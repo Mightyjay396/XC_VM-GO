@@ -132,6 +132,7 @@ class Authenticator {
 			$rCrypt = self::hashPassword($rData['password']);
 			$db->query('UPDATE `users` SET `password` = ?, `last_login` = UNIX_TIMESTAMP(), `ip` = ? WHERE `id` = ?;', $rCrypt, $rIP, $rUserInfo['id']);
 
+			self::renewSessionId();
 			$_SESSION['hash'] = $rUserInfo['id'];
 			$_SESSION['ip'] = $rIP;
 			$_SESSION['code'] = AuthRepository::getCurrentCode();
@@ -197,6 +198,7 @@ class Authenticator {
 			$rCrypt = self::hashPassword($rData['password']);
 			$db->query('UPDATE `users` SET `password` = ?, `last_login` = UNIX_TIMESTAMP(), `ip` = ? WHERE `id` = ?;', $rCrypt, $rIP, $rUserInfo['id']);
 
+			self::renewSessionId();
 			$_SESSION['reseller'] = $rUserInfo['id'];
 			$_SESSION['rip'] = $rIP;
 			$_SESSION['rcode'] = AuthRepository::getCurrentCode();
@@ -216,6 +218,20 @@ class Authenticator {
 		}
 
 		return array('status' => STATUS_FAILURE);
+	}
+
+	/**
+	 * Move a session that has just signed in onto a fresh id, discarding the old
+	 * one. The id the visitor arrived with is one someone else may know — a cookie
+	 * planted from a sibling subdomain, a shared machine — and keeping it would
+	 * sign them in too (session fixation).
+	 *
+	 * @return void
+	 */
+	private static function renewSessionId(): void {
+		if (session_status() === PHP_SESSION_ACTIVE) {
+			session_regenerate_id(true);
+		}
 	}
 
 	/**
