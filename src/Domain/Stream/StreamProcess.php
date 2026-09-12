@@ -103,6 +103,46 @@ class StreamProcess {
 		return FanoutClient::isSupervised(intval($rStreamID)) === true;
 	}
 
+	/**
+	 * Take the start of a stopped on-demand stream for this viewer alone.
+	 *
+	 * Viewers who reach a stopped on-demand stream together each found it
+	 * unwatched — a new monitor takes a few hundred milliseconds to show up — and
+	 * each started one: the later viewer deleted the pid files the earlier
+	 * monitor had just written, both monitors missed each other, and each
+	 * launched a producer. Two connections to a source that often allows one, so
+	 * they kicked each other off. Held around the check and the start, the others
+	 * wait here and then find the stream started. A viewer that dies releases it.
+	 *
+	 * @param int $rStreamID Stream id.
+	 * @return resource|null The held lock, for unlockOnDemandStart(); null when
+	 *                       it cannot be taken (the caller goes on unserialised).
+	 */
+	public static function lockOnDemandStart($rStreamID) {
+		$rLock = @fopen(STREAMS_PATH . intval($rStreamID) . '_.start', 'c');
+		if ($rLock === false) {
+			return null;
+		}
+		if (!flock($rLock, LOCK_EX)) {
+			fclose($rLock);
+			return null;
+		}
+		return $rLock;
+	}
+
+	/**
+	 * Release what lockOnDemandStart() took.
+	 *
+	 * @param resource|null $rLock The lock, or null.
+	 * @return void
+	 */
+	public static function unlockOnDemandStart($rLock) {
+		if (is_resource($rLock)) {
+			flock($rLock, LOCK_UN);
+			fclose($rLock);
+		}
+	}
+
 	/** startMonitor(): the stream was handed to the fanout daemon's supervisor. */
 	const MONITOR_FANOUT = 'fanout';
 	/** startMonitor(): a PHP watchdog (`console.php monitor`) was started for it. */
