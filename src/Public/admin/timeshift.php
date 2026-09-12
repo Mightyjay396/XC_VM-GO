@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
@@ -49,7 +50,7 @@ if (!empty($rRequestData['uitoken'])) {
 	}
 } elseif (!in_array($rIP, ServerRepository::getAllowedIPs())) {
 	generate404();
-} elseif (empty($rRequestData['password']) || SettingsManager::get('live_streaming_pass') != $rRequestData['password']) {
+} elseif (!AuthService::secretMatches(SettingsManager::get('live_streaming_pass'), $rRequestData['password'] ?? null)) {
 	generate404();
 }
 

@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
@@ -43,7 +44,7 @@ if (!empty(RequestManager::get('uitoken'))) {
 	RequestManager::update('stream', $rToken->streamId);
 	RequestManager::update('extension', 'm3u8');
 	$rPrebuffer = $rSegmentSettings['seg_time'];
-} elseif (empty(RequestManager::get('password')) || SettingsManager::get('live_streaming_pass') != RequestManager::get('password')) {
+} elseif (!AuthService::secretMatches(SettingsManager::get('live_streaming_pass'), RequestManager::get('password'))) {
 	generate404();
 } elseif (!in_array($rIP, ServerRepository::getAllowedIPs())) {
 	generate404();

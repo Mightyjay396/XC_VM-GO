@@ -168,6 +168,28 @@ class AuthService {
 		return array('status' => STATUS_FAILURE, 'data' => $rData);
 	}
 
+	/**
+	 * Whether a secret sent by a client is the configured one: strictly, and in
+	 * a time that does not depend on how much of it matched.
+	 *
+	 * The internal API, the admin stream proxies and RTMP compared their shared
+	 * secrets with ==, which reads two numeric-looking strings as numbers and
+	 * stops at the first differing byte. A secret that is not configured matches
+	 * nothing; a caller that means "no secret required" says so itself.
+	 *
+	 * @param mixed $rKnown The configured secret.
+	 * @param mixed $rGiven What the request carried (a string, or anything a
+	 *                      query string can make: null, an array).
+	 * @return bool
+	 */
+	public static function secretMatches($rKnown, $rGiven): bool {
+		if (!is_scalar($rKnown) || !is_string($rGiven)) {
+			return false;
+		}
+		$rKnown = (string) $rKnown;
+		return $rKnown !== '' && hash_equals($rKnown, $rGiven);
+	}
+
 	// ──────────────────────────────────────────────
 	// Из HMACValidator
 	// ──────────────────────────────────────────────
