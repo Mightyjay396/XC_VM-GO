@@ -210,7 +210,10 @@ class AuthService {
 			$rSecret = \XcVm\Core\Util\Encryption::decrypt($rKey['key'], $rSettings['live_streaming_pass'], OPENSSL_EXTRA);
 			$rResult = hash_hmac('sha256', (string) $rStreamID . '##' . $rExtension . '##' . $rExpiry . '##' . $rMACIP . '##' . $rIdentifier . '##' . $rMaxConnections, $rSecret);
 
-			if (md5($rResult) == md5($rHMAC)) {
+			// Constant-time and strict. The old md5($rResult) == md5($rHMAC) used
+			// loose ==, which reads two digests of the form 0e<digits> as the
+			// number 0 and so as equal: an hmac like 240610708 passed as the key.
+			if (hash_equals($rResult, (string) $rHMAC)) {
 				$rKeyID = $rKey['id'];
 				break;
 			}
