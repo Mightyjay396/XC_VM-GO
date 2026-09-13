@@ -134,11 +134,11 @@ class ServerRepository {
 	/**
 	 * Fetch streaming servers visible to the user, filtered by state.
 	 *
-	 * @param array  $rPermissions Effective permissions.
-	 * @param string $type         State filter (e.g. 'online').
+	 * @param array|null $rPermissions Effective permissions (null pre-auth, e.g. on the login page).
+	 * @param string     $type         State filter (e.g. 'online').
 	 * @return array Streaming server rows.
 	 */
-	public static function getStreamingSimple(array $rPermissions, string $type = 'online') {
+	public static function getStreamingSimple(?array $rPermissions = null, string $type = 'online') {
 		$db = self::db();
 		$rReturn = [];
 		$db->query('SELECT * FROM `servers` WHERE `server_type` = 0 ORDER BY `id` ASC;');
@@ -165,11 +165,11 @@ class ServerRepository {
 	/**
 	 * Fetch proxy servers visible to the user.
 	 *
-	 * @param array $rPermissions Effective permissions.
-	 * @param bool  $rOnline      Restrict to online proxies.
+	 * @param array|null $rPermissions Effective permissions (null pre-auth, e.g. on the login page).
+	 * @param bool       $rOnline      Restrict to online proxies.
 	 * @return array Proxy server rows.
 	 */
-	public static function getProxySimple(array $rPermissions, bool $rOnline = false) {
+	public static function getProxySimple(?array $rPermissions = null, bool $rOnline = false) {
 		$db = self::db();
 		$rReturn = [];
 		$db->query('SELECT * FROM `servers` WHERE `server_type` = 1 ORDER BY `id` ASC;');
