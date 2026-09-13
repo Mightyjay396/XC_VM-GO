@@ -18,7 +18,7 @@ use XcVm\Core\Database\DatabaseHandler;
 
 class DatabaseFactory {
 	/** @var DatabaseHandler|null */
-	private static $instance = null;
+	private static $instance;
 
 	/**
 	 * Сохраняет экземпляр DatabaseHandler в singleton-реестре.

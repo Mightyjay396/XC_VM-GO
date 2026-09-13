@@ -76,7 +76,7 @@ class ActiveCodeService {
 		} else {
 			// Check for reseller custom package override
 			$override = json_decode($user['override_packages'] ?? '', true) ?: [];
-			if (isset($override[$packageId]['official_credits']) && strlen((string) $override[$packageId]['official_credits']) > 0) {
+			if (isset($override[$packageId]['official_credits']) && (string) $override[$packageId]['official_credits'] !== '') {
 				$costPerCode = floatval($override[$packageId]['official_credits']);
 			} else {
 				$costPerCode = floatval($package['official_credits'] ?? 0);
@@ -434,13 +434,13 @@ class ActiveCodeService {
 	public static function getRecentBatchNames(array $createdBy = [], int $limit = 100): array {
 		$db = self::db();
 		$where = '`batch_name` IS NOT NULL';
-		if (!empty($createdBy)) {
+		if ($createdBy !== []) {
 			$where = '`created_by` IN (' . implode(',', array_map('intval', $createdBy)) . ') AND ' . $where;
 		}
 		return $db->fetchAll(
 			'SELECT DISTINCT `batch_name` FROM `activation_codes`
              WHERE ' . $where . '
-             ORDER BY `created_at` DESC LIMIT ' . (int) $limit . ';'
+             ORDER BY `created_at` DESC LIMIT ' . $limit . ';'
 		);
 	}
 
@@ -458,7 +458,7 @@ class ActiveCodeService {
 	 */
 	public static function massAction(string $action, array $codeIds, array $user, bool $isAdmin, array $extra = []): array {
 		$db = self::db();
-		if (empty($codeIds)) {
+		if ($codeIds === []) {
 			return ['status' => 'ERROR', 'message' => 'No codes selected.'];
 		}
 
@@ -482,7 +482,7 @@ class ActiveCodeService {
 		$targetIds = array_column($codes, 'id');
 		$targetIdList = implode(',', $targetIds);
 		$subscriberIds = array_filter(array_column($codes, 'subscriber_id'));
-		$subIdList = !empty($subscriberIds) ? implode(',', $subscriberIds) : '0';
+		$subIdList = $subscriberIds !== [] ? implode(',', $subscriberIds) : '0';
 
 		switch ($action) {
 			case 'mass_enable':
@@ -585,7 +585,7 @@ class ActiveCodeService {
 			$params[] = $batchName;
 		}
 
-		$whereClause = !empty($where) ? ('WHERE ' . implode(' AND ', $where)) : '';
+		$whereClause = $where !== [] ? ('WHERE ' . implode(' AND ', $where)) : '';
 
 		$sql = "SELECT 
                     `batch_name`,

@@ -32,11 +32,7 @@ class StatsAjaxController extends BaseAjaxController {
 		$rTime = AdminHelpers::roundUpToAny(time(), 10);
 		$rNearestRange = $rTime - $rLimit;
 		$rPeriod = 60;
-		$rStatsRange = [];
-
-		foreach (range($rNearestRange, $rTime, $rPeriod) as $i) {
-			$rStatsRange[] = $i;
-		}
+		$rStatsRange = range($rNearestRange, $rTime, $rPeriod);
 		$rServerStats = [];
 
 		if (RequestManager::has('server_id')) {

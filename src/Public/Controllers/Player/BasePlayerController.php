@@ -68,11 +68,15 @@ class BasePlayerController extends BaseAdminController {
 		}
 		unset($_g);
 
-		// Экспортируем $data в $GLOBALS чтобы footer.php мог их видеть
+		// Export $data into $GLOBALS so footer.php can see them.
 		foreach ($data as $key => $value) {
 			$GLOBALS[$key] = $value;
 		}
 
+		// Deliberate: expose the view payload as local variables so the legacy
+		// PHP templates can reference them by name. Refactoring this away means
+		// rewriting every view.
+		// phpcs:ignore Generic.PHP.ForbiddenFunctions.Found
 		extract($data);
 
 		$__viewsDir = MAIN_HOME . 'Public/Views/' . $this->scope . '/';

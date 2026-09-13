@@ -165,8 +165,7 @@ class PortalHandler {
 					? false
 					: intval($rSettings["playback_limit"]);
 
-				if (!empty($rTotal["playback_limit"])) {
-				} else {
+				if (empty($rTotal["playback_limit"])) {
 					$rTotal["enable_playback_limit"] = false;
 				}
 
@@ -178,11 +177,8 @@ class PortalHandler {
 				$rTotal["enable_buffering_indication"] = 1;
 				$rTotal["watchdog_timeout"] = mt_rand(80, 120);
 
-				if (
-					!(empty($rTotal["aspect"]) &&
-						$rServers[SERVER_ID]["server_protocol"] == "https")
-				) {
-				} else {
+				if (empty($rTotal["aspect"]) &&
+						$rServers[SERVER_ID]["server_protocol"] == "https") {
 					$rTotal["aspect"] = "16";
 				}
 
@@ -579,8 +575,7 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "set_screensaver_delay":
-				if (empty($_SERVER["HTTP_COOKIE"])) {
-				} else {
+				if (!empty($_SERVER["HTTP_COOKIE"])) {
 					$rDelay = intval($rRequest["screensaver_delay"]);
 					$ctx["device"]["screensaver_delay"] = $rDelay;
 					$db->query(
@@ -594,8 +589,7 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "set_playback_buffer":
-				if (empty($_SERVER["HTTP_COOKIE"])) {
-				} else {
+				if (!empty($_SERVER["HTTP_COOKIE"])) {
 					$rBufferBytes = intval($rRequest["playback_buffer_bytes"]);
 					$rBufferSize = intval($rRequest["playback_buffer_size"]);
 					$ctx["device"]["playback_buffer_bytes"] = $rBufferBytes;
@@ -644,8 +638,7 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "set_locale":
-				if (empty($rRequest["locale"])) {
-				} else {
+				if (!empty($rRequest["locale"])) {
 					$ctx["device"]["locale"] = $rRequest["locale"];
 					$db->query(
 						"UPDATE `mag_devices` SET `locale` = ? WHERE `mag_id` = ?",
@@ -658,8 +651,7 @@ class PortalHandler {
 				exit(json_encode(["js" => []]));
 
 			case "set_hdmi_reaction":
-				if (empty($_SERVER["HTTP_COOKIE"]) || !isset($rRequest["data"])) {
-				} else {
+				if (!empty($_SERVER["HTTP_COOKIE"]) && isset($rRequest["data"])) {
 					$rReaction = $rRequest["data"];
 					$ctx["device"]["hdmi_event_reaction"] = $rReaction;
 					$db->query(
@@ -700,8 +692,7 @@ class PortalHandler {
 				);
 				$rData = ["data" => ["msgs" => 0, "additional_services_on" => 1]];
 
-				if (0 >= $db->num_rows()) {
-				} else {
+				if (0 < $db->num_rows()) {
 					$rEvents = $db->get_row();
 					$db->query(
 						"SELECT count(*) FROM `mag_events` WHERE `mag_device_id` = ? AND `status` = 0 ",
@@ -723,9 +714,7 @@ class PortalHandler {
 						],
 					];
 					$rAutoStatus = ["reboot", "reload_portal", "play_channel", "cut_off"];
-
-					if (!in_array($rEvents["event"], $rAutoStatus)) {
-					} else {
+					if (in_array($rEvents["event"], $rAutoStatus)) {
 						$db->query(
 							"UPDATE `mag_events` SET `status` = 1 WHERE `id` = ?",
 							$rEvents["id"],
@@ -757,36 +746,31 @@ class PortalHandler {
 		global $rSettings, $rCategories;
 		$rCategories = is_array($rCategories ?? null) ? $rCategories : [];
 
-		switch ($rReqAction) {
-			case "get_categories":
-				$rOutput = [];
-				$rOutput["js"] = [];
-
-				if ($rSettings["show_all_category_mag"] != 1) {
-				} else {
-					$rOutput["js"][] = [
-						"id" => "*",
-						"title" => "All",
-						"alias" => "*",
-						"censored" => 0,
-					];
-				}
-
-				foreach ($rCategories as $rCategory) {
-					if (
+		if ($rReqAction === "get_categories") {
+			$rOutput = [];
+			$rOutput["js"] = [];
+			if ($rSettings["show_all_category_mag"] == 1) {
+				$rOutput["js"][] = [
+					"id" => "*",
+					"title" => "All",
+					"alias" => "*",
+					"censored" => 0,
+				];
+			}
+			foreach ($rCategories as $rCategory) {
+				if (
 						$rCategory["category_type"] == "movie" &&
 						in_array($rCategory["id"], $ctx["device"]["category_ids"])
 					) {
-						$rOutput["js"][] = [
-							"id" => $rCategory["id"],
-							"title" => $rCategory["category_name"],
-							"alias" => $rCategory["category_name"],
-							"censored" => intval($rCategory["is_adult"]),
-						];
-					}
+					$rOutput["js"][] = [
+						"id" => $rCategory["id"],
+						"title" => $rCategory["category_name"],
+						"alias" => $rCategory["category_name"],
+						"censored" => intval($rCategory["is_adult"]),
+					];
 				}
-
-				exit(json_encode($rOutput));
+			}
+			exit(json_encode($rOutput));
 		}
 	}
 
@@ -840,8 +824,7 @@ class PortalHandler {
 						"play/" .
 						$rToken;
 
-					if (!$rSettings["mag_keep_extension"]) {
-					} else {
+					if ($rSettings["mag_keep_extension"]) {
 						$rURL .= "?ext=." . $rSettings["mag_container"];
 					}
 				} else {
@@ -857,8 +840,7 @@ class PortalHandler {
 				]));
 
 			case "set_claim":
-				if (empty($rRequest["id"]) || empty($rRequest["real_type"])) {
-				} else {
+				if (!empty($rRequest["id"]) && !empty($rRequest["real_type"])) {
 					$rID = intval($rRequest["id"]);
 					$rRealType = $rRequest["real_type"];
 					$rDate = date("Y-m-d H:i:s");
@@ -926,18 +908,13 @@ class PortalHandler {
 					$rTime = time();
 					$rEPGData = [];
 
-					if (!file_exists(EPG_PATH . "stream_" . intval($rChannelID))) {
-					} else {
+					if (file_exists(EPG_PATH . "stream_" . intval($rChannelID))) {
 						$rRows = igbinary_unserialize(
 							file_get_contents(EPG_PATH . "stream_" . $rChannelID),
 						);
-
 						foreach ($rRows as $rRow) {
-							if (
-								!(($rRow["start"] <= $rTime && $rTime <= $rRow["end"]) ||
-									$rTime <= $rRow["start"])
-							) {
-							} else {
+							if (($rRow["start"] <= $rTime && $rTime <= $rRow["end"]) ||
+									$rTime <= $rRow["start"]) {
 								$rRow["start_timestamp"] = $rRow["start"];
 								$rRow["stop_timestamp"] = $rRow["end"];
 								$rEPGData[] = $rRow;
@@ -945,19 +922,18 @@ class PortalHandler {
 						}
 					}
 
-					if (empty($rEPGData)) {
-					} else {
+					if ($rEPGData !== []) {
 						$rTimeDifference = TimeUtils::getDiffTimezone($ctx["timezone"]) ?: 0;
 						$i = 0;
-
-						for ($n = 0; $n < count($rEPGData); $n++) {
+						$counter = count($rEPGData);
+						for ($n = 0; $n < $counter; $n++) {
 							if ($rEPGData[$n]["end"] >= time()) {
 								$rStartTime = new \DateTime();
 								$rStartTime->setTimestamp($rEPGData[$n]["start"]);
-								$rStartTime->modify((string) $rTimeDifference . " seconds");
+								$rStartTime->modify($rTimeDifference . " seconds");
 								$rEndTime = new \DateTime();
 								$rEndTime->setTimestamp($rEPGData[$n]["end"]);
-								$rEndTime->modify((string) $rTimeDifference . " seconds");
+								$rEndTime->modify($rTimeDifference . " seconds");
 								$rEPG["js"][$i]["id"] = $rEPGData[$n]["id"];
 								$rEPG["js"][$i]["ch_id"] = $rChannelID;
 								$rEPG["js"][$i]["correct"] = $rStartTime->format("Y-m-d H:i:s");
@@ -993,8 +969,7 @@ class PortalHandler {
 			case "set_last_id":
 				$rChannelID = intval($rRequest["id"]);
 
-				if (0 >= $rChannelID) {
-				} else {
+				if (0 < $rChannelID) {
 					$ctx["device"]["last_itv_id"] = $rChannelID;
 					$db->query(
 						"UPDATE `mag_devices` SET `last_itv_id` = ? WHERE `mag_id` = ?",
@@ -1010,8 +985,7 @@ class PortalHandler {
 				$rOutput = [];
 				$rNumber = 1;
 
-				if ($rSettings["show_all_category_mag"] != 1) {
-				} else {
+				if ($rSettings["show_all_category_mag"] == 1) {
 					$rOutput["js"][] = [
 						"id" => "*",
 						"title" => "All",
@@ -1057,8 +1031,7 @@ class PortalHandler {
 
 		switch ($rReqAction) {
 			case "set_claim":
-				if (empty($rRequest["id"]) || empty($rRequest["real_type"])) {
-				} else {
+				if (!empty($rRequest["id"]) && !empty($rRequest["real_type"])) {
 					$rID = intval($rRequest["id"]);
 					$rRealType = $rRequest["real_type"];
 					$rDate = date("Y-m-d H:i:s");
@@ -1074,15 +1047,11 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "set_fav":
-				if (empty($rRequest["video_id"])) {
-				} else {
+				if (!empty($rRequest["video_id"])) {
 					$rVideoID = intval($rRequest["video_id"]);
-
-					if (in_array($rVideoID, $ctx["device"]["fav_channels"]["movie"])) {
-					} else {
+					if (!in_array($rVideoID, $ctx["device"]["fav_channels"]["movie"])) {
 						$ctx["device"]["fav_channels"]["movie"][] = $rVideoID;
 					}
-
 					$db->query(
 						"UPDATE `mag_devices` SET `fav_channels` = ? WHERE `mag_id` = ?",
 						json_encode($ctx["device"]["fav_channels"]),
@@ -1094,16 +1063,13 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "del_fav":
-				if (empty($rRequest["video_id"])) {
-				} else {
+				if (!empty($rRequest["video_id"])) {
 					$rVideoID = intval($rRequest["video_id"]);
-
 					foreach ($ctx["device"]["fav_channels"]["movie"] as $rKey => $rValue) {
-						if ($rValue != $rVideoID) {
-						} else {
+						if ($rValue == $rVideoID) {
 							unset($ctx["device"]["fav_channels"]["movie"][$rKey]);
-
-							goto B79ca0d52db6b02d; //break;
+							goto B79ca0d52db6b02d;
+							//break;
 						}
 					}
 					B79ca0d52db6b02d:
@@ -1121,8 +1087,7 @@ class PortalHandler {
 				$rOutput = [];
 				$rOutput["js"] = [];
 
-				if ($rSettings["show_all_category_mag"] != 1) {
-				} else {
+				if ($rSettings["show_all_category_mag"] == 1) {
 					$rOutput["js"][] = [
 						"id" => "*",
 						"title" => "All",
@@ -1194,8 +1159,7 @@ class PortalHandler {
 					$rCommand = ["series_data" => $rCommand, "type" => "series"];
 				}
 
-				if (!$rSeries) {
-				} else {
+				if ($rSeries) {
 					$rCommand["type"] = "series";
 				}
 
@@ -1208,8 +1172,7 @@ class PortalHandler {
 						break;
 
 					case "series":
-						if (empty($rCommand["series_data"])) {
-						} else {
+						if (!empty($rCommand["series_data"])) {
 							[$rCommand["series_id"], $rCommand["season_num"]] = explode(
 								":",
 								basename($rCommand["series_data"], ".mpg"),
@@ -1262,8 +1225,7 @@ class PortalHandler {
 					"play/" .
 					$rToken;
 
-				if (!$rSettings["mag_keep_extension"]) {
-				} else {
+				if ($rSettings["mag_keep_extension"]) {
 					$rURL .= "?ext=." . $rCommand["target_container"];
 				}
 
@@ -1300,8 +1262,7 @@ class PortalHandler {
 
 		switch ($rReqAction) {
 			case "set_claim":
-				if (empty($rRequest["id"]) || empty($rRequest["real_type"])) {
-				} else {
+				if (!empty($rRequest["id"]) && !empty($rRequest["real_type"])) {
 					$rID = intval($rRequest["id"]);
 					$rRealType = $rRequest["real_type"];
 					$rDate = date("Y-m-d H:i:s");
@@ -1317,15 +1278,11 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "set_fav":
-				if (empty($rRequest["video_id"])) {
-				} else {
+				if (!empty($rRequest["video_id"])) {
 					$rVideoID = intval($rRequest["video_id"]);
-
-					if (in_array($rVideoID, $ctx["device"]["fav_channels"]["series"])) {
-					} else {
+					if (!in_array($rVideoID, $ctx["device"]["fav_channels"]["series"])) {
 						$ctx["device"]["fav_channels"]["series"][] = $rVideoID;
 					}
-
 					$db->query(
 						"UPDATE `mag_devices` SET `fav_channels` = ? WHERE `mag_id` = ?",
 						json_encode($ctx["device"]["fav_channels"]),
@@ -1337,16 +1294,13 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "del_fav":
-				if (empty($rRequest["video_id"])) {
-				} else {
+				if (!empty($rRequest["video_id"])) {
 					$rVideoID = intval($rRequest["video_id"]);
-
 					foreach ($ctx["device"]["fav_channels"]["series"] as $rKey => $rValue) {
-						if ($rValue != $rVideoID) {
-						} else {
+						if ($rValue == $rVideoID) {
 							unset($ctx["device"]["fav_channels"]["series"][$rKey]);
-
-							goto c2cd03c4f6bdbdea; //break;
+							goto c2cd03c4f6bdbdea;
+							//break;
 						}
 					}
 					c2cd03c4f6bdbdea:
@@ -1364,8 +1318,7 @@ class PortalHandler {
 				$rOutput = [];
 				$rOutput["js"] = [];
 
-				if ($rSettings["show_all_category_mag"] != 1) {
-				} else {
+				if ($rSettings["show_all_category_mag"] == 1) {
 					$rOutput["js"][] = [
 						"id" => "*",
 						"title" => "All",
@@ -1374,7 +1327,7 @@ class PortalHandler {
 					];
 				}
 
-				foreach ($rCategories as $rCategoryID => $rCategory) {
+				foreach ($rCategories as $rCategory) {
 					if (
 						$rCategory["category_type"] == "series" &&
 						in_array($rCategory["id"], $rCategoryIDs)
@@ -1394,7 +1347,7 @@ class PortalHandler {
 				$rOutput = [];
 				$rOutput["js"][] = ["id" => "*", "title" => "*"];
 
-				foreach ($rCategories as $rCategoryID => $rCategory) {
+				foreach ($rCategories as $rCategory) {
 					if (
 						$rCategory["category_type"] == "series" &&
 						in_array($rCategory["id"], $rCategoryIDs)
@@ -1441,23 +1394,21 @@ class PortalHandler {
 	public static function handleAccountInfo(string $rReqAction, array &$ctx) {
 		global $rSettings;
 
-		switch ($rReqAction) {
-			case "get_main_info":
-				if (empty($ctx["device"]["exp_date"])) {
+		if ($rReqAction === "get_main_info") {
+			if (empty($ctx["device"]["exp_date"])) {
 					$rExpiry = "Unlimited";
-				} else {
-					$rExpiry = date("F j, Y, g:i a", $ctx["device"]["exp_date"]);
-				}
-
-				exit(json_encode([
-					"js" => [
-						"mac" => $ctx["mac"],
-						"phone" => $rExpiry,
-						"message" => htmlspecialchars_decode(
-							str_replace("\n", "<br/>", $rSettings["mag_message"]),
-						),
-					],
-				]));
+			} else {
+				$rExpiry = date("F j, Y, g:i a", $ctx["device"]["exp_date"]);
+			}
+			exit(json_encode([
+				"js" => [
+					"mac" => $ctx["mac"],
+					"phone" => $rExpiry,
+					"message" => htmlspecialchars_decode(
+						str_replace("\n", "<br/>", $rSettings["mag_message"]),
+					),
+				],
+			]));
 		}
 	}
 
@@ -1478,7 +1429,7 @@ class PortalHandler {
 				exit(getStations(null, $rFav, $rSortBy));
 
 			case "get_all_fav_radio":
-				exit(getStations(null, 1, null));
+				exit(getStations(null, 1));
 
 			case "set_fav":
 				$f3f9f9fa3c58c22b = empty($rRequest["fav_radio"]) ? "" : $rRequest["fav_radio"];
@@ -1511,15 +1462,12 @@ class PortalHandler {
 
 		switch ($rReqAction) {
 			case "get_next_part_url":
-				if (empty($rRequest["id"])) {
-				} else {
+				if (!empty($rRequest["id"])) {
 					$rID = $rRequest["id"];
 					$rStreamID = substr($rID, 0, strpos($rID, "_"));
 					$rDate = strtotime(substr($rID, strpos($rID, "_") + 1));
 					$rRow = getepg($rStreamID, $rDate, $rDate + 86400)[0] ?: null;
-
-					if (!$rRow) {
-					} else {
+					if ($rRow) {
 						$rRow = $db->get_row();
 						$rProgramStart = $rRow["start"];
 						$rDuration = intval(($rRow["end"] - $rRow["start"]) / 60);
@@ -1551,12 +1499,9 @@ class PortalHandler {
 							$rToken .
 							"?&osd_title=" .
 							$rTitle;
-
-						if (!$rSettings["mag_keep_extension"]) {
-						} else {
+						if ($rSettings["mag_keep_extension"]) {
 							$rURL .= "&ext=.ts";
 						}
-
 						exit(json_encode(["js" => $ctx["player"] . $rURL]));
 					}
 				}
@@ -1600,8 +1545,7 @@ class PortalHandler {
 					"play/" .
 					$rToken;
 
-				if (!$rSettings["mag_keep_extension"]) {
-				} else {
+				if ($rSettings["mag_keep_extension"]) {
 					$rURL .= "?ext=.ts";
 				}
 
@@ -1706,15 +1650,12 @@ class PortalHandler {
 				$rStartTime = strtotime($rReqDate . " 00:00:00");
 				$rEndTime = strtotime($rReqDate . " 23:59:59");
 
-				if (!file_exists(EPG_PATH . "stream_" . intval($rChannelID))) {
-				} else {
+				if (file_exists(EPG_PATH . "stream_" . intval($rChannelID))) {
 					$rRows = igbinary_unserialize(
 						file_get_contents(EPG_PATH . "stream_" . $rChannelID),
 					);
-
 					foreach ($rRows as $rRow) {
-						if (!($rStartTime <= $rRow["start"] && $rRow["start"] <= $rEndTime)) {
-						} else {
+						if ($rStartTime <= $rRow["start"] && $rRow["start"] <= $rEndTime) {
 							$rRow["start_timestamp"] = $rRow["start"];
 							$rRow["stop_timestamp"] = $rRow["end"];
 							$rEPGDatas[] = $rRow;
@@ -1732,8 +1673,7 @@ class PortalHandler {
 						$rRequest["ch_id"],
 					);
 
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rStreamRow = $db->get_row();
 					}
 				}
@@ -1741,29 +1681,21 @@ class PortalHandler {
 				$rChannelIDx = 0;
 
 				foreach ($rEPGDatas as $rKey => $rEPGData) {
-					if (
-						!($rEPGData["start_timestamp"] <= time() &&
-							time() <= $rEPGData["stop_timestamp"])
-					) {
-					} else {
+					if ($rEPGData["start_timestamp"] <= time() &&
+							time() <= $rEPGData["stop_timestamp"]) {
 						$rChannelIDx = $rKey + 1;
-
-						goto Aeb56a67ad642976; //break;
+						goto Aeb56a67ad642976;
+						//break;
 					}
 				}
 				Aeb56a67ad642976:
-				if ($rPage != 0) {
-				} else {
+				if ($rPage == 0) {
 					$rDefaultPage = true;
 					$rPage = ceil($rChannelIDx / $rPageItems);
-
-					if ($rPage != 0) {
-					} else {
+					if ($rPage == 0) {
 						$rPage = 1;
 					}
-
-					if ($rReqDate == date("Y-m-d")) {
-					} else {
+					if ($rReqDate != date("Y-m-d")) {
 						$rPage = 1;
 						$rDefaultPage = false;
 					}
@@ -1772,21 +1704,21 @@ class PortalHandler {
 				$rProgram = array_slice($rEPGDatas, ($rPage - 1) * $rPageItems, $rPageItems);
 				$rData = [];
 				$rTimeDifference = TimeUtils::getDiffTimezone($ctx["timezone"]);
+				$counter = count($rProgram);
 
-				for ($i = 0; $i < count($rProgram); $i++) {
+				for ($i = 0; $i < $counter; $i++) {
 					$open = 0;
 
-					if (time() > $rProgram[$i]["stop_timestamp"]) {
-					} else {
+					if (time() <= $rProgram[$i]["stop_timestamp"]) {
 						$open = 1;
 					}
 
 					$rStartTime = new \DateTime();
 					$rStartTime->setTimestamp($rProgram[$i]["start"]);
-					$rStartTime->modify((string) $rTimeDifference . " seconds");
+					$rStartTime->modify($rTimeDifference . " seconds");
 					$rEndTime = new \DateTime();
 					$rEndTime->setTimestamp($rProgram[$i]["end"]);
-					$rEndTime->modify((string) $rTimeDifference . " seconds");
+					$rEndTime->modify($rTimeDifference . " seconds");
 					$rData[$i]["id"] = $rProgram[$i]["id"] . "_" . $rChannelID;
 					$rData[$i]["ch_id"] = $rChannelID;
 					$rData[$i]["time"] = $rStartTime->format("Y-m-d H:i:s");
@@ -1848,31 +1780,27 @@ class PortalHandler {
 						$rRequest["ch_id"],
 					);
 
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rStreamRow = $db->get_row();
 					}
 				}
 
 				$rTime = strtotime(date("Y-m-d 00:00:00"));
 
-				if (!file_exists(EPG_PATH . "stream_" . intval($rChannelID))) {
-				} else {
+				if (file_exists(EPG_PATH . "stream_" . intval($rChannelID))) {
 					$rRows = igbinary_unserialize(
 						file_get_contents(EPG_PATH . "stream_" . $rChannelID),
 					);
-
 					foreach ($rRows as $rRow) {
-						if ($rTime > $rRow["start"]) {
-						} else {
+						if ($rTime <= $rRow["start"]) {
 							$rRow["start_timestamp"] = $rRow["start"];
 							$rRow["stop_timestamp"] = $rRow["end"];
 							$rStartTime = new \DateTime();
 							$rStartTime->setTimestamp($rRow["start"]);
-							$rStartTime->modify((string) $rTimeDifference . " seconds");
+							$rStartTime->modify($rTimeDifference . " seconds");
 							$rEndTime = new \DateTime();
 							$rEndTime->setTimestamp($rRow["end"]);
-							$rEndTime->modify((string) $rTimeDifference . " seconds");
+							$rEndTime->modify($rTimeDifference . " seconds");
 							$rOutput["js"][] = [
 								"start_timestamp" => $rStartTime->getTimestamp(),
 								"stop_timestamp" => $rEndTime->getTimestamp(),
@@ -1894,8 +1822,7 @@ class PortalHandler {
 	 * @param array  &$ctx Context array
 	 */
 	public static function handleUnauthenticated(string $rReqType, string $rReqAction, array &$ctx) {
-		if (!($rReqType == "stb" && $rReqAction == "get_profile")) {
-		} else {
+		if ($rReqType == "stb" && $rReqAction == "get_profile") {
 			BruteforceGuard::checkBruteforce($ctx["ip"], $ctx["mac"]);
 			BruteforceGuard::checkFlood();
 		}

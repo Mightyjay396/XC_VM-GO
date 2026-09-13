@@ -56,7 +56,7 @@ class FanoutConfig {
 			}
 		}
 
-		$rDesired = self::desired($rSettings, $rSnapshot);
+		$rDesired = self::desired($rSettings);
 
 		// Skip the write when nothing the panel owns actually changed (avoids mtime
 		// churn that would make the daemon re-apply needlessly). Loose compare so an
@@ -93,11 +93,8 @@ class FanoutConfig {
 	 *   hls_window, grace_sec, write_timeout_sec, chunk_bytes, max_gop_bytes,
 	 *   source_insecure, default_prebuffer_sec, idle_buffer_grace_sec,
 	 *   idle_buffer_ratio, source_backend, supervise.
-	 *
-	 * @param array $rSnapshot Current on-disk config (unused now the panel owns
-	 *                         every key; kept for signature stability / future use).
 	 */
-	private static function desired(array $rSettings, array $rSnapshot): array {
+	private static function desired(array $rSettings): array {
 		$rSegTime = self::clampInt((int) ($rSettings['seg_time'] ?? SettingsManager::get('seg_time', 6)), 1, 30);
 		$rHlsWindow = self::clampInt((int) ($rSettings['fanout_hls_window'] ?? 6), 1, 20);
 

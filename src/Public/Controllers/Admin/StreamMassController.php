@@ -43,6 +43,6 @@ class StreamMassController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Mass Edit Streams');
-		$this->render('stream_mass', compact('rCategories', 'rStreamArguments', 'rTranscodeProfiles', 'rServerTree'));
+		$this->render('stream_mass', ['rCategories' => $rCategories, 'rStreamArguments' => $rStreamArguments, 'rTranscodeProfiles' => $rTranscodeProfiles, 'rServerTree' => $rServerTree]);
 	}
 }

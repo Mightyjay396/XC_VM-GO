@@ -210,7 +210,6 @@ class MaxMindUpdater {
 	 * Record today's date as the version for an edition in version.json.
 	 *
 	 * @param string $edition Edition id that was updated.
-	 * @return void
 	 */
 	private function updateVersionFile(string $edition): void {
 		$data  = json_decode(@file_get_contents(self::VERSION_FILE), true) ?: [];

@@ -41,7 +41,6 @@ final class SignalQueue {
 	 *
 	 * @param string $rKey  Signal key; its first '/'-segment routes the action.
 	 * @param mixed  $rData JSON-encodable payload.
-	 * @return void
 	 */
 	public static function push(string $rKey, mixed $rData): void {
 		file_put_contents(self::pathFor($rKey), json_encode([$rKey, $rData]));

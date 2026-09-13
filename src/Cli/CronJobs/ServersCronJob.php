@@ -47,12 +47,10 @@ class ServersCronJob implements CommandInterface {
 		$rSocket = @fsockopen($rIP, $rPort, $rErrNo, $rErrStr, 3);
 		$rStopTime = microtime(true);
 		if (!$rSocket) {
-			$rStatus = -1;
-		} else {
-			fclose($rSocket);
-			$rStatus = floor(($rStopTime - $rStartTime) * 1000);
+			return -1;
 		}
-		return $rStatus;
+		fclose($rSocket);
+		return (int) floor(($rStopTime - $rStartTime) * 1000);
 	}
 
 	private function loadCron(): void {

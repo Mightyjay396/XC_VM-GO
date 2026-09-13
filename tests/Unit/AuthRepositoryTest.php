@@ -19,9 +19,9 @@ final class AuthRepositoryTest extends TestCase {
 		$this->db = new TestDb();
 		$this->db->exec(
 			'CREATE TABLE access_codes (id INTEGER PRIMARY KEY, type INTEGER, code TEXT);
-			 CREATE TABLE hmac_keys (id INTEGER PRIMARY KEY, key TEXT);
+			 CREATE TABLE hmac_keys (id INTEGER PRIMARY KEY, `key` TEXT);
 			 INSERT INTO access_codes (id, type, code) VALUES (1, 0, "alpha"), (2, 1, "beta"), (3, 0, "gamma");
-			 INSERT INTO hmac_keys (id, key) VALUES (7, "k7"), (8, "k8");'
+			 INSERT INTO hmac_keys (id, `key`) VALUES (7, "k7"), (8, "k8");'
 		);
 		$GLOBALS['db'] = $this->db;
 	}

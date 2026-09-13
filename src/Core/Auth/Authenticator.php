@@ -113,7 +113,7 @@ class Authenticator {
 			? json_decode($rAccessCode['groups'], true)
 			: null;
 
-		if (!($rCodeCount == 0 || (is_array($rCodeGroups) && in_array($rUserInfo['member_group_id'], $rCodeGroups)))) {
+		if ($rCodeCount != 0 && (!is_array($rCodeGroups) || !in_array($rUserInfo['member_group_id'], $rCodeGroups))) {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('ADMIN', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'INVALID_CODE', $rIP, time());
 			}
@@ -178,7 +178,7 @@ class Authenticator {
 			return ['status' => STATUS_FAILURE];
 		}
 
-		if (!(in_array($rUserInfo['member_group_id'], ($rAccessCode && isset($rAccessCode['groups'])) ? (json_decode($rAccessCode['groups'], true) ?: []) : []) || count(AuthRepository::getActiveCodes(MAIN_HOME)) == 0)) {
+		if (!in_array($rUserInfo['member_group_id'], ($rAccessCode && isset($rAccessCode['groups'])) ? (json_decode($rAccessCode['groups'], true) ?: []) : []) && count(AuthRepository::getActiveCodes(MAIN_HOME)) != 0) {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('RESELLER', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'INVALID_CODE', $rIP, time());
 			}
@@ -229,7 +229,6 @@ class Authenticator {
 	 *
 	 * @param string $rIP    The address trying to sign in.
 	 * @param int    $rLimit login_flood; 0 or less turns the limit off.
-	 * @return bool
 	 */
 	public static function loginFloodExceeded(string $rIP, int $rLimit): bool {
 		global $db;
@@ -245,8 +244,6 @@ class Authenticator {
 	 * one. The id the visitor arrived with is one someone else may know — a cookie
 	 * planted from a sibling subdomain, a shared machine — and keeping it would
 	 * sign them in too (session fixation).
-	 *
-	 * @return void
 	 */
 	private static function renewSessionId(): void {
 		if (session_status() === PHP_SESSION_ACTIVE) {

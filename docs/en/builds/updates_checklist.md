@@ -42,7 +42,7 @@ Before publishing, verify the build works:
 
 ```bash
 make dev-tools && make phpstan && make cs && make gates
-php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist
+php tests/phpunit.phar -c tests/phpunit.xml.dist
 make dev-clean   # remove the dev tools afterwards, restoring the prod-only vendor/
 ```
 
@@ -267,7 +267,7 @@ Every `make` target used during release prep, in one place.
 | `make cs-fix` | Apply code-style fixes in place |
 | `make gates` | PSR-4 regression gates (procedural-use, LB-archive, vendor-prod-only) |
 | `make dev-clean` | Remove the dev tools again, restoring the production-only `vendor/` |
-| `php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist` | Unit tests |
+| `php tests/phpunit.phar -c tests/phpunit.xml.dist` | Unit tests |
 
 **Release prep & build:**
 

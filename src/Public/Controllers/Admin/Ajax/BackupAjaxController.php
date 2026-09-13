@@ -94,7 +94,7 @@ class BackupAjaxController extends BaseAjaxController {
 				unlink(MAIN_HOME . 'backups/' . $rBackup . '.sql');
 			}
 
-			if (0 < strlen($rSettings['dropbox_token'])) {
+			if ((string) $rSettings['dropbox_token'] !== '') {
 				BackupService::deleteRemote('/' . $rBackup . '.sql');
 			}
 
@@ -108,7 +108,7 @@ class BackupAjaxController extends BaseAjaxController {
 			if (!file_exists($rFilename)) {
 				$rFilename = MAIN_HOME . 'tmp/restore.sql';
 
-				if (0 < strlen($rSettings['dropbox_token'])) {
+				if ((string) $rSettings['dropbox_token'] !== '') {
 					if (!BackupService::downloadRemote('/' . $rBackup . '.sql', $rFilename)) {
 						$this->fail();
 					}

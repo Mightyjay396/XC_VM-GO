@@ -27,12 +27,9 @@ class ChannelOrderController extends BaseAdminController {
 		$db->query('SELECT COUNT(`id`) AS `count` FROM `streams`;');
 		$rCount = $db->get_row()['count'];
 
-		if (!($rCount <= 50000 || $rOverride)) {
-		} else {
+		if ($rCount <= 50000 || $rOverride) {
 			$db->query('SELECT `id`, `type`, `stream_display_name`, `category_id` FROM `streams` ORDER BY `order` ASC, `stream_display_name` ASC;');
-
-			if (0 >= $db->num_rows()) {
-			} else {
+			if (0 < $db->num_rows()) {
 				foreach ($db->get_rows() as $rRow) {
 					if ($rRow['type'] == 1 || $rRow['type'] == 3) {
 						$rOrdered['stream'][] = $rRow;
@@ -43,8 +40,7 @@ class ChannelOrderController extends BaseAdminController {
 							if ($rRow['type'] == 4) {
 								$rOrdered['radio'][] = $rRow;
 							} else {
-								if ($rRow['type'] != 5) {
-								} else {
+								if ($rRow['type'] == 5) {
 									$rOrdered['series'][] = $rRow;
 								}
 							}
@@ -55,6 +51,6 @@ class ChannelOrderController extends BaseAdminController {
 		}
 
 		$this->setTitle('Channel Order');
-		$this->render('channel_order', compact('rOverride', 'rOrdered', 'rCount'));
+		$this->render('channel_order', ['rOverride' => $rOverride, 'rOrdered' => $rOrdered, 'rCount' => $rCount]);
 	}
 }

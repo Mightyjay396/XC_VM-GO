@@ -39,6 +39,6 @@ class RadioMassController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Mass Edit Stations');
-		$this->render('radio_mass', compact('rCategories', 'rServerTree'));
+		$this->render('radio_mass', ['rCategories' => $rCategories, 'rServerTree' => $rServerTree]);
 	}
 }

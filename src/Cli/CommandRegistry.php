@@ -39,7 +39,7 @@ class CommandRegistry {
 	public function dispatch(array $rArgv): int {
 		$rCommandName = $rArgv[1] ?? null;
 
-		if ($rCommandName === null || $rCommandName === '--help' || $rCommandName === '-h') {
+		if (in_array($rCommandName, [null, '--help', '-h'], true)) {
 			$this->printHelp();
 			return 0;
 		}

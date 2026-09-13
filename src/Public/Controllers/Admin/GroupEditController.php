@@ -64,6 +64,6 @@ class GroupEditController extends BaseAdminController {
 		}
 
 		$this->setTitle('Group');
-		$this->render('group', compact('rGroup', 'rGroupIDs', 'rPackageIDs', 'rNotice'));
+		$this->render('group', ['rGroup' => $rGroup, 'rGroupIDs' => $rGroupIDs, 'rPackageIDs' => $rPackageIDs, 'rNotice' => $rNotice]);
 	}
 }

@@ -98,6 +98,7 @@ class EpgService {
 				}
 			}
 		}
+		return null;
 	}
 
 	/**

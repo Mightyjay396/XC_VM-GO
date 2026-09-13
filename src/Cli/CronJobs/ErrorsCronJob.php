@@ -170,7 +170,7 @@ class ErrorsCronJob implements CommandInterface {
 							$rErrors = preg_split('/\r\n|\r|\n/', (string) file_get_contents($rFile));
 							foreach ($rErrors as $rError) {
 								$rError = trim((string) $rError);
-								if (!(empty($rError) || $this->inArray($rIgnoreErrors, $rError))) {
+								if (!empty($rError) && !$this->inArray($rIgnoreErrors, $rError)) {
 									if (SettingsManager::get('stream_logs_save')) {
 										$rQuery .= '(' . $rStreamID . ',' . SERVER_ID . ',' . time() . ',' . $db->escape($rError) . '),';
 									}

@@ -18,11 +18,11 @@ class StreamSorter {
 	/**
 	 * Append the year to a title according to the movie_year_append setting.
 	 *
-	 * @param string     $rTitle Base title.
-	 * @param int|string $rYear  Year (only applied when a valid 1900..next-year value).
+	 * @param string          $rTitle Base title.
+	 * @param int|string|null $rYear  Year (only applied when a valid 1900..next-year value).
 	 * @return string Formatted title.
 	 */
-	public static function formatTitle(string $rTitle, int|string $rYear) {
+	public static function formatTitle(string $rTitle, int|string|null $rYear = null) {
 		if (is_numeric($rYear) && 1900 <= $rYear && $rYear <= intval(date('Y') + 1)) {
 			if (SettingsManager::get('movie_year_append') == 0) {
 				return trim($rTitle) . ' (' . $rYear . ')';
@@ -72,7 +72,7 @@ class StreamSorter {
 	 * @return int[] Reordered series ids (input unchanged if no cached order).
 	 */
 	public static function sortSeries(array $rSeries) {
-		if (!(0 < count($rSeries) && file_exists(CACHE_TMP_PATH . 'series_order'))) {
+		if (0 >= count($rSeries) || !file_exists(CACHE_TMP_PATH . 'series_order')) {
 			return $rSeries;
 		}
 

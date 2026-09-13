@@ -34,6 +34,6 @@ class EnigmaController extends BaseAdminController {
 		}
 
 		$this->setTitle('Enigma Device');
-		$this->render('enigma', compact('rDevice'));
+		$this->render('enigma', ['rDevice' => $rDevice]);
 	}
 }

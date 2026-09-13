@@ -33,6 +33,6 @@ class UserController extends BaseAdminController {
 		$rPackages = $rUser ? PackageService::getAll($rUser['member_group_id']) : [];
 
 		$this->setTitle('User');
-		$this->render('user', compact('rUser', 'rPackages'));
+		$this->render('user', ['rUser' => $rUser, 'rPackages' => $rPackages]);
 	}
 }

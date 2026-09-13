@@ -54,6 +54,6 @@ class SerieController extends BaseAdminController {
 		}
 
 		$this->setTitle('TV Series');
-		$this->render('serie', compact('rSeriesArr', 'rTranscodeProfiles', 'rServerTree'));
+		$this->render('serie', ['rSeriesArr' => $rSeriesArr, 'rTranscodeProfiles' => $rTranscodeProfiles, 'rServerTree' => $rServerTree]);
 	}
 }

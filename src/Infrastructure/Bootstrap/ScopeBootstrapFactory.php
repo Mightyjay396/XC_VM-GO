@@ -17,7 +17,6 @@ namespace XcVm\Infrastructure\Bootstrap;
 final class ScopeBootstrapFactory {
 	/**
 	 * @param string $rScope 'admin' | 'reseller' | 'player' (others → admin).
-	 * @return ScopeBootstrap
 	 */
 	public static function create(string $rScope): ScopeBootstrap {
 		switch ($rScope) {

@@ -50,8 +50,6 @@ class SettingsManager {
 
 	/**
 	 * Проверяет наличие ключа в настройках.
-	 *
-	 * @return bool
 	 */
 	public static function has(string $key): bool {
 		return array_key_exists($key, self::$settings);
@@ -64,7 +62,6 @@ class SettingsManager {
 	 * '0' и '' → false, '1' и любое непустое значение → true.
 	 *
 	 * @param bool   $default Значение, если ключ отсутствует.
-	 * @return bool
 	 */
 	public static function getBool(string $key, bool $default = false): bool {
 		return array_key_exists($key, self::$settings) ? (bool) self::$settings[$key] : $default;
@@ -72,8 +69,6 @@ class SettingsManager {
 
 	/**
 	 * Возвращает значение как int.
-	 *
-	 * @return int
 	 */
 	public static function getInt(string $key, int $default = 0): int {
 		return array_key_exists($key, self::$settings) ? (int) self::$settings[$key] : $default;
@@ -81,8 +76,6 @@ class SettingsManager {
 
 	/**
 	 * Возвращает значение как строку.
-	 *
-	 * @return string
 	 */
 	public static function getString(string $key, string $default = ''): string {
 		return array_key_exists($key, self::$settings) ? (string) self::$settings[$key] : $default;
@@ -93,8 +86,6 @@ class SettingsManager {
 	 *
 	 * JSON-поля декодируются в массивы ещё в SettingsRepository, поэтому здесь
 	 * достаточно проверить тип; для скаляров/null возвращается $default.
-	 *
-	 * @return array
 	 */
 	public static function getArray(string $key, array $default = []): array {
 		$rValue = self::$settings[$key] ?? null;

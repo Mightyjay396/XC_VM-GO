@@ -33,6 +33,6 @@ class ReviewController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Review');
-		$this->render('review', compact('rType', 'rCategorySet', 'rLogoSet'));
+		$this->render('review', ['rType' => $rType, 'rCategorySet' => $rCategorySet, 'rLogoSet' => $rLogoSet]);
 	}
 }

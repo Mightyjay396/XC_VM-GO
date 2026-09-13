@@ -29,8 +29,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 
 	/**
 	 * Register all core navigation items with the NavbarRegistry.
-	 *
-	 * @return void
 	 */
 	public static function register(): void {
 		self::_dashboard();
@@ -50,8 +48,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 * Register Dashboard navigation items.
 	 *
 	 * Adds the main dashboard menu item and its live connections sub-item.
-	 *
-	 * @return void
 	 */
 	private static function _dashboard(): void {
 		NavbarRegistry::add((new NavbarItem('dashboard'))
@@ -70,8 +66,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 *
 	 * Adds server management items including load balancer installation,
 	 * server/proxy management, ordering, and process monitoring.
-	 *
-	 * @return void
 	 */
 	private static function _servers(): void {
 		NavbarRegistry::add((new NavbarItem('servers'))
@@ -107,8 +101,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 * Adds complete user management structure including Lines, MAG devices,
 	 * Enigma2 devices, and Reseller management with their respective
 	 * add/manage/mass-edit operations.
-	 *
-	 * @return void
 	 */
 	private static function _users(): void {
 		NavbarRegistry::add((new NavbarItem('users'))
@@ -197,8 +189,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 * Live-streaming content: Streams, Created Channels and Radio Stations.
 	 * VOD (Movies/Series) moved to _vod(); Bouquets/Suppliers/Recordings/TV Guide
 	 * moved to _distribution(). Labelled "Streaming"; the key stays 'content'.
-	 *
-	 * @return void
 	 */
 	private static function _content(): void {
 		NavbarRegistry::add((new NavbarItem('content'))
@@ -262,8 +252,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 * On-demand catalogue split out of Content: Movies and Series with their
 	 * add/import/manage/mass operations. Each leaf keeps its original
 	 * url/permissions/label; only the parent key changed (content.* → vod.*).
-	 *
-	 * @return void
 	 */
 	private static function _vod(): void {
 		NavbarRegistry::add((new NavbarItem('vod'))
@@ -319,8 +307,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 * Content organisation & delivery split out of Content: Bouquets, Suppliers,
 	 * Recordings and TV Guide. Each leaf keeps its original url/permissions/label;
 	 * only the parent key changed (content.* → distribution.*).
-	 *
-	 * @return void
 	 */
 	private static function _distribution(): void {
 		NavbarRegistry::add((new NavbarItem('distribution'))
@@ -377,8 +363,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 *
 	 * Modules inject extra log screens under 'logs' (or one of its subgroups)
 	 * at order 500+.
-	 *
-	 * @return void
 	 */
 	private static function _logs(): void {
 		NavbarRegistry::add((new NavbarItem('logs'))
@@ -464,8 +448,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 * Adds system management structure including Service Setup, Access Codes,
 	 * Security, Tools, and Tickets. Logs live in their own top-level tab now
 	 * (see _logs()).
-	 *
-	 * @return void
 	 */
 	private static function _management(): void {
 		// The former "System" group is flattened: its sections (Service Setup,
@@ -577,8 +559,6 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 	 *   NavbarRegistry::add((new NavbarItem('profile.watch_settings'))
 	 *       ->parent('profile')->url('settings_watch')
 	 *       ->label('watch_settings')->permissions(['folder_watch_settings'])->order(110));
-	 *
-	 * @return void
 	 */
 	private static function _profile(): void {
 		NavbarRegistry::add((new NavbarItem('profile.edit'))

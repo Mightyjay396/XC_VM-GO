@@ -34,7 +34,7 @@ class PlayerProxyController extends BasePlayerController {
 		if (substr($rURL, 0, 4) === 'http') {
 			$rData = file_get_contents($rURL);
 
-			if (strlen($rData) > 0) {
+			if ((string) $rData !== '') {
 				header('Content-Description: File Transfer');
 				header('Content-type: application/octet-stream');
 				header('Content-Disposition: attachment; filename="' . md5($rURL . SettingsManager::get('live_streaming_pass')) . '.vtt"');

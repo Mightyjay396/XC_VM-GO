@@ -466,8 +466,7 @@ class BlocklistService {
 		$rRow = $db->get_row();
 		$db->query('DELETE FROM `blocked_ips` WHERE `id` = ?;', $rID);
 
-		if (!file_exists(FLOOD_TMP_PATH . 'block_' . $rRow['ip'])) {
-		} else {
+		if (file_exists(FLOOD_TMP_PATH . 'block_' . $rRow['ip'])) {
 			unlink(FLOOD_TMP_PATH . 'block_' . $rRow['ip']);
 		}
 
@@ -545,8 +544,7 @@ class BlocklistService {
 		$rReturn = [];
 		$db->query('SELECT * FROM `blocked_uas` ORDER BY `id` ASC;');
 
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() ?: [] as $rRow) {
 				$rReturn[] = $rRow;
 			}
@@ -565,8 +563,7 @@ class BlocklistService {
 		$rReturn = [];
 		$db->query('SELECT * FROM `blocked_isps` ORDER BY `id` ASC;');
 
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() ?: [] as $rRow) {
 				$rReturn[] = $rRow;
 			}
@@ -585,8 +582,7 @@ class BlocklistService {
 		$db = self::db();
 		$db->query('SELECT * FROM `blocked_uas` WHERE `id` = ?;', $rID);
 
-		if ($db->num_rows() != 1) {
-		} else {
+		if ($db->num_rows() == 1) {
 			return $db->get_row();
 		}
 		return null;
@@ -602,8 +598,7 @@ class BlocklistService {
 		$db = self::db();
 		$db->query('SELECT * FROM `blocked_isps` WHERE `id` = ?;', $rID);
 
-		if ($db->num_rows() != 1) {
-		} else {
+		if ($db->num_rows() == 1) {
 			return $db->get_row();
 		}
 		return null;
@@ -638,8 +633,7 @@ class BlocklistService {
 		$db = self::db();
 		$db->query('SELECT * FROM `rtmp_ips` WHERE `id` = ?;', $rID);
 
-		if ($db->num_rows() != 1) {
-		} else {
+		if ($db->num_rows() == 1) {
 			return $db->get_row();
 		}
 		return null;

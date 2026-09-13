@@ -49,8 +49,7 @@ class PortalHelpers {
 				}
 			}
 
-			if (0 >= $db->num_rows()) {
-			} else {
+			if (0 < $db->num_rows()) {
 				$rDevice = $db->get_row();
 				$rUserInfo = UserRepository::getStreamingUserInfo(
 					$rSettings,
@@ -70,27 +69,18 @@ class PortalHelpers {
 				$rDevice["fav_channels"] = !empty($rDevice["fav_channels"])
 					? json_decode($rDevice["fav_channels"], true)
 					: [];
-
-				if (!empty($rDevice["fav_channels"]["live"])) {
-				} else {
+				if (empty($rDevice["fav_channels"]["live"])) {
 					$rDevice["fav_channels"]["live"] = [];
 				}
-
-				if (!empty($rDevice["fav_channels"]["movie"])) {
-				} else {
+				if (empty($rDevice["fav_channels"]["movie"])) {
 					$rDevice["fav_channels"]["movie"] = [];
 				}
-
-				if (!empty($rDevice["fav_channels"]["series"])) {
-				} else {
+				if (empty($rDevice["fav_channels"]["series"])) {
 					$rDevice["fav_channels"]["series"] = [];
 				}
-
-				if (!empty($rDevice["fav_channels"]["radio_streams"])) {
-				} else {
+				if (empty($rDevice["fav_channels"]["radio_streams"])) {
 					$rDevice["fav_channels"]["radio_streams"] = [];
 				}
-
 				$rDevice["mag_player"] = trim($rDevice["mag_player"]);
 				unset($rDevice["channel_ids"]);
 				$rDevice["get_profile_vars"] = [
@@ -177,33 +167,26 @@ class PortalHelpers {
 				$rDevice["generated"] = time();
 			}
 		} else {
-			if (!$rDevice) {
-			} else {
+			if ($rDevice) {
 				$rLiveIDs = $rVODIDs = $rRadioIDs = $rCategoryIDs = $rChannelIDs = $rSeriesIDs = [];
-
 				foreach ($rDevice["bouquet"] as $rID) {
-					if (!isset($rBouquets[$rID]["streams"])) {
-					} else {
+					if (isset($rBouquets[$rID]["streams"])) {
 						$rChannelIDs = array_merge($rChannelIDs, $rBouquets[$rID]["streams"]);
 					}
 
-					if (!isset($rBouquets[$rID]["series"])) {
-					} else {
+					if (isset($rBouquets[$rID]["series"])) {
 						$rSeriesIDs = array_merge($rSeriesIDs, $rBouquets[$rID]["series"]);
 					}
 
-					if (!isset($rBouquets[$rID]["channels"])) {
-					} else {
+					if (isset($rBouquets[$rID]["channels"])) {
 						$rLiveIDs = array_merge($rLiveIDs, $rBouquets[$rID]["channels"]);
 					}
 
-					if (!isset($rBouquets[$rID]["movies"])) {
-					} else {
+					if (isset($rBouquets[$rID]["movies"])) {
 						$rVODIDs = array_merge($rVODIDs, $rBouquets[$rID]["movies"]);
 					}
 
-					if (!isset($rBouquets[$rID]["radios"])) {
-					} else {
+					if (isset($rBouquets[$rID]["radios"])) {
 						$rRadioIDs = array_merge($rRadioIDs, $rBouquets[$rID]["radios"]);
 					}
 				}
@@ -245,8 +228,7 @@ class PortalHelpers {
 			: [];
 
 		foreach ($rData as $rItem) {
-			if ($rStartDate && !($rStartDate < $rItem["end"] && $rItem["start"] < $rFinishDate)) {
-			} else {
+			if (!$rStartDate || $rStartDate < $rItem["end"] && $rItem["start"] < $rFinishDate) {
 				if ($rByID) {
 					$rReturn[$rItem["id"]] = $rItem;
 				} else {
@@ -277,8 +259,7 @@ class PortalHelpers {
 	public static function getProgramme($rStreamID, $rProgrammeID) {
 		$rData = self::getEPG($rStreamID, null, null, true);
 
-		if (!isset($rData[$rProgrammeID])) {
-		} else {
+		if (isset($rData[$rProgrammeID])) {
 			return $rData[$rProgrammeID];
 		}
 	}
@@ -353,29 +334,24 @@ class PortalHelpers {
 		$rKey = $rStart + 1;
 		$rWhereV = $rWhere = [];
 
-		if (0 >= count($rTypes)) {
-		} else {
+		if (0 < count($rTypes)) {
 			$rWhere[] = "`type` IN (" . implode(",", self::convertTypes($rTypes)) . ")";
 		}
 
-		if (empty($rCategoryID)) {
-		} else {
+		if (!empty($rCategoryID)) {
 			$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
 			$rWhereV[] = $rCategoryID;
 		}
 
-		if (empty($rPicking["genre"]) || $rPicking["genre"] == "*") {
-		} else {
+		if (!empty($rPicking["genre"]) && $rPicking["genre"] != "*") {
 			$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
 			$rWhereV[] = $rPicking["genre"];
 		}
 
 		$rChannels = StreamSorter::sortChannels($rChannels);
 
-		if (empty($rFav)) {
-		} else {
+		if (!empty($rFav)) {
 			$favoriteChannelIds = [];
-
 			foreach ($rTypes as $rType) {
 				foreach ($rDevice["fav_channels"][$rType] as $rStreamID) {
 					$favoriteChannelIds[] = intval($rStreamID);
@@ -384,20 +360,17 @@ class PortalHelpers {
 			$rChannels = array_intersect($favoriteChannelIds, $rChannels);
 		}
 
-		if (empty($rSearchBy)) {
-		} else {
+		if (!empty($rSearchBy)) {
 			$rWhere[] = "`stream_display_name` LIKE ?";
 			$rWhereV[] = "%" . $rSearchBy . "%";
 		}
 
-		if (empty($rPicking["abc"]) || $rPicking["abc"] == "*") {
-		} else {
+		if (!empty($rPicking["abc"]) && $rPicking["abc"] != "*") {
 			$rWhere[] = "UCASE(LEFT(`stream_display_name`, 1)) = ?";
 			$rWhereV[] = strtoupper($rPicking["abc"]);
 		}
 
-		if (empty($rPicking["years"]) || $rPicking["years"] == "*") {
-		} else {
+		if (!empty($rPicking["years"]) && $rPicking["years"] != "*") {
 			$rWhere[] = "`year` = ?";
 			$rWhereV[] = $rPicking["years"];
 		}
@@ -533,17 +506,12 @@ class PortalHelpers {
 		foreach ($rSeries as $rSeriesID => $rSeriesO) {
 			$rSeriesO["last_modified"] = $rSeriesO["last_modified_stream"];
 
-			if (
-				!empty($rCategoryID) &&
-				!in_array($rCategoryID, json_decode($rSeriesO["category_id"], true))
-			) {
-			} else {
+			if (empty($rCategoryID) || in_array($rCategoryID, json_decode($rSeriesO["category_id"], true))) {
 				if (in_array($rCategoryID, json_decode($rSeriesO["category_id"], true))) {
 					$rSeriesO["category_id"] = $rCategoryID;
 				} else {
 					[$rSeriesO["category_id"]] = json_decode($rSeriesO["category_id"], true);
 				}
-
 				if (
 					(empty($rSearchBy) || stristr($rSeriesO["title"], $rSearchBy)) &&
 					!(!empty($rPicking["abc"]) &&
@@ -556,18 +524,11 @@ class PortalHelpers {
 						$rPicking["years"] != "*" &&
 						$rSeriesO["year"] != $rPicking["years"])
 				) {
-					if (empty($rFav)) {
-					} else {
+					if (!empty($rFav)) {
 						$rFound = false;
-
-						if (
-							empty($rDevice["fav_channels"][$rType]) ||
-							!in_array($rSeriesID, $rDevice["fav_channels"][$rType])
-						) {
-						} else {
+						if (!empty($rDevice["fav_channels"][$rType]) && in_array($rSeriesID, $rDevice["fav_channels"][$rType])) {
 							$rFound = true;
 						}
-
 						if (!$rFound) {
 							continue;
 						}
@@ -630,8 +591,7 @@ class PortalHelpers {
 		$rDefaultPage = false;
 		$rPage = !empty($rRequest["p"]) ? $rRequest["p"] : 0;
 
-		if ($rPage != 0) {
-		} else {
+		if ($rPage == 0) {
 			$rDefaultPage = true;
 			$rPage = 1;
 		}
@@ -776,8 +736,7 @@ class PortalHelpers {
 			];
 		}
 
-		if ($rDefaultPage) {
-		} else {
+		if (!$rDefaultPage) {
 			$rPage = 0;
 		}
 
@@ -834,13 +793,10 @@ class PortalHelpers {
 		$rCounter = count($rItems);
 		$rChannelIDx = 0;
 
-		if ($rPage != 0) {
-		} else {
+		if ($rPage == 0) {
 			$rDefaultPage = true;
 			$rPage = ceil($rChannelIDx / $rPageItems);
-
-			if ($rPage != 0) {
-			} else {
+			if ($rPage == 0) {
 				$rPage = 1;
 			}
 		}
@@ -849,10 +805,8 @@ class PortalHelpers {
 		$rDatas = [];
 
 		foreach ($rItems as $rKey => $rMovie) {
-			if (is_null($rFav) || $rFav != 1) {
-			} else {
-				if (in_array($rMovie["id"], $rDevice["fav_channels"]["series"])) {
-				} else {
+			if (!is_null($rFav) && $rFav == 1) {
+				if (!in_array($rMovie["id"], $rDevice["fav_channels"]["series"])) {
 					$rCounter--;
 				}
 			}
@@ -862,8 +816,7 @@ class PortalHelpers {
 				$rMaxAdded = 0;
 
 				foreach ($rMovie as $vod) {
-					if ($rMaxAdded >= $vod["added"]) {
-					} else {
+					if ($rMaxAdded < $vod["added"]) {
 						$rMaxAdded = $vod["added"];
 					}
 				}
@@ -1028,8 +981,7 @@ class PortalHelpers {
 		$rDefaultPage = false;
 		$rPage = !empty($rRequest["p"]) ? $rRequest["p"] : 0;
 
-		if ($rPage != 0) {
-		} else {
+		if ($rPage == 0) {
 			$rDefaultPage = true;
 			$rPage = 1;
 		}
@@ -1075,8 +1027,7 @@ class PortalHelpers {
 					"play/" .
 					$rToken;
 
-				if (!$rSettings["mag_keep_extension"]) {
-				} else {
+				if ($rSettings["mag_keep_extension"]) {
 					$rStreamURL .= "?ext=." . $rSettings["mag_container"];
 				}
 
@@ -1102,8 +1053,7 @@ class PortalHelpers {
 			];
 		}
 
-		if ($rDefaultPage) {
-		} else {
+		if (!$rDefaultPage) {
 			$rPage = 0;
 		}
 
@@ -1142,12 +1092,9 @@ class PortalHelpers {
 		$rPage = isset($rRequest["p"]) ? intval($rRequest["p"]) : 0;
 		$rPosition = 0;
 
-		if (!($rPage == 0 && $rCategoryID != -1)) {
-		} else {
+		if ($rPage == 0 && $rCategoryID != -1) {
 			$rDefaultPage = true;
-
-			if ($rRequest["p"] != 0 || empty($rDevice["last_itv_id"])) {
-			} else {
+			if ($rRequest["p"] == 0 && !empty($rDevice["last_itv_id"])) {
 				$rPosition = self::getItems(
 					$rDevice,
 					["live", "created_live"],
@@ -1160,17 +1107,14 @@ class PortalHelpers {
 					0,
 					$rDevice["last_itv_id"],
 				);
-
 				if ($rPosition) {
 					$rPage = floor(($rPosition - 1) / $rPageItems) + 1;
-					$rPosition = $rPosition - ($rPage - 1) * $rPageItems;
+					$rPosition -= ($rPage - 1) * $rPageItems;
 				} else {
 					$rPosition = 0;
 				}
 			}
-
-			if ($rPage != 0) {
-			} else {
+			if ($rPage == 0) {
 				$rPage = 1;
 			}
 		}
@@ -1252,8 +1196,7 @@ class PortalHelpers {
 					"play/" .
 					$rToken;
 
-				if (!$rSettings["mag_keep_extension"]) {
-				} else {
+				if ($rSettings["mag_keep_extension"]) {
 					$rStreamURL .= "?ext=." . $rSettings["mag_container"];
 				}
 
@@ -1266,10 +1209,10 @@ class PortalHelpers {
 			if ($rStream["now_playing"]) {
 				$rStartTime = new \DateTime();
 				$rStartTime->setTimestamp($rStream["now_playing"]["start"]);
-				$rStartTime->modify((string) $rTimeDifference . " seconds");
+				$rStartTime->modify($rTimeDifference . " seconds");
 				$rEndTime = new \DateTime();
 				$rEndTime->setTimestamp($rStream["now_playing"]["end"]);
-				$rEndTime->modify((string) $rTimeDifference . " seconds");
+				$rEndTime->modify($rTimeDifference . " seconds");
 				$rNowPlaying =
 					$rStartTime->format("H:i") .
 					" - " .
@@ -1350,8 +1293,7 @@ class PortalHelpers {
 			];
 		}
 
-		if ($rDefaultPage) {
-		} else {
+		if (!$rDefaultPage) {
 			$rPage = 0;
 			$rPosition = 0;
 		}
@@ -1372,8 +1314,7 @@ class PortalHelpers {
 	// ─── Сортировка ──────────────────────────────────────────────────
 
 	public static function sortArrayStreamRating($a, $b) {
-		if (isset($a["rating"])) {
-		} else {
+		if (!isset($a["rating"])) {
 			if (isset($a["movie_properties"]) && isset($b["movie_properties"])) {
 				if (!is_array($a["movie_properties"])) {
 					$a = json_decode($a["movie_properties"], true);
@@ -1401,13 +1342,11 @@ class PortalHelpers {
 	public static function sortArrayStreamAdded($a, $b) {
 		$rColumn = isset($a["added"]) ? "added" : "last_modified";
 
-		if (is_numeric($a[$rColumn])) {
-		} else {
+		if (!is_numeric($a[$rColumn])) {
 			$a[$rColumn] = strtotime($a["added"]);
 		}
 
-		if (is_numeric($b[$rColumn])) {
-		} else {
+		if (!is_numeric($b[$rColumn])) {
 			$b[$rColumn] = strtotime($b[$rColumn]);
 		}
 
@@ -1441,8 +1380,7 @@ class PortalHelpers {
 		$rHeaders = [];
 
 		foreach ($_SERVER as $rName => $rValue) {
-			if (substr($rName, 0, 5) != "HTTP_") {
-			} else {
+			if (substr($rName, 0, 5) == "HTTP_") {
 				$rHeaders[
 					str_replace(
 						" ",
@@ -1462,8 +1400,7 @@ class PortalHelpers {
 	public static function shutdown() {
 		global $db;
 
-		if (!is_object($db)) {
-		} else {
+		if (is_object($db)) {
 			$db->close_mysql();
 		}
 	}

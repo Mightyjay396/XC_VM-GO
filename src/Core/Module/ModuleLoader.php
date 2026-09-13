@@ -108,7 +108,7 @@ class ModuleLoader {
 			}
 		}
 
-		if (empty($jsonFiles)) {
+		if ($jsonFiles === []) {
 			return $this;
 		}
 
@@ -226,7 +226,6 @@ class ModuleLoader {
 	 * @param ServiceContainer $container Service container for dependency injection.
 	 * @param Router|null $router Optional router for module route registration.
 	 * @param StreamPipeline|null $pipeline Optional stream pipeline for middleware registration.
-	 * @return void
 	 */
 	public function bootAll(ServiceContainer $container, ?Router $router = null, ?StreamPipeline $pipeline = null): void {
 		$navbarRegistry = new NavbarRegistry();
@@ -257,11 +256,11 @@ class ModuleLoader {
 				$this->registerEventSubscribers($module, $container);
 			}
 
-			if ($pipeline !== null) {
+			if ($pipeline instanceof \XcVm\Core\Http\Pipeline\StreamPipeline) {
 				$this->registerStreamMiddleware($module, $pipeline);
 			}
 
-			if ($module instanceof RouteProviderInterface && $router !== null) {
+			if ($router instanceof \XcVm\Core\Http\Router) {
 				$module->registerRoutes($router);
 			}
 
@@ -294,7 +293,6 @@ class ModuleLoader {
 	 * Used in CLI context (console.php).
 	 *
 	 * @param CommandRegistry $registry Command registry for registering module commands.
-	 * @return void
 	 */
 	public function registerAllCommands(CommandRegistry $registry): void {
 		foreach ($this->modules as $name => $module) {
@@ -400,8 +398,6 @@ class ModuleLoader {
 	 * Loads module override configuration from config/modules.php.
 	 *
 	 * Overrides can disable modules, override class names, or provide other module-specific settings.
-	 *
-	 * @return void
 	 */
 	protected function loadOverrides(): void {
 		$overridesPath = defined('CONFIG_PATH')
@@ -732,7 +728,6 @@ class ModuleLoader {
 	 * @param array &$state Visit state for each module (1=visiting, 2=visited).
 	 * @param array &$order Load order being built (appends module names).
 	 * @param array $stack Call stack trace (used for cycle error message).
-	 * @return void
 	 * @throws \RuntimeException If cyclic dependency detected or dependency not found in discovered modules.
 	 */
 	protected function visitDependencyNode(
@@ -799,8 +794,6 @@ class ModuleLoader {
 	 *
 	 * If the event class named in a #[ListensTo] attribute does not exist at
 	 * registration time the listener is silently skipped (graceful degradation).
-	 *
-	 * @return void
 	 */
 	private function registerEventSubscribers(ServiceProviderInterface $module, ServiceContainer $container): void {
 		// Verify the container holds an actual EventDispatcher instance (not just the class name).
@@ -850,8 +843,6 @@ class ModuleLoader {
 	 * Registers stream middleware declared by a module into the pipeline.
 	 *
 	 * Only called for modules implementing StreamMiddlewareProviderInterface.
-	 *
-	 * @return void
 	 */
 	private function registerStreamMiddleware(ModuleInterface $module, StreamPipeline $pipeline): void {
 		if (!$module instanceof StreamMiddlewareProviderInterface) {
@@ -912,7 +903,6 @@ class ModuleLoader {
 	 * existing config/modules.php files continue to work without migration.
 	 *
 	 * @param string $name Module name or directory name.
-	 * @return ModuleState
 	 */
 	private function resolveState(string $name): ModuleState {
 		$entry = $this->overrides[$name] ?? null;

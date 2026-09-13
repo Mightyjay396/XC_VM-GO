@@ -58,8 +58,6 @@ final class StreamContext {
 
 	/**
 	 * Whether the pipeline has been aborted.
-	 *
-	 * @return bool
 	 */
 	public function isAborted(): bool {
 		return $this->aborted;
@@ -67,8 +65,6 @@ final class StreamContext {
 
 	/**
 	 * Reason passed to abort(), or '' if not aborted.
-	 *
-	 * @return string
 	 */
 	public function getAbortReason(): string {
 		return $this->abortReason;
@@ -76,8 +72,6 @@ final class StreamContext {
 
 	/**
 	 * Application-level abort code (0 = unspecified).
-	 *
-	 * @return int
 	 */
 	public function getAbortCode(): int {
 		return $this->abortCode;
@@ -109,7 +103,6 @@ final class StreamContext {
 	 * Whether an attribute exists in the bag.
 	 *
 	 * @param string $key Attribute key.
-	 * @return bool
 	 */
 	public function has(string $key): bool {
 		return array_key_exists($key, $this->attributes);

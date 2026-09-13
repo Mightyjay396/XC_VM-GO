@@ -93,16 +93,6 @@ class MovieController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Movie');
-		$this->render('movie', compact(
-			'rCategories',
-			'rTranscodeProfiles',
-			'rMovie',
-			'rServerTree',
-			'activeStreamingServers',
-			'rStreamSys',
-			'rMovieSource',
-			'rSource',
-			'rPathSources'
-		));
+		$this->render('movie', ['rCategories' => $rCategories, 'rTranscodeProfiles' => $rTranscodeProfiles, 'rMovie' => $rMovie, 'rServerTree' => $rServerTree, 'activeStreamingServers' => $activeStreamingServers, 'rStreamSys' => $rStreamSys, 'rMovieSource' => $rMovieSource, 'rSource' => $rSource, 'rPathSources' => $rPathSources]);
 	}
 }

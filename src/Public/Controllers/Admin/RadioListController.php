@@ -23,6 +23,6 @@ class RadioListController extends BaseAdminController {
 		$rCategories = CategoryService::getAllByType('radio');
 
 		$this->setTitle('Radio Stations');
-		$this->render('radios', compact('rCategories'));
+		$this->render('radios', ['rCategories' => $rCategories]);
 	}
 }

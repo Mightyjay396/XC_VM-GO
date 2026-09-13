@@ -51,8 +51,7 @@ class ResellerAPI {
 		$rArray = ['line' => ['edit', 'trial', 'bouquets_selected', 'pair_id', 'username', 'password', 'member_id', 'package', 'contact', 'reseller_notes', 'allowed_ips', 'allowed_ua', 'bypass_ua', 'is_isplock', 'isp_clear'], 'mag' => ['edit', 'trial', 'bouquets_selected', 'pair_id', 'mac', 'member_id', 'package', 'parent_password', 'sn', 'stb_type', 'image_version', 'hw_version', 'device_id', 'device_id2', 'ver', 'reseller_notes', 'allowed_ips', 'is_isplock', 'isp_clear'], 'enigma' => ['edit', 'trial', 'bouquets_selected', 'pair_id', 'mac', 'member_id', 'package', 'modem_mac', 'local_ip', 'enigma_version', 'cpu', 'lversion', 'token', 'reseller_notes', 'allowed_ips', 'is_isplock', 'isp_clear'], 'user' => ['edit', 'username', 'password', 'owner_id', 'email', 'reseller_dns', 'notes', 'member_group_id'], 'ticket' => ['edit', 'message', 'title', 'respond'], 'profile' => ['email', 'password', 'api_key', 'reseller_dns', 'theme', 'hue', 'timezone']];
 
 		foreach ($rData as $rKey => $rValue) {
-			if (in_array($rKey, $rArray[$rType])) {
-			} else {
+			if (!in_array($rKey, $rArray[$rType])) {
 				unset($rData[$rKey]);
 			}
 		}
@@ -72,13 +71,11 @@ class ResellerAPI {
 		self::$rServers = ServerRepository::getStreamingSimple($rPermissions);
 		self::$rProxyServers = ServerRepository::getProxySimple($rPermissions);
 
-		if ($rUserID || !isset($_SESSION['reseller'])) {
-		} else {
+		if (!$rUserID && isset($_SESSION['reseller'])) {
 			$rUserID = $_SESSION['reseller'];
 		}
 
-		if (!$rUserID) {
-		} else {
+		if ($rUserID) {
 			self::$rUserInfo = UserRepository::getRegisteredUserById($rUserID);
 			self::$rPermissions = array_merge((AuthRepository::getPermissions(self::$rUserInfo['member_group_id']) ?: []), (AuthRepository::getGroupPermissions(self::$rUserInfo['id']) ?: []));
 		}
@@ -96,8 +93,8 @@ class ResellerAPI {
 		$rData = self::processData('profile', $rData);
 
 		if (0 >= strlen($rData['email']) || filter_var($rData['email'], FILTER_VALIDATE_EMAIL)) {
-			if (0 < strlen($rData['password'])) {
-				if (!(strlen($rData['password']) < intval(self::$rPermissions['minimum_password_length']))) {
+			if ((string) $rData['password'] !== '') {
+				if (strlen($rData['password']) >= intval(self::$rPermissions['minimum_password_length'])) {
 					$rPassword = Authenticator::hashPassword($rData['password']);
 				} else {
 					return ['status' => STATUS_INVALID_PASSWORD];
@@ -106,8 +103,7 @@ class ResellerAPI {
 				$rPassword = self::$rUserInfo['password'];
 			}
 
-			if (ctype_xdigit($rData['api_key']) && strlen($rData['api_key']) == 32) {
-			} else {
+			if (!ctype_xdigit($rData['api_key']) || strlen($rData['api_key']) != 32) {
 				$rData['api_key'] = '';
 			}
 
@@ -195,7 +191,7 @@ class ResellerAPI {
 						} else {
 							$rOverride = json_decode(self::$rUserInfo['override_packages'], true);
 
-							if (isset($rOverride[$rPackage['id']]['official_credits']) && 0 < strlen($rOverride[$rPackage['id']]['official_credits'])) {
+							if (isset($rOverride[$rPackage['id']]['official_credits']) && (string) $rOverride[$rPackage['id']]['official_credits'] !== '') {
 								$rCost = intval($rOverride[$rPackage['id']]['official_credits']);
 							} else {
 								$rCost = intval($rPackage['official_credits']);
@@ -222,19 +218,14 @@ class ResellerAPI {
 
 							$rBouquets = array_values(json_decode($rPackage['bouquets'], true));
 
-							if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
-							} else {
+							if (self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? [])) {
 								$rNewBouquets = [];
-
 								foreach ($rData['bouquets_selected'] as $rBouquetID) {
-									if (!in_array($rBouquetID, $rBouquets)) {
-									} else {
+									if (in_array($rBouquetID, $rBouquets)) {
 										$rNewBouquets[] = $rBouquetID;
 									}
 								}
-
-								if (0 >= count($rNewBouquets)) {
-								} else {
+								if (0 < count($rNewBouquets)) {
 									$rBouquets = $rNewBouquets;
 								}
 							}
@@ -269,28 +260,20 @@ class ResellerAPI {
 					return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 				}
 
-				if (!(isset($rData['edit']) && $rUserArray['package_id'])) {
-				} else {
+				if (isset($rData['edit']) && $rUserArray['package_id']) {
 					$rPackage = PackageService::getById($rUserArray['package_id']);
 					$rBouquets = array_values(json_decode($rPackage['bouquets'], true));
-
-					if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
-					} else {
+					if (self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? [])) {
 						$rNewBouquets = [];
-
 						foreach ($rData['bouquets_selected'] as $rBouquetID) {
-							if (!in_array($rBouquetID, $rBouquets)) {
-							} else {
+							if (in_array($rBouquetID, $rBouquets)) {
 								$rNewBouquets[] = $rBouquetID;
 							}
 						}
-
-						if (0 >= count($rNewBouquets)) {
-						} else {
+						if (0 < count($rNewBouquets)) {
 							$rBouquets = $rNewBouquets;
 						}
 					}
-
 					$rUserArray['bouquet'] = AdminHelpers::sortArrayByArray($rBouquets, array_keys(BouquetService::getOrder()));
 					$rUserArray['bouquet'] = '[' . implode(',', array_map('intval', $rUserArray['bouquet'])) . ']';
 				}
@@ -308,11 +291,9 @@ class ResellerAPI {
 				$rUserArray['member_id'] = self::$rUserInfo['id'];
 			}
 
-			if (!self::$rPermissions['allow_restrictions']) {
-			} else {
+			if (self::$rPermissions['allow_restrictions']) {
 				if (isset($rData['allowed_ips'])) {
-					if (is_array($rData['allowed_ips'])) {
-					} else {
+					if (!is_array($rData['allowed_ips'])) {
 						$rData['allowed_ips'] = [$rData['allowed_ips']];
 					}
 
@@ -320,15 +301,12 @@ class ResellerAPI {
 				} else {
 					$rUserArray['allowed_ips'] = '[]';
 				}
-
 				if (isset($rData['is_isplock'])) {
 					$rUserArray['is_isplock'] = 1;
 				} else {
 					$rUserArray['is_isplock'] = 0;
 				}
-
-				if (strlen($rData['isp_clear']) != 0) {
-				} else {
+				if (strlen($rData['isp_clear']) == 0) {
 					$rUserArray['isp_desc'] = '';
 					$rUserArray['as_number'] = null;
 				}
@@ -353,16 +331,13 @@ class ResellerAPI {
 					$rPrepare = QueryHelper::prepareArray($rUserArray);
 					$rQuery = 'REPLACE INTO `lines`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-					if (!$db->query($rQuery, ...$rPrepare['data'])) {
-					} else {
+					if ($db->query($rQuery, ...$rPrepare['data'])) {
 						$rInsertID = $db->last_insert_id();
 						MagService::syncLineDevices($rInsertID);
 						$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_line', 'id' => $rInsertID]));
 						$rArray['user_id'] = $rInsertID;
 						unset($rArray['user'], $rArray['paired']);
-
-						if (isset($rData['edit'])) {
-						} else {
+						if (!isset($rData['edit'])) {
 							$rArray['ver'] = '';
 							$rArray['device_id2'] = $rArray['ver'];
 							$rArray['device_id'] = $rArray['device_id2'];
@@ -371,10 +346,8 @@ class ResellerAPI {
 							$rArray['image_version'] = $rArray['stb_type'];
 							$rArray['sn'] = $rArray['image_version'];
 						}
-
 						$rPrepare = QueryHelper::prepareArray($rArray);
 						$rQuery = 'REPLACE INTO `mag_devices`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-
 						if ($db->query($rQuery, ...$rPrepare['data'])) {
 							$rInsertID = $db->last_insert_id();
 
@@ -400,9 +373,7 @@ class ResellerAPI {
 
 							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						}
-
-						if (isset($rData['edit'])) {
-						} else {
+						if (!isset($rData['edit'])) {
 							$db->query('DELETE FROM `lines` WHERE `id` = ?;', $rInsertID);
 						}
 					}
@@ -414,9 +385,8 @@ class ResellerAPI {
 			}
 
 			return ['status' => STATUS_INVALID_MAC, 'data' => $rData];
-		} else {
-			return false;
 		}
+		return false;
 	}
 
 	/**
@@ -472,7 +442,7 @@ class ResellerAPI {
 						} else {
 							$rOverride = json_decode(self::$rUserInfo['override_packages'], true);
 
-							if (isset($rOverride[$rPackage['id']]['official_credits']) && 0 < strlen($rOverride[$rPackage['id']]['official_credits'])) {
+							if (isset($rOverride[$rPackage['id']]['official_credits']) && (string) $rOverride[$rPackage['id']]['official_credits'] !== '') {
 								$rCost = intval($rOverride[$rPackage['id']]['official_credits']);
 							} else {
 								$rCost = intval($rPackage['official_credits']);
@@ -499,19 +469,14 @@ class ResellerAPI {
 
 							$rBouquets = array_values(json_decode($rPackage['bouquets'], true));
 
-							if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
-							} else {
+							if (self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? [])) {
 								$rNewBouquets = [];
-
 								foreach ($rData['bouquets_selected'] as $rBouquetID) {
-									if (!in_array($rBouquetID, $rBouquets)) {
-									} else {
+									if (in_array($rBouquetID, $rBouquets)) {
 										$rNewBouquets[] = $rBouquetID;
 									}
 								}
-
-								if (0 >= count($rNewBouquets)) {
-								} else {
+								if (0 < count($rNewBouquets)) {
 									$rBouquets = $rNewBouquets;
 								}
 							}
@@ -546,28 +511,20 @@ class ResellerAPI {
 					return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 				}
 
-				if (!(isset($rData['edit']) && $rUserArray['package_id'])) {
-				} else {
+				if (isset($rData['edit']) && $rUserArray['package_id']) {
 					$rPackage = PackageService::getById($rUserArray['package_id']);
 					$rBouquets = array_values(json_decode($rPackage['bouquets'], true));
-
-					if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
-					} else {
+					if (self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? [])) {
 						$rNewBouquets = [];
-
 						foreach ($rData['bouquets_selected'] as $rBouquetID) {
-							if (!in_array($rBouquetID, $rBouquets)) {
-							} else {
+							if (in_array($rBouquetID, $rBouquets)) {
 								$rNewBouquets[] = $rBouquetID;
 							}
 						}
-
-						if (0 >= count($rNewBouquets)) {
-						} else {
+						if (0 < count($rNewBouquets)) {
 							$rBouquets = $rNewBouquets;
 						}
 					}
-
 					$rUserArray['bouquet'] = AdminHelpers::sortArrayByArray($rBouquets, array_keys(BouquetService::getOrder()));
 					$rUserArray['bouquet'] = '[' . implode(',', array_map('intval', $rUserArray['bouquet'])) . ']';
 				}
@@ -585,11 +542,9 @@ class ResellerAPI {
 				$rUserArray['member_id'] = self::$rUserInfo['id'];
 			}
 
-			if (!self::$rPermissions['allow_restrictions']) {
-			} else {
+			if (self::$rPermissions['allow_restrictions']) {
 				if (isset($rData['allowed_ips'])) {
-					if (is_array($rData['allowed_ips'])) {
-					} else {
+					if (!is_array($rData['allowed_ips'])) {
 						$rData['allowed_ips'] = [$rData['allowed_ips']];
 					}
 
@@ -597,15 +552,12 @@ class ResellerAPI {
 				} else {
 					$rUserArray['allowed_ips'] = '[]';
 				}
-
 				if (isset($rData['is_isplock'])) {
 					$rUserArray['is_isplock'] = 1;
 				} else {
 					$rUserArray['is_isplock'] = 0;
 				}
-
-				if (strlen($rData['isp_clear']) != 0) {
-				} else {
+				if (strlen($rData['isp_clear']) == 0) {
 					$rUserArray['isp_desc'] = '';
 					$rUserArray['as_number'] = null;
 				}
@@ -630,16 +582,13 @@ class ResellerAPI {
 					$rPrepare = QueryHelper::prepareArray($rUserArray);
 					$rQuery = 'REPLACE INTO `lines`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-					if (!$db->query($rQuery, ...$rPrepare['data'])) {
-					} else {
+					if ($db->query($rQuery, ...$rPrepare['data'])) {
 						$rInsertID = $db->last_insert_id();
 						MagService::syncLineDevices($rInsertID);
 						$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_line', 'id' => $rInsertID]));
 						$rArray['user_id'] = $rInsertID;
 						unset($rArray['user'], $rArray['paired']);
-
-						if (isset($rData['edit'])) {
-						} else {
+						if (!isset($rData['edit'])) {
 							$rArray['token'] = '';
 							$rArray['lversion'] = $rArray['token'];
 							$rArray['cpu'] = $rArray['lversion'];
@@ -647,10 +596,8 @@ class ResellerAPI {
 							$rArray['local_ip'] = $rArray['enigma_version'];
 							$rArray['modem_mac'] = $rArray['local_ip'];
 						}
-
 						$rPrepare = QueryHelper::prepareArray($rArray);
 						$rQuery = 'REPLACE INTO `enigma2_devices`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-
 						if ($db->query($rQuery, ...$rPrepare['data'])) {
 							$rInsertID = $db->last_insert_id();
 
@@ -676,9 +623,7 @@ class ResellerAPI {
 
 							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						}
-
-						if (isset($rData['edit'])) {
-						} else {
+						if (!isset($rData['edit'])) {
 							$db->query('DELETE FROM `lines` WHERE `id` = ?;', $rInsertID);
 						}
 					}
@@ -690,9 +635,8 @@ class ResellerAPI {
 			}
 
 			return ['status' => STATUS_INVALID_MAC, 'data' => $rData];
-		} else {
-			return false;
 		}
+		return false;
 	}
 
 	/**
@@ -710,8 +654,7 @@ class ResellerAPI {
 				$rArray = UserRepository::getRegisteredUserById($rData['edit']);
 
 				if ($rArray && Authorization::check('user', $rArray['id'])) {
-					if ($rArray['id'] != self::$rUserInfo['id']) {
-					} else {
+					if ($rArray['id'] == self::$rUserInfo['id']) {
 						return false;
 					}
 				} else {
@@ -723,8 +666,7 @@ class ResellerAPI {
 				unset($rArray['id']);
 			}
 
-			if (self::$rPermissions['allow_change_username']) {
-			} else {
+			if (!self::$rPermissions['allow_change_username']) {
 				if (isset($rArray['id'])) {
 					$rData['username'] = $rArray['username'];
 				} else {
@@ -732,8 +674,7 @@ class ResellerAPI {
 				}
 			}
 
-			if (self::$rPermissions['allow_change_password']) {
-			} else {
+			if (!self::$rPermissions['allow_change_password']) {
 				if (isset($rArray['id'])) {
 					$rData['password'] = '';
 				} else {
@@ -746,8 +687,7 @@ class ResellerAPI {
 					if (!QueryHelper::checkExists('users', 'username', $rArray['username'], 'id', $rData['edit'] ?? null)) {
 						$rArray['username'] = $rData['username'];
 
-						if (0 >= strlen($rData['password'])) {
-						} else {
+						if ((string) $rData['password'] !== '') {
 							$rArray['password'] = Authenticator::hashPassword($rData['password']);
 						}
 
@@ -757,12 +697,9 @@ class ResellerAPI {
 							$rArray['owner_id'] = self::$rUserInfo['id'];
 						}
 
-						if (isset($rData['edit'])) {
-						} else {
+						if (!isset($rData['edit'])) {
 							$rCost = intval(self::$rPermissions['create_sub_resellers_price']);
-
-							if (self::$rUserInfo['credits'] - $rCost >= 0) {
-							} else {
+							if (self::$rUserInfo['credits'] - $rCost < 0) {
 								return ['status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData];
 							}
 						}
@@ -826,8 +763,7 @@ class ResellerAPI {
 		if (isset($rData['edit'])) {
 			$rArray = TicketRepository::getById($rData['edit']);
 
-			if ($rArray && Authorization::check('user', $rArray['member_id'])) {
-			} else {
+			if (!$rArray || !Authorization::check('user', $rArray['member_id'])) {
 				return false;
 			}
 		} else {
@@ -835,7 +771,7 @@ class ResellerAPI {
 			unset($rArray['id']);
 		}
 
-		if (!(strlen($rData['title']) == 0 && !isset($rData['respond']) || strlen($rData['message']) == 0)) {
+		if ((strlen($rData['title']) != 0 || isset($rData['respond'])) && strlen($rData['message']) != 0) {
 			$rArray['member_id'] = self::$rUserInfo['id'];
 
 			if (!isset($rData['respond'])) {
@@ -891,8 +827,7 @@ class ResellerAPI {
 				$rArray = UserRepository::getLineById($rData['edit']);
 				$rOrigCredentials = ['username' => $rArray['username'], 'password' => $rArray['password']];
 
-				if ($rArray && Authorization::check('line', $rArray['id'])) {
-				} else {
+				if (!$rArray || !Authorization::check('line', $rArray['id'])) {
 					return false;
 				}
 			} else {
@@ -926,7 +861,7 @@ class ResellerAPI {
 						} else {
 							$rOverride = json_decode(self::$rUserInfo['override_packages'], true);
 
-							if (isset($rOverride[$rPackage['id']]['official_credits']) && 0 < strlen($rOverride[$rPackage['id']]['official_credits'])) {
+							if (isset($rOverride[$rPackage['id']]['official_credits']) && (string) $rOverride[$rPackage['id']]['official_credits'] !== '') {
 								$rCost = intval($rOverride[$rPackage['id']]['official_credits']);
 							} else {
 								$rCost = intval($rPackage['official_credits']);
@@ -953,19 +888,14 @@ class ResellerAPI {
 
 							$rBouquets = array_values(json_decode($rPackage['bouquets'], true));
 
-							if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
-							} else {
+							if (self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? [])) {
 								$rNewBouquets = [];
-
 								foreach ($rData['bouquets_selected'] as $rBouquetID) {
-									if (!in_array($rBouquetID, $rBouquets)) {
-									} else {
+									if (in_array($rBouquetID, $rBouquets)) {
 										$rNewBouquets[] = $rBouquetID;
 									}
 								}
-
-								if (0 >= count($rNewBouquets)) {
-								} else {
+								if (0 < count($rNewBouquets)) {
 									$rBouquets = $rNewBouquets;
 								}
 							}
@@ -992,28 +922,20 @@ class ResellerAPI {
 					return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 				}
 
-				if (!(isset($rData['edit']) && $rArray['package_id'])) {
-				} else {
+				if (isset($rData['edit']) && $rArray['package_id']) {
 					$rPackage = PackageService::getById($rArray['package_id']);
 					$rBouquets = array_values(json_decode($rPackage['bouquets'], true));
-
-					if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
-					} else {
+					if (self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? [])) {
 						$rNewBouquets = [];
-
 						foreach ($rData['bouquets_selected'] as $rBouquetID) {
-							if (!in_array($rBouquetID, $rBouquets)) {
-							} else {
+							if (in_array($rBouquetID, $rBouquets)) {
 								$rNewBouquets[] = $rBouquetID;
 							}
 						}
-
-						if (0 >= count($rNewBouquets)) {
-						} else {
+						if (0 < count($rNewBouquets)) {
 							$rBouquets = $rNewBouquets;
 						}
 					}
-
 					$rArray['bouquet'] = AdminHelpers::sortArrayByArray($rBouquets, array_keys(BouquetService::getOrder()));
 					$rArray['bouquet'] = '[' . implode(',', array_map('intval', $rArray['bouquet'])) . ']';
 				}
@@ -1029,8 +951,7 @@ class ResellerAPI {
 				$rArray['member_id'] = self::$rUserInfo['id'];
 			}
 
-			if (self::$rPermissions['allow_change_username']) {
-			} else {
+			if (!self::$rPermissions['allow_change_username']) {
 				if (isset($rArray['id'])) {
 					$rData['username'] = $rArray['username'];
 				} else {
@@ -1038,8 +959,7 @@ class ResellerAPI {
 				}
 			}
 
-			if (self::$rPermissions['allow_change_password']) {
-			} else {
+			if (!self::$rPermissions['allow_change_password']) {
 				if (isset($rArray['id'])) {
 					$rData['password'] = $rArray['password'];
 				} else {
@@ -1054,10 +974,8 @@ class ResellerAPI {
 					$rData['username'] = $rArray['username'];
 				}
 			} else {
-				if (strlen($rData['username']) >= self::$rPermissions['minimum_username_length']) {
-				} else {
-					if (isset($rData['edit']) && $rData['username'] == $rOrigCredentials['username']) {
-					} else {
+				if (strlen($rData['username']) < self::$rPermissions['minimum_username_length']) {
+					if (!isset($rData['edit']) || $rData['username'] != $rOrigCredentials['username']) {
 						return ['status' => STATUS_INVALID_USERNAME, 'data' => $rData];
 					}
 				}
@@ -1070,31 +988,25 @@ class ResellerAPI {
 					$rData['password'] = $rArray['password'];
 				}
 			} else {
-				if (strlen($rData['password']) >= self::$rPermissions['minimum_password_length']) {
-				} else {
-					if (isset($rData['edit']) && $rData['password'] == $rOrigCredentials['password']) {
-					} else {
+				if (strlen($rData['password']) < self::$rPermissions['minimum_password_length']) {
+					if (!isset($rData['edit']) || $rData['password'] != $rOrigCredentials['password']) {
 						return ['status' => STATUS_INVALID_PASSWORD, 'data' => $rData];
 					}
 				}
 			}
 
-			if (empty($rData['username'])) {
-			} else {
+			if (!empty($rData['username'])) {
 				$rArray['username'] = $rData['username'];
 			}
 
-			if (empty($rData['password'])) {
-			} else {
+			if (!empty($rData['password'])) {
 				$rArray['password'] = $rData['password'];
 			}
 
 			if (!QueryHelper::checkExists('lines', 'username', $rArray['username'], 'id', $rData['edit'] ?? null)) {
-				if (!self::$rPermissions['allow_restrictions']) {
-				} else {
+				if (self::$rPermissions['allow_restrictions']) {
 					if (isset($rData['allowed_ips'])) {
-						if (is_array($rData['allowed_ips'])) {
-						} else {
+						if (!is_array($rData['allowed_ips'])) {
 							$rData['allowed_ips'] = [$rData['allowed_ips']];
 						}
 
@@ -1102,10 +1014,8 @@ class ResellerAPI {
 					} else {
 						$rArray['allowed_ips'] = '[]';
 					}
-
 					if (isset($rData['allowed_ua'])) {
-						if (is_array($rData['allowed_ua'])) {
-						} else {
+						if (!is_array($rData['allowed_ua'])) {
 							$rData['allowed_ua'] = [$rData['allowed_ua']];
 						}
 
@@ -1113,31 +1023,25 @@ class ResellerAPI {
 					} else {
 						$rArray['allowed_ua'] = '[]';
 					}
-
 					if (isset($rData['bypass_ua'])) {
 						$rArray['bypass_ua'] = 1;
 					} else {
 						$rArray['bypass_ua'] = 0;
 					}
-
 					if (isset($rData['is_isplock'])) {
 						$rArray['is_isplock'] = 1;
 					} else {
 						$rArray['is_isplock'] = 0;
 					}
-
-					if (strlen($rData['isp_clear']) != 0) {
-					} else {
+					if (strlen($rData['isp_clear']) == 0) {
 						$rArray['isp_desc'] = '';
 						$rArray['as_number'] = null;
 					}
 				}
 
-				if (!isset($rPackage)) {
-				} else {
+				if (isset($rPackage)) {
 					$rOutputs = [];
 					$rAccessOutput = json_decode($rPackage['output_formats'], true) ?: [];
-
 					foreach ($rAccessOutput as $rOutputID) {
 						$rOutputs[] = $rOutputID;
 					}

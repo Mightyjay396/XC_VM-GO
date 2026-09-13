@@ -50,7 +50,6 @@ final class AdminStreamToken {
 	 *
 	 * @param string $rawToken Encrypted token from the request.
 	 * @param string $key      Decryption key (live_streaming_pass).
-	 * @return self|null
 	 */
 	public static function decode(string $rawToken, string $key, bool $rAcceptLegacy): ?self {
 		$rDecrypted = Encryption::readToken($rawToken, $key, OPENSSL_EXTRA, $rAcceptLegacy);
@@ -82,7 +81,6 @@ final class AdminStreamToken {
 	 * @param bool        $rSubnetMatch Compare only the leading three octets.
 	 * @param string|null $rClientIp    Current client IP.
 	 * @param int|null    $rNow         Reference time (defaults to time()).
-	 * @return bool
 	 */
 	public function isValid(bool $rSubnetMatch, ?string $rClientIp, ?int $rNow = null): bool {
 		return $this->expires >= ($rNow ?? time())

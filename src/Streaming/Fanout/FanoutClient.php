@@ -606,7 +606,7 @@ class FanoutClient {
 			curl_setopt($rCurl, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
 		}
 		$rResponse = curl_exec($rCurl);
-		$rCode = (int) curl_getinfo($rCurl, CURLINFO_HTTP_CODE);
+		$rCode = curl_getinfo($rCurl, CURLINFO_HTTP_CODE);
 		$rErrno = curl_errno($rCurl);
 		curl_close($rCurl);
 		return ['code' => $rCode, 'body' => is_string($rResponse) ? $rResponse : null, 'errno' => $rErrno];

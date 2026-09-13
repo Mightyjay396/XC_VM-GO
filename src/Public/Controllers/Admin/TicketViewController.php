@@ -37,6 +37,6 @@ class TicketViewController extends BaseAdminController {
 		}
 
 		$this->setTitle('View Ticket');
-		$this->render('ticket_view', compact('rTicketInfo'));
+		$this->render('ticket_view', ['rTicketInfo' => $rTicketInfo]);
 	}
 }

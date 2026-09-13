@@ -79,14 +79,12 @@ class QueryHelper {
 
 			$rForceDefault = false;
 
-			if ($rRow['is_nullable'] != 'NO' || $rRow['column_default']) {
-			} else {
+			if ($rRow['is_nullable'] == 'NO' && !$rRow['column_default']) {
 				if (in_array($rRow['data_type'], ['int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit'])) {
 					$rRow['column_default'] = 0;
 				} else {
 					$rRow['column_default'] = '';
 				}
-
 				$rForceDefault = true;
 			}
 
@@ -102,8 +100,7 @@ class QueryHelper {
 					$rReturn[$rRow['column_name']] = $rValue;
 				}
 			} else {
-				if ($rOnlyExisting) {
-				} else {
+				if (!$rOnlyExisting) {
 					$rReturn[$rRow['column_name']] = $rRow['column_default'];
 				}
 			}

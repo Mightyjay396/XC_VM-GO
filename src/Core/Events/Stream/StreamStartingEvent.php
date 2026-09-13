@@ -36,7 +36,6 @@ final class StreamStartingEvent extends AbstractEvent {
 	 * Abort the stream start and stop event propagation.
 	 *
 	 * @param string $reason Human-readable abort reason.
-	 * @return void
 	 */
 	public function abort(string $reason): void {
 		$this->abortReason = $reason;
@@ -45,8 +44,6 @@ final class StreamStartingEvent extends AbstractEvent {
 
 	/**
 	 * Reason supplied to abort(), or '' if not aborted.
-	 *
-	 * @return string
 	 */
 	public function getAbortReason(): string {
 		return $this->abortReason;

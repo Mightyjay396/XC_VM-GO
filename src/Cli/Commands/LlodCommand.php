@@ -475,7 +475,7 @@ class LlodCommand implements CommandInterface {
 			// (after trimming) falls back to the argument's default.
 			$rValue = trim((string) ($rStreamArguments[$rKey]['value'] ?? ''));
 			if ($rValue === '') {
-				$rValue = trim((string) ($rStreamArguments[$rKey]['argument_default_value'] ?? ''));
+				return trim((string) ($rStreamArguments[$rKey]['argument_default_value'] ?? ''));
 			}
 			return $rValue;
 		};
@@ -518,7 +518,6 @@ class LlodCommand implements CommandInterface {
 	 *
 	 * @param resource $rFP     Source stream.
 	 * @param string   $rSniffed Receives the bytes read (they are part of the stream).
-	 * @return bool
 	 */
 	private function looksLikeMpegTs($rFP, string &$rSniffed): bool {
 		$rSniffed = '';
@@ -606,11 +605,9 @@ class LlodCommand implements CommandInterface {
 			} else {
 				$rError = null;
 
-				if (!empty($http_response_header)) {
-					foreach ($http_response_header as $rKey => $rHeader) {
-						if (preg_match('#HTTP/[0-9\\.]+\\s+([0-9]+)#', $rHeader, $rOutput)) {
-							$rError = $rHeader;
-						}
+				foreach ($http_response_header as $rHeader) {
+					if (preg_match('#HTTP/[0-9\\.]+\\s+([0-9]+)#', $rHeader, $rOutput)) {
+						$rError = $rHeader;
 					}
 				}
 

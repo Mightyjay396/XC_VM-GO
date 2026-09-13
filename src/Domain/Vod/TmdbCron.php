@@ -34,13 +34,12 @@ class TmdbCron {
 	 * Приоритет: язык потока → глобальная настройка → без языка.
 	 *
 	 * @param string|null $streamLang Язык потока (tmdb_language)
-	 * @return \TMDB
 	 */
 	private static function createTmdbClient(?string $streamLang = null): \TMDB {
-		if (0 < strlen($streamLang)) {
+		if ((string) $streamLang !== '') {
 			return new \TMDB(SettingsManager::getString('tmdb_api_key'), $streamLang);
 		}
-		if (0 < strlen(SettingsManager::getString('tmdb_language'))) {
+		if (SettingsManager::getString('tmdb_language') !== '') {
 			return new \TMDB(SettingsManager::getString('tmdb_api_key'), SettingsManager::getString('tmdb_language'));
 		}
 		return new \TMDB(SettingsManager::getString('tmdb_api_key'));
@@ -88,8 +87,7 @@ class TmdbCron {
 					$rPercentage
 				);
 
-				if (!$altTitle) {
-				} else {
+				if ($altTitle) {
 					similar_text(
 						strtoupper($altTitle),
 						strtoupper($rResultName),
@@ -97,14 +95,12 @@ class TmdbCron {
 					);
 				}
 
-				if (!($rPercentageMatch <= $rPercentage
-					|| $rPercentageMatch <= $rPercentageAlt)) {
-				} else {
-					if ($year && !in_array(
+				if ($rPercentageMatch <= $rPercentage
+					|| $rPercentageMatch <= $rPercentageAlt) {
+					if (!$year || in_array(
 						intval(substr((string) ($rResultArr->get('release_date') ?: $rResultArr->get('first_air_date')), 0, 4)),
 						range(intval($year) - 1, intval($year) + 1)
 					)) {
-					} else {
 						if ($altTitle && strtolower($rResultName) == strtolower($altTitle)) {
 							$rMatches = [['percentage' => 100, 'data' => $rResultArr]];
 							break;
@@ -118,8 +114,7 @@ class TmdbCron {
 				}
 			}
 
-			if (0 >= count($rMatches)) {
-			} else {
+			if (0 < count($rMatches)) {
 				break;
 			}
 		}
@@ -161,7 +156,7 @@ class TmdbCron {
 		if ($rStream['tmdb_id']) {
 			$rTMDBID = $rStream['tmdb_id'];
 		} else {
-			if (0 < strlen($rStream['movie_properties'])) {
+			if ((string) $rStream['movie_properties'] !== '') {
 				$rTMDBID = intval(json_decode($rStream['movie_properties'], true)['tmdb_id']);
 			} else {
 				$rTMDBID = 0;
@@ -175,8 +170,7 @@ class TmdbCron {
 				$rRelease = AdminHelpers::parserelease($rStreamTitle);
 				$rTitle = $rRelease['title'];
 
-				if (!isset($rRelease['excess'])) {
-				} else {
+				if (isset($rRelease['excess'])) {
 					$rTitle = trim($rTitle, (is_array($rRelease['excess']) ? $rRelease['excess'][0] : $rRelease['excess']));
 				}
 
@@ -184,20 +178,17 @@ class TmdbCron {
 				if (isset($rRelease['group'])) {
 					$rAltTitle = $rTitle . '-' . $rRelease['group'];
 				} else {
-					if (!isset($rRelease['alternative_title'])) {
-					} else {
+					if (isset($rRelease['alternative_title'])) {
 						$rAltTitle = $rTitle . ' - ' . $rRelease['alternative_title'];
 					}
 				}
 
-				if (!isset($rRelease['season'])) {
-				} else {
+				if (isset($rRelease['season'])) {
 					$rTitle .= $rRelease['season'];
 				}
 
 				$rYear = $rRelease['year'];
-				if ($rTitle) {
-				} else {
+				if (!$rTitle) {
 					$rTitle = $rStreamTitle;
 				}
 
@@ -221,53 +212,41 @@ class TmdbCron {
 				? 'https://image.tmdb.org/t/p/w1280' . $rMovieData['backdrop_path']
 				: '');
 
-			if (!SettingsManager::getBool('download_images')) {
-			} else {
-				if (empty($rThumb)) {
-				} else {
+			if (SettingsManager::getBool('download_images')) {
+				if (!empty($rThumb)) {
 					$rThumb = ImageUtils::downloadImage($rThumb, 2);
 				}
-				if (empty($rBG)) {
-				} else {
+				if (!empty($rBG)) {
 					$rBG = ImageUtils::downloadImage($rBG);
 				}
 			}
 
-			if (!$rBG) {
-			} else {
+			if ($rBG) {
 				$rBG = [$rBG];
 			}
 
 			$rCast = [];
 			foreach (($rMovieData['credits']['cast'] ?? []) as $rMember) {
-				if (count($rCast) >= 5) {
-				} else {
+				if (count($rCast) < 5) {
 					$rCast[] = $rMember['name'];
 				}
 			}
 
 			$rDirectors = [];
 			foreach (($rMovieData['credits']['crew'] ?? []) as $rMember) {
-				if (
-					!(count($rDirectors) < 5
-						&& ($rMember['department'] == 'Directing' || $rMember['known_for_department'] == 'Directing'))
-					|| in_array($rMember['name'], $rDirectors)
-				) {
-				} else {
+				if (count($rDirectors) < 5 && ($rMember['department'] == 'Directing' || $rMember['known_for_department'] == 'Directing') && !in_array($rMember['name'], $rDirectors)) {
 					$rDirectors[] = $rMember['name'];
 				}
 			}
 
 			$rCountry = '';
-			if (!isset($rMovieData['production_countries'][0]['name'])) {
-			} else {
+			if (isset($rMovieData['production_countries'][0]['name'])) {
 				$rCountry = $rMovieData['production_countries'][0]['name'];
 			}
 
 			$rGenres = [];
 			foreach ($rMovieData['genres'] as $rGenre) {
-				if (count($rGenres) >= 3) {
-				} else {
+				if (count($rGenres) < 3) {
 					$rGenres[] = $rGenre['name'];
 				}
 			}
@@ -307,8 +286,7 @@ class TmdbCron {
 			$rYear    = null;
 			$rRating  = ($rMovieData['vote_average'] ?: 0);
 
-			if (0 >= strlen($rMovieData['release_date'])) {
-			} else {
+			if ((string) $rMovieData['release_date'] !== '') {
 				$rYear = intval(substr($rMovieData['release_date'], 0, 4));
 			}
 
@@ -333,9 +311,8 @@ class TmdbCron {
 	 * обновляет streams_series и watch_refresh.
 	 *
 	 * @param array $row           Строка из watch_refresh
-	 * @param array &$updateSeries Массив ID сериалов для последующего updateSeries()
 	 */
-	private static function processSeries(array $row, array &$updateSeries): void {
+	private static function processSeries(array $row): void {
 		$db = self::db();
 
 		$db->query('SELECT * FROM `streams_series` WHERE `id` = ?;', $row['stream_id']);
@@ -354,8 +331,7 @@ class TmdbCron {
 			$rRelease = AdminHelpers::parserelease($rFilename);
 			$rTitle = $rRelease['title'];
 
-			if (!isset($rRelease['excess'])) {
-			} else {
+			if (isset($rRelease['excess'])) {
 				// Strip the excess token as a WHOLE WORD — never trim($title, $excess):
 				// its 2nd arg is a char-mask, so trim('Marshals…', 'MULTI') eats the
 				// leading 'M' and yields 'arshals…', breaking the TMDb search.
@@ -370,15 +346,13 @@ class TmdbCron {
 			if (isset($rRelease['group'])) {
 				$rAltTitle = $rTitle . '-' . $rRelease['group'];
 			} else {
-				if (!isset($rRelease['alternative_title'])) {
-				} else {
+				if (isset($rRelease['alternative_title'])) {
 					$rAltTitle = $rTitle . ' - ' . $rRelease['alternative_title'];
 				}
 			}
 
 			$rYear = $rRelease['year'];
-			if ($rTitle) {
-			} else {
+			if (!$rTitle) {
 				$rTitle = $rFilename;
 			}
 
@@ -407,27 +381,22 @@ class TmdbCron {
 				? 'https://image.tmdb.org/t/p/w1280' . $rShowData['backdrop_path']
 				: '');
 
-			if (!SettingsManager::getBool('download_images')) {
-			} else {
-				if (empty($rSeriesArray['cover'])) {
-				} else {
+			if (SettingsManager::getBool('download_images')) {
+				if (!empty($rSeriesArray['cover'])) {
 					$rSeriesArray['cover'] = ImageUtils::downloadImage($rSeriesArray['cover'], 2);
 				}
-				if (empty($rBG)) {
-				} else {
+				if (!empty($rBG)) {
 					$rBG = ImageUtils::downloadImage($rBG);
 				}
 			}
 
-			if (empty($rBG)) {
-			} else {
+			if (!empty($rBG)) {
 				$rSeriesArray['backdrop_path'][] = $rBG;
 			}
 
 			$rCast = [];
 			foreach ($rShowData['credits']['cast'] as $rMember) {
-				if (count($rCast) >= 5) {
-				} else {
+				if (count($rCast) < 5) {
 					$rCast[] = $rMember['name'];
 				}
 			}
@@ -435,12 +404,7 @@ class TmdbCron {
 
 			$rDirectors = [];
 			foreach ($rShowData['credits']['crew'] as $rMember) {
-				if (
-					!(count($rDirectors) < 5
-						&& ($rMember['department'] == 'Directing' || $rMember['known_for_department'] == 'Directing'))
-					|| in_array($rMember['name'], $rDirectors)
-				) {
-				} else {
+				if (count($rDirectors) < 5 && ($rMember['department'] == 'Directing' || $rMember['known_for_department'] == 'Directing') && !in_array($rMember['name'], $rDirectors)) {
 					$rDirectors[] = $rMember['name'];
 				}
 			}
@@ -448,8 +412,7 @@ class TmdbCron {
 
 			$rGenres = [];
 			foreach ($rShowData['genres'] as $rGenre) {
-				if (count($rGenres) >= 3) {
-				} else {
+				if (count($rGenres) < 3) {
 					$rGenres[] = $rGenre['name'];
 				}
 			}
@@ -507,7 +470,7 @@ class TmdbCron {
 
 		$rTMDB = self::createTmdbClient($rSeries['tmdb_language']);
 
-		if (!(0 < strlen($rSeries['tmdb_id']))) {
+		if (0 >= strlen($rSeries['tmdb_id'])) {
 			$db->query('UPDATE `watch_refresh` SET `status` = -5 WHERE `id` = ?;', $row['id']);
 			return;
 		}
@@ -529,8 +492,7 @@ class TmdbCron {
 			$rReleaseEpisode = $rRelease['episode'];
 		}
 
-		if ($rReleaseSeason && $rReleaseEpisode) {
-		} else {
+		if (!$rReleaseSeason || !$rReleaseEpisode) {
 			$rReleaseSeason  = $rSeriesEpisode['season_num'];
 			$rReleaseEpisode = $rSeriesEpisode['episode_num'];
 		}
@@ -549,24 +511,18 @@ class TmdbCron {
 		$rDownloadImages = SettingsManager::getBool('download_images');
 
 		foreach ($rEpisodes['episodes'] as $rEpisode) {
-			if (intval($rEpisode['episode_number']) != $rReleaseEpisode) {
-			} else {
+			if (intval($rEpisode['episode_number']) == $rReleaseEpisode) {
 				$rImage = null;
-				if (0 >= strlen($rEpisode['still_path'])) {
-				} else {
+				if ((string) $rEpisode['still_path'] !== '') {
 					$rImage = 'https://image.tmdb.org/t/p/w1280' . $rEpisode['still_path'];
 					if ($rDownloadImages) {
 						$rImage = ImageUtils::downloadImage($rImage, 5);
 					}
 				}
-
-				if (0 >= strlen($rEpisode['name'])) {
-				} else {
+				if ((string) $rEpisode['name'] !== '') {
 					$rTitle .= ' - ' . $rEpisode['name'];
 				}
-
 				$rSeconds = intval($rShowData['episode_run_time'][0]) * 60;
-
 				$rProperties = [
 					'tmdb_id'       => $rEpisode['id'],
 					'release_date'  => $rEpisode['air_date'],
@@ -580,12 +536,9 @@ class TmdbCron {
 					'rating'        => $rEpisode['vote_average'],
 					'season'        => $rReleaseSeason,
 				];
-
-				if (strlen($rProperties['movie_image'][0]) != 0) {
-				} else {
+				if (strlen($rProperties['movie_image'][0]) == 0) {
 					unset($rProperties['movie_image']);
 				}
-
 				break;
 			}
 		}
@@ -604,8 +557,7 @@ class TmdbCron {
 			$row['stream_id']
 		);
 
-		if (in_array($rSeries['id'], $updateSeries)) {
-		} else {
+		if (!in_array($rSeries['id'], $updateSeries)) {
 			$updateSeries[] = $rSeries['id'];
 		}
 	}
@@ -629,13 +581,12 @@ class TmdbCron {
 			if ($rRow['type'] == 1) {
 				self::processMovie($rRow);
 			} elseif ($rRow['type'] == 2) {
-				self::processSeries($rRow, $rUpdateSeries);
+				self::processSeries($rRow);
 			} elseif ($rRow['type'] == 3) {
 				self::processEpisode($rRow, $rUpdateSeries);
 			} else {
 				/* type=4 — запрос на updateSeries */
-				if (in_array($rRow['stream_id'], $rUpdateSeries)) {
-				} else {
+				if (!in_array($rRow['stream_id'], $rUpdateSeries)) {
 					$db->query('UPDATE `watch_refresh` SET `status` = 1 WHERE `id` = ?;', $rRow['id']);
 					$rUpdateSeries[] = intval($rRow['stream_id']);
 				}

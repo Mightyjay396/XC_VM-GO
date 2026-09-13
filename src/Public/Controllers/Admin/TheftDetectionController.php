@@ -19,7 +19,7 @@ class TheftDetectionController extends BaseAdminController {
 		$this->requirePermission();
 		$this->setTitle('VOD Theft Detection');
 
-		$rRange = intval($this->input('range')) ?: 0;
+		$rRange = intval($this->input('range'));
 		$cacheFile = CACHE_TMP_PATH . 'theft_detection';
 		$rTheftDetection = file_exists($cacheFile)
 			? (igbinary_unserialize(file_get_contents($cacheFile)) ?: [])

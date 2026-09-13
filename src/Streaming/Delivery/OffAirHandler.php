@@ -27,7 +27,6 @@ class OffAirHandler {
 	 * segments above the loop the player was shown.
 	 *
 	 * @param int $rStreamID Stream id.
-	 * @return void
 	 */
 	public static function forStream(int $rStreamID): void {
 		self::$rHlsStreamID = $rStreamID;
@@ -35,7 +34,7 @@ class OffAirHandler {
 
 	public static function getOffAirVideo($rPathKey) {
 		global $rSettings;
-		if (!(isset($rSettings[$rPathKey]) && 0 < strlen($rSettings[$rPathKey]))) {
+		if (!isset($rSettings[$rPathKey]) || 0 >= strlen($rSettings[$rPathKey])) {
 			switch ($rPathKey) {
 				case 'connected_video_path':
 					if (file_exists(VIDEO_PATH . 'connected.ts')) {
@@ -87,7 +86,7 @@ class OffAirHandler {
 	public static function showVideoServer($rShowOptionKey, $rVideoPathKey, $rExtension, $rUserInfo, $rIP, $rCountryCode, $rISP, $rServerID = null, $rProxyID = null) {
 		global $rSettings, $rServers;
 		$rVideoPath = self::getOffAirVideo($rVideoPathKey);
-		if (!(!$rUserInfo['is_restreamer'] && $rSettings[$rShowOptionKey] && 0 < strlen((string) $rVideoPath))) {
+		if (!(!$rUserInfo['is_restreamer'] && $rSettings[$rShowOptionKey] && (string) $rVideoPath !== '')) {
 			switch ($rShowOptionKey) {
 				case 'show_expired_video':
 					generateError('EXPIRED');

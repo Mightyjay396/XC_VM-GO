@@ -184,9 +184,9 @@ class ScannerCommand implements CommandInterface {
 				$rAudioCodec = ($rFFProbeOutput['codecs']['audio']['codec_name'] ?: null);
 				$rVideoCodec = ($rFFProbeOutput['codecs']['video']['codec_name'] ?: null);
 				$rResolution = ($rFFProbeOutput['codecs']['video']['height'] ?: null);
-				$rFPS = (intval(explode('/', $rFFProbeOutput['codecs']['video']['r_frame_rate'])[0]) ?: 0);
+				$rFPS = (intval(explode('/', $rFFProbeOutput['codecs']['video']['r_frame_rate'])[0]));
 				if ($rFPS == 0) {
-					$rFPS = (intval(explode('/', $rFFProbeOutput['codecs']['video']['avg_frame_rate'])[0]) ?: 0);
+					$rFPS = (intval(explode('/', $rFFProbeOutput['codecs']['video']['avg_frame_rate'])[0]));
 				}
 				if ($rFPS >= 1000) {
 					$rFPS = intval($rFPS / 1000);

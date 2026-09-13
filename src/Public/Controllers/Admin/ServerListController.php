@@ -26,6 +26,6 @@ class ServerListController extends BaseAdminController {
 		$this->setTitle('Servers');
 
 		$rServers = ServerRepository::getAll(true);
-		$this->render('servers', compact('rServers'));
+		$this->render('servers', ['rServers' => $rServers]);
 	}
 }

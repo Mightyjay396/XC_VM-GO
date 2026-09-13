@@ -20,7 +20,7 @@ use XcVm\Infrastructure\Signal\SignalQueue;
 
 class RedisManager {
 	/** @var \Redis|null Singleton instance */
-	private static $instance = null;
+	private static $instance;
 
 	/** @var int Last ping health-check timestamp */
 	private static $lastPingCheck = 0;
@@ -41,7 +41,7 @@ class RedisManager {
 			if ($rNow - self::$lastPingCheck > 30) {
 				try {
 					$rPong = self::$instance->ping();
-					if ($rPong !== true && $rPong !== '+PONG' && $rPong !== 'PONG') {
+					if (!in_array($rPong, [true, '+PONG', 'PONG'], true)) {
 						throw new \RedisException('unhealthy ping reply');
 					}
 					self::$lastPingCheck = $rNow;
@@ -106,7 +106,6 @@ class RedisManager {
 	 *
 	 * @param string $rKey  Signal key.
 	 * @param mixed  $rData Signal payload.
-	 * @return void
 	 */
 	public static function setSignal(string $rKey, mixed $rData): void {
 		SignalQueue::push($rKey, $rData);

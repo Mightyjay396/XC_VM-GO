@@ -72,18 +72,6 @@ class ServerController extends BaseAdminController {
 		$rSSLLog = ServerRepository::getSSLLog($rServerArr['id']);
 
 		$this->setTitle('Edit Server');
-		$this->render('server', compact(
-			'rServerArr',
-			'rWatchdog',
-			'rServiceMax',
-			'rInterfaces',
-			'rCertificate',
-			'rCertValid',
-			'rHasCert',
-			'rExpiration',
-			'rFS',
-			'rMounted',
-			'rSSLLog'
-		));
+		$this->render('server', ['rServerArr' => $rServerArr, 'rWatchdog' => $rWatchdog, 'rServiceMax' => $rServiceMax, 'rInterfaces' => $rInterfaces, 'rCertificate' => $rCertificate, 'rCertValid' => $rCertValid, 'rHasCert' => $rHasCert, 'rExpiration' => $rExpiration, 'rFS' => $rFS, 'rMounted' => $rMounted, 'rSSLLog' => $rSSLLog]);
 	}
 }

@@ -39,8 +39,7 @@ class TicketRepository {
 		foreach ($db->get_rows() as $rReply) {
 			$rReply['message'] = htmlspecialchars($rReply['message']);
 
-			if (strlen($rReply['message']) >= 80) {
-			} else {
+			if (strlen($rReply['message']) < 80) {
 				$rReply['message'] .= str_repeat('&nbsp; ', 80 - strlen($rReply['message']));
 			}
 
@@ -73,8 +72,7 @@ class TicketRepository {
 			$db->query('SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, `users`.`username` FROM `tickets`, `users` WHERE `users`.`id` = `tickets`.`member_id` ORDER BY `id` DESC;');
 		}
 
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
 				$db->query('SELECT MIN(`date`) AS `date` FROM `tickets_replies` WHERE `ticket_id` = ?;', $rRow['id']);
 
@@ -89,8 +87,7 @@ class TicketRepository {
 				$rRow['last_reply'] = date('Y-m-d H:i', $rLastResponse['date']);
 
 				if ($rRow['member_id'] == $rID) {
-					if ($rRow['status'] == 0) {
-					} else {
+					if ($rRow['status'] != 0) {
 						if ($rLastResponse['admin_reply']) {
 							if ($rRow['user_read'] == 1) {
 								$rRow['status'] = 3;
@@ -106,8 +103,7 @@ class TicketRepository {
 						}
 					}
 				} else {
-					if ($rRow['status'] == 0) {
-					} else {
+					if ($rRow['status'] != 0) {
 						if ($rLastResponse['admin_reply']) {
 							if ($rRow['user_read'] == 1) {
 								$rRow['status'] = 6;

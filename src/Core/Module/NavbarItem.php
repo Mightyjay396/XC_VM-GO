@@ -28,7 +28,7 @@ class NavbarItem {
 	public $key;
 
 	/** @var string|null Parent key, null for top-level items */
-	public $parent = null;
+	public $parent;
 
 	/** @var string Target URL or '#' for group headers */
 	public $url = '#';
@@ -76,7 +76,6 @@ class NavbarItem {
 	 * Set the parent item key for hierarchical navigation.
 	 *
 	 * @param string $parentKey Dot-separated key of the parent item
-	 * @return self
 	 */
 	public function parent(string $parentKey): self {
 		$this->parent = $parentKey;
@@ -89,7 +88,6 @@ class NavbarItem {
 	 * Use '#' for group headers that expand to show child items.
 	 *
 	 * @param string $url Target URL or '#'
-	 * @return self
 	 */
 	public function url(string $url): self {
 		$this->url = $url;
@@ -104,7 +102,6 @@ class NavbarItem {
 	 *
 	 * @param string $translationKey Translation key for $language::get()
 	 * @param string $fallback       Literal fallback text when translationKey is empty
-	 * @return self
 	 */
 	public function label(string $translationKey, string $fallback = ''): self {
 		$this->translationKey = $translationKey;
@@ -119,7 +116,6 @@ class NavbarItem {
 	 * Empty array means no permission check.
 	 *
 	 * @param string[] $permissions List of permission names
-	 * @return self
 	 */
 	public function permissions(array $permissions): self {
 		$this->permissions = $permissions;
@@ -132,7 +128,6 @@ class NavbarItem {
 	 * Lower values appear first. Default is 100.
 	 *
 	 * @param int $order Sort order
-	 * @return self
 	 */
 	public function order(int $order): self {
 		$this->order = $order;
@@ -143,7 +138,6 @@ class NavbarItem {
 	 * Set the CSS icon class(es) for this navigation item.
 	 *
 	 * @param string $icon CSS classes, e.g. 'fas fa-server' or 'fe-activity'
-	 * @return self
 	 */
 	public function icon(string $icon): self {
 		$this->icon = $icon;
@@ -154,8 +148,6 @@ class NavbarItem {
 	 * Mark this item as desktop-only.
 	 *
 	 * When true, the item is hidden on mobile devices.
-	 *
-	 * @return self
 	 */
 	public function desktopOnly(): self {
 		$this->desktopOnly = true;
@@ -166,8 +158,6 @@ class NavbarItem {
 	 * Hide the submenu on mobile devices.
 	 *
 	 * When true, child items are not rendered in mobile view.
-	 *
-	 * @return self
 	 */
 	public function noMobileSubmenu(): self {
 		$this->noMobileSubmenu = true;
@@ -180,7 +170,6 @@ class NavbarItem {
 	 * Useful for mega menu layouts or custom styling.
 	 *
 	 * @param string $cls CSS class name, e.g. 'megamenu'
-	 * @return self
 	 */
 	public function submenuClass(string $cls): self {
 		$this->submenuClass = $cls;
@@ -194,7 +183,6 @@ class NavbarItem {
 	 * this navigation item will not be displayed.
 	 *
 	 * @param string $key Setting key name
-	 * @return self
 	 */
 	public function settingDisabled(string $key): self {
 		$this->settingDisabled = $key;
@@ -205,8 +193,6 @@ class NavbarItem {
 	 * Render this item as a visual divider.
 	 *
 	 * Dividers are non-clickable elements that separate groups of items.
-	 *
-	 * @return self
 	 */
 	public function makeDivider(): self {
 		$this->divider = true;

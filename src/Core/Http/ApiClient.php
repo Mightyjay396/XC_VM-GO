@@ -69,9 +69,7 @@ class ApiClient {
 			curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $rTimeout);
 			curl_setopt($ch, CURLOPT_TIMEOUT, $rTimeout);
 
-			$rResult = curl_exec($ch);
-
-			return $rResult;
+			return curl_exec($ch);
 		}
 		return null;
 	}
@@ -88,8 +86,7 @@ class ApiClient {
 		global $rServers;
 
 		foreach ($rServerIDs as $rServerID) {
-			if (!$rServers[$rServerID]['server_online']) {
-			} else {
+			if ($rServers[$rServerID]['server_online']) {
 				$rURLs[$rServerID] = ['url' => $rServers[$rServerID]['api_url'], 'postdata' => $rData];
 			}
 		}

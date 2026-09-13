@@ -2,26 +2,39 @@
 
 use XcVm\Core\Database\DatabaseHandler;
 /**
- * TestDb — in-memory SQLite test double for the XC_VM Database wrapper.
+ * TestDb — SQLite/MariaDB test double for the XC_VM Database wrapper.
  *
  * Mirrors the subset of Database's public API used by repositories/services
  * (query / get_rows / get_row / get_col / get_column / num_rows /
- * last_insert_id / escape), but backed by `sqlite::memory:` so DB-touching
- * code can be unit-tested without a MySQL server. Inject via the service's
- * setDb() (the DI seam present on every domain repository/service).
+ * last_insert_id / escape). By default it is backed by `sqlite::memory:` so
+ * DB-touching code can be unit-tested without a server; set the environment
+ * variables below to run the SAME tests against a real MariaDB (e.g. on the
+ * panel host, where SQLite is unavailable). Inject via the service's setDb()
+ * (the DI seam present on every domain repository/service).
+ *
+ * Backend selection (constructor, when no PDO is injected):
+ *   - XCVM_TEST_DB_DSN set  -> connect with that PDO DSN (MariaDB/MySQL),
+ *     XCVM_TEST_DB_USER / XCVM_TEST_DB_PASS for credentials.
+ *   - otherwise              -> sqlite::memory:
+ *
+ * Tests keep writing plain SQLite DDL. When the backend is MySQL/MariaDB the
+ * DDL is translated on the fly (see translate()): `AUTOINCREMENT` becomes
+ * `AUTO_INCREMENT`, a bare `INTEGER PRIMARY KEY` gains `AUTO_INCREMENT` so the
+ * implicit-rowid behaviour matches, and every `CREATE TABLE x` is preceded by
+ * `DROP TABLE IF EXISTS x` (a MariaDB schema persists across the per-test
+ * connections that `:memory:` would otherwise start empty).
  *
  * Usage:
  *   $db = new TestDb();
  *   $db->exec('CREATE TABLE ...; INSERT INTO ...;');
  *   SomeRepository::setDb($db);
  *
- * Caveat: SQLite is NOT MySQL. Code using MySQL-specific SQL — `JSON_CONTAINS`,
- * `information_schema`, MySQL-only functions — cannot be exercised here and
- * needs a real MySQL (CI service) or a query-level mock instead.
+ * Caveat: reserved-word identifiers must be back-quoted in the test DDL
+ * (e.g. `key`, `order`, `lines`) so both engines accept them.
  *
  * Extends DatabaseHandler so it satisfies the setDb(DatabaseHandler) DI seam
  * as a real subtype; the parent constructor (which connects to MySQL) is
- * deliberately not invoked — our own constructor wires SQLite instead.
+ * deliberately not invoked — our own constructor wires the backend instead.
  *
  * @package XC_VM_Tests_Support
  */
@@ -29,21 +42,81 @@ final class TestDb extends DatabaseHandler {
 
 	public PDO $pdo;
 
+	/** @var string PDO driver name ('sqlite' or 'mysql'). */
+	private string $driver;
+
 	/** @var array<int,array<string,mixed>> Buffered rows from the last SELECT. */
 	private array $rows = [];
 
 	private int $lastInsertId = 0;
 
 	public function __construct(?PDO $pdo = null) {
-		$this->pdo = $pdo ?? new PDO('sqlite::memory:');
+		$this->pdo = $pdo ?? self::connect();
 		$this->pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+		$this->driver = (string) $this->pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+
+		if ($this->driver === 'mysql') {
+			// Relax to match SQLite's leniency the tests were written against:
+			// disabling ANSI_QUOTES lets double-quoted string literals work, and
+			// dropping STRICT avoids type-coercion errors on the simplified DDL.
+			$this->pdo->exec("SET SESSION sql_mode = ''");
+		}
+	}
+
+	/**
+	 * Build the backing PDO from the environment: a MariaDB/MySQL DSN when
+	 * XCVM_TEST_DB_DSN is set, otherwise an in-memory SQLite database.
+	 */
+	private static function connect(): PDO {
+		$dsn = getenv('XCVM_TEST_DB_DSN');
+		if ($dsn !== false && $dsn !== '') {
+			$user = getenv('XCVM_TEST_DB_USER');
+			$pass = getenv('XCVM_TEST_DB_PASS');
+			return new PDO($dsn, $user === false ? null : $user, $pass === false ? null : $pass);
+		}
+		return new PDO('sqlite::memory:');
+	}
+
+	/**
+	 * Translate SQLite test DDL to the active backend. No-op for SQLite.
+	 */
+	private function translate(string $sql): string {
+		if ($this->driver !== 'mysql') {
+			return $sql;
+		}
+
+		// SQLite `AUTOINCREMENT` -> MySQL `AUTO_INCREMENT`.
+		$sql = preg_replace('/\bAUTOINCREMENT\b/i', 'AUTO_INCREMENT', $sql);
+
+		// A bare `INTEGER PRIMARY KEY` auto-increments in SQLite but not in
+		// MySQL; add AUTO_INCREMENT so INSERTs without an id behave the same.
+		$sql = preg_replace(
+			'/\bINTEGER\s+PRIMARY\s+KEY\b(?!\s+AUTO_INCREMENT)/i',
+			'INTEGER PRIMARY KEY AUTO_INCREMENT',
+			$sql
+		);
+
+		// MariaDB keeps a table between the per-test connections, so make each
+		// CREATE idempotent by dropping first.
+		$sql = preg_replace_callback(
+			'/\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`?)(\w+)\1/i',
+			static fn(array $m): string => 'DROP TABLE IF EXISTS ' . $m[1] . $m[2] . $m[1] . '; ' . $m[0],
+			$sql
+		);
+
+		return $sql;
+	}
+
+	/** True when the statement is schema DDL (needs the multi-statement exec path). */
+	private static function isDdl(string $sql): bool {
+		return (bool) preg_match('/^\s*(CREATE|ALTER|DROP)\s+TABLE/i', $sql);
 	}
 
 	/**
 	 * Execute raw schema/seed SQL (one or more `;`-separated statements).
 	 */
 	public function exec(string $sql): void {
-		$this->pdo->exec($sql);
+		$this->pdo->exec($this->translate($sql));
 	}
 
 	/**
@@ -51,6 +124,14 @@ final class TestDb extends DatabaseHandler {
 	 * SELECT/PRAGMA/WITH results are buffered for get_rows()/get_row()/num_rows().
 	 */
 	public function query($query, ...$args): bool {
+		// DDL cannot be run through prepare()/execute() on MySQL (the DROP+CREATE
+		// pair is multi-statement); route it through exec() on both backends.
+		if (self::isDdl($query)) {
+			$this->pdo->exec($this->translate($query));
+			$this->rows = array();
+			return true;
+		}
+
 		// Mirror Database: the literal string 'null' and PHP null bind as SQL NULL.
 		$binds = array();
 		foreach ($args as $a) {

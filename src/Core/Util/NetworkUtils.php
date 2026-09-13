@@ -47,7 +47,6 @@ class NetworkUtils {
 	 * @param bool        $rSubnetMatch Compare only the leading three octets.
 	 * @param string|null $rTargetIP    Stored / other IP.
 	 * @param string|null $rClientIP    Current client IP.
-	 * @return bool
 	 */
 	public static function ipMatches(bool $rSubnetMatch, ?string $rTargetIP, ?string $rClientIP): bool {
 		if ($rSubnetMatch) {
@@ -181,19 +180,16 @@ class NetworkUtils {
 					$rFloodRow[$rType] = $rActive;
 				}
 				$rAllow = false;
-				if (count($rFloodRow[$rType]) >= $rFloodLimit) {
-				} else {
+				if (count($rFloodRow[$rType]) < $rFloodLimit) {
 					$rFloodRow[$rType][] = $rDownloadPID;
 					$rAllow = true;
 				}
 				file_put_contents($rFile, json_encode($rFloodRow), LOCK_EX);
 				return $rAllow;
-			} else {
-				return true;
 			}
-		} else {
 			return true;
 		}
+		return true;
 	}
 
 	/**
@@ -212,8 +208,7 @@ class NetworkUtils {
 				if (file_exists($rFile)) {
 					$rFloodRow[$rType] = [];
 					foreach (json_decode(file_get_contents($rFile), true)[$rType] as $rPID) {
-						if (!(ProcessManager::isRunning($rPID, 'php-fpm') && $rPID != $rDownloadPID)) {
-						} else {
+						if (ProcessManager::isRunning($rPID, 'php-fpm') && $rPID != $rDownloadPID) {
 							$rFloodRow[$rType][] = $rPID;
 						}
 					}

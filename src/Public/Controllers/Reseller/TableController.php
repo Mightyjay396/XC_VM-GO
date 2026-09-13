@@ -33,10 +33,8 @@ if (!defined('MAIN_HOME')) {
 	require_once MAIN_HOME . 'vendor/autoload.php';
 }
 WebApiBootstrap::init('reseller');
-if (PHP_ERRORS) {
-} else {
-	if (!(empty($_SERVER['HTTP_X_REQUESTED_WITH']) || strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) != 'xmlhttprequest')) {
-	} else {
+if (!PHP_ERRORS) {
+	if (empty($_SERVER['HTTP_X_REQUESTED_WITH']) || strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) != 'xmlhttprequest') {
 		exit();
 	}
 }
@@ -52,8 +50,7 @@ if (RequestManager::has('api_key')) {
 		\XC_Bootstrap::boot(\XC_Bootstrap::CONTEXT_ADMIN);
 		$rUserInfo = UserRepository::getRegisteredUserById($rUserID);
 		$rPermissions = array_merge(AuthRepository::getPermissions($rUserInfo['member_group_id']), AuthRepository::getGroupPermissions($rUserInfo['id']));
-		if (0 >= strlen($rUserInfo['timezone'])) {
-		} else {
+		if ((string) $rUserInfo['timezone'] !== '') {
 			date_default_timezone_set($rUserInfo['timezone']);
 		}
 	} else {
@@ -76,14 +73,13 @@ if (isset($rUserInfo['reports'])) {
 	$rType = RequestManager::get('id');
 	$rStart = intval(RequestManager::get('start'));
 	$rLimit = intval(RequestManager::get('length'));
-	if (!(1000 < $rLimit || $rLimit <= 0)) {
-	} else {
+	if (1000 < $rLimit || $rLimit <= 0) {
 		$rLimit = 1000;
 	}
 	if ($rType == 'lines') {
 		if ($rPermissions['create_line']) {
 			$rOrder = ['`lines`.`id`', '`lines`.`username`', '`lines`.`password`', '`users`.`username`', '`lines`.`enabled` - `lines`.`admin_enabled`', '`active_connections` > 0', '`lines`.`is_trial`', '`active_connections`', '`lines`.`max_connections`', '`lines`.`exp_date`', '`last_activity`', false];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
@@ -91,15 +87,13 @@ if (isset($rUserInfo['reports'])) {
 			$rWhere = $rWhereV = [];
 			$rWhere[] = '`lines`.`is_mag` = 0 AND `lines`.`is_e2` = 0';
 			$rWhere[] = '`lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')';
-			if (0 >= strlen(RequestManager::get('search')['value'])) {
-			} else {
+			if ((string) RequestManager::get('search')['value'] !== '') {
 				foreach (range(1, 6) as $rInt) {
 					$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 				}
 				$rWhere[] = '(`lines`.`username` LIKE ? OR `lines`.`password` LIKE ? OR `users`.`username` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`max_connections` LIKE ? OR `lines`.`reseller_notes` LIKE ?)';
 			}
-			if (0 >= strlen(RequestManager::get('filter'))) {
-			} else {
+			if ((string) RequestManager::get('filter') !== '') {
 				if (RequestManager::get('filter') == 1) {
 					$rWhere[] = '(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))';
 				} else {
@@ -112,8 +106,7 @@ if (isset($rUserInfo['reports'])) {
 							if (RequestManager::get('filter') == 4) {
 								$rWhere[] = '(`lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` <= UNIX_TIMESTAMP())';
 							} else {
-								if (RequestManager::get('filter') != 5) {
-								} else {
+								if (RequestManager::get('filter') == 5) {
 									$rWhere[] = '`lines`.`is_trial` = 1';
 								}
 							}
@@ -121,8 +114,7 @@ if (isset($rUserInfo['reports'])) {
 					}
 				}
 			}
-			if (0 >= strlen(RequestManager::get('reseller'))) {
-			} else {
+			if ((string) RequestManager::get('reseller') !== '') {
 				$rWhere[] = '`lines`.`member_id` = ?';
 				$rWhereV[] = RequestManager::get('reseller');
 			}
@@ -132,8 +124,7 @@ if (isset($rUserInfo['reports'])) {
 				$rWhereString = '';
 			}
 			$rCountQuery = 'SELECT COUNT(`lines`.`id`) AS `count` FROM `lines` LEFT JOIN `users` ON `users`.`id` = `lines`.`member_id` ' . $rWhereString . ';';
-			if (!$rOrder[$rOrderRow]) {
-			} else {
+			if ($rOrder[$rOrderRow]) {
 				$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 				$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 			}
@@ -144,12 +135,10 @@ if (isset($rUserInfo['reports'])) {
 				$rReturn['recordsTotal'] = 0;
 			}
 			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-			if (0 >= $rReturn['recordsTotal']) {
-			} else {
+			if (0 < $rReturn['recordsTotal']) {
 				$rQuery = 'SELECT `lines`.`id`, `lines`.`member_id`, `lines`.`last_activity`, `lines`.`last_activity_array`, `lines`.`username`, `lines`.`password`, `lines`.`exp_date`, `lines`.`admin_enabled`, `lines`.`is_restreamer`, `lines`.`enabled`, `lines`.`admin_notes`, `lines`.`reseller_notes`, `lines`.`max_connections`, `lines`.`is_trial`, (SELECT COUNT(*) AS `active_connections` FROM `lines_live` WHERE `user_id` = `lines`.`id` AND `hls_end` = 0) AS `active_connections` FROM `lines` LEFT JOIN `users` ON `users`.`id` = `lines`.`member_id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 				$db->query($rQuery, ...$rWhereV);
-				if (0 >= $db->num_rows()) {
-				} else {
+				if (0 < $db->num_rows()) {
 					$rRows = $db->get_rows();
 					$rActivityIDs = $rLineInfo = $rLineIDs = [];
 					foreach ($rRows as $rRow) {
@@ -159,14 +148,12 @@ if (isset($rUserInfo['reports'])) {
 							$rLineInfo[intval($rRow['id'])]['stream_id'] = $rLastInfo['stream_id'];
 							$rLineInfo[intval($rRow['id'])]['last_active'] = $rLastInfo['date_end'];
 						} else {
-							if (!$rRow['last_activity']) {
-							} else {
+							if ($rRow['last_activity']) {
 								$rActivityIDs[] = intval($rRow['last_activity']);
 							}
 						}
 					}
-					if (0 >= count($rLineIDs)) {
-					} else {
+					if (0 < count($rLineIDs)) {
 						$db->query('SELECT `users`.`username`, `lines`.`id` FROM `users` LEFT JOIN `lines` ON `lines`.`member_id` = `users`.`id` WHERE `lines`.`id` IN (' . implode(',', $rLineIDs) . ');');
 						foreach ($db->get_rows() as $rRow) {
 							$rLineInfo[$rRow['id']]['owner_name'] = $rRow['username'];
@@ -177,15 +164,13 @@ if (isset($rUserInfo['reports'])) {
 							$rStreamIDs = [];
 							foreach ($rConnectionMap as $rUserID => $rConnections) {
 								foreach ($rConnections as $rConnection) {
-									if (in_array($rConnection['stream_id'], $rStreamIDs)) {
-									} else {
+									if (!in_array($rConnection['stream_id'], $rStreamIDs)) {
 										$rStreamIDs[] = intval($rConnection['stream_id']);
 									}
 								}
 							}
 							$rStreamMap = [];
-							if (0 >= count($rStreamIDs)) {
-							} else {
+							if (0 < count($rStreamIDs)) {
 								$db->query('SELECT `id`, `stream_display_name` FROM `streams` WHERE `id` IN (' . implode(',', $rStreamIDs) . ');');
 								foreach ($db->get_rows() as $rRow) {
 									$rStreamMap[$rRow['id']] = $rRow['stream_display_name'];
@@ -208,12 +193,10 @@ if (isset($rUserInfo['reports'])) {
 							}
 						}
 					}
-					if (0 >= count($rActivityIDs)) {
-					} else {
+					if (0 < count($rActivityIDs)) {
 						$db->query('SELECT `user_id`, `stream_id`, `date_end` AS `last_active` FROM `lines_activity` WHERE `activity_id` IN (' . implode(',', $rActivityIDs) . ');');
 						foreach ($db->get_rows() as $rRow) {
-							if (isset($rLineInfo[$rRow['user_id']]['stream_id'])) {
-							} else {
+							if (!isset($rLineInfo[$rRow['user_id']]['stream_id'])) {
 								$rLineInfo[$rRow['user_id']]['stream_id'] = $rRow['stream_id'];
 								$rLineInfo[$rRow['user_id']]['last_active'] = $rRow['last_active'];
 							}
@@ -221,8 +204,7 @@ if (isset($rUserInfo['reports'])) {
 					}
 					foreach ($rRows as $rRow) {
 						$rRow = array_merge($rRow, $rLineInfo[$rRow['id']]);
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+						if (SettingsManager::get('redis_handler')) {
 							$rRow['active_connections'] = (isset($rConnectionCount[$rRow['id']]) ? $rConnectionCount[$rRow['id']] : 0);
 						}
 						if (!$rIsAPI) {
@@ -274,34 +256,29 @@ if (isset($rUserInfo['reports'])) {
 							}
 							$rButtons = '<div class="btn-group">';
 							$rNotes = '';
-							if (0 >= strlen($rRow['reseller_notes'])) {
-							} else {
-								if (strlen($rNotes) == 0) {
-								} else {
+							if ((string) $rRow['reseller_notes'] !== '') {
+								if (strlen($rNotes) != 0) {
 									$rNotes .= "\n";
 								}
 								$rNotes .= $rRow['reseller_notes'];
 							}
-							if (0 < strlen($rNotes)) {
+							if ($rNotes !== '') {
 								$rButtons .= '<button type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" title="' . $rNotes . '"><i class="mdi mdi-note"></i></button>';
 							} else {
 								$rButtons .= '<button type="button" disabled class="btn btn-light waves-effect waves-light btn-xs"><i class="mdi mdi-note"></i></button>';
 							}
 							$rButtons .= '<a href="line?id=' . $rRow['id'] . '"><button title="Edit" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip"><i class="mdi mdi-pencil-outline"></i></button></a>';
-							if (!$rPermissions['allow_download']) {
-							} else {
+							if ($rPermissions['allow_download']) {
 								$rButtons .= "<button type=\"button\" title=\"Download Playlist\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\" onClick=\"download('" . $rRow['username'] . "', '" . $rRow['password'] . "');\"><i class=\"mdi mdi-download\"></i></button>";
 							}
-							if (!$rPermissions['reseller_client_connection_logs']) {
-							} else {
+							if ($rPermissions['reseller_client_connection_logs']) {
 								if (0 < $rRow['active_connections']) {
 									$rButtons .= '<button title="Kill Connections" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['id'] . ", 'kill_line');\"><i class=\"fas fa-hammer\"></i></button>";
 								} else {
 									$rButtons .= '<button disabled type="button" class="btn btn-light waves-effect waves-light btn-xs"><i class="fas fa-hammer"></i></button>';
 								}
 							}
-							if (!$rRow['is_isplock']) {
-							} else {
+							if ($rRow['is_isplock']) {
 								$rButtons .= '<button title="Reset ISP Lock" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['id'] . ", 'reset_isp');\"><i class=\"mdi mdi-lock-reset\"></i></button>";
 							}
 							if ($rRow['enabled']) {
@@ -340,22 +317,20 @@ if (isset($rUserInfo['reports'])) {
 	if ($rType == 'mags') {
 		if ($rPermissions['create_mag']) {
 			$rOrder = ['`lines`.`id`', '`lines`.`username`', '`mag_devices`.`mac`', '`mag_devices`.`stb_type`', '`users`.`username`', '`lines`.`enabled`', '`active_connections`', '`lines`.`is_trial`', '`lines`.`exp_date`', false];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
 			}
 			$rWhere = $rWhereV = [];
 			$rWhere[] = '`lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')';
-			if (0 >= strlen(RequestManager::get('search')['value'])) {
-			} else {
+			if ((string) RequestManager::get('search')['value'] !== '') {
 				foreach (range(1, 6) as $rInt) {
 					$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 				}
 				$rWhere[] = '(`lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `mag_devices`.`stb_type` LIKE ? OR `users`.`username` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`reseller_notes` LIKE ?)';
 			}
-			if (0 >= strlen(RequestManager::get('filter'))) {
-			} else {
+			if ((string) RequestManager::get('filter') !== '') {
 				if (RequestManager::get('filter') == 1) {
 					$rWhere[] = '(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))';
 				} else {
@@ -365,16 +340,14 @@ if (isset($rUserInfo['reports'])) {
 						if (RequestManager::get('filter') == 3) {
 							$rWhere[] = '(`lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` <= UNIX_TIMESTAMP())';
 						} else {
-							if (RequestManager::get('filter') != 4) {
-							} else {
+							if (RequestManager::get('filter') == 4) {
 								$rWhere[] = '`lines`.`is_trial` = 1';
 							}
 						}
 					}
 				}
 			}
-			if (0 >= strlen(RequestManager::get('reseller'))) {
-			} else {
+			if ((string) RequestManager::get('reseller') !== '') {
 				$rWhere[] = '`lines`.`member_id` = ?';
 				$rWhereV[] = RequestManager::get('reseller');
 			}
@@ -383,8 +356,7 @@ if (isset($rUserInfo['reports'])) {
 			} else {
 				$rWhereString = '';
 			}
-			if (!$rOrder[$rOrderRow]) {
-			} else {
+			if ($rOrder[$rOrderRow]) {
 				$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 				$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 			}
@@ -396,24 +368,19 @@ if (isset($rUserInfo['reports'])) {
 				$rReturn['recordsTotal'] = 0;
 			}
 			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-			if (0 >= $rReturn['recordsTotal']) {
-			} else {
+			if (0 < $rReturn['recordsTotal']) {
 				$rQuery = 'SELECT `lines`.`id`, `lines`.`username`, `lines`.`member_id`, `lines`.`is_isplock`, `mag_devices`.`mac`, `mag_devices`.`stb_type`, `mag_devices`.`mag_id`, `lines`.`exp_date`, `lines`.`admin_enabled`, `lines`.`enabled`, `lines`.`reseller_notes`, `lines`.`max_connections`,  `lines`.`is_trial`, `users`.`username` AS `owner_name`, (SELECT count(*) FROM `lines_live` WHERE `lines`.`id` = `lines_live`.`user_id` AND `hls_end` = 0) AS `active_connections` FROM `lines` LEFT JOIN `users` ON `users`.`id` = `lines`.`member_id` INNER JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines`.`id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 				$db->query($rQuery, ...$rWhereV);
-				if (0 >= $db->num_rows()) {
-				} else {
+				if (0 < $db->num_rows()) {
 					$rRows = $db->get_rows();
 					$rLineIDs = [];
 					foreach ($rRows as $rRow) {
-						if (!$rRow['id']) {
-						} else {
+						if ($rRow['id']) {
 							$rLineIDs[] = intval($rRow['id']);
 						}
 					}
-					if (0 >= count($rLineIDs)) {
-					} else {
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+					if (0 < count($rLineIDs)) {
+						if (SettingsManager::get('redis_handler')) {
 							$rConnectionCount = [];
 							$rConnectionMap = ConnectionTracker::getUserConnections($rLineIDs, false);
 							foreach (array_keys($rConnectionMap) as $rUserID) {
@@ -423,8 +390,7 @@ if (isset($rUserInfo['reports'])) {
 						}
 					}
 					foreach ($rRows as $rRow) {
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+						if (SettingsManager::get('redis_handler')) {
 							$rRow['active_connections'] = (isset($rConnectionCount[$rRow['id']]) ? $rConnectionCount[$rRow['id']] : 0);
 						}
 						if (!$rIsAPI) {
@@ -462,31 +428,26 @@ if (isset($rUserInfo['reports'])) {
 							}
 							$rButtons = '<div class="btn-group">';
 							$rNotes = '';
-							if (0 >= strlen($rRow['reseller_notes'])) {
-							} else {
-								if (strlen($rNotes) == 0) {
-								} else {
+							if ((string) $rRow['reseller_notes'] !== '') {
+								if (strlen($rNotes) != 0) {
 									$rNotes .= "\n";
 								}
 								$rNotes .= $rRow['reseller_notes'];
 							}
-							if (0 < strlen($rNotes)) {
+							if ($rNotes !== '') {
 								$rButtons .= '<button type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" title="' . $rNotes . '"><i class="mdi mdi-note"></i></button>';
 							} else {
 								$rButtons .= '<button type="button" disabled class="btn btn-light waves-effect waves-light btn-xs"><i class="mdi mdi-note"></i></button>';
 							}
 							$rButtons .= '<button title="MAG Event" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="message(' . $rRow['mag_id'] . ", '" . $rRow['mac'] . "');\"><i class=\"mdi mdi-message-alert\"></i></button>";
 							$rButtons .= '<a href="mag?id=' . $rRow['mag_id'] . '"><button title="Edit" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip"><i class="mdi mdi-pencil-outline"></i></button></a>';
-							if (!$rRow['is_isplock']) {
-							} else {
+							if ($rRow['is_isplock']) {
 								$rButtons .= '<button title="Reset ISP Lock" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['mag_id'] . ", 'reset_isp');\"><i class=\"mdi mdi-lock-reset\"></i></button>";
 							}
-							if (!$rPermissions['create_line']) {
-							} else {
+							if ($rPermissions['create_line']) {
 								$rButtons .= '<button title="Convert to User Line" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['mag_id'] . ", 'convert');\"><i class=\"fas fa-retweet\"></i></button>";
 							}
-							if (!$rPermissions['reseller_client_connection_logs']) {
-							} else {
+							if ($rPermissions['reseller_client_connection_logs']) {
 								if (0 < $rRow['active_connections']) {
 									$rButtons .= '<button title="Kill Connections" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['mag_id'] . ", 'kill_line');\"><i class=\"fas fa-hammer\"></i></button>";
 								} else {
@@ -520,22 +481,20 @@ if (isset($rUserInfo['reports'])) {
 	if ($rType == 'enigmas') {
 		if ($rPermissions['create_enigma']) {
 			$rOrder = ['`lines`.`id`', '`lines`.`username`', '`enigma2_devices`.`mac`', '`enigma2_devices`.`public_ip`', '`users`.`username`', '`lines`.`enabled`', '`active_connections`', '`lines`.`is_trial`', '`lines`.`exp_date`', false];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
 			}
 			$rWhere = $rWhereV = [];
 			$rWhere[] = '`lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')';
-			if (0 >= strlen(RequestManager::get('search')['value'])) {
-			} else {
+			if ((string) RequestManager::get('search')['value'] !== '') {
 				foreach (range(1, 6) as $rInt) {
 					$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 				}
 				$rWhere[] = '(`lines`.`username` LIKE ? OR `enigma2_devices`.`mac` LIKE ? OR `enigma2_devices`.`public_ip` LIKE ? OR `users`.`username` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`reseller_notes` LIKE ?)';
 			}
-			if (0 >= strlen(RequestManager::get('filter'))) {
-			} else {
+			if ((string) RequestManager::get('filter') !== '') {
 				if (RequestManager::get('filter') == 1) {
 					$rWhere[] = '(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))';
 				} else {
@@ -545,16 +504,14 @@ if (isset($rUserInfo['reports'])) {
 						if (RequestManager::get('filter') == 3) {
 							$rWhere[] = '(`lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` <= UNIX_TIMESTAMP())';
 						} else {
-							if (RequestManager::get('filter') != 4) {
-							} else {
+							if (RequestManager::get('filter') == 4) {
 								$rWhere[] = '`lines`.`is_trial` = 1';
 							}
 						}
 					}
 				}
 			}
-			if (0 >= strlen(RequestManager::get('reseller'))) {
-			} else {
+			if ((string) RequestManager::get('reseller') !== '') {
 				$rWhere[] = '`lines`.`member_id` = ?';
 				$rWhereV[] = RequestManager::get('reseller');
 			}
@@ -563,8 +520,7 @@ if (isset($rUserInfo['reports'])) {
 			} else {
 				$rWhereString = '';
 			}
-			if (!$rOrder[$rOrderRow]) {
-			} else {
+			if ($rOrder[$rOrderRow]) {
 				$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 				$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 			}
@@ -576,24 +532,19 @@ if (isset($rUserInfo['reports'])) {
 				$rReturn['recordsTotal'] = 0;
 			}
 			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-			if (0 >= $rReturn['recordsTotal']) {
-			} else {
+			if (0 < $rReturn['recordsTotal']) {
 				$rQuery = 'SELECT `lines`.`id`, `lines`.`username`, `lines`.`member_id`, `lines`.`is_isplock`, `enigma2_devices`.`mac`, `enigma2_devices`.`public_ip`, `enigma2_devices`.`device_id`, `lines`.`exp_date`, `lines`.`admin_enabled`, `lines`.`enabled`, `lines`.`reseller_notes`, `lines`.`max_connections`,  `lines`.`is_trial`, `users`.`username` AS `owner_name`, (SELECT count(*) FROM `lines_live` WHERE `lines`.`id` = `lines_live`.`user_id` AND `hls_end` = 0) AS `active_connections` FROM `lines` LEFT JOIN `users` ON `users`.`id` = `lines`.`member_id` INNER JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines`.`id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 				$db->query($rQuery, ...$rWhereV);
-				if (0 >= $db->num_rows()) {
-				} else {
+				if (0 < $db->num_rows()) {
 					$rRows = $db->get_rows();
 					$rLineIDs = [];
 					foreach ($rRows as $rRow) {
-						if (!$rRow['id']) {
-						} else {
+						if ($rRow['id']) {
 							$rLineIDs[] = intval($rRow['id']);
 						}
 					}
-					if (0 >= count($rLineIDs)) {
-					} else {
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+					if (0 < count($rLineIDs)) {
+						if (SettingsManager::get('redis_handler')) {
 							$rConnectionCount = [];
 							$rConnectionMap = ConnectionTracker::getUserConnections($rLineIDs, false);
 							foreach (array_keys($rConnectionMap) as $rUserID) {
@@ -603,8 +554,7 @@ if (isset($rUserInfo['reports'])) {
 						}
 					}
 					foreach ($rRows as $rRow) {
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+						if (SettingsManager::get('redis_handler')) {
 							$rRow['active_connections'] = (isset($rConnectionCount[$rRow['id']]) ? $rConnectionCount[$rRow['id']] : 0);
 						}
 						if (!$rIsAPI) {
@@ -642,30 +592,25 @@ if (isset($rUserInfo['reports'])) {
 							}
 							$rButtons = '<div class="btn-group">';
 							$rNotes = '';
-							if (0 >= strlen($rRow['reseller_notes'])) {
-							} else {
-								if (strlen($rNotes) == 0) {
-								} else {
+							if ((string) $rRow['reseller_notes'] !== '') {
+								if (strlen($rNotes) != 0) {
 									$rNotes .= "\n";
 								}
 								$rNotes .= $rRow['reseller_notes'];
 							}
-							if (0 < strlen($rNotes)) {
+							if ($rNotes !== '') {
 								$rButtons .= '<button type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" title="' . $rNotes . '"><i class="mdi mdi-note"></i></button>';
 							} else {
 								$rButtons .= '<button type="button" disabled class="btn btn-light waves-effect waves-light btn-xs"><i class="mdi mdi-note"></i></button>';
 							}
 							$rButtons .= '<a href="enigma?id=' . $rRow['device_id'] . '"><button title="Edit" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip"><i class="mdi mdi-pencil-outline"></i></button></a>';
-							if (!$rRow['is_isplock']) {
-							} else {
+							if ($rRow['is_isplock']) {
 								$rButtons .= '<button title="Reset ISP Lock" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['device_id'] . ", 'reset_isp');\"><i class=\"mdi mdi-lock-reset\"></i></button>";
 							}
-							if (!$rPermissions['create_line']) {
-							} else {
+							if ($rPermissions['create_line']) {
 								$rButtons .= '<button title="Convert to User Line" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['device_id'] . ", 'convert');\"><i class=\"fas fa-retweet\"></i></button>";
 							}
-							if (!$rPermissions['reseller_client_connection_logs']) {
-							} else {
+							if ($rPermissions['reseller_client_connection_logs']) {
 								if (0 < $rRow['active_connections']) {
 									$rButtons .= '<button title="Kill Connections" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['device_id'] . ", 'kill_line');\"><i class=\"fas fa-hammer\"></i></button>";
 								} else {
@@ -700,7 +645,7 @@ if (isset($rUserInfo['reports'])) {
 		if ($rPermissions['can_view_vod']) {
 			$rCategories = CategoryService::getAllByType('live');
 			$rOrder = ['`id`', false, '`stream_display_name`', '`category_id`', '`clients`', false];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
@@ -714,20 +659,17 @@ if (isset($rUserInfo['reports'])) {
 				} else {
 					$rWhere[] = '`type` = 1';
 				}
-				if (0 >= strlen(RequestManager::get('search')['value'])) {
-				} else {
+				if ((string) RequestManager::get('search')['value'] !== '') {
 					foreach (range(1, 2) as $rInt) {
 						$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 					}
 					$rWhere[] = '(`id` LIKE ? OR `stream_display_name` LIKE ?)';
 				}
-				if (0 >= strlen(RequestManager::get('category'))) {
-				} else {
+				if ((string) RequestManager::get('category') !== '') {
 					$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
 					$rWhereV[] = RequestManager::get('category');
 				}
-				if (!$rOrder[$rOrderRow]) {
-				} else {
+				if ($rOrder[$rOrderRow]) {
 					$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 					$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 				}
@@ -744,23 +686,19 @@ if (isset($rUserInfo['reports'])) {
 					$rReturn['recordsTotal'] = 0;
 				}
 				$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-				if (0 >= $rReturn['recordsTotal']) {
-				} else {
+				if (0 < $rReturn['recordsTotal']) {
 					$rQuery = 'SELECT `id`, `stream_icon`, `stream_display_name`, `tv_archive_duration`, `tv_archive_server_id`, `category_id`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 					$db->query($rQuery, ...$rWhereV);
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rRows = $db->get_rows();
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+						if (SettingsManager::get('redis_handler')) {
 							$rConnectionCount = $rReports = [];
 							$db->query('SELECT `id` FROM `lines` WHERE `member_id` IN (' . implode(',', $rUserInfo['reports']) . ');');
 							foreach ($db->get_rows() as $rRow) {
 								$rReports[] = $rRow['id'];
 							}
-							if (0 >= count($rReports)) {
-							} else {
-								foreach (ConnectionTracker::getUserConnections($rReports, false) as $rUserID => $rConnections) {
+							if (0 < count($rReports)) {
+								foreach (ConnectionTracker::getUserConnections($rReports, false) as $rConnections) {
 									foreach ($rConnections as $rConnection) {
 										$rConnectionCount[$rConnection['stream_id']]++;
 									}
@@ -768,23 +706,20 @@ if (isset($rUserInfo['reports'])) {
 							}
 						}
 						foreach ($rRows as $rRow) {
-							if (!SettingsManager::get('redis_handler')) {
-							} else {
+							if (SettingsManager::get('redis_handler')) {
 								$rRow['clients'] = ($rConnectionCount[$rRow['id']] ?: 0);
 							}
 							if (!$rIsAPI) {
 								$rCategoryIDs = json_decode($rRow['category_id'], true);
-								if (0 < strlen(RequestManager::get('category'))) {
+								if ((string) RequestManager::get('category') !== '') {
 									$rCategory = ($rCategories[intval(RequestManager::get('category'))]['category_name'] ?: 'No Category');
 								} else {
 									$rCategory = ($rCategories[$rCategoryIDs[0]]['category_name'] ?: 'No Category');
 								}
-								if (1 >= count($rCategoryIDs)) {
-								} else {
+								if (1 < count($rCategoryIDs)) {
 									$rCategory .= ' (+' . (count($rCategoryIDs) - 1) . ' others)';
 								}
-								if (!(0 < $rRow['tv_archive_duration'] && 0 < $rRow['tv_archive_server_id'])) {
-								} else {
+								if (0 < $rRow['tv_archive_duration'] && 0 < $rRow['tv_archive_server_id']) {
 									$rRow['stream_display_name'] .= " <i class='text-danger mdi mdi-record'></i>";
 								}
 								if (0 < $rRow['clients']) {
@@ -799,7 +734,7 @@ if (isset($rUserInfo['reports'])) {
 									$rButtons = '<button type="button" disabled class="btn btn-light waves-effect waves-light btn-xs"><i class="mdi mdi-hammer"></i></button>';
 									$rClients = "<button type='button' class='btn btn-secondary btn-xs waves-effect waves-light'>0</button>";
 								}
-								if (0 < strlen($rRow['stream_icon'])) {
+								if ((string) $rRow['stream_icon'] !== '') {
 									$rIcon = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rRow['stream_icon'] . "'><img loading='lazy' src='resize?maxw=96&maxh=32&url=" . $rRow['stream_icon'] . "' /></a>";
 								} else {
 									$rIcon = '';
@@ -823,7 +758,7 @@ if (isset($rUserInfo['reports'])) {
 		if ($rPermissions['can_view_vod']) {
 			$rCategories = CategoryService::getAllByType('radio');
 			$rOrder = ['`id`', false, '`stream_display_name`', '`category_id`', '`clients`', false];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
@@ -832,20 +767,17 @@ if (isset($rUserInfo['reports'])) {
 			if (0 < count($rPermissions['stream_ids'])) {
 				$rWhere[] = '`streams`.`id` IN (' . implode(',', array_map('intval', $rPermissions['stream_ids'])) . ')';
 				$rWhere[] = '`type` = 4';
-				if (0 >= strlen(RequestManager::get('search')['value'])) {
-				} else {
+				if ((string) RequestManager::get('search')['value'] !== '') {
 					foreach (range(1, 2) as $rInt) {
 						$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 					}
 					$rWhere[] = '(`id` LIKE ? OR `stream_display_name` LIKE ?)';
 				}
-				if (0 >= strlen(RequestManager::get('category'))) {
-				} else {
+				if ((string) RequestManager::get('category') !== '') {
 					$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
 					$rWhereV[] = RequestManager::get('category');
 				}
-				if (!$rOrder[$rOrderRow]) {
-				} else {
+				if ($rOrder[$rOrderRow]) {
 					$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 					$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 				}
@@ -862,23 +794,19 @@ if (isset($rUserInfo['reports'])) {
 					$rReturn['recordsTotal'] = 0;
 				}
 				$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-				if (0 >= $rReturn['recordsTotal']) {
-				} else {
+				if (0 < $rReturn['recordsTotal']) {
 					$rQuery = 'SELECT `id`, `stream_icon`, `stream_display_name`, `category_id`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 					$db->query($rQuery, ...$rWhereV);
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rRows = $db->get_rows();
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+						if (SettingsManager::get('redis_handler')) {
 							$rConnectionCount = $rReports = [];
 							$db->query('SELECT `id` FROM `lines` WHERE `member_id` IN (' . implode(',', $rUserInfo['reports']) . ');');
 							foreach ($db->get_rows() as $rRow) {
 								$rReports[] = $rRow['id'];
 							}
-							if (0 >= count($rReports)) {
-							} else {
-								foreach (ConnectionTracker::getUserConnections($rReports, false) as $rUserID => $rConnections) {
+							if (0 < count($rReports)) {
+								foreach (ConnectionTracker::getUserConnections($rReports, false) as $rConnections) {
 									foreach ($rConnections as $rConnection) {
 										$rConnectionCount[$rConnection['stream_id']]++;
 									}
@@ -886,19 +814,17 @@ if (isset($rUserInfo['reports'])) {
 							}
 						}
 						foreach ($rRows as $rRow) {
-							if (!SettingsManager::get('redis_handler')) {
-							} else {
+							if (SettingsManager::get('redis_handler')) {
 								$rRow['clients'] = ($rConnectionCount[$rRow['id']] ?: 0);
 							}
 							if (!$rIsAPI) {
 								$rCategoryIDs = json_decode($rRow['category_id'], true);
-								if (0 < strlen(RequestManager::get('category'))) {
+								if ((string) RequestManager::get('category') !== '') {
 									$rCategory = ($rCategories[intval(RequestManager::get('category'))]['category_name'] ?: 'No Category');
 								} else {
 									$rCategory = ($rCategories[$rCategoryIDs[0]]['category_name'] ?: 'No Category');
 								}
-								if (1 >= count($rCategoryIDs)) {
-								} else {
+								if (1 < count($rCategoryIDs)) {
 									$rCategory .= ' (+' . (count($rCategoryIDs) - 1) . ' others)';
 								}
 								if (0 < $rRow['clients']) {
@@ -913,7 +839,7 @@ if (isset($rUserInfo['reports'])) {
 									$rButtons = '<button type="button" disabled class="btn btn-light waves-effect waves-light btn-xs"><i class="mdi mdi-hammer"></i></button>';
 									$rClients = "<button type='button' class='btn btn-secondary btn-xs waves-effect waves-light'>0</button>";
 								}
-								if (0 < strlen($rRow['stream_icon'])) {
+								if ((string) $rRow['stream_icon'] !== '') {
 									$rIcon = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rRow['stream_icon'] . "'><img loading='lazy' src='resize?maxw=96&maxh=32&url=" . $rRow['stream_icon'] . "' /></a>";
 								} else {
 									$rIcon = '';
@@ -937,7 +863,7 @@ if (isset($rUserInfo['reports'])) {
 		if ($rPermissions['can_view_vod']) {
 			$rCategories = CategoryService::getAllByType('movie');
 			$rOrder = ['`id`', false, '`stream_display_name`', '`category_id`', '`clients`', false];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
@@ -946,20 +872,17 @@ if (isset($rUserInfo['reports'])) {
 			if (0 < count($rPermissions['stream_ids'])) {
 				$rWhere[] = '`streams`.`id` IN (' . implode(',', array_map('intval', $rPermissions['stream_ids'])) . ')';
 				$rWhere[] = '`type` = 2';
-				if (0 >= strlen(RequestManager::get('search')['value'])) {
-				} else {
+				if ((string) RequestManager::get('search')['value'] !== '') {
 					foreach (range(1, 2) as $rInt) {
 						$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 					}
 					$rWhere[] = '(`id` LIKE ? OR `stream_display_name` LIKE ?)';
 				}
-				if (0 >= strlen(RequestManager::get('category'))) {
-				} else {
+				if ((string) RequestManager::get('category') !== '') {
 					$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
 					$rWhereV[] = RequestManager::get('category');
 				}
-				if (!$rOrder[$rOrderRow]) {
-				} else {
+				if ($rOrder[$rOrderRow]) {
 					$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 					$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 				}
@@ -976,23 +899,19 @@ if (isset($rUserInfo['reports'])) {
 					$rReturn['recordsTotal'] = 0;
 				}
 				$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-				if (0 >= $rReturn['recordsTotal']) {
-				} else {
+				if (0 < $rReturn['recordsTotal']) {
 					$rQuery = 'SELECT `id`, `stream_icon`, `stream_display_name`, `movie_properties`, `category_id`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 					$db->query($rQuery, ...$rWhereV);
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rRows = $db->get_rows();
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+						if (SettingsManager::get('redis_handler')) {
 							$rConnectionCount = $rReports = [];
 							$db->query('SELECT `id` FROM `lines` WHERE `member_id` IN (' . implode(',', $rUserInfo['reports']) . ');');
 							foreach ($db->get_rows() as $rRow) {
 								$rReports[] = $rRow['id'];
 							}
-							if (0 >= count($rReports)) {
-							} else {
-								foreach (ConnectionTracker::getUserConnections($rReports, false) as $rUserID => $rConnections) {
+							if (0 < count($rReports)) {
+								foreach (ConnectionTracker::getUserConnections($rReports, false) as $rConnections) {
 									foreach ($rConnections as $rConnection) {
 										$rConnectionCount[$rConnection['stream_id']]++;
 									}
@@ -1000,19 +919,17 @@ if (isset($rUserInfo['reports'])) {
 							}
 						}
 						foreach ($rRows as $rRow) {
-							if (!SettingsManager::get('redis_handler')) {
-							} else {
+							if (SettingsManager::get('redis_handler')) {
 								$rRow['clients'] = ($rConnectionCount[$rRow['id']] ?: 0);
 							}
 							if (!$rIsAPI) {
 								$rCategoryIDs = json_decode($rRow['category_id'], true);
-								if (0 < strlen(RequestManager::get('category'))) {
+								if ((string) RequestManager::get('category') !== '') {
 									$rCategory = ($rCategories[intval(RequestManager::get('category'))]['category_name'] ?: 'No Category');
 								} else {
 									$rCategory = ($rCategories[$rCategoryIDs[0]]['category_name'] ?: 'No Category');
 								}
-								if (1 >= count($rCategoryIDs)) {
-								} else {
+								if (1 < count($rCategoryIDs)) {
 									$rCategory .= ' (+' . (count($rCategoryIDs) - 1) . ' others)';
 								}
 								if (0 < $rRow['clients']) {
@@ -1028,7 +945,7 @@ if (isset($rUserInfo['reports'])) {
 									$rClients = "<button type='button' class='btn btn-secondary btn-xs waves-effect waves-light'>0</button>";
 								}
 								$rProperties = json_decode($rRow['movie_properties'], true);
-								if (0 < strlen($rProperties['movie_image'])) {
+								if ((string) $rProperties['movie_image'] !== '') {
 									$rImage = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rProperties['movie_image'] . "'><img loading='lazy' src='resize?maxh=58&maxw=32&url=" . $rProperties['movie_image'] . "' /></a>";
 								} else {
 									$rImage = '';
@@ -1052,7 +969,7 @@ if (isset($rUserInfo['reports'])) {
 		if ($rPermissions['can_view_vod']) {
 			$rCategories = CategoryService::getAllByType('series');
 			$rOrder = ['`id`', false, '`stream_display_name`', '`category_id`', '`clients`', false];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
@@ -1061,25 +978,21 @@ if (isset($rUserInfo['reports'])) {
 			if (0 < count($rPermissions['stream_ids'])) {
 				$rWhere[] = '`streams`.`id` IN (' . implode(',', array_map('intval', $rPermissions['stream_ids'])) . ')';
 				$rWhere[] = '`type` = 5';
-				if (0 >= strlen(RequestManager::get('search')['value'])) {
-				} else {
+				if ((string) RequestManager::get('search')['value'] !== '') {
 					foreach (range(1, 3) as $rInt) {
 						$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 					}
 					$rWhere[] = '(`streams`.`id` LIKE ? OR `stream_display_name` LIKE ? OR `streams_series`.`title` LIKE ?)';
 				}
-				if (0 >= strlen(RequestManager::get('category'))) {
-				} else {
+				if ((string) RequestManager::get('category') !== '') {
 					$rWhere[] = "JSON_CONTAINS(`streams_series`.`category_id`, ?, '\$')";
 					$rWhereV[] = RequestManager::get('category');
 				}
-				if (0 >= strlen(RequestManager::get('series'))) {
-				} else {
+				if ((string) RequestManager::get('series') !== '') {
 					$rWhere[] = '`streams_series`.`id` = ?';
 					$rWhereV[] = RequestManager::get('series');
 				}
-				if (!$rOrder[$rOrderRow]) {
-				} else {
+				if ($rOrder[$rOrderRow]) {
 					$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 					$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 				}
@@ -1096,23 +1009,19 @@ if (isset($rUserInfo['reports'])) {
 					$rReturn['recordsTotal'] = 0;
 				}
 				$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-				if (0 >= $rReturn['recordsTotal']) {
-				} else {
+				if (0 < $rReturn['recordsTotal']) {
 					$rQuery = 'SELECT `streams`.`id`, `stream_icon`, `stream_display_name`, `movie_properties`, `streams_series`.`category_id`, `streams_series`.`title`, `streams_episodes`.`season_num`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 					$db->query($rQuery, ...$rWhereV);
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rRows = $db->get_rows();
-						if (!SettingsManager::get('redis_handler')) {
-						} else {
+						if (SettingsManager::get('redis_handler')) {
 							$rConnectionCount = $rReports = [];
 							$db->query('SELECT `id` FROM `lines` WHERE `member_id` IN (' . implode(',', $rUserInfo['reports']) . ');');
 							foreach ($db->get_rows() as $rRow) {
 								$rReports[] = $rRow['id'];
 							}
-							if (0 >= count($rReports)) {
-							} else {
-								foreach (ConnectionTracker::getUserConnections($rReports, false) as $rUserID => $rConnections) {
+							if (0 < count($rReports)) {
+								foreach (ConnectionTracker::getUserConnections($rReports, false) as $rConnections) {
 									foreach ($rConnections as $rConnection) {
 										$rConnectionCount[$rConnection['stream_id']]++;
 									}
@@ -1120,21 +1029,19 @@ if (isset($rUserInfo['reports'])) {
 							}
 						}
 						foreach ($rRows as $rRow) {
-							if (!SettingsManager::get('redis_handler')) {
-							} else {
+							if (SettingsManager::get('redis_handler')) {
 								$rRow['clients'] = ($rConnectionCount[$rRow['id']] ?: 0);
 							}
 							if (!$rIsAPI) {
 								$rSeriesName = $rRow['title'] . ' - Season ' . $rRow['season_num'];
 								$rStreamName = '<b>' . $rRow['stream_display_name'] . "</b><br><span style='font-size:11px;'>" . $rSeriesName . '</span>';
 								$rCategoryIDs = json_decode($rRow['category_id'], true);
-								if (0 < strlen(RequestManager::get('category'))) {
+								if ((string) RequestManager::get('category') !== '') {
 									$rCategory = ($rCategories[intval(RequestManager::get('category'))]['category_name'] ?: 'No Category');
 								} else {
 									$rCategory = ($rCategories[$rCategoryIDs[0]]['category_name'] ?: 'No Category');
 								}
-								if (1 >= count($rCategoryIDs)) {
-								} else {
+								if (1 < count($rCategoryIDs)) {
 									$rCategory .= ' (+' . (count($rCategoryIDs) - 1) . ' others)';
 								}
 								if (0 < $rRow['clients']) {
@@ -1150,7 +1057,7 @@ if (isset($rUserInfo['reports'])) {
 									$rClients = "<button type='button' class='btn btn-secondary btn-xs waves-effect waves-light'>0</button>";
 								}
 								$rProperties = json_decode($rRow['movie_properties'], true);
-								if (0 < strlen($rProperties['movie_image'])) {
+								if ((string) $rProperties['movie_image'] !== '') {
 									$rImage = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rProperties['movie_image'] . "'><img loading='lazy' src='resize?maxh=58&maxw=32&url=" . $rProperties['movie_image'] . "' /></a>";
 								} else {
 									$rImage = '';
@@ -1173,51 +1080,43 @@ if (isset($rUserInfo['reports'])) {
 	if ($rType == 'line_activity') {
 		if ($rPermissions['reseller_client_connection_logs']) {
 			$rOrder = ['`username`', '`streams`.`stream_display_name`', '`lines_activity`.`user_agent`', '`lines_activity`.`isp`', '`lines_activity`.`user_ip`', '`lines_activity`.`date_start`', '`lines_activity`.`date_end`', '`lines_activity`.`date_end` - `lines_activity`.`date_start`', '`lines_activity`.`container`'];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
 			}
 			$rWhere = $rWhereV = [];
 			$rWhere[] = '`lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')';
-			if (0 >= strlen(RequestManager::get('search')['value'])) {
-			} else {
+			if ((string) RequestManager::get('search')['value'] !== '') {
 				foreach (range(1, 10) as $rInt) {
 					$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 				}
 				$rWhere[] = '(`lines_activity`.`user_agent` LIKE ? OR `lines_activity`.`user_ip` LIKE ? OR `lines_activity`.`container` LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_start`) LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_end`) LIKE ? OR `lines_activity`.`geoip_country_code` LIKE ? OR `lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `enigma2_devices`.`mac` LIKE ? OR `streams`.`stream_display_name` LIKE ?)';
 			}
-			if (0 >= strlen(RequestManager::get('range'))) {
-			} else {
+			if ((string) RequestManager::get('range') !== '') {
 				$rStartTime = substr(RequestManager::get('range'), 0, 10);
 				$rEndTime = substr(RequestManager::get('range'), strlen(RequestManager::get('range')) - 10, 10);
-				if ($rStartTime = strtotime($rStartTime . ' 00:00:00')) {
-				} else {
+				if (!$rStartTime = strtotime($rStartTime . ' 00:00:00')) {
 					$rStartTime = null;
 				}
-				if ($rEndTime = strtotime($rEndTime . ' 23:59:59')) {
-				} else {
+				if (!$rEndTime = strtotime($rEndTime . ' 23:59:59')) {
 					$rEndTime = null;
 				}
-				if (!($rStartTime && $rEndTime)) {
-				} else {
+				if ($rStartTime && $rEndTime) {
 					$rWhere[] = '(`lines_activity`.`date_start` >= ? AND `lines_activity`.`date_end` <= ?)';
 					$rWhereV[] = $rStartTime;
 					$rWhereV[] = $rEndTime;
 				}
 			}
-			if (0 >= strlen(RequestManager::get('stream'))) {
-			} else {
+			if ((string) RequestManager::get('stream') !== '') {
 				$rWhere[] = '`lines_activity`.`stream_id` = ?';
 				$rWhereV[] = RequestManager::get('stream');
 			}
-			if (0 >= strlen(RequestManager::get('user'))) {
-			} else {
+			if ((string) RequestManager::get('user') !== '') {
 				$rWhere[] = '`lines`.`member_id` = ?';
 				$rWhereV[] = RequestManager::get('user');
 			}
-			if (0 >= strlen(RequestManager::get('line'))) {
-			} else {
+			if ((string) RequestManager::get('line') !== '') {
 				$rWhere[] = '`lines_activity`.`user_id` = ?';
 				$rWhereV[] = RequestManager::get('line');
 			}
@@ -1226,8 +1125,7 @@ if (isset($rUserInfo['reports'])) {
 			} else {
 				$rWhereString = '';
 			}
-			if (!$rOrder[$rOrderRow]) {
-			} else {
+			if ($rOrder[$rOrderRow]) {
 				$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 				$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 			}
@@ -1239,12 +1137,10 @@ if (isset($rUserInfo['reports'])) {
 				$rReturn['recordsTotal'] = 0;
 			}
 			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-			if (0 >= $rReturn['recordsTotal']) {
-			} else {
+			if (0 < $rReturn['recordsTotal']) {
 				$rQuery = 'SELECT `mag_devices`.`mag_id`, `enigma2_devices`.`device_id`, `lines`.`is_e2`, `lines`.`is_mag`, `lines_activity`.`activity_id`, `lines_activity`.`container`, `lines_activity`.`isp`, `lines_activity`.`user_id`, `lines_activity`.`stream_id`, `streams`.`series_no`, `lines_activity`.`server_id`, `lines_activity`.`user_agent`, `lines_activity`.`user_ip`, `lines_activity`.`container`, `lines_activity`.`date_start`, `lines_activity`.`date_end`, `lines_activity`.`geoip_country_code`, IF(`lines`.`is_mag`, `mag_devices`.`mac`, IF(`lines`.`is_e2`, `enigma2_devices`.`mac`, `lines`.`username`)) AS `username`, `streams`.`stream_display_name`, `streams`.`type`, `lines`.`is_restreamer` FROM `lines_activity` LEFT JOIN `lines` ON `lines_activity`.`user_id` = `lines`.`id` LEFT JOIN `streams` ON `lines_activity`.`stream_id` = `streams`.`id` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines_activity`.`user_id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines_activity`.`user_id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 				$db->query($rQuery, ...$rWhereV);
-				if (0 >= $db->num_rows()) {
-				} else {
+				if (0 < $db->num_rows()) {
 					foreach ($db->get_rows() as $rRow) {
 						if (!$rIsAPI) {
 							if ($rRow['is_mag']) {
@@ -1257,7 +1153,7 @@ if (isset($rUserInfo['reports'])) {
 								}
 							}
 							$rChannel = $rRow['stream_display_name'];
-							if (0 < strlen($rRow['geoip_country_code'])) {
+							if ((string) $rRow['geoip_country_code'] !== '') {
 								$rGeoCountry = "<img loading='lazy' src='assets/img/countries/" . strtolower($rRow['geoip_country_code']) . ".png'></img> &nbsp;";
 							} else {
 								$rGeoCountry = '';
@@ -1288,8 +1184,7 @@ if (isset($rUserInfo['reports'])) {
 									if (14400 < $rDuration) {
 										$rColour = 'warning';
 									} else {
-										if (43200 >= $rDuration) {
-										} else {
+										if (43200 < $rDuration) {
 											$rColour = 'danger';
 										}
 									}
@@ -1315,7 +1210,7 @@ if (isset($rUserInfo['reports'])) {
 		if ($rPermissions['reseller_client_connection_logs']) {
 			$rRows = [];
 			if (SettingsManager::get('redis_handler')) {
-				$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? false : true);
+				$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) !== 'desc');
 				$rReports = [];
 				$rUserID = (0 < intval(RequestManager::get('user')) ? intval(RequestManager::get('user')) : null);
 				$rStreamID = (0 < intval(RequestManager::get('stream_id')) ? intval(RequestManager::get('stream_id')) : null);
@@ -1328,19 +1223,16 @@ if (isset($rUserInfo['reports'])) {
 					$rReports[] = $rRow['id'];
 				}
 				$rKeys = ConnectionTracker::getUserConnections($rReports, false, true);
-				if (!$rOrderDirection) {
-				} else {
+				if ($rOrderDirection) {
 					$rKeys = array_reverse($rKeys);
 				}
 				$rKeyCount = count($rKeys);
 				foreach (RedisManager::instance()->mGet($rKeys) as $rRow) {
 					$rRow = igbinary_unserialize($rRow);
 					if (is_array($rRow)) {
-						if ($rFilterBefore) {
-						} else {
-							if (!($rStreamID && $rStreamID != $rRow['stream_id'])) {
-								if (in_array($rRow['user_id'], $rReports)) {
-								} else {
+						if (!$rFilterBefore) {
+							if (!$rStreamID || $rStreamID == $rRow['stream_id']) {
+								if (!in_array($rRow['user_id'], $rReports)) {
 									$rKeyCount--;
 								}
 							} else {
@@ -1357,34 +1249,29 @@ if (isset($rUserInfo['reports'])) {
 					}
 				}
 				$rOrder = ['uuid', 'divergence', 'identifier', 'stream_display_name', 'user_agent', 'isp', 'user_ip', 'active_time', 'container', null];
-				if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+				if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 					$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 				} else {
 					$rOrderRow = 0;
 				}
-				if (!$rOrder[$rOrderRow]) {
-				} else {
+				if ($rOrder[$rOrderRow]) {
 					array_multisort(array_column($rRows, $rOrder[$rOrderRow]), ($rOrderDirection ? SORT_ASC : SORT_DESC), $rRows);
 				}
 				$rRows = array_slice($rRows, $rStart, $rLimit);
 				$rUUIDs = $rStreamIDs = $rUserIDs = [];
 				foreach ($rRows as $rRow) {
-					if (!$rRow['stream_id']) {
-					} else {
+					if ($rRow['stream_id']) {
 						$rStreamIDs[] = intval($rRow['stream_id']);
 					}
-					if (!$rRow['user_id']) {
-					} else {
+					if ($rRow['user_id']) {
 						$rUserIDs[] = intval($rRow['user_id']);
 					}
-					if (!$rRow['uuid']) {
-					} else {
+					if ($rRow['uuid']) {
 						$rUUIDs[] = $rRow['uuid'];
 					}
 				}
 				$rStreamNames = $rDivergenceMap = $rSeriesMap = $rUserMap = [];
-				if (0 >= count($rUserIDs)) {
-				} else {
+				if (0 < count($rUserIDs)) {
 					$db->query('SELECT `lines`.`id`, `lines`.`is_mag`, `lines`.`is_e2`, `lines`.`is_restreamer`, `lines`.`username`, `mag_devices`.`mag_id`, `enigma2_devices`.`device_id` FROM `lines` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines`.`id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines`.`id` WHERE `lines`.`id` IN (' . implode(',', $rUserIDs) . ');');
 					foreach ($db->get_rows() as $rRow) {
 						$rUserID = $rRow['id'];
@@ -1392,8 +1279,7 @@ if (isset($rUserInfo['reports'])) {
 						$rUserMap[$rUserID] = $rRow;
 					}
 				}
-				if (0 >= count($rStreamIDs)) {
-				} else {
+				if (0 < count($rStreamIDs)) {
 					$db->query('SELECT `stream_id`, `series_id` FROM `streams_episodes` WHERE `stream_id` IN (' . implode(',', $rStreamIDs) . ');');
 					foreach ($db->get_rows() as $rRow) {
 						$rSeriesMap[$rRow['stream_id']] = $rRow['series_id'];
@@ -1403,8 +1289,7 @@ if (isset($rUserInfo['reports'])) {
 						$rStreamNames[$rRow['id']] = [$rRow['stream_display_name'], $rRow['type']];
 					}
 				}
-				if (0 >= count($rUUIDs)) {
-				} else {
+				if (0 < count($rUUIDs)) {
 					$db->query("SELECT `uuid`, `divergence` FROM `lines_divergence` WHERE `uuid` IN ('" . implode("','", $rUUIDs) . "');");
 					foreach ($db->get_rows() as $rRow) {
 						$rDivergenceMap[$rRow['uuid']] = $rRow['divergence'];
@@ -1424,7 +1309,7 @@ if (isset($rUserInfo['reports'])) {
 			} else {
 				$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 				$rOrder = ['`lines_live`.`activity_id`', '`lines_live`.`divergence`', '`username`', '`streams`.`stream_display_name`', '`lines_live`.`user_agent`', '`lines_live`.`isp`', '`lines_live`.`user_ip`', 'UNIX_TIMESTAMP() - `lines_live`.`date_start`', '`lines_live`.`container`', false];
-				if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+				if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 					$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 				} else {
 					$rOrderRow = 0;
@@ -1432,31 +1317,26 @@ if (isset($rUserInfo['reports'])) {
 				$rWhere = $rWhereV = [];
 				$rWhere[] = '`hls_end` = 0';
 				$rWhere[] = '`lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')';
-				if (0 >= strlen(RequestManager::get('search')['value'])) {
-				} else {
+				if ((string) RequestManager::get('search')['value'] !== '') {
 					foreach (range(1, 9) as $rInt) {
 						$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 					}
 					$rWhere[] = '(`lines_live`.`user_agent` LIKE ? OR `lines_live`.`user_ip` LIKE ? OR `lines_live`.`container` LIKE ? OR FROM_UNIXTIME(`lines_live`.`date_start`) LIKE ? OR `lines_live`.`geoip_country_code` LIKE ? OR `lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `enigma2_devices`.`mac` LIKE ? OR `streams`.`stream_display_name` LIKE ?)';
 				}
-				if (0 >= intval(RequestManager::get('stream'))) {
-				} else {
+				if (0 < intval(RequestManager::get('stream'))) {
 					$rWhere[] = '`lines_live`.`stream_id` = ?';
 					$rWhereV[] = RequestManager::get('stream');
 				}
-				if (0 >= intval(RequestManager::get('user'))) {
-				} else {
+				if (0 < intval(RequestManager::get('user'))) {
 					$rWhere[] = '`lines`.`member_id` = ?';
 					$rWhereV[] = RequestManager::get('user');
 				}
-				if (0 >= intval(RequestManager::get('line'))) {
-				} else {
+				if (0 < intval(RequestManager::get('line'))) {
 					$rWhere[] = '`lines_live`.`user_id` = ?';
 					$rWhereV[] = RequestManager::get('line');
 				}
 				$rWhereString = 'WHERE ' . implode(' AND ', $rWhere);
-				if (!$rOrder[$rOrderRow]) {
-				} else {
+				if ($rOrder[$rOrderRow]) {
 					$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 				}
 				$rCountQuery = 'SELECT COUNT(*) AS `count` FROM `lines_live` LEFT JOIN `lines` ON `lines_live`.`user_id` = `lines`.`id` LEFT JOIN `streams` ON `lines_live`.`stream_id` = `streams`.`id` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines_live`.`user_id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines_live`.`user_id` ' . $rWhereString . ';';
@@ -1467,18 +1347,15 @@ if (isset($rUserInfo['reports'])) {
 					$rReturn['recordsTotal'] = 0;
 				}
 				$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-				if (0 >= $rReturn['recordsTotal']) {
-				} else {
+				if (0 < $rReturn['recordsTotal']) {
 					$rQuery = 'SELECT `mag_devices`.`mag_id`, `enigma2_devices`.`device_id`, `lines`.`is_e2`, `lines`.`is_mag`, `lines_live`.`activity_id`, `lines_live`.`divergence`, `lines_live`.`user_id`, `lines_live`.`stream_id`, `streams`.`series_no`, `lines`.`is_restreamer`, `lines_live`.`isp`, `lines_live`.`server_id`, `lines_live`.`user_agent`, `lines_live`.`user_ip`, `lines_live`.`container`, `lines_live`.`uuid`, `lines_live`.`date_start`, `lines_live`.`geoip_country_code`, IF(`lines`.`is_mag`, `mag_devices`.`mac`, IF(`lines`.`is_e2`, `enigma2_devices`.`mac`, `lines`.`username`)) AS `username`, `streams`.`stream_display_name`, `streams`.`type` FROM `lines_live` LEFT JOIN `lines` ON `lines_live`.`user_id` = `lines`.`id` LEFT JOIN `streams` ON `lines_live`.`stream_id` = `streams`.`id` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines_live`.`user_id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines_live`.`user_id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 					$db->query($rQuery, ...$rWhereV);
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rRows = $db->get_rows();
 					}
 				}
 			}
-			if (0 >= count($rRows)) {
-			} else {
+			if (0 < count($rRows)) {
 				foreach ($rRows as $rRow) {
 					if (!$rIsAPI) {
 						if ($rRow['divergence'] <= 50) {
@@ -1500,7 +1377,7 @@ if (isset($rUserInfo['reports'])) {
 							}
 						}
 						$rChannel = $rRow['stream_display_name'];
-						if (0 < strlen($rRow['geoip_country_code'])) {
+						if ((string) $rRow['geoip_country_code'] !== '') {
 							$rGeoCountry = "<img loading='lazy' src='assets/img/countries/" . strtolower($rRow['geoip_country_code']) . ".png'></img> &nbsp;";
 						} else {
 							$rGeoCountry = '';
@@ -1521,8 +1398,7 @@ if (isset($rUserInfo['reports'])) {
 								if (14400 < $rDuration) {
 									$rColour = 'warning';
 								} else {
-									if (43200 >= $rDuration) {
-									} else {
+									if (43200 < $rDuration) {
 										$rColour = 'danger';
 									}
 								}
@@ -1541,48 +1417,184 @@ if (isset($rUserInfo['reports'])) {
 			}
 			echo json_encode($rReturn);
 			exit();
-		} else {
-			exit();
 		}
-	} else {
-		if ($rType == 'reg_user_logs') {
+		exit();
+	}
+	if ($rType == 'reg_user_logs') {
 			$rOrder = ['`users_logs`.`id`', '`users`.`username`', '`users_logs`.`log_id`', '`users_logs`.`type`, `users_logs`.`action`', '`users_logs`.`cost`', '`users_logs`.`credits_after`', '`users_logs`.`date`'];
-			if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
+		if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
+			$rOrderRow = intval(RequestManager::get('order')[0]['column']);
+		} else {
+			$rOrderRow = 0;
+		}
+			$rWhere = $rWhereV = [];
+			$rWhere[] = '`users_logs`.`owner` IN (' . implode(',', $rUserInfo['reports']) . ')';
+		if ((string) RequestManager::get('search')['value'] !== '') {
+			foreach (range(1, 3) as $rInt) {
+					$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
+			}
+			$rWhere[] = '(`users`.`username` LIKE ? OR `users_logs`.`type` LIKE ? OR `users_logs`.`action` LIKE ?)';
+		}
+		if ((string) RequestManager::get('range') !== '') {
+			$rStartTime = substr(RequestManager::get('range'), 0, 10);
+			$rEndTime = substr(RequestManager::get('range'), strlen(RequestManager::get('range')) - 10, 10);
+			if (!$rStartTime = strtotime($rStartTime . ' 00:00:00')) {
+				$rStartTime = null;
+			}
+			if (!$rEndTime = strtotime($rEndTime . ' 23:59:59')) {
+				$rEndTime = null;
+			}
+			if ($rStartTime && $rEndTime) {
+				$rWhere[] = '(`users_logs`.`date` >= ? AND `users_logs`.`date` <= ?)';
+				$rWhereV[] = $rStartTime;
+				$rWhereV[] = $rEndTime;
+			}
+		}
+		if ((string) RequestManager::get('reseller') !== '') {
+			$rWhere[] = '`users_logs`.`owner` = ?';
+			$rWhereV[] = RequestManager::get('reseller');
+		}
+		if (0 < count($rWhere)) {
+			$rWhereString = 'WHERE ' . implode(' AND ', $rWhere);
+		} else {
+			$rWhereString = '';
+		}
+		if ($rOrder[$rOrderRow]) {
+			$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
+			$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
+		}
+			$rCountQuery = 'SELECT COUNT(*) AS `count` FROM `users_logs` LEFT JOIN `users` ON `users`.`id` = `users_logs`.`owner` ' . $rWhereString . ';';
+			$db->query($rCountQuery, ...$rWhereV);
+		if ($db->num_rows() == 1) {
+			$rReturn['recordsTotal'] = $db->get_row()['count'];
+		} else {
+			$rReturn['recordsTotal'] = 0;
+		}
+			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
+		if (0 < $rReturn['recordsTotal']) {
+			$rPackages = PackageService::getAll();
+			$rQuery = 'SELECT `users`.`username`, `users_logs`.`id`, `users_logs`.`owner`, `users_logs`.`type`, `users_logs`.`action`, `users_logs`.`log_id`, `users_logs`.`package_id`, `users_logs`.`cost`, `users_logs`.`credits_after`, `users_logs`.`date`, `users_logs`.`deleted_info` FROM `users_logs` LEFT JOIN `users` ON `users`.`id` = `users_logs`.`owner` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
+			$db->query($rQuery, ...$rWhereV);
+			if (0 < $db->num_rows()) {
+				foreach ($db->get_rows() as $rRow) {
+					if (!$rIsAPI) {
+						if (in_array($rRow['owner'], array_merge($rPermissions['direct_reports'], [$rUserInfo['id']]))) {
+							$rOwner = "<a href='user?id=" . intval($rRow['owner']) . "'>" . $rRow['username'] . '</a>';
+						} else {
+							$rOwner = "<a href='user?id=" . intval($rRow['owner']) . "'>" . $rRow['username'] . "<br/><small class='text-pink'>(indirect)</small></a>";
+						}
+						$rDevice = ['line' => 'User Line', 'mag' => 'MAG Device', 'enigma' => 'Enigma2 Device', 'user' => 'Reseller'][$rRow['type']];
+						switch ($rRow['action']) {
+							case 'new':
+								if ($rRow['package_id']) {
+									$rText = 'Created New ' . $rDevice . ' with Package: ' . $rPackages[$rRow['package_id']]['package_name'];
+								} else {
+									$rText = 'Created New ' . $rDevice;
+								}
+								break;
+							case 'extend':
+								if ($rRow['package_id']) {
+									$rText = 'Extended ' . $rDevice . ' with Package: ' . $rPackages[$rRow['package_id']]['package_name'];
+								} else {
+									$rText = 'Extended ' . $rDevice;
+								}
+								break;
+							case 'edit':
+								$rText = 'Edited ' . $rDevice;
+								break;
+							case 'enable':
+								$rText = 'Enabled ' . $rDevice;
+								break;
+							case 'disable':
+								$rText = 'Disabled ' . $rDevice;
+								break;
+							case 'delete':
+								$rText = 'Deleted ' . $rDevice;
+								break;
+							case 'send_event':
+								$rText = 'Sent Event to ' . $rDevice;
+								break;
+							case 'adjust_credits':
+								$rText = 'Adjusted Credits by ' . $rRow['cost'];
+								break;
+						}
+						$rLineInfo = null;
+						switch ($rRow['type']) {
+							case 'line':
+								$rLine = UserRepository::getLineById($rRow['log_id']);
+								if ($rLine) {
+									$rLineInfo = "<a href='line?id=" . $rRow['log_id'] . "'>" . $rLine['username'] . '</a>';
+								}
+								break;
+							case 'user':
+								$rLine = UserRepository::getRegisteredUserById($rRow['log_id']);
+								if ($rLine) {
+									$rLineInfo = "<a href='user?id=" . $rRow['log_id'] . "'>" . $rLine['username'] . '</a>';
+								}
+								break;
+							case 'mag':
+								$rLine = MagService::getById($rRow['log_id']);
+								if ($rLine) {
+									$rLineInfo = "<a href='mag?id=" . $rRow['log_id'] . "'>" . $rLine['mac'] . '</a>';
+								}
+								break;
+							case 'enigma':
+								$rLine = EnigmaService::getById($rRow['log_id']);
+								if ($rLine) {
+									$rLineInfo = "<a href='enigma?id=" . $rRow['log_id'] . "'>" . $rLine['mac'] . '</a>';
+								}
+								break;
+						}
+						if (!$rLineInfo) {
+							$rDeletedInfo = json_decode($rRow['deleted_info'], true);
+							if (is_array($rDeletedInfo)) {
+								if (isset($rDeletedInfo['mac'])) {
+									$rLineInfo = "<span class='text-secondary'>" . $rDeletedInfo['mac'] . '</span>';
+								} else {
+									$rLineInfo = "<span class='text-secondary'>" . $rDeletedInfo['username'] . '</span>';
+								}
+							} else {
+								$rLineInfo = "<span class='text-secondary'>DELETED</span>";
+							}
+						}
+						$rReturn['data'][] = [$rRow['id'], $rOwner, $rLineInfo, $rText, number_format($rRow['cost'], 0), number_format($rRow['credits_after'], 0), date($rSettings['datetime_format'], $rRow['date'])];
+					} else {
+						unset($rRow['deleted_info']);
+						$rReturn['data'][] = filterrow($rRow, RequestManager::get('show_columns'), RequestManager::get('hide_columns'));
+					}
+				}
+			}
+		}
+			echo json_encode($rReturn);
+			exit();
+	}
+	if ($rType == 'reg_users') {
+		if ($rPermissions['create_sub_resellers']) {
+				$rOrder = ['`users`.`id`', '`users`.`username`', '`r`.`username`', '`users`.`ip`', '`users`.`status`', '`users`.`credits`', '`user_count`', '`users`.`last_login`', false];
+			if (RequestManager::has('order') && (string) RequestManager::get('order')[0]['column'] !== '') {
 				$rOrderRow = intval(RequestManager::get('order')[0]['column']);
 			} else {
 				$rOrderRow = 0;
 			}
-			$rWhere = $rWhereV = [];
-			$rWhere[] = '`users_logs`.`owner` IN (' . implode(',', $rUserInfo['reports']) . ')';
-			if (0 >= strlen(RequestManager::get('search')['value'])) {
-			} else {
-				foreach (range(1, 3) as $rInt) {
-					$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
+				$rWhere = $rWhereV = [];
+				$rWhere[] = '`users`.`owner_id` IN (' . implode(',', $rUserInfo['reports']) . ')';
+			if ((string) RequestManager::get('search')['value'] !== '') {
+				foreach (range(1, 9) as $rInt) {
+						$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 				}
-				$rWhere[] = '(`users`.`username` LIKE ? OR `users_logs`.`type` LIKE ? OR `users_logs`.`action` LIKE ?)';
+				$rWhere[] = '(`users`.`id` LIKE ? OR `users`.`username` LIKE ? OR `users`.`notes` LIKE ? OR `r`.`username` LIKE ? OR FROM_UNIXTIME(`users`.`date_registered`) LIKE ? OR FROM_UNIXTIME(`users`.`last_login`) LIKE ? OR `users`.`email` LIKE ? OR `users`.`ip` LIKE ? OR `users_groups`.`group_name` LIKE ?)';
 			}
-			if (0 >= strlen(RequestManager::get('range'))) {
-			} else {
-				$rStartTime = substr(RequestManager::get('range'), 0, 10);
-				$rEndTime = substr(RequestManager::get('range'), strlen(RequestManager::get('range')) - 10, 10);
-				if ($rStartTime = strtotime($rStartTime . ' 00:00:00')) {
+			if ((string) RequestManager::get('filter') !== '') {
+				if (RequestManager::get('filter') == 1) {
+						$rWhere[] = '`users`.`status` = 1';
 				} else {
-					$rStartTime = null;
-				}
-				if ($rEndTime = strtotime($rEndTime . ' 23:59:59')) {
-				} else {
-					$rEndTime = null;
-				}
-				if (!($rStartTime && $rEndTime)) {
-				} else {
-					$rWhere[] = '(`users_logs`.`date` >= ? AND `users_logs`.`date` <= ?)';
-					$rWhereV[] = $rStartTime;
-					$rWhereV[] = $rEndTime;
+					if (RequestManager::get('filter') == 2) {
+						$rWhere[] = '`users`.`status` = 0';
+					}
 				}
 			}
-			if (0 >= strlen(RequestManager::get('reseller'))) {
-			} else {
-				$rWhere[] = '`users_logs`.`owner` = ?';
+			if ((string) RequestManager::get('reseller') !== '') {
+				$rWhere[] = '`users`.`owner_id` = ?';
 				$rWhereV[] = RequestManager::get('reseller');
 			}
 			if (0 < count($rWhere)) {
@@ -1590,248 +1602,86 @@ if (isset($rUserInfo['reports'])) {
 			} else {
 				$rWhereString = '';
 			}
-			if (!$rOrder[$rOrderRow]) {
-			} else {
+			if ($rOrder[$rOrderRow]) {
 				$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
 				$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
 			}
-			$rCountQuery = 'SELECT COUNT(*) AS `count` FROM `users_logs` LEFT JOIN `users` ON `users`.`id` = `users_logs`.`owner` ' . $rWhereString . ';';
-			$db->query($rCountQuery, ...$rWhereV);
+				$rCountQuery = 'SELECT COUNT(*) AS `count` FROM `users` LEFT JOIN `users_groups` ON `users_groups`.`group_id` = `users`.`member_group_id` LEFT JOIN `users` AS `r` on `r`.`id` = `users`.`owner_id` ' . $rWhereString . ';';
+				$db->query($rCountQuery, ...$rWhereV);
 			if ($db->num_rows() == 1) {
 				$rReturn['recordsTotal'] = $db->get_row()['count'];
 			} else {
 				$rReturn['recordsTotal'] = 0;
 			}
-			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-			if (0 >= $rReturn['recordsTotal']) {
-			} else {
-				$rPackages = PackageService::getAll();
-				$rQuery = 'SELECT `users`.`username`, `users_logs`.`id`, `users_logs`.`owner`, `users_logs`.`type`, `users_logs`.`action`, `users_logs`.`log_id`, `users_logs`.`package_id`, `users_logs`.`cost`, `users_logs`.`credits_after`, `users_logs`.`date`, `users_logs`.`deleted_info` FROM `users_logs` LEFT JOIN `users` ON `users`.`id` = `users_logs`.`owner` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
+				$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
+			if (0 < $rReturn['recordsTotal']) {
+				$rQuery = 'SELECT `users`.`id`, `users`.`status`, `users_groups`.`is_reseller`, `users`.`notes`, `users`.`owner_id`, `users`.`credits`, `users`.`username`, `users`.`email`, `users`.`ip`, FROM_UNIXTIME(`users`.`date_registered`) AS `date_registered`, FROM_UNIXTIME(`users`.`last_login`) AS `last_login`, `r`.`username` as `owner_username`, `users_groups`.`group_name`, `users`.`status`, (SELECT COUNT(`id`) FROM `lines` WHERE `member_id` = `users`.`id`) AS `user_count` FROM `users` LEFT JOIN `users_groups` ON `users_groups`.`group_id` = `users`.`member_group_id` LEFT JOIN `users` AS `r` on `r`.`id` = `users`.`owner_id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 				$db->query($rQuery, ...$rWhereV);
-				if (0 >= $db->num_rows()) {
-				} else {
+				if (0 < $db->num_rows()) {
 					foreach ($db->get_rows() as $rRow) {
 						if (!$rIsAPI) {
-							if (in_array($rRow['owner'], array_merge($rPermissions['direct_reports'], [$rUserInfo['id']]))) {
-								$rOwner = "<a href='user?id=" . intval($rRow['owner']) . "'>" . $rRow['username'] . '</a>';
+							if ($rRow['status'] == 1) {
+								$rStatus = '<i class="text-success fas fa-square"></i>';
 							} else {
-								$rOwner = "<a href='user?id=" . intval($rRow['owner']) . "'>" . $rRow['username'] . "<br/><small class='text-pink'>(indirect)</small></a>";
+								$rStatus = '<i class="text-secondary fas fa-square"></i>';
 							}
-							$rDevice = ['line' => 'User Line', 'mag' => 'MAG Device', 'enigma' => 'Enigma2 Device', 'user' => 'Reseller'][$rRow['type']];
-							switch ($rRow['action']) {
-								case 'new':
-									if ($rRow['package_id']) {
-										$rText = 'Created New ' . $rDevice . ' with Package: ' . $rPackages[$rRow['package_id']]['package_name'];
-									} else {
-										$rText = 'Created New ' . $rDevice;
-									}
-									break;
-								case 'extend':
-									if ($rRow['package_id']) {
-										$rText = 'Extended ' . $rDevice . ' with Package: ' . $rPackages[$rRow['package_id']]['package_name'];
-									} else {
-										$rText = 'Extended ' . $rDevice;
-									}
-									break;
-								case 'edit':
-									$rText = 'Edited ' . $rDevice;
-									break;
-								case 'enable':
-									$rText = 'Enabled ' . $rDevice;
-									break;
-								case 'disable':
-									$rText = 'Disabled ' . $rDevice;
-									break;
-								case 'delete':
-									$rText = 'Deleted ' . $rDevice;
-									break;
-								case 'send_event':
-									$rText = 'Sent Event to ' . $rDevice;
-									break;
-								case 'adjust_credits':
-									$rText = 'Adjusted Credits by ' . $rRow['cost'];
-									break;
+							if (!$rRow['last_login']) {
+								$rRow['last_login'] = 'NEVER';
 							}
-							$rLineInfo = null;
-							switch ($rRow['type']) {
-								case 'line':
-									$rLine = UserRepository::getLineById($rRow['log_id']);
-									if (!$rLine) {
-									} else {
-										$rLineInfo = "<a href='line?id=" . $rRow['log_id'] . "'>" . $rLine['username'] . '</a>';
-									}
-									break;
-								case 'user':
-									$rLine = UserRepository::getRegisteredUserById($rRow['log_id']);
-									if (!$rLine) {
-									} else {
-										$rLineInfo = "<a href='user?id=" . $rRow['log_id'] . "'>" . $rLine['username'] . '</a>';
-									}
-									break;
-								case 'mag':
-									$rLine = MagService::getById($rRow['log_id']);
-									if (!$rLine) {
-									} else {
-										$rLineInfo = "<a href='mag?id=" . $rRow['log_id'] . "'>" . $rLine['mac'] . '</a>';
-									}
-									break;
-								case 'enigma':
-									$rLine = EnigmaService::getById($rRow['log_id']);
-									if (!$rLine) {
-									} else {
-										$rLineInfo = "<a href='enigma?id=" . $rRow['log_id'] . "'>" . $rLine['mac'] . '</a>';
-									}
-									break;
-							}
-							if ($rLineInfo) {
+							$rButtons = '<div class="btn-group">';
+							if ((string) $rRow['notes'] !== '') {
+								$rButtons .= '<button type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" title="' . $rRow['notes'] . '"><i class="mdi mdi-note"></i></button>';
 							} else {
-								$rDeletedInfo = json_decode($rRow['deleted_info'], true);
-								if (is_array($rDeletedInfo)) {
-									if (isset($rDeletedInfo['mac'])) {
-										$rLineInfo = "<span class='text-secondary'>" . $rDeletedInfo['mac'] . '</span>';
-									} else {
-										$rLineInfo = "<span class='text-secondary'>" . $rDeletedInfo['username'] . '</span>';
-									}
-								} else {
-									$rLineInfo = "<span class='text-secondary'>DELETED</span>";
-								}
+								$rButtons .= '<button disabled type="button" class="btn btn-light waves-effect waves-light btn-xs"><i class="mdi mdi-note"></i></button>';
 							}
-							$rReturn['data'][] = [$rRow['id'], $rOwner, $rLineInfo, $rText, number_format($rRow['cost'], 0), number_format($rRow['credits_after'], 0), date($rSettings['datetime_format'], $rRow['date'])];
+							if (in_array($rRow['id'], array_merge($rPermissions['direct_reports'], [$rUserInfo['id']]))) {
+								$rButtons .= '<button title="Adjust Credits" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="addCredits(' . $rRow['id'] . ", '" . addslashes($rRow['username']) . "', " . intval($rRow['credits']) . ');"><i class="mdi mdi-coin"></i></button>';
+								$rUsername = "<a href='user?id=" . intval($rRow['id']) . "'>" . $rRow['username'] . '</a>';
+							} else {
+								$rButtons .= '<button title="Adjust Credits" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="addCredits(' . $rRow['id'] . ", '" . addslashes($rRow['username']) . "', " . intval($rRow['credits']) . ', true);"><i class="mdi mdi-coin"></i></button>';
+								$rUsername = "<a href='user?id=" . intval($rRow['id']) . "'>" . $rRow['username'] . "<br/><small class='text-pink'>(indirect)</small></a>";
+							}
+							$rButtons .= '<a href="user?id=' . $rRow['id'] . '"><button title="Edit" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip"><i class="mdi mdi-pencil-outline"></i></button></a>';
+							if ($rRow['status'] == 1) {
+								$rButtons .= '<button title="Disable" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['id'] . ", 'disable');\"><i class=\"mdi mdi-lock\"></i></button>";
+							} else {
+								$rButtons .= '<button title="Enable" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['id'] . ", 'enable');\"><i class=\"mdi mdi-lock\"></i></button>";
+							}
+							if ($rPermissions['delete_users']) {
+								$rButtons .= '<button title="Delete" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['id'] . ", 'delete');\"><i class=\"mdi mdi-close\"></i></button>";
+							}
+							$rButtons .= '</div>';
+							if ((string) $rRow['ip'] !== '') {
+								$rIP = "<a onClick=\"whois('" . $rRow['ip'] . "');\" href='javascript: void(0);'>" . $rRow['ip'] . '</a>';
+							} else {
+								$rIP = '';
+							}
+							if ($rRow['is_reseller']) {
+								$rCredits = '<button type="button" class="btn btn-info btn-xs waves-effect waves-light">' . number_format($rRow['credits'], 0) . '</button>';
+							} else {
+								$rCredits = '<button type="button" class="btn btn-secondary btn-xs waves-effect waves-light">-</button>';
+							}
+							if (0 < $rRow['user_count']) {
+								$rUserCount = '<button type="button" class="btn btn-info btn-xs waves-effect waves-light">' . number_format($rRow['user_count'], 0) . '</button>';
+							} else {
+								$rUserCount = '<button type="button" class="btn btn-secondary btn-xs waves-effect waves-light">0</button>';
+							}
+							if (in_array($rRow['owner_id'], array_merge($rPermissions['direct_reports'], [$rUserInfo['id']]))) {
+								$rOwner = "<a href='user?id=" . intval($rRow['owner_id']) . "'>" . $rRow['owner_username'] . '</a>';
+							} else {
+								$rOwner = "<a href='user?id=" . intval($rRow['owner_id']) . "'>" . $rRow['owner_username'] . "<br/><small class='text-pink'>(indirect)</small></a>";
+							}
+							$rReturn['data'][] = ["<a href='user?id=" . intval($rRow['id']) . "'>" . $rRow['id'] . '</a>', $rUsername, $rOwner, $rIP, $rStatus, $rCredits, $rUserCount, $rRow['last_login'], $rButtons];
 						} else {
-							unset($rRow['deleted_info']);
 							$rReturn['data'][] = filterrow($rRow, RequestManager::get('show_columns'), RequestManager::get('hide_columns'));
 						}
 					}
 				}
 			}
-			echo json_encode($rReturn);
-			exit();
-		}
-		if ($rType != 'reg_users') {
-		} else {
-			if ($rPermissions['create_sub_resellers']) {
-				$rOrder = ['`users`.`id`', '`users`.`username`', '`r`.`username`', '`users`.`ip`', '`users`.`status`', '`users`.`credits`', '`user_count`', '`users`.`last_login`', false];
-				if (RequestManager::has('order') && 0 < strlen(RequestManager::get('order')[0]['column'])) {
-					$rOrderRow = intval(RequestManager::get('order')[0]['column']);
-				} else {
-					$rOrderRow = 0;
-				}
-				$rWhere = $rWhereV = [];
-				$rWhere[] = '`users`.`owner_id` IN (' . implode(',', $rUserInfo['reports']) . ')';
-				if (0 >= strlen(RequestManager::get('search')['value'])) {
-				} else {
-					foreach (range(1, 9) as $rInt) {
-						$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
-					}
-					$rWhere[] = '(`users`.`id` LIKE ? OR `users`.`username` LIKE ? OR `users`.`notes` LIKE ? OR `r`.`username` LIKE ? OR FROM_UNIXTIME(`users`.`date_registered`) LIKE ? OR FROM_UNIXTIME(`users`.`last_login`) LIKE ? OR `users`.`email` LIKE ? OR `users`.`ip` LIKE ? OR `users_groups`.`group_name` LIKE ?)';
-				}
-				if (0 >= strlen(RequestManager::get('filter'))) {
-				} else {
-					if (RequestManager::get('filter') == 1) {
-						$rWhere[] = '`users`.`status` = 1';
-					} else {
-						if (RequestManager::get('filter') != 2) {
-						} else {
-							$rWhere[] = '`users`.`status` = 0';
-						}
-					}
-				}
-				if (0 >= strlen(RequestManager::get('reseller'))) {
-				} else {
-					$rWhere[] = '`users`.`owner_id` = ?';
-					$rWhereV[] = RequestManager::get('reseller');
-				}
-				if (0 < count($rWhere)) {
-					$rWhereString = 'WHERE ' . implode(' AND ', $rWhere);
-				} else {
-					$rWhereString = '';
-				}
-				if (!$rOrder[$rOrderRow]) {
-				} else {
-					$rOrderDirection = (strtolower(RequestManager::get('order')[0]['dir']) === 'desc' ? 'desc' : 'asc');
-					$rOrderBy = 'ORDER BY ' . $rOrder[$rOrderRow] . ' ' . $rOrderDirection;
-				}
-				$rCountQuery = 'SELECT COUNT(*) AS `count` FROM `users` LEFT JOIN `users_groups` ON `users_groups`.`group_id` = `users`.`member_group_id` LEFT JOIN `users` AS `r` on `r`.`id` = `users`.`owner_id` ' . $rWhereString . ';';
-				$db->query($rCountQuery, ...$rWhereV);
-				if ($db->num_rows() == 1) {
-					$rReturn['recordsTotal'] = $db->get_row()['count'];
-				} else {
-					$rReturn['recordsTotal'] = 0;
-				}
-				$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
-				if (0 >= $rReturn['recordsTotal']) {
-				} else {
-					$rQuery = 'SELECT `users`.`id`, `users`.`status`, `users_groups`.`is_reseller`, `users`.`notes`, `users`.`owner_id`, `users`.`credits`, `users`.`username`, `users`.`email`, `users`.`ip`, FROM_UNIXTIME(`users`.`date_registered`) AS `date_registered`, FROM_UNIXTIME(`users`.`last_login`) AS `last_login`, `r`.`username` as `owner_username`, `users_groups`.`group_name`, `users`.`status`, (SELECT COUNT(`id`) FROM `lines` WHERE `member_id` = `users`.`id`) AS `user_count` FROM `users` LEFT JOIN `users_groups` ON `users_groups`.`group_id` = `users`.`member_group_id` LEFT JOIN `users` AS `r` on `r`.`id` = `users`.`owner_id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
-					$db->query($rQuery, ...$rWhereV);
-					if (0 >= $db->num_rows()) {
-					} else {
-						foreach ($db->get_rows() as $rRow) {
-							if (!$rIsAPI) {
-								if ($rRow['status'] == 1) {
-									$rStatus = '<i class="text-success fas fa-square"></i>';
-								} else {
-									$rStatus = '<i class="text-secondary fas fa-square"></i>';
-								}
-								if ($rRow['last_login']) {
-								} else {
-									$rRow['last_login'] = 'NEVER';
-								}
-								$rButtons = '<div class="btn-group">';
-								if (0 < strlen($rRow['notes'])) {
-									$rButtons .= '<button type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" title="' . $rRow['notes'] . '"><i class="mdi mdi-note"></i></button>';
-								} else {
-									$rButtons .= '<button disabled type="button" class="btn btn-light waves-effect waves-light btn-xs"><i class="mdi mdi-note"></i></button>';
-								}
-								if (in_array($rRow['id'], array_merge($rPermissions['direct_reports'], [$rUserInfo['id']]))) {
-									$rButtons .= '<button title="Adjust Credits" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="addCredits(' . $rRow['id'] . ", '" . addslashes($rRow['username']) . "', " . intval($rRow['credits']) . ');"><i class="mdi mdi-coin"></i></button>';
-									$rUsername = "<a href='user?id=" . intval($rRow['id']) . "'>" . $rRow['username'] . '</a>';
-								} else {
-									$rButtons .= '<button title="Adjust Credits" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="addCredits(' . $rRow['id'] . ", '" . addslashes($rRow['username']) . "', " . intval($rRow['credits']) . ', true);"><i class="mdi mdi-coin"></i></button>';
-									$rUsername = "<a href='user?id=" . intval($rRow['id']) . "'>" . $rRow['username'] . "<br/><small class='text-pink'>(indirect)</small></a>";
-								}
-								$rButtons .= '<a href="user?id=' . $rRow['id'] . '"><button title="Edit" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip"><i class="mdi mdi-pencil-outline"></i></button></a>';
-								if ($rRow['status'] == 1) {
-									$rButtons .= '<button title="Disable" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['id'] . ", 'disable');\"><i class=\"mdi mdi-lock\"></i></button>";
-								} else {
-									$rButtons .= '<button title="Enable" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['id'] . ", 'enable');\"><i class=\"mdi mdi-lock\"></i></button>";
-								}
-								if (!$rPermissions['delete_users']) {
-								} else {
-									$rButtons .= '<button title="Delete" type="button" class="btn btn-light waves-effect waves-light btn-xs tooltip" onClick="api(' . $rRow['id'] . ", 'delete');\"><i class=\"mdi mdi-close\"></i></button>";
-								}
-								$rButtons .= '</div>';
-								if (0 < strlen($rRow['ip'])) {
-									$rIP = "<a onClick=\"whois('" . $rRow['ip'] . "');\" href='javascript: void(0);'>" . $rRow['ip'] . '</a>';
-								} else {
-									$rIP = '';
-								}
-								if ($rRow['is_reseller']) {
-									$rCredits = '<button type="button" class="btn btn-info btn-xs waves-effect waves-light">' . number_format($rRow['credits'], 0) . '</button>';
-								} else {
-									$rCredits = '<button type="button" class="btn btn-secondary btn-xs waves-effect waves-light">-</button>';
-								}
-								if (0 < $rRow['user_count']) {
-									$rUserCount = '<button type="button" class="btn btn-info btn-xs waves-effect waves-light">' . number_format($rRow['user_count'], 0) . '</button>';
-								} else {
-									$rUserCount = '<button type="button" class="btn btn-secondary btn-xs waves-effect waves-light">0</button>';
-								}
-								if (in_array($rRow['owner_id'], array_merge($rPermissions['direct_reports'], [$rUserInfo['id']]))) {
-									$rOwner = "<a href='user?id=" . intval($rRow['owner_id']) . "'>" . $rRow['owner_username'] . '</a>';
-								} else {
-									$rOwner = "<a href='user?id=" . intval($rRow['owner_id']) . "'>" . $rRow['owner_username'] . "<br/><small class='text-pink'>(indirect)</small></a>";
-								}
-								$rReturn['data'][] = ["<a href='user?id=" . intval($rRow['id']) . "'>" . $rRow['id'] . '</a>', $rUsername, $rOwner, $rIP, $rStatus, $rCredits, $rUserCount, $rRow['last_login'], $rButtons];
-							} else {
-								$rReturn['data'][] = filterrow($rRow, RequestManager::get('show_columns'), RequestManager::get('hide_columns'));
-							}
-						}
-					}
-				}
 				echo json_encode($rReturn);
 				exit();
-			}
-			exit();
 		}
+		exit();
 	}
 } else {
 	echo json_encode($rReturn);
@@ -1843,22 +1693,18 @@ function filterRow($rRow, $rShow, $rHide) {
 		$rReturn = [];
 		foreach (array_keys($rRow) as $rKey) {
 			if ($rShow) {
-				if (!in_array($rKey, $rShow)) {
-				} else {
+				if (in_array($rKey, $rShow)) {
 					$rReturn[$rKey] = $rRow[$rKey];
 				}
 			} else {
-				if (!$rHide) {
-				} else {
-					if (in_array($rKey, $rHide)) {
-					} else {
+				if ($rHide) {
+					if (!in_array($rKey, $rHide)) {
 						$rReturn[$rKey] = $rRow[$rKey];
 					}
 				}
 			}
 		}
 		return $rReturn;
-	} else {
-		return $rRow;
 	}
+	return $rRow;
 }

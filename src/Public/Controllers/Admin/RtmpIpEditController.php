@@ -34,6 +34,6 @@ class RtmpIpEditController extends BaseAdminController {
 		}
 
 		$this->setTitle('RTMP IP');
-		$this->render('rtmp_ip', compact('rIPArr'));
+		$this->render('rtmp_ip', ['rIPArr' => $rIPArr]);
 	}
 }

@@ -43,7 +43,7 @@ class StreamRedirector {
 				$rAvailableServers = [$rStream['info']['tv_archive_server_id']];
 			}
 		} else {
-			if (!(($rStream['info']['direct_source'] ?? 0) == 1 && ($rStream['info']['direct_proxy'] ?? 0) == 0)) {
+			if (($rStream['info']['direct_source'] ?? 0) != 1 || ($rStream['info']['direct_proxy'] ?? 0) != 0) {
 				foreach ($rServers as $rServerID => $rServerInfo) {
 					if (!array_key_exists($rServerID, $rStreamServers) || !$rServerInfo['server_online'] || $rServerInfo['server_type'] != 0) {
 						continue;
@@ -67,7 +67,7 @@ class StreamRedirector {
 			}
 		}
 
-		if (empty($rAvailableServers)) {
+		if ($rAvailableServers === []) {
 			return false;
 		}
 
@@ -82,7 +82,7 @@ class StreamRedirector {
 			$rAcceptServers[$rServerID] = (0 < $rServers[$rServerID]['total_clients'] && $rOnlineClients < $rServers[$rServerID]['total_clients'] ? $rServerCapacity[$rServerID]['capacity'] : false);
 		}
 		$rAcceptServers = array_filter($rAcceptServers, 'is_numeric');
-		if (empty($rAcceptServers)) {
+		if ($rAcceptServers === []) {
 			if ($rType == 'archive') {
 				return null;
 			}
@@ -138,7 +138,7 @@ class StreamRedirector {
 						}
 					}
 				}
-				if (empty($rPriorityServers) && empty($rRedirectID)) {
+				if ($rPriorityServers === [] && empty($rRedirectID)) {
 					return false;
 				}
 				$rRedirectID = (empty($rRedirectID) ? array_search(min($rPriorityServers), $rPriorityServers) : $rRedirectID);
@@ -156,15 +156,12 @@ class StreamRedirector {
 		global $db;
 		$rOutput = [];
 		$db->query('SELECT * FROM `streams` t1 LEFT JOIN `streams_types` t2 ON t2.type_id = t1.type WHERE t1.`id` = ?', $rStreamID);
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			$rStreamInfo = $db->get_row();
 			$rServersData = [];
-			if (!($rStreamInfo['direct_source'] == 0 || $rStreamInfo['direct_proxy'] == 1)) {
-			} else {
+			if ($rStreamInfo['direct_source'] == 0 || $rStreamInfo['direct_proxy'] == 1) {
 				$db->query('SELECT * FROM `streams_servers` WHERE `stream_id` = ?', $rStreamID);
-				if (0 >= $db->num_rows()) {
-				} else {
+				if (0 < $db->num_rows()) {
 					$rServersData = $db->get_rows(true, 'server_id');
 				}
 			}
@@ -172,7 +169,7 @@ class StreamRedirector {
 			$rOutput['info'] = $rStreamInfo;
 			$rOutput['servers'] = $rServersData;
 		}
-		return (!empty($rOutput) ? $rOutput : false);
+		return ($rOutput !== [] ? $rOutput : false);
 	}
 
 	public static function getStreamingURL($rSettings, $rServers, $rServerID = null, $rOriginatorID = null, $rForceHTTP = false, $rUserID = null) {
@@ -190,7 +187,7 @@ class StreamRedirector {
 			}
 		}
 		$rDomain = null;
-		if (0 < strlen(HOST) && in_array(strtolower(HOST), array_map('strtolower', $rServers[$rServerID]['domains']['urls']))) {
+		if ((string) HOST !== '' && in_array(strtolower(HOST), array_map('strtolower', $rServers[$rServerID]['domains']['urls']))) {
 			$rDomain = HOST;
 		} else {
 			if ($rServers[$rServerID]['random_ip'] && 0 < count($rServers[$rServerID]['domains']['urls'])) {
@@ -204,7 +201,7 @@ class StreamRedirector {
 		if ($rDomain) {
 			$rURL = $rProtocol . '://' . $rDomain . ':' . $rServers[$rServerID][$rProtocol . '_broadcast_port'];
 		} else {
-			if (defined('HOST') && strlen(HOST) > 0 && filter_var(HOST, FILTER_VALIDATE_IP)) {
+			if (defined('HOST') && (string) HOST !== '' && filter_var(HOST, FILTER_VALIDATE_IP)) {
 				$rURL = $rProtocol . '://' . $rServers[$rServerID]['server_ip'] . ':' . $rServers[$rServerID][$rProtocol . '_broadcast_port'];
 			} else {
 				$rURL = rtrim($rServers[$rServerID][$rProtocol . '_url'], '/');

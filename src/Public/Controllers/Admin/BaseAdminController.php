@@ -127,6 +127,10 @@ class BaseAdminController {
 		// (replaces the former bootstrap-set global $language).
 		$data['language'] ??= Translator::class;
 
+		// Deliberate: expose the view payload as local variables so the legacy
+		// PHP templates can reference them by name. EXTR_SKIP keeps existing
+		// locals safe. Refactoring this away means rewriting every view.
+		// phpcs:ignore Generic.PHP.ForbiddenFunctions.Found
 		extract($data, EXTR_SKIP);
 
 		$__viewsDir = MAIN_HOME . 'Public/Views/' . $this->scope . '/';

@@ -87,7 +87,7 @@ EXCLUDE_ARGS := $(addprefix --exclude=,$(EXCLUDES))
 	verify_no_lfs_pointers \
 	lb_delete_files_list generate_deleted_files \
 	phpstan phpstan-baseline cs cs-fix check-procedural-use verify-lb-archive gates \
-	check-vendor-prod-only dev-tools dev-clean
+	check-vendor-prod-only dev-tools dev-clean rector rector-fix
 
 # ─── Dev tooling ────────────────────────────────────────────────
 # The committed src/vendor/ is PRODUCTION-ONLY (composer install --no-dev). The
@@ -156,6 +156,23 @@ cs:
 cs-fix:
 	@test -x "$(PHPCBF)" || { echo "phpcbf not found — run 'make dev-tools' (composer install) first."; exit 1; }
 	@php "$(PHPCBF)" $(PHPCS_FLAGS)
+
+# ─── Automated refactoring (Rector) ─────────────────────────────
+# Rector is a require-dev tool (like phpstan/phpcs); config in build/rector.php.
+# See docs/en/guides/refactoring.md. Always review a `rector` dry-run diff before
+# `rector-fix`, then re-run cs-fix + phpstan + tests on the result.
+RECTOR := src/vendor/bin/rector
+
+# Dry-run — report what would change, never write. Non-zero exit when changes
+# are pending, so it doubles as a CI check.
+rector:
+	@test -x "$(RECTOR)" || { echo "Rector not found — run 'make dev-tools' (composer install) first."; exit 1; }
+	@php "$(RECTOR)" process -c build/rector.php --dry-run
+
+# Apply changes in place.
+rector-fix:
+	@test -x "$(RECTOR)" || { echo "Rector not found — run 'make dev-tools' (composer install) first."; exit 1; }
+	@php "$(RECTOR)" process -c build/rector.php
 
 # ─── PSR-4 regression gates ─────────────────────────────────────
 # Helper: print a variable's resolved value (consumed by CI gate scripts).

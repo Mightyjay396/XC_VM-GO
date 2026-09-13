@@ -30,7 +30,8 @@ Run these before pushing — CI runs the same set:
 | `make cs` | Code style — import/namespace hygiene (phpcs + Slevomat) |
 | `make cs-fix` | Apply the style fixes in place |
 | `make gates` | PSR-4 regression gates (below) |
-| `php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist` | Unit tests — see [PHPUnit Setup](phpunit-phar.md) |
+| `php tests/phpunit.phar -c tests/phpunit.xml.dist` | Unit tests — see [PHPUnit Setup](phpunit-phar.md) |
+| `make rector` | Dry-run automated refactoring — see [Automated Refactoring (Rector)](refactoring.md) |
 
 `make phpstan` and `make cs` need the dev tools — run `make dev-tools` first.
 

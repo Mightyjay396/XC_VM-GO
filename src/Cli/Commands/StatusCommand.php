@@ -87,7 +87,7 @@ class StatusCommand implements CommandInterface {
 			try {
 				$rInstalled = (new ModuleManager(null, null, ServiceContainer::getInstance()))
 					->syncBundledModules();
-				if (!empty($rInstalled)) {
+				if ($rInstalled !== []) {
 					echo 'Installed bundled modules: ' . implode(', ', $rInstalled) . "\n";
 				}
 			} catch (\Throwable $e) {
@@ -111,7 +111,7 @@ class StatusCommand implements CommandInterface {
 
 		if ($rServers[SERVER_ID]['is_main']) {
 			$this->broadcastUpdateBinaries($rServers);
-			$this->configureRedis($rServers);
+			$this->configureRedis();
 		} else {
 			// LB nodes run no local Redis (bin/redis is stripped from the LB build)
 			// and never reach configureRedis, so the xcvm_core extension would keep
@@ -248,8 +248,9 @@ class StatusCommand implements CommandInterface {
 		$rFile = file('/etc/systemd/system.conf');
 		$rHasHard = false;
 		$rHasSoft = false;
+		$counter = count($rFile);
 
-		for ($i = 0; $i < count($rFile); $i++) {
+		for ($i = 0; $i < $counter; $i++) {
 			if (substr($rFile[$i], 0, 19) === 'DefaultLimitNOFILE=') {
 				$rHasHard = true;
 			}
@@ -289,49 +290,41 @@ class StatusCommand implements CommandInterface {
 		}
 	}
 
-	private function configureRedis(array $rServers): void {
+	private function configureRedis(): void {
 		$db = self::db();
 		$rConfig = file_get_contents(MAIN_HOME . 'bin/redis/redis.conf');
 		$rWrite = false;
-
 		if (stripos($rConfig, "\nsave 60 1000") === false) {
 			$rWrite = true;
 			$rConfig .= "\nsave 60 1000";
 			$rConfig = str_replace('stop-writes-on-bgsave-error yes', 'stop-writes-on-bgsave-error no', $rConfig);
 			echo "Turning Redis Snapshots On!\n\n";
 		}
-
 		if (stripos($rConfig, 'stop-writes-on-bgsave-error yes') !== false) {
 			$rWrite = true;
 			$rConfig = str_replace('stop-writes-on-bgsave-error yes', 'stop-writes-on-bgsave-error no', $rConfig);
 			echo "Disabling failed write lock on Redis\n\n";
 		}
-
 		if (stripos($rConfig, "\nserver-threads") === false) {
 			$rWrite = true;
 			$rConfig .= "\nserver-threads 4\nserver-thread-affinity true";
 			echo "Enabling multithreading on Redis\n\n";
 		}
-
 		$rPassword = trim(explode("\n", explode("\nrequirepass ", $rConfig)[1])[0]);
-
 		if ($rPassword === '#PASSWORD#') {
 			$rWrite = true;
 			$rPassword = $this->generateString(512);
 			$rConfig = str_replace('#PASSWORD#', $rPassword, $rConfig);
 			echo "Generating a new Redis password\n\n";
 		}
-
 		if ($rWrite) {
 			file_put_contents(MAIN_HOME . 'bin/redis/redis.conf', $rConfig);
 		}
-
 		$db->query('SELECT `redis_password` FROM `settings`;');
 		if ($db->get_row()['redis_password'] !== $rPassword) {
 			echo "Updating Redis password in database\n";
 			$db->query('UPDATE `settings` SET `redis_password` = ?;', $rPassword);
 		}
-
 		// \XC_VM::redis_connect() reads its credentials from config.enc only —
 		// without this sync a rotated requirepass leaves the stored auth stale
 		// and every panel Redis connection fails with NOAUTH.
@@ -353,7 +346,6 @@ class StatusCommand implements CommandInterface {
 	 * the right server instead of refusing on 127.0.0.1.
 	 *
 	 * @param array<int,array<string,mixed>> $rServers Servers keyed by id.
-	 * @return void
 	 */
 	private function configureRedisLb(array $rServers): void {
 		$db = self::db();

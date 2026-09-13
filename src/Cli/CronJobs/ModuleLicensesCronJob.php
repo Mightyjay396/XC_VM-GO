@@ -56,7 +56,7 @@ class ModuleLicensesCronJob implements CommandInterface {
 			$manager->listModules(),
 			static fn ($m) => ($m['source'] ?? '') === 'platform'
 		);
-		if (empty($platform)) {
+		if ($platform === []) {
 			echo "No platform modules installed.\n";
 			return 0;
 		}

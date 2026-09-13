@@ -85,7 +85,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 	//  Mode A — remote probe from the MAIN
 	// ─────────────────────────────────────────────────────────────────────────
 	private function diagnoseFromMain(array $rServer, int $rServerID): int {
-		$db = self::db();
+		self::db();
 
 		$rIP   = (string) $rServer['server_ip'];
 		$rPort = intval($rServer['http_broadcast_port']);
@@ -272,7 +272,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 
 	private function summary(array $rProblems): int {
 		echo str_repeat('-', 64) . "\n";
-		if (empty($rProblems)) {
+		if ($rProblems === []) {
 			echo "[OK] No obvious cause — reachable, reporting, clock-synced.\n";
 			echo "     If the panel still shows it offline, force a poll: php console.php cron:servers\n";
 			return 0;
@@ -324,7 +324,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 			CURLOPT_SSL_VERIFYHOST => 0,
 		]);
 		curl_exec($ch);
-		$rCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		$rCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 		$rErr  = curl_error($ch);
 		curl_close($ch);
 		return [$rCode, $rErr];

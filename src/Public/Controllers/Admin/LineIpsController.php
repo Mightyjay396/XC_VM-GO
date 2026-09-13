@@ -23,6 +23,6 @@ class LineIpsController extends BaseAdminController {
 		$rRange = intval(RequestManager::get('range') ?? 0);
 		$rLineIPs = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'lines_per_ip')) ?: [];
 
-		$this->render('line_ips', compact('rRange', 'rLineIPs'));
+		$this->render('line_ips', ['rRange' => $rRange, 'rLineIPs' => $rLineIPs]);
 	}
 }

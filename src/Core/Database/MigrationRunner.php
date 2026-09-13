@@ -20,7 +20,6 @@ class MigrationRunner {
 	 * `*.sql` file (statement by statement) and records successful ones.
 	 *
 	 * @param Database $db Database handle.
-	 * @return void
 	 */
 	public static function run(Database $db): void {
 		echo "Migrations\n------------------------------\n";
@@ -98,8 +97,6 @@ class MigrationRunner {
 
 	/**
 	 * Delete files listed in migrations/deleted_files.txt during an update.
-	 *
-	 * @return void
 	 */
 	public static function runFileCleanup(): void {
 		echo "File Cleanup\n------------------------------\n";

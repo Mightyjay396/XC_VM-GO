@@ -101,7 +101,6 @@ class HlsSequence {
 	 * when the daemon's counter ran on uninterrupted (a brief outage).
 	 *
 	 * @param int $rStreamID Stream id.
-	 * @return void
 	 */
 	public static function markOffAir(int $rStreamID): void {
 		if (!defined('SIGNALS_TMP_PATH')) {

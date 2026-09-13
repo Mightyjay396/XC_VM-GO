@@ -129,6 +129,7 @@ plugins:
             CLI Tools & Console Reference: CLI-инструменты и консоль
             Database Migrations: Миграции базы данных
             PHPUnit Setup: Настройка PHPUnit
+            Automated Refactoring (Rector): Автоматический рефакторинг (Rector)
             Feature Flags: Флаги функций
             Process Management: Управление процессами
             Security & Access: Безопасность и доступ
@@ -187,6 +188,7 @@ nav:
           - CLI Tools & Console Reference: en/guides/cli-tools.md
           - Database Migrations: en/guides/database-migrations.md
           - PHPUnit Setup: en/guides/phpunit-phar.md
+          - Automated Refactoring (Rector): en/guides/refactoring.md
           - Feature Flags: en/guides/feature-flags.md
           - Process Management: en/guides/process-management.md
       - Security & Access:

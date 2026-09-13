@@ -33,8 +33,6 @@ final class ResellerScopeBootstrap implements ScopeBootstrap {
 	/**
 	 * Reseller session lifecycle. Session keys: reseller, rip, rcode, rverify,
 	 * rlast_activity.
-	 *
-	 * @return void
 	 */
 	private function bootSession(): void {
 		$rSessionTimeout = 60;
@@ -77,8 +75,6 @@ final class ResellerScopeBootstrap implements ScopeBootstrap {
 	/**
 	 * Framework boot + reseller user context. Injects the legacy view-facing
 	 * globals ($rUserInfo, $rPermissions, ...) read by the reseller views.
-	 *
-	 * @return void
 	 */
 	private function bootFunctions(): void {
 		global $db, $rSettings, $rMobile, $rPermissions, $rUserInfo,
@@ -98,7 +94,7 @@ final class ResellerScopeBootstrap implements ScopeBootstrap {
 		if (isset($_SESSION['reseller'])) {
 			$rUserInfo = UserRepository::getRegisteredUserById($_SESSION['reseller']);
 
-			if (strlen($rUserInfo['timezone'] ?? '') > 0) {
+			if ((string) ($rUserInfo['timezone'] ?? '') !== '') {
 				date_default_timezone_set($rUserInfo['timezone']);
 			}
 

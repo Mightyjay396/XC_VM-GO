@@ -51,8 +51,7 @@ class EpisodesController extends BasePlayerController {
 				if (SettingsManager::get('player_hide_incompatible')) {
 					$db->query('SELECT MAX(`compatible`) AS `compatible` FROM `streams_servers` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams_servers`.`stream_id` WHERE `series_id` = ? AND `season_num` = ?;', $rSeries['id'], $rRow['season_num']);
 
-					if (!$db->get_row()['compatible']) {
-					} else {
+					if ($db->get_row()['compatible']) {
 						$rSeasons[] = $rRow['season_num'];
 					}
 				} else {
@@ -69,16 +68,15 @@ class EpisodesController extends BasePlayerController {
 
 			$rLegacy = false;
 			$rEpisodes = $db->get_rows();
+			$counter = count($rEpisodes);
 
-			for ($i = 0; $i < count($rEpisodes); $i++) {
+			for ($i = 0; $i < $counter; $i++) {
 				$rURLs[$rEpisodes[$i]['id']] = $rDomainName . 'series/' . $rUserInfo['username'] . '/' . $rUserInfo['password'] . '/' . $rEpisodes[$i]['id'] . '.' . $rEpisodes[$i]['target_container'];
 				$rProperties = json_decode($rEpisodes[$i]['movie_properties'], true);
 				$rSubtitles[$rEpisodes[$i]['id']] = getSubtitles($rEpisodes[$i]['id'], $rProperties['subtitle'] ?? []);
 
-				if ($rEpisodes[$i]['target_container'] == 'mp4') {
-				} else {
+				if ($rEpisodes[$i]['target_container'] != 'mp4') {
 					$rProxySubtitles = [];
-
 					foreach ($rSubtitles[$rEpisodes[$i]['id']] as $rSubtitle) {
 						$rSubtitle['file'] = 'proxy.php?url=' . Encryption::mintToken($rSubtitle['file'], SettingsManager::get('live_streaming_pass'), 'd8de497ebccf4f4697a1da20219c7c33', (bool) SettingsManager::get('secure_stream_tokens'));
 						$rProxySubtitles[] = $rSubtitle;
@@ -89,13 +87,11 @@ class EpisodesController extends BasePlayerController {
 			}
 			$rSeason = null;
 
-			if (!$rSeries['tmdb_id']) {
-			} else {
+			if ($rSeries['tmdb_id']) {
 				if (!file_exists(TMP_PATH . 'tmdb_' . $rSeries['tmdb_id'] . '_' . $rSeasonNo)) {
 					$rSeason = TMDbService::getSeason($rSeries['tmdb_id'], $rSeasonNo);
 
-					if (!$rSeason) {
-					} else {
+					if ($rSeason) {
 						file_put_contents(TMP_PATH . 'tmdb_' . $rSeries['tmdb_id'] . '_' . $rSeasonNo, igbinary_serialize($rSeason));
 					}
 				} else {
@@ -121,14 +117,12 @@ class EpisodesController extends BasePlayerController {
 			$rSimilar = [];
 			$rSimilarArray = json_decode($rSeries['similar'], true);
 
-			if (0 >= count($rSimilarArray)) {
-			} else {
+			if (0 < count($rSimilarArray)) {
 				if (SettingsManager::get('player_hide_incompatible')) {
 					$db->query('SELECT * FROM `streams_series` WHERE `tmdb_id` IN (' . implode(',', $rSimilarArray) . ') AND (SELECT MAX(`compatible`) FROM `streams_servers` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams_servers`.`stream_id` WHERE `streams_episodes`.`series_id` = `streams_series`.`id`) = 1 LIMIT 6;');
 				} else {
 					$db->query('SELECT * FROM `streams_series` WHERE `tmdb_id` IN (' . implode(',', $rSimilarArray) . ') LIMIT 6;');
 				}
-
 				foreach ($db->get_rows() as $rRow) {
 					$rSimilar[] = ['type' => 'series', 'id' => $rRow['id'], 'title' => $rRow['title'], 'year' => ($rRow['year'] ?: ($rRow['releaseDate'] ? substr($rRow['releaseDate'], 0, 4) : null)), 'rating' => $rRow['rating'], 'cover' => (ImageUtils::validateURL($rRow['cover']) ?: ''), 'backdrop' => (ImageUtils::validateURL(json_decode($rRow['backdrop_path'], true)[0]) ?: '')];
 					$rSimilarIDs[] = $rRow['id'];

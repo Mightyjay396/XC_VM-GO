@@ -238,7 +238,7 @@ class ServerAjaxController extends BaseAjaxController {
 			}
 		}
 
-		if (0 < $rData['id'] && 0 < $rData['font_size'] && 0 < strlen($rData['font_color']) && 0 < strlen($rData['xy_offset']) && (0 < strlen($rData['message']) || $rData['type'] < 3)) {
+		if (0 < $rData['id'] && 0 < $rData['font_size'] && (string) $rData['font_color'] !== '' && (string) $rData['xy_offset'] !== '' && ((string) $rData['message'] !== '' || $rData['type'] < 3)) {
 			if (SettingsManager::get('redis_handler')) {
 				if (isset($rData['user'])) {
 					$rRows = ConnectionTracker::getRedisConnections($rData['id'], null, null, true, false, false);

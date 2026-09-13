@@ -35,7 +35,6 @@ class UpdateLogger {
 	 *
 	 * @param string $level   Severity label (e.g. INFO, ERROR).
 	 * @param string $message Message text.
-	 * @return void
 	 */
 	public static function log(string $level, string $message): void {
 		$rLine = sprintf("[%s] [%s] %s\n", date('Y-m-d H:i:s'), strtoupper($level), $message);
@@ -46,7 +45,6 @@ class UpdateLogger {
 	 * Log an INFO-level message.
 	 *
 	 * @param string $message Message text.
-	 * @return void
 	 */
 	public static function info(string $message): void {
 		self::log('INFO', $message);
@@ -56,7 +54,6 @@ class UpdateLogger {
 	 * Log an ERROR-level message.
 	 *
 	 * @param string $message Message text.
-	 * @return void
 	 */
 	public static function error(string $message): void {
 		self::log('ERROR', $message);
@@ -64,8 +61,6 @@ class UpdateLogger {
 
 	/**
 	 * Truncate the update log (start a fresh update run).
-	 *
-	 * @return void
 	 */
 	public static function reset(): void {
 		file_put_contents(self::getLogFile(), '', LOCK_EX);

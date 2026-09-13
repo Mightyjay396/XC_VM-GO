@@ -381,7 +381,7 @@ class LoopbackCommand implements CommandInterface {
 			}
 		}
 		if ($rKeep < count($rReturn)) {
-			$rReturn = array_slice($rReturn, count($rReturn) - $rKeep, $rKeep);
+			return array_slice($rReturn, count($rReturn) - $rKeep, $rKeep);
 		}
 		return $rReturn;
 	}

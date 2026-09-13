@@ -37,6 +37,6 @@ class PlexAddController extends BaseAdminController {
 		}
 
 		$this->setTitle('Add Library');
-		$this->render('plex_add', compact('rFolder', 'rBouquets'));
+		$this->render('plex_add', ['rFolder' => $rFolder, 'rBouquets' => $rBouquets]);
 	}
 }

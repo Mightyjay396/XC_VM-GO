@@ -42,7 +42,7 @@ use XcVm\Infrastructure\Redis\RedisManager;
 
 class RedisCache implements CacheInterface {
 	/** @var \Redis|null phpredis connection */
-	protected $redis = null;
+	protected $redis;
 
 	/** @var string \Redis host */
 	protected $host;
@@ -113,17 +113,12 @@ class RedisCache implements CacheInterface {
 		}
 
 		$prefixedKey = $this->prefix . $key;
-		$data = $this->redis->get($prefixedKey);
-
-		if ($data === false) {
-			return false;
-		}
 
 		// maxAge is handled by \Redis TTL, not by us
 		// But if caller wants to check age, we can't — \Redis doesn't store creation time
 		// For file-based TTL compat, we ignore maxAge here (\Redis uses its own TTL)
 
-		return $data;
+		return $this->redis->get($prefixedKey);
 	}
 
 	/**

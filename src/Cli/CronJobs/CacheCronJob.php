@@ -69,7 +69,7 @@ class CacheCronJob implements CommandInterface {
 		if ($rStartup && file_exists(CACHE_TMP_PATH . 'settings')) {
 			echo 'Checking cache readability...' . "\n";
 			$rSerialize = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'settings'));
-			if (!(is_array($rSerialize) && isset($rSerialize['server_name']))) {
+			if (!is_array($rSerialize) || !isset($rSerialize['server_name'])) {
 				echo 'Clearing cache...' . "\n\n";
 				foreach ([STREAMS_TMP_PATH, LINES_TMP_PATH, SERIES_TMP_PATH] as $rTmpPath) {
 					foreach (scandir($rTmpPath) as $rFile) {
@@ -168,7 +168,7 @@ class CacheCronJob implements CommandInterface {
 			$rAllowedCategories = [];
 
 			foreach ((json_decode($rChannels['bouquet_channels'], true) ?: []) as $rStreamID) {
-				if (!(0 >= intval($rStreamID) || in_array($rStreamID, $rStreamIDs['channels']))) {
+				if (0 < intval($rStreamID) && !in_array($rStreamID, $rStreamIDs['channels'])) {
 					$rStreamIDs['channels'][] = $rStreamID;
 				}
 				if (!isset($rBouquetMap[intval($rStreamID)])) {
@@ -178,7 +178,7 @@ class CacheCronJob implements CommandInterface {
 			}
 
 			foreach ((json_decode($rChannels['bouquet_radios'], true) ?: []) as $rStreamID) {
-				if (!(0 >= intval($rStreamID) || in_array($rStreamID, $rStreamIDs['radios']))) {
+				if (0 < intval($rStreamID) && !in_array($rStreamID, $rStreamIDs['radios'])) {
 					$rStreamIDs['radios'][] = $rStreamID;
 				}
 				if (!isset($rBouquetMap[intval($rStreamID)])) {
@@ -188,7 +188,7 @@ class CacheCronJob implements CommandInterface {
 			}
 
 			foreach ((json_decode($rChannels['bouquet_movies'], true) ?: []) as $rStreamID) {
-				if (!(0 >= intval($rStreamID) || in_array($rStreamID, $rStreamIDs['movies']))) {
+				if (0 < intval($rStreamID) && !in_array($rStreamID, $rStreamIDs['movies'])) {
 					$rStreamIDs['movies'][] = $rStreamID;
 				}
 				if (!isset($rBouquetMap[intval($rStreamID)])) {
@@ -198,7 +198,7 @@ class CacheCronJob implements CommandInterface {
 			}
 
 			foreach ((json_decode($rChannels['bouquet_series'], true) ?: []) as $rSeriesID) {
-				if (!(0 >= intval($rSeriesID) || in_array($rSeriesID, $rStreamIDs['series']))) {
+				if (0 < intval($rSeriesID) && !in_array($rSeriesID, $rStreamIDs['series'])) {
 					$db->query('SELECT `stream_id` FROM `streams_episodes` WHERE `series_id` = ? ORDER BY `season_num` ASC, `episode_num` ASC;', $rSeriesID);
 					foreach ($db->get_rows() as $rEpisode) {
 						if (0 < intval($rEpisode['stream_id'])) {

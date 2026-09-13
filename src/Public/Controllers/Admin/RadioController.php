@@ -95,13 +95,6 @@ class RadioController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Radio Stations');
-		$this->render('radio', compact(
-			'rStation',
-			'rOnDemand',
-			'rStationArguments',
-			'rServerTree',
-			'rStationOptions',
-			'rStationSys'
-		));
+		$this->render('radio', ['rStation' => $rStation, 'rOnDemand' => $rOnDemand, 'rStationArguments' => $rStationArguments, 'rServerTree' => $rServerTree, 'rStationOptions' => $rStationOptions, 'rStationSys' => $rStationSys]);
 	}
 }

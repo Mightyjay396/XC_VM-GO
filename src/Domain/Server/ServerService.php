@@ -53,7 +53,7 @@ class ServerService {
 		}
 
 		foreach ($rData['http_broadcast_ports'] as $rPort) {
-			if (is_numeric($rPort) && 80 <= $rPort && $rPort <= 65535 && !in_array($rPort, ($rPorts['http'] ?: [])) && $rPort != $rData['rtmp_port']) {
+			if (is_numeric($rPort) && 80 <= $rPort && $rPort <= 65535 && !in_array($rPort, ($rPorts['http'])) && $rPort != $rData['rtmp_port']) {
 				$rPorts['http'][] = $rPort;
 			}
 		}
@@ -61,7 +61,7 @@ class ServerService {
 		unset($rData['http_broadcast_ports']);
 
 		foreach ($rData['https_broadcast_ports'] as $rPort) {
-			if (is_numeric($rPort) && 80 <= $rPort && $rPort <= 65535 && !in_array($rPort, ($rPorts['http'] ?: [])) && !in_array($rPort, ($rPorts['https'] ?: [])) && $rPort != $rData['rtmp_port']) {
+			if (is_numeric($rPort) && 80 <= $rPort && $rPort <= 65535 && !in_array($rPort, ($rPorts['http'])) && !in_array($rPort, ($rPorts['https'])) && $rPort != $rData['rtmp_port']) {
 				$rPorts['https'][] = $rPort;
 			}
 		}
@@ -126,7 +126,7 @@ class ServerService {
 		if (strlen($rData['server_ip']) == 0 || !filter_var($rData['server_ip'], FILTER_VALIDATE_IP)) {
 			return ['status' => STATUS_INVALID_IP, 'data' => $rData];
 		}
-		if (0 < strlen($rData['private_ip']) && !filter_var($rData['private_ip'], FILTER_VALIDATE_IP)) {
+		if ((string) $rData['private_ip'] !== '' && !filter_var($rData['private_ip'], FILTER_VALIDATE_IP)) {
 			return ['status' => STATUS_INVALID_IP, 'data' => $rData];
 		}
 
@@ -422,8 +422,7 @@ class ServerService {
 
 		global $rServers;
 		foreach ($db->get_rows() as $rRow) {
-			if (!$rServers[$rRow['server_id']]['server_online']) {
-			} else {
+			if ($rServers[$rRow['server_id']]['server_online']) {
 				ApiClient::systemRequest($rRow['server_id'], ['action' => 'kill_plex']);
 			}
 		}

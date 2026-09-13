@@ -44,17 +44,14 @@ class FFprobeRunner {
 			$rOutput['of_duration'] = (!empty($rCodecs['format']['duration']) ? $rCodecs['format']['duration'] : 'N/A');
 			$rOutput['duration'] = (!empty($rCodecs['format']['duration']) ? gmdate('H:i:s', intval($rCodecs['format']['duration'])) : 'N/A');
 			foreach ($rCodecs['streams'] as $rCodec) {
-				if (isset($rCodec['codec_type']) && !($rCodec['codec_type'] != 'audio' && $rCodec['codec_type'] != 'video' && $rCodec['codec_type'] != 'subtitle')) {
+				if (isset($rCodec['codec_type']) && in_array($rCodec['codec_type'], ['audio', 'video', 'subtitle'])) {
 					if ($rCodec['codec_type'] == 'audio' || $rCodec['codec_type'] == 'video') {
-						if (!empty($rOutput['codecs'][$rCodec['codec_type']])) {
-						} else {
+						if (empty($rOutput['codecs'][$rCodec['codec_type']])) {
 							$rOutput['codecs'][$rCodec['codec_type']] = $rCodec;
 						}
 					} else {
-						if ($rCodec['codec_type'] != 'subtitle') {
-						} else {
-							if (isset($rOutput['codecs'][$rCodec['codec_type']])) {
-							} else {
+						if ($rCodec['codec_type'] == 'subtitle') {
+							if (!isset($rOutput['codecs'][$rCodec['codec_type']])) {
 								$rOutput['codecs'][$rCodec['codec_type']] = [];
 							}
 							$rOutput['codecs'][$rCodec['codec_type']][] = $rCodec;

@@ -369,8 +369,7 @@ class BouquetService {
 		foreach ($db->get_rows() as $rRow) {
 			$rRow['bouquet'] = json_decode($rRow['bouquet'], true);
 
-			if (($rKey = array_search($rID, $rRow['bouquet'])) === false) {
-			} else {
+			if (($rKey = array_search($rID, $rRow['bouquet'])) !== false) {
 				unset($rRow['bouquet'][$rKey]);
 			}
 
@@ -382,8 +381,7 @@ class BouquetService {
 		foreach ($db->get_rows() as $rRow) {
 			$rRow['bouquets'] = json_decode($rRow['bouquets'], true);
 
-			if (($rKey = array_search($rID, $rRow['bouquets'])) === false) {
-			} else {
+			if (($rKey = array_search($rID, $rRow['bouquets'])) !== false) {
 				unset($rRow['bouquets'][$rKey]);
 			}
 
@@ -393,7 +391,7 @@ class BouquetService {
 
 		// Notify modules (e.g. watch) so they drop the bouquet from their own
 		// data — keeps core bouquet deletion free of module-owned tables.
-		EventDispatcher::dispatch(new BouquetDeletedEvent((int) $rID));
+		EventDispatcher::dispatch(new BouquetDeletedEvent($rID));
 		self::scan();
 
 		return true;
@@ -434,8 +432,7 @@ class BouquetService {
 		$rChannels = AdminHelpers::confirmIDs(json_decode($rBouquet[$rColumn], true));
 
 		foreach ($rIDs as $rID) {
-			if (0 >= intval($rID) || in_array($rID, $rChannels)) {
-			} else {
+			if (0 < intval($rID) && !in_array($rID, $rChannels)) {
 				$rChannels[] = $rID;
 				$rChanged = true;
 			}
@@ -481,8 +478,7 @@ class BouquetService {
 		$rChannels = AdminHelpers::confirmIDs(json_decode($rBouquet[$rColumn], true));
 
 		foreach ($rIDs as $rID) {
-			if (($rKey = array_search($rID, $rChannels)) === false) {
-			} else {
+			if (($rKey = array_search($rID, $rChannels)) !== false) {
 				unset($rChannels[$rKey]);
 				$rChanged = true;
 			}

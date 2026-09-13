@@ -21,6 +21,6 @@ class TicketsController extends BaseAdminController {
 		$rStatusArray = ['CLOSED', 'OPEN', 'RESPONDED TO', 'READ BY USER', 'NEW RESPONSE', 'READ BY ME', 'READ BY USER'];
 
 		$this->setTitle('Tickets');
-		$this->render('tickets', compact('rStatusArray'));
+		$this->render('tickets', ['rStatusArray' => $rStatusArray]);
 	}
 }

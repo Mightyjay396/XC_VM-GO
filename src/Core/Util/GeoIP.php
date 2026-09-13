@@ -24,7 +24,7 @@ namespace XcVm\Core\Util;
 
 class GeoIP {
 	/** @var string Cache directory for GeoIP lookups */
-	protected static $cachePath = null;
+	protected static $cachePath;
 
 	/**
 	 * Get ISP information for an IP address

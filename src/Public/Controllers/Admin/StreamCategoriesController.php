@@ -30,6 +30,6 @@ class StreamCategoriesController extends BaseAdminController {
 		}
 
 		$this->setTitle('Stream Categories');
-		$this->render('stream_categories', compact('rCategories', 'rMainCategories'));
+		$this->render('stream_categories', ['rCategories' => $rCategories, 'rMainCategories' => $rMainCategories]);
 	}
 }

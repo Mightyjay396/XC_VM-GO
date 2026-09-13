@@ -136,19 +136,19 @@ class ModulesController extends BaseAdminController {
 						}
 
 						$parts = [];
-						if ($found) {
+						if ($found !== []) {
 							$parts[] = 'Updates available: ' . implode(', ', $found) . '.';
 						}
-						if ($failed) {
+						if ($failed !== []) {
 							$parts[] = 'Could not check ' . implode('; ', $failed) . '.';
 						}
-						if (!$parts) {
+						if ($parts === []) {
 							$parts[] = 'All installed modules are up to date (' . $checked . ' checked'
 								. ($skipped ? ', ' . $skipped . ' not installed — skipped' : '') . ').';
 						}
 
 						$flash = [
-							'type'    => $found ? 'success' : ($failed ? 'warning' : 'info'),
+							'type'    => $found !== [] ? 'success' : ($failed !== [] ? 'warning' : 'info'),
 							'message' => implode(' ', $parts),
 						];
 						break;

@@ -34,8 +34,6 @@ class TMDbService {
 	 *
 	 * Единая точка сборки клиента: раньше блок language/api_key дублировался
 	 * в getMovie/getSeries/getSeason/addCategories.
-	 *
-	 * @return \TMDB
 	 */
 	private static function client(): \TMDB {
 		self::requireLibrary();
@@ -96,8 +94,7 @@ class TMDbService {
 		if ($rLanguage) {
 			$rURL .= '&language=' . urlencode($rLanguage);
 		} else {
-			if (0 >= strlen(SettingsManager::getString('tmdb_language'))) {
-			} else {
+			if (SettingsManager::getString('tmdb_language') !== '') {
 				$rURL .= '&language=' . urlencode(SettingsManager::getString('tmdb_language'));
 			}
 		}
@@ -105,8 +102,7 @@ class TMDbService {
 		$rJSON = json_decode(file_get_contents($rURL), true);
 
 		foreach ($rJSON['results'] as $rVideo) {
-			if (!(strtolower($rVideo['type']) == 'trailer' && strtolower($rVideo['site']) == 'youtube')) {
-			} else {
+			if (strtolower($rVideo['type']) == 'trailer' && strtolower($rVideo['site']) == 'youtube') {
 				return $rVideo['key'];
 			}
 		}
@@ -125,8 +121,7 @@ class TMDbService {
 	public static function getStills(int $rTMDBID, int $rSeason, int $rEpisode) {
 		$rURL = 'https://api.themoviedb.org/3/tv/' . intval($rTMDBID) . '/season/' . intval($rSeason) . '/episode/' . intval($rEpisode) . '/images?api_key=' . urlencode(SettingsManager::getString('tmdb_api_key'));
 
-		if (0 >= strlen(SettingsManager::getString('tmdb_language'))) {
-		} else {
+		if (SettingsManager::getString('tmdb_language') !== '') {
 			$rURL .= '&language=' . urlencode(SettingsManager::getString('tmdb_language'));
 		}
 
@@ -169,7 +164,5 @@ class TMDbService {
 				$db->query("INSERT INTO `streams_categories`(`category_type`, `category_name`) VALUES('series', ?);", $seriesGenreName);
 			}
 		}
-
-		return;
 	}
 }

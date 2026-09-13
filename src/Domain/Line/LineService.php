@@ -57,8 +57,7 @@ class LineService {
 			$rArray = [];
 
 			foreach (['is_stalker', 'is_isplock', 'is_restreamer', 'is_trial'] as $rItem) {
-				if (!isset($rData['c_' . $rItem])) {
-				} else {
+				if (isset($rData['c_' . $rItem])) {
 					if (isset($rData[$rItem])) {
 						$rArray[$rItem] = 1;
 					} else {
@@ -67,38 +66,31 @@ class LineService {
 				}
 			}
 
-			if (!isset($rData['c_admin_notes'])) {
-			} else {
+			if (isset($rData['c_admin_notes'])) {
 				$rArray['admin_notes'] = $rData['admin_notes'];
 			}
 
-			if (!isset($rData['c_reseller_notes'])) {
-			} else {
+			if (isset($rData['c_reseller_notes'])) {
 				$rArray['reseller_notes'] = $rData['reseller_notes'];
 			}
 
-			if (!isset($rData['c_forced_country'])) {
-			} else {
+			if (isset($rData['c_forced_country'])) {
 				$rArray['forced_country'] = $rData['forced_country'];
 			}
 
-			if (!isset($rData['c_member_id'])) {
-			} else {
+			if (isset($rData['c_member_id'])) {
 				$rArray['member_id'] = intval($rData['member_id']);
 			}
 
-			if (!isset($rData['c_force_server_id'])) {
-			} else {
+			if (isset($rData['c_force_server_id'])) {
 				$rArray['force_server_id'] = intval($rData['force_server_id']);
 			}
 
-			if (!isset($rData['c_max_connections'])) {
-			} else {
+			if (isset($rData['c_max_connections'])) {
 				$rArray['max_connections'] = intval($rData['max_connections']);
 			}
 
-			if (!isset($rData['c_exp_date'])) {
-			} else {
+			if (isset($rData['c_exp_date'])) {
 				if (isset($rData['no_expire'])) {
 					$rArray['exp_date'] = null;
 				} else {
@@ -110,23 +102,18 @@ class LineService {
 				}
 			}
 
-			if (!isset($rData['c_access_output'])) {
-			} else {
+			if (isset($rData['c_access_output'])) {
 				$rOutputs = [];
-
 				foreach ($rData['access_output'] as $rOutputID) {
 					$rOutputs[] = $rOutputID;
 				}
 				$rArray['allowed_outputs'] = '[' . implode(',', array_map('intval', $rOutputs)) . ']';
 			}
 
-			if (!isset($rData['c_bouquets'])) {
-			} else {
+			if (isset($rData['c_bouquets'])) {
 				$rArray['bouquet'] = [];
-
 				foreach (json_decode($rData['bouquets_selected'], true) as $rBouquet) {
-					if (!is_numeric($rBouquet)) {
-					} else {
+					if (is_numeric($rBouquet)) {
 						$rArray['bouquet'][] = $rBouquet;
 					}
 				}
@@ -134,26 +121,20 @@ class LineService {
 				$rArray['bouquet'] = '[' . implode(',', array_map('intval', $rArray['bouquet'])) . ']';
 			}
 
-			if (!isset($rData['reset_isp_lock'])) {
-			} else {
+			if (isset($rData['reset_isp_lock'])) {
 				$rArray['isp_desc'] = '';
 				$rArray['as_number'] = $rArray['isp_desc'];
 			}
 
 			$rUsers = AdminHelpers::confirmIDs(json_decode($rData['users_selected'], true));
 
-			if (0 >= count($rUsers)) {
-			} else {
+			if (0 < count($rUsers)) {
 				$rPrepare = QueryHelper::prepareArray($rArray);
-
-				if (0 >= count($rPrepare['data'])) {
-				} else {
+				if (0 < count($rPrepare['data'])) {
 					$rQuery = 'UPDATE `lines` SET ' . $rPrepare['update'] . ' WHERE `id` IN (' . implode(',', $rUsers) . ');';
 					$db->query($rQuery, ...$rPrepare['data']);
 				}
-
 				$db->query('SELECT `pair_id` FROM `lines` WHERE `pair_id` IN (' . implode(',', $rUsers) . ');');
-
 				foreach ($db->get_rows() as $rRow) {
 					MagService::syncLineDevices($rRow['pair_id']);
 				}
@@ -161,9 +142,8 @@ class LineService {
 			}
 
 			return ['status' => STATUS_SUCCESS];
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -191,13 +171,11 @@ class LineService {
 				}
 			}
 
-			if (strlen($rData['username']) != 0) {
-			} else {
+			if (strlen($rData['username']) == 0) {
 				$rArray['username'] = AdminHelpers::generateString(10);
 			}
 
-			if (strlen($rData['password']) != 0) {
-			} else {
+			if (strlen($rData['password']) == 0) {
 				$rArray['password'] = AdminHelpers::generateString(10);
 			}
 
@@ -217,8 +195,7 @@ class LineService {
 				}
 			}
 
-			if (strlen($rData['isp_clear']) != 0) {
-			} else {
+			if (strlen($rData['isp_clear']) == 0) {
 				$rArray['isp_desc'] = '';
 				$rArray['as_number'] = null;
 			}
@@ -227,8 +204,7 @@ class LineService {
 			$rArray['bouquet'] = '[' . implode(',', array_map('intval', $rArray['bouquet'])) . ']';
 
 			if (isset($rData['exp_date']) && !isset($rData['no_expire'])) {
-				if (!(0 < strlen($rData['exp_date']) && $rData['exp_date'] != '1970-01-01')) {
-				} else {
+				if ((string) $rData['exp_date'] !== '' && $rData['exp_date'] != '1970-01-01') {
 					try {
 						$rDate = new \DateTime($rData['exp_date']);
 						$rArray['exp_date'] = $rDate->format('U');
@@ -240,14 +216,12 @@ class LineService {
 				$rArray['exp_date'] = null;
 			}
 
-			if ($rArray['member_id']) {
-			} else {
+			if (!$rArray['member_id']) {
 				$rArray['member_id'] = $GLOBALS['rAdminUserInfo']['id'];
 			}
 
 			if (isset($rData['allowed_ips'])) {
-				if (is_array($rData['allowed_ips'])) {
-				} else {
+				if (!is_array($rData['allowed_ips'])) {
 					$rData['allowed_ips'] = [$rData['allowed_ips']];
 				}
 
@@ -257,8 +231,7 @@ class LineService {
 			}
 
 			if (isset($rData['allowed_ua'])) {
-				if (is_array($rData['allowed_ua'])) {
-				} else {
+				if (!is_array($rData['allowed_ua'])) {
 					$rData['allowed_ua'] = [$rData['allowed_ua']];
 				}
 
@@ -269,8 +242,7 @@ class LineService {
 
 			$rOutputs = [];
 
-			if (!isset($rData['access_output'])) {
-			} else {
+			if (isset($rData['access_output'])) {
 				foreach ($rData['access_output'] as $rOutputID) {
 					$rOutputs[] = $rOutputID;
 				}
@@ -297,9 +269,8 @@ class LineService {
 			}
 
 			return ['status' => STATUS_EXISTS_USERNAME, 'data' => $rData];
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -337,13 +308,11 @@ class LineService {
 		$rMainID = ConnectionTracker::getMainID();
 		if ($rCached) {
 			$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, json_encode(['type' => 'update_line', 'id' => $rUserID]));
-			if ($db->get_row()['count'] != 0) {
-			} else {
+			if ($db->get_row()['count'] == 0) {
 				$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), json_encode(['type' => 'update_line', 'id' => $rUserID]));
 			}
 			return;
 		}
-		return;
 	}
 
 	/**
@@ -358,13 +327,11 @@ class LineService {
 		$rMainID = ConnectionTracker::getMainID();
 		if ($rCached) {
 			$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, json_encode(['type' => 'update_lines', 'id' => $rUserIDs]));
-			if ($db->get_row()['count'] != 0) {
-			} else {
+			if ($db->get_row()['count'] == 0) {
 				$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), json_encode(['type' => 'update_lines', 'id' => $rUserIDs]));
 			}
 			return;
 		}
-		return;
 	}
 
 	/**
@@ -388,8 +355,7 @@ class LineService {
 		$db->query('DELETE FROM `lines_logs` WHERE `user_id` = ?;', $rID);
 		$db->query('UPDATE `lines_activity` SET `user_id` = 0 WHERE `user_id` = ?;', $rID);
 
-		if (!$rCloseCons) {
-		} else {
+		if ($rCloseCons) {
 			if (SettingsManager::get('redis_handler')) {
 				foreach (ConnectionTracker::getRedisConnections($rID, null, null, true, false, false) as $rConnection) {
 					ConnectionTracker::closeConnection($rConnection);
@@ -430,10 +396,8 @@ class LineService {
 		$rReturn = [];
 		$rReports = array_map('intval', array_merge([$rUserInfo['id']], $rPermissions['all_reports']));
 
-		if (0 >= count($rReports)) {
-		} else {
+		if (0 < count($rReports)) {
 			$db->query('SELECT `is_mag`, `is_e2`, `lines`.`id` AS `line_id`, `lines`.`reseller_notes`, `mag_devices`.`mag_id`, `enigma2_devices`.`device_id` AS `e2_id`, `member_id`, `username`, `password`, `exp_date`, `mag_devices`.`mac` AS `mag_mac`, `enigma2_devices`.`mac` AS `e2_mac` FROM `lines` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines`.`id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines`.`id` WHERE `member_id` IN (' . implode(',', $rReports) . ') AND `exp_date` IS NOT NULL AND `exp_date` >= ? AND `exp_date` < ? ORDER BY `exp_date` ASC LIMIT 250;', time(), time() + $rLimit);
-
 			foreach ($db->get_rows() as $rRow) {
 				$rReturn[] = $rRow;
 			}

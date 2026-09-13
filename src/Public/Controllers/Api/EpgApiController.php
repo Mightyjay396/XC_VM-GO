@@ -100,7 +100,7 @@ class EpgApiController extends BaseApiController {
 				header('Content-Type: application/xml; charset=utf-8');
 			}
 
-			self::readChunked($rFile);
+			$this->readChunked($rFile);
 		} else {
 			generateError('DOWNLOAD_LIMIT_REACHED', false);
 			http_response_code(429);
@@ -110,7 +110,7 @@ class EpgApiController extends BaseApiController {
 		exit();
 	}
 
-	private static function readChunked($rFilename) {
+	private function readChunked($rFilename) {
 		$rHandle = fopen($rFilename, 'rb');
 
 		if ($rHandle !== false) {

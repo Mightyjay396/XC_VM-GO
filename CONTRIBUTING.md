@@ -134,7 +134,7 @@ make cs-fix        # run FIRST — auto-format to the coding standard (phpcbf)
 make cs            # verify code style: PSR-12 base + K&R braces + tab indentation
 make phpstan       # static analysis, level 5 (also catches syntax errors)
 make gates         # PSR-4 regression gates (see below)
-php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist   # unit tests
+php tests/phpunit.phar -c tests/phpunit.xml.dist   # unit tests
 ```
 
 `make cs-fix` applies everything auto-fixable; whatever `make cs` still reports
@@ -205,12 +205,12 @@ reports). Key points:
 **Unit tests** (PHPUnit 10.5, config `tests/phpunit.xml.dist`, suite "Unit"):
 
 ```sh
-php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist                    # all
-php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist --filter SomeTest  # one
+php tests/phpunit.phar -c tests/phpunit.xml.dist                    # all
+php tests/phpunit.phar -c tests/phpunit.xml.dist --filter SomeTest  # one
 ```
 
 > On an installed server, use the bundled interpreter instead of system PHP:
-> `/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar ...` (see
+> `/home/xc_vm/bin/php/bin/php tests/phpunit.phar ...` (see
 > `docs/en/guides/phpunit-phar.md`). On a dev machine, plain `php` is fine.
 
 Guidelines:

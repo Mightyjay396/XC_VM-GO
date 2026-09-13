@@ -81,7 +81,7 @@ class UserService {
 					if (substr($rKey, 0, 9) == 'override_') {
 						$rID = intval(explode('override_', $rKey)[1]);
 
-						if (0 < strlen($rCredits)) {
+						if ((string) $rCredits !== '') {
 							$rCredits = intval($rCredits);
 						} else {
 							$rCredits = null;
@@ -111,9 +111,8 @@ class UserService {
 			}
 
 			return ['status' => STATUS_SUCCESS];
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -149,7 +148,7 @@ class UserService {
 				}
 
 				if (!QueryHelper::checkExists('users', 'username', $rArray['username'], 'id', $rData['edit'] ?? null)) {
-					if (strlen($rData['password']) > 0) {
+					if ((string) $rData['password'] !== '') {
 						$rArray['password'] = Authenticator::hashPassword($rData['password']);
 					}
 
@@ -159,7 +158,7 @@ class UserService {
 						if (substr($rKey, 0, 9) == 'override_') {
 							$rID = intval(explode('override_', $rKey)[1]);
 
-							if (0 < strlen($rCredits)) {
+							if ((string) $rCredits !== '') {
 								$rCredits = intval($rCredits);
 							} else {
 								$rCredits = null;
@@ -197,15 +196,12 @@ class UserService {
 					}
 
 					return ['status' => STATUS_FAILURE, 'data' => $rData];
-				} else {
-					return ['status' => STATUS_EXISTS_USERNAME, 'data' => $rData];
 				}
-			} else {
-				return ['status' => STATUS_INVALID_GROUP, 'data' => $rData];
+				return ['status' => STATUS_EXISTS_USERNAME, 'data' => $rData];
 			}
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			return ['status' => STATUS_INVALID_GROUP, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -218,17 +214,17 @@ class UserService {
 	 */
 	public static function editAdminProfile(array $rData, array $rUserInfo, array $allowedLangs) {
 		$db = self::db();
-		if (!(0 >= strlen($rData['email']) || filter_var($rData['email'], FILTER_VALIDATE_EMAIL))) {
+		if ((string) $rData['email'] !== '' && !filter_var($rData['email'], FILTER_VALIDATE_EMAIL)) {
 			return ['status' => STATUS_INVALID_EMAIL];
 		}
 
-		if (0 < strlen($rData['password'])) {
+		if ((string) $rData['password'] !== '') {
 			$rPassword = Authenticator::hashPassword($rData['password']);
 		} else {
 			$rPassword = $rUserInfo['password'];
 		}
 
-		if (!isset($rData['api_key']) || !(ctype_xdigit($rData['api_key']) && strlen($rData['api_key']) == 32)) {
+		if (!isset($rData['api_key']) || (!ctype_xdigit($rData['api_key']) || strlen($rData['api_key']) != 32)) {
 			$rData['api_key'] = '';
 		}
 

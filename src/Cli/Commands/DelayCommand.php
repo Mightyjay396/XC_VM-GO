@@ -148,7 +148,6 @@ class DelayCommand implements CommandInterface {
 	 * @param array    $rSegments  Published segments, oldest first ({seconds, file}).
 	 * @param int|null $rFedSegment Highest segment number queued so far.
 	 * @param array    $rQueue     Pending {data, dur, burst} entries.
-	 * @return void
 	 */
 	private function queueForDaemon(array $rSegments, ?int &$rFedSegment, array &$rQueue): void {
 		$rNew = [];
@@ -189,7 +188,6 @@ class DelayCommand implements CommandInterface {
 	 * @param IngestFeeder $rFeeder  The daemon feed.
 	 * @param array        $rQueue   Pending {data, dur, burst} entries.
 	 * @param array|null   $rCurrent The segment being paced ({data, sent, start, dur, burst}).
-	 * @return void
 	 */
 	private function pumpDaemon(IngestFeeder $rFeeder, array &$rQueue, ?array &$rCurrent): void {
 		$rNow = microtime(true);
@@ -249,7 +247,7 @@ class DelayCommand implements CommandInterface {
 			$this->updateOldPlaylist($rOldSegments, $rPlaylistOld);
 		}
 		if (file_exists($rPlaylistDelay)) {
-			$rSegments = array_merge($rSegments, $this->getSegments($rPlaylistDelay, $rTotalSegments - count($rSegments)));
+			return array_merge($rSegments, $this->getSegments($rPlaylistDelay, $rTotalSegments - count($rSegments)));
 		}
 		return $rSegments;
 	}

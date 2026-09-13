@@ -66,8 +66,6 @@ class AuthRepository {
 
 	/**
 	 * Get the active code string for Web Player (type 6), if configured and enabled.
-	 *
-	 * @return string|null
 	 */
 	public static function getWebPlayerCode(): ?string {
 		foreach (self::getAllCodes(6) as $code) {
@@ -80,8 +78,6 @@ class AuthRepository {
 
 	/**
 	 * Get the active code string for Active Code Portal (type 7), if configured and enabled.
-	 *
-	 * @return string|null
 	 */
 	public static function getActiveCodePortalCode(): ?string {
 		foreach (self::getAllCodes(7) as $code) {
@@ -262,42 +258,31 @@ class AuthRepository {
 		$rReturn = ['create_line' => false, 'create_mag' => false, 'create_enigma' => false, 'stream_ids' => [], 'series_ids' => [], 'category_ids' => [], 'users' => [], 'direct_reports' => [], 'all_reports' => [], 'report_map' => []];
 		$rUser = UserRepository::getRegisteredUserById($rUserID);
 
-		if (!$rUser) {
-		} else {
-			if (!file_exists(CACHE_TMP_PATH . 'permissions_' . intval($rUser['member_group_id']))) {
-			} else {
+		if ($rUser) {
+			if (file_exists(CACHE_TMP_PATH . 'permissions_' . intval($rUser['member_group_id']))) {
 				$rPermData = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'permissions_' . intval($rUser['member_group_id'])));
 				if (is_array($rPermData)) {
 					$rReturn = array_merge($rReturn, $rPermData);
 				}
 			}
-
 			$db->query("SELECT * FROM `users_packages` WHERE JSON_CONTAINS(`groups`, ?, '\$');", $rUser['member_group_id']);
-
 			foreach ($db->get_rows() as $rRow) {
-				if (!$rRow['is_line']) {
-				} else {
+				if ($rRow['is_line']) {
 					$rReturn['create_line'] = true;
 				}
 
-				if (!$rRow['is_mag']) {
-				} else {
+				if ($rRow['is_mag']) {
 					$rReturn['create_mag'] = true;
 				}
 
-				if (!$rRow['is_e2']) {
-				} else {
+				if ($rRow['is_e2']) {
 					$rReturn['create_enigma'] = true;
 				}
 			}
-
-			if (!$rUsers) {
-			} else {
+			if ($rUsers) {
 				$rReturn['users'] = UserRepository::getSubUsers($rUser['id']);
-
 				foreach ($rReturn['users'] as $rUserID => $rUserData) {
-					if ($rUser['id'] != $rUserData['parent']) {
-					} else {
+					if ($rUser['id'] == $rUserData['parent']) {
 						$rReturn['direct_reports'][] = $rUserID;
 					}
 

@@ -182,7 +182,6 @@ class AuthService {
 	 * @param mixed $rKnown The configured secret.
 	 * @param mixed $rGiven What the request carried (a string, or anything a
 	 *                      query string can make: null, an array).
-	 * @return bool
 	 */
 	public static function secretMatches(mixed $rKnown, mixed $rGiven): bool {
 		if (!is_scalar($rKnown) || !is_string($rGiven)) {
@@ -215,7 +214,7 @@ class AuthService {
 	public static function validateHMAC(string $rHMAC, int|string $rExpiry, int|string $rStreamID, string $rExtension, string $rIP = '', string $rMACIP = '', string $rIdentifier = '', int $rMaxConnections = 0) {
 		global $db, $rSettings;
 		$rCached = $rSettings['enable_cache'];
-		if (0 < strlen($rIP) && 0 < strlen($rMACIP) && $rIP != $rMACIP) {
+		if ($rIP !== '' && $rMACIP !== '' && $rIP != $rMACIP) {
 			return null;
 		}
 
@@ -232,12 +231,12 @@ class AuthService {
 
 		foreach ($rKeys as $rKey) {
 			$rSecret = Encryption::decrypt($rKey['key'], $rSettings['live_streaming_pass'], OPENSSL_EXTRA);
-			$rResult = hash_hmac('sha256', (string) $rStreamID . '##' . $rExtension . '##' . $rExpiry . '##' . $rMACIP . '##' . $rIdentifier . '##' . $rMaxConnections, $rSecret);
+			$rResult = hash_hmac('sha256', $rStreamID . '##' . $rExtension . '##' . $rExpiry . '##' . $rMACIP . '##' . $rIdentifier . '##' . $rMaxConnections, $rSecret);
 
 			// Constant-time and strict. The old md5($rResult) == md5($rHMAC) used
 			// loose ==, which reads two digests of the form 0e<digits> as the
 			// number 0 and so as equal: an hmac like 240610708 passed as the key.
-			if (hash_equals($rResult, (string) $rHMAC)) {
+			if (hash_equals($rResult, $rHMAC)) {
 				$rKeyID = $rKey['id'];
 				break;
 			}

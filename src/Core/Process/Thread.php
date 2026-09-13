@@ -19,25 +19,25 @@ namespace XcVm\Core\Process;
 
 class Thread {
 	/** @var resource|null proc_open handle */
-	public $process = null;
+	public $process;
 
 	/** @var array Pipes (stdin, stdout, stderr) */
-	public $pipes = null;
+	public $pipes;
 
 	/** @var string Внутренний буфер */
-	public $buffer = null;
+	public $buffer;
 
 	/** @var string Накопленный stdout */
-	public $output = null;
+	public $output;
 
 	/** @var string Накопленный stderr */
-	public $error = null;
+	public $error;
 
 	/** @var int Таймаут в секундах (0 = без ограничений) */
-	public $timeout = null;
+	public $timeout;
 
 	/** @var int Время запуска процесса */
-	public $start_time = null;
+	public $start_time;
 
 	/**
 	 * Initialize an empty process-thread state.

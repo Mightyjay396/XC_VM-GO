@@ -1,5 +1,6 @@
 <?php
 
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -9,6 +10,7 @@ use PHPUnit\Framework\TestCase;
  * forged through padding errors, so only the uses that are not stream links —
  * deterministic encryption of stored data — may do that.
  */
+#[Group('skip-on-panel')]
 final class StreamTokenCallSitesTest extends TestCase {
 	/** Stored data that must stay deterministic: HMAC keys are looked up by ciphertext, image cache names are reversed by the self-heal. */
 	private const LEGACY_ALLOWED = array(
@@ -19,7 +21,13 @@ final class StreamTokenCallSitesTest extends TestCase {
 	);
 
 	public function testOnlyStoredDataUsesTheLegacyCipherDirectly(): void {
+		// Source-wide guard: scans the repo's src/ tree. On a flat deployment
+		// (/home/xc_vm) there is no such directory and the app root is mixed with
+		// runtime/test files, so this static guard only runs in the repo layout.
 		$rRoot = dirname(__DIR__, 2) . '/src/';
+		if (!is_dir($rRoot)) {
+			$this->markTestSkipped('source-tree guard runs only in the repo layout');
+		}
 		$rOffenders = array();
 		$rIterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($rRoot, FilesystemIterator::SKIP_DOTS));
 		foreach ($rIterator as $rFile) {

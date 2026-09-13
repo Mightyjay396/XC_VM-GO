@@ -220,7 +220,7 @@ class CacheEngineCronJob implements CommandInterface {
 									$cacheValidityCheck[] = $rStart;
 								}
 							}
-							if (!$cacheValidityCheck) {
+							if ($cacheValidityCheck === []) {
 								$cacheValidityCheck = [0];
 							}
 							foreach ($cacheValidityCheck as $rStart) {
@@ -260,7 +260,7 @@ class CacheEngineCronJob implements CommandInterface {
 									$cacheCleanupTrigger[] = $rStart;
 								}
 							}
-							if (!$cacheCleanupTrigger) {
+							if ($cacheCleanupTrigger === []) {
 								$cacheCleanupTrigger = [0];
 							}
 							foreach ($cacheCleanupTrigger as $rStart) {

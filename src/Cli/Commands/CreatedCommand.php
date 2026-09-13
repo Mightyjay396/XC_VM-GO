@@ -75,7 +75,7 @@ class CreatedCommand implements CommandInterface {
 
 		$rSourcesLeft = array_diff($rStreamInfo['stream_source'], $rServerInfo['cchannel_rsources']);
 
-		if (empty($rSourcesLeft) && $rStreamInfo['stream_source'] === $rServerInfo['cchannel_rsources']) {
+		if ($rSourcesLeft === [] && $rStreamInfo['stream_source'] === $rServerInfo['cchannel_rsources']) {
 			echo 'Nothing to build - all sources are already encoded.' . "\n";
 			@unlink(CREATED_PATH . $rStreamID . '_.create');
 			return 0;

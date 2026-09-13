@@ -63,7 +63,7 @@ class DomainResolver {
 
 		if ($rProxied || $rSettings['use_mdomain_in_lists'] == 1) {
 			$rResellerDomains = CacheReader::get('reseller_domains') ?: [];
-			if (!(strlen($rDomain) > 0 && in_array(strtolower($rDomain), $rResellerDomains))) {
+			if (strlen($rDomain) <= 0 || !in_array(strtolower($rDomain), $rResellerDomains)) {
 				if (empty($rServers[$rServerID]['domain_name'])) {
 					$rDomain = escapeshellcmd($rServers[$rServerID]['server_ip']);
 				} elseif (filter_var($rDomain, FILTER_VALIDATE_IP)) {

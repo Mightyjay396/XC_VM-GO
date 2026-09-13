@@ -56,7 +56,7 @@ class ResellerTableController extends BaseResellerController {
 				$rPermissions['category_ids'] = $rPermissions['category_ids'] ?? [];
 				$rPermissions['series_ids'] = $rPermissions['series_ids'] ?? [];
 				$rPermissions['subresellers'] = $rPermissions['subresellers'] ?? [];
-				if (0 < strlen($rUserInfo['timezone'])) {
+				if ((string) $rUserInfo['timezone'] !== '') {
 					date_default_timezone_set($rUserInfo['timezone']);
 				}
 			} else {

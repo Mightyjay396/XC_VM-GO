@@ -267,23 +267,7 @@ class SearchAjaxController extends BaseAjaxController {
 			$rCategories = CategoryService::getAllByType(null);
 			$rGroups = GroupService::getAll();
 
-			$rCtx = compact(
-				'rServerItems',
-				'rServerCount',
-				'rSeriesTitles',
-				'rConnectionCount',
-				'rSeriesInfo',
-				'rUsersCount',
-				'rLinesCount',
-				'rOwnerNames',
-				'rLinesInfo',
-				'rLineConnectionCount',
-				'rStreamNames',
-				'rDeviceLines',
-				'rCategories',
-				'rGroups',
-				'rTables'
-			);
+			$rCtx = ['rServerItems' => $rServerItems, 'rServerCount' => $rServerCount, 'rSeriesTitles' => $rSeriesTitles, 'rConnectionCount' => $rConnectionCount, 'rSeriesInfo' => $rSeriesInfo, 'rUsersCount' => $rUsersCount, 'rLinesCount' => $rLinesCount, 'rOwnerNames' => $rOwnerNames, 'rLinesInfo' => $rLinesInfo, 'rLineConnectionCount' => $rLineConnectionCount, 'rStreamNames' => $rStreamNames, 'rDeviceLines' => $rDeviceLines, 'rCategories' => $rCategories, 'rGroups' => $rGroups, 'rTables' => $rTables];
 
 			foreach ($rItems as $rItem) {
 				$rReturn['items'][] = $this->buildItem($rItem, $rCtx);
@@ -566,8 +550,8 @@ class SearchAjaxController extends BaseAjaxController {
 				}
 			}
 
-			if (!(count(json_decode($rServerItem['cchannel_rsources'], true)) == count(json_decode($rItem['stream_source'], true)) || $rServerItem['parent_id'])) {
-				$rStatus = 6;
+			if (count(json_decode($rServerItem['cchannel_rsources'], true)) != count(json_decode($rItem['stream_source'], true)) && !$rServerItem['parent_id']) {
+				return 6;
 			}
 
 			return $rStatus;
@@ -620,7 +604,7 @@ class SearchAjaxController extends BaseAjaxController {
 
 		return [
 			'stars_full' => $rRating ? $rFull : 0,
-			'half' => $rRating ? $rHalf : false,
+			'half' => $rRating && $rHalf,
 			'empty' => $rRating ? 5 - ($rFull + ($rHalf ? 1 : 0)) : 0,
 			'year' => $rYear ? (string) $rYear : '',
 		];

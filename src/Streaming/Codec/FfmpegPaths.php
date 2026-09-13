@@ -15,11 +15,11 @@ namespace XcVm\Streaming\Codec;
  */
 
 class FfmpegPaths {
-	private static $cpu = null;
+	private static $cpu;
 
-	private static $gpu = null;
+	private static $gpu;
 
-	private static $probe = null;
+	private static $probe;
 
 	private static $resolved = false;
 

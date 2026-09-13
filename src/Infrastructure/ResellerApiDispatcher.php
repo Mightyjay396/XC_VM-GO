@@ -50,7 +50,7 @@ class ResellerApiDispatcher {
 	public static function dispatch(string $action, ?array $rUserInfo, array $rPermissions): void {
 		switch ($action) {
 			case 'dashboard':
-				self::handleDashboard($rUserInfo, $rPermissions);
+				self::handleDashboard($rUserInfo);
 				break;
 			case 'connections':
 				self::handleConnections($rUserInfo, $rPermissions);
@@ -59,7 +59,7 @@ class ResellerApiDispatcher {
 				self::handleLine($rUserInfo, $rPermissions);
 				break;
 			case 'line_activity':
-				self::handleLineActivity($rUserInfo, $rPermissions);
+				self::handleLineActivity($rPermissions);
 				break;
 			case 'adjust_credits':
 				self::handleAdjustCredits($rUserInfo, $rPermissions);
@@ -68,7 +68,7 @@ class ResellerApiDispatcher {
 				self::handleRegUser($rUserInfo, $rPermissions);
 				break;
 			case 'ticket':
-				self::handleTicket($rUserInfo, $rPermissions);
+				self::handleTicket($rUserInfo);
 				break;
 			case 'mag':
 				self::handleMag($rUserInfo, $rPermissions);
@@ -77,49 +77,49 @@ class ResellerApiDispatcher {
 				self::handleEnigma($rUserInfo, $rPermissions);
 				break;
 			case 'get_package':
-				self::handleGetPackage($rUserInfo, $rPermissions);
+				self::handleGetPackage($rUserInfo);
 				break;
 			case 'get_package_trial':
-				self::handleGetPackageTrial($rUserInfo, $rPermissions);
+				self::handleGetPackageTrial();
 				break;
 			case 'header_stats':
-				self::handleHeaderStats($rUserInfo, $rPermissions);
+				self::handleHeaderStats($rUserInfo);
 				break;
 			case 'stats':
-				self::handleStats($rUserInfo, $rPermissions);
+				self::handleStats($rUserInfo);
 				break;
 			case 'userlist':
-				self::handleUserList($rUserInfo, $rPermissions);
+				self::handleUserList($rUserInfo);
 				break;
 			case 'send_event':
 				self::handleSendEvent($rUserInfo, $rPermissions);
 				break;
 			case 'streamlist':
-				self::handleStreamList($rUserInfo, $rPermissions);
+				self::handleStreamList($rPermissions);
 				break;
 			case 'ip_whois':
-				self::handleIpWhois($rUserInfo, $rPermissions);
+				self::handleIpWhois();
 				break;
 			case 'get_epg':
-				self::handleGetEpg($rUserInfo, $rPermissions);
+				self::handleGetEpg($rPermissions);
 				break;
 			case 'get_programme':
-				self::handleGetProgramme($rUserInfo, $rPermissions);
+				self::handleGetProgramme($rPermissions);
 				break;
 			case 'active_code_details':
-				self::handleActiveCodeDetails($rUserInfo, $rPermissions);
+				self::handleActiveCodeDetails($rUserInfo);
 				break;
 			case 'active_codes_mass':
-				self::handleActiveCodesMass($rUserInfo, $rPermissions);
+				self::handleActiveCodesMass($rUserInfo);
 				break;
 			case 'active_codes_batch_action':
-				self::handleActiveCodesBatchAction($rUserInfo, $rPermissions);
+				self::handleActiveCodesBatchAction($rUserInfo);
 				break;
 			case 'active_codes_export_txt':
-				self::handleActiveCodesExportTxt($rUserInfo, $rPermissions);
+				self::handleActiveCodesExportTxt($rUserInfo);
 				break;
 			case 'generate_active_codes':
-				self::handleGenerateActiveCodes($rUserInfo, $rPermissions);
+				self::handleGenerateActiveCodes($rUserInfo);
 				break;
 		}
 	}
@@ -128,10 +128,8 @@ class ResellerApiDispatcher {
 	 * Output reseller dashboard data (JSON) and exit.
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
-	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleDashboard(array $rUserInfo, array $rPermissions): void {
+	private static function handleDashboard(array $rUserInfo): void {
 		$db = self::db();
 		$rReturn = ['open_connections' => 0, 'online_users' => 0, 'active_accounts' => 0, 'credits' => 0, 'credits_assigned' => 0];
 
@@ -170,7 +168,6 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
 	private static function handleConnections(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
@@ -212,7 +209,6 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
 	private static function handleLine(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
@@ -282,11 +278,9 @@ class ResellerApiDispatcher {
 	/**
 	 * Output a line's activity log (JSON) and exit.
 	 *
-	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleLineActivity(array $rUserInfo, array $rPermissions): void {
+	private static function handleLineActivity(array $rPermissions): void {
 		$db = self::db();
 		if ($rPermissions['reseller_client_connection_logs']) {
 			$rSub = RequestManager::get('sub');
@@ -330,7 +324,6 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
 	private static function handleAdjustCredits(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
@@ -367,7 +360,6 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
 	private static function handleRegUser(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
@@ -417,10 +409,8 @@ class ResellerApiDispatcher {
 	 * Submit/handle a support ticket (JSON) and exit.
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
-	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleTicket(array $rUserInfo, array $rPermissions): void {
+	private static function handleTicket(array $rUserInfo): void {
 		$db = self::db();
 		$rTicket = TicketRepository::getById(RequestManager::get('ticket_id'));
 
@@ -457,7 +447,6 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
 	private static function handleMag(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
@@ -537,7 +526,6 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
 	private static function handleEnigma(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
@@ -616,10 +604,8 @@ class ResellerApiDispatcher {
 	 * Output package details/options (JSON) and exit.
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
-	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleGetPackage(array $rUserInfo, array $rPermissions): void {
+	private static function handleGetPackage(array $rUserInfo): void {
 		$db = self::db();
 		$rReturn = [];
 		$rOverride = json_decode($rUserInfo['override_packages'], true);
@@ -628,7 +614,7 @@ class ResellerApiDispatcher {
 		if ($db->num_rows() == 1) {
 			$rData = $db->get_row();
 
-			if (isset($rOverride[$rData['id']]['official_credits']) && 0 < strlen($rOverride[$rData['id']]['official_credits'])) {
+			if (isset($rOverride[$rData['id']]['official_credits']) && (string) $rOverride[$rData['id']]['official_credits'] !== '') {
 				$rData['cost_credits'] = $rOverride[$rData['id']]['official_credits'];
 			}
 
@@ -668,16 +654,11 @@ class ResellerApiDispatcher {
 
 	/**
 	 * Output trial package details (JSON) and exit.
-	 *
-	 * @param array  $rUserInfo    Authenticated reseller user.
-	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleGetPackageTrial(array $rUserInfo, array $rPermissions): void {
+	private static function handleGetPackageTrial(): void {
 		$db = self::db();
 		$rReturn = [];
 		$db->query('SELECT `bouquets`, `trial_credits` AS `cost_credits`, `trial_duration`, `trial_duration_in`, `max_connections`, `is_isplock` FROM `users_packages` WHERE `id` = ?;', RequestManager::get('package_id'));
-
 		if ($db->num_rows() == 1) {
 			$rData = $db->get_row();
 			$rData['exp_date'] = date('Y-m-d H:i', strtotime('+' . intval($rData['trial_duration']) . ' ' . $rData['trial_duration_in']));
@@ -702,10 +683,8 @@ class ResellerApiDispatcher {
 	 * Output header summary statistics (JSON) and exit.
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
-	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleHeaderStats(array $rUserInfo, array $rPermissions): void {
+	private static function handleHeaderStats(array $rUserInfo): void {
 		$db = self::db();
 		$rReturn = ['total_connections' => 0, 'total_users' => 0];
 
@@ -738,10 +717,8 @@ class ResellerApiDispatcher {
 	 * Output reseller statistics (JSON) and exit.
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
-	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleStats(array $rUserInfo, array $rPermissions): void {
+	private static function handleStats(array $rUserInfo): void {
 		$db = self::db();
 		$rReturn = ['open_connections' => 0, 'online_users' => 0, 'total_lines' => 0, 'total_users' => 0, 'owner_credits' => 0, 'user_credits' => 0, 'total_credits' => 0];
 
@@ -782,10 +759,8 @@ class ResellerApiDispatcher {
 	 * Output the reseller's user list (JSON) and exit.
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
-	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleUserList(array $rUserInfo, array $rPermissions): void {
+	private static function handleUserList(array $rUserInfo): void {
 		$db = self::db();
 		$rReturn = ['total_count' => 0, 'items' => [], 'result' => true];
 
@@ -812,7 +787,6 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
 	private static function handleSendEvent(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
@@ -858,11 +832,9 @@ class ResellerApiDispatcher {
 	/**
 	 * Output the available stream list (JSON) and exit.
 	 *
-	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleStreamList(array $rUserInfo, array $rPermissions): void {
+	private static function handleStreamList(array $rPermissions): void {
 		$db = self::db();
 		if ($rPermissions['create_mag'] || $rPermissions['can_view_vod'] || $rPermissions['reseller_client_connection_logs']) {
 			$rReturn = ['total_count' => 0, 'items' => [], 'result' => true];
@@ -889,39 +861,29 @@ class ResellerApiDispatcher {
 
 	/**
 	 * Output WHOIS information for an IP (JSON) and exit.
-	 *
-	 * @param array  $rUserInfo    Authenticated reseller user.
-	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleIpWhois(array $rUserInfo, array $rPermissions): void {
+	private static function handleIpWhois(): void {
 		$db = self::db();
 		$rIP = RequestManager::get('ip');
 		$rReader = new \MaxMind\Db\Reader(GEOLITE2C_BIN);
 		$rResponse = $rReader->get($rIP);
-
 		if (isset($rResponse['location']['time_zone'])) {
 			$rDate = new \DateTime('now', new \DateTimeZone($rResponse['location']['time_zone']));
 			$rResponse['location']['time'] = $rDate->format('Y-m-d H:i:s');
 		}
-
 		$rReader->close();
-
 		if (RequestManager::has('isp')) {
 			$rReader = new \MaxMind\Db\Reader(GEOISP_BIN);
 			$rResponse['isp'] = $rReader->get($rIP);
 			$rReader->close();
 		}
-
 		$rResponse['type'] = null;
-
 		if (!empty($rResponse['isp']['autonomous_system_number'])) {
 			$db->query('SELECT `type` FROM `blocked_asns` WHERE `asn` = ?;', $rResponse['isp']['autonomous_system_number']);
 			if ($db->num_rows() > 0) {
 				$rResponse['type'] = $db->get_row()['type'];
 			}
 		}
-
 		echo json_encode(['result' => true, 'data' => $rResponse]);
 		exit();
 	}
@@ -929,11 +891,9 @@ class ResellerApiDispatcher {
 	/**
 	 * Output EPG data for a stream (JSON) and exit.
 	 *
-	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleGetEpg(array $rUserInfo, array $rPermissions): void {
+	private static function handleGetEpg(array $rPermissions): void {
 		$db = self::db();
 		if ($rPermissions['can_view_vod']) {
 			if (count($rPermissions['stream_ids']) != 0) {
@@ -1004,7 +964,7 @@ class ResellerApiDispatcher {
 						$rCategoryIDs = json_decode($rStream['category_id'], true);
 						$rCategories = CategoryService::getAllByType('live');
 
-						if (0 < strlen(RequestManager::get('category'))) {
+						if ((string) RequestManager::get('category') !== '') {
 							$rCategory = ($rCategories[intval(RequestManager::get('category'))]['category_name'] ?: 'No Category');
 						} else {
 							$rCategory = ($rCategories[$rCategoryIDs[0]]['category_name'] ?: 'No Category');
@@ -1031,11 +991,9 @@ class ResellerApiDispatcher {
 	/**
 	 * Output a single EPG programme (JSON) and exit.
 	 *
-	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @return void
 	 */
-	private static function handleGetProgramme(array $rUserInfo, array $rPermissions): void {
+	private static function handleGetProgramme(array $rPermissions): void {
 		$db = self::db();
 		if ($rPermissions['can_view_vod']) {
 			$rTimezone = (RequestManager::get('timezone') ?: 'Europe/London');
@@ -1074,7 +1032,7 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle Active Code Details AJAX (modal view)
 	 */
-	private static function handleActiveCodeDetails(?array $rUserInfo, array $rPermissions): void {
+	private static function handleActiveCodeDetails(?array $rUserInfo): void {
 		$db = self::db();
 		$codeId = intval(RequestManager::get('id') ?? 0);
 		if (!$codeId) {
@@ -1178,7 +1136,7 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle Active Codes Mass Actions AJAX
 	 */
-	private static function handleActiveCodesMass(?array $rUserInfo, array $rPermissions): void {
+	private static function handleActiveCodesMass(?array $rUserInfo): void {
 		$subAction = trim(RequestManager::get('sub_action') ?? '');
 		$ids = json_decode(RequestManager::get('ids') ?? '[]', true) ?: [];
 		$extra = [
@@ -1198,7 +1156,7 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle Batch Action AJAX (Enable, Disable, Delete)
 	 */
-	private static function handleActiveCodesBatchAction(?array $rUserInfo, array $rPermissions): void {
+	private static function handleActiveCodesBatchAction(?array $rUserInfo): void {
 		$db = self::db();
 		$batchName = trim(RequestManager::get('batch_name') ?? '');
 		$subAction = trim(RequestManager::get('sub_action') ?? '');
@@ -1233,7 +1191,7 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle Export Scratch Cards TXT
 	 */
-	private static function handleActiveCodesExportTxt(?array $rUserInfo, array $rPermissions): void {
+	private static function handleActiveCodesExportTxt(?array $rUserInfo): void {
 		$batchName = trim(RequestManager::get('batch_name') ?? '');
 		if (empty($batchName)) {
 			exit('Invalid batch name');
@@ -1252,7 +1210,7 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle AJAX Code Generation
 	 */
-	private static function handleGenerateActiveCodes(?array $rUserInfo, array $rPermissions): void {
+	private static function handleGenerateActiveCodes(?array $rUserInfo): void {
 		$data = RequestManager::getAll();
 		$res = ActiveCodeService::generateCodes($data, $rUserInfo, false);
 

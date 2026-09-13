@@ -15,26 +15,26 @@ use XcVm\Core\Logging\FileLogger;
  */
 
 class Database {
-	public $result = null;
+	public $result;
 
-	public $last_query = null;
+	public $last_query;
 
-	public $dbh = null;
+	public $dbh;
 
 	public $connected = false;
 
 	/** Last PDO error message (empty when the last query succeeded). */
 	protected $lastError = '';
 
-	protected $dbuser = null;
+	protected $dbuser;
 
-	protected $dbpassword = null;
+	protected $dbpassword;
 
-	protected $dbname = null;
+	protected $dbname;
 
-	protected $dbhost = null;
+	protected $dbhost;
 
-	protected $dbport = null;
+	protected $dbport;
 
 	/**
 	 * Constructor - Initializes database connection
@@ -279,7 +279,7 @@ class Database {
 			// noise filter drops the 'pdo' entry (duplicate entry / timeouts).
 			$this->lastError = $e->getMessage();
 
-			FileLogger::log('pdo', $e->getMessage(), $actual_query, (int) $e->getLine());
+			FileLogger::log('pdo', $e->getMessage(), $actual_query, $e->getLine());
 
 			return false;
 		} finally {
@@ -313,7 +313,7 @@ class Database {
 		try {
 			$this->result = $this->dbh->query($query);
 		} catch (\Exception $e) {
-			FileLogger::log('pdo', $e->getMessage(), $query, (int) $e->getLine());
+			FileLogger::log('pdo', $e->getMessage(), $query, $e->getLine());
 			return false;
 		}
 
@@ -330,14 +330,13 @@ class Database {
 	 * @return array|false Rows (cleaned), or false if no active result.
 	 */
 	public function get_rows(bool $use_id = false, string $column_as_id = '', bool $unique_row = true, string $sub_row_id = '') {
-		if (!($this->dbh && $this->result)) {
+		if (!$this->dbh || !$this->result) {
 			return false;
 		}
 
 		$rows = [];
 
-		if (0 >= $this->result->rowCount()) {
-		} else {
+		if (0 < $this->result->rowCount()) {
 			foreach ($this->result->fetchAll(\PDO::FETCH_ASSOC) as $row) {
 				if ($use_id && array_key_exists($column_as_id, $row)) {
 					if (!isset($rows[$row[$column_as_id]])) {
@@ -370,14 +369,13 @@ class Database {
 	 * @return array<string, mixed>|false The row, or false if no active result.
 	 */
 	public function get_row() {
-		if (!($this->dbh && $this->result)) {
+		if (!$this->dbh || !$this->result) {
 			return false;
 		}
 
 		$row = [];
 
-		if (0 >= $this->result->rowCount()) {
-		} else {
+		if (0 < $this->result->rowCount()) {
 			$row = $this->result->fetch(\PDO::FETCH_ASSOC);
 		}
 
@@ -392,14 +390,13 @@ class Database {
 	 * @return mixed The scalar value, or false if no active result/row.
 	 */
 	public function get_col() {
-		if (!($this->dbh && $this->result)) {
+		if (!$this->dbh || !$this->result) {
 			return false;
 		}
 
 		$row = false;
 
-		if (0 >= $this->result->rowCount()) {
-		} else {
+		if (0 < $this->result->rowCount()) {
 			$row = $this->result->fetch();
 			$row = $row[0];
 		}
@@ -431,12 +428,12 @@ class Database {
 	/**
 	 * Quote a string for safe inclusion in SQL (prefer parameterized queries).
 	 *
-	 * @param string $string Value to quote.
+	 * @param string|null $string Value to quote (null coerced to empty string).
 	 * @return string|null Quoted string, or null if not connected.
 	 */
-	public function escape(string $string) {
+	public function escape(?string $string) {
 		if ($this->dbh) {
-			return $this->dbh->quote($string);
+			return $this->dbh->quote((string) $string);
 		}
 		return null;
 	}
@@ -447,7 +444,7 @@ class Database {
 	 * @return int Column count (0 if none).
 	 */
 	public function num_fields() {
-		if (!($this->dbh && $this->result)) {
+		if (!$this->dbh || !$this->result) {
 			return 0;
 		}
 
@@ -476,7 +473,7 @@ class Database {
 	 * @phpstan-impure Return value reflects the current result set and changes as queries run.
 	 */
 	public function num_rows() {
-		if (!($this->dbh && $this->result)) {
+		if (!$this->dbh || !$this->result) {
 			return 0;
 		}
 

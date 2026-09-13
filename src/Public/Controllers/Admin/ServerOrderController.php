@@ -24,6 +24,6 @@ class ServerOrderController extends BaseAdminController {
 		array_multisort(array_column($rOrderedServers, 'order'), SORT_ASC, $rOrderedServers);
 
 		$this->setTitle('Server Order');
-		$this->render('server_order', compact('rOrderedServers'));
+		$this->render('server_order', ['rOrderedServers' => $rOrderedServers]);
 	}
 }

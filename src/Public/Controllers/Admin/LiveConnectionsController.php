@@ -36,6 +36,6 @@ class LiveConnectionsController extends BaseAdminController {
 		}
 
 		$this->setTitle('Live Connections');
-		$this->render('live_connections', compact('rSearchUser', 'rSearchStream'));
+		$this->render('live_connections', ['rSearchUser' => $rSearchUser, 'rSearchStream' => $rSearchStream]);
 	}
 }

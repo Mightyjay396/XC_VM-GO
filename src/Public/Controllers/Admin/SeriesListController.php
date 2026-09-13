@@ -23,6 +23,6 @@ class SeriesListController extends BaseAdminController {
 		$rCategories = CategoryService::getAllByType('series');
 
 		$this->setTitle('TV Series');
-		$this->render('series', compact('rCategories'));
+		$this->render('series', ['rCategories' => $rCategories]);
 	}
 }

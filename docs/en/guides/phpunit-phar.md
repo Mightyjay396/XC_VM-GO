@@ -3,11 +3,11 @@
 This guide shows how to run project tests with a fixed PHP binary:
 
 - PHP binary: `/home/xc_vm/bin/php/bin/php` (the bundled PHP **on a VDS**)
-- PHPUnit binary: local `tools/.bin/phpunit.phar`
+- PHPUnit binary: local `tests/phpunit.phar`
 
 > **Local vs VDS.** The commands here use the VDS bundled PHP. When running on your **own
 > machine** (see [Development Workflow](dev-workflow.md)), use your local PHP 8.1 instead:
-> `php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist`. CI runs the same suite through the
+> `php tests/phpunit.phar -c tests/phpunit.xml.dist`. CI runs the same suite through the
 > committed config, so a green local run should match CI.
 
 ## Why this setup
@@ -69,14 +69,14 @@ This project is pinned to PHP 8.1, so use **PHPUnit 10** (10.5). Do not fetch `p
 ```bash
 cd /home/xc_vm
 mkdir -p tools/.bin
-wget -O tools/.bin/phpunit.phar https://phar.phpunit.de/phpunit-10.phar
-chmod +x tools/.bin/phpunit.phar
+wget -O tests/phpunit.phar https://phar.phpunit.de/phpunit-10.phar
+chmod +x tests/phpunit.phar
 ```
 
 ## 3. Verify PHPUnit
 
 ```bash
-/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar --version
+/home/xc_vm/bin/php/bin/php tests/phpunit.phar --version
 ```
 
 ## 4. Run all tests
@@ -88,13 +88,13 @@ Project config file:
 Run:
 
 ```bash
-/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist
+/home/xc_vm/bin/php/bin/php tests/phpunit.phar -c tests/phpunit.xml.dist
 ```
 
 ## 5. Run a single test file
 
 ```bash
-/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist tests/Unit/GitHubReleasesTest.php
+/home/xc_vm/bin/php/bin/php tests/phpunit.phar -c tests/phpunit.xml.dist tests/Unit/GitHubReleasesTest.php
 ```
 
 ## 6. Show which test is running now
@@ -102,7 +102,7 @@ Run:
 Use debug mode to print the currently executing test:
 
 ```bash
-/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist --debug --no-progress
+/home/xc_vm/bin/php/bin/php tests/phpunit.phar -c tests/phpunit.xml.dist --debug --no-progress
 ```
 
 ## 7. Optional: Coverage output
@@ -110,7 +110,7 @@ Use debug mode to print the currently executing test:
 If `xdebug` or `pcov` is installed:
 
 ```bash
-XDEBUG_MODE=coverage /home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist --coverage-text
+XDEBUG_MODE=coverage /home/xc_vm/bin/php/bin/php tests/phpunit.phar -c tests/phpunit.xml.dist --coverage-text
 ```
 
 ## Security note
@@ -121,6 +121,6 @@ Do not commit `phpunit.phar` into the repository. Keep it local (`tools/.bin`) a
 
 | File | Role |
 | --- | --- |
-| `tools/.bin/phpunit.phar` | Pinned PHPUnit binary |
+| `tests/phpunit.phar` | Pinned PHPUnit binary |
 | `tests/phpunit.xml.dist` | PHPUnit configuration |
 | `tests/bootstrap.php` | Test bootstrap (Composer autoloader + constants) |

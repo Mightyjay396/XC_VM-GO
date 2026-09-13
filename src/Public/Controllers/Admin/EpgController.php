@@ -28,6 +28,6 @@ class EpgController extends BaseAdminController {
 		}
 
 		$this->setTitle('EPG');
-		$this->render('epg', compact('rEPGArr'));
+		$this->render('epg', ['rEPGArr' => $rEPGArr]);
 	}
 }

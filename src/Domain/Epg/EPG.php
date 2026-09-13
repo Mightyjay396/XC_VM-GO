@@ -210,7 +210,7 @@ class EPG {
 		}
 
 		$this->log("[EPG] Finished parseEPG() - collected $programCount programmes");
-		return !empty($rInsertQuery) ? $rInsertQuery : false;
+		return $rInsertQuery !== [] ? $rInsertQuery : false;
 	}
 
 	/**
@@ -238,10 +238,9 @@ class EPG {
 		if (file_exists($rFilename) && filesize($rFilename) > 0) {
 			$this->log("[EPG] Download successful: " . filesize($rFilename) . " bytes");
 			return true;
-		} else {
-			$this->log("[EPG] Download failed or file is empty: $rSource");
-			return false;
 		}
+		$this->log("[EPG] Download failed or file is empty: $rSource");
+		return false;
 	}
 
 	/**

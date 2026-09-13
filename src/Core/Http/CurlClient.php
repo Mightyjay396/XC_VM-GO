@@ -23,7 +23,7 @@ class CurlClient {
 	 */
 	public static function getMultiCURL(array $rURLs, ?callable $callback = null, int $rTimeout = 5) {
 		global $rServers;
-		if (empty($rURLs)) {
+		if ($rURLs === []) {
 			return [];
 		}
 
@@ -47,8 +47,7 @@ class CurlClient {
 			curl_setopt($rCurl[$rKey], CURLOPT_SSL_VERIFYHOST, 0);
 			curl_setopt($rCurl[$rKey], CURLOPT_SSL_VERIFYPEER, false);
 
-			if ($rValue['postdata'] == null) {
-			} else {
+			if ($rValue['postdata'] != null) {
 				curl_setopt($rCurl[$rKey], CURLOPT_POST, true);
 				curl_setopt($rCurl[$rKey], CURLOPT_POSTFIELDS, http_build_query($rValue['postdata']));
 			}
@@ -62,8 +61,7 @@ class CurlClient {
 		} while ($rMultiExec == CURLM_CALL_MULTI_PERFORM);
 
 		while ($rActive && $rMultiExec == CURLM_OK) {
-			if (curl_multi_select($rMulti) != -1) {
-			} else {
+			if (curl_multi_select($rMulti) == -1) {
 				usleep(50000);
 			}
 			do {
@@ -73,8 +71,7 @@ class CurlClient {
 
 		foreach ($rCurl as $rKey => $rValue) {
 			$rResults[$rKey] = curl_multi_getcontent($rValue);
-			if ($callback == null) {
-			} else {
+			if ($callback != null) {
 				$rResults[$rKey] = call_user_func($callback, $rResults[$rKey], true);
 			}
 			curl_multi_remove_handle($rMulti, $rValue);
@@ -136,8 +133,7 @@ class CurlClient {
 			curl_setopt($rCurl, CURLOPT_FORBID_REUSE, true);
 			curl_setopt($rCurl, CURLOPT_SSL_VERIFYHOST, 0);
 			curl_setopt($rCurl, CURLOPT_SSL_VERIFYPEER, false);
-			if (empty($rPostData)) {
-			} else {
+			if ($rPostData !== []) {
 				curl_setopt($rCurl, CURLOPT_POST, true);
 				curl_setopt($rCurl, CURLOPT_POSTFIELDS, http_build_query($rPostData));
 			}
@@ -163,7 +159,6 @@ class CurlClient {
 	 *
 	 * @param string $rURL  Source URL (must be https://).
 	 * @param string $rDest Destination path (opened for writing).
-	 * @return void
 	 * @throws \RuntimeException On a non-https URL, an unwritable target, or an HTTP error.
 	 */
 	public static function downloadToFile(string $rURL, string $rDest): void {
@@ -185,7 +180,7 @@ class CurlClient {
 		]);
 		$rOk   = curl_exec($ch);
 		$rErr  = curl_error($ch);
-		$rCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		$rCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 		curl_close($ch);
 		fclose($rHandle);
 

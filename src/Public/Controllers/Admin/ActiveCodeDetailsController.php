@@ -23,7 +23,7 @@ class ActiveCodeDetailsController {
 	 */
 	public function index(): never {
 		if (
-			!(defined('PHP_ERRORS') && PHP_ERRORS)
+			(!defined('PHP_ERRORS') || !PHP_ERRORS)
 			&& strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') !== 'xmlhttprequest'
 		) {
 			exit();

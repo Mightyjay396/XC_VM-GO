@@ -20,7 +20,6 @@ class MoviesController extends BasePlayerController {
 		global $db, $rUserInfo;
 
 		if (RequestManager::has('sort') && RequestManager::get('sort') == 'popular') {
-			$rPopular = true;
 			$rPopular = (igbinary_unserialize(file_get_contents(CONTENT_PATH . 'tmdb_popular'))['movies'] ?: []);
 
 			if (0 < count($rPopular) && 0 < count($rUserInfo['vod_ids'])) {
@@ -41,44 +40,37 @@ class MoviesController extends BasePlayerController {
 			$rYearStart = (intval(RequestManager::get('year_s') ?? 0) ?: 1900);
 			$rYearEnd = (intval(RequestManager::get('year_e') ?? 0) ?: date('Y'));
 
-			if (!($rYearStart < 1900 || date('Y') < $rYearStart)) {
-			} else {
+			if ($rYearStart < 1900 || date('Y') < $rYearStart) {
 				$rYearStart = 1900;
 			}
 
-			if (!($rYearEnd < 1900 || date('Y') < $rYearEnd || $rYearEnd < $rYearStart)) {
-			} else {
+			if ($rYearEnd < 1900 || date('Y') < $rYearEnd || $rYearEnd < $rYearStart) {
 				$rYearEnd = date('Y');
 			}
 
-			if (!(1900 < $rYearStart || $rYearEnd < date('Y'))) {
-			} else {
+			if (1900 < $rYearStart || $rYearEnd < date('Y')) {
 				$rPicking['year_range'] = [$rYearStart, $rYearEnd];
 			}
 
 			$rRatingStart = (floatval(RequestManager::get('rating_s') ?? 0) ?: 0);
 			$rRatingEnd = (floatval(RequestManager::get('rating_e') ?? 0) ?: 10);
 
-			if (!($rRatingStart < 0 || 10 < $rRatingStart)) {
-			} else {
+			if ($rRatingStart < 0 || 10 < $rRatingStart) {
 				$rRatingStart = 0;
 			}
 
-			if (!($rRatingEnd < 0 || 10 < $rRatingEnd || $rRatingEnd < $rRatingStart)) {
-			} else {
+			if ($rRatingEnd < 0 || 10 < $rRatingEnd || $rRatingEnd < $rRatingStart) {
 				$rRatingEnd = 10;
 			}
 
-			if (!(0 < $rRatingStart || $rRatingEnd < 10)) {
-			} else {
+			if (0 < $rRatingStart || $rRatingEnd < 10) {
 				$rPicking['rating_range'] = [$rRatingStart, $rRatingEnd];
 			}
 
 			$rCategoryID = (intval(RequestManager::get('category') ?? 0) ?: null);
 			$rSearchBy = (RequestManager::get('search') ?? null);
 
-			if (!$rSearchBy) {
-			} else {
+			if ($rSearchBy) {
 				$rPage = 1;
 				$rLimit = 100;
 			}
@@ -93,22 +85,18 @@ class MoviesController extends BasePlayerController {
 		foreach ($rShuffle as $rStream) {
 			$rProperties = json_decode($rStream['movie_properties'], true);
 
-			if (empty($rProperties['backdrop_path'][0])) {
-			} else {
+			if (!empty($rProperties['backdrop_path'][0])) {
 				$rCover = ImageUtils::validateURL($rProperties['backdrop_path'][0]);
 				break;
 			}
 		}
 
-		if ($rPopular || (isset($rSearchBy) && $rSearchBy)) {
-		} else {
+		if (!$rPopular && (!isset($rSearchBy) || !$rSearchBy)) {
 			$rCount = $rStreams['count'];
 			$rPages = ceil($rCount / $rLimit);
 			$rPagination = [];
-
 			foreach (range($rPage - 2, $rPage + 2) as $i) {
-				if (!(1 <= $i && $i <= $rPages)) {
-				} else {
+				if (1 <= $i && $i <= $rPages) {
 					$rPagination[] = $i;
 				}
 			}

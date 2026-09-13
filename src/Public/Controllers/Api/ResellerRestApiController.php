@@ -21,8 +21,7 @@ class ResellerRestApiController {
 
 		$_ERRORS = [];
 		foreach (get_defined_constants(true)['user'] as $rKey => $rValue) {
-			if (substr($rKey, 0, 7) != 'STATUS_') {
-			} else {
+			if (substr($rKey, 0, 7) == 'STATUS_') {
 				$_ERRORS[intval($rValue)] = $rKey;
 			}
 		}
@@ -31,7 +30,7 @@ class ResellerRestApiController {
 		ResellerAPIWrapper::$rKey = $rData['api_key'];
 		if (!empty(RequestManager::get('api_key')) && ResellerAPIWrapper::createSession()) {
 			$rAction = $rData['action'];
-			$rStart = (intval($rData['start']) ?: 0);
+			$rStart = (intval($rData['start']));
 			$rLimit = (intval($rData['limit']) ?: 50);
 			unset($rData['api_key'], $rData['action'], $rData['start'], $rData['limit']);
 			if (RequestManager::has('show_columns')) {
@@ -139,8 +138,7 @@ class ResellerRestApiController {
 					echo json_encode(ResellerAPIWrapper::convertEnigma(RequestManager::get('id')));
 					break;
 				case 'get_user':
-					if (in_array('password', $rHideColumns)) {
-					} else {
+					if (!in_array('password', $rHideColumns)) {
 						$rHideColumns[] = 'password';
 					}
 					echo json_encode(ResellerAPIWrapper::filterRow(ResellerAPIWrapper::getUser($rData['id']), $rShowColumns, $rHideColumns));

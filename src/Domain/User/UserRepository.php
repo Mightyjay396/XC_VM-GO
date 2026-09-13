@@ -32,12 +32,11 @@ class UserRepository {
 	 * @param string|null $rConIspName Detected ISP name (null/'' on a miss).
 	 * @param int         $rIspViolate Current isp_violate flag.
 	 * @param string|null $rIspDesc    ISP currently stored on the line.
-	 * @return bool
 	 */
 	public static function ispChanged(?string $rConIspName, int $rIspViolate, ?string $rIspDesc): bool {
 		return !empty($rConIspName)
 			&& $rIspViolate == 0
-			&& strtolower((string) $rConIspName) != strtolower((string) $rIspDesc);
+			&& strtolower($rConIspName) != strtolower((string) $rIspDesc);
 	}
 
 	/**

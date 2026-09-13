@@ -55,8 +55,6 @@ class ProcessManager {
 	 * @return bool
 	 */
 	public static function isRunning(?int $pid, ?string $exe = null) {
-		$pid = (int) $pid;
-
 		if ($pid <= 0) {
 			return false;
 		}
@@ -88,12 +86,10 @@ class ProcessManager {
 	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @param string $processName Process name prefix (e.g., 'XC_VM', 'Thumbnail', 'TVArchive')
 	 * @param int|string $identifier Stream/task ID
-	 * @param string|null $exe Expected executable (default: PHP_BIN)
+	 * @param string $exe Expected executable (default: PHP_BIN)
 	 * @return bool
 	 */
 	public static function isNamedProcessRunning(?int $pid, string $processName, int|string $identifier, ?string $exe = null) {
-		$pid = (int) $pid;
-
 		if ($pid <= 0) {
 			return false;
 		}
@@ -136,8 +132,6 @@ class ProcessManager {
 	 * @return bool
 	 */
 	public static function isStreamRunning(?int $pid, int $streamId) {
-		$pid = (int) $pid;
-
 		if ($pid <= 0) {
 			return false;
 		}
@@ -162,12 +156,7 @@ class ProcessManager {
 			$cmdline = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
 			return strpos($cmdline, "\0remux\0") !== false && strpos($cmdline, '/' . $streamId . '_.m3u8') !== false;
 		}
-
-		if (strpos($exe, 'php') === 0) {
-			return true;
-		}
-
-		return false;
+		return strpos($exe, 'php') === 0;
 	}
 
 	/**
@@ -178,8 +167,6 @@ class ProcessManager {
 	 *                     segmenter / loopback relay), or null when it cannot be read.
 	 */
 	public static function producerKind(?int $pid) {
-		$pid = (int) $pid;
-
 		if ($pid <= 0 || !self::procExists($pid) || !is_readable('/proc/' . $pid . '/exe')) {
 			return null;
 		}
@@ -212,8 +199,6 @@ class ProcessManager {
 	 * @return array{ticks:int,rss:int,at:float,start:int}|null Null when the process is gone.
 	 */
 	public static function resourceSample(?int $pid) {
-		$pid = (int) $pid;
-
 		if ($pid <= 1) {
 			return null;
 		}
@@ -344,8 +329,6 @@ class ProcessManager {
 	 * @return bool
 	 */
 	public static function kill(?int $pid, int $signal = 9) {
-		$pid = (int) $pid;
-
 		if ($pid <= 0) {
 			return false;
 		}
@@ -373,8 +356,6 @@ class ProcessManager {
 	 * @return int Age in seconds, or -1 if it cannot be determined
 	 */
 	public static function getProcessAge(?int $pid) {
-		$pid = (int) $pid;
-
 		if ($pid <= 0 || !self::procExists($pid)) {
 			return -1;
 		}
@@ -388,7 +369,7 @@ class ProcessManager {
 
 		$rAge = time() - $rStart;
 
-		return $rAge > 0 ? $rAge : 0;
+		return max($rAge, 0);
 	}
 
 	// ───────────────────────────────────────────────────────────
@@ -474,7 +455,7 @@ class ProcessManager {
 	 */
 	protected static function procExists(int $pid) {
 		$now = microtime(true);
-		$key = (int) $pid;
+		$key = $pid;
 
 		if (isset(self::$procCache[$key]) && ($now - self::$procCache[$key]['time']) < self::$cacheTtl) {
 			return self::$procCache[$key]['exists'];
@@ -511,7 +492,6 @@ class ProcessManager {
 	 * @return bool
 	 */
 	public static function isStreamAlive(?int $pid, int|string $streamID) {
-		$pid = (int) $pid;
 		if ($pid <= 1) {
 			return false;
 		}
@@ -554,7 +534,6 @@ class ProcessManager {
 	 * @return bool
 	 */
 	public static function isMonitorAlive(?int $pid, int|string $streamID, ?string $exe = null) {
-		$pid = (int) $pid;
 		if ($pid <= 0) {
 			return false;
 		}
