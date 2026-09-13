@@ -36,7 +36,7 @@ jobs:
           coverage: none
 
       - name: Run unit tests
-        run: php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist
+        run: php tests/phpunit.phar -c tests/phpunit.xml.dist
 
   build:
     needs: test

@@ -1,7 +1,7 @@
 name: CI
 
 # Quality gate: runs on pushes to main and on every pull request.
-# Tests run via the committed PHAR (tools/.bin/phpunit.phar). Class loading uses
+# Tests run via the committed PHAR (tests/phpunit.phar). Class loading uses
 # the committed Composer PSR-4 autoloader (src/vendor/) first, with the legacy
 # src/autoload.php scanner as an end-of-queue fallback. The deploy path ships
 # vendor/ as-is and never runs `composer install`.
@@ -150,11 +150,11 @@ jobs:
           coverage: pcov
 
       - name: Run unit tests
-        run: php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist
+        run: php tests/phpunit.phar -c tests/phpunit.xml.dist
 
       - name: Coverage report
         run: |
-          php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist \
+          php tests/phpunit.phar -c tests/phpunit.xml.dist \
             --coverage-text \
             --coverage-clover coverage.xml
         continue-on-error: true

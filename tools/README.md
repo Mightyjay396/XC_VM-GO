@@ -25,9 +25,8 @@ Run the analysis with `make phpstan` (needs dev tools: `make dev-tools`).
 
 ## Tests runner
 
-| Tool | Purpose |
-|------|---------|
-| `.bin/phpunit.phar` | Committed PHPUnit 10.5 runner. `php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist` (config in `tests/phpunit.xml.dist`). |
+The committed PHPUnit 10.5 runner now lives with the suite at
+`tests/phpunit.phar`: `php tests/phpunit.phar -c tests/phpunit.xml.dist`.
 
 ## Panel test / QA utilities (manual)
 

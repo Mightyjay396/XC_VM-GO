@@ -54,7 +54,7 @@ Define measurable, binary pass/fail criteria:
 - Non-functional: performance thresholds, memory limits, response times
 - Security: no privilege escalation, no path traversal, no eval/monkey-patching
 - Architectural constraints: no core file modification from modules; no casual new Composer dependency (`vendor/` is committed and production-only — a real dep means `composer.lock` + a `--no-dev` vendor recommit)
-- Test baseline: all existing tests must remain green (run `php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist`)
+- Test baseline: all existing tests must remain green (run `php tests/phpunit.phar -c tests/phpunit.xml.dist`)
 
 ---
 
@@ -140,7 +140,7 @@ For each identified risk:
 You operate within the XC_VM project with these constraints and facts:
 
 **Architecture:** PHP 8.1+, Composer PSR-4 (`XcVm\` → `src/`, `vendor/` committed production-only), `src/Core/` + `src/Modules/`
-**Test Framework:** PHPUnit 10.5 via the committed PHAR (`tools/.bin/phpunit.phar`, config `tests/phpunit.xml.dist`), suite in `tests/Unit/`
+**Test Framework:** PHPUnit 10.5 via the committed PHAR (`tests/phpunit.phar`, config `tests/phpunit.xml.dist`), suite in `tests/Unit/`
 **Test Baseline:** every existing test must stay green — any regression is a blocker
 **Key Contracts to Protect:**
 - `ModuleInterface`, `BaseModule`, `BoundaryInterface`

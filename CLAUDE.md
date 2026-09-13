@@ -22,8 +22,8 @@ make gates            # fast PSR-4 regression gates (see below)
 make dev-clean        # prune src/vendor back to production-only (composer install --no-dev)
 
 # Tests — PHPUnit 10.5, config in tests/phpunit.xml.dist (suite "Unit", bootstrap tests/bootstrap.php)
-php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist
-php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist --filter SomeTestName   # single test
+php tests/phpunit.phar -c tests/phpunit.xml.dist
+php tests/phpunit.phar -c tests/phpunit.xml.dist --filter SomeTestName   # single test
 
 php -l path/to/File.php   # quick syntax check (used constantly; no DB needed)
 ```

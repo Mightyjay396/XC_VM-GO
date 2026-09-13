@@ -10,7 +10,7 @@ them:
 | **Rector** | *Changes* code — mechanical modernisation and simplification |
 | PHPStan | Reports type/logic problems (`make phpstan`) |
 | phpcs / Slevomat | Reports and fixes coding style (`make cs` / `make cs-fix`) |
-| PHPUnit | Verifies behaviour (`tools/.bin/phpunit.phar`) |
+| PHPUnit | Verifies behaviour (`tests/phpunit.phar`) |
 
 **Golden rule: detect → show the diff → verify → only then apply.** Never mass-apply Rector
 to production code without reviewing a dry-run first.
@@ -52,7 +52,7 @@ After **applying** changes, always run the full verification pipeline and review
 ```bash
 make cs-fix        # reconcile style (tabs / K&R) with the rewritten files
 make phpstan
-php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist
+php tests/phpunit.phar -c tests/phpunit.xml.dist
 ```
 
 ## Configuration
