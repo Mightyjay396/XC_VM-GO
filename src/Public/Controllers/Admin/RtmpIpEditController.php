@@ -20,20 +20,20 @@ use XcVm\Domain\Security\BlocklistService;
  */
 
 class RtmpIpEditController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rIPArr = null;
-        $id = $this->input('id');
-        if ($id !== null) {
-            $rIPArr = BlocklistService::getRTMPIPById($id);
-            if (!$rIPArr) {
-                AdminHelpers::goHome();
-                return;
-            }
-        }
+		$rIPArr = null;
+		$id = $this->input('id');
+		if ($id !== null) {
+			$rIPArr = BlocklistService::getRTMPIPById($id);
+			if (!$rIPArr) {
+				AdminHelpers::goHome();
+				return;
+			}
+		}
 
-        $this->setTitle('RTMP IP');
-        $this->render('rtmp_ip', compact('rIPArr'));
-    }
+		$this->setTitle('RTMP IP');
+		$this->render('rtmp_ip', compact('rIPArr'));
+	}
 }

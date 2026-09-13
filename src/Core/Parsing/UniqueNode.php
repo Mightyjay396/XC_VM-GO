@@ -14,41 +14,49 @@ class UniqueNode implements ParserInterface {
 	 * @var array
 	 */
 	protected $options;
+
 	/**
 	 * Current working XML blob
 	 * @var string
 	 */
 	private $workingBlob = '';
+
 	/**
 	 * The flushed node
 	 * @var string
 	 */
 	private $flushed = '';
+
 	/**
 	 * Start position of the given element in the workingBlob
 	 * @var integer
 	 */
 	private $startPos = 0;
+
 	/**
 	 * Records how far we've searched in the XML blob so far
 	 * @var integer
 	 */
 	private $hasSearchedUntilPos = -1;
+
 	/**
 	 * Next action to perform
 	 * @var integer
 	 */
 	private $nextAction = 0;
+
 	/**
 	 * Indicates short closing tag
 	 * @var bool
 	 */
 	private $shortClosedTagNow = false;
+
 	/**
 	 * If extractContainer is true, this will grow with the XML captured before and after the specified capture depth
 	 * @var string
 	 */
 	protected $containerXml = '';
+
 	/**
 	 * Whether we're found our first capture target or not
 	 * @var bool
@@ -60,8 +68,8 @@ class UniqueNode implements ParserInterface {
 	 * @param array $options An options array
 	 * @throws \Exception if the required option uniqueNode isn't set
 	 */
-	public function __construct(array $options = array()) {
-		$this->options = array_merge(array('extractContainer' => false), $options);
+	public function __construct(array $options = []) {
+		$this->options = array_merge(['extractContainer' => false], $options);
 
 		if (!isset($this->options['uniqueNode'])) {
 			throw new \Exception('Required option \'uniqueNode\' not set');
@@ -89,11 +97,9 @@ class UniqueNode implements ParserInterface {
 	/**
 	 * Search short closing tag in $workingBlob before
 	 *
-	 * @param string $workingBlob
-	 * @param int $len
 	 * @return bool|int Either returns the char position of the short closing tag or false
 	 */
-	private function checkShortClosingTag($workingBlob, $len) {
+	private function checkShortClosingTag(string $workingBlob, int $len) {
 		$resultEndPositionInBlob = false;
 
 		while ($len = strpos($workingBlob, '/>', $len + 1)) {
@@ -144,7 +150,7 @@ class UniqueNode implements ParserInterface {
 	 * Set the start position in the workingBlob from where we should start reading when the closing tag is found
 	 * @param  int $startPositionInBlob Position of starting tag
 	 */
-	protected function startSalvaging($startPositionInBlob) {
+	protected function startSalvaging(int $startPositionInBlob) {
 		$this->startPos = $startPositionInBlob;
 	}
 
@@ -152,7 +158,7 @@ class UniqueNode implements ParserInterface {
 	 * Cut everything from the start position to the end position in the workingBlob (+ tag length) and flush it out for later return in getNodeFrom
 	 * @param  int $endPositionInBlob Position of the closing tag
 	 */
-	protected function flush($endPositionInBlob) {
+	protected function flush(int $endPositionInBlob) {
 		$endTagLen = ($this->shortClosedTagNow ? 0 : strlen('</' . $this->options['uniqueNode'] . '>'));
 		$realEndPosition = $endPositionInBlob + $endTagLen;
 		$this->flushed = substr($this->workingBlob, $this->startPos, $realEndPosition - $this->startPos);

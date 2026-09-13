@@ -10,20 +10,18 @@ use XcVm\Domain\Line\PackageService;
  *
  * @package XC_VM_Public_Controllers_Reseller
  */
-class ResellerActiveCodeController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Generate Active Codes');
+class ResellerActiveCodeController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Generate Active Codes');
 
-        $rUserInfo = $GLOBALS['rUserInfo'] ?? [];
-        $rPackages = PackageService::getAll($rUserInfo['member_group_id'] ?? 0, 'line') ?: [];
-        $rBouquets = BouquetService::getAllSimple() ?: [];
+		$rUserInfo = $GLOBALS['rUserInfo'] ?? [];
+		$rPackages = PackageService::getAll($rUserInfo['member_group_id'] ?? 0, 'line') ?: [];
+		$rBouquets = BouquetService::getAllSimple() ?: [];
 
-        $this->render('active_code', [
-            'rPackages' => $rPackages,
-            'rBouquets' => $rBouquets,
-        ]);
-    }
+		$this->render('active_code', [
+			'rPackages' => $rPackages,
+			'rBouquets' => $rBouquets,
+		]);
+	}
 }

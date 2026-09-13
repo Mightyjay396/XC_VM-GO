@@ -17,12 +17,12 @@ use XcVm\Core\Http\RequestManager;
  */
 
 class LineIpsController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rRange = intval(RequestManager::get('range') ?? 0);
-        $rLineIPs = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'lines_per_ip')) ?: [];
+		$rRange = intval(RequestManager::get('range') ?? 0);
+		$rLineIPs = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'lines_per_ip')) ?: [];
 
-        $this->render('line_ips', compact('rRange', 'rLineIPs'));
-    }
+		$this->render('line_ips', compact('rRange', 'rLineIPs'));
+	}
 }

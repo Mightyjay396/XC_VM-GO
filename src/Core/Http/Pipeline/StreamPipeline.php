@@ -39,76 +39,75 @@ namespace XcVm\Core\Http\Pipeline;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class StreamPipeline {
+	/** @var StreamMiddlewareInterface[] Sorted by priority descending */
+	private array $middleware = [];
 
-    /** @var StreamMiddlewareInterface[] Sorted by priority descending */
-    private array $middleware = [];
+	private bool $sorted = true;
 
-    private bool $sorted = true;
+	/**
+	 * Add a middleware to the pipeline.
+	 *
+	 * Inserting middleware triggers a re-sort on next run().
+	 */
+	public function pipe(StreamMiddlewareInterface $middleware): static {
+		$this->middleware[] = $middleware;
+		$this->sorted       = false;
+		return $this;
+	}
 
-    /**
-     * Add a middleware to the pipeline.
-     *
-     * Inserting middleware triggers a re-sort on next run().
-     */
-    public function pipe(StreamMiddlewareInterface $middleware): static {
-        $this->middleware[] = $middleware;
-        $this->sorted       = false;
-        return $this;
-    }
+	/**
+	 * Execute the pipeline against the given context.
+	 *
+	 * Builds a recursive closure chain and invokes it. Each middleware in
+	 * the chain may call $next($ctx) to continue, or skip it to abort.
+	 * Aborted contexts are passed through without calling further middleware.
+	 */
+	public function run(StreamContext $ctx): StreamContext {
+		if (!$this->sorted) {
+			usort(
+				$this->middleware,
+				fn(StreamMiddlewareInterface $a, StreamMiddlewareInterface $b) =>
+					$b->getPriority() <=> $a->getPriority()
+			);
+			$this->sorted = true;
+		}
 
-    /**
-     * Execute the pipeline against the given context.
-     *
-     * Builds a recursive closure chain and invokes it. Each middleware in
-     * the chain may call $next($ctx) to continue, or skip it to abort.
-     * Aborted contexts are passed through without calling further middleware.
-     */
-    public function run(StreamContext $ctx): StreamContext {
-        if (!$this->sorted) {
-            usort(
-                $this->middleware,
-                fn(StreamMiddlewareInterface $a, StreamMiddlewareInterface $b) =>
-                    $b->getPriority() <=> $a->getPriority()
-            );
-            $this->sorted = true;
-        }
+		$chain = $this->buildChain($this->middleware);
+		return $chain($ctx);
+	}
 
-        $chain = $this->buildChain($this->middleware);
-        return $chain($ctx);
-    }
+	/**
+	 * Return all registered middleware in their current sort order.
+	 *
+	 * @return StreamMiddlewareInterface[]
+	 */
+	public function getMiddleware(): array {
+		return $this->middleware;
+	}
 
-    /**
-     * Return all registered middleware in their current sort order.
-     *
-     * @return StreamMiddlewareInterface[]
-     */
-    public function getMiddleware(): array {
-        return $this->middleware;
-    }
+	/**
+	 * Build the recursive closure chain from the middleware array.
+	 *
+	 * Iterates in reverse so the first element in $stack becomes the
+	 * outermost function (called first when the chain is invoked).
+	 *
+	 * @param StreamMiddlewareInterface[] $stack
+	 * @return callable(StreamContext): StreamContext
+	 */
+	private function buildChain(array $stack): callable {
+		$terminal = static fn(StreamContext $ctx): StreamContext => $ctx;
 
-    /**
-     * Build the recursive closure chain from the middleware array.
-     *
-     * Iterates in reverse so the first element in $stack becomes the
-     * outermost function (called first when the chain is invoked).
-     *
-     * @param StreamMiddlewareInterface[] $stack
-     * @return callable(StreamContext): StreamContext
-     */
-    private function buildChain(array $stack): callable {
-        $terminal = static fn(StreamContext $ctx): StreamContext => $ctx;
-
-        return array_reduce(
-            array_reverse($stack),
-            static function (callable $next, StreamMiddlewareInterface $mw): callable {
-                return static function (StreamContext $ctx) use ($mw, $next): StreamContext {
-                    if ($ctx->isAborted()) {
-                        return $ctx;
-                    }
-                    return $mw->handle($ctx, $next);
-                };
-            },
-            $terminal
-        );
-    }
+		return array_reduce(
+			array_reverse($stack),
+			static function (callable $next, StreamMiddlewareInterface $mw): callable {
+				return static function (StreamContext $ctx) use ($mw, $next): StreamContext {
+					if ($ctx->isAborted()) {
+						return $ctx;
+					}
+					return $mw->handle($ctx, $next);
+				};
+			},
+			$terminal
+		);
+	}
 }

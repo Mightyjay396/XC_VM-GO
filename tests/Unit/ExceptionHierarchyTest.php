@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 use XcVm\Core\Exception\Module\ModuleNotFoundException;
 use XcVm\Core\Exception\Module\ModuleManifestException;
 use XcVm\Core\Exception\Module\ModuleLoadException;
@@ -22,8 +21,7 @@ use PHPUnit\Framework\TestCase;
  * These tests act as a regression guard: if any class is renamed,
  * moved, or changes its parent, the test suite catches it immediately.
  */
-class ExceptionHierarchyTest extends TestCase
-{
+class ExceptionHierarchyTest extends TestCase {
     // ── Base ──────────────────────────────────────────────────
 
     public function testXcVmExceptionExtendsRuntimeException(): void {

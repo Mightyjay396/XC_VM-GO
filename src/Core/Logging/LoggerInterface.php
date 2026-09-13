@@ -19,15 +19,15 @@ namespace XcVm\Core\Logging;
  */
 
 interface LoggerInterface {
-    /**
-     * Записать лог-сообщение.
-     *
-     * @param string     $type    Тип события (например: 'pdo', 'epg', 'AUTH_FAILED')
-     * @param string     $message Текст сообщения
-     * @param string|int $extra   Дополнительные данные (trace, query, и т.д.)
-     * @param int        $line    Номер строки (опционально)
-     *
-     * @return void
-     */
-    public static function log(string $type, string $message, $extra = '', int $line = 0): void;
+	/**
+	 * Записать лог-сообщение.
+	 *
+	 * @param string     $type    Тип события (например: 'pdo', 'epg', 'AUTH_FAILED')
+	 * @param string     $message Текст сообщения
+	 * @param string|int $extra   Дополнительные данные (trace, query, и т.д.)
+	 * @param int        $line    Номер строки (опционально)
+	 *
+	 * @return void
+	 */
+	public static function log(string $type, string $message, string|int $extra = '', int $line = 0): void;
 }

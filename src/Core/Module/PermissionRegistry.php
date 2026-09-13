@@ -24,26 +24,25 @@ namespace XcVm\Core\Module;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class PermissionRegistry {
+	/** @var array<string,true> permission key => registered (ordered set) */
+	private static array $keys = [];
 
-    /** @var array<string,true> permission key => registered (ordered set) */
-    private static array $keys = [];
+	/** Register a reseller sub-permission key a module gates on. */
+	public static function add(string $key): void {
+		self::$keys[$key] = true;
+	}
 
-    /** Register a reseller sub-permission key a module gates on. */
-    public static function add(string $key): void {
-        self::$keys[$key] = true;
-    }
+	/**
+	 * All module-registered permission keys, in registration order.
+	 *
+	 * @return string[]
+	 */
+	public static function keys(): array {
+		return array_keys(self::$keys);
+	}
 
-    /**
-     * All module-registered permission keys, in registration order.
-     *
-     * @return string[]
-     */
-    public static function keys(): array {
-        return array_keys(self::$keys);
-    }
-
-    /** Clear all registered keys (used by tests / a fresh boot). */
-    public static function reset(): void {
-        self::$keys = [];
-    }
+	/** Clear all registered keys (used by tests / a fresh boot). */
+	public static function reset(): void {
+		self::$keys = [];
+	}
 }

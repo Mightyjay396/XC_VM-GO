@@ -10,16 +10,14 @@ use XcVm\Domain\Line\PackageService;
  *
  * @package XC_VM_Public_Controllers_Admin
  */
-class ActiveCodesController extends BaseAdminController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Active Codes');
-        $this->render('active_codes', [
-            'rPackages' => PackageService::getAll(null, 'line') ?: [],
-            'resellers' => ActiveCodeService::getResellersWithCodes(),
-            'batches'   => ActiveCodeService::getRecentBatchNames(),
-        ]);
-    }
+class ActiveCodesController extends BaseAdminController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Active Codes');
+		$this->render('active_codes', [
+			'rPackages' => PackageService::getAll(null, 'line') ?: [],
+			'resellers' => ActiveCodeService::getResellersWithCodes(),
+			'batches'   => ActiveCodeService::getRecentBatchNames(),
+		]);
+	}
 }

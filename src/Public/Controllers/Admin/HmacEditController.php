@@ -19,19 +19,19 @@ use XcVm\Core\Auth\AuthRepository;
  */
 
 class HmacEditController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rHMAC = null;
-        $id = $this->input('id');
-        if ($id !== null) {
-            $rHMAC = AuthRepository::getHMACById($id);
-            if (!$rHMAC) {
-                exit();
-            }
-        }
+		$rHMAC = null;
+		$id = $this->input('id');
+		if ($id !== null) {
+			$rHMAC = AuthRepository::getHMACById($id);
+			if (!$rHMAC) {
+				exit();
+			}
+		}
 
-        $this->setTitle('HMAC Key');
-        $this->render('hmac', compact('rHMAC'));
-    }
+		$this->setTitle('HMAC Key');
+		$this->render('hmac', compact('rHMAC'));
+	}
 }

@@ -19,16 +19,16 @@ use XcVm\Domain\Security\BlocklistService;
  */
 
 class IspEditController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rISPArr = null;
-        $id = $this->input('id');
-        if ($id !== null) {
-            $rISPArr = BlocklistService::getISPById($id);
-        }
+		$rISPArr = null;
+		$id = $this->input('id');
+		if ($id !== null) {
+			$rISPArr = BlocklistService::getISPById($id);
+		}
 
-        $this->setTitle('Blocked ISP');
-        $this->render('isp', compact('rISPArr'));
-    }
+		$this->setTitle('Blocked ISP');
+		$this->render('isp', compact('rISPArr'));
+	}
 }

@@ -15,10 +15,10 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class CreatedChannelListController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $this->setTitle('Created Channels');
-        $this->render('created_channels');
-    }
+		$this->setTitle('Created Channels');
+		$this->render('created_channels');
+	}
 }

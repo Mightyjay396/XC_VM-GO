@@ -41,217 +41,216 @@ use XcVm\Infrastructure\Redis\RedisManager;
  */
 
 class RedisCache implements CacheInterface {
+	/** @var \Redis|null phpredis connection */
+	protected $redis = null;
 
-    /** @var \Redis|null phpredis connection */
-    protected $redis = null;
+	/** @var string \Redis host */
+	protected $host;
 
-    /** @var string \Redis host */
-    protected $host;
+	/** @var int \Redis port */
+	protected $port;
 
-    /** @var int \Redis port */
-    protected $port;
+	/** @var string|null \Redis password */
+	protected $password;
 
-    /** @var string|null \Redis password */
-    protected $password;
+	/** @var bool Whether connection is established */
+	protected $connected = false;
 
-    /** @var bool Whether connection is established */
-    protected $connected = false;
+	/** @var string Key prefix to avoid collisions */
+	protected $prefix = '';
 
-    /** @var string Key prefix to avoid collisions */
-    protected $prefix = '';
+	/**
+	 * @param string $host \Redis host
+	 * @param int $port \Redis port
+	 * @param string|null $password \Redis AUTH password
+	 * @param string $prefix Optional key prefix
+	 */
+	public function __construct(string $host = '127.0.0.1', int $port = 6379, ?string $password = null, string $prefix = '') {
+		$this->host = $host;
+		$this->port = $port;
+		$this->password = $password;
+		$this->prefix = $prefix;
+	}
 
-    /**
-     * @param string $host \Redis host
-     * @param int $port \Redis port
-     * @param string|null $password \Redis AUTH password
-     * @param string $prefix Optional key prefix
-     */
-    public function __construct($host = '127.0.0.1', $port = 6379, $password = null, $prefix = '') {
-        $this->host = $host;
-        $this->port = $port;
-        $this->password = $password;
-        $this->prefix = $prefix;
-    }
+	/**
+	 * Establish \Redis connection (lazy — called on first operation)
+	 *
+	 * @return bool
+	 */
+	public function connect() {
+		if ($this->connected && $this->redis !== null) {
+			return true;
+		}
 
-    /**
-     * Establish \Redis connection (lazy — called on first operation)
-     *
-     * @return bool
-     */
-    public function connect() {
-        if ($this->connected && $this->redis !== null) {
-            return true;
-        }
+		try {
+			$this->redis = new \Redis();
+			$this->redis->connect($this->host, $this->port);
 
-        try {
-            $this->redis = new \Redis();
-            $this->redis->connect($this->host, $this->port);
+			if ($this->password) {
+				$this->redis->auth($this->password);
+			}
 
-            if ($this->password) {
-                $this->redis->auth($this->password);
-            }
+			// Use igbinary serializer if available for consistency with FileCache
+			if (defined('Redis::SERIALIZER_IGBINARY')) {
+				$this->redis->setOption(\Redis::OPT_SERIALIZER, \Redis::SERIALIZER_IGBINARY);
+			}
 
-            // Use igbinary serializer if available for consistency with FileCache
-            if (defined('Redis::SERIALIZER_IGBINARY')) {
-                $this->redis->setOption(\Redis::OPT_SERIALIZER, \Redis::SERIALIZER_IGBINARY);
-            }
+			$this->connected = true;
+			return true;
+		} catch (\Exception $e) {
+			$this->redis = null;
+			$this->connected = false;
+			return false;
+		}
+	}
 
-            $this->connected = true;
-            return true;
-        } catch (\Exception $e) {
-            $this->redis = null;
-            $this->connected = false;
-            return false;
-        }
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function get($key, $maxAge = null) {
+		if (!$this->ensureConnected()) {
+			return false;
+		}
 
-    /**
-     * {@inheritdoc}
-     */
-    public function get($key, $maxAge = null) {
-        if (!$this->ensureConnected()) {
-            return false;
-        }
+		$prefixedKey = $this->prefix . $key;
+		$data = $this->redis->get($prefixedKey);
 
-        $prefixedKey = $this->prefix . $key;
-        $data = $this->redis->get($prefixedKey);
+		if ($data === false) {
+			return false;
+		}
 
-        if ($data === false) {
-            return false;
-        }
+		// maxAge is handled by \Redis TTL, not by us
+		// But if caller wants to check age, we can't — \Redis doesn't store creation time
+		// For file-based TTL compat, we ignore maxAge here (\Redis uses its own TTL)
 
-        // maxAge is handled by \Redis TTL, not by us
-        // But if caller wants to check age, we can't — \Redis doesn't store creation time
-        // For file-based TTL compat, we ignore maxAge here (\Redis uses its own TTL)
+		return $data;
+	}
 
-        return $data;
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function set($key, $data, $ttl = 0) {
+		if (!$this->ensureConnected()) {
+			return false;
+		}
 
-    /**
-     * {@inheritdoc}
-     */
-    public function set($key, $data, $ttl = 0) {
-        if (!$this->ensureConnected()) {
-            return false;
-        }
+		$prefixedKey = $this->prefix . $key;
 
-        $prefixedKey = $this->prefix . $key;
+		if ($ttl > 0) {
+			return $this->redis->setex($prefixedKey, $ttl, $data);
+		}
 
-        if ($ttl > 0) {
-            return $this->redis->setex($prefixedKey, $ttl, $data);
-        }
+		return $this->redis->set($prefixedKey, $data);
+	}
 
-        return $this->redis->set($prefixedKey, $data);
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function delete($key) {
+		if (!$this->ensureConnected()) {
+			return false;
+		}
 
-    /**
-     * {@inheritdoc}
-     */
-    public function delete($key) {
-        if (!$this->ensureConnected()) {
-            return false;
-        }
+		$prefixedKey = $this->prefix . $key;
+		$this->redis->del($prefixedKey);
 
-        $prefixedKey = $this->prefix . $key;
-        $this->redis->del($prefixedKey);
+		return true;
+	}
 
-        return true;
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function has($key, $maxAge = null) {
+		if (!$this->ensureConnected()) {
+			return false;
+		}
 
-    /**
-     * {@inheritdoc}
-     */
-    public function has($key, $maxAge = null) {
-        if (!$this->ensureConnected()) {
-            return false;
-        }
+		$prefixedKey = $this->prefix . $key;
 
-        $prefixedKey = $this->prefix . $key;
+		return (bool) $this->redis->exists($prefixedKey);
+	}
 
-        return (bool) $this->redis->exists($prefixedKey);
-    }
+	/**
+	 * {@inheritdoc}
+	 *
+	 * WARNING: Flushes the ENTIRE \Redis database. Use with caution.
+	 */
+	public function flush() {
+		if (!$this->ensureConnected()) {
+			return false;
+		}
 
-    /**
-     * {@inheritdoc}
-     *
-     * WARNING: Flushes the ENTIRE \Redis database. Use with caution.
-     */
-    public function flush() {
-        if (!$this->ensureConnected()) {
-            return false;
-        }
+		return $this->redis->flushDB();
+	}
 
-        return $this->redis->flushDB();
-    }
+	// ───────────────────────────────────────────────────────────
+	//  Raw \Redis Access (for migration period)
+	// ───────────────────────────────────────────────────────────
 
-    // ───────────────────────────────────────────────────────────
-    //  Raw \Redis Access (for migration period)
-    // ───────────────────────────────────────────────────────────
+	/**
+	 * Get the raw phpredis connection
+	 *
+	 * Allows legacy code to use \Redis-specific operations (sorted sets,
+	 * pipelines, pub/sub, etc.) that don't fit the CacheInterface.
+	 *
+	 * @return \Redis|null
+	 */
+	public function getConnection() {
+		$this->ensureConnected();
+		return $this->redis;
+	}
 
-    /**
-     * Get the raw phpredis connection
-     *
-     * Allows legacy code to use \Redis-specific operations (sorted sets,
-     * pipelines, pub/sub, etc.) that don't fit the CacheInterface.
-     *
-     * @return \Redis|null
-     */
-    public function getConnection() {
-        $this->ensureConnected();
-        return $this->redis;
-    }
+	/**
+	 * Check if connection is alive
+	 *
+	 * @return bool
+	 */
+	public function isConnected() {
+		if (!$this->connected || !$this->redis) {
+			return false;
+		}
 
-    /**
-     * Check if connection is alive
-     *
-     * @return bool
-     */
-    public function isConnected() {
-        if (!$this->connected || !$this->redis) {
-            return false;
-        }
+		try {
+			return $this->redis->ping() !== false;
+		} catch (\Exception $e) {
+			$this->connected = false;
+			return false;
+		}
+	}
 
-        try {
-            return $this->redis->ping() !== false;
-        } catch (\Exception $e) {
-            $this->connected = false;
-            return false;
-        }
-    }
+	/**
+	 * Close connection
+	 */
+	public function disconnect() {
+		if ($this->redis) {
+			try {
+				$this->redis->close();
+			} catch (\Exception $e) {
+				// ignore
+			}
+		}
 
-    /**
-     * Close connection
-     */
-    public function disconnect() {
-        if ($this->redis) {
-            try {
-                $this->redis->close();
-            } catch (\Exception $e) {
-                // ignore
-            }
-        }
+		$this->redis = null;
+		$this->connected = false;
+	}
 
-        $this->redis = null;
-        $this->connected = false;
-    }
+	/**
+	 * Ensure connection is active, reconnect if needed
+	 *
+	 * @return bool
+	 */
+	protected function ensureConnected() {
+		if ($this->connected && $this->redis !== null) {
+			return true;
+		}
 
-    /**
-     * Ensure connection is active, reconnect if needed
-     *
-     * @return bool
-     */
-    protected function ensureConnected() {
-        if ($this->connected && $this->redis !== null) {
-            return true;
-        }
+		return $this->connect();
+	}
 
-        return $this->connect();
-    }
-
-    /**
-     * Disconnect from \Redis when the instance is destroyed.
-     */
-    public function __destruct() {
-        $this->disconnect();
-    }
+	/**
+	 * Disconnect from \Redis when the instance is destroyed.
+	 */
+	public function __destruct() {
+		$this->disconnect();
+	}
 }

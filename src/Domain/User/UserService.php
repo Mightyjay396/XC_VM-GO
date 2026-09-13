@@ -22,22 +22,23 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class UserService {
 	use DatabaseAware;
+
 	/**
 	 * Bulk delete a set of selected users.
 	 *
 	 * @param array $rData Selected user ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete($rData) {
+	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
 		ini_set('default_socket_timeout', 0);
 
 		$rUsers = json_decode($rData['users'], true);
-		UserService::deleteRegisteredUser($rUsers);
+		self::deleteRegisteredUser($rUsers);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -46,12 +47,12 @@ class UserService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit($rData) {
+	public static function massEdit(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('massEditUsers', $rData)) {
-			$rArray = array();
+			$rArray = [];
 
-			foreach (array('status') as $rItem) {
+			foreach (['status'] as $rItem) {
 				if (isset($rData['c_' . $rItem])) {
 					if (isset($rData[$rItem])) {
 						$rArray[$rItem] = 1;
@@ -74,7 +75,7 @@ class UserService {
 			}
 
 			if (isset($rData['c_override'])) {
-				$rOverride = array();
+				$rOverride = [];
 
 				foreach ($rData as $rKey => $rCredits) {
 					if (substr($rKey, 0, 9) == 'override_') {
@@ -87,7 +88,7 @@ class UserService {
 						}
 
 						if ($rCredits) {
-							$rOverride[$rID] = array('assign' => 1, 'official_credits' => $rCredits);
+							$rOverride[$rID] = ['assign' => 1, 'official_credits' => $rCredits];
 						}
 					}
 				}
@@ -109,9 +110,9 @@ class UserService {
 				}
 			}
 
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -122,13 +123,13 @@ class UserService {
 	 * @param bool  $rBypassAuth Skip permission checks (internal/trusted callers).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData, $rBypassAuth = false) {
+	public static function process(array $rData, bool $rBypassAuth = false) {
 		$db = self::db();
 		if (InputValidator::validate('processUser', $rData)) {
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'edit_reguser') || $rBypassAuth) {
 					$rUser = UserRepository::getRegisteredUserById($rData['edit']);
-					$rArray = AdminHelpers::overwriteData($rUser, $rData, array('password'));
+					$rArray = AdminHelpers::overwriteData($rUser, $rData, ['password']);
 				} else {
 					exit();
 				}
@@ -152,7 +153,7 @@ class UserService {
 						$rArray['password'] = Authenticator::hashPassword($rData['password']);
 					}
 
-					$rOverride = array();
+					$rOverride = [];
 
 					foreach ($rData as $rKey => $rCredits) {
 						if (substr($rKey, 0, 9) == 'override_') {
@@ -165,7 +166,7 @@ class UserService {
 							}
 
 							if ($rCredits) {
-								$rOverride[$rID] = array('assign' => 1, 'official_credits' => $rCredits);
+								$rOverride[$rID] = ['assign' => 1, 'official_credits' => $rCredits];
 							}
 						}
 					}
@@ -192,18 +193,18 @@ class UserService {
 							$db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rInsertID, $GLOBALS['rAdminUserInfo']['id'], $rCreditsAdjustment, time(), $rReason);
 						}
 
-						return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+						return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 					}
 
-					return array('status' => STATUS_FAILURE, 'data' => $rData);
+					return ['status' => STATUS_FAILURE, 'data' => $rData];
 				} else {
-					return array('status' => STATUS_EXISTS_USERNAME, 'data' => $rData);
+					return ['status' => STATUS_EXISTS_USERNAME, 'data' => $rData];
 				}
 			} else {
-				return array('status' => STATUS_INVALID_GROUP, 'data' => $rData);
+				return ['status' => STATUS_INVALID_GROUP, 'data' => $rData];
 			}
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -215,10 +216,10 @@ class UserService {
 	 * @param array $allowedLangs Allowed UI languages.
 	 * @return array Result status payload.
 	 */
-	public static function editAdminProfile($rData, $rUserInfo, $allowedLangs) {
+	public static function editAdminProfile(array $rData, array $rUserInfo, array $allowedLangs) {
 		$db = self::db();
 		if (!(0 >= strlen($rData['email']) || filter_var($rData['email'], FILTER_VALIDATE_EMAIL))) {
-			return array('status' => STATUS_INVALID_EMAIL);
+			return ['status' => STATUS_INVALID_EMAIL];
 		}
 
 		if (0 < strlen($rData['password'])) {
@@ -237,7 +238,7 @@ class UserService {
 
 		$db->query('UPDATE `users` SET `password` = ?, `email` = ?, `theme` = ?, `hue` = ?, `timezone` = ?, `api_key` = ?, `lang` = ? WHERE `id` = ?;', $rPassword, $rData['email'], $rData['theme'], $rData['hue'], $rData['timezone'], $rData['api_key'], $rData['lang'], $rUserInfo['id']);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -247,7 +248,7 @@ class UserService {
 	 * @param array $rUserInfo Current admin user row.
 	 * @return array Result status payload.
 	 */
-	public static function submitTicket($rData, $rUserInfo) {
+	public static function submitTicket(array $rData, array $rUserInfo) {
 		$db = self::db();
 		if (isset($rData['edit'])) {
 			$rArray = AdminHelpers::overwriteData(TicketRepository::getById($rData['edit']), $rData);
@@ -257,7 +258,7 @@ class UserService {
 		}
 
 		if (strlen($rData['title']) == 0 && !isset($rData['respond']) || strlen($rData['message']) == 0) {
-			return array('status' => STATUS_INVALID_DATA, 'data' => $rData);
+			return ['status' => STATUS_INVALID_DATA, 'data' => $rData];
 		}
 
 		if (!isset($rData['respond'])) {
@@ -267,15 +268,15 @@ class UserService {
 			if ($db->query($rQuery, ...$rPrepare['data'])) {
 				$rInsertID = $db->last_insert_id();
 				$db->query('INSERT INTO `tickets_replies`(`ticket_id`, `admin_reply`, `message`, `date`) VALUES(?, 0, ?, ?);', $rInsertID, $rData['message'], time());
-				return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 			}
 
-			return array('status' => STATUS_FAILURE, 'data' => $rData);
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
 		}
 
 		$rTicket = TicketRepository::getById($rData['respond']);
 		if (!$rTicket) {
-			return array('status' => STATUS_FAILURE, 'data' => $rData);
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
 		}
 
 		if (intval($rUserInfo['id']) == intval($rTicket['member_id'])) {
@@ -286,7 +287,7 @@ class UserService {
 			$db->query('INSERT INTO `tickets_replies`(`ticket_id`, `admin_reply`, `message`, `date`) VALUES(?, 1, ?, ?);', $rData['respond'], $rData['message'], time());
 		}
 
-		return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rData['respond']));
+		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rData['respond']]];
 	}
 
 	/**
@@ -298,7 +299,7 @@ class UserService {
 	 * @param int|null $rReplaceWith    Reassign sub-users/lines to this owner instead.
 	 * @return bool True on success.
 	 */
-	public static function deleteRegisteredUser($rID, $rDeleteSubUsers = false, $rDeleteLines = false, $rReplaceWith = null) {
+	public static function deleteRegisteredUser(int $rID, bool $rDeleteSubUsers = false, bool $rDeleteLines = false, ?int $rReplaceWith = null) {
 		$db = self::db();
 		$rUser = UserRepository::getRegisteredUserById($rID);
 
@@ -341,7 +342,7 @@ class UserService {
 	 * @param int[] $rIDs User ids.
 	 * @return bool True on success.
 	 */
-	public static function deleteRegisteredUsers($rIDs) {
+	public static function deleteRegisteredUsers(array $rIDs) {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 

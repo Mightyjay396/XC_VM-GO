@@ -17,7 +17,6 @@ use XcVm\Domain\Server\ServerRepository;
  */
 
 class CertbotCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'certbot';
 	}
@@ -50,26 +49,26 @@ class CertbotCommand implements CommandInterface {
 			if (file_exists(BIN_PATH . 'certbot/logs/xc_vm.log')) {
 				unlink(BIN_PATH . 'certbot/logs/xc_vm.log');
 			}
-			foreach (array('logs', 'config', 'work') as $rPath) {
+			foreach (['logs', 'config', 'work'] as $rPath) {
 				if (file_exists(BIN_PATH . 'certbot/' . $rPath . '/.certbot.lock')) {
 					unlink(BIN_PATH . 'certbot/' . $rPath . '/.certbot.lock');
 				}
 			}
-			$rActiveDomains = array();
+			$rActiveDomains = [];
 			foreach ($rData['domain'] as $rDomain) {
 				if (!empty($rDomain) && !filter_var($rDomain, FILTER_VALIDATE_IP)) {
 					$rActiveDomains[] = $rDomain;
 				}
 			}
 			$rError = null;
-			$rOutput = array();
+			$rOutput = [];
 			$rResult = false;
 			if (0 < count($rActiveDomains)) {
 				$rCertbotWebroot = MAIN_HOME . 'certbot-webroot';
 				if (!is_dir($rCertbotWebroot)) {
 					mkdir($rCertbotWebroot, 0775, true);
 				}
-				foreach (array('--dry-run ', '') as $rDry) {
+				foreach (['--dry-run ', ''] as $rDry) {
 					if (ServerRepository::getAll()[SERVER_ID]['http_broadcast_port'] == 80) {
 						$rCommand = 'sudo certbot ' . $rDry . '--config-dir ' . BIN_PATH . 'certbot/config --work-dir ' . BIN_PATH . 'certbot/work --logs-dir ' . BIN_PATH . 'certbot/logs certonly --agree-tos --expand --non-interactive --register-unsafely-without-email --webroot -w ' . $rCertbotWebroot;
 					} else {
@@ -79,7 +78,7 @@ class CertbotCommand implements CommandInterface {
 						$rCommand .= ' -d ' . basename($rDomain);
 					}
 					$rCommand .= ' 2>&1';
-					$rOutput = array();
+					$rOutput = [];
 					exec($rCommand, $rOutput, $rReturn);
 
 					if (empty($rDry)) {
@@ -135,11 +134,11 @@ class CertbotCommand implements CommandInterface {
 			} else {
 				$rError = 3;
 			}
-			if (in_array($rError, array(0, 1))) {
+			if (in_array($rError, [0, 1])) {
 				$db->query('SELECT `certbot_ssl` FROM `servers` WHERE `id` = ?;', SERVER_ID);
 				$rCertInfo = json_decode($db->get_row()['certbot_ssl'], true);
 				if (!$rCertInfo) {
-					$rSelectedDomain = array(null, null);
+					$rSelectedDomain = [null, null];
 					foreach (scandir(BIN_PATH . 'certbot/config/live/') as $rDir) {
 						if ($rDir != '.' && $rDir != '..') {
 							$rSplit = explode('-', $rDir);
@@ -151,7 +150,7 @@ class CertbotCommand implements CommandInterface {
 							if (in_array(strtolower($rDomain), array_map('strtolower', $rActiveDomains))) {
 								$rInfo = DiagnosticsService::getCertificateInfo(BIN_PATH . 'certbot/config/live/' . $rDir . '/fullchain.pem');
 								if (($rInfo['serial'] && $rSelectedDomain[0] < $rInfo['expiration']) && !$rSelectedDomain[0]) {
-									$rSelectedDomain = array($rInfo['expiration'], $rInfo);
+									$rSelectedDomain = [$rInfo['expiration'], $rInfo];
 								}
 							}
 						}
@@ -171,7 +170,7 @@ class CertbotCommand implements CommandInterface {
 					}
 				}
 			}
-			$rReturn = array('status' => $rResult, 'error' => $rError, 'output' => $rOutput);
+			$rReturn = ['status' => $rResult, 'error' => $rError, 'output' => $rOutput];
 			if (!is_dir(BIN_PATH . 'certbot/logs')) {
 				mkdir(BIN_PATH . 'certbot/logs', 0775, true);
 			}

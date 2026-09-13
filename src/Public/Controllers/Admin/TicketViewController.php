@@ -18,25 +18,25 @@ use XcVm\Domain\User\TicketRepository;
  */
 
 class TicketViewController extends BaseAdminController {
-    public function index() {
-        global $db, $rUserInfo;
+	public function index() {
+		global $db, $rUserInfo;
 
-        $this->requirePermission();
+		$this->requirePermission();
 
-        $rTicketInfo = null;
-        if (RequestManager::has('id')) {
-            $rTicketInfo = TicketRepository::getById(RequestManager::get('id'));
-        }
-        if (!$rTicketInfo) {
-            $this->redirect('tickets');
-            return;
-        }
+		$rTicketInfo = null;
+		if (RequestManager::has('id')) {
+			$rTicketInfo = TicketRepository::getById(RequestManager::get('id'));
+		}
+		if (!$rTicketInfo) {
+			$this->redirect('tickets');
+			return;
+		}
 
-        if ($rUserInfo['id'] != $rTicketInfo['member_id']) {
-            $db->query('UPDATE `tickets` SET `admin_read` = 1 WHERE `id` = ?;', RequestManager::get('id'));
-        }
+		if ($rUserInfo['id'] != $rTicketInfo['member_id']) {
+			$db->query('UPDATE `tickets` SET `admin_read` = 1 WHERE `id` = ?;', RequestManager::get('id'));
+		}
 
-        $this->setTitle('View Ticket');
-        $this->render('ticket_view', compact('rTicketInfo'));
-    }
+		$this->setTitle('View Ticket');
+		$this->render('ticket_view', compact('rTicketInfo'));
+	}
 }

@@ -18,4 +18,5 @@ namespace XcVm\Core\Exception;
  * @copyright 2025-2026 Vateron Media
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
-class XcVmException extends \RuntimeException {}
+class XcVmException extends \RuntimeException {
+}

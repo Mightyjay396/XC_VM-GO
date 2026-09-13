@@ -13,15 +13,15 @@ namespace XcVm\Core\Enum;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 enum BootContext: string {
-    /** Constants + config only. No DB. */
-    case Minimal = 'minimal';
+	/** Constants + config only. No DB. */
+	case Minimal = 'minimal';
 
-    /** + Database + LegacyInitializer. For cron jobs and CLI scripts. */
-    case Cli = 'cli';
+	/** + Database + LegacyInitializer. For cron jobs and CLI scripts. */
+	case Cli = 'cli';
 
-    /** + Database (cached). Lightweight path for streaming endpoints. */
-    case Stream = 'stream';
+	/** + Database (cached). Lightweight path for streaming endpoints. */
+	case Stream = 'stream';
 
-    /** Full initialization: DB + API + Translator + session. */
-    case Admin = 'admin';
+	/** Full initialization: DB + API + Translator + session. */
+	case Admin = 'admin';
 }

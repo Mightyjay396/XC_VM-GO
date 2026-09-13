@@ -113,13 +113,13 @@ class WatchdogCommand implements CommandInterface {
 			$rInfoA = explode(' ', preg_replace('!cpu +!', '', $rPrevStat[0]));
 			$rInfoB = explode(' ', preg_replace('!cpu +!', '', $rStat[0]));
 			$rPrevStat = $rStat;
-			$rDiff = array();
+			$rDiff = [];
 			$rDiff['user'] = intval($rInfoB[0]) - intval($rInfoA[0]);
 			$rDiff['nice'] = intval($rInfoB[1]) - intval($rInfoA[1]);
 			$rDiff['sys'] = intval($rInfoB[2]) - intval($rInfoA[2]);
 			$rDiff['idle'] = intval($rInfoB[3]) - intval($rInfoA[3]);
 			$rTotal = array_sum($rDiff);
-			$rCPU = array();
+			$rCPU = [];
 			foreach ($rDiff as $x => $y) {
 				$rCPU[$x] = round($y / $rTotal * 100, 2);
 			}
@@ -134,8 +134,8 @@ class WatchdogCommand implements CommandInterface {
 			$rStats['fanout'] = FanoutClient::status();
 
 			// ── PHP PIDs ─────────────────────────────────────────
-			$rPHPPIDs = array();
-			foreach (glob(MAIN_HOME . 'bin/php/sockets/*.pid') ?: array() as $rPidFile) {
+			$rPHPPIDs = [];
+			foreach (glob(MAIN_HOME . 'bin/php/sockets/*.pid') ?: [] as $rPidFile) {
 				$rPid = trim(@file_get_contents($rPidFile) ?: '');
 				if (is_numeric($rPid) && 0 < intval($rPid)) {
 					$rPHPPIDs[] = intval($rPid);
@@ -165,11 +165,11 @@ class WatchdogCommand implements CommandInterface {
 								foreach (array_keys($rServers) as $rServerID) {
 									if ($rServers[$rServerID]['server_online']) {
 										$rMulti->zCard('SERVER#' . $rServerID);
-										$rMulti->zRangeByScore('SERVER_LINES#' . $rServerID, '-inf', '+inf', array('withscores' => true));
+										$rMulti->zRangeByScore('SERVER_LINES#' . $rServerID, '-inf', '+inf', ['withscores' => true]);
 									}
 								}
 								$rResults = $rMulti->exec();
-								$rTotalUsers = array();
+								$rTotalUsers = [];
 								$i = 0;
 								foreach (array_keys($rServers) as $rServerID) {
 									if ($rServers[$rServerID]['server_online']) {

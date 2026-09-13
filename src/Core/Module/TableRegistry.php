@@ -31,32 +31,31 @@ namespace XcVm\Core\Module;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class TableRegistry {
+	/** @var array<string,callable> table id => handler */
+	private static array $handlers = [];
 
-    /** @var array<string,callable> table id => handler */
-    private static array $handlers = [];
+	/**
+	 * Register (or override) the serverSide handler for a table id.
+	 *
+	 * @param string   $id      Table id (the DataTables ajax `d.id`), e.g. 'watch_output'.
+	 * @param callable $handler fn(array $return, int $start, int $limit, bool $isApi): array
+	 */
+	public static function register(string $id, callable $handler): void {
+		self::$handlers[$id] = $handler;
+	}
 
-    /**
-     * Register (or override) the serverSide handler for a table id.
-     *
-     * @param string   $id      Table id (the DataTables ajax `d.id`), e.g. 'watch_output'.
-     * @param callable $handler fn(array $return, int $start, int $limit, bool $isApi): array
-     */
-    public static function register(string $id, callable $handler): void {
-        self::$handlers[$id] = $handler;
-    }
+	/** Whether a module handler is registered for this table id. */
+	public static function has(string $id): bool {
+		return isset(self::$handlers[$id]);
+	}
 
-    /** Whether a module handler is registered for this table id. */
-    public static function has(string $id): bool {
-        return isset(self::$handlers[$id]);
-    }
+	/** The handler for a table id, or null. */
+	public static function get(string $id): ?callable {
+		return self::$handlers[$id] ?? null;
+	}
 
-    /** The handler for a table id, or null. */
-    public static function get(string $id): ?callable {
-        return self::$handlers[$id] ?? null;
-    }
-
-    /** Clear all handlers (used by tests / a fresh boot). */
-    public static function reset(): void {
-        self::$handlers = [];
-    }
+	/** Clear all handlers (used by tests / a fresh boot). */
+	public static function reset(): void {
+		self::$handlers = [];
+	}
 }

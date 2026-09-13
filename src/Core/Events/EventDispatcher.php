@@ -60,128 +60,124 @@ use XcVm\Core\Events\Contract\StoppableEventInterface;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class EventDispatcher {
+	// ── Singleton management ──────────────────────────────────────
+	private static ?self $instance = null;
 
-    // ── Singleton management ──────────────────────────────────────
+	/**
+	 * Return the active singleton instance, creating one on first call.
+	 *
+	 * In production: wired by bootstrap via setInstance(new EventDispatcher()).
+	 * In tests: call setInstance() with a fresh instance per-test.
+	 */
+	public static function getInstance(): self {
+		if (self::$instance === null) {
+			self::$instance = new self();
+		}
+		return self::$instance;
+	}
 
-    private static ?self $instance = null;
+	/**
+	 * Replace the active singleton (used by bootstrap and test setUp).
+	 */
+	public static function setInstance(self $instance): void {
+		self::$instance = $instance;
+	}
 
-    /**
-     * Return the active singleton instance, creating one on first call.
-     *
-     * In production: wired by bootstrap via setInstance(new EventDispatcher()).
-     * In tests: call setInstance() with a fresh instance per-test.
-     */
-    public static function getInstance(): self {
-        if (self::$instance === null) {
-            self::$instance = new self();
-        }
-        return self::$instance;
-    }
+	/**
+	 * Null-out the singleton so the next getInstance() call creates a fresh one.
+	 *
+	 * Primarily for test tearDown to prevent listener state leaking between tests.
+	 */
+	public static function resetInstance(): void {
+		self::$instance = null;
+	}
 
-    /**
-     * Replace the active singleton (used by bootstrap and test setUp).
-     */
-    public static function setInstance(self $instance): void {
-        self::$instance = $instance;
-    }
+	// ── Instance state ────────────────────────────────────────────
+	private ListenerProvider $provider;
 
-    /**
-     * Null-out the singleton so the next getInstance() call creates a fresh one.
-     *
-     * Primarily for test tearDown to prevent listener state leaking between tests.
-     */
-    public static function resetInstance(): void {
-        self::$instance = null;
-    }
+	/**
+	 * Create a dispatcher backed by a fresh ListenerProvider.
+	 */
+	public function __construct() {
+		$this->provider = new ListenerProvider();
+	}
 
-    // ── Instance state ────────────────────────────────────────────
+	// ─────────────────────────────────────────────────────────
+	//  PSR-14-style API — static methods delegate to getInstance()
+	// ─────────────────────────────────────────────────────────
 
-    private ListenerProvider $provider;
+	/**
+	 * Dispatch a typed event object to all registered listeners.
+	 *
+	 * Listeners are called in priority order (highest first).
+	 * Stops early if event implements StoppableEventInterface and propagation was stopped.
+	 *
+	 * @template T of object
+	 * @param T $event
+	 * @return T The same event, possibly mutated by listeners
+	 */
+	public static function dispatch(object $event): object {
+		$i = self::getInstance();
+		foreach ($i->provider->getListenersForEvent($event) as $listener) {
+			if ($event instanceof StoppableEventInterface && $event->isPropagationStopped()) {
+				break;
+			}
+			$listener($event);
+		}
+		return $event;
+	}
 
-    /**
-     * Create a dispatcher backed by a fresh ListenerProvider.
-     */
-    public function __construct() {
-        $this->provider = new ListenerProvider();
-    }
+	/**
+	 * Register a typed listener.
+	 *
+	 * @param class-string $eventClass Fully-qualified event class name
+	 * @param callable     $listener   Receives the event object as sole argument
+	 * @param int          $priority   Higher = called first (default 0)
+	 */
+	public static function listen(string $eventClass, callable $listener, int $priority = 0): void {
+		self::getInstance()->provider->addListener($eventClass, $listener, $priority);
+	}
 
-    // ─────────────────────────────────────────────────────────
-    //  PSR-14-style API — static methods delegate to getInstance()
-    // ─────────────────────────────────────────────────────────
+	/**
+	 * Remove a typed listener, or all listeners for an event class.
+	 *
+	 * @param class-string  $eventClass
+	 */
+	public static function unlisten(string $eventClass, ?callable $listener = null): void {
+		self::getInstance()->provider->removeListener($eventClass, $listener);
+	}
 
-    /**
-     * Dispatch a typed event object to all registered listeners.
-     *
-     * Listeners are called in priority order (highest first).
-     * Stops early if event implements StoppableEventInterface and propagation was stopped.
-     *
-     * @template T of object
-     * @param T $event
-     * @return T The same event, possibly mutated by listeners
-     */
-    public static function dispatch(object $event): object {
-        $i = self::getInstance();
-        foreach ($i->provider->getListenersForEvent($event) as $listener) {
-            if ($event instanceof StoppableEventInterface && $event->isPropagationStopped()) {
-                break;
-            }
-            $listener($event);
-        }
-        return $event;
-    }
+	/**
+	 * Check if any typed listeners are registered for an event class.
+	 *
+	 * @param class-string $eventClass
+	 */
+	public static function hasListeners(string $eventClass): bool {
+		return self::getInstance()->provider->hasListeners($eventClass);
+	}
 
-    /**
-     * Register a typed listener.
-     *
-     * @param class-string $eventClass Fully-qualified event class name
-     * @param callable     $listener   Receives the event object as sole argument
-     * @param int          $priority   Higher = called first (default 0)
-     */
-    public static function listen(string $eventClass, callable $listener, int $priority = 0): void {
-        self::getInstance()->provider->addListener($eventClass, $listener, $priority);
-    }
+	// ─────────────────────────────────────────────────────────
+	//  Utility
+	// ─────────────────────────────────────────────────────────
 
-    /**
-     * Remove a typed listener, or all listeners for an event class.
-     *
-     * @param class-string  $eventClass
-     * @param callable|null $listener
-     */
-    public static function unlisten(string $eventClass, ?callable $listener = null): void {
-        self::getInstance()->provider->removeListener($eventClass, $listener);
-    }
+	/**
+	 * Clear all listeners — both typed and legacy (primarily for testing).
+	 */
+	public static function clear(): void {
+		self::getInstance()->provider->clear();
+	}
 
-    /**
-     * Check if any typed listeners are registered for an event class.
-     *
-     * @param class-string $eventClass
-     */
-    public static function hasListeners(string $eventClass): bool {
-        return self::getInstance()->provider->hasListeners($eventClass);
-    }
+	/**
+	 * Return the underlying ListenerProvider (for introspection).
+	 */
+	public static function getProvider(): ListenerProvider {
+		return self::getInstance()->provider;
+	}
 
-    // ─────────────────────────────────────────────────────────
-    //  Utility
-    // ─────────────────────────────────────────────────────────
-
-    /**
-     * Clear all listeners — both typed and legacy (primarily for testing).
-     */
-    public static function clear(): void {
-        self::getInstance()->provider->clear();
-    }
-
-    /**
-     * Return the underlying ListenerProvider (for introspection).
-     */
-    public static function getProvider(): ListenerProvider {
-        return self::getInstance()->provider;
-    }
-
-    /**
-     * Replace the ListenerProvider (for testing or custom provider injection).
-     */
-    public static function setProvider(ListenerProvider $provider): void {
-        self::getInstance()->provider = $provider;
-    }
+	/**
+	 * Replace the ListenerProvider (for testing or custom provider injection).
+	 */
+	public static function setProvider(ListenerProvider $provider): void {
+		self::getInstance()->provider = $provider;
+	}
 }

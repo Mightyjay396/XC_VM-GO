@@ -16,7 +16,6 @@ use XcVm\Core\Database\MigrationRunner;
  */
 
 class DbMigrateCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'db:migrate';
 	}

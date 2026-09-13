@@ -29,49 +29,48 @@ use XcVm\Core\Module\ModuleUpdateChecker;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class ModuleUpdatesCronJob implements CommandInterface {
+	public function getName(): string {
+		return 'cron:module_updates';
+	}
 
-    public function getName(): string {
-        return 'cron:module_updates';
-    }
+	public function getDescription(): string {
+		return 'Cron: check module update availability from their declared sources';
+	}
 
-    public function getDescription(): string {
-        return 'Cron: check module update availability from their declared sources';
-    }
+	public function execute(array $rArgs): int {
+		register_shutdown_function(function () {
+			global $db;
+			if (is_object($db)) {
+				$db->close_mysql();
+			}
+		});
 
-    public function execute(array $rArgs): int {
-        register_shutdown_function(function () {
-            global $db;
-            if (is_object($db)) {
-                $db->close_mysql();
-            }
-        });
+		$rManager = new ModuleManager(container: ServiceContainer::getInstance());
+		$rChecker = new ModuleUpdateChecker();
 
-        $rManager = new ModuleManager(container: ServiceContainer::getInstance());
-        $rChecker = new ModuleUpdateChecker();
+		foreach ($rManager->listModules() as $rModule) {
+			// Only installed modules — the check compares against installed_version.
+			if (($rModule['installed_version'] ?? '') === '') {
+				continue;
+			}
 
-        foreach ($rManager->listModules() as $rModule) {
-            // Only installed modules — the check compares against installed_version.
-            if (($rModule['installed_version'] ?? '') === '') {
-                continue;
-            }
+			$rInstalled = (string) $rModule['installed_version'];
+			$rLatest    = $rChecker->latestAvailable($rModule);
 
-            $rInstalled = (string) $rModule['installed_version'];
-            $rLatest    = $rChecker->latestAvailable($rModule);
+			if ($rLatest !== null && version_compare($rLatest, $rInstalled, '>')) {
+				$rManager->recordAvailableVersion($rModule['name'], $rLatest);
+				echo '[UPDATE] ' . $rModule['name'] . ': ' . $rInstalled . ' -> ' . $rLatest . "\n";
+			} elseif ($rChecker->lastError() !== null) {
+				// Source unreachable (rate limit, network) — keep any previously
+				// recorded flag; clearing here would hide a real update until the
+				// next successful check.
+				echo '[SKIP] ' . $rModule['name'] . ': ' . $rChecker->lastError() . "\n";
+			} else {
+				// Nothing newer — clear any stale flag.
+				$rManager->recordAvailableVersion($rModule['name'], null);
+			}
+		}
 
-            if ($rLatest !== null && version_compare($rLatest, $rInstalled, '>')) {
-                $rManager->recordAvailableVersion($rModule['name'], $rLatest);
-                echo '[UPDATE] ' . $rModule['name'] . ': ' . $rInstalled . ' -> ' . $rLatest . "\n";
-            } elseif ($rChecker->lastError() !== null) {
-                // Source unreachable (rate limit, network) — keep any previously
-                // recorded flag; clearing here would hide a real update until the
-                // next successful check.
-                echo '[SKIP] ' . $rModule['name'] . ': ' . $rChecker->lastError() . "\n";
-            } else {
-                // Nothing newer — clear any stale flag.
-                $rManager->recordAvailableVersion($rModule['name'], null);
-            }
-        }
-
-        return 0;
-    }
+		return 0;
+	}
 }

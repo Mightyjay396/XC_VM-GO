@@ -25,237 +25,236 @@ namespace XcVm\Streaming;
  */
 
 class AsyncFileOperations {
-    /**
-     * File existence cache with TTL
-     * @var array
-     */
-    private static $fileCache = [];
+	/**
+	 * File existence cache with TTL
+	 * @var array
+	 */
+	private static $fileCache = [];
 
-    /**
-     * Cache TTL in seconds (100 ms) — compared against microtime(true) deltas.
-     * (It was 100000, read as seconds: a "100 ms" cache that lasted 27 hours.)
-     * @var float
-     */
-    private static $cacheTTL = 0.1;
+	/**
+	 * Cache TTL in seconds (100 ms) — compared against microtime(true) deltas.
+	 * (It was 100000, read as seconds: a "100 ms" cache that lasted 27 hours.)
+	 * @var float
+	 */
+	private static $cacheTTL = 0.1;
 
-    /**
-     * Non-blocking file existence check with intelligent polling
-     * Uses inotify if available, otherwise cached checks
-     * 
-     * @param string $file File path to check
-     * @param int $maxRetries Maximum retry attempts
-     * @param int $delayMs Delay between retries in milliseconds
-     * @return bool
-     */
-    public static function awaitFileExists($file, $maxRetries = 300, $delayMs = 10) {
-        // First, quick check
-        if (file_exists($file)) {
-            self::clearFileCache($file);
-            return true;
-        }
+	/**
+	 * Non-blocking file existence check with intelligent polling
+	 * Uses inotify if available, otherwise cached checks
+	 *
+	 * @param string $file File path to check
+	 * @param int $maxRetries Maximum retry attempts
+	 * @param int $delayMs Delay between retries in milliseconds
+	 * @return bool
+	 */
+	public static function awaitFileExists(string $file, int $maxRetries = 300, int $delayMs = 10) {
+		// First, quick check
+		if (file_exists($file)) {
+			self::clearFileCache($file);
+			return true;
+		}
 
-        // Try inotify monitoring if available
-        if (function_exists('inotify_init')) {
-            return self::awaitFileWithInotify($file, $maxRetries, $delayMs);
-        }
+		// Try inotify monitoring if available
+		if (function_exists('inotify_init')) {
+			return self::awaitFileWithInotify($file, $maxRetries, $delayMs);
+		}
 
-        // Fallback to optimized polling
-        return self::awaitFileWithPolling($file, $maxRetries, $delayMs);
-    }
+		// Fallback to optimized polling
+		return self::awaitFileWithPolling($file, $maxRetries, $delayMs);
+	}
 
-    /**
-     * Wait for file using inotify (Linux)
-     * Zero-CPU-usage waiting when file system changes
-     * 
-     * @param string $file File path to monitor
-     * @param int $maxRetries Maximum retry attempts
-     * @param int $delayMs Delay between fallback polls
-     * @return bool
-     */
-    private static function awaitFileWithInotify($file, $maxRetries, $delayMs) {
-        try {
-            $directory = dirname($file);
+	/**
+	 * Wait for file using inotify (Linux)
+	 * Zero-CPU-usage waiting when file system changes
+	 *
+	 * @param string $file File path to monitor
+	 * @param int $maxRetries Maximum retry attempts
+	 * @param int $delayMs Delay between fallback polls
+	 * @return bool
+	 */
+	private static function awaitFileWithInotify(string $file, int $maxRetries, int $delayMs) {
+		try {
+			$directory = dirname($file);
 
-            $inotify = @inotify_init();
-            if ($inotify === false) {
-                return self::awaitFileWithPolling($file, $maxRetries, $delayMs);
-            }
+			$inotify = @inotify_init();
+			if ($inotify === false) {
+				return self::awaitFileWithPolling($file, $maxRetries, $delayMs);
+			}
 
-            // Watch directory for file creation
-            @inotify_add_watch($inotify, $directory, IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE);
+			// Watch directory for file creation
+			@inotify_add_watch($inotify, $directory, IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE);
 
-            // The budget is TIME (maxRetries × delayMs, as for polling), and every
-            // wait is bounded: a blocking inotify_read() never returned when the
-            // file was not created, and counting events instead of time let a busy
-            // directory use up the retries in milliseconds.
-            $deadline = microtime(true) + max(1, $maxRetries) * max(1, $delayMs) / 1000;
-            $slice = max(1000, $delayMs * 1000);
-            while (true) {
-                clearstatcache(true, $file);
-                if (file_exists($file)) {
-                    @fclose($inotify);
-                    self::clearFileCache($file);
-                    return true;
-                }
-                $left = $deadline - microtime(true);
-                if ($left <= 0) {
-                    break;
-                }
-                $read = array($inotify);
-                $write = $except = null;
-                $wait = (int) min($slice, $left * 1000000);
-                if (@stream_select($read, $write, $except, 0, $wait) > 0) {
-                    @inotify_read($inotify); // drain; the loop re-checks the file
-                }
-            }
+			// The budget is TIME (maxRetries × delayMs, as for polling), and every
+			// wait is bounded: a blocking inotify_read() never returned when the
+			// file was not created, and counting events instead of time let a busy
+			// directory use up the retries in milliseconds.
+			$deadline = microtime(true) + max(1, $maxRetries) * max(1, $delayMs) / 1000;
+			$slice = max(1000, $delayMs * 1000);
+			while (true) {
+				clearstatcache(true, $file);
+				if (file_exists($file)) {
+					@fclose($inotify);
+					self::clearFileCache($file);
+					return true;
+				}
+				$left = $deadline - microtime(true);
+				if ($left <= 0) {
+					break;
+				}
+				$read = [$inotify];
+				$write = $except = null;
+				$wait = (int) min($slice, $left * 1000000);
+				if (@stream_select($read, $write, $except, 0, $wait) > 0) {
+					@inotify_read($inotify); // drain; the loop re-checks the file
+				}
+			}
 
-            @fclose($inotify);
-            return false;
-        } catch (\Throwable $e) {
-            return self::awaitFileWithPolling($file, $maxRetries, $delayMs);
-        }
-    }
+			@fclose($inotify);
+			return false;
+		} catch (\Throwable $e) {
+			return self::awaitFileWithPolling($file, $maxRetries, $delayMs);
+		}
+	}
 
-    /**
-     * Wait for file using optimized polling
-     * Efficient busy-wait replacement that reduces CPU usage
-     * 
-     * @param string $file File path to check
-     * @param int $maxRetries Maximum retry attempts
-     * @param int $delayMs Delay between retries in milliseconds
-     * @return bool
-     */
-    private static function awaitFileWithPolling($file, $maxRetries = 300, $delayMs = 10) {
-        $microDelay = max(1000, $delayMs * 1000); // Convert to microseconds
+	/**
+	 * Wait for file using optimized polling
+	 * Efficient busy-wait replacement that reduces CPU usage
+	 *
+	 * @param string $file File path to check
+	 * @param int $maxRetries Maximum retry attempts
+	 * @param int $delayMs Delay between retries in milliseconds
+	 * @return bool
+	 */
+	private static function awaitFileWithPolling(string $file, int $maxRetries = 300, int $delayMs = 10) {
+		$microDelay = max(1000, $delayMs * 1000); // Convert to microseconds
 
-        for ($i = 0; $i < $maxRetries; $i++) {
-            // Check with stat() for better performance
-            clearstatcache(true, $file);
-            if (@stat($file) !== false) {
-                self::clearFileCache($file); // a later readFile() must see the new file
-                return true;
-            }
+		for ($i = 0; $i < $maxRetries; $i++) {
+			// Check with stat() for better performance
+			clearstatcache(true, $file);
+			if (@stat($file) !== false) {
+				self::clearFileCache($file); // a later readFile() must see the new file
+				return true;
+			}
 
-            // Use adaptive sleep/usleep with early exit on events
-            usleep($microDelay);
-        }
+			// Use adaptive sleep/usleep with early exit on events
+			usleep($microDelay);
+		}
 
-        return false;
-    }
+		return false;
+	}
 
-    /**
-     * Non-blocking read file content
-     * Returns false if file doesn't exist or unreadable
-     * 
-     * @param string $file File path
-     * @param bool $useCache Use cache if available
-     * @return string|false
-     */
-    public static function readFile($file, $useCache = true) {
-        // Check cache first
-        if ($useCache && isset(self::$fileCache[$file])) {
-            $cached = self::$fileCache[$file];
-            if (microtime(true) - $cached['time'] < self::$cacheTTL) {
-                return $cached['content'];
-            }
-            unset(self::$fileCache[$file]);
-        }
+	/**
+	 * Non-blocking read file content
+	 * Returns false if file doesn't exist or unreadable
+	 *
+	 * @param string $file File path
+	 * @param bool $useCache Use cache if available
+	 * @return string|false
+	 */
+	public static function readFile(string $file, bool $useCache = true) {
+		// Check cache first
+		if ($useCache && isset(self::$fileCache[$file])) {
+			$cached = self::$fileCache[$file];
+			if (microtime(true) - $cached['time'] < self::$cacheTTL) {
+				return $cached['content'];
+			}
+			unset(self::$fileCache[$file]);
+		}
 
-        // Use stat for quick check
-        $stat = @stat($file);
-        if ($stat === false) {
-            return false;
-        }
+		// Use stat for quick check
+		$stat = @stat($file);
+		if ($stat === false) {
+			return false;
+		}
 
-        // Read with size limit to prevent memory issues
-        $maxReadSize = 1024 * 1024; // 1MB limit
-        if ($stat['size'] > $maxReadSize) {
-            return false;
-        }
+		// Read with size limit to prevent memory issues
+		$maxReadSize = 1024 * 1024; // 1MB limit
+		if ($stat['size'] > $maxReadSize) {
+			return false;
+		}
 
-        $content = @file_get_contents($file);
+		$content = @file_get_contents($file);
 
-        if ($content !== false && $useCache) {
-            self::$fileCache[$file] = [
-                'content' => $content,
-                'time' => microtime(true)
-            ];
-        }
+		if ($content !== false && $useCache) {
+			self::$fileCache[$file] = [
+				'content' => $content,
+				'time' => microtime(true)
+			];
+		}
 
-        return $content;
-    }
+		return $content;
+	}
 
-    /**
-     * Wait for ANY file from list to exist
-     * Returns on first match or after timeout
-     * 
-     * @param array $files Array of file paths
-     * @param int $maxRetries Maximum retry attempts
-     * @param int $delayMs Delay between retries
-     * @return string|false File path that exists, or false
-     */
-    public static function awaitAnyFileExists(array $files, $maxRetries = 300, $delayMs = 10) {
-        $microDelay = max(1000, $delayMs * 1000);
+	/**
+	 * Wait for ANY file from list to exist
+	 * Returns on first match or after timeout
+	 *
+	 * @param array $files Array of file paths
+	 * @param int $maxRetries Maximum retry attempts
+	 * @param int $delayMs Delay between retries
+	 * @return string|false File path that exists, or false
+	 */
+	public static function awaitAnyFileExists(array $files, int $maxRetries = 300, int $delayMs = 10) {
+		$microDelay = max(1000, $delayMs * 1000);
 
-        for ($i = 0; $i < $maxRetries; $i++) {
-            foreach ($files as $file) {
-                clearstatcache(true, $file);
-                if (@stat($file) !== false) {
-                    self::clearFileCache($file);
-                    return $file;
-                }
-            }
-            usleep($microDelay);
-        }
+		for ($i = 0; $i < $maxRetries; $i++) {
+			foreach ($files as $file) {
+				clearstatcache(true, $file);
+				if (@stat($file) !== false) {
+					self::clearFileCache($file);
+					return $file;
+				}
+			}
+			usleep($microDelay);
+		}
 
-        return false;
-    }
+		return false;
+	}
 
-    /**
-     * Clear cache for specific file
-     * @param string $file File path
-     */
-    public static function clearFileCache($file = null) {
-        if ($file === null) {
-            self::$fileCache = [];
-        } else {
-            unset(self::$fileCache[$file]);
-        }
-    }
+	/**
+	 * Clear cache for specific file
+	 * @param string $file File path
+	 */
+	public static function clearFileCache(string $file = null) {
+		if ($file === null) {
+			self::$fileCache = [];
+		} else {
+			unset(self::$fileCache[$file]);
+		}
+	}
 
-    /**
-     * Replacement for usleep with select()
-     * More CPU-efficient than usleep in loops
-     * 
-     * @param int $microseconds Sleep duration
-     */
-    public static function efficientSleep($microseconds) {
-        if ($microseconds < 1000) {
-            usleep($microseconds);
-            return;
-        }
+	/**
+	 * Replacement for usleep with select()
+	 * More CPU-efficient than usleep in loops
+	 *
+	 * @param int $microseconds Sleep duration
+	 */
+	public static function efficientSleep(int $microseconds) {
+		if ($microseconds < 1000) {
+			usleep($microseconds);
+			return;
+		}
 
-        // Use time_nanosleep() if available for precise non-blocking sleep
-        if (function_exists('time_nanosleep')) {
-            $sec = intdiv($microseconds, 1000000);
-            $nsec = ($microseconds % 1000000) * 1000; // convert microsec to nanosec
-            // suppress warnings on interrupted sleep
-            @time_nanosleep($sec, $nsec);
-            return;
-        }
+		// Use time_nanosleep() if available for precise non-blocking sleep
+		if (function_exists('time_nanosleep')) {
+			$sec = intdiv($microseconds, 1000000);
+			$nsec = ($microseconds % 1000000) * 1000; // convert microsec to nanosec
+			// suppress warnings on interrupted sleep
+			@time_nanosleep($sec, $nsec);
+			return;
+		}
 
-        // Fallback to usleep
-        usleep($microseconds);
-    }
+		// Fallback to usleep
+		usleep($microseconds);
+	}
 
-    /**
-     * Non-blocking file size check
-     * @param string $file File path
-     * @return int|false File size or false
-     */
-    public static function getFileSize($file) {
-        $stat = @stat($file);
-        return $stat !== false ? $stat['size'] : false;
-    }
-
+	/**
+	 * Non-blocking file size check
+	 * @param string $file File path
+	 * @return int|false File size or false
+	 */
+	public static function getFileSize(string $file) {
+		$stat = @stat($file);
+		return $stat !== false ? $stat['size'] : false;
+	}
 }

@@ -20,13 +20,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class GroupService {
 	use DatabaseAware;
+
 	/**
 	 * Create or update a user group from admin form data.
 	 *
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processGroup', $rData)) {
 			if (isset($rData['edit'])) {
@@ -44,7 +45,7 @@ class GroupService {
 				}
 			}
 
-			foreach (array('is_admin', 'is_reseller', 'allow_restrictions', 'create_sub_resellers', 'delete_users', 'allow_download', 'can_view_vod', 'reseller_client_connection_logs', 'allow_change_bouquets', 'allow_change_username', 'allow_change_password') as $rSelection) {
+			foreach (['is_admin', 'is_reseller', 'allow_restrictions', 'create_sub_resellers', 'delete_users', 'allow_download', 'can_view_vod', 'reseller_client_connection_logs', 'allow_change_bouquets', 'allow_change_username', 'allow_change_password'] as $rSelection) {
 				if (isset($rData[$rSelection])) {
 					$rArray[$rSelection] = 1;
 				} else {
@@ -100,15 +101,15 @@ class GroupService {
 						}
 					}
 
-					return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+					return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 				} else {
-					return array('status' => STATUS_FAILURE, 'data' => $rData);
+					return ['status' => STATUS_FAILURE, 'data' => $rData];
 				}
 			} else {
-				return array('status' => STATUS_INVALID_NAME, 'data' => $rData);
+				return ['status' => STATUS_INVALID_NAME, 'data' => $rData];
 			}
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -121,7 +122,7 @@ class GroupService {
 	 */
 	public static function getAll() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `users_groups` ORDER BY `group_id` ASC;');
 
 		if (0 >= $db->num_rows()) {
@@ -140,7 +141,7 @@ class GroupService {
 	 * @param int $rID Group id.
 	 * @return array|false The group row, or false if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `users_groups` WHERE `group_id` = ?;', $rID);
 
@@ -157,7 +158,7 @@ class GroupService {
 	 * @param int $rID Group id.
 	 * @return bool True on deletion, false if the group does not exist.
 	 */
-	public static function deleteById($rID) {
+	public static function deleteById(int $rID) {
 		$db = self::db();
 		$rGroup = self::getById($rID);
 

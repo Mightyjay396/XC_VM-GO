@@ -12,4 +12,5 @@ namespace XcVm\Core\Exception\Container;
  * @copyright 2025-2026 Vateron Media
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
-class CircularDependencyException extends ContainerException {}
+class CircularDependencyException extends ContainerException {
+}

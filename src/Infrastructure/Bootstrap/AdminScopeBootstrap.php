@@ -26,7 +26,6 @@ use XcVm\Domain\User\UserRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class AdminScopeBootstrap implements ScopeBootstrap {
-
 	public function boot(): void {
 		$this->bootSession();
 		$this->bootFunctions();

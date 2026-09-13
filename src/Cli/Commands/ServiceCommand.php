@@ -21,7 +21,6 @@ use XcVm\Cli\CommandInterface;
  */
 
 class ServiceCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'service';
 	}

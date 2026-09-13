@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtTagInterface;
 use M3uParser\Tag\ExtTitle;
 use PHPUnit\Framework\TestCase;
 
-class ExtTitleTest extends TestCase
-{
-    public function testParseExtTitle(): void
-    {
+class ExtTitleTest extends TestCase {
+    public function testParseExtTitle(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/exttitle.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/exttitle.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -35,10 +32,9 @@ class ExtTitleTest extends TestCase
         self::assertEquals('Rock music', $extTitle->getValue());
     }
 
-    public function testGenerateExtTitle(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTTITLE:Rock music'."\n";
+    public function testGenerateExtTitle(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTTITLE:Rock music' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

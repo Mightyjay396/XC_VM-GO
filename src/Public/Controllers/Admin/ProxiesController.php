@@ -17,12 +17,12 @@ use XcVm\Domain\Server\ServerRepository;
  */
 
 class ProxiesController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rServers = ServerRepository::getAll(true);
+		$rServers = ServerRepository::getAll(true);
 
-        $this->setTitle('Proxy Servers');
-        $this->render('proxies', compact('rServers'));
-    }
+		$this->setTitle('Proxy Servers');
+		$this->render('proxies', compact('rServers'));
+	}
 }

@@ -26,19 +26,16 @@ use XcVm\Streaming\Health\ProcessChecker;
 
 class StreamProcess {
 	use DatabaseAware;
+
 	/**
 	 * Write stream action log to file
 	 *
 	 * Migrated from CoreUtilities::streamLog()
 	 *
-	 * @param int $rStreamID
-	 * @param int $rServerID
-	 * @param string $rAction
-	 * @param string $rSource
 	 */
-	public static function streamLog($rStreamID, $rServerID, $rAction, $rSource = '') {
+	public static function streamLog(int $rStreamID, int $rServerID, string $rAction, string $rSource = '') {
 		if (SettingsManager::get('save_restart_logs') != 0) {
-			$rData = array('server_id' => $rServerID, 'stream_id' => $rStreamID, 'action' => $rAction, 'source' => $rSource, 'time' => time());
+			$rData = ['server_id' => $rServerID, 'stream_id' => $rStreamID, 'action' => $rAction, 'source' => $rSource, 'time' => time()];
 			file_put_contents(LOGS_TMP_PATH . 'stream_log.log', base64_encode(json_encode($rData)) . "\n", FILE_APPEND);
 		}
 	}
@@ -49,7 +46,7 @@ class StreamProcess {
 	 * @param array $rSources Source identifiers.
 	 * @return void
 	 */
-	public static function deleteCache($rSources) {
+	public static function deleteCache(array $rSources) {
 		if (empty($rSources)) {
 			return;
 		}
@@ -67,7 +64,7 @@ class StreamProcess {
 	 * @param int|null $rServerID Target server id, or null for the default.
 	 * @return mixed Queue result.
 	 */
-	public static function queueChannel($rStreamID, $rServerID = null) {
+	public static function queueChannel(int $rStreamID, ?int $rServerID = null) {
 		$db = self::db();
 		if (!$rServerID) {
 			$rServerID = SERVER_ID;
@@ -84,7 +81,7 @@ class StreamProcess {
 	 * @param int $rStreamID Stream id.
 	 * @return mixed Creation result.
 	 */
-	public static function createChannel($rStreamID) {
+	public static function createChannel(int $rStreamID) {
 		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php created ' . intval($rStreamID) . ' >/dev/null 2>/dev/null &');
 		return true;
 	}
@@ -100,7 +97,7 @@ class StreamProcess {
 	 * @param mixed $rMonitorPID The stream's recorded monitor pid.
 	 * @return bool
 	 */
-	public static function isWatched($rStreamID, $rMonitorPID): bool {
+	public static function isWatched(int $rStreamID, mixed $rMonitorPID): bool {
 		if (ProcessManager::isMonitorAlive($rMonitorPID, $rStreamID)) {
 			return true;
 		}
@@ -122,7 +119,7 @@ class StreamProcess {
 	 * @return resource|null The held lock, for unlockOnDemandStart(); null when
 	 *                       it cannot be taken (the caller goes on unserialised).
 	 */
-	public static function lockOnDemandStart($rStreamID) {
+	public static function lockOnDemandStart(int $rStreamID) {
 		$rLock = @fopen(STREAMS_PATH . intval($rStreamID) . '_.start', 'c');
 		if ($rLock === false) {
 			return null;
@@ -161,7 +158,7 @@ class StreamProcess {
 	 * @param int $rRestart  Truthy to restart what is running rather than take it as it is.
 	 * @return string MONITOR_FANOUT or MONITOR_PHP — which one now watches it.
 	 */
-	public static function startMonitor($rStreamID, $rRestart = 0) {
+	public static function startMonitor(int $rStreamID, int $rRestart = 0) {
 		if (self::superviseStream(intval($rStreamID), (bool) $rRestart)) {
 			return self::MONITOR_FANOUT;
 		}
@@ -175,14 +172,13 @@ class StreamProcess {
 		return self::MONITOR_PHP;
 	}
 
-
 	/**
 	 * Start thumbnail generation for a stream.
 	 *
 	 * @param int $rStreamID Stream id.
 	 * @return mixed Start result.
 	 */
-	public static function startThumbnail($rStreamID) {
+	public static function startThumbnail(int $rStreamID) {
 		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php thumbnail ' . intval($rStreamID) . ' >/dev/null 2>/dev/null &');
 		return true;
 	}
@@ -212,11 +208,11 @@ class StreamProcess {
 	 * @param bool $rForce    Force the update even if unchanged.
 	 * @return mixed Update result.
 	 */
-	public static function updateStream($rStreamID, $rForce = false) {
+	public static function updateStream(int $rStreamID, bool $rForce = false) {
 		if (!SettingsManager::get('enable_cache')) {
 			return false;
 		}
-		self::insertCacheSignalOnce(array('type' => 'update_stream', 'id' => $rStreamID));
+		self::insertCacheSignalOnce(['type' => 'update_stream', 'id' => $rStreamID]);
 		return true;
 	}
 
@@ -226,11 +222,11 @@ class StreamProcess {
 	 * @param int[] $rStreamIDs Stream ids.
 	 * @return void
 	 */
-	public static function updateStreams($rStreamIDs) {
+	public static function updateStreams(array $rStreamIDs) {
 		if (!SettingsManager::get('enable_cache')) {
 			return;
 		}
-		self::insertCacheSignalOnce(array('type' => 'update_streams', 'id' => $rStreamIDs));
+		self::insertCacheSignalOnce(['type' => 'update_streams', 'id' => $rStreamIDs]);
 	}
 
 	/**
@@ -245,7 +241,7 @@ class StreamProcess {
 	 * @param bool  $rLoopback            Loopback streams never overlay a logo.
 	 * @return string `-i <logo> -filter_complex "..."`, or '' when no logo applies.
 	 */
-	private static function buildLogoFilterOptions(array &$rTranscodeAttributes, $rLoopback) {
+	private static function buildLogoFilterOptions(array &$rTranscodeAttributes, bool $rLoopback) {
 		if (!isset($rTranscodeAttributes[16]) || $rLoopback) {
 			return '';
 		}
@@ -253,9 +249,9 @@ class StreamProcess {
 		$rLogoPath = $rAttr[16]['val'];
 		$rPos = (isset($rAttr[16]['pos']) && $rAttr[16]['pos'] !== '10:10') ? $rAttr[16]['pos'] : '10:main_h-overlay_h-10';
 
-		$rChain = array();
+		$rChain = [];
 		$rBase = '[0:v]';
-		$rVideoFilters = array();
+		$rVideoFilters = [];
 		if (isset($rAttr[17])) {
 			$rVideoFilters[] = 'yadif';
 		}
@@ -285,12 +281,12 @@ class StreamProcess {
 	 * @param string $rSourcePath Source URL/path to probe.
 	 * @return string CUVID input-codec flag, or ''.
 	 */
-	private static function resolveGpuInputCodec($rGpuOptions, $rSourcePath) {
+	private static function resolveGpuInputCodec(string $rGpuOptions, string $rSourcePath) {
 		if (empty($rGpuOptions)) {
 			return '';
 		}
 		$rFFProbeOutput = FFprobeRunner::probeStream($rSourcePath);
-		if (in_array($rFFProbeOutput['codecs']['video']['codec_name'], array('h264', 'hevc', 'mjpeg', 'mpeg1', 'mpeg2', 'mpeg4', 'vc1', 'vp8', 'vp9'))) {
+		if (in_array($rFFProbeOutput['codecs']['video']['codec_name'], ['h264', 'hevc', 'mjpeg', 'mpeg1', 'mpeg2', 'mpeg4', 'vc1', 'vp8', 'vp9'])) {
 			return '-c:v ' . $rFFProbeOutput['codecs']['video']['codec_name'] . '_cuvid';
 		}
 		return '';
@@ -327,7 +323,7 @@ class StreamProcess {
 	 * @param array  $rServers       Server registry (for remote subtitle fetch).
 	 * @return array{0:string,1:string} [$rSubtitlesImport, $rSubtitlesMetadata].
 	 */
-	private static function buildSubtitleImport($rSubtitlesJson, $rServers) {
+	private static function buildSubtitleImport(string $rSubtitlesJson, array $rServers) {
 		$rSubtitles = json_decode($rSubtitlesJson, true);
 		$rSubtitlesImport = '';
 		$rSubtitlesMetadata = '';
@@ -348,7 +344,7 @@ class StreamProcess {
 				$rSubtitlesMetadata .= '-map ' . ($i + 1) . ' -metadata:s:s:' . $i . ' title=' . escapeshellcmd($rSubtitles['names'][$i]) . ' -metadata:s:s:' . $i . ' language=' . escapeshellcmd($rSubtitles['names'][$i]) . ' ';
 			}
 		}
-		return array($rSubtitlesImport, $rSubtitlesMetadata);
+		return [$rSubtitlesImport, $rSubtitlesMetadata];
 	}
 
 	/**
@@ -361,7 +357,7 @@ class StreamProcess {
 	 * @param mixed       $rRemoveSubtitles Truthy (== 1) to drop subtitle streams.
 	 * @return string The `-map ...` fragment.
 	 */
-	private static function resolveOutputMap($rCustomMap, $rRemoveSubtitles) {
+	private static function resolveOutputMap(?string $rCustomMap, mixed $rRemoveSubtitles) {
 		if (!empty($rCustomMap)) {
 			return escapeshellcmd($rCustomMap) . ' -copy_unknown ';
 		}
@@ -377,7 +373,7 @@ class StreamProcess {
 	 * @param string $rContainer Target container (mp4/mkv/…).
 	 * @return string ffmpeg subtitle codec: mov_text (mp4), srt (mkv), else copy.
 	 */
-	private static function subtitleCodecForContainer($rContainer) {
+	private static function subtitleCodecForContainer(string $rContainer) {
 		if ($rContainer == 'mp4') {
 			return 'mov_text';
 		}
@@ -404,11 +400,11 @@ class StreamProcess {
 	 * @param string $rPath Absolute filesystem path recorded in stream_source.
 	 * @return bool
 	 */
-	private static function isLocallyMountedPath($rPath) {
+	private static function isLocallyMountedPath(string $rPath) {
 		if (!is_string($rPath) || $rPath === '') {
 			return false;
 		}
-		$rSharedPrefixes = SettingsManager::get('shared_mount_prefixes', array());
+		$rSharedPrefixes = SettingsManager::get('shared_mount_prefixes', []);
 		foreach ($rSharedPrefixes as $rPrefix) {
 			if ($rPrefix !== '' && strncmp($rPath, $rPrefix, strlen($rPrefix)) === 0) {
 				return file_exists($rPath);
@@ -431,7 +427,7 @@ class StreamProcess {
 	 * @param mixed  $rServers Server registry (array keyed by server id).
 	 * @return array{0:int,1:string} [serverId, sourcePath]
 	 */
-	private static function resolveChannelSource($rSource, $rServers) {
+	private static function resolveChannelSource(string $rSource, mixed $rServers) {
 		if (substr($rSource, 0, 2) == 's:') {
 			$rSplit = explode(':', $rSource, 3);
 			$rServerID = intval($rSplit[1]);
@@ -453,7 +449,7 @@ class StreamProcess {
 			$rServerID = SERVER_ID;
 			$rSourcePath = $rSource;
 		}
-		return array($rServerID, $rSourcePath);
+		return [$rServerID, $rSourcePath];
 	}
 
 	/**
@@ -470,7 +466,7 @@ class StreamProcess {
 	 * @param int    $rStreamID        Stream id (segment/playlist filenames).
 	 * @return string The `-f hls …` output fragment.
 	 */
-	private static function buildHlsMpegtsOutput($rOptions, $rSegmentSettings, $rKeyFrames, $rInitTime, $rStreamID) {
+	private static function buildHlsMpegtsOutput(string $rOptions, array $rSegmentSettings, string $rKeyFrames, int $rInitTime, int $rStreamID) {
 		return $rOptions . ' -individual_header_trailer 0 -f hls -hls_init_time ' . $rInitTime
 			. ' -hls_time ' . intval($rSegmentSettings['seg_time'])
 			. ' -hls_list_size ' . intval($rSegmentSettings['seg_list_size'])
@@ -496,7 +492,7 @@ class StreamProcess {
 	 * @param string $rIngestSock Daemon ingest socket (from FanoutClient::registerIngest()).
 	 * @return string The `-f tee …` output fragment.
 	 */
-	private static function buildHlsTeeOutput($rOptions, $rSegmentSettings, $rKeyFrames, $rInitTime, $rStreamID, $rIngestSock) {
+	private static function buildHlsTeeOutput($rOptions, $rSegmentSettings, $rKeyFrames, $rInitTime, $rStreamID, string $rIngestSock) {
 		$rHls = '[f=hls'
 			. ':hls_init_time=' . $rInitTime
 			. ':hls_time=' . intval($rSegmentSettings['seg_time'])
@@ -531,7 +527,7 @@ class StreamProcess {
 		}
 		$rCodec = strtolower(trim((string) $rCodec));
 		$rTune = '';
-		if (in_array($rCodec, array('libx264', 'libx265'), true)) {
+		if (in_array($rCodec, ['libx264', 'libx265'], true)) {
 			$rTune = '-tune zerolatency ';
 		} elseif (substr($rCodec, -6) === '_nvenc') {
 			$rTune = '-zerolatency 1 ';
@@ -548,7 +544,7 @@ class StreamProcess {
 	 * @param string $rTarget     The rtmp:// URL or escaped push URL.
 	 * @return string The `… -f flv … <target> ` output fragment.
 	 */
-	private static function buildFlvOutput($rFLVOptions, $rTarget) {
+	private static function buildFlvOutput(string $rFLVOptions, string $rTarget) {
 		return $rFLVOptions . ' -f flv -flvflags no_duration_filesize ' . $rTarget . ' ';
 	}
 
@@ -566,7 +562,7 @@ class StreamProcess {
 	 * @param array $rSettings          Global settings (analyze/probesize/slack).
 	 * @return array{0:int,1:int|string,2:int} [probesize, analyzeDuration, timeout]
 	 */
-	private static function resolveProbeSettings($rOnDemand, $rProbesizeOndemand, $rLLOD, $rSettings) {
+	private static function resolveProbeSettings(mixed $rOnDemand, mixed $rProbesizeOndemand, bool $rLLOD, array $rSettings) {
 		if ($rOnDemand == 1) {
 			$rProbesize = intval($rProbesizeOndemand) ?: 1000000;
 			$rAnalyseDuration = ($rLLOD ? '500000' : '10000000');
@@ -575,7 +571,7 @@ class StreamProcess {
 			$rProbesize = abs(intval($rSettings['probesize']));
 		}
 		$rTimeout = intval($rAnalyseDuration / 1000000) + $rSettings['probe_extra_wait'];
-		return array($rProbesize, $rAnalyseDuration, $rTimeout);
+		return [$rProbesize, $rAnalyseDuration, $rTimeout];
 	}
 
 	/**
@@ -591,7 +587,7 @@ class StreamProcess {
 	 * @param mixed  $rCurrentSource  Last-used source, or empty.
 	 * @return array The (possibly) reordered source list, re-indexed.
 	 */
-	private static function rotateSourcesPastCurrent($rSources, $rPriorityBackup, $rCurrentSource) {
+	private static function rotateSourcesPastCurrent(array $rSources, mixed $rPriorityBackup, mixed $rCurrentSource) {
 		if ($rPriorityBackup == 1 || empty($rCurrentSource)) {
 			return $rSources;
 		}
@@ -620,7 +616,7 @@ class StreamProcess {
 	 * @param string $rHeaderLine e.g. 'X-XC_VM-Detect:1'.
 	 * @return array The argument list with the header applied.
 	 */
-	private static function appendHeaderArgument($rArguments, $rHeaderLine) {
+	private static function appendHeaderArgument(array $rArguments, string $rHeaderLine) {
 		$rApplied = false;
 		foreach (array_keys($rArguments) as $rID) {
 			if ($rArguments[$rID]['argument_key'] == 'headers') {
@@ -629,7 +625,7 @@ class StreamProcess {
 			}
 		}
 		if (!$rApplied) {
-			$rArguments[] = array('value' => $rHeaderLine, 'argument_key' => 'headers', 'argument_cat' => 'fetch', 'argument_wprotocol' => 'http', 'argument_type' => 'text', 'argument_cmd' => "-headers '%s" . "\r\n" . "'");
+			$rArguments[] = ['value' => $rHeaderLine, 'argument_key' => 'headers', 'argument_cat' => 'fetch', 'argument_wprotocol' => 'http', 'argument_type' => 'text', 'argument_cmd' => "-headers '%s" . "\r\n" . "'"];
 		}
 		return $rArguments;
 	}
@@ -643,7 +639,7 @@ class StreamProcess {
 	 * @param mixed $rAllowHevc     player_allow_hevc setting, passed to the compatibility check.
 	 * @return array{0:int,1:?string,2:?string,3:mixed} [compatible, audioCodec, videoCodec, resolution]
 	 */
-	private static function resolveStreamCodecMeta($rFFProbeOutput, $rAllowHevc) {
+	private static function resolveStreamCodecMeta(mixed $rFFProbeOutput, mixed $rAllowHevc) {
 		$rCompatible = 0;
 		$rAudioCodec = $rVideoCodec = $rResolution = null;
 
@@ -654,11 +650,11 @@ class StreamProcess {
 			$rResolution = isset($rFFProbeOutput['codecs']['video']['height']) ? $rFFProbeOutput['codecs']['video']['height'] : null;
 
 			if ($rResolution) {
-				$rResolution = StreamSorter::getNearest(array(240, 360, 480, 576, 720, 1080, 1440, 2160), $rResolution);
+				$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 			}
 		}
 
-		return array($rCompatible, $rAudioCodec, $rVideoCodec, $rResolution);
+		return [$rCompatible, $rAudioCodec, $rVideoCodec, $rResolution];
 	}
 
 	/**
@@ -670,7 +666,7 @@ class StreamProcess {
 	 * @param mixed $rACodec     resolved output -acodec ('' when absent).
 	 * @return string '-bsf:a aac_adtstoasc' when applicable, otherwise ''.
 	 */
-	private static function aacBitstreamFilter($rContainer, $rAudioCodec, $rACodec) {
+	private static function aacBitstreamFilter(mixed $rContainer, mixed $rAudioCodec, mixed $rACodec) {
 		return (!stristr($rContainer, 'flv') && $rAudioCodec === 'aac' && $rACodec === 'copy') ? '-bsf:a aac_adtstoasc' : '';
 	}
 
@@ -681,7 +677,7 @@ class StreamProcess {
 	 * @param array $rArguments Stream arguments (each an assoc array).
 	 * @return bool
 	 */
-	private static function hasSkipFFProbe($rArguments) {
+	private static function hasSkipFFProbe(array $rArguments) {
 		foreach ($rArguments as $rArg) {
 			if ($rArg['argument_key'] == 'skip_ffprobe' && $rArg['value'] == 1) {
 				return true;
@@ -697,13 +693,13 @@ class StreamProcess {
 	 * @return array
 	 */
 	private static function skipFFProbeOutput() {
-		return array(
-			'codecs' => array(
-				'video' => array('codec_name' => 'h264', 'codec_type' => 'video', 'height' => 1080),
-				'audio' => array('codec_name' => 'aac', 'codec_type' => 'audio')
-			),
+		return [
+			'codecs' => [
+				'video' => ['codec_name' => 'h264', 'codec_type' => 'video', 'height' => 1080],
+				'audio' => ['codec_name' => 'aac', 'codec_type' => 'audio']
+			],
 			'container' => 'mpegts'
-		);
+		];
 	}
 
 	/**
@@ -715,7 +711,7 @@ class StreamProcess {
 	 * @param mixed $rStreamID Stream id; its "<id>_" marks the stream's own segment line.
 	 * @return int Next segment number, or 0.
 	 */
-	private static function resolveDelaySegmentStart($rLines, $rStreamID) {
+	private static function resolveDelaySegmentStart(array $rLines, mixed $rStreamID) {
 		$rLast = $rLines[count($rLines) - 1];
 		$rPrev = $rLines[count($rLines) - 2];
 		$rTarget = stristr($rLast, $rStreamID . '_') ? $rLast : $rPrev;
@@ -733,7 +729,7 @@ class StreamProcess {
 	 * @param int   $rSegmentStart Resume segment number (0 = fresh).
 	 * @return int Seconds to sleep.
 	 */
-	private static function resolveDelaySleepTime($rDelayMinutes, $rSegmentStart) {
+	private static function resolveDelaySleepTime(mixed $rDelayMinutes, int $rSegmentStart) {
 		$rSleepTime = $rDelayMinutes * 60;
 		if ($rSegmentStart > 0) {
 			$rSleepTime -= ($rSegmentStart - 1) * 10;
@@ -752,7 +748,7 @@ class StreamProcess {
 	 * @param int $rStreamID Stream id.
 	 * @return void
 	 */
-	private static function writeStreamKeyIv($rStreamID) {
+	private static function writeStreamKeyIv(int $rStreamID) {
 		$rKey = openssl_random_pseudo_bytes(16);
 		file_put_contents(STREAMS_PATH . $rStreamID . '_.key', $rKey);
 		$rIVSize = openssl_cipher_iv_length('AES-128-CBC');
@@ -767,7 +763,7 @@ class StreamProcess {
 	 * @param int $rStreamID Stream id.
 	 * @return void
 	 */
-	private static function clearStreamPidSegments($rStreamID) {
+	private static function clearStreamPidSegments(int $rStreamID) {
 		shell_exec('rm -f ' . STREAMS_PATH . intval($rStreamID) . '_*.ts');
 		if (file_exists(STREAMS_PATH . $rStreamID . '_.pid')) {
 			unlink(STREAMS_PATH . $rStreamID . '_.pid');
@@ -784,7 +780,7 @@ class StreamProcess {
 	 * @param string $rSuffix   Sidecar suffix ('_.pid' or '_.monitor').
 	 * @return int PID, or 0 if none.
 	 */
-	private static function pidFromFileOrColumn($rStreamID, $rColumn, $rSuffix) {
+	private static function pidFromFileOrColumn(int $rStreamID, string $rColumn, string $rSuffix) {
 		if (file_exists(STREAMS_PATH . $rStreamID . $rSuffix)) {
 			return intval(file_get_contents(STREAMS_PATH . $rStreamID . $rSuffix));
 		}
@@ -802,7 +798,7 @@ class StreamProcess {
 	 * @param bool $rWithMonitor Also clear monitor_pid (full stop vs. movie stop).
 	 * @return void
 	 */
-	private static function resetStreamServerRow($rStreamID, $rWithMonitor = false) {
+	private static function resetStreamServerRow(int $rStreamID, bool $rWithMonitor = false) {
 		$rMonitor = $rWithMonitor ? ',`monitor_pid` = NULL' : '';
 		self::db()->query('UPDATE `streams_servers` SET `bitrate` = NULL,`current_source` = NULL,`to_analyze` = 0,`pid` = NULL,`stream_started` = NULL,`stream_info` = NULL,`audio_codec` = NULL,`video_codec` = NULL,`resolution` = NULL,`compatible` = 0,`stream_status` = 0' . $rMonitor . ' WHERE `stream_id` = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
 	}
@@ -893,7 +889,7 @@ class StreamProcess {
 			if (($rStream['stream_info']['gen_timestamps'] == 1 || empty($rProtocol)) && $rStream['stream_info']['type_key'] != 'created_live') {
 				$rGenPTS = '-fflags +genpts -async 1';
 			} else {
-				if (is_array($rFFProbeOutput) && isset($rFFProbeOutput['codecs']['audio']['codec_name']) && in_array($rFFProbeOutput['codecs']['audio']['codec_name'], array('ac3', 'eac3')) && $rSettings['dts_legacy_ffmpeg']) {
+				if (is_array($rFFProbeOutput) && isset($rFFProbeOutput['codecs']['audio']['codec_name']) && in_array($rFFProbeOutput['codecs']['audio']['codec_name'], ['ac3', 'eac3']) && $rSettings['dts_legacy_ffmpeg']) {
 					$rFFMPEG_CPU = FFMPEG_BIN_40;
 				}
 
@@ -910,12 +906,12 @@ class StreamProcess {
 
 			if (!$rStream['server_info']['parent_id'] && $rStream['stream_info']['enable_transcode'] == 1 && $rStream['stream_info']['type_key'] != 'created_live') {
 				if ($rStream['stream_info']['transcode_profile_id'] == -1) {
-					$rStream['stream_info']['transcode_attributes'] = array_merge(StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'transcode'), json_decode((string) $rStream['stream_info']['transcode_attributes'], true) ?: array());
+					$rStream['stream_info']['transcode_attributes'] = array_merge(StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'transcode'), json_decode((string) $rStream['stream_info']['transcode_attributes'], true) ?: []);
 				} else {
-					$rStream['stream_info']['transcode_attributes'] = json_decode((string) $rStream['stream_info']['profile_options'], true) ?: array();
+					$rStream['stream_info']['transcode_attributes'] = json_decode((string) $rStream['stream_info']['profile_options'], true) ?: [];
 				}
 			} else {
-				$rStream['stream_info']['transcode_attributes'] = array();
+				$rStream['stream_info']['transcode_attributes'] = [];
 			}
 
 			$rFFMPEG = ((isset($rStream['stream_info']['transcode_attributes']['gpu']) ? $rFFMPEG_GPU : $rFFMPEG_CPU)) . ' -y -nostdin -hide_banner -loglevel ' . (($rSettings['ffmpeg_warnings'] ? 'warning' : 'error')) . ' -err_detect ignore_err -thread_queue_size 1024 ' . $rOptions . ' {GEN_PTS} {READ_NATIVE} ' . $rLLODInputFlags . '-probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' -progress "' . $rProgressFile . '" {CONCAT} -i {STREAM_SOURCE} {LOGO} -max_muxing_queue_size 1024 ';
@@ -926,12 +922,12 @@ class StreamProcess {
 				$rStream['stream_info']['transcode_attributes']['-sn'] = '';
 			}
 		} else {
-			$rStream['stream_info']['transcode_attributes'] = array();
+			$rStream['stream_info']['transcode_attributes'] = [];
 			$rFFMPEG = ((stripos($rStream['stream_info']['custom_ffmpeg'], 'nvenc') !== false ? $rFFMPEG_GPU : $rFFMPEG_CPU)) . ' -y -nostdin -hide_banner -loglevel ' . (($rSettings['ffmpeg_warnings'] ? 'warning' : 'error')) . ' -progress "' . $rProgressFile . '" ' . $rStream['stream_info']['custom_ffmpeg'];
 		}
 
 		$rLLODOptions = ($rLLOD && !$rLoopback ? self::llodOutputOptions($rStream['stream_info']['transcode_attributes']) : '');
-		$rOutputs = array();
+		$rOutputs = [];
 
 		if ($rLoopback) {
 			$rOptions = '{MAP}';
@@ -1082,13 +1078,13 @@ class StreamProcess {
 
 		// The fetch identity the daemon's own puller uses for this stream
 		// (user_agent / proxy / cookie resolution is shared, not re-derived).
-		$rSource = FanoutClient::buildSource(array('stream_source' => json_encode(array($data['source']))), $rArgs);
+		$rSource = FanoutClient::buildSource(['stream_source' => json_encode([$data['source']])], $rArgs);
 
-		$rCmd = array(
+		$rCmd = [
 			$data['binary'], 'remux',
 			'-loglevel', (!empty($rSettings['ffmpeg_warnings']) ? 'warning' : 'error'),
 			'-i', escapeshellarg($data['source']),
-		);
+		];
 		if ($rSource['ua'] !== '') {
 			$rCmd[] = '-user_agent ' . escapeshellarg($rSource['ua']);
 		}
@@ -1178,7 +1174,7 @@ class StreamProcess {
 	 */
 	private static function isNativeSource(string $rURL): bool {
 		$rScheme = strtolower((string) parse_url($rURL, PHP_URL_SCHEME));
-		return in_array($rScheme, array('http', 'https', 'udp', 'rtp'), true) && !StreamUtils::needsResolver($rURL);
+		return in_array($rScheme, ['http', 'https', 'udp', 'rtp'], true) && !StreamUtils::needsResolver($rURL);
 	}
 
 	/**
@@ -1193,14 +1189,14 @@ class StreamProcess {
 		// waited for the playlist; the daemon confirms a start by bytes arriving,
 		// which for ffmpeg comes after its own probe. Same budget.
 		$rStartTimeout = $rProbeSeconds + max(20, min($rSegTime * 3, 30));
-		return array(
+		return [
 			'stop_failures'          => max(0, intval($rSettings['stop_failures'] ?? 0)),
 			'stream_fail_sleep'      => max(1, intval($rSettings['stream_fail_sleep'] ?? 10)),
 			'on_demand'              => !empty($rServerInfo['on_demand']),
 			'on_demand_failure_exit' => !empty($rSettings['on_demand_failure_exit']),
 			'start_timeout_sec'      => $rStartTimeout,
 			'priority_backup_sec'    => (!empty($rSettings['priority_backup']) && $rSourceCount > 1 && empty($rServerInfo['parent_id'])) ? 300 : 0,
-		);
+		];
 	}
 
 	/**
@@ -1211,12 +1207,12 @@ class StreamProcess {
 	 */
 	private static function supervisorHealth(array $rStreamInfo, array $rSettings): array {
 		$rSegTime = max(1, intval($rSettings['seg_time'] ?? 10));
-		$rHealth = array(
+		$rHealth = [
 			'stall_sec'      => $rSegTime * 6, // the monitor's "playlist unchanged for seg_time × 6"
 			'audio_loss_sec' => !empty($rSettings['audio_restart_loss']) ? 30 : 0,
 			'fps_threshold'  => 0,
 			'fps_grace_sec'  => max(0, intval($rSettings['fps_delay'] ?? 0)),
-		);
+		];
 		if (intval($rStreamInfo['fps_restart'] ?? 0) === 1) {
 			// "FPS Threshold %": restart below this share of the stream's own rate.
 			$rPercent = intval($rStreamInfo['fps_threshold'] ?? 0) ?: 90;
@@ -1224,7 +1220,7 @@ class StreamProcess {
 		}
 		$rAuto = json_decode((string) ($rStreamInfo['auto_restart'] ?? ''), true);
 		if (is_array($rAuto) && !empty($rAuto['days']) && !empty($rAuto['at'])) {
-			$rHealth['auto_restart'] = array('days' => array_values((array) $rAuto['days']), 'at' => (string) $rAuto['at']);
+			$rHealth['auto_restart'] = ['days' => array_values((array) $rAuto['days']), 'at' => (string) $rAuto['at']];
 		}
 		return $rHealth;
 	}
@@ -1258,7 +1254,7 @@ class StreamProcess {
 		if ($db->num_rows() <= 0) {
 			return null;
 		}
-		$rStream = array('stream_info' => $db->get_row());
+		$rStream = ['stream_info' => $db->get_row()];
 		$db->query('SELECT * FROM `streams_servers` WHERE stream_id = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
 		if ($db->num_rows() <= 0) {
 			return null;
@@ -1278,8 +1274,8 @@ class StreamProcess {
 
 		if ($rParentID > 0) {
 			$rLoopURL = (!is_null($rServers[SERVER_ID]['private_url_ip']) && !is_null($rServers[$rParentID]['private_url_ip']) ? $rServers[$rParentID]['private_url_ip'] : $rServers[$rParentID]['public_url_ip']);
-			$rSources = array($rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts');
-			$rLabels = array('Loopback: #' . $rParentID);
+			$rSources = [$rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts'];
+			$rLabels = ['Loopback: #' . $rParentID];
 		} else {
 			$rSources = array_values(array_filter(array_map('trim', (array) json_decode((string) $rInfo['stream_source'], true)), static fn(string $source): bool => $source !== ''));
 			$rLabels = $rSources;
@@ -1297,20 +1293,20 @@ class StreamProcess {
 
 		$rLoopback = $rParentID > 0;
 		$rLLOD = !empty($rStream['server_info']['on_demand']) && ($rLoopback || intval($rInfo['llod']) > 0);
-		$rSegmentSettings = array('seg_time' => intval($rSettings['seg_time']), 'seg_list_size' => intval($rSettings['seg_list_size']), 'seg_delete_threshold' => intval($rSettings['seg_delete_threshold']));
+		$rSegmentSettings = ['seg_time' => intval($rSettings['seg_time']), 'seg_list_size' => intval($rSettings['seg_list_size']), 'seg_delete_threshold' => intval($rSettings['seg_delete_threshold'])];
 		list($rProbesize, $rAnalyseDuration, $rTimeout) = self::resolveProbeSettings($rStream['server_info']['on_demand'], $rInfo['probesize_ondemand'], $rLLOD, $rSettings);
 
 		self::writeStreamKeyIv($rStreamID);
 		// Loopback included: the playlist declares AES-128 whenever encrypt_hls is
 		// on (HLSGenerator::tokenizeDaemonPlaylist), so a daemon fed without the
 		// key served plain segments no player could decrypt.
-		[$rEncKey, $rEncIV] = !empty($rSettings['encrypt_hls']) ? IngestFeeder::streamKey($rStreamID) : array(null, null);
+		[$rEncKey, $rEncIV] = !empty($rSettings['encrypt_hls']) ? IngestFeeder::streamKey($rStreamID) : [null, null];
 		$rIngestSock = FanoutClient::registerIngest($rStreamID, $rEncKey, $rEncIV);
 		if ($rIngestSock === null) {
 			return null; // no daemon to feed: the stream runs the legacy way
 		}
 
-		$rArgsByKey = array();
+		$rArgsByKey = [];
 		foreach ($rStream['stream_arguments'] as $rArg) {
 			$rArgsByKey[$rArg['argument_key']] = $rArg;
 		}
@@ -1332,7 +1328,7 @@ class StreamProcess {
 		}
 		$rPriority = !empty($rSettings['priority_backup']) && count($rSources) > 1 && !$rLoopback;
 
-		$rSpecSources = array();
+		$rSpecSources = [];
 		foreach ($rSources as $i => $rSource) {
 			$rStreamSource = StreamUtils::parseStreamURL($rSource);
 			$rProtocol = strtolower(substr($rStreamSource, 0, (int) strpos($rStreamSource, '://')));
@@ -1347,33 +1343,33 @@ class StreamProcess {
 			}
 			$rFetchOptions = implode(' ', StreamUtils::getArguments($rArguments, $rProtocol, 'fetch'));
 
-			$rFFMPEG = self::buildLive(array(
+			$rFFMPEG = self::buildLive([
 				'stream' => $rStream, 'settings' => $rSettings, 'servers' => $rServers,
 				'streamID' => $rStreamID, 'streamSource' => $rStreamSource,
 				'fetchOptions' => $rFetchOptions, 'ffprobe' => self::cachedProbe($rSource, $rStreamSource),
 				'protocol' => $rProtocol, 'source' => $rSource,
-				'segmentSettings' => $rSegmentSettings, 'externalPush' => array(),
+				'segmentSettings' => $rSegmentSettings, 'externalPush' => [],
 				'probesize' => $rProbesize, 'analyseDuration' => $rAnalyseDuration,
 				'llod' => $rLLOD, 'loopback' => $rLoopback,
 				'segmentStart' => 0, 'delayActive' => false,
 				'ffmpegCpu' => $rFFMPEGCpu, 'ffmpegGpu' => $rFFMPEGGpu,
 				'ingestSock' => $rIngestSock, 'supervised' => true,
-			));
+			]);
 
-			$rEntry = array('label' => $rLabels[$i], 'cmd' => $rFFMPEG);
+			$rEntry = ['label' => $rLabels[$i], 'cmd' => $rFFMPEG];
 			if ($rNativeStream && !self::isNativeSource($rStreamSource)) {
 				self::noteProducer($rStreamID, 'ffmpeg runs source #' . $i . ': ' . strtolower((string) parse_url($rStreamSource, PHP_URL_SCHEME)) . ':// is not a scheme the remuxer reads');
 			}
 			if ($rNativeStream && self::isNativeSource($rStreamSource)) {
-				$rNativeArgs = array();
+				$rNativeArgs = [];
 				foreach ($rArguments as $rArg) {
 					$rNativeArgs[$rArg['argument_key']] = $rArg;
 				}
-				$rEntry['cmd'] = self::buildNativeLive(array(
+				$rEntry['cmd'] = self::buildNativeLive([
 					'streamID' => $rStreamID, 'source' => $rStreamSource, 'arguments' => $rNativeArgs,
 					'segmentSettings' => $rSegmentSettings, 'ingestSock' => $rIngestSock,
 					'settings' => $rSettings, 'binary' => FanoutClient::binaryPath(),
-				));
+				]);
 				if ($rBackend === 'auto') {
 					$rEntry['fallback_cmd'] = $rFFMPEG;
 				}
@@ -1385,7 +1381,7 @@ class StreamProcess {
 			$rSpecSources[] = $rEntry;
 		}
 
-		return array(
+		return [
 			'sources'     => $rSpecSources,
 			'policy'      => self::supervisorPolicy($rStream['server_info'], $rSettings, count($rSpecSources), intval($rTimeout)),
 			'health'      => self::supervisorHealth($rInfo, $rSettings),
@@ -1396,7 +1392,7 @@ class StreamProcess {
 			// Both producers name this stream's playlist, and nothing else does:
 			// an encoder that outlived a daemon restart is recognised by it.
 			'adopt_match' => STREAMS_PATH . $rStreamID . '_.m3u8',
-		);
+		];
 	}
 
 	/**
@@ -1417,7 +1413,7 @@ class StreamProcess {
 			}
 		}
 		$rPath = strtolower((string) parse_url($rStreamSource, PHP_URL_PATH));
-		return array('container' => (substr($rPath, -5) === '.m3u8' ? 'hls' : 'mpegts'), 'codecs' => array());
+		return ['container' => (substr($rPath, -5) === '.m3u8' ? 'hls' : 'mpegts'), 'codecs' => []];
 	}
 
 	/**
@@ -1426,7 +1422,7 @@ class StreamProcess {
 	 * hand-over without a restart adopts it.
 	 */
 	private static function killPhpMonitor(int $rStreamID): void {
-		$rCandidates = array();
+		$rCandidates = [];
 		if (file_exists(STREAMS_PATH . $rStreamID . '_.monitor')) {
 			$rCandidates[] = intval(@file_get_contents(STREAMS_PATH . $rStreamID . '_.monitor'));
 		}
@@ -1573,7 +1569,7 @@ class StreamProcess {
 	 */
 	private static function killProducer(int $rStreamID, bool $rKeepAdoptable): bool {
 		$rPID = self::pidFromFileOrColumn($rStreamID, 'pid', '_.pid');
-		if ($rPID <= 0 || !ProcessChecker::checkPID($rPID, array($rStreamID . '_.m3u8', $rStreamID . '_%d.ts', 'LLOD[' . $rStreamID . ']', 'Loopback[' . $rStreamID . ']'))) {
+		if ($rPID <= 0 || !ProcessChecker::checkPID($rPID, [$rStreamID . '_.m3u8', $rStreamID . '_%d.ts', 'LLOD[' . $rStreamID . ']', 'Loopback[' . $rStreamID . ']'])) {
 			return false;
 		}
 		if ($rKeepAdoptable && strpos((string) @file_get_contents('/proc/' . $rPID . '/cmdline'), STREAMS_PATH . $rStreamID . '_.m3u8') !== false) {
@@ -1605,17 +1601,17 @@ class StreamProcess {
 		}
 		$rIDs = array_map('intval', array_keys($rStates['streams']));
 		if (count($rIDs) === 0) {
-			return array();
+			return [];
 		}
 		$db = self::db();
 		$db->query('SELECT `stream_id`, `pid`, `monitor_pid`, `stream_status`, `current_source`, `stream_started`, `stream_info`, `audio_codec`, `video_codec`, `resolution`, `bitrate`, `compatible` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', $rIDs) . ')', SERVER_ID);
-		$rRows = array();
+		$rRows = [];
 		foreach ($db->get_rows() as $rRow) {
 			$rRows[intval($rRow['stream_id'])] = $rRow;
 		}
 
-		$rKept = array();
-		$rChanged = array();
+		$rKept = [];
+		$rChanged = [];
 		foreach ($rStates['streams'] as $rID => $rState) {
 			$rID = intval($rID);
 			$rRow = $rRows[$rID] ?? null;
@@ -1628,8 +1624,8 @@ class StreamProcess {
 			$rKept[] = $rID;
 			$rSet = self::supervisedRowUpdate($rRow, $rState, (bool) SettingsManager::get('player_allow_hevc'), time());
 			if (count($rSet) > 0) {
-				$rCols = array();
-				$rVals = array();
+				$rCols = [];
+				$rVals = [];
 				foreach ($rSet as $rCol => $rVal) {
 					$rCols[] = '`' . $rCol . '` = ?';
 					$rVals[] = $rVal;
@@ -1671,10 +1667,10 @@ class StreamProcess {
 		} else {
 			$rStatus = 2;
 		}
-		$rWant = array(
+		$rWant = [
 			'stream_status' => $rStatus,
 			'pid'           => ($rRunning && intval($rState['pid'] ?? 0) > 0) ? intval($rState['pid']) : null,
-		);
+		];
 		if (intval($rState['daemon_pid'] ?? 0) > 0) {
 			$rWant['monitor_pid'] = intval($rState['daemon_pid']);
 		}
@@ -1694,10 +1690,10 @@ class StreamProcess {
 		// where stream/auth.php reads the viewer's video codec. Without it a
 		// supervised stream showed "? x ?" and "N/A", and every adaptive variant
 		// was dropped for want of a width.
-		$rMeta = (isset($rState['meta']) && is_array($rState['meta'])) ? $rState['meta'] : array();
+		$rMeta = (isset($rState['meta']) && is_array($rState['meta'])) ? $rState['meta'] : [];
 		$rInfo = json_decode((string) ($rRow['stream_info'] ?? ''), true);
 		if (!is_array($rInfo)) {
-			$rInfo = array();
+			$rInfo = [];
 		}
 		$rInfoWas = $rInfo;
 		if (!empty($rMeta['video_codec']) || !empty($rMeta['audio_codec'])) {
@@ -1705,23 +1701,23 @@ class StreamProcess {
 			$rAudio = (string) ($rMeta['audio_codec'] ?? '') ?: $rRow['audio_codec'];
 			$rWant['video_codec'] = $rVideo;
 			$rWant['audio_codec'] = $rAudio;
-			$rCodecs = array();
+			$rCodecs = [];
 			if ($rVideo) {
-				$rCodecs['video'] = array('codec_name' => $rVideo, 'codec_type' => 'video');
+				$rCodecs['video'] = ['codec_name' => $rVideo, 'codec_type' => 'video'];
 			}
 			if ($rAudio) {
-				$rCodecs['audio'] = array('codec_name' => $rAudio, 'codec_type' => 'audio');
+				$rCodecs['audio'] = ['codec_name' => $rAudio, 'codec_type' => 'audio'];
 			}
-			$rWant['compatible'] = intval(DiagnosticsService::checkCompatibility(array('codecs' => $rCodecs), $rAllowHevc));
+			$rWant['compatible'] = intval(DiagnosticsService::checkCompatibility(['codecs' => $rCodecs], $rAllowHevc));
 			foreach ($rCodecs as $rKind => $rCodec) {
 				$rInfo['codecs'][$rKind] = array_merge(
-					is_array($rInfo['codecs'][$rKind] ?? null) ? $rInfo['codecs'][$rKind] : array(),
+					is_array($rInfo['codecs'][$rKind] ?? null) ? $rInfo['codecs'][$rKind] : [],
 					$rCodec
 				);
 			}
 		}
 		if (intval($rMeta['height'] ?? 0) > 0) {
-			$rWant['resolution'] = StreamSorter::getNearest(array(240, 360, 480, 576, 720, 1080, 1440, 2160), intval($rMeta['height']));
+			$rWant['resolution'] = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], intval($rMeta['height']));
 			$rInfo['codecs']['video']['height'] = intval($rMeta['height']);
 		}
 		if (intval($rMeta['width'] ?? 0) > 0) {
@@ -1737,7 +1733,7 @@ class StreamProcess {
 			$rWant['stream_info'] = json_encode($rInfo);
 		}
 
-		$rSet = array();
+		$rSet = [];
 		foreach ($rWant as $rCol => $rVal) {
 			$rHave = $rRow[$rCol] ?? null;
 			if ((is_null($rVal) !== is_null($rHave)) || (!is_null($rVal) && (string) $rVal !== (string) $rHave)) {
@@ -1750,7 +1746,7 @@ class StreamProcess {
 	public static function createChannelItem($rStreamID, $rSource) {
 		global $rSettings, $rServers, $rFFMPEG_CPU, $rFFMPEG_GPU;
 		$db = self::db();
-		$rStream = array();
+		$rStream = [];
 		$rLoopback = false;
 		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t1.type = 3 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
 		if ($db->num_rows() > 0) {
@@ -1770,7 +1766,7 @@ class StreamProcess {
 				} else {
 					$rStream['stream_info']['transcode_attributes'] = json_decode($rStream['stream_info']['profile_options'], true);
 					if (!is_array($rStream['stream_info']['transcode_attributes'])) {
-						$rStream['stream_info']['transcode_attributes'] = array();
+						$rStream['stream_info']['transcode_attributes'] = [];
 					}
 
 					$rLogoOptions = self::buildLogoFilterOptions($rStream['stream_info']['transcode_attributes'], $rLoopback);
@@ -1787,7 +1783,7 @@ class StreamProcess {
 					$rCommand .= implode(' ', StreamUtils::parseTranscode($rStream['stream_info']['transcode_attributes'])) . ' ';
 					$rCommand .= '-strict -2 -mpegts_flags +initial_discontinuity -f mpegts "' . CREATED_PATH . intval($rStreamID) . '_' . $rMD5 . '.ts"';
 					$rCommand .= ' >/dev/null 2>"' . CREATED_PATH . intval($rStreamID) . '_' . $rMD5 . '.errors" & echo $! > "' . CREATED_PATH . intval($rStreamID) . '_' . $rMD5 . '.pid"';
-					$rCommand = str_replace(array('{GPU}', '{INPUT_CODEC}', '{LOGO}', '{STREAM_SOURCE}'), array($rGPUOptions, $rInputCodec, $rLogoOptions, escapeshellarg($rSourcePath)), $rCommand);
+					$rCommand = str_replace(['{GPU}', '{INPUT_CODEC}', '{LOGO}', '{STREAM_SOURCE}'], [$rGPUOptions, $rInputCodec, $rLogoOptions, escapeshellarg($rSourcePath)], $rCommand);
 				}
 
 				shell_exec($rCommand);
@@ -1805,7 +1801,7 @@ class StreamProcess {
 	 * @param bool $rStop     Mark the stream as fully stopped (not just restarting).
 	 * @return mixed Stop result.
 	 */
-	public static function stopStream($rStreamID, $rStop = false) {
+	public static function stopStream(int $rStreamID, bool $rStop = false) {
 		// A supervised stream is released FIRST: its producer dying is exactly
 		// what the fanout supervisor restarts, so killing it before the release
 		// would have the daemon start a replacement and the stream refuse to stop.
@@ -1815,13 +1811,13 @@ class StreamProcess {
 
 		$rMonitor = self::pidFromFileOrColumn($rStreamID, 'monitor_pid', '_.monitor');
 
-		if (0 < $rMonitor && ProcessChecker::checkPID($rMonitor, array('XC_VM[' . $rStreamID . ']')) && is_numeric($rMonitor)) {
+		if (0 < $rMonitor && ProcessChecker::checkPID($rMonitor, ['XC_VM[' . $rStreamID . ']']) && is_numeric($rMonitor)) {
 			posix_kill($rMonitor, 9);
 		}
 
 		$rPID = self::pidFromFileOrColumn($rStreamID, 'pid', '_.pid');
 
-		if (0 < $rPID && ProcessChecker::checkPID($rPID, array($rStreamID . '_.m3u8', $rStreamID . '_%d.ts', 'LLOD[' . $rStreamID . ']', 'Loopback[' . $rStreamID . ']')) && is_numeric($rPID)) {
+		if (0 < $rPID && ProcessChecker::checkPID($rPID, [$rStreamID . '_.m3u8', $rStreamID . '_%d.ts', 'LLOD[' . $rStreamID . ']', 'Loopback[' . $rStreamID . ']']) && is_numeric($rPID)) {
 			posix_kill($rPID, 9);
 		}
 
@@ -1850,13 +1846,13 @@ class StreamProcess {
 	 * @param bool $rForce    Force stop.
 	 * @return mixed Stop result.
 	 */
-	public static function stopMovie($rStreamID, $rForce = false) {
+	public static function stopMovie(int $rStreamID, bool $rForce = false) {
 		$db = self::db();
 		shell_exec("kill -9 `ps -ef | grep '/" . intval($rStreamID) . ".' | grep -v grep | awk '{print \$2}'`;");
 		if ($rForce) {
 			exec('rm ' . MAIN_HOME . 'content/vod/' . intval($rStreamID) . '.*');
 		} else {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', SERVER_ID, time(), json_encode(array('type' => 'delete_vod', 'id' => $rStreamID)));
+			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', SERVER_ID, time(), json_encode(['type' => 'delete_vod', 'id' => $rStreamID]));
 		}
 		self::resetStreamServerRow($rStreamID);
 		self::updateStream($rStreamID);
@@ -1869,7 +1865,7 @@ class StreamProcess {
 	 * @param int|null $rServerID Target server id, or null for the default.
 	 * @return mixed Queue result.
 	 */
-	public static function queueMovie($rStreamID, $rServerID = null) {
+	public static function queueMovie(int $rStreamID, ?int $rServerID = null) {
 		$db = self::db();
 		if (!$rServerID) {
 			$rServerID = SERVER_ID;
@@ -1885,7 +1881,7 @@ class StreamProcess {
 	 * @param int|null $rServerID  Target server id, or null for the default.
 	 * @return void
 	 */
-	public static function queueMovies($rStreamIDs, $rServerID = null) {
+	public static function queueMovies(array $rStreamIDs, ?int $rServerID = null) {
 		$db = self::db();
 		if (!$rServerID) {
 			$rServerID = SERVER_ID;
@@ -1912,7 +1908,7 @@ class StreamProcess {
 	 * @param int   $rType Refresh type.
 	 * @return void
 	 */
-	public static function refreshMovies($rIDs, $rType = 1) {
+	public static function refreshMovies(array $rIDs, int $rType = 1) {
 		$db = self::db();
 		if (0 < count($rIDs)) {
 			$db->query('DELETE FROM `watch_refresh` WHERE `type` = ? AND `stream_id` IN (' . implode(',', array_map('intval', $rIDs)) . ');', $rType);
@@ -1935,10 +1931,10 @@ class StreamProcess {
 	 * @param int $rStreamID Stream id.
 	 * @return mixed Start result.
 	 */
-	public static function startMovie($rStreamID) {
+	public static function startMovie(int $rStreamID) {
 		global $rSettings, $rServers, $rFFMPEG_CPU, $rFFMPEG_GPU;
 		$db = self::db();
-		$rStream = array();
+		$rStream = [];
 		$rLoopback = false;
 		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 0 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
 		if ($db->num_rows() > 0) {
@@ -1985,13 +1981,13 @@ class StreamProcess {
 					if ($rStream['stream_info']['enable_transcode'] == 1) {
 						if ($rStream['stream_info']['transcode_profile_id'] == -1) {
 							$rDecoded = json_decode($rStream['stream_info']['transcode_attributes'], true);
-							$rStream['stream_info']['transcode_attributes'] = array_merge(StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'transcode'), (is_array($rDecoded) ? $rDecoded : array()));
+							$rStream['stream_info']['transcode_attributes'] = array_merge(StreamUtils::getArguments($rStream['stream_arguments'], $rProtocol, 'transcode'), (is_array($rDecoded) ? $rDecoded : []));
 						} else {
 							$rDecoded = json_decode($rStream['stream_info']['profile_options'], true);
-							$rStream['stream_info']['transcode_attributes'] = (is_array($rDecoded) ? $rDecoded : array());
+							$rStream['stream_info']['transcode_attributes'] = (is_array($rDecoded) ? $rDecoded : []);
 						}
 					} else {
-						$rStream['stream_info']['transcode_attributes'] = array();
+						$rStream['stream_info']['transcode_attributes'] = [];
 					}
 
 					$rLogoOptions = self::buildLogoFilterOptions($rStream['stream_info']['transcode_attributes'], $rLoopback);
@@ -2001,14 +1997,14 @@ class StreamProcess {
 					$rMap = self::resolveOutputMap($rStream['stream_info']['custom_map'], $rStream['stream_info']['remove_subtitles']);
 					self::applyDefaultCopyCodecs($rStream['stream_info']['transcode_attributes']);
 					$rStream['stream_info']['transcode_attributes']['-scodec'] = self::subtitleCodecForContainer($rStream['stream_info']['target_container']);
-					$rOutputs = array();
+					$rOutputs = [];
 					$rOutputs[$rStream['stream_info']['target_container']] = '-movflags +faststart -dn ' . $rMap . ' -ignore_unknown ' . $rSubtitlesMetadata . ' ' . VOD_PATH . intval($rStreamID) . '.' . escapeshellcmd($rStream['stream_info']['target_container']);
 					foreach ($rOutputs as $rOutputCommand) {
 						$rFFMPEG .= implode(' ', StreamUtils::parseTranscode($rStream['stream_info']['transcode_attributes'])) . ' ';
 						$rFFMPEG .= $rOutputCommand;
 					}
 					$rFFMPEG .= ' >/dev/null 2>' . VOD_PATH . intval($rStreamID) . '.errors & echo $! > ' . VOD_PATH . intval($rStreamID) . '_.pid';
-					$rFFMPEG = str_replace(array('{GPU}', '{INPUT_CODEC}', '{LOGO}', '{FETCH_OPTIONS}', '{STREAM_SOURCE}', '{READ_NATIVE}'), array($rGPUOptions, $rInputCodec, $rLogoOptions, (empty($rFetchOptions) ? '' : $rFetchOptions), escapeshellarg($rMoviePath), (empty($rStream['stream_info']['custom_ffmpeg']) ? $rReadNative : '')), $rFFMPEG);
+					$rFFMPEG = str_replace(['{GPU}', '{INPUT_CODEC}', '{LOGO}', '{FETCH_OPTIONS}', '{STREAM_SOURCE}', '{READ_NATIVE}'], [$rGPUOptions, $rInputCodec, $rLogoOptions, (empty($rFetchOptions) ? '' : $rFetchOptions), escapeshellarg($rMoviePath), (empty($rStream['stream_info']['custom_ffmpeg']) ? $rReadNative : '')], $rFFMPEG);
 				}
 
 				shell_exec($rFFMPEG);
@@ -2029,11 +2025,11 @@ class StreamProcess {
 	 * @param int $rStreamID Stream id.
 	 * @return mixed Start result.
 	 */
-	public static function startLoopback($rStreamID) {
+	public static function startLoopback(int $rStreamID) {
 		global $rSettings, $rServers;
 		$db = self::db();
 		self::clearStreamPidSegments($rStreamID);
-		$rStream = array();
+		$rStream = [];
 		$db->query('SELECT * FROM `streams` WHERE direct_source = 0 AND id = ?', $rStreamID);
 		if ($db->num_rows() > 0) {
 			$rStream['stream_info'] = $db->get_row();
@@ -2048,9 +2044,9 @@ class StreamProcess {
 					$rPID = intval(file_get_contents(STREAMS_PATH . $rStreamID . '_.pid'));
 					$rLoopURL = (!is_null($rServers[SERVER_ID]['private_url_ip']) && !is_null($rServers[$rStream['server_info']['parent_id']]['private_url_ip']) ? $rServers[$rStream['server_info']['parent_id']]['private_url_ip'] : $rServers[$rStream['server_info']['parent_id']]['public_url_ip']);
 					$rCurrentSource = $rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts';
-					$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', null, time(), null, $rPID, json_encode(array()), $rCurrentSource, $rStreamID, SERVER_ID);
+					$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', null, time(), null, $rPID, json_encode([]), $rCurrentSource, $rStreamID, SERVER_ID);
 					self::updateStream($rStreamID);
-					return array('main_pid' => $rPID, 'stream_source' => $rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts', 'delay_enabled' => false, 'parent_id' => 0, 'delay_start_at' => null, 'playlist' => STREAMS_PATH . $rStreamID . '_.m3u8', 'transcode' => false, 'offset' => 0);
+					return ['main_pid' => $rPID, 'stream_source' => $rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts', 'delay_enabled' => false, 'parent_id' => 0, 'delay_start_at' => null, 'playlist' => STREAMS_PATH . $rStreamID . '_.m3u8', 'transcode' => false, 'offset' => 0];
 				}
 				return 0;
 			}
@@ -2068,22 +2064,22 @@ class StreamProcess {
 	 * @param string|null $rForceSource     Force a specific source URL.
 	 * @return mixed Start result.
 	 */
-	public static function startLLOD($rStreamID, $rStreamInfo, $rStreamArguments, $rForceSource = null) {
+	public static function startLLOD(int $rStreamID, array $rStreamInfo, array $rStreamArguments, ?string $rForceSource = null) {
 		$db = self::db();
 		self::clearStreamPidSegments($rStreamID);
-		$rSources = ($rForceSource ? array($rForceSource) : json_decode($rStreamInfo['stream_source'], true));
-		$rArgumentMap = array();
+		$rSources = ($rForceSource ? [$rForceSource] : json_decode($rStreamInfo['stream_source'], true));
+		$rArgumentMap = [];
 		foreach ($rStreamArguments as $rStreamArgument) {
-			$rArgumentMap[$rStreamArgument['argument_key']] = array('value' => $rStreamArgument['value'], 'argument_default_value' => $rStreamArgument['argument_default_value']);
+			$rArgumentMap[$rStreamArgument['argument_key']] = ['value' => $rStreamArgument['value'], 'argument_default_value' => $rStreamArgument['argument_default_value']];
 		}
 		// The key first: the segmenter hands it to the daemon when it registers
 		// its ingest, moments after it starts.
 		self::writeStreamKeyIv($rStreamID);
 		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php llod ' . intval($rStreamID) . ' "' . base64_encode(json_encode($rSources)) . '" "' . base64_encode(json_encode($rArgumentMap)) . '" >/dev/null 2>/dev/null & echo $! > ' . STREAMS_PATH . intval($rStreamID) . '_.pid');
 		$rPID = intval(file_get_contents(STREAMS_PATH . $rStreamID . '_.pid'));
-		$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', null, time(), null, $rPID, json_encode(array()), $rSources[0], $rStreamID, SERVER_ID);
+		$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', null, time(), null, $rPID, json_encode([]), $rSources[0], $rStreamID, SERVER_ID);
 		self::updateStream($rStreamID);
-		return array('main_pid' => $rPID, 'stream_source' => $rSources[0], 'delay_enabled' => false, 'parent_id' => 0, 'delay_start_at' => null, 'playlist' => STREAMS_PATH . $rStreamID . '_.m3u8', 'transcode' => false, 'offset' => 0);
+		return ['main_pid' => $rPID, 'stream_source' => $rSources[0], 'delay_enabled' => false, 'parent_id' => 0, 'delay_start_at' => null, 'playlist' => STREAMS_PATH . $rStreamID . '_.m3u8', 'transcode' => false, 'offset' => 0];
 	}
 
 	/**
@@ -2098,13 +2094,13 @@ class StreamProcess {
 	 * @param int         $rStartPos    Start position/offset.
 	 * @return mixed Start result.
 	 */
-	public static function startStream($rStreamID, $rFromCache = false, $rForceSource = null, $rLLOD = false, $rStartPos = 0) {
+	public static function startStream(int $rStreamID, bool $rFromCache = false, ?string $rForceSource = null, bool $rLLOD = false, int $rStartPos = 0) {
 		global $rSettings, $rServers, $rFFMPEG_CPU, $rFFMPEG_GPU, $rFFPROBE;
 		$db = self::db();
-		$rSegmentSettings = array('seg_time' => intval($rSettings['seg_time']), 'seg_list_size' => intval($rSettings['seg_list_size']), 'seg_delete_threshold' => intval($rSettings['seg_delete_threshold']));
+		$rSegmentSettings = ['seg_time' => intval($rSettings['seg_time']), 'seg_list_size' => intval($rSettings['seg_list_size']), 'seg_delete_threshold' => intval($rSettings['seg_delete_threshold'])];
 		@unlink(STREAMS_PATH . $rStreamID . '_.pid');
 
-		$rStream = array();
+		$rStream = [];
 		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 1 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
 
 		if ($db->num_rows() > 0) {
@@ -2124,12 +2120,12 @@ class StreamProcess {
 
 				if (!$rStream['server_info']['parent_id']) {
 					if ($rStream['stream_info']['type_key'] == 'created_live') {
-						$rSources = array(CREATED_PATH . $rStreamID . '_.list');
+						$rSources = [CREATED_PATH . $rStreamID . '_.list'];
 
 						if ($rStartPos > 0) {
-							$rCCOutput = array();
-							$rCCDuration = array();
-							$rCCInfo = json_decode($rStream['server_info']['cc_info'], true) ?: array();
+							$rCCOutput = [];
+							$rCCDuration = [];
+							$rCCInfo = json_decode($rStream['server_info']['cc_info'], true) ?: [];
 
 							foreach ($rCCInfo as $rItem) {
 								$rCCDuration[$rItem['path']] = intval(explode('.', $rItem['seconds'])[0]);
@@ -2165,7 +2161,7 @@ class StreamProcess {
 							}
 
 							if ($rValid) {
-								$rSources = array(CREATED_PATH . $rStreamID . '_.tlist');
+								$rSources = [CREATED_PATH . $rStreamID . '_.tlist'];
 								$rTList = '';
 
 								foreach ($rCCOutput as $rItem) {
@@ -2180,7 +2176,7 @@ class StreamProcess {
 
 					if (count($rSources) > 0) {
 						if (!empty($rForceSource)) {
-							$rSources = array($rForceSource);
+							$rSources = [$rForceSource];
 						} else {
 							$rSources = self::rotateSourcesPastCurrent($rSources, $rSettings['priority_backup'], $rStream['server_info']['current_source']);
 						}
@@ -2193,7 +2189,7 @@ class StreamProcess {
 					}
 
 					$rLoopURL = (!is_null($rServers[SERVER_ID]['private_url_ip']) && !is_null($rServers[$rStream['server_info']['parent_id']]['private_url_ip']) ? $rServers[$rStream['server_info']['parent_id']]['private_url_ip'] : $rServers[$rStream['server_info']['parent_id']]['public_url_ip']);
-					$rSources = array($rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts');
+					$rSources = [$rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts'];
 				}
 
 				if ($rStream['stream_info']['type_key'] == 'created_live' && file_exists(CREATED_PATH . $rStreamID . '_.info')) {
@@ -2211,7 +2207,7 @@ class StreamProcess {
 				$rRealSource = '';
 				$rStreamSource = '';
 				$rProtocol = '';
-				$rFFProbeOutput = array();
+				$rFFProbeOutput = [];
 				foreach ($rSources as $rSource) {
 					$rRealSource = $rSource;
 					$rStreamSource = StreamUtils::parseStreamURL($rSource);
@@ -2277,7 +2273,7 @@ class StreamProcess {
 							}
 						}
 
-						$rProbeCmd = str_replace(array('{FETCH_OPTIONS}', '{CONCAT}', '{STREAM_SOURCE}'), array($rProbeOptions, ($rStream['stream_info']['type_key'] == 'created_live' && !$rStream['server_info']['parent_id'] ? '-safe 0 -f concat' : ''), escapeshellarg($rStreamSource)), $rFFProbee);
+						$rProbeCmd = str_replace(['{FETCH_OPTIONS}', '{CONCAT}', '{STREAM_SOURCE}'], [$rProbeOptions, ($rStream['stream_info']['type_key'] == 'created_live' && !$rStream['server_info']['parent_id'] ? '-safe 0 -f concat' : ''), escapeshellarg($rStreamSource)], $rFFProbee);
 						$rFFProbeOutput = json_decode(shell_exec($rProbeCmd), true);
 
 						if ($rFFProbeOutput && isset($rFFProbeOutput['streams'])) {
@@ -2350,21 +2346,21 @@ class StreamProcess {
 					// encrypts the HLS segments it serves (ADR 0003, Phase B) —
 					// matching the panel's #EXT-X-KEY.
 					self::writeStreamKeyIv($rStreamID);
-					[$rEncKey, $rEncIV] = (!empty($rSettings['encrypt_hls']) && !$rDelayActive) ? IngestFeeder::streamKey(intval($rStreamID)) : array(null, null);
+					[$rEncKey, $rEncIV] = (!empty($rSettings['encrypt_hls']) && !$rDelayActive) ? IngestFeeder::streamKey(intval($rStreamID)) : [null, null];
 					$rIngestSock = !$rDelayActive ? FanoutClient::registerIngest(intval($rStreamID), $rEncKey, $rEncIV) : null;
 
-					$rFFMPEG = self::buildLive(array(
+					$rFFMPEG = self::buildLive([
 						'stream' => $rStream, 'settings' => $rSettings, 'servers' => $rServers,
 						'streamID' => $rStreamID, 'streamSource' => $rStreamSource,
 						'fetchOptions' => $rFetchOptions, 'ffprobe' => $rFFProbeOutput,
 						'protocol' => $rProtocol, 'source' => $rSource,
-						'segmentSettings' => $rSegmentSettings, 'externalPush' => array(),
+						'segmentSettings' => $rSegmentSettings, 'externalPush' => [],
 						'probesize' => $rProbesize, 'analyseDuration' => $rAnalyseDuration,
 						'llod' => $rLLOD, 'loopback' => $rLoopback,
 						'segmentStart' => $rSegmentStart, 'delayActive' => $rDelayActive,
 						'ffmpegCpu' => $rFFMPEG_CPU, 'ffmpegGpu' => $rFFMPEG_GPU,
 						'ingestSock' => $rIngestSock,
-					));
+					]);
 
 				shell_exec($rFFMPEG);
 				file_put_contents(STREAMS_PATH . $rStreamID . '_.ffmpeg', $rFFMPEG);
@@ -2395,17 +2391,17 @@ class StreamProcess {
 				$rDelayStartAt = ($rDelayEnabled ? time() + $rSleepTime : 0);
 
 				if ($rStream['stream_info']['enable_transcode']) {
-					$rFFProbeOutput = array();
+					$rFFProbeOutput = [];
 				}
 
 				list($rCompatible, $rAudioCodec, $rVideoCodec, $rResolution) = self::resolveStreamCodecMeta($rFFProbeOutput, SettingsManager::get('player_allow_hevc'));
 
 				$rFFProbeOutputSafe = isset($rFFProbeOutput) && is_array($rFFProbeOutput) ? $rFFProbeOutput : [];
-				$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`audio_codec` = ?, `video_codec` = ?, `resolution` = ?,`compatible` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rDelayStartAt, time(), json_encode($rFFProbeOutputSafe), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rPID, json_encode(array()), $rSource, $rStreamID, SERVER_ID);
+				$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`audio_codec` = ?, `video_codec` = ?, `resolution` = ?,`compatible` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rDelayStartAt, time(), json_encode($rFFProbeOutputSafe), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rPID, json_encode([]), $rSource, $rStreamID, SERVER_ID);
 				self::updateStream($rStreamID);
 				$rPlaylist = (!$rDelayEnabled ? STREAMS_PATH . $rStreamID . '_.m3u8' : DELAY_PATH . $rStreamID . '_.m3u8');
 
-				return array('main_pid' => $rPID, 'stream_source' => $rRealSource, 'delay_enabled' => $rDelayEnabled, 'parent_id' => $rStream['server_info']['parent_id'], 'delay_start_at' => $rDelayStartAt, 'playlist' => $rPlaylist, 'transcode' => $rStream['stream_info']['enable_transcode'], 'offset' => $rOffset);
+				return ['main_pid' => $rPID, 'stream_source' => $rRealSource, 'delay_enabled' => $rDelayEnabled, 'parent_id' => $rStream['server_info']['parent_id'], 'delay_start_at' => $rDelayStartAt, 'playlist' => $rPlaylist, 'transcode' => $rStream['stream_info']['enable_transcode'], 'offset' => $rOffset];
 			} else {
 				return false;
 			}

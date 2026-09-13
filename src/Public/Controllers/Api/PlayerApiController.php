@@ -24,11 +24,17 @@ use XcVm\Infrastructure\Cache\CacheReader;
 
 class PlayerApiController {
 	private $deny = true;
+
 	private array|false|null $userInfo = null;
+
 	private $domainName;
+
 	private $domain;
+
 	private $panelAPI = false;
+
 	private $offset = 0;
+
 	private $limit = 0;
 
 	/**
@@ -84,7 +90,7 @@ class PlayerApiController {
 		$this->domainName = DomainResolver::resolve(SERVER_ID);
 		$this->domain = parse_url($this->domainName)['host'] ?? '';
 
-		$rValidActions = array('get_epg', 200 => 'get_vod_categories', 201 => 'get_live_categories', 202 => 'get_live_streams', 203 => 'get_vod_streams', 204 => 'get_series_info', 205 => 'get_short_epg', 206 => 'get_series_categories', 207 => 'get_simple_data_table', 208 => 'get_series', 209 => 'get_vod_info');
+		$rValidActions = ['get_epg', 200 => 'get_vod_categories', 201 => 'get_live_categories', 202 => 'get_live_streams', 203 => 'get_vod_streams', 204 => 'get_series_info', 205 => 'get_short_epg', 206 => 'get_series_categories', 207 => 'get_simple_data_table', 208 => 'get_series', 209 => 'get_vod_info'];
 		$rAction = (!empty($rRequest['action']) && (in_array($rRequest['action'], $rValidActions) || array_key_exists($rRequest['action'], $rValidActions)) ? $rRequest['action'] : '');
 
 		if (isset($rValidActions[$rAction])) {
@@ -94,14 +100,14 @@ class PlayerApiController {
 		if ($this->panelAPI && empty($rAction)) {
 			$rGetChannels = true;
 		} else {
-			$rGetChannels = in_array($rAction, array('get_series', 'get_vod_streams', 'get_live_streams'));
+			$rGetChannels = in_array($rAction, ['get_series', 'get_vod_streams', 'get_live_streams']);
 		}
 
 		$rBouquets = $rGetChannels ? CacheReader::get('bouquets') : null;
 
 		$rCategories = null;
 
-		if ($this->panelAPI && empty($rAction) || in_array($rAction, array('get_vod_categories', 'get_series_categories', 'get_live_categories'))) {
+		if ($this->panelAPI && empty($rAction) || in_array($rAction, ['get_vod_categories', 'get_series_categories', 'get_live_categories'])) {
 			$rCategories = CacheReader::get('categories');
 		}
 		$rUserInfo = null;
@@ -255,13 +261,13 @@ class PlayerApiController {
 
 			if (is_numeric($rRequest['stream_id']) && !isset($rRequest['multi'])) {
 				$rMulti = false;
-				$rStreamIDs = array(intval($rRequest['stream_id']));
+				$rStreamIDs = [intval($rRequest['stream_id'])];
 			} else {
 				$rMulti = true;
 				$rStreamIDs = array_map('intval', explode(',', $rRequest['stream_id']));
 			}
 
-			$rEPGs = array();
+			$rEPGs = [];
 
 			if (count($rStreamIDs) > 0) {
 				foreach ($rStreamIDs as $rStreamID) {
@@ -294,7 +300,7 @@ class PlayerApiController {
 			exit();
 		}
 
-		echo json_encode(array());
+		echo json_encode([]);
 		exit();
 	}
 
@@ -302,7 +308,7 @@ class PlayerApiController {
 		global $rSettings, $rCached, $rRequest, $db;
 
 		$rSeriesID = (empty($rRequest['series_id']) ? 0 : intval($rRequest['series_id']));
-		$output = array();
+		$output = [];
 
 		if ($rCached) {
 			$rSeriesInfo = self::readStreamCache(SERIES_TMP_PATH . 'series_' . $rSeriesID);
@@ -321,17 +327,17 @@ class PlayerApiController {
 			return $output;
 		}
 		if (!is_array($rRows)) {
-			$rRows = array();
+			$rRows = [];
 		}
 
 		// Older cache entries / DB rows may lack newer columns; default them so
 		// the info block below does not raise undefined-key warnings. += only
 		// fills absent keys, leaving present values untouched.
-		$rSeriesInfo += array('title' => '', 'year' => '', 'cover' => '', 'plot' => '', 'cast' => '', 'director' => '', 'genre' => '', 'release_date' => '', 'last_modified' => '', 'youtube_trailer' => '', 'episode_run_time' => '', 'rating' => 0, 'seasons' => '', 'backdrop_path' => '', 'category_id' => '[]');
+		$rSeriesInfo += ['title' => '', 'year' => '', 'cover' => '', 'plot' => '', 'cast' => '', 'director' => '', 'genre' => '', 'release_date' => '', 'last_modified' => '', 'youtube_trailer' => '', 'episode_run_time' => '', 'rating' => 0, 'seasons' => '', 'backdrop_path' => '', 'category_id' => '[]'];
 
-		$output['seasons'] = array();
+		$output['seasons'] = [];
 
-		foreach ((!empty($rSeriesInfo['seasons']) ? array_values(json_decode($rSeriesInfo['seasons'], true)) : array()) as $rSeason) {
+		foreach ((!empty($rSeriesInfo['seasons']) ? array_values(json_decode($rSeriesInfo['seasons'], true)) : []) as $rSeason) {
 			$rSeason['cover'] = ImageUtils::validateURL($rSeason['cover']);
 			$rSeason['cover_big'] = ImageUtils::validateURL($rSeason['cover_big']);
 			$output['seasons'][] = $rSeason;
@@ -347,7 +353,7 @@ class PlayerApiController {
 
 		$rating = is_numeric($rSeriesInfo['rating']) ? floatval($rSeriesInfo['rating']) : 0.0;
 
-		$output['info'] = array('name' => StreamSorter::formatTitle($rSeriesInfo['title'], $rSeriesInfo['year']), 'title' => $rSeriesInfo['title'], 'year' => strval($rSeriesInfo['year']), 'cover' => ImageUtils::validateURL($rSeriesInfo['cover']), 'plot' => $rSeriesInfo['plot'], 'cast' => $rSeriesInfo['cast'], 'director' => $rSeriesInfo['director'], 'genre' => $rSeriesInfo['genre'], 'release_date' => $rSeriesInfo['release_date'], 'releaseDate' => $rSeriesInfo['release_date'], 'last_modified' => $rSeriesInfo['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesInfo['youtube_trailer'], 'episode_run_time' => strval($rSeriesInfo['episode_run_time']), 'category_id' => strval(json_decode($rSeriesInfo['category_id'], true)[0] ?? ''), 'category_ids' => json_decode($rSeriesInfo['category_id'], true));
+		$output['info'] = ['name' => StreamSorter::formatTitle($rSeriesInfo['title'], $rSeriesInfo['year']), 'title' => $rSeriesInfo['title'], 'year' => strval($rSeriesInfo['year']), 'cover' => ImageUtils::validateURL($rSeriesInfo['cover']), 'plot' => $rSeriesInfo['plot'], 'cast' => $rSeriesInfo['cast'], 'director' => $rSeriesInfo['director'], 'genre' => $rSeriesInfo['genre'], 'release_date' => $rSeriesInfo['release_date'], 'releaseDate' => $rSeriesInfo['release_date'], 'last_modified' => $rSeriesInfo['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesInfo['youtube_trailer'], 'episode_run_time' => strval($rSeriesInfo['episode_run_time']), 'category_id' => strval(json_decode($rSeriesInfo['category_id'], true)[0] ?? ''), 'category_ids' => json_decode($rSeriesInfo['category_id'], true)];
 
 		foreach ($rRows as $rSeason => $rEpisodes) {
 			foreach ($rEpisodes as $rEpisode) {
@@ -375,9 +381,9 @@ class PlayerApiController {
 					$rURL = '';
 				}
 
-				$rProperties = (!empty($rEpisodeData['movie_properties']) ? json_decode($rEpisodeData['movie_properties'], true) : array());
+				$rProperties = (!empty($rEpisodeData['movie_properties']) ? json_decode($rEpisodeData['movie_properties'], true) : []);
 				if (!is_array($rProperties)) {
-					$rProperties = array();
+					$rProperties = [];
 				}
 				$rProperties['cover_big'] = ImageUtils::validateURL($rProperties['cover_big'] ?? '');
 				$rProperties['movie_image'] = ImageUtils::validateURL($rProperties['movie_image'] ?? '');
@@ -394,24 +400,24 @@ class PlayerApiController {
 					}
 				}
 
-				$rSubtitles = array();
+				$rSubtitles = [];
 
 				if (is_array($rProperties['subtitle'] ?? null)) {
 					$i = 0;
 
 					foreach ($rProperties['subtitle'] as $rSubtitle) {
-						$rSubtitles[] = array('index' => $i, 'language' => ($rSubtitle['tags']['language'] ?: null), 'title' => ($rSubtitle['tags']['title'] ?: null));
+						$rSubtitles[] = ['index' => $i, 'language' => ($rSubtitle['tags']['language'] ?: null), 'title' => ($rSubtitle['tags']['title'] ?: null)];
 						$i++;
 					}
 				}
 
-				foreach (array('audio', 'video', 'subtitle') as $rKey) {
+				foreach (['audio', 'video', 'subtitle'] as $rKey) {
 					if (isset($rProperties[$rKey])) {
 						unset($rProperties[$rKey]);
 					}
 				}
 
-				$output['episodes'][$rSeason][] = array('id' => $rEpisode['stream_id'], 'episode_num' => $rEpisode['episode_num'], 'title' => $rEpisodeData['stream_display_name'], 'container_extension' => $rEpisodeData['target_container'], 'info' => $rProperties, 'subtitles' => $rSubtitles, 'custom_sid' => strval($rEpisodeData['custom_sid']), 'added' => ($rEpisodeData['added'] ?: ''), 'season' => $rSeason, 'direct_source' => $rURL);
+				$output['episodes'][$rSeason][] = ['id' => $rEpisode['stream_id'], 'episode_num' => $rEpisode['episode_num'], 'title' => $rEpisodeData['stream_display_name'], 'container_extension' => $rEpisodeData['target_container'], 'info' => $rProperties, 'subtitles' => $rSubtitles, 'custom_sid' => strval($rEpisodeData['custom_sid']), 'added' => ($rEpisodeData['added'] ?: ''), 'season' => $rSeason, 'direct_source' => $rURL];
 			}
 		}
 
@@ -423,7 +429,7 @@ class PlayerApiController {
 
 		$rCategoryIDSearch = (empty($rRequest['category_id']) ? null : intval($rRequest['category_id']));
 		$rMovieNum = 0;
-		$output = array();
+		$output = [];
 
 		if (count($this->userInfo['series_ids']) > 0) {
 			if ($rCached) {
@@ -451,7 +457,7 @@ class PlayerApiController {
 					foreach ($rCategoryIDs as $rCategoryID) {
 						if (!$rCategoryIDSearch || $rCategoryIDSearch == $rCategoryID) {
 							$rating = is_numeric($rSeriesItem['rating']) ? floatval($rSeriesItem['rating']) : 0.0;
-							$output[] = array('num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rSeriesItem['title'], $rSeriesItem['year']), 'title' => $rSeriesItem['title'], 'year' => strval($rSeriesItem['year']), 'stream_type' => 'series', 'series_id' => (int) $rSeriesItem['id'], 'cover' => ImageUtils::validateURL($rSeriesItem['cover']), 'plot' => $rSeriesItem['plot'], 'cast' => $rSeriesItem['cast'], 'director' => $rSeriesItem['director'], 'genre' => $rSeriesItem['genre'], 'release_date' => $rSeriesItem['release_date'], 'releaseDate' => $rSeriesItem['release_date'], 'last_modified' => $rSeriesItem['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesItem['youtube_trailer'], 'episode_run_time' => strval($rSeriesItem['episode_run_time']), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs);
+							$output[] = ['num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rSeriesItem['title'], $rSeriesItem['year']), 'title' => $rSeriesItem['title'], 'year' => strval($rSeriesItem['year']), 'stream_type' => 'series', 'series_id' => (int) $rSeriesItem['id'], 'cover' => ImageUtils::validateURL($rSeriesItem['cover']), 'plot' => $rSeriesItem['plot'], 'cast' => $rSeriesItem['cast'], 'director' => $rSeriesItem['director'], 'genre' => $rSeriesItem['genre'], 'release_date' => $rSeriesItem['release_date'], 'releaseDate' => $rSeriesItem['release_date'], 'last_modified' => $rSeriesItem['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesItem['youtube_trailer'], 'episode_run_time' => strval($rSeriesItem['episode_run_time']), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs];
 						}
 
 						if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
@@ -487,7 +493,7 @@ class PlayerApiController {
 						foreach ($rCategoryIDs as $rCategoryID) {
 							if (!$rCategoryIDSearch || $rCategoryIDSearch == $rCategoryID) {
 								$rating = is_numeric($rSeriesItem['rating']) ? floatval($rSeriesItem['rating']) : 0.0;
-								$output[] = array('num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rSeriesItem['title'], $rSeriesItem['year']), 'title' => $rSeriesItem['title'], 'year' => $rSeriesItem['year'], 'stream_type' => 'series', 'series_id' => (int) $rSeriesItem['id'], 'cover' => ImageUtils::validateURL($rSeriesItem['cover']), 'plot' => $rSeriesItem['plot'], 'cast' => $rSeriesItem['cast'], 'director' => $rSeriesItem['director'], 'genre' => $rSeriesItem['genre'], 'release_date' => $rSeriesItem['release_date'], 'releaseDate' => $rSeriesItem['release_date'], 'last_modified' => $rSeriesItem['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesItem['youtube_trailer'], 'episode_run_time' => $rSeriesItem['episode_run_time'], 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs);
+								$output[] = ['num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rSeriesItem['title'], $rSeriesItem['year']), 'title' => $rSeriesItem['title'], 'year' => $rSeriesItem['year'], 'stream_type' => 'series', 'series_id' => (int) $rSeriesItem['id'], 'cover' => ImageUtils::validateURL($rSeriesItem['cover']), 'plot' => $rSeriesItem['plot'], 'cast' => $rSeriesItem['cast'], 'director' => $rSeriesItem['director'], 'genre' => $rSeriesItem['genre'], 'release_date' => $rSeriesItem['release_date'], 'releaseDate' => $rSeriesItem['release_date'], 'last_modified' => $rSeriesItem['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesItem['youtube_trailer'], 'episode_run_time' => $rSeriesItem['episode_run_time'], 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs];
 							}
 
 							if (!$rCategoryIDSearch && !$rSettings['show_category_duplicates']) {
@@ -504,11 +510,11 @@ class PlayerApiController {
 
 	private function getVodCategories($rCategories) {
 		$rCategories = CategoryService::filterLoaded($rCategories, 'movie');
-		$output = array();
+		$output = [];
 
 		foreach ($rCategories as $rCategory) {
 			if (in_array($rCategory['id'], $this->userInfo['category_ids'])) {
-				$output[] = array('category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0);
+				$output[] = ['category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0];
 			}
 		}
 
@@ -517,11 +523,11 @@ class PlayerApiController {
 
 	private function getSeriesCategories($rCategories) {
 		$rCategories = CategoryService::filterLoaded($rCategories, 'series');
-		$output = array();
+		$output = [];
 
 		foreach ($rCategories as $rCategory) {
 			if (in_array($rCategory['id'], $this->userInfo['category_ids'])) {
-				$output[] = array('category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0);
+				$output[] = ['category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0];
 			}
 		}
 
@@ -530,11 +536,11 @@ class PlayerApiController {
 
 	private function getLiveCategories($rCategories) {
 		$rCategories = array_merge(CategoryService::filterLoaded($rCategories, 'live'), CategoryService::filterLoaded($rCategories, 'radio'));
-		$output = array();
+		$output = [];
 
 		foreach ($rCategories as $rCategory) {
 			if (in_array($rCategory['id'], $this->userInfo['category_ids'])) {
-				$output[] = array('category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0);
+				$output[] = ['category_id' => strval($rCategory['id']), 'category_name' => $rCategory['category_name'], 'parent_id' => 0];
 			}
 		}
 
@@ -544,7 +550,7 @@ class PlayerApiController {
 	private function getSimpleDataTable() {
 		global $rSettings, $rCached, $rRequest, $db;
 
-		$output = array('epg_listings' => array());
+		$output = ['epg_listings' => []];
 
 		if (empty($rRequest['stream_id'])) {
 			return $output;
@@ -552,7 +558,7 @@ class PlayerApiController {
 
 		if (is_numeric($rRequest['stream_id']) && !isset($rRequest['multi'])) {
 			$rMulti = false;
-			$rStreamIDs = array(intval($rRequest['stream_id']));
+			$rStreamIDs = [intval($rRequest['stream_id'])];
 		} else {
 			$rMulti = true;
 			$rStreamIDs = array_map('intval', explode(',', $rRequest['stream_id']));
@@ -562,7 +568,7 @@ class PlayerApiController {
 			return $output;
 		}
 
-		$rArchiveInfo = array();
+		$rArchiveInfo = [];
 
 		if ($rCached) {
 			foreach ($rStreamIDs as $rStreamID) {
@@ -624,7 +630,7 @@ class PlayerApiController {
 	private function getShortEpg() {
 		global $rRequest;
 
-		$output = array('epg_listings' => array());
+		$output = ['epg_listings' => []];
 
 		if (empty($rRequest['stream_id'])) {
 			return $output;
@@ -634,7 +640,7 @@ class PlayerApiController {
 
 		if (is_numeric($rRequest['stream_id']) && !isset($rRequest['multi'])) {
 			$rMulti = false;
-			$rStreamIDs = array(intval($rRequest['stream_id']));
+			$rStreamIDs = [intval($rRequest['stream_id'])];
 		} else {
 			$rMulti = true;
 			$rStreamIDs = array_map('intval', explode(',', $rRequest['stream_id']));
@@ -687,7 +693,7 @@ class PlayerApiController {
 
 		$rCategoryIDSearch = (empty($rRequest['category_id']) ? null : intval($rRequest['category_id']));
 		$rLiveNum = 0;
-		$output = array();
+		$output = [];
 		$this->userInfo['live_ids'] = array_merge($this->userInfo['live_ids'], $this->userInfo['radio_ids']);
 
 		if (!empty($this->limit)) {
@@ -697,10 +703,10 @@ class PlayerApiController {
 		$this->userInfo['live_ids'] = StreamSorter::sortChannels($this->userInfo['live_ids']);
 
 		if (!$rCached) {
-			$rChannels = array();
+			$rChannels = [];
 
 			if (count($this->userInfo['live_ids']) > 0) {
-				$rWhereV = $rWhere = array();
+				$rWhereV = $rWhere = [];
 
 				if (!empty($rCategoryIDSearch)) {
 					$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
@@ -735,7 +741,7 @@ class PlayerApiController {
 				}
 			}
 
-			if (in_array($rChannel['type_key'], array('live', 'created_live', 'radio_streams'))) {
+			if (in_array($rChannel['type_key'], ['live', 'created_live', 'radio_streams'])) {
 				$rCategoryIDs = json_decode($rChannel['category_id'], true);
 
 				if (empty($rCategoryIDs)) {
@@ -768,7 +774,7 @@ class PlayerApiController {
 							$rThumbURL = '';
 						}
 
-						$output[] = array('num' => ++$rLiveNum, 'name' => $rChannel['stream_display_name'], 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => $rStreamIcon, 'epg_channel_id' => $rChannel['channel_id'], 'added' => ($rChannel['added'] ?: ''), 'custom_sid' => strval($rChannel['custom_sid']), 'tv_archive' => $rTVArchive, 'direct_source' => $rURL, 'tv_archive_duration' => ($rTVArchive ? intval($rChannel['tv_archive_duration']) : 0), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'thumbnail' => $rThumbURL);
+						$output[] = ['num' => ++$rLiveNum, 'name' => $rChannel['stream_display_name'], 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => $rStreamIcon, 'epg_channel_id' => $rChannel['channel_id'], 'added' => ($rChannel['added'] ?: ''), 'custom_sid' => strval($rChannel['custom_sid']), 'tv_archive' => $rTVArchive, 'direct_source' => $rURL, 'tv_archive_duration' => ($rTVArchive ? intval($rChannel['tv_archive_duration']) : 0), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'thumbnail' => $rThumbURL];
 					}
 
 					if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
@@ -784,7 +790,7 @@ class PlayerApiController {
 	private function getVodInfo() {
 		global $rSettings, $rCached, $rRequest, $db;
 
-		$output = array('info' => array());
+		$output = ['info' => []];
 
 		if (!empty($rRequest['vod_id'])) {
 			$rVODID = intval($rRequest['vod_id']);
@@ -808,7 +814,7 @@ class PlayerApiController {
 
 				$rating = isset($output['info']['rating']) && is_numeric($output['info']['rating']) ? floatval($output['info']['rating']) : 0.0;
 
-				$output['info'] = json_decode($rRow['movie_properties'] ?? '', true) ?: array();
+				$output['info'] = json_decode($rRow['movie_properties'] ?? '', true) ?: [];
 				$output['info']['tmdb_id'] = intval($output['info']['tmdb_id'] ?? 0);
 				$output['info']['episode_run_time'] = intval($output['info']['episode_run_time'] ?? 0);
 				$output['info']['releasedate'] = $output['info']['release_date'] ?? '';
@@ -822,24 +828,24 @@ class PlayerApiController {
 					}
 				}
 
-				$output['info']['subtitles'] = array();
+				$output['info']['subtitles'] = [];
 
 				if (isset($output['info']['subtitle']) && is_array($output['info']['subtitle'])) {
 					$i = 0;
 
 					foreach ($output['info']['subtitle'] as $rSubtitle) {
-						$output['info']['subtitles'][] = array('index' => $i, 'language' => ($rSubtitle['tags']['language'] ?: null), 'title' => ($rSubtitle['tags']['title'] ?: null));
+						$output['info']['subtitles'][] = ['index' => $i, 'language' => ($rSubtitle['tags']['language'] ?: null), 'title' => ($rSubtitle['tags']['title'] ?: null)];
 						$i++;
 					}
 				}
 
-				foreach (array('audio', 'video', 'subtitle') as $rKey) {
+				foreach (['audio', 'video', 'subtitle'] as $rKey) {
 					if (isset($output['info'][$rKey])) {
 						unset($output['info'][$rKey]);
 					}
 				}
 
-				$output['movie_data'] = array('stream_id' => (int) $rRow['id'], 'name' => StreamSorter::formatTitle($rRow['stream_display_name'], $rRow['year']), 'title' => $rRow['stream_display_name'], 'year' => $rRow['year'], 'added' => ($rRow['added'] ?: ''), 'category_id' => strval(json_decode($rRow['category_id'], true)[0]), 'category_ids' => json_decode($rRow['category_id'], true), 'container_extension' => $rRow['target_container'], 'custom_sid' => strval($rRow['custom_sid']), 'direct_source' => $rURL);
+				$output['movie_data'] = ['stream_id' => (int) $rRow['id'], 'name' => StreamSorter::formatTitle($rRow['stream_display_name'], $rRow['year']), 'title' => $rRow['stream_display_name'], 'year' => $rRow['year'], 'added' => ($rRow['added'] ?: ''), 'category_id' => strval(json_decode($rRow['category_id'], true)[0]), 'category_ids' => json_decode($rRow['category_id'], true), 'container_extension' => $rRow['target_container'], 'custom_sid' => strval($rRow['custom_sid']), 'direct_source' => $rURL];
 			}
 		}
 
@@ -851,7 +857,7 @@ class PlayerApiController {
 
 		$rCategoryIDSearch = (empty($rRequest['category_id']) ? null : intval($rRequest['category_id']));
 		$rMovieNum = 0;
-		$output = array();
+		$output = [];
 
 		if (!empty($this->limit)) {
 			$this->userInfo['vod_ids'] = array_slice($this->userInfo['vod_ids'], $this->offset, $this->limit);
@@ -860,10 +866,10 @@ class PlayerApiController {
 		$this->userInfo['vod_ids'] = StreamSorter::sortChannels($this->userInfo['vod_ids']);
 
 		if (!$rCached) {
-			$rChannels = array();
+			$rChannels = [];
 
 			if (count($this->userInfo['vod_ids']) > 0) {
-				$rWhereV = $rWhere = array();
+				$rWhereV = $rWhere = [];
 
 				if (!empty($rCategoryIDSearch)) {
 					$rWhere[] = "JSON_CONTAINS(`category_id`, ?, '\$')";
@@ -901,11 +907,11 @@ class PlayerApiController {
 				}
 			}
 
-			if (in_array($rChannel['type_key'], array('movie'))) {
+			if (in_array($rChannel['type_key'], ['movie'])) {
 				$rProperties = json_decode((string) $rChannel['movie_properties'], true);
 
 				if (!is_array($rProperties)) {
-					$rProperties = array();
+					$rProperties = [];
 				}
 
 				$rCategoryIDs = json_decode($rChannel['category_id'], true);
@@ -921,7 +927,7 @@ class PlayerApiController {
 						}
 
 						$rating = is_numeric($rProperties['rating'] ?? null) ? floatval($rProperties['rating']) : 0.0;
-						$output[] = array('num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rChannel['stream_display_name'], $rChannel['year']), 'title' => $rChannel['stream_display_name'], 'year' => strval($rChannel['year']), 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => (ImageUtils::validateURL($rProperties['movie_image'] ?? '') ?: ''), 'rating' => number_format($rating, 1) + 0, 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'added' => strval(($rChannel['added'] ?: '')), 'plot' => $rProperties['plot'] ?? null, 'cast' => $rProperties['cast'] ?? null, 'director' => $rProperties['director'] ?? null, 'genre' => $rProperties['genre'] ?? null, 'release_date' => $rProperties['release_date'] ?? null, 'youtube_trailer' => $rProperties['youtube_trailer'] ?? null, 'episode_run_time' => $rProperties['episode_run_time'] ?? null, 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'container_extension' => $rChannel['target_container'], 'custom_sid' => strval($rChannel['custom_sid']), 'direct_source' => $rURL);
+						$output[] = ['num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rChannel['stream_display_name'], $rChannel['year']), 'title' => $rChannel['stream_display_name'], 'year' => strval($rChannel['year']), 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => (ImageUtils::validateURL($rProperties['movie_image'] ?? '') ?: ''), 'rating' => number_format($rating, 1) + 0, 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'added' => strval(($rChannel['added'] ?: '')), 'plot' => $rProperties['plot'] ?? null, 'cast' => $rProperties['cast'] ?? null, 'director' => $rProperties['director'] ?? null, 'genre' => $rProperties['genre'] ?? null, 'release_date' => $rProperties['release_date'] ?? null, 'youtube_trailer' => $rProperties['youtube_trailer'] ?? null, 'episode_run_time' => $rProperties['episode_run_time'] ?? null, 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'container_extension' => $rChannel['target_container'], 'custom_sid' => strval($rChannel['custom_sid']), 'direct_source' => $rURL];
 					}
 
 					if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
@@ -937,7 +943,7 @@ class PlayerApiController {
 	private function getDefaultInfo() {
 		global $rSettings, $rServers;
 
-		$output = array();
+		$output = [];
 
 		$output['user_info'] = [
 			'username' => $this->userInfo['username'],
@@ -974,8 +980,8 @@ class PlayerApiController {
 	}
 
 	private static function getOutputFormats($rFormats) {
-		$rFormatArray = array(1 => 'm3u8', 2 => 'ts', 3 => 'rtmp');
-		$rReturn = array();
+		$rFormatArray = [1 => 'm3u8', 2 => 'ts', 3 => 'rtmp'];
+		$rReturn = [];
 
 		foreach ($rFormats as $rFormat) {
 			$rReturn[] = $rFormatArray[$rFormat];

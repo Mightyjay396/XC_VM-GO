@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtTagInterface;
 use M3uParser\Tag\Playlist;
 use PHPUnit\Framework\TestCase;
 
-class PlaylistTest extends TestCase
-{
-    public function testParsePlaylist(): void
-    {
+class PlaylistTest extends TestCase {
+    public function testParsePlaylist(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/playlist.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/playlist.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -35,10 +32,9 @@ class PlaylistTest extends TestCase
         self::assertEquals('My favorite playlist', $playlist->getValue());
     }
 
-    public function testGeneratePlaylist(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#PLAYLIST:My favorite playlist'."\n";
+    public function testGeneratePlaylist(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#PLAYLIST:My favorite playlist' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

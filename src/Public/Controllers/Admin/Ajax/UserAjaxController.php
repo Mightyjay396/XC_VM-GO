@@ -23,111 +23,110 @@ use XcVm\Domain\User\UserService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class UserAjaxController extends BaseAjaxController {
+	use LineStateTrait;
 
-    use LineStateTrait;
+	/** action=line — line operations (delete + shared line-state sub-actions). */
+	public function line(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'edit_user');
 
-    /** action=line — line operations (delete + shared line-state sub-actions). */
-    public function line(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'edit_user');
+		$rUserID = intval(RequestManager::get('user_id'));
+		$rSub = RequestManager::get('sub');
 
-        $rUserID = intval(RequestManager::get('user_id'));
-        $rSub = RequestManager::get('sub');
+		if ($rSub == 'delete') {
+			LineService::deleteLineById($rUserID);
+			$this->ok();
+		}
 
-        if ($rSub == 'delete') {
-            LineService::deleteLineById($rUserID);
-            $this->ok();
-        }
+		$this->lineStateAction($rSub, $rUserID);
+	}
 
-        $this->lineStateAction($rSub, $rUserID);
-    }
+	/** action=line_activity — kill a single live connection by pid. */
+	public function lineActivity(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'connection_logs');
 
-    /** action=line_activity — kill a single live connection by pid. */
-    public function lineActivity(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'connection_logs');
+		if (RequestManager::get('sub') != 'kill') {
+			$this->fail();
+		}
 
-        if (RequestManager::get('sub') != 'kill') {
-            $this->fail();
-        }
+		ConnectionTracker::closeConnection(RequestManager::get('pid'));
 
-        ConnectionTracker::closeConnection(RequestManager::get('pid'));
+		$this->ok();
+	}
 
-        $this->ok();
-    }
+	/** action=adjust_credits — add/subtract reseller credits and log it. */
+	public function adjustCredits(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'edit_reguser');
 
-    /** action=adjust_credits — add/subtract reseller credits and log it. */
-    public function adjustCredits(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'edit_reguser');
+		global $db, $rUserInfo;
+		$rUser = UserRepository::getRegisteredUserById(RequestManager::get('id'));
 
-        global $db, $rUserInfo;
-        $rUser = UserRepository::getRegisteredUserById(RequestManager::get('id'));
+		if ($rUser && is_numeric(RequestManager::get('credits'))) {
+			$rCredits = intval($rUser['credits']) + intval(RequestManager::get('credits'));
 
-        if ($rUser && is_numeric(RequestManager::get('credits'))) {
-            $rCredits = intval($rUser['credits']) + intval(RequestManager::get('credits'));
+			if (0 <= $rCredits) {
+				$db->query('UPDATE `users` SET `credits` = ? WHERE `id` = ?;', $rCredits, $rUser['id']);
+				$db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rUser['id'], $rUserInfo['id'], RequestManager::get('credits'), time(), RequestManager::get('reason'));
+				$this->ok();
+			}
 
-            if (0 <= $rCredits) {
-                $db->query('UPDATE `users` SET `credits` = ? WHERE `id` = ?;', $rCredits, $rUser['id']);
-                $db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rUser['id'], $rUserInfo['id'], RequestManager::get('credits'), time(), RequestManager::get('reason'));
-                $this->ok();
-            }
+			$this->fail();
+		}
 
-            $this->fail();
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=reg_user — delete/enable/disable a registered (reseller) user. */
+	public function regUser(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'edit_reguser');
 
-    /** action=reg_user — delete/enable/disable a registered (reseller) user. */
-    public function regUser(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'edit_reguser');
+		global $db, $rUserInfo;
+		$rSub = RequestManager::get('sub');
 
-        global $db, $rUserInfo;
-        $rSub = RequestManager::get('sub');
+		if ($rSub == 'delete') {
+			UserService::deleteRegisteredUser(RequestManager::get('user_id'), false, false, $rUserInfo['id']);
+			$this->ok();
+		}
 
-        if ($rSub == 'delete') {
-            UserService::deleteRegisteredUser(RequestManager::get('user_id'), false, false, $rUserInfo['id']);
-            $this->ok();
-        }
+		if ($rSub == 'enable') {
+			$db->query('UPDATE `users` SET `status` = 1 WHERE `id` = ?;', RequestManager::get('user_id'));
+			$this->ok();
+		}
 
-        if ($rSub == 'enable') {
-            $db->query('UPDATE `users` SET `status` = 1 WHERE `id` = ?;', RequestManager::get('user_id'));
-            $this->ok();
-        }
+		if ($rSub == 'disable') {
+			$db->query('UPDATE `users` SET `status` = 0 WHERE `id` = ?;', RequestManager::get('user_id'));
+			$this->ok();
+		}
 
-        if ($rSub == 'disable') {
-            $db->query('UPDATE `users` SET `status` = 0 WHERE `id` = ?;', RequestManager::get('user_id'));
-            $this->ok();
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=ticket — delete/close/reopen a support ticket. */
+	public function ticket(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'ticket');
 
-    /** action=ticket — delete/close/reopen a support ticket. */
-    public function ticket(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'ticket');
+		global $db;
+		$rSub = RequestManager::get('sub');
 
-        global $db;
-        $rSub = RequestManager::get('sub');
+		if ($rSub == 'delete') {
+			TicketRepository::deleteById(RequestManager::get('ticket_id'));
+			$this->ok();
+		}
 
-        if ($rSub == 'delete') {
-            TicketRepository::deleteById(RequestManager::get('ticket_id'));
-            $this->ok();
-        }
+		if ($rSub == 'close') {
+			$db->query('UPDATE `tickets` SET `status` = 0 WHERE `id` = ?;', RequestManager::get('ticket_id'));
+			$this->ok();
+		}
 
-        if ($rSub == 'close') {
-            $db->query('UPDATE `tickets` SET `status` = 0 WHERE `id` = ?;', RequestManager::get('ticket_id'));
-            $this->ok();
-        }
+		if ($rSub == 'reopen') {
+			$db->query('UPDATE `tickets` SET `status` = 1 WHERE `id` = ?;', RequestManager::get('ticket_id'));
+			$this->ok();
+		}
 
-        if ($rSub == 'reopen') {
-            $db->query('UPDATE `tickets` SET `status` = 1 WHERE `id` = ?;', RequestManager::get('ticket_id'));
-            $this->ok();
-        }
-
-        $this->fail();
-    }
+		$this->fail();
+	}
 }

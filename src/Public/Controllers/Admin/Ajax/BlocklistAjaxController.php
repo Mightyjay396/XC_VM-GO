@@ -21,192 +21,191 @@ use XcVm\Domain\Security\BlocklistService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class BlocklistAjaxController extends BaseAjaxController {
+	/** action=useragent — remove a blocked user-agent. */
+	public function useragent(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'block_uas');
 
-    /** action=useragent — remove a blocked user-agent. */
-    public function useragent(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'block_uas');
+		if (RequestManager::get('sub') == 'delete') {
+			BlocklistService::deleteBlockedUA(RequestManager::get('ua_id'));
+			$this->ok();
+		}
 
-        if (RequestManager::get('sub') == 'delete') {
-            BlocklistService::deleteBlockedUA(RequestManager::get('ua_id'));
-            $this->ok();
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=isp — remove a blocked ISP. */
+	public function isp(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'block_isps');
 
-    /** action=isp — remove a blocked ISP. */
-    public function isp(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'block_isps');
+		if (RequestManager::get('sub') == 'delete') {
+			BlocklistService::deleteBlockedISP(RequestManager::get('isp_id'));
+			$this->ok();
+		}
 
-        if (RequestManager::get('sub') == 'delete') {
-            BlocklistService::deleteBlockedISP(RequestManager::get('isp_id'));
-            $this->ok();
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=mysql_syslog — block a brute-forcing IP surfaced by the MySQL syslog. */
+	public function mysqlSyslog(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'block_ips');
 
-    /** action=mysql_syslog — block a brute-forcing IP surfaced by the MySQL syslog. */
-    public function mysqlSyslog(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'block_ips');
+		global $db;
 
-        global $db;
+		if (RequestManager::get('sub') == 'block' && filter_var(RequestManager::get('ip'), FILTER_VALIDATE_IP)) {
+			$db->query("INSERT INTO `blocked_ips`(`ip`, `notes`, `date`) VALUES(?, 'MySQL Bruteforce', ?);", RequestManager::get('ip'), time());
+			touch(FLOOD_TMP_PATH . 'block_' . RequestManager::get('ip'));
+			$this->ok();
+		}
 
-        if (RequestManager::get('sub') == 'block' && filter_var(RequestManager::get('ip'), FILTER_VALIDATE_IP)) {
-            $db->query("INSERT INTO `blocked_ips`(`ip`, `notes`, `date`) VALUES(?, 'MySQL Bruteforce', ?);", RequestManager::get('ip'), time());
-            touch(FLOOD_TMP_PATH . 'block_' . RequestManager::get('ip'));
-            $this->ok();
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=ip — remove a blocked IP. */
+	public function ip(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'block_ips');
 
-    /** action=ip — remove a blocked IP. */
-    public function ip(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'block_ips');
+		if (RequestManager::get('sub') == 'delete') {
+			BlocklistService::deleteBlockedIP(RequestManager::get('ip'));
+			$this->ok();
+		}
 
-        if (RequestManager::get('sub') == 'delete') {
-            BlocklistService::deleteBlockedIP(RequestManager::get('ip'));
-            $this->ok();
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=ip_whois — GeoIP/ISP/ASN whois lookup for an IP (no per-action gate). */
+	public function ipWhois(): never {
+		$this->requireXhr();
 
-    /** action=ip_whois — GeoIP/ISP/ASN whois lookup for an IP (no per-action gate). */
-    public function ipWhois(): never {
-        $this->requireXhr();
+		global $db;
+		$rIP = RequestManager::get('ip');
+		$rReader = new \MaxMind\Db\Reader(GEOLITE2C_BIN);
+		$rResponse = $rReader->get($rIP);
 
-        global $db;
-        $rIP = RequestManager::get('ip');
-        $rReader = new \MaxMind\Db\Reader(GEOLITE2C_BIN);
-        $rResponse = $rReader->get($rIP);
+		if (isset($rResponse['location']['time_zone'])) {
+			$rDate = new \DateTime('now', new \DateTimeZone($rResponse['location']['time_zone']));
+			$rResponse['location']['time'] = $rDate->format('Y-m-d H:i:s');
+		}
 
-        if (isset($rResponse['location']['time_zone'])) {
-            $rDate = new \DateTime('now', new \DateTimeZone($rResponse['location']['time_zone']));
-            $rResponse['location']['time'] = $rDate->format('Y-m-d H:i:s');
-        }
+		$rReader->close();
 
-        $rReader->close();
+		if (RequestManager::has('isp')) {
+			$rReader = new \MaxMind\Db\Reader(GEOISP_BIN);
+			$rResponse['isp'] = $rReader->get($rIP);
+			$rReader->close();
+		}
 
-        if (RequestManager::has('isp')) {
-            $rReader = new \MaxMind\Db\Reader(GEOISP_BIN);
-            $rResponse['isp'] = $rReader->get($rIP);
-            $rReader->close();
-        }
+		$rResponse['type'] = null;
 
-        $rResponse['type'] = null;
+		if (!empty($rResponse['isp']['autonomous_system_number'])) {
+			$rASN = $rResponse['isp']['autonomous_system_number'];
+			$db->query('SELECT `type` FROM `blocked_asns` WHERE `asn` = ?;', $rASN);
 
-        if (!empty($rResponse['isp']['autonomous_system_number'])) {
-            $rASN = $rResponse['isp']['autonomous_system_number'];
-            $db->query('SELECT `type` FROM `blocked_asns` WHERE `asn` = ?;', $rASN);
+			if (0 < $db->num_rows()) {
+				$rResponse['type'] = $db->get_row()['type'];
+			}
 
-            if (0 < $db->num_rows()) {
-                $rResponse['type'] = $db->get_row()['type'];
-            }
+			if (file_exists(CIDR_TMP_PATH . $rASN)) {
+				$rCIDRs = json_decode(file_get_contents(CIDR_TMP_PATH . $rASN), true);
 
-            if (file_exists(CIDR_TMP_PATH . $rASN)) {
-                $rCIDRs = json_decode(file_get_contents(CIDR_TMP_PATH . $rASN), true);
+				foreach ($rCIDRs as $rData) {
+					if (ip2long($rData[1]) <= ip2long($rIP) && ip2long($rIP) <= ip2long($rData[2])) {
+						$rTypes = [];
 
-                foreach ($rCIDRs as $rData) {
-                    if (ip2long($rData[1]) <= ip2long($rIP) && ip2long($rIP) <= ip2long($rData[2])) {
-                        $rTypes = array();
+						if ($rData[3]) {
+							$rTypes[] = 'HOSTING';
+						}
 
-                        if ($rData[3]) {
-                            $rTypes[] = 'HOSTING';
-                        }
+						if ($rData[4]) {
+							$rTypes[] = 'PROXY';
+						}
 
-                        if ($rData[4]) {
-                            $rTypes[] = 'PROXY';
-                        }
+						$rResponse['type'] = implode(', ', $rTypes);
 
-                        $rResponse['type'] = implode(', ', $rTypes);
+						break;
+					}
+				}
+			}
+		}
 
-                        break;
-                    }
-                }
-            }
-        }
+		$this->ok(['data' => $rResponse]);
+	}
 
-        $this->ok(array('data' => $rResponse));
-    }
+	/** action=asn — block/allow a single ASN or a whole ASN type. */
+	public function asn(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'block_isps');
 
-    /** action=asn — block/allow a single ASN or a whole ASN type. */
-    public function asn(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'block_isps');
+		global $db;
+		$rSub = RequestManager::get('sub');
+		$rASN = RequestManager::get('id');
 
-        global $db;
-        $rSub = RequestManager::get('sub');
-        $rASN = RequestManager::get('id');
+		if ($rSub == 'allow') {
+			$db->query('UPDATE `blocked_asns` SET `blocked` = 0 WHERE `id` = ?;', $rASN);
+			$this->ok();
+		}
 
-        if ($rSub == 'allow') {
-            $db->query('UPDATE `blocked_asns` SET `blocked` = 0 WHERE `id` = ?;', $rASN);
-            $this->ok();
-        }
+		if ($rSub == 'block') {
+			$db->query('UPDATE `blocked_asns` SET `blocked` = 1 WHERE `id` = ?;', $rASN);
+			$this->ok();
+		}
 
-        if ($rSub == 'block') {
-            $db->query('UPDATE `blocked_asns` SET `blocked` = 1 WHERE `id` = ?;', $rASN);
-            $this->ok();
-        }
+		if ($rSub == 'allow_all') {
+			$db->query('UPDATE `blocked_asns` SET `blocked` = 0 WHERE `type` = ?;', $rASN);
+			$this->ok();
+		}
 
-        if ($rSub == 'allow_all') {
-            $db->query('UPDATE `blocked_asns` SET `blocked` = 0 WHERE `type` = ?;', $rASN);
-            $this->ok();
-        }
+		if ($rSub == 'block_all') {
+			$db->query('UPDATE `blocked_asns` SET `blocked` = 1 WHERE `type` = ?;', $rASN);
+			$this->ok();
+		}
 
-        if ($rSub == 'block_all') {
-            $db->query('UPDATE `blocked_asns` SET `blocked` = 1 WHERE `type` = ?;', $rASN);
-            $this->ok();
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=decrypt_text — decrypt live-stream tokens pasted as text. */
+	public function decryptText(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'stream_tools');
 
-    /** action=decrypt_text — decrypt live-stream tokens pasted as text. */
-    public function decryptText(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'stream_tools');
+		$rDecryptedArray = [];
+		$rText = (RequestManager::get('text') ?: null);
 
-        $rDecryptedArray = array();
-        $rText = (RequestManager::get('text') ?: null);
+		if ($rText) {
+			$rLines = explode("\n", $rText);
 
-        if ($rText) {
-            $rLines = explode("\n", $rText);
+			foreach ($rLines as $rLine) {
+				$rSplit = explode('/', $rLine);
 
-            foreach ($rLines as $rLine) {
-                $rSplit = explode('/', $rLine);
+				foreach ($rSplit as $rPiece) {
+					if (stripos($rPiece, 'token=') !== false) {
+						list(, $rPiece) = explode('token=', $rPiece);
+					}
 
-                foreach ($rSplit as $rPiece) {
-                    if (stripos($rPiece, 'token=') !== false) {
-                        list(, $rPiece) = explode('token=', $rPiece);
-                    }
+					$rDecoded = base64_decode(strtr($rPiece, '-_', '+/'));
 
-                    $rDecoded = base64_decode(strtr($rPiece, '-_', '+/'));
+					if (!empty($rDecoded)) {
+						try {
+							$rDecrypted = Encryption::readToken($rPiece, SettingsManager::get('live_streaming_pass'), OPENSSL_EXTRA, true);
+						} catch (\Exception) {
+							$rDecrypted = null;
+						}
 
-                    if (!empty($rDecoded)) {
-                        try {
-                            $rDecrypted = Encryption::readToken($rPiece, SettingsManager::get('live_streaming_pass'), OPENSSL_EXTRA, true);
-                        } catch (\Exception) {
-                            $rDecrypted = null;
-                        }
+						if ($rDecrypted) {
+							$rDecryptedArray[] = utf8_decode($rDecrypted);
+						}
+					}
+				}
+			}
+		}
 
-                        if ($rDecrypted) {
-                            $rDecryptedArray[] = utf8_decode($rDecrypted);
-                        }
-                    }
-                }
-            }
-        }
+		if (0 < count($rDecryptedArray)) {
+			$this->ok(['data' => $rDecryptedArray]);
+		}
 
-        if (0 < count($rDecryptedArray)) {
-            $this->ok(array('data' => $rDecryptedArray));
-        }
-
-        $this->fail();
-    }
+		$this->fail();
+	}
 }

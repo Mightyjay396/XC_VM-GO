@@ -27,7 +27,7 @@ class HLSGenerator {
 	 * @param string $rPlaylist Raw daemon m3u8.
 	 * @return string|false Tokenized playlist, or false if it has no segments.
 	 */
-	public static function tokenizeDaemonPlaylist($rPlaylist, $rSettings, $rUsername, $rPassword, $rStreamID, $rUUID, $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, $rOnDemand, $rServerID, $rProxyID) {
+	public static function tokenizeDaemonPlaylist(string $rPlaylist, $rSettings, $rUsername, $rPassword, $rStreamID, $rUUID, $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, $rOnDemand, $rServerID, $rProxyID) {
 		$rPrefix = ($rProxyID ? '/' . md5($rProxyID . '_' . $rServerID . '_' . OPENSSL_EXTRA) : '');
 		$rReplaced = 0;
 

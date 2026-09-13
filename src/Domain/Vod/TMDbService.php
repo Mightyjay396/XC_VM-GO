@@ -52,7 +52,7 @@ class TMDbService {
 	 * @param int $rID \TMDB movie id.
 	 * @return \Movie|null Movie metadata object, or null on failure.
 	 */
-	public static function getMovie($rID) {
+	public static function getMovie(int $rID) {
 		$rTMDB = self::client();
 
 		return ($rTMDB->getMovie($rID) ?: null);
@@ -64,7 +64,7 @@ class TMDbService {
 	 * @param int $rID \TMDB series id.
 	 * @return array|null Series metadata, or null on failure.
 	 */
-	public static function getSeries($rID) {
+	public static function getSeries(int $rID) {
 		$rTMDB = self::client();
 
 		return (json_decode($rTMDB->getTVShow($rID)->getJSON(), true) ?: null);
@@ -77,7 +77,7 @@ class TMDbService {
 	 * @param int $rSeason Season number.
 	 * @return array|null Season metadata, or null on failure.
 	 */
-	public static function getSeason($rID, $rSeason) {
+	public static function getSeason(int $rID, int $rSeason) {
 		$rTMDB = self::client();
 
 		return json_decode($rTMDB->getSeason($rID, intval($rSeason))->getJSON(), true);
@@ -90,7 +90,7 @@ class TMDbService {
 	 * @param string|null $rLanguage Preferred language, or null for default.
 	 * @return string|null Trailer reference, or null if none.
 	 */
-	public static function getSeriesTrailer($rTMDBID, $rLanguage = null) {
+	public static function getSeriesTrailer(int $rTMDBID, ?string $rLanguage = null) {
 		$rURL = 'https://api.themoviedb.org/3/tv/' . intval($rTMDBID) . '/videos?api_key=' . urlencode(SettingsManager::getString('tmdb_api_key'));
 
 		if ($rLanguage) {
@@ -122,7 +122,7 @@ class TMDbService {
 	 * @param int $rEpisode Episode number.
 	 * @return array Still image references.
 	 */
-	public static function getStills($rTMDBID, $rSeason, $rEpisode) {
+	public static function getStills(int $rTMDBID, int $rSeason, int $rEpisode) {
 		$rURL = 'https://api.themoviedb.org/3/tv/' . intval($rTMDBID) . '/season/' . intval($rSeason) . '/episode/' . intval($rEpisode) . '/images?api_key=' . urlencode(SettingsManager::getString('tmdb_api_key'));
 
 		if (0 >= strlen(SettingsManager::getString('tmdb_language'))) {
@@ -142,7 +142,7 @@ class TMDbService {
 		$db = self::db();
 		$rTMDB = self::client();
 
-		$rCurrentCats = array('movie' => array(), 'series' => array());
+		$rCurrentCats = ['movie' => [], 'series' => []];
 
 		$db->query('SELECT `id`, `category_type`, `category_name` FROM `streams_categories`;');
 

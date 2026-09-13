@@ -18,7 +18,6 @@ use XcVm\Streaming\Codec\FfmpegPaths;
  */
 
 class ThumbnailCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'thumbnail';
 	}

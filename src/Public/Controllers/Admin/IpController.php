@@ -22,22 +22,22 @@ use XcVm\Domain\Security\BlocklistService;
  */
 
 class IpController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        global $db;
+	public function index() {
+		$this->requirePermission();
+		global $db;
 
-        // Обработка flush перед рендером
-        if ($this->input('flush') !== null) {
-            BlocklistService::flushIPs();
-            $this->redirect('./ips?status=' . STATUS_FLUSH);
-        }
+		// Обработка flush перед рендером
+		if ($this->input('flush') !== null) {
+			BlocklistService::flushIPs();
+			$this->redirect('./ips?status=' . STATUS_FLUSH);
+		}
 
-        $this->setTitle("Blocked IP's");
+		$this->setTitle("Blocked IP's");
 
-        $ips = BlocklistService::getBlockedIPsSimple();
+		$ips = BlocklistService::getBlockedIPsSimple();
 
-        $this->render('ips', [
-            'ips' => $ips,
-        ]);
-    }
+		$this->render('ips', [
+			'ips' => $ips,
+		]);
+	}
 }

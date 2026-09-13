@@ -17,28 +17,26 @@ use XcVm\Domain\User\UserRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerLineActivityController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Activity Logs');
+class ResellerLineActivityController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Activity Logs');
 
-        $rRequest = RequestManager::getAll();
-        $data = [];
+		$rRequest = RequestManager::getAll();
+		$data = [];
 
-        if (isset($rRequest['line'])) {
-            if (Authorization::check('line', $rRequest['line'])) {
-                $data['rSearchLine'] = UserRepository::getLineById($rRequest['line']);
-            } else {
-                exit();
-            }
-        }
+		if (isset($rRequest['line'])) {
+			if (Authorization::check('line', $rRequest['line'])) {
+				$data['rSearchLine'] = UserRepository::getLineById($rRequest['line']);
+			} else {
+				exit();
+			}
+		}
 
-        if (isset($rRequest['stream'])) {
-            $data['rSearchStream'] = StreamRepository::getById($rRequest['stream']);
-        }
+		if (isset($rRequest['stream'])) {
+			$data['rSearchStream'] = StreamRepository::getById($rRequest['stream']);
+		}
 
-        $this->render('line_activity', $data);
-    }
+		$this->render('line_activity', $data);
+	}
 }

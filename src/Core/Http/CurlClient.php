@@ -21,15 +21,15 @@ class CurlClient {
 	 * @param int           $rTimeout Per-request timeout in seconds.
 	 * @return array Map of serverId => response (false for offline servers).
 	 */
-	public static function getMultiCURL($rURLs, $callback = null, $rTimeout = 5) {
+	public static function getMultiCURL(array $rURLs, ?callable $callback = null, int $rTimeout = 5) {
 		global $rServers;
 		if (empty($rURLs)) {
-			return array();
+			return [];
 		}
 
-		$rOffline = array();
-		$rCurl = array();
-		$rResults = array();
+		$rOffline = [];
+		$rCurl = [];
+		$rResults = [];
 		$rMulti = curl_multi_init();
 
 		foreach ($rURLs as $rKey => $rValue) {
@@ -95,7 +95,7 @@ class CurlClient {
 	 * @param bool   $rWait Return the response body (true) or fire-and-forget (false).
 	 * @return string|bool Response body, or the curl result.
 	 */
-	public static function getURL($rURL, $rWait = true) {
+	public static function getURL(string $rURL, bool $rWait = true) {
 		$ch = curl_init();
 		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
 		curl_setopt($ch, CURLOPT_TIMEOUT, 3);
@@ -115,7 +115,7 @@ class CurlClient {
 	 * @param array  $rPostData Optional POST fields.
 	 * @return string|bool Response body, or false if the server is offline/unreachable.
 	 */
-	public static function serverRequest($rServerID, $rURL, $rPostData = array()) {
+	public static function serverRequest(int $rServerID, string $rURL, array $rPostData = []) {
 		global $rServers;
 		if (!(is_array($rServers) && isset($rServers[$rServerID]) && $rServers[$rServerID]['server_online'])) {
 			return false;

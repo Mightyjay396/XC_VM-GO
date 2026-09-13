@@ -269,7 +269,7 @@ class TableController extends BaseAdminController {
 		];
 
 		$rOrderRow = (RequestManager::has("order") && strlen(RequestManager::get("order")[0]["column"] ?? '') > 0)
-			? (int)(RequestManager::get("order")[0]["column"])
+			? (int) (RequestManager::get("order")[0]["column"])
 			: 10;
 
 		$rOrderBy = (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow] !== false)
@@ -280,7 +280,7 @@ class TableController extends BaseAdminController {
 		$rWhereV = [];
 
 		// Reseller filter
-		$resellerFilter = (int)(RequestManager::get("reseller") ?? 0);
+		$resellerFilter = (int) (RequestManager::get("reseller") ?? 0);
 		if ($resellerFilter > 0) {
 			$rWhere[] = "`activation_codes`.`created_by` = ?";
 			$rWhereV[] = $resellerFilter;
@@ -288,7 +288,7 @@ class TableController extends BaseAdminController {
 
 		// Status filter: 1=Ready/Stock, 2=Active, 3=Expired, 4=Disabled
 		$filter = RequestManager::get("filter");
-		if (strlen((string)$filter) > 0 && $filter != 0) {
+		if (strlen((string) $filter) > 0 && $filter != 0) {
 			if ($filter == 1) {
 				$rWhere[] = "`activation_codes`.`status` = 1";
 			} elseif ($filter == 2) {
@@ -301,14 +301,14 @@ class TableController extends BaseAdminController {
 		}
 
 		// Batch filter
-		$batchFilter = trim((string)RequestManager::get("batch"));
+		$batchFilter = trim((string) RequestManager::get("batch"));
 		if (strlen($batchFilter) > 0) {
 			$rWhere[] = "`activation_codes`.`batch_name` = ?";
 			$rWhereV[] = $batchFilter;
 		}
 
 		// Package filter
-		$packageFilter = (int)(RequestManager::get("package") ?? 0);
+		$packageFilter = (int) (RequestManager::get("package") ?? 0);
 		if ($packageFilter > 0) {
 			$rWhere[] = "`activation_codes`.`package_id` = ?";
 			$rWhereV[] = $packageFilter;
@@ -330,7 +330,7 @@ class TableController extends BaseAdminController {
 
 		$countSql = "SELECT COUNT(*) as `total` FROM `activation_codes` LEFT JOIN `lines` ON `lines`.`id` = `activation_codes`.`subscriber_id` LEFT JOIN `users` ON `users`.`id` = `activation_codes`.`created_by` {$whereClause};";
 		$db->query($countSql, ...$rWhereV);
-		$rReturn["recordsTotal"] = $rReturn["recordsFiltered"] = (int)($db->get_row()["total"] ?? 0);
+		$rReturn["recordsTotal"] = $rReturn["recordsFiltered"] = (int) ($db->get_row()["total"] ?? 0);
 
 		$sql = "SELECT
 					`activation_codes`.*,
@@ -461,7 +461,7 @@ class TableController extends BaseAdminController {
 				$rActivityIDs = $rLineInfo = $rLineIDs = [];
 				foreach ($rRows as $rRow) {
 					$rLineIDs[] = (int) $rRow["id"];
-					$rLineInfo[(int) $rRow["id"]] = ["owner_name" => NULL, "stream_display_name" => NULL, "stream_id" => NULL, "last_active" => NULL];
+					$rLineInfo[(int) $rRow["id"]] = ["owner_name" => null, "stream_display_name" => null, "stream_id" => null, "last_active" => null];
 					$rLastInfo = [];
 
 					if (!empty($rRow['last_activity_array'])) {
@@ -648,7 +648,7 @@ class TableController extends BaseAdminController {
 				foreach ($rRows as $rRow) {
 					if ($rRow["id"]) {
 						$rLineIDs[] = (int) $rRow["id"];
-						$rLineInfo[(int) $rRow["id"]] = ["owner_name" => NULL, "stream_display_name" => NULL, "stream_id" => NULL, "last_active" => NULL];
+						$rLineInfo[(int) $rRow["id"]] = ["owner_name" => null, "stream_display_name" => null, "stream_id" => null, "last_active" => null];
 					}
 					$rLastInfo = [];
 
@@ -809,7 +809,7 @@ class TableController extends BaseAdminController {
 				foreach ($rRows as $rRow) {
 					if ($rRow["id"]) {
 						$rLineIDs[] = (int) $rRow["id"];
-						$rLineInfo[(int) $rRow["id"]] = ["owner_name" => NULL, "stream_display_name" => NULL, "stream_id" => NULL, "last_active" => NULL];
+						$rLineInfo[(int) $rRow["id"]] = ["owner_name" => null, "stream_display_name" => null, "stream_id" => null, "last_active" => null];
 					}
 					$rLastInfo = [];
 
@@ -941,10 +941,10 @@ class TableController extends BaseAdminController {
 				}
 				$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
 			}
-			if (0 < (int)(RequestManager::get("category") ?? 0)) {
+			if (0 < (int) (RequestManager::get("category") ?? 0)) {
 				$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 				$rWhereV[] = RequestManager::get("category");
-			} elseif ((int)(RequestManager::get("category") ?? 0) == -1) {
+			} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
 				$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
 			}
 			if (RequestManager::has("refresh")) {
@@ -1014,11 +1014,11 @@ class TableController extends BaseAdminController {
 			}
 			if (0 < strlen(RequestManager::get("resolution") ?? '')) {
 				$rWhere[] = "`streams_servers`.`resolution` = ?";
-				$rWhereV[] = (int) RequestManager::get("resolution") ?: NULL;
+				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
 			}
 			if (0 < (int) (RequestManager::get("server") ?? 0)) {
 				$rWhere[] = "`streams_servers`.`server_id` = ?";
-				$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
+				$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
 			} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 				$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 			}
@@ -1132,7 +1132,7 @@ class TableController extends BaseAdminController {
 							$rCategoryIDs = [];
 						}
 						if (0 < strlen(RequestManager::get("category") ?? '')) {
-							$rCategory = $rCategories[(int)(RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
 							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
@@ -1359,10 +1359,10 @@ class TableController extends BaseAdminController {
 				}
 				$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
 			}
-			if (0 < (int)(RequestManager::get("category") ?? 0)) {
+			if (0 < (int) (RequestManager::get("category") ?? 0)) {
 				$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 				$rWhereV[] = RequestManager::get("category");
-			} elseif ((int)(RequestManager::get("category") ?? 0) == -1) {
+			} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
 				$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
 			}
 			if (RequestManager::has("refresh")) {
@@ -1386,10 +1386,10 @@ class TableController extends BaseAdminController {
 					$rWhere[] = "`streams`.`direct_source` = 1";
 				}
 			}
-			if (0 < (int)(RequestManager::get("server") ?? 0)) {
+			if (0 < (int) (RequestManager::get("server") ?? 0)) {
 				$rWhere[] = "`streams_servers`.`server_id` = ?";
-				$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
-			} elseif ((int)(RequestManager::get("server") ?? 0) == -1) {
+				$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+			} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 				$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 			}
 			$rOrderBy = "";
@@ -1570,10 +1570,10 @@ class TableController extends BaseAdminController {
 				}
 				$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
 			}
-			if (0 < (int)(RequestManager::get("category") ?? 0)) {
+			if (0 < (int) (RequestManager::get("category") ?? 0)) {
 				$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 				$rWhereV[] = RequestManager::get("category");
-			} elseif ((int)(RequestManager::get("category") ?? 0) == -1) {
+			} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
 				$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
 			}
 			if (RequestManager::has("refresh")) {
@@ -1620,11 +1620,11 @@ class TableController extends BaseAdminController {
 			}
 			if (0 < strlen(RequestManager::get("resolution") ?? '')) {
 				$rWhere[] = "`streams_servers`.`resolution` = ?";
-				$rWhereV[] = (int) RequestManager::get("resolution") ?: NULL;
+				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
 			}
 			if (0 < (int) (RequestManager::get("server") ?? 0)) {
 				$rWhere[] = "`streams_servers`.`server_id` = ?";
-				$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
+				$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
 			} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 				$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 			}
@@ -1786,10 +1786,10 @@ class TableController extends BaseAdminController {
 		}
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "`streams`.`type` = 5";
-		if (0 < (int)(RequestManager::get("server") ?? 0)) {
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
 			$rWhere[] = "`streams_servers`.`server_id` = ?";
-			$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
-		} elseif ((int)(RequestManager::get("server") ?? 0) == -1) {
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 		}
 		if (0 < strlen(RequestManager::get("series") ?? '')) {
@@ -2066,9 +2066,9 @@ class TableController extends BaseAdminController {
 				$rKeys = explode(",", RequestManager::get("refresh"));
 				$rKeyCount = count($rKeys);
 			} else {
-				$rServerID = 0 < (int)(RequestManager::get("server_id") ?? 0) ? (int)(RequestManager::get("server_id") ?? 0) : NULL;
-				$rStreamID = 0 < (int)(RequestManager::get("stream_id") ?? 0) ? (int)(RequestManager::get("stream_id") ?? 0) : NULL;
-				$rUserID = 0 < (int)(RequestManager::get("user_id") ?? 0) ? (int)(RequestManager::get("user_id") ?? 0) : NULL;
+				$rServerID = 0 < (int) (RequestManager::get("server_id") ?? 0) ? (int) (RequestManager::get("server_id") ?? 0) : null;
+				$rStreamID = 0 < (int) (RequestManager::get("stream_id") ?? 0) ? (int) (RequestManager::get("stream_id") ?? 0) : null;
+				$rUserID = 0 < (int) (RequestManager::get("user_id") ?? 0) ? (int) (RequestManager::get("user_id") ?? 0) : null;
 				if ($rUserID) {
 					if ($rServerID || $rStreamID) {
 						$rKeys = $rRedis->zRevRangeByScore("LINE#" . $rUserID, "+inf", "-inf");
@@ -2184,7 +2184,7 @@ class TableController extends BaseAdminController {
 			}
 			for ($i = 0; $i < count($rRows); $i++) {
 				$rRows[$i]["divergence"] = $rDivergenceMap[$rRows[$i]["uuid"]] ?? 0;
-				$rRows[$i]["series_no"] = $rSeriesMap[$rRows[$i]["stream_id"]] ?? NULL;
+				$rRows[$i]["series_no"] = $rSeriesMap[$rRows[$i]["stream_id"]] ?? null;
 				$rRows[$i]["stream_display_name"] = $rStreamNames[$rRows[$i]["stream_id"]][0] ?? "";
 				$rRows[$i]["type"] = $rStreamNames[$rRows[$i]["stream_id"]][1] ?? 1;
 				$rRows[$i] = array_merge($rRows[$i], $rUserMap[$rRows[$i]["user_id"]] ?? []);
@@ -2349,16 +2349,16 @@ class TableController extends BaseAdminController {
 		} else {
 			$rWhere[] = "`streams`.`type` = 1";
 		}
-		if (0 < (int)(RequestManager::get("category") ?? 0)) {
+		if (0 < (int) (RequestManager::get("category") ?? 0)) {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category");
-		} elseif ((int)(RequestManager::get("category") ?? 0) == -1) {
+		} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
 			$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
 		}
-		if (0 < (int)(RequestManager::get("server") ?? 0)) {
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
 			$rWhere[] = "`streams_servers`.`server_id` = ?";
-			$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
-		} elseif ((int)(RequestManager::get("server") ?? 0) == -1) {
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 		}
 		if (0 < strlen(RequestManager::get("filter") ?? '')) {
@@ -2529,16 +2529,16 @@ class TableController extends BaseAdminController {
 		}
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "`streams`.`type` = 2";
-		if (0 < (int)(RequestManager::get("category") ?? 0)) {
+		if (0 < (int) (RequestManager::get("category") ?? 0)) {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category");
-		} elseif ((int)(RequestManager::get("category") ?? 0) == -1) {
+		} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
 			$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
 		}
-		if (0 < (int)(RequestManager::get("server") ?? 0)) {
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
 			$rWhere[] = "`streams_servers`.`server_id` = ?";
-			$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
-		} elseif ((int)(RequestManager::get("server") ?? 0) == -1) {
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 		}
 		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
@@ -2632,7 +2632,7 @@ class TableController extends BaseAdminController {
 						}
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
 						if (0 < strlen(RequestManager::get("category") ?? '')) {
-							$rCategory = $rCategories[(int)(RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
 							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
@@ -2699,16 +2699,16 @@ class TableController extends BaseAdminController {
 		}
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "`streams`.`type` = 4";
-		if (0 < (int)(RequestManager::get("category") ?? 0)) {
+		if (0 < (int) (RequestManager::get("category") ?? 0)) {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category");
-		} elseif ((int)(RequestManager::get("category") ?? 0) == -1) {
+		} elseif ((int) (RequestManager::get("category") ?? 0) == -1) {
 			$rWhere[] = "(`streams`.`category_id` = '[]' OR `streams`.`category_id` IS NULL)";
 		}
-		if (0 < (int)(RequestManager::get("server") ?? 0)) {
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
 			$rWhere[] = "`streams_servers`.`server_id` = ?";
-			$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
-		} elseif ((int)(RequestManager::get("server") ?? 0) == -1) {
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
+		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 		}
 		if (0 < strlen(RequestManager::get("filter") ?? '')) {
@@ -2771,7 +2771,7 @@ class TableController extends BaseAdminController {
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
 						if (0 < strlen(RequestManager::get("category") ?? '')) {
-							$rCategory = $rCategories[(int)(RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
 							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
@@ -2884,7 +2884,7 @@ class TableController extends BaseAdminController {
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
 						if (0 < strlen(RequestManager::get("category") ?? '')) {
-							$rCategory = $rCategories[(int)(RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
 							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
@@ -3300,7 +3300,7 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		$rCategories = CategoryService::getAllByType("live");
-		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, "`active_count`", NULL];
+		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, "`active_count`", null];
 		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
@@ -3363,7 +3363,7 @@ class TableController extends BaseAdminController {
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
 						if (0 < strlen(RequestManager::get("category") ?? '')) {
-							$rCategory = $rCategories[(int)(RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
+							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
 							$rCategory = $rCategories[$rCategory]['category_name'] ?? "No Category";
@@ -3440,7 +3440,7 @@ class TableController extends BaseAdminController {
 					if ($rRow["owner_id"]) {
 						$rOwnerIDs[] = $rRow["owner_id"];
 					}
-					$rUserInfo[$rRow["id"]] = ["is_reseller" => 0, "user_lines" => 0, "mag_lines" => 0, "e2_lines" => 0, "user_count" => 0, "group_name" => NULL];
+					$rUserInfo[$rRow["id"]] = ["is_reseller" => 0, "user_lines" => 0, "mag_lines" => 0, "e2_lines" => 0, "user_count" => 0, "group_name" => null];
 				}
 				if (0 < count($rUserIDs)) {
 					$db->query("SELECT `users`.`id`, `users_groups`.`is_reseller`, `users_groups`.`group_name` FROM `users_groups` LEFT JOIN `users` ON `users_groups`.`group_id` = `users`.`member_group_id` WHERE `users`.`id` IN (" . implode(",", $rUserIDs) . ");");
@@ -3716,11 +3716,11 @@ class TableController extends BaseAdminController {
 			}
 			if (0 < strlen(RequestManager::get("resolution") ?? '')) {
 				$rWhere[] = "`streams_servers`.`resolution` = ?";
-				$rWhereV[] = (int) RequestManager::get("resolution") ?: NULL;
+				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
 			}
 			if (0 < (int) (RequestManager::get("server") ?? 0)) {
 				$rWhere[] = "`streams_servers`.`server_id` = ?";
-				$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
+				$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
 			} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 				$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 			}
@@ -3922,7 +3922,6 @@ class TableController extends BaseAdminController {
 		echo json_encode($rReturn);
 		exit;
 	}
-
 
 	private function handleMysqlSyslog($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db, $rPermissions;
@@ -4755,7 +4754,7 @@ class TableController extends BaseAdminController {
 		}
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "`stream_source` LIKE ?";
-		$rWhereV[] = "%s:" . (int)(RequestManager::get("server_id") ?? 0) . ":%";
+		$rWhereV[] = "%s:" . (int) (RequestManager::get("server_id") ?? 0) . ":%";
 		if (RequestManager::has("category_id") && 0 < strlen(RequestManager::get("category_id"))) {
 			$rSplit = explode(":", RequestManager::get("category_id"));
 			if ((int) $rSplit[0] == 0) {
@@ -4965,7 +4964,7 @@ class TableController extends BaseAdminController {
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "`stream_id` = ?";
 		$rWhereV[] = RequestManager::get("stream_id");
-		if (RequestManager::has("server_id") && 0 < (int)(RequestManager::get("server_id") ?? 0)) {
+		if (RequestManager::has("server_id") && 0 < (int) (RequestManager::get("server_id") ?? 0)) {
 			$rWhere[] = "`server_id` = ?";
 			$rWhereV[] = RequestManager::get("server_id");
 		}
@@ -5096,9 +5095,9 @@ class TableController extends BaseAdminController {
 				$rWhere[] = "`ondemand_check`.`status` IS NULL";
 			}
 		}
-		if (0 < (int)(RequestManager::get("server") ?? 0)) {
+		if (0 < (int) (RequestManager::get("server") ?? 0)) {
 			$rWhere[] = "`streams_servers`.`server_id` = ?";
-			$rWhereV[] = (int)(RequestManager::get("server") ?? 0);
+			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
 		}
 		$rOrderBy = "";
 		if (isset($rOrder[$rOrderRow]) && $rOrder[$rOrderRow]) {

@@ -18,10 +18,10 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class MagscanSettingsController extends BaseAdminController {
-    public function index(): void {
-        $this->requirePermission();
+	public function index(): void {
+		$this->requirePermission();
 
-        $this->setTitle('MAGSCAN Settings');
-        $this->render('magscan_settings');
-    }
+		$this->setTitle('MAGSCAN Settings');
+		$this->render('magscan_settings');
+	}
 }

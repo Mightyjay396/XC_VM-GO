@@ -15,12 +15,12 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class TicketsController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rStatusArray = array('CLOSED', 'OPEN', 'RESPONDED TO', 'READ BY USER', 'NEW RESPONSE', 'READ BY ME', 'READ BY USER');
+		$rStatusArray = ['CLOSED', 'OPEN', 'RESPONDED TO', 'READ BY USER', 'NEW RESPONSE', 'READ BY ME', 'READ BY USER'];
 
-        $this->setTitle('Tickets');
-        $this->render('tickets', compact('rStatusArray'));
-    }
+		$this->setTitle('Tickets');
+		$this->render('tickets', compact('rStatusArray'));
+	}
 }

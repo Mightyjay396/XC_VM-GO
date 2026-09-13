@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtGenre;
 use M3uParser\Tag\ExtTagInterface;
 use PHPUnit\Framework\TestCase;
 
-class ExtGenreTest extends TestCase
-{
-    public function testParseExtGenre(): void
-    {
+class ExtGenreTest extends TestCase {
+    public function testParseExtGenre(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/extgenre.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/extgenre.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -35,10 +32,9 @@ class ExtGenreTest extends TestCase
         self::assertEquals('Rock', $extGenre->getValue());
     }
 
-    public function testGenerateExtGenre(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTGENRE:Rock'."\n";
+    public function testGenerateExtGenre(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTGENRE:Rock' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

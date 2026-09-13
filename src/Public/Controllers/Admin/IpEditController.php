@@ -17,9 +17,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class IpEditController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Blocked IP');
-        $this->render('ip');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Blocked IP');
+		$this->render('ip');
+	}
 }

@@ -38,7 +38,7 @@ function sortArrayStreamName($a, $b) {
  * @param int $rID Stream id.
  * @return array|false The stream row, or false if not found.
  */
-function getStream($rID) {
+function getStream(int $rID) {
 	global $db;
 	$db->query('SELECT * FROM `streams` WHERE `id` = ?;', $rID);
 	if ($db->num_rows() == 1) {
@@ -60,10 +60,10 @@ function getStream($rID) {
  * @param mixed $rSubtitles Raw subtitle definition(s).
  * @return array Subtitle entries.
  */
-function getSubtitles($rStreamID, $rSubtitles) {
+function getSubtitles(int $rStreamID, mixed $rSubtitles) {
 	global $rUserInfo;
 	$rDomainName = DomainResolver::resolve(SERVER_ID, !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' || $_SERVER['SERVER_PORT'] == 443);
-	$rReturn = array();
+	$rReturn = [];
 
 	if (is_array($rSubtitles)) {
 		$i = 0;
@@ -72,7 +72,7 @@ function getSubtitles($rStreamID, $rSubtitles) {
 			$rLanguage = null;
 
 			foreach (array_keys($rSubtitle['tags']) as $rKey) {
-				if (!in_array(strtoupper(explode('-', $rKey)[0]), array('BPS', 'DURATION', 'NUMBER_OF_FRAMES', 'NUMBER_OF_BYTES'))) {
+				if (!in_array(strtoupper(explode('-', $rKey)[0]), ['BPS', 'DURATION', 'NUMBER_OF_FRAMES', 'NUMBER_OF_BYTES'])) {
 					if ($rKey == 'language') {
 						$rLanguage = $rSubtitle['tags'][$rKey];
 						break;
@@ -87,7 +87,7 @@ function getSubtitles($rStreamID, $rSubtitles) {
 				$rLanguage = 'Subtitle #' . ($i + 1);
 			}
 
-			$rReturn[] = array('label' => $rLanguage, 'file' => $rDomainName . 'subtitle/' . $rUserInfo['username'] . '/' . $rUserInfo['password'] . '/' . $rStreamID . '?sub_id=' . $i . '&webvtt=1', 'kind' => 'subtitles');
+			$rReturn[] = ['label' => $rLanguage, 'file' => $rDomainName . 'subtitle/' . $rUserInfo['username'] . '/' . $rUserInfo['password'] . '/' . $rStreamID . '?sub_id=' . $i . '&webvtt=1', 'kind' => 'subtitles'];
 			$i++;
 		}
 	}
@@ -102,21 +102,21 @@ function getSubtitles($rStreamID, $rSubtitles) {
  * @param string $rType       Content type ('movie', 'series', ...).
  * @return array Ordered categories.
  */
-function getOrderedCategories($rCategories, $rType = 'movie') {
-	$rReturn = array();
+function getOrderedCategories(array $rCategories, string $rType = 'movie') {
+	$rReturn = [];
 
 	foreach (CategoryService::getFromDatabase($rType) as $rCategory) {
 		if (in_array($rCategory['id'], $rCategories)) {
-			$rReturn[] = array('title' => $rCategory['category_name'], 'id' => $rCategory['id'], 'cat_order' => $rCategory['cat_order']);
+			$rReturn[] = ['title' => $rCategory['category_name'], 'id' => $rCategory['id'], 'cat_order' => $rCategory['cat_order']];
 		}
 	}
 	$rTitle = array_column($rReturn, 'cat_order');
 	array_multisort($rTitle, SORT_ASC, $rReturn);
 
 	if ($rType != 'live') {
-		array_unshift($rReturn, array('id' => '0', 'cat_order' => 0, 'title' => 'All Genres'));
+		array_unshift($rReturn, ['id' => '0', 'cat_order' => 0, 'title' => 'All Genres']);
 	} else {
-		array_unshift($rReturn, array('id' => '0', 'cat_order' => 0, 'title' => 'Most Popular'));
+		array_unshift($rReturn, ['id' => '0', 'cat_order' => 0, 'title' => 'Most Popular']);
 	}
 
 	return $rReturn;
@@ -137,11 +137,11 @@ function getOrderedCategories($rCategories, $rType = 'movie') {
  * @param bool        $rIDs        Return only ids instead of full rows.
  * @return array Streams (or ids) visible to the user.
  */
-function getUserStreams($rUserInfo, $rTypes = array(), $rCategoryID = null, $rFav = null, $rOrderBy = null, $rSearchBy = null, $rPicking = array(), $rStart = 0, $rLimit = 10, $rIDs = false) {
+function getUserStreams(array $rUserInfo, array $rTypes = [], ?int $rCategoryID = null, ?bool $rFav = null, ?string $rOrderBy = null, ?string $rSearchBy = null, array $rPicking = [], int $rStart = 0, int $rLimit = 10, bool $rIDs = false) {
 	global $db;
 	$rPicking = $rPicking ?? [];
 	$rAdded = false;
-	$rChannels = array();
+	$rChannels = [];
 
 	foreach ($rTypes as $rType) {
 		switch ($rType) {
@@ -167,9 +167,9 @@ function getUserStreams($rUserInfo, $rTypes = array(), $rCategoryID = null, $rFa
 				break;
 		}
 	}
-	$rStreams = array('count' => 0, 'streams' => array());
+	$rStreams = ['count' => 0, 'streams' => []];
 	$rKey = $rStart + 1;
-	$rWhereV = $rWhere = array();
+	$rWhereV = $rWhere = [];
 
 	if (SettingsManager::getBool('player_hide_incompatible')) {
 		$rWhere[] = '(SELECT MAX(`compatible`) FROM `streams_servers` WHERE `streams_servers`.`stream_id` = `streams`.`id` LIMIT 1) = 1';
@@ -207,7 +207,7 @@ function getUserStreams($rUserInfo, $rTypes = array(), $rCategoryID = null, $rFa
 	$rChannels = StreamSorter::sortChannels($rChannels);
 
 	if (!empty($rFav)) {
-		$favoriteChannelIds = array();
+		$favoriteChannelIds = [];
 
 		foreach ($rTypes as $rType) {
 			foreach ($rUserInfo['fav_channels'][$rType] as $rStreamID) {
@@ -297,7 +297,7 @@ function getUserStreams($rUserInfo, $rTypes = array(), $rCategoryID = null, $rFa
 		foreach ($rRows as $rStream) {
 			$rStream['number'] = $rKey;
 
-			$rStreamCategories = json_decode($rStream['category_id'], true) ?: array();
+			$rStreamCategories = json_decode($rStream['category_id'], true) ?: [];
 			if (in_array($rCategoryID, $rStreamCategories)) {
 				$rStream['category_id'] = $rCategoryID;
 			} else {
@@ -329,13 +329,13 @@ function getUserStreams($rUserInfo, $rTypes = array(), $rCategoryID = null, $rFa
  * @param mixed       $additionalOptions Extra query options.
  * @return array Series visible to the user.
  */
-function getUserSeries($rUserInfo, $rCategoryID = null, $rFav = null, $rOrderBy = null, $rSearchBy = null, $rPicking = array(), $rStart = 0, $rLimit = 10, $additionalOptions = null) {
+function getUserSeries(array $rUserInfo, ?int $rCategoryID = null, ?bool $rFav = null, ?string $rOrderBy = null, ?string $rSearchBy = null, array $rPicking = [], int $rStart = 0, int $rLimit = 10, mixed $additionalOptions = null) {
 	global $db;
 	$rPicking = $rPicking ?? [];
 	$rSeries = $rUserInfo['series_ids'];
-	$rStreams = array('count' => 0, 'streams' => array());
+	$rStreams = ['count' => 0, 'streams' => []];
 	$rKey = $rStart + 1;
-	$rWhereV = $rWhere = array();
+	$rWhereV = $rWhere = [];
 
 	if (SettingsManager::getBool('player_hide_incompatible')) {
 		$rWhere[] = '(SELECT MAX(`compatible`) FROM `streams_servers` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams_servers`.`stream_id` WHERE `streams_episodes`.`series_id` = `streams_series`.`id`) = 1';
@@ -419,7 +419,7 @@ function getUserSeries($rUserInfo, $rCategoryID = null, $rFav = null, $rOrderBy 
 		foreach ($rRows as $rStream) {
 			$rStream['number'] = $rKey;
 
-			$rStreamCategories = json_decode($rStream['category_id'], true) ?: array();
+			$rStreamCategories = json_decode($rStream['category_id'], true) ?: [];
 			if (in_array($rCategoryID, $rStreamCategories)) {
 				$rStream['category_id'] = $rCategoryID;
 			} else {
@@ -442,9 +442,9 @@ function getUserSeries($rUserInfo, $rCategoryID = null, $rFav = null, $rOrderBy 
  * @param string[] $rTypes Content-type names.
  * @return int[] Corresponding numeric type ids.
  */
-function mapContentTypesToNumbers($rTypes) {
-	$rReturn = array();
-	$rTypeInt = array('live' => 1, 'movie' => 2, 'created_live' => 3, 'radio_streams' => 4, 'series' => 5);
+function mapContentTypesToNumbers(array $rTypes) {
+	$rReturn = [];
+	$rTypeInt = ['live' => 1, 'movie' => 2, 'created_live' => 3, 'radio_streams' => 4, 'series' => 5];
 
 	foreach ($rTypes as $rType) {
 		$rReturn[] = $rTypeInt[$rType];

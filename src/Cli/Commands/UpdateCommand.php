@@ -22,7 +22,6 @@ use XcVm\Domain\Server\ServerRepository;
  */
 
 class UpdateCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'update';
 	}
@@ -282,7 +281,7 @@ class UpdateCommand implements CommandInterface {
 					UpdateLogger::info('Broadcasting update signal to LB servers');
 					foreach (ServerRepository::getAll() as $rServer) {
 						if (($rServer['enabled'] && $rServer['status'] == 1 && time() - $rServer['last_check_ago'] <= 180) || !$rServer['is_main']) {
-							$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(array('action' => 'update')));
+							$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'update']));
 						}
 					}
 				}
@@ -291,7 +290,7 @@ class UpdateCommand implements CommandInterface {
 				$db->query('UPDATE `settings` SET `update_data` = NULL;');
 				UpdateLogger::info('Server status set to 1 (online), version=' . XC_VM_VERSION);
 
-				foreach (array('http', 'https') as $rType) {
+				foreach (['http', 'https'] as $rType) {
 					$rPortConfig = file_get_contents(MAIN_HOME . 'bin/nginx/conf/ports/' . $rType . '.conf');
 					if (stripos($rPortConfig, ' reuseport') !== false) {
 						file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/' . $rType . '.conf', str_replace(' reuseport', '', $rPortConfig));
@@ -338,7 +337,9 @@ class UpdateCommand implements CommandInterface {
 
 	private function downloadFile($url, $targetPath): bool {
 		$rData = @fopen($url, 'rb');
-		if (!$rData) return false;
+		if (!$rData) {
+			return false;
+		}
 		$rOutput = fopen($targetPath, 'wb');
 		stream_copy_to_stream($rData, $rOutput);
 		fclose($rData);

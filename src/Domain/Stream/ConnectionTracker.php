@@ -26,6 +26,7 @@ use XcVm\Streaming\Fanout\FanoutClient;
 
 class ConnectionTracker {
 	use DatabaseAware;
+
 	/**
 	 * Calculate server/proxy load capacity.
 	 *
@@ -46,7 +47,7 @@ class ConnectionTracker {
 		}
 
 		if ($rSettings['redis_handler'] && $rRedis) {
-			$rRows = array();
+			$rRows = [];
 			$rResults = null;
 			// One reconnect+retry: phpredis may silently reconnect a broken
 			// socket without replaying AUTH, so a healthy-looking connection
@@ -77,7 +78,7 @@ class ConnectionTracker {
 			$i = 0;
 			foreach (array_keys($rServers) as $rServerID) {
 				if ($rServers[$rServerID]['server_online']) {
-					$rRows[$rServerID] = array('online_clients' => ($rResults[$i] ?? 0));
+					$rRows[$rServerID] = ['online_clients' => ($rResults[$i] ?? 0)];
 					$i++;
 				}
 			}
@@ -92,7 +93,7 @@ class ConnectionTracker {
 		}
 
 		if ($rSettings['split_by'] == 'band') {
-			$rServerSpeed = array();
+			$rServerSpeed = [];
 			foreach (array_keys($rServers) as $rServerID) {
 				$rServerHardware = json_decode($rServers[$rServerID]['server_hardware'], true);
 				if (!empty($rServerHardware['network_speed'])) {
@@ -165,15 +166,16 @@ class ConnectionTracker {
 			if (is_array($rKeys) && count($rKeys) > 0) {
 				$rData = $rRedis->mGet($rKeys);
 				if (is_array($rData)) {
-					return array($rKeys, array_map(static function ($rItem) {
+					return [$rKeys, array_map(static function ($rItem) {
 						return is_string($rItem) ? igbinary_unserialize($rItem) : false;
-					}, $rData));
+					}, $rData)
+					];
 				}
 			}
-			return array([], []);
+			return [[], []];
 		}
 
-		$rWhere = array();
+		$rWhere = [];
 		if (!empty($rServerID)) {
 			$rWhere[] = 't1.server_id = ' . intval($rServerID);
 		}
@@ -218,7 +220,7 @@ class ConnectionTracker {
 	 * @return void
 	 */
 	public static function addToQueue(int $rStreamID, int $rAddPID): void {
-		$rActivePIDs = $rPIDs = array();
+		$rActivePIDs = $rPIDs = [];
 		if (file_exists(SIGNALS_TMP_PATH . 'queue_' . intval($rStreamID))) {
 			$rPIDs = igbinary_unserialize(file_get_contents(SIGNALS_TMP_PATH . 'queue_' . intval($rStreamID)));
 		}
@@ -247,8 +249,8 @@ class ConnectionTracker {
 		if (!file_exists($rQueueFile)) {
 			return;
 		}
-		$rActivePIDs = array();
-		foreach ((igbinary_unserialize(file_get_contents($rQueueFile)) ?: array()) as $rActivePID) {
+		$rActivePIDs = [];
+		foreach ((igbinary_unserialize(file_get_contents($rQueueFile)) ?: []) as $rActivePID) {
 			if (ProcessManager::isRunning($rActivePID, 'php-fpm') && $rPID != $rActivePID) {
 				$rActivePIDs[] = $rActivePID;
 			}
@@ -334,7 +336,7 @@ class ConnectionTracker {
 	 * @param mixed|null $rCustomData Additional signal data.
 	 * @return array|false MULTI/EXEC result.
 	 */
-	public static function redisSignal(int $rPID, int $rServerID, int $rRTMP, $rCustomData = null) {
+	public static function redisSignal(int $rPID, int $rServerID, int $rRTMP, mixed $rCustomData = null) {
 		$rRedis = RedisManager::instance();
 		if (!$rRedis) {
 			return false;
@@ -343,7 +345,7 @@ class ConnectionTracker {
 		// (a daemon viewer's drop_con) would otherwise all share one key per server
 		// and overwrite each other before the target's signals daemon read them.
 		$rKey = 'SIGNAL#' . md5($rServerID . '#' . $rPID . '#' . $rRTMP . (is_null($rCustomData) ? '' : '#' . json_encode($rCustomData)));
-		$rData = array('pid' => $rPID, 'server_id' => $rServerID, 'rtmp' => $rRTMP, 'time' => time(), 'custom_data' => $rCustomData, 'key' => $rKey);
+		$rData = ['pid' => $rPID, 'server_id' => $rServerID, 'rtmp' => $rRTMP, 'time' => time(), 'custom_data' => $rCustomData, 'key' => $rKey];
 		return $rRedis->multi()->sAdd('SIGNALS#' . $rServerID, $rKey)->set($rKey, igbinary_serialize($rData))->exec();
 	}
 
@@ -367,7 +369,7 @@ class ConnectionTracker {
 			$rMulti->zRevRangeByScore('LINE#' . $rUserID, '+inf', '-inf');
 		}
 		$rGroups = $rMulti->exec();
-		$rConnectionMap = $rRedisKeys = array();
+		$rConnectionMap = $rRedisKeys = [];
 		if (!is_array($rGroups)) {
 			return ($rKeysOnly ? $rRedisKeys : $rConnectionMap);
 		}
@@ -414,7 +416,7 @@ class ConnectionTracker {
 			$rMulti->zRevRangeByScore(($rProxy ? 'PROXY#' . $rServerID : 'SERVER#' . $rServerID), '+inf', '-inf');
 		}
 		$rGroups = $rMulti->exec();
-		$rConnectionMap = $rRedisKeys = array();
+		$rConnectionMap = $rRedisKeys = [];
 		if (!is_array($rGroups)) {
 			return ($rKeysOnly ? $rRedisKeys : $rConnectionMap);
 		}
@@ -455,10 +457,10 @@ class ConnectionTracker {
 		}
 		$rMulti = $rRedis->multi();
 		foreach ($rUserIDs as $rUserID) {
-			$rMulti->zRevRangeByScore('LINE#' . $rUserID, '+inf', '-inf', array('limit' => array(0, 1)));
+			$rMulti->zRevRangeByScore('LINE#' . $rUserID, '+inf', '-inf', ['limit' => [0, 1]]);
 		}
 		$rGroups = $rMulti->exec();
-		$rConnectionMap = $rRedisKeys = array();
+		$rConnectionMap = $rRedisKeys = [];
 		if (!is_array($rGroups)) {
 			return $rConnectionMap;
 		}
@@ -497,7 +499,7 @@ class ConnectionTracker {
 			$rMulti->zRevRangeByScore('STREAM#' . $rStreamID, '+inf', '-inf');
 		}
 		$rGroups = $rMulti->exec();
-		$rConnectionMap = $rRedisKeys = array();
+		$rConnectionMap = $rRedisKeys = [];
 		if (!is_array($rGroups)) {
 			return $rConnectionMap;
 		}
@@ -601,10 +603,10 @@ class ConnectionTracker {
 	public static function getRedisConnections(?int $rUserID = null, ?int $rServerID = null, ?int $rStreamID = null, bool $rOpenOnly = false, bool $rCountOnly = false, bool $rGroup = true, bool $rHLSOnly = false): array {
 		$rRedis = RedisManager::instance();
 		if (!$rRedis) {
-			return ($rCountOnly ? array(0, 0) : array());
+			return ($rCountOnly ? [0, 0] : []);
 		}
-		$rReturn = ($rCountOnly ? array(0, 0) : array());
-		$rUniqueUsers = array();
+		$rReturn = ($rCountOnly ? [0, 0] : []);
+		$rUniqueUsers = [];
 		$rUserID = (0 < intval($rUserID) ? intval($rUserID) : null);
 		$rServerID = (0 < intval($rServerID) ? intval($rServerID) : null);
 		$rStreamID = (0 < intval($rStreamID) ? intval($rStreamID) : null);
@@ -634,7 +636,7 @@ class ConnectionTracker {
 					} else {
 						if ($rGroup) {
 							if (!isset($rReturn[$rUUID])) {
-								$rReturn[$rUUID] = array();
+								$rReturn[$rUUID] = [];
 							}
 							$rReturn[$rUUID][] = $rRow;
 						} else {
@@ -689,7 +691,7 @@ class ConnectionTracker {
 	 * @param string     $rUserAgent  Client user-agent ('' when absent).
 	 * @return string 32-char hex connection id.
 	 */
-	public static function hlsConnectionKey($rIsHMAC, $rIdentifier, $rUserId, $rStreamId, $rIp, $rUserAgent): string {
+	public static function hlsConnectionKey(?int $rIsHMAC, string $rIdentifier, int|string $rUserId, int $rStreamId, string $rIp, string $rUserAgent): string {
 		$rIdentity = is_null($rIsHMAC) ? ('u' . intval($rUserId)) : ('h' . $rIsHMAC . '_' . (string) $rIdentifier);
 
 		return md5('hls#' . $rIdentity . '#' . intval($rStreamId) . '#' . (string) $rIp . '#' . (string) $rUserAgent);
@@ -747,8 +749,8 @@ class ConnectionTracker {
 	 * @param int|null $rPid       Owning pid (NULL for HLS).
 	 * @return mixed Truthy on success (Redis MULTI result or DB write result).
 	 */
-	public static function createLive(array $rSettings, array $rCtx, string $rContainer, $rPid) {
-		$rConn = array(
+	public static function createLive(array $rSettings, array $rCtx, string $rContainer, ?int $rPid) {
+		$rConn = [
 			"stream_id" => $rCtx["stream_id"],
 			"server_id" => $rCtx["server_id"],
 			"proxy_id" => $rCtx["proxy_id"],
@@ -764,7 +766,7 @@ class ConnectionTracker {
 			"hls_last_read" => time() - $rCtx["time_offset"],
 			"on_demand" => $rCtx["on_demand"],
 			"uuid" => $rCtx["uuid"],
-		);
+		];
 
 		if (is_null($rCtx["is_hmac"])) {
 			$rConn["user_id"] = $rCtx["user_id"];
@@ -861,8 +863,8 @@ class ConnectionTracker {
 		}
 
 		$db = self::db();
-		$rSet = array();
-		$rParams = array();
+		$rSet = [];
+		$rParams = [];
 		foreach ($rChanges as $rColumn => $rValue) {
 			$rSet[] = "`" . $rColumn . "` = ?";
 			$rParams[] = $rValue;
@@ -890,7 +892,7 @@ class ConnectionTracker {
 		if (is_array($rKeys) && count($rKeys) > 0) {
 			return $rKeys;
 		}
-		return array();
+		return [];
 	}
 
 	/**
@@ -908,11 +910,11 @@ class ConnectionTracker {
 		// sMembers/mGet return false on a failed connection — degrade to empty.
 		$rKeys = $rRedis->sMembers('ENDED');
 		if (!is_array($rKeys) || 0 >= count($rKeys)) {
-			return array();
+			return [];
 		}
 		$rData = $rRedis->mGet($rKeys);
 		if (!is_array($rData)) {
-			return array();
+			return [];
 		}
 		return array_map(static function ($rItem) {
 			return is_string($rItem) ? igbinary_unserialize($rItem) : false;
@@ -928,7 +930,7 @@ class ConnectionTracker {
 	 */
 	public static function getProxies(int $rServerID, bool $rOnline = true): array {
 		global $rServers;
-		$rReturn = array();
+		$rReturn = [];
 		foreach ($rServers as $rProxyID => $rServerInfo) {
 			if ($rServerInfo['server_type'] == 1 && in_array($rServerID, $rServerInfo['parent_id']) && ($rServerInfo['server_online'] || !$rOnline)) {
 				$rReturn[$rProxyID] = $rServerInfo;
@@ -958,7 +960,7 @@ class ConnectionTracker {
 			FanoutClient::dropConnection($rUUID);
 			return;
 		}
-		$rSignal = array('type' => 'drop_con', 'uuid' => $rUUID);
+		$rSignal = ['type' => 'drop_con', 'uuid' => $rUUID];
 		if (!empty($rSettings['redis_handler'])) {
 			self::redisSignal(0, $rServerID, 0, $rSignal);
 		} else {
@@ -978,7 +980,7 @@ class ConnectionTracker {
 	 * @param bool         $rEnd          Mark HLS connection as ended.
 	 * @return bool True on successful close, false otherwise.
 	 */
-	public static function closeConnection($rActivityInfo, bool $rRemove = true, bool $rEnd = true): bool {
+	public static function closeConnection(array|string $rActivityInfo, bool $rRemove = true, bool $rEnd = true): bool {
 		if (!empty($rActivityInfo)) {
 			global $rSettings, $rServers;
 			$db = self::db();
@@ -1005,7 +1007,7 @@ class ConnectionTracker {
 				}
 			}
 			if (is_array($rActivityInfo)) {
-				$rActivityInfo += array('server_id' => 0, 'pid' => 0, 'activity_id' => null, 'stream_id' => 0, 'uuid' => '', 'hls_end' => 1);
+				$rActivityInfo += ['server_id' => 0, 'pid' => 0, 'activity_id' => null, 'stream_id' => 0, 'uuid' => '', 'hls_end' => 1];
 				if (($rActivityInfo['container'] ?? '') == 'rtmp') {
 					if ($rActivityInfo['server_id'] == SERVER_ID) {
 						shell_exec('wget --timeout=2 -O /dev/null -o /dev/null "' . $rServers[SERVER_ID]['rtmp_mport_url'] . 'control/drop/client?clientid=' . intval($rActivityInfo['pid']) . '" >/dev/null 2>/dev/null &');
@@ -1021,7 +1023,7 @@ class ConnectionTracker {
 						if (!(!$rRemove && $rEnd && $rActivityInfo['hls_end'] == 0)) {
 						} else {
 							if ($rSettings['redis_handler']) {
-								self::updateConnection($rActivityInfo, array(), 'close');
+								self::updateConnection($rActivityInfo, [], 'close');
 							} else {
 								$db->query('UPDATE `lines_live` SET `hls_end` = 1 WHERE `activity_id` = ?', $rActivityInfo['activity_id']);
 							}
@@ -1106,7 +1108,7 @@ class ConnectionTracker {
 	public static function writeOfflineActivity(array $rSettings, int $rServerID, int $rProxyID, int $rUserID, int $rStreamID, int $rStart, string $rUserAgent, string $rIP, string $rExtension, string $rGeoIP, string $rISP, string $rExternalDevice = '', int $rDivergence = 0, ?int $rIsHMAC = null, string $rIdentifier = ''): void {
 		if ($rSettings['save_closed_connection'] != 0) {
 			if ($rServerID && $rUserID && $rStreamID) {
-				$rActivityInfo = array('user_id' => intval($rUserID), 'stream_id' => intval($rStreamID), 'server_id' => intval($rServerID), 'proxy_id' => intval($rProxyID), 'date_start' => intval($rStart), 'user_agent' => $rUserAgent, 'user_ip' => htmlentities($rIP), 'date_end' => time(), 'container' => $rExtension, 'geoip_country_code' => $rGeoIP, 'isp' => $rISP, 'external_device' => htmlentities($rExternalDevice), 'divergence' => intval($rDivergence), 'hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier);
+				$rActivityInfo = ['user_id' => intval($rUserID), 'stream_id' => intval($rStreamID), 'server_id' => intval($rServerID), 'proxy_id' => intval($rProxyID), 'date_start' => intval($rStart), 'user_agent' => $rUserAgent, 'user_ip' => htmlentities($rIP), 'date_end' => time(), 'container' => $rExtension, 'geoip_country_code' => $rGeoIP, 'isp' => $rISP, 'external_device' => htmlentities($rExternalDevice), 'divergence' => intval($rDivergence), 'hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
 				file_put_contents(LOGS_TMP_PATH . 'activity', base64_encode(json_encode($rActivityInfo)) . "\n", FILE_APPEND | LOCK_EX);
 			}
 		} else {

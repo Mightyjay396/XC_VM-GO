@@ -25,7 +25,6 @@ use XcVm\Domain\Server\ServerRepository;
  */
 
 class ServerInstallCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'server:install';
 	}
@@ -54,7 +53,7 @@ class ServerInstallCommand implements CommandInterface {
 			return 0;
 		}
 
-		shell_exec("kill -9 `ps -ef | grep 'XC_VM Install\\[" . $rServerID . "\\]' | grep -v grep | awk '{print \$2}'`;" );
+		shell_exec("kill -9 `ps -ef | grep 'XC_VM Install\\[" . $rServerID . "\\]' | grep -v grep | awk '{print \$2}'`;");
 		set_time_limit(0);
 		cli_set_process_title('XC_VM Install[' . $rServerID . ']');
 		register_shutdown_function(function () use ($db) {
@@ -73,7 +72,7 @@ class ServerInstallCommand implements CommandInterface {
 		$rHTTPSPort = (empty($rArgs[6]) ? 443 : intval($rArgs[6]));
 		$rUpdateSysctl = (empty($rArgs[7]) ? 0 : intval($rArgs[7]));
 		$rPrivateIP = (empty($rArgs[8]) ? 0 : intval($rArgs[8]));
-		$rParentIDs = (empty($rArgs[9]) ? array() : json_decode($rArgs[9], true));
+		$rParentIDs = (empty($rArgs[9]) ? [] : json_decode($rArgs[9], true));
 		$rSysCtl = '# XC_VM' . PHP_EOL . PHP_EOL . 'net.ipv4.tcp_congestion_control = bbr' . PHP_EOL . 'net.core.default_qdisc = fq' . PHP_EOL . 'net.ipv4.tcp_rmem = 8192 87380 134217728' . PHP_EOL . 'net.ipv4.udp_rmem_min = 16384' . PHP_EOL . 'net.core.rmem_default = 262144' . PHP_EOL . 'net.core.rmem_max = 268435456' . PHP_EOL . 'net.ipv4.tcp_wmem = 8192 65536 134217728' . PHP_EOL . 'net.ipv4.udp_wmem_min = 16384' . PHP_EOL . 'net.core.wmem_default = 262144' . PHP_EOL . 'net.core.wmem_max = 268435456' . PHP_EOL . 'net.core.somaxconn = 1000000' . PHP_EOL . 'net.core.netdev_max_backlog = 250000' . PHP_EOL . 'net.core.optmem_max = 65535' . PHP_EOL . 'net.ipv4.tcp_max_tw_buckets = 1440000' . PHP_EOL . 'net.ipv4.tcp_max_orphans = 16384' . PHP_EOL . 'net.ipv4.ip_local_port_range = 2000 65000' . PHP_EOL . 'net.ipv4.tcp_no_metrics_save = 1' . PHP_EOL . 'net.ipv4.tcp_slow_start_after_idle = 0' . PHP_EOL . 'net.ipv4.tcp_fin_timeout = 15' . PHP_EOL . 'net.ipv4.tcp_keepalive_time = 300' . PHP_EOL . 'net.ipv4.tcp_keepalive_probes = 5' . PHP_EOL . 'net.ipv4.tcp_keepalive_intvl = 15' . PHP_EOL . 'fs.file-max=20970800' . PHP_EOL . 'fs.nr_open=20970800' . PHP_EOL . 'fs.aio-max-nr=20970800' . PHP_EOL . 'net.ipv4.tcp_timestamps = 1' . PHP_EOL . 'net.ipv4.tcp_window_scaling = 1' . PHP_EOL . 'net.ipv4.tcp_mtu_probing = 1' . PHP_EOL . 'net.ipv4.route.flush = 1' . PHP_EOL . 'net.ipv6.route.flush = 1';
 		$rInstallDir = BIN_PATH . 'install/';
 
@@ -188,7 +187,7 @@ class ServerInstallCommand implements CommandInterface {
 			ProxyInstallFlow::runStartup($rConn, $rRunSSH);
 		}
 
-		if (in_array($rType, array(1, 2))) {
+		if (in_array($rType, [1, 2])) {
 			$db->query('UPDATE `servers` SET `status` = 1, `http_broadcast_port` = ?, `https_broadcast_port` = ?, `total_services` = ? WHERE `id` = ?;', $rHTTPPort, $rHTTPSPort, $rServices, $rServerID);
 		} else {
 			$db->query('UPDATE `servers` SET `status` = 1 WHERE `id` = ?;', $rServerID);
@@ -228,7 +227,7 @@ class ServerInstallCommand implements CommandInterface {
 	}
 
 	private function prepareInstallRoot($rConn, callable $rRunSSH, int $rType): void {
-		if (!in_array($rType, array(1, 2))) {
+		if (!in_array($rType, [1, 2])) {
 			return;
 		}
 
@@ -315,6 +314,6 @@ class ServerInstallCommand implements CommandInterface {
 		$rError = ssh2_fetch_stream($rStream, SSH2_STREAM_STDERR);
 		stream_set_blocking($rError, true);
 		stream_set_blocking($rStream, true);
-		return array('output' => stream_get_contents($rStream), 'error' => stream_get_contents($rError));
+		return ['output' => stream_get_contents($rStream), 'error' => stream_get_contents($rError)];
 	}
 }

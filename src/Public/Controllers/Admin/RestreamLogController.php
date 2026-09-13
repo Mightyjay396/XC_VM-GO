@@ -20,9 +20,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class RestreamLogController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Restream Detection Logs');
-        $this->render('restream_logs');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Restream Detection Logs');
+		$this->render('restream_logs');
+	}
 }

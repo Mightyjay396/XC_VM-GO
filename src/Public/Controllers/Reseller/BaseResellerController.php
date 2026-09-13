@@ -23,35 +23,32 @@ use XcVm\Public\Controllers\Admin\BaseAdminController;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class BaseResellerController extends BaseAdminController
-{
-    /** @var string Scope: 'reseller' */
-    protected $scope = 'reseller';
+class BaseResellerController extends BaseAdminController {
+	/** @var string Scope: 'reseller' */
+	protected $scope = 'reseller';
 
-    /**
-     * Проверка прав доступа реселлера.
-     * При отказе — redirect на главную + exit.
-     */
-    protected function requirePermission()
-    {
-        if (!PageAuthorization::checkResellerPermissions()) {
-            AdminHelpers::goHome();
-            exit;
-        }
-    }
+	/**
+	 * Проверка прав доступа реселлера.
+	 * При отказе — redirect на главную + exit.
+	 */
+	protected function requirePermission() {
+		if (!PageAuthorization::checkResellerPermissions()) {
+			AdminHelpers::goHome();
+			exit;
+		}
+	}
 
-    /**
-     * Проверка расширенных прав реселлера.
-     * Reseller permissions загружены через getGroupPermissions().
-     *
-     * @param string $type Тип прав
-     * @param string $key  Ключ прав
-     */
-    protected function requireAdvPermission($type, $key)
-    {
-        if (!Authorization::check($type, $key)) {
-            AdminHelpers::goHome();
-            exit;
-        }
-    }
+	/**
+	 * Проверка расширенных прав реселлера.
+	 * Reseller permissions загружены через getGroupPermissions().
+	 *
+	 * @param string $type Тип прав
+	 * @param string $key  Ключ прав
+	 */
+	protected function requireAdvPermission(string $type, string $key) {
+		if (!Authorization::check($type, $key)) {
+			AdminHelpers::goHome();
+			exit;
+		}
+	}
 }

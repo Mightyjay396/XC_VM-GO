@@ -17,29 +17,27 @@ use XcVm\Domain\User\TicketRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerTicketController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Ticket');
+class ResellerTicketController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Ticket');
 
-        $rRequest = RequestManager::getAll();
-        $rTicketInfo = null;
+		$rRequest = RequestManager::getAll();
+		$rTicketInfo = null;
 
-        if (isset($rRequest['id'])) {
-            $rTicketInfo = TicketRepository::getById($rRequest['id']);
-            if (!$rTicketInfo) {
-                AdminHelpers::goHome();
-                return;
-            }
-            if (!Authorization::check('user', $rTicketInfo['member_id'])) {
-                exit();
-            }
-        }
+		if (isset($rRequest['id'])) {
+			$rTicketInfo = TicketRepository::getById($rRequest['id']);
+			if (!$rTicketInfo) {
+				AdminHelpers::goHome();
+				return;
+			}
+			if (!Authorization::check('user', $rTicketInfo['member_id'])) {
+				exit();
+			}
+		}
 
-        $this->render('ticket', [
-            'rTicketInfo' => $rTicketInfo,
-        ]);
-    }
+		$this->render('ticket', [
+			'rTicketInfo' => $rTicketInfo,
+		]);
+	}
 }

@@ -17,28 +17,28 @@ use XcVm\Domain\Stream\CategoryService;
  */
 
 class RadioMassController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $rServers;
+		global $rServers;
 
-        $rCategories = CategoryService::getAllByType('radio');
-        $rServerTree = array(
-            array('id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Online</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => array('opened' => true)),
-            array('id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => array('opened' => true))
-        );
+		$rCategories = CategoryService::getAllByType('radio');
+		$rServerTree = [
+			['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Online</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
+			['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]]
+		];
 
-        foreach ($rServers as $rServer) {
-            $rServerTree[] = array('id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => array('opened' => true));
-        }
+		foreach ($rServers as $rServer) {
+			$rServerTree[] = ['id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
+		}
 
-        // The load-balancer server tree on this page is driven by jstree.
-        $GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
-            (array) ($GLOBALS['xmNewuiVendors'] ?? []),
-            ['jstree']
-        )));
+		// The load-balancer server tree on this page is driven by jstree.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['jstree']
+		)));
 
-        $this->setTitle('Mass Edit Stations');
-        $this->render('radio_mass', compact('rCategories', 'rServerTree'));
-    }
+		$this->setTitle('Mass Edit Stations');
+		$this->render('radio_mass', compact('rCategories', 'rServerTree'));
+	}
 }

@@ -23,13 +23,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class StreamService {
 	use DatabaseAware;
+
 	/**
 	 * Create or update a stream from admin form data.
 	 *
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		global $rSettings;
 		$db = self::db();
 		set_time_limit(0);
@@ -55,7 +56,7 @@ class StreamService {
 		}
 
 		if (isset($rData['days_to_restart']) && preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', $rData['time_to_restart'])) {
-			$rTimeArray = array('days' => array(), 'at' => $rData['time_to_restart']);
+			$rTimeArray = ['days' => [], 'at' => $rData['time_to_restart']];
 
 			foreach ($rData['days_to_restart'] as $rID => $rDay) {
 				$rTimeArray['days'][] = $rDay;
@@ -65,7 +66,7 @@ class StreamService {
 			$rArray['auto_restart'] = '';
 		}
 
-		foreach (array('fps_restart', 'gen_timestamps', 'allow_record', 'rtmp_output', 'stream_all', 'direct_source', 'direct_proxy', 'read_native') as $rKey) {
+		foreach (['fps_restart', 'gen_timestamps', 'allow_record', 'rtmp_output', 'stream_all', 'direct_source', 'direct_proxy', 'read_native'] as $rKey) {
 			if (isset($rData[$rKey])) {
 				$rArray[$rKey] = 1;
 			} else {
@@ -88,7 +89,7 @@ class StreamService {
 		}
 
 		$rReview = false;
-		$rImportStreams = array();
+		$rImportStreams = [];
 
 		if (isset($rData['review'])) {
 			$rReview = true;
@@ -112,11 +113,11 @@ class StreamService {
 		} else {
 			if (isset($_FILES['m3u_file'])) {
 				if (Authorization::check('adv', 'import_streams')) {
-					if (!(empty($_FILES['m3u_file']['tmp_name']) || !in_array(strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)), array('m3u', 'm3u8')))) {
+					if (!(empty($_FILES['m3u_file']['tmp_name']) || !in_array(strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)), ['m3u', 'm3u8']))) {
 						$rResults = self::parseM3U($_FILES['m3u_file']['tmp_name']);
 
 						if (count($rResults) > 0) {
-							$rEPGDatabase = $rSourceDatabase = $rStreamDatabase = array();
+							$rEPGDatabase = $rSourceDatabase = $rStreamDatabase = [];
 							$db->query('SELECT `id`, `stream_display_name`, `stream_source`, `channel_id` FROM `streams` WHERE `type` = 1;');
 
 							foreach ($db->get_rows() as $rRow) {
@@ -134,7 +135,7 @@ class StreamService {
 									}
 								}
 							}
-							$rEPGMatch = $rEPGScan = array();
+							$rEPGMatch = $rEPGScan = [];
 							$i = 0;
 
 							foreach ($rResults as $rResult) {
@@ -164,7 +165,7 @@ class StreamService {
 												}
 
 												foreach ($rEPGScan[$rChannelID] as $i) {
-													$rEPGMatch[$i] = array('channel_id' => $rChannelID, 'epg_lang' => $rEPGLang, 'epg_id' => intval($rRow['id']));
+													$rEPGMatch[$i] = ['channel_id' => $rChannelID, 'epg_lang' => $rEPGLang, 'epg_id' => intval($rRow['id'])];
 												}
 											}
 										}
@@ -181,7 +182,7 @@ class StreamService {
 								$rURL = $rResult->getPath();
 
 								if ($rURL) {
-									$rImportArray = array('stream_source' => array($rURL), 'stream_icon' => ($rTag ? ($rTag->getAttribute('tvg-logo') ?: ($rTag->getAttribute('logo') ?: '')) : ''), 'stream_display_name' => ($rTag ? ($rTag->getTitle() ?: basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)) : basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)), 'epg_id' => null, 'epg_lang' => null, 'channel_id' => null);
+									$rImportArray = ['stream_source' => [$rURL], 'stream_icon' => ($rTag ? ($rTag->getAttribute('tvg-logo') ?: ($rTag->getAttribute('logo') ?: '')) : ''), 'stream_display_name' => ($rTag ? ($rTag->getTitle() ?: basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)) : basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)), 'epg_id' => null, 'epg_lang' => null, 'channel_id' => null];
 
 									if ($rTag && $rTag->getAttribute('tvg-id')) {
 										$rEPG = ($rEPGMatch[$i] ?? null);
@@ -217,10 +218,10 @@ class StreamService {
 										$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?;', $rBackupID);
 
 										if ($db->num_rows() > 0) {
-											$rSources = (json_decode($db->get_row()['stream_source'], true) ?: array());
+											$rSources = (json_decode($db->get_row()['stream_source'], true) ?: []);
 											$rSources[] = $rURL;
 											$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode($rSources), $rBackupID);
-											$rImportStreams[] = array('update' => true, 'id' => $rBackupID);
+											$rImportStreams[] = ['update' => true, 'id' => $rBackupID];
 										}
 									} else {
 										if ($rExistsID && isset($rData['update_existing'])) {
@@ -237,16 +238,16 @@ class StreamService {
 								$i++;
 							}
 						} else {
-							return array('status' => STATUS_INVALID_FILE, 'data' => $rData);
+							return ['status' => STATUS_INVALID_FILE, 'data' => $rData];
 						}
 					} else {
-						return array('status' => STATUS_INVALID_FILE, 'data' => $rData);
+						return ['status' => STATUS_INVALID_FILE, 'data' => $rData];
 					}
 				} else {
 					exit();
 				}
 			} else {
-				$rImportArray = array('stream_source' => array(), 'stream_icon' => $rArray['stream_icon'], 'stream_display_name' => $rArray['stream_display_name'], 'epg_id' => $rArray['epg_id'], 'epg_lang' => $rArray['epg_lang'], 'channel_id' => $rArray['channel_id']);
+				$rImportArray = ['stream_source' => [], 'stream_icon' => $rArray['stream_icon'], 'stream_display_name' => $rArray['stream_display_name'], 'epg_id' => $rArray['epg_id'], 'epg_lang' => $rArray['epg_lang'], 'channel_id' => $rArray['channel_id']];
 
 				if (isset($rData['stream_source'])) {
 					foreach ($rData['stream_source'] as $rID => $rURL) {
@@ -261,13 +262,13 @@ class StreamService {
 		}
 
 		if (0 < count($rImportStreams)) {
-			$rBouquetCreate = array();
-			$rCategoryCreate = array();
+			$rBouquetCreate = [];
+			$rCategoryCreate = [];
 
 			if (!$rReview) {
 				$rBouquetList = json_decode($rData['bouquet_create_list'] ?? '[]', true) ?: [];
 				foreach ($rBouquetList as $rBouquet) {
-					$rPrepare = QueryHelper::prepareArray(array('bouquet_name' => $rBouquet, 'bouquet_channels' => array(), 'bouquet_movies' => array(), 'bouquet_series' => array(), 'bouquet_radios' => array()));
+					$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 					$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 					if ($db->query($rQuery, ...$rPrepare['data'])) {
@@ -278,7 +279,7 @@ class StreamService {
 
 				$rCategoryList = json_decode($rData['category_create_list'] ?? '[]', true) ?: [];
 				foreach ($rCategoryList as $rCategory) {
-					$rPrepare = QueryHelper::prepareArray(array('category_type' => 'live', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0));
+					$rPrepare = QueryHelper::prepareArray(['category_type' => 'live', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 					$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 					if ($db->query($rQuery, ...$rPrepare['data'])) {
@@ -303,7 +304,7 @@ class StreamService {
 						$rBouquets = array_map('intval', $rImportStream['bouquets']);
 						unset($rImportStream['bouquets']);
 					} else {
-						$rBouquets = array();
+						$rBouquets = [];
 
 						foreach (($rData['bouquets'] ?? []) as $rBouquet) {
 							if (isset($rBouquetCreate[$rBouquet])) {
@@ -314,7 +315,7 @@ class StreamService {
 								}
 							}
 						}
-						$rCategories = array();
+						$rCategories = [];
 
 						foreach (($rData['category_id'] ?? []) as $rCategory) {
 							if (isset($rCategoryCreate[$rCategory])) {
@@ -358,7 +359,7 @@ class StreamService {
 
 					if ($db->query($rQuery, ...$rPrepare['data'])) {
 						$rInsertID = $db->last_insert_id();
-						$rStreamExists = array();
+						$rStreamExists = [];
 
 						if (isset($rData['edit']) || isset($rImportStream['id'])) {
 							$db->query('SELECT `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rInsertID);
@@ -368,14 +369,14 @@ class StreamService {
 							}
 						}
 
-						$rStreamsAdded = array();
+						$rStreamsAdded = [];
 						$rServerTree = json_decode($rData['server_tree_data'], true);
 
 						foreach ($rServerTree as $rServer) {
 							if ($rServer['parent'] != '#') {
 								$rServerID = intval($rServer['id']);
 								$rStreamsAdded[] = $rServerID;
-								$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? array())));
+								$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? [])));
 
 								if ($rServer['parent'] == 'source') {
 									$rParent = null;
@@ -423,7 +424,7 @@ class StreamService {
 						}
 
 						if ($rRestart) {
-							ApiClient::request(array('action' => 'stream', 'sub' => 'start', 'stream_ids' => array($rInsertID)));
+							ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID]]);
 						}
 
 						foreach ($rBouquets as $rBouquet) {
@@ -448,14 +449,14 @@ class StreamService {
 							$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
 						}
 
-						return array('status' => STATUS_FAILURE, 'data' => $rData);
+						return ['status' => STATUS_FAILURE, 'data' => $rData];
 					}
 				}
 			}
 
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		} else {
-			return array('status' => STATUS_NO_SOURCES, 'data' => $rData);
+			return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
 		}
 	}
 
@@ -465,18 +466,18 @@ class StreamService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit($rData) {
+	public static function massEdit(array $rData) {
 		$db = self::db();
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
 		ini_set('default_socket_timeout', 0);
 
-		$rArray = array();
+		$rArray = [];
 
 		if (isset($rData['c_days_to_restart'])) {
 			if (isset($rData['days_to_restart']) && preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', $rData['time_to_restart'])) {
-				$rTimeArray = array('days' => array(), 'at' => $rData['time_to_restart']);
+				$rTimeArray = ['days' => [], 'at' => $rData['time_to_restart']];
 
 				foreach ($rData['days_to_restart'] as $rDay) {
 					$rTimeArray['days'][] = $rDay;
@@ -487,7 +488,7 @@ class StreamService {
 			}
 		}
 
-		foreach (array('gen_timestamps', 'allow_record', 'rtmp_output', 'fps_restart', 'stream_all', 'read_native') as $rKey) {
+		foreach (['gen_timestamps', 'allow_record', 'rtmp_output', 'fps_restart', 'stream_all', 'read_native'] as $rKey) {
 			if (isset($rData['c_' . $rKey])) {
 				if (isset($rData[$rKey])) {
 					$rArray[$rKey] = 1;
@@ -515,7 +516,7 @@ class StreamService {
 			}
 		}
 
-		foreach (array('tv_archive_server_id', 'vframes_server_id', 'tv_archive_duration', 'delay_minutes', 'probesize_ondemand', 'fps_threshold', 'llod') as $rKey) {
+		foreach (['tv_archive_server_id', 'vframes_server_id', 'tv_archive_duration', 'delay_minutes', 'probesize_ondemand', 'fps_threshold', 'llod'] as $rKey) {
 			if (isset($rData['c_' . $rKey])) {
 				$rArray[$rKey] = intval($rData[$rKey]);
 			}
@@ -538,24 +539,24 @@ class StreamService {
 		$rStreamIDs = json_decode($rData['streams'], true);
 
 		if (count($rStreamIDs) > 0) {
-			$rCategoryMap = array();
+			$rCategoryMap = [];
 
-			if (isset($rData['c_category_id']) && in_array($rData['category_id_type'], array('ADD', 'DEL'))) {
+			if (isset($rData['c_category_id']) && in_array($rData['category_id_type'], ['ADD', 'DEL'])) {
 				$db->query('SELECT `id`, `category_id` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
 
 				foreach ($db->get_rows() as $rRow) {
-					$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: array());
+					$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: []);
 				}
 			}
 
-			$rDeleteServers = $rStreamExists = array();
+			$rDeleteServers = $rStreamExists = [];
 			$db->query('SELECT `stream_id`, `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
 
 			foreach ($db->get_rows() as $rRow) {
 				$rStreamExists[intval($rRow['stream_id'])][intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
 			}
 			$rBouquets = BouquetService::getAllSimple();
-			$rDelOptions = $rAddBouquet = $rDelBouquet = array();
+			$rDelOptions = $rAddBouquet = $rDelBouquet = [];
 			$rOptQuery = $rAddQuery = '';
 
 			foreach ($rStreamIDs as $rStreamID) {
@@ -563,7 +564,7 @@ class StreamService {
 					$rCategories = array_map('intval', $rData['category_id']);
 
 					if ($rData['category_id_type'] == 'ADD') {
-						foreach (($rCategoryMap[$rStreamID] ?: array()) as $rCategoryID) {
+						foreach (($rCategoryMap[$rStreamID] ?: []) as $rCategoryID) {
 							if (!in_array($rCategoryID, $rCategories)) {
 								$rCategories[] = $rCategoryID;
 							}
@@ -593,15 +594,15 @@ class StreamService {
 				}
 
 				if (isset($rData['c_server_tree'])) {
-					$rStreamsAdded = array();
+					$rStreamsAdded = [];
 					$rServerTree = json_decode($rData['server_tree_data'], true);
 
 					foreach ($rServerTree as $rServer) {
 						if ($rServer['parent'] != '#') {
 							$rServerID = intval($rServer['id']);
 
-							if (in_array($rData['server_type'], array('ADD', 'SET'))) {
-							$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? array())));
+							if (in_array($rData['server_type'], ['ADD', 'SET'])) {
+								$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? [])));
 								if ($rServer['parent'] == 'source') {
 									$rParent = null;
 								} else {
@@ -721,11 +722,11 @@ class StreamService {
 			StreamProcess::updateStreams($rStreamIDs);
 
 			if (isset($rData['restart_on_edit'])) {
-				ApiClient::request(array('action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)));
+				ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)]);
 			}
 		}
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -734,14 +735,14 @@ class StreamService {
 	 * @param array $rData Selected ids and target destination.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function move($rData) {
+	public static function move(array $rData) {
 		$db = self::db();
 		$rType = intval($rData['content_type']);
 		$rSource = intval($rData['source_server']);
 		$rReplacement = intval($rData['replacement_server']);
 
 		if ($rSource > 0 && $rReplacement > 0 && $rSource != $rReplacement) {
-			$rExisting = array();
+			$rExisting = [];
 
 			if ($rType == 0) {
 				$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `server_id` = ?;', $rReplacement);
@@ -772,7 +773,7 @@ class StreamService {
 			}
 		}
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -781,13 +782,13 @@ class StreamService {
 	 * @param array $rData Search/replace host values and target scope.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function replaceDNS($rData) {
+	public static function replaceDNS(array $rData) {
 		$db = self::db();
 		$rOldDNS = str_replace('/', '\\/', $rData['old_dns']);
 		$rNewDNS = str_replace('/', '\\/', $rData['new_dns']);
 		$db->query('UPDATE `streams` SET `stream_source` = REPLACE(`stream_source`, ?, ?);', $rOldDNS, $rNewDNS);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -796,7 +797,7 @@ class StreamService {
 	 * @param array $rData Selected stream ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete($rData) {
+	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
@@ -805,7 +806,7 @@ class StreamService {
 		$rStreams = json_decode($rData['streams'], true);
 		StreamRepository::deleteStreams($rStreams, false);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -815,7 +816,7 @@ class StreamService {
 	 * @param bool  $rFile Treat $rData as a file path (true) or content (false).
 	 * @return \M3uParser\M3uData Parsed playlist entries (iterable, countable).
 	 */
-	public static function parseM3U($rData, $rFile = true) {
+	public static function parseM3U(mixed $rData, bool $rFile = true) {
 		$rParser = new \M3uParser\M3uParser();
 		$rParser->addDefaultTags();
 
@@ -833,8 +834,8 @@ class StreamService {
 	 * @param int $rStreamID Stream id.
 	 * @return array Archive file list.
 	 */
-	public static function getArchiveFiles($rServerID, $rStreamID) {
-		return json_decode(ApiClient::systemRequest($rServerID, array('action' => 'get_archive_files', 'stream_id' => $rStreamID)), true)['data'];
+	public static function getArchiveFiles(int $rServerID, int $rStreamID) {
+		return json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_archive_files', 'stream_id' => $rStreamID]), true)['data'];
 	}
 
 	/**
@@ -843,9 +844,9 @@ class StreamService {
 	 * @param int $rStreamID Stream id.
 	 * @return array Archive information.
 	 */
-	public static function getArchive($rStreamID) {
+	public static function getArchive(int $rStreamID) {
 		/** @var array<int, array<string, mixed>> $rReturn Archive ranges keyed by EPG index, accumulated across $rFiles. */
-		$rReturn = array();
+		$rReturn = [];
 		$rStream = StreamRepository::getById($rStreamID);
 		$rEPG = EpgService::getChannelEpg($rStream, true);
 		$rFiles = self::getArchiveFiles($rStream['tv_archive_server_id'], $rStreamID);
@@ -858,7 +859,7 @@ class StreamService {
 				$rI = 0;
 
 				foreach ($rEPG as $rEPGItem) {
-					if (!filter_var($rTimestamp, FILTER_VALIDATE_INT, array('options' => array('min_range' => $rEPGItem['start'], 'max_range' => $rEPGItem['end'] - 1)))) {
+					if (!filter_var($rTimestamp, FILTER_VALIDATE_INT, ['options' => ['min_range' => $rEPGItem['start'], 'max_range' => $rEPGItem['end'] - 1]])) {
 						$rI++;
 					} else {
 						$rEPGID = $rI;
@@ -894,7 +895,7 @@ class StreamService {
 				$rReturn[$rKey]['in_progress'] = false;
 			}
 
-			if (!$rReturn[$rKey]['in_progress'] && filter_var($rItem['start'], FILTER_VALIDATE_INT, array('options' => array('min_range' => $rItem['archive_start'] - 60, 'max_range' => $rItem['archive_start'] + 60))) && filter_var($rItem['end'], FILTER_VALIDATE_INT, array('options' => array('min_range' => $rItem['archive_stop'] - 60, 'max_range' => $rItem['archive_stop'] + 60)))) {
+			if (!$rReturn[$rKey]['in_progress'] && filter_var($rItem['start'], FILTER_VALIDATE_INT, ['options' => ['min_range' => $rItem['archive_start'] - 60, 'max_range' => $rItem['archive_start'] + 60]]) && filter_var($rItem['end'], FILTER_VALIDATE_INT, ['options' => ['min_range' => $rItem['archive_stop'] - 60, 'max_range' => $rItem['archive_stop'] + 60]])) {
 				$rReturn[$rKey]['complete'] = true;
 			} else {
 				$rReturn[$rKey]['complete'] = false;

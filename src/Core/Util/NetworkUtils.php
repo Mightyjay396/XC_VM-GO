@@ -18,217 +18,214 @@ use XcVm\Core\Process\ProcessManager;
  */
 
 class NetworkUtils {
+	/**
+	 * Get the client's IP address
+	 *
+	 * @return string IP address
+	 */
+	public static function getClientIP() {
+		// Check proxy headers first
+		$headers = ['HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP'];
 
-    /**
-     * Get the client's IP address
-     *
-     * @return string IP address
-     */
-    public static function getClientIP() {
-        // Check proxy headers first
-        $headers = ['HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP'];
+		foreach ($headers as $header) {
+			if (!empty($_SERVER[$header])) {
+				$ip = trim(explode(',', $_SERVER[$header])[0]);
+				if (filter_var($ip, FILTER_VALIDATE_IP)) {
+					return $ip;
+				}
+			}
+		}
 
-        foreach ($headers as $header) {
-            if (!empty($_SERVER[$header])) {
-                $ip = trim(explode(',', $_SERVER[$header])[0]);
-                if (filter_var($ip, FILTER_VALIDATE_IP)) {
-                    return $ip;
-                }
-            }
-        }
+		return isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '0.0.0.0';
+	}
 
-        return isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '0.0.0.0';
-    }
+	/**
+	 * Whether two IPs match — exactly, or on the same /24 (first three octets)
+	 * when $rSubnetMatch is on. Used to compare a stored connection IP against
+	 * the current client IP.
+	 *
+	 * @param bool        $rSubnetMatch Compare only the leading three octets.
+	 * @param string|null $rTargetIP    Stored / other IP.
+	 * @param string|null $rClientIP    Current client IP.
+	 * @return bool
+	 */
+	public static function ipMatches(bool $rSubnetMatch, ?string $rTargetIP, ?string $rClientIP): bool {
+		if ($rSubnetMatch) {
+			return implode(".", array_slice(explode(".", (string) $rTargetIP), 0, -1)) == implode(".", array_slice(explode(".", (string) $rClientIP), 0, -1));
+		}
+		return $rTargetIP == $rClientIP;
+	}
 
-    /**
-     * Whether two IPs match — exactly, or on the same /24 (first three octets)
-     * when $rSubnetMatch is on. Used to compare a stored connection IP against
-     * the current client IP.
-     *
-     * @param bool        $rSubnetMatch Compare only the leading three octets.
-     * @param string|null $rTargetIP    Stored / other IP.
-     * @param string|null $rClientIP    Current client IP.
-     * @return bool
-     */
-    public static function ipMatches($rSubnetMatch, $rTargetIP, $rClientIP): bool {
-        if ($rSubnetMatch) {
-            return implode(".", array_slice(explode(".", (string) $rTargetIP), 0, -1)) == implode(".", array_slice(explode(".", (string) $rClientIP), 0, -1));
-        }
-        return $rTargetIP == $rClientIP;
-    }
+	/**
+	 * Check if an IP address is in a CIDR range
+	 *
+	 * @param string $ip IP address to check
+	 * @param string $cidr CIDR notation (e.g., "192.168.1.0/24")
+	 * @return bool
+	 */
+	public static function ipInCIDR(string $ip, string $cidr) {
+		if (strpos($cidr, '/') === false) {
+			return $ip === $cidr;
+		}
 
-    /**
-     * Check if an IP address is in a CIDR range
-     *
-     * @param string $ip IP address to check
-     * @param string $cidr CIDR notation (e.g., "192.168.1.0/24")
-     * @return bool
-     */
-    public static function ipInCIDR($ip, $cidr) {
-        if (strpos($cidr, '/') === false) {
-            return $ip === $cidr;
-        }
+		list($subnet, $bits) = explode('/', $cidr);
+		$ip = ip2long($ip);
+		$subnet = ip2long($subnet);
+		$mask = -1 << (32 - (int) $bits);
 
-        list($subnet, $bits) = explode('/', $cidr);
-        $ip = ip2long($ip);
-        $subnet = ip2long($subnet);
-        $mask = -1 << (32 - (int)$bits);
+		return ($ip & $mask) === ($subnet & $mask);
+	}
 
-        return ($ip & $mask) === ($subnet & $mask);
-    }
+	/**
+	 * Check if an IP is in any of the given CIDR ranges
+	 *
+	 * @param string $ip IP address
+	 * @param array $cidrs Array of CIDR strings
+	 * @return bool
+	 */
+	public static function ipInAnyCIDR(string $ip, array $cidrs) {
+		foreach ($cidrs as $cidr) {
+			if (self::ipInCIDR($ip, $cidr)) {
+				return true;
+			}
+		}
+		return false;
+	}
 
-    /**
-     * Check if an IP is in any of the given CIDR ranges
-     *
-     * @param string $ip IP address
-     * @param array $cidrs Array of CIDR strings
-     * @return bool
-     */
-    public static function ipInAnyCIDR($ip, array $cidrs) {
-        foreach ($cidrs as $cidr) {
-            if (self::ipInCIDR($ip, $cidr)) {
-                return true;
-            }
-        }
-        return false;
-    }
+	/**
+	 * Validate an IP address
+	 *
+	 * @param string $ip IP address
+	 * @param bool $allowPrivate Allow private/reserved ranges
+	 * @return bool
+	 */
+	public static function isValidIP(string $ip, bool $allowPrivate = true) {
+		$flags = FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6;
 
-    /**
-     * Validate an IP address
-     *
-     * @param string $ip IP address
-     * @param bool $allowPrivate Allow private/reserved ranges
-     * @return bool
-     */
-    public static function isValidIP($ip, $allowPrivate = true) {
-        $flags = FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6;
+		if (!$allowPrivate) {
+			$flags |= FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+		}
 
-        if (!$allowPrivate) {
-            $flags |= FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
-        }
+		return filter_var($ip, FILTER_VALIDATE_IP, $flags) !== false;
+	}
 
-        return filter_var($ip, FILTER_VALIDATE_IP, $flags) !== false;
-    }
+	/**
+	 * Check if an IP is a private/reserved address
+	 *
+	 * @param string $ip IP address
+	 * @return bool
+	 */
+	public static function isPrivateIP(string $ip) {
+		return !filter_var(
+			$ip,
+			FILTER_VALIDATE_IP,
+			FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+		);
+	}
 
-    /**
-     * Check if an IP is a private/reserved address
-     *
-     * @param string $ip IP address
-     * @return bool
-     */
-    public static function isPrivateIP($ip) {
-        return !filter_var(
-            $ip,
-            FILTER_VALIDATE_IP,
-            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
-        );
-    }
+	/**
+	 * Convert a long integer to IP address
+	 *
+	 * @return string
+	 */
+	public static function longToIP(int $long) {
+		return long2ip($long);
+	}
 
-    /**
-     * Convert a long integer to IP address
-     *
-     * @param int $long
-     * @return string
-     */
-    public static function longToIP($long) {
-        return long2ip($long);
-    }
+	/**
+	 * Convert an IP address to long integer
+	 *
+	 * @return int
+	 */
+	public static function ipToLong(string $ip) {
+		return ip2long($ip);
+	}
 
-    /**
-     * Convert an IP address to long integer
-     *
-     * @param string $ip
-     * @return int
-     */
-    public static function ipToLong($ip) {
-        return ip2long($ip);
-    }
+	/**
+	 * Возвращает IP-адрес текущего клиента (REMOTE_ADDR).
+	 *
+	 * @return string
+	 */
+	public static function getUserIP() {
+		return $_SERVER['REMOTE_ADDR'];
+	}
 
-    /**
-     * Возвращает IP-адрес текущего клиента (REMOTE_ADDR).
-     *
-     * @return string
-     */
-    public static function getUserIP() {
-        return $_SERVER['REMOTE_ADDR'];
-    }
+	/**
+	 * Register a download against a user's concurrent-download flood limit.
+	 *
+	 * Prunes finished PIDs and allows the new download only if the limit is not
+	 * reached. Restreamers and a zero limit are always allowed.
+	 *
+	 * @param string $rType        Download type ('epg' or 'playlist').
+	 * @param array  $rUser        User row.
+	 * @param int    $rDownloadPID PID of this download.
+	 * @param int    $rFloodLimit  Max concurrent downloads (0 = unlimited).
+	 * @return bool True if the download is allowed.
+	 */
+	public static function startDownload(string $rType, array $rUser, int $rDownloadPID, int $rFloodLimit) {
+		if ($rFloodLimit != 0) {
+			if (!$rUser['is_restreamer']) {
+				$rFile = FLOOD_TMP_PATH . $rUser['id'] . '_downloads';
+				$rFloodRow = ['epg' => [], 'playlist' => []];
+				if (file_exists($rFile) && time() - filemtime($rFile) < 10) {
+					$rExisting = json_decode(file_get_contents($rFile), true);
+					if (is_array($rExisting)) {
+						$rFloodRow = array_merge($rFloodRow, $rExisting);
+					}
+					$rActive = [];
+					foreach (($rFloodRow[$rType] ?? []) as $rPID) {
+						if (ProcessManager::isRunning($rPID, 'php-fpm') && $rPID != $rDownloadPID) {
+							$rActive[] = $rPID;
+						}
+					}
+					$rFloodRow[$rType] = $rActive;
+				}
+				$rAllow = false;
+				if (count($rFloodRow[$rType]) >= $rFloodLimit) {
+				} else {
+					$rFloodRow[$rType][] = $rDownloadPID;
+					$rAllow = true;
+				}
+				file_put_contents($rFile, json_encode($rFloodRow), LOCK_EX);
+				return $rAllow;
+			} else {
+				return true;
+			}
+		} else {
+			return true;
+		}
+	}
 
-    /**
-     * Register a download against a user's concurrent-download flood limit.
-     *
-     * Prunes finished PIDs and allows the new download only if the limit is not
-     * reached. Restreamers and a zero limit are always allowed.
-     *
-     * @param string $rType        Download type ('epg' or 'playlist').
-     * @param array  $rUser        User row.
-     * @param int    $rDownloadPID PID of this download.
-     * @param int    $rFloodLimit  Max concurrent downloads (0 = unlimited).
-     * @return bool True if the download is allowed.
-     */
-    public static function startDownload($rType, $rUser, $rDownloadPID, $rFloodLimit) {
-        if ($rFloodLimit != 0) {
-            if (!$rUser['is_restreamer']) {
-                $rFile = FLOOD_TMP_PATH . $rUser['id'] . '_downloads';
-                $rFloodRow = array('epg' => array(), 'playlist' => array());
-                if (file_exists($rFile) && time() - filemtime($rFile) < 10) {
-                    $rExisting = json_decode(file_get_contents($rFile), true);
-                    if (is_array($rExisting)) {
-                        $rFloodRow = array_merge($rFloodRow, $rExisting);
-                    }
-                    $rActive = array();
-                    foreach (($rFloodRow[$rType] ?? []) as $rPID) {
-                        if (ProcessManager::isRunning($rPID, 'php-fpm') && $rPID != $rDownloadPID) {
-                            $rActive[] = $rPID;
-                        }
-                    }
-                    $rFloodRow[$rType] = $rActive;
-                }
-                $rAllow = false;
-                if (count($rFloodRow[$rType]) >= $rFloodLimit) {
-                } else {
-                    $rFloodRow[$rType][] = $rDownloadPID;
-                    $rAllow = true;
-                }
-                file_put_contents($rFile, json_encode($rFloodRow), LOCK_EX);
-                return $rAllow;
-            } else {
-                return true;
-            }
-        } else {
-            return true;
-        }
-    }
-
-    /**
-     * Remove a finished download from the user's flood-limit tracking file.
-     *
-     * @param string $rType        Download type ('epg' or 'playlist').
-     * @param array  $rUser        User row.
-     * @param int    $rDownloadPID PID of the download to remove.
-     * @param int    $rFloodLimit  Configured flood limit (0 = no tracking).
-     * @return void
-     */
-    public static function stopDownload($rType, $rUser, $rDownloadPID, $rFloodLimit) {
-        if ($rFloodLimit != 0) {
-            if (!$rUser['is_restreamer']) {
-                $rFile = FLOOD_TMP_PATH . $rUser['id'] . '_downloads';
-                if (file_exists($rFile)) {
-                    $rFloodRow[$rType] = array();
-                    foreach (json_decode(file_get_contents($rFile), true)[$rType] as $rPID) {
-                        if (!(ProcessManager::isRunning($rPID, 'php-fpm') && $rPID != $rDownloadPID)) {
-                        } else {
-                            $rFloodRow[$rType][] = $rPID;
-                        }
-                    }
-                } else {
-                    $rFloodRow = array('epg' => array(), 'playlist' => array());
-                }
-                file_put_contents($rFile, json_encode($rFloodRow), LOCK_EX);
-            } else {
-                return;
-            }
-        } else {
-            return;
-        }
-    }
+	/**
+	 * Remove a finished download from the user's flood-limit tracking file.
+	 *
+	 * @param string $rType        Download type ('epg' or 'playlist').
+	 * @param array  $rUser        User row.
+	 * @param int    $rDownloadPID PID of the download to remove.
+	 * @param int    $rFloodLimit  Configured flood limit (0 = no tracking).
+	 * @return void
+	 */
+	public static function stopDownload(string $rType, array $rUser, int $rDownloadPID, int $rFloodLimit) {
+		if ($rFloodLimit != 0) {
+			if (!$rUser['is_restreamer']) {
+				$rFile = FLOOD_TMP_PATH . $rUser['id'] . '_downloads';
+				if (file_exists($rFile)) {
+					$rFloodRow[$rType] = [];
+					foreach (json_decode(file_get_contents($rFile), true)[$rType] as $rPID) {
+						if (!(ProcessManager::isRunning($rPID, 'php-fpm') && $rPID != $rDownloadPID)) {
+						} else {
+							$rFloodRow[$rType][] = $rPID;
+						}
+					}
+				} else {
+					$rFloodRow = ['epg' => [], 'playlist' => []];
+				}
+				file_put_contents($rFile, json_encode($rFloodRow), LOCK_EX);
+			} else {
+				return;
+			}
+		} else {
+			return;
+		}
+	}
 }

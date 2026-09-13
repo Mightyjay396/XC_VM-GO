@@ -1011,21 +1011,15 @@ function getSeriesItems(
 
 			if (
 				(empty($rSearchBy) || stristr($rSeriesO["title"], $rSearchBy)) &&
-				!(
-					!empty($rPicking["abc"]) &&
+				!(!empty($rPicking["abc"]) &&
 					$rPicking["abc"] != "*" &&
-					strtoupper(substr($rSeriesO["title"], 0, 1)) != $rPicking["abc"]
-				) &&
-				!(
-					!empty($rPicking["genre"]) &&
+					strtoupper(substr($rSeriesO["title"], 0, 1)) != $rPicking["abc"]) &&
+				!(!empty($rPicking["genre"]) &&
 					$rPicking["genre"] != "*" &&
-					$rSeriesO["category_id"] != $rPicking["genre"]
-				) &&
-				!(
-					!empty($rPicking["years"]) &&
+					$rSeriesO["category_id"] != $rPicking["genre"]) &&
+				!(!empty($rPicking["years"]) &&
 					$rPicking["years"] != "*" &&
-					$rSeriesO["year"] != $rPicking["years"]
-				)
+					$rSeriesO["year"] != $rPicking["years"])
 			) {
 				if (empty($rFav)) {
 				} else {
@@ -1070,8 +1064,7 @@ function getSeriesItems(
 	return $rOutputSeries;
 }
 
-function convertTypes($rTypes)
-{
+function convertTypes($rTypes) {
 	$rReturn = [];
 	$rTypeInt = [
 		"live" => 1,
@@ -1309,8 +1302,7 @@ function getItems(
 	return $rStreams;
 }
 
-function sortArrayStreamRating($a, $b)
-{
+function sortArrayStreamRating($a, $b) {
 	if (!isset($a["rating"])) {
 		if (isset($a["movie_properties"]) && isset($b["movie_properties"])) {
 			if (!is_array($a["movie_properties"])) {
@@ -1336,8 +1328,7 @@ function sortArrayStreamRating($a, $b)
 	return 0;
 }
 
-function sortArrayStreamAdded($a, $b)
-{
+function sortArrayStreamAdded($a, $b) {
 	$rColumn = isset($a["added"]) ? "added" : "last_modified";
 
 	if (is_numeric($a[$rColumn])) {
@@ -1357,8 +1348,7 @@ function sortArrayStreamAdded($a, $b)
 	return 0;
 }
 
-function getDevice($rID = null, $rMAC = null)
-{
+function getDevice($rID = null, $rMAC = null) {
 	global $db, $rSettings, $rCached;
 	global $rIP;
 	$rBouquets = CacheReader::get("bouquets");
@@ -1550,8 +1540,7 @@ function getDevice($rID = null, $rMAC = null)
 	return $rDevice;
 }
 
-function getEPG($rStreamID, $rStartDate = null, $rFinishDate = null, $rByID = false)
-{
+function getEPG($rStreamID, $rStartDate = null, $rFinishDate = null, $rByID = false) {
 	$rReturn = [];
 	$rData = file_exists(EPG_PATH . "stream_" . $rStreamID)
 		? igbinary_unserialize(file_get_contents(EPG_PATH . "stream_" . $rStreamID))
@@ -1571,8 +1560,7 @@ function getEPG($rStreamID, $rStartDate = null, $rFinishDate = null, $rByID = fa
 	return $rReturn;
 }
 
-function getEPGs($rStreamIDs, $rStartDate = null, $rFinishDate = null)
-{
+function getEPGs($rStreamIDs, $rStartDate = null, $rFinishDate = null) {
 	$rReturn = [];
 
 	foreach ($rStreamIDs as $rStreamID) {
@@ -1582,8 +1570,7 @@ function getEPGs($rStreamIDs, $rStartDate = null, $rFinishDate = null)
 	return $rReturn;
 }
 
-function getProgramme($rStreamID, $rProgrammeID)
-{
+function getProgramme($rStreamID, $rProgrammeID) {
 	$rData = getepg($rStreamID, null, null, true);
 
 	if (!isset($rData[$rProgrammeID])) {
@@ -1592,8 +1579,7 @@ function getProgramme($rStreamID, $rProgrammeID)
 	}
 }
 
-function updateCache()
-{
+function updateCache() {
 	global $rDevice;
 
 	if (!is_array($rDevice) || empty($rDevice["mag_id"])) {
@@ -1778,8 +1764,7 @@ function getMovies(
 	return json_encode($rOutput, JSON_PARTIAL_OUTPUT_ON_ERROR);
 }
 
-function getSeasons($rSeriesID)
-{
+function getSeasons($rSeriesID) {
 	global $db;
 	$db->query(
 		"SELECT * FROM `streams_episodes` t1 INNER JOIN `streams` t2 ON t2.id=t1.stream_id WHERE t1.series_id = ? ORDER BY t1.season_num DESC, t1.episode_num ASC",
@@ -2002,8 +1987,7 @@ function getSeries(
 	return json_encode($rOutput, JSON_PARTIAL_OUTPUT_ON_ERROR);
 }
 
-function sortArrayStreamNumber($a, $b)
-{
+function sortArrayStreamNumber($a, $b) {
 	if ($a["number"] != $b["number"]) {
 		return $a["number"] < $b["number"] ? -1 : 1;
 	}
@@ -2011,15 +1995,13 @@ function sortArrayStreamNumber($a, $b)
 	return 0;
 }
 
-function sortArrayStreamName($a, $b)
-{
+function sortArrayStreamName($a, $b) {
 	$rColumn = isset($a["stream_display_name"]) ? "stream_display_name" : "title";
 
 	return strcmp($a[$rColumn], $b[$rColumn]);
 }
 
-function getStations($rCategoryID = null, $rFav = null, $rOrderBy = null)
-{
+function getStations($rCategoryID = null, $rFav = null, $rOrderBy = null) {
 	global $rDevice;
 	global $rPlayer;
 	global $rPageItems;
@@ -2363,8 +2345,7 @@ function getStreams(
 	return json_encode($rOutput, JSON_PARTIAL_OUTPUT_ON_ERROR);
 }
 
-function getHeaders()
-{
+function getHeaders() {
 	$rHeaders = [];
 
 	foreach ($_SERVER as $rName => $rValue) {
@@ -2379,8 +2360,7 @@ function getHeaders()
 	return $rHeaders;
 }
 
-function shutdown()
-{
+function shutdown() {
 	global $db;
 
 	if (!is_object($db)) {

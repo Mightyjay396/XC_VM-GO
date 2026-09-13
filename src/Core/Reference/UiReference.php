@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace XcVm\Core\Reference;
 
@@ -17,16 +16,16 @@ namespace XcVm\Core\Reference;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class UiReference {
-    /** CSS accent class => human-readable colour name (leading "" = Default). */
-    private const HUES = array('' => 'Default', 'primary' => 'Blue', 'info' => 'Light Blue', 'success' => 'Green', 'danger' => 'Red', 'warning' => 'Orange', 'purple' => 'Purple', 'pink' => 'Pink', 'dark' => 'Dark Grey', 'secondary' => 'Light Grey');
+	/** CSS accent class => human-readable colour name (leading "" = Default). */
+	private const HUES = ['' => 'Default', 'primary' => 'Blue', 'info' => 'Light Blue', 'success' => 'Green', 'danger' => 'Red', 'warning' => 'Orange', 'purple' => 'Purple', 'pink' => 'Pink', 'dark' => 'Dark Grey', 'secondary' => 'Light Grey'];
 
-    /**
-     * CSS accent class => human-readable colour name for the profile
-     * hue selector (leading empty key = "Default").
-     *
-     * @return array<string, string>
-     */
-    public static function hues(): array {
-        return self::HUES;
-    }
+	/**
+	 * CSS accent class => human-readable colour name for the profile
+	 * hue selector (leading empty key = "Default").
+	 *
+	 * @return array<string, string>
+	 */
+	public static function hues(): array {
+		return self::HUES;
+	}
 }

@@ -15,7 +15,7 @@ class QueryHelper {
 	 * @param string $rValue Raw column/table name.
 	 * @return string Sanitized identifier.
 	 */
-	public static function prepareColumn($rValue) {
+	public static function prepareColumn(string $rValue) {
 		return strtolower(preg_replace('/[^a-z0-9_]+/i', '', $rValue));
 	}
 
@@ -27,8 +27,8 @@ class QueryHelper {
 	 * @param array $rArray Column => value map.
 	 * @return array ['columns' => string, 'placeholder' => string, 'data' => array, 'update' => string].
 	 */
-	public static function prepareArray($rArray) {
-		$UpdateData = $rColumns = $rPlaceholder = $rData = array();
+	public static function prepareArray(array $rArray) {
+		$UpdateData = $rColumns = $rPlaceholder = $rData = [];
 
 		foreach (array_keys($rArray) as $rKey) {
 			$rColumns[] = '`' . self::prepareColumn($rKey) . '`';
@@ -48,7 +48,7 @@ class QueryHelper {
 			$rData[] = $rValue;
 		}
 
-		return array('placeholder' => implode(',', $rPlaceholder), 'columns' => implode(',', $rColumns), 'data' => $rData, 'update' => implode(',', $UpdateData));
+		return ['placeholder' => implode(',', $rPlaceholder), 'columns' => implode(',', $rColumns), 'data' => $rData, 'update' => implode(',', $UpdateData)];
 	}
 
 	/**
@@ -62,9 +62,9 @@ class QueryHelper {
 	 * @param bool   $rOnlyExisting When true, skip columns absent from $rData.
 	 * @return array Sanitized column => value map ready for prepareArray().
 	 */
-	public static function verifyPostTable($rTable, $rData = array(), $rOnlyExisting = false) {
+	public static function verifyPostTable(string $rTable, array $rData = [], bool $rOnlyExisting = false) {
 		global $db;
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `column_name`, `column_default`, `is_nullable`, `data_type` FROM `information_schema`.`columns` WHERE `table_schema` = (SELECT DATABASE()) AND `table_name` = ? ORDER BY `ordinal_position`;', $rTable);
 
 		foreach ($db->get_rows() as $rRow) {
@@ -81,7 +81,7 @@ class QueryHelper {
 
 			if ($rRow['is_nullable'] != 'NO' || $rRow['column_default']) {
 			} else {
-				if (in_array($rRow['data_type'], array('int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit'))) {
+				if (in_array($rRow['data_type'], ['int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit'])) {
 					$rRow['column_default'] = 0;
 				} else {
 					$rRow['column_default'] = '';
@@ -92,11 +92,11 @@ class QueryHelper {
 
 			if (array_key_exists($rRow['column_name'], $rData)) {
 				// coerce empty string for numeric columns to a safe default
-				$rNumericTypes = array('int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit');
+				$rNumericTypes = ['int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit'];
 				$rValue = $rData[$rRow['column_name']];
 				if ($rValue === '' && in_array($rRow['data_type'], $rNumericTypes)) {
 					$rReturn[$rRow['column_name']] = is_null($rRow['column_default']) ? ($rForceDefault ? 0 : null) : $rRow['column_default'];
-				} else if (empty($rValue) && !is_numeric($rValue) && is_null($rRow['column_default'])) {
+				} elseif (empty($rValue) && !is_numeric($rValue) && is_null($rRow['column_default'])) {
 					$rReturn[$rRow['column_name']] = ($rForceDefault ? $rRow['column_default'] : null);
 				} else {
 					$rReturn[$rRow['column_name']] = $rValue;
@@ -122,7 +122,7 @@ class QueryHelper {
 	 * @param mixed       $rExclude       Value to exclude for $rExcludeColumn.
 	 * @return bool True if at least one matching row exists.
 	 */
-	public static function checkExists($rTable, $rColumn, $rValue, $rExcludeColumn = null, $rExclude = null) {
+	public static function checkExists(string $rTable, string $rColumn, mixed $rValue, ?string $rExcludeColumn = null, mixed $rExclude = null) {
 		global $db;
 
 		if ($rExcludeColumn && $rExclude) {

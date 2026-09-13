@@ -22,16 +22,14 @@ use XcVm\Infrastructure\Cache\CacheReader;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class PortalHelpers
-{
+class PortalHelpers {
 	// ─── Устройство / кэш ───────────────────────────────────────────
 
 	/**
 	 * Получить устройство MAG по ID или MAC.
 	 * Загружает из кэша (igbinary) или БД, собирает права из букетов.
 	 */
-	public static function getDevice($rID = null, $rMAC = null)
-	{
+	public static function getDevice($rID = null, $rMAC = null) {
 		global $db, $rIP, $rBouquets, $rSettings, $rCached;
 		$rBouquets = CacheReader::get("bouquets");
 		$rDevice =
@@ -223,8 +221,7 @@ class PortalHelpers
 	/**
 	 * Сохранить кэш устройства в файл.
 	 */
-	public static function updateCache(&$rDevice)
-	{
+	public static function updateCache(&$rDevice) {
 		file_put_contents(
 			MINISTRA_TMP_PATH . "ministra_" . $rDevice["mag_id"],
 			igbinary_serialize($rDevice),
@@ -264,8 +261,7 @@ class PortalHelpers
 	/**
 	 * Получить EPG для нескольких стримов.
 	 */
-	public static function getEPGs($rStreamIDs, $rStartDate = null, $rFinishDate = null)
-	{
+	public static function getEPGs($rStreamIDs, $rStartDate = null, $rFinishDate = null) {
 		$rReturn = [];
 
 		foreach ($rStreamIDs as $rStreamID) {
@@ -278,8 +274,7 @@ class PortalHelpers
 	/**
 	 * Получить конкретную программу.
 	 */
-	public static function getProgramme($rStreamID, $rProgrammeID)
-	{
+	public static function getProgramme($rStreamID, $rProgrammeID) {
 		$rData = self::getEPG($rStreamID, null, null, true);
 
 		if (!isset($rData[$rProgrammeID])) {
@@ -293,8 +288,7 @@ class PortalHelpers
 	/**
 	 * Преобразовать строковые типы в числовые.
 	 */
-	public static function convertTypes($rTypes)
-	{
+	public static function convertTypes($rTypes) {
 		$rReturn = [];
 		$rTypeInt = [
 			"live" => 1,
@@ -552,21 +546,15 @@ class PortalHelpers
 
 				if (
 					(empty($rSearchBy) || stristr($rSeriesO["title"], $rSearchBy)) &&
-					!(
-						!empty($rPicking["abc"]) &&
+					!(!empty($rPicking["abc"]) &&
 						$rPicking["abc"] != "*" &&
-						strtoupper(substr($rSeriesO["title"], 0, 1)) != $rPicking["abc"]
-					) &&
-					!(
-						!empty($rPicking["genre"]) &&
+						strtoupper(substr($rSeriesO["title"], 0, 1)) != $rPicking["abc"]) &&
+					!(!empty($rPicking["genre"]) &&
 						$rPicking["genre"] != "*" &&
-						$rSeriesO["category_id"] != $rPicking["genre"]
-					) &&
-					!(
-						!empty($rPicking["years"]) &&
+						$rSeriesO["category_id"] != $rPicking["genre"]) &&
+					!(!empty($rPicking["years"]) &&
 						$rPicking["years"] != "*" &&
-						$rSeriesO["year"] != $rPicking["years"]
-					)
+						$rSeriesO["year"] != $rPicking["years"])
 				) {
 					if (empty($rFav)) {
 					} else {
@@ -613,8 +601,7 @@ class PortalHelpers
 	/**
 	 * Получить сезоны определённого сериала.
 	 */
-	public static function getSeasons($rSeriesID)
-	{
+	public static function getSeasons($rSeriesID) {
 		global $db;
 		$db->query(
 			"SELECT * FROM `streams_episodes` t1 INNER JOIN `streams` t2 ON t2.id=t1.stream_id WHERE t1.series_id = ? ORDER BY t1.season_num DESC, t1.episode_num ASC",
@@ -1384,8 +1371,7 @@ class PortalHelpers
 
 	// ─── Сортировка ──────────────────────────────────────────────────
 
-	public static function sortArrayStreamRating($a, $b)
-	{
+	public static function sortArrayStreamRating($a, $b) {
 		if (isset($a["rating"])) {
 		} else {
 			if (isset($a["movie_properties"]) && isset($b["movie_properties"])) {
@@ -1412,8 +1398,7 @@ class PortalHelpers
 		return 0;
 	}
 
-	public static function sortArrayStreamAdded($a, $b)
-	{
+	public static function sortArrayStreamAdded($a, $b) {
 		$rColumn = isset($a["added"]) ? "added" : "last_modified";
 
 		if (is_numeric($a[$rColumn])) {
@@ -1433,8 +1418,7 @@ class PortalHelpers
 		return 0;
 	}
 
-	public static function sortArrayStreamNumber($a, $b)
-	{
+	public static function sortArrayStreamNumber($a, $b) {
 		if ($a["number"] != $b["number"]) {
 			return $a["number"] < $b["number"] ? -1 : 1;
 		}
@@ -1442,8 +1426,7 @@ class PortalHelpers
 		return 0;
 	}
 
-	public static function sortArrayStreamName($a, $b)
-	{
+	public static function sortArrayStreamName($a, $b) {
 		$rColumn = isset($a["stream_display_name"]) ? "stream_display_name" : "title";
 
 		return strcmp($a[$rColumn], $b[$rColumn]);
@@ -1454,8 +1437,7 @@ class PortalHelpers
 	/**
 	 * Извлечь HTTP-заголовки из $_SERVER.
 	 */
-	public static function getHeaders()
-	{
+	public static function getHeaders() {
 		$rHeaders = [];
 
 		foreach ($_SERVER as $rName => $rValue) {
@@ -1477,8 +1459,7 @@ class PortalHelpers
 	/**
 	 * Shutdown callback: закрыть MySQL-соединение.
 	 */
-	public static function shutdown()
-	{
+	public static function shutdown() {
 		global $db;
 
 		if (!is_object($db)) {

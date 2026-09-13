@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class AsnsController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle("ASN's");
-        $this->render('asns');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle("ASN's");
+		$this->render('asns');
+	}
 }

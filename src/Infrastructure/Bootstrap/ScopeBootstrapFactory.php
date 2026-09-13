@@ -15,7 +15,6 @@ namespace XcVm\Infrastructure\Bootstrap;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class ScopeBootstrapFactory {
-
 	/**
 	 * @param string $rScope 'admin' | 'reseller' | 'player' (others → admin).
 	 * @return ScopeBootstrap

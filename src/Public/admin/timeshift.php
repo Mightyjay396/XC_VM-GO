@@ -74,7 +74,7 @@ if (0 < $db->num_rows()) {
 	$db->close_mysql();
 
 	if (empty($rRequestData['segment'])) {
-		$rQueue = array();
+		$rQueue = [];
 		$rFile = ARCHIVE_PATH . $rStreamID . '/' . gmdate('Y-m-d:H-i', $rTimestamp) . '.ts';
 
 		if (empty($rStreamID) || empty($rTimestamp) || empty($rDuration)) {
@@ -85,14 +85,14 @@ if (0 < $db->num_rows()) {
 			generate404();
 		}
 
-		$rQueue = array();
+		$rQueue = [];
 		$i = 0;
 
 		while ($i < $rDuration) {
 			$rFile = ARCHIVE_PATH . $rStreamID . '/' . gmdate('Y-m-d:H-i', $rTimestamp + $i * 60) . '.ts';
 
 			if (file_exists($rFile)) {
-				$rQueue[] = array('filename' => $rFile, 'filesize' => filesize($rFile));
+				$rQueue[] = ['filename' => $rFile, 'filesize' => filesize($rFile)];
 			}
 
 			$i++;

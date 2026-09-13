@@ -20,41 +20,41 @@ use XcVm\Domain\Vod\MovieService;
  */
 
 class MovieMassController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $rServers;
+		global $rServers;
 
-        $rCategories = CategoryService::getAllByType('movie');
+		$rCategories = CategoryService::getAllByType('movie');
 
-        if (RequestManager::has('submit_stream')) {
-            $rReturn = MovieService::massEdit(RequestManager::getAll());
-            $_STATUS = $rReturn['status'];
-            $GLOBALS['_STATUS'] = $_STATUS;
+		if (RequestManager::has('submit_stream')) {
+			$rReturn = MovieService::massEdit(RequestManager::getAll());
+			$_STATUS = $rReturn['status'];
+			$GLOBALS['_STATUS'] = $_STATUS;
 
-            if ($_STATUS == 0) {
-                header('Location: ./movies_mass?status=0');
-                exit();
-            }
-        }
+			if ($_STATUS == 0) {
+				header('Location: ./movies_mass?status=0');
+				exit();
+			}
+		}
 
-        $rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
-        $rServerTree = [
-            ['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Online</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
-            ['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]],
-        ];
+		$rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
+		$rServerTree = [
+			['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Online</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
+			['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]],
+		];
 
-        foreach ($rServers as $rServer) {
-            $rServerTree[] = ['id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
-        }
+		foreach ($rServers as $rServer) {
+			$rServerTree[] = ['id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
+		}
 
-        // The load-balancer server tree on this page is driven by jstree.
-        $GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
-            (array) ($GLOBALS['xmNewuiVendors'] ?? []),
-            ['jstree']
-        )));
+		// The load-balancer server tree on this page is driven by jstree.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['jstree']
+		)));
 
-        $this->setTitle('Mass Edit Movies');
-        $this->render('movie_mass', compact('rCategories', 'rTranscodeProfiles', 'rServerTree'));
-    }
+		$this->setTitle('Mass Edit Movies');
+		$this->render('movie_mass', compact('rCategories', 'rTranscodeProfiles', 'rServerTree'));
+	}
 }

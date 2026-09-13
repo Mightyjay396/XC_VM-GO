@@ -11,6 +11,7 @@ class XmlStringStreamer {
 	 * @var ParserInterface
 	 */
 	protected $parser;
+
 	/**
 	 * The current stream
 	 * @var StreamInterface
@@ -33,7 +34,7 @@ class XmlStringStreamer {
 	 * @param  array           $options Parser configuration
 	 * @return XmlStringStreamer        A streamer ready for use
 	 */
-	public static function createStringWalkerParser($file, $options = array()) {
+	public static function createStringWalkerParser($file, array $options = []) {
 		$stream = new File($file, 16384);
 		$parser = new StringWalker($options);
 
@@ -46,7 +47,7 @@ class XmlStringStreamer {
 	 * @param  array           $options Parser configuration
 	 * @return XmlStringStreamer        A streamer ready for use
 	 */
-	public static function createUniqueNodeParser($file, $options = array()) {
+	public static function createUniqueNodeParser($file, array $options = []) {
 		$stream = new File($file, 16384);
 		$parser = new UniqueNode($options);
 

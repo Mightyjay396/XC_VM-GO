@@ -19,20 +19,20 @@ use XcVm\Domain\User\UserRepository;
  */
 
 class UserController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $db;
+		global $db;
 
-        $rUser = RequestManager::has('id') ? UserRepository::getRegisteredUserById(RequestManager::get('id')) : null;
-        if ($rUser === false) {
-            $this->redirect('users');
-            return;
-        }
+		$rUser = RequestManager::has('id') ? UserRepository::getRegisteredUserById(RequestManager::get('id')) : null;
+		if ($rUser === false) {
+			$this->redirect('users');
+			return;
+		}
 
-        $rPackages = $rUser ? PackageService::getAll($rUser['member_group_id']) : [];
+		$rPackages = $rUser ? PackageService::getAll($rUser['member_group_id']) : [];
 
-        $this->setTitle('User');
-        $this->render('user', compact('rUser', 'rPackages'));
-    }
+		$this->setTitle('User');
+		$this->render('user', compact('rUser', 'rPackages'));
+	}
 }

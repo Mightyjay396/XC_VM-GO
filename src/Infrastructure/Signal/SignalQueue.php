@@ -22,7 +22,6 @@ namespace XcVm\Infrastructure\Signal;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class SignalQueue {
-
 	/** Filename prefix shared by every queued signal. */
 	public const PREFIX = 'cache_';
 
@@ -44,8 +43,8 @@ final class SignalQueue {
 	 * @param mixed  $rData JSON-encodable payload.
 	 * @return void
 	 */
-	public static function push(string $rKey, $rData): void {
-		file_put_contents(self::pathFor($rKey), json_encode(array($rKey, $rData)));
+	public static function push(string $rKey, mixed $rData): void {
+		file_put_contents(self::pathFor($rKey), json_encode([$rKey, $rData]));
 	}
 
 	/**
@@ -55,11 +54,11 @@ final class SignalQueue {
 	 * @return array<int,array{0:string,1:string,2:mixed}>
 	 */
 	public static function pending(): array {
-		$rOut = array();
-		foreach (glob(SIGNALS_TMP_PATH . self::PREFIX . '*') ?: array() as $rFile) {
+		$rOut = [];
+		foreach (glob(SIGNALS_TMP_PATH . self::PREFIX . '*') ?: [] as $rFile) {
 			$rDecoded = json_decode((string) @file_get_contents($rFile), true);
 			if (is_array($rDecoded) && array_key_exists(0, $rDecoded) && array_key_exists(1, $rDecoded)) {
-				$rOut[] = array($rFile, $rDecoded[0], $rDecoded[1]);
+				$rOut[] = [$rFile, $rDecoded[0], $rDecoded[1]];
 			}
 		}
 		return $rOut;

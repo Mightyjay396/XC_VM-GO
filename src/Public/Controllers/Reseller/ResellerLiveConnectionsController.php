@@ -18,30 +18,28 @@ use XcVm\Domain\User\UserRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerLiveConnectionsController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Live Connections');
+class ResellerLiveConnectionsController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Live Connections');
 
-        $rRequest = RequestManager::getAll();
-        $data = [
-            'redisEnabled' => (bool) SettingsManager::get('redis_handler'),
-        ];
+		$rRequest = RequestManager::getAll();
+		$data = [
+			'redisEnabled' => (bool) SettingsManager::get('redis_handler'),
+		];
 
-        if (isset($rRequest['line'])) {
-            if (Authorization::check('line', $rRequest['line'])) {
-                $data['rSearchLine'] = UserRepository::getLineById($rRequest['line']);
-            } else {
-                exit();
-            }
-        }
+		if (isset($rRequest['line'])) {
+			if (Authorization::check('line', $rRequest['line'])) {
+				$data['rSearchLine'] = UserRepository::getLineById($rRequest['line']);
+			} else {
+				exit();
+			}
+		}
 
-        if (isset($rRequest['stream'])) {
-            $data['rSearchStream'] = StreamRepository::getById($rRequest['stream']);
-        }
+		if (isset($rRequest['stream'])) {
+			$data['rSearchStream'] = StreamRepository::getById($rRequest['stream']);
+		}
 
-        $this->render('live_connections', $data);
-    }
+		$this->render('live_connections', $data);
+	}
 }

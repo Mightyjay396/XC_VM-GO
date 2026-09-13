@@ -22,7 +22,6 @@ use XcVm\Streaming\Fanout\FanoutClient;
  */
 
 class OndemandCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'ondemand';
 	}
@@ -51,7 +50,7 @@ class OndemandCommand implements CommandInterface {
 		// Kill any OTHER running ondemand instance (dedupe). findProcessPIDs()
 		// skips our own PID and matches both the retitled process and the raw
 		// command line (covers the window before a sibling sets its title).
-		foreach (ProcessManager::findProcessPIDs(array('XC_VM[Ondemand]', 'console.php ondemand')) as $rOtherPID) {
+		foreach (ProcessManager::findProcessPIDs(['XC_VM[Ondemand]', 'console.php ondemand']) as $rOtherPID) {
 			@posix_kill($rOtherPID, 9);
 		}
 
@@ -111,15 +110,17 @@ class OndemandCommand implements CommandInterface {
 			}
 
 			foreach ($rRows as $rRow) {
-				if ($rRow['online_clients'] > 0 || $rRow['attached'] > 0)
+				if ($rRow['online_clients'] > 0 || $rRow['attached'] > 0) {
 					continue;
+				}
 
 				$rStreamID = $rRow['stream_id'];
 				$pidFile = STREAMS_PATH . $rStreamID . '_.pid';
 				$monitorFile = STREAMS_PATH . $rStreamID . '_.monitor';
 
-				if (!file_exists($pidFile))
+				if (!file_exists($pidFile)) {
 					continue;
+				}
 
 				$rPID = (int) @file_get_contents($pidFile);
 				$rMonitorPID = file_exists($monitorFile) ? (int) @file_get_contents($monitorFile) : 0;
@@ -129,8 +130,9 @@ class OndemandCommand implements CommandInterface {
 				if (file_exists($queueFile)) {
 					$queue = @igbinary_unserialize(@file_get_contents($queueFile)) ?: [];
 					foreach ($queue as $pid) {
-						if (ProcessManager::isRunning($pid, 'php-fpm'))
+						if (ProcessManager::isRunning($pid, 'php-fpm')) {
 							$rQueue++;
+						}
 					}
 				}
 
@@ -150,10 +152,12 @@ class OndemandCommand implements CommandInterface {
 				FanoutClient::release($rStreamID);
 				FanoutClient::unregister($rStreamID);
 
-				if ($rMonitorPID > 0)
+				if ($rMonitorPID > 0) {
 					@posix_kill($rMonitorPID, 9);
-				if ($rPID > 0)
+				}
+				if ($rPID > 0) {
 					@posix_kill($rPID, 9);
+				}
 
 				@shell_exec('rm -f ' . STREAMS_PATH . $rStreamID . '_*');
 				@unlink($queueFile);
@@ -169,8 +173,9 @@ class OndemandCommand implements CommandInterface {
 			usleep(800000);
 		}
 
-		if (is_object($db))
+		if (is_object($db)) {
 			$db->close_mysql();
+		}
 		shell_exec('(sleep 2; ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php ondemand) > /dev/null 2>&1 &');
 
 		return 0;

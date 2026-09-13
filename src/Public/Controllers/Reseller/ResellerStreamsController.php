@@ -14,14 +14,12 @@ use XcVm\Domain\Stream\CategoryService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerStreamsController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Streams');
-        $this->render('streams', [
-            'categories' => CategoryService::getAllByType('live'),
-        ]);
-    }
+class ResellerStreamsController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Streams');
+		$this->render('streams', [
+			'categories' => CategoryService::getAllByType('live'),
+		]);
+	}
 }

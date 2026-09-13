@@ -20,31 +20,31 @@ use XcVm\Module\Watch\WatchService;
  */
 
 class ArchiveController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $db;
+		global $db;
 
-        $rRecordings = null;
-        $rStream = null;
-        $rArchive = null;
+		$rRecordings = null;
+		$rStream = null;
+		$rArchive = null;
 
-        if (RequestManager::has('id')) {
-            $rStream = StreamRepository::getById(RequestManager::get('id'));
+		if (RequestManager::has('id')) {
+			$rStream = StreamRepository::getById(RequestManager::get('id'));
 
-            if (!$rStream || $rStream['type'] != 1 || $rStream['tv_archive_duration'] == 0 || $rStream['tv_archive_server_id'] == 0) {
-                $this->redirect('archive');
-                return;
-            }
+			if (!$rStream || $rStream['type'] != 1 || $rStream['tv_archive_duration'] == 0 || $rStream['tv_archive_server_id'] == 0) {
+				$this->redirect('archive');
+				return;
+			}
 
-            $rArchive = StreamService::getArchive($rStream['id']);
-        } else {
-            // Recordings are provided by the optional watch module; empty when absent.
-            $rRecordings = class_exists(WatchService::class) ? WatchService::getRecordings() : array();
-        }
+			$rArchive = StreamService::getArchive($rStream['id']);
+		} else {
+			// Recordings are provided by the optional watch module; empty when absent.
+			$rRecordings = class_exists(WatchService::class) ? WatchService::getRecordings() : [];
+		}
 
-        $rTitle = (!is_null($rRecordings) ? 'Recordings' : 'TV Archive');
-        $this->setTitle($rTitle);
-        $this->render('archive', compact('rRecordings', 'rStream', 'rArchive'));
-    }
+		$rTitle = (!is_null($rRecordings) ? 'Recordings' : 'TV Archive');
+		$this->setTitle($rTitle);
+		$this->render('archive', compact('rRecordings', 'rStream', 'rArchive'));
+	}
 }

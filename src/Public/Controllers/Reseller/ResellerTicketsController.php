@@ -14,18 +14,16 @@ use XcVm\Domain\User\TicketRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerTicketsController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Tickets');
+class ResellerTicketsController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Tickets');
 
-        $statusArray = ['CLOSED', 'OPEN', 'RESPONDED TO', 'READ BY ME', 'NEW RESPONSE', 'READ BY ADMIN', 'READ BY USER'];
+		$statusArray = ['CLOSED', 'OPEN', 'RESPONDED TO', 'READ BY ME', 'NEW RESPONSE', 'READ BY ADMIN', 'READ BY USER'];
 
-        $this->render('tickets', [
-            'statusArray' => $statusArray,
-            'tickets'     => TicketRepository::getAll($GLOBALS['rUserInfo']['id']),
-        ]);
-    }
+		$this->render('tickets', [
+			'statusArray' => $statusArray,
+			'tickets'     => TicketRepository::getAll($GLOBALS['rUserInfo']['id']),
+		]);
+	}
 }

@@ -23,7 +23,7 @@ class ApiClient {
 	 * @param int   $rTimeout Connect/read timeout in seconds.
 	 * @return string|bool Response body, or false on failure.
 	 */
-	public static function request($rData, $rTimeout = 5) {
+	public static function request(array $rData, int $rTimeout = 5) {
 		ini_set('default_socket_timeout', $rTimeout);
 		$rAPI = 'http://127.0.0.1:' . intval(ServerRepository::getAll()[SERVER_ID]['http_broadcast_port']) . '/admin/api';
 
@@ -51,7 +51,7 @@ class ApiClient {
 	 * @param int   $rTimeout  Connect/read timeout in seconds.
 	 * @return string|null Response body, or null if the server is offline/unknown.
 	 */
-	public static function systemRequest($rServerID, $rData, $rTimeout = 5) {
+	public static function systemRequest(int $rServerID, array $rData, int $rTimeout = 5) {
 		ini_set('default_socket_timeout', $rTimeout);
 		global $rServers, $rSettings;
 		if (!is_array($rServers) || !isset($rServers[$rServerID])) {
@@ -83,19 +83,19 @@ class ApiClient {
 	 * @param array $rData      Request payload sent to each server.
 	 * @return array ['result' => true].
 	 */
-	public static function asyncRequest($rServerIDs, $rData) {
-		$rURLs = array();
+	public static function asyncRequest(array $rServerIDs, array $rData) {
+		$rURLs = [];
 		global $rServers;
 
 		foreach ($rServerIDs as $rServerID) {
 			if (!$rServers[$rServerID]['server_online']) {
 			} else {
-				$rURLs[$rServerID] = array('url' => $rServers[$rServerID]['api_url'], 'postdata' => $rData);
+				$rURLs[$rServerID] = ['url' => $rServers[$rServerID]['api_url'], 'postdata' => $rData];
 			}
 		}
 		CurlClient::getMultiCURL($rURLs);
 
-		return array('result' => true);
+		return ['result' => true];
 	}
 
 	/**
@@ -106,8 +106,8 @@ class ApiClient {
 	 * @param string[]|null $rAllowed   Allowed file extensions filter.
 	 * @return array|null Decoded directory listing, or null on failure.
 	 */
-	public static function scanRecursive($rServerID, $rDirectory, $rAllowed = null) {
-		return json_decode(self::systemRequest($rServerID, array('action' => 'scandir_recursive', 'dir' => $rDirectory, 'allowed' => implode('|', $rAllowed))), true);
+	public static function scanRecursive(int $rServerID, string $rDirectory, ?array $rAllowed = null) {
+		return json_decode(self::systemRequest($rServerID, ['action' => 'scandir_recursive', 'dir' => $rDirectory, 'allowed' => implode('|', $rAllowed)]), true);
 	}
 
 	/**
@@ -118,7 +118,7 @@ class ApiClient {
 	 * @param string[]|null $rAllowed   Allowed file extensions filter.
 	 * @return array|null Decoded directory listing, or null on failure.
 	 */
-	public static function listDir($rServerID, $rDirectory, $rAllowed = null) {
-		return json_decode(self::systemRequest($rServerID, array('action' => 'scandir', 'dir' => $rDirectory, 'allowed' => implode('|', $rAllowed))), true);
+	public static function listDir(int $rServerID, string $rDirectory, ?array $rAllowed = null) {
+		return json_decode(self::systemRequest($rServerID, ['action' => 'scandir', 'dir' => $rDirectory, 'allowed' => implode('|', $rAllowed)]), true);
 	}
 }

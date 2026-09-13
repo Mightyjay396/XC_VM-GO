@@ -29,7 +29,7 @@ if (!($_SERVER['REMOTE_ADDR'] != '127.0.0.1' || empty($_GET['stream_id']) || emp
 
 $rStreamID = intval($_GET['stream_id']);
 $rData = array_filter(array_map('trim', explode("\n", $rPost)));
-$rOutput = array();
+$rOutput = [];
 
 foreach ($rData as $rRow) {
 	$rParts = explode('=', $rRow, 2);

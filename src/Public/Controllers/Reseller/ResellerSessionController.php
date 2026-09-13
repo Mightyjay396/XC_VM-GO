@@ -22,11 +22,9 @@ namespace XcVm\Public\Controllers\Reseller;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerSessionController extends BaseResellerController
-{
-    public function index()
-    {
-        echo json_encode(['result' => true]);
-        exit;
-    }
+class ResellerSessionController extends BaseResellerController {
+	public function index() {
+		echo json_encode(['result' => true]);
+		exit;
+	}
 }

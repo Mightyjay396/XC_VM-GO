@@ -19,19 +19,18 @@ namespace XcVm\Core\Module\Contract;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 interface CronProviderInterface {
-
-    /**
-     * Return the cron schedule entries this module requires.
-     *
-     * Keys are standard cron time expressions; values are console command names.
-     * The caller (StartupCommand / StatusCommand) resolves PHP_BIN, MAIN_HOME,
-     * and the comment suffix automatically.
-     *
-     * Example:
-     *   return ['* * * * *' => 'cron:watch'];
-     *   // Produces: "* * * * * /usr/bin/php /opt/xc_vm/console.php cron:watch # XC_VM"
-     *
-     * @return array<string, string>  cron-expression => console-command-name
-     */
-    public function getCronEntries(): array;
+	/**
+	 * Return the cron schedule entries this module requires.
+	 *
+	 * Keys are standard cron time expressions; values are console command names.
+	 * The caller (StartupCommand / StatusCommand) resolves PHP_BIN, MAIN_HOME,
+	 * and the comment suffix automatically.
+	 *
+	 * Example:
+	 *   return ['* * * * *' => 'cron:watch'];
+	 *   // Produces: "* * * * * /usr/bin/php /opt/xc_vm/console.php cron:watch # XC_VM"
+	 *
+	 * @return array<string, string>  cron-expression => console-command-name
+	 */
+	public function getCronEntries(): array;
 }

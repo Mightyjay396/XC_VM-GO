@@ -20,7 +20,6 @@ use XcVm\Streaming\Codec\FfmpegPaths;
  */
 
 class RecordCommand implements CommandInterface {
-
 	use DatabaseAware;
 
 	public function getName(): string {
@@ -170,7 +169,7 @@ class RecordCommand implements CommandInterface {
 		$rImportArray['target_container'] = 'mp4';
 		$rImportArray['stream_display_name'] = $recordingData['title'];
 		$rImportArray['year'] = date('Y');
-		$rImportArray['movie_properties'] = array('kinopoisk_url' => null, 'tmdb_id' => null, 'name' => $recordingData['title'], 'o_name' => $recordingData['title'], 'cover_big' => $recordingData['stream_icon'], 'movie_image' => $recordingData['stream_icon'], 'release_date' => date('Y-m-d', $recordingData['start']), 'episode_run_time' => intval($rSeconds / 60), 'youtube_trailer' => null, 'director' => '', 'actors' => '', 'cast' => '', 'description' => trim($recordingData['description']), 'plot' => trim($recordingData['description']), 'age' => '', 'mpaa_rating' => '', 'rating_count_kinopoisk' => 0, 'country' => '', 'genre' => '', 'backdrop_path' => array(), 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'video' => array(), 'audio' => array(), 'bitrate' => 0, 'rating' => 0);
+		$rImportArray['movie_properties'] = ['kinopoisk_url' => null, 'tmdb_id' => null, 'name' => $recordingData['title'], 'o_name' => $recordingData['title'], 'cover_big' => $recordingData['stream_icon'], 'movie_image' => $recordingData['stream_icon'], 'release_date' => date('Y-m-d', $recordingData['start']), 'episode_run_time' => intval($rSeconds / 60), 'youtube_trailer' => null, 'director' => '', 'actors' => '', 'cast' => '', 'description' => trim($recordingData['description']), 'plot' => trim($recordingData['description']), 'age' => '', 'mpaa_rating' => '', 'rating_count_kinopoisk' => 0, 'country' => '', 'genre' => '', 'backdrop_path' => [], 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'video' => [], 'audio' => [], 'bitrate' => 0, 'rating' => 0];
 		$rImportArray['rating'] = 0;
 		$rImportArray['read_native'] = 0;
 		$rImportArray['movie_symlink'] = 0;
@@ -200,7 +199,7 @@ class RecordCommand implements CommandInterface {
 		foreach (json_decode($recordingData['bouquets'], true) as $rBouquet) {
 			$this->addToBouquet($rBouquet, $rInsertID);
 		}
-		$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode(array(VOD_PATH . $rInsertID . '.mp4')), $rInsertID);
+		$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode([VOD_PATH . $rInsertID . '.mp4']), $rInsertID);
 		$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `pid`, `to_analyze`) VALUES(?, ?, NULL, 1, 1);', $rInsertID, SERVER_ID);
 		$db->query('UPDATE `recordings` SET `status` = 2, `created_id` = ? WHERE `id` = ?;', $rInsertID, $recordingID);
 	}
@@ -278,7 +277,7 @@ class RecordCommand implements CommandInterface {
 	}
 
 	private function prepareArray($rArray): array {
-		$UpdateData = $rColumns = $rPlaceholder = $rData = array();
+		$UpdateData = $rColumns = $rPlaceholder = $rData = [];
 		foreach (array_keys($rArray) as $rKey) {
 			$rColumns[] = '`' . $this->preparecolumn($rKey) . '`';
 			$UpdateData[] = '`' . $this->preparecolumn($rKey) . '` = ?';
@@ -290,12 +289,12 @@ class RecordCommand implements CommandInterface {
 			$rPlaceholder[] = '?';
 			$rData[] = $rValue;
 		}
-		return array('placeholder' => implode(',', $rPlaceholder), 'columns' => implode(',', $rColumns), 'data' => $rData, 'update' => implode(',', $UpdateData));
+		return ['placeholder' => implode(',', $rPlaceholder), 'columns' => implode(',', $rColumns), 'data' => $rData, 'update' => implode(',', $UpdateData)];
 	}
 
-	private function verifyPostTable($rTable, $rData = array(), $rOnlyExisting = false): array {
+	private function verifyPostTable($rTable, $rData = [], $rOnlyExisting = false): array {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `column_name`, `column_default`, `is_nullable`, `data_type` FROM `information_schema`.`columns` WHERE `table_schema` = (SELECT DATABASE()) AND `table_name` = ? ORDER BY `ordinal_position`;', $rTable);
 		foreach ($db->get_rows() as $rRow) {
 			if ($rRow['column_default'] == 'NULL') {
@@ -303,7 +302,7 @@ class RecordCommand implements CommandInterface {
 			}
 			$rForceDefault = false;
 			if (!($rRow['is_nullable'] != 'NO' || $rRow['column_default'])) {
-				if (in_array($rRow['data_type'], array('int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit'))) {
+				if (in_array($rRow['data_type'], ['int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit'])) {
 					$rRow['column_default'] = 0;
 				} else {
 					$rRow['column_default'] = '';
@@ -332,7 +331,7 @@ class RecordCommand implements CommandInterface {
 			$rPID = intval(file_get_contents(ARCHIVE_PATH . $recordingID . '_.record'));
 		}
 		if (empty($rPID)) {
-			$rPIDs = array();
+			$rPIDs = [];
 			exec("ps -ef | grep 'Record\\[" . intval($recordingID) . "\\]' | grep -v grep | awk '{print \$2}'", $rPIDs);
 			foreach ($rPIDs as $rKillPID) {
 				$rKillPID = intval(trim($rKillPID));

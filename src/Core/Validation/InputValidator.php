@@ -167,13 +167,11 @@ class InputValidator {
 	/**
 	 * Проверяет и возвращает STATUS_INVALID_INPUT если данные невалидны.
 	 *
-	 * @param string $rAction
-	 * @param array  $rData
 	 * @return array|null null если валидно, иначе массив с ошибкой
 	 */
 	public static function validateOrFail(string $rAction, array $rData): ?array {
 		if (!self::validate($rAction, $rData)) {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 		return null;
 	}
@@ -184,8 +182,8 @@ class InputValidator {
 	 * @param array $ids Input array of IDs
 	 * @return array Filtered array with only positive integer IDs
 	 */
-	public static function confirmIDs($ids) {
-		$result = array();
+	public static function confirmIDs(array $ids) {
+		$result = [];
 		foreach ($ids as $id) {
 			if (intval($id) > 0) {
 				$result[] = $id;
@@ -216,13 +214,13 @@ class InputValidator {
 	/**
 	 * Рекурсивный парсинг входных данных.
 	 */
-	public static function parseIncomingRecursively(&$rData, $rInput = array(), $rIteration = 0) {
+	public static function parseIncomingRecursively(&$rData, $rInput = [], $rIteration = 0) {
 		if ($rIteration >= 20 || !is_array($rData)) {
 			return $rInput;
 		}
 		foreach ($rData as $rKey => $rValue) {
 			if (is_array($rValue)) {
-				$rInput[$rKey] = self::parseIncomingRecursively($rData[$rKey], array(), $rIteration + 1);
+				$rInput[$rKey] = self::parseIncomingRecursively($rData[$rKey], [], $rIteration + 1);
 			} else {
 				$rInput[self::parseCleanKey($rKey)] = self::parseCleanValue($rValue);
 			}
@@ -251,7 +249,7 @@ class InputValidator {
 			return '';
 		}
 		$rValue = str_replace('&#032;', ' ', stripslashes($rValue));
-		$rValue = str_replace(array("\r\n", "\n\r", "\r"), "\n", $rValue);
+		$rValue = str_replace(["\r\n", "\n\r", "\r"], "\n", $rValue);
 		$rValue = str_replace('<!--', '&#60;&#33;--', $rValue);
 		$rValue = str_replace('-->', '--&#62;', $rValue);
 		$rValue = str_ireplace('<script', '&#60;script', $rValue);

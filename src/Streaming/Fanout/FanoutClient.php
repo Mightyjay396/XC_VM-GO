@@ -517,9 +517,9 @@ class FanoutClient {
 		if (!is_array($rData) || !isset($rData['streams']) || !is_array($rData['streams'])) {
 			return null;
 		}
-		$rFeatures = (isset($rData['features']) && is_array($rData['features'])) ? array_map('strval', $rData['features']) : array();
+		$rFeatures = (isset($rData['features']) && is_array($rData['features'])) ? array_map('strval', $rData['features']) : [];
 		self::$features = $rFeatures;
-		return array('accepting' => !empty($rData['accepting']), 'daemon_pid' => intval($rData['daemon_pid'] ?? 0), 'features' => $rFeatures, 'streams' => $rData['streams']);
+		return ['accepting' => !empty($rData['accepting']), 'daemon_pid' => intval($rData['daemon_pid'] ?? 0), 'features' => $rFeatures, 'streams' => $rData['streams']];
 	}
 
 	/**
@@ -574,7 +574,7 @@ class FanoutClient {
 	 * @return bool True when the daemon queued the switch.
 	 */
 	public static function forceSource(int $rStreamID, int $rIndex): bool {
-		$rCode = self::request('POST', '/monitor/' . $rStreamID . '/source', json_encode(array('index' => $rIndex)), 1, 3)['code'];
+		$rCode = self::request('POST', '/monitor/' . $rStreamID . '/source', json_encode(['index' => $rIndex]), 1, 3)['code'];
 		return $rCode >= 200 && $rCode < 300;
 	}
 
@@ -590,7 +590,7 @@ class FanoutClient {
 	 */
 	private static function request(string $rMethod, string $rPath, ?string $rBody, int $rConnect, int $rTimeout): array {
 		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
-			return array('code' => 0, 'body' => null, 'errno' => -1);
+			return ['code' => 0, 'body' => null, 'errno' => -1];
 		}
 		$rCurl = curl_init();
 		curl_setopt_array($rCurl, [
@@ -609,7 +609,7 @@ class FanoutClient {
 		$rCode = (int) curl_getinfo($rCurl, CURLINFO_HTTP_CODE);
 		$rErrno = curl_errno($rCurl);
 		curl_close($rCurl);
-		return array('code' => $rCode, 'body' => is_string($rResponse) ? $rResponse : null, 'errno' => $rErrno);
+		return ['code' => $rCode, 'body' => is_string($rResponse) ? $rResponse : null, 'errno' => $rErrno];
 	}
 
 	/**

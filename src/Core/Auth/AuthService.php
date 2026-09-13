@@ -31,7 +31,7 @@ class AuthService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => payload].
 	 */
-	public static function processCode($rData) {
+	public static function processCode(array $rData) {
 		global $db;
 		if (isset($rData['edit'])) {
 			$rArray = AdminHelpers::overwriteData(AuthRepository::getCodeById($rData['edit']), $rData);
@@ -49,7 +49,7 @@ class AuthService {
 		}
 
 		if (isset($rData['groups'])) {
-			$rArray['groups'] = array();
+			$rArray['groups'] = [];
 			foreach ($rData['groups'] as $rGroupID) {
 				$rArray['groups'][] = intval($rGroupID);
 			}
@@ -57,7 +57,7 @@ class AuthService {
 			$rArray['groups'] = is_string($rArray['groups'] ?? null) ? (json_decode($rArray['groups'], true) ?: []) : [];
 		}
 
-		if (in_array($rData['type'], array(0, 1, 3, 4))) {
+		if (in_array($rData['type'], [0, 1, 3, 4])) {
 			$rArray['groups'] = '[' . implode(',', array_map('intval', $rArray['groups'])) . ']';
 		} else {
 			$rArray['groups'] = '[]';
@@ -67,20 +67,20 @@ class AuthService {
 			$rArray['whitelist'] = '[]';
 		}
 
-		if (in_array((int)$rData['type'], [6, 7], true)) {
+		if (in_array((int) $rData['type'], [6, 7], true)) {
 			if (strlen($rData['code']) < 3) {
-				return array('status' => STATUS_CODE_LENGTH, 'data' => $rData);
+				return ['status' => STATUS_CODE_LENGTH, 'data' => $rData];
 			}
 		} elseif ($rData['type'] != 2 && strlen($rData['code']) < 8) {
-			return array('status' => STATUS_CODE_LENGTH, 'data' => $rData);
+			return ['status' => STATUS_CODE_LENGTH, 'data' => $rData];
 		}
 
 		if ($rData['type'] == 2 && empty($rData['code'])) {
-			return array('status' => STATUS_INVALID_CODE, 'data' => $rData);
+			return ['status' => STATUS_INVALID_CODE, 'data' => $rData];
 		}
 
-		if (in_array($rData['code'], array('admin', 'stream', 'images', 'player_api', 'player', 'playlist', 'epg', 'live', 'movie', 'series', 'status', 'nginx_status', 'get', 'panel_api', 'xmltv', 'probe', 'thumb', 'timeshift', 'auth', 'vauth', 'tsauth', 'hls', 'play', 'key', 'api', 'c'))) {
-			return array('status' => STATUS_RESERVED_CODE, 'data' => $rData);
+		if (in_array($rData['code'], ['admin', 'stream', 'images', 'player_api', 'player', 'playlist', 'epg', 'live', 'movie', 'series', 'status', 'nginx_status', 'get', 'panel_api', 'xmltv', 'probe', 'thumb', 'timeshift', 'auth', 'vauth', 'tsauth', 'hls', 'play', 'key', 'api', 'c'])) {
+			return ['status' => STATUS_RESERVED_CODE, 'data' => $rData];
 		}
 
 		if (isset($rData['edit'])) {
@@ -90,7 +90,7 @@ class AuthService {
 		}
 
 		if (0 < $db->num_rows()) {
-			return array('status' => STATUS_EXISTS_CODE, 'data' => $rData);
+			return ['status' => STATUS_EXISTS_CODE, 'data' => $rData];
 		}
 
 		$rPrepare = QueryHelper::prepareArray($rArray);
@@ -99,10 +99,10 @@ class AuthService {
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
 			AuthRepository::updateCodes();
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID, 'orig_code' => $rOrigCode, 'new_code' => $rData['code']));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID, 'orig_code' => $rOrigCode, 'new_code' => $rData['code']]];
 		}
 
-		return array('status' => STATUS_FAILURE, 'data' => $rData);
+		return ['status' => STATUS_FAILURE, 'data' => $rData];
 	}
 
 	// ──────────────────────────────────────────────
@@ -118,7 +118,7 @@ class AuthService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => payload or insert_id].
 	 */
-	public static function processHMAC($rData) {
+	public static function processHMAC(array $rData) {
 		global $db, $rSettings;
 		if (isset($rData['edit'])) {
 			$rArray = AdminHelpers::overwriteData(AuthRepository::getHMACById($rData['edit']), $rData);
@@ -134,24 +134,24 @@ class AuthService {
 		}
 
 		if ($rData['keygen'] != 'HMAC KEY HIDDEN' && strlen($rData['keygen']) != 32) {
-			return array('status' => STATUS_NO_KEY, 'data' => $rData);
+			return ['status' => STATUS_NO_KEY, 'data' => $rData];
 		}
 
 		if (strlen($rData['notes']) == 0) {
-			return array('status' => STATUS_NO_DESCRIPTION, 'data' => $rData);
+			return ['status' => STATUS_NO_DESCRIPTION, 'data' => $rData];
 		}
 
 		if (isset($rData['edit'])) {
 			if ($rData['keygen'] != 'HMAC KEY HIDDEN') {
 				$db->query('SELECT `id` FROM `hmac_keys` WHERE `key` = ? AND `id` <> ?;', Encryption::encrypt($rData['keygen'], $rSettings['live_streaming_pass'], OPENSSL_EXTRA), $rData['edit']);
 				if (0 < $db->num_rows()) {
-					return array('status' => STATUS_EXISTS_HMAC, 'data' => $rData);
+					return ['status' => STATUS_EXISTS_HMAC, 'data' => $rData];
 				}
 			}
 		} else {
 			$db->query('SELECT `id` FROM `hmac_keys` WHERE `key` = ?;', Encryption::encrypt($rData['keygen'], $rSettings['live_streaming_pass'], OPENSSL_EXTRA));
 			if (0 < $db->num_rows()) {
-				return array('status' => STATUS_EXISTS_HMAC, 'data' => $rData);
+				return ['status' => STATUS_EXISTS_HMAC, 'data' => $rData];
 			}
 		}
 
@@ -164,10 +164,10 @@ class AuthService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
-		return array('status' => STATUS_FAILURE, 'data' => $rData);
+		return ['status' => STATUS_FAILURE, 'data' => $rData];
 	}
 
 	/**
@@ -184,7 +184,7 @@ class AuthService {
 	 *                      query string can make: null, an array).
 	 * @return bool
 	 */
-	public static function secretMatches($rKnown, $rGiven): bool {
+	public static function secretMatches(mixed $rKnown, mixed $rGiven): bool {
 		if (!is_scalar($rKnown) || !is_string($rGiven)) {
 			return false;
 		}
@@ -212,7 +212,7 @@ class AuthService {
 	 * @param int        $rMaxConnections Max-connections component.
 	 * @return int|null Matching HMAC key id, or null if no key matches.
 	 */
-	public static function validateHMAC($rHMAC, $rExpiry, $rStreamID, $rExtension, $rIP = '', $rMACIP = '', $rIdentifier = '', $rMaxConnections = 0) {
+	public static function validateHMAC(string $rHMAC, int|string $rExpiry, int|string $rStreamID, string $rExtension, string $rIP = '', string $rMACIP = '', string $rIdentifier = '', int $rMaxConnections = 0) {
 		global $db, $rSettings;
 		$rCached = $rSettings['enable_cache'];
 		if (0 < strlen($rIP) && 0 < strlen($rMACIP) && $rIP != $rMACIP) {
@@ -223,7 +223,7 @@ class AuthService {
 		if ($rCached) {
 			$rKeys = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'hmac_keys'));
 		} else {
-			$rKeys = array();
+			$rKeys = [];
 			$db->query('SELECT `id`, `key` FROM `hmac_keys` WHERE `enabled` = 1;');
 			foreach ($db->get_rows() as $rKey) {
 				$rKeys[] = $rKey;

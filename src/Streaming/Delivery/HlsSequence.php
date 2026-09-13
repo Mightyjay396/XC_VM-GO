@@ -164,7 +164,7 @@ class HlsSequence {
 			$rSeq = $rMin;
 		}
 
-		$rNext = array('base' => $rBase, 'last' => $rSeq);
+		$rNext = ['base' => $rBase, 'last' => $rSeq];
 		if ($rNow !== null) {
 			$rNext['daemon'] = $rDaemonSeq;
 			$rNext['at'] = $rNow;

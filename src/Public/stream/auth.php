@@ -106,7 +106,7 @@ if (isset($_GET['utc'])) {
 $rType = (isset($_GET['type']) ? $_GET['type'] : 'live');
 $rStreamID = intval($_GET['stream']);
 $rExtension = (isset($_GET['extension']) ? strtolower(preg_replace('/[^A-Za-z0-9 ]/', '', trim($_GET['extension']))) : null);
-if (!$rExtension && in_array($rType, array('movie', 'series', 'subtitle'))) {
+if (!$rExtension && in_array($rType, ['movie', 'series', 'subtitle'])) {
 	if (preg_match('/^(\d+)\/(?:segment_|seg_)(\d+)\.(ts|m4s)$/', $_GET['stream'], $matches)) {
 		$rStreamID = intval($matches[1]);
 		$_GET['segment'] = intval($matches[2]);
@@ -146,7 +146,7 @@ if ($rExtension) {
 	if (($rSettings['enable_cache'] && !$rSettings['show_not_on_air_video'] && file_exists(CACHE_TMP_PATH . 'servers'))) {
 		$rServers = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'servers'));
 		$rStream = (igbinary_unserialize(file_get_contents(STREAMS_TMP_PATH . 'stream_' . $rStreamID)) ?: null);
-		$rAvailableServers = array();
+		$rAvailableServers = [];
 
 		// Catch-up is served from the archive server, whether or not the channel
 		// is live anywhere right now. (This compared against 'archive', a type the
@@ -175,7 +175,7 @@ if ($rExtension) {
 						$rAvailableServers[] = $rServerID;
 					}
 				} else {
-					if ((($serverStream['on_demand'] == 1 && $serverStream['stream_status'] != 1) || ((int)$serverStream['pid'] > 0 && $serverStream['stream_status'] == 0)) && $serverStream['to_analyze'] == 0 && (int)$serverStream['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || ($rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1)) {
+					if ((($serverStream['on_demand'] == 1 && $serverStream['stream_status'] != 1) || ((int) $serverStream['pid'] > 0 && $serverStream['stream_status'] == 0)) && $serverStream['to_analyze'] == 0 && (int) $serverStream['delay_available_at'] <= time() && $rServerInfo['timeshift_only'] == 0 || ($rStream['info']['direct_source'] == 1 && $rStream['info']['direct_proxy'] == 1)) {
 						$rAvailableServers[] = $rServerID;
 					}
 				}
@@ -230,7 +230,7 @@ if ($rExtension) {
 		$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rAccessToken, null, false, false, $rIP);
 	} else {
 		if (isset($rRequest['hmac'])) {
-			if (!in_array($rType, array('live', 'movie', 'series'))) {
+			if (!in_array($rType, ['live', 'movie', 'series'])) {
 				$rDeny = false;
 				generateError('INVALID_TYPE_TOKEN');
 			}
@@ -248,7 +248,7 @@ if ($rExtension) {
 			$rIsHMAC = AuthService::validateHMAC($rRequest['hmac'], $rExpiry, $rStreamID, $rExtension, $rIP, $rHMACIP, $rIdentifier, $rMaxConnections);
 
 			if ($rIsHMAC) {
-				$rUserInfo = array('id' => null, 'is_restreamer' => 0, 'force_server_id' => 0, 'con_isp_name' => null, 'max_connections' => $rMaxConnections);
+				$rUserInfo = ['id' => null, 'is_restreamer' => 0, 'force_server_id' => 0, 'con_isp_name' => null, 'max_connections' => $rMaxConnections];
 
 				if ($rSettings['show_isps']) {
 					$rISPLock = GeoIPService::getISP($rIP);
@@ -300,10 +300,10 @@ if ($rExtension) {
 			if (!(is_null($rUserInfo['exp_date']) || $rUserInfo['exp_date'] > time())) {
 				DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'USER_EXPIRED', $rIP);
 
-				if (in_array($rType, array('live', 'timeshift'))) {
+				if (in_array($rType, ['live', 'timeshift'])) {
 					OffAirHandler::showVideoServer('show_expired_video', 'expired_video_path', $rExtension, $rUserInfo, $rIP, $rCountryCode, $rUserInfo['con_isp_name'], SERVER_ID);
 				} else {
-					if (in_array($rType, array('movie', 'series'))) {
+					if (in_array($rType, ['movie', 'series'])) {
 						OffAirHandler::showVideoServer('show_expired_video', 'expired_video_path', 'ts', $rUserInfo, $rIP, $rCountryCode, $rUserInfo['con_isp_name'], SERVER_ID);
 					} else {
 						generateError('EXPIRED');
@@ -314,10 +314,10 @@ if ($rExtension) {
 			if ($rUserInfo['admin_enabled'] == 0) {
 				DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'USER_BAN', $rIP);
 
-				if (in_array($rType, array('live', 'timeshift'))) {
+				if (in_array($rType, ['live', 'timeshift'])) {
 					OffAirHandler::showVideoServer('show_banned_video', 'banned_video_path', $rExtension, $rUserInfo, $rIP, $rCountryCode, $rUserInfo['con_isp_name'], SERVER_ID);
 				} else {
-					if (in_array($rType, array('movie', 'series'))) {
+					if (in_array($rType, ['movie', 'series'])) {
 						OffAirHandler::showVideoServer('show_banned_video', 'banned_video_path', 'ts', $rUserInfo, $rIP, $rCountryCode, $rUserInfo['con_isp_name'], SERVER_ID);
 					} else {
 						generateError('BANNED');
@@ -328,10 +328,10 @@ if ($rExtension) {
 			if ($rUserInfo['enabled'] == 0) {
 				DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'USER_DISABLED', $rIP);
 
-				if (in_array($rType, array('live', 'timeshift'))) {
+				if (in_array($rType, ['live', 'timeshift'])) {
 					OffAirHandler::showVideoServer('show_banned_video', 'banned_video_path', $rExtension, $rUserInfo, $rIP, $rCountryCode, $rUserInfo['con_isp_name'], SERVER_ID);
 				} else {
-					if (in_array($rType, array('movie', 'series'))) {
+					if (in_array($rType, ['movie', 'series'])) {
 						OffAirHandler::showVideoServer('show_banned_video', 'banned_video_path', 'ts', $rUserInfo, $rIP, $rCountryCode, $rUserInfo['con_isp_name'], SERVER_ID);
 					} else {
 						generateError('DISABLED');
@@ -376,12 +376,12 @@ if ($rExtension) {
 				}
 
 				if ($rUserInfo['isp_violate']) {
-					DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'ISP_LOCK_FAILED', $rIP, json_encode(array('old' => $rUserInfo['isp_desc'], 'new' => $rUserInfo['con_isp_name'])));
+					DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'ISP_LOCK_FAILED', $rIP, json_encode(['old' => $rUserInfo['isp_desc'], 'new' => $rUserInfo['con_isp_name']]));
 					generateError('ISP_BLOCKED');
 				}
 
 				if ($rUserInfo['isp_is_server'] && !$rUserInfo['is_restreamer']) {
-					DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'BLOCKED_ASN', $rIP, json_encode(array('user_agent' => $rUserAgent, 'isp' => $rUserInfo['con_isp_name'], 'asn' => $rUserInfo['isp_asn'])), true);
+					DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'BLOCKED_ASN', $rIP, json_encode(['user_agent' => $rUserAgent, 'isp' => $rUserInfo['con_isp_name'], 'asn' => $rUserInfo['isp_asn']]), true);
 					generateError('ASN_BLOCKED');
 				}
 
@@ -399,19 +399,19 @@ if ($rExtension) {
 				}
 			}
 
-			if (!in_array($rType, array('thumb', 'subtitle'))) {
+			if (!in_array($rType, ['thumb', 'subtitle'])) {
 				if (!($rUserInfo['is_restreamer'] || in_array($rIP, $rAllowedIPs))) {
 					if (($rSettings['block_streaming_servers'] || $rSettings['block_proxies'])) {
 						$rCIDR = GeoIPService::matchCIDR($rUserInfo['isp_asn'], $rIP);
 
 						if ($rCIDR) {
 							if (($rSettings['block_streaming_servers'] && $rCIDR[3]) && !$rCIDR[4]) {
-								DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'HOSTING_DETECT', $rIP, json_encode(array('user_agent' => $rUserAgent, 'isp' => $rUserInfo['con_isp_name'], 'asn' => $rUserInfo['isp_asn'])), true);
+								DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'HOSTING_DETECT', $rIP, json_encode(['user_agent' => $rUserAgent, 'isp' => $rUserInfo['con_isp_name'], 'asn' => $rUserInfo['isp_asn']]), true);
 								generateError('HOSTING_DETECT');
 							}
 
 							if (($rSettings['block_proxies'] && $rCIDR[4])) {
-								DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'PROXY_DETECT', $rIP, json_encode(array('user_agent' => $rUserAgent, 'isp' => $rUserInfo['con_isp_name'], 'asn' => $rUserInfo['isp_asn'])), true);
+								DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'PROXY_DETECT', $rIP, json_encode(['user_agent' => $rUserAgent, 'isp' => $rUserInfo['con_isp_name'], 'asn' => $rUserInfo['isp_asn']]), true);
 								generateError('PROXY_DETECT');
 							}
 						}
@@ -427,7 +427,7 @@ if ($rExtension) {
 						}
 
 						if (($rSettings['restream_deny_unauthorised'] || $rSettings['detect_restream_block_user'])) {
-							DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'RESTREAM_DETECT', $rIP, json_encode(array('user_agent' => $rUserAgent, 'isp' => $rUserInfo['con_isp_name'], 'asn' => $rUserInfo['isp_asn'])), true);
+							DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'RESTREAM_DETECT', $rIP, json_encode(['user_agent' => $rUserAgent, 'isp' => $rUserInfo['con_isp_name'], 'asn' => $rUserInfo['isp_asn']]), true);
 							generateError('RESTREAM_DETECT');
 						}
 					}
@@ -509,9 +509,9 @@ if ($rExtension) {
 						$rAdaptive = json_decode((string) ($rChannelInfo['adaptive_link'] ?? ''), true);
 
 						if (!$rIsHMAC && is_array($rAdaptive) && 0 < count($rAdaptive)) {
-							$rParts = array();
+							$rParts = [];
 
-							foreach (array_merge(array($rStreamID), $rAdaptive) as $rAdaptiveID) {
+							foreach (array_merge([$rStreamID], $rAdaptive) as $rAdaptiveID) {
 								if ($rAdaptiveID != $rStreamID) {
 									$rAdaptiveInfo = StreamRedirector::redirectStream($rCached, $rSettings, $rServers, $rAdaptiveID, $rExtension, $rUserInfo, $rCountryCode, $rUserInfo['con_isp_name'], 'live');
 									if (!is_array($rAdaptiveInfo) || empty($rAdaptiveInfo['redirect_id'])) {
@@ -540,7 +540,7 @@ if ($rExtension) {
 								$rHeight = intval($rStreamInfo['codecs']['video']['height'] ?? 0);
 
 								if ((0 < $rBitrate && 0 < $rHeight && 0 < $rWidth)) {
-									$rTokenData = array('stream_id' => $rAdaptiveID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'channel_info' => array('redirect_id' => $rAdaptiveInfo['redirect_id'], 'originator_id' => ($rAdaptiveInfo['originator_id'] ?? null), 'pid' => $rAdaptiveInfo['pid'], 'on_demand' => $rAdaptiveInfo['on_demand'], 'monitor_pid' => $rAdaptiveInfo['monitor_pid']), 'user_info' => array('id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']), 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => ($rStreamInfo['codecs']['video']['codec_name'] ?? 'h264'), 'uuid' => $rUUID, 'adaptive' => array($rChannelInfo['redirect_id'], $rStreamID));
+									$rTokenData = ['stream_id' => $rAdaptiveID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'channel_info' => ['redirect_id' => $rAdaptiveInfo['redirect_id'], 'originator_id' => ($rAdaptiveInfo['originator_id'] ?? null), 'pid' => $rAdaptiveInfo['pid'], 'on_demand' => $rAdaptiveInfo['on_demand'], 'monitor_pid' => $rAdaptiveInfo['monitor_pid']], 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => ($rStreamInfo['codecs']['video']['codec_name'] ?? 'h264'), 'uuid' => $rUUID, 'adaptive' => [$rChannelInfo['redirect_id'], $rStreamID]];
 									$rStreamURL = (string) $rURL . '/auth/' . Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 									$rParts[$rBitrate] = '#EXT-X-STREAM-INF:BANDWIDTH=' . $rBitrate . ',RESOLUTION=' . $rWidth . 'x' . $rHeight . "\n" . $rStreamURL;
 								}
@@ -562,9 +562,9 @@ if ($rExtension) {
 							exit();
 						} else {
 							if (!$rIsHMAC) {
-								$rTokenData = array('stream_id' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'channel_info' => array('redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid']), 'user_info' => array('id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']), 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID);
+								$rTokenData = ['stream_id' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'channel_info' => ['redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid']], 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID];
 							} else {
-								$rTokenData = array('stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'channel_info' => array('redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid']), 'user_info' => $rUserInfo, 'pid' => $rPID, 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID);
+								$rTokenData = ['stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'channel_info' => ['redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid']], 'user_info' => $rUserInfo, 'pid' => $rPID, 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID];
 							}
 
 							$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
@@ -585,9 +585,9 @@ if ($rExtension) {
 						}
 
 						if (!$rIsHMAC) {
-							$rTokenData = array('stream_id' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'channel_info' => array('stream_id' => $rChannelInfo['stream_id'], 'redirect_id' => ($rChannelInfo['redirect_id'] ?: null), 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid'], 'proxy' => $rChannelInfo['direct_proxy']), 'user_info' => array('id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']), 'pid' => $rPID, 'prebuffer' => $rPrebuffer, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'external_device' => $rExternalDevice, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID);
+							$rTokenData = ['stream_id' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'channel_info' => ['stream_id' => $rChannelInfo['stream_id'], 'redirect_id' => ($rChannelInfo['redirect_id'] ?: null), 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid'], 'proxy' => $rChannelInfo['direct_proxy']], 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'pid' => $rPID, 'prebuffer' => $rPrebuffer, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'external_device' => $rExternalDevice, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID];
 						} else {
-							$rTokenData = array('stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'channel_info' => array('stream_id' => $rChannelInfo['stream_id'], 'redirect_id' => ($rChannelInfo['redirect_id'] ?: null), 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid'], 'proxy' => $rChannelInfo['direct_proxy']), 'user_info' => $rUserInfo, 'pid' => $rPID, 'prebuffer' => $rPrebuffer, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'external_device' => $rExternalDevice, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID);
+							$rTokenData = ['stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'channel_info' => ['stream_id' => $rChannelInfo['stream_id'], 'redirect_id' => ($rChannelInfo['redirect_id'] ?: null), 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid'], 'proxy' => $rChannelInfo['direct_proxy']], 'user_info' => $rUserInfo, 'pid' => $rPID, 'prebuffer' => $rPrebuffer, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'external_device' => $rExternalDevice, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID];
 						}
 
 						$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
@@ -632,9 +632,9 @@ if ($rExtension) {
 				}
 
 				if (!$rIsHMAC) {
-					$rTokenData = array('stream_id' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'type' => $rType, 'pid' => $rPID, 'channel_info' => array('stream_id' => $rChannelInfo['stream_id'], 'bitrate' => $rChannelInfo['bitrate'], 'target_container' => $rChannelInfo['target_container'], 'redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'proxy' => ($rChannelInfo['direct_proxy'] ? json_decode($rChannelInfo['stream_source'], true)[0] : null)), 'user_info' => array('id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']), 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'is_mag' => $rIsMag, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null));
+					$rTokenData = ['stream_id' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'type' => $rType, 'pid' => $rPID, 'channel_info' => ['stream_id' => $rChannelInfo['stream_id'], 'bitrate' => $rChannelInfo['bitrate'], 'target_container' => $rChannelInfo['target_container'], 'redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'proxy' => ($rChannelInfo['direct_proxy'] ? json_decode($rChannelInfo['stream_source'], true)[0] : null)], 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'is_mag' => $rIsMag, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 				} else {
-					$rTokenData = array('stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'type' => $rType, 'pid' => $rPID, 'channel_info' => array('stream_id' => $rChannelInfo['stream_id'], 'bitrate' => $rChannelInfo['bitrate'], 'target_container' => $rChannelInfo['target_container'], 'redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'proxy_source' => ($rChannelInfo['direct_proxy'] ? json_decode($rChannelInfo['stream_source'], true)[0] : null)), 'user_info' => $rUserInfo, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'is_mag' => $rIsMag, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null));
+					$rTokenData = ['stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'type' => $rType, 'pid' => $rPID, 'channel_info' => ['stream_id' => $rChannelInfo['stream_id'], 'bitrate' => $rChannelInfo['bitrate'], 'target_container' => $rChannelInfo['target_container'], 'redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'proxy_source' => ($rChannelInfo['direct_proxy'] ? json_decode($rChannelInfo['stream_source'], true)[0] : null)], 'user_info' => $rUserInfo, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'is_mag' => $rIsMag, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 				}
 
 				if (isset($_GET['segment'])) {
@@ -693,7 +693,7 @@ if ($rExtension) {
 						generateError('HLS_DISABLED');
 					}
 
-					$rTokenData = array('stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => array('id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_line_info' => $rUserInfo['pair_line_info'], 'pair_id' => $rUserInfo['pair_id'], 'active_cons' => $rUserInfo['active_cons'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']), 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null));
+					$rTokenData = ['stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_line_info' => $rUserInfo['pair_line_info'], 'pair_id' => $rUserInfo['pair_id'], 'active_cons' => $rUserInfo['active_cons'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 					$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 
 					if ($rSettings['allow_cdn_access']) {
@@ -712,7 +712,7 @@ if ($rExtension) {
 					}
 
 					$rActivityStart = time();
-					$rTokenData = array('stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => array('id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_line_info' => $rUserInfo['pair_line_info'], 'pair_id' => $rUserInfo['pair_id'], 'active_cons' => $rUserInfo['active_cons'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']), 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null));
+					$rTokenData = ['stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_line_info' => $rUserInfo['pair_line_info'], 'pair_id' => $rUserInfo['pair_id'], 'active_cons' => $rUserInfo['active_cons'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 					$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 
 					if ($rSettings['allow_cdn_access']) {
@@ -735,7 +735,7 @@ if ($rExtension) {
 				$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 1 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
 
 				if (0 < $db->num_rows()) {
-					$rStreamInfo = array('info' => $db->get_row());
+					$rStreamInfo = ['info' => $db->get_row()];
 				}
 			}
 
@@ -747,7 +747,7 @@ if ($rExtension) {
 				generateError('THUMBNAILS_NOT_ENABLED');
 			}
 
-			$rTokenData = array('stream' => $rStreamID, 'expires' => time() + 5);
+			$rTokenData = ['stream' => $rStreamID, 'expires' => time() + 5];
 			$rOriginatorID = null;
 
 			if (($rServers[$rStreamInfo['info']['vframes_server_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))) {
@@ -785,7 +785,7 @@ if ($rExtension) {
 				}
 
 				$rURL = StreamRedirector::getStreamingURL($rSettings, $rServers, $rChannelInfo['redirect_id'], ($rChannelInfo['originator_id'] ?? null), $rForceHTTP, $rUserID);
-				$rTokenData = array('stream_id' => $rStreamID, 'sub_id' => intval($rRequest['sid'] ?? 0), 'webvtt' => intval($rRequest['webvtt'] ?? 0), 'expires' => time() + 5);
+				$rTokenData = ['stream_id' => $rStreamID, 'sub_id' => intval($rRequest['sid'] ?? 0), 'webvtt' => intval($rRequest['webvtt'] ?? 0), 'expires' => time() + 5];
 				$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 				header('Location: ' . $rURL . '/subauth/' . $rToken);
 

@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests;
 
@@ -11,14 +10,12 @@ use M3uParser\Tag\ExtLogo;
 use M3uParser\Tag\ExtTv;
 use PHPUnit\Framework\TestCase;
 
-class M3uDataTest extends TestCase
-{
-    public function testComplexDefaultEntryToString(): void
-    {
-        $expectedString = '#EXTM3U test-name="test-value"'."\n";
-        $expectedString .= '#EXTINF:123 test-attr="test-attrname",extinf-title'."\n";
-        $expectedString .= '#EXTTV:hd,sd;ru;xml-tv-id;https://example.org/icon.png'."\n";
-        $expectedString .= '#EXTLOGO:https://example.org/logo.png'."\n";
+class M3uDataTest extends TestCase {
+    public function testComplexDefaultEntryToString(): void {
+        $expectedString = '#EXTM3U test-name="test-value"' . "\n";
+        $expectedString .= '#EXTINF:123 test-attr="test-attrname",extinf-title' . "\n";
+        $expectedString .= '#EXTTV:hd,sd;ru;xml-tv-id;https://example.org/icon.png' . "\n";
+        $expectedString .= '#EXTLOGO:https://example.org/logo.png' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();
@@ -51,16 +48,15 @@ class M3uDataTest extends TestCase
     /**
      * @see https://github.com/Gemorroj/M3uParser/pull/14
      */
-    public function testComplexDefaultEntriesToString(): void
-    {
-        $expectedString = '#EXTM3U test-name="test-value"'."\n";
-        $expectedString .= '#EXTINF:123 test-attr="test-attrname1",extinf-title1'."\n";
-        $expectedString .= '#EXTTV:hd,sd;ru;xml-tv-id;https://example.org/icon.png'."\n";
-        $expectedString .= '#EXTLOGO:https://example.org/logo.png'."\n";
-        $expectedString .= 'test-path1'."\n";
-        $expectedString .= '#EXTINF:123 test-attr="test-attrname2",extinf-title2'."\n";
-        $expectedString .= '#EXTTV:hd,sd;ru;xml-tv-id;https://example.org/icon.png'."\n";
-        $expectedString .= '#EXTLOGO:https://example.org/logo.png'."\n";
+    public function testComplexDefaultEntriesToString(): void {
+        $expectedString = '#EXTM3U test-name="test-value"' . "\n";
+        $expectedString .= '#EXTINF:123 test-attr="test-attrname1",extinf-title1' . "\n";
+        $expectedString .= '#EXTTV:hd,sd;ru;xml-tv-id;https://example.org/icon.png' . "\n";
+        $expectedString .= '#EXTLOGO:https://example.org/logo.png' . "\n";
+        $expectedString .= 'test-path1' . "\n";
+        $expectedString .= '#EXTINF:123 test-attr="test-attrname2",extinf-title2' . "\n";
+        $expectedString .= '#EXTTV:hd,sd;ru;xml-tv-id;https://example.org/icon.png' . "\n";
+        $expectedString .= '#EXTLOGO:https://example.org/logo.png' . "\n";
         $expectedString .= 'test-path2';
 
         $entry1 = new M3uEntry();

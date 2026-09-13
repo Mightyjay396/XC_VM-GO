@@ -133,10 +133,10 @@ class ResellerApiDispatcher {
 	 */
 	private static function handleDashboard(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
-		$rReturn = array('open_connections' => 0, 'online_users' => 0, 'active_accounts' => 0, 'credits' => 0, 'credits_assigned' => 0);
+		$rReturn = ['open_connections' => 0, 'online_users' => 0, 'active_accounts' => 0, 'credits' => 0, 'credits_assigned' => 0];
 
 		if (SettingsManager::getBool('redis_handler')) {
-			$rReports = array();
+			$rReports = [];
 			$db->query('SELECT `id` FROM `lines` WHERE `member_id` IN (' . implode(',', $rUserInfo['reports']) . ');');
 			foreach ($db->get_rows() as $rRow) {
 				$rReports[] = $rRow['id'];
@@ -180,7 +180,7 @@ class ResellerApiDispatcher {
 
 			if ($rSub == 'purge') {
 				if (SettingsManager::getBool('redis_handler')) {
-					$rReports = array();
+					$rReports = [];
 					$db->query('SELECT `id` FROM `lines` WHERE `member_id` IN (' . implode(',', $rUserInfo['reports']) . ');');
 					foreach ($db->get_rows() as $rRow) {
 						$rReports[] = $rRow['id'];
@@ -197,11 +197,11 @@ class ResellerApiDispatcher {
 						ConnectionTracker::closeConnection($rRow);
 					}
 				}
-				echo json_encode(array('result' => true));
+				echo json_encode(['result' => true]);
 				exit();
 			}
 
-			echo json_encode(array('result' => false));
+			echo json_encode(['result' => false]);
 			exit();
 		}
 		exit();
@@ -225,34 +225,34 @@ class ResellerApiDispatcher {
 				if ($rSub == 'delete') {
 					LineService::deleteLineById($rUserID);
 					$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'line', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'delete', RequestManager::get('user_id'), 0, $rUserInfo['credits'], time(), json_encode($rLine));
-					echo json_encode(array('result' => true));
+					echo json_encode(['result' => true]);
 					exit();
 				}
 
 				if ($rSub == 'enable') {
 					$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rUserID);
 					$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'line', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'enable', RequestManager::get('user_id'), 0, $rUserInfo['credits'], time(), json_encode($rLine));
-					echo json_encode(array('result' => true));
+					echo json_encode(['result' => true]);
 					exit();
 				}
 
 				if ($rSub == 'disable') {
 					$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rUserID);
 					$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'line', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'disable', RequestManager::get('user_id'), 0, $rUserInfo['credits'], time(), json_encode($rLine));
-					echo json_encode(array('result' => true));
+					echo json_encode(['result' => true]);
 					exit();
 				}
 
 				if ($rSub == 'reset_isp') {
 					$db->query("UPDATE `lines` SET `isp_desc` = '', `as_number` = NULL WHERE `id` = ?;", $rUserID);
-					echo json_encode(array('result' => true));
+					echo json_encode(['result' => true]);
 					exit();
 				}
 
 				if ($rSub == 'kill_line') {
 					if ($rPermissions['reseller_client_connection_logs']) {
 						if (SettingsManager::getBool('redis_handler')) {
-							foreach (ConnectionTracker::getUserConnections(array($rUserID), false)[$rUserID] as $rConnection) {
+							foreach (ConnectionTracker::getUserConnections([$rUserID], false)[$rUserID] as $rConnection) {
 								ConnectionTracker::closeConnection($rConnection);
 							}
 						} else {
@@ -263,17 +263,17 @@ class ResellerApiDispatcher {
 								}
 							}
 						}
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 					exit();
 				}
 
-				echo json_encode(array('result' => false));
+				echo json_encode(['result' => false]);
 				exit();
 			}
 
-			echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+			echo json_encode(['result' => false, 'error' => 'No permissions.']);
 			exit();
 		}
 		exit();
@@ -298,10 +298,10 @@ class ResellerApiDispatcher {
 					if ($rActivityInfo) {
 						if (Authorization::check('line', $rActivityInfo['user_id'])) {
 							ConnectionTracker::closeConnection($rActivityInfo);
-							echo json_encode(array('result' => true));
+							echo json_encode(['result' => true]);
 							exit();
 						}
-						echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+						echo json_encode(['result' => false, 'error' => 'No permissions.']);
 						exit();
 					}
 				} else {
@@ -310,16 +310,16 @@ class ResellerApiDispatcher {
 						$rRow = $db->get_row();
 						if (Authorization::check('line', $rRow['user_id'])) {
 							ConnectionTracker::closeConnection($rRow);
-							echo json_encode(array('result' => true));
+							echo json_encode(['result' => true]);
 							exit();
 						}
-						echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+						echo json_encode(['result' => false, 'error' => 'No permissions.']);
 						exit();
 					}
 				}
 			}
 
-			echo json_encode(array('result' => false));
+			echo json_encode(['result' => false]);
 			exit();
 		}
 		exit();
@@ -347,16 +347,16 @@ class ResellerApiDispatcher {
 						$db->query('UPDATE `users` SET `credits` = ? WHERE `id` = ?;', $rCredits, $rUser['id']);
 						$db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rUser['id'], $rUserInfo['id'], RequestManager::get('credits'), time(), RequestManager::get('reason'));
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'user', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'adjust_credits', RequestManager::get('id'), intval(RequestManager::get('credits')), $rOwnerCredits, time(), json_encode($rUser));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 				}
 
-				echo json_encode(array('result' => false));
+				echo json_encode(['result' => false]);
 				exit();
 			}
 
-			echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+			echo json_encode(['result' => false, 'error' => 'No permissions.']);
 			exit();
 		}
 		exit();
@@ -383,7 +383,7 @@ class ResellerApiDispatcher {
 						UserService::deleteRegisteredUser(RequestManager::get('user_id'), false, false, $rUserInfo['id']);
 						$db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rUserInfo['id'], $rUserInfo['id'], intval($rUser['credits']), time(), 'Deleted user: ' . $rUser['username']);
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'user', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'delete', RequestManager::get('user_id'), intval($rUser['credits']), $rOwnerCredits, time(), json_encode($rUser));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 					exit();
@@ -392,22 +392,22 @@ class ResellerApiDispatcher {
 				if ($rSub == 'enable') {
 					$db->query('UPDATE `users` SET `status` = 1 WHERE `id` = ?;', RequestManager::get('user_id'));
 					$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'user', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'enable', RequestManager::get('user_id'), 0, $rUserInfo['credits'], time(), json_encode($rUser));
-					echo json_encode(array('result' => true));
+					echo json_encode(['result' => true]);
 					exit();
 				}
 
 				if ($rSub == 'disable') {
 					$db->query('UPDATE `users` SET `status` = 0 WHERE `id` = ?;', RequestManager::get('user_id'));
 					$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'user', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'disable', RequestManager::get('user_id'), 0, $rUserInfo['credits'], time(), json_encode($rUser));
-					echo json_encode(array('result' => true));
+					echo json_encode(['result' => true]);
 					exit();
 				}
 
-				echo json_encode(array('result' => false));
+				echo json_encode(['result' => false]);
 				exit();
 			}
 
-			echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+			echo json_encode(['result' => false, 'error' => 'No permissions.']);
 			exit();
 		}
 		exit();
@@ -430,25 +430,25 @@ class ResellerApiDispatcher {
 
 				if ($rSub == 'close') {
 					$db->query('UPDATE `tickets` SET `status` = 0 WHERE `id` = ?;', RequestManager::get('ticket_id'));
-					echo json_encode(array('result' => true));
+					echo json_encode(['result' => true]);
 					exit();
 				}
 
 				if ($rSub == 'reopen') {
 					if ($rTicket['member_id'] != $rUserInfo['id']) {
 						$db->query('UPDATE `tickets` SET `status` = 1 WHERE `id` = ?;', RequestManager::get('ticket_id'));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 					exit();
 				}
 			} else {
-				echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+				echo json_encode(['result' => false, 'error' => 'No permissions.']);
 				exit();
 			}
 		}
 
-		echo json_encode(array('result' => false));
+		echo json_encode(['result' => false]);
 		exit();
 	}
 
@@ -470,41 +470,41 @@ class ResellerApiDispatcher {
 					if ($rSub == 'delete') {
 						MagService::deleteDevice(RequestManager::get('mag_id'));
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'mag', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'delete', RequestManager::get('mag_id'), 0, $rUserInfo['credits'], time(), json_encode($rMagDetails));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 
 					if ($rSub == 'enable') {
 						$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rMagDetails['user_id']);
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'mag', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'enable', RequestManager::get('mag_id'), 0, $rUserInfo['credits'], time(), json_encode($rMagDetails));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 
 					if ($rSub == 'disable') {
 						$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rMagDetails['user_id']);
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'mag', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'disable', RequestManager::get('mag_id'), 0, $rUserInfo['credits'], time(), json_encode($rMagDetails));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 
 					if ($rSub == 'convert') {
 						MagService::deleteDevice(RequestManager::get('mag_id'), false, false, true);
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'line', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'convert', $rMagDetails['user']['id'], 0, $rUserInfo['credits'], time(), json_encode($rMagDetails['user']));
-						echo json_encode(array('result' => true, 'line_id' => $rMagDetails['user']['id']));
+						echo json_encode(['result' => true, 'line_id' => $rMagDetails['user']['id']]);
 						exit();
 					}
 
 					if ($rSub == 'reset_isp') {
 						$db->query("UPDATE `lines` SET `isp_desc` = '', `as_number` = NULL WHERE `id` = ?;", $rMagDetails['user']['id']);
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 
 					if ($rSub == 'kill_line') {
 						if ($rPermissions['reseller_client_connection_logs']) {
 							if (SettingsManager::getBool('redis_handler')) {
-								foreach (ConnectionTracker::getUserConnections(array($rMagDetails['user_id']), false)[$rMagDetails['user_id']] as $rConnection) {
+								foreach (ConnectionTracker::getUserConnections([$rMagDetails['user_id']], false)[$rMagDetails['user_id']] as $rConnection) {
 									ConnectionTracker::closeConnection($rConnection);
 								}
 							} else {
@@ -515,18 +515,18 @@ class ResellerApiDispatcher {
 									}
 								}
 							}
-							echo json_encode(array('result' => true));
+							echo json_encode(['result' => true]);
 							exit();
 						}
 						exit();
 					}
 				} else {
-					echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+					echo json_encode(['result' => false, 'error' => 'No permissions.']);
 					exit();
 				}
 			}
 
-			echo json_encode(array('result' => false));
+			echo json_encode(['result' => false]);
 			exit();
 		}
 		exit();
@@ -550,41 +550,41 @@ class ResellerApiDispatcher {
 					if ($rSub == 'delete') {
 						EnigmaService::deleteDevice(RequestManager::get('e2_id'));
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'enigma', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'delete', RequestManager::get('e2_id'), 0, $rUserInfo['credits'], time(), json_encode($rE2Details));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 
 					if ($rSub == 'enable') {
 						$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rE2Details['user_id']);
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'enigma', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'enable', RequestManager::get('e2_id'), 0, $rUserInfo['credits'], time(), json_encode($rE2Details));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 
 					if ($rSub == 'disable') {
 						$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rE2Details['user_id']);
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'enigma', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'disable', RequestManager::get('e2_id'), 0, $rUserInfo['credits'], time(), json_encode($rE2Details));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 
 					if ($rSub == 'convert') {
 						EnigmaService::deleteDevice(RequestManager::get('e2_id'), false, false, true);
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'line', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'convert', $rE2Details['user']['id'], 0, $rUserInfo['credits'], time(), json_encode($rE2Details['user']));
-						echo json_encode(array('result' => true, 'line_id' => $rE2Details['user']['id']));
+						echo json_encode(['result' => true, 'line_id' => $rE2Details['user']['id']]);
 						exit();
 					}
 
 					if ($rSub == 'reset_isp') {
 						$db->query("UPDATE `lines` SET `isp_desc` = '', `as_number` = NULL WHERE `id` = ?;", $rE2Details['user']['id']);
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 
 					if ($rSub == 'kill_line') {
 						if ($rPermissions['reseller_client_connection_logs']) {
 							if (SettingsManager::getBool('redis_handler')) {
-								foreach (ConnectionTracker::getUserConnections(array($rE2Details['user_id']), false)[$rE2Details['user_id']] as $rConnection) {
+								foreach (ConnectionTracker::getUserConnections([$rE2Details['user_id']], false)[$rE2Details['user_id']] as $rConnection) {
 									ConnectionTracker::closeConnection($rConnection);
 								}
 							} else {
@@ -595,18 +595,18 @@ class ResellerApiDispatcher {
 									}
 								}
 							}
-							echo json_encode(array('result' => true));
+							echo json_encode(['result' => true]);
 							exit();
 						}
 						exit();
 					}
 				} else {
-					echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+					echo json_encode(['result' => false, 'error' => 'No permissions.']);
 					exit();
 				}
 			}
 
-			echo json_encode(array('result' => false));
+			echo json_encode(['result' => false]);
 			exit();
 		}
 		exit();
@@ -621,7 +621,7 @@ class ResellerApiDispatcher {
 	 */
 	private static function handleGetPackage(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$rOverride = json_decode($rUserInfo['override_packages'], true);
 		$db->query('SELECT `id`, `bouquets`, `official_credits` AS `cost_credits`, `official_duration`, `official_duration_in`, `max_connections`, `check_compatible`, `is_isplock` FROM `users_packages` WHERE `id` = ?;', RequestManager::get('package_id'));
 
@@ -655,13 +655,13 @@ class ResellerApiDispatcher {
 				$db->query('SELECT * FROM `bouquets` WHERE `id` = ?;', $rBouquet);
 				if ($db->num_rows() == 1) {
 					$rRow = $db->get_row();
-					$rReturn[] = array('id' => $rRow['id'], 'bouquet_name' => str_replace("'", "\\'", $rRow['bouquet_name']), 'bouquet_channels' => json_decode($rRow['bouquet_channels'], true), 'bouquet_radios' => json_decode($rRow['bouquet_radios'], true), 'bouquet_movies' => json_decode($rRow['bouquet_movies'], true), 'bouquet_series' => json_decode($rRow['bouquet_series'], true));
+					$rReturn[] = ['id' => $rRow['id'], 'bouquet_name' => str_replace("'", "\\'", $rRow['bouquet_name']), 'bouquet_channels' => json_decode($rRow['bouquet_channels'], true), 'bouquet_radios' => json_decode($rRow['bouquet_radios'], true), 'bouquet_movies' => json_decode($rRow['bouquet_movies'], true), 'bouquet_series' => json_decode($rRow['bouquet_series'], true)];
 				}
 			}
 			$rData['duration'] = $rData['official_duration'] . ' ' . $rData['official_duration_in'];
-			echo json_encode(array('result' => true, 'bouquets' => $rReturn, 'data' => $rData));
+			echo json_encode(['result' => true, 'bouquets' => $rReturn, 'data' => $rData]);
 		} else {
-			echo json_encode(array('result' => false));
+			echo json_encode(['result' => false]);
 		}
 		exit();
 	}
@@ -675,7 +675,7 @@ class ResellerApiDispatcher {
 	 */
 	private static function handleGetPackageTrial(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `bouquets`, `trial_credits` AS `cost_credits`, `trial_duration`, `trial_duration_in`, `max_connections`, `is_isplock` FROM `users_packages` WHERE `id` = ?;', RequestManager::get('package_id'));
 
 		if ($db->num_rows() == 1) {
@@ -686,14 +686,14 @@ class ResellerApiDispatcher {
 				$db->query('SELECT * FROM `bouquets` WHERE `id` = ?;', $rBouquet);
 				if ($db->num_rows() == 1) {
 					$rRow = $db->get_row();
-					$rReturn[] = array('id' => $rRow['id'], 'bouquet_name' => str_replace("'", "\\'", $rRow['bouquet_name']), 'bouquet_channels' => json_decode($rRow['bouquet_channels'], true), 'bouquet_radios' => json_decode($rRow['bouquet_radios'], true), 'bouquet_movies' => json_decode($rRow['bouquet_movies'], true), 'bouquet_series' => json_decode($rRow['bouquet_series'], true));
+					$rReturn[] = ['id' => $rRow['id'], 'bouquet_name' => str_replace("'", "\\'", $rRow['bouquet_name']), 'bouquet_channels' => json_decode($rRow['bouquet_channels'], true), 'bouquet_radios' => json_decode($rRow['bouquet_radios'], true), 'bouquet_movies' => json_decode($rRow['bouquet_movies'], true), 'bouquet_series' => json_decode($rRow['bouquet_series'], true)];
 				}
 			}
 			$rData['duration'] = $rData['trial_duration'] . ' ' . $rData['trial_duration_in'];
 			$rData['compatible'] = true;
-			echo json_encode(array('result' => true, 'bouquets' => $rReturn, 'data' => $rData));
+			echo json_encode(['result' => true, 'bouquets' => $rReturn, 'data' => $rData]);
 		} else {
-			echo json_encode(array('result' => false));
+			echo json_encode(['result' => false]);
 		}
 		exit();
 	}
@@ -707,10 +707,10 @@ class ResellerApiDispatcher {
 	 */
 	private static function handleHeaderStats(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
-		$rReturn = array('total_connections' => 0, 'total_users' => 0);
+		$rReturn = ['total_connections' => 0, 'total_users' => 0];
 
 		if (SettingsManager::getBool('redis_handler')) {
-			$rReports = array();
+			$rReports = [];
 			$db->query('SELECT `id` FROM `lines` WHERE `member_id` IN (' . implode(',', $rUserInfo['reports']) . ');');
 			foreach ($db->get_rows() as $rRow) {
 				$rReports[] = $rRow['id'];
@@ -743,10 +743,10 @@ class ResellerApiDispatcher {
 	 */
 	private static function handleStats(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
-		$rReturn = array('open_connections' => 0, 'online_users' => 0, 'total_lines' => 0, 'total_users' => 0, 'owner_credits' => 0, 'user_credits' => 0, 'total_credits' => 0);
+		$rReturn = ['open_connections' => 0, 'online_users' => 0, 'total_lines' => 0, 'total_users' => 0, 'owner_credits' => 0, 'user_credits' => 0, 'total_credits' => 0];
 
 		if (SettingsManager::getBool('redis_handler')) {
-			$rReports = array();
+			$rReports = [];
 			$db->query('SELECT `id` FROM `lines` WHERE `member_id` IN (' . implode(',', $rUserInfo['reports']) . ');');
 			foreach ($db->get_rows() as $rRow) {
 				$rReports[] = $rRow['id'];
@@ -787,7 +787,7 @@ class ResellerApiDispatcher {
 	 */
 	private static function handleUserList(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
-		$rReturn = array('total_count' => 0, 'items' => array(), 'result' => true);
+		$rReturn = ['total_count' => 0, 'items' => [], 'result' => true];
 
 		if (RequestManager::has('search')) {
 			$rPage = RequestManager::has('page') ? intval(RequestManager::get('page')) : 1;
@@ -798,7 +798,7 @@ class ResellerApiDispatcher {
 
 			if ($db->num_rows() > 0) {
 				foreach ($db->get_rows() as $rRow) {
-					$rReturn['items'][] = array('id' => $rRow['id'], 'text' => $rRow['username']);
+					$rReturn['items'][] = ['id' => $rRow['id'], 'text' => $rRow['username']];
 				}
 			}
 		}
@@ -824,13 +824,13 @@ class ResellerApiDispatcher {
 				if (Authorization::check('line', $rMag['user_id'])) {
 					if ($rData['type'] == 'send_msg') {
 						$rData['need_confirm'] = 1;
-					} else if ($rData['type'] == 'play_channel') {
+					} elseif ($rData['type'] == 'play_channel') {
 						$rData['need_confirm'] = 0;
 						$rData['reboot_portal'] = 0;
 						$rData['message'] = intval($rData['channel']);
-					} else if ($rData['type'] == 'reset_stb_lock') {
+					} elseif ($rData['type'] == 'reset_stb_lock') {
 						MagService::resetSTB($rData['id']);
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					} else {
 						$rData['need_confirm'] = 0;
@@ -840,16 +840,16 @@ class ResellerApiDispatcher {
 
 					if ($db->query('INSERT INTO `mag_events`(`status`, `mag_device_id`, `event`, `need_confirm`, `msg`, `reboot_after_ok`, `send_time`) VALUES (0, ?, ?, ?, ?, ?, ?);', $rData['id'], $rData['type'], $rData['need_confirm'], $rData['message'], $rData['reboot_portal'], time())) {
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'mag', ?, ?, null, ?, ?, ?, ?);", $rUserInfo['id'], 'send_event', $rMag['mag_id'], 0, $rUserInfo['credits'], time(), json_encode($rMag));
-						echo json_encode(array('result' => true));
+						echo json_encode(['result' => true]);
 						exit();
 					}
 				} else {
-					echo json_encode(array('result' => false, 'error' => 'No permissions.'));
+					echo json_encode(['result' => false, 'error' => 'No permissions.']);
 					exit();
 				}
 			}
 
-			echo json_encode(array('result' => false));
+			echo json_encode(['result' => false]);
 			exit();
 		}
 		exit();
@@ -865,7 +865,7 @@ class ResellerApiDispatcher {
 	private static function handleStreamList(array $rUserInfo, array $rPermissions): void {
 		$db = self::db();
 		if ($rPermissions['create_mag'] || $rPermissions['can_view_vod'] || $rPermissions['reseller_client_connection_logs']) {
-			$rReturn = array('total_count' => 0, 'items' => array(), 'result' => true);
+			$rReturn = ['total_count' => 0, 'items' => [], 'result' => true];
 
 			if (RequestManager::has('search')) {
 				$rPage = RequestManager::has('page') ? intval(RequestManager::get('page')) : 1;
@@ -876,7 +876,7 @@ class ResellerApiDispatcher {
 
 				if ($db->num_rows() > 0) {
 					foreach ($db->get_rows() as $rRow) {
-						$rReturn['items'][] = array('id' => $rRow['id'], 'text' => $rRow['stream_display_name']);
+						$rReturn['items'][] = ['id' => $rRow['id'], 'text' => $rRow['stream_display_name']];
 					}
 				}
 			}
@@ -922,7 +922,7 @@ class ResellerApiDispatcher {
 			}
 		}
 
-		echo json_encode(array('result' => true, 'data' => $rResponse));
+		echo json_encode(['result' => true, 'data' => $rResponse]);
 		exit();
 	}
 
@@ -939,7 +939,7 @@ class ResellerApiDispatcher {
 			if (count($rPermissions['stream_ids']) != 0) {
 				$rTimezone = (RequestManager::get('timezone') ?: 'Europe/London');
 				date_default_timezone_set($rTimezone);
-				$rReturn = array('Channels' => array());
+				$rReturn = ['Channels' => []];
 				$rChannels = array_map('intval', explode(',', RequestManager::get('channels')));
 
 				if (count($rChannels) != 0) {
@@ -949,9 +949,9 @@ class ResellerApiDispatcher {
 					$rPerUnit = floatval(100 / ($rHours * 60));
 					$rChannelsSort = $rChannels;
 					sort($rChannelsSort);
-					$rListings = array();
+					$rListings = [];
 
-					$rArchiveInfo = array();
+					$rArchiveInfo = [];
 					$db->query('SELECT `id`, `tv_archive_server_id`, `tv_archive_duration` FROM `streams` WHERE `id` IN (' . implode(',', $rChannels) . ');');
 					if ($db->num_rows() > 0) {
 						foreach ($db->get_rows() as $rRow) {
@@ -973,7 +973,7 @@ class ResellerApiDispatcher {
 							if (isset($rArchiveInfo[$rChannelID])) {
 								if (0 < $rArchiveInfo[$rChannelID]['tv_archive_server_id'] && 0 < $rArchiveInfo[$rChannelID]['tv_archive_duration']) {
 									if (!(time() - $rArchiveInfo[$rChannelID]['tv_archive_duration'] * 86400 > $rEPGItem['start'])) {
-										$rArchive = array($rEPGItem['start'], intval(($rEPGItem['end'] - $rEPGItem['start']) / 60));
+										$rArchive = [$rEPGItem['start'], intval(($rEPGItem['end'] - $rEPGItem['start']) / 60)];
 									}
 								}
 							}
@@ -985,11 +985,11 @@ class ResellerApiDispatcher {
 								$rRelativeSize -= $rFullSize - 100;
 							}
 
-							$rListings[$rChannelID][] = array('ListingId' => $rEPGItem['id'], 'ChannelId' => $rChannelID, 'Title' => $rEPGItem['title'], 'RelativeSize' => $rRelativeSize, 'StartTime' => date('h:iA', $rCapStart), 'EndTime' => date('h:iA', $rCapEnd), 'Start' => $rEPGItem['start'], 'End' => $rEPGItem['end'], 'Specialisation' => 'tv', 'Archive' => $rArchive);
+							$rListings[$rChannelID][] = ['ListingId' => $rEPGItem['id'], 'ChannelId' => $rChannelID, 'Title' => $rEPGItem['title'], 'RelativeSize' => $rRelativeSize, 'StartTime' => date('h:iA', $rCapStart), 'EndTime' => date('h:iA', $rCapEnd), 'Start' => $rEPGItem['start'], 'End' => $rEPGItem['end'], 'Specialisation' => 'tv', 'Archive' => $rArchive];
 						}
 					}
 
-					$rDefaultEPG = array('ChannelId' => null, 'Title' => 'No Programme Information...', 'RelativeSize' => 100, 'StartTime' => 'Not Available', 'EndTime' => '', 'Specialisation' => 'tv', 'Archive' => null);
+					$rDefaultEPG = ['ChannelId' => null, 'Title' => 'No Programme Information...', 'RelativeSize' => 100, 'StartTime' => 'Not Available', 'EndTime' => '', 'Specialisation' => 'tv', 'Archive' => null];
 					$db->query('SELECT `id`, `stream_icon`, `stream_display_name`, `tv_archive_duration`, `tv_archive_server_id`, `category_id` FROM `streams` WHERE `id` IN (' . implode(',', $rChannels) . ') ORDER BY FIELD(`id`, ' . implode(',', $rChannels) . ') ASC;');
 
 					foreach ($db->get_rows() as $rStream) {
@@ -1014,7 +1014,7 @@ class ResellerApiDispatcher {
 							$rCategory .= ' (+' . (count($rCategoryIDs) - 1) . ' others)';
 						}
 
-						$rReturn['Channels'][] = array('Id' => $rStream['id'], 'DisplayName' => $rStream['stream_display_name'], 'CategoryName' => $rCategory, 'Archive' => $rArchive, 'Image' => (ImageUtils::validateURL($rStream['stream_icon']) ?: ''), 'TvListings' => ($rListings[$rStream['id']] ?? array($rDefaultArray)));
+						$rReturn['Channels'][] = ['Id' => $rStream['id'], 'DisplayName' => $rStream['stream_display_name'], 'CategoryName' => $rCategory, 'Archive' => $rArchive, 'Image' => (ImageUtils::validateURL($rStream['stream_icon']) ?: ''), 'TvListings' => ($rListings[$rStream['id']] ?? [$rDefaultArray])];
 					}
 					echo json_encode($rReturn);
 					exit();
@@ -1060,12 +1060,12 @@ class ResellerApiDispatcher {
 					}
 
 					$rRow['date'] = date('H:i', $rRow['start']) . ' - ' . date('H:i', $rRow['end']);
-					echo json_encode(array('result' => true, 'data' => $rRow, 'available' => $rAvailable, 'archive' => $rArchive));
+					echo json_encode(['result' => true, 'data' => $rRow, 'available' => $rAvailable, 'archive' => $rArchive]);
 					exit();
 				}
 			}
 
-			echo json_encode(array('result' => false));
+			echo json_encode(['result' => false]);
 			exit();
 		}
 		exit();
@@ -1082,7 +1082,7 @@ class ResellerApiDispatcher {
 			exit();
 		}
 
-		$allowedReports = (array)($rUserInfo['reports'] ?? [$rUserInfo['id']]);
+		$allowedReports = (array) ($rUserInfo['reports'] ?? [$rUserInfo['id']]);
 		$code = $db->fetchOne(
 			"SELECT `activation_codes`.*, `lines`.`username` as `sub_username`, `lines`.`password` as `sub_password`,
 			        `lines`.`exp_date` as `sub_exp_date`, `lines`.`max_connections` as `line_max_conn`
@@ -1097,8 +1097,8 @@ class ResellerApiDispatcher {
 			exit();
 		}
 
-		$package = PackageService::getById((int)$code['package_id']);
-		$portalUrl = self::resolveBaseUrl((string)($code['dns_base'] ?? ''));
+		$package = PackageService::getById((int) $code['package_id']);
+		$portalUrl = self::resolveBaseUrl((string) ($code['dns_base'] ?? ''));
 		$portalParsed = parse_url($portalUrl);
 
 		$m3uHls = "{$portalUrl}/get.php?username={$code['sub_username']}&password={$code['sub_password']}&type=m3u_plus&output=hls";
@@ -1117,28 +1117,28 @@ class ResellerApiDispatcher {
 		}
 
 		$subscriberPortalUrl = $portalCode ? "{$portalUrl}/{$portalCode}/" : "{$portalUrl}/portal";
-		$directActivateUrl   = "{$subscriberPortalUrl}?code=" . urlencode((string)$code['activation_code']);
+		$directActivateUrl   = "{$subscriberPortalUrl}?code=" . urlencode((string) $code['activation_code']);
 		$webPlayerUrl        = $playerCode ? "{$portalUrl}/{$playerCode}/" : null;
 
 		// phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- consumed by the required active_code_details.php view
 		$d = [
-			'id' => (int)$code['id'],
+			'id' => (int) $code['id'],
 			'code' => $code['activation_code'],
 			'batch_name' => $code['batch_name'],
-			'status' => (int)$code['status'],
+			'status' => (int) $code['status'],
 			'status_text' => ($code['status'] == 1) ? 'Ready (Stock)' : (($code['status'] == 2) ? 'Active' : 'Disabled'),
 			'package_name' => $package['package_name'] ?? 'Custom Package',
-			'is_trial' => (bool)$code['is_trial'],
-			'max_connections' => (int)($code['line_max_conn'] ?: $code['max_connections']),
-			'exp_date' => $code['sub_exp_date'] ? date('Y-m-d H:i:s', (int)$code['sub_exp_date']) : 'Frozen (Stock)',
-			'activated_at' => $code['activated_at'] ? date('Y-m-d H:i:s', (int)$code['activated_at']) : 'Never',
-			'created_at' => $code['created_at'] ? date('Y-m-d H:i:s', (int)$code['created_at']) : '-',
+			'is_trial' => (bool) $code['is_trial'],
+			'max_connections' => (int) ($code['line_max_conn'] ?: $code['max_connections']),
+			'exp_date' => $code['sub_exp_date'] ? date('Y-m-d H:i:s', (int) $code['sub_exp_date']) : 'Frozen (Stock)',
+			'activated_at' => $code['activated_at'] ? date('Y-m-d H:i:s', (int) $code['activated_at']) : 'Never',
+			'created_at' => $code['created_at'] ? date('Y-m-d H:i:s', (int) $code['created_at']) : '-',
 			'mac' => $code['mac'] ?: 'None',
 			'device_id' => $code['device_id'] ?: 'None',
 			'username' => $code['sub_username'],
 			'password' => $code['sub_password'],
 			'server' => $portalParsed['host'] ?? 'localhost',
-			'port' => $portalParsed['port'] ?? (isset($_SERVER['SERVER_PORT']) ? (int)$_SERVER['SERVER_PORT'] : 80),
+			'port' => $portalParsed['port'] ?? (isset($_SERVER['SERVER_PORT']) ? (int) $_SERVER['SERVER_PORT'] : 80),
 			'portal_url' => $portalUrl,
 			'activation_portal_url' => $subscriberPortalUrl,
 			'direct_activate_url' => $directActivateUrl,
@@ -1169,8 +1169,8 @@ class ResellerApiDispatcher {
 			return rtrim($dnsBase, '/');
 		}
 
-		$scheme = (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
-		$host = (string)($_SERVER['HTTP_HOST'] ?? '');
+		$scheme = (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
+		$host = (string) ($_SERVER['HTTP_HOST'] ?? '');
 
 		return $host !== '' ? $scheme . '://' . $host : '';
 	}
@@ -1209,7 +1209,7 @@ class ResellerApiDispatcher {
 			exit();
 		}
 
-		$allowedReports = (array)($rUserInfo['reports'] ?? [$rUserInfo['id']]);
+		$allowedReports = (array) ($rUserInfo['reports'] ?? [$rUserInfo['id']]);
 		$codes = $db->fetchAll(
 			"SELECT `id` FROM `activation_codes` WHERE `batch_name` = ? AND `created_by` IN (" . implode(',', array_map('intval', $allowedReports)) . ");",
 			$batchName

@@ -20,6 +20,7 @@ use XcVm\Streaming\Fanout\FanoutConfig;
 
 class SettingsService {
 	use DatabaseAware;
+
 	/**
 	 * The fanout idle buffer ratio as the daemon takes it (0.1-1, two decimals),
 	 * or null when the submitted value is not a number.
@@ -31,7 +32,7 @@ class SettingsService {
 	 * @param mixed $rValue The submitted value.
 	 * @return float|null
 	 */
-	public static function normalizeIdleBufferRatio($rValue): ?float {
+	public static function normalizeIdleBufferRatio(mixed $rValue): ?float {
 		$rValue = str_replace(',', '.', trim((string) $rValue));
 		if ($rValue === '' || !is_numeric($rValue)) {
 			return null;
@@ -45,16 +46,16 @@ class SettingsService {
 	 * @param array $rData Submitted settings.
 	 * @return array Result status payload.
 	 */
-	public static function edit($rData) {
+	public static function edit(array $rData) {
 		$db = self::db();
-		foreach (array('user_agent', 'http_proxy', 'cookie', 'headers') as $rKey) {
+		foreach (['user_agent', 'http_proxy', 'cookie', 'headers'] as $rKey) {
 			$db->query('UPDATE `streams_arguments` SET `argument_default_value` = ? WHERE `argument_key` = ?;', ($rData[$rKey] ?: null), $rKey);
 			unset($rData[$rKey]);
 		}
 
 		$rArray = QueryHelper::verifyPostTable('settings', $rData, true);
 
-		foreach (array('php_loopback', 'restreamer_bypass_proxy', 'request_prebuffer', 'modal_edit', 'group_buttons', 'enable_search', 'on_demand_checker', 'ondemand_balance_equal', 'disable_mag_token', 'allow_cdn_access', 'dts_legacy_ffmpeg', 'mag_load_all_channels', 'disable_xmltv_restreamer', 'disable_playlist_restreamer', 'ffmpeg_warnings', 'reseller_ssl_domain', 'extract_subtitles', 'show_category_duplicates', 'vod_sort_newest', 'header_stats', 'mag_keep_extension', 'keep_protocol', 'read_native_hls', 'player_allow_playlist', 'player_allow_bouquet', 'player_hide_incompatible', 'player_allow_hevc', 'force_epg_timezone', 'check_vod', 'ignore_keyframes', 'save_login_logs', 'save_restart_logs', 'mag_legacy_redirect', 'restrict_playlists', 'monitor_connection_status', 'kill_rogue_ffmpeg', 'show_images', 'on_demand_instant_off', 'on_demand_failure_exit', 'playlist_from_mysql', 'ignore_invalid_users', 'legacy_mag_auth', 'ministra_allow_blank', 'block_proxies', 'block_streaming_servers', 'ip_subnet_match', 'auto_unban_ip', 'debug_show_errors', 'enable_debug_stalker', 'restart_php_fpm', 'restream_deny_unauthorised', 'api_probe', 'legacy_panel_api', 'hide_failures', 'verify_host', 'encrypt_playlist', 'encrypt_playlist_restreamer', 'mag_disable_ssl', 'legacy_get', 'legacy_xmltv', 'save_closed_connection', 'show_tickets', 'stream_logs_save', 'client_logs_save', 'streams_grouped', 'cloudflare', 'cleanup', 'dashboard_stats', 'dashboard_status', 'dashboard_map', 'dashboard_display_alt', 'recaptcha_enable', 'ip_logout', 'disable_player_api', 'disable_playlist', 'disable_xmltv', 'disable_enigma2', 'disable_ministra', 'enable_isp_lock', 'block_svp', 'disable_ts', 'disable_ts_allow_restream', 'disable_hls', 'disable_hls_allow_restream', 'disable_rtmp', 'disable_rtmp_allow_restream', 'case_sensitive_line', 'county_override_1st', 'disallow_2nd_ip_con', 'use_mdomain_in_lists', 'encrypt_hls', 'disallow_empty_user_agents', 'detect_restream_block_user', 'download_images', 'api_redirect', 'use_buffer', 'audio_restart_loss', 'show_isps', 'priority_backup', 'rtmp_random', 'show_connected_video', 'show_not_on_air_video', 'show_banned_video', 'show_expired_video', 'show_expiring_video', 'show_all_category_mag', 'always_enabled_subtitles', 'enable_connection_problem_indication', 'show_tv_channel_logo', 'show_channel_logo_in_preview', 'disable_trial', 'restrict_same_ip', 'fanout_source_insecure', 'fanout_supervise', 'secure_stream_tokens', 'js_navigate') as $rSetting) {
+		foreach (['php_loopback', 'restreamer_bypass_proxy', 'request_prebuffer', 'modal_edit', 'group_buttons', 'enable_search', 'on_demand_checker', 'ondemand_balance_equal', 'disable_mag_token', 'allow_cdn_access', 'dts_legacy_ffmpeg', 'mag_load_all_channels', 'disable_xmltv_restreamer', 'disable_playlist_restreamer', 'ffmpeg_warnings', 'reseller_ssl_domain', 'extract_subtitles', 'show_category_duplicates', 'vod_sort_newest', 'header_stats', 'mag_keep_extension', 'keep_protocol', 'read_native_hls', 'player_allow_playlist', 'player_allow_bouquet', 'player_hide_incompatible', 'player_allow_hevc', 'force_epg_timezone', 'check_vod', 'ignore_keyframes', 'save_login_logs', 'save_restart_logs', 'mag_legacy_redirect', 'restrict_playlists', 'monitor_connection_status', 'kill_rogue_ffmpeg', 'show_images', 'on_demand_instant_off', 'on_demand_failure_exit', 'playlist_from_mysql', 'ignore_invalid_users', 'legacy_mag_auth', 'ministra_allow_blank', 'block_proxies', 'block_streaming_servers', 'ip_subnet_match', 'auto_unban_ip', 'debug_show_errors', 'enable_debug_stalker', 'restart_php_fpm', 'restream_deny_unauthorised', 'api_probe', 'legacy_panel_api', 'hide_failures', 'verify_host', 'encrypt_playlist', 'encrypt_playlist_restreamer', 'mag_disable_ssl', 'legacy_get', 'legacy_xmltv', 'save_closed_connection', 'show_tickets', 'stream_logs_save', 'client_logs_save', 'streams_grouped', 'cloudflare', 'cleanup', 'dashboard_stats', 'dashboard_status', 'dashboard_map', 'dashboard_display_alt', 'recaptcha_enable', 'ip_logout', 'disable_player_api', 'disable_playlist', 'disable_xmltv', 'disable_enigma2', 'disable_ministra', 'enable_isp_lock', 'block_svp', 'disable_ts', 'disable_ts_allow_restream', 'disable_hls', 'disable_hls_allow_restream', 'disable_rtmp', 'disable_rtmp_allow_restream', 'case_sensitive_line', 'county_override_1st', 'disallow_2nd_ip_con', 'use_mdomain_in_lists', 'encrypt_hls', 'disallow_empty_user_agents', 'detect_restream_block_user', 'download_images', 'api_redirect', 'use_buffer', 'audio_restart_loss', 'show_isps', 'priority_backup', 'rtmp_random', 'show_connected_video', 'show_not_on_air_video', 'show_banned_video', 'show_expired_video', 'show_expiring_video', 'show_all_category_mag', 'always_enabled_subtitles', 'enable_connection_problem_indication', 'show_tv_channel_logo', 'show_channel_logo_in_preview', 'disable_trial', 'restrict_same_ip', 'fanout_source_insecure', 'fanout_supervise', 'secure_stream_tokens', 'js_navigate'] as $rSetting) {
 			if (isset($rData[$rSetting])) {
 				$rArray[$rSetting] = 1;
 			} else {
@@ -77,23 +78,23 @@ class SettingsService {
 		}
 
 		if (!isset($rData['allowed_stb_types_for_local_recording'])) {
-			$rArray['allowed_stb_types_for_local_recording'] = array();
+			$rArray['allowed_stb_types_for_local_recording'] = [];
 		}
 
 		if (!isset($rData['allowed_stb_types'])) {
-			$rArray['allowed_stb_types'] = array();
+			$rArray['allowed_stb_types'] = [];
 		}
 
 		if (!isset($rData['maxmind_editions'])) {
-			$rArray['maxmind_editions'] = array();
+			$rArray['maxmind_editions'] = [];
 		}
 
 		if (!isset($rData['shared_mount_prefixes'])) {
-			$rArray['shared_mount_prefixes'] = array();
+			$rArray['shared_mount_prefixes'] = [];
 		}
 
 		if (!isset($rData['allow_countries'])) {
-			$rArray['allow_countries'] = array('ALL');
+			$rArray['allow_countries'] = ['ALL'];
 		}
 
 		if (100 < $rArray['search_items']) {
@@ -112,17 +113,17 @@ class SettingsService {
 
 		$rPrepare = QueryHelper::prepareArray($rArray);
 		if (count($rPrepare['data']) <= 0) {
-			return array('status' => STATUS_FAILURE);
+			return ['status' => STATUS_FAILURE];
 		}
 
 		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . ';';
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			SettingsManager::clearCache();
 			FanoutConfig::sync($rArray);
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		}
 
-		return array('status' => STATUS_FAILURE);
+		return ['status' => STATUS_FAILURE];
 	}
 
 	/**
@@ -131,11 +132,11 @@ class SettingsService {
 	 * @param array $rData Submitted backup settings.
 	 * @return array Result status payload.
 	 */
-	public static function editBackup($rData) {
+	public static function editBackup(array $rData) {
 		$db = self::db();
 		$rArray = QueryHelper::verifyPostTable('settings', $rData, true);
 
-		foreach (array('dropbox_remote') as $rSetting) {
+		foreach (['dropbox_remote'] as $rSetting) {
 			if (isset($rData[$rSetting])) {
 				$rArray[$rSetting] = 1;
 			} else {
@@ -144,25 +145,25 @@ class SettingsService {
 		}
 
 		if (!isset($rData['allowed_stb_types_for_local_recording'])) {
-			$rArray['allowed_stb_types_for_local_recording'] = array();
+			$rArray['allowed_stb_types_for_local_recording'] = [];
 		}
 
 		if (!isset($rData['allowed_stb_types'])) {
-			$rArray['allowed_stb_types'] = array();
+			$rArray['allowed_stb_types'] = [];
 		}
 
 		$rPrepare = QueryHelper::prepareArray($rArray);
 		if (count($rPrepare['data']) <= 0) {
-			return array('status' => STATUS_FAILURE);
+			return ['status' => STATUS_FAILURE];
 		}
 
 		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . ';';
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			SettingsManager::clearCache();
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		}
 
-		return array('status' => STATUS_FAILURE);
+		return ['status' => STATUS_FAILURE];
 	}
 
 	/**
@@ -171,10 +172,10 @@ class SettingsService {
 	 * @param array $rData Submitted cache/cron settings.
 	 * @return array Result status payload.
 	 */
-	public static function editCacheCron($rData) {
+	public static function editCacheCron(array $rData) {
 		$db = self::db();
-		$rCheck = array(false, false);
-		$rCron = array('*', '*', '*', '*', '*');
+		$rCheck = [false, false];
+		$rCron = ['*', '*', '*', '*', '*'];
 		$rPattern = '/^[0-9\/*,-]+$/';
 		$rCron[0] = $rData['minute'];
 		preg_match($rPattern, $rCron[0], $rMatches);
@@ -199,9 +200,9 @@ class SettingsService {
 			}
 
 			SettingsManager::clearCache();
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		}
 
-		return array('status' => STATUS_FAILURE);
+		return ['status' => STATUS_FAILURE];
 	}
 }

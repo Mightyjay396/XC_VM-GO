@@ -24,20 +24,21 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class BouquetService {
 	use DatabaseAware;
+
 	/**
 	 * Create or update a bouquet from admin form data.
 	 *
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (isset($rData['edit'])) {
 			if (!Authorization::check('adv', 'edit_bouquet')) {
 				exit();
 			}
 
-			$rArray = AdminHelpers::overwriteData(BouquetService::getById($rData['edit']), $rData);
+			$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
 		} else {
 			if (!Authorization::check('adv', 'add_bouquet')) {
 				exit();
@@ -54,7 +55,7 @@ class BouquetService {
 			$rBouquetRadios = $rBouquetData['radios'];
 			$rBouquetSeries = $rBouquetData['series'];
 			$rRequiredIDs = AdminHelpers::confirmIDs(array_merge($rBouquetStreams, $rBouquetMovies, $rBouquetRadios));
-			$rStreams = array();
+			$rStreams = [];
 
 			if (count($rRequiredIDs) > 0) {
 				$db->query('SELECT `id`, `type` FROM `streams` WHERE `id` IN (' . implode(',', $rRequiredIDs) . ');');
@@ -80,8 +81,8 @@ class BouquetService {
 			$rArray['bouquet_movies'] = array_intersect(array_map('intval', array_values($rBouquetMovies)), $rStreams[2] ?? []);
 			$rArray['bouquet_radios'] = array_intersect(array_map('intval', array_values($rBouquetRadios)), $rStreams[4] ?? []);
 			$rArray['bouquet_series'] = array_intersect(array_map('intval', array_values($rBouquetSeries)), $rStreams[5] ?? []);
-		} else if (isset($rData['edit'])) {
-			return array('status' => STATUS_FAILURE, 'data' => $rData);
+		} elseif (isset($rData['edit'])) {
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
 		}
 
 		if (!isset($rData['edit'])) {
@@ -96,10 +97,10 @@ class BouquetService {
 			$rInsertID = $db->last_insert_id();
 			self::scan();
 
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
-		return array('status' => STATUS_FAILURE, 'data' => $rData);
+		return ['status' => STATUS_FAILURE, 'data' => $rData];
 	}
 
 	/**
@@ -108,7 +109,7 @@ class BouquetService {
 	 * @param array $rData Ordered bouquet ids.
 	 * @return array ['status' => STATUS_* constant].
 	 */
-	public static function reorder($rData) {
+	public static function reorder(array $rData) {
 		$db = self::db();
 		$rOrder = json_decode($rData['stream_order_array'], true);
 		$rOrder['stream'] = AdminHelpers::confirmIDs($rOrder['stream']);
@@ -117,7 +118,7 @@ class BouquetService {
 		$rOrder['radio'] = AdminHelpers::confirmIDs($rOrder['radio']);
 		$db->query('UPDATE `bouquets` SET `bouquet_channels` = ?, `bouquet_series` = ?, `bouquet_movies` = ?, `bouquet_radios` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rOrder['stream'])) . ']', '[' . implode(',', array_map('intval', $rOrder['series'])) . ']', '[' . implode(',', array_map('intval', $rOrder['movie'])) . ']', '[' . implode(',', array_map('intval', $rOrder['radio'])) . ']', $rData['reorder']);
 
-		return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rData['reorder']));
+		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rData['reorder']]];
 	}
 
 	/**
@@ -126,7 +127,7 @@ class BouquetService {
 	 * @param array $rData Bouquet id and desired item order.
 	 * @return array ['status' => STATUS_* constant].
 	 */
-	public static function sort($rData) {
+	public static function sort(array $rData) {
 		$db = self::db();
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
@@ -157,10 +158,10 @@ class BouquetService {
 				$db->query('UPDATE `users_packages` SET `bouquets` = ? WHERE `id` = ?;', '[' . implode(',', $rBouquet) . ']', $rPackage['id']);
 			}
 
-			return array('status' => STATUS_SUCCESS_REPLACE);
+			return ['status' => STATUS_SUCCESS_REPLACE];
 		}
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -178,9 +179,9 @@ class BouquetService {
 	 * @param int $rID Bouquet id.
 	 * @return void
 	 */
-	public static function scanOne($rID) {
+	public static function scanOne(int $rID) {
 		$db = self::db();
-		$rBouquet = BouquetService::getById($rID);
+		$rBouquet = self::getById($rID);
 		if (!$rBouquet) {
 			return;
 		}
@@ -189,7 +190,7 @@ class BouquetService {
 		$db->query('SELECT `id` FROM `streams`;');
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				$availableStreams[] = (int)$rRow['id'];
+				$availableStreams[] = (int) $rRow['id'];
 			}
 		}
 
@@ -197,7 +198,7 @@ class BouquetService {
 		$db->query('SELECT `id` FROM `streams_series`;');
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				$availableSeries[] = (int)$rRow['id'];
+				$availableSeries[] = (int) $rRow['id'];
 			}
 		}
 
@@ -229,8 +230,8 @@ class BouquetService {
 	 * @param int $rStreamID Stream id.
 	 * @return mixed Map entry (bouquets containing the stream).
 	 */
-	public static function getMapEntry($rStreamID) {
-		$rBouquetMap = array();
+	public static function getMapEntry(int $rStreamID) {
+		$rBouquetMap = [];
 		$rMapPath = CACHE_TMP_PATH . 'bouquet_map';
 
 		if (file_exists($rMapPath) && 0 < filesize($rMapPath)) {
@@ -240,7 +241,7 @@ class BouquetService {
 			}
 		}
 
-		$rReturn = ($rBouquetMap[$rStreamID] ?? array());
+		$rReturn = ($rBouquetMap[$rStreamID] ?? []);
 		unset($rBouquetMap);
 		return $rReturn;
 	}
@@ -251,7 +252,7 @@ class BouquetService {
 	 * @param bool $rForce Bypass the cache.
 	 * @return array Bouquet rows.
 	 */
-	public static function getAll($rForce = false) {
+	public static function getAll(bool $rForce = false) {
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('bouquets', 60);
@@ -260,18 +261,18 @@ class BouquetService {
 			}
 		}
 
-		$rOutput = array();
+		$rOutput = [];
 		$db->query('SELECT *, IF(`bouquet_order` > 0, `bouquet_order`, 999) AS `order` FROM `bouquets` ORDER BY `order` ASC;');
-		foreach ($db->get_rows(true, 'id') ?: array() as $rID => $rChannels) {
+		foreach ($db->get_rows(true, 'id') ?: [] as $rID => $rChannels) {
 			$rChannelsList = json_decode($rChannels['bouquet_channels'], true);
 			$rMoviesList = json_decode($rChannels['bouquet_movies'], true);
 			$rRadiosList = json_decode($rChannels['bouquet_radios'], true);
 			$rSeriesList = json_decode($rChannels['bouquet_series'], true);
 
-			$rChannelsList = is_array($rChannelsList) ? $rChannelsList : array();
-			$rMoviesList = is_array($rMoviesList) ? $rMoviesList : array();
-			$rRadiosList = is_array($rRadiosList) ? $rRadiosList : array();
-			$rSeriesList = is_array($rSeriesList) ? $rSeriesList : array();
+			$rChannelsList = is_array($rChannelsList) ? $rChannelsList : [];
+			$rMoviesList = is_array($rMoviesList) ? $rMoviesList : [];
+			$rRadiosList = is_array($rRadiosList) ? $rRadiosList : [];
+			$rSeriesList = is_array($rSeriesList) ? $rSeriesList : [];
 
 			$rOutput[$rID]['streams'] = array_merge($rChannelsList, $rMoviesList, $rRadiosList);
 			$rOutput[$rID]['series'] = $rSeriesList;
@@ -292,7 +293,7 @@ class BouquetService {
 	 */
 	public static function getUserBouquets() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `id`, `bouquet` FROM `lines` ORDER BY `id` ASC;');
 
 		if ($db->num_rows() > 0) {
@@ -311,7 +312,7 @@ class BouquetService {
 	 */
 	public static function getAllSimple() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `bouquets` ORDER BY `bouquet_order` ASC;');
 
 		if ($db->num_rows() > 0) {
@@ -338,7 +339,7 @@ class BouquetService {
 	 * @param int $rID Bouquet id.
 	 * @return array|null The bouquet row, or null if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `bouquets` WHERE `id` = ?;', $rID);
 
@@ -355,7 +356,7 @@ class BouquetService {
 	 * @param int $rID Bouquet id.
 	 * @return bool True on deletion, false if not found.
 	 */
-	public static function deleteById($rID) {
+	public static function deleteById(int $rID) {
 		$db = self::db();
 		$rBouquet = self::getById($rID);
 
@@ -406,11 +407,11 @@ class BouquetService {
 	 * @param int[]  $rIDs       Item ids to add.
 	 * @return mixed Result.
 	 */
-	public static function addItems($rType, $rBouquetID, $rIDs) {
+	public static function addItems(string $rType, int $rBouquetID, array $rIDs) {
 		$db = self::db();
 
 		if (!is_array($rIDs)) {
-			$rIDs = array($rIDs);
+			$rIDs = [$rIDs];
 		}
 
 		$rBouquet = self::getById($rBouquetID);
@@ -453,11 +454,11 @@ class BouquetService {
 	 * @param int[]  $rIDs       Item ids to remove.
 	 * @return mixed Result.
 	 */
-	public static function removeItems($rType, $rBouquetID, $rIDs) {
+	public static function removeItems(string $rType, int $rBouquetID, array $rIDs) {
 		$db = self::db();
 
 		if (!is_array($rIDs)) {
-			$rIDs = array($rIDs);
+			$rIDs = [$rIDs];
 		}
 
 		$rBouquet = self::getById($rBouquetID);

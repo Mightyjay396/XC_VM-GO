@@ -48,7 +48,7 @@ class FanoutConfig {
 
 		// Snapshot the current config (empty on a missing/torn file — the daemon
 		// will re-seed the rest of the schema on its next load).
-		$rSnapshot = array();
+		$rSnapshot = [];
 		if (is_file($rPath)) {
 			$rDecoded = json_decode((string) @file_get_contents($rPath), true);
 			if (is_array($rDecoded)) {
@@ -104,8 +104,8 @@ class FanoutConfig {
 		// A join that asks for as much as the ring holds starts in the block the next
 		// keyframe prunes, and a viewer slower than one GOP there is dropped: a
 		// prebuffer gets a segment of headroom on top.
-		$rNeeds = array(2 * $rSegTime, $rHlsWindow * $rSegTime);
-		foreach (array('client_prebuffer', 'restreamer_prebuffer', 'fanout_default_prebuffer_sec') as $rKey) {
+		$rNeeds = [2 * $rSegTime, $rHlsWindow * $rSegTime];
+		foreach (['client_prebuffer', 'restreamer_prebuffer', 'fanout_default_prebuffer_sec'] as $rKey) {
 			$rPrebuffer = max(0, (int) ($rSettings[$rKey] ?? 0));
 			if ($rPrebuffer > 0) {
 				$rNeeds[] = $rPrebuffer + $rSegTime;
@@ -120,7 +120,7 @@ class FanoutConfig {
 			$rRatio = 1.0;
 		}
 
-		return array(
+		return [
 			'prebuffer_max_sec'     => $rRing,
 			'hls_target_sec'        => $rSegTime,
 			'hls_window'            => $rHlsWindow,
@@ -136,7 +136,7 @@ class FanoutConfig {
 			// Whether the daemon accepts streams handed over for supervision
 			// (StreamProcess::superviseStream). Applied live by the daemon.
 			'supervise'             => (bool) ($rSettings['fanout_supervise'] ?? true),
-		);
+		];
 	}
 
 	/**
@@ -151,7 +151,7 @@ class FanoutConfig {
 	 * the file we write honest rather than relying on that.
 	 */
 	private static function backend(string $rValue): string {
-		return in_array($rValue, array('auto', 'ffmpeg', 'native'), true) ? $rValue : 'auto';
+		return in_array($rValue, ['auto', 'ffmpeg', 'native'], true) ? $rValue : 'auto';
 	}
 
 	/** Clamp an int into [lo, hi]. */

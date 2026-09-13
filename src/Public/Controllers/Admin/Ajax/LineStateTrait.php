@@ -22,66 +22,65 @@ use XcVm\Domain\Stream\ConnectionTracker;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 trait LineStateTrait {
+	/**
+	 * @param array<string, mixed> $rExtra
+	 */
+	abstract protected function ok(array $rExtra = []): never;
 
-    /**
-     * @param array<string, mixed> $rExtra
-     */
-    abstract protected function ok(array $rExtra = array()): never;
+	/**
+	 * @param array<string, mixed> $rExtra
+	 */
+	abstract protected function fail(array $rExtra = []): never;
 
-    /**
-     * @param array<string, mixed> $rExtra
-     */
-    abstract protected function fail(array $rExtra = array()): never;
+	/**
+	 * Handle the enable/disable/ban/unban/kill sub-actions for a line and
+	 * terminate the request. An unhandled sub falls through to `{"result":false}`.
+	 *
+	 * @param mixed $rUserID line id the action targets
+	 */
+	private function lineStateAction(string $rSub, mixed $rUserID): never {
+		global $db;
 
-    /**
-     * Handle the enable/disable/ban/unban/kill sub-actions for a line and
-     * terminate the request. An unhandled sub falls through to `{"result":false}`.
-     *
-     * @param mixed $rUserID line id the action targets
-     */
-    private function lineStateAction(string $rSub, $rUserID): never {
-        global $db;
+		if ($rSub == 'enable') {
+			$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rUserID);
+			LineService::updateLineSignal($rUserID);
+			$this->ok();
+		}
 
-        if ($rSub == 'enable') {
-            $db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rUserID);
-            LineService::updateLineSignal($rUserID);
-            $this->ok();
-        }
+		if ($rSub == 'disable') {
+			$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rUserID);
+			LineService::updateLineSignal($rUserID);
+			$this->ok();
+		}
 
-        if ($rSub == 'disable') {
-            $db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rUserID);
-            LineService::updateLineSignal($rUserID);
-            $this->ok();
-        }
+		if ($rSub == 'ban') {
+			$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rUserID);
+			LineService::updateLineSignal($rUserID);
+			$this->ok();
+		}
 
-        if ($rSub == 'ban') {
-            $db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rUserID);
-            LineService::updateLineSignal($rUserID);
-            $this->ok();
-        }
+		if ($rSub == 'unban') {
+			$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rUserID);
+			LineService::updateLineSignal($rUserID);
+			$this->ok();
+		}
 
-        if ($rSub == 'unban') {
-            $db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rUserID);
-            LineService::updateLineSignal($rUserID);
-            $this->ok();
-        }
+		if ($rSub == 'kill') {
+			if (SettingsManager::get('redis_handler')) {
+				foreach (ConnectionTracker::getRedisConnections($rUserID, null, null, true, false, false) as $rConnection) {
+					ConnectionTracker::closeConnection($rConnection);
+				}
+			} else {
+				$db->query('SELECT * FROM `lines_live` WHERE `user_id` = ?;', $rUserID);
 
-        if ($rSub == 'kill') {
-            if (SettingsManager::get('redis_handler')) {
-                foreach (ConnectionTracker::getRedisConnections($rUserID, null, null, true, false, false) as $rConnection) {
-                    ConnectionTracker::closeConnection($rConnection);
-                }
-            } else {
-                $db->query('SELECT * FROM `lines_live` WHERE `user_id` = ?;', $rUserID);
+				foreach ($db->get_rows() as $rRow) {
+					ConnectionTracker::closeConnection($rRow);
+				}
+			}
 
-                foreach ($db->get_rows() as $rRow) {
-                    ConnectionTracker::closeConnection($rRow);
-                }
-            }
+			$this->ok();
+		}
 
-            $this->ok();
-        }
-
-        $this->fail();
-    }
+		$this->fail();
+	}
 }

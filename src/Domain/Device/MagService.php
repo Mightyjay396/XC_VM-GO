@@ -25,13 +25,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class MagService {
 	use DatabaseAware;
+
 	/**
 	 * Bulk delete selected MAG devices.
 	 *
 	 * @param array $rData Selected device ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete($rData) {
+	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
@@ -40,7 +41,7 @@ class MagService {
 		$rMags = json_decode($rData['mags'], true);
 		self::deleteDevices($rMags);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -49,14 +50,14 @@ class MagService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit($rData) {
+	public static function massEdit(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('massEditMags', $rData)) {
-			$rArray = array();
-			$rUserArray = array();
-			$rEvent = array('event' => '', 'need_confirm' => 0, 'msg' => '', 'reboot_after_ok' => 0);
+			$rArray = [];
+			$rUserArray = [];
+			$rEvent = ['event' => '', 'need_confirm' => 0, 'msg' => '', 'reboot_after_ok' => 0];
 
-			foreach (array('lock_device') as $rItem) {
+			foreach (['lock_device'] as $rItem) {
 				if (isset($rData['c_' . $rItem])) {
 					if (isset($rData[$rItem])) {
 						$rArray[$rItem] = 1;
@@ -66,7 +67,7 @@ class MagService {
 				}
 			}
 
-			foreach (array('is_isplock', 'is_trial') as $rItem) {
+			foreach (['is_isplock', 'is_trial'] as $rItem) {
 				if (isset($rData['c_' . $rItem])) {
 					if (isset($rData[$rItem])) {
 						$rUserArray[$rItem] = 1;
@@ -121,7 +122,7 @@ class MagService {
 			}
 
 			if (isset($rData['c_bouquets'])) {
-				$rUserArray['bouquet'] = array();
+				$rUserArray['bouquet'] = [];
 
 				foreach (json_decode($rData['bouquets_selected'], true) as $rBouquet) {
 					if (is_numeric($rBouquet)) {
@@ -148,7 +149,7 @@ class MagService {
 			}
 
 			if (!empty($rData['message_type'])) {
-				$rEvent = array('event' => $rData['message_type'], 'need_confirm' => 0, 'msg' => '', 'reboot_after_ok' => intval(isset($rData['reboot_portal'])));
+				$rEvent = ['event' => $rData['message_type'], 'need_confirm' => 0, 'msg' => '', 'reboot_after_ok' => intval(isset($rData['reboot_portal']))];
 
 				if ($rData['message_type'] == 'send_msg') {
 					$rEvent['need_confirm'] = 1;
@@ -167,7 +168,7 @@ class MagService {
 			$rDevices = json_decode($rData['devices_selected'], true);
 
 			foreach ($rDevices as $rDevice) {
-				$rDeviceInfo = MagService::getById($rDevice);
+				$rDeviceInfo = self::getById($rDevice);
 
 				if ($rDeviceInfo) {
 					if (!empty($rData['message_type'])) {
@@ -185,7 +186,7 @@ class MagService {
 					}
 
 					if (count($rUserArray) > 0) {
-						$rUserIDs = array();
+						$rUserIDs = [];
 
 						if (isset($rDeviceInfo['user']['id'])) {
 							$rUserIDs[] = $rDeviceInfo['user']['id'];
@@ -209,9 +210,9 @@ class MagService {
 				}
 			}
 
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -221,12 +222,12 @@ class MagService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processMAG', $rData)) {
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'edit_mag')) {
-					$rArray = AdminHelpers::overwriteData(MagService::getById($rData['edit']), $rData);
+					$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
 					$rUser = UserRepository::getLineById($rArray['user_id']);
 
 					if ($rUser) {
@@ -296,7 +297,7 @@ class MagService {
 						$rDate = new \DateTime($rData['exp_date']);
 						$rUserArray['exp_date'] = $rDate->format('U');
 					} catch (\Exception $e) {
-						return array('status' => STATUS_INVALID_DATE, 'data' => $rData);
+						return ['status' => STATUS_INVALID_DATE, 'data' => $rData];
 					}
 				}
 			} else {
@@ -309,7 +310,7 @@ class MagService {
 
 			if (isset($rData['allowed_ips'])) {
 				if (!is_array($rData['allowed_ips'])) {
-					$rData['allowed_ips'] = array($rData['allowed_ips']);
+					$rData['allowed_ips'] = [$rData['allowed_ips']];
 				}
 
 				$rUserArray['allowed_ips'] = json_encode($rData['allowed_ips']);
@@ -323,7 +324,7 @@ class MagService {
 				$rUserArray['pair_id'] = null;
 			}
 
-			$rUserArray['allowed_outputs'] = '[' . implode(',', array(1, 2)) . ']';
+			$rUserArray['allowed_outputs'] = '[' . implode(',', [1, 2]) . ']';
 			$rDevice = $rArray;
 			$rDevice['user'] = $rUserArray;
 
@@ -331,7 +332,7 @@ class MagService {
 				$rUserCheck = UserRepository::getLineById($rDevice['user']['pair_id']);
 
 				if (!$rUserCheck) {
-					return array('status' => STATUS_INVALID_USER, 'data' => $rData);
+					return ['status' => STATUS_INVALID_USER, 'data' => $rData];
 				}
 			}
 
@@ -369,11 +370,11 @@ class MagService {
 							$rInsertID = $db->last_insert_id();
 
 							if ($rDevice['user']['pair_id'] > 0) {
-								MagService::syncLineDevices($rDevice['user']['pair_id'], $rInsertID);
+								self::syncLineDevices($rDevice['user']['pair_id'], $rInsertID);
 								LineService::updateLineSignal($rDevice['user']['pair_id']);
 							}
 
-							return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						}
 
 						if (!isset($rData['edit'])) {
@@ -381,16 +382,16 @@ class MagService {
 						}
 					}
 
-					return array('status' => STATUS_FAILURE, 'data' => $rData);
+					return ['status' => STATUS_FAILURE, 'data' => $rData];
 				}
 
-				return array('status' => STATUS_EXISTS_MAC, 'data' => $rData);
+				return ['status' => STATUS_EXISTS_MAC, 'data' => $rData];
 			}
 
-			return array('status' => STATUS_INVALID_MAC, 'data' => $rData);
+			return ['status' => STATUS_INVALID_MAC, 'data' => $rData];
 		}
 
-		return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -400,7 +401,7 @@ class MagService {
 	 * @param int|null $rDeviceID Limit to a single device, or null for all.
 	 * @return void
 	 */
-	public static function syncLineDevices($rUserID, $rDeviceID = null) {
+	public static function syncLineDevices(int $rUserID, ?int $rDeviceID = null) {
 		$db = self::db();
 		$rUser = UserRepository::getLineById($rUserID);
 
@@ -418,7 +419,7 @@ class MagService {
 				$rUpdateDevice['pair_id'] = intval($rUserID);
 				$rUpdateDevice['play_token'] = '';
 
-				foreach (array('id', 'is_mag', 'is_e2', 'is_restreamer', 'max_connections', 'created_at', 'username', 'password', 'admin_notes', 'reseller_notes') as $rKey) {
+				foreach (['id', 'is_mag', 'is_e2', 'is_restreamer', 'max_connections', 'created_at', 'username', 'password', 'admin_notes', 'reseller_notes'] as $rKey) {
 					$rUpdateDevice[$rKey] = $rDevice[$rKey];
 				}
 
@@ -438,12 +439,12 @@ class MagService {
 	 * @param int $rID Device id.
 	 * @return array|null The device row, or null if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `mag_devices` WHERE `mag_id` = ?;', $rID);
 
 		if ($db->num_rows() != 1) {
-			return array();
+			return [];
 		}
 
 		$rRow = $db->get_row();
@@ -467,7 +468,7 @@ class MagService {
 	 * @param bool $rConvert      Convert (rather than delete) the paired line.
 	 * @return bool True on success.
 	 */
-	public static function deleteDevice($rID, $rDeletePaired = false, $rCloseCons = true, $rConvert = false) {
+	public static function deleteDevice(int $rID, bool $rDeletePaired = false, bool $rCloseCons = true, bool $rConvert = false) {
 		$db = self::db();
 		$rMag = self::getById($rID);
 
@@ -508,7 +509,7 @@ class MagService {
 	 * @param int[] $rIDs Device ids.
 	 * @return bool True on success.
 	 */
-	public static function deleteDevices($rIDs) {
+	public static function deleteDevices(array $rIDs) {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
@@ -516,7 +517,7 @@ class MagService {
 			return false;
 		}
 
-		$rUserIDs = array();
+		$rUserIDs = [];
 		$db->query('SELECT `user_id` FROM `mag_devices` WHERE `mag_id` IN (' . implode(',', $rIDs) . ');');
 
 		foreach ($db->get_rows() as $rRow) {
@@ -541,7 +542,7 @@ class MagService {
 	 * @param int $rID Device id.
 	 * @return bool True on success.
 	 */
-	public static function resetSTB($rID) {
+	public static function resetSTB(int $rID) {
 		$db = self::db();
 		return $db->query("UPDATE `mag_devices` SET `ip` = '', `ver` = '', `image_version` = '', `stb_type` = '', `sn` = '', `device_id` = '', `device_id2` = '', `hw_version` = '', `token` = '' WHERE `mag_id` = ?;", $rID);
 	}

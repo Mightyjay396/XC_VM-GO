@@ -17,12 +17,12 @@ use XcVm\Domain\Stream\ProviderService;
  */
 
 class ProviderController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Stream Providers');
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Stream Providers');
 
-        $this->render('providers', [
-            'providers' => ProviderService::getAll(),
-        ]);
-    }
+		$this->render('providers', [
+			'providers' => ProviderService::getAll(),
+		]);
+	}
 }

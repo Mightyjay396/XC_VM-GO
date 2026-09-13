@@ -24,7 +24,6 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  */
 
 class ToolsCommand implements CommandInterface {
-
 	use DatabaseAware;
 
 	public function getName(): string {
@@ -43,8 +42,8 @@ class ToolsCommand implements CommandInterface {
 		$rMethod = (!empty($rArgs[0]) ? $rArgs[0] : null);
 		$rUser = posix_getpwuid(posix_geteuid())['name'];
 
-		$rRootMethods = array('rescue', 'recaptcha', 'access', 'ports', 'migration', 'user', 'mysql', 'database', 'flush');
-		$rUserMethods = array('images', 'duplicates', 'bouquets');
+		$rRootMethods = ['rescue', 'recaptcha', 'access', 'ports', 'migration', 'user', 'mysql', 'database', 'flush'];
+		$rUserMethods = ['images', 'duplicates', 'bouquets'];
 
 		// No or unknown subcommand → show the full help to any user (root or xc_vm)
 		if ($rMethod === null || (!in_array($rMethod, $rRootMethods, true) && !in_array($rMethod, $rUserMethods, true))) {
@@ -257,21 +256,21 @@ class ToolsCommand implements CommandInterface {
 
 	private function processPorts(array $rServers): int {
 		echo "Generating port configuration...\n\n";
-		$rConfig = array(
+		$rConfig = [
 			'http' => array_unique(array_merge(
-				array($rServers[SERVER_ID]['http_broadcast_port']),
-				(explode(',', $rServers[SERVER_ID]['http_ports_add']) ?: array())
+				[$rServers[SERVER_ID]['http_broadcast_port']],
+				(explode(',', $rServers[SERVER_ID]['http_ports_add']) ?: [])
 			)),
 			'https' => array_unique(array_merge(
-				array($rServers[SERVER_ID]['https_broadcast_port']),
-				(explode(',', $rServers[SERVER_ID]['https_ports_add']) ?: array())
+				[$rServers[SERVER_ID]['https_broadcast_port']],
+				(explode(',', $rServers[SERVER_ID]['https_ports_add']) ?: [])
 			)),
 			'rtmp' => $rServers[SERVER_ID]['rtmp_port'],
-		);
+		];
 
 		foreach ($rConfig as $rKey => $rPorts) {
 			if ($rKey === 'http') {
-				$rListen = array();
+				$rListen = [];
 				foreach ($rPorts as $rPort) {
 					if (is_numeric($rPort) && 80 <= $rPort && $rPort <= 65535) {
 						$rListen[] = 'listen ' . intval($rPort) . ';';
@@ -280,7 +279,7 @@ class ToolsCommand implements CommandInterface {
 				file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/http.conf', implode(' ', $rListen));
 				file_put_contents(MAIN_HOME . 'bin/nginx_rtmp/conf/live.conf', 'on_play http://127.0.0.1:' . intval($rPorts[0]) . '/stream/rtmp; on_publish http://127.0.0.1:' . intval($rPorts[0]) . '/stream/rtmp; on_play_done http://127.0.0.1:' . intval($rPorts[0]) . '/stream/rtmp;');
 			} elseif ($rKey === 'https') {
-				$rListen = array();
+				$rListen = [];
 				foreach ($rPorts as $rPort) {
 					if (is_numeric($rPort) && 80 <= $rPort && $rPort <= 65535) {
 						$rListen[] = 'listen ' . intval($rPort) . ' ssl;';
@@ -309,13 +308,13 @@ class ToolsCommand implements CommandInterface {
 
 	private function processImages(): void {
 		$db = self::db();
-		$rImages = array();
+		$rImages = [];
 		$db->query('SELECT COUNT(*) AS `count` FROM `streams`;');
 		$rCount = $db->get_row()['count'];
 		if ($rCount > 0) {
 			$rSteps = range(0, $rCount, 1000);
 			if (!$rSteps) {
-				$rSteps = array(0);
+				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
 				try {
@@ -346,7 +345,7 @@ class ToolsCommand implements CommandInterface {
 		if ($rCount > 0) {
 			$rSteps = range(0, $rCount, 1000);
 			if (!$rSteps) {
-				$rSteps = array(0);
+				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
 				try {
@@ -389,7 +388,7 @@ class ToolsCommand implements CommandInterface {
 
 	private function processDuplicates(): void {
 		$db = self::db();
-		$rGroups = $rStreamIDs = array();
+		$rGroups = $rStreamIDs = [];
 		$db->query('SELECT `a`.`id`, `a`.`stream_source` FROM `streams` `a` INNER JOIN (SELECT  `stream_source`, COUNT(*) `totalCount` FROM `streams` WHERE `type` IN (2,5) GROUP BY `stream_source`) `b` ON `a`.`stream_source` = `b`.`stream_source` WHERE `b`.`totalCount` > 1;');
 		foreach ($db->get_rows() as $rRow) {
 			$rGroups[md5($rRow['stream_source'])][] = $rRow['id'];
@@ -409,7 +408,7 @@ class ToolsCommand implements CommandInterface {
 
 	private function processBouquets(): void {
 		$db = self::db();
-		$rStreamIDs = array(array(), array());
+		$rStreamIDs = [[], []];
 		$db->query('SELECT `id` FROM `streams`;');
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
@@ -425,23 +424,23 @@ class ToolsCommand implements CommandInterface {
 		$db->query('SELECT * FROM `bouquets` ORDER BY `bouquet_order` ASC;');
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rBouquet) {
-				$UpdateData = array(array(), array(), array(), array());
-				foreach ((json_decode($rBouquet['bouquet_channels'], true) ?: array()) as $rID) {
+				$UpdateData = [[], [], [], []];
+				foreach ((json_decode($rBouquet['bouquet_channels'], true) ?: []) as $rID) {
 					if (0 < intval($rID) && in_array(intval($rID), $rStreamIDs[0])) {
 						$UpdateData[0][] = intval($rID);
 					}
 				}
-				foreach ((json_decode($rBouquet['bouquet_movies'], true) ?: array()) as $rID) {
+				foreach ((json_decode($rBouquet['bouquet_movies'], true) ?: []) as $rID) {
 					if (0 < intval($rID) && in_array(intval($rID), $rStreamIDs[0])) {
 						$UpdateData[1][] = intval($rID);
 					}
 				}
-				foreach ((json_decode($rBouquet['bouquet_radios'], true) ?: array()) as $rID) {
+				foreach ((json_decode($rBouquet['bouquet_radios'], true) ?: []) as $rID) {
 					if (0 < intval($rID) && in_array(intval($rID), $rStreamIDs[0])) {
 						$UpdateData[2][] = intval($rID);
 					}
 				}
-				foreach ((json_decode($rBouquet['bouquet_series'], true) ?: array()) as $rID) {
+				foreach ((json_decode($rBouquet['bouquet_series'], true) ?: []) as $rID) {
 					if (0 < intval($rID) && in_array(intval($rID), $rStreamIDs[1])) {
 						$UpdateData[3][] = intval($rID);
 					}
@@ -468,9 +467,9 @@ class ToolsCommand implements CommandInterface {
 		$db->query('SELECT `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `streams_servers` WHERE `parent_id` IS NOT NULL AND `parent_id` > 0 AND `parent_id` NOT IN (SELECT `id` FROM `servers` WHERE `server_type` = 0);');
-		$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(array('type' => 'update_streams', 'id' => $rIDs)));
+		$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_streams', 'id' => $rIDs]));
 		foreach (array_keys(ServerRepository::getAll()) as $rServerID) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(array('type' => 'delete_vods', 'id' => $rIDs)));
+			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(['type' => 'delete_vods', 'id' => $rIDs]));
 		}
 		return true;
 	}

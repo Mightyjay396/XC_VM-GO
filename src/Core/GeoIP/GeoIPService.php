@@ -17,16 +17,14 @@ use XcVm\Core\Util\GeoIP;
  */
 
 class GeoIPService {
-
 	/**
 	 * Получить GeoIP-информацию по IP-адресу (GeoLite2).
 	 *
 	 * Результат кэшируется в файл CONS_TMP_PATH/md5(ip)_geo2.
 	 *
-	 * @param string $rIP
 	 * @return array|false
 	 */
-	public static function getIPInfo($rIP) {
+	public static function getIPInfo(string $rIP) {
 		if (!empty($rIP)) {
 			if (!file_exists(CONS_TMP_PATH . md5($rIP) . '_geo2')) {
 				$rGeoIP = new \MaxMind\Db\Reader(GEOLITE2_BIN);
@@ -47,10 +45,9 @@ class GeoIPService {
 	 *
 	 * Результат кэшируется в файл CONS_TMP_PATH/md5(ip)_isp.
 	 *
-	 * @param string $rIP
 	 * @return array|false
 	 */
-	public static function getISP($rIP) {
+	public static function getISP(string $rIP) {
 		if (!empty($rIP)) {
 			$rResponse = (file_exists(CONS_TMP_PATH . md5($rIP) . '_isp') ? json_decode(file_get_contents(CONS_TMP_PATH . md5($rIP) . '_isp'), true) : null);
 			if (!is_array($rResponse)) {
@@ -73,7 +70,7 @@ class GeoIPService {
 	 * @param string $rIP IP address
 	 * @return array|null Matching CIDR data or null
 	 */
-	public static function matchCIDR($rASN, $rIP) {
+	public static function matchCIDR(string $rASN, string $rIP) {
 		if (file_exists(CIDR_TMP_PATH . $rASN)) {
 			$rCIDRs = json_decode(file_get_contents(CIDR_TMP_PATH . $rASN), true);
 			foreach ($rCIDRs as $rData) {

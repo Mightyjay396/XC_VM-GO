@@ -126,14 +126,14 @@ if ($rChannelInfo) {
 
 		if (!isset($rIsHMAC) && is_null($rIsHMAC)) {
 			if ($rSettings['redis_handler']) {
-				$rConnectionData = array('user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset']), 'on_demand' => 0, 'identity' => $rUserInfo['id'], 'uuid' => $rTokenData['uuid']);
+				$rConnectionData = ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset']), 'on_demand' => 0, 'identity' => $rUserInfo['id'], 'uuid' => $rTokenData['uuid']];
 				$rResult = ConnectionTracker::createConnection($rConnectionData);
 			} else {
 				$rResult = $db->query('INSERT INTO `lines_live` (`user_id`,`stream_id`,`server_id`,`proxy_id`,`user_agent`,`user_ip`,`container`,`pid`,`uuid`,`date_start`,`geoip_country_code`,`isp`,`hls_last_read`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?);', $rUserInfo['id'], $rStreamID, $rServerID, $rProxyID, $rUserAgent, $rIP, 'VOD', $rPID, $rTokenData['uuid'], $rActivityStart, $rCountryCode, $rUserInfo['con_isp_name'], time() - intval($rServers[SERVER_ID]['time_offset']));
 			}
 		} else {
 			if ($rSettings['redis_handler']) {
-				$rConnectionData = array('hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier, 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset']), 'on_demand' => 0, 'identity' => $rIsHMAC . '_' . $rIdentifier, 'uuid' => $rTokenData['uuid']);
+				$rConnectionData = ['hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier, 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset']), 'on_demand' => 0, 'identity' => $rIsHMAC . '_' . $rIdentifier, 'uuid' => $rTokenData['uuid']];
 				$rResult = ConnectionTracker::createConnection($rConnectionData);
 			} else {
 				$rResult = $db->query('INSERT INTO `lines_live` (`hmac_id`,`hmac_identifier`,`stream_id`,`server_id`,`proxy_id`,`user_agent`,`user_ip`,`container`,`pid`,`uuid`,`date_start`,`geoip_country_code`,`isp`,`hls_last_read`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', $rIsHMAC, $rIdentifier, $rStreamID, $rServerID, $rProxyID, $rUserAgent, $rIP, 'VOD', $rPID, $rTokenData['uuid'], $rActivityStart, $rCountryCode, $rUserInfo['con_isp_name'], time() - intval($rServers[SERVER_ID]['time_offset']));
@@ -157,7 +157,7 @@ if ($rChannelInfo) {
 		}
 
 		if ($rSettings['redis_handler']) {
-			$rChanges = array('pid' => $rPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset']));
+			$rChanges = ['pid' => $rPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])];
 
 			if ($rConnection = ConnectionTracker::updateConnection($rConnection, $rChanges, 'open')) {
 				$rResult = true;
@@ -310,8 +310,6 @@ if ($rChannelInfo) {
 				if (!($rSettings['monitor_connection_status'] && 5 <= time() - $rTimeChecked)) {
 				} else {
 					if (connection_status() == CONNECTION_NORMAL) {
-
-
 						$rTimeChecked = time();
 					} else {
 						exit();
@@ -362,9 +360,9 @@ if ($rChannelInfo) {
 		// Content-Length as an array after a redirect. The final response's
 		// headers are kept; the body is not downloaded.
 		$rSourceUA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.16; rv:101.0) Gecko/20100101 Firefox/101.0';
-		$rHeaders = array();
+		$rHeaders = [];
 		$ch = curl_init($rDirectProxy);
-		curl_setopt_array($ch, array(
+		curl_setopt_array($ch, [
 			CURLOPT_FOLLOWLOCATION => true,
 			CURLOPT_MAXREDIRS => 20,
 			CURLOPT_CONNECTTIMEOUT => 10,
@@ -373,7 +371,7 @@ if ($rChannelInfo) {
 			CURLOPT_USERAGENT => $rSourceUA,
 			CURLOPT_HEADERFUNCTION => static function ($rHandle, $rLine) use (&$rHeaders) {
 				if (preg_match('#^HTTP/\S+\s+\d+#i', $rLine)) {
-					$rHeaders = array(); // a redirect hop: only the final response counts
+					$rHeaders = []; // a redirect hop: only the final response counts
 				} elseif (strpos($rLine, ':') !== false) {
 					[$rName, $rValue] = explode(':', $rLine, 2);
 					$rHeaders[strtolower(trim($rName))] = trim($rValue);
@@ -383,7 +381,7 @@ if ($rChannelInfo) {
 			CURLOPT_WRITEFUNCTION => static function () {
 				return 0; // headers only: stop at the first body byte
 			},
-		));
+		]);
 		curl_exec($ch);
 		$rDirectProxy = (string) (curl_getinfo($ch, CURLINFO_EFFECTIVE_URL) ?: $rDirectProxy);
 		curl_close($ch);
@@ -391,7 +389,7 @@ if ($rChannelInfo) {
 		$rSize = intval($rHeaders['content-length'] ?? 0);
 		$rContentType = strtolower(trim(explode(';', (string) ($rHeaders['content-type'] ?? ''))[0]));
 
-		if (0 < $rSize && in_array($rContentType, array('video/mp4', 'video/x-matroska', 'video/x-msvideo', 'video/3gpp', 'video/x-flv', 'video/x-ms-wmv', 'video/quicktime', 'video/mp2t', 'video/mpeg', 'application/octet-stream'), true)) {
+		if (0 < $rSize && in_array($rContentType, ['video/mp4', 'video/x-matroska', 'video/x-msvideo', 'video/3gpp', 'video/x-flv', 'video/x-ms-wmv', 'video/quicktime', 'video/mp2t', 'video/mpeg', 'application/octet-stream'], true)) {
 			header('Content-Type: ' . $rContentType);
 			$rServe = HttpRange::sendHeaders(HttpRange::parse($_SERVER['HTTP_RANGE'] ?? null, $rSize), $rSize);
 			if ($rServe === null) {
@@ -402,7 +400,7 @@ if ($rChannelInfo) {
 			$ch = curl_init();
 			if (0 < $rStart || $rEnd < $rSize - 1) {
 				// Ask the source for exactly the range this response promises.
-				curl_setopt($ch, CURLOPT_HTTPHEADER, array('Range: bytes=' . $rStart . '-' . $rEnd));
+				curl_setopt($ch, CURLOPT_HTTPHEADER, ['Range: bytes=' . $rStart . '-' . $rEnd]);
 			}
 
 			if (512 * 1024 * 1024 >= $rSize) {

@@ -18,31 +18,31 @@ use XcVm\Domain\Stream\StreamConfigRepository;
  */
 
 class StreamMassController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $rServers;
+		global $rServers;
 
-        $rCategories = CategoryService::getAllByType('live');
-        $rStreamArguments = StreamConfigRepository::getStreamArguments();
-        $rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
+		$rCategories = CategoryService::getAllByType('live');
+		$rStreamArguments = StreamConfigRepository::getStreamArguments();
+		$rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
 
-        $rServerTree = [
-            ['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Online</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
-            ['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]],
-        ];
+		$rServerTree = [
+			['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Online</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
+			['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]],
+		];
 
-        foreach ($rServers as $rServer) {
-            $rServerTree[] = ['id' => intval($rServer['id']), 'parent' => 'offline', 'text' => htmlspecialchars($rServer['server_name']), 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
-        }
+		foreach ($rServers as $rServer) {
+			$rServerTree[] = ['id' => intval($rServer['id']), 'parent' => 'offline', 'text' => htmlspecialchars($rServer['server_name']), 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
+		}
 
-        // The load-balancer server tree on this form is driven by jstree.
-        $GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
-            (array) ($GLOBALS['xmNewuiVendors'] ?? []),
-            ['jstree']
-        )));
+		// The load-balancer server tree on this form is driven by jstree.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['jstree']
+		)));
 
-        $this->setTitle('Mass Edit Streams');
-        $this->render('stream_mass', compact('rCategories', 'rStreamArguments', 'rTranscodeProfiles', 'rServerTree'));
-    }
+		$this->setTitle('Mass Edit Streams');
+		$this->render('stream_mass', compact('rCategories', 'rStreamArguments', 'rTranscodeProfiles', 'rServerTree'));
+	}
 }

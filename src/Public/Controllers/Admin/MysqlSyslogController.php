@@ -20,9 +20,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class MysqlSyslogController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('System Logs');
-        $this->render('mysql_syslog');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('System Logs');
+		$this->render('mysql_syslog');
+	}
 }

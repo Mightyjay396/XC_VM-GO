@@ -160,7 +160,7 @@ if (isset($rRequest['data'])) {
 			}
 
 			$rInfo = json_decode($rInfo, true);
-			echo json_encode(array('codecs' => $rInfo['codecs'] ?? null, 'container' => $rInfo['container'] ?? null, 'bitrate' => $rInfo['bitrate'] ?? null));
+			echo json_encode(['codecs' => $rInfo['codecs'] ?? null, 'container' => $rInfo['container'] ?? null, 'bitrate' => $rInfo['bitrate'] ?? null]);
 
 			exit();
 		}
@@ -168,6 +168,7 @@ if (isset($rRequest['data'])) {
 }
 
 generate404();
+
 function shutdown() {
 	global $db;
 	if (is_object($db)) {

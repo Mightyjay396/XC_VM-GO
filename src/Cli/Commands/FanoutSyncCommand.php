@@ -41,7 +41,7 @@ class FanoutSyncCommand implements CommandInterface {
 	private const INTERVAL = 10;
 
 	/** @var array<string,int> Daemon viewer uuid => when it was first seen without a row. */
-	private array $rOrphanSince = array();
+	private array $rOrphanSince = [];
 
 	public function getName(): string {
 		return 'fanout_sync';
@@ -151,7 +151,7 @@ class FanoutSyncCommand implements CommandInterface {
 	 * @return string[] The uuids dropped on this pass.
 	 */
 	public function dropOrphans(array $rActive, array $rConns, ?int $rNow = null, ?callable $rDrop = null): array {
-		$rKnown = array();
+		$rKnown = [];
 		foreach ($rConns as $rConn) {
 			if (is_array($rConn) && !empty($rConn['uuid']) && empty($rConn['hls_end'])) {
 				$rKnown[$rConn['uuid']] = true;
@@ -162,8 +162,8 @@ class FanoutSyncCommand implements CommandInterface {
 		$rDrop = $rDrop ?? static function (string $rUUID): void {
 			FanoutClient::dropConnection($rUUID);
 		};
-		$rSeen = array();
-		$rDropped = array();
+		$rSeen = [];
+		$rDropped = [];
 		foreach ($rActive as $rUUID) {
 			$rUUID = (string) $rUUID;
 			if ($rUUID === '' || isset($rKnown[$rUUID])) {
@@ -290,7 +290,7 @@ class FanoutSyncCommand implements CommandInterface {
 			if (!is_array($rKeys)) {
 				return null;
 			}
-			$rOut = array();
+			$rOut = [];
 			foreach ($rKeys as $rUUID) {
 				$rConn = ConnectionTracker::getConnection($rUUID);
 				if (is_array($rConn)) {

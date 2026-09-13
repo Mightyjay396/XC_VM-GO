@@ -13,7 +13,7 @@ namespace XcVm\Streaming\Codec;
  */
 
 class FFprobeRunner {
-	public static function probeStream($rSourceURL, $rFetchArguments = array(), $rPrepend = '', $rParse = true) {
+	public static function probeStream($rSourceURL, $rFetchArguments = [], $rPrepend = '', $rParse = true) {
 		global $rSettings, $rFFPROBE;
 		$rAnalyseDuration = abs(intval($rSettings['stream_max_analyze']));
 		$rProbesize = abs(intval($rSettings['probesize']));
@@ -35,7 +35,7 @@ class FFprobeRunner {
 			return false;
 		}
 		if (empty($rCodecs['codecs'])) {
-			$rOutput = array();
+			$rOutput = [];
 			$rOutput['codecs']['video'] = '';
 			$rOutput['codecs']['audio'] = '';
 			$rOutput['container'] = $rCodecs['format']['format_name'];
@@ -55,7 +55,7 @@ class FFprobeRunner {
 						} else {
 							if (isset($rOutput['codecs'][$rCodec['codec_type']])) {
 							} else {
-								$rOutput['codecs'][$rCodec['codec_type']] = array();
+								$rOutput['codecs'][$rCodec['codec_type']] = [];
 							}
 							$rOutput['codecs'][$rCodec['codec_type']][] = $rCodec;
 						}

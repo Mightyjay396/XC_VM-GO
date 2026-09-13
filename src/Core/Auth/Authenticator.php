@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace XcVm\Core\Auth;
 
@@ -37,7 +36,7 @@ class Authenticator {
 			return false;
 		}
 
-		$rPost = http_build_query(array('secret' => $rSecret, 'response' => $rToken));
+		$rPost = http_build_query(['secret' => $rSecret, 'response' => $rToken]);
 		$rUrl  = 'https://www.google.com/recaptcha/api/siteverify';
 		$rRaw  = false;
 		$rErr  = '';
@@ -93,7 +92,7 @@ class Authenticator {
 		global $db, $rSettings;
 		if (!empty($rSettings['recaptcha_enable']) && !$rBypassRecaptcha) {
 			if (!self::verifyRecaptcha($rData['g-recaptcha-response'] ?? '')) {
-				return array('status' => STATUS_INVALID_CAPTCHA);
+				return ['status' => STATUS_INVALID_CAPTCHA];
 			}
 		}
 
@@ -105,7 +104,7 @@ class Authenticator {
 			// Always recorded, whatever save_login_logs says: these rows are what
 			// the login flood limit counts (loginFloodExceeded).
 			$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('ADMIN', ?, 0, ?, ?, ?);", $rAccessCode['id'] ?? null, 'INVALID_LOGIN', $rIP, time());
-			return array('status' => STATUS_FAILURE);
+			return ['status' => STATUS_FAILURE];
 		}
 
 		$db->query('SELECT COUNT(*) AS `count` FROM `access_codes`;');
@@ -119,7 +118,7 @@ class Authenticator {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('ADMIN', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'INVALID_CODE', $rIP, time());
 			}
-			return array('status' => STATUS_INVALID_CODE);
+			return ['status' => STATUS_INVALID_CODE];
 		}
 
 		$rPermissions = AuthRepository::getPermissions($rUserInfo['member_group_id']);
@@ -127,7 +126,7 @@ class Authenticator {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('ADMIN', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'NOT_ADMIN', $rIP, time());
 			}
-			return array('status' => STATUS_NOT_ADMIN);
+			return ['status' => STATUS_NOT_ADMIN];
 		}
 
 		if ($rUserInfo['status'] == 1) {
@@ -143,17 +142,17 @@ class Authenticator {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('ADMIN', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'SUCCESS', $rIP, time());
 			}
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		}
 
 		if (!$rUserInfo['status']) {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('ADMIN', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'DISABLED', $rIP, time());
 			}
-			return array('status' => STATUS_DISABLED);
+			return ['status' => STATUS_DISABLED];
 		}
 
-		return array('status' => STATUS_FAILURE);
+		return ['status' => STATUS_FAILURE];
 	}
 
 	/**
@@ -166,7 +165,7 @@ class Authenticator {
 		global $db, $rSettings;
 		if (!empty($rSettings['recaptcha_enable'])) {
 			if (!self::verifyRecaptcha($rData['g-recaptcha-response'] ?? '')) {
-				return array('status' => STATUS_INVALID_CAPTCHA);
+				return ['status' => STATUS_INVALID_CAPTCHA];
 			}
 		}
 
@@ -177,14 +176,14 @@ class Authenticator {
 		if (!isset($rUserInfo)) {
 			// Always recorded: the login flood limit counts these (see login()).
 			$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('RESELLER', ?, 0, ?, ?, ?);", $rAccessCode['id'] ?? null, 'INVALID_LOGIN', $rIP, time());
-			return array('status' => STATUS_FAILURE);
+			return ['status' => STATUS_FAILURE];
 		}
 
 		if (!(in_array($rUserInfo['member_group_id'], ($rAccessCode && isset($rAccessCode['groups'])) ? (json_decode($rAccessCode['groups'], true) ?: []) : []) || count(AuthRepository::getActiveCodes(MAIN_HOME)) == 0)) {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('RESELLER', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'INVALID_CODE', $rIP, time());
 			}
-			return array('status' => STATUS_INVALID_CODE);
+			return ['status' => STATUS_INVALID_CODE];
 		}
 
 		$rPermissions = AuthRepository::getPermissions($rUserInfo['member_group_id']);
@@ -192,7 +191,7 @@ class Authenticator {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('RESELLER', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'NOT_ADMIN', $rIP, time());
 			}
-			return array('status' => STATUS_NOT_RESELLER);
+			return ['status' => STATUS_NOT_RESELLER];
 		}
 
 		if ($rUserInfo['status'] == 1) {
@@ -208,17 +207,17 @@ class Authenticator {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('RESELLER', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'SUCCESS', $rIP, time());
 			}
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		}
 
 		if (!$rUserInfo['status']) {
 			if (!empty($rSettings['save_login_logs'])) {
 				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('RESELLER', ?, ?, ?, ?, ?);", $rAccessCode['id'], $rUserInfo['id'], 'DISABLED', $rIP, time());
 			}
-			return array('status' => STATUS_DISABLED);
+			return ['status' => STATUS_DISABLED];
 		}
 
-		return array('status' => STATUS_FAILURE);
+		return ['status' => STATUS_FAILURE];
 	}
 
 	/**

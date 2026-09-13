@@ -321,90 +321,90 @@ $router->any('api', [AjaxController::class, 'index']);
 // ─── Admin-ajax API actions (consumed via $router->dispatchApi() fallback) ───
 
 $router->api('tmdb_search', [TmdbController::class, 'search']);
-$router->api('tmdb',        [TmdbController::class, 'details']);
+$router->api('tmdb', [TmdbController::class, 'details']);
 
 // ─── Cache & Handlers ──────────────────────────────
 $router->api('regenerate_cache', [CacheAjaxController::class, 'regenerate']);
-$router->api('enable_cache',     [CacheAjaxController::class, 'enableCache']);
-$router->api('disable_cache',    [CacheAjaxController::class, 'disableCache']);
-$router->api('enable_handler',   [CacheAjaxController::class, 'enableHandler']);
-$router->api('disable_handler',  [CacheAjaxController::class, 'disableHandler']);
-$router->api('clear_redis',      [CacheAjaxController::class, 'clearRedis']);
+$router->api('enable_cache', [CacheAjaxController::class, 'enableCache']);
+$router->api('disable_cache', [CacheAjaxController::class, 'disableCache']);
+$router->api('enable_handler', [CacheAjaxController::class, 'enableHandler']);
+$router->api('disable_handler', [CacheAjaxController::class, 'disableHandler']);
+$router->api('clear_redis', [CacheAjaxController::class, 'clearRedis']);
 
 // ─── Servers & Ops ─────────────────────────────────
-$router->api('rtmp_ip',              [ServerAjaxController::class, 'rtmpIp']);
-$router->api('rollback_versions',    [ServerAjaxController::class, 'rollbackVersions']);
-$router->api('server',               [ServerAjaxController::class, 'server']);
-$router->api('proxy',                [ServerAjaxController::class, 'proxy']);
-$router->api('fingerprint',          [ServerAjaxController::class, 'fingerprint']);
+$router->api('rtmp_ip', [ServerAjaxController::class, 'rtmpIp']);
+$router->api('rollback_versions', [ServerAjaxController::class, 'rollbackVersions']);
+$router->api('server', [ServerAjaxController::class, 'server']);
+$router->api('proxy', [ServerAjaxController::class, 'proxy']);
+$router->api('fingerprint', [ServerAjaxController::class, 'fingerprint']);
 $router->api('restart_all_services', [ServerAjaxController::class, 'restartAllServices']);
-$router->api('restart_services',     [ServerAjaxController::class, 'restartServices']);
-$router->api('reboot_server',        [ServerAjaxController::class, 'rebootServer']);
-$router->api('update_binaries',      [ServerAjaxController::class, 'updateBinaries']);
-$router->api('server_view',          [ServerAjaxController::class, 'serverView']);
-$router->api('server_stats',         [ServerAjaxController::class, 'serverStats']);
-$router->api('rtmp_kill',            [ServerAjaxController::class, 'rtmpKill']);
-$router->api('install_status',       [ServerAjaxController::class, 'installStatus']);
-$router->api('reinstall_server',     [ServerAjaxController::class, 'reinstallServer']);
-$router->api('fpm_status',           [ServerAjaxController::class, 'fpmStatus']);
-$router->api('update_all_servers',   [ServerAjaxController::class, 'updateAllServers']);
-$router->api('update_all_binaries',  [ServerAjaxController::class, 'updateAllBinaries']);
+$router->api('restart_services', [ServerAjaxController::class, 'restartServices']);
+$router->api('reboot_server', [ServerAjaxController::class, 'rebootServer']);
+$router->api('update_binaries', [ServerAjaxController::class, 'updateBinaries']);
+$router->api('server_view', [ServerAjaxController::class, 'serverView']);
+$router->api('server_stats', [ServerAjaxController::class, 'serverStats']);
+$router->api('rtmp_kill', [ServerAjaxController::class, 'rtmpKill']);
+$router->api('install_status', [ServerAjaxController::class, 'installStatus']);
+$router->api('reinstall_server', [ServerAjaxController::class, 'reinstallServer']);
+$router->api('fpm_status', [ServerAjaxController::class, 'fpmStatus']);
+$router->api('update_all_servers', [ServerAjaxController::class, 'updateAllServers']);
+$router->api('update_all_binaries', [ServerAjaxController::class, 'updateAllBinaries']);
 
 // ─── Blocklists & Security ─────────────────────────
-$router->api('useragent',    [BlocklistAjaxController::class, 'useragent']);
-$router->api('isp',          [BlocklistAjaxController::class, 'isp']);
+$router->api('useragent', [BlocklistAjaxController::class, 'useragent']);
+$router->api('isp', [BlocklistAjaxController::class, 'isp']);
 $router->api('mysql_syslog', [BlocklistAjaxController::class, 'mysqlSyslog']);
-$router->api('ip',           [BlocklistAjaxController::class, 'ip']);
-$router->api('ip_whois',     [BlocklistAjaxController::class, 'ipWhois']);
-$router->api('asn',          [BlocklistAjaxController::class, 'asn']);
+$router->api('ip', [BlocklistAjaxController::class, 'ip']);
+$router->api('ip_whois', [BlocklistAjaxController::class, 'ipWhois']);
+$router->api('asn', [BlocklistAjaxController::class, 'asn']);
 $router->api('decrypt_text', [BlocklistAjaxController::class, 'decryptText']);
 
 // ─── Devices ───────────────────────────────────────
-$router->api('mag',        [DeviceAjaxController::class, 'mag']);
-$router->api('enigma',     [DeviceAjaxController::class, 'enigma']);
-$router->api('mag_event',  [DeviceAjaxController::class, 'magEvent']);
+$router->api('mag', [DeviceAjaxController::class, 'mag']);
+$router->api('enigma', [DeviceAjaxController::class, 'enigma']);
+$router->api('mag_event', [DeviceAjaxController::class, 'magEvent']);
 $router->api('send_event', [DeviceAjaxController::class, 'sendEvent']);
 
 // ─── EPG ───────────────────────────────────────────
-$router->api('epg',                [EpgAjaxController::class, 'epg']);
-$router->api('epglist',            [EpgAjaxController::class, 'epglist']);
-$router->api('force_epg',          [EpgAjaxController::class, 'forceEpg']);
-$router->api('epg_auto_assign',    [EpgAjaxController::class, 'epgAutoAssign']);
-$router->api('epg_categories',     [EpgAjaxController::class, 'epgCategories']);
+$router->api('epg', [EpgAjaxController::class, 'epg']);
+$router->api('epglist', [EpgAjaxController::class, 'epglist']);
+$router->api('force_epg', [EpgAjaxController::class, 'forceEpg']);
+$router->api('epg_auto_assign', [EpgAjaxController::class, 'epgAutoAssign']);
+$router->api('epg_categories', [EpgAjaxController::class, 'epgCategories']);
 $router->api('provider_import_epg', [EpgAjaxController::class, 'providerImportEpg']);
-$router->api('get_epg',            [EpgAjaxController::class, 'getEpg']);
-$router->api('get_programme',      [EpgAjaxController::class, 'getProgramme']);
+$router->api('get_epg', [EpgAjaxController::class, 'getEpg']);
+$router->api('get_programme', [EpgAjaxController::class, 'getProgramme']);
 
 // ─── Packages, Bouquets & Groups ───────────────────
-$router->api('package',            [PackageAjaxController::class, 'package']);
-$router->api('code',               [PackageAjaxController::class, 'code']);
-$router->api('hmac',               [PackageAjaxController::class, 'hmac']);
-$router->api('group',              [PackageAjaxController::class, 'group']);
-$router->api('bouquet',            [PackageAjaxController::class, 'bouquet']);
-$router->api('category',           [PackageAjaxController::class, 'category']);
-$router->api('get_package',        [PackageAjaxController::class, 'getPackage']);
-$router->api('get_package_trial',  [PackageAjaxController::class, 'getPackageTrial']);
+$router->api('package', [PackageAjaxController::class, 'package']);
+$router->api('code', [PackageAjaxController::class, 'code']);
+$router->api('hmac', [PackageAjaxController::class, 'hmac']);
+$router->api('group', [PackageAjaxController::class, 'group']);
+$router->api('bouquet', [PackageAjaxController::class, 'bouquet']);
+$router->api('category', [PackageAjaxController::class, 'category']);
+$router->api('get_package', [PackageAjaxController::class, 'getPackage']);
+$router->api('get_package_trial', [PackageAjaxController::class, 'getPackageTrial']);
 
 // ─── Active Codes ──────────────────────────────────
-$router->api('active_code_details',       [ActiveCodeDetailsController::class, 'index']);
-$router->api('generate_active_codes',     [ActiveCodeAjaxController::class, 'generate']);
+$router->api('active_code_details', [ActiveCodeDetailsController::class, 'index']);
+$router->api('generate_active_codes', [ActiveCodeAjaxController::class, 'generate']);
 $router->api('active_codes_batch_action', [ActiveCodeAjaxController::class, 'batchAction']);
-$router->api('active_codes_export_txt',   [ActiveCodeAjaxController::class, 'exportTxt']);
+$router->api('active_codes_export_txt', [ActiveCodeAjaxController::class, 'exportTxt']);
 
 // ─── Stats & Graphs ────────────────────────────────
-$router->api('graph_stats',  [StatsAjaxController::class, 'graphStats']);
-$router->api('stats',        [StatsAjaxController::class, 'stats']);
-$router->api('header_stats',  [StatsAjaxController::class, 'headerStats']);
+$router->api('graph_stats', [StatsAjaxController::class, 'graphStats']);
+$router->api('stats', [StatsAjaxController::class, 'stats']);
+$router->api('header_stats', [StatsAjaxController::class, 'headerStats']);
 $router->api('save_ui_prefs', [StatsAjaxController::class, 'saveUiPrefs']);
 
 // ─── Backups, Logs & Reports ───────────────────────
-$router->api('clear_logs',           [BackupAjaxController::class, 'clearLogs']);
-$router->api('backup',               [BackupAjaxController::class, 'backup']);
-$router->api('report',               [BackupAjaxController::class, 'report']);
-$router->api('download_panel_logs',  [BackupAjaxController::class, 'downloadPanelLogs']);
+$router->api('clear_logs', [BackupAjaxController::class, 'clearLogs']);
+$router->api('backup', [BackupAjaxController::class, 'backup']);
+$router->api('report', [BackupAjaxController::class, 'report']);
+$router->api('download_panel_logs', [BackupAjaxController::class, 'downloadPanelLogs']);
 
 // ─── Providers ─────────────────────────────────────
-$router->api('provider',         [ProviderAjaxController::class, 'provider']);
+$router->api('provider', [ProviderAjaxController::class, 'provider']);
 $router->api('provider_streams', [ProviderAjaxController::class, 'providerStreams']);
 
 // ─── Search ────────────────────────────────────────
@@ -414,38 +414,38 @@ $router->api('search', [SearchAjaxController::class, 'search']);
 $router->api('multi', [MultiAjaxController::class, 'multi']);
 
 // ─── Misc ──────────────────────────────────────────
-$router->api('process',          [MiscAjaxController::class, 'process']);
-$router->api('profile',          [MiscAjaxController::class, 'profile']);
-$router->api('reguserlist',      [MiscAjaxController::class, 'reguserlist']);
-$router->api('userlist',         [MiscAjaxController::class, 'userlist']);
-$router->api('listdir',          [MiscAjaxController::class, 'listdir']);
-$router->api('queue',            [MiscAjaxController::class, 'queue']);
+$router->api('process', [MiscAjaxController::class, 'process']);
+$router->api('profile', [MiscAjaxController::class, 'profile']);
+$router->api('reguserlist', [MiscAjaxController::class, 'reguserlist']);
+$router->api('userlist', [MiscAjaxController::class, 'userlist']);
+$router->api('listdir', [MiscAjaxController::class, 'listdir']);
+$router->api('queue', [MiscAjaxController::class, 'queue']);
 $router->api('delete_recording', [MiscAjaxController::class, 'deleteRecording']);
-$router->api('clear_failures',   [MiscAjaxController::class, 'clearFailures']);
+$router->api('clear_failures', [MiscAjaxController::class, 'clearFailures']);
 
 // ─── Users & Lines ─────────────────────────────────
-$router->api('line',           [UserAjaxController::class, 'line']);
-$router->api('line_activity',  [UserAjaxController::class, 'lineActivity']);
+$router->api('line', [UserAjaxController::class, 'line']);
+$router->api('line_activity', [UserAjaxController::class, 'lineActivity']);
 $router->api('adjust_credits', [UserAjaxController::class, 'adjustCredits']);
-$router->api('reg_user',       [UserAjaxController::class, 'regUser']);
-$router->api('ticket',         [UserAjaxController::class, 'ticket']);
+$router->api('reg_user', [UserAjaxController::class, 'regUser']);
+$router->api('ticket', [UserAjaxController::class, 'ticket']);
 
 // ─── Streams & VOD ─────────────────────────────────
-$router->api('stream',  [StreamAjaxController::class, 'stream']);
-$router->api('movie',   [StreamAjaxController::class, 'movie']);
+$router->api('stream', [StreamAjaxController::class, 'stream']);
+$router->api('movie', [StreamAjaxController::class, 'movie']);
 $router->api('episode', [StreamAjaxController::class, 'episode']);
-$router->api('series',  [StreamAjaxController::class, 'series']);
+$router->api('series', [StreamAjaxController::class, 'series']);
 
 // ─── Stream Tools, Lists & Reviews ─────────────────
 $router->api('review_selection', [StreamToolsAjaxController::class, 'reviewSelection']);
-$router->api('review_bouquet',   [StreamToolsAjaxController::class, 'reviewBouquet']);
-$router->api('serieslist',       [StreamToolsAjaxController::class, 'serieslist']);
-$router->api('streamlist',       [StreamToolsAjaxController::class, 'streamlist']);
-$router->api('adaptivelist',     [StreamToolsAjaxController::class, 'adaptivelist']);
-$router->api('titlesync',        [StreamToolsAjaxController::class, 'titlesync']);
-$router->api('probe_stream',     [StreamToolsAjaxController::class, 'probeStream']);
-$router->api('check_stream',     [StreamToolsAjaxController::class, 'checkStream']);
-$router->api('get_episode_ids',  [StreamToolsAjaxController::class, 'getEpisodeIds']);
+$router->api('review_bouquet', [StreamToolsAjaxController::class, 'reviewBouquet']);
+$router->api('serieslist', [StreamToolsAjaxController::class, 'serieslist']);
+$router->api('streamlist', [StreamToolsAjaxController::class, 'streamlist']);
+$router->api('adaptivelist', [StreamToolsAjaxController::class, 'adaptivelist']);
+$router->api('titlesync', [StreamToolsAjaxController::class, 'titlesync']);
+$router->api('probe_stream', [StreamToolsAjaxController::class, 'probeStream']);
+$router->api('check_stream', [StreamToolsAjaxController::class, 'checkStream']);
+$router->api('get_episode_ids', [StreamToolsAjaxController::class, 'getEpisodeIds']);
 
 // ─── No-bootstrap pages (login, setup, database, session) ────
 

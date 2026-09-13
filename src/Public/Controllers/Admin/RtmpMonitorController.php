@@ -18,18 +18,18 @@ use XcVm\Domain\Server\ServerRepository;
  */
 
 class RtmpMonitorController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $rServers;
+		global $rServers;
 
-        if (!RequestManager::has('server') || !isset($rServers[RequestManager::get('server')])) {
-            RequestManager::update('server', SERVER_ID);
-        }
+		if (!RequestManager::has('server') || !isset($rServers[RequestManager::get('server')])) {
+			RequestManager::update('server', SERVER_ID);
+		}
 
-        $rRTMPInfo = ServerRepository::getRTMPStats(RequestManager::get('server'));
+		$rRTMPInfo = ServerRepository::getRTMPStats(RequestManager::get('server'));
 
-        $this->setTitle('RTMP Monitor');
-        $this->render('rtmp_monitor', compact('rRTMPInfo'));
-    }
+		$this->setTitle('RTMP Monitor');
+		$this->render('rtmp_monitor', compact('rRTMPInfo'));
+	}
 }

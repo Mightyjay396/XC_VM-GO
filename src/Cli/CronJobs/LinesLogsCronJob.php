@@ -17,57 +17,57 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  */
 
 class LinesLogsCronJob implements CommandInterface {
-    use DatabaseAware;
-    use CronTrait;
+	use DatabaseAware;
+	use CronTrait;
 
-    public function getName(): string {
-        return 'cron:lines_logs';
-    }
+	public function getName(): string {
+		return 'cron:lines_logs';
+	}
 
-    public function getDescription(): string {
-        return 'Cron: import client request logs into DB';
-    }
+	public function getDescription(): string {
+		return 'Cron: import client request logs into DB';
+	}
 
-    public function execute(array $rArgs): int {
-        if (!$this->assertRunAsXcVm()) {
-            return 1;
-        }
+	public function execute(array $rArgs): int {
+		if (!$this->assertRunAsXcVm()) {
+			return 1;
+		}
 
-        $this->initCron('XC_VM[Lines Logs]');
-        $this->loadCron();
+		$this->initCron('XC_VM[Lines Logs]');
+		$this->loadCron();
 
-        return 0;
-    }
+		return 0;
+	}
 
-    private function loadCron(): void {
-        $db = self::db();
+	private function loadCron(): void {
+		$db = self::db();
 
-        $rLog = LOGS_TMP_PATH . 'client_request.log';
-        if (!file_exists($rLog)) {
-            return;
-        }
+		$rLog = LOGS_TMP_PATH . 'client_request.log';
+		if (!file_exists($rLog)) {
+			return;
+		}
 
-        $rQuery = rtrim($this->parseLog($rLog), ',');
-        if (!empty($rQuery)) {
-            $db->query('INSERT INTO `lines_logs` (`stream_id`,`user_id`,`client_status`,`query_string`,`user_agent`,`ip`,`extra_data`,`date`) VALUES ' . $rQuery . ';');
-        }
-        unlink($rLog);
-    }
+		$rQuery = rtrim($this->parseLog($rLog), ',');
+		if (!empty($rQuery)) {
+			$db->query('INSERT INTO `lines_logs` (`stream_id`,`user_id`,`client_status`,`query_string`,`user_agent`,`ip`,`extra_data`,`date`) VALUES ' . $rQuery . ';');
+		}
+		unlink($rLog);
+	}
 
-    private function parseLog(string $rLog): string {
-        $db = self::db();
-        $rQuery = '';
-        $rFP = fopen($rLog, 'r');
-        while (!feof($rFP)) {
-            $rLine = trim(fgets($rFP));
-            if (!empty($rLine)) {
-                $rLine = json_decode(base64_decode($rLine), true);
-                $rLine = array_map(array($db, 'escape'), $rLine);
-                $rQuery .= '(' . $rLine['stream_id'] . ',' . $rLine['user_id'] . ',' . $rLine['action'] . ',' . $rLine['query_string'] . ',' . $rLine['user_agent'] . ',' . $rLine['user_ip'] . ',' . $rLine['extra_data'] . ',' . $rLine['time'] . '),';
-                break;
-            }
-        }
-        fclose($rFP);
-        return $rQuery;
-    }
+	private function parseLog(string $rLog): string {
+		$db = self::db();
+		$rQuery = '';
+		$rFP = fopen($rLog, 'r');
+		while (!feof($rFP)) {
+			$rLine = trim(fgets($rFP));
+			if (!empty($rLine)) {
+				$rLine = json_decode(base64_decode($rLine), true);
+				$rLine = array_map([$db, 'escape'], $rLine);
+				$rQuery .= '(' . $rLine['stream_id'] . ',' . $rLine['user_id'] . ',' . $rLine['action'] . ',' . $rLine['query_string'] . ',' . $rLine['user_agent'] . ',' . $rLine['user_ip'] . ',' . $rLine['extra_data'] . ',' . $rLine['time'] . '),';
+				break;
+			}
+		}
+		fclose($rFP);
+		return $rQuery;
+	}
 }

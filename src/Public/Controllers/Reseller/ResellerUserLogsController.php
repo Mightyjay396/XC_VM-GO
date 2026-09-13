@@ -12,12 +12,10 @@ namespace XcVm\Public\Controllers\Reseller;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerUserLogsController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('User Logs');
-        $this->render('user_logs');
-    }
+class ResellerUserLogsController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('User Logs');
+		$this->render('user_logs');
+	}
 }

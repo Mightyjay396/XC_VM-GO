@@ -22,19 +22,19 @@ use XcVm\Domain\Line\PackageService;
  */
 
 class PackageController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $this->setTitle('Packages');
+		$this->setTitle('Packages');
 
-        $allPackages = PackageService::getAll();
-        // Фильтруем addon-пакеты (показываем только обычные)
-        $packages = array_filter($allPackages, function ($p) {
-            return empty($p['is_addon']);
-        });
+		$allPackages = PackageService::getAll();
+		// Фильтруем addon-пакеты (показываем только обычные)
+		$packages = array_filter($allPackages, function ($p) {
+			return empty($p['is_addon']);
+		});
 
-        $this->render('packages', [
-            'packages' => $packages,
-        ]);
-    }
+		$this->render('packages', [
+			'packages' => $packages,
+		]);
+	}
 }

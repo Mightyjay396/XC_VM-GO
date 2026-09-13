@@ -32,6 +32,6 @@ use XcVm\Core\Module\ModuleLoader;
  */
 
 return [
-    // Пример отключения модуля:
-    // 'example-module' => ['enabled' => false],
+	// Пример отключения модуля:
+	// 'example-module' => ['enabled' => false],
 ];

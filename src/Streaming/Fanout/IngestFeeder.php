@@ -32,21 +32,30 @@ final class IngestFeeder {
 	private const RETRY_SEC = 2.0;
 
 	private int $streamID;
+
 	private ?string $keyHex;
+
 	private ?string $ivHex;
+
 	/** @var callable|null fn(string $message): void */
 	private $logger;
+
 	/** @var callable fn(int $id, ?string $key, ?string $iv): ?string */
 	private $register;
+
 	/** @var callable fn(string $socket): resource|false */
 	private $dial;
 
 	/** @var resource|null */
 	private $conn = null;
+
 	private string $pending = '';
+
 	/** Bytes of the backlog's head packet already written to the current connection. */
 	private int $headSent = 0;
+
 	private float $retryAt = 0.0;
+
 	private int $droppedPackets = 0;
 
 	/**
@@ -82,7 +91,7 @@ final class IngestFeeder {
 	 * @return self
 	 */
 	public static function forStream(int $rStreamID, bool $rEncrypt, ?callable $rLogger = null): self {
-		[$rKey, $rIV] = $rEncrypt ? self::streamKey($rStreamID) : array(null, null);
+		[$rKey, $rIV] = $rEncrypt ? self::streamKey($rStreamID) : [null, null];
 		return new self($rStreamID, $rKey, $rIV, $rLogger);
 	}
 
@@ -95,14 +104,14 @@ final class IngestFeeder {
 	 */
 	public static function streamKey(int $rStreamID): array {
 		if (!defined('STREAMS_PATH')) {
-			return array(null, null);
+			return [null, null];
 		}
 		$rKey = @file_get_contents(STREAMS_PATH . $rStreamID . '_.key');
 		$rIV = @file_get_contents(STREAMS_PATH . $rStreamID . '_.iv');
 		if (!is_string($rKey) || strlen($rKey) !== 16 || !is_string($rIV) || strlen($rIV) !== 16) {
-			return array(null, null);
+			return [null, null];
 		}
-		return array(bin2hex($rKey), bin2hex($rIV));
+		return [bin2hex($rKey), bin2hex($rIV)];
 	}
 
 	/**

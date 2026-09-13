@@ -18,19 +18,19 @@ use XcVm\Domain\Security\BlocklistService;
  */
 
 class UseragentController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rUAArr = null;
-        if (RequestManager::has('id')) {
-            $rUAArr = BlocklistService::getUserAgentById(RequestManager::get('id'));
-            if (!$rUAArr) {
-                $this->redirect('useragents');
-                return;
-            }
-        }
+		$rUAArr = null;
+		if (RequestManager::has('id')) {
+			$rUAArr = BlocklistService::getUserAgentById(RequestManager::get('id'));
+			if (!$rUAArr) {
+				$this->redirect('useragents');
+				return;
+			}
+		}
 
-        $this->setTitle('Block User-Agent');
-        $this->render('useragent', compact('rUAArr'));
-    }
+		$this->setTitle('Block User-Agent');
+		$this->render('useragent', compact('rUAArr'));
+	}
 }

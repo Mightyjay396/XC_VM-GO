@@ -16,12 +16,13 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class StreamConfigRepository {
 	use DatabaseAware;
+
 	/**
 	 * Получить все аргументы потоков (streams_arguments), индексированные по argument_key.
 	 */
 	public static function getStreamArguments() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `streams_arguments` ORDER BY `id` ASC;');
 
 		if ($db->num_rows() > 0) {
@@ -38,7 +39,7 @@ class StreamConfigRepository {
 	 */
 	public static function getTranscodeProfiles() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `profiles` ORDER BY `profile_id` ASC;');
 
 		if ($db->num_rows() > 0) {
@@ -56,7 +57,7 @@ class StreamConfigRepository {
 	 * @param int $rID Profile id.
 	 * @return array|null The profile row, or null if not found.
 	 */
-	public static function getTranscodeProfile($rID) {
+	public static function getTranscodeProfile(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `profiles` WHERE `profile_id` = ?;', $rID);
 
@@ -73,7 +74,7 @@ class StreamConfigRepository {
 	 * @param int $rID Profile id.
 	 * @return bool True on deletion, false if the profile does not exist.
 	 */
-	public static function deleteProfile($rID) {
+	public static function deleteProfile(int $rID) {
 		$db = self::db();
 		$rProfile = self::getTranscodeProfile($rID);
 

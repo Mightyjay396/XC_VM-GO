@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtTagInterface;
 use M3uParser\Tag\ExtTv;
 use PHPUnit\Framework\TestCase;
 
-class ExtTvTest extends TestCase
-{
-    public function testParseExtTv(): void
-    {
+class ExtTvTest extends TestCase {
+    public function testParseExtTv(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/exttv.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/exttv.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -38,10 +35,9 @@ class ExtTvTest extends TestCase
         self::assertNull($extTv->getIconUrl());
     }
 
-    public function testGenerateExtTv(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTTV:hd,sd;ru;xml-tv-id;https://example.org/icon.png'."\n";
+    public function testGenerateExtTv(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTTV:hd,sd;ru;xml-tv-id;https://example.org/icon.png' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

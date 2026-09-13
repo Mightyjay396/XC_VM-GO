@@ -17,7 +17,7 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  */
 
 set_time_limit(0);
-$rSignals = array();
+$rSignals = [];
 
 if (BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])) {
 	$db = new DatabaseHandler();
@@ -37,7 +37,7 @@ if (BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])) {
 	}
 
 	$rAddresses = $_POST['addresses'];
-	$rHardware = array('total_ram' => $rStats['total_mem'], 'total_used' => $rStats['total_mem_used'], 'cores' => $rStats['cpu_cores'], 'threads' => $rStats['cpu_cores'], 'kernel' => $rStats['kernel'], 'total_running_streams' => $rStats['total_running_streams'], 'cpu_name' => $rStats['cpu_name'], 'cpu_usage' => $rStats['cpu'], 'network_speed' => $rStats['network_speed'], 'bytes_sent' => $rStats['bytes_sent'], 'bytes_received' => $rStats['bytes_received']);
+	$rHardware = ['total_ram' => $rStats['total_mem'], 'total_used' => $rStats['total_mem_used'], 'cores' => $rStats['cpu_cores'], 'threads' => $rStats['cpu_cores'], 'kernel' => $rStats['kernel'], 'total_running_streams' => $rStats['total_running_streams'], 'cpu_name' => $rStats['cpu_name'], 'cpu_usage' => $rStats['cpu'], 'network_speed' => $rStats['network_speed'], 'bytes_sent' => $rStats['bytes_sent'], 'bytes_received' => $rStats['bytes_received']];
 	$rPing = (pingserver($rServers[$rServerIDRequest]['server_ip'], $rServers[$rServerIDRequest]['http_broadcast_port']) ?: 0);
 
 	if ($rPing < 0) {
@@ -67,8 +67,6 @@ if (BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])) {
 	$db->query('UPDATE `servers` SET `connections` = ?, `users` = ?, `ping` = ?,`server_hardware` = ?,`whitelist_ips` = ?, `interfaces` = ?, `watchdog_data` = ?, `last_check_ago` = ? WHERE `id` = ?', $rConnections, $rUsers, $rPing, json_encode($rHardware), json_encode($rAddresses), json_encode($rStats['interfaces']), json_encode($rStats, JSON_PARTIAL_OUTPUT_ON_ERROR), time(), $rServerIDRequest);
 
 	if ($db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' ORDER BY signal_id ASC;", $rServerIDRequest)) {
-
-
 		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
 				$rData = json_decode($rRow['custom_data'], true);

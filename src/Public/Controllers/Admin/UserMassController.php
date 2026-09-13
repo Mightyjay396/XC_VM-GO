@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class UserMassController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Mass Edit Users');
-        $this->render('user_mass');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Mass Edit Users');
+		$this->render('user_mass');
+	}
 }

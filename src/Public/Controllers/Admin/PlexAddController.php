@@ -18,25 +18,25 @@ use XcVm\Domain\Stream\StreamRepository;
  */
 
 class PlexAddController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rFolder = null;
-        $id = $this->input('id');
-        if (isset($id)) {
-            $rFolder = StreamRepository::getWatchFolder($id);
-            if (!$rFolder) {
-                $this->redirect('plex');
-                return;
-            }
-        }
+		$rFolder = null;
+		$id = $this->input('id');
+		if (isset($id)) {
+			$rFolder = StreamRepository::getWatchFolder($id);
+			if (!$rFolder) {
+				$this->redirect('plex');
+				return;
+			}
+		}
 
-        $rBouquets = BouquetService::getAllSimple();
-        if (!is_array($rBouquets)) {
-            $rBouquets = [];
-        }
+		$rBouquets = BouquetService::getAllSimple();
+		if (!is_array($rBouquets)) {
+			$rBouquets = [];
+		}
 
-        $this->setTitle('Add Library');
-        $this->render('plex_add', compact('rFolder', 'rBouquets'));
-    }
+		$this->setTitle('Add Library');
+		$this->render('plex_add', compact('rFolder', 'rBouquets'));
+	}
 }

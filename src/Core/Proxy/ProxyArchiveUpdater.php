@@ -28,7 +28,6 @@ use XcVm\Core\Updates\GitHubReleases;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class ProxyArchiveUpdater {
-
 	/** Asset file name published on every XC_VM_Proxy release. */
 	private const ASSET = 'proxy.tar.gz';
 
@@ -187,15 +186,15 @@ class ProxyArchiveUpdater {
 	/** @return array{version?: string, md5?: string} */
 	private function readIndex(): array {
 		if (!is_file($this->indexPath)) {
-			return array();
+			return [];
 		}
 		$rData = json_decode((string) file_get_contents($this->indexPath), true);
-		return is_array($rData) ? $rData : array();
+		return is_array($rData) ? $rData : [];
 	}
 
 	private function writeIndex(string $rVersion, string $rMd5): void {
 		$rJson = json_encode(
-			array('version' => $rVersion, 'md5' => $rMd5),
+			['version' => $rVersion, 'md5' => $rMd5],
 			JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES
 		);
 		@file_put_contents($this->indexPath, $rJson . "\n");
@@ -204,6 +203,6 @@ class ProxyArchiveUpdater {
 
 	/** @return array{version: ?string, action: string, error: ?string} */
 	private function result(?string $rVersion, string $rAction, ?string $rError): array {
-		return array('version' => $rVersion, 'action' => $rAction, 'error' => $rError);
+		return ['version' => $rVersion, 'action' => $rAction, 'error' => $rError];
 	}
 }

@@ -20,7 +20,7 @@ class AdminHelpers {
 	 * @param string $rCIDR IP or CIDR notation.
 	 * @return bool True if valid (mask within range when present).
 	 */
-	public static function validateCIDR($rCIDR) {
+	public static function validateCIDR(string $rCIDR) {
 		$rParts = explode('/', $rCIDR);
 		$rIP = $rParts[0];
 		$rNetmask = null;
@@ -54,7 +54,7 @@ class AdminHelpers {
 	 * @param array $rSkip      Keys to leave untouched.
 	 * @return array The merged row.
 	 */
-	public static function overwriteData($rData, $rOverwrite, $rSkip = array()) {
+	public static function overwriteData(array $rData, array $rOverwrite, array $rSkip = []) {
 		foreach ($rOverwrite as $rKey => $rValue) {
 			if (array_key_exists($rKey, $rData) && !in_array($rKey, $rSkip)) {
 				if (!(empty($rValue) && is_null($rData[$rKey]))) {
@@ -72,7 +72,7 @@ class AdminHelpers {
 	 * @param mixed $rIDs Raw id list.
 	 * @return array Validated integer ids.
 	 */
-	public static function confirmIDs($rIDs) {
+	public static function confirmIDs(mixed $rIDs) {
 		return InputValidator::confirmIDs($rIDs);
 	}
 
@@ -84,7 +84,7 @@ class AdminHelpers {
 	 * @param bool  $checkPositive Require ids to be > 0.
 	 * @return int[] Filtered ids.
 	 */
-	public static function filterIDs($ids, $availableIDs, $checkPositive = true) {
+	public static function filterIDs(mixed $ids, array $availableIDs, bool $checkPositive = true) {
 		$filtered = [];
 
 		if (!is_array($ids)) {
@@ -92,7 +92,7 @@ class AdminHelpers {
 		}
 
 		foreach ($ids as $id) {
-			$intID = (int)$id;
+			$intID = (int) $id;
 			$isValid = (!$checkPositive || $intID > 0) && in_array($intID, $availableIDs);
 
 			if ($isValid) {
@@ -110,7 +110,7 @@ class AdminHelpers {
 	 * @param int|float $search Target value.
 	 * @return mixed The nearest value.
 	 */
-	public static function getNearest($arr, $search) {
+	public static function getNearest(array $arr, int|float $search) {
 		return StreamSorter::getNearest($arr, $search);
 	}
 
@@ -121,7 +121,7 @@ class AdminHelpers {
 	 * @param int       $x Multiple to round to.
 	 * @return float Rounded value.
 	 */
-	public static function roundUpToAny($n, $x = 5) {
+	public static function roundUpToAny(int|float $n, int $x = 5) {
 		return round(($n + $x / 2) / $x) * $x;
 	}
 
@@ -131,7 +131,7 @@ class AdminHelpers {
 	 * @param int $strength Number of characters.
 	 * @return string Random string.
 	 */
-	public static function generateString($strength = 10) {
+	public static function generateString(int $strength = 10) {
 		$input = '23456789abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ';
 		$input_length = strlen($input);
 		$random_string = '';
@@ -153,12 +153,12 @@ class AdminHelpers {
 	 * @param array $rSort  Desired order of values.
 	 * @return array Reordered array.
 	 */
-	public static function sortArrayByArray($rArray, $rSort) {
+	public static function sortArrayByArray(array $rArray, array $rSort) {
 		if (empty($rArray) || empty($rSort)) {
-			return array();
+			return [];
 		}
 
-		$rOrdered = array();
+		$rOrdered = [];
 
 		foreach ($rSort as $rValue) {
 			if (($rKey = array_search($rValue, $rArray)) !== false) {
@@ -176,7 +176,7 @@ class AdminHelpers {
 	 * @param int $rInt Percentage (0–100).
 	 * @return string 'bg-danger' (>=75), 'bg-warning' (>=50) or 'bg-success'.
 	 */
-	public static function getBarColour($rInt) {
+	public static function getBarColour(int $rInt) {
 		if (75 <= $rInt) {
 			return 'bg-danger';
 		}
@@ -194,7 +194,7 @@ class AdminHelpers {
 	 * @param int $rUptime Seconds.
 	 * @return string e.g. "02d 03h 04m" or "03h 04m 05s".
 	 */
-	public static function formatUptime($rUptime) {
+	public static function formatUptime(int $rUptime) {
 		$rUptime = (int) $rUptime;
 		if (86400 <= $rUptime) {
 			$rUptime = sprintf('%02dd %02dh %02dm', intdiv($rUptime, 86400), intdiv($rUptime, 3600) % 24, intdiv($rUptime, 60) % 60);
@@ -213,7 +213,7 @@ class AdminHelpers {
 	public static function getFooter() {
 		$currentYear = date('Y');
 		$startYear = 2025;
-		$yearRange = ($startYear === (int)$currentYear) ? $startYear : "{$startYear}\u{2013}{$currentYear}";
+		$yearRange = ($startYear === (int) $currentYear) ? $startYear : "{$startYear}\u{2013}{$currentYear}";
 
 		$brand = "<a href='https://github.com/Vateron-Media/XC_VM' target='_blank' rel='noopener noreferrer'>Vateron Media</a>";
 		$license = "<a href='https://www.gnu.org/licenses/agpl-3.0.html' target='_blank' rel='noopener noreferrer'>AGPL-3.0</a>";
@@ -269,7 +269,7 @@ class AdminHelpers {
 	 * @param array[] $rData Rows (associative arrays).
 	 * @return string Path to the generated CSV file in TMP_PATH.
 	 */
-	public static function convertToCSV($rData) {
+	public static function convertToCSV(array $rData) {
 		$rHeader = false;
 		$rFilename = TMP_PATH . self::generateString(32) . '.csv';
 		$rFile = fopen($rFilename, 'w');
@@ -295,7 +295,7 @@ class AdminHelpers {
 	 * @param array  $rParams POST parameters.
 	 * @return string|bool Response body, or false on failure.
 	 */
-	public static function generateReport($rURL, $rParams) {
+	public static function generateReport(string $rURL, array $rParams) {
 		$rPost = http_build_query($rParams);
 		$ch = curl_init();
 		curl_setopt($ch, CURLOPT_URL, $rURL);
@@ -365,7 +365,7 @@ class AdminHelpers {
 	 * @param string $rURL URL to parse.
 	 * @return string|null Lowercased page name, or null if $rURL is empty.
 	 */
-	public static function getPageFromURL($rURL) {
+	public static function getPageFromURL(string $rURL) {
 		if ($rURL) {
 			return strtolower(basename(ltrim(parse_url($rURL)['path'], '/'), '.php'));
 		}
@@ -380,7 +380,7 @@ class AdminHelpers {
 	 * @param bool  $rGet  Also merge the args into the request manager.
 	 * @return string Inline <script> updating the browser URL.
 	 */
-	public static function setArgs($rArgs, $rGet = true) {
+	public static function setArgs(array $rArgs, bool $rGet = true) {
 		$rURL = self::getPageName();
 
 		if (count($rArgs) > 0) {
@@ -402,7 +402,7 @@ class AdminHelpers {
 	 * @param string $rRelease Release/file name.
 	 * @return array|null Parsed metadata, or null on failure.
 	 */
-	public static function parserelease($rRelease) {
+	public static function parserelease(string $rRelease) {
 		if (SettingsManager::get('parse_type') == 'guessit') {
 			$rCommand = MAIN_HOME . 'bin/guess ' . escapeshellarg(pathinfo($rRelease)['filename'] . '.mkv');
 		} else {

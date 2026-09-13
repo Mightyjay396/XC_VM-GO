@@ -42,47 +42,46 @@ namespace XcVm\Core\Cache;
  */
 
 interface CacheInterface {
+	/**
+	 * Retrieve a value from cache
+	 *
+	 * @param string $key Cache key
+	 * @param int|null $maxAge Maximum age in seconds (null = no limit)
+	 * @return mixed|false Cached data or false if not found / expired
+	 */
+	public function get(string $key, ?int $maxAge = null);
 
-    /**
-     * Retrieve a value from cache
-     *
-     * @param string $key Cache key
-     * @param int|null $maxAge Maximum age in seconds (null = no limit)
-     * @return mixed|false Cached data or false if not found / expired
-     */
-    public function get($key, $maxAge = null);
+	/**
+	 * Store a value in cache
+	 *
+	 * @param string $key Cache key
+	 * @param mixed $data Data to store
+	 * @param int $ttl Time to live in seconds (0 = forever)
+	 * @return bool Success
+	 */
+	public function set(string $key, mixed $data, int $ttl = 0);
 
-    /**
-     * Store a value in cache
-     *
-     * @param string $key Cache key
-     * @param mixed $data Data to store
-     * @param int $ttl Time to live in seconds (0 = forever)
-     * @return bool Success
-     */
-    public function set($key, $data, $ttl = 0);
+	/**
+	 * Delete a cache entry
+	 *
+	 * @param string $key Cache key
+	 * @return bool Success
+	 */
+	public function delete(string $key);
 
-    /**
-     * Delete a cache entry
-     *
-     * @param string $key Cache key
-     * @return bool Success
-     */
-    public function delete($key);
+	/**
+	 * Check if a cache key exists (and is not expired)
+	 *
+	 * @param string $key Cache key
+	 * @param int|null $maxAge Maximum age in seconds (null = no limit)
+	 * @return bool
+	 */
+	public function has(string $key, ?int $maxAge = null);
 
-    /**
-     * Check if a cache key exists (and is not expired)
-     *
-     * @param string $key Cache key
-     * @param int|null $maxAge Maximum age in seconds (null = no limit)
-     * @return bool
-     */
-    public function has($key, $maxAge = null);
-
-    /**
-     * Clear all cache entries
-     *
-     * @return bool Success
-     */
-    public function flush();
+	/**
+	 * Clear all cache entries
+	 *
+	 * @return bool Success
+	 */
+	public function flush();
 }

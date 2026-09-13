@@ -19,20 +19,20 @@ use XcVm\Core\Http\RequestManager;
  */
 
 class ReviewController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rType = RequestManager::has('type') ? intval(RequestManager::get('type')) : 1;
-        $rCategorySet = [];
-        $rLogoSet = [];
+		$rType = RequestManager::has('type') ? intval(RequestManager::get('type')) : 1;
+		$rCategorySet = [];
+		$rLogoSet = [];
 
-        // The import server tree on this page is driven by jstree.
-        $GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
-            (array) ($GLOBALS['xmNewuiVendors'] ?? []),
-            ['jstree']
-        )));
+		// The import server tree on this page is driven by jstree.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['jstree']
+		)));
 
-        $this->setTitle('Review');
-        $this->render('review', compact('rType', 'rCategorySet', 'rLogoSet'));
-    }
+		$this->setTitle('Review');
+		$this->render('review', compact('rType', 'rCategorySet', 'rLogoSet'));
+	}
 }

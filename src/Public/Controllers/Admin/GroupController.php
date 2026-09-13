@@ -22,15 +22,15 @@ use XcVm\Domain\User\GroupService;
  */
 
 class GroupController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $this->setTitle('Groups');
+		$this->setTitle('Groups');
 
-        $groups = GroupService::getAll();
+		$groups = GroupService::getAll();
 
-        $this->render('groups', [
-            'groups' => $groups,
-        ]);
-    }
+		$this->render('groups', [
+			'groups' => $groups,
+		]);
+	}
 }

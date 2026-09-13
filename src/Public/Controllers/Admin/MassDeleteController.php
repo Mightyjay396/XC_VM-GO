@@ -15,13 +15,13 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class MassDeleteController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        set_time_limit(0);
-        ini_set('max_execution_time', 0);
+		set_time_limit(0);
+		ini_set('max_execution_time', 0);
 
-        $this->setTitle('Mass Delete');
-        $this->render('mass_delete');
-    }
+		$this->setTitle('Mass Delete');
+		$this->render('mass_delete');
+	}
 }

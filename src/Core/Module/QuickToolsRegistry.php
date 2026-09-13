@@ -27,46 +27,45 @@ namespace XcVm\Core\Module;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class QuickToolsRegistry {
+	/** @var array<string,array<int,array{0:string,1:string}>> group => list of [key, label] */
+	private static array $tools = [];
 
-    /** @var array<string,array<int,array{0:string,1:string}>> group => list of [key, label] */
-    private static array $tools = [];
+	/** @var array<string,callable> key => handler */
+	private static array $handlers = [];
 
-    /** @var array<string,callable> key => handler */
-    private static array $handlers = [];
+	/** Register a Quick Tools action (button + handler). */
+	public static function add(string $group, string $key, string $label, callable $handler): void {
+		self::$tools[$group][] = [$key, $label];
+		self::$handlers[$key] = $handler;
+	}
 
-    /** Register a Quick Tools action (button + handler). */
-    public static function add(string $group, string $key, string $label, callable $handler): void {
-        self::$tools[$group][] = [$key, $label];
-        self::$handlers[$key] = $handler;
-    }
+	/** Groups that have at least one module tool. */
+	public static function groups(): array {
+		return array_keys(self::$tools);
+	}
 
-    /** Groups that have at least one module tool. */
-    public static function groups(): array {
-        return array_keys(self::$tools);
-    }
+	/**
+	 * `[key, label]` rows a module added to a group (for the view).
+	 *
+	 * @return array<int,array{0:string,1:string}>
+	 */
+	public static function forGroup(string $group): array {
+		return self::$tools[$group] ?? [];
+	}
 
-    /**
-     * `[key, label]` rows a module added to a group (for the view).
-     *
-     * @return array<int,array{0:string,1:string}>
-     */
-    public static function forGroup(string $group): array {
-        return self::$tools[$group] ?? [];
-    }
+	/** All registered tool keys (for post.php dispatch). */
+	public static function keys(): array {
+		return array_keys(self::$handlers);
+	}
 
-    /** All registered tool keys (for post.php dispatch). */
-    public static function keys(): array {
-        return array_keys(self::$handlers);
-    }
+	/** The handler for a tool key, or null. */
+	public static function handler(string $key): ?callable {
+		return self::$handlers[$key] ?? null;
+	}
 
-    /** The handler for a tool key, or null. */
-    public static function handler(string $key): ?callable {
-        return self::$handlers[$key] ?? null;
-    }
-
-    /** Clear all registered tools (used by tests / a fresh boot). */
-    public static function reset(): void {
-        self::$tools = [];
-        self::$handlers = [];
-    }
+	/** Clear all registered tools (used by tests / a fresh boot). */
+	public static function reset(): void {
+		self::$tools = [];
+		self::$handlers = [];
+	}
 }

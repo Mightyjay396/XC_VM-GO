@@ -103,25 +103,25 @@ class AsnCatalogSync {
 	public static function sync(): array {
 		$rPath = self::path();
 		if (!is_file($rPath)) {
-			return array('upserted' => 0, 'removed' => 0, 'skipped' => 'no-file');
+			return ['upserted' => 0, 'removed' => 0, 'skipped' => 'no-file'];
 		}
 
 		$rRaw = @file_get_contents($rPath);
 		if ($rRaw === false || $rRaw === '') {
-			return array('upserted' => 0, 'removed' => 0, 'skipped' => 'empty');
+			return ['upserted' => 0, 'removed' => 0, 'skipped' => 'empty'];
 		}
 		// Transparently gunzip (the release ships .gz; a plain .json also works).
 		if (substr($rRaw, 0, 2) === "\x1f\x8b") {
 			$rRaw = @gzdecode($rRaw);
 			if ($rRaw === false) {
-				return array('upserted' => 0, 'removed' => 0, 'skipped' => 'bad-gzip');
+				return ['upserted' => 0, 'removed' => 0, 'skipped' => 'bad-gzip'];
 			}
 		}
 
 		$rRecords = json_decode($rRaw, true);
 		unset($rRaw);
 		if (!is_array($rRecords) || count($rRecords) === 0) {
-			return array('upserted' => 0, 'removed' => 0, 'skipped' => 'bad-json');
+			return ['upserted' => 0, 'removed' => 0, 'skipped' => 'bad-json'];
 		}
 
 		$db = self::db();
@@ -130,8 +130,8 @@ class AsnCatalogSync {
 		$db->query('CREATE TEMPORARY TABLE `tmp_asns` (`asn` INT PRIMARY KEY) ENGINE=MEMORY;');
 
 		$rUpserted = 0;
-		$rUpsertBatch = array();
-		$rTmpBatch = array();
+		$rUpsertBatch = [];
+		$rTmpBatch = [];
 
 		foreach ($rRecords as $rRow) {
 			$rAsn = isset($rRow['asn']) ? intval($rRow['asn']) : 0;
@@ -140,21 +140,21 @@ class AsnCatalogSync {
 			}
 
 			$rDomain = (isset($rRow['domain']) && $rRow['domain'] !== '') ? (string) $rRow['domain'] : null;
-			$rUpsertBatch[] = array(
+			$rUpsertBatch[] = [
 				$rAsn,
 				isset($rRow['isp']) ? (string) $rRow['isp'] : null,
 				$rDomain,
 				isset($rRow['country']) ? (string) $rRow['country'] : null,
 				isset($rRow['num_ips']) ? intval($rRow['num_ips']) : 0,
 				isset($rRow['type']) ? (string) $rRow['type'] : null,
-			);
+			];
 			$rTmpBatch[] = $rAsn;
 
 			if (count($rUpsertBatch) >= self::BATCH) {
 				$rUpserted += self::flushUpsert($db, $rUpsertBatch);
 				self::flushTmp($db, $rTmpBatch);
-				$rUpsertBatch = array();
-				$rTmpBatch = array();
+				$rUpsertBatch = [];
+				$rTmpBatch = [];
 			}
 		}
 		if (count($rUpsertBatch) > 0) {
@@ -169,20 +169,19 @@ class AsnCatalogSync {
 		$db->query('DELETE `b` FROM `blocked_asns` `b` LEFT JOIN `tmp_asns` `t` ON `b`.`asn` = `t`.`asn` WHERE `t`.`asn` IS NULL AND `b`.`blocked` = 0;');
 		$db->query('DROP TEMPORARY TABLE IF EXISTS `tmp_asns`;');
 
-		return array('upserted' => $rUpserted, 'removed' => $rRemoved);
+		return ['upserted' => $rUpserted, 'removed' => $rRemoved];
 	}
 
 	/**
 	 * Multi-row upsert of one batch. `blocked` is intentionally absent from the
 	 * column list, so it is never overwritten (new rows take its default 0).
 	 *
-	 * @param object                       $db
 	 * @param array<int, array<int, mixed>> $rBatch Rows [asn, isp, domain, country, num_ips, type].
 	 * @return int Rows sent.
 	 */
-	private static function flushUpsert($db, array $rBatch): int {
+	private static function flushUpsert(object $db, array $rBatch): int {
 		$rPlaceholders = implode(',', array_fill(0, count($rBatch), '(?,?,?,?,?,?)'));
-		$rParams = array();
+		$rParams = [];
 		foreach ($rBatch as $rCols) {
 			foreach ($rCols as $rVal) {
 				$rParams[] = $rVal;
@@ -198,10 +197,9 @@ class AsnCatalogSync {
 	/**
 	 * Batch-insert ASNs into the temp snapshot table used by the prune step.
 	 *
-	 * @param object     $db
 	 * @param array<int> $rAsns
 	 */
-	private static function flushTmp($db, array $rAsns): void {
+	private static function flushTmp(object $db, array $rAsns): void {
 		if (count($rAsns) === 0) {
 			return;
 		}

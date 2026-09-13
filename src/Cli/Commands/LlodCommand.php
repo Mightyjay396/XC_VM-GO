@@ -20,7 +20,6 @@ use XcVm\Streaming\Fanout\IngestFeeder;
  */
 
 class LlodCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'llod';
 	}
@@ -56,16 +55,36 @@ class LlodCommand implements CommandInterface {
 		echo "Stream arguments count: " . count($rStreamArguments) . "\n";
 		echo "====================\n\n";
 
-		if (!defined('MAIN_HOME')) define('MAIN_HOME', '/home/xc_vm/');
-		if (!defined('STREAMS_PATH')) define('STREAMS_PATH', MAIN_HOME . 'content/streams/');
-		if (!defined('CACHE_TMP_PATH')) define('CACHE_TMP_PATH', MAIN_HOME . 'tmp/cache/');
-		if (!defined('CONS_TMP_PATH')) define('CONS_TMP_PATH', MAIN_HOME . 'tmp/opened_cons/');
-		if (!defined('FFMPEG')) define('FFMPEG', FfmpegPaths::cpu() ?: FFMPEG_BIN_40);
-		if (!defined('FFPROBE')) define('FFPROBE', FfmpegPaths::probe() ?: FFPROBE_BIN_40);
-		if (!defined('PACKET_SIZE')) define('PACKET_SIZE', 188);
-		if (!defined('BUFFER_SIZE')) define('BUFFER_SIZE', 12032);
-		if (!defined('TIMEOUT')) define('TIMEOUT', 20);
-		if (!defined('SEGMENT_DURATION')) define('SEGMENT_DURATION', 4);
+		if (!defined('MAIN_HOME')) {
+			define('MAIN_HOME', '/home/xc_vm/');
+		}
+		if (!defined('STREAMS_PATH')) {
+			define('STREAMS_PATH', MAIN_HOME . 'content/streams/');
+		}
+		if (!defined('CACHE_TMP_PATH')) {
+			define('CACHE_TMP_PATH', MAIN_HOME . 'tmp/cache/');
+		}
+		if (!defined('CONS_TMP_PATH')) {
+			define('CONS_TMP_PATH', MAIN_HOME . 'tmp/opened_cons/');
+		}
+		if (!defined('FFMPEG')) {
+			define('FFMPEG', FfmpegPaths::cpu() ?: FFMPEG_BIN_40);
+		}
+		if (!defined('FFPROBE')) {
+			define('FFPROBE', FfmpegPaths::probe() ?: FFPROBE_BIN_40);
+		}
+		if (!defined('PACKET_SIZE')) {
+			define('PACKET_SIZE', 188);
+		}
+		if (!defined('BUFFER_SIZE')) {
+			define('BUFFER_SIZE', 12032);
+		}
+		if (!defined('TIMEOUT')) {
+			define('TIMEOUT', 20);
+		}
+		if (!defined('SEGMENT_DURATION')) {
+			define('SEGMENT_DURATION', 4);
+		}
 
 		if (!file_exists(CACHE_TMP_PATH . 'settings')) {
 			echo "Settings not cached!\n";
@@ -78,7 +97,7 @@ class LlodCommand implements CommandInterface {
 
 		$rFP = null;
 		$rSegmentFile = null;
-		$rSegmentStatus = array();
+		$rSegmentStatus = [];
 
 		register_shutdown_function(function () use (&$rFP, &$rSegmentFile) {
 			if (is_resource($rSegmentFile)) {
@@ -177,7 +196,7 @@ class LlodCommand implements CommandInterface {
 		$segment           = 0;
 		$segmentOpen       = false;
 		$segmentStart      = microtime(true);
-		$rSegmentDurations = array();
+		$rSegmentDurations = [];
 
 		$lastData    = time();
 		$firstDataAt = microtime(true);
@@ -316,7 +335,7 @@ class LlodCommand implements CommandInterface {
 	 * @param string|null $pmtPacket Raw 188-byte PMT packet, or null if not seen yet.
 	 * @return resource|false The open file handle, or false on failure.
 	 */
-	private function openSegment($rStreamID, $segment, $patPacket, $pmtPacket) {
+	private function openSegment(int|string $rStreamID, int $segment, ?string $patPacket, ?string $pmtPacket) {
 		$file = fopen(STREAMS_PATH . $rStreamID . "_{$segment}.ts", 'wb');
 		if (!$file) {
 			return false;
@@ -337,7 +356,7 @@ class LlodCommand implements CommandInterface {
 	 * @param string $pkt A 188-byte TS packet.
 	 * @return array{pid:int,pusi:bool,random_access:bool,payload_offset:int}
 	 */
-	private function parseTsHeader($pkt) {
+	private function parseTsHeader(string $pkt) {
 		$b1 = ord($pkt[1]);
 		$b2 = ord($pkt[2]);
 		$b3 = ord($pkt[3]);
@@ -377,7 +396,7 @@ class LlodCommand implements CommandInterface {
 	 * @param int    $payloadOffset Offset of the payload within the packet.
 	 * @return int|null program_map_PID, or null if not resolvable in this packet.
 	 */
-	private function parsePat($pkt, $payloadOffset) {
+	private function parsePat(string $pkt, int $payloadOffset) {
 		if ($payloadOffset >= PACKET_SIZE) {
 			return null;
 		}
@@ -408,7 +427,7 @@ class LlodCommand implements CommandInterface {
 	 * @param int    $payloadOffset Offset of the payload within the packet.
 	 * @return int|null Video/PCR PID, or null if not resolvable in this packet.
 	 */
-	private function parsePmt($pkt, $payloadOffset) {
+	private function parsePmt(string $pkt, int $payloadOffset) {
 		if ($payloadOffset >= PACKET_SIZE) {
 			return null;
 		}
@@ -450,7 +469,7 @@ class LlodCommand implements CommandInterface {
 	 * @param mixed  $rRequestPrebuffer The request_prebuffer setting.
 	 * @return resource
 	 */
-	private function sourceContext($rURL, $rStreamArguments, $rRequestPrebuffer) {
+	private function sourceContext(string $rURL, array $rStreamArguments, mixed $rRequestPrebuffer) {
 		$rArg = static function (string $rKey) use ($rStreamArguments): string {
 			// `??` already maps a missing or null value to '': an empty value
 			// (after trimming) falls back to the argument's default.
@@ -461,7 +480,7 @@ class LlodCommand implements CommandInterface {
 			return $rValue;
 		};
 
-		$rHeaders = array();
+		$rHeaders = [];
 		foreach (preg_split('/\r\n|\r|\n/', $rArg('headers')) as $rLine) {
 			if (trim($rLine) !== '' && strpos($rLine, ':') !== false) {
 				$rHeaders[] = trim($rLine);
@@ -474,10 +493,10 @@ class LlodCommand implements CommandInterface {
 			$rHeaders[] = 'X-XC_VM-Prebuffer: 1';
 		}
 
-		$rHTTP = array(
+		$rHTTP = [
 			'timeout'    => TIMEOUT,
 			'user_agent' => ($rArg('user_agent') !== '' ? $rArg('user_agent') : 'Mozilla/5.0'),
-		);
+		];
 		if (count($rHeaders) > 0) {
 			$rHTTP['header'] = implode("\r\n", $rHeaders);
 		}
@@ -487,10 +506,10 @@ class LlodCommand implements CommandInterface {
 			$rHTTP['request_fulluri'] = true;
 		}
 
-		return stream_context_create(array(
+		return stream_context_create([
 			'http' => $rHTTP,
-			'ssl'  => array('verify_peer' => false, 'verify_peer_name' => false),
-		));
+			'ssl'  => ['verify_peer' => false, 'verify_peer_name' => false],
+		]);
 	}
 
 	/**
@@ -534,7 +553,7 @@ class LlodCommand implements CommandInterface {
 				$rMetadata = stream_get_meta_data($rFP);
 				echo "Stream metadata obtained\n";
 
-				$rHeaders = array();
+				$rHeaders = [];
 
 				if (!empty($rMetadata['wrapper_data']) && is_array($rMetadata['wrapper_data'])) {
 					foreach ($rMetadata['wrapper_data'] as $rLine) {
@@ -605,12 +624,12 @@ class LlodCommand implements CommandInterface {
 		return false;
 	}
 
-	private function deleteOldSegments($rStreamID, $rKeep, $rThreshold, &$rSegmentStatus, &$rSegmentDurations = array()): array {
+	private function deleteOldSegments($rStreamID, $rKeep, $rThreshold, &$rSegmentStatus, &$rSegmentDurations = []): array {
 		echo "Stream ID: $rStreamID\n";
 		echo "Keep segments: $rKeep\n";
 		echo "Delete threshold: $rThreshold\n";
 
-		$rReturn = array();
+		$rReturn = [];
 
 		if (empty($rSegmentStatus)) {
 			return $rReturn;
@@ -650,7 +669,7 @@ class LlodCommand implements CommandInterface {
 		return $rReturn;
 	}
 
-	private function updateSegments($rStreamID, $segments, $rSegmentDurations = array(), $rSegTime = SEGMENT_DURATION): void {
+	private function updateSegments($rStreamID, $segments, $rSegmentDurations = [], $rSegTime = SEGMENT_DURATION): void {
 		if (empty($segments)) {
 			return;
 		}
@@ -705,7 +724,7 @@ class LlodCommand implements CommandInterface {
 	 */
 	private function checkRunning($rStreamID): void {
 		echo "Checking for existing process for stream $rStreamID\n";
-		$rTerms = array('LLOD[' . intval($rStreamID) . ']', 'console.php llod ' . intval($rStreamID) . ' ');
+		$rTerms = ['LLOD[' . intval($rStreamID) . ']', 'console.php llod ' . intval($rStreamID) . ' '];
 		foreach (ProcessManager::findProcessPIDs($rTerms) as $rPID) {
 			echo "Killing existing LLOD process PID: $rPID\n";
 			@posix_kill($rPID, 9);

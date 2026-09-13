@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class BackupsController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Backups');
-        $this->render('backups');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Backups');
+		$this->render('backups');
+	}
 }

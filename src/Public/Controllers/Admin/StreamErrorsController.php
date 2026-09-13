@@ -15,10 +15,10 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class StreamErrorsController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $this->setTitle('Stream Errors');
-        $this->render('stream_errors');
-    }
+		$this->setTitle('Stream Errors');
+		$this->render('stream_errors');
+	}
 }

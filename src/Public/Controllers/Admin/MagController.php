@@ -18,22 +18,22 @@ use XcVm\Domain\Device\MagService;
  */
 
 class MagController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rDevice = null;
-        if (RequestManager::has('id')) {
-            $rDevice = MagService::getById(RequestManager::get('id'));
-            if (!$rDevice['user_id']) {
-                exit();
-            }
-        }
+		$rDevice = null;
+		if (RequestManager::has('id')) {
+			$rDevice = MagService::getById(RequestManager::get('id'));
+			if (!$rDevice['user_id']) {
+				exit();
+			}
+		}
 
-        if (isset($rDevice) && !isset($rDevice['user'])) {
-            $rDevice['user'] = array('bouquet' => array());
-        }
+		if (isset($rDevice) && !isset($rDevice['user'])) {
+			$rDevice['user'] = ['bouquet' => []];
+		}
 
-        $this->setTitle('MAG Device');
-        $this->render('mag', compact('rDevice'));
-    }
+		$this->setTitle('MAG Device');
+		$this->render('mag', compact('rDevice'));
+	}
 }

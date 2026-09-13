@@ -24,38 +24,36 @@ use XcVm\Infrastructure\ResellerApiDispatcher;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerApiController extends BaseResellerController
-{
-    public function index()
-    {
-        session_write_close();
+class ResellerApiController extends BaseResellerController {
+	public function index() {
+		session_write_close();
 
-        $rUserInfo = $GLOBALS['rUserInfo'] ?? null;
-        $rPermissions = $GLOBALS['rPermissions'] ?? [];
-        global $db;
+		$rUserInfo = $GLOBALS['rUserInfo'] ?? null;
+		$rPermissions = $GLOBALS['rPermissions'] ?? [];
+		global $db;
 
-        if (!PHP_ERRORS) {
-            if (empty($_SERVER['HTTP_X_REQUESTED_WITH']) || strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) !== 'xmlhttprequest') {
-                exit();
-            }
-        }
+		if (!PHP_ERRORS) {
+			if (empty($_SERVER['HTTP_X_REQUESTED_WITH']) || strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) !== 'xmlhttprequest') {
+				exit();
+			}
+		}
 
-        if (SettingsManager::get('redis_handler')) {
-            RedisManager::ensureConnected();
-        }
+		if (SettingsManager::get('redis_handler')) {
+			RedisManager::ensureConnected();
+		}
 
-        if (!$rUserInfo || !$rUserInfo['id']) {
-            echo json_encode(['result' => false]);
-            exit();
-        }
+		if (!$rUserInfo || !$rUserInfo['id']) {
+			echo json_encode(['result' => false]);
+			exit();
+		}
 
-        if (!isset($rUserInfo['reports'])) {
-            echo json_encode(['result' => false]);
-            exit();
-        }
+		if (!isset($rUserInfo['reports'])) {
+			echo json_encode(['result' => false]);
+			exit();
+		}
 
-        $action = RequestManager::get('action') ?? '';
+		$action = RequestManager::get('action') ?? '';
 
-        ResellerApiDispatcher::dispatch($action, $rUserInfo, $rPermissions);
-    }
+		ResellerApiDispatcher::dispatch($action, $rUserInfo, $rPermissions);
+	}
 }

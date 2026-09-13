@@ -21,31 +21,31 @@ use XcVm\Core\Http\RequestManager;
  */
 
 class ServerInstallController extends BaseAdminController {
-    public function index(): void {
-        $this->requirePermission();
+	public function index(): void {
+		$this->requirePermission();
 
-        global $allServers, $rProxyServers;
+		global $allServers, $rProxyServers;
 
-        $rType = RequestManager::has('proxy') ? 1 : 2;
-        $rServerArr = null;
+		$rType = RequestManager::has('proxy') ? 1 : 2;
+		$rServerArr = null;
 
-        if ($this->input('id')) {
-            $id = intval($this->input('id'));
-            if ($rType === 1) {
-                $rServerArr = $rProxyServers[$id] ?? null;
-            } else {
-                $rServerArr = $allServers[$id] ?? null;
-            }
+		if ($this->input('id')) {
+			$id = intval($this->input('id'));
+			if ($rType === 1) {
+				$rServerArr = $rProxyServers[$id] ?? null;
+			} else {
+				$rServerArr = $allServers[$id] ?? null;
+			}
 
-            if (!$rServerArr) {
-                $this->redirect('servers');
-                return;
-            }
-        }
+			if (!$rServerArr) {
+				$this->redirect('servers');
+				return;
+			}
+		}
 
-        $title = ($rType === 1) ? 'Install Proxy' : 'Install Server';
-        $this->setTitle($title);
+		$title = ($rType === 1) ? 'Install Proxy' : 'Install Server';
+		$this->setTitle($title);
 
-        $this->render('server_install', compact('rType', 'rServerArr'));
-    }
+		$this->render('server_install', compact('rType', 'rServerArr'));
+	}
 }

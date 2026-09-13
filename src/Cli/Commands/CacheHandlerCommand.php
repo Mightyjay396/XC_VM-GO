@@ -73,7 +73,7 @@ class CacheHandlerCommand implements CommandInterface {
 			}
 
 			try {
-				$rUpdatedLines = array();
+				$rUpdatedLines = [];
 				foreach (SignalQueue::pending() as list($rFileMD5, $rKey, $rData)) {
 					list($rHeader) = explode('/', $rKey);
 					switch ($rHeader) {

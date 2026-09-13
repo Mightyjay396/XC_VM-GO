@@ -19,18 +19,18 @@ use XcVm\Domain\Stream\CategoryService;
  */
 
 class StreamCategoryController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $rCategoryArr = null;
+	public function index() {
+		$this->requirePermission();
+		$rCategoryArr = null;
 
-        if (RequestManager::has('id')) {
-            $rCategoryArr = CategoryService::getById(RequestManager::get('id'));
-            if (!$rCategoryArr || !Authorization::check('adv', 'edit_cat')) {
-                exit();
-            }
-        }
+		if (RequestManager::has('id')) {
+			$rCategoryArr = CategoryService::getById(RequestManager::get('id'));
+			if (!$rCategoryArr || !Authorization::check('adv', 'edit_cat')) {
+				exit();
+			}
+		}
 
-        $this->setTitle('Stream Category');
-        $this->render('stream_category', compact('rCategoryArr'));
-    }
+		$this->setTitle('Stream Category');
+		$this->render('stream_category', compact('rCategoryArr'));
+	}
 }

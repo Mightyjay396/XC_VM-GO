@@ -16,4 +16,5 @@ use XcVm\Core\Exception\XcVmException;
  * @copyright 2025-2026 Vateron Media
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
-class ContainerException extends XcVmException implements ContainerExceptionInterface {}
+class ContainerException extends XcVmException implements ContainerExceptionInterface {
+}

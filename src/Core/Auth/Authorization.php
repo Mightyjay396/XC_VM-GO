@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace XcVm\Core\Auth;
 
@@ -48,7 +47,7 @@ class Authorization {
 		}
 
 		if ($rType == 'user') {
-			$rReports = array_map('intval', array_merge(array($rUserInfo['id']), $rPermissions['all_reports']));
+			$rReports = array_map('intval', array_merge([$rUserInfo['id']], $rPermissions['all_reports']));
 
 			if (0 < count($rReports)) {
 				$db->query('SELECT `id` FROM `users` WHERE `id` = ? AND (`owner_id` IN (' . implode(',', $rReports) . ') OR `id` = ?);', $rID, $rUserInfo['id']);
@@ -59,7 +58,7 @@ class Authorization {
 		}
 
 		if ($rType == 'line') {
-			$rReports = array_map('intval', array_merge(array($rUserInfo['id']), $rPermissions['all_reports']));
+			$rReports = array_map('intval', array_merge([$rUserInfo['id']], $rPermissions['all_reports']));
 			if (0 < count($rReports)) {
 				$db->query('SELECT `id` FROM `lines` WHERE `id` = ? AND `member_id` IN (' . implode(',', $rReports) . ');', $rID);
 				return 0 < $db->num_rows();
@@ -72,7 +71,7 @@ class Authorization {
 		}
 
 		if (0 < count($rPermissions['advanced']) && $rUserInfo['member_group_id'] != 1) {
-			return in_array($rID, ($rPermissions['advanced'] ?: array()));
+			return in_array($rID, ($rPermissions['advanced'] ?: []));
 		}
 
 		return true;

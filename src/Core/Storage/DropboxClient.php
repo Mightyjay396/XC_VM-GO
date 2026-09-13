@@ -20,13 +20,21 @@ class DropboxClient {
 	public const UPLOAD_CHUNK_SIZE = 2097152;
 
 	private $appParams;
+
 	private $consumerToken;
+
 	private $requestToken;
+
 	private $accessToken;
+
 	private $rootPath;
+
 	private $useCurl;
+
 	private $curlOptions;
+
 	private $_redirectUri;
+
 	private static $_curlHeadersRef;
 
 	/**
@@ -36,9 +44,9 @@ class DropboxClient {
 	 *
 	 * @throws DropboxException
 	 */
-	public function __construct($app_params = array()) {
+	public function __construct(array $app_params = []) {
 		$this->appParams = $app_params;
-		$this->consumerToken = array('t' => $this->appParams['app_key'], 's' => $this->appParams['app_secret']);
+		$this->consumerToken = ['t' => $this->appParams['app_key'], 's' => $this->appParams['app_secret']];
 		$this->rootPath = (empty($app_params['app_full_access']) ? 'sandbox' : 'dropbox');
 		$this->requestToken = null;
 		$this->accessToken = null;
@@ -63,12 +71,11 @@ class DropboxClient {
 	 * Sets whether to use cURL if its available or PHP HTTP wrappers otherwise
 	 *
 	 * @param boolean $use_it whether to use it or not
-	 * @param array $curlOptions
 	 *
 	 * @return bool Whether to actually use cURL (always false if not installed)
 	 * @throws DropboxException
 	 */
-	public function SetUseCUrl($use_it, $curlOptions = array()) {
+	public function SetUseCUrl(bool $use_it, array $curlOptions = []) {
 		if (!$use_it && !empty($curlOptions)) {
 			throw new DropboxException('not using cURL but specified cURL options');
 		}
@@ -86,7 +93,7 @@ class DropboxClient {
 	 *
 	 * @return string URL
 	 */
-	public function BuildAuthorizeUrl($redirect_uri, $state = '') {
+	public function BuildAuthorizeUrl(string $redirect_uri, string $state = '') {
 		$this->_redirectUri = $redirect_uri;
 
 		return 'https://www.dropbox.com/oauth2/authorize?response_type=code&client_id=' . $this->appParams['app_key'] . '&redirect_uri=' . urlencode($redirect_uri) . '&state=' . urlencode($state);
@@ -101,7 +108,7 @@ class DropboxClient {
 	 * @return array
 	 * @throws DropboxException
 	 */
-	public function GetBearerToken($code = '', $redirect_uri = '') {
+	public function GetBearerToken(string $code = '', string $redirect_uri = '') {
 		if (!empty($this->accessToken)) {
 			return $this->accessToken;
 		}
@@ -122,23 +129,22 @@ class DropboxClient {
 			throw new DropboxException('Redirect URI unknown, please specify or call BuildAuthorizeUrl() before!');
 		}
 
-		$res = $this->apiCall('oauth2/token', array('code' => $code, 'grant_type' => 'authorization_code', 'client_id' => $this->appParams['app_key'], 'client_secret' => $this->appParams['app_secret'], 'redirect_uri' => $this->_redirectUri));
+		$res = $this->apiCall('oauth2/token', ['code' => $code, 'grant_type' => 'authorization_code', 'client_id' => $this->appParams['app_key'], 'client_secret' => $this->appParams['app_secret'], 'redirect_uri' => $this->_redirectUri]);
 
 		if (empty($res) || empty($res->access_token)) {
 			throw new DropboxException(sprintf('Could not get bearer token! (code: %s)', $code));
 		}
 
-		return $this->accessToken = array('t' => $res->access_token, 'account_id' => $res->account_id);
+		return $this->accessToken = ['t' => $res->access_token, 'account_id' => $res->account_id];
 	}
 
 	/**
 	 * Sets a previously retrieved (and stored) bearer token.
 	 *
-	 * @param array|object $token
 	 *
 	 * @throws DropboxException
 	 */
-	public function SetBearerToken($token) {
+	public function SetBearerToken(array|object $token) {
 		$token = (array) $token;
 
 		if (empty($token['t'])) {
@@ -174,14 +180,11 @@ class DropboxClient {
 	}
 
 	/**
-	 * @param string $path
-	 * @param bool $recursive
-	 * @param bool $include_deleted
 	 *
 	 * @return mixed
 	 * @throws DropboxException
 	 */
-	public function GetFiles($path = '', $recursive = false, $include_deleted = false) {
+	public function GetFiles(string $path = '', bool $recursive = false, bool $include_deleted = false) {
 		if (is_object($path) && !empty($path->path)) {
 			$path = $path->path;
 		}
@@ -194,30 +197,28 @@ class DropboxClient {
 		$entries = $res->entries;
 
 		while ($res->has_more) {
-			$res = $this->apiCall('2/files/list_folder/continue', array('cursor' => $res->cursor));
+			$res = $this->apiCall('2/files/list_folder/continue', ['cursor' => $res->cursor]);
 			$entries = array_merge($entries, $res->entries);
 		}
 
-		$entries_assoc = array();
+		$entries_assoc = [];
 
 		foreach ($entries as $entry) {
 			$entries_assoc[trim($entry->path_display, '/')] = $entry;
 		}
 
-		return array_map(array(__CLASS__, 'compatMeta'), $entries_assoc);
+		return array_map([__CLASS__, 'compatMeta'], $entries_assoc);
 	}
 
 	/**
 	 * See https://www.dropbox.com/developers/documentation/http/documentation#files-get_metadata
 	 *
 	 * @param $path
-	 * @param bool $include_deleted
-	 * @param null $rev
 	 *
 	 * @return mixed
 	 * @throws DropboxException
 	 */
-	public function GetMetadata($path, $include_deleted = false, $rev = null) {
+	public function GetMetadata($path, bool $include_deleted = false, null $rev = null) {
 		if (is_object($path) && !empty($path->path)) {
 			$path = $path->path;
 		}
@@ -240,7 +241,7 @@ class DropboxClient {
 	 * @return object Dropbox file metadata
 	 * @throws DropboxException
 	 */
-	public function DownloadFile($path, $dest_path = '', $rev = null, $progress_changed_callback = null) {
+	public function DownloadFile(string|object $path, string $dest_path = '', string $rev = null, ?callable $progress_changed_callback = null) {
 		if (is_object($path) && !empty($path->path)) {
 			$path = $path->path;
 		}
@@ -267,7 +268,7 @@ class DropboxClient {
 			curl_setopt($context, CURLOPT_BINARYTRANSFER, true);
 			curl_setopt($context, CURLOPT_RETURNTRANSFER, true);
 			curl_setopt($context, CURLOPT_FILE, $fh);
-			$response_headers = array();
+			$response_headers = [];
 			self::execCurlAndClose($context, $response_headers);
 			fclose($fh);
 			$meta = self::getMetaFromHeaders($response_headers, true);
@@ -315,7 +316,7 @@ class DropboxClient {
 	 * @param object $meta Dropbox v2 metadata entry.
 	 * @return object The same object with legacy compatibility fields added.
 	 */
-	public static function compatMeta($meta) {
+	public static function compatMeta(object $meta) {
 		$meta->is_dir = $meta->{'.tag'} == 'folder';
 		$meta->path = $meta->path_display;
 		$meta->bytes = (isset($meta->size) ? $meta->size : 0);
@@ -330,12 +331,11 @@ class DropboxClient {
 	 *
 	 * @param string $src_file Local file to upload
 	 * @param string $path Dropbox path for destination
-	 * @param bool $overwrite
 	 *
 	 * @return object Dropbox file metadata
 	 * @throws DropboxException
 	 */
-	public function UploadFile($src_file, $path = '', $overwrite = true) {
+	public function UploadFile(string $src_file, string $path = '', bool $overwrite = true) {
 		if (empty($path)) {
 			$path = basename($src_file);
 		}
@@ -355,7 +355,7 @@ class DropboxClient {
 		}
 
 		$file_size = filesize($src_file);
-		$commit_params = array('path' => $path, 'mode' => $overwrite ? 'overwrite' : 'add', 'autorename' => true);
+		$commit_params = ['path' => $path, 'mode' => $overwrite ? 'overwrite' : 'add', 'autorename' => true];
 
 		if (2097152 < $file_size) {
 			$fh = fopen($src_file, 'rb');
@@ -365,12 +365,12 @@ class DropboxClient {
 			}
 
 			$offset = 0;
-			$res = $this->apiCall('2/files/upload_session/start', array(), true);
+			$res = $this->apiCall('2/files/upload_session/start', [], true);
 			$session_id = $res->session_id;
 
 			while (!feof($fh)) {
 				$content = fread($fh, 2097152);
-				$this->apiCall('2/files/upload_session/append_v2', array('cursor' => compact('session_id', 'offset')), true, $content);
+				$this->apiCall('2/files/upload_session/append_v2', ['cursor' => compact('session_id', 'offset')], true, $content);
 				$offset += strlen($content);
 				unset($content);
 
@@ -381,7 +381,7 @@ class DropboxClient {
 
 			@fclose($fh);
 
-			return $this->apiCall('2/files/upload_session/finish', array('cursor' => compact('session_id', 'offset'), 'commit' => $commit_params), true);
+			return $this->apiCall('2/files/upload_session/finish', ['cursor' => compact('session_id', 'offset'), 'commit' => $commit_params], true);
 		} else {
 			$content = file_get_contents($src_file);
 
@@ -396,14 +396,13 @@ class DropboxClient {
 	 *
 	 * @param $dropbox_file string Path to the image
 	 * @param $format string Image format of the thumbnail (jpeg or png)
-	 * @param bool $echo
 	 * @param $size string Thumbnail size (xs, s, m, l, xl)
 	 *
 	 * @return string Returns the thumbnail as binary image data
 	 */
-	public function GetThumbnail($dropbox_file, $size = 's', $format = 'jpeg', $echo = false) {
+	public function GetThumbnail($dropbox_file, $size = 's', $format = 'jpeg', bool $echo = false) {
 		$path = self::toPath($dropbox_file);
-		$size_transform = array('xs' => 'w32h32', 's' => 'w64h64', 'm' => 'w128h128', 'l' => 'w640h480', 'xl' => 'w1024h768');
+		$size_transform = ['xs' => 'w32h32', 's' => 'w64h64', 'm' => 'w128h128', 'l' => 'w640h480', 'xl' => 'w1024h768'];
 
 		if (isset($size_transform[$size])) {
 			$size = $size_transform[$size];
@@ -433,23 +432,23 @@ class DropboxClient {
 	 * @param int|null $expires  Out-param set to the link expiry (unix timestamp), when available.
 	 * @return string The link URL.
 	 */
-	public function GetLink($path, $preview = true, $_short = true, &$expires = null) {
+	public function GetLink(string $path, bool $preview = true, bool $_short = true, ?int &$expires = null) {
 		$path = self::toPath($path);
 
 		if (!$preview) {
-			$data = $this->apiCall('2/files/get_temporary_link', array('path' => $path));
+			$data = $this->apiCall('2/files/get_temporary_link', ['path' => $path]);
 			$expires = (time() + 14400) - 60;
 
 			return $data->link;
 		} else {
 			try {
-				$url = $this->apiCall('2/sharing/create_shared_link_with_settings', array(
+				$url = $this->apiCall('2/sharing/create_shared_link_with_settings', [
 					'path' => $path,
-					'settings' => array('requested_visibility' => 'public')
-				));
+					'settings' => ['requested_visibility' => 'public']
+				]);
 			} catch (DropboxException $ex) {
 				if ($ex->getTag() == 'shared_link_already_exists') {
-					$publicLinks = array_filter($this->apiCall('2/sharing/list_shared_links', array('path' => $path))->links, function ($link) {
+					$publicLinks = array_filter($this->apiCall('2/sharing/list_shared_links', ['path' => $path])->links, function ($link) {
 						return ($link->{'.tag'} == 'file') && ($link->link_permissions->resolved_visibility->{'.tag'} == 'public');
 					});
 					$url = reset($publicLinks);
@@ -468,8 +467,8 @@ class DropboxClient {
 	 * @param string $cursor Cursor from a previous Delta()/LatestCursor() call.
 	 * @return object Delta response (entries + new cursor).
 	 */
-	public function Delta($cursor) {
-		return $this->apiCall('2/files/list_folder/continue', array_merge(compact('cursor'), array()));
+	public function Delta(string $cursor) {
+		return $this->apiCall('2/files/list_folder/continue', array_merge(compact('cursor'), []));
 	}
 
 	/**
@@ -479,7 +478,7 @@ class DropboxClient {
 	 * @param bool   $include_media_info Include media info in the cursor scope.
 	 * @return object Response containing the cursor.
 	 */
-	public function LatestCursor($path = '', $include_media_info = false) {
+	public function LatestCursor(string $path = '', bool $include_media_info = false) {
 		$res = $this->apiCall('2/files/list_folder/get_latest_cursor', compact('path', 'include_media_info'));
 
 		return $res->cursor;
@@ -492,7 +491,7 @@ class DropboxClient {
 	 * @param int    $limit Maximum number of revisions to return.
 	 * @return object Response containing the revision list.
 	 */
-	public function GetRevisions($path, $limit = 10) {
+	public function GetRevisions(string $path, int $limit = 10) {
 		$path = self::toPath($path);
 
 		return $this->apiCall('2/files/list_revisions', compact('path', 'limit'))->entries;
@@ -505,7 +504,7 @@ class DropboxClient {
 	 * @param string        $rev          Revision id to restore.
 	 * @return object Metadata of the restored file.
 	 */
-	public function Restore($dropbox_file, $rev) {
+	public function Restore(string|object $dropbox_file, string $rev) {
 		if (is_object($dropbox_file) && !empty($dropbox_file->path)) {
 			$dropbox_file = $dropbox_file->path;
 		}
@@ -522,10 +521,10 @@ class DropboxClient {
 	 * @param bool   $include_deleted Include deleted entries.
 	 * @return array<object> Matched metadata entries.
 	 */
-	public function Search($path, $query, $max_results = 1000, $include_deleted = false) {
+	public function Search(string $path, string $query, int $max_results = 1000, bool $include_deleted = false) {
 		$path = self::toPath($path);
 		$mode = ($include_deleted ? 'deleted_filename' : 'filename');
-		$meta = array();
+		$meta = [];
 
 		foreach ($this->apiCall('2/files/search', compact('path', 'query', 'max_results', 'mode'))->matches as $match) {
 			$meta[] = self::compatMeta($match->metadata);
@@ -541,7 +540,7 @@ class DropboxClient {
 	 * @param int|false|null $expires     Out-param set to the reference expiry (unix timestamp, or false if unparseable).
 	 * @return object Copy-reference response.
 	 */
-	public function GetCopyRef($dropbox_file, &$expires = null) {
+	public function GetCopyRef(string|object $dropbox_file, int|false|null &$expires = null) {
 		if (is_object($dropbox_file) && !empty($dropbox_file->path)) {
 			$dropbox_file = $dropbox_file->path;
 		}
@@ -560,12 +559,12 @@ class DropboxClient {
 	 * @param bool   $copy_ref  Treat $from_path as a copy reference.
 	 * @return object Metadata of the copy.
 	 */
-	public function Copy($from_path, $to_path, $copy_ref = false) {
+	public function Copy(string $from_path, string $to_path, bool $copy_ref = false) {
 		if (is_object($from_path) && !empty($from_path->path)) {
 			$from_path = $from_path->path;
 		}
 
-		return $this->apiCall('fileops/copy', array('root' => $this->rootPath, $copy_ref ? 'from_copy_ref' : 'from_path' => $from_path, 'to_path' => $to_path));
+		return $this->apiCall('fileops/copy', ['root' => $this->rootPath, $copy_ref ? 'from_copy_ref' : 'from_path' => $from_path, 'to_path' => $to_path]);
 	}
 
 	/**
@@ -574,12 +573,11 @@ class DropboxClient {
 	 * @access public
 	 *
 	 * @param $path string The path to the new folder to create
-	 * @param bool $autorename
 	 *
 	 * @return object Dropbox folder metadata
 	 */
-	public function CreateFolder($path, $autorename = false) {
-		$res = $this->apiCall('2/files/create_folder_v2', array('path' => $path, 'autorename' => $autorename));
+	public function CreateFolder($path, bool $autorename = false) {
+		$res = $this->apiCall('2/files/create_folder_v2', ['path' => $path, 'autorename' => $autorename]);
 		$res->metadata->{'.tag'} = 'folder';
 
 		return self::compatMeta($res->metadata);
@@ -597,7 +595,7 @@ class DropboxClient {
 			$path = $path->path;
 		}
 
-		$res = $this->apiCall('2/files/delete_v2', array('path' => $path));
+		$res = $this->apiCall('2/files/delete_v2', ['path' => $path]);
 
 		return self::compatMeta($res->metadata);
 	}
@@ -609,12 +607,12 @@ class DropboxClient {
 	 * @param string $to_path   Destination path.
 	 * @return object Metadata of the moved entry.
 	 */
-	public function Move($from_path, $to_path) {
+	public function Move(string $from_path, string $to_path) {
 		if (is_object($from_path) && !empty($from_path->path)) {
 			$from_path = $from_path->path;
 		}
 
-		return $this->apiCall('fileops/move', array('root' => $this->rootPath, 'from_path' => $from_path, 'to_path' => $to_path));
+		return $this->apiCall('fileops/move', ['root' => $this->rootPath, 'from_path' => $from_path, 'to_path' => $to_path]);
 	}
 
 	/**
@@ -624,9 +622,9 @@ class DropboxClient {
 	 * @param array  $http_context Context with method, header and optional content.
 	 * @return \CurlHandle Configured cURL handle.
 	 */
-	private function createCurl($url, $http_context) {
+	private function createCurl(string $url, array $http_context) {
 		$ch = curl_init($url);
-		$curl_opts = array(CURLOPT_HEADER => false, CURLOPT_RETURNTRANSFER => true, CURLOPT_SSL_VERIFYPEER => false, CURLOPT_BINARYTRANSFER => true);
+		$curl_opts = [CURLOPT_HEADER => false, CURLOPT_RETURNTRANSFER => true, CURLOPT_SSL_VERIFYPEER => false, CURLOPT_BINARYTRANSFER => true];
 		$curl_opts[CURLOPT_CUSTOMREQUEST] = $http_context['method'];
 
 		if (!empty($http_context['content'])) {
@@ -659,7 +657,7 @@ class DropboxClient {
 	 * @param string               $header A single response header line.
 	 * @return int Number of bytes processed (required by cURL).
 	 */
-	private static function _curlHeaderCallback($ch, $header) {
+	private static function _curlHeaderCallback($ch, string $header) {
 		self::$_curlHeadersRef[] = trim($header);
 
 		return strlen($header);
@@ -673,10 +671,10 @@ class DropboxClient {
 	 * @return mixed The response body (by reference).
 	 * @throws DropboxException On cURL error.
 	 */
-	private static function &execCurlAndClose($ch, &$out_response_headers = null) {
+	private static function &execCurlAndClose($ch, ?array &$out_response_headers = null) {
 		if (is_array($out_response_headers)) {
 			self::$_curlHeadersRef = &$out_response_headers;
-			curl_setopt($ch, CURLOPT_HEADERFUNCTION, array(__CLASS__, '_curlHeaderCallback'));
+			curl_setopt($ch, CURLOPT_HEADERFUNCTION, [__CLASS__, '_curlHeaderCallback']);
 		}
 
 		$res = curl_exec($ch);
@@ -694,17 +692,15 @@ class DropboxClient {
 	/**
 	 * @param $url string
 	 * @param $params
-	 * @param string $content
-	 * @param int $bearer_token
 	 *
 	 * @return \CurlHandle|resource cURL handle (when useCurl) or a stream context resource
 	 */
-	private function createRequestContext($url, $params, &$content = '', $bearer_token = -1) {
+	private function createRequestContext($url, $params, string &$content = '', int $bearer_token = -1) {
 		if ($bearer_token === -1) {
 			$bearer_token = $this->accessToken['t'];
 		}
 
-		$http_context = array('method' => 'POST', 'header' => '', 'content' => '');
+		$http_context = ['method' => 'POST', 'header' => '', 'content' => ''];
 
 		if (strpos($url, '/oauth2/token') !== false) {
 			$http_context['header'] .= 'Content-Type: application/x-www-form-urlencoded' . "\r\n";
@@ -736,17 +732,15 @@ class DropboxClient {
 		$http_context['header'] = trim($http_context['header']);
 		$http_context['ignore_errors'] = true;
 
-		return $this->useCurl ? $this->createCurl($url, $http_context) : stream_context_create(array('http' => $http_context));
+		return $this->useCurl ? $this->createCurl($url, $http_context) : stream_context_create(['http' => $http_context]);
 	}
 
 	/**
-	 * @param object $resp
-	 * @param string $context
 	 *
 	 * @return object
 	 * @throws DropboxException
 	 */
-	private static function checkForError($resp, $context = null) {
+	private static function checkForError(object $resp, string $context = null) {
 		if (!empty($resp->error)) {
 			throw new DropboxException($resp, $context);
 		}
@@ -755,15 +749,11 @@ class DropboxClient {
 	}
 
 	/**
-	 * @param string $path
-	 * @param array $params
-	 * @param bool $content_call
-	 * @param string $content
 	 *
 	 * @return object
 	 * @throws DropboxException
 	 */
-	private function doSingleCall($path, $params = array(), $content_call = false, &$content = '') {
+	private function doSingleCall(string $path, array $params = [], bool $content_call = false, string &$content = '') {
 		$url = self::cleanUrl(($content_call ? 'https://content.dropboxapi.com/' : 'https://api.dropboxapi.com/') . $path);
 		$context = $this->createRequestContext($url, $params, $content);
 		$json = ($this->useCurl ? self::execCurlAndClose($context) : file_get_contents($url, false, $context));
@@ -772,7 +762,7 @@ class DropboxClient {
 		if (is_null($resp) && $content_call) {
 			// Content calls (e.g. upload_session/append) may return an empty body;
 			// hand back an empty object so the declared object return type holds.
-			return (object) array();
+			return (object) [];
 		}
 
 		if (is_null($resp) && !empty($json)) {
@@ -787,10 +777,8 @@ class DropboxClient {
 	}
 
 	/**
-	 * @param object $target
-	 * @param object $part
 	 */
-	private static function mergeContinue(&$target, $part) {
+	private static function mergeContinue(object &$target, object $part) {
 		$keys = array_keys(get_object_vars($target));
 
 		foreach ($keys as $k) {
@@ -804,15 +792,11 @@ class DropboxClient {
 	}
 
 	/**
-	 * @param string $path
-	 * @param array $params
-	 * @param bool $content_call
-	 * @param string $content
 	 *
 	 * @return object
 	 * @throws DropboxException
 	 */
-	private function apiCall($path, $params = array(), $content_call = false, &$content = '') {
+	private function apiCall(string $path, array $params = [], bool $content_call = false, string &$content = '') {
 		$resp = $this->doSingleCall($path, $params, $content_call, $content);
 
 		if (!empty($resp->has_more) && (strpos($path, '/continue') === false)) {
@@ -839,7 +823,7 @@ class DropboxClient {
 	 * @return object Normalized metadata object.
 	 * @throws DropboxException When metadata cannot be parsed and $throw_on_error is true.
 	 */
-	private static function getMetaFromHeaders(&$header_array, $throw_on_error = false) {
+	private static function getMetaFromHeaders(array &$header_array, bool $throw_on_error = false) {
 		$rApiHeaders = array_filter($header_array, function ($s) {
 			return stripos($s, 'dropbox-api-result:') === 0;
 		});
@@ -863,7 +847,7 @@ class DropboxClient {
 	 * @param string|object $file_or_path Path string or metadata object.
 	 * @return string Leading-slash path ('' for root).
 	 */
-	private static function toPath($file_or_path) {
+	private static function toPath(string|object $file_or_path) {
 		if (is_object($file_or_path)) {
 			$file_or_path = $file_or_path->path;
 		}
@@ -883,7 +867,7 @@ class DropboxClient {
 	 * @param string $url Full URL (scheme + path).
 	 * @return string Encoded URL.
 	 */
-	private static function cleanUrl($url) {
+	private static function cleanUrl(string $url) {
 		$p = substr($url, 0, 8);
 		$url = str_replace('//', '/', str_replace('\\', '/', substr($url, 8)));
 		$url = rawurlencode($url);
@@ -899,7 +883,7 @@ class DropboxClient {
 	 * @param int      $chunksize Read chunk size in bytes.
 	 * @return string Hex-encoded Dropbox content hash.
 	 */
-	public static function contentHashStream($stream, $chunksize = 8192) {
+	public static function contentHashStream($stream, int $chunksize = 8192) {
 		static $BLOCK_SIZE = 4194304;
 		$streamhasher = hash_init('sha256');
 		$blockhasher = hash_init('sha256');
@@ -938,7 +922,7 @@ class DropboxClient {
 	 * @param string $localFileName Path to the local file.
 	 * @return string Hex-encoded Dropbox content hash.
 	 */
-	public static function contentHashFile($localFileName) {
+	public static function contentHashFile(string $localFileName) {
 		$handle = fopen($localFileName, 'r');
 		$hash = self::contentHashStream($handle);
 		fclose($handle);

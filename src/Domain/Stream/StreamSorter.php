@@ -22,7 +22,7 @@ class StreamSorter {
 	 * @param int|string $rYear  Year (only applied when a valid 1900..next-year value).
 	 * @return string Formatted title.
 	 */
-	public static function formatTitle($rTitle, $rYear) {
+	public static function formatTitle(string $rTitle, int|string $rYear) {
 		if (is_numeric($rYear) && 1900 <= $rYear && $rYear <= intval(date('Y') + 1)) {
 			if (SettingsManager::get('movie_year_append') == 0) {
 				return trim($rTitle) . ' (' . $rYear . ')';
@@ -43,14 +43,14 @@ class StreamSorter {
 	 * @param int[] $rChannels Channel ids.
 	 * @return int[] Reordered channel ids.
 	 */
-	public static function sortChannels($rChannels) {
+	public static function sortChannels(array $rChannels) {
 		if (!(0 < count($rChannels) && file_exists(CACHE_TMP_PATH . 'channel_order') && SettingsManager::get('channel_number_type') != 'bouquet')) {
 			return $rChannels;
 		}
 
 		$rOrder = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'channel_order'));
 		$rChannels = array_flip($rChannels);
-		$rNewOrder = array();
+		$rNewOrder = [];
 
 		foreach ($rOrder as $rID) {
 			if (isset($rChannels[$rID])) {
@@ -71,14 +71,14 @@ class StreamSorter {
 	 * @param int[] $rSeries Series ids.
 	 * @return int[] Reordered series ids (input unchanged if no cached order).
 	 */
-	public static function sortSeries($rSeries) {
+	public static function sortSeries(array $rSeries) {
 		if (!(0 < count($rSeries) && file_exists(CACHE_TMP_PATH . 'series_order'))) {
 			return $rSeries;
 		}
 
 		$rOrder = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'series_order'));
 		$rSeries = array_flip($rSeries);
-		$rNewOrder = array();
+		$rNewOrder = [];
 
 		foreach ($rOrder as $rID) {
 			if (isset($rSeries[$rID])) {
@@ -100,7 +100,7 @@ class StreamSorter {
 	 * @param int|float $rSearch Target value.
 	 * @return mixed The closest value, or null if the array is empty.
 	 */
-	public static function getNearest($rArray, $rSearch) {
+	public static function getNearest(array $rArray, int|float $rSearch) {
 		$rClosest = null;
 		foreach ($rArray as $rItem) {
 			if ($rClosest === null || abs($rItem - $rSearch) < abs($rSearch - $rClosest)) {

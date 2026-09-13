@@ -17,12 +17,12 @@ use XcVm\Domain\Stream\StreamConfigRepository;
  */
 
 class ProfileController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Transcoding Profiles');
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Transcoding Profiles');
 
-        $this->render('profiles', [
-            'profiles' => StreamConfigRepository::getTranscodeProfiles(),
-        ]);
-    }
+		$this->render('profiles', [
+			'profiles' => StreamConfigRepository::getTranscodeProfiles(),
+		]);
+	}
 }

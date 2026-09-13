@@ -11,13 +11,12 @@ use XcVm\Core\Module\QuickToolsRegistry;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 interface QuickToolsProviderInterface {
-
-    /**
-     * Register one-shot Quick Tools actions via the provided registry.
-     *
-     * Called in bootAll() (same phase as the other providers), before the Quick
-     * Tools page renders and before post.php dispatches the action. Each tool
-     * contributes a button and a handler owned by the module.
-     */
-    public function registerQuickTools(QuickToolsRegistry $registry): void;
+	/**
+	 * Register one-shot Quick Tools actions via the provided registry.
+	 *
+	 * Called in bootAll() (same phase as the other providers), before the Quick
+	 * Tools page renders and before post.php dispatches the action. Each tool
+	 * contributes a button and a handler owned by the module.
+	 */
+	public function registerQuickTools(QuickToolsRegistry $registry): void;
 }

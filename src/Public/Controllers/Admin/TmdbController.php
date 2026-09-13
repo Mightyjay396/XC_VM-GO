@@ -21,49 +21,48 @@ use XcVm\Infrastructure\Tmdb\TmdbApiService;
  */
 
 class TmdbController {
+	public function search(): void {
+		if (!$this->hasMediaPermission()) {
+			echo json_encode(['result' => false]);
+			exit();
+		}
 
-    public function search(): void {
-        if (!$this->hasMediaPermission()) {
-            echo json_encode(['result' => false]);
-            exit();
-        }
+		$term = RequestManager::get('term') ?? '';
+		if (strlen($term) === 0) {
+			echo json_encode(['result' => false]);
+			exit();
+		}
 
-        $term = RequestManager::get('term') ?? '';
-        if (strlen($term) === 0) {
-            echo json_encode(['result' => false]);
-            exit();
-        }
+		$type     = RequestManager::get('type') ?? 'movie';
+		$language = RequestManager::get('language') ?? null;
+		$season   = RequestManager::has('season') ? intval(RequestManager::get('season')) : null;
 
-        $type     = RequestManager::get('type')     ?? 'movie';
-        $language = RequestManager::get('language')  ?? null;
-        $season   = RequestManager::has('season') ? intval(RequestManager::get('season')) : null;
+		$response = TmdbApiService::search($term, $type, $language ?: null, $season);
+		echo json_encode($response);
+		exit();
+	}
 
-        $response = TmdbApiService::search($term, $type, $language ?: null, $season);
-        echo json_encode($response);
-        exit();
-    }
+	public function details(): void {
+		if (!$this->hasMediaPermission()) {
+			echo json_encode(['result' => false]);
+			exit();
+		}
 
-    public function details(): void {
-        if (!$this->hasMediaPermission()) {
-            echo json_encode(['result' => false]);
-            exit();
-        }
+		$id       = intval(RequestManager::get('id') ?? 0);
+		$type     = RequestManager::get('type') ?? '';
+		$language = RequestManager::get('language') ?? null;
 
-        $id       = intval(RequestManager::get('id')       ?? 0);
-        $type     = RequestManager::get('type')             ?? '';
-        $language = RequestManager::get('language')         ?? null;
+		$response = TmdbApiService::getDetails($id, $type, $language ?: null);
+		echo json_encode($response);
+		exit();
+	}
 
-        $response = TmdbApiService::getDetails($id, $type, $language ?: null);
-        echo json_encode($response);
-        exit();
-    }
-
-    private function hasMediaPermission(): bool {
-        return Authorization::check('adv', 'add_series')
-            || Authorization::check('adv', 'edit_series')
-            || Authorization::check('adv', 'add_movie')
-            || Authorization::check('adv', 'edit_movie')
-            || Authorization::check('adv', 'add_episode')
-            || Authorization::check('adv', 'edit_episode');
-    }
+	private function hasMediaPermission(): bool {
+		return Authorization::check('adv', 'add_series')
+			|| Authorization::check('adv', 'edit_series')
+			|| Authorization::check('adv', 'add_movie')
+			|| Authorization::check('adv', 'edit_movie')
+			|| Authorization::check('adv', 'add_episode')
+			|| Authorization::check('adv', 'edit_episode');
+	}
 }

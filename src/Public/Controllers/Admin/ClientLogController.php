@@ -15,8 +15,8 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class ClientLogController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->render('client_logs');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->render('client_logs');
+	}
 }

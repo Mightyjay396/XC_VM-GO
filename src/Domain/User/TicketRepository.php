@@ -16,13 +16,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class TicketRepository {
 	use DatabaseAware;
+
 	/**
 	 * Fetch a single ticket (with its messages) by id.
 	 *
 	 * @param int $rID Ticket id.
 	 * @return array|false The ticket row, or false if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `tickets` WHERE `id` = ?;', $rID);
 
@@ -31,7 +32,7 @@ class TicketRepository {
 		}
 
 		$rRow = $db->get_row();
-		$rRow['replies'] = array();
+		$rRow['replies'] = [];
 		$rRow['title'] = htmlspecialchars($rRow['title']);
 		$db->query('SELECT * FROM `tickets_replies` WHERE `ticket_id` = ? ORDER BY `date` ASC;', $rID);
 
@@ -56,17 +57,17 @@ class TicketRepository {
 	 * @param bool     $rAdmin Use admin scope (all tickets).
 	 * @return array Ticket rows.
 	 */
-	public static function getAll($rID = null, $rAdmin = false) {
+	public static function getAll(?int $rID = null, bool $rAdmin = false) {
 		$db = self::db();
 		global $rUserInfo;
 		global $rPermissions;
-		$rReturn = array();
+		$rReturn = [];
 
 		if ($rID) {
 			if ($rAdmin) {
 				$db->query('SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, `users`.`username` FROM `tickets`, `users` WHERE `member_id` IN (SELECT `id` FROM `users` WHERE `owner_id` = ?) AND `users`.`id` = `tickets`.`member_id` ORDER BY `id` DESC;', $rID);
 			} else {
-				$db->query('SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, `users`.`username` FROM `tickets`, `users` WHERE `member_id` IN (' . implode(',', array_map('intval', array_merge(array($rUserInfo['id']), $rPermissions['all_reports']))) . ') AND `users`.`id` = `tickets`.`member_id` ORDER BY `id` DESC;');
+				$db->query('SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, `users`.`username` FROM `tickets`, `users` WHERE `member_id` IN (' . implode(',', array_map('intval', array_merge([$rUserInfo['id']], $rPermissions['all_reports']))) . ') AND `users`.`id` = `tickets`.`member_id` ORDER BY `id` DESC;');
 			}
 		} else {
 			$db->query('SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, `users`.`username` FROM `tickets`, `users` WHERE `users`.`id` = `tickets`.`member_id` ORDER BY `id` DESC;');
@@ -136,7 +137,7 @@ class TicketRepository {
 	 * @param int $rID Ticket id.
 	 * @return bool True on deletion, false if not found.
 	 */
-	public static function deleteById($rID) {
+	public static function deleteById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT `id` FROM `tickets` WHERE `id` = ?;', $rID);
 

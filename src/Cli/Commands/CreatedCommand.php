@@ -20,7 +20,6 @@ use XcVm\Streaming\Codec\FFprobeRunner;
  */
 
 class CreatedCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'created';
 	}
@@ -71,7 +70,7 @@ class CreatedCommand implements CommandInterface {
 		$rServerInfo['cchannel_rsources'] = json_decode($rServerInfo['cchannel_rsources'], true);
 
 		if (!$rServerInfo['cchannel_rsources']) {
-			$rServerInfo['cchannel_rsources'] = array();
+			$rServerInfo['cchannel_rsources'] = [];
 		}
 
 		$rSourcesLeft = array_diff($rStreamInfo['stream_source'], $rServerInfo['cchannel_rsources']);
@@ -133,13 +132,14 @@ class CreatedCommand implements CommandInterface {
 						. (isset($rEncode['speed']) ? ' @ ' . $rEncode['speed'] : '') . "\n";
 
 					$db->db_connect();
-					$db->query('UPDATE `streams_servers` SET `progress_info` = ? WHERE `server_stream_id` = ?', json_encode(array('cc_encode' => array(
+					$db->query('UPDATE `streams_servers` SET `progress_info` = ? WHERE `server_stream_id` = ?', json_encode(['cc_encode' => [
 						'source'   => $rDone + 1,
 						'total'    => $rTotal,
 						'pct'      => $rPct,
 						'out_time' => gmdate('H:i:s', (int) $rOutSecs),
 						'speed'    => ($rEncode['speed'] ?? null),
-					))), $rServerInfo['server_stream_id']);
+					]
+					]), $rServerInfo['server_stream_id']);
 					$db->close_mysql();
 				}
 			}
@@ -187,17 +187,19 @@ class CreatedCommand implements CommandInterface {
 
 		$rInt = $rSeconds = 0;
 		$rList = explode("\n", file_get_contents(CREATED_PATH . $rStreamID . '_.list'));
-		$rReturn = array();
+		$rReturn = [];
 
 		foreach ($rList as $rItem) {
 			$parts = explode("'", $rItem);
-			if (!isset($parts[1])) continue;
+			if (!isset($parts[1])) {
+				continue;
+			}
 
 			$rFilename = $parts[1];
 
 			if (file_exists($rFilename)) {
 				$rFileInfo = FFprobeRunner::probeStream($rFilename);
-				$rReturn[] = array(
+				$rReturn[] = [
 					'position' => $rInt,
 					'filename' => basename($rFilename),
 					'path' => $rFilename,
@@ -205,7 +207,7 @@ class CreatedCommand implements CommandInterface {
 					'seconds' => $rFileInfo['of_duration'],
 					'start' => $rSeconds,
 					'finish' => $rSeconds + $rFileInfo['of_duration']
-				);
+				];
 
 				$rSeconds += $rFileInfo['of_duration'];
 				$rInt++;
@@ -227,12 +229,12 @@ class CreatedCommand implements CommandInterface {
 	 */
 	private function readEncodeProgress(string $rFile): array {
 		if (!is_file($rFile)) {
-			return array();
+			return [];
 		}
 
 		$rHandle = @fopen($rFile, 'r');
 		if (!$rHandle) {
-			return array();
+			return [];
 		}
 		if (filesize($rFile) > 4096) {
 			fseek($rHandle, -4096, SEEK_END);
@@ -240,7 +242,7 @@ class CreatedCommand implements CommandInterface {
 		$rTail = stream_get_contents($rHandle);
 		fclose($rHandle);
 
-		$rOutput = array();
+		$rOutput = [];
 		foreach (array_filter(array_map('trim', explode("\n", (string) $rTail))) as $rRow) {
 			$rParts = explode('=', $rRow, 2);
 			if (count($rParts) == 2) {

@@ -23,178 +23,178 @@ use XcVm\Streaming\Health\ProcessChecker;
  */
 
 class VodCronJob implements CommandInterface {
-    use CronTrait;
+	use CronTrait;
 
-    public function getName(): string {
-        return 'cron:vod';
-    }
+	public function getName(): string {
+		return 'cron:vod';
+	}
 
-    public function getDescription(): string {
-        return 'Cron: check VOD/channels, start recordings, analyze media';
-    }
+	public function getDescription(): string {
+		return 'Cron: check VOD/channels, start recordings, analyze media';
+	}
 
-    public function execute(array $rArgs): int {
-        if (!$this->assertRunAsXcVm()) {
-            return 1;
-        }
+	public function execute(array $rArgs): int {
+		if (!$this->assertRunAsXcVm()) {
+			return 1;
+		}
 
-        $this->initCron('XC_VM[VOD]');
-        $this->loadCron();
+		$this->initCron('XC_VM[VOD]');
+		$this->loadCron();
 
-        return 0;
-    }
+		return 0;
+	}
 
-    private function loadCron(): void {
-        global $db;
+	private function loadCron(): void {
+		global $db;
 
-        $db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t3 ON t3.stream_id = t1.id LEFT JOIN `profiles` t2 ON t2.profile_id = t1.transcode_profile_id WHERE t1.type = 3 AND t3.server_id = ? AND t3.parent_id IS NULL;', SERVER_ID);
-        if ($db->num_rows() > 0) {
-            $rStreams = $db->get_rows();
-            foreach ($rStreams as $rStream) {
-                echo "\n\n" . '[*] Checking Stream ' . $rStream['stream_display_name'] . "\n";
-                $rCreateFile = CREATED_PATH . $rStream['id'] . '_.create';
-                $rPID = is_file($rCreateFile) ? intval(file_get_contents($rCreateFile)) : 0;
-                if ($rPID && ProcessChecker::checkPID($rPID, 'XC_VMCreate[' . intval($rStream['id']) . ']')) {
-                    echo "\t" . 'Build Is Still Going!' . "\n";
-                } else {
-                    $rSourcesLeft = array_diff(json_decode($rStream['stream_source'], true), json_decode($rStream['cchannel_rsources'], true));
-                    if (count($rSourcesLeft) > 0) {
-                        echo "\t" . 'Needs Updating!' . "\n";
-                        StreamProcess::queueChannel($rStream['id']);
-                    } else {
-                        if (file_exists(CREATED_PATH . $rStream['id'] . '_.info')) {
-                            $rCCInfo = file_get_contents(CREATED_PATH . $rStream['id'] . '_.info');
-                            $db->query('UPDATE `streams_servers` SET `cc_info` = ? WHERE `server_id` = ? AND `stream_id` = ?;', $rCCInfo, SERVER_ID, $rStream['id']);
-                            unlink(CREATED_PATH . $rStream['id'] . '_.info');
-                        }
-                        echo "\t" . 'Build Finished' . "\n";
-                    }
-                }
-            }
-        }
+		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t3 ON t3.stream_id = t1.id LEFT JOIN `profiles` t2 ON t2.profile_id = t1.transcode_profile_id WHERE t1.type = 3 AND t3.server_id = ? AND t3.parent_id IS NULL;', SERVER_ID);
+		if ($db->num_rows() > 0) {
+			$rStreams = $db->get_rows();
+			foreach ($rStreams as $rStream) {
+				echo "\n\n" . '[*] Checking Stream ' . $rStream['stream_display_name'] . "\n";
+				$rCreateFile = CREATED_PATH . $rStream['id'] . '_.create';
+				$rPID = is_file($rCreateFile) ? intval(file_get_contents($rCreateFile)) : 0;
+				if ($rPID && ProcessChecker::checkPID($rPID, 'XC_VMCreate[' . intval($rStream['id']) . ']')) {
+					echo "\t" . 'Build Is Still Going!' . "\n";
+				} else {
+					$rSourcesLeft = array_diff(json_decode($rStream['stream_source'], true), json_decode($rStream['cchannel_rsources'], true));
+					if (count($rSourcesLeft) > 0) {
+						echo "\t" . 'Needs Updating!' . "\n";
+						StreamProcess::queueChannel($rStream['id']);
+					} else {
+						if (file_exists(CREATED_PATH . $rStream['id'] . '_.info')) {
+							$rCCInfo = file_get_contents(CREATED_PATH . $rStream['id'] . '_.info');
+							$db->query('UPDATE `streams_servers` SET `cc_info` = ? WHERE `server_id` = ? AND `stream_id` = ?;', $rCCInfo, SERVER_ID, $rStream['id']);
+							unlink(CREATED_PATH . $rStream['id'] . '_.info');
+						}
+						echo "\t" . 'Build Finished' . "\n";
+					}
+				}
+			}
+		}
 
-        $db->query('SELECT `id` FROM `recordings` WHERE `status` NOT IN (1,2) AND `source_id` = ? AND ((`start` <= UNIX_TIMESTAMP() AND `end` > UNIX_TIMESTAMP()) OR (`archive` = 1));', SERVER_ID);
-        if ($db->num_rows() > 0) {
-            foreach ($db->get_rows() as $rRow) {
-                echo 'Start recording ID: ' . intval($rRow['id']) . "\n";
-                shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php record ' . intval($rRow['id']) . ' > /dev/null 2>/dev/null &');
-            }
-        }
+		$db->query('SELECT `id` FROM `recordings` WHERE `status` NOT IN (1,2) AND `source_id` = ? AND ((`start` <= UNIX_TIMESTAMP() AND `end` > UNIX_TIMESTAMP()) OR (`archive` = 1));', SERVER_ID);
+		if ($db->num_rows() > 0) {
+			foreach ($db->get_rows() as $rRow) {
+				echo 'Start recording ID: ' . intval($rRow['id']) . "\n";
+				shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php record ' . intval($rRow['id']) . ' > /dev/null 2>/dev/null &');
+			}
+		}
 
-        exec("ps ax | grep 'ffmpeg' | awk '{print \$1}'", $rPIDs);
+		exec("ps ax | grep 'ffmpeg' | awk '{print \$1}'", $rPIDs);
 
-        $db->query('SELECT COUNT(*) AS `count` FROM `streams_servers` WHERE `to_analyze` = 1 AND `server_id` = ?', SERVER_ID);
-        $rCount = $db->get_row()['count'];
+		$db->query('SELECT COUNT(*) AS `count` FROM `streams_servers` WHERE `to_analyze` = 1 AND `server_id` = ?', SERVER_ID);
+		$rCount = $db->get_row()['count'];
 
-        if ($rCount > 0) {
-            if ($rCount <= 1000) {
-                $rSteps = [0, $rCount];
-            } else {
-                $rSteps = range(0, $rCount, 1000);
-            }
-            if (!$rSteps) {
-                $rSteps = array(0);
-            }
+		if ($rCount > 0) {
+			if ($rCount <= 1000) {
+				$rSteps = [0, $rCount];
+			} else {
+				$rSteps = range(0, $rCount, 1000);
+			}
+			if (!$rSteps) {
+				$rSteps = [0];
+			}
 
-            foreach ($rSteps as $rStep) {
-                $db->query('SELECT t1.*,t2.* FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type AND t3.live = 0 WHERE t1.to_analyze = 1 AND t1.server_id = ? LIMIT ' . $rStep . ', 1000', SERVER_ID);
-                if ($db->num_rows() <= 0) {
-                    continue;
-                }
+			foreach ($rSteps as $rStep) {
+				$db->query('SELECT t1.*,t2.* FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type AND t3.live = 0 WHERE t1.to_analyze = 1 AND t1.server_id = ? LIMIT ' . $rStep . ', 1000', SERVER_ID);
+				if ($db->num_rows() <= 0) {
+					continue;
+				}
 
-                $rRows = $db->get_rows();
-                foreach ($rRows as $rRow) {
-                    echo '[*] Checking Movie ' . $rRow['stream_display_name'] . ' ' . "\t\t" . '---> ';
-                    if (in_array($rRow['pid'], $rPIDs)) {
-                        echo 'ENCODING...' . "\n";
-                    } else {
-                        $rMoviePath = VOD_PATH . intval($rRow['stream_id']) . '.' . escapeshellcmd($rRow['target_container']);
-                        if ($rFFProbee = FFprobeRunner::probeStream($rMoviePath)) {
-                            if (!isset($rFFProbee['codecs']['video']) || !is_array($rFFProbee['codecs']['video'])) {
-                                // ffprobe opened the file but found no usable video stream
-                                // (e.g. a truncated/placeholder upload): parseFFProbe returns
-                                // '' for the missing codec, and the VALID branch below treats
-                                // it as an array ($rFFProbee['codecs']['video']['codec_name']),
-                                // which is a TypeError on PHP 8 that aborts the whole analyzer
-                                // run and leaves every remaining movie stuck in `to_analyze = 1`
-                                // (yellow) forever. Treat such a file as broken instead.
-                                $db->query('UPDATE `streams_servers` SET `to_analyze` = 0,`stream_status` = 1 WHERE `server_stream_id` = ?', $rRow['server_stream_id']);
-                                echo 'BROKEN (no video stream)' . "\n";
-                                StreamProcess::updateStream($rRow['stream_id']);
-                                continue;
-                            }
-                            // ffprobe (especially over network/rclone mounts) can still
-                            // return a partial result for an odd file — e.g. a video stream
-                            // but no audio, where parseFFProbe stores '' (a string) instead
-                            // of an array. The VALID branch dereferences these as arrays
-                            // ($rFFProbee['codecs']['audio']['codec_name']), a TypeError on
-                            // PHP 8 that aborts the whole run. Normalise to arrays.
-                            foreach (array('video', 'audio') as $rCodecKind) {
-                                if (!is_array($rFFProbee['codecs'][$rCodecKind] ?? null)) {
-                                    $rFFProbee['codecs'][$rCodecKind] = array();
-                                }
-                            }
-                            $rDuration = (isset($rFFProbee['duration']) ? $rFFProbee['duration'] : 0);
-                            sscanf($rDuration, '%d:%d:%d', $rHours, $rMinutes, $rSeconds);
-                            $rSeconds = (isset($rSeconds) ? $rHours * 3600 + $rMinutes * 60 + $rSeconds : $rHours * 60 + $rMinutes);
-                            $rSize = filesize($rMoviePath);
-                            // Guard against a zero/unknown duration (ffprobe reports
-                            // 'N/A' for truncated or duration-less files): dividing by
-                            // it throws DivisionByZeroError on PHP 8, which aborts the
-                            // whole analyzer run and leaves every remaining movie stuck
-                            // in `to_analyze = 1` (yellow) forever.
-                            $rBitrate = ($rSeconds > 0 ? round(($rSize * 0.008) / $rSeconds) : 0);
-                            $rMovieProperties = json_decode($rRow['movie_properties'], true);
-                            if (!is_array($rMovieProperties)) {
-                                $rMovieProperties = array();
-                            }
-                            if (!(isset($rMovieProperties['duration_secs']) && $rSeconds == $rMovieProperties['duration_secs'])) {
-                                $rMovieProperties['duration_secs'] = $rSeconds;
-                                $rMovieProperties['duration'] = $rDuration;
-                            }
-                            if (!(isset($rMovieProperties['video']) && $rFFProbee['codecs']['video']['codec_name'] == $rMovieProperties['video'])) {
-                                $rMovieProperties['video'] = $rFFProbee['codecs']['video'];
-                            }
-                            if (!(isset($rMovieProperties['audio']) && $rFFProbee['codecs']['audio']['codec_name'] == $rMovieProperties['audio'])) {
-                                $rMovieProperties['audio'] = $rFFProbee['codecs']['audio'];
-                            }
-                            if (SettingsManager::get('extract_subtitles')) {
-                                if (!(isset($rMovieProperties['subtitle']) && $rFFProbee['codecs']['subtitle']['codec_name'] == $rMovieProperties['subtitle'])) {
-                                    $rMovieProperties['subtitle'] = $rFFProbee['codecs']['subtitle'];
-                                }
-                            }
-                            if (!(isset($rMovieProperties['bitrate']) && $rBitrate == $rMovieProperties['bitrate'])) {
-                                if (0 < $rBitrate) {
-                                    $rMovieProperties['bitrate'] = $rBitrate;
-                                } else {
-                                    $rBitrate = $rMovieProperties['bitrate'];
-                                }
-                            }
-                            if (isset($rFFProbee['codecs']['subtitle']) && SettingsManager::get('extract_subtitles')) {
-                                $i = 0;
-                                foreach ($rFFProbee['codecs']['subtitle'] as $rSubtitle) {
-                                    FFmpegCommand::extractSubtitle($rRow['stream_id'], $rMoviePath, $i);
-                                    $i++;
-                                }
-                            }
-                            $rCompatible = intval(DiagnosticsService::checkCompatibility($rFFProbee, SettingsManager::get('player_allow_hevc')));
-                            $rAudioCodec = ($rFFProbee['codecs']['audio']['codec_name'] ?: null);
-                            $rVideoCodec = ($rFFProbee['codecs']['video']['codec_name'] ?: null);
-                            $rResolution = ($rFFProbee['codecs']['video']['height'] ?: null);
-                            if ($rResolution) {
-                                $rResolution = StreamSorter::getNearest(array(240, 360, 480, 576, 720, 1080, 1440, 2160), $rResolution);
-                            }
-                            $db->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?', json_encode($rMovieProperties, JSON_UNESCAPED_UNICODE), $rRow['stream_id']);
-                            $db->query('UPDATE `streams_servers` SET `bitrate` = ?,`to_analyze` = 0,`stream_status` = 0,`stream_info` = ?,`audio_codec` = ?,`video_codec` = ?,`resolution` = ?,`compatible` = ? WHERE `server_stream_id` = ?', $rBitrate, json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rRow['server_stream_id']);
-                            echo 'VALID' . "\n";
-                        } else {
-                            $db->query('UPDATE `streams_servers` SET `to_analyze` = 0,`stream_status` = 1 WHERE `server_stream_id` = ?', $rRow['server_stream_id']);
-                            echo 'BROKEN' . "\n";
-                        }
-                        StreamProcess::updateStream($rRow['stream_id']);
-                    }
-                }
-            }
-        }
-    }
+				$rRows = $db->get_rows();
+				foreach ($rRows as $rRow) {
+					echo '[*] Checking Movie ' . $rRow['stream_display_name'] . ' ' . "\t\t" . '---> ';
+					if (in_array($rRow['pid'], $rPIDs)) {
+						echo 'ENCODING...' . "\n";
+					} else {
+						$rMoviePath = VOD_PATH . intval($rRow['stream_id']) . '.' . escapeshellcmd($rRow['target_container']);
+						if ($rFFProbee = FFprobeRunner::probeStream($rMoviePath)) {
+							if (!isset($rFFProbee['codecs']['video']) || !is_array($rFFProbee['codecs']['video'])) {
+								// ffprobe opened the file but found no usable video stream
+								// (e.g. a truncated/placeholder upload): parseFFProbe returns
+								// '' for the missing codec, and the VALID branch below treats
+								// it as an array ($rFFProbee['codecs']['video']['codec_name']),
+								// which is a TypeError on PHP 8 that aborts the whole analyzer
+								// run and leaves every remaining movie stuck in `to_analyze = 1`
+								// (yellow) forever. Treat such a file as broken instead.
+								$db->query('UPDATE `streams_servers` SET `to_analyze` = 0,`stream_status` = 1 WHERE `server_stream_id` = ?', $rRow['server_stream_id']);
+								echo 'BROKEN (no video stream)' . "\n";
+								StreamProcess::updateStream($rRow['stream_id']);
+								continue;
+							}
+							// ffprobe (especially over network/rclone mounts) can still
+							// return a partial result for an odd file — e.g. a video stream
+							// but no audio, where parseFFProbe stores '' (a string) instead
+							// of an array. The VALID branch dereferences these as arrays
+							// ($rFFProbee['codecs']['audio']['codec_name']), a TypeError on
+							// PHP 8 that aborts the whole run. Normalise to arrays.
+							foreach (['video', 'audio'] as $rCodecKind) {
+								if (!is_array($rFFProbee['codecs'][$rCodecKind] ?? null)) {
+									$rFFProbee['codecs'][$rCodecKind] = [];
+								}
+							}
+							$rDuration = (isset($rFFProbee['duration']) ? $rFFProbee['duration'] : 0);
+							sscanf($rDuration, '%d:%d:%d', $rHours, $rMinutes, $rSeconds);
+							$rSeconds = (isset($rSeconds) ? $rHours * 3600 + $rMinutes * 60 + $rSeconds : $rHours * 60 + $rMinutes);
+							$rSize = filesize($rMoviePath);
+							// Guard against a zero/unknown duration (ffprobe reports
+							// 'N/A' for truncated or duration-less files): dividing by
+							// it throws DivisionByZeroError on PHP 8, which aborts the
+							// whole analyzer run and leaves every remaining movie stuck
+							// in `to_analyze = 1` (yellow) forever.
+							$rBitrate = ($rSeconds > 0 ? round(($rSize * 0.008) / $rSeconds) : 0);
+							$rMovieProperties = json_decode($rRow['movie_properties'], true);
+							if (!is_array($rMovieProperties)) {
+								$rMovieProperties = [];
+							}
+							if (!(isset($rMovieProperties['duration_secs']) && $rSeconds == $rMovieProperties['duration_secs'])) {
+								$rMovieProperties['duration_secs'] = $rSeconds;
+								$rMovieProperties['duration'] = $rDuration;
+							}
+							if (!(isset($rMovieProperties['video']) && $rFFProbee['codecs']['video']['codec_name'] == $rMovieProperties['video'])) {
+								$rMovieProperties['video'] = $rFFProbee['codecs']['video'];
+							}
+							if (!(isset($rMovieProperties['audio']) && $rFFProbee['codecs']['audio']['codec_name'] == $rMovieProperties['audio'])) {
+								$rMovieProperties['audio'] = $rFFProbee['codecs']['audio'];
+							}
+							if (SettingsManager::get('extract_subtitles')) {
+								if (!(isset($rMovieProperties['subtitle']) && $rFFProbee['codecs']['subtitle']['codec_name'] == $rMovieProperties['subtitle'])) {
+									$rMovieProperties['subtitle'] = $rFFProbee['codecs']['subtitle'];
+								}
+							}
+							if (!(isset($rMovieProperties['bitrate']) && $rBitrate == $rMovieProperties['bitrate'])) {
+								if (0 < $rBitrate) {
+									$rMovieProperties['bitrate'] = $rBitrate;
+								} else {
+									$rBitrate = $rMovieProperties['bitrate'];
+								}
+							}
+							if (isset($rFFProbee['codecs']['subtitle']) && SettingsManager::get('extract_subtitles')) {
+								$i = 0;
+								foreach ($rFFProbee['codecs']['subtitle'] as $rSubtitle) {
+									FFmpegCommand::extractSubtitle($rRow['stream_id'], $rMoviePath, $i);
+									$i++;
+								}
+							}
+							$rCompatible = intval(DiagnosticsService::checkCompatibility($rFFProbee, SettingsManager::get('player_allow_hevc')));
+							$rAudioCodec = ($rFFProbee['codecs']['audio']['codec_name'] ?: null);
+							$rVideoCodec = ($rFFProbee['codecs']['video']['codec_name'] ?: null);
+							$rResolution = ($rFFProbee['codecs']['video']['height'] ?: null);
+							if ($rResolution) {
+								$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
+							}
+							$db->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?', json_encode($rMovieProperties, JSON_UNESCAPED_UNICODE), $rRow['stream_id']);
+							$db->query('UPDATE `streams_servers` SET `bitrate` = ?,`to_analyze` = 0,`stream_status` = 0,`stream_info` = ?,`audio_codec` = ?,`video_codec` = ?,`resolution` = ?,`compatible` = ? WHERE `server_stream_id` = ?', $rBitrate, json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rRow['server_stream_id']);
+							echo 'VALID' . "\n";
+						} else {
+							$db->query('UPDATE `streams_servers` SET `to_analyze` = 0,`stream_status` = 1 WHERE `server_stream_id` = ?', $rRow['server_stream_id']);
+							echo 'BROKEN' . "\n";
+						}
+						StreamProcess::updateStream($rRow['stream_id']);
+					}
+				}
+			}
+		}
+	}
 }

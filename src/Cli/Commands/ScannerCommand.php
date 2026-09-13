@@ -123,7 +123,7 @@ class ScannerCommand implements CommandInterface {
 						$rProcessed = true;
 					}
 					if (!$rProcessed) {
-						$rStreamArguments[] = array('value' => 'X-XC_VM-Detect:1', 'argument_key' => 'headers', 'argument_cat' => 'fetch', 'argument_wprotocol' => 'http', 'argument_type' => 'text', 'argument_cmd' => "-headers '%s" . "\r\n" . "'");
+						$rStreamArguments[] = ['value' => 'X-XC_VM-Detect:1', 'argument_key' => 'headers', 'argument_cat' => 'fetch', 'argument_wprotocol' => 'http', 'argument_type' => 'text', 'argument_cmd' => "-headers '%s" . "\r\n" . "'"];
 					}
 				}
 
@@ -137,7 +137,7 @@ class ScannerCommand implements CommandInterface {
 						$rProcessed = true;
 					}
 					if (!$rProcessed) {
-						$rStreamArguments[] = array('value' => 'X-XC_VM-Prebuffer:1', 'argument_key' => 'headers', 'argument_cat' => 'fetch', 'argument_wprotocol' => 'http', 'argument_type' => 'text', 'argument_cmd' => "-headers '%s" . "\r\n" . "'");
+						$rStreamArguments[] = ['value' => 'X-XC_VM-Prebuffer:1', 'argument_key' => 'headers', 'argument_cat' => 'fetch', 'argument_wprotocol' => 'http', 'argument_type' => 'text', 'argument_cmd' => "-headers '%s" . "\r\n" . "'"];
 					}
 				}
 
@@ -156,7 +156,7 @@ class ScannerCommand implements CommandInterface {
 				}
 
 				$rTime = round(microtime(true) * 1000);
-				$rFFProbeOutput = json_decode(shell_exec(str_replace(array('{FETCH_OPTIONS}', '{STREAM_SOURCE}'), array($rFetchOptions, escapeshellarg($rStreamSource)), $rFFProbee)), true);
+				$rFFProbeOutput = json_decode(shell_exec(str_replace(['{FETCH_OPTIONS}', '{STREAM_SOURCE}'], [$rFetchOptions, escapeshellarg($rStreamSource)], $rFFProbee)), true);
 				$rTimeTaken = round(microtime(true) * 1000) - $rTime;
 
 				if (file_exists(STREAMS_TMP_PATH . $rRow['id'] . '._errors') && 0 < filesize(STREAMS_TMP_PATH . $rRow['id'] . '._errors')) {
@@ -192,7 +192,7 @@ class ScannerCommand implements CommandInterface {
 					$rFPS = intval($rFPS / 1000);
 				}
 				if ($rResolution) {
-					$rResolution = StreamSorter::getNearest(array(240, 360, 480, 576, 720, 1080, 1440, 2160), $rResolution);
+					$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 				}
 				$rStatus = 1;
 			} else {

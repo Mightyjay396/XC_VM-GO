@@ -23,14 +23,14 @@ use XcVm\Domain\Epg\EpgService;
  */
 
 class EpgListController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('EPG Files');
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('EPG Files');
 
-        $epgs = EpgService::getAll();
+		$epgs = EpgService::getAll();
 
-        $this->render('epgs', [
-            'epgs' => $epgs,
-        ]);
-    }
+		$this->render('epgs', [
+			'epgs' => $epgs,
+		]);
+	}
 }

@@ -19,27 +19,27 @@ use XcVm\Domain\User\UserRepository;
  */
 
 class LineActivityController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $db;
+		global $db;
 
-        $data = [];
+		$data = [];
 
-        if (RequestManager::has('user_id')) {
-            $rSearchUser = UserRepository::getLineById(RequestManager::get('user_id'));
-            if ($rSearchUser) {
-                $data['rSearchUser'] = $rSearchUser;
-            }
-        }
+		if (RequestManager::has('user_id')) {
+			$rSearchUser = UserRepository::getLineById(RequestManager::get('user_id'));
+			if ($rSearchUser) {
+				$data['rSearchUser'] = $rSearchUser;
+			}
+		}
 
-        if (RequestManager::has('stream_id')) {
-            $rSearchStream = StreamRepository::getById(RequestManager::get('stream_id'));
-            if ($rSearchStream) {
-                $data['rSearchStream'] = $rSearchStream;
-            }
-        }
+		if (RequestManager::has('stream_id')) {
+			$rSearchStream = StreamRepository::getById(RequestManager::get('stream_id'));
+			if ($rSearchStream) {
+				$data['rSearchStream'] = $rSearchStream;
+			}
+		}
 
-        $this->render('line_activity', $data);
-    }
+		$this->render('line_activity', $data);
+	}
 }

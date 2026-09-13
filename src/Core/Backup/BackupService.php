@@ -19,7 +19,6 @@ use XcVm\Core\Storage\DropboxClient;
  */
 
 class BackupService {
-
 	private static array $ignoreTables = [
 		'detect_restream_logs',
 		'epg_data',
@@ -49,7 +48,7 @@ class BackupService {
 	 *
 	 * @param string $filename Output SQL file path
 	 */
-	public static function create($filename) {
+	public static function create(string $filename) {
 		\XC_VM::db_dump($filename, self::$ignoreTables);
 	}
 
@@ -60,7 +59,7 @@ class BackupService {
 	 * @param string $filename SQL file path to restore
 	 * @return bool Whether the import succeeded
 	 */
-	public static function restore($filename) {
+	public static function restore(string $filename) {
 		if (!\XC_VM::db_restore($filename)) {
 			return false;
 		}
@@ -73,7 +72,7 @@ class BackupService {
 	 *
 	 * @param string $host Remote host IP
 	 */
-	public static function grantPrivileges($host) {
+	public static function grantPrivileges(string $host) {
 		\XC_VM::db_grant($host);
 	}
 
@@ -82,7 +81,7 @@ class BackupService {
 	 *
 	 * @param string $host Remote host IP
 	 */
-	public static function revokePrivileges($host) {
+	public static function revokePrivileges(string $host) {
 		\XC_VM::db_revoke($host);
 	}
 
@@ -92,14 +91,14 @@ class BackupService {
 	 * @return array[] Each entry: filename, timestamp, date, filesize.
 	 */
 	public static function getLocal() {
-		$rBackups = array();
+		$rBackups = [];
 
 		foreach (scandir(MAIN_HOME . 'backups/') as $rBackup) {
 			$rInfo = pathinfo(MAIN_HOME . 'backups/' . $rBackup);
 
 			if ($rInfo['extension'] != 'sql') {
 			} else {
-				$rBackups[] = array('filename' => $rBackup, 'timestamp' => filemtime(MAIN_HOME . 'backups/' . $rBackup), 'date' => date('Y-m-d H:i:s', filemtime(MAIN_HOME . 'backups/' . $rBackup)), 'filesize' => filesize(MAIN_HOME . 'backups/' . $rBackup));
+				$rBackups[] = ['filename' => $rBackup, 'timestamp' => filemtime(MAIN_HOME . 'backups/' . $rBackup), 'date' => date('Y-m-d H:i:s', filemtime(MAIN_HOME . 'backups/' . $rBackup)), 'filesize' => filesize(MAIN_HOME . 'backups/' . $rBackup)];
 			}
 		}
 		usort(
@@ -121,7 +120,7 @@ class BackupService {
 
 		try {
 			$rClient = new DropboxClient();
-			$rClient->SetBearerToken(array('t' => SettingsManager::get('dropbox_token')));
+			$rClient->SetBearerToken(['t' => SettingsManager::get('dropbox_token')]);
 			$rClient->GetFiles();
 
 			return true;
@@ -139,12 +138,12 @@ class BackupService {
 
 		try {
 			$rClient = new DropboxClient();
-			$rClient->SetBearerToken(array('t' => SettingsManager::get('dropbox_token')));
+			$rClient->SetBearerToken(['t' => SettingsManager::get('dropbox_token')]);
 			$rFiles = $rClient->GetFiles();
 		} catch (\exception $e) {
-			$rFiles = array();
+			$rFiles = [];
 		}
-		$rBackups = array();
+		$rBackups = [];
 
 		foreach ($rFiles as $rFile) {
 			try {
@@ -169,11 +168,11 @@ class BackupService {
 	 * @param string $rFilename Local destination path.
 	 * @return bool True on success.
 	 */
-	public static function downloadRemote($rPath, $rFilename) {
+	public static function downloadRemote(string $rPath, string $rFilename) {
 		$rClient = new DropboxClient();
 
 		try {
-			$rClient->SetBearerToken(array('t' => SettingsManager::get('dropbox_token')));
+			$rClient->SetBearerToken(['t' => SettingsManager::get('dropbox_token')]);
 			$rClient->downloadFile($rPath, $rFilename);
 
 			return true;
@@ -190,15 +189,15 @@ class BackupService {
 	 * @param bool   $rOverwrite Overwrite an existing remote file.
 	 * @return mixed Upload result, or an object with an 'error' key on failure.
 	 */
-	public static function uploadRemote($rPath, $rFilename, $rOverwrite = true) {
+	public static function uploadRemote(string $rPath, string $rFilename, bool $rOverwrite = true) {
 		$rClient = new DropboxClient();
 
 		try {
-			$rClient->SetBearerToken(array('t' => SettingsManager::get('dropbox_token')));
+			$rClient->SetBearerToken(['t' => SettingsManager::get('dropbox_token')]);
 
 			return $rClient->UploadFile($rFilename, $rPath, $rOverwrite);
 		} catch (\exception $e) {
-			return (object) array('error' => $e);
+			return (object) ['error' => $e];
 		}
 	}
 
@@ -208,11 +207,11 @@ class BackupService {
 	 * @param string $rPath Remote path to delete.
 	 * @return bool True on success.
 	 */
-	public static function deleteRemote($rPath) {
+	public static function deleteRemote(string $rPath) {
 		$rClient = new DropboxClient();
 
 		try {
-			$rClient->SetBearerToken(array('t' => SettingsManager::get('dropbox_token')));
+			$rClient->SetBearerToken(['t' => SettingsManager::get('dropbox_token')]);
 			$rClient->Delete($rPath);
 
 			return true;

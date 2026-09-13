@@ -32,165 +32,164 @@ use XcVm\Domain\Vod\TMDbService;
  */
 
 class TmdbApiService {
+	/**
+	 * Создать экземпляр \TMDB API-клиента
+	 *
+	 * @param string      $apiKey   \TMDB API key
+	 * @param string|null $language Язык запроса (приоритет: явный → настройка → default)
+	 * @return \TMDB
+	 */
+	public static function createClient(string $apiKey, ?string $language = null): \TMDB {
+		self::requireLibrary();
 
-    /**
-     * Создать экземпляр \TMDB API-клиента
-     *
-     * @param string      $apiKey   \TMDB API key
-     * @param string|null $language Язык запроса (приоритет: явный → настройка → default)
-     * @return \TMDB
-     */
-    public static function createClient(string $apiKey, ?string $language = null): \TMDB {
-        self::requireLibrary();
+		if ($language !== null && strlen($language) > 0) {
+			return new \TMDB($apiKey, $language);
+		}
 
-        if ($language !== null && strlen($language) > 0) {
-            return new \TMDB($apiKey, $language);
-        }
+		$settingsLang = SettingsManager::getString('tmdb_language');
+		if (strlen($settingsLang) > 0) {
+			return new \TMDB($apiKey, $settingsLang);
+		}
 
-        $settingsLang = SettingsManager::getString('tmdb_language');
-        if (strlen($settingsLang) > 0) {
-            return new \TMDB($apiKey, $settingsLang);
-        }
+		return new \TMDB($apiKey);
+	}
 
-        return new \TMDB($apiKey);
-    }
+	/**
+	 * Поиск по \TMDB (фильмы, сериалы, эпизоды)
+	 *
+	 * Поддерживает поиск:
+	 *   - По числовому ID (прямой getMovie/getTVShow/getSeason)
+	 *   - По текстовому запросу (searchMovie/searchTVShow)
+	 *
+	 * @param string      $term     Поисковый запрос или \TMDB ID
+	 * @param string      $type     Тип: movie|series|episode
+	 * @param string|null $language Язык запроса
+	 * @param int|null    $season   Номер сезона (для episode)
+	 * @return array ['result' => bool, 'data' => array|null]
+	 */
+	public static function search(string $term, string $type, ?string $language = null, ?int $season = null): array {
+		$apiKey = SettingsManager::getString('tmdb_api_key');
+		if (strlen($apiKey) === 0) {
+			return ['result' => false];
+		}
 
-    /**
-     * Поиск по \TMDB (фильмы, сериалы, эпизоды)
-     *
-     * Поддерживает поиск:
-     *   - По числовому ID (прямой getMovie/getTVShow/getSeason)
-     *   - По текстовому запросу (searchMovie/searchTVShow)
-     *
-     * @param string      $term     Поисковый запрос или \TMDB ID
-     * @param string      $type     Тип: movie|series|episode
-     * @param string|null $language Язык запроса
-     * @param int|null    $season   Номер сезона (для episode)
-     * @return array ['result' => bool, 'data' => array|null]
-     */
-    public static function search(string $term, string $type, ?string $language = null, ?int $season = null): array {
-        $apiKey = SettingsManager::getString('tmdb_api_key');
-        if (strlen($apiKey) === 0) {
-            return ['result' => false];
-        }
+		self::requireLibrary();
+		$rTMDB = self::createClient($apiKey, $language);
 
-        self::requireLibrary();
-        $rTMDB = self::createClient($apiKey, $language);
+		// Прямой поиск по числовому \TMDB ID
+		if (is_numeric($term) && in_array($type, ['movie', 'series', 'episode'])) {
+			$rResult = self::fetchByID($rTMDB, $term, $type, $season);
+			if (is_array($rResult)) {
+				return ['result' => true, 'data' => $rResult];
+			}
+		}
 
-        // Прямой поиск по числовому \TMDB ID
-        if (is_numeric($term) && in_array($type, ['movie', 'series', 'episode'])) {
-            $rResult = self::fetchByID($rTMDB, $term, $type, $season);
-            if (is_array($rResult)) {
-                return ['result' => true, 'data' => $rResult];
-            }
-        }
+		// Текстовый поиск
+		$rRelease = AdminHelpers::parserelease($term);
+		$searchTerm = $rRelease['title'] ?? $term;
+		$rJSON = [];
 
-        // Текстовый поиск
-        $rRelease = AdminHelpers::parserelease($term);
-        $searchTerm = $rRelease['title'] ?? $term;
-        $rJSON = [];
+		if ($type === 'movie') {
+			foreach ($rTMDB->searchMovie($searchTerm) as $rResult) {
+				$rJSON[] = json_decode($rResult->getJSON(), true);
+			}
+		} elseif ($type === 'series') {
+			foreach ($rTMDB->searchTVShow($searchTerm) as $rResult) {
+				$rJSON[] = json_decode($rResult->getJSON(), true);
+			}
+		}
 
-        if ($type === 'movie') {
-            foreach ($rTMDB->searchMovie($searchTerm) as $rResult) {
-                $rJSON[] = json_decode($rResult->getJSON(), true);
-            }
-        } elseif ($type === 'series') {
-            foreach ($rTMDB->searchTVShow($searchTerm) as $rResult) {
-                $rJSON[] = json_decode($rResult->getJSON(), true);
-            }
-        }
+		if (count($rJSON) > 0) {
+			return ['result' => true, 'data' => $rJSON];
+		}
 
-        if (count($rJSON) > 0) {
-            return ['result' => true, 'data' => $rJSON];
-        }
+		return ['result' => false];
+	}
 
-        return ['result' => false];
-    }
+	/**
+	 * Получить детальную информацию о фильме/сериале по \TMDB ID
+	 *
+	 * @param int         $id       \TMDB ID
+	 * @param string      $type     Тип: movie|series
+	 * @param string|null $language Язык запроса
+	 * @return array ['result' => bool, 'data' => array|null]
+	 */
+	public static function getDetails(int $id, string $type, ?string $language = null): array {
+		$apiKey = SettingsManager::getString('tmdb_api_key');
+		if (strlen($apiKey) === 0) {
+			return ['result' => false];
+		}
 
-    /**
-     * Получить детальную информацию о фильме/сериале по \TMDB ID
-     *
-     * @param int         $id       \TMDB ID
-     * @param string      $type     Тип: movie|series
-     * @param string|null $language Язык запроса
-     * @return array ['result' => bool, 'data' => array|null]
-     */
-    public static function getDetails(int $id, string $type, ?string $language = null): array {
-        $apiKey = SettingsManager::getString('tmdb_api_key');
-        if (strlen($apiKey) === 0) {
-            return ['result' => false];
-        }
+		self::requireLibrary();
+		$rTMDB = self::createClient($apiKey, $language);
+		$rResult = null;
 
-        self::requireLibrary();
-        $rTMDB = self::createClient($apiKey, $language);
-        $rResult = null;
+		if ($type === 'movie') {
+			$rMovie = $rTMDB->getMovie($id);
+			$rResult = json_decode($rMovie->getJSON(), true);
+			$rResult['trailer'] = $rMovie->getTrailer();
+		} elseif ($type === 'series') {
+			$rSeries = $rTMDB->getTVShow($id);
+			$rResult = json_decode($rSeries->getJSON(), true);
+			$settingsLang = SettingsManager::getString('tmdb_language');
+			$rResult['trailer'] = TMDbService::getSeriesTrailer($id, ($language ?: $settingsLang));
+		}
 
-        if ($type === 'movie') {
-            $rMovie = $rTMDB->getMovie($id);
-            $rResult = json_decode($rMovie->getJSON(), true);
-            $rResult['trailer'] = $rMovie->getTrailer();
-        } elseif ($type === 'series') {
-            $rSeries = $rTMDB->getTVShow($id);
-            $rResult = json_decode($rSeries->getJSON(), true);
-            $settingsLang = SettingsManager::getString('tmdb_language');
-            $rResult['trailer'] = TMDbService::getSeriesTrailer($id, ($language ?: $settingsLang));
-        }
+		if (!$rResult) {
+			return ['result' => false];
+		}
 
-        if (!$rResult) {
-            return ['result' => false];
-        }
+		return ['result' => true, 'data' => $rResult];
+	}
 
-        return ['result' => true, 'data' => $rResult];
-    }
+	/**
+	 * Получить данные по числовому ID
+	 *
+	 * @param \TMDB     $tmdb   Экземпляр \TMDB
+	 * @param string   $id     \TMDB ID
+	 * @param string   $type   Тип: movie|series|episode
+	 * @param int|null $season Номер сезона
+	 * @return array|null
+	 */
+	private static function fetchByID(\TMDB $tmdb, string $id, string $type, ?int $season): ?array {
+		if ($type === 'movie') {
+			return [json_decode($tmdb->getMovie((int) $id)->getJSON(), true)];
+		}
 
-    /**
-     * Получить данные по числовому ID
-     *
-     * @param \TMDB     $tmdb   Экземпляр \TMDB
-     * @param string   $id     \TMDB ID
-     * @param string   $type   Тип: movie|series|episode
-     * @param int|null $season Номер сезона
-     * @return array|null
-     */
-    private static function fetchByID(\TMDB $tmdb, string $id, string $type, ?int $season): ?array {
-        if ($type === 'movie') {
-            return [json_decode($tmdb->getMovie((int) $id)->getJSON(), true)];
-        }
+		if ($type === 'series') {
+			return [json_decode($tmdb->getTVShow((int) $id)->getJSON(), true)];
+		}
 
-        if ($type === 'series') {
-            return [json_decode($tmdb->getTVShow((int) $id)->getJSON(), true)];
-        }
+		if ($type === 'episode' && $season !== null) {
+			$rResult = json_decode($tmdb->getSeason((int) $id, $season)->getJSON(), true);
+			if (isset($rResult['tvshow_id']) && $rResult['tvshow_id'] == 0) {
+				return null;
+			}
+			return $rResult;
+		}
 
-        if ($type === 'episode' && $season !== null) {
-            $rResult = json_decode($tmdb->getSeason((int) $id, $season)->getJSON(), true);
-            if (isset($rResult['tvshow_id']) && $rResult['tvshow_id'] == 0) {
-                return null;
-            }
-            return $rResult;
-        }
+		return null;
+	}
 
-        return null;
-    }
-
-    /**
-     * Подключить библиотеку \TMDB (один раз).
-     *
-     * Загружает клиент и парсер релизов (parserelease). Единственная точка,
-     * знающая путь до вендоренной библиотеки — весь остальной код обязан
-     * идти через этот метод, а не require'ить путь вручную.
-     */
-    public static function requireLibrary(): void {
-        static $loaded = false;
-        if (!$loaded) {
-            // class_exists-защита: сторонние модули могут возить собственную
-            // копию библиотеки — повторное объявление \TMDB/\Release фатально.
-            if (!class_exists('TMDB', false)) {
-                require_once __DIR__ . '/lib/TmdbClient.php';
-            }
-            if (!class_exists('Release', false)) {
-                require_once __DIR__ . '/lib/Release.php';
-            }
-            $loaded = true;
-        }
-    }
+	/**
+	 * Подключить библиотеку \TMDB (один раз).
+	 *
+	 * Загружает клиент и парсер релизов (parserelease). Единственная точка,
+	 * знающая путь до вендоренной библиотеки — весь остальной код обязан
+	 * идти через этот метод, а не require'ить путь вручную.
+	 */
+	public static function requireLibrary(): void {
+		static $loaded = false;
+		if (!$loaded) {
+			// class_exists-защита: сторонние модули могут возить собственную
+			// копию библиотеки — повторное объявление \TMDB/\Release фатально.
+			if (!class_exists('TMDB', false)) {
+				require_once __DIR__ . '/lib/TmdbClient.php';
+			}
+			if (!class_exists('Release', false)) {
+				require_once __DIR__ . '/lib/Release.php';
+			}
+			$loaded = true;
+		}
+	}
 }

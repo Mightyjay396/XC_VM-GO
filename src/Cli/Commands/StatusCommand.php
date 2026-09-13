@@ -28,7 +28,6 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  */
 
 class StatusCommand implements CommandInterface {
-
 	use DatabaseAware;
 
 	public function getName(): string {
@@ -149,14 +148,14 @@ class StatusCommand implements CommandInterface {
 	private function getServers(): array {
 		$db = self::db();
 		$db->query('SELECT * FROM `servers`');
-		$rServers = array();
-		$rOnlineStatus = array(1);
+		$rServers = [];
+		$rOnlineStatus = [1];
 
 		foreach ($db->get_rows() as $rRow) {
 			if (empty($rRow['domain_name'])) {
 				$rURL = escapeshellcmd($rRow['server_ip']);
 			} else {
-				$rURL = str_replace(array('http://', '/', 'https://'), '', escapeshellcmd(explode(',', $rRow['domain_name'])[0]));
+				$rURL = str_replace(['http://', '/', 'https://'], '', escapeshellcmd(explode(',', $rRow['domain_name'])[0]));
 			}
 
 			$rProtocol = ($rRow['enable_https'] == 1) ? 'https' : 'http';
@@ -186,7 +185,7 @@ class StatusCommand implements CommandInterface {
 			$rReload = true;
 		}
 
-		foreach (array('http', 'https') as $rType) {
+		foreach (['http', 'https'] as $rType) {
 			$rPortConfig = file_get_contents(MAIN_HOME . 'bin/nginx/conf/ports/' . $rType . '.conf');
 
 			if (stripos($rPortConfig, ' reuseport') !== false) {
@@ -199,7 +198,7 @@ class StatusCommand implements CommandInterface {
 	}
 
 	private function installRootCrontab(): void {
-		$rCrons = array();
+		$rCrons = [];
 
 		$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_signals # XC_VM';
 		if (file_exists(MAIN_HOME . 'Cli/CronJobs/RootMysqlCronJob.php')) {
@@ -211,12 +210,12 @@ class StatusCommand implements CommandInterface {
 		}
 
 		$rWrite = false;
-		$rOutput = array();
+		$rOutput = [];
 		exec('sudo crontab -l', $rOutput);
 
 		// Удаляем старые строки с нашим маркером (включая '# \XC_VM' от
 		// прошлой миграции), чтобы при апгрейде не появлялись дубликаты.
-		$rFiltered = array();
+		$rFiltered = [];
 		foreach ($rOutput as $rLine) {
 			if (strpos($rLine, '# XC_VM') !== false || strpos($rLine, '# \XC_VM') !== false) {
 				$rWrite = true;
@@ -285,8 +284,8 @@ class StatusCommand implements CommandInterface {
 	private function broadcastUpdateBinaries(array $rServers): void {
 		$db = self::db();
 		foreach ($rServers as $rServerID => $rServerArray) {
-			$db->query('DELETE FROM `signals` WHERE `custom_data` = ?;', json_encode(array('action' => 'update_binaries')));
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(array('action' => 'update_binaries')));
+			$db->query('DELETE FROM `signals` WHERE `custom_data` = ?;', json_encode(['action' => 'update_binaries']));
+			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'update_binaries']));
 		}
 	}
 

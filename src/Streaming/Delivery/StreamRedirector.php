@@ -20,7 +20,7 @@ class StreamRedirector {
 		// The server map can arrive null during a transient cache rebuild; keep it an
 		// array so the array_key_exists()/foreach below neither fatal nor warn.
 		if (!is_array($rServers)) {
-			$rServers = array();
+			$rServers = [];
 		}
 		if ($rCached) {
 			$rRaw = @file_get_contents(STREAMS_TMP_PATH . 'stream_' . $rStreamID);
@@ -36,11 +36,11 @@ class StreamRedirector {
 		}
 
 		$rStream['info']['bouquets'] = $rStream['bouquets'];
-		$rStreamServers = (is_array($rStream['servers'] ?? null) ? $rStream['servers'] : array());
-		$rAvailableServers = array();
+		$rStreamServers = (is_array($rStream['servers'] ?? null) ? $rStream['servers'] : []);
+		$rAvailableServers = [];
 		if ($rType == 'archive') {
 			if (0 < $rStream['info']['tv_archive_duration'] && 0 < $rStream['info']['tv_archive_server_id'] && array_key_exists($rStream['info']['tv_archive_server_id'], $rServers)) {
-				$rAvailableServers = array($rStream['info']['tv_archive_server_id']);
+				$rAvailableServers = [$rStream['info']['tv_archive_server_id']];
 			}
 		} else {
 			if (!(($rStream['info']['direct_source'] ?? 0) == 1 && ($rStream['info']['direct_proxy'] ?? 0) == 0)) {
@@ -73,7 +73,7 @@ class StreamRedirector {
 
 		shuffle($rAvailableServers);
 		$rServerCapacity = ConnectionTracker::getCapacity();
-		$rAcceptServers = array();
+		$rAcceptServers = [];
 		foreach ($rAvailableServers as $rServerID) {
 			$rOnlineClients = (isset($rServerCapacity[$rServerID]['online_clients']) ? $rServerCapacity[$rServerID]['online_clients'] : 0);
 			if ($rOnlineClients == 0) {
@@ -86,7 +86,7 @@ class StreamRedirector {
 			if ($rType == 'archive') {
 				return null;
 			}
-			return array();
+			return [];
 		}
 		$rKeys = array_keys($rAcceptServers);
 		$rValues = array_values($rAcceptServers);
@@ -98,7 +98,7 @@ class StreamRedirector {
 			if (isset($rUserInfo) && $rUserInfo['force_server_id'] != 0 && array_key_exists($rUserInfo['force_server_id'], $rAcceptServers)) {
 				$rRedirectID = $rUserInfo['force_server_id'];
 			} else {
-				$rPriorityServers = array();
+				$rPriorityServers = [];
 				foreach (array_keys($rAcceptServers) as $rServerID) {
 					if ($rServers[$rServerID]['enable_geoip'] == 1) {
 						if (in_array($rCountryCode, $rServers[$rServerID]['geoip_countries'])) {
@@ -154,12 +154,12 @@ class StreamRedirector {
 
 	private static function getStreamData($rStreamID) {
 		global $db;
-		$rOutput = array();
+		$rOutput = [];
 		$db->query('SELECT * FROM `streams` t1 LEFT JOIN `streams_types` t2 ON t2.type_id = t1.type WHERE t1.`id` = ?', $rStreamID);
 		if (0 >= $db->num_rows()) {
 		} else {
 			$rStreamInfo = $db->get_row();
-			$rServersData = array();
+			$rServersData = [];
 			if (!($rStreamInfo['direct_source'] == 0 || $rStreamInfo['direct_proxy'] == 1)) {
 			} else {
 				$db->query('SELECT * FROM `streams_servers` WHERE `stream_id` = ?', $rStreamID);
@@ -175,7 +175,7 @@ class StreamRedirector {
 		return (!empty($rOutput) ? $rOutput : false);
 	}
 
-	public static function getStreamingURL($rSettings, $rServers, $rServerID = null, $rOriginatorID = null, $rForceHTTP = false, $rUserID = null) { 
+	public static function getStreamingURL($rSettings, $rServers, $rServerID = null, $rOriginatorID = null, $rForceHTTP = false, $rUserID = null) {
 		//$rUserID is used to redirect clients with different subdomain to the LB server
 		if (!isset($rServerID)) {
 			$rServerID = SERVER_ID;
@@ -196,7 +196,7 @@ class StreamRedirector {
 			if ($rServers[$rServerID]['random_ip'] && 0 < count($rServers[$rServerID]['domains']['urls'])) {
 				$rDomain = $rServers[$rServerID]['domains']['urls'][array_rand($rServers[$rServerID]['domains']['urls'])];
 				//line_id : 10 => wildcard.lb1.com => 10.lb1.com
-				if($rUserID && strpos($rDomain, 'wildcard.') !== false) { 
+				if ($rUserID && strpos($rDomain, 'wildcard.') !== false) {
 					$rDomain = str_replace('wildcard.', $rUserID . '.', $rDomain);
 				}
 			}

@@ -21,6 +21,7 @@ use XcVm\Infrastructure\Signal\SignalQueue;
 class RedisManager {
 	/** @var \Redis|null Singleton instance */
 	private static $instance = null;
+
 	/** @var int Last ping health-check timestamp */
 	private static $lastPingCheck = 0;
 
@@ -99,8 +100,6 @@ class RedisManager {
 		return is_object(self::$instance);
 	}
 
-
-
 	/**
 	 * @deprecated Signals now live in {@see SignalQueue}.
 	 * Kept as a thin back-compat alias; call SignalQueue::push() directly.
@@ -109,7 +108,7 @@ class RedisManager {
 	 * @param mixed  $rData Signal payload.
 	 * @return void
 	 */
-	public static function setSignal(string $rKey, $rData): void {
+	public static function setSignal(string $rKey, mixed $rData): void {
 		SignalQueue::push($rKey, $rData);
 	}
 

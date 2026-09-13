@@ -30,14 +30,14 @@ use XcVm\Core\Container\ServiceContainer;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 interface MigratableInterface {
-    /**
-     * Return module migrations keyed by target version string.
-     *
-     * Keys are semver strings (e.g. "1.1.0"). Values are callables
-     * that perform the schema or data change for that version step.
-     * Each callable receives the ServiceContainer — use it to access db, settings, etc.
-     *
-     * @return array<string, callable(ServiceContainer): void>
-     */
-    public function getMigrations(): array;
+	/**
+	 * Return module migrations keyed by target version string.
+	 *
+	 * Keys are semver strings (e.g. "1.1.0"). Values are callables
+	 * that perform the schema or data change for that version step.
+	 * Each callable receives the ServiceContainer — use it to access db, settings, etc.
+	 *
+	 * @return array<string, callable(ServiceContainer): void>
+	 */
+	public function getMigrations(): array;
 }

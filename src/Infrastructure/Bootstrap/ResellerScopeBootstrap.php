@@ -25,7 +25,6 @@ use XcVm\Domain\User\UserRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class ResellerScopeBootstrap implements ScopeBootstrap {
-
 	public function boot(): void {
 		$this->bootSession();
 		$this->bootFunctions();
@@ -114,7 +113,7 @@ final class ResellerScopeBootstrap implements ScopeBootstrap {
 			$rPermissions['category_ids'] = $rPermissions['category_ids'] ?? [];
 			$rPermissions['series_ids'] = $rPermissions['series_ids'] ?? [];
 			$rPermissions['subresellers'] = $rPermissions['subresellers'] ?? [];
-			$rUserInfo['reports'] = array_map('intval', array_merge(array($rUserInfo['id']), $rPermissions['all_reports']));
+			$rUserInfo['reports'] = array_map('intval', array_merge([$rUserInfo['id']], $rPermissions['all_reports']));
 			$rIP = NetworkUtils::getUserIP();
 			$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $_SESSION['rip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1)) : $_SESSION['rip'] == $rIP);
 

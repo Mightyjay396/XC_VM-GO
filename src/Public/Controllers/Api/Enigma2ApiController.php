@@ -16,14 +16,23 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 
 class Enigma2ApiController {
 	private bool $deny = true;
+
 	private array|false|null $userInfo = null;
+
 	private ?string $url = null;
+
 	private ?string $username = null;
+
 	private ?string $password = null;
+
 	private array $liveCategories = [];
+
 	private array $vodCategories = [];
+
 	private array $seriesCategories = [];
+
 	private array $liveStreams = [];
+
 	private array $vodStreams = [];
 
 	public function shutdown() {
@@ -81,10 +90,10 @@ class Enigma2ApiController {
 		if ($rSettings['enable_cache']) {
 			$rChannels = $this->userInfo['channel_ids'];
 		} else {
-			$rChannels = array();
+			$rChannels = [];
 
 			if (count($this->userInfo['channel_ids']) > 0) {
-				$rWhere = array();
+				$rWhere = [];
 				$rWhere[] = '`id` IN (' . implode(',', $this->userInfo['channel_ids']) . ')';
 				$rWhereString = 'WHERE ' . implode(' AND ', $rWhere);
 				$rOrder = 'FIELD(id,' . implode(',', $this->userInfo['channel_ids']) . ')';
@@ -359,7 +368,7 @@ class Enigma2ApiController {
 				continue;
 			}
 
-			$rChannelEPGs = array();
+			$rChannelEPGs = [];
 
 			if (file_exists(EPG_PATH . 'stream_' . intval($rStream['id']))) {
 				foreach (igbinary_unserialize(file_get_contents(EPG_PATH . 'stream_' . $rStream['id'])) as $rRow) {

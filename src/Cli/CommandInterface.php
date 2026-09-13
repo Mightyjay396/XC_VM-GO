@@ -16,7 +16,6 @@ namespace XcVm\Cli;
  */
 
 interface CommandInterface {
-
 	/**
 	 * Уникальное имя команды.
 	 *

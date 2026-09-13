@@ -23,7 +23,7 @@ class ImageUtils {
 	 * @param string|null $rForceProtocol Force http/https when resolving server URLs.
 	 * @return string Resolved public URL ('' if the server cannot be resolved).
 	 */
-	public static function validateURL($rURL, $rForceProtocol = null) {
+	public static function validateURL(string $rURL, ?string $rForceProtocol = null) {
 		if (substr($rURL, 0, 2) == 's:') {
 			$rSplit = explode(':', $rURL, 3);
 			$rServerURL = ServerRepository::getPublicURL(intval($rSplit[1]), $rForceProtocol);
@@ -43,7 +43,7 @@ class ImageUtils {
 	 * @param int    $rMaxH Max height.
 	 * @return string Public URL of the resized image, or the validated source.
 	 */
-	public static function resize($rURL, $rMaxW, $rMaxH) {
+	public static function resize(string $rURL, int $rMaxW, int $rMaxH) {
 		list($rExtension) = explode('.', strtolower(pathinfo($rURL)['extension']));
 		$rImagePath = IMAGES_PATH . 'admin/' . md5($rURL) . '_' . $rMaxW . '_' . $rMaxH . '.' . $rExtension;
 
@@ -64,7 +64,7 @@ class ImageUtils {
 	 * @param int    $rType  Stream type controlling target dimensions.
 	 * @return bool True if the thumbnail exists/was created, false otherwise.
 	 */
-	public static function generateThumbnail($rImage, $rType) {
+	public static function generateThumbnail(string $rImage, int $rType) {
 		if ($rType == 1 || $rType == 5 || $rType == 4) {
 			$rMaxW = 96;
 			$rMaxH = 32;
@@ -82,7 +82,7 @@ class ImageUtils {
 			}
 		}
 		list($rExtension) = explode('.', strtolower(pathinfo($rImage)['extension']));
-		if (!in_array($rExtension, array('png', 'jpg', 'jpeg'))) {
+		if (!in_array($rExtension, ['png', 'jpg', 'jpeg'])) {
 		} else {
 			$rImagePath = IMAGES_PATH . 'admin/' . md5($rImage) . '_' . $rMaxW . '_' . $rMaxH . '.' . $rExtension;
 			if (file_exists($rImagePath)) {
@@ -126,7 +126,7 @@ class ImageUtils {
 	 * @param int|null $rType  Optional stream type (unused placeholder).
 	 * @return string Internal `s:` reference, or the original URL.
 	 */
-	public static function downloadImage($rImage, $rType = null) {
+	public static function downloadImage(string $rImage, ?int $rType = null) {
 		if (0 < strlen($rImage) && substr(strtolower($rImage), 0, 4) == 'http') {
 			$rPathInfo = pathinfo(parse_url($rImage, PHP_URL_PATH) ?: $rImage);
 			$rExt = strtolower($rPathInfo['extension'] ?? '');
@@ -136,7 +136,7 @@ class ImageUtils {
 					list(, $rExt) = explode('/', strtolower($rImageInfo['mime']), 2);
 				}
 			}
-			if (in_array(strtolower($rExt), array('jpg', 'jpeg', 'png'))) {
+			if (in_array(strtolower($rExt), ['jpg', 'jpeg', 'png'])) {
 				$rFilename = Encryption::encrypt($rImage, SettingsManager::get('live_streaming_pass'), OPENSSL_EXTRA);
 				// A single filename component is capped at 255 bytes on ext4/most
 				// filesystems. Long source URLs produce an encrypted name that
@@ -185,7 +185,7 @@ class ImageUtils {
 	 * @param int $maxHeight  Max height (0 = no limit).
 	 * @return array ['width' => int, 'height' => int].
 	 */
-	public static function getImageSizeKeepAspectRatio($origWidth, $origHeight, $maxWidth, $maxHeight) {
+	public static function getImageSizeKeepAspectRatio(int $origWidth, int $origHeight, int $maxWidth, int $maxHeight) {
 		if ($maxWidth == 0) {
 			$maxWidth = $origWidth;
 		}
@@ -202,7 +202,7 @@ class ImageUtils {
 			$newHeight = $origHeight;
 			$newWidth = $origWidth;
 		}
-		return array('height' => round($newHeight, 0), 'width' => round($newWidth, 0));
+		return ['height' => round($newHeight, 0), 'width' => round($newWidth, 0)];
 	}
 
 	/**
@@ -211,7 +211,7 @@ class ImageUtils {
 	 * @param string $rURL Candidate URL.
 	 * @return bool True if absolute.
 	 */
-	public static function isAbsoluteUrl($rURL) {
+	public static function isAbsoluteUrl(string $rURL) {
 		$rPattern = "/^(?:ftp|https?|feed)?:?\\/\\/(?:(?:(?:[\\w\\.\\-\\+!\$&'\\(\\)*\\+,;=]|%[0-9a-f]{2})+:)*" . "\n" . "        (?:[\\w\\.\\-\\+%!\$&'\\(\\)*\\+,;=]|%[0-9a-f]{2})+@)?(?:" . "\n" . '        (?:[a-z0-9\\-\\.]|%[0-9a-f]{2})+|(?:\\[(?:[0-9a-f]{0,4}:)*(?:[0-9a-f]{0,4})\\]))(?::[0-9]+)?(?:[\\/|\\?]' . "\n" . "        (?:[\\w#!:\\.\\?\\+\\|=&@\$'~*,;\\/\\(\\)\\[\\]\\-]|%[0-9a-f]{2})*)?\$/xi";
 		return (bool) preg_match($rPattern, $rURL);
 	}

@@ -21,11 +21,11 @@ use XcVm\Domain\Server\ServerRepository;
  */
 
 class ServerListController extends BaseAdminController {
-    public function index(): void {
-        $this->requirePermission();
-        $this->setTitle('Servers');
+	public function index(): void {
+		$this->requirePermission();
+		$this->setTitle('Servers');
 
-        $rServers = ServerRepository::getAll(true);
-        $this->render('servers', compact('rServers'));
-    }
+		$rServers = ServerRepository::getAll(true);
+		$this->render('servers', compact('rServers'));
+	}
 }

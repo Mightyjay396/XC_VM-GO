@@ -27,18 +27,19 @@ use XcVm\Module\Watch\WatchService;
 
 class SeriesService {
 	use DatabaseAware;
+
 	/**
 	 * Create or update a series from admin form data.
 	 *
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processSeries', $rData)) {
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'edit_series')) {
-					$rArray = AdminHelpers::overwriteData(SeriesService::getById($rData['edit']), $rData);
+					$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
 				} else {
 					exit();
 				}
@@ -58,18 +59,18 @@ class SeriesService {
 			}
 
 			if (strlen($rData['backdrop_path']) == 0) {
-				$rArray['backdrop_path'] = array();
+				$rArray['backdrop_path'] = [];
 			} else {
-				$rArray['backdrop_path'] = array($rData['backdrop_path']);
+				$rArray['backdrop_path'] = [$rData['backdrop_path']];
 			}
 
 			$rArray['last_modified'] = time();
 			$rArray['cover'] = $rData['cover'];
 			$rArray['cover_big'] = $rData['cover'];
-			$rBouquetCreate = array();
+			$rBouquetCreate = [];
 
-			foreach ((json_decode($rData['bouquet_create_list'] ?? '', true) ?: array()) as $rBouquet) {
-				$rPrepare = QueryHelper::prepareArray(array('bouquet_name' => $rBouquet, 'bouquet_channels' => array(), 'bouquet_movies' => array(), 'bouquet_series' => array(), 'bouquet_radios' => array()));
+			foreach ((json_decode($rData['bouquet_create_list'] ?? '', true) ?: []) as $rBouquet) {
+				$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 				$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 				if (!$db->query($rQuery, ...$rPrepare['data'])) {
@@ -78,10 +79,10 @@ class SeriesService {
 					$rBouquetCreate[$rBouquet] = $rBouquetID;
 				}
 			}
-			$rCategoryCreate = array();
+			$rCategoryCreate = [];
 
-			foreach ((json_decode($rData['category_create_list'] ?? '', true) ?: array()) as $rCategory) {
-				$rPrepare = QueryHelper::prepareArray(array('category_type' => 'series', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0));
+			foreach ((json_decode($rData['category_create_list'] ?? '', true) ?: []) as $rCategory) {
+				$rPrepare = QueryHelper::prepareArray(['category_type' => 'series', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 				$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 				if (!$db->query($rQuery, ...$rPrepare['data'])) {
@@ -90,7 +91,7 @@ class SeriesService {
 					$rCategoryCreate[$rCategory] = $rCategoryID;
 				}
 			}
-			$rBouquets = array();
+			$rBouquets = [];
 
 			foreach ($rData['bouquets'] as $rBouquet) {
 				if (isset($rBouquetCreate[$rBouquet])) {
@@ -102,7 +103,7 @@ class SeriesService {
 					}
 				}
 			}
-			$rCategories = array();
+			$rCategories = [];
 
 			foreach ($rData['category_id'] as $rCategory) {
 				if (isset($rCategoryCreate[$rCategory])) {
@@ -120,7 +121,7 @@ class SeriesService {
 
 			if ($db->query($rQuery, ...$rPrepare['data'])) {
 				$rInsertID = $db->last_insert_id();
-				SeriesService::queueRefresh($rInsertID);
+				self::queueRefresh($rInsertID);
 
 				foreach ($rBouquets as $rBouquet) {
 					BouquetService::addItems('series', $rBouquet, $rInsertID);
@@ -133,7 +134,7 @@ class SeriesService {
 					}
 				}
 
-				return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 			} else {
 				foreach ($rBouquetCreate as $rID) {
 					$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
@@ -143,10 +144,10 @@ class SeriesService {
 					$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
 				}
 
-				return array('status' => STATUS_FAILURE, 'data' => $rData);
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
 			}
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -156,13 +157,13 @@ class SeriesService {
 	 * @param array $rData Import payload (sources, category, options).
 	 * @return array Import result.
 	 */
-	public static function import($rData) {
+	public static function import(array $rData) {
 		$db = self::db();
 		if (Authorization::check('adv', 'import_movies')) {
 			if (InputValidator::validate('importSeries', $rData)) {
 				$rPostData = $rData;
 
-				foreach (array('read_native', 'movie_symlink', 'direct_source', 'direct_proxy', 'remove_subtitles') as $rKey) {
+				foreach (['read_native', 'movie_symlink', 'direct_source', 'direct_proxy', 'remove_subtitles'] as $rKey) {
 					if (isset($rData[$rKey])) {
 						$rData[$rKey] = 1;
 					} else {
@@ -176,7 +177,7 @@ class SeriesService {
 					$rRestart = false;
 				}
 
-				$rStreamDatabase = array();
+				$rStreamDatabase = [];
 				$db->query('SELECT `stream_source` FROM `streams` WHERE `type` = 5;');
 
 				foreach ($db->get_rows() as $rRow) {
@@ -187,7 +188,7 @@ class SeriesService {
 						}
 					}
 				}
-				$rImportStreams = array();
+				$rImportStreams = [];
 
 				if (!empty($_FILES['m3u_file']['tmp_name'])) {
 					$rFile = '';
@@ -198,7 +199,7 @@ class SeriesService {
 					}
 
 					preg_match_all('/(?P<tag>#EXTINF:[-1,0])|(?:(?P<prop_key>[-a-z]+)=\\"(?P<prop_val>[^"]+)")|(?<name>,[^\\r\\n]+)|(?<url>http[^\\s]*:\\/\\/.*\\/.*)/', $rFile, $rMatches);
-					$rResults = array();
+					$rResults = [];
 					$rIndex = -1;
 
 					for ($i = 0; $i < count($rMatches[0]); $i++) {
@@ -231,7 +232,7 @@ class SeriesService {
 								$rPathInfo['extension'] = ($rData['target_container'] ?: 'mp4');
 							}
 
-							$rImportStreams[] = array('url' => $rResult['url'], 'title' => ($rResult['name'] ?: ''), 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container']));
+							$rImportStreams[] = ['url' => $rResult['url'], 'title' => ($rResult['name'] ?: ''), 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container'])];
 						}
 					}
 				} else {
@@ -242,11 +243,11 @@ class SeriesService {
 						if (!is_numeric($rParts[1])) {
 						} else {
 							if (isset($rData['scan_recursive'])) {
-								$rFiles = ApiClient::scanRecursive(intval($rParts[1]), $rParts[2], array('mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts'));
+								$rFiles = ApiClient::scanRecursive(intval($rParts[1]), $rParts[2], ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts']);
 							} else {
-								$rFiles = array();
+								$rFiles = [];
 
-								foreach (ApiClient::listDir(intval($rParts[1]), rtrim($rParts[2], '/'), array('mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts'))['files'] as $rFile) {
+								foreach (ApiClient::listDir(intval($rParts[1]), rtrim($rParts[2], '/'), ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts'])['files'] as $rFile) {
 									$rFiles[] = rtrim($rParts[2], '/') . '/' . $rFile;
 								}
 							}
@@ -263,7 +264,7 @@ class SeriesService {
 										$rPathInfo['extension'] = ($rData['target_container'] ?: 'mp4');
 									}
 
-									$rImportStreams[] = array('url' => $rFilePath, 'title' => $rPathInfo['filename'], 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container']));
+									$rImportStreams[] = ['url' => $rFilePath, 'title' => $rPathInfo['filename'], 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container'])];
 								}
 							}
 						}
@@ -273,10 +274,10 @@ class SeriesService {
 				$rSeriesCategories = array_keys(CategoryService::getAllByType('series'));
 
 				if (0 < count($rImportStreams)) {
-					$rBouquets = array();
+					$rBouquets = [];
 
-					foreach ((json_decode($rData['bouquet_create_list'] ?? '', true) ?: array()) as $rBouquet) {
-						$rPrepare = QueryHelper::prepareArray(array('bouquet_name' => $rBouquet, 'bouquet_channels' => array(), 'bouquet_movies' => array(), 'bouquet_series' => array(), 'bouquet_radios' => array()));
+					foreach ((json_decode($rData['bouquet_create_list'] ?? '', true) ?: []) as $rBouquet) {
+						$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 						$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 						if (!$db->query($rQuery, ...$rPrepare['data'])) {
@@ -293,10 +294,10 @@ class SeriesService {
 					}
 					unset($rData['bouquets'], $rData['bouquet_create_list']);
 
-					$rCategories = array();
+					$rCategories = [];
 
-					foreach ((json_decode($rData['category_create_list'] ?? '', true) ?: array()) as $rCategory) {
-						$rPrepare = QueryHelper::prepareArray(array('category_type' => 'series', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0));
+					foreach ((json_decode($rData['category_create_list'] ?? '', true) ?: []) as $rCategory) {
+						$rPrepare = QueryHelper::prepareArray(['category_type' => 'series', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 						$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 						if (!$db->query($rQuery, ...$rPrepare['data'])) {
@@ -313,7 +314,7 @@ class SeriesService {
 					}
 					unset($rData['category_id'], $rData['category_create_list']);
 
-					$rServerIDs = array();
+					$rServerIDs = [];
 
 					foreach (json_decode($rData['server_tree_data'], true) as $rServer) {
 						if ($rServer['parent'] == '#') {
@@ -324,21 +325,21 @@ class SeriesService {
 					// watch is an optional module (fetched from its own repo). When it is
 					// not installed there are no watch categories — degrade to empty.
 					$rWatchCategories = class_exists(WatchService::class)
-						? array(1 => WatchService::getWatchCategories(1), 2 => WatchService::getWatchCategories(2))
-						: array();
+						? [1 => WatchService::getWatchCategories(1), 2 => WatchService::getWatchCategories(2)]
+						: [];
 
 					foreach ($rImportStreams as $rImportStream) {
-						$rData = array('import' => true, 'type' => 'series', 'title' => $rImportStream['title'], 'file' => $rImportStream['url'], 'subtitles' => array(), 'servers' => $rServerIDs, 'fb_category_id' => $rCategories, 'fb_bouquets' => $rBouquets, 'disable_tmdb' => false, 'ignore_no_match' => false, 'bouquets' => array(), 'category_id' => array(), 'language' => SettingsManager::getString('tmdb_language'), 'watch_categories' => $rWatchCategories, 'read_native' => $rData['read_native'], 'movie_symlink' => $rData['movie_symlink'], 'remove_subtitles' => $rData['remove_subtitles'], 'direct_source' => $rData['direct_source'], 'direct_proxy' => $rData['direct_proxy'], 'auto_encode' => $rRestart, 'auto_upgrade' => false, 'fallback_title' => false, 'ffprobe_input' => false, 'transcode_profile_id' => $rData['transcode_profile_id'], 'target_container' => $rImportStream['container'], 'max_genres' => SettingsManager::getInt('max_genres'), 'duplicate_tmdb' => true);
+						$rData = ['import' => true, 'type' => 'series', 'title' => $rImportStream['title'], 'file' => $rImportStream['url'], 'subtitles' => [], 'servers' => $rServerIDs, 'fb_category_id' => $rCategories, 'fb_bouquets' => $rBouquets, 'disable_tmdb' => false, 'ignore_no_match' => false, 'bouquets' => [], 'category_id' => [], 'language' => SettingsManager::getString('tmdb_language'), 'watch_categories' => $rWatchCategories, 'read_native' => $rData['read_native'], 'movie_symlink' => $rData['movie_symlink'], 'remove_subtitles' => $rData['remove_subtitles'], 'direct_source' => $rData['direct_source'], 'direct_proxy' => $rData['direct_proxy'], 'auto_encode' => $rRestart, 'auto_upgrade' => false, 'fallback_title' => false, 'ffprobe_input' => false, 'transcode_profile_id' => $rData['transcode_profile_id'], 'target_container' => $rImportStream['container'], 'max_genres' => SettingsManager::getInt('max_genres'), 'duplicate_tmdb' => true];
 						$rCommand = '/usr/bin/timeout 300 ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php watch_item "' . base64_encode(json_encode($rData, JSON_UNESCAPED_UNICODE)) . '" > /dev/null 2>/dev/null &';
 						shell_exec($rCommand);
 					}
 
-					return array('status' => STATUS_SUCCESS);
+					return ['status' => STATUS_SUCCESS];
 				} else {
-					return array('status' => STATUS_NO_SOURCES, 'data' => $rPostData);
+					return ['status' => STATUS_NO_SOURCES, 'data' => $rPostData];
 				}
 			} else {
-				return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+				return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 			}
 		} else {
 			exit();
@@ -351,16 +352,16 @@ class SeriesService {
 	 * @param array $rData Selected series ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete($rData) {
+	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
 		ini_set('default_socket_timeout', 0);
 
 		$rSeries = json_decode($rData['series'], true);
-		SeriesService::deleteSeriesByIds($rSeries);
+		self::deleteSeriesByIds($rSeries);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -369,36 +370,36 @@ class SeriesService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit($rData) {
+	public static function massEdit(array $rData) {
 		$db = self::db();
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
 		ini_set('default_socket_timeout', 0);
 
-		$rArray = array();
+		$rArray = [];
 		$rSeriesIDs = json_decode($rData['series'], true);
 
 		if (0 < count($rSeriesIDs)) {
-			$rCategoryMap = array();
+			$rCategoryMap = [];
 
-			if (isset($rData['c_category_id']) && in_array($rData['category_id_type'], array('ADD', 'DEL'))) {
+			if (isset($rData['c_category_id']) && in_array($rData['category_id_type'], ['ADD', 'DEL'])) {
 				$db->query('SELECT `id`, `category_id` FROM `streams_series` WHERE `id` IN (' . implode(',', array_map('intval', $rSeriesIDs)) . ');');
 
 				foreach ($db->get_rows() as $rRow) {
-					$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: array());
+					$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: []);
 				}
 			}
 
 			$rBouquets = BouquetService::getAllSimple();
-			$rAddBouquet = $rDelBouquet = array();
+			$rAddBouquet = $rDelBouquet = [];
 
 			foreach ($rSeriesIDs as $rSeriesID) {
 				if (isset($rData['c_category_id'])) {
 					$rCategories = array_map('intval', $rData['category_id']);
 
 					if ($rData['category_id_type'] == 'ADD') {
-						foreach (($rCategoryMap[$rSeriesID] ?: array()) as $rCategoryID) {
+						foreach (($rCategoryMap[$rSeriesID] ?: []) as $rCategoryID) {
 							if (!in_array($rCategoryID, $rCategories)) {
 								$rCategories[] = $rCategoryID;
 							}
@@ -465,7 +466,7 @@ class SeriesService {
 			}
 		}
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	// ──────────── Из SeriesRepository ────────────
@@ -477,7 +478,7 @@ class SeriesService {
 	 * @param int $rPage Result page.
 	 * @return array Similar series.
 	 */
-	public static function getSimilar($rID, $rPage = 1) {
+	public static function getSimilar(int $rID, int $rPage = 1) {
 		TMDbService::requireLibrary();
 
 		if (0 < strlen(SettingsManager::getString('tmdb_language'))) {
@@ -494,7 +495,7 @@ class SeriesService {
 	 */
 	public static function getList() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `id`, `title` FROM `streams_series` ORDER BY `title` ASC;');
 
 		if (0 >= $db->num_rows()) {
@@ -531,7 +532,7 @@ class SeriesService {
 					}
 				}
 
-				$rReturn = array();
+				$rReturn = [];
 				$rSeasons = json_decode($rTMDB->getTVShow($rTMDBID)->getJSON(), true)['seasons'];
 
 				foreach ($rSeasons as $rSeason) {
@@ -565,7 +566,7 @@ class SeriesService {
 	 */
 	public static function generatePlaylist($rSeriesNo) {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `stream_id` FROM `streams_episodes` WHERE `series_id` = ? ORDER BY `season_num` ASC, `episode_num` ASC;', $rSeriesNo);
 
 		if (0 >= $db->num_rows()) {
@@ -590,7 +591,7 @@ class SeriesService {
 	 * @param int $rID Series id.
 	 * @return array|false The series row, or false if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `streams_series` WHERE `id` = ?;', $rID);
 
@@ -608,7 +609,7 @@ class SeriesService {
 	 */
 	public static function getAll() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `streams_series` ORDER BY `title` ASC;');
 
 		if ($db->num_rows() > 0) {
@@ -626,7 +627,7 @@ class SeriesService {
 	 * @param int $rID \TMDB id.
 	 * @return array|false The series row, or false if not found.
 	 */
-	public static function getByTMDBId($rID) {
+	public static function getByTMDBId(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `streams_series` WHERE `tmdb_id` = ?;', $rID);
 
@@ -644,7 +645,7 @@ class SeriesService {
 	 * @param bool $rDeleteFiles Also remove on-disk episode files.
 	 * @return bool True on success.
 	 */
-	public static function deleteSeriesById($rID, $rDeleteFiles = true) {
+	public static function deleteSeriesById(int $rID, bool $rDeleteFiles = true) {
 		$db = self::db();
 		$rSeries = self::getById($rID);
 
@@ -670,7 +671,7 @@ class SeriesService {
 	 * @param int[] $rIDs Series ids.
 	 * @return bool True on success.
 	 */
-	public static function deleteSeriesByIds($rIDs) {
+	public static function deleteSeriesByIds(array $rIDs) {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
@@ -678,7 +679,7 @@ class SeriesService {
 			return false;
 		}
 
-		$rStreamIDs = array();
+		$rStreamIDs = [];
 		$db->query('SELECT `stream_id` FROM `streams_episodes` WHERE `series_id` IN (' . implode(',', $rIDs) . ');');
 
 		foreach ($db->get_rows() as $rRow) {

@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class UsersController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Users');
-        $this->render('users');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Users');
+		$this->render('users');
+	}
 }

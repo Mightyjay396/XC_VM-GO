@@ -26,13 +26,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class LineService {
 	use DatabaseAware;
+
 	/**
 	 * Bulk delete selected lines.
 	 *
 	 * @param array $rData Selected line ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete($rData) {
+	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
@@ -41,7 +42,7 @@ class LineService {
 		$rLines = json_decode($rData['lines'], true);
 		LineRepository::deleteMany($rLines);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -50,12 +51,12 @@ class LineService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit($rData) {
+	public static function massEdit(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('massEditLines', $rData)) {
-			$rArray = array();
+			$rArray = [];
 
-			foreach (array('is_stalker', 'is_isplock', 'is_restreamer', 'is_trial') as $rItem) {
+			foreach (['is_stalker', 'is_isplock', 'is_restreamer', 'is_trial'] as $rItem) {
 				if (!isset($rData['c_' . $rItem])) {
 				} else {
 					if (isset($rData[$rItem])) {
@@ -111,7 +112,7 @@ class LineService {
 
 			if (!isset($rData['c_access_output'])) {
 			} else {
-				$rOutputs = array();
+				$rOutputs = [];
 
 				foreach ($rData['access_output'] as $rOutputID) {
 					$rOutputs[] = $rOutputID;
@@ -121,7 +122,7 @@ class LineService {
 
 			if (!isset($rData['c_bouquets'])) {
 			} else {
-				$rArray['bouquet'] = array();
+				$rArray['bouquet'] = [];
 
 				foreach (json_decode($rData['bouquets_selected'], true) as $rBouquet) {
 					if (!is_numeric($rBouquet)) {
@@ -156,12 +157,12 @@ class LineService {
 				foreach ($db->get_rows() as $rRow) {
 					MagService::syncLineDevices($rRow['pair_id']);
 				}
-				LineService::updateLinesSignal($rUsers);
+				self::updateLinesSignal($rUsers);
 			}
 
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -171,7 +172,7 @@ class LineService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processLine', $rData)) {
 			if (isset($rData['edit'])) {
@@ -200,7 +201,7 @@ class LineService {
 				$rArray['password'] = AdminHelpers::generateString(10);
 			}
 
-			foreach (array('max_connections', 'enabled', 'admin_enabled') as $rSelection) {
+			foreach (['max_connections', 'enabled', 'admin_enabled'] as $rSelection) {
 				if (isset($rData[$rSelection])) {
 					$rArray[$rSelection] = intval($rData[$rSelection]);
 				} else {
@@ -208,7 +209,7 @@ class LineService {
 				}
 			}
 
-			foreach (array('is_stalker', 'is_restreamer', 'is_trial', 'is_isplock', 'bypass_ua') as $rSelection) {
+			foreach (['is_stalker', 'is_restreamer', 'is_trial', 'is_isplock', 'bypass_ua'] as $rSelection) {
 				if (isset($rData[$rSelection])) {
 					$rArray[$rSelection] = 1;
 				} else {
@@ -232,7 +233,7 @@ class LineService {
 						$rDate = new \DateTime($rData['exp_date']);
 						$rArray['exp_date'] = $rDate->format('U');
 					} catch (\Exception $e) {
-						return array('status' => STATUS_INVALID_DATE, 'data' => $rData);
+						return ['status' => STATUS_INVALID_DATE, 'data' => $rData];
 					}
 				}
 			} else {
@@ -247,7 +248,7 @@ class LineService {
 			if (isset($rData['allowed_ips'])) {
 				if (is_array($rData['allowed_ips'])) {
 				} else {
-					$rData['allowed_ips'] = array($rData['allowed_ips']);
+					$rData['allowed_ips'] = [$rData['allowed_ips']];
 				}
 
 				$rArray['allowed_ips'] = json_encode($rData['allowed_ips']);
@@ -258,7 +259,7 @@ class LineService {
 			if (isset($rData['allowed_ua'])) {
 				if (is_array($rData['allowed_ua'])) {
 				} else {
-					$rData['allowed_ua'] = array($rData['allowed_ua']);
+					$rData['allowed_ua'] = [$rData['allowed_ua']];
 				}
 
 				$rArray['allowed_ua'] = json_encode($rData['allowed_ua']);
@@ -266,7 +267,7 @@ class LineService {
 				$rArray['allowed_ua'] = '[]';
 			}
 
-			$rOutputs = array();
+			$rOutputs = [];
 
 			if (!isset($rData['access_output'])) {
 			} else {
@@ -287,17 +288,17 @@ class LineService {
 				if ($db->query($rQuery, ...$rPrepare['data'])) {
 					$rInsertID = $db->last_insert_id();
 					MagService::syncLineDevices($rInsertID);
-					LineService::updateLineSignal($rInsertID);
+					self::updateLineSignal($rInsertID);
 
-					return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+					return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 				}
 
-				return array('status' => STATUS_FAILURE, 'data' => $rData);
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
 			}
 
-			return array('status' => STATUS_EXISTS_USERNAME, 'data' => $rData);
+			return ['status' => STATUS_EXISTS_USERNAME, 'data' => $rData];
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -308,7 +309,7 @@ class LineService {
 	 * @param bool $rForce  Force the signal even if recently sent.
 	 * @return void
 	 */
-	public static function deleteLineSignal($rUserID, $rForce = false) {
+	public static function deleteLineSignal(int $rUserID, bool $rForce = false) {
 		self::updateLineSignal($rUserID, $rForce);
 	}
 
@@ -319,7 +320,7 @@ class LineService {
 	 * @param bool  $rForce   Force the signal even if recently sent.
 	 * @return void
 	 */
-	public static function deleteLinesSignal($rUserIDs, $rForce = false) {
+	public static function deleteLinesSignal(array $rUserIDs, bool $rForce = false) {
 		self::updateLinesSignal($rUserIDs);
 	}
 
@@ -330,15 +331,15 @@ class LineService {
 	 * @param bool $rForce  Force the signal even if recently sent.
 	 * @return void
 	 */
-	public static function updateLineSignal($rUserID, $rForce = false) {
+	public static function updateLineSignal(int $rUserID, bool $rForce = false) {
 		$db = self::db();
 		$rCached = SettingsManager::get('enable_cache');
 		$rMainID = ConnectionTracker::getMainID();
 		if ($rCached) {
-			$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, json_encode(array('type' => 'update_line', 'id' => $rUserID)));
+			$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, json_encode(['type' => 'update_line', 'id' => $rUserID]));
 			if ($db->get_row()['count'] != 0) {
 			} else {
-				$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), json_encode(array('type' => 'update_line', 'id' => $rUserID)));
+				$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), json_encode(['type' => 'update_line', 'id' => $rUserID]));
 			}
 			return;
 		}
@@ -351,15 +352,15 @@ class LineService {
 	 * @param int[] $rUserIDs Line/user ids.
 	 * @return void
 	 */
-	public static function updateLinesSignal($rUserIDs) {
+	public static function updateLinesSignal(array $rUserIDs) {
 		$db = self::db();
 		$rCached = SettingsManager::get('enable_cache');
 		$rMainID = ConnectionTracker::getMainID();
 		if ($rCached) {
-			$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, json_encode(array('type' => 'update_lines', 'id' => $rUserIDs)));
+			$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, json_encode(['type' => 'update_lines', 'id' => $rUserIDs]));
 			if ($db->get_row()['count'] != 0) {
 			} else {
-				$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), json_encode(array('type' => 'update_lines', 'id' => $rUserIDs)));
+				$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), json_encode(['type' => 'update_lines', 'id' => $rUserIDs]));
 			}
 			return;
 		}
@@ -374,7 +375,7 @@ class LineService {
 	 * @param bool $rCloseCons    Close active connections first.
 	 * @return bool True on success.
 	 */
-	public static function deleteLineById($rID, $rDeletePaired = false, $rCloseCons = true) {
+	public static function deleteLineById(int $rID, bool $rDeletePaired = false, bool $rCloseCons = true) {
 		$db = self::db();
 		$rLine = UserRepository::getLineById($rID);
 
@@ -422,12 +423,12 @@ class LineService {
 	 * @param int $rLimit Window in seconds (default ~28 days).
 	 * @return array Expiring line rows.
 	 */
-	public static function getExpiring($rLimit = 2419200) {
+	public static function getExpiring(int $rLimit = 2419200) {
 		$db = self::db();
 		global $rUserInfo;
 		global $rPermissions;
-		$rReturn = array();
-		$rReports = array_map('intval', array_merge(array($rUserInfo['id']), $rPermissions['all_reports']));
+		$rReturn = [];
+		$rReports = array_map('intval', array_merge([$rUserInfo['id']], $rPermissions['all_reports']));
 
 		if (0 >= count($rReports)) {
 		} else {
@@ -447,7 +448,7 @@ class LineService {
 	 * @param int $rUserID User id.
 	 * @return bool True if trial generation is allowed.
 	 */
-	public static function canGenerateTrials($rUserID) {
+	public static function canGenerateTrials(int $rUserID) {
 		$db = self::db();
 		global $rSettings;
 		$rUser = UserRepository::getRegisteredUserById($rUserID);

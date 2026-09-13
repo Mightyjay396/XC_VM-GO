@@ -19,10 +19,8 @@ use XcVm\Core\Util\Encryption;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class PlayerProxyController extends BasePlayerController
-{
-	public function index()
-	{
+class PlayerProxyController extends BasePlayerController {
+	public function index() {
 		ini_set('default_socket_timeout', 10);
 
 		// The URL is fetched from this server: it must be one this panel sealed.

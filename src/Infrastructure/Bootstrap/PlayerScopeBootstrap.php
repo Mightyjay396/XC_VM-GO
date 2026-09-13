@@ -24,7 +24,6 @@ use XcVm\Domain\Vod\TMDbService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class PlayerScopeBootstrap implements ScopeBootstrap {
-
 	public function boot(): void {
 		$this->bootSession();
 		$this->bootFunctions();

@@ -22,15 +22,15 @@ use XcVm\Core\Auth\AuthRepository;
  */
 
 class HmacController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $this->setTitle('HMAC Keys');
+		$this->setTitle('HMAC Keys');
 
-        $hmacs = AuthRepository::getAllHMAC();
+		$hmacs = AuthRepository::getAllHMAC();
 
-        $this->render('hmacs', [
-            'hmacs' => $hmacs,
-        ]);
-    }
+		$this->render('hmacs', [
+			'hmacs' => $hmacs,
+		]);
+	}
 }

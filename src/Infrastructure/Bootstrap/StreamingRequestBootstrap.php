@@ -79,7 +79,7 @@ class StreamingRequestBootstrap {
 				unset($rAllowedDomains);
 			}
 
-			$rShowErrors = isset($rSettings['debug_show_errors']) ? (bool)$rSettings['debug_show_errors'] : false;
+			$rShowErrors = isset($rSettings['debug_show_errors']) ? (bool) $rSettings['debug_show_errors'] : false;
 		}
 
 		// ── 5. Logger ────────────────────────────────────────────

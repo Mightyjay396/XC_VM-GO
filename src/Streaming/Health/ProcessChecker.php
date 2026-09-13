@@ -15,7 +15,7 @@ namespace XcVm\Streaming\Health;
 class ProcessChecker {
 	public static function checkPID($rPID, $rSearch) {
 		if (!is_array($rSearch)) {
-			$rSearch = array($rSearch);
+			$rSearch = [$rSearch];
 		}
 		if (file_exists('/proc/' . $rPID)) {
 			$rCommand = trim(file_get_contents('/proc/' . $rPID . '/cmdline'));
@@ -30,7 +30,7 @@ class ProcessChecker {
 
 	public static function getWatchdog($rID, $rLimit = 86400) {
 		global $db;
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `servers_stats` WHERE `server_id` = ? AND UNIX_TIMESTAMP() - `time` <= ? ORDER BY `time` DESC;', $rID, $rLimit);
 		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {

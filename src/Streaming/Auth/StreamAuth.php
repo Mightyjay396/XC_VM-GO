@@ -18,7 +18,7 @@ use XcVm\Streaming\Protection\ConnectionLimiter;
 class StreamAuth {
 	public static function checkAccess($rUserInfo, $rUserIP, $rCountryCode, $rUserISP = '') {
 		global $rServers;
-		$rAvailableServers = array();
+		$rAvailableServers = [];
 		foreach ($rServers as $rServerID => $rServerInfo) {
 			if ($rServerInfo['server_online'] && $rServerInfo['server_type'] == 0) {
 				$rAvailableServers[] = $rServerID;
@@ -31,7 +31,7 @@ class StreamAuth {
 
 		shuffle($rAvailableServers);
 		$rServerCapacity = ConnectionTracker::getCapacity();
-		$rAcceptServers = array();
+		$rAcceptServers = [];
 
 		foreach ($rAvailableServers as $rServerID) {
 			$rOnlineClients = (isset($rServerCapacity[$rServerID]['online_clients']) ? $rServerCapacity[$rServerID]['online_clients'] : 0);
@@ -55,7 +55,7 @@ class StreamAuth {
 			return $rUserInfo['force_server_id'];
 		}
 
-		$rPriorityServers = array();
+		$rPriorityServers = [];
 		$rRedirectID = null;
 		foreach (array_keys($rAcceptServers) as $rServerID) {
 			if ($rServers[$rServerID]['enable_geoip'] == 1) {
@@ -104,7 +104,7 @@ class StreamAuth {
 	 * @param string|null $rUUID      The current connection's uuid, which is never evicted.
 	 * @return void
 	 */
-	public static function validateConnections($rUserInfo, $rIsHMAC = false, $rIdentifier = '', $rIP = null, $rUserAgent = null, $rUUID = null) {
+	public static function validateConnections(array $rUserInfo, mixed $rIsHMAC = false, ?string $rIdentifier = '', ?string $rIP = null, ?string $rUserAgent = null, ?string $rUUID = null) {
 		if ($rUserInfo['max_connections'] != 0) {
 			if (!$rIsHMAC) {
 				if (!empty($rUserInfo['pair_id'])) {

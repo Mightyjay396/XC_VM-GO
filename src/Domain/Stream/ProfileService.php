@@ -18,25 +18,26 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class ProfileService {
 	use DatabaseAware;
+
 	/**
 	 * Create or update a transcode profile from admin form data.
 	 *
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processProfile', $rData)) {
-			$rArray = array('profile_name' => $rData['profile_name'], 'profile_options' => null);
-			$rProfileOptions = array();
+			$rArray = ['profile_name' => $rData['profile_name'], 'profile_options' => null];
+			$rProfileOptions = [];
 
 			if ($rData['gpu_device'] != 0) {
 				$rProfileOptions['software_decoding'] = (intval($rData['software_decoding']) ?: 0);
-				$rProfileOptions['gpu'] = array('val' => $rData['gpu_device'], 'cmd' => '');
+				$rProfileOptions['gpu'] = ['val' => $rData['gpu_device'], 'cmd' => ''];
 				$rProfileOptions['gpu']['device'] = intval(explode('_', $rData['gpu_device'])[1]);
 
 				if (!$rData['software_decoding']) {
-					$rCommand = array();
+					$rCommand = [];
 					$rCommand[] = '-hwaccel cuvid';
 					$rCommand[] = '-hwaccel_device ' . $rProfileOptions['gpu']['device'];
 
@@ -131,57 +132,57 @@ class ProfileService {
 
 			if (0 >= strlen($rData['video_bitrate'])) {
 			} else {
-				$rProfileOptions[3] = array('cmd' => '-b:v ' . intval($rData['video_bitrate']) . 'k', 'val' => intval($rData['video_bitrate']));
+				$rProfileOptions[3] = ['cmd' => '-b:v ' . intval($rData['video_bitrate']) . 'k', 'val' => intval($rData['video_bitrate'])];
 			}
 
 			if (0 >= strlen($rData['audio_bitrate'])) {
 			} else {
-				$rProfileOptions[4] = array('cmd' => '-b:a ' . intval($rData['audio_bitrate']) . 'k', 'val' => intval($rData['audio_bitrate']));
+				$rProfileOptions[4] = ['cmd' => '-b:a ' . intval($rData['audio_bitrate']) . 'k', 'val' => intval($rData['audio_bitrate'])];
 			}
 
 			if (0 >= strlen($rData['min_tolerance'])) {
 			} else {
-				$rProfileOptions[5] = array('cmd' => '-minrate ' . intval($rData['min_tolerance']) . 'k', 'val' => intval($rData['min_tolerance']));
+				$rProfileOptions[5] = ['cmd' => '-minrate ' . intval($rData['min_tolerance']) . 'k', 'val' => intval($rData['min_tolerance'])];
 			}
 
 			if (0 >= strlen($rData['max_tolerance'])) {
 			} else {
-				$rProfileOptions[6] = array('cmd' => '-maxrate ' . intval($rData['max_tolerance']) . 'k', 'val' => intval($rData['max_tolerance']));
+				$rProfileOptions[6] = ['cmd' => '-maxrate ' . intval($rData['max_tolerance']) . 'k', 'val' => intval($rData['max_tolerance'])];
 			}
 
 			if (0 >= strlen($rData['buffer_size'])) {
 			} else {
-				$rProfileOptions[7] = array('cmd' => '-bufsize ' . intval($rData['buffer_size']) . 'k', 'val' => intval($rData['buffer_size']));
+				$rProfileOptions[7] = ['cmd' => '-bufsize ' . intval($rData['buffer_size']) . 'k', 'val' => intval($rData['buffer_size'])];
 			}
 
 			if (0 >= strlen($rData['crf_value'])) {
 			} else {
-				$rProfileOptions[8] = array('cmd' => '-crf ' . intval($rData['crf_value']), 'val' => $rData['crf_value']);
+				$rProfileOptions[8] = ['cmd' => '-crf ' . intval($rData['crf_value']), 'val' => $rData['crf_value']];
 			}
 
 			if (0 >= strlen($rData['aspect_ratio'])) {
 			} else {
-				$rProfileOptions[10] = array('cmd' => '-aspect ' . escapeshellcmd($rData['aspect_ratio']), 'val' => $rData['aspect_ratio']);
+				$rProfileOptions[10] = ['cmd' => '-aspect ' . escapeshellcmd($rData['aspect_ratio']), 'val' => $rData['aspect_ratio']];
 			}
 
 			if (0 >= strlen($rData['framerate'])) {
 			} else {
-				$rProfileOptions[11] = array('cmd' => '-r ' . intval($rData['framerate']), 'val' => intval($rData['framerate']));
+				$rProfileOptions[11] = ['cmd' => '-r ' . intval($rData['framerate']), 'val' => intval($rData['framerate'])];
 			}
 
 			if (0 >= strlen($rData['samplerate'])) {
 			} else {
-				$rProfileOptions[12] = array('cmd' => '-ar ' . intval($rData['samplerate']), 'val' => intval($rData['samplerate']));
+				$rProfileOptions[12] = ['cmd' => '-ar ' . intval($rData['samplerate']), 'val' => intval($rData['samplerate'])];
 			}
 
 			if (0 >= strlen($rData['audio_channels'])) {
 			} else {
-				$rProfileOptions[13] = array('cmd' => '-ac ' . intval($rData['audio_channels']), 'val' => intval($rData['audio_channels']));
+				$rProfileOptions[13] = ['cmd' => '-ac ' . intval($rData['audio_channels']), 'val' => intval($rData['audio_channels'])];
 			}
 
 			if (0 >= strlen($rData['threads'])) {
 			} else {
-				$rProfileOptions[15] = array('cmd' => '-threads ' . intval($rData['threads']), 'val' => intval($rData['threads']));
+				$rProfileOptions[15] = ['cmd' => '-threads ' . intval($rData['threads']), 'val' => intval($rData['threads'])];
 			}
 
 			$rComplex = false;
@@ -194,11 +195,11 @@ class ProfileService {
 
 				if (count($rPos) == 2) {
 				} else {
-					$rPos = array(10, 10);
+					$rPos = [10, 10];
 				}
 
 				$rLogoInput = '-i ' . escapeshellarg($rData['logo_path']);
-				$rProfileOptions[16] = array('cmd' => '', 'val' => $rData['logo_path'], 'pos' => implode(':', $rPos));
+				$rProfileOptions[16] = ['cmd' => '', 'val' => $rData['logo_path'], 'pos' => implode(':', $rPos)];
 
 				if ($rData['gpu_device'] != 0 && !$rData['software_decoding']) {
 					$rOverlay = '[0:v]hwdownload,format=nv12 [base]; [base][1:v] overlay=' . $rPos[0] . ':' . $rPos[1];
@@ -221,12 +222,12 @@ class ProfileService {
 							$rScale = 'yadif,scale=' . escapeshellcmd($rData['scaling']);
 						}
 
-						$rProfileOptions[9] = array('cmd' => '', 'val' => $rData['scaling']);
-						$rProfileOptions[17] = array('cmd' => '', 'val' => 1);
+						$rProfileOptions[9] = ['cmd' => '', 'val' => $rData['scaling']];
+						$rProfileOptions[17] = ['cmd' => '', 'val' => 1];
 					} else {
 						if (0 < strlen($rData['scaling'])) {
 							$rScale = 'scale=' . escapeshellcmd($rData['scaling']);
-							$rProfileOptions[9] = array('cmd' => '', 'val' => $rData['scaling']);
+							$rProfileOptions[9] = ['cmd' => '', 'val' => $rData['scaling']];
 						} else {
 							if (!isset($rData['yadif_filter'])) {
 							} else {
@@ -236,19 +237,19 @@ class ProfileService {
 									$rScale = 'yadif';
 								}
 
-								$rProfileOptions[17] = array('cmd' => '', 'val' => 1);
+								$rProfileOptions[17] = ['cmd' => '', 'val' => 1];
 							}
 						}
 					}
 				} else {
 					if (0 >= strlen($rData['scaling'])) {
 					} else {
-						$rProfileOptions[9] = array('cmd' => '-vf scale=' . escapeshellcmd($rData['scaling']), 'val' => $rData['scaling']);
+						$rProfileOptions[9] = ['cmd' => '-vf scale=' . escapeshellcmd($rData['scaling']), 'val' => $rData['scaling']];
 					}
 
 					if (!isset($rData['yadif_filter'])) {
 					} else {
-						$rProfileOptions[17] = array('cmd' => '-vf yadif', 'val' => 1);
+						$rProfileOptions[17] = ['cmd' => '-vf yadif', 'val' => 1];
 					}
 				}
 			} else {
@@ -265,8 +266,8 @@ class ProfileService {
 							$rScale = 'yadif,scale=' . escapeshellcmd($rData['resize']);
 						}
 
-						$rProfileOptions[9] = array('cmd' => '', 'val' => $rData['resize']);
-						$rProfileOptions[17] = array('cmd' => '', 'val' => 1);
+						$rProfileOptions[9] = ['cmd' => '', 'val' => $rData['resize']];
+						$rProfileOptions[17] = ['cmd' => '', 'val' => 1];
 					} else {
 						if (0 < strlen($rData['resize'])) {
 							if (!$rData['software_decoding']) {
@@ -275,7 +276,7 @@ class ProfileService {
 								$rScale = 'scale=' . escapeshellcmd($rData['resize']);
 							}
 
-							$rProfileOptions[9] = array('cmd' => '', 'val' => $rData['resize']);
+							$rProfileOptions[9] = ['cmd' => '', 'val' => $rData['resize']];
 						} else {
 							if (0 >= intval($rData['deint'])) {
 							} else {
@@ -285,19 +286,19 @@ class ProfileService {
 									$rScale = 'yadif';
 								}
 
-								$rProfileOptions[17] = array('cmd' => '', 'val' => 1);
+								$rProfileOptions[17] = ['cmd' => '', 'val' => 1];
 							}
 						}
 					}
 				} else {
 					if (0 >= strlen($rData['resize'])) {
 					} else {
-						$rProfileOptions[9] = array('cmd' => '-vf scale=' . escapeshellcmd($rData['resize']), 'val' => $rData['resize']);
+						$rProfileOptions[9] = ['cmd' => '-vf scale=' . escapeshellcmd($rData['resize']), 'val' => $rData['resize']];
 					}
 
 					if (0 >= intval($rData['deint'])) {
 					} else {
-						$rProfileOptions[17] = array('cmd' => '-vf yadif', 'val' => 1);
+						$rProfileOptions[17] = ['cmd' => '-vf yadif', 'val' => 1];
 					}
 				}
 			}
@@ -313,7 +314,7 @@ class ProfileService {
 					}
 				}
 
-				$rProfileOptions[16]['cmd'] = str_replace(array('{SCALE}', '{OVERLAY}', '{LOGO}'), array($rScale, $rOverlay, $rLogoInput), '{LOGO} -filter_complex "{SCALE}{OVERLAY}"');
+				$rProfileOptions[16]['cmd'] = str_replace(['{SCALE}', '{OVERLAY}', '{LOGO}'], [$rScale, $rOverlay, $rLogoInput], '{LOGO} -filter_complex "{SCALE}{OVERLAY}"');
 			}
 
 			$rArray['profile_options'] = json_encode($rProfileOptions, JSON_UNESCAPED_UNICODE);
@@ -328,12 +329,12 @@ class ProfileService {
 
 			if ($db->query($rQuery, ...$rPrepare['data'])) {
 				$rInsertID = $db->last_insert_id();
-				return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 			}
 
-			return array('status' => STATUS_FAILURE, 'data' => $rData);
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
 		}
 
-		return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 }

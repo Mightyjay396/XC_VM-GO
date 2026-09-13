@@ -17,12 +17,12 @@ use XcVm\Domain\Stream\CategoryService;
  */
 
 class SeriesListController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rCategories = CategoryService::getAllByType('series');
+		$rCategories = CategoryService::getAllByType('series');
 
-        $this->setTitle('TV Series');
-        $this->render('series', compact('rCategories'));
-    }
+		$this->setTitle('TV Series');
+		$this->render('series', compact('rCategories'));
+	}
 }

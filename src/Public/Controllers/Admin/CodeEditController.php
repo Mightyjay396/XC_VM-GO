@@ -19,19 +19,19 @@ use XcVm\Core\Auth\AuthRepository;
  */
 
 class CodeEditController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rCode = null;
-        $id = $this->input('id');
-        if ($id !== null) {
-            $rCode = AuthRepository::getCodeById($id);
-            if (!$rCode) {
-                exit();
-            }
-        }
+		$rCode = null;
+		$id = $this->input('id');
+		if ($id !== null) {
+			$rCode = AuthRepository::getCodeById($id);
+			if (!$rCode) {
+				exit();
+			}
+		}
 
-        $this->setTitle('Access Code');
-        $this->render('code', compact('rCode'));
-    }
+		$this->setTitle('Access Code');
+		$this->render('code', compact('rCode'));
+	}
 }

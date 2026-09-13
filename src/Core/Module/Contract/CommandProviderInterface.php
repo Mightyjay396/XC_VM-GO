@@ -11,14 +11,12 @@ use XcVm\Cli\CommandRegistry;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 interface CommandProviderInterface {
-
-    /**
-     * Register CLI commands and cron jobs for this module.
-     *
-     * Module explicitly instantiates and registers CommandInterface instances.
-     * No filesystem scanning — all registration is explicit PHP.
-     *
-     * @param CommandRegistry $registry
-     */
-    public function registerCommands(CommandRegistry $registry): void;
+	/**
+	 * Register CLI commands and cron jobs for this module.
+	 *
+	 * Module explicitly instantiates and registers CommandInterface instances.
+	 * No filesystem scanning — all registration is explicit PHP.
+	 *
+	 */
+	public function registerCommands(CommandRegistry $registry): void;
 }

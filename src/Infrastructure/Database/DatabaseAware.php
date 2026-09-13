@@ -48,7 +48,7 @@ trait DatabaseAware {
 	 * @param DatabaseHandler $db Database handler.
 	 * @return void
 	 */
-	public static function setDb($db): void {
+	public static function setDb(DatabaseHandler $db): void {
 		self::$db = $db;
 	}
 

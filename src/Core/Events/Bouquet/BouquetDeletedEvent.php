@@ -14,10 +14,11 @@ namespace XcVm\Core\Events\Bouquet;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class BouquetDeletedEvent {
-    /**
-     * @param int $bouquetId Id of the bouquet that was deleted.
-     */
-    public function __construct(
-        public readonly int $bouquetId,
-    ) {}
+	/**
+	 * @param int $bouquetId Id of the bouquet that was deleted.
+	 */
+	public function __construct(
+		public readonly int $bouquetId,
+	) {
+	}
 }

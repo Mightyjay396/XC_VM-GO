@@ -38,7 +38,7 @@ class LegacyInitializer {
 	 * @param bool $rUseCache Load settings from cache instead of the database.
 	 * @return void
 	 */
-	public static function initCore($rUseCache = false) {
+	public static function initCore(bool $rUseCache = false) {
 		if (!empty($_GET)) {
 			InputValidator::cleanGlobals($_GET);
 		}
@@ -104,14 +104,7 @@ class LegacyInitializer {
 		$db->query("SELECT * FROM `crontab` WHERE `enabled` = 1;");
 		foreach ($db->get_rows() as $rRow) {
 			$rJobs[] =
-				$rRow["time"] .
-				" " .
-				PHP_BIN .
-				" " .
-				MAIN_HOME .
-				"console.php cron:" .
-				$rRow["filename"] .
-				" # XC_VM";
+				$rRow["time"] . " " . PHP_BIN . " " . MAIN_HOME . "console.php cron:" . $rRow["filename"] . " # XC_VM";
 		}
 
 		shell_exec("crontab -r");

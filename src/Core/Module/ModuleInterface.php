@@ -42,32 +42,31 @@ use XcVm\Core\Module\Contract\ServiceProviderInterface;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 interface ModuleInterface extends
-    ServiceProviderInterface,
-    RouteProviderInterface,
-    CommandProviderInterface,
-    NavbarProviderInterface
-{
-    /**
-     * Unique module name — must match the directory name in modules/.
-     */
-    public function getName(): string;
+	ServiceProviderInterface,
+	RouteProviderInterface,
+	CommandProviderInterface,
+	NavbarProviderInterface {
+	/**
+	 * Unique module name — must match the directory name in modules/.
+	 */
+	public function getName(): string;
 
-    /**
-     * Module version (semver).
-     */
-    public function getVersion(): string;
+	/**
+	 * Module version (semver).
+	 */
+	public function getVersion(): string;
 
-    /**
-     * Run once when the module is enabled.
-     *
-     * Creates tables, seeds initial data.
-     */
-    public function install(): void;
+	/**
+	 * Run once when the module is enabled.
+	 *
+	 * Creates tables, seeds initial data.
+	 */
+	public function install(): void;
 
-    /**
-     * Run once when the module is disabled or removed.
-     *
-     * Drops tables, clears settings entries, removes cron records.
-     */
-    public function uninstall(): void;
+	/**
+	 * Run once when the module is disabled or removed.
+	 *
+	 * Drops tables, clears settings entries, removes cron records.
+	 */
+	public function uninstall(): void;
 }

@@ -16,7 +16,7 @@ namespace XcVm\Core\Config;
 
 class SettingsManager {
 	/** @var array */
-	private static $settings = array();
+	private static $settings = [];
 
 	/**
 	 * Сохраняет весь массив настроек.
@@ -35,11 +35,9 @@ class SettingsManager {
 	/**
 	 * Возвращает значение по ключу.
 	 *
-	 * @param string $key
-	 * @param mixed  $default
 	 * @return mixed
 	 */
-	public static function get(string $key, $default = null) {
+	public static function get(string $key, mixed $default = null) {
 		return self::$settings[$key] ?? $default;
 	}
 
@@ -53,7 +51,6 @@ class SettingsManager {
 	/**
 	 * Проверяет наличие ключа в настройках.
 	 *
-	 * @param string $key
 	 * @return bool
 	 */
 	public static function has(string $key): bool {
@@ -66,7 +63,6 @@ class SettingsManager {
 	 * Повторяет PHP-truthiness существующих проверок `if (getAll()['key'])`:
 	 * '0' и '' → false, '1' и любое непустое значение → true.
 	 *
-	 * @param string $key
 	 * @param bool   $default Значение, если ключ отсутствует.
 	 * @return bool
 	 */
@@ -77,8 +73,6 @@ class SettingsManager {
 	/**
 	 * Возвращает значение как int.
 	 *
-	 * @param string $key
-	 * @param int    $default
 	 * @return int
 	 */
 	public static function getInt(string $key, int $default = 0): int {
@@ -88,8 +82,6 @@ class SettingsManager {
 	/**
 	 * Возвращает значение как строку.
 	 *
-	 * @param string $key
-	 * @param string $default
 	 * @return string
 	 */
 	public static function getString(string $key, string $default = ''): string {
@@ -102,11 +94,9 @@ class SettingsManager {
 	 * JSON-поля декодируются в массивы ещё в SettingsRepository, поэтому здесь
 	 * достаточно проверить тип; для скаляров/null возвращается $default.
 	 *
-	 * @param string $key
-	 * @param array  $default
 	 * @return array
 	 */
-	public static function getArray(string $key, array $default = array()): array {
+	public static function getArray(string $key, array $default = []): array {
 		$rValue = self::$settings[$key] ?? null;
 		return is_array($rValue) ? $rValue : $default;
 	}

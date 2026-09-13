@@ -24,10 +24,8 @@ use XcVm\Domain\User\UserRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class PlayerLoginController
-{
-	public function index()
-	{
+class PlayerLoginController {
+	public function index() {
 		define('CLIENT_INVALID', 0);
 		define('CLIENT_IS_E2', 1);
 		define('CLIENT_IS_MAG', 2);
@@ -81,8 +79,7 @@ class PlayerLoginController
 		}
 	}
 
-	private function processLogin()
-	{
+	private function processLogin() {
 		$rIP = NetworkUtils::getUserIP();
 		$rCountryCode = GeoIP::getCountry($rIP)['country']['iso_code'];
 		$rUserInfo = UserRepository::getUserInfo(null, RequestManager::get('username'), RequestManager::get('password'), true);

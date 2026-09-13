@@ -23,13 +23,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class EpisodeService {
 	use DatabaseAware;
+
 	/**
 	 * Create or update a series episode from admin form data.
 	 *
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		global $rSettings;
 		$db = self::db();
 		if (isset($rData['edit'])) {
@@ -58,13 +59,13 @@ class EpisodeService {
 				$rFallbackStreamSource = $rArray['stream_source'];
 			}
 		}
-		$rArray['stream_source'] = array($rData['stream_source'] ?? $rFallbackStreamSource);
+		$rArray['stream_source'] = [$rData['stream_source'] ?? $rFallbackStreamSource];
 
 		$rMovieSubtitles = $rData['movie_subtitles'] ?? '';
 		if (0 < strlen($rMovieSubtitles)) {
 			$rSplit = explode(':', $rMovieSubtitles);
 			if (2 < count($rSplit) && 0 < strlen($rSplit[2])) {
-				$rArray['movie_subtitles'] = array('files' => array($rSplit[2]), 'names' => array('Subtitles'), 'charset' => array('UTF-8'), 'location' => intval($rSplit[1]));
+				$rArray['movie_subtitles'] = ['files' => [$rSplit[2]], 'names' => ['Subtitles'], 'charset' => ['UTF-8'], 'location' => intval($rSplit[1])];
 			} else {
 				$rArray['movie_subtitles'] = null;
 			}
@@ -76,7 +77,7 @@ class EpisodeService {
 			$rArray['enable_transcode'] = 1;
 		}
 
-		foreach (array('read_native', 'movie_symlink', 'direct_source', 'direct_proxy', 'remove_subtitles') as $rKey) {
+		foreach (['read_native', 'movie_symlink', 'direct_source', 'direct_proxy', 'remove_subtitles'] as $rKey) {
 			if (isset($rData[$rKey])) {
 				$rArray[$rKey] = 1;
 			} else {
@@ -90,7 +91,7 @@ class EpisodeService {
 			$rRestart = false;
 		}
 
-		$rProcessArray = array();
+		$rProcessArray = [];
 
 		if (isset($rData['multi'])) {
 			if (Authorization::check('adv', 'import_episodes')) {
@@ -111,7 +112,7 @@ class EpisodeService {
 
 					if ($rSplit[0] == 'episode' && $rSplit[2] == 'name') {
 						if (0 < strlen($rData['episode_' . $rSplit[1] . '_num'])) {
-							$rImportArray = array('filename' => '', 'properties' => array(), 'name' => '', 'episode' => 0, 'target_container' => '');
+							$rImportArray = ['filename' => '', 'properties' => [], 'name' => '', 'episode' => 0, 'target_container' => ''];
 							$rEpisodeNum = intval($rData['episode_' . $rSplit[1] . '_num']);
 							$rImportArray['filename'] = 's:' . $rData['server'] . ':' . $rData['season_folder'] . $rFilename;
 							$rImage = '';
@@ -138,7 +139,7 @@ class EpisodeService {
 
 									$rImportArray['name'] .= $rEpisode['name'];
 									$rSeconds = intval($rSeries['episode_run_time']) * 60;
-									$rImportArray['properties'] = array('tmdb_id' => $rEpisode['id'], 'release_date' => $rEpisode['air_date'], 'plot' => $rEpisode['overview'], 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'movie_image' => $rImage, 'video' => array(), 'audio' => array(), 'bitrate' => 0, 'rating' => $rEpisode['vote_average'], 'season' => $rData['season_num']);
+									$rImportArray['properties'] = ['tmdb_id' => $rEpisode['id'], 'release_date' => $rEpisode['air_date'], 'plot' => $rEpisode['overview'], 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'movie_image' => $rImage, 'video' => [], 'audio' => [], 'bitrate' => 0, 'rating' => $rEpisode['vote_average'], 'season' => $rData['season_num']];
 
 									if (empty($rImportArray['properties']['movie_image'])) {
 										unset($rImportArray['properties']['movie_image']);
@@ -160,7 +161,7 @@ class EpisodeService {
 				exit();
 			}
 		} else {
-			$rImportArray = array('filename' => $rArray['stream_source'][0], 'properties' => array(), 'name' => $rArray['stream_display_name'], 'episode' => $rData['episode'], 'target_container' => $rData['target_container']);
+			$rImportArray = ['filename' => $rArray['stream_source'][0], 'properties' => [], 'name' => $rArray['stream_display_name'], 'episode' => $rData['episode'], 'target_container' => $rData['target_container']];
 
 			$rMovieImage = $rData['movie_image'] ?? '';
 			if ($rSettings['download_images'] && 0 < strlen($rMovieImage)) {
@@ -168,7 +169,7 @@ class EpisodeService {
 			}
 
 			$rSeconds = intval($rData['episode_run_time']) * 60;
-			$rImportArray['properties'] = array('release_date' => $rData['release_date'], 'plot' => $rData['plot'], 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'movie_image' => $rMovieImage, 'video' => array(), 'audio' => array(), 'bitrate' => 0, 'rating' => $rData['rating'], 'season' => $rData['season_num'], 'tmdb_id' => $rData['tmdb_id']);
+			$rImportArray['properties'] = ['release_date' => $rData['release_date'], 'plot' => $rData['plot'], 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'movie_image' => $rMovieImage, 'video' => [], 'audio' => [], 'bitrate' => 0, 'rating' => $rData['rating'], 'season' => $rData['season_num'], 'tmdb_id' => $rData['tmdb_id']];
 
 			if (empty($rImportArray['properties']['movie_image'])) {
 				unset($rImportArray['properties']['movie_image']);
@@ -187,11 +188,11 @@ class EpisodeService {
 			$rProcessArray[] = $rImportArray;
 		}
 
-		$rRestartIDs = array();
+		$rRestartIDs = [];
 		$rInsertID = 0;
 
 		foreach ($rProcessArray as $rImportArray) {
-			$rArray['stream_source'] = array($rImportArray['filename']);
+			$rArray['stream_source'] = [$rImportArray['filename']];
 			$rArray['movie_properties'] = $rImportArray['properties'];
 			$rArray['stream_display_name'] = $rImportArray['name'];
 
@@ -211,7 +212,7 @@ class EpisodeService {
 				$db->query('DELETE FROM `streams_episodes` WHERE `stream_id` = ?;', $rInsertID);
 				$db->query('INSERT INTO `streams_episodes`(`season_num`, `series_id`, `stream_id`, `episode_num`) VALUES(?, ?, ?, ?);', $rData['season_num'], $rData['series'], $rInsertID, $rImportArray['episode']);
 				SeriesService::queueRefresh(intval($rData['series']));
-				$rStreamExists = array();
+				$rStreamExists = [];
 
 				if (isset($rData['edit'])) {
 					$db->query('SELECT `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rInsertID);
@@ -221,7 +222,7 @@ class EpisodeService {
 					}
 				}
 
-				$rStreamsAdded = array();
+				$rStreamsAdded = [];
 				$rServerTree = json_decode($rData['server_tree_data'], true);
 
 				foreach ($rServerTree as $rServer) {
@@ -251,19 +252,19 @@ class EpisodeService {
 				}
 				StreamProcess::updateStream($rInsertID);
 			} else {
-				return array('status' => STATUS_FAILURE);
+				return ['status' => STATUS_FAILURE];
 			}
 		}
 
 		if ($rRestart) {
-			ApiClient::request(array('action' => 'vod', 'sub' => 'start', 'stream_ids' => $rRestartIDs));
+			ApiClient::request(['action' => 'vod', 'sub' => 'start', 'stream_ids' => $rRestartIDs]);
 		}
 
 		if (isset($rData['multi'])) {
-			return array('status' => STATUS_SUCCESS_MULTI, 0 => array('series_id' => $rData['series']));
+			return ['status' => STATUS_SUCCESS_MULTI, 0 => ['series_id' => $rData['series']]];
 		}
 
-		return array('status' => STATUS_SUCCESS, 'data' => array('series_id' => $rData['series'], 'insert_id' => $rInsertID));
+		return ['status' => STATUS_SUCCESS, 'data' => ['series_id' => $rData['series'], 'insert_id' => $rInsertID]];
 	}
 
 	/**
@@ -272,7 +273,7 @@ class EpisodeService {
 	 * @param array $rData Selected episode ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete($rData) {
+	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
@@ -281,7 +282,7 @@ class EpisodeService {
 		$rEpisodes = json_decode($rData['episodes'], true);
 		StreamRepository::deleteStreams($rEpisodes, true);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -290,14 +291,14 @@ class EpisodeService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit($rData) {
+	public static function massEdit(array $rData) {
 		$db = self::db();
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
 		ini_set('default_socket_timeout', 0);
 
-		$rArray = array();
+		$rArray = [];
 
 		if (isset($rData['c_movie_symlink'])) {
 			if (isset($rData['movie_symlink'])) {
@@ -370,7 +371,7 @@ class EpisodeService {
 				$db->query($rQuery, ...$rPrepare['data']);
 			}
 
-			$rDeleteServers = $rQueueMovies = $rProcessServers = $rStreamExists = array();
+			$rDeleteServers = $rQueueMovies = $rProcessServers = $rStreamExists = [];
 			$db->query('SELECT `stream_id`, `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
 
 			foreach ($db->get_rows() as $rRow) {
@@ -381,14 +382,14 @@ class EpisodeService {
 
 			foreach ($rStreamIDs as $rStreamID) {
 				if (isset($rData['c_server_tree'])) {
-					$rStreamsAdded = array();
+					$rStreamsAdded = [];
 					$rServerTree = json_decode($rData['server_tree_data'], true);
 
 					foreach ($rServerTree as $rServer) {
 						if ($rServer['parent'] != '#') {
 							$rServerID = intval($rServer['id']);
 
-							if (in_array($rData['server_type'], array('ADD', 'SET'))) {
+							if (in_array($rData['server_type'], ['ADD', 'SET'])) {
 								$rStreamsAdded[] = $rServerID;
 
 								if (!isset($rStreamExists[$rStreamID][$rServerID])) {
@@ -443,6 +444,6 @@ class EpisodeService {
 			}
 		}
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 }

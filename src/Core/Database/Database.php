@@ -16,17 +16,24 @@ use XcVm\Core\Logging\FileLogger;
 
 class Database {
 	public $result = null;
+
 	public $last_query = null;
+
 	public $dbh = null;
+
 	public $connected = false;
 
 	/** Last PDO error message (empty when the last query succeeded). */
 	protected $lastError = '';
 
 	protected $dbuser = null;
+
 	protected $dbpassword = null;
+
 	protected $dbname = null;
+
 	protected $dbhost = null;
+
 	protected $dbport = null;
 
 	/**
@@ -38,7 +45,7 @@ class Database {
 	 * @param string $host Database host
 	 * @param int $db_port Database port number
 	 */
-	public function __construct($db_user = null, $db_pass = null, $db_name = null, $host = null, $db_port = 3306, $migrate = false) {
+	public function __construct(string $db_user = null, string $db_pass = null, string $db_name = null, string $host = null, int $db_port = 3306, $migrate = false) {
 		$this->dbh = false;
 		$this->dbuser = $db_user;
 		$this->dbpassword = $db_pass;
@@ -54,7 +61,7 @@ class Database {
 	 * @param string $rHost Host name.
 	 * @return string '127.0.0.1' for 'localhost', otherwise the host unchanged.
 	 */
-	private function normalizeHost($rHost) {
+	private function normalizeHost(string $rHost) {
 		if ($rHost === 'localhost') {
 			return '127.0.0.1';
 		}
@@ -122,7 +129,7 @@ class Database {
 	 *                            null it defaults to $migrate (legacy behaviour).
 	 * @return bool True on success.
 	 */
-	public function db_connect($migrate = false, $graceful = null) {
+	public function db_connect(bool $migrate = false, ?bool $graceful = null) {
 		if ($graceful === null) {
 			$graceful = $migrate;
 		}
@@ -131,14 +138,14 @@ class Database {
 			$this->dbh = \XC_VM::db_connect($migrate);
 			if (!$this->dbh) {
 				if (!$graceful) {
-					exit(json_encode(array('error' => 'MySQL: Cannot connect to database! Please check credentials.')));
+					exit(json_encode(['error' => 'MySQL: Cannot connect to database! Please check credentials.']));
 				}
 
 				return false;
 			}
 		} catch (\PDOException $e) {
 			if (!$graceful) {
-				exit(json_encode(array('error' => 'MySQL: ' . $e->getMessage())));
+				exit(json_encode(['error' => 'MySQL: ' . $e->getMessage()]));
 			}
 			return false;
 		}
@@ -184,7 +191,7 @@ class Database {
 	 * @param string $rPassword Password.
 	 * @return bool True on success, false on failure.
 	 */
-	public function db_explicit_connect($rHost, $rPort, $rDatabase, $rUsername, $rPassword) {
+	public function db_explicit_connect(string $rHost, int $rPort, string $rDatabase, string $rUsername, string $rPassword) {
 		try {
 			$this->dbh = new \PDO('mysql:host=' . $this->normalizeHost($rHost) . ';port=' . $rPort . ';dbname=' . $rDatabase, $rUsername, $rPassword);
 		} catch (\PDOException $e) {
@@ -204,7 +211,7 @@ class Database {
 	 * @param \PDOStatement $stmt Prepared statement.
 	 * @return string The dumped parameter/SQL debug text.
 	 */
-	public function debugString($stmt) {
+	public function debugString(\PDOStatement $stmt) {
 		ob_start();
 		$stmt->debugDumpParams();
 		$r = ob_get_contents();
@@ -230,7 +237,7 @@ class Database {
 	 *                         for extraction into a dedicated unbuffered_query().
 	 * @return bool True on success, false on failure.
 	 */
-	public function query($query, $buffered = false) {
+	public function query(string $query, mixed $buffered = false) {
 		if (!$this->dbh) {
 			return false;
 		}
@@ -238,7 +245,7 @@ class Database {
 
 		$numargs = func_num_args();
 		$arg_list = func_get_args();
-		$next_arg_list = array();
+		$next_arg_list = [];
 		$i = 1;
 
 		while ($i < $numargs) {
@@ -301,7 +308,7 @@ class Database {
 	 * @param string $query Raw SQL.
 	 * @return bool True on success, false on failure.
 	 */
-	public function simple_query($query) {
+	public function simple_query(string $query) {
 		try {
 			$this->result = $this->dbh->query($query);
 		} catch (\Exception $e) {
@@ -321,19 +328,19 @@ class Database {
 	 * @param string $sub_row_id   Optional column used as the sub-key when grouping.
 	 * @return array|false Rows (cleaned), or false if no active result.
 	 */
-	public function get_rows($use_id = false, $column_as_id = '', $unique_row = true, $sub_row_id = '') {
+	public function get_rows(bool $use_id = false, string $column_as_id = '', bool $unique_row = true, string $sub_row_id = '') {
 		if (!($this->dbh && $this->result)) {
 			return false;
 		}
 
-		$rows = array();
+		$rows = [];
 
 		if (0 >= $this->result->rowCount()) {
 		} else {
 			foreach ($this->result->fetchAll(\PDO::FETCH_ASSOC) as $row) {
 				if ($use_id && array_key_exists($column_as_id, $row)) {
 					if (!isset($rows[$row[$column_as_id]])) {
-						$rows[$row[$column_as_id]] = array();
+						$rows[$row[$column_as_id]] = [];
 					}
 
 					if (!$unique_row) {
@@ -366,7 +373,7 @@ class Database {
 			return false;
 		}
 
-		$row = array();
+		$row = [];
 
 		if (0 >= $this->result->rowCount()) {
 		} else {
@@ -426,7 +433,7 @@ class Database {
 	 * @param string $string Value to quote.
 	 * @return string|null Quoted string, or null if not connected.
 	 */
-	public function escape($string) {
+	public function escape(string $string) {
 		if ($this->dbh) {
 			return $this->dbh->quote($string);
 		}
@@ -483,9 +490,9 @@ class Database {
 	 * @param string $rValue Raw value.
 	 * @return string Cleaned value ('' for empty input).
 	 */
-	public static function parseCleanValue($rValue) {
+	public static function parseCleanValue(string $rValue) {
 		if ($rValue != '') {
-			$rValue = str_replace(array("\r\n", "\n\r", "\r"), "\n", $rValue);
+			$rValue = str_replace(["\r\n", "\n\r", "\r"], "\n", $rValue);
 			$rValue = str_replace('<', '&lt;', str_replace('>', '&gt;', $rValue));
 			$rValue = str_replace('<!--', '&#60;&#33;--', $rValue);
 			$rValue = str_replace('-->', '--&#62;', $rValue);
@@ -504,7 +511,7 @@ class Database {
 	 * @param array<string, mixed> $row Associative row.
 	 * @return array<string, mixed> Row with sanitized values.
 	 */
-	public function clean_row($row) {
+	public function clean_row(array $row) {
 		foreach ($row as $key => $value) {
 			if ($value) {
 				$row[$key] = self::parseCleanValue($value);

@@ -21,7 +21,6 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  */
 
 class DiagnosticsService {
-
 	use DatabaseAware;
 
 	/**
@@ -30,7 +29,7 @@ class DiagnosticsService {
 	 * @param string|null $certificate  Path to certificate file (auto-detects from nginx if null)
 	 * @return array|null ['serial', 'expiration', 'subject', 'path'], or null if the certificate is missing/unreadable
 	 */
-	public static function getCertificateInfo($certificate = null) {
+	public static function getCertificateInfo(?string $certificate = null) {
 		$result = ['serial' => null, 'expiration' => null, 'subject' => null, 'path' => null];
 
 		if (!$certificate) {
@@ -74,7 +73,7 @@ class DiagnosticsService {
 	 * @param bool         $allowHEVC  Whether HEVC/H265 + AC3 are allowed
 	 * @return bool
 	 */
-	public static function checkCompatibility($data, $allowHEVC = false) {
+	public static function checkCompatibility(array|string $data, bool $allowHEVC = false) {
 		if (!is_array($data)) {
 			$data = json_decode($data, true);
 		}
@@ -140,9 +139,9 @@ class DiagnosticsService {
 					'type'    => isset($error['type']) ? htmlspecialchars($error['type'], ENT_QUOTES, 'UTF-8') : 'unknown',
 					'message' => isset($error['log_message']) ? htmlspecialchars($error['log_message'], ENT_QUOTES, 'UTF-8') : '',
 					'file'    => isset($error['log_extra']) ? htmlspecialchars($error['log_extra'], ENT_QUOTES, 'UTF-8') : '',
-					'line'    => isset($error['line']) ? (int)$error['line'] : 0,
-					'date'    => isset($error['date']) ? (int)$error['date'] : 0,
-					'version' => isset($error['version']) ? htmlspecialchars((string)$error['version'], ENT_QUOTES, 'UTF-8') : '',
+					'line'    => isset($error['line']) ? (int) $error['line'] : 0,
+					'date'    => isset($error['date']) ? (int) $error['date'] : 0,
+					'version' => isset($error['version']) ? htmlspecialchars((string) $error['version'], ENT_QUOTES, 'UTF-8') : '',
 				];
 
 				try {
@@ -202,19 +201,19 @@ class DiagnosticsService {
 		$ids = [];
 
 		foreach ($rows as $row) {
-			$ts = isset($row['date']) ? (int)$row['date'] : 0;
+			$ts = isset($row['date']) ? (int) $row['date'] : 0;
 			$errorsForApi[] = [
 				'type'        => $row['type'] ?? '',
 				'log_message' => $row['log_message'] ?? '',
 				'log_extra'   => $row['log_extra'] ?? '',
-				'line'        => isset($row['line']) ? (string)$row['line'] : '',
+				'line'        => isset($row['line']) ? (string) $row['line'] : '',
 				'date'        => $ts > 0 ? gmdate('Y-m-d H:i:s', $ts) : '',
 				// Per-error panel version frozen when the error occurred. The log
 				// server attributes the entry to THIS, not the batch/current version.
 				'version'     => (string) ($row['version'] ?? ''),
 			];
 			if (isset($row['id'])) {
-				$ids[] = (int)$row['id'];
+				$ids[] = (int) $row['id'];
 			}
 		}
 
@@ -257,9 +256,9 @@ class DiagnosticsService {
 	 * @param int $rServerID Server id to query.
 	 * @return array Process info keyed/listed as returned by the server.
 	 */
-	public static function getPIDs($rServerID) {
-		$rReturn = array();
-		$rProcesses = json_decode(ApiClient::systemRequest($rServerID, array('action' => 'get_pids')), true);
+	public static function getPIDs(int $rServerID) {
+		$rReturn = [];
+		$rProcesses = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_pids']), true);
 		if (!is_array($rProcesses)) {
 			return $rReturn;
 		}
@@ -269,7 +268,7 @@ class DiagnosticsService {
 			$rSplit = explode(' ', preg_replace('!\\s+!', ' ', trim($rProcess)));
 
 			if ($rSplit[0] == 'xc_vm') {
-				$rUsage = array(0, 0, 0);
+				$rUsage = [0, 0, 0];
 				$rTimer = explode('-', $rSplit[9]);
 
 				if (1 < count($rTimer)) {
@@ -322,7 +321,7 @@ class DiagnosticsService {
 					$rUsage[2] = 0;
 				}
 
-				$rReturn[] = array('user' => $rSplit[0], 'pid' => $rSplit[1], 'cpu' => $rSplit[2], 'mem' => $rSplit[3], 'vsz' => $rSplit[4], 'rss' => $rSplit[5], 'tty' => $rSplit[6], 'stat' => $rSplit[7], 'time' => $rUsage[1], 'etime' => $rUsage[0], 'load_average' => $rUsage[2], 'command' => implode(' ', array_splice($rSplit, 10, count($rSplit) - 10)));
+				$rReturn[] = ['user' => $rSplit[0], 'pid' => $rSplit[1], 'cpu' => $rSplit[2], 'mem' => $rSplit[3], 'vsz' => $rSplit[4], 'rss' => $rSplit[5], 'tty' => $rSplit[6], 'stat' => $rSplit[7], 'time' => $rUsage[1], 'etime' => $rUsage[0], 'load_average' => $rUsage[2], 'command' => implode(' ', array_splice($rSplit, 10, count($rSplit) - 10))];
 			}
 		}
 
@@ -335,9 +334,9 @@ class DiagnosticsService {
 	 * @param int $rServerID Server id to inspect.
 	 * @return array NVENC process details.
 	 */
-	public static function getNVENCProcesses($rServerID) {
+	public static function getNVENCProcesses(int $rServerID) {
 		$db = self::db();
-		$rProcesses = array();
+		$rProcesses = [];
 		$rServer = ServerRepository::getById($rServerID);
 		$rGPUInfo = json_decode($rServer['gpu_info'], true);
 
@@ -345,7 +344,7 @@ class DiagnosticsService {
 		} else {
 			foreach ($rGPUInfo['gpus'] as $rGPU) {
 				foreach ($rGPU['processes'] as $rProcess) {
-					$rArray = array('pid' => $rProcess['pid'], 'memory' => $rProcess['memory'], 'stream_id' => null);
+					$rArray = ['pid' => $rProcess['pid'], 'memory' => $rProcess['memory'], 'stream_id' => null];
 					$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `pid` = ? AND `server_id` = ?;', $rProcess['pid'], $rServerID);
 
 					if (0 >= $db->num_rows()) {

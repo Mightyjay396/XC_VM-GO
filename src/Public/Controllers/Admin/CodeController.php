@@ -22,15 +22,15 @@ use XcVm\Core\Auth\AuthRepository;
  */
 
 class CodeController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $this->setTitle('Access Codes');
+		$this->setTitle('Access Codes');
 
-        $codes = AuthRepository::getAllCodes();
+		$codes = AuthRepository::getAllCodes();
 
-        $this->render('codes', [
-            'codes' => $codes,
-        ]);
-    }
+		$this->render('codes', [
+			'codes' => $codes,
+		]);
+	}
 }

@@ -18,35 +18,33 @@ use XcVm\Domain\User\UserRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerLineController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Line');
+class ResellerLineController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Line');
 
-        $rRequest = RequestManager::getAll();
-        $rUserInfo = $GLOBALS['rUserInfo'];
-        $rLine = null;
-        $rOrigPackage = null;
+		$rRequest = RequestManager::getAll();
+		$rUserInfo = $GLOBALS['rUserInfo'];
+		$rLine = null;
+		$rOrigPackage = null;
 
-        if (isset($rRequest['id'])) {
-            $rLine = UserRepository::getLineById($rRequest['id']);
-            if (!$rLine || $rLine['is_mag'] || $rLine['is_e2'] || !Authorization::check('line', $rLine['id'])) {
-                AdminHelpers::goHome();
-                return;
-            }
-            if ($rLine['package_id'] > 0) {
-                $rOrigPackage = PackageService::getById($rLine['package_id']);
-            }
-        }
+		if (isset($rRequest['id'])) {
+			$rLine = UserRepository::getLineById($rRequest['id']);
+			if (!$rLine || $rLine['is_mag'] || $rLine['is_e2'] || !Authorization::check('line', $rLine['id'])) {
+				AdminHelpers::goHome();
+				return;
+			}
+			if ($rLine['package_id'] > 0) {
+				$rOrigPackage = PackageService::getById($rLine['package_id']);
+			}
+		}
 
-        $rPackages = PackageService::getAll($rUserInfo['member_group_id'], 'line') ?: [];
+		$rPackages = PackageService::getAll($rUserInfo['member_group_id'], 'line') ?: [];
 
-        $this->render('line', [
-            'rLine'        => $rLine,
-            'rOrigPackage' => $rOrigPackage,
-            'rPackages'    => $rPackages,
-        ]);
-    }
+		$this->render('line', [
+			'rLine'        => $rLine,
+			'rOrigPackage' => $rOrigPackage,
+			'rPackages'    => $rPackages,
+		]);
+	}
 }

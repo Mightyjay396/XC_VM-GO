@@ -20,33 +20,33 @@ use XcVm\Domain\Stream\StreamRepository;
  */
 
 class ProcessMonitorController extends BaseAdminController {
-    public function index() {
-        global $rServers;
+	public function index() {
+		global $rServers;
 
-        $this->requirePermission();
+		$this->requirePermission();
 
-        if (!RequestManager::has('server') || !isset($rServers[RequestManager::get('server')])) {
-            RequestManager::update('server', SERVER_ID);
-        }
+		if (!RequestManager::has('server') || !isset($rServers[RequestManager::get('server')])) {
+			RequestManager::update('server', SERVER_ID);
+		}
 
-        if (RequestManager::has('clear')) {
-            ServerRepository::freeTemp(RequestManager::get('server'));
-            header('Location: ./process_monitor?server=' . RequestManager::get('server'));
-            exit();
-        }
+		if (RequestManager::has('clear')) {
+			ServerRepository::freeTemp(RequestManager::get('server'));
+			header('Location: ./process_monitor?server=' . RequestManager::get('server'));
+			exit();
+		}
 
-        if (RequestManager::has('clear_s')) {
-            ServerRepository::freeStreams(RequestManager::get('server'));
-            header('Location: ./process_monitor?server=' . RequestManager::get('server'));
-            exit();
-        }
+		if (RequestManager::has('clear_s')) {
+			ServerRepository::freeStreams(RequestManager::get('server'));
+			header('Location: ./process_monitor?server=' . RequestManager::get('server'));
+			exit();
+		}
 
-        $rStreams = StreamRepository::getPIDs(RequestManager::get('server')) ?: array();
-        $rFS = ServerRepository::getFreeSpace(RequestManager::get('server')) ?: array();
-        $rProcesses = DiagnosticsService::getPIDs(RequestManager::get('server')) ?: array();
-        $rStatus = array('D' => 'Uninterruptible Sleep', 'I' => 'Idle', 'R' => 'Running', 'S' => 'Interruptible Sleep', 'T' => 'Stopped', 'W' => 'Paging', 'X' => 'Dead', 'Z' => 'Zombie');
+		$rStreams = StreamRepository::getPIDs(RequestManager::get('server')) ?: [];
+		$rFS = ServerRepository::getFreeSpace(RequestManager::get('server')) ?: [];
+		$rProcesses = DiagnosticsService::getPIDs(RequestManager::get('server')) ?: [];
+		$rStatus = ['D' => 'Uninterruptible Sleep', 'I' => 'Idle', 'R' => 'Running', 'S' => 'Interruptible Sleep', 'T' => 'Stopped', 'W' => 'Paging', 'X' => 'Dead', 'Z' => 'Zombie'];
 
-        $this->setTitle('Process Monitor');
-        $this->render('process_monitor', compact('rStreams', 'rFS', 'rProcesses', 'rStatus'));
-    }
+		$this->setTitle('Process Monitor');
+		$this->render('process_monitor', compact('rStreams', 'rFS', 'rProcesses', 'rStatus'));
+	}
 }

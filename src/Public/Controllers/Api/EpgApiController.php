@@ -61,7 +61,7 @@ class EpgApiController extends BaseApiController {
 
 		$this->validateUser($rUserInfo, $rUserAgent, $rIP, $rCountryCode);
 
-		$rBouquets = array();
+		$rBouquets = [];
 
 		foreach ($rUserInfo['bouquet'] as $rBouquetID) {
 			if (in_array($rBouquetID, array_keys(BouquetService::getAll()))) {

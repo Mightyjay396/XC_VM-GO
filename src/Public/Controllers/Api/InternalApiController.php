@@ -102,7 +102,7 @@ class InternalApiController {
 
 			case 'streams_ramdisk':
 				set_time_limit(30);
-				$rReturn = array('result' => true, 'streams' => array());
+				$rReturn = ['result' => true, 'streams' => []];
 				exec('ls -l ' . STREAMS_PATH, $rFiles);
 
 				foreach ($rFiles as $rFile) {
@@ -142,7 +142,7 @@ class InternalApiController {
 								}
 							}
 
-							echo json_encode(array('result' => true));
+							echo json_encode(['result' => true]);
 
 							exit();
 
@@ -151,7 +151,7 @@ class InternalApiController {
 								StreamProcess::stopMovie($rStreamID);
 							}
 
-							echo json_encode(array('result' => true));
+							echo json_encode(['result' => true]);
 
 							exit();
 					}
@@ -168,9 +168,9 @@ class InternalApiController {
 
 				if (0 < $rPID) {
 					posix_kill($rPID, 9);
-					echo json_encode(array('result' => true));
+					echo json_encode(['result' => true]);
 				} else {
-					echo json_encode(array('result' => false));
+					echo json_encode(['result' => false]);
 				}
 
 				break;
@@ -178,7 +178,7 @@ class InternalApiController {
 			case 'rtmp_kill':
 				$rName = $rRequest['name'];
 				shell_exec('wget --timeout=2 -O /dev/null -o /dev/null "' . ServerRepository::getAll()[SERVER_ID]['rtmp_mport_url'] . 'control/drop/publisher?app=live&name=' . escapeshellcmd($rName) . '" >/dev/null 2>/dev/null &');
-				echo json_encode(array('result' => true));
+				echo json_encode(['result' => true]);
 
 				exit();
 
@@ -198,7 +198,7 @@ class InternalApiController {
 								}
 							}
 
-							echo json_encode(array('result' => true));
+							echo json_encode(['result' => true]);
 
 							exit();
 
@@ -207,7 +207,7 @@ class InternalApiController {
 								StreamProcess::stopStream($rStreamID, true);
 							}
 
-							echo json_encode(array('result' => true));
+							echo json_encode(['result' => true]);
 
 							exit();
 
@@ -235,12 +235,12 @@ class InternalApiController {
 					}
 				}
 
-				exit(json_encode(array('result' => true)));
+				exit(json_encode(['result' => true]));
 
 			case 'closeConnection':
 				ConnectionTracker::closeConnection(intval($rRequest['activity_id']));
 
-				exit(json_encode(array('result' => true)));
+				exit(json_encode(['result' => true]));
 
 			case 'pidsAreRunning':
 				if (empty($rRequest['pids']) || !is_array($rRequest['pids']) || empty($rRequest['program'])) {
@@ -249,7 +249,7 @@ class InternalApiController {
 
 				$rPIDs = array_map('intval', $rRequest['pids']);
 				$rProgram = $rRequest['program'];
-				$rOutput = array();
+				$rOutput = [];
 
 				foreach ($rPIDs as $rPID) {
 					$rOutput[$rPID] = false;
@@ -274,7 +274,7 @@ class InternalApiController {
 				$rAllowed = !empty($rRequest['allowed']) ? urldecode($rRequest['allowed']) : null;
 
 				if (!file_exists($rDirectory)) {
-					exit(json_encode(array('result' => false)));
+					exit(json_encode(['result' => false]));
 				}
 
 				if ($rAllowed) {
@@ -291,17 +291,17 @@ class InternalApiController {
 			case 'scandir':
 				set_time_limit(30);
 				$rDirectory = urldecode($rRequest['dir']);
-				$rAllowed = !empty($rRequest['allowed']) ? explode('|', urldecode($rRequest['allowed'])) : array();
+				$rAllowed = !empty($rRequest['allowed']) ? explode('|', urldecode($rRequest['allowed'])) : [];
 
 				if (!file_exists($rDirectory)) {
-					exit(json_encode(array('result' => false)));
+					exit(json_encode(['result' => false]));
 				}
 
-				$rReturn = array('result' => true, 'dirs' => array(), 'files' => array());
-				$rFiles = scanDir($rDirectory);
+				$rReturn = ['result' => true, 'dirs' => [], 'files' => []];
+				$rFiles = scandir($rDirectory);
 
 				foreach ($rFiles as $rValue) {
-					if (in_array($rValue, array('.', '..'))) {
+					if (in_array($rValue, ['.', '..'])) {
 						continue;
 					}
 
@@ -345,13 +345,13 @@ class InternalApiController {
 			case 'free_temp':
 				exec('rm -rf ' . MAIN_HOME . 'tmp/*');
 				shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache');
-				echo json_encode(array('result' => true));
+				echo json_encode(['result' => true]);
 
 				break;
 
 			case 'free_streams':
 				exec('rm ' . MAIN_HOME . 'content/streams/*');
-				echo json_encode(array('result' => true));
+				echo json_encode(['result' => true]);
 
 				break;
 
@@ -386,19 +386,19 @@ class InternalApiController {
 
 			case 'get_archive_files':
 				$rStreamID = intval($rRequest['stream_id']);
-				echo json_encode(array('result' => true, 'data' => glob(ARCHIVE_PATH . $rStreamID . '/*.ts')));
+				echo json_encode(['result' => true, 'data' => glob(ARCHIVE_PATH . $rStreamID . '/*.ts')]);
 
 				exit();
 
 			case 'kill_watch':
 				$this->killProcessGroup(CACHE_TMP_PATH . 'watch_pid', WATCH_TMP_PATH . '*.wpid');
 
-				exit(json_encode(array('result' => true)));
+				exit(json_encode(['result' => true]));
 
 			case 'kill_plex':
 				$this->killProcessGroup(CACHE_TMP_PATH . 'plex_pid', WATCH_TMP_PATH . '*.ppid');
 
-				exit(json_encode(array('result' => true)));
+				exit(json_encode(['result' => true]));
 
 			case 'probe':
 				$this->probeStream($rRequest);
@@ -406,7 +406,7 @@ class InternalApiController {
 				break;
 
 			default:
-				exit(json_encode(array('result' => false)));
+				exit(json_encode(['result' => false]));
 		}
 	}
 
@@ -437,18 +437,18 @@ class InternalApiController {
 
 	private function serveFile($rRequest, $rSettings) {
 		if (empty($rRequest['filename'])) {
-			exit(json_encode(array('result' => false)));
+			exit(json_encode(['result' => false]));
 		}
 
 		$rFilename = urldecode($rRequest['filename']);
 		$rFilename = trim($rFilename, "'\"\\");
 
-		if (!in_array(strtolower(pathinfo($rFilename)['extension']), array('log', 'tar.gz', 'gz', 'zip', 'm3u8', 'mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts', 'srt', 'sub', 'sbv', 'jpg', 'png', 'bmp', 'jpeg', 'gif', 'tif'))) {
-			exit(json_encode(array('result' => false, 'error' => 'Invalid file extension.')));
+		if (!in_array(strtolower(pathinfo($rFilename)['extension']), ['log', 'tar.gz', 'gz', 'zip', 'm3u8', 'mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts', 'srt', 'sub', 'sbv', 'jpg', 'png', 'bmp', 'jpeg', 'gif', 'tif'])) {
+			exit(json_encode(['result' => false, 'error' => 'Invalid file extension.']));
 		}
 
 		if (!file_exists($rFilename) || !is_readable($rFilename)) {
-			exit(json_encode(array('result' => false, 'error' => 'Invalid file extension.')));
+			exit(json_encode(['result' => false, 'error' => 'Invalid file extension.']));
 		}
 
 		header('Content-Type: application/octet-stream');
@@ -514,11 +514,11 @@ class InternalApiController {
 
 	private function probeStream($rRequest) {
 		if (empty($rRequest['url'])) {
-			exit(json_encode(array('result' => false)));
+			exit(json_encode(['result' => false]));
 		}
 
 		$rURL = $rRequest['url'];
-		$rFetchArguments = array();
+		$rFetchArguments = [];
 
 		if (!empty($rRequest['user_agent'])) {
 			$rFetchArguments[] = sprintf("-user_agent '%s'", escapeshellcmd($rRequest['user_agent']));
@@ -536,6 +536,6 @@ class InternalApiController {
 		$rHeaders .= 'X-XC_VM-Prebuffer:1' . "\r\n";
 		$rFetchArguments[] = sprintf('-headers %s', escapeshellarg($rHeaders));
 
-		exit(json_encode(array('result' => true, 'data' => FFprobeRunner::probeStream($rURL, $rFetchArguments, '', false))));
+		exit(json_encode(['result' => true, 'data' => FFprobeRunner::probeStream($rURL, $rFetchArguments, '', false)]));
 	}
 }

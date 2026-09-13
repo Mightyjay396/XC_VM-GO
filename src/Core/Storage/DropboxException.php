@@ -11,7 +11,7 @@ class DropboxException extends \Exception {
 	 * @param object|string|null $resp    Error response object, message string, or null (use last PHP error).
 	 * @param string|null        $context Optional context appended to the message.
 	 */
-	public function __construct($resp = null, $context = null) {
+	public function __construct(object|string|null $resp = null, ?string $context = null) {
 		if (is_null($resp)) {
 			$el = error_get_last();
 			$this->message = $el['message'];

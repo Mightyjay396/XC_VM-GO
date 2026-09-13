@@ -18,27 +18,27 @@ use XcVm\Infrastructure\Tmdb\TmdbApiService;
  */
 
 class TmdbPopularCronJob implements CommandInterface {
-    use CronTrait;
+	use CronTrait;
 
-    public function getName(): string {
-        return 'cron:tmdb_popular';
-    }
+	public function getName(): string {
+		return 'cron:tmdb_popular';
+	}
 
-    public function getDescription(): string {
-        return 'Cron: update popular TMDB movies';
-    }
+	public function getDescription(): string {
+		return 'Cron: update popular TMDB movies';
+	}
 
-    public function execute(array $rArgs): int {
-        if (!$this->assertRunAsXcVm()) {
-            return 1;
-        }
+	public function execute(array $rArgs): int {
+		if (!$this->assertRunAsXcVm()) {
+			return 1;
+		}
 
-        $this->initCron('XC_VM[Popular]');
+		$this->initCron('XC_VM[Popular]');
 
-        TmdbApiService::requireLibrary();
+		TmdbApiService::requireLibrary();
 
-        TmdbPopularCron::run();
+		TmdbPopularCron::run();
 
-        return 0;
-    }
+		return 0;
+	}
 }

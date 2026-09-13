@@ -19,7 +19,6 @@ use XcVm\Streaming\Fanout\IngestFeeder;
  */
 
 class DelayCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'delay';
 	}
@@ -72,9 +71,9 @@ class DelayCommand implements CommandInterface {
 		$db->close_mysql();
 		$rDelayDuration = intval($rStreamInfo['delay_minutes']) + 5;
 		$this->cleanUpSegments($rStreamID, $rDelayDuration);
-		$rSegmentSettings = array('seg_time' => intval(SettingsManager::get('seg_time')), 'seg_list_size' => intval(SettingsManager::get('seg_list_size')), 'seg_delete_threshold' => intval(SettingsManager::get('seg_delete_threshold')));
+		$rSegmentSettings = ['seg_time' => intval(SettingsManager::get('seg_time')), 'seg_list_size' => intval(SettingsManager::get('seg_list_size')), 'seg_delete_threshold' => intval(SettingsManager::get('seg_delete_threshold'))];
 		$rTotalSegments = intval($rSegmentSettings['seg_list_size']) + 5;
-		$rOldSegments = array();
+		$rOldSegments = [];
 		if (file_exists($rPlaylistOld)) {
 			$rOldSegments = $this->getSegments($rPlaylistOld, -1);
 		}
@@ -89,7 +88,7 @@ class DelayCommand implements CommandInterface {
 		});
 		$rFeeder->connect();
 		$rFedSegment = null;
-		$rFeedQueue = array();
+		$rFeedQueue = [];
 		$rFeedCurrent = null;
 
 		$rPrevMD5 = null;
@@ -102,7 +101,7 @@ class DelayCommand implements CommandInterface {
 						$rSegmentSettings['seg_time'] = $rDuration;
 					}
 				}
-				$rM3U8 = array('vars' => array('#EXTM3U' => '', '#EXT-X-VERSION' => 3, '#EXT-X-MEDIA-SEQUENCE' => '0', '#EXT-X-TARGETDURATION' => $rSegmentSettings['seg_time']), 'segments' => $this->getData($rPlaylistDelay, $rOldSegments, $rTotalSegments, $rPlaylistOld));
+				$rM3U8 = ['vars' => ['#EXTM3U' => '', '#EXT-X-VERSION' => 3, '#EXT-X-MEDIA-SEQUENCE' => '0', '#EXT-X-TARGETDURATION' => $rSegmentSettings['seg_time']], 'segments' => $this->getData($rPlaylistDelay, $rOldSegments, $rTotalSegments, $rPlaylistOld)];
 				if (!empty($rM3U8['segments'])) {
 					$rData = '';
 					$rSequence = 0;
@@ -152,7 +151,7 @@ class DelayCommand implements CommandInterface {
 	 * @return void
 	 */
 	private function queueForDaemon(array $rSegments, ?int &$rFedSegment, array &$rQueue): void {
-		$rNew = array();
+		$rNew = [];
 		foreach ($rSegments as $rSegment) {
 			if (preg_match('/_(\d+)\.ts$/', (string) ($rSegment['file'] ?? ''), $rMatch)) {
 				$rNumber = intval($rMatch[1]);
@@ -176,7 +175,7 @@ class DelayCommand implements CommandInterface {
 			}
 			if (is_string($rData) && strlen($rData) >= 188) {
 				$rData = substr($rData, 0, strlen($rData) - strlen($rData) % 188); // whole packets
-				$rQueue[] = array('data' => $rData, 'dur' => max(0.5, floatval($rSegment['seconds'])), 'burst' => $rSeed);
+				$rQueue[] = ['data' => $rData, 'dur' => max(0.5, floatval($rSegment['seconds'])), 'burst' => $rSeed];
 			}
 			$rFedSegment = $rNumber;
 		}
@@ -196,7 +195,7 @@ class DelayCommand implements CommandInterface {
 		$rNow = microtime(true);
 		if ($rCurrent === null && count($rQueue) > 0) {
 			$rItem = array_shift($rQueue);
-			$rCurrent = array('data' => $rItem['data'], 'sent' => 0, 'start' => $rNow, 'dur' => $rItem['dur'], 'burst' => $rItem['burst']);
+			$rCurrent = ['data' => $rItem['data'], 'sent' => 0, 'start' => $rNow, 'dur' => $rItem['dur'], 'burst' => $rItem['burst']];
 		}
 		if ($rCurrent === null) {
 			$rFeeder->flush();
@@ -236,7 +235,7 @@ class DelayCommand implements CommandInterface {
 	}
 
 	private function getData($rPlaylistDelay, &$rOldSegments, $rTotalSegments, $rPlaylistOld): array {
-		$rSegments = array();
+		$rSegments = [];
 		if (!empty($rOldSegments)) {
 			$rSegments = array_shift($rOldSegments);
 			unlink(DELAY_PATH . $rSegments['file']);
@@ -268,7 +267,7 @@ class DelayCommand implements CommandInterface {
 	}
 
 	private function getSegments($rPlaylist, $rCounter = 0): array {
-		$rSegments = array();
+		$rSegments = [];
 		if (file_exists($rPlaylist)) {
 			$rFP = fopen($rPlaylist, 'r');
 			while (!feof($rFP) && count($rSegments) != $rCounter) {
@@ -278,7 +277,7 @@ class DelayCommand implements CommandInterface {
 					$rSeconds = rtrim($rSeconds, ',');
 					$rSegmentFile = trim(fgets($rFP));
 					if (file_exists(DELAY_PATH . $rSegmentFile)) {
-						$rSegments[] = array('seconds' => $rSeconds, 'file' => $rSegmentFile);
+						$rSegments[] = ['seconds' => $rSeconds, 'file' => $rSegmentFile];
 					}
 				}
 			}

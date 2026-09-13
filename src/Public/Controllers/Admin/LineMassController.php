@@ -15,8 +15,8 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class LineMassController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->render('line_mass');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->render('line_mass');
+	}
 }

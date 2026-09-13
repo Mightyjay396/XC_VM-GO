@@ -21,13 +21,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class ServerRepository {
 	use DatabaseAware;
+
 	/**
 	 * Fetch all servers (cached unless forced).
 	 *
 	 * @param bool $rForce Bypass the cache and re-read from the database.
 	 * @return array Server rows keyed by id.
 	 */
-	public static function getAll($rForce = false) {
+	public static function getAll(bool $rForce = false) {
 		global $rSettings;
 		$db = self::db();
 		if (!$rSettings) {
@@ -45,14 +46,14 @@ class ServerRepository {
 		}
 
 		$db->query('SELECT * FROM `servers`');
-		$rServers = array();
-		$rOnlineStatus = array(1);
+		$rServers = [];
+		$rOnlineStatus = [1];
 
-		foreach ($db->get_rows() ?: array() as $rRow) {
+		foreach ($db->get_rows() ?: [] as $rRow) {
 			if (empty($rRow['domain_name'])) {
 				$rURL = escapeshellcmd($rRow['server_ip']);
 			} else {
-				$rURL = str_replace(array('http://', '/', 'https://'), '', escapeshellcmd(explode(',', $rRow['domain_name'])[0]));
+				$rURL = str_replace(['http://', '/', 'https://'], '', escapeshellcmd(explode(',', $rRow['domain_name'])[0]));
 			}
 
 			if ($rRow['enable_https'] == 1) {
@@ -68,18 +69,18 @@ class ServerRepository {
 			$rRow['http_url'] = 'http://' . $rURL . ':' . intval($rRow['http_broadcast_port']) . '/';
 			$rRow['https_url'] = 'https://' . $rURL . ':' . intval($rRow['https_broadcast_port']) . '/';
 			$rRow['rtmp_server'] = 'rtmp://' . $rURL . ':' . intval($rRow['rtmp_port']) . '/live/';
-			$rRow['domains'] = array('protocol' => $rProtocol, 'port' => $rPort, 'urls' => array_filter(array_map('escapeshellcmd', explode(',', $rRow['domain_name'] ?? ''))));
+			$rRow['domains'] = ['protocol' => $rProtocol, 'port' => $rPort, 'urls' => array_filter(array_map('escapeshellcmd', explode(',', $rRow['domain_name'] ?? '')))];
 			$rRow['rtmp_mport_url'] = 'http://127.0.0.1:31210/';
 			$rRow['api_url_ip'] = 'http://' . escapeshellcmd($rRow['server_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/api?password=' . urlencode($rSettings['live_streaming_pass']);
 			$rRow['api_url'] = $rRow['api_url_ip'];
 			$rRow['site_url_ip'] = $rProtocol . '://' . escapeshellcmd($rRow['server_ip']) . ':' . $rPort . '/';
 			$rRow['private_url_ip'] = (!empty($rRow['private_ip']) ? 'http://' . escapeshellcmd($rRow['private_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/' : null);
 			$rRow['public_url_ip'] = 'http://' . escapeshellcmd($rRow['server_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/';
-			$rRow['geoip_countries'] = (empty($rRow['geoip_countries']) ? array() : json_decode($rRow['geoip_countries'], true));
-			$rRow['isp_names'] = (empty($rRow['isp_names']) ? array() : json_decode($rRow['isp_names'], true));
+			$rRow['geoip_countries'] = (empty($rRow['geoip_countries']) ? [] : json_decode($rRow['geoip_countries'], true));
+			$rRow['isp_names'] = (empty($rRow['isp_names']) ? [] : json_decode($rRow['isp_names'], true));
 
 			if (is_numeric($rRow['parent_id'])) {
-				$rRow['parent_id'] = array(intval($rRow['parent_id']));
+				$rRow['parent_id'] = [intval($rRow['parent_id'])];
 			} else {
 				$decoded = json_decode($rRow['parent_id'] ?? '', true);
 				$rRow['parent_id'] = is_array($decoded) ? array_map('intval', $decoded) : [];
@@ -117,12 +118,12 @@ class ServerRepository {
 	 */
 	public static function getAllSimple() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `servers` ORDER BY `id` ASC;');
 
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				$rRow['server_online'] = in_array($rRow['status'], array(1, 3)) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
+				$rRow['server_online'] = in_array($rRow['status'], [1, 3]) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
 				$rReturn[$rRow['id']] = $rRow;
 			}
 		}
@@ -137,9 +138,9 @@ class ServerRepository {
 	 * @param string $type         State filter (e.g. 'online').
 	 * @return array Streaming server rows.
 	 */
-	public static function getStreamingSimple($rPermissions, $type = 'online') {
+	public static function getStreamingSimple(array $rPermissions, string $type = 'online') {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `servers` WHERE `server_type` = 0 ORDER BY `id` ASC;');
 
 		if ($db->num_rows() > 0) {
@@ -148,7 +149,7 @@ class ServerRepository {
 					$rRow['server_name'] = 'Server #' . ($rRow['id'] ?? 'unknown');
 				}
 
-				$rRow['server_online'] = in_array($rRow['status'], array(1, 3)) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
+				$rRow['server_online'] = in_array($rRow['status'], [1, 3]) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
 				if (!isset($rRow['order'])) {
 					$rRow['order'] = 0;
 				}
@@ -168,9 +169,9 @@ class ServerRepository {
 	 * @param bool  $rOnline      Restrict to online proxies.
 	 * @return array Proxy server rows.
 	 */
-	public static function getProxySimple($rPermissions, $rOnline = false) {
+	public static function getProxySimple(array $rPermissions, bool $rOnline = false) {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `servers` WHERE `server_type` = 1 ORDER BY `id` ASC;');
 
 		if (0 >= $db->num_rows()) {
@@ -180,7 +181,7 @@ class ServerRepository {
 					$rRow['server_name'] = 'Proxy #' . $rRow['id'];
 				}
 
-				$rRow['server_online'] = in_array($rRow['status'], array(1, 3)) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
+				$rRow['server_online'] = in_array($rRow['status'], [1, 3]) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
 				if (!($rRow['server_online'] == 0 && $rOnline)) {
 					$rReturn[$rRow['id']] = $rRow;
 				}
@@ -196,9 +197,9 @@ class ServerRepository {
 	 * @param int $rServerID Server id.
 	 * @return mixed Free-space information.
 	 */
-	public static function getFreeSpace($rServerID) {
-		$rReturn = array();
-		$rLines = json_decode(ApiClient::systemRequest($rServerID, array('action' => 'get_free_space')), true);
+	public static function getFreeSpace(int $rServerID) {
+		$rReturn = [];
+		$rLines = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_free_space']), true);
 
 		if (!is_array($rLines)) {
 			return $rReturn;
@@ -211,7 +212,7 @@ class ServerRepository {
 		foreach ($rLines as $rLine) {
 			$rSplit = explode(' ', preg_replace('!\s+!', ' ', trim($rLine)));
 			if (0 < strlen($rSplit[0]) && strpos($rSplit[5], 'xc_vm') !== false || $rSplit[5] == '/') {
-				$rReturn[] = array('filesystem' => $rSplit[0], 'size' => $rSplit[1], 'used' => $rSplit[2], 'avail' => $rSplit[3], 'percentage' => $rSplit[4], 'mount' => implode(' ', array_slice($rSplit, 5, count($rSplit) - 5)));
+				$rReturn[] = ['filesystem' => $rSplit[0], 'size' => $rSplit[1], 'used' => $rSplit[2], 'avail' => $rSplit[3], 'percentage' => $rSplit[4], 'mount' => implode(' ', array_slice($rSplit, 5, count($rSplit) - 5))];
 			}
 		}
 
@@ -224,19 +225,19 @@ class ServerRepository {
 	 * @param int $rServerID Server id.
 	 * @return mixed Ramdisk information.
 	 */
-	public static function getStreamsRamdisk($rServerID) {
-		$response = ApiClient::systemRequest($rServerID, array('action' => 'streams_ramdisk'));
+	public static function getStreamsRamdisk(int $rServerID) {
+		$response = ApiClient::systemRequest($rServerID, ['action' => 'streams_ramdisk']);
 		$rReturn = json_decode($response, true);
 
 		if (!is_array($rReturn)) {
-			return array();
+			return [];
 		}
 
 		if (empty($rReturn['result'])) {
-			return array();
+			return [];
 		}
 
-		return ($rReturn['streams'] ?? array());
+		return ($rReturn['streams'] ?? []);
 	}
 
 	/**
@@ -246,8 +247,8 @@ class ServerRepository {
 	 * @param int $rPID      Process id to kill.
 	 * @return mixed Result of the kill request.
 	 */
-	public static function killPID($rServerID, $rPID) {
-		ApiClient::systemRequest($rServerID, array('action' => 'kill_pid', 'pid' => $rPID));
+	public static function killPID(int $rServerID, int $rPID) {
+		ApiClient::systemRequest($rServerID, ['action' => 'kill_pid', 'pid' => $rPID]);
 	}
 
 	/**
@@ -256,8 +257,8 @@ class ServerRepository {
 	 * @param int $rServerID Server id.
 	 * @return mixed RTMP stats.
 	 */
-	public static function getRTMPStats($rServerID) {
-		return json_decode(ApiClient::systemRequest($rServerID, array('action' => 'rtmp_stats')), true);
+	public static function getRTMPStats(int $rServerID) {
+		return json_decode(ApiClient::systemRequest($rServerID, ['action' => 'rtmp_stats']), true);
 	}
 
 	/**
@@ -269,7 +270,7 @@ class ServerRepository {
 	 * @param string $rFilename Source file/path.
 	 * @return mixed Probe result.
 	 */
-	public static function checkSource($rServers, $rFFProbe, $rServerID, $rFilename) {
+	public static function checkSource(array $rServers, mixed $rFFProbe, int $rServerID, string $rFilename) {
 		$rAPI = $rServers[intval($rServerID)]['api_url_ip'] . '&action=getFile&filename=' . urlencode($rFilename);
 		$rCommand = 'timeout 10 ' . $rFFProbe . ' -user_agent "Mozilla/5.0" -show_streams -v quiet "' . $rAPI . '" -of json';
 		return json_decode(shell_exec($rCommand), true);
@@ -281,7 +282,7 @@ class ServerRepository {
 	 * @param int $rServerID Server id.
 	 * @return mixed SSL log contents.
 	 */
-	public static function getSSLLog($rServerID) {
+	public static function getSSLLog(int $rServerID) {
 		global $rServers;
 		$rServer = $rServers[intval($rServerID)] ?? null;
 		if (!$rServer || empty($rServer['api_url_ip'])) {
@@ -301,8 +302,8 @@ class ServerRepository {
 	 * @param int $rServerID Server id.
 	 * @return mixed Result of the request.
 	 */
-	public static function freeTemp($rServerID) {
-		ApiClient::systemRequest($rServerID, array('action' => 'free_temp'));
+	public static function freeTemp(int $rServerID) {
+		ApiClient::systemRequest($rServerID, ['action' => 'free_temp']);
 	}
 
 	/**
@@ -311,8 +312,8 @@ class ServerRepository {
 	 * @param int $rServerID Server id.
 	 * @return mixed Result of the request.
 	 */
-	public static function freeStreams($rServerID) {
-		ApiClient::systemRequest($rServerID, array('action' => 'free_streams'));
+	public static function freeStreams(int $rServerID) {
+		ApiClient::systemRequest($rServerID, ['action' => 'free_streams']);
 	}
 
 	/**
@@ -326,8 +327,8 @@ class ServerRepository {
 	 * @param mixed       $rHeaders   Optional extra headers.
 	 * @return mixed Probe result.
 	 */
-	public static function probeSource($rServerID, $rURL, $rUserAgent = null, $rProxy = null, $rCookies = null, $rHeaders = null) {
-		return json_decode(ApiClient::systemRequest($rServerID, array('action' => 'probe', 'url' => $rURL, 'user_agent' => $rUserAgent, 'http_proxy' => $rProxy, 'cookies' => $rCookies, 'headers' => $rHeaders), 30), true);
+	public static function probeSource(int $rServerID, string $rURL, ?string $rUserAgent = null, mixed $rProxy = null, ?string $rCookies = null, mixed $rHeaders = null) {
+		return json_decode(ApiClient::systemRequest($rServerID, ['action' => 'probe', 'url' => $rURL, 'user_agent' => $rUserAgent, 'http_proxy' => $rProxy, 'cookies' => $rCookies, 'headers' => $rHeaders], 30), true);
 	}
 
 	/**
@@ -337,10 +338,10 @@ class ServerRepository {
 	 * @param int|null $rReplaceWith Replacement server id for reassignment.
 	 * @return bool True on success.
 	 */
-	public static function deleteById($rID, $rReplaceWith = null) {
+	public static function deleteById(int $rID, ?int $rReplaceWith = null) {
 		global $rSettings;
 		$db = self::db();
-		$rServer = ServerRepository::getById($rID);
+		$rServer = self::getById($rID);
 
 		if (!$rServer || $rServer['is_main']) {
 			return false;
@@ -377,7 +378,7 @@ class ServerRepository {
 	 * @param bool $rForce Bypass the cache.
 	 * @return array Allowed domains.
 	 */
-	public static function getAllowedDomains($rForce = false) {
+	public static function getAllowedDomains(bool $rForce = false) {
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('allowed_domains', 20);
@@ -385,7 +386,7 @@ class ServerRepository {
 				return $rCache;
 			}
 		}
-		$rDomains = array('127.0.0.1', 'localhost');
+		$rDomains = ['127.0.0.1', 'localhost'];
 		$db->query('SELECT `server_ip`, `private_ip`, `domain_name` FROM `servers` WHERE `enabled` = 1;');
 		foreach ($db->get_rows() as $rRow) {
 			foreach (explode(',', $rRow['domain_name']) as $rDomain) {
@@ -415,7 +416,7 @@ class ServerRepository {
 	 * @param bool $rForce Bypass the cache.
 	 * @return array Allowed IPs.
 	 */
-	public static function getAllowedIPs($rForce = false) {
+	public static function getAllowedIPs(bool $rForce = false) {
 		global $rServers, $rSettings;
 		if ($rForce) {
 		} else {
@@ -425,7 +426,7 @@ class ServerRepository {
 				return $rCache;
 			}
 		}
-		$rIPs = array('127.0.0.1');
+		$rIPs = ['127.0.0.1'];
 		$rServerAddr = ($_SERVER['SERVER_ADDR'] ?? null);
 		if (!empty($rServerAddr)) {
 			$rIPs[] = $rServerAddr;
@@ -464,7 +465,7 @@ class ServerRepository {
 	public static function getLocalRTMPStats() {
 		global $rServers;
 		$rURL = $rServers[SERVER_ID]['rtmp_mport_url'] . 'stat';
-		$rContext = stream_context_create(array('http' => array('timeout' => 1)));
+		$rContext = stream_context_create(['http' => ['timeout' => 1]]);
 		$rXML = file_get_contents($rURL, false, $rContext);
 		return json_decode(json_encode(simplexml_load_string($rXML, 'SimpleXMLElement', LIBXML_NOCDATA)), true);
 	}
@@ -476,7 +477,7 @@ class ServerRepository {
 	 * @param string|null $rForceProtocol Force http/https.
 	 * @return string Public URL.
 	 */
-	public static function getPublicURL($rServerID = null, $rForceProtocol = null) {
+	public static function getPublicURL(?int $rServerID = null, ?string $rForceProtocol = null) {
 		global $rSettings, $rServers;
 		$rOriginatorID = null;
 		if (isset($rServerID)) {
@@ -533,7 +534,7 @@ class ServerRepository {
 	 * @param int $rID Server id.
 	 * @return array|null The server row, or null if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `servers` WHERE `id` = ?;', $rID);
 

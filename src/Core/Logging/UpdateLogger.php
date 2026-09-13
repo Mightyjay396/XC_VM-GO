@@ -18,7 +18,6 @@ namespace XcVm\Core\Logging;
  */
 
 class UpdateLogger {
-
 	/**
 	 * Path to the update log file (outside tmp/ so cron cleanup won't delete it).
 	 *

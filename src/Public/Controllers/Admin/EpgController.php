@@ -18,16 +18,16 @@ use XcVm\Domain\Epg\EpgService;
  */
 
 class EpgController extends BaseAdminController {
-    public function index() {
-        $rEPGArr = null;
-        if (RequestManager::has('id')) {
-            $rEPGArr = EpgService::getById(RequestManager::get('id'));
-            if (!$rEPGArr) {
-                exit();
-            }
-        }
+	public function index() {
+		$rEPGArr = null;
+		if (RequestManager::has('id')) {
+			$rEPGArr = EpgService::getById(RequestManager::get('id'));
+			if (!$rEPGArr) {
+				exit();
+			}
+		}
 
-        $this->setTitle('EPG');
-        $this->render('epg', compact('rEPGArr'));
-    }
+		$this->setTitle('EPG');
+		$this->render('epg', compact('rEPGArr'));
+	}
 }

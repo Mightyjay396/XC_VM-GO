@@ -22,12 +22,12 @@ use XcVm\Domain\Bouquet\BouquetService;
  */
 
 class BouquetListController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Bouquets');
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Bouquets');
 
-        $rBouquets = BouquetService::getAllSimple();
+		$rBouquets = BouquetService::getAllSimple();
 
-        $this->render('bouquets', compact('rBouquets'));
-    }
+		$this->render('bouquets', compact('rBouquets'));
+	}
 }

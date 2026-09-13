@@ -24,22 +24,23 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class EnigmaService {
 	use DatabaseAware;
+
 	/**
 	 * Bulk delete selected Enigma2 devices.
 	 *
 	 * @param array $rData Selected device ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete($rData) {
+	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
 		ini_set('default_socket_timeout', 0);
 
 		$rEnigmas = json_decode($rData['enigmas'], true);
-		EnigmaService::deleteDevices($rEnigmas);
+		self::deleteDevices($rEnigmas);
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -48,13 +49,13 @@ class EnigmaService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit($rData) {
+	public static function massEdit(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('massEditEnigmas', $rData)) {
-			$rArray = array();
-			$rUserArray = array();
+			$rArray = [];
+			$rUserArray = [];
 
-			foreach (array('is_isplock', 'is_trial') as $rItem) {
+			foreach (['is_isplock', 'is_trial'] as $rItem) {
 				if (!isset($rData['c_' . $rItem])) {
 				} else {
 					if (isset($rData[$rItem])) {
@@ -105,7 +106,7 @@ class EnigmaService {
 
 			if (!isset($rData['c_bouquets'])) {
 			} else {
-				$rUserArray['bouquet'] = array();
+				$rUserArray['bouquet'] = [];
 
 				foreach (json_decode($rData['bouquets_selected'], true) as $rBouquet) {
 					if (!is_numeric($rBouquet)) {
@@ -136,7 +137,7 @@ class EnigmaService {
 			$rDevices = json_decode($rData['devices_selected'], true);
 
 			foreach ($rDevices as $rDevice) {
-				$rDeviceInfo = EnigmaService::getById($rDevice);
+				$rDeviceInfo = self::getById($rDevice);
 
 				if (!$rDeviceInfo) {
 				} else {
@@ -154,7 +155,7 @@ class EnigmaService {
 
 					if (0 >= count($rUserArray)) {
 					} else {
-						$rUserIDs = array();
+						$rUserIDs = [];
 
 						if (!isset($rDeviceInfo['user']['id'])) {
 						} else {
@@ -175,15 +176,15 @@ class EnigmaService {
 								$rQuery = 'UPDATE `lines` SET ' . $rPrepare['update'] . ' WHERE `id` = ?;';
 								$db->query($rQuery, ...$rPrepare['data']);
 											LineService::updateLineSignal($rUserID);
-										}
-									}
-								}
 							}
 						}
+					}
+				}
+			}
 
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -193,12 +194,12 @@ class EnigmaService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processEnigma', $rData)) {
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'edit_e2')) {
-					$rArray = AdminHelpers::overwriteData(EnigmaService::getById($rData['edit']), $rData);
+					$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
 					$rUser = UserRepository::getLineById($rArray['user_id']);
 
 					if ($rUser) {
@@ -271,7 +272,7 @@ class EnigmaService {
 						$rDate = new \DateTime($rData['exp_date']);
 						$rUserArray['exp_date'] = $rDate->format('U');
 					} catch (\Exception $e) {
-						return array('status' => STATUS_INVALID_DATE, 'data' => $rData);
+						return ['status' => STATUS_INVALID_DATE, 'data' => $rData];
 					}
 				}
 			} else {
@@ -286,7 +287,7 @@ class EnigmaService {
 			if (isset($rData['allowed_ips'])) {
 				if (is_array($rData['allowed_ips'])) {
 				} else {
-					$rData['allowed_ips'] = array($rData['allowed_ips']);
+					$rData['allowed_ips'] = [$rData['allowed_ips']];
 				}
 
 				$rUserArray['allowed_ips'] = json_encode($rData['allowed_ips']);
@@ -300,7 +301,7 @@ class EnigmaService {
 				$rUserArray['pair_id'] = null;
 			}
 
-			$rUserArray['allowed_outputs'] = '[' . implode(',', array(1, 2)) . ']';
+			$rUserArray['allowed_outputs'] = '[' . implode(',', [1, 2]) . ']';
 			$rDevice = $rArray;
 			$rDevice['user'] = $rUserArray;
 
@@ -310,7 +311,7 @@ class EnigmaService {
 
 				if ($rUserCheck) {
 				} else {
-					return array('status' => STATUS_INVALID_USER, 'data' => $rData);
+					return ['status' => STATUS_INVALID_USER, 'data' => $rData];
 				}
 			}
 
@@ -330,7 +331,7 @@ class EnigmaService {
 					} else {
 						$rInsertID = $db->last_insert_id();
 						$rArray['user_id'] = $rInsertID;
-					LineService::updateLineSignal($rArray['user_id']);
+						LineService::updateLineSignal($rArray['user_id']);
 						if (isset($rData['edit'])) {
 						} else {
 							$rArray['token'] = '';
@@ -353,7 +354,7 @@ class EnigmaService {
 										LineService::updateLineSignal($rDevice['user']['pair_id']);
 							}
 
-							return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						}
 
 						if (isset($rData['edit'])) {
@@ -362,16 +363,16 @@ class EnigmaService {
 						}
 					}
 
-					return array('status' => STATUS_FAILURE, 'data' => $rData);
+					return ['status' => STATUS_FAILURE, 'data' => $rData];
 				}
 
-				return array('status' => STATUS_EXISTS_MAC, 'data' => $rData);
+				return ['status' => STATUS_EXISTS_MAC, 'data' => $rData];
 			}
 
-			return array('status' => STATUS_INVALID_MAC, 'data' => $rData);
+			return ['status' => STATUS_INVALID_MAC, 'data' => $rData];
 		}
 
-		return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -380,12 +381,12 @@ class EnigmaService {
 	 * @param int $rID Device id.
 	 * @return array|null The device row, or null if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `enigma2_devices` WHERE `device_id` = ?;', $rID);
 
 		if ($db->num_rows() != 1) {
-			return array();
+			return [];
 		}
 
 		$rRow = $db->get_row();
@@ -407,12 +408,12 @@ class EnigmaService {
 	 * @param int $rID Owner/line id.
 	 * @return array Device row(s).
 	 */
-	public static function getByUserId($rID) {
+	public static function getByUserId(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `enigma2_devices` WHERE `user_id` = ?;', $rID);
 
 		if ($db->num_rows() != 1) {
-			return array();
+			return [];
 		}
 
 		return $db->get_row();
@@ -427,7 +428,7 @@ class EnigmaService {
 	 * @param bool $rConvert      Convert (rather than delete) the paired line.
 	 * @return bool True on success.
 	 */
-	public static function deleteDevice($rID, $rDeletePaired = false, $rCloseCons = true, $rConvert = false) {
+	public static function deleteDevice(int $rID, bool $rDeletePaired = false, bool $rCloseCons = true, bool $rConvert = false) {
 		$db = self::db();
 		$rEnigma = self::getById($rID);
 
@@ -466,7 +467,7 @@ class EnigmaService {
 	 * @param int[] $rIDs Device ids.
 	 * @return bool True on success.
 	 */
-	public static function deleteDevices($rIDs) {
+	public static function deleteDevices(array $rIDs) {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
@@ -474,7 +475,7 @@ class EnigmaService {
 			return false;
 		}
 
-		$rUserIDs = array();
+		$rUserIDs = [];
 		$db->query('SELECT `user_id` FROM `enigma2_devices` WHERE `device_id` IN (' . implode(',', $rIDs) . ');');
 
 		foreach ($db->get_rows() as $rRow) {

@@ -20,89 +20,89 @@ use XcVm\Domain\Stream\StreamRepository;
  */
 
 class MovieController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $db, $rServers;
+		global $db, $rServers;
 
-        $rCategories = CategoryService::getAllByType('movie');
-        $rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
+		$rCategories = CategoryService::getAllByType('movie');
+		$rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
 
-        if (RequestManager::has('id')) {
-            $rMovie = StreamRepository::getById(RequestManager::get('id'));
-            if (!$rMovie || $rMovie['type'] != 2) {
-                $this->redirect('movies');
-                return;
-            }
-        }
+		if (RequestManager::has('id')) {
+			$rMovie = StreamRepository::getById(RequestManager::get('id'));
+			if (!$rMovie || $rMovie['type'] != 2) {
+				$this->redirect('movies');
+				return;
+			}
+		}
 
-        $rServerTree = [
-            ['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Active</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
-            ['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]],
-        ];
-        $activeStreamingServers = [];
-        $rMovie = null;
-        $rStreamSys = [];
-        $rMovieSource = [''];
-        $rSource = '';
-        $rPathSources = '';
+		$rServerTree = [
+			['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Active</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
+			['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]],
+		];
+		$activeStreamingServers = [];
+		$rMovie = null;
+		$rStreamSys = [];
+		$rMovieSource = [''];
+		$rSource = '';
+		$rPathSources = '';
 
-        if (RequestManager::has('id')) {
-            $rMovie = StreamRepository::getById(RequestManager::get('id'));
-            if (!$rMovie || $rMovie['type'] != 2) {
-                $this->redirect('movies');
-                return;
-            }
-            $rMovie['properties'] = json_decode($rMovie['movie_properties'], true);
-            $rStreamSys = StreamRepository::getSystemRows(RequestManager::get('id'));
+		if (RequestManager::has('id')) {
+			$rMovie = StreamRepository::getById(RequestManager::get('id'));
+			if (!$rMovie || $rMovie['type'] != 2) {
+				$this->redirect('movies');
+				return;
+			}
+			$rMovie['properties'] = json_decode($rMovie['movie_properties'], true);
+			$rStreamSys = StreamRepository::getSystemRows(RequestManager::get('id'));
 
-            $streamSourceJson = $rMovie['stream_source'] ?? '';
-            $rMovieSource = json_decode($streamSourceJson, true);
-            if (!is_array($rMovieSource)) {
-                $rMovieSource = [''];
-            }
-            $rSource = $rMovieSource[0] ?? '';
-            if (str_starts_with($rSource, 's:')) {
-                $parts = explode(':', $rSource, 3);
-                $rPathSources = (count($parts) >= 3) ? urldecode($parts[2]) : '';
-            } else {
-                $rPathSources = $rSource;
-            }
+			$streamSourceJson = $rMovie['stream_source'] ?? '';
+			$rMovieSource = json_decode($streamSourceJson, true);
+			if (!is_array($rMovieSource)) {
+				$rMovieSource = [''];
+			}
+			$rSource = $rMovieSource[0] ?? '';
+			if (str_starts_with($rSource, 's:')) {
+				$parts = explode(':', $rSource, 3);
+				$rPathSources = (count($parts) >= 3) ? urldecode($parts[2]) : '';
+			} else {
+				$rPathSources = $rSource;
+			}
 
-            foreach ($rServers as $rServer) {
-                if (($rServer['direct_source'] ?? 0) == 0 && ($rServer['stream_status'] ?? 0) == 1) {
-                    $activeStreamingServers[] = intval($rServer['id']);
-                }
-                if (isset($rStreamSys[intval($rServer['id'])])) {
-                    $rParent = 'source';
-                } else {
-                    $rParent = 'offline';
-                }
-                $rServerTree[] = ['id' => $rServer['id'], 'parent' => $rParent, 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
-            }
-        } else {
-            foreach ($rServers as $rServer) {
-                $rServerTree[] = ['id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
-            }
-        }
+			foreach ($rServers as $rServer) {
+				if (($rServer['direct_source'] ?? 0) == 0 && ($rServer['stream_status'] ?? 0) == 1) {
+					$activeStreamingServers[] = intval($rServer['id']);
+				}
+				if (isset($rStreamSys[intval($rServer['id'])])) {
+					$rParent = 'source';
+				} else {
+					$rParent = 'offline';
+				}
+				$rServerTree[] = ['id' => $rServer['id'], 'parent' => $rParent, 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
+			}
+		} else {
+			foreach ($rServers as $rServer) {
+				$rServerTree[] = ['id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
+			}
+		}
 
-        // The load-balancer server tree on this form is driven by jstree.
-        $GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
-            (array) ($GLOBALS['xmNewuiVendors'] ?? []),
-            ['jstree']
-        )));
+		// The load-balancer server tree on this form is driven by jstree.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['jstree']
+		)));
 
-        $this->setTitle('Movie');
-        $this->render('movie', compact(
-            'rCategories',
-            'rTranscodeProfiles',
-            'rMovie',
-            'rServerTree',
-            'activeStreamingServers',
-            'rStreamSys',
-            'rMovieSource',
-            'rSource',
-            'rPathSources'
-        ));
-    }
+		$this->setTitle('Movie');
+		$this->render('movie', compact(
+			'rCategories',
+			'rTranscodeProfiles',
+			'rMovie',
+			'rServerTree',
+			'activeStreamingServers',
+			'rStreamSys',
+			'rMovieSource',
+			'rSource',
+			'rPathSources'
+		));
+	}
 }

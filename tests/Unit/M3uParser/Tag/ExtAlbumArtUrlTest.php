@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtAlbumArtUrl;
 use M3uParser\Tag\ExtTagInterface;
 use PHPUnit\Framework\TestCase;
 
-class ExtAlbumArtUrlTest extends TestCase
-{
-    public function testParseExtAlbumArtUrl(): void
-    {
+class ExtAlbumArtUrlTest extends TestCase {
+    public function testParseExtAlbumArtUrl(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/extalbumarturl.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/extalbumarturl.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -35,10 +32,9 @@ class ExtAlbumArtUrlTest extends TestCase
         self::assertEquals('https://store.example.com/download/A32X5yz-1.jpg', $extAlbumArtUrl->getValue());
     }
 
-    public function testGenerateExtAlbumArtUrl(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTALBUMARTURL:https://store.example.com/download/A32X5yz-1.jpg'."\n";
+    public function testGenerateExtAlbumArtUrl(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTALBUMARTURL:https://store.example.com/download/A32X5yz-1.jpg' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

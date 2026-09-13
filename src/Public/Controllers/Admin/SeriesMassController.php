@@ -17,12 +17,12 @@ use XcVm\Domain\Stream\CategoryService;
  */
 
 class SeriesMassController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rCategories = CategoryService::getAllByType('series');
+		$rCategories = CategoryService::getAllByType('series');
 
-        $this->setTitle('Mass Edit Series');
-        $this->render('series_mass', compact('rCategories'));
-    }
+		$this->setTitle('Mass Edit Series');
+		$this->render('series_mass', compact('rCategories'));
+	}
 }

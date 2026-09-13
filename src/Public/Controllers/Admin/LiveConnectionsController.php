@@ -19,23 +19,23 @@ use XcVm\Domain\User\UserRepository;
  */
 
 class LiveConnectionsController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $db;
+		global $db;
 
-        $rSearchUser = null;
-        $rSearchStream = null;
+		$rSearchUser = null;
+		$rSearchStream = null;
 
-        if (RequestManager::has('user_id')) {
-            $rSearchUser = UserRepository::getLineById(RequestManager::get('user_id'));
-        }
+		if (RequestManager::has('user_id')) {
+			$rSearchUser = UserRepository::getLineById(RequestManager::get('user_id'));
+		}
 
-        if (RequestManager::has('stream_id')) {
-            $rSearchStream = StreamRepository::getById(RequestManager::get('stream_id'));
-        }
+		if (RequestManager::has('stream_id')) {
+			$rSearchStream = StreamRepository::getById(RequestManager::get('stream_id'));
+		}
 
-        $this->setTitle('Live Connections');
-        $this->render('live_connections', compact('rSearchUser', 'rSearchStream'));
-    }
+		$this->setTitle('Live Connections');
+		$this->render('live_connections', compact('rSearchUser', 'rSearchStream'));
+	}
 }

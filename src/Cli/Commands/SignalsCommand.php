@@ -80,7 +80,7 @@ class SignalsCommand implements CommandInterface {
 			// ── Kill-сигналы из БД ──────────────────────────────
 			if ($db->query('SELECT `signal_id`, `pid`, `rtmp` FROM `signals` WHERE `server_id` = ? AND `pid` IS NOT NULL ORDER BY `signal_id` ASC LIMIT 100', SERVER_ID)) {
 				if ($db->num_rows() > 0) {
-					$rIDs = array();
+					$rIDs = [];
 					foreach ($db->get_rows() as $rRow) {
 						$rIDs[] = $rRow['signal_id'];
 						$rPID = $rRow['pid'];
@@ -100,7 +100,7 @@ class SignalsCommand implements CommandInterface {
 				// ── Cache-сигналы из БД ─────────────────────────
 				if ($db->query('SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 ORDER BY `signal_id` ASC LIMIT 1000;', SERVER_ID)) {
 					if ($db->num_rows() > 0) {
-						$rUpdatedStreams = $rUpdatedLines = $rIDs = array();
+						$rUpdatedStreams = $rUpdatedLines = $rIDs = [];
 						foreach ($db->get_rows() as $rRow) {
 							$rCustomData = json_decode($rRow['custom_data'], true);
 							$rIDs[] = $rRow['signal_id'];
@@ -163,13 +163,13 @@ class SignalsCommand implements CommandInterface {
 
 					// ── Redis kill-сигналы ──────────────────────
 					if (SettingsManager::get('redis_handler')) {
-						$rSignals = array();
+						$rSignals = [];
 						foreach (RedisManager::instance()->sMembers('SIGNALS#' . SERVER_ID) as $rKey) {
 							$rSignals[] = $rKey;
 						}
 						if (count($rSignals) > 0) {
 							$rSignalData = RedisManager::instance()->mGet($rSignals);
-							$rIDs = array();
+							$rIDs = [];
 							foreach ($rSignalData as $rData) {
 								$rRow = igbinary_unserialize($rData);
 								$rIDs[] = $rRow['key'];

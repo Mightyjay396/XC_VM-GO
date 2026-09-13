@@ -20,66 +20,66 @@ use XcVm\Domain\Stream\StreamRepository;
  */
 
 class RecordController extends BaseAdminController {
-    public function index() {
-        global $db;
+	public function index() {
+		global $db;
 
-        $this->requirePermission();
+		$this->requirePermission();
 
-        $rAvailableServers = $rServers = array();
-        $rStream = $rProgramme = $rBitrate = null;
-        $rRequestData = RequestManager::getAll();
+		$rAvailableServers = $rServers = [];
+		$rStream = $rProgramme = $rBitrate = null;
+		$rRequestData = RequestManager::getAll();
 
-        if (isset($rRequestData['id'])) {
-            $rStream = StreamRepository::getById($rRequestData['id']);
-            $rProgramme = EpgService::getProgramme($rRequestData['id'], $rRequestData['programme']);
+		if (isset($rRequestData['id'])) {
+			$rStream = StreamRepository::getById($rRequestData['id']);
+			$rProgramme = EpgService::getProgramme($rRequestData['id'], $rRequestData['programme']);
 
-            if ($rStream && $rStream['type'] == 1 && $rProgramme) {
-            } else {
-                $this->redirect('record');
-                return;
-            }
-        } else {
-            if (isset($rRequestData['archive'])) {
-                $rArchive = json_decode(base64_decode($rRequestData['archive']), true);
-                $rStream = StreamRepository::getById($rArchive['stream_id']);
-                $rProgramme = array('start' => $rArchive['start'], 'end' => $rArchive['end'], 'title' => $rArchive['title'], 'description' => $rArchive['description'], 'archive' => true);
+			if ($rStream && $rStream['type'] == 1 && $rProgramme) {
+			} else {
+				$this->redirect('record');
+				return;
+			}
+		} else {
+			if (isset($rRequestData['archive'])) {
+				$rArchive = json_decode(base64_decode($rRequestData['archive']), true);
+				$rStream = StreamRepository::getById($rArchive['stream_id']);
+				$rProgramme = ['start' => $rArchive['start'], 'end' => $rArchive['end'], 'title' => $rArchive['title'], 'description' => $rArchive['description'], 'archive' => true];
 
-                if ($rStream && $rStream['type'] == 1 && $rProgramme) {
-                } else {
-                    $this->redirect('record');
-                    return;
-                }
-            } else {
-                if (!isset($rRequestData['stream_id'])) {
-                } else {
-                    $rStream = StreamRepository::getById($rRequestData['stream_id']);
-                    $rProgramme = array('start' => strtotime($rRequestData['start_date']), 'end' => strtotime($rRequestData['start_date']) + intval($rRequestData['duration']) * 60, 'title' => '', 'description' => '');
+				if ($rStream && $rStream['type'] == 1 && $rProgramme) {
+				} else {
+					$this->redirect('record');
+					return;
+				}
+			} else {
+				if (!isset($rRequestData['stream_id'])) {
+				} else {
+					$rStream = StreamRepository::getById($rRequestData['stream_id']);
+					$rProgramme = ['start' => strtotime($rRequestData['start_date']), 'end' => strtotime($rRequestData['start_date']) + intval($rRequestData['duration']) * 60, 'title' => '', 'description' => ''];
 
-                    if (!(!$rStream || $rStream['type'] != 1 || !$rProgramme || $rProgramme['end'] < time())) {
-                    } else {
-                        header('Location: record');
-                    }
-                }
-            }
-        }
+					if (!(!$rStream || $rStream['type'] != 1 || !$rProgramme || $rProgramme['end'] < time())) {
+					} else {
+						header('Location: record');
+					}
+				}
+			}
+		}
 
-        if ($rStream) {
-            $db->query('SELECT `server_id`, `bitrate` FROM `streams_servers` WHERE `stream_id` = ?;', $rStream['id']);
+		if ($rStream) {
+			$db->query('SELECT `server_id`, `bitrate` FROM `streams_servers` WHERE `stream_id` = ?;', $rStream['id']);
 
-            foreach ($db->get_rows() as $rRow) {
-                $rAvailableServers[] = $rRow['server_id'];
-                if (!(!$rBitrate && $rRow['bitrate'] || $rRow['bitrate'] && $rBitrate < $rRow['bitrate'])) {
-                } else {
-                    $rBitrate = $rRow['bitrate'];
-                }
-            }
-        }
+			foreach ($db->get_rows() as $rRow) {
+				$rAvailableServers[] = $rRow['server_id'];
+				if (!(!$rBitrate && $rRow['bitrate'] || $rRow['bitrate'] && $rBitrate < $rRow['bitrate'])) {
+				} else {
+					$rBitrate = $rRow['bitrate'];
+				}
+			}
+		}
 
-        if (is_array($rProgramme) && !isset($rProgramme['archive'])) {
-            $rProgramme['archive'] = false;
-        }
+		if (is_array($rProgramme) && !isset($rProgramme['archive'])) {
+			$rProgramme['archive'] = false;
+		}
 
-        $this->setTitle('Record');
-        $this->render('record', compact('rStream', 'rProgramme', 'rAvailableServers', 'rBitrate'));
-    }
+		$this->setTitle('Record');
+		$this->render('record', compact('rStream', 'rProgramme', 'rAvailableServers', 'rBitrate'));
+	}
 }

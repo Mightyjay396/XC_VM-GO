@@ -18,31 +18,31 @@ use XcVm\Infrastructure\Tmdb\TmdbApiService;
  */
 
 class TmdbCronJob implements CommandInterface {
-    use CronTrait;
+	use CronTrait;
 
-    public function getName(): string {
-        return 'cron:tmdb';
-    }
+	public function getName(): string {
+		return 'cron:tmdb';
+	}
 
-    public function getDescription(): string {
-        return 'Cron: update TMDB data (series, movies)';
-    }
+	public function getDescription(): string {
+		return 'Cron: update TMDB data (series, movies)';
+	}
 
-    public function execute(array $rArgs): int {
-        if (!$this->assertRunAsXcVm()) {
-            return 1;
-        }
+	public function execute(array $rArgs): int {
+		if (!$this->assertRunAsXcVm()) {
+			return 1;
+		}
 
-        TmdbApiService::requireLibrary();
+		TmdbApiService::requireLibrary();
 
-        $this->initCron('XC_VM[TMDB]');
+		$this->initCron('XC_VM[TMDB]');
 
-        $rTimeout = 3600;
-        set_time_limit($rTimeout);
-        ini_set('max_execution_time', $rTimeout);
+		$rTimeout = 3600;
+		set_time_limit($rTimeout);
+		ini_set('max_execution_time', $rTimeout);
 
-        TmdbCron::run();
+		TmdbCron::run();
 
-        return 0;
-    }
+		return 0;
+	}
 }

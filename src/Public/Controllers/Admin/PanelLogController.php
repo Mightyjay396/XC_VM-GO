@@ -20,9 +20,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class PanelLogController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Panel Errors');
-        $this->render('panel_logs');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Panel Errors');
+		$this->render('panel_logs');
+	}
 }

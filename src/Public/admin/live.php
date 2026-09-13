@@ -28,7 +28,7 @@ header('Access-Control-Allow-Origin: *');
 set_time_limit(0);
 $rIP = NetworkUtils::getUserIP();
 $rPID = getmypid();
-$rSegmentSettings = array('seg_time' => intval(SettingsManager::get('seg_time')), 'seg_list_size' => intval(SettingsManager::get('seg_list_size')), 'seg_delete_threshold' => intval(SettingsManager::get('seg_delete_threshold')));
+$rSegmentSettings = ['seg_time' => intval(SettingsManager::get('seg_time')), 'seg_list_size' => intval(SettingsManager::get('seg_list_size')), 'seg_delete_threshold' => intval(SettingsManager::get('seg_delete_threshold'))];
 
 if (SettingsManager::get('use_buffer') == 0) {
 	header('X-Accel-Buffering: no');

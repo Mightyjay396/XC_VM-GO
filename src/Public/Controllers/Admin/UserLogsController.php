@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class UserLogsController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('User Logs');
-        $this->render('user_logs');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('User Logs');
+		$this->render('user_logs');
+	}
 }

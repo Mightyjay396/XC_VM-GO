@@ -21,10 +21,8 @@ class PortalHandler {
 	 * Phase 1: Pre-init stub responses (no DB needed).
 	 * Exits immediately if the action is handled, otherwise returns void.
 	 *
-	 * @param string|null $rReqType
-	 * @param string|null $rReqAction
 	 */
-	public static function handlePreInit($rReqType, $rReqAction) {
+	public static function handlePreInit(?string $rReqType, ?string $rReqAction) {
 		if ($rReqType && $rReqAction) {
 			switch ($rReqType) {
 				case "stb":
@@ -138,10 +136,9 @@ class PortalHandler {
 	 * Called when $rReqType == 'stb' from the outer switch.
 	 * Exits if action is handled, otherwise returns void.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array with device, profile, language, theme, authenticated, etc.
 	 */
-	public static function handleStbPublic($rReqAction, &$ctx) {
+	public static function handleStbPublic(string $rReqAction, array &$ctx) {
 		global $rSettings, $rServers;
 
 		switch ($rReqAction) {
@@ -182,10 +179,8 @@ class PortalHandler {
 				$rTotal["watchdog_timeout"] = mt_rand(80, 120);
 
 				if (
-					!(
-						empty($rTotal["aspect"]) &&
-						$rServers[SERVER_ID]["server_protocol"] == "https"
-					)
+					!(empty($rTotal["aspect"]) &&
+						$rServers[SERVER_ID]["server_protocol"] == "https")
 				) {
 				} else {
 					$rTotal["aspect"] = "16";
@@ -195,15 +190,15 @@ class PortalHandler {
 
 			case "get_types_list":
 				exit(json_encode([
-						"js" => [
-							"allowed_stb_types" => array_values(
-								(array) ($rSettings["allowed_stb_types"] ?? []),
-							),
-							"strict_stb_type_check" => empty($rSettings["strict_stb_type_check"])
+					"js" => [
+						"allowed_stb_types" => array_values(
+							(array) ($rSettings["allowed_stb_types"] ?? []),
+						),
+						"strict_stb_type_check" => empty($rSettings["strict_stb_type_check"])
 								? ""
 								: $rSettings["strict_stb_type_check"],
-						],
-					]));
+					],
+				]));
 
 			case "get_localization":
 				exit(json_encode(["js" => $ctx["language"][$ctx["device"]["locale"]]]));
@@ -272,11 +267,9 @@ class PortalHandler {
 	 * Phase 5: Authenticated action dispatcher.
 	 * Sets up player, then dispatches to the appropriate sub-handler.
 	 *
-	 * @param string $rReqType
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleAuthenticated($rReqType, $rReqAction, &$ctx) {
+	public static function handleAuthenticated(string $rReqType, string $rReqAction, array &$ctx) {
 		$ctx["device"]["mag_player"] = trim($ctx["device"]["mag_player"], "'\"");
 		$ctx["player"] = !empty($ctx["device"]["mag_player"])
 			? $ctx["device"]["mag_player"] . " "
@@ -342,10 +335,9 @@ class PortalHandler {
 	 *          set_screensaver_delay, set_playback_buffer, set_plasma_saving,
 	 *          set_parent_password, set_locale, set_hdmi_reaction.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleStbSettings($rReqAction, &$ctx) {
+	public static function handleStbSettings(string $rReqAction, array &$ctx) {
 		global $db, $rSettings, $rRequest;
 
 		switch ($rReqAction) {
@@ -687,10 +679,9 @@ class PortalHandler {
 	 * Actions: get_events, confirm_event.
 	 * Also updates last_watchdog before processing action.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleWatchdog($rReqAction, &$ctx) {
+	public static function handleWatchdog(string $rReqAction, array &$ctx) {
 		global $db, $rRequest;
 
 		$ctx["device"]["last_watchdog"] = time();
@@ -760,10 +751,9 @@ class PortalHandler {
 	 * Phase 5 sub-handler: Audioclub actions.
 	 * Actions: get_categories.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleAudioclub($rReqAction, &$ctx) {
+	public static function handleAudioclub(string $rReqAction, array &$ctx) {
 		global $rSettings, $rCategories;
 		$rCategories = is_array($rCategories ?? null) ? $rCategories : [];
 
@@ -806,10 +796,9 @@ class PortalHandler {
 	 *          get_ordered_list, get_all_fav_channels, get_epg_info, get_short_epg,
 	 *          set_last_id, get_genres.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleItv($rReqAction, &$ctx) {
+	public static function handleItv(string $rReqAction, array &$ctx) {
 		global $db, $rSettings, $rServers, $rRequest, $rCategories;
 		$rCategories = is_array($rCategories ?? null) ? $rCategories : [];
 		$rCategoryIDs = is_array($ctx["device"]["category_ids"] ?? null)
@@ -860,12 +849,12 @@ class PortalHandler {
 				}
 
 				exit(json_encode([
-						"js" => ["id" => $rStreamID, "cmd" => $rURL],
-						"streamer_id" => 0,
-						"link_id" => 0,
-						"load" => 0,
-						"error" => "",
-					]));
+					"js" => ["id" => $rStreamID, "cmd" => $rURL],
+					"streamer_id" => 0,
+					"link_id" => 0,
+					"load" => 0,
+					"error" => "",
+				]));
 
 			case "set_claim":
 				if (empty($rRequest["id"]) || empty($rRequest["real_type"])) {
@@ -945,10 +934,8 @@ class PortalHandler {
 
 						foreach ($rRows as $rRow) {
 							if (
-								!(
-									($rRow["start"] <= $rTime && $rTime <= $rRow["end"]) ||
-									$rTime <= $rRow["start"]
-								)
+								!(($rRow["start"] <= $rTime && $rTime <= $rRow["end"]) ||
+									$rTime <= $rRow["start"])
 							) {
 							} else {
 								$rRow["start_timestamp"] = $rRow["start"];
@@ -1059,10 +1046,9 @@ class PortalHandler {
 	 * Actions: set_claim, set_fav, del_fav, get_categories, get_genres_by_category_alias,
 	 *          get_years, get_ordered_list, create_link, get_abc.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleVod($rReqAction, &$ctx) {
+	public static function handleVod(string $rReqAction, array &$ctx) {
 		global $db, $rSettings, $rServers, $rRequest, $rCategories;
 		$rCategories = is_array($rCategories ?? null) ? $rCategories : [];
 		$rCategoryIDs = is_array($ctx["device"]["category_ids"] ?? null)
@@ -1303,10 +1289,9 @@ class PortalHandler {
 	 * Actions: set_claim, set_fav, del_fav, get_categories, get_genres_by_category_alias,
 	 *          get_years, get_ordered_list, get_abc.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleSeries($rReqAction, &$ctx) {
+	public static function handleSeries(string $rReqAction, array &$ctx) {
 		global $db, $rSettings, $rRequest, $rCategories;
 		$rCategories = is_array($rCategories ?? null) ? $rCategories : [];
 		$rCategoryIDs = is_array($ctx["device"]["category_ids"] ?? null)
@@ -1451,10 +1436,9 @@ class PortalHandler {
 	 * Phase 5 sub-handler: Account info actions.
 	 * Actions: get_main_info.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleAccountInfo($rReqAction, &$ctx) {
+	public static function handleAccountInfo(string $rReqAction, array &$ctx) {
 		global $rSettings;
 
 		switch ($rReqAction) {
@@ -1466,14 +1450,14 @@ class PortalHandler {
 				}
 
 				exit(json_encode([
-						"js" => [
-							"mac" => $ctx["mac"],
-							"phone" => $rExpiry,
-							"message" => htmlspecialchars_decode(
-								str_replace("\n", "<br/>", $rSettings["mag_message"]),
-							),
-						],
-					]));
+					"js" => [
+						"mac" => $ctx["mac"],
+						"phone" => $rExpiry,
+						"message" => htmlspecialchars_decode(
+							str_replace("\n", "<br/>", $rSettings["mag_message"]),
+						),
+					],
+				]));
 		}
 	}
 
@@ -1481,10 +1465,9 @@ class PortalHandler {
 	 * Phase 5 sub-handler: Radio actions.
 	 * Actions: get_ordered_list, get_all_fav_radio, set_fav, get_fav_ids.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleRadio($rReqAction, &$ctx) {
+	public static function handleRadio(string $rReqAction, array &$ctx) {
 		global $db, $rRequest;
 
 		switch ($rReqAction) {
@@ -1521,10 +1504,9 @@ class PortalHandler {
 	 * Phase 5 sub-handler: TV Archive actions.
 	 * Actions: get_next_part_url, create_link, get_link_for_channel.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleTvArchive($rReqAction, &$ctx) {
+	public static function handleTvArchive(string $rReqAction, array &$ctx) {
 		global $db, $rSettings, $rServers, $rRequest;
 
 		switch ($rReqAction) {
@@ -1683,10 +1665,9 @@ class PortalHandler {
 	 * Phase 5 sub-handler: EPG (Electronic Program Guide) actions.
 	 * Actions: get_week, get_data_table, get_simple_data_table, get_all_program_for_ch.
 	 *
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleEpg($rReqAction, &$ctx) {
+	public static function handleEpg(string $rReqAction, array &$ctx) {
 		global $db, $rRequest;
 
 		switch ($rReqAction) {
@@ -1761,10 +1742,8 @@ class PortalHandler {
 
 				foreach ($rEPGDatas as $rKey => $rEPGData) {
 					if (
-						!(
-							$rEPGData["start_timestamp"] <= time() &&
-							time() <= $rEPGData["stop_timestamp"]
-						)
+						!($rEPGData["start_timestamp"] <= time() &&
+							time() <= $rEPGData["stop_timestamp"])
 					) {
 					} else {
 						$rChannelIDx = $rKey + 1;
@@ -1912,11 +1891,9 @@ class PortalHandler {
 	 * If not authenticated and action is stb/get_profile, performs bruteforce check.
 	 * Then exits.
 	 *
-	 * @param string $rReqType
-	 * @param string $rReqAction
 	 * @param array  &$ctx Context array
 	 */
-	public static function handleUnauthenticated($rReqType, $rReqAction, &$ctx) {
+	public static function handleUnauthenticated(string $rReqType, string $rReqAction, array &$ctx) {
 		if (!($rReqType == "stb" && $rReqAction == "get_profile")) {
 		} else {
 			BruteforceGuard::checkBruteforce($ctx["ip"], $ctx["mac"]);
@@ -1930,9 +1907,8 @@ class PortalHandler {
 	 * Phase 7: Handshake — token generation.
 	 * Generates a new token for the device identified by MAC, updates DB, and exits with token.
 	 *
-	 * @param string $rMAC
 	 */
-	public static function handleHandshake($rMAC) {
+	public static function handleHandshake(string $rMAC) {
 		global $db, $rSettings, $rDevice;
 
 		$rDevice = getdevice(null, $rMAC);

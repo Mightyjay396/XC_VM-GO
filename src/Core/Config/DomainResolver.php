@@ -27,7 +27,7 @@ class DomainResolver {
 	 * @param bool $rForceSSL Force the https protocol.
 	 * @return string Public base URL (trailing slash), or '' if no proxy is available.
 	 */
-	public static function resolve($rServerID, $rForceSSL = false) {
+	public static function resolve(int $rServerID, bool $rForceSSL = false) {
 		global $rServers, $rSettings;
 		$rOriginatorID = null;
 		if ($rForceSSL) {
@@ -62,14 +62,14 @@ class DomainResolver {
 		}
 
 		if ($rProxied || $rSettings['use_mdomain_in_lists'] == 1) {
-			$rResellerDomains = CacheReader::get('reseller_domains') ?: array();
+			$rResellerDomains = CacheReader::get('reseller_domains') ?: [];
 			if (!(strlen($rDomain) > 0 && in_array(strtolower($rDomain), $rResellerDomains))) {
 				if (empty($rServers[$rServerID]['domain_name'])) {
 					$rDomain = escapeshellcmd($rServers[$rServerID]['server_ip']);
-				} else if (filter_var($rDomain, FILTER_VALIDATE_IP)) {
+				} elseif (filter_var($rDomain, FILTER_VALIDATE_IP)) {
 					$rDomain = escapeshellcmd($rServers[$rServerID]['server_ip']);
 				} else {
-					$rDomain = str_replace(array('http://', '/', 'https://'), '', escapeshellcmd(explode(',', $rServers[$rServerID]['domain_name'])[0]));
+					$rDomain = str_replace(['http://', '/', 'https://'], '', escapeshellcmd(explode(',', $rServers[$rServerID]['domain_name'])[0]));
 				}
 			}
 		} else {
@@ -77,7 +77,7 @@ class DomainResolver {
 				if (empty($rServers[$rServerID]['domain_name'])) {
 					$rDomain = escapeshellcmd($rServers[$rServerID]['server_ip']);
 				} else {
-					$rDomain = str_replace(array('http://', '/', 'https://'), '', escapeshellcmd(explode(',', $rServers[$rServerID]['domain_name'])[0]));
+					$rDomain = str_replace(['http://', '/', 'https://'], '', escapeshellcmd(explode(',', $rServers[$rServerID]['domain_name'])[0]));
 				}
 			}
 		}

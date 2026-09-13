@@ -14,12 +14,10 @@ use XcVm\Core\Auth\SessionManager;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class PlayerLogoutController extends BasePlayerController
-{
-    public function index()
-    {
-        SessionManager::clearContext('player');
-        header('Location: login');
-        exit();
-    }
+class PlayerLogoutController extends BasePlayerController {
+	public function index() {
+		SessionManager::clearContext('player');
+		header('Location: login');
+		exit();
+	}
 }

@@ -18,8 +18,11 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class EPG {
 	use DatabaseAware;
+
 	public $rValid = false;
+
 	public $rEPGSource;
+
 	public $rFilename;
 
 	/**
@@ -28,7 +31,7 @@ class EPG {
 	 * @param string $rSource EPG source URL/path.
 	 * @param bool   $rCache  Use a cached copy when available.
 	 */
-	public function __construct($rSource, $rCache = false) {
+	public function __construct(string $rSource, bool $rCache = false) {
 		$this->loadEPG($rSource, $rCache);
 	}
 
@@ -38,7 +41,7 @@ class EPG {
 	 * @param string $rMessage Message to log.
 	 * @return void
 	 */
-	private function log($rMessage) {
+	private function log(string $rMessage) {
 		echo '[' . date('Y-m-d H:i:s') . '] ' . $rMessage . "\n";
 	}
 
@@ -55,7 +58,9 @@ class EPG {
 
 		while ($rNode = $this->rEPGSource->getNode()) {
 			$rData = simplexml_load_string($rNode);
-			if (!$rData) continue;
+			if (!$rData) {
+				continue;
+			}
 
 			$rNodeName = $rData->getName();
 
@@ -108,7 +113,7 @@ class EPG {
 	 * @param int    $rOffset      Time offset (seconds) to apply.
 	 * @return array Parsed programmes.
 	 */
-	public function parseEPG($rEPGID, $rChannelInfo, $rOffset = 0) {
+	public function parseEPG(string $rEPGID, array $rChannelInfo, int $rOffset = 0) {
 		$db = self::db();
 
 		$rInsertQuery = [];
@@ -145,7 +150,7 @@ class EPG {
 			}
 
 			$rStart = $rStartRaw + ($rOffset * 60);
-			$rStop  = $rStopRaw  + ($rOffset * 60);
+			$rStop  = $rStopRaw + ($rOffset * 60);
 
 			$rLangTitle = '';
 			$rLangDesc  = '';
@@ -196,15 +201,7 @@ class EPG {
 				}
 			}
 
-			$rInsertQuery[] = '(' .
-				$db->escape($rEPGID) . ', ' .
-				$db->escape($rChannelID) . ', ' .
-				intval($rStart) . ', ' .
-				intval($rStop) . ', ' .
-				$db->escape($rChannelInfo[$rChannelID]['epg_lang']) . ', ' .
-				$db->escape($rLangTitle) . ', ' .
-				$db->escape($rLangDesc) .
-				')';
+			$rInsertQuery[] = '(' . $db->escape($rEPGID) . ', ' . $db->escape($rChannelID) . ', ' . intval($rStart) . ', ' . intval($rStop) . ', ' . $db->escape($rChannelInfo[$rChannelID]['epg_lang']) . ', ' . $db->escape($rLangTitle) . ', ' . $db->escape($rLangDesc) . ')';
 
 			$programCount++;
 			if ($programCount % 1000 === 0) {
@@ -223,7 +220,7 @@ class EPG {
 	 * @param string $rFilename Local destination path.
 	 * @return bool True on success.
 	 */
-	public function downloadFile($rSource, $rFilename) {
+	public function downloadFile(string $rSource, string $rFilename) {
 		$this->log("[EPG] Downloading EPG file: $rSource");
 
 		$rExtension = pathinfo($rSource, PATHINFO_EXTENSION);
@@ -254,7 +251,7 @@ class EPG {
 	 * @param bool   $rCache  Use a cached copy when available.
 	 * @return void
 	 */
-	public function loadEPG($rSource, $rCache) {
+	public function loadEPG(string $rSource, bool $rCache) {
 		try {
 			$this->rFilename = TMP_PATH . md5($rSource) . '.xml';
 

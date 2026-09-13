@@ -15,15 +15,13 @@ use XcVm\Domain\Vod\SeriesService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerEpisodesController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Episodes');
-        $this->render('episodes', [
-            'seriesList' => SeriesService::getList(),
-            'categories' => CategoryService::getAllByType('series'),
-        ]);
-    }
+class ResellerEpisodesController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Episodes');
+		$this->render('episodes', [
+			'seriesList' => SeriesService::getList(),
+			'categories' => CategoryService::getAllByType('series'),
+		]);
+	}
 }

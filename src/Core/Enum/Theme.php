@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace XcVm\Core\Enum;
 
@@ -19,50 +18,50 @@ namespace XcVm\Core\Enum;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 enum Theme: int {
-    /** Default light theme. */
-    case Light = 0;
+	/** Default light theme. */
+	case Light = 0;
 
-    /** Dark theme. */
-    case Dark = 1;
+	/** Dark theme. */
+	case Dark = 1;
 
-    /**
-     * Return true when this theme renders the dark layout variant.
-     */
-    public function isDark(): bool {
-        return $this === self::Dark;
-    }
+	/**
+	 * Return true when this theme renders the dark layout variant.
+	 */
+	public function isDark(): bool {
+		return $this === self::Dark;
+	}
 
-    /**
-     * Human-readable theme name (as shown in the profile selector).
-     */
-    public function label(): string {
-        return match ($this) {
-            self::Light => 'Light',
-            self::Dark  => 'Dark',
-        };
-    }
+	/**
+	 * Human-readable theme name (as shown in the profile selector).
+	 */
+	public function label(): string {
+		return match ($this) {
+			self::Light => 'Light',
+			self::Dark  => 'Dark',
+		};
+	}
 
-    /**
-     * Resolve a stored profile theme value to a Theme, defaulting to Light
-     * for missing or out-of-range values.
-     *
-     * @param mixed $id The raw `theme` value from the user profile.
-     */
-    public static function fromId(mixed $id): self {
-        return self::tryFrom((int) $id) ?? self::Light;
-    }
+	/**
+	 * Resolve a stored profile theme value to a Theme, defaulting to Light
+	 * for missing or out-of-range values.
+	 *
+	 * @param mixed $id The raw `theme` value from the user profile.
+	 */
+	public static function fromId(mixed $id): self {
+		return self::tryFrom((int) $id) ?? self::Light;
+	}
 
-    /**
-     * Ordered id => label map for building the theme selector, preserving
-     * the legacy `$rThemes` ordering (0 => Light, 1 => Dark).
-     *
-     * @return array<int, string>
-     */
-    public static function options(): array {
-        $options = [];
-        foreach (self::cases() as $case) {
-            $options[$case->value] = $case->label();
-        }
-        return $options;
-    }
+	/**
+	 * Ordered id => label map for building the theme selector, preserving
+	 * the legacy `$rThemes` ordering (0 => Light, 1 => Dark).
+	 *
+	 * @return array<int, string>
+	 */
+	public static function options(): array {
+		$options = [];
+		foreach (self::cases() as $case) {
+			$options[$case->value] = $case->label();
+		}
+		return $options;
+	}
 }

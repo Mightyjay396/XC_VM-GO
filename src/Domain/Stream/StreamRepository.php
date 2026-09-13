@@ -22,6 +22,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class StreamRepository {
 	use DatabaseAware;
+
 	/**
 	 * Fetch recent error-log entries for a stream.
 	 *
@@ -29,7 +30,7 @@ class StreamRepository {
 	 * @param int $rAmount    Maximum number of entries.
 	 * @return array Error rows.
 	 */
-	public static function getErrors($rStreamID, $rAmount = 250) {
+	public static function getErrors(int $rStreamID, int $rAmount = 250) {
 		$db = self::db();
 		$db->query('SELECT * FROM (SELECT MAX(`date`) AS `date`, `error` FROM `streams_errors` WHERE `stream_id` = ? GROUP BY `error`) AS `output` ORDER BY `date` DESC LIMIT ' . intval($rAmount) . ';', $rStreamID);
 		return $db->get_rows();
@@ -41,7 +42,7 @@ class StreamRepository {
 	 * @param int $rID Stream id.
 	 * @return array|false The stream row, or false if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `streams` WHERE `id` = ?;', $rID);
 
@@ -57,9 +58,9 @@ class StreamRepository {
 	 * @param int $rStreamID Stream id.
 	 * @return array Stats data.
 	 */
-	public static function getStats($rStreamID) {
+	public static function getStats(int $rStreamID) {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `streams_stats` WHERE `stream_id` = ?;', $rStreamID);
 
 		if ($db->num_rows() > 0) {
@@ -68,9 +69,9 @@ class StreamRepository {
 			}
 		}
 
-		foreach (array('today', 'week', 'month', 'all') as $rType) {
+		foreach (['today', 'week', 'month', 'all'] as $rType) {
 			if (!isset($rReturn[$rType])) {
-				$rReturn[$rType] = array('rank' => 0, 'users' => 0, 'connections' => 0, 'time' => 0);
+				$rReturn[$rType] = ['rank' => 0, 'users' => 0, 'connections' => 0, 'time' => 0];
 			}
 		}
 
@@ -83,17 +84,17 @@ class StreamRepository {
 	 * @param int $rServerID Server id.
 	 * @return array PID information keyed by stream.
 	 */
-	public static function getPIDs($rServerID) {
+	public static function getPIDs(int $rServerID) {
 		global $rSettings;
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `streams`.`id`, `streams`.`stream_display_name`, `streams`.`type`, `streams_servers`.`pid`, `streams_servers`.`monitor_pid`, `streams_servers`.`delay_pid` FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `streams_servers`.`server_id` = ?;', $rServerID);
 
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				foreach (array('pid', 'monitor_pid', 'delay_pid') as $rPIDType) {
+				foreach (['pid', 'monitor_pid', 'delay_pid'] as $rPIDType) {
 					if ($rRow[$rPIDType]) {
-						$rReturn[$rRow[$rPIDType]] = array('id' => $rRow['id'], 'title' => $rRow['stream_display_name'], 'type' => $rRow['type'], 'pid_type' => $rPIDType);
+						$rReturn[$rRow[$rPIDType]] = ['id' => $rRow['id'], 'title' => $rRow['stream_display_name'], 'type' => $rRow['type'], 'pid_type' => $rPIDType];
 					}
 				}
 			}
@@ -103,7 +104,7 @@ class StreamRepository {
 
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				$rReturn[$rRow['tv_archive_pid']] = array('id' => $rRow['id'], 'title' => $rRow['stream_display_name'], 'type' => $rRow['type'], 'pid_type' => 'timeshift');
+				$rReturn[$rRow['tv_archive_pid']] = ['id' => $rRow['id'], 'title' => $rRow['stream_display_name'], 'type' => $rRow['type'], 'pid_type' => 'timeshift'];
 			}
 		}
 
@@ -111,12 +112,12 @@ class StreamRepository {
 
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				$rReturn[$rRow['vframes_pid']] = array('id' => $rRow['id'], 'title' => $rRow['stream_display_name'], 'type' => $rRow['type'], 'pid_type' => 'vframes');
+				$rReturn[$rRow['vframes_pid']] = ['id' => $rRow['id'], 'title' => $rRow['stream_display_name'], 'type' => $rRow['type'], 'pid_type' => 'vframes'];
 			}
 		}
 
 		if ($rSettings['redis_handler']) {
-			$rStreamIDs = $rStreamMap = array();
+			$rStreamIDs = $rStreamMap = [];
 			$rConnections = ConnectionTracker::getRedisConnections(null, $rServerID, null, true, false, false);
 
 			foreach ($rConnections as $rConnection) {
@@ -129,19 +130,19 @@ class StreamRepository {
 				$db->query('SELECT `id`, `type`, `stream_display_name` FROM `streams` WHERE `id` IN (' . implode(',', $rStreamIDs) . ');');
 
 				foreach ($db->get_rows() as $rRow) {
-					$rStreamMap[$rRow['id']] = array($rRow['stream_display_name'], $rRow['type']);
+					$rStreamMap[$rRow['id']] = [$rRow['stream_display_name'], $rRow['type']];
 				}
 			}
 
 			foreach ($rConnections as $rRow) {
-				$rReturn[$rRow['pid']] = array('id' => $rRow['stream_id'], 'title' => $rStreamMap[$rRow['stream_id']][0], 'type' => $rStreamMap[$rRow['stream_id']][1], 'pid_type' => 'activity');
+				$rReturn[$rRow['pid']] = ['id' => $rRow['stream_id'], 'title' => $rStreamMap[$rRow['stream_id']][0], 'type' => $rStreamMap[$rRow['stream_id']][1], 'pid_type' => 'activity'];
 			}
 		} else {
 			$db->query('SELECT `streams`.`id`, `streams`.`stream_display_name`, `streams`.`type`, `lines_live`.`pid` FROM `lines_live` LEFT JOIN `streams` ON `streams`.`id` = `lines_live`.`stream_id` WHERE `lines_live`.`server_id` = ?;', $rServerID);
 
 			if ($db->num_rows() > 0) {
 				foreach ($db->get_rows() as $rRow) {
-					$rReturn[$rRow['pid']] = array('id' => $rRow['id'], 'title' => $rRow['stream_display_name'], 'type' => $rRow['type'], 'pid_type' => 'activity');
+					$rReturn[$rRow['pid']] = ['id' => $rRow['id'], 'title' => $rRow['stream_display_name'], 'type' => $rRow['type'], 'pid_type' => 'activity'];
 				}
 			}
 		}
@@ -155,9 +156,9 @@ class StreamRepository {
 	 * @param int $rID Stream id.
 	 * @return array Stream options.
 	 */
-	public static function getOptions($rID) {
+	public static function getOptions(int $rID) {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `streams_options` WHERE `stream_id` = ?;', $rID);
 
 		if ($db->num_rows() > 0) {
@@ -175,9 +176,9 @@ class StreamRepository {
 	 * @param int $rID Stream id.
 	 * @return array System rows.
 	 */
-	public static function getSystemRows($rID) {
+	public static function getSystemRows(int $rID) {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `streams_servers` WHERE `stream_id` = ?;', $rID);
 
 		if ($db->num_rows() > 0) {
@@ -212,9 +213,9 @@ class StreamRepository {
 	 * @param int $rID Stream id.
 	 * @return array Encode error rows.
 	 */
-	public static function getEncodeErrors($rID) {
+	public static function getEncodeErrors(int $rID) {
 		$db = self::db();
-		$rErrors = array();
+		$rErrors = [];
 		$db->query('SELECT `server_id`, `error` FROM `streams_errors` WHERE `stream_id` = ?;', $rID);
 
 		foreach ($db->get_rows() as $rRow) {
@@ -230,9 +231,9 @@ class StreamRepository {
 	 * @param array $rSources Source identifiers.
 	 * @return array Matching stream selections.
 	 */
-	public static function getSelections($rSources) {
+	public static function getSelections(array $rSources) {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 
 		foreach ($rSources as $rSource) {
 			$db->query("SELECT `id` FROM `streams` WHERE `type` IN (2,5) AND `stream_source` LIKE ? ESCAPE '|' LIMIT 1;", '%' . str_replace('/', '\\/', $rSource) . '"%');
@@ -255,7 +256,7 @@ class StreamRepository {
 	 * @param bool $f2d619cb38696890   Internal flag controlling cascade behavior.
 	 * @return bool True on success.
 	 */
-	public static function deleteStream($rID, $rServerID = -1, $rDeleteFiles = true, $f2d619cb38696890 = true) {
+	public static function deleteStream(int $rID, int $rServerID = -1, bool $rDeleteFiles = true, bool $f2d619cb38696890 = true) {
 		$db = self::db();
 		$db->query('SELECT `id`, `type` FROM `streams` WHERE `id` = ?;', $rID);
 
@@ -285,13 +286,13 @@ class StreamRepository {
 			$db->query('DELETE FROM `recordings` WHERE `created_id` = ? OR `stream_id` = ?;', $rID, $rID);
 			$db->query('UPDATE `lines_activity` SET `stream_id` = 0 WHERE `stream_id` = ?;', $rID);
 			$db->query('SELECT `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rID);
-			$rServerIDs = array();
+			$rServerIDs = [];
 
 			foreach ($db->get_rows() as $rRow) {
 				$rServerIDs[] = $rRow['server_id'];
 			}
 
-			if (!($rDeleteFiles && 0 < count($rServerIDs) && in_array($rType, array(2, 5)))) {
+			if (!($rDeleteFiles && 0 < count($rServerIDs) && in_array($rType, [2, 5]))) {
 			} else {
 				MovieService::deleteFile($rServerIDs, $rID);
 			}
@@ -300,9 +301,9 @@ class StreamRepository {
 		} else {
 			$db->query('DELETE FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` = ?;', $rID, $rServerID);
 
-			if (!($rDeleteFiles && in_array($rType, array(2, 5)))) {
+			if (!($rDeleteFiles && in_array($rType, [2, 5]))) {
 			} else {
-				MovieService::deleteFile(array($rServerID), $rID);
+				MovieService::deleteFile([$rServerID], $rID);
 			}
 		}
 
@@ -320,7 +321,7 @@ class StreamRepository {
 	 * @param bool  $rDeleteFiles Also remove on-disk stream files.
 	 * @return bool True on success.
 	 */
-	public static function deleteStreams($rIDs, $rDeleteFiles = false) {
+	public static function deleteStreams(array $rIDs, bool $rDeleteFiles = false) {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
@@ -341,11 +342,11 @@ class StreamRepository {
 			$db->query('SELECT `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			$db->query('DELETE FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			$db->query('DELETE FROM `streams_servers` WHERE `parent_id` IS NOT NULL AND `parent_id` > 0 AND `parent_id` NOT IN (SELECT `id` FROM `servers` WHERE `server_type` = 0);');
-			$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(array('type' => 'update_streams', 'id' => $rIDs)));
+			$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_streams', 'id' => $rIDs]));
 
 			if ($rDeleteFiles) {
 				foreach (array_keys(ServerRepository::getAll()) as $rServerID) {
-					$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(array('type' => 'delete_vods', 'id' => $rIDs)));
+					$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(['type' => 'delete_vods', 'id' => $rIDs]));
 				}
 			}
 
@@ -363,7 +364,7 @@ class StreamRepository {
 	 * @param bool  $rDeleteFiles Also remove on-disk stream files.
 	 * @return bool True on success.
 	 */
-	public static function deleteStreamsByServer($rIDs, $rServerID, $rDeleteFiles = false) {
+	public static function deleteStreamsByServer(array $rIDs, int $rServerID, bool $rDeleteFiles = false) {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
@@ -373,7 +374,7 @@ class StreamRepository {
 			$db->query('UPDATE `streams_servers` SET `parent_id` = NULL WHERE `parent_id` = ? AND `stream_id` IN (' . implode(',', $rIDs) . ');', $rServerID);
 
 			if ($rDeleteFiles) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(array('type' => 'delete_vods', 'id' => $rIDs)));
+				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(['type' => 'delete_vods', 'id' => $rIDs]));
 			}
 		}
 
@@ -386,7 +387,7 @@ class StreamRepository {
 	 * @param int $rID Watch-folder id.
 	 * @return array|false The row, or false if not found.
 	 */
-	public static function getWatchFolder($rID) {
+	public static function getWatchFolder(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `watch_folders` WHERE `id` = ?;', $rID);
 
@@ -403,7 +404,7 @@ class StreamRepository {
 	 * @param int $rID Watch-folder id.
 	 * @return bool True on success.
 	 */
-	public static function deleteWatchFolder($rID) {
+	public static function deleteWatchFolder(int $rID) {
 		$db = self::db();
 		$db->query('SELECT `id` FROM `watch_folders` WHERE `id` = ?;', $rID);
 

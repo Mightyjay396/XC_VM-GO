@@ -23,9 +23,9 @@ class AuthRepository {
 	 * @param int|null $rType Access-code type to filter by, or null for all.
 	 * @return array Rows keyed by access-code id.
 	 */
-	public static function getAllCodes($rType = null) {
+	public static function getAllCodes(?int $rType = null) {
 		global $db;
-		$rReturn = array();
+		$rReturn = [];
 
 		if (!is_null($rType)) {
 			$db->query('SELECT * FROM `access_codes` WHERE `type` = ? ORDER BY `id` ASC;', $rType);
@@ -48,8 +48,8 @@ class AuthRepository {
 	 * @param string $rMainHome Panel home path (trailing slash).
 	 * @return string[] Access-code names (config filenames without extension, excluding 'default').
 	 */
-	public static function getActiveCodes($rMainHome) {
-		$rCodes = array();
+	public static function getActiveCodes(string $rMainHome) {
+		$rCodes = [];
 		$rFiles = scandir($rMainHome . 'bin/nginx/conf/codes/');
 
 		foreach ($rFiles as $rFile) {
@@ -72,7 +72,7 @@ class AuthRepository {
 	public static function getWebPlayerCode(): ?string {
 		foreach (self::getAllCodes(6) as $code) {
 			if (!empty($code['enabled'])) {
-				return (string)$code['code'];
+				return (string) $code['code'];
 			}
 		}
 		return null;
@@ -86,7 +86,7 @@ class AuthRepository {
 	public static function getActiveCodePortalCode(): ?string {
 		foreach (self::getAllCodes(7) as $code) {
 			if (!empty($code['enabled'])) {
-				return (string)$code['code'];
+				return (string) $code['code'];
 			}
 		}
 		return null;
@@ -109,7 +109,7 @@ class AuthRepository {
 
 		foreach (self::getAllCodes() as $rCode) {
 			if ($rCode['enabled']) {
-				$rWhitelist = array();
+				$rWhitelist = [];
 
 				foreach ((array) json_decode($rCode['whitelist'], true) as $rIP) {
 					if (filter_var($rIP, FILTER_VALIDATE_IP)) {
@@ -128,22 +128,22 @@ class AuthRepository {
 				$rAliasMap = [0 => 'Public/Views/admin', 1 => 'reseller', 2 => 'Ministra', 3 => 'includes/api/admin', 4 => 'includes/api/reseller', 5 => 'Ministra/new', 6 => 'Public/assets/player', 7 => 'Public/Views/portal'];
 				$rBurstMap = [0 => 500, 1 => 50, 2 => 50, 3 => 1000, 4 => 1000, 5 => 50, 6 => 500, 7 => 500];
 
-				$rType = $rTypeMap[(int)$rCode['type']] ?? 'admin';
-				$rAlias = $rAliasMap[(int)$rCode['type']] ?? 'Public/Views/admin';
-				$rBurst = $rBurstMap[(int)$rCode['type']] ?? 500;
-				$rCurrentTemplate = in_array($rType, array('ministra', 'ministra/new')) ? $rMinistraTemplate : $rTemplate;
+				$rType = $rTypeMap[(int) $rCode['type']] ?? 'admin';
+				$rAlias = $rAliasMap[(int) $rCode['type']] ?? 'Public/Views/admin';
+				$rBurst = $rBurstMap[(int) $rCode['type']] ?? 500;
+				$rCurrentTemplate = in_array($rType, ['ministra', 'ministra/new']) ? $rMinistraTemplate : $rTemplate;
 
-				if (in_array($rType, array('ministra', 'ministra/new')) || strlen($rCode['code']) >= 4) {
-					file_put_contents($rMainHome . 'bin/nginx/conf/codes/' . $rCode['code'] . '.conf', str_replace(array('#WHITELIST#', '#CODE#', '#TYPE#', '#BURST#', '#ALIAS#'), array(implode(' ', $rWhitelist), (string) $rCode['code'], $rType, (string) $rBurst, $rAlias), $rCurrentTemplate));
+				if (in_array($rType, ['ministra', 'ministra/new']) || strlen($rCode['code']) >= 4) {
+					file_put_contents($rMainHome . 'bin/nginx/conf/codes/' . $rCode['code'] . '.conf', str_replace(['#WHITELIST#', '#CODE#', '#TYPE#', '#BURST#', '#ALIAS#'], [implode(' ', $rWhitelist), (string) $rCode['code'], $rType, (string) $rBurst, $rAlias], $rCurrentTemplate));
 				} else {
-					file_put_contents($rMainHome . 'bin/nginx/conf/codes/' . $rCode['code'] . '.conf', str_replace(array('#WHITELIST#', '#CODE#', '#TYPE#', '#BURST#', '#ALIAS#'), array(implode(' ', $rWhitelist), $rCode['code'] . '/', $rType . '/', (string) $rBurst, $rAlias . '/'), $rCurrentTemplate));
+					file_put_contents($rMainHome . 'bin/nginx/conf/codes/' . $rCode['code'] . '.conf', str_replace(['#WHITELIST#', '#CODE#', '#TYPE#', '#BURST#', '#ALIAS#'], [implode(' ', $rWhitelist), $rCode['code'] . '/', $rType . '/', (string) $rBurst, $rAlias . '/'], $rCurrentTemplate));
 				}
 			}
 		}
 
 		if (count(self::getActiveCodes($rMainHome)) == 0) {
 			if (!file_exists($rMainHome . 'bin/nginx/conf/codes/default.conf')) {
-				file_put_contents($rMainHome . 'bin/nginx/conf/codes/default.conf', str_replace(array('alias ', '#WHITELIST#', '#CODE#', '#TYPE#', '#ALIAS#'), array('root ', '', '', 'admin', 'Public/Views/admin'), $rTemplate));
+				file_put_contents($rMainHome . 'bin/nginx/conf/codes/default.conf', str_replace(['alias ', '#WHITELIST#', '#CODE#', '#TYPE#', '#ALIAS#'], ['root ', '', '', 'admin', 'Public/Views/admin'], $rTemplate));
 			}
 		} else {
 			if (file_exists($rMainHome . 'bin/nginx/conf/codes/default.conf')) {
@@ -151,7 +151,7 @@ class AuthRepository {
 			}
 		}
 
-		ApiClient::systemRequest($rServerId, array('action' => 'reload_nginx'));
+		ApiClient::systemRequest($rServerId, ['action' => 'reload_nginx']);
 	}
 
 	/**
@@ -163,7 +163,7 @@ class AuthRepository {
 	 * @param bool $rInfo When true, return the full access-code DB row instead of the code string.
 	 * @return string|array|null Code string, or the DB row when $rInfo is true (null if not found).
 	 */
-	public static function getCurrentCode($rInfo = false) {
+	public static function getCurrentCode(bool $rInfo = false) {
 		global $db;
 		// Front Controller передаёт XC_CODE через fastcgi_param.
 		// Без FC — определяем из PHP_SELF (legacy поведение).
@@ -189,7 +189,7 @@ class AuthRepository {
 	 */
 	public static function getAllHMAC() {
 		global $db;
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `hmac_keys` ORDER BY `id` ASC;');
 
 		if ($db->num_rows() > 0) {
@@ -207,7 +207,7 @@ class AuthRepository {
 	 * @param int $rID HMAC key id.
 	 * @return array|null The key row, or null if not found.
 	 */
-	public static function getHMACById($rID) {
+	public static function getHMACById(int $rID) {
 		global $db;
 		$db->query('SELECT * FROM `hmac_keys` WHERE `id` = ?;', $rID);
 		if ($db->num_rows() == 1) {
@@ -228,7 +228,7 @@ class AuthRepository {
 	 * @param int $rID User group id.
 	 * @return array The group permissions row, or [] if not found.
 	 */
-	public static function getPermissions($rID) {
+	public static function getPermissions(int $rID) {
 		global $db;
 		$db->query('SELECT * FROM `users_groups` WHERE `group_id` = ?;', $rID);
 
@@ -257,9 +257,9 @@ class AuthRepository {
 	 * @param bool $rUsers   When true, include sub-users and report maps.
 	 * @return array Effective permissions (create flags, stream/series/category ids, users, reports).
 	 */
-	public static function getGroupPermissions($rUserID, $rStreams = true, $rUsers = true) {
+	public static function getGroupPermissions(int $rUserID, bool $rStreams = true, bool $rUsers = true) {
 		global $db;
-		$rReturn = array('create_line' => false, 'create_mag' => false, 'create_enigma' => false, 'stream_ids' => array(), 'series_ids' => array(), 'category_ids' => array(), 'users' => array(), 'direct_reports' => array(), 'all_reports' => array(), 'report_map' => array());
+		$rReturn = ['create_line' => false, 'create_mag' => false, 'create_enigma' => false, 'stream_ids' => [], 'series_ids' => [], 'category_ids' => [], 'users' => [], 'direct_reports' => [], 'all_reports' => [], 'report_map' => []];
 		$rUser = UserRepository::getRegisteredUserById($rUserID);
 
 		if (!$rUser) {
@@ -315,7 +315,7 @@ class AuthRepository {
 	 * @param int $rID Access-code id.
 	 * @return array|null The access-code row, or null if not found.
 	 */
-	public static function getCodeById($rID) {
+	public static function getCodeById(int $rID) {
 		global $db;
 		$db->query('SELECT * FROM `access_codes` WHERE `id` = ?;', $rID);
 
@@ -332,7 +332,7 @@ class AuthRepository {
 	 * @param int $rID Access-code id.
 	 * @return bool True on deletion, false if the code does not exist.
 	 */
-	public static function deleteCode($rID) {
+	public static function deleteCode(int $rID) {
 		global $db;
 		$db->query('SELECT `id` FROM `access_codes` WHERE `id` = ?;', $rID);
 
@@ -352,7 +352,7 @@ class AuthRepository {
 	 * @param int $rID HMAC key id.
 	 * @return bool True on deletion, false if the key does not exist.
 	 */
-	public static function deleteHMAC($rID) {
+	public static function deleteHMAC(int $rID) {
 		global $db;
 		$db->query('SELECT `id` FROM `hmac_keys` WHERE `id` = ?;', $rID);
 

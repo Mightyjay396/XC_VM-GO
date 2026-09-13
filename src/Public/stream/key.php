@@ -16,7 +16,9 @@ use XcVm\Core\Util\Encryption;
 header('Access-Control-Allow-Origin: *');
 $rSettings = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'settings'));
 $rServers = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'servers'));
-if (!defined('SERVER_ID')) define('SERVER_ID', intval(ConfigReader::get('server_id')));
+if (!defined('SERVER_ID')) {
+	define('SERVER_ID', intval(ConfigReader::get('server_id')));
+}
 
 if (empty($rSettings['live_streaming_pass'])) {
 	generate404();
@@ -37,6 +39,7 @@ if (isset($_GET['token'])) {
 }
 
 generate404();
+
 function getuserip() {
 	return $_SERVER['REMOTE_ADDR'];
 }

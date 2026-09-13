@@ -109,7 +109,7 @@ class XPluginApiController {
 		$rDNS = !empty($rRequest['dn']) ? htmlentities($rRequest['dn']) : '-';
 		$rCMAC = !empty($rRequest['cmac']) ? htmlentities(strtoupper($rRequest['cmac'])) : '';
 
-		$rDevice = UserRepository::getE2Info(array('device_id' => null, 'mac' => strtoupper($rMAC)));
+		$rDevice = UserRepository::getE2Info(['device_id' => null, 'mac' => strtoupper($rMAC)]);
 
 		if (!$rDevice) {
 			BruteforceGuard::checkBruteforce(null, strtoupper($rMAC));
@@ -128,8 +128,8 @@ class XPluginApiController {
 		$rToken = strtoupper(md5(uniqid(rand(), true)));
 		$rTimeout = mt_rand(60, 70);
 		$db->query('UPDATE `enigma2_devices` SET `original_mac` = ?,`dns` = ?,`key_auth` = ?,`lversion` = ?,`watchdog_timeout` = ?,`modem_mac` = ?,`local_ip` = ?,`public_ip` = ?,`enigma_version` = ?,`cpu` = ?,`version` = ?,`token` = ?,`last_updated` = ? WHERE `device_id` = ?', $rCMAC, $rDNS, $rUserAgent, $rLVersion, $rTimeout, $rModemMAC, $rLocalIP, $rIP, $rEnigmaVersion, $rCPU, $rPluginVersion, $rToken, time(), $rDevice['enigma2']['device_id']);
-		$rDetails = array();
-		$rDetails['details'] = array();
+		$rDetails = [];
+		$rDetails['details'] = [];
 		$rDetails['details']['token'] = $rToken;
 		$rDetails['details']['username'] = $rDevice['user_info']['username'];
 		$rDetails['details']['password'] = $rDevice['user_info']['password'];
@@ -144,13 +144,13 @@ class XPluginApiController {
 		$db = self::db();
 		$db->query('UPDATE `enigma2_devices` SET `last_updated` = ?,`rc` = ? WHERE `device_id` = ?;', time(), $rRequest['rc'], $rDeviceInfo['device_id']);
 		$db->query('SELECT * FROM `enigma2_actions` WHERE `device_id` = ?;', $rDeviceInfo['device_id']);
-		$rResult = array();
+		$rResult = [];
 
 		if ($db->num_rows() > 0) {
 			$rFirst = $db->get_row();
 
 			if ($rFirst['key'] == 'message') {
-				$rResult['message'] = array();
+				$rResult['message'] = [];
 				$rResult['message']['title'] = $rFirst['command2'];
 				$rResult['message']['message'] = $rFirst['command'];
 			} elseif ($rFirst['key'] == 'ssh') {
@@ -180,7 +180,7 @@ class XPluginApiController {
 
 		header('Content-Type: application/json');
 
-		exit(json_encode(array('valid' => true, 'data' => $rResult)));
+		exit(json_encode(['valid' => true, 'data' => $rResult]));
 	}
 
 	private function handleFileUpload($rDeviceInfo, $rRequest) {

@@ -38,19 +38,19 @@ class ConnectionLimiter {
 	 *                                    pid 0, so the new viewer could evict itself.
 	 * @return int|null Connections closed, or null when within the limit.
 	 */
-	public static function closeConnections($rUserID, $rMaxConnections, $rIsHMAC = null, $rIdentifier = '', $rIP = null, $rUserAgent = null, $rCurrentUUID = null) {
+	public static function closeConnections(?int $rUserID, int $rMaxConnections, ?int $rIsHMAC = null, string $rIdentifier = '', ?string $rIP = null, ?string $rUserAgent = null, ?string $rCurrentUUID = null) {
 		global $rSettings, $rServers, $db;
 		$redis = RedisManager::instance();
 		if ($rSettings['redis_handler']) {
 			if (!$redis) {
 				return null;
 			}
-			$rConnections = array();
+			$rConnections = [];
 			// An HMAC identity's connections are keyed by "<hmac_id>_<identifier>",
 			// not a line id (which is null for it).
 			$rIdentity = $rIsHMAC ? $rIsHMAC . '_' . $rIdentifier : intval($rUserID);
 			$rKeys = $redis->zRangeByScore('LINE#' . $rIdentity, '-inf', '+inf');
-			$rKeys = is_array($rKeys) ? $rKeys : array();
+			$rKeys = is_array($rKeys) ? $rKeys : [];
 			$rToKill = count($rKeys) - $rMaxConnections;
 			if ($rToKill > 0) {
 				foreach (array_map('igbinary_unserialize', $redis->mGet($rKeys)) as $rConnection) {
@@ -81,14 +81,14 @@ class ConnectionLimiter {
 
 		$rIP = $_SERVER['REMOTE_ADDR'];
 		$rKilled = 0;
-		$rDelSID = $rDelUUID = $rIDs = array();
+		$rDelSID = $rDelUUID = $rIDs = [];
 		if ($rIP && $rUserAgent) {
-			$rKillTypes = array(2, 1, 0);
+			$rKillTypes = [2, 1, 0];
 		} else {
 			if ($rIP) {
-				$rKillTypes = array(1, 0);
+				$rKillTypes = [1, 0];
 			} else {
-				$rKillTypes = array(0);
+				$rKillTypes = [0];
 			}
 		}
 
@@ -125,7 +125,7 @@ class ConnectionLimiter {
 
 		if (!empty($rIDs)) {
 			if ($rSettings['redis_handler']) {
-				$rUUIDs = array();
+				$rUUIDs = [];
 				$rRedis = $redis->multi();
 				foreach ($rIDs as $rConnection) {
 					$rRedis->zRem('LINE#' . $rConnection['identity'], $rConnection['uuid']);
@@ -200,7 +200,7 @@ class ConnectionLimiter {
 		} else {
 			if ($rActivityInfo['container'] == 'hls' || $rActivityInfo['container'] == 'm3u8') {
 				if ($rSettings['redis_handler']) {
-					ConnectionTracker::updateConnection($rActivityInfo, array(), 'close');
+					ConnectionTracker::updateConnection($rActivityInfo, [], 'close');
 				} else {
 					$db->query('UPDATE `lines_live` SET `hls_end` = 1 WHERE `activity_id` = ?', $rActivityInfo['activity_id']);
 				}
@@ -210,7 +210,7 @@ class ConnectionLimiter {
 				if ($rActivityInfo['server_id'] == SERVER_ID && !empty($rActivityInfo['uuid'])) {
 					@unlink(CONS_TMP_PATH . $rActivityInfo['uuid']);
 				}
-			} else if (intval($rActivityInfo['pid']) === 0) {
+			} elseif (intval($rActivityInfo['pid']) === 0) {
 				// Daemon-served live TS (ADR 0003): no worker to kill — the daemon
 				// serving it drops the uuid (directly, or via its node's signals).
 				ConnectionTracker::dropDaemonViewer($rActivityInfo);

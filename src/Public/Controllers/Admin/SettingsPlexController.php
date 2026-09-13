@@ -21,15 +21,15 @@ use XcVm\Domain\Bouquet\BouquetService;
  */
 
 class SettingsPlexController extends BaseAdminController {
-    public function index(): void {
-        $this->requirePermission();
+	public function index(): void {
+		$this->requirePermission();
 
-        $rBouquets = BouquetService::getAllSimple();
-        if (!is_array($rBouquets)) {
-            $rBouquets = [];
-        }
+		$rBouquets = BouquetService::getAllSimple();
+		if (!is_array($rBouquets)) {
+			$rBouquets = [];
+		}
 
-        $this->setTitle('Plex Settings');
-        $this->render('settings_plex', compact('rBouquets'));
-    }
+		$this->setTitle('Plex Settings');
+		$this->render('settings_plex', compact('rBouquets'));
+	}
 }

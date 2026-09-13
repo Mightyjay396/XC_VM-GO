@@ -34,7 +34,6 @@ use XcVm\Streaming\Fanout\FanoutClient;
  */
 
 class MonitorCommand implements CommandInterface {
-
 	/** {@inheritDoc} */
 	public function getName(): string {
 		return 'monitor';
@@ -103,7 +102,7 @@ class MonitorCommand implements CommandInterface {
 		$rDelayPID = $rStreamInfo['delay_pid'];
 		$rParentID = $rStreamInfo['parent_id'];
 		$rStreamProbe = false;
-		$rSources = array();
+		$rSources = [];
 		$rSegmentTime = intval(SettingsManager::get('seg_time'));
 		$rPrioritySwitch = false;
 		$rMaxFails = 0;
@@ -349,7 +348,7 @@ class MonitorCommand implements CommandInterface {
 							if ($rStreamInfo['parent_id']) {
 								$rForceSource = (!is_null(ServerRepository::getAll()[SERVER_ID]['private_url_ip']) && !is_null(ServerRepository::getAll()[$rStreamInfo['parent_id']]['private_url_ip']) ? ServerRepository::getAll()[$rStreamInfo['parent_id']]['private_url_ip'] : ServerRepository::getAll()[$rStreamInfo['parent_id']]['public_url_ip']) . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode(SettingsManager::get('live_streaming_pass')) . '&extension=ts';
 							}
-							$rData = StreamProcess::startLLOD($rStreamID, $rStreamInfo, $rStreamInfo['parent_id'] ? array() : $rStreamArguments, $rForceSource);
+							$rData = StreamProcess::startLLOD($rStreamID, $rStreamInfo, $rStreamInfo['parent_id'] ? [] : $rStreamArguments, $rForceSource);
 						}
 					} elseif ($rStreamInfo['type'] == 3) {
 						if ((0 < $rPID) && !$rStreamInfo['parent_id'] && (0 < $rStreamInfo['stream_started'])) {
@@ -512,7 +511,7 @@ class MonitorCommand implements CommandInterface {
 	 * @param mixed $rThreshold fps_threshold percentage (1..100), or empty.
 	 * @return bool
 	 */
-	public static function isFpsBelowThreshold($rFps, $rBaseline, $rThreshold): bool {
+	public static function isFpsBelowThreshold(float $rFps, float $rBaseline, mixed $rThreshold): bool {
 		$rPercent = min(100, max(1, intval($rThreshold) ?: 90));
 		return 0 < $rBaseline && $rFps < $rBaseline * $rPercent / 100;
 	}
@@ -526,7 +525,7 @@ class MonitorCommand implements CommandInterface {
 	 * @param mixed $rCurrentSource The source in use.
 	 * @return array
 	 */
-	public static function higherPrioritySources(array $rSources, $rCurrentSource): array {
+	public static function higherPrioritySources(array $rSources, mixed $rCurrentSource): array {
 		$rKey = array_search($rCurrentSource, $rSources);
 		if (!is_numeric($rKey)) {
 			return array_values($rSources); // current is not in the list (e.g. it was edited): all are candidates
@@ -541,7 +540,7 @@ class MonitorCommand implements CommandInterface {
 	 * @param mixed $rRate Raw avg_frame_rate / r_frame_rate value.
 	 * @return float Frames per second; 0.0 for empty/zero/malformed input.
 	 */
-	private static function parseFrameRate($rRate): float {
+	private static function parseFrameRate(mixed $rRate): float {
 		$rRate = (string) $rRate;
 		if (strpos($rRate, '/') !== false) {
 			list($rNum, $rDen) = array_map('floatval', explode('/', $rRate));
@@ -558,7 +557,7 @@ class MonitorCommand implements CommandInterface {
 	 * @param int|null $rNow         Timestamp to test against (defaults to now).
 	 * @return bool
 	 */
-	private static function isAutoRestartDue($rAutoRestart, $rNow = null): bool {
+	private static function isAutoRestartDue(mixed $rAutoRestart, ?int $rNow = null): bool {
 		if (empty($rAutoRestart['days']) || empty($rAutoRestart['at'])) {
 			return false;
 		}
@@ -578,7 +577,7 @@ class MonitorCommand implements CommandInterface {
 	 * @param mixed $rAllowHevc      player_allow_hevc setting.
 	 * @return array{0:int,1:?string,2:?string,3:mixed} [compatible, audio, video, resolution]
 	 */
-	private static function resolveStreamCodecMeta($rStreamInfoJson, $rAllowHevc): array {
+	private static function resolveStreamCodecMeta(mixed $rStreamInfoJson, mixed $rAllowHevc): array {
 		$rCompatible = 0;
 		$rAudioCodec = $rVideoCodec = $rResolution = null;
 		if ($rStreamInfoJson) {
@@ -590,10 +589,10 @@ class MonitorCommand implements CommandInterface {
 				$rResolution = isset($rStreamJSON['codecs']['video']['height']) ? $rStreamJSON['codecs']['video']['height'] : null;
 			}
 			if ($rResolution) {
-				$rResolution = StreamSorter::getNearest(array(240, 360, 480, 576, 720, 1080, 1440, 2160), $rResolution);
+				$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 			}
 		}
-		return array($rCompatible, $rAudioCodec, $rVideoCodec, $rResolution);
+		return [$rCompatible, $rAudioCodec, $rVideoCodec, $rResolution];
 	}
 
 	/**
@@ -606,7 +605,7 @@ class MonitorCommand implements CommandInterface {
 	 * @param mixed $rSegmentTime Current segment time.
 	 * @return array{0:mixed,1:mixed} [clamped probe, updated segment time]
 	 */
-	private static function persistSegmentDuration($rProbe, $rStreamID, $rSegmentTime): array {
+	private static function persistSegmentDuration(mixed $rProbe, mixed $rStreamID, mixed $rSegmentTime): array {
 		if (10 < intval($rProbe['of_duration'])) {
 			$rProbe['of_duration'] = 10;
 		}
@@ -614,7 +613,7 @@ class MonitorCommand implements CommandInterface {
 		if ($rSegmentTime < intval($rProbe['of_duration'])) {
 			$rSegmentTime = intval($rProbe['of_duration']);
 		}
-		return array($rProbe, $rSegmentTime);
+		return [$rProbe, $rSegmentTime];
 	}
 
 	/**

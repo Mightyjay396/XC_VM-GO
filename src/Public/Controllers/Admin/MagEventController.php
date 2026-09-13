@@ -20,9 +20,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class MagEventController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('MAG Events');
-        $this->render('mag_events');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('MAG Events');
+		$this->render('mag_events');
+	}
 }

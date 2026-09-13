@@ -39,7 +39,7 @@ class ConfigReader {
 	 * @param mixed  $default Значение по умолчанию
 	 * @return mixed
 	 */
-	public static function get(string $key, $default = null) {
+	public static function get(string $key, mixed $default = null) {
 		return self::getAll()[$key] ?? $default;
 	}
 }

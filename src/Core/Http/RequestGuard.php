@@ -31,35 +31,35 @@ use XcVm\Core\Logging\Logger;
 $rShowErrors = false;
 
 if (!isset($_SERVER['argc'])) {
-    $rIP = $_SERVER['REMOTE_ADDR'];
-    if (empty($rIP) || !file_exists(FLOOD_TMP_PATH . 'block_' . $rIP)) {
-        define('HOST', trim(explode(':', $_SERVER['HTTP_HOST'])[0]));
+	$rIP = $_SERVER['REMOTE_ADDR'];
+	if (empty($rIP) || !file_exists(FLOOD_TMP_PATH . 'block_' . $rIP)) {
+		define('HOST', trim(explode(':', $_SERVER['HTTP_HOST'])[0]));
 
-        if (file_exists(CACHE_TMP_PATH . 'settings')) {
-            $rData = file_get_contents(CACHE_TMP_PATH . 'settings');
-            $rSettings = igbinary_unserialize($rData);
+		if (file_exists(CACHE_TMP_PATH . 'settings')) {
+			$rData = file_get_contents(CACHE_TMP_PATH . 'settings');
+			$rSettings = igbinary_unserialize($rData);
 
-            if (is_array($rSettings) && file_exists(CACHE_TMP_PATH . 'allowed_domains') && $rSettings['verify_host']) {
-                $rData = file_get_contents(CACHE_TMP_PATH . 'allowed_domains');
-                $rAllowedDomains = igbinary_unserialize($rData);
+			if (is_array($rSettings) && file_exists(CACHE_TMP_PATH . 'allowed_domains') && $rSettings['verify_host']) {
+				$rData = file_get_contents(CACHE_TMP_PATH . 'allowed_domains');
+				$rAllowedDomains = igbinary_unserialize($rData);
 
-                if (!(is_array($rAllowedDomains) && !in_array(HOST, $rAllowedDomains) && HOST != 'xc_vm') || filter_var(HOST, FILTER_VALIDATE_IP)) {
-                } else {
-                    generateError('INVALID_HOST');
-                }
-            }
+				if (!(is_array($rAllowedDomains) && !in_array(HOST, $rAllowedDomains) && HOST != 'xc_vm') || filter_var(HOST, FILTER_VALIDATE_IP)) {
+				} else {
+					generateError('INVALID_HOST');
+				}
+			}
 
-            $rShowErrors = (isset($rSettings['debug_show_errors']) ? $rSettings['debug_show_errors'] : false);
-        }
-    } else {
-        http_response_code(403);
+			$rShowErrors = (isset($rSettings['debug_show_errors']) ? $rSettings['debug_show_errors'] : false);
+		}
+	} else {
+		http_response_code(403);
 
-        exit();
-    }
+		exit();
+	}
 }
 
 if (defined('DEV_MODE') && DEV_MODE) {
-    $rShowErrors = true;
+	$rShowErrors = true;
 }
 
 define('PHP_ERRORS', $rShowErrors);
@@ -67,6 +67,6 @@ define('PHP_ERRORS', $rShowErrors);
 // ── Logger ─────────────────────────────────────────────────────
 require_once MAIN_HOME . 'Core/Logging/Logger.php';
 Logger::init(
-    PHP_ERRORS,
-    LOGS_TMP_PATH . 'error_log.log'
+	PHP_ERRORS,
+	LOGS_TMP_PATH . 'error_log.log'
 );

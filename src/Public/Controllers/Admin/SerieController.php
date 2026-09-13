@@ -19,41 +19,41 @@ use XcVm\Domain\Vod\SeriesService;
  */
 
 class SerieController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $rServers;
+		global $rServers;
 
-        $rSeriesArr = null;
-        if (RequestManager::has('id') && !($rSeriesArr = SeriesService::getById(RequestManager::get('id')))) {
-            $this->redirect('series');
-            return;
-        }
+		$rSeriesArr = null;
+		if (RequestManager::has('id') && !($rSeriesArr = SeriesService::getById(RequestManager::get('id')))) {
+			$this->redirect('series');
+			return;
+		}
 
-        if (isset($rSeriesArr) && RequestManager::has('import')) {
-            unset(RequestManager::getAll()['import']);
-        }
+		if (isset($rSeriesArr) && RequestManager::has('import')) {
+			unset(RequestManager::getAll()['import']);
+		}
 
-        $rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
+		$rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
 
-        $rServerTree = [
-            ['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Active</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
-            ['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]],
-        ];
+		$rServerTree = [
+			['id' => 'source', 'parent' => '#', 'text' => "<span class='badge bg-success'>Active</span>", 'icon' => 'icon-base ti tabler-player-play', 'state' => ['opened' => true]],
+			['id' => 'offline', 'parent' => '#', 'text' => "<span class='badge bg-secondary'>Offline</span>", 'icon' => 'icon-base ti tabler-player-stop', 'state' => ['opened' => true]],
+		];
 
-        foreach ($rServers as $rServer) {
-            $rServerTree[] = ['id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
-        }
+		foreach ($rServers as $rServer) {
+			$rServerTree[] = ['id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'icon-base ti tabler-server', 'state' => ['opened' => true]];
+		}
 
-        // The import flow's server tree is driven by jstree.
-        if (RequestManager::has('import')) {
-            $GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
-                (array) ($GLOBALS['xmNewuiVendors'] ?? []),
-                ['jstree']
-            )));
-        }
+		// The import flow's server tree is driven by jstree.
+		if (RequestManager::has('import')) {
+			$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+				(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+				['jstree']
+			)));
+		}
 
-        $this->setTitle('TV Series');
-        $this->render('serie', compact('rSeriesArr', 'rTranscodeProfiles', 'rServerTree'));
-    }
+		$this->setTitle('TV Series');
+		$this->render('serie', compact('rSeriesArr', 'rTranscodeProfiles', 'rServerTree'));
+	}
 }

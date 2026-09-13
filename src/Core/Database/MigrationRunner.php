@@ -13,7 +13,6 @@ namespace XcVm\Core\Database;
  */
 
 class MigrationRunner {
-
 	/**
 	 * Apply pending SQL migrations from the migrations/ directory.
 	 *
@@ -23,7 +22,7 @@ class MigrationRunner {
 	 * @param Database $db Database handle.
 	 * @return void
 	 */
-	public static function run($db): void {
+	public static function run(Database $db): void {
 		echo "Migrations\n------------------------------\n";
 
 		$db->query("CREATE TABLE IF NOT EXISTS `migrations` (
@@ -33,7 +32,7 @@ class MigrationRunner {
 		) ENGINE=InnoDB DEFAULT CHARSET=utf8;");
 
 		$db->query("SELECT `migration` FROM `migrations`;");
-		$rApplied = array();
+		$rApplied = [];
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
 				$rApplied[] = $rRow['migration'];

@@ -24,13 +24,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class RadioService {
 	use DatabaseAware;
+
 	/**
 	 * Create or update a radio stream from admin form data.
 	 *
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processRadio', $rData)) {
 			if (isset($rData['edit'])) {
@@ -51,7 +52,7 @@ class RadioService {
 			}
 
 			if (isset($rData['days_to_restart']) && preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', $rData['time_to_restart'])) {
-				$rTimeArray = array('days' => array(), 'at' => $rData['time_to_restart']);
+				$rTimeArray = ['days' => [], 'at' => $rData['time_to_restart']];
 
 				foreach ($rData['days_to_restart'] as $rID => $rDay) {
 					$rTimeArray['days'][] = $rDay;
@@ -79,17 +80,17 @@ class RadioService {
 				$rRestart = false;
 			}
 
-			$rImportStreams = array();
+			$rImportStreams = [];
 
 			if (0 < strlen($rData['stream_source'][0])) {
-				$rImportArray = array('stream_source' => $rData['stream_source'], 'stream_icon' => $rArray['stream_icon'], 'stream_display_name' => $rArray['stream_display_name']);
+				$rImportArray = ['stream_source' => $rData['stream_source'], 'stream_icon' => $rArray['stream_icon'], 'stream_display_name' => $rArray['stream_display_name']];
 				$rImportStreams[] = $rImportArray;
 
 				if (0 < count($rImportStreams)) {
-					$rBouquetCreate = array();
+					$rBouquetCreate = [];
 
 					foreach (json_decode($rData['bouquet_create_list'] ?? '[]', true) ?: [] as $rBouquet) {
-						$rPrepare = QueryHelper::prepareArray(array('bouquet_name' => $rBouquet, 'bouquet_channels' => array(), 'bouquet_movies' => array(), 'bouquet_series' => array(), 'bouquet_radios' => array()));
+						$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 						$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 						if (!$db->query($rQuery, ...$rPrepare['data'])) {
@@ -98,10 +99,10 @@ class RadioService {
 							$rBouquetCreate[$rBouquet] = $rBouquetID;
 						}
 					}
-					$rCategoryCreate = array();
+					$rCategoryCreate = [];
 
 					foreach (json_decode($rData['category_create_list'] ?? '[]', true) ?: [] as $rCategory) {
-						$rPrepare = QueryHelper::prepareArray(array('category_type' => 'radio', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0));
+						$rPrepare = QueryHelper::prepareArray(['category_type' => 'radio', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 						$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 						if (!$db->query($rQuery, ...$rPrepare['data'])) {
@@ -112,7 +113,7 @@ class RadioService {
 					}
 
 					foreach ($rImportStreams as $rImportStream) {
-						$rBouquets = array();
+						$rBouquets = [];
 
 						foreach ($rData['bouquets'] as $rBouquet) {
 							if (isset($rBouquetCreate[$rBouquet])) {
@@ -124,7 +125,7 @@ class RadioService {
 								}
 							}
 						}
-						$rCategories = array();
+						$rCategories = [];
 
 						foreach ($rData['category_id'] ?? [] as $rCategory) {
 							if (isset($rCategoryCreate[$rCategory])) {
@@ -158,7 +159,7 @@ class RadioService {
 
 						if ($db->query($rQuery, ...$rPrepare['data'])) {
 							$rInsertID = $db->last_insert_id();
-							$rStationExists = array();
+							$rStationExists = [];
 
 							if (!isset($rData['edit'])) {
 							} else {
@@ -169,7 +170,7 @@ class RadioService {
 								}
 							}
 
-							$rStreamsAdded = array();
+							$rStreamsAdded = [];
 							$rServerTree = json_decode($rData['server_tree_data'], true);
 
 							foreach ($rServerTree as $rServer) {
@@ -231,7 +232,7 @@ class RadioService {
 
 							if (!$rRestart) {
 							} else {
-								ApiClient::request(array('action' => 'stream', 'sub' => 'start', 'stream_ids' => array($rInsertID)));
+								ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID]]);
 							}
 
 							foreach ($rBouquets as $rBouquet) {
@@ -250,7 +251,7 @@ class RadioService {
 
 							StreamProcess::updateStream($rInsertID);
 
-							return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						} else {
 							foreach ($rBouquetCreate as $rBouquet => $rID) {
 								$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
@@ -260,17 +261,17 @@ class RadioService {
 								$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
 							}
 
-							return array('status' => STATUS_FAILURE, 'data' => $rData);
+							return ['status' => STATUS_FAILURE, 'data' => $rData];
 						}
 					}
 				} else {
-					return array('status' => STATUS_NO_SOURCES, 'data' => $rData);
+					return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
 				}
 			} else {
-				return array('status' => STATUS_NO_SOURCES, 'data' => $rData);
+				return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
 			}
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -280,7 +281,7 @@ class RadioService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit($rData) {
+	public static function massEdit(array $rData) {
 		$db = self::db();
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
@@ -288,7 +289,7 @@ class RadioService {
 		ini_set('default_socket_timeout', 0);
 
 		if (InputValidator::validate('massEditRadios', $rData)) {
-			$rArray = array();
+			$rArray = [];
 
 			if (!isset($rData['c_direct_source'])) {
 			} else {
@@ -308,25 +309,25 @@ class RadioService {
 
 			if (0 >= count($rStreamIDs)) {
 			} else {
-				$rCategoryMap = array();
+				$rCategoryMap = [];
 
-				if (!(isset($rData['c_category_id']) && in_array($rData['category_id_type'], array('ADD', 'DEL')))) {
+				if (!(isset($rData['c_category_id']) && in_array($rData['category_id_type'], ['ADD', 'DEL']))) {
 				} else {
 					$db->query('SELECT `id`, `category_id` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
 
 					foreach ($db->get_rows() as $rRow) {
-						$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: array());
+						$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: []);
 					}
 				}
 
-				$rDeleteServers = $rStreamExists = array();
+				$rDeleteServers = $rStreamExists = [];
 				$db->query('SELECT `stream_id`, `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
 
 				foreach ($db->get_rows() as $rRow) {
 					$rStreamExists[intval($rRow['stream_id'])][intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
 				}
 				$rBouquets = BouquetService::getAllSimple();
-				$rAddBouquet = $rDelBouquet = array();
+				$rAddBouquet = $rDelBouquet = [];
 				$rAddQuery = '';
 
 				foreach ($rStreamIDs as $rStreamID) {
@@ -335,7 +336,7 @@ class RadioService {
 						$rCategories = array_map('intval', $rData['category_id']);
 
 						if ($rData['category_id_type'] == 'ADD') {
-							foreach (($rCategoryMap[$rStreamID] ?: array()) as $rCategoryID) {
+							foreach (($rCategoryMap[$rStreamID] ?: []) as $rCategoryID) {
 								if (in_array($rCategoryID, $rCategories)) {
 								} else {
 									$rCategories[] = $rCategoryID;
@@ -370,7 +371,7 @@ class RadioService {
 
 					if (!isset($rData['c_server_tree'])) {
 					} else {
-						$rStreamsAdded = array();
+						$rStreamsAdded = [];
 						$rServerTree = json_decode($rData['server_tree_data'], true);
 
 						foreach ($rServerTree as $rServer) {
@@ -378,8 +379,8 @@ class RadioService {
 							} else {
 								$rServerID = intval($rServer['id']);
 
-								if (in_array($rData['server_type'], array('ADD', 'SET'))) {
-									$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?: array())));
+								if (in_array($rData['server_type'], ['ADD', 'SET'])) {
+									$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?: [])));
 
 									if ($rServer['parent'] == 'source') {
 										$rParent = null;
@@ -466,14 +467,14 @@ class RadioService {
 
 				if (!isset($rData['restart_on_edit'])) {
 				} else {
-					ApiClient::request(array('action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)));
+					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)]);
 				}
 			}
 
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		}
 
-		return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -482,7 +483,7 @@ class RadioService {
 	 * @param array $rData Selected radio ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete($rData) {
+	public static function massDelete(array $rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
@@ -491,9 +492,9 @@ class RadioService {
 		if (InputValidator::validate('massDeleteStations', $rData)) {
 			$rStreams = json_decode($rData['radios'], true);
 			StreamRepository::deleteStreams($rStreams, false);
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		}
 
-		return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 }

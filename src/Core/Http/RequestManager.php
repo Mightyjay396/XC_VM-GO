@@ -17,7 +17,7 @@ namespace XcVm\Core\Http;
 
 class RequestManager {
 	/** @var array */
-	private static $request = array();
+	private static $request = [];
 
 	/**
 	 * Сохраняет весь массив параметров запроса.
@@ -36,11 +36,9 @@ class RequestManager {
 	/**
 	 * Возвращает значение по ключу.
 	 *
-	 * @param string $key
-	 * @param mixed  $default
 	 * @return mixed
 	 */
-	public static function get(string $key, $default = null) {
+	public static function get(string $key, mixed $default = null) {
 		return self::$request[$key] ?? $default;
 	}
 
@@ -57,7 +55,6 @@ class RequestManager {
 	 * Прямая замена `isset(getAll()['key'])` — `isset()` нельзя применять к
 	 * результату get(), поэтому для проверок существования нужен этот метод.
 	 *
-	 * @param string $key
 	 * @return bool
 	 */
 	public static function has(string $key): bool {

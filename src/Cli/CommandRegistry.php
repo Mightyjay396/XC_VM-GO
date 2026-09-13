@@ -20,7 +20,6 @@ namespace XcVm\Cli;
  */
 
 class CommandRegistry {
-
 	/** @var CommandInterface[] name → command */
 	private $rCommands = [];
 

@@ -22,15 +22,15 @@ use XcVm\Domain\Security\BlocklistService;
  */
 
 class IspController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $this->setTitle("Blocked ISP's");
+		$this->setTitle("Blocked ISP's");
 
-        $isps = BlocklistService::getAllISPs();
+		$isps = BlocklistService::getAllISPs();
 
-        $this->render('isps', [
-            'isps' => $isps,
-        ]);
-    }
+		$this->render('isps', [
+			'isps' => $isps,
+		]);
+	}
 }

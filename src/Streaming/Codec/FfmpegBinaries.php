@@ -23,7 +23,6 @@ namespace XcVm\Streaming\Codec;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class FfmpegBinaries {
-
 	/** Encoder-name substrings that mark a hardware (GPU/accelerated) encoder. */
 	private const HW_ENCODER_MARKERS = ['_nvenc', 'nvenc_', '_qsv', '_vaapi', '_amf', '_videotoolbox', '_mf'];
 
@@ -81,7 +80,7 @@ class FfmpegBinaries {
 	 * A binary swap bumps the folder mtime and changes this, invalidating the cache.
 	 */
 	private static function fingerprint(): string {
-		$rParts = array();
+		$rParts = [];
 		foreach (self::versionDirs() as $rVersion => $rDir) {
 			$rParts[] = $rVersion . ':' . (@filemtime($rDir . 'ffmpeg') ?: 0);
 		}
@@ -96,8 +95,8 @@ class FfmpegBinaries {
 	 */
 	private static function versionDirs(): array {
 		$rBase = self::baseDir();
-		$rOut = array();
-		foreach (glob($rBase . '*', GLOB_ONLYDIR) ?: array() as $rDir) {
+		$rOut = [];
+		foreach (glob($rBase . '*', GLOB_ONLYDIR) ?: [] as $rDir) {
 			$rVersion = basename($rDir);
 			if (!preg_match('/^\d+\.\d+$/', $rVersion)) {
 				continue; // skip backups / non-version folders
@@ -117,16 +116,16 @@ class FfmpegBinaries {
 	 * @return array<string, array{version: string, gpu: bool, encoders: string[], banner: string}>
 	 */
 	private static function scan(): array {
-		$rOut = array();
+		$rOut = [];
 		foreach (self::versionDirs() as $rVersion => $rDir) {
 			$rBinary = $rDir . 'ffmpeg';
 			$rEncoders = self::hwEncoders($rBinary);
-			$rOut[$rVersion] = array(
+			$rOut[$rVersion] = [
 				'version'  => $rVersion,
 				'gpu'      => count($rEncoders) > 0,
 				'encoders' => $rEncoders,
 				'banner'   => self::banner($rBinary),
-			);
+			];
 		}
 		return $rOut;
 	}
@@ -145,7 +144,7 @@ class FfmpegBinaries {
 	 */
 	private static function hwEncoders(string $rBinary): array {
 		$rOut = (string) @shell_exec('timeout 5 ' . escapeshellarg($rBinary) . ' -hide_banner -encoders 2>/dev/null');
-		$rEncoders = array();
+		$rEncoders = [];
 		foreach (explode("\n", $rOut) as $rRow) {
 			// ` V....D h264_nvenc  NVIDIA NVENC H.264 encoder`
 			if (!preg_match('/^\s*[VASFXBD.]{6}\s+(\S+)/', $rRow, $rMatch)) {
@@ -175,7 +174,7 @@ class FfmpegBinaries {
 
 	/** Best-effort atomic cache write; failure is non-fatal (rescans next time). */
 	private static function writeCache(string $rFingerprint, array $rVersions): void {
-		$rJson = json_encode(array('fingerprint' => $rFingerprint, 'versions' => $rVersions), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+		$rJson = json_encode(['fingerprint' => $rFingerprint, 'versions' => $rVersions], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 		if ($rJson === false) {
 			return;
 		}

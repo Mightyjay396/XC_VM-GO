@@ -19,19 +19,19 @@ use XcVm\Domain\Stream\ProviderService;
  */
 
 class ProviderEditController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rProvider = null;
-        $id = $this->input('id');
-        if ($id !== null) {
-            $rProvider = ProviderService::getById($id);
-            if (!$rProvider) {
-                exit();
-            }
-        }
+		$rProvider = null;
+		$id = $this->input('id');
+		if ($id !== null) {
+			$rProvider = ProviderService::getById($id);
+			if (!$rProvider) {
+				exit();
+			}
+		}
 
-        $this->setTitle('Stream Provider');
-        $this->render('provider', compact('rProvider'));
-    }
+		$this->setTitle('Stream Provider');
+		$this->render('provider', compact('rProvider'));
+	}
 }

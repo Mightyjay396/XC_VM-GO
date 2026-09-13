@@ -9,18 +9,16 @@ use XcVm\Domain\Line\ActiveCodeService;
  *
  * @package XC_VM_Public_Controllers_Reseller
  */
-class ResellerActiveCodesBatchController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Batch Manager');
+class ResellerActiveCodesBatchController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Batch Manager');
 
-        $rUserInfo = $GLOBALS['rUserInfo'] ?? [];
-        $batches = ActiveCodeService::getBatchSummary($rUserInfo, false);
+		$rUserInfo = $GLOBALS['rUserInfo'] ?? [];
+		$batches = ActiveCodeService::getBatchSummary($rUserInfo, false);
 
-        $this->render('active_codes_batch', [
-            'batches' => $batches,
-        ]);
-    }
+		$this->render('active_codes_batch', [
+			'batches' => $batches,
+		]);
+	}
 }

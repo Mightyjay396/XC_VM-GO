@@ -22,14 +22,14 @@ use XcVm\Domain\Bouquet\BouquetService;
  */
 
 class BouquetOrderController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Bouquet Order');
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Bouquet Order');
 
-        $bouquets = BouquetService::getAllSimple();
+		$bouquets = BouquetService::getAllSimple();
 
-        $this->render('bouquet_order', [
-            'bouquets' => $bouquets,
-        ]);
-    }
+		$this->render('bouquet_order', [
+			'bouquets' => $bouquets,
+		]);
+	}
 }

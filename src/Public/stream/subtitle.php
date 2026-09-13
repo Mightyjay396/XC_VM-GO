@@ -76,6 +76,7 @@ if ($rStreamID && file_exists(VOD_PATH . $rStreamID . '_' . $rSubID . '.srt')) {
 }
 
 generateError('THUMBNAIL_DOESNT_EXIST');
+
 function convertVTT($rSubtitle) {
 	$rLines = explode("\n", $rSubtitle);
 	$rLength = count($rLines);

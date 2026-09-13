@@ -34,7 +34,7 @@ class UserRepository {
 	 * @param string|null $rIspDesc    ISP currently stored on the line.
 	 * @return bool
 	 */
-	public static function ispChanged($rConIspName, $rIspViolate, $rIspDesc): bool {
+	public static function ispChanged(?string $rConIspName, int $rIspViolate, ?string $rIspDesc): bool {
 		return !empty($rConIspName)
 			&& $rIspViolate == 0
 			&& strtolower((string) $rConIspName) != strtolower((string) $rIspDesc);
@@ -54,7 +54,7 @@ class UserRepository {
 	 * @param string|null $rPassword Password.
 	 * @return array|false The line row, or false when it cannot be resolved.
 	 */
-	private static function loadUserRow($db, $rCached, $rSettings, &$rUserID, $rUsername, $rPassword) {
+	private static function loadUserRow(mixed $db, bool $rCached, array $rSettings, ?int &$rUserID, ?string $rUsername, ?string $rPassword) {
 		if ($rCached) {
 			if (empty($rPassword) && empty($rUserID) && strlen($rUsername) == 32) {
 				$rKey = $rSettings['case_sensitive_line'] ? $rUsername : strtolower($rUsername);
@@ -99,7 +99,7 @@ class UserRepository {
 	 * @param string|null $rPassword Password.
 	 * @return bool True when the credentials are valid.
 	 */
-	private static function verifyCachedCredentials($rUserInfo, $rUserID, $rUsername, $rPassword): bool {
+	private static function verifyCachedCredentials(array $rUserInfo, ?int $rUserID, ?string $rUsername, ?string $rPassword): bool {
 		if (empty($rPassword) && empty($rUserID) && strlen($rUsername) == 32) {
 			return $rUsername == $rUserInfo['access_token'];
 		}
@@ -134,7 +134,7 @@ class UserRepository {
 	 * @param array $rAllowedOutputs Access-output ids the line is allowed.
 	 * @return array<int,string> Output keys.
 	 */
-	private static function resolveOutputFormats($db, $rCached, array $rAllowedOutputs): array {
+	private static function resolveOutputFormats(mixed $db, bool $rCached, array $rAllowedOutputs): array {
 		if ($rCached) {
 			$rRows = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'output_formats'));
 		} else {
@@ -142,7 +142,7 @@ class UserRepository {
 			$rRows = $db->get_rows();
 		}
 
-		$rFormats = array();
+		$rFormats = [];
 		foreach ($rRows as $rRow) {
 			if (in_array(intval($rRow['access_output_id']), $rAllowedOutputs)) {
 				$rFormats[] = $rRow['output_key'];
@@ -159,8 +159,8 @@ class UserRepository {
 	 * @param array $rBouquets Bouquet map (id => ['streams','series','channels','movies','radios']).
 	 * @return array{channel_ids:int[],series_ids:int[],vod_ids:int[],live_ids:int[],radio_ids:int[]}
 	 */
-	private static function aggregateBouquetIds($rBouquet, $rBouquets): array {
-		$rChannelIDs = $rSeriesIDs = $rVODIDs = $rLiveIDs = $rRadioIDs = array();
+	private static function aggregateBouquetIds(array $rBouquet, array $rBouquets): array {
+		$rChannelIDs = $rSeriesIDs = $rVODIDs = $rLiveIDs = $rRadioIDs = [];
 		foreach ($rBouquet as $rID) {
 			if (isset($rBouquets[$rID]['streams'])) {
 				$rChannelIDs = array_merge($rChannelIDs, $rBouquets[$rID]['streams']);
@@ -178,13 +178,13 @@ class UserRepository {
 				$rRadioIDs = array_merge($rRadioIDs, $rBouquets[$rID]['radios']);
 			}
 		}
-		return array(
+		return [
 			'channel_ids' => array_map('intval', array_unique($rChannelIDs)),
 			'series_ids' => array_map('intval', array_unique($rSeriesIDs)),
 			'vod_ids' => array_map('intval', array_unique($rVODIDs)),
 			'live_ids' => array_map('intval', array_unique($rLiveIDs)),
 			'radio_ids' => array_map('intval', array_unique($rRadioIDs)),
-		);
+		];
 	}
 
 	/**
@@ -194,10 +194,10 @@ class UserRepository {
 	 * @param array $rCategoryMap Bouquet id => category id list.
 	 * @return array<int,mixed> Distinct category ids.
 	 */
-	private static function resolveCategoryIds($rBouquet, $rCategoryMap): array {
-		$rAllowedCategories = array();
+	private static function resolveCategoryIds(array $rBouquet, array $rCategoryMap): array {
+		$rAllowedCategories = [];
 		foreach ($rBouquet as $rID) {
-			$rAllowedCategories = array_merge($rAllowedCategories, ($rCategoryMap[$rID] ?: array()));
+			$rAllowedCategories = array_merge($rAllowedCategories, ($rCategoryMap[$rID] ?: []));
 		}
 		return array_values(array_unique($rAllowedCategories));
 	}
@@ -214,7 +214,7 @@ class UserRepository {
 	 * @param mixed  $db        Database handler.
 	 * @return array The (possibly) updated row.
 	 */
-	private static function applyForcedCountry(array $rUserInfo, $rSettings, $rCached, $rIP, $db): array {
+	private static function applyForcedCountry(array $rUserInfo, array $rSettings, bool $rCached, string $rIP, mixed $db): array {
 		if ($rSettings['county_override_1st'] == 1 && empty($rUserInfo['forced_country']) && !empty($rIP) && $rUserInfo['max_connections'] == 1) {
 			$rUserInfo['forced_country'] = GeoIP::getCountry($rIP)['registered_country']['iso_code'];
 			if ($rCached) {
@@ -238,7 +238,7 @@ class UserRepository {
 	 * @param mixed  $db        Database handler.
 	 * @return array The updated row.
 	 */
-	private static function applyIspInfo(array $rUserInfo, $rSettings, $rCached, $rIP, $db): array {
+	private static function applyIspInfo(array $rUserInfo, array $rSettings, bool $rCached, string $rIP, mixed $db): array {
 		$rUserInfo['con_isp_name'] = null;
 		$rUserInfo['isp_asn'] = null;
 		$rUserInfo['isp_violate'] = 0;
@@ -261,7 +261,7 @@ class UserRepository {
 
 			if (self::ispChanged($rUserInfo['con_isp_name'], $rUserInfo['isp_violate'], $rUserInfo['isp_desc'])) {
 				if ($rCached) {
-					SignalQueue::push('isp/' . $rUserInfo['id'], json_encode(array($rUserInfo['con_isp_name'], $rUserInfo['isp_asn'])));
+					SignalQueue::push('isp/' . $rUserInfo['id'], json_encode([$rUserInfo['con_isp_name'], $rUserInfo['isp_asn']]));
 				} else {
 					$db->query('UPDATE `lines` SET `isp_desc` = ?, `as_number` = ? WHERE `id` = ?', $rUserInfo['con_isp_name'], $rUserInfo['isp_asn'], $rUserInfo['id']);
 				}
@@ -277,7 +277,7 @@ class UserRepository {
 	 * @param string $rPassword Plain-text password.
 	 * @return array|null The user row, or null if credentials are invalid.
 	 */
-	public static function getAuthUserByCredentials($rUsername, $rPassword) {
+	public static function getAuthUserByCredentials(string $rUsername, string $rPassword) {
 		$db = self::db();
 		$db->query('SELECT `id`, `username`, `password`, `member_group_id`, `status` FROM `users` WHERE `username` = ? LIMIT 1;', $rUsername);
 
@@ -298,7 +298,7 @@ class UserRepository {
 	 * @param bool $rIncludeSelf Include the owner in the result.
 	 * @return array Reseller rows.
 	 */
-	public static function getResellers($rOwner, $rIncludeSelf = true) {
+	public static function getResellers(int $rOwner, bool $rIncludeSelf = true) {
 		$db = self::db();
 		if ($rIncludeSelf) {
 			$db->query('SELECT `id`, `username` FROM `users` WHERE `owner_id` = ? OR `id` = ? ORDER BY `username` ASC;', $rOwner, $rOwner);
@@ -317,7 +317,7 @@ class UserRepository {
 	 * @param bool  $rIncludeSelf Include the user themselves.
 	 * @return array Direct report rows.
 	 */
-	public static function getDirectReports($rPermissions, $rUserInfo, $rIncludeSelf = true) {
+	public static function getDirectReports(array $rPermissions, array $rUserInfo, bool $rIncludeSelf = true) {
 		$db = self::db();
 		$rUserIDs = $rPermissions['direct_reports'];
 
@@ -325,7 +325,7 @@ class UserRepository {
 			$rUserIDs[] = $rUserInfo['id'];
 		}
 
-		$rReturn = array();
+		$rReturn = [];
 
 		if (0 < count($rUserIDs)) {
 			$db->query('SELECT * FROM `users` WHERE `owner_id` IN (' . implode(',', array_map('intval', $rUserIDs)) . ') ORDER BY `username` ASC;');
@@ -348,7 +348,7 @@ class UserRepository {
 	 * @param int   $rID          Target user id.
 	 * @return int Resolved parent user id.
 	 */
-	public static function getParent($rPermissions, $rUserInfo, $rID) {
+	public static function getParent(array $rPermissions, array $rUserInfo, int $rID) {
 		if (!isset($rPermissions['users'][$rID]['parent']) || $rPermissions['users'][$rID]['parent'] == 0 || $rPermissions['users'][$rID]['parent'] == $rUserInfo['id']) {
 			return $rID;
 		}
@@ -362,13 +362,13 @@ class UserRepository {
 	 * @param int $rUser User id.
 	 * @return array Sub-user rows keyed by id.
 	 */
-	public static function getSubUsers($rUser) {
+	public static function getSubUsers(int $rUser) {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `id`, `username` FROM `users` WHERE `owner_id` = ?;', $rUser);
 
 		foreach ($db->get_rows() as $rRow) {
-			$rReturn[$rRow['id']] = array('username' => $rRow['username'], 'parent' => $rUser);
+			$rReturn[$rRow['id']] = ['username' => $rRow['username'], 'parent' => $rUser];
 
 			foreach (self::getSubUsers($rRow['id']) as $rUserID => $rUserData) {
 				$rReturn[$rUserID] = $rUserData;
@@ -384,7 +384,7 @@ class UserRepository {
 	 * @param int $rID Line id.
 	 * @return array|null The line row, or null if not found.
 	 */
-	public static function getLineById($rID) {
+	public static function getLineById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `lines` WHERE `id` = ?;', $rID);
 
@@ -400,7 +400,7 @@ class UserRepository {
 	 * @param string $rUsername Line username.
 	 * @return array|null The line row, or null if not found.
 	 */
-	public static function getLineByUsername($rUsername) {
+	public static function getLineByUsername(string $rUsername) {
 		$db = self::db();
 		$db->query('SELECT * FROM `lines` WHERE `username` = ?;', $rUsername);
 
@@ -416,7 +416,7 @@ class UserRepository {
 	 * @param int $rID User id.
 	 * @return array|null The user row, or null if not found.
 	 */
-	public static function getRegisteredUserById($rID) {
+	public static function getRegisteredUserById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `users` WHERE `id` = ?;', $rID);
 
@@ -432,7 +432,7 @@ class UserRepository {
 	 * @param int $rID User id.
 	 * @return array|null
 	 */
-	public static function getUserById($rID) {
+	public static function getUserById(int $rID) {
 		return self::getRegisteredUserById($rID);
 	}
 
@@ -443,9 +443,9 @@ class UserRepository {
 	 * @param bool     $rIncludeSelf Include the owner in the result.
 	 * @return array Registered user rows.
 	 */
-	public static function getRegisteredUsers($rOwner = null, $rIncludeSelf = true) {
+	public static function getRegisteredUsers(?int $rOwner = null, bool $rIncludeSelf = true) {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `users` ORDER BY `username` ASC;');
 
 		if (0 < $db->num_rows()) {
@@ -457,7 +457,7 @@ class UserRepository {
 		}
 
 		if (count($rReturn) == 0) {
-			$rReturn[-1] = array();
+			$rReturn[-1] = [];
 		}
 
 		return $rReturn;
@@ -480,7 +480,7 @@ class UserRepository {
 	 * @param string      $rIP              Client IP.
 	 * @return array|null User info, or null if not found.
 	 */
-	public static function getStreamingUserInfo($rSettings, $rCached, $rBouquets, $rUserID = null, $rUsername = null, $rPassword = null, $rGetChannelIDs = false, $rGetConnections = false, $rIP = '') {
+	public static function getStreamingUserInfo(array $rSettings, bool $rCached, array $rBouquets, ?int $rUserID = null, ?string $rUsername = null, ?string $rPassword = null, bool $rGetChannelIDs = false, bool $rGetConnections = false, string $rIP = '') {
 		$db = self::db();
 		$rUserInfo = null;
 
@@ -518,7 +518,7 @@ class UserRepository {
 	 * @param string      $rIP             Client IP.
 	 * @return array|null User info, or null if not found.
 	 */
-	public static function getUserInfo($rUserID = null, $rUsername = null, $rPassword = null, $rGetChannelIDs = false, $rGetConnections = false, $rIP = '') {
+	public static function getUserInfo(?int $rUserID = null, ?string $rUsername = null, ?string $rPassword = null, bool $rGetChannelIDs = false, bool $rGetConnections = false, string $rIP = '') {
 		global $rSettings;
 		return self::getStreamingUserInfo($rSettings, $rSettings['enable_cache'], BouquetService::getAll(), $rUserID, $rUsername, $rPassword, $rGetChannelIDs, $rGetConnections, $rIP);
 	}
@@ -531,7 +531,7 @@ class UserRepository {
 	 * @param bool  $rGetConnections  Include active connections.
 	 * @return array|null Device user info, or null if not found.
 	 */
-	public static function getE2Info($rDevice, $rGetChannelIDs = false, $rGetConnections = false) {
+	public static function getE2Info(array $rDevice, bool $rGetChannelIDs = false, bool $rGetConnections = false) {
 		$db = self::db();
 		if (empty($rDevice['device_id'])) {
 			$db->query('SELECT * FROM `enigma2_devices` WHERE `mac` = ?', $rDevice['mac']);
@@ -541,11 +541,11 @@ class UserRepository {
 		if (0 >= $db->num_rows()) {
 			return null;
 		}
-		$rReturn = array(
+		$rReturn = [
 			'enigma2' => $db->get_row(),
-			'user_info' => array(),
-			'pair_line_info' => array(),
-		);
+			'user_info' => [],
+			'pair_line_info' => [],
+		];
 
 		if ($rUserInfo = self::getUserInfo($rReturn['enigma2']['user_id'], null, null, $rGetChannelIDs, $rGetConnections)) {
 			$rReturn['user_info'] = $rUserInfo;

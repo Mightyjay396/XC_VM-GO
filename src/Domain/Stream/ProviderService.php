@@ -20,6 +20,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class ProviderService {
 	use DatabaseAware;
+
 	/**
 	 * Create or update a provider from admin form data.
 	 *
@@ -28,12 +29,12 @@ class ProviderService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (InputValidator::validate('processProvider', $rData)) {
 			if (isset($rData['edit'])) {
 				if (Authorization::check('adv', 'streams')) {
-					$rArray = AdminHelpers::overwriteData(ProviderService::getById($rData['edit']), $rData);
+					$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
 				} else {
 					exit();
 				}
@@ -46,7 +47,7 @@ class ProviderService {
 				}
 			}
 
-			foreach (array('enabled', 'ssl', 'hls', 'legacy') as $rKey) {
+			foreach (['enabled', 'ssl', 'hls', 'legacy'] as $rKey) {
 				if (isset($rData[$rKey])) {
 					$rArray[$rKey] = 1;
 				} else {
@@ -66,15 +67,15 @@ class ProviderService {
 
 				if ($db->query($rQuery, ...$rPrepare['data'])) {
 					$rInsertID = $db->last_insert_id();
-					return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+					return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 				}
 
-				return array('status' => STATUS_FAILURE, 'data' => $rData);
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
 			}
 
-			return array('status' => STATUS_EXISTS_IP, 'data' => $rData);
+			return ['status' => STATUS_EXISTS_IP, 'data' => $rData];
 		} else {
-			return array('status' => STATUS_INVALID_INPUT, 'data' => $rData);
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
 	}
 
@@ -84,7 +85,7 @@ class ProviderService {
 	 * @param int $rID Provider id.
 	 * @return array|null The provider row, or null if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `providers` WHERE `id` = ?;', $rID);
 
@@ -102,7 +103,7 @@ class ProviderService {
 	 */
 	public static function getAll() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `providers` ORDER BY `last_changed` DESC;');
 
 		if ($db->num_rows() > 0) {
@@ -120,7 +121,7 @@ class ProviderService {
 	 * @param int $rID Provider id.
 	 * @return bool True on deletion, false if the provider does not exist.
 	 */
-	public static function deleteById($rID) {
+	public static function deleteById(int $rID) {
 		$db = self::db();
 		$rProvider = self::getById($rID);
 

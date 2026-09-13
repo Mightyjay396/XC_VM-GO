@@ -19,68 +19,68 @@ use XcVm\Core\Updates\UpdateChannels;
  */
 
 class UpdateCronJob implements CommandInterface {
-    use CronTrait;
+	use CronTrait;
 
-    public function getName(): string {
-        return 'cron:update';
-    }
+	public function getName(): string {
+		return 'cron:update';
+	}
 
-    public function getDescription(): string {
-        return 'Cron: check for XC_VM updates';
-    }
+	public function getDescription(): string {
+		return 'Cron: check for XC_VM updates';
+	}
 
-    public function execute(array $rArgs): int {
-        if (!$this->assertRunAsXcVm()) {
-            return 1;
-        }
+	public function execute(array $rArgs): int {
+		if (!$this->assertRunAsXcVm()) {
+			return 1;
+		}
 
-        if (!$this->isRunning()) {
-            return 1;
-        }
+		if (!$this->isRunning()) {
+			return 1;
+		}
 
-        global $db, $gitRelease;
+		global $db, $gitRelease;
 
-        if (!$gitRelease) {
-            if (defined('GIT_OWNER') && defined('GIT_REPO_MAIN')) {
-                $gitRelease = new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, UpdateChannels::main());
-            }
-        }
+		if (!$gitRelease) {
+			if (defined('GIT_OWNER') && defined('GIT_REPO_MAIN')) {
+				$gitRelease = new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, UpdateChannels::main());
+			}
+		}
 
-        if (!$gitRelease) {
-            FileLogger::log('cron', 'GitRelease service not initialized', 'cron:update');
-            return 1;
-        }
+		if (!$gitRelease) {
+			FileLogger::log('cron', 'GitRelease service not initialized', 'cron:update');
+			return 1;
+		}
 
-        $rUpdate = $gitRelease->getUpdate(XC_VM_VERSION);
+		$rUpdate = $gitRelease->getUpdate(XC_VM_VERSION);
 
-        if (is_array($rUpdate) && $rUpdate['version'] && (0 < version_compare($rUpdate['version'], XC_VM_VERSION) || version_compare($rUpdate['version'], XC_VM_VERSION) == 0)) {
-            echo 'Update is available!' . "\n";
-            $updatedChanges = array();
-            foreach (array_reverse($rUpdate['changelog']) as $rItem) {
-                if (!($rItem['version'] == XC_VM_VERSION)) {
-                    $updatedChanges[] = $rItem;
-                } else {
-                    break;
-                }
-            }
-            $rUpdate['changelog'] = $updatedChanges;
-            $db->query('UPDATE `settings` SET `update_data` = ?;', json_encode($rUpdate));
-        } else {
-            $db->query('UPDATE `settings` SET `update_data` = NULL;');
-        }
+		if (is_array($rUpdate) && $rUpdate['version'] && (0 < version_compare($rUpdate['version'], XC_VM_VERSION) || version_compare($rUpdate['version'], XC_VM_VERSION) == 0)) {
+			echo 'Update is available!' . "\n";
+			$updatedChanges = [];
+			foreach (array_reverse($rUpdate['changelog']) as $rItem) {
+				if (!($rItem['version'] == XC_VM_VERSION)) {
+					$updatedChanges[] = $rItem;
+				} else {
+					break;
+				}
+			}
+			$rUpdate['changelog'] = $updatedChanges;
+			$db->query('UPDATE `settings` SET `update_data` = ?;', json_encode($rUpdate));
+		} else {
+			$db->query('UPDATE `settings` SET `update_data` = NULL;');
+		}
 
-        return 0;
-    }
+		return 0;
+	}
 
-    private function isRunning(): bool {
-        $rNginx = 0;
-        exec('ps -fp $(pgrep -u xc_vm)', $rOutput, $rReturnVar);
-        foreach ($rOutput as $rProcess) {
-            $rSplit = explode(' ', preg_replace('!\\s+!', ' ', trim($rProcess)));
-            if ($rSplit[8] == 'nginx:' && $rSplit[9] == 'master') {
-                $rNginx++;
-            }
-        }
-        return 0 < $rNginx;
-    }
+	private function isRunning(): bool {
+		$rNginx = 0;
+		exec('ps -fp $(pgrep -u xc_vm)', $rOutput, $rReturnVar);
+		foreach ($rOutput as $rProcess) {
+			$rSplit = explode(' ', preg_replace('!\\s+!', ' ', trim($rProcess)));
+			if ($rSplit[8] == 'nginx:' && $rSplit[9] == 'master') {
+				$rNginx++;
+			}
+		}
+		return 0 < $rNginx;
+	}
 }

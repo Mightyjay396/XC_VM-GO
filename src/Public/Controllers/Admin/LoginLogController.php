@@ -20,9 +20,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class LoginLogController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Login Logs');
-        $this->render('login_logs');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Login Logs');
+		$this->render('login_logs');
+	}
 }

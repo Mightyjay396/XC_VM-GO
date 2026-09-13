@@ -11,11 +11,10 @@ namespace XcVm\Core\Events\Contract;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 interface StoppableEventInterface {
-
-    /**
-     * Whether propagation has been stopped by a previous listener.
-     *
-     * When true, EventDispatcher must not call any further listeners.
-     */
-    public function isPropagationStopped(): bool;
+	/**
+	 * Whether propagation has been stopped by a previous listener.
+	 *
+	 * When true, EventDispatcher must not call any further listeners.
+	 */
+	public function isPropagationStopped(): bool;
 }

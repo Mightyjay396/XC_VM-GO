@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtInf;
 use M3uParser\Tag\ExtTagInterface;
 use PHPUnit\Framework\TestCase;
 
-class ExtInfTest extends TestCase
-{
-    public function testParseIssue23(): void
-    {
+class ExtInfTest extends TestCase {
+    public function testParseIssue23(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/issue23.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/issue23.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -27,11 +24,10 @@ class ExtInfTest extends TestCase
         self::assertSame(5.279, $extInf->getDuration());
     }
 
-    public function testParseExtInf(): void
-    {
+    public function testParseExtInf(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/extinf.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/extinf.m3u');
 
         self::assertCount(6, $data);
 
@@ -165,10 +161,9 @@ class ExtInfTest extends TestCase
         ], $extInf->getAttributes());
     }
 
-    public function testGenerateExtInf(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTINF:123 test-attr="test-attrname",extinf-title'."\n";
+    public function testGenerateExtInf(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTINF:123 test-attr="test-attrname",extinf-title' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();
@@ -186,8 +181,7 @@ class ExtInfTest extends TestCase
         self::assertEquals($expectedString, (string) $data);
     }
 
-    public function testAttributeQuotes(): void
-    {
+    public function testAttributeQuotes(): void {
         $testString = '#EXTINF:-1 tvg-id="" tvg-name="" tvg-logo="" tvg-chno="7529" channel-id="7529" group-title="S: (HULU) The Handmaid\'s Tale",The Handmaid\'s Tale S01 E01';
 
         $extInf = new ExtInf($testString);

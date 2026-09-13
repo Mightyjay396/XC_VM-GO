@@ -16,14 +16,15 @@ namespace XcVm\Core\Events\Vod;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class VodImportedEvent {
-    /**
-     * @param int    $streamId   Id of the created/updated VOD stream.
-     * @param string $sourcePath File path the item was imported from (server prefix stripped).
-     * @param int    $type       VOD type (1 = movie).
-     */
-    public function __construct(
-        public readonly int $streamId,
-        public readonly string $sourcePath,
-        public readonly int $type = 1,
-    ) {}
+	/**
+	 * @param int    $streamId   Id of the created/updated VOD stream.
+	 * @param string $sourcePath File path the item was imported from (server prefix stripped).
+	 * @param int    $type       VOD type (1 = movie).
+	 */
+	public function __construct(
+		public readonly int $streamId,
+		public readonly string $sourcePath,
+		public readonly int $type = 1,
+	) {
+	}
 }

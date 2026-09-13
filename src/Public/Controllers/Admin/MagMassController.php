@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class MagMassController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Mass Edit Devices');
-        $this->render('mag_mass');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Mass Edit Devices');
+		$this->render('mag_mass');
+	}
 }

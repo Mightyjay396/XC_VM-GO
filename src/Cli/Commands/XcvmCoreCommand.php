@@ -38,7 +38,6 @@ use XcVm\Core\Updates\UpdateChannels;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class XcvmCoreCommand implements CommandInterface {
-
 	/** Branch of the binaries repo that carries the committed extension tree. */
 	private const BIN_BRANCH = 'main';
 

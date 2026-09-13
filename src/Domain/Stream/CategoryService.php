@@ -19,13 +19,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class CategoryService {
 	use DatabaseAware;
+
 	/**
 	 * Persist the display order of categories from posted data.
 	 *
 	 * @param array $rData Form data with a JSON `categories` list (id + order).
 	 * @return array ['status' => STATUS_SUCCESS].
 	 */
-	public static function reorder($rData) {
+	public static function reorder(array $rData) {
 		$db = self::db();
 		$rPostCategories = json_decode($rData['categories'], true);
 
@@ -36,7 +37,7 @@ class CategoryService {
 			}
 		}
 
-		return array('status' => STATUS_SUCCESS);
+		return ['status' => STATUS_SUCCESS];
 	}
 
 	/**
@@ -45,10 +46,10 @@ class CategoryService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process($rData) {
+	public static function process(array $rData) {
 		$db = self::db();
 		if (isset($rData['edit'])) {
-			$rArray = AdminHelpers::overwriteData(CategoryService::getById($rData['edit']), $rData);
+			$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
 		} else {
 			$rArray = QueryHelper::verifyPostTable('streams_categories', $rData);
 			$rArray['cat_order'] = 99;
@@ -66,10 +67,10 @@ class CategoryService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
-		return array('status' => STATUS_FAILURE, 'data' => $rData);
+		return ['status' => STATUS_FAILURE, 'data' => $rData];
 	}
 
 	/**
@@ -79,9 +80,9 @@ class CategoryService {
 	 * @param string $rType 'live'|'movie'|'series'|'radio'|null
 	 * @return array<int, array>
 	 */
-	public static function getAllByType($rType = 'live') {
+	public static function getAllByType(string $rType = 'live') {
 		$rCategories = self::getFromDatabase(($rType ?: null), true);
-		$rReturn = array();
+		$rReturn = [];
 		foreach ($rCategories as $rID => $rRow) {
 			$rReturn[intval($rID)] = $rRow;
 		}
@@ -97,11 +98,11 @@ class CategoryService {
 	 * @param bool        $rForce Bypass the file cache when loading all.
 	 * @return array Categories keyed by id.
 	 */
-	public static function getFromDatabase($rType = null, $rForce = false) {
+	public static function getFromDatabase(?string $rType = null, bool $rForce = false) {
 		$db = self::db();
 		if (is_string($rType)) {
 			$db->query('SELECT t1.* FROM `streams_categories` t1 WHERE t1.category_type = ? GROUP BY t1.id ORDER BY t1.cat_order ASC', $rType);
-			return (0 < $db->num_rows() ? $db->get_rows(true, 'id') : array());
+			return (0 < $db->num_rows() ? $db->get_rows(true, 'id') : []);
 		}
 
 		if (!$rForce) {
@@ -112,7 +113,7 @@ class CategoryService {
 		}
 
 		$db->query('SELECT t1.* FROM `streams_categories` t1 ORDER BY t1.cat_order ASC');
-		$rCategories = (0 < $db->num_rows() ? $db->get_rows(true, 'id') : array());
+		$rCategories = (0 < $db->num_rows() ? $db->get_rows(true, 'id') : []);
 
 		FileCache::setCache('categories', $rCategories);
 
@@ -126,8 +127,8 @@ class CategoryService {
 	 * @param string|null $rType       Type to keep, or null for all.
 	 * @return array Filtered categories.
 	 */
-	public static function filterLoaded($rCategories, $rType = null) {
-		$rReturn = array();
+	public static function filterLoaded(array $rCategories, ?string $rType = null) {
+		$rReturn = [];
 		foreach ($rCategories as $rCategory) {
 			if ($rCategory['category_type'] != $rType && $rType) {
 			} else {
@@ -143,8 +144,8 @@ class CategoryService {
 	 * @param array $rCategories Массив загруженных категорий
 	 * @return int[]
 	 */
-	public static function getAdultIDs($rCategories) {
-		$rReturn = array();
+	public static function getAdultIDs(array $rCategories) {
+		$rReturn = [];
 		foreach ($rCategories as $rCategory) {
 			if ($rCategory['is_adult']) {
 				$rReturn[] = intval($rCategory['id']);
@@ -159,7 +160,7 @@ class CategoryService {
 	 * @param int $rID Category id.
 	 * @return array|false The category row, or false if not found.
 	 */
-	public static function getById($rID) {
+	public static function getById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `streams_categories` WHERE `id` = ?;', $rID);
 
@@ -176,7 +177,7 @@ class CategoryService {
 	 * @param int $rID Category id.
 	 * @return bool True on deletion, false if the category does not exist.
 	 */
-	public static function deleteById($rID) {
+	public static function deleteById(int $rID) {
 		$db = self::db();
 		$rCategory = self::getById($rID);
 

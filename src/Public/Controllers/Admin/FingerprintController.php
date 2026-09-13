@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class FingerprintController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Fingerprint Stream');
-        $this->render('fingerprint');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Fingerprint Stream');
+		$this->render('fingerprint');
+	}
 }

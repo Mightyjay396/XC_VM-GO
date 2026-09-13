@@ -21,7 +21,7 @@ class ProxySelector {
 			return null;
 		}
 		$rServerCapacity = ConnectionTracker::getCapacity(true);
-		$rAcceptServers = array();
+		$rAcceptServers = [];
 		foreach ($rProxies as $rServerID) {
 			$rOnlineClients = (isset($rServerCapacity[$rServerID]['online_clients']) ? $rServerCapacity[$rServerID]['online_clients'] : 0);
 			if ($rOnlineClients == 0) {
@@ -37,7 +37,7 @@ class ProxySelector {
 		$rValues = array_values($rAcceptServers);
 		array_multisort($rValues, SORT_ASC, $rKeys, SORT_ASC);
 		$rAcceptServers = array_combine($rKeys, $rValues);
-		$rPriorityServers = array();
+		$rPriorityServers = [];
 		foreach (array_keys($rAcceptServers) as $rServerID) {
 			if ($rServers[$rServerID]['enable_geoip'] == 1) {
 				if (in_array($rCountryCode, $rServers[$rServerID]['geoip_countries'])) {

@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class UseragentsController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Blocked User-Agents');
-        $this->render('useragents');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Blocked User-Agents');
+		$this->render('useragents');
+	}
 }

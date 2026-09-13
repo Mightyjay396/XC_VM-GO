@@ -58,7 +58,7 @@ class QueueCommand implements CommandInterface {
 
 			// ── Movie queue ──────────────────────────────────────
 			if ($db->query("SELECT `id`, `pid` FROM `queue` WHERE `server_id` = ? AND `pid` IS NOT NULL AND `type` = 'movie' ORDER BY `added` ASC;", SERVER_ID)) {
-				$rDelete = $rInProgress = array();
+				$rDelete = $rInProgress = [];
 				if ($db->num_rows() > 0) {
 					foreach ($db->get_rows() as $rRow) {
 						if ($rRow['pid'] && (ProcessManager::isRunning($rRow['pid'], 'ffmpeg') || ProcessManager::isRunning($rRow['pid'], PHP_BIN))) {
@@ -86,7 +86,7 @@ class QueueCommand implements CommandInterface {
 
 				// ── Channel queue ────────────────────────────────
 				if ($db->query("SELECT `id`, `pid` FROM `queue` WHERE `server_id` = ? AND `pid` IS NOT NULL AND `type` = 'channel' ORDER BY `added` ASC;", SERVER_ID)) {
-					$rInProgress = array();
+					$rInProgress = [];
 					if ($db->num_rows() > 0) {
 						foreach ($db->get_rows() as $rRow) {
 							if ($rRow['pid'] && ProcessManager::isRunning($rRow['pid'], PHP_BIN)) {

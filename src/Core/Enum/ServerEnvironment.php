@@ -14,9 +14,9 @@ namespace XcVm\Core\Enum;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 enum ServerEnvironment: string {
-    /** Standard panel installation. */
-    case Main = 'main';
+	/** Standard panel installation. */
+	case Main = 'main';
 
-    /** Load-balancer node (SERVER_TYPE=lb). */
-    case LoadBalancer = 'lb';
+	/** Load-balancer node (SERVER_TYPE=lb). */
+	case LoadBalancer = 'lb';
 }

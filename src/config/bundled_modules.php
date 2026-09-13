@@ -29,20 +29,20 @@
  */
 
 return [
-    // ministra is no longer a module — the Stalker portal moved into core at
-    // src/Ministra/ (served via /home/xc_vm/Ministra). No entry needed here.
-    [
-        'hash_id'    => '2541abe329f151202d7a3c4ecfb17db4',
-        'name'       => 'watch',
-        'source'     => 'git',
-        'repository' => 'https://github.com/Vateron-Media/Module_Watch',
-        'channel'    => 'stable',
-    ],
-    [
-        'hash_id'    => '20cd9576a466f5c1d60cc32c971a571b',
-        'name'       => 'plex',
-        'source'     => 'git',
-        'repository' => 'https://github.com/Vateron-Media/Module_Plex',
-        'channel'    => 'stable',
-    ],
+	// ministra is no longer a module — the Stalker portal moved into core at
+	// src/Ministra/ (served via /home/xc_vm/Ministra). No entry needed here.
+	[
+		'hash_id'    => '2541abe329f151202d7a3c4ecfb17db4',
+		'name'       => 'watch',
+		'source'     => 'git',
+		'repository' => 'https://github.com/Vateron-Media/Module_Watch',
+		'channel'    => 'stable',
+	],
+	[
+		'hash_id'    => '20cd9576a466f5c1d60cc32c971a571b',
+		'name'       => 'plex',
+		'source'     => 'git',
+		'repository' => 'https://github.com/Vateron-Media/Module_Plex',
+		'channel'    => 'stable',
+	],
 ];

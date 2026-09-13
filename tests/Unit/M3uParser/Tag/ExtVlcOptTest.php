@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtTagInterface;
 use M3uParser\Tag\ExtVlcOpt;
 use PHPUnit\Framework\TestCase;
 
-class ExtVlcOptTest extends TestCase
-{
-    public function testParseExtVlcOpt(): void
-    {
+class ExtVlcOptTest extends TestCase {
+    public function testParseExtVlcOpt(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/extvlcopt.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/extvlcopt.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -36,10 +33,9 @@ class ExtVlcOptTest extends TestCase
         self::assertEquals('Lavf53.32.100', $extVlcOpt->getValue());
     }
 
-    public function testGenerateExtVlcOpt(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTVLCOPT:some-key=some-value'."\n";
+    public function testGenerateExtVlcOpt(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTVLCOPT:some-key=some-value' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

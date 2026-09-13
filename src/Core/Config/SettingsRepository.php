@@ -21,7 +21,7 @@ class SettingsRepository {
 	 * @param bool $rForce Bypass the file cache and re-read from the database.
 	 * @return array Settings map (with normalized array fields).
 	 */
-	public static function getAll($rForce = false) {
+	public static function getAll(bool $rForce = false) {
 		global $db;
 		if (!$rForce) {
 			$rCache = FileCache::getCache('settings', 20);
@@ -30,17 +30,17 @@ class SettingsRepository {
 			}
 		}
 
-		$rOutput = array();
+		$rOutput = [];
 		$db->query('SELECT * FROM `settings`');
 		$rRows = $db->get_row();
-		foreach ($rRows ?: array() as $rKey => $rValue) {
+		foreach ($rRows ?: [] as $rKey => $rValue) {
 			$rOutput[$rKey] = $rValue;
 		}
 
 		$rOutput['allow_countries'] = json_decode($rOutput['allow_countries'] ?? '', true);
 
 		$decodedAllowedSTB = json_decode($rOutput['allowed_stb_types'] ?? '', true);
-		$rOutput['allowed_stb_types'] = array();
+		$rOutput['allowed_stb_types'] = [];
 		if (is_array($decodedAllowedSTB)) {
 			// Drop blank entries so an "empty" selection (an unset multiselect is
 			// commonly stored as [""]) collapses to a truly empty array. An empty

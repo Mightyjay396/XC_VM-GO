@@ -17,7 +17,6 @@ use XcVm\Core\Updates\UpdateChannels;
  */
 
 class BinariesCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'binaries';
 	}
@@ -101,7 +100,7 @@ class BinariesCommand implements CommandInterface {
 		$rLogFile = $rLogDir . 'binaries_update_' . date('Ymd_His') . '.log';
 		$rDetachedCommand = 'nohup ' . $rCommand . ' > ' . escapeshellarg($rLogFile) . ' 2>&1 < /dev/null & echo $!';
 		echo "Starting binaries updater in background...\n";
-		$rPid = trim((string)shell_exec($rDetachedCommand));
+		$rPid = trim((string) shell_exec($rDetachedCommand));
 
 		if (empty($rPid)) {
 			echo "Failed to start binaries updater in background.\n";

@@ -16,57 +16,55 @@ use XcVm\Core\Util\ImageUtils;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class LiveController extends BasePlayerController
-{
-    public function index()
-    {
-        global $db, $rUserInfo;
+class LiveController extends BasePlayerController {
+	public function index() {
+		global $db, $rUserInfo;
 
-        if (!in_array(1, $rUserInfo['allowed_outputs']) || SettingsManager::get('disable_hls')) {
-            header('Location: index');
-            exit;
-        }
+		if (!in_array(1, $rUserInfo['allowed_outputs']) || SettingsManager::get('disable_hls')) {
+			header('Location: index');
+			exit;
+		}
 
-        $rCategories = getOrderedCategories($rUserInfo['category_ids'], 'live');
-        $rFilterArray = array('all' => 'All Channels', 'timeshift' => 'Timeshift Only', 'epg' => 'Has EPG Only');
-        $rFilterBy = (isset($rFilterArray[RequestManager::get('filter') ?? '']) ? RequestManager::get('filter') : 'all');
-        $rPicking = array('filter' => $rFilterBy);
-        $rSortArray = array('number' => 'Default', 'name' => 'Name A-Z', 'added' => 'Date Added');
-        $rSortBy = (isset($rSortArray[RequestManager::get('sort') ?? '']) ? RequestManager::get('sort') : 'number');
-        $rCategoryID = (intval(RequestManager::get('category') ?? 0) ?: $rCategories[0]['id']);
-        $rSearchBy = (RequestManager::get('search') ?? null);
-        $rStreamIDs = array();
-        $rStreams = getUserStreams($rUserInfo, array('live', 'created_live'), $rCategoryID, null, $rSortBy, $rSearchBy, $rPicking, null, null, true);
+		$rCategories = getOrderedCategories($rUserInfo['category_ids'], 'live');
+		$rFilterArray = ['all' => 'All Channels', 'timeshift' => 'Timeshift Only', 'epg' => 'Has EPG Only'];
+		$rFilterBy = (isset($rFilterArray[RequestManager::get('filter') ?? '']) ? RequestManager::get('filter') : 'all');
+		$rPicking = ['filter' => $rFilterBy];
+		$rSortArray = ['number' => 'Default', 'name' => 'Name A-Z', 'added' => 'Date Added'];
+		$rSortBy = (isset($rSortArray[RequestManager::get('sort') ?? '']) ? RequestManager::get('sort') : 'number');
+		$rCategoryID = (intval(RequestManager::get('category') ?? 0) ?: $rCategories[0]['id']);
+		$rSearchBy = (RequestManager::get('search') ?? null);
+		$rStreamIDs = [];
+		$rStreams = getUserStreams($rUserInfo, ['live', 'created_live'], $rCategoryID, null, $rSortBy, $rSearchBy, $rPicking, null, null, true);
 
-        foreach ($rStreams as $rStream) {
-            $rStreamIDs[] = $rStream['id'];
-        }
+		foreach ($rStreams as $rStream) {
+			$rStreamIDs[] = $rStream['id'];
+		}
 
-        $db->query('SELECT `movie_properties` FROM `streams` WHERE `movie_properties` IS NOT NULL AND `type` = 2 ORDER BY RAND() LIMIT 5;');
-        $rCover = '';
+		$db->query('SELECT `movie_properties` FROM `streams` WHERE `movie_properties` IS NOT NULL AND `type` = 2 ORDER BY RAND() LIMIT 5;');
+		$rCover = '';
 
-        foreach ($db->get_rows() as $rStream) {
-            $rProperties = json_decode($rStream['movie_properties'], true);
+		foreach ($db->get_rows() as $rStream) {
+			$rProperties = json_decode($rStream['movie_properties'], true);
 
-            if (!empty($rProperties['backdrop_path'][0])) {
-                $rCover = ImageUtils::validateURL($rProperties['backdrop_path'][0]);
-                break;
-            }
-        }
+			if (!empty($rProperties['backdrop_path'][0])) {
+				$rCover = ImageUtils::validateURL($rProperties['backdrop_path'][0]);
+				break;
+			}
+		}
 
-        $GLOBALS['_TITLE'] = 'Live TV';
-        $GLOBALS['rStreamIDs'] = $rStreamIDs;
+		$GLOBALS['_TITLE'] = 'Live TV';
+		$GLOBALS['rStreamIDs'] = $rStreamIDs;
 
-        $this->render('live', [
-            'rCategories' => $rCategories,
-            'rFilterArray' => $rFilterArray,
-            'rFilterBy' => $rFilterBy,
-            'rSortArray' => $rSortArray,
-            'rSortBy' => $rSortBy,
-            'rCategoryID' => $rCategoryID,
-            'rSearchBy' => $rSearchBy,
-            'rStreamIDs' => $rStreamIDs,
-            'rCover' => $rCover,
-        ]);
-    }
+		$this->render('live', [
+			'rCategories' => $rCategories,
+			'rFilterArray' => $rFilterArray,
+			'rFilterBy' => $rFilterBy,
+			'rSortArray' => $rSortArray,
+			'rSortBy' => $rSortBy,
+			'rCategoryID' => $rCategoryID,
+			'rSearchBy' => $rSearchBy,
+			'rStreamIDs' => $rStreamIDs,
+			'rCover' => $rCover,
+		]);
+	}
 }

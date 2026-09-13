@@ -93,7 +93,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 
 		echo "Diagnosing node #{$rServerID} FROM the main — " . ($rServer['server_name'] ?? '(no name)') . " @ {$rIP}:{$rPort}\n";
 		echo str_repeat('-', 64) . "\n";
-		$rProblems = array();
+		$rProblems = [];
 
 		$this->heartbeatSection($rServer, $rNow, $rProblems);
 
@@ -132,7 +132,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 
 		echo "Self-diagnosis on node #" . SERVER_ID . " — " . ($rMe['server_name'] ?? '(no name)') . " (type " . ($rMe['server_type'] ?? '?') . ")\n";
 		echo str_repeat('-', 64) . "\n";
-		$rProblems = array();
+		$rProblems = [];
 
 		// 1. How the main currently sees me (my own row in the shared DB).
 		$this->heartbeatSection($rMe, $rNow, $rProblems);
@@ -259,8 +259,8 @@ class ServerDiagnoseCommand implements CommandInterface {
 	private function signalSection(int $rServerID, int $rNow, array &$rProblems): void {
 		$db = self::db();
 		$db->query('SELECT COUNT(*) AS `c`, MIN(`time`) AS `oldest` FROM `signals` WHERE `server_id` = ?;', $rServerID);
-		$rRows    = $db->get_rows() ?: array();
-		$rSig     = $rRows[0] ?? array();
+		$rRows    = $db->get_rows() ?: [];
+		$rSig     = $rRows[0] ?? [];
 		$rBacklog = intval($rSig['c'] ?? 0);
 		$rOldest  = $rBacklog > 0 ? ($rNow - intval($rSig['oldest'])) : 0;
 		$rOk      = ($rBacklog === 0) || ($rOldest < self::SIGNAL_STUCK_AFTER);
@@ -295,7 +295,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 	}
 
 	private function icmpPing(string $rIP): bool {
-		$rOut = array();
+		$rOut = [];
 		$rCode = 1;
 		exec('ping -c1 -W2 ' . escapeshellarg($rIP) . ' 2>/dev/null', $rOut, $rCode);
 		return $rCode === 0;
@@ -316,22 +316,22 @@ class ServerDiagnoseCommand implements CommandInterface {
 	/** @return array{0:int,1:string} [http_code, curl_error]; code 0 = no response. */
 	private function httpApi(string $rURL): array {
 		$ch = curl_init($rURL);
-		curl_setopt_array($ch, array(
+		curl_setopt_array($ch, [
 			CURLOPT_RETURNTRANSFER => true,
 			CURLOPT_CONNECTTIMEOUT => 3,
 			CURLOPT_TIMEOUT        => 6,
 			CURLOPT_SSL_VERIFYPEER => false,
 			CURLOPT_SSL_VERIFYHOST => 0,
-		));
+		]);
 		curl_exec($ch);
 		$rCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
 		$rErr  = curl_error($ch);
 		curl_close($ch);
-		return array($rCode, $rErr);
+		return [$rCode, $rErr];
 	}
 
 	private function svcActive(string $rName): bool {
-		$rOut = array();
+		$rOut = [];
 		$rCode = 1;
 		exec('systemctl is-active ' . escapeshellarg($rName) . ' 2>/dev/null', $rOut, $rCode);
 		return trim(implode('', $rOut)) === 'active';
@@ -339,7 +339,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 
 	/** @return true|false|string true=blocked, false=not, string=could not check. */
 	private function iptablesBlocks(string $rIP) {
-		$rOut = array();
+		$rOut = [];
 		$rCode = 1;
 		exec('sudo -n iptables -nL INPUT 2>/dev/null', $rOut, $rCode);
 		if ($rCode !== 0) {
@@ -356,7 +356,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 	private function crontabHas(string $rNeedle): bool {
 		// Panel crons live in the xc_vm USER's crontab (LegacyInitializer::generateCron),
 		// not root's. `-u xc_vm` needs root; fall back to the caller's own crontab.
-		$rOut = array();
+		$rOut = [];
 		$rCode = 1;
 		exec('crontab -u xc_vm -l 2>/dev/null', $rOut, $rCode);
 		if ($rCode !== 0) {
@@ -370,7 +370,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 
 	/** Whether a process whose command line matches the ERE $rPattern is running. */
 	private function processRunning(string $rPattern): bool {
-		$rOut = array();
+		$rOut = [];
 		$rCode = 1;
 		exec('pgrep -f ' . escapeshellarg($rPattern) . ' 2>/dev/null', $rOut, $rCode);
 		return $rCode === 0 && count($rOut) > 0;

@@ -26,7 +26,6 @@ use XcVm\Domain\Server\ServerRepository;
  */
 
 class ImageResizeService {
-
 	/**
 	 * Process resize request and send image response.
 	 *
@@ -40,9 +39,9 @@ class ImageResizeService {
 		set_time_limit(2);
 		ini_set('default_socket_timeout', 2);
 
-		$rCacheDir     = $rOptions['cacheDir']     ?? (defined('IMAGES_PATH') ? IMAGES_PATH . 'admin/' : '');
-		$rPlaceholder  = $rOptions['placeholder']  ?? null;
-		$rExtraParams  = $rOptions['extraParams']  ?? false;
+		$rCacheDir     = $rOptions['cacheDir'] ?? (defined('IMAGES_PATH') ? IMAGES_PATH . 'admin/' : '');
+		$rPlaceholder  = $rOptions['placeholder'] ?? null;
+		$rExtraParams  = $rOptions['extraParams'] ?? false;
 
 		if ($rCacheDir && !is_dir($rCacheDir)) {
 			@mkdir($rCacheDir, 0755, true);
@@ -115,7 +114,10 @@ class ImageResizeService {
 
 				if ($rImageSize === null) {
 					$rImageSize = ImageUtils::getImageSizeKeepAspectRatio(
-						$rImageInfo[0], $rImageInfo[1], $rMaxW, $rMaxH
+						$rImageInfo[0],
+						$rImageInfo[1],
+						$rMaxW,
+						$rMaxH
 					);
 				}
 
@@ -133,10 +135,16 @@ class ImageResizeService {
 						imagealphablending($rImageP, false);
 						imagesavealpha($rImageP, true);
 						imagecopyresampled(
-							$rImageP, $rImage,
-							0, 0, 0, 0,
-							$rImageSize['width'], $rImageSize['height'],
-							$rImageInfo[0], $rImageInfo[1]
+							$rImageP,
+							$rImage,
+							0,
+							0,
+							0,
+							0,
+							$rImageSize['width'],
+							$rImageSize['height'],
+							$rImageInfo[0],
+							$rImageInfo[1]
 						);
 						@imagepng($rImageP, $rImagePath);
 					}

@@ -29,11 +29,16 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class ResellerAPI {
 	use DatabaseAware;
-	public static $rSettings = array();
-	public static $rServers = array();
-	public static $rProxyServers = array();
-	public static $rUserInfo = array();
-	public static $rPermissions = array();
+
+	public static $rSettings = [];
+
+	public static $rServers = [];
+
+	public static $rProxyServers = [];
+
+	public static $rUserInfo = [];
+
+	public static $rPermissions = [];
 
 	/**
 	 * Dispatch a reseller API action by type.
@@ -42,8 +47,8 @@ class ResellerAPI {
 	 * @param array  $rData Request payload.
 	 * @return array Action result.
 	 */
-	public static function processData($rType, $rData) {
-		$rArray = array('line' => array('edit', 'trial', 'bouquets_selected', 'pair_id', 'username', 'password', 'member_id', 'package', 'contact', 'reseller_notes', 'allowed_ips', 'allowed_ua', 'bypass_ua', 'is_isplock', 'isp_clear'), 'mag' => array('edit', 'trial', 'bouquets_selected', 'pair_id', 'mac', 'member_id', 'package', 'parent_password', 'sn', 'stb_type', 'image_version', 'hw_version', 'device_id', 'device_id2', 'ver', 'reseller_notes', 'allowed_ips', 'is_isplock', 'isp_clear'), 'enigma' => array('edit', 'trial', 'bouquets_selected', 'pair_id', 'mac', 'member_id', 'package', 'modem_mac', 'local_ip', 'enigma_version', 'cpu', 'lversion', 'token', 'reseller_notes', 'allowed_ips', 'is_isplock', 'isp_clear'), 'user' => array('edit', 'username', 'password', 'owner_id', 'email', 'reseller_dns', 'notes', 'member_group_id'), 'ticket' => array('edit', 'message', 'title', 'respond'), 'profile' => array('email', 'password', 'api_key', 'reseller_dns', 'theme', 'hue', 'timezone'));
+	public static function processData(string $rType, array $rData) {
+		$rArray = ['line' => ['edit', 'trial', 'bouquets_selected', 'pair_id', 'username', 'password', 'member_id', 'package', 'contact', 'reseller_notes', 'allowed_ips', 'allowed_ua', 'bypass_ua', 'is_isplock', 'isp_clear'], 'mag' => ['edit', 'trial', 'bouquets_selected', 'pair_id', 'mac', 'member_id', 'package', 'parent_password', 'sn', 'stb_type', 'image_version', 'hw_version', 'device_id', 'device_id2', 'ver', 'reseller_notes', 'allowed_ips', 'is_isplock', 'isp_clear'], 'enigma' => ['edit', 'trial', 'bouquets_selected', 'pair_id', 'mac', 'member_id', 'package', 'modem_mac', 'local_ip', 'enigma_version', 'cpu', 'lversion', 'token', 'reseller_notes', 'allowed_ips', 'is_isplock', 'isp_clear'], 'user' => ['edit', 'username', 'password', 'owner_id', 'email', 'reseller_dns', 'notes', 'member_group_id'], 'ticket' => ['edit', 'message', 'title', 'respond'], 'profile' => ['email', 'password', 'api_key', 'reseller_dns', 'theme', 'hue', 'timezone']];
 
 		foreach ($rData as $rKey => $rValue) {
 			if (in_array($rKey, $rArray[$rType])) {
@@ -61,7 +66,7 @@ class ResellerAPI {
 	 * @param int|null $rUserID Reseller user id, or null for the current session user.
 	 * @return void
 	 */
-	public static function init($rUserID = null) {
+	public static function init(?int $rUserID = null) {
 		global $rPermissions;
 		self::$rSettings = SettingsManager::getAll();
 		self::$rServers = ServerRepository::getStreamingSimple($rPermissions);
@@ -75,7 +80,7 @@ class ResellerAPI {
 		if (!$rUserID) {
 		} else {
 			self::$rUserInfo = UserRepository::getRegisteredUserById($rUserID);
-			self::$rPermissions = array_merge((AuthRepository::getPermissions(self::$rUserInfo['member_group_id']) ?: array()), (AuthRepository::getGroupPermissions(self::$rUserInfo['id']) ?: array()));
+			self::$rPermissions = array_merge((AuthRepository::getPermissions(self::$rUserInfo['member_group_id']) ?: []), (AuthRepository::getGroupPermissions(self::$rUserInfo['id']) ?: []));
 		}
 	}
 
@@ -85,19 +90,17 @@ class ResellerAPI {
 	 * @param array $rData Submitted profile fields.
 	 * @return array Result status payload.
 	 */
-	public static function editResellerProfile($rData) {
+	public static function editResellerProfile(array $rData) {
 		$db = self::db();
 		global $allowedLangs;
 		$rData = self::processData('profile', $rData);
 
 		if (0 >= strlen($rData['email']) || filter_var($rData['email'], FILTER_VALIDATE_EMAIL)) {
-
-
 			if (0 < strlen($rData['password'])) {
 				if (!(strlen($rData['password']) < intval(self::$rPermissions['minimum_password_length']))) {
 					$rPassword = Authenticator::hashPassword($rData['password']);
 				} else {
-					return array('status' => STATUS_INVALID_PASSWORD);
+					return ['status' => STATUS_INVALID_PASSWORD];
 				}
 			} else {
 				$rPassword = self::$rUserInfo['password'];
@@ -112,7 +115,7 @@ class ResellerAPI {
 				$rData['hue'] = '';
 			}
 
-			if (!in_array($rData['theme'], array(0, 1))) {
+			if (!in_array($rData['theme'], [0, 1])) {
 				$rData['theme'] = 0;
 			}
 
@@ -122,10 +125,10 @@ class ResellerAPI {
 
 			$db->query('UPDATE `users` SET `password` = ?, `email` = ?, `reseller_dns` = ?, `theme` = ?, `hue` = ?, `timezone` = ?, `api_key` = ?, `lang` = ? WHERE `id` = ?;', $rPassword, $rData['email'], $rData['reseller_dns'], $rData['theme'], $rData['hue'], $rData['timezone'], $rData['api_key'], $rData['lang'], self::$rUserInfo['id']);
 
-			return array('status' => STATUS_SUCCESS);
+			return ['status' => STATUS_SUCCESS];
 		}
 
-		return array('status' => STATUS_INVALID_EMAIL);
+		return ['status' => STATUS_INVALID_EMAIL];
 	}
 
 	/**
@@ -134,7 +137,7 @@ class ResellerAPI {
 	 * @param array $rData Login payload.
 	 * @return array Result status payload.
 	 */
-	public static function processLogin($rData) {
+	public static function processLogin(array $rData) {
 		return Authenticator::resellerLogin($rData);
 	}
 
@@ -144,19 +147,15 @@ class ResellerAPI {
 	 * @param array $rData Submitted MAG/line data.
 	 * @return array|false Result status payload, or false on authorization/validation failure.
 	 */
-	public static function processMAG($rData) {
+	public static function processMAG(array $rData) {
 		$db = self::db();
 		$rData = self::processData('mag', $rData);
 
 		if (self::$rPermissions['create_mag']) {
-
-
 			if (isset($rData['edit'])) {
 				$rArray = MagService::getById($rData['edit']);
 
 				if ($rArray && Authorization::check('line', $rArray['user_id'])) {
-
-
 					$rUserArray = UserRepository::getLineById($rArray['user_id']);
 				} else {
 					return false;
@@ -180,8 +179,6 @@ class ResellerAPI {
 				$rPackage = PackageService::getById($rData['package']);
 
 				if ($rPackage['is_mag']) {
-
-
 					if (0 < intval($rUserArray['package_id']) && $rPackage['check_compatible']) {
 						$rCompatible = PackageService::checkCompatible($rUserArray['package_id'], $rPackage['id']);
 					} else {
@@ -193,7 +190,7 @@ class ResellerAPI {
 							if ($rGenTrials) {
 								$rCost = intval($rPackage['trial_credits']);
 							} else {
-								return array('status' => STATUS_NO_TRIALS, 'data' => $rData);
+								return ['status' => STATUS_NO_TRIALS, 'data' => $rData];
 							}
 						} else {
 							$rOverride = json_decode(self::$rUserInfo['override_packages'], true);
@@ -227,7 +224,7 @@ class ResellerAPI {
 
 							if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
 							} else {
-								$rNewBouquets = array();
+								$rNewBouquets = [];
 
 								foreach ($rData['bouquets_selected'] as $rBouquetID) {
 									if (!in_array($rBouquetID, $rBouquets)) {
@@ -249,8 +246,8 @@ class ResellerAPI {
 							$rUserArray['force_server_id'] = $rPackage['force_server_id'];
 							$rUserArray['forced_country'] = $rPackage['forced_country'];
 							$rUserArray['is_isplock'] = $rPackage['is_isplock'];
-							$rOutputs = array();
-							$rAccessOutput = json_decode($rPackage['output_formats'], true) ?: array();
+							$rOutputs = [];
+							$rAccessOutput = json_decode($rPackage['output_formats'], true) ?: [];
 
 							foreach ($rAccessOutput as $rOutputID) {
 								$rOutputs[] = $rOutputID;
@@ -259,17 +256,17 @@ class ResellerAPI {
 							$rUserArray['package_id'] = $rPackage['id'];
 							$rArray['lock_device'] = $rPackage['lock_device'];
 						} else {
-							return array('status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData);
+							return ['status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData];
 						}
 					} else {
-						return array('status' => STATUS_INVALID_PACKAGE, 'data' => $rData);
+						return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 					}
 				} else {
-					return array('status' => STATUS_INVALID_TYPE, 'data' => $rData);
+					return ['status' => STATUS_INVALID_TYPE, 'data' => $rData];
 				}
 			} else {
 				if (!isset($rUserArray['id'])) {
-					return array('status' => STATUS_INVALID_PACKAGE, 'data' => $rData);
+					return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 				}
 
 				if (!(isset($rData['edit']) && $rUserArray['package_id'])) {
@@ -279,7 +276,7 @@ class ResellerAPI {
 
 					if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
 					} else {
-						$rNewBouquets = array();
+						$rNewBouquets = [];
 
 						foreach ($rData['bouquets_selected'] as $rBouquetID) {
 							if (!in_array($rBouquetID, $rBouquets)) {
@@ -299,7 +296,7 @@ class ResellerAPI {
 				}
 			}
 
-			foreach (array('parent_password', 'sn', 'stb_type', 'image_version', 'hw_version', 'device_id', 'device_id2', 'ver') as $rKey) {
+			foreach (['parent_password', 'sn', 'stb_type', 'image_version', 'hw_version', 'device_id', 'device_id2', 'ver'] as $rKey) {
 				$rArray[$rKey] = $rData[$rKey];
 			}
 			$rUserArray['reseller_notes'] = $rData['reseller_notes'];
@@ -316,7 +313,7 @@ class ResellerAPI {
 				if (isset($rData['allowed_ips'])) {
 					if (is_array($rData['allowed_ips'])) {
 					} else {
-						$rData['allowed_ips'] = array($rData['allowed_ips']);
+						$rData['allowed_ips'] = [$rData['allowed_ips']];
 					}
 
 					$rUserArray['allowed_ips'] = json_encode($rData['allowed_ips']);
@@ -338,8 +335,6 @@ class ResellerAPI {
 			}
 
 			if (filter_var($rData['mac'], FILTER_VALIDATE_MAC)) {
-
-
 				if (isset($rData['edit'])) {
 					$db->query('SELECT `mag_id` FROM `mag_devices` WHERE mac = ? AND `mag_id` <> ? LIMIT 1;', $rArray['mac'], $rData['edit']);
 				} else {
@@ -347,8 +342,6 @@ class ResellerAPI {
 				}
 
 				if (0 >= $db->num_rows()) {
-
-
 					$rArray['mac'] = $rData['mac'];
 
 					if (isset($rData['pair_id']) && Authorization::check('line', $rData['pair_id'])) {
@@ -364,7 +357,7 @@ class ResellerAPI {
 					} else {
 						$rInsertID = $db->last_insert_id();
 						MagService::syncLineDevices($rInsertID);
-						$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(array('type' => 'update_line', 'id' => $rInsertID)));
+						$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_line', 'id' => $rInsertID]));
 						$rArray['user_id'] = $rInsertID;
 						unset($rArray['user'], $rArray['paired']);
 
@@ -405,7 +398,7 @@ class ResellerAPI {
 								$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'mag', ?, ?, null, ?, ?, ?, ?);", self::$rUserInfo['id'], 'edit', $rInsertID, 0, self::$rUserInfo['credits'], time(), json_encode($rData));
 							}
 
-							return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						}
 
 						if (isset($rData['edit'])) {
@@ -414,13 +407,13 @@ class ResellerAPI {
 						}
 					}
 
-					return array('status' => STATUS_FAILURE, 'data' => $rData);
+					return ['status' => STATUS_FAILURE, 'data' => $rData];
 				}
 
-				return array('status' => STATUS_EXISTS_MAC, 'data' => $rData);
+				return ['status' => STATUS_EXISTS_MAC, 'data' => $rData];
 			}
 
-			return array('status' => STATUS_INVALID_MAC, 'data' => $rData);
+			return ['status' => STATUS_INVALID_MAC, 'data' => $rData];
 		} else {
 			return false;
 		}
@@ -432,19 +425,15 @@ class ResellerAPI {
 	 * @param array $rData Submitted Enigma2/line data.
 	 * @return array|false Result status payload, or false on authorization/validation failure.
 	 */
-	public static function processEnigma($rData) {
+	public static function processEnigma(array $rData) {
 		$db = self::db();
 		$rData = self::processData('enigma', $rData);
 
 		if (self::$rPermissions['create_enigma']) {
-
-
 			if (isset($rData['edit'])) {
 				$rArray = EnigmaService::getById($rData['edit']);
 
 				if ($rArray && Authorization::check('line', $rArray['user_id'])) {
-
-
 					$rUserArray = UserRepository::getLineById($rArray['user_id']);
 				} else {
 					return false;
@@ -467,8 +456,6 @@ class ResellerAPI {
 				$rPackage = PackageService::getById($rData['package']);
 
 				if ($rPackage['is_e2']) {
-
-
 					if (0 < intval($rUserArray['package_id']) && $rPackage['check_compatible']) {
 						$rCompatible = PackageService::checkCompatible($rUserArray['package_id'], $rPackage['id']);
 					} else {
@@ -480,7 +467,7 @@ class ResellerAPI {
 							if ($rGenTrials) {
 								$rCost = intval($rPackage['trial_credits']);
 							} else {
-								return array('status' => STATUS_NO_TRIALS, 'data' => $rData);
+								return ['status' => STATUS_NO_TRIALS, 'data' => $rData];
 							}
 						} else {
 							$rOverride = json_decode(self::$rUserInfo['override_packages'], true);
@@ -514,7 +501,7 @@ class ResellerAPI {
 
 							if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
 							} else {
-								$rNewBouquets = array();
+								$rNewBouquets = [];
 
 								foreach ($rData['bouquets_selected'] as $rBouquetID) {
 									if (!in_array($rBouquetID, $rBouquets)) {
@@ -536,8 +523,8 @@ class ResellerAPI {
 							$rUserArray['force_server_id'] = $rPackage['force_server_id'];
 							$rUserArray['forced_country'] = $rPackage['forced_country'];
 							$rUserArray['is_isplock'] = $rPackage['is_isplock'];
-							$rOutputs = array();
-							$rAccessOutput = json_decode($rPackage['output_formats'], true) ?: array();
+							$rOutputs = [];
+							$rAccessOutput = json_decode($rPackage['output_formats'], true) ?: [];
 
 							foreach ($rAccessOutput as $rOutputID) {
 								$rOutputs[] = $rOutputID;
@@ -546,17 +533,17 @@ class ResellerAPI {
 							$rUserArray['package_id'] = $rPackage['id'];
 							$rArray['lock_device'] = $rPackage['lock_device'];
 						} else {
-							return array('status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData);
+							return ['status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData];
 						}
 					} else {
-						return array('status' => STATUS_INVALID_PACKAGE, 'data' => $rData);
+						return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 					}
 				} else {
-					return array('status' => STATUS_INVALID_TYPE, 'data' => $rData);
+					return ['status' => STATUS_INVALID_TYPE, 'data' => $rData];
 				}
 			} else {
 				if (!isset($rUserArray['id'])) {
-					return array('status' => STATUS_INVALID_PACKAGE, 'data' => $rData);
+					return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 				}
 
 				if (!(isset($rData['edit']) && $rUserArray['package_id'])) {
@@ -566,7 +553,7 @@ class ResellerAPI {
 
 					if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
 					} else {
-						$rNewBouquets = array();
+						$rNewBouquets = [];
 
 						foreach ($rData['bouquets_selected'] as $rBouquetID) {
 							if (!in_array($rBouquetID, $rBouquets)) {
@@ -586,7 +573,7 @@ class ResellerAPI {
 				}
 			}
 
-			foreach (array('modem_mac', 'local_ip', 'enigma_version', 'cpu', 'lversion', 'token') as $rKey) {
+			foreach (['modem_mac', 'local_ip', 'enigma_version', 'cpu', 'lversion', 'token'] as $rKey) {
 				$rArray[$rKey] = $rData[$rKey];
 			}
 			$rUserArray['reseller_notes'] = $rData['reseller_notes'];
@@ -603,7 +590,7 @@ class ResellerAPI {
 				if (isset($rData['allowed_ips'])) {
 					if (is_array($rData['allowed_ips'])) {
 					} else {
-						$rData['allowed_ips'] = array($rData['allowed_ips']);
+						$rData['allowed_ips'] = [$rData['allowed_ips']];
 					}
 
 					$rUserArray['allowed_ips'] = json_encode($rData['allowed_ips']);
@@ -625,8 +612,6 @@ class ResellerAPI {
 			}
 
 			if (filter_var($rData['mac'], FILTER_VALIDATE_MAC)) {
-
-
 				if (isset($rData['edit'])) {
 					$db->query('SELECT `device_id` FROM `enigma2_devices` WHERE mac = ? AND `device_id` <> ? LIMIT 1;', $rArray['mac'], $rData['edit']);
 				} else {
@@ -634,8 +619,6 @@ class ResellerAPI {
 				}
 
 				if (0 >= $db->num_rows()) {
-
-
 					$rArray['mac'] = $rData['mac'];
 
 					if (isset($rData['pair_id']) && Authorization::check('line', $rData['pair_id'])) {
@@ -651,7 +634,7 @@ class ResellerAPI {
 					} else {
 						$rInsertID = $db->last_insert_id();
 						MagService::syncLineDevices($rInsertID);
-						$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(array('type' => 'update_line', 'id' => $rInsertID)));
+						$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_line', 'id' => $rInsertID]));
 						$rArray['user_id'] = $rInsertID;
 						unset($rArray['user'], $rArray['paired']);
 
@@ -691,7 +674,7 @@ class ResellerAPI {
 								$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'enigma', ?, ?, null, ?, ?, ?, ?);", self::$rUserInfo['id'], 'edit', $rInsertID, 0, self::$rUserInfo['credits'], time(), json_encode($rData));
 							}
 
-							return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						}
 
 						if (isset($rData['edit'])) {
@@ -700,13 +683,13 @@ class ResellerAPI {
 						}
 					}
 
-					return array('status' => STATUS_FAILURE, 'data' => $rData);
+					return ['status' => STATUS_FAILURE, 'data' => $rData];
 				}
 
-				return array('status' => STATUS_EXISTS_MAC, 'data' => $rData);
+				return ['status' => STATUS_EXISTS_MAC, 'data' => $rData];
 			}
 
-			return array('status' => STATUS_INVALID_MAC, 'data' => $rData);
+			return ['status' => STATUS_INVALID_MAC, 'data' => $rData];
 		} else {
 			return false;
 		}
@@ -718,19 +701,15 @@ class ResellerAPI {
 	 * @param array $rData Submitted user data.
 	 * @return array|false Result status payload, or false on authorization/validation failure.
 	 */
-	public static function processUser($rData) {
+	public static function processUser(array $rData) {
 		$db = self::db();
 		$rData = self::processData('user', $rData);
 
 		if (self::$rPermissions['create_sub_resellers']) {
-
-
 			if (isset($rData['edit'])) {
 				$rArray = UserRepository::getRegisteredUserById($rData['edit']);
 
 				if ($rArray && Authorization::check('user', $rArray['id'])) {
-
-
 					if ($rArray['id'] != self::$rUserInfo['id']) {
 					} else {
 						return false;
@@ -763,14 +742,8 @@ class ResellerAPI {
 			}
 
 			if (strlen($rData['username']) >= self::$rPermissions['minimum_username_length'] || (isset($rData['edit']) && strlen($rData['username']) == 0)) {
-
-
 				if (strlen($rData['password']) >= self::$rPermissions['minimum_password_length'] || (isset($rData['edit']) && strlen($rData['password']) == 0)) {
-
-
 					if (!QueryHelper::checkExists('users', 'username', $rArray['username'], 'id', $rData['edit'] ?? null)) {
-
-
 						$rArray['username'] = $rData['username'];
 
 						if (0 >= strlen($rData['password'])) {
@@ -790,7 +763,7 @@ class ResellerAPI {
 
 							if (self::$rUserInfo['credits'] - $rCost >= 0) {
 							} else {
-								return array('status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData);
+								return ['status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData];
 							}
 						}
 
@@ -800,7 +773,7 @@ class ResellerAPI {
 							if (0 < count(self::$rPermissions['subresellers'])) {
 								$rArray['member_group_id'] = self::$rPermissions['subresellers'][0];
 							} else {
-								return array('status' => STATUS_INVALID_SUBRESELLER, 'data' => $rData);
+								return ['status' => STATUS_INVALID_SUBRESELLER, 'data' => $rData];
 							}
 						}
 
@@ -822,19 +795,19 @@ class ResellerAPI {
 								$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'user', ?, ?, null, ?, ?, ?, ?);", self::$rUserInfo['id'], 'edit', $rInsertID, 0, self::$rUserInfo['credits'], time(), json_encode($rData));
 							}
 
-							return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						}
 
-						return array('status' => STATUS_FAILURE, 'data' => $rData);
+						return ['status' => STATUS_FAILURE, 'data' => $rData];
 					}
 
-					return array('status' => STATUS_EXISTS_USERNAME, 'data' => $rData);
+					return ['status' => STATUS_EXISTS_USERNAME, 'data' => $rData];
 				}
 
-				return array('status' => STATUS_INVALID_PASSWORD, 'data' => $rData);
+				return ['status' => STATUS_INVALID_PASSWORD, 'data' => $rData];
 			}
 
-			return array('status' => STATUS_INVALID_USERNAME, 'data' => $rData);
+			return ['status' => STATUS_INVALID_USERNAME, 'data' => $rData];
 		}
 
 		return false;
@@ -846,7 +819,7 @@ class ResellerAPI {
 	 * @param array $rData Ticket payload.
 	 * @return array|false Result status payload, or false on authorization failure.
 	 */
-	public static function submitTicket($rData) {
+	public static function submitTicket(array $rData) {
 		$db = self::db();
 		$rData = self::processData('ticket', $rData);
 
@@ -863,9 +836,6 @@ class ResellerAPI {
 		}
 
 		if (!(strlen($rData['title']) == 0 && !isset($rData['respond']) || strlen($rData['message']) == 0)) {
-
-
-
 			$rArray['member_id'] = self::$rUserInfo['id'];
 
 			if (!isset($rData['respond'])) {
@@ -880,10 +850,10 @@ class ResellerAPI {
 					$rInsertID = $db->last_insert_id();
 					$db->query('INSERT INTO `tickets_replies`(`ticket_id`, `admin_reply`, `message`, `date`) VALUES(?, 0, ?, ?);', $rInsertID, $rData['message'], time());
 
-					return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+					return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 				}
 
-				return array('status' => STATUS_FAILURE, 'data' => $rData);
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
 			}
 
 			$rTicket = TicketRepository::getById($rData['respond']);
@@ -897,13 +867,13 @@ class ResellerAPI {
 					$db->query('INSERT INTO `tickets_replies`(`ticket_id`, `admin_reply`, `message`, `date`) VALUES(?, 1, ?, ?);', $rData['respond'], $rData['message'], time());
 				}
 
-				return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rData['respond']));
+				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rData['respond']]];
 			}
 
-			return array('status' => STATUS_FAILURE, 'data' => $rData);
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
 		}
 
-		return array('status' => STATUS_INVALID_DATA, 'data' => $rData);
+		return ['status' => STATUS_INVALID_DATA, 'data' => $rData];
 	}
 
 	/**
@@ -912,16 +882,14 @@ class ResellerAPI {
 	 * @param array $rData Submitted line data.
 	 * @return array|false Result status payload, or false on authorization/validation failure.
 	 */
-	public static function processLine($rData) {
+	public static function processLine(array $rData) {
 		$db = self::db();
 		$rData = self::processData('line', $rData);
 
 		if (self::$rPermissions['create_line']) {
-
-
 			if (isset($rData['edit'])) {
 				$rArray = UserRepository::getLineById($rData['edit']);
-				$rOrigCredentials = array('username' => $rArray['username'], 'password' => $rArray['password']);
+				$rOrigCredentials = ['username' => $rArray['username'], 'password' => $rArray['password']];
 
 				if ($rArray && Authorization::check('line', $rArray['id'])) {
 				} else {
@@ -931,7 +899,7 @@ class ResellerAPI {
 				$rArray = QueryHelper::verifyPostTable('lines', $rData);
 				$rArray['created_at'] = time();
 				unset($rArray['id']);
-				$rOrigCredentials = array('username' => '', 'password' => '');
+				$rOrigCredentials = ['username' => '', 'password' => ''];
 			}
 
 			$rArray['is_mag'] = 0;
@@ -942,8 +910,6 @@ class ResellerAPI {
 				$rPackage = PackageService::getById($rData['package']);
 
 				if ($rPackage['is_line']) {
-
-
 					if (0 < intval($rArray['package_id']) && $rPackage['check_compatible']) {
 						$rCompatible = PackageService::checkCompatible($rArray['package_id'], $rPackage['id']);
 					} else {
@@ -955,7 +921,7 @@ class ResellerAPI {
 							if ($rGenTrials) {
 								$rCost = intval($rPackage['trial_credits']);
 							} else {
-								return array('status' => STATUS_NO_TRIALS, 'data' => $rData);
+								return ['status' => STATUS_NO_TRIALS, 'data' => $rData];
 							}
 						} else {
 							$rOverride = json_decode(self::$rUserInfo['override_packages'], true);
@@ -989,7 +955,7 @@ class ResellerAPI {
 
 							if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
 							} else {
-								$rNewBouquets = array();
+								$rNewBouquets = [];
 
 								foreach ($rData['bouquets_selected'] as $rBouquetID) {
 									if (!in_array($rBouquetID, $rBouquets)) {
@@ -1013,17 +979,17 @@ class ResellerAPI {
 							$rArray['is_isplock'] = $rPackage['is_isplock'];
 							$rArray['package_id'] = $rPackage['id'];
 						} else {
-							return array('status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData);
+							return ['status' => STATUS_INSUFFICIENT_CREDITS, 'data' => $rData];
 						}
 					} else {
-						return array('status' => STATUS_INVALID_PACKAGE, 'data' => $rData);
+						return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 					}
 				} else {
-					return array('status' => STATUS_INVALID_TYPE, 'data' => $rData);
+					return ['status' => STATUS_INVALID_TYPE, 'data' => $rData];
 				}
 			} else {
 				if (!isset($rArray['id'])) {
-					return array('status' => STATUS_INVALID_PACKAGE, 'data' => $rData);
+					return ['status' => STATUS_INVALID_PACKAGE, 'data' => $rData];
 				}
 
 				if (!(isset($rData['edit']) && $rArray['package_id'])) {
@@ -1033,7 +999,7 @@ class ResellerAPI {
 
 					if (!(self::$rPermissions['allow_change_bouquets'] && 0 < count($rData['bouquets_selected'] ?? []))) {
 					} else {
-						$rNewBouquets = array();
+						$rNewBouquets = [];
 
 						foreach ($rData['bouquets_selected'] as $rBouquetID) {
 							if (!in_array($rBouquetID, $rBouquets)) {
@@ -1092,7 +1058,7 @@ class ResellerAPI {
 				} else {
 					if (isset($rData['edit']) && $rData['username'] == $rOrigCredentials['username']) {
 					} else {
-						return array('status' => STATUS_INVALID_USERNAME, 'data' => $rData);
+						return ['status' => STATUS_INVALID_USERNAME, 'data' => $rData];
 					}
 				}
 			}
@@ -1108,7 +1074,7 @@ class ResellerAPI {
 				} else {
 					if (isset($rData['edit']) && $rData['password'] == $rOrigCredentials['password']) {
 					} else {
-						return array('status' => STATUS_INVALID_PASSWORD, 'data' => $rData);
+						return ['status' => STATUS_INVALID_PASSWORD, 'data' => $rData];
 					}
 				}
 			}
@@ -1124,14 +1090,12 @@ class ResellerAPI {
 			}
 
 			if (!QueryHelper::checkExists('lines', 'username', $rArray['username'], 'id', $rData['edit'] ?? null)) {
-
-
 				if (!self::$rPermissions['allow_restrictions']) {
 				} else {
 					if (isset($rData['allowed_ips'])) {
 						if (is_array($rData['allowed_ips'])) {
 						} else {
-							$rData['allowed_ips'] = array($rData['allowed_ips']);
+							$rData['allowed_ips'] = [$rData['allowed_ips']];
 						}
 
 						$rArray['allowed_ips'] = json_encode($rData['allowed_ips']);
@@ -1142,7 +1106,7 @@ class ResellerAPI {
 					if (isset($rData['allowed_ua'])) {
 						if (is_array($rData['allowed_ua'])) {
 						} else {
-							$rData['allowed_ua'] = array($rData['allowed_ua']);
+							$rData['allowed_ua'] = [$rData['allowed_ua']];
 						}
 
 						$rArray['allowed_ua'] = json_encode($rData['allowed_ua']);
@@ -1171,8 +1135,8 @@ class ResellerAPI {
 
 				if (!isset($rPackage)) {
 				} else {
-					$rOutputs = array();
-					$rAccessOutput = json_decode($rPackage['output_formats'], true) ?: array();
+					$rOutputs = [];
+					$rAccessOutput = json_decode($rPackage['output_formats'], true) ?: [];
 
 					foreach ($rAccessOutput as $rOutputID) {
 						$rOutputs[] = $rOutputID;
@@ -1210,13 +1174,13 @@ class ResellerAPI {
 						$db->query("INSERT INTO `users_logs`(`owner`, `type`, `action`, `log_id`, `package_id`, `cost`, `credits_after`, `date`, `deleted_info`) VALUES(?, 'line', ?, ?, null, ?, ?, ?, ?);", self::$rUserInfo['id'], 'edit', $rInsertID, 0, self::$rUserInfo['credits'], time(), json_encode($rData));
 					}
 
-					return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+					return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 				}
 
-				return array('status' => STATUS_FAILURE, 'data' => $rData);
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
 			}
 
-			return array('status' => STATUS_EXISTS_USERNAME, 'data' => $rData);
+			return ['status' => STATUS_EXISTS_USERNAME, 'data' => $rData];
 		}
 
 		return false;

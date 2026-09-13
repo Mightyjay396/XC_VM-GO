@@ -21,7 +21,6 @@ use XcVm\Infrastructure\Redis\RedisManager;
  */
 
 trait DaemonTrait {
-
 	/** @var string MD5 файла команды при запуске */
 	protected $rDaemonMD5;
 

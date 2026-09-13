@@ -20,180 +20,179 @@ use XcVm\Module\Watch\WatchService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class MiscAjaxController extends BaseAjaxController {
+	/** action=process — kill a process by pid on a server (process monitor). */
+	public function process(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'process_monitor');
 
-    /** action=process — kill a process by pid on a server (process monitor). */
-    public function process(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'process_monitor');
+		ApiClient::systemRequest(RequestManager::get('server'), ['action' => 'kill_pid', 'pid' => intval(RequestManager::get('pid'))]);
 
-        ApiClient::systemRequest(RequestManager::get('server'), array('action' => 'kill_pid', 'pid' => intval(RequestManager::get('pid'))));
+		$this->ok();
+	}
 
-        $this->ok();
-    }
+	/** action=profile — delete a transcoding profile. */
+	public function profile(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'tprofiles');
 
-    /** action=profile — delete a transcoding profile. */
-    public function profile(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'tprofiles');
+		if (RequestManager::get('sub') == 'delete') {
+			StreamConfigRepository::deleteProfile(RequestManager::get('profile_id'));
+			$this->ok();
+		}
 
-        if (RequestManager::get('sub') == 'delete') {
-            StreamConfigRepository::deleteProfile(RequestManager::get('profile_id'));
-            $this->ok();
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=reguserlist — Select2 registered-user search. */
+	public function reguserlist(): never {
+		$this->requireXhr();
+		$this->gateAny([
+			['adv', 'mng_regusers'],
+			['adv', 'manage_mag'],
+			['adv', 'manage_e2'],
+			['adv', 'edit_e2'],
+			['adv', 'add_e2'],
+			['adv', 'add_mag'],
+			['adv', 'edit_mag'],
+		]);
 
-    /** action=reguserlist — Select2 registered-user search. */
-    public function reguserlist(): never {
-        $this->requireXhr();
-        $this->gateAny(array(
-            array('adv', 'mng_regusers'),
-            array('adv', 'manage_mag'),
-            array('adv', 'manage_e2'),
-            array('adv', 'edit_e2'),
-            array('adv', 'add_e2'),
-            array('adv', 'add_mag'),
-            array('adv', 'edit_mag'),
-        ));
+		global $db;
+		$rReturn = ['total_count' => 0, 'items' => [], 'result' => true];
 
-        global $db;
-        $rReturn = array('total_count' => 0, 'items' => array(), 'result' => true);
+		if (RequestManager::has('search')) {
+			$rPage = RequestManager::has('page') ? intval(RequestManager::get('page')) : 1;
+			$db->query('SELECT COUNT(`id`) AS `id` FROM `users` WHERE `username` LIKE ?;', '%' . RequestManager::get('search') . '%');
+			$rReturn['total_count'] = $db->get_row()['id'];
+			$db->query('SELECT `id`, `username` FROM `users` WHERE `username` LIKE ? ORDER BY `username` ASC LIMIT ' . ($rPage - 1) * 100 . ', 100;', '%' . RequestManager::get('search') . '%');
 
-        if (RequestManager::has('search')) {
-            $rPage = RequestManager::has('page') ? intval(RequestManager::get('page')) : 1;
-            $db->query('SELECT COUNT(`id`) AS `id` FROM `users` WHERE `username` LIKE ?;', '%' . RequestManager::get('search') . '%');
-            $rReturn['total_count'] = $db->get_row()['id'];
-            $db->query('SELECT `id`, `username` FROM `users` WHERE `username` LIKE ? ORDER BY `username` ASC LIMIT ' . ($rPage - 1) * 100 . ', 100;', '%' . RequestManager::get('search') . '%');
+			foreach ($db->get_rows() as $rRow) {
+				$rReturn['items'][] = ['id' => $rRow['id'], 'text' => $rRow['username']];
+			}
+		}
 
-            foreach ($db->get_rows() as $rRow) {
-                $rReturn['items'][] = array('id' => $rRow['id'], 'text' => $rRow['username']);
-            }
-        }
+		$this->json($rReturn, JSON_PARTIAL_OUTPUT_ON_ERROR);
+	}
 
-        $this->json($rReturn, JSON_PARTIAL_OUTPUT_ON_ERROR);
-    }
+	/** action=userlist — Select2 line / MAG / Enigma2 search. */
+	public function userlist(): never {
+		$this->requireXhr();
+		$this->gateAny([
+			['adv', 'edit_e2'],
+			['adv', 'add_e2'],
+			['adv', 'add_mag'],
+			['adv', 'edit_mag'],
+		]);
 
-    /** action=userlist — Select2 line / MAG / Enigma2 search. */
-    public function userlist(): never {
-        $this->requireXhr();
-        $this->gateAny(array(
-            array('adv', 'edit_e2'),
-            array('adv', 'add_e2'),
-            array('adv', 'add_mag'),
-            array('adv', 'edit_mag'),
-        ));
+		global $db;
+		$rReturn = ['total_count' => 0, 'items' => [], 'result' => true];
 
-        global $db;
-        $rReturn = array('total_count' => 0, 'items' => array(), 'result' => true);
+		if (RequestManager::has('search')) {
+			$rPage = RequestManager::has('page') ? intval(RequestManager::get('page')) : 1;
+			$db->query('SELECT COUNT(`id`) AS `id` FROM `lines` WHERE `username` LIKE ? AND `is_e2` = 0 AND `is_mag` = 0;', RequestManager::get('search') . '%');
+			$rReturn['total_count'] = $db->get_row()['id'];
+			$db->query('SELECT COUNT(`device_id`) AS `id` FROM `enigma2_devices` WHERE `mac` LIKE ?;', RequestManager::get('search') . '%');
+			$rReturn['total_count'] += $db->get_row()['id'];
+			$db->query('SELECT COUNT(`mag_id`) AS `id` FROM `mag_devices` WHERE `mac` LIKE ?;', RequestManager::get('search') . '%');
+			$rReturn['total_count'] += $db->get_row()['id'];
+			$db->query('SELECT `id`, IF(`lines`.`is_mag`, `mag_devices`.`mac`, IF(`lines`.`is_e2`, `enigma2_devices`.`mac`, `lines`.`username`)) AS `username` FROM `lines` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines`.`id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines`.`id` WHERE `lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `enigma2_devices`.`mac` LIKE ? ORDER BY `username` ASC LIMIT ' . ($rPage - 1) * 100 . ', 100;', RequestManager::get('search') . '%', RequestManager::get('search') . '%', RequestManager::get('search') . '%');
 
-        if (RequestManager::has('search')) {
-            $rPage = RequestManager::has('page') ? intval(RequestManager::get('page')) : 1;
-            $db->query('SELECT COUNT(`id`) AS `id` FROM `lines` WHERE `username` LIKE ? AND `is_e2` = 0 AND `is_mag` = 0;', RequestManager::get('search') . '%');
-            $rReturn['total_count'] = $db->get_row()['id'];
-            $db->query('SELECT COUNT(`device_id`) AS `id` FROM `enigma2_devices` WHERE `mac` LIKE ?;', RequestManager::get('search') . '%');
-            $rReturn['total_count'] += $db->get_row()['id'];
-            $db->query('SELECT COUNT(`mag_id`) AS `id` FROM `mag_devices` WHERE `mac` LIKE ?;', RequestManager::get('search') . '%');
-            $rReturn['total_count'] += $db->get_row()['id'];
-            $db->query('SELECT `id`, IF(`lines`.`is_mag`, `mag_devices`.`mac`, IF(`lines`.`is_e2`, `enigma2_devices`.`mac`, `lines`.`username`)) AS `username` FROM `lines` LEFT JOIN `mag_devices` ON `mag_devices`.`user_id` = `lines`.`id` LEFT JOIN `enigma2_devices` ON `enigma2_devices`.`user_id` = `lines`.`id` WHERE `lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `enigma2_devices`.`mac` LIKE ? ORDER BY `username` ASC LIMIT ' . ($rPage - 1) * 100 . ', 100;', RequestManager::get('search') . '%', RequestManager::get('search') . '%', RequestManager::get('search') . '%');
+			foreach ($db->get_rows() as $rRow) {
+				$rReturn['items'][] = ['id' => $rRow['id'], 'text' => $rRow['username']];
+			}
+		}
 
-            foreach ($db->get_rows() as $rRow) {
-                $rReturn['items'][] = array('id' => $rRow['id'], 'text' => $rRow['username']);
-            }
-        }
+		$this->json($rReturn, JSON_PARTIAL_OUTPUT_ON_ERROR);
+	}
 
-        $this->json($rReturn, JSON_PARTIAL_OUTPUT_ON_ERROR);
-    }
+	/** action=listdir — list media/subtitle files in a directory on a node. */
+	public function listdir(): never {
+		$this->requireXhr();
+		$this->gateAny([
+			['adv', 'add_episode'],
+			['adv', 'edit_episode'],
+			['adv', 'add_movie'],
+			['adv', 'edit_movie'],
+			['adv', 'create_channel'],
+			['adv', 'edit_cchannel'],
+			['adv', 'folder_watch_add'],
+		]);
 
-    /** action=listdir — list media/subtitle files in a directory on a node. */
-    public function listdir(): never {
-        $this->requireXhr();
-        $this->gateAny(array(
-            array('adv', 'add_episode'),
-            array('adv', 'edit_episode'),
-            array('adv', 'add_movie'),
-            array('adv', 'edit_movie'),
-            array('adv', 'create_channel'),
-            array('adv', 'edit_cchannel'),
-            array('adv', 'folder_watch_add'),
-        ));
+		if (RequestManager::get('filter') == 'video') {
+			$rFilter = ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts'];
+		} elseif (RequestManager::get('filter') == 'subs') {
+			$rFilter = ['srt', 'sub', 'sbv'];
+		} else {
+			$rFilter = ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts', 'srt', 'sub', 'sbv'];
+		}
 
-        if (RequestManager::get('filter') == 'video') {
-            $rFilter = array('mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts');
-        } elseif (RequestManager::get('filter') == 'subs') {
-            $rFilter = array('srt', 'sub', 'sbv');
-        } else {
-            $rFilter = array('mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts', 'srt', 'sub', 'sbv');
-        }
+		if (!(RequestManager::has('server') && RequestManager::has('dir'))) {
+			$this->fail();
+		}
 
-        if (!(RequestManager::has('server') && RequestManager::has('dir'))) {
-            $this->fail();
-        }
+		$this->ok(['data' => ApiClient::listDir(intval(RequestManager::get('server')), RequestManager::get('dir'), $rFilter)]);
+	}
 
-        $this->ok(array('data' => ApiClient::listDir(intval(RequestManager::get('server')), RequestManager::get('dir'), $rFilter)));
-    }
+	/** action=queue — delete or stop (kill + delete) a queue job. */
+	public function queue(): never {
+		$this->requireXhr();
+		$this->gateAny([['adv', 'streams'], ['adv', 'series'], ['adv', 'episodes']]);
 
-    /** action=queue — delete or stop (kill + delete) a queue job. */
-    public function queue(): never {
-        $this->requireXhr();
-        $this->gateAny(array(array('adv', 'streams'), array('adv', 'series'), array('adv', 'episodes')));
+		global $db;
+		$rSub = RequestManager::get('sub');
+		$db->query('SELECT * FROM `queue` WHERE `id` = ?;', RequestManager::get('id'));
 
-        global $db;
-        $rSub = RequestManager::get('sub');
-        $db->query('SELECT * FROM `queue` WHERE `id` = ?;', RequestManager::get('id'));
+		if ($db->num_rows() == 1) {
+			$rRow = $db->get_row();
 
-        if ($db->num_rows() == 1) {
-            $rRow = $db->get_row();
+			if ($rSub == 'delete') {
+				$db->query('DELETE FROM `queue` WHERE `id` = ?;', RequestManager::get('id'));
+				$this->ok();
+			}
 
-            if ($rSub == 'delete') {
-                $db->query('DELETE FROM `queue` WHERE `id` = ?;', RequestManager::get('id'));
-                $this->ok();
-            }
+			if ($rSub == 'stop') {
+				if (0 < $rRow['pid']) {
+					ServerRepository::killPID($rRow['server_id'], $rRow['pid']);
+				}
 
-            if ($rSub == 'stop') {
-                if (0 < $rRow['pid']) {
-                    ServerRepository::killPID($rRow['server_id'], $rRow['pid']);
-                }
+				$db->query('DELETE FROM `queue` WHERE `id` = ?;', RequestManager::get('id'));
+				$this->ok();
+			}
+		}
 
-                $db->query('DELETE FROM `queue` WHERE `id` = ?;', RequestManager::get('id'));
-                $this->ok();
-            }
-        }
+		$this->fail();
+	}
 
-        $this->fail();
-    }
+	/** action=delete_recording — delete a DVR recording. */
+	public function deleteRecording(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'edit_movie');
 
-    /** action=delete_recording — delete a DVR recording. */
-    public function deleteRecording(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'edit_movie');
+		if (!(RequestManager::has('id') && 0 < intval(RequestManager::get('id')))) {
+			$this->fail();
+		}
 
-        if (!(RequestManager::has('id') && 0 < intval(RequestManager::get('id')))) {
-            $this->fail();
-        }
+		if (!class_exists(WatchService::class)) {
+			$this->fail();
+		}
 
-        if (!class_exists(WatchService::class)) {
-            $this->fail();
-        }
+		WatchService::deleteRecording(RequestManager::get('id'));
 
-        WatchService::deleteRecording(RequestManager::get('id'));
+		$this->ok();
+	}
 
-        $this->ok();
-    }
+	/** action=clear_failures — clear a stream's failure log. */
+	public function clearFailures(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'streams');
 
-    /** action=clear_failures — clear a stream's failure log. */
-    public function clearFailures(): never {
-        $this->requireXhr();
-        $this->gate('adv', 'streams');
+		global $db;
 
-        global $db;
+		if (!(RequestManager::has('id') && 0 < intval(RequestManager::get('id')))) {
+			$this->fail();
+		}
 
-        if (!(RequestManager::has('id') && 0 < intval(RequestManager::get('id')))) {
-            $this->fail();
-        }
+		$db->query('DELETE FROM `streams_logs` WHERE `stream_id` = ?;', RequestManager::get('id'));
 
-        $db->query('DELETE FROM `streams_logs` WHERE `stream_id` = ?;', RequestManager::get('id'));
-
-        $this->ok();
-    }
+		$this->ok();
+	}
 }

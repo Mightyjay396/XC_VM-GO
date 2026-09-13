@@ -80,7 +80,7 @@ class OffAirHandler {
 	 * @param int|null $rProxyID     Proxy id.
 	 * @return void
 	 */
-	public static function showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID = null, $rProxyID = null) {
+	public static function showNotOnAir(string $rExtension, array $rUserInfo, string $rIP, string $rCountryCode, ?int $rServerID = null, ?int $rProxyID = null) {
 		self::showVideoServer("show_not_on_air_video", "not_on_air_video_path", $rExtension, $rUserInfo, $rIP, $rCountryCode, $rUserInfo["con_isp_name"], $rServerID, $rProxyID);
 	}
 
@@ -127,7 +127,7 @@ class OffAirHandler {
 		if ($rOriginatorID && !$rServers[$rOriginatorID]['is_main']) {
 			$rURL .= '/' . md5($rServerID . '_' . $rOriginatorID . '_' . OPENSSL_EXTRA);
 		}
-		$rTokenData = array('expires' => time() + 10, 'video_path' => $rVideoPath);
+		$rTokenData = ['expires' => time() + 10, 'video_path' => $rVideoPath];
 		$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 		if ($rExtension == 'm3u8') {
 			if (self::$rHlsStreamID !== null) {

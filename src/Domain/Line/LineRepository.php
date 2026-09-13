@@ -17,13 +17,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class LineRepository {
 	use DatabaseAware;
+
 	/**
 	 * Bulk delete lines by id.
 	 *
 	 * @param int[] $rIDs Line ids.
 	 * @return bool True on success.
 	 */
-	public static function deleteMany($rIDs) {
+	public static function deleteMany(array $rIDs) {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
@@ -35,7 +36,7 @@ class LineRepository {
 		$db->query('DELETE FROM `lines` WHERE `id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `lines_logs` WHERE `user_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('UPDATE `lines_activity` SET `user_id` = 0 WHERE `user_id` IN (' . implode(',', $rIDs) . ');');
-		$rPairIDs = array();
+		$rPairIDs = [];
 		$db->query('SELECT `id` FROM `lines` WHERE `pair_id` IN (' . implode(',', $rIDs) . ');');
 
 		foreach ($db->get_rows() as $rRow) {
@@ -60,6 +61,6 @@ class LineRepository {
 	public static function getOutputFormats() {
 		$db = self::db();
 		$db->query('SELECT * FROM `output_formats` ORDER BY `access_output_id` ASC;');
-		return (0 < $db->num_rows() ? $db->get_rows() : array());
+		return (0 < $db->num_rows() ? $db->get_rows() : []);
 	}
 }

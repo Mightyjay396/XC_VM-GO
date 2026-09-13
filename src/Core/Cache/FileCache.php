@@ -34,278 +34,275 @@ namespace XcVm\Core\Cache;
  */
 
 class FileCache implements CacheInterface {
+	/** @var string Base directory for cache files */
+	protected $basePath;
 
-    /** @var string Base directory for cache files */
-    protected $basePath;
+	/** @var bool Whether igbinary extension is available */
+	protected $useIgbinary;
 
-    /** @var bool Whether igbinary extension is available */
-    protected $useIgbinary;
+	/**
+	 * @param string $basePath Directory for cache files (must end with /)
+	 */
+	public function __construct(string $basePath) {
+		$this->basePath = rtrim($basePath, '/') . '/';
+		$this->useIgbinary = function_exists('igbinary_serialize');
 
-    /**
-     * @param string $basePath Directory for cache files (must end with /)
-     */
-    public function __construct($basePath) {
-        $this->basePath = rtrim($basePath, '/') . '/';
-        $this->useIgbinary = function_exists('igbinary_serialize');
+		if (!is_dir($this->basePath)) {
+			@mkdir($this->basePath, 0755, true);
+		}
+		// A root-context boot (installer, `console.php status`) must leave the
+		// cache dir owned by the panel user, or xc_vm processes cannot create
+		// cache files in it afterwards. Same pattern as set().
+		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+			@chown($this->basePath, 'xc_vm');
+			@chgrp($this->basePath, 'xc_vm');
+		}
+	}
 
-        if (!is_dir($this->basePath)) {
-            @mkdir($this->basePath, 0755, true);
-        }
-        // A root-context boot (installer, `console.php status`) must leave the
-        // cache dir owned by the panel user, or xc_vm processes cannot create
-        // cache files in it afterwards. Same pattern as set().
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-            @chown($this->basePath, 'xc_vm');
-            @chgrp($this->basePath, 'xc_vm');
-        }
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function get($key, $maxAge = null) {
+		$file = $this->basePath . $key;
 
-    /**
-     * {@inheritdoc}
-     */
-    public function get($key, $maxAge = null) {
-        $file = $this->basePath . $key;
+		if (!file_exists($file)) {
+			return false;
+		}
 
-        if (!file_exists($file)) {
-            return false;
-        }
+		// Check TTL based on file modification time
+		if ($maxAge !== null) {
+			$age = time() - filemtime($file);
+			if ($age >= $maxAge) {
+				return false;
+			}
+		}
 
-        // Check TTL based on file modification time
-        if ($maxAge !== null) {
-            $age = time() - filemtime($file);
-            if ($age >= $maxAge) {
-                return false;
-            }
-        }
+		$data = @file_get_contents($file);
 
-        $data = @file_get_contents($file);
+		if ($data === false || $data === '') {
+			@unlink($file);
+			return false;
+		}
 
-        if ($data === false || $data === '') {
-            @unlink($file);
-            return false;
-        }
+		$result = $this->deserialize($data);
 
-        $result = $this->deserialize($data);
+		if ($result === false) {
+			@unlink($file);
+		}
 
-        if ($result === false) {
-            @unlink($file);
-        }
+		return $result;
+	}
 
-        return $result;
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function set($key, $data, $ttl = 0) {
+		$file = $this->basePath . $key;
+		$serialized = $this->serialize($data);
 
-    /**
-     * {@inheritdoc}
-     */
-    public function set($key, $data, $ttl = 0) {
-        $file = $this->basePath . $key;
-        $serialized = $this->serialize($data);
+		$tmp = $file . '.' . getmypid() . '.tmp';
+		if (@file_put_contents($tmp, $serialized, LOCK_EX) === false) {
+			@unlink($tmp);
+			$this->warnWriteFailure($file);
+			return false;
+		}
+		if (!@rename($tmp, $file)) {
+			@unlink($tmp);
+			$this->warnWriteFailure($file);
+			return false;
+		}
+		// A root-context write (installer, `console.php status`) must stay
+		// owned by the panel user, or xc_vm daemons cannot refresh the file
+		// later. Same pattern as Logger.
+		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+			@chown($file, 'xc_vm');
+			@chgrp($file, 'xc_vm');
+		}
+		return true;
+	}
 
-        $tmp = $file . '.' . getmypid() . '.tmp';
-        if (@file_put_contents($tmp, $serialized, LOCK_EX) === false) {
-            @unlink($tmp);
-            $this->warnWriteFailure($file);
-            return false;
-        }
-        if (!@rename($tmp, $file)) {
-            @unlink($tmp);
-            $this->warnWriteFailure($file);
-            return false;
-        }
-        // A root-context write (installer, `console.php status`) must stay
-        // owned by the panel user, or xc_vm daemons cannot refresh the file
-        // later. Same pattern as Logger.
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-            @chown($file, 'xc_vm');
-            @chgrp($file, 'xc_vm');
-        }
-        return true;
-    }
+	/**
+	 * Report a failed cache write once per process.
+	 *
+	 * A silently stale cache (bad tmp/ ownership, full or missing tmpfs) keeps
+	 * the panel running on outdated settings with no visible symptom, so the
+	 * first failure must reach the panel log via the error handler.
+	 *
+	 * @param string $file Cache file path that could not be written.
+	 */
+	protected function warnWriteFailure(string $file) {
+		static $warned = false;
+		if ($warned) {
+			return;
+		}
+		$warned = true;
+		trigger_error('FileCache: cache write failed for ' . $file . ' — serving stale cache', E_USER_WARNING);
+	}
 
-    /**
-     * Report a failed cache write once per process.
-     *
-     * A silently stale cache (bad tmp/ ownership, full or missing tmpfs) keeps
-     * the panel running on outdated settings with no visible symptom, so the
-     * first failure must reach the panel log via the error handler.
-     *
-     * @param string $file Cache file path that could not be written.
-     */
-    protected function warnWriteFailure($file) {
-        static $warned = false;
-        if ($warned) {
-            return;
-        }
-        $warned = true;
-        trigger_error('FileCache: cache write failed for ' . $file . ' — serving stale cache', E_USER_WARNING);
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function delete($key) {
+		$file = $this->basePath . $key;
 
-    /**
-     * {@inheritdoc}
-     */
-    public function delete($key) {
-        $file = $this->basePath . $key;
+		if (file_exists($file)) {
+			return unlink($file);
+		}
 
-        if (file_exists($file)) {
-            return unlink($file);
-        }
+		return true;
+	}
 
-        return true;
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function has($key, $maxAge = null) {
+		$file = $this->basePath . $key;
 
-    /**
-     * {@inheritdoc}
-     */
-    public function has($key, $maxAge = null) {
-        $file = $this->basePath . $key;
+		if (!file_exists($file)) {
+			return false;
+		}
 
-        if (!file_exists($file)) {
-            return false;
-        }
+		if ($maxAge !== null) {
+			$age = time() - filemtime($file);
+			if ($age >= $maxAge) {
+				return false;
+			}
+		}
 
-        if ($maxAge !== null) {
-            $age = time() - filemtime($file);
-            if ($age >= $maxAge) {
-                return false;
-            }
-        }
+		return true;
+	}
 
-        return true;
-    }
+	/**
+	 * {@inheritdoc}
+	 */
+	public function flush() {
+		$files = glob($this->basePath . '*');
 
-    /**
-     * {@inheritdoc}
-     */
-    public function flush() {
-        $files = glob($this->basePath . '*');
+		if ($files === false) {
+			return false;
+		}
 
-        if ($files === false) {
-            return false;
-        }
+		foreach ($files as $file) {
+			if (is_file($file)) {
+				unlink($file);
+			}
+		}
 
-        foreach ($files as $file) {
-            if (is_file($file)) {
-                unlink($file);
-            }
-        }
+		return true;
+	}
 
-        return true;
-    }
+	/**
+	 * Get the file path for a cache key
+	 *
+	 * Useful for direct file operations (e.g., file_exists checks
+	 * in legacy code during migration).
+	 *
+	 * @param string $key Cache key
+	 * @return string Full file path
+	 */
+	public function getPath(string $key) {
+		return $this->basePath . $key;
+	}
 
-    /**
-     * Get the file path for a cache key
-     *
-     * Useful for direct file operations (e.g., file_exists checks
-     * in legacy code during migration).
-     *
-     * @param string $key Cache key
-     * @return string Full file path
-     */
-    public function getPath($key) {
-        return $this->basePath . $key;
-    }
+	/**
+	 * Get the base directory path
+	 *
+	 * @return string
+	 */
+	public function getBasePath() {
+		return $this->basePath;
+	}
 
-    /**
-     * Get the base directory path
-     *
-     * @return string
-     */
-    public function getBasePath() {
-        return $this->basePath;
-    }
+	/**
+	 * Get modification time of a cache entry
+	 *
+	 * @param string $key Cache key
+	 * @return int|false Unix timestamp or false if not found
+	 */
+	public function getAge(string $key) {
+		$file = $this->basePath . $key;
 
-    /**
-     * Get modification time of a cache entry
-     *
-     * @param string $key Cache key
-     * @return int|false Unix timestamp or false if not found
-     */
-    public function getAge($key) {
-        $file = $this->basePath . $key;
+		if (!file_exists($file)) {
+			return false;
+		}
 
-        if (!file_exists($file)) {
-            return false;
-        }
+		return time() - filemtime($file);
+	}
 
-        return time() - filemtime($file);
-    }
+	/**
+	 * Serialize data using igbinary (if available) or PHP serialize
+	 *
+	 * @return string
+	 */
+	protected function serialize(mixed $data) {
+		if ($this->useIgbinary) {
+			return igbinary_serialize($data);
+		}
 
-    /**
-     * Serialize data using igbinary (if available) or PHP serialize
-     *
-     * @param mixed $data
-     * @return string
-     */
-    protected function serialize($data) {
-        if ($this->useIgbinary) {
-            return igbinary_serialize($data);
-        }
+		return serialize($data);
+	}
 
-        return serialize($data);
-    }
+	/**
+	 * Deserialize data using igbinary (if available) or PHP unserialize
+	 *
+	 * Returns false on corrupted data (cache miss).
+	 *
+	 * @return mixed|false
+	 */
+	protected function deserialize(string $data) {
+		if ($this->useIgbinary) {
+			$result = @igbinary_unserialize($data);
+			if ($result === false && $data !== igbinary_serialize(false)) {
+				return false;
+			}
+			return $result;
+		}
 
-    /**
-     * Deserialize data using igbinary (if available) or PHP unserialize
-     *
-     * Returns false on corrupted data (cache miss).
-     *
-     * @param string $data
-     * @return mixed|false
-     */
-    protected function deserialize($data) {
-        if ($this->useIgbinary) {
-            $result = @igbinary_unserialize($data);
-            if ($result === false && $data !== igbinary_serialize(false)) {
-                return false;
-            }
-            return $result;
-        }
+		$result = @unserialize($data);
+		if ($result === false && $data !== serialize(false)) {
+			return false;
+		}
+		return $result;
+	}
 
-        $result = @unserialize($data);
-        if ($result === false && $data !== serialize(false)) {
-            return false;
-        }
-        return $result;
-    }
+	// ------------------------------------------------------------------
+	//  Static convenience API (drop-in replacement for CoreUtilities)
+	// ------------------------------------------------------------------
 
-    // ------------------------------------------------------------------
-    //  Static convenience API (drop-in replacement for CoreUtilities)
-    // ------------------------------------------------------------------
+	/** @var self|null Singleton instance for static calls */
+	private static $defaultInstance;
 
-    /** @var self|null Singleton instance for static calls */
-    private static $defaultInstance;
+	/**
+	 * Get the default singleton instance (uses CACHE_TMP_PATH)
+	 *
+	 * @return self
+	 */
+	private static function getDefault() {
+		if (!self::$defaultInstance) {
+			self::$defaultInstance = new self(CACHE_TMP_PATH);
+		}
+		return self::$defaultInstance;
+	}
 
-    /**
-     * Get the default singleton instance (uses CACHE_TMP_PATH)
-     *
-     * @return self
-     */
-    private static function getDefault() {
-        if (!self::$defaultInstance) {
-            self::$defaultInstance = new self(CACHE_TMP_PATH);
-        }
-        return self::$defaultInstance;
-    }
+	/**
+	 * Static write — drop-in for CoreUtilities::setCache()
+	 *
+	 * @param string $key   Cache key
+	 * @param mixed  $data  Data to cache
+	 * @return bool
+	 */
+	public static function setCache(string $key, mixed $data) {
+		return self::getDefault()->set($key, $data);
+	}
 
-    /**
-     * Static write — drop-in for CoreUtilities::setCache()
-     *
-     * @param string $key   Cache key
-     * @param mixed  $data  Data to cache
-     * @return bool
-     */
-    public static function setCache($key, $data) {
-        return self::getDefault()->set($key, $data);
-    }
-
-    /**
-     * Static read — drop-in for CoreUtilities::getCache()
-     *
-     * @param string $key     Cache key
-     * @param int|null $maxAge  Maximum age in seconds (null = no limit)
-     * @return mixed|false
-     */
-    public static function getCache($key, $maxAge = null) {
-        return self::getDefault()->get($key, $maxAge);
-    }
+	/**
+	 * Static read — drop-in for CoreUtilities::getCache()
+	 *
+	 * @param string $key     Cache key
+	 * @param int|null $maxAge  Maximum age in seconds (null = no limit)
+	 * @return mixed|false
+	 */
+	public static function getCache(string $key, ?int $maxAge = null) {
+		return self::getDefault()->get($key, $maxAge);
+	}
 }

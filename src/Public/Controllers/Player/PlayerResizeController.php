@@ -18,10 +18,8 @@ use XcVm\Core\Util\ImageResizeService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class PlayerResizeController extends BasePlayerController
-{
-	public function index()
-	{
+class PlayerResizeController extends BasePlayerController {
+	public function index() {
 		session_write_close();
 
 		if (!isset($GLOBALS['rUserInfo']) || !$GLOBALS['rUserInfo']['id']) {

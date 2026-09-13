@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class EnigmasController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Enigma Devices');
-        $this->render('enigmas');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Enigma Devices');
+		$this->render('enigmas');
+	}
 }

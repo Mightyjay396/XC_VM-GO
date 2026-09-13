@@ -45,7 +45,7 @@ final class HttpRange {
 			if ($rLength <= 0) {
 				return false;
 			}
-			return array(max(0, $rSize - $rLength), $rSize - 1);
+			return [max(0, $rSize - $rLength), $rSize - 1];
 		}
 
 		$rFirst = (int) $rParts[1];
@@ -53,7 +53,7 @@ final class HttpRange {
 		if ($rFirst >= $rSize || $rLast < $rFirst) {
 			return false;
 		}
-		return array($rFirst, $rLast);
+		return [$rFirst, $rLast];
 	}
 
 	/**
@@ -64,7 +64,7 @@ final class HttpRange {
 	 * @param int                           $rSize  Resource size in bytes.
 	 * @return array{0:int,1:int}|null [first, last] to send, or null after a 416 (send no body).
 	 */
-	public static function sendHeaders($rRange, int $rSize): ?array {
+	public static function sendHeaders(array|false|null $rRange, int $rSize): ?array {
 		header('Accept-Ranges: bytes');
 		if ($rRange === false) {
 			header('HTTP/1.1 416 Requested Range Not Satisfiable');
@@ -73,7 +73,7 @@ final class HttpRange {
 		}
 		if ($rRange === null) {
 			header('Content-Length: ' . $rSize);
-			return array(0, $rSize - 1);
+			return [0, $rSize - 1];
 		}
 		header('HTTP/1.1 206 Partial Content');
 		header('Content-Range: bytes ' . $rRange[0] . '-' . $rRange[1] . '/' . $rSize);

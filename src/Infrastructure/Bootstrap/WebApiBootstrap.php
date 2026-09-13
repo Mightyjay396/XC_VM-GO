@@ -20,7 +20,6 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  */
 
 class WebApiBootstrap {
-
 	/**
 	 * Инициализирует web API контекст.
 	 *

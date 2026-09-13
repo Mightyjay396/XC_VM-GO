@@ -5,8 +5,11 @@ namespace XcVm\Core\Parsing;
 class File implements StreamInterface {
 	/** @var resource */
 	private $handle;
+
 	private int $readBytes = 0;
+
 	private int $chunkSize;
+
 	/** @var callable|null */
 	private $chunkCallback;
 
@@ -48,7 +51,7 @@ class File implements StreamInterface {
 			$this->readBytes += strlen($buffer);
 
 			if (is_callable($this->chunkCallback)) {
-				call_user_func_array($this->chunkCallback, array($buffer, $this->readBytes));
+				call_user_func_array($this->chunkCallback, [$buffer, $this->readBytes]);
 			}
 
 			return $buffer;

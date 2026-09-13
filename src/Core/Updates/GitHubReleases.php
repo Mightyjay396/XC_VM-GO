@@ -17,527 +17,537 @@ namespace XcVm\Core\Updates;
  */
 
 class GitHubReleases {
-    private string $owner;
-    private string $repo;
-    private string $api_url;
-    /** @var list<string> */
-    private array $headers;
-    private $timeout = 30; // Total transfer timeout in seconds (the /releases list ships changelogs and is tens of KB; 5s was too tight during installs when the link is saturated by apt/wget)
-    private $connect_timeout = 10; // Connection-phase timeout in seconds — fail fast on an unreachable host without capping slow transfers
-    private $cache_file = '/home/xc_vm/tmp/gitapi'; // Cache file path
-    private string $channel = 'stable'; // 'stable' or 'beta' ('unstable' accepted as a legacy alias)
-    private $hash_file = 'hashes.md5';
-    private $cache_ttl = 1800; // Cache TTL in seconds (30 minutes)
+	private string $owner;
 
-    /**
-     * Initialize a GitHubReleases instance.
-     *
-     * @param string $owner Repository owner
-     * @param string $repo Repository name
-     * @param string $channel Update channel: 'stable' or 'beta' ('unstable' is a legacy alias)
-     * @param string|null $token GitHub API token
-     */
-    public function __construct(string $owner, string $repo, ?string $channel = 'stable', ?string $token = null) {
-        $this->owner = $owner;
-        $this->repo = $repo;
-        $this->channel = self::normalizeChannel($channel);
-        $this->cache_file = "{$this->cache_file}_{$repo}_{$this->channel}"; // Уникальный кэш для канала
-        $this->api_url = "https://api.github.com/repos/{$owner}/{$repo}/releases";
-        $this->headers = $token ? [
-            "Authorization: Bearer {$token}",
-            'Accept: application/vnd.github+json',
-            'X-GitHub-Api-Version: 2022-11-28'
-        ] : [];
-    }
+	private string $repo;
 
-    /**
-     * Normalize a channel name to the canonical set. 'unstable' is a legacy alias
-     * for 'beta'; anything unrecognized falls back to 'stable'.
-     *
-     * @param string|null $channel Raw channel value (e.g. from settings)
-     * @return string 'stable' or 'beta'
-     */
-    private static function normalizeChannel(?string $channel): string {
-        $channel = ($channel === 'unstable') ? 'beta' : (string) $channel;
-        return in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable';
-    }
+	private string $api_url;
 
-    /**
-     * Clear the cached release data by deleting the cache file.
-     */
-    public function clearCache(): void {
-        if (file_exists($this->cache_file)) {
-            unlink($this->cache_file);
-            error_log("Cache cleared for {$this->owner}/{$this->repo} by deleting {$this->cache_file}");
-        }
-    }
+	/** @var list<string> */
+	private array $headers;
 
-    /**
-     * Check if the cache file is still valid based on TTL.
-     *
-     * @return bool True if cache is valid, False otherwise.
-     */
-    private function isCacheValid(): bool {
-        if (!file_exists($this->cache_file)) {
-            return false;
-        }
-        $cache_timestamp = filemtime($this->cache_file);
-        return (time() - $cache_timestamp) < $this->cache_ttl;
-    }
+	private $timeout = 30; // Total transfer timeout in seconds (the /releases list ships changelogs and is tens of KB; 5s was too tight during installs when the link is saturated by apt/wget)
 
-    /**
-     * Load cache from file.
-     *
-     * @return array|null The cached data, or null if the file doesn't exist or is invalid.
-     */
-    private function loadCache(): ?array {
-        if (!file_exists($this->cache_file)) {
-            return null;
-        }
-        $content = file_get_contents($this->cache_file);
-        if ($content === false) {
-            error_log("Failed to read cache file {$this->cache_file}");
-            return null;
-        }
-        $data = json_decode($content, true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            error_log("Failed to parse cache file {$this->cache_file}: " . json_last_error_msg());
-            return null;
-        }
-        return $data;
-    }
+	private $connect_timeout = 10; // Connection-phase timeout in seconds — fail fast on an unreachable host without capping slow transfers
 
-    /**
-     * Save data to cache file with file locking to prevent race conditions.
-     *
-     * @param array $data The data to cache.
-     * @return bool True on success, False on failure.
-     */
-    private function saveCache(array $data): bool {
-        $json = json_encode($data);
-        if ($json === false) {
-            error_log("Failed to encode cache data to JSON");
-            return false;
-        }
+	private $cache_file = '/home/xc_vm/tmp/gitapi'; // Cache file path
 
-        $file = fopen($this->cache_file, 'c');
-        if ($file === false) {
-            error_log("Failed to open cache file {$this->cache_file} for writing");
-            return false;
-        }
+	private string $channel = 'stable'; // 'stable' or 'beta' ('unstable' accepted as a legacy alias)
 
-        if (flock($file, LOCK_EX)) {
-            ftruncate($file, 0);
-            fwrite($file, $json);
-            fflush($file);
-            flock($file, LOCK_UN);
-            fclose($file);
-            error_log("Cache saved to {$this->cache_file}");
-            return true;
-        } else {
-            error_log("Failed to acquire lock on cache file {$this->cache_file}");
-            fclose($file);
-            return false;
-        }
-    }
+	private $hash_file = 'hashes.md5';
 
-    /**
-     * Fetch all release versions (tags) from the GitHub repository, using cache if valid.
-     *
-     * @return array List of version tags in descending order (latest first).
-     * @throws \Exception If the request fails.
-     */
-    public function getReleases(): array {
-        return array_values(array_map(fn($r) => $r['tag_name'], $this->getFilteredReleases()));
-    }
+	private $cache_ttl = 1800; // Cache TTL in seconds (30 minutes)
 
-    /**
-     * Fetch the channel-filtered release objects (with the tag_name AND the
-     * prerelease flag), newest first, using the cache when valid. Shared by
-     * getReleases() and the rollback picker, which needs the prerelease flag to
-     * mark beta builds.
-     *
-     * @return array<int,array<string,mixed>> Filtered GitHub release objects.
-     * @throws \Exception If the request fails.
-     */
-    private function getFilteredReleases(): array {
-        if ($this->isCacheValid()) {
-            error_log("Using cached releases (channel: {$this->channel}) from {$this->cache_file}");
-            $cache = $this->loadCache();
-            if ($cache !== null) {
-                return array_values($this->filterReleasesByChannel($cache));
-            }
-        }
+	/**
+	 * Initialize a GitHubReleases instance.
+	 *
+	 * @param string $owner Repository owner
+	 * @param string $repo Repository name
+	 * @param string $channel Update channel: 'stable' or 'beta' ('unstable' is a legacy alias)
+	 * @param string|null $token GitHub API token
+	 */
+	public function __construct(string $owner, string $repo, ?string $channel = 'stable', ?string $token = null) {
+		$this->owner = $owner;
+		$this->repo = $repo;
+		$this->channel = self::normalizeChannel($channel);
+		$this->cache_file = "{$this->cache_file}_{$repo}_{$this->channel}"; // Уникальный кэш для канала
+		$this->api_url = "https://api.github.com/repos/{$owner}/{$repo}/releases";
+		$this->headers = $token ? [
+			"Authorization: Bearer {$token}",
+			'Accept: application/vnd.github+json',
+			'X-GitHub-Api-Version: 2022-11-28'
+		] : [];
+	}
 
-        try {
-            error_log("Fetching releases for {$this->owner}/{$this->repo} (channel: {$this->channel})");
-            $response = $this->makeRequest($this->api_url);
-            $data = json_decode($response, true);
-            if ($data === null) {
-                throw new \Exception("Failed to parse API response: " . json_last_error_msg());
-            }
+	/**
+	 * Normalize a channel name to the canonical set. 'unstable' is a legacy alias
+	 * for 'beta'; anything unrecognized falls back to 'stable'.
+	 *
+	 * @param string|null $channel Raw channel value (e.g. from settings)
+	 * @return string 'stable' or 'beta'
+	 */
+	private static function normalizeChannel(?string $channel): string {
+		$channel = ($channel === 'unstable') ? 'beta' : (string) $channel;
+		return in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable';
+	}
 
-            $this->saveCache($data); // Сохраняем полные данные, фильтруем при использовании
-            $filtered = array_values($this->filterReleasesByChannel($data));
-            error_log("Retrieved " . count($filtered) . " releases for channel '{$this->channel}'");
-            return $filtered;
-        } catch (\Exception $e) {
-            error_log("Failed to fetch releases: " . $e->getMessage());
-            throw $e;
-        }
-    }
+	/**
+	 * Clear the cached release data by deleting the cache file.
+	 */
+	public function clearCache(): void {
+		if (file_exists($this->cache_file)) {
+			unlink($this->cache_file);
+			error_log("Cache cleared for {$this->owner}/{$this->repo} by deleting {$this->cache_file}");
+		}
+	}
 
-    /**
-     * Get the latest available version that is newer than the current one.
-     *
-     * Unlike getNextVersion(), this skips intermediate versions and returns
-     * the newest release directly, allowing jump updates.
-     *
-     * @param string $current_version The current version tag (e.g., "1.0.0").
-     * @return string|null The latest version tag, or null if already up-to-date or version not found.
-     */
-    public function getLatestVersion(string $current_version): ?string {
-        $releases = $this->getReleases();
+	/**
+	 * Check if the cache file is still valid based on TTL.
+	 *
+	 * @return bool True if cache is valid, False otherwise.
+	 */
+	private function isCacheValid(): bool {
+		if (!file_exists($this->cache_file)) {
+			return false;
+		}
+		$cache_timestamp = filemtime($this->cache_file);
+		return (time() - $cache_timestamp) < $this->cache_ttl;
+	}
 
-        if (empty($releases)) {
-            return null;
-        }
+	/**
+	 * Load cache from file.
+	 *
+	 * @return array|null The cached data, or null if the file doesn't exist or is invalid.
+	 */
+	private function loadCache(): ?array {
+		if (!file_exists($this->cache_file)) {
+			return null;
+		}
+		$content = file_get_contents($this->cache_file);
+		if ($content === false) {
+			error_log("Failed to read cache file {$this->cache_file}");
+			return null;
+		}
+		$data = json_decode($content, true);
+		if (json_last_error() !== JSON_ERROR_NONE) {
+			error_log("Failed to parse cache file {$this->cache_file}: " . json_last_error_msg());
+			return null;
+		}
+		return $data;
+	}
 
-        $latest = $releases[0];
+	/**
+	 * Save data to cache file with file locking to prevent race conditions.
+	 *
+	 * @param array $data The data to cache.
+	 * @return bool True on success, False on failure.
+	 */
+	private function saveCache(array $data): bool {
+		$json = json_encode($data);
+		if ($json === false) {
+			error_log("Failed to encode cache data to JSON");
+			return false;
+		}
 
-        if (version_compare($latest, $current_version, '<=')) {
-            return null;
-        }
+		$file = fopen($this->cache_file, 'c');
+		if ($file === false) {
+			error_log("Failed to open cache file {$this->cache_file} for writing");
+			return false;
+		}
 
-        return $latest;
-    }
+		if (flock($file, LOCK_EX)) {
+			ftruncate($file, 0);
+			fwrite($file, $json);
+			fflush($file);
+			flock($file, LOCK_UN);
+			fclose($file);
+			error_log("Cache saved to {$this->cache_file}");
+			return true;
+		} else {
+			error_log("Failed to acquire lock on cache file {$this->cache_file}");
+			fclose($file);
+			return false;
+		}
+	}
 
-    /**
-     * Retrieve the MD5 hash of a release asset from its corresponding hash file.
-     *
-     * @param string $version The release tag (e.g., "1.0.0").
-     * @param string $asset_name The asset file name to get the hash for (e.g., "update.tar.gz").
-     * @return string|null The MD5 hash string, or null if not found or invalid.
-     */
-    public function getAssetHash(string $version, string $asset_name): ?string {
-        $hashURL = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$this->hash_file}";
-        try {
-            $hash_response = $this->makeRequest($hashURL);
+	/**
+	 * Fetch all release versions (tags) from the GitHub repository, using cache if valid.
+	 *
+	 * @return array List of version tags in descending order (latest first).
+	 * @throws \Exception If the request fails.
+	 */
+	public function getReleases(): array {
+		return array_values(array_map(fn($r) => $r['tag_name'], $this->getFilteredReleases()));
+	}
 
-            $hash_text = trim($hash_response);
-            $lines = explode("\n", $hash_text);
+	/**
+	 * Fetch the channel-filtered release objects (with the tag_name AND the
+	 * prerelease flag), newest first, using the cache when valid. Shared by
+	 * getReleases() and the rollback picker, which needs the prerelease flag to
+	 * mark beta builds.
+	 *
+	 * @return array<int,array<string,mixed>> Filtered GitHub release objects.
+	 * @throws \Exception If the request fails.
+	 */
+	private function getFilteredReleases(): array {
+		if ($this->isCacheValid()) {
+			error_log("Using cached releases (channel: {$this->channel}) from {$this->cache_file}");
+			$cache = $this->loadCache();
+			if ($cache !== null) {
+				return array_values($this->filterReleasesByChannel($cache));
+			}
+		}
 
-            foreach ($lines as $line) {
-                $line = trim($line);
-                if (empty($line)) {
-                    continue;
-                }
-                $parts = preg_split('/\s+/', $line, 2);
-                if (count($parts) === 2 && $parts[1] === $asset_name) {
-                    error_log("Retrieved MD5 hash for {$asset_name} in version {$version}");
-                    return $parts[0];
-                }
-            }
-            error_log("Asset '{$asset_name}' not found in hash file for version {$version}");
-            return null;
-        } catch (\Exception $e) {
-            error_log("Failed to fetch asset hash from {$hashURL}: " . $e->getMessage());
-            return null;
-        }
-    }
+		try {
+			error_log("Fetching releases for {$this->owner}/{$this->repo} (channel: {$this->channel})");
+			$response = $this->makeRequest($this->api_url);
+			$data = json_decode($response, true);
+			if ($data === null) {
+				throw new \Exception("Failed to parse API response: " . json_last_error_msg());
+			}
 
-    /**
-     * Retrieve the changelog for a specific release from its changelog.json.
-     *
-     * The file is fetched from the repository at the given tag via raw.githubusercontent.
-     * It contains a single object: {"version": "X.Y.Z", "changes": [...]}.
-     *
-     * @param string $version The release tag to fetch the changelog for.
-     * @return array A JSON-compatible array containing the changelog entry wrapped in an array.
-     */
-    public function getChangelog(string $version): array {
-        try {
-            $url = "https://raw.githubusercontent.com/{$this->owner}/{$this->repo}/refs/tags/{$version}/changelog.json";
-            $response = $this->makeRequest($url);
-            $changelog = json_decode($response, true);
-            if ($changelog === null) {
-                error_log("Failed to parse changelog JSON for version {$version}");
-                return [];
-            }
-            error_log("Successfully retrieved changelog for version {$version} with " . count($changelog['changes'] ?? []) . " changes");
-            return [$changelog];
-        } catch (\Exception $e) {
-            error_log("Failed to fetch changelog for version {$version}: " . $e->getMessage());
-            return [];
-        }
-    }
+			$this->saveCache($data); // Сохраняем полные данные, фильтруем при использовании
+			$filtered = array_values($this->filterReleasesByChannel($data));
+			error_log("Retrieved " . count($filtered) . " releases for channel '{$this->channel}'");
+			return $filtered;
+		} catch (\Exception $e) {
+			error_log("Failed to fetch releases: " . $e->getMessage());
+			throw $e;
+		}
+	}
 
-    /**
-     * Validate whether a version string follows the format X.Y.Z.
-     *
-     * @param string $version The version string to validate (e.g., "1.0.0").
-     * @return bool True if valid, False otherwise.
-     * @throws \InvalidArgumentException If the version string is too long or contains invalid parts.
-     */
-    public static function isValidVersion(string $version): bool {
-        if (strlen($version) > 20) {
-            error_log("Version string too long");
-            throw new \InvalidArgumentException("Version string is too long");
-        }
+	/**
+	 * Get the latest available version that is newer than the current one.
+	 *
+	 * Unlike getNextVersion(), this skips intermediate versions and returns
+	 * the newest release directly, allowing jump updates.
+	 *
+	 * @param string $current_version The current version tag (e.g., "1.0.0").
+	 * @return string|null The latest version tag, or null if already up-to-date or version not found.
+	 */
+	public function getLatestVersion(string $current_version): ?string {
+		$releases = $this->getReleases();
 
-        if (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/', $version)) {
-            error_log("Invalid version format: {$version}");
-            return false;
-        }
+		if (empty($releases)) {
+			return null;
+		}
 
-        $parts = explode('.', $version);
-        if (count($parts) !== 3) {
-            error_log("Version must have three parts: {$version}");
-            return false;
-        }
+		$latest = $releases[0];
 
-        foreach ($parts as $part) {
-            $num = (int)$part;
-            if ($num < 0) {
-                error_log("Negative numbers are not allowed in version: {$version}");
-                return false;
-            }
-            if (strlen($part) > 1 && $part[0] === '0') {
-                error_log("Leading zeros are not allowed in version: {$version}");
-                return false;
-            }
-        }
+		if (version_compare($latest, $current_version, '<=')) {
+			return null;
+		}
 
-        return true;
-    }
+		return $latest;
+	}
 
-    /**
-     * Make an HTTP request using cURL.
-     *
-     * @param string $url The URL to request.
-     * @return string The response body.
-     * @throws \Exception If the request fails.
-     */
-    private function makeRequest(string $url): string {
-        $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->connect_timeout);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $this->headers);
-        curl_setopt($ch, CURLOPT_USERAGENT, 'Vateron-Media/XC_VM');
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+	/**
+	 * Retrieve the MD5 hash of a release asset from its corresponding hash file.
+	 *
+	 * @param string $version The release tag (e.g., "1.0.0").
+	 * @param string $asset_name The asset file name to get the hash for (e.g., "update.tar.gz").
+	 * @return string|null The MD5 hash string, or null if not found or invalid.
+	 */
+	public function getAssetHash(string $version, string $asset_name): ?string {
+		$hashURL = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$this->hash_file}";
+		try {
+			$hash_response = $this->makeRequest($hashURL);
 
-        $response = curl_exec($ch);
-        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $error = curl_error($ch);
-        curl_close($ch);
+			$hash_text = trim($hash_response);
+			$lines = explode("\n", $hash_text);
 
-        if ($response === false) {
-            throw new \Exception("cURL error: {$error}");
-        }
+			foreach ($lines as $line) {
+				$line = trim($line);
+				if (empty($line)) {
+					continue;
+				}
+				$parts = preg_split('/\s+/', $line, 2);
+				if (count($parts) === 2 && $parts[1] === $asset_name) {
+					error_log("Retrieved MD5 hash for {$asset_name} in version {$version}");
+					return $parts[0];
+				}
+			}
+			error_log("Asset '{$asset_name}' not found in hash file for version {$version}");
+			return null;
+		} catch (\Exception $e) {
+			error_log("Failed to fetch asset hash from {$hashURL}: " . $e->getMessage());
+			return null;
+		}
+	}
 
-        if ($http_code !== 200) {
-            switch ($http_code) {
-                case 404:
-                    error_log("Resource not found (404)");
-                    throw new \Exception("Resource not found (404)");
-                case 403:
-                    error_log("Access forbidden (403) - Check API rate limits or permissions");
-                    throw new \Exception("Access forbidden (403)");
-                case 500:
-                    error_log("Server error (500)");
-                    throw new \Exception("Server error (500)");
-                default:
-                    error_log("Unexpected HTTP status code: {$http_code}");
-                    throw new \Exception("Unexpected HTTP status code: {$http_code}");
-            }
-        }
+	/**
+	 * Retrieve the changelog for a specific release from its changelog.json.
+	 *
+	 * The file is fetched from the repository at the given tag via raw.githubusercontent.
+	 * It contains a single object: {"version": "X.Y.Z", "changes": [...]}.
+	 *
+	 * @param string $version The release tag to fetch the changelog for.
+	 * @return array A JSON-compatible array containing the changelog entry wrapped in an array.
+	 */
+	public function getChangelog(string $version): array {
+		try {
+			$url = "https://raw.githubusercontent.com/{$this->owner}/{$this->repo}/refs/tags/{$version}/changelog.json";
+			$response = $this->makeRequest($url);
+			$changelog = json_decode($response, true);
+			if ($changelog === null) {
+				error_log("Failed to parse changelog JSON for version {$version}");
+				return [];
+			}
+			error_log("Successfully retrieved changelog for version {$version} with " . count($changelog['changes'] ?? []) . " changes");
+			return [$changelog];
+		} catch (\Exception $e) {
+			error_log("Failed to fetch changelog for version {$version}: " . $e->getMessage());
+			return [];
+		}
+	}
 
-        return $response;
-    }
+	/**
+	 * Validate whether a version string follows the format X.Y.Z.
+	 *
+	 * @param string $version The version string to validate (e.g., "1.0.0").
+	 * @return bool True if valid, False otherwise.
+	 * @throws \InvalidArgumentException If the version string is too long or contains invalid parts.
+	 */
+	public static function isValidVersion(string $version): bool {
+		if (strlen($version) > 20) {
+			error_log("Version string too long");
+			throw new \InvalidArgumentException("Version string is too long");
+		}
 
-    /**
-     * Get update file details for a specific file type and version.
-     *
-     * @param string $file_type The type of update file (main, lb, lb_update).
-     * @param string $version The current version tag (e.g., "1.0.0").
-     * @return array|null Array with URL and MD5 hash, or null if no next version.
-     * @throws \Exception If the file type is invalid.
-     */
-    public function getUpdateFile(string $file_type, string $version) {
-        switch ($file_type) {
-            case "main":
-                $update_file = "xc_vm.tar.gz";
-                break;
-            case "lb":
-                $update_file = "loadbalancer.tar.gz";
-                break;
-            case "lb_update":
-                $update_file = "loadbalancer.tar.gz";
-                break;
-            default:
-                throw new \Exception("Not valid file type");
-        }
-        $target_version = $this->getLatestVersion($version);
-        if (is_null($target_version)) {
-            $target_version = $version;
-        }
-        $upd_archive_url = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$target_version}/{$update_file}";
-        $hash_md5 = $this->getAssetHash($target_version, $update_file);
+		if (!preg_match('/^[0-9]+\.[0-9]+\.[0-9]+$/', $version)) {
+			error_log("Invalid version format: {$version}");
+			return false;
+		}
 
-        $data = ["url" => $upd_archive_url, "md5" => $hash_md5];
-        return $data;
-    }
+		$parts = explode('.', $version);
+		if (count($parts) !== 3) {
+			error_log("Version must have three parts: {$version}");
+			return false;
+		}
 
-    /**
-     * Build the download URL + MD5 for a SPECIFIC release version's asset.
-     *
-     * Unlike getUpdateFile(), which always resolves to the latest via
-     * getLatestVersion(), this targets the exact $version passed — used by the
-     * rollback flow to fetch an older release.
-     *
-     * @param string $file_type "main" (panel) or "lb"/"lb_update" (load balancer).
-     * @param string $version   Exact release tag to fetch (e.g. "2.4.0").
-     * @return array{url:string,md5:?string}
-     * @throws \Exception On an invalid file type.
-     */
-    public function getVersionFile(string $file_type, string $version): array {
-        switch ($file_type) {
-            case "main":
-                $update_file = "xc_vm.tar.gz";
-                break;
-            case "lb":
-            case "lb_update":
-                $update_file = "loadbalancer.tar.gz";
-                break;
-            default:
-                throw new \Exception("Not valid file type");
-        }
-        $url = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$update_file}";
+		foreach ($parts as $part) {
+			$num = (int) $part;
+			if ($num < 0) {
+				error_log("Negative numbers are not allowed in version: {$version}");
+				return false;
+			}
+			if (strlen($part) > 1 && $part[0] === '0') {
+				error_log("Leading zeros are not allowed in version: {$version}");
+				return false;
+			}
+		}
 
-        return ["url" => $url, "md5" => $this->getAssetHash($version, $update_file)];
-    }
+		return true;
+	}
 
-    /**
-     * List the newest $limit released versions strictly older than
-     * $current_version, newest first. Populates the rollback version picker. Each
-     * entry carries a `beta` flag (GitHub prerelease) so the UI can tag it.
-     *
-     * @param string $current_version Current version tag (e.g. "2.4.1").
-     * @param int    $limit           Max versions to return.
-     * @return array<int,array{version:string,beta:bool}> Older releases, newest first.
-     */
-    public function getPreviousVersions(string $current_version, int $limit = 5): array {
-        $older = array();
-        foreach ($this->getFilteredReleases() as $rRelease) {
-            $tag = (string) ($rRelease['tag_name'] ?? '');
-            if ($tag !== '' && version_compare($tag, $current_version, '<')) {
-                $older[] = array('version' => $tag, 'beta' => !empty($rRelease['prerelease']));
-            }
-        }
-        usort($older, static fn($a, $b) => version_compare($b['version'], $a['version']));
+	/**
+	 * Make an HTTP request using cURL.
+	 *
+	 * @param string $url The URL to request.
+	 * @return string The response body.
+	 * @throws \Exception If the request fails.
+	 */
+	private function makeRequest(string $url): string {
+		$ch = curl_init($url);
+		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+		curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
+		curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->connect_timeout);
+		curl_setopt($ch, CURLOPT_HTTPHEADER, $this->headers);
+		curl_setopt($ch, CURLOPT_USERAGENT, 'Vateron-Media/XC_VM');
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 
-        return array_slice($older, 0, max(1, $limit));
-    }
+		$response = curl_exec($ch);
+		$http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		$error = curl_error($ch);
+		curl_close($ch);
 
-    /**
-     * Retrieves update information for the specified version
-     * 
-     * @param string $version Current version to check for updates
-     * @return array|null Array with update information or null in case of error
-     * @throws \InvalidArgumentException If an incorrect version is passed
-     */
-    public function getUpdate(string $version): ?array {
-        try {
-            $latest_version = $this->getLatestVersion($version);
-            if ($latest_version === null) {
-                error_log("No update available for version {$version} on channel '{$this->channel}'");
-                return null;
-            }
+		if ($response === false) {
+			throw new \Exception("cURL error: {$error}");
+		}
 
-            $changelog = $this->getChangelog($latest_version);
+		if ($http_code !== 200) {
+			switch ($http_code) {
+				case 404:
+					error_log("Resource not found (404)");
+					throw new \Exception("Resource not found (404)");
+				case 403:
+					error_log("Access forbidden (403) - Check API rate limits or permissions");
+					throw new \Exception("Access forbidden (403)");
+				case 500:
+					error_log("Server error (500)");
+					throw new \Exception("Server error (500)");
+				default:
+					error_log("Unexpected HTTP status code: {$http_code}");
+					throw new \Exception("Unexpected HTTP status code: {$http_code}");
+			}
+		}
 
-            $url = "https://github.com/{$this->owner}/{$this->repo}/releases/tag/{$latest_version}";
+		return $response;
+	}
 
-            return [
-                "version" => $latest_version,
-                "changelog" => $changelog,
-                "url" => $url
-            ];
-        } catch (\Exception $e) {
-            error_log("Error while fetching update: " . $e->getMessage());
-            return null;
-        }
-    }
-    /**
-     * Build the browser download URL for a release asset.
-     *
-     * @param string $version Release tag.
-     * @param string $asset   Asset filename.
-     * @return string
-     */
-    public function assetUrl(string $version, string $asset): string {
-        return "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$asset}";
-    }
+	/**
+	 * Get update file details for a specific file type and version.
+	 *
+	 * @param string $file_type The type of update file (main, lb, lb_update).
+	 * @param string $version The current version tag (e.g., "1.0.0").
+	 * @return array|null Array with URL and MD5 hash, or null if no next version.
+	 * @throws \Exception If the file type is invalid.
+	 */
+	public function getUpdateFile(string $file_type, string $version) {
+		switch ($file_type) {
+			case "main":
+				$update_file = "xc_vm.tar.gz";
+				break;
+			case "lb":
+				$update_file = "loadbalancer.tar.gz";
+				break;
+			case "lb_update":
+				$update_file = "loadbalancer.tar.gz";
+				break;
+			default:
+				throw new \Exception("Not valid file type");
+		}
+		$target_version = $this->getLatestVersion($version);
+		if (is_null($target_version)) {
+			$target_version = $version;
+		}
+		$upd_archive_url = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$target_version}/{$update_file}";
+		$hash_md5 = $this->getAssetHash($target_version, $update_file);
 
-    /**
-     * Filter releases based on the selected channel.
-     *
-     * @param array $releases Raw releases from GitHub API
-     * @return array Filtered releases
-     */
-    private function filterReleasesByChannel(array $releases): array {
-        if ($this->channel === 'beta') {
-            return $releases; // Все релизы
-        }
+		$data = ["url" => $upd_archive_url, "md5" => $hash_md5];
+		return $data;
+	}
 
-        // stable: только не pre-release
-        return array_filter($releases, function ($release) {
-            return empty($release['prerelease']);
-        });
-    }
+	/**
+	 * Build the download URL + MD5 for a SPECIFIC release version's asset.
+	 *
+	 * Unlike getUpdateFile(), which always resolves to the latest via
+	 * getLatestVersion(), this targets the exact $version passed — used by the
+	 * rollback flow to fetch an older release.
+	 *
+	 * @param string $file_type "main" (panel) or "lb"/"lb_update" (load balancer).
+	 * @param string $version   Exact release tag to fetch (e.g. "2.4.0").
+	 * @return array{url:string,md5:?string}
+	 * @throws \Exception On an invalid file type.
+	 */
+	public function getVersionFile(string $file_type, string $version): array {
+		switch ($file_type) {
+			case "main":
+				$update_file = "xc_vm.tar.gz";
+				break;
+			case "lb":
+			case "lb_update":
+				$update_file = "loadbalancer.tar.gz";
+				break;
+			default:
+				throw new \Exception("Not valid file type");
+		}
+		$url = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$update_file}";
 
-    /**
-     * Set the request timeout for cURL operations.
-     *
-     * @param int $seconds Timeout in seconds
-     */
-    public function setTimeout(int $seconds): void {
-        $this->timeout = max(1, $seconds);
-    }
+		return ["url" => $url, "md5" => $this->getAssetHash($version, $update_file)];
+	}
 
-    /**
-     * Change the update channel and clear cache.
-     *
-     * @param string $channel 'stable' or 'beta' ('unstable' is a legacy alias)
-     */
-    public function setChannel(string $channel): void {
-        $channel = ($channel === 'unstable') ? 'beta' : $channel;
-        if (!in_array($channel, ['stable', 'beta'])) {
-            throw new \InvalidArgumentException("Channel must be 'stable' or 'beta'");
-        }
-        if ($this->channel !== $channel) {
-            $oldCacheFile = $this->cache_file;
-            $baseCacheFile = preg_replace('/_(stable|beta|unstable)$/', '', $this->cache_file);
-            if (!is_string($baseCacheFile) || $baseCacheFile === '') {
-                $baseCacheFile = $this->cache_file;
-            }
+	/**
+	 * List the newest $limit released versions strictly older than
+	 * $current_version, newest first. Populates the rollback version picker. Each
+	 * entry carries a `beta` flag (GitHub prerelease) so the UI can tag it.
+	 *
+	 * @param string $current_version Current version tag (e.g. "2.4.1").
+	 * @param int    $limit           Max versions to return.
+	 * @return array<int,array{version:string,beta:bool}> Older releases, newest first.
+	 */
+	public function getPreviousVersions(string $current_version, int $limit = 5): array {
+		$older = [];
+		foreach ($this->getFilteredReleases() as $rRelease) {
+			$tag = (string) ($rRelease['tag_name'] ?? '');
+			if ($tag !== '' && version_compare($tag, $current_version, '<')) {
+				$older[] = ['version' => $tag, 'beta' => !empty($rRelease['prerelease'])];
+			}
+		}
+		usort($older, static fn($a, $b) => version_compare($b['version'], $a['version']));
 
-            $this->channel = $channel;
+		return array_slice($older, 0, max(1, $limit));
+	}
 
-            // Remove old-channel cache explicitly before switching file path.
-            if (file_exists($oldCacheFile)) {
-                unlink($oldCacheFile);
-            }
+	/**
+	 * Retrieves update information for the specified version
+	 *
+	 * @param string $version Current version to check for updates
+	 * @return array|null Array with update information or null in case of error
+	 * @throws \InvalidArgumentException If an incorrect version is passed
+	 */
+	public function getUpdate(string $version): ?array {
+		try {
+			$latest_version = $this->getLatestVersion($version);
+			if ($latest_version === null) {
+				error_log("No update available for version {$version} on channel '{$this->channel}'");
+				return null;
+			}
 
-            $this->cache_file = $baseCacheFile . "_{$channel}";
+			$changelog = $this->getChangelog($latest_version);
 
-            // Ensure target-channel cache is also reset.
-            $this->clearCache();
-            error_log("Update channel changed to '{$channel}' and cache cleared");
-        }
-    }
+			$url = "https://github.com/{$this->owner}/{$this->repo}/releases/tag/{$latest_version}";
+
+			return [
+				"version" => $latest_version,
+				"changelog" => $changelog,
+				"url" => $url
+			];
+		} catch (\Exception $e) {
+			error_log("Error while fetching update: " . $e->getMessage());
+			return null;
+		}
+	}
+
+	/**
+	 * Build the browser download URL for a release asset.
+	 *
+	 * @param string $version Release tag.
+	 * @param string $asset   Asset filename.
+	 * @return string
+	 */
+	public function assetUrl(string $version, string $asset): string {
+		return "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$asset}";
+	}
+
+	/**
+	 * Filter releases based on the selected channel.
+	 *
+	 * @param array $releases Raw releases from GitHub API
+	 * @return array Filtered releases
+	 */
+	private function filterReleasesByChannel(array $releases): array {
+		if ($this->channel === 'beta') {
+			return $releases; // Все релизы
+		}
+
+		// stable: только не pre-release
+		return array_filter($releases, function ($release) {
+			return empty($release['prerelease']);
+		});
+	}
+
+	/**
+	 * Set the request timeout for cURL operations.
+	 *
+	 * @param int $seconds Timeout in seconds
+	 */
+	public function setTimeout(int $seconds): void {
+		$this->timeout = max(1, $seconds);
+	}
+
+	/**
+	 * Change the update channel and clear cache.
+	 *
+	 * @param string $channel 'stable' or 'beta' ('unstable' is a legacy alias)
+	 */
+	public function setChannel(string $channel): void {
+		$channel = ($channel === 'unstable') ? 'beta' : $channel;
+		if (!in_array($channel, ['stable', 'beta'])) {
+			throw new \InvalidArgumentException("Channel must be 'stable' or 'beta'");
+		}
+		if ($this->channel !== $channel) {
+			$oldCacheFile = $this->cache_file;
+			$baseCacheFile = preg_replace('/_(stable|beta|unstable)$/', '', $this->cache_file);
+			if (!is_string($baseCacheFile) || $baseCacheFile === '') {
+				$baseCacheFile = $this->cache_file;
+			}
+
+			$this->channel = $channel;
+
+			// Remove old-channel cache explicitly before switching file path.
+			if (file_exists($oldCacheFile)) {
+				unlink($oldCacheFile);
+			}
+
+			$this->cache_file = $baseCacheFile . "_{$channel}";
+
+			// Ensure target-channel cache is also reset.
+			$this->clearCache();
+			error_log("Update channel changed to '{$channel}' and cache cleared");
+		}
+	}
 }
 
 /**

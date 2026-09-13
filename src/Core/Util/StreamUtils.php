@@ -21,7 +21,7 @@ class StreamUtils {
 	 * @param string $rCookie Raw cookie string.
 	 * @return string Cookie string with `path=/` and `domain=` appended if missing.
 	 */
-	public static function fixCookie($rCookie) {
+	public static function fixCookie(string $rCookie) {
 		$rPath = false;
 		$rDomain = false;
 		$rSplit = explode(';', $rCookie);
@@ -59,8 +59,8 @@ class StreamUtils {
 	 * @param mixed       $rType      Argument category to include.
 	 * @return string[] Formatted command-line arguments.
 	 */
-	public static function getArguments($rArguments, $rProtocol, $rType) {
-		$rReturn = array();
+	public static function getArguments(array $rArguments, ?string $rProtocol, mixed $rType) {
+		$rReturn = [];
 		if (!empty($rArguments)) {
 			foreach ($rArguments as $rArgument_id => $rArgument) {
 				if ($rArgument['argument_cat'] == $rType && (is_null($rArgument['argument_wprotocol']) || stristr($rProtocol, $rArgument['argument_wprotocol']) || is_null($rProtocol))) {
@@ -87,8 +87,8 @@ class StreamUtils {
 	 * @param array $rArgs Raw transcode argument map.
 	 * @return string[] Ordered, trimmed ffmpeg arguments.
 	 */
-	public static function parseTranscode($rArgs) {
-		$rFitlerComplex = array();
+	public static function parseTranscode(array $rArgs) {
+		$rFitlerComplex = [];
 		foreach ($rArgs as $rKey => $rArgument) {
 			if (!($rKey == 'gpu' || $rKey == 'software_decoding' || $rKey == '16')) {
 				if (isset($rArgument['cmd'])) {
@@ -103,7 +103,7 @@ class StreamUtils {
 		if (!empty($rFitlerComplex)) {
 			$rArgs[] = '-filter_complex "' . implode(',', $rFitlerComplex) . '"';
 		}
-		$rNewArgs = array();
+		$rNewArgs = [];
 		foreach ($rArgs as $rKey => $rArg) {
 			if ($rKey != 'gpu' && $rKey != 'software_decoding') {
 				if (is_numeric($rKey)) {
@@ -114,7 +114,7 @@ class StreamUtils {
 			}
 		}
 		$rNewArgs = array_filter($rNewArgs);
-		uasort($rNewArgs, array(self::class, 'customOrder'));
+		uasort($rNewArgs, [self::class, 'customOrder']);
 		return array_map('trim', array_values(array_filter($rNewArgs)));
 	}
 
@@ -125,7 +125,7 @@ class StreamUtils {
 	 * @param string $b Second argument.
 	 * @return int -1 if $a is an input arg, 1 otherwise.
 	 */
-	public static function customOrder($a, $b) {
+	public static function customOrder(string $a, string $b) {
 		if (substr($a, 0, 3) == '-i ') {
 			return -1;
 		}
@@ -141,7 +141,7 @@ class StreamUtils {
 	 * @param string $rURL Source URL.
 	 * @return string Normalized/resolved URL.
 	 */
-	public static function parseStreamURL($rURL) {
+	public static function parseStreamURL(string $rURL) {
 		$rProtocol = strtolower(substr($rURL, 0, 4));
 		if ($rProtocol == 'rtmp') {
 			if (stristr($rURL, '$OPT')) {
@@ -159,7 +159,7 @@ class StreamUtils {
 	}
 
 	/** Video platforms whose page URLs parseStreamURL() resolves through yt-dlp. */
-	const RESOLVED_PLATFORMS = array('livestream.com', 'ustream.tv', 'twitch.tv', 'vimeo.com', 'facebook.com', 'dailymotion.com', 'cnn.com', 'edition.cnn.com', 'youtube.com', 'youtu.be');
+	const RESOLVED_PLATFORMS = ['livestream.com', 'ustream.tv', 'twitch.tv', 'vimeo.com', 'facebook.com', 'dailymotion.com', 'cnn.com', 'edition.cnn.com', 'youtube.com', 'youtu.be'];
 
 	/**
 	 * Whether a source URL is a platform page parseStreamURL() has to resolve
@@ -168,7 +168,7 @@ class StreamUtils {
 	 * @param string $rURL Source URL.
 	 * @return bool
 	 */
-	public static function needsResolver($rURL) {
+	public static function needsResolver(string $rURL) {
 		if (strtolower(substr((string) $rURL, 0, 4)) !== 'http') {
 			return false;
 		}
@@ -182,10 +182,10 @@ class StreamUtils {
 	 * @param string $rURL URL to inspect.
 	 * @return bool True if the path matches a known XC_VM stream pattern.
 	 */
-	public static function detectXC_VM($rURL) {
+	public static function detectXC_VM(string $rURL) {
 		$rPath = parse_url($rURL)['path'];
 		$rPathSize = count(explode('/', $rPath));
-		$rRegex = array('/\\/auth\\/(.*)$/m' => 3, '/\\/play\\/(.*)$/m' => 3, '/\\/play\\/(.*)\\/(.*)$/m' => 4, '/\\/live\\/(.*)\\/(\\d+)$/m' => 4, '/\\/live\\/(.*)\\/(\\d+)\\.(.*)$/m' => 4, '/\\/(.*)\\/(.*)\\/(\\d+)\\.(.*)$/m' => 4, '/\\/(.*)\\/(.*)\\/(\\d+)$/m' => 4, '/\\/live\\/(.*)\\/(.*)\\/(\\d+)\\.(.*)$/m' => 5, '/\\/live\\/(.*)\\/(.*)\\/(\\d+)$/m' => 5);
+		$rRegex = ['/\\/auth\\/(.*)$/m' => 3, '/\\/play\\/(.*)$/m' => 3, '/\\/play\\/(.*)\\/(.*)$/m' => 4, '/\\/live\\/(.*)\\/(\\d+)$/m' => 4, '/\\/live\\/(.*)\\/(\\d+)\\.(.*)$/m' => 4, '/\\/(.*)\\/(.*)\\/(\\d+)\\.(.*)$/m' => 4, '/\\/(.*)\\/(.*)\\/(\\d+)$/m' => 4, '/\\/live\\/(.*)\\/(.*)\\/(\\d+)\\.(.*)$/m' => 5, '/\\/live\\/(.*)\\/(.*)\\/(\\d+)$/m' => 5];
 		foreach ($rRegex as $rQuery => $rCount) {
 			if ($rPathSize != $rCount) {
 			} else {
@@ -207,7 +207,7 @@ class StreamUtils {
 	 * @param int    $rSegmentDuration Assumed segment duration in seconds.
 	 * @return array|string|null Segment list, current segment id, or null if missing.
 	 */
-	public static function getPlaylistSegments($rPlaylist, $rPrebuffer = 0, $rSegmentDuration = 10) {
+	public static function getPlaylistSegments(string $rPlaylist, int $rPrebuffer = 0, int $rSegmentDuration = 10) {
 		if (!file_exists($rPlaylist)) {
 		} else {
 			$rSource = file_get_contents($rPlaylist);
@@ -236,7 +236,7 @@ class StreamUtils {
 	 * @param string $rUIToken  UI token; preferred auth when present.
 	 * @return string|false Rewritten playlist text, or false if unavailable.
 	 */
-	public static function generateAdminHLS($rM3U8, $rPassword, $rStreamID, $rUIToken) {
+	public static function generateAdminHLS(string $rM3U8, string $rPassword, int $rStreamID, string $rUIToken) {
 		if (!file_exists($rM3U8)) {
 		} else {
 			$rSource = file_get_contents($rM3U8);
@@ -262,7 +262,7 @@ class StreamUtils {
 	 * @param int    $rPID      Process id to check (ffmpeg/php).
 	 * @return bool True if running and the playlist file exists.
 	 */
-	public static function isValidStream($rPlaylist, $rPID) {
+	public static function isValidStream(string $rPlaylist, int $rPID) {
 		return (ProcessManager::isRunning($rPID, 'ffmpeg') || ProcessManager::isRunning($rPID, 'php')) && file_exists($rPlaylist);
 	}
 
@@ -272,7 +272,7 @@ class StreamUtils {
 	 * @param string $rSegment Path to the .ts segment.
 	 * @return int Byte offset of the keyframe (0 if not found).
 	 */
-	public static function findKeyframe($rSegment) {
+	public static function findKeyframe(string $rSegment) {
 		$rPacketSize = 188;
 		$rKeyframe = $rPosition = 0;
 		$rFoundStart = false;
@@ -335,7 +335,7 @@ class StreamUtils {
 	 * @param string|null $rForceDuration Duration "H:M:S" for movies (size-based estimate).
 	 * @return int|false Average bitrate, or false if unavailable.
 	 */
-	public static function getStreamBitrate($rType, $rPath, $rForceDuration = null) {
+	public static function getStreamBitrate(string $rType, string $rPath, ?string $rForceDuration = null) {
 		clearstatcache();
 		if (file_exists($rPath)) {
 			$rBitrate = 0;
@@ -349,7 +349,7 @@ class StreamUtils {
 					break;
 				case 'live':
 					$rFP = fopen($rPath, 'r');
-					$rBitrates = array();
+					$rBitrates = [];
 					while (!feof($rFP)) {
 						$rLine = trim(fgets($rFP));
 						if (stristr($rLine, 'EXTINF')) {
@@ -384,8 +384,8 @@ class StreamUtils {
 	 * @param string $rRawSegment Raw (URL-encoded) segment from the request.
 	 * @return string
 	 */
-	public static function sanitizeSegmentName($rRawSegment) {
-		return str_replace(array('\\', '/'), '', urldecode((string) $rRawSegment));
+	public static function sanitizeSegmentName(string $rRawSegment) {
+		return str_replace(['\\', '/'], '', urldecode((string) $rRawSegment));
 	}
 
 	/**
@@ -395,8 +395,8 @@ class StreamUtils {
 	 * @param string $rContainer Container extension (e.g. "mp4").
 	 * @return string
 	 */
-	public static function containerMimeType($rContainer) {
-		$rMap = array(
+	public static function containerMimeType(string $rContainer) {
+		$rMap = [
 			'mp4' => 'video/mp4',
 			'mkv' => 'video/x-matroska',
 			'avi' => 'video/x-msvideo',
@@ -405,7 +405,7 @@ class StreamUtils {
 			'wmv' => 'video/x-ms-wmv',
 			'mov' => 'video/quicktime',
 			'ts'  => 'video/mp2t',
-		);
+		];
 
 		return $rMap[(string) $rContainer] ?? 'application/octet-stream';
 	}
@@ -414,10 +414,9 @@ class StreamUtils {
 	 * Parse the timeshift `start` parameter into a unix timestamp. Accepts a raw
 	 * timestamp, `YYYYMMDD-H`, or `Y-m-d:H-i`.
 	 *
-	 * @param string|int $rStartDate
 	 * @return int
 	 */
-	public static function timeshiftStartTimestamp($rStartDate) {
+	public static function timeshiftStartTimestamp(string|int $rStartDate) {
 		if (is_numeric($rStartDate)) {
 			return (int) $rStartDate;
 		}
@@ -443,8 +442,7 @@ class StreamUtils {
 	 * @param int $rConfiguredWaitSeconds Configured `segment_wait_time`.
 	 * @return int
 	 */
-	public static function segmentRetryBudget($rSegTimeSeconds, $rConfiguredWaitSeconds) {
+	public static function segmentRetryBudget(int $rSegTimeSeconds, int $rConfiguredWaitSeconds) {
 		return max((int) $rSegTimeSeconds * 2, (int) $rConfiguredWaitSeconds ?: 20);
 	}
-
 }

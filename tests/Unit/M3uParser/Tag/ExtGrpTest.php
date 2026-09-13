@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtGrp;
 use M3uParser\Tag\ExtTagInterface;
 use PHPUnit\Framework\TestCase;
 
-class ExtGrpTest extends TestCase
-{
-    public function testParseExtGrp(): void
-    {
+class ExtGrpTest extends TestCase {
+    public function testParseExtGrp(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/extgrp.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/extgrp.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -35,10 +32,9 @@ class ExtGrpTest extends TestCase
         self::assertEquals('Rock', $extGrp->getValue());
     }
 
-    public function testGenerateExtGrp(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTGRP:Rock'."\n";
+    public function testGenerateExtGrp(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTGRP:Rock' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

@@ -20,29 +20,30 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 
 class BlocklistService {
 	use DatabaseAware;
+
 	/**
 	 * Add an IP (or CIDR) to the blocklist.
 	 *
 	 * @param array $rData Submitted IP/notes data.
 	 * @return array Result status payload.
 	 */
-	public static function blockIP($rData) {
+	public static function blockIP(array $rData) {
 		$db = self::db();
 		if (!AdminHelpers::validateCIDR($rData['ip'])) {
-			return array('status' => STATUS_INVALID_IP, 'data' => $rData);
+			return ['status' => STATUS_INVALID_IP, 'data' => $rData];
 		}
 
-		$rArray = array('ip' => $rData['ip'], 'notes' => $rData['notes'], 'date' => time());
+		$rArray = ['ip' => $rData['ip'], 'notes' => $rData['notes'], 'date' => time()];
 		touch(FLOOD_TMP_PATH . 'block_' . $rData['ip']);
 		$rPrepare = QueryHelper::prepareArray($rArray);
 		$rQuery = 'REPLACE INTO `blocked_ips`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
-		return array('status' => STATUS_FAILURE, 'data' => $rData);
+		return ['status' => STATUS_FAILURE, 'data' => $rData];
 	}
 
 	/**
@@ -51,13 +52,13 @@ class BlocklistService {
 	 * @param array $rData Submitted ISP data (includes `edit` id when updating).
 	 * @return array Result status payload.
 	 */
-	public static function processISP($rData) {
+	public static function processISP(array $rData) {
 		$db = self::db();
 		if (isset($rData['edit'])) {
 			if (!Authorization::check('adv', 'block_isps')) {
 				exit();
 			}
-			$rArray = AdminHelpers::overwriteData(BlocklistService::getISPById($rData['edit']), $rData);
+			$rArray = AdminHelpers::overwriteData(self::getISPById($rData['edit']), $rData);
 		} else {
 			if (!Authorization::check('adv', 'block_isps')) {
 				exit();
@@ -73,7 +74,7 @@ class BlocklistService {
 		}
 
 		if (strlen($rArray['isp']) == 0) {
-			return array('status' => STATUS_INVALID_NAME, 'data' => $rData);
+			return ['status' => STATUS_INVALID_NAME, 'data' => $rData];
 		}
 
 		$rPrepare = QueryHelper::prepareArray($rArray);
@@ -81,10 +82,10 @@ class BlocklistService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
-		return array('status' => STATUS_FAILURE, 'data' => $rData);
+		return ['status' => STATUS_FAILURE, 'data' => $rData];
 	}
 
 	/**
@@ -93,16 +94,16 @@ class BlocklistService {
 	 * @param array $rData Submitted RTMP IP data (includes `edit` id when updating).
 	 * @return array Result status payload.
 	 */
-	public static function processRTMPIP($rData) {
+	public static function processRTMPIP(array $rData) {
 		$db = self::db();
 		if (isset($rData['edit'])) {
-			$rArray = AdminHelpers::overwriteData(BlocklistService::getRTMPIPById($rData['edit']), $rData);
+			$rArray = AdminHelpers::overwriteData(self::getRTMPIPById($rData['edit']), $rData);
 		} else {
 			$rArray = QueryHelper::verifyPostTable('rtmp_ips', $rData);
 			unset($rArray['id']);
 		}
 
-		foreach (array('push', 'pull') as $rSelection) {
+		foreach (['push', 'pull'] as $rSelection) {
 			if (isset($rData[$rSelection])) {
 				$rArray[$rSelection] = 1;
 			} else {
@@ -111,11 +112,11 @@ class BlocklistService {
 		}
 
 		if (!filter_var($rData['ip'], FILTER_VALIDATE_IP)) {
-			return array('status' => STATUS_INVALID_IP, 'data' => $rData);
+			return ['status' => STATUS_INVALID_IP, 'data' => $rData];
 		}
 
 		if (QueryHelper::checkExists('rtmp_ips', 'ip', $rData['ip'], 'id', $rArray['id'])) {
-			return array('status' => STATUS_EXISTS_IP, 'data' => $rData);
+			return ['status' => STATUS_EXISTS_IP, 'data' => $rData];
 		}
 
 		if (strlen($rData['password']) == 0) {
@@ -127,10 +128,10 @@ class BlocklistService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
-		return array('status' => STATUS_FAILURE, 'data' => $rData);
+		return ['status' => STATUS_FAILURE, 'data' => $rData];
 	}
 
 	/**
@@ -139,10 +140,10 @@ class BlocklistService {
 	 * @param array $rData Submitted user-agent data (includes `edit` id when updating).
 	 * @return array Result status payload.
 	 */
-	public static function processUA($rData) {
+	public static function processUA(array $rData) {
 		$db = self::db();
 		if (isset($rData['edit'])) {
-			$rArray = AdminHelpers::overwriteData(BlocklistService::getUserAgentById($rData['edit']), $rData);
+			$rArray = AdminHelpers::overwriteData(self::getUserAgentById($rData['edit']), $rData);
 		} else {
 			$rArray = QueryHelper::verifyPostTable('blocked_uas', $rData);
 			unset($rArray['id']);
@@ -159,10 +160,10 @@ class BlocklistService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
-			return array('status' => STATUS_SUCCESS, 'data' => array('insert_id' => $rInsertID));
+			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
-		return array('status' => STATUS_FAILURE, 'data' => $rData);
+		return ['status' => STATUS_FAILURE, 'data' => $rData];
 	}
 
 	/**
@@ -173,7 +174,7 @@ class BlocklistService {
 	 * @param bool   $rReturn    Return the matched entry instead of a boolean.
 	 * @return bool|mixed True/match if blocked, false otherwise.
 	 */
-	public static function checkBlockedUAs($rBlockedUA, $rUserAgent, $rReturn = false) {
+	public static function checkBlockedUAs(array $rBlockedUA, string $rUserAgent, bool $rReturn = false) {
 		$rUserAgent = strtolower($rUserAgent);
 		foreach ($rBlockedUA as $rBlocked) {
 			if ($rBlocked['exact_match'] == 1) {
@@ -197,7 +198,7 @@ class BlocklistService {
 	 * @param bool   $rReturn    Return the matched entry instead of acting.
 	 * @return bool|mixed True/match if blocked, false otherwise.
 	 */
-	public static function checkAndBlockUA($rBlockedUA, $rUserAgent, $rReturn = false) {
+	public static function checkAndBlockUA(array $rBlockedUA, string $rUserAgent, bool $rReturn = false) {
 		$db = self::db();
 		$rUserAgent = strtolower($rUserAgent);
 		$rFoundID = false;
@@ -231,7 +232,7 @@ class BlocklistService {
 	 * @param string $rConISP     Connection ISP to test.
 	 * @return bool True if blocked.
 	 */
-	public static function checkISP($rBlockedISP, $rConISP) {
+	public static function checkISP(array $rBlockedISP, string $rConISP) {
 		foreach ($rBlockedISP as $rISP) {
 			if (strtolower($rConISP) == strtolower($rISP['isp'])) {
 				return (bool) intval($rISP['blocked']);
@@ -247,7 +248,7 @@ class BlocklistService {
 	 * @param int|string $rASN            ASN to test.
 	 * @return bool True if blocked.
 	 */
-	public static function checkServer($rBlockedServers, $rASN) {
+	public static function checkServer(array $rBlockedServers, int|string $rASN) {
 		return in_array($rASN, $rBlockedServers);
 	}
 
@@ -259,7 +260,7 @@ class BlocklistService {
 	 * @param string $rIP IP address.
 	 * @return bool True if the IP is a known proxy.
 	 */
-	public static function isProxy($rIP) {
+	public static function isProxy(string $rIP) {
 		$rProxies = self::getProxyIPs();
 		if (isset($rProxies[$rIP])) {
 			return (bool) $rProxies[$rIP];
@@ -273,7 +274,7 @@ class BlocklistService {
 	 * @param bool $rForce Bypass the cache.
 	 * @return array Proxy IPs.
 	 */
-	public static function getProxyIPs($rForce = false) {
+	public static function getProxyIPs(bool $rForce = false) {
 		global $rServers;
 		if (!$rForce) {
 			$rCache = FileCache::getCache('proxy_servers', 20);
@@ -282,7 +283,7 @@ class BlocklistService {
 			}
 		}
 
-		$rOutput = array();
+		$rOutput = [];
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_type'] == 1) {
 				$rOutput[$rServer['server_ip']] = $rServer;
@@ -303,7 +304,7 @@ class BlocklistService {
 	 * @param bool $rForce Bypass the cache.
 	 * @return array Blocked user agents.
 	 */
-	public static function getBlockedUA($rForce = false) {
+	public static function getBlockedUA(bool $rForce = false) {
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('blocked_ua', 20);
@@ -326,7 +327,7 @@ class BlocklistService {
 	 * @param bool $rForce Bypass the cache.
 	 * @return array Blocked IPs.
 	 */
-	public static function getBlockedIPs($rForce = false) {
+	public static function getBlockedIPs(bool $rForce = false) {
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('blocked_ips', 20);
@@ -335,9 +336,9 @@ class BlocklistService {
 			}
 		}
 
-		$rOutput = array();
+		$rOutput = [];
 		$db->query('SELECT `ip` FROM `blocked_ips`');
-		foreach ($db->get_rows() ?: array() as $rRow) {
+		foreach ($db->get_rows() ?: [] as $rRow) {
 			$rOutput[] = $rRow['ip'];
 		}
 
@@ -352,7 +353,7 @@ class BlocklistService {
 	 * @param bool $rForce Bypass the cache.
 	 * @return array Blocked ISPs.
 	 */
-	public static function getBlockedISP($rForce = false) {
+	public static function getBlockedISP(bool $rForce = false) {
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('blocked_isp', 20);
@@ -375,7 +376,7 @@ class BlocklistService {
 	 * @param bool $rForce Bypass the cache.
 	 * @return array Blocked servers/ASNs.
 	 */
-	public static function getBlockedServers($rForce = false) {
+	public static function getBlockedServers(bool $rForce = false) {
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('blocked_servers', 20);
@@ -384,9 +385,9 @@ class BlocklistService {
 			}
 		}
 
-		$rOutput = array();
+		$rOutput = [];
 		$db->query('SELECT `asn` FROM `blocked_asns` WHERE `blocked` = 1;');
-		foreach ($db->get_rows() ?: array() as $rRow) {
+		foreach ($db->get_rows() ?: [] as $rRow) {
 			$rOutput[] = $rRow['asn'];
 		}
 
@@ -402,11 +403,11 @@ class BlocklistService {
 	 */
 	public static function getBlockedIPsSimple() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `blocked_ips` ORDER BY `id` ASC;');
 
 		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() ?: array() as $rRow) {
+			foreach ($db->get_rows() ?: [] as $rRow) {
 				$rReturn[] = $rRow;
 			}
 		}
@@ -421,11 +422,11 @@ class BlocklistService {
 	 */
 	public static function getRTMPIPsSimple() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `rtmp_ips` ORDER BY `id` ASC;');
 
 		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() ?: array() as $rRow) {
+			foreach ($db->get_rows() ?: [] as $rRow) {
 				$rReturn[] = $rRow;
 			}
 		}
@@ -440,10 +441,10 @@ class BlocklistService {
 	 */
 	public static function getAllowedRTMP() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT `ip`, `password`, `push`, `pull` FROM `rtmp_ips`');
-		foreach ($db->get_rows() ?: array() as $rRow) {
-			$rReturn[gethostbyname($rRow['ip'])] = array('password' => $rRow['password'], 'push' => boolval($rRow['push']), 'pull' => boolval($rRow['pull']));
+		foreach ($db->get_rows() ?: [] as $rRow) {
+			$rReturn[gethostbyname($rRow['ip'])] = ['password' => $rRow['password'], 'push' => boolval($rRow['push']), 'pull' => boolval($rRow['pull'])];
 		}
 		return $rReturn;
 	}
@@ -454,7 +455,7 @@ class BlocklistService {
 	 * @param int $rID Entry id.
 	 * @return bool True on success.
 	 */
-	public static function deleteBlockedIP($rID) {
+	public static function deleteBlockedIP(int $rID) {
 		$db = self::db();
 		$db->query('SELECT `id`, `ip` FROM `blocked_ips` WHERE `id` = ?;', $rID);
 
@@ -479,7 +480,7 @@ class BlocklistService {
 	 * @param int $rID Entry id.
 	 * @return bool True on success.
 	 */
-	public static function deleteBlockedISP($rID) {
+	public static function deleteBlockedISP(int $rID) {
 		$db = self::db();
 		$db->query('SELECT `id` FROM `blocked_isps` WHERE `id` = ?;', $rID);
 
@@ -498,7 +499,7 @@ class BlocklistService {
 	 * @param int $rID Entry id.
 	 * @return bool True on success.
 	 */
-	public static function deleteBlockedUA($rID) {
+	public static function deleteBlockedUA(int $rID) {
 		$db = self::db();
 		$db->query('SELECT `id` FROM `blocked_uas` WHERE `id` = ?;', $rID);
 
@@ -524,11 +525,11 @@ class BlocklistService {
 		shell_exec('rm ' . FLOOD_TMP_PATH . 'block_*');
 
 		foreach ($rServers as $rServer) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(array('action' => 'flush')));
+			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'flush']));
 		}
 
 		foreach ($rProxyServers as $rServer) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(array('action' => 'flush')));
+			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'flush']));
 		}
 
 		return true;
@@ -541,12 +542,12 @@ class BlocklistService {
 	 */
 	public static function getAllUserAgents() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `blocked_uas` ORDER BY `id` ASC;');
 
 		if (0 >= $db->num_rows()) {
 		} else {
-			foreach ($db->get_rows() ?: array() as $rRow) {
+			foreach ($db->get_rows() ?: [] as $rRow) {
 				$rReturn[] = $rRow;
 			}
 		}
@@ -561,12 +562,12 @@ class BlocklistService {
 	 */
 	public static function getAllISPs() {
 		$db = self::db();
-		$rReturn = array();
+		$rReturn = [];
 		$db->query('SELECT * FROM `blocked_isps` ORDER BY `id` ASC;');
 
 		if (0 >= $db->num_rows()) {
 		} else {
-			foreach ($db->get_rows() ?: array() as $rRow) {
+			foreach ($db->get_rows() ?: [] as $rRow) {
 				$rReturn[] = $rRow;
 			}
 		}
@@ -580,7 +581,7 @@ class BlocklistService {
 	 * @param int $rID Entry id.
 	 * @return array|null The row, or null if not found.
 	 */
-	public static function getUserAgentById($rID) {
+	public static function getUserAgentById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `blocked_uas` WHERE `id` = ?;', $rID);
 
@@ -597,7 +598,7 @@ class BlocklistService {
 	 * @param int $rID Entry id.
 	 * @return array|null The row, or null if not found.
 	 */
-	public static function getISPById($rID) {
+	public static function getISPById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `blocked_isps` WHERE `id` = ?;', $rID);
 
@@ -614,7 +615,7 @@ class BlocklistService {
 	 * @param int $rID Entry id.
 	 * @return bool True on success.
 	 */
-	public static function deleteRTMPIP($rID) {
+	public static function deleteRTMPIP(int $rID) {
 		$db = self::db();
 		$db->query('SELECT `id` FROM `rtmp_ips` WHERE `id` = ?;', $rID);
 
@@ -633,7 +634,7 @@ class BlocklistService {
 	 * @param int $rID Entry id.
 	 * @return array|null The row, or null if not found.
 	 */
-	public static function getRTMPIPById($rID) {
+	public static function getRTMPIPById(int $rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `rtmp_ips` WHERE `id` = ?;', $rID);
 

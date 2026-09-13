@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace XcVm\Core\Events;
 
@@ -35,13 +34,13 @@ namespace XcVm\Core\Events;
  */
 #[\Attribute(\Attribute::TARGET_METHOD | \Attribute::IS_REPEATABLE)]
 final class ListensTo {
-
-    /**
-     * @param class-string $eventClass Fully-qualified event class name to listen for.
-     * @param int          $priority   Dispatch priority — higher value means called first (default 0).
-     */
-    public function __construct(
-        public readonly string $eventClass,
-        public readonly int    $priority = 0,
-    ) {}
+	/**
+	 * @param class-string $eventClass Fully-qualified event class name to listen for.
+	 * @param int          $priority   Dispatch priority — higher value means called first (default 0).
+	 */
+	public function __construct(
+		public readonly string $eventClass,
+		public readonly int $priority = 0,
+	) {
+	}
 }

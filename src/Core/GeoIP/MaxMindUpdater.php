@@ -20,14 +20,15 @@ use XcVm\Core\Util\GeoIP;
  * Implemented for: https://github.com/Vateron-Media/XC_VM/issues/102
  */
 class MaxMindUpdater {
-
 	private const DOWNLOAD_URL = 'https://download.maxmind.com/geoip/databases/%s/download?suffix=tar.gz';
 	private const MAXMIND_DIR  = '/home/xc_vm/bin/maxmind/';
 	private const VERSION_FILE = '/home/xc_vm/bin/maxmind/version.json';
 	private const TIMEOUT      = 300;
 
 	private string $accountId;
+
 	private string $licenseKey;
+
 	/** @var string[] */
 	private array $editions;
 

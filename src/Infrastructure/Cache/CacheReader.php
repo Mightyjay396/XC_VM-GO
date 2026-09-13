@@ -19,7 +19,7 @@ class CacheReader {
 	 * @param string $rCache Имя кэш-файла (без пути)
 	 * @return mixed|null
 	 */
-	public static function get($rCache) {
+	public static function get(string $rCache) {
 		$rPath = CACHE_TMP_PATH . $rCache;
 		if (!is_file($rPath)) {
 			return null;
@@ -34,7 +34,7 @@ class CacheReader {
 	 * @param array $rSettings Настройки приложения
 	 * @return bool
 	 */
-	public static function isReady($rSettings) {
+	public static function isReady(array $rSettings) {
 		if (!$rSettings['enable_cache']) {
 			return false;
 		}

@@ -16,8 +16,11 @@ namespace XcVm\Streaming\Codec;
 
 class FfmpegPaths {
 	private static $cpu = null;
+
 	private static $gpu = null;
+
 	private static $probe = null;
+
 	private static $resolved = false;
 
 	/**
@@ -36,7 +39,7 @@ class FfmpegPaths {
 	 * @param string      $cpuVersion e.g. '8.0', '7.1', '4.0'
 	 * @param string|null $gpuVersion GPU ffmpeg version, or null to reuse the CPU build
 	 */
-	public static function resolve($cpuVersion, $gpuVersion = null) {
+	public static function resolve(string $cpuVersion, ?string $gpuVersion = null) {
 		if (self::$resolved) {
 			return;
 		}
@@ -57,7 +60,7 @@ class FfmpegPaths {
 	 * @param string $version Version folder name (e.g. '8.0')
 	 * @param string $name    'ffmpeg' or 'ffprobe'
 	 */
-	private static function binary($version, $name): ?string {
+	private static function binary(string $version, string $name): ?string {
 		if (!is_string($version) || !preg_match('/^\d+\.\d+$/', $version)) {
 			return null;
 		}

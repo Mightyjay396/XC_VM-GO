@@ -11,36 +11,43 @@ class StringWalker implements ParserInterface {
 	 * @var array
 	 */
 	protected $options;
+
 	/**
 	 * Is this the first run?
 	 * @var boolean
 	 */
 	protected $firstRun = true;
+
 	/**
 	 * What depth are we currently at?
 	 * @var integer
 	 */
 	protected $depth = 0;
+
 	/**
 	 * The latest chunk from the stream
 	 * @var string
 	 */
 	protected $chunk;
+
 	/**
 	 * Last XML node in the making, used for anti-freeze detection
 	 * @var null|string
 	 */
 	protected $lastChunk;
+
 	/**
 	 * XML node in the making
 	 * @var null|string
 	 */
 	protected $shaved;
+
 	/**
 	 * Whether to capture or not
 	 * @var boolean
 	 */
 	protected $capture = false;
+
 	/**
 	 * If extractContainer is true, this will grow with the XML captured before and after the specified capture depth
 	 * @var string
@@ -51,25 +58,25 @@ class StringWalker implements ParserInterface {
 	 * Parser contructor
 	 * @param array $options An options array
 	 */
-	public function __construct(array $options = array()) {
-		$this->options = array_merge(array(
+	public function __construct(array $options = []) {
+		$this->options = array_merge([
 			'captureDepth' => 2,
 			'expectGT' => false,
-			'tags' => array(
-				array('<?', '?>', 0),
-				array('<!--', '-->', 0),
-				array('<![CDATA[', ']]>', 0),
-				array('<!', '>', 0),
-				array('</', '>', -1),
-				array('<', '/>', 0),
-				array('<', '>', 1)
-			),
-			'tagsWithAllowedGT' => array(
-				array('<!--', '-->'),
-				array('<![CDATA[', ']]>')
-			),
+			'tags' => [
+				['<?', '?>', 0],
+				['<!--', '-->', 0],
+				['<![CDATA[', ']]>', 0],
+				['<!', '>', 0],
+				['</', '>', -1],
+				['<', '/>', 0],
+				['<', '>', 1]
+			],
+			'tagsWithAllowedGT' => [
+				['<!--', '-->'],
+				['<![CDATA[', ']]>']
+			],
 			'extractContainer' => false
-		), $options);
+		], $options);
 	}
 
 	/**
@@ -103,7 +110,7 @@ class StringWalker implements ParserInterface {
 			$data = substr($this->chunk, 0, $offset);
 			$this->chunk = substr($this->chunk, $offset + strlen($captured));
 
-			return array($captured, $data . $captured);
+			return [$captured, $data . $captured];
 		}
 
 		return false;
@@ -114,7 +121,7 @@ class StringWalker implements ParserInterface {
 	 * @param  string $element XML element
 	 * @return array{string, string, int}|null 0 => Opening tag, 1 => Closing tag, 2 => Depth delta (null if no tag matches)
 	 */
-	protected function getEdges($element) {
+	protected function getEdges(string $element) {
 		foreach ($this->options['tags'] as $tag) {
 			list($opening, $closing, $depth) = $tag;
 

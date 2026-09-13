@@ -22,18 +22,17 @@ namespace XcVm\Public\Controllers\Admin;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class AjaxController extends BaseAdminController {
+	public function index() {
+		// Non-AJAX requests are rejected unless debug mode is on — the guard the
+		// legacy api.php applied to every action.
+		if (!defined('PHP_ERRORS') || !PHP_ERRORS) {
+			$rRequestedWith = $_SERVER['HTTP_X_REQUESTED_WITH'] ?? '';
 
-    public function index() {
-        // Non-AJAX requests are rejected unless debug mode is on — the guard the
-        // legacy api.php applied to every action.
-        if (!defined('PHP_ERRORS') || !PHP_ERRORS) {
-            $rRequestedWith = $_SERVER['HTTP_X_REQUESTED_WITH'] ?? '';
+			if (strtolower($rRequestedWith) !== 'xmlhttprequest') {
+				exit();
+			}
+		}
 
-            if (strtolower($rRequestedWith) !== 'xmlhttprequest') {
-                exit();
-            }
-        }
-
-        $this->json(array('result' => false));
-    }
+		$this->json(['result' => false]);
+	}
 }

@@ -26,429 +26,429 @@ use XcVm\Streaming\Fanout\FanoutClient;
  */
 
 class StreamsCronJob implements CommandInterface {
-    use CronTrait;
+	use CronTrait;
 
-    public function getName(): string {
-        return 'cron:streams';
-    }
+	public function getName(): string {
+		return 'cron:streams';
+	}
 
-    public function getDescription(): string {
-        return 'Cron: check live streams, monitors, on-demand, rogue PIDs';
-    }
+	public function getDescription(): string {
+		return 'Cron: check live streams, monitors, on-demand, rogue PIDs';
+	}
 
-    public function execute(array $rArgs): int {
-        if (!$this->assertRunAsXcVm()) {
-            return 1;
-        }
+	public function execute(array $rArgs): int {
+		if (!$this->assertRunAsXcVm()) {
+			return 1;
+		}
 
-        $this->initCron('XC_VM[Live Checker]');
-        $this->loadCron();
+		$this->initCron('XC_VM[Live Checker]');
+		$this->loadCron();
 
-        return 0;
-    }
+		return 0;
+	}
 
-    /**
-     * Whether handing a stream (whose watchdog is gone) to the fanout supervisor
-     * must restart its producer rather than adopt it.
-     *
-     * An ffmpeg producer's feed into the daemon is a tee slave that, once broken
-     * by a daemon restart, stays broken for the life of the process — adopting it
-     * would leave the daemon's viewers on dead air until a stall restart. The
-     * native remuxer redials the ingest socket by itself, so it is adopted and
-     * the channel does not blink.
-     */
-    private static function handOverNeedsRestart(array $rStream): int {
-        $rPID = file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.pid') ? intval(@file_get_contents(STREAMS_PATH . $rStream['stream_id'] . '_.pid')) : intval($rStream['pid']);
-        if (!ProcessManager::isStreamRunning($rPID, $rStream['stream_id'])) {
-            return 0; // nothing running: a plain start
-        }
-        $rExe = basename((string) @readlink('/proc/' . $rPID . '/exe'));
-        return (strpos($rExe, 'ffmpeg') === 0 && FanoutClient::daemonStreamMissing(intval($rStream['stream_id']))) ? 1 : 0;
-    }
+	/**
+	 * Whether handing a stream (whose watchdog is gone) to the fanout supervisor
+	 * must restart its producer rather than adopt it.
+	 *
+	 * An ffmpeg producer's feed into the daemon is a tee slave that, once broken
+	 * by a daemon restart, stays broken for the life of the process — adopting it
+	 * would leave the daemon's viewers on dead air until a stall restart. The
+	 * native remuxer redials the ingest socket by itself, so it is adopted and
+	 * the channel does not blink.
+	 */
+	private static function handOverNeedsRestart(array $rStream): int {
+		$rPID = file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.pid') ? intval(@file_get_contents(STREAMS_PATH . $rStream['stream_id'] . '_.pid')) : intval($rStream['pid']);
+		if (!ProcessManager::isStreamRunning($rPID, $rStream['stream_id'])) {
+			return 0; // nothing running: a plain start
+		}
+		$rExe = basename((string) @readlink('/proc/' . $rPID . '/exe'));
+		return (strpos($rExe, 'ffmpeg') === 0 && FanoutClient::daemonStreamMissing(intval($rStream['stream_id']))) ? 1 : 0;
+	}
 
-    /**
-     * Fold the producer's CPU, memory and kind into the stream's progress JSON —
-     * what the admin streams list shows per stream.
-     *
-     * Only this node can read its own /proc, so the reading is taken here and
-     * travels to the panel in the row the cron already writes. CPU is the
-     * difference against this pass's predecessor, so it is the average over the
-     * last minute rather than ffmpeg's lifetime average — and where there is no
-     * usable predecessor (the producer's first pass, or a new pid after a
-     * restart) the lifetime average stands in, so the column never waits a pass
-     * to show a figure.
-     *
-     * The previous reading is kept beside the stream's files (`<id>_.usage`, on
-     * the streams tmpfs, removed with the rest of `<id>_*` when it stops) rather
-     * than in the database row: it is this node's bookkeeping, and a value that
-     * has to survive a round trip through a row other code also rewrites is one
-     * that sometimes does not.
-     *
-     * @param string $rProgressJson This pass's progress report.
-     * @param int    $rStreamID     The stream.
-     * @param int    $rPID          The producer's pid.
-     * @return string The JSON to store.
-     */
-    private static function withResourceUsage(string $rProgressJson, int $rStreamID, int $rPID): string {
-        $rProgress = json_decode($rProgressJson, true);
-        if (!is_array($rProgress)) {
-            $rProgress = array();
-        }
-        // Keys an earlier version kept in the row for the CPU difference.
-        unset($rProgress['cpu_t'], $rProgress['cpu_at']);
+	/**
+	 * Fold the producer's CPU, memory and kind into the stream's progress JSON —
+	 * what the admin streams list shows per stream.
+	 *
+	 * Only this node can read its own /proc, so the reading is taken here and
+	 * travels to the panel in the row the cron already writes. CPU is the
+	 * difference against this pass's predecessor, so it is the average over the
+	 * last minute rather than ffmpeg's lifetime average — and where there is no
+	 * usable predecessor (the producer's first pass, or a new pid after a
+	 * restart) the lifetime average stands in, so the column never waits a pass
+	 * to show a figure.
+	 *
+	 * The previous reading is kept beside the stream's files (`<id>_.usage`, on
+	 * the streams tmpfs, removed with the rest of `<id>_*` when it stops) rather
+	 * than in the database row: it is this node's bookkeeping, and a value that
+	 * has to survive a round trip through a row other code also rewrites is one
+	 * that sometimes does not.
+	 *
+	 * @param string $rProgressJson This pass's progress report.
+	 * @param int    $rStreamID     The stream.
+	 * @param int    $rPID          The producer's pid.
+	 * @return string The JSON to store.
+	 */
+	private static function withResourceUsage(string $rProgressJson, int $rStreamID, int $rPID): string {
+		$rProgress = json_decode($rProgressJson, true);
+		if (!is_array($rProgress)) {
+			$rProgress = [];
+		}
+		// Keys an earlier version kept in the row for the CPU difference.
+		unset($rProgress['cpu_t'], $rProgress['cpu_at']);
 
-        $rSamplePath = STREAMS_PATH . $rStreamID . '_.usage';
-        $rSample = ProcessManager::resourceSample($rPID);
-        if ($rSample === null) {
-            @unlink($rSamplePath);
-            unset($rProgress['cpu'], $rProgress['mem'], $rProgress['producer']);
-            return json_encode($rProgress);
-        }
+		$rSamplePath = STREAMS_PATH . $rStreamID . '_.usage';
+		$rSample = ProcessManager::resourceSample($rPID);
+		if ($rSample === null) {
+			@unlink($rSamplePath);
+			unset($rProgress['cpu'], $rProgress['mem'], $rProgress['producer']);
+			return json_encode($rProgress);
+		}
 
-        $rCPU = null;
-        $rPrevious = json_decode((string) @file_get_contents($rSamplePath), true);
-        if (is_array($rPrevious) && intval($rPrevious['pid'] ?? 0) === $rPID) {
-            $rCPU = ProcessManager::cpuPercent($rSample, $rPrevious);
-        }
-        if ($rCPU === null) {
-            $rCPU = ProcessManager::cpuPercentSinceStart($rSample);
-        }
-        @file_put_contents($rSamplePath, json_encode(array('pid' => $rPID, 'ticks' => $rSample['ticks'], 'at' => $rSample['at'])));
+		$rCPU = null;
+		$rPrevious = json_decode((string) @file_get_contents($rSamplePath), true);
+		if (is_array($rPrevious) && intval($rPrevious['pid'] ?? 0) === $rPID) {
+			$rCPU = ProcessManager::cpuPercent($rSample, $rPrevious);
+		}
+		if ($rCPU === null) {
+			$rCPU = ProcessManager::cpuPercentSinceStart($rSample);
+		}
+		@file_put_contents($rSamplePath, json_encode(['pid' => $rPID, 'ticks' => $rSample['ticks'], 'at' => $rSample['at']]));
 
-        $rProgress['cpu'] = $rCPU;
-        $rProgress['mem'] = $rSample['rss'];
-        $rProgress['producer'] = ProcessManager::producerKind($rPID);
+		$rProgress['cpu'] = $rCPU;
+		$rProgress['mem'] = $rSample['rss'];
+		$rProgress['producer'] = ProcessManager::producerKind($rPID);
 
-        return json_encode($rProgress);
-    }
+		return json_encode($rProgress);
+	}
 
-    private function loadCron(): void {
-        $rRedis = SettingsManager::getBool('redis_handler');
-        global $db;
+	private function loadCron(): void {
+		$rRedis = SettingsManager::getBool('redis_handler');
+		global $db;
 
-        if (!ProcessManager::isNginxRunning()) {
-            echo 'XC_VM not running...' . "\n";
-        }
+		if (!ProcessManager::isNginxRunning()) {
+			echo 'XC_VM not running...' . "\n";
+		}
 
-        if ($rRedis) {
-            RedisManager::ensureConnected();
-        }
+		if ($rRedis) {
+			RedisManager::ensureConnected();
+		}
 
-        $rActivePIDs = array();
-        $rStreamIDs = array();
+		$rActivePIDs = [];
+		$rStreamIDs = [];
 
-        // Bring streams_servers in step with the fanout supervisor first, so the
-        // pass below reads what is actually running. $rSupervised is the set it
-        // is supervising, or null when it cannot be asked — unknown, which the
-        // checks below treat as "not supervised" exactly as before this existed.
-        $rStates = FanoutClient::monitorStates();
-        $rSupervised = StreamProcess::reconcileSupervised($rStates);
-        $rSupervisedSet = array_flip($rSupervised ?? array());
-        // While the daemon takes hand-overs, streams still under a PHP monitor
-        // (started before supervision was on, or while the daemon was down) are
-        // moved to it — adopting their running encoder, so they do not restart.
-        $rMigrate = $rStates !== null && !empty($rStates['accepting']) && StreamProcess::supervisionEnabled();
+		// Bring streams_servers in step with the fanout supervisor first, so the
+		// pass below reads what is actually running. $rSupervised is the set it
+		// is supervising, or null when it cannot be asked — unknown, which the
+		// checks below treat as "not supervised" exactly as before this existed.
+		$rStates = FanoutClient::monitorStates();
+		$rSupervised = StreamProcess::reconcileSupervised($rStates);
+		$rSupervisedSet = array_flip($rSupervised ?? []);
+		// While the daemon takes hand-overs, streams still under a PHP monitor
+		// (started before supervision was on, or while the daemon was down) are
+		// moved to it — adopting their running encoder, so they do not restart.
+		$rMigrate = $rStates !== null && !empty($rStates['accepting']) && StreamProcess::supervisionEnabled();
 
-        if ($rRedis) {
-            $db->query('SELECT t2.stream_display_name, t2.delay_minutes, t1.stream_started, t1.stream_info, t2.fps_restart, t1.stream_status, t1.progress_info, t1.stream_id, t1.monitor_pid, t1.on_demand, t1.server_stream_id, t1.pid, servers_attached.attached, t2.vframes_server_id, t2.vframes_pid, t2.tv_archive_server_id, t2.tv_archive_pid FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type LEFT JOIN (SELECT `stream_id`, COUNT(*) AS `attached` FROM `streams_servers` WHERE `parent_id` = ? AND `pid` IS NOT NULL AND `pid` > 0 AND `monitor_pid` IS NOT NULL AND `monitor_pid` > 0 GROUP BY `stream_id`) AS `servers_attached` ON `servers_attached`.`stream_id` = t1.`stream_id` WHERE (t1.pid IS NOT NULL OR t1.stream_status <> 0 OR t1.to_analyze = 1) AND t1.server_id = ? AND t3.live = 1', SERVER_ID, SERVER_ID);
-        } else {
-            $db->query("SELECT t2.stream_display_name, t2.delay_minutes, t1.stream_started, t1.stream_info, t2.fps_restart, t1.stream_status, t1.progress_info, t1.stream_id, t1.monitor_pid, t1.on_demand, t1.server_stream_id, t1.pid, clients.online_clients, clients_hls.online_clients_hls, servers_attached.attached, t2.vframes_server_id, t2.vframes_pid, t2.tv_archive_server_id, t2.tv_archive_pid FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type LEFT JOIN (SELECT stream_id, COUNT(*) as online_clients FROM `lines_live` WHERE `server_id` = ? AND `hls_end` = 0 GROUP BY stream_id) AS clients ON clients.stream_id = t1.stream_id LEFT JOIN (SELECT `stream_id`, COUNT(*) AS `attached` FROM `streams_servers` WHERE `parent_id` = ? AND `pid` IS NOT NULL AND `pid` > 0 AND `monitor_pid` IS NOT NULL AND `monitor_pid` > 0 GROUP BY `stream_id`) AS `servers_attached` ON `servers_attached`.`stream_id` = t1.`stream_id` LEFT JOIN (SELECT stream_id, COUNT(*) as online_clients_hls FROM `lines_live` WHERE `server_id` = ? AND `container` = 'hls' AND `hls_end` = 0 GROUP BY stream_id) AS clients_hls ON clients_hls.stream_id = t1.stream_id WHERE (t1.pid IS NOT NULL OR t1.stream_status <> 0 OR t1.to_analyze = 1) AND t1.server_id = ? AND t3.live = 1", SERVER_ID, SERVER_ID, SERVER_ID, SERVER_ID);
-        }
+		if ($rRedis) {
+			$db->query('SELECT t2.stream_display_name, t2.delay_minutes, t1.stream_started, t1.stream_info, t2.fps_restart, t1.stream_status, t1.progress_info, t1.stream_id, t1.monitor_pid, t1.on_demand, t1.server_stream_id, t1.pid, servers_attached.attached, t2.vframes_server_id, t2.vframes_pid, t2.tv_archive_server_id, t2.tv_archive_pid FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type LEFT JOIN (SELECT `stream_id`, COUNT(*) AS `attached` FROM `streams_servers` WHERE `parent_id` = ? AND `pid` IS NOT NULL AND `pid` > 0 AND `monitor_pid` IS NOT NULL AND `monitor_pid` > 0 GROUP BY `stream_id`) AS `servers_attached` ON `servers_attached`.`stream_id` = t1.`stream_id` WHERE (t1.pid IS NOT NULL OR t1.stream_status <> 0 OR t1.to_analyze = 1) AND t1.server_id = ? AND t3.live = 1', SERVER_ID, SERVER_ID);
+		} else {
+			$db->query("SELECT t2.stream_display_name, t2.delay_minutes, t1.stream_started, t1.stream_info, t2.fps_restart, t1.stream_status, t1.progress_info, t1.stream_id, t1.monitor_pid, t1.on_demand, t1.server_stream_id, t1.pid, clients.online_clients, clients_hls.online_clients_hls, servers_attached.attached, t2.vframes_server_id, t2.vframes_pid, t2.tv_archive_server_id, t2.tv_archive_pid FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type LEFT JOIN (SELECT stream_id, COUNT(*) as online_clients FROM `lines_live` WHERE `server_id` = ? AND `hls_end` = 0 GROUP BY stream_id) AS clients ON clients.stream_id = t1.stream_id LEFT JOIN (SELECT `stream_id`, COUNT(*) AS `attached` FROM `streams_servers` WHERE `parent_id` = ? AND `pid` IS NOT NULL AND `pid` > 0 AND `monitor_pid` IS NOT NULL AND `monitor_pid` > 0 GROUP BY `stream_id`) AS `servers_attached` ON `servers_attached`.`stream_id` = t1.`stream_id` LEFT JOIN (SELECT stream_id, COUNT(*) as online_clients_hls FROM `lines_live` WHERE `server_id` = ? AND `container` = 'hls' AND `hls_end` = 0 GROUP BY stream_id) AS clients_hls ON clients_hls.stream_id = t1.stream_id WHERE (t1.pid IS NOT NULL OR t1.stream_status <> 0 OR t1.to_analyze = 1) AND t1.server_id = ? AND t3.live = 1", SERVER_ID, SERVER_ID, SERVER_ID, SERVER_ID);
+		}
 
-        if ($db->num_rows() > 0) {
-            foreach ($db->get_rows() as $rStream) {
-                echo 'Stream ID: ' . $rStream['stream_id'] . "\n";
-                $rStreamIDs[] = $rStream['stream_id'];
+		if ($db->num_rows() > 0) {
+			foreach ($db->get_rows() as $rStream) {
+				echo 'Stream ID: ' . $rStream['stream_id'] . "\n";
+				$rStreamIDs[] = $rStream['stream_id'];
 
-                $rIsSupervised = isset($rSupervisedSet[intval($rStream['stream_id'])]);
-                // superviseStream, not startMonitor: a stream the daemon will not
-                // take (delay, created channels) must keep the PHP monitor it has,
-                // not have a second one spawned beside it every pass.
-                if ($rMigrate && !$rIsSupervised && ProcessManager::isMonitorAlive($rStream['monitor_pid'], $rStream['stream_id'])) {
-                    if (StreamProcess::superviseStream(intval($rStream['stream_id']), false)) {
-                        echo 'Handed over to the fanout supervisor.' . "\n\n";
-                        continue;
-                    }
-                }
-                if ($rIsSupervised || ProcessManager::isMonitorAlive($rStream['monitor_pid'], $rStream['stream_id']) || $rStream['on_demand']) {
-                    if ($rStream['on_demand'] == 1 && $rStream['attached'] == 0) {
-                        if ($rRedis) {
-                            $rCount = 0;
-                            $rRedis = RedisManager::instance();
-                            if ($rRedis) {
-                                $rKeys = $rRedis->zRangeByScore('STREAM#' . $rStream['stream_id'], '-inf', '+inf');
-                                if (count($rKeys) > 0) {
-                                    $rConnections = array_map('igbinary_unserialize', $rRedis->mGet($rKeys));
-                                    foreach ($rConnections as $rConnection) {
-                                        if ($rConnection && $rConnection['server_id'] == SERVER_ID) {
-                                            $rCount++;
-                                        }
-                                    }
-                                }
-                            }
-                            $rStream['online_clients'] = $rCount;
-                        }
+				$rIsSupervised = isset($rSupervisedSet[intval($rStream['stream_id'])]);
+				// superviseStream, not startMonitor: a stream the daemon will not
+				// take (delay, created channels) must keep the PHP monitor it has,
+				// not have a second one spawned beside it every pass.
+				if ($rMigrate && !$rIsSupervised && ProcessManager::isMonitorAlive($rStream['monitor_pid'], $rStream['stream_id'])) {
+					if (StreamProcess::superviseStream(intval($rStream['stream_id']), false)) {
+						echo 'Handed over to the fanout supervisor.' . "\n\n";
+						continue;
+					}
+				}
+				if ($rIsSupervised || ProcessManager::isMonitorAlive($rStream['monitor_pid'], $rStream['stream_id']) || $rStream['on_demand']) {
+					if ($rStream['on_demand'] == 1 && $rStream['attached'] == 0) {
+						if ($rRedis) {
+							$rCount = 0;
+							$rRedis = RedisManager::instance();
+							if ($rRedis) {
+								$rKeys = $rRedis->zRangeByScore('STREAM#' . $rStream['stream_id'], '-inf', '+inf');
+								if (count($rKeys) > 0) {
+									$rConnections = array_map('igbinary_unserialize', $rRedis->mGet($rKeys));
+									foreach ($rConnections as $rConnection) {
+										if ($rConnection && $rConnection['server_id'] == SERVER_ID) {
+											$rCount++;
+										}
+									}
+								}
+							}
+							$rStream['online_clients'] = $rCount;
+						}
 
-                        $rAdminQueue = $rQueue = 0;
-                        if (SettingsManager::getBool('on_demand_instant_off') && file_exists(SIGNALS_TMP_PATH . 'queue_' . intval($rStream['stream_id']))) {
-                            foreach ((igbinary_unserialize(file_get_contents(SIGNALS_TMP_PATH . 'queue_' . intval($rStream['stream_id']))) ?: array()) as $rPID) {
-                                if (ProcessManager::isRunning($rPID, 'php-fpm')) {
-                                    $rQueue++;
-                                }
-                            }
-                        }
-                        if (file_exists(SIGNALS_TMP_PATH . 'admin_' . intval($rStream['stream_id']))) {
-                            if (time() - filemtime(SIGNALS_TMP_PATH . 'admin_' . intval($rStream['stream_id'])) <= 30) {
-                                $rAdminQueue = 1;
-                            } else {
-                                unlink(SIGNALS_TMP_PATH . 'admin_' . intval($rStream['stream_id']));
-                            }
-                        }
-                        if ($rQueue == 0 && $rAdminQueue == 0 && $rStream['online_clients'] == 0 && (file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.m3u8') || SettingsManager::getInt('on_demand_wait_time') < time() - intval($rStream['stream_started']) || $rStream['stream_status'] == 1)) {
-                            echo 'Stop on-demand stream...' . "\n\n";
-                            StreamProcess::stopStream($rStream['stream_id'], true);
-                            // Stopped: nothing below applies (it would start a thumbnail
-                            // and a TV archive worker for the stream just stopped).
-                            continue;
-                        }
-                    }
+						$rAdminQueue = $rQueue = 0;
+						if (SettingsManager::getBool('on_demand_instant_off') && file_exists(SIGNALS_TMP_PATH . 'queue_' . intval($rStream['stream_id']))) {
+							foreach ((igbinary_unserialize(file_get_contents(SIGNALS_TMP_PATH . 'queue_' . intval($rStream['stream_id']))) ?: []) as $rPID) {
+								if (ProcessManager::isRunning($rPID, 'php-fpm')) {
+									$rQueue++;
+								}
+							}
+						}
+						if (file_exists(SIGNALS_TMP_PATH . 'admin_' . intval($rStream['stream_id']))) {
+							if (time() - filemtime(SIGNALS_TMP_PATH . 'admin_' . intval($rStream['stream_id'])) <= 30) {
+								$rAdminQueue = 1;
+							} else {
+								unlink(SIGNALS_TMP_PATH . 'admin_' . intval($rStream['stream_id']));
+							}
+						}
+						if ($rQueue == 0 && $rAdminQueue == 0 && $rStream['online_clients'] == 0 && (file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.m3u8') || SettingsManager::getInt('on_demand_wait_time') < time() - intval($rStream['stream_started']) || $rStream['stream_status'] == 1)) {
+							echo 'Stop on-demand stream...' . "\n\n";
+							StreamProcess::stopStream($rStream['stream_id'], true);
+							// Stopped: nothing below applies (it would start a thumbnail
+							// and a TV archive worker for the stream just stopped).
+							continue;
+						}
+					}
 
-                    if ($rStream['vframes_server_id'] == SERVER_ID && !ProcessManager::isNamedProcessRunning($rStream['vframes_pid'], 'Thumbnail', $rStream['stream_id'])) {
-                        echo 'Start Thumbnail...' . "\n";
-                        StreamProcess::startThumbnail($rStream['stream_id']);
-                    }
-                    if ($rStream['tv_archive_server_id'] == SERVER_ID && !ProcessManager::isNamedProcessRunning($rStream['tv_archive_pid'], 'TVArchive', $rStream['stream_id'])) {
-                        echo 'Start TV Archive...' . "\n";
-                        shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php archive ' . intval($rStream['stream_id']) . ' >/dev/null 2>/dev/null & echo $!');
-                    }
+					if ($rStream['vframes_server_id'] == SERVER_ID && !ProcessManager::isNamedProcessRunning($rStream['vframes_pid'], 'Thumbnail', $rStream['stream_id'])) {
+						echo 'Start Thumbnail...' . "\n";
+						StreamProcess::startThumbnail($rStream['stream_id']);
+					}
+					if ($rStream['tv_archive_server_id'] == SERVER_ID && !ProcessManager::isNamedProcessRunning($rStream['tv_archive_pid'], 'TVArchive', $rStream['stream_id'])) {
+						echo 'Start TV Archive...' . "\n";
+						shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php archive ' . intval($rStream['stream_id']) . ' >/dev/null 2>/dev/null & echo $!');
+					}
 
-                    foreach (glob(STREAMS_PATH . $rStream['stream_id'] . '_*.ts.enc') as $rFile) {
-                        if (!file_exists(rtrim($rFile, '.enc'))) {
-                            unlink($rFile);
-                        }
-                    }
+					foreach (glob(STREAMS_PATH . $rStream['stream_id'] . '_*.ts.enc') as $rFile) {
+						if (!file_exists(rtrim($rFile, '.enc'))) {
+							unlink($rFile);
+						}
+					}
 
-                    if (file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.pid')) {
-                        $rPID = intval(file_get_contents(STREAMS_PATH . $rStream['stream_id'] . '_.pid'));
-                    } else {
-                        $rPID = intval(shell_exec("ps aux | grep -v grep | grep '/" . intval($rStream['stream_id']) . "_.m3u8' | awk '{print \$2}'"));
-                    }
-                    $rActivePIDs[] = intval($rPID);
+					if (file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.pid')) {
+						$rPID = intval(file_get_contents(STREAMS_PATH . $rStream['stream_id'] . '_.pid'));
+					} else {
+						$rPID = intval(shell_exec("ps aux | grep -v grep | grep '/" . intval($rStream['stream_id']) . "_.m3u8' | awk '{print \$2}'"));
+					}
+					$rActivePIDs[] = intval($rPID);
 
-                    $rPlaylist = STREAMS_PATH . $rStream['stream_id'] . '_.m3u8';
-                    if (ProcessManager::isStreamRunning($rPID, $rStream['stream_id']) && file_exists($rPlaylist)) {
-                        // Re-feed after a daemon restart (ADR 0003, C-ops). This
-                        // stream's ffmpeg is running and teeing into the daemon,
-                        // but if the daemon restarted it wiped its in-memory
-                        // registry and `onfail=ignore` silently dropped the tee
-                        // slave — the daemon no longer knows the stream
-                        // (control /streams/<id> → 404) and delivery has quietly
-                        // fallen back to legacy. Restart it so buildLive
-                        // re-registers the ingest and the daemon serves it again.
-                        // Guard: only a reachable-daemon 404 (daemonStreamMissing),
-                        // so a stopped daemon leaves legacy alone; throttled by a
-                        // stamp so a stream whose ingest keeps failing is not
-                        // restart-looped every cron tick. Proxy streams have no
-                        // local ffmpeg, so they never reach this running branch.
-                        // Only an ffmpeg producer needs the restart: a broken tee slave
-                        // stays broken. The PHP relays (LLOD, loopback) and a delayed
-                        // stream's DelayCommand re-register and redial the daemon by
-                        // themselves (IngestFeeder), and restarting a delayed stream
-                        // would throw its buffer away.
-                        $rSelfFeeding = intval($rStream['delay_minutes'] ?? 0) > 0 || ProcessManager::producerKind($rPID) === 'php';
-                        if (!$rSelfFeeding && FanoutClient::daemonStreamMissing($rStream['stream_id'])) {
-                            // The stamp lives outside STREAMS_PATH: the restart below
-                            // runs `rm -f <id>_*` there, which deleted a `<id>_.refeed`
-                            // stamp — and with it the 120 s throttle it was meant to be.
-                            $rRefeedStamp = SIGNALS_TMP_PATH . 'refeed_' . intval($rStream['stream_id']);
-                            if (!file_exists($rRefeedStamp) || time() - filemtime($rRefeedStamp) > 120) {
-                                echo 'Daemon lost stream ' . $rStream['stream_id'] . ' (restarted) — re-feeding...' . "\n\n";
-                                touch($rRefeedStamp);
-                                StreamProcess::startMonitor($rStream['stream_id'], 1);
-                                continue;
-                            }
-                        }
+					$rPlaylist = STREAMS_PATH . $rStream['stream_id'] . '_.m3u8';
+					if (ProcessManager::isStreamRunning($rPID, $rStream['stream_id']) && file_exists($rPlaylist)) {
+						// Re-feed after a daemon restart (ADR 0003, C-ops). This
+						// stream's ffmpeg is running and teeing into the daemon,
+						// but if the daemon restarted it wiped its in-memory
+						// registry and `onfail=ignore` silently dropped the tee
+						// slave — the daemon no longer knows the stream
+						// (control /streams/<id> → 404) and delivery has quietly
+						// fallen back to legacy. Restart it so buildLive
+						// re-registers the ingest and the daemon serves it again.
+						// Guard: only a reachable-daemon 404 (daemonStreamMissing),
+						// so a stopped daemon leaves legacy alone; throttled by a
+						// stamp so a stream whose ingest keeps failing is not
+						// restart-looped every cron tick. Proxy streams have no
+						// local ffmpeg, so they never reach this running branch.
+						// Only an ffmpeg producer needs the restart: a broken tee slave
+						// stays broken. The PHP relays (LLOD, loopback) and a delayed
+						// stream's DelayCommand re-register and redial the daemon by
+						// themselves (IngestFeeder), and restarting a delayed stream
+						// would throw its buffer away.
+						$rSelfFeeding = intval($rStream['delay_minutes'] ?? 0) > 0 || ProcessManager::producerKind($rPID) === 'php';
+						if (!$rSelfFeeding && FanoutClient::daemonStreamMissing($rStream['stream_id'])) {
+							// The stamp lives outside STREAMS_PATH: the restart below
+							// runs `rm -f <id>_*` there, which deleted a `<id>_.refeed`
+							// stamp — and with it the 120 s throttle it was meant to be.
+							$rRefeedStamp = SIGNALS_TMP_PATH . 'refeed_' . intval($rStream['stream_id']);
+							if (!file_exists($rRefeedStamp) || time() - filemtime($rRefeedStamp) > 120) {
+								echo 'Daemon lost stream ' . $rStream['stream_id'] . ' (restarted) — re-feeding...' . "\n\n";
+								touch($rRefeedStamp);
+								StreamProcess::startMonitor($rStream['stream_id'], 1);
+								continue;
+							}
+						}
 
-                        echo 'Update Stream Information...' . "\n";
-                        $rBitrate = StreamUtils::getStreamBitrate('live', STREAMS_PATH . $rStream['stream_id'] . '_.m3u8');
-                        $rProgressPath = STREAMS_PATH . $rStream['stream_id'] . '_.progress';
-                        if (file_exists($rProgressPath)) {
-                            // ffmpeg appends key=value progress reports to this file
-                            // for the stream's whole life. Read only the tail, keep
-                            // the last COMPLETE report block (terminated by a
-                            // "progress=" line) and re-encode it as the JSON the rest
-                            // of the panel expects. Then truncate so the file stays
-                            // tiny on disk (ffmpeg keeps its write offset, so the
-                            // hole left behind is sparse).
-                            $rTail = '';
-                            $rFp = fopen($rProgressPath, 'rb');
-                            if ($rFp !== false) {
-                                fseek($rFp, 0, SEEK_END);
-                                if (ftell($rFp) > 16384) {
-                                    fseek($rFp, -16384, SEEK_END);
-                                } else {
-                                    rewind($rFp);
-                                }
-                                $rTail = stream_get_contents($rFp);
-                                fclose($rFp);
-                            }
-                            $rReport = array();
-                            $rCurrentReport = array();
-                            foreach (explode("\n", (string) $rTail) as $rLine) {
-                                $rLine = trim($rLine);
-                                if ($rLine === '') {
-                                    continue;
-                                }
-                                $rKV = explode('=', $rLine, 2);
-                                if (count($rKV) !== 2) {
-                                    continue;
-                                }
-                                $rReportKey = trim($rKV[0]);
-                                $rCurrentReport[$rReportKey] = trim($rKV[1]);
-                                if ($rReportKey === 'progress') {
-                                    $rReport = $rCurrentReport;
-                                    $rCurrentReport = array();
-                                }
-                            }
-                            $rProgress = $rReport ? json_encode($rReport) : ($rStream['progress_info'] ?: json_encode(array()));
-                            file_put_contents($rProgressPath, '');
-                            if ($rStream['fps_restart']) {
-                                file_put_contents(STREAMS_PATH . $rStream['stream_id'] . '_.progress_check', $rProgress);
-                            }
-                        } else {
-                            $rProgress = $rStream['progress_info'];
-                        }
-                        $rProgress = self::withResourceUsage((string) $rProgress, intval($rStream['stream_id']), $rPID);
-                        // A supervised stream's codecs, resolution and bitrate come
-                        // from the daemon, measured off the bytes (reconcileSupervised
-                        // wrote them above); recomputing them here from a stream_info
-                        // that nothing probes any more would blank them. Only the
-                        // producer's progress report is this pass's to record.
-                        if ($rIsSupervised) {
-                            if ($rProgress !== $rStream['progress_info']) {
-                                $db->query('UPDATE `streams_servers` SET `progress_info` = ? WHERE `server_stream_id` = ?', $rProgress, $rStream['server_stream_id']);
-                            }
-                            echo "\n";
-                            continue;
-                        }
-                        if (file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.stream_info')) {
-                            $rStreamInfo = file_get_contents(STREAMS_PATH . $rStream['stream_id'] . '_.stream_info');
-                            unlink(STREAMS_PATH . $rStream['stream_id'] . '_.stream_info');
-                        } else {
-                            $rStreamInfo = $rStream['stream_info'];
-                        }
-                        $rCompatible = 0;
-                        $rAudioCodec = $rVideoCodec = $rResolution = null;
-                        if ($rStreamInfo) {
-                            $rStreamJSON = json_decode($rStreamInfo, true);
-                            $rCompatible = intval(DiagnosticsService::checkCompatibility($rStreamJSON, SettingsManager::getBool('player_allow_hevc')));
-                            if (is_array($rStreamJSON) && isset($rStreamJSON['codecs']) && is_array($rStreamJSON['codecs'])) {
-                                $rAudioCodec = isset($rStreamJSON['codecs']['audio']['codec_name']) ? $rStreamJSON['codecs']['audio']['codec_name'] : null;
-                                $rVideoCodec = isset($rStreamJSON['codecs']['video']['codec_name']) ? $rStreamJSON['codecs']['video']['codec_name'] : null;
-                                $rResolution = isset($rStreamJSON['codecs']['video']['height']) ? $rStreamJSON['codecs']['video']['height'] : null;
-                            }
-                            if ($rResolution) {
-                                $rResolution = StreamSorter::getNearest(array(240, 360, 480, 576, 720, 1080, 1440, 2160), $rResolution);
-                            }
-                        }
-                        if ($rStream['pid'] != $rPID) {
-                            $db->query('UPDATE `streams_servers` SET `pid` = ?, `progress_info` = ?, `stream_info` = ?, `compatible` = ?, `bitrate` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ? WHERE `server_stream_id` = ?', $rPID, $rProgress, $rStreamInfo, $rCompatible, $rBitrate, $rAudioCodec, $rVideoCodec, $rResolution, $rStream['server_stream_id']);
-                        } else {
-                            $db->query('UPDATE `streams_servers` SET `progress_info` = ?, `stream_info` = ?, `compatible` = ?, `bitrate` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ? WHERE `server_stream_id` = ?', $rProgress, $rStreamInfo, $rCompatible, $rBitrate, $rAudioCodec, $rVideoCodec, $rResolution, $rStream['server_stream_id']);
-                        }
-                    }
-                    echo "\n";
-                } else {
-                    echo 'Start monitor...' . "\n\n";
-                    if (StreamProcess::startMonitor($rStream['stream_id'], self::handOverNeedsRestart($rStream)) === StreamProcess::MONITOR_PHP) {
-                        usleep(50000); // stagger PHP monitor spawns
-                    }
-                }
-            }
-        }
+						echo 'Update Stream Information...' . "\n";
+						$rBitrate = StreamUtils::getStreamBitrate('live', STREAMS_PATH . $rStream['stream_id'] . '_.m3u8');
+						$rProgressPath = STREAMS_PATH . $rStream['stream_id'] . '_.progress';
+						if (file_exists($rProgressPath)) {
+							// ffmpeg appends key=value progress reports to this file
+							// for the stream's whole life. Read only the tail, keep
+							// the last COMPLETE report block (terminated by a
+							// "progress=" line) and re-encode it as the JSON the rest
+							// of the panel expects. Then truncate so the file stays
+							// tiny on disk (ffmpeg keeps its write offset, so the
+							// hole left behind is sparse).
+							$rTail = '';
+							$rFp = fopen($rProgressPath, 'rb');
+							if ($rFp !== false) {
+								fseek($rFp, 0, SEEK_END);
+								if (ftell($rFp) > 16384) {
+									fseek($rFp, -16384, SEEK_END);
+								} else {
+									rewind($rFp);
+								}
+								$rTail = stream_get_contents($rFp);
+								fclose($rFp);
+							}
+							$rReport = [];
+							$rCurrentReport = [];
+							foreach (explode("\n", (string) $rTail) as $rLine) {
+								$rLine = trim($rLine);
+								if ($rLine === '') {
+									continue;
+								}
+								$rKV = explode('=', $rLine, 2);
+								if (count($rKV) !== 2) {
+									continue;
+								}
+								$rReportKey = trim($rKV[0]);
+								$rCurrentReport[$rReportKey] = trim($rKV[1]);
+								if ($rReportKey === 'progress') {
+									$rReport = $rCurrentReport;
+									$rCurrentReport = [];
+								}
+							}
+							$rProgress = $rReport ? json_encode($rReport) : ($rStream['progress_info'] ?: json_encode([]));
+							file_put_contents($rProgressPath, '');
+							if ($rStream['fps_restart']) {
+								file_put_contents(STREAMS_PATH . $rStream['stream_id'] . '_.progress_check', $rProgress);
+							}
+						} else {
+							$rProgress = $rStream['progress_info'];
+						}
+						$rProgress = self::withResourceUsage((string) $rProgress, intval($rStream['stream_id']), $rPID);
+						// A supervised stream's codecs, resolution and bitrate come
+						// from the daemon, measured off the bytes (reconcileSupervised
+						// wrote them above); recomputing them here from a stream_info
+						// that nothing probes any more would blank them. Only the
+						// producer's progress report is this pass's to record.
+						if ($rIsSupervised) {
+							if ($rProgress !== $rStream['progress_info']) {
+								$db->query('UPDATE `streams_servers` SET `progress_info` = ? WHERE `server_stream_id` = ?', $rProgress, $rStream['server_stream_id']);
+							}
+							echo "\n";
+							continue;
+						}
+						if (file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.stream_info')) {
+							$rStreamInfo = file_get_contents(STREAMS_PATH . $rStream['stream_id'] . '_.stream_info');
+							unlink(STREAMS_PATH . $rStream['stream_id'] . '_.stream_info');
+						} else {
+							$rStreamInfo = $rStream['stream_info'];
+						}
+						$rCompatible = 0;
+						$rAudioCodec = $rVideoCodec = $rResolution = null;
+						if ($rStreamInfo) {
+							$rStreamJSON = json_decode($rStreamInfo, true);
+							$rCompatible = intval(DiagnosticsService::checkCompatibility($rStreamJSON, SettingsManager::getBool('player_allow_hevc')));
+							if (is_array($rStreamJSON) && isset($rStreamJSON['codecs']) && is_array($rStreamJSON['codecs'])) {
+								$rAudioCodec = isset($rStreamJSON['codecs']['audio']['codec_name']) ? $rStreamJSON['codecs']['audio']['codec_name'] : null;
+								$rVideoCodec = isset($rStreamJSON['codecs']['video']['codec_name']) ? $rStreamJSON['codecs']['video']['codec_name'] : null;
+								$rResolution = isset($rStreamJSON['codecs']['video']['height']) ? $rStreamJSON['codecs']['video']['height'] : null;
+							}
+							if ($rResolution) {
+								$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
+							}
+						}
+						if ($rStream['pid'] != $rPID) {
+							$db->query('UPDATE `streams_servers` SET `pid` = ?, `progress_info` = ?, `stream_info` = ?, `compatible` = ?, `bitrate` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ? WHERE `server_stream_id` = ?', $rPID, $rProgress, $rStreamInfo, $rCompatible, $rBitrate, $rAudioCodec, $rVideoCodec, $rResolution, $rStream['server_stream_id']);
+						} else {
+							$db->query('UPDATE `streams_servers` SET `progress_info` = ?, `stream_info` = ?, `compatible` = ?, `bitrate` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ? WHERE `server_stream_id` = ?', $rProgress, $rStreamInfo, $rCompatible, $rBitrate, $rAudioCodec, $rVideoCodec, $rResolution, $rStream['server_stream_id']);
+						}
+					}
+					echo "\n";
+				} else {
+					echo 'Start monitor...' . "\n\n";
+					if (StreamProcess::startMonitor($rStream['stream_id'], self::handOverNeedsRestart($rStream)) === StreamProcess::MONITOR_PHP) {
+						usleep(50000); // stagger PHP monitor spawns
+					}
+				}
+			}
+		}
 
-        $db->query('SELECT `streams`.`id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `streams`.`direct_source` = 1 AND `streams`.`direct_proxy` = 1 AND `streams_servers`.`server_id` = ? AND `streams_servers`.`pid` > 0;', SERVER_ID);
-        if ($db->num_rows() > 0) {
-            foreach ($db->get_rows() as $rStream) {
-                if (file_exists(STREAMS_PATH . $rStream['id'] . '.analyse')) {
-                    $rFFProbeOutput = FFprobeRunner::probeStream(STREAMS_PATH . $rStream['id'] . '.analyse');
-                    // Defaults: the UPDATE below runs even when probing fails or
-                    // the output has no codec info, so these must always be set.
-                    $rBitrate = $rCompatible = $rAudioCodec = $rVideoCodec = $rResolution = null;
-                    if ($rFFProbeOutput) {
-                        $rBitrate = $rFFProbeOutput['bitrate'] / 1024;
-                        $rCompatible = intval(DiagnosticsService::checkCompatibility($rFFProbeOutput, SettingsManager::getBool('player_allow_hevc')));
-                        if (is_array($rFFProbeOutput) && isset($rFFProbeOutput['codecs']) && is_array($rFFProbeOutput['codecs'])) {
-                            $rAudioCodec = isset($rFFProbeOutput['codecs']['audio']['codec_name']) ? $rFFProbeOutput['codecs']['audio']['codec_name'] : null;
-                            $rVideoCodec = isset($rFFProbeOutput['codecs']['video']['codec_name']) ? $rFFProbeOutput['codecs']['video']['codec_name'] : null;
-                            $rResolution = isset($rFFProbeOutput['codecs']['video']['height']) ? $rFFProbeOutput['codecs']['video']['height'] : null;
-                        }
-                        if ($rResolution) {
-                            $rResolution = StreamSorter::getNearest(array(240, 360, 480, 576, 720, 1080, 1440, 2160), $rResolution);
-                        }
-                    }
-                    echo 'Stream ID: ' . $rStream['id'] . "\n";
-                    echo 'Update Stream Information...' . "\n";
-                    $db->query('UPDATE `streams_servers` SET `bitrate` = ?, `stream_info` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ?, `compatible` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rBitrate, json_encode($rFFProbeOutput), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rStream['id'], SERVER_ID);
-                }
+		$db->query('SELECT `streams`.`id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `streams`.`direct_source` = 1 AND `streams`.`direct_proxy` = 1 AND `streams_servers`.`server_id` = ? AND `streams_servers`.`pid` > 0;', SERVER_ID);
+		if ($db->num_rows() > 0) {
+			foreach ($db->get_rows() as $rStream) {
+				if (file_exists(STREAMS_PATH . $rStream['id'] . '.analyse')) {
+					$rFFProbeOutput = FFprobeRunner::probeStream(STREAMS_PATH . $rStream['id'] . '.analyse');
+					// Defaults: the UPDATE below runs even when probing fails or
+					// the output has no codec info, so these must always be set.
+					$rBitrate = $rCompatible = $rAudioCodec = $rVideoCodec = $rResolution = null;
+					if ($rFFProbeOutput) {
+						$rBitrate = $rFFProbeOutput['bitrate'] / 1024;
+						$rCompatible = intval(DiagnosticsService::checkCompatibility($rFFProbeOutput, SettingsManager::getBool('player_allow_hevc')));
+						if (is_array($rFFProbeOutput) && isset($rFFProbeOutput['codecs']) && is_array($rFFProbeOutput['codecs'])) {
+							$rAudioCodec = isset($rFFProbeOutput['codecs']['audio']['codec_name']) ? $rFFProbeOutput['codecs']['audio']['codec_name'] : null;
+							$rVideoCodec = isset($rFFProbeOutput['codecs']['video']['codec_name']) ? $rFFProbeOutput['codecs']['video']['codec_name'] : null;
+							$rResolution = isset($rFFProbeOutput['codecs']['video']['height']) ? $rFFProbeOutput['codecs']['video']['height'] : null;
+						}
+						if ($rResolution) {
+							$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
+						}
+					}
+					echo 'Stream ID: ' . $rStream['id'] . "\n";
+					echo 'Update Stream Information...' . "\n";
+					$db->query('UPDATE `streams_servers` SET `bitrate` = ?, `stream_info` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ?, `compatible` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rBitrate, json_encode($rFFProbeOutput), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rStream['id'], SERVER_ID);
+				}
 
-                $rUUIDs = array();
-                $rConnections = ConnectionTracker::getConnections(SERVER_ID, null, $rStream['id']);
-                foreach ($rConnections as $rItems) {
-                    foreach ($rItems as $rItem) {
-                        $rUUIDs[] = $rItem['uuid'];
-                    }
-                }
+				$rUUIDs = [];
+				$rConnections = ConnectionTracker::getConnections(SERVER_ID, null, $rStream['id']);
+				foreach ($rConnections as $rItems) {
+					foreach ($rItems as $rItem) {
+						$rUUIDs[] = $rItem['uuid'];
+					}
+				}
 
-                $rConDir = CONS_TMP_PATH . $rStream['id'] . '/';
-                // The per-stream connection dir only exists once a client connects,
-                // so its absence is normal — guard with is_dir() to avoid a bogus
-                // opendir() warning being logged every cron tick on idle streams.
-                if (is_dir($rConDir) && ($rHandle = opendir($rConDir))) {
-                    while (false !== ($rFilename = readdir($rHandle))) {
-                        if ($rFilename != '.' && $rFilename != '..') {
-                            if (!in_array($rFilename, $rUUIDs)) {
-                                unlink(CONS_TMP_PATH . $rStream['id'] . '/' . $rFilename);
-                            }
-                        }
-                    }
-                    closedir($rHandle);
-                }
-            }
-        }
+				$rConDir = CONS_TMP_PATH . $rStream['id'] . '/';
+				// The per-stream connection dir only exists once a client connects,
+				// so its absence is normal — guard with is_dir() to avoid a bogus
+				// opendir() warning being logged every cron tick on idle streams.
+				if (is_dir($rConDir) && ($rHandle = opendir($rConDir))) {
+					while (false !== ($rFilename = readdir($rHandle))) {
+						if ($rFilename != '.' && $rFilename != '..') {
+							if (!in_array($rFilename, $rUUIDs)) {
+								unlink(CONS_TMP_PATH . $rStream['id'] . '/' . $rFilename);
+							}
+						}
+					}
+					closedir($rHandle);
+				}
+			}
+		}
 
-        $db->query('SELECT `stream_id` FROM `streams_servers` WHERE `on_demand` = 1 AND `server_id` = ?;', SERVER_ID);
-        $rOnDemandIDs = array_keys($db->get_rows(true, 'stream_id'));
-        $rProcesses = shell_exec('ps aux | grep XC_VM');
-        if (preg_match_all('/XC_VM\\[(.*)\\]/', $rProcesses, $rMatches)) {
-            $rRemove = array_diff($rMatches[1], $rStreamIDs);
-            $rRemove = array_diff($rRemove, $rOnDemandIDs);
-            foreach ($rRemove as $rStreamID) {
-                if (is_numeric($rStreamID)) {
-                    echo 'Kill Stream ID: ' . $rStreamID . "\n";
-                    shell_exec("kill -9 `ps -ef | grep '/" . intval($rStreamID) . '_.m3u8\\|XC_VM\\[' . intval($rStreamID) . "\\]' | grep -v grep | awk '{print \$2}'`;");
-                    shell_exec('rm -f ' . STREAMS_PATH . intval($rStreamID) . '_*');
-                }
-            }
-        }
+		$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `on_demand` = 1 AND `server_id` = ?;', SERVER_ID);
+		$rOnDemandIDs = array_keys($db->get_rows(true, 'stream_id'));
+		$rProcesses = shell_exec('ps aux | grep XC_VM');
+		if (preg_match_all('/XC_VM\\[(.*)\\]/', $rProcesses, $rMatches)) {
+			$rRemove = array_diff($rMatches[1], $rStreamIDs);
+			$rRemove = array_diff($rRemove, $rOnDemandIDs);
+			foreach ($rRemove as $rStreamID) {
+				if (is_numeric($rStreamID)) {
+					echo 'Kill Stream ID: ' . $rStreamID . "\n";
+					shell_exec("kill -9 `ps -ef | grep '/" . intval($rStreamID) . '_.m3u8\\|XC_VM\\[' . intval($rStreamID) . "\\]' | grep -v grep | awk '{print \$2}'`;");
+					shell_exec('rm -f ' . STREAMS_PATH . intval($rStreamID) . '_*');
+				}
+			}
+		}
 
-        if (SettingsManager::getBool('kill_rogue_ffmpeg')) {
-            // The supervisor restarts producers on its own schedule: a pid read from
-            // _.pid at the top of this pass may already have been replaced, and the
-            // replacement is not rogue. Ask the daemon for what it runs NOW.
-            $rStates = FanoutClient::monitorStates();
-            foreach (($rStates['streams'] ?? array()) as $rState) {
-                if (intval($rState['pid'] ?? 0) > 0) {
-                    $rActivePIDs[] = intval($rState['pid']);
-                }
-            }
-            exec("ps aux | grep -v grep | grep '/*_.m3u8' | awk '{print \$2}'", $rRoguePIDs);
-            foreach ($rRoguePIDs as $rPID) {
-                if (is_numeric($rPID) && intval($rPID) > 0 && !in_array($rPID, $rActivePIDs)) {
-                    echo 'Kill Roque PID: ' . $rPID . "\n";
-                    shell_exec('kill -9 ' . $rPID . ';');
-                }
-            }
-        }
-    }
+		if (SettingsManager::getBool('kill_rogue_ffmpeg')) {
+			// The supervisor restarts producers on its own schedule: a pid read from
+			// _.pid at the top of this pass may already have been replaced, and the
+			// replacement is not rogue. Ask the daemon for what it runs NOW.
+			$rStates = FanoutClient::monitorStates();
+			foreach (($rStates['streams'] ?? []) as $rState) {
+				if (intval($rState['pid'] ?? 0) > 0) {
+					$rActivePIDs[] = intval($rState['pid']);
+				}
+			}
+			exec("ps aux | grep -v grep | grep '/*_.m3u8' | awk '{print \$2}'", $rRoguePIDs);
+			foreach ($rRoguePIDs as $rPID) {
+				if (is_numeric($rPID) && intval($rPID) > 0 && !in_array($rPID, $rActivePIDs)) {
+					echo 'Kill Roque PID: ' . $rPID . "\n";
+					shell_exec('kill -9 ' . $rPID . ';');
+				}
+			}
+		}
+	}
 }

@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class QueueController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Encoding Queue');
-        $this->render('queue');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Encoding Queue');
+		$this->render('queue');
+	}
 }

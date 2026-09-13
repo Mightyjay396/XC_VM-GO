@@ -21,99 +21,99 @@ use XcVm\Domain\Stream\StreamRepository;
  */
 
 class CreatedChannelController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        global $db, $rServers;
+		global $db, $rServers;
 
-        $rCategories = CategoryService::getAllByType('live');
-        $rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
+		$rCategories = CategoryService::getAllByType('live');
+		$rTranscodeProfiles = StreamConfigRepository::getTranscodeProfiles();
 
-        if (!RequestManager::has('id')) {
-            $rChannel = null;
-        } else {
-            $rChannel = StreamRepository::getById(RequestManager::get('id'));
+		if (!RequestManager::has('id')) {
+			$rChannel = null;
+		} else {
+			$rChannel = StreamRepository::getById(RequestManager::get('id'));
 
-            if (!$rChannel || $rChannel['type'] != 3) {
-                AdminHelpers::goHome();
-            }
-        }
+			if (!$rChannel || $rChannel['type'] != 3) {
+				AdminHelpers::goHome();
+			}
+		}
 
-        $rOnDemand = [];
-        $rProperties = null;
-        $rChannelSys = null;
-        $rServerTree = [
-            [
-                'id' => 'source',
-                'parent' => '#',
-                'text' => "<span class='badge bg-success'>Online</span>",
-                'icon' => 'icon-base ti tabler-player-play',
-                'state' => ['opened' => true]
-            ],
-            [
-                'id' => 'offline',
-                'parent' => '#',
-                'text' => "<span class='badge bg-secondary'>Offline</span>",
-                'icon' => 'icon-base ti tabler-player-stop',
-                'state' => ['opened' => true]
-            ]
-        ];
+		$rOnDemand = [];
+		$rProperties = null;
+		$rChannelSys = null;
+		$rServerTree = [
+			[
+				'id' => 'source',
+				'parent' => '#',
+				'text' => "<span class='badge bg-success'>Online</span>",
+				'icon' => 'icon-base ti tabler-player-play',
+				'state' => ['opened' => true]
+			],
+			[
+				'id' => 'offline',
+				'parent' => '#',
+				'text' => "<span class='badge bg-secondary'>Offline</span>",
+				'icon' => 'icon-base ti tabler-player-stop',
+				'state' => ['opened' => true]
+			]
+		];
 
-        if (isset($rChannel)) {
-            $rProperties = json_decode($rChannel['movie_properties'], true);
+		if (isset($rChannel)) {
+			$rProperties = json_decode($rChannel['movie_properties'], true);
 
-            if (!$rProperties) {
-                $rProperties = ['type' => $rChannel['series_no'] > 0 ? 0 : 1];
-            }
+			if (!$rProperties) {
+				$rProperties = ['type' => $rChannel['series_no'] > 0 ? 0 : 1];
+			}
 
-            $rChannelSys = StreamRepository::getSystemRows(RequestManager::get('id'));
+			$rChannelSys = StreamRepository::getSystemRows(RequestManager::get('id'));
 
-            foreach ($rServers as $rServer) {
-                if (isset($rChannelSys[intval($rServer['id'])])) {
-                    $rParent = $rChannelSys[intval($rServer['id'])]['parent_id'] != 0
-                        ? intval($rChannelSys[intval($rServer['id'])]['parent_id'])
-                        : (!$rChannelSys[intval($rServer['id'])]['on_demand'] ? 'source' : null);
-                } else {
-                    $rParent = 'offline';
-                }
+			foreach ($rServers as $rServer) {
+				if (isset($rChannelSys[intval($rServer['id'])])) {
+					$rParent = $rChannelSys[intval($rServer['id'])]['parent_id'] != 0
+						? intval($rChannelSys[intval($rServer['id'])]['parent_id'])
+						: (!$rChannelSys[intval($rServer['id'])]['on_demand'] ? 'source' : null);
+				} else {
+					$rParent = 'offline';
+				}
 
-                if ($rParent !== null) {
-                    $rServerTree[] = [
-                        'id' => $rServer['id'],
-                        'parent' => $rParent,
-                        'text' => $rServer['server_name'],
-                        'icon' => 'icon-base ti tabler-server',
-                        'state' => ['opened' => true]
-                    ];
-                }
-            }
-        } else {
-            foreach ($rServers as $rServer) {
-                $rServerTree[] = [
-                    'id' => $rServer['id'],
-                    'parent' => 'offline',
-                    'text' => $rServer['server_name'],
-                    'icon' => 'icon-base ti tabler-server',
-                    'state' => ['opened' => true]
-                ];
-            }
-        }
+				if ($rParent !== null) {
+					$rServerTree[] = [
+						'id' => $rServer['id'],
+						'parent' => $rParent,
+						'text' => $rServer['server_name'],
+						'icon' => 'icon-base ti tabler-server',
+						'state' => ['opened' => true]
+					];
+				}
+			}
+		} else {
+			foreach ($rServers as $rServer) {
+				$rServerTree[] = [
+					'id' => $rServer['id'],
+					'parent' => 'offline',
+					'text' => $rServer['server_name'],
+					'icon' => 'icon-base ti tabler-server',
+					'state' => ['opened' => true]
+				];
+			}
+		}
 
-        // The load-balancer server tree is driven by jstree.
-        $GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
-            (array) ($GLOBALS['xmNewuiVendors'] ?? []),
-            ['jstree']
-        )));
+		// The load-balancer server tree is driven by jstree.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['jstree']
+		)));
 
-        $this->setTitle('Created Channel');
-        $this->render('created_channel', compact(
-            'rCategories',
-            'rTranscodeProfiles',
-            'rChannel',
-            'rOnDemand',
-            'rServerTree',
-            'rProperties',
-            'rChannelSys'
-        ));
-    }
+		$this->setTitle('Created Channel');
+		$this->render('created_channel', compact(
+			'rCategories',
+			'rTranscodeProfiles',
+			'rChannel',
+			'rOnDemand',
+			'rServerTree',
+			'rProperties',
+			'rChannelSys'
+		));
+	}
 }

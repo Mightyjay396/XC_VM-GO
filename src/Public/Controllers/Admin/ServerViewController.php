@@ -24,90 +24,90 @@ use XcVm\Streaming\Health\ProcessChecker;
  */
 
 class ServerViewController extends BaseAdminController {
-    public function index(): void {
-        $this->requirePermission();
+	public function index(): void {
+		$this->requirePermission();
 
-        global $allServers, $rProxyServers, $db;
+		global $allServers, $rProxyServers, $db;
 
-        $id = $this->input('id');
-        if (!$id) {
-            exit();
-        }
+		$id = $this->input('id');
+		if (!$id) {
+			exit();
+		}
 
-        // Read the server fresh (bypass the 10s file cache) so this detail page always
-        // reflects the true current status — otherwise a just-started install (status 3)
-        // or a failure (status 4) can be hidden behind a stale cached status.
-        $rFreshServers = ServerRepository::getAll(true);
-        if (isset($rFreshServers[$id])) {
-            $rServer = $rFreshServers[$id];
-        } elseif (isset($allServers[$id])) {
-            $rServer = $allServers[$id];
-        } elseif (isset($rProxyServers[$id])) {
-            $rServer = $rProxyServers[$id];
-        } else {
-            exit();
-        }
+		// Read the server fresh (bypass the 10s file cache) so this detail page always
+		// reflects the true current status — otherwise a just-started install (status 3)
+		// or a failure (status 4) can be hidden behind a stale cached status.
+		$rFreshServers = ServerRepository::getAll(true);
+		if (isset($rFreshServers[$id])) {
+			$rServer = $rFreshServers[$id];
+		} elseif (isset($allServers[$id])) {
+			$rServer = $allServers[$id];
+		} elseif (isset($rProxyServers[$id])) {
+			$rServer = $rProxyServers[$id];
+		} else {
+			exit();
+		}
 
-        // Watchdog data
-        $rWatchdog = json_decode($rServer['watchdog_data'], true);
-        $rServer['gpu_info'] = json_decode($rServer['gpu_info'], true);
+		// Watchdog data
+		$rWatchdog = json_decode($rServer['watchdog_data'], true);
+		$rServer['gpu_info'] = json_decode($rServer['gpu_info'], true);
 
-        // Stats for charts
-        $rStats = [
-            'cpu'    => [],
-            'memory' => [],
-            'io'     => [],
-            'input'  => [],
-            'output' => [],
-            'dates'  => [null, null],
-        ];
+		// Stats for charts
+		$rStats = [
+			'cpu'    => [],
+			'memory' => [],
+			'io'     => [],
+			'input'  => [],
+			'output' => [],
+			'dates'  => [null, null],
+		];
 
-        foreach (ProcessChecker::getWatchdog($rServer['id']) as $rData) {
-            if (!$rStats['dates'][0] || $rData['time'] * 1000 <= $rStats['dates'][0]) {
-                $rStats['dates'][0] = $rData['time'] * 1000;
-            }
-            if (!$rStats['dates'][1] || $rData['time'] * 1000 >= $rStats['dates'][1]) {
-                $rStats['dates'][1] = $rData['time'] * 1000;
-            }
+		foreach (ProcessChecker::getWatchdog($rServer['id']) as $rData) {
+			if (!$rStats['dates'][0] || $rData['time'] * 1000 <= $rStats['dates'][0]) {
+				$rStats['dates'][0] = $rData['time'] * 1000;
+			}
+			if (!$rStats['dates'][1] || $rData['time'] * 1000 >= $rStats['dates'][1]) {
+				$rStats['dates'][1] = $rData['time'] * 1000;
+			}
 
-            $rStats['cpu'][]    = [$rData['time'] * 1000, floatval(rtrim($rData['cpu'], '%'))];
-            $rStats['memory'][] = [$rData['time'] * 1000, floatval(rtrim($rData['total_mem_used_percent'], '%'))];
-            $rStats['io'][]     = [$rData['time'] * 1000, floatval(json_decode($rData['iostat_info'], true)['avg-cpu']['iowait'] ?? 0)];
-            $rStats['input'][]  = [$rData['time'] * 1000, round($rData['bytes_received'] / 125000, 0)];
-            $rStats['output'][] = [$rData['time'] * 1000, round($rData['bytes_sent'] / 125000, 0)];
-        }
+			$rStats['cpu'][]    = [$rData['time'] * 1000, floatval(rtrim($rData['cpu'], '%'))];
+			$rStats['memory'][] = [$rData['time'] * 1000, floatval(rtrim($rData['total_mem_used_percent'], '%'))];
+			$rStats['io'][]     = [$rData['time'] * 1000, floatval(json_decode($rData['iostat_info'], true)['avg-cpu']['iowait'] ?? 0)];
+			$rStats['input'][]  = [$rData['time'] * 1000, round($rData['bytes_received'] / 125000, 0)];
+			$rStats['output'][] = [$rData['time'] * 1000, round($rData['bytes_sent'] / 125000, 0)];
+		}
 
-        // Certificate
-        $rCertificate = json_decode($rServer['certbot_ssl'], true);
-        $rCertValid = false;
-        if (!empty($rCertificate['expiration'])) {
-            $rHasCert = true;
-            if (time() < $rCertificate['expiration']) {
-                $rCertValid = true;
-            }
-            $rExpiration = date(SettingsManager::get('datetime_format'), $rCertificate['expiration']);
-        } else {
-            $rHasCert = false;
-            $rExpiration = 'No Certificate Installed';
-        }
+		// Certificate
+		$rCertificate = json_decode($rServer['certbot_ssl'], true);
+		$rCertValid = false;
+		if (!empty($rCertificate['expiration'])) {
+			$rHasCert = true;
+			if (time() < $rCertificate['expiration']) {
+				$rCertValid = true;
+			}
+			$rExpiration = date(SettingsManager::get('datetime_format'), $rCertificate['expiration']);
+		} else {
+			$rHasCert = false;
+			$rExpiration = 'No Certificate Installed';
+		}
 
-        $title = ($rServer['server_type'] == 0) ? 'View Server' : 'View Proxy';
-        $this->setTitle($title);
+		$title = ($rServer['server_type'] == 0) ? 'View Server' : 'View Proxy';
+		$this->setTitle($title);
 
-        // The Resources / Network tabs draw ApexCharts; request the vendor for the new-UI shell.
-        $GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
-            (array) ($GLOBALS['xmNewuiVendors'] ?? []),
-            ['apexcharts']
-        )));
+		// The Resources / Network tabs draw ApexCharts; request the vendor for the new-UI shell.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['apexcharts']
+		)));
 
-        $this->render('server_view', compact(
-            'rServer',
-            'rWatchdog',
-            'rStats',
-            'rCertificate',
-            'rCertValid',
-            'rHasCert',
-            'rExpiration'
-        ));
-    }
+		$this->render('server_view', compact(
+			'rServer',
+			'rWatchdog',
+			'rStats',
+			'rCertificate',
+			'rCertValid',
+			'rHasCert',
+			'rExpiration'
+		));
+	}
 }

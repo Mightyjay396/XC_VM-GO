@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtLogo;
 use M3uParser\Tag\ExtTagInterface;
 use PHPUnit\Framework\TestCase;
 
-class ExtLogoTest extends TestCase
-{
-    public function testParseExtLogo(): void
-    {
+class ExtLogoTest extends TestCase {
+    public function testParseExtLogo(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/extlogo.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/extlogo.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -35,10 +32,9 @@ class ExtLogoTest extends TestCase
         self::assertEquals('http://example.org/logo.png', $extLogo->getValue());
     }
 
-    public function testGenerateExtLogo(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTLOGO:http://example.org/logo.png'."\n";
+    public function testGenerateExtLogo(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTLOGO:http://example.org/logo.png' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

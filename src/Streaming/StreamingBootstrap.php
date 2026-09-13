@@ -16,9 +16,9 @@ use XcVm\Core\Init\LegacyInitializer;
 
 class StreamingBootstrap {
 	public static function bootstrap($rFilename, $rSettings) {
-		$rProbeEndpoints = array('probe', 'player_api');
-		$rDefaultEndpoints = array('live', 'thumb', 'subtitle', 'timeshift', 'vod', 'status');
-		$rPrivilegedEndpoints = array('rtmp', 'portal');
+		$rProbeEndpoints = ['probe', 'player_api'];
+		$rDefaultEndpoints = ['live', 'thumb', 'subtitle', 'timeshift', 'vod', 'status'];
+		$rPrivilegedEndpoints = ['rtmp', 'portal'];
 
 		if (!in_array($rFilename, array_merge($rProbeEndpoints, $rDefaultEndpoints, $rPrivilegedEndpoints), true)) {
 			return null;

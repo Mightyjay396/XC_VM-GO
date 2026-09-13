@@ -11,24 +11,21 @@ use XcVm\Core\Container\ServiceContainer;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 interface ServiceProviderInterface {
+	/**
+	 * Register module services in the DI container.
+	 *
+	 * Called once per request during module boot phase.
+	 *
+	 */
+	public function boot(ServiceContainer $container): void;
 
-    /**
-     * Register module services in the DI container.
-     *
-     * Called once per request during module boot phase.
-     *
-     * @param ServiceContainer $container
-     */
-    public function boot(ServiceContainer $container): void;
-
-    /**
-     * Return event subscribers declared by this module.
-     *
-     * Key is a fully-qualified event class name, value is a callable
-     * or [callable, int $priority] tuple.
-     *
-     * @return array<class-string, callable|array{callable, int}>
-     */
-    public function getEventSubscribers(): array;
-
+	/**
+	 * Return event subscribers declared by this module.
+	 *
+	 * Key is a fully-qualified event class name, value is a callable
+	 * or [callable, int $priority] tuple.
+	 *
+	 * @return array<class-string, callable|array{callable, int}>
+	 */
+	public function getEventSubscribers(): array;
 }

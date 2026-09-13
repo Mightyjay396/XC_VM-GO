@@ -14,10 +14,11 @@ namespace XcVm\Core\Events\Stream;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class StreamsDeletedEvent {
-    /**
-     * @param int[] $streamIds Ids of the streams that were deleted.
-     */
-    public function __construct(
-        public readonly array $streamIds,
-    ) {}
+	/**
+	 * @param int[] $streamIds Ids of the streams that were deleted.
+	 */
+	public function __construct(
+		public readonly array $streamIds,
+	) {
+	}
 }

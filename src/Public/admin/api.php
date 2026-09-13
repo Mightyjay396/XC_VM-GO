@@ -42,10 +42,10 @@ switch ($rAction) {
 	case 'server':
 		switch ($rSubAction) {
 			case 'list':
-				$rOutput = array();
+				$rOutput = [];
 
 				foreach ($rAllServers as $rServerID => $rServerInfo) {
-					$rOutput[] = array('id' => $rServerID, 'server_name' => $rServerInfo['server_name'], 'online' => $rServerInfo['server_online'], 'info' => json_decode($rServerInfo['server_hardware'], true));
+					$rOutput[] = ['id' => $rServerID, 'server_name' => $rServerInfo['server_name'], 'online' => $rServerInfo['server_online'], 'info' => json_decode($rServerInfo['server_hardware'], true)];
 				}
 				echo json_encode($rOutput);
 
@@ -68,23 +68,23 @@ switch ($rAction) {
 				$rReq = RequestManager::getAll();
 				$rStreamIDs = !empty($rReq['stream_ids'])
 					? array_map('intval', $rReq['stream_ids'])
-					: array(intval($rReq['stream_id'] ?? 0));
+					: [intval($rReq['stream_id'] ?? 0)];
 				$rServerID = intval($rReq['server_id'] ?? -1);
 				$rServerIDs = !empty($rReq['servers'])
 					? array_map('intval', $rReq['servers'])
-					: ($rServerID > 0 ? array($rServerID) : array_keys($rAllServers));
+					: ($rServerID > 0 ? [$rServerID] : array_keys($rAllServers));
 				$rForce = ($rReq['force'] ?? false);
-				$rURLs = array();
+				$rURLs = [];
 
 				foreach ($rServerIDs as $rServerID) {
-					$rPostData = array('function' => $rSubAction, 'stream_ids' => $rStreamIDs);
+					$rPostData = ['function' => $rSubAction, 'stream_ids' => $rStreamIDs];
 					if ($rSubAction === 'start') {
 						$rPostData['force'] = $rForce;
 					}
-					$rURLs[$rServerID] = array('url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=vod', 'postdata' => $rPostData);
+					$rURLs[$rServerID] = ['url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=vod', 'postdata' => $rPostData];
 				}
 				CurlClient::getMultiCURL($rURLs);
-				echo json_encode(array('result' => true));
+				echo json_encode(['result' => true]);
 
 				exit();
 		}
@@ -94,37 +94,37 @@ switch ($rAction) {
 	case 'stream':
 		switch ($rSubAction) {
 			case 'start':
-				$rStreamIDs = array_map('intval', RequestManager::get('stream_ids') ?? array());
+				$rStreamIDs = array_map('intval', RequestManager::get('stream_ids') ?? []);
 				$rServerIDs = (empty(RequestManager::get('servers')) ? array_keys($rAllServers) : array_map('intval', RequestManager::get('servers')));
-				$rURLs = array();
+				$rURLs = [];
 
 				foreach ($rServerIDs as $rServerID) {
-					$rURLs[$rServerID] = array('url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=stream', 'postdata' => array('function' => $rSubAction, 'stream_ids' => $rStreamIDs));
+					$rURLs[$rServerID] = ['url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=stream', 'postdata' => ['function' => $rSubAction, 'stream_ids' => $rStreamIDs]];
 				}
 				CurlClient::getMultiCURL($rURLs);
-				echo json_encode(array('result' => true));
+				echo json_encode(['result' => true]);
 
 				exit();
 
 			case 'stop':
-				$rStreamIDs = array_map('intval', RequestManager::get('stream_ids') ?? array());
+				$rStreamIDs = array_map('intval', RequestManager::get('stream_ids') ?? []);
 				$rServerIDs = (empty(RequestManager::get('servers')) ? array_keys($rAllServers) : array_map('intval', RequestManager::get('servers')));
-				$rURLs = array();
+				$rURLs = [];
 
 				foreach ($rServerIDs as $rServerID) {
-					$rURLs[$rServerID] = array('url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=stream', 'postdata' => array('function' => $rSubAction, 'stream_ids' => $rStreamIDs));
+					$rURLs[$rServerID] = ['url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=stream', 'postdata' => ['function' => $rSubAction, 'stream_ids' => $rStreamIDs]];
 				}
 				CurlClient::getMultiCURL($rURLs);
-				echo json_encode(array('result' => true));
+				echo json_encode(['result' => true]);
 
 				exit();
 
 			case 'list':
-				$rOutput = array();
+				$rOutput = [];
 				$db->query('SELECT id,stream_display_name FROM `streams` WHERE type <> 2');
 
 				foreach ($db->get_rows() as $rRow) {
-					$rOutput[] = array('id' => $rRow['id'], 'stream_name' => $rRow['stream_display_name']);
+					$rOutput[] = ['id' => $rRow['id'], 'stream_name' => $rRow['stream_display_name']];
 				}
 				echo json_encode($rOutput);
 
@@ -133,7 +133,7 @@ switch ($rAction) {
 			case 'offline':
 				$db->query('SELECT t1.stream_status,t1.server_id,t1.stream_id  FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.type <> 2 WHERE t1.stream_status <> 0');
 				$rStreams = $db->get_rows(true, 'stream_id', false, 'server_id');
-				$rOutput = array();
+				$rOutput = [];
 
 				foreach ($rStreams as $rStreamID => $rStreamServers) {
 					$rOutput[$rStreamID] = array_keys($rStreamServers);
@@ -145,7 +145,7 @@ switch ($rAction) {
 			case 'online':
 				$db->query('SELECT t1.stream_status,t1.server_id,t1.stream_id FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.type <> 2 WHERE t1.pid > 0 AND t1.stream_status = 0');
 				$rStreams = $db->get_rows(true, 'stream_id', false, 'server_id');
-				$rOutput = array();
+				$rOutput = [];
 
 				foreach ($rStreams as $rStreamID => $rStreamServers) {
 					$rOutput[$rStreamID] = array_keys($rStreamServers);
@@ -166,12 +166,12 @@ switch ($rAction) {
 					$rUserInfo = UserRepository::getUserInfo(false, $rUsername, $rPassword, true, true);
 
 					if (!empty($rUserInfo)) {
-						echo json_encode(array('result' => true, 'user_info' => $rUserInfo));
+						echo json_encode(['result' => true, 'user_info' => $rUserInfo]);
 					} else {
-						echo json_encode(array('result' => false, 'error' => 'NOT EXISTS'));
+						echo json_encode(['result' => false, 'error' => 'NOT EXISTS']);
 					}
 				} else {
-					echo json_encode(array('result' => false, 'error' => 'PARAMETER ERROR (user/pass)'));
+					echo json_encode(['result' => false, 'error' => 'PARAMETER ERROR (user/pass)']);
 				}
 
 				break;
@@ -194,6 +194,7 @@ switch ($rAction) {
 	default:
 		break;
 }
+
 function shutdown() {
 	global $db;
 

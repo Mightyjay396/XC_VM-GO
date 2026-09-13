@@ -18,16 +18,16 @@ use XcVm\Domain\User\TicketRepository;
  */
 
 class TicketController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
+	public function index() {
+		$this->requirePermission();
 
-        $rTicket = TicketRepository::getById(RequestManager::get('id'));
-        if (!$rTicket) {
-            $this->redirect('tickets');
-            return;
-        }
+		$rTicket = TicketRepository::getById(RequestManager::get('id'));
+		if (!$rTicket) {
+			$this->redirect('tickets');
+			return;
+		}
 
-        $this->setTitle('Ticket');
-        $this->render('ticket', compact('rTicket'));
-    }
+		$this->setTitle('Ticket');
+		$this->render('ticket', compact('rTicket'));
+	}
 }

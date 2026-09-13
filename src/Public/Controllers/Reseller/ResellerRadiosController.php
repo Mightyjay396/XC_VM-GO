@@ -14,14 +14,12 @@ use XcVm\Domain\Stream\CategoryService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-class ResellerRadiosController extends BaseResellerController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Radio Stations');
-        $this->render('radios', [
-            'categories' => CategoryService::getAllByType('radio'),
-        ]);
-    }
+class ResellerRadiosController extends BaseResellerController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Radio Stations');
+		$this->render('radios', [
+			'categories' => CategoryService::getAllByType('radio'),
+		]);
+	}
 }

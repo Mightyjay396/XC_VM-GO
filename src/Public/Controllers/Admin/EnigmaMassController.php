@@ -15,9 +15,9 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class EnigmaMassController extends BaseAdminController {
-    public function index() {
-        $this->requirePermission();
-        $this->setTitle('Mass Edit Devices');
-        $this->render('enigma_mass');
-    }
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Mass Edit Devices');
+		$this->render('enigma_mass');
+	}
 }

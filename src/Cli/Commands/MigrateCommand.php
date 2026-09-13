@@ -15,7 +15,6 @@ use XcVm\Cli\CommandInterface;
  */
 
 class MigrateCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'migrate';
 	}

@@ -11,13 +11,11 @@ use XcVm\Core\Http\Router;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 interface RouteProviderInterface {
-
-    /**
-     * Register HTTP routes for this module.
-     *
-     * Called after boot(). Module registers GET/POST routes and API handlers.
-     *
-     * @param Router $router
-     */
-    public function registerRoutes(Router $router): void;
+	/**
+	 * Register HTTP routes for this module.
+	 *
+	 * Called after boot(). Module registers GET/POST routes and API handlers.
+	 *
+	 */
+	public function registerRoutes(Router $router): void;
 }

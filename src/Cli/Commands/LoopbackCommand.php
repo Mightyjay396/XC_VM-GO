@@ -19,7 +19,6 @@ use XcVm\Streaming\Fanout\IngestFeeder;
  */
 
 class LoopbackCommand implements CommandInterface {
-
 	public function getName(): string {
 		return 'loopback';
 	}
@@ -44,29 +43,59 @@ class LoopbackCommand implements CommandInterface {
 		$rStreamID = intval($rArgs[0]);
 		$rServerID = intval($rArgs[1]);
 
-		if (!defined('MAIN_HOME')) define('MAIN_HOME', '/home/xc_vm/');
-		if (!defined('STREAMS_PATH')) define('STREAMS_PATH', MAIN_HOME . 'content/streams/');
-		if (!defined('FFMPEG')) define('FFMPEG', FfmpegPaths::cpu() ?: FFMPEG_BIN_40);
-		if (!defined('FFPROBE')) define('FFPROBE', FfmpegPaths::probe() ?: FFPROBE_BIN_40);
-		if (!defined('CACHE_TMP_PATH')) define('CACHE_TMP_PATH', MAIN_HOME . 'tmp/cache/');
-		if (!defined('CONFIG_PATH')) define('CONFIG_PATH', MAIN_HOME . 'config/');
+		if (!defined('MAIN_HOME')) {
+			define('MAIN_HOME', '/home/xc_vm/');
+		}
+		if (!defined('STREAMS_PATH')) {
+			define('STREAMS_PATH', MAIN_HOME . 'content/streams/');
+		}
+		if (!defined('FFMPEG')) {
+			define('FFMPEG', FfmpegPaths::cpu() ?: FFMPEG_BIN_40);
+		}
+		if (!defined('FFPROBE')) {
+			define('FFPROBE', FfmpegPaths::probe() ?: FFPROBE_BIN_40);
+		}
+		if (!defined('CACHE_TMP_PATH')) {
+			define('CACHE_TMP_PATH', MAIN_HOME . 'tmp/cache/');
+		}
+		if (!defined('CONFIG_PATH')) {
+			define('CONFIG_PATH', MAIN_HOME . 'config/');
+		}
 		// PAT_HEADER restored to the real PAT header bytes (0xB0 0x0D) derived from the stream.
 		// The value was corrupted (byte 0xB0 → space/U+FFFD) by a non-binary-safe editor.
-		if (!defined('PAT_HEADER')) define('PAT_HEADER', "\xB0\x0D");
-		if (!defined('KEYFRAME_HEADER')) define('KEYFRAME_HEADER', "\x07P");
-		if (!defined('PACKET_SIZE')) define('PACKET_SIZE', 188);
-		if (!defined('BUFFER_SIZE')) define('BUFFER_SIZE', 12032);
-		if (!defined('PAT_PERIOD')) define('PAT_PERIOD', 2);
+		if (!defined('PAT_HEADER')) {
+			define('PAT_HEADER', "\xB0\x0D");
+		}
+		if (!defined('KEYFRAME_HEADER')) {
+			define('KEYFRAME_HEADER', "\x07P");
+		}
+		if (!defined('PACKET_SIZE')) {
+			define('PACKET_SIZE', 188);
+		}
+		if (!defined('BUFFER_SIZE')) {
+			define('BUFFER_SIZE', 12032);
+		}
+		if (!defined('PAT_PERIOD')) {
+			define('PAT_PERIOD', 2);
+		}
 		// Minimum VIDEO duration per segment (90 kHz ticks). ~1.5s guarantees one cut per 2s GOP
 		// and prevents sub-GOP cuts that were producing 8 KB .ts files. Measured in PTS (video time),
 		// so it stays correct even when the source bursts at 400+ Mbps.
-		if (!defined('MIN_SEG_PTS')) define('MIN_SEG_PTS', 135000);
+		if (!defined('MIN_SEG_PTS')) {
+			define('MIN_SEG_PTS', 135000);
+		}
 		// Segment size safety cap. If the source stops delivering keyframes with an advancing PCR
 		// (e.g. re-serving the same chunk to a consumer), we still rotate on the next keyframe to
 		// avoid writing a giant .ts that fills the disk. ~16 MB ≈ ~20s, well above a normal segment (~800 KB).
-		if (!defined('MAX_SEG_BYTES')) define('MAX_SEG_BYTES', 16777216);
-		if (!defined('TIMEOUT')) define('TIMEOUT', 20);
-		if (!defined('TIMEOUT_READ')) define('TIMEOUT_READ', 1);
+		if (!defined('MAX_SEG_BYTES')) {
+			define('MAX_SEG_BYTES', 16777216);
+		}
+		if (!defined('TIMEOUT')) {
+			define('TIMEOUT', 20);
+		}
+		if (!defined('TIMEOUT_READ')) {
+			define('TIMEOUT_READ', 1);
+		}
 
 		if (!file_exists(CACHE_TMP_PATH . 'settings')) {
 			echo "Settings not cached!\n";
@@ -77,7 +106,9 @@ class LoopbackCommand implements CommandInterface {
 			return 0;
 		}
 
-		if (!defined('SERVER_ID')) define('SERVER_ID', intval(ConfigReader::get('server_id')));
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', intval(ConfigReader::get('server_id')));
+		}
 		$this->checkRunning($rStreamID);
 
 		// Single-instance lock per stream. The monitor/watchdog (StreamProcess::startLoopback) can
@@ -92,8 +123,8 @@ class LoopbackCommand implements CommandInterface {
 
 		$rFP = null;
 		$rSegmentFile = null;
-		$rSegmentDuration = array();
-		$rSegmentStatus = array();
+		$rSegmentDuration = [];
+		$rSegmentStatus = [];
 		$rLastPTS = null;
 		$rCurPTS = null;
 		$rSegStartPTS = null;
@@ -143,7 +174,7 @@ class LoopbackCommand implements CommandInterface {
 		$rFeeder->connect();
 
 		$rExcessBuffer = $rPrebuffer = $rBuffer = $rPacket = '';
-		$rPATHeaders = array();
+		$rPATHeaders = [];
 		$rNewSegment = $rPAT = false;
 		$rFirstWrite = true;
 		$rLastPacket = time();
@@ -214,7 +245,7 @@ class LoopbackCommand implements CommandInterface {
 					if ($rSync == 71) {
 						if (substr($rPacket, 6, 2) == PAT_HEADER) {
 							$rPAT = true;
-							$rPATHeaders = array();
+							$rPATHeaders = [];
 						} else {
 							$rAdaptationField = $rHeader >> 4 & 3;
 							if (($rAdaptationField & 2) === 2) {
@@ -246,14 +277,14 @@ class LoopbackCommand implements CommandInterface {
 										$rPrebuffer = implode('', $rPATHeaders);
 										$rNewSegment = true;
 										$rPAT = false;
-										$rPATHeaders = array();
+										$rPATHeaders = [];
 										$rLastPTS = $rSegStartPTS;
 										$rCurPTS = $rKfPTS;
 										$rSegStartPTS = $rKfPTS;
 									} else {
 										// Still within the current segment duration: consume the PAT/keyframe pair without rotating.
 										$rPAT = false;
-										$rPATHeaders = array();
+										$rPATHeaders = [];
 									}
 								}
 							}
@@ -335,7 +366,7 @@ class LoopbackCommand implements CommandInterface {
 	}
 
 	private function deleteOldSegments($rStreamID, $rKeep, $rThreshold, &$rSegmentStatus): array {
-		$rReturn = array();
+		$rReturn = [];
 		$rCurrentSegment = max(array_keys($rSegmentStatus));
 		foreach ($rSegmentStatus as $rSegmentID => $rStatus) {
 			if ($rStatus) {

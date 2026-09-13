@@ -34,7 +34,7 @@ use XcVm\Public\Controllers\Player\PortalController;
 
 // 1. MAIN_HOME
 if (!defined('MAIN_HOME')) {
-    define('MAIN_HOME', dirname(__DIR__) . '/');
+	define('MAIN_HOME', dirname(__DIR__) . '/');
 }
 
 // 1b. Autoloader
@@ -52,140 +52,140 @@ $accessCode = null;
 $rawScope   = null;
 
 if (!empty($_SERVER['XC_SCOPE'])) {
-    // Режим A: access code (nginx XC_SCOPE/XC_CODE)
-    $rawScope   = $_SERVER['XC_SCOPE'];
-    $accessCode = $_SERVER['XC_CODE'] ?? null;
+	// Режим A: access code (nginx XC_SCOPE/XC_CODE)
+	$rawScope   = $_SERVER['XC_SCOPE'];
+	$accessCode = $_SERVER['XC_CODE'] ?? null;
 
-    $scopeMap = [
-        'admin'                => 'admin',
-        'reseller'             => 'reseller',
-        'ministra'             => 'ministra',
-        'ministra/new'         => 'ministra',
-        'includes/api/admin'   => 'admin',
-        'includes/api/reseller' => 'reseller',
-        'player'               => 'player',
-        'portal'               => 'portal',
-    ];
+	$scopeMap = [
+		'admin'                => 'admin',
+		'reseller'             => 'reseller',
+		'ministra'             => 'ministra',
+		'ministra/new'         => 'ministra',
+		'includes/api/admin'   => 'admin',
+		'includes/api/reseller' => 'reseller',
+		'player'               => 'player',
+		'portal'               => 'portal',
+	];
 
-    $scope = $scopeMap[$rawScope] ?? 'admin';
+	$scope = $scopeMap[$rawScope] ?? 'admin';
 
-    if ($accessCode && preg_match('#^/' . preg_quote($accessCode, '#') . '(?:/(.*))?$#', $urlPath, $m)) {
-        $pageName = isset($m[1]) ? trim($m[1], '/') : '';
-    } else {
-        $pageName = trim($urlPath, '/');
-        $parts = explode('/', $pageName, 2);
-        $pageName = $parts[1] ?? '';
-    }
+	if ($accessCode && preg_match('#^/' . preg_quote($accessCode, '#') . '(?:/(.*))?$#', $urlPath, $m)) {
+		$pageName = isset($m[1]) ? trim($m[1], '/') : '';
+	} else {
+		$pageName = trim($urlPath, '/');
+		$parts = explode('/', $pageName, 2);
+		$pageName = $parts[1] ?? '';
+	}
 } elseif (preg_match('#^/(admin|reseller|portal)(?:/(.*))?$#', $urlPath, $m)) {
-    // Режим B: прямой URL /admin/... или /reseller/... или /portal/...
-    $scope    = $m[1];
-    $pageName = isset($m[2]) ? trim($m[2], '/') : '';
+	// Режим B: прямой URL /admin/... или /reseller/... или /portal/...
+	$scope    = $m[1];
+	$pageName = isset($m[2]) ? trim($m[2], '/') : '';
 } else {
-    // Режим C: access code без XC_SCOPE (fallback admin)
-    $selfDir = basename(dirname($_SERVER['PHP_SELF'] ?? ''));
+	// Режим C: access code без XC_SCOPE (fallback admin)
+	$selfDir = basename(dirname($_SERVER['PHP_SELF'] ?? ''));
 
-    if (!in_array($selfDir, ['admin', 'reseller'], true)) {
-        $accessCode = $selfDir;
-    } else {
-        $scope = $selfDir;
-    }
+	if (!in_array($selfDir, ['admin', 'reseller'], true)) {
+		$accessCode = $selfDir;
+	} else {
+		$scope = $selfDir;
+	}
 
-    $parts = explode('/', trim($urlPath, '/'));
-    array_shift($parts);
-    $pageName = implode('/', $parts);
+	$parts = explode('/', trim($urlPath, '/'));
+	array_shift($parts);
+	$pageName = implode('/', $parts);
 }
 
 $pageName = preg_replace('/\.php$/', '', $pageName);
 
 if ($pageName === '') {
-    $pageName = 'index';
+	$pageName = 'index';
 }
 
 // 3. REST API (access code type 3/4) — dispatch до редиректа и роутера
 if (isset($rawScope) && in_array($rawScope, ['includes/api/admin', 'includes/api/reseller'], true)) {
-    require_once MAIN_HOME . 'bootstrap.php';
-    XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_ADMIN);
-    // Boot modules (no router → registries only, no route side-effects) so a
-    // module-owned serverSide table (TableRegistry) is reachable over the REST API.
-    if (class_exists(ModuleLoader::class)) {
-        $rApiModuleLoader = new ModuleLoader();
-        $rApiModuleLoader->loadAll();
-        $rApiModuleLoader->bootAll(XC_Bootstrap::getContainer());
-    }
-    if ($rawScope === 'includes/api/admin') {
-        $controller = new AdminApiController();
-    } else {
-        $controller = new ResellerRestApiController();
-    }
-    $controller->index();
-    exit;
+	require_once MAIN_HOME . 'bootstrap.php';
+	XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_ADMIN);
+	// Boot modules (no router → registries only, no route side-effects) so a
+	// module-owned serverSide table (TableRegistry) is reachable over the REST API.
+	if (class_exists(ModuleLoader::class)) {
+		$rApiModuleLoader = new ModuleLoader();
+		$rApiModuleLoader->loadAll();
+		$rApiModuleLoader->bootAll(XC_Bootstrap::getContainer());
+	}
+	if ($rawScope === 'includes/api/admin') {
+		$controller = new AdminApiController();
+	} else {
+		$controller = new ResellerRestApiController();
+	}
+	$controller->index();
+	exit;
 }
 
 // 4. Redirect /CODE/ → /CODE/login (иначе relative assets ломаются)
 if (
-    $pageName === 'index' && $accessCode && in_array($scope, ['admin', 'reseller'], true)
-    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+	$pageName === 'index' && $accessCode && in_array($scope, ['admin', 'reseller'], true)
+	&& ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 ) {
-    header('Location: /' . $accessCode . '/login');
-    exit;
+	header('Location: /' . $accessCode . '/login');
+	exit;
 }
 
 // 4b. Player / Portal: /CODE (без завершающего слэша) → /CODE/
 if (
-    $accessCode && in_array($scope, ['player', 'portal'], true)
-    && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
-    && rtrim(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '', '/') === '/' . $accessCode
-    && substr(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '', -1) !== '/'
+	$accessCode && in_array($scope, ['player', 'portal'], true)
+	&& ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
+	&& rtrim(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '', '/') === '/' . $accessCode
+	&& substr(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '', -1) !== '/'
 ) {
-    $query = (string) parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_QUERY);
-    header('Location: /' . $accessCode . '/' . ($query !== '' ? '?' . $query : ''));
-    exit;
+	$query = (string) parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_QUERY);
+	header('Location: /' . $accessCode . '/' . ($query !== '' ? '?' . $query : ''));
+	exit;
 }
 
 if (!defined('PAGE_NAME')) {
-    define('PAGE_NAME', $pageName);
+	define('PAGE_NAME', $pageName);
 }
 
 // 5. Статические ресурсы (fallback для неверной nginx-конфигурации)
 $ext = pathinfo($pageName, PATHINFO_EXTENSION);
 if (in_array($ext, ['css', 'js', 'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'woff', 'woff2', 'ttf', 'eot', 'map'], true)) {
-    http_response_code(404);
-    exit;
+	http_response_code(404);
+	exit;
 }
 
 // 6. Streaming / web API (XC_SCOPE=api, XC_API={endpoint})
 // Each entry: [controller class, bootstrap kind]. `::class` yields the resolved
 // FQN, so `new $class()` works without a manual namespace prefix.
 if (isset($rawScope) && $rawScope === 'api' && !empty($_SERVER['XC_API'])) {
-    $rApiName = $_SERVER['XC_API'];
-    $rApiEndpoints = [
-        'player_api' => [PlayerApiController::class,   'stream'],
-        'enigma2'    => [Enigma2ApiController::class,  'web'],
-        'xplugin'    => [XPluginApiController::class,  'web'],
-        'epg'        => [EpgApiController::class,      'web'],
-        'playlist'    => [PlaylistApiController::class,   'web'],
-        'internal'    => [InternalApiController::class,   'web'],
-        'active_code' => [ActiveCodeApiController::class, 'web'],
-    ];
+	$rApiName = $_SERVER['XC_API'];
+	$rApiEndpoints = [
+		'player_api' => [PlayerApiController::class,   'stream'],
+		'enigma2'    => [Enigma2ApiController::class,  'web'],
+		'xplugin'    => [XPluginApiController::class,  'web'],
+		'epg'        => [EpgApiController::class,      'web'],
+		'playlist'    => [PlaylistApiController::class,   'web'],
+		'internal'    => [InternalApiController::class,   'web'],
+		'active_code' => [ActiveCodeApiController::class, 'web'],
+	];
 
-    if (!isset($rApiEndpoints[$rApiName])) {
-        http_response_code(404);
-        exit;
-    }
+	if (!isset($rApiEndpoints[$rApiName])) {
+		http_response_code(404);
+		exit;
+	}
 
-    [$rControllerClass, $rBootstrapKind] = $rApiEndpoints[$rApiName];
-    $rFilename = ($rApiName === 'internal') ? 'api' : $rApiName;
+	[$rControllerClass, $rBootstrapKind] = $rApiEndpoints[$rApiName];
+	$rFilename = ($rApiName === 'internal') ? 'api' : $rApiName;
 
-    if ($rBootstrapKind === 'stream') {
-        StreamingRequestBootstrap::init($rFilename);
-    } else {
-        WebApiBootstrap::init($rFilename);
-    }
+	if ($rBootstrapKind === 'stream') {
+		StreamingRequestBootstrap::init($rFilename);
+	} else {
+		WebApiBootstrap::init($rFilename);
+	}
 
-    $controller = new $rControllerClass();
-    register_shutdown_function([$controller, 'shutdown']);
-    $controller->index();
-    exit;
+	$controller = new $rControllerClass();
+	register_shutdown_function([$controller, 'shutdown']);
+	$controller->index();
+	exit;
 }
 
 // 6b. Stalker STB compatibility. The box firmware pings <portal_base>/server/load.php
@@ -195,21 +195,21 @@ if (isset($rawScope) && $rawScope === 'api' && !empty($_SERVER['XC_API'])) {
 // to the same /server/... path and self-loops — the STB hangs on "authorization".
 // Redirect them to the portal in the SAME base (portal.php answers the handshake).
 if ($scope === 'ministra') {
-    $rReqPath = (string) parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
-    if (preg_match('#/server/(load\.php|login)$#', $rReqPath)) {
-        $rPortalBase = preg_replace('#/server/[^/]+$#', '/', $rReqPath);
-        $rQuery = $_SERVER['QUERY_STRING'] ?? '';
-        header('Location: ' . $rPortalBase . 'portal.php' . ($rQuery !== '' ? '?' . $rQuery : ''), true, 302);
-        exit;
-    }
+	$rReqPath = (string) parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+	if (preg_match('#/server/(load\.php|login)$#', $rReqPath)) {
+		$rPortalBase = preg_replace('#/server/[^/]+$#', '/', $rReqPath);
+		$rQuery = $_SERVER['QUERY_STRING'] ?? '';
+		header('Location: ' . $rPortalBase . 'portal.php' . ($rQuery !== '' ? '?' . $rQuery : ''), true, 302);
+		exit;
+	}
 }
 
 // 6c. Subscriber Activation Portal (public access, no admin/reseller session required)
 if ($scope === 'portal') {
-    WebApiBootstrap::init('portal');
-    $portalController = new PortalController();
-    $portalController->index();
-    exit;
+	WebApiBootstrap::init('portal');
+	$portalController = new PortalController();
+	$portalController->index();
+	exit;
 }
 
 // 7. Scope bootstrap — working directory + session/functions files
@@ -217,24 +217,24 @@ $adminDir = ($scope === 'admin') ? MAIN_HOME . 'Public/Views/admin/' : MAIN_HOME
 @chdir(is_dir($adminDir) ? $adminDir : MAIN_HOME);
 
 if ($scope === 'player') {
-    $noBootstrapPages = ['login'];
+	$noBootstrapPages = ['login'];
 } else {
-    $noBootstrapPages = ['login', 'setup', 'database', 'index', 'session'];
+	$noBootstrapPages = ['login', 'setup', 'database', 'index', 'session'];
 }
 
 // 7a. Страницы без bootstrap (имеют свой)
 // ВАЖНО: НЕ загружаем includes/admin.php — require_once пропустит повторную
 // загрузку в legacy-файлах и переменные ($db и др.) не будут определены.
 if (in_array($pageName, $noBootstrapPages, true)) {
-    $router = Router::getInstance();
-    require_once __DIR__ . '/routes/' . $scope . '.php';
-    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
-    if ($router->dispatch($pageName, $method)) {
-        exit;
-    }
-    http_response_code(404);
-    echo '404 Not Found';
-    exit;
+	$router = Router::getInstance();
+	require_once __DIR__ . '/routes/' . $scope . '.php';
+	$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+	if ($router->dispatch($pageName, $method)) {
+		exit;
+	}
+	http_response_code(404);
+	echo '404 Not Found';
+	exit;
 }
 
 // 7b. Bootstrap the request scope: session lifecycle → framework + user context.
@@ -248,38 +248,38 @@ $routesDir = __DIR__ . '/routes/';
 
 $routeFile = $routesDir . $scope . '.php';
 if (file_exists($routeFile)) {
-    require_once $routeFile;
+	require_once $routeFile;
 }
 
 // API-маршруты (общие для admin и reseller)
 $apiRouteFile = $routesDir . 'api.php';
 if (file_exists($apiRouteFile)) {
-    require_once $apiRouteFile;
+	require_once $apiRouteFile;
 }
 
 // 9. Module web boot (M-1)
 if (in_array($scope, ['admin', 'reseller'], true) && class_exists(ModuleLoader::class)) {
-    $moduleLoader = new ModuleLoader();
-    $router->beginModuleRegistration();
-    $moduleLoader->loadAll();
-    $moduleLoader->bootAll(XC_Bootstrap::getContainer(), $router);
-    $router->endModuleRegistration();
+	$moduleLoader = new ModuleLoader();
+	$router->beginModuleRegistration();
+	$moduleLoader->loadAll();
+	$moduleLoader->bootAll(XC_Bootstrap::getContainer(), $router);
+	$router->endModuleRegistration();
 
-    $routeCollisions = $router->drainRouteCollisions();
-    if (!empty($routeCollisions)) {
-        $isDevelopment = defined('DEVELOPMENT') ? (bool) constant('DEVELOPMENT') : false;
-        if ($isDevelopment) {
-            $collisionKeys = [];
-            foreach ($routeCollisions as $routeCollision) {
-                $collisionKeys[] = $routeCollision['type'] . ':' . $routeCollision['key'];
-            }
+	$routeCollisions = $router->drainRouteCollisions();
+	if (!empty($routeCollisions)) {
+		$isDevelopment = defined('DEVELOPMENT') ? (bool) constant('DEVELOPMENT') : false;
+		if ($isDevelopment) {
+			$collisionKeys = [];
+			foreach ($routeCollisions as $routeCollision) {
+				$collisionKeys[] = $routeCollision['type'] . ':' . $routeCollision['key'];
+			}
 
-            $collisionMessage = 'Module route collisions detected (core priority preserved): ' . implode(', ', $collisionKeys);
-            error_log($collisionMessage);
+			$collisionMessage = 'Module route collisions detected (core priority preserved): ' . implode(', ', $collisionKeys);
+			error_log($collisionMessage);
 
-            trigger_error($collisionMessage, E_USER_WARNING);
-        }
-    }
+			trigger_error($collisionMessage, E_USER_WARNING);
+		}
+	}
 }
 
 // 10. Dispatch
@@ -288,21 +288,21 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 // Module API routes take priority over legacy AjaxController.
 // dispatchApi must run BEFORE dispatch('api') because dispatch() exits inside AjaxController.
 if ($pageName === 'api' && !empty($_REQUEST['action'])) {
-    $action = $_REQUEST['action'];
-    if ($router->dispatchApi($action)) {
-        exit;
-    }
+	$action = $_REQUEST['action'];
+	if ($router->dispatchApi($action)) {
+		exit;
+	}
 }
 
 if ($router->dispatch($pageName, $method)) {
-    exit;
+	exit;
 }
 
 // 11. 404
 http_response_code(404);
 
 if (function_exists('generate404')) {
-    generate404();
+	generate404();
 } else {
-    echo '404 Not Found';
+	echo '404 Not Found';
 }

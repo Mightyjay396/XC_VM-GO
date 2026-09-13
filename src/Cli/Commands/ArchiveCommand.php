@@ -25,7 +25,6 @@ use XcVm\Domain\Stream\StreamProcess;
  */
 
 class ArchiveCommand implements CommandInterface {
-
 	/** @inheritDoc */
 	public function getName(): string {
 		return 'archive';
@@ -111,7 +110,7 @@ class ArchiveCommand implements CommandInterface {
 		// currently listed in the playlist to avoid reading a partial file.
 		$rPlaylistContent = @file_get_contents($rPlaylist);
 		preg_match_all('/_(\d+)\.ts/', ($rPlaylistContent ?: ''), $rSegMatches);
-		$rSegNum = !empty($rSegMatches[1]) ? (int)end($rSegMatches[1]) + 1 : 0;
+		$rSegNum = !empty($rSegMatches[1]) ? (int) end($rSegMatches[1]) + 1 : 0;
 		$this->logStatus('Starting from source segment #' . $rSegNum . '.');
 
 		// Open the first archive minute file; subsequent ones are opened on rotation.
@@ -165,7 +164,7 @@ class ArchiveCommand implements CommandInterface {
 				if ($rWaitCount % 300 === 0) {
 					$rFreshContent = @file_get_contents($rPlaylist);
 					preg_match_all('/_(\d+)\.ts/', ($rFreshContent ?: ''), $rFreshMatches);
-					$rFreshSeg = !empty($rFreshMatches[1]) ? (int)end($rFreshMatches[1]) : -1;
+					$rFreshSeg = !empty($rFreshMatches[1]) ? (int) end($rFreshMatches[1]) : -1;
 
 					if ($rFreshSeg >= 0 && $rFreshSeg > $rSegNum + 1) {
 						// Forward gap: ffmpeg skipped segment numbers (old files purged
@@ -269,7 +268,7 @@ class ArchiveCommand implements CommandInterface {
 	 *
 	 * @param string $rMessage Human-readable status message.
 	 */
-	private function logStatus($rMessage): void {
+	private function logStatus(string $rMessage): void {
 		echo '[archive][' . getmypid() . '][' . gmdate('Y-m-d H:i:s') . '] ' . $rMessage . "\n";
 	}
 
@@ -283,7 +282,7 @@ class ArchiveCommand implements CommandInterface {
 	 * @param int $rStreamID Stream identifier used to build the archive path.
 	 * @param int $rDuration Maximum retention duration in days.
 	 */
-	private function deleteSegments($rStreamID, $rDuration): void {
+	private function deleteSegments(int $rStreamID, int $rDuration): void {
 		$rSegmentCount = intval(count(scandir(ARCHIVE_PATH . $rStreamID . '/')) - 2);
 		if ($rDuration * 24 * 60 < $rSegmentCount) {
 			$rDelta = $rSegmentCount - $rDuration * 24 * 60;
@@ -308,7 +307,7 @@ class ArchiveCommand implements CommandInterface {
 	 *
 	 * @param int $rStreamID Stream identifier.
 	 */
-	private function checkRunning($rStreamID): void {
+	private function checkRunning(int $rStreamID): void {
 		clearstatcache(true);
 		$rPID = null;
 		if (file_exists(STREAMS_PATH . $rStreamID . '_.archive')) {
@@ -326,7 +325,7 @@ class ArchiveCommand implements CommandInterface {
 		file_put_contents(STREAMS_PATH . $rStreamID . '_.archive', getmypid());
 		$this->logStatus('Wrote current PID to archive marker file.');
 	}
-	
+
 	/**
 	 * Checks whether a given PID is an active TVArchive worker for this stream.
 	 *
@@ -337,7 +336,7 @@ class ArchiveCommand implements CommandInterface {
 	 * @param int $rStreamID Stream identifier to match against the process title.
 	 * @return bool True if the process is an archive worker for this stream.
 	 */
-	private function isArchiveProcessForStream($rPID, $rStreamID): bool {
+	private function isArchiveProcessForStream(int $rPID, int $rStreamID): bool {
 		if (!is_numeric($rPID) || 0 >= intval($rPID) || !file_exists('/proc/' . $rPID)) {
 			return false;
 		}

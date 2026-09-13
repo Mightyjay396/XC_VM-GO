@@ -1,6 +1,5 @@
 <?php
 
-declare(strict_types=1);
 
 namespace M3uParser\Tests\Tag;
 
@@ -11,13 +10,11 @@ use M3uParser\Tag\ExtArt;
 use M3uParser\Tag\ExtTagInterface;
 use PHPUnit\Framework\TestCase;
 
-class ExtArtTest extends TestCase
-{
-    public function testParseExtArt(): void
-    {
+class ExtArtTest extends TestCase {
+    public function testParseExtArt(): void {
         $m3uParser = new M3uParser();
         $m3uParser->addDefaultTags();
-        $data = $m3uParser->parseFile(__DIR__.'/../fixtures/extart.m3u');
+        $data = $m3uParser->parseFile(__DIR__ . '/../fixtures/extart.m3u');
 
         /** @var M3uEntry $entry */
         $entry = $data[0];
@@ -35,10 +32,9 @@ class ExtArtTest extends TestCase
         self::assertEquals('some artist', $extArt->getValue());
     }
 
-    public function testGenerateExtArt(): void
-    {
-        $expectedString = '#EXTM3U'."\n";
-        $expectedString .= '#EXTART:some artist'."\n";
+    public function testGenerateExtArt(): void {
+        $expectedString = '#EXTM3U' . "\n";
+        $expectedString .= '#EXTART:some artist' . "\n";
         $expectedString .= 'test-path';
 
         $entry = new M3uEntry();

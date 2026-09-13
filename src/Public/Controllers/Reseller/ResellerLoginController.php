@@ -25,63 +25,63 @@ use XcVm\Domain\User\ResellerAPI;
  */
 
 class ResellerLoginController {
-    public function index() {
-        // Bootstrap (login page is in noBootstrapPages, so FC skips bootstrap)
-        require_once MAIN_HOME . 'bootstrap.php';
-        \XC_Bootstrap::boot(\XC_Bootstrap::CONTEXT_ADMIN);
+	public function index() {
+		// Bootstrap (login page is in noBootstrapPages, so FC skips bootstrap)
+		require_once MAIN_HOME . 'bootstrap.php';
+		\XC_Bootstrap::boot(\XC_Bootstrap::CONTEXT_ADMIN);
 
-        // Already logged in → dashboard
-        if (isset($_SESSION['reseller'])) {
-            header('Location: dashboard');
-            exit();
-        }
+		// Already logged in → dashboard
+		if (isset($_SESSION['reseller'])) {
+			header('Location: dashboard');
+			exit();
+		}
 
-        $rIP = NetworkUtils::getUserIP();
+		$rIP = NetworkUtils::getUserIP();
 
-        // Flood protection
-        $rSettings = SettingsManager::getAll();
-        global $db;
+		// Flood protection
+		$rSettings = SettingsManager::getAll();
+		global $db;
 
-        // Translator FQCN for reseller/login.php's `$language::get(...)` calls.
+		// Translator FQCN for reseller/login.php's `$language::get(...)` calls.
         // phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- consumed by required view reseller/login.php
-        $language = Translator::class;
+		$language = Translator::class;
 
-        if (Authenticator::loginFloodExceeded($rIP, intval($rSettings['login_flood']))) {
-            BlocklistService::blockIP(['ip' => $rIP, 'notes' => 'LOGIN FLOOD ATTACK']);
-            exit();
-        }
+		if (Authenticator::loginFloodExceeded($rIP, intval($rSettings['login_flood']))) {
+			BlocklistService::blockIP(['ip' => $rIP, 'notes' => 'LOGIN FLOOD ATTACK']);
+			exit();
+		}
 
-        // Process login POST
-        $_STATUS = null;
-        if (RequestManager::has('login')) {
-            $rReturn = ResellerAPI::processLogin(RequestManager::getAll());
-            $_STATUS = $rReturn['status'];
+		// Process login POST
+		$_STATUS = null;
+		if (RequestManager::has('login')) {
+			$rReturn = ResellerAPI::processLogin(RequestManager::getAll());
+			$_STATUS = $rReturn['status'];
 
-            if ($_STATUS === STATUS_SUCCESS) {
-                $rReferer = RequestManager::get('referrer') ?? '';
-                if (strlen($rReferer) > 0) {
-                    $rReferer = basename($rReferer);
-                    if (substr($rReferer, 0, 6) === 'logout') {
-                        $rReferer = 'dashboard';
-                    }
-                    header('Location: ' . $rReferer);
-                } else {
-                    header('Location: dashboard');
-                }
-                exit();
-            }
-        }
+			if ($_STATUS === STATUS_SUCCESS) {
+				$rReferer = RequestManager::get('referrer') ?? '';
+				if (strlen($rReferer) > 0) {
+					$rReferer = basename($rReferer);
+					if (substr($rReferer, 0, 6) === 'logout') {
+						$rReferer = 'dashboard';
+					}
+					header('Location: ' . $rReferer);
+				} else {
+					header('Location: dashboard');
+				}
+				exit();
+			}
+		}
 
-        // Render login view
-        $__viewFile = MAIN_HOME . 'Public/Views/reseller/login.php';
+		// Render login view
+		$__viewFile = MAIN_HOME . 'Public/Views/reseller/login.php';
         // phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- consumed by required view reseller/login.php
-        $referrer = htmlspecialchars(RequestManager::get('referrer') ?? '');
+		$referrer = htmlspecialchars(RequestManager::get('referrer') ?? '');
 
-        if (file_exists($__viewFile)) {
-            require $__viewFile;
-        } else {
-            http_response_code(500);
-            echo 'Login view not found';
-        }
-    }
+		if (file_exists($__viewFile)) {
+			require $__viewFile;
+		} else {
+			http_response_code(500);
+			echo 'Login view not found';
+		}
+	}
 }

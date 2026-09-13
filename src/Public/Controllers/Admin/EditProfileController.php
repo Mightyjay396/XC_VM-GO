@@ -16,8 +16,8 @@ namespace XcVm\Public\Controllers\Admin;
  */
 
 class EditProfileController extends BaseAdminController {
-    public function index() {
-        $this->setTitle('Edit Profile');
-        $this->render('edit_profile');
-    }
+	public function index() {
+		$this->setTitle('Edit Profile');
+		$this->render('edit_profile');
+	}
 }

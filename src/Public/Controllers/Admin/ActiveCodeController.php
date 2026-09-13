@@ -11,17 +11,15 @@ use XcVm\Domain\Line\PackageService;
  *
  * @package XC_VM_Public_Controllers_Admin
  */
-class ActiveCodeController extends BaseAdminController
-{
-    public function index()
-    {
-        $this->requirePermission();
-        $this->setTitle('Generate Active Codes');
+class ActiveCodeController extends BaseAdminController {
+	public function index() {
+		$this->requirePermission();
+		$this->setTitle('Generate Active Codes');
 
-        $this->render('active_code', [
-            'rPackages'  => PackageService::getAll(null, 'line') ?: [],
-            'rBouquets'  => BouquetService::getAllSimple() ?: [],
-            'rResellers' => ActiveCodeService::getResellersForAssignment(),
-        ]);
-    }
+		$this->render('active_code', [
+			'rPackages'  => PackageService::getAll(null, 'line') ?: [],
+			'rBouquets'  => BouquetService::getAllSimple() ?: [],
+			'rResellers' => ActiveCodeService::getResellersForAssignment(),
+		]);
+	}
 }

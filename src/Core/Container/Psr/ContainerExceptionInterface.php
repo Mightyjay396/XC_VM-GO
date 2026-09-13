@@ -10,4 +10,5 @@ namespace XcVm\Core\Container\Psr;
  * @package XC_VM_Core_Container
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
-interface ContainerExceptionInterface extends \Throwable {}
+interface ContainerExceptionInterface extends \Throwable {
+}
