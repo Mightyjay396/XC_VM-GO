@@ -80,7 +80,7 @@ class DatabaseHandler extends Database {
 	protected $inTransaction = false;
 
 	/** @var callable|null Optional logger callback: function(string $level, string $message, array $context) */
-	protected $logger = null;
+	protected $logger;
 
 	/** @var int Maximum reconnection attempts */
 	protected $maxReconnectAttempts = 3;
@@ -431,7 +431,7 @@ class DatabaseHandler extends Database {
 	 * @return int|false Last insert ID on success, false on failure
 	 */
 	public function insert(string $table, array $data) {
-		if (empty($data)) {
+		if ($data === []) {
 			return false;
 		}
 
@@ -464,7 +464,7 @@ class DatabaseHandler extends Database {
 	 * @return bool
 	 */
 	public function update(string $table, array $data, string $where, mixed ...$whereParams) {
-		if (empty($data)) {
+		if ($data === []) {
 			return false;
 		}
 

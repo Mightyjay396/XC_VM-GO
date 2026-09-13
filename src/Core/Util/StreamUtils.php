@@ -30,22 +30,18 @@ class StreamUtils {
 			if (strtolower($rKey) == 'path') {
 				$rPath = true;
 			} else {
-				if (strtolower($rKey) != 'domain') {
-				} else {
+				if (strtolower($rKey) == 'domain') {
 					$rDomain = true;
 				}
 			}
 		}
-		if (!substr($rCookie, -1) != ';') {
-		} else {
+		if (!substr($rCookie, -1) == ';') {
 			$rCookie .= ';';
 		}
-		if ($rPath) {
-		} else {
+		if (!$rPath) {
 			$rCookie .= 'path=/;';
 		}
-		if ($rDomain) {
-		} else {
+		if (!$rDomain) {
 			$rCookie .= 'domain=;';
 		}
 		return $rCookie;
@@ -61,17 +57,15 @@ class StreamUtils {
 	 */
 	public static function getArguments(array $rArguments, ?string $rProtocol, mixed $rType) {
 		$rReturn = [];
-		if (!empty($rArguments)) {
-			foreach ($rArguments as $rArgument_id => $rArgument) {
-				if ($rArgument['argument_cat'] == $rType && (is_null($rArgument['argument_wprotocol']) || stristr($rProtocol, $rArgument['argument_wprotocol']) || is_null($rProtocol))) {
-					if ($rArgument['argument_key'] == 'cookie') {
-						$rArgument['value'] = self::fixCookie($rArgument['value']);
-					}
-					if ($rArgument['argument_type'] == 'text') {
-						$rReturn[] = sprintf($rArgument['argument_cmd'], $rArgument['value']);
-					} else {
-						$rReturn[] = $rArgument['argument_cmd'];
-					}
+		foreach ($rArguments as $rArgument) {
+			if ($rArgument['argument_cat'] == $rType && (is_null($rArgument['argument_wprotocol']) || stristr($rProtocol, $rArgument['argument_wprotocol']) || is_null($rProtocol))) {
+				if ($rArgument['argument_key'] == 'cookie') {
+					$rArgument['value'] = self::fixCookie($rArgument['value']);
+				}
+				if ($rArgument['argument_type'] == 'text') {
+					$rReturn[] = sprintf($rArgument['argument_cmd'], $rArgument['value']);
+				} else {
+					$rReturn[] = $rArgument['argument_cmd'];
 				}
 			}
 		}
@@ -90,7 +84,7 @@ class StreamUtils {
 	public static function parseTranscode(array $rArgs) {
 		$rFitlerComplex = [];
 		foreach ($rArgs as $rKey => $rArgument) {
-			if (!($rKey == 'gpu' || $rKey == 'software_decoding' || $rKey == '16')) {
+			if (!(in_array($rKey, ['gpu', 'software_decoding', '16']))) {
 				if (isset($rArgument['cmd'])) {
 					$rArgs[$rKey] = $rArgument = $rArgument['cmd'];
 				}
@@ -100,7 +94,7 @@ class StreamUtils {
 				}
 			}
 		}
-		if (!empty($rFitlerComplex)) {
+		if ($rFitlerComplex !== []) {
 			$rArgs[] = '-filter_complex "' . implode(',', $rFitlerComplex) . '"';
 		}
 		$rNewArgs = [];
@@ -169,7 +163,7 @@ class StreamUtils {
 	 * @return bool
 	 */
 	public static function needsResolver(string $rURL) {
-		if (strtolower(substr((string) $rURL, 0, 4)) !== 'http') {
+		if (strtolower(substr($rURL, 0, 4)) !== 'http') {
 			return false;
 		}
 		$rHost = str_ireplace('www.', '', (string) parse_url($rURL, PHP_URL_HOST));
@@ -187,11 +181,9 @@ class StreamUtils {
 		$rPathSize = count(explode('/', $rPath));
 		$rRegex = ['/\\/auth\\/(.*)$/m' => 3, '/\\/play\\/(.*)$/m' => 3, '/\\/play\\/(.*)\\/(.*)$/m' => 4, '/\\/live\\/(.*)\\/(\\d+)$/m' => 4, '/\\/live\\/(.*)\\/(\\d+)\\.(.*)$/m' => 4, '/\\/(.*)\\/(.*)\\/(\\d+)\\.(.*)$/m' => 4, '/\\/(.*)\\/(.*)\\/(\\d+)$/m' => 4, '/\\/live\\/(.*)\\/(.*)\\/(\\d+)\\.(.*)$/m' => 5, '/\\/live\\/(.*)\\/(.*)\\/(\\d+)$/m' => 5];
 		foreach ($rRegex as $rQuery => $rCount) {
-			if ($rPathSize != $rCount) {
-			} else {
+			if ($rPathSize == $rCount) {
 				preg_match($rQuery, $rPath, $rMatches);
-				if (0 >= count($rMatches)) {
-				} else {
+				if (0 < count($rMatches)) {
 					return true;
 				}
 			}
@@ -208,11 +200,9 @@ class StreamUtils {
 	 * @return array|string|null Segment list, current segment id, or null if missing.
 	 */
 	public static function getPlaylistSegments(string $rPlaylist, int $rPrebuffer = 0, int $rSegmentDuration = 10) {
-		if (!file_exists($rPlaylist)) {
-		} else {
+		if (file_exists($rPlaylist)) {
 			$rSource = file_get_contents($rPlaylist);
-			if (!preg_match_all('/(.*?).ts/', $rSource, $rMatches)) {
-			} else {
+			if (preg_match_all('/(.*?).ts/', $rSource, $rMatches)) {
 				if (0 < $rPrebuffer) {
 					$rTotalSegments = intval($rPrebuffer / (($rSegmentDuration ?: 1)));
 					return array_slice($rMatches[0], -1 * $rTotalSegments);
@@ -237,11 +227,9 @@ class StreamUtils {
 	 * @return string|false Rewritten playlist text, or false if unavailable.
 	 */
 	public static function generateAdminHLS(string $rM3U8, string $rPassword, int $rStreamID, string $rUIToken) {
-		if (!file_exists($rM3U8)) {
-		} else {
+		if (file_exists($rM3U8)) {
 			$rSource = file_get_contents($rM3U8);
-			if (!preg_match_all('/(.*?)\\.ts/', $rSource, $rMatches)) {
-			} else {
+			if (preg_match_all('/(.*?)\\.ts/', $rSource, $rMatches)) {
 				foreach ($rMatches[0] as $rMatch) {
 					if ($rUIToken) {
 						$rSource = str_replace($rMatch, '/admin/live?extension=m3u8&segment=' . $rMatch . '&uitoken=' . $rUIToken, $rSource);
@@ -385,7 +373,7 @@ class StreamUtils {
 	 * @return string
 	 */
 	public static function sanitizeSegmentName(string $rRawSegment) {
-		return str_replace(['\\', '/'], '', urldecode((string) $rRawSegment));
+		return str_replace(['\\', '/'], '', urldecode($rRawSegment));
 	}
 
 	/**
@@ -407,7 +395,7 @@ class StreamUtils {
 			'ts'  => 'video/mp2t',
 		];
 
-		return $rMap[(string) $rContainer] ?? 'application/octet-stream';
+		return $rMap[$rContainer] ?? 'application/octet-stream';
 	}
 
 	/**
@@ -421,13 +409,13 @@ class StreamUtils {
 			return (int) $rStartDate;
 		}
 
-		if (substr_count((string) $rStartDate, '-') == 1) {
-			list($rDate, $rHour) = explode('-', (string) $rStartDate);
+		if (substr_count($rStartDate, '-') == 1) {
+			list($rDate, $rHour) = explode('-', $rStartDate);
 
 			return (int) mktime((int) $rHour, 0, 0, (int) substr($rDate, 4, 2), (int) substr($rDate, 6, 2), (int) substr($rDate, 0, 4));
 		}
 
-		list($rDate, $rTime) = explode(':', (string) $rStartDate);
+		list($rDate, $rTime) = explode(':', $rStartDate);
 		list($rYear, $rMonth, $rDay) = explode('-', $rDate);
 		list($rHour, $rMinutes) = explode('-', $rTime);
 
@@ -443,6 +431,6 @@ class StreamUtils {
 	 * @return int
 	 */
 	public static function segmentRetryBudget(int $rSegTimeSeconds, int $rConfiguredWaitSeconds) {
-		return max((int) $rSegTimeSeconds * 2, (int) $rConfiguredWaitSeconds ?: 20);
+		return max($rSegTimeSeconds * 2, $rConfiguredWaitSeconds ?: 20);
 	}
 }

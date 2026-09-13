@@ -19,11 +19,17 @@ final class MonitorCommandTest extends TestCase {
 		}
 	}
 
-	/** Invoke a private static MonitorCommand method via reflection. */
+	/**
+	 * Invoke a private MonitorCommand method via reflection on a constructor-less
+	 * instance. Works for both instance and (still) static helpers — a static
+	 * method ignores the object argument. The tested helpers are pure (no $this),
+	 * so a bare instance is sufficient.
+	 */
 	private function call(string $method, ...$args) {
 		$m = new ReflectionMethod(MonitorCommand::class, $method);
 		$m->setAccessible(true);
-		return $m->invoke(null, ...$args);
+		$instance = (new \ReflectionClass(MonitorCommand::class))->newInstanceWithoutConstructor();
+		return $m->invoke($instance, ...$args);
 	}
 
 	// ── parseFrameRate (label768/780/1047/1052/1057) ───────────

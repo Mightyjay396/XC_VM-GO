@@ -128,22 +128,22 @@ class CleanupCronJob implements CommandInterface {
 							if (!is_array($rMovieProperties)) {
 								$rMovieProperties = [];
 							}
-							if (!(isset($rMovieProperties['duration_secs']) && $rSeconds == $rMovieProperties['duration_secs'])) {
+							if (!isset($rMovieProperties['duration_secs']) || $rSeconds != $rMovieProperties['duration_secs']) {
 								$rMovieProperties['duration_secs'] = $rSeconds;
 								$rMovieProperties['duration'] = $rDuration;
 							}
-							if (!(isset($rMovieProperties['video']) && $rFFProbee['codecs']['video']['codec_name'] == $rMovieProperties['video'])) {
+							if (!isset($rMovieProperties['video']) || $rFFProbee['codecs']['video']['codec_name'] != $rMovieProperties['video']) {
 								$rMovieProperties['video'] = $rFFProbee['codecs']['video'];
 							}
-							if (!(isset($rMovieProperties['audio']) && $rFFProbee['codecs']['audio']['codec_name'] == $rMovieProperties['audio'])) {
+							if (!isset($rMovieProperties['audio']) || $rFFProbee['codecs']['audio']['codec_name'] != $rMovieProperties['audio']) {
 								$rMovieProperties['audio'] = $rFFProbee['codecs']['audio'];
 							}
 							if (SettingsManager::get('extract_subtitles')) {
-								if (!(isset($rMovieProperties['subtitle']) && $rFFProbee['codecs']['subtitle']['codec_name'] == $rMovieProperties['subtitle'])) {
+								if (!isset($rMovieProperties['subtitle']) || $rFFProbee['codecs']['subtitle']['codec_name'] != $rMovieProperties['subtitle']) {
 									$rMovieProperties['subtitle'] = $rFFProbee['codecs']['subtitle'];
 								}
 							}
-							if (!(isset($rMovieProperties['bitrate']) && $rBitrate == $rMovieProperties['bitrate'])) {
+							if (!isset($rMovieProperties['bitrate']) || $rBitrate != $rMovieProperties['bitrate']) {
 								if (0 < $rBitrate) {
 									$rMovieProperties['bitrate'] = $rBitrate;
 								} else {
@@ -184,7 +184,7 @@ class CleanupCronJob implements CommandInterface {
 						$rActualFiles = [];
 						foreach ($rList as $rItem) {
 							$rFilename = trim(explode("'", explode("'", $rItem)[1])[0]);
-							if (0 < strlen($rFilename)) {
+							if ($rFilename !== '') {
 								if (in_array($rFilename, $rExisting)) {
 									$rActualFiles[] = $rFilename;
 								} else {

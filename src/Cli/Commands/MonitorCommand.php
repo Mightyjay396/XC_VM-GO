@@ -117,7 +117,7 @@ class MonitorCommand implements CommandInterface {
 		$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
 		$rStreamArguments = $db->get_rows();
 
-		if (!(0 < $rStreamInfo['delay_minutes']) && ($rStreamInfo['parent_id'] == 0)) {
+		if (0 >= $rStreamInfo['delay_minutes'] && ($rStreamInfo['parent_id'] == 0)) {
 			$rDelay = false;
 			$rFolder = STREAMS_PATH;
 		} else {
@@ -167,7 +167,7 @@ class MonitorCommand implements CommandInterface {
 				$rStreamFailed = ProcessManager::isStreamRunning($rPID, $rStreamID) && file_exists($rPlaylist);
 				$rBaselineFps = null;
 				while (ProcessManager::isStreamRunning($rPID, $rStreamID) && file_exists($rPlaylist)) {
-					if (self::isAutoRestartDue($rAutoRestart)) {
+					if ($this->isAutoRestartDue($rAutoRestart)) {
 						echo "Auto-restart\n";
 						StreamProcess::streamLog($rStreamID, SERVER_ID, 'AUTO_RESTART', $rCurrentSource);
 						$rStreamFailed = false;
@@ -183,7 +183,7 @@ class MonitorCommand implements CommandInterface {
 							}
 							$rLastSegment = $rSegment;
 							$rProbe = FFprobeRunner::probeStream($rFolder . $rSegment);
-							list($rProbe, $rSegmentTime) = self::persistSegmentDuration($rProbe, $rStreamID, $rSegmentTime);
+							list($rProbe, $rSegmentTime) = $this->persistSegmentDuration($rProbe, $rStreamID, $rSegmentTime);
 							file_put_contents(STREAMS_PATH . $rStreamID . '_.stream_info', json_encode($rProbe, JSON_UNESCAPED_UNICODE));
 							$rStreamInfo['stream_info'] = json_encode($rProbe, JSON_UNESCAPED_UNICODE);
 						}
@@ -207,7 +207,7 @@ class MonitorCommand implements CommandInterface {
 										$rProbe = FFprobeRunner::probeStream($rFolder . $rSegment);
 										if (isset($rProbe['codecs']['video']['avg_frame_rate']) || isset($rProbe['codecs']['video']['r_frame_rate'])) {
 											$rFps = $rProbe['codecs']['video']['avg_frame_rate'] ?: $rProbe['codecs']['video']['r_frame_rate'];
-											$rFps = self::parseFrameRate($rFps);
+											$rFps = $this->parseFrameRate($rFps);
 											if (0 < $rFps) {
 												$rBaselineFps = $rFps;
 											}
@@ -452,7 +452,7 @@ class MonitorCommand implements CommandInterface {
 					$rBitrate = 0;
 					if (file_exists($rSegment)) {
 						$rProbe = FFprobeRunner::probeStream($rSegment);
-						list($rProbe, $rSegmentTime) = self::persistSegmentDuration($rProbe, $rStreamID, $rSegmentTime);
+						list($rProbe, $rSegmentTime) = $this->persistSegmentDuration($rProbe, $rStreamID, $rSegmentTime);
 						if ($rProbe) {
 							$rStreamInfo['stream_info'] = json_encode($rProbe, JSON_UNESCAPED_UNICODE);
 							$rBitrate = StreamUtils::getStreamBitrate('live', STREAMS_PATH . $rStreamID . '_.m3u8');
@@ -462,7 +462,7 @@ class MonitorCommand implements CommandInterface {
 					}
 
 					// Defining video/Audio parameters
-					list($rCompatible, $rAudioCodec, $rVideoCodec, $rResolution) = self::resolveStreamCodecMeta($rStreamInfo['stream_info'], SettingsManager::get('player_allow_hevc'));
+					list($rCompatible, $rAudioCodec, $rVideoCodec, $rResolution) = $this->resolveStreamCodecMeta($rStreamInfo['stream_info'], SettingsManager::get('player_allow_hevc'));
 
 					if (!$rSegmentSeen && $rStreamInfo['stream_info'] && $rStreamInfo['on_demand']) {
 						$db->query('UPDATE `streams_servers` SET `stream_info` = ?, `compatible` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ?, `bitrate` = ?, `stream_status` = 0, `stream_started` = ? WHERE `server_stream_id` = ?', $rStreamInfo['stream_info'], $rCompatible, $rAudioCodec, $rVideoCodec, $rResolution, intval($rBitrate), time() - $rOffset, $rStreamInfo['server_stream_id']);
@@ -509,7 +509,6 @@ class MonitorCommand implements CommandInterface {
 	 * @param float $rFps       Current frames per second.
 	 * @param float $rBaseline  Baseline frames per second.
 	 * @param mixed $rThreshold fps_threshold percentage (1..100), or empty.
-	 * @return bool
 	 */
 	public static function isFpsBelowThreshold(float $rFps, float $rBaseline, mixed $rThreshold): bool {
 		$rPercent = min(100, max(1, intval($rThreshold) ?: 90));
@@ -523,7 +522,6 @@ class MonitorCommand implements CommandInterface {
 	 *
 	 * @param array $rSources       Ordered source list (primary first).
 	 * @param mixed $rCurrentSource The source in use.
-	 * @return array
 	 */
 	public static function higherPrioritySources(array $rSources, mixed $rCurrentSource): array {
 		$rKey = array_search($rCurrentSource, $rSources);
@@ -540,11 +538,11 @@ class MonitorCommand implements CommandInterface {
 	 * @param mixed $rRate Raw avg_frame_rate / r_frame_rate value.
 	 * @return float Frames per second; 0.0 for empty/zero/malformed input.
 	 */
-	private static function parseFrameRate(mixed $rRate): float {
+	private function parseFrameRate(mixed $rRate): float {
 		$rRate = (string) $rRate;
 		if (strpos($rRate, '/') !== false) {
 			list($rNum, $rDen) = array_map('floatval', explode('/', $rRate));
-			return $rDen != 0.0 ? (float) ($rNum / $rDen) : 0.0;
+			return $rDen != 0.0 ? $rNum / $rDen : 0.0;
 		}
 		return (float) $rRate;
 	}
@@ -555,9 +553,8 @@ class MonitorCommand implements CommandInterface {
 	 *
 	 * @param mixed    $rAutoRestart Decoded auto_restart config (['days'=>[...],'at'=>'HH:MM']).
 	 * @param int|null $rNow         Timestamp to test against (defaults to now).
-	 * @return bool
 	 */
-	private static function isAutoRestartDue(mixed $rAutoRestart, ?int $rNow = null): bool {
+	private function isAutoRestartDue(mixed $rAutoRestart, ?int $rNow = null): bool {
 		if (empty($rAutoRestart['days']) || empty($rAutoRestart['at'])) {
 			return false;
 		}
@@ -577,7 +574,7 @@ class MonitorCommand implements CommandInterface {
 	 * @param mixed $rAllowHevc      player_allow_hevc setting.
 	 * @return array{0:int,1:?string,2:?string,3:mixed} [compatible, audio, video, resolution]
 	 */
-	private static function resolveStreamCodecMeta(mixed $rStreamInfoJson, mixed $rAllowHevc): array {
+	private function resolveStreamCodecMeta(mixed $rStreamInfoJson, mixed $rAllowHevc): array {
 		$rCompatible = 0;
 		$rAudioCodec = $rVideoCodec = $rResolution = null;
 		if ($rStreamInfoJson) {
@@ -605,7 +602,7 @@ class MonitorCommand implements CommandInterface {
 	 * @param mixed $rSegmentTime Current segment time.
 	 * @return array{0:mixed,1:mixed} [clamped probe, updated segment time]
 	 */
-	private static function persistSegmentDuration(mixed $rProbe, mixed $rStreamID, mixed $rSegmentTime): array {
+	private function persistSegmentDuration(mixed $rProbe, mixed $rStreamID, mixed $rSegmentTime): array {
 		if (10 < intval($rProbe['of_duration'])) {
 			$rProbe['of_duration'] = 10;
 		}

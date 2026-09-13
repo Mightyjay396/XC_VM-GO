@@ -82,11 +82,12 @@ class RootSignalsCronJob implements CommandInterface {
 				exec('sudo ip6tables -I INPUT -s ' . escapeshellcmd($rIP) . ' -j DROP');
 			}
 		}
-
 		if (!$isPrivate && $rIP) {
 			touch(FLOOD_TMP_PATH . 'block_' . $rIP);
 			return true;
-		} elseif ($isPrivate) {
+		}
+
+		if ($isPrivate) {
 			error_log("Block attempt denied for private IP: " . $rIP);
 			return false;
 		}

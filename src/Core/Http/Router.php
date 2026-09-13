@@ -115,7 +115,6 @@ class Router {
 
 	/**
 	 * Current permission spec for the active group.
-	 * @var array
 	 */
 	protected array $groupPermission = [];
 
@@ -126,7 +125,7 @@ class Router {
 	 * Get the singleton instance.
 	 */
 	public static function getInstance(): self {
-		if (self::$instance === null) {
+		if (!self::$instance instanceof \XcVm\Core\Http\Router) {
 			self::$instance = new self();
 		}
 		return self::$instance;

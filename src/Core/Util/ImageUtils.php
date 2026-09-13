@@ -127,7 +127,7 @@ class ImageUtils {
 	 * @return string Internal `s:` reference, or the original URL.
 	 */
 	public static function downloadImage(string $rImage, ?int $rType = null) {
-		if (0 < strlen($rImage) && substr(strtolower($rImage), 0, 4) == 'http') {
+		if ($rImage !== '' && substr(strtolower($rImage), 0, 4) == 'http') {
 			$rPathInfo = pathinfo(parse_url($rImage, PHP_URL_PATH) ?: $rImage);
 			$rExt = strtolower($rPathInfo['extension'] ?? '');
 			if (!$rExt) {
@@ -158,7 +158,7 @@ class ImageUtils {
 				curl_setopt($rCurl, CURLOPT_CONNECTTIMEOUT, 5);
 				curl_setopt($rCurl, CURLOPT_TIMEOUT, 5);
 				$rData = curl_exec($rCurl);
-				if (strlen($rData) > 0) {
+				if ((string) $rData !== '') {
 					$rPath = IMAGES_PATH . $rFilename . '.' . $rExt;
 					// The images cache dir may not exist yet on a given node (e.g. an
 					// LB running the watch import), so file_put_contents would fail
@@ -196,8 +196,8 @@ class ImageUtils {
 		$heightRatio = $maxHeight / (($origHeight ?: 1));
 		$ratio = min($widthRatio, $heightRatio);
 		if ($ratio < 1) {
-			$newWidth = (int) $origWidth * $ratio;
-			$newHeight = (int) $origHeight * $ratio;
+			$newWidth = $origWidth * $ratio;
+			$newHeight = $origHeight * $ratio;
 		} else {
 			$newHeight = $origHeight;
 			$newWidth = $origWidth;

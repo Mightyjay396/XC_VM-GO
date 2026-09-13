@@ -65,7 +65,7 @@ class Authorization {
 			return false;
 		}
 
-		if (!($rType == 'adv' && $rPermissions['is_admin'])) {
+		if ($rType != 'adv' || !$rPermissions['is_admin']) {
 			return false;
 		}
 

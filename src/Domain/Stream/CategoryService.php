@@ -30,8 +30,7 @@ class CategoryService {
 		$db = self::db();
 		$rPostCategories = json_decode($rData['categories'], true);
 
-		if (0 >= count($rPostCategories)) {
-		} else {
+		if (0 < count($rPostCategories)) {
 			foreach ($rPostCategories as $rOrder => $rPostCategory) {
 				$db->query('UPDATE `streams_categories` SET `cat_order` = ?, `parent_id` = 0 WHERE `id` = ?;', intval($rOrder) + 1, $rPostCategory['id']);
 			}
@@ -130,8 +129,7 @@ class CategoryService {
 	public static function filterLoaded(array $rCategories, ?string $rType = null) {
 		$rReturn = [];
 		foreach ($rCategories as $rCategory) {
-			if ($rCategory['category_type'] != $rType && $rType) {
-			} else {
+			if ($rCategory['category_type'] == $rType || !$rType) {
 				$rReturn[] = $rCategory;
 			}
 		}
@@ -190,8 +188,7 @@ class CategoryService {
 		foreach ($db->get_rows() as $rRow) {
 			$rRow['category_id'] = json_decode($rRow['category_id'], true);
 
-			if (($rKey = array_search($rID, $rRow['category_id'])) === false) {
-			} else {
+			if (($rKey = array_search($rID, $rRow['category_id'])) !== false) {
 				unset($rRow['category_id'][$rKey]);
 			}
 
@@ -202,8 +199,7 @@ class CategoryService {
 		foreach ($db->get_rows() as $rRow) {
 			$rRow['category_id'] = json_decode($rRow['category_id'], true);
 
-			if (($rKey = array_search($rID, $rRow['category_id'])) === false) {
-			} else {
+			if (($rKey = array_search($rID, $rRow['category_id'])) !== false) {
 				unset($rRow['category_id'][$rKey]);
 			}
 

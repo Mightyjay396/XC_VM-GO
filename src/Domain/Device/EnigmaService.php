@@ -56,8 +56,7 @@ class EnigmaService {
 			$rUserArray = [];
 
 			foreach (['is_isplock', 'is_trial'] as $rItem) {
-				if (!isset($rData['c_' . $rItem])) {
-				} else {
+				if (isset($rData['c_' . $rItem])) {
 					if (isset($rData[$rItem])) {
 						$rUserArray[$rItem] = 1;
 					} else {
@@ -66,33 +65,27 @@ class EnigmaService {
 				}
 			}
 
-			if (!isset($rData['c_admin_notes'])) {
-			} else {
+			if (isset($rData['c_admin_notes'])) {
 				$rUserArray['admin_notes'] = $rData['admin_notes'];
 			}
 
-			if (!isset($rData['c_reseller_notes'])) {
-			} else {
+			if (isset($rData['c_reseller_notes'])) {
 				$rUserArray['reseller_notes'] = $rData['reseller_notes'];
 			}
 
-			if (!isset($rData['c_forced_country'])) {
-			} else {
+			if (isset($rData['c_forced_country'])) {
 				$rUserArray['forced_country'] = $rData['forced_country'];
 			}
 
-			if (!isset($rData['c_member_id'])) {
-			} else {
+			if (isset($rData['c_member_id'])) {
 				$rUserArray['member_id'] = intval($rData['member_id']);
 			}
 
-			if (!isset($rData['c_force_server_id'])) {
-			} else {
+			if (isset($rData['c_force_server_id'])) {
 				$rUserArray['force_server_id'] = intval($rData['force_server_id']);
 			}
 
-			if (!isset($rData['c_exp_date'])) {
-			} else {
+			if (isset($rData['c_exp_date'])) {
 				if (isset($rData['no_expire'])) {
 					$rUserArray['exp_date'] = null;
 				} else {
@@ -104,13 +97,10 @@ class EnigmaService {
 				}
 			}
 
-			if (!isset($rData['c_bouquets'])) {
-			} else {
+			if (isset($rData['c_bouquets'])) {
 				$rUserArray['bouquet'] = [];
-
 				foreach (json_decode($rData['bouquets_selected'], true) as $rBouquet) {
-					if (!is_numeric($rBouquet)) {
-					} else {
+					if (is_numeric($rBouquet)) {
 						$rUserArray['bouquet'][] = $rBouquet;
 					}
 				}
@@ -118,14 +108,12 @@ class EnigmaService {
 				$rUserArray['bouquet'] = '[' . implode(',', array_map('intval', $rUserArray['bouquet'])) . ']';
 			}
 
-			if (!isset($rData['reset_isp_lock'])) {
-			} else {
+			if (isset($rData['reset_isp_lock'])) {
 				$rUserArray['isp_desc'] = '';
 				$rUserArray['as_number'] = $rUserArray['isp_desc'];
 			}
 
-			if (!isset($rData['reset_device_lock'])) {
-			} else {
+			if (isset($rData['reset_device_lock'])) {
 				$rArray['token'] = '';
 				$rArray['lversion'] = $rArray['token'];
 				$rArray['cpu'] = $rArray['lversion'];
@@ -139,43 +127,31 @@ class EnigmaService {
 			foreach ($rDevices as $rDevice) {
 				$rDeviceInfo = self::getById($rDevice);
 
-				if (!$rDeviceInfo) {
-				} else {
-					if (0 >= count($rArray)) {
-					} else {
+				if ($rDeviceInfo) {
+					if (0 < count($rArray)) {
 						$rPrepare = QueryHelper::prepareArray($rArray);
-
-						if (0 >= count($rPrepare['data'])) {
-						} else {
+						if (0 < count($rPrepare['data'])) {
 							$rPrepare['data'][] = $rDevice;
 							$rQuery = 'UPDATE `enigma2_devices` SET ' . $rPrepare['update'] . ' WHERE `device_id` = ?;';
 							$db->query($rQuery, ...$rPrepare['data']);
 						}
 					}
-
-					if (0 >= count($rUserArray)) {
-					} else {
+					if (0 < count($rUserArray)) {
 						$rUserIDs = [];
-
-						if (!isset($rDeviceInfo['user']['id'])) {
-						} else {
+						if (isset($rDeviceInfo['user']['id'])) {
 							$rUserIDs[] = $rDeviceInfo['user']['id'];
 						}
-
-						if (!isset($rDeviceInfo['user']['paired'])) {
-						} else {
+						if (isset($rDeviceInfo['user']['paired'])) {
 							$rUserIDs[] = $rDeviceInfo['paired']['id'];
 						}
-
 						foreach ($rUserIDs as $rUserID) {
 							$rPrepare = QueryHelper::prepareArray($rUserArray);
 
-							if (0 >= count($rPrepare['data'])) {
-							} else {
+							if (0 < count($rPrepare['data'])) {
 								$rPrepare['data'][] = $rUserID;
 								$rQuery = 'UPDATE `lines` SET ' . $rPrepare['update'] . ' WHERE `id` = ?;';
 								$db->query($rQuery, ...$rPrepare['data']);
-											LineService::updateLineSignal($rUserID);
+								LineService::updateLineSignal($rUserID);
 							}
 						}
 					}
@@ -183,9 +159,8 @@ class EnigmaService {
 			}
 
 			return ['status' => STATUS_SUCCESS];
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -223,18 +198,15 @@ class EnigmaService {
 				}
 			}
 
-			if (strlen($rUserArray['username']) != 0) {
-			} else {
+			if (strlen($rUserArray['username']) == 0) {
 				$rUserArray['username'] = AdminHelpers::generateString(32);
 			}
 
-			if (strlen($rUserArray['password']) != 0) {
-			} else {
+			if (strlen($rUserArray['password']) == 0) {
 				$rUserArray['password'] = AdminHelpers::generateString(32);
 			}
 
-			if (strlen($rData['isp_clear']) != 0) {
-			} else {
+			if (strlen($rData['isp_clear']) == 0) {
 				$rUserArray['isp_desc'] = '';
 				$rUserArray['as_number'] = null;
 			}
@@ -266,8 +238,7 @@ class EnigmaService {
 			$rUserArray['bouquet'] = '[' . implode(',', array_map('intval', $rUserArray['bouquet'])) . ']';
 
 			if (isset($rData['exp_date']) && !isset($rData['no_expire'])) {
-				if (!(0 < strlen($rData['exp_date']) && $rData['exp_date'] != '1970-01-01')) {
-				} else {
+				if ((string) $rData['exp_date'] !== '' && $rData['exp_date'] != '1970-01-01') {
 					try {
 						$rDate = new \DateTime($rData['exp_date']);
 						$rUserArray['exp_date'] = $rDate->format('U');
@@ -279,14 +250,12 @@ class EnigmaService {
 				$rUserArray['exp_date'] = null;
 			}
 
-			if ($rUserArray['member_id']) {
-			} else {
+			if (!$rUserArray['member_id']) {
 				$rUserArray['member_id'] = $GLOBALS['rAdminUserInfo']['id'];
 			}
 
 			if (isset($rData['allowed_ips'])) {
-				if (is_array($rData['allowed_ips'])) {
-				} else {
+				if (!is_array($rData['allowed_ips'])) {
 					$rData['allowed_ips'] = [$rData['allowed_ips']];
 				}
 
@@ -305,12 +274,9 @@ class EnigmaService {
 			$rDevice = $rArray;
 			$rDevice['user'] = $rUserArray;
 
-			if (0 >= $rDevice['user']['pair_id']) {
-			} else {
+			if (0 < $rDevice['user']['pair_id']) {
 				$rUserCheck = UserRepository::getLineById($rDevice['user']['pair_id']);
-
-				if ($rUserCheck) {
-				} else {
+				if (!$rUserCheck) {
 					return ['status' => STATUS_INVALID_USER, 'data' => $rData];
 				}
 			}
@@ -327,13 +293,11 @@ class EnigmaService {
 
 					$rQuery = 'REPLACE INTO `lines`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-					if (!$db->query($rQuery, ...$rPrepare['data'])) {
-					} else {
+					if ($db->query($rQuery, ...$rPrepare['data'])) {
 						$rInsertID = $db->last_insert_id();
 						$rArray['user_id'] = $rInsertID;
 						LineService::updateLineSignal($rArray['user_id']);
-						if (isset($rData['edit'])) {
-						} else {
+						if (!isset($rData['edit'])) {
 							$rArray['token'] = '';
 							$rArray['lversion'] = $rArray['token'];
 							$rArray['cpu'] = $rArray['lversion'];
@@ -341,24 +305,19 @@ class EnigmaService {
 							$rArray['local_ip'] = $rArray['enigma_version'];
 							$rArray['modem_mac'] = $rArray['local_ip'];
 						}
-
 						$rPrepare = QueryHelper::prepareArray($rArray);
 						$rQuery = 'REPLACE INTO `enigma2_devices`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-
 						if ($db->query($rQuery, ...$rPrepare['data'])) {
 							$rInsertID = $db->last_insert_id();
 
-							if (0 >= $rDevice['user']['pair_id']) {
-							} else {
+							if (0 < $rDevice['user']['pair_id']) {
 								MagService::syncLineDevices($rDevice['user']['pair_id'], $rInsertID);
-										LineService::updateLineSignal($rDevice['user']['pair_id']);
+								LineService::updateLineSignal($rDevice['user']['pair_id']);
 							}
 
 							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 						}
-
-						if (isset($rData['edit'])) {
-						} else {
+						if (!isset($rData['edit'])) {
 							$db->query('DELETE FROM `lines` WHERE `id` = ?;', $rInsertID);
 						}
 					}
@@ -394,8 +353,7 @@ class EnigmaService {
 
 		$db->query('SELECT `pair_id` FROM `lines` WHERE `id` = ?;', $rRow['user_id']);
 
-		if ($db->num_rows() != 1) {
-		} else {
+		if ($db->num_rows() == 1) {
 			$rRow['paired'] = UserRepository::getLineById($rRow['user']['pair_id']);
 		}
 
@@ -439,8 +397,7 @@ class EnigmaService {
 		$db->query('DELETE FROM `enigma2_devices` WHERE `device_id` = ?;', $rID);
 		$db->query('DELETE FROM `enigma2_actions` WHERE `device_id` = ?;', $rID);
 
-		if (!$rEnigma['user']) {
-		} else {
+		if ($rEnigma['user']) {
 			if ($rConvert) {
 				$db->query('UPDATE `lines` SET `is_e2` = 0 WHERE `id` = ?;', $rEnigma['user']['id']);
 				LineService::updateLineSignal($rEnigma['user']['id']);
@@ -451,8 +408,7 @@ class EnigmaService {
 				$db->query('SELECT `device_id` FROM `enigma2_devices` WHERE `user_id` = ?;', $rEnigma['user']['id']);
 				$rCount += $db->num_rows();
 
-				if ($rCount != 0) {
-				} else {
+				if ($rCount == 0) {
 					LineService::deleteLineById($rEnigma['user']['id'], $rDeletePaired, $rCloseCons);
 				}
 			}
@@ -484,8 +440,7 @@ class EnigmaService {
 		$db->query('DELETE FROM `enigma2_devices` WHERE `device_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `enigma2_actions` WHERE `device_id` IN (' . implode(',', $rIDs) . ');');
 
-		if (0 >= count($rUserIDs)) {
-		} else {
+		if (0 < count($rUserIDs)) {
 			LineRepository::deleteMany($rUserIDs);
 		}
 

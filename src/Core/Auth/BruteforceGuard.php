@@ -40,8 +40,6 @@ class BruteforceGuard {
 
 	/**
 	 * Resolve the user's IP address.
-	 *
-	 * @return string
 	 */
 	private static function getUserIP(): string {
 		if (class_exists(NetworkUtils::class, false)) {
@@ -52,8 +50,6 @@ class BruteforceGuard {
 
 	/**
 	 * Get the allowed IPs list.
-	 *
-	 * @return array
 	 */
 	private static function getAllowedIPs(): array {
 		if (class_exists(ServerRepository::class, false)) {
@@ -67,8 +63,6 @@ class BruteforceGuard {
 
 	/**
 	 * Get the blocked IPs list.
-	 *
-	 * @return array
 	 */
 	private static function getBlockedIPs(): array {
 		if (class_exists(BlocklistService::class, false)) {
@@ -82,11 +76,9 @@ class BruteforceGuard {
 
 	/**
 	 * Get database instance.
-	 *
-	 * @return object|null
 	 */
 	private static function getDB(): ?object {
-		if (class_exists(DatabaseFactory::class, false) && DatabaseFactory::get() !== null) {
+		if (class_exists(DatabaseFactory::class, false) && DatabaseFactory::get() instanceof \XcVm\Core\Database\DatabaseHandler) {
 			return DatabaseFactory::get();
 		}
 		global $db;
@@ -284,7 +276,7 @@ class BruteforceGuard {
 			$floodLimit = intval($settings['auth_flood_limit']);
 			$floodRow['attempts'] = self::truncateAttempts($floodRow['attempts'], $floodSeconds, true);
 
-			if (!($floodLimit > count($floodRow['attempts']))) {
+			if ($floodLimit <= count($floodRow['attempts'])) {
 				$floodRow['block_until'] = time() + intval($settings['auth_flood_seconds']);
 			}
 

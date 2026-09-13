@@ -57,7 +57,7 @@ class UpdateCronJob implements CommandInterface {
 			echo 'Update is available!' . "\n";
 			$updatedChanges = [];
 			foreach (array_reverse($rUpdate['changelog']) as $rItem) {
-				if (!($rItem['version'] == XC_VM_VERSION)) {
+				if ($rItem['version'] != XC_VM_VERSION) {
 					$updatedChanges[] = $rItem;
 				} else {
 					break;

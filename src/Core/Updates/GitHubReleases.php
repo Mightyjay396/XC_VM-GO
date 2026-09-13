@@ -32,7 +32,7 @@ class GitHubReleases {
 
 	private $cache_file = '/home/xc_vm/tmp/gitapi'; // Cache file path
 
-	private string $channel = 'stable'; // 'stable' or 'beta' ('unstable' accepted as a legacy alias)
+	private string $channel; // 'stable' or 'beta' ('unstable' accepted as a legacy alias)
 
 	private $hash_file = 'hashes.md5';
 
@@ -49,7 +49,7 @@ class GitHubReleases {
 	public function __construct(string $owner, string $repo, ?string $channel = 'stable', ?string $token = null) {
 		$this->owner = $owner;
 		$this->repo = $repo;
-		$this->channel = self::normalizeChannel($channel);
+		$this->channel = $this->normalizeChannel($channel);
 		$this->cache_file = "{$this->cache_file}_{$repo}_{$this->channel}"; // Уникальный кэш для канала
 		$this->api_url = "https://api.github.com/repos/{$owner}/{$repo}/releases";
 		$this->headers = $token ? [
@@ -66,7 +66,7 @@ class GitHubReleases {
 	 * @param string|null $channel Raw channel value (e.g. from settings)
 	 * @return string 'stable' or 'beta'
 	 */
-	private static function normalizeChannel(?string $channel): string {
+	private function normalizeChannel(?string $channel): string {
 		$channel = ($channel === 'unstable') ? 'beta' : (string) $channel;
 		return in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable';
 	}
@@ -143,11 +143,10 @@ class GitHubReleases {
 			fclose($file);
 			error_log("Cache saved to {$this->cache_file}");
 			return true;
-		} else {
-			error_log("Failed to acquire lock on cache file {$this->cache_file}");
-			fclose($file);
-			return false;
 		}
+		error_log("Failed to acquire lock on cache file {$this->cache_file}");
+		fclose($file);
+		return false;
 	}
 
 	/**
@@ -208,7 +207,7 @@ class GitHubReleases {
 	public function getLatestVersion(string $current_version): ?string {
 		$releases = $this->getReleases();
 
-		if (empty($releases)) {
+		if ($releases === []) {
 			return null;
 		}
 
@@ -380,8 +379,6 @@ class GitHubReleases {
 				$update_file = "xc_vm.tar.gz";
 				break;
 			case "lb":
-				$update_file = "loadbalancer.tar.gz";
-				break;
 			case "lb_update":
 				$update_file = "loadbalancer.tar.gz";
 				break;
@@ -394,9 +391,7 @@ class GitHubReleases {
 		}
 		$upd_archive_url = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$target_version}/{$update_file}";
 		$hash_md5 = $this->getAssetHash($target_version, $update_file);
-
-		$data = ["url" => $upd_archive_url, "md5" => $hash_md5];
-		return $data;
+		return ["url" => $upd_archive_url, "md5" => $hash_md5];
 	}
 
 	/**
@@ -485,7 +480,6 @@ class GitHubReleases {
 	 *
 	 * @param string $version Release tag.
 	 * @param string $asset   Asset filename.
-	 * @return string
 	 */
 	public function assetUrl(string $version, string $asset): string {
 		return "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$asset}";

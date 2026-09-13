@@ -76,7 +76,7 @@ class DropboxClient {
 	 * @throws DropboxException
 	 */
 	public function SetUseCUrl(bool $use_it, array $curlOptions = []) {
-		if (!$use_it && !empty($curlOptions)) {
+		if (!$use_it && $curlOptions !== []) {
 			throw new DropboxException('not using cURL but specified cURL options');
 		}
 
@@ -193,7 +193,7 @@ class DropboxClient {
 			$path = '';
 		}
 
-		$res = $this->apiCall('2/files/list_folder', compact('path', 'recursive', 'include_deleted'));
+		$res = $this->apiCall('2/files/list_folder', ['path' => $path, 'recursive' => $recursive, 'include_deleted' => $include_deleted]);
 		$entries = $res->entries;
 
 		while ($res->has_more) {
@@ -227,7 +227,7 @@ class DropboxClient {
 			$path = 'rev:' . $rev;
 		}
 
-		return self::compatMeta($this->apiCall('2/files/get_metadata', compact('path', 'include_deleted')));
+		return self::compatMeta($this->apiCall('2/files/get_metadata', ['path' => $path, 'include_deleted' => $include_deleted]));
 	}
 
 	/**
@@ -256,7 +256,7 @@ class DropboxClient {
 			$path = 'rev:' . $rev;
 		}
 
-		$context = $this->createRequestContext($url, compact('path'));
+		$context = $this->createRequestContext($url, ['path' => $path]);
 		$fh = @fopen($dest_path, 'wb');
 
 		if ($fh === false) {
@@ -370,7 +370,7 @@ class DropboxClient {
 
 			while (!feof($fh)) {
 				$content = fread($fh, 2097152);
-				$this->apiCall('2/files/upload_session/append_v2', ['cursor' => compact('session_id', 'offset')], true, $content);
+				$this->apiCall('2/files/upload_session/append_v2', ['cursor' => ['session_id' => $session_id, 'offset' => $offset]], true, $content);
 				$offset += strlen($content);
 				unset($content);
 
@@ -381,12 +381,10 @@ class DropboxClient {
 
 			@fclose($fh);
 
-			return $this->apiCall('2/files/upload_session/finish', ['cursor' => compact('session_id', 'offset'), 'commit' => $commit_params], true);
-		} else {
-			$content = file_get_contents($src_file);
-
-			return $this->apiCall('2/files/upload', $commit_params, true, $content);
+			return $this->apiCall('2/files/upload_session/finish', ['cursor' => ['session_id' => $session_id, 'offset' => $offset], 'commit' => $commit_params], true);
 		}
+		$content = file_get_contents($src_file);
+		return $this->apiCall('2/files/upload', $commit_params, true, $content);
 	}
 
 	/**
@@ -409,7 +407,7 @@ class DropboxClient {
 		}
 
 		$url = 'https://content.dropboxapi.com/2/files/get_thumbnail';
-		$context = $this->createRequestContext($url, compact('path', 'size', 'format'));
+		$context = $this->createRequestContext($url, ['path' => $path, 'size' => $size, 'format' => $format]);
 		$thumb = ($this->useCurl ? self::execCurlAndClose($context) : file_get_contents($url, false, $context));
 
 		if ($echo) {
@@ -440,25 +438,23 @@ class DropboxClient {
 			$expires = (time() + 14400) - 60;
 
 			return $data->link;
-		} else {
-			try {
+		}
+		try {
 				$url = $this->apiCall('2/sharing/create_shared_link_with_settings', [
 					'path' => $path,
 					'settings' => ['requested_visibility' => 'public']
 				]);
-			} catch (DropboxException $ex) {
-				if ($ex->getTag() == 'shared_link_already_exists') {
-					$publicLinks = array_filter($this->apiCall('2/sharing/list_shared_links', ['path' => $path])->links, function ($link) {
-						return ($link->{'.tag'} == 'file') && ($link->link_permissions->resolved_visibility->{'.tag'} == 'public');
-					});
-					$url = reset($publicLinks);
-				} else {
-					throw $ex;
-				}
+		} catch (DropboxException $ex) {
+			if ($ex->getTag() == 'shared_link_already_exists') {
+				$publicLinks = array_filter($this->apiCall('2/sharing/list_shared_links', ['path' => $path])->links, function ($link) {
+					return ($link->{'.tag'} == 'file') && ($link->link_permissions->resolved_visibility->{'.tag'} == 'public');
+				});
+				$url = reset($publicLinks);
+			} else {
+				throw $ex;
 			}
-
-			return $url->url;
 		}
+		return $url->url;
 	}
 
 	/**
@@ -468,7 +464,7 @@ class DropboxClient {
 	 * @return object Delta response (entries + new cursor).
 	 */
 	public function Delta(string $cursor) {
-		return $this->apiCall('2/files/list_folder/continue', array_merge(compact('cursor'), []));
+		return $this->apiCall('2/files/list_folder/continue', ['cursor' => $cursor]);
 	}
 
 	/**
@@ -479,7 +475,7 @@ class DropboxClient {
 	 * @return object Response containing the cursor.
 	 */
 	public function LatestCursor(string $path = '', bool $include_media_info = false) {
-		$res = $this->apiCall('2/files/list_folder/get_latest_cursor', compact('path', 'include_media_info'));
+		$res = $this->apiCall('2/files/list_folder/get_latest_cursor', ['path' => $path, 'include_media_info' => $include_media_info]);
 
 		return $res->cursor;
 	}
@@ -494,7 +490,7 @@ class DropboxClient {
 	public function GetRevisions(string $path, int $limit = 10) {
 		$path = self::toPath($path);
 
-		return $this->apiCall('2/files/list_revisions', compact('path', 'limit'))->entries;
+		return $this->apiCall('2/files/list_revisions', ['path' => $path, 'limit' => $limit])->entries;
 	}
 
 	/**
@@ -509,7 +505,7 @@ class DropboxClient {
 			$dropbox_file = $dropbox_file->path;
 		}
 
-		return $this->apiCall('restore/' . $this->rootPath . '/' . $dropbox_file, compact('rev'));
+		return $this->apiCall('restore/' . $this->rootPath . '/' . $dropbox_file, ['rev' => $rev]);
 	}
 
 	/**
@@ -526,7 +522,7 @@ class DropboxClient {
 		$mode = ($include_deleted ? 'deleted_filename' : 'filename');
 		$meta = [];
 
-		foreach ($this->apiCall('2/files/search', compact('path', 'query', 'max_results', 'mode'))->matches as $match) {
+		foreach ($this->apiCall('2/files/search', ['path' => $path, 'query' => $query, 'max_results' => $max_results, 'mode' => $mode])->matches as $match) {
 			$meta[] = self::compatMeta($match->metadata);
 		}
 
@@ -653,11 +649,10 @@ class DropboxClient {
 	/**
 	 * cURL header callback that collects response headers.
 	 *
-	 * @param \CurlHandle|resource $ch     cURL handle.
 	 * @param string               $header A single response header line.
 	 * @return int Number of bytes processed (required by cURL).
 	 */
-	private static function _curlHeaderCallback($ch, string $header) {
+	private static function _curlHeaderCallback(string $header) {
 		self::$_curlHeadersRef[] = trim($header);
 
 		return strlen($header);
@@ -855,7 +850,7 @@ class DropboxClient {
 		$file_or_path = '/' . trim($file_or_path, '/');
 
 		if ($file_or_path == '/') {
-			$file_or_path = '';
+			return '';
 		}
 
 		return $file_or_path;

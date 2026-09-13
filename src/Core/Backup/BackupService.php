@@ -96,8 +96,7 @@ class BackupService {
 		foreach (scandir(MAIN_HOME . 'backups/') as $rBackup) {
 			$rInfo = pathinfo(MAIN_HOME . 'backups/' . $rBackup);
 
-			if ($rInfo['extension'] != 'sql') {
-			} else {
+			if ($rInfo['extension'] == 'sql') {
 				$rBackups[] = ['filename' => $rBackup, 'timestamp' => filemtime(MAIN_HOME . 'backups/' . $rBackup), 'date' => date('Y-m-d H:i:s', filemtime(MAIN_HOME . 'backups/' . $rBackup)), 'filesize' => filesize(MAIN_HOME . 'backups/' . $rBackup)];
 			}
 		}
@@ -147,8 +146,7 @@ class BackupService {
 
 		foreach ($rFiles as $rFile) {
 			try {
-				if (!(!$rFile->isDir && strtolower(pathinfo($rFile->name)['extension']) == 'sql' && 0 < $rFile->size)) {
-				} else {
+				if (!$rFile->isDir && strtolower(pathinfo($rFile->name)['extension']) == 'sql' && 0 < $rFile->size) {
 					$rJSON = json_decode(json_encode($rFile, JSON_UNESCAPED_UNICODE), true);
 					$rJSON['time'] = strtotime($rFile->server_modified);
 					$rBackups[] = $rJSON;

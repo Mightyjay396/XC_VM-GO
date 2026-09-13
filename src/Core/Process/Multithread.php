@@ -29,7 +29,7 @@ class Multithread {
 	public $error = [];
 
 	/** @var Thread[]|null Активные потоки */
-	public $thread = null;
+	public $thread;
 
 	/** @var array Команды в работе */
 	public $commands = [];
@@ -46,8 +46,7 @@ class Multithread {
 	 */
 	public function __construct(array $commands, int $sizePool = 0) {
 		$this->hasPool = 0 < $sizePool;
-		if (!$this->hasPool) {
-		} else {
+		if ($this->hasPool) {
 			$this->toExecuted = array_splice($commands, $sizePool);
 		}
 		$this->commands = $commands;
@@ -79,8 +78,7 @@ class Multithread {
 				$this->error[$key] .= @$this->thread[$key]->getError();
 				if ($this->thread[$key]->isActive()) {
 					$this->output[$key] .= $this->thread[$key]->listen();
-					if (!$this->thread[$key]->isBusy()) {
-					} else {
+					if ($this->thread[$key]->isBusy()) {
 						$this->thread[$key]->close();
 						unset($this->commands[$key]);
 						$this->launchNextInQueue();
@@ -98,7 +96,7 @@ class Multithread {
 	/**
 	 * Запустить следующую команду из очереди
 	 *
-	 * @return bool|void
+	 * @return bool|null
 	 */
 	public function launchNextInQueue() {
 		if (count($this->toExecuted) != 0) {
@@ -110,5 +108,6 @@ class Multithread {
 		} else {
 			return true;
 		}
+		return null;
 	}
 }

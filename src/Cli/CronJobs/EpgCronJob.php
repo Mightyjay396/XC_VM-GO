@@ -113,7 +113,7 @@ class EpgCronJob implements CommandInterface {
                     WHERE `epg_id` = ?;', $rData['epg_id'], $rData['epg_id']);
 				$channelMap = $db->get_rows(true, 'channel_id');
 
-				$batches = $rEPG->parseEPG($rData['epg_id'], $channelMap, intval($rData['offset']) ?: 0);
+				$batches = $rEPG->parseEPG($rData['epg_id'], $channelMap, intval($rData['offset']));
 
 				$this->reconnectDb();
 
@@ -166,7 +166,7 @@ class EpgCronJob implements CommandInterface {
 		$this->printLog("[XMLTV] Generating XMLTV for $totalBouquets bouquet(s)");
 
 		foreach ($ApiDependencyIdentifier as $rBouquet => $BatchProcessId) {
-			if (!(strlen($rBouquet) > 0 && (count($BatchProcessId['streams']) > 0 || $rBouquet == 'all'))) {
+			if (strlen($rBouquet) <= 0 || count($BatchProcessId['streams']) <= 0 && $rBouquet != 'all') {
 				continue;
 			}
 
@@ -336,7 +336,7 @@ class EpgCronJob implements CommandInterface {
 		foreach ($db->get_rows() as $rRow) {
 			$rBouquets = json_decode($rRow['bouquet'] ?? null, true);
 
-			if (!is_array($rBouquets) || empty($rBouquets)) {
+			if (!is_array($rBouquets) || $rBouquets === []) {
 				$this->printLog("[XMLTV] Skipping invalid/empty bouquet value: " . var_export($rBouquets, true));
 				continue;
 			}

@@ -174,15 +174,14 @@ class ServerRepository {
 		$rReturn = [];
 		$db->query('SELECT * FROM `servers` WHERE `server_type` = 1 ORDER BY `id` ASC;');
 
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
 				if (isset($rPermissions['is_reseller']) && $rPermissions['is_reseller']) {
 					$rRow['server_name'] = 'Proxy #' . $rRow['id'];
 				}
 
 				$rRow['server_online'] = in_array($rRow['status'], [1, 3]) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
-				if (!($rRow['server_online'] == 0 && $rOnline)) {
+				if ($rRow['server_online'] != 0 || !$rOnline) {
 					$rReturn[$rRow['id']] = $rRow;
 				}
 			}
@@ -205,13 +204,13 @@ class ServerRepository {
 			return $rReturn;
 		}
 
-		if (!empty($rLines)) {
+		if ($rLines !== []) {
 			array_shift($rLines);
 		}
 
 		foreach ($rLines as $rLine) {
 			$rSplit = explode(' ', preg_replace('!\s+!', ' ', trim($rLine)));
-			if (0 < strlen($rSplit[0]) && strpos($rSplit[5], 'xc_vm') !== false || $rSplit[5] == '/') {
+			if ($rSplit[0] !== '' && strpos($rSplit[5], 'xc_vm') !== false || $rSplit[5] == '/') {
 				$rReturn[] = ['filesystem' => $rSplit[0], 'size' => $rSplit[1], 'used' => $rSplit[2], 'avail' => $rSplit[3], 'percentage' => $rSplit[4], 'mount' => implode(' ', array_slice($rSplit, 5, count($rSplit) - 5))];
 			}
 		}
@@ -418,11 +417,9 @@ class ServerRepository {
 	 */
 	public static function getAllowedIPs(bool $rForce = false) {
 		global $rServers, $rSettings;
-		if ($rForce) {
-		} else {
+		if (!$rForce) {
 			$rCache = FileCache::getCache('allowed_ips', 60);
-			if ($rCache === false) {
-			} else {
+			if ($rCache !== false) {
 				return $rCache;
 			}
 		}
@@ -438,19 +435,16 @@ class ServerRepository {
 				$rIPs = array_merge($rIPs, json_decode($rServerInfo['whitelist_ips'], true));
 			}
 			$rIPs[] = $rServerInfo['server_ip'];
-			if (!$rServerInfo['private_ip']) {
-			} else {
+			if ($rServerInfo['private_ip']) {
 				$rIPs[] = $rServerInfo['private_ip'];
 			}
 			foreach (explode(',', $rServerInfo['domain_name'] ?? '') as $rIP) {
-				if (!filter_var($rIP, FILTER_VALIDATE_IP)) {
-				} else {
+				if (filter_var($rIP, FILTER_VALIDATE_IP)) {
 					$rIPs[] = $rIP;
 				}
 			}
 		}
-		if (empty($rSettings['allowed_ips_admin'])) {
-		} else {
+		if (!empty($rSettings['allowed_ips_admin'])) {
 			$rIPs = array_merge($rIPs, explode(',', $rSettings['allowed_ips_admin']));
 		}
 		FileCache::setCache('allowed_ips', $rIPs);
@@ -480,8 +474,7 @@ class ServerRepository {
 	public static function getPublicURL(?int $rServerID = null, ?string $rForceProtocol = null) {
 		global $rSettings, $rServers;
 		$rOriginatorID = null;
-		if (isset($rServerID)) {
-		} else {
+		if (!isset($rServerID)) {
 			$rServerID = SERVER_ID;
 		}
 		if ($rForceProtocol) {
@@ -496,13 +489,10 @@ class ServerRepository {
 				$rProtocol = $rServers[$rServerID]['server_protocol'] ?? 'http';
 			}
 		}
-		if (!$rServers[$rServerID]) {
-		} else {
-			if (!$rServers[$rServerID]['enable_proxy']) {
-			} else {
+		if ($rServers[$rServerID]) {
+			if ($rServers[$rServerID]['enable_proxy']) {
 				$rProxyIDs = array_keys(ConnectionTracker::getProxies($rServerID));
-				if (count($rProxyIDs) != 0) {
-				} else {
+				if (count($rProxyIDs) == 0) {
 					$rProxyIDs = array_keys(ConnectionTracker::getProxies($rServerID, false));
 				}
 				if (count($rProxyIDs) != 0) {
@@ -519,8 +509,7 @@ class ServerRepository {
 				$rDomain = (empty($rServers[$rServerID]['domain_name']) ? $rServers[$rServerID]['server_ip'] : explode(',', $rServers[$rServerID]['domain_name'])[0]);
 			}
 			$rServerURL = $rProtocol . '://' . $rDomain . ':' . $rServers[$rServerID][$rProtocol . '_broadcast_port'] . '/';
-			if (!($rServers[$rServerID]['server_type'] == 1 && $rOriginatorID && $rServers[$rOriginatorID]['is_main'] == 0)) {
-			} else {
+			if ($rServers[$rServerID]['server_type'] == 1 && $rOriginatorID && $rServers[$rOriginatorID]['is_main'] == 0) {
 				$rServerURL .= md5($rServerID . '_' . $rOriginatorID . '_' . OPENSSL_EXTRA) . '/';
 			}
 			return $rServerURL;

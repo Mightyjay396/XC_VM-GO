@@ -130,8 +130,6 @@ class SessionManager {
 
 	/**
 	 * Check if user is authenticated (non-blocking, no redirect)
-	 *
-	 * @return bool
 	 */
 	public static function isAuthenticated(): bool {
 		if (!self::$started) {
@@ -144,8 +142,6 @@ class SessionManager {
 
 	/**
 	 * Get the auth token/hash for current session
-	 *
-	 * @return mixed
 	 */
 	public static function getUser(): mixed {
 		$authKey = self::getKey('auth');
@@ -156,7 +152,6 @@ class SessionManager {
 	 * Get a session value by logical name
 	 *
 	 * @param string $name Logical name: 'auth', 'activity', 'ip', 'code', 'verify'
-	 * @return mixed
 	 */
 	public static function getValue(string $name): mixed {
 		$key = self::getKey($name);
@@ -245,8 +240,6 @@ class SessionManager {
 
 	/**
 	 * Get current context
-	 *
-	 * @return string|null
 	 */
 	public static function getContext(): ?string {
 		return self::$context;
@@ -286,7 +279,6 @@ class SessionManager {
 	 * Get the actual $_SESSION key for a logical name in current context
 	 *
 	 * @param string $name Logical name: 'auth', 'activity', 'ip', 'code', 'verify'
-	 * @return string
 	 */
 	protected static function getKey(string $name): string {
 		if (self::$context === null) {

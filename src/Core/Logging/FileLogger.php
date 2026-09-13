@@ -30,8 +30,6 @@ class FileLogger implements LoggerInterface {
 	/**
 	 * Путь к файлу лога.
 	 * По умолчанию используется LOGS_TMP_PATH . 'error_log.log'
-	 *
-	 * @var string|null
 	 */
 	private static ?string $logFile = null;
 
@@ -47,8 +45,6 @@ class FileLogger implements LoggerInterface {
 	/**
 	 * Получить текущий путь к файлу лога.
 	 * Если не установлен явно, используется LOGS_TMP_PATH . 'error_log.log'
-	 *
-	 * @return string
 	 */
 	public static function getLogFile(): string {
 		if (self::$logFile !== null) {
@@ -78,7 +74,7 @@ class FileLogger implements LoggerInterface {
 
 		$rTrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2);
 		$rCaller = $rTrace[1] ?? [];
-		$rFile = (string) ($rCaller['file'] ?? '');
+		$rFile = $rCaller['file'] ?? '';
 		if ($line <= 0 && isset($rCaller['line'])) {
 			$line = (int) $rCaller['line'];
 		}

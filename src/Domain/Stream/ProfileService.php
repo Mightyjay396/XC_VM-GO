@@ -32,7 +32,7 @@ class ProfileService {
 			$rProfileOptions = [];
 
 			if ($rData['gpu_device'] != 0) {
-				$rProfileOptions['software_decoding'] = (intval($rData['software_decoding']) ?: 0);
+				$rProfileOptions['software_decoding'] = (intval($rData['software_decoding']));
 				$rProfileOptions['gpu'] = ['val' => $rData['gpu_device'], 'cmd' => ''];
 				$rProfileOptions['gpu']['device'] = intval(explode('_', $rData['gpu_device'])[1]);
 
@@ -41,25 +41,21 @@ class ProfileService {
 					$rCommand[] = '-hwaccel cuvid';
 					$rCommand[] = '-hwaccel_device ' . $rProfileOptions['gpu']['device'];
 
-					if (0 >= strlen($rData['resize'])) {
-					} else {
+					if ((string) $rData['resize'] !== '') {
 						$rProfileOptions['gpu']['resize'] = $rData['resize'];
 						$rCommand[] = '-resize ' . escapeshellcmd($rData['resize']);
 					}
 
-					if (0 >= $rData['deint']) {
-					} else {
+					if (0 < $rData['deint']) {
 						$rProfileOptions['gpu']['deint'] = intval($rData['deint']);
 						$rCommand[] = '-deint ' . intval($rData['deint']);
 					}
 
 					$rCodec = '';
 
-					if (0 >= strlen($rData['video_codec_gpu'])) {
-					} else {
+					if ((string) $rData['video_codec_gpu'] !== '') {
 						$rProfileOptions['-vcodec'] = escapeshellcmd($rData['video_codec_gpu']);
 						$rCommand[] = '{INPUT_CODEC}';
-
 						switch ($rData['video_codec_gpu']) {
 							case 'hevc_nvenc':
 								$rCodec = 'hevc';
@@ -70,13 +66,11 @@ class ProfileService {
 						}
 					}
 
-					if (0 >= strlen($rData['preset_' . $rCodec])) {
-					} else {
+					if ((string) $rData['preset_' . $rCodec] !== '') {
 						$rProfileOptions['-preset'] = escapeshellcmd($rData['preset_' . $rCodec]);
 					}
 
-					if (0 >= strlen($rData['video_profile_' . $rCodec])) {
-					} else {
+					if ((string) $rData['video_profile_' . $rCodec] !== '') {
 						$rProfileOptions['-profile:v'] = escapeshellcmd($rData['video_profile_' . $rCodec]);
 					}
 
@@ -86,121 +80,95 @@ class ProfileService {
 				} else {
 					$rCodec = '';
 
-					if (0 >= strlen($rData['video_codec_gpu'])) {
-					} else {
+					if (0 < strlen($rData['video_codec_gpu'])) {
 						$rProfileOptions['-vcodec'] = escapeshellcmd($rData['video_codec_gpu']);
-
-						switch ($rData['video_codec_gpu']) {
-							case 'hevc_nvenc':
-								$rCodec = 'hevc';
-								break;
+						if ($rData['video_codec_gpu'] === 'hevc_nvenc') {
+							$rCodec = 'hevc';
 						}
 						$rCodec = 'h264';
 					}
 
-					if (0 >= strlen($rData['preset_' . $rCodec])) {
-					} else {
+					if (0 < strlen($rData['preset_' . $rCodec])) {
 						$rProfileOptions['-preset'] = escapeshellcmd($rData['preset_' . $rCodec]);
 					}
 
-					if (0 >= strlen($rData['video_profile_' . $rCodec])) {
-					} else {
+					if (0 < strlen($rData['video_profile_' . $rCodec])) {
 						$rProfileOptions['-profile:v'] = escapeshellcmd($rData['video_profile_' . $rCodec]);
 					}
 				}
 			} else {
-				if (0 >= strlen($rData['video_codec_cpu'])) {
-				} else {
+				if (0 < strlen($rData['video_codec_cpu'])) {
 					$rProfileOptions['-vcodec'] = escapeshellcmd($rData['video_codec_cpu']);
 				}
 
-				if (0 >= strlen($rData['preset_cpu'])) {
-				} else {
+				if (0 < strlen($rData['preset_cpu'])) {
 					$rProfileOptions['-preset'] = escapeshellcmd($rData['preset_cpu']);
 				}
 
-				if (0 >= strlen($rData['video_profile_cpu'])) {
-				} else {
+				if (0 < strlen($rData['video_profile_cpu'])) {
 					$rProfileOptions['-profile:v'] = escapeshellcmd($rData['video_profile_cpu']);
 				}
 			}
 
-			if (0 >= strlen($rData['audio_codec'])) {
-			} else {
+			if ((string) $rData['audio_codec'] !== '') {
 				$rProfileOptions['-acodec'] = escapeshellcmd($rData['audio_codec']);
 			}
 
-			if (0 >= strlen($rData['video_bitrate'])) {
-			} else {
+			if ((string) $rData['video_bitrate'] !== '') {
 				$rProfileOptions[3] = ['cmd' => '-b:v ' . intval($rData['video_bitrate']) . 'k', 'val' => intval($rData['video_bitrate'])];
 			}
 
-			if (0 >= strlen($rData['audio_bitrate'])) {
-			} else {
+			if ((string) $rData['audio_bitrate'] !== '') {
 				$rProfileOptions[4] = ['cmd' => '-b:a ' . intval($rData['audio_bitrate']) . 'k', 'val' => intval($rData['audio_bitrate'])];
 			}
 
-			if (0 >= strlen($rData['min_tolerance'])) {
-			} else {
+			if ((string) $rData['min_tolerance'] !== '') {
 				$rProfileOptions[5] = ['cmd' => '-minrate ' . intval($rData['min_tolerance']) . 'k', 'val' => intval($rData['min_tolerance'])];
 			}
 
-			if (0 >= strlen($rData['max_tolerance'])) {
-			} else {
+			if ((string) $rData['max_tolerance'] !== '') {
 				$rProfileOptions[6] = ['cmd' => '-maxrate ' . intval($rData['max_tolerance']) . 'k', 'val' => intval($rData['max_tolerance'])];
 			}
 
-			if (0 >= strlen($rData['buffer_size'])) {
-			} else {
+			if ((string) $rData['buffer_size'] !== '') {
 				$rProfileOptions[7] = ['cmd' => '-bufsize ' . intval($rData['buffer_size']) . 'k', 'val' => intval($rData['buffer_size'])];
 			}
 
-			if (0 >= strlen($rData['crf_value'])) {
-			} else {
+			if ((string) $rData['crf_value'] !== '') {
 				$rProfileOptions[8] = ['cmd' => '-crf ' . intval($rData['crf_value']), 'val' => $rData['crf_value']];
 			}
 
-			if (0 >= strlen($rData['aspect_ratio'])) {
-			} else {
+			if ((string) $rData['aspect_ratio'] !== '') {
 				$rProfileOptions[10] = ['cmd' => '-aspect ' . escapeshellcmd($rData['aspect_ratio']), 'val' => $rData['aspect_ratio']];
 			}
 
-			if (0 >= strlen($rData['framerate'])) {
-			} else {
+			if ((string) $rData['framerate'] !== '') {
 				$rProfileOptions[11] = ['cmd' => '-r ' . intval($rData['framerate']), 'val' => intval($rData['framerate'])];
 			}
 
-			if (0 >= strlen($rData['samplerate'])) {
-			} else {
+			if ((string) $rData['samplerate'] !== '') {
 				$rProfileOptions[12] = ['cmd' => '-ar ' . intval($rData['samplerate']), 'val' => intval($rData['samplerate'])];
 			}
 
-			if (0 >= strlen($rData['audio_channels'])) {
-			} else {
+			if ((string) $rData['audio_channels'] !== '') {
 				$rProfileOptions[13] = ['cmd' => '-ac ' . intval($rData['audio_channels']), 'val' => intval($rData['audio_channels'])];
 			}
 
-			if (0 >= strlen($rData['threads'])) {
-			} else {
+			if ((string) $rData['threads'] !== '') {
 				$rProfileOptions[15] = ['cmd' => '-threads ' . intval($rData['threads']), 'val' => intval($rData['threads'])];
 			}
 
 			$rComplex = false;
 			$rScale = $rOverlay = $rLogoInput = '';
 
-			if (0 >= strlen($rData['logo_path'])) {
-			} else {
+			if ((string) $rData['logo_path'] !== '') {
 				$rComplex = true;
 				$rPos = array_map('intval', explode(':', $rData['logo_pos']));
-
-				if (count($rPos) == 2) {
-				} else {
+				if (count($rPos) != 2) {
 					$rPos = [10, 10];
 				}
-
 				$rLogoInput = '-i ' . escapeshellarg($rData['logo_path']);
 				$rProfileOptions[16] = ['cmd' => '', 'val' => $rData['logo_path'], 'pos' => implode(':', $rPos)];
-
 				if ($rData['gpu_device'] != 0 && !$rData['software_decoding']) {
 					$rOverlay = '[0:v]hwdownload,format=nv12 [base]; [base][1:v] overlay=' . $rPos[0] . ':' . $rPos[1];
 				} else {
@@ -209,13 +177,12 @@ class ProfileService {
 			}
 
 			if ($rData['gpu_device'] == 0) {
-				if (!(isset($rData['yadif_filter']) && 0 < strlen($rData['scaling']))) {
-				} else {
+				if (isset($rData['yadif_filter']) && (string) $rData['scaling'] !== '') {
 					$rComplex = true;
 				}
 
 				if ($rComplex) {
-					if (isset($rData['yadif_filter']) && 0 < strlen($rData['scaling'])) {
+					if (isset($rData['yadif_filter']) && (string) $rData['scaling'] !== '') {
 						if (!$rData['software_decoding']) {
 							$rScale = '[0:v]yadif,scale=' . escapeshellcmd($rData['scaling']) . '[bg];[bg][1:v]';
 						} else {
@@ -225,41 +192,36 @@ class ProfileService {
 						$rProfileOptions[9] = ['cmd' => '', 'val' => $rData['scaling']];
 						$rProfileOptions[17] = ['cmd' => '', 'val' => 1];
 					} else {
-						if (0 < strlen($rData['scaling'])) {
+						if ((string) $rData['scaling'] !== '') {
 							$rScale = 'scale=' . escapeshellcmd($rData['scaling']);
 							$rProfileOptions[9] = ['cmd' => '', 'val' => $rData['scaling']];
 						} else {
-							if (!isset($rData['yadif_filter'])) {
-							} else {
+							if (isset($rData['yadif_filter'])) {
 								if (!$rData['software_decoding']) {
 									$rScale = '[0:v]yadif[bg];[bg][1:v]';
 								} else {
 									$rScale = 'yadif';
 								}
-
 								$rProfileOptions[17] = ['cmd' => '', 'val' => 1];
 							}
 						}
 					}
 				} else {
-					if (0 >= strlen($rData['scaling'])) {
-					} else {
+					if (0 < strlen($rData['scaling'])) {
 						$rProfileOptions[9] = ['cmd' => '-vf scale=' . escapeshellcmd($rData['scaling']), 'val' => $rData['scaling']];
 					}
 
-					if (!isset($rData['yadif_filter'])) {
-					} else {
+					if (isset($rData['yadif_filter'])) {
 						$rProfileOptions[17] = ['cmd' => '-vf yadif', 'val' => 1];
 					}
 				}
 			} else {
-				if (!(0 < intval($rData['deint']) && 0 < strlen($rData['resize']))) {
-				} else {
+				if (0 < intval($rData['deint']) && (string) $rData['resize'] !== '') {
 					$rComplex = true;
 				}
 
 				if ($rComplex) {
-					if (0 < intval($rData['deint']) && 0 < strlen($rData['resize'])) {
+					if (0 < intval($rData['deint']) && (string) $rData['resize'] !== '') {
 						if (!$rData['software_decoding']) {
 							$rScale = '[0:v]yadif,scale=' . escapeshellcmd($rData['resize']) . '[bg];[bg][1:v]';
 						} else {
@@ -269,7 +231,7 @@ class ProfileService {
 						$rProfileOptions[9] = ['cmd' => '', 'val' => $rData['resize']];
 						$rProfileOptions[17] = ['cmd' => '', 'val' => 1];
 					} else {
-						if (0 < strlen($rData['resize'])) {
+						if ((string) $rData['resize'] !== '') {
 							if (!$rData['software_decoding']) {
 								$rScale = '[0:v]scale=' . escapeshellcmd($rData['resize']) . '[bg];[bg][1:v]';
 							} else {
@@ -278,49 +240,41 @@ class ProfileService {
 
 							$rProfileOptions[9] = ['cmd' => '', 'val' => $rData['resize']];
 						} else {
-							if (0 >= intval($rData['deint'])) {
-							} else {
+							if (0 < intval($rData['deint'])) {
 								if (!$rData['software_decoding']) {
 									$rScale = '[0:v]yadif[bg];[bg][1:v]';
 								} else {
 									$rScale = 'yadif';
 								}
-
 								$rProfileOptions[17] = ['cmd' => '', 'val' => 1];
 							}
 						}
 					}
 				} else {
-					if (0 >= strlen($rData['resize'])) {
-					} else {
+					if (0 < strlen($rData['resize'])) {
 						$rProfileOptions[9] = ['cmd' => '-vf scale=' . escapeshellcmd($rData['resize']), 'val' => $rData['resize']];
 					}
 
-					if (0 >= intval($rData['deint'])) {
-					} else {
+					if (0 < intval($rData['deint'])) {
 						$rProfileOptions[17] = ['cmd' => '-vf yadif', 'val' => 1];
 					}
 				}
 			}
 
-			if (!$rComplex) {
-			} else {
+			if ($rComplex) {
 				if (!empty($rScale) && substr($rScale, strlen($rScale) - 1, 1) != ']') {
 					$rOverlay = ',' . $rOverlay;
 				} else {
-					if (empty($rScale)) {
-					} else {
+					if (!empty($rScale)) {
 						$rOverlay = ' ' . $rOverlay;
 					}
 				}
-
 				$rProfileOptions[16]['cmd'] = str_replace(['{SCALE}', '{OVERLAY}', '{LOGO}'], [$rScale, $rOverlay, $rLogoInput], '{LOGO} -filter_complex "{SCALE}{OVERLAY}"');
 			}
 
 			$rArray['profile_options'] = json_encode($rProfileOptions, JSON_UNESCAPED_UNICODE);
 
-			if (!isset($rData['edit'])) {
-			} else {
+			if (isset($rData['edit'])) {
 				$rArray['profile_id'] = $rData['edit'];
 			}
 

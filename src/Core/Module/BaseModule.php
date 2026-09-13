@@ -29,15 +29,11 @@ use XcVm\Core\Module\Contract\TopbarProviderInterface;
 abstract class BaseModule implements ModuleInterface, MigratableInterface, CronProviderInterface, TopbarProviderInterface, TableProviderInterface, PermissionProviderInterface, QuickToolsProviderInterface {
 	/**
 	 * Unique module identifier.
-	 *
-	 * @return string
 	 */
 	abstract public function getName(): string;
 
 	/**
 	 * Module version string.
-	 *
-	 * @return string
 	 */
 	abstract public function getVersion(): string;
 
@@ -45,7 +41,6 @@ abstract class BaseModule implements ModuleInterface, MigratableInterface, CronP
 	 * Boot hook: register services/bindings into the container. No-op by default.
 	 *
 	 * @param ServiceContainer $container The DI container.
-	 * @return void
 	 */
 	public function boot(ServiceContainer $container): void {
 	}
@@ -63,7 +58,6 @@ abstract class BaseModule implements ModuleInterface, MigratableInterface, CronP
 	 * Register the module's HTTP routes. No-op by default.
 	 *
 	 * @param Router $router The application router.
-	 * @return void
 	 */
 	public function registerRoutes(Router $router): void {
 	}
@@ -72,7 +66,6 @@ abstract class BaseModule implements ModuleInterface, MigratableInterface, CronP
 	 * Register the module's CLI commands. No-op by default.
 	 *
 	 * @param CommandRegistry $registry The CLI command registry.
-	 * @return void
 	 */
 	public function registerCommands(CommandRegistry $registry): void {
 	}
@@ -81,55 +74,42 @@ abstract class BaseModule implements ModuleInterface, MigratableInterface, CronP
 	 * Register the module's navbar entries. No-op by default.
 	 *
 	 * @param NavbarRegistry $registry The navbar registry.
-	 * @return void
 	 */
 	public function registerNavbar(NavbarRegistry $registry): void {
 	}
 
 	/**
 	 * No-op default — override to contribute per-page topbar buttons.
-	 *
-	 * @return void
 	 */
 	public function registerTopbar(TopbarRegistry $registry): void {
 	}
 
 	/**
 	 * No-op default — override to register serverSide DataTable handlers.
-	 *
-	 * @return void
 	 */
 	public function registerTables(TableRegistry $registry): void {
 	}
 
 	/**
 	 * No-op default — override to register reseller sub-permission keys.
-	 *
-	 * @return void
 	 */
 	public function registerPermissions(PermissionRegistry $registry): void {
 	}
 
 	/**
 	 * No-op default — override to register one-shot Quick Tools actions.
-	 *
-	 * @return void
 	 */
 	public function registerQuickTools(QuickToolsRegistry $registry): void {
 	}
 
 	/**
 	 * Installation hook, run when the module is installed. No-op by default.
-	 *
-	 * @return void
 	 */
 	public function install(): void {
 	}
 
 	/**
 	 * Uninstallation hook, run when the module is removed. No-op by default.
-	 *
-	 * @return void
 	 */
 	public function uninstall(): void {
 	}

@@ -81,7 +81,7 @@ class OndemandCommand implements CommandInterface {
 			}
 
 			$rStreamIDs = ConnectionTracker::activeOnDemandStreamIDs(SERVER_ID);
-			if (empty($rStreamIDs)) {
+			if ($rStreamIDs === []) {
 				usleep(800000);
 				continue;
 			}

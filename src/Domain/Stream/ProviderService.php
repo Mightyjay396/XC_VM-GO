@@ -74,9 +74,8 @@ class ProviderService {
 			}
 
 			return ['status' => STATUS_EXISTS_IP, 'data' => $rData];
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**

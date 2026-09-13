@@ -213,7 +213,7 @@ final class Logger {
 			}
 
 			$e = $e->getPrevious();
-			if ($e) {
+			if ($e instanceof \Throwable) {
 				$out[] = "---- CAUSED BY ----";
 			}
 		} while ($e);

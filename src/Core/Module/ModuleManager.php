@@ -68,13 +68,13 @@ class ModuleManager {
 	 */
 	public function archivePathFor(string $name, string $version): string {
 		$name    = $this->sanitizeModuleName($name);
-		$version = preg_replace('/[^0-9A-Za-z._\-]/', '', (string) $version);
+		$version = preg_replace('/[^0-9A-Za-z._\-]/', '', $version);
 		return $this->archivesPath . '/' . $name . '_' . $version . '.zip';
 	}
 
 	/** @return object|null Database instance from the container, or null if unavailable. */
 	private function getDb(): ?object {
-		if ($this->container !== null && $this->container->has('db')) {
+		if ($this->container instanceof \XcVm\Core\Container\ServiceContainer && $this->container->has('db')) {
 			return $this->container->get('db');
 		}
 		return null;
@@ -168,7 +168,7 @@ class ModuleManager {
 			}
 		}
 		if (!isset($out['hash_id'])) {
-			$out = ['hash_id' => $hash] + $out;
+			return ['hash_id' => $hash] + $out;
 		}
 		return $out;
 	}
@@ -386,7 +386,7 @@ class ModuleManager {
 		// dependencies are themselves installed.
 		$done  = [];
 		$guard = 0;
-		while (!empty($pending) && $guard++ < 1000) {
+		while ($pending !== [] && $guard++ < 1000) {
 			$progressed = false;
 			foreach (array_keys($pending) as $name) {
 				$ready = true;
@@ -533,7 +533,6 @@ class ModuleManager {
 	 * `hash_id` against the entry so a repo/URL cannot supply a different module.
 	 *
 	 * @param array $entry A getStandardSet() entry (source/repository/…, hash_id).
-	 * @return void
 	 * @throws \RuntimeException on download/verify/install failure.
 	 */
 	private function installModuleFromSource(array $entry): void {
@@ -693,7 +692,6 @@ class ModuleManager {
 	 * Loads the module instance, runs install(), and enables it.
 	 *
 	 * @param string $name Module name (lowercase, alphanumeric + hyphens).
-	 * @return void
 	 * @throws \RuntimeException If the module cannot be loaded.
 	 */
 	public function installModule(string $name, ?string $version = null): void {
@@ -736,7 +734,6 @@ class ModuleManager {
 	 * Runs uninstall() and disables the module.
 	 *
 	 * @param string $name Module name.
-	 * @return void
 	 * @throws \RuntimeException If the module cannot be loaded.
 	 */
 	public function uninstallModule(string $name): void {
@@ -745,7 +742,7 @@ class ModuleManager {
 		// Refuse to remove a module that still-installed dependents rely on
 		// (e.g. plex depends on watch — watch cannot be removed under it).
 		$dependents = $this->installedDependentsOf($name);
-		if (!empty($dependents)) {
+		if ($dependents !== []) {
 			throw new \RuntimeException(
 				"Cannot uninstall '{$name}': still required by " . implode(', ', $dependents)
 				. '. Uninstall ' . (count($dependents) === 1 ? 'it' : 'them') . ' first.'
@@ -783,7 +780,6 @@ class ModuleManager {
 	 * enforced up front.
 	 *
 	 * @param string $name Module name.
-	 * @return void
 	 * @throws \RuntimeException If an installed dependent still requires the module.
 	 */
 	public function deleteModule(string $name): void {
@@ -791,7 +787,7 @@ class ModuleManager {
 
 		// Same guard as uninstall: refuse while an installed dependent needs it.
 		$dependents = $this->installedDependentsOf($name);
-		if (!empty($dependents)) {
+		if ($dependents !== []) {
 			throw new \RuntimeException(
 				"Cannot delete '{$name}': still required by " . implode(', ', $dependents)
 				. '. Delete ' . (count($dependents) === 1 ? 'it' : 'them') . ' first.'
@@ -827,7 +823,6 @@ class ModuleManager {
 	 * the module directory, its stored archives, and its config/modules.php entry.
 	 *
 	 * @param string $name Module name.
-	 * @return void
 	 */
 	public function deleteModuleFilesOnly(string $name): void {
 		$name = $this->sanitizeModuleName($name);
@@ -860,7 +855,6 @@ class ModuleManager {
 	 *
 	 * @param string $name     Module name.
 	 * @param array  $manifest The module's manifest (read before deletion).
-	 * @return void
 	 */
 	private function distributeDeletionToLoadBalancers(string $name, array $manifest): void {
 		// Cheap manifest check first — a MAIN-only module was never on any LB, so
@@ -904,7 +898,6 @@ class ModuleManager {
 	 * and version <= module->getVersion(), in ascending semver order.
 	 *
 	 * @param string $name Module name.
-	 * @return void
 	 */
 	public function updateModule(string $name): void {
 		$name        = $this->sanitizeModuleName($name);
@@ -1076,7 +1069,7 @@ class ModuleManager {
 			$md5   = '';
 			try {
 				$channel = in_array((string) ($update['channel'] ?? 'stable'), ['beta', 'unstable'], true) ? 'beta' : 'stable';
-				$md5 = (string) ((new GitHubReleases($m[1], $m[2], $channel))->getAssetHash($version, $asset) ?? '');
+				$md5 = (new GitHubReleases($m[1], $m[2], $channel))->getAssetHash($version, $asset) ?? '';
 			} catch (\Throwable $e) {
 				// no hash available → download proceeds unverified
 			}
@@ -1129,7 +1122,6 @@ class ModuleManager {
 	 *
 	 * @param string      $name  Module name.
 	 * @param ModuleState $state Target lifecycle state.
-	 * @return void
 	 */
 	public function setState(string $name, ModuleState $state): void {
 		$name      = $this->sanitizeModuleName($name);
@@ -1142,7 +1134,7 @@ class ModuleManager {
 		// but are set by installModule() itself and must never be blocked.
 		if ($state === ModuleState::Disabled) {
 			$dependents = $this->enabledDependentsOf($name);
-			if (!empty($dependents)) {
+			if ($dependents !== []) {
 				throw new \RuntimeException(
 					"Cannot disable '{$name}': still required by " . implode(', ', $dependents)
 					. '. Disable ' . (count($dependents) === 1 ? 'it' : 'them') . ' first.'
@@ -1179,7 +1171,6 @@ class ModuleManager {
 	 *
 	 * @param string $name    Module name.
 	 * @param bool   $enabled True to enable, false to disable.
-	 * @return void
 	 */
 	public function setEnabled(string $name, bool $enabled): void {
 		$this->setState($name, $enabled ? ModuleState::Enabled : ModuleState::Disabled);
@@ -1311,7 +1302,6 @@ class ModuleManager {
 	 * is hardcoded and may drift from the shipped manifest).
 	 *
 	 * @param string $name Module name / directory.
-	 * @return string|null
 	 */
 	private function manifestVersion(string $name): ?string {
 		$v = $this->readModuleManifest($name)['version'] ?? null;
@@ -1400,7 +1390,6 @@ class ModuleManager {
 	 * @param string      $slug    Module slug as listed on the platform.
 	 * @param string      $version Exact version string (e.g. "1.2.0"), or '' for the latest.
 	 * @param string|null $apiKey  API key for the SaaS platform.
-	 * @return void
 	 * @throws \RuntimeException If the C extension is missing, download fails, or install fails.
 	 */
 	public function downloadFromPlatform(string $slug, string $version = '', ?string $apiKey = null): void {
@@ -1669,7 +1658,6 @@ class ModuleManager {
 	 * @param string      $slug    Module slug on the platform.
 	 * @param string      $version Exact version string.
 	 * @param string|null $apiKey  Shared platform API key (from settings).
-	 * @return void
 	 */
 	public function deployFromPlatformFilesOnly(string $slug, string $version, ?string $apiKey = null): void {
 		$result = $this->pullFilesFromPlatform($slug, $version, $apiKey);
@@ -1766,7 +1754,6 @@ class ModuleManager {
 	 *
 	 * @param string $slug       Module slug.
 	 * @param string $modulePath Filesystem path to the module.
-	 * @return void
 	 */
 	private function hotReload(string $slug, string $modulePath): void {
 		$container = ServiceContainer::getInstance();
@@ -1852,7 +1839,6 @@ class ModuleManager {
 	 *
 	 * @param string      $name    Module name.
 	 * @param string|null $version Latest available version, or null to clear.
-	 * @return void
 	 */
 	public function recordAvailableVersion(string $name, ?string $version): void {
 		$name    = $this->sanitizeModuleName($name);
@@ -1894,7 +1880,7 @@ class ModuleManager {
 		}
 
 		$module = $loader->getModule($name);
-		if (!$module) {
+		if (!$module instanceof \XcVm\Core\Module\ModuleInterface) {
 			throw new ModuleNotFoundException('Module instance is not available: ' . $name);
 		}
 
@@ -1909,7 +1895,7 @@ class ModuleManager {
 	 * @throws \InvalidArgumentException If the name is invalid.
 	 */
 	private function sanitizeModuleName(string $name): string {
-		$name = trim((string) $name);
+		$name = trim($name);
 		if (!preg_match('/^[a-z0-9][a-z0-9\-]*$/', $name)) {
 			throw new ModuleException('Invalid module name.');
 		}
@@ -1937,7 +1923,6 @@ class ModuleManager {
 	 * requests can never read a partially-written file.
 	 *
 	 * @param array $overrides Module overrides to persist.
-	 * @return void
 	 * @throws \RuntimeException If the file cannot be written or renamed.
 	 */
 	private function writeOverrides(array $overrides): void {
@@ -2075,7 +2060,6 @@ class ModuleManager {
 	 *
 	 * @param string $zipFilePath  Path to the zip file.
 	 * @param string $destination  Extraction target directory.
-	 * @return void
 	 * @throws \RuntimeException If extraction fails or unsafe entries are detected.
 	 */
 	private function extractZipViaZipArchive(string $zipFilePath, string $destination): void {
@@ -2177,7 +2161,6 @@ class ModuleManager {
 	 * Recursively delete a directory and its contents.
 	 *
 	 * @param string $path Path to delete.
-	 * @return void
 	 */
 	private function deleteDirectory(string $path): void {
 		if (!file_exists($path)) {
@@ -2210,7 +2193,6 @@ class ModuleManager {
 	 *
 	 * @param string $source      Source directory path.
 	 * @param string $destination Destination directory path.
-	 * @return void
 	 * @throws \RuntimeException If copying fails.
 	 */
 	private function copyDirectory(string $source, string $destination): void {

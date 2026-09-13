@@ -44,7 +44,7 @@ class ListenerProvider {
 
 		foreach ($this->listeners[$eventClass] as $priority => $group) {
 			$filtered = array_filter($group, fn($l) => $l !== $listener);
-			if (empty($filtered)) {
+			if ($filtered === []) {
 				unset($this->listeners[$eventClass][$priority]);
 			} else {
 				$this->listeners[$eventClass][$priority] = array_values($filtered);

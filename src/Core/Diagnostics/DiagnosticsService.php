@@ -101,12 +101,7 @@ class DiagnosticsService {
 		if (!in_array(strtolower($videoCodec), $videoCodecs, true)) {
 			return false;
 		}
-
-		if ($audioCodec && !in_array(strtolower($audioCodec), $audioCodecs, true)) {
-			return false;
-		}
-
-		return true;
+		return !$audioCodec || in_array(strtolower($audioCodec), $audioCodecs, true);
 	}
 
 	/**
@@ -159,14 +154,14 @@ class DiagnosticsService {
 				$errors[] = $errorData;
 			}
 
-			if (!empty($errors)) {
+			if ($errors !== []) {
 				$truncateResult = $db->query('TRUNCATE `panel_logs`;');
 				if (!$truncateResult) {
 					throw new \Exception('Failed to truncate panel logs table');
 				}
 			}
 		} catch (\Exception $e) {
-			throw new \Exception('Failed to process panel logs');
+			throw new \Exception('Failed to process panel logs', $e->getCode(), $e);
 		}
 
 		return [
@@ -240,7 +235,7 @@ class DiagnosticsService {
 
 		if ($response !== false) {
 			$responseData = json_decode($response, true);
-			if (isset($responseData['status']) && $responseData['status'] === 'success' && !empty($ids)) {
+			if (isset($responseData['status']) && $responseData['status'] === 'success' && $ids !== []) {
 				// mark sent logs instead of truncating the whole table
 				$idList = implode(',', array_map('intval', $ids));
 				$db->query("UPDATE `panel_logs` SET `sent` = 1 WHERE `id` IN ($idList);");
@@ -340,15 +335,13 @@ class DiagnosticsService {
 		$rServer = ServerRepository::getById($rServerID);
 		$rGPUInfo = json_decode($rServer['gpu_info'], true);
 
-		if (!is_array($rGPUInfo)) {
-		} else {
+		if (is_array($rGPUInfo)) {
 			foreach ($rGPUInfo['gpus'] as $rGPU) {
 				foreach ($rGPU['processes'] as $rProcess) {
 					$rArray = ['pid' => $rProcess['pid'], 'memory' => $rProcess['memory'], 'stream_id' => null];
 					$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `pid` = ? AND `server_id` = ?;', $rProcess['pid'], $rServerID);
 
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rArray['stream_id'] = $db->get_row()['stream_id'];
 					}
 

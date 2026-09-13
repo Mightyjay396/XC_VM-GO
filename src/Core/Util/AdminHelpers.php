@@ -57,7 +57,7 @@ class AdminHelpers {
 	public static function overwriteData(array $rData, array $rOverwrite, array $rSkip = []) {
 		foreach ($rOverwrite as $rKey => $rValue) {
 			if (array_key_exists($rKey, $rData) && !in_array($rKey, $rSkip)) {
-				if (!(empty($rValue) && is_null($rData[$rKey]))) {
+				if (!empty($rValue) || !is_null($rData[$rKey])) {
 					$rData[$rKey] = $rValue;
 				}
 			}
@@ -154,7 +154,7 @@ class AdminHelpers {
 	 * @return array Reordered array.
 	 */
 	public static function sortArrayByArray(array $rArray, array $rSort) {
-		if (empty($rArray) || empty($rSort)) {
+		if ($rArray === [] || $rSort === []) {
 			return [];
 		}
 
@@ -195,14 +195,11 @@ class AdminHelpers {
 	 * @return string e.g. "02d 03h 04m" or "03h 04m 05s".
 	 */
 	public static function formatUptime(int $rUptime) {
-		$rUptime = (int) $rUptime;
 		if (86400 <= $rUptime) {
-			$rUptime = sprintf('%02dd %02dh %02dm', intdiv($rUptime, 86400), intdiv($rUptime, 3600) % 24, intdiv($rUptime, 60) % 60);
-		} else {
-			$rUptime = sprintf('%02dh %02dm %02ds', intdiv($rUptime, 3600), intdiv($rUptime, 60) % 60, $rUptime % 60);
+			return sprintf('%02dd %02dh %02dm', intdiv($rUptime, 86400), intdiv($rUptime, 3600) % 24, intdiv($rUptime, 60) % 60);
 		}
 
-		return $rUptime;
+		return sprintf('%02dh %02dm %02ds', intdiv($rUptime, 3600), intdiv($rUptime, 60) % 60, $rUptime % 60);
 	}
 
 	/**
@@ -253,7 +250,7 @@ class AdminHelpers {
 			}
 		} catch (\Exception $e) {
 			date_default_timezone_set($original_timezone);
-			throw new \RuntimeException('Error processing timezone list: ' . $e->getMessage());
+			throw new \RuntimeException('Error processing timezone list: ' . $e->getMessage(), $e->getCode(), $e);
 		}
 
 		date_default_timezone_set($original_timezone);

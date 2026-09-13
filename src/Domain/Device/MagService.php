@@ -211,9 +211,8 @@ class MagService {
 			}
 
 			return ['status' => STATUS_SUCCESS];
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -292,7 +291,7 @@ class MagService {
 			$rUserArray['bouquet'] = '[' . implode(',', array_map('intval', $rUserArray['bouquet'])) . ']';
 
 			if (isset($rData['exp_date']) && !isset($rData['no_expire'])) {
-				if (0 < strlen($rData['exp_date']) && $rData['exp_date'] != '1970-01-01') {
+				if ((string) $rData['exp_date'] !== '' && $rData['exp_date'] != '1970-01-01') {
 					try {
 						$rDate = new \DateTime($rData['exp_date']);
 						$rUserArray['exp_date'] = $rDate->format('U');
@@ -451,8 +450,7 @@ class MagService {
 		$rRow['user'] = UserRepository::getLineById($rRow['user_id']);
 		$db->query('SELECT `pair_id` FROM `lines` WHERE `id` = ?;', $rRow['user_id']);
 
-		if ($db->num_rows() != 1) {
-		} else {
+		if ($db->num_rows() == 1) {
 			$rRow['paired'] = UserRepository::getLineById($rRow['user']['pair_id']);
 		}
 
@@ -481,8 +479,7 @@ class MagService {
 		$db->query('DELETE FROM `mag_events` WHERE `mag_device_id` = ?;', $rID);
 		$db->query('DELETE FROM `mag_logs` WHERE `mag_id` = ?;', $rID);
 
-		if (!$rMag['user']) {
-		} else {
+		if ($rMag['user']) {
 			if ($rConvert) {
 				$db->query('UPDATE `lines` SET `is_mag` = 0 WHERE `id` = ?;', $rMag['user']['id']);
 				LineService::updateLineSignal($rMag['user']['id']);
@@ -493,8 +490,7 @@ class MagService {
 				$db->query('SELECT `device_id` FROM `enigma2_devices` WHERE `user_id` = ?;', $rMag['user']['id']);
 				$rCount += $db->num_rows();
 
-				if ($rCount != 0) {
-				} else {
+				if ($rCount == 0) {
 					LineService::deleteLineById($rMag['user']['id'], $rDeletePaired, $rCloseCons);
 				}
 			}
@@ -528,8 +524,7 @@ class MagService {
 		$db->query('DELETE FROM `mag_events` WHERE `mag_device_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `mag_logs` WHERE `mag_id` IN (' . implode(',', $rIDs) . ');');
 
-		if (0 >= count($rUserIDs)) {
-		} else {
+		if (0 < count($rUserIDs)) {
 			LineRepository::deleteMany($rUserIDs);
 		}
 

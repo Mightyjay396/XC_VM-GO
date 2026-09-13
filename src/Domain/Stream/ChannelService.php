@@ -97,8 +97,7 @@ class ChannelService {
 				$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 				$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-				if (!$db->query($rQuery, ...$rPrepare['data'])) {
-				} else {
+				if ($db->query($rQuery, ...$rPrepare['data'])) {
 					$rBouquetID = $db->last_insert_id();
 					$rBouquetCreate[$rBouquet] = $rBouquetID;
 				}
@@ -109,8 +108,7 @@ class ChannelService {
 				$rPrepare = QueryHelper::prepareArray(['category_type' => 'live', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 				$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-				if (!$db->query($rQuery, ...$rPrepare['data'])) {
-				} else {
+				if ($db->query($rQuery, ...$rPrepare['data'])) {
 					$rCategoryID = $db->last_insert_id();
 					$rCategoryCreate[$rCategory] = $rCategoryID;
 				}
@@ -121,8 +119,7 @@ class ChannelService {
 				if (isset($rBouquetCreate[$rBouquet])) {
 					$rBouquets[] = $rBouquetCreate[$rBouquet];
 				} else {
-					if (!is_numeric($rBouquet)) {
-					} else {
+					if (is_numeric($rBouquet)) {
 						$rBouquets[] = intval($rBouquet);
 					}
 				}
@@ -140,13 +137,11 @@ class ChannelService {
 			}
 			$rArray['category_id'] = '[' . implode(',', array_map('intval', $rCategories)) . ']';
 
-			if (!$rSettings['download_images']) {
-			} else {
+			if ($rSettings['download_images']) {
 				$rArray['stream_icon'] = ImageUtils::downloadImage($rArray['stream_icon'], 3);
 			}
 
-			if (isset($rData['edit'])) {
-			} else {
+			if (!isset($rData['edit'])) {
 				$rArray['order'] = StreamRepository::getNextOrder();
 			}
 
@@ -157,10 +152,8 @@ class ChannelService {
 				$rInsertID = $db->last_insert_id();
 				$rStreamExists = [];
 
-				if (!isset($rData['edit'])) {
-				} else {
+				if (isset($rData['edit'])) {
 					$db->query('SELECT `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rInsertID);
-
 					foreach ($db->get_rows() as $rRow) {
 						$rStreamExists[intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
 					}
@@ -170,18 +163,15 @@ class ChannelService {
 				$rServerTree = json_decode($rData['server_tree_data'], true);
 
 				foreach ($rServerTree as $rServer) {
-					if ($rServer['parent'] == '#') {
-					} else {
+					if ($rServer['parent'] != '#') {
 						$rServerID = intval($rServer['id']);
 						$rStreamsAdded[] = $rServerID;
 						$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? [])));
-
 						if ($rServer['parent'] == 'source') {
 							$rParent = null;
 						} else {
 							$rParent = intval($rServer['parent']);
 						}
-
 						if (isset($rStreamExists[$rServerID])) {
 							$db->query('UPDATE `streams_servers` SET `parent_id` = ?, `on_demand` = ? WHERE `server_stream_id` = ?;', $rParent, $rOD, $rStreamExists[$rServerID]);
 						} else {
@@ -191,8 +181,7 @@ class ChannelService {
 				}
 
 				foreach ($rStreamExists as $rServerID => $rDBID) {
-					if (in_array($rServerID, $rStreamsAdded)) {
-					} else {
+					if (!in_array($rServerID, $rStreamsAdded)) {
 						StreamRepository::deleteStream($rInsertID, $rServerID, false, false);
 					}
 				}
@@ -211,11 +200,9 @@ class ChannelService {
 					BouquetService::addItems('stream', $rBouquet, $rInsertID);
 				}
 
-				if (!isset($rData['edit'])) {
-				} else {
+				if (isset($rData['edit'])) {
 					foreach (BouquetService::getAllSimple() as $rBouquet) {
-						if (in_array($rBouquet['id'], $rBouquets)) {
-						} else {
+						if (!in_array($rBouquet['id'], $rBouquets)) {
 							BouquetService::removeItems('stream', $rBouquet['id'], $rInsertID);
 						}
 					}
@@ -224,12 +211,10 @@ class ChannelService {
 				StreamProcess::updateStream($rInsertID);
 
 				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
-			} else {
-				return ['status' => STATUS_FAILURE, 'data' => $rData];
 			}
-		} else {
-			return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
 		}
+		return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
 	}
 
 	/**
@@ -248,8 +233,7 @@ class ChannelService {
 		$rArray = [];
 
 		foreach (['allow_record', 'rtmp_output'] as $rKey) {
-			if (!isset($rData['c_' . $rKey])) {
-			} else {
+			if (isset($rData['c_' . $rKey])) {
 				if (isset($rData[$rKey])) {
 					$rArray[$rKey] = 1;
 				} else {
@@ -258,10 +242,8 @@ class ChannelService {
 			}
 		}
 
-		if (!isset($rData['c_transcode_profile_id'])) {
-		} else {
+		if (isset($rData['c_transcode_profile_id'])) {
 			$rArray['transcode_profile_id'] = $rData['transcode_profile_id'];
-
 			if (0 < $rArray['transcode_profile_id']) {
 				$rArray['enable_transcode'] = 1;
 			} else {
@@ -271,22 +253,16 @@ class ChannelService {
 
 		$rStreamIDs = json_decode($rData['streams'], true);
 
-		if (0 >= count($rStreamIDs)) {
-		} else {
+		if (0 < count($rStreamIDs)) {
 			$rCategoryMap = [];
-
-			if (!(isset($rData['c_category_id']) && in_array($rData['category_id_type'], ['ADD', 'DEL']))) {
-			} else {
+			if (isset($rData['c_category_id']) && in_array($rData['category_id_type'], ['ADD', 'DEL'])) {
 				$db->query('SELECT `id`, `category_id` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
-
 				foreach ($db->get_rows() as $rRow) {
 					$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: []);
 				}
 			}
-
 			$rDeleteServers = $rProcessServers = $rStreamExists = [];
 			$db->query('SELECT `stream_id`, `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
-
 			foreach ($db->get_rows() as $rRow) {
 				$rStreamExists[intval($rRow['stream_id'])][intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
 				$rProcessServers[intval($rRow['stream_id'])][] = intval($rRow['server_id']);
@@ -294,56 +270,43 @@ class ChannelService {
 			$rBouquets = BouquetService::getAllSimple();
 			$rAddBouquet = $rDelBouquet = [];
 			$rEncQuery = $rAddQuery = '';
-
 			foreach ($rStreamIDs as $rStreamID) {
-				if (!isset($rData['c_category_id'])) {
-				} else {
+				if (isset($rData['c_category_id'])) {
 					$rCategories = array_map('intval', $rData['category_id']);
-
 					if ($rData['category_id_type'] == 'ADD') {
 						foreach (($rCategoryMap[$rStreamID] ?: []) as $rCategoryID) {
-							if (in_array($rCategoryID, $rCategories)) {
-							} else {
+							if (!in_array($rCategoryID, $rCategories)) {
 								$rCategories[] = $rCategoryID;
 							}
 						}
 					} else {
-						if ($rData['category_id_type'] != 'DEL') {
-						} else {
+						if ($rData['category_id_type'] == 'DEL') {
 							$rNewCategories = $rCategoryMap[$rStreamID];
-
 							foreach ($rCategories as $rCategoryID) {
-								if (($rKey = array_search($rCategoryID, $rNewCategories)) === false) {
-								} else {
+								if (($rKey = array_search($rCategoryID, $rNewCategories)) !== false) {
 									unset($rNewCategories[$rKey]);
 								}
 							}
 							$rCategories = $rNewCategories;
 						}
 					}
-
 					$rArray['category_id'] = '[' . implode(',', $rCategories) . ']';
 				}
 
 				$rPrepare = QueryHelper::prepareArray($rArray);
 
-				if (0 >= count($rPrepare['data'])) {
-				} else {
+				if (0 < count($rPrepare['data'])) {
 					$rPrepare['data'][] = $rStreamID;
 					$rQuery = 'UPDATE `streams` SET ' . $rPrepare['update'] . ' WHERE `id` = ?;';
 					$db->query($rQuery, ...$rPrepare['data']);
 				}
 
-				if (!isset($rData['c_server_tree'])) {
-				} else {
+				if (isset($rData['c_server_tree'])) {
 					$rStreamsAdded = [];
 					$rServerTree = json_decode($rData['server_tree_data'], true);
-
 					foreach ($rServerTree as $rServer) {
-						if ($rServer['parent'] == '#') {
-						} else {
+						if ($rServer['parent'] != '#') {
 							$rServerID = intval($rServer['id']);
-
 							if (in_array($rData['server_type'], ['ADD', 'SET'])) {
 								$rStreamsAdded[] = $rServerID;
 								$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? [])));
@@ -362,23 +325,17 @@ class ChannelService {
 
 								$rProcessServers[$rStreamID][] = $rServerID;
 							} else {
-								if (!isset($rStreamExists[$rStreamID][$rServerID])) {
-								} else {
+								if (isset($rStreamExists[$rStreamID][$rServerID])) {
 									$rDeleteServers[$rServerID][] = $rStreamID;
 								}
 							}
 						}
 					}
-
-					if ($rData['server_type'] != 'SET') {
-					} else {
+					if ($rData['server_type'] == 'SET') {
 						foreach ($rStreamExists as $rServerID => $rDBID) {
-							if (in_array($rServerID, $rStreamsAdded)) {
-							} else {
+							if (!in_array($rServerID, $rStreamsAdded)) {
 								$rDeleteServers[$rServerID][] = $rStreamID;
-
-								if (($rKey = array_search($rServerID, $rProcessServers[$rStreamID])) === false) {
-								} else {
+								if (($rKey = array_search($rServerID, $rProcessServers[$rStreamID])) !== false) {
 									unset($rProcessServers[$rStreamID][$rKey]);
 								}
 							}
@@ -386,16 +343,14 @@ class ChannelService {
 					}
 				}
 
-				if (!isset($rData['c_bouquets'])) {
-				} else {
+				if (isset($rData['c_bouquets'])) {
 					if ($rData['bouquets_type'] == 'SET') {
 						foreach ($rData['bouquets'] as $rBouquet) {
 							$rAddBouquet[$rBouquet][] = $rStreamID;
 						}
 
 						foreach ($rBouquets as $rBouquet) {
-							if (in_array($rBouquet['id'], $rData['bouquets'])) {
-							} else {
+							if (!in_array($rBouquet['id'], $rData['bouquets'])) {
 								$rDelBouquet[$rBouquet['id']][] = $rStreamID;
 							}
 						}
@@ -405,8 +360,7 @@ class ChannelService {
 								$rAddBouquet[$rBouquet][] = $rStreamID;
 							}
 						} else {
-							if ($rData['bouquets_type'] != 'DEL') {
-							} else {
+							if ($rData['bouquets_type'] == 'DEL') {
 								foreach ($rData['bouquets'] as $rBouquet) {
 									$rDelBouquet[$rBouquet][] = $rStreamID;
 								}
@@ -415,47 +369,37 @@ class ChannelService {
 					}
 				}
 
-				if (!isset($rData['reencode_on_edit'])) {
-				} else {
+				if (isset($rData['reencode_on_edit'])) {
 					foreach ($rProcessServers[$rStreamID] as $rServerID) {
 						$rEncQuery .= "('channel', " . intval($rStreamID) . ', ' . intval($rServerID) . ', ' . time() . '),';
 					}
 				}
 			}
-
 			foreach ($rDeleteServers as $rServerID => $rDeleteIDs) {
 				StreamRepository::deleteStreamsByServer($rDeleteIDs, $rServerID, false);
 			}
-
 			foreach ($rAddBouquet as $rBouquetID => $rAddIDs) {
 				BouquetService::addItems('stream', $rBouquetID, $rAddIDs);
 			}
-
 			foreach ($rDelBouquet as $rBouquetID => $rRemIDs) {
 				BouquetService::removeItems('stream', $rBouquetID, $rRemIDs);
 			}
-
-			if (empty($rAddQuery)) {
-			} else {
+			if (!empty($rAddQuery)) {
 				$rAddQuery = rtrim($rAddQuery, ',');
 				$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `on_demand`) VALUES ' . $rAddQuery . ';');
 			}
-
 			StreamProcess::updateStreams($rStreamIDs);
-
 			if (isset($rData['reencode_on_edit'])) {
 				$db->query("UPDATE `streams_servers` SET `pids_create_channel` = '[]', `cchannel_rsources` = '[]' WHERE `stream_id` IN (" . implode(',', array_map('intval', $rStreamIDs)) . ');');
 
-				if (empty($rEncQuery)) {
-				} else {
+				if (!empty($rEncQuery)) {
 					$rEncQuery = rtrim($rEncQuery, ',');
 					$db->query('INSERT INTO `queue`(`type`, `stream_id`, `server_id`, `added`) VALUES ' . $rEncQuery . ';');
 				}
 
 				ApiClient::request(['action' => 'stream', 'sub' => 'stop', 'stream_ids' => array_values($rStreamIDs)]);
 			} else {
-				if (!isset($rData['restart_on_edit'])) {
-				} else {
+				if (isset($rData['restart_on_edit'])) {
 					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)]);
 				}
 			}

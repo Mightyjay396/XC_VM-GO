@@ -140,21 +140,20 @@ class StringWalker implements ParserInterface {
 	protected function prepareChunk(StreamInterface $stream) {
 		if (!$this->firstRun && is_null($this->shaved)) {
 			$this->shaved = '';
-
 			return true;
-		} elseif (is_null($this->shaved)) {
+		}
+		if (is_null($this->shaved)) {
 			$this->shaved = '';
 		}
 
 		$newChunk = $stream->getChunk();
-
 		if ($newChunk !== false) {
 			$this->chunk .= $newChunk;
-
 			return true;
-		} elseif ((trim($this->chunk) !== '') && ($this->chunk !== $this->lastChunk)) {
-			$this->lastChunk = $this->chunk;
+		}
 
+		if ((trim($this->chunk) !== '') && ($this->chunk !== $this->lastChunk)) {
+			$this->lastChunk = $this->chunk;
 			return true;
 		}
 

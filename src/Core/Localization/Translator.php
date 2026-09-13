@@ -17,10 +17,8 @@ class Translator {
 	/** @var array<string, string> */
 	private static array $translations = [];
 
-	/** @var string */
 	private static string $currentLang = 'en';
 
-	/** @var string */
 	private static string $langsDir = __DIR__ . '/lang/';
 
 	/** @var string[] */
@@ -86,7 +84,7 @@ class Translator {
 			self::$translations[$key] = $text;
 		}
 
-		return !empty($replace) ? strtr($text, $replace) : $text;
+		return $replace !== [] ? strtr($text, $replace) : $text;
 	}
 
 	/**
@@ -119,8 +117,8 @@ class Translator {
 		}
 
 		$languages = array_unique($languages);
-		if (empty($languages)) {
-			$languages = ['en'];
+		if ($languages === []) {
+			return ['en'];
 		}
 
 		return $languages;

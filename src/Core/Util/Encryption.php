@@ -83,7 +83,7 @@ class Encryption {
 	public static function seal(string $data, string $key, string $deviceId) {
 		$rNonce = random_bytes(self::SEAL_NONCE);
 		$rTag = '';
-		$rCipher = openssl_encrypt((string) $data, 'aes-256-gcm', self::sealKey($key, $deviceId), OPENSSL_RAW_DATA, $rNonce, $rTag, '', self::SEAL_TAG);
+		$rCipher = openssl_encrypt($data, 'aes-256-gcm', self::sealKey($key, $deviceId), OPENSSL_RAW_DATA, $rNonce, $rTag, '', self::SEAL_TAG);
 		return self::base64urlEncode($rNonce . $rCipher . $rTag);
 	}
 

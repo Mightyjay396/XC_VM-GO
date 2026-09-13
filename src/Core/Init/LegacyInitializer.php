@@ -194,8 +194,6 @@ class LegacyInitializer {
 
 	/**
 	 * Export the singleton managers to legacy superglobals.
-	 *
-	 * @return void
 	 */
 	public static function exportGlobals(): void {
 		$GLOBALS["rSettings"] = SettingsManager::getAll();

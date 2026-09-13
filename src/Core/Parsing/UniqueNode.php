@@ -180,20 +180,14 @@ class UniqueNode implements ParserInterface {
 		$chunk = $stream->getChunk();
 
 		if ($chunk === false) {
-			if (($this->hasSearchedUntilPos === -1) && (0 < strlen($this->workingBlob))) {
-				return true;
-			}
-
-			return false;
-		} else {
-			if (($this->nextAction === 0) && !$this->options['extractContainer']) {
-				$this->workingBlob = substr($this->workingBlob, -1 * strlen('<' . $this->options['uniqueNode'] . '>')) . $chunk;
-			} else {
-				$this->workingBlob .= $chunk;
-			}
-
-			return true;
+			return ($this->hasSearchedUntilPos === -1) && ((string) $this->workingBlob !== '');
 		}
+		if (($this->nextAction === 0) && !$this->options['extractContainer']) {
+				$this->workingBlob = substr($this->workingBlob, -1 * strlen('<' . $this->options['uniqueNode'] . '>')) . $chunk;
+		} else {
+			$this->workingBlob .= $chunk;
+		}
+		return true;
 	}
 
 	/**

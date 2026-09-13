@@ -62,9 +62,9 @@ class EpisodeService {
 		$rArray['stream_source'] = [$rData['stream_source'] ?? $rFallbackStreamSource];
 
 		$rMovieSubtitles = $rData['movie_subtitles'] ?? '';
-		if (0 < strlen($rMovieSubtitles)) {
+		if ((string) $rMovieSubtitles !== '') {
 			$rSplit = explode(':', $rMovieSubtitles);
-			if (2 < count($rSplit) && 0 < strlen($rSplit[2])) {
+			if (2 < count($rSplit) && $rSplit[2] !== '') {
 				$rArray['movie_subtitles'] = ['files' => [$rSplit[2]], 'names' => ['Subtitles'], 'charset' => ['UTF-8'], 'location' => intval($rSplit[1])];
 			} else {
 				$rArray['movie_subtitles'] = null;
@@ -99,7 +99,7 @@ class EpisodeService {
 				TMDbService::requireLibrary();
 				$rSeries = SeriesService::getById(intval($rData['series']));
 
-				if (0 < strlen($rSettings['tmdb_language'])) {
+				if ((string) $rSettings['tmdb_language'] !== '') {
 					$rTMDB = new \TMDB($rSettings['tmdb_api_key'], $rSettings['tmdb_language']);
 				} else {
 					$rTMDB = new \TMDB($rSettings['tmdb_api_key']);
@@ -111,7 +111,7 @@ class EpisodeService {
 					$rSplit = explode('_', $rKey);
 
 					if ($rSplit[0] == 'episode' && $rSplit[2] == 'name') {
-						if (0 < strlen($rData['episode_' . $rSplit[1] . '_num'])) {
+						if ((string) $rData['episode_' . $rSplit[1] . '_num'] !== '') {
 							$rImportArray = ['filename' => '', 'properties' => [], 'name' => '', 'episode' => 0, 'target_container' => ''];
 							$rEpisodeNum = intval($rData['episode_' . $rSplit[1] . '_num']);
 							$rImportArray['filename'] = 's:' . $rData['server'] . ':' . $rData['season_folder'] . $rFilename;
@@ -129,7 +129,7 @@ class EpisodeService {
 
 							foreach ($rJSON['episodes'] as $rEpisode) {
 								if (intval($rEpisode['episode_number']) == $rEpisodeNum) {
-									if (0 < strlen($rEpisode['still_path'])) {
+									if ((string) $rEpisode['still_path'] !== '') {
 										$rImage = 'https://image.tmdb.org/t/p/w600_and_h900_bestv2' . $rEpisode['still_path'];
 
 										if ($rSettings['download_images']) {
@@ -164,7 +164,7 @@ class EpisodeService {
 			$rImportArray = ['filename' => $rArray['stream_source'][0], 'properties' => [], 'name' => $rArray['stream_display_name'], 'episode' => $rData['episode'], 'target_container' => $rData['target_container']];
 
 			$rMovieImage = $rData['movie_image'] ?? '';
-			if ($rSettings['download_images'] && 0 < strlen($rMovieImage)) {
+			if ($rSettings['download_images'] && (string) $rMovieImage !== '') {
 				$rMovieImage = ImageUtils::downloadImage($rMovieImage, 5);
 			}
 

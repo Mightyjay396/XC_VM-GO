@@ -27,8 +27,7 @@ class PageAuthorization {
 	public static function checkResellerPermissions(?string $rPage = null): bool {
 		global $rPermissions;
 
-		if ($rPage) {
-		} else {
+		if (!$rPage) {
 			$rPage = strtolower(basename($_SERVER['SCRIPT_FILENAME'], '.php'));
 		}
 
@@ -75,8 +74,7 @@ class PageAuthorization {
 	 * @return bool True if the current user may access the page.
 	 */
 	public static function checkPermissions(?string $rPage = null): bool {
-		if ($rPage) {
-		} else {
+		if (!$rPage) {
 			$rPage = strtolower(basename($_SERVER['SCRIPT_FILENAME'], '.php'));
 		}
 
@@ -91,8 +89,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_bouquet')) {
-				} else {
+				if (!(RequestManager::has('id') || !Authorization::check('adv', 'add_bouquet'))) {
 					return true;
 				}
 
@@ -115,8 +112,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'create_channel')) {
-				} else {
+				if (!(RequestManager::has('id') || !Authorization::check('adv', 'create_channel'))) {
 					return true;
 				}
 
@@ -140,8 +136,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_epg')) {
-				} else {
+				if (!(RequestManager::has('id') || !Authorization::check('adv', 'add_epg'))) {
 					return true;
 				}
 
@@ -154,8 +149,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_episode')) {
-				} else {
+				if (!(RequestManager::has('id') || !Authorization::check('adv', 'add_episode'))) {
 					return true;
 				}
 
@@ -175,8 +169,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_group')) {
-				} else {
+				if (!(RequestManager::has('id') || !Authorization::check('adv', 'add_group'))) {
 					return true;
 				}
 
@@ -210,6 +203,7 @@ class PageAuthorization {
 			case 'record':
 				return Authorization::check('adv', 'add_movie');
 			case 'recordings':
+			case 'movies':
 				return Authorization::check('adv', 'movies');
 			case 'queue':
 				return Authorization::check('adv', 'streams') || Authorization::check('adv', 'episodes') || Authorization::check('adv', 'series');
@@ -217,18 +211,14 @@ class PageAuthorization {
 				if (RequestManager::has('id') && Authorization::check('adv', 'edit_movie')) {
 					return true;
 				}
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_movie')) {
-				} else {
-					if (RequestManager::has('import') && !Authorization::check('adv', 'import_movies')) {
-					} else {
+				if (!RequestManager::has('id') && Authorization::check('adv', 'add_movie')) {
+					if (!RequestManager::has('import') || Authorization::check('adv', 'import_movies')) {
 						return true;
 					}
 				}
 				break;
 			case 'movie_mass':
 				return Authorization::check('adv', 'mass_sedits_vod');
-			case 'movies':
-				return Authorization::check('adv', 'movies');
 			case 'package':
 				if (RequestManager::has('id') && Authorization::check('adv', 'edit_package')) {
 					return true;
@@ -327,10 +317,8 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_stream')) {
-				} else {
-					if (RequestManager::has('import') && !Authorization::check('adv', 'import_streams')) {
-					} else {
+				if (!RequestManager::has('id') && Authorization::check('adv', 'add_stream')) {
+					if (!RequestManager::has('import') || Authorization::check('adv', 'import_streams')) {
 						return true;
 					}
 				}

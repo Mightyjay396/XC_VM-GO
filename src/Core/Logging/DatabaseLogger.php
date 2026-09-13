@@ -28,8 +28,6 @@ require_once __DIR__ . '/LoggerInterface.php';
 class DatabaseLogger implements LoggerInterface {
 	/**
 	 * Путь к файлу лога клиентских запросов.
-	 *
-	 * @var string|null
 	 */
 	private static ?string $logFile = null;
 
@@ -61,8 +59,6 @@ class DatabaseLogger implements LoggerInterface {
 
 	/**
 	 * Получить текущий путь к файлу лога.
-	 *
-	 * @return string
 	 */
 	public static function getLogFile(): string {
 		if (self::$logFile !== null) {

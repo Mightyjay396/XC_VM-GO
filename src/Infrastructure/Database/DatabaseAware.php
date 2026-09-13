@@ -37,7 +37,7 @@ use XcVm\Core\Database\DatabaseHandler;
  */
 trait DatabaseAware {
 	/** @var DatabaseHandler|null Explicitly injected handler (optional). */
-	private static $db = null;
+	private static $db;
 
 	/**
 	 * Explicitly inject the database handler.
@@ -46,7 +46,6 @@ trait DatabaseAware {
 	 * tests/mocks and backward compatibility with DomainDatabaseWiring.
 	 *
 	 * @param DatabaseHandler $db Database handler.
-	 * @return void
 	 */
 	public static function setDb(DatabaseHandler $db): void {
 		self::$db = $db;

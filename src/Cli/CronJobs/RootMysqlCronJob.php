@@ -168,10 +168,9 @@ class RootMysqlCronJob implements CommandInterface {
 			if (isset($checkOut[0]) && trim($checkOut[0]) === 'active') {
 				echo "[MYSQL] MariaDB successfully restarted\n";
 				return true;
-			} else {
-				echo "[MYSQL] FAILED to restart MariaDB\n";
-				return false;
 			}
+			echo "[MYSQL] FAILED to restart MariaDB\n";
+			return false;
 		}
 
 		return true;

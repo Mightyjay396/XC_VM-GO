@@ -125,7 +125,7 @@ class ServiceContainer implements ContainerInterface {
 	 * @internal Bootstrap only. Modules receive ServiceContainer via boot(ServiceContainer $c).
 	 */
 	public static function getInstance(): self {
-		if (self::$instance === null) {
+		if (!self::$instance instanceof \XcVm\Core\Container\ServiceContainer) {
 			self::$instance = new self();
 		}
 		return self::$instance;
@@ -135,7 +135,7 @@ class ServiceContainer implements ContainerInterface {
 	 * Сбросить контейнер (для тестов).
 	 */
 	public static function resetInstance(): void {
-		if (self::$instance !== null) {
+		if (self::$instance instanceof \XcVm\Core\Container\ServiceContainer) {
 			self::$instance->factories = [];
 			self::$instance->resolved  = [];
 			self::$instance->isFactory = [];
@@ -158,14 +158,13 @@ class ServiceContainer implements ContainerInterface {
 	/**
 	 * Зарегистрировать сервис.
 	 *
-	 * Если $value — callable (замыкание или [class, method]),
+	 * Если $value — callable(замыкание или [class, method]),
 	 * он будет вызван ОДИН раз при первом get(). Результат кэшируется.
 	 *
 	 * Если $value — не callable, сохраняется как готовое значение.
 	 *
 	 * @param string $id    Уникальный идентификатор (например, 'db', 'settings')
 	 * @param mixed  $value Фабрика (callable) или готовое значение
-	 * @return $this
 	 */
 	public function set(string $id, mixed $value): static {
 		// Удаляем ранее разрешённый сервис при перерегистрации
@@ -188,7 +187,6 @@ class ServiceContainer implements ContainerInterface {
 	 *
 	 * @param string   $id      Идентификатор
 	 * @param callable $factory Фабрика: function(ServiceContainer $c): mixed
-	 * @return $this
 	 */
 	public function factory(string $id, callable $factory): static {
 		unset($this->resolved[$id]);
@@ -207,7 +205,6 @@ class ServiceContainer implements ContainerInterface {
 	 *
 	 * @param string $id  Идентификатор сервиса
 	 * @param string $tag Имя тега (например, 'event.subscriber', 'cron')
-	 * @return $this
 	 */
 	public function tag(string $id, string $tag): static {
 		if (!isset($this->tags[$tag])) {
@@ -275,7 +272,6 @@ class ServiceContainer implements ContainerInterface {
 	 * Получить сервис по идентификатору.
 	 *
 	 * @param string $id Идентификатор
-	 * @return mixed
 	 * @throws NotFoundException           Если сервис не зарегистрирован
 	 * @throws \RuntimeException            Если обнаружена циклическая зависимость или фабрика бросила исключение
 	 */
@@ -330,7 +326,6 @@ class ServiceContainer implements ContainerInterface {
 	 *
 	 * @param string $id      Идентификатор
 	 * @param mixed  $default Значение по умолчанию (если сервис не найден)
-	 * @return mixed
 	 */
 	public function getOrDefault(string $id, mixed $default = null): mixed {
 		if ($this->has($id)) {
@@ -361,7 +356,6 @@ class ServiceContainer implements ContainerInterface {
 	 * Проверить, зарегистрирован ли сервис.
 	 *
 	 * @param string $id Идентификатор
-	 * @return bool
 	 */
 	public function has(string $id): bool {
 		return array_key_exists($id, $this->resolved) || isset($this->factories[$id]);
@@ -385,7 +379,6 @@ class ServiceContainer implements ContainerInterface {
 	 * Удалить сервис из контейнера.
 	 *
 	 * @param string $id Идентификатор
-	 * @return $this
 	 */
 	public function remove(string $id): static {
 		unset(
@@ -412,7 +405,6 @@ class ServiceContainer implements ContainerInterface {
 	 * Зарегистрировать несколько сервисов из массива.
 	 *
 	 * @param array $services Массив [id => value/callable, ...]
-	 * @return $this
 	 */
 	public function register(array $services): static {
 		foreach ($services as $id => $value) {
@@ -427,8 +419,6 @@ class ServiceContainer implements ContainerInterface {
 
 	/**
 	 * Магический доступ: $container->db вместо $container->get('db')
-	 *
-	 * @return mixed
 	 */
 	public function __get(string $id): mixed {
 		return $this->get($id);
@@ -436,8 +426,6 @@ class ServiceContainer implements ContainerInterface {
 
 	/**
 	 * Магическая проверка: isset($container->db)
-	 *
-	 * @return bool
 	 */
 	public function __isset(string $id): bool {
 		return $this->has($id);
@@ -488,7 +476,6 @@ class ServiceContainer implements ContainerInterface {
 	 * Throw a CircularDependencyException describing the resolution chain.
 	 *
 	 * @param string $id Service id whose creation closed the cycle.
-	 * @return never
 	 * @throws CircularDependencyException Always.
 	 */
 	private function throwCircularDependency(string $id): never {
@@ -504,8 +491,6 @@ class ServiceContainer implements ContainerInterface {
 
 	/**
 	 * Дамп содержимого контейнера (для отладки).
-	 *
-	 * @return array
 	 */
 	public function dump(): array {
 		$result = [];

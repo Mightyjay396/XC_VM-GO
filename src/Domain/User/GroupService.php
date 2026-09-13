@@ -171,7 +171,7 @@ class GroupService {
 		foreach ($db->get_rows() as $rRow) {
 			$rRow['groups'] = json_decode($rRow['groups'], true);
 
-			if ($rKey = array_search($rID, $rRow['groups']) !== false) {
+			if (($rKey = array_search($rID, $rRow['groups'])) !== false) {
 				unset($rRow['groups'][$rKey]);
 			}
 

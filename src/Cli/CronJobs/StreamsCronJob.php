@@ -57,7 +57,7 @@ class StreamsCronJob implements CommandInterface {
 	 * native remuxer redials the ingest socket by itself, so it is adopted and
 	 * the channel does not blink.
 	 */
-	private static function handOverNeedsRestart(array $rStream): int {
+	private function handOverNeedsRestart(array $rStream): int {
 		$rPID = file_exists(STREAMS_PATH . $rStream['stream_id'] . '_.pid') ? intval(@file_get_contents(STREAMS_PATH . $rStream['stream_id'] . '_.pid')) : intval($rStream['pid']);
 		if (!ProcessManager::isStreamRunning($rPID, $rStream['stream_id'])) {
 			return 0; // nothing running: a plain start
@@ -89,7 +89,7 @@ class StreamsCronJob implements CommandInterface {
 	 * @param int    $rPID          The producer's pid.
 	 * @return string The JSON to store.
 	 */
-	private static function withResourceUsage(string $rProgressJson, int $rStreamID, int $rPID): string {
+	private function withResourceUsage(string $rProgressJson, int $rStreamID, int $rPID): string {
 		$rProgress = json_decode($rProgressJson, true);
 		if (!is_array($rProgress)) {
 			$rProgress = [];
@@ -175,7 +175,7 @@ class StreamsCronJob implements CommandInterface {
 						if ($rRedis) {
 							$rCount = 0;
 							$rRedis = RedisManager::instance();
-							if ($rRedis) {
+							if ($rRedis instanceof \Redis) {
 								$rKeys = $rRedis->zRangeByScore('STREAM#' . $rStream['stream_id'], '-inf', '+inf');
 								if (count($rKeys) > 0) {
 									$rConnections = array_map('igbinary_unserialize', $rRedis->mGet($rKeys));
@@ -310,7 +310,7 @@ class StreamsCronJob implements CommandInterface {
 									$rCurrentReport = [];
 								}
 							}
-							$rProgress = $rReport ? json_encode($rReport) : ($rStream['progress_info'] ?: json_encode([]));
+							$rProgress = $rReport !== [] ? json_encode($rReport) : ($rStream['progress_info'] ?: json_encode([]));
 							file_put_contents($rProgressPath, '');
 							if ($rStream['fps_restart']) {
 								file_put_contents(STREAMS_PATH . $rStream['stream_id'] . '_.progress_check', $rProgress);
@@ -318,7 +318,7 @@ class StreamsCronJob implements CommandInterface {
 						} else {
 							$rProgress = $rStream['progress_info'];
 						}
-						$rProgress = self::withResourceUsage((string) $rProgress, intval($rStream['stream_id']), $rPID);
+						$rProgress = $this->withResourceUsage((string) $rProgress, intval($rStream['stream_id']), $rPID);
 						// A supervised stream's codecs, resolution and bitrate come
 						// from the daemon, measured off the bytes (reconcileSupervised
 						// wrote them above); recomputing them here from a stream_info
@@ -360,7 +360,7 @@ class StreamsCronJob implements CommandInterface {
 					echo "\n";
 				} else {
 					echo 'Start monitor...' . "\n\n";
-					if (StreamProcess::startMonitor($rStream['stream_id'], self::handOverNeedsRestart($rStream)) === StreamProcess::MONITOR_PHP) {
+					if (StreamProcess::startMonitor($rStream['stream_id'], $this->handOverNeedsRestart($rStream)) === StreamProcess::MONITOR_PHP) {
 						usleep(50000); // stagger PHP monitor spawns
 					}
 				}

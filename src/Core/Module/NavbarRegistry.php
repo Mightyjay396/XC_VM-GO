@@ -27,7 +27,6 @@ class NavbarRegistry {
 	 * Duplicate keys will overwrite previously registered items.
 	 *
 	 * @param NavbarItem $item The navigation item to register
-	 * @return void
 	 */
 	public static function add(NavbarItem $item): void {
 		self::$items[$item->key] = $item;
@@ -98,7 +97,7 @@ class NavbarRegistry {
 			}
 			$result[] = $item;
 		}
-		while (!empty($result) && end($result)->divider) {
+		while ($result !== [] && end($result)->divider) {
 			array_pop($result);
 		}
 		return $result;
@@ -109,8 +108,6 @@ class NavbarRegistry {
 	 *
 	 * Primarily useful for unit testing to ensure a clean state
 	 * between test cases.
-	 *
-	 * @return void
 	 */
 	public static function reset(): void {
 		self::$items = [];

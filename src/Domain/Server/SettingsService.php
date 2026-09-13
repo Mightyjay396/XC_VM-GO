@@ -30,7 +30,6 @@ class SettingsService {
 	 * which a decimal(3,2) column refuses.
 	 *
 	 * @param mixed $rValue The submitted value.
-	 * @return float|null
 	 */
 	public static function normalizeIdleBufferRatio(mixed $rValue): ?float {
 		$rValue = str_replace(',', '.', trim((string) $rValue));

@@ -78,8 +78,8 @@ class SystemInfo {
 					$rJSON['network_speed'] = $NetSpeed;
 				}
 			}
-			$rJSON['bytes_sent_total'] = (intval(trim(file_get_contents('/sys/class/net/' . $rInterface . '/statistics/tx_bytes'))) ?: 0);
-			$rJSON['bytes_received_total'] = (intval(trim(file_get_contents('/sys/class/net/' . $rInterface . '/statistics/tx_bytes'))) ?: 0);
+			$rJSON['bytes_sent_total'] = (intval(trim(file_get_contents('/sys/class/net/' . $rInterface . '/statistics/tx_bytes'))));
+			$rJSON['bytes_received_total'] = (intval(trim(file_get_contents('/sys/class/net/' . $rInterface . '/statistics/tx_bytes'))));
 			$rJSON['bytes_sent'] += $rData['out_bytes'];
 			$rJSON['bytes_received'] += $rData['in_bytes'];
 		}
@@ -171,7 +171,7 @@ class SystemInfo {
 	 * @return string e.g., "5d 3h 12m 4s"
 	 */
 	public static function getUptime() {
-		if (!(file_exists('/proc/uptime') && is_readable('/proc/uptime'))) {
+		if (!file_exists('/proc/uptime') || !is_readable('/proc/uptime')) {
 			return '';
 		}
 		$tmp = explode(' ', file_get_contents('/proc/uptime'));
@@ -189,8 +189,7 @@ class SystemInfo {
 		@exec('ls /sys/class/net/', $rOutput, $rReturnVar);
 		foreach ($rOutput as $rInterface) {
 			$rInterface = trim(rtrim($rInterface, ':'));
-			if (!($rInterface != 'lo' && substr($rInterface, 0, 4) != 'bond')) {
-			} else {
+			if ($rInterface != 'lo' && substr($rInterface, 0, 4) != 'bond') {
 				$rReturn[] = $rInterface;
 			}
 		}
@@ -208,7 +207,7 @@ class SystemInfo {
 		if (file_exists(LOGS_TMP_PATH . 'network')) {
 			$rNetwork = json_decode(file_get_contents(LOGS_TMP_PATH . 'network'), true);
 			foreach ((is_array($rNetwork) ? $rNetwork : []) as $rLine) {
-				if (!($rInterface && $rLine[0] != $rInterface) && !($rLine[0] == 'lo' || !$rInterface && substr($rLine[0], 0, 4) == 'bond')) {
+				if ((!$rInterface || $rLine[0] == $rInterface) && ($rLine[0] != 'lo' && ($rInterface || substr($rLine[0], 0, 4) != 'bond'))) {
 					$rReturn[$rLine[0]] = ['in_bytes' => intval($rLine[1] / 2), 'in_packets' => $rLine[2], 'in_errors' => $rLine[3], 'out_bytes' => intval($rLine[4] / 2), 'out_packets' => $rLine[5], 'out_errors' => $rLine[6]];
 				}
 			}
@@ -279,14 +278,11 @@ class SystemInfo {
 		$rOutput = [];
 		@exec('nvidia-smi -x -q', $rOutput, $rReturnVar);
 		$rOutput = implode('', $rOutput);
-		if (stripos($rOutput, '<?xml') === false) {
-		} else {
+		if (stripos($rOutput, '<?xml') !== false) {
 			$rJSON = json_decode(json_encode(simplexml_load_string($rOutput)), true);
-			if (!isset($rJSON['driver_version'])) {
-			} else {
+			if (isset($rJSON['driver_version'])) {
 				$rGPU = ['attached_gpus' => $rJSON['attached_gpus'], 'driver_version' => $rJSON['driver_version'], 'cuda_version' => $rJSON['cuda_version'], 'gpus' => []];
-				if (!isset($rJSON['gpu']['board_id'])) {
-				} else {
+				if (isset($rJSON['gpu']['board_id'])) {
 					$rJSON['gpu'] = [$rJSON['gpu']];
 				}
 				foreach ($rJSON['gpu'] as $rInstance) {

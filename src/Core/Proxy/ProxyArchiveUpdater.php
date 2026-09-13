@@ -84,7 +84,7 @@ class ProxyArchiveUpdater {
 		$rReachable = true;
 		try {
 			$rReleases = $this->repo->getReleases();
-			if (!empty($rReleases) && GitHubReleases::isValidVersion((string) $rReleases[0])) {
+			if ($rReleases !== [] && GitHubReleases::isValidVersion((string) $rReleases[0])) {
 				$rVersion = (string) $rReleases[0];
 			}
 		} catch (\Throwable $e) {

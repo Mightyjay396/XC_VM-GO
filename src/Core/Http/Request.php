@@ -42,13 +42,13 @@ class Request {
 	protected $input = [];
 
 	/** @var string Raw POST body */
-	protected $rawBody = null;
+	protected $rawBody;
 
 	/** @var string Client IP address */
-	protected $clientIp = null;
+	protected $clientIp;
 
 	/** @var Request|null Captured singleton for static access */
-	protected static $captured = null;
+	protected static $captured;
 
 	/**
 	 * Create from raw superglobals
@@ -351,6 +351,7 @@ class Request {
 		} else {
 			return null;
 		}
+		return null;
 	}
 
 	/**

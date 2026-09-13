@@ -54,8 +54,6 @@ class RequestManager {
 	 *
 	 * Прямая замена `isset(getAll()['key'])` — `isset()` нельзя применять к
 	 * результату get(), поэтому для проверок существования нужен этот метод.
-	 *
-	 * @return bool
 	 */
 	public static function has(string $key): bool {
 		return isset(self::$request[$key]);

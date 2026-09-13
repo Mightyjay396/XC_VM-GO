@@ -217,7 +217,6 @@ class ConnectionTracker {
 	 *
 	 * @param int $rStreamID Stream ID.
 	 * @param int $rAddPID   Process PID to add.
-	 * @return void
 	 */
 	public static function addToQueue(int $rStreamID, int $rAddPID): void {
 		$rActivePIDs = $rPIDs = [];
@@ -242,7 +241,6 @@ class ConnectionTracker {
 	 *
 	 * @param int $rStreamID Stream ID.
 	 * @param int $rPID      Process PID to remove.
-	 * @return void
 	 */
 	public static function removeFromQueue(int $rStreamID, int $rPID): void {
 		$rQueueFile = SIGNALS_TMP_PATH . 'queue_' . intval($rStreamID);
@@ -276,7 +274,7 @@ class ConnectionTracker {
 	 */
 	public static function updateConnection(array $rData, array $rChanges = [], ?string $rOption = null): ?array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return null;
 		}
 		$rOrigData = $rData;
@@ -338,7 +336,7 @@ class ConnectionTracker {
 	 */
 	public static function redisSignal(int $rPID, int $rServerID, int $rRTMP, mixed $rCustomData = null) {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return false;
 		}
 		// The payload is part of the key when there is one: pid-less signals
@@ -361,7 +359,7 @@ class ConnectionTracker {
 	 */
 	public static function getUserConnections(array $rUserIDs, bool $rCount = false, bool $rKeysOnly = false): array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
 		$rMulti = $rRedis->multi();
@@ -384,7 +382,7 @@ class ConnectionTracker {
 		}
 		$rRedisKeys = array_unique($rRedisKeys);
 		if (!$rKeysOnly) {
-			if (!$rCount && !empty($rRedisKeys)) {
+			if (!$rCount && $rRedisKeys !== []) {
 				foreach ($rRedis->mGet($rRedisKeys) as $rRow) {
 					$rRow = igbinary_unserialize($rRow);
 					$rConnectionMap[$rRow['user_id']][] = $rRow;
@@ -408,7 +406,7 @@ class ConnectionTracker {
 	 */
 	public static function getServerConnections(array $rServerIDs, bool $rProxy = false, bool $rCount = false, bool $rKeysOnly = false): array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
 		$rMulti = $rRedis->multi();
@@ -431,7 +429,7 @@ class ConnectionTracker {
 		}
 		$rRedisKeys = array_unique($rRedisKeys);
 		if (!$rKeysOnly) {
-			if (!$rCount && !empty($rRedisKeys)) {
+			if (!$rCount && $rRedisKeys !== []) {
 				foreach ($rRedis->mGet($rRedisKeys) as $rRow) {
 					$rRow = igbinary_unserialize($rRow);
 					$rConnectionMap[$rRow['server_id']][] = $rRow;
@@ -452,7 +450,7 @@ class ConnectionTracker {
 	 */
 	public static function getFirstConnection(array $rUserIDs): array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
 		$rMulti = $rRedis->multi();
@@ -469,7 +467,7 @@ class ConnectionTracker {
 				$rRedisKeys[] = $rKeys[0];
 			}
 		}
-		if (empty($rRedisKeys)) {
+		if ($rRedisKeys === []) {
 			return $rConnectionMap;
 		}
 		foreach ($rRedis->mGet(array_unique($rRedisKeys)) as $rRow) {
@@ -491,7 +489,7 @@ class ConnectionTracker {
 	 */
 	public static function getStreamConnections(array $rStreamIDs, bool $rGroup = true, bool $rCount = false): array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
 		$rMulti = $rRedis->multi();
@@ -512,7 +510,7 @@ class ConnectionTracker {
 				}
 			}
 		}
-		if (!$rCount && !empty($rRedisKeys)) {
+		if (!$rCount && $rRedisKeys !== []) {
 			foreach ($rRedis->mGet(array_unique($rRedisKeys)) as $rRow) {
 				$rRow = igbinary_unserialize($rRow);
 				if ($rGroup) {
@@ -549,7 +547,7 @@ class ConnectionTracker {
 	 * @return array<int,int> stream_id => restreamer count.
 	 */
 	public static function attachedRestreamCounts(array $rStreamIDs, int $rServerID): array {
-		if (empty($rStreamIDs)) {
+		if ($rStreamIDs === []) {
 			return [];
 		}
 		$db = self::db();
@@ -572,7 +570,7 @@ class ConnectionTracker {
 	 * @return array<int,int> stream_id => viewer count.
 	 */
 	public static function onlineClientCounts(array $rStreamIDs, int $rServerID): array {
-		if (empty($rStreamIDs)) {
+		if ($rStreamIDs === []) {
 			return [];
 		}
 		$db = self::db();
@@ -602,7 +600,7 @@ class ConnectionTracker {
 	 */
 	public static function getRedisConnections(?int $rUserID = null, ?int $rServerID = null, ?int $rStreamID = null, bool $rOpenOnly = false, bool $rCountOnly = false, bool $rGroup = true, bool $rHLSOnly = false): array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return ($rCountOnly ? [0, 0] : []);
 		}
 		$rReturn = ($rCountOnly ? [0, 0] : []);
@@ -628,7 +626,7 @@ class ConnectionTracker {
 		if (0 < count($rKeys)) {
 			foreach ($rRedis->mGet(array_unique($rKeys)) as $rRow) {
 				$rRow = igbinary_unserialize($rRow);
-				if (!($rServerID && $rServerID != $rRow['server_id']) && !($rStreamID && $rStreamID != $rRow['stream_id']) && !($rUserID && $rUserID != $rRow['user_id']) && !($rHLSOnly && $rRow['container'] == 'hls')) {
+				if ((!$rServerID || $rServerID == $rRow['server_id']) && (!$rStreamID || $rStreamID == $rRow['stream_id']) && (!$rUserID || $rUserID == $rRow['user_id']) && (!$rHLSOnly || $rRow['container'] != 'hls')) {
 					$rUUID = ($rRow['user_id'] ?: $rRow['hmac_id'] . '_' . $rRow['hmac_identifier']);
 					if ($rCountOnly) {
 						$rReturn[0]++;
@@ -661,7 +659,7 @@ class ConnectionTracker {
 	 */
 	public static function getConnection(string $rUUID): ?array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return null;
 		}
 		$raw = $rRedis->get($rUUID);
@@ -692,9 +690,9 @@ class ConnectionTracker {
 	 * @return string 32-char hex connection id.
 	 */
 	public static function hlsConnectionKey(?int $rIsHMAC, string $rIdentifier, int|string $rUserId, int $rStreamId, string $rIp, string $rUserAgent): string {
-		$rIdentity = is_null($rIsHMAC) ? ('u' . intval($rUserId)) : ('h' . $rIsHMAC . '_' . (string) $rIdentifier);
+		$rIdentity = is_null($rIsHMAC) ? ('u' . intval($rUserId)) : ('h' . $rIsHMAC . '_' . $rIdentifier);
 
-		return md5('hls#' . $rIdentity . '#' . intval($rStreamId) . '#' . (string) $rIp . '#' . (string) $rUserAgent);
+		return md5('hls#' . $rIdentity . '#' . intval($rStreamId) . '#' . $rIp . '#' . $rUserAgent);
 	}
 
 	/**
@@ -709,7 +707,7 @@ class ConnectionTracker {
 	 */
 	public static function createConnection(array $rData) {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return false;
 		}
 		$rMulti = $rRedis->multi();
@@ -884,7 +882,7 @@ class ConnectionTracker {
 	 */
 	public static function getLineConnections(int $rUserID, bool $rActive = false, bool $rKeys = false): array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
 		// zRangeByScore returns false on a failed connection — degrade to empty.
@@ -904,7 +902,7 @@ class ConnectionTracker {
 	 */
 	public static function getEnded(): array {
 		$rRedis = RedisManager::instance();
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
 		// sMembers/mGet return false on a failed connection — degrade to empty.
@@ -947,7 +945,6 @@ class ConnectionTracker {
 	 * which that node's signals daemon turns into the same call.
 	 *
 	 * @param array $rConnection Connection row (needs uuid and server_id).
-	 * @return void
 	 */
 	public static function dropDaemonViewer(array $rConnection): void {
 		global $rSettings;
@@ -984,16 +981,14 @@ class ConnectionTracker {
 		if (!empty($rActivityInfo)) {
 			global $rSettings, $rServers;
 			$db = self::db();
-			if (!$rSettings['redis_handler'] || is_object(RedisManager::instance())) {
-			} else {
+			if ($rSettings['redis_handler'] && !is_object(RedisManager::instance())) {
 				RedisManager::ensureConnected();
 			}
 			$rRedisObj = RedisManager::instance();
 			if (!$rRedisObj && $rSettings['redis_handler']) {
 				return false;
 			}
-			if (is_array($rActivityInfo)) {
-			} else {
+			if (!is_array($rActivityInfo)) {
 				if (!$rSettings['redis_handler']) {
 					if (strlen(strval($rActivityInfo)) == 32) {
 						$db->query('SELECT * FROM `lines_live` WHERE `uuid` = ?', $rActivityInfo);
@@ -1020,8 +1015,7 @@ class ConnectionTracker {
 					}
 				} else {
 					if (($rActivityInfo['container'] ?? '') == 'hls') {
-						if (!(!$rRemove && $rEnd && $rActivityInfo['hls_end'] == 0)) {
-						} else {
+						if (!$rRemove && $rEnd && $rActivityInfo['hls_end'] == 0) {
 							if ($rSettings['redis_handler']) {
 								self::updateConnection($rActivityInfo, [], 'close');
 							} else {
@@ -1033,8 +1027,7 @@ class ConnectionTracker {
 						if (intval($rActivityInfo['pid']) === 0) {
 							self::dropDaemonViewer($rActivityInfo);
 						} elseif ($rActivityInfo['server_id'] == SERVER_ID) {
-							if (!($rActivityInfo['pid'] != getmypid() && is_numeric($rActivityInfo['pid']) && 0 < $rActivityInfo['pid'])) {
-							} else {
+							if ($rActivityInfo['pid'] != getmypid() && is_numeric($rActivityInfo['pid']) && 0 < $rActivityInfo['pid']) {
 								posix_kill(intval($rActivityInfo['pid']), 9);
 							}
 						} else {
@@ -1103,7 +1096,6 @@ class ConnectionTracker {
 	 * @param int         $rDivergence     Divergence value.
 	 * @param int|null    $rIsHMAC         HMAC ID.
 	 * @param string      $rIdentifier     HMAC identifier.
-	 * @return void
 	 */
 	public static function writeOfflineActivity(array $rSettings, int $rServerID, int $rProxyID, int $rUserID, int $rStreamID, int $rStart, string $rUserAgent, string $rIP, string $rExtension, string $rGeoIP, string $rISP, string $rExternalDevice = '', int $rDivergence = 0, ?int $rIsHMAC = null, string $rIdentifier = ''): void {
 		if ($rSettings['save_closed_connection'] != 0) {
@@ -1137,8 +1129,7 @@ class ConnectionTracker {
 
 				foreach ($rParentIDs as $rParentID) {
 					foreach (self::getRedisConnections(null, $rParentID, null, true, false, false) as $rConnection) {
-						if ($rConnection['proxy_id'] != $rServerID) {
-						} else {
+						if ($rConnection['proxy_id'] == $rServerID) {
 							$rCount++;
 						}
 					}
@@ -1148,14 +1139,12 @@ class ConnectionTracker {
 			}
 
 			return $rCount;
-		} else {
-			if ($rProxy) {
-				$db->query('SELECT COUNT(*) AS `count` FROM `lines_live` WHERE `proxy_id` = ? AND `hls_end` = 0;', $rServerID);
-			} else {
-				$db->query('SELECT COUNT(*) AS `count` FROM `lines_live` WHERE `server_id` = ? AND `hls_end` = 0;', $rServerID);
-			}
-
-			return $db->get_row()['count'];
 		}
+		if ($rProxy) {
+				$db->query('SELECT COUNT(*) AS `count` FROM `lines_live` WHERE `proxy_id` = ? AND `hls_end` = 0;', $rServerID);
+		} else {
+			$db->query('SELECT COUNT(*) AS `count` FROM `lines_live` WHERE `server_id` = ? AND `hls_end` = 0;', $rServerID);
+		}
+		return $db->get_row()['count'];
 	}
 }
