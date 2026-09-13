@@ -59,7 +59,7 @@ if (RequestManager::has('api_key')) {
 	}
 } else {
 	if (isset($_SESSION['reseller'])) {
-		include __DIR__ . '/functions.php';
+		include 'functions.php';
 	} else {
 		echo json_encode($rReturn);
 		exit();

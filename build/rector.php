@@ -88,6 +88,17 @@ return RectorConfig::configure()
 		// 49 access-control checks (Authorization::check) in the API wrappers.
 		// The cosmetic De Morgan wins aren't worth that risk — leave it off.
 		SimplifyDeMorganBinaryRector::class,
+
+		// NOTE: FollowRequireByDirRector (Rector\CodingStyle\Rector\Include_)
+		// is UNSAFE here and must stay disabled if a future Rector version
+		// reintroduces it. It rewrites `include "functions.php"` (resolved via
+		// include_path / CWD at runtime) into `include __DIR__ . "/functions.php"`,
+		// pinning it to the file's own directory. The admin/reseller
+		// TableControllers include a legacy bootstrap that does NOT live next to
+		// them, so __DIR__ pointed at a non-existent path and broke every
+		// session-authenticated table load. It is not in the current rule set,
+		// so it is documented rather than listed (an unknown class in withSkip
+		// would fail config validation).
 	])
 	// Safe, behaviour-preserving sets. deadCode carries
 	// RemoveDeadIfForeachForRector (the empty-if/else collapse); codeQuality
