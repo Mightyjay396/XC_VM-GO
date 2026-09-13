@@ -55,6 +55,6 @@ class MovieMassController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Mass Edit Movies');
-		$this->render('movie_mass', compact('rCategories', 'rTranscodeProfiles', 'rServerTree'));
+		$this->render('movie_mass', ['rCategories' => $rCategories, 'rTranscodeProfiles' => $rTranscodeProfiles, 'rServerTree' => $rServerTree]);
 	}
 }

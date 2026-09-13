@@ -267,12 +267,12 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		} else {
 			$rStream = StreamRepository::getById(RequestManager::get('stream'));
 			$rStreamOptions = StreamRepository::getOptions(RequestManager::get('stream'));
-			$rUA = (0 < strlen($rStreamOptions[1]['value'])) ? ' -user_agent ' . escapeshellarg($rStreamOptions[1]['value']) : '';
+			$rUA = ((string) $rStreamOptions[1]['value'] !== '') ? ' -user_agent ' . escapeshellarg($rStreamOptions[1]['value']) : '';
 			$rCookie = RequestManager::has('cookie') ? ' -cookies ' . escapeshellarg(StreamUtils::fixCookie($rStreamOptions[17]['value'])) : '';
 			$rURL = StreamUtils::parseStreamURL(json_decode($rStream['stream_source'], true)[intval(RequestManager::get('id'))]);
 		}
 
-		if (0 < strlen($rURL)) {
+		if ((string) $rURL !== '') {
 			$rStreamInfoText = "<table style='width: 300px;' class='table-data' align='center'><tbody><tr><td colspan='4'>Stream probe failed!</td></tr></tbody></table>";
 			$rStreamInfo = null;
 

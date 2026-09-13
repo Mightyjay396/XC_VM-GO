@@ -38,7 +38,7 @@ class SettingsController extends BaseAdminController {
 
 		$binVersionData = json_decode(@file_get_contents(BIN_PATH . 'bin_version.json'), true) ?: [];
 		$BinVersion = $binVersionData['release'] ?? 'N/A';
-		$BinOS = self::resolveOsLabel($binVersionData);
+		$BinOS = $this->resolveOsLabel($binVersionData);
 
 		// xc_fanout daemon (`-version`), xcvm_core extension marker and yt-dlp — Info tab.
 		$rFanoutBin = BIN_PATH . 'xc_fanout/xc_fanout';
@@ -56,19 +56,7 @@ class SettingsController extends BaseAdminController {
 			: 'N/A';
 
 		$this->setTitle('Settings');
-		$this->render('settings', compact(
-			'rSettings',
-			'rStreamArguments',
-			'GeoLite2',
-			'GeoISP',
-			'Nginx',
-			'BinVersion',
-			'BinOS',
-			'rUpdate',
-			'FanoutVersion',
-			'XcvmCoreVersion',
-			'YtDlpVersion'
-		));
+		$this->render('settings', ['rSettings' => $rSettings, 'rStreamArguments' => $rStreamArguments, 'GeoLite2' => $GeoLite2, 'GeoISP' => $GeoISP, 'Nginx' => $Nginx, 'BinVersion' => $BinVersion, 'BinOS' => $BinOS, 'rUpdate' => $rUpdate, 'FanoutVersion' => $FanoutVersion, 'XcvmCoreVersion' => $XcvmCoreVersion, 'YtDlpVersion' => $YtDlpVersion]);
 	}
 
 	/**
@@ -81,7 +69,7 @@ class SettingsController extends BaseAdminController {
 	 *
 	 * @param array<string,mixed> $binVersionData
 	 */
-	private static function resolveOsLabel(array $binVersionData): string {
+	private function resolveOsLabel(array $binVersionData): string {
 		$dist    = trim((string) ($binVersionData['distribution'] ?? ''));
 		$version = trim((string) ($binVersionData['distribution_version'] ?? ''));
 
@@ -94,7 +82,7 @@ class SettingsController extends BaseAdminController {
 			if (!empty($osRelease['PRETTY_NAME'])) {
 				return (string) $osRelease['PRETTY_NAME'];
 			}
-			$label = trim((string) ($osRelease['NAME'] ?? '') . ' ' . (string) ($osRelease['VERSION_ID'] ?? ''));
+			$label = trim(($osRelease['NAME'] ?? '') . ' ' . ($osRelease['VERSION_ID'] ?? ''));
 			if ($label !== '') {
 				return $label;
 			}

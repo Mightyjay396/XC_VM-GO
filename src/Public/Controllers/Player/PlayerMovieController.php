@@ -52,14 +52,12 @@ class PlayerMovieController extends BasePlayerController {
 			$rSimilar = [];
 			$rSimilarArray = json_decode($rStream['similar'], true);
 
-			if (0 >= count($rSimilarArray)) {
-			} else {
+			if (0 < count($rSimilarArray)) {
 				if (SettingsManager::get('player_hide_incompatible')) {
 					$db->query('SELECT * FROM `streams` WHERE `tmdb_id` IN (' . implode(',', $rSimilarArray) . ') AND (SELECT MAX(`compatible`) FROM `streams_servers` WHERE `streams_servers`.`stream_id` = `streams`.`id` LIMIT 1) = 1 LIMIT 6;');
 				} else {
 					$db->query('SELECT * FROM `streams` WHERE `tmdb_id` IN (' . implode(',', $rSimilarArray) . ') LIMIT 6;');
 				}
-
 				foreach ($db->get_rows() as $rRow) {
 					$rSimilarProperties = json_decode($rRow['movie_properties'], true);
 						$rSimilar[] = ['type' => 'movie', 'id' => $rRow['id'], 'title' => ($rRow['title'] ?? $rRow['stream_display_name']), 'year' => ($rRow['year'] ?: null), 'rating' => $rSimilarProperties['rating'], 'cover' => (ImageUtils::validateURL($rSimilarProperties['movie_image']) ?: ''), 'backdrop' => (ImageUtils::validateURL($rSimilarProperties['backdrop_path'][0] ?? '') ?: '')];
@@ -67,23 +65,19 @@ class PlayerMovieController extends BasePlayerController {
 				}
 			}
 
-			if (count($rSimilar) >= 6) {
-			} else {
+			if (count($rSimilar) < 6) {
 				if (0 < count($rSimilarIDs)) {
 					$rPrevious = '`stream_id` NOT IN (' . implode(',', $rSimilarIDs) . ') AND ';
 				} else {
 					$rPrevious = '';
 				}
-
 				if (SettingsManager::get('player_hide_incompatible')) {
 					$db->query('SELECT `streams`.*, COUNT(`user_id`) AS `count` FROM `lines_activity` LEFT JOIN `streams` ON `streams`.`id` = `lines_activity`.`stream_id` WHERE `user_id` IN (SELECT DISTINCT(`user_id`) FROM `lines_activity` WHERE `stream_id` = ? AND (`date_end` - `date_start` > 60)) AND `type` = 2 AND ' . $rPrevious . ' `stream_id` IN (' . implode(',', $rUserInfo['vod_ids']) . ') AND (SELECT MAX(`compatible`) FROM `streams_servers` WHERE `streams_servers`.`stream_id` = `streams`.`id` LIMIT 1) = 1 GROUP BY `stream_id` ORDER BY `count` DESC LIMIT ' . (6 - count($rSimilar)) . ';', $rStream['id']);
 				} else {
 					$db->query('SELECT `streams`.*, COUNT(`user_id`) AS `count` FROM `lines_activity` LEFT JOIN `streams` ON `streams`.`id` = `lines_activity`.`stream_id` WHERE `user_id` IN (SELECT DISTINCT(`user_id`) FROM `lines_activity` WHERE `stream_id` = ? AND (`date_end` - `date_start` > 60)) AND `type` = 2 AND ' . $rPrevious . ' `stream_id` IN (' . implode(',', $rUserInfo['vod_ids']) . ') GROUP BY `stream_id` ORDER BY `count` DESC LIMIT ' . (6 - count($rSimilar)) . ';', $rStream['id']);
 				}
-
 				foreach ($db->get_rows() as $rRow) {
-					if (!$rRow['id']) {
-					} else {
+					if ($rRow['id']) {
 						$rSimilarProperties = json_decode($rRow['movie_properties'], true);
 						$rSimilar[] = ['type' => 'movie', 'id' => $rRow['id'], 'title' => ($rRow['title'] ?? $rRow['stream_display_name']), 'year' => ($rRow['year'] ?: null), 'rating' => $rSimilarProperties['rating'], 'cover' => (ImageUtils::validateURL($rSimilarProperties['movie_image']) ?: ''), 'backdrop' => (ImageUtils::validateURL($rSimilarProperties['backdrop_path'][0] ?? '') ?: '')];
 						$rSimilarIDs[] = $rRow['id'];

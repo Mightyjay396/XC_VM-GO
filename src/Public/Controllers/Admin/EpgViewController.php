@@ -83,16 +83,6 @@ class EpgViewController extends BaseAdminController {
 		}
 
 		$this->setTitle('TV Guide');
-		$this->render('epg_view', compact(
-			'rPageInt',
-			'rLimit',
-			'rStart',
-			'rStreamIDs',
-			'rCount',
-			'rPages',
-			'rPagination',
-			'rWhereString',
-			'rOrderBy'
-		));
+		$this->render('epg_view', ['rPageInt' => $rPageInt, 'rLimit' => $rLimit, 'rStart' => $rStart, 'rStreamIDs' => $rStreamIDs, 'rCount' => $rCount, 'rPages' => $rPages, 'rPagination' => $rPagination, 'rWhereString' => $rWhereString, 'rOrderBy' => $rOrderBy]);
 	}
 }

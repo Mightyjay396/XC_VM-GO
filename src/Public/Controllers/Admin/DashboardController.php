@@ -39,8 +39,7 @@ class DashboardController extends BaseAdminController {
 		}
 
 		// Server ID validation
-		if (!RequestManager::has('server_id') || isset($rServers[RequestManager::get('server_id')])) {
-		} else {
+		if (RequestManager::has('server_id') && !isset($rServers[RequestManager::get('server_id')])) {
 			$this->redirect('dashboard');
 			return;
 		}
@@ -55,8 +54,7 @@ class DashboardController extends BaseAdminController {
 			$db->query('SELECT `geoip_country_code`, COUNT(`geoip_country_code`) AS `count` FROM `lines_activity` GROUP BY `geoip_country_code` ORDER BY `count` DESC;');
 		}
 
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			$i = 0;
 			foreach ($db->get_rows() as $rRow) {
 				if ($i < count($rColourMap)) {
@@ -113,15 +111,7 @@ class DashboardController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Dashboard');
-		$this->render('dashboard', compact(
-			'rColours',
-			'rColourMap',
-			'rConnectionMap',
-			'rConnectionCount',
-			'rServerStats',
-			'rOrderedServers',
-			'rStatusItems'
-		));
+		$this->render('dashboard', ['rColours' => $rColours, 'rColourMap' => $rColourMap, 'rConnectionMap' => $rConnectionMap, 'rConnectionCount' => $rConnectionCount, 'rServerStats' => $rServerStats, 'rOrderedServers' => $rOrderedServers, 'rStatusItems' => $rStatusItems]);
 	}
 
 	/**

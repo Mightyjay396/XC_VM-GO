@@ -28,7 +28,7 @@ class TmdbController {
 		}
 
 		$term = RequestManager::get('term') ?? '';
-		if (strlen($term) === 0) {
+		if ((string) $term === '') {
 			echo json_encode(['result' => false]);
 			exit();
 		}

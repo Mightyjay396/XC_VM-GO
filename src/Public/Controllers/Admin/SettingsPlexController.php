@@ -30,6 +30,6 @@ class SettingsPlexController extends BaseAdminController {
 		}
 
 		$this->setTitle('Plex Settings');
-		$this->render('settings_plex', compact('rBouquets'));
+		$this->render('settings_plex', ['rBouquets' => $rBouquets]);
 	}
 }

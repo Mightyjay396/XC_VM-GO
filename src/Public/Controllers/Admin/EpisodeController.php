@@ -92,6 +92,6 @@ class EpisodeController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Episode');
-		$this->render('episode', compact('rSeriesArr', 'rEpisode', 'rServerTree', 'rStreamSys', 'rMulti'));
+		$this->render('episode', ['rSeriesArr' => $rSeriesArr, 'rEpisode' => $rEpisode, 'rServerTree' => $rServerTree, 'rStreamSys' => $rStreamSys, 'rMulti' => $rMulti]);
 	}
 }

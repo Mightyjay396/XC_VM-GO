@@ -125,7 +125,7 @@ class MiscAjaxController extends BaseAjaxController {
 			$rFilter = ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts', 'srt', 'sub', 'sbv'];
 		}
 
-		if (!(RequestManager::has('server') && RequestManager::has('dir'))) {
+		if (!RequestManager::has('server') || !RequestManager::has('dir')) {
 			$this->fail();
 		}
 
@@ -167,7 +167,7 @@ class MiscAjaxController extends BaseAjaxController {
 		$this->requireXhr();
 		$this->gate('adv', 'edit_movie');
 
-		if (!(RequestManager::has('id') && 0 < intval(RequestManager::get('id')))) {
+		if (!RequestManager::has('id') || 0 >= intval(RequestManager::get('id'))) {
 			$this->fail();
 		}
 
@@ -187,7 +187,7 @@ class MiscAjaxController extends BaseAjaxController {
 
 		global $db;
 
-		if (!(RequestManager::has('id') && 0 < intval(RequestManager::get('id')))) {
+		if (!RequestManager::has('id') || 0 >= intval(RequestManager::get('id'))) {
 			$this->fail();
 		}
 

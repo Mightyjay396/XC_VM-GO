@@ -65,7 +65,7 @@ class TableController extends BaseAdminController {
 			$rUserInfo = UserRepository::getRegisteredUserById($rUserID);
 			$rPermissions = AuthRepository::getPermissions($rUserInfo["member_group_id"]);
 			$rPermissions["advanced"] = json_decode($rPermissions["allowed_pages"], true);
-			if (0 < strlen($rUserInfo["timezone"])) {
+			if ((string) $rUserInfo["timezone"] !== '') {
 				date_default_timezone_set($rUserInfo["timezone"]);
 			}
 		} elseif ($_SERVER["REMOTE_ADDR"] == "127.0.0.1" && RequestManager::has("api_user_id")) {
@@ -75,11 +75,11 @@ class TableController extends BaseAdminController {
 			$rUserInfo = UserRepository::getRegisteredUserById(RequestManager::get("api_user_id"));
 			$rPermissions = AuthRepository::getPermissions($rUserInfo["member_group_id"]);
 			$rPermissions["advanced"] = json_decode($rPermissions["allowed_pages"], true);
-			if (0 < strlen($rUserInfo["timezone"])) {
+			if ((string) $rUserInfo["timezone"] !== '') {
 				date_default_timezone_set($rUserInfo["timezone"]);
 			}
 		} elseif (isset($_SESSION["hash"])) {
-			include "functions.php";
+			include __DIR__ . "/functions.php";
 		} else {
 			echo json_encode($rReturn);
 			exit;
@@ -105,7 +105,7 @@ class TableController extends BaseAdminController {
 				$this->handleLines($rReturn, $rStart, $rLimit, $rIsAPI);
 				return;
 			case "active_codes":
-				$this->handleActiveCodes($rReturn, $rStart, $rLimit, $rIsAPI);
+				$this->handleActiveCodes($rReturn, $rStart, $rLimit);
 				return;
 			case "mags":
 				$this->handleMags($rReturn, $rStart, $rLimit, $rIsAPI);
@@ -171,7 +171,7 @@ class TableController extends BaseAdminController {
 				$this->handleEpisodes($rReturn, $rStart, $rLimit, $rIsAPI);
 				return;
 			case "backups":
-				$this->handleBackups($rReturn, $rStart, $rLimit, $rIsAPI);
+				$this->handleBackups($rReturn);
 				return;
 			case "mysql_syslog":
 				$this->handleMysqlSyslog($rReturn, $rStart, $rLimit, $rIsAPI);
@@ -228,7 +228,7 @@ class TableController extends BaseAdminController {
 				$this->handleFailuresModal($rReturn, $rStart, $rLimit, $rIsAPI);
 				return;
 			case "epg_modal":
-				$this->handleEpgModal($rReturn, $rStart, $rLimit, $rIsAPI);
+				$this->handleEpgModal($rReturn, $rLimit, $rIsAPI);
 				return;
 			case "stream_logs":
 				$this->handleStreamLogs($rReturn, $rStart, $rLimit, $rIsAPI);
@@ -246,7 +246,7 @@ class TableController extends BaseAdminController {
 		}
 	}
 
-	private function handleActiveCodes($rReturn, $rStart, $rLimit, $rIsAPI) {
+	private function handleActiveCodes($rReturn, $rStart, $rLimit) {
 		global $db;
 		if (!Authorization::check("adv", "users") && !Authorization::check("adv", "manage_lines")) {
 			exit;
@@ -268,7 +268,7 @@ class TableController extends BaseAdminController {
 			false // actions
 		];
 
-		$rOrderRow = (RequestManager::has("order") && strlen(RequestManager::get("order")[0]["column"] ?? '') > 0)
+		$rOrderRow = (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '')
 			? (int) (RequestManager::get("order")[0]["column"])
 			: 10;
 
@@ -288,7 +288,7 @@ class TableController extends BaseAdminController {
 
 		// Status filter: 1=Ready/Stock, 2=Active, 3=Expired, 4=Disabled
 		$filter = RequestManager::get("filter");
-		if (strlen((string) $filter) > 0 && $filter != 0) {
+		if ((string) $filter !== '' && $filter != 0) {
 			if ($filter == 1) {
 				$rWhere[] = "`activation_codes`.`status` = 1";
 			} elseif ($filter == 2) {
@@ -302,7 +302,7 @@ class TableController extends BaseAdminController {
 
 		// Batch filter
 		$batchFilter = trim((string) RequestManager::get("batch"));
-		if (strlen($batchFilter) > 0) {
+		if ($batchFilter !== '') {
 			$rWhere[] = "`activation_codes`.`batch_name` = ?";
 			$rWhereV[] = $batchFilter;
 		}
@@ -316,7 +316,7 @@ class TableController extends BaseAdminController {
 
 		// Search
 		$searchVal = trim(RequestManager::get("search")["value"] ?? '');
-		if (strlen($searchVal) > 0) {
+		if ($searchVal !== '') {
 			$searchParam = "%{$searchVal}%";
 			$rWhere[] = "(`activation_codes`.`activation_code` LIKE ? OR `activation_codes`.`batch_name` LIKE ? OR `lines`.`username` LIKE ? OR `users`.`username` LIKE ? OR `activation_codes`.`mac` LIKE ?)";
 			$rWhereV[] = $searchParam;
@@ -326,7 +326,7 @@ class TableController extends BaseAdminController {
 			$rWhereV[] = $searchParam;
 		}
 
-		$whereClause = !empty($rWhere) ? ("WHERE " . implode(" AND ", $rWhere)) : "";
+		$whereClause = $rWhere !== [] ? ("WHERE " . implode(" AND ", $rWhere)) : "";
 
 		$countSql = "SELECT COUNT(*) as `total` FROM `activation_codes` LEFT JOIN `lines` ON `lines`.`id` = `activation_codes`.`subscriber_id` LEFT JOIN `users` ON `users`.`id` = `activation_codes`.`created_by` {$whereClause};";
 		$db->query($countSql, ...$rWhereV);
@@ -398,7 +398,7 @@ class TableController extends BaseAdminController {
 		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
 		// Leading false, false = Responsive control + bulk-select checkbox columns (Bootstrap 5).
 		$rOrder = [false, false, "`lines`.`id`", "`lines`.`username`", "`lines`.`password`", "`lines`.`member_id`", "`lines`.`enabled` - `lines`.`admin_enabled`", "`active_connections` > 0", "`lines`.`is_trial`", "`lines`.`is_restreamer`", "`active_connections`", "`lines`.`max_connections`", "`lines`.`exp_date`", "`active_connections` " . $rOrderDirection . ", `last_activity`", false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -406,13 +406,13 @@ class TableController extends BaseAdminController {
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "(`is_mag` + `is_e2`) = 0";
 		$rWhere[] = "(`lines`.`is_activecode` = 0 OR `lines`.`is_activecode` IS NULL)";
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 6) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`lines`.`username` LIKE ? OR `lines`.`password` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`max_connections` LIKE ? OR `lines`.`reseller_notes` LIKE ? OR `lines`.`admin_notes` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (RequestManager::get("filter") == 1) {
 				$rWhere[] = "(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))";
 			} elseif (RequestManager::get("filter") == 2) {
@@ -431,7 +431,7 @@ class TableController extends BaseAdminController {
 				$rWhere[] = "(`lines`.`exp_date` IS NOT NULL AND `lines`.`exp_date` > UNIX_TIMESTAMP() AND `lines`.`exp_date` <= (UNIX_TIMESTAMP() + (86400*14)))";
 			}
 		}
-		if (0 < strlen(RequestManager::get("reseller") ?? '')) {
+		if ((string) (RequestManager::get("reseller") ?? '') !== '') {
 			$rWhere[] = "`lines`.`member_id` = ?";
 			$rWhereV[] = RequestManager::get("reseller");
 		}
@@ -471,7 +471,7 @@ class TableController extends BaseAdminController {
 						}
 					}
 
-					if ($rLastInfo) {
+					if ($rLastInfo !== []) {
 						$id = (int) $rRow['id'];
 						$rLineInfo[$id]['stream_id']   = $rLastInfo['stream_id'] ?? null;
 						$rLineInfo[$id]['last_active'] = $rLastInfo['date_end'] ?? null;
@@ -571,7 +571,7 @@ class TableController extends BaseAdminController {
 							"max_connections" => (int) $rRow["max_connections"],
 							"exp_str" => $rExpStr,
 							"exp_unix" => $rRow["exp_date"] ? (int) $rRow["exp_date"] : null,
-							"exp_expired" => (bool) ($rRow["exp_date"] && $rRow["exp_date"] < time()),
+							"exp_expired" => $rRow["exp_date"] && $rRow["exp_date"] < time(),
 							"stream_id" => isset($rRow["stream_id"]) ? (int) $rRow["stream_id"] : null,
 							"stream_display_name" => $rRow["stream_display_name"] ?? null,
 							"last_active" => !empty($rRow["last_active"]) ? (int) $rRow["last_active"] : null,
@@ -597,15 +597,15 @@ class TableController extends BaseAdminController {
 		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
 		$rOrder = [false, false, "`lines`.`id`", "`lines`.`username`", "`mag_devices`.`mac`", "`mag_devices`.`stb_type`", "`lines`.`member_id`", "`lines`.`enabled`", "`active_connections` > 0", "`lines`.`is_trial`", "`lines`.`exp_date`", "`active_connections` " . $rOrderDirection . ", `last_activity`", false];
 		$rOrderColumn = RequestManager::get("order")[0]["column"] ?? '';
-		$rOrderRow = (0 < strlen((string) $rOrderColumn)) ? (int) $rOrderColumn : 0;
+		$rOrderRow = ((string) $rOrderColumn !== '') ? (int) $rOrderColumn : 0;
 		$rWhere = $rWhereV = [];
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 6) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`lines`.`username` LIKE ? OR `mag_devices`.`mac` LIKE ? OR `mag_devices`.`stb_type` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`reseller_notes` LIKE ? OR `lines`.`admin_notes` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (RequestManager::get("filter") == 1) {
 				$rWhere[] = "(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))";
 			} elseif (RequestManager::get("filter") == 2) {
@@ -618,7 +618,7 @@ class TableController extends BaseAdminController {
 				$rWhere[] = "`lines`.`is_trial` = 1";
 			}
 		}
-		if (0 < strlen(RequestManager::get("reseller") ?? '')) {
+		if ((string) (RequestManager::get("reseller") ?? '') !== '') {
 			$rWhere[] = "`lines`.`member_id` = ?";
 			$rWhereV[] = RequestManager::get("reseller");
 		}
@@ -659,7 +659,7 @@ class TableController extends BaseAdminController {
 						}
 					}
 
-					if ($rLastInfo) {
+					if ($rLastInfo !== []) {
 						$rLineInfo[(int) $rRow["id"]]["stream_id"] = $rLastInfo["stream_id"];
 						$rLineInfo[(int) $rRow["id"]]["last_active"] = $rLastInfo["date_end"];
 					} elseif ($rRow["last_activity"]) {
@@ -758,15 +758,15 @@ class TableController extends BaseAdminController {
 		$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? "desc" : "asc";
 		$rOrder = [false, false, "`lines`.`id`", "`lines`.`username`", "`enigma2_devices`.`mac`", "`enigma2_devices`.`public_ip`", "`lines`.`member_id`", "`lines`.`enabled`", "`active_connections` > 0", "`lines`.`is_trial`", "`lines`.`exp_date`", "`active_connections` " . $rOrderDirection . ", `last_activity`", false];
 		$rOrderColumn = RequestManager::get("order")[0]["column"] ?? '';
-		$rOrderRow = (0 < strlen((string) $rOrderColumn)) ? (int) $rOrderColumn : 0;
+		$rOrderRow = ((string) $rOrderColumn !== '') ? (int) $rOrderColumn : 0;
 		$rWhere = $rWhereV = [];
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 6) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`lines`.`username` LIKE ? OR `enigma2_devices`.`mac` LIKE ? OR `enigma2_devices`.`public_ip` LIKE ? OR FROM_UNIXTIME(`exp_date`) LIKE ? OR `lines`.`reseller_notes` LIKE ? OR `lines`.`admin_notes` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (RequestManager::get("filter") == 1) {
 				$rWhere[] = "(`lines`.`admin_enabled` = 1 AND `lines`.`enabled` = 1 AND (`lines`.`exp_date` IS NULL OR `lines`.`exp_date` > UNIX_TIMESTAMP()))";
 			} elseif (RequestManager::get("filter") == 2) {
@@ -779,7 +779,7 @@ class TableController extends BaseAdminController {
 				$rWhere[] = "`lines`.`is_trial` = 1";
 			}
 		}
-		if (0 < strlen(RequestManager::get("reseller") ?? '')) {
+		if ((string) (RequestManager::get("reseller") ?? '') !== '') {
 			$rWhere[] = "`lines`.`member_id` = ?";
 			$rWhereV[] = RequestManager::get("reseller");
 		}
@@ -820,7 +820,7 @@ class TableController extends BaseAdminController {
 						}
 					}
 
-					if ($rLastInfo) {
+					if ($rLastInfo !== []) {
 						$rLineInfo[(int) $rRow["id"]]["stream_id"] = $rLastInfo["stream_id"];
 						$rLineInfo[(int) $rRow["id"]]["last_active"] = $rLastInfo["date_end"];
 					} elseif ($rRow["last_activity"]) {
@@ -918,7 +918,7 @@ class TableController extends BaseAdminController {
 		$rCategories = CategoryService::getAllByType("live");
 		// Leading false, false = Responsive control + bulk-select checkbox columns (Bootstrap 5).
 		$rOrder = [false, false, "`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`streams_servers`.`current_source`", "`clients`", "`streams_servers`.`stream_started`", false, false, false, "`streams_servers`.`bitrate`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -935,7 +935,7 @@ class TableController extends BaseAdminController {
 			$rWhereV[] = RequestManager::get("stream_id");
 			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
 		} else {
-			if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 				foreach (range(1, 4) as $rInt) {
 					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 				}
@@ -953,7 +953,7 @@ class TableController extends BaseAdminController {
 				$rStart = 0;
 				$rLimit = 1000;
 			}
-			if (0 < strlen(RequestManager::get("filter") ?? '')) {
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
 				if (!$rCreated) {
 					if (RequestManager::get("filter") == 1) {
 						$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`stream_status` = 0)";
@@ -996,7 +996,7 @@ class TableController extends BaseAdminController {
 					$rWhere[] = "`streams`.`transcode_profile_id` > 0";
 				}
 			}
-			if (0 < strlen(RequestManager::get("audio") ?? '')) {
+			if ((string) (RequestManager::get("audio") ?? '') !== '') {
 				if (RequestManager::get("audio") == -1) {
 					$rWhere[] = "`streams_servers`.`audio_codec` IS NULL";
 				} else {
@@ -1004,7 +1004,7 @@ class TableController extends BaseAdminController {
 					$rWhereV[] = RequestManager::get("audio");
 				}
 			}
-			if (0 < strlen(RequestManager::get("video") ?? '')) {
+			if ((string) (RequestManager::get("video") ?? '') !== '') {
 				if (RequestManager::get("video") == -1) {
 					$rWhere[] = "`streams_servers`.`video_codec` IS NULL";
 				} else {
@@ -1012,7 +1012,7 @@ class TableController extends BaseAdminController {
 					$rWhereV[] = RequestManager::get("video");
 				}
 			}
-			if (0 < strlen(RequestManager::get("resolution") ?? '')) {
+			if ((string) (RequestManager::get("resolution") ?? '') !== '') {
 				$rWhere[] = "`streams_servers`.`resolution` = ?";
 				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
 			}
@@ -1131,7 +1131,7 @@ class TableController extends BaseAdminController {
 						if (!is_array($rCategoryIDs)) {
 							$rCategoryIDs = [];
 						}
-						if (0 < strlen(RequestManager::get("category") ?? '')) {
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -1217,7 +1217,7 @@ class TableController extends BaseAdminController {
 						}
 
 						// Server id used by row actions / live link: -1 (all) in grouped mode, else real or 0.
-						$rServerColId = $rSettings["streams_grouped"] == 1 ? -1 : ($rRealServerId ?: 0);
+						$rServerColId = $rSettings["streams_grouped"] == 1 ? -1 : ($rRealServerId);
 
 						// Convert-to-channel encode progress (status 6).
 						$rEncodePct = null;
@@ -1275,7 +1275,7 @@ class TableController extends BaseAdminController {
 								if (1000 <= $rFPS) {
 									$rFPS = (int) ($rFPS / 1000);
 								}
-								$rFPS = $rFPS . " FPS";
+								$rFPS .= " FPS";
 							} else {
 								$rFPS = "--";
 							}
@@ -1302,7 +1302,7 @@ class TableController extends BaseAdminController {
 							"display_id" => (!$rSettings["streams_grouped"] && 1 < $rServerCnt) ? ($rRow["id"] . "-" . $rRealServerId) : (string) $rRow["id"],
 							"server_col_id" => $rServerColId,
 							"type" => (int) $rRow["type"],
-							"icon" => (0 < strlen((string) $rRow["stream_icon"]) && SettingsManager::getAll()["show_images"]) ? $rRow["stream_icon"] : null,
+							"icon" => ((string) $rRow["stream_icon"] !== '' && SettingsManager::getAll()["show_images"]) ? $rRow["stream_icon"] : null,
 							"title" => $rRow["stream_display_name"],
 							"category" => $rCategory,
 							"archive" => $rHasArchive,
@@ -1341,7 +1341,7 @@ class TableController extends BaseAdminController {
 		$rCategories = CategoryService::getAllByType("radio");
 		// Leading false, false = the Bootstrap 5 Responsive control + bulk-select columns.
 		$rOrder = [false, false, "`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`server_name`", "`clients`", "`streams_servers`.`stream_started`", false, "`streams_servers`.`bitrate`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -1353,7 +1353,7 @@ class TableController extends BaseAdminController {
 			$rWhereV[] = RequestManager::get("stream_id");
 			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
 		} else {
-			if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 				foreach (range(1, 4) as $rInt) {
 					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 				}
@@ -1371,7 +1371,7 @@ class TableController extends BaseAdminController {
 				$rStart = 0;
 				$rLimit = 1000;
 			}
-			if (0 < strlen(RequestManager::get("filter") ?? '')) {
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
 				if (RequestManager::get("filter") == 1) {
 					$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`stream_status` = 0)";
 				} elseif (RequestManager::get("filter") == 2) {
@@ -1457,7 +1457,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true) ?: [];
-						if (0 < strlen(RequestManager::get("category") ?? "")) {
+						if ((string) (RequestManager::get("category") ?? "") !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -1515,7 +1515,7 @@ class TableController extends BaseAdminController {
 							"id"             => (int) $rRow["id"],
 							"display_id"     => (!$rGrouped && 1 < $rServerCnt) ? ($rRow["id"] . "-" . $rServerId) : (string) $rRow["id"],
 							"server_col_id"  => $rGrouped ? -1 : $rServerId,
-							"icon"           => (0 < strlen((string) $rRow["stream_icon"]) && SettingsManager::getAll()["show_images"]) ? $rRow["stream_icon"] : null,
+							"icon"           => ((string) $rRow["stream_icon"] !== '' && SettingsManager::getAll()["show_images"]) ? $rRow["stream_icon"] : null,
 							"title"          => $rRow["stream_display_name"],
 							"category"       => $rCategory,
 							"source_label"   => $rSourceLabel,
@@ -1526,7 +1526,7 @@ class TableController extends BaseAdminController {
 							"server_offline" => (($rServers[$rRow["server_id"]]["last_status"] ?? null) != 1),
 							"clients"        => (int) $rRow["clients"],
 							"status"         => $rActualStatus,
-							"uptime"         => (int) $rUptime,
+							"uptime"         => $rUptime,
 							"on_demand"      => (1 == (int) $rRow["on_demand"]),
 							"notes"          => !empty($rRow["notes"]) ? $rRow["notes"] : null,
 							"info"           => $rInfo,
@@ -1547,7 +1547,7 @@ class TableController extends BaseAdminController {
 		$rCategories = CategoryService::getAllByType("movie");
 		// Leading false, false = the Bootstrap 5 Responsive control + bulk-select columns.
 		$rOrder = [false, false, "`streams`.`id`", false, "`streams`.`stream_display_name`", "`server_name`", "`clients`", "`streams_servers`.`stream_started`", false, false, false, "`streams_servers`.`bitrate`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -1564,7 +1564,7 @@ class TableController extends BaseAdminController {
 			$rWhereV[] = RequestManager::get("source_id");
 			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
 		} else {
-			if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 				foreach (range(1, 4) as $rInt) {
 					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 				}
@@ -1582,7 +1582,7 @@ class TableController extends BaseAdminController {
 				$rStart = 0;
 				$rLimit = 1000;
 			}
-			if (0 < strlen(RequestManager::get("filter") ?? '')) {
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
 				if (RequestManager::get("filter") == 1) {
 					$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` <> 1)";
 				} elseif (RequestManager::get("filter") == 2) {
@@ -1602,7 +1602,7 @@ class TableController extends BaseAdminController {
 					$rWhere[] = "`streams`.`transcode_profile_id` > 0";
 				}
 			}
-			if (0 < strlen(RequestManager::get("audio") ?? '')) {
+			if ((string) (RequestManager::get("audio") ?? '') !== '') {
 				if (RequestManager::get("audio") == -1) {
 					$rWhere[] = "`streams_servers`.`audio_codec` IS NULL";
 				} else {
@@ -1610,7 +1610,7 @@ class TableController extends BaseAdminController {
 					$rWhereV[] = RequestManager::get("audio");
 				}
 			}
-			if (0 < strlen(RequestManager::get("video") ?? '')) {
+			if ((string) (RequestManager::get("video") ?? '') !== '') {
 				if (RequestManager::get("video") == -1) {
 					$rWhere[] = "`streams_servers`.`video_codec` IS NULL";
 				} else {
@@ -1618,7 +1618,7 @@ class TableController extends BaseAdminController {
 					$rWhereV[] = RequestManager::get("video");
 				}
 			}
-			if (0 < strlen(RequestManager::get("resolution") ?? '')) {
+			if ((string) (RequestManager::get("resolution") ?? '') !== '') {
 				$rWhere[] = "`streams_servers`.`resolution` = ?";
 				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
 			}
@@ -1706,7 +1706,7 @@ class TableController extends BaseAdminController {
 						if (!is_array($rProperties)) {
 							$rProperties = [];
 						}
-						if (0 < strlen(RequestManager::get("category") ?? "")) {
+						if ((string) (RequestManager::get("category") ?? "") !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -1752,7 +1752,7 @@ class TableController extends BaseAdminController {
 							"year"           => $rRow["year"] ?: null,
 							"rating"         => !empty($rProperties["rating"]) ? (float) $rProperties["rating"] : null,
 							"category"       => $rCategory,
-							"image"          => (0 < strlen($rProperties["movie_image"] ?? "") && SettingsManager::getAll()["show_images"]) ? $rProperties["movie_image"] : null,
+							"image"          => ((string) ($rProperties["movie_image"] ?? "") !== '' && SettingsManager::getAll()["show_images"]) ? $rProperties["movie_image"] : null,
 							"server_id"      => $rServerId,
 							"server_name"    => $rRow["server_name"] ?: null,
 							"server_url"     => ($rRow["server_name"] && Authorization::check("adv", "servers")) ? "server_view?id=" . $rServerId : null,
@@ -1760,7 +1760,7 @@ class TableController extends BaseAdminController {
 							"server_offline" => (($rServers[$rRow["server_id"]]["last_status"] ?? null) != 1),
 							"clients"        => (int) $rRow["clients"],
 							"status"         => $rActualStatus,
-							"tmdb"           => (isset($rProperties["kinopoisk_url"]) && 0 < strlen($rProperties["kinopoisk_url"])),
+							"tmdb"           => (isset($rProperties["kinopoisk_url"]) && (string) $rProperties["kinopoisk_url"] !== ''),
 							"notes"          => !empty($rRow["notes"]) ? $rRow["notes"] : null,
 							"target_container" => $rRow["target_container"] ?? null,
 							"info"           => $rInfo,
@@ -1779,7 +1779,7 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		$rOrder = ["`streams`.`id`", false, "`streams`.`stream_display_name`", "`streams_servers`.`server_id`", "`streams_servers`.`stream_status`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -1792,17 +1792,17 @@ class TableController extends BaseAdminController {
 		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 		}
-		if (0 < strlen(RequestManager::get("series") ?? '')) {
+		if ((string) (RequestManager::get("series") ?? '') !== '') {
 			$rWhere[] = "`streams_episodes`.`series_id` = ?";
 			$rWhereV[] = RequestManager::get("series");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 5) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams_series`.`title` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (RequestManager::get("filter") == 1) {
 				$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` <> 1)";
 			} elseif (RequestManager::get("filter") == 2) {
@@ -1887,7 +1887,7 @@ class TableController extends BaseAdminController {
 						if (!is_array($rProperties)) {
 							$rProperties = [];
 						}
-						if (0 < strlen($rProperties["movie_image"] ?? '') && SettingsManager::getAll()["show_images"]) {
+						if ((string) ($rProperties["movie_image"] ?? '') !== '' && SettingsManager::getAll()["show_images"]) {
 							$rImage = "<a href='javascript: void(0);' data-src='resize?maxw=512&maxh=512&url=" . $rProperties["movie_image"] . "'><img loading='lazy' src='resize?maxh=32&maxw=64&url=" . $rProperties["movie_image"] . "' /></a>";
 						}
 						$rReturn["data"][] = [$rRow["id"], $rImage, $rStreamName, $rServerName, StatusBadge::vod($rActualStatus)];
@@ -1905,17 +1905,17 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable).
-		$rOrderBy = self::dtOrderBy([false, "`username`", "`streams`.`stream_display_name`", "`server_name`", "`lines_activity`.`user_agent`", "`lines_activity`.`isp`", "`lines_activity`.`user_ip`", "`lines_activity`.`date_start`", "`lines_activity`.`activity_id`", "`lines_activity`.`date_end` - `lines_activity`.`date_start`", "`lines_activity`.`container`", "`lines`.`is_restreamer`"]);
+		$rOrderBy = $this->dtOrderBy([false, "`username`", "`streams`.`stream_display_name`", "`server_name`", "`lines_activity`.`user_agent`", "`lines_activity`.`isp`", "`lines_activity`.`user_ip`", "`lines_activity`.`date_start`", "`lines_activity`.`activity_id`", "`lines_activity`.`date_end` - `lines_activity`.`date_start`", "`lines_activity`.`container`", "`lines`.`is_restreamer`"]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 7) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`lines_activity`.`hmac_identifier` LIKE ? OR `lines_activity`.`user_agent` LIKE ? OR `lines_activity`.`user_ip` LIKE ? OR `lines_activity`.`container` LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_start`) LIKE ? OR FROM_UNIXTIME(`lines_activity`.`date_end`) LIKE ? OR `lines_activity`.`geoip_country_code` LIKE ?)";
 		}
 		$rRange = (string) (RequestManager::get("range") ?? '');
-		if (0 < strlen($rRange)) {
+		if ($rRange !== '') {
 			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
 			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
 			if ($rStartTime && $rEndTime) {
@@ -1924,11 +1924,11 @@ class TableController extends BaseAdminController {
 				$rWhereV[] = $rEndTime;
 			}
 		}
-		if (0 < strlen(RequestManager::get("stream") ?? '')) {
+		if ((string) (RequestManager::get("stream") ?? '') !== '') {
 			$rWhere[]  = "`lines_activity`.`stream_id` = ?";
 			$rWhereV[] = RequestManager::get("stream");
 		}
-		if (0 < strlen(RequestManager::get("user") ?? '')) {
+		if ((string) (RequestManager::get("user") ?? '') !== '') {
 			$rWhere[]  = "`lines_activity`.`user_id` = ?";
 			$rWhereV[] = RequestManager::get("user");
 		}
@@ -1937,7 +1937,7 @@ class TableController extends BaseAdminController {
 			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
 			$rWhereV[] = (int) (RequestManager::get("server") ?? 0);
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `lines_activity` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -2030,7 +2030,7 @@ class TableController extends BaseAdminController {
 					"player"        => trim(explode("(", (string) $rRow["user_agent"])[0]),
 					"isp"           => $rRow["isp"],
 					"user_ip"       => $rRow["user_ip"],
-					"country"       => (0 < strlen((string) $rRow["geoip_country_code"])) ? strtolower($rRow["geoip_country_code"]) : null,
+					"country"       => ((string) $rRow["geoip_country_code"] !== '') ? strtolower($rRow["geoip_country_code"]) : null,
 					"date_start"    => (int) $rRow["date_start"],
 					"date_end"      => (int) $rRow["date_end"],
 					"duration"      => (int) $rRow["date_end"] - (int) $rRow["date_start"],
@@ -2054,11 +2054,11 @@ class TableController extends BaseAdminController {
 		$rRows = [];
 		if (SettingsManager::getAll()["redis_handler"]) {
 			$rRedis = RedisManager::instance();
-			if (!$rRedis) {
+			if (!$rRedis instanceof \Redis) {
 				echo json_encode(["draw" => intval(RequestManager::get("draw") ?? 0), "recordsTotal" => 0, "recordsFiltered" => 0, "data" => []]);
 				exit;
 			}
-			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') === "desc" ? false : true;
+			$rOrderDirection = strtolower(RequestManager::get("order")[0]["dir"] ?? '') !== "desc";
 			$rFilterBefore = true;
 			if (RequestManager::has("refresh")) {
 				$rStart = 0;
@@ -2182,7 +2182,8 @@ class TableController extends BaseAdminController {
 					$rDivergenceMap[$rRow["uuid"]] = $rRow["divergence"];
 				}
 			}
-			for ($i = 0; $i < count($rRows); $i++) {
+			$counter = count($rRows);
+			for ($i = 0; $i < $counter; $i++) {
 				$rRows[$i]["divergence"] = $rDivergenceMap[$rRows[$i]["uuid"]] ?? 0;
 				$rRows[$i]["series_no"] = $rSeriesMap[$rRows[$i]["stream_id"]] ?? null;
 				$rRows[$i]["stream_display_name"] = $rStreamNames[$rRows[$i]["stream_id"]][0] ?? "";
@@ -2196,14 +2197,14 @@ class TableController extends BaseAdminController {
 			// Leading false = the Bootstrap 5 Responsive control column (client index 0);
 			// index 1 is the hidden activity_id column, so the visible columns line up.
 			$rOrder = [false, "`lines_live`.`activity_id`", "`lines_live`.`divergence`", "`username` " . $rOrderDirection . ", `lines_live`.`hmac_identifier`", "`streams`.`stream_display_name`", "`server_name`", "`lines_live`.`user_agent`", "`lines_live`.`isp`", "`lines_live`.`user_ip`", "UNIX_TIMESTAMP() - `lines_live`.`date_start`", "`lines_live`.`container`", "`lines`.`is_restreamer`", false];
-			if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+			if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 				$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 			} else {
 				$rOrderRow = 0;
 			}
 			$rWhere = $rWhereV = [];
 			$rWhere[] = "`hls_end` = 0";
-			if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 				foreach (range(1, 10) as $rInt) {
 					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 				}
@@ -2228,7 +2229,7 @@ class TableController extends BaseAdminController {
 				$rStart = 0;
 				$rLimit = 1000;
 			}
-			if (0 < strlen(RequestManager::get("filter") ?? '')) {
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
 				if (RequestManager::get("filter") == 1) {
 					$rWhere[] = "(`lines`.`is_mag` = 0 AND `lines`.`is_e2` = 0 AND `lines`.`is_restreamer` = 0 AND `lines`.`is_stalker` = 0)";
 				} elseif (RequestManager::get("filter") == 2) {
@@ -2316,7 +2317,7 @@ class TableController extends BaseAdminController {
 						"player"          => trim(explode("(", (string) $rRow["user_agent"])[0]),
 						"isp"             => $rRow["isp"],
 						"user_ip"         => $rRow["user_ip"],
-						"country"         => (0 < strlen((string) $rRow["geoip_country_code"])) ? strtolower($rRow["geoip_country_code"]) : null,
+						"country"         => ((string) $rRow["geoip_country_code"] !== '') ? strtolower($rRow["geoip_country_code"]) : null,
 						"date_start"      => (int) $rRow["date_start"],
 						"container"       => strtoupper((string) $rRow["container"]),
 						"is_restreamer"   => (1 == (int) ($rRow["is_restreamer"] ?? 0)),
@@ -2336,7 +2337,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("live");
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`streams`.`category_id`", "`streams_servers`.`server_id`", "`streams_servers`.`stream_status`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -2361,7 +2362,7 @@ class TableController extends BaseAdminController {
 		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (!RequestManager::has("only_channels")) {
 				if (RequestManager::get("filter") == 1) {
 					$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`stream_status` = 0)";
@@ -2402,7 +2403,7 @@ class TableController extends BaseAdminController {
 				$rWhere[] = "(REPLACE(`streams_servers`.`cchannel_rsources`, '\\\\/', '/') <> REPLACE(`streams`.`stream_source`, '\\\\/', '/'))";
 			}
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 4) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -2450,7 +2451,7 @@ class TableController extends BaseAdminController {
 						if (!is_array($rCategoryIDs)) {
 							$rCategoryIDs = [];
 						}
-						if (0 < strlen(RequestManager::get("category") ?? '')) {
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rRequestedCategoryID = (int) (RequestManager::get("category") ?? 0);
 							$rCategory = $rCategories[$rRequestedCategoryID]["category_name"] ?? "No Category";
 						} else {
@@ -2500,7 +2501,7 @@ class TableController extends BaseAdminController {
 						} else {
 							$rActualStatus = -1;
 						}
-						if (0 < strlen($rRow["stream_icon"])) {
+						if ((string) $rRow["stream_icon"] !== '') {
 							$rIcon = "<img loading='lazy' src='resize?maxw=96&maxh=32&url=" . urlencode($rRow["stream_icon"]) . "' />";
 						} else {
 							$rIcon = "";
@@ -2522,7 +2523,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("movie");
 		$rOrder = ["`streams`.`id`", false, "`streams`.`stream_display_name`", "`streams`.`category_id`", "`streams_servers`.`server_id`", "`streams_servers`.`stream_status`", false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -2541,13 +2542,13 @@ class TableController extends BaseAdminController {
 		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 4) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (RequestManager::get("filter") == 1) {
 				$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` <> 1)";
 			} elseif (RequestManager::get("filter") == 2) {
@@ -2631,7 +2632,7 @@ class TableController extends BaseAdminController {
 							$rServerName = "No Server Selected";
 						}
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (0 < strlen(RequestManager::get("category") ?? '')) {
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -2666,12 +2667,12 @@ class TableController extends BaseAdminController {
 						}
 						$rYear = $rRow["year"] ? "<strong>" . $rRow["year"] . "</strong> &nbsp;" : "";
 						$rStreamName = $rRow["stream_display_name"] . "<br><span style='font-size:11px;'>" . $rYear . $rRatingText . "</span>";
-						if (0 < strlen($rProperties["movie_image"] ?? "") && SettingsManager::getAll()["show_images"]) {
+						if ((string) ($rProperties["movie_image"] ?? "") !== '' && SettingsManager::getAll()["show_images"]) {
 							$rImage = "<a href='javascript: void(0);' data-src='resize?maxw=512&maxh=512&url=" . $rProperties["movie_image"] . "'><img loading='lazy' src='resize?maxh=58&maxw=32&url=" . $rProperties["movie_image"] . "' /></a>";
 						} else {
 							$rImage = "";
 						}
-						if (isset($rProperties["kinopoisk_url"]) && 0 < strlen($rProperties["kinopoisk_url"])) {
+						if (isset($rProperties["kinopoisk_url"]) && (string) $rProperties["kinopoisk_url"] !== '') {
 							$rTMDB = "<button type=\"button\" class=\"btn btn-success btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-check-circle\"></i></button>";
 						} else {
 							$rTMDB = "<button type=\"button\" class=\"btn btn-secondary btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-minus-circle\"></i></button>";
@@ -2692,7 +2693,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("radio");
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`streams`.`category_id`", "`streams_servers`.`server_id`", "`streams_servers`.`stream_status`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -2711,7 +2712,7 @@ class TableController extends BaseAdminController {
 		} elseif ((int) (RequestManager::get("server") ?? 0) == -1) {
 			$rWhere[] = "`streams_servers`.`server_id` IS NULL";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (RequestManager::get("filter") == 1) {
 				$rWhere[] = "(`streams_servers`.`monitor_pid` > 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`stream_status` = 0)";
 			} elseif (RequestManager::get("filter") == 2) {
@@ -2726,7 +2727,7 @@ class TableController extends BaseAdminController {
 				$rWhere[] = "`streams`.`direct_source` = 1";
 			}
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 4) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -2770,7 +2771,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (0 < strlen(RequestManager::get("category") ?? '')) {
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -2813,7 +2814,7 @@ class TableController extends BaseAdminController {
 						} else {
 							$rServerName = "No Server Selected";
 						}
-						if (0 < strlen($rRow["stream_icon"]) && SettingsManager::getAll()["show_images"]) {
+						if ((string) $rRow["stream_icon"] !== '' && SettingsManager::getAll()["show_images"]) {
 							$rIcon = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rRow["stream_icon"] . "'><img loading='lazy' src='resize?maxw=96&maxh=32&url=" . $rRow["stream_icon"] . "' /></a>";
 						} else {
 							$rIcon = "";
@@ -2834,13 +2835,13 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("series");
 		$rOrder = ["`streams_series`.`id`", "`streams_series`.`cover`", "`streams_series`.`title`", "`streams_series`.`category_id`", "`latest_season`", "`episode_count`", false, "`streams_series`.`release_date`", "`streams_series`.`last_modified`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
 		}
 		$rWhere = $rWhereV = [];
-		if (0 < strlen(RequestManager::get("category") ?? '')) {
+		if ((string) (RequestManager::get("category") ?? '') !== '') {
 			if (RequestManager::get("category") == -1) {
 				$rWhere[] = "(`streams_series`.`tmdb_id` = 0 OR `streams_series`.`tmdb_id` IS NULL)";
 			} elseif (RequestManager::get("category") == -2) {
@@ -2850,7 +2851,7 @@ class TableController extends BaseAdminController {
 				$rWhereV[] = RequestManager::get("category");
 			}
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -2883,7 +2884,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (0 < strlen(RequestManager::get("category") ?? '')) {
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -2915,7 +2916,7 @@ class TableController extends BaseAdminController {
 						} else {
 							$rTMDB = "<button type=\"button\" class=\"btn btn-secondary btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-minus-circle\"></i></button>";
 						}
-						if (0 < strlen($rRow["cover"])) {
+						if ((string) $rRow["cover"] !== '') {
 							$rImage = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rRow["cover"] . "'><img loading='lazy' src='resize?maxh=58&maxw=32&url=" . $rRow["cover"] . "' /></a>";
 						} else {
 							$rImage = "";
@@ -2957,17 +2958,17 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable).
-		$rOrderBy = self::dtOrderBy([false, "`users_credits_logs`.`id`", "`owner_username`", "`target_username`", "`users_credits_logs`.`amount`", "`users_credits_logs`.`reason`", "`date`"]);
+		$rOrderBy = $this->dtOrderBy([false, "`users_credits_logs`.`id`", "`owner_username`", "`target_username`", "`users_credits_logs`.`amount`", "`users_credits_logs`.`reason`", "`date`"]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 5) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`target`.`username` LIKE ? OR `owner`.`username` LIKE ? OR FROM_UNIXTIME(`date`) LIKE ? OR `users_credits_logs`.`amount` LIKE ? OR `users_credits_logs`.`reason` LIKE ?)";
 		}
 		$rRange = (string) (RequestManager::get("range") ?? '');
-		if (0 < strlen($rRange)) {
+		if ($rRange !== '') {
 			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
 			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
 			if ($rStartTime && $rEndTime) {
@@ -2977,12 +2978,12 @@ class TableController extends BaseAdminController {
 			}
 		}
 		$rReseller = (string) (RequestManager::get("reseller") ?? '');
-		if (0 < strlen($rReseller)) {
+		if ($rReseller !== '') {
 			$rWhere[]  = "(`users_credits_logs`.`target_id` = ? OR `users_credits_logs`.`admin_id` = ?)";
 			$rWhereV[] = $rReseller;
 			$rWhereV[] = $rReseller;
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `users_credits_logs` LEFT JOIN `users` AS `target` ON `target`.`id` = `users_credits_logs`.`target_id` LEFT JOIN `users` AS `owner` ON `owner`.`id` = `users_credits_logs`.`admin_id` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -3020,17 +3021,17 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable).
-		$rOrderBy = self::dtOrderBy([false, "`lines_logs`.`id`", "`lines`.`username`", "`streams`.`stream_display_name`", "`lines_logs`.`client_status`", "`lines_logs`.`user_agent`", "`lines_logs`.`ip`", "`lines_logs`.`date`"]);
+		$rOrderBy = $this->dtOrderBy([false, "`lines_logs`.`id`", "`lines`.`username`", "`streams`.`stream_display_name`", "`lines_logs`.`client_status`", "`lines_logs`.`user_agent`", "`lines_logs`.`ip`", "`lines_logs`.`date`"]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 8) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`lines_logs`.`client_status` LIKE ? OR `lines_logs`.`query_string` LIKE ? OR FROM_UNIXTIME(`date`) LIKE ? OR `lines_logs`.`user_agent` LIKE ? OR `lines_logs`.`ip` LIKE ? OR `lines_logs`.`extra_data` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `lines`.`username` LIKE ?)";
 		}
 		$rRange = (string) (RequestManager::get("range") ?? '');
-		if (0 < strlen($rRange)) {
+		if ($rRange !== '') {
 			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
 			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
 			if ($rStartTime && $rEndTime) {
@@ -3040,11 +3041,11 @@ class TableController extends BaseAdminController {
 			}
 		}
 		$rFilter = (string) (RequestManager::get("filter") ?? '');
-		if (0 < strlen($rFilter)) {
+		if ($rFilter !== '') {
 			$rWhere[]  = "`lines_logs`.`client_status` = ?";
 			$rWhereV[] = $rFilter;
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `lines_logs` LEFT JOIN `streams` ON `streams`.`id` = `lines_logs`.`stream_id` LEFT JOIN `lines` ON `lines`.`id` = `lines_logs`.`user_id` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -3093,17 +3094,17 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable).
-		$rOrderBy = self::dtOrderBy([false, "`users`.`username`", "`users_logs`.`log_id`", "`users_logs`.`type`, `users_logs`.`action`", "`users_logs`.`cost`", "`users_logs`.`credits_after`", "`users_logs`.`date`"]);
+		$rOrderBy = $this->dtOrderBy([false, "`users`.`username`", "`users_logs`.`log_id`", "`users_logs`.`type`, `users_logs`.`action`", "`users_logs`.`cost`", "`users_logs`.`credits_after`", "`users_logs`.`date`"]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`users`.`username` LIKE ? OR `users_logs`.`deleted_info` LIKE ? OR `users_logs`.`action` LIKE ?)";
 		}
 		$rRange = (string) (RequestManager::get("range") ?? '');
-		if (0 < strlen($rRange)) {
+		if ($rRange !== '') {
 			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
 			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
 			if ($rStartTime && $rEndTime) {
@@ -3113,16 +3114,16 @@ class TableController extends BaseAdminController {
 			}
 		}
 		$rReseller = (string) (RequestManager::get("reseller") ?? '');
-		if (0 < strlen($rReseller)) {
+		if ($rReseller !== '') {
 			$rWhere[]  = "`users_logs`.`owner` = ?";
 			$rWhereV[] = $rReseller;
 		}
 		$rFilter = (string) (RequestManager::get("filter") ?? '');
-		if (0 < strlen($rFilter)) {
+		if ($rFilter !== '') {
 			$rWhere[]  = "`users_logs`.`action` = ?";
 			$rWhereV[] = $rFilter;
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `users_logs` LEFT JOIN `users` ON `users`.`id` = `users_logs`.`owner` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -3233,17 +3234,17 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable).
-		$rOrderBy = self::dtOrderBy([false, "`streams`.`stream_display_name`", "`servers`.`server_name`", "`streams_errors`.`error`", "`streams_errors`.`date`"]);
+		$rOrderBy = $this->dtOrderBy([false, "`streams`.`stream_display_name`", "`servers`.`server_name`", "`streams_errors`.`error`", "`streams_errors`.`date`"]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 4) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`streams`.`stream_display_name` LIKE ? OR `servers`.`server_name` LIKE ? OR FROM_UNIXTIME(`date`) LIKE ? OR `streams_errors`.`error` LIKE ?)";
 		}
 		$rRange = (string) (RequestManager::get("range") ?? '');
-		if (0 < strlen($rRange)) {
+		if ($rRange !== '') {
 			$rStartTime = strtotime(substr($rRange, 0, 10) . " 00:00:00");
 			$rEndTime   = strtotime(substr($rRange, strlen($rRange) - 10, 10) . " 23:59:59");
 			if ($rStartTime && $rEndTime) {
@@ -3257,7 +3258,7 @@ class TableController extends BaseAdminController {
 			$rWhere[]  = "`streams_errors`.`server_id` = ?";
 			$rWhereV[] = $rServer;
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `streams_errors` LEFT JOIN `streams` ON `streams`.`id` = `streams_errors`.`stream_id` LEFT JOIN `servers` ON `servers`.`id` = `streams_errors`.`server_id` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -3301,7 +3302,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("live");
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, "`active_count`", null];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -3311,11 +3312,11 @@ class TableController extends BaseAdminController {
 		if (!SettingsManager::getAll()["redis_handler"]) {
 			$rWhere[] = "(SELECT COUNT(*) FROM `lines_live` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `lines_live`.`hls_end` = 0) > 0";
 		}
-		if (0 < strlen(RequestManager::get("category") ?? '')) {
+		if ((string) (RequestManager::get("category") ?? '') !== '') {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -3362,7 +3363,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (0 < strlen(RequestManager::get("category") ?? '')) {
+						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -3389,15 +3390,15 @@ class TableController extends BaseAdminController {
 		// Leading false = the Bootstrap 5 Responsive control column (client index 0).
 		$rOrder = [false, "`users`.`id`", "`users`.`username`", "`users`.`owner_id`", "`users`.`ip`", "`users`.`status`", "`users`.`member_group_id`", "`users`.`credits`", false, false, false, false, "`users`.`last_login`", false];
 		$rOrderColumn = RequestManager::get("order")[0]["column"] ?? '';
-		$rOrderRow = (0 < strlen((string) $rOrderColumn)) ? (int) $rOrderColumn : 0;
+		$rOrderRow = ((string) $rOrderColumn !== '') ? (int) $rOrderColumn : 0;
 		$rWhere = $rWhereV = [];
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 7) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`users`.`id` LIKE ? OR `users`.`username` LIKE ? OR `users`.`notes` LIKE ? OR FROM_UNIXTIME(`users`.`date_registered`) LIKE ? OR FROM_UNIXTIME(`users`.`last_login`) LIKE ? OR `users`.`email` LIKE ? OR `users`.`ip` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (RequestManager::get("filter") == -1) {
 				$rWhere[] = "`users`.`status` = 1";
 			} elseif (RequestManager::get("filter") == -2) {
@@ -3407,7 +3408,7 @@ class TableController extends BaseAdminController {
 				$rWhereV[] = RequestManager::get("filter");
 			}
 		}
-		if (0 < strlen(RequestManager::get("reseller") ?? '')) {
+		if ((string) (RequestManager::get("reseller") ?? '') !== '') {
 			$rWhere[] = "`users`.`owner_id` = ?";
 			$rWhereV[] = RequestManager::get("reseller");
 		}
@@ -3511,24 +3512,24 @@ class TableController extends BaseAdminController {
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable);
 		// the trailing actions column is non-orderable too.
-		$rOrderBy = self::dtOrderBy([false, "`blocked_asns`.`asn`", "`blocked_asns`.`isp`", "`blocked_asns`.`domain`", "`blocked_asns`.`country`", "`blocked_asns`.`num_ips`", "`blocked_asns`.`type`", "`blocked_asns`.`blocked`", false]);
+		$rOrderBy = $this->dtOrderBy([false, "`blocked_asns`.`asn`", "`blocked_asns`.`isp`", "`blocked_asns`.`domain`", "`blocked_asns`.`country`", "`blocked_asns`.`num_ips`", "`blocked_asns`.`type`", "`blocked_asns`.`blocked`", false]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 5) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`blocked_asns`.`asn` LIKE ? OR `blocked_asns`.`isp` LIKE ? OR `blocked_asns`.`domain` LIKE ? OR `blocked_asns`.`country` LIKE ? OR `blocked_asns`.`type` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			$rWhere[]  = "`blocked_asns`.`blocked` = ?";
 			$rWhereV[] = RequestManager::get("filter");
 		}
-		if (0 < strlen(RequestManager::get("type") ?? '')) {
+		if ((string) (RequestManager::get("type") ?? '') !== '') {
 			$rWhere[]  = "`blocked_asns`.`type` = ?";
 			$rWhereV[] = RequestManager::get("type");
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `blocked_asns` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -3543,7 +3544,7 @@ class TableController extends BaseAdminController {
 					"asn"     => $rRow["asn"],
 					"isp"     => $rRow["isp"],
 					"domain"  => $rRow["domain"],
-					"country" => (0 < strlen((string) $rRow["country"])) ? strtolower($rRow["country"]) : null,
+					"country" => ((string) $rRow["country"] !== '') ? strtolower($rRow["country"]) : null,
 					"num_ips" => (int) $rRow["num_ips"],
 					"type"    => strtoupper((string) $rRow["type"]),
 					"blocked" => (1 == (int) $rRow["blocked"]),
@@ -3566,15 +3567,15 @@ class TableController extends BaseAdminController {
 		// Leading false, false = the Bootstrap 5 Responsive control + bulk-select columns.
 		$rOrder = [false, false, "`streams_series`.`id`", "`streams_series`.`cover`", "`streams_series`.`title`", "`streams_series`.`category_id`", "`latest_season`", "`episode_count`", false, "`streams_series`.`release_date`", "`streams_series`.`last_modified`", false];
 		$rOrderColumn = RequestManager::get("order")[0]["column"] ?? '';
-		$rOrderRow = (0 < strlen((string) $rOrderColumn)) ? (int) $rOrderColumn : 0;
+		$rOrderRow = ((string) $rOrderColumn !== '') ? (int) $rOrderColumn : 0;
 		$rWhere = $rWhereV = [];
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`streams_series`.`id` LIKE ? OR `streams_series`.`title` LIKE ? OR `streams_series`.`release_date` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("category") ?? '')) {
+		if ((string) (RequestManager::get("category") ?? '') !== '') {
 			if (RequestManager::get("category") == -1) {
 				$rWhere[] = "(`streams_series`.`tmdb_id` = 0 OR `streams_series`.`tmdb_id` IS NULL)";
 			} elseif (RequestManager::get("category") == -2) {
@@ -3611,7 +3612,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (0 < strlen(RequestManager::get("category") ?? "")) {
+						if ((string) (RequestManager::get("category") ?? "") !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -3622,7 +3623,7 @@ class TableController extends BaseAdminController {
 						}
 						$rReturn["data"][] = [
 							"id"            => (int) $rRow["id"],
-							"cover"         => (0 < strlen((string) $rRow["cover"]) && SettingsManager::getAll()["show_images"]) ? $rRow["cover"] : null,
+							"cover"         => ((string) $rRow["cover"] !== '' && SettingsManager::getAll()["show_images"]) ? $rRow["cover"] : null,
 							"title"         => $rRow["title"],
 							"year"          => $rRow["year"] ?: null,
 							"rating"        => $rRow["rating"] ? (float) $rRow["rating"] : null,
@@ -3647,7 +3648,7 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		$rOrder = ["`streams`.`id`", false, "`streams`.`stream_display_name`", "`server_name`", "`clients`", "`streams_servers`.`stream_started`", false, false, "`streams_servers`.`bitrate`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -3664,13 +3665,13 @@ class TableController extends BaseAdminController {
 			$rWhereV[] = RequestManager::get("source_id");
 			$rOrderBy = "ORDER BY `streams_servers`.`server_stream_id` ASC";
 		} else {
-			if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+			if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 				foreach (range(1, 5) as $rInt) {
 					$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 				}
 				$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `streams_series`.`title` LIKE ? OR `streams`.`notes` LIKE ? OR `streams_servers`.`current_source` LIKE ?)";
 			}
-			if (0 < strlen(RequestManager::get("series") ?? '')) {
+			if ((string) (RequestManager::get("series") ?? '') !== '') {
 				$rWhere[] = "`streams_series`.`id` = ?";
 				$rWhereV[] = RequestManager::get("series");
 			}
@@ -3680,7 +3681,7 @@ class TableController extends BaseAdminController {
 				$rStart = 0;
 				$rLimit = 1000;
 			}
-			if (0 < strlen(RequestManager::get("filter") ?? '')) {
+			if ((string) (RequestManager::get("filter") ?? '') !== '') {
 				if (RequestManager::get("filter") == 1) {
 					$rWhere[] = "(`streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0 AND `streams_servers`.`to_analyze` = 0 AND `streams_servers`.`stream_status` <> 1)";
 				} elseif (RequestManager::get("filter") == 2) {
@@ -3698,7 +3699,7 @@ class TableController extends BaseAdminController {
 					$rWhere[] = "`streams`.`transcode_profile_id` > 0";
 				}
 			}
-			if (0 < strlen(RequestManager::get("audio") ?? '')) {
+			if ((string) (RequestManager::get("audio") ?? '') !== '') {
 				if (RequestManager::get("audio") == -1) {
 					$rWhere[] = "`streams_servers`.`audio_codec` IS NULL";
 				} else {
@@ -3706,7 +3707,7 @@ class TableController extends BaseAdminController {
 					$rWhereV[] = RequestManager::get("audio");
 				}
 			}
-			if (0 < strlen(RequestManager::get("video") ?? '')) {
+			if ((string) (RequestManager::get("video") ?? '') !== '') {
 				if (RequestManager::get("video") == -1) {
 					$rWhere[] = "`streams_servers`.`video_codec` IS NULL";
 				} else {
@@ -3714,7 +3715,7 @@ class TableController extends BaseAdminController {
 					$rWhereV[] = RequestManager::get("video");
 				}
 			}
-			if (0 < strlen(RequestManager::get("resolution") ?? '')) {
+			if ((string) (RequestManager::get("resolution") ?? '') !== '') {
 				$rWhere[] = "`streams_servers`.`resolution` = ?";
 				$rWhereV[] = (int) RequestManager::get("resolution") ?: null;
 			}
@@ -3848,7 +3849,7 @@ class TableController extends BaseAdminController {
 							"series"           => $rRow["title"] ?: null,
 							"season"           => $rRow["season_num"],
 							"sid"              => (int) $rRow["sid"],
-							"image"            => (0 < strlen($rProperties["movie_image"] ?? "") && SettingsManager::getAll()["show_images"]) ? $rProperties["movie_image"] : null,
+							"image"            => ((string) ($rProperties["movie_image"] ?? "") !== '' && SettingsManager::getAll()["show_images"]) ? $rProperties["movie_image"] : null,
 							"server_id"        => $rServerId,
 							"server_name"      => $rRow["server_name"] ?: null,
 							"server_url"       => ($rRow["server_name"] && Authorization::check("adv", "servers")) ? "server_view?id=" . $rServerId : null,
@@ -3872,14 +3873,14 @@ class TableController extends BaseAdminController {
 		exit;
 	}
 
-	private function handleBackups($rReturn, $rStart, $rLimit, $rIsAPI) {
+	private function handleBackups($rReturn) {
 		global $rSettings;
 		if (!Authorization::check("adv", "database")) {
 			exit;
 		}
 		$rBackups = array_reverse(BackupService::getLocal());
 		$rRemoteBackups = [];
-		if (0 < strlen($rSettings["dropbox_token"])) {
+		if ((string) $rSettings["dropbox_token"] !== '') {
 			foreach (array_reverse(BackupService::getRemote()) as $rBackup) {
 				$rRemoteBackups[$rBackup["name"]] = $rBackup;
 			}
@@ -3930,16 +3931,16 @@ class TableController extends BaseAdminController {
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable);
 		// the trailing actions column is non-orderable too.
-		$rOrderBy = self::dtOrderBy([false, "`mysql_syslog`.`date`", "`servers`.`server_name`", "`mysql_syslog`.`type`", "`mysql_syslog`.`error`", "`mysql_syslog`.`ip`", false]);
+		$rOrderBy = $this->dtOrderBy([false, "`mysql_syslog`.`date`", "`servers`.`server_name`", "`mysql_syslog`.`type`", "`mysql_syslog`.`error`", "`mysql_syslog`.`ip`", false]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`mysql_syslog`.`ip` LIKE ? OR `mysql_syslog`.`type` LIKE ? OR `mysql_syslog`.`error` LIKE ?)";
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `mysql_syslog` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -3981,16 +3982,16 @@ class TableController extends BaseAdminController {
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable); the
 		// data columns start at index 1, matching the client-side column order.
-		$rOrderBy = self::dtOrderBy([false, "`panel_logs`.`date`", "`servers`.`server_name`", "`panel_logs`.`type`", "`panel_logs`.`log_message`"]);
+		$rOrderBy = $this->dtOrderBy([false, "`panel_logs`.`date`", "`servers`.`server_name`", "`panel_logs`.`type`", "`panel_logs`.`log_message`"]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`panel_logs`.`log_message` LIKE ? OR `panel_logs`.`log_extra` LIKE ? OR `panel_logs`.`type` LIKE ?)";
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `panel_logs` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -4026,16 +4027,16 @@ class TableController extends BaseAdminController {
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable);
 		// the trailing actions column is non-orderable too.
-		$rOrderBy = self::dtOrderBy([false, "`login_logs`.`date`", "`login_logs`.`type`", "`login_logs`.`status`", "`users`.`username`", "`access_codes`.`code`", "`login_logs`.`login_ip`", false]);
+		$rOrderBy = $this->dtOrderBy([false, "`login_logs`.`date`", "`login_logs`.`type`", "`login_logs`.`status`", "`users`.`username`", "`access_codes`.`code`", "`login_logs`.`login_ip`", false]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 4) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`login_logs`.`login_ip` LIKE ? OR `login_logs`.`status` LIKE ? OR `users`.`username` LIKE ? OR `access_codes`.`code` LIKE ?)";
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `login_logs` LEFT JOIN `users` ON `users`.`id` = `login_logs`.`user_id` LEFT JOIN `access_codes` ON `access_codes`.`id` = `login_logs`.`access_code` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -4077,16 +4078,16 @@ class TableController extends BaseAdminController {
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable);
 		// the trailing actions column is non-orderable too.
-		$rOrderBy = self::dtOrderBy([false, "`queue`.`id`", "`streams`.`stream_display_name`", "`servers`.`server_name`", "`queue`.`pid`", "`queue`.`added`", false]);
+		$rOrderBy = $this->dtOrderBy([false, "`queue`.`id`", "`streams`.`stream_display_name`", "`servers`.`server_name`", "`queue`.`pid`", "`queue`.`added`", false]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`streams`.`stream_display_name` LIKE ? OR `servers`.`server_name` LIKE ? OR `streams`.`id` LIKE ?)";
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `queue` LEFT JOIN `servers` ON `servers`.`id` = `queue`.`server_id` LEFT JOIN `streams` ON `streams`.`id` = `queue`.`stream_id` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -4132,16 +4133,16 @@ class TableController extends BaseAdminController {
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable);
 		// the trailing actions column is non-orderable too.
-		$rOrderBy = self::dtOrderBy([false, "`lines`.`username`", "`streams`.`stream_display_name`", "`detect_restream_logs`.`ip`", "`detect_restream_logs`.`time`", false]);
+		$rOrderBy = $this->dtOrderBy([false, "`lines`.`username`", "`streams`.`stream_display_name`", "`detect_restream_logs`.`ip`", "`detect_restream_logs`.`time`", false]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`detect_restream_logs`.`ip` LIKE ? OR `lines`.`username` LIKE ? OR `streams`.`stream_display_name` LIKE ?)";
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `detect_restream_logs` LEFT JOIN `lines` ON `lines`.`id` = `detect_restream_logs`.`user_id` LEFT JOIN `streams` ON `streams`.`id` = `detect_restream_logs`.`stream_id` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -4194,16 +4195,16 @@ class TableController extends BaseAdminController {
 		}
 		// Column 0 is the DataTables Responsive control column (non-orderable);
 		// the trailing actions column is non-orderable too.
-		$rOrderBy = self::dtOrderBy([false, "`mag_events`.`send_time`", "`mag_devices`.`mac`", "`mag_events`.`event`", "`mag_events`.`msg`", false]);
+		$rOrderBy = $this->dtOrderBy([false, "`mag_events`.`send_time`", "`mag_devices`.`mac`", "`mag_events`.`event`", "`mag_events`.`msg`", false]);
 		$rWhere = $rWhereV = [];
-		$rSearch = self::dtSearch();
-		if (0 < strlen($rSearch)) {
+		$rSearch = $this->dtSearch();
+		if ($rSearch !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . $rSearch . "%";
 			}
 			$rWhere[] = "(`mag_devices`.`mac` LIKE ? OR `mag_events`.`event` LIKE ? OR `mag_events`.`msg` LIKE ?)";
 		}
-		$rWhereString = $rWhere ? "WHERE " . implode(" AND ", $rWhere) : "";
+		$rWhereString = $rWhere !== [] ? "WHERE " . implode(" AND ", $rWhere) : "";
 
 		$db->query("SELECT COUNT(*) AS `count` FROM `mag_events` LEFT JOIN `mag_devices` ON `mag_devices`.`mag_id` = `mag_events`.`mag_device_id` " . $rWhereString . ";", ...$rWhereV);
 		$rReturn["recordsTotal"]    = ($db->num_rows() == 1) ? (int) $db->get_row()["count"] : 0;
@@ -4237,7 +4238,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("live");
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4248,7 +4249,7 @@ class TableController extends BaseAdminController {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category_id");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4281,7 +4282,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (RequestManager::has("category_id") && 0 < strlen(RequestManager::get("category_id"))) {
+						if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
 							$rCategory = $rCategories[(int) RequestManager::get("category_id")]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -4306,7 +4307,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("movie");
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4317,7 +4318,7 @@ class TableController extends BaseAdminController {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category_id");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4350,7 +4351,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (RequestManager::has("category_id") && 0 < strlen(RequestManager::get("category_id"))) {
+						if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
 							$rCategory = $rCategories[(int) RequestManager::get("category_id")]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -4375,7 +4376,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("series");
 		$rOrder = ["`streams_series`.`id`", "`streams_series`.`title`", false, false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4385,7 +4386,7 @@ class TableController extends BaseAdminController {
 			$rWhere[] = "JSON_CONTAINS(`streams_series`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category_id");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4418,7 +4419,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (RequestManager::has("category_id") && 0 < strlen(RequestManager::get("category_id"))) {
+						if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
 							$rCategory = $rCategories[(int) RequestManager::get("category_id")]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -4443,7 +4444,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("radio");
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false, false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4454,7 +4455,7 @@ class TableController extends BaseAdminController {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category_id");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4487,7 +4488,7 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (RequestManager::has("category_id") && 0 < strlen(RequestManager::get("category_id"))) {
+						if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
 							$rCategory = $rCategories[(int) RequestManager::get("category_id")]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -4511,7 +4512,7 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4522,7 +4523,7 @@ class TableController extends BaseAdminController {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category_id");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4570,7 +4571,7 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4581,7 +4582,7 @@ class TableController extends BaseAdminController {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category_id");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4629,7 +4630,7 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4640,7 +4641,7 @@ class TableController extends BaseAdminController {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category_id");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4688,7 +4689,7 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		$rOrder = ["`streams_series`.`id`", "`streams_series`.`title`", false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4698,7 +4699,7 @@ class TableController extends BaseAdminController {
 			$rWhere[] = "JSON_CONTAINS(`streams_series`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category_id");
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4747,7 +4748,7 @@ class TableController extends BaseAdminController {
 		}
 		$rCategories = CategoryService::getAllByType("movie");
 		$rOrder = ["`streams`.`id`", "`streams`.`stream_display_name`", "`streams_series`.`title`", false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4755,7 +4756,7 @@ class TableController extends BaseAdminController {
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "`stream_source` LIKE ?";
 		$rWhereV[] = "%s:" . (int) (RequestManager::get("server_id") ?? 0) . ":%";
-		if (RequestManager::has("category_id") && 0 < strlen(RequestManager::get("category_id"))) {
+		if (RequestManager::has("category_id") && (string) RequestManager::get("category_id") !== '') {
 			$rSplit = explode(":", RequestManager::get("category_id"));
 			if ((int) $rSplit[0] == 0) {
 				$rWhere[] = "(`streams`.`type` = 2 AND JSON_CONTAINS(`streams`.`category_id`, ?, '\$'))";
@@ -4767,7 +4768,7 @@ class TableController extends BaseAdminController {
 		} else {
 			$rWhere[] = "(`streams`.`type` = 2 OR `streams`.`type` = 5)";
 		}
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 3) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4800,11 +4801,11 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rButtons = "<div class=\"btn-group\"><button data-id=\"" . $rRow["id"] . "\" data-type=\"vod\" type=\"button\" style=\"display: none;\" class=\"btn-remove btn btn-light waves-effect waves-light btn-xs\" onClick=\"toggleSelection(" . $rRow["id"] . ");\"><i class=\"mdi mdi-minus\"></i></button>\r\n                <button data-id=\"" . $rRow["id"] . "\" data-type=\"vod\" type=\"button\" style=\"display: none;\" class=\"btn-add btn btn-light waves-effect waves-light btn-xs\" onClick=\"toggleSelection(" . $rRow["id"] . ");\"><i class=\"mdi mdi-plus\"></i></button></div>";
-						if (0 < strlen($rRow["title"])) {
+						if ((string) $rRow["title"] !== '') {
 							$rCategory = $rRow["title"];
 						} else {
 							$rCategoryIDs = json_decode($rRow["category_id"], true);
-							if (0 < strlen($rSplit[1] ?? '')) {
+							if (($rSplit[1] ?? '') !== '') {
 								$rCategory = $rCategories[(int) $rSplit[1]]["category_name"] ?: "No Category";
 							} else {
 								$rCategory = $rCategoryIDs[0] ?? null;
@@ -4826,20 +4827,20 @@ class TableController extends BaseAdminController {
 	private function handleProviderStreams($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db;
 		$rOrder = ["`providers`.`name`", "`providers_streams`.`stream_icon`", "`providers_streams`.`stream_display_name`", false];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
 		}
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "`providers`.`enabled` = 1 AND `providers`.`status` = 1";
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 4) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`providers`.`name` LIKE ? OR `providers`.`ip` LIKE ? OR `providers_streams`.`stream_display_name` LIKE ? OR `providers_streams`.`stream_id` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("type") ?? '')) {
+		if ((string) (RequestManager::get("type") ?? '') !== '') {
 			$rWhere[] = "`providers_streams`.`type` = ?";
 			$rWhereV[] = RequestManager::get("type");
 		}
@@ -4876,7 +4877,7 @@ class TableController extends BaseAdminController {
 							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/movie/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . "." . $rRow["channel_id"];
 							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream('" . str_replace("'", "\\'", $rRow["stream_display_name"]) . "', '" . str_replace("'", "\\'", $rStreamURL) . "');\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
 						}
-						if (0 < strlen($rRow["stream_icon"]) && $rRow["type"] == "live") {
+						if ((string) $rRow["stream_icon"] !== '' && $rRow["type"] == "live") {
 							$rIcon = "<img loading='lazy' src='" . $rRow["stream_icon"] . "' height='32px' />";
 						} else {
 							$rIcon = "";
@@ -4909,7 +4910,7 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 		$rOrder = ["`id`", "`server_name`", "`server_ip`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -4917,7 +4918,7 @@ class TableController extends BaseAdminController {
 		$rWhere = $rWhereV = [];
 		$rWhere[] = "`server_type` = 0";
 		$rWhere[] = "`id` IN (" . implode(",", array_map("intval", $rServers[RequestManager::get("proxy_id")]["parent_id"])) . ")";
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 2) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
@@ -4999,13 +5000,13 @@ class TableController extends BaseAdminController {
 		exit;
 	}
 
-	private function handleEpgModal($rReturn, $rStart, $rLimit, $rIsAPI) {
+	private function handleEpgModal($rReturn, $rLimit, $rIsAPI) {
 		$rLimit = 10;
 		$rEPG = EpgService::getStreamEpg(RequestManager::get("stream_id"), time(), time() + 604800);
 		if ($rEPG && $rLimit < count($rEPG)) {
 			$rEPG = array_slice($rEPG, 0, $rLimit);
 		}
-		$rReturn["recordsTotal"] = count($rEPG) ?: 0;
+		$rReturn["recordsTotal"] = count($rEPG);
 		$rReturn["recordsFiltered"] = ($rIsAPI ? ($rReturn["recordsTotal"] < $rLimit ? $rReturn["recordsTotal"] : $rLimit) : $rReturn["recordsTotal"]);
 		if (0 < $rReturn["recordsTotal"]) {
 			foreach ($rEPG as $rRow) {
@@ -5022,8 +5023,7 @@ class TableController extends BaseAdminController {
 
 	private function handleStreamLogs($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db;
-		$rOrder = ["`date`", "`action`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -5067,7 +5067,7 @@ class TableController extends BaseAdminController {
 		$rCategories = CategoryService::getAllByType("live");
 		// Leading false = the Bootstrap 5 Responsive control column (client index 0).
 		$rOrder = [false, "`streams`.`id`", "`streams`.`stream_icon`", "`streams`.`stream_display_name`", "`streams_servers`.`server_id`", "`ondemand_check`.`status`", "`ondemand_check`.`response`", "`ondemand_check`.`resolution`", "`ondemand_check`.`date`"];
-		if (RequestManager::has("order") && 0 < strlen(RequestManager::get("order")[0]["column"] ?? '')) {
+		if (RequestManager::has("order") && (string) (RequestManager::get("order")[0]["column"] ?? '') !== '') {
 			$rOrderRow = (int) (RequestManager::get("order")[0]["column"] ?? 0);
 		} else {
 			$rOrderRow = 0;
@@ -5076,17 +5076,17 @@ class TableController extends BaseAdminController {
 		$rWhere[] = "`streams`.`type` = 1";
 		$rWhere[] = "`streams`.`direct_source` = 0";
 		$rWhere[] = "`streams_servers`.`on_demand` = 1";
-		if (0 < strlen(RequestManager::get("search")["value"] ?? '')) {
+		if ((string) (RequestManager::get("search")["value"] ?? '') !== '') {
 			foreach (range(1, 6) as $rInt) {
 				$rWhereV[] = "%" . RequestManager::get("search")["value"] . "%";
 			}
 			$rWhere[] = "(`streams`.`id` LIKE ? OR `streams`.`stream_display_name` LIKE ? OR `ondemand_check`.`fps` LIKE ? OR `ondemand_check`.`resolution` LIKE ? OR `ondemand_check`.`video_codec` LIKE ? OR `ondemand_check`.`audio_codec` LIKE ?)";
 		}
-		if (0 < strlen(RequestManager::get("category") ?? '')) {
+		if ((string) (RequestManager::get("category") ?? '') !== '') {
 			$rWhere[] = "JSON_CONTAINS(`streams`.`category_id`, ?, '\$')";
 			$rWhereV[] = RequestManager::get("category");
 		}
-		if (0 < strlen(RequestManager::get("filter") ?? '')) {
+		if ((string) (RequestManager::get("filter") ?? '') !== '') {
 			if (RequestManager::get("filter") == 1) {
 				$rWhere[] = "`ondemand_check`.`status` = 1";
 			} elseif (RequestManager::get("filter") == 2) {
@@ -5143,7 +5143,7 @@ class TableController extends BaseAdminController {
 					} else {
 						$rServerID = (int) $rRow["server_id"];
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
-						if (0 < strlen(RequestManager::get("category") ?? "")) {
+						if ((string) (RequestManager::get("category") ?? "") !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
 							$rCategory = $rCategoryIDs[0] ?? null;
@@ -5188,9 +5188,9 @@ class TableController extends BaseAdminController {
 	 *
 	 * @param array<int,string|false> $rOrderColumns
 	 */
-	private static function dtOrderBy(array $rOrderColumns): string {
+	private function dtOrderBy(array $rOrderColumns): string {
 		$rColumn = RequestManager::get("order")[0]["column"] ?? '';
-		$rRow    = (0 < strlen((string) $rColumn)) ? (int) $rColumn : 0;
+		$rRow    = ((string) $rColumn !== '') ? (int) $rColumn : 0;
 		if (empty($rOrderColumns[$rRow])) {
 			return "";
 		}
@@ -5199,7 +5199,7 @@ class TableController extends BaseAdminController {
 	}
 
 	/** The DataTables global search value (empty string when none). */
-	private static function dtSearch(): string {
+	private function dtSearch(): string {
 		return (string) (RequestManager::get("search")["value"] ?? '');
 	}
 

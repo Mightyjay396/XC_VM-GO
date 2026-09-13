@@ -23,6 +23,6 @@ class SeriesMassController extends BaseAdminController {
 		$rCategories = CategoryService::getAllByType('series');
 
 		$this->setTitle('Mass Edit Series');
-		$this->render('series_mass', compact('rCategories'));
+		$this->render('series_mass', ['rCategories' => $rCategories]);
 	}
 }

@@ -371,7 +371,7 @@ class EpgAjaxController extends BaseAjaxController {
 				$rCategoryIDs = json_decode($rStream['category_id'], true);
 				$rCategories = CategoryService::getAllByType('live');
 
-				if (0 < strlen(RequestManager::get('category'))) {
+				if ((string) RequestManager::get('category') !== '') {
 					$rCategory = ($rCategories[intval(RequestManager::get('category'))]['category_name'] ?: 'No Category');
 				} else {
 					$rCategory = ($rCategories[$rCategoryIDs[0]]['category_name'] ?: 'No Category');

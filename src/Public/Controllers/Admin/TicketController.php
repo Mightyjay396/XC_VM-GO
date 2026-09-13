@@ -28,6 +28,6 @@ class TicketController extends BaseAdminController {
 		}
 
 		$this->setTitle('Ticket');
-		$this->render('ticket', compact('rTicket'));
+		$this->render('ticket', ['rTicket' => $rTicket]);
 	}
 }

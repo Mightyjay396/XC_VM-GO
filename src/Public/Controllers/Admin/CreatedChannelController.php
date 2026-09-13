@@ -106,14 +106,6 @@ class CreatedChannelController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Created Channel');
-		$this->render('created_channel', compact(
-			'rCategories',
-			'rTranscodeProfiles',
-			'rChannel',
-			'rOnDemand',
-			'rServerTree',
-			'rProperties',
-			'rChannelSys'
-		));
+		$this->render('created_channel', ['rCategories' => $rCategories, 'rTranscodeProfiles' => $rTranscodeProfiles, 'rChannel' => $rChannel, 'rOnDemand' => $rOnDemand, 'rServerTree' => $rServerTree, 'rProperties' => $rProperties, 'rChannelSys' => $rChannelSys]);
 	}
 }

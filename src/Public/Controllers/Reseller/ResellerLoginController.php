@@ -59,7 +59,7 @@ class ResellerLoginController {
 
 			if ($_STATUS === STATUS_SUCCESS) {
 				$rReferer = RequestManager::get('referrer') ?? '';
-				if (strlen($rReferer) > 0) {
+				if ((string) $rReferer !== '') {
 					$rReferer = basename($rReferer);
 					if (substr($rReferer, 0, 6) === 'logout') {
 						$rReferer = 'dashboard';

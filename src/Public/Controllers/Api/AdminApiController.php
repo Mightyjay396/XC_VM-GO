@@ -22,8 +22,7 @@ class AdminApiController {
 
 		$_ERRORS = [];
 		foreach (get_defined_constants(true)['user'] as $rKey => $rValue) {
-			if (substr($rKey, 0, 7) != 'STATUS_') {
-			} else {
+			if (substr($rKey, 0, 7) == 'STATUS_') {
 				$_ERRORS[intval($rValue)] = $rKey;
 			}
 		}

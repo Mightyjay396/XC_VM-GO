@@ -37,9 +37,8 @@ class LineController extends BaseAdminController {
 				if ($db->num_rows() > 0) {
 					header('Location: mag?id=' . intval($db->get_row()['mag_id']));
 					exit;
-				} else {
-					AdminHelpers::goHome();
 				}
+				AdminHelpers::goHome();
 			}
 
 			if ($rLine['is_e2']) {
@@ -47,9 +46,8 @@ class LineController extends BaseAdminController {
 				if ($db->num_rows() > 0) {
 					header('Location: enigma?id=' . intval($db->get_row()['device_id']));
 					exit;
-				} else {
-					AdminHelpers::goHome();
 				}
+				AdminHelpers::goHome();
 			}
 		} else {
 			if (!Authorization::check('adv', 'add_user')) {

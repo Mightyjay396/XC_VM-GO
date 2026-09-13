@@ -29,6 +29,6 @@ class IspEditController extends BaseAdminController {
 		}
 
 		$this->setTitle('Blocked ISP');
-		$this->render('isp', compact('rISPArr'));
+		$this->render('isp', ['rISPArr' => $rISPArr]);
 	}
 }

@@ -31,6 +31,6 @@ class UseragentController extends BaseAdminController {
 		}
 
 		$this->setTitle('Block User-Agent');
-		$this->render('useragent', compact('rUAArr'));
+		$this->render('useragent', ['rUAArr' => $rUAArr]);
 	}
 }

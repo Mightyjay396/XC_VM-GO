@@ -47,7 +47,7 @@ final class IngestFeeder {
 	private $dial;
 
 	/** @var resource|null */
-	private $conn = null;
+	private $conn;
 
 	private string $pending = '';
 
@@ -88,7 +88,6 @@ final class IngestFeeder {
 	 * @param int           $rStreamID Stream id.
 	 * @param bool          $rEncrypt  The encrypt_hls setting.
 	 * @param callable|null $rLogger   See the constructor.
-	 * @return self
 	 */
 	public static function forStream(int $rStreamID, bool $rEncrypt, ?callable $rLogger = null): self {
 		[$rKey, $rIV] = $rEncrypt ? self::streamKey($rStreamID) : [null, null];
@@ -160,7 +159,6 @@ final class IngestFeeder {
 	 * Queue whole TS packets for the daemon and send what the socket takes now.
 	 *
 	 * @param string $rData Whole 188-byte packets.
-	 * @return void
 	 */
 	public function write(string $rData): void {
 		if ($rData !== '') {
@@ -174,8 +172,6 @@ final class IngestFeeder {
 	 * Send as much of the backlog as the socket takes without blocking; reconnect
 	 * first when the connection is down and the backoff has passed. Call it from
 	 * the producer's loop even when there is nothing new to write.
-	 *
-	 * @return void
 	 */
 	public function flush(): void {
 		if (!$this->conn) {
@@ -192,7 +188,7 @@ final class IngestFeeder {
 			if ($rWritten === 0) {
 				return; // socket buffer full — the rest goes on the next call
 			}
-			$this->pending = (string) substr($this->pending, $rWritten);
+			$this->pending = substr($this->pending, $rWritten);
 			$this->headSent = ($this->headSent + $rWritten) % self::PACKET;
 		}
 	}
@@ -200,8 +196,6 @@ final class IngestFeeder {
 	/**
 	 * Close the connection. The daemon keeps the stream registered; viewers wait
 	 * for the next producer rather than being dropped.
-	 *
-	 * @return void
 	 */
 	public function close(): void {
 		if ($this->conn) {
@@ -217,7 +211,7 @@ final class IngestFeeder {
 	private function drop(string $rWhy): void {
 		$this->close();
 		if ($this->headSent > 0) {
-			$this->pending = (string) substr($this->pending, self::PACKET - $this->headSent);
+			$this->pending = substr($this->pending, self::PACKET - $this->headSent);
 			$this->headSent = 0;
 		}
 		$this->retryAt = microtime(true) + self::RETRY_SEC;

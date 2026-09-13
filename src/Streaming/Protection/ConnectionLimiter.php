@@ -42,7 +42,7 @@ class ConnectionLimiter {
 		global $rSettings, $rServers, $db;
 		$redis = RedisManager::instance();
 		if ($rSettings['redis_handler']) {
-			if (!$redis) {
+			if (!$redis instanceof \Redis) {
 				return null;
 			}
 			$rConnections = [];
@@ -123,7 +123,7 @@ class ConnectionLimiter {
 			}
 		}
 
-		if (!empty($rIDs)) {
+		if ($rIDs !== []) {
 			if ($rSettings['redis_handler']) {
 				$rUUIDs = [];
 				$rRedis = $redis->multi();

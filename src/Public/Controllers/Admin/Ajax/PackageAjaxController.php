@@ -132,7 +132,7 @@ class PackageAjaxController extends BaseAjaxController {
 		if ($db->num_rows() == 1) {
 			$rData = $db->get_row();
 
-			if (isset($rOverride[$rData['id']]['official_credits']) && 0 < strlen($rOverride[$rData['id']]['official_credits'])) {
+			if (isset($rOverride[$rData['id']]['official_credits']) && (string) $rOverride[$rData['id']]['official_credits'] !== '') {
 				$rData['cost_credits'] = $rOverride[$rData['id']]['official_credits'];
 			}
 

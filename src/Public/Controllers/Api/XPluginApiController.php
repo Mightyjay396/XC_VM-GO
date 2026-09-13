@@ -190,15 +190,11 @@ class XPluginApiController {
 
 		$rType = $rRequest['t'];
 
-		switch ($rType) {
-			case 'screen':
-				$rInfo = getimagesize($_FILES['f']['tmp_name']);
-
-				if ($rInfo && $rInfo[2] == IMAGETYPE_JPEG) {
+		if ($rType === 'screen') {
+			$rInfo = getimagesize($_FILES['f']['tmp_name']);
+			if ($rInfo && $rInfo[2] == IMAGETYPE_JPEG) {
 					move_uploaded_file($_FILES['f']['tmp_name'], E2_IMAGES_PATH . $rDeviceInfo['device_id'] . '_screen_' . time() . '_' . uniqid() . '.jpg');
-				}
-
-				break;
+			}
 		}
 	}
 }

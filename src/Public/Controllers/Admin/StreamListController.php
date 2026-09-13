@@ -33,6 +33,6 @@ class StreamListController extends BaseAdminController {
 		}
 
 		$this->setTitle('Streams');
-		$this->render('streams', compact('rAudioCodecs', 'rVideoCodecs'));
+		$this->render('streams', ['rAudioCodecs' => $rAudioCodecs, 'rVideoCodecs' => $rVideoCodecs]);
 	}
 }

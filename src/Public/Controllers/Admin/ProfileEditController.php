@@ -64,6 +64,6 @@ class ProfileEditController extends BaseAdminController {
 		}
 
 		$this->setTitle('Transcoding Profile');
-		$this->render('profile', compact('rProfileArr', 'rProfileOptions', 'rDevices'));
+		$this->render('profile', ['rProfileArr' => $rProfileArr, 'rProfileOptions' => $rProfileOptions, 'rDevices' => $rDevices]);
 	}
 }

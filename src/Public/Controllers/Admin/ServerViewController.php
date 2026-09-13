@@ -100,14 +100,6 @@ class ServerViewController extends BaseAdminController {
 			['apexcharts']
 		)));
 
-		$this->render('server_view', compact(
-			'rServer',
-			'rWatchdog',
-			'rStats',
-			'rCertificate',
-			'rCertValid',
-			'rHasCert',
-			'rExpiration'
-		));
+		$this->render('server_view', ['rServer' => $rServer, 'rWatchdog' => $rWatchdog, 'rStats' => $rStats, 'rCertificate' => $rCertificate, 'rCertValid' => $rCertValid, 'rHasCert' => $rHasCert, 'rExpiration' => $rExpiration]);
 	}
 }

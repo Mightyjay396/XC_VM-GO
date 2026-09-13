@@ -35,6 +35,6 @@ class MovieListController extends BaseAdminController {
 		}
 
 		$this->setTitle('Movies');
-		$this->render('movies', compact('rCategories', 'rAudioCodecs', 'rVideoCodecs'));
+		$this->render('movies', ['rCategories' => $rCategories, 'rAudioCodecs' => $rAudioCodecs, 'rVideoCodecs' => $rVideoCodecs]);
 	}
 }

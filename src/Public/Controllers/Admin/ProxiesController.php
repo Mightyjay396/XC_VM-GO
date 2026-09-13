@@ -23,6 +23,6 @@ class ProxiesController extends BaseAdminController {
 		$rServers = ServerRepository::getAll(true);
 
 		$this->setTitle('Proxy Servers');
-		$this->render('proxies', compact('rServers'));
+		$this->render('proxies', ['rServers' => $rServers]);
 	}
 }

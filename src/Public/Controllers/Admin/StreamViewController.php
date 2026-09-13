@@ -30,8 +30,7 @@ class StreamViewController extends BaseAdminController {
 
 		global $db;
 
-		if (RequestManager::has('id') && ($rStream = StreamRepository::getById(RequestManager::get('id')))) {
-		} else {
+		if (!RequestManager::has('id') || !$rStream = StreamRepository::getById(RequestManager::get('id'))) {
 			AdminHelpers::goHome();
 		}
 
@@ -49,12 +48,10 @@ class StreamViewController extends BaseAdminController {
 		if ($rStream['type'] == 1) {
 			$rEPGData = EpgService::getChannelEpg($rStream);
 
-			if (0 >= $rStream['vframes_server_id']) {
-			} else {
+			if (0 < $rStream['vframes_server_id']) {
 				$rExpires = time() + 3600;
 				$rTokenData = ['session_id' => session_id(), 'expires' => $rExpires, 'stream_id' => intval(RequestManager::get('id')), 'ip' => NetworkUtils::getUserIP()];
 				$rUIToken = Encryption::mintToken(json_encode($rTokenData), SettingsManager::get('live_streaming_pass'), OPENSSL_EXTRA, (bool) SettingsManager::get('secure_stream_tokens'));
-
 				if (AdminHelpers::issecure()) {
 					$rVServer = ServerRepository::getAll()[$rStream['vframes_server_id']];
 					$rImage = 'https://' . (($rVServer['domain_name'] ? $rVServer['domain_name'] : $rVServer['server_ip'])) . ':' . intval($rVServer['https_broadcast_port']) . '/admin/thumb?uitoken=' . $rUIToken;
@@ -70,21 +67,16 @@ class StreamViewController extends BaseAdminController {
 				$rProperties = json_decode($rStream['movie_properties'], true);
 				$rImage = (!empty($rProperties['backdrop_path'][0]) ? ImageUtils::validateURL($rProperties['backdrop_path'][0], (AdminHelpers::issecure() ? 'https' : 'http')) : ImageUtils::validateURL($rProperties['movie_image'], (AdminHelpers::issecure() ? 'https' : 'http')));
 
-				if (empty($rImage)) {
-				} else {
-					if (@getimagesize($rImage)) {
-					} else {
+				if (!empty($rImage)) {
+					if (!@getimagesize($rImage)) {
 						$rImage = null;
 					}
 				}
 			} else {
-				if ($rStream['type'] != 3) {
-				} else {
+				if ($rStream['type'] == 3) {
 					$rCCInfo = null;
 					$db->query('SELECT `streams_servers`.`stream_started`, `streams_servers`.`cc_info` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` AND `streams_servers`.`parent_id` IS NULL WHERE `streams`.`id` = ? GROUP BY `streams`.`id`;', $rStream['id']);
-
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						$rServerRow = $db->get_row();
 						$rCCInfo = json_decode($rServerRow['cc_info'], true);
 						$rSeconds = time() - intval($rServerRow['stream_started']);
@@ -93,35 +85,18 @@ class StreamViewController extends BaseAdminController {
 			}
 		}
 
-		if ($rStream['type'] != 5) {
-		} else {
+		if ($rStream['type'] == 5) {
 			$rSeries = null;
 			$db->query('SELECT * FROM `streams_series` WHERE `id` = (SELECT `series_id` FROM `streams_episodes` WHERE `stream_id` = ?);', $rStream['id']);
-
-			if (0 >= $db->num_rows()) {
-			} else {
+			if (0 < $db->num_rows()) {
 				$rSeries = $db->get_row();
 			}
-
 			$rSeriesID = $rSeries['id'];
 		}
 
 		$rStreamStats = StreamRepository::getStats($rStream['id']);
 
 		$this->setTitle('View ' . $rTypeString);
-		$this->render('stream_view', compact(
-			'rStream',
-			'rTypeString',
-			'rEPGData',
-			'rImage',
-			'rUIToken',
-			'rAdaptiveLink',
-			'rProperties',
-			'rSeries',
-			'rSeriesID',
-			'rStreamStats',
-			'rCCInfo',
-			'rSeconds'
-		));
+		$this->render('stream_view', ['rStream' => $rStream, 'rTypeString' => $rTypeString, 'rEPGData' => $rEPGData, 'rImage' => $rImage, 'rUIToken' => $rUIToken, 'rAdaptiveLink' => $rAdaptiveLink, 'rProperties' => $rProperties, 'rSeries' => $rSeries, 'rSeriesID' => $rSeriesID, 'rStreamStats' => $rStreamStats, 'rCCInfo' => $rCCInfo, 'rSeconds' => $rSeconds]);
 	}
 }

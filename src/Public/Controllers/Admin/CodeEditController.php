@@ -32,6 +32,6 @@ class CodeEditController extends BaseAdminController {
 		}
 
 		$this->setTitle('Access Code');
-		$this->render('code', compact('rCode'));
+		$this->render('code', ['rCode' => $rCode]);
 	}
 }

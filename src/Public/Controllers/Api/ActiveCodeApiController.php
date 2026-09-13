@@ -57,7 +57,7 @@ class ActiveCodeApiController extends BaseApiController {
 			?? ($jsonInput['device_id'] ?? $jsonInput['device'] ?? '')
 		);
 
-		$action = trim(
+		trim(
 			RequestManager::get('action')
 			?? ($jsonInput['action'] ?? 'auth')
 		);

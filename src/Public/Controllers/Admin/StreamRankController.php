@@ -28,6 +28,6 @@ class StreamRankController extends BaseAdminController {
 		$rRows = $db->get_rows();
 
 		$this->setTitle('Stream Rank');
-		$this->render('stream_rank', compact('rStreamTypes', 'rPeriod', 'rRows'));
+		$this->render('stream_rank', ['rStreamTypes' => $rStreamTypes, 'rPeriod' => $rPeriod, 'rRows' => $rRows]);
 	}
 }

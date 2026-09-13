@@ -28,6 +28,6 @@ class BouquetListController extends BaseAdminController {
 
 		$rBouquets = BouquetService::getAllSimple();
 
-		$this->render('bouquets', compact('rBouquets'));
+		$this->render('bouquets', ['rBouquets' => $rBouquets]);
 	}
 }

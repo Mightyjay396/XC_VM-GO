@@ -152,7 +152,7 @@ class CacheAjaxController extends BaseAjaxController {
 
 		$rRedis = RedisManager::instance();
 
-		if (!$rRedis) {
+		if (!$rRedis instanceof \Redis) {
 			$this->fail();
 		}
 

@@ -25,7 +25,7 @@ class StreamAuth {
 			}
 		}
 
-		if (empty($rAvailableServers)) {
+		if ($rAvailableServers === []) {
 			return false;
 		}
 
@@ -42,7 +42,7 @@ class StreamAuth {
 		}
 
 		$rAcceptServers = array_filter($rAcceptServers, 'is_numeric');
-		if (empty($rAcceptServers)) {
+		if ($rAcceptServers === []) {
 			return false;
 		}
 
@@ -85,7 +85,7 @@ class StreamAuth {
 			}
 		}
 
-		if (empty($rPriorityServers) && empty($rRedirectID)) {
+		if ($rPriorityServers === [] && empty($rRedirectID)) {
 			return false;
 		}
 

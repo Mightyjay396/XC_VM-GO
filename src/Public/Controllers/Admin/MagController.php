@@ -34,6 +34,6 @@ class MagController extends BaseAdminController {
 		}
 
 		$this->setTitle('MAG Device');
-		$this->render('mag', compact('rDevice'));
+		$this->render('mag', ['rDevice' => $rDevice]);
 	}
 }

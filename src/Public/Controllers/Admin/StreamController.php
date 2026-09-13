@@ -98,18 +98,6 @@ class StreamController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Stream');
-		$this->render('stream', compact(
-			'rStream',
-			'rEPGSources',
-			'rStreamArguments',
-			'rTranscodeProfiles',
-			'rOnDemand',
-			'rEPGJS',
-			'rServerTree',
-			'rAudioDevices',
-			'rVideoDevices',
-			'rStreamOptions',
-			'rStreamSys'
-		));
+		$this->render('stream', ['rStream' => $rStream, 'rEPGSources' => $rEPGSources, 'rStreamArguments' => $rStreamArguments, 'rTranscodeProfiles' => $rTranscodeProfiles, 'rOnDemand' => $rOnDemand, 'rEPGJS' => $rEPGJS, 'rServerTree' => $rServerTree, 'rAudioDevices' => $rAudioDevices, 'rVideoDevices' => $rVideoDevices, 'rStreamOptions' => $rStreamOptions, 'rStreamSys' => $rStreamSys]);
 	}
 }

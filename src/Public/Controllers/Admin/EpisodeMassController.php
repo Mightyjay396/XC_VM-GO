@@ -33,6 +33,6 @@ class EpisodeMassController extends BaseAdminController {
 		}
 
 		$this->setTitle('Mass Edit Episodes');
-		$this->render('episodes_mass', compact('rSeries', 'rServerTree'));
+		$this->render('episodes_mass', ['rSeries' => $rSeries, 'rServerTree' => $rServerTree]);
 	}
 }

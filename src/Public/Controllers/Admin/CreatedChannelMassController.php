@@ -35,6 +35,6 @@ class CreatedChannelMassController extends BaseAdminController {
 		}
 
 		$this->setTitle('Mass Edit Channels');
-		$this->render('created_channel_mass', compact('rCategories', 'rTranscodeProfiles', 'rServerTree'));
+		$this->render('created_channel_mass', ['rCategories' => $rCategories, 'rTranscodeProfiles' => $rTranscodeProfiles, 'rServerTree' => $rServerTree]);
 	}
 }

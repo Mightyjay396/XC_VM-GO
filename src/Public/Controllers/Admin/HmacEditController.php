@@ -32,6 +32,6 @@ class HmacEditController extends BaseAdminController {
 		}
 
 		$this->setTitle('HMAC Key');
-		$this->render('hmac', compact('rHMAC'));
+		$this->render('hmac', ['rHMAC' => $rHMAC]);
 	}
 }

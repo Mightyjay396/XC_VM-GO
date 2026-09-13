@@ -33,8 +33,7 @@ class RecordController extends BaseAdminController {
 			$rStream = StreamRepository::getById($rRequestData['id']);
 			$rProgramme = EpgService::getProgramme($rRequestData['id'], $rRequestData['programme']);
 
-			if ($rStream && $rStream['type'] == 1 && $rProgramme) {
-			} else {
+			if (!($rStream && $rStream['type'] == 1 && $rProgramme)) {
 				$this->redirect('record');
 				return;
 			}
@@ -44,19 +43,15 @@ class RecordController extends BaseAdminController {
 				$rStream = StreamRepository::getById($rArchive['stream_id']);
 				$rProgramme = ['start' => $rArchive['start'], 'end' => $rArchive['end'], 'title' => $rArchive['title'], 'description' => $rArchive['description'], 'archive' => true];
 
-				if ($rStream && $rStream['type'] == 1 && $rProgramme) {
-				} else {
+				if (!($rStream && $rStream['type'] == 1 && $rProgramme)) {
 					$this->redirect('record');
 					return;
 				}
 			} else {
-				if (!isset($rRequestData['stream_id'])) {
-				} else {
+				if (isset($rRequestData['stream_id'])) {
 					$rStream = StreamRepository::getById($rRequestData['stream_id']);
 					$rProgramme = ['start' => strtotime($rRequestData['start_date']), 'end' => strtotime($rRequestData['start_date']) + intval($rRequestData['duration']) * 60, 'title' => '', 'description' => ''];
-
-					if (!(!$rStream || $rStream['type'] != 1 || !$rProgramme || $rProgramme['end'] < time())) {
-					} else {
+					if (!$rStream || $rStream['type'] != 1 || !$rProgramme || $rProgramme['end'] < time()) {
 						header('Location: record');
 					}
 				}
@@ -68,8 +63,7 @@ class RecordController extends BaseAdminController {
 
 			foreach ($db->get_rows() as $rRow) {
 				$rAvailableServers[] = $rRow['server_id'];
-				if (!(!$rBitrate && $rRow['bitrate'] || $rRow['bitrate'] && $rBitrate < $rRow['bitrate'])) {
-				} else {
+				if (!$rBitrate && $rRow['bitrate'] || $rRow['bitrate'] && $rBitrate < $rRow['bitrate']) {
 					$rBitrate = $rRow['bitrate'];
 				}
 			}
@@ -80,6 +74,6 @@ class RecordController extends BaseAdminController {
 		}
 
 		$this->setTitle('Record');
-		$this->render('record', compact('rStream', 'rProgramme', 'rAvailableServers', 'rBitrate'));
+		$this->render('record', ['rStream' => $rStream, 'rProgramme' => $rProgramme, 'rAvailableServers' => $rAvailableServers, 'rBitrate' => $rBitrate]);
 	}
 }

@@ -29,27 +29,20 @@ class ListingsController extends BasePlayerController {
 		if (RequestManager::has('id')) {
 			$rReturn = ['id' => RequestManager::get('id'), 'title' => 'LIVE TV', 'epg_title' => 'No Programme Information...', 'epg_description' => '', 'url' => null];
 
-			if (!isset($rFlip[RequestManager::get('id')])) {
-			} else {
+			if (isset($rFlip[RequestManager::get('id')])) {
 				$rStart = intval(RequestManager::get('start') ?? time());
 				$rDuration = intval(RequestManager::get('duration') ?? 0);
 				$db->query('SELECT `id`, `stream_display_name`, `channel_id`, `epg_id` FROM `streams` WHERE `id` = ?;', RequestManager::get('id'));
-
-				if ($db->num_rows() != 1) {
-				} else {
+				if ($db->num_rows() == 1) {
 					$rStream = $db->get_row();
 					$rReturn['title'] = $rStream['stream_display_name'];
 					$rEPGRow = (EpgService::getStreamEpg(RequestManager::get('id'), $rStart, $rStart + 86400)[0] ?? null);
-
-					if (!$rEPGRow) {
-					} else {
+					if ($rEPGRow) {
 						$rReturn['epg_title'] = date('h:ia', $rEPGRow['start']) . ' - ' . $rEPGRow['title'];
 						$rReturn['epg_description'] = $rEPGRow['description'];
 					}
 				}
-
 				$rDomainName = DomainResolver::resolve(SERVER_ID, !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' || $_SERVER['SERVER_PORT'] == 443);
-
 				if ($rStart + $rDuration * 60 < time() && 0 < $rDuration) {
 					$rReturn['url'] = $rDomainName . 'timeshift/' . $rUserInfo['username'] . '/' . $rUserInfo['password'] . '/' . $rDuration . '/' . $rStart . '/' . intval(RequestManager::get('id')) . '.m3u8';
 				} else {
@@ -61,11 +54,10 @@ class ListingsController extends BasePlayerController {
 		} else {
 			$rReturn = ['Channels' => []];
 			$rChannels = [];
-			$rHideEmpty = (intval(RequestManager::get('hideempty')) ?: 0);
+			$rHideEmpty = (intval(RequestManager::get('hideempty')));
 
 			foreach (array_map('intval', explode(',', RequestManager::get('channels'))) as $rChannelID) {
-				if (!($rChannelID && isset($rFlip[$rChannelID]))) {
-				} else {
+				if ($rChannelID && isset($rFlip[$rChannelID])) {
 					$rChannels[] = $rChannelID;
 				}
 			}
@@ -81,51 +73,40 @@ class ListingsController extends BasePlayerController {
 
 				if (!file_exists(TMP_PATH . 'cache_' . $rCacheID) || 600 < time() - filemtime(TMP_PATH . 'cache_' . $rCacheID)) {
 					$rListings = [];
-
-					if (0 >= count($rChannels)) {
+					$rArchiveInfo = [];
+					$db->query('SELECT `id`, `tv_archive_duration`, `tv_archive_server_id` FROM `streams` WHERE `id` IN (' . implode(',', $rChannels) . ');');
+					if (0 >= $db->num_rows()) {
 					} else {
-						$rArchiveInfo = [];
-						$db->query('SELECT `id`, `tv_archive_duration`, `tv_archive_server_id` FROM `streams` WHERE `id` IN (' . implode(',', $rChannels) . ');');
-
-						if (0 >= $db->num_rows()) {
-						} else {
-							foreach ($db->get_rows() as $rRow) {
-								$rArchiveInfo[$rRow['id']] = $rRow;
-							}
+						foreach ($db->get_rows() as $rRow) {
+							$rArchiveInfo[$rRow['id']] = $rRow;
 						}
-
-						$rEPGs = EpgService::getStreamsEpg($rChannels, $rStartDate, $rFinishDate);
-
-						foreach ($rEPGs as $rChannelID => $rEPGData) {
+					}
+					$rEPGs = EpgService::getStreamsEpg($rChannels, $rStartDate, $rFinishDate);
+					foreach ($rEPGs as $rChannelID => $rEPGData) {
 							$rFullSize = 0;
 
-							foreach ($rEPGData as $rEPGItem) {
-								$rCapStart = ($rEPGItem['start'] < $rStartDate ? $rStartDate : $rEPGItem['start']);
-								$rCapEnd = ($rFinishDate < $rEPGItem['end'] ? $rFinishDate : $rEPGItem['end']);
-								$rDuration = ($rCapEnd - $rCapStart) / 60;
-								$rArchive = null;
+						foreach ($rEPGData as $rEPGItem) {
+							$rCapStart = ($rEPGItem['start'] < $rStartDate ? $rStartDate : $rEPGItem['start']);
+							$rCapEnd = ($rFinishDate < $rEPGItem['end'] ? $rFinishDate : $rEPGItem['end']);
+							$rDuration = ($rCapEnd - $rCapStart) / 60;
+							$rArchive = null;
 
-								if (!isset($rArchiveInfo[$rChannelID])) {
-								} else {
-									if (!(0 < $rArchiveInfo[$rChannelID]['tv_archive_server_id'] && 0 < $rArchiveInfo[$rChannelID]['tv_archive_duration'])) {
-									} else {
-										if (time() - $rEPGItem['tv_archive_duration'] * 86400 > $rEPGItem['start']) {
-										} else {
-											$rArchive = [$rEPGItem['start'], intval(($rEPGItem['end'] - $rEPGItem['start']) / 60)];
-										}
+							if (isset($rArchiveInfo[$rChannelID])) {
+								if (0 < $rArchiveInfo[$rChannelID]['tv_archive_server_id'] && 0 < $rArchiveInfo[$rChannelID]['tv_archive_duration']) {
+									if (time() - $rEPGItem['tv_archive_duration'] * 86400 <= $rEPGItem['start']) {
+										$rArchive = [$rEPGItem['start'], intval(($rEPGItem['end'] - $rEPGItem['start']) / 60)];
 									}
 								}
-
-								$rRelativeSize = round($rDuration * $rPerUnit, 2);
-								$rFullSize += $rRelativeSize;
-
-								if (100 >= $rFullSize) {
-								} else {
-									$rRelativeSize -= $rFullSize - 100;
-								}
-
-								$rListings[$rChannelID][] = ['ListingId' => $rEPGItem['id'], 'ChannelId' => $rChannelID, 'Title' => $rEPGItem['title'], 'RelativeSize' => $rRelativeSize, 'StartTime' => date('h:ia', $rCapStart), 'EndTime' => date('h:ia', $rCapEnd), 'Start' => $rEPGItem['start'], 'End' => $rEPGItem['end'], 'Specialisation' => 'tv', 'Archive' => $rArchive];
 							}
+
+							$rRelativeSize = round($rDuration * $rPerUnit, 2);
+							$rFullSize += $rRelativeSize;
+
+							if (100 < $rFullSize) {
+								$rRelativeSize -= $rFullSize - 100;
+							}
+
+							$rListings[$rChannelID][] = ['ListingId' => $rEPGItem['id'], 'ChannelId' => $rChannelID, 'Title' => $rEPGItem['title'], 'RelativeSize' => $rRelativeSize, 'StartTime' => date('h:ia', $rCapStart), 'EndTime' => date('h:ia', $rCapEnd), 'Start' => $rEPGItem['start'], 'End' => $rEPGItem['end'], 'Specialisation' => 'tv', 'Archive' => $rArchive];
 						}
 					}
 
@@ -133,30 +114,24 @@ class ListingsController extends BasePlayerController {
 					$db->query('SELECT `id`, `stream_icon`, `stream_display_name`, `tv_archive_duration`, `tv_archive_server_id`, `category_id` FROM `streams` WHERE `id` IN (' . implode(',', $rChannels) . ') ORDER BY FIELD(`id`, ' . implode(',', $rChannels) . ') ASC;');
 
 					foreach ($db->get_rows() as $rStream) {
-						if ($rHideEmpty && 0 >= count($rListings[$rStream['id']] ?? [])) {
-						} else {
+						if (!$rHideEmpty || 0 < count($rListings[$rStream['id']] ?? [])) {
 							if (0 < $rStream['tv_archive_duration'] && 0 < $rStream['tv_archive_server_id']) {
 								$rArchive = $rStream['tv_archive_duration'];
 							} else {
 								$rArchive = 0;
 							}
-
 							$rDefaultArray = $rDefaultEPG;
 							$rDefaultArray['ChannelId'] = $rStream['id'];
 							$rCategoryIDs = json_decode($rStream['category_id'], true);
 							$rCategories = CategoryService::getFromDatabase('live');
-
-							if (0 < strlen(RequestManager::get('category') ?? '')) {
+							if ((string) (RequestManager::get('category') ?? '') !== '') {
 								$rCategory = ($rCategories[intval(RequestManager::get('category'))]['category_name'] ?? 'No Category');
 							} else {
 								$rCategory = ($rCategories[$rCategoryIDs[0] ?? null]['category_name'] ?? 'No Category');
 							}
-
-							if (1 >= count($rCategoryIDs)) {
-							} else {
+							if (1 < count($rCategoryIDs)) {
 								$rCategory .= ' (+' . (count($rCategoryIDs) - 1) . ' others)';
 							}
-
 							$rReturn['Channels'][] = ['Id' => $rStream['id'], 'DisplayName' => $rStream['stream_display_name'], 'CategoryName' => $rCategory, 'Archive' => $rArchive, 'Image' => (ImageUtils::validateURL($rStream['stream_icon']) ?: ''), 'TvListings' => ($rListings[$rStream['id']] ?? [$rDefaultArray])];
 						}
 					}

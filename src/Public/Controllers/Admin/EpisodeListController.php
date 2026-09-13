@@ -33,6 +33,6 @@ class EpisodeListController extends BaseAdminController {
 		}
 
 		$this->setTitle('Episodes');
-		$this->render('episodes', compact('rAudioCodecs', 'rVideoCodecs'));
+		$this->render('episodes', ['rAudioCodecs' => $rAudioCodecs, 'rVideoCodecs' => $rVideoCodecs]);
 	}
 }

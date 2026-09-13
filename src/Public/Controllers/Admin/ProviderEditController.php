@@ -32,6 +32,6 @@ class ProviderEditController extends BaseAdminController {
 		}
 
 		$this->setTitle('Stream Provider');
-		$this->render('provider', compact('rProvider'));
+		$this->render('provider', ['rProvider' => $rProvider]);
 	}
 }

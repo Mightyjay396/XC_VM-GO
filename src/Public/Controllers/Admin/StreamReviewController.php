@@ -30,15 +30,12 @@ class StreamReviewController extends BaseAdminController {
 			foreach (array_keys(RequestManager::getAll()) as $rKey) {
 				$rSplit = explode('_', $rKey);
 
-				if (!($rSplit[0] == 'modified' && RequestManager::get($rKey) == 1)) {
-				} else {
+				if ($rSplit[0] == 'modified' && RequestManager::get($rKey) == 1) {
 					$rID = intval($rSplit[1]);
 					$rChanges[$rID] = [];
-
 					foreach (['name', 'channel_id', 'epg_id'] as $rChangeKey) {
 						$rChanges[$rID][$rChangeKey] = RequestManager::get($rChangeKey . '_' . $rID);
 					}
-
 					foreach (['bouquets', 'categories'] as $rChangeKey) {
 						$rChanges[$rID][$rChangeKey] = json_decode(RequestManager::get($rChangeKey . '_' . $rID), true);
 					}
@@ -46,28 +43,21 @@ class StreamReviewController extends BaseAdminController {
 			}
 
 			foreach ($rChanges as $rID => $rStream) {
-				if (!RequestManager::get('save_bouquets')) {
-				} else {
+				if (RequestManager::get('save_bouquets')) {
 					$rHasBouquets = [];
-
 					foreach (BouquetService::getAll() as $rBouquetID => $rBouquet) {
-						if (!(in_array($rID, $rBouquet['streams']) || in_array($rID, $rBouquet['channels']))) {
-						} else {
+						if (in_array($rID, $rBouquet['streams']) || in_array($rID, $rBouquet['channels'])) {
 							$rHasBouquets[] = $rBouquetID;
 						}
 					}
 					$rAddBouquet = [];
-
 					foreach ($rHasBouquets as $rBouquetID) {
-						if (in_array($rBouquetID, $rStream['bouquets'])) {
-						} else {
+						if (!in_array($rBouquetID, $rStream['bouquets'])) {
 							BouquetService::removeItems('stream', $rBouquetID, $rID);
 						}
 					}
-
 					foreach ($rStream['bouquets'] as $rBouquetID) {
-						if (in_array($rBouquetID, $rHasBouquets)) {
-						} else {
+						if (!in_array($rBouquetID, $rHasBouquets)) {
 							$rAddBouquet[] = $rBouquetID;
 							BouquetService::addItems('stream', $rBouquetID, $rID);
 						}
@@ -91,51 +81,40 @@ class StreamReviewController extends BaseAdminController {
 			header('Location: ./streams?status=' . STATUS_SUCCESS);
 
 			exit();
-		} else {
-			if (!RequestManager::has('streams')) {
-			} else {
-				$rStreams = json_decode(RequestManager::get('streams'), true);
-				$rCategories = CategoryService::getAllByType('live');
-				$rBouquets = BouquetService::getAllSimple();
-				$rStreamBouquets = [];
-				foreach ($rBouquets as $rBouquet) {
+		}
+		if (RequestManager::has('streams')) {
+			$rStreams = json_decode(RequestManager::get('streams'), true);
+			$rCategories = CategoryService::getAllByType('live');
+			$rBouquets = BouquetService::getAllSimple();
+			$rStreamBouquets = [];
+			foreach ($rBouquets as $rBouquet) {
 					$rBouquetChannels = json_decode($rBouquet['bouquet_channels'], true);
 
-					foreach ($rBouquetChannels as $rStreamID) {
-						if (!in_array($rStreamID, $rStreams)) {
-						} else {
-							$rStreamBouquets[$rStreamID][] = $rBouquet['id'];
-						}
+				foreach ($rBouquetChannels as $rStreamID) {
+					if (in_array($rStreamID, $rStreams)) {
+						$rStreamBouquets[$rStreamID][] = $rBouquet['id'];
 					}
 				}
-				$rOptions = ['categories' => RequestManager::has('edit_categories'), 'epg' => RequestManager::has('edit_epg'), 'bouquets' => RequestManager::has('edit_bouquets')];
-				$rWidth = [25, 20, 20];
-
-				if ($rOptions['categories'] || $rOptions['bouquets'] || $rOptions['epg']) {
-				} else {
-					$rWidth = [90, 0, 0];
+			}
+			$rOptions = ['categories' => RequestManager::has('edit_categories'), 'epg' => RequestManager::has('edit_epg'), 'bouquets' => RequestManager::has('edit_bouquets')];
+			$rWidth = [25, 20, 20];
+			if (!($rOptions['categories'] || $rOptions['bouquets'] || $rOptions['epg'])) {
+				$rWidth = [90, 0, 0];
+			}
+			$rImport = [];
+			if (0 < count($rStreams)) {
+				$db->query('SELECT * FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreams)) . ');');
+				foreach ($db->get_rows() as $rRow) {
+						$rImport[] = ['id' => $rRow['id'], 'channel_id' => ($rRow['channel_id'] ?: ''), 'epg_id' => ($rRow['epg_id'] ?: ''), 'title' => ($rRow['stream_display_name'] ?: ''), 'category' => json_decode($rRow['category_id'], true), 'bouquets' => ($rStreamBouquets[$rRow['id']])];
 				}
-
-				$rImport = [];
-
-				if (0 >= count($rStreams)) {
-				} else {
-					$db->query('SELECT * FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreams)) . ');');
-
-					foreach ($db->get_rows() as $rRow) {
-						$rImport[] = ['id' => $rRow['id'], 'channel_id' => ($rRow['channel_id'] ?: ''), 'epg_id' => ($rRow['epg_id'] ?: ''), 'title' => ($rRow['stream_display_name'] ?: ''), 'category' => json_decode($rRow['category_id'], true), 'bouquets' => ($rStreamBouquets[$rRow['id']] ?: [])];
-					}
-				}
-
-				if (count($rImport) != 0) {
-				} else {
-					$_STATUS = STATUS_NO_SOURCES;
-					$rImport = null;
-				}
+			}
+			if (count($rImport) == 0) {
+				$_STATUS = STATUS_NO_SOURCES;
+				$rImport = null;
 			}
 		}
 
 		$this->setTitle('Review');
-		$this->render('stream_review', compact('rStreams', 'rCategories', 'rBouquets', 'rStreamBouquets', 'rOptions', 'rWidth', 'rImport'));
+		$this->render('stream_review', ['rStreams' => $rStreams, 'rCategories' => $rCategories, 'rBouquets' => $rBouquets, 'rStreamBouquets' => $rStreamBouquets, 'rOptions' => $rOptions, 'rWidth' => $rWidth, 'rImport' => $rImport]);
 	}
 }

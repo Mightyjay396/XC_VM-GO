@@ -13,9 +13,9 @@ use XcVm\Domain\User\UserRepository;
 use XcVm\Domain\User\UserService;
 
 class ResellerAPIWrapper {
-	public static $db = null;
+	public static $db;
 
-	public static $rKey = null;
+	public static $rKey;
 
 	public static function filterRow($rData, $rShow, $rHide, $rSkipResult = false) {
 		if ($rShow || $rHide) {
@@ -25,19 +25,15 @@ class ResellerAPIWrapper {
 				$rRow = $rData['data'];
 			}
 			$rReturn = [];
-			if (!$rRow) {
-			} else {
+			if ($rRow) {
 				foreach (array_keys($rRow) as $rKey) {
 					if ($rShow) {
-						if (!in_array($rKey, $rShow)) {
-						} else {
+						if (in_array($rKey, $rShow)) {
 							$rReturn[$rKey] = $rRow[$rKey];
 						}
 					} else {
-						if (!$rHide) {
-						} else {
-							if (in_array($rKey, $rHide)) {
-							} else {
+						if ($rHide) {
+							if (!in_array($rKey, $rHide)) {
 								$rReturn[$rKey] = $rRow[$rKey];
 							}
 						}
@@ -55,8 +51,7 @@ class ResellerAPIWrapper {
 
 	public static function filterRows($rRows, $rShow, $rHide) {
 		$rReturn = [];
-		if (!$rRows['data']) {
-		} else {
+		if ($rRows['data']) {
 			foreach ($rRows['data'] as $rRow) {
 				$rReturn[] = self::filterRow($rRow, $rShow, $rHide, true);
 			}
@@ -94,8 +89,7 @@ class ResellerAPIWrapper {
 		unset(ResellerAPI::$rUserInfo['password']);
 		$rUserInfo = ResellerAPI::$rUserInfo;
 		$rPermissions = ResellerAPI::$rPermissions;
-		if (0 >= strlen($rUserInfo['timezone'])) {
-		} else {
+		if ((string) $rUserInfo['timezone'] !== '') {
 			date_default_timezone_set($rUserInfo['timezone']);
 		}
 		return true;
@@ -115,7 +109,7 @@ class ResellerAPIWrapper {
 		$rPackages = [];
 		$rOverride = json_decode($rUserInfo['override_packages'], true);
 		foreach (PackageService::getAll($rUserInfo['member_group_id']) as $rPackage) {
-			if (isset($rOverride[$rPackage['id']]['official_credits']) && 0 < strlen($rOverride[$rPackage['id']]['official_credits'])) {
+			if (isset($rOverride[$rPackage['id']]['official_credits']) && (string) $rOverride[$rPackage['id']]['official_credits'] !== '') {
 				$rPackage['official_credits'] = intval($rOverride[$rPackage['id']]['official_credits']);
 			} else {
 				$rPackage['official_credits'] = intval($rPackage['official_credits']);
@@ -126,20 +120,18 @@ class ResellerAPIWrapper {
 	}
 
 	public static function getLine($rID) {
-		if (!(($rLine = UserRepository::getLineById($rID)) && Authorization::check('line', $rID))) {
+		if (!$rLine = UserRepository::getLineById($rID) || !Authorization::check('line', $rID)) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rLine];
 	}
 
 	public static function createLine($rData) {
-		if (!isset($rData['edit'])) {
-		} else {
+		if (isset($rData['edit'])) {
 			unset($rData['edit']);
 		}
 		$rReturn = parseerror(ResellerAPI::processLine($rData));
-		if (!isset($rReturn['data']['insert_id'])) {
-		} else {
+		if (isset($rReturn['data']['insert_id'])) {
 			$rReturn['data'] = self::getLine($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
@@ -150,23 +142,19 @@ class ResellerAPIWrapper {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
-		if (!isset($rData['isp_clear'])) {
-		} else {
+		if (isset($rData['isp_clear'])) {
 			$rData['isp_clear'] = '';
 		}
 		$rReturn = parseerror(ResellerAPI::processLine($rData));
-		if (!isset($rReturn['data']['insert_id'])) {
-		} else {
+		if (isset($rReturn['data']['insert_id'])) {
 			$rReturn['data'] = self::getLine($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
 	}
 
 	public static function deleteLine($rID) {
-		if (!UserRepository::getLineById($rID)) {
-		} else {
-			if (!LineService::deleteLineById($rID)) {
-			} else {
+		if (UserRepository::getLineById($rID)) {
+			if (LineService::deleteLineById($rID)) {
 				return ['status' => 'STATUS_SUCCESS'];
 			}
 		}
@@ -190,10 +178,8 @@ class ResellerAPIWrapper {
 	}
 
 	public static function getMAG($rID) {
-		if (!($rDevice = MagService::getById($rID))) {
-		} else {
-			if (!Authorization::check('line', $rDevice['user_id'])) {
-			} else {
+		if ($rDevice = MagService::getById($rID)) {
+			if (Authorization::check('line', $rDevice['user_id'])) {
 				return ['status' => 'STATUS_SUCCESS', 'data' => $rDevice];
 			}
 		}
@@ -201,13 +187,11 @@ class ResellerAPIWrapper {
 	}
 
 	public static function createMAG($rData) {
-		if (!isset($rData['edit'])) {
-		} else {
+		if (isset($rData['edit'])) {
 			unset($rData['edit']);
 		}
 		$rReturn = parseerror(ResellerAPI::processMAG($rData));
-		if (!isset($rReturn['data']['insert_id'])) {
-		} else {
+		if (isset($rReturn['data']['insert_id'])) {
 			$rReturn['data'] = self::getMAG($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
@@ -218,23 +202,19 @@ class ResellerAPIWrapper {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
-		if (!isset($rData['isp_clear'])) {
-		} else {
+		if (isset($rData['isp_clear'])) {
 			$rData['isp_clear'] = '';
 		}
 		$rReturn = parseerror(ResellerAPI::processMAG($rData));
-		if (!isset($rReturn['data']['insert_id'])) {
-		} else {
+		if (isset($rReturn['data']['insert_id'])) {
 			$rReturn['data'] = self::getMAG($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
 	}
 
 	public static function deleteMAG($rID) {
-		if (!MagService::getById($rID)) {
-		} else {
-			if (!MagService::deleteDevice($rID)) {
-			} else {
+		if (MagService::getById($rID)) {
+			if (MagService::deleteDevice($rID)) {
 				return ['status' => 'STATUS_SUCCESS'];
 			}
 		}
@@ -267,10 +247,8 @@ class ResellerAPIWrapper {
 	}
 
 	public static function getEnigma($rID) {
-		if (!($rDevice = EnigmaService::getById($rID))) {
-		} else {
-			if (!Authorization::check('line', $rDevice['user_id'])) {
-			} else {
+		if ($rDevice = EnigmaService::getById($rID)) {
+			if (Authorization::check('line', $rDevice['user_id'])) {
 				return ['status' => 'STATUS_SUCCESS', 'data' => $rDevice];
 			}
 		}
@@ -278,13 +256,11 @@ class ResellerAPIWrapper {
 	}
 
 	public static function createEnigma($rData) {
-		if (!isset($rData['edit'])) {
-		} else {
+		if (isset($rData['edit'])) {
 			unset($rData['edit']);
 		}
 		$rReturn = parseerror(ResellerAPI::processEnigma($rData));
-		if (!isset($rReturn['data']['insert_id'])) {
-		} else {
+		if (isset($rReturn['data']['insert_id'])) {
 			$rReturn['data'] = self::getEnigma($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
@@ -295,23 +271,19 @@ class ResellerAPIWrapper {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
-		if (!isset($rData['isp_clear'])) {
-		} else {
+		if (isset($rData['isp_clear'])) {
 			$rData['isp_clear'] = '';
 		}
 		$rReturn = parseerror(ResellerAPI::processEnigma($rData));
-		if (!isset($rReturn['data']['insert_id'])) {
-		} else {
+		if (isset($rReturn['data']['insert_id'])) {
 			$rReturn['data'] = self::getEnigma($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
 	}
 
 	public static function deleteEnigma($rID) {
-		if (!EnigmaService::getById($rID)) {
-		} else {
-			if (!EnigmaService::deleteDevice($rID)) {
-			} else {
+		if (EnigmaService::getById($rID)) {
+			if (EnigmaService::deleteDevice($rID)) {
 				return ['status' => 'STATUS_SUCCESS'];
 			}
 		}
@@ -344,43 +316,38 @@ class ResellerAPIWrapper {
 	}
 
 	public static function getUser($rID) {
-		if (!(($rUser = UserRepository::getRegisteredUserById($rID)) && Authorization::check('user', $rUser['id']))) {
+		if (!$rUser = UserRepository::getRegisteredUserById($rID) || !Authorization::check('user', $rUser['id'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rUser];
 	}
 
 	public static function createUser($rData) {
-		if (!isset($rData['edit'])) {
-		} else {
+		if (isset($rData['edit'])) {
 			unset($rData['edit']);
 		}
 		$rReturn = parseerror(ResellerAPI::processUser($rData));
-		if (!isset($rReturn['data']['insert_id'])) {
-		} else {
+		if (isset($rReturn['data']['insert_id'])) {
 			$rReturn['data'] = self::getUser($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
 	}
 
 	public static function editUser($rID, $rData) {
-		if (!(($rUser = self::getUser($rID)) && isset($rUser['data']))) {
+		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
 		$rReturn = parseerror(ResellerAPI::processUser($rData));
-		if (!isset($rReturn['data']['insert_id'])) {
-		} else {
+		if (isset($rReturn['data']['insert_id'])) {
 			$rReturn['data'] = self::getUser($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
 	}
 
 	public static function deleteUser($rID) {
-		if (!(($rUser = self::getUser($rID)) && isset($rUser['data']))) {
-		} else {
-			if (!UserService::deleteRegisteredUser($rID)) {
-			} else {
+		if (($rUser = self::getUser($rID)) && isset($rUser['data'])) {
+			if (UserService::deleteRegisteredUser($rID)) {
 				return ['status' => 'STATUS_SUCCESS'];
 			}
 		}
@@ -388,7 +355,7 @@ class ResellerAPIWrapper {
 	}
 
 	public static function disableUser($rID) {
-		if (!(($rUser = self::getUser($rID)) && isset($rUser['data']))) {
+		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `users` SET `status` = 0 WHERE `id` = ?;', $rID);
@@ -396,7 +363,7 @@ class ResellerAPIWrapper {
 	}
 
 	public static function enableUser($rID) {
-		if (!(($rUser = self::getUser($rID)) && isset($rUser['data']))) {
+		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `users` SET `status` = 1 WHERE `id` = ?;', $rID);
@@ -405,18 +372,14 @@ class ResellerAPIWrapper {
 
 	public static function adjustCredits($rID, $rCredits, $rNote) {
 		global $rUserInfo;
-		if (strlen($rNote) != 0) {
-		} else {
+		if (strlen($rNote) == 0) {
 			$rNote = 'Reseller API Adjustment';
 		}
-		if (!(($rUser = self::getUser($rID)) && isset($rUser['data']))) {
-		} else {
-			if (!is_numeric($rCredits)) {
-			} else {
+		if (($rUser = self::getUser($rID)) && isset($rUser['data'])) {
+			if (is_numeric($rCredits)) {
 				$rOwnerCredits = intval($rUserInfo['credits']) - intval($rCredits);
 				$rNewCredits = intval($rUser['data']['credits']) + intval($rCredits);
-				if (!(0 <= $rNewCredits && 0 <= $rOwnerCredits)) {
-				} else {
+				if (0 <= $rNewCredits && 0 <= $rOwnerCredits) {
 					self::$db->query('UPDATE `users` SET `credits` = ? WHERE `id` = ?;', $rOwnerCredits, $rUserInfo['id']);
 					self::$db->query('UPDATE `users` SET `credits` = ? WHERE `id` = ?;', $rNewCredits, $rUser['data']['id']);
 					self::$db->query('INSERT INTO `users_credits_logs`(`target_id`, `admin_id`, `amount`, `date`, `reason`) VALUES(?, ?, ?, ?, ?);', $rUser['data']['id'], $rUserInfo['id'], $rCredits, time(), $rNote);
@@ -432,12 +395,10 @@ class ResellerAPIWrapper {
 if (!function_exists('parseError')) {
 	function parseError($rArray) {
 		global $_ERRORS;
-		if (!(isset($rArray['status']) && is_numeric($rArray['status']))) {
-		} else {
+		if (isset($rArray['status']) && is_numeric($rArray['status'])) {
 			$rArray['status'] = $_ERRORS[$rArray['status']];
 		}
-		if ($rArray) {
-		} else {
+		if (!$rArray) {
 			$rArray['status'] = 'STATUS_NO_PERMISSIONS';
 		}
 		return $rArray;

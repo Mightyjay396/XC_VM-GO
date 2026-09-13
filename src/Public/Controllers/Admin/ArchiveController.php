@@ -45,6 +45,6 @@ class ArchiveController extends BaseAdminController {
 
 		$rTitle = (!is_null($rRecordings) ? 'Recordings' : 'TV Archive');
 		$this->setTitle($rTitle);
-		$this->render('archive', compact('rRecordings', 'rStream', 'rArchive'));
+		$this->render('archive', ['rRecordings' => $rRecordings, 'rStream' => $rStream, 'rArchive' => $rArchive]);
 	}
 }

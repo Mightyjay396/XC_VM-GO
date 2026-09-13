@@ -30,6 +30,6 @@ class RtmpMonitorController extends BaseAdminController {
 		$rRTMPInfo = ServerRepository::getRTMPStats(RequestManager::get('server'));
 
 		$this->setTitle('RTMP Monitor');
-		$this->render('rtmp_monitor', compact('rRTMPInfo'));
+		$this->render('rtmp_monitor', ['rRTMPInfo' => $rRTMPInfo]);
 	}
 }

@@ -46,6 +46,6 @@ class ServerInstallController extends BaseAdminController {
 		$title = ($rType === 1) ? 'Install Proxy' : 'Install Server';
 		$this->setTitle($title);
 
-		$this->render('server_install', compact('rType', 'rServerArr'));
+		$this->render('server_install', ['rType' => $rType, 'rServerArr' => $rServerArr]);
 	}
 }

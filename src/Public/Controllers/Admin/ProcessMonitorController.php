@@ -47,6 +47,6 @@ class ProcessMonitorController extends BaseAdminController {
 		$rStatus = ['D' => 'Uninterruptible Sleep', 'I' => 'Idle', 'R' => 'Running', 'S' => 'Interruptible Sleep', 'T' => 'Stopped', 'W' => 'Paging', 'X' => 'Dead', 'Z' => 'Zombie'];
 
 		$this->setTitle('Process Monitor');
-		$this->render('process_monitor', compact('rStreams', 'rFS', 'rProcesses', 'rStatus'));
+		$this->render('process_monitor', ['rStreams' => $rStreams, 'rFS' => $rFS, 'rProcesses' => $rProcesses, 'rStatus' => $rStatus]);
 	}
 }

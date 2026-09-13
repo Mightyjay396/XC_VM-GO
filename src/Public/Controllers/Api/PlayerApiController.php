@@ -49,7 +49,7 @@ class PlayerApiController {
 	 * @param string $rPath Absolute cache file path
 	 * @return array|null Decoded cache payload, or null when unavailable
 	 */
-	private static function readStreamCache(string $rPath): ?array {
+	private function readStreamCache(string $rPath): ?array {
 		if (!is_file($rPath)) {
 			return null;
 		}
@@ -206,10 +206,9 @@ class PlayerApiController {
 
 			echo json_encode($output);
 			exit();
-		} else {
-			BruteforceGuard::checkBruteforce(null, null, $rUsername ?? '');
-			generateError('INVALID_CREDENTIALS');
 		}
+		BruteforceGuard::checkBruteforce(null, null, $rUsername ?? '');
+		generateError('INVALID_CREDENTIALS');
 	}
 
 	public function shutdown() {
@@ -269,29 +268,27 @@ class PlayerApiController {
 
 			$rEPGs = [];
 
-			if (count($rStreamIDs) > 0) {
-				foreach ($rStreamIDs as $rStreamID) {
-					if (!file_exists(EPG_PATH . 'stream_' . intval($rStreamID))) {
-						continue;
-					}
+			foreach ($rStreamIDs as $rStreamID) {
+				if (!file_exists(EPG_PATH . 'stream_' . intval($rStreamID))) {
+					continue;
+				}
 
 					$rRows = igbinary_unserialize(file_get_contents(EPG_PATH . 'stream_' . $rStreamID));
 
-					foreach ($rRows as $rRow) {
-						if ($rFromNow && $rRow['end'] < time()) {
-							continue;
-						}
+				foreach ($rRows as $rRow) {
+					if ($rFromNow && $rRow['end'] < time()) {
+						continue;
+					}
 
-						$rRow['title'] = base64_encode($rRow['title']);
-						$rRow['description'] = base64_encode($rRow['description']);
-						$rRow['start'] = intval($rRow['start']);
-						$rRow['end'] = intval($rRow['end']);
+					$rRow['title'] = base64_encode($rRow['title']);
+					$rRow['description'] = base64_encode($rRow['description']);
+					$rRow['start'] = intval($rRow['start']);
+					$rRow['end'] = intval($rRow['end']);
 
-						if ($rMulti) {
-							$rEPGs[$rStreamID][] = $rRow;
-						} else {
-							$rEPGs[] = $rRow;
-						}
+					if ($rMulti) {
+						$rEPGs[$rStreamID][] = $rRow;
+					} else {
+						$rEPGs[] = $rRow;
 					}
 				}
 			}
@@ -311,8 +308,8 @@ class PlayerApiController {
 		$output = [];
 
 		if ($rCached) {
-			$rSeriesInfo = self::readStreamCache(SERIES_TMP_PATH . 'series_' . $rSeriesID);
-			$rRows = self::readStreamCache(SERIES_TMP_PATH . 'episodes_' . $rSeriesID);
+			$rSeriesInfo = $this->readStreamCache(SERIES_TMP_PATH . 'series_' . $rSeriesID);
+			$rRows = $this->readStreamCache(SERIES_TMP_PATH . 'episodes_' . $rSeriesID);
 		} else {
 			$db->query('SELECT * FROM `streams_episodes` t1 INNER JOIN `streams` t2 ON t2.id=t1.stream_id WHERE t1.series_id = ? ORDER BY t1.season_num ASC, t1.episode_num ASC', $rSeriesID);
 			$rRows = $db->get_rows(true, 'season_num', false);
@@ -438,7 +435,7 @@ class PlayerApiController {
 				}
 
 				foreach ($this->userInfo['series_ids'] as $rSeriesID) {
-					$rSeriesItem = self::readStreamCache(SERIES_TMP_PATH . 'series_' . $rSeriesID);
+					$rSeriesItem = $this->readStreamCache(SERIES_TMP_PATH . 'series_' . $rSeriesID);
 					if ($rSeriesItem === null) {
 						// Cache not warmed for this series — it would contribute
 						// nothing (foreach over a null category_id), so skip it.
@@ -460,7 +457,7 @@ class PlayerApiController {
 							$output[] = ['num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rSeriesItem['title'], $rSeriesItem['year']), 'title' => $rSeriesItem['title'], 'year' => strval($rSeriesItem['year']), 'stream_type' => 'series', 'series_id' => (int) $rSeriesItem['id'], 'cover' => ImageUtils::validateURL($rSeriesItem['cover']), 'plot' => $rSeriesItem['plot'], 'cast' => $rSeriesItem['cast'], 'director' => $rSeriesItem['director'], 'genre' => $rSeriesItem['genre'], 'release_date' => $rSeriesItem['release_date'], 'releaseDate' => $rSeriesItem['release_date'], 'last_modified' => $rSeriesItem['last_modified'], 'rating' => number_format($rating, 0), 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'backdrop_path' => $rBackdrops, 'youtube_trailer' => $rSeriesItem['youtube_trailer'], 'episode_run_time' => strval($rSeriesItem['episode_run_time']), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs];
 						}
 
-						if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
+						if (!$rCategoryIDSearch && !$rSettings['show_category_duplicates']) {
 							break;
 						}
 					}
@@ -660,7 +657,7 @@ class PlayerApiController {
 			$rRows = igbinary_unserialize(file_get_contents(EPG_PATH . 'stream_' . $rStreamID));
 
 			foreach ($rRows as $rRow) {
-				if (!($rRow['start'] <= $rTime && $rTime <= $rRow['end'] || $rTime <= $rRow['start'])) {
+				if (($rRow['start'] > $rTime || $rTime > $rRow['end']) && $rTime > $rRow['start']) {
 					continue;
 				}
 
@@ -731,7 +728,7 @@ class PlayerApiController {
 
 		foreach ($rChannels as $rChannel) {
 			if ($rCached) {
-				$rChannelData = self::readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rChannel));
+				$rChannelData = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rChannel));
 				if ($rChannelData === null) {
 					continue;
 				}
@@ -777,7 +774,7 @@ class PlayerApiController {
 						$output[] = ['num' => ++$rLiveNum, 'name' => $rChannel['stream_display_name'], 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => $rStreamIcon, 'epg_channel_id' => $rChannel['channel_id'], 'added' => ($rChannel['added'] ?: ''), 'custom_sid' => strval($rChannel['custom_sid']), 'tv_archive' => $rTVArchive, 'direct_source' => $rURL, 'tv_archive_duration' => ($rTVArchive ? intval($rChannel['tv_archive_duration']) : 0), 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'thumbnail' => $rThumbURL];
 					}
 
-					if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
+					if (!$rCategoryIDSearch && !$rSettings['show_category_duplicates']) {
 						break;
 					}
 				}
@@ -796,7 +793,7 @@ class PlayerApiController {
 			$rVODID = intval($rRequest['vod_id']);
 
 			if ($rCached) {
-				$rRowData = self::readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rVODID));
+				$rRowData = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rVODID));
 				$rRow = $rRowData !== null ? ($rRowData['info'] ?? null) : null;
 			} else {
 				$db->query('SELECT * FROM `streams` WHERE `id` = ?', $rVODID);
@@ -907,7 +904,7 @@ class PlayerApiController {
 				}
 			}
 
-			if (in_array($rChannel['type_key'], ['movie'])) {
+			if ($rChannel['type_key'] == 'movie') {
 				$rProperties = json_decode((string) $rChannel['movie_properties'], true);
 
 				if (!is_array($rProperties)) {
@@ -930,7 +927,7 @@ class PlayerApiController {
 						$output[] = ['num' => ++$rMovieNum, 'name' => StreamSorter::formatTitle($rChannel['stream_display_name'], $rChannel['year']), 'title' => $rChannel['stream_display_name'], 'year' => strval($rChannel['year']), 'stream_type' => $rChannel['type_key'], 'stream_id' => (int) $rChannel['id'], 'stream_icon' => (ImageUtils::validateURL($rProperties['movie_image'] ?? '') ?: ''), 'rating' => number_format($rating, 1) + 0, 'rating_5based' => number_format($rating * 0.5, 1) + 0, 'added' => strval(($rChannel['added'] ?: '')), 'plot' => $rProperties['plot'] ?? null, 'cast' => $rProperties['cast'] ?? null, 'director' => $rProperties['director'] ?? null, 'genre' => $rProperties['genre'] ?? null, 'release_date' => $rProperties['release_date'] ?? null, 'youtube_trailer' => $rProperties['youtube_trailer'] ?? null, 'episode_run_time' => $rProperties['episode_run_time'] ?? null, 'category_id' => strval($rCategoryID), 'category_ids' => $rCategoryIDs, 'container_extension' => $rChannel['target_container'], 'custom_sid' => strval($rChannel['custom_sid']), 'direct_source' => $rURL];
 					}
 
-					if (!($rCategoryIDSearch || $rSettings['show_category_duplicates'])) {
+					if (!$rCategoryIDSearch && !$rSettings['show_category_duplicates']) {
 						break;
 					}
 				}
@@ -956,7 +953,7 @@ class PlayerApiController {
 			'active_cons' => strval($this->userInfo['active_cons'] ?? '0'),
 			'created_at' => strval($this->userInfo['created_at'] ?? ''),
 			'max_connections' => strval($this->userInfo['max_connections'] ?? '1'),
-			'allowed_output_formats' => self::getOutputFormats($this->userInfo['allowed_outputs'])
+			'allowed_output_formats' => $this->getOutputFormats($this->userInfo['allowed_outputs'])
 		];
 
 		if (!empty($token)) {
@@ -979,7 +976,7 @@ class PlayerApiController {
 		return $output;
 	}
 
-	private static function getOutputFormats($rFormats) {
+	private function getOutputFormats($rFormats) {
 		$rFormatArray = [1 => 'm3u8', 2 => 'ts', 3 => 'rtmp'];
 		$rReturn = [];
 

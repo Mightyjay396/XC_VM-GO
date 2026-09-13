@@ -30,7 +30,7 @@ class ProxySelector {
 			$rAcceptServers[$rServerID] = (0 < $rServers[$rServerID]['total_clients'] && $rOnlineClients < $rServers[$rServerID]['total_clients'] ? $rServerCapacity[$rServerID]['capacity'] : false);
 		}
 		$rAcceptServers = array_filter($rAcceptServers, 'is_numeric');
-		if (empty($rAcceptServers)) {
+		if ($rAcceptServers === []) {
 			return null;
 		}
 		$rKeys = array_keys($rAcceptServers);
@@ -65,9 +65,8 @@ class ProxySelector {
 				}
 			}
 		}
-		if (!(empty($rPriorityServers) && empty($rRedirectID))) {
-			$rRedirectID = (empty($rRedirectID) ? array_search(min($rPriorityServers), $rPriorityServers) : $rRedirectID);
-			return $rRedirectID;
+		if ($rPriorityServers !== [] || !empty($rRedirectID)) {
+			return empty($rRedirectID) ? array_search(min($rPriorityServers), $rPriorityServers) : $rRedirectID;
 		}
 		return null;
 	}

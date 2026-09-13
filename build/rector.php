@@ -7,12 +7,21 @@ use Rector\Config\RectorConfig;
 use Rector\TypeDeclaration\Rector\StmtsAwareInterface\SafeDeclareStrictTypesRector;
 
 /**
- * Rector configuration for XC_VM — stage 1 (scaffolding + audit).
+ * Rector configuration for XC_VM — stage 2 (class-based trees).
  *
- * Scope is deliberately narrow: only the PSR-4, class-based trees
- * (Core / Domain / Cli / Infrastructure). Procedural entry points, view
- * templates (short tags), the legacy \TMDB library, runtime-installed modules,
- * the committed vendor and the streaming hot-path are excluded — see withSkip().
+ * Scope is the PSR-4, class-based trees: Core / Domain / Cli / Infrastructure
+ * plus Streaming, Public\Controllers and the Ministra classes. Deliberately
+ * EXCLUDED (see withSkip / withPaths): view templates (Public/Views, short
+ * tags), procedural front-controllers (Public/stream, Public/admin,
+ * Ministra/portal.php), the legacy \TMDB library, runtime-installed modules,
+ * the committed vendor and the streaming hot-path bootstraps.
+ *
+ * KNOWN BUG — review every run: the empty-if/else inversion drops the parens
+ * around an assignment-in-condition, e.g. `if (($k = array_search(...)) === false)`
+ * becomes `if ($k = array_search(...) !== false)` — assigning the bool to $k.
+ * PHPStan catches only some cases. After each `make rector-fix`, grep the diff:
+ *   grep -rnE 'if \(\$[A-Za-z_]+ = .*(!==|===) (false|true|null)\)' src/
+ * and restore the parens on any hit before committing.
  *
  * Paths are anchored with __DIR__ (this file lives in build/) so the config
  * behaves the same whether invoked from the repo root (make rector) or from
@@ -36,10 +45,19 @@ return RectorConfig::configure()
 		__DIR__ . '/../src/Domain',
 		__DIR__ . '/../src/Cli',
 		__DIR__ . '/../src/Infrastructure',
+		// Stage 2 — class-based trees that were deferred:
+		__DIR__ . '/../src/Streaming',
+		__DIR__ . '/../src/Public/Controllers',
+		__DIR__ . '/../src/Ministra',
 	])
 	->withSkip([
 		// Legacy global \TMDB library — not PSR-4, vendored verbatim.
 		__DIR__ . '/../src/Infrastructure/Tmdb/lib',
+
+		// Ministra procedural front-controller (short tags, injected globals) —
+		// excluded from PHPStan for the same reason. PortalHandler/PortalHelpers
+		// (classes, next to it) ARE analysed.
+		__DIR__ . '/../src/Ministra/portal.php',
 
 		// Streaming hot-path — refactored later in its own cautious phase.
 		__DIR__ . '/../src/Infrastructure/Bootstrap/StreamingRequestBootstrap.php',
