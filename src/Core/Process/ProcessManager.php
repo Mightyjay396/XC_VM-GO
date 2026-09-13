@@ -50,11 +50,11 @@ class ProcessManager {
 	/**
 	 * Check if a process is running via /proc filesystem
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @param string|null $exe Expected executable name (e.g., 'ffmpeg', 'php')
 	 * @return bool
 	 */
-	public static function isRunning(int $pid, ?string $exe = null) {
+	public static function isRunning(?int $pid, ?string $exe = null) {
 		if ($pid <= 0) {
 			return false;
 		}
@@ -83,13 +83,13 @@ class ProcessManager {
 	 *
 	 * Reads /proc/PID/cmdline and matches against "NAME[ID]" pattern.
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @param string $processName Process name prefix (e.g., 'XC_VM', 'Thumbnail', 'TVArchive')
 	 * @param int|string $identifier Stream/task ID
 	 * @param string $exe Expected executable (default: PHP_BIN)
 	 * @return bool
 	 */
-	public static function isNamedProcessRunning(int $pid, string $processName, int|string $identifier, string $exe = null) {
+	public static function isNamedProcessRunning(?int $pid, string $processName, int|string $identifier, ?string $exe = null) {
 		if ($pid <= 0) {
 			return false;
 		}
@@ -127,11 +127,11 @@ class ProcessManager {
 	 * Specialized check for streaming processes that match
 	 * either ffmpeg with specific stream output files, or PHP processes.
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @param int $streamId Stream ID
 	 * @return bool
 	 */
-	public static function isStreamRunning(int $pid, int $streamId) {
+	public static function isStreamRunning(?int $pid, int $streamId) {
 		if ($pid <= 0) {
 			return false;
 		}
@@ -162,11 +162,11 @@ class ProcessManager {
 	/**
 	 * What kind of producer a stream's pid is, for the panel's stream list.
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @return string|null 'fanout' (xc_fanout remux), 'ffmpeg', 'php' (the LLOD
 	 *                     segmenter / loopback relay), or null when it cannot be read.
 	 */
-	public static function producerKind(int $pid) {
+	public static function producerKind(?int $pid) {
 		if ($pid <= 0 || !self::procExists($pid) || !is_readable('/proc/' . $pid . '/exe')) {
 			return null;
 		}
@@ -195,10 +195,10 @@ class ProcessManager {
 	 * size in bytes, which is the figure that matters for a box running hundreds
 	 * of encoders: what they actually hold in RAM.
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @return array{ticks:int,rss:int,at:float,start:int}|null Null when the process is gone.
 	 */
-	public static function resourceSample(int $pid) {
+	public static function resourceSample(?int $pid) {
 		if ($pid <= 1) {
 			return null;
 		}
@@ -324,11 +324,11 @@ class ProcessManager {
 	/**
 	 * Kill a process by PID
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @param int $signal Signal to send (default: SIGKILL = 9)
 	 * @return bool
 	 */
-	public static function kill(int $pid, int $signal = 9) {
+	public static function kill(?int $pid, int $signal = 9) {
 		if ($pid <= 0) {
 			return false;
 		}
@@ -352,10 +352,10 @@ class ProcessManager {
 	 * watchdog blocked in poll() on a half-open MariaDB socket): a normally
 	 * short-lived generation that has been alive far too long is stale.
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @return int Age in seconds, or -1 if it cannot be determined
 	 */
-	public static function getProcessAge(int $pid) {
+	public static function getProcessAge(?int $pid) {
 		if ($pid <= 0 || !self::procExists($pid)) {
 			return -1;
 		}
@@ -487,11 +487,11 @@ class ProcessManager {
 	 * Extracted from ProcessManager::isStreamAlive().
 	 * Searches for $streamID anywhere in /proc/PID/cmdline (case-insensitive).
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @param int|string $streamID Stream identifier to search for
 	 * @return bool
 	 */
-	public static function isStreamAlive(int $pid, int|string $streamID) {
+	public static function isStreamAlive(?int $pid, int|string $streamID) {
 		if ($pid <= 1) {
 			return false;
 		}
@@ -528,12 +528,12 @@ class ProcessManager {
 	 * Extracted from ProcessManager::isMonitorAlive().
 	 * Checks for XC_VM[streamID] OR XC_VMProxy[streamID] in cmdline.
 	 *
-	 * @param int $pid Process ID
+	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @param int|string $streamID Stream identifier
 	 * @param string|null $exe Expected executable (default: PHP_BIN)
 	 * @return bool
 	 */
-	public static function isMonitorAlive(int $pid, int|string $streamID, ?string $exe = null) {
+	public static function isMonitorAlive(?int $pid, int|string $streamID, ?string $exe = null) {
 		if ($pid <= 0) {
 			return false;
 		}

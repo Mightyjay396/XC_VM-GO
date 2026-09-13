@@ -428,12 +428,12 @@ class Database {
 	/**
 	 * Quote a string for safe inclusion in SQL (prefer parameterized queries).
 	 *
-	 * @param string $string Value to quote.
+	 * @param string|null $string Value to quote (null coerced to empty string).
 	 * @return string|null Quoted string, or null if not connected.
 	 */
-	public function escape(string $string) {
+	public function escape(?string $string) {
 		if ($this->dbh) {
-			return $this->dbh->quote($string);
+			return $this->dbh->quote((string) $string);
 		}
 		return null;
 	}
