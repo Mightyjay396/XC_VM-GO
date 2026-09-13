@@ -259,7 +259,7 @@ class WatchdogCommand implements CommandInterface {
 		exec(escapeshellarg($rBinary) . ' ' . escapeshellarg(MAIN_HOME . 'bin/redis/redis.conf') . ' >/dev/null 2>/dev/null');
 		sleep(1);
 
-		if (RedisManager::reconnect()) {
+		if (RedisManager::reconnect() instanceof \Redis) {
 			echo "Redis restarted successfully\n";
 		} else {
 			echo "Redis restart attempted, connection still unavailable\n";

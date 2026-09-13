@@ -43,7 +43,7 @@ if ($odb->num_rows() > 0) {
 		$odb->query('SHOW TABLES LIKE ?;', $rTable);
 		if ($odb->num_rows() > 0) {
 			$odb->query('SELECT COUNT(*) AS `count` FROM `' . $rTable . '`;');
-			$rItemCount += (intval($odb->get_row()['count']) ?: 0);
+			$rItemCount += (intval($odb->get_row()['count']));
 		}
 	}
 	if ($rItemCount == 0) {
@@ -85,7 +85,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -187,7 +187,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -217,7 +217,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -319,7 +319,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -349,7 +349,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -398,7 +398,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -428,7 +428,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -458,7 +458,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -584,7 +584,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -637,7 +637,7 @@ if ($odb->num_rows() > 0) {
 		$odb->query('SHOW TABLES LIKE ?;', $rTable);
 		if ($odb->num_rows() > 0) {
 			$odb->query('SELECT COUNT(*) AS `count` FROM `' . $rTable . '`;');
-			$rItemCount += (intval($odb->get_row()['count']) ?: 0);
+			$rItemCount += (intval($odb->get_row()['count']));
 		}
 	}
 	if ($rItemCount == 0) {
@@ -669,7 +669,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -699,7 +699,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -814,14 +814,12 @@ if ($odb->num_rows() > 0) {
 					$rSeries = json_decode($rResult['bouquet_series'], true);
 					$rResult['bouquet_series'] = [];
 					foreach ($rSeries as $rSeriesID) {
-						if (!in_array(intval($rSeriesID), $rSeriesMap)) {
-						} else {
+						if (in_array(intval($rSeriesID), $rSeriesMap)) {
 							$rResult['bouquet_series'][] = intval($rSeriesID);
 						}
 					}
 					foreach (['channels', 'movies', 'radios', 'series'] as $rType) {
-						if ($rResult['bouquet_' . $rType]) {
-						} else {
+						if (!$rResult['bouquet_' . $rType]) {
 							$rResult['bouquet_' . $rType] = '[]';
 						}
 					}
@@ -846,7 +844,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -878,7 +876,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -889,8 +887,7 @@ if ($odb->num_rows() > 0) {
 					foreach ($rResults as $rResult) {
 						$rResult['mac'] = base64_decode($rResult['mac']);
 						$rResult['lock_device'] = 1;
-						if (0 >= $rResult['user_id']) {
-						} else {
+						if (0 < $rResult['user_id']) {
 							$rResult = QueryHelper::verifyPostTable('mag_devices', $rResult);
 							$rPrepare = QueryHelper::prepareArray($rResult);
 							$rQuery = 'INSERT INTO `mag_devices`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
@@ -986,8 +983,6 @@ if ($odb->num_rows() > 0) {
 				}
 			}
 		}
-	}
-	if (in_array('groups', $rMigrateOptions)) {
 		$odb->query('SELECT * FROM `groups` WHERE `can_delete` = 1;');
 		$rResults = $odb->get_rows();
 		if (count($rResults) > 0) {
@@ -1036,8 +1031,7 @@ if ($odb->num_rows() > 0) {
 					}
 					$rResult['lock_device'] = 1;
 					$rResult['check_compatible'] = 1;
-					if (count(json_decode($rResult['output_formats'], true)) != 0) {
-					} else {
+					if (count(json_decode($rResult['output_formats'], true)) == 0) {
 						$rResult['output_formats'] = '[1,2,3]';
 					}
 					$rResult = QueryHelper::verifyPostTable('users_packages', $rResult);
@@ -1081,7 +1075,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -1092,8 +1086,7 @@ if ($odb->num_rows() > 0) {
 					foreach ($rResults as $rResult) {
 						$rResult['category_id'] = '[' . intval($rResult['category_id']) . ']';
 						$rResult['release_date'] = $rResult['releaseDate'];
-						if ($rResult['tmdb_id'] != 0) {
-						} else {
+						if ($rResult['tmdb_id'] == 0) {
 							$rResult['tmdb_id'] = null;
 						}
 						$rResult = QueryHelper::verifyPostTable('streams_series', $rResult);
@@ -1118,7 +1111,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -1217,7 +1210,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -1228,14 +1221,12 @@ if ($odb->num_rows() > 0) {
 					foreach ($rResults as $rResult) {
 						try {
 							$rExternal = json_decode($rResult['external_push'], true);
-							if ($rExternal) {
-							} else {
+							if (!$rExternal) {
 								$rResult['external_push'] = '{}';
 							}
 							$rResult['category_id'] = '[' . intval($rResult['category_id']) . ']';
 							$rResult['movie_properties'] = $rResult['movie_propeties'];
-							if (!$rResult['target_container']) {
-							} else {
+							if ($rResult['target_container']) {
 								list($rResult['target_container']) = json_decode($rResult['target_container'], true);
 							}
 							$rCreatedOptions[$rResult['id']] = $rResult['cchannel_rsources'];
@@ -1264,7 +1255,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -1295,7 +1286,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -1303,15 +1294,12 @@ if ($odb->num_rows() > 0) {
 				try {
 					$odb->query('SELECT * FROM `streams_sys` LIMIT ' . $rStep . ', 1000;');
 					$rResults = $odb->get_rows();
-					if (0 >= count($rResults)) {
-					} else {
+					if (0 < count($rResults)) {
 						foreach ($rResults as $rResult) {
-							if ($rResult['parent_id'] && $rResult['parent_id'] != 0) {
-							} else {
+							if (!$rResult['parent_id'] || $rResult['parent_id'] == 0) {
 								$rResult['parent_id'] = null;
 							}
-							if (!isset($rCreatedOptions[$rResult['stream_id']])) {
-							} else {
+							if (isset($rCreatedOptions[$rResult['stream_id']])) {
 								$rResult['cchannel_rsources'] = $rCreatedOptions[$rResult['stream_id']];
 							}
 							$rResult['custom_ffmpeg'] = '';
@@ -1344,7 +1332,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -1352,18 +1340,15 @@ if ($odb->num_rows() > 0) {
 				try {
 					$odb->query('SELECT * FROM `stream_servers` LIMIT ' . $rStep . ', 1000;');
 					$rResults = $odb->get_rows();
-					if (0 >= count($rResults)) {
-					} else {
+					if (0 < count($rResults)) {
 						foreach ($rResults as $rResult) {
-							if ($rResult['parent_id'] && $rResult['parent_id'] != 0) {
-							} else {
+							if (!$rResult['parent_id'] || $rResult['parent_id'] == 0) {
 								$rResult['parent_id'] = null;
 							}
 							$rResult['stream_status'] = 0;
 							$rResult['stream_started'] = null;
 							$rResult['monitor_pid'] = null;
-							if ($rResult['pid'] > 0) {
-							} else {
+							if ($rResult['pid'] <= 0) {
 								$rResult['pid'] = null;
 							}
 							$rResult = QueryHelper::verifyPostTable('streams_servers', $rResult);
@@ -1479,7 +1464,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -1507,7 +1492,7 @@ if ($odb->num_rows() > 0) {
 			for ($i = 0; $i < $rCount; $i += $stepSize) {
 				$rSteps[] = $i;
 			}
-			if (empty($rSteps)) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -1516,16 +1501,13 @@ if ($odb->num_rows() > 0) {
 					$odb->query('SELECT * FROM `users` LIMIT ' . $rStep . ', 1000;');
 					$rResults = $odb->get_rows();
 					foreach ($rResults as $rResult) {
-						if (!empty($rResult['isp_desc'])) {
-						} else {
+						if (empty($rResult['isp_desc'])) {
 							$rResult['isp_desc'] = null;
 						}
-						if (!isset($rOutput[$rResult['id']])) {
-						} else {
+						if (isset($rOutput[$rResult['id']])) {
 							$rResult['allowed_outputs'] = '[' . implode(',', $rOutput[$rResult['id']]) . ']';
 						}
-						if (!isset($rResult['output'])) {
-						} else {
+						if (isset($rResult['output'])) {
 							$rResult['allowed_outputs'] = $rResult['output'];
 						}
 						$rResult['bouquet'] = '[' . implode(',', array_map('intval', json_decode($rResult['bouquet'], true))) . ']';
@@ -1542,8 +1524,7 @@ if ($odb->num_rows() > 0) {
 	}
 	if (in_array('watch_folders', $rMigrateOptions)) {
 		$odb->query("SHOW TABLES LIKE 'watch_folders';");
-		if (0 >= $odb->num_rows()) {
-		} else {
+		if (0 < $odb->num_rows()) {
 			$odb->query('SELECT COUNT(*) AS `count` FROM `watch_folders`;');
 			$rCount = $odb->get_row()['count'];
 			if ($rCount > 0) {
@@ -1578,8 +1559,7 @@ try {
 		foreach ($odb->get_rows() as $rRow) {
 			$rAdminSettings[$rRow['type']] = $rRow['value'];
 		}
-		if (!(0 < strlen($rAdminSettings['recaptcha_v2_secret_key']) && 0 < strlen($rAdminSettings['recaptcha_v2_site_key']))) {
-		} else {
+		if ((string) $rAdminSettings['recaptcha_v2_secret_key'] !== '' && (string) $rAdminSettings['recaptcha_v2_site_key'] !== '') {
 			$db->query('UPDATE `settings` SET `recaptcha_v2_secret_key` = ?, `recaptcha_v2_site_key` = ?;', $rAdminSettings['recaptcha_v2_secret_key'], $rAdminSettings['recaptcha_v2_site_key']);
 		}
 	}

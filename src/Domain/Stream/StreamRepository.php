@@ -238,8 +238,7 @@ class StreamRepository {
 		foreach ($rSources as $rSource) {
 			$db->query("SELECT `id` FROM `streams` WHERE `type` IN (2,5) AND `stream_source` LIKE ? ESCAPE '|' LIMIT 1;", '%' . str_replace('/', '\\/', $rSource) . '"%');
 
-			if ($db->num_rows() != 1) {
-			} else {
+			if ($db->num_rows() == 1) {
 				$rReturn[] = intval($db->get_row()['id']);
 			}
 		}
@@ -267,8 +266,7 @@ class StreamRepository {
 		$rType = $db->get_row()['type'];
 		$rRemaining = 0;
 
-		if ($rServerID == -1) {
-		} else {
+		if ($rServerID != -1) {
 			$db->query('SELECT `server_stream_id` FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` <> ?;', $rID, $rServerID);
 			$rRemaining = $db->num_rows();
 		}
@@ -282,7 +280,7 @@ class StreamRepository {
 			$db->query('DELETE FROM `streams_logs` WHERE `stream_id` = ?;', $rID);
 			$db->query('DELETE FROM `streams_options` WHERE `stream_id` = ?;', $rID);
 			$db->query('DELETE FROM `streams_stats` WHERE `stream_id` = ?;', $rID);
-			EventDispatcher::dispatch(new StreamsDeletedEvent([(int) $rID]));
+			EventDispatcher::dispatch(new StreamsDeletedEvent([$rID]));
 			$db->query('DELETE FROM `recordings` WHERE `created_id` = ? OR `stream_id` = ?;', $rID, $rID);
 			$db->query('UPDATE `lines_activity` SET `stream_id` = 0 WHERE `stream_id` = ?;', $rID);
 			$db->query('SELECT `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rID);
@@ -292,8 +290,7 @@ class StreamRepository {
 				$rServerIDs[] = $rRow['server_id'];
 			}
 
-			if (!($rDeleteFiles && 0 < count($rServerIDs) && in_array($rType, [2, 5]))) {
-			} else {
+			if ($rDeleteFiles && 0 < count($rServerIDs) && in_array($rType, [2, 5])) {
 				MovieService::deleteFile($rServerIDs, $rID);
 			}
 
@@ -301,8 +298,7 @@ class StreamRepository {
 		} else {
 			$db->query('DELETE FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` = ?;', $rID, $rServerID);
 
-			if (!($rDeleteFiles && in_array($rType, [2, 5]))) {
-			} else {
+			if ($rDeleteFiles && in_array($rType, [2, 5])) {
 				MovieService::deleteFile([$rServerID], $rID);
 			}
 		}
@@ -325,8 +321,7 @@ class StreamRepository {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
-		if (0 >= count($rIDs)) {
-		} else {
+		if (0 < count($rIDs)) {
 			$db->query('DELETE FROM `lines_logs` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			$db->query('DELETE FROM `mag_claims` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			$db->query('DELETE FROM `streams` WHERE `id` IN (' . implode(',', $rIDs) . ');');
@@ -343,13 +338,11 @@ class StreamRepository {
 			$db->query('DELETE FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 			$db->query('DELETE FROM `streams_servers` WHERE `parent_id` IS NOT NULL AND `parent_id` > 0 AND `parent_id` NOT IN (SELECT `id` FROM `servers` WHERE `server_type` = 0);');
 			$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_streams', 'id' => $rIDs]));
-
 			if ($rDeleteFiles) {
 				foreach (array_keys(ServerRepository::getAll()) as $rServerID) {
 					$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(['type' => 'delete_vods', 'id' => $rIDs]));
 				}
 			}
-
 			BouquetService::scan();
 		}
 
@@ -368,11 +361,9 @@ class StreamRepository {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
-		if (0 >= count($rIDs)) {
-		} else {
+		if (0 < count($rIDs)) {
 			$db->query('DELETE FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', $rIDs) . ');', $rServerID);
 			$db->query('UPDATE `streams_servers` SET `parent_id` = NULL WHERE `parent_id` = ? AND `stream_id` IN (' . implode(',', $rIDs) . ');', $rServerID);
-
 			if ($rDeleteFiles) {
 				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(['type' => 'delete_vods', 'id' => $rIDs]));
 			}
@@ -391,8 +382,7 @@ class StreamRepository {
 		$db = self::db();
 		$db->query('SELECT * FROM `watch_folders` WHERE `id` = ?;', $rID);
 
-		if ($db->num_rows() != 1) {
-		} else {
+		if ($db->num_rows() == 1) {
 			return $db->get_row();
 		}
 		return false;

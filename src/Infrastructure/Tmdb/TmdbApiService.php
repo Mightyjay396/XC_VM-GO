@@ -37,17 +37,16 @@ class TmdbApiService {
 	 *
 	 * @param string      $apiKey   \TMDB API key
 	 * @param string|null $language Язык запроса (приоритет: явный → настройка → default)
-	 * @return \TMDB
 	 */
 	public static function createClient(string $apiKey, ?string $language = null): \TMDB {
 		self::requireLibrary();
 
-		if ($language !== null && strlen($language) > 0) {
+		if ($language !== null && $language !== '') {
 			return new \TMDB($apiKey, $language);
 		}
 
 		$settingsLang = SettingsManager::getString('tmdb_language');
-		if (strlen($settingsLang) > 0) {
+		if ($settingsLang !== '') {
 			return new \TMDB($apiKey, $settingsLang);
 		}
 
@@ -69,7 +68,7 @@ class TmdbApiService {
 	 */
 	public static function search(string $term, string $type, ?string $language = null, ?int $season = null): array {
 		$apiKey = SettingsManager::getString('tmdb_api_key');
-		if (strlen($apiKey) === 0) {
+		if ($apiKey === '') {
 			return ['result' => false];
 		}
 
@@ -116,7 +115,7 @@ class TmdbApiService {
 	 */
 	public static function getDetails(int $id, string $type, ?string $language = null): array {
 		$apiKey = SettingsManager::getString('tmdb_api_key');
-		if (strlen($apiKey) === 0) {
+		if ($apiKey === '') {
 			return ['result' => false];
 		}
 
@@ -149,7 +148,6 @@ class TmdbApiService {
 	 * @param string   $id     \TMDB ID
 	 * @param string   $type   Тип: movie|series|episode
 	 * @param int|null $season Номер сезона
-	 * @return array|null
 	 */
 	private static function fetchByID(\TMDB $tmdb, string $id, string $type, ?int $season): ?array {
 		if ($type === 'movie') {

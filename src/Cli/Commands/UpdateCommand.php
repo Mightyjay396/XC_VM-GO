@@ -212,7 +212,7 @@ class UpdateCommand implements CommandInterface {
 
 				$UpdateData = $gitRelease->getVersionFile($rIsMain ? 'main' : 'lb_update', $rTarget);
 
-				if (!$UpdateData || empty($UpdateData['url'])) {
+				if (empty($UpdateData['url'])) {
 					echo "ERROR: failed to resolve release asset for {$rTarget}.\n";
 					UpdateLogger::error('Failed to resolve rollback asset URL for ' . $rTarget);
 					return 1;

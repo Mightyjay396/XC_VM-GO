@@ -47,9 +47,6 @@ class StreamProcess {
 	 * @return void
 	 */
 	public static function deleteCache(array $rSources) {
-		if (empty($rSources)) {
-			return;
-		}
 		foreach ($rSources as $rSource) {
 			if (file_exists(CACHE_TMP_PATH . md5($rSource))) {
 				unlink(CACHE_TMP_PATH . md5($rSource));
@@ -95,7 +92,6 @@ class StreamProcess {
 	 *
 	 * @param int $rStreamID  Stream id.
 	 * @param mixed $rMonitorPID The stream's recorded monitor pid.
-	 * @return bool
 	 */
 	public static function isWatched(int $rStreamID, mixed $rMonitorPID): bool {
 		if (ProcessManager::isMonitorAlive($rMonitorPID, $rStreamID)) {
@@ -255,11 +251,11 @@ class StreamProcess {
 		if (isset($rAttr[17])) {
 			$rVideoFilters[] = 'yadif';
 		}
-		if (isset($rAttr[9]['val']) && strlen($rAttr[9]['val']) > 0) {
+		if (isset($rAttr[9]['val']) && (string) $rAttr[9]['val'] !== '') {
 			$rVideoFilters[] = 'scale=' . $rAttr[9]['val'];
 		}
 
-		if (!empty($rVideoFilters)) {
+		if ($rVideoFilters !== []) {
 			$rChain[] = $rBase . implode(',', $rVideoFilters) . '[bg]';
 			$rBase = '[bg]';
 		}
@@ -599,7 +595,7 @@ class StreamProcess {
 		while ($i <= $k) {
 			$rTemp = $rSources[$i];
 			unset($rSources[$i]);
-			array_push($rSources, $rTemp);
+			$rSources[] = $rTemp;
 			$i++;
 		}
 		return array_values($rSources);
@@ -1014,7 +1010,7 @@ class StreamProcess {
 
 		$audioCodec = (isset($rFFProbeOutput['codecs']['audio']['codec_name']) && is_array($rFFProbeOutput['codecs']['audio'])) ? $rFFProbeOutput['codecs']['audio']['codec_name'] : '';
 
-		$rFFMPEG = str_replace(
+		return str_replace(
 			['{FETCH_OPTIONS}', '{GEN_PTS}', '{STREAM_SOURCE}', '{MAP}', '{READ_NATIVE}', '{CONCAT}', '{AAC_FILTER}', '{GPU}', '{INPUT_CODEC}', '{LOGO}', '{LLOD}'],
 			[
 				empty($rStream['stream_info']['custom_ffmpeg']) ? $rFetchOptions : '',
@@ -1031,8 +1027,6 @@ class StreamProcess {
 			],
 			$rFFMPEG
 		);
-
-		return $rFFMPEG;
 	}
 
 	// ── Fanout supervision + native remuxer ─────────────────────────────────
@@ -1126,7 +1120,6 @@ class StreamProcess {
 	 *
 	 * @param array $rStreamInfo streams ⨝ streams_types row.
 	 * @param array $rArgs       Stream arguments keyed by argument_key.
-	 * @return string|null
 	 */
 	private static function nativeRefusal(array $rStreamInfo, array $rArgs): ?string {
 		// `live` is the key of the Live Streams type in `streams_types`; the other
@@ -2261,7 +2254,7 @@ class StreamProcess {
 						}
 					}
 
-					if (!($rStream['server_info']['on_demand'] && $rLLOD)) {
+					if (!$rStream['server_info']['on_demand'] || !$rLLOD) {
 						if ($rIsXC_VM && $rSettings['api_probe']) {
 							$rProbeURL = $rURLInfo['scheme'] . '://' . $rURLInfo['host'] . (isset($rURLInfo['port']) ? ':' . $rURLInfo['port'] : '') . '/probe/' . base64_encode($rURLInfo['path'] ?? '');
 							$rFFProbeOutput = json_decode(CurlClient::getURL($rProbeURL), true);
@@ -2287,7 +2280,7 @@ class StreamProcess {
 						break;
 					}
 				}
-				if (!($rStream['server_info']['on_demand'] && $rLLOD)) {
+				if (!$rStream['server_info']['on_demand'] || !$rLLOD) {
 					if (!isset($rFFProbeOutput['codecs'])) {
 						$rFFProbeOutput = FFprobeRunner::parseFFProbe($rFFProbeOutput);
 					}
@@ -2307,7 +2300,7 @@ class StreamProcess {
 					// before buildLive(), which consumes segmentStart / delayActive.
 					$rSleepTime = 0;
 				$rSegmentStart = 0;
-				$rDelayActive = !(0 >= $rStream['stream_info']['delay_minutes'] || $rStream['server_info']['parent_id']);
+				$rDelayActive = 0 < $rStream['stream_info']['delay_minutes'] && !$rStream['server_info']['parent_id'];
 				if ($rDelayActive) {
 					$m3u8File = DELAY_PATH . $rStreamID . '_.m3u8';
 					$oldM3u8File = DELAY_PATH . intval($rStreamID) . '_.m3u8_old';
@@ -2316,7 +2309,7 @@ class StreamProcess {
 						$rFile = file($m3u8File, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
 
 						if (!is_array($rFile) || count($rFile) < 2) {
-							return;
+							return null;
 						}
 
 						$rSegmentStart = self::resolveDelaySegmentStart($rFile, $rStreamID);
@@ -2402,11 +2395,9 @@ class StreamProcess {
 				$rPlaylist = (!$rDelayEnabled ? STREAMS_PATH . $rStreamID . '_.m3u8' : DELAY_PATH . $rStreamID . '_.m3u8');
 
 				return ['main_pid' => $rPID, 'stream_source' => $rRealSource, 'delay_enabled' => $rDelayEnabled, 'parent_id' => $rStream['server_info']['parent_id'], 'delay_start_at' => $rDelayStartAt, 'playlist' => $rPlaylist, 'transcode' => $rStream['stream_info']['enable_transcode'], 'offset' => $rOffset];
-			} else {
-				return false;
 			}
-		} else {
 			return false;
 		}
+		return false;
 	}
 }

@@ -89,7 +89,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (!(RequestManager::has('id') || !Authorization::check('adv', 'add_bouquet'))) {
+				if (!RequestManager::has('id') && Authorization::check('adv', 'add_bouquet')) {
 					return true;
 				}
 
@@ -112,7 +112,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (!(RequestManager::has('id') || !Authorization::check('adv', 'create_channel'))) {
+				if (!RequestManager::has('id') && Authorization::check('adv', 'create_channel')) {
 					return true;
 				}
 
@@ -136,7 +136,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (!(RequestManager::has('id') || !Authorization::check('adv', 'add_epg'))) {
+				if (!RequestManager::has('id') && Authorization::check('adv', 'add_epg')) {
 					return true;
 				}
 
@@ -149,7 +149,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (!(RequestManager::has('id') || !Authorization::check('adv', 'add_episode'))) {
+				if (!RequestManager::has('id') && Authorization::check('adv', 'add_episode')) {
 					return true;
 				}
 
@@ -169,7 +169,7 @@ class PageAuthorization {
 					return true;
 				}
 
-				if (!(RequestManager::has('id') || !Authorization::check('adv', 'add_group'))) {
+				if (!RequestManager::has('id') && Authorization::check('adv', 'add_group')) {
 					return true;
 				}
 

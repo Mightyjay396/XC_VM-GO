@@ -72,7 +72,7 @@ class StreamSorter {
 	 * @return int[] Reordered series ids (input unchanged if no cached order).
 	 */
 	public static function sortSeries(array $rSeries) {
-		if (!(0 < count($rSeries) && file_exists(CACHE_TMP_PATH . 'series_order'))) {
+		if (0 >= count($rSeries) || !file_exists(CACHE_TMP_PATH . 'series_order')) {
 			return $rSeries;
 		}
 

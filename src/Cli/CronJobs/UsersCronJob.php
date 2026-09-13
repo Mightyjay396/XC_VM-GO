@@ -92,7 +92,7 @@ class UsersCronJob implements CommandInterface {
 								$rRow['identity'] = $rRow['hmac_id'] . '_' . $rRow['hmac_identifier'];
 							}
 
-							$rRow['on_demand'] = ($rOnDemand[$rRow['stream_id']][$rRow['server_id']] ?: 0);
+							$rRow['on_demand'] = ($rOnDemand[$rRow['stream_id']][$rRow['server_id']]);
 							$rRedis->zAdd('LINE#' . $rRow['identity'], $rRow['date_start'], $rRow['uuid']);
 							$rRedis->zAdd('LINE_ALL#' . $rRow['identity'], $rRow['date_start'], $rRow['uuid']);
 							$rRedis->zAdd('STREAM#' . $rRow['stream_id'], $rRow['date_start'], $rRow['uuid']);
@@ -179,7 +179,7 @@ class UsersCronJob implements CommandInterface {
 				echo "Redis unavailable, connection cleanup postponed until next run\n";
 			}
 		} else {
-			foreach ($rDelete as $rServerID => $rConnections) {
+			foreach ($rDelete as $rConnections) {
 				if (count($rConnections) > 0) {
 					$db->query("DELETE FROM `lines_live` WHERE `uuid` IN ('" . implode("','", $rConnections) . "')");
 				}
@@ -331,7 +331,7 @@ class UsersCronJob implements CommandInterface {
 						if (!isset($rConnection['exp_date']) || is_null($rConnection['exp_date']) || $rConnection['exp_date'] >= $rStartTime) {
 							$rTotalTime = $rStartTime - $rConnection['date_start'];
 
-							if (!($rAutoKick != 0 && $rAutoKick <= $rTotalTime) || $rIsRestreamer) {
+							if ($rAutoKick == 0 || $rAutoKick > $rTotalTime || $rIsRestreamer) {
 								if ($rConnection['container'] == 'hls') {
 									if (30 <= $rStartTime - $rConnection['hls_last_read'] || $rConnection['hls_end'] == 1) {
 										echo 'Close connection: ' . $rConnection['uuid'] . "\n";
@@ -529,7 +529,7 @@ class UsersCronJob implements CommandInterface {
 
 				if (count($rUUIDs) > 0) {
 					$rRedis = RedisManager::instance();
-					if (!$rRedis) {
+					if (!$rRedis instanceof \Redis) {
 						$rConnections = [];
 					} else {
 						$rConnections = array_map(
@@ -633,9 +633,6 @@ class UsersCronJob implements CommandInterface {
 			} else {
 				$db->query('DELETE FROM `lines_divergence` WHERE `uuid` NOT IN (SELECT `uuid` FROM `lines_live`);');
 			}
-		}
-
-		if ($rServers[SERVER_ID]['is_main']) {
 			$db->query('DELETE FROM `lines_live` WHERE `uuid` IS NULL;');
 		}
 	}

@@ -58,7 +58,6 @@ class DomainDatabaseWiring {
 	 * Wire the injected $db instance into every domain service class.
 	 *
 	 * @param object $db DatabaseHandler instance.
-	 * @return void
 	 */
 	public static function wire(object $db): void {
 		// Every domain service that uses the static setDb()/db() pattern, kept as a

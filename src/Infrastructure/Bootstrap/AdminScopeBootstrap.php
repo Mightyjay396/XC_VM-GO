@@ -35,8 +35,6 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 	 * Admin session lifecycle: start, expire after timeout, redirect if
 	 * unauthenticated (JSON for AJAX). Session keys: hash, ip, code, verify,
 	 * last_activity.
-	 *
-	 * @return void
 	 */
 	private function bootSession(): void {
 		$rSessionTimeout = 60;
@@ -87,8 +85,6 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 	 * Framework boot + admin user context. Injects the legacy view-facing
 	 * globals ($rUserInfo, $rPermissions, $rServerError, ...) — the procedural
 	 * admin views read them from scope.
-	 *
-	 * @return void
 	 */
 	private function bootFunctions(): void {
 		global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
@@ -141,8 +137,7 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 				exit();
 			}
 
-			if ($_SESSION['ip'] == $rIP || $rSettings['ip_logout']) {
-			} else {
+			if ($_SESSION['ip'] != $rIP && !$rSettings['ip_logout']) {
 				$_SESSION['ip'] = $rIP;
 			}
 

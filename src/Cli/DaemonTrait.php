@@ -75,10 +75,7 @@ trait DaemonTrait {
 	 * Проверить нужно ли обновить настройки (по таймеру).
 	 */
 	protected function shouldRefreshSettings(): bool {
-		if ($this->rLastCheck && $this->rRefreshInterval > time() - $this->rLastCheck) {
-			return false;
-		}
-		return true;
+		return !$this->rLastCheck || $this->rRefreshInterval <= time() - $this->rLastCheck;
 	}
 
 	/**

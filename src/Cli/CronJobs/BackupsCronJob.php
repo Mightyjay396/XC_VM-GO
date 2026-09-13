@@ -59,7 +59,7 @@ class BackupsCronJob implements CommandInterface {
 
 		if (!$rForce) {
 			$rPID = getmypid();
-			if (file_exists('/proc/' . SettingsManager::get('backups_pid')) && 0 < strlen(SettingsManager::get('backups_pid'))) {
+			if (file_exists('/proc/' . SettingsManager::get('backups_pid')) && (string) SettingsManager::get('backups_pid') !== '') {
 				return 0;
 			}
 			$db->query('UPDATE `settings` SET `backups_pid` = ?;', $rPID);
@@ -81,7 +81,7 @@ class BackupsCronJob implements CommandInterface {
 						$rResponse = BackupService::uploadRemote(basename($rFilename), $rFilename);
 						if (!isset($rResponse->error)) {
 							$rResponse = json_decode(json_encode($rResponse, JSON_UNESCAPED_UNICODE), true);
-							if (!(isset($rResponse['size']) && intval($rResponse['size']) == filesize($rFilename))) {
+							if (!isset($rResponse['size']) || intval($rResponse['size']) != filesize($rFilename)) {
 								$rError = 'Failed to upload';
 								file_put_contents($rFilename . '.error', $rError);
 							}

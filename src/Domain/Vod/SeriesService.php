@@ -52,8 +52,7 @@ class SeriesService {
 				}
 			}
 
-			if (!SettingsManager::getBool('download_images')) {
-			} else {
+			if (SettingsManager::getBool('download_images')) {
 				$rData['cover'] = ImageUtils::downloadImage($rData['cover'], 2);
 				$rData['backdrop_path'] = ImageUtils::downloadImage($rData['backdrop_path']);
 			}
@@ -73,8 +72,7 @@ class SeriesService {
 				$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 				$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-				if (!$db->query($rQuery, ...$rPrepare['data'])) {
-				} else {
+				if ($db->query($rQuery, ...$rPrepare['data'])) {
 					$rBouquetID = $db->last_insert_id();
 					$rBouquetCreate[$rBouquet] = $rBouquetID;
 				}
@@ -85,8 +83,7 @@ class SeriesService {
 				$rPrepare = QueryHelper::prepareArray(['category_type' => 'series', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 				$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-				if (!$db->query($rQuery, ...$rPrepare['data'])) {
-				} else {
+				if ($db->query($rQuery, ...$rPrepare['data'])) {
 					$rCategoryID = $db->last_insert_id();
 					$rCategoryCreate[$rCategory] = $rCategoryID;
 				}
@@ -97,8 +94,7 @@ class SeriesService {
 				if (isset($rBouquetCreate[$rBouquet])) {
 					$rBouquets[] = $rBouquetCreate[$rBouquet];
 				} else {
-					if (!is_numeric($rBouquet)) {
-					} else {
+					if (is_numeric($rBouquet)) {
 						$rBouquets[] = intval($rBouquet);
 					}
 				}
@@ -109,8 +105,7 @@ class SeriesService {
 				if (isset($rCategoryCreate[$rCategory])) {
 					$rCategories[] = $rCategoryCreate[$rCategory];
 				} else {
-					if (!is_numeric($rCategory)) {
-					} else {
+					if (is_numeric($rCategory)) {
 						$rCategories[] = intval($rCategory);
 					}
 				}
@@ -128,27 +123,22 @@ class SeriesService {
 				}
 
 				foreach (BouquetService::getAllSimple() as $rBouquet) {
-					if (in_array($rBouquet['id'], $rBouquets)) {
-					} else {
+					if (!in_array($rBouquet['id'], $rBouquets)) {
 						BouquetService::removeItems('series', $rBouquet['id'], $rInsertID);
 					}
 				}
 
 				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
-			} else {
-				foreach ($rBouquetCreate as $rID) {
-					$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
-				}
-
-				foreach ($rCategoryCreate as $rID) {
-					$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
-				}
-
-				return ['status' => STATUS_FAILURE, 'data' => $rData];
 			}
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			foreach ($rBouquetCreate as $rID) {
+					$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
+			}
+			foreach ($rCategoryCreate as $rID) {
+					$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
+			}
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -182,8 +172,7 @@ class SeriesService {
 
 				foreach ($db->get_rows() as $rRow) {
 					foreach (json_decode($rRow['stream_source'], true) as $rSource) {
-						if (0 >= strlen($rSource)) {
-						} else {
+						if ((string) $rSource !== '') {
 							$rStreamDatabase[] = $rSource;
 						}
 					}
@@ -193,16 +182,16 @@ class SeriesService {
 				if (!empty($_FILES['m3u_file']['tmp_name'])) {
 					$rFile = '';
 
-					if (empty($_FILES['m3u_file']['tmp_name']) || strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)) != 'm3u') {
-					} else {
+					if (!empty($_FILES['m3u_file']['tmp_name']) && strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)) == 'm3u') {
 						$rFile = file_get_contents($_FILES['m3u_file']['tmp_name']);
 					}
 
 					preg_match_all('/(?P<tag>#EXTINF:[-1,0])|(?:(?P<prop_key>[-a-z]+)=\\"(?P<prop_val>[^"]+)")|(?<name>,[^\\r\\n]+)|(?<url>http[^\\s]*:\\/\\/.*\\/.*)/', $rFile, $rMatches);
 					$rResults = [];
 					$rIndex = -1;
+					$counter = count($rMatches[0]);
 
-					for ($i = 0; $i < count($rMatches[0]); $i++) {
+					for ($i = 0; $i < $counter; $i++) {
 						$rItem = $rMatches[0][$i];
 
 						if (!empty($rMatches['tag'][$i])) {
@@ -223,25 +212,18 @@ class SeriesService {
 					}
 
 					foreach ($rResults as $rResult) {
-						if (empty($rResult['url']) || in_array($rResult['url'], $rStreamDatabase)) {
-						} else {
+						if (!empty($rResult['url']) && !in_array($rResult['url'], $rStreamDatabase)) {
 							$rPathInfo = pathinfo(explode('?', $rResult['url'])[0]);
-
-							if (!empty($rPathInfo['extension'])) {
-							} else {
+							if (empty($rPathInfo['extension'])) {
 								$rPathInfo['extension'] = ($rData['target_container'] ?: 'mp4');
 							}
-
 							$rImportStreams[] = ['url' => $rResult['url'], 'title' => ($rResult['name'] ?: ''), 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container'])];
 						}
 					}
 				} else {
-					if (empty($rData['import_folder'])) {
-					} else {
+					if (!empty($rData['import_folder'])) {
 						$rParts = explode(':', $rData['import_folder']);
-
-						if (!is_numeric($rParts[1])) {
-						} else {
+						if (is_numeric($rParts[1])) {
 							if (isset($rData['scan_recursive'])) {
 								$rFiles = ApiClient::scanRecursive(intval($rParts[1]), $rParts[2], ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts']);
 							} else {
@@ -251,19 +233,14 @@ class SeriesService {
 									$rFiles[] = rtrim($rParts[2], '/') . '/' . $rFile;
 								}
 							}
-
 							foreach ($rFiles as $rFile) {
 								$rFilePath = 's:' . intval($rParts[1]) . ':' . $rFile;
 
-								if (in_array($rFilePath, $rStreamDatabase)) {
-								} else {
+								if (!in_array($rFilePath, $rStreamDatabase)) {
 									$rPathInfo = pathinfo($rFile);
-
-									if (!empty($rPathInfo['extension'])) {
-									} else {
+									if (empty($rPathInfo['extension'])) {
 										$rPathInfo['extension'] = ($rData['target_container'] ?: 'mp4');
 									}
-
 									$rImportStreams[] = ['url' => $rFilePath, 'title' => $rPathInfo['filename'], 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container'])];
 								}
 							}
@@ -280,15 +257,13 @@ class SeriesService {
 						$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 						$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-						if (!$db->query($rQuery, ...$rPrepare['data'])) {
-						} else {
+						if ($db->query($rQuery, ...$rPrepare['data'])) {
 							$rBouquets[] = $db->last_insert_id();
 						}
 					}
 
 					foreach ($rData['bouquets'] as $rBouquetID) {
-						if (!(is_numeric($rBouquetID) && in_array($rBouquetID, array_keys(BouquetService::getAll())))) {
-						} else {
+						if (is_numeric($rBouquetID) && in_array($rBouquetID, array_keys(BouquetService::getAll()))) {
 							$rBouquets[] = intval($rBouquetID);
 						}
 					}
@@ -300,15 +275,13 @@ class SeriesService {
 						$rPrepare = QueryHelper::prepareArray(['category_type' => 'series', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 						$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-						if (!$db->query($rQuery, ...$rPrepare['data'])) {
-						} else {
+						if ($db->query($rQuery, ...$rPrepare['data'])) {
 							$rCategories[] = $db->last_insert_id();
 						}
 					}
 
 					foreach ($rData['category_id'] as $rCategoryID) {
-						if (!(is_numeric($rCategoryID) && in_array($rCategoryID, $rSeriesCategories))) {
-						} else {
+						if (is_numeric($rCategoryID) && in_array($rCategoryID, $rSeriesCategories)) {
 							$rCategories[] = intval($rCategoryID);
 						}
 					}
@@ -317,8 +290,7 @@ class SeriesService {
 					$rServerIDs = [];
 
 					foreach (json_decode($rData['server_tree_data'], true) as $rServer) {
-						if ($rServer['parent'] == '#') {
-						} else {
+						if ($rServer['parent'] != '#') {
 							$rServerIDs[] = intval($rServer['id']);
 						}
 					}
@@ -335,15 +307,12 @@ class SeriesService {
 					}
 
 					return ['status' => STATUS_SUCCESS];
-				} else {
-					return ['status' => STATUS_NO_SOURCES, 'data' => $rPostData];
 				}
-			} else {
-				return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+				return ['status' => STATUS_NO_SOURCES, 'data' => $rPostData];
 			}
-		} else {
-			exit();
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
+		exit();
 	}
 
 	/**
@@ -481,7 +450,7 @@ class SeriesService {
 	public static function getSimilar(int $rID, int $rPage = 1) {
 		TMDbService::requireLibrary();
 
-		if (0 < strlen(SettingsManager::getString('tmdb_language'))) {
+		if (SettingsManager::getString('tmdb_language') !== '') {
 			$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'), SettingsManager::getString('tmdb_language'));
 		} else {
 			$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'));
@@ -498,8 +467,7 @@ class SeriesService {
 		$rReturn = [];
 		$db->query('SELECT `id`, `title` FROM `streams_series` ORDER BY `title` ASC;');
 
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
 				$rReturn[intval($rRow['id'])] = $rRow;
 			}
@@ -515,31 +483,25 @@ class SeriesService {
 		TMDbService::requireLibrary();
 		$db->query('SELECT `tmdb_id`, `tmdb_language` FROM `streams_series` WHERE `id` = ?;', $rID);
 
-		if ($db->num_rows() != 1) {
-		} else {
+		if ($db->num_rows() == 1) {
 			$rRow = $db->get_row();
 			$rTMDBID = $rRow['tmdb_id'];
-
-			if (0 >= strlen($rTMDBID)) {
-			} else {
-				if (0 < strlen($rRow['tmdb_language'])) {
+			if ((string) $rTMDBID !== '') {
+				if ((string) $rRow['tmdb_language'] !== '') {
 					$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'), $rRow['tmdb_language']);
 				} else {
-					if (0 < strlen(SettingsManager::getString('tmdb_language'))) {
+					if (SettingsManager::getString('tmdb_language') !== '') {
 						$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'), SettingsManager::getString('tmdb_language'));
 					} else {
 						$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'));
 					}
 				}
-
 				$rReturn = [];
 				$rSeasons = json_decode($rTMDB->getTVShow($rTMDBID)->getJSON(), true)['seasons'];
-
 				foreach ($rSeasons as $rSeason) {
 					$rSeason['cover'] = 'https://image.tmdb.org/t/p/w600_and_h900_bestv2' . $rSeason['poster_path'];
 
-					if (!SettingsManager::getBool('download_images')) {
-					} else {
+					if (SettingsManager::getBool('download_images')) {
 						$rSeason['cover'] = ImageUtils::downloadImage($rSeason['cover']);
 					}
 
@@ -547,7 +509,6 @@ class SeriesService {
 					unset($rSeason['poster_path']);
 					$rReturn[] = $rSeason;
 				}
-
 				$db->query('UPDATE `streams_series` SET `seasons` = ? WHERE `id` = ?;', json_encode($rReturn, JSON_UNESCAPED_UNICODE), $rID);
 			}
 		}
@@ -569,13 +530,11 @@ class SeriesService {
 		$rReturn = [];
 		$db->query('SELECT `stream_id` FROM `streams_episodes` WHERE `series_id` = ? ORDER BY `season_num` ASC, `episode_num` ASC;', $rSeriesNo);
 
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
 				$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?;', $rRow['stream_id']);
 
-				if (0 >= $db->num_rows()) {
-				} else {
+				if (0 < $db->num_rows()) {
 					list($rSource) = json_decode($db->get_row()['stream_source'], true);
 					$rReturn[] = $rSource;
 				}
@@ -688,8 +647,7 @@ class SeriesService {
 		$db->query('DELETE FROM `streams_episodes` WHERE `series_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `streams_series` WHERE `id` IN (' . implode(',', $rIDs) . ');');
 
-		if (0 >= count($rStreamIDs)) {
-		} else {
+		if (0 < count($rStreamIDs)) {
 			StreamRepository::deleteStreams($rStreamIDs, true);
 		}
 

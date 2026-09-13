@@ -53,8 +53,7 @@ class GroupService {
 				}
 			}
 
-			if ($rArray['can_delete'] || !isset($rData['edit'])) {
-			} else {
+			if (!$rArray['can_delete'] && isset($rData['edit'])) {
 				$rGroup = self::getById($rData['edit']);
 				$rArray['is_admin'] = $rGroup['is_admin'];
 				$rArray['is_reseller'] = $rGroup['is_reseller'];
@@ -75,12 +74,9 @@ class GroupService {
 					foreach ($rPackages as $rPackage) {
 						$db->query('SELECT `groups` FROM `users_packages` WHERE `id` = ?;', $rPackage);
 
-						if ($db->num_rows() != 1) {
-						} else {
+						if ($db->num_rows() == 1) {
 							$rGroups = json_decode($db->get_row()['groups'], true);
-
-							if (in_array($rInsertID, $rGroups)) {
-							} else {
+							if (!in_array($rInsertID, $rGroups)) {
 								$rGroups[] = $rInsertID;
 								$db->query('UPDATE `users_packages` SET `groups` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rGroups)) . ']', $rPackage);
 							}
@@ -89,12 +85,9 @@ class GroupService {
 					$db->query("SELECT `id`, `groups` FROM `users_packages` WHERE JSON_CONTAINS(`groups`, ?, '\$');", $rInsertID);
 
 					foreach ($db->get_rows() as $rRow) {
-						if (in_array($rRow['id'], $rPackages)) {
-						} else {
+						if (!in_array($rRow['id'], $rPackages)) {
 							$rGroups = json_decode($rRow['groups'], true);
-
-							if (($rKey = array_search($rInsertID, $rGroups)) === false) {
-							} else {
+							if (($rKey = array_search($rInsertID, $rGroups)) !== false) {
 								unset($rGroups[$rKey]);
 								$db->query('UPDATE `users_packages` SET `groups` = ? WHERE `id` = ?;', '[' . implode(',', array_map('intval', $rGroups)) . ']', $rRow['id']);
 							}
@@ -102,15 +95,12 @@ class GroupService {
 					}
 
 					return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
-				} else {
-					return ['status' => STATUS_FAILURE, 'data' => $rData];
 				}
-			} else {
-				return ['status' => STATUS_INVALID_NAME, 'data' => $rData];
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
 			}
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			return ['status' => STATUS_INVALID_NAME, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	// ──────────── Из GroupRepository ────────────
@@ -125,8 +115,7 @@ class GroupService {
 		$rReturn = [];
 		$db->query('SELECT * FROM `users_groups` ORDER BY `group_id` ASC;');
 
-		if (0 >= $db->num_rows()) {
-		} else {
+		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
 				$rReturn[intval($rRow['group_id'])] = $rRow;
 			}
@@ -145,8 +134,7 @@ class GroupService {
 		$db = self::db();
 		$db->query('SELECT * FROM `users_groups` WHERE `group_id` = ?;', $rID);
 
-		if ($db->num_rows() != 1) {
-		} else {
+		if ($db->num_rows() == 1) {
 			return $db->get_row();
 		}
 		return false;
@@ -162,7 +150,7 @@ class GroupService {
 		$db = self::db();
 		$rGroup = self::getById($rID);
 
-		if (!($rGroup && $rGroup['can_delete'])) {
+		if (!$rGroup || !$rGroup['can_delete']) {
 			return false;
 		}
 

@@ -309,9 +309,8 @@ function getUserStreams(array $rUserInfo, array $rTypes = [], ?int $rCategoryID 
 		}
 
 		return $rStreams;
-	} else {
-		return $rStreams;
 	}
+	return $rStreams;
 }
 
 /**
@@ -429,9 +428,8 @@ function getUserSeries(array $rUserInfo, ?int $rCategoryID = null, ?bool $rFav =
 		}
 
 		return $rStreams;
-	} else {
-		return $rStreams;
 	}
+	return $rStreams;
 }
 
 /**

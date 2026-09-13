@@ -111,10 +111,8 @@ class PackageService {
 
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
-				if (isset($rGroup) && !in_array(intval($rGroup), json_decode($rRow['groups'], true))) {
-				} else {
-					if ($rType && !$rRow['is_' . $rType]) {
-					} else {
+				if (!isset($rGroup) || in_array(intval($rGroup), json_decode($rRow['groups'], true))) {
+					if (!$rType || $rRow['is_' . $rType]) {
 						$rReturn[intval($rRow['id'])] = $rRow;
 					}
 				}
@@ -153,18 +151,14 @@ class PackageService {
 		$rPackageB = self::getById($rIDB);
 		$rCompatible = true;
 
-		if (!($rPackageA && $rPackageB)) {
-		} else {
+		if ($rPackageA && $rPackageB) {
 			foreach (['bouquets', 'output_formats'] as $rKey) {
-				if (json_decode($rPackageA[$rKey], true) == json_decode($rPackageB[$rKey], true)) {
-				} else {
+				if (json_decode($rPackageA[$rKey], true) != json_decode($rPackageB[$rKey], true)) {
 					$rCompatible = false;
 				}
 			}
-
 			foreach (['is_restreamer', 'is_isplock', 'max_connections', 'force_server_id', 'forced_country', 'lock_device'] as $rKey) {
-				if ($rPackageA[$rKey] == $rPackageB[$rKey]) {
-				} else {
+				if ($rPackageA[$rKey] != $rPackageB[$rKey]) {
 					$rCompatible = false;
 				}
 			}

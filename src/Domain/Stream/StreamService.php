@@ -58,7 +58,7 @@ class StreamService {
 		if (isset($rData['days_to_restart']) && preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', $rData['time_to_restart'])) {
 			$rTimeArray = ['days' => [], 'at' => $rData['time_to_restart']];
 
-			foreach ($rData['days_to_restart'] as $rID => $rDay) {
+			foreach ($rData['days_to_restart'] as $rDay) {
 				$rTimeArray['days'][] = $rDay;
 			}
 			$rArray['auto_restart'] = $rTimeArray;
@@ -113,7 +113,7 @@ class StreamService {
 		} else {
 			if (isset($_FILES['m3u_file'])) {
 				if (Authorization::check('adv', 'import_streams')) {
-					if (!(empty($_FILES['m3u_file']['tmp_name']) || !in_array(strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)), ['m3u', 'm3u8']))) {
+					if (!empty($_FILES['m3u_file']['tmp_name']) && in_array(strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)), ['m3u', 'm3u8'])) {
 						$rResults = self::parseM3U($_FILES['m3u_file']['tmp_name']);
 
 						if (count($rResults) > 0) {
@@ -182,7 +182,7 @@ class StreamService {
 								$rURL = $rResult->getPath();
 
 								if ($rURL) {
-									$rImportArray = ['stream_source' => [$rURL], 'stream_icon' => ($rTag ? ($rTag->getAttribute('tvg-logo') ?: ($rTag->getAttribute('logo') ?: '')) : ''), 'stream_display_name' => ($rTag ? ($rTag->getTitle() ?: basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)) : basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)), 'epg_id' => null, 'epg_lang' => null, 'channel_id' => null];
+									$rImportArray = ['stream_source' => [$rURL], 'stream_icon' => ($rTag instanceof \M3uParser\Tag\ExtInf ? ($rTag->getAttribute('tvg-logo') ?: ($rTag->getAttribute('logo') ?: '')) : ''), 'stream_display_name' => ($rTag instanceof \M3uParser\Tag\ExtInf ? ($rTag->getTitle() ?: basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)) : basename(parse_url($rURL, PHP_URL_PATH) ?: $rURL)), 'epg_id' => null, 'epg_lang' => null, 'channel_id' => null];
 
 									if ($rTag && $rTag->getAttribute('tvg-id')) {
 										$rEPG = ($rEPGMatch[$i] ?? null);
@@ -250,8 +250,8 @@ class StreamService {
 				$rImportArray = ['stream_source' => [], 'stream_icon' => $rArray['stream_icon'], 'stream_display_name' => $rArray['stream_display_name'], 'epg_id' => $rArray['epg_id'], 'epg_lang' => $rArray['epg_lang'], 'channel_id' => $rArray['channel_id']];
 
 				if (isset($rData['stream_source'])) {
-					foreach ($rData['stream_source'] as $rID => $rURL) {
-						if (strlen($rURL) > 0) {
+					foreach ($rData['stream_source'] as $rURL) {
+						if ((string) $rURL !== '') {
 							$rImportArray['stream_source'][] = $rURL;
 						}
 					}
@@ -399,19 +399,19 @@ class StreamService {
 						}
 						$db->query('DELETE FROM `streams_options` WHERE `stream_id` = ?;', $rInsertID);
 
-						if (isset($rData['user_agent']) && strlen($rData['user_agent']) > 0) {
+						if (isset($rData['user_agent']) && (string) $rData['user_agent'] !== '') {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 1, ?);', $rInsertID, $rData['user_agent']);
 						}
 
-						if (isset($rData['http_proxy']) && strlen($rData['http_proxy']) > 0) {
+						if (isset($rData['http_proxy']) && (string) $rData['http_proxy'] !== '') {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 2, ?);', $rInsertID, $rData['http_proxy']);
 						}
 
-						if (isset($rData['cookie']) && strlen($rData['cookie']) > 0) {
+						if (isset($rData['cookie']) && (string) $rData['cookie'] !== '') {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 17, ?);', $rInsertID, $rData['cookie']);
 						}
 
-						if (isset($rData['headers']) && strlen($rData['headers']) > 0) {
+						if (isset($rData['headers']) && (string) $rData['headers'] !== '') {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 19, ?);', $rInsertID, $rData['headers']);
 						}
 
@@ -419,7 +419,7 @@ class StreamService {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 21, ?);', $rInsertID, '1');
 						}
 
-						if (isset($rData['force_input_acodec']) && strlen(trim($rData['force_input_acodec'])) > 0) {
+						if (isset($rData['force_input_acodec']) && trim($rData['force_input_acodec']) !== '') {
 							$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 20, ?);', $rInsertID, trim($rData['force_input_acodec']));
 						}
 
@@ -441,11 +441,11 @@ class StreamService {
 
 						StreamProcess::updateStream($rInsertID);
 					} else {
-						foreach ($rBouquetCreate as $rBouquet => $rID) {
+						foreach ($rBouquetCreate as $rID) {
 							$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
 						}
 
-						foreach ($rCategoryCreate as $rCategory => $rID) {
+						foreach ($rCategoryCreate as $rID) {
 							$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
 						}
 
@@ -455,9 +455,8 @@ class StreamService {
 			}
 
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
-		} else {
-			return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
 		}
+		return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
 	}
 
 	/**
@@ -636,28 +635,28 @@ class StreamService {
 				}
 
 				if (isset($rData['c_user_agent'])) {
-					if (isset($rData['user_agent']) && strlen($rData['user_agent']) > 0) {
+					if (isset($rData['user_agent']) && (string) $rData['user_agent'] !== '') {
 						$rDelOptions[1][] = $rStreamID;
 						$rOptQuery .= '(' . intval($rStreamID) . ', 1, ' . $db->escape($rData['user_agent']) . '),';
 					}
 				}
 
 				if (isset($rData['c_http_proxy'])) {
-					if (isset($rData['http_proxy']) && strlen($rData['http_proxy']) > 0) {
+					if (isset($rData['http_proxy']) && (string) $rData['http_proxy'] !== '') {
 						$rDelOptions[2][] = $rStreamID;
 						$rOptQuery .= '(' . intval($rStreamID) . ', 2, ' . $db->escape($rData['http_proxy']) . '),';
 					}
 				}
 
 				if (isset($rData['c_cookie'])) {
-					if (isset($rData['cookie']) && strlen($rData['cookie']) > 0) {
+					if (isset($rData['cookie']) && (string) $rData['cookie'] !== '') {
 						$rDelOptions[17][] = $rStreamID;
 						$rOptQuery .= '(' . intval($rStreamID) . ', 17, ' . $db->escape($rData['cookie']) . '),';
 					}
 				}
 
 				if (isset($rData['c_headers'])) {
-					if (isset($rData['headers']) && strlen($rData['headers']) > 0) {
+					if (isset($rData['headers']) && (string) $rData['headers'] !== '') {
 						$rDelOptions[19][] = $rStreamID;
 						$rOptQuery .= '(' . intval($rStreamID) . ', 19, ' . $db->escape($rData['headers']) . '),';
 					}
@@ -875,13 +874,11 @@ class StreamService {
 						$rReturn[$rEPGID]['archive_start'] = $rReturn[$rEPGID]['archive_stop'];
 					}
 
-					if ($rTimestamp - 60 >= $rReturn[$rEPGID]['archive_start'] && $rReturn[$rEPGID]['archive_start']) {
-					} else {
+					if ($rTimestamp - 60 < $rReturn[$rEPGID]['archive_start'] || !$rReturn[$rEPGID]['archive_start']) {
 						$rReturn[$rEPGID]['archive_start'] = $rTimestamp - 60;
 					}
 
-					if ($rReturn[$rEPGID]['archive_stop'] >= $rTimestamp && $rReturn[$rEPGID]['archive_stop']) {
-					} else {
+					if ($rReturn[$rEPGID]['archive_stop'] < $rTimestamp || !$rReturn[$rEPGID]['archive_stop']) {
 						$rReturn[$rEPGID]['archive_stop'] = $rTimestamp;
 					}
 				}

@@ -92,7 +92,7 @@ class VodCronJob implements CommandInterface {
 			} else {
 				$rSteps = range(0, $rCount, 1000);
 			}
-			if (!$rSteps) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 
@@ -148,22 +148,22 @@ class VodCronJob implements CommandInterface {
 							if (!is_array($rMovieProperties)) {
 								$rMovieProperties = [];
 							}
-							if (!(isset($rMovieProperties['duration_secs']) && $rSeconds == $rMovieProperties['duration_secs'])) {
+							if (!isset($rMovieProperties['duration_secs']) || $rSeconds != $rMovieProperties['duration_secs']) {
 								$rMovieProperties['duration_secs'] = $rSeconds;
 								$rMovieProperties['duration'] = $rDuration;
 							}
-							if (!(isset($rMovieProperties['video']) && $rFFProbee['codecs']['video']['codec_name'] == $rMovieProperties['video'])) {
+							if (!isset($rMovieProperties['video']) || $rFFProbee['codecs']['video']['codec_name'] != $rMovieProperties['video']) {
 								$rMovieProperties['video'] = $rFFProbee['codecs']['video'];
 							}
-							if (!(isset($rMovieProperties['audio']) && $rFFProbee['codecs']['audio']['codec_name'] == $rMovieProperties['audio'])) {
+							if (!isset($rMovieProperties['audio']) || $rFFProbee['codecs']['audio']['codec_name'] != $rMovieProperties['audio']) {
 								$rMovieProperties['audio'] = $rFFProbee['codecs']['audio'];
 							}
 							if (SettingsManager::get('extract_subtitles')) {
-								if (!(isset($rMovieProperties['subtitle']) && $rFFProbee['codecs']['subtitle']['codec_name'] == $rMovieProperties['subtitle'])) {
+								if (!isset($rMovieProperties['subtitle']) || $rFFProbee['codecs']['subtitle']['codec_name'] != $rMovieProperties['subtitle']) {
 									$rMovieProperties['subtitle'] = $rFFProbee['codecs']['subtitle'];
 								}
 							}
-							if (!(isset($rMovieProperties['bitrate']) && $rBitrate == $rMovieProperties['bitrate'])) {
+							if (!isset($rMovieProperties['bitrate']) || $rBitrate != $rMovieProperties['bitrate']) {
 								if (0 < $rBitrate) {
 									$rMovieProperties['bitrate'] = $rBitrate;
 								} else {

@@ -31,8 +31,6 @@ final class PlayerScopeBootstrap implements ScopeBootstrap {
 
 	/**
 	 * Player session lifecycle. Session keys: phash, pverify.
-	 *
-	 * @return void
 	 */
 	private function bootSession(): void {
 		if (session_status() === PHP_SESSION_NONE && !headers_sent()) {
@@ -53,8 +51,6 @@ final class PlayerScopeBootstrap implements ScopeBootstrap {
 	 * Framework boot + player user context, then load the player utility
 	 * functions. Injects the legacy view-facing globals ($rServers, $rUserInfo,
 	 * $_PAGE) read by the player views/header/footer.
-	 *
-	 * @return void
 	 */
 	private function bootFunctions(): void {
 		global $rServers, $rUserInfo, $_PAGE;

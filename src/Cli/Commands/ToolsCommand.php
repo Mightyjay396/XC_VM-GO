@@ -259,11 +259,11 @@ class ToolsCommand implements CommandInterface {
 		$rConfig = [
 			'http' => array_unique(array_merge(
 				[$rServers[SERVER_ID]['http_broadcast_port']],
-				(explode(',', $rServers[SERVER_ID]['http_ports_add']) ?: [])
+				(explode(',', $rServers[SERVER_ID]['http_ports_add']))
 			)),
 			'https' => array_unique(array_merge(
 				[$rServers[SERVER_ID]['https_broadcast_port']],
-				(explode(',', $rServers[SERVER_ID]['https_ports_add']) ?: [])
+				(explode(',', $rServers[SERVER_ID]['https_ports_add']))
 			)),
 			'rtmp' => $rServers[SERVER_ID]['rtmp_port'],
 		];
@@ -313,7 +313,7 @@ class ToolsCommand implements CommandInterface {
 		$rCount = $db->get_row()['count'];
 		if ($rCount > 0) {
 			$rSteps = range(0, $rCount, 1000);
-			if (!$rSteps) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {
@@ -344,7 +344,7 @@ class ToolsCommand implements CommandInterface {
 		$rCount = $db->get_row()['count'];
 		if ($rCount > 0) {
 			$rSteps = range(0, $rCount, 1000);
-			if (!$rSteps) {
+			if ($rSteps === []) {
 				$rSteps = [0];
 			}
 			foreach ($rSteps as $rStep) {

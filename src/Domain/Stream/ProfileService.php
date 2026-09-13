@@ -80,7 +80,7 @@ class ProfileService {
 				} else {
 					$rCodec = '';
 
-					if (0 < strlen($rData['video_codec_gpu'])) {
+					if ((string) $rData['video_codec_gpu'] !== '') {
 						$rProfileOptions['-vcodec'] = escapeshellcmd($rData['video_codec_gpu']);
 						if ($rData['video_codec_gpu'] === 'hevc_nvenc') {
 							$rCodec = 'hevc';
@@ -88,24 +88,24 @@ class ProfileService {
 						$rCodec = 'h264';
 					}
 
-					if (0 < strlen($rData['preset_' . $rCodec])) {
+					if ((string) $rData['preset_' . $rCodec] !== '') {
 						$rProfileOptions['-preset'] = escapeshellcmd($rData['preset_' . $rCodec]);
 					}
 
-					if (0 < strlen($rData['video_profile_' . $rCodec])) {
+					if ((string) $rData['video_profile_' . $rCodec] !== '') {
 						$rProfileOptions['-profile:v'] = escapeshellcmd($rData['video_profile_' . $rCodec]);
 					}
 				}
 			} else {
-				if (0 < strlen($rData['video_codec_cpu'])) {
+				if ((string) $rData['video_codec_cpu'] !== '') {
 					$rProfileOptions['-vcodec'] = escapeshellcmd($rData['video_codec_cpu']);
 				}
 
-				if (0 < strlen($rData['preset_cpu'])) {
+				if ((string) $rData['preset_cpu'] !== '') {
 					$rProfileOptions['-preset'] = escapeshellcmd($rData['preset_cpu']);
 				}
 
-				if (0 < strlen($rData['video_profile_cpu'])) {
+				if ((string) $rData['video_profile_cpu'] !== '') {
 					$rProfileOptions['-profile:v'] = escapeshellcmd($rData['video_profile_cpu']);
 				}
 			}
@@ -207,7 +207,7 @@ class ProfileService {
 						}
 					}
 				} else {
-					if (0 < strlen($rData['scaling'])) {
+					if ((string) $rData['scaling'] !== '') {
 						$rProfileOptions[9] = ['cmd' => '-vf scale=' . escapeshellcmd($rData['scaling']), 'val' => $rData['scaling']];
 					}
 
@@ -251,7 +251,7 @@ class ProfileService {
 						}
 					}
 				} else {
-					if (0 < strlen($rData['resize'])) {
+					if ((string) $rData['resize'] !== '') {
 						$rProfileOptions[9] = ['cmd' => '-vf scale=' . escapeshellcmd($rData['resize']), 'val' => $rData['resize']];
 					}
 

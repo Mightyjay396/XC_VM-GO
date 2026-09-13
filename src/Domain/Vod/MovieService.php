@@ -62,20 +62,18 @@ class MovieService {
 				}
 			}
 
-			if (0 < strlen($rData['movie_subtitles'] ?? '')) {
+			if ((string) ($rData['movie_subtitles'] ?? '') !== '') {
 				$rSplit = explode(':', $rData['movie_subtitles']);
 				$rArray['movie_subtitles'] = ['files' => [$rSplit[2]], 'names' => ['Subtitles'], 'charset' => ['UTF-8'], 'location' => intval($rSplit[1])];
 			} else {
 				$rArray['movie_subtitles'] = null;
 			}
 
-			if (0 >= $rArray['transcode_profile_id']) {
-			} else {
+			if (0 < $rArray['transcode_profile_id']) {
 				$rArray['enable_transcode'] = 1;
 			}
 
-			if (!(!is_numeric($rArray['year']) || $rArray['year'] < 1900 || intval(date('Y') + 1) < $rArray['year'])) {
-			} else {
+			if (!is_numeric($rArray['year']) || $rArray['year'] < 1900 || intval(date('Y') + 1) < $rArray['year']) {
 				$rArray['year'] = null;
 			}
 
@@ -99,7 +97,7 @@ class MovieService {
 			if (isset($rData['review'])) {
 				TMDbService::requireLibrary();
 
-				if (0 < strlen(SettingsManager::getString('tmdb_language'))) {
+				if (SettingsManager::getString('tmdb_language') !== '') {
 					$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'), SettingsManager::getString('tmdb_language'));
 				} else {
 					$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'));
@@ -108,62 +106,45 @@ class MovieService {
 				$rReview = true;
 
 				foreach ($rData['review'] as $rImportStream) {
-					if (!$rImportStream['tmdb_id']) {
-					} else {
+					if ($rImportStream['tmdb_id']) {
 						$rMovie = $rTMDB->getMovie($rImportStream['tmdb_id']);
-
-						if (!$rMovie) {
-						} else {
+						if ($rMovie) {
 							$rMovieData = json_decode($rMovie->getJSON(), true);
 							$rMovieData['trailer'] = $rMovie->getTrailer();
 							$rThumb = 'https://image.tmdb.org/t/p/w600_and_h900_bestv2' . $rMovieData['poster_path'];
 							$rBG = 'https://image.tmdb.org/t/p/w1280' . $rMovieData['backdrop_path'];
-
-							if (!SettingsManager::getBool('download_images')) {
-							} else {
+							if (SettingsManager::getBool('download_images')) {
 								$rThumb = ImageUtils::downloadImage($rThumb, 2);
 								$rBG = ImageUtils::downloadImage($rBG);
 							}
-
 							$rCast = [];
-
 							foreach ($rMovieData['credits']['cast'] as $rMember) {
-								if (count($rCast) >= 5) {
-								} else {
+								if (count($rCast) < 5) {
 									$rCast[] = $rMember['name'];
 								}
 							}
 							$rDirectors = [];
-
 							foreach ($rMovieData['credits']['crew'] as $rMember) {
-								if (!(count($rDirectors) < 5 && ($rMember['department'] == 'Directing' || $rMember['known_for_department'] == 'Directing'))) {
-								} else {
+								if (count($rDirectors) < 5 && ($rMember['department'] == 'Directing' || $rMember['known_for_department'] == 'Directing')) {
 									$rDirectors[] = $rMember['name'];
 								}
 							}
 							$rCountry = '';
-
-							if (!isset($rMovieData['production_countries'][0]['name'])) {
-							} else {
+							if (isset($rMovieData['production_countries'][0]['name'])) {
 								$rCountry = $rMovieData['production_countries'][0]['name'];
 							}
-
 							$rGenres = [];
-
 							foreach ($rMovieData['genres'] as $rGenre) {
-								if (count($rGenres) >= 3) {
-								} else {
+								if (count($rGenres) < 3) {
 									$rGenres[] = $rGenre['name'];
 								}
 							}
 							$rSeconds = intval($rMovieData['runtime']) * 60;
-
-							if (0 < strlen($rMovieData['release_date'])) {
+							if ((string) $rMovieData['release_date'] !== '') {
 								$rYear = intval(substr($rMovieData['release_date'], 0, 4));
 							} else {
 								$rYear = null;
 							}
-
 							$rImportStream['movie_properties'] = ['kinopoisk_url' => 'https://www.themoviedb.org/movie/' . $rMovieData['id'], 'tmdb_id' => $rMovieData['id'], 'name' => $rMovieData['title'], 'year' => $rYear, 'o_name' => $rMovieData['original_title'], 'cover_big' => $rThumb, 'movie_image' => $rThumb, 'release_date' => $rMovieData['release_date'], 'episode_run_time' => $rMovieData['runtime'], 'youtube_trailer' => $rMovieData['trailer'], 'director' => implode(', ', $rDirectors), 'actors' => implode(', ', $rCast), 'cast' => implode(', ', $rCast), 'description' => $rMovieData['overview'], 'plot' => $rMovieData['overview'], 'age' => '', 'mpaa_rating' => '', 'rating_count_kinopoisk' => 0, 'country' => $rCountry, 'genre' => implode(', ', $rGenres), 'backdrop_path' => [$rBG], 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'video' => [], 'audio' => [], 'bitrate' => 0, 'rating' => $rMovieData['vote_average']];
 						}
 					}
@@ -172,8 +153,7 @@ class MovieService {
 					$rImportStream['async'] = false;
 					$rImportStream['target_container'] = pathinfo(explode('?', $rImportStream['stream_source'][0])[0])['extension'];
 
-					if (!empty($rImportStream['target_container'])) {
-					} else {
+					if (empty($rImportStream['target_container'])) {
 						$rImportStream['target_container'] = 'mp4';
 					}
 
@@ -190,24 +170,23 @@ class MovieService {
 
 						foreach ($db->get_rows() as $rRow) {
 							foreach (json_decode($rRow['stream_source'], true) as $rSource) {
-								if (0 >= strlen($rSource)) {
-								} else {
+								if ((string) $rSource !== '') {
 									$rStreamDatabase[] = $rSource;
 								}
 							}
 						}
 						$rFile = '';
 
-						if (empty($_FILES['m3u_file']['tmp_name']) || strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)) != 'm3u') {
-						} else {
+						if (!empty($_FILES['m3u_file']['tmp_name']) && strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)) == 'm3u') {
 							$rFile = file_get_contents($_FILES['m3u_file']['tmp_name']);
 						}
 
 						preg_match_all('/(?P<tag>#EXTINF:[-1,0])|(?:(?P<prop_key>[-a-z]+)=\\"(?P<prop_val>[^"]+)")|(?<name>,[^\\r\\n]+)|(?<url>http[^\\s]*:\\/\\/.*\\/.*)/', $rFile, $rMatches);
 						$rResults = [];
 						$rIndex = -1;
+						$counter = count($rMatches[0]);
 
-						for ($i = 0; $i < count($rMatches[0]); $i++) {
+						for ($i = 0; $i < $counter; $i++) {
 							$rItem = $rMatches[0][$i];
 
 							if (!empty($rMatches['tag'][$i])) {
@@ -228,8 +207,7 @@ class MovieService {
 						}
 
 						foreach ($rResults as $rResult) {
-							if (in_array($rResult['url'], $rStreamDatabase)) {
-							} else {
+							if (!in_array($rResult['url'], $rStreamDatabase)) {
 								$rPathInfo = pathinfo(explode('?', $rResult['url'])[0]);
 								$rImportArray = ['stream_source' => [$rResult['url']], 'stream_icon' => ($rResult['tvg-logo'] ?: ''), 'stream_display_name' => ($rResult['name'] ?: ''), 'movie_properties' => [], 'async' => true, 'target_container' => $rPathInfo['extension']];
 								$rImportStreams[] = $rImportArray;
@@ -247,16 +225,14 @@ class MovieService {
 
 							foreach ($db->get_rows() as $rRow) {
 								foreach (json_decode($rRow['stream_source'], true) as $rSource) {
-									if (0 >= strlen($rSource)) {
-									} else {
+									if ((string) $rSource !== '') {
 										$rStreamDatabase[] = $rSource;
 									}
 								}
 							}
 							$rParts = explode(':', $rData['import_folder']);
 
-							if (!is_numeric($rParts[1])) {
-							} else {
+							if (is_numeric($rParts[1])) {
 								if (isset($rData['scan_recursive'])) {
 									$rFiles = ApiClient::scanRecursive(intval($rParts[1]), $rParts[2], ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts']);
 								} else {
@@ -266,12 +242,10 @@ class MovieService {
 										$rFiles[] = rtrim($rParts[2], '/') . '/' . $rFile;
 									}
 								}
-
 								foreach ($rFiles as $rFile) {
 									$rFilePath = 's:' . intval($rParts[1]) . ':' . $rFile;
 
-									if (in_array($rFilePath, $rStreamDatabase)) {
-									} else {
+									if (!in_array($rFilePath, $rStreamDatabase)) {
 										$rPathInfo = pathinfo($rFile);
 										$rImportArray = ['stream_source' => [$rFilePath], 'stream_icon' => '', 'stream_display_name' => $rPathInfo['filename'], 'movie_properties' => [], 'async' => true, 'target_container' => $rPathInfo['extension']];
 										$rImportStreams[] = $rImportArray;
@@ -284,14 +258,13 @@ class MovieService {
 					} else {
 						$rImportArray = ['stream_source' => [$rData['stream_source']], 'stream_icon' => $rArray['stream_icon'], 'stream_display_name' => $rArray['stream_display_name'], 'movie_properties' => [], 'async' => false, 'target_container' => $rArray['target_container']];
 
-						if (0 < strlen($rData['tmdb_id'])) {
+						if ((string) $rData['tmdb_id'] !== '') {
 							$rTMDBURL = 'https://www.themoviedb.org/movie/' . $rData['tmdb_id'];
 						} else {
 							$rTMDBURL = '';
 						}
 
-						if (!SettingsManager::getBool('download_images')) {
-						} else {
+						if (SettingsManager::getBool('download_images')) {
 							$rData['movie_image'] = ImageUtils::downloadImage($rData['movie_image'], 2);
 							$rData['backdrop_path'] = ImageUtils::downloadImage($rData['backdrop_path']);
 						}
@@ -299,8 +272,7 @@ class MovieService {
 						$rSeconds = intval($rData['episode_run_time']) * 60;
 						$rImportArray['movie_properties'] = ['kinopoisk_url' => $rTMDBURL, 'tmdb_id' => $rData['tmdb_id'], 'name' => $rArray['stream_display_name'], 'o_name' => $rArray['stream_display_name'], 'cover_big' => $rData['movie_image'], 'movie_image' => $rData['movie_image'], 'release_date' => $rData['release_date'], 'episode_run_time' => $rData['episode_run_time'], 'youtube_trailer' => $rData['youtube_trailer'], 'director' => $rData['director'], 'actors' => $rData['cast'], 'cast' => $rData['cast'], 'description' => $rData['plot'], 'plot' => $rData['plot'], 'age' => '', 'mpaa_rating' => '', 'rating_count_kinopoisk' => 0, 'country' => $rData['country'], 'genre' => $rData['genre'], 'backdrop_path' => [$rData['backdrop_path']], 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'video' => [], 'audio' => [], 'bitrate' => 0, 'rating' => $rData['rating']];
 
-						if (strlen($rImportArray['movie_properties']['backdrop_path'][0]) != 0) {
-						} else {
+						if (strlen($rImportArray['movie_properties']['backdrop_path'][0]) == 0) {
 							unset($rImportArray['movie_properties']['backdrop_path']);
 						}
 
@@ -325,25 +297,21 @@ class MovieService {
 				$rBouquetCreate = [];
 				$rCategoryCreate = [];
 
-				if ($rReview) {
-				} else {
+				if (!$rReview) {
 					foreach (json_decode($rData['bouquet_create_list'] ?? '[]', true) ?? [] as $rBouquet) {
 						$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
 						$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-						if (!$db->query($rQuery, ...$rPrepare['data'])) {
-						} else {
+						if ($db->query($rQuery, ...$rPrepare['data'])) {
 							$rBouquetID = $db->last_insert_id();
 							$rBouquetCreate[$rBouquet] = $rBouquetID;
 						}
 					}
-
 					foreach (json_decode($rData['category_create_list'] ?? '[]', true) ?? [] as $rCategory) {
 						$rPrepare = QueryHelper::prepareArray(['category_type' => 'movie', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
 						$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
 
-						if (!$db->query($rQuery, ...$rPrepare['data'])) {
-						} else {
+						if ($db->query($rQuery, ...$rPrepare['data'])) {
 							$rCategoryID = $db->last_insert_id();
 							$rCategoryCreate[$rCategory] = $rCategoryID;
 						}
@@ -366,8 +334,7 @@ class MovieService {
 							if (isset($rBouquetCreate[$rBouquet])) {
 								$rBouquets[] = $rBouquetCreate[$rBouquet];
 							} else {
-								if (!is_numeric($rBouquet)) {
-								} else {
+								if (is_numeric($rBouquet)) {
 									$rBouquets[] = intval($rBouquet);
 								}
 							}
@@ -378,8 +345,7 @@ class MovieService {
 							if (isset($rCategoryCreate[$rCategory])) {
 								$rCategories[] = $rCategoryCreate[$rCategory];
 							} else {
-								if (!is_numeric($rCategory)) {
-								} else {
+								if (is_numeric($rCategory)) {
 									$rCategories[] = intval($rCategory);
 								}
 							}
@@ -387,8 +353,7 @@ class MovieService {
 						$rImportArray['category_id'] = '[' . implode(',', array_map('intval', $rCategories)) . ']';
 					}
 
-					if (!isset($rImportArray['movie_properties']['rating'])) {
-					} else {
+					if (isset($rImportArray['movie_properties']['rating'])) {
 						$rImportArray['rating'] = $rImportArray['movie_properties']['rating'];
 					}
 
@@ -396,8 +361,7 @@ class MovieService {
 						$rImportArray[$rKey] = $rImportStream[$rKey];
 					}
 
-					if (isset($rData['edit'])) {
-					} else {
+					if (!isset($rData['edit'])) {
 						$rImportArray['order'] = StreamRepository::getNextOrder();
 					}
 
@@ -411,10 +375,8 @@ class MovieService {
 						$rInsertID = $db->last_insert_id();
 						$rStreamExists = [];
 
-						if (!isset($rData['edit'])) {
-						} else {
+						if (isset($rData['edit'])) {
 							$db->query('SELECT `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rInsertID);
-
 							foreach ($db->get_rows() as $rRow) {
 								$rStreamExists[intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
 							}
@@ -422,8 +384,7 @@ class MovieService {
 
 						$rPath = $rImportArray['stream_source'][0];
 
-						if (substr($rPath, 0, 2) != 's:') {
-						} else {
+						if (substr($rPath, 0, 2) == 's:') {
 							$rSplit = explode(':', $rPath, 3);
 							$rPath = $rSplit[2];
 						}
@@ -435,21 +396,17 @@ class MovieService {
 						$rServerTree = json_decode($rData['server_tree_data'], true);
 
 						foreach ($rServerTree as $rServer) {
-							if ($rServer['parent'] == '#') {
-							} else {
+							if ($rServer['parent'] != '#') {
 								$rServerID = intval($rServer['id']);
 								$rStreamsAdded[] = $rServerID;
-
-								if (isset($rStreamExists[$rServerID])) {
-								} else {
+								if (!isset($rStreamExists[$rServerID])) {
 									$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `on_demand`) VALUES(?, ?, 0);', $rInsertID, $rServerID);
 								}
 							}
 						}
 
 						foreach ($rStreamExists as $rServerID => $rDBID) {
-							if (in_array($rServerID, $rStreamsAdded)) {
-							} else {
+							if (!in_array($rServerID, $rStreamsAdded)) {
 								StreamRepository::deleteStream($rInsertID, $rServerID, true, false);
 							}
 						}
@@ -463,24 +420,22 @@ class MovieService {
 						}
 
 						foreach (BouquetService::getAllSimple() as $rBouquet) {
-							if (in_array($rBouquet['id'], $rBouquets)) {
-							} else {
+							if (!in_array($rBouquet['id'], $rBouquets)) {
 								BouquetService::removeItems('movie', $rBouquet['id'], $rInsertID);
 							}
 						}
 
-						if (!$rSync) {
-						} else {
+						if ($rSync) {
 							$db->query('INSERT INTO `watch_refresh`(`type`, `stream_id`, `status`) VALUES(1, ?, 0);', $rInsertID);
 						}
 
 						StreamProcess::updateStream($rInsertID);
 					} else {
-						foreach ($rBouquetCreate as $rBouquet => $rID) {
+						foreach ($rBouquetCreate as $rID) {
 							$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
 						}
 
-						foreach ($rCategoryCreate as $rCategory => $rID) {
+						foreach ($rCategoryCreate as $rID) {
 							$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
 						}
 
@@ -488,18 +443,15 @@ class MovieService {
 					}
 				}
 
-				if (!$rRestart) {
-				} else {
+				if ($rRestart) {
 					ApiClient::request(['action' => 'vod', 'sub' => 'start', 'stream_ids' => $rRestartIDs]);
 				}
 
 				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
-			} else {
-				return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
 			}
-		} else {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+			return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
 		}
+		return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 	}
 
 	/**
@@ -545,8 +497,7 @@ class MovieService {
 
 				foreach ($db->get_rows() as $rRow) {
 					foreach (json_decode($rRow['stream_source'], true) as $rSource) {
-						if (0 >= strlen($rSource)) {
-						} else {
+						if ((string) $rSource !== '') {
 							$rStreamDatabase[] = $rSource;
 						}
 					}
@@ -556,16 +507,16 @@ class MovieService {
 				if (!empty($_FILES['m3u_file']['tmp_name'])) {
 					$rFile = '';
 
-					if (empty($_FILES['m3u_file']['tmp_name']) || strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)) != 'm3u') {
-					} else {
+					if (!empty($_FILES['m3u_file']['tmp_name']) && strtolower(pathinfo(explode('?', $_FILES['m3u_file']['name'])[0], PATHINFO_EXTENSION)) == 'm3u') {
 						$rFile = file_get_contents($_FILES['m3u_file']['tmp_name']);
 					}
 
 					preg_match_all('/(?P<tag>#EXTINF:[-1,0])|(?:(?P<prop_key>[-a-z]+)=\\"(?P<prop_val>[^"]+)")|(?<name>,[^\\r\\n]+)|(?<url>http[^\\s]*:\\/\\/.*\\/.*)/', $rFile, $rMatches);
 					$rResults = [];
 					$rIndex = -1;
+					$counter = count($rMatches[0]);
 
-					for ($i = 0; $i < count($rMatches[0]); $i++) {
+					for ($i = 0; $i < $counter; $i++) {
 						$rItem = $rMatches[0][$i];
 
 						if (!empty($rMatches['tag'][$i])) {
@@ -586,25 +537,18 @@ class MovieService {
 					}
 
 					foreach ($rResults as $rResult) {
-						if (empty($rResult['url']) || in_array($rResult['url'], $rStreamDatabase)) {
-						} else {
+						if (!empty($rResult['url']) && !in_array($rResult['url'], $rStreamDatabase)) {
 							$rPathInfo = pathinfo(explode('?', $rResult['url'])[0]);
-
-							if (!empty($rPathInfo['extension'])) {
-							} else {
+							if (empty($rPathInfo['extension'])) {
 								$rPathInfo['extension'] = ($rData['target_container'] ?: 'mp4');
 							}
-
 							$rImportStreams[] = ['url' => $rResult['url'], 'title' => ($rResult['name'] ?: ''), 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container'])];
 						}
 					}
 				} else {
-					if (empty($rData['import_folder'])) {
-					} else {
+					if (!empty($rData['import_folder'])) {
 						$rParts = explode(':', $rData['import_folder']);
-
-						if (!is_numeric($rParts[1])) {
-						} else {
+						if (is_numeric($rParts[1])) {
 							if (isset($rData['scan_recursive'])) {
 								$rFiles = ApiClient::scanRecursive(intval($rParts[1]), $rParts[2], ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts']);
 							} else {
@@ -614,19 +558,14 @@ class MovieService {
 									$rFiles[] = rtrim($rParts[2], '/') . '/' . $rFile;
 								}
 							}
-
 							foreach ($rFiles as $rFile) {
 								$rFilePath = 's:' . intval($rParts[1]) . ':' . $rFile;
 
-								if (in_array($rFilePath, $rStreamDatabase)) {
-								} else {
+								if (!in_array($rFilePath, $rStreamDatabase)) {
 									$rPathInfo = pathinfo($rFile);
-
-									if (!empty($rPathInfo['extension'])) {
-									} else {
+									if (empty($rPathInfo['extension'])) {
 										$rPathInfo['extension'] = ($rData['target_container'] ?: 'mp4');
 									}
-
 									$rImportStreams[] = ['url' => $rFilePath, 'title' => $rPathInfo['filename'], 'container' => ($rData['movie_symlink'] || $rData['direct_source'] ? $rPathInfo['extension'] : $rData['target_container'])];
 								}
 							}
@@ -681,8 +620,7 @@ class MovieService {
 					$rSelectedCategories = (isset($rData['category_id']) && is_array($rData['category_id']) ? $rData['category_id'] : []);
 
 					foreach ($rSelectedCategories as $rCategoryID) {
-						if (!(is_numeric($rCategoryID) && in_array($rCategoryID, $rMovieCategories))) {
-						} else {
+						if (is_numeric($rCategoryID) && in_array($rCategoryID, $rMovieCategories)) {
 							$rCategories[] = intval($rCategoryID);
 						}
 					}
@@ -696,8 +634,7 @@ class MovieService {
 					}
 
 					foreach ($rServerTreeData as $rServer) {
-						if (!is_array($rServer) || ($rServer['parent'] ?? '#') == '#') {
-						} else {
+						if (is_array($rServer) && ($rServer['parent'] ?? '#') != '#') {
 							$rServerID = intval($rServer['id'] ?? 0);
 							if (0 < $rServerID) {
 								$rServerIDs[] = $rServerID;
@@ -717,15 +654,12 @@ class MovieService {
 					}
 
 					return ['status' => STATUS_SUCCESS];
-				} else {
-					return ['status' => STATUS_NO_SOURCES, 'data' => $rPostData];
 				}
-			} else {
-				return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+				return ['status' => STATUS_NO_SOURCES, 'data' => $rPostData];
 			}
-		} else {
-			exit();
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
 		}
+		exit();
 	}
 
 	/**
@@ -981,7 +915,7 @@ class MovieService {
 	public static function getSimilar(int $rID, int $rPage = 1) {
 		TMDbService::requireLibrary();
 
-		if (0 < strlen(SettingsManager::getString('tmdb_language'))) {
+		if (SettingsManager::getString('tmdb_language') !== '') {
 			$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'), SettingsManager::getString('tmdb_language'));
 		} else {
 			$rTMDB = new \TMDB(SettingsManager::getString('tmdb_api_key'));
@@ -995,8 +929,7 @@ class MovieService {
 	 */
 	public static function deleteFile($rServerIDs, $rID) {
 		$db = self::db();
-		if (is_array($rServerIDs)) {
-		} else {
+		if (!is_array($rServerIDs)) {
 			$rServerIDs = [$rServerIDs];
 		}
 

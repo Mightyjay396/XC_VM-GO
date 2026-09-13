@@ -27,8 +27,6 @@ interface ScopeBootstrap {
 	 *
 	 * May `header()`/`exit()` on an unauthenticated or invalidated session,
 	 * exactly as the former include pair did.
-	 *
-	 * @return void
 	 */
 	public function boot(): void;
 }

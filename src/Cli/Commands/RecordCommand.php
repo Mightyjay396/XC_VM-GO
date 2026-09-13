@@ -65,7 +65,7 @@ class RecordCommand implements CommandInterface {
 		$isComplete = false;
 		$recordingData = $db->get_row();
 
-		if (!($recordingData['start'] - 60 <= time() && time() <= $recordingData['end'] || $recordingData['archive'])) {
+		if (($recordingData['start'] - 60 > time() || time() > $recordingData['end']) && !$recordingData['archive']) {
 			echo "Programme is not currently airing.\n";
 			$db->query('UPDATE `recordings` SET `status` = 3 WHERE `id` = ?;', $recordingID);
 			@unlink(ARCHIVE_PATH . $recordingID . '.ts');
@@ -111,7 +111,7 @@ class RecordCommand implements CommandInterface {
 						fflush($rWriteFile);
 						$rFails = 0;
 					}
-					if (!($recordingData['end'] > time() || $recordingData['archive'])) {
+					if ($recordingData['end'] <= time() && !$recordingData['archive']) {
 						$isComplete = true;
 						fclose($rWriteFile);
 						break;
@@ -301,7 +301,7 @@ class RecordCommand implements CommandInterface {
 				$rRow['column_default'] = null;
 			}
 			$rForceDefault = false;
-			if (!($rRow['is_nullable'] != 'NO' || $rRow['column_default'])) {
+			if ($rRow['is_nullable'] == 'NO' && !$rRow['column_default']) {
 				if (in_array($rRow['data_type'], ['int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit'])) {
 					$rRow['column_default'] = 0;
 				} else {
