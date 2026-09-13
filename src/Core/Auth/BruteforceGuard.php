@@ -1,6 +1,5 @@
 <?php
 
-
 namespace XcVm\Core\Auth;
 
 use XcVm\Core\Config\SettingsManager;

@@ -1,6 +1,5 @@
 <?php
 
-
 namespace XcVm\Core\Reference;
 
 use XcVm\Core\Localization\Translator;
