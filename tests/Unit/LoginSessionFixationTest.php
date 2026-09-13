@@ -2,6 +2,7 @@
 
 namespace XcVm\Tests\Unit;
 
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Auth\Authenticator;
@@ -50,10 +51,16 @@ class LoginScriptedDb extends DatabaseHandler {
  * output has started, and a runner prints between tests.
  */
 #[RunTestsInSeparateProcesses]
+#[Group('skip-on-panel')]
 class LoginSessionFixationTest extends TestCase {
 	private LoginScriptedDb $db;
 
 	protected function setUp(): void {
+		// NOTE: this class is in the 'skip-on-panel' group. It runs in isolated
+		// child processes, which the panel's bundled PHP (ionCube + OPcache)
+		// cannot reconstitute — the child dies before setUp can even skip — so
+		// the deployed-panel run must exclude the group (--exclude-group
+		// skip-on-panel). It runs normally under stock PHP (repo/CI/container).
 		foreach (['STATUS_FAILURE' => 0, 'STATUS_SUCCESS' => 1, 'STATUS_DISABLED' => 5, 'STATUS_NOT_ADMIN' => 6, 'STATUS_INVALID_CAPTCHA' => 12, 'STATUS_INVALID_CODE' => 13, 'STATUS_NOT_RESELLER' => 35] as $rName => $rValue) {
 			if (!defined($rName)) {
 				define($rName, $rValue);

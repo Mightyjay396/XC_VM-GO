@@ -1,5 +1,6 @@
 <?php
 
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -13,9 +14,19 @@ use PHPUnit\Framework\TestCase;
  * Explicit exemptions are listed with a comment explaining WHY and referencing
  * the roadmap item that will eventually remove the exemption.
  */
+#[Group('skip-on-panel')]
 final class ArchitectureTest extends TestCase {
 
     private const MODULES_DIR = __DIR__ . '/../../src/Modules';
+
+    protected function setUp(): void {
+        // Static source guard: scans the repo's src/Modules tree. A flat panel
+        // deployment (/home/xc_vm) has no such path and its module tree may hold
+        // installed marketplace modules, so this only runs in the repo layout.
+        if (!is_dir(self::MODULES_DIR)) {
+            $this->markTestSkipped('module architecture guard runs only in the repo layout');
+        }
+    }
 
     // ── helpers ──────────────────────────────────────────────────────────────
 
