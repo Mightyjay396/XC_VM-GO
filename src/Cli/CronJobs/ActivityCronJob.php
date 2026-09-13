@@ -99,7 +99,7 @@ class ActivityCronJob implements CommandInterface {
 					break;
 				}
 				$rUpdates[] = [$rLine['user_id'], $rLine['user_ip'], json_encode(['date_end' => $rLine['date_end'], 'stream_id' => $rLine['stream_id']])];
-				$rLine = array_map([$db, 'escape'], $rLine);
+				$rLine = array_map(static fn($rValue) => $db->escape((string) $rValue), $rLine);
 				$rQuery .= '(' . $rLine['server_id'] . ',' . $rLine['proxy_id'] . ',' . $rLine['user_id'] . ',' . $rLine['isp'] . ',' . $rLine['external_device'] . ',' . $rLine['stream_id'] . ',' . $rLine['date_start'] . ',' . $rLine['user_agent'] . ',' . $rLine['user_ip'] . ',' . $rLine['date_end'] . ',' . $rLine['container'] . ',' . $rLine['geoip_country_code'] . ',' . $rLine['divergence'] . ',' . $rLine['hmac_id'] . ',' . $rLine['hmac_identifier'] . '),';
 				$rCount++;
 				break;

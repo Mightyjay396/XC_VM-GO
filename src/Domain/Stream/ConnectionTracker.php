@@ -681,16 +681,16 @@ class ConnectionTracker {
 	 * streams from one IP and multi-device counting — while the same player
 	 * re-requesting the same channel from the same IP collapses to one.
 	 *
-	 * @param int|null   $rIsHMAC     HMAC id, or null for a regular line.
-	 * @param string     $rIdentifier HMAC identifier ('' for a regular line).
-	 * @param int|string $rUserId     Line id (used when not HMAC).
-	 * @param int        $rStreamId   Stream id being watched.
-	 * @param string     $rIp         Client IP.
-	 * @param string     $rUserAgent  Client user-agent ('' when absent).
+	 * @param int|null    $rIsHMAC     HMAC id, or null for a regular line.
+	 * @param string|null $rIdentifier HMAC identifier (null/'' for a regular line).
+	 * @param int|string  $rUserId     Line id (used when not HMAC).
+	 * @param int         $rStreamId   Stream id being watched.
+	 * @param string      $rIp         Client IP.
+	 * @param string      $rUserAgent  Client user-agent ('' when absent).
 	 * @return string 32-char hex connection id.
 	 */
-	public static function hlsConnectionKey(?int $rIsHMAC, string $rIdentifier, int|string $rUserId, int $rStreamId, string $rIp, string $rUserAgent): string {
-		$rIdentity = is_null($rIsHMAC) ? ('u' . intval($rUserId)) : ('h' . $rIsHMAC . '_' . $rIdentifier);
+	public static function hlsConnectionKey(?int $rIsHMAC, ?string $rIdentifier, int|string $rUserId, int $rStreamId, string $rIp, string $rUserAgent): string {
+		$rIdentity = is_null($rIsHMAC) ? ('u' . intval($rUserId)) : ('h' . $rIsHMAC . '_' . ($rIdentifier ?? ''));
 
 		return md5('hls#' . $rIdentity . '#' . intval($rStreamId) . '#' . $rIp . '#' . $rUserAgent);
 	}
