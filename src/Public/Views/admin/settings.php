@@ -1422,6 +1422,17 @@ use XcVm\Streaming\Codec\FfmpegBinaries; // Code reconstruction by Squallp
 							</div>
 
 							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="secure_stream_tokens">
+									<?= $language::get('secure_stream_tokens') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('secure_stream_tokens_help') ?>"></i>
+								</label>
+
+								<div class="col-md-2">
+									<div class="form-check form-switch"><input name="secure_stream_tokens" id="secure_stream_tokens" type="checkbox" <?= ($rSettings["secure_stream_tokens"] ?? 0) == 1 ? ' checked' : '' ?> class="form-check-input"></div>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
 								<label class="col-md-4 col-form-label" for="restrict_playlists">
 									<?= $language::get('restrictions_on_playlists_epg') ?>
 									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('verify_useragent_ip_restrictions_isp_tooltip') ?>"></i>

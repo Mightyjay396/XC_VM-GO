@@ -55,7 +55,7 @@ if (!($_GET['addr'] == '127.0.0.1' && $_GET['call'] == 'publish')) {
 				if (isset($rRequest['tcurl']) && isset($rRequest['app'])) {
 					if (isset($rRequest['token'])) {
 						if (!ctype_xdigit($rRequest['token'])) {
-							$rTokenData = explode('/', Encryption::decrypt($rRequest['token'], $rSettings['live_streaming_pass'], OPENSSL_EXTRA));
+							$rTokenData = explode('/', (string) Encryption::readToken($rRequest['token'], $rSettings['live_streaming_pass'], OPENSSL_EXTRA, true));
 							list($rUsername, $rPassword) = $rTokenData;
 							$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rUsername, $rPassword, true, false, $rIP);
 						} else {

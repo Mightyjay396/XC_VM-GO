@@ -372,7 +372,7 @@ class PlayerApiController {
 
 				if ($rSettings['api_redirect']) {
 					$rEncData = 'series/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rEpisodeData['id'] . '/' . $rEpisodeData['target_container'];
-					$rToken = Encryption::encrypt($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA);
+					$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 					$rURL = $this->domainName . 'play/' . $rToken;
 				} else {
 					$rURL = '';
@@ -752,7 +752,7 @@ class PlayerApiController {
 
 						if ($rSettings['api_redirect']) {
 							$rEncData = 'live/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rChannel['id'];
-							$rToken = Encryption::encrypt($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA);
+							$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 
 							if ($rSettings['cloudflare'] && $rSettings['api_container'] == 'ts') {
 								$rURL = $this->domainName . 'play/' . $rToken;
@@ -765,7 +765,7 @@ class PlayerApiController {
 
 						if ($rChannel['vframes_server_id']) {
 							$rEncData = 'thumb/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rChannel['id'];
-							$rToken = Encryption::encrypt($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA);
+							$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 							$rThumbURL = $this->domainName . 'play/' . $rToken;
 						} else {
 							$rThumbURL = '';
@@ -803,7 +803,7 @@ class PlayerApiController {
 			if ($rRow) {
 				if ($rSettings['api_redirect']) {
 					$rEncData = 'movie/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rRow['id'] . '/' . $rRow['target_container'];
-					$rToken = Encryption::encrypt($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA);
+					$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 					$rURL = $this->domainName . 'play/' . $rToken;
 				} else {
 					$rURL = '';
@@ -917,7 +917,7 @@ class PlayerApiController {
 					if (!$rCategoryIDSearch || $rCategoryIDSearch == $rCategoryID) {
 						if ($rSettings['api_redirect']) {
 							$rEncData = 'movie/' . $this->userInfo['username'] . '/' . $this->userInfo['password'] . '/' . $rChannel['id'] . '/' . $rChannel['target_container'];
-							$rToken = Encryption::encrypt($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA);
+							$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 							$rURL = $this->domainName . 'play/' . $rToken;
 						} else {
 							$rURL = '';

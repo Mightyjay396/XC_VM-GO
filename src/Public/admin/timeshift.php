@@ -32,7 +32,7 @@ if (SettingsManager::get('use_buffer') == 0) {
 
 
 if (!empty($rRequestData['uitoken'])) {
-	$rToken = AdminStreamToken::decode($rRequestData['uitoken'], SettingsManager::get('live_streaming_pass'));
+	$rToken = AdminStreamToken::decode($rRequestData['uitoken'], SettingsManager::get('live_streaming_pass'), !SettingsManager::get('secure_stream_tokens'));
 
 	if ($rToken === null || !$rToken->isValid((bool) SettingsManager::get('ip_subnet_match'), $rIP)) {
 		generate404();
