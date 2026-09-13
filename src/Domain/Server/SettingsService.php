@@ -20,6 +20,25 @@ use XcVm\Streaming\Fanout\FanoutConfig;
 class SettingsService {
 	use \XcVm\Infrastructure\Database\DatabaseAware;
 	/**
+	 * The fanout idle buffer ratio as the daemon takes it (0.1-1, two decimals),
+	 * or null when the submitted value is not a number.
+	 *
+	 * A decimal comma counts as a point, as a pt/ru/de keyboard types it. The form
+	 * used to strip everything but digits from this field, so 0.25 arrived as 025,
+	 * which a decimal(3,2) column refuses.
+	 *
+	 * @param mixed $rValue The submitted value.
+	 * @return float|null
+	 */
+	public static function normalizeIdleBufferRatio($rValue): ?float {
+		$rValue = str_replace(',', '.', trim((string) $rValue));
+		if ($rValue === '' || !is_numeric($rValue)) {
+			return null;
+		}
+		return round(min(1.0, max(0.1, (float) $rValue)), 2);
+	}
+
+	/**
 	 * Save general panel settings from admin form data.
 	 *
 	 * @param array $rData Submitted settings.
@@ -46,6 +65,15 @@ class SettingsService {
 		// on narrow screens) but stored in the inverse `disable_table_responsive` column:
 		// checked → responsive on → 0; unchecked → full-width tables → 1.
 		$rArray['disable_table_responsive'] = empty($rData['responsive_tables']) ? 1 : 0;
+
+		if (array_key_exists('fanout_idle_buffer_ratio', $rArray)) {
+			$rRatio = self::normalizeIdleBufferRatio($rArray['fanout_idle_buffer_ratio']);
+			if ($rRatio === null) {
+				unset($rArray['fanout_idle_buffer_ratio']); // not a number: keep the stored value
+			} else {
+				$rArray['fanout_idle_buffer_ratio'] = $rRatio;
+			}
+		}
 
 		if (!isset($rData['allowed_stb_types_for_local_recording'])) {
 			$rArray['allowed_stb_types_for_local_recording'] = array();
