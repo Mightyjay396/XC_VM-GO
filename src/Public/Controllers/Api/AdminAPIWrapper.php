@@ -150,7 +150,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editLine($rID, $rData) {
-		if (!$rLine = self::getLine($rID) || !isset($rLine['data'])) {
+		if (!($rLine = self::getLine($rID)) || !isset($rLine['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -174,7 +174,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function disableLine($rID) {
-		if (!$rLine = self::getLine($rID) || !isset($rLine['data'])) {
+		if (!($rLine = self::getLine($rID)) || !isset($rLine['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rID);
@@ -182,7 +182,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function enableLine($rID) {
-		if (!$rLine = self::getLine($rID) || !isset($rLine['data'])) {
+		if (!($rLine = self::getLine($rID)) || !isset($rLine['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rID);
@@ -190,7 +190,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function banLine($rID) {
-		if (!$rLine = self::getLine($rID) || !isset($rLine['data'])) {
+		if (!($rLine = self::getLine($rID)) || !isset($rLine['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rID);
@@ -198,7 +198,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function unbanLine($rID) {
-		if (!$rLine = self::getLine($rID) || !isset($rLine['data'])) {
+		if (!($rLine = self::getLine($rID)) || !isset($rLine['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rID);
@@ -224,7 +224,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editUser($rID, $rData) {
-		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -245,7 +245,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function disableUser($rID) {
-		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `users` SET `status` = 0 WHERE `id` = ?;', $rID);
@@ -253,7 +253,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function enableUser($rID) {
-		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `users` SET `status` = 1 WHERE `id` = ?;', $rID);
@@ -279,7 +279,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editMAG($rID, $rData) {
-		if (!$rDevice = self::getMAG($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -303,7 +303,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function disableMAG($rID) {
-		if (!$rDevice = self::getMAG($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
@@ -311,7 +311,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function enableMAG($rID) {
-		if (!$rDevice = self::getMAG($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
@@ -319,7 +319,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function banMAG($rID) {
-		if (!$rDevice = self::getMAG($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
@@ -327,7 +327,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function unbanMAG($rID) {
-		if (!$rDevice = self::getMAG($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
@@ -335,7 +335,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function convertMAG($rID) {
-		if (!$rDevice = self::getMAG($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		MagService::deleteDevice($rID, false, false, true);
@@ -361,7 +361,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editEnigma($rID, $rData) {
-		if (!$rDevice = self::getEnigma($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -385,7 +385,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function disableEnigma($rID) {
-		if (!$rDevice = self::getEnigma($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
@@ -393,7 +393,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function enableEnigma($rID) {
-		if (!$rDevice = self::getEnigma($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
@@ -401,7 +401,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function banEnigma($rID) {
-		if (!$rDevice = self::getEnigma($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
@@ -409,7 +409,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function unbanEnigma($rID) {
-		if (!$rDevice = self::getEnigma($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
@@ -417,7 +417,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function convertEnigma($rID) {
-		if (!$rDevice = self::getEnigma($rID) || !isset($rDevice['data'])) {
+		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		EnigmaService::deleteDevice($rID, false, false, true);
@@ -447,7 +447,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editBouquet($rID, $rData) {
-		if (!$rBouquet = self::getBouquet($rID) || !isset($rBouquet['data'])) {
+		if (!($rBouquet = self::getBouquet($rID)) || !isset($rBouquet['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -490,7 +490,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editAccessCode($rID, $rData) {
-		if (!$rCode = self::getAccessCode($rID) || !isset($rCode['data'])) {
+		if (!($rCode = self::getAccessCode($rID)) || !isset($rCode['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -533,7 +533,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editHMAC($rID, $rData) {
-		if (!$rToken = self::getHMAC($rID) || !isset($rToken['data'])) {
+		if (!($rToken = self::getHMAC($rID)) || !isset($rToken['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -576,7 +576,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editEPG($rID, $rData) {
-		if (!$rEPG = self::getEPG($rID) || !isset($rEPG['data'])) {
+		if (!($rEPG = self::getEPG($rID)) || !isset($rEPG['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -628,7 +628,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editProvider($rID, $rData) {
-		if (!$rProvider = self::getProvider($rID) || !isset($rProvider['data'])) {
+		if (!($rProvider = self::getProvider($rID)) || !isset($rProvider['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -680,7 +680,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editGroup($rID, $rData) {
-		if (!$rGroup = self::getGroup($rID) || !isset($rGroup['data'])) {
+		if (!($rGroup = self::getGroup($rID)) || !isset($rGroup['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -723,7 +723,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editPackage($rID, $rData) {
-		if (!$rPackage = self::getPackage($rID) || !isset($rPackage['data'])) {
+		if (!($rPackage = self::getPackage($rID)) || !isset($rPackage['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -766,7 +766,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editTranscodeProfile($rID, $rData) {
-		if (!$rProfile = self::getTranscodeProfile($rID) || !isset($rProfile['data'])) {
+		if (!($rProfile = self::getTranscodeProfile($rID)) || !isset($rProfile['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -809,7 +809,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editRTMPIP($rID, $rData) {
-		if (!$rIP = self::getRTMPIP($rID) || !isset($rIP['data'])) {
+		if (!($rIP = self::getRTMPIP($rID)) || !isset($rIP['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -852,7 +852,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editCategory($rID, $rData) {
-		if (!$rCategory = self::getCategory($rID) || !isset($rCategory['data'])) {
+		if (!($rCategory = self::getCategory($rID)) || !isset($rCategory['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -905,7 +905,7 @@ class AdminAPIWrapper {
 		if (!class_exists(WatchService::class)) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		if (!$rFolder = self::getWatchFolder($rID) || !isset($rFolder['data'])) {
+		if (!($rFolder = self::getWatchFolder($rID)) || !isset($rFolder['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -1005,7 +1005,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getStream($rID) {
-		if (!$rStream = StreamRepository::getById($rID) || $rStream['type'] != 1) {
+		if (!($rStream = StreamRepository::getById($rID)) || $rStream['type'] != 1) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rStream];
@@ -1023,7 +1023,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editStream($rID, $rData) {
-		if (!$rStream = self::getStream($rID) || !isset($rStream['data'])) {
+		if (!($rStream = self::getStream($rID)) || !isset($rStream['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -1068,7 +1068,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getChannel($rID) {
-		if (!$rStream = StreamRepository::getById($rID) || $rStream['type'] != 3) {
+		if (!($rStream = StreamRepository::getById($rID)) || $rStream['type'] != 3) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rStream];
@@ -1086,7 +1086,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editChannel($rID, $rData) {
-		if (!$rStream = self::getChannel($rID) || !isset($rStream['data'])) {
+		if (!($rStream = self::getChannel($rID)) || !isset($rStream['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -1107,7 +1107,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getStation($rID) {
-		if (!$rStream = StreamRepository::getById($rID) || $rStream['type'] != 4) {
+		if (!($rStream = StreamRepository::getById($rID)) || $rStream['type'] != 4) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rStream];
@@ -1125,7 +1125,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editStation($rID, $rData) {
-		if (!$rStream = self::getStation($rID) || !isset($rStream['data'])) {
+		if (!($rStream = self::getStation($rID)) || !isset($rStream['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -1146,7 +1146,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getMovie($rID) {
-		if (!$rStream = StreamRepository::getById($rID) || $rStream['type'] != 2) {
+		if (!($rStream = StreamRepository::getById($rID)) || $rStream['type'] != 2) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rStream];
@@ -1164,7 +1164,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editMovie($rID, $rData) {
-		if (!$rStream = self::getMovie($rID) || !isset($rStream['data'])) {
+		if (!($rStream = self::getMovie($rID)) || !isset($rStream['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -1209,7 +1209,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getEpisode($rID) {
-		if (!$rStream = StreamRepository::getById($rID) || $rStream['type'] != 5) {
+		if (!($rStream = StreamRepository::getById($rID)) || $rStream['type'] != 5) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rStream];
@@ -1227,7 +1227,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editEpisode($rID, $rData) {
-		if (!$rStream = self::getEpisode($rID) || !isset($rStream['data'])) {
+		if (!($rStream = self::getEpisode($rID)) || !isset($rStream['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -1266,7 +1266,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editSeries($rID, $rData) {
-		if (!$rStream = self::getSeries($rID) || !isset($rStream['data'])) {
+		if (!($rStream = self::getSeries($rID)) || !isset($rStream['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -1314,7 +1314,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editServer($rID, $rData) {
-		if (!$rServer = self::getServer($rID) || !isset($rServer['data'])) {
+		if (!($rServer = self::getServer($rID)) || !isset($rServer['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -1326,7 +1326,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function editProxy($rID, $rData) {
-		if (!$rServer = self::getServer($rID) || !isset($rServer['data'])) {
+		if (!($rServer = self::getServer($rID)) || !isset($rServer['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;

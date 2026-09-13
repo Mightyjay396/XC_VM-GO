@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Rector\CodeQuality\Rector\BooleanNot\SimplifyDeMorganBinaryRector;
 use Rector\CodeQuality\Rector\Equal\UseIdenticalOverEqualWithSameTypeRector;
 use Rector\Config\RectorConfig;
 use Rector\TypeDeclaration\Rector\StmtsAwareInterface\SafeDeclareStrictTypesRector;
@@ -16,12 +17,16 @@ use Rector\TypeDeclaration\Rector\StmtsAwareInterface\SafeDeclareStrictTypesRect
  * Ministra/portal.php), the legacy \TMDB library, runtime-installed modules,
  * the committed vendor and the streaming hot-path bootstraps.
  *
- * KNOWN BUG — review every run: the empty-if/else inversion drops the parens
- * around an assignment-in-condition, e.g. `if (($k = array_search(...)) === false)`
- * becomes `if ($k = array_search(...) !== false)` — assigning the bool to $k.
- * PHPStan catches only some cases. After each `make rector-fix`, grep the diff:
+ * KNOWN BUG — review every run: several rules drop the parens around an
+ * assignment-in-condition, assigning the wrong value and flipping the guard.
+ * Two variants seen (PHPStan catches only some):
+ *   1. empty-if/else inversion:  `if (($k = array_search(...)) === false)`
+ *      -> `if ($k = array_search(...) !== false)`
+ *   2. De Morgan (now disabled below): `!(($x = f()) && g())`
+ *      -> `!$x = f() || !g()`
+ * After each `make rector-fix`, grep the diff and restore parens on any hit:
  *   grep -rnE 'if \(\$[A-Za-z_]+ = .*(!==|===) (false|true|null)\)' src/
- * and restore the parens on any hit before committing.
+ *   grep -rnE '!\$[A-Za-z_]+ = .+ \|\|' src/
  *
  * Paths are anchored with __DIR__ (this file lives in build/) so the config
  * behaves the same whether invoked from the repo root (make rector) or from
@@ -76,6 +81,13 @@ return RectorConfig::configure()
 		//  - == -> === is type-sensitive; the "same type" inference can be wrong.
 		SafeDeclareStrictTypesRector::class,
 		UseIdenticalOverEqualWithSameTypeRector::class,
+
+		// UNSAFE on assignment-in-condition: negating `!(($x = f()) && g())` this
+		// rule drops the assignment parens -> `!$x = f() || !g()`, which by PHP
+		// precedence assigns the WRONG value to $x and flips the guard. It broke
+		// 49 access-control checks (Authorization::check) in the API wrappers.
+		// The cosmetic De Morgan wins aren't worth that risk — leave it off.
+		SimplifyDeMorganBinaryRector::class,
 	])
 	// Safe, behaviour-preserving sets. deadCode carries
 	// RemoveDeadIfForeachForRector (the empty-if/else collapse); codeQuality

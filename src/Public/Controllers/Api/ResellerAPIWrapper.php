@@ -120,7 +120,7 @@ class ResellerAPIWrapper {
 	}
 
 	public static function getLine($rID) {
-		if (!$rLine = UserRepository::getLineById($rID) || !Authorization::check('line', $rID)) {
+		if (!($rLine = UserRepository::getLineById($rID)) || !Authorization::check('line', $rID)) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rLine];
@@ -316,7 +316,7 @@ class ResellerAPIWrapper {
 	}
 
 	public static function getUser($rID) {
-		if (!$rUser = UserRepository::getRegisteredUserById($rID) || !Authorization::check('user', $rUser['id'])) {
+		if (!($rUser = UserRepository::getRegisteredUserById($rID)) || !Authorization::check('user', $rUser['id'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rUser];
@@ -334,7 +334,7 @@ class ResellerAPIWrapper {
 	}
 
 	public static function editUser($rID, $rData) {
-		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		$rData['edit'] = $rID;
@@ -355,7 +355,7 @@ class ResellerAPIWrapper {
 	}
 
 	public static function disableUser($rID) {
-		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `users` SET `status` = 0 WHERE `id` = ?;', $rID);
@@ -363,7 +363,7 @@ class ResellerAPIWrapper {
 	}
 
 	public static function enableUser($rID) {
-		if (!$rUser = self::getUser($rID) || !isset($rUser['data'])) {
+		if (!($rUser = self::getUser($rID)) || !isset($rUser['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		self::$db->query('UPDATE `users` SET `status` = 1 WHERE `id` = ?;', $rID);
