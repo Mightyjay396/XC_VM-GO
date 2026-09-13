@@ -190,7 +190,7 @@ class BlocklistAjaxController extends BaseAjaxController {
 
                     if (!empty($rDecoded)) {
                         try {
-                            $rDecrypted = Encryption::decrypt($rPiece, SettingsManager::get('live_streaming_pass'), OPENSSL_EXTRA);
+                            $rDecrypted = Encryption::readToken($rPiece, SettingsManager::get('live_streaming_pass'), OPENSSL_EXTRA, true);
                         } catch (\Exception) {
                             $rDecrypted = null;
                         }

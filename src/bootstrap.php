@@ -425,7 +425,13 @@ class XC_Bootstrap {
         if (session_status() === PHP_SESSION_NONE) {
             $rParams = session_get_cookie_params() ?: [];
             $rParams['samesite'] = 'Strict';
+            // The panel's scripts never read the session cookie, so an XSS must
+            // not be able to either.
+            $rParams['httponly'] = true;
             session_set_cookie_params($rParams);
+            // Refuse session ids this server never issued, so a visitor cannot
+            // arrive carrying one an attacker chose.
+            ini_set('session.use_strict_mode', '1');
             session_start();
         }
 

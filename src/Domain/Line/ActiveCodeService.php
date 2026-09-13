@@ -267,6 +267,7 @@ class ActiveCodeService {
         $now = time();
 
         // ─── First-Time Activation (Countdown starts now) ───
+        $claimed = false;
         if ($codeRow['status'] == 1 || empty($codeRow['activated_at'])) {
             $duration = intval($codeRow['is_trial'] ? ($package['trial_duration'] ?? 1) : ($package['official_duration'] ?? 1));
             $unit = (string)($codeRow['is_trial'] ? ($package['trial_duration_in'] ?? 'days') : ($package['official_duration_in'] ?? 'months'));
@@ -280,37 +281,55 @@ class ActiveCodeService {
             $deviceId = !empty($deviceInfo['device_id']) ? trim($deviceInfo['device_id']) : null;
             $clientIp = $deviceInfo['ip'] ?? ($_SERVER['REMOTE_ADDR'] ?? null);
 
-            // Update activation_codes
+            // Claim the code. The WHERE repeats the check above in SQL, so of two
+            // requests that read the code while it was still fresh only one binds
+            // its device and starts the countdown; the other finds it taken.
             $db->query(
                 "UPDATE `activation_codes` SET
                     `status` = 2,
                     `activated_at` = ?,
                     `mac` = COALESCE(?, `mac`),
                     `device_id` = COALESCE(?, `device_id`)
-                WHERE `id` = ?;",
+                WHERE `id` = ? AND (`status` = 1 OR `activated_at` IS NULL);",
                 $now,
                 $mac,
                 $deviceId,
                 $codeRow['id']
             );
+            $claimed = $db->num_rows() > 0;
 
-            // Update companion line
-            $db->query(
-                "UPDATE `lines` SET
-                    `exp_date` = ?,
-                    `last_ip` = ?,
-                    `last_activity` = ?
-                WHERE `id` = ?;",
-                $expDate,
-                $clientIp,
-                $now,
-                $line['id']
-            );
+            if ($claimed) {
+                // Update companion line
+                $db->query(
+                    "UPDATE `lines` SET
+                        `exp_date` = ?,
+                        `last_ip` = ?,
+                        `last_activity` = ?
+                    WHERE `id` = ?;",
+                    $expDate,
+                    $clientIp,
+                    $now,
+                    $line['id']
+                );
 
-            $line['exp_date'] = $expDate;
-            $codeRow['status'] = 2;
-            $codeRow['activated_at'] = $now;
-        } else {
+                $line['exp_date'] = $expDate;
+                $codeRow['status'] = 2;
+                $codeRow['activated_at'] = $now;
+            } else {
+                // Another request activated it first: from here it is an activated
+                // code like any other, device lock included.
+                $codeRow = self::getByCode($cleanCode);
+                $line = $codeRow ? UserRepository::getLineById($codeRow['subscriber_id']) : null;
+                if (!$codeRow || !$line) {
+                    return ['status' => 'INVALID_CODE', 'message' => 'Invalid or unknown activation code.'];
+                }
+                if ($codeRow['status'] == 0) {
+                    return ['status' => 'DISABLED', 'message' => 'This activation code has been suspended or revoked.'];
+                }
+            }
+        }
+
+        if (!$claimed) {
             // Already activated: check if expired
             if (!empty($line['exp_date']) && $line['exp_date'] < $now) {
                 return [
@@ -321,8 +340,10 @@ class ActiveCodeService {
                 ];
             }
 
-            // Check device lock if enforced
-            if (!empty($codeRow['mac']) && !empty($deviceInfo['mac']) && strcasecmp($codeRow['mac'], $deviceInfo['mac']) !== 0) {
+            // A code bound to a device answers that device only. A request naming
+            // no device is not that device: skipping the check when `mac` was absent
+            // let any client read a locked code's credentials by leaving it out.
+            if (!empty($codeRow['mac']) && strcasecmp($codeRow['mac'], trim((string) ($deviceInfo['mac'] ?? ''))) !== 0) {
                 return ['status' => 'DEVICE_MISMATCH', 'message' => 'Code is locked to another hardware device.'];
             }
         }
@@ -349,7 +370,7 @@ class ActiveCodeService {
         return [
             'status' => 'SUCCESS',
             'code' => $cleanCode,
-            'is_new_activation' => ($codeRow['status'] == 2 && ($codeRow['activated_at'] >= ($now - 5))),
+            'is_new_activation' => $claimed,
             'package_name' => $package['package_name'] ?? 'Premium IPTV',
             'exp_date' => (int)$line['exp_date'],
             'exp_date_formatted' => date('Y-m-d H:i:s', (int)$line['exp_date']),
