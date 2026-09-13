@@ -18,6 +18,7 @@ use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\User\TicketRepository;
 use XcVm\Domain\User\UserRepository;
 use XcVm\Domain\User\UserService;
+use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Redis\RedisManager;
 
 /**
@@ -34,6 +35,7 @@ use XcVm\Infrastructure\Redis\RedisManager;
  */
 
 class ResellerApiDispatcher {
+	use DatabaseAware;
 
 	/**
 	 * Dispatch an API action for the reseller panel.
@@ -46,79 +48,78 @@ class ResellerApiDispatcher {
 	 * @param array      $rPermissions Reseller permissions
 	 */
 	public static function dispatch(string $action, ?array $rUserInfo, array $rPermissions): void {
-		global $db;
 		switch ($action) {
 			case 'dashboard':
-				self::handleDashboard($rUserInfo, $rPermissions, $db);
+				self::handleDashboard($rUserInfo, $rPermissions);
 				break;
 			case 'connections':
-				self::handleConnections($rUserInfo, $rPermissions, $db);
+				self::handleConnections($rUserInfo, $rPermissions);
 				break;
 			case 'line':
-				self::handleLine($rUserInfo, $rPermissions, $db);
+				self::handleLine($rUserInfo, $rPermissions);
 				break;
 			case 'line_activity':
-				self::handleLineActivity($rUserInfo, $rPermissions, $db);
+				self::handleLineActivity($rUserInfo, $rPermissions);
 				break;
 			case 'adjust_credits':
-				self::handleAdjustCredits($rUserInfo, $rPermissions, $db);
+				self::handleAdjustCredits($rUserInfo, $rPermissions);
 				break;
 			case 'reg_user':
-				self::handleRegUser($rUserInfo, $rPermissions, $db);
+				self::handleRegUser($rUserInfo, $rPermissions);
 				break;
 			case 'ticket':
-				self::handleTicket($rUserInfo, $rPermissions, $db);
+				self::handleTicket($rUserInfo, $rPermissions);
 				break;
 			case 'mag':
-				self::handleMag($rUserInfo, $rPermissions, $db);
+				self::handleMag($rUserInfo, $rPermissions);
 				break;
 			case 'enigma':
-				self::handleEnigma($rUserInfo, $rPermissions, $db);
+				self::handleEnigma($rUserInfo, $rPermissions);
 				break;
 			case 'get_package':
-				self::handleGetPackage($rUserInfo, $rPermissions, $db);
+				self::handleGetPackage($rUserInfo, $rPermissions);
 				break;
 			case 'get_package_trial':
-				self::handleGetPackageTrial($rUserInfo, $rPermissions, $db);
+				self::handleGetPackageTrial($rUserInfo, $rPermissions);
 				break;
 			case 'header_stats':
-				self::handleHeaderStats($rUserInfo, $rPermissions, $db);
+				self::handleHeaderStats($rUserInfo, $rPermissions);
 				break;
 			case 'stats':
-				self::handleStats($rUserInfo, $rPermissions, $db);
+				self::handleStats($rUserInfo, $rPermissions);
 				break;
 			case 'userlist':
-				self::handleUserList($rUserInfo, $rPermissions, $db);
+				self::handleUserList($rUserInfo, $rPermissions);
 				break;
 			case 'send_event':
-				self::handleSendEvent($rUserInfo, $rPermissions, $db);
+				self::handleSendEvent($rUserInfo, $rPermissions);
 				break;
 			case 'streamlist':
-				self::handleStreamList($rUserInfo, $rPermissions, $db);
+				self::handleStreamList($rUserInfo, $rPermissions);
 				break;
 			case 'ip_whois':
-				self::handleIpWhois($rUserInfo, $rPermissions, $db);
+				self::handleIpWhois($rUserInfo, $rPermissions);
 				break;
 			case 'get_epg':
-				self::handleGetEpg($rUserInfo, $rPermissions, $db);
+				self::handleGetEpg($rUserInfo, $rPermissions);
 				break;
 			case 'get_programme':
-				self::handleGetProgramme($rUserInfo, $rPermissions, $db);
+				self::handleGetProgramme($rUserInfo, $rPermissions);
 				break;
 			case 'active_code_details':
-				self::handleActiveCodeDetails($rUserInfo, $rPermissions, $db);
+				self::handleActiveCodeDetails($rUserInfo, $rPermissions);
 				break;
 			case 'active_codes_mass':
-				self::handleActiveCodesMass($rUserInfo, $rPermissions, $db);
+				self::handleActiveCodesMass($rUserInfo, $rPermissions);
 				break;
 			case 'active_codes_batch_action':
-				self::handleActiveCodesBatchAction($rUserInfo, $rPermissions, $db);
+				self::handleActiveCodesBatchAction($rUserInfo, $rPermissions);
 				break;
 			case 'active_codes_export_txt':
-				self::handleActiveCodesExportTxt($rUserInfo, $rPermissions, $db);
+				self::handleActiveCodesExportTxt($rUserInfo, $rPermissions);
 				break;
 			case 'generate_active_codes':
-				self::handleGenerateActiveCodes($rUserInfo, $rPermissions, $db);
+				self::handleGenerateActiveCodes($rUserInfo, $rPermissions);
 				break;
 		}
 	}
@@ -128,10 +129,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleDashboard(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleDashboard(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$rReturn = array('open_connections' => 0, 'online_users' => 0, 'active_accounts' => 0, 'credits' => 0, 'credits_assigned' => 0);
 
 		if (SettingsManager::getBool('redis_handler')) {
@@ -141,7 +142,7 @@ class ResellerApiDispatcher {
 				$rReports[] = $rRow['id'];
 			}
 			if (0 < count($rReports)) {
-				foreach (ConnectionTracker::getUserConnections($rReports, true) as $rUserID => $rConnections) {
+				foreach (ConnectionTracker::getUserConnections($rReports, true) as $rConnections) {
 					$rReturn['open_connections'] += $rConnections;
 					if (0 < $rConnections) {
 						$rReturn['online_users']++;
@@ -169,10 +170,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleConnections(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleConnections(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['reseller_client_connection_logs']) {
 			$rStreamID = RequestManager::get('stream_id');
 			$rSub = RequestManager::get('sub');
@@ -211,10 +212,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleLine(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleLine(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['create_line']) {
 			$rSub = RequestManager::get('sub');
 			$rUserID = intval(RequestManager::get('user_id'));
@@ -283,10 +284,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleLineActivity(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleLineActivity(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['reseller_client_connection_logs']) {
 			$rSub = RequestManager::get('sub');
 
@@ -329,10 +330,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleAdjustCredits(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleAdjustCredits(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['create_sub_resellers']) {
 			if (Authorization::check('user', RequestManager::get('id'))) {
 				$rUser = UserRepository::getRegisteredUserById(RequestManager::get('id'));
@@ -366,10 +367,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleRegUser(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleRegUser(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['create_sub_resellers']) {
 			if (Authorization::check('user', RequestManager::get('user_id'))) {
 				$rSub = RequestManager::get('sub');
@@ -417,10 +418,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleTicket(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleTicket(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$rTicket = TicketRepository::getById(RequestManager::get('ticket_id'));
 
 		if ($rTicket) {
@@ -456,10 +457,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleMag(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleMag(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['create_mag']) {
 			$rSub = RequestManager::get('sub');
 			$rMagDetails = MagService::getById(intval(RequestManager::get('mag_id')));
@@ -536,10 +537,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleEnigma(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleEnigma(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['create_enigma']) {
 			$rSub = RequestManager::get('sub');
 			$rE2Details = EnigmaService::getById(intval(RequestManager::get('e2_id')));
@@ -616,10 +617,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleGetPackage(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleGetPackage(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$rReturn = array();
 		$rOverride = json_decode($rUserInfo['override_packages'], true);
 		$db->query('SELECT `id`, `bouquets`, `official_credits` AS `cost_credits`, `official_duration`, `official_duration_in`, `max_connections`, `check_compatible`, `is_isplock` FROM `users_packages` WHERE `id` = ?;', RequestManager::get('package_id'));
@@ -670,10 +671,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleGetPackageTrial(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleGetPackageTrial(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$rReturn = array();
 		$db->query('SELECT `bouquets`, `trial_credits` AS `cost_credits`, `trial_duration`, `trial_duration_in`, `max_connections`, `is_isplock` FROM `users_packages` WHERE `id` = ?;', RequestManager::get('package_id'));
 
@@ -702,10 +703,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleHeaderStats(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleHeaderStats(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$rReturn = array('total_connections' => 0, 'total_users' => 0);
 
 		if (SettingsManager::getBool('redis_handler')) {
@@ -715,7 +716,7 @@ class ResellerApiDispatcher {
 				$rReports[] = $rRow['id'];
 			}
 			if (0 < count($rReports)) {
-				foreach (ConnectionTracker::getUserConnections($rReports, true) as $rUserID => $rConnections) {
+				foreach (ConnectionTracker::getUserConnections($rReports, true) as $rConnections) {
 					$rReturn['total_connections'] += $rConnections;
 					if (0 < $rConnections) {
 						$rReturn['total_users']++;
@@ -738,10 +739,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleStats(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleStats(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$rReturn = array('open_connections' => 0, 'online_users' => 0, 'total_lines' => 0, 'total_users' => 0, 'owner_credits' => 0, 'user_credits' => 0, 'total_credits' => 0);
 
 		if (SettingsManager::getBool('redis_handler')) {
@@ -751,7 +752,7 @@ class ResellerApiDispatcher {
 				$rReports[] = $rRow['id'];
 			}
 			if (0 < count($rReports)) {
-				foreach (ConnectionTracker::getUserConnections($rReports, true) as $rUserID => $rConnections) {
+				foreach (ConnectionTracker::getUserConnections($rReports, true) as $rConnections) {
 					$rReturn['open_connections'] += $rConnections;
 					if (0 < $rConnections) {
 						$rReturn['online_users']++;
@@ -782,10 +783,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleUserList(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleUserList(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$rReturn = array('total_count' => 0, 'items' => array(), 'result' => true);
 
 		if (RequestManager::has('search')) {
@@ -811,10 +812,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleSendEvent(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleSendEvent(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['create_mag']) {
 			$rData = json_decode(RequestManager::get('data'), true);
 			$rMag = MagService::getById($rData['id']);
@@ -859,10 +860,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleStreamList(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleStreamList(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['create_mag'] || $rPermissions['can_view_vod'] || $rPermissions['reseller_client_connection_logs']) {
 			$rReturn = array('total_count' => 0, 'items' => array(), 'result' => true);
 
@@ -891,10 +892,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleIpWhois(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleIpWhois(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$rIP = RequestManager::get('ip');
 		$rReader = new \MaxMind\Db\Reader(GEOLITE2C_BIN);
 		$rResponse = $rReader->get($rIP);
@@ -930,10 +931,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleGetEpg(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleGetEpg(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['can_view_vod']) {
 			if (count($rPermissions['stream_ids']) != 0) {
 				$rTimezone = (RequestManager::get('timezone') ?: 'Europe/London');
@@ -1032,10 +1033,10 @@ class ResellerApiDispatcher {
 	 *
 	 * @param array  $rUserInfo    Authenticated reseller user.
 	 * @param array  $rPermissions Effective permissions.
-	 * @param \XcVm\Core\Database\DatabaseHandler $db           Database handler.
 	 * @return void
 	 */
-	private static function handleGetProgramme(array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleGetProgramme(array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		if ($rPermissions['can_view_vod']) {
 			$rTimezone = (RequestManager::get('timezone') ?: 'Europe/London');
 			date_default_timezone_set($rTimezone);
@@ -1073,7 +1074,8 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle Active Code Details AJAX (modal view)
 	 */
-	private static function handleActiveCodeDetails(?array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleActiveCodeDetails(?array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$codeId = intval(RequestManager::get('id') ?? 0);
 		if (!$codeId) {
 			http_response_code(404);
@@ -1118,6 +1120,7 @@ class ResellerApiDispatcher {
 		$directActivateUrl   = "{$subscriberPortalUrl}?code=" . urlencode((string)$code['activation_code']);
 		$webPlayerUrl        = $playerCode ? "{$portalUrl}/{$playerCode}/" : null;
 
+		// phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- consumed by the required active_code_details.php view
 		$d = [
 			'id' => (int)$code['id'],
 			'code' => $code['activation_code'],
@@ -1146,6 +1149,7 @@ class ResellerApiDispatcher {
 
 		// Reuse the shared voucher-details fragment (same body as admin), rendered
 		// server-side and injected by the reseller list. $language lets it translate.
+		// phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- consumed by the required active_code_details.php view
 		$language = Translator::class;
 		header('Content-Type: text/html; charset=utf-8');
 		require MAIN_HOME . 'Public/Views/admin/active_code_details.php';
@@ -1174,7 +1178,7 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle Active Codes Mass Actions AJAX
 	 */
-	private static function handleActiveCodesMass(?array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleActiveCodesMass(?array $rUserInfo, array $rPermissions): void {
 		$subAction = trim(RequestManager::get('sub_action') ?? '');
 		$ids = json_decode(RequestManager::get('ids') ?? '[]', true) ?: [];
 		$extra = [
@@ -1194,7 +1198,8 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle Batch Action AJAX (Enable, Disable, Delete)
 	 */
-	private static function handleActiveCodesBatchAction(?array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleActiveCodesBatchAction(?array $rUserInfo, array $rPermissions): void {
+		$db = self::db();
 		$batchName = trim(RequestManager::get('batch_name') ?? '');
 		$subAction = trim(RequestManager::get('sub_action') ?? '');
 		$refund = !empty(RequestManager::get('refund_credits'));
@@ -1228,7 +1233,7 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle Export Scratch Cards TXT
 	 */
-	private static function handleActiveCodesExportTxt(?array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleActiveCodesExportTxt(?array $rUserInfo, array $rPermissions): void {
 		$batchName = trim(RequestManager::get('batch_name') ?? '');
 		if (empty($batchName)) {
 			exit('Invalid batch name');
@@ -1247,7 +1252,7 @@ class ResellerApiDispatcher {
 	/**
 	 * Handle AJAX Code Generation
 	 */
-	private static function handleGenerateActiveCodes(?array $rUserInfo, array $rPermissions, $db): void {
+	private static function handleGenerateActiveCodes(?array $rUserInfo, array $rPermissions): void {
 		$data = RequestManager::getAll();
 		$res = ActiveCodeService::generateCodes($data, $rUserInfo, false);
 
