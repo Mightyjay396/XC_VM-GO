@@ -651,7 +651,7 @@ class PortalHandler {
 				exit(json_encode(["js" => []]));
 
 			case "set_hdmi_reaction":
-				if (!(empty($_SERVER["HTTP_COOKIE"]) || !isset($rRequest["data"]))) {
+				if (!empty($_SERVER["HTTP_COOKIE"]) && isset($rRequest["data"])) {
 					$rReaction = $rRequest["data"];
 					$ctx["device"]["hdmi_event_reaction"] = $rReaction;
 					$db->query(
@@ -840,7 +840,7 @@ class PortalHandler {
 				]));
 
 			case "set_claim":
-				if (!(empty($rRequest["id"]) || empty($rRequest["real_type"]))) {
+				if (!empty($rRequest["id"]) && !empty($rRequest["real_type"])) {
 					$rID = intval($rRequest["id"]);
 					$rRealType = $rRequest["real_type"];
 					$rDate = date("Y-m-d H:i:s");
@@ -1031,7 +1031,7 @@ class PortalHandler {
 
 		switch ($rReqAction) {
 			case "set_claim":
-				if (!(empty($rRequest["id"]) || empty($rRequest["real_type"]))) {
+				if (!empty($rRequest["id"]) && !empty($rRequest["real_type"])) {
 					$rID = intval($rRequest["id"]);
 					$rRealType = $rRequest["real_type"];
 					$rDate = date("Y-m-d H:i:s");
@@ -1262,7 +1262,7 @@ class PortalHandler {
 
 		switch ($rReqAction) {
 			case "set_claim":
-				if (!(empty($rRequest["id"]) || empty($rRequest["real_type"]))) {
+				if (!empty($rRequest["id"]) && !empty($rRequest["real_type"])) {
 					$rID = intval($rRequest["id"]);
 					$rRealType = $rRequest["real_type"];
 					$rDate = date("Y-m-d H:i:s");

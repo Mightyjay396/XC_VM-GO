@@ -1317,7 +1317,7 @@ if (isset($rUserInfo['reports'])) {
 				$rWhere = $rWhereV = [];
 				$rWhere[] = '`hls_end` = 0';
 				$rWhere[] = '`lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')';
-				if (0 < strlen(RequestManager::get('search')['value'])) {
+				if ((string) RequestManager::get('search')['value'] !== '') {
 					foreach (range(1, 9) as $rInt) {
 						$rWhereV[] = '%' . RequestManager::get('search')['value'] . '%';
 					}

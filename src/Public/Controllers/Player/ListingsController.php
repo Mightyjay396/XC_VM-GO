@@ -75,8 +75,7 @@ class ListingsController extends BasePlayerController {
 					$rListings = [];
 					$rArchiveInfo = [];
 					$db->query('SELECT `id`, `tv_archive_duration`, `tv_archive_server_id` FROM `streams` WHERE `id` IN (' . implode(',', $rChannels) . ');');
-					if (0 >= $db->num_rows()) {
-					} else {
+					if (0 < $db->num_rows()) {
 						foreach ($db->get_rows() as $rRow) {
 							$rArchiveInfo[$rRow['id']] = $rRow;
 						}
