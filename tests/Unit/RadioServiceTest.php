@@ -198,6 +198,49 @@ final class RadioServiceTest extends TestCase {
 		$this->assertSame([], $this->radios(2), 'detached from the unselected bouquet on edit');
 	}
 
+	// ── computeCategoryChange (pure) ─────────────────────────────────
+
+	public function testComputeCategoryChangeAddUnionsExisting(): void {
+		// selected first, then existing not already selected.
+		$this->assertSame([2, 3, 1], $this->call('computeCategoryChange', 'ADD', [1, 2], [2, 3]));
+	}
+
+	public function testComputeCategoryChangeDelRemovesSelectedFromExisting(): void {
+		$this->assertSame([1, 3], $this->call('computeCategoryChange', 'DEL', [1, 2, 3], [2]));
+	}
+
+	public function testComputeCategoryChangeSetReplacesWithSelected(): void {
+		$this->assertSame([5, 6], $this->call('computeCategoryChange', 'SET', [1, 2], [5, 6]), 'non-ADD/DEL type replaces');
+	}
+
+	public function testComputeCategoryChangeAddWithNoExisting(): void {
+		$this->assertSame([5, 6], $this->call('computeCategoryChange', 'ADD', [], [5, 6]));
+	}
+
+	public function testComputeCategoryChangeDelWithNoSelectionKeepsAll(): void {
+		$this->assertSame([1, 2, 3], $this->call('computeCategoryChange', 'DEL', [1, 2, 3], []));
+	}
+
+	// ── planBouquetChanges (pure) ────────────────────────────────────
+
+	public function testPlanBouquetsSetAttachesSelectedDetachesRest(): void {
+		$plan = $this->call('planBouquetChanges', 'SET', [1, 2], [['id' => 1], ['id' => 2], ['id' => 3]]);
+		$this->assertSame([1, 2], $plan['add']);
+		$this->assertSame([3], $plan['del'], 'detach from bouquets not selected');
+	}
+
+	public function testPlanBouquetsAddOnlyAttaches(): void {
+		$plan = $this->call('planBouquetChanges', 'ADD', [5], [['id' => 1], ['id' => 5]]);
+		$this->assertSame([5], $plan['add']);
+		$this->assertSame([], $plan['del']);
+	}
+
+	public function testPlanBouquetsDelOnlyDetaches(): void {
+		$plan = $this->call('planBouquetChanges', 'DEL', [7], [['id' => 7]]);
+		$this->assertSame([], $plan['add']);
+		$this->assertSame([7], $plan['del']);
+	}
+
 	/** Read a bouquet's bouquet_radios list. */
 	private function radios(int $rBouquetID): array {
 		$this->db->query('SELECT `bouquet_radios` FROM `bouquets` WHERE `id` = ?;', $rBouquetID);

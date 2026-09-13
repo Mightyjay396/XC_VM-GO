@@ -94,7 +94,7 @@ class TMDbService {
 		if ($rLanguage) {
 			$rURL .= '&language=' . urlencode($rLanguage);
 		} else {
-			if (0 < strlen(SettingsManager::getString('tmdb_language'))) {
+			if (SettingsManager::getString('tmdb_language') !== '') {
 				$rURL .= '&language=' . urlencode(SettingsManager::getString('tmdb_language'));
 			}
 		}

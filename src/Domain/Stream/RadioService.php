@@ -207,22 +207,22 @@ class RadioService {
 	private static function saveStreamOptions(object $db, int|string $rInsertID, array $rData): void {
 		$db->query('DELETE FROM `streams_options` WHERE `stream_id` = ?;', $rInsertID);
 
-		if (isset($rData['user_agent']) && 0 < strlen($rData['user_agent'])) {
+		if (isset($rData['user_agent']) && (string) $rData['user_agent'] !== '') {
 			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 1, ?);', $rInsertID, $rData['user_agent']);
 		}
-		if (isset($rData['http_proxy']) && 0 < strlen($rData['http_proxy'])) {
+		if (isset($rData['http_proxy']) && (string) $rData['http_proxy'] !== '') {
 			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 2, ?);', $rInsertID, $rData['http_proxy']);
 		}
-		if (isset($rData['cookie']) && 0 < strlen($rData['cookie'])) {
+		if (isset($rData['cookie']) && (string) $rData['cookie'] !== '') {
 			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 17, ?);', $rInsertID, $rData['cookie']);
 		}
-		if (isset($rData['headers']) && 0 < strlen($rData['headers'])) {
+		if (isset($rData['headers']) && (string) $rData['headers'] !== '') {
 			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 19, ?);', $rInsertID, $rData['headers']);
 		}
 		if (isset($rData['skip_ffprobe']) && ($rData['skip_ffprobe'] == 'on' || $rData['skip_ffprobe'] == 1)) {
 			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 21, ?);', $rInsertID, '1');
 		}
-		if (isset($rData['force_input_acodec']) && strlen(trim($rData['force_input_acodec'])) > 0) {
+		if (isset($rData['force_input_acodec']) && trim($rData['force_input_acodec']) !== '') {
 			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 20, ?);', $rInsertID, trim($rData['force_input_acodec']));
 		}
 	}
@@ -289,6 +289,130 @@ class RadioService {
 	}
 
 	/**
+	 * Compute a stream's new category list for a mass edit.
+	 *
+	 * ADD unions the selected categories onto the existing ones; DEL removes the
+	 * selected ones from the existing; any other type (SET) replaces with the
+	 * selected list.
+	 *
+	 * @param string    $rType     'ADD', 'DEL' or otherwise (SET/replace).
+	 * @param int[]     $rExisting The stream's current category ids.
+	 * @param int[]     $rSelected The submitted category ids.
+	 * @return int[] The resulting category ids.
+	 */
+	private static function computeCategoryChange(string $rType, array $rExisting, array $rSelected): array {
+		if ($rType === 'ADD') {
+			foreach ($rExisting as $rCategoryID) {
+				if (!in_array($rCategoryID, $rSelected)) {
+					$rSelected[] = $rCategoryID;
+				}
+			}
+
+			return $rSelected;
+		}
+
+		if ($rType === 'DEL') {
+			return array_values(array_filter($rExisting, static fn ($rID) => !in_array($rID, $rSelected)));
+		}
+
+		return $rSelected;
+	}
+
+	/**
+	 * Plan which bouquets a stream should be added to / removed from.
+	 *
+	 * SET attaches to the selected bouquets and detaches from every other; ADD
+	 * only attaches to the selected; DEL only detaches from the selected.
+	 *
+	 * @param string $rType         'SET', 'ADD' or 'DEL'.
+	 * @param array  $rSelected     Selected bouquet ids.
+	 * @param array  $rAllBouquets  All bouquets (rows with 'id'), for SET detach.
+	 * @return array{add: array, del: array} Bouquet ids to attach / detach.
+	 */
+	private static function planBouquetChanges(string $rType, array $rSelected, array $rAllBouquets): array {
+		if ($rType === 'SET') {
+			$rDel = [];
+			foreach ($rAllBouquets as $rBouquet) {
+				if (!in_array($rBouquet['id'], $rSelected)) {
+					$rDel[] = $rBouquet['id'];
+				}
+			}
+
+			return ['add' => $rSelected, 'del' => $rDel];
+		}
+
+		if ($rType === 'ADD') {
+			return ['add' => $rSelected, 'del' => []];
+		}
+
+		if ($rType === 'DEL') {
+			return ['add' => [], 'del' => $rSelected];
+		}
+
+		return ['add' => [], 'del' => []];
+	}
+
+	/**
+	 * Lift PHP time/timeout limits for the long-running bulk operations.
+	 */
+	private static function raiseTimeLimits(): void {
+		set_time_limit(0);
+		ini_set('mysql.connect_timeout', 0);
+		ini_set('max_execution_time', 0);
+		ini_set('default_socket_timeout', 0);
+	}
+
+	/**
+	 * Plan one stream's server-tree changes during a mass edit.
+	 *
+	 * ADD/SET attach or re-parent each tree node (updating existing rows in place,
+	 * or appending to the batch-insert buffer); SET additionally marks existing
+	 * attachments absent from the tree for deletion. A non-ADD/SET type (DEL) only
+	 * marks the tree's existing attachments for deletion.
+	 *
+	 * @param object         $db              Database handler.
+	 * @param array          $rData           Submitted form data (server_type, server_tree_data, on_demand).
+	 * @param int|string     $rStreamID       Stream id.
+	 * @param array<int,int> $rExistingServers server_id => server_stream_id already attached to this stream.
+	 * @param string         $rAddQuery       Batch INSERT VALUES buffer (appended in place).
+	 * @param array          $rDeleteServers  server_id => stream ids to detach (appended in place).
+	 */
+	private static function planServerTreeForStream(object $db, array $rData, int|string $rStreamID, array $rExistingServers, string &$rAddQuery, array &$rDeleteServers): void {
+		$rStreamsAdded = [];
+		foreach (json_decode($rData['server_tree_data'], true) as $rServer) {
+			if ($rServer['parent'] == '#') {
+				continue;
+			}
+			$rServerID = intval($rServer['id']);
+
+			if (!in_array($rData['server_type'], ['ADD', 'SET'])) {
+				if (isset($rExistingServers[$rServerID])) {
+					$rDeleteServers[$rServerID][] = $rStreamID;
+				}
+				continue;
+			}
+
+			$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?: [])));
+			$rParent = ($rServer['parent'] == 'source') ? null : intval($rServer['parent']);
+			$rStreamsAdded[] = $rServerID;
+
+			if (isset($rExistingServers[$rServerID])) {
+				$db->query('UPDATE `streams_servers` SET `parent_id` = ?, `on_demand` = ? WHERE `server_stream_id` = ?;', $rParent, $rOD, $rExistingServers[$rServerID]);
+			} else {
+				$rAddQuery .= '(' . intval($rStreamID) . ', ' . intval($rServerID) . ', ' . (($rParent ?: 'NULL')) . ', ' . $rOD . '),';
+			}
+		}
+
+		if ($rData['server_type'] == 'SET') {
+			foreach (array_keys($rExistingServers) as $rServerID) {
+				if (!in_array($rServerID, $rStreamsAdded)) {
+					$rDeleteServers[$rServerID][] = $rStreamID;
+				}
+			}
+		}
+	}
+
+	/**
 	 * Apply bulk edits to a set of selected radio streams.
 	 *
 	 * @param array $rData Selected ids plus the fields/values to apply.
@@ -296,16 +420,12 @@ class RadioService {
 	 */
 	public static function massEdit(array $rData) {
 		$db = self::db();
-		set_time_limit(0);
-		ini_set('mysql.connect_timeout', 0);
-		ini_set('max_execution_time', 0);
-		ini_set('default_socket_timeout', 0);
+		self::raiseTimeLimits();
 
 		if (InputValidator::validate('massEditRadios', $rData)) {
 			$rArray = [];
 
-			if (!isset($rData['c_direct_source'])) {
-			} else {
+			if (isset($rData['c_direct_source'])) {
 				if (isset($rData['direct_source'])) {
 					$rArray['direct_source'] = 1;
 				} else {
@@ -313,173 +433,71 @@ class RadioService {
 				}
 			}
 
-			if (!isset($rData['c_custom_sid'])) {
-			} else {
+			if (isset($rData['c_custom_sid'])) {
 				$rArray['custom_sid'] = $rData['custom_sid'];
 			}
 
 			$rStreamIDs = json_decode($rData['streams'], true);
 
-			if (0 >= count($rStreamIDs)) {
-			} else {
+			if (0 < count($rStreamIDs)) {
 				$rCategoryMap = [];
-
-				if (!(isset($rData['c_category_id']) && in_array($rData['category_id_type'], ['ADD', 'DEL']))) {
-				} else {
+				if (isset($rData['c_category_id']) && in_array($rData['category_id_type'], ['ADD', 'DEL'])) {
 					$db->query('SELECT `id`, `category_id` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
-
 					foreach ($db->get_rows() as $rRow) {
 						$rCategoryMap[$rRow['id']] = (json_decode($rRow['category_id'], true) ?: []);
 					}
 				}
-
 				$rDeleteServers = $rStreamExists = [];
 				$db->query('SELECT `stream_id`, `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
-
 				foreach ($db->get_rows() as $rRow) {
 					$rStreamExists[intval($rRow['stream_id'])][intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
 				}
 				$rBouquets = BouquetService::getAllSimple();
 				$rAddBouquet = $rDelBouquet = [];
 				$rAddQuery = '';
-
 				foreach ($rStreamIDs as $rStreamID) {
-					if (!isset($rData['c_category_id'])) {
-					} else {
-						$rCategories = array_map('intval', $rData['category_id']);
-
-						if ($rData['category_id_type'] == 'ADD') {
-							foreach (($rCategoryMap[$rStreamID] ?: []) as $rCategoryID) {
-								if (in_array($rCategoryID, $rCategories)) {
-								} else {
-									$rCategories[] = $rCategoryID;
-								}
-							}
-						} else {
-							if ($rData['category_id_type'] != 'DEL') {
-							} else {
-								$rNewCategories = $rCategoryMap[$rStreamID];
-
-								foreach ($rCategories as $rCategoryID) {
-									if (($rKey = array_search($rCategoryID, $rNewCategories)) === false) {
-									} else {
-										unset($rNewCategories[$rKey]);
-									}
-								}
-								$rCategories = $rNewCategories;
-							}
-						}
-
+					if (isset($rData['c_category_id'])) {
+						$rCategories = self::computeCategoryChange($rData['category_id_type'], $rCategoryMap[$rStreamID] ?? [], array_map('intval', $rData['category_id']));
 						$rArray['category_id'] = '[' . implode(',', $rCategories) . ']';
 					}
 
 					$rPrepare = QueryHelper::prepareArray($rArray);
 
-					if (0 >= count($rPrepare['data'])) {
-					} else {
+					if (0 < count($rPrepare['data'])) {
 						$rPrepare['data'][] = $rStreamID;
 						$rQuery = 'UPDATE `streams` SET ' . $rPrepare['update'] . ' WHERE `id` = ?;';
 						$db->query($rQuery, ...$rPrepare['data']);
 					}
 
-					if (!isset($rData['c_server_tree'])) {
-					} else {
-						$rStreamsAdded = [];
-						$rServerTree = json_decode($rData['server_tree_data'], true);
-
-						foreach ($rServerTree as $rServer) {
-							if ($rServer['parent'] == '#') {
-							} else {
-								$rServerID = intval($rServer['id']);
-
-								if (in_array($rData['server_type'], ['ADD', 'SET'])) {
-									$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?: [])));
-
-									if ($rServer['parent'] == 'source') {
-										$rParent = null;
-									} else {
-										$rParent = intval($rServer['parent']);
-									}
-
-									$rStreamsAdded[] = $rServerID;
-
-									if (isset($rStreamExists[$rStreamID][$rServerID])) {
-										$db->query('UPDATE `streams_servers` SET `parent_id` = ?, `on_demand` = ? WHERE `server_stream_id` = ?;', $rParent, $rOD, $rStreamExists[$rStreamID][$rServerID]);
-									} else {
-										$rAddQuery .= '(' . intval($rStreamID) . ', ' . intval($rServerID) . ', ' . (($rParent ?: 'NULL')) . ', ' . $rOD . '),';
-									}
-								} else {
-									if (!isset($rStreamExists[$rStreamID][$rServerID])) {
-									} else {
-										$rDeleteServers[$rServerID][] = $rStreamID;
-									}
-								}
-							}
-						}
-
-						if ($rData['server_type'] != 'SET') {
-						} else {
-							foreach ($rStreamExists[$rStreamID] as $rServerID => $rDBID) {
-								if (in_array($rServerID, $rStreamsAdded)) {
-								} else {
-									$rDeleteServers[$rServerID][] = $rStreamID;
-								}
-							}
-						}
+					if (isset($rData['c_server_tree'])) {
+						self::planServerTreeForStream($db, $rData, $rStreamID, $rStreamExists[$rStreamID] ?? [], $rAddQuery, $rDeleteServers);
 					}
 
-					if (!isset($rData['c_bouquets'])) {
-					} else {
-						if ($rData['bouquets_type'] == 'SET') {
-							foreach ($rData['bouquets'] as $rBouquet) {
-								$rAddBouquet[$rBouquet][] = $rStreamID;
-							}
-
-							foreach ($rBouquets as $rBouquet) {
-								if (in_array($rBouquet['id'], $rData['bouquets'])) {
-								} else {
-									$rDelBouquet[$rBouquet['id']][] = $rStreamID;
-								}
-							}
-						} else {
-							if ($rData['bouquets_type'] == 'ADD') {
-								foreach ($rData['bouquets'] as $rBouquet) {
-									$rAddBouquet[$rBouquet][] = $rStreamID;
-								}
-							} else {
-								if ($rData['bouquets_type'] != 'DEL') {
-								} else {
-									foreach ($rData['bouquets'] as $rBouquet) {
-										$rDelBouquet[$rBouquet][] = $rStreamID;
-									}
-								}
-							}
+					if (isset($rData['c_bouquets'])) {
+						$rPlan = self::planBouquetChanges($rData['bouquets_type'], $rData['bouquets'], $rBouquets);
+						foreach ($rPlan['add'] as $rBouquetID) {
+							$rAddBouquet[$rBouquetID][] = $rStreamID;
+						}
+						foreach ($rPlan['del'] as $rBouquetID) {
+							$rDelBouquet[$rBouquetID][] = $rStreamID;
 						}
 					}
 				}
-
 				foreach ($rDeleteServers as $rServerID => $rDeleteIDs) {
 					StreamRepository::deleteStreamsByServer($rDeleteIDs, $rServerID, false);
 				}
-
 				foreach ($rAddBouquet as $rBouquetID => $rAddIDs) {
 					BouquetService::addItems('radio', $rBouquetID, $rAddIDs);
 				}
-
 				foreach ($rDelBouquet as $rBouquetID => $rRemIDs) {
 					BouquetService::removeItems('radio', $rBouquetID, $rRemIDs);
 				}
-
-				if (empty($rAddQuery)) {
-				} else {
+				if (!empty($rAddQuery)) {
 					$rAddQuery = rtrim($rAddQuery, ',');
 					$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `on_demand`) VALUES ' . $rAddQuery . ';');
 				}
-
 				StreamProcess::updateStreams($rStreamIDs);
-
-				if (!isset($rData['restart_on_edit'])) {
-				} else {
+				if (isset($rData['restart_on_edit'])) {
 					ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)]);
 				}
 			}
@@ -497,10 +515,7 @@ class RadioService {
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
 	public static function massDelete(array $rData) {
-		set_time_limit(0);
-		ini_set('mysql.connect_timeout', 0);
-		ini_set('max_execution_time', 0);
-		ini_set('default_socket_timeout', 0);
+		self::raiseTimeLimits();
 
 		if (InputValidator::validate('massDeleteStations', $rData)) {
 			$rStreams = json_decode($rData['radios'], true);
