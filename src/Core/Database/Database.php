@@ -45,7 +45,7 @@ class Database {
 	 * @param string $host Database host
 	 * @param int $db_port Database port number
 	 */
-	public function __construct(string $db_user = null, string $db_pass = null, string $db_name = null, string $host = null, int $db_port = 3306, $migrate = false) {
+	public function __construct(?string $db_user = null, ?string $db_pass = null, ?string $db_name = null, ?string $host = null, int $db_port = 3306, $migrate = false) {
 		$this->dbh = false;
 		$this->dbuser = $db_user;
 		$this->dbpassword = $db_pass;
@@ -58,10 +58,11 @@ class Database {
 	/**
 	 * Normalize a DB host, forcing TCP for 'localhost'.
 	 *
-	 * @param string $rHost Host name.
-	 * @return string '127.0.0.1' for 'localhost', otherwise the host unchanged.
+	 * @param string|null $rHost Host name (null when connecting via the bundled
+	 *                           XC_VM extension, which resolves credentials itself).
+	 * @return string|null '127.0.0.1' for 'localhost', otherwise the host unchanged.
 	 */
-	private function normalizeHost(string $rHost) {
+	private function normalizeHost(?string $rHost): ?string {
 		if ($rHost === 'localhost') {
 			return '127.0.0.1';
 		}
