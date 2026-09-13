@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Reseller;
 
+use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
@@ -44,16 +45,9 @@ class ResellerLoginController {
         // Translator FQCN for reseller/login.php's `$language::get(...)` calls.
         $language = Translator::class;
 
-        if (intval($rSettings['login_flood']) > 0) {
-            $db->query(
-                "SELECT COUNT(`id`) AS `count` FROM `login_logs` WHERE `status` = 'INVALID_LOGIN' AND `login_ip` = ? AND TIME_TO_SEC(TIMEDIFF(NOW(), `date`)) <= 86400;",
-                $rIP
-            );
-
-            if ($db->num_rows() === 1 && intval($db->get_row()['count']) >= intval($rSettings['login_flood'])) {
-                BlocklistService::blockIP(['ip' => $rIP, 'notes' => 'LOGIN FLOOD ATTACK']);
-                exit();
-            }
+        if (Authenticator::loginFloodExceeded($rIP, intval($rSettings['login_flood']))) {
+            BlocklistService::blockIP(['ip' => $rIP, 'notes' => 'LOGIN FLOOD ATTACK']);
+            exit();
         }
 
         // Process login POST

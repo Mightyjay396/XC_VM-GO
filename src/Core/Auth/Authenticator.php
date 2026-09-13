@@ -100,9 +100,9 @@ class Authenticator {
 		$rAccessCode = AuthRepository::getCurrentCode(true);
 
 		if (!isset($rUserInfo)) {
-			if (!empty($rSettings['save_login_logs'])) {
-				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('ADMIN', ?, 0, ?, ?, ?);", $rAccessCode['id'], 'INVALID_LOGIN', $rIP, time());
-			}
+			// Always recorded, whatever save_login_logs says: these rows are what
+			// the login flood limit counts (loginFloodExceeded).
+			$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('ADMIN', ?, 0, ?, ?, ?);", $rAccessCode['id'] ?? null, 'INVALID_LOGIN', $rIP, time());
 			return array('status' => STATUS_FAILURE);
 		}
 
@@ -173,9 +173,8 @@ class Authenticator {
 		$rAccessCode = AuthRepository::getCurrentCode(true);
 
 		if (!isset($rUserInfo)) {
-			if (!empty($rSettings['save_login_logs'])) {
-				$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('RESELLER', ?, 0, ?, ?, ?);", $rAccessCode['id'], 'INVALID_LOGIN', $rIP, time());
-			}
+			// Always recorded: the login flood limit counts these (see login()).
+			$db->query("INSERT INTO `login_logs`(`type`, `access_code`, `user_id`, `status`, `login_ip`, `date`) VALUES('RESELLER', ?, 0, ?, ?, ?);", $rAccessCode['id'] ?? null, 'INVALID_LOGIN', $rIP, time());
 			return array('status' => STATUS_FAILURE);
 		}
 
@@ -218,6 +217,27 @@ class Authenticator {
 		}
 
 		return array('status' => STATUS_FAILURE);
+	}
+
+	/**
+	 * Whether an address has failed to sign in $rLimit times in the last day —
+	 * the admin and reseller login pages block it when it has (login_flood).
+	 *
+	 * `login_logs.date` is a Unix time. The pages filtered it with
+	 * TIME_TO_SEC(TIMEDIFF(NOW(), `date`)), which is NULL for an integer column,
+	 * so the count was always 0 and no address was ever blocked.
+	 *
+	 * @param string $rIP    The address trying to sign in.
+	 * @param int    $rLimit login_flood; 0 or less turns the limit off.
+	 * @return bool
+	 */
+	public static function loginFloodExceeded(string $rIP, int $rLimit): bool {
+		global $db;
+		if ($rLimit <= 0) {
+			return false;
+		}
+		$db->query("SELECT COUNT(`id`) AS `count` FROM `login_logs` WHERE `status` = 'INVALID_LOGIN' AND `login_ip` = ? AND `date` >= ?;", $rIP, time() - 86400);
+		return $db->num_rows() === 1 && intval($db->get_row()['count']) >= $rLimit;
 	}
 
 	/**
