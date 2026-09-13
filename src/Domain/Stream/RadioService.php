@@ -33,245 +33,258 @@ class RadioService {
 	 */
 	public static function process(array $rData) {
 		$db = self::db();
-		if (InputValidator::validate('processRadio', $rData)) {
-			if (isset($rData['edit'])) {
-				if (Authorization::check('adv', 'edit_radio')) {
-					$rArray = AdminHelpers::overwriteData(StreamRepository::getById($rData['edit']), $rData);
-				} else {
-					exit();
-				}
-			} else {
-				if (Authorization::check('adv', 'add_radio')) {
-					$rArray = QueryHelper::verifyPostTable('streams', $rData);
-					$rArray['type'] = 4;
-					$rArray['added'] = time();
-					unset($rArray['id']);
-				} else {
-					exit();
-				}
-			}
 
-			if (isset($rData['days_to_restart']) && preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', $rData['time_to_restart'])) {
-				$rTimeArray = ['days' => [], 'at' => $rData['time_to_restart']];
-
-				foreach ($rData['days_to_restart'] as $rID => $rDay) {
-					$rTimeArray['days'][] = $rDay;
-				}
-				$rArray['auto_restart'] = $rTimeArray;
-			} else {
-				$rArray['auto_restart'] = '';
-			}
-
-			if (isset($rData['direct_source'])) {
-				$rArray['direct_source'] = 1;
-			} else {
-				$rArray['direct_source'] = 0;
-			}
-
-			if (isset($rData['probesize_ondemand'])) {
-				$rArray['probesize_ondemand'] = intval($rData['probesize_ondemand']);
-			} else {
-				$rArray['probesize_ondemand'] = 128000;
-			}
-
-			if (isset($rData['restart_on_edit'])) {
-				$rRestart = true;
-			} else {
-				$rRestart = false;
-			}
-
-			$rImportStreams = [];
-
-			if (0 < strlen($rData['stream_source'][0])) {
-				$rImportArray = ['stream_source' => $rData['stream_source'], 'stream_icon' => $rArray['stream_icon'], 'stream_display_name' => $rArray['stream_display_name']];
-				$rImportStreams[] = $rImportArray;
-
-				if (0 < count($rImportStreams)) {
-					$rBouquetCreate = [];
-
-					foreach (json_decode($rData['bouquet_create_list'] ?? '[]', true) ?: [] as $rBouquet) {
-						$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
-						$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-
-						if (!$db->query($rQuery, ...$rPrepare['data'])) {
-						} else {
-							$rBouquetID = $db->last_insert_id();
-							$rBouquetCreate[$rBouquet] = $rBouquetID;
-						}
-					}
-					$rCategoryCreate = [];
-
-					foreach (json_decode($rData['category_create_list'] ?? '[]', true) ?: [] as $rCategory) {
-						$rPrepare = QueryHelper::prepareArray(['category_type' => 'radio', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
-						$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-
-						if (!$db->query($rQuery, ...$rPrepare['data'])) {
-						} else {
-							$rCategoryID = $db->last_insert_id();
-							$rCategoryCreate[$rCategory] = $rCategoryID;
-						}
-					}
-
-					foreach ($rImportStreams as $rImportStream) {
-						$rBouquets = [];
-
-						foreach ($rData['bouquets'] as $rBouquet) {
-							if (isset($rBouquetCreate[$rBouquet])) {
-								$rBouquets[] = $rBouquetCreate[$rBouquet];
-							} else {
-								if (!is_numeric($rBouquet)) {
-								} else {
-									$rBouquets[] = intval($rBouquet);
-								}
-							}
-						}
-						$rCategories = [];
-
-						foreach ($rData['category_id'] ?? [] as $rCategory) {
-							if (isset($rCategoryCreate[$rCategory])) {
-								$rCategories[] = $rCategoryCreate[$rCategory];
-							} else {
-								if (!is_numeric($rCategory)) {
-								} else {
-									$rCategories[] = intval($rCategory);
-								}
-							}
-						}
-						$rArray['category_id'] = '[' . implode(',', array_map('intval', $rCategories)) . ']';
-						$rImportArray = $rArray;
-
-						if (!SettingsManager::get('download_images')) {
-						} else {
-							$rImportStream['stream_icon'] = ImageUtils::downloadImage($rImportStream['stream_icon'], 4);
-						}
-
-						foreach (array_keys($rImportStream) as $rKey) {
-							$rImportArray[$rKey] = $rImportStream[$rKey];
-						}
-
-						if (isset($rData['edit'])) {
-						} else {
-							$rImportArray['order'] = StreamRepository::getNextOrder();
-						}
-
-						$rPrepare = QueryHelper::prepareArray($rImportArray);
-						$rQuery = 'REPLACE INTO `streams`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-
-						if ($db->query($rQuery, ...$rPrepare['data'])) {
-							$rInsertID = $db->last_insert_id();
-							$rStationExists = [];
-
-							if (!isset($rData['edit'])) {
-							} else {
-								$db->query('SELECT `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rInsertID);
-
-								foreach ($db->get_rows() as $rRow) {
-									$rStationExists[intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
-								}
-							}
-
-							$rStreamsAdded = [];
-							$rServerTree = json_decode($rData['server_tree_data'], true);
-
-							foreach ($rServerTree as $rServer) {
-								if ($rServer['parent'] == '#') {
-								} else {
-									$rServerID = intval($rServer['id']);
-									$rStreamsAdded[] = $rServerID;
-									$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? [])));
-
-									if ($rServer['parent'] == 'source') {
-										$rParent = null;
-									} else {
-										$rParent = intval($rServer['parent']);
-									}
-
-									if (isset($rStationExists[$rServerID])) {
-										$db->query('UPDATE `streams_servers` SET `parent_id` = ?, `on_demand` = ? WHERE `server_stream_id` = ?;', $rParent, $rOD, $rStationExists[$rServerID]);
-									} else {
-										$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `on_demand`) VALUES(?, ?, ?, ?);', $rInsertID, $rServerID, $rParent, $rOD);
-									}
-								}
-							}
-
-							foreach ($rStationExists as $rServerID => $rDBID) {
-								if (in_array($rServerID, $rStreamsAdded)) {
-								} else {
-									StreamRepository::deleteStream($rInsertID, $rServerID, false, false);
-								}
-							}
-							$db->query('DELETE FROM `streams_options` WHERE `stream_id` = ?;', $rInsertID);
-
-							if (!(isset($rData['user_agent']) && 0 < strlen($rData['user_agent']))) {
-							} else {
-								$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 1, ?);', $rInsertID, $rData['user_agent']);
-							}
-
-							if (!(isset($rData['http_proxy']) && 0 < strlen($rData['http_proxy']))) {
-							} else {
-								$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 2, ?);', $rInsertID, $rData['http_proxy']);
-							}
-
-							if (!(isset($rData['cookie']) && 0 < strlen($rData['cookie']))) {
-							} else {
-								$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 17, ?);', $rInsertID, $rData['cookie']);
-							}
-
-							if (!(isset($rData['headers']) && 0 < strlen($rData['headers']))) {
-							} else {
-								$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 19, ?);', $rInsertID, $rData['headers']);
-							}
-
-							if (isset($rData['skip_ffprobe']) && ($rData['skip_ffprobe'] == 'on' || $rData['skip_ffprobe'] == 1)) {
-								$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 21, ?);', $rInsertID, '1');
-							}
-
-							if (isset($rData['force_input_acodec']) && strlen(trim($rData['force_input_acodec'])) > 0) {
-								$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 20, ?);', $rInsertID, trim($rData['force_input_acodec']));
-							}
-
-							if (!$rRestart) {
-							} else {
-								ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID]]);
-							}
-
-							foreach ($rBouquets as $rBouquet) {
-								BouquetService::addItems('radio', $rBouquet, $rInsertID);
-							}
-
-							if (!isset($rData['edit'])) {
-							} else {
-								foreach (BouquetService::getAllSimple() as $rBouquet) {
-									if (in_array($rBouquet['id'], $rBouquets)) {
-									} else {
-										BouquetService::removeItems('radio', $rBouquet['id'], $rInsertID);
-									}
-								}
-							}
-
-							StreamProcess::updateStream($rInsertID);
-
-							return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
-						} else {
-							foreach ($rBouquetCreate as $rBouquet => $rID) {
-								$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
-							}
-
-							foreach ($rCategoryCreate as $rCategory => $rID) {
-								$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
-							}
-
-							return ['status' => STATUS_FAILURE, 'data' => $rData];
-						}
-					}
-				} else {
-					return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
-				}
-			} else {
-				return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
-			}
-		} else {
+		if (!InputValidator::validate('processRadio', $rData)) {
 			return ['status' => STATUS_INVALID_INPUT, 'data' => $rData];
+		}
+
+		if (isset($rData['edit'])) {
+			if (!Authorization::check('adv', 'edit_radio')) {
+				exit();
+			}
+			$rArray = AdminHelpers::overwriteData(StreamRepository::getById($rData['edit']), $rData);
+		} else {
+			if (!Authorization::check('adv', 'add_radio')) {
+				exit();
+			}
+			$rArray = QueryHelper::verifyPostTable('streams', $rData);
+			$rArray['type'] = 4;
+			$rArray['added'] = time();
+			unset($rArray['id']);
+		}
+
+		$rArray['auto_restart'] = self::buildAutoRestart($rData);
+		$rArray['direct_source'] = isset($rData['direct_source']) ? 1 : 0;
+		$rArray['probesize_ondemand'] = isset($rData['probesize_ondemand']) ? intval($rData['probesize_ondemand']) : 128000;
+		$rRestart = isset($rData['restart_on_edit']);
+
+		if (0 >= strlen($rData['stream_source'][0])) {
+			return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
+		}
+
+		$rBouquetCreate = self::createMissingBouquets($db, $rData);
+		$rCategoryCreate = self::createMissingCategories($db, $rData);
+		$rBouquets = self::resolveSelectedIds($rData['bouquets'], $rBouquetCreate);
+		$rCategories = self::resolveSelectedIds($rData['category_id'] ?? [], $rCategoryCreate);
+
+		$rArray['category_id'] = '[' . implode(',', array_map('intval', $rCategories)) . ']';
+		$rArray['stream_source'] = $rData['stream_source'];
+		if (SettingsManager::get('download_images')) {
+			$rArray['stream_icon'] = ImageUtils::downloadImage($rArray['stream_icon'], 4);
+		}
+		if (!isset($rData['edit'])) {
+			$rArray['order'] = StreamRepository::getNextOrder();
+		}
+
+		$rPrepare = QueryHelper::prepareArray($rArray);
+		$rQuery = 'REPLACE INTO `streams`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
+
+		if (!$db->query($rQuery, ...$rPrepare['data'])) {
+			// Insert failed — roll back the bouquets/categories created above.
+			foreach ($rBouquetCreate as $rID) {
+				$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
+			}
+			foreach ($rCategoryCreate as $rID) {
+				$db->query('DELETE FROM `streams_categories` WHERE `id` = ?;', $rID);
+			}
+
+			return ['status' => STATUS_FAILURE, 'data' => $rData];
+		}
+
+		$rInsertID = $db->last_insert_id();
+
+		$rStationExists = [];
+		if (isset($rData['edit'])) {
+			$db->query('SELECT `server_stream_id`, `server_id` FROM `streams_servers` WHERE `stream_id` = ?;', $rInsertID);
+			foreach ($db->get_rows() as $rRow) {
+				$rStationExists[intval($rRow['server_id'])] = intval($rRow['server_stream_id']);
+			}
+		}
+
+		self::syncServerTree($db, $rInsertID, json_decode($rData['server_tree_data'], true), $rData['on_demand'] ?? [], $rStationExists);
+		self::saveStreamOptions($db, $rInsertID, $rData);
+
+		if ($rRestart) {
+			ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rInsertID]]);
+		}
+
+		self::syncBouquets($rInsertID, $rBouquets, isset($rData['edit']));
+		StreamProcess::updateStream($rInsertID);
+
+		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
+	}
+
+	/**
+	 * Build the auto_restart schedule from the form's days/time fields.
+	 *
+	 * @param array $rData Submitted form data.
+	 * @return array|string ['days' => string[], 'at' => 'HH:MM'] for a valid
+	 *                      schedule, otherwise '' (no schedule).
+	 */
+	private static function buildAutoRestart(array $rData): array|string {
+		if (!isset($rData['days_to_restart']) || !preg_match('/^(?:2[0-3]|[01][0-9]):[0-5][0-9]$/', (string) ($rData['time_to_restart'] ?? ''))) {
+			return '';
+		}
+
+		return ['days' => array_values($rData['days_to_restart']), 'at' => $rData['time_to_restart']];
+	}
+
+	/**
+	 * Resolve submitted selections (bouquets or categories) to integer ids.
+	 *
+	 * A value is either the name of an entity created earlier in this request
+	 * (mapped via $rCreatedMap) or an existing numeric id; anything else is
+	 * skipped.
+	 *
+	 * @param array<int,mixed>  $rSelected   Submitted values.
+	 * @param array<string,int> $rCreatedMap name => new id for entities created this request.
+	 * @return int[]
+	 */
+	private static function resolveSelectedIds(array $rSelected, array $rCreatedMap): array {
+		$rIds = [];
+		foreach ($rSelected as $rValue) {
+			if (isset($rCreatedMap[$rValue])) {
+				$rIds[] = $rCreatedMap[$rValue];
+			} elseif (is_numeric($rValue)) {
+				$rIds[] = intval($rValue);
+			}
+		}
+
+		return $rIds;
+	}
+
+	/**
+	 * Insert any bouquets named in bouquet_create_list.
+	 *
+	 * @param object $db    Database handler.
+	 * @param array  $rData Submitted form data.
+	 * @return array<string,int> Created bouquet name => new id.
+	 */
+	private static function createMissingBouquets(object $db, array $rData): array {
+		$rCreated = [];
+		foreach (json_decode($rData['bouquet_create_list'] ?? '[]', true) ?: [] as $rBouquet) {
+			$rPrepare = QueryHelper::prepareArray(['bouquet_name' => $rBouquet, 'bouquet_channels' => [], 'bouquet_movies' => [], 'bouquet_series' => [], 'bouquet_radios' => []]);
+			$rQuery = 'INSERT INTO `bouquets`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
+			if ($db->query($rQuery, ...$rPrepare['data'])) {
+				$rCreated[$rBouquet] = $db->last_insert_id();
+			}
+		}
+
+		return $rCreated;
+	}
+
+	/**
+	 * Insert any radio categories named in category_create_list.
+	 *
+	 * @param object $db    Database handler.
+	 * @param array  $rData Submitted form data.
+	 * @return array<string,int> Created category name => new id.
+	 */
+	private static function createMissingCategories(object $db, array $rData): array {
+		$rCreated = [];
+		foreach (json_decode($rData['category_create_list'] ?? '[]', true) ?: [] as $rCategory) {
+			$rPrepare = QueryHelper::prepareArray(['category_type' => 'radio', 'category_name' => $rCategory, 'parent_id' => 0, 'cat_order' => 99, 'is_adult' => 0]);
+			$rQuery = 'INSERT INTO `streams_categories`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
+			if ($db->query($rQuery, ...$rPrepare['data'])) {
+				$rCreated[$rCategory] = $db->last_insert_id();
+			}
+		}
+
+		return $rCreated;
+	}
+
+	/**
+	 * Replace a stream's ffmpeg option rows from the submitted form fields.
+	 *
+	 * Clears existing streams_options for the stream, then re-inserts the ones
+	 * present in the form (user_agent, http_proxy, cookie, headers, skip_ffprobe,
+	 * force_input_acodec).
+	 *
+	 * @param object     $db        Database handler.
+	 * @param int|string $rInsertID Stream id.
+	 * @param array      $rData     Submitted form data.
+	 */
+	private static function saveStreamOptions(object $db, int|string $rInsertID, array $rData): void {
+		$db->query('DELETE FROM `streams_options` WHERE `stream_id` = ?;', $rInsertID);
+
+		if (isset($rData['user_agent']) && 0 < strlen($rData['user_agent'])) {
+			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 1, ?);', $rInsertID, $rData['user_agent']);
+		}
+		if (isset($rData['http_proxy']) && 0 < strlen($rData['http_proxy'])) {
+			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 2, ?);', $rInsertID, $rData['http_proxy']);
+		}
+		if (isset($rData['cookie']) && 0 < strlen($rData['cookie'])) {
+			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 17, ?);', $rInsertID, $rData['cookie']);
+		}
+		if (isset($rData['headers']) && 0 < strlen($rData['headers'])) {
+			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 19, ?);', $rInsertID, $rData['headers']);
+		}
+		if (isset($rData['skip_ffprobe']) && ($rData['skip_ffprobe'] == 'on' || $rData['skip_ffprobe'] == 1)) {
+			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 21, ?);', $rInsertID, '1');
+		}
+		if (isset($rData['force_input_acodec']) && strlen(trim($rData['force_input_acodec'])) > 0) {
+			$db->query('INSERT INTO `streams_options`(`stream_id`, `argument_id`, `value`) VALUES(?, 20, ?);', $rInsertID, trim($rData['force_input_acodec']));
+		}
+	}
+
+	/**
+	 * Reconcile a stream's server rows against the submitted server tree.
+	 *
+	 * Inserts/updates streams_servers for every node in the tree (skipping the
+	 * '#' root), then removes any previously-attached server no longer present.
+	 *
+	 * @param object         $db             Database handler.
+	 * @param int|string     $rInsertID      Stream id.
+	 * @param array          $rServerTree    Decoded server_tree_data.
+	 * @param array          $rOnDemand      Server ids flagged on-demand.
+	 * @param array<int,int> $rStationExists Existing server_id => server_stream_id.
+	 */
+	private static function syncServerTree(object $db, int|string $rInsertID, array $rServerTree, array $rOnDemand, array $rStationExists): void {
+		$rStreamsAdded = [];
+		foreach ($rServerTree as $rServer) {
+			if ($rServer['parent'] == '#') {
+				continue;
+			}
+			$rServerID = intval($rServer['id']);
+			$rStreamsAdded[] = $rServerID;
+			$rOD = intval(in_array($rServerID, $rOnDemand));
+			$rParent = ($rServer['parent'] == 'source') ? null : intval($rServer['parent']);
+
+			if (isset($rStationExists[$rServerID])) {
+				$db->query('UPDATE `streams_servers` SET `parent_id` = ?, `on_demand` = ? WHERE `server_stream_id` = ?;', $rParent, $rOD, $rStationExists[$rServerID]);
+			} else {
+				$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `on_demand`) VALUES(?, ?, ?, ?);', $rInsertID, $rServerID, $rParent, $rOD);
+			}
+		}
+
+		foreach ($rStationExists as $rServerID => $rDBID) {
+			if (!in_array($rServerID, $rStreamsAdded)) {
+				StreamRepository::deleteStream($rInsertID, $rServerID, false, false);
+			}
+		}
+	}
+
+	/**
+	 * Attach the stream to the selected bouquets, and — on edit — detach it from
+	 * any bouquet no longer selected.
+	 *
+	 * @param int|string $rInsertID Stream id.
+	 * @param int[]      $rBouquets Selected bouquet ids.
+	 * @param bool       $rIsEdit   Whether this is an edit (enables detach).
+	 */
+	private static function syncBouquets(int|string $rInsertID, array $rBouquets, bool $rIsEdit): void {
+		foreach ($rBouquets as $rBouquet) {
+			BouquetService::addItems('radio', $rBouquet, $rInsertID);
+		}
+
+		if (!$rIsEdit) {
+			return;
+		}
+
+		foreach (BouquetService::getAllSimple() as $rBouquet) {
+			if (!in_array($rBouquet['id'], $rBouquets)) {
+				BouquetService::removeItems('radio', $rBouquet['id'], $rInsertID);
+			}
 		}
 	}
 
