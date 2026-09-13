@@ -41,7 +41,7 @@ class HmacTokenTest extends TestCase {
 	}
 
 	private function check(string $rHMAC) {
-		return AuthService::validateHMAC($rHMAC, null, 1, 'ts', '', '', self::IDENTIFIER, 0);
+		return AuthService::validateHMAC($rHMAC, '', 1, 'ts', '', '', self::IDENTIFIER, 0);
 	}
 
 	public function testTheKeysHmacIsAccepted(): void {

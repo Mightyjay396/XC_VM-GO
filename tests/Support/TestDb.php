@@ -1,6 +1,6 @@
 <?php
 
-use XcVm\Core\Database\Database;
+use XcVm\Core\Database\DatabaseHandler;
 /**
  * TestDb — in-memory SQLite test double for the XC_VM Database wrapper.
  *
@@ -19,9 +19,13 @@ use XcVm\Core\Database\Database;
  * `information_schema`, MySQL-only functions — cannot be exercised here and
  * needs a real MySQL (CI service) or a query-level mock instead.
  *
+ * Extends DatabaseHandler so it satisfies the setDb(DatabaseHandler) DI seam
+ * as a real subtype; the parent constructor (which connects to MySQL) is
+ * deliberately not invoked — our own constructor wires SQLite instead.
+ *
  * @package XC_VM_Tests_Support
  */
-final class TestDb {
+final class TestDb extends DatabaseHandler {
 
 	public PDO $pdo;
 
