@@ -9,6 +9,15 @@ use PHPUnit\Framework\TestCase;
  */
 final class GeoLiteReleaseUpdaterTest extends TestCase {
 
+	// updateGeoLite() echoes "[ERROR] GeoLite2: …" when no release is found; swallow it.
+	protected function setUp(): void {
+		ob_start();
+	}
+
+	protected function tearDown(): void {
+		ob_end_clean();
+	}
+
 	/** @param string[] $releases */
 	private function repo(array $releases): GitHubReleases {
 		$rRepo = $this->getMockBuilder(GitHubReleases::class)

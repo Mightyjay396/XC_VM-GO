@@ -12,6 +12,15 @@ use XcVm\Cli\Commands\FanoutSyncCommand;
  */
 final class FanoutSyncOrphanTest extends TestCase {
 
+	// dropOrphans() echoes each dropped viewer; swallow it so the run stays clean.
+	protected function setUp(): void {
+		ob_start();
+	}
+
+	protected function tearDown(): void {
+		ob_end_clean();
+	}
+
 	public function testOrphanIsDroppedOnlyAfterTheGrace(): void {
 		$rSync = new FanoutSyncCommand();
 		$rDropped = [];

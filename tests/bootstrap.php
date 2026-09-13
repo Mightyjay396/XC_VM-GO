@@ -12,6 +12,11 @@ if (file_exists($srcRoot . '/vendor/autoload.php')) {
 	throw new RuntimeException('Unable to locate vendor/autoload.php in expected project paths.');
 }
 
+// Silence error_log() diagnostics emitted by exercised code paths (ModuleLoader
+// dependency skips, GitHubReleases version warnings, …) so the test run stays clean.
+// No test asserts on this output; production behaviour is unchanged.
+ini_set('error_log', '/dev/null');
+
 $tmpRoot = __DIR__ . '/.tmp';
 $binRoot = $tmpRoot . '/bin';
 
