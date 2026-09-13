@@ -365,23 +365,18 @@ class Request {
 	 */
 	public static function parseIncomingRecursively(array &$rData, array $rInput = [], int $rIteration = 0) {
 		if (20 > $rIteration) {
-			if (is_array($rData)) {
-				foreach ($rData as $rKey => $rValue) {
-					if (is_array($rValue)) {
-						$rInput[$rKey] = self::parseIncomingRecursively($rData[$rKey], [], $rIteration + 1);
-					} else {
-						$rKey = self::parseCleanKey($rKey);
-						$rValue = self::parseCleanValue($rValue);
-						$rInput[$rKey] = $rValue;
-					}
+			foreach ($rData as $rKey => $rValue) {
+				if (is_array($rValue)) {
+					$rInput[$rKey] = self::parseIncomingRecursively($rData[$rKey], [], $rIteration + 1);
+				} else {
+					$rKey = self::parseCleanKey($rKey);
+					$rValue = self::parseCleanValue($rValue);
+					$rInput[$rKey] = $rValue;
 				}
-				return $rInput;
-			} else {
-				return $rInput;
 			}
-		} else {
-			return $rInput;
 		}
+
+		return $rInput;
 	}
 
 	/**

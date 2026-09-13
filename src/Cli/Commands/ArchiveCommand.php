@@ -337,7 +337,7 @@ class ArchiveCommand implements CommandInterface {
 	 * @return bool True if the process is an archive worker for this stream.
 	 */
 	private function isArchiveProcessForStream(int $rPID, int $rStreamID): bool {
-		if (!is_numeric($rPID) || 0 >= intval($rPID) || !file_exists('/proc/' . $rPID)) {
+		if (0 >= $rPID || !file_exists('/proc/' . $rPID)) {
 			return false;
 		}
 

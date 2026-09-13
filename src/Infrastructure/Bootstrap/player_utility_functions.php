@@ -139,7 +139,6 @@ function getOrderedCategories(array $rCategories, string $rType = 'movie') {
  */
 function getUserStreams(array $rUserInfo, array $rTypes = [], ?int $rCategoryID = null, ?bool $rFav = null, ?string $rOrderBy = null, ?string $rSearchBy = null, array $rPicking = [], int $rStart = 0, int $rLimit = 10, bool $rIDs = false) {
 	global $db;
-	$rPicking = $rPicking ?? [];
 	$rAdded = false;
 	$rChannels = [];
 
@@ -331,7 +330,6 @@ function getUserStreams(array $rUserInfo, array $rTypes = [], ?int $rCategoryID 
  */
 function getUserSeries(array $rUserInfo, ?int $rCategoryID = null, ?bool $rFav = null, ?string $rOrderBy = null, ?string $rSearchBy = null, array $rPicking = [], int $rStart = 0, int $rLimit = 10, mixed $additionalOptions = null) {
 	global $db;
-	$rPicking = $rPicking ?? [];
 	$rSeries = $rUserInfo['series_ids'];
 	$rStreams = ['count' => 0, 'streams' => []];
 	$rKey = $rStart + 1;

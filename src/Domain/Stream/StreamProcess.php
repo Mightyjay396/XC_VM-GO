@@ -401,7 +401,7 @@ class StreamProcess {
 	 * @return bool
 	 */
 	private static function isLocallyMountedPath(string $rPath) {
-		if (!is_string($rPath) || $rPath === '') {
+		if ($rPath === '') {
 			return false;
 		}
 		$rSharedPrefixes = SettingsManager::get('shared_mount_prefixes', []);

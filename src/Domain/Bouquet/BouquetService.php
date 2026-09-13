@@ -404,10 +404,10 @@ class BouquetService {
 	 *
 	 * @param string $rType      Item type (stream/movie/series/radio).
 	 * @param int    $rBouquetID Bouquet id.
-	 * @param int[]  $rIDs       Item ids to add.
+	 * @param int[]|int|string $rIDs Item ids to add (a single id is wrapped into an array).
 	 * @return mixed Result.
 	 */
-	public static function addItems(string $rType, int $rBouquetID, array $rIDs) {
+	public static function addItems(string $rType, int $rBouquetID, array|int|string $rIDs) {
 		$db = self::db();
 
 		if (!is_array($rIDs)) {
@@ -451,10 +451,10 @@ class BouquetService {
 	 *
 	 * @param string $rType      Item type (stream/movie/series/radio).
 	 * @param int    $rBouquetID Bouquet id.
-	 * @param int[]  $rIDs       Item ids to remove.
+	 * @param int[]|int|string $rIDs Item ids to remove (a single id is wrapped into an array).
 	 * @return mixed Result.
 	 */
-	public static function removeItems(string $rType, int $rBouquetID, array $rIDs) {
+	public static function removeItems(string $rType, int $rBouquetID, array|int|string $rIDs) {
 		$db = self::db();
 
 		if (!is_array($rIDs)) {

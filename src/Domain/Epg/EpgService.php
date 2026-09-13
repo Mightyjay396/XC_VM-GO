@@ -133,13 +133,13 @@ class EpgService {
 	/**
 	 * Recursively collect array entries matching a key/value.
 	 *
-	 * @param array  $rArray   Array to search.
+	 * @param mixed  $rArray   Value to search; recurses into arrays, skips scalars.
 	 * @param string $rKey     Key to compare.
 	 * @param mixed  $rValue   Value to match.
 	 * @param array  $rResults Accumulator (by reference).
 	 * @return void
 	 */
-	private static function searchRecursive(array $rArray, string $rKey, mixed $rValue, array &$rResults) {
+	private static function searchRecursive(mixed $rArray, string $rKey, mixed $rValue, array &$rResults) {
 		if (is_array($rArray)) {
 			if (isset($rArray[$rKey]) && $rArray[$rKey] == $rValue) {
 				$rResults[] = $rArray;

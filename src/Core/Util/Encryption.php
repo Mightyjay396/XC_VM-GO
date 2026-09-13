@@ -215,10 +215,10 @@ class Encryption {
 	/**
 	 * Генерирует уникальный код панели на основе пароля.
 	 *
-	 * @param string $pass  Пароль (live_streaming_pass)
+	 * @param string|null $pass  Пароль (live_streaming_pass); может быть null, если не задан.
 	 * @return string 15-символьный хеш
 	 */
-	public static function generateUniqueCode(string $pass) {
+	public static function generateUniqueCode(?string $pass = null) {
 		return substr(md5($pass ?? ''), 0, 15);
 	}
 }

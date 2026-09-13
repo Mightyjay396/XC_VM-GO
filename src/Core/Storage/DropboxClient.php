@@ -184,7 +184,7 @@ class DropboxClient {
 	 * @return mixed
 	 * @throws DropboxException
 	 */
-	public function GetFiles(string $path = '', bool $recursive = false, bool $include_deleted = false) {
+	public function GetFiles(string|object $path = '', bool $recursive = false, bool $include_deleted = false) {
 		if (is_object($path) && !empty($path->path)) {
 			$path = $path->path;
 		}
@@ -218,7 +218,7 @@ class DropboxClient {
 	 * @return mixed
 	 * @throws DropboxException
 	 */
-	public function GetMetadata($path, bool $include_deleted = false, null $rev = null) {
+	public function GetMetadata($path, bool $include_deleted = false, ?string $rev = null) {
 		if (is_object($path) && !empty($path->path)) {
 			$path = $path->path;
 		}
@@ -559,7 +559,7 @@ class DropboxClient {
 	 * @param bool   $copy_ref  Treat $from_path as a copy reference.
 	 * @return object Metadata of the copy.
 	 */
-	public function Copy(string $from_path, string $to_path, bool $copy_ref = false) {
+	public function Copy(string|object $from_path, string $to_path, bool $copy_ref = false) {
 		if (is_object($from_path) && !empty($from_path->path)) {
 			$from_path = $from_path->path;
 		}
@@ -607,7 +607,7 @@ class DropboxClient {
 	 * @param string $to_path   Destination path.
 	 * @return object Metadata of the moved entry.
 	 */
-	public function Move(string $from_path, string $to_path) {
+	public function Move(string|object $from_path, string $to_path) {
 		if (is_object($from_path) && !empty($from_path->path)) {
 			$from_path = $from_path->path;
 		}

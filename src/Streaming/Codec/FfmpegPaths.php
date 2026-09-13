@@ -61,7 +61,7 @@ class FfmpegPaths {
 	 * @param string $name    'ffmpeg' or 'ffprobe'
 	 */
 	private static function binary(string $version, string $name): ?string {
-		if (!is_string($version) || !preg_match('/^\d+\.\d+$/', $version)) {
+		if (!preg_match('/^\d+\.\d+$/', $version)) {
 			return null;
 		}
 		$rPath = BIN_PATH . 'ffmpeg_bin/' . $version . '/' . $name;
