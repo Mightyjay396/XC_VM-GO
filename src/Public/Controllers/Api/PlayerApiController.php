@@ -79,7 +79,6 @@ class PlayerApiController {
 		}
 
 		$rIP = $_SERVER['REMOTE_ADDR'];
-		$rUserAgent = trim($_SERVER['HTTP_USER_AGENT'] ?? '');
 		$this->offset = (empty($rRequest['params']['offset']) ? 0 : abs(intval($rRequest['params']['offset'])));
 		$this->limit = (empty($rRequest['params']['items_per_page']) ? 0 : abs(intval($rRequest['params']['items_per_page'])));
 		$this->domainName = DomainResolver::resolve(SERVER_ID);
@@ -178,10 +177,8 @@ class PlayerApiController {
 		if ($rUserInfo) {
 			$this->deny = false;
 			$this->userInfo = $rUserInfo;
-			$rValidUser = false;
 
 			if ($rUserInfo['admin_enabled'] == 1 && $rUserInfo['enabled'] == 1 && (is_null($rUserInfo['exp_date']) || time() < $rUserInfo['exp_date'])) {
-				$rValidUser = true;
 			} elseif (!$rUserInfo['admin_enabled']) {
 				generateError('BANNED');
 			} elseif (!$rUserInfo['enabled']) {

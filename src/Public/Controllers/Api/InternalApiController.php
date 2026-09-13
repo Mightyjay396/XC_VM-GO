@@ -299,7 +299,7 @@ class InternalApiController {
 				$rReturn = array('result' => true, 'dirs' => array(), 'files' => array());
 				$rFiles = scanDir($rDirectory);
 
-				foreach ($rFiles as $rKey => $rValue) {
+				foreach ($rFiles as $rValue) {
 					if (in_array($rValue, array('.', '..'))) {
 						continue;
 					}

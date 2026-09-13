@@ -70,6 +70,7 @@ use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\CategoryService;
 use XcVm\Domain\User\ResellerAPI;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Infrastructure\Bootstrap\DomainDatabaseWiring;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
 
@@ -583,7 +584,7 @@ class XC_Bootstrap {
         }
 
         // Translator
-        if (class_exists(\XcVm\Core\Localization\Translator::class, false) && Translator::available()) {
+        if (class_exists(Translator::class, false) && Translator::available()) {
             $container->set('translator', Translator::class);
         }
 
@@ -601,10 +602,10 @@ class XC_Bootstrap {
      * the injected instance; db() returns it. Calling this method removes the
      * need for the global $db fallback inside each db() helper.
      *
-     * @param \XcVm\Core\Database\DatabaseHandler $db DatabaseHandler instance
+     * @param DatabaseHandler $db DatabaseHandler instance
      */
     private static function wireDomainDatabase(object $db): void {
-        \XcVm\Infrastructure\Bootstrap\DomainDatabaseWiring::wire($db);
+        DomainDatabaseWiring::wire($db);
     }
 
     /**

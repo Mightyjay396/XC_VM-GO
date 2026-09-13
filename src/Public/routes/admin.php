@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Http\Router;
 use XcVm\Public\Controllers\Admin\ActiveCodeController;
 use XcVm\Public\Controllers\Admin\ActiveCodeDetailsController;
 use XcVm\Public\Controllers\Admin\ActiveCodesBatchController;
@@ -155,7 +156,7 @@ use XcVm\Public\Controllers\Admin\UsersController;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-/** @var \XcVm\Core\Http\Router $router Injected by the Front Controller (index.php). */
+/** @var Router $router Injected by the Front Controller (index.php). */
 
 // ─── List Pages ────────────────────────────────────
 

@@ -14,7 +14,7 @@ use XcVm\Domain\Line\ActiveCodeService;
  * - action=active_codes_export_txt
  *
  * (action=active_code_details renders an HTML fragment, so it lives in its own
- * {@see \XcVm\Public\Controllers\Admin\ActiveCodeDetailsController}.)
+ * {@see ActiveCodeDetailsController}.)
  *
  * @package XC_VM_Public_Controllers_Admin
  */

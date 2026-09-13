@@ -112,7 +112,7 @@ class BlocklistAjaxController extends BaseAjaxController {
             if (file_exists(CIDR_TMP_PATH . $rASN)) {
                 $rCIDRs = json_decode(file_get_contents(CIDR_TMP_PATH . $rASN), true);
 
-                foreach ($rCIDRs as $rCIDR => $rData) {
+                foreach ($rCIDRs as $rData) {
                     if (ip2long($rData[1]) <= ip2long($rIP) && ip2long($rIP) <= ip2long($rData[2])) {
                         $rTypes = array();
 

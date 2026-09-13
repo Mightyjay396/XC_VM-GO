@@ -5,6 +5,7 @@ namespace XcVm\Domain\Stream;
 use XcVm\Core\Config\DomainResolver;
 use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\ImageUtils;
+use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
  * PlaylistGenerator — playlist generator
@@ -17,7 +18,7 @@ use XcVm\Core\Util\ImageUtils;
  */
 
 class PlaylistGenerator {
-	use \XcVm\Infrastructure\Database\DatabaseAware;
+	use DatabaseAware;
 	/**
 	 * Generate a playlist (M3U) for a user/device.
 	 *

@@ -379,7 +379,7 @@ class StreamsCronJob implements CommandInterface {
 
                 $rUUIDs = array();
                 $rConnections = ConnectionTracker::getConnections(SERVER_ID, null, $rStream['id']);
-                foreach ($rConnections as $rUserID => $rItems) {
+                foreach ($rConnections as $rItems) {
                     foreach ($rItems as $rItem) {
                         $rUUIDs[] = $rItem['uuid'];
                     }

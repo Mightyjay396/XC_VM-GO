@@ -4,6 +4,7 @@ namespace XcVm\Domain\Line;
 
 use XcVm\Core\Config\DomainResolver;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
  * ActiveCodeService — Native Smart Activation Codes System
@@ -17,7 +18,7 @@ use XcVm\Domain\User\UserRepository;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class ActiveCodeService {
-    use \XcVm\Infrastructure\Database\DatabaseAware;
+    use DatabaseAware;
 
     /**
      * Generate unique collision-free code string.

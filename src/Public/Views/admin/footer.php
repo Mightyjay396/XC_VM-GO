@@ -367,7 +367,7 @@ $xmBare  = $xmSetup || isset($_GET['modal']);
         // Live tables auto-refresh every 5s (paused while a modal is open), so
         // status / connections / uptime stay current like the legacy panel.
         var LIVE_PAGES = ['streams', 'lines', 'radios', 'movies', 'ondemand'];
-        var xcPage = <?= json_encode(\XcVm\Core\Util\AdminHelpers::getPageName()); ?>;
+        var xcPage = <?= json_encode(AdminHelpers::getPageName()); ?>;
         if (LIVE_PAGES.indexOf(xcPage) !== -1) {
             setInterval(function() {
                 // Pause while a modal is open, or while a row-action dropdown is open

@@ -42,6 +42,7 @@ class ResellerLoginController {
         global $db;
 
         // Translator FQCN for reseller/login.php's `$language::get(...)` calls.
+        // phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- consumed by required view reseller/login.php
         $language = Translator::class;
 
         if (intval($rSettings['login_flood']) > 0) {
@@ -79,6 +80,7 @@ class ResellerLoginController {
 
         // Render login view
         $__viewFile = MAIN_HOME . 'Public/Views/reseller/login.php';
+        // phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- consumed by required view reseller/login.php
         $referrer = htmlspecialchars(RequestManager::get('referrer') ?? '');
 
         if (file_exists($__viewFile)) {

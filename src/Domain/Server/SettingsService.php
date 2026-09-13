@@ -5,6 +5,7 @@ namespace XcVm\Domain\Server;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Localization\Translator;
+use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Fanout\FanoutConfig;
 
 /**
@@ -18,7 +19,7 @@ use XcVm\Streaming\Fanout\FanoutConfig;
  */
 
 class SettingsService {
-	use \XcVm\Infrastructure\Database\DatabaseAware;
+	use DatabaseAware;
 	/**
 	 * Save general panel settings from admin form data.
 	 *
@@ -75,7 +76,7 @@ class SettingsService {
 			$rArray['search_items'] = 1;
 		}
 
-		if (isset($rArray['language']) && class_exists(\XcVm\Core\Localization\Translator::class, false)) {
+		if (isset($rArray['language']) && class_exists(Translator::class, false)) {
 			if (!in_array($rArray['language'], Translator::available(), true)) {
 				$rArray['language'] = 'en';
 			}
