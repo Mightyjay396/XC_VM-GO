@@ -124,17 +124,21 @@ repeated syncs don't trip fail2ban. See the header of `tools/sync-dev.sh` (or
 
 ## ✅ Pre-Commit Checks
 
-Run these before committing — **CI runs the exact same set and will reject a PR
-that fails any of them:**
+**Always run `make cs-fix` first.** It auto-formats your changes to the coding
+standard (K&R braces, tab indentation, spacing, import order) via phpcbf, so your
+diff matches what CI expects. Then run the checks below — **CI runs the exact same
+set and will reject a PR that fails any of them:**
 
 ```sh
+make cs-fix        # run FIRST — auto-format to the coding standard (phpcbf)
+make cs            # verify code style: PSR-12 base + K&R braces + tab indentation
 make phpstan       # static analysis, level 5 (also catches syntax errors)
-make cs            # code style — import/namespace hygiene (phpcs + Slevomat)
 make gates         # PSR-4 regression gates (see below)
 php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist   # unit tests
-
-make cs-fix        # auto-apply fixable style issues
 ```
+
+`make cs-fix` applies everything auto-fixable; whatever `make cs` still reports
+afterwards (e.g. a missing parameter type hint) you fix by hand.
 
 `make gates` runs three CI blockers:
 
@@ -180,10 +184,16 @@ How the gate works:
 
 ## ✨ Code Style
 
-- **K&R** brace style for PHP; enforced by phpcs (Slevomat) via `make cs` /
-  `make cs-fix`. The ruleset (`build/phpcs.xml.dist`) **excludes view templates**
-  (`Public/Views/`, `Modules/*/views/`), so short-tag templates (`<?`, `<?=`)
-  need no special handling there.
+The PHP standard (`build/phpcs.xml.dist`) is PSR-12 with project overrides —
+**run `make cs-fix` to auto-format to it before committing** (`make cs` only
+reports). Key points:
+
+- **K&R** brace style (opening brace on the same line), not PSR-12's Allman.
+- **Tabs** for indentation (one tab per level), not spaces.
+- Give every function parameter a **type hint** (`make cs` flags untyped ones;
+  this one is not auto-fixable — add the type yourself).
+- The ruleset **excludes view templates** (`Public/Views/`, `Modules/*/views/`),
+  so short-tag templates (`<?`, `<?=`) need no special handling there.
 - All code comments and docblocks in **English**.
 - Prefer inverting empty-else guards: `if (!$c) { body }` over
   `if ($c) {} else { body }`.

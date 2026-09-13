@@ -1,10 +1,9 @@
-<?xml version="1.0"?>
-<ruleset name="XC_VM">
-    <description>
-        Import / namespace hygiene only (NOT full PSR-12) — a 1:1 replacement for
-        the previous narrow PHP-CS-Fixer ruleset, using phpcs + Slevomat. The win
-        over PHP-CS-Fixer: UnusedUses is precise — it does not treat a class name
-        that merely appears in a PHPDoc description as "used".
+<?xml version="1.0" encoding="UTF-8"?>
+<ruleset name="XC_VM PSR-12"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="../../vendor/squizlabs/php_codesniffer/phpcs.xsd">
+    <description>   
+        PSR-12 strict coding standard
         Run via `make cs` (report) / `make cs-fix` (auto-fix, = phpcbf).
     </description>
 
@@ -17,44 +16,257 @@
     <exclude-pattern>*/Public/Views/*</exclude-pattern>
     <exclude-pattern>*/Modules/*/views/*</exclude-pattern>
 
+    <!-- Analyse PHP only. phpcbf's default extension list also covers js/css
+         (legacy tokenizers), which would otherwise reformat those files. -->
     <arg name="extensions" value="php"/>
-    <arg name="colors"/>
-    <arg value="p"/><!-- show progress -->
 
-    <!-- no_unused_imports (precise): remove `use` that is not referenced. -->
-    <rule ref="SlevomatCodingStandard.Namespaces.UnusedUses">
-        <properties>
-            <!-- true = also treat class names used in PHPDoc TYPE positions
-                 (@param/@return/@var/@throws) as "used", so imports referenced
-                 only from a docblock type are NOT removed. (searchAnnotations
-                 parses annotation types, not free-text descriptions.) -->
-            <property name="searchAnnotations" value="true"/>
-        </properties>
+    <!-- Indentation is a real tab (rendered 4 wide), not PSR-12's 4 spaces. -->
+    <arg name="tab-width" value="4"/>
+
+    <!-- Code MUST follow PSR-12, EXCEPT brace placement: this project uses
+         K&R / one-true-brace (opening brace on the SAME line), not PSR-12's
+         Allman placement. The Allman-enforcing sniffs are excluded here and the
+         K&R sniffs are added at the end of this ruleset. -->
+    <rule ref="PSR12">
+        <exclude name="Generic.Functions.OpeningFunctionBraceBsdAllman"/>
+        <exclude name="PSR2.Classes.ClassDeclaration.OpenBraceNewLine"/>
+        <exclude name="Generic.WhiteSpace.DisallowTabIndent"/>
+        <!-- Multi-line function declarations also keep the brace on the same
+             line (K&R), so drop PSR-12's "brace on new line" for them. -->
+        <exclude name="Squiz.Functions.MultiLineFunctionDeclaration.BraceOnSameLine"/>
     </rule>
-    <!-- Drop a `use` that points at the file's own namespace. -->
-    <rule ref="SlevomatCodingStandard.Namespaces.UseFromSameNamespace"/>
 
-    <!-- no_leading_import_slash: `use \Foo;` -> `use Foo;` -->
-    <rule ref="SlevomatCodingStandard.Namespaces.UseDoesNotStartWithBackslash"/>
-
-    <!-- ordered_imports: alphabetically sorted `use` statements. -->
-    <rule ref="SlevomatCodingStandard.Namespaces.AlphabeticallySortedUses"/>
-
-    <!-- single_line_after_imports + no_extra_blank_lines[use]:
-         exactly one blank line before/after the use block, none between. -->
-    <rule ref="SlevomatCodingStandard.Namespaces.UseSpacing">
+    <!-- Indentation MUST use tabs (one tab per level), not PSR-12's 4 spaces. -->
+    <rule ref="Generic.WhiteSpace.DisallowSpaceIndent"/>
+    <rule ref="Generic.WhiteSpace.ScopeIndent">
         <properties>
-            <property name="linesCountBeforeFirstUse" value="1"/>
-            <property name="linesCountBetweenUseTypes" value="0"/>
-            <property name="linesCountAfterLastUse" value="1"/>
+            <property name="indent" value="4"/>
+            <property name="tabIndent" value="true"/>
         </properties>
     </rule>
 
-    <!-- blank_line_after_namespace: exactly one blank line around `namespace`. -->
-    <rule ref="SlevomatCodingStandard.Namespaces.NamespaceSpacing">
+    <!-- Generic rules -->
+
+    <!-- All values in multiline arrays must be indented with 4 spaces. -->
+    <rule ref="Generic.Arrays.ArrayIndent"/>
+
+    <!-- The short array syntax MUST be used to define arrays. -->
+    <rule ref="Generic.Arrays.DisallowLongArraySyntax"/>
+
+    <!-- There MUST NOT be duplicate class names. -->
+    <rule ref="Generic.Classes.DuplicateClassName"/>
+
+    <!-- The final keyword on methods MUST be omitted in final classes. -->
+    <rule ref="Generic.CodeAnalysis.UnnecessaryFinalModifier"/>
+
+    <!-- Detects unnecessary overridden methods that simply call their parent. -->
+    <rule ref="Generic.CodeAnalysis.UselessOverridingMethod"/>
+
+    <!-- There MUST be one whitespace after a type casting operator. -->
+    <rule ref="Generic.Formatting.SpaceAfterCast"/>
+
+    <!-- Checks the cyclomatic complexity (McCabe) for functions. -->
+    <rule ref="Generic.Metrics.CyclomaticComplexity"/>
+
+    <!-- Checks the nesting level for methods. -->
+    <rule ref="Generic.Metrics.NestingLevel"/>
+
+    <!-- Checks that abstract classes are prefixed by Abstract. -->
+    <rule ref="Generic.NamingConventions.AbstractClassNamePrefix"/>
+
+    <!-- Ensures method and functions are named correctly. -->
+    <rule ref="Generic.NamingConventions.CamelCapsFunctionName"/>
+
+    <!-- Checks that interfaces are suffixed by Interface. -->
+    <rule ref="Generic.NamingConventions.InterfaceNameSuffix"/>
+
+    <!-- Checks that traits are suffixed by Trait. -->
+    <rule ref="Generic.NamingConventions.TraitNameSuffix"/>
+
+    <!-- The backtick operator MUST NOT be used. -->
+    <rule ref="Generic.PHP.BacktickOperator"/>
+
+    <!-- Deprecated PHP functions MUST be avoided. -->
+    <rule ref="Generic.PHP.DeprecatedFunctions"/>
+
+    <!-- The PHP `goto` language construct SHOULD NOT be used. -->
+    <rule ref="Generic.PHP.DiscourageGoto"/>
+
+    <!-- Alias functions SHOULD NOT be used. -->
+    <rule ref="Generic.PHP.ForbiddenFunctions">
         <properties>
-            <property name="linesCountBeforeNamespace" value="1"/>
-            <property name="linesCountAfterNamespace" value="1"/>
+            <property name="forbiddenFunctions" type="array">
+                <element key="chop" value="rtrim"/>
+                <element key="close" value="closedir"/>
+                <element key="compact" value="null"/>
+                <element key="delete" value="unset"/>
+                <element key="doubleval" value="floatval"/>
+                <element key="extract" value="null"/>
+                <element key="fputs" value="fwrite"/>
+                <element key="ini_alter" value="ini_set"/>
+                <element key="is_double" value="is_float"/>
+                <element key="is_integer" value="is_int"/>
+                <element key="is_long" value="is_int"/>
+                <element key="is_null" value="null"/>
+                <element key="is_real" value="is_float"/>
+                <element key="join" value="implode"/>
+                <element key="key_exists" value="array_key_exists"/>
+                <element key="pos" value="current"/>
+                <element key="settype" value="null"/>
+                <element key="show_source" value="highlight_file"/>
+                <element key="sizeof" value="count"/>
+                <element key="strchr" value="strstr"/>
+            </property>
+        </properties>
+    </rule>
+
+    <!-- Throws an error or warning when any code prefixed with an asperand is encountered. -->
+    <rule ref="Generic.PHP.NoSilencedErrors"/>
+
+    <!-- Checks that the `strict_types` has been declared. -->
+    <!-- <rule ref="Generic.PHP.RequireStrictTypes"/> -->
+
+    <!-- The constant `PHP_SAPI` SHOULD be used instead of the `php_sapi_name()` function. -->
+    <rule ref="Generic.PHP.SAPIUsage"/>
+
+    <!-- Checks that two strings are not concatenated together; suggests using one string instead. -->
+    <rule ref="Generic.Strings.UnnecessaryStringConcat"/>
+
+    <!-- Check & fix whitespace on the inside of arbitrary parentheses. -->
+    <rule ref="Generic.WhiteSpace.ArbitraryParenthesesSpacing"/>
+
+    <!-- Verifies spacing between the spread operator and the variable/function call it applies to. -->
+    <rule ref="Generic.WhiteSpace.SpreadOperatorSpacingAfter"/>
+
+    <!-- PEAR rules -->
+
+    <!-- Verifies that control statements conform to their coding standards. -->
+    <rule ref="PEAR.ControlStructures.ControlSignature"/>
+
+    <!-- Ensure multi-line `if` conditions are defined correctly. -->
+    <rule ref="PEAR.ControlStructures.MultiLineCondition"/>
+
+    <!-- If an assignment goes over two lines, ensure the equal sign is indented. -->
+    <rule ref="PEAR.Formatting.MultiLineAssignment"/>
+
+    <!-- Ensure single and multi-line function declarations are defined correctly. -->
+    <rule ref="PEAR.Functions.FunctionDeclaration">
+        <!-- K&R: opening brace stays on the same line, incl. multi-line signatures. -->
+        <exclude name="PEAR.Functions.FunctionDeclaration.BraceOnSameLine"/>
+    </rule>
+
+    <!-- Checks that object operators are indented correctly. -->
+    <rule ref="PEAR.WhiteSpace.ObjectOperatorIndent"/>
+
+    <!-- Checks that the closing braces of scopes are aligned correctly. -->
+    <rule ref="PEAR.WhiteSpace.ScopeClosingBrace"/>
+
+    <!-- Squiz rules -->
+
+    <!-- Checks the declaration of the class and its inheritance is correct. -->
+    <rule ref="Squiz.Classes.ClassDeclaration">
+        <!-- K&R: class opening brace on the SAME line (see Generic.Classes.OpeningBraceSameLine). -->
+        <exclude name="Squiz.Classes.ClassDeclaration.OpenBraceNewLine"/>
+    </rule>
+
+    <!-- The file name MUST match the case of the terminating class name. -->
+    <rule ref="Squiz.Classes.ClassFileName"/>
+
+    <!-- For self-reference a class lower-case `self::` MUST be used
+    without spaces around the scope resolution operator. -->
+    <rule ref="Squiz.Classes.SelfMemberReference"/>
+
+    <!-- The `&&` and `||` operators SHOULD be used instead of `and` and `or`. -->
+    <rule ref="Squiz.Operators.ValidLogicalOperators"/>
+
+    <!-- The `global` keyword MUST NOT be used. -->
+    <rule ref="Squiz.PHP.GlobalKeyword"/>
+
+    <!-- PHP function calls MUST be in lowercase. -->
+    <rule ref="Squiz.PHP.LowercasePHPFunctions"/>
+
+    <!-- Non executable code MUST be removed. -->
+    <rule ref="Squiz.PHP.NonExecutableCode"/>
+
+    <!-- The pseudo-variable `$this` MUST NOT be called inside a static method or function. -->
+    <rule ref="Squiz.Scope.StaticThisUsage"/>
+
+    <!-- Makes sure there are no spaces around the concatenation operator. -->
+    <rule ref="Squiz.Strings.ConcatenationSpacing">
+        <properties>
+            <property name="spacing" value="1" />
+            <!-- Don't collapse indentation into a single space on multi-line
+                 concatenations (the `.` at the start of an indented continuation
+                 line) — that fights the indent sniff and prevents phpcbf from
+                 converging. -->
+            <property name="ignoreNewlines" value="true" />
+        </properties>
+    </rule>
+
+    <!-- Checks the separation between functions and methods. -->
+    <rule ref="Squiz.WhiteSpace.FunctionSpacing">
+        <properties>
+            <property name="spacing" value="1" />
+            <property name="spacingBeforeFirst" value="0" />
+            <property name="spacingAfterLast" value="0" />
+        </properties>
+    </rule>
+
+    <!-- There MUST NOT be any white space around the object operator UNLESS multilines are used. -->
+    <rule ref="Squiz.WhiteSpace.LogicalOperatorSpacing"/>
+
+    <!-- Verifies that class members are spaced correctly. -->
+    <rule ref="Squiz.WhiteSpace.MemberVarSpacing">
+        <properties>
+            <property name="spacing" value="1" />
+            <property name="spacingBeforeFirst" value="0" />
+        </properties>
+    </rule>
+
+    <!-- Ensure there is no whitespace before/after an object operator. -->
+    <rule ref="Squiz.WhiteSpace.ObjectOperatorSpacing">
+        <properties>
+            <property name="ignoreNewlines" value="true"/>
+        </properties>
+    </rule>
+
+    <!-- Verifies that operators have valid spacing surrounding them. -->
+    <rule ref="Squiz.WhiteSpace.OperatorSpacing">
+        <properties>
+            <property name="ignoreNewlines" value="true"/>
+        </properties>
+    </rule>
+
+    <!-- There MUST NOT be a space before a semicolon. Redundant semicolons SHOULD be avoided. -->
+    <rule ref="Squiz.WhiteSpace.SemicolonSpacing"/>
+
+    <!-- ── Disabled: multi-line ALIGNMENT sniffs incompatible with tabs ──
+         These align continuation lines (multi-line conditions / call args /
+         control-structure bodies) with spaces relative to a tab-indented base.
+         DisallowSpaceIndent then strips those spaces, so phpcbf oscillates and
+         reports FAILED TO FIX. A tab-based layout can't use space-alignment, so
+         they are turned off (severity 0). -->
+    <rule ref="PEAR.ControlStructures.MultiLineCondition"><severity>0</severity></rule>
+    <rule ref="PEAR.Functions.FunctionCallSignature"><severity>0</severity></rule>
+    <rule ref="PSR12.ControlStructures.ControlStructureSpacing"><severity>0</severity></rule>
+
+    <!-- ── Type hints ────────────────────────────────────────────────
+         Catch parameters with no type information (no native type hint and
+         no @param). Not auto-fixable — a type can't be inferred — so this is
+         report-only; expect many findings across legacy code. -->
+    <rule ref="SlevomatCodingStandard.TypeHints.ParameterTypeHint">
+        <properties>
+            <property name="enableObjectTypeHint" value="true"/>
+        </properties>
+    </rule>
+
+    <!-- ── K&R / one-true-brace style (overrides PSR-12 Allman) ──────────
+         Opening brace on the SAME line as the declaration, for classes and
+         for functions/methods/closures. Both sniffs are phpcbf-fixable. -->
+    <rule ref="Generic.Classes.OpeningBraceSameLine"/>
+    <rule ref="Generic.Functions.OpeningFunctionBraceKernighanRitchie">
+        <properties>
+            <property name="checkClosures" value="true"/>
         </properties>
     </rule>
 </ruleset>
