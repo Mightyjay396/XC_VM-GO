@@ -107,7 +107,6 @@
                 <element key="is_double" value="is_float"/>
                 <element key="is_integer" value="is_int"/>
                 <element key="is_long" value="is_int"/>
-                <element key="is_null" value="null"/>
                 <element key="is_real" value="is_float"/>
                 <element key="join" value="implode"/>
                 <element key="key_exists" value="array_key_exists"/>
