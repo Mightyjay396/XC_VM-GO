@@ -22,7 +22,16 @@ class ListingsController extends BasePlayerController {
 	public function index() {
 		global $db, $rUserInfo;
 
-		$rFlip = array_flip($rUserInfo['channel_ids']);
+		$channelIds = $rUserInfo['channel_ids'] ?? [];
+		if (empty($channelIds) && !empty($rUserInfo['bouquet'])) {
+			global $rBouquets;
+			if (empty($rBouquets)) {
+				$rBouquets = \XcVm\Domain\Bouquet\BouquetService::getAll(true);
+			}
+			$ids = \XcVm\Domain\User\UserRepository::aggregateBouquetIds($rUserInfo['bouquet'], $rBouquets);
+			$channelIds = $ids['channel_ids'] ?? [];
+		}
+		$rFlip = array_flip($channelIds);
 		$rTimezone = (RequestManager::get('timezone') ?? 'Europe/London');
 		date_default_timezone_set($rTimezone);
 
@@ -56,8 +65,18 @@ class ListingsController extends BasePlayerController {
 			$rChannels = [];
 			$rHideEmpty = (intval(RequestManager::get('hideempty')));
 
-			foreach (array_map('intval', explode(',', RequestManager::get('channels'))) as $rChannelID) {
-				if ($rChannelID && isset($rFlip[$rChannelID])) {
+			$rawChannels = RequestManager::get('channels')
+				?? RequestManager::get('stream_ids')
+				?? RequestManager::get('stream_id')
+				?? ($_GET['channels'] ?? null)
+				?? ($_GET['stream_ids'] ?? null)
+				?? ($_GET['stream_id'] ?? null)
+				?? ($_REQUEST['channels'] ?? null)
+				?? ($_REQUEST['stream_ids'] ?? null)
+				?? '';
+			$idsList = array_filter(array_map('intval', explode(',', (string) $rawChannels)));
+			foreach ($idsList as $rChannelID) {
+				if ($rChannelID && ($rFlip === [] || isset($rFlip[$rChannelID]))) {
 					$rChannels[] = $rChannelID;
 				}
 			}
@@ -75,7 +94,8 @@ class ListingsController extends BasePlayerController {
 					$rListings = [];
 					$rArchiveInfo = [];
 					$db->query('SELECT `id`, `tv_archive_duration`, `tv_archive_server_id` FROM `streams` WHERE `id` IN (' . implode(',', $rChannels) . ');');
-					if (0 < $db->num_rows()) {
+					if (0 >= $db->num_rows()) {
+					} else {
 						foreach ($db->get_rows() as $rRow) {
 							$rArchiveInfo[$rRow['id']] = $rRow;
 						}
@@ -121,16 +141,38 @@ class ListingsController extends BasePlayerController {
 							}
 							$rDefaultArray = $rDefaultEPG;
 							$rDefaultArray['ChannelId'] = $rStream['id'];
-							$rCategoryIDs = json_decode($rStream['category_id'], true);
+							$rawCat = $rStream['category_id'] ?? null;
+							if (is_string($rawCat)) {
+								$rCategoryIDs = json_decode($rawCat, true);
+								if (!is_array($rCategoryIDs)) {
+									$rCategoryIDs = is_numeric($rawCat) ? [(int) $rawCat] : [];
+								}
+							} elseif (is_numeric($rawCat)) {
+								$rCategoryIDs = [(int) $rawCat];
+							} elseif (is_array($rawCat)) {
+								$rCategoryIDs = $rawCat;
+							} else {
+								$rCategoryIDs = [];
+							}
 							$rCategories = CategoryService::getFromDatabase('live');
 							if ((string) (RequestManager::get('category') ?? '') !== '') {
 								$rCategory = ($rCategories[intval(RequestManager::get('category'))]['category_name'] ?? 'No Category');
 							} else {
 								$rCategory = ($rCategories[$rCategoryIDs[0] ?? null]['category_name'] ?? 'No Category');
 							}
-							if (1 < count($rCategoryIDs)) {
+							if (count($rCategoryIDs) > 1) {
 								$rCategory .= ' (+' . (count($rCategoryIDs) - 1) . ' others)';
 							}
+							$firstProg = ($rListings[$rStream['id']][0] ?? $rDefaultArray);
+							$rReturn[$rStream['id']] = [
+								'id' => $rStream['id'],
+								'now' => [
+									'title' => $firstProg['Title'] ?? 'Live Broadcast',
+									'start' => $firstProg['StartTime'] ?? '',
+									'end' => $firstProg['EndTime'] ?? '',
+									'percentage' => $firstProg['RelativeSize'] ?? 0,
+								],
+							];
 							$rReturn['Channels'][] = ['Id' => $rStream['id'], 'DisplayName' => $rStream['stream_display_name'], 'CategoryName' => $rCategory, 'Archive' => $rArchive, 'Image' => (ImageUtils::validateURL($rStream['stream_icon']) ?: ''), 'TvListings' => ($rListings[$rStream['id']] ?? [$rDefaultArray])];
 						}
 					}
