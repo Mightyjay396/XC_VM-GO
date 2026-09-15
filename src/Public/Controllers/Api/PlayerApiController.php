@@ -212,13 +212,11 @@ class PlayerApiController {
 			BruteforceGuard::checkAuthFlood($rUserInfo);
 			header('Content-Type: application/json; charset=utf-8');
 
-			if (isset($_SERVER['HTTP_ORIGIN'])) {
-				header('Access-Control-Allow-Origin: ' . $_SERVER['HTTP_ORIGIN']);
-			} else {
-				header('Access-Control-Allow-Origin: *');
-			}
-
-			header('Access-Control-Allow-Credentials: true');
+			// Token/credential-authenticated API (not cookie-based): never reflect
+			// the Origin together with credentials, or any site could read
+			// authenticated responses. A wildcard origin without credentials is
+			// the correct posture here.
+			header('Access-Control-Allow-Origin: *');
 
 			$output = $this->dispatch($rAction, $rCategories);
 
@@ -1036,12 +1034,9 @@ class PlayerApiController {
 	private function sendAuthError(string $status = '', string $message = ''): void {
 		$this->deny = false;
 		header('Content-Type: application/json; charset=utf-8');
-		if (isset($_SERVER['HTTP_ORIGIN'])) {
-			header('Access-Control-Allow-Origin: ' . $_SERVER['HTTP_ORIGIN']);
-		} else {
-			header('Access-Control-Allow-Origin: *');
-		}
-		header('Access-Control-Allow-Credentials: true');
+		// Token/credential-authenticated API (not cookie-based): do not reflect
+		// the Origin with credentials.
+		header('Access-Control-Allow-Origin: *');
 		$payload = [
 			'user_info' => [
 				'auth' => 0
