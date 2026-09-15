@@ -433,7 +433,9 @@ class ActiveCodeService {
 			// still fail the check, or any client could read a locked code's
 			// credentials simply by leaving the identifier out.
 			if (!empty($codeRow['mac']) && strcasecmp(trim($codeRow['mac']), (string) $mac) !== 0) {
-				return ['status' => 'DEVICE_MISMATCH', 'message' => 'Code is locked to another hardware device (MAC: ' . htmlspecialchars($codeRow['mac']) . ').'];
+				// Do not echo the bound MAC back: it would hand an attacker the exact
+				// value to spoof and defeat the hardware lock.
+				return ['status' => 'DEVICE_MISMATCH', 'message' => 'Code is locked to another hardware device.'];
 			}
 			// Same rule for a real hardware device_id lock (synthetic 'DEV-' web
 			// fingerprints never lock and never satisfy a lock).
@@ -1279,7 +1281,6 @@ class ActiveCodeService {
 			'exp_date' => $expDate,
 			'exp_date_formatted' => $expDate ? date('Y-m-d H:i:s', $expDate) : null,
 			'is_device_locked' => (!empty($codeRow['mac']) || !empty($codeRow['device_id'])),
-			'locked_mac' => $codeRow['mac'] ?: null,
 		];
 	}
 
