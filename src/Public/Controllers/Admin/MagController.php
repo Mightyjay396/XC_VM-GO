@@ -33,7 +33,12 @@ class MagController extends BaseAdminController {
 			$rDevice['user'] = ['bouquet' => []];
 		}
 
+		$categoryTemplates = \XcVm\Domain\Stream\CategoryTemplateService::getTemplatesForUser(
+			$GLOBALS['rAdminUserInfo'] ?? ($GLOBALS['rUserInfo'] ?? []),
+			true
+		);
+
 		$this->setTitle('MAG Device');
-		$this->render('mag', ['rDevice' => $rDevice]);
+		$this->render('mag', ['rDevice' => $rDevice, 'categoryTemplates' => $categoryTemplates]);
 	}
 }
