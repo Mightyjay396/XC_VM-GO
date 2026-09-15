@@ -26,17 +26,33 @@ class CategoryService {
 	 * @param array $rData Form data with a JSON `categories` list (id + order).
 	 * @return array ['status' => STATUS_SUCCESS].
 	 */
-	public static function reorder(array $rData) {
+	public static function reorder($rData) {
 		$db = self::db();
-		$rPostCategories = json_decode($rData['categories'], true);
-
-		if (0 < count($rPostCategories)) {
-			foreach ($rPostCategories as $rOrder => $rPostCategory) {
-				$db->query('UPDATE `streams_categories` SET `cat_order` = ?, `parent_id` = 0 WHERE `id` = ?;', intval($rOrder) + 1, $rPostCategory['id']);
-			}
+		$rawCategories = $rData['categories'] ?? [];
+		if (is_string($rawCategories)) {
+			$rPostCategories = json_decode($rawCategories, true);
+		} elseif (is_array($rawCategories)) {
+			$rPostCategories = $rawCategories;
+		} else {
+			$rPostCategories = [];
 		}
 
-		return ['status' => STATUS_SUCCESS];
+		if (is_array($rPostCategories) && count($rPostCategories) > 0) {
+			foreach ($rPostCategories as $rOrder => $rPostCategory) {
+				$catId = intval($rPostCategory['id'] ?? 0);
+				if ($catId > 0) {
+					$db->query('UPDATE `streams_categories` SET `cat_order` = ?, `parent_id` = 0 WHERE `id` = ?;', intval($rOrder) + 1, $catId);
+				}
+			}
+			FileCache::delCache('categories');
+			FileCache::delCache('category_map');
+		}
+
+		if (!defined('STATUS_SUCCESS') && class_exists(\XC_Bootstrap::class)) {
+			\XC_Bootstrap::defineStatusConstants();
+		}
+
+		return ['status' => defined('STATUS_SUCCESS') ? STATUS_SUCCESS : 1];
 	}
 
 	/**
@@ -45,7 +61,11 @@ class CategoryService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process(array $rData) {
+	public static function process($rData) {
+		if (!defined('STATUS_SUCCESS') && class_exists(\XC_Bootstrap::class)) {
+			\XC_Bootstrap::defineStatusConstants();
+		}
+
 		$db = self::db();
 		if (isset($rData['edit'])) {
 			$rArray = AdminHelpers::overwriteData(self::getById($rData['edit']), $rData);
@@ -66,10 +86,19 @@ class CategoryService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
-			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
+			$catId = isset($rData['edit']) ? intval($rData['edit']) : intval($rInsertID);
+			FileCache::delCache('categories');
+			FileCache::delCache('category_map');
+
+			// Sync any templates and subscribers tied to this category
+			if ($catId > 0 && class_exists(CategoryTemplateService::class)) {
+				CategoryTemplateService::syncTemplatesForCategory($catId);
+			}
+
+			return ['status' => defined('STATUS_SUCCESS') ? STATUS_SUCCESS : 1, 'data' => ['insert_id' => $rInsertID]];
 		}
 
-		return ['status' => STATUS_FAILURE, 'data' => $rData];
+		return ['status' => defined('STATUS_FAILURE') ? STATUS_FAILURE : 0, 'data' => $rData];
 	}
 
 	/**
