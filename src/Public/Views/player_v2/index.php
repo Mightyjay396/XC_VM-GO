@@ -28,9 +28,8 @@ $primaryHero = !empty($heroSlides[0]) ? $heroSlides[0] : [
     'duration' => '4K Ultra HD',
 ];
 
-$heroBackdrop = !empty($primaryHero['backdrop'])
-    ? $primaryHero['backdrop']
-    : (!empty($primaryHero['cover']) ? $primaryHero['cover'] : $assetsPath . 'img/pages/profile-banner.png');
+$heroBackdrop = ImageUtils::validateURL($primaryHero['backdrop'] ?? '')
+    ?: (ImageUtils::validateURL($primaryHero['cover'] ?? '') ?: $assetsPath . 'img/pages/profile-banner.png');
 
 $heroDetailUrl = $primaryHero['type'] === 'series'
     ? $baseUrl . 'series?id=' . (int)$primaryHero['id']
@@ -236,9 +235,8 @@ $heroPlayUrl = $primaryHero['type'] === 'series'
         $rank = $idx + 1;
         $isSeries = $item['type'] === 'series';
         $detailLink = $isSeries ? $baseUrl . 'series?id=' . (int)$item['id'] : $baseUrl . 'movie?id=' . (int)$item['id'];
-        $posterUrl = !empty($item['cover'])
-            ? $item['cover']
-            : (!empty($item['backdrop']) ? $item['backdrop'] : $assetsPath . 'img/pages/profile-banner.png');
+        $posterUrl = ImageUtils::validateURL($item['cover'] ?? '')
+            ?: (ImageUtils::validateURL($item['backdrop'] ?? '') ?: $assetsPath . 'img/pages/profile-banner.png');
         $rating = !empty($item['rating']) ? number_format((float)$item['rating'], 1) : null;
         $itemGenre = !empty($item['genre']) ? (is_array($item['genre']) ? implode(', ', $item['genre']) : $item['genre']) : '';
         $firstGenre = $itemGenre ? explode(',', $itemGenre)[0] : ($isSeries ? 'Series' : 'Feature');

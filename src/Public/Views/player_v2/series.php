@@ -56,7 +56,7 @@ $assetsPath = $baseUrl . 'assets/';
                     title="<?= htmlspecialchars($cat['name'] ?? 'Category') ?>">
                     <div class="d-flex align-items-center text-truncate me-2">
                       <?php if (!empty($cat['emoji'])): ?>
-                        <span class="category-emoji me-2"><?= $cat['emoji'] ?></span>
+                        <span class="category-emoji me-2"><?= htmlspecialchars($cat['emoji']) ?></span>
                       <?php else: ?>
                         <i class="icon-base <?= $cat['icon'] ?? 'bx bx-movie-play' ?> me-2 text-primary"></i>
                       <?php endif; ?>
