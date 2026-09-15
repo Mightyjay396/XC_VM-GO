@@ -814,6 +814,13 @@ class CategoryTemplateService {
 			return ['success' => false, 'message' => 'Template not found.'];
 		}
 
+		// A non-admin may only apply a template they are allowed to see; a
+		// non-admin caller always targets their own lines (targetResellerId is
+		// honoured for admins only, below), so no target-scope check is needed.
+		if (!self::canAccessTemplate($template, $user, $isAdmin)) {
+			return ['success' => false, 'message' => 'You do not have permission to apply this template.'];
+		}
+
 		// Build custom_data JSON
 		$customData = self::buildCustomData($templateId);
 		$customDataJson = json_encode($customData, JSON_UNESCAPED_UNICODE);
