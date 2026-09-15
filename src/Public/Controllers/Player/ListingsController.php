@@ -76,7 +76,7 @@ class ListingsController extends BasePlayerController {
 				?? '';
 			$idsList = array_filter(array_map('intval', explode(',', (string) $rawChannels)));
 			foreach ($idsList as $rChannelID) {
-				if ($rChannelID && ($rFlip === [] || isset($rFlip[$rChannelID]))) {
+				if ($rChannelID && isset($rFlip[$rChannelID])) {
 					$rChannels[] = $rChannelID;
 				}
 			}

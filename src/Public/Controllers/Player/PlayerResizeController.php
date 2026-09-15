@@ -24,6 +24,12 @@ class PlayerResizeController extends BasePlayerController {
 			session_write_close();
 		}
 
+		// Sensitive endpoint: it fetches/serves remote images. Require an
+		// authenticated player session (the scope bootstrap populates rUserInfo).
+		if (!isset($GLOBALS['rUserInfo']) || empty($GLOBALS['rUserInfo']['id'])) {
+			exit();
+		}
+
 		$cacheDir = defined('IMAGES_PATH')
 			? IMAGES_PATH . 'player/'
 			: (defined('MAIN_HOME') ? MAIN_HOME : '/home/xc_vm/') . 'storage/images/player/';
