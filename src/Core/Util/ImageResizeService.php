@@ -148,28 +148,11 @@ class ImageResizeService {
 				$rawImageData = null;
 
 				if (ImageUtils::isAbsoluteUrl($rActURL)) {
-					// SSRF guard: a raw user-supplied URL must resolve to a public
-					// host; trusted server-list URLs (resolved above) are exempt.
-					if (!$rTrustedSource && !self::hostIsPublic($rActURL)) {
+					$rawImageData = self::fetchRemoteImage($rActURL, $rTrustedSource);
+					if ($rawImageData === null) {
 						goto fallback;
 					}
-					$ctx = stream_context_create([
-						'http' => [
-							'method' => 'GET',
-							'header' => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nAccept: image/jpeg,image/png,image/*;q=0.5\r\n",
-							'timeout' => 10,
-							// Do not follow redirects: a 30x could point at an internal
-							// address and slip past the pre-flight host check.
-							'follow_location' => 0,
-							'max_redirects' => 0,
-						],
-						'ssl' => [
-							'verify_peer' => true,
-							'verify_peer_name' => true,
-						]
-					]);
-					$rawImageData = @file_get_contents($rActURL, false, $ctx);
-					if ($rawImageData !== false && $rawImageData !== '') {
+					if ($rawImageData !== '') {
 						$rImage = @imagecreatefromstring($rawImageData);
 					}
 				} else {
@@ -256,19 +239,22 @@ class ImageResizeService {
 	}
 
 	/**
-	 * SSRF guard for outbound image fetches — true only if the URL is http(s)
-	 * and its host resolves entirely to public IPs. Rejects loopback, RFC1918,
-	 * link-local 169.254/16 (cloud metadata), CGNAT and other reserved ranges,
-	 * and an unresolvable host. Applied only to raw user-supplied URLs.
+	 * SSRF guard for outbound image fetches — returns the URL host's validated
+	 * public IPs, or null if the URL is not http(s), the host does not resolve,
+	 * or any resolved address is loopback/private/reserved/link-local (cloud
+	 * metadata) or CGNAT. The IPs are returned so the fetch can pin them and
+	 * never re-resolve (DNS rebinding / TOCTOU).
+	 *
+	 * @return list<string>|null
 	 */
-	private static function hostIsPublic(string $url): bool {
+	private static function resolvePublicIps(string $url): ?array {
 		$scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
 		if ($scheme !== 'http' && $scheme !== 'https') {
-			return false;
+			return null;
 		}
 		$host = parse_url($url, PHP_URL_HOST);
 		if (!is_string($host) || $host === '') {
-			return false;
+			return null;
 		}
 		$host = trim($host, '[]');
 
@@ -293,20 +279,79 @@ class ImageResizeService {
 		}
 
 		if ($ips === []) {
-			return false;
+			return null;
 		}
 
 		foreach ($ips as $ip) {
 			if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-				return false;
+				return null;
 			}
 			// filter_var misses CGNAT shared space (RFC 6598, 100.64.0.0/10).
 			if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
 				&& (ip2long($ip) & 0xffc00000) === (ip2long('100.64.0.0') & 0xffc00000)) {
-				return false;
+				return null;
 			}
 		}
 
-		return true;
+		return array_values($ips);
+	}
+
+	/**
+	 * Fetch a remote image via cURL.
+	 *
+	 * Raw user URL ($trusted = false): the host is SSRF-validated and the vetted
+	 * IPs are pinned with CURLOPT_RESOLVE so libcurl cannot re-resolve to an
+	 * internal address after the check (DNS rebinding); TLS is verified and
+	 * redirects are refused. Admin-configured server URL ($trusted = true):
+	 * self-signed internal certs are tolerated.
+	 *
+	 * @return string|null Raw bytes, or null on failure / blocked host.
+	 */
+	private static function fetchRemoteImage(string $url, bool $trusted): ?string {
+		$scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+		if ($scheme !== 'http' && $scheme !== 'https') {
+			return null;
+		}
+
+		$opts = [
+			CURLOPT_URL            => $url,
+			CURLOPT_RETURNTRANSFER => true,
+			CURLOPT_TIMEOUT        => 10,
+			CURLOPT_CONNECTTIMEOUT => 6,
+			CURLOPT_FOLLOWLOCATION => false,
+			CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+			CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			CURLOPT_HTTPHEADER     => ['Accept: image/jpeg,image/png,image/*;q=0.5'],
+		];
+
+		if ($trusted) {
+			// Admin-configured internal server: self-signed certs are expected.
+			$opts[CURLOPT_SSL_VERIFYPEER] = false;
+			$opts[CURLOPT_SSL_VERIFYHOST] = false;
+		} else {
+			$safeIps = self::resolvePublicIps($url);
+			if ($safeIps === null) {
+				return null;
+			}
+			$opts[CURLOPT_SSL_VERIFYPEER] = true;
+			$opts[CURLOPT_SSL_VERIFYHOST] = 2;
+			$host = trim((string) parse_url($url, PHP_URL_HOST), '[]');
+			if ($host !== '' && filter_var($host, FILTER_VALIDATE_IP) === false) {
+				$port = (int) (parse_url($url, PHP_URL_PORT) ?: ($scheme === 'https' ? 443 : 80));
+				$opts[CURLOPT_RESOLVE] = [$host . ':' . $port . ':' . implode(',', $safeIps)];
+			}
+		}
+
+		$ch = curl_init();
+		curl_setopt_array($ch, $opts);
+		$data = curl_exec($ch);
+		$code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		curl_close($ch);
+
+		if ($data === false || $code < 200 || $code >= 400) {
+			return null;
+		}
+
+		return (string) $data;
 	}
 }
