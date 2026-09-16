@@ -136,21 +136,24 @@ Edit the version constant, disable the phpMiniAdmin access flag, and clear its p
 
 
 ```text
-src/Core/Config/AppConfig.php
+src/Core/Config/ConstantsInitializer.php
 ```
+
+These frequently-edited constants are `define()`s at the **top of the file** (above the
+class); `appConfig()` reads them back, and `init()` skips the already-defined ones.
 
 **Quick commands:**
 
 ```bash
-sed -i "s/define('DB_ACCESS_ENABLED', true);/define('DB_ACCESS_ENABLED', false);/" src/Core/Config/AppConfig.php
-sed -i "s/define('DB_ACCESS_PWD', *\"[^\"]*\");/define('DB_ACCESS_PWD', \"\");/" src/Core/Config/AppConfig.php
-sed -i "s/define('XC_VM_VERSION', *'[0-9]\+\.[0-9]\+\.[0-9]\+');/define('XC_VM_VERSION', '${VERSION}');/" src/Core/Config/AppConfig.php
+sed -i "s/define('DB_ACCESS_ENABLED', true);/define('DB_ACCESS_ENABLED', false);/" src/Core/Config/ConstantsInitializer.php
+sed -i "s/define('DB_ACCESS_PWD', '[^']*');/define('DB_ACCESS_PWD', '');/" src/Core/Config/ConstantsInitializer.php
+sed -i "s/define('XC_VM_VERSION', '[0-9]\+\.[0-9]\+\.[0-9]\+');/define('XC_VM_VERSION', '${VERSION}');/" src/Core/Config/ConstantsInitializer.php
 ```
 
 **Create one final release commit/push:**
 
 ```bash
-git add src/Core/Config/AppConfig.php changelog.json src/migrations/deleted_files.txt
+git add src/Core/Config/ConstantsInitializer.php changelog.json src/migrations/deleted_files.txt
 git add docs/en docs/ru   # include any doc edits + the regenerated ru (step 2)
 git commit -m "Prepare release ${VERSION}"
 git push

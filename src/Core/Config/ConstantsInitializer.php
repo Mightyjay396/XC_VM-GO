@@ -4,6 +4,15 @@ namespace XcVm\Core\Config;
 
 use RuntimeException;
 
+// Frequently-edited release constants — kept as define()s at the top of the file
+// so they are easy to find/edit and the release automation can sed them by name.
+// appConfig() reads them back below; init() then skips the already-defined ones.
+// Guarded so a pre-definition (e.g. the PHPStan stub) never causes a fatal.
+defined('DB_ACCESS_ENABLED') || define('DB_ACCESS_ENABLED', false);
+defined('DB_ACCESS_PWD') || define('DB_ACCESS_PWD', '');
+defined('DEV_MODE') || define('DEV_MODE', false);
+defined('XC_VM_VERSION') || define('XC_VM_VERSION', '2.5.1');
+
 /**
  * Single source of truth for the runtime constants that used to live in the
  * procedural prelude files (Paths.php, AppConfig.php, Binaries.php) and in
@@ -12,9 +21,10 @@ use RuntimeException;
  * The value maps (paths(), appConfig(), binaries(), statuses()) are pure and
  * unit-testable with different inputs in the same process — unlike the raw
  * define() constants they feed, which are one-shot per process. init() is the
- * ONE place define() runs; every boot path (ConstantsStage, WebApiBootstrap,
- * StreamingRequestBootstrap, the progress endpoint) calls it directly and gets
- * the full, correctly-ordered constant set regardless of call order.
+ * place define() runs for the derived constants (the four frequently-edited
+ * release constants above are defined at file scope for editability); every boot
+ * path (ConstantsStage, WebApiBootstrap, StreamingRequestBootstrap, the progress
+ * endpoint) calls it directly and gets the full constant set regardless of order.
  *
  * @package XC_VM_Core_Config
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -131,10 +141,10 @@ class ConstantsInitializer {
 	 */
 	public static function appConfig(): array {
 		return [
-			'DB_ACCESS_ENABLED' => false,
-			'DB_ACCESS_PWD'     => '',
-			'DEV_MODE'          => false,
-			'XC_VM_VERSION'     => '2.5.1',
+			'DB_ACCESS_ENABLED' => DB_ACCESS_ENABLED,
+			'DB_ACCESS_PWD'     => DB_ACCESS_PWD,
+			'DEV_MODE'          => DEV_MODE,
+			'XC_VM_VERSION'     => XC_VM_VERSION,
 			'GIT_OWNER'         => 'Vateron-Media',
 			'GIT_REPO_MAIN'     => 'XC_VM',
 			'GIT_REPO_UPDATE'   => 'XC_VM_Update',
