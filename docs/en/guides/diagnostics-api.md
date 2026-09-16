@@ -89,4 +89,4 @@ Extracts GPU (NVENC) process data from server GPU info. Used for GPU encoding di
 | --- | --- |
 | `src/Core/Diagnostics/DiagnosticsService.php` | diagnostics methods |
 | `src/Core/Logging/Logger.php` | writes logs |
-| `src/Core/Config/AppConfig.php` | version metadata |
+| `src/Core/Config/ConstantsInitializer.php` | version metadata (`appConfig()` map) |

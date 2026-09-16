@@ -154,7 +154,7 @@ Supported editions:
 Downloads via MaxMind API using `maxmind_account_id` and `maxmind_license_key`.
 Extracts `.mmdb` files from tar.gz archives to `BIN_PATH/maxmind/`.
 
-Database file paths (defined in `src/Core/Config/Binaries.php`):
+Database file paths (defined by the `binaries()` map in `src/Core/Config/ConstantsInitializer.php`):
 
 ```text
 GEOLITE2_BIN  = BIN_PATH/maxmind/GeoLite2-Country.mmdb
@@ -233,7 +233,7 @@ Periodically archived from `lines_live` to `lines_activity` by `ActivityCronJob`
 | `src/Core/GeoIP/GeoIPService.php` | high-level GeoIP + CIDR matching |
 | `src/Core/GeoIP/MaxMindUpdater.php` | MaxMind database downloader |
 | `src/Cli/CronJobs/MaxMindCronJob.php` | Tuesday / `--force` database update cron |
-| `src/Core/Config/Binaries.php` | GeoIP database file path constants |
+| `src/Core/Config/ConstantsInitializer.php` | GeoIP database file path constants (`binaries()` map) |
 | `src/Domain/User/UserRepository.php` | GeoIP enrichment on user records |
 | `src/Public/stream/auth.php` | streaming auth with the geo checks (1-4) |
 | `src/Streaming/Auth/StreamAuth.php` | GeoIP-aware server selection |

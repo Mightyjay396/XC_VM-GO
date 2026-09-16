@@ -36,7 +36,7 @@ Application code
 
 ## Error Code Registry
 
-All codes are declared in `src/Core/Error/ErrorCodes.php` as the global `$rErrorCodes` array.
+All codes are declared by the `ErrorResponder::codes()` method in `src/Core/Error/ErrorResponder.php`, which returns the code => English-description array.
 
 Code format:
 
@@ -142,7 +142,7 @@ Parameters:
 
 | Param | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `$rError` | `string` | -- | Key from `$rErrorCodes` |
+| `$rError` | `string` | -- | Key from `ErrorResponder::codes()` |
 | `$rKill` | `bool` | `true` | Terminate script after output |
 | `$rCode` | `int\|null` | `null` | Explicit HTTP response code (bypasses 404 in production) |
 
@@ -335,8 +335,7 @@ The error handling infrastructure is loaded early in the boot sequence:
 
 1. `bootstrap.php` defines `MAIN_HOME` and registers the Composer autoloader
 2. `XC_Bootstrap::loadConstants()` loads (in order):
-   - `Core/Error/ErrorCodes.php` -- populates `$rErrorCodes`
-   - `Core/Error/ErrorHandler.php` -- defines `generateError()` and `generate404()`
+   - `Core/Error/ErrorHandler.php` -- defines `generateError()` and `generate404()` (loaded globally via Composer `autoload.files`); the code catalogue itself is `ErrorResponder::codes()` in `Core/Error/ErrorResponder.php`
    - Path and config files
    - `Core/Logging/Logger.php` -- class definition
 3. `Logger::init(PHP_ERRORS, LOGS_TMP_PATH . 'error_log.log')` is called, registering the three global handlers
@@ -348,7 +347,7 @@ For streaming endpoints that bypass the full bootstrap, `RequestGuard.php` perfo
 
 ## Adding a New Error Code
 
-1. Add a new key to `src/Core/Error/ErrorCodes.php`:
+1. Add a new entry to the array returned by `ErrorResponder::codes()` in `src/Core/Error/ErrorResponder.php`:
 
 ```php
 'MY_NEW_ERROR' => 'Human-readable description.',
@@ -368,7 +367,7 @@ Descriptions must stay in English for consistency with the existing registry.
 
 | File | Purpose |
 | --- | --- |
-| `src/Core/Error/ErrorCodes.php` | Centralized error code map (`$rErrorCodes`) |
+| `src/Core/Error/ErrorResponder.php` | Centralized error code map (`ErrorResponder::codes()`) |
 | `src/Core/Error/ErrorHandler.php` | `generateError()` and `generate404()` functions |
 | `src/Core/Logging/Logger.php` | Global PHP error, exception, and fatal handlers |
 | `src/Core/Logging/LoggerInterface.php` | Logging contract interface |
