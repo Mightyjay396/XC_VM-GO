@@ -64,6 +64,16 @@ final class AdminHelpersTest extends TestCase {
 		$this->assertNull(AdminHelpers::getPageFromURL(''));
 	}
 
+	/**
+	 * post.php hands over its `referer` parameter, which the new-UI forms do not
+	 * send: a null there must read as "no page", not end the request.
+	 */
+	public function testGetPageFromUrlWithoutAReferer() {
+		$this->assertNull(AdminHelpers::getPageFromURL(null));
+		$this->assertSame('lines', AdminHelpers::getPageFromURL('lines?status=1'));
+		$this->assertNull(AdminHelpers::getPageFromURL('http://host'));
+	}
+
 	public function testProtocolDetectionFromServerVars() {
 		$saved = $_SERVER;
 
