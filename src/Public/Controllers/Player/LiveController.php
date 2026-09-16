@@ -34,7 +34,7 @@ class LiveController extends BasePlayerController {
 		$rCategoryID = (intval(RequestManager::get('category') ?? 0) ?: $rCategories[0]['id']);
 		$rSearchBy = (RequestManager::get('search') ?? null);
 		$rStreamIDs = [];
-		$rStreams = getUserStreams($rUserInfo, ['live', 'created_live'], $rCategoryID, null, $rSortBy, $rSearchBy, $rPicking, null, null, true);
+		$rStreams = getUserStreams($rUserInfo, ['live', 'created_live'], $rCategoryID, null, $rSortBy, $rSearchBy, $rPicking, 0, 0, true);
 
 		if (is_array($rStreams)) {
 			$streamList = isset($rStreams['streams']) ? $rStreams['streams'] : $rStreams;

@@ -249,22 +249,22 @@ class HomeController extends BasePlayerV2Controller {
 
 		// Fetch recent movies
 		$rMovies = function_exists('getUserStreams')
-			? getUserStreams($rUserInfo, ['movie'], null, null, 'added', null, null, 0, 18)
+			? getUserStreams($rUserInfo, ['movie'], null, null, 'added', null, [], 0, 18)
 			: ['streams' => []];
 
 		// Fetch recent series
 		$rSeries = function_exists('getUserSeries')
-			? getUserSeries($rUserInfo, null, null, 'added', null, null, 0, 18)
+			? getUserSeries($rUserInfo, null, null, 'added', null, [], 0, 18)
 			: ['streams' => []];
 
 		// Fetch live channels preview (8 channels)
 		$rLiveChannels = function_exists('getUserStreams')
-			? getUserStreams($rUserInfo, ['live', 'created_live'], null, null, 'number', null, null, 0, 8)
+			? getUserStreams($rUserInfo, ['live', 'created_live'], null, null, 'number', null, [], 0, 8)
 			: ['streams' => []];
 
 		// Fetch radio preview (6 stations)
 		$rRadioStreams = function_exists('getUserStreams')
-			? getUserStreams($rUserInfo, ['radio_streams'], null, null, 'number', null, null, 0, 6)
+			? getUserStreams($rUserInfo, ['radio_streams'], null, null, 'number', null, [], 0, 6)
 			: ['streams' => []];
 
 		// Total Counts for quick stats
