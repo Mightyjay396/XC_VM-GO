@@ -2,8 +2,14 @@
 
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Bootstrap\BootState;
+use XcVm\Core\Bootstrap\Stage\AdminShutdownStage;
 use XcVm\Core\Bootstrap\Stage\ContainerPopulateStage;
+use XcVm\Core\Bootstrap\Stage\FloodProtectionStage;
 use XcVm\Core\Bootstrap\Stage\HealthCheckStage;
+use XcVm\Core\Bootstrap\Stage\HostVerificationStage;
+use XcVm\Core\Bootstrap\Stage\ProcessTitleStage;
+use XcVm\Core\Bootstrap\Stage\SessionStage;
+use XcVm\Core\Bootstrap\Stage\StatusConstantsStage;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
 use XcVm\Core\Events\EventDispatcher;
@@ -96,5 +102,46 @@ final class BootStageTest extends TestCase {
 		DatabaseFactory::reset();
 
 		$this->assertNull(DatabaseFactory::get());
+	}
+
+	// ── HTTP-only stages self-skip under the CLI SAPI (the test runner) ──
+
+	public function testSessionStageSkipsOnCli(): void {
+		$state = $this->freshState();
+
+		(new SessionStage())->run($state);
+
+		// The early return happens before sessionStarted is set.
+		$this->assertFalse($state->sessionStarted);
+	}
+
+	/** Flood/host guards are no-ops on CLI: they must neither exit nor throw. */
+	public function testFloodAndHostStagesAreInertOnCli(): void {
+		$this->expectNotToPerformAssertions();
+		$state = $this->freshState();
+
+		(new FloodProtectionStage())->run($state);
+		(new HostVerificationStage())->run($state);
+	}
+
+	public function testProcessTitleStageRunsForEmptyAndNonEmptyNames(): void {
+		$this->expectNotToPerformAssertions();
+		$state = $this->freshState();
+
+		(new ProcessTitleStage(''))->run($state);
+		(new ProcessTitleStage('xcvm-unit-test'))->run($state);
+	}
+
+	public function testAdminShutdownStageRegistersWithoutError(): void {
+		$this->expectNotToPerformAssertions();
+
+		(new AdminShutdownStage())->run($this->freshState());
+	}
+
+	public function testStatusConstantsStageDefinesStatusCodes(): void {
+		(new StatusConstantsStage())->run($this->freshState());
+
+		$this->assertTrue(defined('STATUS_FAILURE'));
+		$this->assertSame(0, STATUS_FAILURE);
 	}
 }
