@@ -86,7 +86,6 @@ class StreamingRequestBootstrap {
 			define('PHP_ERRORS', $rShowErrors);
 		}
 
-		require_once MAIN_HOME . 'Core/Logging/Logger.php';
 		Logger::init(PHP_ERRORS, LOGS_TMP_PATH . 'error_log.log');
 
 		// ── 6. Fail-closed gate (настройки недоступны) ───────────

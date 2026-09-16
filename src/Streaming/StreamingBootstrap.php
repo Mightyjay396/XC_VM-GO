@@ -24,9 +24,6 @@ class StreamingBootstrap {
 			return null;
 		}
 
-		require_once MAIN_HOME . 'Streaming/AsyncFileOperations.php';
-		require_once MAIN_HOME . 'Core/Database/DatabaseHandler.php';
-
 		$GLOBALS['rSettings'] = $rSettings;
 		$GLOBALS['rAccess'] = $rFilename;
 		LegacyInitializer::initStreaming();
