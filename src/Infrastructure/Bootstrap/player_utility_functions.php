@@ -140,7 +140,6 @@ function getOrderedCategories(array $rCategories, string $rType = 'movie') {
 function getUserStreams(array $rUserInfo, array $rTypes = [], ?int $rCategoryID = null, ?bool $rFav = null, ?string $rOrderBy = null, ?string $rSearchBy = null, array $rPicking = [], int $rStart = 0, int $rLimit = 10, bool $rIDs = false) {
 	global $db;
 	$rStreams = ['count' => 0, 'streams' => []];
-	$rPicking = $rPicking ?? [];
 	$rAdded = false;
 	$rChannels = [];
 

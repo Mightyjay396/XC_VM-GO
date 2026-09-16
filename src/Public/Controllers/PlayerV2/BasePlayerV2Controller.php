@@ -43,7 +43,9 @@ class BasePlayerV2Controller extends BasePlayerController {
 			$GLOBALS[$key] = $value;
 		}
 
-		extract($data);
+		// Expose the view payload as locals for the legacy PHP templates.
+		// phpcs:ignore Generic.PHP.ForbiddenFunctions.Found
+		extract($data, EXTR_SKIP);
 
 		$__viewsDir = MAIN_HOME . 'Public/Views/' . $this->scope . '/';
 		$__viewFile = $__viewsDir . $view . '.php';

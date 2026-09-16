@@ -293,7 +293,7 @@ class ImageResizeService {
 			}
 		}
 
-		return array_values($ips);
+		return $ips;
 	}
 
 	/**

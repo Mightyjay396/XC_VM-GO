@@ -193,14 +193,12 @@ class PlayerCategoryHelper {
 				$tag = $candidateTag;
 				$title = trim($parts[1], " \t\n\r\0\x0B★*");
 			}
-		}
-		// 3. Check for [TAG], (TAG) at start
-		elseif (preg_match('/^[\[\(]([A-Za-z0-9\+\s]{2,10})[\]\)]\s*[-:\s]?\s*(.*)$/u', $title, $m)) {
+		} elseif (preg_match('/^[\[\(]([A-Za-z0-9\+\s]{2,10})[\]\)]\s*[-:\s]?\s*(.*)$/u', $title, $m)) {
+			// [TAG] or (TAG) at the start
 			$tag = trim($m[1]);
 			$title = trim($m[2], " \t\n\r\0\x0B★*");
-		}
-		// 4. Check for 'TAG : TITLE' or 'TAG - TITLE'
-		elseif (preg_match('/^([A-Za-z0-9\+]{2,8})\s*[:\-]\s*(.+)$/u', $title, $m)) {
+		} elseif (preg_match('/^([A-Za-z0-9\+]{2,8})\s*[:\-]\s*(.+)$/u', $title, $m)) {
+			// 'TAG : TITLE' or 'TAG - TITLE'
 			$tag = trim($m[1]);
 			$title = trim($m[2], " \t\n\r\0\x0B★*");
 		}

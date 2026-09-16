@@ -527,8 +527,9 @@ class CategoryTemplateService {
 	/**
 	 * Clone an existing template for the current user.
 	 *
-	 * @param int $templateId Template ID to copy
-	 * @param int $newOwnerId New owner ID
+	 * @param int   $templateId Template ID to copy
+	 * @param array $user       Acting user; the clone is created under this user's id
+	 * @param bool  $isAdmin    True if the caller is a full admin
 	 * @return array ['success' => bool, 'id' => int, 'message' => string]
 	 */
 	public static function cloneTemplate(int $templateId, array $user, bool $isAdmin): array {
@@ -921,7 +922,7 @@ class CategoryTemplateService {
 			if (is_array($sec['hide_ids'])) {
 				$hideIds = array_map('intval', $sec['hide_ids']);
 			} elseif (is_string($sec['hide_ids'])) {
-				$hideIds = array_map('intval', array_filter(array_map('trim', explode(',', $sec['hide_ids'])), 'strlen'));
+				$hideIds = array_map('intval', array_filter(array_map('trim', explode(',', $sec['hide_ids'])), static fn(string $v): bool => $v !== ''));
 			}
 		}
 
@@ -931,7 +932,7 @@ class CategoryTemplateService {
 			if (is_array($sec['order'])) {
 				$order = array_map('intval', $sec['order']);
 			} elseif (is_string($sec['order'])) {
-				$order = array_map('intval', array_filter(array_map('trim', explode(',', $sec['order'])), 'strlen'));
+				$order = array_map('intval', array_filter(array_map('trim', explode(',', $sec['order'])), static fn(string $v): bool => $v !== ''));
 			}
 		}
 
@@ -946,7 +947,7 @@ class CategoryTemplateService {
 		if ($section === 'live_cat' && !empty($parsed['radio_cat']) && is_array($parsed['radio_cat'])) {
 			$rSec = $parsed['radio_cat'];
 			if (!empty($rSec['hide_ids'])) {
-				$rHide = is_array($rSec['hide_ids']) ? array_map('intval', $rSec['hide_ids']) : array_map('intval', array_filter(array_map('trim', explode(',', $rSec['hide_ids'])), 'strlen'));
+				$rHide = is_array($rSec['hide_ids']) ? array_map('intval', $rSec['hide_ids']) : array_map('intval', array_filter(array_map('trim', explode(',', $rSec['hide_ids'])), static fn(string $v): bool => $v !== ''));
 				$hideIds = array_unique(array_merge($hideIds, $rHide));
 			}
 			if (!empty($rSec['renamed'])) {
@@ -956,7 +957,7 @@ class CategoryTemplateService {
 				}
 			}
 			if (!empty($rSec['order'])) {
-				$rOrd = is_array($rSec['order']) ? array_map('intval', $rSec['order']) : array_map('intval', array_filter(array_map('trim', explode(',', $rSec['order'])), 'strlen'));
+				$rOrd = is_array($rSec['order']) ? array_map('intval', $rSec['order']) : array_map('intval', array_filter(array_map('trim', explode(',', $rSec['order'])), static fn(string $v): bool => $v !== ''));
 				$order = array_merge($order, $rOrd);
 			}
 		}
@@ -989,7 +990,7 @@ class CategoryTemplateService {
 			});
 		}
 
-		return array_values($filtered);
+		return $filtered;
 	}
 
 	/**
@@ -1029,7 +1030,7 @@ class CategoryTemplateService {
 			if (is_array($sec['hide_ids'])) {
 				$hideIds = array_map('intval', $sec['hide_ids']);
 			} elseif (is_string($sec['hide_ids'])) {
-				$hideIds = array_map('intval', array_filter(array_map('trim', explode(',', $sec['hide_ids'])), 'strlen'));
+				$hideIds = array_map('intval', array_filter(array_map('trim', explode(',', $sec['hide_ids'])), static fn(string $v): bool => $v !== ''));
 			}
 		}
 
@@ -1038,7 +1039,7 @@ class CategoryTemplateService {
 			if (is_array($sec['order'])) {
 				$order = array_map('intval', $sec['order']);
 			} elseif (is_string($sec['order'])) {
-				$order = array_map('intval', array_filter(array_map('trim', explode(',', $sec['order'])), 'strlen'));
+				$order = array_map('intval', array_filter(array_map('trim', explode(',', $sec['order'])), static fn(string $v): bool => $v !== ''));
 			}
 		}
 

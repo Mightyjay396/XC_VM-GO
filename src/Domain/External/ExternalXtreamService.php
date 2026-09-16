@@ -128,7 +128,7 @@ class ExternalXtreamService {
 			}
 		}
 
-		return array_values($ips);
+		return $ips;
 	}
 
 	/**
@@ -230,7 +230,7 @@ class ExternalXtreamService {
 		$instance = new self($cleanUrl, $username, $password, 10);
 		$res = $instance->request([], 10);
 
-		if (!$res || !is_array($res)) {
+		if (!$res) {
 			return [
 				'success' => false,
 				'message' => 'Failed to connect to server (' . htmlspecialchars($cleanUrl) . '). Please verify host, port, and network connection.'

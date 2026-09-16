@@ -87,8 +87,8 @@ class FavoritesController extends BasePlayerV2Controller {
 
 		// 1. Fetch Live Channels
 		if ($liveIds !== []) {
-			$liveIdList = implode(',', $liveIds);
-			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `category_id` FROM `streams` WHERE `type` = 1 AND `id` IN ({$liveIdList});");
+			$livePh = implode(',', array_fill(0, count($liveIds), '?'));
+			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `category_id` FROM `streams` WHERE `type` = 1 AND `id` IN ({$livePh});", ...$liveIds);
 			$rows = $db->get_rows() ?: [];
 			foreach ($rows as $r) {
 				$catId = $this->parseCatId($r['category_id']);
@@ -105,8 +105,8 @@ class FavoritesController extends BasePlayerV2Controller {
 
 		// 2. Fetch Movies
 		if ($movieIds !== []) {
-			$movieIdList = implode(',', $movieIds);
-			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `movie_properties`, `rating`, `year`, `category_id` FROM `streams` WHERE `type` = 2 AND `id` IN ({$movieIdList});");
+			$moviePh = implode(',', array_fill(0, count($movieIds), '?'));
+			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `movie_properties`, `rating`, `year`, `category_id` FROM `streams` WHERE `type` = 2 AND `id` IN ({$moviePh});", ...$movieIds);
 			$rows = $db->get_rows() ?: [];
 			foreach ($rows as $r) {
 				$props = json_decode($r['movie_properties'] ?? '', true) ?: [];
@@ -128,8 +128,8 @@ class FavoritesController extends BasePlayerV2Controller {
 
 		// 3. Fetch Series
 		if ($seriesIds !== []) {
-			$seriesIdList = implode(',', $seriesIds);
-			$db->query("SELECT `id`, `title`, `cover`, `rating`, `year`, `category_id`, `genre`, `seasons` FROM `streams_series` WHERE `id` IN ({$seriesIdList});");
+			$seriesPh = implode(',', array_fill(0, count($seriesIds), '?'));
+			$db->query("SELECT `id`, `title`, `cover`, `rating`, `year`, `category_id`, `genre`, `seasons` FROM `streams_series` WHERE `id` IN ({$seriesPh});", ...$seriesIds);
 			$rows = $db->get_rows() ?: [];
 			foreach ($rows as $r) {
 				$catId = $this->parseCatId($r['category_id']);
@@ -157,8 +157,8 @@ class FavoritesController extends BasePlayerV2Controller {
 
 		// 4. Fetch Radio Stations
 		if ($radioIds !== []) {
-			$radioIdList = implode(',', $radioIds);
-			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `category_id` FROM `streams` WHERE `type` = 4 AND `id` IN ({$radioIdList});");
+			$radioPh = implode(',', array_fill(0, count($radioIds), '?'));
+			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `category_id` FROM `streams` WHERE `type` = 4 AND `id` IN ({$radioPh});", ...$radioIds);
 			$rows = $db->get_rows() ?: [];
 			foreach ($rows as $r) {
 				$catId = $this->parseCatId($r['category_id']);

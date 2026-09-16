@@ -3,6 +3,7 @@
 namespace XcVm\Infrastructure;
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Config\DomainResolver;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
