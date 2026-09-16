@@ -111,4 +111,16 @@ final class UserRepositoryTest extends TestCase {
 		// An id-based lookup carries no username/password to re-verify.
 		$this->assertTrue($this->call('verifyCachedCredentials', array(), 5, null, null));
 	}
+
+	/**
+	 * getLineById() is handed nullable columns (a MAG / Enigma2 device's
+	 * `pair_id`, an activation code's `subscriber_id`) and raw request values.
+	 * None of those is a line, and none may end the request: loading an
+	 * unpaired MAG device used to throw, so deleting one answered an empty page.
+	 */
+	public function testGetLineByIdFindsNothingForANonId(): void {
+		foreach (array(null, '', 0, '0', -3, 'abc') as $rID) {
+			$this->assertNull(UserRepository::getLineById($rID), var_export($rID, true));
+		}
+	}
 }
