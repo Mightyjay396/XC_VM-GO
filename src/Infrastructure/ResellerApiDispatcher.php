@@ -3,6 +3,7 @@
 namespace XcVm\Infrastructure;
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Config\DomainResolver;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
@@ -1036,7 +1037,7 @@ class ResellerApiDispatcher {
 		$db = self::db();
 		$codeId = intval(RequestManager::get('id') ?? 0);
 		if (!$codeId) {
-			http_response_code(404);
+			echo json_encode(['result' => false, 'message' => 'Missing code ID.']);
 			exit();
 		}
 
@@ -1056,7 +1057,24 @@ class ResellerApiDispatcher {
 		}
 
 		$package = PackageService::getById((int) $code['package_id']);
-		$portalUrl = self::resolveBaseUrl((string) ($code['dns_base'] ?? ''));
+
+		$isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+			|| (!empty($_SERVER['REQUEST_SCHEME']) && strtolower($_SERVER['REQUEST_SCHEME']) === 'https')
+			|| (isset($_SERVER['SERVER_PORT']) && in_array((int) $_SERVER['SERVER_PORT'], [443, 3434], true))
+			|| (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
+			|| (isset($_SERVER['HTTP_X_FORWARDED_SSL']) && $_SERVER['HTTP_X_FORWARDED_SSL'] === 'on');
+		$currentScheme = $isHttps ? 'https' : 'http';
+
+		if (!empty($code['dns_base'])) {
+			$portalUrl = rtrim($code['dns_base'], '/');
+			if (!preg_match('#^https?://#i', $portalUrl)) {
+				$portalUrl = "{$currentScheme}://{$portalUrl}";
+			}
+		} elseif (!empty($_SERVER['HTTP_HOST'])) {
+			$portalUrl = "{$currentScheme}://{$_SERVER['HTTP_HOST']}";
+		} else {
+			$portalUrl = rtrim(DomainResolver::resolve(SERVER_ID, $isHttps), '/');
+		}
 		$portalParsed = parse_url($portalUrl);
 
 		$m3uHls = "{$portalUrl}/get.php?username={$code['sub_username']}&password={$code['sub_password']}&type=m3u_plus&output=hls";
@@ -1085,14 +1103,19 @@ class ResellerApiDispatcher {
 			'batch_name' => $code['batch_name'],
 			'status' => (int) $code['status'],
 			'status_text' => ($code['status'] == 1) ? 'Ready (Stock)' : (($code['status'] == 2) ? 'Active' : 'Disabled'),
+			'package_id' => (int) $code['package_id'],
 			'package_name' => $package['package_name'] ?? 'Custom Package',
 			'is_trial' => (bool) $code['is_trial'],
 			'max_connections' => (int) ($code['line_max_conn'] ?: $code['max_connections']),
 			'exp_date' => $code['sub_exp_date'] ? date('Y-m-d H:i:s', (int) $code['sub_exp_date']) : 'Frozen (Stock)',
+			'exp_date_input' => $code['sub_exp_date'] ? date('Y-m-d\TH:i', (int) $code['sub_exp_date']) : '',
+			'has_line' => !empty($code['subscriber_id']),
 			'activated_at' => $code['activated_at'] ? date('Y-m-d H:i:s', (int) $code['activated_at']) : 'Never',
 			'created_at' => $code['created_at'] ? date('Y-m-d H:i:s', (int) $code['created_at']) : '-',
 			'mac' => $code['mac'] ?: 'None',
+			'raw_mac' => $code['mac'] ?? '',
 			'device_id' => $code['device_id'] ?: 'None',
+			'raw_device_id' => $code['device_id'] ?? '',
 			'username' => $code['sub_username'],
 			'password' => $code['sub_password'],
 			'server' => $portalParsed['host'] ?? 'localhost',
@@ -1112,25 +1135,6 @@ class ResellerApiDispatcher {
 		header('Content-Type: text/html; charset=utf-8');
 		require MAIN_HOME . 'Public/Views/admin/active_code_details.php';
 		exit();
-	}
-
-	/**
-	 * Public base URL for the subscriber portal / credential links.
-	 *
-	 * Honours a well-formed per-code dns_base (one that carries an http(s)://
-	 * scheme); otherwise falls back to this panel's own request origin, which is
-	 * where the portal is served. Returns no trailing slash.
-	 */
-	private static function resolveBaseUrl(string $dnsBase): string {
-		$dnsBase = trim($dnsBase);
-		if ($dnsBase !== '' && preg_match('#^https?://#i', $dnsBase)) {
-			return rtrim($dnsBase, '/');
-		}
-
-		$scheme = (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off') ? 'https' : 'http';
-		$host = (string) ($_SERVER['HTTP_HOST'] ?? '');
-
-		return $host !== '' ? $scheme . '://' . $host : '';
 	}
 
 	/**

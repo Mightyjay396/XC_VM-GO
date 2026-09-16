@@ -11,7 +11,6 @@ use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Line\LineRepository;
 use XcVm\Domain\Line\LineService;
 use XcVm\Domain\User\UserRepository;
-use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
  * MagService — mag service
@@ -24,7 +23,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  */
 
 class MagService {
-	use DatabaseAware;
+	use \XcVm\Infrastructure\Database\DatabaseAware;
 
 	/**
 	 * Bulk delete selected MAG devices.
@@ -32,7 +31,7 @@ class MagService {
 	 * @param array $rData Selected device ids.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massDelete(array $rData) {
+	public static function massDelete($rData) {
 		set_time_limit(0);
 		ini_set('mysql.connect_timeout', 0);
 		ini_set('max_execution_time', 0);
@@ -50,7 +49,7 @@ class MagService {
 	 * @param array $rData Selected ids plus the fields/values to apply.
 	 * @return array ['status' => STATUS_* constant, ...].
 	 */
-	public static function massEdit(array $rData) {
+	public static function massEdit($rData) {
 		$db = self::db();
 		if (InputValidator::validate('massEditMags', $rData)) {
 			$rArray = [];
@@ -221,7 +220,7 @@ class MagService {
 	 * @param array $rData Submitted form data (includes `edit` id when updating).
 	 * @return array ['status' => STATUS_* constant, 'data' => insert_id or payload].
 	 */
-	public static function process(array $rData) {
+	public static function process($rData) {
 		$db = self::db();
 		if (InputValidator::validate('processMAG', $rData)) {
 			if (isset($rData['edit'])) {
@@ -343,6 +342,19 @@ class MagService {
 				}
 
 				if (0 >= $db->num_rows()) {
+					if (isset($rData['category_template_id'])) {
+						if ($rData['category_template_id'] === '0' || $rData['category_template_id'] === 'none') {
+							$rUserArray['custom_data'] = null;
+						} elseif (intval($rData['category_template_id']) > 0) {
+							$customDataObj = \XcVm\Domain\Stream\CategoryTemplateService::buildCustomData(intval($rData['category_template_id']));
+							$rUserArray['custom_data'] = json_encode($customDataObj, JSON_UNESCAPED_UNICODE);
+						}
+					} elseif (isset($rData['custom_data'])) {
+						$rUserArray['custom_data'] = ((string) $rData['custom_data'] !== '')
+							? (is_array($rData['custom_data']) ? json_encode($rData['custom_data'], JSON_UNESCAPED_UNICODE) : $rData['custom_data'])
+							: null;
+					}
+
 					$rPrepare = QueryHelper::prepareArray($rUserArray);
 
 					$rQuery = 'REPLACE INTO `lines`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
@@ -400,7 +412,7 @@ class MagService {
 	 * @param int|null $rDeviceID Limit to a single device, or null for all.
 	 * @return void
 	 */
-	public static function syncLineDevices(int $rUserID, ?int $rDeviceID = null) {
+	public static function syncLineDevices($rUserID, $rDeviceID = null) {
 		$db = self::db();
 		$rUser = UserRepository::getLineById($rUserID);
 
@@ -438,7 +450,7 @@ class MagService {
 	 * @param int $rID Device id.
 	 * @return array|null The device row, or null if not found.
 	 */
-	public static function getById(int $rID) {
+	public static function getById($rID) {
 		$db = self::db();
 		$db->query('SELECT * FROM `mag_devices` WHERE `mag_id` = ?;', $rID);
 
@@ -466,7 +478,7 @@ class MagService {
 	 * @param bool $rConvert      Convert (rather than delete) the paired line.
 	 * @return bool True on success.
 	 */
-	public static function deleteDevice(int $rID, bool $rDeletePaired = false, bool $rCloseCons = true, bool $rConvert = false) {
+	public static function deleteDevice($rID, $rDeletePaired = false, $rCloseCons = true, $rConvert = false) {
 		$db = self::db();
 		$rMag = self::getById($rID);
 
@@ -505,7 +517,7 @@ class MagService {
 	 * @param int[] $rIDs Device ids.
 	 * @return bool True on success.
 	 */
-	public static function deleteDevices(array $rIDs) {
+	public static function deleteDevices($rIDs) {
 		$db = self::db();
 		$rIDs = AdminHelpers::confirmIDs($rIDs);
 
@@ -537,7 +549,7 @@ class MagService {
 	 * @param int $rID Device id.
 	 * @return bool True on success.
 	 */
-	public static function resetSTB(int $rID) {
+	public static function resetSTB($rID) {
 		$db = self::db();
 		return $db->query("UPDATE `mag_devices` SET `ip` = '', `ver` = '', `image_version` = '', `stb_type` = '', `sn` = '', `device_id` = '', `device_id2` = '', `hw_version` = '', `token` = '' WHERE `mag_id` = ?;", $rID);
 	}

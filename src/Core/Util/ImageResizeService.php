@@ -2,8 +2,6 @@
 
 namespace XcVm\Core\Util;
 
-use XcVm\Domain\Server\ServerRepository;
-
 /**
  * ImageResizeService — HTTP image resize handler
  *
@@ -36,8 +34,9 @@ class ImageResizeService {
 	 * }
 	 */
 	public static function serve(array $rOptions = []): void {
-		set_time_limit(2);
-		ini_set('default_socket_timeout', 2);
+		set_time_limit(15);
+		ini_set('default_socket_timeout', 10);
+		ini_set('user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
 		$rCacheDir     = $rOptions['cacheDir'] ?? (defined('IMAGES_PATH') ? IMAGES_PATH . 'admin/' : '');
 		$rPlaceholder  = $rOptions['placeholder'] ?? null;
@@ -47,7 +46,13 @@ class ImageResizeService {
 			@mkdir($rCacheDir, 0755, true);
 		}
 
-		$rServers = $GLOBALS['rServers'] ?? ServerRepository::getAll();
+		if (empty($_GET['url']) && !empty($_SERVER['REQUEST_URI']) && str_contains($_SERVER['REQUEST_URI'], '?')) {
+			$qStr = (string) parse_url($_SERVER['REQUEST_URI'], PHP_URL_QUERY);
+			if ($qStr !== '') {
+				parse_str($qStr, $parsedParams);
+				$_GET = array_merge($parsedParams, $_GET);
+			}
+		}
 
 		$rURL  = $_GET['url'] ?? '';
 		$rMaxW = 0;
@@ -67,18 +72,48 @@ class ImageResizeService {
 		$rImageSize = null;
 
 		if ($rExtraParams) {
-			if (isset($_GET['h'], $_GET['w'])) {
-				$rImageSize = ['width' => intval($_GET['w']), 'height' => intval($_GET['h'])];
+			$reqW = isset($_GET['w']) ? intval($_GET['w']) : (isset($_GET['width']) ? intval($_GET['width']) : 0);
+			$reqH = isset($_GET['h']) ? intval($_GET['h']) : (isset($_GET['height']) ? intval($_GET['height']) : 0);
+
+			if ($reqW > 0 && $reqH > 0) {
+				$rImageSize = ['width' => $reqW, 'height' => $reqH];
+			} elseif ($reqW > 0) {
+				$rMaxW = $reqW;
+				$rMaxH = $reqW * 2;
+			} elseif ($reqH > 0) {
+				$rMaxH = $reqH;
+				$rMaxW = $reqH * 2;
 			}
+
 			if (isset($_GET['icon'])) {
 				$rMaxH = $rMaxW = 48;
 			}
 		}
 
-		// Resolve server-prefixed URL (s:<id>:<path>)
+		if ($rMaxW > 0 && $rMaxH === 0) {
+			$rMaxH = $rMaxW * 2;
+		} elseif ($rMaxH > 0 && $rMaxW === 0) {
+			$rMaxW = $rMaxH * 2;
+		} elseif ($rMaxW === 0 && $rMaxH === 0 && $rImageSize === null) {
+			$rMaxW = 600;
+			$rMaxH = 900;
+		}
+
+		// Resolve server-prefixed URL (s:<id>:<path>) only when needed. A URL
+		// resolved from the admin-configured server list is trusted (it may point
+		// at a private LB address); a raw user-supplied URL is not (SSRF risk).
+		$rTrustedSource = false;
 		if (substr($rURL, 0, 2) === 's:') {
+			$rServers = $GLOBALS['rServers'] ?? null;
+			if ($rServers === null && class_exists(\XcVm\Domain\Server\ServerRepository::class)) {
+				try {
+					$rServers = \XcVm\Domain\Server\ServerRepository::getAll();
+				} catch (\Throwable $e) {
+					$rServers = [];
+				}
+			}
 			$rSplit    = explode(':', $rURL, 3);
-			$rServerID = intval($rSplit[1]);
+			$rServerID = intval($rSplit[1] ?? 0);
 			if (isset($rServers[$rServerID])) {
 				$rSrv      = $rServers[$rServerID];
 				$rDomain   = empty($rSrv['domain_name'])
@@ -92,6 +127,7 @@ class ImageResizeService {
 				}
 				$rServerURL .= '/';
 				$rURL = $rServerURL . 'images/' . basename($rURL);
+				$rTrustedSource = true;
 			}
 		}
 
@@ -99,67 +135,98 @@ class ImageResizeService {
 		header('X-Content-Type-Options: nosniff');
 
 		if ($rURL && ($rMaxW > 0 && $rMaxH > 0 || $rImageSize !== null)) {
-			$rImagePath = $rCacheDir . md5($rURL) . '_' . $rMaxW . '_' . $rMaxH . '.png';
+			$wKey = $rImageSize ? $rImageSize['width'] : $rMaxW;
+			$hKey = $rImageSize ? $rImageSize['height'] : $rMaxH;
+			$rImagePath = $rCacheDir . md5($rURL) . '_' . $wKey . '_' . $hKey . '.png';
 
 			if (!file_exists($rImagePath) || filesize($rImagePath) === 0) {
 				$rActURL = ImageUtils::isAbsoluteUrl($rURL)
 					? $rURL
 					: (defined('IMAGES_PATH') ? IMAGES_PATH . basename($rURL) : $rURL);
 
-				$rImageInfo = @getimagesize($rActURL);
+				$rImage = null;
+				$rawImageData = null;
 
-				if (!$rImageInfo) {
+				if (ImageUtils::isAbsoluteUrl($rActURL)) {
+					$rawImageData = self::fetchRemoteImage($rActURL, $rTrustedSource);
+					if ($rawImageData === null) {
+						goto fallback;
+					}
+					if ($rawImageData !== '') {
+						$rImage = @imagecreatefromstring($rawImageData);
+					}
+				} else {
+					if (file_exists($rActURL)) {
+						$rawImageData = @file_get_contents($rActURL);
+						if ($rawImageData !== false && $rawImageData !== '') {
+							$rImage = @imagecreatefromstring($rawImageData);
+						}
+					}
+				}
+
+				if (!$rImage) {
+					// Fallback for WebP images when bundled PHP GD has no WebP support:
+					// Cache the raw webp and pass directly to browser (which natively renders WebP).
+					if (is_string($rawImageData) && strlen($rawImageData) > 12 && substr($rawImageData, 0, 4) === 'RIFF' && substr($rawImageData, 8, 4) === 'WEBP') {
+						$webpCache = $rCacheDir . md5($rURL) . '.webp';
+						@file_put_contents($webpCache, $rawImageData);
+						header('Content-Type: image/webp');
+						header('Content-Length: ' . strlen($rawImageData));
+						header('Cache-Control: public, max-age=604800');
+						echo $rawImageData;
+						exit();
+					}
+
 					goto fallback;
 				}
 
+				$origW = imagesx($rImage);
+				$origH = imagesy($rImage);
+
 				if ($rImageSize === null) {
 					$rImageSize = ImageUtils::getImageSizeKeepAspectRatio(
-						$rImageInfo[0],
-						$rImageInfo[1],
+						$origW,
+						$origH,
 						$rMaxW,
 						$rMaxH
 					);
 				}
 
-				if ($rImageSize['width'] && $rImageSize['height']) {
-					if ($rImageInfo['mime'] === 'image/png') {
-						$rImage = @imagecreatefrompng($rActURL);
-					} elseif ($rImageInfo['mime'] === 'image/jpeg') {
-						$rImage = @imagecreatefromjpeg($rActURL);
-					} else {
-						$rImage = null;
-					}
-
-					if ($rImage) {
-						$rImageP = imagecreatetruecolor($rImageSize['width'], $rImageSize['height']);
-						imagealphablending($rImageP, false);
-						imagesavealpha($rImageP, true);
-						imagecopyresampled(
-							$rImageP,
-							$rImage,
-							0,
-							0,
-							0,
-							0,
-							$rImageSize['width'],
-							$rImageSize['height'],
-							$rImageInfo[0],
-							$rImageInfo[1]
-						);
-						@imagepng($rImageP, $rImagePath);
-					}
+				if (!empty($rImageSize['width']) && !empty($rImageSize['height'])) {
+					$rImageP = imagecreatetruecolor($rImageSize['width'], $rImageSize['height']);
+					imagealphablending($rImageP, false);
+					imagesavealpha($rImageP, true);
+					imagecopyresampled(
+						$rImageP,
+						$rImage,
+						0,
+						0,
+						0,
+						0,
+						$rImageSize['width'],
+						$rImageSize['height'],
+						$origW,
+						$origH
+					);
+					@imagepng($rImageP, $rImagePath);
+					imagedestroy($rImageP);
 				}
+				imagedestroy($rImage);
 			}
 
-			if (file_exists($rImagePath)) {
-				echo file_get_contents($rImagePath);
+			if (file_exists($rImagePath) && filesize($rImagePath) > 0) {
+				header('Content-Length: ' . filesize($rImagePath));
+				header('Cache-Control: public, max-age=604800');
+				readfile($rImagePath);
 				exit();
 			}
 		}
 
 		fallback:
 		if ($rPlaceholder && file_exists($rPlaceholder) && !isset($_GET['icon'])) {
-			echo file_get_contents($rPlaceholder);
+			header('Content-Length: ' . filesize($rPlaceholder));
+			header('Cache-Control: public, max-age=86400');
+			readfile($rPlaceholder);
 			exit();
 		}
 
@@ -167,5 +234,124 @@ class ImageResizeService {
 		imagesavealpha($rImg, true);
 		imagefill($rImg, 0, 0, imagecolorallocatealpha($rImg, 0, 0, 0, 127));
 		imagepng($rImg);
+		imagedestroy($rImg);
+		exit();
+	}
+
+	/**
+	 * SSRF guard for outbound image fetches — returns the URL host's validated
+	 * public IPs, or null if the URL is not http(s), the host does not resolve,
+	 * or any resolved address is loopback/private/reserved/link-local (cloud
+	 * metadata) or CGNAT. The IPs are returned so the fetch can pin them and
+	 * never re-resolve (DNS rebinding / TOCTOU).
+	 *
+	 * @return list<string>|null
+	 */
+	private static function resolvePublicIps(string $url): ?array {
+		$scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+		if ($scheme !== 'http' && $scheme !== 'https') {
+			return null;
+		}
+		$host = parse_url($url, PHP_URL_HOST);
+		if (!is_string($host) || $host === '') {
+			return null;
+		}
+		$host = trim($host, '[]');
+
+		$ips = [];
+		if (filter_var($host, FILTER_VALIDATE_IP)) {
+			$ips[] = $host;
+		} else {
+			foreach (@dns_get_record($host, DNS_A | DNS_AAAA) ?: [] as $record) {
+				if (!empty($record['ip'])) {
+					$ips[] = $record['ip'];
+				}
+				if (!empty($record['ipv6'])) {
+					$ips[] = $record['ipv6'];
+				}
+			}
+			if ($ips === []) {
+				$resolved = gethostbyname($host);
+				if ($resolved !== '' && $resolved !== $host) {
+					$ips[] = $resolved;
+				}
+			}
+		}
+
+		if ($ips === []) {
+			return null;
+		}
+
+		foreach ($ips as $ip) {
+			if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+				return null;
+			}
+			// filter_var misses CGNAT shared space (RFC 6598, 100.64.0.0/10).
+			if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+				&& (ip2long($ip) & 0xffc00000) === (ip2long('100.64.0.0') & 0xffc00000)) {
+				return null;
+			}
+		}
+
+		return $ips;
+	}
+
+	/**
+	 * Fetch a remote image via cURL.
+	 *
+	 * Raw user URL ($trusted = false): the host is SSRF-validated and the vetted
+	 * IPs are pinned with CURLOPT_RESOLVE so libcurl cannot re-resolve to an
+	 * internal address after the check (DNS rebinding); TLS is verified and
+	 * redirects are refused. Admin-configured server URL ($trusted = true):
+	 * self-signed internal certs are tolerated.
+	 *
+	 * @return string|null Raw bytes, or null on failure / blocked host.
+	 */
+	private static function fetchRemoteImage(string $url, bool $trusted): ?string {
+		$scheme = strtolower((string) parse_url($url, PHP_URL_SCHEME));
+		if ($scheme !== 'http' && $scheme !== 'https') {
+			return null;
+		}
+
+		$opts = [
+			CURLOPT_URL            => $url,
+			CURLOPT_RETURNTRANSFER => true,
+			CURLOPT_TIMEOUT        => 10,
+			CURLOPT_CONNECTTIMEOUT => 6,
+			CURLOPT_FOLLOWLOCATION => false,
+			CURLOPT_PROTOCOLS      => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+			CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			CURLOPT_HTTPHEADER     => ['Accept: image/jpeg,image/png,image/*;q=0.5'],
+		];
+
+		if ($trusted) {
+			// Admin-configured internal server: self-signed certs are expected.
+			$opts[CURLOPT_SSL_VERIFYPEER] = false;
+			$opts[CURLOPT_SSL_VERIFYHOST] = false;
+		} else {
+			$safeIps = self::resolvePublicIps($url);
+			if ($safeIps === null) {
+				return null;
+			}
+			$opts[CURLOPT_SSL_VERIFYPEER] = true;
+			$opts[CURLOPT_SSL_VERIFYHOST] = 2;
+			$host = trim((string) parse_url($url, PHP_URL_HOST), '[]');
+			if ($host !== '' && filter_var($host, FILTER_VALIDATE_IP) === false) {
+				$port = (int) (parse_url($url, PHP_URL_PORT) ?: ($scheme === 'https' ? 443 : 80));
+				$opts[CURLOPT_RESOLVE] = [$host . ':' . $port . ':' . implode(',', $safeIps)];
+			}
+		}
+
+		$ch = curl_init();
+		curl_setopt_array($ch, $opts);
+		$data = curl_exec($ch);
+		$code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		curl_close($ch);
+
+		if ($data === false || $code < 200 || $code >= 400) {
+			return null;
+		}
+
+		return (string) $data;
 	}
 }

@@ -1,8 +1,6 @@
 <?php
 
-use XcVm\Core\Http\Router;
 use XcVm\Public\Controllers\Admin\ActiveCodeController;
-use XcVm\Public\Controllers\Admin\ActiveCodeDetailsController;
 use XcVm\Public\Controllers\Admin\ActiveCodesBatchController;
 use XcVm\Public\Controllers\Admin\ActiveCodesController;
 use XcVm\Public\Controllers\Admin\ActiveCodesMassController;
@@ -12,6 +10,7 @@ use XcVm\Public\Controllers\Admin\Ajax\ActiveCodeAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\BackupAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\BlocklistAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\CacheAjaxController;
+use XcVm\Public\Controllers\Admin\Ajax\CategoryTemplateAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\DeviceAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\EpgAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\MiscAjaxController;
@@ -33,6 +32,8 @@ use XcVm\Public\Controllers\Admin\BouquetListController;
 use XcVm\Public\Controllers\Admin\BouquetOrderController;
 use XcVm\Public\Controllers\Admin\BouquetSortController;
 use XcVm\Public\Controllers\Admin\CacheController;
+use XcVm\Public\Controllers\Admin\CategoryTemplateController;
+use XcVm\Public\Controllers\Admin\CategoryTemplatesController;
 use XcVm\Public\Controllers\Admin\ChannelOrderController;
 use XcVm\Public\Controllers\Admin\ClientLogController;
 use XcVm\Public\Controllers\Admin\CodeController;
@@ -156,7 +157,7 @@ use XcVm\Public\Controllers\Admin\UsersController;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-/** @var Router $router Injected by the Front Controller (index.php). */
+/** @var \XcVm\Core\Http\Router $router Injected by the Front Controller (index.php). */
 
 // ─── List Pages ────────────────────────────────────
 
@@ -233,6 +234,8 @@ $router->get('stream', [StreamController::class, 'index']);
 $router->get('stream_mass', [StreamMassController::class, 'index']);
 $router->get('stream_categories', [StreamCategoriesController::class, 'index']);
 $router->get('stream_category', [StreamCategoryController::class, 'index']);
+$router->get('category_templates', [CategoryTemplatesController::class, 'index']);
+$router->get('category_template', [CategoryTemplateController::class, 'index']);
 $router->get('stream_errors', [StreamErrorsController::class, 'index']);
 $router->get('stream_rank', [StreamRankController::class, 'index']);
 $router->any('stream_review', [StreamReviewController::class, 'index']);
@@ -386,10 +389,21 @@ $router->api('get_package', [PackageAjaxController::class, 'getPackage']);
 $router->api('get_package_trial', [PackageAjaxController::class, 'getPackageTrial']);
 
 // ─── Active Codes ──────────────────────────────────
-$router->api('active_code_details', [ActiveCodeDetailsController::class, 'index']);
+$router->api('active_code_details', [ActiveCodeAjaxController::class, 'details']);
+$router->api('active_code_edit', [ActiveCodeAjaxController::class, 'edit']);
+$router->api('active_code_delete', [ActiveCodeAjaxController::class, 'delete']);
 $router->api('generate_active_codes', [ActiveCodeAjaxController::class, 'generate']);
 $router->api('active_codes_batch_action', [ActiveCodeAjaxController::class, 'batchAction']);
 $router->api('active_codes_export_txt', [ActiveCodeAjaxController::class, 'exportTxt']);
+
+// ─── Category Templates ────────────────────────────
+$router->api('category_template_create', [CategoryTemplateAjaxController::class, 'create']);
+$router->api('category_template_save', [CategoryTemplateAjaxController::class, 'save']);
+$router->api('category_template_delete', [CategoryTemplateAjaxController::class, 'delete']);
+$router->api('category_template_clone', [CategoryTemplateAjaxController::class, 'clone']);
+$router->api('category_template_toggle_system', [CategoryTemplateAjaxController::class, 'toggleSystem']);
+$router->api('category_template_apply_all', [CategoryTemplateAjaxController::class, 'applyAll']);
+$router->api('category_template_get', [CategoryTemplateAjaxController::class, 'get']);
 
 // ─── Stats & Graphs ────────────────────────────────
 $router->api('graph_stats', [StatsAjaxController::class, 'graphStats']);
