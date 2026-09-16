@@ -2,6 +2,7 @@
 
 namespace XcVm\Infrastructure\Bootstrap;
 
+use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Logging\Logger;
 
 /**
@@ -26,11 +27,8 @@ class StreamingRequestBootstrap {
 	 */
 	public static function init(string $rFilename): void {
 		// ── 1. Базовые модули ────────────────────────────────────
-		require_once MAIN_HOME . 'Core/Error/ErrorCodes.php';
-		require_once MAIN_HOME . 'Core/Error/ErrorHandler.php';
-		require_once MAIN_HOME . 'Core/Config/Paths.php';
-		require_once MAIN_HOME . 'Core/Config/AppConfig.php';
-		require_once MAIN_HOME . 'Core/Config/Binaries.php';
+		// generateError()/generate404() are provided globally via autoload.files.
+		ConstantsInitializer::init();
 
 		@ini_set('user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.61 Safari/537.36');
 		@ini_set('default_socket_timeout', 5);

@@ -16,9 +16,8 @@ if (!defined('MAIN_HOME')) {
 }
 
 require_once MAIN_HOME . 'vendor/autoload.php';
-require_once MAIN_HOME . 'Core/Error/ErrorCodes.php';
-require_once MAIN_HOME . 'Core/Error/ErrorHandler.php';
-require_once MAIN_HOME . 'Core/Config/Paths.php';
+// generateError()/generate404() come from autoload.files; constants from the initializer.
+\XcVm\Core\Config\ConstantsInitializer::init();
 
 $rPost = trim(file_get_contents('php://input'));
 

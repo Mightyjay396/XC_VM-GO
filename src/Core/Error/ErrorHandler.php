@@ -7,8 +7,8 @@
  * functions stay so the ~139 legacy generateError()/generate404() call sites
  * keep working unchanged and keep terminating the request in production. The
  * side-effecting emit() (echo / http_response_code / exit) is centralized in
- * ErrorResponder. Loaded both via composer autoload.files and legacy
- * require_once, so both declarations are guarded with function_exists().
+ * ErrorResponder. This file is loaded globally via composer autoload.files; the
+ * function_exists() guards keep it safe against any stray double-load.
  *
  * @package XC_VM_Core_Error
  * @author  Divarion_D <https://github.com/Divarion-D>

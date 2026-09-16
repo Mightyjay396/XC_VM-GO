@@ -4,12 +4,13 @@ namespace XcVm\Core\Bootstrap\Stage;
 
 use XcVm\Core\Bootstrap\BootState;
 use XcVm\Core\Bootstrap\BootStageInterface;
+use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Logging\Logger;
 
 /**
- * Load constants (paths, app-config, binaries, error functions) and start the
- * Logger. The prelude shims delegate to ConstantsInitializer; requiring them by
- * name keeps the legacy include points working.
+ * Load the runtime constants (paths, app-config, binaries) and start the Logger.
+ * The generateError()/generate404() functions are provided globally via composer
+ * autoload.files, so they need no explicit require here.
  *
  * @package XC_VM_Core_Bootstrap_Stage
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -23,11 +24,7 @@ class ConstantsStage implements BootStageInterface {
 			return;
 		}
 
-		require_once MAIN_HOME . 'Core/Error/ErrorCodes.php';
-		require_once MAIN_HOME . 'Core/Error/ErrorHandler.php';
-		require_once MAIN_HOME . 'Core/Config/Paths.php';
-		require_once MAIN_HOME . 'Core/Config/AppConfig.php';
-		require_once MAIN_HOME . 'Core/Config/Binaries.php';
+		ConstantsInitializer::init();
 
 		$state->devMode = DEV_MODE;
 

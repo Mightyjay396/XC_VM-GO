@@ -6,6 +6,7 @@ use XcVm\Core\Bootstrap\BootPipeline;
 use XcVm\Core\Bootstrap\BootState;
 use XcVm\Core\Bootstrap\Stage\DatabaseStage;
 use XcVm\Core\Bootstrap\Stage\LegacyCoreStage;
+use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
 use XcVm\Core\Updates\GitHubReleases;
@@ -38,20 +39,13 @@ class WebApiBootstrap {
 	 * @param string $rFilename  Имя endpoint'а (enigma2, epg, playlist, xplugin, api, …)
 	 */
 	public static function init(string $rFilename): void {
-		// ── 1. Ошибки ────────────────────────────────────────────
-		require_once MAIN_HOME . 'Core/Error/ErrorCodes.php';
-		require_once MAIN_HOME . 'Core/Error/ErrorHandler.php';
-
-		// ── 2. PHP defaults ──────────────────────────────────────
+		// ── 1. PHP defaults + constants ──────────────────────────
+		// generateError()/generate404() are provided globally via autoload.files.
 		@ini_set('user_agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/83.0.4103.61 Safari/537.36');
 		@ini_set('default_socket_timeout', 5);
+		ConstantsInitializer::init();
 
-		// ── 3. Константы и конфигурация ──────────────────────────
-		require_once MAIN_HOME . 'Core/Config/Paths.php';
-		require_once MAIN_HOME . 'Core/Config/AppConfig.php';
-		require_once MAIN_HOME . 'Core/Config/Binaries.php';
-
-		// ── 4. Flood / host / Logger ─────────────────────────────
+		// ── 2. Flood / host / Logger ─────────────────────────────
 		require_once MAIN_HOME . 'Core/Http/RequestGuard.php';
 
 		// ── 5. DB + LegacyInitializer (shared stages) ────────────

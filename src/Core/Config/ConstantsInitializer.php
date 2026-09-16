@@ -12,9 +12,9 @@ use RuntimeException;
  * The value maps (paths(), appConfig(), binaries(), statuses()) are pure and
  * unit-testable with different inputs in the same process — unlike the raw
  * define() constants they feed, which are one-shot per process. init() is the
- * ONE place define() runs; the legacy prelude files become thin shims delegating
- * here, so every caller (XC_Bootstrap, WebApiBootstrap, StreamingRequestBootstrap)
- * gets the full, correctly-ordered constant set regardless of include order.
+ * ONE place define() runs; every boot path (ConstantsStage, WebApiBootstrap,
+ * StreamingRequestBootstrap, the progress endpoint) calls it directly and gets
+ * the full, correctly-ordered constant set regardless of call order.
  *
  * @package XC_VM_Core_Config
  * @author  Divarion_D <https://github.com/Divarion-D>
