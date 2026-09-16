@@ -153,6 +153,12 @@ final class BootPipelineTest extends TestCase {
 		$this->assertNotContains(HealthCheckStage::class, $this->classesFor(BootContext::Minimal));
 	}
 
+	/** WebApi has no kernel profile — it boots via WebApiBootstrap, so misuse must fail loudly. */
+	public function testWebApiContextHasNoKernelProfile(): void {
+		$this->expectException(\LogicException::class);
+		StageProfiles::for(BootContext::WebApi, []);
+	}
+
 	public function testDefaultsPerContext(): void {
 		$this->assertTrue(BootKernel::defaults(BootContext::Admin)['redis']);
 		$this->assertFalse(BootKernel::defaults(BootContext::Cli)['redis']);

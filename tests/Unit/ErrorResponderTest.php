@@ -81,6 +81,15 @@ final class ErrorResponderTest extends TestCase {
 		$this->assertTrue($outcome->shouldExit);
 	}
 
+	/** A falsy explicit code (0) falls through to 404, matching the legacy !$rCode check. */
+	public function testProductionKillWithZeroCodeFallsTo404(): void {
+		$outcome = ErrorResponder::respondError('BANNED', ['debug_show_errors' => false], true, 0);
+
+		$this->assertTrue($outcome->is404);
+		$this->assertSame(404, $outcome->httpCode);
+		$this->assertTrue($outcome->shouldExit);
+	}
+
 	/** Production + no kill: emit nothing at all. */
 	public function testProductionNoKillEmitsNothing(): void {
 		$outcome = ErrorResponder::respondError('BANNED', ['debug_show_errors' => false], false, null);

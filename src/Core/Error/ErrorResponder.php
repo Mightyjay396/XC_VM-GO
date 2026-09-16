@@ -126,7 +126,7 @@ class ErrorResponder {
 	 * @param string               $code     Error code key.
 	 * @param array<string,mixed>  $settings Panel settings (reads debug_show_errors).
 	 * @param bool                 $kill     Whether the caller wants to terminate.
-	 * @param int|null             $httpCode Explicit HTTP status (null = fall to 404).
+	 * @param int|null             $httpCode Explicit HTTP status (falsy — null or 0 — falls to 404).
 	 */
 	public static function respondError(string $code, array $settings, bool $kill = true, ?int $httpCode = null): ErrorResponseException {
 		$debug = isset($settings['debug_show_errors']) && $settings['debug_show_errors'];
@@ -144,7 +144,8 @@ class ErrorResponder {
 		}
 
 		// Production + terminate: a bare 404 page, or just the given status code.
-		if ($httpCode === null) {
+		// Matches the legacy `!$rCode` check — a falsy code (null or 0) means 404.
+		if (!$httpCode) {
 			return self::respond404(true, $code);
 		}
 

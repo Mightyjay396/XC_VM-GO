@@ -78,6 +78,14 @@ class StageProfiles {
 				$stages[] = new StatusConstantsStage();
 				$stages[] = new AdminGlobalsStage();
 				break;
+
+			case BootContext::WebApi:
+				// WebApi has its own pipeline (WebApiBootstrap::init) and never
+				// routes through the kernel; fail loudly instead of silently
+				// building a wrong stage list from the common prefix/suffix.
+				throw new \LogicException(
+					'BootContext::WebApi boots via WebApiBootstrap::init(), not the kernel StageProfiles.'
+				);
 		}
 
 		$stages[] = new ContainerPopulateStage();

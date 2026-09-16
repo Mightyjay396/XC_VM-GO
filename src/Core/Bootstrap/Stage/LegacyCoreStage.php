@@ -44,7 +44,7 @@ class LegacyCoreStage implements BootStageInterface {
 		LegacyInitializer::initCore($this->cached);
 
 		// If cache was used and is incomplete — reconnect to DB
-		if ($this->cached && !SettingsManager::get('enable_cache')) {
+		if ($this->cached && !SettingsManager::getBool('enable_cache')) {
 			$db = new DatabaseHandler();
 			DatabaseFactory::set($db);
 			DomainDatabaseWiring::wire($db);
