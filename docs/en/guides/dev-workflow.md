@@ -31,6 +31,7 @@ Run these before pushing — CI runs the same set:
 | `make cs-fix` | Apply the style fixes in place |
 | `make gates` | PSR-4 regression gates (below) |
 | `php tests/phpunit.phar -c tests/phpunit.xml.dist` | Unit tests — see [PHPUnit Setup](phpunit-phar.md) |
+| `make e2e` | Browser tests against a live test panel — see [End-to-End Tests](#end-to-end-tests) |
 | `make rector` | Dry-run automated refactoring — see [Automated Refactoring (Rector)](refactoring.md) |
 
 `make phpstan` and `make cs` need the dev tools — run `make dev-tools` first.
@@ -45,6 +46,21 @@ just to silence a real new error — fix the code.
 - **check-procedural-use** — procedural / view files import every migrated class they use (PHP imports are positional, so the `use` must precede the usage);
 - **verify-lb-archive** — the Load Balancer build excludes privileged code (admin/reseller controllers, user/device domain, install/root commands) — see [Build System (MAIN vs LB)](../builds/build_system.md) for the exclusion boundary;
 - **check-vendor-prod-only** — no `require-dev` package is committed under `src/vendor/`.
+
+## End-to-End Tests
+
+`tests/e2e` is a Playwright suite that drives the admin panel the way an
+administrator does: it creates categories, bouquets, packages, lines, devices,
+resellers, block-list entries and a live stream, edits them, starts and stops the
+stream, and deletes everything again. It needs a **test** panel (never
+production) and an admin account used only by the tests — every admin login
+re-hashes the password and signs out that account's other sessions.
+
+Set `XC_E2E_BASE_URL` (the admin URL including the access code), `XC_E2E_USER`
+and `XC_E2E_PASS`, then run `make e2e-install` once and `make e2e`. The suite's
+`README.md` (in `tests/e2e/`) lists what each spec covers, how to provision the
+test account with `tests/e2e/tools/create-admin.php`, and what the tests change
+on the panel host.
 
 ## Deploying Code to VDS via SFTP
 
