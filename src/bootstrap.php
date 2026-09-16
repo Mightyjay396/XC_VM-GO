@@ -1,53 +1,16 @@
 <?php
 
 /**
- * Unified initialization entry point (bootstrap)
+ * Application entry point.
  *
- * Provides context-dependent initialization for the entire application.
- * Handles: constant loading, DB connection, flood-protection, Logger,
- * error functions, session, Redis, Translator, and admin globals.
+ * Defines MAIN_HOME, registers the Composer PSR-4 autoloader, and exposes
+ * XC_Bootstrap — a thin, backward-compatible static facade that boots a context
+ * and answers a few legacy getters. All initialization logic lives in
+ * XcVm\Core\Bootstrap\BootKernel and its per-subsystem stages; the context is a
+ * XcVm\Core\Enum\BootContext (Minimal / Cli / Stream / Admin).
  *
- * ──────────────────────────────────────────────────────────────────
- * Initialization contexts:
- * ──────────────────────────────────────────────────────────────────
- *
- *   CONTEXT_MINIMAL  — autoload + constants + config + Logger only.
- *                      No DB connection. For scripts that only need
- *                      paths and configuration.
- *
- *   CONTEXT_CLI      — + Database + LegacyInitializer.
- *                      For cron jobs and CLI scripts.
- *
- *   CONTEXT_STREAM   — + Database + LegacyInitializer (lightweight path).
- *                      For streaming endpoints (live, vod, timeshift).
- *                      Does not load admin_api, Translator, etc.
- *
- *   CONTEXT_ADMIN    — + Database + LegacyInitializer + API + ResellerAPI
- *                      + Translator + MobileDetect + session.
- *                      Full initialization for admin/reseller panel.
- *
- * ──────────────────────────────────────────────────────────────────
- * Usage:
- * ──────────────────────────────────────────────────────────────────
- *
- *   // In an admin controller:
- *   require_once '/home/xc_vm/bootstrap.php';
- *   XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_ADMIN);
- *
- *   // In a cron job:
- *   require_once '/home/xc_vm/bootstrap.php';
- *   XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_CLI);
- *
- *   // In a streaming endpoint:
- *   require_once '/home/xc_vm/bootstrap.php';
- *   XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_STREAM, ['cached' => true]);
- *
- *   // Constants only (no DB):
- *   require_once '/home/xc_vm/bootstrap.php';
- *   XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_MINIMAL);
- *
- * The heavy lifting now lives in XcVm\Core\Bootstrap\BootKernel and its stages;
- * XC_Bootstrap is a thin, backward-compatible static facade over that pipeline.
+ *     require_once MAIN_HOME . 'bootstrap.php';
+ *     XC_Bootstrap::boot(BootContext::Admin);
  *
  * @package XC_VM
  * @author  Divarion_D <https://github.com/Divarion-D>
