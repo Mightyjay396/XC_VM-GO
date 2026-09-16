@@ -2,7 +2,7 @@
 
 XC_VM uses constants and settings-driven flags to control environment behavior.
 
-Application constants are stored in `src/Core/Config/AppConfig.php`.
+Application constants are defined by the `appConfig()` map in `src/Core/Config/ConstantsInitializer.php`.
 
 ---
 
@@ -28,7 +28,7 @@ define('DB_ACCESS_ENABLED', false); // enables phpMiniAdmin tab/page in admin pa
 
 `DB_ACCESS_ENABLED` controls access to phpMiniAdmin from admin UI only.
 It does not block core application database connections. Its companion `DB_ACCESS_PWD`
-(also in `AppConfig.php`) sets the password protecting that page — leave it empty to keep the
+(also in the `appConfig()` map) sets the password protecting that page — leave it empty to keep the
 tab off, set a strong value only while you need it.
 
 ### `DEV_MODE`
@@ -67,28 +67,30 @@ These values are loaded from `CACHE_TMP_PATH/settings` by request guards.
 
 ## Static App Constants
 
-From `src/Core/Config/AppConfig.php`:
+From the `appConfig()` map in `src/Core/Config/ConstantsInitializer.php` (each entry is
+`define()`'d by `ConstantsInitializer::init()`):
 
 ```php
-define('DB_ACCESS_ENABLED', false);
-define('DB_ACCESS_PWD', '');       // password for the phpMiniAdmin tab (empty = off)
-define('DEV_MODE', false);         // master development-mode switch
-define('XC_VM_VERSION', '2.4.1');  // bumped every release — treat as illustrative
-define('GIT_OWNER', 'Vateron-Media');
-define('GIT_REPO_MAIN', 'XC_VM');
-define('GIT_REPO_UPDATE', 'XC_VM_Update');
-define('GIT_REPO_BIN', 'XC_VM_Binaries');
-define('GIT_REPO_FANOUT', 'XC_VM_Fanout'); // xc_fanout daemon source + binaries
-define('GIT_REPO_PROXY', 'XC_VM_Proxy');
-define('MONITOR_CALLS', 3);
-define('OPENSSL_EXTRA', '...');
+'DB_ACCESS_ENABLED' => false,
+'DB_ACCESS_PWD'     => '',       // password for the phpMiniAdmin tab (empty = off)
+'DEV_MODE'          => false,    // master development-mode switch
+'XC_VM_VERSION'     => '2.4.1',  // bumped every release — treat as illustrative
+'GIT_OWNER'         => 'Vateron-Media',
+'GIT_REPO_MAIN'     => 'XC_VM',
+'GIT_REPO_UPDATE'   => 'XC_VM_Update',
+'GIT_REPO_BIN'      => 'XC_VM_Binaries',
+'GIT_REPO_FANOUT'   => 'XC_VM_Fanout', // xc_fanout daemon source + binaries
+'GIT_REPO_PROXY'    => 'XC_VM_Proxy',
+'MONITOR_CALLS'     => 3,
+'OPENSSL_EXTRA'     => '...',    // literal fallback; the real per-install secret is read
+                                 // from the config/openssl_extra file by init()
 ```
 
 ---
 
 ## Adding New Flags
 
-Use static constants in `AppConfig.php` for fixed infrastructure/runtime constants (edited in
+Use static constants in the `appConfig()` map (`ConstantsInitializer.php`) for fixed infrastructure/runtime constants (edited in
 code, take effect on next request). Use settings (`$rSettings`) for values an operator toggles
 from the admin panel (**Settings** page) — those are persisted in the `settings` DB table and
 read from `CACHE_TMP_PATH/settings`.
@@ -103,7 +105,7 @@ either turning it on wins.
 
 | File | Purpose |
 | --- | --- |
-| `src/Core/Config/AppConfig.php` | static app constants |
+| `src/Core/Config/ConstantsInitializer.php` | static app constants (`appConfig()` map) |
 | `src/Core/Http/RequestGuard.php` | loads `$rSettings`, sets `PHP_ERRORS` |
 | `src/Core/Error/ErrorHandler.php` | uses `debug_show_errors` behavior |
 | `src/Core/Logging/Logger.php` | debug/verbosity behavior |

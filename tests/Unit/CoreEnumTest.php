@@ -15,12 +15,13 @@ final class CoreEnumTest extends TestCase {
 		$this->assertSame('cli', BootContext::Cli->value);
 		$this->assertSame('stream', BootContext::Stream->value);
 		$this->assertSame('admin', BootContext::Admin->value);
+		$this->assertSame('webapi', BootContext::WebApi->value);
 	}
 
 	public function testBootContextFromString() {
 		$this->assertSame(BootContext::Admin, BootContext::from('admin'));
 		$this->assertNull(BootContext::tryFrom('nope'));
-		$this->assertCount(4, BootContext::cases());
+		$this->assertCount(5, BootContext::cases());
 	}
 
 	public function testServerEnvironmentValues() {

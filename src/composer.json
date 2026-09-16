@@ -20,7 +20,10 @@
     "autoload": {
         "psr-4": {
             "XcVm\\": "./"
-        }
+        },
+        "files": [
+            "Core/Error/ErrorHandler.php"
+        ]
     },
     "config": {
         "optimize-autoloader": false,

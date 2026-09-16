@@ -65,4 +65,15 @@ class DatabaseFactory {
 		}
 		self::$instance = null;
 	}
+
+	/**
+	 * Clears the singleton registry without closing the connection.
+	 *
+	 * Test seam for deterministic per-test state: unlike close(), it does not
+	 * touch the global $db or call close_mysql(), so it is safe with the fake
+	 * DatabaseHandler subtypes tests inject.
+	 */
+	public static function reset(): void {
+		self::$instance = null;
+	}
 }

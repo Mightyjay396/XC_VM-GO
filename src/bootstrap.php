@@ -1,50 +1,16 @@
 <?php
 
 /**
- * Unified initialization entry point (bootstrap)
+ * Application entry point.
  *
- * Provides context-dependent initialization for the entire application.
- * Handles: constant loading, DB connection, flood-protection, Logger,
- * error functions, session, Redis, Translator, and admin globals.
+ * Defines MAIN_HOME, registers the Composer PSR-4 autoloader, and exposes
+ * XC_Bootstrap — a thin, backward-compatible static facade that boots a context
+ * and answers a few legacy getters. All initialization logic lives in
+ * XcVm\Core\Bootstrap\BootKernel and its per-subsystem stages; the context is a
+ * XcVm\Core\Enum\BootContext (Minimal / Cli / Stream / Admin).
  *
- * ──────────────────────────────────────────────────────────────────
- * Initialization contexts:
- * ──────────────────────────────────────────────────────────────────
- *
- *   CONTEXT_MINIMAL  — autoload + constants + config + Logger only.
- *                      No DB connection. For scripts that only need
- *                      paths and configuration.
- *
- *   CONTEXT_CLI      — + Database + LegacyInitializer.
- *                      For cron jobs and CLI scripts.
- *
- *   CONTEXT_STREAM   — + Database + LegacyInitializer (lightweight path).
- *                      For streaming endpoints (live, vod, timeshift).
- *                      Does not load admin_api, Translator, etc.
- *
- *   CONTEXT_ADMIN    — + Database + LegacyInitializer + API + ResellerAPI
- *                      + Translator + MobileDetect + session.
- *                      Full initialization for admin/reseller panel.
- *
- * ──────────────────────────────────────────────────────────────────
- * Usage:
- * ──────────────────────────────────────────────────────────────────
- *
- *   // In an admin controller:
- *   require_once '/home/xc_vm/bootstrap.php';
- *   XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_ADMIN);
- *
- *   // In a cron job:
- *   require_once '/home/xc_vm/bootstrap.php';
- *   XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_CLI);
- *
- *   // In a streaming endpoint:
- *   require_once '/home/xc_vm/bootstrap.php';
- *   XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_STREAM, ['cached' => true]);
- *
- *   // Constants only (no DB):
- *   require_once '/home/xc_vm/bootstrap.php';
- *   XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_MINIMAL);
+ *     require_once MAIN_HOME . 'bootstrap.php';
+ *     XC_Bootstrap::boot(BootContext::Admin);
  *
  * @package XC_VM
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -53,24 +19,14 @@
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-use XcVm\Core\Config\ConfigReader;
-use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Bootstrap\BootKernel;
+use XcVm\Core\Bootstrap\BootState;
+use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\Database;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Enum\BootContext;
 use XcVm\Core\Events\EventDispatcher;
-use XcVm\Core\Init\LegacyInitializer;
-use XcVm\Core\Localization\Translator;
-use XcVm\Core\Logging\Logger;
-use XcVm\Domain\Bouquet\BouquetService;
-use XcVm\Domain\Server\ServerRepository;
-use XcVm\Domain\Stream\CategoryService;
-use XcVm\Domain\User\ResellerAPI;
-use XcVm\Domain\User\UserRepository;
-use XcVm\Infrastructure\Bootstrap\DomainDatabaseWiring;
 use XcVm\Infrastructure\Database\DatabaseFactory;
-use XcVm\Infrastructure\Redis\RedisManager;
 
 // ─────────────────────────────────────────────────────────────────
 //  1. Class autoloader
@@ -113,7 +69,7 @@ if (!function_exists('getallheaders')) {
 
 
 // ─────────────────────────────────────────────────────────────────
-//  3. XC_Bootstrap class
+//  3. XC_Bootstrap facade
 // ─────────────────────────────────────────────────────────────────
 
 class XC_Bootstrap {
@@ -127,34 +83,11 @@ class XC_Bootstrap {
 	/** @deprecated Use BootContext::Admin */
 	const CONTEXT_ADMIN    = 'admin';
 
-	// ── Internal state ───────────────────────────────────────
-	private static bool $booted  = false;
-
-	private static ?string $context = null;
-
-	private static array $options = [];
-
-	private static bool $devMode = false;
-
-	// ── Subsystem initialization flags ────────────────────────
-	private static bool $constantsLoaded = false;
-
-	private static bool $configLoaded    = false;
-
-	private static bool $loggerStarted   = false;
-
-	private static bool $databaseReady   = false;
-
-	private static bool $coreReady       = false;
-
-	private static bool $adminReady      = false;
-
-	private static bool $sessionStarted  = false;
-
-	private static bool $redisReady      = false;
+	/** Result of the last boot(); null until the first boot. */
+	private static ?BootState $state = null;
 
 	/**
-	 * Main entry point.
+	 * Main entry point — delegates to the BootKernel pipeline.
 	 *
 	 * @param string|BootContext $context  Boot context. Accepts BootContext enum or legacy string constant.
 	 * @param array              $options  Additional options:
@@ -164,68 +97,27 @@ class XC_Bootstrap {
 	 *   'shutdown'    => callable Shutdown callback (replaces register_shutdown_function)
 	 */
 	public static function boot(string|BootContext $context = BootContext::Cli, array $options = []): void {
-		if (self::$booted) {
+		if (self::$state?->booted) {
 			return;
 		}
 
 		$ctx = $context instanceof BootContext ? $context : BootContext::from($context);
 
-		self::$context = $ctx->value;
-		self::$options = array_merge(self::defaults($ctx), $options);
-
-		// ── Create container ────────────────────────────────────
-		$container = ServiceContainer::getInstance();
-		$container->set('context', $ctx->value);
-		$container->set('options', self::$options);
-
-		// ── Common for all contexts ────────────────────────────
-
-		self::loadConstants();
-
-		$container->set('config', ConfigReader::getAll());
-
-		// ── Flood-protection (HTTP only) ───────────────────────
-		if (!self::isCli()) {
-			self::floodProtection();
-			self::hostVerification();
-		}
-
-		// ── Context-dependent initialization ───────────────────
-
-		match ($ctx) {
-			BootContext::Minimal => null,
-			BootContext::Cli     => self::bootCli(),
-			BootContext::Stream  => self::bootStream(),
-			BootContext::Admin   => self::bootAdmin(),
-		};
-
-		// ── Register services in the container ──────────────────
-		self::populateContainer($container);
-
-		// ── Verify that expected services were registered ────────
-		if ($ctx !== BootContext::Minimal) {
-			self::assertContainerHealth($container);
-		}
-
-		self::$booted = true;
+		self::$state = (new BootKernel())->boot($ctx, $options);
 	}
-
-	// ─────────────────────────────────────────────────────────
-	//  Public getters
-	// ─────────────────────────────────────────────────────────
 
 	/**
 	 * Current boot context.
 	 */
 	public static function getContext(): ?string {
-		return self::$context;
+		return self::$state?->context->value;
 	}
 
 	/**
 	 * Whether bootstrap has been executed.
 	 */
 	public static function isBooted(): bool {
-		return self::$booted;
+		return (bool) self::$state?->booted;
 	}
 
 	/**
@@ -233,7 +125,7 @@ class XC_Bootstrap {
 	 * When true, PHP errors are displayed on-screen regardless of DB settings.
 	 */
 	public static function isDevMode(): bool {
-		return self::$devMode;
+		return (bool) self::$state?->devMode;
 	}
 
 	/**
@@ -246,8 +138,6 @@ class XC_Bootstrap {
 
 	/**
 	 * Get the ServiceContainer.
-	 *
-	 * @return ServiceContainer
 	 */
 	public static function getContainer(): ServiceContainer {
 		return ServiceContainer::getInstance();
@@ -261,571 +151,24 @@ class XC_Bootstrap {
 	}
 
 	/**
-	 * Force reset (for testing).
+	 * Force reset (for testing): drops the boot state and the process-wide
+	 * singletons the pipeline populates.
 	 */
 	public static function reset(): void {
-		self::$booted          = false;
-		self::$context         = null;
-		self::$options         = [];
-		self::$constantsLoaded = false;
-		self::$configLoaded    = false;
-		self::$loggerStarted   = false;
-		self::$databaseReady   = false;
-		self::$coreReady       = false;
-		self::$adminReady      = false;
-		self::$sessionStarted  = false;
-		self::$redisReady      = false;
+		self::$state = null;
 
 		ServiceContainer::resetInstance();
+		EventDispatcher::resetInstance();
+		DatabaseFactory::reset();
 	}
-
-	// ─────────────────────────────────────────────────────────
-	//  Context boot sequences
-	// ─────────────────────────────────────────────────────────
-
-	/**
-	 * Boot sequence for the CLI context: database, legacy core, optional redis
-	 * and process title.
-	 *
-	 * @return void
-	 */
-	private static function bootCli(): void {
-		self::initDatabase(self::$options['cached']);
-		self::initLegacyCore(self::$options['cached']);
-		if (self::$options['redis']) {
-			self::initRedis();
-		}
-		if (!empty(self::$options['process'])) {
-			cli_set_process_title(self::$options['process']);
-		}
-	}
-
-	/**
-	 * Boot sequence for the streaming context: cached database connection only.
-	 *
-	 * @return void
-	 */
-	private static function bootStream(): void {
-		self::initDatabase(true);
-	}
-
-	/**
-	 * Boot sequence for the admin context: session, database, legacy core, redis,
-	 * admin API, translator, shutdown handler and status constants.
-	 *
-	 * @return void
-	 */
-	private static function bootAdmin(): void {
-		self::initSession();
-		self::initDatabase(false);
-		self::initLegacyCore(false);
-		self::initRedis();
-		self::initAdminAPI();
-		self::initTranslator();
-		self::registerAdminShutdown();
-		self::defineStatusConstants();
-		self::initAdminGlobals();
-	}
-
-	// ─────────────────────────────────────────────────────────
-	//  Subsystem initialization (each called at most once)
-	// ─────────────────────────────────────────────────────────
-
-	/**
-	 * Load constants, paths, Logger, error functions.
-	 *
-	 * Loads core configuration directly (without www/constants.php):
-	 *   core/Error/ErrorCodes.php  — $rErrorCodes
-	 *   core/Error/ErrorHandler.php — generateError(), generate404()
-	 *   core/Config/Paths.php      — *_PATH constants
-	 *   core/Config/AppConfig.php  — version, Git, flags
-	 *   core/Config/Binaries.php   — FFMPEG, FFPROBE, GeoIP
-	 */
-	private static function loadConstants(): void {
-		if (self::$constantsLoaded) {
-			return;
-		}
-
-		require_once MAIN_HOME . 'Core/Error/ErrorCodes.php';
-		require_once MAIN_HOME . 'Core/Error/ErrorHandler.php';
-		require_once MAIN_HOME . 'Core/Config/Paths.php';
-		require_once MAIN_HOME . 'Core/Config/AppConfig.php';
-		require_once MAIN_HOME . 'Core/Config/Binaries.php';
-
-		self::$devMode = DEV_MODE;
-
-		if (!defined('PHP_ERRORS')) {
-			define('PHP_ERRORS', self::$devMode);
-		}
-
-		Logger::init(
-			self::$devMode || PHP_ERRORS,
-			LOGS_TMP_PATH . 'error_log.log'
-		);
-
-		self::$constantsLoaded = true;
-		self::$configLoaded    = true;
-		self::$loggerStarted   = true;
-	}
-
-	/**
-	 * Flood-protection: block banned IPs.
-	 *
-	 * Called for HTTP contexts only.
-	 */
-	private static function floodProtection(): void {
-		if (self::isCli()) {
-			return;
-		}
-
-		$rIP = $_SERVER['REMOTE_ADDR'] ?? '';
-		if (!empty($rIP) && file_exists(FLOOD_TMP_PATH . 'block_' . $rIP)) {
-			http_response_code(403);
-			exit();
-		}
-	}
-
-	/**
-	 * Host verification: ensure request comes from an allowed domain.
-	 */
-	private static function hostVerification(): void {
-		if (self::isCli()) {
-			return;
-		}
-
-		if (!defined('HOST')) {
-			$host = trim(explode(':', $_SERVER['HTTP_HOST'] ?? '')[0]);
-			define('HOST', $host);
-		}
-
-		// Domain check via settings cache
-		if (file_exists(CACHE_TMP_PATH . 'settings')) {
-			$rData = @file_get_contents(CACHE_TMP_PATH . 'settings');
-			if ($rData !== false) {
-				$rSettings = @igbinary_unserialize($rData);
-				if (is_array($rSettings) && !empty($rSettings['verify_host'])) {
-					if (file_exists(CACHE_TMP_PATH . 'allowed_domains')) {
-						$rDomains = @igbinary_unserialize(@file_get_contents(CACHE_TMP_PATH . 'allowed_domains'));
-						if (
-							is_array($rDomains) && count($rDomains) > 0
-							&& !in_array(HOST, $rDomains) && HOST !== 'xc_vm'
-							&& !filter_var(HOST, FILTER_VALIDATE_IP)
-						) {
-							generateError('INVALID_HOST');
-						}
-					}
-				}
-			}
-		}
-	}
-
-	/**
-	 * Start PHP session with secure parameters.
-	 *
-	 * HTTP contexts only (admin/reseller).
-	 */
-	private static function initSession(): void {
-		if (self::$sessionStarted || self::isCli()) {
-			return;
-		}
-
-		if (session_status() === PHP_SESSION_NONE) {
-			$rParams = session_get_cookie_params() ?: [];
-			$rParams['samesite'] = 'Strict';
-			// The panel's scripts never read the session cookie, so an XSS must
-			// not be able to either.
-			$rParams['httponly'] = true;
-			session_set_cookie_params($rParams);
-			// Refuse session ids this server never issued, so a visitor cannot
-			// arrive carrying one an attacker chose.
-			ini_set('session.use_strict_mode', '1');
-			session_start();
-		}
-
-		self::$sessionStarted = true;
-	}
-
-	/**
-	 * Connect to MySQL/MariaDB.
-	 *
-	 * Creates the global $db variable (backward compatibility).
-	 *
-	 * @param bool $cached If true, LegacyInitializer will use
-	 *                     file cache instead of SQL queries for settings.
-	 */
-	private static function initDatabase(bool $cached = false): void {
-		if (self::$databaseReady) {
-			return;
-		}
-
-		global $db;
-
-		$db = new DatabaseHandler();
-
-		self::$databaseReady = true;
-	}
-
-	/**
-	 * Initialize legacy core subsystems.
-	 *
-	 * Sanitizes globals ($_GET, $_POST, $_SESSION, $_COOKIE),
-	 * parses config, defines SERVER_ID, selects FFmpeg binaries,
-	 * loads settings (from DB or cache).
-	 *
-	 * @param bool $cached Use cache for settings (for high-load paths)
-	 */
-	private static function initLegacyCore(bool $cached = false): void {
-		if (self::$coreReady) {
-			return;
-		}
-
-		global $db;
-
-		DatabaseFactory::set($db);
-
-		// Wire $db into the domain service classes before initCore() runs,
-		// since initCore() calls ServerRepository::getAll() which requires it.
-		self::wireDomainDatabase($db);
-
-		LegacyInitializer::initCore($cached);
-
-		// If cache was used and is incomplete — reconnect to DB
-		if ($cached && !SettingsManager::get('enable_cache')) {
-			$db = new DatabaseHandler();
-			DatabaseFactory::set($db);
-			self::wireDomainDatabase($db);
-		}
-
-		self::$coreReady = true;
-	}
-
-	/**
-	 * Connect to Redis.
-	 */
-	private static function initRedis(): void {
-		if (self::$redisReady) {
-			return;
-		}
-
-		// $redisReady means "connected", not "attempted": assertContainerHealth()
-		// requires the 'redis' service only when this flag is set, so a failed
-		// connection must leave it false — the panel degrades instead of 500ing.
-		self::$redisReady = RedisManager::ensureConnected();
-	}
-
-	/**
-	 * Initialize Admin API + Reseller API.
-	 *
-	 * Initializes ResellerAPI class and admin user info.
-	 */
-	private static function initAdminAPI(): void {
-		if (self::$adminReady) {
-			return;
-		}
-
-		global $db;
-
-
-		// Admin user info
-		if (isset($_SESSION['hash'])) {
-			$GLOBALS['rAdminUserInfo'] = UserRepository::getRegisteredUserById($_SESSION['hash']);
-		}
-
-		ResellerAPI::init();
-
-		self::$adminReady = true;
-	}
-
-	/**
-	 * Initialize Translator (i18n).
-	 */
-	private static function initTranslator(): void {
-		Translator::init();
-	}
-
-	/**
-	 * Register shutdown function for admin context.
-	 *
-	 * Closes the MySQL connection on script termination.
-	 */
-	private static function registerAdminShutdown(): void {
-		register_shutdown_function(function () {
-			global $db;
-			if (is_object($db)) {
-				$db->close_mysql();
-			}
-		});
-	}
-
-	/**
-	 * Populate the container with initialized services.
-	 *
-	 * Called at the end of boot() — all subsystems are already running,
-	 * so it is safe to reference $db, SettingsManager, etc.
-	 *
-	 * Container stores:
-	 *   'db'           => Database       — PDO wrapper
-	 *   'config'       => array          — $_INFO from config.ini
-	 *   'settings'     => array          — panel settings
-	 *   'redis'        => Redis|null     — Redis connection
-	 *   'servers'      => array          — server list
-	 *   'bouquets'     => array          — bouquets
-	 *   'categories'   => array          — categories
-	 *   'translator'   => string         — Translator class
-	 *   'events'       => string         — EventDispatcher class
-	 *
-	 */
-	private static function populateContainer(ServiceContainer $container): void {
-		// Database
-		if (self::$databaseReady) {
-			global $db;
-			$container->set('db', $db);
-			self::wireDomainDatabase($db);
-		}
-
-		// Settings and core data
-		if (self::$coreReady) {
-			$container->set('settings', SettingsManager::getAll());
-			$container->set('servers', ServerRepository::getAll());
-			$container->set('bouquets', BouquetService::getAll());
-			$container->set('categories', CategoryService::getFromDatabase());
-
-			if (self::$redisReady && RedisManager::isConnected()) {
-				$container->set('redis', RedisManager::instance());
-			}
-		}
-
-		// Translator
-		if (class_exists(Translator::class, false) && Translator::available()) {
-			$container->set('translator', Translator::class);
-		}
-
-		// Events — create an instance, wire it as the static singleton bridge,
-		// and register it in the container so it can be injected via DI.
-		$dispatcher = new EventDispatcher();
-		EventDispatcher::setInstance($dispatcher);
-		$container->set('events', $dispatcher);
-	}
-
-	/**
-	 * Wire the injected $db instance into every domain service class.
-	 *
-	 * Domain classes use the static setDb() / db() pattern: setDb() stores
-	 * the injected instance; db() returns it. Calling this method removes the
-	 * need for the global $db fallback inside each db() helper.
-	 *
-	 * @param DatabaseHandler $db DatabaseHandler instance
-	 */
-	private static function wireDomainDatabase(object $db): void {
-		DomainDatabaseWiring::wire($db);
-	}
-
-	/**
-	 * Verify that services which should have been registered actually are.
-	 *
-	 * Called after populateContainer() for every context except CONTEXT_MINIMAL.
-	 * Throws RuntimeException on the first missing service so the application
-	 * fails loudly instead of silently degrading.
-	 *
-	 * @throws RuntimeException
-	 */
-	private static function assertContainerHealth(ServiceContainer $container): void {
-		$required = ['events'];
-
-		if (self::$databaseReady) {
-			$required[] = 'db';
-		}
-
-		if (self::$redisReady) {
-			$required[] = 'redis';
-		}
-
-		$missing = [];
-		foreach ($required as $service) {
-			if (!$container->has($service)) {
-				$missing[] = $service;
-			}
-		}
-
-		if ($missing !== []) {
-			throw new RuntimeException(
-				'ServiceContainer health check failed — missing required services: '
-					. implode(', ', $missing)
-			);
-		}
-	}
-
-	/**
-	 * Default boot options for a context.
-	 *
-	 * @param BootContext $ctx Boot context.
-	 * @return array Options: cached, redis, process, shutdown.
-	 */
-	private static function defaults(BootContext $ctx): array {
-		return match ($ctx) {
-			BootContext::Admin   => ['cached' => false, 'redis' => true,  'process' => '', 'shutdown' => null],
-			BootContext::Stream  => ['cached' => true,  'redis' => false, 'process' => '', 'shutdown' => null],
-			BootContext::Cli     => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null],
-			BootContext::Minimal => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null],
-		};
-	}
-
-	/**
-	 * Initialize admin globals: MobileDetect, timeouts, servers, protocol.
-	 */
-	private static function initAdminGlobals(): void {
-		global $rDetect, $rMobile, $rTimeout, $rSQLTimeout, $rProtocol,
-			$allServers, $rServers, $rSettings, $rProxyServers,
-			$rPermissions, $allowedLangs;
-
-		if (!defined('SERVER_ID')) {
-			define('SERVER_ID', intval(ConfigReader::get('server_id')));
-		}
-
-		$rDetect = new \Detection\MobileDetect();
-		$rMobile = $rDetect->isMobile();
-
-		$rTimeout    = 15;
-		$rSQLTimeout = 10;
-		set_time_limit($rTimeout);
-		ini_set('mysql.connect_timeout', (string) $rSQLTimeout);
-		ini_set('max_execution_time', (string) $rTimeout);
-		ini_set('default_socket_timeout', (string) $rTimeout);
-
-		$rProtocol    = self::detectProtocol();
-		$allServers   = ServerRepository::getAllSimple();
-		$rServers     = ServerRepository::getStreamingSimple($rPermissions);
-		$rSettings    = SettingsManager::getAll();
-		if (self::$devMode) {
-			$rSettings['debug_show_errors'] = true;
-		}
-		$rProxyServers = ServerRepository::getProxySimple($rPermissions);
-
-		$allowedLangs = Translator::available();
-
-		// Sort servers by order
-		if (is_array($rServers)) {
-			uasort(
-				$rServers,
-				function ($a, $b) {
-					return $a['order'] - $b['order'];
-				}
-			);
-		}
-
-		// Ensure the legacy 'reseller' assets alias (Public/assets/reseller → admin).
-		self::ensureResellerAssetsSymlink();
-	}
-
-	/**
-	 * Ensure the legacy 'reseller' assets alias exists (Public/assets/reseller → admin).
-	 *
-	 * Reseller pages reuse the admin asset bundle, and some nginx configs / legacy
-	 * routes expect Public/assets/reseller to resolve to Public/assets/admin. The
-	 * link is not stored in git (an absolute-path symlink broke the build), so the
-	 * panel recreates it here. Idempotent, and repairs a stale/broken link.
-	 */
-	private static function ensureResellerAssetsSymlink(): void {
-		$assetsBase   = MAIN_HOME . 'Public/assets/';
-		$resellerLink = $assetsBase . 'reseller';
-
-		// Nothing to point at yet — skip.
-		if (!is_dir($assetsBase . 'admin')) {
-			return;
-		}
-
-		if (is_link($resellerLink)) {
-			// Correct, resolvable link → nothing to do.
-			if (readlink($resellerLink) === 'admin' && is_dir($resellerLink)) {
-				return;
-			}
-			@unlink($resellerLink); // stale/broken link — recreate below
-		} elseif (file_exists($resellerLink)) {
-			return; // a real directory/file lives here — leave it alone
-		}
-
-		// Relative link so it is independent of MAIN_HOME and path case.
-		if (!@symlink('admin', $resellerLink)) {
-			// Without the link every reseller access code serves pages with no
-			// CSS/JS (nginx aliases /CODE/assets/ to Public/assets/reseller/).
-			error_log('XC_Bootstrap: failed to create Public/assets/reseller -> admin symlink — check ownership of Public/assets/ (expected xc_vm).');
-		}
-	}
-
-	/**
-	 * Detect HTTP protocol (http/https).
-	 */
-	private static function detectProtocol(): string {
-		$https  = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
-		$port443 = isset($_SERVER['SERVER_PORT']) && $_SERVER['SERVER_PORT'] == 443;
-		return ($https || $port443) ? 'https' : 'http';
-	}
-
-	// ─────────────────────────────────────────────────────────
-	//  Status constants (from admin.php)
-	// ─────────────────────────────────────────────────────────
 
 	/**
 	 * Define status constants (STATUS_FAILURE, STATUS_SUCCESS, ...).
 	 *
-	 * Used throughout admin and reseller API handlers.
-	 * Called automatically in CONTEXT_ADMIN.
-	 * Can be called manually when needed.
+	 * Used throughout admin and reseller API handlers. Called automatically in
+	 * the Admin context; can be called manually when needed.
 	 */
 	public static function defineStatusConstants(): void {
-		// Guard against duplicate definition
-		if (defined('STATUS_FAILURE')) {
-			return;
-		}
-
-		define('STATUS_FAILURE', 0);
-		define('STATUS_SUCCESS', 1);
-		define('STATUS_SUCCESS_MULTI', 2);
-		define('STATUS_CODE_LENGTH', 3);
-		define('STATUS_NO_SOURCES', 4);
-		define('STATUS_DISABLED', 5);
-		define('STATUS_NOT_ADMIN', 6);
-		define('STATUS_INVALID_EMAIL', 7);
-		define('STATUS_INVALID_PASSWORD', 8);
-		define('STATUS_INVALID_IP', 9);
-		define('STATUS_INVALID_PLAYLIST', 10);
-		define('STATUS_INVALID_NAME', 11);
-		define('STATUS_INVALID_CAPTCHA', 12);
-		define('STATUS_INVALID_CODE', 13);
-		define('STATUS_INVALID_DATE', 14);
-		define('STATUS_INVALID_FILE', 15);
-		define('STATUS_INVALID_GROUP', 16);
-		define('STATUS_INVALID_DATA', 17);
-		define('STATUS_INVALID_DIR', 18);
-		define('STATUS_INVALID_MAC', 19);
-		define('STATUS_EXISTS_CODE', 20);
-		define('STATUS_EXISTS_NAME', 21);
-		define('STATUS_EXISTS_USERNAME', 22);
-		define('STATUS_EXISTS_MAC', 23);
-		define('STATUS_EXISTS_SOURCE', 24);
-		define('STATUS_EXISTS_IP', 25);
-		define('STATUS_EXISTS_DIR', 26);
-		define('STATUS_SUCCESS_REPLACE', 27);
-		define('STATUS_FLUSH', 28);
-		define('STATUS_TOO_MANY_RESULTS', 29);
-		define('STATUS_SPACE_ISSUE', 30);
-		define('STATUS_INVALID_USER', 31);
-		define('STATUS_CERTBOT', 32);
-		define('STATUS_CERTBOT_INVALID', 33);
-		define('STATUS_INVALID_INPUT', 34);
-		define('STATUS_NOT_RESELLER', 35);
-		define('STATUS_NO_TRIALS', 36);
-		define('STATUS_INSUFFICIENT_CREDITS', 37);
-		define('STATUS_INVALID_PACKAGE', 38);
-		define('STATUS_INVALID_TYPE', 39);
-		define('STATUS_INVALID_USERNAME', 40);
-		define('STATUS_INVALID_SUBRESELLER', 41);
-		define('STATUS_NO_DESCRIPTION', 42);
-		define('STATUS_NO_KEY', 43);
-		define('STATUS_EXISTS_HMAC', 44);
-		define('STATUS_CERTBOT_RUNNING', 45);
-		define('STATUS_RESERVED_CODE', 46);
-		define('STATUS_NO_TITLE', 47);
-		define('STATUS_NO_SOURCE', 48);
+		ConstantsInitializer::initStatus();
 	}
 }

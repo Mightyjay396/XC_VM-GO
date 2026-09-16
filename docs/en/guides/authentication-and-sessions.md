@@ -431,4 +431,4 @@ Page-level access control. Determines whether the current user's group permissio
 | `src/Infrastructure/Bootstrap/reseller_functions.php` | Reseller session validation on every page load |
 | `src/Domain/User/UserRepository.php` | Credential lookup (`getAuthUserByCredentials`) |
 | `src/bootstrap.php` | Status constant definitions, bootstrap contexts |
-| `src/Core/Config/Paths.php` | `FLOOD_TMP_PATH` definition |
+| `src/Core/Config/ConstantsInitializer.php` | `FLOOD_TMP_PATH` definition (`paths()` map) |

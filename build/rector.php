@@ -64,7 +64,8 @@ return RectorConfig::configure()
 		// (classes, next to it) ARE analysed.
 		__DIR__ . '/../src/Ministra/portal.php',
 
-		// Streaming hot-path — refactored later in its own cautious phase.
+		// Streaming/web-API hot paths — deliberately excluded from the mechanical
+		// pass; touched only under review (verified via the dev-container smokes).
 		__DIR__ . '/../src/Infrastructure/Bootstrap/StreamingRequestBootstrap.php',
 		__DIR__ . '/../src/Infrastructure/Bootstrap/WebApiBootstrap.php',
 		__DIR__ . '/../src/Cli/Commands/FanoutBinaryCommand.php',

@@ -24,4 +24,8 @@ enum BootContext: string {
 
 	/** Full initialization: DB + API + Translator + session. */
 	case Admin = 'admin';
+
+	/** Lightweight web-API endpoint boot (enigma2/epg/playlist/api/...): DB +
+	 * LegacyInitializer via the shared stages, no ServiceContainer population. */
+	case WebApi = 'webapi';
 }
