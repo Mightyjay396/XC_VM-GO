@@ -255,7 +255,8 @@ $_menu = new XcNewuiMenuBuilder($rMobile, $rSettings, (string) $language, AdminH
  */
 $_menuSections = [
     ['title' => '',               'keys' => ['dashboard']],
-    ['title' => 'Catalog',        'keys' => ['users', 'content', 'vod', 'distribution']],
+    ['title' => 'Users',          'keys' => ['lines', 'active_codes', 'mag', 'e2', 'reseller']],
+    ['title' => 'Catalog',        'keys' => ['content', 'vod', 'distribution', 'category_templates']],
     ['title' => 'Infrastructure', 'keys' => ['servers', 'logs', 'management.service_setup', 'management.access_codes', 'management.security', 'management.tools', 'management.tickets']],
 ];
 ?>
