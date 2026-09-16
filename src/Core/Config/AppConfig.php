@@ -1,45 +1,19 @@
 <?php
 
 /**
- * XC_VM Application Configuration
+ * Application constants — backward-compatibility shim.
  *
- * Copyright (c) 2026 Vateron-Media
+ * Versioning, Git repos and feature flags now live in ConstantsInitializer (the
+ * single define() site). Kept because boot paths require_once it by name; it
+ * delegates to the same idempotent initializer as Paths.php / Binaries.php.
  *
- * @author      Divarion_D
- * @license     GNU Affero General Public License v3.0 (AGPL-3.0)
- * @link        https://github.com/Vateron-Media/XC_VM
- *
- * This file contains application-level configuration constants,
- * including versioning, Git repositories, and feature flags.
+ * @package XC_VM_Core_Config
+ * @author  Divarion_D <https://github.com/Divarion-D>
+ * @copyright 2025-2026 Vateron Media
+ * @link    https://github.com/Vateron-Media/XC_VM
+ * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-// ── Runtime Safety Flags ───────────────────────────────────────
+use XcVm\Core\Config\ConstantsInitializer;
 
-// phpMiniAdmin — direct MySQL access from the admin panel. Disabled by default:
-// it exposes raw database access, so enable it per-install only when needed.
-define('DB_ACCESS_ENABLED', false); // Set to true to allow phpMiniAdmin access; false disables it
-
-// Password phpMiniAdmin requires (on top of the admin session). Keep EMPTY in the
-// repo — a committed password is public and protects nothing; set a strong one on
-// the specific install. When empty, only local IPs (127.0.0.1/::1) may pass.
-define('DB_ACCESS_PWD', ""); // Set a strong password to protect database access
-
-// Forces error display on-screen regardless of the DB setting (debug_show_errors).
-// Set to true locally for development; must be false in production.
-define('DEV_MODE', false);
-
-// ── Version & Git Configuration ────────────────────────────────
-
-define('XC_VM_VERSION', '2.5.1');
-
-define('GIT_OWNER', 'Vateron-Media');
-define('GIT_REPO_MAIN', 'XC_VM');
-define('GIT_REPO_UPDATE', 'XC_VM_Update');
-define('GIT_REPO_BIN', 'XC_VM_Binaries');
-define('GIT_REPO_FANOUT', 'XC_VM_Fanout'); // xc_fanout daemon: source repo, binaries as release assets
-define('GIT_REPO_PROXY', 'XC_VM_Proxy');
-
-// ── Miscellaneous Settings ─────────────────────────────────────
-
-define('MONITOR_CALLS', 3);          // Number of retry attempts for monitoring tasks
-define('OPENSSL_EXTRA', 'fNiu3XD448xTDa27xoY4'); // Additional OpenSSL entropy/seed (review necessity)
+ConstantsInitializer::init();

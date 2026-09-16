@@ -1,17 +1,13 @@
 <?php
 
 /**
- * Константы путей
+ * Path constants — backward-compatibility shim.
  *
- * Все define() для файловой структуры проекта.
- * Зависимость: MAIN_HOME должен быть определён до подключения этого файла.
- *
- * Группы:
- *   1. Базовые пути (content/, tmp/)
- *   2. Системные директории (config/, bin/, storage/, signals/)
- *   3. Контент-директории (streams/, epg/, vod/, archive/, ...)
- *   4. Временные директории (cache/, flood/, logs/, ...)
- *   5. Хранилище файлов (storage/images/, storage/images/enigma2/)
+ * The path, app-config and binary constants now live in ConstantsInitializer
+ * (the single define() site). This file is kept because several boot paths
+ * require_once it by name; it simply delegates. init() is idempotent and
+ * defines the full, correctly-ordered set regardless of which prelude file is
+ * required first.
  *
  * @package XC_VM_Core_Config
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -20,71 +16,6 @@
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
-// ─────────────────────────────────────────────────────────────────
-//  1. Базовые пути (с защитой от повторного определения)
-// ─────────────────────────────────────────────────────────────────
+use XcVm\Core\Config\ConstantsInitializer;
 
-if (!defined('CONTENT_PATH')) {
-	define('CONTENT_PATH', MAIN_HOME . 'content/');
-}
-
-if (!defined('TMP_PATH')) {
-	define('TMP_PATH', MAIN_HOME . 'tmp/');
-}
-
-// ─────────────────────────────────────────────────────────────────
-//  2. Системные директории
-// ─────────────────────────────────────────────────────────────────
-
-define('CONFIG_PATH', MAIN_HOME . 'config/');
-define('BIN_PATH', MAIN_HOME . 'bin/');
-define('STORAGE_PATH', MAIN_HOME . 'storage/');
-define('SIGNALS_PATH', MAIN_HOME . 'signals/');
-
-// xc_fanout daemon sockets (ADR 0002, P2/P3). Kept in the app bin tree next to
-// the daemon binary, mirroring the php-fpm sockets layout (bin/php/sockets/):
-// FANOUT_HTTP_SOCK is the nginx-facing client surface, FANOUT_CTL_SOCK the
-// PHP-only control surface. A unix socket stores no stream bytes (IPC only), so
-// this is orthogonal to the tmpfs-free byte-path goal.
-define('FANOUT_RUN_PATH', BIN_PATH . 'xc_fanout/sockets/');
-define('FANOUT_CTL_SOCK', FANOUT_RUN_PATH . 'control.sock');
-define('FANOUT_HTTP_SOCK', FANOUT_RUN_PATH . 'http.sock');
-
-// ─────────────────────────────────────────────────────────────────
-//  3. Контент-директории
-// ─────────────────────────────────────────────────────────────────
-
-define('STREAMS_PATH', CONTENT_PATH . 'streams/');
-define('EPG_PATH', CONTENT_PATH . 'epg/');
-define('VOD_PATH', CONTENT_PATH . 'vod/');
-define('ARCHIVE_PATH', CONTENT_PATH . 'archive/');
-define('CREATED_PATH', CONTENT_PATH . 'created/');
-define('DELAY_PATH', CONTENT_PATH . 'delayed/');
-define('VIDEO_PATH', CONTENT_PATH . 'video/');
-define('PLAYLIST_PATH', CONTENT_PATH . 'playlists/');
-
-// ─────────────────────────────────────────────────────────────────
-//  4. Временные директории
-// ─────────────────────────────────────────────────────────────────
-
-define('CONS_TMP_PATH', TMP_PATH . 'opened_cons/');
-define('CRONS_TMP_PATH', TMP_PATH . 'crons/');
-define('CIDR_TMP_PATH', TMP_PATH . 'cidr/');
-define('CACHE_TMP_PATH', TMP_PATH . 'cache/');
-define('STREAMS_TMP_PATH', TMP_PATH . 'cache/streams/');
-define('SERIES_TMP_PATH', TMP_PATH . 'cache/series/');
-define('LINES_TMP_PATH', TMP_PATH . 'cache/lines/');
-define('DIVERGENCE_TMP_PATH', TMP_PATH . 'divergence/');
-define('FLOOD_TMP_PATH', TMP_PATH . 'flood/');
-define('PLAYER_TMP_PATH', TMP_PATH . 'player/');
-define('MINISTRA_TMP_PATH', TMP_PATH . 'ministra/');
-define('SIGNALS_TMP_PATH', TMP_PATH . 'signals/');
-define('LOGS_TMP_PATH', TMP_PATH . 'logs/');
-define('WATCH_TMP_PATH', TMP_PATH . 'watch/');
-
-// ─────────────────────────────────────────────────────────────────
-//  5. Хранилище файлов
-// ─────────────────────────────────────────────────────────────────
-
-define('IMAGES_PATH', STORAGE_PATH . 'images/');
-define('E2_IMAGES_PATH', IMAGES_PATH . 'enigma2/');
+ConstantsInitializer::init();
