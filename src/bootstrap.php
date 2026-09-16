@@ -54,6 +54,7 @@
  */
 
 use XcVm\Core\Config\ConfigReader;
+use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\Database;
@@ -773,59 +774,6 @@ class XC_Bootstrap {
 	 * Can be called manually when needed.
 	 */
 	public static function defineStatusConstants(): void {
-		// Guard against duplicate definition
-		if (defined('STATUS_FAILURE')) {
-			return;
-		}
-
-		define('STATUS_FAILURE', 0);
-		define('STATUS_SUCCESS', 1);
-		define('STATUS_SUCCESS_MULTI', 2);
-		define('STATUS_CODE_LENGTH', 3);
-		define('STATUS_NO_SOURCES', 4);
-		define('STATUS_DISABLED', 5);
-		define('STATUS_NOT_ADMIN', 6);
-		define('STATUS_INVALID_EMAIL', 7);
-		define('STATUS_INVALID_PASSWORD', 8);
-		define('STATUS_INVALID_IP', 9);
-		define('STATUS_INVALID_PLAYLIST', 10);
-		define('STATUS_INVALID_NAME', 11);
-		define('STATUS_INVALID_CAPTCHA', 12);
-		define('STATUS_INVALID_CODE', 13);
-		define('STATUS_INVALID_DATE', 14);
-		define('STATUS_INVALID_FILE', 15);
-		define('STATUS_INVALID_GROUP', 16);
-		define('STATUS_INVALID_DATA', 17);
-		define('STATUS_INVALID_DIR', 18);
-		define('STATUS_INVALID_MAC', 19);
-		define('STATUS_EXISTS_CODE', 20);
-		define('STATUS_EXISTS_NAME', 21);
-		define('STATUS_EXISTS_USERNAME', 22);
-		define('STATUS_EXISTS_MAC', 23);
-		define('STATUS_EXISTS_SOURCE', 24);
-		define('STATUS_EXISTS_IP', 25);
-		define('STATUS_EXISTS_DIR', 26);
-		define('STATUS_SUCCESS_REPLACE', 27);
-		define('STATUS_FLUSH', 28);
-		define('STATUS_TOO_MANY_RESULTS', 29);
-		define('STATUS_SPACE_ISSUE', 30);
-		define('STATUS_INVALID_USER', 31);
-		define('STATUS_CERTBOT', 32);
-		define('STATUS_CERTBOT_INVALID', 33);
-		define('STATUS_INVALID_INPUT', 34);
-		define('STATUS_NOT_RESELLER', 35);
-		define('STATUS_NO_TRIALS', 36);
-		define('STATUS_INSUFFICIENT_CREDITS', 37);
-		define('STATUS_INVALID_PACKAGE', 38);
-		define('STATUS_INVALID_TYPE', 39);
-		define('STATUS_INVALID_USERNAME', 40);
-		define('STATUS_INVALID_SUBRESELLER', 41);
-		define('STATUS_NO_DESCRIPTION', 42);
-		define('STATUS_NO_KEY', 43);
-		define('STATUS_EXISTS_HMAC', 44);
-		define('STATUS_CERTBOT_RUNNING', 45);
-		define('STATUS_RESERVED_CODE', 46);
-		define('STATUS_NO_TITLE', 47);
-		define('STATUS_NO_SOURCE', 48);
+		ConstantsInitializer::initStatus();
 	}
 }
