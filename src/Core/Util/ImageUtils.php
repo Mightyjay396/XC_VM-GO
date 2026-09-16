@@ -122,12 +122,13 @@ class ImageUtils {
 	 * Stores jpg/jpeg/png images and returns an internal `s:<serverId>:` reference;
 	 * returns the original URL unchanged when not downloadable.
 	 *
-	 * @param string   $rImage Remote image URL.
-	 * @param int|null $rType  Optional stream type (unused placeholder).
-	 * @return string Internal `s:` reference, or the original URL.
+	 * @param string|null $rImage Remote image URL; callers pass optional columns
+	 *                            (an icon, a backdrop), so it may be null.
+	 * @param int|null    $rType  Optional stream type (unused placeholder).
+	 * @return string|null Internal `s:` reference, or $rImage unchanged.
 	 */
-	public static function downloadImage(string $rImage, ?int $rType = null) {
-		if ($rImage !== '' && substr(strtolower($rImage), 0, 4) == 'http') {
+	public static function downloadImage(?string $rImage, ?int $rType = null) {
+		if ((string) $rImage !== '' && substr(strtolower($rImage), 0, 4) == 'http') {
 			$rPathInfo = pathinfo(parse_url($rImage, PHP_URL_PATH) ?: $rImage);
 			$rExt = strtolower($rPathInfo['extension'] ?? '');
 			if (!$rExt) {

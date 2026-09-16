@@ -425,12 +425,18 @@ class UserRepository {
 	/**
 	 * Fetch a line by id.
 	 *
-	 * @param int $rID Line id.
+	 * @param int|string|null $rID Line id. Callers hand over nullable columns (a
+	 *                             device's `pair_id`) and request values; anything
+	 *                             that is not a positive id finds nothing.
 	 * @return array|null The line row, or null if not found.
 	 */
-	public static function getLineById(int $rID) {
+	public static function getLineById($rID) {
+		if (!is_numeric($rID) || (int) $rID <= 0) {
+			return null;
+		}
+
 		$db = self::db();
-		$db->query('SELECT * FROM `lines` WHERE `id` = ?;', $rID);
+		$db->query('SELECT * FROM `lines` WHERE `id` = ?;', (int) $rID);
 
 		if ($db->num_rows() == 1) {
 			return $db->get_row();

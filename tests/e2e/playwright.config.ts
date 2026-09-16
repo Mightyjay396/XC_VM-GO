@@ -42,7 +42,14 @@ export default defineConfig({
     ignoreHTTPSErrors: true,
   },
   projects: [
-    { name: 'setup', testMatch: /auth\.setup\.ts/ },
+    // Logs in once; when every dependent project has finished, `cleanup` sweeps
+    // the records the admin specs created (tests/admin/cleanup.teardown.ts).
+    { name: 'setup', testMatch: /auth\.setup\.ts/, teardown: 'cleanup' },
+    {
+      name: 'cleanup',
+      testMatch: /cleanup\.teardown\.ts/,
+      use: { ...devices['Desktop Chrome'], storageState: '.auth/admin.json' },
+    },
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'], storageState: '.auth/admin.json' },

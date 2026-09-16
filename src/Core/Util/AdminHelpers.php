@@ -359,12 +359,14 @@ class AdminHelpers {
 	/**
 	 * Extract the page name (script basename) from a URL.
 	 *
-	 * @param string $rURL URL to parse.
-	 * @return string|null Lowercased page name, or null if $rURL is empty.
+	 * @param string|null $rURL URL to parse. post.php passes its optional
+	 *                          `referer` parameter, which the new-UI forms omit.
+	 * @return string|null Lowercased page name, or null if $rURL is empty or has no path.
 	 */
-	public static function getPageFromURL(string $rURL) {
-		if ($rURL) {
-			return strtolower(basename(ltrim(parse_url($rURL)['path'], '/'), '.php'));
+	public static function getPageFromURL(?string $rURL) {
+		$rPath = $rURL ? parse_url($rURL, PHP_URL_PATH) : null;
+		if (is_string($rPath) && trim($rPath, '/') !== '') {
+			return strtolower(basename(ltrim($rPath, '/'), '.php'));
 		}
 
 		return null;
