@@ -49,6 +49,9 @@ class BootKernel {
 			BootContext::Stream  => ['cached' => true,  'redis' => false, 'process' => '', 'shutdown' => null],
 			BootContext::Cli     => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null],
 			BootContext::Minimal => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null],
+			// WebApi boots via WebApiBootstrap (its own pipeline), not this kernel;
+			// defined for exhaustiveness and per-endpoint 'cached' is passed directly.
+			BootContext::WebApi  => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null],
 		};
 	}
 }
