@@ -3,11 +3,11 @@
 В этом руководстве показано, как запускать тесты проекта с фиксированным двоичным кодом PHP:
 
 - PHP двоичный файл: `/home/xc_vm/bin/php/bin/php` (связанный PHP **на VDS**)
-- Двоичный файл PHPUnit: local `tools/.bin/phpunit.phar`
+- Двоичный файл PHPUnit: local `tests/phpunit.phar`
 
 > **Local vs VDS.** The commands here use the VDS bundled PHP. When running on your **own
 > компьютер** (см. [Рабочий процесс разработки](dev-workflow.md)), вместо этого используйте свой локальный PHP 8.1:
-> `php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist`. CI запускает тот же набор данных через
+> `php tests/phpunit.phar -c tests/phpunit.xml.dist`. CI запускает тот же набор данных через
 > зафиксированная конфигурация, поэтому зеленый локальный запуск должен соответствовать CI.
 
 ## Почему такая установка
@@ -69,14 +69,14 @@ final class MyThingTest extends TestCase
 ```bash
 cd /home/xc_vm
 mkdir -p tools/.bin
-wget -O tools/.bin/phpunit.phar https://phar.phpunit.de/phpunit-10.phar
-chmod +x tools/.bin/phpunit.phar
+wget -O tests/phpunit.phar https://phar.phpunit.de/phpunit-10.phar
+chmod +x tests/phpunit.phar
 ```
 
 ## 3. Проверьте PHPUnit
 
 ```bash
-/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar --version
+/home/xc_vm/bin/php/bin/php tests/phpunit.phar --version
 ```
 
 ## 4. Выполните все тесты
@@ -88,13 +88,13 @@ chmod +x tools/.bin/phpunit.phar
 Бежать:
 
 ```bash
-/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist
+/home/xc_vm/bin/php/bin/php tests/phpunit.phar -c tests/phpunit.xml.dist
 ```
 
 ## 5. Запустите один тестовый файл
 
 ```bash
-/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist tests/Unit/GitHubReleasesTest.php
+/home/xc_vm/bin/php/bin/php tests/phpunit.phar -c tests/phpunit.xml.dist tests/Unit/GitHubReleasesTest.php
 ```
 
 ## 6. Показать, какой тест выполняется сейчас
@@ -102,7 +102,7 @@ chmod +x tools/.bin/phpunit.phar
 Используйте режим отладки для печати текущего теста:
 
 ```bash
-/home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist --debug --no-progress
+/home/xc_vm/bin/php/bin/php tests/phpunit.phar -c tests/phpunit.xml.dist --debug --no-progress
 ```
 
 ## 7. Дополнительно: Выход покрытия
@@ -110,7 +110,7 @@ chmod +x tools/.bin/phpunit.phar
 Если установлено значение `xdebug` или `pcov`:
 
 ```bash
-XDEBUG_MODE=coverage /home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist --coverage-text
+XDEBUG_MODE=coverage /home/xc_vm/bin/php/bin/php tests/phpunit.phar -c tests/phpunit.xml.dist --coverage-text
 ```
 
 ## Защитная записка
@@ -121,6 +121,6 @@ XDEBUG_MODE=coverage /home/xc_vm/bin/php/bin/php tools/.bin/phpunit.phar -c test
 
 |Файл|Роль|
 | --- | --- |
-| `tools/.bin/phpunit.phar` |Закрепленный двоичный файл PHPUnit|
+| `tests/phpunit.phar` |Закрепленный двоичный файл PHPUnit|
 | `tests/phpunit.xml.dist` |Конфигурация PHPUnit|
 | `tests/bootstrap.php` |Тестовый bootstrap (Composer автозагрузчик + константы)|

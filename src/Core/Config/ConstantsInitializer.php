@@ -11,7 +11,7 @@ use RuntimeException;
 defined('DB_ACCESS_ENABLED') || define('DB_ACCESS_ENABLED', false);
 defined('DB_ACCESS_PWD') || define('DB_ACCESS_PWD', '');
 defined('DEV_MODE') || define('DEV_MODE', false);
-defined('XC_VM_VERSION') || define('XC_VM_VERSION', '2.5.1');
+defined('XC_VM_VERSION') || define('XC_VM_VERSION', '2.5.2');
 
 /**
  * Single source of truth for the runtime constants that used to live in the

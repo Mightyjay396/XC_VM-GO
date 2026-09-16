@@ -16,7 +16,7 @@
 Возвращает сведения о сертификате (`serial`, `expiration`, `subject`, `path`).
 
 Если значение `$certificate` равно null, путь к сертификату автоматически определяется из конфигурации SSL nginx.
-Возвращает `null`, если файл отсутствует или не удалось выполнить синтаксический анализ OpenSSL.
+Возвращает `null`, если файл отсутствует или при анализе OpenSSL произошел сбой.
 
 ---
 
@@ -47,7 +47,7 @@
 ]
 ```
 
-Выдает ошибку `Exception` при сбое запроса к базе данных.
+Выдает `Exception` при сбое запроса к БД.
 
 ---
 
@@ -89,4 +89,4 @@
 | --- | --- |
 | `src/Core/Diagnostics/DiagnosticsService.php` |методы диагностики|
 | `src/Core/Logging/Logger.php` |записывает журналы|
-| `src/Core/Config/AppConfig.php` |метаданные версии|
+| `src/Core/Config/ConstantsInitializer.php` |метаданные версии (карта`appConfig()`)|

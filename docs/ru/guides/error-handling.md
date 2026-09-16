@@ -2,8 +2,8 @@
 
 XC_VM обработка ошибок состоит из трех уровней:
 
-- **Коды ошибок** -- что не удалось (централизованный реестр именованных строк ошибок)
-- **Обработчики ошибок** -- как формируется HTTP-ответ клиента (`generateError()`, `generate404()`)
+- **Коды ошибок** -- что привело к сбою (централизованный реестр именованных строк ошибок)
+- **Обработчики ошибок** -- как генерируется HTTP-ответ клиента (`generateError()`, `generate404()`)
 - **Подсистема регистратора** -- фиксация во время выполнения PHP ошибок, неперехваченных исключений и фатальных сбоев
 
 ---
@@ -36,7 +36,7 @@ Application code
 
 ## Реестр кодов ошибок
 
-Все коды объявлены в `src/Core/Error/ErrorCodes.php` как глобальный массив `$rErrorCodes`.
+Все коды объявляются методом `ErrorResponder::codes()` в `src/Core/Error/ErrorResponder.php`, который возвращает массив code => English-описание.
 
 Формат кода:
 
@@ -142,7 +142,7 @@ else (production)
 
 |Параметр|Тип|По умолчанию|Значение|
 | --- | --- | --- | --- |
-| `$rError` | `string` |--|Ключ от `$rErrorCodes`|
+| `$rError` | `string` |--|Ключ от `ErrorResponder::codes()`|
 | `$rKill` | `bool` | `true` |Завершить работу скрипта после вывода|
 | `$rCode` |`инт\|нулевой`| `null` |Явный код ответа HTTP (обходит 404 в рабочей среде)|
 
@@ -253,7 +253,7 @@ Each log entry is written as a single line: `base64_encode(json_encode($data))` 
 
 Когда `$showErrors` равно `true`, регистратор также отображает ошибки напрямую:
 
-- **КЛИ:** выходной сигнал терминала с цветовой кодировкой (красный - НЕИСПРАВИМОСТЬ/ОШИБКА, желтый - ПРЕДУПРЕЖДЕНИЕ, синий - УВЕДОМЛЕНИЕ).
+- **КЛИ:** выходной сигнал терминала с цветовой кодировкой (красный - НЕИСПРАВИМОСТЬ/ОШИБКА, желтый - ПРЕДУПРЕЖДЕНИЕ, синий - УВЕДОМЛЕНИЕ)
 - **Сеть:** встроенный `<div>` с моноширинным шрифтом, красной рамкой и трассировкой стека в блоке `<pre>`
 
 ---
@@ -296,7 +296,7 @@ Each log entry is written as a single line: `base64_encode(json_encode($data))` 
 
 ## Типы исключений в кодовой базе
 
-Кодовая база определяет небольшое количество пользовательских классов исключений. Все неперехваченные исключения перехватываются параметром `Logger::handleException()`, который регистрирует всю цепочку исключений (включая `getPrevious()`).
+В кодовой базе определено небольшое количество пользовательских классов исключений. Все неперехваченные исключения перехватываются командой `Logger::handleException()`, которая регистрирует всю цепочку исключений (включая `getPrevious()`).
 
 |Класс исключений|Базовый класс|Местоположение|
 | --- | --- | --- |
@@ -306,7 +306,7 @@ Each log entry is written as a single line: `base64_encode(json_encode($data))` 
 | `DefinitionException` | `\RuntimeException` | `src/vendor/chrisyue/php-m3u8/src/Definition/DefinitionException.php` |
 | `DumpingException` | `\RuntimeException` | `src/vendor/chrisyue/php-m3u8/src/Dumper/DumpingException.php` |
 
-Большая часть кода приложения использует общие ошибки `Exception` или полагается на встроенную систему ошибок PHP. Обработчик исключений регистратора принимает любые `Throwable`.
+В большинстве случаев в коде приложения используются общие ошибки `Exception` или используется встроенная система ошибок PHP. Обработчик исключений регистратора принимает любое `Throwable`.
 
 ---
 
@@ -335,12 +335,11 @@ Each log entry is written as a single line: `base64_encode(json_encode($data))` 
 
 1. `bootstrap.php` определяет `MAIN_HOME` и регистрирует автозагрузчик Composer
 2. `XC_Bootstrap::loadConstants()` загружает (по порядку):
-   - `Core/Error/ErrorCodes.php` -- заполняет `$rErrorCodes`
-   - `Core/Error/ErrorHandler.php` -- определяет `generateError()` и `generate404()`
+   - `Core/Error/ErrorHandler.php` -- определяет `generateError()` и `generate404()` (загружается глобально через Composer `autoload.files`); сам каталог кодов равен `ErrorResponder::codes()` в `Core/Error/ErrorResponder.php`
    - Путь и конфигурационные файлы
    - `Core/Logging/Logger.php` -- определение класса
 3. вызывается `Logger::init(PHP_ERRORS, LOGS_TMP_PATH . 'error_log.log')`, регистрирующий три глобальных обработчика
-4. Начиная с этого момента, фиксируются все ошибки PHP, неперехваченные исключения и фатальные сбои
+4. Начиная с этого момента, регистрируются все ошибки PHP, неперехваченные исключения и фатальные сбои
 
 Для конечных точек потоковой передачи, которые обходят полную загрузку, `RequestGuard.php` выполняет шаги 2-3 независимо: загружает настройки из файлового кэша, определяет `PHP_ERRORS` и вызывает `Logger::init()`.
 
@@ -348,7 +347,7 @@ Each log entry is written as a single line: `base64_encode(json_encode($data))` 
 
 ## Добавление нового кода ошибки
 
-1. Добавьте новый ключ к `src/Core/Error/ErrorCodes.php`:
+1. Добавьте новую запись в массив, возвращаемый `ErrorResponder::codes()` в `src/Core/Error/ErrorResponder.php`:
 
 ```php
 'MY_NEW_ERROR' => 'Human-readable description.',
@@ -368,7 +367,7 @@ generateError('MY_NEW_ERROR');
 
 |Файл|Цель|
 | --- | --- |
-| `src/Core/Error/ErrorCodes.php` |Централизованная карта кодов ошибок (`$rErrorCodes`)|
+| `src/Core/Error/ErrorResponder.php` |Централизованная карта кодов ошибок (`ErrorResponder::codes()`)|
 | `src/Core/Error/ErrorHandler.php` |функции `generateError()` и `generate404()`|
 | `src/Core/Logging/Logger.php` |Глобальные PHP обработчики ошибок, исключений и фатальных исходов|
 | `src/Core/Logging/LoggerInterface.php` |Интерфейс контракта ведения журнала|

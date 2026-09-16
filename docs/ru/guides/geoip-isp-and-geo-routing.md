@@ -39,7 +39,7 @@ GeoIPService::matchCIDR($rASN, $rIP): array|null  // hosting/proxy detection
 
 ## Обнаружение интернет-провайдеров и ASN
 
-Когда `show_isps` включено, каждый потоковый запрос разрешает клиентский провайдер:
+Если параметр `show_isps` включен, каждый потоковый запрос обрабатывается клиентским провайдером:
 
 ```php
 $rISPLock = GeoIPService::getISP($rIP);
@@ -69,7 +69,7 @@ AND enable_isp_lock = 1
 
 ## Проверки контроля доступа (geo)
 
-Они выполняются в режиме `src/Public/stream/auth.php` во время проверки токена. Проверки 5-6 (Пользовательский агент, тип устройства) отображаются на странице [Обнаружение устройства и блокировка STB](device-detection-and-stb-locking.md).
+Они запускаются в `src/Public/stream/auth.php` во время проверки токена. Проверки 5-6 (Пользовательский агент, тип устройства) выполняются в реальном времени на странице [Обнаружение устройства и блокировка STB](device-detection-and-stb-locking.md).
 
 ### 1. Валидация в стране
 
@@ -107,7 +107,7 @@ GeoIPService::matchCIDR($asn, $ip)
     flag[4] = proxy → error: PROXY_DETECT
 ```
 
-Также проверяет заголовок `X-XC_VM-DETECT` на предмет обнаружения повторного потока.
+Также проверяет заголовок `X-XC_VM-DETECT` для обнаружения повторного потока.
 
 ---
 
@@ -154,7 +154,7 @@ $updater->update();  // downloads and extracts all configured editions
 Загружается через MaxMind API с использованием `maxmind_account_id` и `maxmind_license_key`.
 Извлекает `.mmdb` файлов из tar.gz архивов в `BIN_PATH/maxmind/`.
 
-Пути к файлам базы данных (определены в `src/Core/Config/Binaries.php`):
+Пути к файлам базы данных (определяются с помощью сопоставления `binaries()` в `src/Core/Config/ConstantsInitializer.php`):
 
 ```text
 GEOLITE2_BIN  = BIN_PATH/maxmind/GeoLite2-Country.mmdb
@@ -165,14 +165,14 @@ GEOISP_BIN    = BIN_PATH/maxmind/GeoIP2-ISP.mmdb
 ### Автоматическое обновление
 
 Базы данных обновляются с помощью задания cron `cron:maxmind` (`src/Cli/CronJobs/MaxMindCronJob.php`).
-Он запускается **только по вторникам** — в день, когда MaxMind публикует новые версии. Логика меняется в настройках панели:
+Он запускается **только по вторникам** — в день, когда MaxMind публикует новые версии. Логика разветвляется в настройках панели:
 
 - если `maxmind_account_id` + `maxmind_license_key` + `maxmind_editions` задано, базы данных извлекаются непосредственно из MaxMind API (`MaxMindUpdater`, загружаются только настроенные версии).;
 - если для учетных данных MaxMind задано значение **нет**, оно возвращается к версиям GitHub GeoLite2 (бесплатные базы данных).
 
 ### Ручное (принудительное) обновление
 
-Чтобы немедленно обновить базы данных `.mmdb` на рабочей панели, запустите задание cron вручную **как корень** с флагом `--force` (это снимает ограничение "Только по вторникам").:
+"Чтобы немедленно обновить базы данных `.mmdb` на рабочей панели, запустите задание cron вручную **как корень** с флагом `--force` (это снимает ограничение "Только по вторникам").:
 
 ```bash
 /home/xc_vm/bin/php/bin/php /home/xc_vm/console.php cron:maxmind --force
@@ -184,7 +184,7 @@ GEOISP_BIN    = BIN_PATH/maxmind/GeoIP2-ISP.mmdb
 - `[SKIP]` — уже обновлено;
 - `[WARN]` / `[ERROR]` — с подробной информацией (неверные учетные данные, ошибка HTTP, сеть недоступна).
 
-> ➡️ Путь к API MaxMind отправляет заголовок `If-Modified-Since`, поэтому уже обновленная база данных возвращает HTTP 304 и статус `[SKIP]`. Чтобы принудительно выполнить повторную загрузку, сначала удалите (или переименуйте) соответствующий `.mmdb` в `BIN_PATH/maxmind/`, чтобы заголовок не отправлялся. Резервный вариант GitHub не имеет такого поведения — он сравнивает md5 и повторные загрузки при несоответствии.
+> ➡️ Путь к API MaxMind отправляет заголовок `If-Modified-Since`, поэтому уже обновленная база данных возвращает HTTP 304 и статус `[SKIP]`. Чтобы принудительно выполнить повторную загрузку, сначала удалите (или переименуйте) соответствующий `.mmdb` в `BIN_PATH/maxmind/`, чтобы заголовок не отправлялся. Резервный вариант GitHub не имеет такого поведения — он сравнивает md5 и повторно загружает при несоответствии.
 
 ---
 
@@ -197,7 +197,7 @@ GEOISP_BIN    = BIN_PATH/maxmind/GeoIP2-ISP.mmdb
 | `geoip_country_code` | `GeoIPService::getIPInfo()` |
 | `isp` |`con_isp_name` из `GeoIPService::getISP()`|
 | `external_device` |идентификатор типа устройства|
-| `user_agent` |Заголовок HTTP-агента пользователя|
+| `user_agent` |Заголовок HTTP User-Agent|
 | `user_ip` |IP-адрес клиента|
 
 Вошел в систему `live.php`, `vod.php`, `timeshift.php`, и `rtmp.php`.
@@ -229,12 +229,12 @@ GEOISP_BIN    = BIN_PATH/maxmind/GeoIP2-ISP.mmdb
 
 |Файл|Цель|
 | --- | --- |
-| `src/Core/Util/GeoIP.php` |низкоуровневый поиск GeoIP с кэшированием файлов|
+| `src/Core/Util/GeoIP.php` |низкоуровневый GeoIP поиск с кэшированием файлов|
 | `src/Core/GeoIP/GeoIPService.php` |соответствие высокого уровня GeoIP + CIDR|
 | `src/Core/GeoIP/MaxMindUpdater.php` |Загрузчик баз данных MaxMind|
 | `src/Cli/CronJobs/MaxMindCronJob.php` |Вторник / `--force` cron обновления базы данных|
-| `src/Core/Config/Binaries.php` |GeoIP константы пути к файлу базы данных|
+| `src/Core/Config/ConstantsInitializer.php` |GeoIP константы пути к файлу базы данных (`binaries()` сопоставление)|
 | `src/Domain/User/UserRepository.php` |GeoIP обогащение пользовательских записей|
-| `src/Public/stream/auth.php` |потоковая авторизация с проверкой географического местоположения (1-4)|
+| `src/Public/stream/auth.php` |потоковая авторизация с проверкой географии (1-4)|
 | `src/Streaming/Auth/StreamAuth.php` |Выбор сервера с поддержкой GeoIP|
 | `src/Streaming/Balancer/ProxySelector.php` |Выбор прокси-сервера с поддержкой GeoIP|

@@ -1,6 +1,6 @@
 # XC_VM Контрольный список для подготовки релиза
 
-Пошаговое руководство по подготовке и публикации релиза XC_VM.
+Пошаговое руководство по подготовке и публикации пресс-релиза XC_VM.
 
 ---
 
@@ -38,11 +38,11 @@ git log --pretty=format:"- %s (%h)" "$PREV_TAG"..main > dist/changes.md
 
 Перед публикацией проверьте, работает ли сборка:
 
-**Проверка качества** (CI запускает тот же набор для тега — подтвердите, что он зеленый):
+**Проверка качества** (CI использует тот же набор параметров для тега — убедитесь, что он зеленый):
 
 ```bash
 make dev-tools && make phpstan && make cs && make gates
-php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist
+php tests/phpunit.phar -c tests/phpunit.xml.dist
 make dev-clean   # remove the dev tools afterwards, restoring the prod-only vendor/
 ```
 
@@ -52,7 +52,7 @@ make dev-clean   # remove the dev tools afterwards, restoring the prod-only vend
 
 ### Восстановление переведенной документации
 
-Документация написана в **Только на английском языке** (`docs/en`). Русское дерево
+Документация написана в виде **Только на английском языке** (`docs/en`). Русское дерево
 (`docs/ru`) - это артефакт **сгенерированный, зафиксированный**, обновляемый локально перед каждым
 release — перевод намеренно **нет** выполняется в CI (он медленный); только CI
 создает зафиксированное дерево. Если `docs/en` изменено с момента последнего выпуска:
@@ -63,14 +63,14 @@ make docs-build          # strict build — fails on any broken link/anchor
 ```
 
 - `make docs-translate` повторно переводятся только те файлы на английском языке, содержимое которых
-изменен (для каждого файлового кэша), так что при постепенном выпуске это происходит быстро.
+изменен (для каждого файла в кэше), так что при постепенном выпуске это происходит быстрее.
 - **Review and commit the regenerated `docs/ru`** — он включен в единый
-снимите фиксацию (шаг 5). Никогда не редактируйте вручную `docs/ru`.
+отпустите фиксацию (шаг 5). Никогда не редактируйте вручную `docs/ru`.
 - Documentation is published **per release, not per push**: `pages.yml` runs when
 будет запущена версия **метка** (шаг 7), и документы этого выпуска будут опубликованы в виде
 версионный снимок (`X.Y.Z` + псевдоним `latest`) в ветвь `gh-pages` через
 `mike`. Правки, объединенные в `main` между выпусками, будут опубликованы на следующем помеченном
-высвобождение (которое также происходит при регенерации `docs/ru`). Заголовок материала
+освобождение (которое также происходит при повторном создании `docs/ru`). Заголовок материала
 селектор версий позволяет читателям переключаться между выпущенными версиями.
 
 ---
@@ -127,7 +127,7 @@ cat src/migrations/deleted_files.txt
 
 ## 5. Обновите версию и создайте единую фиксацию выпуска
 
-Отредактируйте константу версии, отключите флаг доступа phpMiniAdmin и снимите пароль в:
+Измените значение постоянной версии, отключите флажок доступа к phpMiniAdmin и снимите пароль в:
 
 > **Зачем отключать `DB_ACCESS_ENABLED` / очищать `DB_ACCESS_PWD`?** phpMiniAdmin - это необработанный
 > консоль базы данных удобна при разработке, но ее отправка **включен** приведет к тому, что база данных будет подвержена
@@ -136,21 +136,24 @@ cat src/migrations/deleted_files.txt
 
 
 ```text
-src/Core/Config/AppConfig.php
+src/Core/Config/ConstantsInitializer.php
 ```
+
+Эти часто редактируемые константы равны `define()`s в **верхняя часть файла** (над
+class); `appConfig()` считывает их обратно, а `init()` пропускает уже определенные.
 
 **Quick commands:**
 
 ```bash
-sed -i "s/define('DB_ACCESS_ENABLED', true);/define('DB_ACCESS_ENABLED', false);/" src/Core/Config/AppConfig.php
-sed -i "s/define('DB_ACCESS_PWD', *\"[^\"]*\");/define('DB_ACCESS_PWD', \"\");/" src/Core/Config/AppConfig.php
-sed -i "s/define('XC_VM_VERSION', *'[0-9]\+\.[0-9]\+\.[0-9]\+');/define('XC_VM_VERSION', '${VERSION}');/" src/Core/Config/AppConfig.php
+sed -i "s/define('DB_ACCESS_ENABLED', true);/define('DB_ACCESS_ENABLED', false);/" src/Core/Config/ConstantsInitializer.php
+sed -i "s/define('DB_ACCESS_PWD', '[^']*');/define('DB_ACCESS_PWD', '');/" src/Core/Config/ConstantsInitializer.php
+sed -i "s/define('XC_VM_VERSION', '[0-9]\+\.[0-9]\+\.[0-9]\+');/define('XC_VM_VERSION', '${VERSION}');/" src/Core/Config/ConstantsInitializer.php
 ```
 
 **Create one final release commit/push:**
 
 ```bash
-git add src/Core/Config/AppConfig.php changelog.json src/migrations/deleted_files.txt
+git add src/Core/Config/ConstantsInitializer.php changelog.json src/migrations/deleted_files.txt
 git add docs/en docs/ru   # include any doc edits + the regenerated ru (step 2)
 git commit -m "Prepare release ${VERSION}"
 git push
@@ -209,7 +212,7 @@ bash tools/test-install/test_release.sh
 1. Перейти к [Релизам на GitHub](https://github.com/Vateron-Media/XC_VM/releases)
 2. Создайте новый релиз с тегом, указанным на первом шаге
 3. Вставьте список изменений в качестве описания выпуска
-4. Опубликовать **без прикрепления файлов** — Действия на GitHub создадут и прикрепят их
+4. Опубликовать **без прикрепления файлов** — Действия GitHub создадут и прикрепят их
 
 После публикации рабочий процесс будет автоматически запущен:
 
@@ -226,7 +229,7 @@ bash tools/test-install/test_release.sh
 ## 8. После выпуска
 
 > **ГЛАВНЫЙ перед LB.** Сначала обновите узел **главный**. Его `post-update` узел передает `update`
-> подавайте сигнал на каждый LB, когда включено `auto_update_lbs`, чтобы LBS следовали автоматически; сохраняйте ОСНОВНЫЕ и LB
+> подавайте сигнал на каждый LB, когда включено `auto_update_lbs`, чтобы LBS следовали автоматически; сохраняйте основные и LB
 > в **та же версия** — LBs считывается база данных MAIN, и может возникнуть перекос в схеме/поведении
 > потоковый. Не оставляйте LBs без внимания.
 
@@ -247,7 +250,7 @@ bash tools/test-install/test_release.sh
 - **Выпущенный актив поврежден** — опубликовать выпуск исправления **заплатка** (новый тег) вместо редактирования
 опубликованный файл; клиенты прикрепляют его к тегу.
 - **Плохой релиз уже достиг серверов** — операторы могут понизить рейтинг каждого сервера с помощью панели управления
-(**Серверы → Откат версии**, см. [Механизм обновления → Откат](../administration/update-system.md#rollback-downgrade)); в MAIN сначала автоматически создается резервная копия базы данных. Миграции выполняются
+(**Серверы → Откат версии**, см. [Механизм обновления → Откат](../administration/update-system.md#rollback-downgrade)); на ГЛАВНОЙ сначала автоматически создается резервная копия базы данных. Миграции - это
 доступна только переадресация, поэтому, если исправление небольшое, предпочитайте исправление с переадресацией.
 
 ---
@@ -265,9 +268,9 @@ bash tools/test-install/test_release.sh
 | `make phpstan-baseline` |Восстановите базовую линию PHPStan|
 | `make cs` |Проверка стиля кода - импорт/гигиена пространства имен (phpcs + Slevomat)|
 | `make cs-fix` |Примените исправления в стиле кода на месте|
-| `make gates` |PSR-4 регрессионные шлюзы (для процедурного использования, для LB-архива, только для продукта поставщика)|
+| `make gates` |PSR-4 регрессионные параметры (для использования в процедурных целях, LB-архив, только для продукта поставщика)|
 | `make dev-clean` |Снова удалите инструменты разработки, восстановив только производственную версию `vendor/`.|
-| `php tools/.bin/phpunit.phar -c tests/phpunit.xml.dist` |Модульные тесты|
+| `php tests/phpunit.phar -c tests/phpunit.xml.dist` |Модульные тесты|
 
 **Release prep & build:**
 
@@ -286,4 +289,4 @@ bash tools/test-install/test_release.sh
 | `make docs-venv` |Одноразовый: локальный venv (сборка + переводы)|
 | `make docs-translate` |Восстановить `docs/ru` из `docs/en` (перед выпуском)|
 | `make docs-build` |Строгая сборка MkDocs в `./build/site` (что запускает CI)|
-| `make docs-serve` |Предварительный просмотр документов в режиме реального времени на `http://127.0.0.1:8000`|
+| `make docs-serve` |Предварительный просмотр документов в режиме реального времени по адресу `http://127.0.0.1:8000`|

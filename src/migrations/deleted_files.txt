@@ -4,6 +4,10 @@
 #
 Cli/Commands/ProxyCommand.php
 Core/Boundary/BoundaryInterface.php
+Core/Config/AppConfig.php
+Core/Config/Binaries.php
+Core/Config/Paths.php
+Core/Error/ErrorCodes.php
 Infrastructure/Bootstrap/admin_functions_fc.php
 Infrastructure/Bootstrap/admin_session_fc.php
 Infrastructure/Bootstrap/player_functions.php
