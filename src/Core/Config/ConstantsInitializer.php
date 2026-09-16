@@ -45,14 +45,11 @@ class ConstantsInitializer {
 		self::defineAll(self::paths($mainHome));
 
 		$appConfig = self::appConfig();
-		// OPENSSL_EXTRA is per-install key material: prefer the value persisted in
-		// config.ini (config.enc) so a fresh install carries its own secret, and
-		// fall back to the historical literal so existing installs — whose data was
-		// derived from it — keep decrypting. Resolve only on the genuine first
-		// define, so the config extension is never touched when the constant is
-		// already set (tests, re-init).
+		// OPENSSL_EXTRA is per-install key material: prefer the secret the installer
+		// wrote, falling back to the historical literal. Resolved only on the
+		// genuine first define (tests / re-init keep the already-set constant).
 		if (!defined('OPENSSL_EXTRA')) {
-			$appConfig['OPENSSL_EXTRA'] = self::resolveOpensslExtra($appConfig['OPENSSL_EXTRA']);
+			$appConfig['OPENSSL_EXTRA'] = self::resolveOpensslExtra($mainHome . 'config/openssl_extra', $appConfig['OPENSSL_EXTRA']);
 		}
 		self::defineAll($appConfig);
 
@@ -231,26 +228,26 @@ class ConstantsInitializer {
 	}
 
 	/**
-	 * Resolve the per-install OPENSSL_EXTRA secret from config, falling back to
-	 * the historical literal when none is stored.
+	 * Resolve the per-install OPENSSL_EXTRA secret from a dedicated file the
+	 * installer writes, falling back to the historical literal when absent.
 	 *
-	 * The literal fallback is mandatory: OPENSSL_EXTRA feeds key/HMAC derivation
-	 * for data persisted before this mechanism existed (hmac_keys rows, cached
-	 * image filenames, proxy URL keys, stream tokens), so an install with no
-	 * stored secret MUST keep deriving from the old value or that data orphans.
-	 * The secret must therefore be generated once at fresh install and never
-	 * rotated afterward.
+	 * A standalone file (not config.ini) is used deliberately: it is independent
+	 * of the config.ini -> config.enc migration and is never rewritten, so the
+	 * value a fresh install generates is read back identically for the life of
+	 * the install — OPENSSL_EXTRA must never change, since it feeds key/HMAC
+	 * derivation for persisted data (hmac_keys rows, cached image filenames,
+	 * proxy URL keys, stream tokens). The literal fallback keeps existing installs
+	 * — whose data derives from it — decrypting unchanged.
 	 *
-	 * @param string $fallback Historical literal default.
+	 * @param string $secretFile Absolute path to the per-install secret file.
+	 * @param string $fallback   Historical literal default.
 	 */
-	private static function resolveOpensslExtra(string $fallback): string {
-		try {
-			$value = ConfigReader::get('openssl_extra');
-			if (is_string($value) && $value !== '') {
+	private static function resolveOpensslExtra(string $secretFile, string $fallback): string {
+		if (is_file($secretFile)) {
+			$value = trim((string) @file_get_contents($secretFile));
+			if ($value !== '') {
 				return $value;
 			}
-		} catch (\Throwable) {
-			// Config extension unavailable (tests, early boot) — use the literal.
 		}
 
 		return $fallback;

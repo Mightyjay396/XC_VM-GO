@@ -2205,6 +2205,18 @@ if __name__ == "__main__":
     with io.open(rConfigPath, "w", encoding="utf-8") as rFile:
         rFile.write(rConfigData)
 
+    # Per-install OPENSSL_EXTRA secret — key material for Encryption (hmac_keys,
+    # cached image filenames, proxy URL keys, stream tokens). Generated ONCE and
+    # never rotated: rotating it would make all existing encrypted data
+    # undecryptable, so only create the file when absent (re-running the installer
+    # must never overwrite it). PHP reads it via ConstantsInitializer, falling
+    # back to the historical literal when the file is missing.
+    rOpensslExtraPath = "/home/xc_vm/config/openssl_extra"
+    if not os.path.exists(rOpensslExtraPath):
+        with io.open(rOpensslExtraPath, "w", encoding="utf-8") as rFile:
+            rFile.write(generate_random_password(40))
+        os.chmod(rOpensslExtraPath, 0o600)
+
     printc("MariaDB configuration completed", col.OKGREEN)
 
     ##################################################
