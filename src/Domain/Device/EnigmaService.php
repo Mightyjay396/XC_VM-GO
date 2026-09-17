@@ -311,7 +311,10 @@ class EnigmaService {
 							$rInsertID = $db->last_insert_id();
 
 							if (0 < $rDevice['user']['pair_id']) {
-								MagService::syncLineDevices($rDevice['user']['pair_id'], $rInsertID);
+								// Sync by the paired line only. The device id argument is a
+								// mag_devices id: given this Enigma2 id it picked whichever MAG
+								// device shared the number and overwrote that subscriber's line.
+								MagService::syncLineDevices($rDevice['user']['pair_id']);
 								LineService::updateLineSignal($rDevice['user']['pair_id']);
 							}
 
