@@ -4721,11 +4721,13 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<div class=\"btn-group\"><button data-id=\"" . $rRow["id"] . "\" data-type=\"vod\" type=\"button\" style=\"display: none;\" class=\"btn-remove btn btn-light waves-effect waves-light btn-xs\" onClick=\"toggleSelection(" . $rRow["id"] . ");\"><i class=\"mdi mdi-minus\"></i></button>\r\n                <button data-id=\"" . $rRow["id"] . "\" data-type=\"vod\" type=\"button\" style=\"display: none;\" class=\"btn-add btn btn-light waves-effect waves-light btn-xs\" onClick=\"toggleSelection(" . $rRow["id"] . ");\"><i class=\"mdi mdi-plus\"></i></button></div>";
 						if ((string) $rRow["title"] !== '') {
 							$rCategory = $rRow["title"];
 						} else {
 							$rCategoryIDs = json_decode($rRow["category_id"], true);
+							if (!is_array($rCategoryIDs)) {
+								$rCategoryIDs = [];
+							}
 							if (($rSplit[1] ?? '') !== '') {
 								$rCategory = $rCategories[(int) $rSplit[1]]["category_name"] ?: "No Category";
 							} else {
@@ -4736,7 +4738,11 @@ class TableController extends BaseAdminController {
 								$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
 							}
 						}
-						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rCategory, $rButtons];
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+						];
 					}
 				}
 			}
