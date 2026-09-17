@@ -342,6 +342,26 @@ class AdminHelpers {
 	}
 
 	/**
+	 * Where to send a user after login, from the `referrer` the auth redirect
+	 * added: a local page name with an optional query string, or the dashboard.
+	 *
+	 * Anything that could leave the panel is refused. basename(), which the login
+	 * pages used, keeps backslashes, and browsers treat `\\host` in a Location
+	 * header as `//host`.
+	 *
+	 * @param string|null $rReferrer The submitted referrer.
+	 * @return string A relative page reference.
+	 */
+	public static function loginRedirectTarget(?string $rReferrer) {
+		$rReferrer = (string) $rReferrer;
+		if (preg_match('/^[A-Za-z0-9_]+(\?[A-Za-z0-9_\-.=&%+,]*)?$/', $rReferrer) !== 1 || str_starts_with($rReferrer, 'logout')) {
+			return 'dashboard';
+		}
+
+		return $rReferrer;
+	}
+
+	/**
 	 * Resolve the current page name.
 	 *
 	 * Prefers the PAGE_NAME constant, falling back to the entry script name.
