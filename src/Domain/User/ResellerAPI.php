@@ -807,6 +807,13 @@ class ResellerAPI {
 
 			$rTicket = TicketRepository::getById($rData['respond']);
 
+			// A reseller answers its own tickets, or — as their admin — tickets of
+			// users in its tree. Any other id used to take the reply too, filed as an
+			// admin answer on another reseller's (or an admin's) ticket.
+			if ($rTicket && intval(self::$rUserInfo['id']) != intval($rTicket['member_id']) && !Authorization::check('user', $rTicket['member_id'])) {
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
+			}
+
 			if ($rTicket) {
 				if (intval(self::$rUserInfo['id']) == intval($rTicket['member_id'])) {
 					$db->query('UPDATE `tickets` SET `admin_read` = 0, `user_read` = 1 WHERE `id` = ?;', $rData['respond']);
