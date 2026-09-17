@@ -1842,17 +1842,47 @@ class StreamProcess {
 	 */
 	public static function stopMovie(int $rStreamID, bool $rForce = false) {
 		$db = self::db();
-		// Match this movie's output path as a fixed string. The old pattern '/5.' was a
-		// regex: the dot matched any character, so stopping movie 5 also killed the
-		// encodes of movies 50-59, 500-599 and every other id starting with 5.
-		shell_exec('kill -9 `ps -ef | grep -F ' . escapeshellarg(VOD_PATH . intval($rStreamID) . '.') . " | grep -v grep | awk '{print \$2}'`;");
+		self::killMovieEncodes($rStreamID);
 		if ($rForce) {
-			exec('rm ' . MAIN_HOME . 'content/vod/' . intval($rStreamID) . '.*');
+			self::deleteMovieFiles($rStreamID);
 		} else {
 			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', SERVER_ID, time(), json_encode(['type' => 'delete_vod', 'id' => $rStreamID]));
 		}
 		self::resetStreamServerRow($rStreamID);
 		self::updateStream($rStreamID);
+	}
+
+	/**
+	 * Kill the processes writing this movie's output (VOD_PATH/<id>.<ext>).
+	 *
+	 * Matches the path as a fixed substring of each command line in /proc, with
+	 * no shell. The trailing dot keeps movie 5 from matching movie 50; an older
+	 * `ps | grep '/5.'` treated the dot as a regex wildcard and killed both.
+	 *
+	 * @param int $rStreamID Stream id.
+	 * @return array<int> PIDs that were sent SIGKILL.
+	 */
+	private static function killMovieEncodes(int $rStreamID): array {
+		$rKilled = [];
+		foreach (ProcessManager::findProcessPIDs([VOD_PATH . $rStreamID . '.']) as $rPID) {
+			if (ProcessManager::kill($rPID)) {
+				$rKilled[] = $rPID;
+			}
+		}
+		return $rKilled;
+	}
+
+	/**
+	 * Delete this movie's output files (VOD_PATH/<id>.*) without a shell.
+	 *
+	 * @param int $rStreamID Stream id.
+	 */
+	private static function deleteMovieFiles(int $rStreamID): void {
+		foreach (glob(VOD_PATH . $rStreamID . '.*') ?: [] as $rFile) {
+			if (is_file($rFile) || is_link($rFile)) {
+				unlink($rFile);
+			}
+		}
 	}
 
 	/**
