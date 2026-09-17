@@ -32,6 +32,12 @@ class EpisodeMassController extends BaseAdminController {
 			$rServerTree[] = ['id' => $rServer['id'], 'parent' => 'offline', 'text' => $rServer['server_name'], 'icon' => 'mdi mdi-server-network', 'state' => ['opened' => true]];
 		}
 
+		// The load-balancer server tree on this form is driven by jstree.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['jstree']
+		)));
+
 		$this->setTitle('Mass Edit Episodes');
 		$this->render('episodes_mass', ['rSeries' => $rSeries, 'rServerTree' => $rServerTree]);
 	}
