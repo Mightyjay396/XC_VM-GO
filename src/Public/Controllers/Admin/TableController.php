@@ -2736,6 +2736,9 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
 						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
@@ -2745,46 +2748,32 @@ class TableController extends BaseAdminController {
 						if (1 < count($rCategoryIDs)) {
 							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
 						}
-						$rUptime = 0;
 						$rActualStatus = 0;
-						if (0 < (int) $rRow["stream_started"]) {
-							$rUptime = time() - (int) $rRow["stream_started"];
-						}
 						if ($rRow["server_id"]) {
 							if ((int) $rRow["direct_source"] == 1) {
 								$rActualStatus = 5;
 							} elseif ($rRow["monitor_pid"]) {
 								if ($rRow["pid"] && 0 < $rRow["pid"]) {
-									if ((int) $rRow["stream_status"] == 2) {
-										$rActualStatus = 2;
-									} else {
-										$rActualStatus = 1;
-									}
+									$rActualStatus = (int) $rRow["stream_status"] == 2 ? 2 : 1;
 								} else {
 									$rActualStatus = 3;
 								}
 							} elseif ((int) $rRow["on_demand"] == 1) {
 								$rActualStatus = 4;
-							} else {
-								$rActualStatus = 0;
 							}
 						} else {
 							$rActualStatus = -1;
 						}
-						if ($rRow["server_name"]) {
-							$rServerName = $rRow["server_name"];
-							if (1 < $rServerCount[$rRow["id"]]) {
-								$rServerName .= " &nbsp; <button type='button' class='btn btn-info btn-xs waves-effect waves-light'>+ " . ($rServerCount[$rRow["id"]] - 1) . "</button>";
-							}
-						} else {
-							$rServerName = "No Server Selected";
-						}
-						if ((string) $rRow["stream_icon"] !== '' && SettingsManager::getAll()["show_images"]) {
-							$rIcon = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rRow["stream_icon"] . "'><img loading='lazy' src='resize?maxw=96&maxh=32&url=" . $rRow["stream_icon"] . "' /></a>";
-						} else {
-							$rIcon = "";
-						}
-						$rReturn["data"][] = [$rRow["id"], $rIcon, $rRow["stream_display_name"], $rCategory, $rServerName, StatusBadge::stream($rActualStatus)];
+						$rIcon = SettingsManager::getAll()["show_images"] ? (string) $rRow["stream_icon"] : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"stream_icon" => $rIcon,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
 					}
 				}
 			}

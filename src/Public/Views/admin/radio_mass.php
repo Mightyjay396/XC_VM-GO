@@ -290,6 +290,45 @@ renderUnifiedLayoutFooter('admin');
             });
         }
 
+        // Client-side render from raw radio_list rows (no server HTML).
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : s);
+            return d.innerHTML;
+        }
+        var STREAM_BADGE = {
+            '-1': ['secondary', 'NO SERVERS'],
+            0: ['dark', 'STOPPED'],
+            1: ['success', 'ONLINE'],
+            2: ['warning', 'STARTING'],
+            3: ['danger', 'DOWN'],
+            4: ['info', 'ON DEMAND'],
+            5: ['primary', 'DIRECT SOURCE'],
+            6: ['primary', 'CREATING...'],
+            7: ['primary', 'DIRECT STREAM']
+        };
+        function streamBadge(code) {
+            var m = STREAM_BADGE[code] || STREAM_BADGE[0];
+            return '<span class="badge bg-label-' + m[0] + '">' + m[1] + '</span>';
+        }
+        function radioIcon(url) {
+            if (!url) {
+                return '';
+            }
+            return '<a href="javascript:void(0);" onclick="openImage(this);" data-src="resize?maxw=512&maxh=512&url=' + encodeURIComponent(url) +
+                '"><img loading="lazy" src="resize?maxw=96&maxh=32&url=' + encodeURIComponent(url) + '"></a>';
+        }
+        function serverNameCell(name, count) {
+            if (!name) {
+                return 'No Server Selected';
+            }
+            var html = esc(name);
+            if (count > 1) {
+                html += ' &nbsp; <button type="button" class="btn btn-info btn-xs waves-effect waves-light">+ ' +
+                    (count - 1) + '</button>';
+            }
+            return html;
+        }
         var rTable = $('#datatable-mass').DataTable({
             serverSide: true,
             searchDelay: 250,
@@ -302,17 +341,40 @@ renderUnifiedLayoutFooter('admin');
                     d.server = getServer();
                 }
             },
-            columnDefs: [{
-                    className: 'text-center',
-                    targets: [0, 1, 5]
-                },
-                {
-                    orderable: false,
-                    targets: [1]
+            columns: [{
+                data: 'id',
+                className: 'text-center'
+            }, {
+                data: 'stream_icon',
+                orderable: false,
+                className: 'text-center',
+                render: function(d) {
+                    return radioIcon(d);
                 }
-            ],
+            }, {
+                data: 'stream_display_name',
+                render: function(d) {
+                    return esc(d);
+                }
+            }, {
+                data: 'category',
+                render: function(d) {
+                    return esc(d);
+                }
+            }, {
+                data: 'server_name',
+                render: function(d, t, row) {
+                    return serverNameCell(d, row.server_count);
+                }
+            }, {
+                data: 'status',
+                className: 'text-center',
+                render: function(d) {
+                    return streamBadge(d);
+                }
+            }],
             rowCallback: function(row, data) {
-                if (selected.indexOf(String(data[0])) !== -1) {
+                if (selected.indexOf(String(data.id)) !== -1) {
                     $(row).addClass('table-active');
                 }
             },

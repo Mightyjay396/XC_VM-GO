@@ -1031,9 +1031,37 @@ renderUnifiedLayoutFooter('admin');
                     d.filter = val('radio_filter');
                     d.server = val('station_server_id');
                 },
-                columnDefs: [{
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
+                }, {
+                    data: 'stream_icon',
+                    orderable: false,
                     className: 'dt-center',
-                    targets: [0, 1, 5]
+                    render: function(d) {
+                        return streamIcon(d);
+                    }
+                }, {
+                    data: 'stream_display_name',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'category',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'server_name',
+                    render: function(d, t, row) {
+                        return serverNameCell(d, row.server_count);
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return streamBadge(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']
