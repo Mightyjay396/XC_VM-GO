@@ -329,7 +329,6 @@ renderUnifiedLayoutFooter('admin');
         })();
 
         var table = jQuery('#streams-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {
@@ -712,7 +711,6 @@ renderUnifiedLayoutFooter('admin');
         var failsStream = null,
             failsServer = null;
         var failsTable = jQuery('#failures-table').DataTable({
-            processing: true,
             serverSide: true,
             paging: false,
             searching: false,

@@ -67,7 +67,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#panel-logs-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

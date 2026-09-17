@@ -162,7 +162,6 @@ renderUnifiedLayoutFooter('reseller');
         };
 
         var table = jQuery('#e2-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: { details: { type: 'column', target: 0 } },
             order: [[1, 'desc']],

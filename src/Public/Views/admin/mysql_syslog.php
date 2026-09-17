@@ -88,7 +88,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#syslog-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

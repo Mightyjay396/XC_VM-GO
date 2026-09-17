@@ -264,7 +264,6 @@ renderUnifiedLayoutFooter('reseller');
     }
 
     const dt = tableEl.DataTable({
-        processing: true,
         serverSide: true,
         responsive: {
             details: {

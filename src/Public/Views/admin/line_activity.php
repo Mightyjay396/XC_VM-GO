@@ -134,7 +134,6 @@ renderUnifiedLayoutFooter('admin');
         var errMsg = <?= json_encode($language::get('error_occured')); ?>;
 
         var table = jQuery('#activity-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

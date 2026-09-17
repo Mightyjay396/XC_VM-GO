@@ -82,7 +82,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#login-logs-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

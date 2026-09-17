@@ -86,7 +86,6 @@ renderUnifiedLayoutFooter('reseller');
         };
 
         var table = jQuery('#cchannels-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: { details: { type: 'column', target: 0 } },
             order: [[1, 'desc']],

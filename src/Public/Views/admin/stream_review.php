@@ -287,7 +287,6 @@ renderUnifiedLayoutFooter('admin');
                 }
 
                 var rTable = $('#datatable-mass').DataTable({
-                    processing: true,
                     serverSide: true,
                     searching: true,
                     ordering: false,

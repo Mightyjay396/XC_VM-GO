@@ -175,7 +175,6 @@ renderUnifiedLayoutFooter('admin');
 
         // ----- stream picker (data-only rows; select button rendered here) -----
         var md1 = $('#datatable-md1').DataTable({
-            processing: true,
             serverSide: true,
             <?= $rRedis ? 'paging: false,' : 'pageLength: ' . $rPageLen . ', lengthMenu: [10, 25, 50, 250, 500, 1000],'; ?>
             order: [
@@ -227,7 +226,6 @@ renderUnifiedLayoutFooter('admin');
 
         // ----- activity table (clean-JSON live_connections rows) -----
         var md2 = $('#datatable-md2').DataTable({
-            processing: true,
             serverSide: true,
             searchDelay: 250,
             pageLength: <?= $rPageLen; ?>,

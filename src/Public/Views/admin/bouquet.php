@@ -326,7 +326,6 @@ renderUnifiedLayoutFooter('admin');
             // [id, name, category, buttonsHtml]; createdRow flips add/remove per rBouquet.
             function buildPicker(rTableId, rTypeKey, rDataId, rCategorySel) {
                 return $('#' + rTableId).DataTable({
-                    processing: true,
                     serverSide: true,
                     info: false,
                     lengthChange: false,

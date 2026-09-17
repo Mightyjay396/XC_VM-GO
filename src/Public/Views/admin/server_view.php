@@ -751,7 +751,6 @@ renderUnifiedLayoutFooter('admin');
             }
             $('#datatable-live').DataTable({
                 destroy: true,
-                processing: true,
                 serverSide: true,
                 searchDelay: 250,
                 ajax: {
@@ -776,7 +775,6 @@ renderUnifiedLayoutFooter('admin');
 
             if (document.getElementById('datatable_streams')) {
                 $('#datatable_streams').DataTable({
-                    processing: true,
                     serverSide: true,
                     ordering: true,
                     searching: true,
@@ -828,7 +826,6 @@ renderUnifiedLayoutFooter('admin');
             }
 
             $('#datatable_connections').DataTable({
-                processing: true,
                 serverSide: true,
                 ordering: true,
                 searching: true,

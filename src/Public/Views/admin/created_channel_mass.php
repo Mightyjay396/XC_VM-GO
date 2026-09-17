@@ -335,7 +335,6 @@ renderUnifiedLayoutFooter('admin');
 
         // stream_list is a positional-array handler; keep legacy columnDefs.
         var rTable = $('#datatable-mass').DataTable({
-            processing: true,
             serverSide: true,
             searchDelay: 250,
             ajax: {

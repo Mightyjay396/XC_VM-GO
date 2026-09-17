@@ -183,7 +183,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#e2-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

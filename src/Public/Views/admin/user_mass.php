@@ -261,7 +261,6 @@ renderUnifiedLayoutFooter('admin');
         };
         // reg_users is a clean-JSON handler (objects), so map fields to the 13 columns.
         var rTable = $('#datatable-mass').DataTable({
-            processing: true,
             serverSide: true,
             searchDelay: 250,
             ajax: {

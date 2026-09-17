@@ -70,7 +70,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#mag-events-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

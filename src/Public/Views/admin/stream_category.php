@@ -100,7 +100,6 @@ renderUnifiedLayoutFooter('admin');
                 }
                 channelsInit = true;
                 $('#channels-table').DataTable({
-                    processing: true,
                     serverSide: true,
                     info: false,
                     ajax: {

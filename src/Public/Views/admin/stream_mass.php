@@ -530,7 +530,6 @@ renderUnifiedLayoutFooter('admin');
             });
 
         var rTable = $('#datatable-mass').DataTable({
-            processing: true,
             serverSide: true,
             searchDelay: 250,
             ajax: {

@@ -135,7 +135,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#backups-table').DataTable({
-            processing: true,
             serverSide: true,
             paging: false,
             searching: false,

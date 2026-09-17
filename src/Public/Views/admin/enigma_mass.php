@@ -380,7 +380,6 @@ renderUnifiedLayoutFooter('admin');
 
         // enigmas is a clean-JSON handler (objects): map fields to the 10 columns.
         var rTable = $('#datatable-mass').DataTable({
-            processing: true,
             serverSide: true,
             searchDelay: 250,
             ordering: false,

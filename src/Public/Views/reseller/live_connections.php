@@ -163,7 +163,6 @@ renderUnifiedLayoutFooter('reseller');
         };
 
         var table = jQuery('#live-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

@@ -703,7 +703,6 @@ renderUnifiedLayoutFooter('admin');
         function initTable(opts) {
             var arr = opts.arr;
             var dtOpts = {
-                processing: true,
                 serverSide: true,
                 searching: true,
                 ajax: {

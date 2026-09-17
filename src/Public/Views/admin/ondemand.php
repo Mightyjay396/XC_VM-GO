@@ -102,7 +102,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#ondemand-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

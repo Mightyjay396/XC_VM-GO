@@ -470,7 +470,6 @@ renderUnifiedLayoutFooter('admin');
             reviewSelection();
         };
         window.__ccMovies = $('#datatable-movies').DataTable({
-            processing: true,
             serverSide: true,
             searching: true,
             lengthChange: false,

@@ -839,7 +839,6 @@ renderUnifiedLayoutFooter('admin');
         var provBtn = document.getElementById('provider-streams');
         if (provBtn) {
             var provTable = $('#datatable-provider-streams').DataTable({
-                processing: true,
                 serverSide: true,
                 searchDelay: 250,
                 responsive: false,
