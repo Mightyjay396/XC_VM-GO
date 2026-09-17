@@ -773,6 +773,14 @@ renderUnifiedLayoutFooter('admin');
             return '<i class="icon-base ti tabler-circle-minus text-secondary" title="No TMDb"></i>';
         }
 
+        function seriesTitle(row) {
+            var year = row.year ? '<strong>' + esc(row.year) + '</strong> &nbsp;' : '';
+            return '<strong>' + esc(row.title) + '</strong><br><span style="font-size:11px;">' + year + ratingStars(row.rating) + '</span>';
+        }
+        function countBadge(n) {
+            return '<span class="badge bg-label-' + (n > 0 ? 'info' : 'secondary') + '">' + (n || 0) + '</span>';
+        }
+
         var LINE_STATUS = {
             active: ['success', 'Active'],
             banned: ['danger', 'Banned'],
@@ -1145,12 +1153,57 @@ renderUnifiedLayoutFooter('admin');
                     d.id = 'series_list';
                     d.category = val('series_category_search');
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 1, 4, 5, 6, 7, 8]
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
                 }, {
+                    data: 'cover',
                     orderable: false,
-                    targets: [1, 6]
+                    className: 'dt-center',
+                    render: function(d) {
+                        return movieImage(d);
+                    }
+                }, {
+                    data: 'title',
+                    render: function(d, t, row) {
+                        return seriesTitle(row);
+                    }
+                }, {
+                    data: 'category',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'latest_season',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return countBadge(d);
+                    }
+                }, {
+                    data: 'episode_count',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return countBadge(d);
+                    }
+                }, {
+                    data: 'has_tmdb',
+                    orderable: false,
+                    className: 'dt-center',
+                    render: function(d) {
+                        return tmdbBadge(d);
+                    }
+                }, {
+                    data: 'release_date',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'last_modified',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return esc(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']

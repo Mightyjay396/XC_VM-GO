@@ -2838,6 +2838,9 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
 						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
@@ -2847,57 +2850,25 @@ class TableController extends BaseAdminController {
 						if (1 < count($rCategoryIDs)) {
 							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
 						}
-						if (0 < $rRow["latest_season"]) {
-							$rRow["latest_season"] = "<button type='button' class='btn btn-info btn-xs waves-effect waves-light'>" . $rRow["latest_season"] . "</button>";
-						} else {
-							$rRow["latest_season"] = "<button type='button' class='btn btn-secondary btn-xs waves-effect waves-light'>0</button>";
-						}
-						if (0 < $rRow["episode_count"]) {
-							$rRow["episode_count"] = "<button type='button' class='btn btn-info btn-xs waves-effect waves-light'>" . $rRow["episode_count"] . "</button>";
-						} else {
-							$rRow["episode_count"] = "<button type='button' class='btn btn-secondary btn-xs waves-effect waves-light'>0</button>";
-						}
 						if ($rRow["last_modified"] == 0) {
-							$rRow["last_modified"] = "Never";
+							$rLastModified = "Never";
 						} else {
-							$rRow["last_modified"] = date($rSettings["datetime_format"], $rRow["last_modified"]);
+							$rLastModified = date($rSettings["datetime_format"], $rRow["last_modified"]);
 						}
-						if ($rRow["release_date"]) {
-							$rRow["release_date"] = date($rSettings["date_format"], strtotime($rRow["release_date"]));
-						}
-						if (0 < $rRow["tmdb_id"]) {
-							$rTMDB = "<button type=\"button\" class=\"btn btn-success btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-check-circle\"></i></button>";
-						} else {
-							$rTMDB = "<button type=\"button\" class=\"btn btn-secondary btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-minus-circle\"></i></button>";
-						}
-						if ((string) $rRow["cover"] !== '') {
-							$rImage = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rRow["cover"] . "'><img loading='lazy' src='resize?maxh=58&maxw=32&url=" . $rRow["cover"] . "' /></a>";
-						} else {
-							$rImage = "";
-						}
-						$rRatingText = "";
-						if ($rRow["rating"]) {
-							$rStarRating = round($rRow["rating"]) / 2;
-							$rFullStars = floor($rStarRating);
-							$rHalfStar = 0 < $rStarRating - $rFullStars;
-							$rEmpty = 5 - ($rFullStars + ($rHalfStar ? 1 : 0));
-							if (0 < $rFullStars) {
-								foreach (range(1, $rFullStars) as $i) {
-									$rRatingText .= "<i class='mdi mdi-star'></i>";
-								}
-							}
-							if ($rHalfStar) {
-								$rRatingText .= "<i class='mdi mdi-star-half'></i>";
-							}
-							if (0 < $rEmpty) {
-								foreach (range(1, $rEmpty) as $i) {
-									$rRatingText .= "<i class='mdi mdi-star-outline'></i>";
-								}
-							}
-						}
-						$rYear = $rRow["year"] ? "<strong>" . $rRow["year"] . "</strong> &nbsp;" : "";
-						$rTitle = "<strong>" . $rRow["title"] . "</strong><br><span style='font-size:11px;'>" . $rYear . $rRatingText . "</span></a>";
-						$rReturn["data"][] = [$rRow["id"], $rImage, $rTitle, $rCategory, $rRow["latest_season"], $rRow["episode_count"], $rTMDB, $rRow["release_date"], $rRow["last_modified"]];
+						$rReleaseDate = $rRow["release_date"] ? date($rSettings["date_format"], strtotime($rRow["release_date"])) : "";
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"cover" => (string) ($rRow["cover"] ?? ''),
+							"title" => (string) $rRow["title"],
+							"year" => (string) ($rRow["year"] ?? ''),
+							"rating" => (float) ($rRow["rating"] ?? 0),
+							"category" => $rCategory,
+							"latest_season" => (int) $rRow["latest_season"],
+							"episode_count" => (int) $rRow["episode_count"],
+							"has_tmdb" => 0 < (int) $rRow["tmdb_id"],
+							"release_date" => $rReleaseDate,
+							"last_modified" => $rLastModified,
+						];
 					}
 				}
 			}
