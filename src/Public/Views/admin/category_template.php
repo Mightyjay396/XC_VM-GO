@@ -1,17 +1,19 @@
 <?php
 
 /**
- * Category Template Editor View (Reseller).
+ * Category Template Editor View (Admin).
  *
- * Reseller category template editor with RBAC enforcement (only editable if owned by reseller).
- * Supports drag-and-drop ordering, renaming, visibility toggle, and instant cloning if viewing system/shared templates.
+ * The admin counterpart of reseller/category_template.php: administrators edit
+ * every template, system ones included, and can switch a template between
+ * system and regular. Drag-and-drop ordering, renaming and visibility per
+ * category; saves through ./api?action=category_template_save.
  */
 
 $rCurrentUser = $currentUser ?? ($GLOBALS['rUserInfo'] ?? []);
 $rTemplate = $template ?? [];
 $rCategories = $categories ?? ['live' => [], 'movie' => [], 'series' => []];
-$rCanEdit = !empty($canEdit);
-$rIsOwner = !empty($isOwner);
+// Administrators may edit any template (CategoryTemplateService::saveTemplate).
+$rCanEdit = true;
 
 $tmplId = (int)($rTemplate['id'] ?? 0);
 $tmplName = $rTemplate['name'] ?? '';
@@ -48,6 +50,11 @@ $isShared = (int)($rTemplate['is_shared'] ?? 0) === 1;
                         <div class="form-check form-switch mb-0">
                             <input class="form-check-input" type="checkbox" id="templateIsShared" <?= $isShared ? 'checked' : ''; ?>>
                             <label class="form-check-label small fw-semibold" for="templateIsShared"><?= $language::get('share_with_subresellers'); ?></label>
+                        </div>
+
+                        <div class="form-check form-switch mb-0" title="<?= $language::get('system_template_desc'); ?>">
+                            <input class="form-check-input" type="checkbox" id="templateIsSystem" <?= $isSystem ? 'checked' : ''; ?>>
+                            <label class="form-check-label small fw-semibold" for="templateIsSystem"><?= $language::get('system'); ?></label>
                         </div>
 
                         <button type="button" class="btn btn-primary d-flex align-items-center gap-2 shadow-sm" id="btnSaveTemplate">
@@ -248,7 +255,7 @@ $isShared = (int)($rTemplate['is_shared'] ?? 0) === 1;
 
 <?php
 require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+renderUnifiedLayoutFooter('admin');
 ?>
 
 <script>
@@ -258,8 +265,7 @@ renderUnifiedLayoutFooter('reseller');
     var templateId = <?= $tmplId; ?>;
     var canEdit = <?= $rCanEdit ? 'true' : 'false'; ?>;
 
-    // Call sites pass (type, message); the footer's xcToast takes (message, type),
-    // so handing it over directly showed the word "success" as the message.
+    // Call sites pass (type, message); the footer's xcToast takes (message, type).
     var toast = function(type, msg) {
         if (window.xcToast) {
             window.xcToast(msg, type);
@@ -534,6 +540,7 @@ renderUnifiedLayoutFooter('reseller');
             }
 
             var isShared = document.getElementById('templateIsShared') && document.getElementById('templateIsShared').checked ? 1 : 0;
+            var isSystem = document.getElementById('templateIsSystem') && document.getElementById('templateIsSystem').checked ? 1 : 0;
 
             var allCategories = [];
             ['live', 'movie', 'series', 'radio'].forEach(function(sec) {
@@ -561,6 +568,7 @@ renderUnifiedLayoutFooter('reseller');
                 id: templateId,
                 name: name,
                 is_shared: isShared,
+                is_system: isSystem,
                 categories: allCategories
             };
 

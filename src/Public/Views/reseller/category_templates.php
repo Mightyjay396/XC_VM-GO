@@ -279,7 +279,7 @@ $rCounts      = $counts ?? [
                                             <div class="template-stat-chip stat-series h-100 d-flex flex-column justify-content-between">
                                                 <div class="d-flex align-items-center justify-content-between mb-1">
                                                     <span class="stat-label text-warning"><?= $language::get('series') ?? 'Series'; ?></span>
-                                                    <i class="icon-base ti tabler-clapperboard text-warning fs-6"></i>
+                                                    <i class="icon-base ti tabler-device-tv-old text-warning fs-6"></i>
                                                 </div>
                                                 <div class="d-flex align-items-baseline justify-content-between">
                                                     <span class="stat-value text-heading"><?= $cSeries; ?></span>
@@ -435,16 +435,11 @@ renderUnifiedLayoutFooter('reseller');
 (function() {
     'use strict';
 
-    var toast = window.xcToast || function(type, msg) {
-        if (typeof Swal !== 'undefined') {
-            Swal.fire({
-                icon: type === 'error' ? 'error' : 'success',
-                title: msg,
-                timer: 3000,
-                showConfirmButton: false,
-                toast: true,
-                position: 'top-end'
-            });
+    // Call sites pass (type, message); the footer's xcToast takes (message, type),
+    // so handing it over directly showed the word "success" as the message.
+    var toast = function(type, msg) {
+        if (window.xcToast) {
+            window.xcToast(msg, type);
         } else {
             alert(msg);
         }
