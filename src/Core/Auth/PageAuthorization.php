@@ -3,6 +3,7 @@
 namespace XcVm\Core\Auth;
 
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\AdminHelpers;
 
 /**
  * PageAuthorization — page-level permission checks for admin/reseller panels.
@@ -28,7 +29,7 @@ class PageAuthorization {
 		global $rPermissions;
 
 		if (!$rPage) {
-			$rPage = strtolower(basename($_SERVER['SCRIPT_FILENAME'], '.php'));
+			$rPage = AdminHelpers::getPageName();
 		}
 
 		switch ($rPage) {
@@ -73,10 +74,16 @@ class PageAuthorization {
 	 * @param string|null $rPage Page key, or null to derive from the current script.
 	 * @return bool True if the current user may access the page.
 	 */
-	public static function checkPermissions(?string $rPage = null): bool {
+	public static function checkPermissions(?string $rPage = null, ?bool $rIsEdit = null): bool {
 		if (!$rPage) {
-			$rPage = strtolower(basename($_SERVER['SCRIPT_FILENAME'], '.php'));
+			// Under the front controller SCRIPT_FILENAME is always Public/index.php,
+			// so deriving the page from it checked "index" — a page no rule names —
+			// and every page opened for every administrator.
+			$rPage = AdminHelpers::getPageName();
 		}
+		// Editing an existing record needs edit_*, creating one add_*. A page tells
+		// them apart by ?id=; post.php passes whether the form carries `edit`.
+		$rHasID = $rIsEdit ?? RequestManager::has('id');
 
 		switch ($rPage) {
 			case 'isps':
@@ -85,11 +92,11 @@ class PageAuthorization {
 				return Authorization::check('adv', 'block_isps');
 
 			case 'bouquet':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_bouquet')) {
+				if ($rHasID && Authorization::check('adv', 'edit_bouquet')) {
 					return true;
 				}
 
-				if (!RequestManager::has('id') && Authorization::check('adv', 'add_bouquet')) {
+				if (!$rHasID && Authorization::check('adv', 'add_bouquet')) {
 					return true;
 				}
 
@@ -108,11 +115,11 @@ class PageAuthorization {
 				return Authorization::check('adv', 'client_request_log');
 
 			case 'created_channel':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_cchannel')) {
+				if ($rHasID && Authorization::check('adv', 'edit_cchannel')) {
 					return true;
 				}
 
-				if (!RequestManager::has('id') && Authorization::check('adv', 'create_channel')) {
+				if (!$rHasID && Authorization::check('adv', 'create_channel')) {
 					return true;
 				}
 
@@ -132,11 +139,11 @@ class PageAuthorization {
 				return Authorization::check('adv', 'manage_e2');
 
 			case 'epg':
-				if (RequestManager::has('id') && Authorization::check('adv', 'epg_edit')) {
+				if ($rHasID && Authorization::check('adv', 'epg_edit')) {
 					return true;
 				}
 
-				if (!RequestManager::has('id') && Authorization::check('adv', 'add_epg')) {
+				if (!$rHasID && Authorization::check('adv', 'add_epg')) {
 					return true;
 				}
 
@@ -145,11 +152,11 @@ class PageAuthorization {
 				return Authorization::check('adv', 'epg');
 
 			case 'episode':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_episode')) {
+				if ($rHasID && Authorization::check('adv', 'edit_episode')) {
 					return true;
 				}
 
-				if (!RequestManager::has('id') && Authorization::check('adv', 'add_episode')) {
+				if (!$rHasID && Authorization::check('adv', 'add_episode')) {
 					return true;
 				}
 
@@ -165,11 +172,11 @@ class PageAuthorization {
 				return Authorization::check('adv', 'fingerprint');
 
 			case 'group':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_group')) {
+				if ($rHasID && Authorization::check('adv', 'edit_group')) {
 					return true;
 				}
 
-				if (!RequestManager::has('id') && Authorization::check('adv', 'add_group')) {
+				if (!$rHasID && Authorization::check('adv', 'add_group')) {
 					return true;
 				}
 
@@ -185,13 +192,22 @@ class PageAuthorization {
 				return Authorization::check('adv', 'live_connections');
 
 			case 'mag':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_mag')) {
+				if ($rHasID && Authorization::check('adv', 'edit_mag')) {
 					return true;
 				}
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_mag')) {
+				if ($rHasID || !Authorization::check('adv', 'add_mag')) {
 					break;
 				}
 				return true;
+			case 'enigma':
+				if ($rHasID && Authorization::check('adv', 'edit_e2')) {
+					return true;
+				}
+				if ($rHasID || !Authorization::check('adv', 'add_e2')) {
+					break;
+				}
+				return true;
+
 			case 'mag_events':
 				return Authorization::check('adv', 'manage_events');
 			case 'mags':
@@ -208,10 +224,10 @@ class PageAuthorization {
 			case 'queue':
 				return Authorization::check('adv', 'streams') || Authorization::check('adv', 'episodes') || Authorization::check('adv', 'series');
 			case 'movie':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_movie')) {
+				if ($rHasID && Authorization::check('adv', 'edit_movie')) {
 					return true;
 				}
-				if (!RequestManager::has('id') && Authorization::check('adv', 'add_movie')) {
+				if (!$rHasID && Authorization::check('adv', 'add_movie')) {
 					if (!RequestManager::has('import') || Authorization::check('adv', 'import_movies')) {
 						return true;
 					}
@@ -220,11 +236,11 @@ class PageAuthorization {
 			case 'movie_mass':
 				return Authorization::check('adv', 'mass_sedits_vod');
 			case 'package':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_package')) {
+				if ($rHasID && Authorization::check('adv', 'edit_package')) {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_packages')) {
+				if ($rHasID || !Authorization::check('adv', 'add_packages')) {
 					break;
 				}
 				return true;
@@ -245,10 +261,10 @@ class PageAuthorization {
 				return Authorization::check('adv', 'tprofiles');
 
 			case 'radio':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_radio')) {
+				if ($rHasID && Authorization::check('adv', 'edit_radio')) {
 					return true;
 				}
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_radio')) {
+				if ($rHasID || !Authorization::check('adv', 'add_radio')) {
 					break;
 				}
 				return true;
@@ -257,11 +273,11 @@ class PageAuthorization {
 			case 'radios':
 				return Authorization::check('adv', 'radio');
 			case 'user':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_reguser')) {
+				if ($rHasID && Authorization::check('adv', 'edit_reguser')) {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_reguser')) {
+				if ($rHasID || !Authorization::check('adv', 'add_reguser')) {
 					break;
 				}
 				return true;
@@ -275,11 +291,11 @@ class PageAuthorization {
 			case 'rtmp_monitor':
 				return Authorization::check('adv', 'rtmp');
 			case 'serie':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_series')) {
+				if ($rHasID && Authorization::check('adv', 'edit_series')) {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_series')) {
+				if ($rHasID || !Authorization::check('adv', 'add_series')) {
 					break;
 				}
 				return true;
@@ -289,10 +305,10 @@ class PageAuthorization {
 				return Authorization::check('adv', 'edit_series');
 			case 'server':
 			case 'proxy':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_server')) {
+				if ($rHasID && Authorization::check('adv', 'edit_server')) {
 					return true;
 				}
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_server')) {
+				if ($rHasID || !Authorization::check('adv', 'add_server')) {
 					break;
 				}
 				return true;
@@ -313,11 +329,11 @@ class PageAuthorization {
 				return Authorization::check('adv', 'database');
 
 			case 'stream':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_stream')) {
+				if ($rHasID && Authorization::check('adv', 'edit_stream')) {
 					return true;
 				}
 
-				if (!RequestManager::has('id') && Authorization::check('adv', 'add_stream')) {
+				if (!$rHasID && Authorization::check('adv', 'add_stream')) {
 					if (!RequestManager::has('import') || Authorization::check('adv', 'import_streams')) {
 						return true;
 					}
@@ -379,11 +395,11 @@ class PageAuthorization {
 				return Authorization::check('adv', 'manage_tickets');
 
 			case 'line':
-				if (RequestManager::has('id') && Authorization::check('adv', 'edit_user')) {
+				if ($rHasID && Authorization::check('adv', 'edit_user')) {
 					return true;
 				}
 
-				if (RequestManager::has('id') || !Authorization::check('adv', 'add_user')) {
+				if ($rHasID || !Authorization::check('adv', 'add_user')) {
 					break;
 				}
 
@@ -420,4 +436,30 @@ class PageAuthorization {
 
 		return false;
 	}
+
+	/**
+	 * Whether the current administrator may run a post.php save action.
+	 *
+	 * post.php handles every admin form, and each action is held to the rule of
+	 * the page whose form it saves. Most actions are named after that page; the
+	 * rest are mapped here. Actions no rule covers (the administrator's own
+	 * profile, module settings) stay open, as they were.
+	 *
+	 * @param string $rAction The post.php `action`.
+	 * @param bool   $rIsEdit Whether the form edits an existing record (`edit`).
+	 * @return bool
+	 */
+	public static function checkPostAction(string $rAction, bool $rIsEdit): bool {
+		if (str_starts_with($rAction, 'mass_delete_')) {
+			return self::checkPermissions('mass_delete', $rIsEdit);
+		}
+
+		$rPage = ['import_tmdb_categories' => 'stream_categories'][$rAction] ?? $rAction;
+		if ($rPage === '' || $rPage === 'edit_profile') {
+			return $rPage === 'edit_profile';
+		}
+
+		return self::checkPermissions($rPage, $rIsEdit);
+	}
+
 }
