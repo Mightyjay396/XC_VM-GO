@@ -699,6 +699,32 @@ renderUnifiedLayoutFooter('admin');
             $('#enigma_reseller_search').val('').trigger('change');
         };
 
+        // Client-side render helpers for keyed (raw-data) picker tables.
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : s);
+            return d.innerHTML;
+        }
+        var VOD_BADGE = {
+            0: ['secondary', 'Not Encoded'],
+            1: ['success', 'Encoded'],
+            2: ['warning', 'Encoding'],
+            3: ['primary', 'Direct Source'],
+            4: ['danger', 'Down'],
+            5: ['info', 'Direct Stream']
+        };
+        function vodBadge(code) {
+            var m = VOD_BADGE[code] || ['secondary', 'Unknown'];
+            return '<span class="badge bg-label-' + m[0] + '">' + m[1] + '</span>';
+        }
+        function episodeImage(url) {
+            if (!url) {
+                return '';
+            }
+            return '<a href="javascript:void(0);" data-src="resize?maxw=512&maxh=512&url=' + encodeURIComponent(url) +
+                '"><img loading="lazy" src="resize?maxh=32&maxw=64&url=' + encodeURIComponent(url) + '"></a>';
+        }
+
         // Build one selection table: serverSide picker + row-click select + search/entries/reload wiring.
         function initTable(opts) {
             var arr = opts.arr;
@@ -711,7 +737,8 @@ renderUnifiedLayoutFooter('admin');
                 },
                 columnDefs: opts.columnDefs,
                 rowCallback: function(row, data) {
-                    if ($.inArray(String(data[0]).trim(), arr) !== -1) {
+                    var rid = opts.columns ? String(data && data.id != null ? data.id : '') : String(data[0]);
+                    if ($.inArray(rid.trim(), arr) !== -1) {
                         $(row).addClass('table-active');
                     }
                 },
@@ -724,6 +751,10 @@ renderUnifiedLayoutFooter('admin');
                     topEnd: null
                 }
             };
+            if (opts.columns) {
+                dtOpts.columns = opts.columns;
+                delete dtOpts.columnDefs;
+            }
             if (opts.order) {
                 dtOpts.order = opts.order;
             }
@@ -969,12 +1000,38 @@ renderUnifiedLayoutFooter('admin');
                     d.filter = val('episode_filter');
                     d.server = val('episode_server_id');
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 1, 4]
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
                 }, {
+                    data: 'movie_image',
                     orderable: false,
-                    targets: [1]
+                    className: 'dt-center',
+                    render: function(d) {
+                        return episodeImage(d);
+                    }
+                }, {
+                    data: 'stream_display_name',
+                    render: function(d, t, row) {
+                        var s = (row.series_title || '') + ' - Season ' + (row.season_num == null ? '' : row.season_num);
+                        return '<strong>' + esc(d) + '</strong><br><span style="font-size:11px;">' + esc(s) + '</span>';
+                    }
+                }, {
+                    data: 'server_name',
+                    render: function(d, t, row) {
+                        var name = d ? esc(d) : 'No Server Selected';
+                        if (row.server_count > 1) {
+                            name += ' &nbsp; <button type="button" class="btn btn-info btn-xs waves-effect waves-light">+ ' +
+                                (row.server_count - 1) + '</button>';
+                        }
+                        return name;
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return vodBadge(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']

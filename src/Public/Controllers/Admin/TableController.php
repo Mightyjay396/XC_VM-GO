@@ -1894,25 +1894,21 @@ class TableController extends BaseAdminController {
 						} else {
 							$rActualStatus = 0;
 						}
-						$rSeriesName = $rRow["title"] . " - Season " . $rRow["season_num"];
-						$rStreamName = "<strong>" . $rRow["stream_display_name"] . "</strong><br><span style='font-size:11px;'>" . $rSeriesName . "</span>";
-						if ($rRow["server_name"]) {
-							$rServerName = $rRow["server_name"];
-							if (1 < $rServerCount[$rRow["id"]]) {
-								$rServerName .= " &nbsp; <button type='button' class='btn btn-info btn-xs waves-effect waves-light'>+ " . ($rServerCount[$rRow["id"]] - 1) . "</button>";
-							}
-						} else {
-							$rServerName = "No Server Selected";
-						}
-						$rImage = "";
 						$rProperties = json_decode((string) $rRow["movie_properties"], true);
 						if (!is_array($rProperties)) {
 							$rProperties = [];
 						}
-						if ((string) ($rProperties["movie_image"] ?? '') !== '' && SettingsManager::getAll()["show_images"]) {
-							$rImage = "<a href='javascript: void(0);' data-src='resize?maxw=512&maxh=512&url=" . $rProperties["movie_image"] . "'><img loading='lazy' src='resize?maxh=32&maxw=64&url=" . $rProperties["movie_image"] . "' /></a>";
-						}
-						$rReturn["data"][] = [$rRow["id"], $rImage, $rStreamName, $rServerName, StatusBadge::vod($rActualStatus)];
+						$rImage = SettingsManager::getAll()["show_images"] ? (string) ($rProperties["movie_image"] ?? '') : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"movie_image" => $rImage,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"series_title" => (string) ($rRow["title"] ?? ''),
+							"season_num" => $rRow["season_num"],
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
 					}
 				}
 			}
