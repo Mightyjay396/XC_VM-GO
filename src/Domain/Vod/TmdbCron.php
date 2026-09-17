@@ -203,6 +203,13 @@ class TmdbCron {
 		if (0 < $rTMDBID) {
 			$rMovie = $rTMDB->getMovie($rTMDBID);
 			$rMovieData = json_decode($rMovie->getJSON(), true);
+			// The TMDb client turns an error answer (rate limit, 404, network) into an
+			// empty object. Writing that back set the movie's name, year and metadata to
+			// NULL, and the NULL title then broke player_api. Treat it as no match.
+			if (empty($rMovieData['title'])) {
+				$db->query('UPDATE `watch_refresh` SET `status` = -1 WHERE `id` = ?;', $row['id']);
+				return;
+			}
 			$rMovieData['trailer'] = $rMovie->getTrailer();
 
 			$rThumb = ($rMovieData['poster_path']
@@ -363,6 +370,12 @@ class TmdbCron {
 		if (0 < $rTMDBID) {
 			$rShow = $rTMDB->getTVShow($rTMDBID);
 			$rShowData = json_decode($rShow->getJSON(), true);
+			// An error answer comes back empty (see processMovie): without an id,
+			// getSeriesTrailer(int) threw and stopped the refresh run.
+			if (empty($rShowData['id']) || empty($rShowData['name'])) {
+				$db->query('UPDATE `watch_refresh` SET `status` = -1 WHERE `id` = ?;', $row['id']);
+				return;
+			}
 
 			$rSeriesArray = $rStream;
 			$rSeriesArray['title']           = $rShowData['name'];
