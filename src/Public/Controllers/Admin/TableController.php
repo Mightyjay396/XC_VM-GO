@@ -4931,7 +4931,13 @@ class TableController extends BaseAdminController {
 						if (!empty($rRow["source"])) {
 							$rStreamSource = strtolower(parse_url($rRow["source"])["host"]);
 						}
-						$rReturn["data"][] = ["<a href='server_view?id=" . (int) $rRow["server_id"] . "'>" . ServerRepository::getAll()[$rRow["server_id"]]["server_name"] . "</a>", $rStreamSource, StatusBadge::failure($rRow["action"]), date(SettingsManager::getAll()["datetime_format"], $rRow["date"])];
+												$rReturn["data"][] = [
+							"server_id" => (int) $rRow["server_id"],
+							"server_name" => (string) (ServerRepository::getAll()[$rRow["server_id"]]["server_name"] ?? ''),
+							"source_host" => $rStreamSource,
+							"action" => (string) $rRow["action"],
+							"date" => date(SettingsManager::getAll()["datetime_format"], $rRow["date"]),
+						];
 					}
 				}
 			}
