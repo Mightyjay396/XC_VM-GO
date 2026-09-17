@@ -791,9 +791,9 @@ renderUnifiedLayoutFooter('admin');
         }
         function tmdbBadge(has) {
             if (has) {
-                return '<button type="button" class="btn btn-success btn-xs waves-effect waves-light btn-fixed-xs"><i class="text-light fas fa-check-circle"></i></button>';
+                return '<i class="icon-base ti tabler-circle-check-filled text-success" title="TMDb"></i>';
             }
-            return '<button type="button" class="btn btn-secondary btn-xs waves-effect waves-light btn-fixed-xs"><i class="text-light fas fa-minus-circle"></i></button>';
+            return '<i class="icon-base ti tabler-circle-minus text-secondary" title="No TMDb"></i>';
         }
 
         // Build one selection table: serverSide picker + row-click select + search/entries/reload wiring.
