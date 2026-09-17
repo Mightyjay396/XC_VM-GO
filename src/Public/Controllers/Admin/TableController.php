@@ -85,10 +85,6 @@ class TableController extends BaseAdminController {
 			exit;
 		}
 
-		if (!empty($rMobile)) {
-			SettingsManager::getAll()["modal_edit"] = false;
-			SettingsManager::getAll()["group_buttons"] = false;
-		}
 		$rType = RequestManager::get("id");
 
 		$rStart = (int) RequestManager::get("start");
