@@ -37,3 +37,5 @@ graphify-out/
 
 # sync-dev.sh incremental-deploy watermark (per-checkout, not shared)
 .dev-sync-state
+coverage/*
+.cache/*
