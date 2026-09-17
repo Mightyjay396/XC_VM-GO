@@ -522,7 +522,6 @@ class ActiveCodeService {
 	 *
 	 * @param array $package Package row.
 	 * @param array $user    Reseller row (member_group_id).
-	 * @return bool
 	 */
 	private static function packageAvailableTo(array $package, array $user): bool {
 		$groups = json_decode((string) ($package['groups'] ?? ''), true);

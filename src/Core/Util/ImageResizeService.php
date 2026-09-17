@@ -345,7 +345,7 @@ class ImageResizeService {
 		$ch = curl_init();
 		curl_setopt_array($ch, $opts);
 		$data = curl_exec($ch);
-		$code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+		$code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 		curl_close($ch);
 
 		if ($data === false || $code < 200 || $code >= 400) {
