@@ -4480,8 +4480,7 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<a href=\"stream_view?id=" . $rRow["id"] . "\"><button type=\"button\" title=\"View Stream\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\"><i class=\"mdi mdi-play\"></i></button></a>";
-						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rButtons];
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
 					}
 				}
 			}
@@ -4539,8 +4538,7 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<a href=\"stream_view?id=" . $rRow["id"] . "\"><button type=\"button\" title=\"View Movie\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\"><i class=\"mdi mdi-play\"></i></button></a>";
-						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rButtons];
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
 					}
 				}
 			}
@@ -4598,8 +4596,7 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<a href=\"stream_view?id=" . $rRow["id"] . "\"><button type=\"button\" title=\"View Station\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\"><i class=\"mdi mdi-play\"></i></button></a>";
-						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rButtons];
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
 					}
 				}
 			}
@@ -4656,8 +4653,7 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<a href=\"series?id=" . $rRow["id"] . "\"><button type=\"button\" title=\"Edit Series\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\"><i class=\"mdi mdi-play\"></i></button></a>";
-						$rReturn["data"][] = [$rRow["id"], $rRow["title"], $rButtons];
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["title"]];
 					}
 				}
 			}
