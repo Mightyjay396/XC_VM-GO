@@ -2479,53 +2479,31 @@ class TableController extends BaseAdminController {
 						if (1 < count($rCategoryIDs)) {
 							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
 						}
-						$rStreamName = $rRow["stream_display_name"];
-						if ($rRow["server_name"]) {
-							$rServerCountForStream = intval($rServerCount[$rRow["id"]] ?? 0);
-							$rServerName = $rRow["server_name"];
-							if (1 < $rServerCountForStream) {
-								$rServerName .= " &nbsp; <button type='button' class='btn btn-info btn-xs waves-effect waves-light'>+ " . ($rServerCountForStream - 1) . "</button>";
-							}
-						} else {
-							$rServerName = "No Server Selected";
-						}
-						$rUptime = 0;
 						$rActualStatus = 0;
-						if (0 < (int) $rRow["stream_started"]) {
-							$rUptime = time() - (int) $rRow["stream_started"];
-						}
 						if ($rRow["server_id"]) {
 							if ((int) $rRow["direct_source"] == 1) {
-								if ((int) $rRow["direct_proxy"] == 1) {
-									$rActualStatus = 7;
-								} else {
-									$rActualStatus = 5;
-								}
+								$rActualStatus = (int) $rRow["direct_proxy"] == 1 ? 7 : 5;
 							} elseif ($rRow["monitor_pid"]) {
 								if ($rRow["pid"] && 0 < $rRow["pid"]) {
-									if ((int) $rRow["stream_status"] == 2) {
-										$rActualStatus = 2;
-									} else {
-										$rActualStatus = 1;
-									}
+									$rActualStatus = (int) $rRow["stream_status"] == 2 ? 2 : 1;
 								} else {
 									$rActualStatus = 3;
 								}
 							} elseif ((int) $rRow["on_demand"] == 1) {
 								$rActualStatus = 4;
-							} else {
-								$rActualStatus = 0;
 							}
 						} else {
 							$rActualStatus = -1;
 						}
-						if ((string) $rRow["stream_icon"] !== '') {
-							$rIcon = "<img loading='lazy' src='resize?maxw=96&maxh=32&url=" . urlencode($rRow["stream_icon"]) . "' />";
-						} else {
-							$rIcon = "";
-						}
-						$rStatusText = StatusBadge::stream($rActualStatus);
-						$rReturn["data"][] = [$rRow["id"], $rIcon, $rStreamName, $rCategory, $rServerName, $rStatusText];
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"stream_icon" => (string) $rRow["stream_icon"],
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
 					}
 				}
 			}
