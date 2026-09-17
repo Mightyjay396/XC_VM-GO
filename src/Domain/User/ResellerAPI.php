@@ -56,6 +56,21 @@ class ResellerAPI {
 			}
 		}
 
+		if (in_array($rType, ['line', 'mag', 'enigma'], true)) {
+			// A trial comes with a new subscription. On an edit it reset the expiry
+			// for trial_credits (usually 0), and the trial quota — lines counted by
+			// created_at — never saw it, so any line could be kept alive for free.
+			if (isset($rData['edit'])) {
+				unset($rData['trial']);
+			}
+			// Pairing copies the paired line's expiry and bouquets onto this one
+			// (MagService::syncLineDevices), so only a line this reseller manages
+			// may be named. Devices checked this; lines stored any id.
+			if (isset($rData['pair_id']) && !Authorization::check('line', $rData['pair_id'])) {
+				unset($rData['pair_id']);
+			}
+		}
+
 		return $rData;
 	}
 
