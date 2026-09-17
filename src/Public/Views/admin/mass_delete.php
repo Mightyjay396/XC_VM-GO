@@ -758,6 +758,44 @@ renderUnifiedLayoutFooter('admin');
             return html;
         }
 
+        function movieImage(url) {
+            if (!url) {
+                return '';
+            }
+            return '<a href="javascript:void(0);" data-src="resize?maxw=512&maxh=512&url=' + encodeURIComponent(url) +
+                '"><img loading="lazy" src="resize?maxh=58&maxw=32&url=' + encodeURIComponent(url) + '"></a>';
+        }
+        function ratingStars(rating) {
+            if (!rating) {
+                return '';
+            }
+            var star = Math.round(rating) / 2;
+            var full = Math.floor(star);
+            var half = (star - full) > 0;
+            var empty = 5 - (full + (half ? 1 : 0));
+            var h = '';
+            for (var i = 0; i < full; i++) {
+                h += "<i class='mdi mdi-star'></i>";
+            }
+            if (half) {
+                h += "<i class='mdi mdi-star-half'></i>";
+            }
+            for (var j = 0; j < empty; j++) {
+                h += "<i class='mdi mdi-star-outline'></i>";
+            }
+            return h;
+        }
+        function movieName(row) {
+            var year = row.year ? '<strong>' + esc(row.year) + '</strong> &nbsp;' : '';
+            return esc(row.stream_display_name) + '<br><span style="font-size:11px;">' + year + ratingStars(row.rating) + '</span>';
+        }
+        function tmdbBadge(has) {
+            if (has) {
+                return '<button type="button" class="btn btn-success btn-xs waves-effect waves-light btn-fixed-xs"><i class="text-light fas fa-check-circle"></i></button>';
+            }
+            return '<button type="button" class="btn btn-secondary btn-xs waves-effect waves-light btn-fixed-xs"><i class="text-light fas fa-minus-circle"></i></button>';
+        }
+
         // Build one selection table: serverSide picker + row-click select + search/entries/reload wiring.
         function initTable(opts) {
             var arr = opts.arr;
@@ -1014,12 +1052,44 @@ renderUnifiedLayoutFooter('admin');
                     d.filter = val('movie_filter');
                     d.server = val('movie_server_id');
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 1, 5, 6]
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
                 }, {
+                    data: 'movie_image',
                     orderable: false,
-                    targets: [1, 6]
+                    className: 'dt-center',
+                    render: function(d) {
+                        return movieImage(d);
+                    }
+                }, {
+                    data: 'stream_display_name',
+                    render: function(d, t, row) {
+                        return movieName(row);
+                    }
+                }, {
+                    data: 'category',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'server_name',
+                    render: function(d, t, row) {
+                        return serverNameCell(d, row.server_count);
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return vodBadge(d);
+                    }
+                }, {
+                    data: 'has_tmdb',
+                    orderable: false,
+                    className: 'dt-center',
+                    render: function(d) {
+                        return tmdbBadge(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']

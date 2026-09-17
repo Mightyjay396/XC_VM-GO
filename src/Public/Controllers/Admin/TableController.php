@@ -2603,11 +2603,7 @@ class TableController extends BaseAdminController {
 					} else {
 						$rActualStatus = 0;
 						if ((int) $rRow["direct_source"] == 1) {
-							if ((int) $rRow["direct_proxy"] == 1) {
-								$rActualStatus = 5;
-							} else {
-								$rActualStatus = 3;
-							}
+							$rActualStatus = (int) $rRow["direct_proxy"] == 1 ? 5 : 3;
 						} elseif (!is_null($rRow["pid"]) && 0 < $rRow["pid"]) {
 							if ($rRow["to_analyze"] == 1) {
 								$rActualStatus = 2;
@@ -2616,18 +2612,11 @@ class TableController extends BaseAdminController {
 							} else {
 								$rActualStatus = 1;
 							}
-						} else {
-							$rActualStatus = 0;
-						}
-						if ($rRow["server_name"]) {
-							$rServerName = $rRow["server_name"];
-							if (1 < $rServerCount[$rRow["id"]]) {
-								$rServerName .= " &nbsp; <button type='button' class='btn btn-info btn-xs waves-effect waves-light'>+ " . ($rServerCount[$rRow["id"]] - 1) . "</button>";
-							}
-						} else {
-							$rServerName = "No Server Selected";
 						}
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
 						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
@@ -2641,39 +2630,19 @@ class TableController extends BaseAdminController {
 						if (!is_array($rProperties)) {
 							$rProperties = [];
 						}
-						$rRatingText = "";
-						if (!empty($rProperties["rating"])) {
-							$rStarRating = round($rProperties["rating"]) / 2;
-							$rFullStars = floor($rStarRating);
-							$rHalfStar = 0 < $rStarRating - $rFullStars;
-							$rEmpty = 5 - ($rFullStars + ($rHalfStar ? 1 : 0));
-							if (0 < $rFullStars) {
-								foreach (range(1, $rFullStars) as $i) {
-									$rRatingText .= "<i class='mdi mdi-star'></i>";
-								}
-							}
-							if ($rHalfStar) {
-								$rRatingText .= "<i class='mdi mdi-star-half'></i>";
-							}
-							if (0 < $rEmpty) {
-								foreach (range(1, $rEmpty) as $i) {
-									$rRatingText .= "<i class='mdi mdi-star-outline'></i>";
-								}
-							}
-						}
-						$rYear = $rRow["year"] ? "<strong>" . $rRow["year"] . "</strong> &nbsp;" : "";
-						$rStreamName = $rRow["stream_display_name"] . "<br><span style='font-size:11px;'>" . $rYear . $rRatingText . "</span>";
-						if ((string) ($rProperties["movie_image"] ?? "") !== '' && SettingsManager::getAll()["show_images"]) {
-							$rImage = "<a href='javascript: void(0);' data-src='resize?maxw=512&maxh=512&url=" . $rProperties["movie_image"] . "'><img loading='lazy' src='resize?maxh=58&maxw=32&url=" . $rProperties["movie_image"] . "' /></a>";
-						} else {
-							$rImage = "";
-						}
-						if (isset($rProperties["kinopoisk_url"]) && (string) $rProperties["kinopoisk_url"] !== '') {
-							$rTMDB = "<button type=\"button\" class=\"btn btn-success btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-check-circle\"></i></button>";
-						} else {
-							$rTMDB = "<button type=\"button\" class=\"btn btn-secondary btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-minus-circle\"></i></button>";
-						}
-						$rReturn["data"][] = [$rRow["id"], $rImage, $rStreamName, $rCategory, $rServerName, StatusBadge::vod($rActualStatus), $rTMDB];
+						$rImage = SettingsManager::getAll()["show_images"] ? (string) ($rProperties["movie_image"] ?? '') : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"movie_image" => $rImage,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"year" => (string) ($rRow["year"] ?? ''),
+							"rating" => (float) ($rProperties["rating"] ?? 0),
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+							"has_tmdb" => isset($rProperties["kinopoisk_url"]) && (string) $rProperties["kinopoisk_url"] !== '',
+						];
 					}
 				}
 			}
