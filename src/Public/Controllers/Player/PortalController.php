@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Player;
 
+use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Line\ActiveCodeService;
 
@@ -56,6 +57,16 @@ class PortalController {
 		// If code is supplied (via GET or POST), evaluate/activate immediately
 		if (!empty($code)) {
 			$result = ActiveCodeService::activateCode($code, $deviceInfo);
+
+			if (($result['status'] ?? '') !== 'SUCCESS') {
+				// Codes are short (6+ characters, possibly digits only) and this page
+				// needs no login: count every distinct failed code against the
+				// client's IP, as the activation API does, so guessing gets it blocked.
+				BruteforceGuard::checkBruteforce(null, null, strtoupper($code));
+			}
+			// The page shows credentials, playlists and the expiry. The raw `lines`
+			// and `activation_codes` rows (notes, owner, tokens) stay on the server.
+			unset($result['line'], $result['code_details']);
 
 			// If AJAX request, return JSON
 			if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest') {
