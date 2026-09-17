@@ -120,24 +120,24 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 			->parent('lines')->url('line_mass')
 			->label('mass_edit_lines')->permissions(['mass_edit_lines'])->order(30));
 
-		// Active Codes (Disable)
-		// NavbarRegistry::add((new NavbarItem('active_codes'))
-		// 	->url('#')->label('active_codes')
-		// 	->icon('ti tabler-key')
-		// 	->permissions(['add_user', 'users', 'mass_edit_lines'])
-		// 	->order(310));
-		// NavbarRegistry::add((new NavbarItem('active_codes.add'))
-		// 	->parent('active_codes')->url('active_code')
-		// 	->label('generate_codes')->permissions(['add_user'])->order(10));
-		// NavbarRegistry::add((new NavbarItem('active_codes.manage'))
-		// 	->parent('active_codes')->url('active_codes')
-		// 	->label('manage_active_codes')->permissions(['users'])->order(20));
-		// NavbarRegistry::add((new NavbarItem('active_codes.batch'))
-		// 	->parent('active_codes')->url('active_codes_batch')
-		// 	->label('batch_manager')->permissions(['users'])->order(25));
-		// NavbarRegistry::add((new NavbarItem('active_codes.mass'))
-		// 	->parent('active_codes')->url('active_codes_mass')
-		// 	->label('mass_edit_active_codes')->permissions(['mass_edit_lines'])->order(30));
+		// Active Codes
+		NavbarRegistry::add((new NavbarItem('active_codes'))
+			->url('#')->label('active_codes')
+			->icon('ti tabler-key')
+			->permissions(['add_user', 'users', 'mass_edit_lines'])
+			->order(310));
+		NavbarRegistry::add((new NavbarItem('active_codes.add'))
+			->parent('active_codes')->url('active_code')
+			->label('generate_codes')->permissions(['add_user'])->order(10));
+		NavbarRegistry::add((new NavbarItem('active_codes.manage'))
+			->parent('active_codes')->url('active_codes')
+			->label('manage_active_codes')->permissions(['users'])->order(20));
+		NavbarRegistry::add((new NavbarItem('active_codes.batch'))
+			->parent('active_codes')->url('active_codes_batch')
+			->label('batch_manager')->permissions(['users'])->order(25));
+		NavbarRegistry::add((new NavbarItem('active_codes.mass'))
+			->parent('active_codes')->url('active_codes_mass')
+			->label('mass_edit_active_codes')->permissions(['mass_edit_lines'])->order(30));
 
 		// MAG Devices
 		NavbarRegistry::add((new NavbarItem('mag'))
