@@ -315,12 +315,13 @@ class StreamProcess {
 	 * still emit `-map` for every file — so multi-subtitle movies imported one
 	 * track but mapped non-existent inputs. The two loops are now siblings.
 	 *
-	 * @param string $rSubtitlesJson `movie_subtitles` JSON from the stream row.
-	 * @param array  $rServers       Server registry (for remote subtitle fetch).
+	 * @param string|null $rSubtitlesJson `movie_subtitles` JSON from the stream row;
+	 *                                    NULL for a movie or episode saved without subtitles.
+	 * @param array       $rServers       Server registry (for remote subtitle fetch).
 	 * @return array{0:string,1:string} [$rSubtitlesImport, $rSubtitlesMetadata].
 	 */
-	private static function buildSubtitleImport(string $rSubtitlesJson, array $rServers) {
-		$rSubtitles = json_decode($rSubtitlesJson, true);
+	private static function buildSubtitleImport(?string $rSubtitlesJson, array $rServers) {
+		$rSubtitles = json_decode((string) $rSubtitlesJson, true);
 		$rSubtitlesImport = '';
 		$rSubtitlesMetadata = '';
 		if (!empty($rSubtitles) && !empty($rSubtitles['files']) && is_array($rSubtitles['files'])) {

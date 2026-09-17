@@ -45,7 +45,9 @@ class CategoryService {
 				}
 			}
 			FileCache::delCache('categories');
-			FileCache::delCache('category_map');
+			// category_map (bouquet => category ids) is left alone: reordering does not
+			// change it, and only the heavy cache pass rebuilds it — up to 5 minutes
+			// later — while every line authentication reads it.
 		}
 
 		if (!defined('STATUS_SUCCESS') && class_exists(\XC_Bootstrap::class)) {
@@ -88,7 +90,8 @@ class CategoryService {
 			$rInsertID = $db->last_insert_id();
 			$catId = isset($rData['edit']) ? intval($rData['edit']) : intval($rInsertID);
 			FileCache::delCache('categories');
-			FileCache::delCache('category_map');
+			// Not category_map: which categories a bouquet reaches depends on its
+			// streams, not on a category's name, type or order (see reorder()).
 
 			// Sync any templates and subscribers tied to this category
 			if ($catId > 0 && class_exists(CategoryTemplateService::class)) {
@@ -105,10 +108,11 @@ class CategoryService {
 	 * Возвращает категории с int-ключами (замена legacy getCategories()).
 	 * Всегда читает из БД ($rForce = true).
 	 *
-	 * @param string $rType 'live'|'movie'|'series'|'radio'|null
+	 * @param string|null $rType 'live'|'movie'|'series'|'radio', or null for every type
+	 *                          (the admin global search asks for all of them).
 	 * @return array<int, array>
 	 */
-	public static function getAllByType(string $rType = 'live') {
+	public static function getAllByType(?string $rType = 'live') {
 		$rCategories = self::getFromDatabase(($rType ?: null), true);
 		$rReturn = [];
 		foreach ($rCategories as $rID => $rRow) {

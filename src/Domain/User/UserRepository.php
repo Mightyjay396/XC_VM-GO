@@ -552,8 +552,10 @@ class UserRepository {
 			$rUserInfo = array_merge($rUserInfo, self::aggregateBouquetIds($rUserInfo['bouquet'], $rBouquets));
 		}
 
-		$rCategoryMap = igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'category_map'));
-		$rUserInfo['category_ids'] = self::resolveCategoryIds($rUserInfo['bouquet'], $rCategoryMap);
+		// Built by the heavy cache pass; until it exists (a fresh install, a cleared
+		// cache) the line simply has no categories instead of the request failing.
+		$rCategoryMap = @igbinary_unserialize((string) @file_get_contents(CACHE_TMP_PATH . 'category_map'));
+		$rUserInfo['category_ids'] = self::resolveCategoryIds($rUserInfo['bouquet'], is_array($rCategoryMap) ? $rCategoryMap : []);
 		return $rUserInfo;
 	}
 
