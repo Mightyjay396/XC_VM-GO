@@ -21,7 +21,10 @@ class CategoryTemplateController extends BaseAdminController {
 
 		$id = (int) RequestManager::get('id', 0);
 		if ($id <= 0) {
-			header('Location: category_templates');
+			// Templates are created from the list page's dialog (the create action
+			// returns the new id); the "Create Category Template" menu entry lands
+			// here, so open that dialog instead of just showing the list.
+			header('Location: category_templates?create=1');
 			exit;
 		}
 

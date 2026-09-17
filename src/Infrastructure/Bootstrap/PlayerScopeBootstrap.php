@@ -3,7 +3,6 @@
 namespace XcVm\Infrastructure\Bootstrap;
 
 use XcVm\Core\Auth\SessionManager;
-use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\User\UserRepository;
@@ -75,7 +74,11 @@ final class PlayerScopeBootstrap implements ScopeBootstrap {
 		$_PAGE = defined('PAGE_NAME') ? PAGE_NAME : 'index';
 
 		$rServers = ServerRepository::getAll();
-		SettingsManager::update('live_streaming_pass', md5(sha1($rServers[SERVER_ID]['server_name'] . $rServers[SERVER_ID]['server_ip']) . '5f13a731fb85944e5c69ce863b0c990d'));
+		// live_streaming_pass is left as the random secret setup generated. The
+		// player used to replace it here with md5(sha1(server_name . server_ip) .
+		// a constant in this file) — values any subscriber knows — and the subtitle
+		// proxy (PlayerProxyController) fetches whatever URL a token under that key
+		// names, so a signed-in line could mint tokens for internal URLs.
 
 		// HTTPS check: redirect to HTTP if HTTPS is on but not enabled in panel settings
 		if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] == 'on' && !$rServers[SERVER_ID]['enable_https']) {

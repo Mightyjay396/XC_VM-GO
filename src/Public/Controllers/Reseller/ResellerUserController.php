@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Reseller;
 
+use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\User\GroupService;
 use XcVm\Domain\User\UserRepository;
@@ -28,7 +29,10 @@ class ResellerUserController extends BaseResellerController {
 		if (isset($rRequest['id'])) {
 			$rUser = UserRepository::getRegisteredUserById($rRequest['id']);
 
-			if (!$rUser || $rRequest['id'] == $rUserInfo['id']) {
+			// Only a user in this reseller's own tree — the same rule the save
+			// (ResellerAPI::processUser) applies. Without it any id showed another
+			// reseller's or an admin's username, email, DNS and notes.
+			if (!$rUser || $rRequest['id'] == $rUserInfo['id'] || !Authorization::check('user', $rUser['id'])) {
 				AdminHelpers::goHome();
 			}
 

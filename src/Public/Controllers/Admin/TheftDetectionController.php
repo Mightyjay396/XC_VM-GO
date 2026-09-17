@@ -25,9 +25,11 @@ class TheftDetectionController extends BaseAdminController {
 			? (igbinary_unserialize(file_get_contents($cacheFile)) ?: [])
 			: [];
 
+		// render() extracts these as the view's locals: the names must match what
+		// theft_detection.php reads ($rTheftDetection, $rRange).
 		$this->render('theft_detection', [
-			'theftDetection' => $rTheftDetection,
-			'range'          => $rRange,
+			'rTheftDetection' => $rTheftDetection,
+			'rRange'          => $rRange,
 		]);
 	}
 }

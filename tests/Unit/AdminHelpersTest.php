@@ -65,6 +65,25 @@ final class AdminHelpersTest extends TestCase {
 	}
 
 	/**
+	 * After login the panel redirects to the page the visitor was sent away
+	 * from. Only a local page name (with an optional query) may come back:
+	 * basename() leaves backslashes alone, and browsers read `\\evil.com` in a
+	 * Location header as `//evil.com`.
+	 */
+	public function testLoginRedirectTargetKeepsLocalPagesOnly() {
+		$this->assertSame('lines', AdminHelpers::loginRedirectTarget('lines'));
+		$this->assertSame('stream_view?id=5&server=1', AdminHelpers::loginRedirectTarget('stream_view?id=5&server=1'));
+		$this->assertSame('dashboard', AdminHelpers::loginRedirectTarget(null));
+		$this->assertSame('dashboard', AdminHelpers::loginRedirectTarget(''));
+		$this->assertSame('dashboard', AdminHelpers::loginRedirectTarget('logout'));
+		$this->assertSame('dashboard', AdminHelpers::loginRedirectTarget('\\\\evil.com'));
+		$this->assertSame('dashboard', AdminHelpers::loginRedirectTarget('//evil.com'));
+		$this->assertSame('dashboard', AdminHelpers::loginRedirectTarget('https://evil.com'));
+		$this->assertSame('dashboard', AdminHelpers::loginRedirectTarget('lines?next=https://evil.com'));
+		$this->assertSame('dashboard', AdminHelpers::loginRedirectTarget("lines\r\nSet-Cookie: x=1"));
+	}
+
+	/**
 	 * post.php hands over its `referer` parameter, which the new-UI forms do not
 	 * send: a null there must read as "no page", not end the request.
 	 */

@@ -17,6 +17,8 @@ the admin specs create, edit, start and delete real records.
 | `tests/admin/blocklists.spec.ts` | Block and unblock an IP, a user agent and an ISP |
 | `tests/admin/streams.spec.ts` | Live stream: add with a source and a server, start, wait until it runs with codecs and the Resources column (producer / CPU / RAM), stop, rename, delete |
 | `tests/admin/signin.spec.ts` | A second administrator: created, refused with a wrong password, signs in and out, deleted |
+| `tests/admin/templates.spec.ts` | Activation code pages render; category template: the menu's create entry, create, rename and make it a system template, clone, delete |
+| `tests/admin/reports.spec.ts` | VOD theft detection and line IP usage keep the chosen time range |
 | `tests/admin/cleanup.teardown.ts` | After everything: removes whatever the admin specs left behind (see below) |
 
 ## Run
@@ -69,7 +71,7 @@ ssh root@panel 'sudo -u xc_vm /home/xc_vm/bin/php/bin/php /tmp/create-admin.php 
 ## Test data
 
 Every record the admin specs create is named after the run: `e2e-<run>-<label>`
-(categories, bouquets, packages, streams, block lists), `e2e<run><label>` for
+(categories, bouquets, packages, category templates, streams, block lists), `e2e<run><label>` for
 usernames, and devices carry an `e2e-<run>` tag in their notes. Each spec deletes
 what it made; `cleanup.teardown.ts` runs after the whole suite (also after a
 failure) and sweeps anything matching those patterns, from any earlier run. It

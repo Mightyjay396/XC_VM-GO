@@ -5,6 +5,7 @@ namespace XcVm\Public\Controllers\Reseller;
 use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Localization\Translator;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Security\BlocklistService;
@@ -58,16 +59,7 @@ class ResellerLoginController {
 			$_STATUS = $rReturn['status'];
 
 			if ($_STATUS === STATUS_SUCCESS) {
-				$rReferer = RequestManager::get('referrer') ?? '';
-				if ((string) $rReferer !== '') {
-					$rReferer = basename($rReferer);
-					if (substr($rReferer, 0, 6) === 'logout') {
-						$rReferer = 'dashboard';
-					}
-					header('Location: ' . $rReferer);
-				} else {
-					header('Location: dashboard');
-				}
+				header('Location: ' . AdminHelpers::loginRedirectTarget(RequestManager::get('referrer')));
 				exit();
 			}
 		}

@@ -36,7 +36,7 @@ $rCanEditUser = Authorization::check('adv', 'edit_user');
                 </tr>
             </thead>
             <tbody>
-                <?php foreach ($rLineIPs[$rRange] as $rRow): ?>
+                <?php foreach (($rLineIPs[$rRange] ?? []) as $rRow): ?>
                     <?php
                     $rLogsUrl = $rRange == 0
                         ? 'line_activity?user_id=' . (int) $rRow['user_id']

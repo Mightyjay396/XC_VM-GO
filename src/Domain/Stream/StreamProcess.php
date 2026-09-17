@@ -315,12 +315,13 @@ class StreamProcess {
 	 * still emit `-map` for every file — so multi-subtitle movies imported one
 	 * track but mapped non-existent inputs. The two loops are now siblings.
 	 *
-	 * @param string $rSubtitlesJson `movie_subtitles` JSON from the stream row.
-	 * @param array  $rServers       Server registry (for remote subtitle fetch).
+	 * @param string|null $rSubtitlesJson `movie_subtitles` JSON from the stream row;
+	 *                                    NULL for a movie or episode saved without subtitles.
+	 * @param array       $rServers       Server registry (for remote subtitle fetch).
 	 * @return array{0:string,1:string} [$rSubtitlesImport, $rSubtitlesMetadata].
 	 */
-	private static function buildSubtitleImport(string $rSubtitlesJson, array $rServers) {
-		$rSubtitles = json_decode($rSubtitlesJson, true);
+	private static function buildSubtitleImport(?string $rSubtitlesJson, array $rServers) {
+		$rSubtitles = json_decode((string) $rSubtitlesJson, true);
 		$rSubtitlesImport = '';
 		$rSubtitlesMetadata = '';
 		if (!empty($rSubtitles) && !empty($rSubtitles['files']) && is_array($rSubtitles['files'])) {
@@ -1841,14 +1842,47 @@ class StreamProcess {
 	 */
 	public static function stopMovie(int $rStreamID, bool $rForce = false) {
 		$db = self::db();
-		shell_exec("kill -9 `ps -ef | grep '/" . intval($rStreamID) . ".' | grep -v grep | awk '{print \$2}'`;");
+		self::killMovieEncodes($rStreamID);
 		if ($rForce) {
-			exec('rm ' . MAIN_HOME . 'content/vod/' . intval($rStreamID) . '.*');
+			self::deleteMovieFiles($rStreamID);
 		} else {
 			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', SERVER_ID, time(), json_encode(['type' => 'delete_vod', 'id' => $rStreamID]));
 		}
 		self::resetStreamServerRow($rStreamID);
 		self::updateStream($rStreamID);
+	}
+
+	/**
+	 * Kill the processes writing this movie's output (VOD_PATH/<id>.<ext>).
+	 *
+	 * Matches the path as a fixed substring of each command line in /proc, with
+	 * no shell. The trailing dot keeps movie 5 from matching movie 50; an older
+	 * `ps | grep '/5.'` treated the dot as a regex wildcard and killed both.
+	 *
+	 * @param int $rStreamID Stream id.
+	 * @return array<int> PIDs that were sent SIGKILL.
+	 */
+	private static function killMovieEncodes(int $rStreamID): array {
+		$rKilled = [];
+		foreach (ProcessManager::findProcessPIDs([VOD_PATH . $rStreamID . '.']) as $rPID) {
+			if (ProcessManager::kill($rPID)) {
+				$rKilled[] = $rPID;
+			}
+		}
+		return $rKilled;
+	}
+
+	/**
+	 * Delete this movie's output files (VOD_PATH/<id>.*) without a shell.
+	 *
+	 * @param int $rStreamID Stream id.
+	 */
+	private static function deleteMovieFiles(int $rStreamID): void {
+		foreach (glob(VOD_PATH . $rStreamID . '.*') ?: [] as $rFile) {
+			if (is_file($rFile) || is_link($rFile)) {
+				unlink($rFile);
+			}
+		}
 	}
 
 	/**

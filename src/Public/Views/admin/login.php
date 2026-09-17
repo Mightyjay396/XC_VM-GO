@@ -3,6 +3,7 @@
 use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Core\Reference\UiReference;
@@ -46,15 +47,8 @@ if (!isset($_SESSION['hash'])) {
                 exit();
             }
 
-            if (0 < strlen(RequestManager::get('referrer'))) {
-                $rReferer = basename(RequestManager::get('referrer'));
-
-                if (substr($rReferer, 0, 6) != 'logout') {
-                } else {
-                    $rReferer = 'dashboard';
-                }
-
-                header('Location: ' . $rReferer);
+            if (0 < strlen((string) RequestManager::get('referrer'))) {
+                header('Location: ' . AdminHelpers::loginRedirectTarget(RequestManager::get('referrer')));
 
                 exit();
             }

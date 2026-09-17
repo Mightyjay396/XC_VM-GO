@@ -402,7 +402,9 @@ if (1 < $rICount) { ?>
 
 <?php
 } else {
-	if (PageAuthorization::checkPermissions($_PAGE)) {
+	// Each action is held to the rule of the page it saves: the page here is
+	// always "post", which no rule names.
+	if (PageAuthorization::checkPostAction((string) RequestManager::get('action'), RequestManager::has('edit'))) {
 		// FIX CSRF: acoes que alteram dados so vem por POST (bloqueia ataques via <img src>, que sao GET)
 		if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
 			http_response_code(405);

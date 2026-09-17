@@ -41,7 +41,8 @@ final class ConstantsInitializerTest extends TestCase {
 		$cfg = ConstantsInitializer::appConfig();
 
 		$this->assertCount(12, $cfg);
-		$this->assertSame('2.5.1', $cfg['XC_VM_VERSION']);
+		// The release commit bumps the version; the test only pins its shape.
+		$this->assertMatchesRegularExpression('/^\d+\.\d+\.\d+$/', $cfg['XC_VM_VERSION']);
 		$this->assertFalse($cfg['DEV_MODE']);
 		$this->assertFalse($cfg['DB_ACCESS_ENABLED']);
 		$this->assertSame('', $cfg['DB_ACCESS_PWD']);
@@ -83,7 +84,7 @@ final class ConstantsInitializerTest extends TestCase {
 		$this->assertSame('/opt/xcvm/content/', CONTENT_PATH);
 		$this->assertSame('/opt/xcvm/config/', CONFIG_PATH);
 		$this->assertSame('/opt/xcvm/content/streams/', STREAMS_PATH);
-		$this->assertSame('2.5.1', XC_VM_VERSION);
+		$this->assertSame(ConstantsInitializer::appConfig()['XC_VM_VERSION'], XC_VM_VERSION);
 	}
 
 	/** Isolated: STATUS_* are process-global one-shot constants. */

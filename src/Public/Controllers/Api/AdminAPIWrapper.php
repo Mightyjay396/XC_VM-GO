@@ -303,11 +303,15 @@ class AdminAPIWrapper {
 		return ['status' => 'STATUS_FAILURE'];
 	}
 
+	// getMAG()/getEnigma() return the device under `data`. These actions read
+	// $rDevice['user_id'] — always null — so they ran `WHERE id = NULL`, changed
+	// nothing and answered success; convert returned a failure object as its data.
 	public static function disableMAG($rID) {
 		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
+		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rDevice['data']['user_id']);
+		LineService::updateLineSignal($rDevice['data']['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -315,7 +319,8 @@ class AdminAPIWrapper {
 		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
+		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rDevice['data']['user_id']);
+		LineService::updateLineSignal($rDevice['data']['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -323,7 +328,8 @@ class AdminAPIWrapper {
 		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		self::$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
+		self::$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rDevice['data']['user_id']);
+		LineService::updateLineSignal($rDevice['data']['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -331,7 +337,8 @@ class AdminAPIWrapper {
 		if (!($rDevice = self::getMAG($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		self::$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
+		self::$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rDevice['data']['user_id']);
+		LineService::updateLineSignal($rDevice['data']['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -340,7 +347,7 @@ class AdminAPIWrapper {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		MagService::deleteDevice($rID, false, false, true);
-		return ['status' => 'STATUS_SUCCESS', 'data' => self::getLine($rDevice['user_id'])];
+		return ['status' => 'STATUS_SUCCESS', 'data' => self::getLine($rDevice['data']['user_id'])];
 	}
 
 	public static function getEnigma($rID) {
@@ -356,7 +363,7 @@ class AdminAPIWrapper {
 		}
 		$rReturn = parseerror(EnigmaService::process($rData));
 		if (isset($rReturn['data']['insert_id'])) {
-			$rReturn['data'] = self::getMAG($rReturn['data']['insert_id'])['data'];
+			$rReturn['data'] = self::getEnigma($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
 	}
@@ -371,7 +378,7 @@ class AdminAPIWrapper {
 		}
 		$rReturn = parseerror(EnigmaService::process($rData));
 		if (isset($rReturn['data']['insert_id'])) {
-			$rReturn['data'] = self::getMAG($rReturn['data']['insert_id'])['data'];
+			$rReturn['data'] = self::getEnigma($rReturn['data']['insert_id'])['data'];
 		}
 		return $rReturn;
 	}
@@ -389,7 +396,8 @@ class AdminAPIWrapper {
 		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
+		self::$db->query('UPDATE `lines` SET `enabled` = 0 WHERE `id` = ?;', $rDevice['data']['user_id']);
+		LineService::updateLineSignal($rDevice['data']['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -397,7 +405,8 @@ class AdminAPIWrapper {
 		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
+		self::$db->query('UPDATE `lines` SET `enabled` = 1 WHERE `id` = ?;', $rDevice['data']['user_id']);
+		LineService::updateLineSignal($rDevice['data']['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -405,7 +414,8 @@ class AdminAPIWrapper {
 		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		self::$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rDevice['user_id']);
+		self::$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rDevice['data']['user_id']);
+		LineService::updateLineSignal($rDevice['data']['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -413,7 +423,8 @@ class AdminAPIWrapper {
 		if (!($rDevice = self::getEnigma($rID)) || !isset($rDevice['data'])) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
-		self::$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rDevice['user_id']);
+		self::$db->query('UPDATE `lines` SET `admin_enabled` = 1 WHERE `id` = ?;', $rDevice['data']['user_id']);
+		LineService::updateLineSignal($rDevice['data']['user_id']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
@@ -422,7 +433,7 @@ class AdminAPIWrapper {
 			return ['status' => 'STATUS_FAILURE'];
 		}
 		EnigmaService::deleteDevice($rID, false, false, true);
-		return ['status' => 'STATUS_SUCCESS', 'data' => self::getLine($rDevice['user_id'])];
+		return ['status' => 'STATUS_SUCCESS', 'data' => self::getLine($rDevice['data']['user_id'])];
 	}
 
 	public static function getBouquets() {

@@ -64,12 +64,16 @@ class ActiveCodeService {
 
 		$packageId = intval($data['package_id'] ?? 0);
 		$package = PackageService::getById($packageId);
-		if (!$package) {
+		// A reseller picks from the packages its group sells (the list the page
+		// offers); the id used to be taken as sent.
+		if (!$package || (!$isAdmin && !self::packageAvailableTo($package, $user))) {
 			return ['status' => 'ERROR', 'message' => 'Invalid package selected.'];
 		}
 
-		// Calculate credit cost per code
-		$isTrial = !empty($package['is_trial']) || !empty($data['is_trial']);
+		// Calculate credit cost per code. Only an admin may issue trial codes from a
+		// package that is not a trial one: a reseller sending is_trial=1 used to pay
+		// the trial price (usually 0) for official codes.
+		$isTrial = !empty($package['is_trial']) || ($isAdmin && !empty($data['is_trial']));
 		if ($isTrial) {
 			$costPerCode = floatval($package['trial_credits'] ?? 0);
 		} else {
@@ -118,7 +122,10 @@ class ActiveCodeService {
 		$forcedCountry = array_key_exists('forced_country', $data)
 			? (trim((string) $data['forced_country']) ?: null)
 			: (trim((string) ($package['forced_country'] ?? '')) ?: null);
-		$maxConnections = intval($data['max_connections'] ?? ($package['max_connections'] ?: 1));
+		// The reseller form has no connection count; the package decides it.
+		$maxConnections = $isAdmin
+			? intval($data['max_connections'] ?? ($package['max_connections'] ?: 1))
+			: intval($package['max_connections'] ?: 1);
 		$isAdult = !empty($data['is_adult']) ? 1 : 0;
 		$outputFormats = $package['output_formats'] ?? '[]';
 
@@ -509,6 +516,22 @@ class ActiveCodeService {
 	}
 
 	/**
+	 * Whether a reseller may issue codes on a package: a line package offered to
+	 * the reseller's group — the list PackageService::getAll(group, 'line') gives
+	 * the reseller's code pages.
+	 *
+	 * @param array $package Package row.
+	 * @param array $user    Reseller row (member_group_id).
+	 * @return bool
+	 */
+	private static function packageAvailableTo(array $package, array $user): bool {
+		$groups = json_decode((string) ($package['groups'] ?? ''), true);
+		return !empty($package['is_line'])
+			&& is_array($groups)
+			&& in_array(intval($user['member_group_id'] ?? 0), array_map('intval', $groups), true);
+	}
+
+	/**
 	 * Look up activation code record by code string.
 	 */
 	public static function getByCode(string $code): ?array {
@@ -524,6 +547,54 @@ class ActiveCodeService {
 		$db = self::db();
 		$db->query('SELECT * FROM `activation_codes` WHERE `id` = ? LIMIT 1;', $id);
 		return $db->num_rows() > 0 ? $db->get_row() : null;
+	}
+
+	// The three list helpers below feed the filter and assignment dropdowns of the
+	// active-codes pages (ActiveCodesController, ActiveCodesMassController,
+	// ActiveCodeController, ResellerActiveCodesController). fabce4bf dropped them
+	// while those pages still call them, so each page died with "Call to undefined
+	// method" before sending a byte.
+
+	/**
+	 * Distinct resellers who have created activation codes (reseller filter).
+	 */
+	public static function getResellersWithCodes(): array {
+		$db = self::db();
+		return $db->fetchAll(
+			'SELECT DISTINCT `users`.`id`, `users`.`username`
+             FROM `activation_codes`
+             INNER JOIN `users` ON `users`.`id` = `activation_codes`.`created_by`
+             ORDER BY `users`.`username` ASC;'
+		) ?: [];
+	}
+
+	/**
+	 * Recent distinct batch names (batch filter). Pass a list of creator ids to
+	 * scope it (reseller view); empty = all batches (admin view).
+	 */
+	public static function getRecentBatchNames(array $createdBy = [], int $limit = 100): array {
+		$db = self::db();
+		$where = '`batch_name` IS NOT NULL';
+		if ($createdBy !== []) {
+			$where = '`created_by` IN (' . implode(',', array_map('intval', $createdBy)) . ') AND ' . $where;
+		}
+		// GROUP BY rather than DISTINCT: ordering a DISTINCT list by a column it does
+		// not select is refused by MySQL's ONLY_FULL_GROUP_BY (MariaDB allows it).
+		return $db->fetchAll(
+			'SELECT `batch_name` FROM `activation_codes`
+             WHERE ' . $where . '
+             GROUP BY `batch_name`
+             ORDER BY MAX(`created_at`) DESC LIMIT ' . max(1, $limit) . ';'
+		) ?: [];
+	}
+
+	/**
+	 * All resellers with their credit balance, for the creator-assignment
+	 * dropdown on the admin generate-codes wizard.
+	 */
+	public static function getResellersForAssignment(): array {
+		$db = self::db();
+		return $db->fetchAll('SELECT `id`, `username`, `credits` FROM `users` ORDER BY `username` ASC;') ?: [];
 	}
 
 	/**
@@ -562,7 +633,10 @@ class ActiveCodeService {
 			case 'mass_enable':
 				// Set status: 1 if never activated, 2 if activated
 				$db->query("UPDATE `activation_codes` SET `status` = IF(`activated_at` IS NULL, 1, 2) WHERE `id` IN ({$targetIdList});");
-				$db->query("UPDATE `lines` SET `enabled` = 1, `admin_enabled` = 1 WHERE `id` IN ({$subIdList});");
+				// admin_enabled is the administrator's ban; only an admin lifts it.
+				$db->query($isAdmin
+					? "UPDATE `lines` SET `enabled` = 1, `admin_enabled` = 1 WHERE `id` IN ({$subIdList});"
+					: "UPDATE `lines` SET `enabled` = 1 WHERE `id` IN ({$subIdList});");
 				return ['status' => 'SUCCESS', 'message' => count($targetIds) . ' codes successfully enabled.'];
 
 			case 'disable':
@@ -591,7 +665,7 @@ class ActiveCodeService {
 			case 'mass_change_package':
 				$newPackageId = intval($extra['package_id'] ?? 0);
 				$newPackage = PackageService::getById($newPackageId);
-				if (!$newPackage) {
+				if (!$newPackage || (!$isAdmin && !self::packageAvailableTo($newPackage, $user))) {
 					return ['status' => 'ERROR', 'message' => 'Invalid package.'];
 				}
 				$newBouquets = $newPackage['bouquets'];

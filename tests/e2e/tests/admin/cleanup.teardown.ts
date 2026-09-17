@@ -95,6 +95,21 @@ teardown('remove test records', async ({ page }) => {
   swept.categories = await sweepList(page, 'stream_categories', 'category', 'category_id');
   swept.useragents = await sweepList(page, 'useragents', 'useragent', 'ua_id');
   swept.isps = await sweepList(page, 'isps', 'isp', 'isp_id');
+  // Category templates are cards; the delete entry carries the id and name.
+  await page.goto('./category_templates');
+  const templateIds = await page.locator('.js-btn-delete').evaluateAll(
+    (buttons, source) =>
+      buttons
+        .filter((b) => new RegExp(source).test(b.getAttribute('data-name') || ''))
+        .map((b) => b.getAttribute('data-id'))
+        .filter((id): id is string => !!id),
+    NAMED.source,
+  );
+  for (const id of templateIds) {
+    const body = await adminApi(page.request, 'category_template_delete', { id });
+    expect.soft(body?.result, `category_templates: delete ${id} answered ${JSON.stringify(body)}`).toBe(true);
+  }
+  swept.templates = templateIds.length;
   // Blocked IPs are named by their notes (the address itself is not tagged).
   await page.goto('./ips');
   const ipIds = await page

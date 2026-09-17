@@ -56,6 +56,21 @@ class ResellerAPI {
 			}
 		}
 
+		if (in_array($rType, ['line', 'mag', 'enigma'], true)) {
+			// A trial comes with a new subscription. On an edit it reset the expiry
+			// for trial_credits (usually 0), and the trial quota — lines counted by
+			// created_at — never saw it, so any line could be kept alive for free.
+			if (isset($rData['edit'])) {
+				unset($rData['trial']);
+			}
+			// Pairing copies the paired line's expiry and bouquets onto this one
+			// (MagService::syncLineDevices), so only a line this reseller manages
+			// may be named. Devices checked this; lines stored any id.
+			if (isset($rData['pair_id']) && !Authorization::check('line', $rData['pair_id'])) {
+				unset($rData['pair_id']);
+			}
+		}
+
 		return $rData;
 	}
 
@@ -806,6 +821,13 @@ class ResellerAPI {
 			}
 
 			$rTicket = TicketRepository::getById($rData['respond']);
+
+			// A reseller answers its own tickets, or — as their admin — tickets of
+			// users in its tree. Any other id used to take the reply too, filed as an
+			// admin answer on another reseller's (or an admin's) ticket.
+			if ($rTicket && intval(self::$rUserInfo['id']) != intval($rTicket['member_id']) && !Authorization::check('user', $rTicket['member_id'])) {
+				return ['status' => STATUS_FAILURE, 'data' => $rData];
+			}
 
 			if ($rTicket) {
 				if (intval(self::$rUserInfo['id']) == intval($rTicket['member_id'])) {
