@@ -4797,31 +4797,26 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						// Every value below except the admin's own provider row comes
-						// from the remote provider's API (ProvidersCronJob), and the
-						// table renders these cells as HTML: escape each one for where
-						// it lands — an attribute, a JS string inside an attribute, text.
+						// Remote provider API data (untrusted): sent raw and escaped client-side
+						// where it lands (attribute, text). The stream URL was already exposed to
+						// the client via the add button.
 						if ($rRow["type"] == "live") {
 							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/live/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . ($rRow["hls"] ? ".m3u8" : ($rRow["legacy"] ? ".ts" : ""));
-							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream(" . self::jsArgument($rStreamURL) . ");\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
 						} else {
 							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/movie/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . "." . $rRow["channel_id"];
-							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream(" . self::jsArgument($rRow["stream_display_name"]) . ", " . self::jsArgument($rStreamURL) . ");\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
-						}
-						if ((string) $rRow["stream_icon"] !== '' && $rRow["type"] == "live") {
-							$rIcon = "<img loading='lazy' src='" . self::htmlValue($rRow["stream_icon"]) . "' height='32px' />";
-						} else {
-							$rIcon = "";
 						}
 						$rProviderData = json_decode((string) $rRow["data"], true) ?: [];
-						$rExpires = ($rProviderData["exp_date"] ?? null) ? self::htmlValue($rProviderData["exp_date"]) : "Never";
-						$rMaxConnections = ($rProviderData["max_connections"] ?? null) ? self::htmlValue($rProviderData["max_connections"]) : "&infin;";
-						$rProvider = "<span class='tooltip' title='Expires: " . $rExpires . "<br/>Connections: " . self::htmlValue($rProviderData["active_connections"] ?? '') . " / " . $rMaxConnections . "'>" . self::htmlValue($rRow["name"]) . "</span>";
-						if ($rRow["type"] == "live") {
-							$rReturn["data"][] = [$rIcon, self::htmlValue($rRow["stream_display_name"]), $rProvider, $rButtons];
-						} else {
-							$rReturn["data"][] = [self::htmlValue($rRow["stream_display_name"]), $rProvider, $rButtons];
-						}
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"type" => (string) $rRow["type"],
+							"name" => (string) $rRow["stream_display_name"],
+							"stream_icon" => ($rRow["type"] == "live") ? (string) $rRow["stream_icon"] : "",
+							"stream_url" => $rStreamURL,
+							"provider_name" => (string) $rRow["name"],
+							"provider_expires" => ($rProviderData["exp_date"] ?? null) ? (string) $rProviderData["exp_date"] : "Never",
+							"provider_max" => ($rProviderData["max_connections"] ?? null) ? (string) $rProviderData["max_connections"] : "\u{221E}",
+							"provider_active" => (string) ($rProviderData["active_connections"] ?? ""),
+						];
 					}
 				}
 			}

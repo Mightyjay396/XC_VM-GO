@@ -838,6 +838,19 @@ renderUnifiedLayoutFooter('admin');
         // ---- provider search ----
         var provBtn = document.getElementById('provider-streams');
         if (provBtn) {
+            function escAttr(s) {
+                return esc(s).replace(/"/g, '&quot;');
+            }
+            function providerIcon(url) {
+                return url ? '<img loading="lazy" src="' + escAttr(url) + '" height="32px">' : '';
+            }
+            function providerCell(row) {
+                var title = 'Expires: ' + escAttr(row.provider_expires) + '<br/>Connections: ' + escAttr(row.provider_active) + ' / ' + escAttr(row.provider_max);
+                return '<span class="tooltip" title="' + title + '">' + esc(row.provider_name) + '</span>';
+            }
+            function providerAddButton(row) {
+                return '<button type="button" class="btn btn-light waves-effect waves-light btn-xs prov-add" data-name="' + escAttr(row.name) + '" data-url="' + escAttr(row.stream_url) + '"><i class="mdi mdi-check"></i></button>';
+            }
             var provTable = $('#datatable-provider-streams').DataTable({
                 serverSide: true,
                 searchDelay: 250,
@@ -853,10 +866,35 @@ renderUnifiedLayoutFooter('admin');
                         d.type = 'live';
                     }
                 },
-                columnDefs: [{
+                columns: [{
+                    data: 'stream_icon',
                     className: 'dt-center',
-                    targets: [0, 3]
+                    orderable: false,
+                    render: function(d) {
+                        return providerIcon(d);
+                    }
+                }, {
+                    data: 'name',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: null,
+                    orderable: false,
+                    render: function(d, t, row) {
+                        return providerCell(row);
+                    }
+                }, {
+                    data: null,
+                    className: 'dt-center',
+                    orderable: false,
+                    render: function(d, t, row) {
+                        return providerAddButton(row);
+                    }
                 }]
+            });
+            $('#datatable-provider-streams tbody').on('click', '.prov-add', function() {
+                addStream(this.dataset.url);
             });
             provBtn.addEventListener('click', function() {
                 provTable.search(document.getElementById('stream_display_name') ? document.getElementById('stream_display_name').value : '').draw();
