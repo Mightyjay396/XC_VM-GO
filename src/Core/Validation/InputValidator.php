@@ -180,13 +180,15 @@ class InputValidator {
 	 * Filter array to only positive integer IDs
 	 *
 	 * @param array $ids Input array of IDs
-	 * @return array Filtered array with only positive integer IDs
+	 * @return int[] The positive integer IDs. Callers implode these into SQL
+	 *               `IN (...)` lists, so the integer is returned, never the input
+	 *               string (`'1) OR (1=1'` passes an intval() > 0 test).
 	 */
 	public static function confirmIDs(array $ids) {
 		$result = [];
 		foreach ($ids as $id) {
 			if (intval($id) > 0) {
-				$result[] = $id;
+				$result[] = intval($id);
 			}
 		}
 		return $result;
