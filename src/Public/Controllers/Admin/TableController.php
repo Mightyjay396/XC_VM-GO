@@ -4892,26 +4892,30 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
+						// Every value below except the admin's own provider row comes
+						// from the remote provider's API (ProvidersCronJob), and the
+						// table renders these cells as HTML: escape each one for where
+						// it lands — an attribute, a JS string inside an attribute, text.
 						if ($rRow["type"] == "live") {
 							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/live/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . ($rRow["hls"] ? ".m3u8" : ($rRow["legacy"] ? ".ts" : ""));
-							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream('" . str_replace("'", "\\'", $rStreamURL) . "');\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
+							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream(" . self::jsArgument($rStreamURL) . ");\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
 						} else {
 							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/movie/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . "." . $rRow["channel_id"];
-							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream('" . str_replace("'", "\\'", $rRow["stream_display_name"]) . "', '" . str_replace("'", "\\'", $rStreamURL) . "');\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
+							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream(" . self::jsArgument($rRow["stream_display_name"]) . ", " . self::jsArgument($rStreamURL) . ");\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
 						}
 						if ((string) $rRow["stream_icon"] !== '' && $rRow["type"] == "live") {
-							$rIcon = "<img loading='lazy' src='" . $rRow["stream_icon"] . "' height='32px' />";
+							$rIcon = "<img loading='lazy' src='" . self::htmlValue($rRow["stream_icon"]) . "' height='32px' />";
 						} else {
 							$rIcon = "";
 						}
-						$rProviderData = json_decode($rRow["data"], true);
-						$rExpires = $rProviderData["exp_date"] ?: "Never";
-						$rMaxConnections = $rProviderData["max_connections"] ?: "&infin;";
-						$rProvider = "<span class='tooltip' title='Expires: " . $rExpires . "<br/>Connections: " . $rProviderData["active_connections"] . " / " . $rMaxConnections . "'>" . $rRow["name"] . "</span>";
+						$rProviderData = json_decode((string) $rRow["data"], true) ?: [];
+						$rExpires = ($rProviderData["exp_date"] ?? null) ? self::htmlValue($rProviderData["exp_date"]) : "Never";
+						$rMaxConnections = ($rProviderData["max_connections"] ?? null) ? self::htmlValue($rProviderData["max_connections"]) : "&infin;";
+						$rProvider = "<span class='tooltip' title='Expires: " . $rExpires . "<br/>Connections: " . self::htmlValue($rProviderData["active_connections"] ?? '') . " / " . $rMaxConnections . "'>" . self::htmlValue($rRow["name"]) . "</span>";
 						if ($rRow["type"] == "live") {
-							$rReturn["data"][] = [$rIcon, $rRow["stream_display_name"], $rProvider, $rButtons];
+							$rReturn["data"][] = [$rIcon, self::htmlValue($rRow["stream_display_name"]), $rProvider, $rButtons];
 						} else {
-							$rReturn["data"][] = [$rRow["stream_display_name"], $rProvider, $rButtons];
+							$rReturn["data"][] = [self::htmlValue($rRow["stream_display_name"]), $rProvider, $rButtons];
 						}
 					}
 				}
@@ -4919,6 +4923,20 @@ class TableController extends BaseAdminController {
 		}
 		echo json_encode($rReturn);
 		exit;
+	}
+
+	/**
+	 * A database value made safe for HTML text or a quoted attribute. Rows arrive
+	 * with only < and > entity-encoded (Database::clean_row), so they are decoded
+	 * first and encoded once, quotes included.
+	 */
+	private static function htmlValue(mixed $rValue): string {
+		return htmlspecialchars(html_entity_decode((string) $rValue, ENT_QUOTES), ENT_QUOTES);
+	}
+
+	/** A database value as a JavaScript string literal, for an event-handler attribute. */
+	private static function jsArgument(mixed $rValue): string {
+		return htmlspecialchars((string) json_encode(html_entity_decode((string) $rValue, ENT_QUOTES), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), ENT_QUOTES);
 	}
 
 	private function handleParentServers($rReturn, $rStart, $rLimit, $rIsAPI) {
