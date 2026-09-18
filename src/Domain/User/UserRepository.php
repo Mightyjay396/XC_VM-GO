@@ -6,6 +6,7 @@ use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Util\GeoIP;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Security\BlocklistService;
+use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Signal\SignalQueue;
 
@@ -231,7 +232,9 @@ class UserRepository {
 	private static function resolveCategoryIds(array $rBouquet, array $rCategoryMap): array {
 		$rAllowedCategories = [];
 		foreach ($rBouquet as $rID) {
-			$rAllowedCategories = array_merge($rAllowedCategories, ($rCategoryMap[$rID] ?: []));
+			// A bouquet newer than the category map (rebuilt by the heavy cache
+			// pass) has no entry yet: no categories, not an undefined-key warning.
+			$rAllowedCategories = array_merge($rAllowedCategories, ($rCategoryMap[$rID] ?? []) ?: []);
 		}
 		return array_values(array_unique($rAllowedCategories));
 	}
@@ -549,7 +552,11 @@ class UserRepository {
 		$rUserInfo = self::applyIspInfo($rUserInfo, $rSettings, $rCached, $rIP, $db);
 
 		if ($rGetChannelIDs) {
-			$rUserInfo = array_merge($rUserInfo, self::aggregateBouquetIds($rUserInfo['bouquet'], $rBouquets));
+			$rUserInfo = array_merge($rUserInfo, self::aggregateBouquetIds($rUserInfo['bouquet'], $rBouquets ?? []));
+		}
+
+		if ($rGetConnections && !empty($rUserInfo['id'])) {
+			$rUserInfo['active_cons'] = ConnectionTracker::countLineConnections((int) $rUserInfo['id']);
 		}
 
 		// Built by the heavy cache pass; until it exists (a fresh install, a cleared

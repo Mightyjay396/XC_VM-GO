@@ -26,6 +26,17 @@ final class ImageUtilsTest extends TestCase {
 		$this->assertEquals(50, $size['height']);
 	}
 
+	public function testValidateUrlTakesAMissingImage() {
+		// A stream with no icon has a NULL stream_icon; get_live_streams passed it
+		// straight in and died with a TypeError for the whole list.
+		$this->assertSame('', ImageUtils::validateURL(null));
+	}
+
+	public function testValidateUrlKeepsAPlainUrl() {
+		$this->assertSame('http://example.com/logo.png', ImageUtils::validateURL('http://example.com/logo.png'));
+		$this->assertSame('', ImageUtils::validateURL(''));
+	}
+
 	public function testIsAbsoluteUrl() {
 		$this->assertTrue(ImageUtils::isAbsoluteUrl('http://example.com/a.png'));
 		$this->assertTrue(ImageUtils::isAbsoluteUrl('https://example.com/a.png'));

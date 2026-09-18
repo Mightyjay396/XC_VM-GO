@@ -6,6 +6,7 @@ use XcVm\Core\GeoIP\GeoIPService;
 use XcVm\Core\Init\LegacyInitializer;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Util\Encryption;
+use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\User\UserRepository;
@@ -441,6 +442,18 @@ if ($rExtension) {
 				}
 			}
 
+			// Only what the line's bouquets include — every type: live and radio,
+			// movies, episodes (mapped through their series), catch-up, thumbnails
+			// and subtitles. Live alone was checked, and only after redirectStream(),
+			// which sends a direct source straight to its upstream URL first — so
+			// any line could get any direct channel's source URL, and play any
+			// movie, episode or catch-up by id. HMAC requests are not a line: their
+			// signature already names the one stream they may open.
+			if (!array_intersect((array) ($rUserInfo['bouquet'] ?? []), BouquetService::getMapEntry($rStreamID))) {
+				DatabaseLogger::clientLog($rStreamID, $rUserInfo['id'], 'NOT_IN_BOUQUET', $rIP);
+				generateError('NOT_IN_BOUQUET');
+			}
+
 			if (($rType == 'live' && $rSettings['show_expiring_video'] && !$rUserInfo['is_trial'] && !is_null($rUserInfo['exp_date']) && $rUserInfo['exp_date'] - 86400 * 7 <= time() && (86400 <= time() - $rUserInfo['last_expiration_video'] || !$rUserInfo['last_expiration_video']))) {
 				if ($rCached) {
 					SignalQueue::push('expiring/' . $rUserInfo['id'], time());
@@ -474,10 +487,6 @@ if ($rExtension) {
 			if (is_array($rChannelInfo)) {
 				if (count(array_keys($rChannelInfo)) == 0) {
 					generateError('NO_SERVERS_AVAILABLE');
-				}
-
-				if (!array_intersect($rUserInfo['bouquet'], $rChannelInfo['bouquets'])) {
-					generateError('NOT_IN_BOUQUET');
 				}
 
 				if (($rServers[$rChannelInfo['redirect_id']]['enable_proxy'] && (!$rUserInfo['is_restreamer'] || !$rSettings['restreamer_bypass_proxy']))) {

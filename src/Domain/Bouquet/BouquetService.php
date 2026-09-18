@@ -225,14 +225,35 @@ class BouquetService {
 	}
 
 	/**
+	 * Entries getMapEntry() has read, and the map file's mtime they came from:
+	 * stream auth asks for the same stream twice per request (its bouquet check,
+	 * then redirectStream()), and the map file is re-read only when it changed.
+	 *
+	 * @var array<int, array>
+	 */
+	private static array $rMapEntries = [];
+
+	private static int $rMapEntriesMtime = 0;
+
+	/**
 	 * Get the bouquet-map entry for a stream.
 	 *
 	 * @param int $rStreamID Stream id.
-	 * @return mixed Map entry (bouquets containing the stream).
+	 * @return array Map entry (ids of the bouquets containing the stream).
 	 */
 	public static function getMapEntry(int $rStreamID) {
-		$rBouquetMap = [];
 		$rMapPath = CACHE_TMP_PATH . 'bouquet_map';
+		clearstatcache(true, $rMapPath);
+		$rMtime = (int) @filemtime($rMapPath);
+		if ($rMtime !== self::$rMapEntriesMtime) {
+			self::$rMapEntries = [];
+			self::$rMapEntriesMtime = $rMtime;
+		}
+		if (array_key_exists($rStreamID, self::$rMapEntries)) {
+			return self::$rMapEntries[$rStreamID];
+		}
+
+		$rBouquetMap = [];
 
 		if (file_exists($rMapPath) && 0 < filesize($rMapPath)) {
 			$rData = @igbinary_unserialize(file_get_contents($rMapPath));
@@ -243,7 +264,7 @@ class BouquetService {
 
 		$rReturn = ($rBouquetMap[$rStreamID] ?? []);
 		unset($rBouquetMap);
-		return $rReturn;
+		return self::$rMapEntries[$rStreamID] = $rReturn;
 	}
 
 	/**

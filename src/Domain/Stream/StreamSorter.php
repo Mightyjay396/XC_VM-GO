@@ -18,11 +18,12 @@ class StreamSorter {
 	/**
 	 * Append the year to a title according to the movie_year_append setting.
 	 *
-	 * @param string          $rTitle Base title.
+	 * @param string|null     $rTitle Base title (the title columns are nullable; null is '').
 	 * @param int|string|null $rYear  Year (only applied when a valid 1900..next-year value).
 	 * @return string Formatted title.
 	 */
-	public static function formatTitle(string $rTitle, int|string|null $rYear = null) {
+	public static function formatTitle(?string $rTitle, int|string|null $rYear = null): string {
+		$rTitle ??= '';
 		if (is_numeric($rYear) && 1900 <= $rYear && $rYear <= intval(date('Y') + 1)) {
 			if (SettingsManager::get('movie_year_append') == 0) {
 				return trim($rTitle) . ' (' . $rYear . ')';
