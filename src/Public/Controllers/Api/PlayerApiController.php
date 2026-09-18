@@ -145,7 +145,8 @@ class PlayerApiController {
 		$rCategories = null;
 
 		if ($this->panelAPI && empty($rAction) || in_array($rAction, ['get_vod_categories', 'get_series_categories', 'get_live_categories'])) {
-			$rCategories = CacheReader::get('categories');
+			// A missing cache file reads as null; filterLoaded() takes an array.
+			$rCategories = CacheReader::get('categories') ?: [];
 		}
 		$rUserInfo = null;
 
