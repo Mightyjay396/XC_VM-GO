@@ -49,6 +49,7 @@ final class FanoutConfigTest extends TestCase {
 			'fanout_idle_buffer_ratio'     => 0.5,
 			'fanout_source_backend'        => 'auto',
 			'fanout_supervise'             => 1,
+			'fanout_debug'                 => '',
 		);
 	}
 
@@ -197,4 +198,24 @@ final class FanoutConfigTest extends TestCase {
 		$this->assertTrue($this->read()['supervise'], 'the column default');
 	}
 
+
+	public function testDebugIsOffByDefault(): void {
+		$this->assertTrue(FanoutConfig::sync($this->baseSettings()));
+		$this->assertSame('', $this->read()['debug_cats']);
+	}
+
+	public function testDebugAllMapsToAll(): void {
+		$s = $this->baseSettings();
+		$s['fanout_debug'] = 'ON';
+		$this->assertTrue(FanoutConfig::sync($s));
+		$this->assertSame('all', $this->read()['debug_cats']);
+	}
+
+	public function testDebugCategoryListIsKeptToKnownNames(): void {
+		$s = $this->baseSettings();
+		$s['fanout_debug'] = 'puller, HLS , bogus, monitor';
+		$this->assertTrue(FanoutConfig::sync($s));
+		// known names kept in order and lower-cased; the unknown one dropped.
+		$this->assertSame('puller,hls,monitor', $this->read()['debug_cats']);
+	}
 }
