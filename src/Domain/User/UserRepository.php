@@ -6,6 +6,7 @@ use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Util\GeoIP;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Security\BlocklistService;
+use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Signal\SignalQueue;
 
@@ -554,6 +555,10 @@ class UserRepository {
 
 		if ($rGetChannelIDs) {
 			$rUserInfo = array_merge($rUserInfo, self::aggregateBouquetIds($rUserInfo['bouquet'], $rBouquets ?? []));
+		}
+
+		if ($rGetConnections && !empty($rUserInfo['id'])) {
+			$rUserInfo['active_cons'] = ConnectionTracker::countLineConnections((int) $rUserInfo['id']);
 		}
 
 		// Built by the heavy cache pass; until it exists (a fresh install, a cleared

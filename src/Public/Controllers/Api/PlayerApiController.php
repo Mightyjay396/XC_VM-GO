@@ -140,6 +140,9 @@ class PlayerApiController {
 			$rGetChannels = in_array($rAction, ['get_series', 'get_vod_streams', 'get_live_streams', 'get_series_info', 'get_vod_info']);
 		}
 
+		// Only the sign-in answer (no action) reports the line's active connections.
+		$rGetConnections = ($rAction === '');
+
 		$rBouquets = $rGetChannels ? CacheReader::get('bouquets') : null;
 
 		$rCategories = null;
@@ -155,7 +158,7 @@ class PlayerApiController {
 			$rPassword = (string) ($rRequest['password'] ?? '');
 
 			if (!empty($rUsername) && !empty($rPassword)) {
-				$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rUsername, $rPassword, $rGetChannels);
+				$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rUsername, $rPassword, $rGetChannels, $rGetConnections);
 			}
 
 			// Active Code transparent auto-activation fallback
@@ -173,7 +176,7 @@ class PlayerApiController {
 					if ($actRes['status'] === 'SUCCESS' && !empty($actRes['line'])) {
 						$lineUser = $actRes['line']['username'];
 						$linePass = $actRes['line']['password'];
-						$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, false, $rBouquets, null, $lineUser, $linePass, $rGetChannels);
+						$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, false, $rBouquets, null, $lineUser, $linePass, $rGetChannels, $rGetConnections);
 						if ($rUserInfo && !empty($actRes['line']['exp_date'])) {
 							$rUserInfo['exp_date'] = $actRes['line']['exp_date'];
 						}
@@ -192,7 +195,7 @@ class PlayerApiController {
 					$this->sendAuthError('', 'No credentials provided.');
 				}
 
-				$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rToken, null, $rGetChannels);
+				$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, $rCached, $rBouquets, null, $rToken, null, $rGetChannels, $rGetConnections);
 
 				if (!$rUserInfo && class_exists(ActiveCodeService::class)) {
 					$candidateCode = strtoupper(trim($rToken));
@@ -208,7 +211,7 @@ class PlayerApiController {
 						if ($actRes['status'] === 'SUCCESS' && !empty($actRes['line'])) {
 							$lineUser = $actRes['line']['username'];
 							$linePass = $actRes['line']['password'];
-							$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, false, $rBouquets, null, $lineUser, $linePass, $rGetChannels);
+							$rUserInfo = UserRepository::getStreamingUserInfo($rSettings, false, $rBouquets, null, $lineUser, $linePass, $rGetChannels, $rGetConnections);
 							if ($rUserInfo && !empty($actRes['line']['exp_date'])) {
 								$rUserInfo['exp_date'] = $actRes['line']['exp_date'];
 							}
