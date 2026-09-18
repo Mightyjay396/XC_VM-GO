@@ -2,7 +2,7 @@
 <ruleset name="XC_VM PSR-12"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:noNamespaceSchemaLocation="../../vendor/squizlabs/php_codesniffer/phpcs.xsd">
-    <description>   
+    <description>
         PSR-12 strict coding standard
         Run via `make cs` (report) / `make cs-fix` (auto-fix, = phpcbf).
     </description>
@@ -34,6 +34,27 @@
         <!-- Multi-line function declarations also keep the brace on the same
              line (K&R), so drop PSR-12's "brace on new line" for them. -->
         <exclude name="Squiz.Functions.MultiLineFunctionDeclaration.BraceOnSameLine"/>
+
+        <!-- ── Temporarily disabled PSR-family sniffs (technical-debt ratchet) ──
+             These come from the PSR12 parent, so they can only be switched off
+             here with <exclude>. To ENABLE one: DELETE its exclude line, run
+             `make cs`, fix the fallout, commit. (…N) = current violation count. -->
+        <exclude name="PSR1.Methods.CamelCapsMethodName"/>                            <!-- 40: legacy snake_case methods -->
+        <exclude name="PSR1.Classes.ClassDeclaration"/>                               <!-- 2: legacy non-namespaced (XC_Bootstrap) -->
+        <exclude name="PSR2.Classes.PropertyDeclaration.Underscore"/>                 <!-- 2: legacy _property names -->
+        <exclude name="PSR2.Methods.MethodDeclaration.Underscore"/>                   <!-- 12: legacy _method names -->
+        <exclude name="PSR2.ControlStructures.SwitchDeclaration.TerminatingComment"/> <!-- 6: add `// no break` -->
+        <exclude name="PSR12.Files.FileHeader.IncorrectOrder"/>                       <!-- 29: header declare/namespace/use order -->
+        <exclude name="Squiz.Classes.ValidClassName"/>                                <!-- 1: legacy class name -->
+
+        <!-- ── PERMANENTLY disabled — DO NOT ENABLE ──
+             Space-alignment sniff that cannot converge under tab indentation:
+             LineIndent counts SPACES ("expected 12, found 8" on 3 tabs) and
+             FirstExpressionLine/CloseParenthesisLine force the expanded PSR-12
+             layout, so phpcbf oscillates → FAILED TO FIX. The tab-safe
+             equivalent PEAR.ControlStructures.MultiLineCondition is enabled
+             below and enforces the same multi-line `if` layout. See 689663d4. -->
+        <exclude name="PSR12.ControlStructures.ControlStructureSpacing"/>
     </rule>
 
     <!-- Indentation MUST use tabs (one tab per level), not PSR-12's 4 spaces. -->
@@ -65,29 +86,43 @@
     <!-- There MUST be one whitespace after a type casting operator. -->
     <rule ref="Generic.Formatting.SpaceAfterCast"/>
 
-    <!-- Checks the cyclomatic complexity (McCabe) for functions. -->
-    <rule ref="Generic.Metrics.CyclomaticComplexity"/>
+    <!-- Checks the cyclomatic complexity (McCabe) for functions. The hard
+         MaxExceeded ERROR is disabled (174 God-methods); the softer TooHigh
+         WARNING still reports. To enforce: delete the exclude, run `make cs`,
+         refactor the fallout. -->
+    <rule ref="Generic.Metrics.CyclomaticComplexity">
+        <exclude name="Generic.Metrics.CyclomaticComplexity.MaxExceeded"/>
+    </rule>
 
-    <!-- Checks the nesting level for methods. -->
-    <rule ref="Generic.Metrics.NestingLevel"/>
+    <!-- Checks the nesting level for methods. MaxExceeded ERROR disabled (2),
+         TooHigh WARNING still reports; delete the exclude to enforce. -->
+    <rule ref="Generic.Metrics.NestingLevel">
+        <exclude name="Generic.Metrics.NestingLevel.MaxExceeded"/>
+    </rule>
 
-    <!-- Checks that abstract classes are prefixed by Abstract. -->
-    <rule ref="Generic.NamingConventions.AbstractClassNamePrefix"/>
+    <!-- Checks that abstract classes are prefixed by Abstract.
+         DISABLED (2) — uncomment to enable. -->
+    <!-- <rule ref="Generic.NamingConventions.AbstractClassNamePrefix"/> -->
 
-    <!-- Ensures method and functions are named correctly. -->
-    <rule ref="Generic.NamingConventions.CamelCapsFunctionName"/>
+    <!-- Ensures method and functions are named correctly.
+         DISABLED (187) — legacy snake_case function names; renames break
+         callers. Uncomment to enable. -->
+    <!-- <rule ref="Generic.NamingConventions.CamelCapsFunctionName"/> -->
 
-    <!-- Checks that interfaces are suffixed by Interface. -->
-    <rule ref="Generic.NamingConventions.InterfaceNameSuffix"/>
+    <!-- Checks that interfaces are suffixed by Interface.
+         DISABLED (1) — uncomment to enable. -->
+    <!-- <rule ref="Generic.NamingConventions.InterfaceNameSuffix"/> -->
 
-    <!-- Checks that traits are suffixed by Trait. -->
-    <rule ref="Generic.NamingConventions.TraitNameSuffix"/>
+    <!-- Checks that traits are suffixed by Trait.
+         DISABLED (1) — uncomment to enable. -->
+    <!-- <rule ref="Generic.NamingConventions.TraitNameSuffix"/> -->
 
     <!-- The backtick operator MUST NOT be used. -->
     <rule ref="Generic.PHP.BacktickOperator"/>
 
-    <!-- Deprecated PHP functions MUST be avoided. -->
-    <rule ref="Generic.PHP.DeprecatedFunctions"/>
+    <!-- Deprecated PHP functions MUST be avoided.
+         DISABLED (1) — uncomment to enable. -->
+    <!-- <rule ref="Generic.PHP.DeprecatedFunctions"/> -->
 
     <!-- The PHP `goto` language construct SHOULD NOT be used. -->
     <rule ref="Generic.PHP.DiscourageGoto"/>
@@ -125,11 +160,13 @@
     <!-- Checks that the `strict_types` has been declared. -->
     <!-- <rule ref="Generic.PHP.RequireStrictTypes"/> -->
 
-    <!-- The constant `PHP_SAPI` SHOULD be used instead of the `php_sapi_name()` function. -->
-    <rule ref="Generic.PHP.SAPIUsage"/>
+    <!-- The constant `PHP_SAPI` SHOULD be used instead of the `php_sapi_name()` function.
+         DISABLED (7) — uncomment to enable (mechanical: php_sapi_name() → PHP_SAPI). -->
+    <!-- <rule ref="Generic.PHP.SAPIUsage"/> -->
 
-    <!-- Checks that two strings are not concatenated together; suggests using one string instead. -->
-    <rule ref="Generic.Strings.UnnecessaryStringConcat"/>
+    <!-- Checks that two strings are not concatenated together; suggests using one string instead.
+         DISABLED (41) — uncomment to enable. -->
+    <!-- <rule ref="Generic.Strings.UnnecessaryStringConcat"/> -->
 
     <!-- Check & fix whitespace on the inside of arbitrary parentheses. -->
     <rule ref="Generic.WhiteSpace.ArbitraryParenthesesSpacing"/>
@@ -142,11 +179,14 @@
     <!-- Verifies that control statements conform to their coding standards. -->
     <rule ref="PEAR.ControlStructures.ControlSignature"/>
 
-    <!-- Ensure multi-line `if` conditions are defined correctly. -->
+    <!-- Ensure multi-line `if` conditions are defined correctly. Tab-safe
+         replacement for the disabled PSR12 ControlStructureSpacing (see the
+         PSR12 exclude block above). -->
     <rule ref="PEAR.ControlStructures.MultiLineCondition"/>
 
-    <!-- If an assignment goes over two lines, ensure the equal sign is indented. -->
-    <rule ref="PEAR.Formatting.MultiLineAssignment"/>
+    <!-- If an assignment goes over two lines, ensure the equal sign is indented.
+         DISABLED (49) — uncomment to enable. -->
+    <!-- <rule ref="PEAR.Formatting.MultiLineAssignment"/> -->
 
     <!-- Ensure single and multi-line function declarations are defined correctly. -->
     <rule ref="PEAR.Functions.FunctionDeclaration">
@@ -168,8 +208,9 @@
         <exclude name="Squiz.Classes.ClassDeclaration.OpenBraceNewLine"/>
     </rule>
 
-    <!-- The file name MUST match the case of the terminating class name. -->
-    <rule ref="Squiz.Classes.ClassFileName"/>
+    <!-- The file name MUST match the case of the terminating class name.
+         DISABLED (1) — uncomment to enable. -->
+    <!-- <rule ref="Squiz.Classes.ClassFileName"/> -->
 
     <!-- For self-reference a class lower-case `self::` MUST be used
     without spaces around the scope resolution operator. -->
@@ -178,8 +219,10 @@
     <!-- The `&&` and `||` operators SHOULD be used instead of `and` and `or`. -->
     <rule ref="Squiz.Operators.ValidLogicalOperators"/>
 
-    <!-- The `global` keyword MUST NOT be used. -->
-    <rule ref="Squiz.PHP.GlobalKeyword"/>
+    <!-- The `global` keyword MUST NOT be used.
+         DISABLED (478) — architectural `global $db` → DatabaseAware migration;
+         not a quick style fix. Uncomment to enable. -->
+    <!-- <rule ref="Squiz.PHP.GlobalKeyword"/> -->
 
     <!-- PHP function calls MUST be in lowercase. -->
     <rule ref="Squiz.PHP.LowercasePHPFunctions"/>
@@ -239,37 +282,28 @@
     <!-- There MUST NOT be a space before a semicolon. Redundant semicolons SHOULD be avoided. -->
     <rule ref="Squiz.WhiteSpace.SemicolonSpacing"/>
 
-    <!-- ── Disabled: space-alignment sniffs incompatible with tab indentation ──
-         These sniffs indent/align multi-line continuations with SPACES measured
-         from a tab-indented base — e.g. ControlStructureSpacing.LineIndent wants
-         "12 spaces" where the code has 3 tabs, and FirstExpressionLine/
-         CloseParenthesisLine push the fully-expanded PSR-12 layout. phpcbf
-         inserts the spaces, DisallowSpaceIndent strips them back, and the fixer
-         never converges → FAILED TO FIX. They also directly contradict the K&R /
-         same-line multi-line-condition layout this codebase uses.
+    <!-- ══════════════════════════════════════════════════════════════════
+         PERMANENTLY disabled — DO NOT ENABLE (not part of the ratchet).
 
-         The tab-compatible equivalent is PEAR.ControlStructures.MultiLineCondition
-         (enabled above): it enforces the same multi-line `if` layout and DOES
-         converge under tabs. Multi-line call-argument alignment has no tab-safe
-         fixer, so FunctionCallSignature stays off. Do NOT re-enable either of
-         these as a fixer under this tab-indented ruleset. -->
-    <rule ref="PEAR.Functions.FunctionCallSignature"><severity>0</severity></rule>
-    <rule ref="PSR12.ControlStructures.ControlStructureSpacing"><severity>0</severity></rule>
+         Space-alignment sniffs that align multi-line continuations with SPACES
+         relative to a tab-indented base. phpcbf inserts the spaces,
+         Generic.WhiteSpace.DisallowSpaceIndent strips them back, and the fixer
+         never converges → FAILED TO FIX. Multi-line call-argument alignment has
+         no tab-safe fixer, so this stays off (multi-line `if` layout IS enforced,
+         via PEAR.ControlStructures.MultiLineCondition above). -->
+    <!-- <rule ref="PEAR.Functions.FunctionCallSignature"/> -->
 
-    <!-- ── Type hints ────────────────────────────────────────────────
-         Catch parameters with no type information (no native type hint and
-         no @param).
-         TEMPORARILY MUTED (severity 0): as a FIXER this sniff auto-added
-         native param types from @param docblocks that crash on null at
-         runtime (the "null given" footgun — see TYPE_AUDIT.md). Keep it off
-         until that audit is worked through, then re-enable. See the muted-rules
-         block at the end of this file. -->
+    <!-- SlevomatCodingStandard.TypeHints.ParameterTypeHint — DO NOT ENABLE yet.
+         As a FIXER it auto-added native param types from @param docblocks that
+         crash on null at runtime (the "null given" footgun — see TYPE_AUDIT.md).
+         Keep off until that audit is worked through; then uncomment. -->
+    <!--
     <rule ref="SlevomatCodingStandard.TypeHints.ParameterTypeHint">
         <properties>
             <property name="enableObjectTypeHint" value="true"/>
         </properties>
-        <severity>0</severity>
     </rule>
+    -->
 
     <!-- ── K&R / one-true-brace style (overrides PSR-12 Allman) ──────────
          Opening brace on the SAME line as the declaration, for classes and
@@ -282,36 +316,37 @@
     </rule>
 
     <!-- ══════════════════════════════════════════════════════════════════
-         TEMPORARY: muted error rules (severity 0) — technical-debt ratchet.
-         These sniffs currently ERROR across legacy code (counts below, ~2321
-         total). They are silenced so `make cs` passes and can act as a green
-         baseline, and MUST be re-enabled ONE AT A TIME as each is cleaned up
-         (drop the line, run `make cs`, fix the fallout, commit). Do not add
-         NEW violations under a muted rule. ParameterTypeHint is muted above.
+         Technical-debt ratchet — how to gradually tighten this ruleset.
+
+         Sniffs that legacy code still violates are DISABLED so `make cs` stays
+         green and can act as a baseline. Enable ONE at a time: flip its toggle,
+         run `make cs`, fix the fallout, run `make cs-fix` (confirm it converges,
+         no FAILED TO FIX), commit. Do NOT add new violations under a disabled
+         rule. Each disabled rule is a single-line toggle:
+
+           • Own `<rule ref>` commented out above  → UNCOMMENT the line:
+               CamelCapsFunctionName(187), MultiLineAssignment(49),
+               UnnecessaryStringConcat(41), SAPIUsage(7), AbstractClassNamePrefix(2),
+               InterfaceNameSuffix(1), TraitNameSuffix(1), DeprecatedFunctions(1),
+               Squiz.Classes.ClassFileName(1), Squiz.PHP.GlobalKeyword(478).
+           • <exclude> in the PSR12 block above     → DELETE the exclude line:
+               CamelCapsMethodName(40), FileHeader.IncorrectOrder(29),
+               MethodDeclaration.Underscore(12), SwitchDeclaration.TerminatingComment(6),
+               PSR1.Classes.ClassDeclaration(2), PropertyDeclaration.Underscore(2),
+               Squiz.Classes.ValidClassName(1).
+           • <exclude> in the Metrics refs above    → DELETE the exclude line:
+               CyclomaticComplexity.MaxExceeded(201), NestingLevel.MaxExceeded(2).
+
+         Suggested order (cheapest / lowest-risk first): SAPIUsage,
+         DeprecatedFunctions, SwitchDeclaration.TerminatingComment,
+         MultiLineAssignment, UnnecessaryStringConcat, FileHeader.IncorrectOrder,
+         the small naming/rename sniffs, then the underscore renames. Leave the
+         architectural ones (GlobalKeyword, Cyclomatic/Nesting, CamelCaps names)
+         for dedicated refactors. See the "PERMANENTLY disabled" blocks for the
+         two that must stay off.
 
          Warnings (line length, cyclomatic "too high", silenced errors, …) are
-         still reported but do NOT fail the run, so advisory noise does not
-         block the gate:
+         reported but do NOT fail the run:
     ══════════════════════════════════════════════════════════════════════ -->
     <config name="ignore_warnings_on_exit" value="1"/>
-
-    <rule ref="Squiz.PHP.GlobalKeyword"><severity>0</severity></rule>                              <!-- 452: legacy global $db -->
-    <rule ref="Generic.NamingConventions.CamelCapsFunctionName"><severity>0</severity></rule>      <!-- 191: legacy method/function names -->
-    <rule ref="PSR1.Methods.CamelCapsMethodName"><severity>0</severity></rule>
-    <rule ref="Generic.Metrics.CyclomaticComplexity.MaxExceeded"><severity>0</severity></rule>     <!-- 174: God-methods (TooHigh stays a warning) -->
-    <rule ref="Generic.Metrics.NestingLevel.MaxExceeded"><severity>0</severity></rule>
-    <rule ref="PEAR.Formatting.MultiLineAssignment"><severity>0</severity></rule>                   <!-- 49 -->
-    <rule ref="Generic.Strings.UnnecessaryStringConcat"><severity>0</severity></rule>              <!-- 29 -->
-    <rule ref="PSR12.Files.FileHeader.IncorrectOrder"><severity>0</severity></rule>                <!-- 29 -->
-    <rule ref="PSR2.Methods.MethodDeclaration.Underscore"><severity>0</severity></rule>            <!-- 11 -->
-    <rule ref="Generic.PHP.SAPIUsage"><severity>0</severity></rule>                                <!-- 6 -->
-    <rule ref="PSR2.ControlStructures.SwitchDeclaration.TerminatingComment"><severity>0</severity></rule> <!-- 6 -->
-    <rule ref="Generic.NamingConventions.AbstractClassNamePrefix"><severity>0</severity></rule>    <!-- 2 -->
-    <rule ref="PSR1.Classes.ClassDeclaration"><severity>0</severity></rule>                         <!-- 2: legacy non-namespaced (XC_Bootstrap) -->
-    <rule ref="PSR2.Classes.PropertyDeclaration.Underscore"><severity>0</severity></rule>          <!-- 2 -->
-    <rule ref="Generic.NamingConventions.InterfaceNameSuffix"><severity>0</severity></rule>        <!-- 1 -->
-    <rule ref="Generic.NamingConventions.TraitNameSuffix"><severity>0</severity></rule>            <!-- 1 -->
-    <rule ref="Generic.PHP.DeprecatedFunctions"><severity>0</severity></rule>                       <!-- 1 -->
-    <rule ref="Squiz.Classes.ClassFileName"><severity>0</severity></rule>                           <!-- 1 -->
-    <rule ref="Squiz.Classes.ValidClassName"><severity>0</severity></rule>                          <!-- 1 -->
 </ruleset>
