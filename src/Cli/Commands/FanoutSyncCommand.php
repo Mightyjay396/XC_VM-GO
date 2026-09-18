@@ -68,6 +68,7 @@ class FanoutSyncCommand implements CommandInterface {
 		while (true) {
 			// Refresh settings periodically and exit (to be respawned) if nginx
 			// stopped or the code changed — the standard daemon self-restart.
+			$rLastRefresh = $this->rLastCheck;
 			if (!$this->refreshOrBreak()) {
 				break;
 			}
@@ -77,7 +78,15 @@ class FanoutSyncCommand implements CommandInterface {
 			// the panel corrects it here. Runs in the xc_vm context that owns the
 			// file; a cheap no-op unless the panel-owned keys actually diverge (the
 			// internal diff guard skips the write), and the daemon mtime-polls it.
-			FanoutConfig::sync(SettingsManager::getAll());
+			//
+			// Only with settings just re-read from the database: this loop runs
+			// every INTERVAL but refreshes settings every rRefreshInterval, and a
+			// sync from the older snapshot put the previous values back over an
+			// admin's save (SettingsService::edit writes the file at once) for up
+			// to a minute.
+			if ($this->rLastCheck !== $rLastRefresh) {
+				FanoutConfig::sync(SettingsManager::getAll());
+			}
 
 			$rActive = FanoutClient::activeConnections();
 			if ($rActive !== null) {

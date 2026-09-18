@@ -19,11 +19,16 @@ class ImageUtils {
 	/**
 	 * Resolve an image URL, expanding internal `s:<serverId>:` references.
 	 *
-	 * @param string      $rURL           Image URL or internal `s:` reference.
+	 * @param string|null $rURL           Image URL or internal `s:` reference; null (a stream,
+	 *                                    movie or series without an image — the columns are
+	 *                                    nullable) resolves to ''.
 	 * @param string|null $rForceProtocol Force http/https when resolving server URLs.
-	 * @return string Resolved public URL ('' if the server cannot be resolved).
+	 * @return string Resolved public URL ('' if there is none or the server cannot be resolved).
 	 */
-	public static function validateURL(string $rURL, ?string $rForceProtocol = null) {
+	public static function validateURL(?string $rURL, ?string $rForceProtocol = null): string {
+		if ($rURL === null) {
+			return '';
+		}
 		if (substr($rURL, 0, 2) == 's:') {
 			$rSplit = explode(':', $rURL, 3);
 			$rServerURL = ServerRepository::getPublicURL(intval($rSplit[1]), $rForceProtocol);

@@ -78,6 +78,18 @@ final class UserRepositoryTest extends TestCase {
 		$this->assertSame(array(100, 101, 102), $this->call('resolveCategoryIds', array(1, 2), $rMap));
 	}
 
+	public function testResolveCategoryIdsSkipsABouquetNewerThanTheMap(): void {
+		// Bouquet 16 was created after the heavy cache pass built the map.
+		$this->assertSame(array(100), $this->call('resolveCategoryIds', array(1, 16), array(1 => array(100))));
+	}
+
+	public function testStreamingUserInfoAcceptsNullBouquets(): void {
+		// player_api passes null unless it lists channels; the parameter must take it.
+		$rParam = (new ReflectionMethod(UserRepository::class, 'getStreamingUserInfo'))->getParameters()[2];
+		$this->assertSame('rBouquets', $rParam->getName());
+		$this->assertTrue($rParam->allowsNull());
+	}
+
 	// ── decodeUserFields ──
 
 	public function testDecodeUserFieldsNormalises(): void {

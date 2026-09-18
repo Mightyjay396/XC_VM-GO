@@ -1109,6 +1109,27 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * Count a line's live connections — the active_cons player_api reports.
+	 *
+	 * In Redis mode counts the line's LINE# set (getLineConnections() degrades a
+	 * failed Redis call to none); in MySQL mode its open lines_live rows.
+	 *
+	 * @param int $rUserID Line ID.
+	 * @return int Number of live connections.
+	 */
+	public static function countLineConnections(int $rUserID): int {
+		if ($rUserID <= 0) {
+			return 0;
+		}
+		if (SettingsManager::get('redis_handler')) {
+			return count(self::getLineConnections($rUserID, true));
+		}
+		$db = self::db();
+		$db->query('SELECT COUNT(*) AS `count` FROM `lines_live` WHERE `user_id` = ? AND `hls_end` = 0;', $rUserID);
+		return (int) ($db->get_row()['count'] ?? 0);
+	}
+
+	/**
 	 * Count active (live) connections on a server or proxy.
 	 *
 	 * In Redis mode counts via getRedisConnections.
