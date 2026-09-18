@@ -47,15 +47,14 @@ if ($rLegacyPortalRequest && empty($rSettings["mag_legacy_redirect"])) {
 }
 
 if (!$rSettings["disable_ministra"]) {
-	if (
-		!in_array($rReqAction, [
-			"get_categories",
-			"get_genres",
-			"get_ordered_list",
-			"get_all_channels",
-			"get_all_fav_channels",
-			"get_all_fav_radio",
-		])
+	if (!in_array($rReqAction, [
+		"get_categories",
+		"get_genres",
+		"get_ordered_list",
+		"get_all_channels",
+		"get_all_fav_channels",
+		"get_all_fav_radio",
+	])
 	) {
 	} else {
 		$rCategories = CacheReader::get("categories");
@@ -141,9 +140,8 @@ if (!$rSettings["disable_ministra"]) {
 			$rHWVersion = !empty($rRequest["hw_version"]) ? $rRequest["hw_version"] : null;
 			$rVerified = true;
 
-			if (
-				empty($rSettings["allowed_stb_types"]) ||
-				in_array(strtolower($rSTBType), $rSettings["allowed_stb_types"])
+			if (empty($rSettings["allowed_stb_types"])
+				|| in_array(strtolower($rSTBType), $rSettings["allowed_stb_types"])
 			) {
 			} else {
 				$rVerified = false;
@@ -205,9 +203,8 @@ if (!$rSettings["disable_ministra"]) {
 				}
 			}
 
-			if (
-				empty($rSettings["stalker_lock_images"]) ||
-				in_array($rVersion, $rSettings["stalker_lock_images"])
+			if (empty($rSettings["stalker_lock_images"])
+				|| in_array($rVersion, $rSettings["stalker_lock_images"])
 			) {
 			} else {
 				$rVerified = false;
@@ -245,9 +242,8 @@ if (!$rSettings["disable_ministra"]) {
 				);
 				updatecache();
 			} else {
-				if (
-					!empty($rDevice["id"]) &&
-					file_exists(MINISTRA_TMP_PATH . "ministra_" . $rDevice["id"])
+				if (!empty($rDevice["id"])
+					&& file_exists(MINISTRA_TMP_PATH . "ministra_" . $rDevice["id"])
 				) {
 					unlink(MINISTRA_TMP_PATH . "ministra_" . $rDevice["id"]);
 				}
@@ -1009,17 +1005,16 @@ function getSeriesItems(
 				$rSeriesO["category_id"] = $rSeriesCategories[0] ?? 0;
 			}
 
-			if (
-				(empty($rSearchBy) || stristr($rSeriesO["title"], $rSearchBy)) &&
-				!(!empty($rPicking["abc"]) &&
-					$rPicking["abc"] != "*" &&
-					strtoupper(substr($rSeriesO["title"], 0, 1)) != $rPicking["abc"]) &&
-				!(!empty($rPicking["genre"]) &&
-					$rPicking["genre"] != "*" &&
-					$rSeriesO["category_id"] != $rPicking["genre"]) &&
-				!(!empty($rPicking["years"]) &&
-					$rPicking["years"] != "*" &&
-					$rSeriesO["year"] != $rPicking["years"])
+			if ((empty($rSearchBy) || stristr($rSeriesO["title"], $rSearchBy))
+				&& !(!empty($rPicking["abc"])
+				&& $rPicking["abc"] != "*"
+				&& strtoupper(substr($rSeriesO["title"], 0, 1)) != $rPicking["abc"])
+				&& !(!empty($rPicking["genre"])
+				&& $rPicking["genre"] != "*"
+				&& $rSeriesO["category_id"] != $rPicking["genre"])
+				&& !(!empty($rPicking["years"])
+				&& $rPicking["years"] != "*"
+				&& $rSeriesO["year"] != $rPicking["years"])
 			) {
 				if (empty($rFav)) {
 				} else {
@@ -1411,9 +1406,8 @@ function getDevice($rID = null, $rMAC = null) {
 				$rDevice["fav_channels"]["radio_streams"] = [];
 			}
 
-			if (
-				!empty($rDevice["fav_channels"]["series"]) &&
-				is_array($rDevice["fav_channels"]["series"])
+			if (!empty($rDevice["fav_channels"]["series"])
+				&& is_array($rDevice["fav_channels"]["series"])
 			) {
 			} else {
 				$rDevice["fav_channels"]["series"] = [];

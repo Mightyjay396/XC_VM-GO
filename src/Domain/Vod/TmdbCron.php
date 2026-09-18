@@ -96,11 +96,13 @@ class TmdbCron {
 				}
 
 				if ($rPercentageMatch <= $rPercentage
-					|| $rPercentageMatch <= $rPercentageAlt) {
+					|| $rPercentageMatch <= $rPercentageAlt
+				) {
 					if (!$year || in_array(
 						intval(substr((string) ($rResultArr->get('release_date') ?: $rResultArr->get('first_air_date')), 0, 4)),
 						range(intval($year) - 1, intval($year) + 1)
-					)) {
+					)
+					) {
 						if ($altTitle && strtolower($rResultName) == strtolower($altTitle)) {
 							$rMatches = [['percentage' => 100, 'data' => $rResultArr]];
 							break;

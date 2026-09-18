@@ -24,8 +24,7 @@ class SessionController extends BaseAdminController {
 			session_start();
 		}
 
-		if (
-			isset($_SESSION['hash'], $_SESSION['last_activity'])
+		if (isset($_SESSION['hash'], $_SESSION['last_activity'])
 			&& (time() - $_SESSION['last_activity']) > self::SESSION_TIMEOUT_MINUTES * 60
 		) {
 			foreach (['hash', 'ip', 'code', 'verify', 'last_activity'] as $rKey) {

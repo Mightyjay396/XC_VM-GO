@@ -48,8 +48,7 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 		}
 
 		// Expire session after timeout
-		if (
-			isset($_SESSION['hash'], $_SESSION['last_activity'])
+		if (isset($_SESSION['hash'], $_SESSION['last_activity'])
 			&& ($rSessionTimeout * 60) < (time() - $_SESSION['last_activity'])
 		) {
 			foreach (['hash', 'ip', 'code', 'verify', 'last_activity'] as $rKey) {
@@ -59,8 +58,7 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 
 		// Not authenticated → redirect to login (or JSON response for AJAX)
 		if (!isset($_SESSION['hash'])) {
-			if (
-				!empty($_SERVER['HTTP_X_REQUESTED_WITH'])
+			if (!empty($_SERVER['HTTP_X_REQUESTED_WITH'])
 				&& strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest'
 			) {
 				header('Content-Type: application/json');

@@ -239,13 +239,20 @@
     <!-- There MUST NOT be a space before a semicolon. Redundant semicolons SHOULD be avoided. -->
     <rule ref="Squiz.WhiteSpace.SemicolonSpacing"/>
 
-    <!-- ── Disabled: multi-line ALIGNMENT sniffs incompatible with tabs ──
-         These align continuation lines (multi-line conditions / call args /
-         control-structure bodies) with spaces relative to a tab-indented base.
-         DisallowSpaceIndent then strips those spaces, so phpcbf oscillates and
-         reports FAILED TO FIX. A tab-based layout can't use space-alignment, so
-         they are turned off (severity 0). -->
-    <rule ref="PEAR.ControlStructures.MultiLineCondition"><severity>0</severity></rule>
+    <!-- ── Disabled: space-alignment sniffs incompatible with tab indentation ──
+         These sniffs indent/align multi-line continuations with SPACES measured
+         from a tab-indented base — e.g. ControlStructureSpacing.LineIndent wants
+         "12 spaces" where the code has 3 tabs, and FirstExpressionLine/
+         CloseParenthesisLine push the fully-expanded PSR-12 layout. phpcbf
+         inserts the spaces, DisallowSpaceIndent strips them back, and the fixer
+         never converges → FAILED TO FIX. They also directly contradict the K&R /
+         same-line multi-line-condition layout this codebase uses.
+
+         The tab-compatible equivalent is PEAR.ControlStructures.MultiLineCondition
+         (enabled above): it enforces the same multi-line `if` layout and DOES
+         converge under tabs. Multi-line call-argument alignment has no tab-safe
+         fixer, so FunctionCallSignature stays off. Do NOT re-enable either of
+         these as a fixer under this tab-indented ruleset. -->
     <rule ref="PEAR.Functions.FunctionCallSignature"><severity>0</severity></rule>
     <rule ref="PSR12.ControlStructures.ControlStructureSpacing"><severity>0</severity></rule>
 

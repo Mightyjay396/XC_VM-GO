@@ -512,17 +512,16 @@ class PortalHelpers {
 				} else {
 					[$rSeriesO["category_id"]] = json_decode($rSeriesO["category_id"], true);
 				}
-				if (
-					(empty($rSearchBy) || stristr($rSeriesO["title"], $rSearchBy)) &&
-					!(!empty($rPicking["abc"]) &&
-						$rPicking["abc"] != "*" &&
-						strtoupper(substr($rSeriesO["title"], 0, 1)) != $rPicking["abc"]) &&
-					!(!empty($rPicking["genre"]) &&
-						$rPicking["genre"] != "*" &&
-						$rSeriesO["category_id"] != $rPicking["genre"]) &&
-					!(!empty($rPicking["years"]) &&
-						$rPicking["years"] != "*" &&
-						$rSeriesO["year"] != $rPicking["years"])
+				if ((empty($rSearchBy) || stristr($rSeriesO["title"], $rSearchBy))
+					&& !(!empty($rPicking["abc"])
+					&& $rPicking["abc"] != "*"
+					&& strtoupper(substr($rSeriesO["title"], 0, 1)) != $rPicking["abc"])
+					&& !(!empty($rPicking["genre"])
+					&& $rPicking["genre"] != "*"
+					&& $rSeriesO["category_id"] != $rPicking["genre"])
+					&& !(!empty($rPicking["years"])
+					&& $rPicking["years"] != "*"
+					&& $rSeriesO["year"] != $rPicking["years"])
 				) {
 					if (!empty($rFav)) {
 						$rFound = false;

@@ -336,8 +336,7 @@ class EpgAjaxController extends BaseAjaxController {
 					$rDuration = ($rCapEnd - $rCapStart) / 60;
 					$rArchive = null;
 
-					if (
-						isset($rArchiveInfo[$rChannelID])
+					if (isset($rArchiveInfo[$rChannelID])
 						&& 0 < $rArchiveInfo[$rChannelID]['tv_archive_server_id']
 						&& 0 < $rArchiveInfo[$rChannelID]['tv_archive_duration']
 						&& time() - $rArchiveInfo[$rChannelID]['tv_archive_duration'] * 86400 <= $rEPGItem['start']

@@ -288,7 +288,8 @@ class ImageResizeService {
 			}
 			// filter_var misses CGNAT shared space (RFC 6598, 100.64.0.0/10).
 			if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
-				&& (ip2long($ip) & 0xffc00000) === (ip2long('100.64.0.0') & 0xffc00000)) {
+				&& (ip2long($ip) & 0xffc00000) === (ip2long('100.64.0.0') & 0xffc00000)
+			) {
 				return null;
 			}
 		}

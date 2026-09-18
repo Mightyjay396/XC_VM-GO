@@ -127,8 +127,7 @@ final class PlayerScopeBootstrap implements ScopeBootstrap {
 			} else {
 				$rUserInfo = UserRepository::getUserInfo($_SESSION['phash'], null, null, true);
 
-				if (
-					!$rUserInfo
+				if (!$rUserInfo
 					|| $_SESSION['pverify'] != md5($rUserInfo['username'] . '||' . $rUserInfo['password'])
 					|| (!is_null($rUserInfo['exp_date']) && $rUserInfo['exp_date'] <= time())
 					|| $rUserInfo['admin_enabled'] == 0

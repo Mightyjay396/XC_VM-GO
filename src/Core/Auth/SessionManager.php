@@ -4,7 +4,6 @@ namespace XcVm\Core\Auth;
 
 use XcVm\Core\Util\NetworkUtils;
 
-
 /**
  * Unified Session Manager
  *

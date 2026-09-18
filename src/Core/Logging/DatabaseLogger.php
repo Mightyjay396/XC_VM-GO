@@ -144,8 +144,7 @@ class DatabaseLogger implements LoggerInterface {
 
 			// Если не задано — проверяем через глобальные настройки (обратная совместимость)
 			if (self::$enabled === null && !empty($GLOBALS['rSettings'])) {
-				if (
-					isset($GLOBALS['rSettings']['client_logs_save'])
+				if (isset($GLOBALS['rSettings']['client_logs_save'])
 					&& $GLOBALS['rSettings']['client_logs_save'] == 0
 				) {
 					return;

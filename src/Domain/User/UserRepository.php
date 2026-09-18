@@ -603,7 +603,8 @@ class UserRepository {
 			$rReturn['user_info'] = $rUserInfo;
 
 			if (!is_null($rReturn['user_info']['pair_id'])
-				&& ($rUserInfo = self::getUserInfo($rReturn['user_info']['pair_id'], null, null, $rGetChannelIDs, $rGetConnections))) {
+				&& ($rUserInfo = self::getUserInfo($rReturn['user_info']['pair_id'], null, null, $rGetChannelIDs, $rGetConnections))
+			) {
 				$rReturn['pair_line_info'] = $rUserInfo;
 			}
 		}

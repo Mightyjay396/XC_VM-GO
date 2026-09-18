@@ -46,8 +46,7 @@ final class ResellerScopeBootstrap implements ScopeBootstrap {
 		}
 
 		// Expire session after timeout
-		if (
-			isset($_SESSION['reseller'], $_SESSION['rlast_activity'])
+		if (isset($_SESSION['reseller'], $_SESSION['rlast_activity'])
 			&& ($rSessionTimeout * 60) < (time() - $_SESSION['rlast_activity'])
 		) {
 			foreach (['reseller', 'rip', 'rcode', 'rverify', 'rlast_activity'] as $rKey) {

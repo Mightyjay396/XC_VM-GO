@@ -133,8 +133,7 @@ if (isset($rawScope) && in_array($rawScope, ['includes/api/admin', 'includes/api
 }
 
 // 4. Redirect /CODE/ → /CODE/login (иначе relative assets ломаются)
-if (
-	$pageName === 'index' && $accessCode && in_array($scope, ['admin', 'reseller'], true)
+if ($pageName === 'index' && $accessCode && in_array($scope, ['admin', 'reseller'], true)
 	&& ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 ) {
 	header('Location: /' . $accessCode . '/login');
@@ -142,8 +141,7 @@ if (
 }
 
 // 4b. Player / Portal: /CODE (без завершающего слэша) → /CODE/
-if (
-	$accessCode && in_array($scope, ['player', 'player_v2', 'portal'], true)
+if ($accessCode && in_array($scope, ['player', 'player_v2', 'portal'], true)
 	&& ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 	&& rtrim(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '', '/') === '/' . $accessCode
 	&& substr(parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH) ?: '', -1) !== '/'

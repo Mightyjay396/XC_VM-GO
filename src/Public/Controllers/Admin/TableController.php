@@ -4941,12 +4941,12 @@ class TableController extends BaseAdminController {
 							$rStreamSource = strtolower(parse_url($rRow["source"])["host"]);
 						}
 												$rReturn["data"][] = [
-							"server_id" => (int) $rRow["server_id"],
-							"server_name" => (string) (ServerRepository::getAll()[$rRow["server_id"]]["server_name"] ?? ''),
-							"source_host" => $rStreamSource,
-							"action" => (string) $rRow["action"],
-							"date" => date(SettingsManager::getAll()["datetime_format"], $rRow["date"]),
-						];
+													"server_id" => (int) $rRow["server_id"],
+													"server_name" => (string) (ServerRepository::getAll()[$rRow["server_id"]]["server_name"] ?? ''),
+													"source_host" => $rStreamSource,
+													"action" => (string) $rRow["action"],
+													"date" => date(SettingsManager::getAll()["datetime_format"], $rRow["date"]),
+												];
 					}
 				}
 			}

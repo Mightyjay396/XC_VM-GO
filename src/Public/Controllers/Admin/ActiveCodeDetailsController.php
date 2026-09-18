@@ -22,8 +22,7 @@ class ActiveCodeDetailsController {
 	 * action=active_code_details — full voucher & companion line details.
 	 */
 	public function index(): never {
-		if (
-			(!defined('PHP_ERRORS') || !PHP_ERRORS)
+		if ((!defined('PHP_ERRORS') || !PHP_ERRORS)
 			&& strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') !== 'xmlhttprequest'
 		) {
 			exit();

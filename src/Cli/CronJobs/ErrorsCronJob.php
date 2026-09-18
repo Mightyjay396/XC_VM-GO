@@ -100,10 +100,9 @@ class ErrorsCronJob implements CommandInterface {
 				? (int) $row['server_id']
 				: SERVER_ID;
 
-			if (
-				stripos($rLogMessage, 'server has gone away') !== false ||
-				stripos($rLogMessage, 'socket error on read socket') !== false ||
-				stripos($rLogMessage, 'connection lost') !== false
+			if (stripos($rLogMessage, 'server has gone away') !== false
+				|| stripos($rLogMessage, 'socket error on read socket') !== false
+				|| stripos($rLogMessage, 'connection lost') !== false
 			) {
 				continue;
 			}

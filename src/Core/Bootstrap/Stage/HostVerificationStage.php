@@ -34,8 +34,7 @@ class HostVerificationStage implements BootStageInterface {
 				if (is_array($rSettings) && !empty($rSettings['verify_host'])) {
 					if (file_exists(CACHE_TMP_PATH . 'allowed_domains')) {
 						$rDomains = @igbinary_unserialize(@file_get_contents(CACHE_TMP_PATH . 'allowed_domains'));
-						if (
-							is_array($rDomains) && count($rDomains) > 0
+						if (is_array($rDomains) && count($rDomains) > 0
 							&& !in_array(HOST, $rDomains) && HOST !== 'xc_vm'
 							&& !filter_var(HOST, FILTER_VALIDATE_IP)
 						) {

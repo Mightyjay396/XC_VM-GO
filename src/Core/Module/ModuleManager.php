@@ -1777,9 +1777,8 @@ class ModuleManager {
 	private function runPendingMigrations(array $migrations, string $fromVersion, string $toVersion): void {
 		$pending = [];
 		foreach ($migrations as $version => $callable) {
-			if (
-				version_compare($version, $fromVersion, '>') &&
-				version_compare($version, $toVersion, '<=')
+			if (version_compare($version, $fromVersion, '>')
+				&& version_compare($version, $toVersion, '<=')
 			) {
 				$pending[$version] = $callable;
 			}

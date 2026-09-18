@@ -177,8 +177,9 @@ class PortalHandler {
 				$rTotal["enable_buffering_indication"] = 1;
 				$rTotal["watchdog_timeout"] = mt_rand(80, 120);
 
-				if (empty($rTotal["aspect"]) &&
-						$rServers[SERVER_ID]["server_protocol"] == "https") {
+				if (empty($rTotal["aspect"])
+					&& $rServers[SERVER_ID]["server_protocol"] == "https"
+				) {
 					$rTotal["aspect"] = "16";
 				}
 
@@ -618,11 +619,10 @@ class PortalHandler {
 				exit(json_encode(["js" => true]));
 
 			case "set_parent_password":
-				if (
-					isset($rRequest["parent_password"]) &&
-					isset($rRequest["pass"]) &&
-					isset($rRequest["repeat_pass"]) &&
-					$rRequest["pass"] == $rRequest["repeat_pass"]
+				if (isset($rRequest["parent_password"])
+					&& isset($rRequest["pass"])
+					&& isset($rRequest["repeat_pass"])
+					&& $rRequest["pass"] == $rRequest["repeat_pass"]
 				) {
 					$ctx["device"]["parent_password"] = $rRequest["pass"];
 					$db->query(
@@ -758,10 +758,9 @@ class PortalHandler {
 				];
 			}
 			foreach ($rCategories as $rCategory) {
-				if (
-						$rCategory["category_type"] == "movie" &&
-						in_array($rCategory["id"], $ctx["device"]["category_ids"])
-					) {
+				if ($rCategory["category_type"] == "movie"
+					&& in_array($rCategory["id"], $ctx["device"]["category_ids"])
+				) {
 					$rOutput["js"][] = [
 						"id" => $rCategory["id"],
 						"title" => $rCategory["category_name"],
@@ -913,8 +912,9 @@ class PortalHandler {
 							file_get_contents(EPG_PATH . "stream_" . $rChannelID),
 						);
 						foreach ($rRows as $rRow) {
-							if (($rRow["start"] <= $rTime && $rTime <= $rRow["end"]) ||
-									$rTime <= $rRow["start"]) {
+							if (($rRow["start"] <= $rTime && $rTime <= $rRow["end"])
+								|| $rTime <= $rRow["start"]
+							) {
 								$rRow["start_timestamp"] = $rRow["start"];
 								$rRow["stop_timestamp"] = $rRow["end"];
 								$rEPGData[] = $rRow;
@@ -996,9 +996,8 @@ class PortalHandler {
 				}
 
 				foreach ($rCategories as $rCategory) {
-					if (
-						$rCategory["category_type"] == "live" &&
-						in_array($rCategory["id"], $rCategoryIDs)
+					if ($rCategory["category_type"] == "live"
+						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
 							"id" => $rCategory["id"],
@@ -1097,9 +1096,8 @@ class PortalHandler {
 				}
 
 				foreach ($rCategories as $rCategory) {
-					if (
-						$rCategory["category_type"] == "movie" &&
-						in_array($rCategory["id"], $rCategoryIDs)
+					if ($rCategory["category_type"] == "movie"
+						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
 							"id" => $rCategory["id"],
@@ -1117,9 +1115,8 @@ class PortalHandler {
 				$rOutput["js"][] = ["id" => "*", "title" => "*"];
 
 				foreach ($rCategories as $rCategory) {
-					if (
-						$rCategory["category_type"] == "movie" &&
-						in_array($rCategory["id"], $rCategoryIDs)
+					if ($rCategory["category_type"] == "movie"
+						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
 							"id" => $rCategory["id"],
@@ -1328,9 +1325,8 @@ class PortalHandler {
 				}
 
 				foreach ($rCategories as $rCategory) {
-					if (
-						$rCategory["category_type"] == "series" &&
-						in_array($rCategory["id"], $rCategoryIDs)
+					if ($rCategory["category_type"] == "series"
+						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
 							"id" => $rCategory["id"],
@@ -1348,9 +1344,8 @@ class PortalHandler {
 				$rOutput["js"][] = ["id" => "*", "title" => "*"];
 
 				foreach ($rCategories as $rCategory) {
-					if (
-						$rCategory["category_type"] == "series" &&
-						in_array($rCategory["id"], $rCategoryIDs)
+					if ($rCategory["category_type"] == "series"
+						&& in_array($rCategory["id"], $rCategoryIDs)
 					) {
 						$rOutput["js"][] = [
 							"id" => $rCategory["id"],
@@ -1681,8 +1676,9 @@ class PortalHandler {
 				$rChannelIDx = 0;
 
 				foreach ($rEPGDatas as $rKey => $rEPGData) {
-					if ($rEPGData["start_timestamp"] <= time() &&
-							time() <= $rEPGData["stop_timestamp"]) {
+					if ($rEPGData["start_timestamp"] <= time()
+						&& time() <= $rEPGData["stop_timestamp"]
+					) {
 						$rChannelIDx = $rKey + 1;
 						goto Aeb56a67ad642976;
 						//break;

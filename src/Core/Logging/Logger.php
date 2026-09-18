@@ -113,7 +113,8 @@ final class Logger {
 			E_PARSE,
 			E_CORE_ERROR,
 			E_COMPILE_ERROR
-		], true)) {
+		], true)
+		) {
 			self::log(
 				'FATAL',
 				$error['message'],

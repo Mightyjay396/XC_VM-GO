@@ -122,7 +122,8 @@ class StartupCommand implements CommandInterface {
 		foreach ($rOutput as $rLine) {
 			if (strpos($rLine, MAIN_HOME . 'crons/root_') !== false
 				|| strpos($rLine, '# XC_VM') !== false
-				|| strpos($rLine, '# \XC_VM') !== false) {
+				|| strpos($rLine, '# \XC_VM') !== false
+			) {
 				$rWrite = true;
 				continue;
 			}
