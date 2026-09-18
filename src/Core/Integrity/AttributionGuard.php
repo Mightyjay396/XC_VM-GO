@@ -45,16 +45,18 @@ class AttributionGuard {
 	}
 
 	/**
-	 * Prefer the tamper-resistant compiled check when xcvm_core exposes it: that
-	 * logic lives in the ioncube-protected extension and cannot be stripped from
-	 * readable PHP. Fall back to the in-PHP marker scan (a deterrent only) where
-	 * the extension or the method is absent (dev/CI, installs without xcvm_core).
+	 * Prefer the tamper-resistant compiled check when xcvm_core exposes it: it
+	 * reads the canonical attribution source itself (ignoring any PHP-supplied
+	 * value) inside the ioncube-protected extension, so it cannot be stripped
+	 * from readable PHP or fed forged input. Fall back to the in-PHP marker scan
+	 * (a deterrent only) where the extension or the method is absent (dev/CI,
+	 * installs without xcvm_core).
 	 *
-	 * @param string $rHtml Rendered attribution HTML to inspect.
+	 * @param string $rHtml Rendered attribution HTML for the PHP fallback scan.
 	 */
 	private static function inspect(string $rHtml): bool {
 		if (class_exists('XC_VM') && method_exists('XC_VM', 'verify_branding')) {
-			return (bool) \XC_VM::verify_branding($rHtml);
+			return (bool) \XC_VM::verify_branding();
 		}
 
 		return self::hasMarkers($rHtml);
