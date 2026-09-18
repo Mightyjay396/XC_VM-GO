@@ -422,6 +422,18 @@ renderUnifiedLayoutFooter('admin');
             });
         }
 
+        // Expiry date-time picker. The pre-Bootstrap 5 form had one (daterangepicker);
+        // the migration dropped it and left a bare text box. allowInput keeps typing
+        // and pasting a date working.
+        if (window.flatpickr) {
+            flatpickr('#exp_date', {
+                enableTime: true,
+                time_24hr: true,
+                allowInput: true,
+                dateFormat: 'Y-m-d H:i:S'
+            });
+        }
+
         // Never-expire disables the expiry field.
         var noExpire = document.getElementById('no_expire'),
             expDate = document.getElementById('exp_date');
