@@ -7,10 +7,17 @@ use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Core\Reference\UiReference;
+use XcVm\Core\Localization\Translator;
+use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
 $rHues = UiReference::hues();
 
-include 'functions.php';
+global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
+    $rTimeout, $rProtocol, $allServers, $rPermissions, $allowedLangs,
+    $rServerError, $allServersHealthy, $updateRequired, $rUserInfo,
+    $_STATUS, $customScript, $language;
+$language = Translator::class;
+AdminScopeBootstrap::hydrateAdminContext();
 
 if (file_exists(TMP_PATH . '.migration.first')) {
     header('Location: setup');
