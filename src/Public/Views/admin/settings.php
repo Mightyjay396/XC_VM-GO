@@ -9,6 +9,7 @@ use XcVm\Core\GeoIP\MaxMindUpdater;
 use XcVm\Core\Localization\Translator;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Streaming\Codec\FfmpegBinaries; // Code reconstruction by Squallp
+use XcVm\Streaming\Fanout\FanoutConfig;
 ?>
 
 <form id="settings-form">
@@ -1573,10 +1574,32 @@ use XcVm\Streaming\Codec\FfmpegBinaries; // Code reconstruction by Squallp
 								</div>
 								<label class="col-md-4 col-form-label" for="fanout_debug">
 									<?= $language::get('fanout_debug') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="xc_fanout: live debug narration, applied on the daemon&#39;s next config poll (no restart, no viewer drop). Empty = off; &#39;all&#39; = everything; or a comma list of categories: boot, config, stream, puller, hls, viewer, ingest, ctl, signal, monitor, stats, buffer, reaper, mem."></i>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="xc_fanout: live debug narration into xc_fanout.log — off, every category, or one category — applied on the daemon&#39;s next config poll (no restart, no viewer drop)."></i>
 								</label>
 								<div class="col-md-2">
-									<input type="text" class="form-control text-center" id="fanout_debug" name="fanout_debug" value="<?= htmlspecialchars($rSettings["fanout_debug"] ?? '') ?>" placeholder="off">
+									<?php
+									// Off stores "", "all" every category, or one of the daemon's categories.
+									// A combination set before
+									// this was a dropdown stays selectable as it is.
+									$rFanoutDebug = strtolower(trim((string) ($rSettings['fanout_debug'] ?? '')));
+									if (in_array($rFanoutDebug, ['off', '0', 'false', 'no'], true)) {
+										$rFanoutDebug = '';
+									} elseif (in_array($rFanoutDebug, ['1', 'true', 'yes', 'on'], true)) {
+										$rFanoutDebug = 'all';
+									}
+									$rFanoutDebugOptions = ['' => $language::get('fanout_debug_off'), 'all' => $language::get('fanout_debug_all')];
+									foreach (FanoutConfig::DEBUG_CATEGORIES as $rCat) {
+										$rFanoutDebugOptions[$rCat] = $rCat;
+									}
+									if (!array_key_exists($rFanoutDebug, $rFanoutDebugOptions)) {
+										$rFanoutDebugOptions[$rFanoutDebug] = str_replace(',', ', ', $rFanoutDebug);
+									}
+									?>
+									<select name="fanout_debug" id="fanout_debug" class="form-control" data-toggle="select2">
+										<?php foreach ($rFanoutDebugOptions as $rValue => $rLabel): ?>
+											<option value="<?= htmlspecialchars((string) $rValue) ?>"<?= (string) $rValue === $rFanoutDebug ? ' selected' : '' ?>><?= htmlspecialchars((string) $rLabel) ?></option>
+										<?php endforeach; ?>
+									</select>
 								</div>
 							</div>
 

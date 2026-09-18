@@ -27,6 +27,9 @@ use XcVm\Core\Config\SettingsManager;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class FanoutConfig {
+	/** The daemon's debug narration categories (its dlog categories); the settings dropdown lists them. */
+	public const DEBUG_CATEGORIES = ['boot', 'config', 'stream', 'puller', 'hls', 'viewer', 'ingest', 'ctl', 'signal', 'monitor', 'stats', 'buffer', 'reaper', 'mem'];
+
 	/** Absolute path to the daemon's tuning config on THIS node. */
 	private static function path(): string {
 		return BIN_PATH . 'xc_fanout/config.json';
@@ -173,7 +176,7 @@ class FanoutConfig {
 		if (in_array($rValue, ['all', '1', 'true', 'yes', 'on'], true)) {
 			return 'all';
 		}
-		$rKnown = ['boot', 'config', 'stream', 'puller', 'hls', 'viewer', 'ingest', 'ctl', 'signal', 'monitor', 'stats', 'buffer', 'reaper', 'mem'];
+		$rKnown = self::DEBUG_CATEGORIES;
 		$rCats = [];
 		foreach (explode(',', $rValue) as $rCat) {
 			$rCat = trim($rCat);
