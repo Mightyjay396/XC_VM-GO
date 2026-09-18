@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\NetworkUtils;
@@ -116,7 +117,7 @@ if ($rChannelInfo) {
 	// legacy path runs — startProxy producer included. Stopping the daemon is
 	// therefore the rollback: every stream falls back automatically, no flag.
 	$rFanout = false;
-	if (!empty($rChannelInfo["proxy"]) && file_exists(FANOUT_CTL_SOCK)) {
+	if (!empty($rChannelInfo["proxy"]) && LicenseGate::fanoutUsable()) {
 		DatabaseFactory::connect();
 		$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?', $rStreamID);
 		$rStreamRow = ($db->num_rows() > 0 ? $db->get_row() : []);
@@ -361,7 +362,7 @@ if ($rChannelInfo) {
 			// fed ⇒ not-on-air, same as the TS arm. The on-disk HLS stays only for
 			// timeshift/thumbnail/.analyse/MonitorCommand, never served to clients.
 			$rHLS = false;
-			if (file_exists(FANOUT_CTL_SOCK) && FanoutClient::isStreamFed($rStreamID)) {
+			if (LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)) {
 				$rDaemonPl = FanoutClient::hlsPlaylist($rStreamID);
 				if ($rDaemonPl !== null) {
 					$rHLS = HLSGenerator::tokenizeDaemonPlaylist($rDaemonPl, $rSettings, (isset($rUsername) ? $rUsername : null), (isset($rPassword) ? $rPassword : null), $rStreamID, $rTokenData["uuid"], $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, intval($rChannelInfo["on_demand"]), $rServerID, $rProxyID);
@@ -393,7 +394,7 @@ if ($rChannelInfo) {
 			$rTSDaemon = false;
 			if ($rChannelInfo["proxy"]) {
 				$rTSDaemon = $rFanout;
-			} elseif (file_exists(FANOUT_CTL_SOCK) && FanoutClient::isStreamFed($rStreamID)) {
+			} elseif (LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)) {
 				$rTSDaemon = true;
 			}
 			$rConnPID = $rTSDaemon ? 0 : $rPID;

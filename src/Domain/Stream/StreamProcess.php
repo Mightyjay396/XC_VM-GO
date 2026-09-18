@@ -5,6 +5,7 @@ namespace XcVm\Domain\Stream;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\CurlClient;
+use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -1223,7 +1224,7 @@ class StreamProcess {
 	 * Whether live streams on this server are handed to the fanout supervisor.
 	 */
 	public static function supervisionEnabled(): bool {
-		return !empty(SettingsManager::get('fanout_supervise')) && defined('FANOUT_CTL_SOCK') && file_exists(FANOUT_CTL_SOCK);
+		return !empty(SettingsManager::get('fanout_supervise')) && LicenseGate::fanoutUsable();
 	}
 
 	/**
