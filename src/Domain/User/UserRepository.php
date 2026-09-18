@@ -193,7 +193,7 @@ class UserRepository {
 	 * @param array $rBouquets Bouquet map (id => ['streams','series','channels','movies','radios']).
 	 * @return array{channel_ids:int[],series_ids:int[],vod_ids:int[],live_ids:int[],radio_ids:int[]}
 	 */
-	private static function aggregateBouquetIds(array $rBouquet, array $rBouquets): array {
+	private static function aggregateBouquetIds(array $rBouquet, ?array $rBouquets): array {
 		$rChannelIDs = $rSeriesIDs = $rVODIDs = $rLiveIDs = $rRadioIDs = [];
 		foreach ($rBouquet as $rID) {
 			if (isset($rBouquets[$rID]['streams'])) {
@@ -521,7 +521,7 @@ class UserRepository {
 	 *
 	 * @param array       $rSettings        Panel settings.
 	 * @param bool        $rCached          Use cached lookups.
-	 * @param array       $rBouquets        Bouquet definitions.
+	 * @param array|null  $rBouquets        Bouquet definitions (only used when $rGetChannelIDs).
 	 * @param int|null    $rUserID          User id (when known).
 	 * @param string|null $rUsername        Username (credential lookup).
 	 * @param string|null $rPassword        Password (credential lookup).
@@ -530,7 +530,7 @@ class UserRepository {
 	 * @param string      $rIP              Client IP.
 	 * @return array|null User info, or null if not found.
 	 */
-	public static function getStreamingUserInfo(array $rSettings, bool $rCached, array $rBouquets, ?int $rUserID = null, ?string $rUsername = null, ?string $rPassword = null, bool $rGetChannelIDs = false, bool $rGetConnections = false, string $rIP = '') {
+	public static function getStreamingUserInfo(array $rSettings, bool $rCached, ?array $rBouquets, ?int $rUserID = null, ?string $rUsername = null, ?string $rPassword = null, bool $rGetChannelIDs = false, bool $rGetConnections = false, string $rIP = '') {
 		$db = self::db();
 		$rUserInfo = null;
 
