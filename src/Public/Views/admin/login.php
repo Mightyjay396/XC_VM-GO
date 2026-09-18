@@ -175,10 +175,7 @@ if (!isset($_SESSION['hash'])) {
                     <span class="panel-divider" aria-hidden="true"></span>
 
                     <div class="panel-foot">
-                        &copy; <?= $rYears ?>
-                        <a href="https://github.com/Vateron-Media/XC_VM" target="_blank" rel="noopener noreferrer">Vateron Media</a>
-                        &middot;
-                        <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener noreferrer">AGPL-3.0</a>
+                        &copy; <?= $rYears ?> <?= AdminHelpers::getAttribution() ?>
                     </div>
                 </section>
 

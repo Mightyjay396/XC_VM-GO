@@ -41,7 +41,23 @@ class AttributionGuard {
 	 * @return bool True when the panel's attribution notice still carries every marker.
 	 */
 	public static function verify(): bool {
-		return self::hasMarkers(AdminHelpers::getAttribution());
+		return self::inspect(AdminHelpers::getAttribution());
+	}
+
+	/**
+	 * Prefer the tamper-resistant compiled check when xcvm_core exposes it: that
+	 * logic lives in the ioncube-protected extension and cannot be stripped from
+	 * readable PHP. Fall back to the in-PHP marker scan (a deterrent only) where
+	 * the extension or the method is absent (dev/CI, installs without xcvm_core).
+	 *
+	 * @param string $rHtml Rendered attribution HTML to inspect.
+	 */
+	private static function inspect(string $rHtml): bool {
+		if (class_exists('XC_VM') && method_exists('XC_VM', 'verify_branding')) {
+			return (bool) \XC_VM::verify_branding($rHtml);
+		}
+
+		return self::hasMarkers($rHtml);
 	}
 
 	/**
