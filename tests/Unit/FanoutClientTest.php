@@ -96,4 +96,29 @@ final class FanoutClientTest extends TestCase {
 		// after a real register, so this alone is a safe false.
 		$this->assertFalse(FanoutClient::probe(42, 500));
 	}
+
+	/**
+	 * status() reports where the daemon's memory is alongside whether it is up.
+	 * With no control socket there is nothing to ask, and the key must still be
+	 * present and null rather than missing: the watchdog writes this array into
+	 * servers.watchdog_data, and the admin views read it back by key.
+	 */
+	public function testStatusCarriesAMemoryKeyWhenTheDaemonIsUnreachable() {
+		$status = FanoutClient::status();
+
+		$this->assertArrayHasKey('memory', $status);
+		$this->assertNull($status['memory']);
+		$this->assertFalse($status['running']);
+		$this->assertArrayHasKey('connections', $status);
+	}
+
+	/**
+	 * Both new control calls answer null when the daemon cannot be reached,
+	 * rather than throwing or reporting a false success — the panel runs them
+	 * from the watchdog, where an unreachable daemon is an ordinary state.
+	 */
+	public function testControlCallsReturnNullWithoutADaemon() {
+		$this->assertNull(FanoutClient::memory());
+		$this->assertNull(FanoutClient::unregisterAll());
+	}
 }

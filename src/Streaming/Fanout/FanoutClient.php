@@ -290,19 +290,64 @@ class FanoutClient {
 	 * daemon up — control socket present AND answering? Reuses the /connections
 	 * control call, so a live socket that responds means the daemon is serving.
 	 *
-	 * @return array{running:bool,socket:bool,connections:int|null}
+	 * @return array{running:bool,socket:bool,connections:int|null,memory:array|null}
 	 *   running     — socket answered (daemon up),
 	 *   socket      — the control socket file exists (binary started at all),
-	 *   connections — live TS viewers on the daemon, or null when unreachable.
+	 *   connections — live TS viewers on the daemon, or null when unreachable,
+	 *   memory      — where the daemon's memory is (see memory()), or null.
 	 */
 	public static function status(): array {
 		$rSocket = defined('FANOUT_CTL_SOCK') && file_exists(FANOUT_CTL_SOCK);
 		$rConns = self::activeConnections();
+		$rRunning = $rConns !== null;
 		return [
-			'running'     => $rConns !== null,
+			'running'     => $rRunning,
 			'socket'      => $rSocket,
 			'connections' => is_array($rConns) ? count($rConns) : null,
+			// Where the daemon's memory actually is. The join rings dominate its
+			// RSS by design — one watched channel holds its whole prebuffer — so
+			// a node running hot is answered by "the rings are as big as the
+			// tuning says" or "something else is growing", and nothing else in
+			// the panel could tell those apart. Skipped when the daemon is down,
+			// so a dead socket costs no second request.
+			'memory'      => $rRunning ? self::memory() : null,
 		];
+	}
+
+	/**
+	 * Where the daemon's memory is: the per-stream join rings against the Go
+	 * heap as a whole.
+	 *
+	 * @return array{streams:int,ring_bytes:int,heap_in_use_bytes:int,mapped_bytes:int,released_bytes:int,largest:array}|null
+	 *   null when the daemon is unreachable or answers something unreadable.
+	 */
+	public static function memory(): ?array {
+		$rResponse = self::request('GET', '/memory', null, 1, 3);
+		if ($rResponse['code'] !== 200 || $rResponse['body'] === null) {
+			return null;
+		}
+		$rData = json_decode($rResponse['body'], true);
+		return is_array($rData) ? $rData : null;
+	}
+
+	/**
+	 * Tear down EVERY stream on the daemon in one call — a maintenance drain,
+	 * or a node being decommissioned — and report how many were removed.
+	 *
+	 * The daemon logs each teardown, so this is an auditable operator action.
+	 * Streams the panel still wants come back on the next request that
+	 * registers them, since registration happens per request; this stops the
+	 * fan-out now rather than scripting a DELETE per id.
+	 *
+	 * @return int|null Streams removed, or null when the daemon is unreachable.
+	 */
+	public static function unregisterAll(): ?int {
+		$rResponse = self::request('DELETE', '/streams', null, 2, 5);
+		if ($rResponse['code'] < 200 || $rResponse['code'] >= 300 || $rResponse['body'] === null) {
+			return null;
+		}
+		$rData = json_decode($rResponse['body'], true);
+		return is_array($rData) && isset($rData['unregistered']) ? intval($rData['unregistered']) : null;
 	}
 
 	/**

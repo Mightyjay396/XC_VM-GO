@@ -1571,6 +1571,13 @@ use XcVm\Streaming\Codec\FfmpegBinaries; // Code reconstruction by Squallp
 								<div class="col-md-2">
 									<div class="form-check form-switch"><input name="fanout_source_insecure" id="fanout_source_insecure" type="checkbox" <?= ($rSettings["fanout_source_insecure"] ?? 1) == 1 ? ' checked' : '' ?> class="form-check-input"></div>
 								</div>
+								<label class="col-md-4 col-form-label" for="fanout_debug">
+									<?= $language::get('fanout_debug') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="xc_fanout: live debug narration, applied on the daemon&#39;s next config poll (no restart, no viewer drop). Empty = off; &#39;all&#39; = everything; or a comma list of categories: boot, config, stream, puller, hls, viewer, ingest, ctl, signal, monitor, stats, buffer, reaper, mem."></i>
+								</label>
+								<div class="col-md-2">
+									<input type="text" class="form-control text-center" id="fanout_debug" name="fanout_debug" value="<?= htmlspecialchars($rSettings["fanout_debug"] ?? '') ?>" placeholder="off">
+								</div>
 							</div>
 
 							<div class="form-group row mb-4">

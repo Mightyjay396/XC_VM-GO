@@ -133,6 +133,13 @@ class FanoutConfig {
 			// Whether the daemon accepts streams handed over for supervision
 			// (StreamProcess::superviseStream). Applied live by the daemon.
 			'supervise'             => (bool) ($rSettings['fanout_supervise'] ?? true),
+			// The daemon's debug narration, toggled live from here: "" (off),
+			// "all", or a comma-separated category list. Off by default — the
+			// full narration on a busy node is a lot of log — and applied on the
+			// daemon's next config poll, so an operator can turn it on for a
+			// misbehaving node and off again without a restart that would drop
+			// every viewer.
+			'debug_cats'            => self::debugCats((string) ($rSettings['fanout_debug'] ?? '')),
 		];
 	}
 
@@ -149,6 +156,32 @@ class FanoutConfig {
 	 */
 	private static function backend(string $rValue): string {
 		return in_array($rValue, ['auto', 'ffmpeg', 'native'], true) ? $rValue : 'auto';
+	}
+
+	/**
+	 * Keep the debug selection to what the daemon understands: "" (off), "all"
+	 * (every category), or a comma-separated list drawn from the daemon's known
+	 * categories. An unknown or empty value becomes "" so a typo turns debug off
+	 * rather than producing a file the daemon then has to second-guess; the
+	 * daemon itself ignores an unknown category, so this is belt-and-braces.
+	 */
+	private static function debugCats(string $rValue): string {
+		$rValue = strtolower(trim($rValue));
+		if ($rValue === '' || $rValue === 'off' || $rValue === '0' || $rValue === 'false' || $rValue === 'no') {
+			return '';
+		}
+		if (in_array($rValue, ['all', '1', 'true', 'yes', 'on'], true)) {
+			return 'all';
+		}
+		$rKnown = ['boot', 'config', 'stream', 'puller', 'hls', 'viewer', 'ingest', 'ctl', 'signal', 'monitor', 'stats', 'buffer', 'reaper', 'mem'];
+		$rCats = [];
+		foreach (explode(',', $rValue) as $rCat) {
+			$rCat = trim($rCat);
+			if ($rCat !== '' && in_array($rCat, $rKnown, true) && !in_array($rCat, $rCats, true)) {
+				$rCats[] = $rCat;
+			}
+		}
+		return implode(',', $rCats);
 	}
 
 	/** Clamp an int into [lo, hi]. */
