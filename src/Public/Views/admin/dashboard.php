@@ -61,6 +61,71 @@ if ($rSettings['save_closed_connection'] && $rSettings['dashboard_map']) {
 }
 ?>
 
+<?php
+// Activation nudge: shown until the install has an activation key on disk (the
+// same file xcvm_core reads for license_valid()). Soft UI hint only — it never
+// blocks the dashboard; real enforcement lives in the extension.
+$xmActivationFile = MAIN_HOME . 'config/activation_key';
+if (!is_file($xmActivationFile)):
+    $xmHwid = (class_exists('XC_VM') && method_exists('XC_VM', 'install_id')) ? (string) \XC_VM::install_id() : '';
+?>
+    <div class="alert alert-warning mb-4" role="alert">
+        <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
+            <i class="icon-base ti tabler-shield-lock"></i>
+            <div class="flex-grow-1">
+                <strong><?= $language::get('activation_required_title'); ?></strong>
+                <div class="small">
+                    <?= $language::get('activation_required_text'); ?>
+                    <?php if ($xmHwid !== ''): ?>
+                        <br><?= $language::get('activation_hwid'); ?>:
+                        <code class="user-select-all"><?= htmlspecialchars($xmHwid, ENT_QUOTES); ?></code>
+                    <?php endif; ?>
+                </div>
+            </div>
+            <a href="https://www.xcvm.tech/activate" target="_blank" rel="noopener" class="btn btn-sm btn-label-warning">
+                <?= $language::get('activation_get_key'); ?>
+            </a>
+        </div>
+        <form id="activation-form" class="d-flex flex-wrap gap-2" onsubmit="return false;">
+            <input type="text" id="activation-key-input" class="form-control form-control-sm flex-grow-1" style="min-width:260px;"
+                autocomplete="off" spellcheck="false"
+                placeholder="<?= htmlspecialchars($language::get('activation_key_placeholder'), ENT_QUOTES); ?>">
+            <button type="submit" id="activation-submit" class="btn btn-sm btn-warning">
+                <?= $language::get('activation_activate'); ?>
+            </button>
+        </form>
+        <div id="activation-msg" class="small mt-1 d-none"></div>
+    </div>
+    <script>
+        (function () {
+            var form = document.getElementById('activation-form');
+            if (!form) return;
+            form.addEventListener('submit', function () {
+                var input = document.getElementById('activation-key-input');
+                var msg = document.getElementById('activation-msg');
+                var btn = document.getElementById('activation-submit');
+                var key = (input.value || '').trim();
+                if (!key) return;
+                btn.disabled = true;
+                fetch('./api?action=save_activation_key', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    body: 'activation_key=' + encodeURIComponent(key)
+                }).then(function (r) { return r.json(); }).then(function (d) {
+                    if (d && d.result) { location.reload(); return; }
+                    btn.disabled = false;
+                    msg.textContent = (d && d.message) ? d.message : '';
+                    msg.classList.remove('d-none');
+                    msg.classList.add('text-danger');
+                }).catch(function () { btn.disabled = false; });
+            });
+        })();
+    </script>
+<?php endif; ?>
+
 <!-- Page header -->
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3">
     <h4 class="mb-0">

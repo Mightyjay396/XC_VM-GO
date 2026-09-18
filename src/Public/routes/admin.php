@@ -436,6 +436,7 @@ $router->api('listdir', [MiscAjaxController::class, 'listdir']);
 $router->api('queue', [MiscAjaxController::class, 'queue']);
 $router->api('delete_recording', [MiscAjaxController::class, 'deleteRecording']);
 $router->api('clear_failures', [MiscAjaxController::class, 'clearFailures']);
+$router->api('save_activation_key', [MiscAjaxController::class, 'saveActivationKey']);
 
 // ─── Users & Lines ─────────────────────────────────
 $router->api('line', [UserAjaxController::class, 'line']);

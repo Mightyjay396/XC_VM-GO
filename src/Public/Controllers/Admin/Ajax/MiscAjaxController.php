@@ -4,6 +4,7 @@ namespace XcVm\Public\Controllers\Admin\Ajax;
 
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Localization\Translator;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamConfigRepository;
 use XcVm\Module\Watch\WatchService;
@@ -178,6 +179,28 @@ class MiscAjaxController extends BaseAjaxController {
 		WatchService::deleteRecording(RequestManager::get('id'));
 
 		$this->ok();
+	}
+
+	/** action=save_activation_key — store the panel activation key on disk. */
+	public function saveActivationKey(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'settings');
+
+		$rKey = trim((string) RequestManager::get('activation_key'));
+
+		if (!preg_match('/^XCVM1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/', $rKey)) {
+			$this->fail(['message' => Translator::get('activation_invalid_key')]);
+		}
+
+		$rPath = MAIN_HOME . 'config/activation_key';
+
+		if (@file_put_contents($rPath, $rKey . "\n") === false) {
+			$this->fail(['message' => Translator::get('activation_save_failed')]);
+		}
+
+		@chmod($rPath, 0600);
+
+		$this->ok(['message' => Translator::get('activation_saved')]);
 	}
 
 	/** action=clear_failures — clear a stream's failure log. */
