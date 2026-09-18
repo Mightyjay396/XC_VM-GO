@@ -28,7 +28,7 @@ use XcVm\Domain\User\UserRepository;
 final class AdminScopeBootstrap implements ScopeBootstrap {
 	public function boot(): void {
 		$this->bootSession();
-		$this->bootFunctions();
+		self::bootFunctions();
 	}
 
 	/**
@@ -82,11 +82,23 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 	}
 
 	/**
+	 * Public entry point for the admin bootstrap. The FC path reaches it via
+	 * boot(); the $noBootstrapPages view scripts (login, setup, database, logout,
+	 * player, post) call it directly in place of the former `include
+	 * "functions.php"`. Optional-auth: the session-integrity guard is inside the
+	 * `isset($_SESSION['hash'])` block, so unauthenticated pages boot cleanly.
+	 */
+	public static function hydrateAdminContext(): void {
+		self::bootFunctions();
+	}
+
+	/**
 	 * Framework boot + admin user context. Injects the legacy view-facing
 	 * globals ($rUserInfo, $rPermissions, $rServerError, ...) — the procedural
-	 * admin views read them from scope.
+	 * admin views read them from scope. Callers that run after output has
+	 * started rely on the headers_sent() guards.
 	 */
-	private function bootFunctions(): void {
+	private static function bootFunctions(): void {
 		global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
 			$rTimeout, $rProtocol, $allServers, $rPermissions, $allowedLangs,
 			$rServerError, $allServersHealthy, $updateRequired, $rUserInfo,
@@ -112,11 +124,15 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 			}
 
 			if (!empty($rUserInfo['hue']) && (!isset($_COOKIE['hue']) || $_COOKIE['hue'] != $rUserInfo['hue'])) {
-				setcookie('hue', $rUserInfo['hue'], time() + 604800);
+				if (!headers_sent()) {
+					setcookie('hue', $rUserInfo['hue'], time() + 604800);
+				}
 			}
 
 			if (!isset($_COOKIE['theme']) || $_COOKIE['theme'] != $rUserInfo['theme']) {
-				setcookie('theme', $rUserInfo['theme'], time() + 604800);
+				if (!headers_sent()) {
+					setcookie('theme', $rUserInfo['theme'], time() + 604800);
+				}
 			}
 
 			if (!isset($_COOKIE['lang']) || $_COOKIE['lang'] != $rUserInfo['lang']) {
@@ -125,18 +141,19 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 
 			$rPermissions = AuthRepository::getPermissions($rUserInfo['member_group_id']);
 			$rPermissions['advanced'] = json_decode($rPermissions['allowed_pages'], true);
-			$rIP = NetworkUtils::getUserIP();
-			$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $_SESSION['ip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1)) : $_SESSION['ip'] == $rIP);
 
-			if (!$rUserInfo || !$rPermissions || !$rPermissions['is_admin'] || !$rIPMatch && $rSettings['ip_logout'] || $_SESSION['verify'] != md5($rUserInfo['username'] . '||' . $rUserInfo['password'])) {
+			if (!SessionManager::adminSessionValid($rUserInfo, $rPermissions, $rSettings)) {
 				unset($rUserInfo, $rPermissions);
 
 				SessionManager::clearContext('admin');
-				header('Location: index');
+				if (!headers_sent()) {
+					header('Location: index');
+				}
 
 				exit();
 			}
 
+			$rIP = NetworkUtils::getUserIP();
 			if ($_SESSION['ip'] != $rIP && !$rSettings['ip_logout']) {
 				$_SESSION['ip'] = $rIP;
 			}
@@ -178,7 +195,9 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 			$db->query('SELECT COUNT(`id`) AS `count` FROM `users` LEFT JOIN `users_groups` ON `users_groups`.`group_id` = `users`.`member_group_id` WHERE `users_groups`.`is_admin` = 1;');
 
 			if ($db->get_row()['count'] == 0) {
-				header('Location: ./setup');
+				if (!headers_sent()) {
+					header('Location: ./setup');
+				}
 				exit();
 			}
 		}

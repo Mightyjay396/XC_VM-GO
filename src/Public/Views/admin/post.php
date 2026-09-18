@@ -3,6 +3,7 @@
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\PageAuthorization;
+use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
@@ -37,10 +38,18 @@ use XcVm\Domain\Vod\TMDbService;
 use XcVm\Module\Plex\PlexService;
 use XcVm\Module\Watch\RecordingService;
 use XcVm\Module\Watch\WatchService;
+use XcVm\Core\Localization\Translator;
+use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
 $rICount = !empty($GLOBALS['__forcePostMode']) ? 1 : count(get_included_files());
-include 'session.php';
-include 'functions.php';
+SessionManager::start('admin');
+SessionManager::requireAuth();
+global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
+	$rTimeout, $rProtocol, $allServers, $rPermissions, $allowedLangs,
+	$rServerError, $allServersHealthy, $updateRequired, $rUserInfo,
+	$_STATUS, $customScript, $language;
+$language = Translator::class;
+AdminScopeBootstrap::hydrateAdminContext();
 
 // nginx serves an existing post.php directly (standalone), bypassing the front
 // controller — so the module web boot in index.php never runs and the module

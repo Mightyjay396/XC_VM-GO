@@ -4,6 +4,7 @@ namespace XcVm\Public\Controllers\Admin;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Auth\AuthRepository;
+use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Enum\ClientFilter;
@@ -41,7 +42,7 @@ class TableController extends BaseAdminController {
 			session_write_close();
 		}
 
-		global $db, $rPermissions;
+		global $db, $rPermissions, $rUserInfo, $rSettings;
 
 		if (!PHP_ERRORS) {
 			if (empty($_SERVER['HTTP_X_REQUESTED_WITH']) || strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) != 'xmlhttprequest') {
@@ -58,37 +59,26 @@ class TableController extends BaseAdminController {
 				echo json_encode(["status" => "STATUS_FAILURE", "error" => "Invalid API key."]);
 				exit;
 			}
-			$rUserID = $db->get_row()["id"];
 			$rIsAPI = true;
-			require_once MAIN_HOME . "bootstrap.php";
-			\XC_Bootstrap::boot(\XC_Bootstrap::CONTEXT_ADMIN);
-			$rUserInfo = UserRepository::getRegisteredUserById($rUserID);
-			$rPermissions = AuthRepository::getPermissions($rUserInfo["member_group_id"]);
-			$rPermissions["advanced"] = json_decode($rPermissions["allowed_pages"], true);
-			if ((string) $rUserInfo["timezone"] !== '') {
-				date_default_timezone_set($rUserInfo["timezone"]);
-			}
+			$this->hydrateApiUser((int) $db->get_row()["id"]);
 		} elseif ($_SERVER["REMOTE_ADDR"] == "127.0.0.1" && RequestManager::has("api_user_id")) {
 			$rIsAPI = true;
-			require_once MAIN_HOME . "bootstrap.php";
-			\XC_Bootstrap::boot(\XC_Bootstrap::CONTEXT_ADMIN);
-			$rUserInfo = UserRepository::getRegisteredUserById(RequestManager::get("api_user_id"));
-			$rPermissions = AuthRepository::getPermissions($rUserInfo["member_group_id"]);
-			$rPermissions["advanced"] = json_decode($rPermissions["allowed_pages"], true);
-			if ((string) $rUserInfo["timezone"] !== '') {
-				date_default_timezone_set($rUserInfo["timezone"]);
-			}
+			$this->hydrateApiUser((int) RequestManager::get("api_user_id"));
 		} elseif (isset($_SESSION["hash"])) {
-			include "functions.php";
+			// Session path: same hydration as the API branches, then validate the
+			// session's integrity. Unlike the HTML bootstrap this returns JSON on
+			// failure (no cookies / redirects / setup query — this is a data endpoint).
+			$this->hydrateApiUser((int) $_SESSION["hash"]);
+			if (!SessionManager::adminSessionValid($rUserInfo, $rPermissions, $rSettings)) {
+				SessionManager::clearContext("admin");
+				echo json_encode($rReturn);
+				exit;
+			}
 		} else {
 			echo json_encode($rReturn);
 			exit;
 		}
 
-		if (!empty($rMobile)) {
-			SettingsManager::getAll()["modal_edit"] = false;
-			SettingsManager::getAll()["group_buttons"] = false;
-		}
 		$rType = RequestManager::get("id");
 
 		$rStart = (int) RequestManager::get("start");
@@ -243,6 +233,25 @@ class TableController extends BaseAdminController {
 					echo json_encode($rReturn);
 				}
 				return;
+		}
+	}
+
+	/**
+	 * Boot the admin framework and resolve the acting user's permissions into the
+	 * view-facing globals ($rUserInfo, $rPermissions). Shared by the api_key,
+	 * api_user_id and session branches of index() (replaces the former
+	 * `include "functions.php"` on the session path).
+	 */
+	private function hydrateApiUser(int $rUserID): void {
+		global $rUserInfo, $rPermissions;
+
+		require_once MAIN_HOME . "bootstrap.php";
+		\XC_Bootstrap::boot(\XC_Bootstrap::CONTEXT_ADMIN);
+		$rUserInfo = UserRepository::getRegisteredUserById($rUserID);
+		$rPermissions = AuthRepository::getPermissions($rUserInfo["member_group_id"]);
+		$rPermissions["advanced"] = json_decode($rPermissions["allowed_pages"], true);
+		if ((string) $rUserInfo["timezone"] !== '') {
+			date_default_timezone_set($rUserInfo["timezone"]);
 		}
 	}
 

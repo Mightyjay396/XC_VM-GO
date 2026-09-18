@@ -1,6 +1,8 @@
 <?php
 
 use XcVm\Core\Util\AdminHelpers;
+use XcVm\Core\Localization\Translator;
+use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
 /*
  PHP Mini MySQL Admin
@@ -12,7 +14,12 @@ use XcVm\Core\Util\AdminHelpers;
  Dual licensed: GPL v2 and MIT, see texts at http://opensource.org/licenses/
 */
 
-include "functions.php";
+global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
+    $rTimeout, $rProtocol, $allServers, $rPermissions, $allowedLangs,
+    $rServerError, $allServersHealthy, $updateRequired, $rUserInfo,
+    $_STATUS, $customScript, $language;
+$language = Translator::class;
+AdminScopeBootstrap::hydrateAdminContext();
 
 if (!defined('DB_ACCESS_ENABLED') || !DB_ACCESS_ENABLED) {
     AdminHelpers::goHome();

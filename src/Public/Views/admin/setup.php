@@ -3,20 +3,30 @@
 use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\PageAuthorization;
+use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\NetworkUtils;
+use XcVm\Core\Localization\Translator;
+use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
-include 'functions.php';
+
+global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
+    $rTimeout, $rProtocol, $allServers, $rPermissions, $allowedLangs,
+    $rServerError, $allServersHealthy, $updateRequired, $rUserInfo,
+    $_STATUS, $customScript, $language;
+$language = Translator::class;
+AdminScopeBootstrap::hydrateAdminContext();
 if (!RequestManager::has('update')):
     $rFirstRun = true;
     $db->query('SELECT COUNT(`id`) AS `count` FROM `users` LEFT JOIN `users_groups` ON `users_groups`.`group_id` = `users`.`member_group_id` WHERE `users_groups`.`is_admin` = 1;');
 
     if ($db->get_row()['count'] > 0) {
         $rFirstRun = false;
-        include 'session.php';
+        SessionManager::start('admin');
+        SessionManager::requireAuth();
 
         if (!PageAuthorization::checkPermissions()) {
             AdminHelpers::goHome();

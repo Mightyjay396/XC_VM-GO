@@ -194,7 +194,7 @@ class UserRepository {
 	 * @param array $rBouquets Bouquet map (id => ['streams','series','channels','movies','radios']).
 	 * @return array{channel_ids:int[],series_ids:int[],vod_ids:int[],live_ids:int[],radio_ids:int[]}
 	 */
-	private static function aggregateBouquetIds(array $rBouquet, array $rBouquets): array {
+	private static function aggregateBouquetIds(array $rBouquet, ?array $rBouquets): array {
 		$rChannelIDs = $rSeriesIDs = $rVODIDs = $rLiveIDs = $rRadioIDs = [];
 		foreach ($rBouquet as $rID) {
 			if (isset($rBouquets[$rID]['streams'])) {
@@ -524,9 +524,7 @@ class UserRepository {
 	 *
 	 * @param array       $rSettings        Panel settings.
 	 * @param bool        $rCached          Use cached lookups.
-	 * @param array|null  $rBouquets        Bouquet definitions; null when the caller did not load them
-	 *                                      (player_api does so unless it lists channels, the portal when
-	 *                                      the cache file is missing) — treated as no bouquets.
+	 * @param array|null  $rBouquets        Bouquet definitions (only used when $rGetChannelIDs).
 	 * @param int|null    $rUserID          User id (when known).
 	 * @param string|null $rUsername        Username (credential lookup).
 	 * @param string|null $rPassword        Password (credential lookup).

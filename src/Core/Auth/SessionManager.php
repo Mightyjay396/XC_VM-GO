@@ -2,6 +2,9 @@
 
 namespace XcVm\Core\Auth;
 
+use XcVm\Core\Util\NetworkUtils;
+
+
 /**
  * Unified Session Manager
  *
@@ -227,6 +230,62 @@ class SessionManager {
 		foreach (self::$keyMap[$context] as $key) {
 			unset($_SESSION[$key]);
 		}
+	}
+
+	/**
+	 * Integrity check for an authenticated admin session. The single definition
+	 * shared by the HTML bootstrap (AdminScopeBootstrap::hydrateAdminContext) and
+	 * the JSON table endpoint (Admin\TableController). Returns true only when the
+	 * user and permissions exist, the account is an admin, the login IP still
+	 * matches (when ip_logout is enabled), and the stored verify hash matches the
+	 * user's current credentials. Callers act on `false` themselves (redirect for
+	 * HTML, JSON error for AJAX) after SessionManager::clearContext('admin').
+	 *
+	 * @param array|null $rUserInfo    Registered-user row, or null when not found.
+	 * @param array|null $rPermissions Resolved permissions, or null.
+	 * @param array      $rSettings    Settings row (ip_subnet_match, ip_logout).
+	 */
+	public static function adminSessionValid(?array $rUserInfo, ?array $rPermissions, array $rSettings): bool {
+		if (!self::adminIdentityValid($rUserInfo, $rPermissions)) {
+			return false;
+		}
+
+		if (!self::adminIpAllowed($rSettings)) {
+			return false;
+		}
+
+		return $_SESSION['verify'] == md5($rUserInfo['username'] . '||' . $rUserInfo['password']);
+	}
+
+	/**
+	 * Identity side of the admin session guard: a user row and permissions exist
+	 * and the account is flagged as an admin.
+	 *
+	 * @param array|null $rUserInfo    Registered-user row, or null when not found.
+	 * @param array|null $rPermissions Resolved permissions, or null.
+	 */
+	private static function adminIdentityValid(?array $rUserInfo, ?array $rPermissions): bool {
+		return $rUserInfo && $rPermissions && !empty($rPermissions['is_admin']);
+	}
+
+	/**
+	 * IP side of the admin session guard: allowed unless ip_logout is enabled and
+	 * the request IP no longer matches the login IP — the whole IP, or just the
+	 * subnet when ip_subnet_match is set.
+	 *
+	 * @param array $rSettings Settings row (ip_logout, ip_subnet_match).
+	 */
+	private static function adminIpAllowed(array $rSettings): bool {
+		if (!$rSettings['ip_logout']) {
+			return true;
+		}
+
+		$rIP = NetworkUtils::getUserIP();
+		if ($rSettings['ip_subnet_match']) {
+			return implode('.', array_slice(explode('.', $_SESSION['ip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1));
+		}
+
+		return $_SESSION['ip'] == $rIP;
 	}
 
 	/**
