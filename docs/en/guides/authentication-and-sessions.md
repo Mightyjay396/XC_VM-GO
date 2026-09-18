@@ -165,20 +165,18 @@ After initial login, every authenticated page load re-validates the session. Thi
 
 ### Admin Session Validation
 
-File: `src/Public/Views/admin/functions.php`
+Entry point: `AdminScopeBootstrap::hydrateAdminContext()` (`src/Infrastructure/Bootstrap/AdminScopeBootstrap.php`). It runs on the front-controller admin path (via `boot()`) and is called directly by the `$noBootstrapPages` view scripts (`login`, `setup`, `database`, `logout`, `player`, `post`) — replacing the former `admin/functions.php` include.
 
-When `$_SESSION['hash']` is set, the following checks run on every page load:
+When `$_SESSION['hash']` is set, it resolves the user (`UserRepository::getRegisteredUserById($_SESSION['hash'])`) and permissions (`AuthRepository::getPermissions()`), then validates the session's integrity via `SessionManager::adminSessionValid($rUserInfo, $rPermissions, $rSettings)`:
 
-1. **User lookup** -- `UserRepository::getRegisteredUserById($_SESSION['hash'])`. If the user no longer exists, the session is terminated.
-2. **Permission check** -- `AuthRepository::getPermissions()` must return a valid set with `is_admin == true`.
-3. **IP verification** -- Compares the current IP against `$_SESSION['ip']`:
+1. **User & admin** -- a user row and permissions exist and `is_admin` is set.
+2. **IP verification** -- Compares the current IP against `$_SESSION['ip']`:
    - If `ip_subnet_match` setting is enabled: compares only the first three octets (e.g., `192.168.1.*` matches `192.168.1.*`).
    - If `ip_subnet_match` is disabled: requires an exact IP match.
-   - If the IP does not match and `ip_logout` setting is enabled: the session is terminated.
-   - If the IP does not match and `ip_logout` is disabled: `$_SESSION['ip']` is silently updated to the new IP.
-4. **Verify hash check** -- `$_SESSION['verify']` must equal `md5($rUserInfo['username'] . '||' . $rUserInfo['password'])`. This ensures the session is invalidated if the password changes.
+   - The IP is only enforced when `ip_logout` is enabled; otherwise a changed IP is tolerated (and, on the HTML path, `$_SESSION['ip']` is refreshed to the new value).
+3. **Verify hash check** -- `$_SESSION['verify']` must equal `md5($rUserInfo['username'] . '||' . $rUserInfo['password'])`. This ensures the session is invalidated if the password changes.
 
-If any check fails, the session is cleared via `SessionManager::clearContext('admin')` and the user is redirected to the index page.
+If validation fails, the session is cleared via `SessionManager::clearContext('admin')` and the user is redirected to the index page. The admin JSON DataTables endpoint (`Public\Controllers\Admin\TableController`) runs the same `SessionManager::adminSessionValid()` check on its session branch but responds with JSON instead of redirecting.
 
 ### Reseller Session Validation
 
@@ -193,11 +191,9 @@ Identical logic to admin validation, but uses the reseller session keys:
 
 The IP subnet matching and IP logout behavior is the same as admin.
 
-### Admin Session Timeout
+### Admin Session Lifecycle
 
-File: `src/Public/Views/admin/session.php`
-
-A separate session timeout check runs for admin sessions. If `$_SESSION['hash']` and `$_SESSION['last_activity']` are both set and more than 60 minutes have elapsed since `last_activity`, the session keys (`hash`, `ip`, `code`, `verify`, `last_activity`) are unset. On every valid request, `$_SESSION['last_activity']` is updated and the session is closed for writing.
+Session start and the 60-minute inactivity timeout run in `AdminScopeBootstrap::bootSession()` (front-controller path) and, for the legacy view scripts, in `SessionManager::start('admin')` + `requireAuth()` — which replaced the former `admin/session.php` include. If `$_SESSION['hash']` and `$_SESSION['last_activity']` are both set and more than 60 minutes have elapsed since `last_activity`, the session keys (`hash`, `ip`, `code`, `verify`, `last_activity`) are unset. On every valid request, `$_SESSION['last_activity']` is updated and the session is closed for writing. The AJAX session-poll endpoint (`{"result": true/false}`) is served by `Public\Controllers\Admin\SessionController` (the `session` route).
 
 ### Player Session Validation
 
@@ -209,7 +205,7 @@ The player context does not perform IP verification, subnet matching, or activit
 
 File: `src/Core/Auth/SessionManager.php`
 
-Unified session API that abstracts the different session key names across contexts. Intended as a replacement for the legacy `admin/session.php` and `reseller/session.php` files.
+Unified session API that abstracts the different session key names across contexts. It is the replacement for the legacy admin `session.php` / `functions.php` includes (now removed); reseller and player scopes bootstrap through their own `*ScopeBootstrap` classes.
 
 ### Context Key Map
 
@@ -231,7 +227,7 @@ Starts a PHP session (if not already started), sets the active context, and runs
 
 **`requireAuth(?string $loginUrl = null): void`**
 
-Checks for an authenticated session. If the request is to `session.php` directly, returns a JSON `{"result": true/false}` response (used for AJAX session polling). Otherwise, redirects unauthenticated users to the login page. On success, calls `touch()` to update the activity timestamp.
+Redirects unauthenticated users to the login page; on success, calls `touch()` to update the activity timestamp. Dedicated AJAX session polling is now served by `SessionController` (the `session` route), not by this method.
 
 **`isAuthenticated(): bool`**
 
@@ -426,8 +422,8 @@ Page-level access control. Determines whether the current user's group permissio
 | `src/Core/Auth/Authorization.php` | Object-level authorization checks |
 | `src/Core/Auth/PageAuthorization.php` | Page-level access control |
 | `src/Public/Controllers/Player/PlayerLoginController.php` | Player login flow with security checks |
-| `src/Public/Views/admin/functions.php` | Admin session validation on every page load |
-| `src/Public/Views/admin/session.php` | Admin session timeout and AJAX session check |
+| `src/Infrastructure/Bootstrap/AdminScopeBootstrap.php` | Admin bootstrap: session lifecycle, `$rUserInfo`/`$rPermissions`, integrity guard |
+| `src/Public/Controllers/Admin/SessionController.php` | AJAX admin session poll (`session` route) |
 | `src/Infrastructure/Bootstrap/reseller_functions.php` | Reseller session validation on every page load |
 | `src/Domain/User/UserRepository.php` | Credential lookup (`getAuthUserByCredentials`) |
 | `src/bootstrap.php` | Status constant definitions, bootstrap contexts |
