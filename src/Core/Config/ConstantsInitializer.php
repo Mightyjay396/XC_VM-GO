@@ -16,11 +16,12 @@ defined('XC_VM_VERSION') || define('XC_VM_VERSION', '2.5.2');
 // Makefile stamp_release_id target). A source/dev checkout is never stamped, so
 // runtime and the licence activation call report 'dev'. Unique per build, so a
 // leaked copy can be traced back to the build it came from.
-defined('XC_VM_BUILD_ID') || define('XC_VM_BUILD_ID', (
+defined('XC_VM_BUILD_ID') || define(
+	'XC_VM_BUILD_ID',
 	is_file(__DIR__ . '/../../RELEASE_ID')
-		? trim((string) file_get_contents(__DIR__ . '/../../RELEASE_ID'))
-		: ''
-) ?: 'dev');
+		? (trim((string) file_get_contents(__DIR__ . '/../../RELEASE_ID')) ?: 'dev')
+		: 'dev'
+);
 
 /**
  * Single source of truth for the runtime constants that used to live in the
