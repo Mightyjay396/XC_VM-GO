@@ -231,7 +231,9 @@ class UserRepository {
 	private static function resolveCategoryIds(array $rBouquet, array $rCategoryMap): array {
 		$rAllowedCategories = [];
 		foreach ($rBouquet as $rID) {
-			$rAllowedCategories = array_merge($rAllowedCategories, ($rCategoryMap[$rID] ?: []));
+			// A bouquet newer than the category map (rebuilt by the heavy cache
+			// pass) has no entry yet: no categories, not an undefined-key warning.
+			$rAllowedCategories = array_merge($rAllowedCategories, ($rCategoryMap[$rID] ?? []) ?: []);
 		}
 		return array_values(array_unique($rAllowedCategories));
 	}
@@ -521,7 +523,9 @@ class UserRepository {
 	 *
 	 * @param array       $rSettings        Panel settings.
 	 * @param bool        $rCached          Use cached lookups.
-	 * @param array       $rBouquets        Bouquet definitions.
+	 * @param array|null  $rBouquets        Bouquet definitions; null when the caller did not load them
+	 *                                      (player_api does so unless it lists channels, the portal when
+	 *                                      the cache file is missing) — treated as no bouquets.
 	 * @param int|null    $rUserID          User id (when known).
 	 * @param string|null $rUsername        Username (credential lookup).
 	 * @param string|null $rPassword        Password (credential lookup).
@@ -530,7 +534,7 @@ class UserRepository {
 	 * @param string      $rIP              Client IP.
 	 * @return array|null User info, or null if not found.
 	 */
-	public static function getStreamingUserInfo(array $rSettings, bool $rCached, array $rBouquets, ?int $rUserID = null, ?string $rUsername = null, ?string $rPassword = null, bool $rGetChannelIDs = false, bool $rGetConnections = false, string $rIP = '') {
+	public static function getStreamingUserInfo(array $rSettings, bool $rCached, ?array $rBouquets, ?int $rUserID = null, ?string $rUsername = null, ?string $rPassword = null, bool $rGetChannelIDs = false, bool $rGetConnections = false, string $rIP = '') {
 		$db = self::db();
 		$rUserInfo = null;
 
@@ -549,7 +553,7 @@ class UserRepository {
 		$rUserInfo = self::applyIspInfo($rUserInfo, $rSettings, $rCached, $rIP, $db);
 
 		if ($rGetChannelIDs) {
-			$rUserInfo = array_merge($rUserInfo, self::aggregateBouquetIds($rUserInfo['bouquet'], $rBouquets));
+			$rUserInfo = array_merge($rUserInfo, self::aggregateBouquetIds($rUserInfo['bouquet'], $rBouquets ?? []));
 		}
 
 		// Built by the heavy cache pass; until it exists (a fresh install, a cleared
