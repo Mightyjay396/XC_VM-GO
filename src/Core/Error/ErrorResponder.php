@@ -35,6 +35,7 @@ class ErrorResponder {
 			'API_IP_NOT_ALLOWED'       => 'IP is not allowed to access the API.',
 			'ARCHIVE_DOESNT_EXIST'     => 'Archive files are missing for this stream ID.',
 			'ASN_BLOCKED'              => 'ASN has been blocked.',
+			'ATTRIBUTION_REMOVED'      => 'Panel copyright/attribution notice is missing. Restore it to continue.',
 			'BANNED'                   => 'Line has been banned.',
 			'BLOCKED_USER_AGENT'       => 'User-agent has been blocked.',
 			'DEVICE_NOT_ALLOWED'       => 'MAG & Enigma devices are not allowed to access this.',

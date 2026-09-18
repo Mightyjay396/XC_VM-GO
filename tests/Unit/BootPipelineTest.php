@@ -7,6 +7,7 @@ use XcVm\Core\Bootstrap\BootStageInterface;
 use XcVm\Core\Bootstrap\BootState;
 use XcVm\Core\Bootstrap\StageProfiles;
 use XcVm\Core\Bootstrap\Stage\AdminApiStage;
+use XcVm\Core\Bootstrap\Stage\AttributionVerificationStage;
 use XcVm\Core\Bootstrap\Stage\AdminGlobalsStage;
 use XcVm\Core\Bootstrap\Stage\AdminShutdownStage;
 use XcVm\Core\Bootstrap\Stage\ConfigStage;
@@ -135,6 +136,7 @@ final class BootPipelineTest extends TestCase {
 			ConfigStage::class,
 			FloodProtectionStage::class,
 			HostVerificationStage::class,
+			AttributionVerificationStage::class,
 			SessionStage::class,
 			DatabaseStage::class,
 			LegacyCoreStage::class,

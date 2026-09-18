@@ -321,6 +321,16 @@ Under this license:
 
 Any attempt to redistribute this software under a different license, remove attribution, or obscure the origin of the project constitutes a violation of the license terms.
 
+#### Attribution-integrity check
+
+As permitted by **AGPL-3.0 §7(b)** (preservation of author attributions), the panel
+verifies on each request that its attribution notice — the *"Vateron Media · AGPL-3.0"*
+credit shown in the panel footer — is still present. If the notice has been removed, the
+**management UI** (admin / reseller / player panels) is locked with an
+`ATTRIBUTION_REMOVED` notice until it is restored. The check is fully reversible and
+non-destructive: no data is modified, the CLI remains available, and restoring the notice
+unlocks the panel on the next request. End-viewer streaming is **not** affected by this check.
+
 > ⚖️ You are solely responsible for how it is used.
 > We take no responsibility for misuse or illegal deployments.
 

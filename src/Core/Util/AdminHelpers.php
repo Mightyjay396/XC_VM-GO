@@ -203,7 +203,25 @@ class AdminHelpers {
 	}
 
 	/**
-	 * Build the admin footer HTML (copyright year range + version).
+	 * Build the legally-required attribution notice (author + AGPL-3.0 licence).
+	 *
+	 * This is the SINGLE source for the "Vateron Media · AGPL-3.0" attribution
+	 * that every panel footer and login page renders, so its presence can be
+	 * verified in one place (see \XcVm\Core\Integrity\AttributionGuard). AGPL-3.0
+	 * §7(b) permits requiring preservation of this notice; removing it trips the
+	 * attribution guard and locks the panel UI until it is restored.
+	 *
+	 * @return string Attribution HTML (author link · licence link).
+	 */
+	public static function getAttribution() {
+		$brand = "<a href='https://github.com/Vateron-Media/XC_VM' target='_blank' rel='noopener noreferrer'>Vateron Media</a>";
+		$license = "<a href='https://www.gnu.org/licenses/agpl-3.0.html' target='_blank' rel='noopener noreferrer'>AGPL-3.0</a>";
+
+		return "{$brand} &middot; {$license}";
+	}
+
+	/**
+	 * Build the admin footer HTML (attribution + copyright year range + version).
 	 *
 	 * @return string Footer HTML.
 	 */
@@ -212,10 +230,7 @@ class AdminHelpers {
 		$startYear = 2025;
 		$yearRange = ($startYear === (int) $currentYear) ? $startYear : "{$startYear}\u{2013}{$currentYear}";
 
-		$brand = "<a href='https://github.com/Vateron-Media/XC_VM' target='_blank' rel='noopener noreferrer'>Vateron Media</a>";
-		$license = "<a href='https://www.gnu.org/licenses/agpl-3.0.html' target='_blank' rel='noopener noreferrer'>AGPL-3.0</a>";
-
-		return "{$brand} &nbsp;&middot;&nbsp; &copy; {$yearRange} &middot; {$license} &middot; v" . XC_VM_VERSION;
+		return self::getAttribution() . " &nbsp;&middot;&nbsp; &copy; {$yearRange} &middot; v" . XC_VM_VERSION;
 	}
 
 	/**

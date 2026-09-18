@@ -40,7 +40,7 @@ final class ErrorResponderTest extends TestCase {
 	public function testCodesCatalogueSize(): void {
 		$codes = ErrorResponder::codes();
 
-		$this->assertCount(65, $codes);
+		$this->assertCount(66, $codes);
 		$this->assertSame('Domain name not recognised.', $codes['INVALID_HOST']);
 		$this->assertArrayHasKey('CACHE_INCOMPLETE', $codes);
 	}

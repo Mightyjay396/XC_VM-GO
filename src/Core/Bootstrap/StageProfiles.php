@@ -5,6 +5,7 @@ namespace XcVm\Core\Bootstrap;
 use XcVm\Core\Bootstrap\Stage\AdminApiStage;
 use XcVm\Core\Bootstrap\Stage\AdminGlobalsStage;
 use XcVm\Core\Bootstrap\Stage\AdminShutdownStage;
+use XcVm\Core\Bootstrap\Stage\AttributionVerificationStage;
 use XcVm\Core\Bootstrap\Stage\ConfigStage;
 use XcVm\Core\Bootstrap\Stage\ConstantsStage;
 use XcVm\Core\Bootstrap\Stage\ContainerPopulateStage;
@@ -68,6 +69,9 @@ class StageProfiles {
 				break;
 
 			case BootContext::Admin:
+				// UI scopes (admin/reseller/player) all boot as Admin; lock the
+				// panel UI if the required attribution notice was stripped.
+				$stages[] = new AttributionVerificationStage();
 				$stages[] = new SessionStage();
 				$stages[] = new DatabaseStage();
 				$stages[] = new LegacyCoreStage(false);
