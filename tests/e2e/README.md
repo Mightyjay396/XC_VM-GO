@@ -19,6 +19,7 @@ the admin specs create, edit, start and delete real records.
 | `tests/admin/signin.spec.ts` | A second administrator: created, refused with a wrong password, signs in and out, deleted |
 | `tests/admin/templates.spec.ts` | Activation code pages render; category template: the menu's create entry, create, rename and make it a system template, clone, delete |
 | `tests/admin/reports.spec.ts` | VOD theft detection and line IP usage keep the chosen time range |
+| `tests/admin/pickers.spec.ts` | Date pickers open: expiry on the line / MAG / Enigma2 forms and their mass-edit pages, and the log pages' date range filters |
 | `tests/admin/cleanup.teardown.ts` | After everything: removes whatever the admin specs left behind (see below) |
 
 ## Run
