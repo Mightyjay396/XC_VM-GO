@@ -51,6 +51,13 @@ final class ConstantsInitializerTest extends TestCase {
 		$this->assertSame(3, $cfg['MONITOR_CALLS']);
 	}
 
+	public function testBuildIdWatermarkDefaultsToDevInSourceCheckout(): void {
+		// Loading the class defines XC_VM_BUILD_ID at file scope. `make main`
+		// stamps a RELEASE_ID into the deploy root; a source checkout has none.
+		$this->assertTrue(defined('XC_VM_BUILD_ID'));
+		$this->assertSame('dev', XC_VM_BUILD_ID);
+	}
+
 	public function testBinariesDeriveFromBinPath(): void {
 		$bin = ConstantsInitializer::binaries('/home/xc_vm/bin/');
 

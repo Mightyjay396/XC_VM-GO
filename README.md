@@ -331,6 +331,9 @@ credit shown in the panel footer — is still present. If the notice has been re
 non-destructive: no data is modified, the CLI remains available, and restoring the notice
 unlocks the panel on the next request. End-viewer streaming is **not** affected by this check.
 
+Each build is also stamped with a unique build identifier (`XC_VM_BUILD_ID`) for provenance,
+so a leaked or rebranded copy can be traced back to the build it originated from.
+
 > ⚖️ You are solely responsible for how it is used.
 > We take no responsibility for misuse or illegal deployments.
 

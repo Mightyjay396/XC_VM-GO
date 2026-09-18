@@ -243,10 +243,10 @@ generate_deleted_files:
 # ─── MAIN targets ────────────────────────────────────────────────
 # Single archive: used for both clean install and update.
 # The update script (src/update) filters out excluded dirs at runtime.
-main: main_copy_files set_permissions verify_no_lfs_pointers create_archive main_archive_move main_install_archive clean
+main: main_copy_files stamp_release_id set_permissions verify_no_lfs_pointers create_archive main_archive_move main_install_archive clean
 
 # ─── LoadBalancer targets ────────────────────────────────────────
-lb: lb_copy_files lb_delete_files_list set_permissions verify_no_lfs_pointers create_archive lb_archive_move clean
+lb: lb_copy_files lb_delete_files_list stamp_release_id set_permissions verify_no_lfs_pointers create_archive lb_archive_move clean
 
 lb_copy_files:
 	@echo "==> [LB] Creating distribution directory: $(DIST_DIR)"
@@ -315,6 +315,18 @@ main_copy_files:
 		-not -path "*/.git/*" \
 		-delete
 	@echo "All files gitkeep deleted"
+
+# Stamp a unique per-build watermark into the staged tree for provenance / leak
+# tracing. Generated per build (NOT git-tracked, one file per archive). Runtime
+# exposes it as the XC_VM_BUILD_ID constant (ConstantsInitializer reads
+# RELEASE_ID from the deploy root); a source/dev checkout has no file -> "dev".
+stamp_release_id:
+	@ver=$$(sed -nE "s/.*define\('XC_VM_VERSION', '([^']+)'\).*/\1/p" $(MAIN_DIR)/Core/Config/ConstantsInitializer.php | head -n1); \
+	sha=$$(git rev-parse --short=10 HEAD 2>/dev/null || echo nogit); \
+	rnd=$$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n'); \
+	id="$${ver:-0}+$${sha}.$$(date -u +%Y%m%dT%H%M%SZ).$${rnd}"; \
+	printf '%s\n' "$$id" > "$(TEMP_DIR)/RELEASE_ID"; \
+	echo "==> [BUILD] Stamped RELEASE_ID: $$id"
 
 lb_delete_files_list:
 	@echo "[INFO] Checking for manual deleted files list (LB-scoped)"
