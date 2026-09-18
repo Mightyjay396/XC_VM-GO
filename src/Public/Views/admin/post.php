@@ -3,6 +3,7 @@
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\PageAuthorization;
+use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
@@ -41,7 +42,8 @@ use XcVm\Core\Localization\Translator;
 use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
 $rICount = !empty($GLOBALS['__forcePostMode']) ? 1 : count(get_included_files());
-include 'session.php';
+SessionManager::start('admin');
+SessionManager::requireAuth();
 global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
 	$rTimeout, $rProtocol, $allServers, $rPermissions, $allowedLangs,
 	$rServerError, $allServersHealthy, $updateRequired, $rUserInfo,

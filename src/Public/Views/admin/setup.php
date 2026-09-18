@@ -3,6 +3,7 @@
 use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\PageAuthorization;
+use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Http\RequestManager;
@@ -24,7 +25,8 @@ if (!RequestManager::has('update')):
 
     if ($db->get_row()['count'] > 0) {
         $rFirstRun = false;
-        include 'session.php';
+        SessionManager::start('admin');
+        SessionManager::requireAuth();
 
         if (!PageAuthorization::checkPermissions()) {
             AdminHelpers::goHome();

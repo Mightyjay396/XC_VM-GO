@@ -1,6 +1,7 @@
 <?php
 
 use XcVm\Core\Auth\PageAuthorization;
+use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\AdminHelpers;
@@ -9,7 +10,8 @@ use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Localization\Translator;
 use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
-include 'session.php';
+SessionManager::start('admin');
+SessionManager::requireAuth();
 global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
     $rTimeout, $rProtocol, $allServers, $rPermissions, $allowedLangs,
     $rServerError, $allServersHealthy, $updateRequired, $rUserInfo,
