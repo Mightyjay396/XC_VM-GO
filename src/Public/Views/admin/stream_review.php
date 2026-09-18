@@ -286,8 +286,19 @@ renderUnifiedLayoutFooter('admin');
                     });
                 }
 
+                // Client-side render from raw stream_list rows (no server HTML).
+                function esc(s) {
+                    var d = document.createElement('div');
+                    d.textContent = (s == null ? '' : s);
+                    return d.innerHTML;
+                }
+                function streamIcon(url) {
+                    if (!url) {
+                        return '';
+                    }
+                    return '<img loading="lazy" src="resize?maxw=96&maxh=32&url=' + encodeURIComponent(url) + '">';
+                }
                 var rTable = $('#datatable-mass').DataTable({
-                    processing: true,
                     serverSide: true,
                     searching: true,
                     ordering: false,
@@ -299,12 +310,28 @@ renderUnifiedLayoutFooter('admin');
                             d.filter = getFilter();
                         }
                     },
-                    columnDefs: [{
+                    columns: [{
+                        data: 'id',
+                        className: 'dt-center'
+                    }, {
+                        data: 'stream_icon',
+                        render: function(d) {
+                            return streamIcon(d);
+                        }
+                    }, {
+                        data: 'stream_display_name',
+                        render: function(d) {
+                            return esc(d);
+                        }
+                    }, {
+                        data: 'category',
                         className: 'dt-center',
-                        targets: [0, 3]
+                        render: function(d) {
+                            return esc(d);
+                        }
                     }],
                     rowCallback: function(row, data) {
-                        if ($.inArray(data[0], window.rSelected) !== -1) {
+                        if ($.inArray(String(data.id), window.rSelected) !== -1) {
                             $(row).addClass('selected');
                         }
                     },

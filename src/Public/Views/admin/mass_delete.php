@@ -412,17 +412,9 @@ use XcVm\Domain\Vod\SeriesService;
                                 <tr>
                                     <th class="text-center"><?= $language::get('id') ?></th>
                                     <th><?= $language::get('username') ?></th>
-                                    <th></th>
                                     <th><?= $language::get('owner') ?></th>
                                     <th class="text-center"><?= $language::get('status') ?></th>
-                                    <th></th>
-                                    <th class="text-center"><?= $language::get('trial') ?></th>
-                                    <th class="text-center"><?= $language::get('restreamer') ?></th>
-                                    <th></th>
-                                    <th class="text-center"><?= $language::get('connections') ?></th>
                                     <th class="text-center"><?= $language::get('expiration') ?></th>
-                                    <th></th>
-                                    <th></th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -475,13 +467,7 @@ use XcVm\Domain\Vod\SeriesService;
                                     <th class="text-center"><?= $language::get('id') ?></th>
                                     <th><?= $language::get('username') ?></th>
                                     <th><?= $language::get('owner') ?></th>
-                                    <th class="text-center"><?= $language::get('ip') ?></th>
-                                    <th class="text-center"><?= $language::get('type') ?></th>
                                     <th class="text-center"><?= $language::get('status') ?></th>
-                                    <th class="text-center"><?= $language::get('credits') ?></th>
-                                    <th class="text-center"><?= $language::get('users') ?></th>
-                                    <th class="text-center"><?= $language::get('last_login') ?></th>
-                                    <th class="text-center"><?= $language::get('actions') ?></th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -539,11 +525,7 @@ use XcVm\Domain\Vod\SeriesService;
                                     <th class="text-center"><?= $language::get('mac_address') ?></th>
                                     <th class="text-center"><?= $language::get('device') ?></th>
                                     <th><?= $language::get('owner') ?></th>
-                                    <th class="text-center"><?= $language::get('status') ?></th>
-                                    <th class="text-center"><?= $language::get('online') ?></th>
-                                    <th class="text-center"><?= $language::get('trial') ?></th>
                                     <th class="text-center"><?= $language::get('expiration') ?></th>
-                                    <th class="text-center"><?= $language::get('actions') ?></th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -599,13 +581,8 @@ use XcVm\Domain\Vod\SeriesService;
                                     <th class="text-center"><?= $language::get('id') ?></th>
                                     <th><?= $language::get('username') ?></th>
                                     <th class="text-center"><?= $language::get('mac_address') ?></th>
-                                    <th class="text-center"><?= $language::get('device') ?></th>
                                     <th><?= $language::get('owner') ?></th>
-                                    <th class="text-center"><?= $language::get('status') ?></th>
-                                    <th class="text-center"><?= $language::get('online') ?></th>
-                                    <th class="text-center"><?= $language::get('trial') ?></th>
                                     <th class="text-center"><?= $language::get('expiration') ?></th>
-                                    <th class="text-center"><?= $language::get('actions') ?></th>
                                 </tr>
                             </thead>
                             <tbody></tbody>
@@ -699,11 +676,149 @@ renderUnifiedLayoutFooter('admin');
             $('#enigma_reseller_search').val('').trigger('change');
         };
 
+        // Client-side render helpers for keyed (raw-data) picker tables.
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : s);
+            return d.innerHTML;
+        }
+        var VOD_BADGE = {
+            0: ['secondary', 'Not Encoded'],
+            1: ['success', 'Encoded'],
+            2: ['warning', 'Encoding'],
+            3: ['primary', 'Direct Source'],
+            4: ['danger', 'Down'],
+            5: ['info', 'Direct Stream']
+        };
+        function vodBadge(code) {
+            var m = VOD_BADGE[code] || ['secondary', 'Unknown'];
+            return '<span class="badge bg-label-' + m[0] + '">' + m[1] + '</span>';
+        }
+        function episodeImage(url) {
+            if (!url) {
+                return '';
+            }
+            return '<a href="javascript:void(0);" data-src="resize?maxw=512&maxh=512&url=' + encodeURIComponent(url) +
+                '"><img loading="lazy" src="resize?maxh=32&maxw=64&url=' + encodeURIComponent(url) + '"></a>';
+        }
+
+        var STREAM_BADGE = {
+            '-1': ['secondary', 'NO SERVERS'],
+            0: ['dark', 'STOPPED'],
+            1: ['success', 'ONLINE'],
+            2: ['warning', 'STARTING'],
+            3: ['danger', 'DOWN'],
+            4: ['info', 'ON DEMAND'],
+            5: ['primary', 'DIRECT SOURCE'],
+            6: ['primary', 'CREATING...'],
+            7: ['primary', 'DIRECT STREAM']
+        };
+        function streamBadge(code) {
+            var m = STREAM_BADGE[code] || STREAM_BADGE[0];
+            return '<span class="badge bg-label-' + m[0] + '">' + m[1] + '</span>';
+        }
+        function streamIcon(url) {
+            if (!url) {
+                return '';
+            }
+            return '<img loading="lazy" src="resize?maxw=96&maxh=32&url=' + encodeURIComponent(url) + '">';
+        }
+        function serverNameCell(name, count) {
+            if (!name) {
+                return 'No Server Selected';
+            }
+            var html = esc(name);
+            if (count > 1) {
+                html += ' &nbsp; <button type="button" class="btn btn-info btn-xs waves-effect waves-light">+ ' +
+                    (count - 1) + '</button>';
+            }
+            return html;
+        }
+
+        function movieImage(url) {
+            if (!url) {
+                return '';
+            }
+            return '<a href="javascript:void(0);" data-src="resize?maxw=512&maxh=512&url=' + encodeURIComponent(url) +
+                '"><img loading="lazy" src="resize?maxh=58&maxw=32&url=' + encodeURIComponent(url) + '"></a>';
+        }
+        function ratingStars(rating) {
+            if (!rating) {
+                return '';
+            }
+            var star = Math.round(rating) / 2;
+            var full = Math.floor(star);
+            var half = (star - full) > 0;
+            var empty = 5 - (full + (half ? 1 : 0));
+            var h = '';
+            for (var i = 0; i < full; i++) {
+                h += "<i class='mdi mdi-star'></i>";
+            }
+            if (half) {
+                h += "<i class='mdi mdi-star-half'></i>";
+            }
+            for (var j = 0; j < empty; j++) {
+                h += "<i class='mdi mdi-star-outline'></i>";
+            }
+            return h;
+        }
+        function movieName(row) {
+            var year = row.year ? '<strong>' + esc(row.year) + '</strong> &nbsp;' : '';
+            return esc(row.stream_display_name) + '<br><span style="font-size:11px;">' + year + ratingStars(row.rating) + '</span>';
+        }
+        function tmdbBadge(has) {
+            if (has) {
+                return '<i class="icon-base ti tabler-circle-check-filled text-success" title="TMDb"></i>';
+            }
+            return '<i class="icon-base ti tabler-circle-minus text-secondary" title="No TMDb"></i>';
+        }
+
+        function seriesTitle(row) {
+            var year = row.year ? '<strong>' + esc(row.year) + '</strong> &nbsp;' : '';
+            return '<strong>' + esc(row.title) + '</strong><br><span style="font-size:11px;">' + year + ratingStars(row.rating) + '</span>';
+        }
+        function countBadge(n) {
+            return '<span class="badge bg-label-' + (n > 0 ? 'info' : 'secondary') + '">' + (n || 0) + '</span>';
+        }
+
+        var LINE_STATUS = {
+            active: ['success', 'Active'],
+            banned: ['danger', 'Banned'],
+            disabled: ['secondary', 'Disabled'],
+            expired: ['warning', 'Expired']
+        };
+        function lineStatusBadge(sv) {
+            var m = LINE_STATUS[sv] || ['secondary', sv || ''];
+            return '<span class="badge bg-label-' + m[0] + '">' + esc(m[1]) + '</span>';
+        }
+        function userStatusBadge(code) {
+            return code == 1 ? '<span class="badge bg-label-success">Active</span>' :
+                '<span class="badge bg-label-secondary">Disabled</span>';
+        }
+        function expStrCell(d, expired) {
+            if (!d) {
+                return '<span class="fs-4">&infin;</span>';
+            }
+            var parts = String(d).split(' ');
+            var body = esc(parts[0]) + (parts[1] ? '<br><small class="text-body-secondary">' + esc(parts[1]) + '</small>' : '');
+            return expired ? '<span class="text-danger">' + body + '</span>' : body;
+        }
+        function fmtExpDate(unix) {
+            if (!unix) {
+                return '<span class="fs-4">&infin;</span>';
+            }
+            var dt = new Date(unix * 1000);
+            if (isNaN(dt.getTime())) {
+                return '';
+            }
+            var z = function(n) { return (n < 10 ? '0' : '') + n; };
+            return dt.getFullYear() + '-' + z(dt.getMonth() + 1) + '-' + z(dt.getDate());
+        }
+
         // Build one selection table: serverSide picker + row-click select + search/entries/reload wiring.
         function initTable(opts) {
             var arr = opts.arr;
             var dtOpts = {
-                processing: true,
                 serverSide: true,
                 searching: true,
                 ajax: {
@@ -712,7 +827,8 @@ renderUnifiedLayoutFooter('admin');
                 },
                 columnDefs: opts.columnDefs,
                 rowCallback: function(row, data) {
-                    if ($.inArray(String(data[0]).trim(), arr) !== -1) {
+                    var rid = opts.columns ? String(data && data[opts.idKey || 'id'] != null ? data[opts.idKey || 'id'] : '') : String(data[0]);
+                    if ($.inArray(rid.trim(), arr) !== -1) {
                         $(row).addClass('table-active');
                     }
                 },
@@ -725,6 +841,10 @@ renderUnifiedLayoutFooter('admin');
                     topEnd: null
                 }
             };
+            if (opts.columns) {
+                dtOpts.columns = opts.columns;
+                delete dtOpts.columnDefs;
+            }
             if (opts.order) {
                 dtOpts.order = opts.order;
             }
@@ -882,9 +1002,36 @@ renderUnifiedLayoutFooter('admin');
                     d.server = val('stream_server_id');
                     d.include_channels = true;
                 },
-                columnDefs: [{
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
+                }, {
+                    data: 'stream_icon',
                     className: 'dt-center',
-                    targets: [0, 1, 5]
+                    render: function(d) {
+                        return streamIcon(d);
+                    }
+                }, {
+                    data: 'stream_display_name',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'category',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'server_name',
+                    render: function(d, t, row) {
+                        return serverNameCell(d, row.server_count);
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return streamBadge(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']
@@ -903,9 +1050,37 @@ renderUnifiedLayoutFooter('admin');
                     d.filter = val('radio_filter');
                     d.server = val('station_server_id');
                 },
-                columnDefs: [{
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
+                }, {
+                    data: 'stream_icon',
+                    orderable: false,
                     className: 'dt-center',
-                    targets: [0, 1, 5]
+                    render: function(d) {
+                        return streamIcon(d);
+                    }
+                }, {
+                    data: 'stream_display_name',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'category',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'server_name',
+                    render: function(d, t, row) {
+                        return serverNameCell(d, row.server_count);
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return streamBadge(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']
@@ -924,12 +1099,44 @@ renderUnifiedLayoutFooter('admin');
                     d.filter = val('movie_filter');
                     d.server = val('movie_server_id');
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 1, 5, 6]
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
                 }, {
+                    data: 'movie_image',
                     orderable: false,
-                    targets: [1, 6]
+                    className: 'dt-center',
+                    render: function(d) {
+                        return movieImage(d);
+                    }
+                }, {
+                    data: 'stream_display_name',
+                    render: function(d, t, row) {
+                        return movieName(row);
+                    }
+                }, {
+                    data: 'category',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'server_name',
+                    render: function(d, t, row) {
+                        return serverNameCell(d, row.server_count);
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return vodBadge(d);
+                    }
+                }, {
+                    data: 'has_tmdb',
+                    orderable: false,
+                    className: 'dt-center',
+                    render: function(d) {
+                        return tmdbBadge(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']
@@ -946,12 +1153,57 @@ renderUnifiedLayoutFooter('admin');
                     d.id = 'series_list';
                     d.category = val('series_category_search');
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 1, 4, 5, 6, 7, 8]
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
                 }, {
+                    data: 'cover',
                     orderable: false,
-                    targets: [1, 6]
+                    className: 'dt-center',
+                    render: function(d) {
+                        return movieImage(d);
+                    }
+                }, {
+                    data: 'title',
+                    render: function(d, t, row) {
+                        return seriesTitle(row);
+                    }
+                }, {
+                    data: 'category',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'latest_season',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return countBadge(d);
+                    }
+                }, {
+                    data: 'episode_count',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return countBadge(d);
+                    }
+                }, {
+                    data: 'has_tmdb',
+                    orderable: false,
+                    className: 'dt-center',
+                    render: function(d) {
+                        return tmdbBadge(d);
+                    }
+                }, {
+                    data: 'release_date',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'last_modified',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return esc(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']
@@ -970,12 +1222,38 @@ renderUnifiedLayoutFooter('admin');
                     d.filter = val('episode_filter');
                     d.server = val('episode_server_id');
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 1, 4]
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
                 }, {
+                    data: 'movie_image',
                     orderable: false,
-                    targets: [1]
+                    className: 'dt-center',
+                    render: function(d) {
+                        return episodeImage(d);
+                    }
+                }, {
+                    data: 'stream_display_name',
+                    render: function(d, t, row) {
+                        var s = (row.series_title || '') + ' - Season ' + (row.season_num == null ? '' : row.season_num);
+                        return '<strong>' + esc(d) + '</strong><br><span style="font-size:11px;">' + esc(s) + '</span>';
+                    }
+                }, {
+                    data: 'server_name',
+                    render: function(d, t, row) {
+                        var name = d ? esc(d) : 'No Server Selected';
+                        if (row.server_count > 1) {
+                            name += ' &nbsp; <button type="button" class="btn btn-info btn-xs waves-effect waves-light">+ ' +
+                                (row.server_count - 1) + '</button>';
+                        }
+                        return name;
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return vodBadge(d);
+                    }
                 }],
                 order: [
                     [0, 'desc']
@@ -994,13 +1272,33 @@ renderUnifiedLayoutFooter('admin');
                     d.reseller = val('reseller_search');
                     d.no_url = true;
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 4, 6, 7, 9, 10]
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
                 }, {
-                    visible: false,
-                    targets: [2, 5, 8, 11, 12]
+                    data: 'username',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'owner_name',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return lineStatusBadge(d);
+                    }
+                }, {
+                    data: 'exp_str',
+                    className: 'dt-center text-nowrap',
+                    render: function(d, t, row) {
+                        return expStrCell(d, row.exp_expired);
+                    }
                 }],
+                idKey: 'id',
                 searchDelay: 250,
                 search: '#line_search',
                 len: '#line_show_entries',
@@ -1016,13 +1314,27 @@ renderUnifiedLayoutFooter('admin');
                     d.reseller = val('user_reseller_search');
                     d.no_url = true;
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 4, 5, 6, 7]
+                columns: [{
+                    data: 'id',
+                    className: 'dt-center'
                 }, {
-                    visible: false,
-                    targets: [3, 8, 9]
+                    data: 'username',
+                    render: function(d) {
+                        return esc(d);
+                    }
+                }, {
+                    data: 'owner_username',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'status',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return userStatusBadge(d);
+                    }
                 }],
+                idKey: 'id',
                 searchDelay: 250,
                 search: '#user_search',
                 len: '#user_show_entries',
@@ -1038,13 +1350,39 @@ renderUnifiedLayoutFooter('admin');
                     d.reseller = val('mag_reseller_search');
                     d.no_url = true;
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 2, 5, 7, 8]
+                columns: [{
+                    data: 'mag_id',
+                    className: 'dt-center'
                 }, {
-                    visible: false,
-                    targets: [1, 3, 6, 9]
+                    data: 'username',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'mac',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'stb_type',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'owner_name',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'exp_date',
+                    className: 'dt-center text-nowrap',
+                    render: function(d) {
+                        return fmtExpDate(d);
+                    }
                 }],
+                idKey: 'mag_id',
                 searchDelay: 250,
                 search: '#mag_search',
                 len: '#mag_show_entries',
@@ -1060,13 +1398,33 @@ renderUnifiedLayoutFooter('admin');
                     d.reseller = val('enigma_reseller_search');
                     d.no_url = true;
                 },
-                columnDefs: [{
-                    className: 'dt-center',
-                    targets: [0, 2, 5, 7, 8]
+                columns: [{
+                    data: 'device_id',
+                    className: 'dt-center'
                 }, {
-                    visible: false,
-                    targets: [1, 3, 6, 9]
+                    data: 'username',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'mac',
+                    className: 'dt-center',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'owner_name',
+                    render: function(d) {
+                        return esc(d || '');
+                    }
+                }, {
+                    data: 'exp_date',
+                    className: 'dt-center text-nowrap',
+                    render: function(d) {
+                        return fmtExpDate(d);
+                    }
                 }],
+                idKey: 'device_id',
                 searchDelay: 250,
                 search: '#enigma_search',
                 len: '#enigma_show_entries',

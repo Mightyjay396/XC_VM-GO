@@ -240,7 +240,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = $('#episodes-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

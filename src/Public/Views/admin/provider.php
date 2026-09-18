@@ -224,7 +224,6 @@ renderUnifiedLayoutFooter('admin');
 
             var initProviderTable = function(tableId, streamType, urlFn, addPage) {
                 $('#' + tableId).DataTable({
-                    processing: true,
                     serverSide: true,
                     ajax: {
                         url: './api?action=provider_streams&provider_id=' + p.id + '&stream_type=' + streamType,

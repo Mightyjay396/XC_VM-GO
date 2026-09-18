@@ -209,7 +209,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#mags-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

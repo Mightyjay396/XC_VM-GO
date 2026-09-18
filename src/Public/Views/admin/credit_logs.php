@@ -78,7 +78,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#credit-logs-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

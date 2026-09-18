@@ -529,8 +529,45 @@ renderUnifiedLayoutFooter('admin');
                 plugins: ['dnd']
             });
 
+        // Client-side render from raw stream_list rows (no server HTML).
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : s);
+            return d.innerHTML;
+        }
+        var STREAM_BADGE = {
+            '-1': ['secondary', 'NO SERVERS'],
+            0: ['dark', 'STOPPED'],
+            1: ['success', 'ONLINE'],
+            2: ['warning', 'STARTING'],
+            3: ['danger', 'DOWN'],
+            4: ['info', 'ON DEMAND'],
+            5: ['primary', 'DIRECT SOURCE'],
+            6: ['primary', 'CREATING...'],
+            7: ['primary', 'DIRECT STREAM']
+        };
+        function streamBadge(code) {
+            var m = STREAM_BADGE[code] || STREAM_BADGE[0];
+            return '<span class="badge bg-label-' + m[0] + '">' + m[1] + '</span>';
+        }
+        function streamIcon(url) {
+            if (!url) {
+                return '';
+            }
+            return '<img loading="lazy" src="resize?maxw=96&maxh=32&url=' + encodeURIComponent(url) + '">';
+        }
+        function serverNameCell(name, count) {
+            if (!name) {
+                return 'No Server Selected';
+            }
+            var html = esc(name);
+            if (count > 1) {
+                html += ' &nbsp; <button type="button" class="btn btn-info btn-xs waves-effect waves-light">+ ' +
+                    (count - 1) + '</button>';
+            }
+            return html;
+        }
         var rTable = $('#datatable-mass').DataTable({
-            processing: true,
             serverSide: true,
             searchDelay: 250,
             ajax: {
@@ -542,12 +579,39 @@ renderUnifiedLayoutFooter('admin');
                     d.server = getServer();
                 }
             },
-            columnDefs: [{
+            columns: [{
+                data: 'id',
+                className: 'text-center'
+            }, {
+                data: 'stream_icon',
                 className: 'text-center',
-                targets: [0, 1, 5]
+                render: function(d) {
+                    return streamIcon(d);
+                }
+            }, {
+                data: 'stream_display_name',
+                render: function(d) {
+                    return esc(d);
+                }
+            }, {
+                data: 'category',
+                render: function(d) {
+                    return esc(d);
+                }
+            }, {
+                data: 'server_name',
+                render: function(d, t, row) {
+                    return serverNameCell(d, row.server_count);
+                }
+            }, {
+                data: 'status',
+                className: 'text-center',
+                render: function(d) {
+                    return streamBadge(d);
+                }
             }],
             rowCallback: function(row, data) {
-                if (selected.indexOf(String(data[0])) !== -1) {
+                if (selected.indexOf(String(data.id)) !== -1) {
                     $(row).addClass('table-active');
                 }
             },

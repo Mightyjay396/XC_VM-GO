@@ -1894,25 +1894,21 @@ class TableController extends BaseAdminController {
 						} else {
 							$rActualStatus = 0;
 						}
-						$rSeriesName = $rRow["title"] . " - Season " . $rRow["season_num"];
-						$rStreamName = "<strong>" . $rRow["stream_display_name"] . "</strong><br><span style='font-size:11px;'>" . $rSeriesName . "</span>";
-						if ($rRow["server_name"]) {
-							$rServerName = $rRow["server_name"];
-							if (1 < $rServerCount[$rRow["id"]]) {
-								$rServerName .= " &nbsp; <button type='button' class='btn btn-info btn-xs waves-effect waves-light'>+ " . ($rServerCount[$rRow["id"]] - 1) . "</button>";
-							}
-						} else {
-							$rServerName = "No Server Selected";
-						}
-						$rImage = "";
 						$rProperties = json_decode((string) $rRow["movie_properties"], true);
 						if (!is_array($rProperties)) {
 							$rProperties = [];
 						}
-						if ((string) ($rProperties["movie_image"] ?? '') !== '' && SettingsManager::getAll()["show_images"]) {
-							$rImage = "<a href='javascript: void(0);' data-src='resize?maxw=512&maxh=512&url=" . $rProperties["movie_image"] . "'><img loading='lazy' src='resize?maxh=32&maxw=64&url=" . $rProperties["movie_image"] . "' /></a>";
-						}
-						$rReturn["data"][] = [$rRow["id"], $rImage, $rStreamName, $rServerName, StatusBadge::vod($rActualStatus)];
+						$rImage = SettingsManager::getAll()["show_images"] ? (string) ($rProperties["movie_image"] ?? '') : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"movie_image" => $rImage,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"series_title" => (string) ($rRow["title"] ?? ''),
+							"season_num" => $rRow["season_num"],
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
 					}
 				}
 			}
@@ -2483,53 +2479,31 @@ class TableController extends BaseAdminController {
 						if (1 < count($rCategoryIDs)) {
 							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
 						}
-						$rStreamName = $rRow["stream_display_name"];
-						if ($rRow["server_name"]) {
-							$rServerCountForStream = intval($rServerCount[$rRow["id"]] ?? 0);
-							$rServerName = $rRow["server_name"];
-							if (1 < $rServerCountForStream) {
-								$rServerName .= " &nbsp; <button type='button' class='btn btn-info btn-xs waves-effect waves-light'>+ " . ($rServerCountForStream - 1) . "</button>";
-							}
-						} else {
-							$rServerName = "No Server Selected";
-						}
-						$rUptime = 0;
 						$rActualStatus = 0;
-						if (0 < (int) $rRow["stream_started"]) {
-							$rUptime = time() - (int) $rRow["stream_started"];
-						}
 						if ($rRow["server_id"]) {
 							if ((int) $rRow["direct_source"] == 1) {
-								if ((int) $rRow["direct_proxy"] == 1) {
-									$rActualStatus = 7;
-								} else {
-									$rActualStatus = 5;
-								}
+								$rActualStatus = (int) $rRow["direct_proxy"] == 1 ? 7 : 5;
 							} elseif ($rRow["monitor_pid"]) {
 								if ($rRow["pid"] && 0 < $rRow["pid"]) {
-									if ((int) $rRow["stream_status"] == 2) {
-										$rActualStatus = 2;
-									} else {
-										$rActualStatus = 1;
-									}
+									$rActualStatus = (int) $rRow["stream_status"] == 2 ? 2 : 1;
 								} else {
 									$rActualStatus = 3;
 								}
 							} elseif ((int) $rRow["on_demand"] == 1) {
 								$rActualStatus = 4;
-							} else {
-								$rActualStatus = 0;
 							}
 						} else {
 							$rActualStatus = -1;
 						}
-						if ((string) $rRow["stream_icon"] !== '') {
-							$rIcon = "<img loading='lazy' src='resize?maxw=96&maxh=32&url=" . urlencode($rRow["stream_icon"]) . "' />";
-						} else {
-							$rIcon = "";
-						}
-						$rStatusText = StatusBadge::stream($rActualStatus);
-						$rReturn["data"][] = [$rRow["id"], $rIcon, $rStreamName, $rCategory, $rServerName, $rStatusText];
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"stream_icon" => (string) $rRow["stream_icon"],
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
 					}
 				}
 			}
@@ -2629,11 +2603,7 @@ class TableController extends BaseAdminController {
 					} else {
 						$rActualStatus = 0;
 						if ((int) $rRow["direct_source"] == 1) {
-							if ((int) $rRow["direct_proxy"] == 1) {
-								$rActualStatus = 5;
-							} else {
-								$rActualStatus = 3;
-							}
+							$rActualStatus = (int) $rRow["direct_proxy"] == 1 ? 5 : 3;
 						} elseif (!is_null($rRow["pid"]) && 0 < $rRow["pid"]) {
 							if ($rRow["to_analyze"] == 1) {
 								$rActualStatus = 2;
@@ -2642,18 +2612,11 @@ class TableController extends BaseAdminController {
 							} else {
 								$rActualStatus = 1;
 							}
-						} else {
-							$rActualStatus = 0;
-						}
-						if ($rRow["server_name"]) {
-							$rServerName = $rRow["server_name"];
-							if (1 < $rServerCount[$rRow["id"]]) {
-								$rServerName .= " &nbsp; <button type='button' class='btn btn-info btn-xs waves-effect waves-light'>+ " . ($rServerCount[$rRow["id"]] - 1) . "</button>";
-							}
-						} else {
-							$rServerName = "No Server Selected";
 						}
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
 						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
@@ -2667,39 +2630,19 @@ class TableController extends BaseAdminController {
 						if (!is_array($rProperties)) {
 							$rProperties = [];
 						}
-						$rRatingText = "";
-						if (!empty($rProperties["rating"])) {
-							$rStarRating = round($rProperties["rating"]) / 2;
-							$rFullStars = floor($rStarRating);
-							$rHalfStar = 0 < $rStarRating - $rFullStars;
-							$rEmpty = 5 - ($rFullStars + ($rHalfStar ? 1 : 0));
-							if (0 < $rFullStars) {
-								foreach (range(1, $rFullStars) as $i) {
-									$rRatingText .= "<i class='mdi mdi-star'></i>";
-								}
-							}
-							if ($rHalfStar) {
-								$rRatingText .= "<i class='mdi mdi-star-half'></i>";
-							}
-							if (0 < $rEmpty) {
-								foreach (range(1, $rEmpty) as $i) {
-									$rRatingText .= "<i class='mdi mdi-star-outline'></i>";
-								}
-							}
-						}
-						$rYear = $rRow["year"] ? "<strong>" . $rRow["year"] . "</strong> &nbsp;" : "";
-						$rStreamName = $rRow["stream_display_name"] . "<br><span style='font-size:11px;'>" . $rYear . $rRatingText . "</span>";
-						if ((string) ($rProperties["movie_image"] ?? "") !== '' && SettingsManager::getAll()["show_images"]) {
-							$rImage = "<a href='javascript: void(0);' data-src='resize?maxw=512&maxh=512&url=" . $rProperties["movie_image"] . "'><img loading='lazy' src='resize?maxh=58&maxw=32&url=" . $rProperties["movie_image"] . "' /></a>";
-						} else {
-							$rImage = "";
-						}
-						if (isset($rProperties["kinopoisk_url"]) && (string) $rProperties["kinopoisk_url"] !== '') {
-							$rTMDB = "<button type=\"button\" class=\"btn btn-success btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-check-circle\"></i></button>";
-						} else {
-							$rTMDB = "<button type=\"button\" class=\"btn btn-secondary btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-minus-circle\"></i></button>";
-						}
-						$rReturn["data"][] = [$rRow["id"], $rImage, $rStreamName, $rCategory, $rServerName, StatusBadge::vod($rActualStatus), $rTMDB];
+						$rImage = SettingsManager::getAll()["show_images"] ? (string) ($rProperties["movie_image"] ?? '') : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"movie_image" => $rImage,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"year" => (string) ($rRow["year"] ?? ''),
+							"rating" => (float) ($rProperties["rating"] ?? 0),
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+							"has_tmdb" => isset($rProperties["kinopoisk_url"]) && (string) $rProperties["kinopoisk_url"] !== '',
+						];
 					}
 				}
 			}
@@ -2793,6 +2736,9 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
 						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
@@ -2802,46 +2748,32 @@ class TableController extends BaseAdminController {
 						if (1 < count($rCategoryIDs)) {
 							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
 						}
-						$rUptime = 0;
 						$rActualStatus = 0;
-						if (0 < (int) $rRow["stream_started"]) {
-							$rUptime = time() - (int) $rRow["stream_started"];
-						}
 						if ($rRow["server_id"]) {
 							if ((int) $rRow["direct_source"] == 1) {
 								$rActualStatus = 5;
 							} elseif ($rRow["monitor_pid"]) {
 								if ($rRow["pid"] && 0 < $rRow["pid"]) {
-									if ((int) $rRow["stream_status"] == 2) {
-										$rActualStatus = 2;
-									} else {
-										$rActualStatus = 1;
-									}
+									$rActualStatus = (int) $rRow["stream_status"] == 2 ? 2 : 1;
 								} else {
 									$rActualStatus = 3;
 								}
 							} elseif ((int) $rRow["on_demand"] == 1) {
 								$rActualStatus = 4;
-							} else {
-								$rActualStatus = 0;
 							}
 						} else {
 							$rActualStatus = -1;
 						}
-						if ($rRow["server_name"]) {
-							$rServerName = $rRow["server_name"];
-							if (1 < $rServerCount[$rRow["id"]]) {
-								$rServerName .= " &nbsp; <button type='button' class='btn btn-info btn-xs waves-effect waves-light'>+ " . ($rServerCount[$rRow["id"]] - 1) . "</button>";
-							}
-						} else {
-							$rServerName = "No Server Selected";
-						}
-						if ((string) $rRow["stream_icon"] !== '' && SettingsManager::getAll()["show_images"]) {
-							$rIcon = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rRow["stream_icon"] . "'><img loading='lazy' src='resize?maxw=96&maxh=32&url=" . $rRow["stream_icon"] . "' /></a>";
-						} else {
-							$rIcon = "";
-						}
-						$rReturn["data"][] = [$rRow["id"], $rIcon, $rRow["stream_display_name"], $rCategory, $rServerName, StatusBadge::stream($rActualStatus)];
+						$rIcon = SettingsManager::getAll()["show_images"] ? (string) $rRow["stream_icon"] : '';
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"stream_icon" => $rIcon,
+							"stream_display_name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+							"server_name" => (string) ($rRow["server_name"] ?? ''),
+							"server_count" => (int) ($rServerCount[$rRow["id"]] ?? 0),
+							"status" => $rActualStatus,
+						];
 					}
 				}
 			}
@@ -2906,6 +2838,9 @@ class TableController extends BaseAdminController {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
 						$rCategoryIDs = json_decode($rRow["category_id"], true);
+						if (!is_array($rCategoryIDs)) {
+							$rCategoryIDs = [];
+						}
 						if ((string) (RequestManager::get("category") ?? '') !== '') {
 							$rCategory = $rCategories[(int) (RequestManager::get("category") ?? 0)]["category_name"] ?: "No Category";
 						} else {
@@ -2915,57 +2850,25 @@ class TableController extends BaseAdminController {
 						if (1 < count($rCategoryIDs)) {
 							$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
 						}
-						if (0 < $rRow["latest_season"]) {
-							$rRow["latest_season"] = "<button type='button' class='btn btn-info btn-xs waves-effect waves-light'>" . $rRow["latest_season"] . "</button>";
-						} else {
-							$rRow["latest_season"] = "<button type='button' class='btn btn-secondary btn-xs waves-effect waves-light'>0</button>";
-						}
-						if (0 < $rRow["episode_count"]) {
-							$rRow["episode_count"] = "<button type='button' class='btn btn-info btn-xs waves-effect waves-light'>" . $rRow["episode_count"] . "</button>";
-						} else {
-							$rRow["episode_count"] = "<button type='button' class='btn btn-secondary btn-xs waves-effect waves-light'>0</button>";
-						}
 						if ($rRow["last_modified"] == 0) {
-							$rRow["last_modified"] = "Never";
+							$rLastModified = "Never";
 						} else {
-							$rRow["last_modified"] = date($rSettings["datetime_format"], $rRow["last_modified"]);
+							$rLastModified = date($rSettings["datetime_format"], $rRow["last_modified"]);
 						}
-						if ($rRow["release_date"]) {
-							$rRow["release_date"] = date($rSettings["date_format"], strtotime($rRow["release_date"]));
-						}
-						if (0 < $rRow["tmdb_id"]) {
-							$rTMDB = "<button type=\"button\" class=\"btn btn-success btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-check-circle\"></i></button>";
-						} else {
-							$rTMDB = "<button type=\"button\" class=\"btn btn-secondary btn-xs waves-effect waves-light btn-fixed-xs\"><i class=\"text-light fas fa-minus-circle\"></i></button>";
-						}
-						if ((string) $rRow["cover"] !== '') {
-							$rImage = "<a href='javascript: void(0);' onClick='openImage(this);' data-src='resize?maxw=512&maxh=512&url=" . $rRow["cover"] . "'><img loading='lazy' src='resize?maxh=58&maxw=32&url=" . $rRow["cover"] . "' /></a>";
-						} else {
-							$rImage = "";
-						}
-						$rRatingText = "";
-						if ($rRow["rating"]) {
-							$rStarRating = round($rRow["rating"]) / 2;
-							$rFullStars = floor($rStarRating);
-							$rHalfStar = 0 < $rStarRating - $rFullStars;
-							$rEmpty = 5 - ($rFullStars + ($rHalfStar ? 1 : 0));
-							if (0 < $rFullStars) {
-								foreach (range(1, $rFullStars) as $i) {
-									$rRatingText .= "<i class='mdi mdi-star'></i>";
-								}
-							}
-							if ($rHalfStar) {
-								$rRatingText .= "<i class='mdi mdi-star-half'></i>";
-							}
-							if (0 < $rEmpty) {
-								foreach (range(1, $rEmpty) as $i) {
-									$rRatingText .= "<i class='mdi mdi-star-outline'></i>";
-								}
-							}
-						}
-						$rYear = $rRow["year"] ? "<strong>" . $rRow["year"] . "</strong> &nbsp;" : "";
-						$rTitle = "<strong>" . $rRow["title"] . "</strong><br><span style='font-size:11px;'>" . $rYear . $rRatingText . "</span></a>";
-						$rReturn["data"][] = [$rRow["id"], $rImage, $rTitle, $rCategory, $rRow["latest_season"], $rRow["episode_count"], $rTMDB, $rRow["release_date"], $rRow["last_modified"]];
+						$rReleaseDate = $rRow["release_date"] ? date($rSettings["date_format"], strtotime($rRow["release_date"])) : "";
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"cover" => (string) ($rRow["cover"] ?? ''),
+							"title" => (string) $rRow["title"],
+							"year" => (string) ($rRow["year"] ?? ''),
+							"rating" => (float) ($rRow["rating"] ?? 0),
+							"category" => $rCategory,
+							"latest_season" => (int) $rRow["latest_season"],
+							"episode_count" => (int) $rRow["episode_count"],
+							"has_tmdb" => 0 < (int) $rRow["tmdb_id"],
+							"release_date" => $rReleaseDate,
+							"last_modified" => $rLastModified,
+						];
 					}
 				}
 			}
@@ -4577,8 +4480,7 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<a href=\"stream_view?id=" . $rRow["id"] . "\"><button type=\"button\" title=\"View Stream\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\"><i class=\"mdi mdi-play\"></i></button></a>";
-						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rButtons];
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
 					}
 				}
 			}
@@ -4636,8 +4538,7 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<a href=\"stream_view?id=" . $rRow["id"] . "\"><button type=\"button\" title=\"View Movie\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\"><i class=\"mdi mdi-play\"></i></button></a>";
-						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rButtons];
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
 					}
 				}
 			}
@@ -4695,8 +4596,7 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<a href=\"stream_view?id=" . $rRow["id"] . "\"><button type=\"button\" title=\"View Station\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\"><i class=\"mdi mdi-play\"></i></button></a>";
-						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rButtons];
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["stream_display_name"]];
 					}
 				}
 			}
@@ -4753,8 +4653,7 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<a href=\"series?id=" . $rRow["id"] . "\"><button type=\"button\" title=\"Edit Series\" class=\"btn btn-light waves-effect waves-light btn-xs tooltip\"><i class=\"mdi mdi-play\"></i></button></a>";
-						$rReturn["data"][] = [$rRow["id"], $rRow["title"], $rButtons];
+						$rReturn["data"][] = ["id" => (int) $rRow["id"], "name" => (string) $rRow["title"]];
 					}
 				}
 			}
@@ -4822,11 +4721,13 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						$rButtons = "<div class=\"btn-group\"><button data-id=\"" . $rRow["id"] . "\" data-type=\"vod\" type=\"button\" style=\"display: none;\" class=\"btn-remove btn btn-light waves-effect waves-light btn-xs\" onClick=\"toggleSelection(" . $rRow["id"] . ");\"><i class=\"mdi mdi-minus\"></i></button>\r\n                <button data-id=\"" . $rRow["id"] . "\" data-type=\"vod\" type=\"button\" style=\"display: none;\" class=\"btn-add btn btn-light waves-effect waves-light btn-xs\" onClick=\"toggleSelection(" . $rRow["id"] . ");\"><i class=\"mdi mdi-plus\"></i></button></div>";
 						if ((string) $rRow["title"] !== '') {
 							$rCategory = $rRow["title"];
 						} else {
 							$rCategoryIDs = json_decode($rRow["category_id"], true);
+							if (!is_array($rCategoryIDs)) {
+								$rCategoryIDs = [];
+							}
 							if (($rSplit[1] ?? '') !== '') {
 								$rCategory = $rCategories[(int) $rSplit[1]]["category_name"] ?: "No Category";
 							} else {
@@ -4837,7 +4738,11 @@ class TableController extends BaseAdminController {
 								$rCategory .= " (+" . (count($rCategoryIDs) - 1) . " others)";
 							}
 						}
-						$rReturn["data"][] = [$rRow["id"], $rRow["stream_display_name"], $rCategory, $rButtons];
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"name" => (string) $rRow["stream_display_name"],
+							"category" => $rCategory,
+						];
 					}
 				}
 			}
@@ -4892,31 +4797,26 @@ class TableController extends BaseAdminController {
 					if ($rIsAPI) {
 						$rReturn["data"][] = self::filterRow($rRow, RequestManager::get("show_columns") ?? '', RequestManager::get("hide_columns") ?? '');
 					} else {
-						// Every value below except the admin's own provider row comes
-						// from the remote provider's API (ProvidersCronJob), and the
-						// table renders these cells as HTML: escape each one for where
-						// it lands — an attribute, a JS string inside an attribute, text.
+						// Remote provider API data (untrusted): sent raw and escaped client-side
+						// where it lands (attribute, text). The stream URL was already exposed to
+						// the client via the add button.
 						if ($rRow["type"] == "live") {
 							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/live/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . ($rRow["hls"] ? ".m3u8" : ($rRow["legacy"] ? ".ts" : ""));
-							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream(" . self::jsArgument($rStreamURL) . ");\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
 						} else {
 							$rStreamURL = ($rRow["ssl"] ? "https" : "http") . "://" . $rRow["ip"] . ":" . $rRow["port"] . "/movie/" . $rRow["username"] . "/" . $rRow["password"] . "/" . $rRow["stream_id"] . "." . $rRow["channel_id"];
-							$rButtons = "<a href=\"javascript: void(0);\" onClick=\"addStream(" . self::jsArgument($rRow["stream_display_name"]) . ", " . self::jsArgument($rStreamURL) . ");\"><button type=\"button\" class=\"btn btn-light waves-effect waves-light btn-xs\"><i class=\"mdi mdi-check\"></i></button></a>";
-						}
-						if ((string) $rRow["stream_icon"] !== '' && $rRow["type"] == "live") {
-							$rIcon = "<img loading='lazy' src='" . self::htmlValue($rRow["stream_icon"]) . "' height='32px' />";
-						} else {
-							$rIcon = "";
 						}
 						$rProviderData = json_decode((string) $rRow["data"], true) ?: [];
-						$rExpires = ($rProviderData["exp_date"] ?? null) ? self::htmlValue($rProviderData["exp_date"]) : "Never";
-						$rMaxConnections = ($rProviderData["max_connections"] ?? null) ? self::htmlValue($rProviderData["max_connections"]) : "&infin;";
-						$rProvider = "<span class='tooltip' title='Expires: " . $rExpires . "<br/>Connections: " . self::htmlValue($rProviderData["active_connections"] ?? '') . " / " . $rMaxConnections . "'>" . self::htmlValue($rRow["name"]) . "</span>";
-						if ($rRow["type"] == "live") {
-							$rReturn["data"][] = [$rIcon, self::htmlValue($rRow["stream_display_name"]), $rProvider, $rButtons];
-						} else {
-							$rReturn["data"][] = [self::htmlValue($rRow["stream_display_name"]), $rProvider, $rButtons];
-						}
+						$rReturn["data"][] = [
+							"id" => (int) $rRow["id"],
+							"type" => (string) $rRow["type"],
+							"name" => (string) $rRow["stream_display_name"],
+							"stream_icon" => ($rRow["type"] == "live") ? (string) $rRow["stream_icon"] : "",
+							"stream_url" => $rStreamURL,
+							"provider_name" => (string) $rRow["name"],
+							"provider_expires" => ($rProviderData["exp_date"] ?? null) ? (string) $rProviderData["exp_date"] : "Never",
+							"provider_max" => ($rProviderData["max_connections"] ?? null) ? (string) $rProviderData["max_connections"] : "\u{221E}",
+							"provider_active" => (string) ($rProviderData["active_connections"] ?? ""),
+						];
 					}
 				}
 			}
@@ -5031,7 +4931,13 @@ class TableController extends BaseAdminController {
 						if (!empty($rRow["source"])) {
 							$rStreamSource = strtolower(parse_url($rRow["source"])["host"]);
 						}
-						$rReturn["data"][] = ["<a href='server_view?id=" . (int) $rRow["server_id"] . "'>" . ServerRepository::getAll()[$rRow["server_id"]]["server_name"] . "</a>", $rStreamSource, StatusBadge::failure($rRow["action"]), date(SettingsManager::getAll()["datetime_format"], $rRow["date"])];
+												$rReturn["data"][] = [
+							"server_id" => (int) $rRow["server_id"],
+							"server_name" => (string) (ServerRepository::getAll()[$rRow["server_id"]]["server_name"] ?? ''),
+							"source_host" => $rStreamSource,
+							"action" => (string) $rRow["action"],
+							"date" => date(SettingsManager::getAll()["datetime_format"], $rRow["date"]),
+						];
 					}
 				}
 			}

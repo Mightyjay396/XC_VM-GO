@@ -295,7 +295,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#lines-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

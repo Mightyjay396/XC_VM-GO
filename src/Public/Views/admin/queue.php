@@ -72,7 +72,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#queue-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

@@ -804,7 +804,6 @@ renderUnifiedLayoutFooter('admin');
 
         // ----- main servers table (clean-JSON for every type) -----
         var table = $('#datatable').DataTable({
-            processing: true,
             serverSide: true,
             ordering: false,
             paging: false,
@@ -1017,7 +1016,6 @@ renderUnifiedLayoutFooter('admin');
                 ordering: true,
                 paging: true,
                 searching: true,
-                processing: true,
                 serverSide: true,
                 searchDelay: 250,
                 info: true,

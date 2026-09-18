@@ -257,7 +257,6 @@ renderUnifiedLayoutFooter('admin');
         }
 
         const dt = tableEl.DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

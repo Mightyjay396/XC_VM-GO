@@ -169,7 +169,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#movies-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

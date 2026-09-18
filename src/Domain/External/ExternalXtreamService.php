@@ -84,7 +84,7 @@ class ExternalXtreamService {
 	 *
 	 * @return list<string>|null Validated IPs, or null if the host is unsafe.
 	 */
-	private static function resolvePublicIps(string $url): ?array {
+	private function resolvePublicIps(string $url): ?array {
 		$host = parse_url($url, PHP_URL_HOST);
 		if (!is_string($host) || $host === '') {
 			return null;
@@ -277,7 +277,7 @@ class ExternalXtreamService {
 		// SSRF guard: serverUrl is supplied by an unauthenticated visitor, so
 		// refuse any host that resolves into a loopback/private/reserved range
 		// (localhost, RFC1918, link-local 169.254/16 incl. cloud metadata, …).
-		$safeIps = self::resolvePublicIps($this->serverUrl);
+		$safeIps = $this->resolvePublicIps($this->serverUrl);
 		if ($safeIps === null) {
 			return null;
 		}

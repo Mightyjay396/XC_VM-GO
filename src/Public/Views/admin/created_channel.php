@@ -469,8 +469,13 @@ renderUnifiedLayoutFooter('admin');
             }
             reviewSelection();
         };
+        function vodSelectButtons(id) {
+            return '<div class="btn-group">' +
+                '<button data-id="' + id + '" data-type="vod" type="button" style="display: none;" class="btn-remove btn btn-light waves-effect waves-light btn-xs" onclick="toggleSelection(' + id + ');"><i class="mdi mdi-minus"></i></button>' +
+                '<button data-id="' + id + '" data-type="vod" type="button" style="display: none;" class="btn-add btn btn-light waves-effect waves-light btn-xs" onclick="toggleSelection(' + id + ');"><i class="mdi mdi-plus"></i></button>' +
+                '</div>';
+        }
         window.__ccMovies = $('#datatable-movies').DataTable({
-            processing: true,
             serverSide: true,
             searching: true,
             lengthChange: false,
@@ -484,13 +489,30 @@ renderUnifiedLayoutFooter('admin');
                     d.server_id = $('#server_idc').val();
                 }
             },
-            columnDefs: [{
+            columns: [{
+                data: 'id',
+                className: 'dt-center'
+            }, {
+                data: 'name',
+                render: function(d) {
+                    return esc(d);
+                }
+            }, {
+                data: 'category',
+                render: function(d) {
+                    return esc(d);
+                }
+            }, {
+                data: null,
                 className: 'dt-center',
-                targets: [0, 3]
+                orderable: false,
+                render: function(d, t, row) {
+                    return vodSelectButtons(row.id);
+                }
             }],
             createdRow: function(row, data) {
-                $(row).addClass('vod-' + data[0]);
-                if (rSelection.indexOf(parseInt(data[0], 10)) > -1) {
+                $(row).addClass('vod-' + data.id);
+                if (rSelection.indexOf(parseInt(data.id, 10)) > -1) {
                     $(row).find('.btn-remove').show();
                 } else {
                     $(row).find('.btn-add').show();

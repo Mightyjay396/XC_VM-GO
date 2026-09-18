@@ -84,7 +84,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#stream-errors-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

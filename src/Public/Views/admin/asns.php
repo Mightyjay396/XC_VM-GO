@@ -85,7 +85,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#asns-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

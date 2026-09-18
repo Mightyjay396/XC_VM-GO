@@ -148,7 +148,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#series-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

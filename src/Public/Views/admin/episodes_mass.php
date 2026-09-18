@@ -305,9 +305,33 @@ renderUnifiedLayoutFooter('admin');
                 plugins: ['dnd']
             });
 
-        // episode_list is a positional-array handler; keep legacy columnDefs.
+        // Client-side render from raw episode_list rows (no server HTML).
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : s);
+            return d.innerHTML;
+        }
+        var VOD_BADGE = {
+            0: ['secondary', 'Not Encoded'],
+            1: ['success', 'Encoded'],
+            2: ['warning', 'Encoding'],
+            3: ['primary', 'Direct Source'],
+            4: ['danger', 'Down'],
+            5: ['info', 'Direct Stream']
+        };
+        function vodBadge(code) {
+            var m = VOD_BADGE[code] || ['secondary', 'Unknown'];
+            return '<span class="badge bg-label-' + m[0] + '">' + m[1] + '</span>';
+        }
+        function episodeImage(url) {
+            if (!url) {
+                return '';
+            }
+            return '<a href="javascript:void(0);" data-src="resize?maxw=512&maxh=512&url=' + encodeURIComponent(url) +
+                '"><img loading="lazy" src="resize?maxh=32&maxw=64&url=' + encodeURIComponent(url) + '"></a>';
+        }
+
         var rTable = $('#datatable-mass').DataTable({
-            processing: true,
             serverSide: true,
             searchDelay: 250,
             ajax: {
@@ -319,17 +343,41 @@ renderUnifiedLayoutFooter('admin');
                     d.server = getServer();
                 }
             },
-            columnDefs: [{
-                    className: 'text-center',
-                    targets: [0, 1, 4]
-                },
-                {
-                    orderable: false,
-                    targets: [1]
+            columns: [{
+                data: 'id',
+                className: 'text-center'
+            }, {
+                data: 'movie_image',
+                orderable: false,
+                className: 'text-center',
+                render: function(d) {
+                    return episodeImage(d);
                 }
-            ],
+            }, {
+                data: 'stream_display_name',
+                render: function(d, t, row) {
+                    var s = (row.series_title || '') + ' - Season ' + (row.season_num == null ? '' : row.season_num);
+                    return '<strong>' + esc(d) + '</strong><br><span style="font-size:11px;">' + esc(s) + '</span>';
+                }
+            }, {
+                data: 'server_name',
+                render: function(d, t, row) {
+                    var name = d ? esc(d) : 'No Server Selected';
+                    if (row.server_count > 1) {
+                        name += ' &nbsp; <button type="button" class="btn btn-info btn-xs waves-effect waves-light">+ ' +
+                            (row.server_count - 1) + '</button>';
+                    }
+                    return name;
+                }
+            }, {
+                data: 'status',
+                className: 'text-center',
+                render: function(d) {
+                    return vodBadge(d);
+                }
+            }],
             rowCallback: function(row, data) {
-                if (selected.indexOf(String(data[0])) !== -1) {
+                if (selected.indexOf(String(data.id)) !== -1) {
                     $(row).addClass('table-active');
                 }
             },

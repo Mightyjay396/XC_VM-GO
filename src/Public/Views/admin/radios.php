@@ -155,7 +155,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#radios-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

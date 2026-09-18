@@ -319,8 +319,73 @@ renderUnifiedLayoutFooter('admin');
             });
         }
 
+        // Client-side render from raw movie_list rows (no server HTML).
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : s);
+            return d.innerHTML;
+        }
+        var VOD_BADGE = {
+            0: ['secondary', 'Not Encoded'],
+            1: ['success', 'Encoded'],
+            2: ['warning', 'Encoding'],
+            3: ['primary', 'Direct Source'],
+            4: ['danger', 'Down'],
+            5: ['info', 'Direct Stream']
+        };
+        function vodBadge(code) {
+            var m = VOD_BADGE[code] || ['secondary', 'Unknown'];
+            return '<span class="badge bg-label-' + m[0] + '">' + m[1] + '</span>';
+        }
+        function movieImage(url) {
+            if (!url) {
+                return '';
+            }
+            return '<a href="javascript:void(0);" data-src="resize?maxw=512&maxh=512&url=' + encodeURIComponent(url) +
+                '"><img loading="lazy" src="resize?maxh=58&maxw=32&url=' + encodeURIComponent(url) + '"></a>';
+        }
+        function ratingStars(rating) {
+            if (!rating) {
+                return '';
+            }
+            var star = Math.round(rating) / 2;
+            var full = Math.floor(star);
+            var half = (star - full) > 0;
+            var empty = 5 - (full + (half ? 1 : 0));
+            var h = '';
+            for (var i = 0; i < full; i++) {
+                h += "<i class='mdi mdi-star'></i>";
+            }
+            if (half) {
+                h += "<i class='mdi mdi-star-half'></i>";
+            }
+            for (var j = 0; j < empty; j++) {
+                h += "<i class='mdi mdi-star-outline'></i>";
+            }
+            return h;
+        }
+        function movieName(row) {
+            var year = row.year ? '<strong>' + esc(row.year) + '</strong> &nbsp;' : '';
+            return esc(row.stream_display_name) + '<br><span style="font-size:11px;">' + year + ratingStars(row.rating) + '</span>';
+        }
+        function serverNameCell(name, count) {
+            if (!name) {
+                return 'No Server Selected';
+            }
+            var html = esc(name);
+            if (count > 1) {
+                html += ' &nbsp; <button type="button" class="btn btn-info btn-xs waves-effect waves-light">+ ' +
+                    (count - 1) + '</button>';
+            }
+            return html;
+        }
+        function tmdbBadge(has) {
+            if (has) {
+                return '<i class="icon-base ti tabler-circle-check-filled text-success" title="TMDb"></i>';
+            }
+            return '<i class="icon-base ti tabler-circle-minus text-secondary" title="No TMDb"></i>';
+        }
         var rTable = $('#datatable-mass').DataTable({
-            processing: true,
             serverSide: true,
             searchDelay: 250,
             ajax: {
@@ -332,17 +397,47 @@ renderUnifiedLayoutFooter('admin');
                     d.server = getServer();
                 }
             },
-            columnDefs: [{
-                    className: 'text-center',
-                    targets: [0, 1, 5, 6]
-                },
-                {
-                    orderable: false,
-                    targets: [1, 6]
+            columns: [{
+                data: 'id',
+                className: 'text-center'
+            }, {
+                data: 'movie_image',
+                orderable: false,
+                className: 'text-center',
+                render: function(d) {
+                    return movieImage(d);
                 }
-            ],
+            }, {
+                data: 'stream_display_name',
+                render: function(d, t, row) {
+                    return movieName(row);
+                }
+            }, {
+                data: 'category',
+                render: function(d) {
+                    return esc(d);
+                }
+            }, {
+                data: 'server_name',
+                render: function(d, t, row) {
+                    return serverNameCell(d, row.server_count);
+                }
+            }, {
+                data: 'status',
+                className: 'text-center',
+                render: function(d) {
+                    return vodBadge(d);
+                }
+            }, {
+                data: 'has_tmdb',
+                orderable: false,
+                className: 'text-center',
+                render: function(d) {
+                    return tmdbBadge(d);
+                }
+            }],
             rowCallback: function(row, data) {
-                if (selected.indexOf(String(data[0])) !== -1) {
+                if (selected.indexOf(String(data.id)) !== -1) {
                     $(row).addClass('table-active');
                 }
             },

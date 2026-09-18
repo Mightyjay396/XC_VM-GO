@@ -168,7 +168,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#users-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

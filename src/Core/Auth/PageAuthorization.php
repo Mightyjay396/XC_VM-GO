@@ -447,7 +447,6 @@ class PageAuthorization {
 	 *
 	 * @param string $rAction The post.php `action`.
 	 * @param bool   $rIsEdit Whether the form edits an existing record (`edit`).
-	 * @return bool
 	 */
 	public static function checkPostAction(string $rAction, bool $rIsEdit): bool {
 		if (str_starts_with($rAction, 'mass_delete_')) {
@@ -461,5 +460,4 @@ class PageAuthorization {
 
 		return self::checkPermissions($rPage, $rIsEdit);
 	}
-
 }

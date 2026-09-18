@@ -34,6 +34,12 @@ class CreatedChannelMassController extends BaseAdminController {
 			$rServerTree[] = ['id' => intval($rServer['id']), 'parent' => 'offline', 'text' => htmlspecialchars($rServer['server_name']), 'icon' => 'mdi mdi-server-network', 'state' => ['opened' => true]];
 		}
 
+		// The load-balancer server tree on this form is driven by jstree.
+		$GLOBALS['xmNewuiVendors'] = array_values(array_unique(array_merge(
+			(array) ($GLOBALS['xmNewuiVendors'] ?? []),
+			['jstree']
+		)));
+
 		$this->setTitle('Mass Edit Channels');
 		$this->render('created_channel_mass', ['rCategories' => $rCategories, 'rTranscodeProfiles' => $rTranscodeProfiles, 'rServerTree' => $rServerTree]);
 	}

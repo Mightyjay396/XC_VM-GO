@@ -79,7 +79,6 @@ renderUnifiedLayoutFooter('admin');
         };
 
         var table = jQuery('#restream-logs-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {

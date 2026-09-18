@@ -329,7 +329,6 @@ renderUnifiedLayoutFooter('admin');
         })();
 
         var table = jQuery('#streams-table').DataTable({
-            processing: true,
             serverSide: true,
             responsive: {
                 details: {
@@ -711,8 +710,23 @@ renderUnifiedLayoutFooter('admin');
         // TableController::handleFailuresModal (d.id = 'failures_modal').
         var failsStream = null,
             failsServer = null;
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : s);
+            return d.innerHTML;
+        }
+        var FAILURE_BADGE = {
+            STREAM_STOP: ['secondary', 'STOPPED'],
+            STREAM_START_FAIL: ['danger', 'START FAILED'],
+            STREAM_START: ['success', 'STARTED'],
+            STREAM_RESTART: ['info', 'RESTARTED'],
+            STREAM_FAILED: ['danger', 'STREAM FAILED']
+        };
+        function failureBadge(action) {
+            var m = FAILURE_BADGE[action];
+            return m ? '<span class="badge bg-label-' + m[0] + '">' + m[1] + '</span>' : '';
+        }
         var failsTable = jQuery('#failures-table').DataTable({
-            processing: true,
             serverSide: true,
             paging: false,
             searching: false,
@@ -727,13 +741,25 @@ renderUnifiedLayoutFooter('admin');
                 }
             },
             columns: [{
-                data: 0
+                data: null,
+                render: function(d, t, row) {
+                    return '<a href="server_view?id=' + encodeURIComponent(row.server_id) + '">' + esc(row.server_name) + '</a>';
+                }
             }, {
-                data: 1
+                data: 'source_host',
+                render: function(d) {
+                    return esc(d);
+                }
             }, {
-                data: 2
+                data: 'action',
+                render: function(d) {
+                    return failureBadge(d);
+                }
             }, {
-                data: 3
+                data: 'date',
+                render: function(d) {
+                    return esc(d);
+                }
             }],
             language: {
                 emptyTable: '—'

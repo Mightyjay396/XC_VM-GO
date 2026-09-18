@@ -92,15 +92,26 @@ renderUnifiedLayoutFooter('admin');
         var edit = <?= $rEdit ? 'true' : 'false'; ?>;
 
         <?php if ($rEdit): ?>
-            // Channels list — reuses the legacy serverSide *_short handler (HTML rows).
+            // Channels list — serverSide *_short handler (raw JSON rows, rendered client-side).
             var channelsInit = false;
             document.querySelector('[data-bs-target="#view-channels"]').addEventListener('shown.bs.tab', function() {
                 if (channelsInit) {
                     return;
                 }
                 channelsInit = true;
+                var viewBase = <?= json_encode($rCategoryArr['category_type'] === 'series' ? 'series' : 'stream_view'); ?>;
+                var viewTitle = <?= json_encode(['live' => 'View Stream', 'movie' => 'View Movie', 'radio' => 'View Station', 'series' => 'Edit Series'][$rCategoryArr['category_type']] ?? 'View'); ?>;
+                function esc(s) {
+                    var d = document.createElement('div');
+                    d.textContent = (s == null ? '' : s);
+                    return d.innerHTML;
+                }
+                function viewButton(id) {
+                    return '<a href="' + viewBase + '?id=' + encodeURIComponent(id) +
+                        '"><button type="button" title="' + esc(viewTitle) +
+                        '" class="btn btn-light waves-effect waves-light btn-xs tooltip"><i class="mdi mdi-play"></i></button></a>';
+                }
                 $('#channels-table').DataTable({
-                    processing: true,
                     serverSide: true,
                     info: false,
                     ajax: {
@@ -111,14 +122,20 @@ renderUnifiedLayoutFooter('admin');
                         }
                     },
                     columns: [{
-                        data: 0,
+                        data: 'id',
                         className: 'text-center'
                     }, {
-                        data: 1
+                        data: 'name',
+                        render: function(d) {
+                            return esc(d);
+                        }
                     }, {
-                        data: 2,
+                        data: null,
                         className: 'text-center',
-                        orderable: false
+                        orderable: false,
+                        render: function(d, t, row) {
+                            return viewButton(row.id);
+                        }
                     }],
                     layout: {
                         topStart: 'pageLength',
