@@ -82,6 +82,16 @@ class StreamReviewController extends BaseAdminController {
 
 			exit();
 		}
+		// Selection mode (opened without a stream list) renders the picker; seed
+		// the view-facing defaults so render() never sees undefined variables.
+		$rStreams = [];
+		$rCategories = [];
+		$rBouquets = [];
+		$rStreamBouquets = [];
+		$rOptions = ['categories' => false, 'epg' => false, 'bouquets' => false];
+		$rWidth = [90, 0, 0];
+		$rImport = null;
+
 		if (RequestManager::has('streams')) {
 			$rStreams = json_decode(RequestManager::get('streams'), true);
 			$rCategories = CategoryService::getAllByType('live');

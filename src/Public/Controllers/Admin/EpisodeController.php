@@ -33,7 +33,7 @@ class EpisodeController extends BaseAdminController {
 			}
 		}
 
-		if (!($rSeriesArr = SeriesService::getById(RequestManager::get('sid') ?? null))) {
+		if (!($rSeriesArr = SeriesService::getById((int) RequestManager::get('sid')))) {
 			$this->redirect('series');
 			return;
 		}
