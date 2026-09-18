@@ -61,6 +61,27 @@ class PlayerApiController {
 		return is_array($rData) ? $rData : null;
 	}
 
+	/**
+	 * The stream ids an EPG action asks for: one id, or a comma-separated list
+	 * (or any id with `multi` set), whose answer is then keyed by stream id.
+	 * A non-scalar stream_id (stream_id[]=…) asks for nothing instead of raising
+	 * a TypeError from explode().
+	 *
+	 * @return array{0: int[], 1: bool} The stream ids, and whether the answer is keyed by id.
+	 */
+	private function requestedStreamIds(): array {
+		global $rRequest;
+
+		$rValue = $rRequest['stream_id'] ?? '';
+		if (!is_scalar($rValue) || empty($rValue)) {
+			return [[], false];
+		}
+		if (is_numeric($rValue) && !isset($rRequest['multi'])) {
+			return [[intval($rValue)], false];
+		}
+		return [array_map('intval', explode(',', (string) $rValue)), true];
+	}
+
 	public function index() {
 		global $rSettings, $rCached, $rRequest, $rServers, $db;
 
@@ -103,7 +124,9 @@ class PlayerApiController {
 		$this->domain = parse_url($this->domainName)['host'] ?? '';
 
 		$rValidActions = ['get_epg', 200 => 'get_vod_categories', 201 => 'get_live_categories', 202 => 'get_live_streams', 203 => 'get_vod_streams', 204 => 'get_series_info', 205 => 'get_short_epg', 206 => 'get_series_categories', 207 => 'get_simple_data_table', 208 => 'get_series', 209 => 'get_vod_info'];
-		$rAction = (!empty($rRequest['action']) && (in_array($rRequest['action'], $rValidActions) || array_key_exists($rRequest['action'], $rValidActions)) ? $rRequest['action'] : '');
+		// action[]=… (or a JSON array) is no action, not a TypeError from array_key_exists().
+		$rRequestedAction = $rRequest['action'] ?? '';
+		$rAction = ((is_string($rRequestedAction) || is_int($rRequestedAction)) && $rRequestedAction !== '' && (in_array($rRequestedAction, $rValidActions) || array_key_exists($rRequestedAction, $rValidActions)) ? $rRequestedAction : '');
 
 		if (isset($rValidActions[$rAction])) {
 			$rAction = $rValidActions[$rAction];
@@ -112,7 +135,9 @@ class PlayerApiController {
 		if ($this->panelAPI && empty($rAction)) {
 			$rGetChannels = true;
 		} else {
-			$rGetChannels = in_array($rAction, ['get_series', 'get_vod_streams', 'get_live_streams']);
+			// The info actions need the line's ids too: they only answer for
+			// content the line's bouquets include.
+			$rGetChannels = in_array($rAction, ['get_series', 'get_vod_streams', 'get_live_streams', 'get_series_info', 'get_vod_info']);
 		}
 
 		$rBouquets = $rGetChannels ? CacheReader::get('bouquets') : null;
@@ -271,25 +296,17 @@ class PlayerApiController {
 	private function getEpg() {
 		global $rRequest;
 
-		if (!empty($rRequest['stream_id']) && (is_null($this->userInfo['exp_date']) || time() < $this->userInfo['exp_date'])) {
+		[$rStreamIDs, $rMulti] = $this->requestedStreamIds();
+
+		if (!empty($rStreamIDs) && (is_null($this->userInfo['exp_date']) || time() < $this->userInfo['exp_date'])) {
 			$rFromNow = !empty($rRequest['from_now']) && 0 < $rRequest['from_now'];
-
-			if (is_numeric($rRequest['stream_id']) && !isset($rRequest['multi'])) {
-				$rMulti = false;
-				$rStreamIDs = [intval($rRequest['stream_id'])];
-			} else {
-				$rMulti = true;
-				$rStreamIDs = array_map('intval', explode(',', $rRequest['stream_id']));
-			}
-
 			$rEPGs = [];
 
 			foreach ($rStreamIDs as $rStreamID) {
-				if (!file_exists(EPG_PATH . 'stream_' . intval($rStreamID))) {
+				$rRows = $this->readStreamCache(EPG_PATH . 'stream_' . $rStreamID);
+				if ($rRows === null) {
 					continue;
 				}
-
-					$rRows = igbinary_unserialize(file_get_contents(EPG_PATH . 'stream_' . $rStreamID));
 
 				foreach ($rRows as $rRow) {
 					if ($rFromNow && $rRow['end'] < time()) {
@@ -320,8 +337,14 @@ class PlayerApiController {
 	private function getSeriesInfo() {
 		global $rSettings, $rCached, $rRequest, $db;
 
-		$rSeriesID = (empty($rRequest['series_id']) ? 0 : intval($rRequest['series_id']));
+		$rSeriesID = (empty($rRequest['series_id']) || !is_scalar($rRequest['series_id']) ? 0 : intval($rRequest['series_id']));
 		$output = [];
+
+		// Only series the line's bouquets include: otherwise any line could read
+		// the catalogue, and a playable episode URL, of any series by id.
+		if (!in_array($rSeriesID, $this->userInfo['series_ids'] ?? [], true)) {
+			return $output;
+		}
 
 		if ($rCached) {
 			$rSeriesInfo = $this->readStreamCache(SERIES_TMP_PATH . 'series_' . $rSeriesID);
@@ -371,13 +394,7 @@ class PlayerApiController {
 		foreach ($rRows as $rSeason => $rEpisodes) {
 			foreach ($rEpisodes as $rEpisode) {
 				if ($rCached) {
-					$rEpisodeCache = STREAMS_TMP_PATH . 'stream_' . intval($rEpisode['stream_id']);
-
-					if (!file_exists($rEpisodeCache)) {
-						continue;
-					}
-
-					$rEpisodeData = igbinary_unserialize(file_get_contents($rEpisodeCache))['info'] ?? null;
+					$rEpisodeData = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rEpisode['stream_id']))['info'] ?? null;
 
 					if (!$rEpisodeData) {
 						continue;
@@ -419,7 +436,7 @@ class PlayerApiController {
 					$i = 0;
 
 					foreach ($rProperties['subtitle'] as $rSubtitle) {
-						$rSubtitles[] = ['index' => $i, 'language' => ($rSubtitle['tags']['language'] ?: null), 'title' => ($rSubtitle['tags']['title'] ?: null)];
+						$rSubtitles[] = ['index' => $i, 'language' => (($rSubtitle['tags']['language'] ?? '') ?: null), 'title' => (($rSubtitle['tags']['title'] ?? '') ?: null)];
 						$i++;
 					}
 				}
@@ -576,17 +593,7 @@ class PlayerApiController {
 
 		$output = ['epg_listings' => []];
 
-		if (empty($rRequest['stream_id'])) {
-			return $output;
-		}
-
-		if (is_numeric($rRequest['stream_id']) && !isset($rRequest['multi'])) {
-			$rMulti = false;
-			$rStreamIDs = [intval($rRequest['stream_id'])];
-		} else {
-			$rMulti = true;
-			$rStreamIDs = array_map('intval', explode(',', $rRequest['stream_id']));
-		}
+		[$rStreamIDs, $rMulti] = $this->requestedStreamIds();
 
 		if (count($rStreamIDs) <= 0) {
 			return $output;
@@ -596,12 +603,11 @@ class PlayerApiController {
 
 		if ($rCached) {
 			foreach ($rStreamIDs as $rStreamID) {
-				if (!file_exists(STREAMS_TMP_PATH . 'stream_' . intval($rStreamID))) {
+				$rRow = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . $rStreamID)['info'] ?? null;
+				if (!is_array($rRow)) {
 					continue;
 				}
-
-				$rRow = igbinary_unserialize(file_get_contents(STREAMS_TMP_PATH . 'stream_' . intval($rStreamID)))['info'];
-				$rArchiveInfo[$rStreamID] = intval($rRow['tv_archive_duration']);
+				$rArchiveInfo[$rStreamID] = intval($rRow['tv_archive_duration'] ?? 0);
 			}
 		} else {
 			$db->query('SELECT `id`, `tv_archive_duration` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');');
@@ -614,11 +620,10 @@ class PlayerApiController {
 		}
 
 		foreach ($rStreamIDs as $rStreamID) {
-			if (!file_exists(EPG_PATH . 'stream_' . intval($rStreamID))) {
+			$rRows = $this->readStreamCache(EPG_PATH . 'stream_' . $rStreamID);
+			if ($rRows === null) {
 				continue;
 			}
-
-			$rRows = igbinary_unserialize(file_get_contents(EPG_PATH . 'stream_' . $rStreamID));
 
 			foreach ($rRows as $rEPGData) {
 				$rNowPlaying = $rHasArchive = 0;
@@ -656,19 +661,9 @@ class PlayerApiController {
 
 		$output = ['epg_listings' => []];
 
-		if (empty($rRequest['stream_id'])) {
-			return $output;
-		}
+		$rLimit = (empty($rRequest['limit']) || !is_scalar($rRequest['limit']) ? 4 : intval($rRequest['limit']));
 
-		$rLimit = (empty($rRequest['limit']) ? 4 : intval($rRequest['limit']));
-
-		if (is_numeric($rRequest['stream_id']) && !isset($rRequest['multi'])) {
-			$rMulti = false;
-			$rStreamIDs = [intval($rRequest['stream_id'])];
-		} else {
-			$rMulti = true;
-			$rStreamIDs = array_map('intval', explode(',', $rRequest['stream_id']));
-		}
+		[$rStreamIDs, $rMulti] = $this->requestedStreamIds();
 
 		if (count($rStreamIDs) <= 0) {
 			return $output;
@@ -677,11 +672,10 @@ class PlayerApiController {
 		$rTime = time();
 
 		foreach ($rStreamIDs as $rStreamID) {
-			if (!file_exists(EPG_PATH . 'stream_' . intval($rStreamID))) {
+			$rRows = $this->readStreamCache(EPG_PATH . 'stream_' . $rStreamID);
+			if ($rRows === null) {
 				continue;
 			}
-
-			$rRows = igbinary_unserialize(file_get_contents(EPG_PATH . 'stream_' . $rStreamID));
 
 			foreach ($rRows as $rRow) {
 				if (!($rRow['start'] <= $rTime && $rTime <= $rRow['end'] || $rTime <= $rRow['start'])) {
@@ -703,7 +697,9 @@ class PlayerApiController {
 					$output['epg_listings'][] = $rRow;
 				}
 
-				if (count($output['epg_listings']) >= $rLimit) {
+				// The limit is per stream: keyed by stream id (multi), counting the
+				// outer array counted streams, so a multi request was never limited.
+				if (count($rMulti ? $output['epg_listings'][$rStreamID] : $output['epg_listings']) >= $rLimit) {
 					break;
 				}
 			}
@@ -726,11 +722,13 @@ class PlayerApiController {
 
 		$this->userInfo['live_ids'] = array_merge($this->userInfo['live_ids'], $this->userInfo['radio_ids']);
 
+		// Sort the whole list, then take the page: slicing first paged the
+		// unsorted ids, so a page did not follow the channel order.
+		$this->userInfo['live_ids'] = StreamSorter::sortChannels($this->userInfo['live_ids']);
+
 		if (!empty($this->limit)) {
 			$this->userInfo['live_ids'] = array_slice($this->userInfo['live_ids'], $this->offset, $this->limit);
 		}
-
-		$this->userInfo['live_ids'] = StreamSorter::sortChannels($this->userInfo['live_ids']);
 
 		if (!$rCached) {
 			$rChannels = [];
@@ -825,9 +823,10 @@ class PlayerApiController {
 
 		$output = ['info' => []];
 
-		if (!empty($rRequest['vod_id'])) {
-			$rVODID = intval($rRequest['vod_id']);
+		$rVODID = (empty($rRequest['vod_id']) || !is_scalar($rRequest['vod_id']) ? 0 : intval($rRequest['vod_id']));
 
+		// Only movies the line's bouquets include (see getSeriesInfo()).
+		if ($rVODID > 0 && in_array($rVODID, $this->userInfo['vod_ids'] ?? [], true)) {
 			if ($rCached) {
 				$rRowData = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rVODID));
 				$rRow = $rRowData !== null ? ($rRowData['info'] ?? null) : null;
@@ -845,9 +844,9 @@ class PlayerApiController {
 					$rURL = '';
 				}
 
-				$rating = isset($output['info']['rating']) && is_numeric($output['info']['rating']) ? floatval($output['info']['rating']) : 0.0;
-
 				$output['info'] = json_decode($rRow['movie_properties'] ?? '', true) ?: [];
+				// Read after the properties are loaded — read before, it was always 0.
+				$rating = is_numeric($output['info']['rating'] ?? null) ? floatval($output['info']['rating']) : 0.0;
 				$output['info']['tmdb_id'] = intval($output['info']['tmdb_id'] ?? 0);
 				$output['info']['episode_run_time'] = intval($output['info']['episode_run_time'] ?? 0);
 				$output['info']['releasedate'] = $output['info']['release_date'] ?? '';
@@ -867,7 +866,7 @@ class PlayerApiController {
 					$i = 0;
 
 					foreach ($output['info']['subtitle'] as $rSubtitle) {
-						$output['info']['subtitles'][] = ['index' => $i, 'language' => ($rSubtitle['tags']['language'] ?: null), 'title' => ($rSubtitle['tags']['title'] ?: null)];
+						$output['info']['subtitles'][] = ['index' => $i, 'language' => (($rSubtitle['tags']['language'] ?? '') ?: null), 'title' => (($rSubtitle['tags']['title'] ?? '') ?: null)];
 						$i++;
 					}
 				}
@@ -878,7 +877,7 @@ class PlayerApiController {
 					}
 				}
 
-				$output['movie_data'] = ['stream_id' => (int) $rRow['id'], 'name' => StreamSorter::formatTitle($rRow['stream_display_name'], $rRow['year']), 'title' => $rRow['stream_display_name'], 'year' => $rRow['year'], 'added' => ($rRow['added'] ?: ''), 'category_id' => strval(json_decode($rRow['category_id'], true)[0]), 'category_ids' => json_decode($rRow['category_id'], true), 'container_extension' => $rRow['target_container'], 'custom_sid' => strval($rRow['custom_sid']), 'direct_source' => $rURL];
+				$output['movie_data'] = ['stream_id' => (int) $rRow['id'], 'name' => StreamSorter::formatTitle($rRow['stream_display_name'], $rRow['year']), 'title' => $rRow['stream_display_name'], 'year' => $rRow['year'], 'added' => ($rRow['added'] ?: ''), 'category_id' => strval(json_decode($rRow['category_id'], true)[0] ?? ''), 'category_ids' => json_decode($rRow['category_id'], true), 'container_extension' => $rRow['target_container'], 'custom_sid' => strval($rRow['custom_sid']), 'direct_source' => $rURL];
 			}
 		}
 
@@ -897,11 +896,13 @@ class PlayerApiController {
 			return $output;
 		}
 
+		// Sort the whole list, then take the page: slicing first paged the
+		// unsorted ids, so a page did not follow the channel order.
+		$this->userInfo['vod_ids'] = StreamSorter::sortChannels($this->userInfo['vod_ids']);
+
 		if (!empty($this->limit)) {
 			$this->userInfo['vod_ids'] = array_slice($this->userInfo['vod_ids'], $this->offset, $this->limit);
 		}
-
-		$this->userInfo['vod_ids'] = StreamSorter::sortChannels($this->userInfo['vod_ids']);
 
 		if (!$rCached) {
 			$rChannels = [];
@@ -932,13 +933,7 @@ class PlayerApiController {
 
 		foreach ($rChannels as $rChannel) {
 			if ($rCached) {
-				$rChannelCache = STREAMS_TMP_PATH . 'stream_' . intval($rChannel);
-
-				if (!file_exists($rChannelCache)) {
-					continue;
-				}
-
-				$rChannel = igbinary_unserialize(file_get_contents($rChannelCache))['info'] ?? null;
+				$rChannel = $this->readStreamCache(STREAMS_TMP_PATH . 'stream_' . intval($rChannel))['info'] ?? null;
 
 				if (!$rChannel) {
 					continue;
