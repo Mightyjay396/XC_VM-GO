@@ -43,6 +43,19 @@ class LicenseGate {
 	 * @return bool True when this install's licence permits the fanout daemon.
 	 */
 	public static function fanoutAllowed(): bool {
+		return self::licensed();
+	}
+
+	/**
+	 * Whether this install is licensed — a community install that keeps the
+	 * attribution, or a white-label install with a valid activation key. This is
+	 * the gate for licence-restricted capabilities (fanout delivery, adding
+	 * load-balancer nodes). Fail-open where the extension or the method is absent
+	 * (dev / CI / installs without xcvm_core), so it never blocks a working panel.
+	 *
+	 * @return bool True when the install is licensed.
+	 */
+	public static function licensed(): bool {
 		if (class_exists('XC_VM') && method_exists('XC_VM', 'license_valid')) {
 			return (bool) \XC_VM::license_valid();
 		}

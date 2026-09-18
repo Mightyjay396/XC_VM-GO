@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Proxy\ProxyArchiveUpdater;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
@@ -92,6 +93,18 @@ class ServerInstallCommand implements CommandInterface {
 				return 1;
 			}
 		} elseif ($rType == 2) {
+			// Load-balancer nodes are a licensed capability — an unlicensed
+			// white-label panel stays usable locally but cannot add LB nodes.
+			// This is a first-line stopgap (removable PHP); the tamper-proof gate
+			// is XC_VM::db_grant() in the compiled core, which refuses the LB node
+			// DB access unless the panel is licensed.
+			if (!LicenseGate::licensed()) {
+				$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+				echo "This panel is not activated — load-balancer nodes require activation.\n";
+				echo "Activate the panel (dashboard banner → Get activation key), then retry.\n";
+				return 1;
+			}
+
 			$rUpdateData = LbInstallFlow::resolveUpdateData($gitRelease);
 			$rInstallFiles = $rUpdateData['url'];
 			$rHash = $rUpdateData['md5'];
@@ -110,11 +123,7 @@ class ServerInstallCommand implements CommandInterface {
 			return 1;
 		}
 
-		if ($rUsername == 'root') {
-			echo "Connected! Authenticating as root user...\n";
-		} else {
-			echo "Connected! Authenticating as non-root user...\n";
-		}
+		echo "Connected! Authenticating as user '" . $rUsername . "'...\n";
 		$rResult = @ssh2_auth_password($rConn, $rUsername, $rPassword);
 		if (!$rResult) {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
