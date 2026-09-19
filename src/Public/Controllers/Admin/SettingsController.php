@@ -63,21 +63,20 @@ class SettingsController extends BaseAdminController {
 
 	/**
 	 * Licence status for the Settings → Info tab. Reads the compiled xcvm_core
-	 * verdict (attribution intact / valid activation key). Fail-open to N/A where
-	 * the extension or the licence methods are absent (dev/CI, or an older .so).
+	 * verdict. Fail-open to N/A where the extension or the licence methods are
+	 * absent (dev/CI, or an older .so).
 	 *
-	 * @return array{status: string, attribution: string, hwid: string, key: string}
+	 * @return array{status: string, hwid: string, key: string}
 	 */
 	private function licenseInfo(): array {
 		if (!class_exists('XC_VM') || !method_exists('XC_VM', 'license_valid')) {
-			return ['status' => 'N/A', 'attribution' => 'N/A', 'hwid' => 'N/A', 'key' => 'N/A'];
+			return ['status' => 'N/A', 'hwid' => 'N/A', 'key' => 'N/A'];
 		}
 
 		return [
-			'status'      => \XC_VM::license_valid() ? 'Licensed' : 'Unlicensed',
-			'attribution' => \XC_VM::verify_branding() ? 'Intact' : 'Removed',
-			'hwid'        => (string) \XC_VM::install_id(),
-			'key'         => is_file(MAIN_HOME . 'config/activation_key') ? 'Present' : 'None',
+			'status' => \XC_VM::license_valid() ? 'Licensed' : 'Unlicensed',
+			'hwid'   => (string) \XC_VM::install_id(),
+			'key'    => is_file(MAIN_HOME . 'config/activation_key') ? 'Present' : 'None',
 		];
 	}
 
