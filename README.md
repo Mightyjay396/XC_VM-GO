@@ -334,6 +334,26 @@ unlocks the panel on the next request. End-viewer streaming is **not** affected 
 Each build is also stamped with a unique build identifier (`XC_VM_BUILD_ID`) for provenance,
 so a leaked or rebranded copy can be traced back to the build it originated from.
 
+#### White-label activation (dual-licensing)
+
+Keeping the attribution notice means **AGPL-3.0 — free, and everything works**, including
+load-balancer nodes. If the attribution is **removed** (white-labelling), the panel
+requires a **free, machine-bound activation key** to provision load-balancer / cluster
+nodes; a single-server panel still runs locally without one. Keys are issued **free** and
+self-service (one per HWID, shown in **Settings → Info** and on the dashboard) and are
+**revocable** — this is accountability against rebranded resale, not monetization.
+
+#### What the panel sends (full transparency)
+
+A **community install (attribution intact) never contacts the licensing server.** A
+white-label install contacts `https://www.xcvm.tech` only to: (a) obtain its key
+(`install_id`), (b) run a weekly revocation check (`jti` + nonce), and (c) send **one daily
+check-in** (`install_id`, `jti`, `env_fp`, nonce) recording which IP a HWID runs from —
+evidence against a leaked copy. Every response is **Ed25519-signed** and verified. **No
+stream data, viewer data, credentials, database or file contents, and no remote command
+channel** are ever involved. Full detail:
+[Licensing & Activation](docs/en/info/licensing-and-activation.md).
+
 > ⚖️ You are solely responsible for how it is used.
 > We take no responsibility for misuse or illegal deployments.
 

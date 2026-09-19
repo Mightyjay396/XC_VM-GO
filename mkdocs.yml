@@ -105,6 +105,7 @@ plugins:
             Diagnostics: Диагностика
             Diagnostics Service: Сервис диагностики
             Info & FAQ: Информация и FAQ
+            Licensing & Activation: Лицензирование и активация
             Migration Guide: Руководство по миграции
             Watch Folder: Отслеживаемая папка
             Developer Guide: Руководство разработчика
@@ -164,6 +165,7 @@ nav:
           - Diagnostics Service: en/guides/diagnostics-api.md
       - Info & FAQ:
           - FAQ: en/info/faq.md
+          - Licensing & Activation: en/info/licensing-and-activation.md
           - Migration Guide: en/info/migration_guide.md
           - Watch Folder: en/info/watch_folder.md
   - Developer Guide:
