@@ -2755,6 +2755,10 @@ use XcVm\Streaming\Fanout\FanoutConfig;
 								['Daemon (xc_fanout)', $FanoutVersion, 'bg-dark', ''],
 								['xcvm_core', $XcvmCoreVersion, '', '#e83e8c'],
 								['yt-dlp', $YtDlpVersion, '', '#20c997'],
+								['Licence', $License['status'], $License['status'] === 'Licensed' ? 'bg-success' : ($License['status'] === 'Unlicensed' ? 'bg-danger' : 'bg-secondary'), ''],
+								['Attribution (AGPL §7b)', $License['attribution'], $License['attribution'] === 'Intact' ? 'bg-success' : ($License['attribution'] === 'Removed' ? 'bg-danger' : 'bg-secondary'), ''],
+								['HWID', $License['hwid'], '', '#6c757d'],
+								['Activation key', $License['key'], $License['key'] === 'Present' ? 'bg-success' : 'bg-secondary', ''],
 							];
 							?>
 							<table class="table table-striped table-bordered">
