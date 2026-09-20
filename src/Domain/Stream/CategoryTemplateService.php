@@ -72,10 +72,10 @@ class CategoryTemplateService {
 			// 4. Admin-shared templates (is_shared = 1 created by administrators)
 			$orConditions[] = "(t.is_shared = 1 AND (t.owner_id = 1 OR u.member_group_id = 1))";
 
-			// 5. Parent-shared templates (shared by direct parent reseller)
-			if ($parentOwnerId > 0) {
-				$orConditions[] = "(t.is_shared = 1 AND t.owner_id = ?)";
-				$params[] = $parentOwnerId;
+			// 5. Ancestor-shared templates (shared by any parent/ancestor reseller in the hierarchy)
+			$ancestorIds = self::ancestorOwnerIds($parentOwnerId, $userId);
+			if ($ancestorIds !== []) {
+				$orConditions[] = "(t.is_shared = 1 AND t.owner_id IN (" . implode(',', $ancestorIds) . "))";
 			}
 
 			$where[] = '(' . implode(' OR ', $orConditions) . ')';
@@ -122,6 +122,27 @@ class CategoryTemplateService {
 		}
 		unset($tmpl);
 		return $templates;
+	}
+
+	/**
+	 * Walk the reseller ownership chain upward from $parentOwnerId and return
+	 * every ancestor id (cycle-guarded). Widens shared-template visibility from
+	 * the direct parent to the whole hierarchy above the caller.
+	 *
+	 * @return list<int>
+	 */
+	private static function ancestorOwnerIds(int $parentOwnerId, int $userId): array {
+		$db = self::db();
+		$ancestorIds = [];
+		$currOwner = $parentOwnerId;
+		$seen = [$userId];
+		while ($currOwner > 0 && !in_array($currOwner, $seen, true)) {
+			$ancestorIds[] = $currOwner;
+			$seen[] = $currOwner;
+			$db->query("SELECT `owner_id` FROM `users` WHERE `id` = ? LIMIT 1", $currOwner);
+			$currOwner = (int) ($db->get_row()['owner_id'] ?? 0);
+		}
+		return $ancestorIds;
 	}
 
 	/**
@@ -621,7 +642,7 @@ class CategoryTemplateService {
 	 *
 	 * A non-admin may only touch a template they own, one owned by a
 	 * sub-reseller of theirs, a system template, an admin-shared template, or
-	 * one shared by their direct parent reseller. Denies by default.
+	 * one shared by any ancestor reseller above them. Denies by default.
 	 */
 	public static function canAccessTemplate(array $template, array $user, bool $isAdmin): bool {
 		if ($isAdmin) {
@@ -641,8 +662,10 @@ class CategoryTemplateService {
 		}
 
 		if ((int) ($template['is_shared'] ?? 0) === 1) {
-			// Parent-shared: shared by the caller's direct parent reseller.
-			if ($ownerId === (int) ($user['owner_id'] ?? 0)) {
+			// Shared by any ancestor reseller above the caller (direct parent
+			// included: a direct parent's sub-tree already contains the caller).
+			$subUsersOfOwner = \XcVm\Domain\User\UserRepository::getSubUsers($ownerId);
+			if (isset($subUsersOfOwner[$userId])) {
 				return true;
 			}
 			// Admin-shared: shared and owned by an administrator.

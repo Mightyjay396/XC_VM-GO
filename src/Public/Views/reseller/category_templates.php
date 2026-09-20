@@ -68,6 +68,14 @@ $rCounts      = $counts ?? [
             <span><?= $language::get('admin_shared_templates') ?? 'Admin & System'; ?></span>
             <span class="badge rounded-pill <?= $rScope === 'admin' ? 'bg-white text-info' : 'bg-label-info'; ?> ms-1"><?= (int)($rCounts['admin'] ?? 0); ?></span>
         </a>
+        <?php if (!empty($rCounts['shared']) || $rScope === 'shared'): ?>
+        <a href="category_templates?scope=shared<?= !empty($rSearch) ? '&search=' . urlencode($rSearch) : ''; ?>"
+           class="btn btn-sm <?= $rScope === 'shared' ? 'btn-warning text-white' : 'btn-label-warning'; ?> d-flex align-items-center gap-1">
+            <i class="icon-base ti tabler-share fs-7"></i>
+            <span><?= $language::get('shared_with_subresellers') ?? 'Shared with Me'; ?></span>
+            <span class="badge rounded-pill <?= $rScope === 'shared' ? 'bg-white text-warning' : 'bg-label-warning'; ?> ms-1"><?= (int)($rCounts['shared'] ?? 0); ?></span>
+        </a>
+        <?php endif; ?>
     </div>
 
     <!-- Filter & Search Bar -->
