@@ -264,10 +264,7 @@ class PlaylistGenerator {
 									$rEncData .= ($rSettings['cloudflare'] && $rOutputExt == 'ts') ? $rChannelInfo['id'] : ($rChannelInfo['id'] . '/' . $rOutputExt);
 								}
 								$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
-								$rURL = $rDomainName . 'play/' . $rToken;
-								if ($rChannelInfo['live'] == 0) {
-									$rURL .= '#.' . $rChannelInfo['target_container'];
-								}
+								$rURL = $rDomainName . 'play/' . $rToken . self::encryptedPlaySuffix($rChannelInfo, $rSettings, $rOutputExt);
 							} else {
 								$rURL = $rDomainName . $rChannelInfo['type_output'] . '/' . $rUserInfo['username'] . '/' . $rUserInfo['password'] . '/';
 								if ($rChannelInfo['live'] == 0) {
@@ -394,7 +391,7 @@ class PlaylistGenerator {
 							} elseif ($rEncryptPlaylist) {
 								$rEncData = $rChannel['type_output'] . '/' . $rUserInfo['username'] . '/' . $rUserInfo['password'] . '/' . $rChannel['id'] . '/' . $rChannel['target_container'];
 								$rToken = Encryption::mintToken($rEncData, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
-								$rURL = $rDomainName . 'play/' . $rToken . '#.' . $rChannel['target_container'];
+								$rURL = $rDomainName . 'play/' . $rToken . '.' . $rChannel['target_container'];
 							} else {
 								$rURL = $rDomainName . $rChannel['type_output'] . '/' . $rUserInfo['username'] . '/' . $rUserInfo['password'] . '/' . $rChannel['id'] . '.' . $rChannel['target_container'];
 							}
@@ -415,7 +412,7 @@ class PlaylistGenerator {
 									if ($rSettings['cloudflare'] && $rOutputExt == 'ts') {
 										$rURL = $rDomainName . 'play/' . $rToken;
 									} else {
-										$rURL = $rDomainName . 'play/' . $rToken . '/' . $rOutputExt;
+										$rURL = $rDomainName . 'play/' . $rToken . '.' . $rOutputExt;
 									}
 								} else {
 									if ($rSettings['cloudflare'] && $rOutputExt == 'ts') {
@@ -488,5 +485,20 @@ class PlaylistGenerator {
 			rename(PLAYLIST_PATH . md5($rCacheName) . '.write', PLAYLIST_PATH . md5($rCacheName));
 		}
 		exit();
+	}
+
+	/**
+	 * The path suffix for an encrypted /play/<token> URL: the VOD container, or
+	 * the live output extension — omitted only for the Cloudflare TS case, where
+	 * the bare token is rewritten to a .ts stream. Pure.
+	 *
+	 * @param array $rChannelInfo Channel row (live flag, target_container).
+	 * @param array $rSettings    Server settings (cloudflare flag).
+	 */
+	private static function encryptedPlaySuffix(array $rChannelInfo, array $rSettings, string $rOutputExt): string {
+		if ($rChannelInfo['live'] == 0) {
+			return '.' . $rChannelInfo['target_container'];
+		}
+		return ($rSettings['cloudflare'] && $rOutputExt == 'ts') ? '' : ('.' . $rOutputExt);
 	}
 }
