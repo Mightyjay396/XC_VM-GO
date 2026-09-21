@@ -15,8 +15,10 @@
 #   changed, and copies the FULL current content of those files to the target
 #   server's install root (default /home/xc_vm/). Files the commits DELETED are
 #   removed on the server; renames delete the old path and copy the new one.
-#   After copying, every touched file is chown'd to xc_vm:xc_vm. Optionally the
-#   settings cache is rebuilt and/or the panel is restarted.
+#   After copying, every touched file AND any parent directory tar had to create
+#   is chown'd to xc_vm:xc_vm (a root-owned directory in the path would stop
+#   PHP-FPM reading the file). Optionally the settings cache is rebuilt and/or
+#   the panel is restarted.
 #
 #   This is a developer convenience for iterating against a running box — NOT a
 #   release mechanism. It never bumps versions, runs DB migrations, touches
@@ -35,7 +37,8 @@
 #     commit), so files land whole — this is a file sync, not a patch apply. A
 #     listed file missing from the working tree is skipped with a warning.
 #   * Transfer. One tar stream (tar -C src -cf - -T <list> | ssh 'tar -x') plus
-#     a single chown; deletions are one `rm -f`. All SSH multiplexes over ONE
+#     one chown of the copied files and their parent dirs; deletions are one
+#     `rm -f`. All SSH multiplexes over ONE
 #     ControlMaster socket (/tmp/xcvm-dev-cm-<server>) so repeated connections
 #     do not trip fail2ban on the box.
 #   * Watermark. On success the synced HEAD sha is written to .dev-sync-state so
@@ -205,9 +208,18 @@ sshcmd true
 # ── Copy full files: single tar stream src/ -> REMOTE_ROOT/ ──────────────────
 if [ "$nCopy" -gt 0 ]; then
 	echo "==> copying $nCopy file(s)..."
-	tar -C src -cf - -T "$COPYLIST" | sshcmd "tar -C '$REMOTE_ROOT' -xf -"
-	# ownership: everything the panel touches must be xc_vm:xc_vm
-	sed "s#^#$REMOTE_ROOT/#" "$COPYLIST" | sshcmd "xargs -r -d '\n' chown xc_vm:xc_vm"
+	# --no-same-owner: extract as the SSH user (root) instead of restoring the
+	# developer's uid/gid from the archive; the chown below then sets xc_vm.
+	tar -C src -cf - -T "$COPYLIST" | sshcmd "tar -C '$REMOTE_ROOT' --no-same-owner -xf -"
+	# ownership: the panel runs as xc_vm, so every copied file AND any parent
+	# directory tar had to create must be xc_vm:xc_vm — a root-owned directory
+	# in the path stops PHP-FPM traversing it and the include 500s
+	# (Failed to open stream: Permission denied).
+	{
+		sed "s#^#$REMOTE_ROOT/#" "$COPYLIST"
+		awk -F/ '{ p = ""; for (i = 1; i < NF; i++) { p = (p == "" ? $i : p "/" $i); print p } }' "$COPYLIST" \
+			| sort -u | sed "s#^#$REMOTE_ROOT/#"
+	} | sshcmd "xargs -r -d '\n' chown xc_vm:xc_vm"
 fi
 
 # ── Apply deletions ──────────────────────────────────────────────────────────
