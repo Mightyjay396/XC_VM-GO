@@ -41,7 +41,22 @@ use XcVm\Module\Watch\WatchService;
 use XcVm\Core\Localization\Translator;
 use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
-$rICount = !empty($GLOBALS['__forcePostMode']) ? 1 : count(get_included_files());
+// Legacy standalone entry: nginx can map /CODE/post.php straight to this file
+// (a `location ~ \.php$` with SCRIPT_FILENAME=$request_filename), bypassing the
+// front controller in index.php that normally registers the Composer autoloader.
+// Load the bootstrap before the first class reference so post.php works both
+// standalone and when dispatched through PostController.
+if (!class_exists(SessionManager::class, false)) {
+	require_once dirname(__DIR__, 3) . '/bootstrap.php';
+}
+
+// A real POST entry (standalone request, or dispatched via PostController)
+// processes the action; when post.php is instead included by the admin footer
+// to emit its JS helpers it only prints the <script> block. Detect the entry
+// script directly — the get_included_files() count is unreliable now that a
+// standalone entry loads the bootstrap above.
+$rICount = (!empty($GLOBALS['__forcePostMode'])
+	|| realpath((string) (get_included_files()[0] ?? '')) === realpath(__FILE__)) ? 1 : 2;
 SessionManager::start('admin');
 SessionManager::requireAuth();
 global $db, $rSettings, $rMobile, $rServers, $rProxyServers, $rDetect,
