@@ -76,6 +76,11 @@ class StartupCommand implements CommandInterface {
 			@chmod($rRunSh, 0755);
 		}
 
+		// Core scripts/binaries lose their executable bit on a mode-dropping
+		// deploy, and a missing php-fpm pool config leaves that worker down.
+		self::ensureExecutableScripts(['service', 'update', 'bin/redis/redis-server', 'bin/daemons.sh'], MAIN_HOME);
+		self::ensurePhpFpmPoolConfigs(MAIN_HOME);
+
 		// ── Установка crontab и запуск кэша ──────────────────
 		if (posix_getpwuid(posix_geteuid())['name'] == 'root') {
 			$this->installRootCrontab();
@@ -92,6 +97,44 @@ class StartupCommand implements CommandInterface {
 
 		echo "\n";
 		return 0;
+	}
+
+	/**
+	 * Restore the executable bit on core scripts that a mode-dropping deploy
+	 * (git archive, some rsync flags) can strip.
+	 *
+	 * @param list<string> $rScripts Paths relative to $rBase.
+	 */
+	private static function ensureExecutableScripts(array $rScripts, string $rBase): void {
+		foreach ($rScripts as $rScript) {
+			$rPath = $rBase . $rScript;
+			if (file_exists($rPath) && !is_executable($rPath)) {
+				@chmod($rPath, 0755);
+			}
+		}
+	}
+
+	/**
+	 * Regenerate any missing php-fpm pool config (1..4.conf) from the template,
+	 * so a worker whose config was lost comes back on the next boot.
+	 */
+	private static function ensurePhpFpmPoolConfigs(string $rBase): void {
+		$rTemplatePath = $rBase . 'bin/php/etc/template';
+		if (!file_exists($rTemplatePath)) {
+			return;
+		}
+		$rTemplate = (string) file_get_contents($rTemplatePath);
+		foreach (range(1, 4) as $rID) {
+			$rConf = $rBase . 'bin/php/etc/' . $rID . '.conf';
+			if (file_exists($rConf)) {
+				continue;
+			}
+			file_put_contents($rConf, str_replace('#PATH#', $rBase, str_replace('#ID#', (string) $rID, $rTemplate)));
+			@chmod($rConf, 0644);
+			if (posix_geteuid() === 0) {
+				exec('sudo chown xc_vm:xc_vm ' . escapeshellarg($rConf) . ' 2>/dev/null');
+			}
+		}
 	}
 
 	private function installRootCrontab(): void {

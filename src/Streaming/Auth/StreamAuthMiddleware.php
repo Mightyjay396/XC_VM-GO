@@ -43,14 +43,27 @@ class StreamAuthMiddleware {
 			header('Alt-Svc: h3-29=":' . $rServers[SERVER_ID]['https_broadcast_port'] . '"; ma=2592000,h3-T051=":' . $rServers[SERVER_ID]['https_broadcast_port'] . '"; ma=2592000,h3-Q050=":' . $rServers[SERVER_ID]['https_broadcast_port'] . '"; ma=2592000,h3-Q046=":' . $rServers[SERVER_ID]['https_broadcast_port'] . '"; ma=2592000,h3-Q043=":' . $rServers[SERVER_ID]['https_broadcast_port'] . '"; ma=2592000,quic=":' . $rServers[SERVER_ID]['https_broadcast_port'] . '"; ma=2592000; v="46,43"');
 		}
 
-		if (empty($rSettings['send_unique_header_domain']) && !filter_var(HOST, FILTER_VALIDATE_IP)) {
-			$rSettings['send_unique_header_domain'] = '.' . HOST;
+		if (empty($rSettings['send_unique_header_domain']) && ($rDomain = self::uniqueHeaderDomain()) !== null) {
+			$rSettings['send_unique_header_domain'] = $rDomain;
 		}
 
 		if (!empty($rSettings['send_unique_header'])) {
 			$rExpires = new \DateTime('+6 months', new \DateTimeZone('GMT'));
 			header('Set-Cookie: ' . $rSettings['send_unique_header'] . '=' . Encryption::randomString(11) . '; Domain=' . $rSettings['send_unique_header_domain'] . '; Expires=' . $rExpires->format(DATE_RFC2822) . '; Path=/; Secure; HttpOnly; SameSite=none');
 		}
+	}
+
+	/**
+	 * The leading-dot cookie domain derived from the request host, or null when
+	 * there is no usable host name (HOST undefined, empty, or a bare IP — a dot
+	 * prefix on which is not a valid cookie domain).
+	 */
+	private static function uniqueHeaderDomain(): ?string {
+		$rHost = defined('HOST') ? (string) HOST : (string) ($_SERVER['HTTP_HOST'] ?? '');
+		if ($rHost === '' || filter_var($rHost, FILTER_VALIDATE_IP)) {
+			return null;
+		}
+		return '.' . $rHost;
 	}
 
 	/**
