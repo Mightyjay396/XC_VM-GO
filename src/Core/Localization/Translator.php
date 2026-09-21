@@ -95,6 +95,16 @@ class Translator {
 	}
 
 	/**
+	 * Whether a language (or the current one) is written right-to-left.
+	 *
+	 * @param string|null $lang Language code, or null for the current language.
+	 */
+	public static function isRtl(?string $lang = null): bool {
+		$lang ??= self::$currentLang;
+		return in_array(strtolower((string) $lang), ['ar', 'fa', 'ur', 'he'], true);
+	}
+
+	/**
 	 * @return string[] List of available language codes
 	 */
 	public static function available(): array {

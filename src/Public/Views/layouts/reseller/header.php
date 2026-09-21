@@ -200,12 +200,14 @@ if (!function_exists('_xc_reseller_menu_node')) {
         return [$html, $active];
     }
 }
+$xmCurrentLang = \XcVm\Core\Localization\Translator::current();
+$xmIsRtl       = \XcVm\Core\Localization\Translator::isRtl($xmCurrentLang);
 ?>
 <!doctype html>
 <html
-    lang="en"
+    lang="<?= htmlspecialchars($xmCurrentLang, ENT_QUOTES); ?>"
     class="layout-navbar-fixed layout-menu-fixed layout-compact"
-    dir="ltr"
+    dir="<?= $xmIsRtl ? 'rtl' : 'ltr'; ?>"
     data-skin="default"
     data-bs-theme="<?= $xmBsTheme ?>"
     data-assets-path="assets/"
@@ -239,6 +241,10 @@ if (!function_exists('_xc_reseller_menu_node')) {
     <?php require_once dirname(__DIR__, 2) . '/admin/vendors.php'; ?>
     <?php xc_newui_vendor_css(xc_newui_vendors_wanted()); ?>
     <link rel="stylesheet" href="assets/xcvm/custom.css">
+    <?php if ($xmIsRtl): ?>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap">
+        <link rel="stylesheet" href="assets/xcvm/rtl.css">
+    <?php endif; ?>
 
     <!-- Helpers + template customizer must precede config.js -->
     <script src="assets/vendor/js/helpers.js"></script>
