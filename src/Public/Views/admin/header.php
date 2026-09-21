@@ -68,11 +68,9 @@ if (!function_exists('_xc_nav_label')) {
 $xmCurrentLang = \XcVm\Core\Localization\Translator::current();
 $xmIsRtl       = \XcVm\Core\Localization\Translator::isRtl($xmCurrentLang);
 // The Vuexy customizer (config.js) derives the text direction from the per-user
-// `rtl` pref, not the language, and would otherwise reset <html dir> back to ltr.
-// Force it on for an RTL language so the layout actually mirrors.
-if ($xmIsRtl) {
-	$xmUiPrefs['rtl'] = true;
-}
+// `rtl` pref, not the language. Bind it to the language so an RTL language
+// mirrors the layout and switching back to an LTR language clears it.
+$xmUiPrefs['rtl'] = $xmIsRtl;
 ?>
 <!doctype html>
 <html
