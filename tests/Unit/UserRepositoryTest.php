@@ -135,4 +135,12 @@ final class UserRepositoryTest extends TestCase {
 			$this->assertNull(UserRepository::getLineById($rID), var_export($rID, true));
 		}
 	}
+
+	// A caller-supplied bouquet map is used as-is (the null path resolves from
+	// the shared cache / DB, exercised via the streaming endpoints).
+	public function testResolveBouquetsUsesCallerSuppliedMap(): void {
+		$rMap = array(1 => array('streams' => array(7)));
+		$this->assertSame($rMap, $this->call('resolveBouquets', $rMap));
+		$this->assertSame(array(), $this->call('resolveBouquets', array()));
+	}
 }
