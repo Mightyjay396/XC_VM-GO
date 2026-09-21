@@ -573,7 +573,7 @@ class ActiveCodeService {
 	 */
 	public static function getRecentBatchNames(array $createdBy = [], int $limit = 100): array {
 		$db = self::db();
-		$where = '`batch_name` IS NOT NULL';
+		$where = '`batch_name` IS NOT NULL AND `batch_name` != ""';
 		if ($createdBy !== []) {
 			$where = '`created_by` IN (' . implode(',', array_map('intval', $createdBy)) . ') AND ' . $where;
 		}

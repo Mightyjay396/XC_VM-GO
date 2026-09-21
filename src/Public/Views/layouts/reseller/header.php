@@ -112,6 +112,12 @@ $xmMenu = [
         ],
     ],
     [
+        'label' => 'category_templates',
+        'icon'  => 'ti tabler-layout-grid',
+        'url'   => 'category_templates',
+        'show'  => true,
+    ],
+    [
         'label' => 'content',
         'icon'  => 'ti tabler-player-play',
         'url'   => '#',
@@ -123,6 +129,7 @@ $xmMenu = [
             ['label' => 'episodes',         'url' => 'episodes',         'show' => true],
             ['label' => 'radios',           'url' => 'radios',           'show' => true],
             ['label' => 'tv_guide',         'url' => 'epg_view',         'show' => !$rMobile],
+            ['label' => 'category_templates', 'url' => 'category_templates', 'show' => true],
         ],
     ],
     [

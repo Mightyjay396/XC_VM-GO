@@ -746,6 +746,52 @@ class CategoryTemplateService {
 	}
 
 	/**
+	 * Resolve the `custom_data` column on a line/device payload from an incoming
+	 * form. Shared by line, mag and enigma saves. The column is only touched when
+	 * the request carries `category_template_id` or `custom_data`, so an untouched
+	 * edit preserves the stored layout.
+	 *
+	 * @param array<string, mixed> $rData   Incoming request data.
+	 * @param array<string, mixed> $target  Line/device row being built.
+	 * @return array<string, mixed> The row with `custom_data` applied.
+	 */
+	public static function applyCustomData(array $rData, array $target): array {
+		if (isset($rData['category_template_id'])) {
+			return self::applyTemplateId($rData['category_template_id'], $target);
+		}
+		if (isset($rData['custom_data'])) {
+			$target['custom_data'] = self::normaliseCustomData($rData['custom_data']);
+		}
+		return $target;
+	}
+
+	/**
+	 * Apply a selected template id: "0"/"none" clears the layout, a positive id
+	 * builds it, anything else leaves the row unchanged.
+	 *
+	 * @param array<string, mixed> $target
+	 * @return array<string, mixed>
+	 */
+	private static function applyTemplateId(mixed $templateId, array $target): array {
+		if ($templateId === '0' || $templateId === 'none') {
+			$target['custom_data'] = null;
+		} elseif (intval($templateId) > 0) {
+			$target['custom_data'] = json_encode(self::buildCustomData(intval($templateId)), JSON_UNESCAPED_UNICODE);
+		}
+		return $target;
+	}
+
+	/**
+	 * Normalise a raw `custom_data` payload to the stored string form (or null).
+	 */
+	private static function normaliseCustomData(mixed $customData): ?string {
+		if (is_array($customData)) {
+			return json_encode($customData, JSON_UNESCAPED_UNICODE);
+		}
+		return (string) $customData === '' ? null : (string) $customData;
+	}
+
+	/**
 	 * Count active subscriber lines attached to a specific template.
 	 */
 	public static function getSubscriberCount(int $templateId): int {

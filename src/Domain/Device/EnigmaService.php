@@ -10,6 +10,7 @@ use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Line\LineRepository;
 use XcVm\Domain\Line\LineService;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Domain\Stream\CategoryTemplateService;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -289,6 +290,7 @@ class EnigmaService {
 				}
 
 				if (0 >= $db->num_rows()) {
+					$rUserArray = CategoryTemplateService::applyCustomData($rData, $rUserArray);
 					$rPrepare = QueryHelper::prepareArray($rUserArray);
 
 					$rQuery = 'REPLACE INTO `lines`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';

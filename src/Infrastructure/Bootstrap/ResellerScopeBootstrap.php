@@ -46,7 +46,8 @@ final class ResellerScopeBootstrap implements ScopeBootstrap {
 		}
 
 		// Expire session after timeout
-		if (isset($_SESSION['reseller'], $_SESSION['rlast_activity'])
+		if (
+			isset($_SESSION['reseller'], $_SESSION['rlast_activity'])
 			&& ($rSessionTimeout * 60) < (time() - $_SESSION['rlast_activity'])
 		) {
 			foreach (['reseller', 'rip', 'rcode', 'rverify', 'rlast_activity'] as $rKey) {
@@ -99,7 +100,7 @@ final class ResellerScopeBootstrap implements ScopeBootstrap {
 
 			setcookie('hue', $rUserInfo['hue'] ?? '', time() + 604800);
 			setcookie('theme', $rUserInfo['theme'] ?? '', time() + 604800);
-			Translator::setLanguage($rUserInfo['lang']);
+			Translator::setLanguage($rUserInfo['lang'] ?? 'en');
 
 			$rPermissions = array_merge(AuthRepository::getPermissions($rUserInfo['member_group_id']), AuthRepository::getGroupPermissions($rUserInfo['id']));
 			$rPermissions['direct_reports'] = $rPermissions['direct_reports'] ?? [];

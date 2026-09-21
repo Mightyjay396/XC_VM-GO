@@ -18,17 +18,21 @@ use XcVm\Domain\Line\PackageService;
  * @package XC_VM_Public_Controllers_Admin
  */
 class ActiveCodeDetailsController {
+	use \XcVm\Infrastructure\Database\DatabaseAware;
+
+
 	/**
 	 * action=active_code_details — full voucher & companion line details.
 	 */
 	public function index(): never {
 		if ((!defined('PHP_ERRORS') || !PHP_ERRORS)
 			&& strtolower($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') !== 'xmlhttprequest'
+			&& !RequestManager::has('id')
 		) {
 			exit();
 		}
 
-		global $db;
+		$db = self::db();
 		$codeId = (int) (RequestManager::get('id') ?? 0);
 
 		$code = $codeId ? $db->fetchOne(
