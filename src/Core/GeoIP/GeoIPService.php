@@ -27,9 +27,7 @@ class GeoIPService {
 	public static function getIPInfo(string $rIP) {
 		if (!empty($rIP)) {
 			if (!file_exists(CONS_TMP_PATH . md5($rIP) . '_geo2')) {
-				$rGeoIP = new \MaxMind\Db\Reader(GEOLITE2_BIN);
-				$rResponse = $rGeoIP->get($rIP);
-				$rGeoIP->close();
+				$rResponse = self::readMmdb('GEOLITE2_BIN', $rIP);
 				if ($rResponse) {
 					file_put_contents(CONS_TMP_PATH . md5($rIP) . '_geo2', json_encode($rResponse));
 				}
@@ -38,6 +36,28 @@ class GeoIPService {
 			return json_decode(file_get_contents(CONS_TMP_PATH . md5($rIP) . '_geo2'), true);
 		}
 		return false;
+	}
+
+	/**
+	 * Read one record from a MaxMind database, guarding a missing constant or
+	 * binary and any reader error so a corrupt/absent database can never fatal
+	 * the streaming request (returns false instead).
+	 *
+	 * @param string $rBinConst Name of the DB-path constant (GEOLITE2_BIN/GEOISP_BIN).
+	 * @return array|mixed|false The record, or false when the database is unusable.
+	 */
+	private static function readMmdb(string $rBinConst, string $rIP) {
+		if (!defined($rBinConst) || !file_exists(constant($rBinConst))) {
+			return false;
+		}
+		try {
+			$rGeoIP = new \MaxMind\Db\Reader(constant($rBinConst));
+			$rResponse = $rGeoIP->get($rIP);
+			$rGeoIP->close();
+			return $rResponse;
+		} catch (\Throwable $e) {
+			return false;
+		}
 	}
 
 	/**
@@ -51,9 +71,7 @@ class GeoIPService {
 		if (!empty($rIP)) {
 			$rResponse = (file_exists(CONS_TMP_PATH . md5($rIP) . '_isp') ? json_decode(file_get_contents(CONS_TMP_PATH . md5($rIP) . '_isp'), true) : null);
 			if (!is_array($rResponse)) {
-				$rGeoIP = new \MaxMind\Db\Reader(GEOISP_BIN);
-				$rResponse = $rGeoIP->get($rIP);
-				$rGeoIP->close();
+				$rResponse = self::readMmdb('GEOISP_BIN', $rIP);
 				if (is_array($rResponse)) {
 					file_put_contents(CONS_TMP_PATH . md5($rIP) . '_isp', json_encode($rResponse));
 				}
