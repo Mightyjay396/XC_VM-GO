@@ -185,7 +185,7 @@ if (!LicenseGate::licensed()):
         <div class="col-xl-6">
             <div class="card h-100">
                 <div class="card-header">
-                    <h5 class="card-title mb-0"><?= $language::get('dashboard_service_status'); ?></h5>
+                    <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-heartbeat icon-22px text-success"></i><span><?= $language::get('dashboard_service_status'); ?></span></h5>
                 </div>
                 <div class="card-body dashboard-status-scroll">
                     <ul class="timeline mb-0">
@@ -221,7 +221,7 @@ if (!LicenseGate::licensed()):
         <div class="col-xl-6">
             <div class="card h-100">
                 <div class="card-header">
-                    <h5 class="card-title mb-0"><?= $language::get('dashboard_cpu_memory'); ?></h5>
+                    <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-cpu icon-22px text-primary"></i><span><?= $language::get('dashboard_cpu_memory'); ?></span></h5>
                 </div>
                 <div class="card-body">
                     <div id="cpu_chart"></div>
@@ -232,7 +232,7 @@ if (!LicenseGate::licensed()):
         <div class="col-xl-6">
             <div class="card h-100">
                 <div class="card-header">
-                    <h5 class="card-title mb-0"><?= $language::get('dashboard_network_traffic'); ?></h5>
+                    <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-arrows-up-down icon-22px text-info"></i><span><?= $language::get('dashboard_network_traffic'); ?></span></h5>
                 </div>
                 <div class="card-body">
                     <div id="network_chart"></div>
@@ -244,7 +244,7 @@ if (!LicenseGate::licensed()):
             <div class="col-xl-6">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h5 class="card-title mb-0"><?= $language::get('dashboard_connections'); ?></h5>
+                        <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-plug-connected icon-22px text-warning"></i><span><?= $language::get('dashboard_connections'); ?></span></h5>
                     </div>
                     <div class="card-body">
                         <div id="connections_chart"></div>
@@ -258,7 +258,7 @@ if (!LicenseGate::licensed()):
             <div class="col-12">
                 <div class="card h-100">
                     <div class="card-header">
-                        <h5 class="card-title mb-0"><?= $language::get('dashboard_connections_by_location'); ?></h5>
+                        <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-world icon-22px text-primary"></i><span><?= $language::get('dashboard_connections_by_location'); ?></span></h5>
                     </div>
                     <div class="card-body">
                         <div class="row">
