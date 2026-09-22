@@ -60,9 +60,6 @@ $rCategoryIDs = (array) ($rPermissions['category_ids'] ?? []);
                     <th><?= $language::get('title'); ?></th>
                     <th><?= $language::get('category'); ?></th>
                     <th class="text-center"><?= $language::get('connections'); ?></th>
-                    <?php if ($rCanKill): ?>
-                        <th class="text-center"><?= $language::get('actions'); ?></th>
-                    <?php endif; ?>
                 </tr>
             </thead>
             <tbody></tbody>
@@ -111,7 +108,7 @@ renderUnifiedLayoutFooter('reseller');
             },
             columnDefs: [{
                 orderable: false,
-                targets: [0, 2 <?= $rCanKill ? ', 6' : ''; ?>]
+                targets: [0, 2]
             }],
             columns: [{
                     data: null,
@@ -154,24 +151,14 @@ renderUnifiedLayoutFooter('reseller');
                     className: 'text-center',
                     render: function(d, t, row) {
                         var badge = '<span class="badge bg-label-' + (d > 0 ? 'info' : 'secondary') + '">' + (d || 0) + '</span>';
-                        return (d > 0 && canKill) ? '<a href="live_connections?stream=' + encodeURIComponent(row.id) + '&stream_id=' + encodeURIComponent(row.id) + '">' + badge + '</a>' : badge;
+                        if (!(d > 0) || !canKill) {
+                            return badge;
+                        }
+                        // The badge opens the connection list; the hammer purges the whole stream at once.
+                        return '<span class="text-nowrap"><a href="live_connections?stream=' + encodeURIComponent(row.id) + '&stream_id=' + encodeURIComponent(row.id) + '">' + badge + '</a> '
+                            + '<button type="button" class="btn btn-sm btn-icon btn-label-danger js-act" title="' + esc(lang.kill) + '" data-id="' + esc(row.id) + '"><i class="icon-base ti tabler-hammer"></i></button></span>';
                     }
                 }
-                <?php if ($rCanKill): ?>,
-                    {
-                        data: null,
-                        orderable: false,
-                        searchable: false,
-                        className: 'text-center',
-                        render: function(d, t, row) {
-                            if (!(row.clients > 0)) {
-                                return '';
-                            }
-                            var items = '<a class="dropdown-item js-act" href="javascript:void(0);" data-id="' + esc(row.id) + '">' + esc(lang.kill) + '</a>';
-                            return '<div class="dropdown"><button class="btn btn-sm btn-icon btn-label-secondary" data-bs-toggle="dropdown" aria-expanded="false"><i class="icon-base ti tabler-dots-vertical"></i></button><div class="dropdown-menu dropdown-menu-end">' + items + '</div></div>';
-                        }
-                    }
-                <?php endif; ?>
             ],
             layout: {
                 topStart: 'pageLength',
