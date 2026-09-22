@@ -11,6 +11,7 @@
  * Posts to post.php?action=package via fetch; on success returns to the list.
  */
 
+use XcVm\Core\Reference\GeoReference;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Line\LineRepository;
 use XcVm\Domain\User\GroupService;
@@ -146,7 +147,7 @@ $rPackageOutputs = ($rIsEdit && !empty($rPackage['output_formats'])) ? (json_dec
                         <div class="col-md-6">
                             <label class="form-label" for="forced_country"><?= $language::get('forced_country'); ?></label>
                             <select name="forced_country" id="forced_country" class="form-select">
-                                <?php foreach ($rCountries as $rCountry): ?>
+                                <?php foreach (GeoReference::countries() as $rCountry): ?>
                                     <option value="<?= htmlspecialchars((string) $rCountry['id'], ENT_QUOTES); ?>" <?= ($rIsEdit && $rPackage['forced_country'] == $rCountry['id']) ? 'selected' : ''; ?>><?= htmlspecialchars((string) $rCountry['name'], ENT_QUOTES); ?></option>
                                 <?php endforeach; ?>
                             </select>

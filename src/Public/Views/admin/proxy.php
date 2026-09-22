@@ -7,6 +7,7 @@
  */
 
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Reference\GeoReference;
 
 ?>
 
@@ -127,8 +128,8 @@ use XcVm\Core\Config\SettingsManager;
                         <div class="col-md-8">
                             <select name="geoip_countries[]" id="geoip_countries" class="form-select" multiple="multiple" data-placeholder="<?= htmlspecialchars((string) $language::get('choose_placeholder'), ENT_QUOTES); ?>">
                                 <?php $selectedCountries = json_decode($rServerArr['geoip_countries'] ?? '[]', true) ?: []; ?>
-                                <?php foreach ($rCountries as $country): ?>
-                                    <option value="<?= htmlspecialchars((string) $country['id'], ENT_QUOTES); ?>" <?= in_array($country['id'], $selectedCountries) ? 'selected' : ''; ?>><?= htmlspecialchars((string) $country['name'], ENT_QUOTES); ?></option>
+                                <?php foreach (GeoReference::geoCountries() as $rCode => $rName): ?>
+                                    <option value="<?= htmlspecialchars((string) $rCode, ENT_QUOTES); ?>" <?= in_array($rCode, $selectedCountries) ? 'selected' : ''; ?>><?= htmlspecialchars((string) $rName, ENT_QUOTES); ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
