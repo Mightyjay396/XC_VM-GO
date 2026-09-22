@@ -185,7 +185,7 @@ class HomeController extends BasePlayerV2Controller {
 		}
 
 		// 3. Fallback to direct catalog items if popular file has no matches
-		if (empty($rPopularNow)) {
+		if ($rPopularNow === []) {
 			// Pick up to 5 movies
 			if ($vodIdsSafe !== []) {
 				$db->query('SELECT `id`, `stream_display_name`, `year`, `rating`, `movie_properties` FROM `streams` WHERE `id` IN (' . implode(',', array_slice($vodIdsSafe, 0, 10)) . ') LIMIT 5;');
@@ -239,7 +239,7 @@ class HomeController extends BasePlayerV2Controller {
 				$heroSlides[] = $item;
 			}
 		}
-		if (empty($heroSlides) && !empty($rPopularNow)) {
+		if ($heroSlides === [] && $rPopularNow !== []) {
 			$heroSlides = $rPopularNow;
 		}
 		$heroSlides = array_slice($heroSlides, 0, 5);

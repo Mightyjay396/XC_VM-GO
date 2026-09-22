@@ -4834,20 +4834,6 @@ class TableController extends BaseAdminController {
 		exit;
 	}
 
-	/**
-	 * A database value made safe for HTML text or a quoted attribute. Rows arrive
-	 * with only < and > entity-encoded (Database::clean_row), so they are decoded
-	 * first and encoded once, quotes included.
-	 */
-	private static function htmlValue(mixed $rValue): string {
-		return htmlspecialchars(html_entity_decode((string) $rValue, ENT_QUOTES), ENT_QUOTES);
-	}
-
-	/** A database value as a JavaScript string literal, for an event-handler attribute. */
-	private static function jsArgument(mixed $rValue): string {
-		return htmlspecialchars((string) json_encode(html_entity_decode((string) $rValue, ENT_QUOTES), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE), ENT_QUOTES);
-	}
-
 	private function handleParentServers($rReturn, $rStart, $rLimit, $rIsAPI) {
 		global $db, $rServers;
 		if (!Authorization::check("adv", "servers")) {

@@ -12,10 +12,15 @@ final class StartupCommandRuntimeFilesTest extends TestCase {
 
 	private string $dir;
 
+	/**
+	 * Call a private helper. Whether it is static is an implementation detail
+	 * (Rector's LocallyCalledStaticMethodToNonStatic flips it), so bind an
+	 * instance only when the method actually needs one.
+	 */
 	private function call(string $rMethod, ...$rArgs) {
 		$rM = new ReflectionMethod(StartupCommand::class, $rMethod);
 		$rM->setAccessible(true);
-		return $rM->invoke(null, ...$rArgs);
+		return $rM->invoke($rM->isStatic() ? null : new StartupCommand(), ...$rArgs);
 	}
 
 	protected function setUp(): void {

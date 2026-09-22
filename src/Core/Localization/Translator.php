@@ -101,7 +101,7 @@ class Translator {
 	 */
 	public static function isRtl(?string $lang = null): bool {
 		$lang ??= self::$currentLang;
-		return in_array(strtolower((string) $lang), ['ar', 'fa', 'ur', 'he'], true);
+		return in_array(strtolower($lang), ['ar', 'fa', 'ur', 'he'], true);
 	}
 
 	/**

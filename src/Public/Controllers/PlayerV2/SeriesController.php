@@ -499,7 +499,7 @@ class SeriesController extends BasePlayerV2Controller {
 		}
 
 		// Fallback seasons from episodes map if seasons table was empty
-		if (empty($seasons) && !empty($episodesMap)) {
+		if ($seasons === [] && $episodesMap !== []) {
 			$seasonKeys = array_keys($episodesMap);
 			sort($seasonKeys, SORT_NUMERIC);
 			foreach ($seasonKeys as $sNum) {

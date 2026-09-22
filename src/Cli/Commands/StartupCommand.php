@@ -78,8 +78,8 @@ class StartupCommand implements CommandInterface {
 
 		// Core scripts/binaries lose their executable bit on a mode-dropping
 		// deploy, and a missing php-fpm pool config leaves that worker down.
-		self::ensureExecutableScripts(['service', 'update', 'bin/redis/redis-server', 'bin/daemons.sh'], MAIN_HOME);
-		self::ensurePhpFpmPoolConfigs(MAIN_HOME);
+		$this->ensureExecutableScripts(['service', 'update', 'bin/redis/redis-server', 'bin/daemons.sh'], MAIN_HOME);
+		$this->ensurePhpFpmPoolConfigs(MAIN_HOME);
 
 		// ── Установка crontab и запуск кэша ──────────────────
 		if (posix_getpwuid(posix_geteuid())['name'] == 'root') {
@@ -105,7 +105,7 @@ class StartupCommand implements CommandInterface {
 	 *
 	 * @param list<string> $rScripts Paths relative to $rBase.
 	 */
-	private static function ensureExecutableScripts(array $rScripts, string $rBase): void {
+	private function ensureExecutableScripts(array $rScripts, string $rBase): void {
 		foreach ($rScripts as $rScript) {
 			$rPath = $rBase . $rScript;
 			if (file_exists($rPath) && !is_executable($rPath)) {
@@ -118,7 +118,7 @@ class StartupCommand implements CommandInterface {
 	 * Regenerate any missing php-fpm pool config (1..4.conf) from the template,
 	 * so a worker whose config was lost comes back on the next boot.
 	 */
-	private static function ensurePhpFpmPoolConfigs(string $rBase): void {
+	private function ensurePhpFpmPoolConfigs(string $rBase): void {
 		$rTemplatePath = $rBase . 'bin/php/etc/template';
 		if (!file_exists($rTemplatePath)) {
 			return;

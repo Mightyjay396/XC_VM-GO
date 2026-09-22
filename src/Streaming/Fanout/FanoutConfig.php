@@ -170,7 +170,7 @@ class FanoutConfig {
 	 */
 	private static function debugCats(string $rValue): string {
 		$rValue = strtolower(trim($rValue));
-		if ($rValue === '' || $rValue === 'off' || $rValue === '0' || $rValue === 'false' || $rValue === 'no') {
+		if (in_array($rValue, ['', 'off', '0', 'false', 'no'], true)) {
 			return '';
 		}
 		if (in_array($rValue, ['all', '1', 'true', 'yes', 'on'], true)) {

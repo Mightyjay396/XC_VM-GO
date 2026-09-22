@@ -302,7 +302,7 @@ class PlayerApiController {
 
 		[$rStreamIDs, $rMulti] = $this->requestedStreamIds();
 
-		if (!empty($rStreamIDs) && (is_null($this->userInfo['exp_date']) || time() < $this->userInfo['exp_date'])) {
+		if ($rStreamIDs !== [] && (is_null($this->userInfo['exp_date']) || time() < $this->userInfo['exp_date'])) {
 			$rFromNow = !empty($rRequest['from_now']) && 0 < $rRequest['from_now'];
 			$rEPGs = [];
 
@@ -1063,6 +1063,6 @@ class PlayerApiController {
 			}
 		}
 
-		return !empty($rReturn) ? $rReturn : ['m3u8', 'ts', 'rtmp'];
+		return $rReturn !== [] ? $rReturn : ['m3u8', 'ts', 'rtmp'];
 	}
 }

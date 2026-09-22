@@ -392,10 +392,7 @@ class StreamsCronJob implements CommandInterface {
 					$db->query('UPDATE `streams_servers` SET `bitrate` = ?, `stream_info` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ?, `compatible` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rBitrate, json_encode($rFFProbeOutput), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rStream['id'], SERVER_ID);
 				}
 
-				$rUUIDs = self::connectionUuidsForStream(
-					ConnectionTracker::getConnections(SERVER_ID, null, $rStream['id']),
-					$rStream['id']
-				);
+				$rUUIDs = $this->connectionUuidsForStream(ConnectionTracker::getConnections(SERVER_ID, null, $rStream['id']), $rStream['id']);
 
 				$rConDir = CONS_TMP_PATH . $rStream['id'] . '/';
 				// The per-stream connection dir only exists once a client connects,
@@ -459,7 +456,7 @@ class StreamsCronJob implements CommandInterface {
 	 * @param mixed $rStreamID    Stream id to keep (rows without one are kept).
 	 * @return list<string>
 	 */
-	private static function connectionUuidsForStream($rConnections, $rStreamID): array {
+	private function connectionUuidsForStream($rConnections, $rStreamID): array {
 		$rUUIDs = [];
 		foreach (self::collectUuidRows($rConnections) as $rRow) {
 			if (empty($rRow['stream_id']) || $rRow['stream_id'] == $rStreamID) {

@@ -11,16 +11,23 @@ use XcVm\Cli\CronJobs\StreamsCronJob;
  */
 final class StreamsCronConnectionsTest extends TestCase {
 
-	private function uuids($rConnections, $rStreamID): array {
-		$rM = new ReflectionMethod(StreamsCronJob::class, 'connectionUuidsForStream');
+	/**
+	 * Call a private helper. Whether it is static is an implementation detail
+	 * (Rector's LocallyCalledStaticMethodToNonStatic flips it), so bind an
+	 * instance only when the method actually needs one.
+	 */
+	private function call(string $rMethod, ...$rArgs) {
+		$rM = new ReflectionMethod(StreamsCronJob::class, $rMethod);
 		$rM->setAccessible(true);
-		return $rM->invoke(null, $rConnections, $rStreamID);
+		return $rM->invoke($rM->isStatic() ? null : new StreamsCronJob(), ...$rArgs);
+	}
+
+	private function uuids($rConnections, $rStreamID): array {
+		return $this->call('connectionUuidsForStream', $rConnections, $rStreamID);
 	}
 
 	private function collect($rNode): array {
-		$rM = new ReflectionMethod(StreamsCronJob::class, 'collectUuidRows');
-		$rM->setAccessible(true);
-		return $rM->invoke(null, $rNode);
+		return $this->call('collectUuidRows', $rNode);
 	}
 
 	public function testRedisPairShapeFiltersByStream(): void {

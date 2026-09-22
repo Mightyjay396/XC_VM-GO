@@ -20,7 +20,6 @@ use XcVm\Domain\Line\PackageService;
 class ActiveCodeDetailsController {
 	use \XcVm\Infrastructure\Database\DatabaseAware;
 
-
 	/**
 	 * action=active_code_details — full voucher & companion line details.
 	 */
