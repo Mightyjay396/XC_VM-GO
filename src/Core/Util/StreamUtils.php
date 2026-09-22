@@ -153,7 +153,7 @@ class StreamUtils {
 	}
 
 	/** Video platforms whose page URLs parseStreamURL() resolves through yt-dlp. */
-	const RESOLVED_PLATFORMS = ['livestream.com', 'ustream.tv', 'twitch.tv', 'vimeo.com', 'facebook.com', 'dailymotion.com', 'cnn.com', 'edition.cnn.com', 'youtube.com', 'youtu.be'];
+	public const RESOLVED_PLATFORMS = ['livestream.com', 'ustream.tv', 'twitch.tv', 'vimeo.com', 'facebook.com', 'dailymotion.com', 'cnn.com', 'edition.cnn.com', 'youtube.com', 'youtu.be'];
 
 	/**
 	 * Whether a source URL is a platform page parseStreamURL() has to resolve

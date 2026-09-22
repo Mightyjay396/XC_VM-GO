@@ -142,9 +142,9 @@ class StreamProcess {
 	}
 
 	/** startMonitor(): the stream was handed to the fanout daemon's supervisor. */
-	const MONITOR_FANOUT = 'fanout';
+	public const MONITOR_FANOUT = 'fanout';
 	/** startMonitor(): a PHP watchdog (`console.php monitor`) was started for it. */
-	const MONITOR_PHP = 'php';
+	public const MONITOR_PHP = 'php';
 
 	/**
 	 * Start watching a live stream: hand it to the fanout daemon's supervisor
@@ -1049,7 +1049,7 @@ class StreamProcess {
 	// cannot read that source.
 
 	/** Exit status of `xc_fanout remux` for "cannot be served natively" (supervisor.ExitUnsupported). */
-	const REMUX_EXIT_UNSUPPORTED = 3;
+	public const REMUX_EXIT_UNSUPPORTED = 3;
 
 	/**
 	 * Assemble the native remuxer command — `xc_fanout remux` — for one source of

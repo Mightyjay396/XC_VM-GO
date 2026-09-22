@@ -24,7 +24,7 @@ class SignalsCommand implements CommandInterface {
 	use DaemonTrait;
 
 	/** Seconds between syncs of supervised streams' rows from the fanout daemon. */
-	const RECONCILE_INTERVAL = 5;
+	public const RECONCILE_INTERVAL = 5;
 
 	public function getName(): string {
 		return 'signals';

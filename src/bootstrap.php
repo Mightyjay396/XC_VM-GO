@@ -75,13 +75,13 @@ if (!function_exists('getallheaders')) {
 class XC_Bootstrap {
 	// ── Contexts (kept for backward compatibility — prefer BootContext enum) ──
 	/** @deprecated Use BootContext::Minimal */
-	const CONTEXT_MINIMAL  = 'minimal';
+	public const CONTEXT_MINIMAL  = 'minimal';
 	/** @deprecated Use BootContext::Cli */
-	const CONTEXT_CLI      = 'cli';
+	public const CONTEXT_CLI      = 'cli';
 	/** @deprecated Use BootContext::Stream */
-	const CONTEXT_STREAM   = 'stream';
+	public const CONTEXT_STREAM   = 'stream';
 	/** @deprecated Use BootContext::Admin */
-	const CONTEXT_ADMIN    = 'admin';
+	public const CONTEXT_ADMIN    = 'admin';
 
 	/** Result of the last boot(); null until the first boot. */
 	private static ?BootState $state = null;
