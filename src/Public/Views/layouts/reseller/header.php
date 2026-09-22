@@ -459,7 +459,7 @@ $xmUiPrefs['rtl'] = $xmIsRtl;
                                             <a class="nav-link dropdown-toggle hide-arrow p-0" href="javascript:void(0);" data-bs-toggle="dropdown">
                                                 <div class="avatar avatar-online">
                                                     <span class="avatar-initial rounded-circle bg-label-primary">
-                                                        <?= htmlspecialchars(strtoupper(substr((string) $rUserInfo['username'], 0, 1))); ?>
+                                                        <?= htmlspecialchars(strtoupper(substr((string) ($rUserInfo['username'] ?? ''), 0, 1))); ?>
                                                     </span>
                                                 </div>
                                             </a>
@@ -469,12 +469,12 @@ $xmUiPrefs['rtl'] = $xmIsRtl;
                                                         <div class="flex-shrink-0 me-2">
                                                             <div class="avatar avatar-online">
                                                                 <span class="avatar-initial rounded-circle bg-label-primary">
-                                                                    <?= htmlspecialchars(strtoupper(substr((string) $rUserInfo['username'], 0, 1))); ?>
+                                                                    <?= htmlspecialchars(strtoupper(substr((string) ($rUserInfo['username'] ?? ''), 0, 1))); ?>
                                                                 </span>
                                                             </div>
                                                         </div>
                                                         <div class="flex-grow-1">
-                                                            <h6 class="mb-0"><?= htmlspecialchars($rUserInfo['username']); ?></h6>
+                                                            <h6 class="mb-0"><?= htmlspecialchars((string) ($rUserInfo['username'] ?? '')); ?></h6>
                                                             <small class="text-body-secondary"><?= $language::get('shell_role_reseller'); ?></small>
                                                         </div>
                                                     </div>
