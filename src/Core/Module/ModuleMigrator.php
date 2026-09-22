@@ -52,7 +52,7 @@ class ModuleMigrator {
 	public static function install(string $modulePath, object $db, string $to): array {
 		$master = $modulePath . '/database.sql';
 		if (is_file($master)) {
-			self::runFile($db, $master);
+			self::applyFile($db, $master);
 			return ['database.sql'];
 		}
 		// No master schema — replay forward deltas up to the target version.
@@ -72,7 +72,7 @@ class ModuleMigrator {
 	public static function uninstall(string $modulePath, object $db): array {
 		$drop = $modulePath . '/database_drop.sql';
 		if (is_file($drop)) {
-			self::runFile($db, $drop);
+			self::applyFile($db, $drop);
 			return ['database_drop.sql'];
 		}
 		return [];
@@ -92,17 +92,40 @@ class ModuleMigrator {
 	 */
 	public static function up(string $modulePath, object $db, ?string $from, string $to): array {
 		$applied = [];
-		foreach (self::discover($modulePath) as [$version, $file]) {
-			if ($from !== null && version_compare($version, $from, '<=')) {
-				continue;
-			}
-			if (version_compare($version, $to, '>')) {
-				continue;
-			}
-			self::runFile($db, $file);
+		foreach (self::pending($modulePath, $from, $to) as $version => $file) {
+			self::applyFile($db, $file);
 			$applied[] = $version;
 		}
 		return $applied;
+	}
+
+	/**
+	 * Forward deltas still to apply for versions in the (`$from`, `$to`] range.
+	 *
+	 * Exposed separately from up() so a caller can apply them one version at a
+	 * time and persist its own watermark between steps.
+	 *
+	 * @param string      $modulePath Absolute path of the module directory.
+	 * @param string|null $from       Already-applied version, or null to list all ≤ $to.
+	 * @param string      $to         Target version (inclusive).
+	 * @return array<string, string> version => absolute delta path, ascending.
+	 */
+	public static function pending(string $modulePath, ?string $from, string $to): array {
+		$out = [];
+		foreach (self::discover($modulePath) as [$version, $file]) {
+			if (self::isPending($version, $from, $to)) {
+				$out[$version] = $file;
+			}
+		}
+		return $out;
+	}
+
+	/** Whether $version falls in the (`$from`, `$to`] range. */
+	private static function isPending(string $version, ?string $from, string $to): bool {
+		if ($from !== null && version_compare($version, $from, '<=')) {
+			return false;
+		}
+		return version_compare($version, $to, '<=');
 	}
 
 	/**
@@ -144,7 +167,7 @@ class ModuleMigrator {
 	/**
 	 * Execute every statement in a SQL file. Throws on the first failure.
 	 */
-	private static function runFile(object $db, string $file): void {
+	public static function applyFile(object $db, string $file): void {
 		$sql = trim((string) file_get_contents($file));
 		if ($sql === '') {
 			return;

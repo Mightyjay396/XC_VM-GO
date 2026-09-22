@@ -53,7 +53,11 @@ class ModuleManager {
 	) {
 		$this->modulesPath   = $modulesPath ?: (defined('MAIN_HOME') ? MAIN_HOME . 'Modules' : dirname(__DIR__, 2) . '/Modules');
 		$this->overridesPath = $overridesPath ?: (defined('CONFIG_PATH') ? CONFIG_PATH . 'modules.php' : dirname(__DIR__, 2) . '/config/modules.php');
-		$this->archivesPath  = defined('MAIN_HOME') ? MAIN_HOME . 'modules_archives' : dirname(__DIR__, 2) . '/modules_archives';
+		// Sits beside the modules directory (same idiom as the .module_backups
+		// area) so it follows an injected modulesPath instead of always resolving
+		// under MAIN_HOME. Identical path in production, where modulesPath is
+		// MAIN_HOME . 'Modules'.
+		$this->archivesPath  = dirname($this->modulesPath) . '/modules_archives';
 		$this->container     = $container;
 	}
 
@@ -184,22 +188,46 @@ class ModuleManager {
 		$name = $this->sanitizeModuleName($this->manifestNameFromDir($moduleDir));
 		// Guarantee a hash_id (generating + persisting one when the upload lacks it)
 		// so the module is always placed in a `{name}_{hash5}` directory, never bare.
-		$hash = $this->ensureHashId($moduleDir);
+		$targetDir = $this->modulesPath . '/' . $this->moduleDirName($name, $this->ensureHashId($moduleDir));
 
-		// Remove any current install of the same module (may live under a different
-		// {name}_{hash5} or a legacy {name} directory).
-		$existing = $this->modulePathFor($name);
-		if (is_dir($existing)) {
-			$this->deleteDirectory($existing);
+		// Remove every other copy of this module (a legacy bare `{name}` directory,
+		// or an install under a different hash). The source is skipped on purpose: a
+		// platform pull extracts straight INTO the modules directory, and deleting
+		// it here would destroy the very files being placed.
+		$this->dropRivalModuleDirs($name, $moduleDir);
+
+		if (realpath($targetDir) === realpath($moduleDir)) {
+			return $name;
 		}
-
-		$targetDir = $this->modulesPath . '/' . $this->moduleDirName($name, $hash);
-		if (is_dir($targetDir)) {
-			$this->deleteDirectory($targetDir);
+		if (!@rename($moduleDir, $targetDir)) {
+			$this->copyDirectory($moduleDir, $targetDir);
 		}
-		$this->copyDirectory($moduleDir, $targetDir);
-
 		return $name;
+	}
+
+	/** Remove every on-disk copy of $name except $keep — one install per name. */
+	private function dropRivalModuleDirs(string $name, string $keep): void {
+		$keepReal = realpath($keep);
+		foreach ($this->moduleDirsFor($name) as $dir) {
+			if (realpath($dir) !== $keepReal) {
+				$this->deleteDirectory($dir);
+			}
+		}
+	}
+
+	/**
+	 * Every directory under modulesPath whose manifest declares $name.
+	 *
+	 * @return string[]
+	 */
+	private function moduleDirsFor(string $name): array {
+		$out = [];
+		foreach (glob($this->modulesPath . '/*', GLOB_ONLYDIR) ?: [] as $dir) {
+			if (is_file($dir . '/module.json') && $this->manifestNameFromDir($dir) === $name) {
+				$out[] = $dir;
+			}
+		}
+		return $out;
 	}
 
 	/**
@@ -299,31 +327,69 @@ class ModuleManager {
 	}
 
 	/**
-	 * Names of currently-loadable (enabled) installed modules that declare $name
-	 * as a required dependency.
+	 * Names of installed dependents that would actually stop working if $name
+	 * were disabled.
 	 *
-	 * Used to guard disabling: a dependent that is itself disabled won't be loaded
-	 * either, so disabling $name under it is harmless and must not be blocked.
-	 * Only enabled dependents would be broken (ModuleLoader skips them on the next
-	 * boot), so only those count.
+	 * Used to guard disabling. Only a dependent that currently loads can break,
+	 * and being nominally Enabled is not enough: ModuleLoader drops any module
+	 * whose required dependency is unavailable and cascades that transitively
+	 * (see ModuleLoader::pruneUnsatisfiableModules), so a dependent sitting on an
+	 * already-broken chain is not running either. Counting it would make a module
+	 * whose own dependency is disabled impossible to disable, for no runtime gain.
 	 *
 	 * @return string[]
 	 */
-	private function enabledDependentsOf(string $name): array {
+	private function breakableDependentsOf(string $name): array {
 		$out = [];
-		foreach ($this->listModules() as $module) {
-			if (($module['installed_version'] ?? '') === '') {
+		foreach ($this->loadableModules() as $module) {
+			if ($module['installed_version'] === '') {
 				continue; // not installed — its requirements don't apply
 			}
-			$state = $module['state'] ?? null;
-			if (!($state instanceof ModuleState) || !$state->isLoadable()) {
-				continue; // already disabled/failed — disabling its dep won't break it
-			}
-			if (in_array($name, $module['dependencies'] ?? [], true)) {
+			if (in_array($name, $module['dependencies'], true)) {
 				$out[] = $module['name'];
 			}
 		}
 		return $out;
+	}
+
+	/**
+	 * Modules that ModuleLoader would actually boot right now, keyed by name.
+	 *
+	 * @return array<string, array> listModules() entries that are enabled and
+	 *                              whose required dependency chain is satisfied.
+	 */
+	private function loadableModules(): array {
+		$enabled = [];
+		foreach ($this->listModules() as $module) {
+			if ($module['state']->isLoadable()) {
+				$enabled[$module['name']] = $module;
+			}
+		}
+		return $this->pruneUnsatisfiable($enabled);
+	}
+
+	/**
+	 * Drop every module with a required dependency outside the set, repeating
+	 * until it settles — the same transitive cascade ModuleLoader applies.
+	 *
+	 * @param  array<string, array> $modules Candidate modules keyed by name.
+	 * @return array<string, array>
+	 */
+	private function pruneUnsatisfiable(array $modules): array {
+		do {
+			$removed = false;
+			foreach ($modules as $name => $module) {
+				foreach ($module['dependencies'] as $dependency) {
+					if (!isset($modules[$dependency])) {
+						unset($modules[$name]);
+						$removed = true;
+						break;
+					}
+				}
+			}
+		} while ($removed);
+
+		return $modules;
 	}
 
 	/**
@@ -617,7 +683,7 @@ class ModuleManager {
 		$overrides = $this->readOverrides();
 		$items = [];
 
-		$jsonFiles = glob($this->modulesPath . '/*/module.json') ?: [];
+		$jsonFiles = $this->dedupeManifestFiles(glob($this->modulesPath . '/*/module.json') ?: []);
 
 		// Pre-resolve each module's state by name so the dependency diagnostics
 		// below can see the full set while building items.
@@ -687,6 +753,28 @@ class ModuleManager {
 	}
 
 	/**
+	 * Keep one manifest per module name, preferring the canonical directory.
+	 *
+	 * A module should occupy exactly one directory, but a legacy bare `{name}`
+	 * copy can linger beside the canonical `{name}_{hash5}` one; listing both
+	 * would show the module twice in the admin table. The hashed directory wins.
+	 *
+	 * @param string[] $jsonFiles
+	 * @return string[]
+	 */
+	private function dedupeManifestFiles(array $jsonFiles): array {
+		$byName = [];
+		foreach ($jsonFiles as $jsonFile) {
+			$dir  = dirname($jsonFile);
+			$name = $this->manifestNameFromDir($dir);
+			if (!isset($byName[$name]) || basename($dir) !== $name) {
+				$byName[$name] = $jsonFile;
+			}
+		}
+		return array_values($byName);
+	}
+
+	/**
 	 * Install a module by name.
 	 *
 	 * Loads the module instance, runs install(), and enables it.
@@ -738,30 +826,49 @@ class ModuleManager {
 	 */
 	public function uninstallModule(string $name): void {
 		$name = $this->sanitizeModuleName($name);
-
-		// Refuse to remove a module that still-installed dependents rely on
-		// (e.g. plex depends on watch — watch cannot be removed under it).
-		$dependents = $this->installedDependentsOf($name);
-		if ($dependents !== []) {
-			throw new \RuntimeException(
-				"Cannot uninstall '{$name}': still required by " . implode(', ', $dependents)
-				. '. Uninstall ' . (count($dependents) === 1 ? 'it' : 'them') . ' first.'
-			);
-		}
+		$this->assertNoInstalledDependents($name, 'uninstall');
 
 		$module = $this->loadModuleInstance($name);
 
 		// The module's own uninstall() hook runs first (it clears the data/rows
 		// it created), then the module's schema is torn down via its single
-		// teardown file (database_drop.sql).
-		$module->uninstall();
-		$db = $this->getDb() ?? DatabaseFactory::get();
-		if ($db !== null) {
-			ModuleMigrator::uninstall($this->modulePathFor($name), $db);
+		// teardown file (database_drop.sql). A failure between the two would
+		// otherwise leave the module recorded as installed and Enabled with
+		// half-deleted data, so mark it Failed and let the admin see it.
+		try {
+			$module->uninstall();
+			$db = $this->getDb() ?? DatabaseFactory::get();
+			if ($db !== null) {
+				ModuleMigrator::uninstall($this->modulePathFor($name), $db);
+			}
+		} catch (\Throwable $e) {
+			$this->setState($name, ModuleState::Failed);
+			throw $e;
 		}
 
 		$this->clearInstalledVersion($name);
 		$this->setState($name, ModuleState::Disabled);
+	}
+
+	/**
+	 * Refuse an action that would strip a module out from under installed
+	 * dependents (e.g. plex depends on watch — watch cannot be removed under it).
+	 *
+	 * Unlike the disable guard this counts every INSTALLED dependent regardless of
+	 * state: a disabled dependent still owns rows that reference this module's
+	 * tables, and uninstalling drops them.
+	 *
+	 * @param string $verb Lowercase action name used in the message ('uninstall', 'delete').
+	 */
+	private function assertNoInstalledDependents(string $name, string $verb): void {
+		$dependents = $this->installedDependentsOf($name);
+		if ($dependents === []) {
+			return;
+		}
+		throw new \RuntimeException(
+			"Cannot {$verb} '{$name}': still required by " . implode(', ', $dependents)
+			. '. ' . ucfirst($verb) . ' ' . (count($dependents) === 1 ? 'it' : 'them') . ' first.'
+		);
 	}
 
 	/**
@@ -786,13 +893,7 @@ class ModuleManager {
 		$name = $this->sanitizeModuleName($name);
 
 		// Same guard as uninstall: refuse while an installed dependent needs it.
-		$dependents = $this->installedDependentsOf($name);
-		if ($dependents !== []) {
-			throw new \RuntimeException(
-				"Cannot delete '{$name}': still required by " . implode(', ', $dependents)
-				. '. Delete ' . (count($dependents) === 1 ? 'it' : 'them') . ' first.'
-			);
-		}
+		$this->assertNoInstalledDependents($name, 'delete');
 
 		// Read the manifest (for LB propagation) BEFORE the files are removed.
 		$manifest = [];
@@ -910,24 +1011,105 @@ class ModuleManager {
 		}
 
 		$module    = $this->loadModuleInstance($name);
-		$toVersion = $this->manifestVersion($name) ?? $module->getVersion();
+		$toVersion = (string) ($this->manifestVersion($name) ?? $module->getVersion());
 
 		if (version_compare($fromVersion, $toVersion, '>=')) {
 			return;
 		}
 
-		// File-based schema migrations: every up file in (fromVersion, toVersion].
-		$db = $this->getDb() ?? DatabaseFactory::get();
-		if ($db !== null) {
-			ModuleMigrator::up($this->modulePathFor($name), $db, $fromVersion, (string) $toVersion);
-		}
-
-		// Programmatic migrations (callables) — coexist with the file-based ones.
-		if ($module instanceof MigratableInterface) {
-			$this->runPendingMigrations($module->getMigrations(), $fromVersion, $toVersion);
-		}
-
+		$this->applyUpdateSteps($name, $this->pendingUpdateSteps($name, $module, $fromVersion, $toVersion));
 		$this->recordInstalledVersion($name, $toVersion);
+	}
+
+	/**
+	 * Run each version's update steps, advancing the recorded version only once a
+	 * version is fully applied.
+	 *
+	 * The watermark moves per COMPLETED version rather than once at the end, so a
+	 * failure half-way leaves the module Failed at the last version that actually
+	 * landed and a retry resumes from there. Without that, a retry replays deltas
+	 * that already ran — and a non-idempotent one (`ALTER TABLE ADD COLUMN`) then
+	 * fails forever, wedging the module's updates.
+	 *
+	 * @param array<string, list<callable>> $steps version => steps, ascending.
+	 */
+	private function applyUpdateSteps(string $name, array $steps): void {
+		try {
+			foreach ($steps as $version => $versionSteps) {
+				foreach ($versionSteps as $step) {
+					$step();
+				}
+				$this->recordInstalledVersion($name, $version);
+			}
+		} catch (\Throwable $e) {
+			$this->setState($name, ModuleState::Failed);
+			throw $e;
+		}
+	}
+
+	/**
+	 * Everything still to run to get from $from to $to, grouped by version.
+	 *
+	 * Merges the two migration systems — file deltas and programmatic callables —
+	 * into one ascending timeline so a version's schema change and its code hook
+	 * are applied together and watermarked together.
+	 *
+	 * @return array<string, list<callable>> version => steps, ascending.
+	 */
+	private function pendingUpdateSteps(string $name, ModuleInterface $module, string $from, string $to): array {
+		$steps = $this->pendingSchemaSteps($this->modulePathFor($name), $from, $to);
+		foreach ($this->pendingCallableSteps($module, $from, $to) as $version => $step) {
+			$steps[$version][] = $step;
+		}
+		uksort($steps, 'version_compare');
+		return $steps;
+	}
+
+	/**
+	 * File-based schema deltas in (`$from`, `$to`], one step per version.
+	 *
+	 * @return array<string, list<callable>>
+	 */
+	private function pendingSchemaSteps(string $modulePath, string $from, string $to): array {
+		$db = $this->getDb() ?? DatabaseFactory::get();
+		if ($db === null) {
+			return [];
+		}
+
+		$steps = [];
+		foreach (ModuleMigrator::pending($modulePath, $from, $to) as $version => $file) {
+			$steps[$version] = [static fn() => ModuleMigrator::applyFile($db, $file)];
+		}
+		return $steps;
+	}
+
+	/**
+	 * Programmatic migrations declared by the module in (`$from`, `$to`].
+	 *
+	 * @return array<string, callable>
+	 */
+	private function pendingCallableSteps(ModuleInterface $module, string $from, string $to): array {
+		if (!$module instanceof MigratableInterface) {
+			return [];
+		}
+
+		$steps = [];
+		foreach ($module->getMigrations() as $version => $callable) {
+			if (version_compare($version, $from, '>') && version_compare($version, $to, '<=')) {
+				$steps[$version] = fn() => $this->runMigration($callable);
+			}
+		}
+		return $steps;
+	}
+
+	/** Run one programmatic migration, in a transaction when the handler supports it. */
+	private function runMigration(callable $callable): void {
+		$db = $this->getDb();
+		if ($db !== null && method_exists($db, 'transactional')) {
+			$db->transactional(fn() => $callable($this->container));
+			return;
+		}
+		$callable($this->container);
 	}
 
 	/**
@@ -1126,14 +1308,14 @@ class ModuleManager {
 	public function setState(string $name, ModuleState $state): void {
 		$name      = $this->sanitizeModuleName($name);
 
-		// Refuse to disable a module that still-enabled dependents rely on
+		// Refuse to disable a module that a still-working dependent relies on
 		// (e.g. plex requires watch — watch cannot be disabled under it, or
 		// ModuleLoader would skip plex on the next boot). Mirrors the guard in
 		// uninstallModule(). Scoped strictly to a deliberate Disabled transition:
 		// the internal lifecycle states (Installing, Failed) are also non-loadable
 		// but are set by installModule() itself and must never be blocked.
 		if ($state === ModuleState::Disabled) {
-			$dependents = $this->enabledDependentsOf($name);
+			$dependents = $this->breakableDependentsOf($name);
 			if ($dependents !== []) {
 				throw new \RuntimeException(
 					"Cannot disable '{$name}': still required by " . implode(', ', $dependents)
@@ -1393,8 +1575,12 @@ class ModuleManager {
 	 * @throws \RuntimeException If the C extension is missing, download fails, or install fails.
 	 */
 	public function downloadFromPlatform(string $slug, string $version = '', ?string $apiKey = null): void {
-		$slug      = $this->sanitizeModuleName($slug);
-		$targetDir = $this->modulesPath . '/' . $slug;
+		$slug = $this->sanitizeModuleName($slug);
+		// Resolve the module's ACTUAL directory (canonical `{name}_{hash5}`, or a
+		// legacy bare one) rather than assuming the bare form: otherwise the backup
+		// below finds nothing and the pulled copy lands beside the existing install
+		// instead of replacing it.
+		$targetDir = $this->modulePathFor($slug);
 
 		// Snapshot current state so a failed (re)install rolls back cleanly. We
 		// MOVE the existing module aside (outside modulesPath so the loader never
@@ -1404,8 +1590,12 @@ class ModuleManager {
 		$backupDir   = $this->backupModuleDir($slug, $targetDir);
 
 		try {
-			$result          = $this->pullFilesFromPlatform($slug, $version, $apiKey);
-			$modulePath      = $result['path'];
+			$result = $this->pullFilesFromPlatform($slug, $version, $apiKey);
+			// The extension extracts wherever it likes; fold that into the canonical
+			// `{name}_{hash5}` directory and track it as the rollback target below.
+			$this->placeModuleFiles($result['path']);
+			$modulePath      = $this->modulePathFor($slug);
+			$targetDir       = $modulePath;
 			$resolvedVersion = (string) ($result['version'] ?: $version);
 
 			// Acquire the per-machine ionCube license BEFORE installModule(): if the
@@ -1558,7 +1748,7 @@ class ModuleManager {
 			return false;
 		}
 
-		$dir = $this->modulesPath . '/' . $slug;
+		$dir = $this->modulePathFor($slug);
 		if (!is_dir($dir)) {
 			error_log("ModuleManager: module dir missing for '{$slug}': {$dir}");
 			return false;
@@ -1661,17 +1851,19 @@ class ModuleManager {
 	 */
 	public function deployFromPlatformFilesOnly(string $slug, string $version, ?string $apiKey = null): void {
 		$result = $this->pullFilesFromPlatform($slug, $version, $apiKey);
+		$this->placeModuleFiles($result['path']);
+		$modulePath = $this->modulePathFor($slug);
 
 		EventDispatcher::dispatch(new PackageInstalledEvent(
 			slug:        $result['module'],
 			version:     $result['version'],
-			path:        $result['path'],
+			path:        $modulePath,
 			installedAt: time(),
 		));
 
 		$this->recordInstalledVersion($slug, (string) ($result['version'] ?: $version));
 		$this->setState($slug, ModuleState::Enabled);
-		$this->hotReloadSafe($slug, $result['path']);
+		$this->hotReloadSafe($slug, $modulePath);
 	}
 
 	/**
@@ -1710,7 +1902,7 @@ class ModuleManager {
 			'ok'               => true,
 			'module'           => $result['module'] ?? $slug,
 			'version'          => $result['version'] ?? $version,
-			'path'             => $result['path'] ?? ($this->modulesPath . '/' . $slug),
+			'path'             => $result['path'] ?? $this->modulePathFor($slug),
 			// Previous approved version reported by the platform (for the
 			// Rollback button). May be absent/null when there is no prior version.
 			'previous_version' => $result['previous_version'] ?? null,
@@ -1765,35 +1957,6 @@ class ModuleManager {
 
 		$router = $container->getOrDefault('router');
 		$loader->bootAll($container, $router instanceof Router ? $router : null);
-	}
-
-	/**
-	 * Run migrations whose target version falls in (fromVersion, toVersion].
-	 *
-	 * @param array<string, callable> $migrations
-	 * @param string $fromVersion Currently installed version (exclusive lower bound).
-	 * @param string $toVersion   New version (inclusive upper bound).
-	 */
-	private function runPendingMigrations(array $migrations, string $fromVersion, string $toVersion): void {
-		$pending = [];
-		foreach ($migrations as $version => $callable) {
-			if (version_compare($version, $fromVersion, '>')
-				&& version_compare($version, $toVersion, '<=')
-			) {
-				$pending[$version] = $callable;
-			}
-		}
-
-		uksort($pending, 'version_compare');
-
-		$db = $this->getDb();
-		foreach ($pending as $callable) {
-			if ($db !== null && method_exists($db, 'transactional')) {
-				$db->transactional(fn() => $callable($this->container));
-			} else {
-				$callable($this->container);
-			}
-		}
 	}
 
 	/**
@@ -2021,6 +2184,10 @@ class ModuleManager {
 	/** Extract .tar/.tar.gz via PharData (no PHP extension needed) or the `tar` CLI. */
 	private function extractTarArchive(string $archivePath, string $destination): void {
 		if (class_exists('PharData')) {
+			// No per-entry check here (unlike the zip branch): PharData resolves
+			// members itself and refuses to write outside $destination — verified
+			// against a hand-built tar carrying a `../` member, which it parses but
+			// neither exposes nor extracts.
 			try {
 				(new \PharData($archivePath))->extractTo($destination, null, true);
 				return;

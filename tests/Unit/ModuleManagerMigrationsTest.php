@@ -1,6 +1,7 @@
 <?php
 
 use XcVm\Core\Container\ServiceContainer;
+use XcVm\Core\Enum\ModuleState;
 use XcVm\Core\Module\ModuleManager;
 use XcVm\Core\Module\BaseModule;
 use PHPUnit\Framework\TestCase;
@@ -18,21 +19,37 @@ class MigrationCallTracker {
     }
 }
 
+// Minimal db double for module schema files: it can be told to fail on a given
+// statement, which is what makes the update/uninstall failure paths reachable.
+class FakeModuleDb {
+    public string $failOn = '';
+    public array $statements = [];
+
+    public function query(string $sql): bool {
+        $this->statements[] = $sql;
+        return $this->failOn === '' || strpos($sql, $this->failOn) === false;
+    }
+}
+
 final class ModuleManagerMigrationsTest extends TestCase {
 
     private string $modulesPath;
     private string $overridesPath;
     private string $workDir;
+    private FakeModuleDb $db;
 
     protected function setUp(): void {
         $this->workDir      = sys_get_temp_dir() . '/xc_vm_mgr_' . bin2hex(random_bytes(6));
         $this->modulesPath  = $this->workDir . '/modules';
         $this->overridesPath = $this->workDir . '/modules.php';
         mkdir($this->modulesPath, 0775, true);
+        $this->db = new FakeModuleDb();
+        ServiceContainer::getInstance()->set('db', $this->db);
         MigrationCallTracker::reset();
     }
 
     protected function tearDown(): void {
+        ServiceContainer::getInstance()->remove('db');
         $this->deleteDir($this->workDir);
         MigrationCallTracker::reset();
     }
@@ -331,6 +348,149 @@ final class ModuleManagerMigrationsTest extends TestCase {
         $this->assertSame([], $byName['ok-consumer']['dependency_warnings']);
     }
 
+    // ── update/uninstall failure containment ──────────────────────────────
+
+    public function testUpdateKeepsWatermarkAtLastCompletedVersionOnFailure(): void {
+        // Deltas 1.1.0 and 1.2.0 pending; the second one fails. The recorded
+        // version must stop at 1.1.0 so a retry resumes instead of replaying it.
+        $this->createModule('resume-mod', '1.2.0');
+        $dir = $this->modulesPath . '/resume-mod/migrations';
+        mkdir($dir, 0775, true);
+        file_put_contents($dir . '/1.1.0.sql', 'SELECT 1;');
+        file_put_contents($dir . '/1.2.0.sql', 'BOOM;');
+        $this->writeOverrides(['resume-mod' => ['installed_version' => '1.0.0']]);
+
+        $this->db->failOn = 'BOOM';
+
+        try {
+            $this->manager()->updateModule('resume-mod');
+            $this->fail('expected the failing delta to throw');
+        } catch (RuntimeException $e) {
+            // expected
+        }
+
+        $overrides = $this->readOverrides();
+        $this->assertSame('1.1.0', $overrides['resume-mod']['installed_version'] ?? null);
+        $this->assertSame('failed', $overrides['resume-mod']['state'] ?? null);
+    }
+
+    public function testUpdateRecordsTargetVersionWhenEveryDeltaApplies(): void {
+        $this->createModule('resume-ok', '1.2.0');
+        $dir = $this->modulesPath . '/resume-ok/migrations';
+        mkdir($dir, 0775, true);
+        file_put_contents($dir . '/1.1.0.sql', 'SELECT 1;');
+        file_put_contents($dir . '/1.2.0.sql', 'SELECT 2;');
+        $this->writeOverrides(['resume-ok' => ['installed_version' => '1.0.0']]);
+
+        $this->manager()->updateModule('resume-ok');
+
+        $overrides = $this->readOverrides();
+        $this->assertSame('1.2.0', $overrides['resume-ok']['installed_version'] ?? null);
+        $this->assertArrayNotHasKey('state', $overrides['resume-ok']);
+    }
+
+    public function testUninstallMarksModuleFailedWhenTeardownThrows(): void {
+        $this->createModule('teardown-mod', '1.0.0');
+        file_put_contents($this->modulesPath . '/teardown-mod/database_drop.sql', 'BOOM;');
+        $this->writeOverrides(['teardown-mod' => ['installed_version' => '1.0.0']]);
+
+        $this->db->failOn = 'BOOM';
+
+        try {
+            $this->manager()->uninstallModule('teardown-mod');
+            $this->fail('expected the failing teardown to throw');
+        } catch (RuntimeException $e) {
+            // expected
+        }
+
+        $overrides = $this->readOverrides();
+        $this->assertSame('failed', $overrides['teardown-mod']['state'] ?? null);
+        // Still recorded as installed — its tables were not dropped.
+        $this->assertSame('1.0.0', $overrides['teardown-mod']['installed_version'] ?? null);
+    }
+
+    // ── one directory per module ──────────────────────────────────────────
+
+    public function testUploadPlacesModuleInHashedDirAndDropsLegacyBareCopy(): void {
+        // A stale bare `{name}` copy must not survive beside the canonical one —
+        // two dirs for one module is what made the platform flow lose track of it.
+        $legacy = $this->modulesPath . '/upl-mod';
+        mkdir($legacy, 0775, true);
+        file_put_contents($legacy . '/module.json', json_encode(['name' => 'upl-mod', 'version' => '0.9.0']));
+
+        try {
+            $this->manager()->uploadAndInstall($this->makeModuleTar('upl-mod', '1.0.0', str_repeat('ab12', 8)));
+        } catch (Error $e) {
+            // uploadAndInstall ends by distributing to load balancers through the
+            // xcvm_core extension, which is absent here. Extraction, placement and
+            // install have all already run by then — that is what this asserts.
+            $this->assertStringContainsString('XC_VM', $e->getMessage());
+        }
+
+        $this->assertDirectoryExists($this->modulesPath . '/upl-mod_ab12a');
+        $this->assertDirectoryDoesNotExist($legacy);
+        $this->assertSame('1.0.0', $this->readOverrides()['upl-mod']['installed_version'] ?? null);
+    }
+
+    public function testListModulesShowsOneRowWhenBareAndHashedCopiesCoexist(): void {
+        // The platform flow used to extract into a bare `{name}` dir beside the
+        // canonical `{name}_{hash5}` one; the table then listed the module twice.
+        $this->createModuleWithDeps('dupe-mod', '1.0.0', []);
+        $hashed = $this->modulesPath . '/dupe-mod_ab123';
+        mkdir($hashed, 0775, true);
+        copy($this->modulesPath . '/dupe-mod/module.json', $hashed . '/module.json');
+
+        $names = array_column($this->manager()->listModules(), 'name');
+
+        $this->assertSame(['dupe-mod'], $names);
+    }
+
+    // ── setState() disable guard ──────────────────────────────────────────
+
+    public function testDisableBlockedByWorkingDependent(): void {
+        $this->createModuleWithDeps('guard-base', '1.0.0', []);
+        $this->createModuleWithDeps('guard-consumer', '1.0.0', ['guard-base']);
+        $this->writeOverrides([
+            'guard-base'     => ['installed_version' => '1.0.0'],
+            'guard-consumer' => ['installed_version' => '1.0.0'],
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('guard-consumer');
+        $this->manager()->setState('guard-base', ModuleState::Disabled);
+    }
+
+    public function testDisableAllowedWhenDependentIsAlreadyBrokenByDisabledDependency(): void {
+        // Chain: top -> middle -> bottom. bottom is disabled, so the loader already
+        // prunes middle AND top. Disabling middle breaks nothing and must succeed —
+        // the guard used to count top as an enabled dependent and refuse.
+        $this->createModuleWithDeps('chain-bottom', '1.0.0', []);
+        $this->createModuleWithDeps('chain-middle', '1.0.0', ['chain-bottom']);
+        $this->createModuleWithDeps('chain-top', '1.0.0', ['chain-middle']);
+        $this->writeOverrides([
+            'chain-bottom' => ['state' => 'disabled', 'installed_version' => '1.0.0'],
+            'chain-middle' => ['installed_version' => '1.0.0'],
+            'chain-top'    => ['installed_version' => '1.0.0'],
+        ]);
+
+        $this->manager()->setState('chain-middle', ModuleState::Disabled);
+
+        $this->assertSame('disabled', $this->readOverrides()['chain-middle']['state'] ?? null);
+    }
+
+    public function testDisableAllowedWhenDependentIsItselfDisabled(): void {
+        $this->createModuleWithDeps('solo-base', '1.0.0', []);
+        $this->createModuleWithDeps('solo-consumer', '1.0.0', ['solo-base']);
+        $this->writeOverrides([
+            'solo-base'     => ['installed_version' => '1.0.0'],
+            'solo-consumer' => ['state' => 'disabled', 'installed_version' => '1.0.0'],
+        ]);
+
+        $this->manager()->setState('solo-base', ModuleState::Disabled);
+
+        $this->assertSame('disabled', $this->readOverrides()['solo-base']['state'] ?? null);
+    }
+
     private function manager(): ModuleManager {
         return new ModuleManager($this->modulesPath, $this->overridesPath, ServiceContainer::getInstance());
     }
@@ -342,6 +502,33 @@ final class ModuleManagerMigrationsTest extends TestCase {
             $byName[$module['name']] = $module;
         }
         return $byName;
+    }
+
+    /** Build a .tar holding one module under a `{name}/` prefix; returns its path. */
+    private function makeModuleTar(string $name, string $version, string $hashId): string {
+        $pascal   = $this->pascal($name);
+        $manifest = $this->manifest($name, $version);
+        $manifest['hash_id'] = $hashId;
+
+        $tarPath = $this->workDir . '/' . $name . '.tar';
+        @unlink($tarPath);
+        $tar = new PharData($tarPath);
+        $tar->addFromString(
+            $name . '/module.json',
+            json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES)
+        );
+        $tar->addFromString($name . '/' . $pascal . 'Module.php',
+            "<?php\n"
+            . "namespace XcVm\Module\\{$pascal};\n"
+            . "use XcVm\Core\Module\BaseModule;\n"
+            . "class {$pascal}Module extends BaseModule {\n"
+            . "\tpublic function getName(): string { return '{$name}'; }\n"
+            . "\tpublic function getVersion(): string { return '{$version}'; }\n"
+            . "}\n"
+        );
+        unset($tar);
+
+        return $tarPath;
     }
 
     /** Create a plain module whose manifest declares the given required dependencies. */
