@@ -4,6 +4,7 @@ namespace XcVm\Public\Controllers\Admin\Ajax;
 
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Localization\Translator;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamConfigRepository;
@@ -199,6 +200,19 @@ class MiscAjaxController extends BaseAjaxController {
 		}
 
 		@chmod($rPath, 0600);
+
+		// The pattern above only proves the key is shaped like one. Ask the
+		// extension whether it actually licenses THIS install before reporting
+		// success, so a well-formed key that is not bound to this HWID stops
+		// reading as a completed activation.
+		//
+		// The key stays on disk either way: the extension may have cached its
+		// verdict for this request, and discarding a good key over a stale "no"
+		// would be worse than leaving a dead one behind. Nothing trusts the
+		// file's presence any more — the dashboard banner asks LicenseGate too.
+		if (!LicenseGate::licensed()) {
+			$this->fail(['message' => Translator::get('activation_key_rejected')]);
+		}
 
 		$this->ok(['message' => Translator::get('activation_saved')]);
 	}

@@ -12,6 +12,7 @@
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\License\LicenseGate;
 use XcVm\Domain\Server\ServerRepository;
 
 if (!Authorization::check('adv', 'index')):
@@ -62,11 +63,14 @@ if ($rSettings['save_closed_connection'] && $rSettings['dashboard_map']) {
 ?>
 
 <?php
-// Activation nudge: shown until the install has an activation key on disk (the
-// same file xcvm_core reads for license_valid()). Soft UI hint only — it never
-// blocks the dashboard; real enforcement lives in the extension.
-$xmActivationFile = MAIN_HOME . 'config/activation_key';
-if (!is_file($xmActivationFile)):
+// Activation nudge: shown while the install is NOT licensed, as judged by the
+// extension itself (XC_VM::license_valid via LicenseGate). Deliberately not a
+// file_exists() on config/activation_key — a key file proves only that someone
+// pasted something, not that it unlocks anything, so that check hid the banner
+// for rejected keys and kept showing it for licensed installs that carry no key
+// file at all. Soft UI hint only; real enforcement lives in the extension, and
+// LicenseGate fails open where it is absent (dev/CI).
+if (!LicenseGate::licensed()):
     $xmHwid = (class_exists('XC_VM') && method_exists('XC_VM', 'install_id')) ? (string) \XC_VM::install_id() : '';
 ?>
     <div class="alert alert-warning mb-4" role="alert">
