@@ -46,10 +46,11 @@ class SettingsController extends BaseAdminController {
 			? (ltrim(trim((string) shell_exec(escapeshellarg($rFanoutBin) . ' -version 2>/dev/null')), 'vV') ?: 'N/A')
 			: 'N/A';
 
-		$rCoreVerFile = rtrim((string) ini_get('extension_dir'), '/') . '/xcvm_core.version';
-		$XcvmCoreVersion = is_file($rCoreVerFile)
-			? (trim((string) file_get_contents($rCoreVerFile)) ?: 'N/A')
-			: (extension_loaded('xcvm_core') ? (phpversion('xcvm_core') ?: 'N/A') : 'N/A');
+		// Report what this worker actually loaded. The old sidecar marker file took
+		// priority here, which had it backwards: the marker can outlive the .so it
+		// described (a failed install that rolled back), and the page then showed a
+		// version the panel is not running.
+		$XcvmCoreVersion = phpversion('xcvm_core') ?: 'N/A';
 
 		$YtDlpVersion = (is_file(YOUTUBE_BIN) && is_executable(YOUTUBE_BIN))
 			? (trim((string) shell_exec(escapeshellarg(YOUTUBE_BIN) . ' --version 2>/dev/null')) ?: 'N/A')

@@ -10,17 +10,18 @@ use XcVm\Core\Updates\UpdateChannels;
  *
  * The extension is built in a private repo and mirrored — decoupled from the
  * heavy per-distro runtime bundle — into the PUBLIC binaries repo tree at fixed
- * paths under `bin/xcvm_core/`:
- *   - `xcvm_core-openssl1.1.tar.gz` / `xcvm_core-openssl3.tar.gz` — the `.so` built
- *     per OpenSSL-ABI group (`libcrypto.so.1.1` vs `libcrypto.so.3`), each with a
- *     `VERSION` / `TARGETS` / `NEEDED.txt`;
+ * paths under `bin/xcvm_extention/` (the repo's spelling):
+ *   - `xcvm_core-php8.1.tar.gz` / `xcvm_core-php8.4.tar.gz` — the `.so` built per
+ *     PHP minor version, since an extension only loads into the ABI it was
+ *     compiled against;
  *   - `version.json` — the single source of truth for the current version;
- *   - `SHA256SUMS` — integrity hashes of the group archives.
+ *   - `SHA256SUMS` — integrity hashes of the group archives, and the list this
+ *     command reads the available groups from.
  *
  * This command is the panel-side installer/updater, modelled on
  * {@see FanoutBinaryCommand}: it reads the latest version from `version.json`,
- * compares it to a sidecar marker next to the installed `.so`, and when they
- * differ downloads the archive matching this host's OpenSSL ABI, verifies its
+ * compares it to the version the loaded extension reports, and when they
+ * differ downloads the archive matching this host's PHP version, verifies its
  * SHA-256, and installs the `.so` **atomically with a backup + load-test +
  * rollback** — a wrong-ABI or broken extension must never take php-fpm down.
  * php-fpm is then reloaded (USR2) so workers pick up the new extension; the CLI
@@ -42,7 +43,7 @@ class XcvmCoreCommand implements CommandInterface {
 	private const BIN_BRANCH = 'main';
 
 	/** Fixed sub-path of the extension files under the binaries repo tree. */
-	private const EXT_SUBPATH = 'bin/xcvm_core';
+	private const EXT_SUBPATH = 'bin/xcvm_extention';
 
 	public function getName(): string {
 		return 'xcvm_core';
@@ -84,8 +85,11 @@ class XcvmCoreCommand implements CommandInterface {
 			return 1;
 		}
 		$rSo = $rExtDir . '/xcvm_core.so';
-		$rVerFile = $rExtDir . '/xcvm_core.version';
-		$rInstalled = is_file($rVerFile) ? trim((string) file_get_contents($rVerFile)) : null;
+		// Ask the loaded extension itself rather than a sidecar marker file. A
+		// marker outlives the .so it described — a failed install that rolled
+		// back, or a hand-copied .so — and the panel then believes it is running
+		// a version it is not. phpversion() reports what is actually loaded.
+		$rInstalled = phpversion('xcvm_core') ?: null;
 
 		if (!$rForce && $rInstalled !== null && $rInstalled === $rLatest && is_file($rSo)) {
 			echo "xcvm_core is up to date ({$rInstalled}).\n";
@@ -99,9 +103,9 @@ class XcvmCoreCommand implements CommandInterface {
 			return 1;
 		}
 
-		// Try the preferred OpenSSL-ABI group first; if its .so fails to load on
-		// this host (wrong libcrypto), fall through to the other group.
-		foreach ($this->groupCandidates() as $rGroup) {
+		// Try the build matching this PHP first; if its .so fails to load on this
+		// host, fall through to the remaining groups.
+		foreach ($this->groupCandidates($rSums) as $rGroup) {
 			$rAsset = 'xcvm_core-' . $rGroup . '.tar.gz';
 			$rExpected = $this->shaFor($rSums, $rAsset);
 			if ($rExpected === null) {
@@ -121,7 +125,7 @@ class XcvmCoreCommand implements CommandInterface {
 				continue;
 			}
 
-			$rOk = $this->installFromTarball($rTmp, $rSo, $rVerFile, $rLatest);
+			$rOk = $this->installFromTarball($rTmp, $rSo);
 			@unlink($rTmp);
 			if ($rOk) {
 				echo "xcvm_core {$rLatest} ({$rGroup}) installed.\n";
@@ -135,34 +139,36 @@ class XcvmCoreCommand implements CommandInterface {
 	}
 
 	/**
-	 * Preferred OpenSSL-ABI group first, then the other as a fallback.
+	 * Available asset groups, the one matching this PHP first.
 	 *
+	 * The groups are read out of SHA256SUMS rather than hardcoded, so the day the
+	 * binaries repo adds another PHP minor this keeps resolving without a panel
+	 * release. An extension only loads into the ABI it was compiled against, so
+	 * the exact match for the interpreter running this command (the bundled PHP)
+	 * goes first; the rest follow newest-first and the load-test in execute()
+	 * rejects a wrong guess.
+	 *
+	 * @param string $rSums Contents of the SHA256SUMS file.
 	 * @return string[]
 	 */
-	private function groupCandidates(): array {
-		$rHas3 = $this->libExists('libcrypto.so.3');
-		$rHas11 = $this->libExists('libcrypto.so.1.1');
-		if ($rHas3 && !$rHas11) {
-			return ['openssl3'];
-		}
-		if ($rHas11 && !$rHas3) {
-			return ['openssl1.1'];
-		}
-		// Both present (a transitional box) or neither detectable: prefer the
-		// modern ABI and let the load-test fall back to the other.
-		return ['openssl3', 'openssl1.1'];
-	}
+	private function groupCandidates(string $rSums): array {
+		preg_match_all('/xcvm_core-(\S+)\.tar\.gz/', $rSums, $rMatches);
+		$rGroups = array_unique($rMatches[1]);
+		natsort($rGroups);
+		$rGroups = array_reverse(array_values($rGroups));
 
-	private function libExists(string $rSoname): bool {
-		if (strpos((string) shell_exec('ldconfig -p 2>/dev/null'), $rSoname) !== false) {
-			return true;
+		// When the repo ships the build for this exact PHP minor, it is the ONLY
+		// candidate: a .so cannot load into a different minor, so falling back to
+		// one would churn the installed extension through a swap and a rollback
+		// and still fail. A transient download hiccup is better reported as such,
+		// and fixed by re-running, than papered over with an impossible install.
+		$rWanted = 'php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;
+		if (in_array($rWanted, $rGroups, true)) {
+			return [$rWanted];
 		}
-		foreach (['/usr/lib/x86_64-linux-gnu/', '/lib/x86_64-linux-gnu/', '/usr/lib64/', '/usr/lib/'] as $rDir) {
-			if (@file_exists($rDir . $rSoname)) {
-				return true;
-			}
-		}
-		return false;
+
+		// No build for this minor — try newest-first and let the load-test judge.
+		return $rGroups;
 	}
 
 	/**
@@ -170,7 +176,7 @@ class XcvmCoreCommand implements CommandInterface {
 	 * one (keeping a backup), load-test it in a fresh php, and roll back on
 	 * failure. Only on success is the version marker written and php-fpm reloaded.
 	 */
-	private function installFromTarball(string $rTarball, string $rSo, string $rVerFile, string $rVersion): bool {
+	private function installFromTarball(string $rTarball, string $rSo): bool {
 		$rStage = $rSo . '.new';
 		@unlink($rStage);
 		shell_exec('tar xzf ' . escapeshellarg($rTarball) . ' -O ./xcvm_core.so > ' . escapeshellarg($rStage) . ' 2>/dev/null');
@@ -206,10 +212,6 @@ class XcvmCoreCommand implements CommandInterface {
 			return false;
 		}
 		@unlink($rBackup);
-
-		@file_put_contents($rVerFile, $rVersion . "\n");
-		@chown($rVerFile, 'xc_vm');
-		@chgrp($rVerFile, 'xc_vm');
 
 		// Reload php-fpm so its workers pick up the new extension (match the master
 		// process, not a cmdline, to avoid self-matching this command's shell).
@@ -270,6 +272,10 @@ class XcvmCoreCommand implements CommandInterface {
 	}
 
 	/** Download a URL to a file (following redirects). */
+	/**
+	 * Fetch $rUrl to $rDest. A transient failure is reported, not retried — the
+	 * command is idempotent, so re-running it is the recovery.
+	 */
 	private function download(string $rUrl, string $rDest): bool {
 		$rFp = @fopen($rDest, 'wb');
 		if (!$rFp) {
