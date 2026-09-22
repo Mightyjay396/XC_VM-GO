@@ -148,11 +148,11 @@ class ImageResizeService {
 				$rawImageData = null;
 
 				if (ImageUtils::isAbsoluteUrl($rActURL)) {
+					// null = the SSRF guard refused it or the fetch failed, '' = empty
+					// body. Either way $rImage stays null and the placeholder tail below
+					// takes over, so neither needs a branch of its own.
 					$rawImageData = self::fetchRemoteImage($rActURL, $rTrustedSource);
-					if ($rawImageData === null) {
-						goto fallback;
-					}
-					if ($rawImageData !== '') {
+					if (!empty($rawImageData)) {
 						$rImage = @imagecreatefromstring($rawImageData);
 					}
 				} else {
@@ -164,54 +164,51 @@ class ImageResizeService {
 					}
 				}
 
-				if (!$rImage) {
-					// Fallback for WebP images when bundled PHP GD has no WebP support:
-					// Cache the raw webp and pass directly to browser (which natively renders WebP).
-					if (is_string($rawImageData) && strlen($rawImageData) > 12 && substr($rawImageData, 0, 4) === 'RIFF' && substr($rawImageData, 8, 4) === 'WEBP') {
-						$webpCache = $rCacheDir . md5($rURL) . '.webp';
-						@file_put_contents($webpCache, $rawImageData);
-						header('Content-Type: image/webp');
-						header('Content-Length: ' . strlen($rawImageData));
-						header('Cache-Control: public, max-age=604800');
-						echo $rawImageData;
-						exit();
+				if ($rImage) {
+					$origW = imagesx($rImage);
+					$origH = imagesy($rImage);
+
+					if ($rImageSize === null) {
+						$rImageSize = ImageUtils::getImageSizeKeepAspectRatio(
+							$origW,
+							$origH,
+							$rMaxW,
+							$rMaxH
+						);
 					}
 
-					goto fallback;
+					if (!empty($rImageSize['width']) && !empty($rImageSize['height'])) {
+						$rImageP = imagecreatetruecolor($rImageSize['width'], $rImageSize['height']);
+						imagealphablending($rImageP, false);
+						imagesavealpha($rImageP, true);
+						imagecopyresampled(
+							$rImageP,
+							$rImage,
+							0,
+							0,
+							0,
+							0,
+							$rImageSize['width'],
+							$rImageSize['height'],
+							$origW,
+							$origH
+						);
+						@imagepng($rImageP, $rImagePath);
+						imagedestroy($rImageP);
+					}
+					imagedestroy($rImage);
+				} elseif (is_string($rawImageData) && strlen($rawImageData) > 12 && substr($rawImageData, 0, 4) === 'RIFF' && substr($rawImageData, 8, 4) === 'WEBP') {
+					// GD could not decode it and the bytes are WebP — the bundled PHP GD
+					// has no WebP support, so cache the raw file and let the browser,
+					// which renders WebP natively, do the decoding.
+					$webpCache = $rCacheDir . md5($rURL) . '.webp';
+					@file_put_contents($webpCache, $rawImageData);
+					header('Content-Type: image/webp');
+					header('Content-Length: ' . strlen($rawImageData));
+					header('Cache-Control: public, max-age=604800');
+					echo $rawImageData;
+					exit();
 				}
-
-				$origW = imagesx($rImage);
-				$origH = imagesy($rImage);
-
-				if ($rImageSize === null) {
-					$rImageSize = ImageUtils::getImageSizeKeepAspectRatio(
-						$origW,
-						$origH,
-						$rMaxW,
-						$rMaxH
-					);
-				}
-
-				if (!empty($rImageSize['width']) && !empty($rImageSize['height'])) {
-					$rImageP = imagecreatetruecolor($rImageSize['width'], $rImageSize['height']);
-					imagealphablending($rImageP, false);
-					imagesavealpha($rImageP, true);
-					imagecopyresampled(
-						$rImageP,
-						$rImage,
-						0,
-						0,
-						0,
-						0,
-						$rImageSize['width'],
-						$rImageSize['height'],
-						$origW,
-						$origH
-					);
-					@imagepng($rImageP, $rImagePath);
-					imagedestroy($rImageP);
-				}
-				imagedestroy($rImage);
 			}
 
 			if (file_exists($rImagePath) && filesize($rImagePath) > 0) {
@@ -222,7 +219,7 @@ class ImageResizeService {
 			}
 		}
 
-		fallback:
+		// Nothing served yet: fall back to the placeholder, else a 1x1 transparent PNG.
 		if ($rPlaceholder && file_exists($rPlaceholder) && !isset($_GET['icon'])) {
 			header('Content-Length: ' . filesize($rPlaceholder));
 			header('Cache-Control: public, max-age=86400');

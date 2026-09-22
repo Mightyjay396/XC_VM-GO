@@ -1067,11 +1067,9 @@ class PortalHandler {
 					foreach ($ctx["device"]["fav_channels"]["movie"] as $rKey => $rValue) {
 						if ($rValue == $rVideoID) {
 							unset($ctx["device"]["fav_channels"]["movie"][$rKey]);
-							goto B79ca0d52db6b02d;
-							//break;
+							break;
 						}
 					}
-					B79ca0d52db6b02d:
 					$db->query(
 						"UPDATE `mag_devices` SET `fav_channels` = ? WHERE `mag_id` = ?",
 						json_encode($ctx["device"]["fav_channels"]),
@@ -1296,11 +1294,9 @@ class PortalHandler {
 					foreach ($ctx["device"]["fav_channels"]["series"] as $rKey => $rValue) {
 						if ($rValue == $rVideoID) {
 							unset($ctx["device"]["fav_channels"]["series"][$rKey]);
-							goto c2cd03c4f6bdbdea;
-							//break;
+							break;
 						}
 					}
-					c2cd03c4f6bdbdea:
 					$db->query(
 						"UPDATE `mag_devices` SET `fav_channels` = ? WHERE `mag_id` = ?",
 						json_encode($ctx["device"]["fav_channels"]),
@@ -1680,11 +1676,9 @@ class PortalHandler {
 						&& time() <= $rEPGData["stop_timestamp"]
 					) {
 						$rChannelIDx = $rKey + 1;
-						goto Aeb56a67ad642976;
-						//break;
+						break;
 					}
 				}
-				Aeb56a67ad642976:
 				if ($rPage == 0) {
 					$rDefaultPage = true;
 					$rPage = ceil($rChannelIDx / $rPageItems);

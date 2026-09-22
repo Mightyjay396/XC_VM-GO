@@ -1016,21 +1016,11 @@ function getSeriesItems(
 				&& $rPicking["years"] != "*"
 				&& $rSeriesO["year"] != $rPicking["years"])
 			) {
-				if (empty($rFav)) {
-				} else {
-					$rFound = false;
-
-					if (empty($rSeriesFav) || !in_array($rSeriesID, $rSeriesFav)) {
-					} else {
-						$rFound = true;
-					}
-
-					if (!$rFound) {
-						goto C4d803244552131c;
-					}
+				// Without a favourites filter every series passes; with one, keep
+				// only those the device actually has favourited.
+				if (empty($rFav) || (!empty($rSeriesFav) && in_array($rSeriesID, $rSeriesFav))) {
+					$rOutputSeries[$rSeriesID] = $rSeriesO;
 				}
-				$rOutputSeries[$rSeriesID] = $rSeriesO;
-				C4d803244552131c:
 			}
 		}
 	}
