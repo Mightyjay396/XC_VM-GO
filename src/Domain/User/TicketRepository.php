@@ -33,20 +33,63 @@ class TicketRepository {
 
 		$rRow = $db->get_row();
 		$rRow['replies'] = [];
-		$rRow['title'] = htmlspecialchars($rRow['title']);
 		$db->query('SELECT * FROM `tickets_replies` WHERE `ticket_id` = ? ORDER BY `date` ASC;', $rID);
 
 		foreach ($db->get_rows() as $rReply) {
-			$rReply['message'] = htmlspecialchars($rReply['message']);
-
-			if (strlen($rReply['message']) < 80) {
-				$rReply['message'] .= str_repeat('&nbsp; ', 80 - strlen($rReply['message']));
-			}
-
 			$rRow['replies'][] = $rReply;
 		}
-		$rRow['user'] = UserRepository::getRegisteredUserById($rRow['member_id']);
+		$rRow['user'] = UserRepository::getRegisteredUserById((int) $rRow['member_id']) ?: ['username' => 'Unknown'];
 		return $rRow;
+	}
+
+	/**
+	 * Whether the caller may see every ticket on the server.
+	 *
+	 * Reserved for the super-admin group (member_group_id = 1). `users_groups`.
+	 * `is_admin` is a flag several groups can carry, so "reached the admin panel"
+	 * must not widen into "sees every tenant".
+	 */
+	private static function seesAllTickets(?int $rID, bool $rAdmin): bool {
+		global $rUserInfo;
+
+		return empty($rID) || ($rAdmin && (int) ($rUserInfo['member_group_id'] ?? 0) === 1);
+	}
+
+	/**
+	 * Run the ticket list query, scoped to what $rID is allowed to see.
+	 *
+	 * Only the super-admin group (member_group_id = 1) gets every ticket on the
+	 * server. `users_groups`.`is_admin` is a flag several groups can carry, so
+	 * "reached the admin panel" must not widen into "sees every tenant": any
+	 * other admin stays scoped to the users it owns, and a reseller to its own
+	 * reports.
+	 *
+	 * @param object   $db     Database handler.
+	 * @param int|null $rID    Caller user id, or null for the unscoped list.
+	 * @param bool     $rAdmin Whether the caller reached this from the admin panel.
+	 */
+	private static function queryScopedTickets(object $db, ?int $rID, bool $rAdmin): void {
+		global $rPermissions;
+
+		// The LEFT JOIN keeps a ticket listed after its author's user row is gone.
+		$rSelect = 'SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, COALESCE(`users`.`username`, \'Unknown\') AS `username` FROM `tickets` LEFT JOIN `users` ON `users`.`id` = `tickets`.`member_id`';
+
+		if (self::seesAllTickets($rID, $rAdmin)) {
+			$db->query($rSelect . ' ORDER BY `tickets`.`id` DESC;');
+			return;
+		}
+
+		if ($rAdmin) {
+			$db->query(
+				$rSelect . ' WHERE `tickets`.`member_id` = ? OR `tickets`.`member_id` IN (SELECT `id` FROM `users` WHERE `owner_id` = ?) ORDER BY `tickets`.`id` DESC;',
+				$rID,
+				$rID
+			);
+			return;
+		}
+
+		$rUserIDs = array_map('intval', array_merge([$rID], $rPermissions['all_reports'] ?? []));
+		$db->query($rSelect . ' WHERE `tickets`.`member_id` IN (' . implode(',', $rUserIDs) . ') ORDER BY `tickets`.`id` DESC;');
 	}
 
 	/**
@@ -58,19 +101,9 @@ class TicketRepository {
 	 */
 	public static function getAll(?int $rID = null, bool $rAdmin = false) {
 		$db = self::db();
-		global $rUserInfo;
-		global $rPermissions;
 		$rReturn = [];
 
-		if ($rID) {
-			if ($rAdmin) {
-				$db->query('SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, `users`.`username` FROM `tickets`, `users` WHERE `member_id` IN (SELECT `id` FROM `users` WHERE `owner_id` = ?) AND `users`.`id` = `tickets`.`member_id` ORDER BY `id` DESC;', $rID);
-			} else {
-				$db->query('SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, `users`.`username` FROM `tickets`, `users` WHERE `member_id` IN (' . implode(',', array_map('intval', array_merge([$rUserInfo['id']], $rPermissions['all_reports']))) . ') AND `users`.`id` = `tickets`.`member_id` ORDER BY `id` DESC;');
-			}
-		} else {
-			$db->query('SELECT `tickets`.`id`, `tickets`.`member_id`, `tickets`.`title`, `tickets`.`status`, `tickets`.`admin_read`, `tickets`.`user_read`, `users`.`username` FROM `tickets`, `users` WHERE `users`.`id` = `tickets`.`member_id` ORDER BY `id` DESC;');
-		}
+		self::queryScopedTickets($db, $rID, $rAdmin);
 
 		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
@@ -83,12 +116,12 @@ class TicketRepository {
 				}
 
 				$db->query('SELECT * FROM `tickets_replies` WHERE `ticket_id` = ? ORDER BY `id` DESC LIMIT 1;', $rRow['id']);
-				$rLastResponse = $db->get_row();
-				$rRow['last_reply'] = date('Y-m-d H:i', $rLastResponse['date']);
+				$rLastResponse = $db->get_row() ?: [];
+				$rRow['last_reply'] = !empty($rLastResponse['date']) ? date('Y-m-d H:i', (int) $rLastResponse['date']) : $rRow['created'];
 
 				if ($rRow['member_id'] == $rID) {
 					if ($rRow['status'] != 0) {
-						if ($rLastResponse['admin_reply']) {
+						if (!empty($rLastResponse['admin_reply'])) {
 							if ($rRow['user_read'] == 1) {
 								$rRow['status'] = 3;
 							} else {
@@ -104,7 +137,7 @@ class TicketRepository {
 					}
 				} else {
 					if ($rRow['status'] != 0) {
-						if ($rLastResponse['admin_reply']) {
+						if (!empty($rLastResponse['admin_reply'])) {
 							if ($rRow['user_read'] == 1) {
 								$rRow['status'] = 6;
 							} else {

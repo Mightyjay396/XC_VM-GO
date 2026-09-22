@@ -46,6 +46,7 @@ $rStatusColour = ['secondary', 'warning', 'success', 'warning', 'info', 'primary
                                 <div class="dropdown-menu dropdown-menu-end">
                                     <a class="dropdown-item" href="ticket_view?id=<?= (int) $rTicket['id']; ?>"><i class="icon-base ti tabler-eye me-2"></i><?= $language::get('view_ticket') ?: 'View Ticket'; ?></a>
                                     <?php if ($rCanTicket): ?>
+                                        <a class="dropdown-item" href="ticket?id=<?= (int) $rTicket['id']; ?>"><i class="icon-base ti tabler-message-reply me-2"></i><?= $language::get('ticket_response') ?: 'Reply'; ?></a>
                                         <?php if ($rStatus > 0): ?>
                                             <a class="dropdown-item js-ticket" href="javascript:void(0);" data-id="<?= (int) $rTicket['id']; ?>" data-sub="close"><i class="icon-base ti tabler-check me-2"></i><?= $language::get('close') ?: 'Close'; ?></a>
                                         <?php else: ?>
