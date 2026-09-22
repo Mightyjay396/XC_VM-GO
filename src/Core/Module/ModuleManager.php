@@ -792,6 +792,10 @@ class ModuleManager {
 		$targetVersion = $version ?? $this->manifestVersion($name) ?? $module->getVersion();
 		$modulePath = $this->modulePathFor($name);
 
+		// Capture the admin's on/off choice BEFORE the Installing transition
+		// overwrites it, or updating a disabled module switches it back on.
+		$rRestore = $this->stateAfterInstall($name);
+
 		$this->setState($name, ModuleState::Installing);
 
 		try {
@@ -812,7 +816,9 @@ class ModuleManager {
 			throw $e;
 		}
 
-		$this->setState($name, ModuleState::Enabled);
+		// writeState, not setState: restoring Disabled is an internal lifecycle
+		// transition and must not be second-guessed by the dependents guard.
+		$this->writeState($name, $rRestore);
 		$this->recordInstalledVersion($name, $targetVersion);
 	}
 
@@ -1306,7 +1312,7 @@ class ModuleManager {
 	 * @param ModuleState $state Target lifecycle state.
 	 */
 	public function setState(string $name, ModuleState $state): void {
-		$name      = $this->sanitizeModuleName($name);
+		$name = $this->sanitizeModuleName($name);
 
 		// Refuse to disable a module that a still-working dependent relies on
 		// (e.g. plex requires watch — watch cannot be disabled under it, or
@@ -1324,6 +1330,35 @@ class ModuleManager {
 			}
 		}
 
+		$this->writeState($name, $state);
+	}
+
+	/**
+	 * The state a (re)install should leave the module in.
+	 *
+	 * An admin who switched the module off expects it to stay off across a
+	 * reinstall or a store update; everything else — never installed, or one of
+	 * the transient Installing / Failed states — means Enabled. Reads the raw
+	 * override rather than listModules() precisely so those transient states
+	 * cannot be mistaken for a deliberate "disabled".
+	 */
+	private function stateAfterInstall(string $name): ModuleState {
+		$rRaw = $this->readOverrides()[$name]['state'] ?? null;
+
+		return $rRaw === ModuleState::Disabled->value ? ModuleState::Disabled : ModuleState::Enabled;
+	}
+
+	/**
+	 * Persist a lifecycle state without the dependents guard.
+	 *
+	 * That guard belongs to a deliberate admin "disable", not to the transitions
+	 * install/uninstall drive themselves: putting a module back into the state it
+	 * already had must never fail because something depends on it.
+	 *
+	 * @param string      $name  Module name (already sanitized).
+	 * @param ModuleState $state Target lifecycle state.
+	 */
+	private function writeState(string $name, ModuleState $state): void {
 		$overrides = $this->readOverrides();
 
 		if (!isset($overrides[$name]) || !is_array($overrides[$name])) {

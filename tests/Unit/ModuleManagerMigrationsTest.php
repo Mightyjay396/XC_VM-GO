@@ -348,6 +348,45 @@ final class ModuleManagerMigrationsTest extends TestCase {
         $this->assertSame([], $byName['ok-consumer']['dependency_warnings']);
     }
 
+    // ── install keeps the admin's on/off decision ─────────────────────────
+
+    public function testReinstallKeepsAModuleTheAdminDisabled(): void {
+        // A store update lands in installModule(), which used to finish with an
+        // unconditional Enabled — silently switching a disabled module back on.
+        $this->createModule('keep-off', '1.0.0');
+        $this->writeOverrides(['keep-off' => ['state' => 'disabled', 'installed_version' => '1.0.0']]);
+
+        $this->manager()->installModule('keep-off');
+
+        $overrides = $this->readOverrides();
+        $this->assertSame('disabled', $overrides['keep-off']['state'] ?? null);
+        $this->assertSame('1.0.0', $overrides['keep-off']['installed_version'] ?? null);
+    }
+
+    public function testFirstInstallEnablesTheModule(): void {
+        $this->createModule('turn-on', '1.0.0');
+
+        $this->manager()->installModule('turn-on');
+
+        // Enabled is the clean default, recorded by the ABSENCE of a state key.
+        $this->assertArrayNotHasKey('state', $this->readOverrides()['turn-on']);
+    }
+
+    public function testReinstallRestoresDisabledEvenWithADependent(): void {
+        // Restoring Disabled is a lifecycle transition, not an admin "disable",
+        // so the dependents guard must not veto it and fail the install.
+        $this->createModuleWithDeps('dep-off', '1.0.0', []);
+        $this->createModuleWithDeps('dep-user', '1.0.0', ['dep-off']);
+        $this->writeOverrides([
+            'dep-off'  => ['state' => 'disabled', 'installed_version' => '1.0.0'],
+            'dep-user' => ['installed_version' => '1.0.0'],
+        ]);
+
+        $this->manager()->installModule('dep-off');
+
+        $this->assertSame('disabled', $this->readOverrides()['dep-off']['state'] ?? null);
+    }
+
     // ── update/uninstall failure containment ──────────────────────────────
 
     public function testUpdateKeepsWatermarkAtLastCompletedVersionOnFailure(): void {
