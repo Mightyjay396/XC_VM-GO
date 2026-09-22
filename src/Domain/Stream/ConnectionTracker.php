@@ -348,6 +348,27 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * Read the raw connection payloads behind a batch of Redis keys.
+	 *
+	 * `mGet` answers false once the connection has dropped, and the manager
+	 * hands back null when Redis is unreachable at all — iterating either is a
+	 * warning or, for null, a fatal. An empty batch never reaches Redis.
+	 *
+	 * @param \Redis|null $rRedis Active connection, or null when unreachable.
+	 * @param string[]    $rKeys  Connection keys.
+	 * @return array<int, mixed> Raw igbinary payloads.
+	 */
+	public static function readConnections(?\Redis $rRedis, array $rKeys): array {
+		if ($rKeys === [] || !$rRedis instanceof \Redis) {
+			return [];
+		}
+		// mGet answers false on a dropped connection and the client itself while
+		// pipelining, so anything but an array counts as "no connections".
+		$rRows = $rRedis->mGet($rKeys);
+		return is_array($rRows) ? array_values($rRows) : [];
+	}
+
+	/**
 	 * Get connections for multiple users (batch).
 	 *
 	 * Uses MULTI pipeline for parallel LINE# sorted set queries.

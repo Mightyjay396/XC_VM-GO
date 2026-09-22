@@ -1195,7 +1195,7 @@ class ResellerTableRenderer {
 				$rKeys = array_reverse($rKeys);
 			}
 			$rKeyCount = count($rKeys);
-			foreach (RedisManager::instance()->mGet($rKeys) as $rRow) {
+			foreach (ConnectionTracker::readConnections(RedisManager::instance(), $rKeys) as $rRow) {
 				$rRow = igbinary_unserialize($rRow);
 				if (is_array($rRow)) {
 					if (!$rStreamID || $rStreamID == $rRow['stream_id']) {
@@ -1224,7 +1224,10 @@ class ResellerTableRenderer {
 			} else {
 				$rOrderRow = 0;
 			}
-			if ($rOrder[$rOrderRow]) {
+			// !empty, not a truth test: the client can order by the Responsive
+			// control column (index 0, `false`) or by a column past the end of
+			// the map, and array_multisort on an undefined key is a TypeError.
+			if (!empty($rOrder[$rOrderRow])) {
 				array_multisort(array_column($rRows, $rOrder[$rOrderRow]), ($rOrderDirection ? SORT_ASC : SORT_DESC), $rRows);
 			}
 			$rRows = array_slice($rRows, $rStart, $rLimit);
