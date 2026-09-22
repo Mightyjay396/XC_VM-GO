@@ -15,6 +15,7 @@ use XcVm\Public\Controllers\Admin\Ajax\CategoryTemplateAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\DeviceAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\EpgAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\MiscAjaxController;
+use XcVm\Public\Controllers\Admin\Ajax\ModuleAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\MultiAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\PackageAjaxController;
 use XcVm\Public\Controllers\Admin\Ajax\ProviderAjaxController;
@@ -441,6 +442,7 @@ $router->api('save_activation_key', [MiscAjaxController::class, 'saveActivationK
 
 // ─── Users & Lines ─────────────────────────────────
 $router->api('line', [UserAjaxController::class, 'line']);
+$router->api('module', [ModuleAjaxController::class, 'module']);
 $router->api('line_activity', [UserAjaxController::class, 'lineActivity']);
 $router->api('adjust_credits', [UserAjaxController::class, 'adjustCredits']);
 $router->api('reg_user', [UserAjaxController::class, 'regUser']);

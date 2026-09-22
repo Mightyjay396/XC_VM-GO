@@ -3,7 +3,9 @@
 /**
  * Modules (Bootstrap 5). Marketplace / ZIP module management: install from store, upload a
  * ZIP, and the installed-modules table with per-module install / update / rollback / renew /
- * enable-disable / uninstall / delete actions. Every action POSTs module_action to the page
+ * enable-disable / uninstall / delete actions. Row actions go to ./api?action=module
+ * and the table reloads from ./table?id=modules; only the page-level forms
+ * (zip upload, store install, check updates) still POST module_action to the page
  * itself (ModulesController) and gets back a JSON flash; the table body is re-fetched and
  * swapped in place. Reached full-page in the new-UI shell.
  */
@@ -82,83 +84,32 @@
                 </tr>
             </thead>
             <tbody>
-                <?php if (empty($modules)): ?>
-                    <tr>
-                        <td colspan="6" class="text-center text-body-secondary">No modules found.</td>
-                    </tr>
-                <?php else: ?>
-                    <?php foreach ($modules as $module): ?>
-                        <tr>
-                            <td class="fw-medium"><?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?></td>
-                            <td><?= htmlspecialchars((string) ($module['description'] ?: '-'), ENT_QUOTES); ?></td>
-                            <td><?= htmlspecialchars((string) ($module['version'] ?: '-'), ENT_QUOTES); ?></td>
-                            <td><?= htmlspecialchars((string) ($module['requires_core'] ?: '-'), ENT_QUOTES); ?></td>
-                            <td>
-                                <span class="badge module-status-badge <?= !empty($module['enabled']) ? 'bg-label-success' : 'bg-label-secondary'; ?>" data-module="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>"><?= !empty($module['enabled']) ? 'Enabled' : 'Disabled'; ?></span>
-                                <?php if (!empty($module['dependency_warnings'])): ?>
-                                    <span class="badge bg-label-warning module-dep-warning" data-module="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>" title="<?= htmlspecialchars(implode(' ', $module['dependency_warnings']), ENT_QUOTES); ?>"><i class="icon-base ti tabler-alert-triangle me-1"></i><?= count($module['dependency_warnings']) === 1 ? 'Dependency issue' : 'Dependency issues'; ?></span>
-                                <?php endif; ?>
-                            </td>
-                            <td class="text-end">
-                                <div class="btn-group" role="group">
-                                    <?php if (($module['installed_version'] ?? '') === ''): ?>
-                                        <form action="#" method="POST" class="me-1 js-module-form">
-                                            <input type="hidden" name="module_name" value="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>">
-                                            <input type="hidden" name="module_action" value="install">
-                                            <button type="submit" class="btn btn-sm btn-primary">Install</button>
-                                        </form>
-                                    <?php endif; ?>
-                                    <?php $rAvailable = ($module['available_version'] ?? '') !== '' ? (string) $module['available_version'] : (string) ($module['version'] ?? ''); ?>
-                                    <?php if (($module['installed_version'] ?? '') !== '' && version_compare($rAvailable, (string) $module['installed_version'], '>')): ?>
-                                        <form action="#" method="POST" class="me-1 js-module-form">
-                                            <input type="hidden" name="module_name" value="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>">
-                                            <input type="hidden" name="module_action" value="update">
-                                            <button type="submit" class="btn btn-sm btn-info" title="New version <?= htmlspecialchars($rAvailable, ENT_QUOTES); ?> available">Update to <?= htmlspecialchars($rAvailable, ENT_QUOTES); ?></button>
-                                        </form>
-                                    <?php endif; ?>
-                                    <?php if (($module['source'] ?? '') === 'platform' && !empty($module['previous_version'])): ?>
-                                        <form action="#" method="POST" class="me-1 js-module-form" data-confirm="Roll back <?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?> to version <?= htmlspecialchars((string) $module['previous_version'], ENT_QUOTES); ?>?">
-                                            <input type="hidden" name="module_name" value="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>">
-                                            <input type="hidden" name="module_action" value="platform_rollback">
-                                            <button type="submit" class="btn btn-sm btn-label-secondary" title="Roll back to v<?= htmlspecialchars((string) $module['previous_version'], ENT_QUOTES); ?>"><i class="icon-base ti tabler-history me-1"></i>Rollback</button>
-                                        </form>
-                                    <?php endif; ?>
-                                    <?php if (($module['source'] ?? '') === 'platform'): ?>
-                                        <form action="#" method="POST" class="me-1 js-module-form">
-                                            <input type="hidden" name="module_name" value="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>">
-                                            <input type="hidden" name="module_action" value="renew_license">
-                                            <button type="submit" class="btn btn-sm btn-label-secondary" title="Re-issue the per-machine ionCube license (use if the module fails to load with a license error)"><i class="icon-base ti tabler-key me-1"></i>Renew license</button>
-                                        </form>
-                                    <?php endif; ?>
-                                    <button type="button" class="btn btn-sm me-1 module-toggle-btn <?= !empty($module['enabled']) ? 'btn-warning' : 'btn-success'; ?>" data-module="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>" data-enabled="<?= !empty($module['enabled']) ? '1' : '0'; ?>"><?= !empty($module['enabled']) ? 'Disable' : 'Enable'; ?></button>
-                                    <?php if (($module['installed_version'] ?? '') !== ''): ?>
-                                        <form action="#" method="POST" class="me-1 js-module-form" data-confirm="<?= htmlspecialchars($language::get('confirm_uninstall_module', [':name' => $module['name']]), ENT_QUOTES); ?>">
-                                            <input type="hidden" name="module_name" value="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>">
-                                            <input type="hidden" name="module_action" value="uninstall">
-                                            <button type="submit" class="btn btn-sm btn-danger">Uninstall</button>
-                                        </form>
-                                    <?php endif; ?>
-                                    <form action="#" method="POST" class="js-module-form" data-confirm="Delete module '<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>' completely — remove its files and drop its tables? A bundled module returns on the next panel update.">
-                                        <input type="hidden" name="module_name" value="<?= htmlspecialchars((string) $module['name'], ENT_QUOTES); ?>">
-                                        <input type="hidden" name="module_action" value="delete">
-                                        <button type="submit" class="btn btn-sm btn-label-danger">Delete</button>
-                                    </form>
-                                </div>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
             </tbody>
         </table>
     </div>
 </div>
 
+<?php
+require_once __DIR__ . '/../layouts/footer.php';
+renderUnifiedLayoutFooter('admin');
+?>
 <script>
     (function() {
         'use strict';
         var endpoint = window.location.href.split('#')[0];
         var CHOOSE_FILE = <?= json_encode($language::get('choose_file')); ?>;
         var TOGGLE_FAIL = <?= json_encode($language::get('failed_toggle_module')); ?>;
+        var REFRESH_FAIL = <?= json_encode($language::get('modules_refresh_failed')); ?>;
+        var WAIT_LABEL = <?= json_encode($language::get('please_wait')); ?>;
+        var NOW_ENABLED = <?= json_encode($language::get('module_now_enabled')); ?>;
+        var NOW_DISABLED = <?= json_encode($language::get('module_now_disabled')); ?>;
+        var TOGGLE_TIMEOUT = <?= json_encode($language::get('module_toggle_timeout')); ?>;
+        var CONFIRM_ACTION = <?= json_encode($language::get('module_confirm_action')); ?>;
+        // Poll the list until the module's state actually flips, rather than
+        // trusting the POST: an action can be applied by a worker other than the
+        // one that answered, so "accepted" is not yet "in effect".
+        var POLL_MS = 2000;
+        var POLL_TRIES = 15;
 
         function escapeHtml(s) {
             return String(s).replace(/[&<>"']/g, function(c) {
@@ -181,11 +132,9 @@
             if (!box) {
                 return;
             }
+            // No scrollIntoView: a toast already announces the result, and yanking
+            // the page mid-click moved the buttons out from under the cursor.
             box.innerHTML = '<div class="alert alert-' + cls + ' alert-dismissible" role="alert">' + escapeHtml(message || '') + '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button></div>';
-            box.scrollIntoView({
-                behavior: 'smooth',
-                block: 'nearest'
-            });
         }
 
         function postAction(formData) {
@@ -206,20 +155,129 @@
                     });
                 });
         }
+        // Rows come from ./table?id=modules — the same endpoint every other
+        // admin table uses — but painted by hand with plain fetch: this page
+        // loads no jQuery and no DataTables.
+        var lastRows = [];
 
-        function refreshTable() {
-            return fetch(endpoint, {
+        function actionButton(sub, cls, label, name, title) {
+            return '<button type="button" class="btn btn-sm me-1 ' + cls + ' js-mod" data-sub="' + escapeHtml(sub) +
+                '" data-module="' + escapeHtml(name) + '"' + (title ? ' title="' + escapeHtml(title) + '"' : '') +
+                '>' + escapeHtml(label) + '</button>';
+        }
+
+        function renderStatus(row) {
+            var html = '<span class="badge ' + (row.enabled ? 'bg-label-success' : 'bg-label-secondary') + '">' +
+                escapeHtml(row.enabled ? 'Enabled' : 'Disabled') + '</span>';
+            if (row.warnings && row.warnings.length) {
+                html += ' <span class="badge bg-label-warning" title="' + escapeHtml(row.warnings.join(' ')) + '">' +
+                    '<i class="icon-base ti tabler-alert-triangle me-1"></i>' +
+                    escapeHtml(row.warnings.length === 1 ? 'Dependency issue' : 'Dependency issues') + '</span>';
+            }
+            return html;
+        }
+
+        function renderActions(row) {
+            var html = '';
+            if (!row.installed) {
+                html += actionButton('install', 'btn-primary', 'Install', row.name);
+            }
+            if (row.update_to) {
+                html += actionButton('update', 'btn-info', 'Update to ' + row.update_to, row.name,
+                    'New version ' + row.update_to + ' available');
+            }
+            if (row.source === 'platform' && row.rollback_to) {
+                html += actionButton('rollback', 'btn-label-secondary', 'Rollback', row.name,
+                    'Roll back to v' + row.rollback_to);
+            }
+            if (row.source === 'platform') {
+                html += actionButton('renew_license', 'btn-label-secondary', 'Renew license', row.name,
+                    'Re-issue the per-machine ionCube license');
+            }
+            html += actionButton(row.enabled ? 'disable' : 'enable',
+                row.enabled ? 'btn-warning' : 'btn-success',
+                row.enabled ? 'Disable' : 'Enable', row.name);
+            if (row.installed) {
+                html += actionButton('uninstall', 'btn-danger', 'Uninstall', row.name);
+            }
+            html += actionButton('delete', 'btn-label-danger', 'Delete', row.name);
+            return html;
+        }
+
+        // Reload the table and resolve with the rows the server returned, so a
+        // caller can read the real post-action state instead of assuming it.
+        function paint(rows) {
+            var tbody = document.querySelector('#modules-table tbody');
+            if (!tbody) {
+                return;
+            }
+            if (!rows.length) {
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center text-body-secondary py-4">—</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(function(row) {
+                return '<tr>' +
+                    '<td class="fw-medium">' + escapeHtml(row.name) + '</td>' +
+                    '<td>' + escapeHtml(row.description || '-') + '</td>' +
+                    '<td>' + escapeHtml(row.version || '-') + '</td>' +
+                    '<td>' + escapeHtml(row.requires_core || '-') + '</td>' +
+                    '<td>' + renderStatus(row) + '</td>' +
+                    '<td class="text-end"><div class="btn-group" role="group">' + renderActions(row) + '</div></td>' +
+                    '</tr>';
+            }).join('');
+        }
+
+        // Resolves with the rows the server returned, or null when the list could
+        // not be read — the caller must be able to tell "unchanged" from
+        // "could not check".
+        function reloadTable() {
+            return fetch('./table?id=modules&draw=1&start=0&length=1000', {
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
                 credentials: 'same-origin'
             }).then(function(r) {
-                return r.text();
-            }).then(function(html) {
-                var doc = new DOMParser().parseFromString(html, 'text/html');
-                var fresh = doc.querySelector('#modules-table tbody');
-                var current = document.querySelector('#modules-table tbody');
-                if (fresh && current) {
-                    current.innerHTML = fresh.innerHTML;
+                return r.json();
+            }).then(function(json) {
+                lastRows = (json && json.data) || [];
+                paint(lastRows);
+                return lastRows;
+            }).catch(function() {
+                return null;
+            });
+        }
+
+        function rowOf(rows, name) {
+            for (var i = 0; i < rows.length; i++) {
+                if (rows[i].name === name) {
+                    return rows[i];
                 }
-            }).catch(function() {});
+            }
+            return null;
+        }
+
+        // Reload every POLL_MS until the module leaves `wasEnabled`. Resolves with
+        // the row that showed the change, or null on timeout. A module that has
+        // vanished (uninstalled elsewhere) counts as settled, not as a hang.
+        function waitForToggle(moduleName, wasEnabled, tries) {
+            return reloadTable().then(function(rows) {
+                // A failed read is "not confirmed yet", not "unchanged" — keep
+                // polling rather than reporting a state nothing vouched for.
+                if (rows !== null) {
+                    var row = rowOf(rows, moduleName);
+                    if (row === null || row.enabled !== wasEnabled) {
+                        return row;
+                    }
+                }
+                if (tries <= 1) {
+                    return null;
+                }
+                return new Promise(function(resolve) {
+                    setTimeout(function() {
+                        resolve(waitForToggle(moduleName, wasEnabled, tries - 1));
+                    }, POLL_MS);
+                });
+            });
         }
 
         // File input + drag & drop.
@@ -274,6 +332,8 @@
         }
 
         // AJAX submit for every module action form.
+        // Page-level forms (zip upload, store install, check updates) still POST to
+        // this page: they are not row actions and the upload is multipart.
         document.addEventListener('submit', function(e) {
             var form = e.target.closest('.js-module-form');
             if (!form) {
@@ -287,16 +347,19 @@
                 var isUpload = form.id === 'module-upload-form';
                 if (btn) {
                     btn.disabled = true;
-                    btn.innerHTML = '<i class="icon-base ti tabler-loader me-1"></i>…';
+                    btn.innerHTML = '<i class="icon-base ti tabler-loader me-1"></i>' + escapeHtml(WAIT_LABEL);
                 }
                 postAction(new FormData(form)).then(function(resp) {
-                    showFlash(resp.type, resp.message);
-                    if (resp.type !== 'danger') {
-                        if (isUpload) {
-                            resetUploadForm(form);
-                        }
-                        return refreshTable();
+                    if (resp.type === 'danger') {
+                        showFlash(resp.type, resp.message);
+                        return;
                     }
+                    if (isUpload) {
+                        resetUploadForm(form);
+                    }
+                    return reloadTable().then(function() {
+                        showFlash(resp.type, resp.message);
+                    });
                 }).catch(function() {
                     showFlash('danger', 'Request failed.');
                 }).finally(function() {
@@ -317,50 +380,71 @@
             }
         });
 
-        // Enable/disable toggle (optimistic in-place update).
+        // Row actions. Every one goes to ./api?action=module and the outcome is
+        // read back off the reloaded table, never inferred from the request: the
+        // guard can refuse a disable, and toggling one module changes the
+        // dependency warnings on the others.
         document.addEventListener('click', function(e) {
-            var btn = e.target.closest('.module-toggle-btn');
+            var btn = e.target.closest('.js-mod');
             if (!btn) {
                 return;
             }
             e.preventDefault();
-            var moduleName = btn.getAttribute('data-module');
-            var isEnabled = btn.getAttribute('data-enabled') === '1';
-            btn.disabled = true;
-            btn.innerHTML = '<i class="icon-base ti tabler-loader me-1"></i>…';
-            var fd = new FormData();
-            fd.append('module_name', moduleName);
-            fd.append('module_action', isEnabled ? 'disable' : 'enable');
-            postAction(fd).then(function(resp) {
-                if (resp && resp.type === 'danger') {
-                    btn.disabled = false;
-                    btn.innerHTML = isEnabled ? 'Disable' : 'Enable';
-                    showFlash('danger', resp.message || 'Operation failed.');
-                    return;
-                }
-                var nowEnabled = !isEnabled;
-                btn.setAttribute('data-enabled', nowEnabled ? '1' : '0');
-                btn.className = 'btn btn-sm me-1 module-toggle-btn ' + (nowEnabled ? 'btn-warning' : 'btn-success');
-                btn.innerHTML = nowEnabled ? 'Disable' : 'Enable';
-                btn.disabled = false;
-                var badge = document.querySelector('.module-status-badge[data-module="' + moduleName + '"]');
-                if (badge) {
-                    badge.className = 'badge module-status-badge ' + (nowEnabled ? 'bg-label-success' : 'bg-label-secondary');
-                    badge.textContent = nowEnabled ? 'Enabled' : 'Disabled';
-                }
-                if (resp && resp.message) {
-                    showFlash(resp.type || 'success', resp.message);
-                }
-            }).catch(function() {
-                btn.disabled = false;
-                btn.innerHTML = isEnabled ? 'Disable' : 'Enable';
-                showFlash('danger', TOGGLE_FAIL);
-            });
+            var name = btn.getAttribute('data-module');
+            var sub = btn.getAttribute('data-sub');
+            var isToggle = sub === 'enable' || sub === 'disable';
+            var wasEnabled = sub === 'disable';
+
+            var run = function() {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="icon-base ti tabler-loader me-1"></i>' + escapeHtml(WAIT_LABEL);
+
+                fetch('./api?action=module&sub=' + encodeURIComponent(sub) + '&name=' + encodeURIComponent(name), {
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                    credentials: 'same-origin'
+                }).then(function(r) {
+                    return r.json().catch(function() {
+                        return { result: false, message: 'Unexpected server response.' };
+                    });
+                }).then(function(resp) {
+                    // A refusal will never change the state, so report it now
+                    // rather than poll for the full timeout.
+                    if (!resp || resp.result === false) {
+                        return reloadTable().then(function() {
+                            showFlash('danger', (resp && resp.message) || TOGGLE_FAIL);
+                        });
+                    }
+                    if (!isToggle) {
+                        return reloadTable().then(function() {
+                            showFlash('success', resp.message || '');
+                        });
+                    }
+                    return waitForToggle(name, wasEnabled, POLL_TRIES).then(function(row) {
+                        if (row === null) {
+                            showFlash('warning', TOGGLE_TIMEOUT.replace(':name', name));
+                            return;
+                        }
+                        showFlash('success', (row.enabled ? NOW_ENABLED : NOW_DISABLED).replace(':name', name));
+                    });
+                }).catch(function() {
+                    showFlash('danger', TOGGLE_FAIL);
+                });
+            };
+
+            var confirmMsg = (sub === 'uninstall' || sub === 'delete' || sub === 'rollback')
+                ? CONFIRM_ACTION.replace(':action', sub).replace(':name', name)
+                : '';
+            if (confirmMsg) {
+                (window.xcConfirm ? window.xcConfirm(confirmMsg) : Promise.resolve(confirm(confirmMsg))).then(function(ok) {
+                    if (ok) {
+                        run();
+                    }
+                });
+            } else {
+                run();
+            }
         });
+
+        reloadTable();
     })();
 </script>
-
-<?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
-?>
