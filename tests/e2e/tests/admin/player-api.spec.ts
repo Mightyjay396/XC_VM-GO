@@ -97,7 +97,7 @@ test.describe.serial('player API', () => {
 
   test('the channel is listed under its category', async ({ request }) => {
     // The stream and bouquet caches pick new content up on their next pass.
-    test.setTimeout(420_000);
+    test.setTimeout(600_000);
     await expect
       .poll(async () => (await playerApi(request, { action: 'get_live_streams' })).map((s: any) => s.stream_id), {
         timeout: 200_000,
@@ -106,11 +106,16 @@ test.describe.serial('player API', () => {
       })
       .toContain(channelID);
 
-    // The category follows once the heavy cache pass has rebuilt the bouquet →
-    // category map, which can be a pass later than the stream itself.
+    // The category needs `category_map`, and only the heavy cache pass builds it
+    // (UserRepository::resolveCategoryIds reads that file; a bouquet newer than
+    // the map simply has no categories yet). CacheCronJob skips the heavy pass
+    // while its `heavy_cache_built` marker is under 300s old, and cron:cache runs
+    // once a minute, so a category created just after a pass waits the full 300s
+    // plus cron granularity. Anything under that is flaky by construction: this
+    // budget has to outlast one whole cycle, not an average one.
     await expect
       .poll(async () => (await playerApi(request, { action: 'get_live_categories' })).find((c: any) => c.category_name === category)?.category_id, {
-        timeout: 200_000,
+        timeout: 380_000,
         intervals: [5_000, 10_000],
         message: `${category} never appeared in get_live_categories`,
       })
