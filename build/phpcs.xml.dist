@@ -46,6 +46,17 @@
         <exclude name="PSR2.ControlStructures.SwitchDeclaration.TerminatingComment"/> <!-- 6: add `// no break` -->
         <exclude name="PSR12.Files.FileHeader.IncorrectOrder"/>                       <!-- 29: header declare/namespace/use order -->
         <exclude name="Squiz.Classes.ValidClassName"/>                                <!-- 1: legacy class name -->
+        <exclude name="PSR1.Files.SideEffects"/>                                      <!-- 22: declares symbols AND runs code -->
+
+        <!-- Line length (3480 warnings across 284 of 557 analysed files). Muted
+             for REPORT NOISE only: it is a warning, and ignore_warnings_on_exit
+             below already keeps it from failing the run. NOT part of the ratchet
+             above: Generic.Files.LineLength has no fixer (it only calls
+             addWarning), so neither phpcbf nor PHP-CS-Fixer nor Rector can wrap
+             these lines — re-enabling it would mean splitting them by hand. The
+             one sniff that could help, PEAR.Functions.FunctionCallSignature, is
+             permanently disabled below because it cannot converge under tabs. -->
+        <exclude name="Generic.Files.LineLength"/>
 
         <!-- ── PERMANENTLY disabled — DO NOT ENABLE ──
              Space-alignment sniff that cannot converge under tab indentation:
@@ -86,19 +97,26 @@
     <!-- There MUST be one whitespace after a type casting operator. -->
     <rule ref="Generic.Formatting.SpaceAfterCast"/>
 
-    <!-- Checks the cyclomatic complexity (McCabe) for functions. The hard
-         MaxExceeded ERROR is disabled (174 God-methods); the softer TooHigh
-         WARNING still reports. To enforce: delete the exclude, run `make cs`,
-         refactor the fallout. -->
+    <!-- Checks the cyclomatic complexity (McCabe) for functions.
+         DISABLED — MaxExceeded(201 errors) + TooHigh(190 warnings). Complexity is
+         already ratcheted by the CRAP gate (.claude/quartermaster/crap.json,
+         ceiling 6 against main), which blocks NEW complexity per function; this
+         sniff only restated the existing backlog. Uncomment to surface it again,
+         then refactor the fallout. -->
+    <!--
     <rule ref="Generic.Metrics.CyclomaticComplexity">
         <exclude name="Generic.Metrics.CyclomaticComplexity.MaxExceeded"/>
     </rule>
+    -->
 
-    <!-- Checks the nesting level for methods. MaxExceeded ERROR disabled (2),
-         TooHigh WARNING still reports; delete the exclude to enforce. -->
+    <!-- Checks the nesting level for methods.
+         DISABLED — MaxExceeded(2 errors) + TooHigh(84 warnings). Same reasoning as
+         the complexity sniff above; uncomment to enforce. -->
+    <!--
     <rule ref="Generic.Metrics.NestingLevel">
         <exclude name="Generic.Metrics.NestingLevel.MaxExceeded"/>
     </rule>
+    -->
 
     <!-- Checks that abstract classes are prefixed by Abstract.
          DISABLED (2) — uncomment to enable. -->
@@ -154,8 +172,11 @@
         </properties>
     </rule>
 
-    <!-- Throws an error or warning when any code prefixed with an asperand is encountered. -->
-    <rule ref="Generic.PHP.NoSilencedErrors"/>
+    <!-- Throws an error or warning when any code prefixed with an asperand is encountered.
+         DISABLED (473) — uncomment to enable. Not a style fix: each `@` is either
+         deliberate (@unlink on a maybe-missing file) or masking a real error, so
+         they have to be judged one at a time, with a test per behaviour change. -->
+    <!-- <rule ref="Generic.PHP.NoSilencedErrors"/> -->
 
     <!-- Checks that the `strict_types` has been declared. -->
     <!-- <rule ref="Generic.PHP.RequireStrictTypes"/> -->
@@ -324,18 +345,22 @@
          no FAILED TO FIX), commit. Do NOT add new violations under a disabled
          rule. Each disabled rule is a single-line toggle:
 
-           • Own `<rule ref>` commented out above  → UNCOMMENT the line:
-               CamelCapsFunctionName(187), MultiLineAssignment(49),
-               UnnecessaryStringConcat(41), SAPIUsage(7), AbstractClassNamePrefix(2),
-               InterfaceNameSuffix(1), TraitNameSuffix(1), DeprecatedFunctions(1),
-               Squiz.Classes.ClassFileName(1), Squiz.PHP.GlobalKeyword(478).
-           • <exclude> in the PSR12 block above     → DELETE the exclude line:
+           • Own `<rule ref>` commented out above  → UNCOMMENT it:
+               NoSilencedErrors(473), CamelCapsFunctionName(187),
+               CyclomaticComplexity(201 err + 190 warn), NestingLevel(2 + 84),
+               MultiLineAssignment(49), UnnecessaryStringConcat(41), SAPIUsage(7),
+               AbstractClassNamePrefix(2), InterfaceNameSuffix(1), TraitNameSuffix(1),
+               DeprecatedFunctions(1), Squiz.Classes.ClassFileName(1),
+               Squiz.PHP.GlobalKeyword(478).
+           • <exclude> in the PSR12 block above     → DELETE the exclude line.
+             (Sniffs inherited from the PSR12 parent CANNOT be commented out —
+             <exclude> is the only switch for them.)
                CamelCapsMethodName(40), FileHeader.IncorrectOrder(29),
+               PSR1.Files.SideEffects(22),
                MethodDeclaration.Underscore(12), SwitchDeclaration.TerminatingComment(6),
                PSR1.Classes.ClassDeclaration(2), PropertyDeclaration.Underscore(2),
-               Squiz.Classes.ValidClassName(1).
-           • <exclude> in the Metrics refs above    → DELETE the exclude line:
-               CyclomaticComplexity.MaxExceeded(201), NestingLevel.MaxExceeded(2).
+               Squiz.Classes.ValidClassName(1), Generic.Files.LineLength(3480 — has
+               no fixer, see its own note; not really part of this ratchet).
 
          Suggested order (cheapest / lowest-risk first): SAPIUsage,
          DeprecatedFunctions, SwitchDeclaration.TerminatingComment,

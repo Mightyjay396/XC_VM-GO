@@ -165,9 +165,13 @@ RECTOR := src/vendor/bin/rector
 
 # Dry-run — report what would change, never write. Non-zero exit when changes
 # are pending, so it doubles as a CI check.
+#
+# --clear-cache is not optional here: Rector's cache key does not track the rule
+# set, so after editing build/rector.php a cached run reports "Rector is done!"
+# and a newly enabled set looks like it changes nothing.
 rector:
 	@test -x "$(RECTOR)" || { echo "Rector not found — run 'make dev-tools' (composer install) first."; exit 1; }
-	@php "$(RECTOR)" process -c build/rector.php --dry-run
+	@php "$(RECTOR)" process -c build/rector.php --dry-run --clear-cache
 
 # Apply changes in place.
 rector-fix:

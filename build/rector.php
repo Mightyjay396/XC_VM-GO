@@ -104,7 +104,32 @@ return RectorConfig::configure()
 	// Safe, behaviour-preserving sets. deadCode carries
 	// RemoveDeadIfForeachForRector (the empty-if/else collapse); codeQuality
 	// carries the boolean simplifiers (double-not, De Morgan, != normalisation).
+	//
+	// instanceOf / earlyReturn / if were measured at zero changes across the
+	// analysed tree, so they cost nothing today and only hold the line on new
+	// code. NB `if` merges conditions with `&&` — the same shape that made
+	// De Morgan corrupt assignment-in-condition guards, so keep running the two
+	// KNOWN BUG greps above over its diff.
+	//
+	// Deliberately NOT enabled (file counts measured on the same tree):
+	//  - typeDeclarations (319): infers native param/return types — the exact
+	//    footgun that keeps SlevomatCodingStandard.TypeHints.ParameterTypeHint
+	//    disabled in build/phpcs.xml.dist. See TYPE_AUDIT.md.
+	//  - typeDeclarationDocblocks (86): docblocks only, no runtime effect on its
+	//    own — but `make cs-fix` derives native types FROM docblocks, so a wrong
+	//    @param written here becomes a wrong signature on the next style pass.
+	//  - codingStyle (255): touches `use` imports, which the check-procedural-use
+	//    gate depends on staying positional.
+	//  - naming (132): renames variables/params, against the $r-prefix convention
+	//    and the views that receive render() data by variable name.
+	//  - namedArgs (238): cosmetic churn over a quarter of the codebase.
+	//  - privatization (0): zero only because the codebase has almost no `final`
+	//    classes, not because it is structurally safe — its rules would start
+	//    firing on module subclasses of BaseModule and on Reflection-based tests.
 	->withPreparedSets(
 		deadCode: true,
 		codeQuality: true,
+		instanceOf: true,
+		earlyReturn: true,
+		if: true,
 	);
