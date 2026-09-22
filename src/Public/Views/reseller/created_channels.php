@@ -63,7 +63,9 @@ $rCategoryIDs = (array) ($rPermissions['category_ids'] ?? []);
                     <th><?= $language::get('title'); ?></th>
                     <th><?= $language::get('category'); ?></th>
                     <th class="text-center"><?= $language::get('connections'); ?></th>
-                    <th class="text-center"><?= $language::get('actions'); ?></th>
+                    <?php if ($rCanKill): ?>
+                        <th class="text-center"><?= $language::get('actions'); ?></th>
+                    <?php endif; ?>
                 </tr>
             </thead>
             <tbody></tbody>
@@ -77,7 +79,11 @@ renderUnifiedLayoutFooter('reseller');
 ?>
 <script>
     (function() {
-        var esc = function(s) { var d = document.createElement('div'); d.textContent = (s == null ? '' : String(s)); return d.innerHTML; };
+        var esc = function(s) {
+            var d = document.createElement('div');
+            d.textContent = (s == null ? '' : String(s));
+            return d.innerHTML;
+        };
         var canKill = <?= $rCanKill ? 'true' : 'false'; ?>;
         var lang = {
             kill: <?= json_encode($language::get('kill') ?: 'Kill Connections'); ?>,
@@ -87,20 +93,53 @@ renderUnifiedLayoutFooter('reseller');
 
         var table = jQuery('#cchannels-table').DataTable({
             serverSide: true,
-            responsive: { details: { type: 'column', target: 0 } },
-            order: [[1, 'desc']],
+            responsive: {
+                details: {
+                    type: 'column',
+                    target: 0
+                }
+            },
+            order: [
+                [1, 'desc']
+            ],
             searchDelay: 400,
             lengthMenu: [10, 25, 50, 250, 500, 1000],
             pageLength: <?= (int) ($rSettings['default_entries'] ?: 25); ?>,
             ajax: {
                 url: './table',
-                data: function(d) { d.id = 'streams'; d.created = true; d.category = document.getElementById('filter-category').value; }
+                data: function(d) {
+                    d.id = 'streams';
+                    d.created = true;
+                    d.category = document.getElementById('filter-category').value;
+                }
             },
-            columnDefs: [{ orderable: false, targets: [0, 2, 6] }],
-            columns: [
-                { data: null, defaultContent: '', orderable: false, searchable: false, className: 'control', responsivePriority: 2 },
-                { data: 'id', className: 'text-center', render: function(d) { return '<a href="stream_view?id=' + encodeURIComponent(d) + '" class="text-body">' + esc(d) + '</a>'; } },
-                { data: 'icon', orderable: false, searchable: false, render: function(d) { return d ? '<a href="resize?maxw=512&maxh=512&url=' + encodeURIComponent(d) + '" target="_blank"><img loading="lazy" src="resize?maxw=96&maxh=32&url=' + encodeURIComponent(d) + '" alt=""></a>' : ''; } },
+            columnDefs: [{
+                orderable: false,
+                targets: [0, 2 <?= $rCanKill ? ', 6' : ''; ?>]
+            }],
+            columns: [{
+                    data: null,
+                    defaultContent: '',
+                    orderable: false,
+                    searchable: false,
+                    className: 'control',
+                    responsivePriority: 2
+                },
+                {
+                    data: 'id',
+                    className: 'text-center',
+                    render: function(d) {
+                        return '<a href="stream_view?id=' + encodeURIComponent(d) + '" class="text-body">' + esc(d) + '</a>';
+                    }
+                },
+                {
+                    data: 'icon',
+                    orderable: false,
+                    searchable: false,
+                    render: function(d) {
+                        return d ? '<a href="resize?maxw=512&maxh=512&url=' + encodeURIComponent(d) + '" target="_blank"><img loading="lazy" src="resize?maxw=96&maxh=32&url=' + encodeURIComponent(d) + '" alt=""></a>' : '';
+                    }
+                },
                 {
                     data: 'title',
                     responsivePriority: 1,
@@ -109,7 +148,12 @@ renderUnifiedLayoutFooter('reseller');
                         return '<a href="stream_view?id=' + encodeURIComponent(row.id) + '" class="text-body"><span class="fw-medium">' + esc(d) + '</span>' + badge + '</a>';
                     }
                 },
-                { data: 'category', render: function(d) { return '<small class="text-body-secondary">' + esc(d || '') + '</small>'; } },
+                {
+                    data: 'category',
+                    render: function(d) {
+                        return '<small class="text-body-secondary">' + esc(d || '') + '</small>';
+                    }
+                },
                 {
                     data: 'clients',
                     className: 'text-center',
@@ -117,33 +161,57 @@ renderUnifiedLayoutFooter('reseller');
                         var badge = '<span class="badge bg-label-' + (d > 0 ? 'info' : 'secondary') + '">' + (d || 0) + '</span>';
                         return (d > 0 && canKill) ? '<a href="live_connections?stream=' + encodeURIComponent(row.id) + '&stream_id=' + encodeURIComponent(row.id) + '">' + badge + '</a>' : badge;
                     }
-                },
-                {
-                    data: null,
-                    orderable: false,
-                    searchable: false,
-                    className: 'text-center',
-                    render: function(d, t, row) {
-                        if (!canKill || !(row.clients > 0)) { return ''; }
-                        var items = '<a class="dropdown-item js-act" href="javascript:void(0);" data-id="' + esc(row.id) + '">' + esc(lang.kill) + '</a>';
-                        return '<div class="dropdown"><button class="btn btn-sm btn-icon btn-label-secondary" data-bs-toggle="dropdown" aria-expanded="false"><i class="icon-base ti tabler-dots-vertical"></i></button><div class="dropdown-menu dropdown-menu-end">' + items + '</div></div>';
-                    }
                 }
+                <?php if ($rCanKill): ?>,
+                    {
+                        data: null,
+                        orderable: false,
+                        searchable: false,
+                        className: 'text-center',
+                        render: function(d, t, row) {
+                            if (!(row.clients > 0)) {
+                                return '';
+                            }
+                            var items = '<a class="dropdown-item js-act" href="javascript:void(0);" data-id="' + esc(row.id) + '">' + esc(lang.kill) + '</a>';
+                            return '<div class="dropdown"><button class="btn btn-sm btn-icon btn-label-secondary" data-bs-toggle="dropdown" aria-expanded="false"><i class="icon-base ti tabler-dots-vertical"></i></button><div class="dropdown-menu dropdown-menu-end">' + items + '</div></div>';
+                        }
+                    }
+                <?php endif; ?>
             ],
-            layout: { topStart: 'pageLength', topEnd: 'search' }
+            layout: {
+                topStart: 'pageLength',
+                topEnd: 'search'
+            }
         });
 
-        document.getElementById('filter-category').addEventListener('change', function() { table.ajax.reload(); });
+        document.getElementById('filter-category').addEventListener('change', function() {
+            table.ajax.reload();
+        });
 
         // Kill connections -> reseller api (action=connections&sub=purge&stream_id=…).
         jQuery('#cchannels-table tbody').on('click', '.js-act', function() {
             var id = this.getAttribute('data-id');
             xcConfirm(lang.confirmKill).then(function(ok) {
-                if (!ok) { return; }
-                fetch('./api?action=connections&sub=purge&stream_id=' + encodeURIComponent(id), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
-                    .then(function(r) { return r.json(); })
-                    .then(function(dt) { if (!dt || dt.result !== true) { throw new Error('fail'); } table.ajax.reload(null, false); })
-                    .catch(function() { xcToast(lang.error, 'error'); });
+                if (!ok) {
+                    return;
+                }
+                fetch('./api?action=connections&sub=purge&stream_id=' + encodeURIComponent(id), {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        }
+                    })
+                    .then(function(r) {
+                        return r.json();
+                    })
+                    .then(function(dt) {
+                        if (!dt || dt.result !== true) {
+                            throw new Error('fail');
+                        }
+                        table.ajax.reload(null, false);
+                    })
+                    .catch(function() {
+                        xcToast(lang.error, 'error');
+                    });
             });
         });
     })();
