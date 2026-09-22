@@ -243,8 +243,8 @@ class UserRepository {
 	/**
 	 * The distinct category ids reachable through a line's bouquets. Pure.
 	 *
-	 * @param array      $rBouquet     The line's bouquet ids.
-	 * @param array|null $rCategoryMap Bouquet id => category id list.
+	 * @param array $rBouquet     The line's bouquet ids.
+	 * @param array $rCategoryMap Bouquet id => category id list.
 	 * @return array<int,mixed> Distinct category ids.
 	 */
 	private static function resolveCategoryIds(array $rBouquet, array $rCategoryMap): array {
