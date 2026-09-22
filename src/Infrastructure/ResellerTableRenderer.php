@@ -625,7 +625,7 @@ class ResellerTableRenderer {
 			}
 			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
 			if (0 < $rReturn['recordsTotal']) {
-				$rQuery = 'SELECT `id`, `stream_icon`, `stream_display_name`, `tv_archive_duration`, `tv_archive_server_id`, `category_id`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
+				$rQuery = 'SELECT `id`, `stream_icon`, `stream_display_name`, `added`, `tv_archive_duration`, `tv_archive_server_id`, `category_id`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 				$db->query($rQuery, ...$rWhereV);
 				if ($db->num_rows() > 0) {
 					$rRows = $db->get_rows();
@@ -664,6 +664,7 @@ class ResellerTableRenderer {
 								'id' => (int) $rRow['id'],
 								'icon' => (string) $rRow['stream_icon'],
 								'title' => (string) $rRow['stream_display_name'],
+								'added' => (int) $rRow['added'],
 								'archive' => 0 < $rRow['tv_archive_duration'] && 0 < $rRow['tv_archive_server_id'],
 								'category' => $rCategory,
 								'clients' => (int) $rRow['clients'],
@@ -854,7 +855,7 @@ class ResellerTableRenderer {
 			}
 			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
 			if (0 < $rReturn['recordsTotal']) {
-				$rQuery = 'SELECT `id`, `stream_icon`, `stream_display_name`, `movie_properties`, `category_id`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
+				$rQuery = 'SELECT `id`, `stream_icon`, `stream_display_name`, `added`, `movie_properties`, `category_id`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 				$db->query($rQuery, ...$rWhereV);
 				if (0 < $db->num_rows()) {
 					$rRows = $db->get_rows();
@@ -894,6 +895,7 @@ class ResellerTableRenderer {
 								'id' => (int) $rRow['id'],
 								'image' => (string) ($rProperties['movie_image'] ?? ''),
 								'title' => (string) $rRow['stream_display_name'],
+								'added' => (int) $rRow['added'],
 								'category' => $rCategory,
 								'clients' => (int) $rRow['clients'],
 							];
@@ -977,7 +979,7 @@ class ResellerTableRenderer {
 			}
 			$rReturn['recordsFiltered'] = $rReturn['recordsTotal'];
 			if (0 < $rReturn['recordsTotal']) {
-				$rQuery = 'SELECT `streams`.`id`, `stream_icon`, `stream_display_name`, `movie_properties`, `streams_series`.`category_id`, `streams_series`.`title`, `streams_episodes`.`season_num`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
+				$rQuery = 'SELECT `streams`.`id`, `stream_icon`, `stream_display_name`, `streams`.`added`, `movie_properties`, `streams_series`.`category_id`, `streams_series`.`title`, `streams_episodes`.`season_num`, (SELECT COUNT(*) FROM `lines_live` LEFT JOIN `lines` ON `lines`.`id` = `lines_live`.`user_id` WHERE `lines_live`.`stream_id` = `streams`.`id` AND `hls_end` = 0 AND `lines`.`member_id` IN (' . implode(',', $rUserInfo['reports']) . ')) AS `clients` FROM `streams` LEFT JOIN `streams_episodes` ON `streams_episodes`.`stream_id` = `streams`.`id` LEFT JOIN `streams_series` ON `streams_series`.`id` = `streams_episodes`.`series_id` ' . $rWhereString . ' ' . $rOrderBy . ' LIMIT ' . $rStart . ', ' . $rLimit . ';';
 				$db->query($rQuery, ...$rWhereV);
 				if (0 < $db->num_rows()) {
 					$rRows = $db->get_rows();
@@ -1018,6 +1020,7 @@ class ResellerTableRenderer {
 								'id' => (int) $rRow['id'],
 								'image' => (string) ($rProperties['movie_image'] ?? ''),
 								'title' => (string) $rRow['stream_display_name'],
+								'added' => (int) $rRow['added'],
 								'series' => (string) $rRow['title'],
 								'season' => ($rRow['season_num'] !== null ? (int) $rRow['season_num'] : null),
 								'category' => $rCategory,

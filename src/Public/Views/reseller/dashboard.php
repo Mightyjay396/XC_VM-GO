@@ -79,7 +79,10 @@ foreach ($rConnectionMap as $rCountry) {
     <!-- Connections by Location -->
     <div class="card mb-4">
         <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="card-title mb-0"><?= htmlspecialchars($language::get('dashboard_connections_by_location')); ?></h5>
+            <h5 class="card-title mb-0 d-flex align-items-center gap-2">
+                <i class="icon-base ti tabler-world icon-22px text-primary"></i>
+                <span><?= htmlspecialchars($language::get('dashboard_connections_by_location')); ?></span>
+            </h5>
             <span class="badge bg-label-primary"><?= number_format($rConnectionCount, 0); ?></span>
         </div>
         <div class="card-body">
@@ -115,7 +118,10 @@ foreach ($rConnectionMap as $rCountry) {
     <!-- Live connections (serverSide: ./table?id=live_connections) -->
     <div class="card mb-4">
         <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="card-title mb-0"><a href="live_connections" class="text-body"><?= htmlspecialchars($language::get('live_connections')); ?></a></h5>
+            <h5 class="card-title mb-0 d-flex align-items-center gap-2">
+                <i class="icon-base ti tabler-activity icon-22px text-success"></i>
+                <a href="live_connections" class="text-body"><?= htmlspecialchars($language::get('live_connections')); ?></a>
+            </h5>
             <a href="live_connections" class="btn btn-sm btn-label-secondary"><?= htmlspecialchars($language::get('view_all')); ?></a>
         </div>
         <div class="card-datatable table-responsive">
@@ -147,7 +153,10 @@ foreach ($rConnectionMap as $rCountry) {
     <div class="col-xl-6">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0"><a href="user_logs" class="text-body"><?= htmlspecialchars($language::get('recent_activity')); ?></a></h5>
+                <h5 class="card-title mb-0 d-flex align-items-center gap-2">
+                    <i class="icon-base ti tabler-history icon-22px text-info"></i>
+                    <a href="user_logs" class="text-body"><?= htmlspecialchars($language::get('recent_activity')); ?></a>
+                </h5>
                 <a href="user_logs" class="btn btn-sm btn-label-secondary"><?= htmlspecialchars($language::get('view_all')); ?></a>
             </div>
             <div class="card-datatable table-responsive">
@@ -179,7 +188,10 @@ foreach ($rConnectionMap as $rCountry) {
     <div class="col-xl-6">
         <div class="card h-100">
             <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0"><a href="lines" class="text-body"><?= htmlspecialchars($language::get('expiring_lines')); ?></a></h5>
+                <h5 class="card-title mb-0 d-flex align-items-center gap-2">
+                    <i class="icon-base ti tabler-clock-exclamation icon-22px text-warning"></i>
+                    <a href="lines" class="text-body"><?= htmlspecialchars($language::get('expiring_lines')); ?></a>
+                </h5>
                 <a href="lines" class="btn btn-sm btn-label-secondary"><?= htmlspecialchars($language::get('view_all')); ?></a>
             </div>
             <div class="card-datatable table-responsive">
@@ -217,34 +229,42 @@ foreach ($rConnectionMap as $rCountry) {
 </div>
 
 <?php if ($xmCanVod): ?>
+    <?php
+    // [action, paneId, tableId, tabIcon, rowIcon, accent, imageColumnLabel, imageWidth].
+    // `action` is both the ./table id and the list page the View All button opens.
+    // The column order mirrors the Streams / Movies / Episodes pages because
+    // ResellerTableRenderer resolves the sort column by DataTables index — only
+    // id (1), title (3) and category (4) are orderable, so the columns added
+    // after them are safe to append.
+    $xmMediaTabs = [
+        ['streams',  'dash-tab-streams',  'dash-streams-table',  'tabler-broadcast', 'tabler-broadcast', 'danger',  $language::get('icon'),  96],
+        ['movies',   'dash-tab-movies',   'dash-movies-table',   'tabler-movie',     'tabler-movie',     'primary', $language::get('cover'), 32],
+        ['episodes', 'dash-tab-episodes', 'dash-episodes-table', 'tabler-device-tv', 'tabler-device-tv', 'info',    $language::get('cover'), 32],
+    ];
+    ?>
     <!-- Recently added media (serverSide: ./table?id=streams|movies|episodes) -->
     <div class="card mb-4">
         <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2 pb-0">
-            <h5 class="card-title mb-0"><?= htmlspecialchars($language::get('recently_added_media')); ?></h5>
+            <h5 class="card-title mb-0 d-flex align-items-center gap-2">
+                <i class="icon-base ti tabler-player-play icon-22px text-danger"></i>
+                <span><?= htmlspecialchars($language::get('recently_added_media')); ?></span>
+            </h5>
             <ul class="nav nav-tabs card-header-tabs" role="tablist">
-                <li class="nav-item">
-                    <button type="button" class="nav-link active" data-bs-toggle="tab" data-bs-target="#dash-tab-streams" role="tab" aria-selected="true"><?= htmlspecialchars($language::get('streams')); ?></button>
-                </li>
-                <li class="nav-item">
-                    <button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#dash-tab-movies" role="tab" aria-selected="false"><?= htmlspecialchars($language::get('movies')); ?></button>
-                </li>
-                <li class="nav-item">
-                    <button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#dash-tab-episodes" role="tab" aria-selected="false"><?= htmlspecialchars($language::get('episodes')); ?></button>
-                </li>
+                <?php foreach ($xmMediaTabs as $rIndex => [$rAction, $rPaneId, $rTableId, $rTabIcon, $rRowIcon, $rAccent, $rImageLabel, $rImageWidth]): ?>
+                    <li class="nav-item">
+                        <button type="button" class="nav-link d-flex align-items-center gap-1<?= $rIndex === 0 ? ' active' : ''; ?>"
+                            data-bs-toggle="tab" data-bs-target="#<?= $rPaneId; ?>" role="tab" aria-selected="<?= $rIndex === 0 ? 'true' : 'false'; ?>">
+                            <i class="icon-base ti <?= $rTabIcon; ?>"></i>
+                            <span><?= htmlspecialchars($language::get($rAction)); ?></span>
+                            <!-- Filled from the endpoint's recordsTotal on the first draw. -->
+                            <span class="badge rounded-pill bg-label-<?= $rAccent; ?> ms-1" id="count-<?= $rTableId; ?>">–</span>
+                        </button>
+                    </li>
+                <?php endforeach; ?>
             </ul>
         </div>
         <div class="tab-content p-0">
-            <?php
-            // [paneId, tableId, listUrl, imageColumnLabel]. The column order mirrors
-            // the Streams / Movies / Episodes pages because ResellerTableRenderer
-            // resolves the sort column by DataTables index.
-            $xmMediaTabs = [
-                ['dash-tab-streams',  'dash-streams-table',  'streams',  $language::get('icon')],
-                ['dash-tab-movies',   'dash-movies-table',   'movies',   $language::get('cover')],
-                ['dash-tab-episodes', 'dash-episodes-table', 'episodes', $language::get('cover')],
-            ];
-            foreach ($xmMediaTabs as $rIndex => [$rPaneId, $rTableId, $rListUrl, $rImageLabel]):
-            ?>
+            <?php foreach ($xmMediaTabs as $rIndex => [$rAction, $rPaneId, $rTableId, $rTabIcon, $rRowIcon, $rAccent, $rImageLabel, $rImageWidth]): ?>
                 <div class="tab-pane fade<?= $rIndex === 0 ? ' show active' : ''; ?>" id="<?= $rPaneId; ?>" role="tabpanel">
                     <div class="card-datatable table-responsive">
                         <table id="<?= $rTableId; ?>" class="table" style="width:100%">
@@ -255,14 +275,21 @@ foreach ($rConnectionMap as $rCountry) {
                                     <th><?= htmlspecialchars($rImageLabel); ?></th>
                                     <th><?= $language::get('title'); ?></th>
                                     <th><?= $language::get('category'); ?></th>
+                                    <th class="text-center"><?= $language::get('added'); ?></th>
                                     <th class="text-center"><?= $language::get('connections'); ?></th>
+                                    <?php if ($xmCanSeeConnections): ?>
+                                        <th class="text-center"><?= $language::get('action'); ?></th>
+                                    <?php endif; ?>
                                 </tr>
                             </thead>
                             <tbody></tbody>
                         </table>
                     </div>
                     <div class="card-body pt-0 text-end">
-                        <a href="<?= $rListUrl; ?>" class="btn btn-sm btn-label-secondary"><?= htmlspecialchars($language::get('view_all')); ?></a>
+                        <a href="<?= $rAction; ?>" class="btn btn-sm btn-label-secondary">
+                            <?= htmlspecialchars($language::get('view_all')); ?>
+                            <i class="icon-base ti tabler-arrow-right ms-1"></i>
+                        </a>
                     </div>
                 </div>
             <?php endforeach; ?>
@@ -326,6 +353,8 @@ renderUnifiedLayoutFooter('reseller');
             kill: <?= json_encode($language::get('kill')); ?>,
             error: <?= json_encode($language::get('error_occured')); ?>
         };
+        var langSeason = <?= json_encode($language::get('season')); ?>;
+        var langConnections = <?= json_encode($language::get('connections')); ?>;
 
         // Same colour-coded live duration the Live Connections page renders.
         function fmtDuration(startTs, isRestreamer) {
@@ -380,11 +409,102 @@ renderUnifiedLayoutFooter('reseller');
             });
         }
 
+        var canSeeConnections = <?= $xmCanSeeConnections ? 'true' : 'false'; ?>;
+
+        function fmtDate(ts) {
+            return ts ? new Date(ts * 1000).toLocaleString() : '—';
+        }
+
         // Media panels: the Streams / Movies / Episodes endpoints share one
-        // column contract (id, image, title, category, clients), so one factory
-        // covers all three. Read-only here — killing lives on the full pages.
-        function mediaTable(selector, action, imageWidth) {
-            return jQuery(selector).DataTable({
+        // column contract (id, image, title, added, category, clients), so one
+        // factory covers all three. The only per-stream action a reseller has is
+        // its live connections — there is no reseller stream_view route.
+        function mediaTable(tab) {
+            var columns = [{
+                    data: null,
+                    defaultContent: '',
+                    orderable: false,
+                    searchable: false,
+                    className: 'control',
+                    responsivePriority: 2
+                },
+                {
+                    data: 'id',
+                    className: 'text-center',
+                    render: function(d) {
+                        return '<span class="badge bg-label-secondary">' + esc(d) + '</span>';
+                    }
+                },
+                {
+                    data: tab.action === 'streams' ? 'icon' : 'image',
+                    orderable: false,
+                    searchable: false,
+                    className: 'text-center',
+                    render: function(d) {
+                        if (d) {
+                            return '<img class="rounded" loading="lazy" src="resize?maxw=' + tab.imageWidth + '&maxh=32&url=' + encodeURIComponent(d) + '" alt="">';
+                        }
+                        // Artwork is optional; a tinted type badge keeps the column
+                        // from collapsing into an empty cell.
+                        return '<span class="badge bg-label-' + tab.accent + ' rounded p-2"><i class="icon-base ti ' + tab.rowIcon + '"></i></span>';
+                    }
+                },
+                {
+                    data: 'title',
+                    responsivePriority: 1,
+                    render: function(d, t, row) {
+                        var sub = '';
+                        if (row.series) {
+                            sub = esc(row.series) + (row.season != null && row.season !== '' ? ' — ' + esc(langSeason) + ' ' + esc(row.season) : '');
+                            sub = '<br><small class="text-body-secondary">' + sub + '</small>';
+                        }
+                        return '<span class="fw-medium">' + esc(d) + '</span>' + sub;
+                    }
+                },
+                {
+                    data: 'category',
+                    render: function(d) {
+                        if (!d) {
+                            return '<span class="text-body-secondary">—</span>';
+                        }
+                        return '<span class="badge bg-label-' + tab.accent + ' text-uppercase"><i class="icon-base ti tabler-folder me-1"></i>' + esc(d) + '</span>';
+                    }
+                },
+                {
+                    data: 'added',
+                    orderable: false,
+                    searchable: false,
+                    className: 'text-center text-nowrap',
+                    render: function(d) {
+                        return '<small class="text-body-secondary">' + esc(fmtDate(d)) + '</small>';
+                    }
+                },
+                {
+                    data: 'clients',
+                    orderable: false,
+                    searchable: false,
+                    className: 'text-center',
+                    render: function(d) {
+                        return '<span class="badge bg-label-' + (d > 0 ? 'success' : 'secondary') + '">' + (d || 0) + '</span>';
+                    }
+                }
+            ];
+
+            if (canSeeConnections) {
+                columns.push({
+                    data: null,
+                    orderable: false,
+                    searchable: false,
+                    className: 'text-center',
+                    render: function(d, t, row) {
+                        return '<a href="live_connections?stream=' + encodeURIComponent(row.id) + '&stream_id=' + encodeURIComponent(row.id) + '"' +
+                            ' class="btn btn-sm btn-icon btn-label-primary" title="' + esc(langConnections) + '">' +
+                            '<i class="icon-base ti tabler-plug-connected"></i></a>';
+                    }
+                });
+            }
+
+            var table = jQuery('#' + tab.tableId).DataTable({
                 serverSide: true,
                 responsive: {
                     details: {
@@ -392,6 +512,8 @@ renderUnifiedLayoutFooter('reseller');
                         target: 0
                     }
                 },
+                // Newest first. `added` is not orderable — the endpoint maps the
+                // sort column by index and only knows id, title and category.
                 order: [
                     [1, 'desc']
                 ],
@@ -401,63 +523,25 @@ renderUnifiedLayoutFooter('reseller');
                 ajax: {
                     url: './table',
                     data: function(d) {
-                        d.id = action;
+                        d.id = tab.action;
                     }
                 },
-                columnDefs: [{
-                    orderable: false,
-                    targets: [0, 2]
-                }],
-                columns: [{
-                        data: null,
-                        defaultContent: '',
-                        orderable: false,
-                        searchable: false,
-                        className: 'control',
-                        responsivePriority: 2
-                    },
-                    {
-                        data: 'id',
-                        className: 'text-center',
-                        render: function(d) {
-                            return '<span class="badge bg-label-secondary">' + esc(d) + '</span>';
-                        }
-                    },
-                    {
-                        data: action === 'streams' ? 'icon' : 'image',
-                        orderable: false,
-                        searchable: false,
-                        render: function(d) {
-                            return d ? '<img loading="lazy" src="resize?maxw=' + imageWidth + '&maxh=32&url=' + encodeURIComponent(d) + '" alt="">' : '';
-                        }
-                    },
-                    {
-                        data: 'title',
-                        responsivePriority: 1,
-                        render: function(d, t, row) {
-                            var sub = row.series ? '<br><small class="text-body-secondary">' + esc(row.series) + '</small>' : '';
-                            return '<span class="fw-medium">' + esc(d) + '</span>' + sub;
-                        }
-                    },
-                    {
-                        data: 'category',
-                        render: function(d) {
-                            return '<small class="text-body-secondary">' + esc(d || '') + '</small>';
-                        }
-                    },
-                    {
-                        data: 'clients',
-                        className: 'text-center',
-                        render: function(d) {
-                            return '<span class="badge bg-label-' + (d > 0 ? 'info' : 'secondary') + '">' + (d || 0) + '</span>';
-                        }
-                    }
-                ],
+                columns: columns,
                 layout: {
                     topStart: 'pageLength',
                     topEnd: 'search'
                 }
             });
+
+            // The tab badge shows the real catalogue size, not the page length.
+            table.on('xhr', function(e, settings, json) {
+                var badge = document.getElementById('count-' + tab.tableId);
+                if (badge && json) {
+                    badge.textContent = nf.format(json.recordsTotal || 0);
+                }
+            });
+
+            return table;
         }
 
         <?php if ($xmCanSeeConnections): ?>
@@ -606,9 +690,15 @@ renderUnifiedLayoutFooter('reseller');
         <?php endif; ?>
 
         <?php if ($xmCanVod): ?>
-            mediaTable('#dash-streams-table', 'streams', 96);
-            mediaTable('#dash-movies-table', 'movies', 32);
-            mediaTable('#dash-episodes-table', 'episodes', 32);
+            <?php foreach ($xmMediaTabs as [$rAction, $rPaneId, $rTableId, $rTabIcon, $rRowIcon, $rAccent, $rImageLabel, $rImageWidth]): ?>
+                mediaTable(<?= json_encode([
+                                'action' => $rAction,
+                                'tableId' => $rTableId,
+                                'rowIcon' => $rRowIcon,
+                                'accent' => $rAccent,
+                                'imageWidth' => $rImageWidth,
+                            ], JSON_UNESCAPED_SLASHES); ?>);
+            <?php endforeach; ?>
         <?php endif; ?>
 
         // Server-rendered panels: client-side DataTables for sort, search and paging.
