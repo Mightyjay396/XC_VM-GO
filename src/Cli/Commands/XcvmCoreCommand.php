@@ -271,8 +271,8 @@ class XcvmCoreCommand implements CommandInterface {
 		return (is_string($rBody) && $rCode >= 200 && $rCode < 300) ? $rBody : null;
 	}
 
-	/** Download a URL to a file (following redirects). */
 	/**
+	 * Download a URL to a file (following redirects).
 	 * Fetch $rUrl to $rDest. A transient failure is reported, not retried — the
 	 * command is idempotent, so re-running it is the recovery.
 	 */

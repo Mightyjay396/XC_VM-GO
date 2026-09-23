@@ -18,8 +18,11 @@ Modules/ministra_85a7d/MinistraModule.php
 Modules/ministra_85a7d/PortalHandler.php
 Modules/ministra_85a7d/PortalHelpers.php
 Modules/ministra_85a7d/module.json
+Public/Controllers/Reseller/TableController.php
 Public/Views/admin/api.php
+Public/Views/admin/functions.php
 Public/Views/admin/modals.php
+Public/Views/admin/session.php
 Public/Views/layouts/reseller/modals.php
 Public/Views/reseller/topbar.php
 Public/assets/admin/css/app.css

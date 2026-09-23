@@ -20,11 +20,8 @@ git log --pretty=format:"- %s (%h)" "$PREV_TAG"..main > dist/changes.md
 
 ```json
 {
-    "version": "X.Y.Z",
-    "changes": [
-        "Description of change 1",
-        "Description of change 2"
-    ]
+	"version": "X.Y.Z",
+	"changes": ["Description of change 1", "Description of change 2"]
 }
 ```
 
@@ -41,7 +38,10 @@ Before publishing, verify the build works:
 **Quality checks** (CI runs the same set on the tag — confirm it is green):
 
 ```bash
-make dev-tools && make phpstan && make cs && make gates
+make dev-tools
+make phpstan
+make cs
+make gates
 php tests/phpunit.phar -c tests/phpunit.xml.dist
 make dev-clean   # remove the dev tools afterwards, restoring the prod-only vendor/
 ```
@@ -134,7 +134,6 @@ Edit the version constant, disable the phpMiniAdmin access flag, and clear its p
 > anyone who reaches the panel. This step is a security hardening gate — a release must never
 > go out with it on.
 
-
 ```text
 src/Core/Config/ConstantsInitializer.php
 ```
@@ -178,12 +177,12 @@ make main
 
 After building, `dist/` should contain:
 
-| File | Description |
-| --- | --- |
-| `XC_VM.zip` | MAIN installer (install script + xc_vm.tar.gz) |
-| `xc_vm.tar.gz` | MAIN archive (install & update) |
-| `loadbalancer.tar.gz` | LB archive (install & update) |
-| `hashes.md5` | MD5 checksums |
+| File                  | Description                                    |
+| --------------------- | ---------------------------------------------- |
+| `XC_VM.zip`           | MAIN installer (install script + xc_vm.tar.gz) |
+| `xc_vm.tar.gz`        | MAIN archive (install & update)                |
+| `loadbalancer.tar.gz` | LB archive (install & update)                  |
+| `hashes.md5`          | MD5 checksums                                  |
 
 > The same archive is used for both clean installation and updates.
 > The update script (`src/update`) filters out binary/config directories at runtime using the hardcoded `UPDATE_EXCLUDE_DIRS` list inside the Python script itself.
@@ -233,7 +232,6 @@ After publishing, the workflow will automatically:
 > on the **same version** — LBs read MAIN's database and a schema/behaviour skew can break
 > streaming. Don't leave LBs a release behind.
 
-
 - [ ] Verify all 4 assets are attached to the release
 - [ ] Run `md5sum -c hashes.md5` on downloaded files
 - [ ] Check Telegram notification was sent
@@ -251,7 +249,7 @@ After publishing, the workflow will automatically:
   a published one; clients pin to a tag.
 - **A bad release already reached servers** — operators can downgrade per-server from the panel
   (**Servers → Rollback Version**, see [Update Mechanism → Rollback](../administration/update-system.md#rollback-downgrade)); on MAIN a DB backup is taken automatically first. Migrations are
-  forward-only, so prefer a roll-*forward* hotfix when the fix is small.
+  forward-only, so prefer a roll-_forward_ hotfix when the fix is small.
 
 ---
 
@@ -261,32 +259,32 @@ Every `make` target used during release prep, in one place.
 
 **Quality checks** — run `make dev-tools` first, `make dev-clean` when done:
 
-| Command | Purpose |
-| --- | --- |
-| `make dev-tools` | Install dev tooling (PHPStan, phpcs) via `composer install` |
-| `make phpstan` | Static analysis (also catches syntax errors) |
-| `make phpstan-baseline` | Regenerate the PHPStan baseline |
-| `make cs` | Code-style check — import/namespace hygiene (phpcs + Slevomat) |
-| `make cs-fix` | Apply code-style fixes in place |
-| `make gates` | PSR-4 regression gates (procedural-use, LB-archive, vendor-prod-only) |
-| `make dev-clean` | Remove the dev tools again, restoring the production-only `vendor/` |
-| `php tests/phpunit.phar -c tests/phpunit.xml.dist` | Unit tests |
+| Command                                            | Purpose                                                               |
+| -------------------------------------------------- | --------------------------------------------------------------------- |
+| `make dev-tools`                                   | Install dev tooling (PHPStan, phpcs) via `composer install`           |
+| `make phpstan`                                     | Static analysis (also catches syntax errors)                          |
+| `make phpstan-baseline`                            | Regenerate the PHPStan baseline                                       |
+| `make cs`                                          | Code-style check — import/namespace hygiene (phpcs + Slevomat)        |
+| `make cs-fix`                                      | Apply code-style fixes in place                                       |
+| `make gates`                                       | PSR-4 regression gates (procedural-use, LB-archive, vendor-prod-only) |
+| `make dev-clean`                                   | Remove the dev tools again, restoring the production-only `vendor/`   |
+| `php tests/phpunit.phar -c tests/phpunit.xml.dist` | Unit tests                                                            |
 
 **Release prep & build:**
 
-| Command | Purpose |
-| --- | --- |
-| `make generate_deleted_files` | Regenerate `src/migrations/deleted_files.txt` |
-| `make new` | Wipe + recreate `dist/` — run ONCE at the start (step 1), before writing `dist/changes.md`; never again before building |
-| `make lb` | Build the LoadBalancer archive into `dist/` |
-| `make main` | Build the MAIN archive into `dist/` |
-| `bash tools/test-install/test_release.sh` | Docker install test of the built release |
+| Command                                   | Purpose                                                                                                                 |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `make generate_deleted_files`             | Regenerate `src/migrations/deleted_files.txt`                                                                           |
+| `make new`                                | Wipe + recreate `dist/` — run ONCE at the start (step 1), before writing `dist/changes.md`; never again before building |
+| `make lb`                                 | Build the LoadBalancer archive into `dist/`                                                                             |
+| `make main`                               | Build the MAIN archive into `dist/`                                                                                     |
+| `bash tools/test-install/test_release.sh` | Docker install test of the built release                                                                                |
 
 **Documentation** (English source in `docs/en`; `docs/ru` is generated + committed):
 
-| Command | Purpose |
-| --- | --- |
-| `make docs-venv` | One-time: local venv (build + translation deps) |
+| Command               | Purpose                                                |
+| --------------------- | ------------------------------------------------------ |
+| `make docs-venv`      | One-time: local venv (build + translation deps)        |
 | `make docs-translate` | Regenerate `docs/ru` from `docs/en` (before a release) |
-| `make docs-build` | Strict MkDocs build into `./build/site` (what CI runs) |
-| `make docs-serve` | Live docs preview at `http://127.0.0.1:8000` |
+| `make docs-build`     | Strict MkDocs build into `./build/site` (what CI runs) |
+| `make docs-serve`     | Live docs preview at `http://127.0.0.1:8000`           |

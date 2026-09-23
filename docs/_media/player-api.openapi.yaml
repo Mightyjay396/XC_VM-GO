@@ -14,6 +14,8 @@ info:
     ```
     {protocol}://{host}:{port}/player_api?username={username}&password={password}&action={action}
     ```
+    The legacy XtreamCodes `/player_api.php?…` spelling and the path-style
+    `/player_api/{username}/{password}[/{action}]` form hit the same handler.
 
     ## Media access (direct links)
     After authorization, media is served from:
