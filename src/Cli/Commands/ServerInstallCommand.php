@@ -100,8 +100,8 @@ class ServerInstallCommand implements CommandInterface {
 			// DB access unless the panel is licensed.
 			if (!LicenseGate::licensed()) {
 				$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
-				echo "This panel is not activated — load-balancer nodes require activation.\n";
-				echo "Activate the panel (dashboard banner → Get activation key), then retry.\n";
+				echo "This panel is not verified — load-balancer nodes require a verified panel.\n";
+				echo "Verify the panel (dashboard banner → Get a key), then retry.\n";
 				return 1;
 			}
 
