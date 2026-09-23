@@ -67,3 +67,16 @@ jobs:
           git fetch origin gh-pages --depth=1 || true
           mike deploy --push --update-aliases "${{ steps.ver.outputs.version }}" latest
           mike set-default --push latest
+
+      # If the Pages source is "GitHub Actions" (or another branch), the site keeps
+      # serving a stale unversioned build: no versions.json, so no version selector,
+      # while every deploy above still looks green. Fail loudly instead.
+      - name: Verify Pages serves the gh-pages branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          src=$(gh api "repos/${{ github.repository }}/pages" --jq '"\(.build_type) \(.source.branch) \(.source.path)"')
+          if [ "$src" != "legacy gh-pages /" ]; then
+            echo "::error::GitHub Pages source is '$src', expected 'legacy gh-pages /'. Set Settings → Pages → Deploy from a branch → gh-pages / (root), otherwise the versioned docs are never served."
+            exit 1
+          fi
