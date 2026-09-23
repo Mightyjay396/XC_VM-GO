@@ -24,9 +24,11 @@ on:
         description: 'Version to (re)deploy, e.g. 2.4.2'
         required: true
 
-# mike commits and pushes the built site to the gh-pages branch.
+# mike commits and pushes the built site to the gh-pages branch; pages:read lets
+# the last step verify Pages actually serves that branch.
 permissions:
   contents: write
+  pages: read
 
 # Never run two doc deploys at once; queue instead (mike appends to gh-pages).
 concurrency:
