@@ -48,15 +48,17 @@ you find out right away.
 server and stores the result locally. The license server is not contacted on
 every request, so verification does not affect the panel's performance.
 
-**If the license server is unavailable.** Temporary connectivity problems do not
-interrupt operation:
+**If the license server is unavailable.** Connectivity problems do not interrupt
+operation:
 
-- the last confirmed verification result stays valid for another **14 days**;
-- a newly issued key also has **14 days** to complete its first successful
-  verification.
+- after you enter the key, the panel must successfully reach the license server
+  **at least once, within 14 days of the key being issued**. This normally happens
+  immediately, when the key is entered;
+- once that has happened, the license keeps working offline **with no time
+  limit**.
 
-If the license server cannot be reached at all for 14 days, the license is
-considered invalid until connectivity is restored.
+Only two things end a confirmed license: the key's own expiry date, or an explicit
+revocation received from the license server.
 
 ## What data is transmitted
 
@@ -84,8 +86,8 @@ servers and load balancers (LBs) to the main server.
 - The main server itself keeps working.
 - Once the key is renewed or replaced, additional servers can be connected again.
 
-If the license became invalid only because the license server was unreachable for
-a long time, everything works again after the first successful verification.
+If the panel could not reach the license server even once within 14 days of the
+key being issued, everything works again after the first successful connection.
 
 ## Paid modules
 
@@ -113,8 +115,10 @@ the main server do not need a separate key.
 
 **My panel runs on a closed network without Internet access. What should I do?**
 
-The server needs to reach the license server at least once every 14 days. If that
-is not possible, contact us and we will help find a suitable solution.
+The server needs to reach the license server only once, within 14 days of the key
+being issued. After that successful verification the license works offline with no
+time limit. If even a single connection is not possible, contact us and we will
+help find a suitable solution.
 
 **Can I remove the XC_VM attribution if I bought a license?**
 
