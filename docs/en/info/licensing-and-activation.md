@@ -1,76 +1,126 @@
 # Licensing & Activation
 
-XC_VM is **free and open-source** under the **GNU Affero General Public License
-v3.0 (AGPL-3.0)**. This page discloses, in full, how the panel's licensing,
-attribution check and activation work — including exactly what the panel sends
-to the licensing server and when. Nothing here is hidden or covert.
+XC_VM is distributed under the **GNU Affero General Public License v3.0
+(AGPL-3.0)**. This page explains how licensing works: what is checked, when, and
+what data leaves your server.
 
-## Dual-licensing model
+## In short
 
-| You keep the attribution notice                                                                         | You remove the attribution (white-label)                                                                                                                                     |
-| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **AGPL-3.0 — free.** Everything works, including load-balancer nodes. No activation, no server contact. | **Requires activation.** A free, machine-bound activation key is needed to run load-balancer / cluster nodes. The panel still runs locally on a single server without a key. |
+For features that require a license, **two conditions must be met at the same
+time**:
 
-Keeping the _"Vateron Media · AGPL-3.0"_ credit (as AGPL-3.0 **§7(b)** expressly
-permits requiring) is all a community deployment needs. The activation path
-exists only for operators who remove that attribution — it is the point at which
-Vateron Media, as the sole copyright holder, offers a separate arrangement rather
-than AGPL.
+1. the attribution must be preserved in the panel;
+2. a valid **activation key** must be installed on the server.
 
-!!! note "Activation keys are free"
-Keys are issued **free**, self-service, one per machine (HWID). They are not
-sold. Their purpose is accountability — a revocable record of who is running a
-rebranded copy — not monetization.
+Neither condition replaces the other. A valid key does not allow you to remove
+the attribution, and keeping the attribution does not replace the activation key.
 
-## Attribution-integrity check (AGPL §7b)
+## Attribution
 
-On each request the panel verifies its attribution notice is still present in the
-footer. If it has been removed, the **management UI** (admin / reseller / player)
-shows an `ATTRIBUTION_REMOVED` notice until it is restored. The check is
-**reversible and non-destructive**: no data is changed, the CLI keeps working, and
-restoring the notice unlocks the panel on the next request. **End-viewer streaming
-is not affected** by this check.
+Attribution is a reference to the XC_VM project and Vateron Media, with links to
+the repository and the AGPL license text. It is displayed:
 
-## What activation gates
+- in the footer of the administrator panel;
+- in the footer of the reseller panel;
+- in the player footer;
+- on the administrator and reseller login pages.
 
-For a **white-label** install (attribution removed) without a valid key:
+The panel automatically checks that the attribution is present **and actually
+displayed**. If it is removed, commented out, or its output is disabled, the
+license is no longer considered valid, even if the activation key itself is valid.
 
-- **Load-balancer / cluster nodes cannot be provisioned** — the compiled core
-  refuses to grant a remote node access to the panel database.
-- **High-capacity live delivery (the fanout daemon) is disabled**, so delivery
-  falls back to the legacy path. A single-server panel remains usable.
+## Activation key
 
-A **community** install (attribution intact) is never gated and never contacts the
-licensing server.
+- The key is issued for **one specific panel installation**. It is not accepted
+  on another server or by another installation.
+- The key is signed by the license server. Changing even a single character makes
+  it invalid.
+- The key can be revoked on the license server, for example when the applicable
+  terms are violated.
 
-## How to activate
+## How verification works
 
-1. Find your **HWID** — shown in **Settings → Info** and on the dashboard banner
-   (`XC_VM::install_id()`).
-2. Submit it on the activation page and receive a key bound to that HWID.
-3. Enter the key in the panel (dashboard activation banner). The panel verifies it
-   **offline** against a public key compiled into the extension — no round-trip is
-   required to start using it.
+**When you enter the key.** The panel contacts the license server immediately. If
+the key is invalid (revoked, issued for a different installation, or corrupted),
+you find out right away.
 
-## Data the panel sends — full disclosure
+**During operation.** Once a day the panel checks the key with the license
+server and stores the result locally. The license server is not contacted on
+every request, so verification does not affect the panel's performance.
 
-A **community install (attribution intact) sends nothing** — it never contacts the
-licensing server.
+**If the license server is unavailable.** Temporary connectivity problems do not
+interrupt operation:
 
-A **white-label install** communicates with the licensing server
-(`https://www.xcvm.tech`)
+- the last confirmed verification result stays valid for another **14 days**;
+- a newly issued key also has **14 days** to complete its first successful
+  verification.
 
-**What is never sent:** no stream data, no viewer/subscriber data, no account
-credentials, no database contents, no file contents. There is no remote command
-channel — the panel is never instructed by the server to do anything; it only
-reads a signed _valid / revoked_ verdict for its own key.
+If the license server cannot be reached at all for 14 days, the license is
+considered invalid until connectivity is restored.
 
-## Provenance
+## What data is transmitted
 
-Each build is stamped with a unique identifier (`XC_VM_BUILD_ID`), so a leaked or
-rebranded copy can be traced back to the build it originated from.
+During verification the panel sends only the technical information the licensing
+process needs:
 
----
+- the key identifier;
+- the installation identifier;
+- an anonymized technical fingerprint of the environment (a hash from which the
+  original data cannot be recovered).
 
-> ⚖️ You are solely responsible for how XC_VM is used. Vateron Media takes no
-> responsibility for misuse or illegal deployments.
+Databases, user lists, channels, logs and other content are **not transmitted**.
+The server's response is digitally signed, so it cannot be forged or tampered
+with.
+
+## What the license provides
+
+The license is required for **multi-server operation**: connecting additional
+servers and load balancers (LBs) to the main server.
+
+## If the license expires or is revoked
+
+- The main server **disconnects additional servers (LBs) from the database**, and
+  new servers cannot be connected.
+- The main server itself keeps working.
+- Once the key is renewed or replaced, additional servers can be connected again.
+
+If the license became invalid only because the license server was unreachable for
+a long time, everything works again after the first successful verification.
+
+## Paid modules
+
+Paid modules are licensed **separately** from the panel:
+
+- when a module is installed, the system checks whether the owner of the API key
+  has access to that module;
+- the module is bound to the server it is installed on;
+- modules are distributed in a protected form and can only be installed through
+  the panel.
+
+## FAQ
+
+**I reinstalled the panel or moved it to a new server. Why did my key stop
+working?**
+
+The key is tied to a specific installation. After a clean reinstall or a
+migration, the panel gets a new installation identifier, so the key must be
+reissued. Please contact support.
+
+**Can I use one key on several main servers?**
+
+No. One key is valid for one installation. Additional servers (LBs) connected to
+the main server do not need a separate key.
+
+**My panel runs on a closed network without Internet access. What should I do?**
+
+The server needs to reach the license server at least once every 14 days. If that
+is not possible, contact us and we will help find a suitable solution.
+
+**Can I remove the XC_VM attribution if I bought a license?**
+
+No. Attribution is mandatory whether or not an activation key is installed.
+
+**How can I check the license status?**
+
+The panel has a license status check. It verifies the license with the server
+immediately and shows the current status.
