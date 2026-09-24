@@ -21,8 +21,8 @@ use XcVm\Public\Controllers\Player\PortalController;
  *
  * Flow: nginx → FC → scope/pageName → bootstrap → Router::dispatch() → Controller
  *
- * @see core/Http/Router.php
- * @see public/routes/admin.php
+ * @see Core/Http/Router.php
+ * @see Public/routes/admin.php
  * @see bin/nginx/conf/codes/template
  *
  * @package XC_VM_Public
