@@ -3,73 +3,18 @@
 /**
  * Unified Layout Footer
  *
- * Единая точка входа для footer/layout admin/reseller/player.
- * На текущем этапе используется как совместимая обёртка над legacy footer.php,
- * чтобы начать миграцию страниц без риска регрессий.
- *
- * Параметры:
- * - $scope: 'admin' | 'reseller' | 'player'
- * - $vars:  набор переменных страницы (опционально)
+ * Backward-compatible global-function wrapper around XcVm\Core\Util\LayoutRenderer
+ * — kept because ~150 view/controller files call renderUnifiedLayoutFooter()
+ * directly. The actual logic lives in LayoutRenderer::renderFooter().
  *
  * Пример:
  *   renderUnifiedLayoutFooter('admin');
  */
 
-use XcVm\Core\Localization\Translator;
+use XcVm\Core\Util\LayoutRenderer;
 
 if (!function_exists('renderUnifiedLayoutFooter')) {
     function renderUnifiedLayoutFooter($scope = 'admin', array $vars = []) {
-        foreach ($vars as $key => $value) {
-            if (!is_string($key) || $key === '') {
-                continue;
-            }
-
-            // Explicit page data must win over stale globals and remain in the
-            // local scope used by the legacy footer required below.
-            $GLOBALS[$key] = $value;
-            ${$key} = $value;
-        }
-
-        // Legacy footer.php expects these variables in file scope.
-        foreach ([
-            'rUserInfo', 'rSettings', 'rThemes', 'rMobile', 'rHues',
-            'db', 'rServers', 'allServers', 'rUpdate',
-            '_TITLE', 'rModal', 'rProxyServers', 'rPermissions',
-            'rServerError', 'allServersHealthy', '_PAGE', '_SETUP',
-            'rStreamIDs', 'rFilterBy', 'rSortArray', 'rFilterArray',
-            'rSearchBy', 'rURLs', 'rSubtitles', 'rLegacy', 'rSeries',
-            'rYearStart', 'rYearEnd', 'rRatingStart', 'rRatingEnd',
-            'rRegisteredUsers', 'rLine',
-        ] as $_g) {
-            if (array_key_exists($_g, $GLOBALS)) {
-                $$_g = $GLOBALS[$_g];
-            }
-        }
-        unset($_g);
-
-        // Translator FQCN for the legacy footer's $language::get(...) calls.
-        $language = Translator::class;
-
-        $rootPath = dirname(__DIR__, 3);
-
-        if ($scope === 'player') {
-            require __DIR__ . '/player/footer.php';
-            return;
-        }
-
-        if ($scope === 'player_v2') {
-            require __DIR__ . '/player_v2/footer.php';
-            return;
-        }
-
-        if ($scope === 'reseller') {
-            // Every reseller page is migrated to the Bootstrap 5 shell.
-            require __DIR__ . '/reseller/footer.php';
-            return;
-        }
-
-        // Admin is fully on the Bootstrap 5 shell (setup + modals handled inside
-        // admin/footer.php), so the admin scope always renders the new-UI footer.
-        require dirname(__DIR__) . '/admin/footer.php';
+        LayoutRenderer::renderFooter($scope, $vars);
     }
 }

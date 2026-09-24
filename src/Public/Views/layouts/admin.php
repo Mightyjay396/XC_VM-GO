@@ -3,95 +3,18 @@
 /**
  * Unified Layout Header
  *
- * Единая точка входа для header/layout admin/reseller/player.
- * На текущем этапе используется как совместимая обёртка над legacy header.php,
- * чтобы начать миграцию страниц без риска регрессий.
- *
- * Параметры:
- * - $scope: 'admin' | 'reseller' | 'player'
- * - $vars:  набор переменных страницы (опционально)
+ * Backward-compatible global-function wrapper around XcVm\Core\Util\LayoutRenderer
+ * — kept because ~150 view/controller files call renderUnifiedLayoutHeader()
+ * directly. The actual logic lives in LayoutRenderer::renderHeader().
  *
  * Пример:
  *   renderUnifiedLayoutHeader('admin', ['_TITLE' => 'Dashboard']);
  */
 
-use XcVm\Core\Localization\Translator;
+use XcVm\Core\Util\LayoutRenderer;
 
 if (!function_exists('renderUnifiedLayoutHeader')) {
     function renderUnifiedLayoutHeader($scope = 'admin', array $vars = []) {
-        foreach ($vars as $key => $value) {
-            if (!array_key_exists($key, $GLOBALS)) {
-                $GLOBALS[$key] = $value;
-            }
-        }
-
-        // Legacy header.php expects these variables in file scope.
-        // Since we require it from inside a function, pull them from $GLOBALS.
-        foreach (
-            [
-                'rUserInfo',
-                'rSettings',
-                'rThemes',
-                'rMobile',
-                'rHues',
-                'db',
-                'allServersHealthy',
-                'rServerError',
-                'rServers',
-                'allServers',
-                'rUpdate',
-                '_TITLE',
-                'rModal',
-                'rProxyServers',
-                'rPermissions',
-                '_PAGE',
-                '_SETUP',
-            ] as $_g
-        ) {
-            if (array_key_exists($_g, $GLOBALS)) {
-                $$_g = $GLOBALS[$_g];
-            }
-        }
-        unset($_g);
-
-        // Translator FQCN for the legacy header's $language::get(...) calls.
-        $language = Translator::class;
-
-        $rootPath = dirname(__DIR__, 3);
-
-        if ($scope === 'player') {
-            require __DIR__ . '/player/header.php';
-            return;
-        }
-
-        if ($scope === 'player_v2') {
-            require __DIR__ . '/player_v2/header.php';
-            return;
-        }
-
-        if ($scope === 'reseller') {
-            // Every reseller page is migrated to the Bootstrap 5 shell.
-            require __DIR__ . '/reseller/header.php';
-            // header may set $rGenTrials/$rModal in local scope; propagate to
-            // $GLOBALS so the footer/renderer can read it later.
-            if (isset($rGenTrials)) {
-                $GLOBALS['rGenTrials'] = $rGenTrials;
-            }
-            if (isset($rModal)) {
-                $GLOBALS['rModal'] = $rModal;
-            }
-            return;
-        }
-
-        // Every admin page is migrated to the Bootstrap 5 shell (setup + modals
-        // included via header.php's own $_SETUP / ?modal branches), so the admin
-        // scope always renders the new-UI header.
-        require dirname(__DIR__) . '/admin/header.php';
-
-        // header.php sets $rModal in local scope; propagate to $GLOBALS
-        // so that renderUnifiedLayoutFooter() can read it later.
-        if (isset($rModal)) {
-            $GLOBALS['rModal'] = $rModal;
-        }
+        LayoutRenderer::renderHeader($scope, $vars);
     }
 }
