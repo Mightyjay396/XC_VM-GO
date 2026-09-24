@@ -5,7 +5,10 @@ namespace XcVm\Infrastructure\Bootstrap;
 use XcVm\Core\Bootstrap\BootPipeline;
 use XcVm\Core\Bootstrap\BootState;
 use XcVm\Core\Bootstrap\Stage\DatabaseStage;
+use XcVm\Core\Bootstrap\Stage\FloodProtectionStage;
+use XcVm\Core\Bootstrap\Stage\HostVerificationStage;
 use XcVm\Core\Bootstrap\Stage\LegacyCoreStage;
+use XcVm\Core\Bootstrap\Stage\WebApiLoggerStage;
 use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
@@ -18,10 +21,14 @@ use XcVm\Core\Updates\UpdateChannels;
  * The shared DB + LegacyInitializer step now runs through the same DatabaseStage
  * and LegacyCoreStage the main BootKernel uses, so there is one source of truth
  * for "connect, wire the domain services, run initCore, reconnect if the settings
- * cache is incomplete". The web-API-specific prelude (constants split around the
- * ini_set defaults), RequestGuard (flood/host/PHP_ERRORS/Logger from the file
- * cache) and the $gitRelease global stay inline — they are order-sensitive and
- * not part of the container-based boot.
+ * cache is incomplete". Flood/host verification reuse the same
+ * FloodProtectionStage/HostVerificationStage every other BootContext uses
+ * (formerly duplicated inline in the now-removed Core/Http/RequestGuard.php);
+ * WebApiLoggerStage covers the one WebApi-specific difference — PHP_ERRORS also
+ * honours the runtime `debug_show_errors` setting, not just DEV_MODE. The
+ * web-API-specific prelude (constants split around the ini_set defaults) and
+ * the $gitRelease global stay inline — they are order-sensitive and not part
+ * of the container-based boot.
  *
  * @package XC_VM_Infrastructure_Bootstrap
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -45,14 +52,14 @@ class WebApiBootstrap {
 		@ini_set('default_socket_timeout', 5);
 		ConstantsInitializer::init();
 
-		// ── 2. Flood / host / Logger ─────────────────────────────
-		require_once MAIN_HOME . 'Core/Http/RequestGuard.php';
-
-		// ── 5. DB + LegacyInitializer (shared stages) ────────────
+		// ── 2. Flood / host / Logger / DB + LegacyInitializer (shared stages) ──
 		$rUseCache = in_array($rFilename, self::CACHED_ENDPOINTS, true);
 
 		$state = new BootState(BootContext::WebApi, ['cached' => $rUseCache], ServiceContainer::getInstance());
 		(new BootPipeline([
+			new FloodProtectionStage(),
+			new HostVerificationStage(),
+			new WebApiLoggerStage(),
 			new DatabaseStage(),
 			new LegacyCoreStage($rUseCache),
 		]))->run($state);

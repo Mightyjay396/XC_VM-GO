@@ -10,6 +10,7 @@ use XcVm\Core\Bootstrap\Stage\HostVerificationStage;
 use XcVm\Core\Bootstrap\Stage\ProcessTitleStage;
 use XcVm\Core\Bootstrap\Stage\SessionStage;
 use XcVm\Core\Bootstrap\Stage\StatusConstantsStage;
+use XcVm\Core\Bootstrap\Stage\WebApiLoggerStage;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
 use XcVm\Core\Events\EventDispatcher;
@@ -143,5 +144,26 @@ final class BootStageTest extends TestCase {
 
 		$this->assertTrue(defined('STATUS_FAILURE'));
 		$this->assertSame(0, STATUS_FAILURE);
+	}
+
+	/**
+	 * Logger::init() registers global error/exception handlers as a side
+	 * effect — restore the previous ones after the assertion so this test
+	 * cannot change how errors in later tests of the suite are reported.
+	 */
+	public function testWebApiLoggerStageDefinesPhpErrorsAndInitsLogger(): void {
+		if (!defined('CACHE_TMP_PATH')) {
+			define('CACHE_TMP_PATH', sys_get_temp_dir() . '/xcvm_weblogger_cache_' . bin2hex(random_bytes(4)) . '/');
+		}
+		if (!defined('LOGS_TMP_PATH')) {
+			define('LOGS_TMP_PATH', sys_get_temp_dir() . '/xcvm_weblogger_logs_' . bin2hex(random_bytes(4)) . '/');
+		}
+
+		(new WebApiLoggerStage())->run($this->freshState());
+
+		$this->assertTrue(defined('PHP_ERRORS'));
+
+		restore_error_handler();
+		restore_exception_handler();
 	}
 }
