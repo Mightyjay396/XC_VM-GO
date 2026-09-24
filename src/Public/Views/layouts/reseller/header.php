@@ -4,17 +4,19 @@
  * Bootstrap 5 reseller header — Vertical Menu Template.
  *
  * Mirrors admin/header.php but for the reseller surface: the reseller has
- * NO server / admin-only chrome. The sidebar is built from a hardcoded reseller
- * menu array (the legacy reseller navigation is hardcoded too, so there is no
- * NavbarRegistry tree to walk here), gated by the same $rPermissions the legacy
- * reseller header uses. The navbar carries the live header stats, the owner
- * credits pill, a tickets link and the profile dropdown.
+ * NO server / admin-only chrome. The sidebar is built from ResellerNavbarRegistry
+ * (see menu.php), gated by the same $rPermissions the legacy reseller header
+ * uses. The navbar carries the live header stats, the owner credits pill, a
+ * tickets link and the profile dropdown.
  *
  * Rendered by renderUnifiedLayoutHeader('reseller') for every reseller page
  * (all migrated to the Bootstrap 5 shell).
  */
 
+use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Enum\Theme;
+use XcVm\Core\Module\NavbarItem;
+use XcVm\Core\Module\ResellerNavbarRegistry;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\Line\LineService;
 
@@ -26,6 +28,9 @@ if (count(get_included_files()) == 1) {
 // the "Generate Trial" menu entries and downstream views can read it.
 $rGenTrials = LineService::canGenerateTrials($rUserInfo['id']);
 $GLOBALS['rGenTrials'] = $rGenTrials;
+// Folded into $rPermissions so the "Generate Trial" NavbarItems can use the
+// ordinary ->permissions(['can_generate_trials']) gate like any other item.
+$rPermissions['can_generate_trials'] = $rGenTrials;
 
 $xmIsDark = Theme::fromId($rUserInfo['theme'] ?? 0)->isDark();
 
@@ -36,239 +41,38 @@ $xmUiPrefs   = json_decode($rUserInfo['ui_prefs'] ?? '', true) ?: [];
 $xmThemePref = $xmUiPrefs['theme'] ?? null;
 $xmBsTheme   = $xmThemePref === 'dark' ? 'dark' : ($xmThemePref === 'light' ? 'light' : ($xmIsDark ? 'dark' : 'light'));
 
-$xmPage        = AdminHelpers::getPageName();
-$xmPermissions = $rPermissions ?? [];
-
 /**
- * Reseller sidebar, grouped into captioned sections (hardcoded, permission-gated).
- *
- * A section is ['title' => i18n key or '', 'show' => bool, 'items' => node[]] and
- * renders its caption only when at least one item survives the permission gates.
- * Each node is ['label' => i18n key, 'icon' => tabler class, 'url' => string,
- * 'show' => bool, 'children' => node[]]; only depth-0 nodes carry an icon
- * (matches the admin vertical-menu markup).
+ * Shared reseller navbar helpers (same contract as admin/header.php's
+ * _xc_nav_visible()/_xc_nav_label(), against ResellerNavbarRegistry and
+ * Authorization::hasResellerPermissions() instead of the admin equivalents).
+ * Guarded so a single request only ever defines them once.
  */
-$xmMenuSections = [
-    [
-        'title' => '',
-        'items' => [
-            [
-                'label' => 'dashboard',
-                'icon'  => 'ti tabler-smart-home',
-                'url'   => 'dashboard',
-                'show'  => true,
-            ],
-        ],
-    ],
-    [
-        'title' => 'clients',
-        'show'  => !empty($xmPermissions['create_line']) || !empty($xmPermissions['create_mag']) || !empty($xmPermissions['create_enigma']) || !empty($xmPermissions['create_sub_resellers']),
-        'items' => [
-            [
-                'label' => 'user_lines',
-                'icon'  => 'ti tabler-device-desktop',
-                'url'   => '#',
-                'show'  => !empty($xmPermissions['create_line']),
-                'children' => [
-                    ['label' => 'add_line',       'url' => 'line',         'show' => true],
-                    ['label' => 'generate_trial', 'url' => 'line?trial=1', 'show' => $rGenTrials],
-                    ['label' => 'manage_lines',   'url' => 'lines',        'show' => true],
-                ],
-            ],
-            [
-                'label' => 'mag_devices',
-                'icon'  => 'ti tabler-device-tv',
-                'url'   => '#',
-                'show'  => !empty($xmPermissions['create_mag']),
-                'children' => [
-                    ['label' => 'add_mag',            'url' => 'mag',         'show' => true],
-                    ['label' => 'generate_trial',     'url' => 'mag?trial=1', 'show' => $rGenTrials],
-                    ['label' => 'manage_mag_devices', 'url' => 'mags',        'show' => true],
-                ],
-            ],
-            [
-                'label' => 'enigma_devices',
-                'icon'  => 'ti tabler-cpu',
-                'url'   => '#',
-                'show'  => !empty($xmPermissions['create_enigma']),
-                'children' => [
-                    ['label' => 'add_enigma',            'url' => 'enigma',         'show' => true],
-                    ['label' => 'generate_trial',        'url' => 'enigma?trial=1', 'show' => $rGenTrials],
-                    ['label' => 'manage_enigma_devices', 'url' => 'enigmas',        'show' => true],
-                ],
-            ],
-            [
-                'label' => 'active_codes',
-                'icon'  => 'ti tabler-key',
-                'url'   => '#',
-                'show'  => !empty($xmPermissions['create_line']),
-                'children' => [
-                    ['label' => 'generate_codes', 'url' => 'active_code',        'show' => true],
-                    ['label' => 'manage_codes',   'url' => 'active_codes',       'show' => true],
-                    ['label' => 'batch_manager',  'url' => 'active_codes_batch', 'show' => true],
-                ],
-            ],
-            [
-                'label' => 'sub_resellers',
-                'icon'  => 'ti tabler-users',
-                'url'   => '#',
-                'show'  => !empty($xmPermissions['create_sub_resellers']),
-                'children' => [
-                    ['label' => 'add_user',     'url' => 'user',  'show' => true],
-                    ['label' => 'manage_users', 'url' => 'users', 'show' => true],
-                ],
-            ],
-        ],
-    ],
-    [
-        'title' => 'content',
-        'show'  => !empty($xmPermissions['can_view_vod']),
-        'items' => [
-            ['label' => 'streams',          'icon' => 'ti tabler-player-play',   'url' => 'streams',          'show' => true],
-            ['label' => 'created_channels', 'icon' => 'ti tabler-playlist-add',  'url' => 'created_channels', 'show' => true],
-            ['label' => 'movies',           'icon' => 'ti tabler-movie',         'url' => 'movies',           'show' => true],
-            ['label' => 'episodes',         'icon' => 'ti tabler-device-tv-old', 'url' => 'episodes',         'show' => true],
-            ['label' => 'radios',           'icon' => 'ti tabler-broadcast',     'url' => 'radios',           'show' => true],
-            ['label' => 'tv_guide',         'icon' => 'ti tabler-calendar-time', 'url' => 'epg_view',         'show' => !$rMobile],
-        ],
-    ],
-    [
-        'title' => 'category_templates',
-        'items' => [
-            [
-                'label' => 'category_templates',
-                'icon'  => 'ti tabler-layout-grid',
-                'url'   => 'category_templates',
-                'show'  => true,
-            ],
-        ],
-    ],
-    [
-        'title' => 'tickets_and_logs',
-        'items' => [
-            [
-                'label' => 'tickets',
-                'icon'  => 'ti tabler-ticket',
-                'url'   => 'tickets',
-                'show'  => true,
-            ],
-            [
-                'label' => 'logs',
-                'icon'  => 'ti tabler-clipboard-list',
-                'url'   => '#',
-                'show'  => true,
-                'children' => [
-                    ['label' => 'live_connections', 'url' => 'live_connections', 'show' => !empty($xmPermissions['reseller_client_connection_logs'])],
-                    ['label' => 'activity_logs',    'url' => 'line_activity',    'show' => !empty($xmPermissions['reseller_client_connection_logs'])],
-                    ['label' => 'user_logs',        'url' => 'user_logs',        'show' => true],
-                ],
-            ],
-        ],
-    ],
-];
-
-/**
- * Render the reseller sidebar tree.
- *
- * Returns [html, isActive] so the active leaf and its ancestors are resolved in
- * one traversal (ancestors gain `open active`). Only depth-0 nodes carry an icon.
- */
-/**
- * Whether a menu node points at the page being rendered.
- *
- * Two cases the plain basename match gets wrong:
- *  - `line` and `line?trial=1` share a basename, so both lit up at once. The
- *    trial entry matches only while ?trial=1 is set, and the plain one only
- *    while it is not.
- *  - Detail pages live under their own route (`ticket_view` under Tickets,
- *    `category_template` under Category Templates), which left the sidebar with
- *    nothing highlighted; the alias map folds them back onto their section.
- */
-if (!function_exists('_xc_reseller_node_is_current')) {
-    function _xc_reseller_node_is_current(string $urlBase, string $url, string $page): bool {
-        if ($urlBase === '') {
+if (!function_exists('_xc_reseller_nav_visible')) {
+    function _xc_reseller_nav_visible(NavbarItem $item, bool $mobile, array $settings): bool {
+        if ($item->desktopOnly && $mobile) return false;
+        if ($item->settingDisabled !== '' && !empty($settings[$item->settingDisabled])) return false;
+        if ($item->divider) return true;
+        if (!empty($item->permissions)) {
+            foreach ($item->permissions as $_p) {
+                if (Authorization::hasResellerPermissions($_p)) return true;
+            }
             return false;
         }
-
-        $isTrialPage = (string) ($_GET['trial'] ?? '') === '1';
-        if (str_contains($url, 'trial=1')) {
-            return $urlBase === $page && $isTrialPage;
+        if ($item->url === '#') {
+            foreach (ResellerNavbarRegistry::getChildren($item->key) as $_child) {
+                if (_xc_reseller_nav_visible($_child, $mobile, $settings)) return true;
+            }
+            return false;
         }
-        if (in_array($urlBase, ['line', 'mag', 'enigma'], true)) {
-            return $urlBase === $page && !$isTrialPage;
-        }
-
-        $aliases = [
-            'category_templates' => ['category_template'],
-            'tickets'            => ['ticket', 'ticket_view'],
-        ];
-        return $urlBase === $page || in_array($page, $aliases[$urlBase] ?? [], true);
+        return true;
     }
 }
 
-/**
- * Render a sidebar section caption (Vuexy `menu-header`).
- */
-if (!function_exists('_xc_reseller_section_header')) {
-    function _xc_reseller_section_header(string $title, string $language): string {
-        if ($title === '') {
-            return '';
-        }
-        return '<li class="menu-header small text-uppercase"><span class="menu-header-text">'
-            . htmlspecialchars($language::get($title), ENT_QUOTES)
-            . '</span></li>';
-    }
-}
-
-if (!function_exists('_xc_reseller_menu_node')) {
-    function _xc_reseller_menu_node(array $item, int $depth, string $page, string $language): array {
-        if (empty($item['show'])) {
-            return ['', false];
-        }
-        $children = array_filter($item['children'] ?? [], static fn($c) => !empty($c['show']));
-
-        $childHtml = '';
-        $childActive = false;
-        if ($children) {
-            $sub = '';
-            foreach ($children as $child) {
-                [$node, $active] = _xc_reseller_menu_node($child, $depth + 1, $page, $language);
-                $sub .= $node;
-                $childActive = $childActive || $active;
-            }
-            if ($sub !== '') {
-                $childHtml = '<ul class="menu-sub">' . $sub . '</ul>';
-            }
-        }
-        $hasKids = $childHtml !== '';
-
-        $url = (string) ($item['url'] ?? '#');
-
-        // A parent whose children were all hidden by permissions has nothing left
-        // to expand, and its own '#' url goes nowhere — drop it instead of leaving
-        // a dead toggle in the sidebar.
-        if (!$hasKids && isset($item['children']) && ($url === '#' || $url === '')) {
-            return ['', false];
-        }
-
-        // Match the current page by the item's URL basename (strip any query).
-        $urlBase    = $url !== '#' && $url !== '' ? basename(explode('?', $url)[0]) : '';
-        $selfActive = _xc_reseller_node_is_current($urlBase, $url, $page);
-        $active     = $selfActive || ($hasKids && $childActive);
-
-        $liClass = 'menu-item' . ($active ? ' active' : '') . ($hasKids && $active ? ' open' : '');
-        $href    = htmlspecialchars($hasKids ? 'javascript:void(0);' : $url, ENT_QUOTES);
-        $icon    = $depth === 0
-            ? '<i class="menu-icon icon-base ' . htmlspecialchars((string) ($item['icon'] ?? 'ti tabler-circle'), ENT_QUOTES) . '"></i>'
-            : '';
-        $label   = htmlspecialchars($language::get($item['label']), ENT_QUOTES);
-
-        $html  = '<li class="' . $liClass . '">';
-        $html .= '<a href="' . $href . '" class="menu-link' . ($hasKids ? ' menu-toggle' : '') . '">';
-        $html .= $icon . '<div>' . $label . '</div>';
-        $html .= '</a>' . $childHtml . '</li>';
-
-        return [$html, $active];
+if (!function_exists('_xc_reseller_nav_label')) {
+    function _xc_reseller_nav_label(NavbarItem $item, string $language): string {
+        return $item->translationKey
+            ? $language::get($item->translationKey)
+            : htmlspecialchars($item->fallbackTitle, ENT_QUOTES);
     }
 }
 $xmCurrentLang = \XcVm\Core\Localization\Translator::current();
@@ -343,43 +147,7 @@ $xmUiPrefs['rtl'] = $xmIsRtl;
                 <div class="layout-wrapper layout-content-navbar">
                     <div class="layout-container">
 
-                        <!-- Vertical menu -->
-                        <aside id="layout-menu" class="layout-menu menu-vertical menu">
-                            <div class="app-brand demo">
-                                <a href="dashboard" class="app-brand-link">
-                                    <span class="app-brand-logo demo">
-                                        <img src="assets/img/logo-topbar.png" alt="<?= htmlspecialchars($rSettings['server_name'] ?: 'XC_VM'); ?>" height="24">
-                                    </span>
-                                    <span class="app-brand-text demo menu-text fw-bold ms-3"><?= htmlspecialchars($rSettings['server_name'] ?: 'XC_VM'); ?></span>
-                                </a>
-                                <a href="javascript:void(0);" class="layout-menu-toggle menu-link text-large ms-auto">
-                                    <i class="icon-base ti menu-toggle-icon d-none d-xl-block"></i>
-                                    <i class="icon-base ti tabler-x d-block d-xl-none"></i>
-                                </a>
-                            </div>
-
-                            <div class="menu-inner-shadow"></div>
-
-                            <ul class="menu-inner py-1">
-                                <?php foreach ($xmMenuSections as $xmSection): ?>
-                                    <?php
-                                    if (isset($xmSection['show']) && empty($xmSection['show'])) {
-                                        continue;
-                                    }
-                                    $xmSectionBody = '';
-                                    foreach ($xmSection['items'] as $xmItem) {
-                                        [$xmNodeHtml] = _xc_reseller_menu_node($xmItem, 0, $xmPage, $language);
-                                        $xmSectionBody .= $xmNodeHtml;
-                                    }
-                                    ?>
-                                    <?php if ($xmSectionBody !== ''): ?>
-                                        <?= _xc_reseller_section_header($xmSection['title'] ?? '', $language); ?>
-                                        <?= $xmSectionBody; ?>
-                                    <?php endif; ?>
-                                <?php endforeach; ?>
-                            </ul>
-                        </aside>
-                        <!-- / Vertical menu -->
+                        <?php require __DIR__ . '/menu.php'; ?>
 
                         <!-- Layout page -->
                         <div class="layout-page">

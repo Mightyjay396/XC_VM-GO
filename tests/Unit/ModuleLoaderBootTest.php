@@ -3,6 +3,7 @@
 use XcVm\Core\Http\Router;
 use XcVm\Core\Module\ModuleLoader;
 use XcVm\Core\Module\NavbarRegistry;
+use XcVm\Core\Module\ResellerNavbarRegistry;
 use XcVm\Core\Module\ModuleInterface;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Events\EventDispatcher;
@@ -34,6 +35,7 @@ final class ModuleLoaderBootTest extends TestCase {
         ServiceContainer::resetInstance();
         Router::resetInstance();
         NavbarRegistry::reset();
+        ResellerNavbarRegistry::reset();
         EventDispatcher::resetInstance();
         TestBootCallTracker::reset();
 
@@ -51,6 +53,7 @@ final class ModuleLoaderBootTest extends TestCase {
         ServiceContainer::resetInstance();
         Router::resetInstance();
         NavbarRegistry::reset();
+        ResellerNavbarRegistry::reset();
         EventDispatcher::resetInstance();
         TestBootCallTracker::reset();
     }
@@ -77,6 +80,31 @@ final class ModuleLoaderBootTest extends TestCase {
         $loader->bootAll($this->container);
 
         $this->assertTrue(TestBootCallTracker::has('navbar:navbar-beta'));
+    }
+
+    public function testBootAllCallsRegisterResellerNavbarOnModule(): void {
+        $root = $this->createRoot();
+        $this->createModule($root, 'reseller-navbar-zeta', resellerNavbar: "\\TestBootCallTracker::record('reseller-navbar:reseller-navbar-zeta');");
+
+        $loader = new ModuleLoader();
+        $loader->loadAll($root);
+        $loader->bootAll($this->container);
+
+        $this->assertTrue(TestBootCallTracker::has('reseller-navbar:reseller-navbar-zeta'));
+    }
+
+    public function testBootAllSkipsRegisterResellerNavbarWhenModuleDoesNotImplementInterface(): void {
+        $root = $this->createRoot();
+        // Plain ModuleInterface module — no ResellerNavbarProviderInterface.
+        $this->createModule($root, 'no-reseller-navbar-eta');
+
+        $loader = new ModuleLoader();
+        $loader->loadAll($root);
+        // Would throw if bootAll() called registerResellerNavbar() on a module
+        // that does not implement ResellerNavbarProviderInterface.
+        $loader->bootAll($this->container);
+
+        $this->assertFalse(TestBootCallTracker::has('reseller-navbar:no-reseller-navbar-eta'));
     }
 
     public function testBootAllCallsRegisterRoutesWhenRouterProvided(): void {
@@ -214,7 +242,8 @@ final class ModuleLoaderBootTest extends TestCase {
         string $boot = '',
         string $navbar = '',
         string $routes = '',
-        string $subscribers = ''
+        string $subscribers = '',
+        string $resellerNavbar = ''
     ): void {
         $dir = $root . '/' . $name;
         mkdir($dir, 0775, true);
@@ -223,6 +252,10 @@ final class ModuleLoaderBootTest extends TestCase {
         $cls    = $this->className($name);
         $ns     = $this->namespace($name);
         $subscriberReturn = $subscribers !== '' ? "return [{$subscribers}];" : 'return [];';
+        $implements = $resellerNavbar !== '' ? 'ModuleInterface, \\XcVm\\Core\\Module\\Contract\\ResellerNavbarProviderInterface' : 'ModuleInterface';
+        $resellerNavbarMethod = $resellerNavbar !== ''
+            ? "\tpublic function registerResellerNavbar(\\XcVm\\Core\\Module\\ResellerNavbarRegistry \$registry): void { {$resellerNavbar} }\n"
+            : '';
 
         $code = "<?php\n"
             . "namespace {$ns};\n"
@@ -231,7 +264,7 @@ final class ModuleLoaderBootTest extends TestCase {
             . "use XcVm\\Core\\Http\\Router;\n"
             . "use XcVm\Cli\CommandRegistry;\n"
             . "use XcVm\Core\Module\NavbarRegistry;\n"
-            . "class {$cls} implements ModuleInterface {\n"
+            . "class {$cls} implements {$implements} {\n"
             . "\tpublic function getName(): string { return '{$name}'; }\n"
             . "\tpublic function getVersion(): string { return '1.0.0'; }\n"
             . "\tpublic function boot(ServiceContainer \$container): void { {$boot} }\n"
@@ -241,6 +274,7 @@ final class ModuleLoaderBootTest extends TestCase {
             . "\tpublic function install(): void {}\n"
             . "\tpublic function uninstall(): void {}\n"
             . "\tpublic function registerNavbar(NavbarRegistry \$registry): void { {$navbar} }\n"
+            . $resellerNavbarMethod
             . "}\n";
 
         file_put_contents($dir . '/' . $cls . '.php', $code);

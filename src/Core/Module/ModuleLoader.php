@@ -20,6 +20,7 @@ use XcVm\Core\Module\Contract\CronProviderInterface;
 use XcVm\Core\Module\Contract\NavbarProviderInterface;
 use XcVm\Core\Module\Contract\PermissionProviderInterface;
 use XcVm\Core\Module\Contract\QuickToolsProviderInterface;
+use XcVm\Core\Module\Contract\ResellerNavbarProviderInterface;
 use XcVm\Core\Module\Contract\RouteProviderInterface;
 use XcVm\Core\Module\Contract\ServiceProviderInterface;
 use XcVm\Core\Module\Contract\StreamMiddlewareProviderInterface;
@@ -231,6 +232,15 @@ class ModuleLoader {
 		$navbarRegistry = new NavbarRegistry();
 		(new CoreNavbarProvider())->registerNavbar($navbarRegistry);
 
+		// Module reseller sidebar contributions (ResellerNavbarProviderInterface).
+		// Separate storage from $navbarRegistry above so admin/reseller top-level
+		// keys (both use names like 'dashboard', 'lines') never collide. Reset
+		// before core registers so a re-boot in the same process (tests/CLI)
+		// does not accumulate stale entries.
+		$resellerNavbarRegistry = new ResellerNavbarRegistry();
+		ResellerNavbarRegistry::reset();
+		(new CoreResellerNavbarProvider())->registerResellerNavbar($resellerNavbarRegistry);
+
 		// Module topbar contributions are merged on top of Topbar's core literal
 		// (see XcVm\Core\Util\Topbar::config). Reset so a re-boot in the same
 		// process (tests/CLI) does not accumulate stale entries.
@@ -266,6 +276,10 @@ class ModuleLoader {
 
 			if ($module instanceof NavbarProviderInterface) {
 				$module->registerNavbar($navbarRegistry);
+			}
+
+			if ($module instanceof ResellerNavbarProviderInterface) {
+				$module->registerResellerNavbar($resellerNavbarRegistry);
 			}
 
 			if ($module instanceof TopbarProviderInterface) {
