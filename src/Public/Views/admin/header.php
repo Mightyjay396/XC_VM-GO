@@ -4,9 +4,9 @@
  * Bootstrap 5 admin header — Vertical Menu Template (v10.11.1).
  *
  * Rebuilt from the stock Bootstrap 5 vertical-menu shell and wired to the current
- * XC_VM backend. Rendered by renderUnifiedLayoutHeader('admin') only for pages
- * opted in through xc_admin_use_newui() (see layouts/admin.php); every other
- * admin page keeps the legacy header.php shell.
+ * XC_VM backend. Rendered by XcVm\Core\Util\LayoutRenderer::renderHeader('admin')
+ * only for pages opted in through xc_admin_use_newui(); every other admin page
+ * keeps the legacy header.php shell.
  *
  * Theme is server-authoritative: data-bs-theme is emitted from the user's
  * stored theme via the Theme enum. The live per-user customizer

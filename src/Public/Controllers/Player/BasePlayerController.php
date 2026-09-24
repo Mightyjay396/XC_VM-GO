@@ -2,20 +2,21 @@
 
 namespace XcVm\Public\Controllers\Player;
 
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Public\Controllers\Admin\BaseAdminController;
 
 /**
  * BasePlayerController — базовый контроллер для player-страниц.
  *
  * Наследует BaseAdminController, переопределяя:
- *   - $scope = 'player' (для renderUnifiedLayout и путей views)
+ *   - $scope = 'player' (для LayoutRenderer и путей views)
  *   - requirePermission() — пустой (player не использует RBAC)
  *   - render() — поддерживает player-специфичные глобальные переменные
  *
  * Player layout:
- *   1. renderUnifiedLayoutHeader('player') → player/header.php
+ *   1. LayoutRenderer::renderHeader('player') → player/header.php
  *   2. require Views/player/{view}.php — HTML-контент
- *   3. renderUnifiedLayoutFooter('player') → player/footer.php
+ *   3. LayoutRenderer::renderFooter('player') → player/footer.php
  *
  * @see BaseAdminController
  *
@@ -49,9 +50,6 @@ class BasePlayerController extends BaseAdminController {
 	 * @param array  $data Данные для view (extract'd в scope)
 	 */
 	protected function render(string $view, array $data = []) {
-		require_once MAIN_HOME . 'Public/Views/layouts/admin.php';
-		require_once MAIN_HOME . 'Public/Views/layouts/footer.php';
-
 		// Player-специфичные глобалы (для header.php и footer.php)
 		$viewGlobals = [
 			// Core
@@ -82,7 +80,7 @@ class BasePlayerController extends BaseAdminController {
 		$__viewsDir = MAIN_HOME . 'Public/Views/' . $this->scope . '/';
 
 		// 1. Header
-		renderUnifiedLayoutHeader($this->scope);
+		LayoutRenderer::renderHeader($this->scope);
 
 		// 2. View content
 		$__viewFile = $__viewsDir . $view . '.php';
@@ -91,7 +89,7 @@ class BasePlayerController extends BaseAdminController {
 		}
 
 		// 3. Footer (player footer.php содержит page-specific JS)
-		renderUnifiedLayoutFooter($this->scope);
+		LayoutRenderer::renderFooter($this->scope);
 	}
 
 	/**

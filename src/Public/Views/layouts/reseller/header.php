@@ -9,8 +9,8 @@
  * uses. The navbar carries the live header stats, the owner credits pill, a
  * tickets link and the profile dropdown.
  *
- * Rendered by renderUnifiedLayoutHeader('reseller') for every reseller page
- * (all migrated to the Bootstrap 5 shell).
+ * Rendered by XcVm\Core\Util\LayoutRenderer::renderHeader('reseller') for
+ * every reseller page (all migrated to the Bootstrap 5 shell).
  */
 
 use XcVm\Core\Auth\Authorization;

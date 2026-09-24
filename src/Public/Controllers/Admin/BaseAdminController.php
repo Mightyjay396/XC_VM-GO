@@ -7,23 +7,23 @@ use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
 use XcVm\Core\Util\AdminHelpers;
+use XcVm\Core\Util\LayoutRenderer;
 
 /**
  * BaseAdminController — базовый контроллер для admin-страниц.
  *
  * Инкапсулирует общий render-flow:
- *   1. renderUnifiedLayoutHeader('admin')
- *   2. require Views/admin/{view}.php — HTML-контент
- *   3. renderUnifiedLayoutFooter('admin')
+ *   1. LayoutRenderer::renderHeader('admin')
+ *   2. require Views/admin/{view}.php — HTML-контент (сам вызывает
+ *      LayoutRenderer::renderFooter('admin') в конце своего шаблона)
  *
  * Контроллер-наследник:
  *   - Вызывает requirePermission() для проверки доступа
  *   - Устанавливает setTitle() для $_TITLE
  *   - Вызывает render('view_name', $data) для отрисовки
  *
- * @see public/Views/layouts/admin.php  — renderUnifiedLayoutHeader()
- * @see public/Views/layouts/footer.php — renderUnifiedLayoutFooter()
- * @see core/Http/Router.php                     — callHandler() → new Controller()->method()
+ * @see \XcVm\Core\Util\LayoutRenderer — renderHeader() / renderFooter()
+ * @see core/Http/Router.php          — callHandler() → new Controller()->method()
  *
  * @package XC_VM_Public_Controllers_Admin
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -79,10 +79,6 @@ class BaseAdminController {
 	 * @param array  $data Данные для view (extract'd в scope)
 	 */
 	protected function render(string $view, array $data = []) {
-		// Layout functions
-		require_once MAIN_HOME . 'Public/Views/layouts/admin.php';
-		require_once MAIN_HOME . 'Public/Views/layouts/footer.php';
-
 		// Глобальные переменные, нужные view-шаблонам и legacy-файлам.
 		// Набор из bootstrap и functions.php, чтобы legacy body code мог их
 		// использовать. Справочные данные (страны, языки, статусы, темы и т.п.)
@@ -136,7 +132,7 @@ class BaseAdminController {
 		$__viewsDir = MAIN_HOME . 'Public/Views/' . $this->scope . '/';
 
 		// 1. Header
-		renderUnifiedLayoutHeader($this->scope);
+		LayoutRenderer::renderHeader($this->scope);
 
 		// Header may define new globals (e.g. reseller header sets rGenTrials)
 		foreach ($viewGlobals as $_g) {

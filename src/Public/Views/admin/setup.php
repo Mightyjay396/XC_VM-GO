@@ -8,6 +8,7 @@ use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\AdminHelpers;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Localization\Translator;
 use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
@@ -153,8 +154,7 @@ if (!RequestManager::has('update')):
     $_TITLE = 'Database Migration';
     $_SETUP = true;
     $GLOBALS['_SETUP'] = true;
-    require_once __DIR__ . '/../layouts/admin.php';
-    renderUnifiedLayoutHeader('admin', ['_SETUP' => true]);
+    LayoutRenderer::renderHeader('admin', ['_SETUP' => true]);
 ?>
     <h4 class="py-3 mb-4"><?= $language::get('database_migration') ?></h4>
     <div class="card">
@@ -263,8 +263,7 @@ if (!RequestManager::has('update')):
         </div>
     </div>
     <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin', ['_SETUP' => true]);
+    LayoutRenderer::renderFooter('admin', ['_SETUP' => true]);
     ?>
     <?php if ($rMigrating): ?>
         <script>

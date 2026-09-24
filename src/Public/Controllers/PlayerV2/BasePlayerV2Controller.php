@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\PlayerV2;
 
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Public\Controllers\Player\BasePlayerController;
 
 /**
@@ -22,9 +23,6 @@ class BasePlayerV2Controller extends BasePlayerController {
 	 * @param array  $data View data to extract
 	 */
 	protected function render($view, array $data = []) {
-		require_once MAIN_HOME . 'Public/Views/layouts/admin.php';
-		require_once MAIN_HOME . 'Public/Views/layouts/footer.php';
-
 		// Player globals for header & footer
 		$viewGlobals = [
 			'db', 'rSettings', 'rUserInfo', '_TITLE', '_PAGE',
@@ -77,7 +75,7 @@ class BasePlayerV2Controller extends BasePlayerController {
 
 		// ─── Standard Full Page Render (Fallback & Direct Visits) ──────
 		// 1. Header
-		renderUnifiedLayoutHeader($this->scope);
+		LayoutRenderer::renderHeader($this->scope);
 
 		// 2. View content
 		if (file_exists($__viewFile)) {
@@ -85,6 +83,6 @@ class BasePlayerV2Controller extends BasePlayerController {
 		}
 
 		// 3. Footer
-		renderUnifiedLayoutFooter($this->scope);
+		LayoutRenderer::renderFooter($this->scope);
 	}
 }
