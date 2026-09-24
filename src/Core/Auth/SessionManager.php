@@ -7,8 +7,9 @@ use XcVm\Core\Util\NetworkUtils;
 /**
  * Unified Session Manager
  *
- * Consolidates duplicated session logic from admin/session.php
- * and reseller/session.php into a single class with role contexts.
+ * Consolidates admin/reseller/player session-key handling into a single
+ * class with role contexts, instead of each scope duplicating its own
+ * $_SESSION key names and timeout/redirect logic.
  *
  * Session Keys by Context:
  *
@@ -26,20 +27,26 @@ use XcVm\Core\Util\NetworkUtils;
  *     rcode          — 2FA code
  *     rverify        — 2FA verification flag
  *
- * Backward Compatibility:
+ *   Player:
+ *     phash    — session authentication hash (line/registered-user id)
+ *     pverify  — verification flag (md5 of username||password)
  *
- *   admin/session.php will be reduced to:
- *     require_once MAIN_HOME . 'Core/Auth/SessionManager.php';
- *     SessionManager::start('admin');
- *     SessionManager::requireAuth();
+ * Current usage:
  *
- *   reseller/session.php will be reduced to:
- *     require_once MAIN_HOME . 'Core/Auth/SessionManager.php';
- *     SessionManager::start('reseller');
- *     SessionManager::requireAuth();
+ *   start() + requireAuth() are called directly by the $noBootstrapPages
+ *   view scripts that skip the full scope bootstrap (Public/Views/admin/
+ *   setup.php, post.php, player.php) — see AdminScopeBootstrap's docblock.
  *
- * @see admin/session.php
- * @see reseller/session.php
+ *   clearContext() tears down one context's keys without destroying the
+ *   whole session: used by AdminScopeBootstrap/ResellerScopeBootstrap on an
+ *   invalid identity, and by the Player/PlayerV2 login+logout controllers.
+ *
+ *   adminSessionValid() is the shared admin-session integrity check used by
+ *   both AdminScopeBootstrap::hydrateAdminContext() and Admin\TableController.
+ *
+ * @see \XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap
+ * @see \XcVm\Infrastructure\Bootstrap\ResellerScopeBootstrap
+ * @see \XcVm\Infrastructure\Bootstrap\PlayerScopeBootstrap
  *
  * @package XC_VM_Core_Auth
  * @author  Divarion_D <https://github.com/Divarion-D>
