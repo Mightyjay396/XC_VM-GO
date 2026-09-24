@@ -9,6 +9,7 @@
  */
 
 use XcVm\Core\Auth\AuthRepository;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\User\GroupService;
 
 $rIsEdit = isset($rCode);
@@ -130,8 +131,7 @@ $rTypes = ['Admin', 'Reseller', 'Ministra', 'Admin API', 'Reseller API', 6 => 'W
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

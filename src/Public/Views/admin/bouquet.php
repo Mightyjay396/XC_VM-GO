@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Add / edit Bouquet (Bootstrap 5). A details tab (bouquet name) plus Streams / Movies /
@@ -235,8 +237,7 @@ $rPageLen = (int) ($rSettings['default_entries'] ?? 10) ?: 10;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     // Selected-item state, seeded from the bouquet being edited/duplicated (empty on add).

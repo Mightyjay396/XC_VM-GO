@@ -9,13 +9,13 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Util\LayoutRenderer;
 
 if (!Authorization::check('adv', 'manage_e2')):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin');
+    LayoutRenderer::renderFooter('admin');
     echo '</body></html>';
     return;
 endif;
@@ -110,8 +110,7 @@ $rCanConvert = Authorization::check('adv', 'edit_user');
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

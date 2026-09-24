@@ -6,7 +6,7 @@
  *
  * Reached only for pages opted in via xc_admin_use_newui() (modal/setup pages
  * are routed to the legacy footer.php upstream). Views call
- * renderUnifiedLayoutFooter('admin') at their end, then append their own page
+ * LayoutRenderer::renderFooter('admin') at their end, then append their own page
  * <script> and close </body></html> themselves.
  *
  * Only the layout-critical vendors load here (jQuery, Popper, Bootstrap, Waves,
@@ -653,6 +653,6 @@ $xmBare  = $xmSetup || isset($_GET['modal']);
 <?php endif; ?>
 
 <?php // NOTE: </body></html> are intentionally NOT emitted here. Views call
-// renderUnifiedLayoutFooter() and then append their own page scripts
+// LayoutRenderer::renderFooter() and then append their own page scripts
 // before closing </body></html> themselves (the legacy convention). 
 ?>

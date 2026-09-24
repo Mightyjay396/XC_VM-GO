@@ -10,6 +10,7 @@
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Domain\User\TicketRepository;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rCanTicket = Authorization::check('adv', 'ticket');
 // Ticket status → [Bootstrap label colour].
@@ -65,8 +66,7 @@ $rStatusColour = ['secondary', 'warning', 'success', 'warning', 'info', 'primary
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

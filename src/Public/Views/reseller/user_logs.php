@@ -15,6 +15,7 @@
  */
 
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 
 // The header stat link deep-links via ?user_id=ID; pre-select that owner.
 $rSelectedOwner = RequestManager::has('user_id') ? (string) RequestManager::get('user_id') : '';
@@ -81,8 +82,7 @@ $rReportUsers = (array) ($rPermissions['users'] ?? []);
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function() {

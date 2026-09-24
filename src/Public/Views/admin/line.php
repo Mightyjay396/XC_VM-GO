@@ -16,6 +16,7 @@
  */
 
 use XcVm\Core\Reference\GeoReference;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Line\LineRepository;
 use XcVm\Domain\Stream\CategoryTemplateService;
@@ -334,8 +335,7 @@ if ($rIsEdit && !empty($rLine['custom_data'])) {
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

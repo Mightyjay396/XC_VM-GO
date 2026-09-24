@@ -10,7 +10,7 @@
  * registry. Pages initialise their own plugins.
  *
  * Reached for every reseller page (all migrated to the Bootstrap 5 shell).
- * Views call renderUnifiedLayoutFooter('reseller') at their end, then append their
+ * Views call LayoutRenderer::renderFooter('reseller') at their end, then append their
  * own page <script> and close </body></html> themselves (same convention as admin).
  */
 
@@ -300,6 +300,6 @@ if (count(get_included_files()) == 1) {
 <?php endif; ?>
 
 <?php // NOTE: </body></html> are intentionally NOT emitted here. Views call
-// renderUnifiedLayoutFooter() and then append their own page scripts
+// LayoutRenderer::renderFooter() and then append their own page scripts
 // before closing </body></html> themselves (the legacy convention).
 ?>

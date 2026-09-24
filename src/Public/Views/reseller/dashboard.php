@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Reseller Dashboard (Bootstrap 5). Content-only markup rendered inside the
@@ -298,8 +300,7 @@ foreach ($rConnectionMap as $rCountry) {
 <?php endif; ?>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     // Live reseller stat tiles — poll ./api?action=dashboard (legacy contract:

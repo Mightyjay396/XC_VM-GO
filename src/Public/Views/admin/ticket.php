@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Ticket response (Bootstrap 5). A single-message reply form for a support
@@ -29,8 +31,7 @@
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

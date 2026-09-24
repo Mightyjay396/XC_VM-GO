@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Admin Active Codes Management (Bootstrap 5)
@@ -187,8 +189,7 @@
 </style>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
 (function($) {

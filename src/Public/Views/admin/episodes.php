@@ -13,14 +13,14 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Server\ServerRepository;
 
 if (!Authorization::check('adv', 'episodes') && !Authorization::check('adv', 'mass_sedits')):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin');
+    LayoutRenderer::renderFooter('admin');
     echo '</body></html>';
     return;
 endif;
@@ -147,8 +147,7 @@ $rFilters = [1 => 'encoded', 2 => 'encoding', 3 => 'down', 4 => 'ready', 5 => 'd
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Reseller Movies / VOD (Bootstrap 5). Full-parity port of admin/movies.php adapted
@@ -22,8 +24,7 @@ if (empty($rPermissions['can_view_vod'])):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('reseller');
+    LayoutRenderer::renderFooter('reseller');
     echo '</body></html>';
     return;
 endif;
@@ -69,8 +70,7 @@ $rCategoryIDs = (array) ($rPermissions['category_ids'] ?? []);
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function() {

@@ -23,6 +23,7 @@
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Line\PackageService;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rIsEdit  = isset($rDevice['device_id']) && !isset($_STATUS);
 $rIsTrial = isset($rRequest['trial']);
@@ -332,8 +333,7 @@ $rStatusMessages = [
 <?php endif; ?>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function() {

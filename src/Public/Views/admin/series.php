@@ -10,14 +10,14 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Stream\CategoryService;
 
 if (!Authorization::check('adv', 'series') && !Authorization::check('adv', 'mass_sedits')):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin');
+    LayoutRenderer::renderFooter('admin');
     echo '</body></html>';
     return;
 endif;
@@ -91,8 +91,7 @@ $rCanAddEpisode = Authorization::check('adv', 'add_episode');
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

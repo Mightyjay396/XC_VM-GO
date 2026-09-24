@@ -14,9 +14,10 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Config\DomainResolver;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
-use XcVm\Core\Config\DomainResolver;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\User\UserRepository;
 
@@ -24,8 +25,7 @@ if (!Authorization::check('adv', 'users') && !Authorization::check('adv', 'mass_
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin');
+    LayoutRenderer::renderFooter('admin');
     echo '</body></html>';
     return;
 endif;
@@ -348,8 +348,7 @@ $rStatusFilters = [1 => 'Active', 2 => 'Disabled', 3 => 'Banned', 4 => 'Expired'
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

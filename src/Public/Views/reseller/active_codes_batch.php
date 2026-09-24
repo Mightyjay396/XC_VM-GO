@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Batch Manager for Active Codes (Bootstrap 5, Reseller)
@@ -169,8 +171,7 @@ $totalActive = array_sum(array_column($batches, 'active_count'));
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
 (function($) {

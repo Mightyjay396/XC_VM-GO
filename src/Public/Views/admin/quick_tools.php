@@ -8,6 +8,7 @@
  */
 
 use XcVm\Core\Module\QuickToolsRegistry;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rTabs = [
     'streams' => ['tabler-player-play', 'streams', [
@@ -147,8 +148,7 @@ foreach (QuickToolsRegistry::groups() as $rQtGroup) {
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

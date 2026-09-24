@@ -23,6 +23,7 @@
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 
 ?>
 
@@ -167,8 +168,7 @@ use XcVm\Core\Http\RequestManager;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     function selectChannel(rID) {

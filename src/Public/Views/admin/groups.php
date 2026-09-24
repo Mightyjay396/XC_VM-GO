@@ -7,14 +7,14 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\User\GroupService;
 
 if (!Authorization::check('adv', 'mng_groups') && !Authorization::check('adv', 'edit_group')):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin');
+    LayoutRenderer::renderFooter('admin');
     echo '</body></html>';
     return;
 endif;
@@ -70,8 +70,7 @@ if (!function_exists('xc_bool_flag')) {
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

@@ -12,6 +12,7 @@
  * load_balancer, …) never matched the handler and are dropped.
  */
 
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Server\ServerRepository;
 ?>
@@ -165,8 +166,7 @@ use XcVm\Domain\Server\ServerRepository;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

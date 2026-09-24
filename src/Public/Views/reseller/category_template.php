@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Category Template Editor View (Reseller).
@@ -247,8 +249,7 @@ $isShared = (int)($rTemplate['is_shared'] ?? 0) === 1;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 
 <script>

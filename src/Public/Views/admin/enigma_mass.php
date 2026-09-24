@@ -11,6 +11,7 @@
 
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Reference\GeoReference;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\User\UserRepository;
 
@@ -190,8 +191,7 @@ $rOwner = (RequestManager::has('owner') && ($rO = UserRepository::getRegisteredU
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

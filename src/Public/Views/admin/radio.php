@@ -14,6 +14,7 @@
  */
 
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Stream\CategoryService;
 
@@ -191,8 +192,7 @@ $rArg = static function (string $key, $rOptId) use ($rStationOptions, $rStationA
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

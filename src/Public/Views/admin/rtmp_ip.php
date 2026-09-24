@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * RTMP IP add / edit (Bootstrap 5). Full-page form reached from the rtmp_ips table
@@ -53,8 +55,7 @@ $rIsEdit = isset($rIPArr);
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

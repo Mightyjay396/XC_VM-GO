@@ -11,6 +11,7 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rCanEdit = Authorization::check('adv', 'edit_cat');
 $rTabs = [
@@ -78,8 +79,7 @@ $rTabs = [
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

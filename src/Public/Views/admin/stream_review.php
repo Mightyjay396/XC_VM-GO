@@ -12,6 +12,7 @@
 
 use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Stream\CategoryService;
+use XcVm\Core\Util\LayoutRenderer;
 
 ?>
 
@@ -131,8 +132,7 @@ use XcVm\Domain\Stream\CategoryService;
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

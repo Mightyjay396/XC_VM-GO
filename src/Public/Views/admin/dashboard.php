@@ -13,6 +13,7 @@
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\License\LicenseGate;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Server\ServerRepository;
 
 if (!Authorization::check('adv', 'index')):
@@ -22,8 +23,7 @@ if (!Authorization::check('adv', 'index')):
         <?= $language::get('dashboard_nav_top'); ?>
     </div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin');
+    LayoutRenderer::renderFooter('admin');
     echo '</body></html>';
     return;
 endif;
@@ -397,8 +397,7 @@ if (!LicenseGate::licensed()):
 <?php endif; ?>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

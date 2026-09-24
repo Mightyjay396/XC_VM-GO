@@ -9,6 +9,7 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rCanTicket = Authorization::check('adv', 'ticket');
 ?>
@@ -76,8 +77,7 @@ $rCanTicket = Authorization::check('adv', 'ticket');
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

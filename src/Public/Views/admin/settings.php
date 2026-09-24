@@ -10,6 +10,7 @@ use XcVm\Core\Localization\Translator;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Streaming\Codec\FfmpegBinaries; // Code reconstruction by Squallp
 use XcVm\Streaming\Fanout\FanoutConfig;
+use XcVm\Core\Util\LayoutRenderer;
 ?>
 
 <form id="settings-form">
@@ -2943,8 +2944,7 @@ use XcVm\Streaming\Fanout\FanoutConfig;
 
 <?php
 
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 
 ?>
 

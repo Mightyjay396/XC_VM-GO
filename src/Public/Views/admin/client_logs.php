@@ -10,13 +10,13 @@
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Enum\ClientFilter;
+use XcVm\Core\Util\LayoutRenderer;
 
 if (!Authorization::check('adv', 'client_request_log')):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin');
+    LayoutRenderer::renderFooter('admin');
     echo '</body></html>';
     return;
 endif;
@@ -86,8 +86,7 @@ endif;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

@@ -15,13 +15,13 @@
  */
 
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 
 if (empty($rPermissions['reseller_client_connection_logs'])):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('reseller');
+    LayoutRenderer::renderFooter('reseller');
     echo '</body></html>';
     return;
 endif;
@@ -118,8 +118,7 @@ $rReportUsers = (array) ($rPermissions['users'] ?? []);
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function() {

@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Ticket create / respond (Bootstrap 5, reseller). Dual-purpose form driven by
@@ -40,8 +42,7 @@ $rIsRespond = isset($rTicketInfo);
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function() {

@@ -11,6 +11,7 @@
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Stream\ConnectionTracker;
 
 $rCanEdit = Authorization::check('adv', 'edit_server');
@@ -230,8 +231,7 @@ $rBar = static function (int $pct): string {
 <?php endif; ?>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

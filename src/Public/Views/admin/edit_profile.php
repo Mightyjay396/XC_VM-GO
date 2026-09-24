@@ -10,6 +10,7 @@ use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Enum\Theme;
 use XcVm\Core\Reference\UiReference;
 use XcVm\Core\Util\AdminHelpers;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Server\ServerRepository;
 
 $rApiCode = null;
@@ -90,8 +91,7 @@ foreach (AuthRepository::getAllCodes() as $rCode) {
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

@@ -19,6 +19,7 @@
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamConfigRepository;
 use XcVm\Domain\Stream\StreamRepository;
@@ -341,8 +342,7 @@ $rTitle = $rIsEdit ? $rEpisode['stream_display_name'] : ($rMulti ? $language::ge
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

@@ -9,6 +9,7 @@
  * full-page in the new-UI shell.
  */
 
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Bouquet\BouquetService;
 ?>
 
@@ -42,8 +43,7 @@ use XcVm\Domain\Bouquet\BouquetService;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

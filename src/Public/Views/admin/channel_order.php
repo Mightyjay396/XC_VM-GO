@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Channel order (Bootstrap 5). Four tabs (streams / movies / series / radio); each is a
@@ -72,8 +74,7 @@ $rBlocked = (50000 < $rCount && empty($rOverride));
 <?php endif; ?>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

@@ -9,6 +9,7 @@
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Server\ServerRepository;
 
 $rIsProxy = ($rType == 1);
@@ -134,8 +135,7 @@ $rCoverage = $rIsEdit ? (ServerRepository::getAll()[$rServerArr['id']]['parent_i
 <?php endif; ?>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

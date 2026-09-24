@@ -10,6 +10,7 @@
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Stream\CategoryService;
 
 $rRedis = (bool) SettingsManager::get('redis_handler');
@@ -114,8 +115,7 @@ $rSelCategory = RequestManager::has('category') ? (string) RequestManager::get('
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

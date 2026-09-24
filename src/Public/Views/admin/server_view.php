@@ -25,6 +25,7 @@
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\AdminHelpers;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rServerId    = intval(RequestManager::get('id'));
 $rIsMain      = ($rServer['server_type'] == 0);
@@ -326,8 +327,7 @@ $rDiskLabel   = (1099511627776 < ($rWatchdog['total_disk_space'] ?? 0))
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

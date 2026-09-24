@@ -12,6 +12,7 @@
  */
 
 use XcVm\Core\Reference\GeoReference;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Line\LineRepository;
 use XcVm\Domain\User\GroupService;
@@ -253,8 +254,7 @@ $rPackageOutputs = ($rIsEdit && !empty($rPackage['output_formats'])) ? (json_dec
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

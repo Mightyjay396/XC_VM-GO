@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Category add / edit (Bootstrap 5). A details tab (type / name / adult switch) plus, when
@@ -79,8 +81,7 @@ $rTypeMap = ['live' => 'streams_short', 'movie' => 'movies_short', 'radio' => 'r
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

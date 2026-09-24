@@ -13,6 +13,7 @@
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Stream\CategoryService;
 
 ?>
@@ -159,8 +160,7 @@ use XcVm\Domain\Stream\CategoryService;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     function selectChannel(rID) {

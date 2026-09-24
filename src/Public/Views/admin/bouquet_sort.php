@@ -11,6 +11,7 @@
  */
 
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rTypes = [
     'stream' => ['streams', 'tabler-player-play'],
@@ -73,8 +74,7 @@ $rBouquetId = (int) RequestManager::get('id');
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

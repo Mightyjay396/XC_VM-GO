@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Generate Active Codes (Bootstrap 5, Reseller)
@@ -483,8 +485,7 @@ $dnsList = array_filter(array_map('trim', explode(',', (string)($rUserInfo['rese
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function($) {

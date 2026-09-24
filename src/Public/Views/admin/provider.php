@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Provider (Supplier) add / edit (Bootstrap 5). Full-page form reached from the
@@ -135,8 +137,7 @@ $rIsEdit = isset($rProvider);
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

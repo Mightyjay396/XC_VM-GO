@@ -12,6 +12,7 @@ use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Line\PackageService;
 use XcVm\Domain\User\GroupService;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rOwner = (RequestManager::has('owner') && ($rO = UserRepository::getRegisteredUserById((int) RequestManager::get('owner')))) ? $rO : null;
 ?>
@@ -155,8 +156,7 @@ $rOwner = (RequestManager::has('owner') && ($rO = UserRepository::getRegisteredU
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

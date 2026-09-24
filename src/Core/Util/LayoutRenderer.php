@@ -16,10 +16,11 @@ use XcVm\Core\Localization\Translator;
  * read $rUserInfo, $rSettings, etc. as plain local variables) need them
  * pulled in explicitly first.
  *
- * The global functions renderUnifiedLayoutHeader()/renderUnifiedLayoutFooter()
- * (Public/Views/layouts/admin.php, footer.php) are thin backward-compatible
- * wrappers around this class — kept because ~150 view/controller files call
- * them directly.
+ * Neither method has a global-function wrapper anymore. The former
+ * layouts/admin.php and layouts/footer.php (renderUnifiedLayoutHeader() /
+ * renderUnifiedLayoutFooter()) were deleted once every caller — the 3
+ * Base*Controller classes, admin/setup.php, and every Public/Views/*.php
+ * page template — was converted to call this class directly.
  *
  * @package XC_VM_Core_Util
  * @author  Divarion_D <https://github.com/Divarion-D>

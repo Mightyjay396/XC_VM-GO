@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * EPG source add / edit (Bootstrap 5). Full-page form reached from the epgs table
@@ -82,8 +84,7 @@ $rEPGData = ($rIsEdit && !empty($rEPGArr['data'])) ? (json_decode((string) $rEPG
 <?php endif; ?>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

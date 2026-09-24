@@ -19,6 +19,7 @@
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rIsEdit  = isset($rUser);
 $rCost    = intval($rPermissions['create_sub_resellers_price']);
@@ -161,8 +162,7 @@ $rStatusMessages = [
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function() {

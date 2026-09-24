@@ -11,13 +11,13 @@
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Util\LayoutRenderer;
 
 if (!Authorization::check('adv', 'database')):
 ?>
     <div class="alert alert-danger text-center" role="alert"><?= $language::get('dashboard_no_permissions'); ?></div>
 <?php
-    require_once __DIR__ . '/../layouts/footer.php';
-    renderUnifiedLayoutFooter('admin');
+    LayoutRenderer::renderFooter('admin');
     echo '</body></html>';
     return;
 endif;
@@ -110,8 +110,7 @@ $rBackupTypes = ['off' => 'Off', 'hourly' => 'Hourly', 'daily' => 'Daily', 'week
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

@@ -14,6 +14,7 @@
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\User\GroupService;
 use XcVm\Domain\User\UserRepository;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rIsEdit    = (bool) ($rUser ?? null);
 $rOverrides = ($rIsEdit && !empty($rUser['override_packages'])) ? (json_decode((string) $rUser['override_packages'], true) ?: []) : [];
@@ -158,8 +159,7 @@ $rMinPwLen  = max(10, (int) ($rPermissions['minimum_password_length'] ?? 10));
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

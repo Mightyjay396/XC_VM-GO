@@ -23,6 +23,7 @@ use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\TimeUtils;
 use XcVm\Domain\Stream\StreamRepository;
 use XcVm\Domain\Stream\StreamService;
+use XcVm\Core\Util\LayoutRenderer;
 
 ?>
 
@@ -586,8 +587,7 @@ use XcVm\Domain\Stream\StreamService;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

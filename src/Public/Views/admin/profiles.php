@@ -9,6 +9,7 @@
  */
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Stream\StreamConfigRepository;
 
 $rCanEdit = Authorization::check('adv', 'edit_tprofile');
@@ -63,8 +64,7 @@ $rFlag = static fn(bool $on): string => $on
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

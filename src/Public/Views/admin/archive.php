@@ -9,6 +9,7 @@
  */
 
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rIsRecordings = !is_null($rRecordings);
 ?>
@@ -119,8 +120,7 @@ $rIsRecordings = !is_null($rRecordings);
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

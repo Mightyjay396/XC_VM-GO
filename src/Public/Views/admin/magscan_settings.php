@@ -7,6 +7,7 @@
  */
 
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Util\LayoutRenderer;
 
 $rWhiteMacs = $gData['value']['whitelist_macs'] ?? [];
 $rBlackMacs = $gData['value']['blacklist_macs'] ?? [];
@@ -112,8 +113,7 @@ $rWhiteIps  = $gData['value']['whitelist_ips'] ?? [];
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

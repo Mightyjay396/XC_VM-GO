@@ -16,6 +16,7 @@
  */
 
 use XcVm\Core\Reference\PermissionReference;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Line\PackageService;
 use XcVm\Domain\User\GroupService;
 
@@ -258,8 +259,7 @@ $rAdminCard    = !$rIsEdit || !empty($rGroup['can_delete']);
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

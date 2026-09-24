@@ -9,6 +9,7 @@
  */
 
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Core\Util\TimeUtils;
 use XcVm\Domain\Server\ServerRepository;
 
@@ -173,8 +174,7 @@ if (SettingsManager::get('enable_cache') || SettingsManager::get('redis_handler'
 </form>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

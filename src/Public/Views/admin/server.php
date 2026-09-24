@@ -10,6 +10,7 @@
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Reference\GeoReference;
+use XcVm\Core\Util\LayoutRenderer;
 
 ?>
 
@@ -316,8 +317,7 @@ use XcVm\Core\Reference\GeoReference;
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

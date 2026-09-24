@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Block ISP (Bootstrap 5). Full-page form reached from the isps table (href="isp?id=X").
@@ -39,8 +41,7 @@ $rIsEdit = isset($rISPArr);
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {

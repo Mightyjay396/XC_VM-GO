@@ -1,4 +1,6 @@
 <?php
+use XcVm\Core\Util\LayoutRenderer;
+
 
 /**
  * Support tickets (Bootstrap 5, reseller). A small client-rendered list: the
@@ -66,8 +68,7 @@ $rStatusColour = ['secondary', 'warning', 'success', 'warning', 'info', 'primary
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('reseller');
+LayoutRenderer::renderFooter('reseller');
 ?>
 <script>
     (function() {

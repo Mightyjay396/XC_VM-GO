@@ -14,6 +14,7 @@
 use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Core\Util\LayoutRenderer;
 
 $selectedCategory = RequestManager::get('category') ?? null;
 $rAutoRestart = ['days' => [], 'at' => '06:00'];
@@ -382,8 +383,7 @@ $rAutoRestart = ['days' => [], 'at' => '06:00'];
 </div>
 
 <?php
-require_once __DIR__ . '/../layouts/footer.php';
-renderUnifiedLayoutFooter('admin');
+LayoutRenderer::renderFooter('admin');
 ?>
 <script>
     (function() {
