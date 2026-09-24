@@ -14,7 +14,7 @@ namespace XcVm\Core\Database;
 
 class MigrationRunner {
 	/**
-	 * Apply pending SQL migrations from the migrations/ directory.
+	 * Apply pending SQL migrations from the migrations/database/up/ directory.
 	 *
 	 * Ensures the `migrations` tracking table exists, then runs each unapplied
 	 * `*.sql` file (statement by statement) and records successful ones.
@@ -24,21 +24,11 @@ class MigrationRunner {
 	public static function run(Database $db): void {
 		echo "Migrations\n------------------------------\n";
 
-		$db->query("CREATE TABLE IF NOT EXISTS `migrations` (
-			`id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-			`migration` VARCHAR(255) NOT NULL UNIQUE,
-			`applied_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		) ENGINE=InnoDB DEFAULT CHARSET=utf8;");
+		self::ensureTable($db);
 
-		$db->query("SELECT `migration` FROM `migrations`;");
-		$rApplied = [];
-		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() as $rRow) {
-				$rApplied[] = $rRow['migration'];
-			}
-		}
+		$rApplied = self::appliedMigrations($db);
 
-		$rPath = MAIN_HOME . 'migrations/';
+		$rPath = MAIN_HOME . 'migrations/database/up/';
 		if (!is_dir($rPath)) {
 			echo "No migrations directory found.\n\n";
 			return;
@@ -54,33 +44,7 @@ class MigrationRunner {
 				continue;
 			}
 
-			$rSQL = trim(file_get_contents($rFile));
-			if (empty($rSQL)) {
-				continue;
-			}
-
-			// Strip full-line `--` comments BEFORE splitting on `;` — a comment
-			// may itself contain a semicolon (e.g. "no GeoIP data; on the old
-			// schedule…"), which would otherwise corrupt statement parsing and
-			// leak comment text into the next statement, failing forever.
-			$rLines = array_filter(explode("\n", $rSQL), function ($l) {
-				return strpos(ltrim($l), '--') !== 0;
-			});
-			$rClean = implode("\n", $rLines);
-
-			$rStatements = array_filter(array_map('trim', explode(';', $rClean)));
-			$rFailed = false;
-
-			foreach ($rStatements as $rStatement) {
-				if ($rStatement === '') {
-					continue;
-				}
-				if (!$db->query($rStatement . ';')) {
-					$rFailed = true;
-				}
-			}
-
-			if ($rFailed) {
+			if (!self::executeSqlFile($db, $rFile)) {
 				echo "  [FAIL] " . $rName . " (not recorded — will retry on next run)\n";
 			} else {
 				$db->query("INSERT INTO `migrations` (`migration`) VALUES (?);", $rName);
@@ -93,6 +57,128 @@ class MigrationRunner {
 			echo "No pending migrations.\n";
 		}
 		echo "\n";
+	}
+
+	/**
+	 * Reverse migrations applied on this server that the target version's
+	 * migrations/database/up/ folder no longer carries — used before a
+	 * version rollback swaps in older code, so the older code doesn't hit
+	 * schema it doesn't expect (a column/table a newer migration dropped) or,
+	 * conversely, isn't confused into re-running a migration that never
+	 * existed for it.
+	 *
+	 * Only migrations with a same-named counterpart in migrations/database/down/
+	 * are reversed; migrations without one are left applied (echoed as
+	 * skipped) — safe by design, since every migration lacking a down file
+	 * only ever ADDs schema or business data older code simply never
+	 * references.
+	 *
+	 * up/ and down/ are separate directories under migrations/database/, not
+	 * a `.down.sql`-suffixed sibling of the up file — glob($rPath . '*.sql')
+	 * in run() would otherwise pick up a `<name>.down.sql` file too (it still
+	 * ends in `.sql`) and try to run it forward as an ordinary pending
+	 * migration. glob() doesn't recurse into subdirectories, so keeping down/
+	 * out of up/'s directory entirely is what makes it invisible to run().
+	 *
+	 * @param Database $db                        Database handle.
+	 * @param string[] $targetMigrationFilenames   Migration basenames the target version's migrations/database/up/ folder contains.
+	 * @param string|null $databaseDir             Override for the migrations/database/ directory (tests); defaults to MAIN_HOME . 'migrations/database/'.
+	 * @return array{reversed: string[], skipped: string[]}
+	 * @throws \RuntimeException If a down migration's SQL fails — the caller must abort the rollback.
+	 */
+	public static function rollback(Database $db, array $targetMigrationFilenames, ?string $databaseDir = null): array {
+		$rPath = $databaseDir ?? (MAIN_HOME . 'migrations/database/');
+
+		self::ensureTable($db);
+		$rApplied = self::appliedMigrations($db);
+
+		$rToReverse = array_diff($rApplied, $targetMigrationFilenames);
+		rsort($rToReverse);
+
+		$rReversed = [];
+		$rSkipped = [];
+
+		foreach ($rToReverse as $rName) {
+			$rDownFile = $rPath . 'down/' . $rName;
+
+			if (!is_file($rDownFile)) {
+				$rSkipped[] = $rName;
+				continue;
+			}
+
+			if (!self::executeSqlFile($db, $rDownFile)) {
+				throw new \RuntimeException('Down migration failed: ' . basename($rDownFile));
+			}
+
+			$db->query('DELETE FROM `migrations` WHERE `migration` = ?;', $rName);
+			$rReversed[] = $rName;
+		}
+
+		return ['reversed' => $rReversed, 'skipped' => $rSkipped];
+	}
+
+	/**
+	 * Ensure the `migrations` tracking table exists.
+	 */
+	private static function ensureTable(Database $db): void {
+		$db->query("CREATE TABLE IF NOT EXISTS `migrations` (
+			`id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+			`migration` VARCHAR(255) NOT NULL UNIQUE,
+			`applied_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		) ENGINE=InnoDB DEFAULT CHARSET=utf8;");
+	}
+
+	/**
+	 * Filenames of migrations already recorded as applied.
+	 *
+	 * @return string[]
+	 */
+	private static function appliedMigrations(Database $db): array {
+		$db->query("SELECT `migration` FROM `migrations`;");
+		$rApplied = [];
+		if ($db->num_rows() > 0) {
+			foreach ($db->get_rows() as $rRow) {
+				$rApplied[] = $rRow['migration'];
+			}
+		}
+		return $rApplied;
+	}
+
+	/**
+	 * Execute every statement in a migration SQL file. Comment-strips (`--`
+	 * full-line comments, which may themselves contain a `;`) before
+	 * splitting on `;`, then runs each remaining statement.
+	 *
+	 * @return bool True if every statement succeeded.
+	 */
+	private static function executeSqlFile(Database $db, string $file): bool {
+		$rSQL = trim((string) file_get_contents($file));
+		if ($rSQL === '') {
+			return true;
+		}
+
+		// Strip full-line `--` comments BEFORE splitting on `;` — a comment
+		// may itself contain a semicolon (e.g. "no GeoIP data; on the old
+		// schedule…"), which would otherwise corrupt statement parsing and
+		// leak comment text into the next statement, failing forever.
+		$rLines = array_filter(explode("\n", $rSQL), function ($l) {
+			return strpos(ltrim($l), '--') !== 0;
+		});
+		$rClean = implode("\n", $rLines);
+
+		$rStatements = array_filter(array_map('trim', explode(';', $rClean)));
+		$rFailed = false;
+
+		foreach ($rStatements as $rStatement) {
+			if ($rStatement === '') {
+				continue;
+			}
+			if (!$db->query($rStatement . ';')) {
+				$rFailed = true;
+			}
+		}
+
+		return !$rFailed;
 	}
 
 	/**

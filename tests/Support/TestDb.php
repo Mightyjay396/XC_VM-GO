@@ -82,7 +82,15 @@ final class TestDb extends DatabaseHandler {
 	 */
 	private function translate(string $sql): string {
 		if ($this->driver !== 'mysql') {
-			return $sql;
+			// SQLite doesn't understand MySQL table-option clauses (real
+			// production DDL, e.g. MigrationRunner's CREATE TABLE, carries
+			// `ENGINE=InnoDB DEFAULT CHARSET=utf8[mb4] [COLLATE=...]`) — strip
+			// them so such DDL can run unmodified against the default backend.
+			return preg_replace(
+				'/\s*ENGINE\s*=\s*\w+(\s+DEFAULT)?(\s+CHARSET\s*=\s*\w+)?(\s+COLLATE\s*=?\s*\w+)?/i',
+				'',
+				$sql
+			);
 		}
 
 		// SQLite `AUTOINCREMENT` -> MySQL `AUTO_INCREMENT`.

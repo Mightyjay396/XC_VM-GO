@@ -1,3 +1,7 @@
+-- No down migration: blanket-reverting 'beta' back to 'unstable' would also
+-- revert values a user legitimately set to 'beta' after this migration ran —
+-- not safely invertible.
+--
 -- Rename the "unstable" update channel to "beta". The stored value is now
 -- 'beta' everywhere (settings UI, GitHubReleases, binary/fanout update commands,
 -- module channel logic). 'unstable' stays accepted as a legacy alias in code

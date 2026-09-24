@@ -8,6 +8,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Logging\UpdateLogger;
 use XcVm\Core\Updates\GitHubReleases;
+use XcVm\Core\Updates\ReleaseArchiveInspector;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Server\ServerRepository;
 
@@ -243,6 +244,31 @@ class UpdateCommand implements CommandInterface {
 
 				echo "Download OK, MD5 verified (" . filesize($rOutputDir) . " bytes).\n";
 				UpdateLogger::info('Rollback download OK, MD5 verified, size=' . filesize($rOutputDir) . ' bytes');
+
+				// Reverse schema changes the target version's migrations/ folder
+				// doesn't carry (e.g. a column a newer migration dropped), so the
+				// older code about to be installed doesn't hit schema it doesn't
+				// expect. MAIN only — the DB lives there. Abort on failure: the
+				// pre-rollback backup above is still the recovery path.
+				if ($rIsMain) {
+					echo "Checking for schema changes to reverse...\n";
+					try {
+						$rTargetMigrations = ReleaseArchiveInspector::listSubpathFiles($rOutputDir, 'migrations/database/up');
+						$rMigrationResult = MigrationRunner::rollback($db, $rTargetMigrations);
+					} catch (\Throwable $e) {
+						echo "ERROR: schema reversal failed: " . $e->getMessage() . "\n";
+						UpdateLogger::error('Rollback aborted: schema reversal failed: ' . $e->getMessage());
+						@unlink($rOutputDir);
+						return 1;
+					}
+					foreach ($rMigrationResult['reversed'] as $rName) {
+						echo "  [DOWN] " . $rName . "\n";
+					}
+					foreach ($rMigrationResult['skipped'] as $rName) {
+						echo "  [SKIP] " . $rName . " (no down migration; left applied)\n";
+					}
+					UpdateLogger::info('Rollback schema reversal: ' . count($rMigrationResult['reversed']) . ' reversed, ' . count($rMigrationResult['skipped']) . ' skipped');
+				}
 
 				// Pre-flight the launcher before flipping status: a missing
 				// interpreter or updater script must not strand the server at

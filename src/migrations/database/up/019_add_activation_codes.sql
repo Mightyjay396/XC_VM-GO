@@ -1,3 +1,7 @@
+-- No down migration: `activation_codes` holds real subscriber-facing voucher
+-- data — a rollback reversal would mean DROPping this table outright.
+-- Un-reversed, older code simply never references it.
+--
 -- Smart Activation Codes (core feature): prepaid voucher codes that a
 -- subscriber redeems to provision a line. Generated/managed from admin and
 -- reseller, redeemed through the player activation portal.

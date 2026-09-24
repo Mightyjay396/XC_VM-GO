@@ -1,3 +1,6 @@
+-- No down migration: `category_templates`/`category_template_items` hold real
+-- user-created templates — a rollback reversal would mean DROPping both
+-- tables outright. Un-reversed, older code simply never references them.
 CREATE TABLE IF NOT EXISTS `category_templates` (
   `id` INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `owner_id` INT UNSIGNED NOT NULL COMMENT 'Owner reseller or admin from users table',
