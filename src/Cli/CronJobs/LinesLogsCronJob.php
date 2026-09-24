@@ -20,8 +20,11 @@ class LinesLogsCronJob implements CommandInterface {
 	use DatabaseAware;
 	use CronTrait;
 
-	/** Rows per INSERT, well under MariaDB's max_allowed_packet. */
+	/** Most rows per INSERT. */
 	private const IMPORT_BATCH = 1000;
+
+	/** Most spool bytes per INSERT: oversized rows still keep it far below max_allowed_packet (16M). */
+	private const IMPORT_BYTES = 4194304;
 
 	/** Spool keys, in `lines_logs` column order. */
 	private const KEYS = ['stream_id', 'user_id', 'action', 'query_string', 'user_agent', 'user_ip', 'extra_data', 'time'];
@@ -52,7 +55,8 @@ class LinesLogsCronJob implements CommandInterface {
 	/**
 	 * Import a spool, claimed by renaming it to <spool>.import so rows written
 	 * meanwhile start a fresh spool. A claim left by a run that died mid-import
-	 * goes first. Rows whose INSERT fails are dropped.
+	 * goes first, and the batches that run had inserted are inserted again
+	 * (at-least-once). Rows whose INSERT fails are dropped.
 	 *
 	 * @param string $rLog Spool path.
 	 * @return int Rows inserted.
@@ -71,12 +75,15 @@ class LinesLogsCronJob implements CommandInterface {
 		return $rCount;
 	}
 
-	/** Insert every row of a claimed spool, IMPORT_BATCH per INSERT, then delete it. */
+	/** Insert every row of a claimed spool, up to IMPORT_BATCH rows or IMPORT_BYTES per INSERT, then delete it. */
 	private function parseLog(string $rLog): int {
 		$rRows = [];
-		$rCount = 0;
+		$rCount = $rBytes = 0;
 
 		$rFP = fopen($rLog, 'r');
+		if ($rFP === false) {
+			return 0;
+		}
 		while (($rRaw = fgets($rFP)) !== false) {
 			$rLine = trim($rRaw);
 			if (empty($rLine)) {
@@ -87,9 +94,11 @@ class LinesLogsCronJob implements CommandInterface {
 				continue;
 			}
 			$rRows[] = $rLine;
-			if (count($rRows) >= self::IMPORT_BATCH) {
+			$rBytes += strlen($rRaw);
+			if (count($rRows) >= self::IMPORT_BATCH || $rBytes >= self::IMPORT_BYTES) {
 				$rCount += $this->insertBatch($rRows);
 				$rRows = [];
+				$rBytes = 0;
 			}
 		}
 		fclose($rFP);
