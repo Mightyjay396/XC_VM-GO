@@ -314,6 +314,20 @@
          via PEAR.ControlStructures.MultiLineCondition above). -->
     <!-- <rule ref="PEAR.Functions.FunctionCallSignature"/> -->
 
+    <!-- `use` imports that nothing in the file references MUST be removed
+         (dead code from a rename/refactor, e.g. an IDE flagging "declared but
+         not used"). searchAnnotations=true is REQUIRED: several core
+         interfaces (StreamMiddlewareProviderInterface, MigratableInterface)
+         reference their imported type only inside a @return/@param docblock,
+         never in the actual signature — without this the sniff/fixer treats
+         them as unused and removing the import breaks PHPStan's docblock type
+         resolution (class.notFound), even though `make cs` stays green. -->
+    <rule ref="SlevomatCodingStandard.Namespaces.UnusedUses">
+        <properties>
+            <property name="searchAnnotations" value="true"/>
+        </properties>
+    </rule>
+
     <!-- SlevomatCodingStandard.TypeHints.ParameterTypeHint — DO NOT ENABLE yet.
          As a FIXER it auto-added native param types from @param docblocks that
          crash on null at runtime (the "null given" footgun — see TYPE_AUDIT.md).

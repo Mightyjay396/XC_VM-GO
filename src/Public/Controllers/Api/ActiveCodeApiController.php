@@ -5,9 +5,7 @@ namespace XcVm\Public\Controllers\Api;
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Config\DomainResolver;
 use XcVm\Core\Database\DatabaseHandler;
-use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Line\ActiveCodeService;
-use XcVm\Domain\User\UserRepository;
 
 /**
  * ActiveCodeApiController — Unified REST API for Smart Activation Codes

@@ -3,7 +3,6 @@
 namespace XcVm\Public\Controllers\Admin;
 
 use XcVm\Core\Http\RequestManager;
-use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\Stream\CategoryTemplateService;
 
 /**

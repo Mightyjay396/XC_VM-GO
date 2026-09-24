@@ -2,7 +2,6 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
-use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Stream\CategoryTemplateService;
 

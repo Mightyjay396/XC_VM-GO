@@ -21,7 +21,6 @@ use XcVm\Core\Module\Contract\NavbarProviderInterface;
 use XcVm\Core\Module\Contract\PermissionProviderInterface;
 use XcVm\Core\Module\Contract\QuickToolsProviderInterface;
 use XcVm\Core\Module\Contract\ResellerNavbarProviderInterface;
-use XcVm\Core\Module\Contract\RouteProviderInterface;
 use XcVm\Core\Module\Contract\ServiceProviderInterface;
 use XcVm\Core\Module\Contract\StreamMiddlewareProviderInterface;
 use XcVm\Core\Module\Contract\TableProviderInterface;

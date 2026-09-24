@@ -3,10 +3,8 @@
 namespace XcVm\Public\Controllers\PlayerV2;
 
 use XcVm\Core\Config\DomainResolver;
-use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\ImageUtils;
-use XcVm\Domain\Stream\CategoryService;
 
 /**
  * PlayerMovieController — Movie Details & Player Controller for Web Player V2.

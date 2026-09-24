@@ -3,11 +3,9 @@
 namespace XcVm\Public\Controllers\PlayerV2;
 
 use XcVm\Core\Config\DomainResolver;
-use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Line\LineService;
-use XcVm\Domain\User\UserRepository;
 
 /**
  * ProfileController — Subscriber Profile & Settings Controller for Web Player V2.

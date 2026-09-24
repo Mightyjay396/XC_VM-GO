@@ -2,7 +2,6 @@
 
 namespace XcVm\Public\Controllers\PlayerV2;
 
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Stream\CategoryService;
 use XcVm\Domain\Stream\CategoryTemplateService;
 use XcVm\Infrastructure\Database\DatabaseFactory;

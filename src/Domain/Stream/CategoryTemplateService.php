@@ -2,7 +2,6 @@
 
 namespace XcVm\Domain\Stream;
 
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Line\LineService;
 
 /**
