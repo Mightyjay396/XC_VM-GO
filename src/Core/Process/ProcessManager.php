@@ -604,14 +604,15 @@ class ProcessManager {
 	 * match unrelated processes (e.g. ffmpeg's -thread_queue_size satisfied
 	 * the "queue" daemon check, so the encode queue was never revived).
 	 *
-	 * @param array $rTerms Cmdline substrings to match (exact, case-sensitive)
-	 * @param int   $rLimit Stop after this many matches (0 = no limit)
+	 * @param array  $rTerms    Cmdline substrings to match (exact, case-sensitive)
+	 * @param int    $rLimit    Stop after this many matches (0 = no limit)
+	 * @param string $rProcRoot procfs mount point (overridable for tests)
 	 * @return array<int> Matching PIDs (own PID excluded)
 	 */
-	public static function findProcessPIDs(array $rTerms, int $rLimit = 0) {
+	public static function findProcessPIDs(array $rTerms, int $rLimit = 0, string $rProcRoot = '/proc') {
 		$rPIDs = [];
 		$rSelf = getmypid();
-		foreach (glob('/proc/[0-9]*/cmdline') ?: [] as $rCmdFile) {
+		foreach (glob($rProcRoot . '/[0-9]*/cmdline') ?: [] as $rCmdFile) {
 			$rPID = intval(basename(dirname($rCmdFile)));
 			if ($rPID == $rSelf) {
 				continue;
@@ -643,5 +644,21 @@ class ProcessManager {
 	 */
 	public static function isAnyProcessRunning(array $rTerms) {
 		return count(self::findProcessPIDs($rTerms, 1)) > 0;
+	}
+
+	/**
+	 * PIDs of the live PHP-FPM workers of the xc_vm pool — the pids that
+	 * connection rows record (getmypid() in the stream endpoints). The watchdog
+	 * publishes them as servers.php_pids. FPM titles a worker "php-fpm: pool
+	 * xc_vm" and its master "php-fpm: master process (...)", so the pool pid
+	 * files (masters only) would never match a connection.
+	 *
+	 * @param string $rProcRoot procfs mount point (overridable for tests)
+	 * @return array<int> Worker PIDs, ascending
+	 */
+	public static function phpFpmWorkerPIDs(string $rProcRoot = '/proc') {
+		$rPIDs = array_unique(self::findProcessPIDs(['php-fpm: pool xc_vm'], 0, $rProcRoot));
+		sort($rPIDs);
+		return $rPIDs;
 	}
 }

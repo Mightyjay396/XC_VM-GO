@@ -103,6 +103,9 @@ class ServerRepository {
 			if (!isset($rRow['order'])) {
 				$rRow['order'] = 0;
 			}
+			// One pid per live PHP-FPM worker; only cron:users needs it and it
+			// reads the column itself. Keep it out of the per-request cache.
+			unset($rRow['php_pids']);
 			$rServers[intval($rRow['id'])] = $rRow;
 		}
 

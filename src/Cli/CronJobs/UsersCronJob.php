@@ -126,16 +126,31 @@ class UsersCronJob implements CommandInterface {
 
 		if (SettingsManager::getBool('redis_handler') && $this->rServers[SERVER_ID]['is_main']) {
 			$this->rServers = ServerRepository::getAll(true);
-
-			foreach ($this->rServers as $rServer) {
-				$rDecodedPids = json_decode($rServer['php_pids'] ?? '', true);
-				$this->rPHPPIDs[$rServer['id']] = is_array($rDecodedPids) ? array_map('intval', $rDecodedPids) : [];
-			}
+			$this->rPHPPIDs = $this->loadPHPPIDs();
 		}
 
 		$this->loadCron();
 
 		return 0;
+	}
+
+	/**
+	 * Every node's live PHP-FPM worker pids, as its watchdog last published
+	 * them. Read here because ServerRepository::getAll() leaves php_pids out.
+	 *
+	 * @return array<int, int[]> Worker pids keyed by server id ([] = unknown).
+	 */
+	private function loadPHPPIDs(): array {
+		global $db;
+		$rPHPPIDs = [];
+
+		$db->query('SELECT `id`, `php_pids` FROM `servers`;');
+		foreach ($db->get_rows() ?: [] as $rRow) {
+			$rDecodedPids = json_decode($rRow['php_pids'] ?? '', true);
+			$rPHPPIDs[intval($rRow['id'])] = is_array($rDecodedPids) ? array_map('intval', $rDecodedPids) : [];
+		}
+
+		return $rPHPPIDs;
 	}
 
 	private function processDeletions($rDelete, $rDelStream = []) {

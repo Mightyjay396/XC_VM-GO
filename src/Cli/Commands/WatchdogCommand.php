@@ -134,13 +134,9 @@ class WatchdogCommand implements CommandInterface {
 			$rStats['fanout'] = FanoutClient::status();
 
 			// ── PHP PIDs ─────────────────────────────────────────
-			$rPHPPIDs = [];
-			foreach (glob(MAIN_HOME . 'bin/php/sockets/*.pid') ?: [] as $rPidFile) {
-				$rPid = trim(@file_get_contents($rPidFile) ?: '');
-				if (is_numeric($rPid) && 0 < intval($rPid)) {
-					$rPHPPIDs[] = intval($rPid);
-				}
-			}
+			// FPM worker pids, which connection rows record; the pool pid
+			// files hold only the masters.
+			$rPHPPIDs = ProcessManager::phpFpmWorkerPIDs();
 
 			// ── Update servers table ─────────────────────────────
 			$rConnections = $rUsers = 0;
