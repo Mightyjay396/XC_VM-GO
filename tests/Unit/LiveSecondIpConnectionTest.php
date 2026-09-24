@@ -7,7 +7,8 @@ use XcVm\Domain\Stream\ConnectionTracker;
  * disallow_2nd_ip_con in Redis mode — live.php accepts only the IP of the
  * line's oldest connection. The LINE# set holds connection keys, not the
  * connections, so the rows are read behind them before the oldest is picked;
- * sorting the keys by date_start was a ValueError on PHP 8.
+ * sorting the keys by date_start was a ValueError on PHP 8, and an HMAC
+ * token's null line id a TypeError.
  */
 final class LiveSecondIpConnectionTest extends TestCase {
 
@@ -49,14 +50,44 @@ final class LiveSecondIpConnectionTest extends TestCase {
 		$this->assertNull(ConnectionTracker::oldestConnectionIP([]));
 	}
 
-	public function testConnectionKeysAloneYieldNoIpInsteadOfAValueError(): void {
-		// The shape live.php used to sort: the LINE# members, uuid strings.
+	public function testConnectionKeysAreNotConnectionRows(): void {
+		// The LINE# members, uuid strings, carry no IP.
 		$this->assertNull(ConnectionTracker::oldestConnectionIP(['uuid-a', 'uuid-b']));
 	}
 
+	public function testOldestIpIsAcceptedForALineWithActiveConnections(): void {
+		if (!extension_loaded('redis')) {
+			$this->markTestSkipped('phpredis is not loaded; the mGet branch needs a \Redis double.');
+		}
+
+		// Sorting these LINE# keys by date_start was "ValueError: Array sizes are
+		// inconsistent" as soon as the line had one active connection.
+		$rRedis = $this->createMock(\Redis::class);
+		$rRedis->expects($this->once())->method('zRangeByScore')->with('LINE#7', '-inf', '+inf')->willReturn(['k-new', 'k-old']);
+		$rRedis->expects($this->once())->method('mGet')->with(['k-new', 'k-old'])->willReturn([
+			igbinary_serialize(['user_ip' => '2.2.2.2', 'date_start' => 200]),
+			igbinary_serialize(['user_ip' => '1.1.1.1', 'date_start' => 100]),
+		]);
+
+		$this->assertSame('1.1.1.1', ConnectionTracker::acceptedLineIP($rRedis, '7'));
+	}
+
+	public function testHmacIdentityHasNoAcceptedIpAndNeverQueriesRedis(): void {
+		if (!extension_loaded('redis')) {
+			$this->markTestSkipped('phpredis is not loaded; the zRangeByScore branch needs a \Redis double.');
+		}
+
+		// An HMAC token's line id is null; getLineConnections(int) was a TypeError.
+		$rRedis = $this->createMock(\Redis::class);
+		$rRedis->expects($this->never())->method('zRangeByScore');
+		$rRedis->expects($this->never())->method('mGet');
+
+		$this->assertNull(ConnectionTracker::acceptedLineIP($rRedis, null));
+	}
+
 	public function testLineConnectionRowsReadsTheRowsBehindTheLineKeys(): void {
-		if (!extension_loaded('redis') || !extension_loaded('igbinary')) {
-			$this->markTestSkipped('phpredis and igbinary are needed for the \Redis double and the payloads.');
+		if (!extension_loaded('redis')) {
+			$this->markTestSkipped('phpredis is not loaded; the mGet branch needs a \Redis double.');
 		}
 
 		$rRedis = $this->createMock(\Redis::class);
@@ -94,16 +125,11 @@ final class LiveSecondIpConnectionTest extends TestCase {
 		$this->assertSame([], ConnectionTracker::getLineConnectionRows($rRedis, 7, true));
 	}
 
-	public function testLiveEndpointNoLongerSortsTheLineKeys(): void {
+	public function testLiveEndpointTakesTheAcceptedIpFromTheSeam(): void {
 		$rPath = MAIN_HOME . 'Public/stream/live.php';
-		if (!is_file($rPath)) {
-			$this->markTestSkipped('live.php is not part of this layout');
-		}
+		$this->assertFileExists($rPath);
 		$rSource = (string) file_get_contents($rPath);
 
-		// getLineConnections() answers the LINE# members (keys); sorting those by
-		// date_start threw "Array sizes are inconsistent" for any live line.
-		$this->assertSame(0, substr_count($rSource, 'array_multisort'), 'live.php must not sort connection keys');
-		$this->assertSame(0, substr_count($rSource, 'ConnectionTracker::getLineConnections('), 'live.php must read the connection rows, not the keys');
+		$this->assertSame(1, substr_count($rSource, 'ConnectionTracker::acceptedLineIP('), 'live.php must take the Redis-mode accepted IP from acceptedLineIP()');
 	}
 }

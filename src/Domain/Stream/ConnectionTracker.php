@@ -376,17 +376,17 @@ class ConnectionTracker {
 	 * them here. An unreachable Redis, a failed call and an unreadable payload
 	 * all read as "no connection".
 	 *
-	 * @param \Redis|null $rRedis    Active connection, or null when unreachable.
-	 * @param int|string  $rIdentity Line ID (or an HMAC "<hmac_id>_<identifier>" identity).
-	 * @param bool        $rActive   If true — only active (LINE#), otherwise all (LINE_ALL#).
+	 * @param \Redis|null $rRedis  Active connection, or null when unreachable.
+	 * @param int         $rLineID Line ID.
+	 * @param bool        $rActive If true — only active (LINE#), otherwise all (LINE_ALL#).
 	 * @return array<int, array> Unserialized connection rows.
 	 */
-	public static function getLineConnectionRows(?\Redis $rRedis, int|string $rIdentity, bool $rActive = true): array {
+	public static function getLineConnectionRows(?\Redis $rRedis, int $rLineID, bool $rActive = true): array {
 		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
 		// zRangeByScore returns false on a failed connection — degrade to empty.
-		$rKeys = $rRedis->zRangeByScore(($rActive ? 'LINE#' : 'LINE_ALL#') . $rIdentity, '-inf', '+inf');
+		$rKeys = $rRedis->zRangeByScore(($rActive ? 'LINE#' : 'LINE_ALL#') . $rLineID, '-inf', '+inf');
 		if (!is_array($rKeys) || count($rKeys) === 0) {
 			return [];
 		}
@@ -423,6 +423,24 @@ class ConnectionTracker {
 			}
 		}
 		return $rAcceptIP;
+	}
+
+	/**
+	 * The IP disallow_2nd_ip_con accepts for a line in Redis mode: its oldest
+	 * active connection's.
+	 *
+	 * An HMAC token has no line id (null) and is never checked — the MySQL
+	 * branch's `user_id = NULL` matches nothing either — so Redis is not asked.
+	 *
+	 * @param \Redis|null $rRedis  Active connection, or null when unreachable.
+	 * @param mixed       $rLineID Line ID; empty for an HMAC identity.
+	 * @return string|null The accepted IP, or null when there is none.
+	 */
+	public static function acceptedLineIP(?\Redis $rRedis, mixed $rLineID): ?string {
+		if (empty($rLineID)) {
+			return null;
+		}
+		return self::oldestConnectionIP(self::getLineConnectionRows($rRedis, intval($rLineID), true));
 	}
 
 	/**
