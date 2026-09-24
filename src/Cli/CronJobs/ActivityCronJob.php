@@ -20,6 +20,12 @@ class ActivityCronJob implements CommandInterface {
 	use DatabaseAware;
 	use CronTrait;
 
+	/** Rows per INSERT, well under MariaDB's max_allowed_packet. */
+	private const IMPORT_BATCH = 1000;
+
+	/** Spool keys, in `lines_activity` column order. */
+	private const COLUMNS = ['server_id', 'proxy_id', 'user_id', 'isp', 'external_device', 'stream_id', 'date_start', 'user_agent', 'user_ip', 'date_end', 'container', 'geoip_country_code', 'divergence', 'hmac_id', 'hmac_identifier'];
+
 	public function getName(): string {
 		return 'cron:activity';
 	}
@@ -40,73 +46,82 @@ class ActivityCronJob implements CommandInterface {
 	}
 
 	private function loadCron(): void {
-		$db = self::db();
-
-		$rLogFile = LOGS_TMP_PATH . 'activity';
-		$rUpdateQuery = $rQuery = '';
-		$rUpdates = [];
-		$rCount = 0;
-
-		if (!file_exists($rLogFile)) {
-			return;
-		}
-
-		list($rQuery, $rUpdates, $rCount) = $this->parseLog($rLogFile);
-		unlink($rLogFile);
-
-		if (0 >= $rCount) {
-			return;
-		}
-
-		$rQuery = rtrim($rQuery, ',');
-		if (empty($rQuery)) {
-			return;
-		}
-
-		if (!$db->query('INSERT INTO `lines_activity` (`server_id`,`proxy_id`,`user_id`,`isp`,`external_device`,`stream_id`,`date_start`,`user_agent`,`user_ip`,`date_end`,`container`,`geoip_country_code`,`divergence`,`hmac_id`,`hmac_identifier`) VALUES ' . $rQuery)) {
-			return;
-		}
-
-		$rFirstID = $db->last_insert_id();
-		$i = 0;
-		while ($i < $rCount) {
-			$rUpdateQuery .= '(' . $rUpdates[$i][0] . ',' . $db->escape($rUpdates[$i][1]) . ',' . ($rFirstID + $i) . ',' . $db->escape($rUpdates[$i][2]) . '),';
-			$i++;
-		}
-
-		$rUpdateQuery = rtrim($rUpdateQuery, ',');
-		if (!empty($rUpdateQuery)) {
-			$db->query('INSERT INTO `lines`(`id`,`last_ip`,`last_activity`,`last_activity_array`) VALUES ' . $rUpdateQuery . ' ON DUPLICATE KEY UPDATE `id`=VALUES(`id`), `last_ip`=VALUES(`last_ip`), `last_activity`=VALUES(`last_activity`), `last_activity_array`=VALUES(`last_activity_array`);');
-		}
+		$this->importFile(LOGS_TMP_PATH . 'activity');
 	}
 
-	private function parseLog(string $rFile): array {
-		$db = self::db();
-		$rQuery = '';
-		$rUpdates = [];
+	/**
+	 * Import a spool, claimed by renaming it to <spool>.import so rows written
+	 * meanwhile start a fresh spool. A claim left by a run that died mid-import
+	 * goes first. Rows whose INSERT fails are dropped.
+	 *
+	 * @param string $rLogFile Spool path.
+	 * @return int Rows inserted.
+	 */
+	private function importFile(string $rLogFile): int {
+		$rClaimed = $rLogFile . '.import';
 		$rCount = 0;
 
-		if (!file_exists($rFile)) {
-			return [$rQuery, $rUpdates, $rCount];
+		if (file_exists($rClaimed)) {
+			$rCount += $this->parseLog($rClaimed);
+		}
+		if (file_exists($rLogFile) && rename($rLogFile, $rClaimed)) {
+			$rCount += $this->parseLog($rClaimed);
 		}
 
+		return $rCount;
+	}
+
+	/** Insert every valid row of a claimed spool, IMPORT_BATCH per INSERT, then delete it. */
+	private function parseLog(string $rFile): int {
+		$rRows = [];
+		$rCount = 0;
+
 		$rFP = fopen($rFile, 'r');
-		while (!feof($rFP)) {
-			$rLine = trim(fgets($rFP));
-			if (!empty($rLine)) {
-				$rLine = json_decode(base64_decode($rLine), true);
-				if (!($rLine['server_id'] && $rLine['user_id'] && $rLine['stream_id'] && $rLine['user_ip'])) {
-					break;
-				}
-				$rUpdates[] = [$rLine['user_id'], $rLine['user_ip'], json_encode(['date_end' => $rLine['date_end'], 'stream_id' => $rLine['stream_id']])];
-				$rLine = array_map(static fn($rValue) => $db->escape((string) $rValue), $rLine);
-				$rQuery .= '(' . $rLine['server_id'] . ',' . $rLine['proxy_id'] . ',' . $rLine['user_id'] . ',' . $rLine['isp'] . ',' . $rLine['external_device'] . ',' . $rLine['stream_id'] . ',' . $rLine['date_start'] . ',' . $rLine['user_agent'] . ',' . $rLine['user_ip'] . ',' . $rLine['date_end'] . ',' . $rLine['container'] . ',' . $rLine['geoip_country_code'] . ',' . $rLine['divergence'] . ',' . $rLine['hmac_id'] . ',' . $rLine['hmac_identifier'] . '),';
-				$rCount++;
-				break;
+		while (($rRaw = fgets($rFP)) !== false) {
+			$rLine = trim($rRaw);
+			if (empty($rLine)) {
+				continue;
+			}
+			$rLine = json_decode(base64_decode($rLine), true);
+			if (!is_array($rLine) || empty($rLine['server_id']) || empty($rLine['user_id']) || empty($rLine['stream_id']) || empty($rLine['user_ip'])) {
+				continue;
+			}
+			$rRows[] = $rLine;
+			if (count($rRows) >= self::IMPORT_BATCH) {
+				$rCount += $this->insertBatch($rRows);
+				$rRows = [];
 			}
 		}
 		fclose($rFP);
 
-		return [$rQuery, $rUpdates, $rCount];
+		if (!empty($rRows)) {
+			$rCount += $this->insertBatch($rRows);
+		}
+		unlink($rFile);
+
+		return $rCount;
+	}
+
+	/** Insert one batch into `lines_activity` and record it as each line's last activity. */
+	private function insertBatch(array $rRows): int {
+		$db = self::db();
+		$rQuery = $rUpdateQuery = '';
+
+		foreach ($rRows as $rLine) {
+			$rQuery .= '(' . implode(',', array_map(static fn($rKey) => $db->escape((string) ($rLine[$rKey] ?? '')), self::COLUMNS)) . '),';
+		}
+
+		if (!$db->query('INSERT INTO `lines_activity` (`server_id`,`proxy_id`,`user_id`,`isp`,`external_device`,`stream_id`,`date_start`,`user_agent`,`user_ip`,`date_end`,`container`,`geoip_country_code`,`divergence`,`hmac_id`,`hmac_identifier`) VALUES ' . rtrim($rQuery, ','))) {
+			return 0;
+		}
+
+		// A multi-row INSERT reports its first id; the rest follow consecutively.
+		$rFirstID = (int) $db->last_insert_id();
+		foreach ($rRows as $i => $rLine) {
+			$rUpdateQuery .= '(' . intval($rLine['user_id']) . ',' . $db->escape((string) $rLine['user_ip']) . ',' . ($rFirstID + $i) . ',' . $db->escape(json_encode(['date_end' => $rLine['date_end'] ?? null, 'stream_id' => $rLine['stream_id']])) . '),';
+		}
+		$db->query('INSERT INTO `lines`(`id`,`last_ip`,`last_activity`,`last_activity_array`) VALUES ' . rtrim($rUpdateQuery, ',') . ' ON DUPLICATE KEY UPDATE `id`=VALUES(`id`), `last_ip`=VALUES(`last_ip`), `last_activity`=VALUES(`last_activity`), `last_activity_array`=VALUES(`last_activity_array`);');
+
+		return count($rRows);
 	}
 }
