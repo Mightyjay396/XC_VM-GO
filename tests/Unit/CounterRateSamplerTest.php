@@ -67,6 +67,7 @@ final class CounterRateSamplerTest extends TestCase {
 		$rSampler = new CounterRateSampler($this->rFile);
 		$rSampler->sample(1000, 100);
 		$this->assertSame(0, $rSampler->sample(2210, 221));
+		$this->assertSame(10, $rSampler->sample(3410, 341), '120 s is in range by default');
 	}
 
 	public function testACorruptStateFileIsZeroAndOverwritten(): void {
@@ -92,6 +93,7 @@ final class CounterRateSamplerTest extends TestCase {
 		$this->assertFileExists($rPath);
 		$rSource = (string) file_get_contents($rPath);
 
+		$this->assertStringContainsString('SystemInfo::nginxRequestCount(', $rSource);
 		$this->assertStringContainsString('new CounterRateSampler(TMP_PATH . ', $rSource);
 		$this->assertStringNotContainsString('$rLastRequests', $rSource, 'a per-process previous reading is always null');
 	}

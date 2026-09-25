@@ -252,6 +252,20 @@ class SystemInfo {
 	}
 
 	/**
+	 * Total request count from an nginx stub_status body.
+	 *
+	 * The third line holds the accepts, handled and requests counters
+	 * (" 10 10 57 "); the request count is the third of them.
+	 *
+	 * @param string $rStatus stub_status response body ('' when unreachable)
+	 * @return float|null The request count; null when the body has none
+	 */
+	public static function nginxRequestCount(string $rStatus) {
+		$rRequests = explode(' ', trim(explode("\n", $rStatus)[2] ?? ''))[2] ?? null;
+		return is_numeric($rRequests) ? (float) $rRequests : null;
+	}
+
+	/**
 	 * List V4L2 video capture devices.
 	 *
 	 * @return array<int, array{name: string, video_device: string}>

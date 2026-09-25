@@ -100,9 +100,8 @@ class WatchdogCommand implements CommandInterface {
 			// ── Nginx stats ──────────────────────────────────────
 			// Each pass is a fresh process (restartDaemon re-execs), so the
 			// previous request count is kept in a state file, not a variable.
-			$rNginx = explode("\n", (string) @file_get_contents('http://127.0.0.1:' . $rServers[SERVER_ID]['http_broadcast_port'] . '/nginx_status'));
-			$rRequests = explode(' ', trim($rNginx[2] ?? ''))[2] ?? null;
-			$rRequestsPerSecond = is_numeric($rRequests) ? (new CounterRateSampler(TMP_PATH . 'watchdog_nginx_requests.json'))->sample((float) $rRequests, time()) : 0;
+			$rRequests = SystemInfo::nginxRequestCount((string) @file_get_contents('http://127.0.0.1:' . $rServers[SERVER_ID]['http_broadcast_port'] . '/nginx_status'));
+			$rRequestsPerSecond = ($rRequests === null ? 0 : (new CounterRateSampler(TMP_PATH . 'watchdog_nginx_requests.json'))->sample($rRequests, time()));
 
 			// ── CPU stats ────────────────────────────────────────
 			$rStats = SystemInfo::getStats();

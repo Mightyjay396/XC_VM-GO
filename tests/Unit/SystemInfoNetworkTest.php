@@ -93,7 +93,8 @@ final class SystemInfoNetworkTest extends TestCase {
 	public function testGetStatsTakesItsBandwidthFromAggregateNetwork(): void {
 		$rSource = (string) file_get_contents(MAIN_HOME . 'Core/Util/SystemInfo.php');
 
-		$this->assertStringContainsString('self::aggregateNetwork($rJSON[\'network_info\'])', $rSource);
+		// array_replace, not `+`: the keys already exist (as 0) and must be overwritten in place.
+		$this->assertStringContainsString("\$rJSON = array_replace(\$rJSON, self::aggregateNetwork(\$rJSON['network_info']));", $rSource);
 		$this->assertStringNotContainsString("\$rJSON['bytes_sent_total'] = (", $rSource, 'the total must not be assigned per interface');
 	}
 }
