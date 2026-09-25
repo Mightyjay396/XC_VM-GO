@@ -475,8 +475,9 @@ class LbInstallFlow {
 	 * MAIN's API, stops the install (status 4).
 	 *
 	 * @param callable|null $rAgentBinary fn(string $arch): ?string local agent path (tests; defaults to AgentBinaryCommand::cached)
+	 * @param bool          $rMarkFailed  Set status 4 on failure (a fresh install); false for `server:enrol` on a live node.
 	 */
-	public static function provisionCluster($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?ClusterCrypto $rCrypto = null, ?callable $rAgentBinary = null): bool {
+	public static function provisionCluster($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?ClusterCrypto $rCrypto = null, ?callable $rAgentBinary = null, bool $rMarkFailed = true): bool {
 		$rSettings = SettingsManager::getAll();
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return true;
@@ -490,8 +491,10 @@ class LbInstallFlow {
 			}
 		}
 		echo "Enrolling the node in the cluster API\n";
-		$rFail = static function (string $rWhy) use ($db, $rServerID): bool {
-			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+		$rFail = static function (string $rWhy) use ($db, $rServerID, $rMarkFailed): bool {
+			if ($rMarkFailed) {
+				$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			}
 			echo $rWhy . "\n";
 			return false;
 		};
@@ -502,6 +505,9 @@ class LbInstallFlow {
 			echo 'No xc_agent for this node (' . ($rArch ?? 'unsupported arch') . "); the node stays legacy and can be enrolled later\n";
 			return true;
 		}
+		// A re-enrolment replaces the node's identity: stop a running agent (the
+		// supervisor first, so it cannot respawn it) before its state changes.
+		call_user_func($rRunSSH, $rConn, 'sudo pkill -u xc_vm -f ' . escapeshellarg(dirname(self::AGENT_BIN) . '/run.sh') . '; sudo pkill -u xc_vm -x xc_agent; true');
 		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)));
 		if (!call_user_func($rSendFileSSH, $rConn, $rLocal, self::AGENT_BIN, false)) {
 			return $rFail('Failed to upload xc_agent! Exiting');

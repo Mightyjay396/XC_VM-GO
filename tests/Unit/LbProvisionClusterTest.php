@@ -172,6 +172,37 @@ final class LbProvisionClusterTest extends TestCase {
 		$this->assertSame(4, $this->serverStatus());
 	}
 
+	public function testEnrolOnALiveNodeNeverMarksItFailed(): void {
+		// server:enrol passes $rMarkFailed = false: a failed enrolment leaves a
+		// serving LB as it was.
+		$this->rDb->query('UPDATE `servers` SET `status` = 1 WHERE `id` = 9');
+		$this->rProbeOk = false;
+		[$rRun, $rSend] = $this->fakeSsh();
+		ob_start();
+		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary(), false);
+		ob_end_clean();
+		$this->assertFalse($rOk);
+		$this->assertSame(1, $this->serverStatus());
+	}
+
+	public function testReEnrolmentStopsTheRunningAgentFirstAndRaisesTheGeneration(): void {
+		[$rRun, $rSend] = $this->fakeSsh();
+		ob_start();
+		$this->assertTrue(LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary(), false));
+		$rFirst = NodeRegistry::byServer(self::SID);
+		$this->rCommands = [];
+		$this->assertTrue(LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary(), false));
+		ob_end_clean();
+		$rSecond = NodeRegistry::byServer(self::SID);
+		$this->assertNotSame($rFirst['node_uuid'], $rSecond['node_uuid'], 'a new identity');
+		$this->assertSame((int) $rFirst['gen'] + 1, (int) $rSecond['gen']);
+		$rStopAt = array_key_first(array_filter($this->rCommands, static fn($c) => str_contains($c, 'pkill -u xc_vm -x xc_agent')));
+		$rKeygenAt = array_key_first(array_filter($this->rCommands, static fn($c) => str_contains($c, ' keygen ')));
+		$this->assertNotNull($rStopAt);
+		$this->assertLessThan($rKeygenAt, $rStopAt, 'the old agent is stopped before its state is replaced');
+		$this->assertStringContainsString('run.sh', $this->rCommands[$rStopAt], 'the supervisor too, first');
+	}
+
 	public function testLegacyWhenDisabledOrWithoutAnAgent(): void {
 		[$rRun, $rSend] = $this->fakeSsh();
 		SettingsManager::set(['cluster_api_enabled' => 0]);
