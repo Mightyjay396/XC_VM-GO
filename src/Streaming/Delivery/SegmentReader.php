@@ -39,7 +39,7 @@ class SegmentReader {
 	 * @return array<int,string>|string|null
 	 */
 	public static function selectSegments($rSource, $rPrebuffer = 0, $rSegmentDuration = 10) {
-		$rSource = str_replace(array("\r\n", "\r"), "\n", $rSource);
+		$rSource = str_replace(["\r\n", "\r"], "\n", $rSource);
 
 		if (!preg_match_all('/(.*?)\.(ts|m4s)/', $rSource, $rMatches)) {
 			return null;
@@ -53,7 +53,7 @@ class SegmentReader {
 			if (strpos($rSource, '#EXTINF:') !== false) {
 				$rPairs = self::parseSegmentDurations($rSource);
 				$rAccum = 0.0;
-				$rPicked = array();
+				$rPicked = [];
 				for ($i = count($rPairs) - 1; $i >= 0; $i--) {
 					array_unshift($rPicked, $rPairs[$i][1]);
 					$rAccum += $rPairs[$i][0];
@@ -86,7 +86,7 @@ class SegmentReader {
 			return 0.0;
 		}
 		$rTotal = 0.0;
-		$rSource = str_replace(array("\r\n", "\r"), "\n", (string) file_get_contents($rPlaylist));
+		$rSource = str_replace(["\r\n", "\r"], "\n", (string) file_get_contents($rPlaylist));
 		foreach (self::parseSegmentDurations($rSource) as $rPair) {
 			$rTotal += $rPair[0];
 		}
@@ -101,14 +101,14 @@ class SegmentReader {
 	 * @return array<int,array{0:float,1:string}>
 	 */
 	private static function parseSegmentDurations($rSource) {
-		$rPairs = array();
+		$rPairs = [];
 		$rDuration = null;
 		foreach (explode("\n", $rSource) as $rLine) {
 			$rLine = trim($rLine);
 			if (strncmp($rLine, '#EXTINF:', 8) === 0) {
 				$rDuration = (float) substr($rLine, 8);
 			} elseif ($rLine !== '' && $rLine[0] !== '#' && preg_match('/\.(ts|m4s)$/', $rLine)) {
-				$rPairs[] = array($rDuration !== null ? $rDuration : 0.0, $rLine);
+				$rPairs[] = [$rDuration !== null ? $rDuration : 0.0, $rLine];
 				$rDuration = null;
 			}
 		}

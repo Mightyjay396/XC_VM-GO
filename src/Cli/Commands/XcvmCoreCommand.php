@@ -233,6 +233,7 @@ class XcvmCoreCommand implements CommandInterface {
 	}
 
 	/** True if a fresh php (as xc_vm) loads xcvm_core and it is the new API build. */
+
 	/**
 	 * Would swapping an extension with cluster API $rBefore for one with $rAfter
 	 * lose the API this panel speaks? (0 = no cluster API.) Keeping an

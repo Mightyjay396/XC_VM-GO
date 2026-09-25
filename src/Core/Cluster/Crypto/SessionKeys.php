@@ -33,9 +33,19 @@ final class SessionKeys {
 	/** @param array<string, mixed> $rA As `XC_VM::cluster_session()` returns it. */
 	public static function fromArray(array $rA): self {
 		return new self(
-			(string) $rA['node_uuid'], (int) $rA['server_id'], (int) $rA['gen'], (string) $rA['node_sign_pub'],
-			(int) $rA['epoch'], (int) $rA['nbf'], (int) $rA['exp'], (string) $rA['kid'], (bool) $rA['licensed'],
-			(string) $rA['k_mac_up'], (string) $rA['k_mac_down'], (string) $rA['k_enc_up'], (string) $rA['k_enc_down'],
+			(string) $rA['node_uuid'],
+			(int) $rA['server_id'],
+			(int) $rA['gen'],
+			(string) $rA['node_sign_pub'],
+			(int) $rA['epoch'],
+			(int) $rA['nbf'],
+			(int) $rA['exp'],
+			(string) $rA['kid'],
+			(bool) $rA['licensed'],
+			(string) $rA['k_mac_up'],
+			(string) $rA['k_mac_down'],
+			(string) $rA['k_enc_up'],
+			(string) $rA['k_enc_down'],
 		);
 	}
 

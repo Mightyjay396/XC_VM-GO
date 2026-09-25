@@ -45,7 +45,8 @@ final class RelayAuth {
 		$rNonce = (string) hex2bin($rM[2]);
 		$rSig = Enc::b64urlDecode($rM[3]);
 		if ($rSig === null || !Canonical::withinWindow($rTs, $rNowMs)
-			|| !NodeSig::verify($rChildSignPub, 'relay', self::message($rTicketWire, $rMethod, $rTarget, $rTs, $rNonce), $rSig)) {
+			|| !NodeSig::verify($rChildSignPub, 'relay', self::message($rTicketWire, $rMethod, $rTarget, $rTs, $rNonce), $rSig)
+		) {
 			return null;
 		}
 		return ['ts_ms' => $rTs, 'nonce' => $rNonce];

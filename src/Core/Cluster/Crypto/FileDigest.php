@@ -54,7 +54,8 @@ final class FileDigest {
 		}
 		$rData = json_decode($rDoc, true);
 		if (!is_array($rData) || ($rData['v'] ?? null) !== 1 || ($rData['typ'] ?? null) !== 'xcvm-file-digest'
-			|| ($rData['tid'] ?? null) !== $rTid || !is_int($rData['size'] ?? null) || !preg_match('/^[0-9a-f]{64}$/', (string) ($rData['sha256'] ?? ''))) {
+			|| ($rData['tid'] ?? null) !== $rTid || !is_int($rData['size'] ?? null) || !preg_match('/^[0-9a-f]{64}$/', (string) ($rData['sha256'] ?? ''))
+		) {
 			return null;
 		}
 		return $rData;

@@ -66,7 +66,8 @@ final class Ticket {
 		}
 		$rData = json_decode($rDoc, true);
 		if (!is_array($rData) || ($rData['v'] ?? null) !== 1 || ($rData['typ'] ?? null) !== $rTyp
-			|| !is_int($rData['iat'] ?? null) || !is_int($rData['exp'] ?? null) || !is_string($rData['tid'] ?? null)) {
+			|| !is_int($rData['iat'] ?? null) || !is_int($rData['exp'] ?? null) || !is_string($rData['tid'] ?? null)
+		) {
 			return null;
 		}
 		if ($rData['exp'] - $rData['iat'] > $rMax || $rData['iat'] - self::SKEW > $rNow || $rNow >= $rData['exp']) {

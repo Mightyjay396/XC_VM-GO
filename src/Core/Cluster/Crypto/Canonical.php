@@ -137,7 +137,8 @@ final class Canonical {
 			|| $rEpoch === null || !preg_match('/^(0|[1-9][0-9]{0,17})$/', $rEpoch)
 			|| $rTs === null || !preg_match('/^[1-9][0-9]{12,15}$/', $rTs)
 			|| $rNonce === null || !preg_match('/^[0-9a-f]{32}$/', $rNonce)
-			|| ($rSig !== null && !preg_match('/^[0-9a-f]{64}$/', $rSig))) {
+			|| ($rSig !== null && !preg_match('/^[0-9a-f]{64}$/', $rSig))
+		) {
 			return null;
 		}
 		$rAgent = (string) ($rGet(self::H_AGENT) ?? '');

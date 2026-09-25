@@ -140,7 +140,8 @@ class CreatedCommand implements CommandInterface {
 						'out_time' => gmdate('H:i:s', (int) $rOutSecs),
 						'speed'    => ($rEncode['speed'] ?? null),
 					]
-					])], $db);
+					])
+					], $db);
 					$db->close_mysql();
 				}
 			}
