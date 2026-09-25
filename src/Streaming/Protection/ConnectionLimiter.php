@@ -3,6 +3,7 @@
 namespace XcVm\Streaming\Protection;
 
 use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Redis\RedisManager;
 
@@ -228,6 +229,14 @@ class ConnectionLimiter {
 					}
 				}
 			}
+		}
+
+		// A node whose agent holds its viewers (CONNECTIONS on) hears of the
+		// close too (MAIN only), or its registry would resume a kicked HLS
+		// viewer on the next playlist request.
+		if ($rActivityInfo['server_id'] != SERVER_ID && !empty($rActivityInfo['uuid']) && class_exists(ClusterRoute::class)) {
+			$rHLS = $rActivityInfo['container'] == 'hls' || $rActivityInfo['container'] == 'm3u8';
+			ClusterRoute::closeConnection(intval($rActivityInfo['server_id']), (string) $rActivityInfo['uuid'], !$rHLS);
 		}
 
 		self::writeOfflineActivity($rActivityInfo['server_id'], $rActivityInfo['proxy_id'], $rActivityInfo['user_id'], $rActivityInfo['stream_id'], $rActivityInfo['date_start'], $rActivityInfo['user_agent'], $rActivityInfo['user_ip'], $rActivityInfo['container'], $rActivityInfo['geoip_country_code'], $rActivityInfo['isp'], $rActivityInfo['external_device'] ?? '', $rActivityInfo['divergence'] ?? 0, $rActivityInfo['hmac_id'] ?? null, $rActivityInfo['hmac_identifier'] ?? '');

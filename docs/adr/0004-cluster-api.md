@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam and the agent's connection registry; admission, snapshots and the HLS reaper are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry and connection limits enforced on MAIN; admission, snapshots and the HLS reaper are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -431,6 +431,24 @@ On a node whose CONNECTIONS flow is on, the agent holds the node's viewers, and 
 - **Made by the node itself** (its reaper, in MySQL mode): the node still writes MAIN's store directly, and tells its registry with `POST /v1/conn/{uuid}/close`, which sends no event.
 
 **Known gap.** An upsert already in flight when MAIN closes the same viewer can re-open it in MAIN's store. The node's registry holds the viewer as ended, so its next request starts a new connection, with the token's checks. Admission, snapshots with digests and the agent's HLS reaper are the next increments.
+
+### Connections (Phase 6, fourth increment): limits on MAIN
+
+A node whose CONNECTIONS flow is on does not run `ConnectionLimiter` against MAIN's store any more. That would be a WAN round trip on every viewer's open, and it could evict the viewer that just opened.
+
+**Node.** When a viewer opens with a limit, `StreamAuth::validateConnections` spools a P0 `conn.limit` event after the viewer's `conn.upsert`. For a line it carries `{uuid, ip, user_agent, user_id}`. For an HMAC identity it carries `{uuid, ip, user_agent, hmac_id, hmac_identifier, max_connections}`. If the spool refuses (for example, a stale `flows.json`), the node enforces the limit itself, as before.
+
+**MAIN.** `EventIngest` accepts `conn.limit` only from a node with CONNECTIONS. It queues the check as a file in `TMP_PATH/cluster_limits/` (`Domain\Cluster\ConnectionLimits`), so the events op returns at once. `cron:signals` drains the queue on its 1 s loop, and runs each check with these rules:
+
+- The viewer must be in MAIN's store under the sending node, with the same owner. Otherwise the check is dropped: the viewer is gone, or it is not that node's.
+- A line's limit is read from `lines`, never from the event. An HMAC identity's limit is the node's, because MAIN has no row for it.
+- `StreamAuth::validateConnections` then runs on MAIN, with the viewer's IP. It closes the owner's oldest connections, preferring the requesting device, as it does on a legacy node.
+
+A viewer over its limit is closed within about 1–1.5 s of opening on another node. The viewer that just opened is not the one evicted.
+
+**Closes reach the node.** `ConnectionLimiter::closeConnection` also sends `conn.close {uuid, remove}` when the viewer is another node's and that node has CONNECTIONS. This covers any close made by the limiter, on MAIN or from another path. An ended HLS viewer is kept as ended (`remove: false`); anything else is removed. Without this, the node's registry would resume a kicked HLS viewer on the next playlist request.
+
+Admission when the token is minted (reservations) is not in this increment.
 
 ### Extension updates
 

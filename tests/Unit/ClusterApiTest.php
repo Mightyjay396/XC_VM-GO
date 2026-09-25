@@ -783,6 +783,33 @@ final class ClusterApiTest extends TestCase {
 		}
 	}
 
+	#[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+	#[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
+	public function testTheLimitersCloseReachesTheNodeThatHoldsTheViewer(): void {
+		define('SERVER_ID', 1); // MAIN; the viewer is on node 5
+		if (!class_exists('XC_VM', false)) {
+			eval('final class XC_VM { public static function redis_connect() { return null; } }'); // no Redis here; the limiter asks for it up front
+		}
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY, `hls_end` int NOT NULL DEFAULT 0)');
+		$this->rDb->exec('INSERT INTO `lines_live` (`activity_id`) VALUES (7)');
+		$GLOBALS['db'] = $this->rDb;
+		$GLOBALS['rSettings'] = ['redis_handler' => 0, 'save_closed_connection' => 0];
+		$rViewer = ['activity_id' => 7, 'server_id' => self::SID, 'proxy_id' => 0, 'user_id' => 3, 'stream_id' => 100, 'date_start' => 1, 'user_agent' => 'ua', 'user_ip' => '10.0.0.1', 'geoip_country_code' => '', 'isp' => '', 'pid' => 0];
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		try {
+			$this->assertTrue(\XcVm\Streaming\Protection\ConnectionLimiter::closeConnection($rViewer + ['uuid' => 'hlsviewer', 'container' => 'hls']));
+			$this->rDb->query('SELECT `hls_end` FROM `lines_live` WHERE `activity_id` = 7');
+			$this->assertSame(1, (int) $this->rDb->get_row()['hls_end']);
+			$rDocs = array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0));
+			$this->assertSame([['conn.close', ['uuid' => 'hlsviewer', 'remove' => false]]], array_map(static fn($rD) => [$rD['type'], $rD['args']], $rDocs), 'an ended HLS viewer stays ended on the node');
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
 	public function testEventsAreAppliedInOrderAndHelloReturnsTheCursors(): void {
 		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `pid` int)');
 		$this->rDb->exec('INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `pid`) VALUES (11, 100, 5, 0)');
