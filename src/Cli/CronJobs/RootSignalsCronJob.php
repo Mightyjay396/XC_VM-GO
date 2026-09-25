@@ -9,6 +9,7 @@ use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\Encryption;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Streaming\Fanout\FanoutMode;
 
@@ -730,6 +731,10 @@ class RootSignalsCronJob implements CommandInterface {
 									}
 								}
 								file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/http.conf', implode(' ', $rListen));
+								// MAIN: its old HTTP ports, kept for the cluster API alone after a port change.
+								if (NodeRole::isMain() && class_exists(ClusterEndpoint::class)) {
+									file_put_contents(MAIN_HOME . 'bin/nginx/conf/cluster_legacy.conf', ClusterEndpoint::nginxConf(ClusterEndpoint::legacyPorts(SettingsManager::getAll()), array_map('intval', $rData['ports'])));
+								}
 								file_put_contents(MAIN_HOME . 'bin/nginx_rtmp/conf/live.conf', 'on_play http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp; on_publish http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp; on_play_done http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp;');
 								if ($rData['reload']) {
 									shell_exec('sudo ' . BIN_PATH . 'nginx/sbin/nginx -s reload');

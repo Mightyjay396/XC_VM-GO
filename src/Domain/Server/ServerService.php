@@ -6,8 +6,10 @@ use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRpc;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Util\AdminHelpers;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -141,6 +143,12 @@ class ServerService {
 		}
 
 		$rInsertID = $rData['edit'];
+		// MAIN's HTTP port moved: announce it to the cluster nodes and keep the
+		// old port for the cluster API a while (before the ports are applied,
+		// so nginx gets both at once). Domain\Cluster is not in the LB build.
+		if (!empty($rServer['is_main']) && intval($rServer['http_broadcast_port'] ?? 0) !== intval($rArray['http_broadcast_port']) && class_exists(ClusterEndpoint::class) && SettingsManager::get('cluster_api_enabled')) {
+			ClusterEndpoint::recordChange(intval($rServer['http_broadcast_port'] ?? 0), intval($rArray['http_broadcast_port']), SettingsManager::getAll());
+		}
 		$rPorts = ['http' => [], 'https' => []];
 		foreach (array_merge([intval($rArray['http_broadcast_port'])], explode(',', $rArray['http_ports_add'])) as $rPort) {
 			if (is_numeric($rPort) && 0 < $rPort && $rPort <= 65535) {

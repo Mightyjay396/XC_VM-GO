@@ -4,9 +4,11 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAudit;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\NonceStore;
@@ -58,6 +60,21 @@ class ClusterCronJob implements CommandInterface {
 			'epochs' => static fn() => TokenService::prune(),
 			'nonces' => static fn() => NonceStore::purge(),
 			'enrol_codes' => static fn() => EnrolCodeService::prune(),
+			// MAIN's old HTTP ports past their 7 days: release them in nginx.
+			'endpoint' => static function () {
+				if (ClusterEndpoint::prune(SettingsManager::getAll()) && defined('SERVER_ID')) {
+					$rMain = ServerRepository::getAll(true)[SERVER_ID] ?? [];
+					$rPorts = [];
+					foreach (array_merge([intval($rMain['http_broadcast_port'] ?? 0)], explode(',', (string) ($rMain['http_ports_add'] ?? ''))) as $rPort) {
+						if (is_numeric($rPort) && (int) $rPort > 0 && (int) $rPort <= 65535) {
+							$rPorts[] = (int) $rPort;
+						}
+					}
+					if ($rPorts !== []) {
+						NodeActions::setPorts(SERVER_ID, 0, $rPorts, true);
+					}
+				}
+			},
 			// The signals daemon runs this every second; the minute is its fallback.
 			'liveness' => static function () {
 				if (LivenessService::tick(max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec') ?: 30)))) !== []) {

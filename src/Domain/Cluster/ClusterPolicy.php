@@ -49,7 +49,20 @@ final class ClusterPolicy {
 				$rHttps[] = 'https://' . self::hostPort($rTlsName, intval($rMain['https_broadcast_port'] ?? 443)) . '/cluster/v1/';
 			}
 		}
-		$rUrls = $rTransport === 'https_required' ? $rHttps : array_merge($rHttps, $rHttp);
+		// MAIN's old HTTP ports after a port change: still served for the
+		// cluster API (ClusterEndpoint), listed last so nodes that missed the
+		// change find MAIN and move on.
+		$rOld = [];
+		if ((int) ($rSettings['cluster_api_port'] ?? 0) === 0) {
+			foreach (array_keys(ClusterEndpoint::legacyPorts($rSettings)) as $rPort) {
+				if ($rPort !== $rHttpPort) {
+					foreach ($rHosts as $rHost) {
+						$rOld[] = 'http://' . self::hostPort($rHost, $rPort) . '/cluster/v1/';
+					}
+				}
+			}
+		}
+		$rUrls = $rTransport === 'https_required' ? $rHttps : array_merge($rHttps, $rHttp, $rOld);
 		return [
 			'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
 			'transport' => $rTransport,
