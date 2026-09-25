@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 has logs and stream state as events; content, recordings and fanout events are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 has logs, stream state and content (recordings, worker pids, movie analysis) as events; fanout events and `p0_reset` are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -331,6 +331,33 @@ A node whose LOGS or STREAMS flow is on stops writing its logs and stream runtim
   - An event whose flow is off is dropped and counted.
   - `hello` returns the cursors.
 - **Admin.** The Cluster Nodes page switches LOGS and STREAMS per node.
+
+### Content (Phase 5, second increment)
+
+The rest of what a node writes about its own content goes the same way, as P0 events through `Domain\Stream\ContentSink`. MAIN applies each event only where the node is the owner:
+
+| Event | Flow | Written by | MAIN applies it when |
+| --- | --- | --- | --- |
+| `recording.state {id, status}` | CONTENT | `RecordCommand` | `recordings.source_id` is the node |
+| `stream.worker {stream_id, worker, pid}` | STREAMS | `ArchiveCommand`, `ThumbnailCommand` (`tv_archive`, `vframes`) | `streams.<worker>_server_id` is the node |
+| `vod.analysis {stream_id, props}` | CONTENT | `VodCronJob`, `CleanupCronJob` | the node holds the movie |
+
+`vod.analysis` carries only the ffprobe keys (`duration_secs`, `duration`, `video`, `audio`, `subtitle`, `bitrate`), and MAIN merges them into its own `movie_properties`.
+
+When an event changes a stream's routing state, MAIN writes the cache signal (`StreamProcess::updateStream`) itself. A node with STREAMS on no longer writes that signal into MAIN's database.
+
+**Recordings.** A finished recording becomes one VOD through `Domain\Stream\RecordingFinalizer`. It works in two steps around the node's conversion to `VOD_PATH/<id>.mp4`:
+
+1. `create()` makes the VOD row and its bouquets, and records it as `created_id`. It is idempotent.
+2. `finish()` attaches the VOD to the node (pid 1, `to_analyze` 1) and sets status 2.
+
+A legacy node runs both in-process, as before. A CONTENT node needs the id before it can convert, so it asks MAIN synchronously:
+
+- **Agent socket.** The node calls the `recording_complete` op through the agent's local socket. The socket is `config/cluster/agent.sock`, mode 0660, and PHP reaches it through `Core\Cluster\AgentClient`. It serves `POST /v1/main/{op}` for an allowlist of ops, which is only `recording_complete` today. The plan puts the socket under `bin/xc_agent/sockets/`; it lives beside the agent's state instead, with the spool and `flows.json`.
+- **Completion.** After converting, the node reports `recording.state` 2, and MAIN runs `finish()`.
+- **Checks.** `recording_complete` needs the CONTENT flow, or MAIN answers `409 FLOW_OFF`. It answers only for the node's own recordings, and only takes an icon from the node's own image store.
+
+The Cluster Nodes page switches CONTENT.
 
 ### Extension updates
 
