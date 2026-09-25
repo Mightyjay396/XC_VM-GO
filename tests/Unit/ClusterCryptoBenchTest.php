@@ -13,8 +13,19 @@ use XcVm\Core\Cluster\Crypto\Canonical;
  *   (two SHA-256 passes plus two AES-GCM passes over the body), so this test
  *   only guards against regressions at twice the target; the target itself is
  *   checked on bundled PHP on real hardware.
+ *
+ * Wall-clock timings depend on the machine (CPU, Xdebug, load), so these are
+ * opt-in and never fail the unit suite on a slower box:
+ *
+ *   XCVM_BENCH=1 php tests/phpunit.phar -c tests/phpunit.xml.dist --filter ClusterCryptoBenchTest
  */
 final class ClusterCryptoBenchTest extends TestCase {
+	protected function setUp(): void {
+		if (!getenv('XCVM_BENCH')) {
+			$this->markTestSkipped('timing benchmark; set XCVM_BENCH=1 to run it');
+		}
+	}
+
 	/** @return list<float> milliseconds, sorted */
 	private function measure(int $rSize, int $rRounds): array {
 		$rKeyEnc = random_bytes(32);
