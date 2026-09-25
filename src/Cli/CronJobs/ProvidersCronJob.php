@@ -79,7 +79,11 @@ class ProvidersCronJob implements CommandInterface {
 
 		foreach ($db->get_rows() as $rRow) {
 			$rArray = [];
-			$rURL = (($rRow['ssl'] ? 'https' : 'http')) . '://' . $rRow['ip'] . ':' . $rRow['port'] . '/';
+			// A provider's `ip` field is meant to be a bare host, but a user
+			// pasting a full URL by mistake (e.g. "https://example.com") would
+			// otherwise double the scheme ("https://https://example.com").
+			$rHost = preg_replace('#^https?://#i', '', (string) $rRow['ip']);
+			$rURL = (($rRow['ssl'] ? 'https' : 'http')) . '://' . $rHost . ':' . $rRow['port'] . '/';
 			if ($rRow['legacy']) {
 				$rURL .= 'player_api.php?username=' . $rRow['username'] . '&password=' . $rRow['password'];
 			} else {
@@ -95,7 +99,9 @@ class ProvidersCronJob implements CommandInterface {
 				$rArray['exp_date'] = $rUserInfo['exp_date'] ?? null;
 			} else {
 				$rStatus = 0;
-				$rArray['exp_date'] = ($rRow['exp_date'] ?: -1);
+				// `providers` has no exp_date column of its own — there is
+				// nothing to fall back to on a failed connection.
+				$rArray['exp_date'] = -1;
 			}
 
 			$rCategories = [];
