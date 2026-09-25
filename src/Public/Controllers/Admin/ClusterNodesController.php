@@ -51,7 +51,7 @@ class ClusterNodesController extends BaseAdminController {
 			'clusterPending' => ClusterAdmin::pending($rServers),
 			'clusterLbs' => ClusterAdmin::loadBalancers($rServers),
 			'clusterFlash' => $rFlash,
-			'clusterPanelFp' => $rEnabled && $rAvailable ? (string) (ClusterMeta::get('panel_fp') ?? '') : '',
+			'clusterPanelFp' => $rEnabled && $rAvailable ? ClusterMeta::get('panel_fp') ?? '' : '',
 		]);
 	}
 }

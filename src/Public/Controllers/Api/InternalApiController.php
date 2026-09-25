@@ -120,6 +120,14 @@ class InternalApiController {
 
 				foreach ($rFiles as $rFile) {
 					$rSplit = explode(' ', preg_replace('!\\s+!', ' ', $rFile));
+
+					// The "total N" header line (and any other malformed `ls -l`
+					// row) has fewer columns than a real entry — skip it instead
+					// of reading past the end of $rSplit.
+					if (count($rSplit) < 5) {
+						continue;
+					}
+
 					$rFileSplit = explode('_', $rSplit[count($rSplit) - 1]);
 
 					if (count($rFileSplit) != 2) {

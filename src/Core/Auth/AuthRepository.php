@@ -278,17 +278,19 @@ class AuthRepository {
 				}
 			}
 			$db->query("SELECT * FROM `users_packages` WHERE JSON_CONTAINS(`groups`, ?, '\$');", $rUser['member_group_id']);
-			foreach ($db->get_rows() as $rRow) {
-				if ($rRow['is_line']) {
-					$rReturn['create_line'] = true;
-				}
+			if ($db->num_rows() > 0) {
+				foreach ($db->get_rows() as $rRow) {
+					if ($rRow['is_line']) {
+						$rReturn['create_line'] = true;
+					}
 
-				if ($rRow['is_mag']) {
-					$rReturn['create_mag'] = true;
-				}
+					if ($rRow['is_mag']) {
+						$rReturn['create_mag'] = true;
+					}
 
-				if ($rRow['is_e2']) {
-					$rReturn['create_enigma'] = true;
+					if ($rRow['is_e2']) {
+						$rReturn['create_enigma'] = true;
+					}
 				}
 			}
 			if ($rUsers) {

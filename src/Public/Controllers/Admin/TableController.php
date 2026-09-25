@@ -4977,7 +4977,7 @@ class TableController extends BaseAdminController {
 					} else {
 						$rStreamSource = "";
 						if (!empty($rRow["source"])) {
-							$rStreamSource = strtolower(parse_url($rRow["source"])["host"]);
+							$rStreamSource = strtolower(parse_url($rRow["source"])["host"] ?? '');
 						}
 												$rReturn["data"][] = [
 													"server_id" => (int) $rRow["server_id"],

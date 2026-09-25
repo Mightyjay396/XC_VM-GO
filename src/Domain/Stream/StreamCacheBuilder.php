@@ -33,7 +33,7 @@ final class StreamCacheBuilder {
 	public static function streamRows(object $rDb, ?array $rIDs, ?int $rOffset = null, ?int $rLimit = null): array {
 		$rSql = 'SELECT ' . self::STREAM_COLUMNS . ' FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type';
 		if ($rIDs !== null) {
-			if (empty($rIDs)) {
+			if ($rIDs === []) {
 				return [];
 			}
 			$rSql .= ' WHERE `t1`.`id` IN (' . implode(',', array_map('intval', $rIDs)) . ');';
@@ -56,7 +56,7 @@ final class StreamCacheBuilder {
 	 */
 	public static function serverMap(object $rDb, array $rStreamIDs): array {
 		$rMap = [];
-		if (empty($rStreamIDs)) {
+		if ($rStreamIDs === []) {
 			return $rMap;
 		}
 		if ($rDb->query('SELECT `' . implode('`, `', self::SERVER_COLUMNS) . '` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ')')) {

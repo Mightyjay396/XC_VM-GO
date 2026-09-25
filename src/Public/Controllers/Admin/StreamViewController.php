@@ -30,7 +30,7 @@ class StreamViewController extends BaseAdminController {
 
 		global $db;
 
-		if (!RequestManager::has('id') || !$rStream = StreamRepository::getById(RequestManager::get('id'))) {
+		if (!RequestManager::has('id') || !$rStream = StreamRepository::getById(intval(RequestManager::get('id')))) {
 			AdminHelpers::goHome();
 		}
 
@@ -65,7 +65,7 @@ class StreamViewController extends BaseAdminController {
 		} else {
 			if ($rStream['type'] == 2 || $rStream['type'] == 5) {
 				$rProperties = json_decode($rStream['movie_properties'], true);
-				$rImage = (!empty($rProperties['backdrop_path'][0]) ? ImageUtils::validateURL($rProperties['backdrop_path'][0], (AdminHelpers::issecure() ? 'https' : 'http')) : ImageUtils::validateURL($rProperties['movie_image'], (AdminHelpers::issecure() ? 'https' : 'http')));
+				$rImage = (!empty($rProperties['backdrop_path'][0]) ? ImageUtils::validateURL($rProperties['backdrop_path'][0], (AdminHelpers::issecure() ? 'https' : 'http')) : ImageUtils::validateURL($rProperties['movie_image'] ?? '', (AdminHelpers::issecure() ? 'https' : 'http')));
 
 				if (!empty($rImage)) {
 					if (!@getimagesize($rImage)) {

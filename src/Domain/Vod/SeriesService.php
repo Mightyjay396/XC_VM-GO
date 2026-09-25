@@ -90,7 +90,7 @@ class SeriesService {
 			}
 			$rBouquets = [];
 
-			foreach ($rData['bouquets'] as $rBouquet) {
+			foreach (($rData['bouquets'] ?? []) as $rBouquet) {
 				if (isset($rBouquetCreate[$rBouquet])) {
 					$rBouquets[] = $rBouquetCreate[$rBouquet];
 				} else {
@@ -101,7 +101,7 @@ class SeriesService {
 			}
 			$rCategories = [];
 
-			foreach ($rData['category_id'] as $rCategory) {
+			foreach (($rData['category_id'] ?? []) as $rCategory) {
 				if (isset($rCategoryCreate[$rCategory])) {
 					$rCategories[] = $rCategoryCreate[$rCategory];
 				} else {
@@ -223,7 +223,7 @@ class SeriesService {
 				} else {
 					if (!empty($rData['import_folder'])) {
 						$rParts = explode(':', $rData['import_folder']);
-						if (is_numeric($rParts[1])) {
+						if (is_numeric($rParts[1] ?? null)) {
 							if (isset($rData['scan_recursive'])) {
 								$rFiles = ApiClient::scanRecursive(intval($rParts[1]), $rParts[2], ['mp4', 'mkv', 'avi', 'mpg', 'flv', '3gp', 'm4v', 'wmv', 'mov', 'ts']);
 							} else {
@@ -262,7 +262,7 @@ class SeriesService {
 						}
 					}
 
-					foreach ($rData['bouquets'] as $rBouquetID) {
+					foreach (($rData['bouquets'] ?? []) as $rBouquetID) {
 						if (is_numeric($rBouquetID) && in_array($rBouquetID, array_keys(BouquetService::getAll()))) {
 							$rBouquets[] = intval($rBouquetID);
 						}
@@ -280,7 +280,7 @@ class SeriesService {
 						}
 					}
 
-					foreach ($rData['category_id'] as $rCategoryID) {
+					foreach (($rData['category_id'] ?? []) as $rCategoryID) {
 						if (is_numeric($rCategoryID) && in_array($rCategoryID, $rSeriesCategories)) {
 							$rCategories[] = intval($rCategoryID);
 						}
@@ -289,7 +289,7 @@ class SeriesService {
 
 					$rServerIDs = [];
 
-					foreach (json_decode($rData['server_tree_data'], true) as $rServer) {
+					foreach ((json_decode($rData['server_tree_data'] ?? '', true) ?: []) as $rServer) {
 						if ($rServer['parent'] != '#') {
 							$rServerIDs[] = intval($rServer['id']);
 						}
@@ -301,7 +301,7 @@ class SeriesService {
 						: [];
 
 					foreach ($rImportStreams as $rImportStream) {
-						$rData = ['import' => true, 'type' => 'series', 'title' => $rImportStream['title'], 'file' => $rImportStream['url'], 'subtitles' => [], 'servers' => $rServerIDs, 'fb_category_id' => $rCategories, 'fb_bouquets' => $rBouquets, 'disable_tmdb' => false, 'ignore_no_match' => false, 'bouquets' => [], 'category_id' => [], 'language' => SettingsManager::getString('tmdb_language'), 'watch_categories' => $rWatchCategories, 'read_native' => $rData['read_native'], 'movie_symlink' => $rData['movie_symlink'], 'remove_subtitles' => $rData['remove_subtitles'], 'direct_source' => $rData['direct_source'], 'direct_proxy' => $rData['direct_proxy'], 'auto_encode' => $rRestart, 'auto_upgrade' => false, 'fallback_title' => false, 'ffprobe_input' => false, 'transcode_profile_id' => $rData['transcode_profile_id'], 'target_container' => $rImportStream['container'], 'max_genres' => SettingsManager::getInt('max_genres'), 'duplicate_tmdb' => true];
+						$rData = ['import' => true, 'type' => 'series', 'title' => $rImportStream['title'], 'file' => $rImportStream['url'], 'subtitles' => [], 'servers' => $rServerIDs, 'fb_category_id' => $rCategories, 'fb_bouquets' => $rBouquets, 'disable_tmdb' => false, 'ignore_no_match' => false, 'bouquets' => [], 'category_id' => [], 'language' => SettingsManager::getString('tmdb_language'), 'watch_categories' => $rWatchCategories, 'read_native' => $rData['read_native'], 'movie_symlink' => $rData['movie_symlink'], 'remove_subtitles' => $rData['remove_subtitles'], 'direct_source' => $rData['direct_source'], 'direct_proxy' => $rData['direct_proxy'], 'auto_encode' => $rRestart, 'auto_upgrade' => false, 'fallback_title' => false, 'ffprobe_input' => false, 'transcode_profile_id' => ($rData['transcode_profile_id'] ?? null), 'target_container' => $rImportStream['container'], 'max_genres' => SettingsManager::getInt('max_genres'), 'duplicate_tmdb' => true];
 						$rCommand = '/usr/bin/timeout 300 ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php watch_item "' . base64_encode(json_encode($rData, JSON_UNESCAPED_UNICODE)) . '" > /dev/null 2>/dev/null &';
 						shell_exec($rCommand);
 					}
@@ -365,7 +365,7 @@ class SeriesService {
 
 			foreach ($rSeriesIDs as $rSeriesID) {
 				if (isset($rData['c_category_id'])) {
-					$rCategories = array_map('intval', $rData['category_id']);
+					$rCategories = array_map('intval', $rData['category_id'] ?? []);
 
 					if ($rData['category_id_type'] == 'ADD') {
 						foreach (($rCategoryMap[$rSeriesID] ?: []) as $rCategoryID) {
@@ -396,6 +396,9 @@ class SeriesService {
 				}
 
 				if (isset($rData['c_bouquets'])) {
+					// browsers omit the multi-select entirely when nothing is checked
+					$rData['bouquets'] = $rData['bouquets'] ?? [];
+
 					if ($rData['bouquets_type'] == 'SET') {
 						foreach ($rData['bouquets'] as $rBouquet) {
 							$rAddBouquet[$rBouquet][] = $rSeriesID;

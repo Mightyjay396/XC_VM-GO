@@ -48,7 +48,7 @@ class ResellerPostController extends BaseResellerController {
 				$rReturn = ResellerAPI::editResellerProfile($rData);
 				setcookie('hue', $rData['hue'], time() + 315360000);
 				setcookie('theme', $rData['theme'], time() + 315360000);
-				$language::setLanguage($rData['lang']);
+				$language::setLanguage($rData['lang'] ?? 'en');
 
 				if ($rReturn['status'] == STATUS_SUCCESS) {
 					echo json_encode(['result' => true, 'location' => 'edit_profile?status=' . intval($rReturn['status']), 'status' => $rReturn['status'], 'reload' => true]);

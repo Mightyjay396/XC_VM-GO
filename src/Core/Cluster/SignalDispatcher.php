@@ -87,7 +87,7 @@ final class SignalDispatcher {
 	 * @param list<array<string, mixed>> $rPayloads
 	 */
 	public static function cacheBatch(int $rServerID, array $rPayloads, ?int $rTime = null, ?object $rDb = null): bool {
-		if (empty($rPayloads)) {
+		if ($rPayloads === []) {
 			return true;
 		}
 		$rTime ??= time();

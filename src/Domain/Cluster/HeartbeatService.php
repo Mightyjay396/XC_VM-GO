@@ -111,7 +111,7 @@ final class HeartbeatService {
 			'interfaces' => array_values(array_filter((array) ($rTel['interfaces'] ?? []), 'is_string')),
 			'network_info' => [],
 		];
-		$rOnly = ($rInterface === null || $rInterface === '' || $rInterface === 'auto') ? null : $rInterface;
+		$rOnly = (in_array($rInterface, [null, '', 'auto'], true)) ? null : $rInterface;
 		$rNet = is_array($rTel['net'] ?? null) ? $rTel['net'] : [];
 		ksort($rNet);
 		foreach ($rNet as $rName => $rRate) {
@@ -167,7 +167,8 @@ final class HeartbeatService {
 		$rArgs = [json_encode($rStats, JSON_PARTIAL_OUTPUT_ON_ERROR), $rNow, $rRps, json_encode($rPIDs)];
 		if ($rCounts !== null) {
 			$rSql .= ', `connections` = ?, `users` = ?';
-			array_push($rArgs, $rCounts['connections'], $rCounts['users']);
+			$rArgs[] = $rCounts['connections'];
+			$rArgs[] = $rCounts['users'];
 		}
 		self::db()->query($rSql . ' WHERE `id` = ?;', ...[...$rArgs, $rServerID]);
 

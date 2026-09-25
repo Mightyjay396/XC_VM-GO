@@ -231,7 +231,11 @@ class MultiAjaxController extends BaseAjaxController {
 		$rNoServer = $rStreamMap = [];
 
 		foreach ($rRequestIDs as $rStream) {
-			list($rStreamID, $rServerID) = explode('-', $rStream);
+			// A plain stream id (no "-server" suffix) is valid — it lands in
+			// $rNoServer below — so explode() may legitimately return only 1 element.
+			$rStreamParts = explode('-', $rStream, 2);
+			$rStreamID = $rStreamParts[0];
+			$rServerID = $rStreamParts[1] ?? null;
 
 			if (!$rServerID) {
 				$rNoServer[] = $rStreamID;

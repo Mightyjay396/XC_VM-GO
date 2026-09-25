@@ -54,7 +54,7 @@ class ClusterEnrolCodeCommand implements CommandInterface {
 			echo "Server {$rServerID} is not a load balancer. Exiting\n";
 			return 1;
 		}
-		$rUrl = (string) ($rOptions['url'] ?? '');
+		$rUrl = $rOptions['url'] ?? '';
 		if ($rUrl === '') {
 			$rFirst = ClusterPolicy::current($rSettings, $rServers[SERVER_ID] ?? [])['main_urls'][0] ?? '';
 			$rUrl = (string) preg_replace('#/cluster/v1/$#', '', $rFirst);

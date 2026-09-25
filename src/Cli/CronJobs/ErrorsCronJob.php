@@ -178,14 +178,14 @@ class ErrorsCronJob implements CommandInterface {
 			}
 		}
 
-		if (SettingsManager::get('stream_logs_save') && !empty($rErrorRows)) {
+		if (SettingsManager::get('stream_logs_save') && $rErrorRows !== []) {
 			LogSink::write('stream_error', $rErrorRows, $db);
 		}
 
 		$rLog = LOGS_TMP_PATH . 'error_log.log';
 		if (file_exists($rLog)) {
 			$rRows = $this->parseLog(LOGS_TMP_PATH . 'error_log.log');
-			if (!empty($rRows) && LogSink::write('panel_error', $rRows, $db)) {
+			if ($rRows !== [] && LogSink::write('panel_error', $rRows, $db)) {
 				unlink($rLog);
 			}
 		}

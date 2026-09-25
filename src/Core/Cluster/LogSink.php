@@ -34,7 +34,7 @@ final class LogSink {
 	];
 
 	/** @var (callable(string, list<array<string, mixed>>, ?object): bool)|null */
-	private static $rSink = null;
+	private static $rSink;
 
 	/**
 	 * Write records of one type. Each row maps the type's columns to values; a
@@ -47,7 +47,7 @@ final class LogSink {
 		if (!isset(self::TYPES[$rType])) {
 			throw new \InvalidArgumentException('Unknown log type: ' . $rType);
 		}
-		if (empty($rRows)) {
+		if ($rRows === []) {
 			return true;
 		}
 		if (self::$rSink !== null) {

@@ -17,7 +17,7 @@ use XcVm\Core\Config\SettingsManager;
  */
 final class ClusterRoute {
 	/** @var (callable(): ClusterCrypto)|null */
-	private static $rCrypto = null;
+	private static $rCrypto;
 
 	/**
 	 * An RPC answered by the node: `node.rpc{action}`, waiting for its ack.
@@ -27,7 +27,7 @@ final class ClusterRoute {
 	 */
 	public static function rpc(int $rServerID, array $rData, int $rTimeout): array {
 		$rCrypto = self::target($rServerID);
-		if ($rCrypto === null) {
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			return [false, null];
 		}
 		try {
@@ -47,7 +47,7 @@ final class ClusterRoute {
 	 */
 	public static function send(int $rServerID, array $rData): array {
 		$rCrypto = self::target($rServerID);
-		if ($rCrypto === null) {
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			return [false, false];
 		}
 		try {
@@ -66,7 +66,7 @@ final class ClusterRoute {
 	 */
 	public static function kill(int $rServerID, int $rPID, bool $rRTMP): array {
 		$rCrypto = self::target($rServerID);
-		if ($rCrypto === null) {
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			return [false, false];
 		}
 		try {
@@ -141,7 +141,7 @@ final class ClusterRoute {
 	 */
 	public static function root(int $rServerID, array $rPayload): array {
 		$rCrypto = self::target($rServerID, true);
-		if ($rCrypto === null) {
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			return [false, false];
 		}
 		try {

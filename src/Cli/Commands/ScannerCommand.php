@@ -182,12 +182,16 @@ class ScannerCommand implements CommandInterface {
 			if (!empty($rFFProbeOutput)) {
 				echo "Source live!\n";
 				$rFFProbeOutput = FFprobeRunner::parseFFProbe($rFFProbeOutput);
-				$rAudioCodec = ($rFFProbeOutput['codecs']['audio']['codec_name'] ?: null);
-				$rVideoCodec = ($rFFProbeOutput['codecs']['video']['codec_name'] ?: null);
-				$rResolution = ($rFFProbeOutput['codecs']['video']['height'] ?: null);
-				$rFPS = (intval(explode('/', $rFFProbeOutput['codecs']['video']['r_frame_rate'])[0]));
+				// parseFFProbe() leaves codecs.video/audio as '' when the source has no
+				// stream of that type, instead of an array.
+				$rVideoInfo = is_array($rFFProbeOutput['codecs']['video'] ?? null) ? $rFFProbeOutput['codecs']['video'] : [];
+				$rAudioInfo = is_array($rFFProbeOutput['codecs']['audio'] ?? null) ? $rFFProbeOutput['codecs']['audio'] : [];
+				$rAudioCodec = ($rAudioInfo['codec_name'] ?? null);
+				$rVideoCodec = ($rVideoInfo['codec_name'] ?? null);
+				$rResolution = ($rVideoInfo['height'] ?? null);
+				$rFPS = (intval(explode('/', $rVideoInfo['r_frame_rate'] ?? '')[0]));
 				if ($rFPS == 0) {
-					$rFPS = (intval(explode('/', $rFFProbeOutput['codecs']['video']['avg_frame_rate'])[0]));
+					$rFPS = (intval(explode('/', $rVideoInfo['avg_frame_rate'] ?? '')[0]));
 				}
 				if ($rFPS >= 1000) {
 					$rFPS = intval($rFPS / 1000);

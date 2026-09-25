@@ -39,7 +39,7 @@ final class StreamStateWriter {
 	];
 
 	/** @var (callable(string, array<string, mixed>, list<mixed>, ?object): bool)|null */
-	private static $rSink = null;
+	private static $rSink;
 
 	/**
 	 * Update this node's row for a stream, keyed by (stream_id, server_id).
@@ -91,11 +91,11 @@ final class StreamStateWriter {
 	 * @param array<string, int> $rKey how a `stream.state` event names the row
 	 */
 	private static function write(string $rWhere, array $rFields, array $rWhereValues, ?object $rDb, array $rKey): bool {
-		if (empty($rFields)) {
+		if ($rFields === []) {
 			return true;
 		}
 		$rUnknown = array_diff(array_keys($rFields), self::STATE_FIELDS);
-		if (!empty($rUnknown)) {
+		if ($rUnknown !== []) {
 			throw new \InvalidArgumentException('Not stream runtime state: ' . implode(', ', $rUnknown));
 		}
 		if (self::$rSink !== null) {

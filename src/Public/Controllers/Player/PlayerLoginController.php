@@ -81,7 +81,10 @@ class PlayerLoginController {
 
 	private function processLogin() {
 		$rIP = NetworkUtils::getUserIP();
-		$rCountryCode = GeoIP::getCountry($rIP)['country']['iso_code'];
+		// GeoIP::getCountry() returns null on a failed/unresolvable lookup;
+		// the chained ?? keeps the country gate below simply "unknown" instead
+		// of crashing (isset()-semantics tolerate the null intermediate).
+		$rCountryCode = GeoIP::getCountry($rIP)['country']['iso_code'] ?? null;
 		$rUserInfo = UserRepository::getUserInfo(null, RequestManager::get('username'), RequestManager::get('password'), true);
 		$rUserAgent = empty($_SERVER['HTTP_USER_AGENT']) ? '' : htmlspecialchars(trim($_SERVER['HTTP_USER_AGENT']));
 
