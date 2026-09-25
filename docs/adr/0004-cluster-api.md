@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, and the connection store seam; the connection registry, admission and snapshots are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam and the agent's connection registry; admission, snapshots and the HLS reaper are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -411,6 +411,26 @@ The stream endpoints (`live.php`, `vod.php`, `timeshift.php`, `rtmp.php`) now re
 | `acceptedIP($settings, $lineID)` | The IP the first open connection of a line came from (`disallow_2nd_ip_con`). |
 
 It is a refactor: no store changes behaviour, as `ConnectionStoreTest` pins on both `lines_live` and a real Redis. The seam resolves the database through the current handle (`DatabaseFactory::get()`), the one the endpoints' global `$db` holds between `connectLazy()` and `close()`. A handle injected at boot may already be closed. Here, the next increment swaps in the node's agent as the store for nodes with CONNECTIONS on.
+
+### Connections (Phase 6, third increment): the agent's connection registry
+
+On a node whose CONNECTIONS flow is on, the agent holds the node's viewers, and the connection store seam reads and writes them there. CONNECTIONS needs COMMANDS and STREAMS, and the Cluster Nodes page refuses it without them.
+
+**Seam.** The seam's methods go to the agent: `openRecord`, `findByUuid` (with the Range fallback), `lookupLive`, `updateLive`, `heartbeat` and `acceptedIP`. They use `Core\Cluster\AgentConnections` over the local socket, with a 1 s timeout. The stream endpoints make no WAN call for their viewers any more. When the agent does not answer, the call falls back to MAIN's store, so a viewer is never held up by the agent. `lookupLive` applies the same owner, server, container, stream and open checks the table path's query does.
+
+**Agent.** The agent's `Registry` holds the records, in ConnectionTracker's Redis record shape, and keeps a snapshot in `config/cluster/registry.snap`. It serves `/v1/conn/...` on the local socket. It mirrors every change to MAIN as P0 events, spooling the event before changing the record:
+
+- `conn.upsert {record}` for a new or changed connection. A change of `hls_last_read` alone goes at most every 10 s, inside the 30 s after which MAIN's reaper closes an HLS viewer.
+- `conn.remove {uuid}` when the node removes a connection.
+
+**MAIN.** MAIN keeps its store current from these events, in Redis or `lines_live` as `redis_handler` says (`Domain\Cluster\ConnectionIngest`). The reaper, the limits and the admin read what they always read. A node writes only its own connections: `server_id` is the sender, the line identity is recomputed from the record's owner, and a uuid another node holds is refused.
+
+**Closes.**
+
+- **Decided on MAIN** (a kick, a limit, MAIN's reaper): the close reaches the node as `conn.close {uuid, remove}`, which is restrictive and deduplicated per viewer. The agent applies it to its registry in-process. Without this, the player's next playlist request would resume a kicked HLS viewer from the node's registry.
+- **Made by the node itself** (its reaper, in MySQL mode): the node still writes MAIN's store directly, and tells its registry with `POST /v1/conn/{uuid}/close`, which sends no event.
+
+**Known gap.** An upsert already in flight when MAIN closes the same viewer can re-open it in MAIN's store. The node's registry holds the viewer as ended, so its next request starts a new connection, with the token's checks. Admission, snapshots with digests and the agent's HLS reaper are the next increments.
 
 ### Extension updates
 
