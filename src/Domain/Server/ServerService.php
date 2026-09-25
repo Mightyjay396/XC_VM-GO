@@ -4,6 +4,7 @@ namespace XcVm\Domain\Server;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
@@ -177,9 +178,9 @@ class ServerService {
 
 		$rDisableRamdisk = !empty($rData['disable_ramdisk']);
 		if ($rDisableRamdisk && $rMounted) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rInsertID, time(), json_encode(['action' => 'disable_ramdisk']));
+			SignalDispatcher::rootAction(intval($rInsertID), ['action' => 'disable_ramdisk'], $db);
 		} elseif (!$rDisableRamdisk && !$rMounted) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rInsertID, time(), json_encode(['action' => 'enable_ramdisk']));
+			SignalDispatcher::rootAction(intval($rInsertID), ['action' => 'enable_ramdisk'], $db);
 		}
 
 		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
@@ -355,7 +356,7 @@ class ServerService {
 	 */
 	public static function changePort(int $rServerID, int $rType, mixed $rPorts, bool $rReload = false) {
 		$db = self::db();
-		$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'set_port', 'type' => intval($rType), 'ports' => $rPorts, 'reload' => $rReload]));
+		SignalDispatcher::rootAction(intval($rServerID), ['action' => 'set_port', 'type' => intval($rType), 'ports' => $rPorts, 'reload' => $rReload], $db);
 	}
 
 	/**
@@ -368,7 +369,7 @@ class ServerService {
 	 */
 	public static function setServices(int $rServerID, int $rNumServices, bool $rReload = true) {
 		$db = self::db();
-		$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'set_services', 'count' => intval($rNumServices), 'reload' => $rReload]));
+		SignalDispatcher::rootAction(intval($rServerID), ['action' => 'set_services', 'count' => intval($rNumServices), 'reload' => $rReload], $db);
 	}
 
 	/**
@@ -380,7 +381,7 @@ class ServerService {
 	 */
 	public static function setGovernor(int $rServerID, string $rGovernor) {
 		$db = self::db();
-		$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'set_governor', 'data' => $rGovernor]));
+		SignalDispatcher::rootAction(intval($rServerID), ['action' => 'set_governor', 'data' => $rGovernor], $db);
 	}
 
 	/**
@@ -392,7 +393,7 @@ class ServerService {
 	 */
 	public static function setSysctl(int $rServerID, mixed $rSysCtl) {
 		$db = self::db();
-		$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'set_sysctl', 'data' => $rSysCtl]));
+		SignalDispatcher::rootAction(intval($rServerID), ['action' => 'set_sysctl', 'data' => $rSysCtl], $db);
 	}
 
 	/**

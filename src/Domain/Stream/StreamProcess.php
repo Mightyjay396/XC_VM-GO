@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\CurlClient;
@@ -189,13 +190,7 @@ class StreamProcess {
 	 * @return void
 	 */
 	private static function insertCacheSignalOnce(array $rCustomData) {
-		$db = self::db();
-		$rMainID = ConnectionTracker::getMainID();
-		$rJson = json_encode($rCustomData);
-		$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, $rJson);
-		if (($db->get_row()['count'] ?? 0) == 0) {
-			$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), $rJson);
-		}
+		SignalDispatcher::cache(intval(ConnectionTracker::getMainID()), $rCustomData, true, false, self::db());
 	}
 
 	/**
@@ -1847,7 +1842,7 @@ class StreamProcess {
 		if ($rForce) {
 			self::deleteMovieFiles($rStreamID);
 		} else {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', SERVER_ID, time(), json_encode(['type' => 'delete_vod', 'id' => $rStreamID]));
+			SignalDispatcher::cache(intval(SERVER_ID), ['type' => 'delete_vod', 'id' => $rStreamID], false, false, $db);
 		}
 		self::resetStreamServerRow($rStreamID);
 		self::updateStream($rStreamID);

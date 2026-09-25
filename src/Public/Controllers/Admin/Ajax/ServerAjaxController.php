@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
@@ -90,7 +91,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		if ($rSub == 'update') {
 			foreach ($this->normalizeServerIds() as $rID) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rID, time(), json_encode(['action' => 'update']));
+				SignalDispatcher::rootAction(intval($rID), ['action' => 'update'], $db);
 			}
 
 			$this->ok();
@@ -104,7 +105,7 @@ class ServerAjaxController extends BaseAjaxController {
 			}
 
 			foreach ($this->normalizeServerIds() as $rID) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rID, time(), json_encode(['action' => 'rollback', 'version' => $rVersion]));
+				SignalDispatcher::rootAction(intval($rID), ['action' => 'rollback', 'version' => $rVersion], $db);
 			}
 
 			$this->ok();
@@ -193,7 +194,7 @@ class ServerAjaxController extends BaseAjaxController {
 		}
 
 		if ($rSub == 'update') {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', RequestManager::get('server_id'), time(), json_encode(['action' => 'update']));
+			SignalDispatcher::rootAction(intval(RequestManager::get('server_id')), ['action' => 'update'], $db);
 			$this->ok();
 		}
 
@@ -308,7 +309,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				$db->query("INSERT INTO `signals`(`server_id`, `custom_data`, `time`) VALUES(?, '{\"action\": \"restart_services\"}', ?);", $rServer['id'], time());
+				SignalDispatcher::rootAction(intval($rServer['id']), ['action' => 'restart_services'], $db);
 			}
 		}
 
@@ -323,7 +324,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			$db->query("INSERT INTO `signals`(`server_id`, `custom_data`, `time`) VALUES(?, '{\"action\": \"restart_services\"}', ?);", $rID, time());
+			SignalDispatcher::rootAction(intval($rID), ['action' => 'restart_services'], $db);
 		}
 
 		$this->ok();
@@ -337,7 +338,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			$db->query("INSERT INTO `signals`(`server_id`, `custom_data`, `time`) VALUES(?, '{\"action\": \"reboot\"}', ?);", $rID, time());
+			SignalDispatcher::rootAction(intval($rID), ['action' => 'reboot'], $db);
 		}
 
 		$this->ok();
@@ -351,7 +352,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			$db->query("INSERT INTO `signals`(`server_id`, `custom_data`, `time`) VALUES(?, '{\"action\": \"update_binaries\"}', ?);", $rID, time());
+			SignalDispatcher::rootAction(intval($rID), ['action' => 'update_binaries'], $db);
 		}
 
 		$this->ok();
@@ -513,7 +514,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'update']));
+				SignalDispatcher::rootAction(intval($rServer['id']), ['action' => 'update'], $db);
 			}
 		}
 
@@ -529,7 +530,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'update_binaries']));
+				SignalDispatcher::rootAction(intval($rServer['id']), ['action' => 'update_binaries'], $db);
 			}
 		}
 

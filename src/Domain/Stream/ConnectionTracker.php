@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Server\ServerRepository;
@@ -1057,7 +1058,7 @@ class ConnectionTracker {
 		if (!empty($rSettings['redis_handler'])) {
 			self::redisSignal(0, $rServerID, 0, $rSignal);
 		} else {
-			self::db()->query('INSERT INTO `signals` (`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, UNIX_TIMESTAMP(), ?);', $rServerID, json_encode($rSignal));
+			SignalDispatcher::cache($rServerID, $rSignal, false, true, self::db());
 		}
 	}
 
@@ -1106,7 +1107,7 @@ class ConnectionTracker {
 						if ($rSettings['redis_handler']) {
 							self::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 1);
 						} else {
-							$db->query('INSERT INTO `signals` (`pid`,`server_id`,`rtmp`,`time`) VALUES(?,?,?,UNIX_TIMESTAMP())', $rActivityInfo['pid'], $rActivityInfo['server_id'], 1);
+							SignalDispatcher::kill(intval($rActivityInfo['server_id']), intval($rActivityInfo['pid']), true, $db);
 						}
 					}
 				} else {
@@ -1130,7 +1131,7 @@ class ConnectionTracker {
 							if ($rSettings['redis_handler']) {
 								self::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 0);
 							} else {
-								$db->query('INSERT INTO `signals` (`pid`,`server_id`,`time`) VALUES(?,?,UNIX_TIMESTAMP())', $rActivityInfo['pid'], $rActivityInfo['server_id']);
+								SignalDispatcher::kill(intval($rActivityInfo['server_id']), intval($rActivityInfo['pid']), false, $db);
 							}
 						}
 					}
