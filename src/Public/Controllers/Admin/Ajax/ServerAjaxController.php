@@ -7,7 +7,6 @@ use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
-use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Server\InstallCredentials;
@@ -59,7 +58,7 @@ class ServerAjaxController extends BaseAjaxController {
 		$rVersions = [];
 
 		try {
-			$rGit = new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, UpdateChannels::main());
+			$rGit = UpdateChannels::mainReleases();
 			$rGit->setTimeout(15);
 			$rVersions = $rGit->getPreviousVersions($rBaseVersion, 5);
 		} catch (\Throwable) {

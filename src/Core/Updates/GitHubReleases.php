@@ -21,8 +21,6 @@ class GitHubReleases {
 
 	private string $repo;
 
-	private string $api_url;
-
 	/** @var list<string> */
 	private array $headers;
 
@@ -30,9 +28,18 @@ class GitHubReleases {
 
 	private $connect_timeout = 10; // Connection-phase timeout in seconds — fail fast on an unreachable host without capping slow transfers
 
-	private $cache_file = '/home/xc_vm/tmp/gitapi'; // Cache file path
+	private string $cache_prefix = '/home/xc_vm/tmp/gitapi';
 
-	private string $channel; // 'stable' or 'beta' ('unstable' accepted as a legacy alias)
+	private $cache_file; // Cache file path
+
+	private string $channel; // 'stable', 'beta' or 'dev' ('unstable' accepted as a legacy alias for 'beta')
+
+	/**
+	 * Releases-only repository holding the nightly builds (XC_VM_Dev). Consulted
+	 * only on the 'dev' channel, where its releases are merged with the primary
+	 * repository's. Null for repositories that have no nightly builds.
+	 */
+	private ?string $devRepo;
 
 	private $hash_file = 'hashes.md5';
 
@@ -43,15 +50,16 @@ class GitHubReleases {
 	 *
 	 * @param string $owner Repository owner
 	 * @param string $repo Repository name
-	 * @param string $channel Update channel: 'stable' or 'beta' ('unstable' is a legacy alias)
+	 * @param string $channel Update channel: 'stable', 'beta' or 'dev' ('unstable' is a legacy alias for 'beta')
 	 * @param string|null $token GitHub API token
+	 * @param string|null $devRepo Nightly-builds repository merged in on the 'dev' channel
 	 */
-	public function __construct(string $owner, string $repo, ?string $channel = 'stable', ?string $token = null) {
+	public function __construct(string $owner, string $repo, ?string $channel = 'stable', ?string $token = null, ?string $devRepo = null) {
 		$this->owner = $owner;
 		$this->repo = $repo;
+		$this->devRepo = $devRepo;
 		$this->channel = $this->normalizeChannel($channel);
-		$this->cache_file = "{$this->cache_file}_{$repo}_{$this->channel}"; // Уникальный кэш для канала
-		$this->api_url = "https://api.github.com/repos/{$owner}/{$repo}/releases";
+		$this->cache_file = "{$this->cache_prefix}_{$repo}_{$this->channel}"; // Уникальный кэш для канала
 		$this->headers = $token ? [
 			"Authorization: Bearer {$token}",
 			'Accept: application/vnd.github+json',
@@ -64,53 +72,84 @@ class GitHubReleases {
 	 * for 'beta'; anything unrecognized falls back to 'stable'.
 	 *
 	 * @param string|null $channel Raw channel value (e.g. from settings)
-	 * @return string 'stable' or 'beta'
+	 * @return string 'stable', 'beta' or 'dev'
 	 */
 	private function normalizeChannel(?string $channel): string {
 		$channel = ($channel === 'unstable') ? 'beta' : (string) $channel;
-		return in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable';
+		return in_array($channel, ['stable', 'beta', 'dev'], true) ? $channel : 'stable';
 	}
 
 	/**
-	 * Clear the cached release data by deleting the cache file.
+	 * Releases API URL for a repository. per_page=100 (the API maximum) keeps
+	 * stable releases in view when prereleases pile up; the default page of 30
+	 * would push them off the list.
+	 */
+	private function releasesApiUrl(string $repo): string {
+		return "https://api.github.com/repos/{$this->owner}/{$repo}/releases?per_page=100";
+	}
+
+	/**
+	 * Whether a tag is a nightly build (X.Y.Z-dev.N). Nightly builds are
+	 * published only to the dev repository, so the tag alone tells which
+	 * repository serves its assets.
+	 */
+	public static function isDevVersion(string $version): bool {
+		return (bool) preg_match('/^\d+\.\d+\.\d+-dev\.\d+$/', $version);
+	}
+
+	private function repoFor(string $version): string {
+		return ($this->devRepo !== null && self::isDevVersion($version)) ? $this->devRepo : $this->repo;
+	}
+
+	private function devCacheFile(): string {
+		return "{$this->cache_prefix}_{$this->devRepo}";
+	}
+
+	/**
+	 * Clear the cached release data by deleting the cache file(s).
 	 */
 	public function clearCache(): void {
-		if (file_exists($this->cache_file)) {
-			unlink($this->cache_file);
-			error_log("Cache cleared for {$this->owner}/{$this->repo} by deleting {$this->cache_file}");
+		$files = $this->devRepo !== null ? [$this->cache_file, $this->devCacheFile()] : [$this->cache_file];
+		foreach ($files as $file) {
+			if (file_exists($file)) {
+				unlink($file);
+				error_log("Cache cleared for {$this->owner} by deleting {$file}");
+			}
 		}
 	}
 
 	/**
-	 * Check if the cache file is still valid based on TTL.
+	 * Check if a cache file is still valid based on TTL.
 	 *
+	 * @param string $cacheFile Cache file path.
 	 * @return bool True if cache is valid, False otherwise.
 	 */
-	private function isCacheValid(): bool {
-		if (!file_exists($this->cache_file)) {
+	private function isCacheValid(string $cacheFile): bool {
+		if (!file_exists($cacheFile)) {
 			return false;
 		}
-		$cache_timestamp = filemtime($this->cache_file);
+		$cache_timestamp = filemtime($cacheFile);
 		return (time() - $cache_timestamp) < $this->cache_ttl;
 	}
 
 	/**
 	 * Load cache from file.
 	 *
+	 * @param string $cacheFile Cache file path.
 	 * @return array|null The cached data, or null if the file doesn't exist or is invalid.
 	 */
-	private function loadCache(): ?array {
-		if (!file_exists($this->cache_file)) {
+	private function loadCache(string $cacheFile): ?array {
+		if (!file_exists($cacheFile)) {
 			return null;
 		}
-		$content = file_get_contents($this->cache_file);
+		$content = file_get_contents($cacheFile);
 		if ($content === false) {
-			error_log("Failed to read cache file {$this->cache_file}");
+			error_log("Failed to read cache file {$cacheFile}");
 			return null;
 		}
 		$data = json_decode($content, true);
 		if (json_last_error() !== JSON_ERROR_NONE) {
-			error_log("Failed to parse cache file {$this->cache_file}: " . json_last_error_msg());
+			error_log("Failed to parse cache file {$cacheFile}: " . json_last_error_msg());
 			return null;
 		}
 		return $data;
@@ -119,19 +158,20 @@ class GitHubReleases {
 	/**
 	 * Save data to cache file with file locking to prevent race conditions.
 	 *
+	 * @param string $cacheFile Cache file path.
 	 * @param array $data The data to cache.
 	 * @return bool True on success, False on failure.
 	 */
-	private function saveCache(array $data): bool {
+	private function saveCache(string $cacheFile, array $data): bool {
 		$json = json_encode($data);
 		if ($json === false) {
 			error_log("Failed to encode cache data to JSON");
 			return false;
 		}
 
-		$file = fopen($this->cache_file, 'c');
+		$file = fopen($cacheFile, 'c');
 		if ($file === false) {
-			error_log("Failed to open cache file {$this->cache_file} for writing");
+			error_log("Failed to open cache file {$cacheFile} for writing");
 			return false;
 		}
 
@@ -141,10 +181,10 @@ class GitHubReleases {
 			fflush($file);
 			flock($file, LOCK_UN);
 			fclose($file);
-			error_log("Cache saved to {$this->cache_file}");
+			error_log("Cache saved to {$cacheFile}");
 			return true;
 		}
-		error_log("Failed to acquire lock on cache file {$this->cache_file}");
+		error_log("Failed to acquire lock on cache file {$cacheFile}");
 		fclose($file);
 		return false;
 	}
@@ -165,30 +205,58 @@ class GitHubReleases {
 	 * getReleases() and the rollback picker, which needs the prerelease flag to
 	 * mark beta builds.
 	 *
+	 * On the 'dev' channel the nightly builds of the dev repository are merged
+	 * in and the result is ordered by version, since the two repositories'
+	 * API orders do not interleave.
+	 *
 	 * @return array<int,array<string,mixed>> Filtered GitHub release objects.
 	 * @throws \Exception If the request fails.
 	 */
 	private function getFilteredReleases(): array {
-		if ($this->isCacheValid()) {
-			error_log("Using cached releases (channel: {$this->channel}) from {$this->cache_file}");
-			$cache = $this->loadCache();
+		$releases = array_values($this->filterReleasesByChannel($this->fetchRawReleases($this->repo, $this->cache_file)));
+		if ($this->channel !== 'dev' || $this->devRepo === null) {
+			return $releases;
+		}
+
+		// A missing or unreachable dev repository must not cut the dev channel
+		// off the regular releases.
+		try {
+			$releases = array_merge($releases, $this->fetchRawReleases($this->devRepo, $this->devCacheFile()));
+		} catch (\Exception $e) {
+			error_log("Failed to fetch dev releases from {$this->devRepo}: " . $e->getMessage());
+		}
+		usort($releases, static fn($a, $b) => version_compare((string) ($b['tag_name'] ?? ''), (string) ($a['tag_name'] ?? '')));
+
+		return $releases;
+	}
+
+	/**
+	 * Fetch a repository's raw release list, using the cache when valid.
+	 *
+	 * @param string $repo      Repository name.
+	 * @param string $cacheFile Cache file for this repository.
+	 * @return array<int,array<string,mixed>> Unfiltered GitHub release objects, API order.
+	 * @throws \Exception If the request fails.
+	 */
+	protected function fetchRawReleases(string $repo, string $cacheFile): array {
+		if ($this->isCacheValid($cacheFile)) {
+			error_log("Using cached releases (channel: {$this->channel}) from {$cacheFile}");
+			$cache = $this->loadCache($cacheFile);
 			if ($cache !== null) {
-				return array_values($this->filterReleasesByChannel($cache));
+				return $cache;
 			}
 		}
 
 		try {
-			error_log("Fetching releases for {$this->owner}/{$this->repo} (channel: {$this->channel})");
-			$response = $this->makeRequest($this->api_url);
-			$data = json_decode($response, true);
-			if ($data === null) {
+			error_log("Fetching releases for {$this->owner}/{$repo} (channel: {$this->channel})");
+			$data = json_decode($this->makeRequest($this->releasesApiUrl($repo)), true);
+			if (!is_array($data)) {
 				throw new \Exception("Failed to parse API response: " . json_last_error_msg());
 			}
 
-			$this->saveCache($data); // Сохраняем полные данные, фильтруем при использовании
-			$filtered = array_values($this->filterReleasesByChannel($data));
-			error_log("Retrieved " . count($filtered) . " releases for channel '{$this->channel}'");
-			return $filtered;
+			$this->saveCache($cacheFile, $data); // Сохраняем полные данные, фильтруем при использовании
+			error_log("Retrieved " . count($data) . " releases for {$repo}");
+			return $data;
 		} catch (\Exception $e) {
 			error_log("Failed to fetch releases: " . $e->getMessage());
 			throw $e;
@@ -228,7 +296,7 @@ class GitHubReleases {
 	 * @return string|null The MD5 hash string, or null if not found or invalid.
 	 */
 	public function getAssetHash(string $version, string $asset_name): ?string {
-		$hashURL = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$this->hash_file}";
+		$hashURL = $this->assetUrl($version, $this->hash_file);
 		try {
 			$hash_response = $this->makeRequest($hashURL);
 
@@ -265,7 +333,11 @@ class GitHubReleases {
 	 */
 	public function getChangelog(string $version): array {
 		try {
-			$url = "https://raw.githubusercontent.com/{$this->owner}/{$this->repo}/refs/tags/{$version}/changelog.json";
+			// The dev repository carries no source tree, so nightly builds ship
+			// their changelog as a release asset instead.
+			$url = self::isDevVersion($version) && $this->devRepo !== null
+				? $this->assetUrl($version, 'changelog.json')
+				: "https://raw.githubusercontent.com/{$this->owner}/{$this->repo}/refs/tags/{$version}/changelog.json";
 			$response = $this->makeRequest($url);
 			$changelog = json_decode($response, true);
 			if ($changelog === null) {
@@ -326,7 +398,7 @@ class GitHubReleases {
 	 * @return string The response body.
 	 * @throws \Exception If the request fails.
 	 */
-	private function makeRequest(string $url): string {
+	protected function makeRequest(string $url): string {
 		$ch = curl_init($url);
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 		curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
@@ -389,7 +461,7 @@ class GitHubReleases {
 		if (is_null($target_version)) {
 			$target_version = $version;
 		}
-		$upd_archive_url = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$target_version}/{$update_file}";
+		$upd_archive_url = $this->assetUrl($target_version, $update_file);
 		$hash_md5 = $this->getAssetHash($target_version, $update_file);
 		return ["url" => $upd_archive_url, "md5" => $hash_md5];
 	}
@@ -418,7 +490,7 @@ class GitHubReleases {
 			default:
 				throw new \Exception("Not valid file type");
 		}
-		$url = "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$update_file}";
+		$url = $this->assetUrl($version, $update_file);
 
 		return ["url" => $url, "md5" => $this->getAssetHash($version, $update_file)];
 	}
@@ -436,7 +508,8 @@ class GitHubReleases {
 		$older = [];
 		foreach ($this->getFilteredReleases() as $rRelease) {
 			$tag = (string) ($rRelease['tag_name'] ?? '');
-			if ($tag !== '' && version_compare($tag, $current_version, '<')) {
+			// Nightly builds are not rollback targets: the rollback flow accepts X.Y.Z only.
+			if ($tag !== '' && !self::isDevVersion($tag) && version_compare($tag, $current_version, '<')) {
 				$older[] = ['version' => $tag, 'beta' => !empty($rRelease['prerelease'])];
 			}
 		}
@@ -462,7 +535,7 @@ class GitHubReleases {
 
 			$changelog = $this->getChangelog($latest_version);
 
-			$url = "https://github.com/{$this->owner}/{$this->repo}/releases/tag/{$latest_version}";
+			$url = "https://github.com/{$this->owner}/{$this->repoFor($latest_version)}/releases/tag/{$latest_version}";
 
 			return [
 				"version" => $latest_version,
@@ -482,7 +555,7 @@ class GitHubReleases {
 	 * @param string $asset   Asset filename.
 	 */
 	public function assetUrl(string $version, string $asset): string {
-		return "https://github.com/{$this->owner}/{$this->repo}/releases/download/{$version}/{$asset}";
+		return "https://github.com/{$this->owner}/{$this->repoFor($version)}/releases/download/{$version}/{$asset}";
 	}
 
 	/**
@@ -492,8 +565,8 @@ class GitHubReleases {
 	 * @return array Filtered releases
 	 */
 	private function filterReleasesByChannel(array $releases): array {
-		if ($this->channel === 'beta') {
-			return $releases; // Все релизы
+		if ($this->channel !== 'stable') {
+			return $releases; // beta/dev: все релизы
 		}
 
 		// stable: только не pre-release
@@ -514,16 +587,16 @@ class GitHubReleases {
 	/**
 	 * Change the update channel and clear cache.
 	 *
-	 * @param string $channel 'stable' or 'beta' ('unstable' is a legacy alias)
+	 * @param string $channel 'stable', 'beta' or 'dev' ('unstable' is a legacy alias for 'beta')
 	 */
 	public function setChannel(string $channel): void {
 		$channel = ($channel === 'unstable') ? 'beta' : $channel;
-		if (!in_array($channel, ['stable', 'beta'])) {
-			throw new \InvalidArgumentException("Channel must be 'stable' or 'beta'");
+		if (!in_array($channel, ['stable', 'beta', 'dev'], true)) {
+			throw new \InvalidArgumentException("Channel must be 'stable', 'beta' or 'dev'");
 		}
 		if ($this->channel !== $channel) {
 			$oldCacheFile = $this->cache_file;
-			$baseCacheFile = preg_replace('/_(stable|beta|unstable)$/', '', $this->cache_file);
+			$baseCacheFile = preg_replace('/_(stable|beta|dev|unstable)$/', '', $this->cache_file);
 			if (!is_string($baseCacheFile) || $baseCacheFile === '') {
 				$baseCacheFile = $this->cache_file;
 			}

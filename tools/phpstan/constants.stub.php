@@ -55,6 +55,7 @@ if (!defined('GEOLITE2C_BIN')) define('GEOLITE2C_BIN', (string) mt_rand());
 if (!defined('GEOLITE2_BIN')) define('GEOLITE2_BIN', (string) mt_rand());
 if (!defined('GIT_OWNER')) define('GIT_OWNER', (string) mt_rand());
 if (!defined('GIT_REPO_BIN')) define('GIT_REPO_BIN', (string) mt_rand());
+if (!defined('GIT_REPO_DEV')) define('GIT_REPO_DEV', (string) mt_rand());
 if (!defined('GIT_REPO_FANOUT')) define('GIT_REPO_FANOUT', (string) mt_rand());
 if (!defined('GIT_REPO_MAIN')) define('GIT_REPO_MAIN', (string) mt_rand());
 if (!defined('GIT_REPO_PROXY')) define('GIT_REPO_PROXY', (string) mt_rand());

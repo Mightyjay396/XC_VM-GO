@@ -40,14 +40,16 @@ final class ConstantsInitializerTest extends TestCase {
 	public function testAppConfigValues(): void {
 		$cfg = ConstantsInitializer::appConfig();
 
-		$this->assertCount(12, $cfg);
-		// The release commit bumps the version; the test only pins its shape.
-		$this->assertMatchesRegularExpression('/^\d+\.\d+\.\d+$/', $cfg['XC_VM_VERSION']);
+		$this->assertCount(13, $cfg);
+		// The release commit bumps the version (nightly builds stamp X.Y.Z-dev.N);
+		// the test only pins its shape.
+		$this->assertMatchesRegularExpression('/^\d+\.\d+\.\d+(-dev\.\d+)?$/', $cfg['XC_VM_VERSION']);
 		$this->assertFalse($cfg['DEV_MODE']);
 		$this->assertFalse($cfg['DB_ACCESS_ENABLED']);
 		$this->assertSame('', $cfg['DB_ACCESS_PWD']);
 		$this->assertSame('Vateron-Media', $cfg['GIT_OWNER']);
 		$this->assertSame('XC_VM', $cfg['GIT_REPO_MAIN']);
+		$this->assertSame('XC_VM_Dev', $cfg['GIT_REPO_DEV']);
 		$this->assertSame(3, $cfg['MONITOR_CALLS']);
 	}
 
