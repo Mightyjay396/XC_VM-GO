@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phases 3–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 is under way: authoritative telemetry is in, the 1 s liveness loop is not. Phases 4–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -206,6 +206,31 @@ Other rules:
 Actions POST back to the page; admin sessions are `SameSite=Strict`. The deciding admin is recorded in `decided_by` and in the audit log.
 
 `cron:cluster` runs every minute (migration 037 enables its crontab row). It deletes expired epochs, which erases their `z`, the replay cache and used challenges, unused expired codes, and decided requests after a day. It returns at once on load balancers, which get the crontab verbatim but not `Domain/Cluster`, and while the API is disabled.
+
+### Telemetry (Phase 3)
+
+Every agent samples its host each second (`clusteragent.Sampler`) and sends the latest sample in each heartbeat. The sample covers:
+
+- CPU (user + system over user, nice, system and idle, as the watchdog measured it), cores and model, load;
+- memory, disk of the deploy root, kernel and uptime;
+- stream producers (ffmpeg, `xc_fanout remux`) and the xc_vm PHP-FPM worker pids;
+- per-interface rates, totals and link speed.
+
+What only PHP knows, nginx requests per second and the fanout daemon's status, the LB's watchdog writes to `config/cluster/local.json`. The agent forwards that file while it is under 10 s old.
+
+For a node with the TELEMETRY flow on (mode ≥ 1, toggled per node on the Cluster Nodes page), `HeartbeatService` makes the sample authoritative:
+
+- **Every 5 s:** `servers.watchdog_data`, `last_check_ago`, `requests_per_second` and `php_pids`; without the Redis handler, also `connections` and `users`, counted as the watchdog counted them. `toWatchdogData()` keeps the legacy `SystemInfo::getStats()` keys and order, plus `cpu_average_array` and `fanout`. `ClusterTelemetryTest` pins that against `getStats()`'s source. `network_interface` selects interfaces as before.
+- **Every minute:** the `servers_stats` row the LB's `cron:servers` wrote.
+- **Not yet reported:** GPU, iostat and capture devices are reported empty.
+
+The node learns its mode and flows from MAIN's authenticated replies. The agent writes them to `config/cluster/flows.json`, and `Core\Cluster\NodeFlows` reads them. With TELEMETRY on:
+
+- the LB's watchdog stops writing its `servers` row and only refreshes `local.json`;
+- `cron:servers` skips its `servers_stats` row;
+- `network.py` is stopped.
+
+A stopped agent removes `flows.json`, so the node falls back to the legacy paths.
 
 ### Extension updates
 

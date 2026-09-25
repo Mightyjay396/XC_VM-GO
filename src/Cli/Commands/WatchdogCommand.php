@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
@@ -105,6 +106,15 @@ class WatchdogCommand implements CommandInterface {
 			// previous request count is kept in a state file, not a variable.
 			$rRequests = SystemInfo::nginxRequestCount((string) @file_get_contents('http://127.0.0.1:' . $rServers[SERVER_ID]['http_broadcast_port'] . '/nginx_status'));
 			$rRequestsPerSecond = ($rRequests === null ? 0 : (new CounterRateSampler(TMP_PATH . 'watchdog_nginx_requests.json'))->sample($rRequests, time()));
+
+			// ── TELEMETRY flow: the node's agent reports to MAIN ──
+			// MAIN writes this server's row from the agent's heartbeats; here
+			// only what PHP alone knows is sampled, for the agent to forward.
+			if (NodeFlows::on(NodeFlows::TELEMETRY)) {
+				self::writeLocalTelemetry($rRequestsPerSecond);
+				sleep(2);
+				break;
+			}
 
 			// ── CPU stats ────────────────────────────────────────
 			$rStats = SystemInfo::getStats();
@@ -262,6 +272,22 @@ class WatchdogCommand implements CommandInterface {
 			echo "Redis restarted successfully\n";
 		} else {
 			echo "Redis restart attempted, connection still unavailable\n";
+		}
+	}
+
+	/**
+	 * `config/cluster/local.json`, beside the agent's state: what the agent
+	 * cannot sample itself. It forwards the file while it is under 10 s old.
+	 */
+	public static function writeLocalTelemetry(int|float $rRequestsPerSecond): void {
+		$rDir = CONFIG_PATH . 'cluster/';
+		if (!is_dir($rDir)) {
+			return;
+		}
+		$rTmp = $rDir . 'local.json.tmp';
+		$rJson = json_encode(['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status()], JSON_PARTIAL_OUTPUT_ON_ERROR);
+		if (@file_put_contents($rTmp, (string) $rJson, LOCK_EX) !== false) {
+			@rename($rTmp, $rDir . 'local.json');
 		}
 	}
 }
