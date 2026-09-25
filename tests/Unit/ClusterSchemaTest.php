@@ -3,13 +3,13 @@
 use PHPUnit\Framework\TestCase;
 
 /**
- * The cluster schema exists twice: as migrations 028–034 for upgrades and in
+ * The cluster schema exists twice: as migrations 028–037 for upgrades and in
  * database.sql for fresh installs. Both were loaded into MariaDB 10.11 and
  * compared column by column when written; this test keeps them from drifting
  * where CI has no database.
  */
 final class ClusterSchemaTest extends TestCase {
-	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes', '035_add_cluster_epoch_eph'];
+	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes', '035_add_cluster_epoch_eph', '036_add_cluster_enrol_request_eph', '037_enable_cluster_cron'];
 
 	private function src(string $rPath): string {
 		return (string) file_get_contents(dirname(__DIR__, 2) . '/src/' . $rPath);
@@ -75,6 +75,7 @@ final class ClusterSchemaTest extends TestCase {
 		foreach (['cleanup', 'tmdb', 'tmdb_popular', 'update'] as $rCron) {
 			$this->assertMatchesRegularExpression("/\\(\\d+, '" . $rCron . "', '[^']*', 1, 'main'\\)/", $rSql, $rCron);
 		}
-		$this->assertStringContainsString("(30, 'cluster', '* * * * *', 0, 'main')", $rSql, 'disabled until cron:cluster exists');
+		$this->assertStringContainsString("(30, 'cluster', '* * * * *', 1, 'main')", $rSql, 'cron:cluster runs on MAIN');
+		$this->assertFileExists(dirname(__DIR__, 2) . '/src/Cli/CronJobs/ClusterCronJob.php');
 	}
 }

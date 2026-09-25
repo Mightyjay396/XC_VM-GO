@@ -277,6 +277,7 @@ CREATE TABLE IF NOT EXISTS `cluster_enrol_requests` (
   `node_uuid` char(36) COLLATE utf8_unicode_ci NOT NULL,
   `node_sign_pub` binary(32) NOT NULL,
   `node_box_pub` binary(32) NOT NULL,
+  `agent_eph_pub` binary(32) DEFAULT NULL,
   `attest` varbinary(64) DEFAULT NULL,
   `state` varchar(20) COLLATE utf8_unicode_ci NOT NULL DEFAULT 'pending_approval',
   `created_at` int(11) NOT NULL,
@@ -419,7 +420,7 @@ INSERT INTO `crontab` (`id`, `filename`, `time`, `enabled`, `role`) VALUES
 (27, 'plex', '*/5 * * * *', 1, 'all'),
 (28, 'maxmind', '0 4 * * 2', 1, 'all'),
 (29, 'proxy', '0 5 * * *', 1, 'all'),
-(30, 'cluster', '* * * * *', 0, 'main');
+(30, 'cluster', '* * * * *', 1, 'main');
 
 -- --------------------------------------------------------
 

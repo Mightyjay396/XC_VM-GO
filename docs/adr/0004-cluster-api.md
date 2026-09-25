@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`) and `token_rekey` are too. Enrolment codes and Phases 3–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phases 3–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -83,6 +83,8 @@ The plan numbers its Phase 1 migrations 026–032. 026 and 027 were already take
 | `challenge?cn=` | GET | none | any | panel-signed (`hlt`): a single-use 32-byte challenge, licence state, policy |
 | `enrol_complete` | POST | session + node signature, epoch 1 only | `enrolling`, before `enrol_deadline` (30 min) | BOX: state, mode, flows, gen, policy |
 | `token_refresh` | POST | session + node signature | `active`, `quarantined` | BOX: the next epoch's sealed token |
+| `enrol_code` | POST | `sid:<n>`, epoch 0: code MAC (K_req) + signature by the key being enrolled; body SEALed to the panel box key | none yet | MAC'd (K_res): `pending_approval` |
+| `enrol_code_status` | POST | `sid:<n>`, epoch 0: code MAC (K_req) | the request's | MAC'd (K_res): the state; once approved, epoch 1 panel-signed (`pre`) |
 | `token_rekey` | POST | node signature (epoch 0, no MAC), body SEALed to the panel box key, a challenge | `active`, once a minute | panel-signed (`pre`): a new epoch's sealed token |
 | `hello` | POST | session | `active`, `quarantined` | BOX: state, mode, flows, proto, policy |
 | `heartbeat` | POST | session | `active`, `quarantined` | BOX: state, mode, flows, `pending` |
@@ -92,7 +94,7 @@ A session request is checked in this order. Nothing is written, not even the non
 1. header syntax and the 8 MB body cap;
 2. protocol range (426 `PROTO` carries min and max);
 3. the ±90 s window;
-4. the node (`sid:` identities are refused until the code-based enrolment path exists) and its revocation;
+4. the node (`sid:` identities are refused: they are only valid on the two code ops) and its revocation;
 5. the extension's session for the named epoch (its refusals map to `NODE_REVOKED`, `LICENCE_INVALID`, `CLOCK` or `TOKEN_EXPIRED`);
 6. the request MAC;
 7. the node signature, verified with the key from the extension-sealed epoch record, never the DB row;
@@ -158,6 +160,52 @@ A missing agent binary, for example when GitHub is unreachable and there is no c
 - **A failure never marks the node failed.** It keeps serving the legacy way.
 
 Re-enrolling stops the node's running agent before replacing its identity. The generation goes up, so every token of the previous identity stops working.
+
+### Enrolling by code (break-glass)
+
+For a node MAIN cannot reach over SSH (NAT, lost keys). `Domain\Cluster\EnrolCodeService` owns it:
+
+```text
+code   = base32(u8 1 ‖ u32 sid ‖ u8 len ‖ main_url ‖ SHA-256(panel_sign_pub)[0:16] ‖ secret[16]), dash-grouped
+K_req  = HKDF-SHA256(secret, salt = u32 sid, info = "xcvm/enrol-code/v1/req")
+K_res  = HKDF-SHA256(secret, salt = u32 sid, info = "xcvm/enrol-code/v1/res")
+lookup = SHA-256(secret)
+```
+
+1. `console.php cluster:enrol-code <id> [--url=http://host:port]` issues a code. MAIN keeps K_req and K_res sealed with `cluster_seal_local`, under a row MAC keyed by K_res, and never keeps the secret. There is one live code per server: a new one supersedes unused codes and pending requests. A code lives 30 minutes.
+2. On the node, `xc_agent enrol <code>`:
+   - fetches the signed `health` at the code's URL;
+   - pins the panel key whose hash the code carries;
+   - makes the node's keys;
+   - sends `enrol_code` (MAC'd with K_req, signed by the new node key, body SEALed to the panel box key);
+   - prints the SAS.
+
+   The request's per-epoch key waits in `cluster_enrol_requests.agent_eph_pub` (migration 036).
+3. `console.php cluster:enrol-approve <id> <SAS>` approves the request. Only at approval does MAIN run `startEnrolment` (raising the generation) and mint epoch 1. The approval is panel-signed (`pre`) and stored.
+   - Five wrong SAS entries reject the request.
+   - A licence refusal leaves it pending.
+   - `--reject` rejects it outright.
+4. The node polls `enrol_code_status` every 10 s. The approved reply is MAC'd with K_res and carries the panel signature. The node checks it, opens the token with its per-epoch key, and writes its state as the SSH install does. The agent then finishes with `enrol_complete`.
+
+Other rules:
+
+- A wrong code MAC records nothing: no nonce and no attempt. The attempts count only the admin's wrong SAS entries, so a code cannot be burned without its secret.
+- Under a used code, other keys get a 409 `ENROL_CONFLICT` and an audit entry, never a silent replacement. The same keys again (a lost reply) are accepted as they stand.
+- `xc_agent enrol` refuses to replace an identity that holds tokens unless given `-force`.
+- The pin blob (`cluster_pin`) waits for Phase 4, as it does on the SSH path.
+
+### Cluster Nodes page and housekeeping
+
+*Servers → Cluster Nodes* (`cluster_nodes`, permission `servers`) is the admin side of the CLI commands, through `Domain\Cluster\ClusterAdmin`. It:
+
+- lists enrolled nodes with state, liveness (`NodeHealth`), mode, epoch, token expiry, last heartbeat and agent version;
+- shows code enrolments waiting for a SAS, with *Approve* (SAS field) and *Reject*;
+- issues enrolment codes (optional MAIN URL; the code is shown once);
+- revokes nodes.
+
+Actions POST back to the page; admin sessions are `SameSite=Strict`. The deciding admin is recorded in `decided_by` and in the audit log.
+
+`cron:cluster` runs every minute (migration 037 enables its crontab row). It deletes expired epochs, which erases their `z`, the replay cache and used challenges, unused expired codes, and decided requests after a day. It returns at once on load balancers, which get the crontab verbatim but not `Domain/Cluster`, and while the API is disabled.
 
 ### Extension updates
 

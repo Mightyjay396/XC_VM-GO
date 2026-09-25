@@ -315,6 +315,7 @@ class PageAuthorization {
 			case 'server_install':
 				return Authorization::check('adv', 'add_server');
 			case 'servers':
+			case 'cluster_nodes':
 			case 'server_view':
 			case 'server_order':
 			case 'proxies':
