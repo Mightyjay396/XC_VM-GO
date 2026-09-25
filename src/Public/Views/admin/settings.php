@@ -1475,6 +1475,16 @@ use XcVm\Core\Util\LayoutRenderer;
 							</div>
 
 							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="fanout_enabled">
+									<?= $language::get('fanout_enabled') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= htmlspecialchars($language::get('fanout_enabled_help')) ?>"></i>
+								</label>
+								<div class="col-md-2">
+									<div class="form-check form-switch"><input name="fanout_enabled" id="fanout_enabled" type="checkbox" <?= ($rSettings["fanout_enabled"] ?? 1) == 1 ? ' checked' : '' ?> class="form-check-input"></div>
+								</div>
+							</div>
+
+							<div class="form-group row mb-4">
 								<label class="col-md-4 col-form-label" for="fanout_hls_window">
 									<?= $language::get('fanout_hls_window') ?>
 									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="xc_fanout: how many HLS segments the playlist lists (1-20)."></i>

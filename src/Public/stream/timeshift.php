@@ -134,7 +134,7 @@ if ($rUserInfo) {
 	if ($rSettings['redis_handler']) {
 		RedisManager::ensureConnected();
 	} else {
-		DatabaseFactory::connect();
+		DatabaseFactory::connectLazy();
 	}
 
 	$rConnection = null;
@@ -419,7 +419,7 @@ if ($rUserInfo) {
 							}
 							RedisManager::closeInstance();
 						} else {
-							DatabaseFactory::connect();
+							DatabaseFactory::connectLazy();
 							$db->query('UPDATE `lines_live` SET `hls_last_read` = ? WHERE `uuid` = ?', time() - intval($rServers[SERVER_ID]['time_offset']), $rTokenData['uuid']);
 							$db->query('SELECT `pid`, `hls_end` FROM `lines_live` WHERE `uuid` = ?', $rTokenData['uuid']);
 

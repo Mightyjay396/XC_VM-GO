@@ -10,6 +10,7 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Fanout\FanoutClient;
 use XcVm\Streaming\Fanout\FanoutConfig;
+use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
  * FanoutSyncCommand — reconcile xc_fanout live-TS connections (ADR 0003, Phase C).
@@ -84,17 +85,24 @@ class FanoutSyncCommand implements CommandInterface {
 			// sync from the older snapshot put the previous values back over an
 			// admin's save (SettingsService::edit writes the file at once) for up
 			// to a minute.
-			if ($this->rLastCheck !== $rLastRefresh) {
+			$rEnabled = FanoutMode::enabled();
+			if ($rEnabled && $this->rLastCheck !== $rLastRefresh) {
 				FanoutConfig::sync(SettingsManager::getAll());
 			}
 
-			$rActive = FanoutClient::activeConnections();
+			// Fanout switched off: the daemon is stopped, so it serves nobody. An
+			// empty active set lets reconcile() close the daemon-served rows it
+			// left behind (pid 0); the PHP-served rows of the legacy path carry
+			// their php-fpm pid and are never touched here.
+			$rActive = $rEnabled ? FanoutClient::activeConnections() : [];
 			if ($rActive !== null) {
 				$rConns = $this->daemonConnections();
 				if ($rConns !== null) {
 					$this->reconcile(array_flip($rActive), $rConns);
-					$this->dropOrphans($rActive, $rConns);
-					$this->writeDivergence($rConns);
+					if ($rEnabled) {
+						$this->dropOrphans($rActive, $rConns);
+						$this->writeDivergence($rConns);
+					}
 				}
 			}
 

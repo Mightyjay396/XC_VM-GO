@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Http;
 
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Server\ServerRepository;
 
@@ -104,7 +105,7 @@ class ApiClient {
 	 * @return array|null Decoded directory listing, or null on failure.
 	 */
 	public static function scanRecursive(int $rServerID, string $rDirectory, ?array $rAllowed = null) {
-		return json_decode(self::systemRequest($rServerID, ['action' => 'scandir_recursive', 'dir' => $rDirectory, 'allowed' => implode('|', $rAllowed)]), true);
+		return json_decode(NodeRpc::request($rServerID, ['action' => 'scandir_recursive', 'dir' => $rDirectory, 'allowed' => implode('|', $rAllowed)]), true);
 	}
 
 	/**
@@ -116,6 +117,6 @@ class ApiClient {
 	 * @return array|null Decoded directory listing, or null on failure.
 	 */
 	public static function listDir(int $rServerID, string $rDirectory, ?array $rAllowed = null) {
-		return json_decode(self::systemRequest($rServerID, ['action' => 'scandir', 'dir' => $rDirectory, 'allowed' => implode('|', $rAllowed)]), true);
+		return json_decode(NodeRpc::request($rServerID, ['action' => 'scandir', 'dir' => $rDirectory, 'allowed' => implode('|', $rAllowed)]), true);
 	}
 }

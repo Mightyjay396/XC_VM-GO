@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Codec\FFmpegCommand;
 use XcVm\Streaming\Codec\FfmpegPaths;
 use XcVm\Streaming\Codec\FFprobeRunner;
@@ -132,14 +133,14 @@ class CreatedCommand implements CommandInterface {
 						. (isset($rEncode['speed']) ? ' @ ' . $rEncode['speed'] : '') . "\n";
 
 					$db->db_connect();
-					$db->query('UPDATE `streams_servers` SET `progress_info` = ? WHERE `server_stream_id` = ?', json_encode(['cc_encode' => [
+					StreamStateWriter::updateRow(intval($rServerInfo['server_stream_id']), ['progress_info' => json_encode(['cc_encode' => [
 						'source'   => $rDone + 1,
 						'total'    => $rTotal,
 						'pct'      => $rPct,
 						'out_time' => gmdate('H:i:s', (int) $rOutSecs),
 						'speed'    => ($rEncode['speed'] ?? null),
 					]
-					]), $rServerInfo['server_stream_id']);
+					])], $db);
 					$db->close_mysql();
 				}
 			}
@@ -151,10 +152,10 @@ class CreatedCommand implements CommandInterface {
 			$rDone++;
 			echo "\t" . 'Source finished (' . $rDone . '/' . $rTotal . ')' . "\n";
 			$rServerInfo['cchannel_rsources'][] = $rSource;
-			$db->query('UPDATE `streams_servers` SET `cchannel_rsources` = ? WHERE `server_stream_id` = ?', json_encode($rServerInfo['cchannel_rsources']), $rServerInfo['server_stream_id']);
+			StreamStateWriter::updateRow(intval($rServerInfo['server_stream_id']), ['cchannel_rsources' => json_encode($rServerInfo['cchannel_rsources'])], $db);
 		}
 
-		$db->query("UPDATE `streams_servers` SET `progress_info` = '' WHERE `server_stream_id` = ?", $rServerInfo['server_stream_id']);
+		StreamStateWriter::updateRow(intval($rServerInfo['server_stream_id']), ['progress_info' => ''], $db);
 
 		$rOutputList = '';
 		foreach ($rStreamInfo['stream_source'] as $rSource) {

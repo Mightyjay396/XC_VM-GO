@@ -1349,6 +1349,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `fanout_source_backend` varchar(8) DEFAULT 'auto',
   `fanout_supervise` tinyint(1) DEFAULT '1',
   `fanout_debug` varchar(128) DEFAULT '',
+  `fanout_enabled` tinyint(1) DEFAULT '1',
   `secure_stream_tokens` tinyint(1) DEFAULT '1',
   `disable_table_responsive` tinyint(1) DEFAULT '0'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;

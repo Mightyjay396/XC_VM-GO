@@ -2,7 +2,8 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
-use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
@@ -21,7 +22,7 @@ use XcVm\Streaming\Health\ProcessChecker;
  * rtmp_kill, install_status, reinstall_server, fpm_status, update_all_servers,
  * update_all_binaries.
  *
- * Note: rtmp_kill echoes the raw {@see ApiClient::systemRequest()} response
+ * Note: rtmp_kill echoes the raw {@see NodeRpc::request()} response
  * rather than a JSON envelope.
  *
  * @package XC_VM_Public_Controllers_Admin
@@ -91,7 +92,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		if ($rSub == 'update') {
 			foreach ($this->normalizeServerIds() as $rID) {
-				SignalDispatcher::rootAction(intval($rID), ['action' => 'update'], $db);
+				NodeActions::update(intval($rID), $db);
 			}
 
 			$this->ok();
@@ -105,7 +106,7 @@ class ServerAjaxController extends BaseAjaxController {
 			}
 
 			foreach ($this->normalizeServerIds() as $rID) {
-				SignalDispatcher::rootAction(intval($rID), ['action' => 'rollback', 'version' => $rVersion], $db);
+				NodeActions::rollback(intval($rID), (string) $rVersion, $db);
 			}
 
 			$this->ok();
@@ -194,7 +195,7 @@ class ServerAjaxController extends BaseAjaxController {
 		}
 
 		if ($rSub == 'update') {
-			SignalDispatcher::rootAction(intval(RequestManager::get('server_id')), ['action' => 'update'], $db);
+			NodeActions::update(intval(RequestManager::get('server_id')), $db);
 			$this->ok();
 		}
 
@@ -291,7 +292,7 @@ class ServerAjaxController extends BaseAjaxController {
 						}
 
 						$rArray['action'] = 'signal_send';
-						ApiClient::systemRequest(intval($rRow['server_id']), $rArray);
+						NodeRpc::request(intval($rRow['server_id']), $rArray);
 					}
 				}
 			}
@@ -309,7 +310,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				SignalDispatcher::rootAction(intval($rServer['id']), ['action' => 'restart_services'], $db);
+				NodeActions::restartServices(intval($rServer['id']), $db);
 			}
 		}
 
@@ -324,7 +325,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			SignalDispatcher::rootAction(intval($rID), ['action' => 'restart_services'], $db);
+			NodeActions::restartServices(intval($rID), $db);
 		}
 
 		$this->ok();
@@ -338,7 +339,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			SignalDispatcher::rootAction(intval($rID), ['action' => 'reboot'], $db);
+			NodeActions::reboot(intval($rID), $db);
 		}
 
 		$this->ok();
@@ -352,7 +353,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			SignalDispatcher::rootAction(intval($rID), ['action' => 'update_binaries'], $db);
+			NodeActions::updateBinaries(intval($rID), $db);
 		}
 
 		$this->ok();
@@ -418,7 +419,7 @@ class ServerAjaxController extends BaseAjaxController {
 		$this->requireXhr();
 		$this->gate('adv', 'rtmp');
 
-		$rResult = ApiClient::systemRequest(intval(RequestManager::get('server')), ['action' => 'rtmp_kill', 'name' => RequestManager::get('name')]);
+		$rResult = NodeRpc::request(intval(RequestManager::get('server')), ['action' => 'rtmp_kill', 'name' => RequestManager::get('name')]);
 
 		if (empty($rResult)) {
 			$this->fail();
@@ -490,7 +491,7 @@ class ServerAjaxController extends BaseAjaxController {
 		$this->gateAny([['adv', 'add_server'], ['adv', 'edit_server']]);
 
 		global $rServers;
-		$rData = str_replace("\n", '<br/>', ApiClient::systemRequest(RequestManager::get('server_id'), ['action' => 'fpm_status']));
+		$rData = str_replace("\n", '<br/>', NodeRpc::request(RequestManager::get('server_id'), ['action' => 'fpm_status']));
 
 		if (empty($rData)) {
 			$rData = '<strong>No response from status page.</strong>';
@@ -514,7 +515,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				SignalDispatcher::rootAction(intval($rServer['id']), ['action' => 'update'], $db);
+				NodeActions::update(intval($rServer['id']), $db);
 			}
 		}
 
@@ -530,7 +531,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				SignalDispatcher::rootAction(intval($rServer['id']), ['action' => 'update_binaries'], $db);
+				NodeActions::updateBinaries(intval($rServer['id']), $db);
 			}
 		}
 

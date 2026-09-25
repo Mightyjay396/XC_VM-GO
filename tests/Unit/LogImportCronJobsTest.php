@@ -13,6 +13,8 @@ use XcVm\Core\Database\DatabaseHandler;
 class LogImportDb extends DatabaseHandler {
 	public array $queries = [];
 	public bool $fail = false;
+	/** @var list<list<mixed>> Bound values, one list per recorded statement. */
+	public array $params = [];
 	/** Runs once, on the first statement: stands in for a writer appending mid-import. */
 	public ?\Closure $onFirstQuery = null;
 	private int $nextID = 100;
@@ -28,6 +30,7 @@ class LogImportDb extends DatabaseHandler {
 			$rHook();
 		}
 		$this->queries[] = $query;
+		$this->params[] = array_slice(func_get_args(), 1);
 		if ($this->fail) {
 			return false;
 		}
@@ -200,8 +203,10 @@ class LogImportCronJobsTest extends TestCase {
 		$rInserts = $this->db->startingWith(self::LOGS_INSERT);
 		$this->assertCount(1, $rInserts);
 		$this->assertSame(3, self::tuples($rInserts[0]));
-		$this->assertStringContainsString("('5','11','AUTH_FAILED','q=11','VLC','192.0.2.11','{}','1700000000')", $rInserts[0]);
-		$this->assertStringContainsString("('5','13','AUTH_FAILED','q=13','VLC','192.0.2.13','','1700000000')", $rInserts[0], 'a missing key imports as empty');
+		// lines_logs goes through LogSink, which binds the values.
+		$rRows = array_chunk($this->db->params[array_search($rInserts[0], $this->db->queries, true)], 8);
+		$this->assertSame(['5', '11', 'AUTH_FAILED', 'q=11', 'VLC', '192.0.2.11', '{}', '1700000000'], $rRows[0]);
+		$this->assertSame(['5', '13', 'AUTH_FAILED', 'q=13', 'VLC', '192.0.2.13', '', '1700000000'], $rRows[2], 'a missing key imports as empty');
 		$this->assertFileDoesNotExist($rFile, 'a bad line does not wedge the spool');
 	}
 

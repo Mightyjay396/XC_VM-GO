@@ -58,6 +58,7 @@ Loaded from settings cache and used in runtime decision points.
 | `recaptcha_enable` | `bool` | enable reCAPTCHA v2 on login |
 | `verify_host` | `bool` | enforce host allowlist validation |
 | `save_login_logs` | `bool` | persist login attempts in `login_logs` |
+| `fanout_enabled` | `bool` | master switch for the xc_fanout daemon (default on); off stops it on every node and live delivery uses the pre-fanout paths (see streaming-subsystem, "Switching fanout off") |
 | `fanout_supervise` | `bool` | hand live streams to the xc_fanout supervisor instead of a PHP monitor (default on) |
 | `fanout_source_backend` | `auto` / `ffmpeg` / `native` | how sources become MPEG-TS; with supervision, whether copy-only streams run the native remuxer (`auto`: with ffmpeg fallback) |
 

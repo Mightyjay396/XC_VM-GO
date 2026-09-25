@@ -358,11 +358,11 @@ class InternalApiController {
 			case 'signal_send':
 				if (!empty($rRequest['message']) && !empty($rRequest['uuid'])) {
 					RequestManager::update('type', 'signal');
-					// Clients are served by the xc_fanout daemon now (Phase E), so push
-					// the "send message" overlay to it — it burns the banner onto the
-					// viewer's next HLS segment / a short live-TS window. The legacy
-					// tmpfs signal file is kept as a harmless no-op for any node still
-					// on the pre-daemon byte path.
+					// With fanout on, push the "send message" overlay to the xc_fanout
+					// daemon — it burns the banner onto the viewer's next HLS segment /
+					// a short live-TS window. With fanout off (FanoutMode) that call is
+					// a no-op, and the signal file below is what the pre-fanout path
+					// reads (live.php's TS feed, segment.php).
 					FanoutClient::sendSignal($rRequest['uuid'], $rRequest);
 					file_put_contents(SIGNALS_PATH . $rRequest['uuid'], json_encode($rRequest));
 				}

@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\License;
 
+use XcVm\Streaming\Fanout\FanoutMode;
+
 /**
  * Reads the panel's licence verdict for the one capability it gates: the
  * xc_fanout live-delivery daemon.
@@ -30,13 +32,14 @@ class LicenseGate {
 	 *
 	 * This is the single gate the delivery/supervision choke points consult
 	 * (replacing bare file_exists(FANOUT_CTL_SOCK) checks). False means the control
-	 * socket is absent OR the licence denies fanout; callers then fall back to the
+	 * socket is absent, the admin switched fanout off (FanoutMode), OR the
+	 * licence denies fanout; callers then fall back to the
 	 * legacy delivery path automatically (soft enforcement).
 	 *
 	 * @return bool True when fanout should be used for this request.
 	 */
 	public static function fanoutUsable(): bool {
-		return defined('FANOUT_CTL_SOCK') && file_exists(FANOUT_CTL_SOCK) && self::fanoutAllowed();
+		return FanoutMode::enabled() && defined('FANOUT_CTL_SOCK') && file_exists(FANOUT_CTL_SOCK) && self::fanoutAllowed();
 	}
 
 	/**

@@ -316,14 +316,14 @@ class DatabaseHandler extends Database {
 		$start = microtime(true);
 		$this->queryCount++;
 
-		$result = call_user_func_array('parent::query', func_get_args());
+		$result = parent::query(...func_get_args());
 
 		// If query failed — try reconnection (only if not in transaction)
 		if ($result === false && !$this->inTransaction && $this->shouldReconnect()) {
 			$this->log('warning', 'Query failed, attempting reconnect', ['query' => $query]);
 
 			if ($this->reconnect()) {
-				$result = call_user_func_array('parent::query', func_get_args());
+				$result = parent::query(...func_get_args());
 			}
 		}
 

@@ -5,11 +5,12 @@ use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Backup\BackupService;
-use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Localization\Translator;
 use XcVm\Core\Module\ModuleLoader;
 use XcVm\Core\Module\QuickToolsRegistry;
 use XcVm\Core\Util\AdminHelpers;
@@ -36,11 +37,10 @@ use XcVm\Domain\Vod\EpisodeService;
 use XcVm\Domain\Vod\MovieService;
 use XcVm\Domain\Vod\SeriesService;
 use XcVm\Domain\Vod\TMDbService;
+use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 use XcVm\Module\Plex\PlexService;
 use XcVm\Module\Watch\RecordingService;
 use XcVm\Module\Watch\WatchService;
-use XcVm\Core\Localization\Translator;
-use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
 
 // Legacy standalone entry: nginx can map /CODE/post.php straight to this file
 // (a `location ~ \.php$` with SCRIPT_FILENAME=$request_filename), bypassing the
@@ -1871,7 +1871,7 @@ if (1 < $rICount) { ?>
 						}
 
 						if (0 < count($rCertbot['domain'])) {
-							SignalDispatcher::rootAction(intval($rReturn['data']['insert_id']), $rCertbot, $db);
+							NodeActions::send(intval($rReturn['data']['insert_id']), $rCertbot, $db);
 							echo json_encode(array('result' => true, 'location' => 'server_view?id=' . intval($rReturn['data']['insert_id']) . '&status=' . STATUS_CERTBOT, 'status' => STATUS_CERTBOT));
 
 							exit();

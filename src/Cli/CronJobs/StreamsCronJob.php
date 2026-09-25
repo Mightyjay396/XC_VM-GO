@@ -11,6 +11,7 @@ use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Codec\FFprobeRunner;
 use XcVm\Streaming\Fanout\FanoutClient;
@@ -326,7 +327,7 @@ class StreamsCronJob implements CommandInterface {
 						// producer's progress report is this pass's to record.
 						if ($rIsSupervised) {
 							if ($rProgress !== $rStream['progress_info']) {
-								$db->query('UPDATE `streams_servers` SET `progress_info` = ? WHERE `server_stream_id` = ?', $rProgress, $rStream['server_stream_id']);
+								StreamStateWriter::updateRow(intval($rStream['server_stream_id']), ['progress_info' => $rProgress], $db);
 							}
 							echo "\n";
 							continue;
@@ -352,9 +353,9 @@ class StreamsCronJob implements CommandInterface {
 							}
 						}
 						if ($rStream['pid'] != $rPID) {
-							$db->query('UPDATE `streams_servers` SET `pid` = ?, `progress_info` = ?, `stream_info` = ?, `compatible` = ?, `bitrate` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ? WHERE `server_stream_id` = ?', $rPID, $rProgress, $rStreamInfo, $rCompatible, $rBitrate, $rAudioCodec, $rVideoCodec, $rResolution, $rStream['server_stream_id']);
+							StreamStateWriter::updateRow(intval($rStream['server_stream_id']), ['pid' => $rPID, 'progress_info' => $rProgress, 'stream_info' => $rStreamInfo, 'compatible' => $rCompatible, 'bitrate' => $rBitrate, 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution], $db);
 						} else {
-							$db->query('UPDATE `streams_servers` SET `progress_info` = ?, `stream_info` = ?, `compatible` = ?, `bitrate` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ? WHERE `server_stream_id` = ?', $rProgress, $rStreamInfo, $rCompatible, $rBitrate, $rAudioCodec, $rVideoCodec, $rResolution, $rStream['server_stream_id']);
+							StreamStateWriter::updateRow(intval($rStream['server_stream_id']), ['progress_info' => $rProgress, 'stream_info' => $rStreamInfo, 'compatible' => $rCompatible, 'bitrate' => $rBitrate, 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution], $db);
 						}
 					}
 					echo "\n";
@@ -389,7 +390,7 @@ class StreamsCronJob implements CommandInterface {
 					}
 					echo 'Stream ID: ' . $rStream['id'] . "\n";
 					echo 'Update Stream Information...' . "\n";
-					$db->query('UPDATE `streams_servers` SET `bitrate` = ?, `stream_info` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ?, `compatible` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rBitrate, json_encode($rFFProbeOutput), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rStream['id'], SERVER_ID);
+					StreamStateWriter::update(intval($rStream['id']), intval(SERVER_ID), ['bitrate' => $rBitrate, 'stream_info' => json_encode($rFFProbeOutput), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible], $db);
 				}
 
 				$rUUIDs = $this->connectionUuidsForStream(ConnectionTracker::getConnections(SERVER_ID, null, $rStream['id']), $rStream['id']);

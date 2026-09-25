@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\License\LicenseGate;
@@ -27,7 +28,7 @@ class MiscAjaxController extends BaseAjaxController {
 		$this->requireXhr();
 		$this->gate('adv', 'process_monitor');
 
-		ApiClient::systemRequest(RequestManager::get('server'), ['action' => 'kill_pid', 'pid' => intval(RequestManager::get('pid'))]);
+		NodeRpc::request(RequestManager::get('server'), ['action' => 'kill_pid', 'pid' => intval(RequestManager::get('pid'))]);
 
 		$this->ok();
 	}

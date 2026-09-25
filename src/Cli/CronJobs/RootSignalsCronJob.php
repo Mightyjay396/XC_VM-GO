@@ -10,6 +10,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
  * RootSignalsCronJob — root signals cron job
@@ -330,8 +331,17 @@ class RootSignalsCronJob implements CommandInterface {
 		// any racing duplicate supervisor exits at once), run as xc_vm to
 		// match `service boot`. Closes the "supervisor died → fanout stays down"
 		// gap. Runs on every node (main + LB), like the daemon self-heal below.
+		//
+		// Fanout switched off (settings.fanout_enabled = 0, FanoutMode): write the
+		// flag the shell scripts check, stop the supervisor and the daemon, and
+		// skip the keepalive and the binary self-heal below. Switched back on:
+		// the flag goes and the keepalive starts the supervisor again.
+		$rFanoutEnabled = FanoutMode::enabled();
+		if (FanoutMode::applyToNode($rFanoutEnabled)) {
+			echo 'xc_fanout ' . ($rFanoutEnabled ? 'enabled' : 'disabled: daemon stopped') . "\n";
+		}
 		$rRunSh = MAIN_HOME . 'bin/xc_fanout/run.sh';
-		if (is_file($rRunSh) && trim((string) shell_exec('pgrep -u xc_vm -f ' . escapeshellarg($rRunSh) . ' 2>/dev/null')) === '') {
+		if ($rFanoutEnabled && is_file($rRunSh) && trim((string) shell_exec('pgrep -u xc_vm -f ' . escapeshellarg($rRunSh) . ' 2>/dev/null')) === '') {
 			shell_exec('sudo -u xc_vm bash ' . escapeshellarg($rRunSh) . ' >/dev/null 2>&1 &');
 		}
 
@@ -346,7 +356,7 @@ class RootSignalsCronJob implements CommandInterface {
 		// actual upgrade. Root context (this cron) is required — it installs into
 		// bin/ and chowns. Runs on every node (main + LB) since LBs need it too.
 		$rFanoutStamp = CRONS_TMP_PATH . 'fanout_binary_check';
-		if (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600) {
+		if ($rFanoutEnabled && (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600)) {
 			file_put_contents($rFanoutStamp, time());
 			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php fanout_binary >/dev/null 2>&1 &');
 		}

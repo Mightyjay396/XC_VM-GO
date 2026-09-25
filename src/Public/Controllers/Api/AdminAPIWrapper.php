@@ -4,6 +4,7 @@ namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Auth\AuthService;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
@@ -1059,7 +1060,7 @@ class AdminAPIWrapper {
 		if ($rServerID == -1) {
 			$rData = json_decode(ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => [$rID], 'servers' => array_keys(ServerRepository::getAll())]), true);
 		} else {
-			$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'stream', 'stream_ids' => [$rID], 'function' => 'start']), true);
+			$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'stream', 'stream_ids' => [$rID], 'function' => 'start']), true);
 		}
 		if (!$rData['result']) {
 			return ['status' => 'STATUS_FAILURE'];
@@ -1071,7 +1072,7 @@ class AdminAPIWrapper {
 		if ($rServerID == -1) {
 			$rData = json_decode(ApiClient::request(['action' => 'stream', 'sub' => 'stop', 'stream_ids' => [$rID], 'servers' => array_keys(ServerRepository::getAll())]), true);
 		} else {
-			$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'stream', 'stream_ids' => [$rID], 'function' => 'stop']), true);
+			$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'stream', 'stream_ids' => [$rID], 'function' => 'stop']), true);
 		}
 		if (!$rData['result']) {
 			return ['status' => 'STATUS_FAILURE'];
@@ -1200,7 +1201,7 @@ class AdminAPIWrapper {
 		if ($rServerID == -1) {
 			$rData = json_decode(ApiClient::request(['action' => 'vod', 'sub' => 'start', 'stream_ids' => [$rID], 'servers' => array_keys(ServerRepository::getAll())]), true);
 		} else {
-			$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'vod', 'stream_ids' => [$rID], 'function' => 'start']), true);
+			$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'vod', 'stream_ids' => [$rID], 'function' => 'start']), true);
 		}
 		if (!$rData['result']) {
 			return ['status' => 'STATUS_FAILURE'];
@@ -1212,7 +1213,7 @@ class AdminAPIWrapper {
 		if ($rServerID == -1) {
 			$rData = json_decode(ApiClient::request(['action' => 'vod', 'sub' => 'stop', 'stream_ids' => [$rID], 'servers' => array_keys(ServerRepository::getAll())]), true);
 		} else {
-			$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'vod', 'stream_ids' => [$rID], 'function' => 'stop']), true);
+			$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'vod', 'stream_ids' => [$rID], 'function' => 'stop']), true);
 		}
 		if (!$rData['result']) {
 			return ['status' => 'STATUS_FAILURE'];
@@ -1372,7 +1373,7 @@ class AdminAPIWrapper {
 
 	public static function getStats($rServerID) {
 		global $db;
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'stats']), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'stats']), true);
 		if (!$rData) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1410,7 +1411,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getFPMStatus($rServerID) {
-		$rData = ApiClient::systemRequest($rServerID, ['action' => 'fpm_status']);
+		$rData = NodeRpc::request($rServerID, ['action' => 'fpm_status']);
 		if (!$rData) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1418,7 +1419,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getRTMPStats($rServerID) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'rtmp_stats']), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'rtmp_stats']), true);
 		if (!$rData) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1426,7 +1427,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getFreeSpace($rServerID) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_free_space']), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'get_free_space']), true);
 		if (!$rData) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1434,7 +1435,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getPIDs($rServerID) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_pids']), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'get_pids']), true);
 		if (!$rData) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1442,7 +1443,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getCertificateInfo($rServerID) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_certificate_info']), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'get_certificate_info']), true);
 		if (!$rData) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1450,12 +1451,12 @@ class AdminAPIWrapper {
 	}
 
 	public static function reloadNGINX($rServerID) {
-		ApiClient::systemRequest($rServerID, ['action' => 'reload_nginx']);
+		NodeRpc::request($rServerID, ['action' => 'reload_nginx']);
 		return ['status' => 'STATUS_SUCCESS'];
 	}
 
 	public static function clearTemp($rServerID) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'free_temp']), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'free_temp']), true);
 		if (!$rData['result']) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1463,7 +1464,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function clearStreams($rServerID) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'free_streams']), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'free_streams']), true);
 		if (!$rData['result']) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1471,7 +1472,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function getDirectory($rServerID, $rDirectory) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'scandir', 'dir' => $rDirectory]), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'scandir', 'dir' => $rDirectory]), true);
 		if (!$rData) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1483,7 +1484,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function killPID($rServerID, $rPID) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'kill_pid', 'pid' => intval($rPID)]), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'kill_pid', 'pid' => intval($rPID)]), true);
 		if (!$rData['result']) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
@@ -1491,7 +1492,7 @@ class AdminAPIWrapper {
 	}
 
 	public static function killConnection($rServerID, $rActivityID) {
-		$rData = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'closeConnection', 'activity_id' => intval($rActivityID)]), true);
+		$rData = json_decode(NodeRpc::request($rServerID, ['action' => 'closeConnection', 'activity_id' => intval($rActivityID)]), true);
 		if (!$rData['result']) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
