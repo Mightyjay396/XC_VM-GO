@@ -1,23 +1,29 @@
 <?php
 
-use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
 /**
  * tools/ci/verify-lb-archive.sh (make verify-lb-archive) guards the Makefile's
  * LB lists. It must fail on an entry that matches no tracked path (a strip rule
- * that became a no-op after a rename, as the old www/* entries did), on
- * privileged code left in the manifest, and on a stripped file that
- * lb_configs/nginx.conf still routes to.
+ * that became a no-op after a rename, as the old www/* entries did), on an entry
+ * of the wrong kind for its list, on privileged code left in the manifest, on a
+ * stripped file that lb_configs/nginx.conf still routes to, and on an LB
+ * deleted-files list that would delete a shipped file on update. The last test
+ * pins what `make lb_delete_files_list` puts in that list.
  *
- * Each case overrides one Makefile list through MAKEFLAGS, as `make VAR=...`
+ * Each case overrides Makefile variables through MAKEFLAGS, as `make VAR=...`
  * on the command line would, and runs the real script against the checkout.
+ * A case injects all its entries into one run (each gate run takes about a
+ * second) and asserts that every entry produces its own finding line.
  */
 #[Group('skip-on-panel')]
 final class LbArchiveGateTest extends TestCase {
 
 	private string $rRoot;
+
+	/** @var string[] Temporary directories removed in tearDown(). */
+	private array $rTempDirs = [];
 
 	protected function setUp(): void {
 		// The gate reads the Makefile and `git ls-files`, so it only runs in a
@@ -28,51 +34,156 @@ final class LbArchiveGateTest extends TestCase {
 		}
 	}
 
+	protected function tearDown(): void {
+		foreach ($this->rTempDirs as $rDir) {
+			$this->removeDir($rDir);
+		}
+	}
+
 	public function testCurrentListsPass(): void {
 		[$rCode, $rOutput] = $this->runGate([]);
 
 		$this->assertSame(0, $rCode, $rOutput);
 		$this->assertStringStartsWith('OK: ', $rOutput);
-		$this->assertDoesNotMatchRegularExpression('/^(STALE|LEAK|MISSING|FAIL):/m', $rOutput);
+		$this->assertDoesNotMatchRegularExpression('/^(STALE|WRONG-LIST|LEAK|MISSING|DELETES-SHIPPED|FAIL):/m', $rOutput);
 	}
 
-	public function testStaleFileEntryFails(): void {
-		[$rCode, $rOutput] = $this->runGate(['LB_FILES_TO_REMOVE' => array_merge($this->makeList('LB_FILES_TO_REMOVE'), ['www/admin/api.php'])]);
-
-		$this->assertSame(1, $rCode, $rOutput);
-		$this->assertStringContainsString("STALE: 'www/admin/api.php'", $rOutput);
-	}
-
-	public function testStaleDirectoryEntryFails(): void {
-		[$rCode, $rOutput] = $this->runGate(['LB_DIRS' => array_merge($this->makeList('LB_DIRS'), ['www'])]);
-
-		$this->assertSame(1, $rCode, $rOutput);
-		$this->assertStringContainsString("STALE: 'www'", $rOutput);
-	}
-
-	public function testPrivilegedFileLeftInTheManifestFails(): void {
-		$rFiles = array_values(array_diff($this->makeList('LB_FILES_TO_REMOVE'), ['Public/stream/auth.php']));
-		[$rCode, $rOutput] = $this->runGate(['LB_FILES_TO_REMOVE' => $rFiles]);
-
-		$this->assertSame(1, $rCode, $rOutput);
-		$this->assertStringContainsString("LEAK: 'Public/stream/auth.php'", $rOutput);
-	}
-
-	/** @return array<string, array{string}> */
-	public static function routedFiles(): array {
-		return [
-			'SCRIPT_FILENAME' => ['Public/index.php'],
-			'stream handler'  => ['Public/stream/live.php'],
-			'admin handler'   => ['Public/admin/vod.php'],
+	public function testStaleEntriesFail(): void {
+		$rStale = [
+			'LB_DIRS'            => 'www',
+			'LB_ROOT_FILES'      => 'index.php',
+			'LB_DIRS_TO_REMOVE'  => 'Domain/Auth',
+			'LB_FILES_TO_REMOVE' => 'www/admin/api.php',
 		];
-	}
-
-	#[DataProvider('routedFiles')]
-	public function testStrippingARoutedFileFails(string $rPath): void {
-		[$rCode, $rOutput] = $this->runGate(['LB_FILES_TO_REMOVE' => array_merge($this->makeList('LB_FILES_TO_REMOVE'), [$rPath])]);
+		$rOverrides = [];
+		foreach ($rStale as $rList => $rEntry) {
+			$rOverrides[$rList] = array_merge($this->makeList($rList), [$rEntry]);
+		}
+		[$rCode, $rOutput] = $this->runGate($rOverrides);
 
 		$this->assertSame(1, $rCode, $rOutput);
-		$this->assertMatchesRegularExpression('#^MISSING: .*' . preg_quote($rPath, '#') . '#m', $rOutput);
+		foreach ($rStale as $rList => $rEntry) {
+			$this->assertStringContainsString("STALE: '" . $rEntry . "' in " . $rList . ' ', $rOutput);
+		}
+	}
+
+	public function testEntriesOfTheWrongKindFail(): void {
+		// rm -rf strips a file named in LB_DIRS_TO_REMOVE, while rm -f and cp skip a
+		// directory named in LB_FILES_TO_REMOVE or LB_ROOT_FILES.
+		$rWrong = [
+			'LB_DIRS'            => ['bootstrap.php', 'is a file'],
+			'LB_ROOT_FILES'      => ['Cli', 'is a directory'],
+			'LB_DIRS_TO_REMOVE'  => ['Public/stream/live.php', 'is a file'],
+			'LB_FILES_TO_REMOVE' => ['Domain/Epg', 'is a directory'],
+		];
+		$rOverrides = [];
+		foreach ($rWrong as $rList => [$rEntry]) {
+			$rOverrides[$rList] = array_merge($this->makeList($rList), [$rEntry]);
+		}
+		[$rCode, $rOutput] = $this->runGate($rOverrides);
+
+		$this->assertSame(1, $rCode, $rOutput);
+		foreach ($rWrong as $rList => [$rEntry, $rKind]) {
+			$this->assertStringContainsString("WRONG-LIST: '" . $rEntry . "' in " . $rList . ' ' . $rKind, $rOutput);
+		}
+		// The manifest models rm -rf, so the stripped routed file is reported too.
+		$this->assertMatchesRegularExpression('#^MISSING: .*\'Public/stream/live\.php\'#m', $rOutput);
+	}
+
+	public function testPrivilegedCodeLeftInTheManifestFails(): void {
+		$rDirs = ['Public/Controllers/PlayerV2'];
+		$rFiles = ['Public/admin/api.php', 'Public/admin/proxy_api.php', 'Public/stream/auth.php', 'Public/stream/probe.php', 'Cli/Commands/DbMigrateCommand.php'];
+		[$rCode, $rOutput] = $this->runGate([
+			'LB_DIRS_TO_REMOVE'  => array_values(array_diff($this->makeList('LB_DIRS_TO_REMOVE'), $rDirs)),
+			'LB_FILES_TO_REMOVE' => array_values(array_diff($this->makeList('LB_FILES_TO_REMOVE'), $rFiles)),
+		]);
+
+		$this->assertSame(1, $rCode, $rOutput);
+		foreach (array_merge($rDirs, $rFiles) as $rPath) {
+			$this->assertStringContainsString("LEAK: '" . $rPath . "'", $rOutput);
+		}
+	}
+
+	public function testStrippingARoutedFileFails(): void {
+		$rRouted = [
+			'SCRIPT_FILENAME'           => 'Public/index.php',
+			'/stream/ gateway handler'  => 'Public/stream/live.php',
+			'/admin/ gateway handler'   => 'Public/admin/vod.php',
+			'XC_API internal (/api)'    => 'Public/Controllers/Api/InternalApiController.php',
+			'XC_API $1 (/api/<name>)'   => 'Public/Controllers/Api/PlayerApiController.php',
+			'XC_API shared base class'  => 'Public/Controllers/Api/BaseApiController.php',
+			'XC_API request bootstrap'  => 'Infrastructure/Bootstrap/StreamingRequestBootstrap.php',
+		];
+		[$rCode, $rOutput] = $this->runGate(['LB_FILES_TO_REMOVE' => array_merge($this->makeList('LB_FILES_TO_REMOVE'), array_values($rRouted))]);
+
+		$this->assertSame(1, $rCode, $rOutput);
+		foreach ($rRouted as $rRoute => $rPath) {
+			$this->assertMatchesRegularExpression('#^MISSING: .*\'' . preg_quote($rPath, '#') . '\'#m', $rOutput, $rRoute);
+		}
+	}
+
+	public function testUnparseableNginxConfigFailsClosed(): void {
+		$rConf = (string) file_get_contents($this->rRoot . '/lb_configs/nginx.conf');
+		$rBroken = str_replace(
+			['SCRIPT_FILENAME /home/xc_vm/', 'location ~ ^/admin/(', 'fastcgi_param XC_API internal;'],
+			['SCRIPT_FILENAME /srv/xc_vm/', 'location ~ ^/panel/(', 'fastcgi_param XC_API bogus;'],
+			$rConf,
+			$rCount
+		);
+		$this->assertGreaterThanOrEqual(3, $rCount, 'lb_configs/nginx.conf no longer has the lines this test rewrites');
+		$rConfigDir = $this->tempDir();
+		file_put_contents($rConfigDir . '/nginx.conf', $rBroken);
+
+		[$rCode, $rOutput] = $this->runGate(['CONFIG_DIR' => [$rConfigDir]]);
+
+		$this->assertSame(1, $rCode, $rOutput);
+		$this->assertStringContainsString('MISSING: no SCRIPT_FILENAME /home/xc_vm/', $rOutput);
+		$this->assertStringContainsString('MISSING: no \'location ~ ^/admin/(...)$\' gateway', $rOutput);
+		$this->assertStringContainsString("sets XC_API 'bogus', which src/Public/index.php does not map", $rOutput);
+	}
+
+	public function testDeletingAShippedFileOnUpdateFails(): void {
+		// A git deletion whose path is tracked again: the LB update would unlink it.
+		$rMainDir = $this->mainDirWithDeletedFiles(['Public/stream/live.php', 'console.php']);
+
+		[$rCode, $rOutput] = $this->runGate(['MAIN_DIR' => [$rMainDir]]);
+
+		$this->assertSame(1, $rCode, $rOutput);
+		$this->assertStringContainsString("DELETES-SHIPPED: the LB update would delete 'Public/stream/live.php'", $rOutput);
+		$this->assertStringContainsString("DELETES-SHIPPED: the LB update would delete 'console.php'", $rOutput);
+	}
+
+	public function testDeletedFilesListHoldsLbGitDeletionsAndStrippedCode(): void {
+		$rMainDir = $this->mainDirWithDeletedFiles(['www/old.php', 'resources/data/a.txt', 'Modules/Foo/x.php', 'bin/y']);
+		$rTempDir = $this->tempDir();
+
+		[$rCode, $rOutput] = $this->runProcess(['make', '-s', 'lb_delete_files_list', 'TEMP_DIR=' . $rTempDir, 'MAIN_DIR=' . $rMainDir], []);
+
+		$this->assertSame(0, $rCode, $rOutput);
+		$rList = file($rTempDir . '/migrations/deleted_files.txt', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+		$this->assertIsArray($rList);
+
+		// Git deletions under LB_DIRS or a retired LB tree; never a module path.
+		foreach (['www/old.php', 'resources/data/a.txt', 'bin/y'] as $rPath) {
+			$this->assertContains($rPath, $rList);
+		}
+		$this->assertNotContains('Modules/Foo/x.php', $rList);
+
+		// Every stripped code file, including whole stripped trees...
+		foreach ($this->makeList('LB_FILES_TO_REMOVE') as $rPath) {
+			if (preg_match('#^(Cli|Core|Domain|Infrastructure|Public|Streaming)/#', $rPath)) {
+				$this->assertContains($rPath, $rList);
+			}
+		}
+		$this->assertContains('Public/Controllers/PlayerV2/BasePlayerV2Controller.php', $rList);
+		$this->assertContains('Domain/Device/MagService.php', $rList);
+
+		// ...but no stripped runtime file, nothing under LB_KEEP_ON_UPDATE and no
+		// shipped file.
+		$this->assertSame([], preg_grep('#^(Domain/User|bin/install|bin/redis)/#', $rList));
+		foreach (['config/rclone.conf', 'bin/nginx/conf/gzip.conf', 'Public/stream/live.php', 'Public/stream/rtmp.php', 'Public/index.php'] as $rPath) {
+			$this->assertNotContains($rPath, $rList);
+		}
 	}
 
 	/** @return string[] The current value of a Makefile list. */
@@ -84,7 +195,43 @@ final class LbArchiveGateTest extends TestCase {
 	}
 
 	/**
-	 * @param array<string, string[]> $rOverrides Makefile lists to replace.
+	 * A MAIN_DIR stand-in whose migrations/deleted_files.txt lists $rPaths.
+	 *
+	 * @param string[] $rPaths
+	 */
+	private function mainDirWithDeletedFiles(array $rPaths): string {
+		$rDir = $this->tempDir();
+		mkdir($rDir . '/migrations');
+		file_put_contents($rDir . '/migrations/deleted_files.txt', "# Files to delete during update\n" . implode("\n", $rPaths) . "\n\n");
+
+		return $rDir;
+	}
+
+	private function tempDir(): string {
+		$rDir = sys_get_temp_dir() . '/lb-gate-' . bin2hex(random_bytes(6));
+		mkdir($rDir, 0700);
+		$this->rTempDirs[] = $rDir;
+
+		return $rDir;
+	}
+
+	private function removeDir(string $rDir): void {
+		if (!is_dir($rDir)) {
+			return;
+		}
+		foreach (array_diff(scandir($rDir) ?: [], ['.', '..']) as $rEntry) {
+			$rPath = $rDir . '/' . $rEntry;
+			if (is_dir($rPath)) {
+				$this->removeDir($rPath);
+			} else {
+				unlink($rPath);
+			}
+		}
+		rmdir($rDir);
+	}
+
+	/**
+	 * @param array<string, string[]> $rOverrides Makefile variables to replace.
 	 * @return array{int, string} Exit code and combined output.
 	 */
 	private function runGate(array $rOverrides): array {
