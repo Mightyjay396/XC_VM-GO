@@ -2307,6 +2307,7 @@ use XcVm\Domain\Server\ServerRepository;
 						['servers_stats_retention_days', 'number', 'Days of servers_stats kept (1-365).'],
 						['cluster_audit_retention_days', 'number', 'Days of cluster audit log kept (1-365).'],
 						['cluster_agent_upgrade_parallel', 'number', 'Nodes updated at once during staged agent/core/fanout updates (1-50).'],
+						['cluster_db_allowlist', 'switch', 'Firewall MariaDB (3306) and Redis (6379) on MAIN: only MAIN, LBs and proxies not yet in cluster mode 2, and the extra list below may connect. Applied within a minute by the root cron; check first with console.php cluster:db-allowlist status.'],
 					];
 					?>
 					<div class="row">
@@ -2350,6 +2351,15 @@ use XcVm\Domain\Server\ServerRepository;
 								</label>
 								<div class="col-md-8">
 									<textarea class="form-control" rows="3" id="lb_scan_roots" name="lb_scan_roots"><?= htmlspecialchars(implode("\n", $rClusterRoots)) ?></textarea>
+								</div>
+							</div>
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="cluster_db_allowlist_extra">
+									<?= $language::get('cluster_db_allowlist_extra') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="Other IPs or CIDRs that may reach 3306/6379 while the allowlist is on (a remote backup, a MySQL client), one per line."></i>
+								</label>
+								<div class="col-md-8">
+									<textarea class="form-control" rows="3" id="cluster_db_allowlist_extra" name="cluster_db_allowlist_extra"><?= htmlspecialchars((string) ($rSettings['cluster_db_allowlist_extra'] ?? '')) ?></textarea>
 								</div>
 							</div>
 						</div>

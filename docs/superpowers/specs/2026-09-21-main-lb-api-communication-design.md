@@ -140,9 +140,9 @@ nginx applies `limit_req` 100 r/s per TCP peer (burst 400, status 429), `client_
 
 **Legacy caveat.** Shared Redis and MariaDB stay reachable for legacy nodes, with three safeguards:
 
-- An iptables allowlist opens 3306/6379 only to mode ≤ 1 nodes and proxies with a grant.
-- `CONFIG`, `DEBUG`, `MODULE` and `REPLICAOF` get random names on the shared Redis.
-- `redis_password` and the LB DB grant password rotate when a node leaves mode ≤ 1 and at lockdown.
+- An iptables allowlist opens 3306/6379 only to mode ≤ 1 nodes and proxies. It is opt-in (`cluster_db_allowlist`), and it keeps every proxy, because which proxies still hold a grant is not recorded.
+- `CONFIG`, `DEBUG`, `SHUTDOWN`, `SLAVEOF`, `REPLICAOF`, `MIGRATE` and `MODULE` are renamed to `""` (removed) on the shared Redis. `FLUSHALL`, `FLUSHDB` and `EVAL` stay, since the panel uses them.
+- `redis_password` and the LB DB grant password rotate when a node leaves mode ≤ 1 and at lockdown (Phase 9).
 
 Until those rotations, legacy nodes send Redis `AUTH` and SQL in cleartext, so confidentiality holds only for mode-2 nodes. Per-node scoping of the grant password by `db_grant` is (undetermined).
 
@@ -939,8 +939,9 @@ Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR 
 - CLI: `ClusterInitCommand` (`cluster:init`, which also covers the plan's `cluster:reinit`), `ClusterExportKeysCommand` and `ClusterImportKeysCommand` (`cluster:export-keys`/`cluster:import-keys`, the DR bundle; `ClusterDrTest`), `AgentBinaryCommand` (`agent_binary`, MAIN's SHA-256-verified agent cache), `LbInstallFlow::provisionCluster` (enrolment at install), `ServerEnrolCommand` (`server:enrol`, existing LBs; expected host key, no TOFU), `ClusterEnrolCodeCommand` and `ClusterEnrolApproveCommand` (codes; SAS approval), `ClusterPinRootCommand`. Agent: Go `cmd/xc_agent` (`run`, `health`, `keygen`, `probe`, `install`, `enrol <code>`) and `internal/clusteragent` (`client.go`, `rekey.go`, `enrolcode.go`, `install.go`, `state.go`), supervised by `bin/xc_agent/run.sh`; released as `xc_agent-linux-<arch>` beside `xc_fanout`.
 - Acceptance: a fresh LB on a panel without an SSL certificate ends `active` in mode 1. Its first token arrives over SSH at install; `enrol_complete`, heartbeats and at least three refreshes then run over plain HTTP on `http_broadcast_port`.
 - Also accepted: at L = 5 (`lb_token_rotation_min` = 5 min, the fastest rotation), three overlapping rotations cause zero auth errors. Revoke returns signed `NODE_REVOKED`; heartbeats stay under 2 s during an 8 MB upload.
-- Tests: `ClusterApiTest` (enrolment, refresh, rekey, replay, bad MAC and node signature, revocation, challenge), `ClusterEnrolCodeTest`, `LbProvisionClusterTest` (opt-in against the real agent), `ClusterSchemaTest`; Go `client_test.go`, `rekey_test.go`, `enrolcode_test.go` and the opt-in `interop_test.go` against the panel's PHP API, with `-race`.
-- **Not built yet:** the cluster FPM pool (`ClusterPool`), rendered nginx config (`ClusterNginxConfig`, `cluster_locations.conf`, `cluster.d/`) and the cluster bus (`ClusterBus`, unix socket); shared-instance hardening (the 3306/6379 allowlist, Redis `rename-command`, password rotation); a fleet-wide `cluster:reenrol --all` (each node is re-enrolled with `server:enrol`); `HttpsRequiredRecoveryTest`; E2E `admin/cluster-nodes.spec.ts`.
+- Shared-instance hardening: `Domain/Cluster/DbAllowlist` (chain `XCVM_DB`, reconciled each minute by `RootSignalsCronJob` on MAIN; migration 040; `ClusterDbAllowlistCommand`, `cluster:db-allowlist status|apply|undo`) and `Infrastructure/Redis/RedisConfigHardening` (the Redis renames, in `bin/redis/redis.conf` and appended once by `status` on existing installs). Password rotation belongs to Phase 9.
+- Tests: `ClusterApiTest` (enrolment, refresh, rekey, replay, bad MAC and node signature, revocation, challenge), `ClusterEnrolCodeTest`, `LbProvisionClusterTest` (opt-in against the real agent), `ClusterSchemaTest`, `DbAllowlistTest` (opt-in `XCVM_TEST_NETNS=1` against the real iptables in a network namespace), `RedisConfigHardeningTest`; Go `client_test.go`, `rekey_test.go`, `enrolcode_test.go` and the opt-in `interop_test.go` against the panel's PHP API, with `-race`.
+- **Not built yet:** the cluster FPM pool (`ClusterPool`), rendered nginx config (`ClusterNginxConfig`, `cluster_locations.conf`, `cluster.d/`) and the cluster bus (`ClusterBus`, unix socket); a fleet-wide `cluster:reenrol --all` (each node is re-enrolled with `server:enrol`); `HttpsRequiredRecoveryTest`; E2E `admin/cluster-nodes.spec.ts`.
 
 **Phase 3: Telemetry and liveness authoritative (\~3 pw).**
 
