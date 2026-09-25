@@ -60,7 +60,7 @@ window.templateName = document.documentElement.getAttribute("data-template");
 window.XC_VM_UIDefaults = window.XC_VM_UIDefaults || {
 	theme: "light", // 'light' | 'dark' | 'system'
 	skin: "default", // 'default', 'bordered'
-	color: "#FFAB1D", // primary color (hex)
+	color: "#7367f0", // primary color (hex)
 	semiDark: true, // dark sidebar with light content
 	layoutCollapsed: false, // collapsed vertical menu
 	navbar: "static", // 'sticky' | 'static' | 'hidden'
