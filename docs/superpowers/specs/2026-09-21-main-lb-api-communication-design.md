@@ -914,53 +914,62 @@ Phases 2–8 are built and accepted on test panels with the reference crypto (`X
 
 ### Phase by phase
 
+Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR `docs/adr/0004-cluster-api.md` records each increment and why it differs from this plan. **Not built yet** marks what Phases 0–6 still owe.
+
 **Phase 0: Fixes, seams and gates (\~3.5 pw).**
 
-- Fixes: the log-import `break` in `ActivityCronJob`/`LinesLogsCronJob`, `SystemInfo`, the Redis `ValueError` in `live.php`, and removal of LB spawns of `cache_handler` and `cron:cache_engine`. MAIN-only gates go on cleanup, TMDb, certbot and root-signal crons; LB versions are pinned.
-- Stop-gaps: `proxy_api.php` binds `server_id` to the source IP (`whitelist_ips` admin-maintained only). SSH credentials move to a credential file, with a TOFU host key for fresh installs and no plaintext `<id>.json`.
-- Seams with legacy backends only: `SignalDispatcher` (47 `INSERT INTO signals` sites), `Domain/Stream/{StreamSource, StreamStateWriter, StreamRowMerge, StreamCacheBuilder}`, `LogSink`, `NodeRpc`, `NodeActions`. Also: lazy DB in the streaming bootstrap and trace-only audit hooks in `db_connect()` and `RedisManager::connect()`. Persistent loops refresh servers on a ≤ 5 s timer, and cron lock ids stop depending on the secret.
+- Fixes: the log-import `break` in `ActivityCronJob`/`LinesLogsCronJob`, `SystemInfo`, the Redis `ValueError` in `live.php`, and removal of LB spawns of `cron:cache_engine`. MAIN-only gates (`NodeRole::isMain()`, and `crontab.role = 'main'` from migration 033) go on `cleanup`, `tmdb`, `tmdb_popular`, `update` and the MAIN parts of `RootSignalsCronJob`; LB versions are pinned.
+- Stop-gaps: `proxy_api.php` binds `server_id` to the source IP (`whitelist_ips` admin-maintained only). SSH credentials go in a 0600 credential file (`InstallCredentials`, `--cred-file`), with a TOFU host key (`servers.ssh_hostkey_sha1`, migration 026) for fresh installs and no plaintext `<id>.json`.
+- Seams with legacy backends only: `Core/Cluster/SignalDispatcher` (every `INSERT INTO signals` site; `LegacySqlSignalSink` is the legacy backend), `Domain/Stream/{StreamSource, StreamStateWriter, StreamRowMerge, StreamCacheBuilder}`, `Core/Cluster/{LogSink, Redactor, NodeRpc, NodeActions}`. Also: `LazyDatabaseHandler` (`DatabaseFactory::connectLazy()`) in the stream endpoints and trace-only `ConnectAudit` hooks in `db_connect()` and `RedisManager::connect()`. Persistent loops refresh servers on a ≤ 5 s timer, and cron lock ids stop depending on the secret.
 - Acceptance: PHPUnit, `make gates` and E2E are green, and `live.php` p99 is measured before and after. Per-LB queries/s against MAIN must not rise; daemon RSS stays flat over 24 h.
-- Tests: seam parity tests (`SignalDispatcherParityTest`, …), `LazyDatabaseHandlerTest`, `SignalsLoopQueryRateTest`, `CronLockIdStableTest`.
+- Tests: `SignalDispatcherParityTest`, `LazyDatabaseHandlerTest`, `SignalsLoopQueryRateTest`, `CronLockIdStableTest`, `LogImportCronJobsTest`, `NodeRpcActionsTest`, `LogSinkTest`.
+- **Not built yet:** `cron:certbot` is not MAIN-only (`role = 'all'`, no `isMain()` check); decide whether each LB keeps renewing its own certificate. `service` still starts `cache_handler` on LBs, where the command is stripped and the spawn fails.
 
 **Phase 1: Crypto contract, schema, settings (\~4 pw + extension 3–4 wk).**
 
-- Migrations 026–032 plus `database.sql`; `src/Core/Cluster/Crypto/` (`ClusterCrypto`, `ClusterCryptoFactory`, `Box`, `Seal`, `Canonical`, `PanelSig`, `RelayAuth`, `Ticket`, `FileDigest`); `tests/Support/cluster_vectors.json`; Go `internal/clustercrypto` in XC\_VM\_Fanout.
-- `ClusterSettings::normalize` with port-collision and `https_required` checks; the admin Cluster tab, with strings in en.ini and 7 locales; the `XcvmCoreCommand` probe; ADR `docs/adr/0004-cluster-api.md`.
-- Acceptance: PHP, Go and the extension agree on every vector, and the factory refuses a missing or out-of-range extension. On bundled PHP, verifying and decrypting a 64 KB request and encrypting and MAC-ing its response takes under 1 ms p99 (`ClusterCryptoBenchTest`). An 8 MB body takes under 40 ms.
-- Tests: vector tests (`BoxVectorsTest`, `SealVectorsTest`), `SignTagSeparationTest`, `ClusterCryptoFailClosedTest`; E2E `admin/cluster-settings.spec.ts`.
+- Migrations 028–034 (026 and 027 were taken) plus `database.sql`; `src/Core/Cluster/Crypto/` (`ClusterCrypto`, `ClusterCryptoFactory`, `Box`, `Seal`, `Canonical`, `PanelSig`, `NodeSig`, `Enc`, `SessionKeys`, `RelayAuth`, `Ticket`, `FileDigest`); `tests/Support/{cluster_vectors.json, cluster_canonical_vectors.json, ClusterReference.php}`; Go `internal/clustercrypto` in XC\_VM\_Fanout.
+- `Core/Cluster/ClusterSettings::normalize` with port-collision and `https_required` checks; the admin Cluster tab, with strings in en.ini and 7 locales; the `XcvmCoreCommand` probe; ADR `docs/adr/0004-cluster-api.md`.
+- Acceptance: PHP, Go and the extension agree on every vector, and the factory refuses a missing or out-of-range extension. On bundled PHP, verifying and decrypting a 64 KB request and encrypting and MAC-ing its response takes under 1 ms p99 (`ClusterCryptoBenchTest`, opt-in `XCVM_BENCH=1`). An 8 MB body takes under 40 ms.
+- Tests: `ClusterVectorsTest` (SEAL, BOX, token chain, tag separation), `CanonicalRequestTest`, `ClusterTicketsTest`, `ClusterCryptoFailClosedTest`, `ClusterSchemaTest`, `ClusterSettingsTest`, opt-in `ClusterExtensionIntegrationTest`; Go `internal/clustercrypto/vectors_test.go`.
+- **Not built yet:** E2E `admin/cluster-settings.spec.ts`.
 
 **Phase 2: MAIN endpoint, enrolment, Go agent skeleton (\~8 pw).**
 
-- MAIN: `cluster_locations.conf` and `cluster.d/` rendered by `ClusterNginxConfig`, `ClusterPool`, `ClusterBus` (unix socket), `ClusterApiController`, and `Domain/Cluster/{NodeRegistry, TokenService, EnrolmentService, HeartbeatService, NodeHealth, ClusterAudit, DenialFactory}`. Shared-instance hardening adds the 3306/6379 allowlist, Redis `rename-command` and password rotation.
-- CLI: `ClusterInitCommand`, `ClusterEnrolCommand`, `ServerEnrolCommand` (SSH with expected host key or SAS), `ClusterExportKeysCommand` (Argon2id), `LbInstallFlow::provisionCluster`. Agent: Go `cmd/xc_agent` with four lanes and an http/https transport policy.
+- MAIN: `Domain/Cluster/ClusterApi` behind `Public/cluster/index.php`, routed by a fixed `location ^~ /cluster/v1/` in `bin/nginx/conf/nginx.conf` (MAIN only; `lb_configs/nginx.conf` has no route). `Domain/Cluster/{NodeRegistry, TokenService, EnrolmentService, EnrolCodeService, HeartbeatService, NodeHealth, ClusterAudit, ClusterClock, ClusterMeta, ClusterPolicy, ClusterReply, DenialFactory, NonceStore, ClusterAdmin}`. The admin page *Servers → Cluster Nodes* and `cron:cluster` (`ClusterCronJob`).
+- CLI: `ClusterInitCommand` (`cluster:init`), `AgentBinaryCommand` (`agent_binary`, MAIN's SHA-256-verified agent cache), `LbInstallFlow::provisionCluster` (enrolment at install), `ServerEnrolCommand` (`server:enrol`, existing LBs; expected host key, no TOFU), `ClusterEnrolCodeCommand` and `ClusterEnrolApproveCommand` (codes; SAS approval), `ClusterPinRootCommand`. Agent: Go `cmd/xc_agent` (`run`, `health`, `keygen`, `probe`, `install`, `enrol <code>`) and `internal/clusteragent` (`client.go`, `rekey.go`, `enrolcode.go`, `install.go`, `state.go`), supervised by `bin/xc_agent/run.sh`; released as `xc_agent-linux-<arch>` beside `xc_fanout`.
 - Acceptance: a fresh LB on a panel without an SSL certificate ends `active` in mode 1. Its first token arrives over SSH at install; `enrol_complete`, heartbeats and at least three refreshes then run over plain HTTP on `http_broadcast_port`.
 - Also accepted: at L = 5 (`lb_token_rotation_min` = 5 min, the fastest rotation), three overlapping rotations cause zero auth errors. Revoke returns signed `NODE_REVOKED`; heartbeats stay under 2 s during an 8 MB upload.
-- Tests: 27 PHPUnit tests, such as `CanonicalRequestTest` (±90 s window) and `HttpsRequiredRecoveryTest`; Go tests with `-race`; E2E `admin/cluster-nodes.spec.ts`.
+- Tests: `ClusterApiTest` (enrolment, refresh, rekey, replay, bad MAC and node signature, revocation, challenge), `ClusterEnrolCodeTest`, `LbProvisionClusterTest` (opt-in against the real agent), `ClusterSchemaTest`; Go `client_test.go`, `rekey_test.go`, `enrolcode_test.go` and the opt-in `interop_test.go` against the panel's PHP API, with `-race`.
+- **Not built yet:** the cluster FPM pool (`ClusterPool`), rendered nginx config (`ClusterNginxConfig`, `cluster_locations.conf`, `cluster.d/`) and the cluster bus (`ClusterBus`, unix socket); shared-instance hardening (the 3306/6379 allowlist, Redis `rename-command`, password rotation); DR commands `cluster:export-keys` (Argon2id), `cluster:import-keys`, `cluster:reinit`, `cluster:reenrol --all`; `HttpsRequiredRecoveryTest`; E2E `admin/cluster-nodes.spec.ts`.
 
 **Phase 3: Telemetry and liveness authoritative (\~3 pw).**
 
-- Agent `internal/agent/telemetry`; `HeartbeatService` feeds the bus, and `toWatchdogData()` keeps the legacy key set. The signals loop gains a 1 s health step, plus a fleet silence guard. `ClusterEndpointChange` handles MAIN port changes.
-- The TELEMETRY flow turns off the LB watchdog DB write, the stats part of `cron:servers`, and `network.py`.
+- Agent `internal/clusteragent/telemetry.go` (samples the host as the watchdog does; the node's PHP writes `config/cluster/local.json` via `WatchdogCommand::writeLocalTelemetry`). `HeartbeatService` turns it into `servers.watchdog_data` with the legacy key set. `SignalsCommand` runs `LivenessService::tick` every second, with the fleet silence guard; `cron:cluster` runs it too. `Domain/Cluster/ClusterEndpoint` handles MAIN port changes.
+- The TELEMETRY flow (`Core/Cluster/NodeFlows`) turns off the LB watchdog DB write, the stats part of `cron:servers`, and `network.py`.
 - Acceptance: dashboard refresh ≤ 3 s; `getCapacity()` routing identical to legacy; a stopped agent is suspect at 10 s and offline at 30 s. Changing MAIN's HTTP port with 3 live nodes keeps all ACTIVE.
-- Tests: `WatchdogDataContractTest`, `NodeHealthHysteresisTest`, `FleetSilenceGuardTest`, `EndpointChangeTest`; E2E `admin/lb-telemetry.spec.ts`.
+- Tests: `ClusterTelemetryTest` (watchdog data contract), `ClusterLivenessTest` (suspect/offline, fleet silence), `ClusterEndpointTest`; Go `telemetry_test.go`.
+- **Not built yet:** hysteresis in `NodeHealth` (a node near the 10 s threshold can flap between ok and suspect) and its `NodeHealthHysteresisTest`; GPU, iostat and capture devices are reported empty; E2E `admin/lb-telemetry.spec.ts`.
 
 **Phase 4: Commands and RPC (\~4 pw).**
 
-- `CommandBus` signs with tag `cmd`, wakes pollers and falls back to short polls. Routing changes in `ApiClient`, `admin/api.php`, `CurlClient::getMultiCURL` and `ConnectionTracker::redisSignal`. Agent `internal/agent/{commands, artefact}` and `ClusterRootCommand` with a root crontab entry.
+- `Domain/Cluster/CommandBus` signs with tag `cmd` (restrictive types such as kills sign without a licence) and queues per node; the agent takes them through the `commands` long-poll and answers with `ack`. `NodeRpc` routes RPCs to agent nodes; `ApiClient` and `ConnectionTracker` go through it. Agent `internal/clusteragent/commands.go` runs them via `ClusterExecCommand` (`cluster:exec`); root commands go to `ClusterRootCommand` (`cluster:root`), started every minute by root's crontab and gated by `RootPin`.
 - Acceptance: stream controls, probe, scandir and monitors work with MAIN blocked from the LB's HTTP port. Kill p99 is under 1 s, root actions ≤ 2 s, and commands run exactly once. An unlicensed MAIN still delivers kills.
-- Tests: `CommandBusTest`, `HardModeKillChannelTest`, `RootInboxReplayTest`, `ArtefactHashRefusalTest`; E2E `admin/lb-streams.spec.ts`.
+- Tests: `ClusterApiTest` (commands, acks, kills as commands), `ClusterExecCommandTest`, `ClusterRootCommandTest` (each command once, symlink and pin checks); Go `commands_test.go`.
+- **Not built yet:** the bus wake-up (each long-poll holds a PHP worker on MAIN until the cluster bus exists); the `artefact` op and the agent's artefact download with its hash refusal (`ArtefactHashRefusalTest`); routing `admin/api.php` and `CurlClient::getMultiCURL` through `NodeRpc`; a dedicated `HardModeKillChannelTest`; E2E `admin/lb-streams.spec.ts`.
 
 **Phase 5: Logs, stream state, content; fanout events (\~4.5 pw).**
 
-- API backends for `StreamStateWriter`, `LogSink` (credentials redacted before the journal) and `ContentSink`; `Ingest/{StreamStateIngest, LogIngest, ContentIngest}`; `RecordingFinalizer`; agent `internal/agent/journal`; fanout `GET /events?since=&wait=25`.
+- Agent-backed paths for `StreamStateWriter`, `LogSink` (credentials redacted by `Redactor` before the spool) and `Domain/Stream/ContentSink`: the node's PHP spools events (`Core/Cluster/EventSpool`), the agent ships them in two lanes (`internal/clusteragent/events.go`: P0 stream state ≤ 250 ms, P1 logs batched), and MAIN applies them in `Domain/Cluster/EventIngest` (`stream.state`, `stream.worker`, `stream.monitor`, `recording.state`, `vod.analysis`, logs, `skip`). Finished recordings go through the `recording_complete` op. The fanout serves `GET /events` (`internal/server/events.go`) and the agent turns it into `stream.monitor` events. A capped P0 backlog is compacted in place instead of the plan's separate `p0_reset` event.
 - Acceptance: LB stream transitions reach routing at p99 ≤ 1 s. No log rows are lost across restarts, and no MAIN log row holds a credential. A full journal drops P1 but P0 keeps flowing; recordings create one VOD.
-- Tests: `StreamStateIngestTest`, `LogRedactionTest`, `P0ResetTest`, `RecordingFinalizerTest`; Go journal crash-recovery tests; fanout `events_test.go`.
+- Tests: `ClusterEventsTest` (redaction, P0 gap check and apply-once, own rows only), `ClusterContentTest` (recording → one VOD), `StreamStateWriterTest`, `LogSinkTest`; Go `events_test.go` (agent) and `internal/server/events_test.go` (fanout).
+- **Not built yet:** `stream.progress`, `security.block_ip` and `node.state`/`inventory` events.
 
 **Phase 6: Connections (\~5.5 pw).**
 
-- `ConnectionAdmission` (Lua reserve on the bus) and `ConnectionIngest` at the `auth.php` mint sites. `AgentConnectionStore` seams go into `live.php`, `vod.php`, `timeshift.php` and `rtmp.php`. Agent `internal/agent/{registry, hls, snapshot, digest}`; `cluster:seed-connections`.
+- Remote kills and viewer drops as commands (`conn.drop`, `conn.drop_line`, `conn.close`). The stream endpoints reach the connection store only through `ConnectionTracker` (the store seam); on a CONNECTIONS node its store is the agent (`Core/Cluster/AgentConnections`, over the agent's local socket). `ConnectionIngest` applies the agent's `conn.upsert`/`conn.remove`; `ConnectionLimits` enforces line limits on MAIN (`conn.limit`); `ConnectionDigest` and `ConnectionSnapshot` (the `conn_snapshot` op, chunked) keep MAIN in step. Agent `internal/clusteragent/{registry.go, snapshot.go, socket.go}`; `ClusterSeedConnectionsCommand` (`cluster:seed-connections`).
 - Acceptance: `max_connections=1` on LB-A then LB-B kills A within ≤ 1 s, without self-eviction on re-auth. HLS refresh makes 0 WAN calls; a 20k-connection snapshot applies atomically. Stopping MAIN for 5 minutes drops zero viewers.
-- Tests: `ConnectionAdmissionTest`, `ConnectionIngestIdempotencyTest`, `MainOutageNoPurgeTest`, `LargeSnapshotChunkingTest`; E2E `admin/lb-playback-limits.spec.ts`; load tests.
+- Tests: `ConnectionStoreTest` (seam on `lines_live` and Redis; an agent that does not answer), `ConnectionLimitsTest`, `ConnectionSnapshotTest` (digest, whole-snapshot apply, bad chunk), `ClusterApiTest` (kills as commands); Go `registry_test.go`, `snapshot_test.go`.
+- **Not built yet:** admission (`ConnectionAdmission` with the `conn_admit` op and the reserve on the bus) and `ConnectionAdmissionTest`; the agent's HLS reaper (`conn.touch`, `conn.divergence`); `ConnectionIngestIdempotencyTest`, `MainOutageNoPurgeTest`, `LargeSnapshotChunkingTest` at 20k rows; E2E `admin/lb-playback-limits.spec.ts`; load tests.
 
 **Phase 7: Authoritative config, DB-free LB (\~4 pw).**
 
@@ -970,7 +979,7 @@ Phases 2–8 are built and accepted on test panels with the reference crypto (`X
 
 **Phase 8: Data plane (\~4.5 pw).**
 
-- Agent `internal/agent/relayproxy` with digest checks; ticket minting in R2; `RelayAuth` in `admin/{live,vod,timeshift,thumb}.php`; `/v1/nonce`, `/v1/file_digest`; `FileTicketController` with `location = /xfile` and `X-XCVM-File-Digest`. `StreamProcess` moves to loopback URLs; `Encryption` gains multi-key support.
+- Agent relay proxy in `internal/clusteragent` with digest checks; ticket minting in R2; `RelayAuth` in `admin/{live,vod,timeshift,thumb}.php`; `/v1/nonce`, `/v1/file_digest`; `FileTicketController` with `location = /xfile` and `X-XCVM-File-Digest`. `StreamProcess` moves to loopback URLs; `Encryption` gains multi-key support.
 - Acceptance: `live_streaming_pass` appears in no `/proc/*/cmdline` or `current_source`. Replayed, wrong-stream and revoked-node tickets fail; a tampered `/xfile` body is refused. No encoder restarts over 48 h at L = 5.
 - Tests: `RelayAuthTest`, `FileTicketTest`, `FileDigestTest`, `EncryptionKeyWindowTest`; Go relay proxy tests.
 
