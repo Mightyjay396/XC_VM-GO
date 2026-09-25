@@ -73,6 +73,25 @@ make docs-build          # strict build — fails on any broken link/anchor
   release (which is also when `docs/ru` is regenerated). The Material header's
   version selector lets readers switch between released versions.
 
+### Sync panel language files
+
+New UI strings are added to `src/Core/Localization/lang/en.ini` only. Before a
+release, bring every other language file in line with it:
+
+```bash
+make lang-translate      # translate keys missing vs en.ini, drop keys en.ini no longer has
+```
+
+- Existing translations are kept; missing keys and values still identical to
+  the English text are machine-translated; keys removed from `en.ini` are
+  deleted from every language (the run lists them — check nothing expected is
+  in that list).
+- Translations are cached (`build/docs-cache/ini-<lang>.json`), so only keys
+  added since the last release hit the network.
+- **Review the diff of `src/Core/Localization/lang/*.ini` and commit it** with
+  the release (step 5). Placeholders such as `{bin}` and HTML tags must be
+  unchanged; see [Adding a Custom Language](../guides/translations.md#keeping-translations-in-sync).
+
 ---
 
 ## 3. Prepare Release Baseline
@@ -286,5 +305,6 @@ Every `make` target used during release prep, in one place.
 | --------------------- | ------------------------------------------------------ |
 | `make docs-venv`      | One-time: local venv (build + translation deps)        |
 | `make docs-translate` | Regenerate `docs/ru` from `docs/en` (before a release) |
+| `make lang-translate` | Sync `lang/*.ini` with `en.ini` (before a release)     |
 | `make docs-build`     | Strict MkDocs build into `./build/site` (what CI runs) |
 | `make docs-serve`     | Live docs preview at `http://127.0.0.1:8000`           |

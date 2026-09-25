@@ -1,4 +1,4 @@
-# Translation dependencies for tools/docs/translate.py — LOCAL only (run before a
+# Translation dependencies for tools/i18n/translate.py — LOCAL only (run before a
 # release via `make docs-translate`; NOT installed or run in CI). Pick per
 # DOCS_TRANSLATE_PROVIDER:
 #   translators = free, NO API KEY (web engines: yandex/google/bing/...) — default

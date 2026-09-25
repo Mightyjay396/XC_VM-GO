@@ -15,6 +15,4 @@ When you edit a file listed here, either delete its dead block or re-confirm it
 is still unused and leave a note.
 
 | File | Symbol | Refs | Commented out | Notes |
-|------|--------|------|---------------|-------|
-| `src/Core/Util/ImageUtils.php` | `resize(string $rURL, int $rMaxW, int $rMaxH)` | 0 | 2026-09-13 | `resize.php?url=` in views is a separate public endpoint, not this method. |
-| `src/Core/Util/ImageUtils.php` | `generateThumbnail(string $rImage, int $rType)` | 0 | 2026-09-13 | Also had a pre-existing unreachable 32×64 branch (type 5 matched earlier); the whole method is unused regardless. |
+| ---- | ------ | ---- | ------------- | ----- |

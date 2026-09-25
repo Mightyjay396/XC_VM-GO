@@ -17,7 +17,6 @@
 	max-height: 320px;
 	overflow-y: auto;
 }
-.dashboard-tile-progress,
 .dashboard-loc-progress {
 	height: 6px;
 }
@@ -28,6 +27,33 @@
 .dashboard-metric-progress .progress-bar {
 	border-radius: 1rem;
 	transition: width 0.4s ease;
+}
+/* Vertical separators between the Statistics items; the last item of each
+   row (6 / 3 / 2 per row by breakpoint) gets none. */
+.dashboard-stat-item {
+	position: relative;
+}
+.dashboard-stat-item::after {
+	position: absolute;
+	inset-block: 0.25rem;
+	inset-inline-end: 0;
+	border-inline-end: 1px solid var(--bs-border-color);
+	content: "";
+}
+@media (min-width: 1200px) {
+	.dashboard-stat-item:last-child::after {
+		display: none;
+	}
+}
+@media (min-width: 768px) and (max-width: 1199.98px) {
+	.dashboard-stat-item:nth-child(3n)::after {
+		display: none;
+	}
+}
+@media (max-width: 767.98px) {
+	.dashboard-stat-item:nth-child(2n)::after {
+		display: none;
+	}
 }
 .dashboard-spark {
 	min-height: 50px;

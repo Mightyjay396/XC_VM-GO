@@ -31,11 +31,14 @@ endif;
 $xmServerId = RequestManager::has('server_id') ? intval(RequestManager::get('server_id')) : null;
 $xmAccents  = ['primary', 'success', 'info', 'warning', 'danger'];
 
-// Stat tiles: [wrapClass, icon, accent, label, link|null, showSecondary, unit].
+// Statistics items: [wrapClass, icon, accent, label, link|null, showSecondary, unit].
+// The "/ total" secondary is "this server / whole fleet", so it only means
+// something with a server selected; in the fleet view it duplicates or reads 0.
+$xmPerServer = $xmServerId !== null;
 $xmTiles = [
-    ['active-connections', 'ti tabler-plug-connected', 'primary', $language::get('dashboard_online_connections'), Authorization::check('adv', 'live_connections') ? 'live_connections' : null, true, ''],
-    ['online-users',       'ti tabler-users',          'success', $language::get('dashboard_active_lines'),        Authorization::check('adv', 'live_connections') ? 'live_connections' : null, true, ''],
-    ['active-streams',     'ti tabler-player-play',    'info',    $language::get('dashboard_live_streams'),        Authorization::check('adv', 'streams') ? 'streams?filter=1' : null, true, ''],
+    ['active-connections', 'ti tabler-plug-connected', 'primary', $language::get('dashboard_online_connections'), Authorization::check('adv', 'live_connections') ? 'live_connections' : null, $xmPerServer, ''],
+    ['online-users',       'ti tabler-users',          'success', $language::get('dashboard_active_lines'),        Authorization::check('adv', 'live_connections') ? 'live_connections' : null, $xmPerServer, ''],
+    ['active-streams',     'ti tabler-player-play',    'info',    $language::get('dashboard_live_streams'),        Authorization::check('adv', 'streams') ? 'streams?filter=1' : null, false, ''],
     ['offline-streams',    'ti tabler-alert-triangle', 'danger',  $language::get('dashboard_down_streams'),        Authorization::check('adv', 'streams') ? 'streams?filter=2' : null, false, ''],
     ['output-flow',        'ti tabler-arrow-up-right', 'primary', $language::get('dashboard_network_output'),      null, false, 'Mbps'],
     ['input-flow',         'ti tabler-arrow-down-left', 'warning', $language::get('dashboard_network_input'),       null, false, 'Mbps'],
@@ -155,61 +158,74 @@ if (!LicenseGate::licensed()):
     </div>
 </div>
 
-<!-- Stat tiles -->
-<div class="row g-4 mb-4">
-    <?php foreach ($xmTiles as [$rWrap, $rIcon, $rAccent, $rLabel, $rLink, $rSub, $rUnit]): ?>
-        <div class="col-sm-6 col-xl-4">
-            <?php if ($rLink): ?><a href="<?= htmlspecialchars($rLink, ENT_QUOTES); ?>" class="text-body text-decoration-none"><?php endif; ?>
-                <div class="card h-100">
-                    <div class="card-body d-flex justify-content-between align-items-center <?= $rWrap; ?>">
-                        <div class="card-title mb-0">
-                            <h5 class="mb-1 me-2"><span class="entry">0</span><?php if ($rUnit): ?> <small class="text-body-secondary"><?= $rUnit; ?></small><?php endif; ?></h5>
-                            <p class="mb-0"><?= htmlspecialchars($rLabel); ?></p>
+<!-- Statistics -->
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0"><?= $language::get('dashboard_statistics'); ?></h5>
+        <small class="text-body-secondary"><?= $language::get('last_updated'); ?> <span class="tabular-nums" id="stats_updated">&mdash;</span></small>
+    </div>
+    <div class="card-body">
+        <div class="row gy-4">
+            <?php foreach ($xmTiles as [$rWrap, $rIcon, $rAccent, $rLabel, $rLink, $rSub, $rUnit]): ?>
+                <div class="col-xl-2 col-md-4 col-6 dashboard-stat-item">
+                    <?php if ($rLink): ?><a href="<?= htmlspecialchars($rLink, ENT_QUOTES); ?>" class="text-body text-decoration-none"><?php endif; ?>
+                        <div class="d-flex align-items-center <?= $rWrap; ?>">
+                            <div class="badge rounded bg-label-<?= $rAccent; ?> me-4 p-2">
+                                <i class="icon-base <?= $rIcon; ?> icon-lg"></i>
+                            </div>
+                            <div class="card-info">
+                                <h5 class="mb-0 tabular-nums">
+                                    <span class="entry">0</span><?php if ($rSub): ?><small class="text-body-secondary fw-normal"> / <span class="stat-sub">0</span></small><?php endif; ?><?php if ($rUnit): ?> <small class="text-body-secondary fw-normal"><?= $rUnit; ?></small><?php endif; ?>
+                                </h5>
+                                <small><?= htmlspecialchars($rLabel); ?></small>
+                            </div>
                         </div>
-                        <div class="card-icon">
-                            <span class="badge bg-label-<?= $rAccent; ?> rounded p-2">
-                                <i class="icon-base <?= $rIcon; ?> icon-26px"></i>
-                            </span>
-                        </div>
-                    </div>
+                        <?php if ($rLink): ?>
+                    </a><?php endif; ?>
                 </div>
-                <?php if ($rLink): ?>
-                </a><?php endif; ?>
+            <?php endforeach; ?>
         </div>
-    <?php endforeach; ?>
+    </div>
 </div>
 
 <div class="row g-4 mb-4">
     <?php if ($rSettings['dashboard_status']): ?>
         <!-- Service Status -->
         <div class="col-xl-6">
+            <?php
+            // check state => [accent, badge icon]
+            $xmCheckStyle = [
+                'ok'   => ['success', 'tabler-circle-check'],
+                'warn' => ['warning', 'tabler-alert-circle'],
+                'fail' => ['danger', 'tabler-circle-x'],
+                'off'  => ['secondary', 'tabler-circle-minus'],
+            ];
+            $xmIssues = count(array_filter($rStatusChecks, fn($c) => in_array($c['state'], ['warn', 'fail'], true)));
+            ?>
             <div class="card h-100">
-                <div class="card-header">
-                    <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-heartbeat icon-22px text-success"></i><span><?= $language::get('dashboard_service_status'); ?></span></h5>
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-heartbeat icon-22px text-<?= $xmIssues ? 'danger' : 'success'; ?>"></i><span><?= $language::get('dashboard_service_status'); ?></span></h5>
+                    <span class="badge rounded-pill bg-label-<?= $xmIssues ? 'danger' : 'success'; ?>">
+                        <?= $xmIssues ? $language::get('dashboard_status_issues', ['{count}' => (string) $xmIssues]) : $language::get('dashboard_status_all_ok'); ?>
+                    </span>
                 </div>
                 <div class="card-body dashboard-status-scroll">
-                    <ul class="timeline mb-0">
-                        <?php if (empty($rStatusItems)): ?>
-                            <li class="timeline-item timeline-item-transparent">
-                                <span class="timeline-point timeline-point-success"></span>
-                                <div class="timeline-event">
-                                    <div class="timeline-header">
-                                        <h6 class="mb-0"><?= $language::get('dashboard_no_issues'); ?></h6>
-                                    </div>
+                    <ul class="list-unstyled mb-0">
+                        <?php foreach ($rStatusChecks as $rCheck):
+                            [$rAcc, $rStateIcon] = $xmCheckStyle[$rCheck['state']];
+                        ?>
+                            <li class="d-flex align-items-start gap-3 mb-4">
+                                <div class="avatar flex-shrink-0">
+                                    <span class="avatar-initial rounded bg-label-<?= $rAcc; ?>"><i class="icon-base ti <?= $rCheck['icon']; ?> icon-22px"></i></span>
                                 </div>
+                                <div class="flex-grow-1 min-w-0">
+                                    <h6 class="mb-0"><?= htmlspecialchars($rCheck['title']); ?></h6>
+                                    <?php if ($rCheck['detail'] !== ''): ?><small class="text-body-secondary d-block"><?= htmlspecialchars($rCheck['detail']); ?></small><?php endif; ?>
+                                    <?php if ($rCheck['help'] !== ''): ?><small class="d-block mt-1 text-<?= $rAcc; ?>"><?= $rCheck['help']; ?></small><?php endif; ?>
+                                </div>
+                                <i class="icon-base ti <?= $rStateIcon; ?> icon-24px text-<?= $rAcc; ?> flex-shrink-0"></i>
                             </li>
-                            <?php else: foreach ($rStatusItems as $rItem): ?>
-                                <li class="timeline-item timeline-item-transparent">
-                                    <span class="timeline-point timeline-point-<?= htmlspecialchars($rItem['state'], ENT_QUOTES); ?>"></span>
-                                    <div class="timeline-event">
-                                        <div class="timeline-header">
-                                            <h6 class="mb-1"><?= htmlspecialchars($rItem['title']); ?></h6>
-                                        </div>
-                                        <small class="text-body-secondary"><?= $rItem['text']; ?></small>
-                                    </div>
-                                </li>
-                        <?php endforeach;
-                        endif; ?>
+                        <?php endforeach; ?>
                     </ul>
                 </div>
             </div>
@@ -478,6 +494,7 @@ LayoutRenderer::renderFooter('admin');
                     var inp = Math.floor((d.bytes_received || 0) / 125000);
                     setTile('output-flow', out, null, pctOf(out, d.network_guaranteed_speed));
                     setTile('input-flow', inp, null, pctOf(inp, d.network_guaranteed_speed));
+                    setText('stats_updated', new Date().toLocaleTimeString());
 
                     if (!hasServerId && Array.isArray(d.servers)) {
                         d.servers.forEach(function(s) {

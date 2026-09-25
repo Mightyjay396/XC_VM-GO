@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Generate translated docs from the canonical English source.
+"""Generate translations from the canonical English sources.
 
-English (``docs/en``) is the single source of truth; every other language tree
-(e.g. ``docs/ru``) is produced from it by this script. The generated tree IS
-committed and refreshed by running this script LOCALLY before a release (not in
-CI); ``mkdocs build`` then consumes it via the mkdocs-static-i18n plugin.
+Two targets:
+
+* **Docs** (default). English (``docs/en``) is the single source of truth;
+  every other language tree (e.g. ``docs/ru``) is produced from it. The
+  generated tree IS committed and refreshed by running this script LOCALLY
+  before a release (not in CI); ``mkdocs build`` then consumes it via the
+  mkdocs-static-i18n plugin.
+* **Panel language files** (``--ini``). Each
+  ``src/Core/Localization/lang/<lang>.ini`` is rebuilt in ``en.ini`` order:
+  existing translations are kept, keys missing from it (or still holding the
+  English text the runtime Translator auto-copies in) are translated, and keys
+  no longer in ``en.ini`` are dropped.
 
 Design goals
 ------------
@@ -20,17 +28,22 @@ Design goals
 Usage
 -----
     DOCS_TRANSLATE_PROVIDER=noop \
-        python3 tools/docs/translate.py --lang ru
+        python3 tools/i18n/translate.py --lang ru
 
     # provider-specific:
     DOCS_TRANSLATE_PROVIDER=anthropic ANTHROPIC_API_KEY=... \
-        python3 tools/docs/translate.py --lang ru
+        python3 tools/i18n/translate.py --lang ru
+
+    # panel language files (one language, or every <lang>.ini but en):
+    DOCS_TRANSLATE_PROVIDER=translators \
+        python3 tools/i18n/translate.py --ini --lang all
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import sys
@@ -47,6 +60,7 @@ LANG_NAMES = {
     "fr": "French",
     "pt": "Portuguese",
     "bg": "Bulgarian",
+    "ar": "Arabic",
 }
 
 
@@ -198,6 +212,9 @@ def _protect_inline(text, glossary, tr=None, memo=None):
     text = re.sub(r"(?<=\])\([^)]*\)", keep, text)  # link target (url)
     text = re.sub(r"https?://[^\s)]+", keep, text)  # bare URLs
     text = re.sub(r"</?[A-Za-z][^>]*>", keep, text)  # HTML tags
+    # Named placeholders ({bin}), printf specs (%s, %1$d) and HTML entities.
+    # Letter-led {name} never collides with the numeric {N} sentinels above.
+    text = re.sub(r"\{[A-Za-z_]\w*\}|%(?:\d+\$)?[sdf]|&#?\w+;", keep, text)
     for term in glossary:
         text = re.sub(rf"(?<![\w-])({re.escape(term)}){_POSS}(?![\w-])", keep1, text)
     return text, store
@@ -322,20 +339,143 @@ PROVIDERS = {
 }
 
 
+# ── Panel language files (.ini) ──────────────────────────────────────────────
+# Read by PHP with parse_ini_file(..., INI_SCANNER_RAW): `key = "value"`, inner
+# quotes escaped as \", `;` comments and a `[Language]` section header.
+
+_INI_ENTRY = re.compile(r"^(?P<key>[^;#\[\s=][^=]*?)\s*=\s*(?P<val>.*?)\s*$")
+
+
+def _ini_unquote(raw: str) -> str:
+    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        raw = raw[1:-1]
+    return raw.replace('\\"', '"')
+
+
+def _ini_quote(value: str) -> str:
+    return '"' + " ".join(value.splitlines()).replace('"', '\\"') + '"'
+
+
+def parse_ini(path: Path) -> dict[str, str]:
+    """key => unescaped value; a repeated key keeps the last value, as PHP does."""
+    entries: dict[str, str] = {}
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            m = _INI_ENTRY.match(line)
+            if m:
+                entries[m.group("key")] = _ini_unquote(m.group("val"))
+    return entries
+
+
+def sync_ini(en_path, dst_path, lang, translate, glossary, cache, provider_name):
+    """Rebuild ``dst_path`` in en.ini order; return (kept, translated, failed, removed).
+
+    ``cache`` maps a cache_key of the English value to its translation, so a
+    value the engine legitimately returns unchanged ("CPU") is not re-sent on
+    every run just because it still equals the English text.
+    """
+    current = parse_ini(dst_path)
+    en_lines = en_path.read_text(encoding="utf-8").splitlines()
+    en_keys = {m.group("key") for m in map(_INI_ENTRY.match, en_lines) if m}
+    kept = translated = failed = 0
+    out = []
+    for line in en_lines:
+        m = _INI_ENTRY.match(line)
+        if not m:
+            out.append(line)  # comment, blank line or [Language] section
+            continue
+        key, en_value = m.group("key"), _ini_unquote(m.group("val"))
+        value = current.get(key)
+        if value is not None and (value != en_value or not en_value.strip()):
+            kept += 1
+        else:
+            ck = cache_key(en_value, lang, provider_name, glossary)
+            if ck in cache:
+                value = cache[ck]
+            else:
+                try:
+                    value = translate(en_value, lang, glossary).strip()
+                except Exception as exc:  # noqa: BLE001 — keep English, retry next run
+                    print(f"  WARN {key}: translation failed ({exc}); keeping English", file=sys.stderr)
+                    failed += 1
+                    value = en_value
+                else:
+                    cache[ck] = value
+                    translated += 1
+                    if translated % 25 == 0:
+                        print(f"  … {translated} keys translated", flush=True)
+        out.append(f"{key} = {_ini_quote(value)}")
+    removed = sorted(set(current) - en_keys)
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    dst_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return kept, translated, failed, removed
+
+
+def run_ini(args, translate, provider_name, glossary, repo_root) -> int:
+    src = Path(args.ini_dir) if args.ini_dir else repo_root / "src" / "Core" / "Localization" / "lang"
+    en_path = src / "en.ini"
+    if not en_path.is_file():
+        print(f"error: {en_path} not found", file=sys.stderr)
+        return 1
+    langs = (
+        sorted(p.stem for p in src.glob("*.ini") if p.stem != "en")
+        if args.lang == "all"
+        else [args.lang]
+    )
+    dst = Path(args.dst) if args.dst else src
+    cache_dir = Path(args.cache)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    for lang in langs:
+        cache_file = cache_dir / f"ini-{lang}.json"
+        cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.is_file() else {}
+        print(f"→ {lang}.ini …", flush=True)
+        try:
+            kept, translated, failed, removed = sync_ini(
+                en_path, dst / f"{lang}.ini", lang, translate, glossary, cache, provider_name
+            )
+        finally:
+            # Saved even on Ctrl+C, so an interrupted run resumes where it stopped.
+            cache_file.write_text(json.dumps(cache, ensure_ascii=False, indent=0), encoding="utf-8")
+        for key in removed:
+            print(f"  removed {key}")
+        print(
+            f"[{provider_name}] {lang}.ini: {kept} kept, {translated} translated, "
+            f"{failed} fell back to English, {len(removed)} removed"
+        )
+    return 0
+
+
 # ── Driver ───────────────────────────────────────────────────────────────────
 
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[2]
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--lang", required=True, help="target language code, e.g. ru")
+    ap.add_argument(
+        "--lang",
+        required=True,
+        help="target language code, e.g. ru ('all' = every <lang>.ini with --ini)",
+    )
+    ap.add_argument(
+        "--ini",
+        action="store_true",
+        help="sync the panel .ini language files with en.ini instead of the docs",
+    )
+    ap.add_argument(
+        "--ini-dir",
+        default=None,
+        help="language files dir (default: src/Core/Localization/lang)",
+    )
     ap.add_argument(
         "--src",
         default=str(repo_root / "docs" / "en"),
         help="source (English) docs dir",
     )
     ap.add_argument(
-        "--dst", default=None, help="destination dir (default: docs/<lang>)"
+        "--dst",
+        default=None,
+        help="destination dir (default: docs/<lang>; with --ini: in place)",
     )
     ap.add_argument(
         "--cache",
@@ -358,6 +498,9 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.ini:
+        return run_ini(args, translate, provider_name, load_glossary(Path(args.glossary)), repo_root)
 
     src = Path(args.src)
     dst = Path(args.dst) if args.dst else repo_root / "docs" / args.lang

@@ -69,12 +69,13 @@ All of these create the DI container and (for admin/CLI) call `ModuleLoader::boo
 - Outbound HTTPS from PHP-FPM must use cURL — `file_get_contents()` over https does not work in this environment.
 - The TMDb client is the legacy global `\TMDB` class (vendored in `src/Infrastructure/Tmdb/lib/`, not PSR-4). Build it through `XcVm\Infrastructure\Tmdb\TmdbApiService::createClient($apiKey, $language)` (or load via `TmdbApiService::requireLibrary()`), which loads the library itself — do not `require_once` the lib path manually.
 - Config: `config.ini` (DB creds, `server_id`), the `settings` DB table via `SettingsManager`, and `config/modules.php` for module enable/disable/version state.
+- Panel UI strings live in `src/Core/Localization/lang/<lang>.ini`; `en.ini` is the source of truth. Add new keys to `en.ini` only, then `make lang-translate` (`tools/i18n/translate.py --ini`) translates missing keys into every other language and drops keys `en.ini` no longer has.
 
 ## Documentation (`docs/`)
 
 The docs are a **MkDocs Material** site (`mkdocs.yml`), deployed to GitHub Pages by `.github/workflows/pages.yml`.
 
-- **Edit ONLY `docs/en/`** — English is the single source of truth. **Never hand-edit `docs/ru/` (or any other language tree)**: it is GENERATED from `docs/en` by `tools/docs/translate.py` and any manual change is overwritten on the next regeneration.
+- **Edit ONLY `docs/en/`** — English is the single source of truth. **Never hand-edit `docs/ru/` (or any other language tree)**: it is GENERATED from `docs/en` by `tools/i18n/translate.py` and any manual change is overwritten on the next regeneration.
 - `docs/ru` is committed but **regenerated locally before a release** (`make docs-translate`), not in CI — translation is slow, so `pages.yml` only builds the committed tree. See the "Regenerate translated documentation" step in `docs/en/builds/updates_checklist.md`.
 - After editing English docs: `make docs-build` (strict — fails on broken links/anchors) to verify; before a release also `make docs-translate` and commit the regenerated `docs/ru`.
 - The two nav tabs (User Guide / Developer Guide) are a `mkdocs.yml` `nav:` grouping only — do not move files to reorganize; edit `nav:` (and `nav_translations` for ru labels).

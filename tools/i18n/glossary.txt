@@ -1,4 +1,4 @@
-# Do-not-translate terms for docs translation (tools/docs/translate.py).
+# Do-not-translate terms for docs translation (tools/i18n/translate.py).
 # One term per line; blank lines and #-comments ignored. Product, protocol,
 # tool and code identifiers that must stay verbatim in every language.
 
