@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
+use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Updates\GitHubReleases;
@@ -568,6 +569,16 @@ class LbInstallFlow {
 		if (trim((string) $rDone['output']) !== 'OK') {
 			return $rFail('xc_agent install failed on the node: ' . trim((string) $rDone['output']) . ' Exiting');
 		}
+		// Root's own pin of the panel key, for root commands (cluster:root): written
+		// over this verified SSH session, root-owned, so nothing the panel's user
+		// can write becomes root's trust anchor. A new pin starts root's seq afresh.
+		$rPinDir = RootPin::DIR;
+		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . escapeshellarg($rPinDir) . ' && sudo chown root:root /etc/xc_vm ' . escapeshellarg($rPinDir) . ' && sudo chmod 0755 /etc/xc_vm ' . escapeshellarg($rPinDir)
+			. ' && echo ' . escapeshellarg(bin2hex($rPanelPub)) . ' | sudo tee ' . escapeshellarg($rPinDir . 'main_sign.pub') . ' >/dev/null'
+			. ' && echo ' . escapeshellarg($rUuid) . ' | sudo tee ' . escapeshellarg($rPinDir . 'node') . ' >/dev/null'
+			. ' && sudo chmod 0644 ' . escapeshellarg($rPinDir . 'main_sign.pub') . ' ' . escapeshellarg($rPinDir . 'node')
+			. ' && sudo rm -f ' . escapeshellarg($rPinDir . 'root.seq')
+			. ' && sudo -u xc_vm mkdir -p ' . escapeshellarg(dirname(self::AGENT_STATE) . '/root-inbox') . ' && sudo chmod 0700 ' . escapeshellarg(dirname(self::AGENT_STATE) . '/root-inbox'));
 		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm bash ' . escapeshellarg(MAIN_HOME . 'bin/xc_agent/run.sh') . ' >/dev/null 2>&1 &');
 		echo 'Node enrolled (uuid ' . $rUuid . ', SAS ' . $rSas . "); it finishes with enrol_complete within 30 minutes\n";
 		return true;

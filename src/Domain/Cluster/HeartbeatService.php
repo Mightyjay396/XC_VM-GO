@@ -41,10 +41,15 @@ final class HeartbeatService {
 	 */
 	public static function record(array $rNode, array $rPayload, int $rNodeTsMs): void {
 		$rNow = ClusterClock::nowMs();
-		NodeRegistry::update((int) $rNode['server_id'], [
+		$rFields = [
 			'last_seen_at' => $rNow,
 			'clock_offset_ms' => max(-2147483648, min(2147483647, $rNodeTsMs - $rNow)),
-		]);
+		];
+		// Whether the node's root-owned panel-key pin is in place (root commands).
+		if (array_key_exists('root_ready', $rPayload)) {
+			$rFields['root_ready'] = empty($rPayload['root_ready']) ? 0 : 1;
+		}
+		NodeRegistry::update((int) $rNode['server_id'], $rFields);
 		$rTelemetry = $rPayload['telemetry'] ?? null;
 		if (is_array($rTelemetry) && defined('TMP_PATH')) {
 			$rJson = (string) json_encode(['at' => $rNow, 'telemetry' => $rTelemetry], JSON_UNESCAPED_SLASHES);

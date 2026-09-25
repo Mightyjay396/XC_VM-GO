@@ -140,6 +140,10 @@ class StartupCommand implements CommandInterface {
 	private function installRootCrontab(): void {
 		$rCrons = [];
 		$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_signals # XC_VM';
+		// MAIN's signed root commands (cluster API, Phase 4); a no-op until the node's root pin exists.
+		if (file_exists(MAIN_HOME . 'Cli/Commands/ClusterRootCommand.php')) {
+			$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:root # XC_VM';
+		}
 		if (file_exists(MAIN_HOME . 'Cli/CronJobs/RootMysqlCronJob.php')) {
 			$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_mysql # XC_VM';
 		}

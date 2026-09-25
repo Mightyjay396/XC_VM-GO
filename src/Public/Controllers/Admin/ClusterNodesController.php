@@ -5,6 +5,7 @@ namespace XcVm\Public\Controllers\Admin;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
+use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -50,6 +51,7 @@ class ClusterNodesController extends BaseAdminController {
 			'clusterPending' => ClusterAdmin::pending($rServers),
 			'clusterLbs' => ClusterAdmin::loadBalancers($rServers),
 			'clusterFlash' => $rFlash,
+			'clusterPanelFp' => $rEnabled && $rAvailable ? (string) (ClusterMeta::get('panel_fp') ?? '') : '',
 		]);
 	}
 }

@@ -31,7 +31,7 @@ final class CommandBus {
 	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'default' => 600];
 
 	/** Types this increment carries. */
-	public const TYPES = ['node.rpc', 'conn.kill_worker'];
+	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker'];
 
 	/** Types that are restrictive (always signable); the extension decides, this is informational. */
 	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
@@ -46,6 +46,16 @@ final class CommandBus {
 	 */
 	public static function accepts(?array $rNode): bool {
 		return $rNode !== null && $rNode['state'] === 'active' && (int) $rNode['mode'] >= 1 && ((int) $rNode['flows'] & NodeRegistry::FLOW_COMMANDS) !== 0;
+	}
+
+	/**
+	 * Does the node take root commands too? Only once its root-owned pin of
+	 * the panel key is in place (cluster:root refuses without it).
+	 *
+	 * @param array<string, mixed>|null $rNode
+	 */
+	public static function acceptsRoot(?array $rNode): bool {
+		return self::accepts($rNode) && !empty($rNode['root_ready']);
 	}
 
 	/**

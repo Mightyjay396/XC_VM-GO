@@ -3,6 +3,7 @@
 namespace XcVm\Core\Cluster;
 
 use XcVm\Core\Config\OpensslExtra;
+use XcVm\Domain\Cluster\ClusterRoute;
 
 /**
  * Node Actions
@@ -94,6 +95,13 @@ final class NodeActions {
 		$rAction = is_array($rData) ? ($rData['action'] ?? null) : null;
 		if (!is_string($rAction) || !in_array($rAction, self::ROOT_ACTIONS, true)) {
 			throw new \InvalidArgumentException('Unknown node root action: ' . (is_string($rAction) ? $rAction : 'none'));
+		}
+		// A node with the COMMANDS flow and its root pin gets a signed node.root (MAIN only).
+		if (class_exists(ClusterRoute::class)) {
+			[$rRouted, $rQueued] = ClusterRoute::root($rServerID, $rData);
+			if ($rRouted) {
+				return $rQueued;
+			}
 		}
 		return SignalDispatcher::rootAction($rServerID, $rPayload, $rDb);
 	}
