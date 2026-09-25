@@ -490,6 +490,27 @@ Still to come in Phase 6: admission when the token is minted, the agent's HLS re
 - **Tests:** `ClusterDrTest` covers the commands. Opt-in, with `XCVM_EXT_SO`, it runs the real extension, shrunk by `XCVM_TEST_DR_MEM_KIB`, across two config dirs.
 - **Operator procedure:** `docs/en/administration/backup-strategy.md`.
 
+### Shared MariaDB and Redis before lockdown (Phase 2)
+
+Until lockdown, legacy and hybrid LBs still use MAIN's MariaDB (3306) and Redis (6379), which listen on every interface.
+
+- **Redis commands.** `CONFIG`, `DEBUG`, `SHUTDOWN`, `SLAVEOF`, `REPLICAOF`, `MIGRATE` and `MODULE` are renamed to `""`, which removes them: with the password alone, an attacker can no longer write files through `CONFIG SET dir`, replicate from a hostile host or load a module.
+  - `FLUSHALL`, `FLUSHDB` and `EVAL` stay, because the panel uses them.
+  - The shipped `bin/redis/redis.conf` carries the lines. Updates never overwrite `bin/redis`, so `status` appends them once to an existing install's config (`RedisConfigHardening`). They take effect when Redis next restarts.
+  - An operator who needs a command renames it to a secret name; any `rename-command` line for it is left alone.
+- **Allowlist.** `cluster_db_allowlist` is off by default. When on, only these may connect to the two ports:
+  - loopback and MAIN's own addresses;
+  - every other `servers` row (LBs and proxies) except nodes in cluster mode 2;
+  - `cluster_db_allowlist_extra`.
+- **Proxies.** Every proxy stays on the allowlist, because which proxies still hold a `db_grant` is not recorded.
+- **Hostnames.** A `server_ip` given as a name is resolved to its IPv4 addresses.
+- **The chain.** `DbAllowlist` keeps the rules in the chain `XCVM_DB`, jumped to from INPUT for the two ports, for IPv4 and IPv6, and touches no other rule.
+- **Reconciliation.** `RootSignalsCronJob` reconciles the chain every minute on MAIN. It compares the live chain with the wanted one and rewrites it with `iptables-restore --noflush` only when they differ, so a flush, a reboot or a server change is repaired within a minute. If the settings or the servers table cannot be read, the firewall is left as it is.
+- **The command.** `cluster:db-allowlist status` lists the allowed sources, whether each family's chain is in sync, and the established connections from outside the list (`ss`). `apply` and `undo` set the setting and act at once.
+- **Audit.** Changes are audited as `cluster.db_allowlist`.
+- **No shell.** Tools run with literal argv through `proc_open`.
+- **Password rotation** is Phase 9's (credentials and lockdown).
+
 ### Extension updates
 
 `console.php xcvm_core` rolls back an update whose cluster API falls outside the panel's range when the installed one was inside it. `console.php xcvm_core status` reports what is loaded. Installing an exact pinned version needs versioned paths in the binaries repo; that prerequisite is still open.
