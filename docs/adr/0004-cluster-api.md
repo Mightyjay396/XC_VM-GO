@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 has logs, stream state and content (recordings, worker pids, movie analysis) as events; fanout events and `p0_reset` are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -358,6 +358,34 @@ A legacy node runs both in-process, as before. A CONTENT node needs the id befor
 - **Checks.** `recording_complete` needs the CONTENT flow, or MAIN answers `409 FLOW_OFF`. It answers only for the node's own recordings, and only takes an icon from the node's own image store.
 
 The Cluster Nodes page switches CONTENT.
+
+### Fanout monitor feed and P0 compaction (Phase 5, third increment)
+
+**Fanout feed.** xc_fanout publishes its supervised streams' monitor transitions on `GET /events?boot=&since=&wait=` on its control socket:
+
+- A watcher compares states every 250 ms. It ignores the counters that move on their own (uptime, the sampled bitrate).
+- The last 4096 transitions are kept in a ring.
+- A request is held up to 25 s when there is nothing new.
+- A consumer that is new, behind the ring, or on another daemon life (`boot`) gets `reset` and a full snapshot.
+- Viewer open and close join the feed in Phase 6.
+
+**Agent side.** While STREAMS is on, the agent follows the feed (`-fanout-ctl`) and spools each transition as a P0 `stream.monitor {stream_id, state}` event.
+
+- Before spooling, it redacts `source` and drops `last_error`.
+- It names spool files on `CLOCK_MONOTONIC`, the clock of PHP's `hrtime()`, so the agent's files and PHP's sort together.
+- Once the feed answers, the agent adds `"features": ["fanout_events"]` to `flows.json`. `NodeFlows::agentHas()` reads it, and the node's `reconcileSupervised` then stops writing that state. It still releases streams that nothing should produce.
+
+**MAIN side.** MAIN derives the row from `stream.monitor` with the same pure rule PHP uses (`StreamProcess::supervisedRowUpdate`), against its own copy. It leaves a row the panel has stopped untouched and refreshes the stream cache on a change. Transitions reach MAIN within a poll step, not the reconcile's cadence.
+
+**P0 compaction.** P0 is never dropped. Past 128 MB, the agent collapses the backlog instead, keeping the latest state per key:
+
+- `stream.state` per row, with its fields merged;
+- `stream.monitor` per stream;
+- `stream.worker` per stream and worker;
+- `recording.state` per recording;
+- `vod.analysis` per movie, with its props merged.
+
+Other event types are kept as they are, in order. The result replaces the oldest file, so it still goes first. MAIN applies it like any batch, so the plan's separate `p0_reset` event is not needed.
 
 ### Extension updates
 

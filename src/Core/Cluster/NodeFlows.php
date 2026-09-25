@@ -23,7 +23,7 @@ final class NodeFlows {
 	public const CONNECTIONS = 64;
 	public const DATAPLANE = 128;
 
-	/** @var array{mode: int, flows: int, state: string}|null */
+	/** @var array{mode: int, flows: int, state: string, features: list<string>}|null */
 	private static ?array $rCache = null;
 
 	private static int $rReadAt = 0;
@@ -36,7 +36,15 @@ final class NodeFlows {
 		return $rNow['mode'] >= 1 && ($rNow['flows'] & $rFlow) === $rFlow && in_array($rNow['state'], ['active', 'quarantined'], true);
 	}
 
-	/** @return array{mode: int, flows: int, state: string} */
+	/**
+	 * Does the node's agent do this (e.g. "fanout_events": it follows the
+	 * fanout's monitor feed, so PHP's reconcile leaves that state to it)?
+	 */
+	public static function agentHas(string $rFeature): bool {
+		return in_array($rFeature, self::current()['features'], true);
+	}
+
+	/** @return array{mode: int, flows: int, state: string, features: list<string>} */
 	public static function current(): array {
 		if (self::$rCache === null || time() - self::$rReadAt >= 5) {
 			self::$rCache = self::read();
@@ -51,9 +59,9 @@ final class NodeFlows {
 		self::$rCache = null;
 	}
 
-	/** @return array{mode: int, flows: int, state: string} */
+	/** @return array{mode: int, flows: int, state: string, features: list<string>} */
 	private static function read(): array {
-		$rOff = ['mode' => 0, 'flows' => 0, 'state' => ''];
+		$rOff = ['mode' => 0, 'flows' => 0, 'state' => '', 'features' => []];
 		$rPath = self::$rPath ?? (defined('CONFIG_PATH') ? CONFIG_PATH . 'cluster/flows.json' : null);
 		// The file first: no file is the common case (MAIN, legacy nodes), and
 		// it needs no database to find out.
@@ -61,6 +69,7 @@ final class NodeFlows {
 		if (!is_array($rDoc) || (self::$rPath === null && NodeRole::isMain())) {
 			return $rOff;
 		}
-		return ['mode' => max(0, min(2, (int) ($rDoc['mode'] ?? 0))), 'flows' => (int) ($rDoc['flows'] ?? 0) & 255, 'state' => (string) ($rDoc['state'] ?? '')];
+		$rFeatures = is_array($rDoc['features'] ?? null) ? array_values(array_filter($rDoc['features'], 'is_string')) : [];
+		return ['mode' => max(0, min(2, (int) ($rDoc['mode'] ?? 0))), 'flows' => (int) ($rDoc['flows'] ?? 0) & 255, 'state' => (string) ($rDoc['state'] ?? ''), 'features' => $rFeatures];
 	}
 }
