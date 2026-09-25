@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`) is too. Enrolment codes, `token_rekey` and Phases 3–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`) and `token_rekey` are too. Enrolment codes and Phases 3–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -83,6 +83,7 @@ The plan numbers its Phase 1 migrations 026–032. 026 and 027 were already take
 | `challenge?cn=` | GET | none | any | panel-signed (`hlt`): a single-use 32-byte challenge, licence state, policy |
 | `enrol_complete` | POST | session + node signature, epoch 1 only | `enrolling`, before `enrol_deadline` (30 min) | BOX: state, mode, flows, gen, policy |
 | `token_refresh` | POST | session + node signature | `active`, `quarantined` | BOX: the next epoch's sealed token |
+| `token_rekey` | POST | node signature (epoch 0, no MAC), body SEALed to the panel box key, a challenge | `active`, once a minute | panel-signed (`pre`): a new epoch's sealed token |
 | `hello` | POST | session | `active`, `quarantined` | BOX: state, mode, flows, proto, policy |
 | `heartbeat` | POST | session | `active`, `quarantined` | BOX: state, mode, flows, `pending` |
 
@@ -107,6 +108,25 @@ Token epochs:
 - `token_refresh` mints the next epoch for the agent's per-epoch key. A retry with the same key gets the same unused token back. A retry with another key replaces the unused epoch under the same number. A node therefore never holds more than two valid epochs. Migration 035 adds `cluster_node_epochs.agent_eph_pub` for this.
 - Re-enrolment and revocation raise the extension's generation floor before touching the database, so a restored row cannot open a session.
 
+Re-key (`token_rekey`), for a node whose tokens have all expired while its keys are intact:
+
+- The agent fetches `GET challenge?cn=<uuid>`, then sends `POST token_rekey` with `X-XCVM-Epoch: 0` and no `X-XCVM-Sig`, as there is no session. The body is XCVM-SEAL-v1 to the panel box key, purpose `rekey`, with the request context as the SEAL context. It carries the challenge, a fresh per-epoch X25519 key, and `instance_id`, `boot_id` and `agent_version`. The request is node-signed like `token_refresh`, with the enrolled key from `cluster_nodes`, as no epoch record is left.
+- MAIN checks, in order:
+  1. headers, protocol and window;
+  2. the node exists and is not revoked;
+  3. the node signature;
+  4. the nonce claim;
+  5. the node is `active`;
+  6. the once-a-minute limit (429 `RATE_LIMITED` with `retry_after_ms`), charged per authenticated attempt;
+  7. the SEAL opens (`cluster_open_sealed`);
+  8. the challenge is live (180 s) and unused (401 `CHALLENGE`). Consuming it is a second claim in `cluster_nonces`, so two concurrent uses cannot both win;
+  9. the attestation: an `instance_id` other than the enrolled one quarantines the node (409 `NOT_ACTIVE`, state `quarantined`);
+  10. the mint. A licence refusal returns 403 `LICENCE_INVALID` and leaves the node's rows as they were.
+- The new epoch follows the node's current epoch and any epoch row still held. Every other epoch row is dropped, so a re-key whose reply was lost leaves nothing behind.
+- The reply is panel-signed with tag `pre`, a granting record the extension signs only under a valid licence. It names the node and the request nonce, and carries the token sealed to the agent's new key.
+- Nodes installed from this release get `panel_box_pub` in their install data. Nodes enrolled earlier take it once from the signed `health` document.
+- The agent re-keys when a session op is refused with `TOKEN_EXPIRED` (or `LICENCE_INVALID`, the hard revocation mode), or when it holds no epoch. While the challenge says `licence_ok: false`, or the node is quarantined, it asks again every 60 s. Otherwise it backs off with jitter. Only `NODE_REVOKED`, `UNKNOWN_NODE` and `ENROL_EXPIRED` stop it. A node whose first token expires before `enrol_complete` still stops, because MAIN re-keys active nodes only.
+
 Other behaviour:
 
 - `hello` from an active node with a different `instance_id` quarantines it. That is authenticated evidence of a clone.
@@ -127,7 +147,7 @@ Other behaviour:
 
 A missing agent binary, for example when GitHub is unreachable and there is no cached copy, leaves the node legacy and does not fail the install.
 
-`run.sh` is a flock-guarded respawn loop. `service` boot and the RootSignals cron keep it alive on enrolled nodes. The agent exits 3 when MAIN has stopped the node (revoked, or its token expired). `run.sh` then writes `bin/xc_agent/stopped` and nothing restarts it until the node is enrolled again. The `/etc/xc_vm/cluster` root pin, which the root executor needs, arrives with Phase 4.
+`run.sh` is a flock-guarded respawn loop. `service` boot and the RootSignals cron keep it alive on enrolled nodes. The agent exits 3 when MAIN has stopped the node: it was revoked or is unknown, or its enrolment was never completed. An expired token re-keys instead. `run.sh` then writes `bin/xc_agent/stopped` and nothing restarts it until the node is enrolled again. The `/etc/xc_vm/cluster` root pin, which the root executor needs, arrives with Phase 4.
 
 ### Enrolling an existing LB (SSH)
 

@@ -123,6 +123,27 @@ final class TokenService {
 		return $rIssued;
 	}
 
+	/**
+	 * `token_rekey`: a fresh epoch for a node whose tokens are gone. Every
+	 * epoch it still has is dropped (expired, or never used because a reply
+	 * was lost), so it again holds exactly one. The new epoch follows both the
+	 * node's current (last used) one and any row still held; a number minted
+	 * but never used can come round again, under a new z.
+	 *
+	 * @param array<string, mixed> $rNode
+	 * @return array<string, mixed> token_sealed, epoch, nbf, exp, refresh_at, …
+	 */
+	public static function rekey(ClusterCrypto $rCrypto, array $rNode, string $rAgentEphPub): array {
+		$rServerID = (int) $rNode['server_id'];
+		self::db()->query('SELECT MAX(`epoch`) AS `n` FROM `cluster_node_epochs` WHERE `server_id` = ?;', $rServerID);
+		$rEpoch = max((int) (self::db()->get_row()['n'] ?? 0), (int) $rNode['epoch']) + 1;
+		// Minted first: a licence refusal leaves the node's rows as they were.
+		$rIssued = self::issue($rCrypto, $rNode, $rEpoch, $rAgentEphPub);
+		self::db()->query('DELETE FROM `cluster_node_epochs` WHERE `server_id` = ? AND `epoch` <> ?;', $rServerID, $rEpoch);
+		ClusterAudit::log('token.rekey', $rServerID, ['epoch' => $rEpoch]);
+		return $rIssued;
+	}
+
 	/** Drop expired epochs (erasing their z) and anything older than the current one's predecessor. */
 	public static function prune(): void {
 		self::db()->query('DELETE FROM `cluster_node_epochs` WHERE `exp` <= ?;', ClusterClock::now());
