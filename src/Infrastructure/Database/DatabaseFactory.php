@@ -3,6 +3,7 @@
 namespace XcVm\Infrastructure\Database;
 
 use XcVm\Core\Database\DatabaseHandler;
+use XcVm\Core\Database\LazyDatabaseHandler;
 
 /**
  * DatabaseFactory — создание, хранение и закрытие глобального подключения к БД.
@@ -51,6 +52,28 @@ class DatabaseFactory {
 		}
 
 		$db = new DatabaseHandler();
+		self::$instance = $db;
+	}
+
+	/**
+	 * Like connect(), but the handler opens its connection only when first
+	 * used (LazyDatabaseHandler). For the streaming endpoints, where many
+	 * requests end without a query.
+	 */
+	public static function connectLazy() {
+		global $db;
+
+		if (is_object($db) && method_exists($db, 'ping') && $db->ping()) {
+			self::$instance = $db;
+			return;
+		}
+
+		if (is_object($db)) {
+			$db->close_mysql();
+			$db = null;
+		}
+
+		$db = new LazyDatabaseHandler();
 		self::$instance = $db;
 	}
 

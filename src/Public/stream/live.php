@@ -118,7 +118,7 @@ if ($rChannelInfo) {
 	// therefore the rollback: every stream falls back automatically, no flag.
 	$rFanout = false;
 	if (!empty($rChannelInfo["proxy"]) && LicenseGate::fanoutUsable()) {
-		DatabaseFactory::connect();
+		DatabaseFactory::connectLazy();
 		$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?', $rStreamID);
 		$rStreamRow = ($db->num_rows() > 0 ? $db->get_row() : []);
 		$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
@@ -175,7 +175,7 @@ if ($rChannelInfo) {
 				@unlink(STREAMS_PATH . $rStreamID . "_.pid");
 				AsyncFileOperations::clearFileCache();
 
-				DatabaseFactory::connect(); // the hand-over reads the stream's config
+				DatabaseFactory::connectLazy(); // the hand-over reads the stream's config
 				if (StreamProcess::startMonitor($rStreamID) === StreamProcess::MONITOR_FANOUT) {
 					// The daemon is the monitor: there is no _.monitor file to wait
 					// for, and waiting its full three seconds would be pure latency
@@ -258,7 +258,7 @@ if ($rChannelInfo) {
 	if ($rSettings["redis_handler"]) {
 		RedisManager::ensureConnected();
 	} else {
-		DatabaseFactory::connect();
+		DatabaseFactory::connectLazy();
 	}
 
 	if ($rSettings["disallow_2nd_ip_con"] && !$rUserInfo["is_restreamer"] && ($rUserInfo["max_connections"] <= $rSettings["disallow_2nd_ip_max"] && 0 < $rUserInfo["max_connections"] || $rSettings["disallow_2nd_ip_max"] == 0)) {
