@@ -105,4 +105,26 @@ final class ServerRepositoryPhpPidsTest extends TestCase {
 	public function testGetByIdKeepsTheFullRow(): void {
 		$this->assertSame('[11,12]', ServerRepository::getById(7)['php_pids']);
 	}
+
+	public function testClusterHealthDecidesOnlineForAgentNodes(): void {
+		$rPath = sys_get_temp_dir() . '/health_' . bin2hex(random_bytes(4)) . '.json';
+		\XcVm\Core\Cluster\ClusterHealth::usePath($rPath);
+		try {
+			// Fresh last_check_ago, but MAIN's liveness loop says offline.
+			\XcVm\Core\Cluster\ClusterHealth::write([7 => 'offline'], false);
+			$this->assertFalse(ServerRepository::getAll(true)[7]['server_online']);
+			// A stale last_check_ago (legacy: offline after 90 s), but the loop says suspect.
+			$this->db->query('UPDATE servers SET last_check_ago = ? WHERE id = 7', time() - 600);
+			\XcVm\Core\Cluster\ClusterHealth::write([7 => 'suspect'], false);
+			$rServers = ServerRepository::getAll(true);
+			$this->assertTrue($rServers[7]['server_online']);
+			$this->assertSame('suspect', $rServers[7]['cluster_health']);
+			// Not judged by the loop: the legacy rule.
+			\XcVm\Core\Cluster\ClusterHealth::write([], false);
+			$this->assertFalse(ServerRepository::getAll(true)[7]['server_online']);
+		} finally {
+			@unlink($rPath);
+			\XcVm\Core\Cluster\ClusterHealth::usePath(null);
+		}
+	}
 }

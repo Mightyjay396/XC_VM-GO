@@ -8,15 +8,18 @@ use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\EnrolCodeService;
+use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\NonceStore;
 use XcVm\Domain\Cluster\TokenService;
+use XcVm\Domain\Server\ServerRepository;
 
 /**
  * ClusterCronJob — MAIN's cluster API housekeeping, every minute:
  *
  * - expired token epochs are deleted, which erases their `z`;
  * - the replay cache and single-use challenges past their 180 s go;
- * - enrolment codes nobody used, and decided requests after a day, go.
+ * - enrolment codes nobody used, and decided requests after a day, go;
+ * - the liveness loop runs once (the signals daemon runs it every second).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
  * the rest; there the job returns before touching anything, as the cluster
@@ -55,6 +58,12 @@ class ClusterCronJob implements CommandInterface {
 			'epochs' => static fn() => TokenService::prune(),
 			'nonces' => static fn() => NonceStore::purge(),
 			'enrol_codes' => static fn() => EnrolCodeService::prune(),
+			// The signals daemon runs this every second; the minute is its fallback.
+			'liveness' => static function () {
+				if (LivenessService::tick(max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec') ?: 30)))) !== []) {
+					ServerRepository::getAll(true);
+				}
+			},
 		] as $rStep => $rRun) {
 			try {
 				$rRun();

@@ -8,6 +8,7 @@
  * (ClusterNodesController → Domain\Cluster\ClusterAdmin).
  */
 
+use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Util\LayoutRenderer;
 
 $rBadge = static fn(string $rState): string => match ($rState) {
@@ -39,6 +40,10 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
 
 <?php if (empty($clusterEnabled)): ?>
     <div class="alert alert-info" role="alert"><?= $language::get('cluster_api_off'); ?> <a href="settings#cluster"><?= $language::get('cluster'); ?></a></div>
+<?php endif; ?>
+
+<?php if (ClusterHealth::read()['guard']): ?>
+    <div class="alert alert-danger" role="alert"><i class="icon-base ti tabler-alert-triangle me-1"></i><?= $language::get('cluster_fleet_silence'); ?></div>
 <?php endif; ?>
 
 <?php if (!empty($clusterPending)): ?>

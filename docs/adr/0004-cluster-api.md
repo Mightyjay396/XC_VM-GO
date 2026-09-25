@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 is under way: authoritative telemetry is in, the 1 s liveness loop is not. Phases 4–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3's authoritative telemetry and 1 s liveness loop are in; its MAIN endpoint-change handling is not. Phases 4–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -231,6 +231,24 @@ The node learns its mode and flows from MAIN's authenticated replies. The agent 
 - `network.py` is stopped.
 
 A stopped agent removes `flows.json`, so the node falls back to the legacy paths.
+
+### Liveness (Phase 3)
+
+`LivenessService::tick()` runs every second in MAIN's signals daemon, with `cron:cluster` as the per-minute fallback. It judges the active nodes whose TELEMETRY flow is on by their silence (`NodeHealth`):
+
+| State | When | Effect on routing |
+| --- | --- | --- |
+| `ok` | heard within 10 s | online, whatever the legacy `last_check_ago` says |
+| `suspect` | silent over 10 s | still online; capacity weight doubled |
+| `offline` | silent over `cluster_offline_after_sec` (30 s) | offline |
+
+Other rules:
+
+- A node never heard from counts as offline only once the loop has been up for that long.
+- The result goes to `tmp/cluster/health.json`. `Core\Cluster\ClusterHealth` is how `ServerRepository::getAll()` (`server_online`, `cluster_health`) and `ConnectionTracker::getCapacity()` read it.
+- Each transition rewrites the servers cache at once and is audited (`node.health`).
+- **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears.
+- Nodes without the flow keep the legacy 90 s rule. The Phase 6 orphan purge at `cluster_orphan_conn_ttl_sec` is not part of this loop yet.
 
 ### Extension updates
 
