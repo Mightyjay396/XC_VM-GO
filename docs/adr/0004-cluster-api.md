@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs (`server:enrol`, enrolment codes), `token_rekey` and Phases 3–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`) is too. Enrolment codes, `token_rekey` and Phases 3–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -128,6 +128,16 @@ Other behaviour:
 A missing agent binary, for example when GitHub is unreachable and there is no cached copy, leaves the node legacy and does not fail the install.
 
 `run.sh` is a flock-guarded respawn loop. `service` boot and the RootSignals cron keep it alive on enrolled nodes. The agent exits 3 when MAIN has stopped the node (revoked, or its token expired). `run.sh` then writes `bin/xc_agent/stopped` and nothing restarts it until the node is enrolled again. The `/etc/xc_vm/cluster` root pin, which the root executor needs, arrives with Phase 4.
+
+### Enrolling an existing LB (SSH)
+
+`console.php server:enrol <id> <sshPort> --cred-file=<path> [--expect-hostkey=<sha1>]` runs the same `provisionCluster` on a node that is already serving, without reinstalling it. The credentials travel as they do for `server:install`: a 0600 file, read and then deleted. The command differs from the install flow in three ways:
+
+- **No trust on first use.** The SSH host key must match `--expect-hostkey` or the fingerprint stored at install (`ssh_hostkey_sha1`). The admin reads the key on the node with `ssh-keygen -l -E sha1 -f /etc/ssh/ssh_host_ed25519_key.pub`.
+- **The node must already run this release.** Its `bin/xc_agent/run.sh` must exist; update the node through the legacy `update` signal first.
+- **A failure never marks the node failed.** It keeps serving the legacy way.
+
+Re-enrolling stops the node's running agent before replacing its identity. The generation goes up, so every token of the previous identity stops working.
 
 ### Extension updates
 
