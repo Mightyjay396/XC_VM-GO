@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Util;
 
+use XcVm\Core\Config\OpensslExtra;
+
 /**
  * Encryption Utilities
  *
@@ -125,9 +127,23 @@ class Encryption {
 	 * $rAcceptLegacy — the secure_stream_tokens setting is off, or the token
 	 * only carries credentials the caller checks against the database again.
 	 *
+	 * A token made for the OPENSSL_EXTRA context that does not open is tried once
+	 * more with the value this node replaced, while that is still accepted
+	 * (OpensslExtra::previous()), so switching a node onto MAIN's value does not
+	 * break the links it has just handed out. A token that opens pays nothing extra.
+	 *
 	 * @return string|false
 	 */
 	public static function readToken($token, $key, $deviceId, bool $rAcceptLegacy) {
+		$rPlain = self::readTokenWith($token, $key, $deviceId, $rAcceptLegacy);
+		if ($rPlain === false && defined('OPENSSL_EXTRA') && $deviceId === OPENSSL_EXTRA && ($rPrevious = OpensslExtra::previous()) !== null) {
+			return self::readTokenWith($token, $key, $rPrevious, $rAcceptLegacy);
+		}
+		return $rPlain;
+	}
+
+	/** @return string|false */
+	private static function readTokenWith($token, $key, $deviceId, bool $rAcceptLegacy) {
 		$rPlain = self::open($token, $key, $deviceId);
 		if ($rPlain !== false || !$rAcceptLegacy || !is_string($token)) {
 			return $rPlain;
