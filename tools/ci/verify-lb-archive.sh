@@ -66,6 +66,7 @@ SENSITIVE=(
 	"Cli/Commands/ClusterInitCommand.php"
 	"Cli/Commands/ClusterExportKeysCommand.php"
 	"Cli/Commands/ClusterImportKeysCommand.php"
+	"Cli/Commands/ClusterDbAllowlistCommand.php"
 	"Cli/Commands/ClusterEnrolCodeCommand.php"
 	"Cli/Commands/ClusterEnrolApproveCommand.php"
 	"Cli/Commands/ServerEnrolCommand.php"

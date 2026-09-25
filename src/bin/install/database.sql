@@ -1609,6 +1609,8 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `cluster_agent_upgrade_parallel` int(11) DEFAULT '1',
   `cluster_policy_ver` int(11) DEFAULT '1',
   `cluster_legacy_ports` varchar(255) DEFAULT '',
+  `cluster_db_allowlist` tinyint(1) DEFAULT '0',
+  `cluster_db_allowlist_extra` varchar(1024) DEFAULT '',
   `secure_stream_tokens` tinyint(1) DEFAULT '1',
   `disable_table_responsive` tinyint(1) DEFAULT '0'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;

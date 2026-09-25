@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Domain\Cluster\DbAllowlist;
+
 /**
  * The cluster API settings (MAIN ↔ LB plan, section 11): defaults, bounds
  * and the checks a save must pass.
@@ -17,7 +19,8 @@ namespace XcVm\Core\Cluster;
  *   self-probe, and every active node reporting HTTPS);
  * - `cluster_api_enabled = 1` without the extension's cluster API;
  * - `lb_new_node_mode = api` before Phase 9;
- * - a scan root that is not an absolute, normalised path.
+ * - a scan root that is not an absolute, normalised path;
+ * - a database allowlist entry that is not an IP or CIDR.
  *
  * The class is pure apart from httpsSelfProbe(); SettingsService supplies the
  * main server row, the stored settings and the environment checks.
@@ -37,6 +40,7 @@ final class ClusterSettings {
 		'servers_stats_retention_days' => [30, 1, 365],
 		'cluster_audit_retention_days' => [30, 1, 365],
 		'cluster_agent_upgrade_parallel' => [1, 1, 50],
+		'cluster_db_allowlist' => [0, 0, 1],
 	];
 
 	public const ENUMS = [
@@ -53,7 +57,7 @@ final class ClusterSettings {
 
 	/** Every setting this class owns. */
 	public static function keys(): array {
-		return array_merge(array_keys(self::INTS), array_keys(self::ENUMS), ['cluster_api_port', 'cluster_main_host', 'lb_scan_roots']);
+		return array_merge(array_keys(self::INTS), array_keys(self::ENUMS), ['cluster_api_port', 'cluster_main_host', 'lb_scan_roots', 'cluster_db_allowlist_extra']);
 	}
 
 	/** Grace G for a rotation interval L (both minutes): clamp(L/4, 5, 60). */
@@ -111,6 +115,16 @@ final class ClusterSettings {
 				$rErrors[] = ['lb_scan_roots', 'cluster_error_scan_roots'];
 			} else {
 				$rOut['lb_scan_roots'] = json_encode($rRoots, JSON_UNESCAPED_SLASHES);
+			}
+		}
+
+		if (array_key_exists('cluster_db_allowlist_extra', $rNew)) {
+			[$rCidrs, $rBad] = DbAllowlist::parseExtra((string) $rNew['cluster_db_allowlist_extra']);
+			$rJoined = implode("\n", $rCidrs);
+			if ($rBad || strlen($rJoined) > 1024) {
+				$rErrors[] = ['cluster_db_allowlist_extra', 'cluster_error_db_allowlist'];
+			} else {
+				$rOut['cluster_db_allowlist_extra'] = $rJoined;
 			}
 		}
 
