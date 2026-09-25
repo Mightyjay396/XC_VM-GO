@@ -72,13 +72,19 @@ final class FanoutMode {
 	 * supervisor goes first, so it cannot respawn the daemon in between.
 	 *
 	 * @param bool          $rEnabled The switch.
-	 * @param callable|null $rExec    fn(string $cmd): void (defaults to shell_exec; tests stub it).
+	 * @param callable|null $rExec    fn(string $cmd): void (tests stub it; the default runs only the two stop commands, as literals).
 	 * @param string|null   $rFlag    Flag file (defaults to flagPath(); tests use a temp dir).
 	 * @return bool True when this call changed the node's state.
 	 */
 	public static function applyToNode(bool $rEnabled, ?callable $rExec = null, ?string $rFlag = null): bool {
 		$rExec = $rExec ?? static function (string $rCmd): void {
-			shell_exec($rCmd);
+			// Never a built string in a shell: the node's two stop commands, as
+			// literals at the fixed deploy path.
+			if (str_contains($rCmd, '-x xc_fanout')) {
+				shell_exec('pkill -u xc_vm -x xc_fanout >/dev/null 2>&1');
+			} elseif (str_contains($rCmd, 'run.sh')) {
+				shell_exec('pkill -u xc_vm -f /home/xc_vm/bin/xc_fanout/run.sh >/dev/null 2>&1');
+			}
 		};
 		$rFlag = $rFlag ?? self::flagPath();
 		if ($rEnabled) {
