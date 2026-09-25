@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Logging\FileLogger;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
@@ -36,6 +37,12 @@ class UpdateCronJob implements CommandInterface {
 
 		if (!$this->isRunning()) {
 			return 1;
+		}
+
+		// The update check calls GitHub and writes the cluster-wide
+		// settings.update_data; LBs are updated through MAIN.
+		if (!NodeRole::isMain()) {
+			return 0;
 		}
 
 		global $db, $gitRelease;

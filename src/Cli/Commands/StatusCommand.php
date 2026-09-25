@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Module\ModuleLoader;
@@ -286,7 +287,7 @@ class StatusCommand implements CommandInterface {
 		$db = self::db();
 		foreach ($rServers as $rServerID => $rServerArray) {
 			$db->query('DELETE FROM `signals` WHERE `custom_data` = ?;', json_encode(['action' => 'update_binaries']));
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'update_binaries']));
+			SignalDispatcher::rootAction(intval($rServerID), ['action' => 'update_binaries'], $db);
 		}
 	}
 

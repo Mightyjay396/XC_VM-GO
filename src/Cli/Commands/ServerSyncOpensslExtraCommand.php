@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -116,7 +117,7 @@ class ServerSyncOpensslExtraCommand implements CommandInterface {
 				echo "#{$rServerID} {$rName}: skipped, {$rSkip}\n";
 				continue;
 			}
-			self::db()->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), $rCustomData);
+			SignalDispatcher::rootAction(intval($rServerID), $rCustomData, self::db());
 			echo "#{$rServerID} {$rName}: queued\n";
 			$rQueued++;
 		}

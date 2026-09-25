@@ -4,8 +4,11 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\ConnectAudit;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
+use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
 use XcVm\Streaming\Codec\FFmpegCommand;
@@ -206,6 +209,16 @@ class CleanupCronJob implements CommandInterface {
 			}
 		}
 
+		// This node's connect audit: the cutover gate reads seven days of it.
+		ConnectAudit::prune(8);
+
+		// Retention of cluster-wide log tables: MAIN's job. Every LB used to
+		// run the same DELETEs against MAIN's database each minute.
+		if (!NodeRole::isMain()) {
+			return;
+		}
+		// SSH passwords saved by installs before they moved to one-shot cred files.
+		InstallCredentials::scrubLegacyMetadata();
 		$rTables = ['lines_activity' => ['keep_activity', 'date_end'], 'lines_logs' => ['keep_client', 'date'], 'login_logs' => ['keep_login', 'date'], 'streams_errors' => ['keep_errors', 'date'], 'streams_logs' => ['keep_restarts', 'date'], 'ondemand_check' => ['on_demand_scan_keep', 'date']];
 		foreach ($rTables as $rTable => $rArray) {
 			if (SettingsManager::getAll()[$rArray[0]] && 0 < SettingsManager::getAll()[$rArray[0]]) {

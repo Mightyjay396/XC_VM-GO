@@ -5,6 +5,7 @@ use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\ApiClient;
@@ -1870,7 +1871,7 @@ if (1 < $rICount) { ?>
 						}
 
 						if (0 < count($rCertbot['domain'])) {
-							$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rReturn['data']['insert_id'], time(), json_encode($rCertbot));
+							SignalDispatcher::rootAction(intval($rReturn['data']['insert_id']), $rCertbot, $db);
 							echo json_encode(array('result' => true, 'location' => 'server_view?id=' . intval($rReturn['data']['insert_id']) . '&status=' . STATUS_CERTBOT, 'status' => STATUS_CERTBOT));
 
 							exit();

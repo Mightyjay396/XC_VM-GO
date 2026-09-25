@@ -4,6 +4,7 @@ namespace XcVm\Domain\Line;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Auth\AuthRepository;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Util\AdminHelpers;
@@ -309,10 +310,7 @@ class LineService {
 		$rCached = SettingsManager::get('enable_cache');
 		$rMainID = ConnectionTracker::getMainID();
 		if ($rCached) {
-			$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, json_encode(['type' => 'update_line', 'id' => $rUserID]));
-			if ($db->get_row()['count'] == 0) {
-				$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), json_encode(['type' => 'update_line', 'id' => $rUserID]));
-			}
+			SignalDispatcher::cache(intval($rMainID), ['type' => 'update_line', 'id' => $rUserID], true, false, $db);
 			return;
 		}
 	}
@@ -328,10 +326,7 @@ class LineService {
 		$rCached = SettingsManager::get('enable_cache');
 		$rMainID = ConnectionTracker::getMainID();
 		if ($rCached) {
-			$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, json_encode(['type' => 'update_lines', 'id' => $rUserIDs]));
-			if ($db->get_row()['count'] == 0) {
-				$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), json_encode(['type' => 'update_lines', 'id' => $rUserIDs]));
-			}
+			SignalDispatcher::cache(intval($rMainID), ['type' => 'update_lines', 'id' => $rUserIDs], true, false, $db);
 			return;
 		}
 	}

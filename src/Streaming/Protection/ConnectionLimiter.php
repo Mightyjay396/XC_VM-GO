@@ -2,6 +2,7 @@
 
 namespace XcVm\Streaming\Protection;
 
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Redis\RedisManager;
 
@@ -194,7 +195,7 @@ class ConnectionLimiter {
 				if ($rSettings['redis_handler']) {
 					ConnectionTracker::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 1);
 				} else {
-					$db->query('INSERT INTO `signals` (`pid`,`server_id`,`rtmp`,`time`) VALUES(?,?,?,UNIX_TIMESTAMP())', $rActivityInfo['pid'], $rActivityInfo['server_id'], 1);
+					SignalDispatcher::kill(intval($rActivityInfo['server_id']), intval($rActivityInfo['pid']), true, $db);
 				}
 			}
 		} else {
@@ -223,7 +224,7 @@ class ConnectionLimiter {
 					if ($rSettings['redis_handler']) {
 						ConnectionTracker::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 0);
 					} else {
-						$db->query('INSERT INTO `signals` (`pid`,`server_id`,`time`) VALUES(?,?,UNIX_TIMESTAMP())', $rActivityInfo['pid'], $rActivityInfo['server_id']);
+						SignalDispatcher::kill(intval($rActivityInfo['server_id']), intval($rActivityInfo['pid']), false, $db);
 					}
 				}
 			}

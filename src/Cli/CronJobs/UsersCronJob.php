@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Validation\InputValidator;
@@ -228,16 +229,11 @@ class UsersCronJob implements CommandInterface {
 
 		foreach (($rRedis ? $rDelete['server'] : $rDelete) as $rServerID => $rConnections) {
 			if ($rServerID != SERVER_ID) {
-				$rQuery = '';
-
+				$rPayloads = [];
 				foreach ($rConnections as $rConnection) {
-					$rQuery .= '(' . $rServerID . ',1,' . $rTime . ',' . $db->escape(json_encode(['type' => 'delete_con', 'uuid' => $rConnection])) . '),';
+					$rPayloads[] = ['type' => 'delete_con', 'uuid' => $rConnection];
 				}
-				$rQuery = rtrim($rQuery, ',');
-
-				if (!empty($rQuery)) {
-					$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES ' . $rQuery . ';');
-				}
+				SignalDispatcher::cacheBatch(intval($rServerID), $rPayloads, intval($rTime), $db);
 			}
 		}
 

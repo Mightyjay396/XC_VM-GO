@@ -57,8 +57,10 @@ class SignalsCommand implements CommandInterface {
 			if (!$this->refreshOrBreak()) {
 				break;
 			}
-			if ($this->rLastCheck) {
-				$rServers = ServerRepository::getAll(true);
+			// Was every pass (four times a second): a `SELECT * FROM servers`
+			// against MAIN from every node, all day.
+			if ($this->serversRefreshDue()) {
+				$rServers = $this->refreshServers();
 			}
 
 			// Stop if Redis required but dead. checkRedisHealth() catches

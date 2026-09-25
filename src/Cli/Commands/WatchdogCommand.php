@@ -80,6 +80,10 @@ class WatchdogCommand implements CommandInterface {
 				$this->attemptRedisRestart();
 			}
 
+			if ($this->serversRefreshDue()) {
+				$rServers = $this->refreshServers();
+			}
+
 			if ($this->shouldRefreshSettings()) {
 				if (!ProcessManager::isNginxRunning()) {
 					echo "Not running! Break.\n";
@@ -89,7 +93,6 @@ class WatchdogCommand implements CommandInterface {
 					echo "File changed! Break.\n";
 					break;
 				}
-				$rServers = ServerRepository::getAll(true);
 				SettingsManager::set(SettingsRepository::getAll(true));
 				ConnectionTracker::getCapacity(true);
 				ConnectionTracker::getCapacity(false);

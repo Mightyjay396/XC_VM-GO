@@ -3,6 +3,7 @@
 namespace XcVm\Ministra;
 
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\TimeUtils;
 
@@ -1845,12 +1846,7 @@ class PortalHandler {
 				$rDevice["token"],
 				$rDevice["mag_id"],
 			);
-			$db->query(
-				"INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);",
-				SERVER_ID,
-				time(),
-				json_encode(["type" => "update_line", "id" => $rDevice["user_id"]]),
-			);
+			SignalDispatcher::cache(intval(SERVER_ID), ["type" => "update_line", "id" => $rDevice["user_id"]], false, false, $db);
 			updatecache();
 		} else {
 			$rDevice = [];
