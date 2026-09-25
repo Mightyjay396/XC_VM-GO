@@ -319,3 +319,21 @@ tar -tzf dist/loadbalancer.tar.gz | grep -cE "admin/|player/|ministra|reseller"
 # Compare sizes (LB should be significantly smaller)
 ls -lh dist/xc_vm.tar.gz dist/loadbalancer.tar.gz
 ```
+
+## Nightly Builds (Dev Channel)
+
+`.github/workflows/build-dev.yml` publishes nightly builds of `main` for panels on the `Dev` update channel. It runs at 02:00 UTC and on manual dispatch (`force` rebuilds an unchanged `main`). It skips the build when `main` is unchanged since the previous nightly or has no commits since the last release.
+
+Nightly builds go to the releases-only repository [`Vateron-Media/XC_VM_Dev`](https://github.com/Vateron-Media/XC_VM_Dev), not to `XC_VM`, for three reasons:
+
+- The panel reads one page of up to 100 releases. Daily releases in `XC_VM` would push the stable ones off that page.
+- The release workflows take the newest tag as `LAST_TAG`, and nightly tags would take its place.
+- Every release in `XC_VM` notifies the repository's watchers and `release-notifier.yml`.
+
+**Version.** Each build is tagged `<base>-dev.<run number>`. `<base>` is `XC_VM_VERSION` from the source when it is already bumped past the last `X.Y.Z` tag, otherwise the next patch after that tag. The workflow runs the unit tests first, then stamps the version into `ConstantsInitializer.php` and runs `make lb` and `make main` with `LAST_TAG` set to the last release. `deleted_files.txt` therefore covers every deletion since that release, so a panel that skips nightlies still gets a correct cleanup.
+
+**Assets.** A nightly carries the same assets as a release (`xc_vm.tar.gz`, `loadbalancer.tar.gz`, `XC_VM.zip`, `hashes.md5`) plus `changelog.json`, which is built from the commit subjects since the previous nightly. `XC_VM_Dev` has no source tree, so `GitHubReleases::getChangelog()` reads nightly changelogs from this asset, not from the tagged `changelog.json`. The first line of the release notes (`Source: …/commit/<sha>`) records the source commit, and the next run compares against it. Only the newest 20 nightlies are kept.
+
+**Panel side.** `UpdateChannels::mainReleases()` gives the MAIN release client `GIT_REPO_DEV`. On the `dev` channel `GitHubReleases` merges both repositories' releases, orders them with `version_compare()`, and fetches each asset from the repository that published its tag (`GitHubReleases::isDevVersion()`). If `XC_VM_Dev` cannot be reached, the dev channel still receives regular releases.
+
+**Setup.** The workflow publishes through a GitHub App installed on `XC_VM_Dev` with **Contents: read and write**. Set its App ID in the repository variable `DEV_RELEASE_APP_ID` and its private key in the secret `DEV_RELEASE_APP_KEY`. `XC_VM_Dev` must be public, because panels download from it without a token, and it needs at least one commit for release tags to point at.
