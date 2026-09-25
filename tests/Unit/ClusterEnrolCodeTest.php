@@ -281,4 +281,47 @@ final class ClusterEnrolCodeTest extends TestCase {
 		}
 		$this->assertSame('pending_approval', EnrolCodeService::request(self::SID)['state']);
 	}
+
+	public function testCronHousekeeping(): void {
+		$this->code();
+		\XcVm\Domain\Cluster\NonceStore::claim('sid:5', random_bytes(16));
+		$this->rDb->query('INSERT INTO `cluster_node_epochs` (`server_id`, `epoch`, `record`, `nbf`, `exp`, `refresh_at`, `used`, `created_at`) VALUES (5, 1, ?, 0, ?, 0, 1, 0)', '{}', intdiv($this->rT0, 1000) + 60);
+		ClusterClock::fix($this->rT0 + (EnrolCodeService::TTL + 1) * 1000);
+		\XcVm\Cli\CronJobs\ClusterCronJob::housekeep();
+		foreach (['cluster_enrol_codes', 'cluster_nonces', 'cluster_node_epochs'] as $rTable) {
+			$this->rDb->query('SELECT COUNT(*) AS `n` FROM `' . $rTable . '`');
+			$this->assertSame(0, (int) $this->rDb->get_row()['n'], $rTable);
+		}
+	}
+
+	public function testAdminPageActions(): void {
+		$rServers = [1 => ['is_main' => 1, 'server_type' => 0, 'server_name' => 'Main'] + $this->rMain, 5 => ['is_main' => 0, 'server_type' => 0, 'server_name' => 'LB-5'], 9 => ['is_main' => 0, 'server_type' => 1, 'server_name' => 'Proxy']];
+		$rAct = fn(array $rInput) => \XcVm\Domain\Cluster\ClusterAdmin::act($this->rCrypto, $rInput, $rServers, 1, $this->rSettings, 7);
+		$this->assertSame([5 => 'LB-5'], \XcVm\Domain\Cluster\ClusterAdmin::loadBalancers($rServers));
+		$this->assertSame('cluster_not_a_load_balancer', $rAct(['cluster_action' => 'code', 'server_id' => 9])['message']);
+		$this->assertSame('cluster_bad_main_url', $rAct(['cluster_action' => 'code', 'server_id' => 5, 'url' => 'ftp://x'])['message']);
+
+		$rOut = $rAct(['cluster_action' => 'code', 'server_id' => 5]);
+		$this->assertSame('cluster_code_issued', $rOut['message']);
+		$rDec = EnrolCodeService::decode($rOut['code']);
+		$this->assertSame('http://10.0.0.1:25461', $rDec['main_url'], 'defaults to the policy URL');
+		[$rReq] = EnrolCodeService::keys($rDec['secret'], 5);
+		$rNode = $this->node();
+		$this->send('enrol_code', $rReq, $rNode);
+		$rPending = \XcVm\Domain\Cluster\ClusterAdmin::pending($rServers);
+		$this->assertSame(['LB-5', $rNode['uuid']], [$rPending[0]['server_name'], $rPending[0]['node_uuid']]);
+
+		$this->assertSame('cluster_wrong_sas', $rAct(['cluster_action' => 'approve', 'server_id' => 5, 'sas' => 'nope'])['message']);
+		$rSas = EnrolmentService::sas($rNode['uuid'], $rNode['sign_pub'], $rNode['box_pub']);
+		$this->assertSame('cluster_enrol_approved', $rAct(['cluster_action' => 'approve', 'server_id' => 5, 'sas' => $rSas])['message']);
+		$this->assertSame([], \XcVm\Domain\Cluster\ClusterAdmin::pending($rServers));
+		$rNodes = \XcVm\Domain\Cluster\ClusterAdmin::nodes($rServers, 30);
+		$this->assertSame(['LB-5', 'enrolling'], [$rNodes[0]['server_name'], $rNodes[0]['health']]);
+		$this->rDb->query('SELECT `decided_by` FROM `cluster_enrol_requests` WHERE `server_id` = 5');
+		$this->assertSame(7, (int) $this->rDb->get_row()['decided_by'], 'the deciding admin is recorded');
+
+		$this->assertSame('cluster_node_revoked', $rAct(['cluster_action' => 'revoke', 'server_id' => 5])['message']);
+		$this->assertSame('revoked', \XcVm\Domain\Cluster\ClusterAdmin::nodes($rServers, 30)[0]['health']);
+		$this->assertSame('cluster_unknown_action', $rAct(['cluster_action' => 'x', 'server_id' => 5])['message']);
+	}
 }

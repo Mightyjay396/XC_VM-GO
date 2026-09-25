@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. Phases 3–11 are not; code approval has no admin page yet (CLI only).
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phases 3–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -193,6 +193,19 @@ Other rules:
 - Under a used code, other keys get a 409 `ENROL_CONFLICT` and an audit entry, never a silent replacement. The same keys again (a lost reply) are accepted as they stand.
 - `xc_agent enrol` refuses to replace an identity that holds tokens unless given `-force`.
 - The pin blob (`cluster_pin`) waits for Phase 4, as it does on the SSH path.
+
+### Cluster Nodes page and housekeeping
+
+*Servers → Cluster Nodes* (`cluster_nodes`, permission `servers`) is the admin side of the CLI commands, through `Domain\Cluster\ClusterAdmin`. It:
+
+- lists enrolled nodes with state, liveness (`NodeHealth`), mode, epoch, token expiry, last heartbeat and agent version;
+- shows code enrolments waiting for a SAS, with *Approve* (SAS field) and *Reject*;
+- issues enrolment codes (optional MAIN URL; the code is shown once);
+- revokes nodes.
+
+Actions POST back to the page; admin sessions are `SameSite=Strict`. The deciding admin is recorded in `decided_by` and in the audit log.
+
+`cron:cluster` runs every minute (migration 037 enables its crontab row). It deletes expired epochs, which erases their `z`, the replay cache and used challenges, unused expired codes, and decided requests after a day. It returns at once on load balancers, which get the crontab verbatim but not `Domain/Cluster`, and while the API is disabled.
 
 ### Extension updates
 

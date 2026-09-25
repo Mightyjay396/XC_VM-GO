@@ -420,7 +420,7 @@ INSERT INTO `crontab` (`id`, `filename`, `time`, `enabled`, `role`) VALUES
 (27, 'plex', '*/5 * * * *', 1, 'all'),
 (28, 'maxmind', '0 4 * * 2', 1, 'all'),
 (29, 'proxy', '0 5 * * *', 1, 'all'),
-(30, 'cluster', '* * * * *', 0, 'main');
+(30, 'cluster', '* * * * *', 1, 'main');
 
 -- --------------------------------------------------------
 
