@@ -5,8 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronJobs\ServersCronJob;
 use XcVm\Core\Config\OpensslExtra;
-use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Util\Encryption;
+use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -211,7 +210,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 
 		// 6c. A hung cron:servers holds its lock and blocks every relaunch for up
 		// to 30 min (ProcessManager::acquireCronLock stale timeout is 1800s).
-		$rLock = CRONS_TMP_PATH . md5(Encryption::generateUniqueCode(SettingsManager::get('live_streaming_pass') ?? '') . ServersCronJob::class);
+		$rLock = ProcessManager::cronLockPath(ServersCronJob::class);
 		if (file_exists($rLock)) {
 			$rLockPID = intval(trim((string) @file_get_contents($rLock)));
 			$rLockAge = time() - filemtime($rLock);

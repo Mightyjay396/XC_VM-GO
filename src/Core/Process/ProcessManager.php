@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Process;
 
+use XcVm\Core\Util\Encryption;
+
 /**
  * Process Manager
  *
@@ -375,6 +377,38 @@ class ProcessManager {
 	// ───────────────────────────────────────────────────────────
 	//  Cron Lock Management
 	// ───────────────────────────────────────────────────────────
+
+	/**
+	 * Lock file of a cron class. Stable across secret rotations: the old name
+	 * hashed live_streaming_pass, so rotating that secret let a second
+	 * instance start beside one still running under the old name.
+	 */
+	public static function cronLockPath(string $rClass): string {
+		return CRONS_TMP_PATH . 'lock_' . md5($rClass);
+	}
+
+	/**
+	 * The name a cron class's lock had before cronLockPath(). Only consulted
+	 * so that an instance started by the previous release is still honoured.
+	 */
+	public static function legacyCronLockPath(string $rClass, ?string $rStreamingPass): string {
+		return CRONS_TMP_PATH . md5(Encryption::generateUniqueCode($rStreamingPass) . $rClass);
+	}
+
+	/**
+	 * Exit like acquireCronLock() when $lockFile is held by a live, fresh
+	 * process; never takes or writes the lock.
+	 */
+	public static function exitIfCronLockHeld(string $lockFile, int $timeout = 1800): void {
+		$contents = @file_get_contents($lockFile);
+		$mtime = @filemtime($lockFile);
+		if ($contents === false || $mtime === false) {
+			return;
+		}
+		if (self::procExists((int) trim($contents)) && time() - $mtime < $timeout) {
+			exit('Running...');
+		}
+	}
 
 	/**
 	 * Acquire a cron lock (PID file)
