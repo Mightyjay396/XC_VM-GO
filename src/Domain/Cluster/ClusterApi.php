@@ -11,7 +11,7 @@ use XcVm\Core\Cluster\Crypto\SessionKeys;
 
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
- * token_refresh, token_rekey, hello, heartbeat). Transport-free: handle() takes the request
+ * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -37,6 +37,8 @@ final class ClusterApi {
 		'enrol_complete' => ['POST', true, ['enrolling']],
 		'token_refresh' => ['POST', true, ['active', 'quarantined']],
 		'token_rekey' => ['POST', true, ['active']],
+		'enrol_code' => ['POST', true, null],
+		'enrol_code_status' => ['POST', false, null],
 		'hello' => ['POST', false, ['active', 'quarantined']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
@@ -68,6 +70,9 @@ final class ClusterApi {
 		}
 		if ($rOp === 'token_rekey') {
 			return self::tokenRekey($rCrypto, $rReq, $rStates);
+		}
+		if ($rOp === 'enrol_code' || $rOp === 'enrol_code_status') {
+			return self::enrolByCode($rCrypto, $rOp, $rReq);
 		}
 
 		// ── Authenticated ops ────────────────────────────────────────────
@@ -305,6 +310,102 @@ final class ClusterApi {
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
 		}
+	}
+
+	/**
+	 * `enrol_code` and `enrol_code_status`: a node with no identity on MAIN yet
+	 * (`X-XCVM-Node: sid:<n>`, epoch 0), authenticated by the code's K_req.
+	 * `enrol_code` is also node-signed with the key it asks MAIN to enrol, and
+	 * its body is SEALed to the panel box key. Replies are MAC'd under K_res;
+	 * an approved one also carries the panel's `pre` signature.
+	 *
+	 * A wrong MAC changes nothing: no nonce, no attempt counted (the attempts
+	 * are the admin's wrong SAS entries), so a code cannot be burned without
+	 * its secret.
+	 *
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	private static function enrolByCode(ClusterCrypto $rCrypto, string $rOp, array $rReq): array {
+		$rH = Canonical::parseHeaders($rReq['headers']);
+		$rBody = (string) ($rReq['body'] ?? '');
+		if ($rH === null || $rH['sig'] === null || $rH['epoch'] !== 0 || !str_starts_with($rH['node'], 'sid:') || strlen($rBody) > 65536) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST');
+		}
+		if ($rH['proto'] < self::PROTO_MIN || $rH['proto'] > self::PROTO_MAX) {
+			return DenialFactory::deny($rCrypto, 426, 'PROTO', $rH['node'], $rH['nonce'], ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX]);
+		}
+		if (!Canonical::withinWindow($rH['ts_ms'], ClusterClock::nowMs())) {
+			return DenialFactory::deny($rCrypto, 401, 'CLOCK_SKEW', $rH['node'], $rH['nonce']);
+		}
+		$rSid = (int) substr($rH['node'], 4);
+		$rPending = $rOp === 'enrol_code_status' ? EnrolCodeService::request($rSid) : null;
+		$rCode = $rOp === 'enrol_code' ? EnrolCodeService::code($rCrypto, $rSid)
+			: ($rPending === null ? null : EnrolCodeService::code($rCrypto, $rSid, (int) $rPending['code_id'], false));
+		if ($rCode === null) {
+			return DenialFactory::deny($rCrypto, 401, 'CODE_INVALID', $rH['node'], $rH['nonce']);
+		}
+		$rCtx = Canonical::request([
+			'proto' => $rH['proto'], 'agent' => $rH['agent'], 'method' => 'POST', 'path' => (string) $rReq['path'],
+			'query' => (string) ($rReq['query'] ?? ''), 'content_type' => self::header($rReq['headers'], 'Content-Type'),
+			'content_encoding' => self::header($rReq['headers'], 'Content-Encoding'), 'node' => $rH['node'],
+			'epoch' => 0, 'ts_ms' => $rH['ts_ms'], 'nonce' => $rH['nonce'],
+		]);
+		if (!Canonical::verifyMac($rCode['req'], $rCtx, $rBody, $rH['sig'])) {
+			return DenialFactory::deny($rCrypto, 401, 'BAD_MAC', $rH['node'], $rH['nonce']);
+		}
+
+		if ($rOp === 'enrol_code_status') {
+			if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
+				return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+			}
+			$rP = json_decode($rBody, true);
+			if (!is_array($rP) || ($rP['node_uuid'] ?? null) !== $rPending['node_uuid']) {
+				return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+			}
+			if ($rPending['state'] === 'approved') {
+				$rReply = json_decode((string) $rPending['reply'], true);
+				return ClusterReply::maced($rCode['res'], $rCtx, (string) $rReply['doc'], [Canonical::H_PANEL_SIG => (string) $rReply['sig']]);
+			}
+			return ClusterReply::maced($rCode['res'], $rCtx, (string) json_encode([
+				'v' => 1, 'typ' => 'xcvm-enrol-status', 'state' => (string) $rPending['state'], 'main_time_ms' => ClusterClock::nowMs(),
+			]));
+		}
+
+		try {
+			$rPlain = $rCrypto->openSealed('enrol_code', $rBody, $rCtx);
+		} catch (ClusterRefusedException) {
+			$rPlain = null;
+		}
+		$rP = $rPlain === null ? null : json_decode($rPlain, true);
+		$rKey = static fn(string $rName) => is_array($rP) && is_string($rP[$rName] ?? null) ? base64_decode((string) $rP[$rName], true) : false;
+		$rNode = [
+			'node_uuid' => is_array($rP) && is_string($rP['node_uuid'] ?? null) ? (string) $rP['node_uuid'] : '',
+			'sign_pub' => $rKey('sign_pub'), 'box_pub' => $rKey('box_pub'), 'eph_pub' => $rKey('eph_pub'),
+			'instance_id' => self::short($rP['instance_id'] ?? null),
+		];
+		foreach (['sign_pub', 'box_pub', 'eph_pub'] as $rName) {
+			if (!is_string($rNode[$rName]) || strlen($rNode[$rName]) !== 32) {
+				return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+			}
+		}
+		if (!EnrolmentService::validUuid($rNode['node_uuid'])) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		$rNodeSig = self::header($rReq['headers'], Canonical::H_NODE_SIG);
+		$rSig = preg_match('/^[0-9a-f]{128}$/', $rNodeSig) ? (string) hex2bin($rNodeSig) : '';
+		if (!NodeSig::verify($rNode['sign_pub'], 'request', $rCtx . hash('sha256', $rBody, true), $rSig)) {
+			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
+		}
+		if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
+			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+		}
+		$rRefused = EnrolCodeService::submit($rCode, $rSid, $rNode, (string) ($rReq['ip'] ?? ''));
+		if ($rRefused !== null) {
+			return DenialFactory::deny($rCrypto, $rRefused === 'BAD_REQUEST' ? 400 : 409, $rRefused, $rH['node'], $rH['nonce']);
+		}
+		return ClusterReply::maced($rCode['res'], $rCtx, (string) json_encode([
+			'v' => 1, 'typ' => 'xcvm-enrol-status', 'state' => 'pending_approval', 'main_time_ms' => ClusterClock::nowMs(),
+		]));
 	}
 
 	private static function hello(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {

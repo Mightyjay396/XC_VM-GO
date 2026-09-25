@@ -64,6 +64,8 @@ SENSITIVE=(
 	"Domain/Cluster"
 	"Public/cluster"
 	"Cli/Commands/ClusterInitCommand.php"
+	"Cli/Commands/ClusterEnrolCodeCommand.php"
+	"Cli/Commands/ClusterEnrolApproveCommand.php"
 	"Cli/Commands/ServerEnrolCommand.php"
 	# Admin / reseller APIs and the MAIN-only endpoints (the LB nginx routes none
 	# of them; auth.php and probe.php need the stripped Domain/User).

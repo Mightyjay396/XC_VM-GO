@@ -81,6 +81,8 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/CacheHandlerCommand.php \
 	Cli/Commands/ServerInstallCommand.php \
 	Cli/Commands/ClusterInitCommand.php \
+	Cli/Commands/ClusterEnrolCodeCommand.php \
+	Cli/Commands/ClusterEnrolApproveCommand.php \
 	Cli/Commands/AgentBinaryCommand.php \
 	Cli/Commands/ServerEnrolCommand.php \
 	Cli/Commands/SshChannel.php \

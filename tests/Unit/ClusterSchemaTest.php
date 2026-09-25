@@ -3,13 +3,13 @@
 use PHPUnit\Framework\TestCase;
 
 /**
- * The cluster schema exists twice: as migrations 028–034 for upgrades and in
+ * The cluster schema exists twice: as migrations 028–036 for upgrades and in
  * database.sql for fresh installs. Both were loaded into MariaDB 10.11 and
  * compared column by column when written; this test keeps them from drifting
  * where CI has no database.
  */
 final class ClusterSchemaTest extends TestCase {
-	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes', '035_add_cluster_epoch_eph'];
+	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes', '035_add_cluster_epoch_eph', '036_add_cluster_enrol_request_eph'];
 
 	private function src(string $rPath): string {
 		return (string) file_get_contents(dirname(__DIR__, 2) . '/src/' . $rPath);

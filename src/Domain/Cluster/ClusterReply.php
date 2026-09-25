@@ -35,4 +35,29 @@ final class ClusterReply {
 			'body' => $rBody,
 		];
 	}
+
+	/**
+	 * A pre-token reply under an enrolment code: the JSON body in the clear
+	 * (it holds nothing secret; a token inside is sealed to the node's key),
+	 * MAC'd under K_res and bound to the request like a session reply.
+	 *
+	 * @param array<string, string> $rHeaders Extra headers (a panel signature).
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	public static function maced(string $rKey, string $rRequestContext, string $rBody, array $rHeaders = [], int $rStatus = 200): array {
+		$rTs = ClusterClock::nowMs();
+		$rNonce = random_bytes(16);
+		$rContext = Canonical::response($rRequestContext, $rStatus, 'application/json', $rTs, $rNonce);
+		return [
+			'status' => $rStatus,
+			'headers' => [
+				'Content-Type' => 'application/json',
+				Canonical::H_TS => (string) $rTs,
+				Canonical::H_NONCE => bin2hex($rNonce),
+				Canonical::H_SIG => bin2hex(Canonical::mac($rKey, $rContext, $rBody)),
+				'Cache-Control' => 'no-store',
+			] + $rHeaders,
+			'body' => $rBody,
+		];
+	}
 }

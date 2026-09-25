@@ -277,6 +277,7 @@ CREATE TABLE IF NOT EXISTS `cluster_enrol_requests` (
   `node_uuid` char(36) COLLATE utf8_unicode_ci NOT NULL,
   `node_sign_pub` binary(32) NOT NULL,
   `node_box_pub` binary(32) NOT NULL,
+  `agent_eph_pub` binary(32) DEFAULT NULL,
   `attest` varbinary(64) DEFAULT NULL,
   `state` varchar(20) COLLATE utf8_unicode_ci NOT NULL DEFAULT 'pending_approval',
   `created_at` int(11) NOT NULL,

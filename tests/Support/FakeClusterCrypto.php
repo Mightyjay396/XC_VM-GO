@@ -151,4 +151,20 @@ class FakeClusterCrypto extends ClusterCrypto {
 		}
 		return $rPlain;
 	}
+
+	/** Machine sealing, standing in for the extension's install_id-bound key. */
+	public function sealLocal(string $rPurpose, string $rData, string $rContext = ''): string {
+		$rNonce = random_bytes(12);
+		$rTag = '';
+		$rCipher = (string) openssl_encrypt($rData, 'aes-256-gcm', hash('sha256', 'fake-machine' . $this->rSeed, true), OPENSSL_RAW_DATA, $rNonce, $rTag, 'php:' . $rPurpose . "\0" . $rContext, 16);
+		return $rNonce . $rCipher . $rTag;
+	}
+
+	public function openLocal(string $rPurpose, string $rBlob, string $rContext = ''): string {
+		$rPlain = strlen($rBlob) < 28 ? false : openssl_decrypt(substr($rBlob, 12, -16), 'aes-256-gcm', hash('sha256', 'fake-machine' . $this->rSeed, true), OPENSSL_RAW_DATA, substr($rBlob, 0, 12), substr($rBlob, -16), 'php:' . $rPurpose . "\0" . $rContext);
+		if ($rPlain === false) {
+			throw new ClusterRefusedException('SEAL', 'cluster_open_local');
+		}
+		return $rPlain;
+	}
 }
