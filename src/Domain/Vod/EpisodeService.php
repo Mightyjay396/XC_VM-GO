@@ -175,7 +175,7 @@ class EpisodeService {
 				unset($rImportArray['properties']['movie_image']);
 			}
 
-			if ($rData['direct_proxy']) {
+			if ($rArray['direct_proxy']) {
 				$rExtension = pathinfo(explode('?', $rData['stream_source'])[0])['extension'];
 
 				if ($rExtension) {
