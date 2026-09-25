@@ -7,6 +7,7 @@ use XcVm\Cli\DaemonTrait;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Util\CounterRateSampler;
 use XcVm\Core\Util\SystemInfo;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -54,7 +55,7 @@ class WatchdogCommand implements CommandInterface {
 		$this->initRedisIfEnabled();
 
 		$this->rRefreshInterval = (intval(SettingsManager::get('online_capacity_interval')) ?: 10);
-		$rLastRequests = $rLastRequestsTime = $rPrevStat = null;
+		$rPrevStat = null;
 		$this->rLastCheck = null;
 
 		$rServers = ServerRepository::getAll();
@@ -97,11 +98,11 @@ class WatchdogCommand implements CommandInterface {
 			}
 
 			// ── Nginx stats ──────────────────────────────────────
-			$rNginx = explode("\n", file_get_contents('http://127.0.0.1:' . $rServers[SERVER_ID]['http_broadcast_port'] . '/nginx_status'));
-			list($rAccepted, $rHandled, $rRequests) = explode(' ', trim($rNginx[2]));
-			$rRequestsPerSecond = ($rLastRequests ? intval((floatval($rRequests) - floatval($rLastRequests)) / (time() - $rLastRequestsTime)) : 0);
-			$rLastRequests = $rRequests;
-			$rLastRequestsTime = time();
+			// Each pass is a fresh process (restartDaemon re-execs), so the
+			// previous request count is kept in a state file, not a variable.
+			$rNginx = explode("\n", (string) @file_get_contents('http://127.0.0.1:' . $rServers[SERVER_ID]['http_broadcast_port'] . '/nginx_status'));
+			$rRequests = explode(' ', trim($rNginx[2] ?? ''))[2] ?? null;
+			$rRequestsPerSecond = is_numeric($rRequests) ? (new CounterRateSampler(TMP_PATH . 'watchdog_nginx_requests.json'))->sample((float) $rRequests, time()) : 0;
 
 			// ── CPU stats ────────────────────────────────────────
 			$rStats = SystemInfo::getStats();

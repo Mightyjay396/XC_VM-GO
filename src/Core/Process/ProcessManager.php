@@ -647,6 +647,43 @@ class ProcessManager {
 	}
 
 	/**
+	 * Whether a raw /proc/PID/cmdline is a stream producer: ffmpeg itself, or
+	 * the fanout daemon's native remuxer (`xc_fanout remux`). Only the program
+	 * name is matched, so ffprobe (under bin/ffmpeg_bin/ as well), a shell
+	 * wrapper naming ffmpeg and the fanout daemon are not producers.
+	 *
+	 * @param string $rRawCmdline NUL-separated argv, as read from /proc
+	 * @return bool
+	 */
+	public static function isStreamProducerCmdline(string $rRawCmdline) {
+		$rArgv = explode("\0", $rRawCmdline);
+		$rProgram = basename($rArgv[0]);
+		if ($rProgram === 'ffmpeg') {
+			return true;
+		}
+		return $rProgram === 'xc_fanout' && ($rArgv[1] ?? '') === 'remux';
+	}
+
+	/**
+	 * Count the running stream producers (see isStreamProducerCmdline()) —
+	 * total_running_streams in the watchdog heartbeat. Reads /proc directly
+	 * instead of `ps ax | grep -c ffmpeg`.
+	 *
+	 * @param string $rProcRoot procfs mount point (overridable for tests)
+	 * @return int
+	 */
+	public static function countStreamProducers(string $rProcRoot = '/proc') {
+		$rCount = 0;
+		foreach (glob($rProcRoot . '/[0-9]*/cmdline') ?: [] as $rCmdFile) {
+			$rRaw = @file_get_contents($rCmdFile);
+			if ($rRaw && self::isStreamProducerCmdline($rRaw)) {
+				$rCount++;
+			}
+		}
+		return $rCount;
+	}
+
+	/**
 	 * PIDs of the live PHP-FPM workers of the xc_vm pool — the pids that
 	 * connection rows record (getmypid() in the stream endpoints). The watchdog
 	 * publishes them as servers.php_pids. FPM titles a worker "php-fpm: pool
