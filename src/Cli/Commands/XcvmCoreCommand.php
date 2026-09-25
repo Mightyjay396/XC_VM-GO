@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Updates\UpdateChannels;
 
 /**
@@ -30,7 +31,14 @@ use XcVm\Core\Updates\UpdateChannels;
  * Unlike the daemon (release assets), the extension lives in the repo *tree*, so
  * it is fetched raw from the default branch (rolling latest at a fixed path).
  *
- * Usage: `console.php xcvm_core` (add `force` to reinstall the same version).
+ * Cluster API pin: an update never replaces an extension whose cluster API
+ * this panel speaks (ClusterCryptoFactory::API_MIN..API_MAX) with one whose API
+ * it does not. The new `.so` is load-tested for that too, and rolled back.
+ * Versioned download paths, to install exactly a pinned version, are a
+ * prerequisite still open on the binaries repo.
+ *
+ * Usage: `console.php xcvm_core` (add `force` to reinstall the same version),
+ * `console.php xcvm_core status` (what is loaded, and its cluster API state).
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -54,6 +62,9 @@ class XcvmCoreCommand implements CommandInterface {
 	}
 
 	public function execute(array $rArgs): int {
+		if (in_array('status', $rArgs, true)) {
+			return $this->status();
+		}
 		if (posix_getpwuid(posix_geteuid())['name'] !== 'root') {
 			echo "Please run as root!\n";
 			return 1;
@@ -202,8 +213,10 @@ class XcvmCoreCommand implements CommandInterface {
 
 		// Load-test the freshly-installed .so in a fresh php process (it loads the
 		// extension from php.ini). A wrong-ABI/broken .so fails HERE, before we
-		// touch the running php-fpm workers — so we can roll back cleanly.
-		if (!$this->loads()) {
+		// touch the running php-fpm workers — so we can roll back cleanly. So does
+		// one that would drop the cluster API this panel speaks.
+		$rApiBefore = $this->clusterApi();
+		if (!$this->loads() || !self::clusterApiKept($rApiBefore, $this->clusterApi())) {
 			if ($rHadOld && is_file($rBackup)) {
 				@rename($rBackup, $rSo); // rollback
 			} else {
@@ -220,6 +233,37 @@ class XcvmCoreCommand implements CommandInterface {
 	}
 
 	/** True if a fresh php (as xc_vm) loads xcvm_core and it is the new API build. */
+	/**
+	 * Would swapping an extension with cluster API $rBefore for one with $rAfter
+	 * lose the API this panel speaks? (0 = no cluster API.) Keeping an
+	 * out-of-range or absent API as it was is allowed: nothing worked before.
+	 */
+	public static function clusterApiKept(int $rBefore, int $rAfter): bool {
+		$rInRange = static fn(int $rApi) => $rApi >= ClusterCryptoFactory::API_MIN && $rApi <= ClusterCryptoFactory::API_MAX;
+		return !$rInRange($rBefore) || $rInRange($rAfter);
+	}
+
+	/** The cluster API version of the extension a fresh php loads (0 = none). */
+	private function clusterApi(): int {
+		$rBin = defined('PHP_BIN') ? PHP_BIN : (BIN_PATH . 'php/bin/php');
+		$rCheck = 'echo (class_exists("XC_VM") && method_exists("XC_VM","cluster_info")) ? intval(XC_VM::cluster_info()["api"] ?? 0) : 0;';
+		return intval(trim((string) shell_exec('sudo -u xc_vm ' . escapeshellarg($rBin) . ' -r ' . escapeshellarg($rCheck) . ' 2>/dev/null')));
+	}
+
+	/** `console.php xcvm_core status`: the loaded extension and its cluster API. */
+	private function status(): int {
+		$rStatus = ClusterCryptoFactory::status();
+		echo 'xcvm_core: ' . (phpversion('xcvm_core') ?: 'not loaded') . "\n";
+		echo 'cluster API: ' . ($rStatus['api'] ?? 'none') . ' (panel speaks ' . $rStatus['range'] . ') -> ' . ($rStatus['available'] ? 'usable' : 'unavailable: ' . $rStatus['reason']) . "\n";
+		if ($rStatus['available']) {
+			$rInfo = \XC_VM::cluster_info();
+			echo 'root: ' . (!empty($rInfo['initialised']) ? 'initialised, fingerprint ' . bin2hex((string) ($rInfo['panel_fp'] ?? '')) : 'not initialised (' . ($rInfo['root_error'] ?? '') . ')') . "\n";
+			echo 'licence binding: ' . (!empty($rInfo['licensed']) ? 'kid ' . $rInfo['kid'] : 'none (token issue refused)') . "\n";
+			echo 'clock: ' . (!empty($rInfo['clock_ok']) ? 'ok' : 'ROLLED BACK - cluster calls refuse') . "\n";
+		}
+		return $rStatus['available'] ? 0 : 2;
+	}
+
 	private function loads(): bool {
 		$rBin = defined('PHP_BIN') ? PHP_BIN : (BIN_PATH . 'php/bin/php');
 		$rCheck = 'echo (extension_loaded("xcvm_core") && method_exists("XC_VM","config_set_redis")) ? "OK" : "NO";';
