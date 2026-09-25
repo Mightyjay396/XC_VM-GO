@@ -321,7 +321,9 @@ if ($rChannelInfo) {
 	// connection id, segment auth and the heartbeat file consistent. TS/VOD keep
 	// their per-request random uuid.
 	if ($rExtension === "m3u8") {
-		$rTokenData["uuid"] = ConnectionTracker::hlsConnectionKey($rIsHMAC, $rIdentifier, $rUserInfo["id"], $rStreamID, $rIP, $rUserAgent);
+		// HMAC/external-device streams have no real user id in $rUserInfo (0 is a
+		// safe placeholder: hlsConnectionKey() only uses $rUserId in the non-HMAC branch).
+		$rTokenData["uuid"] = ConnectionTracker::hlsConnectionKey($rIsHMAC, $rIdentifier, $rUserInfo["id"] ?? 0, $rStreamID, $rIP, $rUserAgent);
 	}
 
 	// Shared connection context for ConnectionTracker::createLive(); the HLS
