@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\LogSink;
 
 /**
  * StreamsLogsCronJob — streams logs cron job
@@ -40,19 +41,17 @@ class StreamsLogsCronJob implements CommandInterface {
 			return 0;
 		}
 
-		$rQuery = rtrim($this->parseLog($rLog), ',');
-		if (!empty($rQuery)) {
-			$db->query('INSERT INTO `streams_logs` (`stream_id`,`server_id`,`action`,`source`,`date`) VALUES ' . $rQuery . ';');
-		}
+		LogSink::write('stream', $this->parseLog($rLog), $db);
 		unlink($rLog);
 
 		return 0;
 	}
 
-	private function parseLog(string $rLog): string {
-		$rQuery = '';
+	/** @return list<array<string, mixed>> streams_logs rows. */
+	private function parseLog(string $rLog): array {
+		$rRows = [];
 		if (!file_exists($rLog)) {
-			return $rQuery;
+			return $rRows;
 		}
 
 		$rFP = fopen($rLog, 'r');
@@ -63,11 +62,11 @@ class StreamsLogsCronJob implements CommandInterface {
 				if (!$rLine['stream_id']) {
 					continue;
 				}
-				$rQuery .= '(' . intval($rLine['stream_id']) . ',' . SERVER_ID . ",'" . addslashes($rLine['action']) . "','" . addslashes($rLine['source']) . "','" . addslashes($rLine['time']) . "'),";
+				$rRows[] = ['stream_id' => intval($rLine['stream_id']), 'server_id' => SERVER_ID, 'action' => (string) $rLine['action'], 'source' => (string) $rLine['source'], 'date' => (string) $rLine['time']];
 			}
 		}
 		fclose($rFP);
 
-		return $rQuery;
+		return $rRows;
 	}
 }

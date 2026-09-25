@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\LogSink;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -113,14 +114,15 @@ class LinesLogsCronJob implements CommandInterface {
 
 	/** Insert one batch into `lines_logs`. */
 	private function insertBatch(array $rRows): int {
-		$db = self::db();
-		$rQuery = '';
-
+		$rColumns = LogSink::TYPES['client'][1];
+		$rMapped = [];
 		foreach ($rRows as $rLine) {
-			$rQuery .= '(' . implode(',', array_map(static fn($rKey) => $db->escape((string) ($rLine[$rKey] ?? '')), self::KEYS)) . '),';
+			// Spool keys map onto the columns in order (action → client_status,
+			// user_ip → ip, time → date); a missing key is written as ''.
+			$rMapped[] = array_combine($rColumns, array_map(static fn($rKey) => (string) ($rLine[$rKey] ?? ''), self::KEYS));
 		}
 
-		if (!$db->query('INSERT INTO `lines_logs` (`stream_id`,`user_id`,`client_status`,`query_string`,`user_agent`,`ip`,`extra_data`,`date`) VALUES ' . rtrim($rQuery, ',') . ';')) {
+		if (!LogSink::write('client', $rMapped, self::db())) {
 			return 0;
 		}
 

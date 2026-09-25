@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Config\SettingsManager;
 
 /**
@@ -41,35 +42,30 @@ class ErrorsCronJob implements CommandInterface {
 		return 0;
 	}
 
-	private function sqlValue($value, bool $isNumeric = false): string {
-		global $db;
-
+	/** Empty → NULL; numeric columns as int (NULL when not numeric). */
+	private function sqlValue($value, bool $isNumeric = false): string|int|null {
 		if ($value === null || $value === '') {
-			return 'NULL';
+			return null;
 		}
 		if ($isNumeric) {
-			if (!is_numeric($value)) {
-				return 'NULL';
-			}
-			return (string) ((int) $value);
+			return is_numeric($value) ? (int) $value : null;
 		}
-		return $db->escape($value);
+		return (string) $value;
 	}
 
-	private function parseLog(string $logFile): string {
-		global $db;
-
+	/** @return list<array<string, mixed>> panel_logs rows, deduplicated. */
+	private function parseLog(string $logFile): array {
 		if (!file_exists($logFile)) {
-			return '';
+			return [];
 		}
 
 		$fp = fopen($logFile, 'r');
 		if (!$fp) {
-			return '';
+			return [];
 		}
 
 		$hashes = [];
-		$query = '';
+		$rows = [];
 
 		while (!feof($fp)) {
 			$line = trim(fgets($fp));
@@ -124,24 +120,23 @@ class ErrorsCronJob implements CommandInterface {
 			}
 			$hashes[$hash] = true;
 
-			$query .= sprintf(
-				"(%d,%s,%s,%s,%s,%s,%s,%s,%s,%s),",
-				$rLogServerID,
-				$this->sqlValue($rLogType),
-				$this->sqlValue($rLogMessage),
-				$this->sqlValue($rLogExtra),
-				$this->sqlValue($rLogLine, true),
-				$this->sqlValue($rLogTime, true),
-				$this->sqlValue($rLogFile),
-				$this->sqlValue($rLogEnv),
-				$this->sqlValue($rLogVersion),
-				$this->sqlValue($hash)
-			);
+			$rows[] = [
+				'server_id'   => $rLogServerID,
+				'type'        => $this->sqlValue($rLogType),
+				'log_message' => $this->sqlValue($rLogMessage),
+				'log_extra'   => $this->sqlValue($rLogExtra),
+				'line'        => $this->sqlValue($rLogLine, true),
+				'date'        => $this->sqlValue($rLogTime, true),
+				'file'        => $this->sqlValue($rLogFile),
+				'env'         => $this->sqlValue($rLogEnv),
+				'version'     => $this->sqlValue($rLogVersion),
+				'unique'      => $hash,
+			];
 		}
 
 		fclose($fp);
 
-		return rtrim($query, ',');
+		return $rows;
 	}
 
 	private function inArray(array $needles, string $haystack): bool {
@@ -156,7 +151,7 @@ class ErrorsCronJob implements CommandInterface {
 	private function loadCron(array $rIgnoreErrors): void {
 		global $db;
 
-		$rQuery = '';
+		$rErrorRows = [];
 		foreach ([STREAMS_PATH] as $rPath) {
 			if ($rHandle = opendir($rPath)) {
 				while (false !== ($fileEntry = readdir($rHandle))) {
@@ -171,7 +166,7 @@ class ErrorsCronJob implements CommandInterface {
 								$rError = trim((string) $rError);
 								if (!empty($rError) && !$this->inArray($rIgnoreErrors, $rError)) {
 									if (SettingsManager::get('stream_logs_save')) {
-										$rQuery .= '(' . $rStreamID . ',' . SERVER_ID . ',' . time() . ',' . $db->escape($rError) . '),';
+										$rErrorRows[] = ['stream_id' => $rStreamID, 'server_id' => SERVER_ID, 'date' => time(), 'error' => $rError];
 									}
 								}
 							}
@@ -183,19 +178,15 @@ class ErrorsCronJob implements CommandInterface {
 			}
 		}
 
-		if (SettingsManager::get('stream_logs_save') && !empty($rQuery)) {
-			$rQuery = rtrim($rQuery, ',');
-			$db->query('INSERT INTO `streams_errors` (`stream_id`,`server_id`,`date`,`error`) VALUES ' . $rQuery . ';');
+		if (SettingsManager::get('stream_logs_save') && !empty($rErrorRows)) {
+			LogSink::write('stream_error', $rErrorRows, $db);
 		}
 
 		$rLog = LOGS_TMP_PATH . 'error_log.log';
 		if (file_exists($rLog)) {
-			$rQuery = $this->parseLog(LOGS_TMP_PATH . 'error_log.log');
-			if ($rQuery !== '') {
-				$rInserted = $db->query("INSERT IGNORE INTO panel_logs(server_id, type, log_message, log_extra, line, date, file, env, version, `unique`) VALUES {$rQuery};");
-				if ($rInserted) {
-					unlink($rLog);
-				}
+			$rRows = $this->parseLog(LOGS_TMP_PATH . 'error_log.log');
+			if (!empty($rRows) && LogSink::write('panel_error', $rRows, $db)) {
+				unlink($rLog);
 			}
 		}
 	}
