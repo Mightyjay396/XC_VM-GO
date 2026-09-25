@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
@@ -207,6 +208,9 @@ class CleanupCronJob implements CommandInterface {
 				}
 			}
 		}
+
+		// This node's connect audit: the cutover gate reads seven days of it.
+		ConnectAudit::prune(8);
 
 		// Retention of cluster-wide log tables: MAIN's job. Every LB used to
 		// run the same DELETEs against MAIN's database each minute.

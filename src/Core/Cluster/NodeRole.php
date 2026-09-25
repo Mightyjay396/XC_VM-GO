@@ -29,9 +29,30 @@ final class NodeRole {
 	/** @var (callable(): array<int, array<string, mixed>>)|null */
 	private static $rServers = null;
 
+	private static ?bool $rAudit = null;
+
 	public static function isMain(): bool {
 		$rServers = self::$rServers !== null ? (self::$rServers)() : ServerRepository::getAll();
 		return defined('SERVER_ID') && !empty($rServers[SERVER_ID]['is_main']);
+	}
+
+	/**
+	 * Is every connect to MAIN's MySQL/Redis to be recorded (ConnectAudit)?
+	 * On when `STORAGE_PATH/cluster/sql_audit/enabled` exists — the cluster
+	 * API sets it for nodes in hybrid mode — or under XCVM_CONNECT_AUDIT=1 for
+	 * a manual trace. Checked once per process.
+	 */
+	public static function auditConnects(): bool {
+		if (self::$rAudit === null) {
+			self::$rAudit = getenv('XCVM_CONNECT_AUDIT') === '1'
+				|| (defined('STORAGE_PATH') && is_file(STORAGE_PATH . 'cluster/sql_audit/enabled'));
+		}
+		return self::$rAudit;
+	}
+
+	/** Forget the cached auditConnects() answer (tests only). */
+	public static function resetAudit(?bool $rValue = null): void {
+		self::$rAudit = $rValue;
 	}
 
 	/**

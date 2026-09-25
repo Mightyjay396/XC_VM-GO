@@ -2,6 +2,7 @@
 
 namespace XcVm\Infrastructure\Redis;
 
+use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Infrastructure\Signal\SignalQueue;
 
 /**
@@ -130,6 +131,7 @@ class RedisManager {
 			}
 		}
 
+		ConnectAudit::record(ConnectAudit::REDIS);
 		try {
 			$rRedis = \XC_VM::redis_connect();
 			if (!is_object($rRedis)) {
