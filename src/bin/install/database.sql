@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS `cluster_nodes` (
   `state` varchar(16) COLLATE utf8_unicode_ci NOT NULL DEFAULT 'enrolling',
   `mode` tinyint(3) unsigned NOT NULL DEFAULT '0',
   `flows` int(10) unsigned NOT NULL DEFAULT '0',
+  `root_ready` tinyint(1) NOT NULL DEFAULT '0',
   `gen` int(10) unsigned NOT NULL DEFAULT '1',
   `node_sign_pub` binary(32) DEFAULT NULL,
   `node_box_pub` binary(32) DEFAULT NULL,

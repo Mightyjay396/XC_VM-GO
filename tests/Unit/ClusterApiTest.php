@@ -57,6 +57,7 @@ final class ClusterApiTest extends TestCase {
 			$this->rDb->exec($this->ddl((string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/' . $rName . '.sql')));
 		}
 		$this->rDb->exec('ALTER TABLE `cluster_node_epochs` ADD COLUMN `agent_eph_pub` binary(32) DEFAULT NULL');
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `root_ready` tinyint(1) NOT NULL DEFAULT 0');
 		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `status` int NOT NULL DEFAULT 0)');
 		$this->rDb->exec('INSERT INTO `servers` (`id`, `status`) VALUES (5, 0)');
 		DatabaseFactory::set($this->rDb);
@@ -740,6 +741,26 @@ final class ClusterApiTest extends TestCase {
 			$this->assertLessThan(3, microtime(true) - $rStart);
 			$rTypes = array_map(static fn($rC) => json_decode($rC['doc'], true)['type'], \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0));
 			$this->assertSame(['conn.kill_worker', 'node.rpc', 'node.rpc'], $rTypes);
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
+	public function testRootCommandsNeedTheNodesRootPin(): void {
+		$rKeys = $this->active();
+		SettingsManager::set($this->rSettings);
+		NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS]);
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		try {
+			$this->assertSame([false, false], \XcVm\Domain\Cluster\ClusterRoute::root(self::SID, ['action' => 'reload_nginx']), 'no pin reported: the signals table');
+			// The agent reports its root pin in a heartbeat.
+			[$rRes, $rCtx] = $this->call('heartbeat', ['root_ready' => true], 1, $rKeys);
+			$this->reply($rRes, $rCtx, $rKeys);
+			$this->assertSame(1, (int) NodeRegistry::byServer(self::SID)['root_ready']);
+			$this->assertSame([true, true], \XcVm\Domain\Cluster\ClusterRoute::root(self::SID, ['action' => 'reload_nginx']));
+			$rDoc = json_decode(\XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0)[0]['doc'], true);
+			$this->assertSame(['node.root', ['action' => 'reload_nginx']], [$rDoc['type'], $rDoc['args']]);
+			$this->assertSame(86400, $rDoc['exp'] - $rDoc['iat'], 'root commands live a day');
 		} finally {
 			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
 		}

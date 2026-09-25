@@ -22,6 +22,9 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
 
 <div class="d-flex align-items-center mb-4">
     <h4 class="mb-0"><?= $language::get('cluster_nodes'); ?></h4>
+    <?php if (!empty($clusterPanelFp)): ?>
+        <span class="ms-auto small text-body-secondary" title="<?= $language::get('cluster_panel_fp_help'); ?>"><?= $language::get('cluster_panel_fp'); ?>: <code class="user-select-all"><?= htmlspecialchars($clusterPanelFp, ENT_QUOTES); ?></code></span>
+    <?php endif; ?>
 </div>
 
 <?php if (!empty($clusterFlash)): ?>
@@ -84,6 +87,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('cluster_mode'); ?></th>
                     <th><?= $language::get('cluster_telemetry_flow'); ?></th>
                     <th><?= $language::get('cluster_commands_flow'); ?></th>
+                    <th><?= $language::get('cluster_root_pin'); ?></th>
                     <th><?= $language::get('cluster_epoch'); ?></th>
                     <th><?= $language::get('cluster_token_expires'); ?></th>
                     <th><?= $language::get('cluster_last_seen'); ?></th>
@@ -93,7 +97,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
             </thead>
             <tbody>
                 <?php if (empty($clusterNodes)): ?>
-                    <tr><td colspan="10" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
+                    <tr><td colspan="11" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($clusterNodes as $rNode): ?>
                     <tr>
@@ -121,6 +125,13 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                             <?php endif; ?>
                         </td>
                         <?php endforeach; ?>
+                        <td>
+                            <?php if (!empty($rNode['root_ready'])): ?>
+                                <span class="badge bg-label-success" title="<?= $language::get('cluster_root_ready_help'); ?>">root</span>
+                            <?php else: ?>
+                                <span class="text-body-secondary" title="<?= $language::get('cluster_root_missing_help'); ?>">—</span>
+                            <?php endif; ?>
+                        </td>
                         <td><?= (int) $rNode['epoch']; ?> <span class="small text-body-secondary">(gen <?= (int) $rNode['gen']; ?>)</span></td>
                         <td><?= $rWhen($rNode['token_exp'] === null ? null : (int) $rNode['token_exp']); ?></td>
                         <td><?= $rWhen($rNode['last_seen_at'] === null ? null : intdiv((int) $rNode['last_seen_at'], 1000)); ?></td>

@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\NodeRpc;
+use XcVm\Core\Cluster\RootPin;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Public\Controllers\Api\InternalApiController;
 
@@ -21,7 +22,10 @@ use XcVm\Public\Controllers\Api\InternalApiController;
  * - `conn.kill_worker {pid, rtmp}` — a viewer's PHP worker (this user's
  *   processes only) or an RTMP client.
  *
- * Runs as xc_vm; root actions are not taken here.
+ * - `node.root {action, …}` — handed to root (cluster:root) through the
+ *   root inbox; root checks it against its own pin of the panel key.
+ *
+ * Runs as xc_vm.
  *
  * Usage: `console.php cluster:exec < command.json`
  *
@@ -47,7 +51,47 @@ class ClusterExecCommand implements CommandInterface {
 			fwrite(STDERR, 'cluster:exec: ' . $rCmd . "\n");
 			return 2;
 		}
+		if (($rCmd['type'] ?? '') === 'node.root') {
+			return self::handToRoot($rIn, (int) ($rCmd['seq'] ?? 0));
+		}
 		return self::run($rCmd);
+	}
+
+	/** Seconds cluster:exec waits for cluster:root's result before acking "queued". */
+	public const ROOT_WAIT = 5;
+
+	/**
+	 * `node.root`: root runs it (cluster:root), after checking it against its
+	 * own pin of the panel key; here the signed command is only handed over,
+	 * and root's result waited for briefly.
+	 *
+	 * @param array<string, mixed> $rIn {doc, sig}
+	 */
+	public static function handToRoot(array $rIn, int $rSeq, int $rWait = self::ROOT_WAIT): int {
+		$rInbox = RootPin::inbox();
+		if ($rSeq <= 0 || !is_dir($rInbox)) {
+			fwrite(STDERR, "cluster:exec: no root inbox (the node's root pin is not in place)\n");
+			return 2;
+		}
+		$rTmp = $rInbox . '.' . $rSeq . '.tmp';
+		$rDone = $rInbox . $rSeq . '.done';
+		@unlink($rDone);
+		if (@file_put_contents($rTmp, (string) json_encode(['doc' => $rIn['doc'], 'sig' => $rIn['sig']])) === false || !@rename($rTmp, $rInbox . $rSeq . '.json')) {
+			fwrite(STDERR, "cluster:exec: cannot write the root inbox\n");
+			return 2;
+		}
+		$rDeadline = microtime(true) + $rWait;
+		while (microtime(true) < $rDeadline) {
+			if (is_file($rDone)) {
+				$rOut = json_decode((string) file_get_contents($rDone), true);
+				@unlink($rDone);
+				echo is_array($rOut) ? (string) ($rOut['result'] ?? '') : '';
+				return is_array($rOut) && !empty($rOut['ok']) ? 0 : 1;
+			}
+			usleep(200000);
+		}
+		echo json_encode(['queued' => true]);
+		return 0;
 	}
 
 	/**

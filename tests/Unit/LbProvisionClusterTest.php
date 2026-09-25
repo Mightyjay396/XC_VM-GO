@@ -148,6 +148,14 @@ final class LbProvisionClusterTest extends TestCase {
 		$this->assertLessThan($rInstallAt, $rProbeAt);
 		$this->assertStringContainsString('bin/xc_agent/run.sh', end($this->rCommands));
 		$this->assertStringContainsString(bin2hex($this->rCrypto->info()['panel_sign_pub']), $this->rCommands[$rProbeAt]);
+		// Root's own pin of the panel key, root-owned, before the agent starts.
+		$rPinAt = array_key_first(array_filter($this->rCommands, static fn($c) => str_contains($c, 'main_sign.pub')));
+		$this->assertNotNull($rPinAt, 'the root pin is written');
+		$this->assertStringContainsString("echo '" . bin2hex($this->rCrypto->info()['panel_sign_pub']) . "' | sudo tee '/etc/xc_vm/cluster/main_sign.pub'", $this->rCommands[$rPinAt]);
+		$this->assertStringContainsString('sudo chown root:root', $this->rCommands[$rPinAt]);
+		$this->assertStringContainsString("sudo rm -f '/etc/xc_vm/cluster/root.seq'", $this->rCommands[$rPinAt]);
+		$rRunAt = array_key_last(array_filter($this->rCommands, static fn($c) => str_contains($c, 'bash') && str_contains($c, 'run.sh')));
+		$this->assertLessThan($rRunAt, $rPinAt, 'pinned before the agent runs');
 	}
 
 	public function testUnreachableMainStopsBeforeAnyToken(): void {

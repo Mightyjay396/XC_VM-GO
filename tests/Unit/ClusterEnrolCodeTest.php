@@ -44,6 +44,7 @@ final class ClusterEnrolCodeTest extends TestCase {
 		}
 		$this->rDb->exec('ALTER TABLE `cluster_node_epochs` ADD COLUMN `agent_eph_pub` binary(32) DEFAULT NULL');
 		$this->rDb->exec('ALTER TABLE `cluster_enrol_requests` ADD COLUMN `agent_eph_pub` binary(32) DEFAULT NULL');
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `root_ready` tinyint(1) NOT NULL DEFAULT 0');
 		DatabaseFactory::set($this->rDb);
 		SettingsManager::set($this->rSettings);
 		$this->rCrypto = new FakeClusterCrypto();

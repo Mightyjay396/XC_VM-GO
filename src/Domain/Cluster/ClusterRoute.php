@@ -77,15 +77,37 @@ final class ClusterRoute {
 		}
 	}
 
+	/**
+	 * A root action (NodeActions): a signed `node.root` command, run on the
+	 * node by cluster:root after it checks the signature against its
+	 * root-owned pin of the panel key. Only for nodes that report that pin.
+	 *
+	 * @param array<string, mixed> $rPayload {action, …} as the signals row carried it
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function root(int $rServerID, array $rPayload): array {
+		$rCrypto = self::target($rServerID, true);
+		if ($rCrypto === null) {
+			return [false, false];
+		}
+		try {
+			CommandBus::enqueue($rCrypto, $rServerID, 'node.root', $rPayload);
+			return [true, true];
+		} catch (\Throwable) {
+			return [true, false];
+		}
+	}
+
 	/** Tests: supply the extension handle. Null restores the factory. */
 	public static function useCrypto(?callable $rFactory): void {
 		self::$rCrypto = $rFactory;
 	}
 
 	/** The extension, when this node takes commands; null for the legacy path. */
-	private static function target(int $rServerID): ?ClusterCrypto {
+	private static function target(int $rServerID, bool $rRoot = false): ?ClusterCrypto {
 		try {
-			if (empty(SettingsManager::get('cluster_api_enabled')) || !CommandBus::accepts(NodeRegistry::byServer($rServerID))) {
+			$rNode = empty(SettingsManager::get('cluster_api_enabled')) ? null : NodeRegistry::byServer($rServerID);
+			if (!($rRoot ? CommandBus::acceptsRoot($rNode) : CommandBus::accepts($rNode))) {
 				return null;
 			}
 			return self::$rCrypto !== null ? (self::$rCrypto)() : ClusterCryptoFactory::create();

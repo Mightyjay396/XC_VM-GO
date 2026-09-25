@@ -22,7 +22,7 @@ final class ClusterAdmin {
 	public static function nodes(array $rServers, int $rOfflineAfterSec): array {
 		$rReady = ClusterMeta::readyAtMs(); // its own query: before ours, not between query() and get_rows()
 		$rNow = ClusterClock::nowMs();
-		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
+		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rOut = [];
 		foreach (self::db()->get_rows() as $rRow) {
 			$rLastSeen = $rRow['last_seen_at'] === null ? null : (int) $rRow['last_seen_at'];
