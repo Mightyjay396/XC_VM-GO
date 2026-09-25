@@ -72,7 +72,7 @@ markdown_extensions:
 plugins:
   - search
   # English is the canonical source (docs/en). Russian (docs/ru) is generated at
-  # build time by tools/docs/translate.py and consumed here in folder structure.
+  # build time by tools/i18n/translate.py and consumed here in folder structure.
   - i18n:
       docs_structure: folder
       fallback_to_default: true

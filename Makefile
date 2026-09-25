@@ -512,14 +512,14 @@ DOCS_TRANSLATE_PROVIDER ?= translators
 $(DOCS_VENV)/bin/mkdocs:
 	@python3 -m venv $(DOCS_VENV)
 	@$(DOCS_VENV)/bin/pip install -q --upgrade pip
-	@$(DOCS_VENV)/bin/pip install -q -r docs/requirements.txt -r tools/docs/requirements.txt
+	@$(DOCS_VENV)/bin/pip install -q -r docs/requirements.txt -r tools/i18n/requirements.txt
 
 docs-venv: $(DOCS_VENV)/bin/mkdocs
 
 # Release-time step: regenerate the committed docs/ru from docs/en. Commit the
 # result with the release. NOT part of docs-build (CI builds the committed tree).
 docs-translate: $(DOCS_VENV)/bin/mkdocs
-	@DOCS_TRANSLATE_PROVIDER=$(DOCS_TRANSLATE_PROVIDER) $(DOCS_PY) -u tools/docs/translate.py --lang ru
+	@DOCS_TRANSLATE_PROVIDER=$(DOCS_TRANSLATE_PROVIDER) $(DOCS_PY) -u tools/i18n/translate.py --lang ru
 
 docs-build: $(DOCS_VENV)/bin/mkdocs
 	@$(DOCS_PY) -m mkdocs build --strict

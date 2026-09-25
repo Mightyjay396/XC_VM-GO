@@ -258,7 +258,7 @@ Docs are a **MkDocs Material** site under `docs/`.
 
 - **Edit only `docs/en/`** — English is the single source of truth.
 - **Never hand-edit `docs/ru/`** (or any other language tree): it is generated
-  from `docs/en` by `tools/docs/translate.py` and overwritten on the next run.
+  from `docs/en` by `tools/i18n/translate.py` and overwritten on the next run.
 - After editing English docs, verify with `make docs-build` (strict — fails on
   broken links/anchors). Preview locally with `make docs-serve`.
 - `docs/ru` is regenerated locally before a release (`make docs-translate`), not

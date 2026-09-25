@@ -74,7 +74,7 @@ All of these create the DI container and (for admin/CLI) call `ModuleLoader::boo
 
 The docs are a **MkDocs Material** site (`mkdocs.yml`), deployed to GitHub Pages by `.github/workflows/pages.yml`.
 
-- **Edit ONLY `docs/en/`** — English is the single source of truth. **Never hand-edit `docs/ru/` (or any other language tree)**: it is GENERATED from `docs/en` by `tools/docs/translate.py` and any manual change is overwritten on the next regeneration.
+- **Edit ONLY `docs/en/`** — English is the single source of truth. **Never hand-edit `docs/ru/` (or any other language tree)**: it is GENERATED from `docs/en` by `tools/i18n/translate.py` and any manual change is overwritten on the next regeneration.
 - `docs/ru` is committed but **regenerated locally before a release** (`make docs-translate`), not in CI — translation is slow, so `pages.yml` only builds the committed tree. See the "Regenerate translated documentation" step in `docs/en/builds/updates_checklist.md`.
 - After editing English docs: `make docs-build` (strict — fails on broken links/anchors) to verify; before a release also `make docs-translate` and commit the regenerated `docs/ru`.
 - The two nav tabs (User Guide / Developer Guide) are a `mkdocs.yml` `nav:` grouping only — do not move files to reorganize; edit `nav:` (and `nav_translations` for ru labels).

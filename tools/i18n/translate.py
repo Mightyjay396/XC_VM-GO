@@ -20,11 +20,11 @@ Design goals
 Usage
 -----
     DOCS_TRANSLATE_PROVIDER=noop \
-        python3 tools/docs/translate.py --lang ru
+        python3 tools/i18n/translate.py --lang ru
 
     # provider-specific:
     DOCS_TRANSLATE_PROVIDER=anthropic ANTHROPIC_API_KEY=... \
-        python3 tools/docs/translate.py --lang ru
+        python3 tools/i18n/translate.py --lang ru
 """
 
 from __future__ import annotations
