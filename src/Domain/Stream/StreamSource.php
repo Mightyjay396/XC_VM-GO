@@ -22,7 +22,7 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  */
 final class StreamSource {
 	/** @var (callable(string, int, array<string, mixed>): mixed)|null */
-	private static $rLoader = null;
+	private static $rLoader;
 
 	/**
 	 * The stream's row joined with its type (live or not) and transcode

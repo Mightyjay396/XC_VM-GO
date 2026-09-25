@@ -74,7 +74,7 @@ final class CommandBus {
 		$rNow = ClusterClock::now();
 		$rTtl ??= self::ttl($rType);
 		$rCmdID = bin2hex(random_bytes(16));
-		for ($rAttempt = 0; ; $rAttempt++) {
+		for ($rAttempt = 0;; $rAttempt++) {
 			self::db()->query('SELECT MAX(`seq`) AS `seq` FROM `cluster_commands` WHERE `server_id` = ?;', $rServerID);
 			$rSeq = max((int) (self::db()->get_row()['seq'] ?? 0), (int) $rNode['cmd_seq']) + 1;
 			$rDoc = (string) json_encode([

@@ -483,7 +483,7 @@ class LbInstallFlow {
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return true;
 		}
-		if ($rCrypto === null) {
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			try {
 				$rCrypto = ClusterCryptoFactory::create();
 			} catch (\Throwable $rE) {

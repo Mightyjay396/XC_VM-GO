@@ -106,7 +106,7 @@ class ServerAjaxController extends BaseAjaxController {
 			}
 
 			foreach ($this->normalizeServerIds() as $rID) {
-				NodeActions::rollback(intval($rID), (string) $rVersion, $db);
+				NodeActions::rollback(intval($rID), $rVersion, $db);
 			}
 
 			$this->ok();

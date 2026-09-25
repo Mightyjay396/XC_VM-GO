@@ -43,7 +43,7 @@ final class OpensslExtra {
 	 *
 	 * @var array{value:string,valid_until:int}|false|null
 	 */
-	private static $rPrevious = null;
+	private static $rPrevious;
 
 	/**
 	 * A fingerprint of $rValue that can be compared across nodes: an HMAC keyed

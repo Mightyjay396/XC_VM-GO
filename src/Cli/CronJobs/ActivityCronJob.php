@@ -103,7 +103,7 @@ class ActivityCronJob implements CommandInterface {
 		}
 		fclose($rFP);
 
-		if (!empty($rRows)) {
+		if ($rRows !== []) {
 			$rCount += $this->insertBatch($rRows);
 		}
 		unlink($rFile);

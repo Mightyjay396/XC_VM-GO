@@ -54,7 +54,7 @@ final class NodeRegistry {
 		$rNow = ClusterClock::now();
 		$rExisting = self::byServer($rServerID);
 		$rGen = $rExisting ? (int) $rExisting['gen'] + 1 : 1;
-		if ($rExisting && $rCrypto !== null) {
+		if ($rExisting && $rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			$rCrypto->nodeGen((string) $rExisting['node_uuid'], $rGen);
 		}
 		self::db()->query('DELETE FROM `cluster_node_epochs` WHERE `server_id` = ?;', $rServerID);
@@ -79,7 +79,7 @@ final class NodeRegistry {
 
 	/** @param array<string, mixed> $rFields */
 	public static function update(int $rServerID, array $rFields): void {
-		if (empty($rFields)) {
+		if ($rFields === []) {
 			return;
 		}
 		$rFields['updated_at'] = ClusterClock::now();

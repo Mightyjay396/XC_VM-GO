@@ -102,7 +102,7 @@ final class ClusterApi {
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
 		}
-		if ($rKeys === null) {
+		if (!$rKeys instanceof \XcVm\Core\Cluster\Crypto\SessionKeys) {
 			return DenialFactory::deny($rCrypto, 401, 'TOKEN_EXPIRED', $rH['node'], $rH['nonce']);
 		}
 
