@@ -9,6 +9,7 @@ use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
+use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Fanout\FanoutClient;
 
@@ -451,6 +452,26 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * The IP a line's first open connection came from, the one a second IP is
+	 * refused against (disallow_2nd_ip_con), from whichever store is in use.
+	 * HMAC identities have no line id, so neither path matches them.
+	 *
+	 * @param array<string, mixed> $rSettings Settings (reads redis_handler).
+	 */
+	public static function acceptedIP(array $rSettings, mixed $rLineID): ?string {
+		if ($rSettings['redis_handler']) {
+			// The LINE# set holds connection keys; the oldest connection's IP is
+			// read from the rows behind them.
+			return self::acceptedLineIP(RedisManager::instance(), $rLineID);
+		}
+		// The FIRST connection's IP is the accepted one, as the Redis path picks
+		// it (oldest date_start).
+		$db = self::store();
+		$db->query('SELECT `user_ip` FROM `lines_live` WHERE `user_id` = ? AND `hls_end` = 0 ORDER BY `activity_id` ASC LIMIT 1;', $rLineID);
+		return $db->num_rows() == 1 ? $db->get_row()['user_ip'] : null;
+	}
+
+	/**
 	 * The IP disallow_2nd_ip_con accepts for a line in Redis mode: its oldest
 	 * active connection's.
 	 *
@@ -853,6 +874,92 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * The database handle the stream endpoints use now: the one their global
+	 * `$db` holds, which connectLazy() and close() replace between a request's
+	 * steps. An instance injected at boot (setDb) may be the one they closed.
+	 */
+	private static function store(): object {
+		return DatabaseFactory::get() ?? self::db();
+	}
+
+	/**
+	 * Store a new connection: the one place a stream endpoint records a viewer
+	 * (the connection store seam, cluster plan Phase 6). $rRecord is the Redis
+	 * record (with `identity`); $rDbRow the `lines_live` columns this caller
+	 * writes on the table path, exactly as it wrote them before.
+	 *
+	 * @param array<string, mixed> $rSettings Settings (reads redis_handler).
+	 * @param array<string, mixed> $rRecord   Redis connection record.
+	 * @param array<string, mixed> $rDbRow    Column => value for `lines_live` (code-controlled keys).
+	 * @return mixed Truthy on success (Redis MULTI result or DB write result).
+	 */
+	public static function openRecord(array $rSettings, array $rRecord, array $rDbRow) {
+		if ($rSettings['redis_handler']) {
+			return self::createConnection($rRecord);
+		}
+		$rColumns = array_keys($rDbRow);
+		return self::store()->query('INSERT INTO `lines_live` (`' . implode('`,`', $rColumns) . '`) VALUES(' . implode(',', array_fill(0, count($rColumns), '?')) . ');', ...array_values($rDbRow));
+	}
+
+	/**
+	 * A viewer's connection by its uuid (Redis or `lines_live`). On the table
+	 * path, a request that finds none may be matched on other columns instead
+	 * (a player's HTTP Range request carries no uuid of its own).
+	 *
+	 * @param array<string, mixed> $rSettings  Settings (reads redis_handler).
+	 * @param string               $rColumns   Columns to select on the table path (code-controlled).
+	 * @param array<string, mixed> $rFallback  Column => value to match when the uuid finds nothing (table path only).
+	 * @return array<string, mixed>|null
+	 */
+	public static function findByUuid(array $rSettings, string $rUUID, string $rColumns, array $rFallback = []): ?array {
+		if ($rSettings['redis_handler']) {
+			$rConnection = self::getConnection($rUUID);
+			return is_array($rConnection) ? $rConnection : null;
+		}
+		$db = self::store();
+		$db->query('SELECT ' . $rColumns . ' FROM `lines_live` WHERE `uuid` = ?;', $rUUID);
+		if ($db->num_rows() > 0) {
+			return $db->get_row();
+		}
+		if ($rFallback === []) {
+			return null;
+		}
+		$db->query('SELECT ' . $rColumns . ' FROM `lines_live` WHERE ' . implode(' AND ', array_map(static fn($rColumn) => '`' . $rColumn . '` = ?', array_keys($rFallback))) . ';', ...array_values($rFallback));
+		return $db->num_rows() > 0 ? $db->get_row() : null;
+	}
+
+	/**
+	 * A long-running viewer's periodic check-in: refresh `hls_last_read` and
+	 * read back what the store now says (null when the connection is gone).
+	 * Opens and closes its own Redis / database connection, as the stream
+	 * endpoints' loops do between check-ins.
+	 *
+	 * @param array<string, mixed> $rSettings Settings (reads redis_handler).
+	 * @return array<string, mixed>|null The Redis record, or `pid` and `hls_end` on the table path.
+	 */
+	public static function heartbeat(array $rSettings, string $rUUID, int $rLastRead): ?array {
+		$rConnection = null;
+		if ($rSettings['redis_handler']) {
+			RedisManager::ensureConnected();
+			$rExisting = self::getConnection($rUUID);
+			if ($rExisting) {
+				$rConnection = self::updateConnection($rExisting, ['hls_last_read' => $rLastRead], 'open');
+			}
+			RedisManager::closeInstance();
+			return $rConnection ?: null;
+		}
+		DatabaseFactory::connectLazy();
+		$db = self::store();
+		$db->query('UPDATE `lines_live` SET `hls_last_read` = ? WHERE `uuid` = ?', $rLastRead, $rUUID);
+		$db->query('SELECT `pid`, `hls_end` FROM `lines_live` WHERE `uuid` = ?', $rUUID);
+		if ($db->num_rows() == 1) {
+			$rConnection = $db->get_row();
+		}
+		DatabaseFactory::close();
+		return $rConnection;
+	}
+
+	/**
 	 * Create a live connection record for the current request, transparently
 	 * targeting Redis or the `lines_live` table depending on redis_handler. The
 	 * HLS and TS delivery arms share this; they differ only in the container and
@@ -896,24 +1003,19 @@ class ConnectionTracker {
 			$rConn["identity"] = $rCtx["is_hmac"] . "_" . $rCtx["identifier"];
 		}
 
-		if ($rSettings["redis_handler"]) {
-			return self::createConnection($rConn);
+		if (!$rSettings["redis_handler"] && $rContainer === 'hls') {
+			// A re-auth after a close reuses the player's HLS uuid. Drop the closed row
+			// (its activity was logged when it was closed) — the reaper deletes by uuid
+			// and would otherwise take this new row down with the old one.
+			self::store()->query('DELETE FROM `lines_live` WHERE `uuid` = ? AND `hls_end` = 1;', $rConn["uuid"]);
 		}
 
-		$db = self::db();
-
-		// A re-auth after a close reuses the player's HLS uuid. Drop the closed row
-		// (its activity was logged when it was closed) — the reaper deletes by uuid
-		// and would otherwise take this new row down with the old one.
-		if ($rContainer === 'hls') {
-			$db->query('DELETE FROM `lines_live` WHERE `uuid` = ? AND `hls_end` = 1;', $rConn["uuid"]);
-		}
-
-		if (is_null($rCtx["is_hmac"])) {
-			return $db->query('INSERT INTO `lines_live` (`user_id`,`stream_id`,`server_id`,`proxy_id`,`user_agent`,`user_ip`,`container`,`pid`,`uuid`,`date_start`,`geoip_country_code`,`isp`,`external_device`,`hls_last_read`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', $rConn["user_id"], $rConn["stream_id"], $rConn["server_id"], $rConn["proxy_id"], $rConn["user_agent"], $rConn["user_ip"], $rConn["container"], $rConn["pid"], $rConn["uuid"], $rConn["date_start"], $rConn["geoip_country_code"], $rConn["isp"], $rConn["external_device"], $rConn["hls_last_read"]);
-		}
-
-		return $db->query('INSERT INTO `lines_live` (`hmac_id`,`hmac_identifier`,`stream_id`,`server_id`,`proxy_id`,`user_agent`,`user_ip`,`container`,`pid`,`uuid`,`date_start`,`geoip_country_code`,`isp`,`external_device`,`hls_last_read`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', $rConn["hmac_id"], $rConn["hmac_identifier"], $rConn["stream_id"], $rConn["server_id"], $rConn["proxy_id"], $rConn["user_agent"], $rConn["user_ip"], $rConn["container"], $rConn["pid"], $rConn["uuid"], $rConn["date_start"], $rConn["geoip_country_code"], $rConn["isp"], $rConn["external_device"], $rConn["hls_last_read"]);
+		$rOwner = is_null($rCtx["is_hmac"]) ? ["user_id" => $rConn["user_id"]] : ["hmac_id" => $rConn["hmac_id"], "hmac_identifier" => $rConn["hmac_identifier"]];
+		return self::openRecord($rSettings, $rConn, $rOwner + [
+			"stream_id" => $rConn["stream_id"], "server_id" => $rConn["server_id"], "proxy_id" => $rConn["proxy_id"], "user_agent" => $rConn["user_agent"],
+			"user_ip" => $rConn["user_ip"], "container" => $rConn["container"], "pid" => $rConn["pid"], "uuid" => $rConn["uuid"], "date_start" => $rConn["date_start"],
+			"geoip_country_code" => $rConn["geoip_country_code"], "isp" => $rConn["isp"], "external_device" => $rConn["external_device"], "hls_last_read" => $rConn["hls_last_read"],
+		]);
 	}
 
 	/**

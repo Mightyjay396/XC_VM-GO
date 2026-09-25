@@ -220,6 +220,11 @@ final class TestDb extends DatabaseHandler {
 		return true;
 	}
 
+	/** The in-memory connection is always up (DatabaseFactory::connectLazy() asks). */
+	public function ping(): bool {
+		return true;
+	}
+
 	public function clean_row($row) {
 		return $row;
 	}
