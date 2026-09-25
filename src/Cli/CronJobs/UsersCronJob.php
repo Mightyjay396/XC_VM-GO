@@ -138,7 +138,8 @@ class UsersCronJob implements CommandInterface {
 	 * Every node's live PHP-FPM worker pids, as its watchdog last published
 	 * them. Read here because ServerRepository::getAll() leaves php_pids out.
 	 *
-	 * @return array<int, int[]> Worker pids keyed by server id ([] = unknown).
+	 * @return array<int, int[]|null> Worker pids keyed by server id ([] = none
+	 *                                running, null = unknown).
 	 */
 	private function loadPHPPIDs(): array {
 		global $db;
@@ -147,10 +148,34 @@ class UsersCronJob implements CommandInterface {
 		$db->query('SELECT `id`, `php_pids` FROM `servers`;');
 		foreach ($db->get_rows() ?: [] as $rRow) {
 			$rDecodedPids = json_decode($rRow['php_pids'] ?? '', true);
-			$rPHPPIDs[intval($rRow['id'])] = is_array($rDecodedPids) ? array_map('intval', $rDecodedPids) : [];
+			$rPHPPIDs[intval($rRow['id'])] = is_array($rDecodedPids) ? array_map('intval', $rDecodedPids) : null;
 		}
 
 		return $rPHPPIDs;
+	}
+
+	/**
+	 * Redis mode on MAIN: whether a remote node's PHP-served connection still
+	 * has its FPM worker, judged from the worker pids the node's watchdog
+	 * published just before its last heartbeat. A pid assigned after that
+	 * snapshot cannot be in it, so it counts as running. A reused connection
+	 * keeps its original date_start while every pid write also stamps
+	 * hls_last_read (MAIN's clock, like last_check_ago), so the later of the
+	 * two is when the current pid was assigned.
+	 *
+	 * @param array      $rConnection Connection blob.
+	 * @param array|null $rServer     The node's servers row (null = unknown).
+	 * @param int[]|null $rPIDs       The node's worker pids (null = unknown).
+	 * @return bool False only when the worker is known to be gone.
+	 */
+	private function isRemoteWorkerRunning(array $rConnection, ?array $rServer, ?array $rPIDs): bool {
+		$rAssigned = max(intval($rConnection['date_start']), intval($rConnection['hls_last_read'] ?? 0));
+
+		if (!is_array($rPIDs) || !isset($rServer['last_check_ago']) || $rServer['last_check_ago'] - 1 < $rAssigned) {
+			return true;
+		}
+
+		return in_array(intval($rConnection['pid']), $rPIDs);
 	}
 
 	private function processDeletions($rDelete, $rDelStream = []) {
@@ -382,11 +407,7 @@ class UsersCronJob implements CommandInterface {
 										if ($rConnection['server_id'] == SERVER_ID) {
 											$rIsRunning = ProcessManager::isRunning($rConnection['pid'], 'php-fpm');
 										} else {
-											if ($rConnection['date_start'] <= $rServers[$rConnection['server_id']]['last_check_ago'] - 1 && 0 < count($rPHPPIDs[$rConnection['server_id']])) {
-												$rIsRunning = in_array(intval($rConnection['pid']), $rPHPPIDs[$rConnection['server_id']]);
-											} else {
-												$rIsRunning = true;
-											}
+											$rIsRunning = $this->isRemoteWorkerRunning($rConnection, $rServers[$rConnection['server_id']] ?? null, $rPHPPIDs[$rConnection['server_id']] ?? null);
 										}
 
 										if (($rConnection['hls_end'] == 1 && ($rStartTime - $rConnection['hls_last_read']) >= 300) || !$rIsRunning) {

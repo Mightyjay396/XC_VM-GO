@@ -653,11 +653,18 @@ class ProcessManager {
 	 * xc_vm" and its master "php-fpm: master process (...)", so the pool pid
 	 * files (masters only) would never match a connection.
 	 *
+	 * With pm = ondemand an idle pool has no workers, so an empty list is only
+	 * reported while an FPM master is visible. With no master either, FPM is
+	 * down or hidden from this scan, and the list is unknown.
+	 *
 	 * @param string $rProcRoot procfs mount point (overridable for tests)
-	 * @return array<int> Worker PIDs, ascending
+	 * @return array<int>|null Worker PIDs, ascending; null when unknown
 	 */
 	public static function phpFpmWorkerPIDs(string $rProcRoot = '/proc') {
-		$rPIDs = array_unique(self::findProcessPIDs(['php-fpm: pool xc_vm'], 0, $rProcRoot));
+		$rPIDs = self::findProcessPIDs(['php-fpm: pool xc_vm'], 0, $rProcRoot);
+		if (count($rPIDs) == 0 && count(self::findProcessPIDs(['php-fpm: master process'], 1, $rProcRoot)) == 0) {
+			return null;
+		}
 		sort($rPIDs);
 		return $rPIDs;
 	}

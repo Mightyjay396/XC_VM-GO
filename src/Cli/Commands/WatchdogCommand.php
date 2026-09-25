@@ -135,7 +135,7 @@ class WatchdogCommand implements CommandInterface {
 
 			// ── PHP PIDs ─────────────────────────────────────────
 			// FPM worker pids, which connection rows record; the pool pid
-			// files hold only the masters.
+			// files hold only the masters. null (unknown) is stored as "null".
 			$rPHPPIDs = ProcessManager::phpFpmWorkerPIDs();
 
 			// ── Update servers table ─────────────────────────────

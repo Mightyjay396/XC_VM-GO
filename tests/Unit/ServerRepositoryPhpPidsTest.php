@@ -3,6 +3,7 @@
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Public\Controllers\Api\AdminAPIWrapper;
 
 /**
  * ServerRepository::getAll keeps servers.php_pids out of the rows it returns
@@ -10,6 +11,9 @@ use XcVm\Domain\Server\ServerRepository;
  * one pid per live PHP-FPM worker of a node; only MAIN's cron:users needs it,
  * and it reads the column itself. (CacheCronJob's unset($rServers['php_pids'])
  * meant to strip it, but the map is keyed by server id, so it did nothing.)
+ * The Simple readers every admin request runs, and the admin API's
+ * get_server, leave it out too. getById keeps it: ServerService writes that
+ * row back whole with REPLACE.
  */
 final class ServerRepositoryPhpPidsTest extends TestCase {
 
@@ -21,7 +25,7 @@ final class ServerRepositoryPhpPidsTest extends TestCase {
 
 	protected function setUp(): void {
 		if (!defined('CACHE_TMP_PATH')) {
-			$rDir = sys_get_temp_dir() . '/xcvm_servers_cache_test/';
+			$rDir = dirname(__DIR__) . '/.tmp/cache/';
 			@mkdir($rDir, 0755, true);
 			define('CACHE_TMP_PATH', $rDir);
 		}
@@ -40,7 +44,9 @@ final class ServerRepositoryPhpPidsTest extends TestCase {
 		);
 		$this->db->query(
 			'INSERT INTO servers (id, server_type, is_main, enabled, status, last_check_ago, parent_id, domain_name, server_ip, private_ip, enable_https, http_broadcast_port, https_broadcast_port, rtmp_port, geoip_countries, isp_names, watchdog_data, php_pids, `order`) VALUES
-			 (7, 0, 0, 1, 1, ?, NULL, "", "10.0.0.7", "", 0, 80, 443, 8880, "", "", "{}", "[11,12]", 0);',
+			 (7, 0, 0, 1, 1, ?, NULL, "", "10.0.0.7", "", 0, 80, 443, 8880, "", "", "{}", "[11,12]", 0),
+			 (8, 1, 0, 1, 1, ?, "[7]", "", "10.0.0.8", "", 0, 80, 443, 8880, "", "", "{}", "[21]", 0);',
+			time(),
 			time()
 		);
 		ServerRepository::setDb($this->db);
@@ -48,6 +54,7 @@ final class ServerRepositoryPhpPidsTest extends TestCase {
 
 	protected function tearDown(): void {
 		FileCache::delCache('servers');
+		(new ReflectionProperty(ServerRepository::class, 'db'))->setValue(null, null);
 		$GLOBALS['rSettings'] = $this->rSettingsBackup;
 		if ($this->rSchemeBackup === null) {
 			unset($_SERVER['REQUEST_SCHEME']);
@@ -71,5 +78,31 @@ final class ServerRepositoryPhpPidsTest extends TestCase {
 		$this->assertIsArray($rCache);
 		$this->assertArrayHasKey(7, $rCache);
 		$this->assertArrayNotHasKey('php_pids', $rCache[7]);
+	}
+
+	public function testSimpleReadersCarryNoPhpPids(): void {
+		$rAll = ServerRepository::getAllSimple();
+		$rStreaming = ServerRepository::getStreamingSimple(null, 'all');
+		$rProxies = ServerRepository::getProxySimple();
+
+		$this->assertSame([7, 8], array_keys($rAll));
+		$this->assertArrayNotHasKey('php_pids', $rAll[7]);
+		$this->assertArrayNotHasKey('php_pids', $rAll[8]);
+		$this->assertSame([7], array_keys($rStreaming));
+		$this->assertArrayNotHasKey('php_pids', $rStreaming[7]);
+		$this->assertSame([8], array_keys($rProxies));
+		$this->assertArrayNotHasKey('php_pids', $rProxies[8]);
+	}
+
+	public function testAdminApiServerCarriesNoPhpPids(): void {
+		$rResult = AdminAPIWrapper::getServer(7);
+
+		$this->assertSame('STATUS_SUCCESS', $rResult['status']);
+		$this->assertSame('10.0.0.7', $rResult['data']['server_ip']);
+		$this->assertArrayNotHasKey('php_pids', $rResult['data']);
+	}
+
+	public function testGetByIdKeepsTheFullRow(): void {
+		$this->assertSame('[11,12]', ServerRepository::getById(7)['php_pids']);
 	}
 }
