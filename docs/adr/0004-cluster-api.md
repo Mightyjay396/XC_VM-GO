@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phases 6–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands; the connection registry, admission and snapshots are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -386,6 +386,17 @@ The Cluster Nodes page switches CONTENT.
 - `vod.analysis` per movie, with its props merged.
 
 Other event types are kept as they are, in order. The result replaces the oldest file, so it still goes first. MAIN applies it like any batch, so the plan's separate `p0_reset` event is not needed.
+
+### Connections (Phase 6, first increment): kills as commands
+
+Every kill MAIN sends to another node's viewers now travels as a signed command when that node takes commands. Before this, only `SignalDispatcher::kill` in MySQL mode did.
+
+- **Kills from `ConnectionTracker::redisSignal`.** In Redis mode, a worker pid becomes `conn.kill_worker`, and so does an RTMP client (`rtmp: true`). A daemon viewer's `drop_con` becomes `conn.drop {uuid}`. This covers every caller: `ConnectionTracker::closeConnection` and `ConnectionLimiter`'s kicks. Before, all of these went through `SIGNALS#<sid>` in MAIN's Redis.
+- **Drops from `dropDaemonViewer`.** In MySQL mode, the drop of a viewer on another node also becomes `conn.drop`, instead of a `drop_con` row in `signals`.
+
+**On the node.** `conn.drop` is restrictive, so it is signed without a licence. Repeat drops for the same viewer supersede each other through `dedupe_key`.
+
+The agent runs `conn.drop` in its own process: a `DELETE /connections/<uuid>` on the fanout's control socket. A 404 is acked as "not connected here". When the agent cannot reach the fanout, `cluster:exec` does the same through `FanoutClient::dropConnection`. A kill reaches the node within a poll step of the `commands` long-poll.
 
 ### Extension updates
 

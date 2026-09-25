@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Public\Controllers\Api\InternalApiController;
+use XcVm\Streaming\Fanout\FanoutClient;
 
 /**
  * ClusterExecCommand — run one MAIN command on this node (Phase 4). The agent
@@ -19,6 +20,8 @@ use XcVm\Public\Controllers\Api\InternalApiController;
  *
  * - `node.rpc {action, …}` — one of NodeRpc::ACTIONS, through the handlers of
  *   the legacy /api (InternalApiController::runCommand);
+ * - `conn.drop {uuid}` — a viewer the fanout serves (the agent runs it
+ *   itself when it can reach the fanout);
  * - `conn.kill_worker {pid, rtmp}` — a viewer's PHP worker (this user's
  *   processes only) or an RTMP client.
  *
@@ -141,6 +144,15 @@ class ClusterExecCommand implements CommandInterface {
 					posix_kill($rPID, 9);
 				}
 				echo json_encode(['result' => true]);
+				return 0;
+
+			case 'conn.drop':
+				// The agent drops daemon viewers itself; this is its fallback.
+				$rUUID = (string) ($rArgs['uuid'] ?? '');
+				if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+					return 2;
+				}
+				echo json_encode(['result' => FanoutClient::dropConnection($rUUID)]);
 				return 0;
 		}
 		fwrite(STDERR, "cluster:exec: unknown command type\n");

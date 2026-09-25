@@ -9,7 +9,7 @@ use XcVm\Core\Config\SettingsManager;
 /**
  * Where MAIN's calls to a node go: the node's signed command channel when its
  * COMMANDS flow is on, else the legacy transport (the caller's own). Core's
- * seams (NodeRpc, SignalDispatcher) ask here first; on load balancers this
+ * seams (NodeRpc, SignalDispatcher, ConnectionTracker's kills) ask here first; on load balancers this
  * class is not in the build and they go legacy directly.
  *
  * Every method returns [routed, result]: routed false means "not a command
@@ -71,6 +71,29 @@ final class ClusterRoute {
 		}
 		try {
 			CommandBus::enqueue($rCrypto, $rServerID, 'conn.kill_worker', ['pid' => $rPID, 'rtmp' => $rRTMP]);
+			return [true, true];
+		} catch (\Throwable) {
+			return [true, false];
+		}
+	}
+
+	/**
+	 * Drop a viewer the node's fanout serves (a daemon viewer has no worker
+	 * pid): `conn.drop {uuid}`, run by the node's agent against its fanout.
+	 * Restrictive, like kill.
+	 *
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function drop(int $rServerID, string $rUUID): array {
+		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+			return [false, false];
+		}
+		$rCrypto = self::target($rServerID);
+		if ($rCrypto === null) {
+			return [false, false];
+		}
+		try {
+			CommandBus::enqueue($rCrypto, $rServerID, 'conn.drop', ['uuid' => $rUUID], 'drop:' . $rUUID);
 			return [true, true];
 		} catch (\Throwable) {
 			return [true, false];
