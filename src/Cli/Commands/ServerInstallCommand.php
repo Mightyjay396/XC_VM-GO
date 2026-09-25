@@ -222,6 +222,9 @@ class ServerInstallCommand implements CommandInterface {
 
 		if ($rType == 2) {
 			LbInstallFlow::runStartup($rConn, $rRunSSH);
+			if (!LbInstallFlow::provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db)) {
+				return 1;
+			}
 		} else {
 			ProxyInstallFlow::runStartup($rConn, $rRunSSH);
 		}

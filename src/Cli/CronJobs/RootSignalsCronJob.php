@@ -346,6 +346,15 @@ class RootSignalsCronJob implements CommandInterface {
 			shell_exec('sudo -u xc_vm bash /home/xc_vm/bin/xc_fanout/run.sh >/dev/null 2>&1 &');
 		}
 
+		// Cluster agent keepalive, on nodes enrolled in the cluster API: the same
+		// supervisor pattern as xc_fanout. Not after MAIN stopped the node
+		// (run.sh writes `stopped` when the agent exits 3); re-enrolment clears it.
+		if (is_file('/home/xc_vm/config/cluster/agent.json') && is_file('/home/xc_vm/bin/xc_agent/run.sh') && !file_exists('/home/xc_vm/bin/xc_agent/stopped')
+			&& trim((string) shell_exec('pgrep -u xc_vm -f /home/xc_vm/bin/xc_agent/run.sh 2>/dev/null')) === ''
+		) {
+			shell_exec('sudo -u xc_vm bash /home/xc_vm/bin/xc_agent/run.sh >/dev/null 2>&1 &');
+		}
+
 		// xc_fanout daemon binary — keep it installed and current (ADR 0003,
 		// Phase G). Nothing else pulls it: not the installer, not UpdateCommand,
 		// so a fresh node/LB would never get the daemon and an updated panel would

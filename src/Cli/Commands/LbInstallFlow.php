@@ -2,9 +2,16 @@
 
 namespace XcVm\Cli\Commands;
 
+use XcVm\Core\Cluster\Crypto\ClusterCrypto;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Config\ConfigReader;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Updates\GitHubReleases;
+use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
+use XcVm\Domain\Cluster\ClusterPolicy;
+use XcVm\Domain\Cluster\EnrolmentService;
 
 class LbInstallFlow {
 	// Per-distribution package lists, mirrored from the MAIN installer (install -> PACKAGES),
@@ -441,5 +448,129 @@ class LbInstallFlow {
 		call_user_func($rRunSSH, $rConn, 'sudo rm -rf /tmp/xc_vm_bin.tar.gz /tmp/xc_vm_bin');
 		echo "Distribution-specific binaries installed successfully\n";
 		return true;
+	}
+
+	/** Where the agent and its state live on the node. */
+	public const AGENT_BIN = MAIN_HOME . 'bin/xc_agent/xc_agent';
+	public const AGENT_STATE = CONFIG_PATH . 'cluster/agent.json';
+
+	/**
+	 * Enrol the new LB in the cluster API (MAIN ↔ LB plan, section 6), over the
+	 * install's verified SSH session. Runs after runStartup(), when /home/xc_vm
+	 * belongs to xc_vm.
+	 *
+	 * With the API disabled, no extension, or no agent binary for the node's
+	 * arch, the node stays legacy (mode 0) and the install goes on: it can be
+	 * enrolled later. Otherwise:
+	 *
+	 * 1. push the SHA-256-verified agent from MAIN's cache;
+	 * 2. `xc_agent keygen` on the node — its private keys never leave it;
+	 * 3. `xc_agent probe` — the node checks MAIN's signed health with the panel
+	 *    key it got over SSH, before any token exists;
+	 * 4. MAIN mints epoch 1 (EnrolmentService::issueFirst);
+	 * 5. `xc_agent install` opens and checks the token, then the agent starts
+	 *    and completes enrolment itself (`enrol_complete`).
+	 *
+	 * Only a refusal by an available extension, or a node that cannot reach
+	 * MAIN's API, stops the install (status 4).
+	 *
+	 * @param callable|null $rAgentBinary fn(string $arch): ?string local agent path (tests; defaults to AgentBinaryCommand::cached)
+	 */
+	public static function provisionCluster($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?ClusterCrypto $rCrypto = null, ?callable $rAgentBinary = null): bool {
+		$rSettings = SettingsManager::getAll();
+		if (empty($rSettings['cluster_api_enabled'])) {
+			return true;
+		}
+		if ($rCrypto === null) {
+			try {
+				$rCrypto = ClusterCryptoFactory::create();
+			} catch (\Throwable $rE) {
+				echo 'Cluster API unavailable (' . $rE->getMessage() . "); the node stays legacy\n";
+				return true;
+			}
+		}
+		echo "Enrolling the node in the cluster API\n";
+		$rFail = static function (string $rWhy) use ($db, $rServerID): bool {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo $rWhy . "\n";
+			return false;
+		};
+
+		$rArch = ReleaseAsset::arch((string) call_user_func($rRunSSH, $rConn, 'uname -m')['output']);
+		$rLocal = $rArch === null ? null : call_user_func($rAgentBinary ?? static fn(string $rA) => AgentBinaryCommand::cached($rA), $rArch);
+		if ($rLocal === null) {
+			echo 'No xc_agent for this node (' . ($rArch ?? 'unsupported arch') . "); the node stays legacy and can be enrolled later\n";
+			return true;
+		}
+		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)));
+		if (!call_user_func($rSendFileSSH, $rConn, $rLocal, self::AGENT_BIN, false)) {
+			return $rFail('Failed to upload xc_agent! Exiting');
+		}
+		call_user_func($rRunSSH, $rConn, 'sudo rm -f ' . escapeshellarg(dirname(self::AGENT_BIN) . '/stopped') . ' && sudo chmod 0755 ' . escapeshellarg(self::AGENT_BIN) . ' && sudo chown -R xc_vm:xc_vm ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)) . ' && sudo chmod 0700 ' . escapeshellarg(dirname(self::AGENT_STATE)));
+		$rAgent = 'sudo -u xc_vm ' . escapeshellarg(self::AGENT_BIN);
+
+		$rUuid = self::uuid4();
+		$rOut = (string) call_user_func($rRunSSH, $rConn, $rAgent . ' keygen -state ' . escapeshellarg(self::AGENT_STATE) . ' -uuid ' . $rUuid)['output'];
+		$rKeys = json_decode(trim($rOut), true);
+		$rHex = static fn($rV) => is_string($rV) && preg_match('/^[0-9a-f]{64}$/', $rV) ? (string) hex2bin($rV) : null;
+		$rSign = $rHex($rKeys['sign_pub'] ?? null);
+		$rBox = $rHex($rKeys['box_pub'] ?? null);
+		$rEph = $rHex($rKeys['eph_pub'] ?? null);
+		if (($rKeys['node_uuid'] ?? null) !== $rUuid || $rSign === null || $rBox === null || $rEph === null) {
+			return $rFail('xc_agent keygen failed on the node! Exiting');
+		}
+		$rSas = EnrolmentService::sas($rUuid, $rSign, $rBox);
+		if (($rKeys['sas'] ?? null) !== $rSas) {
+			return $rFail('The node\'s keys do not match their SAS! Exiting');
+		}
+
+		$rMain = $rServers[SERVER_ID] ?? [];
+		$rPolicy = ClusterPolicy::current($rSettings, $rMain);
+		$rPanelPub = (string) ($rCrypto->info()['panel_sign_pub'] ?? '');
+		$rProbe = $rAgent . ' probe -panel-pub ' . bin2hex($rPanelPub);
+		foreach ($rPolicy['main_urls'] as $rUrl) {
+			$rProbe .= ' -url ' . escapeshellarg($rUrl);
+		}
+		$rProbed = call_user_func($rRunSSH, $rConn, $rProbe . ' 2>&1');
+		if (!str_starts_with(trim((string) $rProbed['output']), 'OK ')) {
+			return $rFail("The node cannot reach MAIN's cluster API (" . implode(', ', $rPolicy['main_urls']) . '): ' . trim((string) $rProbed['output']) . "\nOpen the cluster API port from the LB to MAIN, then reinstall. Exiting");
+		}
+
+		try {
+			$rFirst = EnrolmentService::issueFirst($rCrypto, $rServerID, $rUuid, $rSign, $rBox, $rEph, $rSettings, $rMain);
+		} catch (ClusterRefusedException $rE) {
+			return $rFail(($rE->reason() === 'LICENCE' ? 'CLUSTER_LICENCE_REQUIRED' : 'Cluster token refused: ' . $rE->reason()) . '! Exiting');
+		}
+		$rInstall = (string) json_encode([
+			'server_id' => $rServerID,
+			'panel_sign_pub' => base64_encode($rPanelPub),
+			'main_urls' => $rPolicy['main_urls'],
+			'policy_ver' => $rPolicy['policy_ver'],
+			'epoch' => 1,
+			'token_sealed' => base64_encode($rFirst['token_sealed']),
+		], JSON_UNESCAPED_SLASHES);
+		$rTmp = TMP_PATH . 'agent_install_' . $rServerID . '.json';
+		$rRemote = '/tmp/xc_agent_install_' . $rServerID . '.json';
+		file_put_contents($rTmp, $rInstall);
+		$rSent = call_user_func($rSendFileSSH, $rConn, $rTmp, $rRemote, false);
+		@unlink($rTmp);
+		if (!$rSent) {
+			return $rFail('Failed to upload the first cluster token! Exiting');
+		}
+		$rDone = call_user_func($rRunSSH, $rConn, 'sudo chown xc_vm:xc_vm ' . $rRemote . ' && ' . $rAgent . ' install -state ' . escapeshellarg(self::AGENT_STATE) . ' < ' . $rRemote . ' 2>&1; sudo rm -f ' . $rRemote);
+		if (trim((string) $rDone['output']) !== 'OK') {
+			return $rFail('xc_agent install failed on the node: ' . trim((string) $rDone['output']) . ' Exiting');
+		}
+		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm bash ' . escapeshellarg(MAIN_HOME . 'bin/xc_agent/run.sh') . ' >/dev/null 2>&1 &');
+		echo 'Node enrolled (uuid ' . $rUuid . ', SAS ' . $rSas . "); it finishes with enrol_complete within 30 minutes\n";
+		return true;
+	}
+
+	private static function uuid4(): string {
+		$rB = random_bytes(16);
+		$rB[6] = chr((ord($rB[6]) & 0x0f) | 0x40);
+		$rB[8] = chr((ord($rB[8]) & 0x3f) | 0x80);
+		$rH = bin2hex($rB);
+		return substr($rH, 0, 8) . '-' . substr($rH, 8, 4) . '-' . substr($rH, 12, 4) . '-' . substr($rH, 16, 4) . '-' . substr($rH, 20);
 	}
 }

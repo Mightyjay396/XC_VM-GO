@@ -33,6 +33,9 @@ class FakeClusterCrypto extends ClusterCrypto {
 
 	public bool $rInitialised = false;
 
+	/** Set to a reason code to make tokenIssue() refuse (LICENCE, …). */
+	public ?string $rRefuseIssue = null;
+
 	public function __construct() {
 		$this->rSeed = str_repeat("\x42", 32);
 		$this->rPrk = str_repeat("\x07", 32);
@@ -56,6 +59,9 @@ class FakeClusterCrypto extends ClusterCrypto {
 	}
 
 	public function tokenIssue(array $rParams): array {
+		if ($this->rRefuseIssue !== null) {
+			throw new ClusterRefusedException($this->rRefuseIssue, 'cluster_token_issue');
+		}
 		$rNow = \XcVm\Domain\Cluster\ClusterClock::now();
 		$rRotation = (int) $rParams['rotation_min'];
 		$rGrace = ClusterSettings::graceMin($rRotation);
