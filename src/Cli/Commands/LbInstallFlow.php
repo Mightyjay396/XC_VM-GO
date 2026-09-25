@@ -202,7 +202,7 @@ class LbInstallFlow {
 	 * @return bool False only when the upload failed.
 	 */
 	public static function provisionOpensslExtra($rConn, callable $rRunSSH, callable $rSendFileSSH, string $rLocalFile): bool {
-		call_user_func($rRunSSH, $rConn, 'sudo rm -f ' . CONFIG_PATH . 'openssl_extra');
+		call_user_func($rRunSSH, $rConn, 'sudo rm -f ' . CONFIG_PATH . 'openssl_extra ' . CONFIG_PATH . 'openssl_extra.prev');
 		if (!is_file($rLocalFile) || trim((string) @file_get_contents($rLocalFile)) === '') {
 			return true;
 		}

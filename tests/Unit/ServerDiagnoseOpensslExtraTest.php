@@ -38,6 +38,7 @@ final class ServerDiagnoseOpensslExtraTest extends TestCase {
 		$this->assertStringContainsString('[WARN]', $rOutput);
 		$this->assertCount(1, $rProblems);
 		$this->assertStringStartsWith('OPENSSL_EXTRA mismatch: tokens minted on MAIN are rejected by this node', $rProblems[0]);
+		$this->assertStringContainsString('server:sync-openssl-extra 2', $rProblems[0]);
 	}
 
 	public function testMatchingValuesPass(): void {

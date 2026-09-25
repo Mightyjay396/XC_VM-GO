@@ -65,6 +65,7 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/MigrateCommand.php \
 	Cli/Commands/CacheHandlerCommand.php \
 	Cli/Commands/ServerInstallCommand.php \
+	Cli/Commands/ServerSyncOpensslExtraCommand.php \
 	Cli/Commands/LbInstallFlow.php \
 	Cli/Commands/ProxyInstallFlow.php \
 	Cli/CronJobs/RootMysqlCronJob.php \

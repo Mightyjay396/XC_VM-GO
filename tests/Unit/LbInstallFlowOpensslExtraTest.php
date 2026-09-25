@@ -47,7 +47,7 @@ final class LbInstallFlowOpensslExtraTest extends TestCase {
 	}
 
 	private function clear(): array {
-		return ['run', 'sudo rm -f ' . CONFIG_PATH . 'openssl_extra'];
+		return ['run', 'sudo rm -f ' . CONFIG_PATH . 'openssl_extra ' . CONFIG_PATH . 'openssl_extra.prev'];
 	}
 
 	public function testShipsTheMainsValueAndLocksItDown(): void {

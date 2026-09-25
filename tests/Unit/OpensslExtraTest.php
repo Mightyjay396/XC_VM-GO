@@ -11,9 +11,9 @@ use XcVm\Core\Config\OpensslExtra;
  * servers.server_hardware, so the values can be compared without leaving the
  * node.
  *
- * previous: after a node switches to another value, the one it replaced is
- * kept for a short window, so tokens minted with it still open
- * (Encryption::readToken).
+ * install / previous: the root signal that brings an LB onto MAIN's value
+ * keeps the value it replaced for a short window, so tokens the LB minted with
+ * it still open (Encryption::readToken).
  */
 final class OpensslExtraTest extends TestCase {
 
@@ -57,6 +57,44 @@ final class OpensslExtraTest extends TestCase {
 		$this->assertNull(OpensslExtra::reportedFingerprint(['server_hardware' => 'not json']));
 		$this->assertNull(OpensslExtra::reportedFingerprint(['server_hardware' => null]));
 		$this->assertNull(OpensslExtra::reportedFingerprint([]));
+	}
+
+	public function testInstallWritesTheNewValueAndKeepsTheOldOneForTheWindow(): void {
+		$this->assertTrue(OpensslExtra::install('new-extra', $this->rDir, 1000));
+
+		$this->assertSame('new-extra', file_get_contents($this->rDir . 'openssl_extra'));
+		$this->assertSame(0600, fileperms($this->rDir . 'openssl_extra') & 0777);
+		$this->assertSame(['value' => OPENSSL_EXTRA, 'valid_until' => 1600], json_decode((string) file_get_contents($this->rDir . 'openssl_extra.prev'), true));
+		$this->assertSame(0600, fileperms($this->rDir . 'openssl_extra.prev') & 0777);
+		$this->assertSame(['openssl_extra', 'openssl_extra.prev'], array_values(array_diff(scandir($this->rDir), ['.', '..'])), 'no temporary file left behind');
+	}
+
+	public function testInstallReplacesAnExistingValue(): void {
+		file_put_contents($this->rDir . 'openssl_extra', 'stale-extra');
+
+		$this->assertTrue(OpensslExtra::install("  new-extra\n", $this->rDir, 1000, 60));
+
+		$this->assertSame('new-extra', file_get_contents($this->rDir . 'openssl_extra'));
+		$this->assertSame(1060, json_decode((string) file_get_contents($this->rDir . 'openssl_extra.prev'), true)['valid_until']);
+	}
+
+	/** Syncing a node that already holds the value must not cut short the window of an earlier change. */
+	public function testInstallingTheCurrentValueKeepsAnEarlierPreviousValue(): void {
+		$rEarlier = json_encode(['value' => 'older-extra', 'valid_until' => 1500]);
+		file_put_contents($this->rDir . 'openssl_extra.prev', $rEarlier);
+
+		$this->assertTrue(OpensslExtra::install(OPENSSL_EXTRA, $this->rDir, 1000));
+
+		$this->assertSame(OPENSSL_EXTRA, file_get_contents($this->rDir . 'openssl_extra'));
+		$this->assertSame($rEarlier, file_get_contents($this->rDir . 'openssl_extra.prev'));
+	}
+
+	public function testInstallRefusesAnEmptyValueOrAMissingDirectory(): void {
+		$this->assertFalse(OpensslExtra::install(" \n", $this->rDir, 1000));
+		$this->assertFileDoesNotExist($this->rDir . 'openssl_extra');
+		$this->assertFileDoesNotExist($this->rDir . 'openssl_extra.prev');
+
+		$this->assertFalse(OpensslExtra::install('new-extra', $this->rDir . 'missing/', 1000));
 	}
 
 	public function testThePreviousValueIsAcceptedUntilItsWindowCloses(): void {

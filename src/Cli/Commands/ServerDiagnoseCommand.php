@@ -292,7 +292,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 		$rOk = hash_equals($rMainPrint, $rNodePrint);
 		$this->line('OPENSSL_EXTRA', $rOk ? 'matches main' : 'MISMATCH with main', $rOk);
 		if (!$rOk) {
-			$rProblems[] = 'OPENSSL_EXTRA mismatch: tokens minted on MAIN are rejected by this node (playback redirected from the main fails).';
+			$rProblems[] = 'OPENSSL_EXTRA mismatch: tokens minted on MAIN are rejected by this node (playback redirected from the main fails). Repair it from the main: `php console.php server:sync-openssl-extra ' . intval($rServer['id'] ?? 0) . '`.';
 		}
 	}
 

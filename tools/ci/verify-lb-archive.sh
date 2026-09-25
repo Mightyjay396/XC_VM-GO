@@ -44,6 +44,7 @@ SENSITIVE=(
 	"Domain/Device"
 	# Install / provisioning commands and root-privileged cron jobs (file-level).
 	"Cli/Commands/ServerInstallCommand.php"
+	"Cli/Commands/ServerSyncOpensslExtraCommand.php"
 	"Cli/Commands/LbInstallFlow.php"
 	"Cli/Commands/ProxyInstallFlow.php"
 	"Cli/Commands/MigrateCommand.php"

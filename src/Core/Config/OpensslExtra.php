@@ -13,9 +13,10 @@ namespace XcVm\Core\Config;
  * provisioning shipped the file runs on the default.
  *
  * Each node publishes a fingerprint of its value (never the value) in
- * servers.server_hardware, so server:diagnose can compare them. After a node
- * switches to another value, Encryption::readToken() still opens, for a short
- * window, tokens made with the value it replaced (previous()).
+ * servers.server_hardware, so server:diagnose can compare them. When a root
+ * signal (server:sync-openssl-extra) brings a node onto MAIN's value, install()
+ * keeps the value it replaces for a short window, and Encryption::readToken()
+ * falls back to it, so tokens the node minted just before the switch still open.
  *
  * @package XC_VM_Core_Config
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -26,6 +27,9 @@ namespace XcVm\Core\Config;
 final class OpensslExtra {
 	/** The server_hardware key cron:servers publishes the fingerprint under. */
 	public const HARDWARE_KEY = 'openssl_extra_fp';
+
+	/** Seconds a replaced value still opens tokens. */
+	public const PREVIOUS_WINDOW = 600;
 
 	/** Test seam: the previous-value file to read instead of CONFIG_PATH's. */
 	private static ?string $rPrevFile = null;
@@ -55,6 +59,33 @@ final class OpensslExtra {
 		$rPrint = is_array($rHardware) ? ($rHardware[self::HARDWARE_KEY] ?? null) : null;
 
 		return (is_string($rPrint) && $rPrint !== '') ? $rPrint : null;
+	}
+
+	/**
+	 * Make $rNew this node's OPENSSL_EXTRA.
+	 *
+	 * The value in use now (OPENSSL_EXTRA) is first written to openssl_extra.prev,
+	 * accepted until $rNow + $rWindow; then openssl_extra is replaced atomically.
+	 * Installing the value already in use leaves an earlier .prev alone. Both
+	 * files are 0600 and take the owner of $rConfigDir, so php-fpm can read them
+	 * the moment they appear.
+	 *
+	 * @param string $rConfigDir The config directory, with a trailing slash.
+	 */
+	public static function install(string $rNew, string $rConfigDir, int $rNow, int $rWindow = self::PREVIOUS_WINDOW): bool {
+		$rNew = trim($rNew);
+		if ($rNew === '') {
+			return false;
+		}
+		$rCurrent = defined('OPENSSL_EXTRA') ? (string) OPENSSL_EXTRA : '';
+		if ($rCurrent !== '' && $rCurrent !== $rNew) {
+			if (!self::writeFile($rConfigDir . 'openssl_extra.prev', json_encode(['value' => $rCurrent, 'valid_until' => $rNow + $rWindow]))) {
+				return false;
+			}
+		}
+		self::$rPrevious = null;
+
+		return self::writeFile($rConfigDir . 'openssl_extra', $rNew);
 	}
 
 	/**
@@ -103,5 +134,30 @@ final class OpensslExtra {
 		}
 
 		return ['value' => $rData['value'], 'valid_until' => intval($rData['valid_until'])];
+	}
+
+	/** Write $rData to $rPath through a 0600 temporary file owned like its directory, then rename it into place. */
+	private static function writeFile(string $rPath, string $rData): bool {
+		$rDir = dirname($rPath);
+		$rTmp = $rPath . '.' . getmypid() . '.tmp';
+		@unlink($rTmp);
+		if (!@touch($rTmp)) {
+			return false;
+		}
+		@chmod($rTmp, 0600);
+		$rOwner = @fileowner($rDir);
+		$rGroup = @filegroup($rDir);
+		if ($rOwner !== false) {
+			@chown($rTmp, $rOwner);
+		}
+		if ($rGroup !== false) {
+			@chgrp($rTmp, $rGroup);
+		}
+		if (@file_put_contents($rTmp, $rData) !== strlen($rData) || !@rename($rTmp, $rPath)) {
+			@unlink($rTmp);
+			return false;
+		}
+
+		return true;
 	}
 }
