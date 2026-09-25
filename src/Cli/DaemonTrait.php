@@ -78,6 +78,7 @@ trait DaemonTrait {
 	/**
 	 * Проверить нужно ли обновить настройки (по таймеру).
 	 */
+
 	/**
 	 * Reload the servers list at most this often. Often enough that routing,
 	 * ports and node state are never more than five seconds stale; rare

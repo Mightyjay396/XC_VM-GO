@@ -2,6 +2,8 @@
 
 namespace XcVm\Domain\Server;
 
+use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Localization\Translator;
@@ -41,6 +43,43 @@ class SettingsService {
 	}
 
 	/**
+	 * Run the cluster keys of a settings save through ClusterSettings::normalize()
+	 * in place. Returns the translated refusals (empty when the values stand).
+	 *
+	 * @param array<string, mixed> $rArray Settings about to be written (modified in place).
+	 * @return list<string>
+	 */
+	private static function normalizeCluster(array &$rArray, object $db): array {
+		$rKeys = array_intersect_key($rArray, array_flip(ClusterSettings::keys()));
+		if (empty($rKeys)) {
+			return [];
+		}
+		$rMain = [];
+		foreach (ServerRepository::getAll() as $rServer) {
+			if (!empty($rServer['is_main'])) {
+				$rMain = $rServer;
+				break;
+			}
+		}
+		$rCurrent = SettingsManager::getAll();
+		$rEnv = [
+			'extension_ok' => ClusterCryptoFactory::available(),
+			'api_mode_allowed' => false, // Phase 9 (cutover) enables API-only new nodes
+		];
+		if (($rKeys['cluster_transport'] ?? null) === 'https_required') {
+			$rEnv['https_ok'] = ClusterSettings::httpsSelfProbe($rMain)['ok'];
+			// Until telemetry reports each node's HTTPS (Phase 3), any active node blocks it.
+			$rEnv['nodes_https_ok'] = !$db->query("SELECT 1 FROM `cluster_nodes` WHERE `state` = 'active' LIMIT 1;") || $db->num_rows() === 0;
+		}
+		[$rValues, $rErrors] = ClusterSettings::normalize($rKeys, $rMain, $rCurrent, $rEnv);
+		foreach (array_keys($rKeys) as $rKey) {
+			unset($rArray[$rKey]);
+		}
+		$rArray = array_merge($rArray, $rValues);
+		return array_map(static fn($rError) => Translator::get($rError[1]), $rErrors);
+	}
+
+	/**
 	 * Save general panel settings from admin form data.
 	 *
 	 * @param array $rData Submitted settings.
@@ -56,7 +95,7 @@ class SettingsService {
 		$rArray = QueryHelper::verifyPostTable('settings', $rData, true);
 
 		$isFullForm = isset($rData['submit_settings']);
-		foreach (['php_loopback', 'restreamer_bypass_proxy', 'request_prebuffer', 'modal_edit', 'group_buttons', 'enable_search', 'on_demand_checker', 'ondemand_balance_equal', 'disable_mag_token', 'allow_cdn_access', 'dts_legacy_ffmpeg', 'mag_load_all_channels', 'disable_xmltv_restreamer', 'disable_playlist_restreamer', 'ffmpeg_warnings', 'reseller_ssl_domain', 'extract_subtitles', 'show_category_duplicates', 'vod_sort_newest', 'header_stats', 'mag_keep_extension', 'keep_protocol', 'read_native_hls', 'player_allow_playlist', 'player_allow_bouquet', 'player_hide_incompatible', 'player_allow_hevc', 'force_epg_timezone', 'check_vod', 'ignore_keyframes', 'save_login_logs', 'save_restart_logs', 'mag_legacy_redirect', 'restrict_playlists', 'monitor_connection_status', 'kill_rogue_ffmpeg', 'show_images', 'on_demand_instant_off', 'on_demand_failure_exit', 'playlist_from_mysql', 'ignore_invalid_users', 'legacy_mag_auth', 'ministra_allow_blank', 'block_proxies', 'block_streaming_servers', 'ip_subnet_match', 'auto_unban_ip', 'debug_show_errors', 'enable_debug_stalker', 'restart_php_fpm', 'restream_deny_unauthorised', 'api_probe', 'legacy_panel_api', 'hide_failures', 'verify_host', 'encrypt_playlist', 'encrypt_playlist_restreamer', 'mag_disable_ssl', 'legacy_get', 'legacy_xmltv', 'save_closed_connection', 'show_tickets', 'stream_logs_save', 'client_logs_save', 'streams_grouped', 'cloudflare', 'cleanup', 'dashboard_stats', 'dashboard_status', 'dashboard_map', 'dashboard_display_alt', 'recaptcha_enable', 'ip_logout', 'disable_player_api', 'disable_playlist', 'disable_xmltv', 'disable_enigma2', 'disable_ministra', 'enable_isp_lock', 'block_svp', 'disable_ts', 'disable_ts_allow_restream', 'disable_hls', 'disable_hls_allow_restream', 'disable_rtmp', 'disable_rtmp_allow_restream', 'case_sensitive_line', 'county_override_1st', 'disallow_2nd_ip_con', 'use_mdomain_in_lists', 'encrypt_hls', 'disallow_empty_user_agents', 'detect_restream_block_user', 'download_images', 'api_redirect', 'use_buffer', 'audio_restart_loss', 'show_isps', 'priority_backup', 'rtmp_random', 'show_connected_video', 'show_not_on_air_video', 'show_banned_video', 'show_expired_video', 'show_expiring_video', 'show_all_category_mag', 'always_enabled_subtitles', 'enable_connection_problem_indication', 'show_tv_channel_logo', 'show_channel_logo_in_preview', 'disable_trial', 'restrict_same_ip', 'fanout_source_insecure', 'fanout_enabled', 'fanout_supervise', 'secure_stream_tokens', 'js_navigate'] as $rSetting) {
+		foreach (['php_loopback', 'restreamer_bypass_proxy', 'request_prebuffer', 'modal_edit', 'group_buttons', 'enable_search', 'on_demand_checker', 'ondemand_balance_equal', 'disable_mag_token', 'allow_cdn_access', 'dts_legacy_ffmpeg', 'mag_load_all_channels', 'disable_xmltv_restreamer', 'disable_playlist_restreamer', 'ffmpeg_warnings', 'reseller_ssl_domain', 'extract_subtitles', 'show_category_duplicates', 'vod_sort_newest', 'header_stats', 'mag_keep_extension', 'keep_protocol', 'read_native_hls', 'player_allow_playlist', 'player_allow_bouquet', 'player_hide_incompatible', 'player_allow_hevc', 'force_epg_timezone', 'check_vod', 'ignore_keyframes', 'save_login_logs', 'save_restart_logs', 'mag_legacy_redirect', 'restrict_playlists', 'monitor_connection_status', 'kill_rogue_ffmpeg', 'show_images', 'on_demand_instant_off', 'on_demand_failure_exit', 'playlist_from_mysql', 'ignore_invalid_users', 'legacy_mag_auth', 'ministra_allow_blank', 'block_proxies', 'block_streaming_servers', 'ip_subnet_match', 'auto_unban_ip', 'debug_show_errors', 'enable_debug_stalker', 'restart_php_fpm', 'restream_deny_unauthorised', 'api_probe', 'legacy_panel_api', 'hide_failures', 'verify_host', 'encrypt_playlist', 'encrypt_playlist_restreamer', 'mag_disable_ssl', 'legacy_get', 'legacy_xmltv', 'save_closed_connection', 'show_tickets', 'stream_logs_save', 'client_logs_save', 'streams_grouped', 'cloudflare', 'cleanup', 'dashboard_stats', 'dashboard_status', 'dashboard_map', 'dashboard_display_alt', 'recaptcha_enable', 'ip_logout', 'disable_player_api', 'disable_playlist', 'disable_xmltv', 'disable_enigma2', 'disable_ministra', 'enable_isp_lock', 'block_svp', 'disable_ts', 'disable_ts_allow_restream', 'disable_hls', 'disable_hls_allow_restream', 'disable_rtmp', 'disable_rtmp_allow_restream', 'case_sensitive_line', 'county_override_1st', 'disallow_2nd_ip_con', 'use_mdomain_in_lists', 'encrypt_hls', 'disallow_empty_user_agents', 'detect_restream_block_user', 'download_images', 'api_redirect', 'use_buffer', 'audio_restart_loss', 'show_isps', 'priority_backup', 'rtmp_random', 'show_connected_video', 'show_not_on_air_video', 'show_banned_video', 'show_expired_video', 'show_expiring_video', 'show_all_category_mag', 'always_enabled_subtitles', 'enable_connection_problem_indication', 'show_tv_channel_logo', 'show_channel_logo_in_preview', 'disable_trial', 'restrict_same_ip', 'fanout_source_insecure', 'fanout_enabled', 'fanout_supervise', 'secure_stream_tokens', 'cluster_api_enabled', 'cluster_kill_on_line_disable', 'js_navigate'] as $rSetting) {
 			if (isset($rData[$rSetting])) {
 				$rArray[$rSetting] = 1;
 			} elseif ($isFullForm) {
@@ -76,6 +115,14 @@ class SettingsService {
 			} else {
 				$rArray['fanout_idle_buffer_ratio'] = $rRatio;
 			}
+		}
+
+		// Cluster API settings: clamped, and refused where clamping would change
+		// what the admin meant (a taken port, HTTPS required without HTTPS, …).
+		// A refusal fails the whole save, so nothing is half-applied.
+		$rClusterErrors = self::normalizeCluster($rArray, $db);
+		if (!empty($rClusterErrors)) {
+			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => implode(' ', $rClusterErrors)]];
 		}
 
 		if (!isset($rData['allowed_stb_types_for_local_recording'])) {

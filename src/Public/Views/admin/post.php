@@ -139,6 +139,11 @@ if (1 < $rICount) { ?>
 					showError("Required entry fields have not been populated. Please check the form.");
 					return;
 				}
+				// Settings refusals (e.g. the cluster API checks) carry their own message.
+				if (window.rCurrentPage == "settings" && rData.data && rData.data.message) {
+					showError($("<div>").text(rData.data.message).html());
+					return;
+				}
 				switch (window.rCurrentPage) {
 					case "record":
 						switch (window.rErrors[rData.status]) {

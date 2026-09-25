@@ -1,0 +1,21 @@
+-- Reverse 028_add_cluster_settings.sql.
+ALTER TABLE `settings`
+      DROP COLUMN IF EXISTS `cluster_api_enabled`,
+      DROP COLUMN IF EXISTS `cluster_api_port`,
+      DROP COLUMN IF EXISTS `cluster_main_host`,
+      DROP COLUMN IF EXISTS `cluster_transport`,
+      DROP COLUMN IF EXISTS `lb_token_rotation_min`,
+      DROP COLUMN IF EXISTS `lb_revocation_mode`,
+      DROP COLUMN IF EXISTS `lb_partition_tolerance_h`,
+      DROP COLUMN IF EXISTS `lb_fence_drain_min`,
+      DROP COLUMN IF EXISTS `lb_telemetry_interval_sec`,
+      DROP COLUMN IF EXISTS `cluster_offline_after_sec`,
+      DROP COLUMN IF EXISTS `cluster_orphan_conn_ttl_sec`,
+      DROP COLUMN IF EXISTS `lb_offline_admission`,
+      DROP COLUMN IF EXISTS `cluster_kill_on_line_disable`,
+      DROP COLUMN IF EXISTS `cluster_ingest_concurrency`,
+      DROP COLUMN IF EXISTS `lb_new_node_mode`,
+      DROP COLUMN IF EXISTS `lb_scan_roots`,
+      DROP COLUMN IF EXISTS `servers_stats_retention_days`,
+      DROP COLUMN IF EXISTS `cluster_audit_retention_days`,
+      DROP COLUMN IF EXISTS `cluster_agent_upgrade_parallel`;

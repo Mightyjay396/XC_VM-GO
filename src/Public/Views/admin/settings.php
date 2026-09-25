@@ -1,6 +1,8 @@
 <?php
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Reference\DeviceReference;
 use XcVm\Core\Reference\GeoReference;
 use XcVm\Core\Reference\LocaleReference;
@@ -11,6 +13,7 @@ use XcVm\Core\Util\AdminHelpers;
 use XcVm\Streaming\Codec\FfmpegBinaries; // Code reconstruction by Squallp
 use XcVm\Streaming\Fanout\FanoutConfig;
 use XcVm\Core\Util\LayoutRenderer;
+use XcVm\Domain\Server\ServerRepository;
 ?>
 
 <form id="settings-form">
@@ -69,6 +72,7 @@ use XcVm\Core\Util\LayoutRenderer;
 				<li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#security" role="tab"><i class="icon-base ti tabler-shield-lock me-1"></i><span class="d-none d-sm-inline"><?= $language::get('security') ?></span></button></li>
 				<li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#api" role="tab"><i class="icon-base ti tabler-code me-1"></i><span class="d-none d-sm-inline">API</span></button></li>
 				<li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#streaming" role="tab"><i class="icon-base ti tabler-player-play me-1"></i><span class="d-none d-sm-inline"><?= $language::get('streaming') ?></span></button></li>
+				<li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#cluster" role="tab"><i class="icon-base ti tabler-topology-star-3 me-1"></i><span class="d-none d-sm-inline"><?= $language::get('cluster') ?></span></button></li>
 				<li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#mag" role="tab"><i class="icon-base ti tabler-device-tablet me-1"></i><span class="d-none d-sm-inline"><?= $language::get('mag') ?></span></button></li>
 				<li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#webplayer" role="tab"><i class="icon-base ti tabler-world me-1"></i><span class="d-none d-sm-inline">Web Player</span></button></li>
 				<li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#logs" role="tab"><i class="icon-base ti tabler-file-text me-1"></i><span class="d-none d-sm-inline"><?= $language::get('logs') ?></span></button></li>
@@ -2262,6 +2266,90 @@ use XcVm\Core\Util\LayoutRenderer;
 											</option>
 										<?php endforeach; ?>
 									</select>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<div class="tab-pane fade" id="cluster" role="tabpanel">
+					<?php
+					// MAIN <-> LB cluster API (Phase 1: settings only; nothing runs until
+					// cluster_api_enabled and `cluster:init`). Values are clamped on save by
+					// ClusterSettings::normalize(); refusals come back as an error message.
+					$rClusterStatus = ClusterCryptoFactory::status();
+					$rClusterMain = [];
+					foreach (ServerRepository::getAll() as $rClusterServer) {
+						if (!empty($rClusterServer['is_main'])) {
+							$rClusterMain = $rClusterServer;
+							break;
+						}
+					}
+					$rClusterHttps = ClusterSettings::httpsSelfProbe($rClusterMain, 2);
+					$rClusterRotation = intval($rSettings['lb_token_rotation_min'] ?? 60);
+					[$rClusterRoots] = ClusterSettings::scanRoots($rSettings['lb_scan_roots'] ?? '');
+					$rClusterFields = [
+						['cluster_api_enabled', 'switch', 'Fleet switch for the LB API. Takes effect only after `console.php cluster:init`; needs xcvm_core with the cluster API.'],
+						['cluster_api_port', 'number', '0 serves the API on MAIN\'s HTTP broadcast port. Otherwise a dedicated plain-HTTP port (1024-65535) that MAIN does not already use.'],
+						['cluster_main_host', 'text', 'Optional DNS name for MAIN in the URLs nodes use; survives MAIN IP changes.'],
+						['cluster_transport', ['auto', 'http', 'https_preferred', 'https_required'], 'auto: HTTPS first when MAIN\'s certificate verifies. https_required is refused unless HTTPS works for MAIN and every active node.'],
+						['lb_token_rotation_min', 'number', 'Node token rotation interval L in minutes (5-1440). Grace = clamp(L/4, 5, 60).'],
+						['lb_revocation_mode', ['graceful', 'hard'], 'How fast nodes stop after a licence revocation: graceful (~85 min) or hard (~12 min).'],
+						['lb_partition_tolerance_h', 'number', 'Hours a node keeps serving after its token expires while MAIN is unreachable (0-24).'],
+						['lb_fence_drain_min', 'number', 'Minutes existing sessions drain after a node is fenced (0-60).'],
+						['lb_telemetry_interval_sec', 'number', 'Heartbeat interval in seconds (1-3).'],
+						['cluster_offline_after_sec', 'number', 'Silence before MAIN marks a node offline (10-300 s).'],
+						['cluster_orphan_conn_ttl_sec', 'number', 'Silence before MAIN purges a node\'s connections (30-3600 s).'],
+						['lb_offline_admission', ['local', 'allow', 'deny'], 'Admission of viewers without a MAIN reservation while MAIN is unreachable.'],
+						['cluster_kill_on_line_disable', 'switch', 'Drop live sessions when a line is disabled, banned or expires.'],
+						['cluster_ingest_concurrency', 'number', 'Concurrent ingest permits on MAIN (1-64); half are reserved for P0 events.'],
+						['lb_new_node_mode', ['legacy', 'api'], 'Mode of newly installed LBs. api (no database access) is available from the cutover phase.'],
+						['servers_stats_retention_days', 'number', 'Days of servers_stats kept (1-365).'],
+						['cluster_audit_retention_days', 'number', 'Days of cluster audit log kept (1-365).'],
+						['cluster_agent_upgrade_parallel', 'number', 'Nodes updated at once during staged agent/core/fanout updates (1-50).'],
+					];
+					?>
+					<div class="row">
+						<div class="col-12">
+							<h5 class="card-title mb-4"><?= $language::get('cluster') ?></h5>
+							<div class="alert <?= $rClusterStatus['available'] ? 'alert-info' : 'alert-warning' ?> mb-4">
+								<?= $language::get('cluster_extension') ?>:
+								<strong><?= $rClusterStatus['available'] ? 'xcvm_core ' . htmlspecialchars((string) $rClusterStatus['ext_version']) . ' (API ' . intval($rClusterStatus['api']) . ')' : htmlspecialchars($language::get('cluster_extension_missing')) . ' (' . htmlspecialchars($rClusterStatus['reason']) . ')' ?></strong>
+								&middot; <?= $language::get('cluster_api_range') ?> <?= htmlspecialchars($rClusterStatus['range']) ?>
+								&middot; <?= $language::get('cluster_https_available') ?>:
+								<strong><?= $rClusterHttps['ok'] ? $language::get('label_yes') : $language::get('label_no') . ' (' . htmlspecialchars($rClusterHttps['reason']) . ')' ?></strong>
+								&middot; <?= $language::get('cluster_grace') ?>: <strong><?= ClusterSettings::graceMin($rClusterRotation) ?> min</strong>
+							</div>
+							<?php foreach (array_chunk($rClusterFields, 2) as $rClusterPair): ?>
+								<div class="form-group row mb-4">
+									<?php foreach ($rClusterPair as [$rKey, $rType, $rHelp]): ?>
+										<label class="col-md-4 col-form-label" for="<?= $rKey ?>">
+											<?= $language::get($rKey) ?>
+											<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= htmlspecialchars($rHelp) ?>"></i>
+										</label>
+										<div class="col-md-2">
+											<?php if ($rType === 'switch'): ?>
+												<div class="form-check form-switch"><input name="<?= $rKey ?>" id="<?= $rKey ?>" type="checkbox" <?= intval($rSettings[$rKey] ?? ClusterSettings::INTS[$rKey][0]) === 1 ? 'checked' : '' ?> class="form-check-input"></div>
+											<?php elseif (is_array($rType)): ?>
+												<select name="<?= $rKey ?>" id="<?= $rKey ?>" class="form-control" data-toggle="select2">
+													<?php foreach ($rType as $rValue): ?>
+														<option value="<?= $rValue ?>" <?= ($rSettings[$rKey] ?? ClusterSettings::ENUMS[$rKey][0]) === $rValue ? 'selected' : '' ?>><?= $rValue ?></option>
+													<?php endforeach; ?>
+												</select>
+											<?php else: ?>
+												<input type="text" class="form-control text-center" id="<?= $rKey ?>" name="<?= $rKey ?>" value="<?= htmlspecialchars((string) ($rSettings[$rKey] ?? '')) ?>">
+											<?php endif; ?>
+										</div>
+									<?php endforeach; ?>
+								</div>
+							<?php endforeach; ?>
+							<div class="form-group row mb-4">
+								<label class="col-md-4 col-form-label" for="lb_scan_roots">
+									<?= $language::get('lb_scan_roots') ?>
+									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="Absolute directories the scandir RPC may list on a node, one per line."></i>
+								</label>
+								<div class="col-md-8">
+									<textarea class="form-control" rows="3" id="lb_scan_roots" name="lb_scan_roots"><?= htmlspecialchars(implode("\n", $rClusterRoots)) ?></textarea>
 								</div>
 							</div>
 						</div>
