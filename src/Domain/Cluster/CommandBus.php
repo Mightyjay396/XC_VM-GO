@@ -31,10 +31,10 @@ final class CommandBus {
 	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'default' => 600];
 
 	/** Types this increment carries. */
-	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop'];
+	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop', 'conn.close'];
 
 	/** Types that are restrictive (always signable); the extension decides, this is informational. */
-	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
+	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
 
 	/** Largest result stored from an ack. */
 	public const MAX_RESULT = 65536;

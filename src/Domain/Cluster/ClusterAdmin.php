@@ -22,6 +22,7 @@ final class ClusterAdmin {
 		'logs' => NodeRegistry::FLOW_LOGS,
 		'streams' => NodeRegistry::FLOW_STREAMS,
 		'content' => NodeRegistry::FLOW_CONTENT,
+		'connections' => NodeRegistry::FLOW_CONNECTIONS,
 	];
 
 	/**
@@ -121,6 +122,8 @@ final class ClusterAdmin {
 				case 'streams_off':
 				case 'content_on':
 				case 'content_off':
+				case 'connections_on':
+				case 'connections_off':
 					$rNode = NodeRegistry::byServer($rServerID);
 					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
 						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
@@ -128,6 +131,10 @@ final class ClusterAdmin {
 					[$rName, $rSwitch] = explode('_', $rAction);
 					$rBit = self::FLOW_BITS[$rName];
 					$rFlows = $rSwitch === 'on' ? ((int) $rNode['flows'] | $rBit) : ((int) $rNode['flows'] & ~$rBit);
+					if (!NodeRegistry::validFlows($rFlows)) {
+						// CONNECTIONS needs COMMANDS and STREAMS; DATAPLANE needs STREAMS and CONTENT.
+						return ['type' => 'warning', 'message' => 'cluster_flow_needs'];
+					}
 					NodeRegistry::update($rServerID, ['flows' => $rFlows]);
 					ClusterAudit::log('node.flows', $rServerID, ['flows' => $rFlows, 'was' => (int) $rNode['flows']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
 					return ['type' => 'success', 'message' => 'cluster_' . $rName . '_' . $rSwitch . '_done'];

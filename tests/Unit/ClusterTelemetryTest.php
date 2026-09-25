@@ -174,6 +174,12 @@ final class ClusterTelemetryTest extends TestCase {
 		$rAct('logs_off');
 		$this->assertSame(NodeRegistry::FLOW_STREAMS, (int) NodeRegistry::byServer(5)['flows']);
 		$this->assertSame('cluster_content_on_done', $rAct('content_on')['message']);
+		$this->assertSame('cluster_flow_needs', $rAct('connections_on')['message'], 'Connections needs Commands too');
+		$rAct('commands_on');
+		$this->assertSame('cluster_connections_on_done', $rAct('connections_on')['message']);
+		$this->assertSame('cluster_flow_needs', $rAct('commands_off')['message'], 'and cannot lose it while on');
+		$rAct('connections_off');
+		$rAct('commands_off');
 		$this->assertSame(NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT, (int) NodeRegistry::byServer(5)['flows']);
 		NodeRegistry::update(5, ['state' => 'revoked']);
 		$this->assertSame('cluster_not_enrolled', $rAct('telemetry_on')['message']);

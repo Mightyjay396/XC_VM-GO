@@ -101,6 +101,37 @@ final class ClusterRoute {
 	}
 
 	/**
+	 * A close MAIN made to a connection another node's agent holds (its
+	 * CONNECTIONS flow is on): `conn.close {uuid, remove}`, so the node's
+	 * registry follows and a kicked HLS viewer is not resumed there.
+	 *
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function closeConnection(int $rServerID, string $rUUID, bool $rRemove): array {
+		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+			return [false, false];
+		}
+		try {
+			$rNode = NodeRegistry::byServer($rServerID);
+		} catch (\Throwable) {
+			return [false, false];
+		}
+		if ($rNode === null || ((int) $rNode['flows'] & NodeRegistry::FLOW_CONNECTIONS) === 0) {
+			return [false, false];
+		}
+		$rCrypto = self::target($rServerID);
+		if ($rCrypto === null) {
+			return [false, false];
+		}
+		try {
+			CommandBus::enqueue($rCrypto, $rServerID, 'conn.close', ['uuid' => $rUUID, 'remove' => $rRemove], 'close:' . $rUUID);
+			return [true, true];
+		} catch (\Throwable) {
+			return [true, false];
+		}
+	}
+
+	/**
 	 * A root action (NodeActions): a signed `node.root` command, run on the
 	 * node by cluster:root after it checks the signature against its
 	 * root-owned pin of the panel key. Only for nodes that report that pin.

@@ -18,7 +18,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * ```text
  * p0  stream.state, stream.worker, stream.monitor,   gap-checked: first_useq must be
- *     recording.state, vod.analysis                  useq_p0 + 1, else 409 {expected_useq}
+ *     recording.state, vod.analysis,                 useq_p0 + 1, else 409 {expected_useq}
+ *     conn.upsert, conn.remove
  *                                                    and the node rewinds
  * p1  log.<type>, skip                               high-water: numbers at or below
  *                                                    useq_p1 are skipped, gaps are fine
@@ -42,6 +43,8 @@ final class EventIngest {
 		'stream.worker' => ['p0', NodeRegistry::FLOW_STREAMS],
 		'stream.monitor' => ['p0', NodeRegistry::FLOW_STREAMS],
 		'recording.state' => ['p0', NodeRegistry::FLOW_CONTENT],
+		'conn.upsert' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
+		'conn.remove' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
 		'vod.analysis' => ['p0', NodeRegistry::FLOW_CONTENT],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
 	];
@@ -134,6 +137,10 @@ final class EventIngest {
 				return self::recordingState($rServerID, $rData);
 			case 'vod.analysis':
 				return self::vodAnalysis($rServerID, $rData);
+			case 'conn.upsert':
+				return is_array($rData['record'] ?? null) && ConnectionIngest::upsert($rServerID, $rData['record']);
+			case 'conn.remove':
+				return ConnectionIngest::remove($rServerID, (string) ($rData['uuid'] ?? ''));
 		}
 		// skip: the node dropped logs past its cap.
 		ClusterAudit::log('events.skip', $rServerID, ['count' => max(0, (int) ($rData['count'] ?? 0))], 'node');
