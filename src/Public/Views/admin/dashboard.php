@@ -192,33 +192,40 @@ if (!LicenseGate::licensed()):
     <?php if ($rSettings['dashboard_status']): ?>
         <!-- Service Status -->
         <div class="col-xl-6">
+            <?php
+            // check state => [accent, badge icon]
+            $xmCheckStyle = [
+                'ok'   => ['success', 'tabler-circle-check'],
+                'warn' => ['warning', 'tabler-alert-circle'],
+                'fail' => ['danger', 'tabler-circle-x'],
+                'off'  => ['secondary', 'tabler-circle-minus'],
+            ];
+            $xmIssues = count(array_filter($rStatusChecks, fn($c) => in_array($c['state'], ['warn', 'fail'], true)));
+            ?>
             <div class="card h-100">
-                <div class="card-header">
-                    <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-heartbeat icon-22px text-success"></i><span><?= $language::get('dashboard_service_status'); ?></span></h5>
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="card-title mb-0 d-flex align-items-center gap-2"><i class="icon-base ti tabler-heartbeat icon-22px text-<?= $xmIssues ? 'danger' : 'success'; ?>"></i><span><?= $language::get('dashboard_service_status'); ?></span></h5>
+                    <span class="badge rounded-pill bg-label-<?= $xmIssues ? 'danger' : 'success'; ?>">
+                        <?= $xmIssues ? $language::get('dashboard_status_issues', ['{count}' => (string) $xmIssues]) : $language::get('dashboard_status_all_ok'); ?>
+                    </span>
                 </div>
                 <div class="card-body dashboard-status-scroll">
-                    <ul class="timeline mb-0">
-                        <?php if (empty($rStatusItems)): ?>
-                            <li class="timeline-item timeline-item-transparent">
-                                <span class="timeline-point timeline-point-success"></span>
-                                <div class="timeline-event">
-                                    <div class="timeline-header">
-                                        <h6 class="mb-0"><?= $language::get('dashboard_no_issues'); ?></h6>
-                                    </div>
+                    <ul class="list-unstyled mb-0">
+                        <?php foreach ($rStatusChecks as $rCheck):
+                            [$rAcc, $rStateIcon] = $xmCheckStyle[$rCheck['state']];
+                        ?>
+                            <li class="d-flex align-items-start gap-3 mb-4">
+                                <div class="avatar flex-shrink-0">
+                                    <span class="avatar-initial rounded bg-label-<?= $rAcc; ?>"><i class="icon-base ti <?= $rCheck['icon']; ?> icon-22px"></i></span>
                                 </div>
+                                <div class="flex-grow-1 min-w-0">
+                                    <h6 class="mb-0"><?= htmlspecialchars($rCheck['title']); ?></h6>
+                                    <?php if ($rCheck['detail'] !== ''): ?><small class="text-body-secondary d-block"><?= htmlspecialchars($rCheck['detail']); ?></small><?php endif; ?>
+                                    <?php if ($rCheck['help'] !== ''): ?><small class="d-block mt-1 text-<?= $rAcc; ?>"><?= $rCheck['help']; ?></small><?php endif; ?>
+                                </div>
+                                <i class="icon-base ti <?= $rStateIcon; ?> icon-24px text-<?= $rAcc; ?> flex-shrink-0"></i>
                             </li>
-                            <?php else: foreach ($rStatusItems as $rItem): ?>
-                                <li class="timeline-item timeline-item-transparent">
-                                    <span class="timeline-point timeline-point-<?= htmlspecialchars($rItem['state'], ENT_QUOTES); ?>"></span>
-                                    <div class="timeline-event">
-                                        <div class="timeline-header">
-                                            <h6 class="mb-1"><?= htmlspecialchars($rItem['title']); ?></h6>
-                                        </div>
-                                        <small class="text-body-secondary"><?= $rItem['text']; ?></small>
-                                    </div>
-                                </li>
-                        <?php endforeach;
-                        endif; ?>
+                        <?php endforeach; ?>
                     </ul>
                 </div>
             </div>

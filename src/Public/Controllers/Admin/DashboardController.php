@@ -96,9 +96,9 @@ class DashboardController extends BaseAdminController {
 		$rOrderedServers = $rServers;
 		array_multisort(array_column($rOrderedServers, 'order'), SORT_ASC, $rOrderedServers);
 
-		// Service-status timeline items (prepared here so the view stays free of
-		// DB / filesystem probes). Each item: ['state', 'title', 'text'].
-		$rStatusItems = $this->buildStatusItems($db, $rOrderedServers);
+		// Service-status checklist (prepared here so the view stays free of
+		// filesystem / watchdog probes).
+		$rStatusChecks = $this->buildStatusChecks($rOrderedServers);
 
 		// The Bootstrap 5 dashboard renders CPU/network/connection charts with ApexCharts,
 		// and (when enabled and there is data) a jsvectormap world map.
@@ -112,72 +112,128 @@ class DashboardController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Dashboard');
-		$this->render('dashboard', ['rColours' => $rColours, 'rColourMap' => $rColourMap, 'rConnectionMap' => $rConnectionMap, 'rConnectionCount' => $rConnectionCount, 'rServerStats' => $rServerStats, 'rOrderedServers' => $rOrderedServers, 'rStatusItems' => $rStatusItems]);
+		$this->render('dashboard', ['rColours' => $rColours, 'rColourMap' => $rColourMap, 'rConnectionMap' => $rConnectionMap, 'rConnectionCount' => $rConnectionCount, 'rServerStats' => $rServerStats, 'rOrderedServers' => $rOrderedServers, 'rStatusChecks' => $rStatusChecks]);
 	}
 
 	/**
-	 * Build the "Service Status" timeline the dashboard shows.
-	 *
-	 * Runs the health probes (MariaDB JSON support, schema watermark, root-cron
-	 * freshness, per-server xc_fanout watchdog) that used to live inline in the
-	 * view. Returns an ordered list of ['state' => 'danger|warning|dark',
-	 * 'title' => string, 'text' => string(html)]; empty when all checks pass and
-	 * the caller renders the "no issues" item.
+	 * Build the "Service Status" checklist: every probe is always listed with
+	 * its state, so a healthy panel shows what was checked instead of nothing.
 	 *
 	 * @param array<int,array<string,mixed>> $orderedServers
-	 * @return array<int,array{state:string,title:string,text:string}>
+	 * @return list<array{state:string,icon:string,title:string,detail:string,help:string}>
 	 */
-	private function buildStatusItems($db, array $orderedServers): array {
-		$items = [];
-		$bin = defined('PHP_BIN') ? PHP_BIN : 'php';
+	private function buildStatusChecks(array $orderedServers): array {
+		$bin = ['{bin}' => htmlspecialchars(defined('PHP_BIN') ? PHP_BIN : 'php')];
+		$signals = CONFIG_PATH . 'signals.last';
+		$now = time();
 
-		$binRepl = ['{bin}' => htmlspecialchars($bin)];
+		return [
+			self::serversCheck($orderedServers),
+			self::schemaCheck((string) SettingsManager::get('status_uuid'), XC_VM_VERSION, $bin),
+			self::cronCheck(file_exists($signals) ? filemtime($signals) : null, $now, $bin),
+			self::fanoutCheck(FanoutMode::enabled(), $orderedServers, $now, $bin),
+		];
+	}
 
-		try {
-			$db->dbh->query("SELECT JSON_CONTAINS('0', 0, '$') AS `json_test`;");
-		} catch (\Throwable $e) {
-			$items[] = [
-				'state' => 'danger',
-				'title' => Translator::get('dashboard_status_mariadb_title'),
-				'text'  => Translator::get('dashboard_status_mariadb_text'),
-			];
+	/**
+	 * @param array<int,array<string,mixed>> $servers
+	 * @return array{state:string,icon:string,title:string,detail:string,help:string}
+	 */
+	public static function serversCheck(array $servers): array {
+		$enabled = array_filter($servers, fn($s) => !empty($s['enabled']));
+		$offline = array_column(array_filter($enabled, fn($s) => empty($s['server_online'])), 'server_name');
+		$total = count($enabled);
+		$detail = Translator::get('dashboard_check_servers_ok', ['{online}' => (string) ($total - count($offline)), '{total}' => (string) $total]);
+
+		return self::check($offline ? 'fail' : 'ok', 'tabler-server-2', 'dashboard_check_servers', self::withDown($detail, $offline));
+	}
+
+	/**
+	 * @param array<string,string> $bin
+	 * @return array{state:string,icon:string,title:string,detail:string,help:string}
+	 */
+	public static function schemaCheck(string $statusUuid, string $version, array $bin): array {
+		if ($statusUuid !== '' && $statusUuid === md5($version)) {
+			return self::check('ok', 'tabler-database', 'dashboard_check_schema', Translator::get('dashboard_check_schema_ok', ['{version}' => $version]));
 		}
 
-		if (empty(SettingsManager::get('status_uuid')) || SettingsManager::get('status_uuid') != md5(XC_VM_VERSION)) {
-			$items[] = [
-				'state' => 'warning',
-				'title' => Translator::get('dashboard_status_db_incomplete_title'),
-				'text'  => Translator::get('dashboard_status_db_incomplete_text', $binRepl),
-			];
+		return self::check('warn', 'tabler-database', 'dashboard_check_schema', '', Translator::get('dashboard_status_db_incomplete_text', $bin));
+	}
+
+	/**
+	 * Root crons touch config/signals.last each run; stale after 10 minutes.
+	 *
+	 * @param array<string,string> $bin
+	 * @return array{state:string,icon:string,title:string,detail:string,help:string}
+	 */
+	public static function cronCheck(?int $lastRun, int $now, array $bin): array {
+		if ($lastRun === null) {
+			return self::check('fail', 'tabler-clock-play', 'dashboard_check_crons', Translator::get('dashboard_check_crons_never'), Translator::get('dashboard_status_crons_text', $bin));
 		}
 
-		if (!file_exists(CONFIG_PATH . 'signals.last') || time() - filemtime(CONFIG_PATH . 'signals.last') > 600) {
-			$items[] = [
-				'state' => 'dark',
-				'title' => Translator::get('dashboard_status_crons_title'),
-				'text'  => Translator::get('dashboard_status_crons_text', $binRepl),
-			];
+		$ok = $now - $lastRun <= 600;
+		$detail = Translator::get('dashboard_check_crons_ok', ['{ago}' => self::formatAgo($now - $lastRun)]);
+
+		return self::check($ok ? 'ok' : 'fail', 'tabler-clock-play', 'dashboard_check_crons', $detail, $ok ? '' : Translator::get('dashboard_status_crons_text', $bin));
+	}
+
+	/**
+	 * xc_fanout live-delivery daemon, judged only on servers whose watchdog
+	 * reported in the last minute. Switched off by the admin → "off", not a failure.
+	 *
+	 * @param array<int,array<string,mixed>> $servers
+	 * @param array<string,string> $bin
+	 * @return array{state:string,icon:string,title:string,detail:string,help:string}
+	 */
+	public static function fanoutCheck(bool $enabled, array $servers, int $now, array $bin): array {
+		if (!$enabled) {
+			return self::check('off', 'tabler-broadcast', 'dashboard_check_fanout', Translator::get('dashboard_check_fanout_disabled'));
 		}
 
-		// xc_fanout live-delivery daemon — flag any reporting server where it is down.
-		// Not when the admin switched fanout off: down is then what was asked for.
-		$multi = count($orderedServers) > 1;
-		foreach (FanoutMode::enabled() ? $orderedServers : [] as $srv) {
+		$states = self::fanoutStates($servers, $now);
+		if ($states === []) {
+			return self::check('off', 'tabler-broadcast', 'dashboard_check_fanout', Translator::get('dashboard_check_fanout_nodata'));
+		}
+
+		$down = array_keys(array_filter($states, fn($running) => !$running));
+		$detail = Translator::get('dashboard_check_fanout_ok', ['{running}' => (string) (count($states) - count($down)), '{total}' => (string) count($states)]);
+
+		return self::check($down ? 'fail' : 'ok', 'tabler-broadcast', 'dashboard_check_fanout', self::withDown($detail, $down), $down ? Translator::get('dashboard_status_fanout_text', $bin) : '');
+	}
+
+	/**
+	 * server name => fanout running, for servers that reported in the last minute.
+	 *
+	 * @param array<int,array<string,mixed>> $servers
+	 * @return array<string,bool>
+	 */
+	private static function fanoutStates(array $servers, int $now): array {
+		$states = [];
+		foreach ($servers as $srv) {
 			$wd = json_decode($srv['watchdog_data'] ?? '{}', true) ?: [];
-			$fresh = (time() - intval($srv['last_check_ago'] ?? 0)) < 60;
-			if ($fresh && isset($wd['fanout']['running']) && !$wd['fanout']['running']) {
-				$title = Translator::get('dashboard_status_fanout_title');
-				if ($multi) {
-					$title .= ' ' . Translator::get('dashboard_status_fanout_on') . ' ' . htmlspecialchars($srv['server_name']);
-				}
-				$items[] = [
-					'state' => 'danger',
-					'title' => $title,
-					'text'  => Translator::get('dashboard_status_fanout_text', $binRepl),
-				];
+			if ($now - intval($srv['last_check_ago'] ?? 0) < 60 && isset($wd['fanout']['running'])) {
+				$states[(string) $srv['server_name']] = (bool) $wd['fanout']['running'];
 			}
 		}
 
-		return $items;
+		return $states;
+	}
+
+	/** @param list<string> $down */
+	private static function withDown(string $detail, array $down): string {
+		return $down ? $detail . ' · ' . Translator::get('dashboard_check_servers_down', ['{names}' => implode(', ', $down)]) : $detail;
+	}
+
+	/** @return array{state:string,icon:string,title:string,detail:string,help:string} */
+	private static function check(string $state, string $icon, string $titleKey, string $detail, string $help = ''): array {
+		return ['state' => $state, 'icon' => $icon, 'title' => Translator::get($titleKey), 'detail' => $detail, 'help' => $help];
+	}
+
+	private static function formatAgo(int $seconds): string {
+		if ($seconds < 60) {
+			return max(0, $seconds) . 's';
+		}
+
+		return $seconds < 3600 ? intdiv($seconds, 60) . ' min' : intdiv($seconds, 3600) . ' h';
 	}
 }
