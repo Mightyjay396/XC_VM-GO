@@ -11,6 +11,7 @@ use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Codec\FFprobeRunner;
 use XcVm\Streaming\Fanout\FanoutClient;
 
@@ -90,7 +91,7 @@ class MonitorCommand implements CommandInterface {
 		}
 
 		$rStreamInfo = $db->get_row();
-		$db->query('UPDATE `streams_servers` SET `monitor_pid` = ? WHERE `server_stream_id` = ?', getmypid(), $rStreamInfo['server_stream_id']);
+		StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['monitor_pid' => getmypid()], $db);
 
 		if (SettingsManager::get('enable_cache')) {
 			StreamProcess::updateStream($rStreamID);
@@ -428,7 +429,7 @@ class MonitorCommand implements CommandInterface {
 						echo "Segment exists!\n";
 						$rSegmentSeen = true;
 						$rChecks = 0;
-						$db->query('UPDATE `streams_servers` SET `stream_status` = 0, `stream_started` = ? WHERE `server_stream_id` = ?', time() - $rOffset, $rStreamInfo['server_stream_id']);
+						StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['stream_status' => 0, 'stream_started' => time() - $rOffset], $db);
 					}
 					if (($rChecks == $rMaxChecks)) {
 						echo "Reached max failures\n";
@@ -465,9 +466,9 @@ class MonitorCommand implements CommandInterface {
 					list($rCompatible, $rAudioCodec, $rVideoCodec, $rResolution) = $this->resolveStreamCodecMeta($rStreamInfo['stream_info'], SettingsManager::get('player_allow_hevc'));
 
 					if (!$rSegmentSeen && $rStreamInfo['stream_info'] && $rStreamInfo['on_demand']) {
-						$db->query('UPDATE `streams_servers` SET `stream_info` = ?, `compatible` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ?, `bitrate` = ?, `stream_status` = 0, `stream_started` = ? WHERE `server_stream_id` = ?', $rStreamInfo['stream_info'], $rCompatible, $rAudioCodec, $rVideoCodec, $rResolution, intval($rBitrate), time() - $rOffset, $rStreamInfo['server_stream_id']);
+						StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['stream_info' => $rStreamInfo['stream_info'], 'compatible' => $rCompatible, 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'bitrate' => intval($rBitrate), 'stream_status' => 0, 'stream_started' => time() - $rOffset], $db);
 					} else {
-						$db->query('UPDATE `streams_servers` SET `stream_info` = ?, `compatible` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ?, `bitrate` = ?, `stream_status` = 0 WHERE `server_stream_id` = ?', $rStreamInfo['stream_info'], $rCompatible, $rAudioCodec, $rVideoCodec, $rResolution, intval($rBitrate), $rStreamInfo['server_stream_id']);
+						StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['stream_info' => $rStreamInfo['stream_info'], 'compatible' => $rCompatible, 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'bitrate' => intval($rBitrate), 'stream_status' => 0], $db);
 					}
 					if (SettingsManager::get('enable_cache')) {
 						StreamProcess::updateStream($rStreamID);
@@ -481,7 +482,7 @@ class MonitorCommand implements CommandInterface {
 					if (((0 < $rPID) && ProcessManager::isStreamRunning($rPID, $rStreamID))) {
 						shell_exec('kill -9 ' . intval($rPID));
 					}
-					$db->query('UPDATE `streams_servers` SET `pid` = null, `stream_status` = 1 WHERE `server_stream_id` = ?;', $rStreamInfo['server_stream_id']);
+					StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['pid' => null, 'stream_status' => 1], $db);
 					if (SettingsManager::get('enable_cache')) {
 						StreamProcess::updateStream($rStreamID);
 					}

@@ -9,6 +9,7 @@ use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Http\CurlClient;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Codec\FfmpegPaths;
 use XcVm\Streaming\Codec\FFprobeRunner;
@@ -203,7 +204,7 @@ class ScannerCommand implements CommandInterface {
 
 			$rSource = $rSources[$rSourceID];
 			$db->query('INSERT INTO `ondemand_check`(`stream_id`, `server_id`, `status`, `source_id`, `source_url`, `fps`, `video_codec`, `audio_codec`, `resolution`, `response`, `errors`, `date`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);', $rRow['id'], SERVER_ID, $rStatus, $rSourceID, $rSource, $rFPS, $rVideoCodec, $rAudioCodec, $rResolution, $rTimeTaken, $rErrors, time());
-			$db->query('UPDATE `streams_servers` SET `ondemand_check` = ? WHERE `stream_id` = ? AND `server_id` = ?;', $db->last_insert_id(), $rRow['id'], SERVER_ID);
+			StreamStateWriter::update(intval($rRow['id']), intval(SERVER_ID), ['ondemand_check' => $db->last_insert_id()], $db);
 			echo "\n";
 		}
 	}

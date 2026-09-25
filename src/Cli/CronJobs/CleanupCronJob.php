@@ -11,6 +11,7 @@ use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Codec\FFmpegCommand;
 use XcVm\Streaming\Codec\FFprobeRunner;
 
@@ -117,7 +118,7 @@ class CleanupCronJob implements CommandInterface {
 					if ($rRow['stream_status'] == 0) {
 						if (!file_exists($rMoviePath)) {
 							echo 'BAD MOVIE' . "\n";
-							$db->query('UPDATE `streams_servers` SET `stream_status` = 1 WHERE `server_stream_id` = ?', $rRow['server_stream_id']);
+							StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['stream_status' => 1], $db);
 							StreamProcess::updateStream($rRow['id']);
 						}
 					} elseif ($rRow['stream_status'] == 1) {
@@ -168,7 +169,7 @@ class CleanupCronJob implements CommandInterface {
 								$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 							}
 							$db->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?', json_encode($rMovieProperties, JSON_UNESCAPED_UNICODE), $rRow['id']);
-							$db->query('UPDATE `streams_servers` SET `bitrate` = ?,`to_analyze` = 0,`stream_status` = 0,`stream_info` = ?, `audio_codec` = ?, `video_codec` = ?, `resolution` = ?, `compatible` = ? WHERE `server_stream_id` = ?', $rBitrate, json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rRow['server_stream_id']);
+							StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['bitrate' => $rBitrate, 'to_analyze' => 0, 'stream_status' => 0, 'stream_info' => json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible], $db);
 							StreamProcess::updateStream($rRow['id']);
 							echo 'VALID MOVIE' . "\n";
 						}
@@ -197,12 +198,12 @@ class CleanupCronJob implements CommandInterface {
 						}
 						if ($rFailure) {
 							echo 'BAD CHANNEL' . "\n";
-							$db->query('UPDATE `streams_servers` SET `cchannel_rsources` = ? WHERE `server_stream_id` = ?;', json_encode($rActualFiles, JSON_UNESCAPED_UNICODE), $rStream['server_stream_id']);
+							StreamStateWriter::updateRow(intval($rStream['server_stream_id']), ['cchannel_rsources' => json_encode($rActualFiles, JSON_UNESCAPED_UNICODE)], $db);
 							StreamProcess::updateStream($rStream['id']);
 						}
 					} else {
 						echo 'BAD CHANNEL' . "\n";
-						$db->query("UPDATE `streams_servers` SET `cchannel_rsources` = '[]' WHERE `server_stream_id` = ?;", $rStream['server_stream_id']);
+						StreamStateWriter::updateRow(intval($rStream['server_stream_id']), ['cchannel_rsources' => '[]'], $db);
 						StreamProcess::updateStream($rStream['id']);
 					}
 				}

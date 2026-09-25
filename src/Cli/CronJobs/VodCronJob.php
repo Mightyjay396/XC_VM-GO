@@ -10,6 +10,7 @@ use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Vod\MediaAnalyzedEvent;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Codec\FFmpegCommand;
 use XcVm\Streaming\Codec\FFprobeRunner;
 use XcVm\Streaming\Health\ProcessChecker;
@@ -66,7 +67,7 @@ class VodCronJob implements CommandInterface {
 					} else {
 						if (file_exists(CREATED_PATH . $rStream['id'] . '_.info')) {
 							$rCCInfo = file_get_contents(CREATED_PATH . $rStream['id'] . '_.info');
-							$db->query('UPDATE `streams_servers` SET `cc_info` = ? WHERE `server_id` = ? AND `stream_id` = ?;', $rCCInfo, SERVER_ID, $rStream['id']);
+							StreamStateWriter::update(intval($rStream['id']), intval(SERVER_ID), ['cc_info' => $rCCInfo], $db);
 							unlink(CREATED_PATH . $rStream['id'] . '_.info');
 						}
 						echo "\t" . 'Build Finished' . "\n";
@@ -120,7 +121,7 @@ class VodCronJob implements CommandInterface {
 								// which is a TypeError on PHP 8 that aborts the whole analyzer
 								// run and leaves every remaining movie stuck in `to_analyze = 1`
 								// (yellow) forever. Treat such a file as broken instead.
-								$db->query('UPDATE `streams_servers` SET `to_analyze` = 0,`stream_status` = 1 WHERE `server_stream_id` = ?', $rRow['server_stream_id']);
+								StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['to_analyze' => 0, 'stream_status' => 1], $db);
 								echo 'BROKEN (no video stream)' . "\n";
 								StreamProcess::updateStream($rRow['stream_id']);
 								continue;
@@ -187,11 +188,11 @@ class VodCronJob implements CommandInterface {
 								$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 							}
 							$db->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?', json_encode($rMovieProperties, JSON_UNESCAPED_UNICODE), $rRow['stream_id']);
-							$db->query('UPDATE `streams_servers` SET `bitrate` = ?,`to_analyze` = 0,`stream_status` = 0,`stream_info` = ?,`audio_codec` = ?,`video_codec` = ?,`resolution` = ?,`compatible` = ? WHERE `server_stream_id` = ?', $rBitrate, json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rRow['server_stream_id']);
+							StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['bitrate' => $rBitrate, 'to_analyze' => 0, 'stream_status' => 0, 'stream_info' => json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible], $db);
 							echo 'VALID' . "\n";
 							EventDispatcher::dispatch(new MediaAnalyzedEvent((int) $rRow['stream_id'], (int) $rRow['type']));
 						} else {
-							$db->query('UPDATE `streams_servers` SET `to_analyze` = 0,`stream_status` = 1 WHERE `server_stream_id` = ?', $rRow['server_stream_id']);
+							StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['to_analyze' => 0, 'stream_status' => 1], $db);
 							echo 'BROKEN' . "\n";
 						}
 						StreamProcess::updateStream($rRow['stream_id']);

@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Fanout\IngestFeeder;
 
 /**
@@ -66,7 +67,7 @@ class DelayCommand implements CommandInterface {
 		$rPlaylist = STREAMS_PATH . $rStreamID . '_.m3u8';
 		$rPlaylistDelay = DELAY_PATH . $rStreamID . '_.m3u8';
 		$rPlaylistOld = DELAY_PATH . $rStreamID . '_.m3u8_old';
-		$db->query('UPDATE `streams_servers` SET delay_pid = ? WHERE stream_id = ? AND server_id = ?', getmypid(), $rStreamID, SERVER_ID);
+		StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['delay_pid' => getmypid()], $db);
 		StreamProcess::updateStream($rStreamInfo['id']);
 		$db->close_mysql();
 		$rDelayDuration = intval($rStreamInfo['delay_minutes']) + 5;
