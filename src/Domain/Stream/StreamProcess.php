@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
@@ -215,6 +216,12 @@ class StreamProcess {
 	public static function updateStream(int $rStreamID, bool $rForce = false) {
 		if (!SettingsManager::get('enable_cache')) {
 			return false;
+		}
+		if (NodeFlows::on(NodeFlows::STREAMS)) {
+			// The node's state reaches MAIN as events; MAIN refreshes the
+			// stream's cache when it applies them (EventIngest), so the node
+			// writes no signal into MAIN's database.
+			return true;
 		}
 		self::insertCacheSignalOnce(['type' => 'update_stream', 'id' => $rStreamID]);
 		return true;

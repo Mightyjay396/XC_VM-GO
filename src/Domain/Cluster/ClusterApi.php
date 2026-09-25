@@ -8,11 +8,12 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
+use XcVm\Domain\Stream\RecordingFinalizer;
 
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
  * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat;
- * Phase 4: commands, ack; Phase 5: events). Transport-free: handle() takes the request
+ * Phase 4: commands, ack; Phase 5: events, recording_complete). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -44,6 +45,7 @@ final class ClusterApi {
 		'commands' => ['POST', false, ['active']],
 		'ack' => ['POST', false, ['active', 'quarantined']],
 		'events' => ['POST', false, ['active']],
+		'recording_complete' => ['POST', false, ['active']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
 
@@ -146,6 +148,7 @@ final class ClusterApi {
 			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
 			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 		};
 	}
 
@@ -498,6 +501,31 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 409, 'USEQ_GAP', $rH['node'], $rH['nonce'], ['expected_useq' => $rOut['expected_useq']]);
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `recording_complete`: the VOD for a recording the node finished, created
+	 * once (RecordingFinalizer). The node names its file after the id, then
+	 * reports `recording.state` 2 once it has converted it.
+	 */
+	private static function recordingComplete(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONTENT) === 0) {
+			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'content']);
+		}
+		$rRecording = $rP['recording_id'] ?? null;
+		$rIcon = $rP['stream_icon'] ?? null;
+		if (!is_int($rRecording) || $rRecording <= 0 || ($rIcon !== null && !is_string($rIcon))) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		try {
+			$rID = RecordingFinalizer::create($rRecording, (int) $rNode['server_id'], $rIcon);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if ($rID === null) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, ['stream_id' => $rID, 'main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/** Map an extension refusal to a signed denial. */

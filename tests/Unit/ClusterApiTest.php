@@ -770,6 +770,25 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(['p0' => 1, 'p1' => 0], $this->reply($rRes, $rCtx, $rKeys)['cursors']);
 	}
 
+	public function testRecordingCompleteCreatesTheVodOnceForTheNodesRecording(): void {
+		$this->rDb->exec('CREATE TABLE `streams` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `type` int, `stream_display_name` text, `stream_source` text, `target_container` text, `year` text, `movie_properties` text, `rating` int, `read_native` int, `movie_symlink` int, `remove_subtitles` int, `transcode_profile_id` int, `order` int, `added` int, `category_id` text)');
+		$this->rDb->exec('CREATE TABLE `recordings` (`id` INTEGER PRIMARY KEY, `created_id` int, `category_id` text, `bouquets` text, `title` text, `description` text, `start` int, `end` int, `source_id` int, `status` int)');
+		$this->rDb->exec("INSERT INTO `recordings` VALUES (1, NULL, '[]', '[]', 'Match', '', 1800000000, 1800003600, 5, 1), (2, NULL, '[]', '[]', 'Theirs', '', 1800000000, 1800003600, 6, 1)");
+		$rKeys = $this->active();
+
+		[$rRes, , $rReq] = $this->call('recording_complete', ['recording_id' => 1, 'stream_icon' => null], 1, $rKeys);
+		$this->assertSame('content', $this->denial($rRes, 409, 'FLOW_OFF', $rReq)['flow']);
+
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_CONTENT]);
+		[$rRes, $rCtx] = $this->call('recording_complete', ['recording_id' => 1, 'stream_icon' => null], 1, $rKeys);
+		$rID = $this->reply($rRes, $rCtx, $rKeys)['stream_id'];
+		[$rRes, $rCtx] = $this->call('recording_complete', ['recording_id' => 1], 1, $rKeys);
+		$this->assertSame($rID, $this->reply($rRes, $rCtx, $rKeys)['stream_id'], 'a retry gets the same VOD');
+
+		[$rRes, , $rReq] = $this->call('recording_complete', ['recording_id' => 2], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+	}
+
 	public function testRootCommandsNeedTheNodesRootPin(): void {
 		$rKeys = $this->active();
 		SettingsManager::set($this->rSettings);

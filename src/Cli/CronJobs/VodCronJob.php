@@ -8,6 +8,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Vod\MediaAnalyzedEvent;
+use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
 use XcVm\Domain\Stream\StreamStateWriter;
@@ -187,7 +188,7 @@ class VodCronJob implements CommandInterface {
 							if ($rResolution) {
 								$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 							}
-							$db->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?', json_encode($rMovieProperties, JSON_UNESCAPED_UNICODE), $rRow['stream_id']);
+							ContentSink::movieProperties((int) $rRow['stream_id'], $rMovieProperties, $db);
 							StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['bitrate' => $rBitrate, 'to_analyze' => 0, 'stream_status' => 0, 'stream_info' => json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible], $db);
 							echo 'VALID' . "\n";
 							EventDispatcher::dispatch(new MediaAnalyzedEvent((int) $rRow['stream_id'], (int) $rRow['type']));
