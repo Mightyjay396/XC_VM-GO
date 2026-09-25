@@ -4,6 +4,7 @@ namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\Redactor;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Domain\Stream\StreamProcess;
@@ -16,10 +17,11 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * order and at most once.
  *
  * ```text
- * p0  stream.state, stream.worker,   gap-checked: first_useq must be useq_p0 + 1,
- *     recording.state, vod.analysis else 409 {expected_useq} and the node rewinds
- * p1  log.<type>, skip              high-water: numbers at or below useq_p1 are
- *                                   skipped, gaps are fine (dropped logs)
+ * p0  stream.state, stream.worker, stream.monitor,   gap-checked: first_useq must be
+ *     recording.state, vod.analysis                  useq_p0 + 1, else 409 {expected_useq}
+ *                                                    and the node rewinds
+ * p1  log.<type>, skip                               high-water: numbers at or below
+ *                                                    useq_p1 are skipped, gaps are fine
  * ```
  *
  * Every event is applied as the sending node: a stream's state goes to that
@@ -38,6 +40,7 @@ final class EventIngest {
 	private const TYPES = [
 		'stream.state' => ['p0', NodeRegistry::FLOW_STREAMS],
 		'stream.worker' => ['p0', NodeRegistry::FLOW_STREAMS],
+		'stream.monitor' => ['p0', NodeRegistry::FLOW_STREAMS],
 		'recording.state' => ['p0', NodeRegistry::FLOW_CONTENT],
 		'vod.analysis' => ['p0', NodeRegistry::FLOW_CONTENT],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
@@ -125,6 +128,8 @@ final class EventIngest {
 				return self::streamState($rServerID, $rData);
 			case 'stream.worker':
 				return self::streamWorker($rServerID, $rData);
+			case 'stream.monitor':
+				return self::streamMonitor($rServerID, $rData);
 			case 'recording.state':
 				return self::recordingState($rServerID, $rData);
 			case 'vod.analysis':
@@ -163,6 +168,36 @@ final class EventIngest {
 		if (array_diff(array_keys($rFields), self::CACHE_NEUTRAL) !== []) {
 			self::streamChanged($rStreamID);
 		}
+		return true;
+	}
+
+	/**
+	 * The fanout's view of a stream it supervises on the node, as the agent
+	 * followed it: the row follows as PHP's reconcile would set it
+	 * (StreamProcess::supervisedRowUpdate), against MAIN's own copy. A row the
+	 * panel has stopped is left alone; the node's reconcile releases it.
+	 *
+	 * @param array<string, mixed> $rData {stream_id, state}
+	 */
+	private static function streamMonitor(int $rServerID, array $rData): bool {
+		$rStreamID = is_int($rData['stream_id'] ?? null) ? $rData['stream_id'] : 0;
+		$rState = $rData['state'] ?? null;
+		if ($rStreamID <= 0 || !is_array($rState) || empty($rState['supervised'])) {
+			return false;
+		}
+		self::db()->query('SELECT `stream_id`, `pid`, `monitor_pid`, `stream_status`, `current_source`, `stream_started`, `stream_info`, `audio_codec`, `video_codec`, `resolution`, `bitrate`, `compatible` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` = ?;', $rServerID, $rStreamID);
+		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		if ($rRow === null || (is_null($rRow['monitor_pid']) && is_null($rRow['pid']) && intval($rRow['stream_status']) === 0)) {
+			return false;
+		}
+		$rSet = StreamRowMerge::eventFields(StreamProcess::supervisedRowUpdate($rRow, $rState, (bool) SettingsManager::get('player_allow_hevc'), ClusterClock::now()));
+		if ($rSet === []) {
+			return true;
+		}
+		if (!StreamRowMerge::mergeNode($rServerID, $rStreamID, $rSet, self::db())) {
+			return false;
+		}
+		self::streamChanged($rStreamID);
 		return true;
 	}
 

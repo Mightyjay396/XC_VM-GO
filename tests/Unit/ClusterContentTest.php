@@ -29,7 +29,7 @@ final class ClusterContentTest extends TestCase {
 		$this->rDb->exec((string) preg_replace(['/^--.*$/m', '/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)/', '/ unsigned| COLLATE \w+/', '/\) ENGINE=[^;]*;/'], ['', '', '', ');'], (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/029_create_cluster_nodes.sql')));
 		$this->rDb->exec('CREATE TABLE `cluster_audit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `time` int, `server_id` int, `actor` varchar(64), `event` varchar(64), `detail` text, `ip` varchar(64))');
 		$this->rDb->exec('CREATE TABLE `streams` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `type` int, `stream_display_name` text, `stream_source` text, `target_container` text, `year` text, `movie_properties` text, `rating` int, `read_native` int, `movie_symlink` int, `remove_subtitles` int, `transcode_profile_id` int, `order` int, `added` int, `category_id` text, `tv_archive_server_id` int, `tv_archive_pid` int, `vframes_server_id` int, `vframes_pid` int)');
-		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `parent_id` int, `pid` int, `to_analyze` int, `stream_status` int, `progress_info` text)');
+		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `parent_id` int, `pid` int, `to_analyze` int, `stream_status` int, `progress_info` text, `monitor_pid` int, `current_source` text, `stream_started` int, `stream_info` text, `audio_codec` text, `video_codec` text, `resolution` int, `bitrate` int, `compatible` int)');
 		$this->rDb->exec('CREATE TABLE `recordings` (`id` INTEGER PRIMARY KEY, `stream_id` int, `created_id` int, `category_id` text, `bouquets` text, `title` text, `description` text, `stream_icon` text, `start` int, `end` int, `source_id` int, `archive` int, `status` int DEFAULT 0)');
 		$this->rDb->exec('CREATE TABLE `bouquets` (`id` INTEGER PRIMARY KEY, `bouquet_movies` text)');
 		$this->rDb->query('INSERT INTO `recordings` (`id`, `stream_id`, `category_id`, `bouquets`, `title`, `description`, `start`, `end`, `source_id`, `status`) VALUES (1, 100, \'[3]\', \'[9]\', \'Match\', \'Final\', 1800000000, 1800003600, 5, 1), (2, 100, \'[]\', \'[]\', \'Other\', \'\', 1800000000, 1800003600, 6, 1)');
@@ -163,6 +163,47 @@ final class ClusterContentTest extends TestCase {
 	public function testAnIconFromElsewhereIsNotTaken(): void {
 		$rID = RecordingFinalizer::create(1, 5, 'http://evil.example/x.jpg');
 		$this->assertNull(json_decode((string) $this->val('SELECT `movie_properties` FROM `streams` WHERE `id` = ' . $rID), true)['movie_image']);
+	}
+
+	public function testStreamMonitorDerivesTheRowAsTheReconcileDoes(): void {
+		$this->rDb->query('UPDATE `streams_servers` SET `monitor_pid` = 900, `stream_status` = 2 WHERE `server_stream_id` = 11');
+		$rState = ['supervised' => true, 'running' => true, 'confirmed' => true, 'pid' => 4321, 'daemon_pid' => 900, 'source' => 'http://***@origin/1.ts', 'uptime_ms' => 5000, 'meta' => ['video_codec' => 'h264', 'audio_codec' => 'aac', 'height' => 720, 'bitrate_kbps' => 3000]];
+		$rOut = $this->ingest(
+			['type' => 'stream.monitor', 'd' => ['stream_id' => 100, 'state' => $rState]],
+			['type' => 'stream.monitor', 'd' => ['stream_id' => 300, 'state' => $rState]], // node 6's stream
+			['type' => 'stream.monitor', 'd' => ['stream_id' => 100, 'state' => ['supervised' => false]]]
+		);
+		$this->assertSame([1, 2], [$rOut['applied'], $rOut['dropped']]);
+		$this->rDb->query('SELECT `pid`, `stream_status`, `video_codec`, `resolution`, `bitrate`, `current_source`, `stream_started` FROM `streams_servers` WHERE `server_stream_id` = 11');
+		$rRow = $this->rDb->get_row();
+		$this->assertSame([4321, 0, 'h264', 720, 3000, 'http://***@origin/1.ts'], [(int) $rRow['pid'], (int) $rRow['stream_status'], $rRow['video_codec'], (int) $rRow['resolution'], (int) $rRow['bitrate'], $rRow['current_source']]);
+		$this->assertSame(1800000000 - 5, (int) $rRow['stream_started']);
+		$this->assertSame([100], $this->rChanged);
+
+		// Nothing new: nothing written, the cache is left alone.
+		$this->ingest(['type' => 'stream.monitor', 'd' => ['stream_id' => 100, 'state' => $rState]]);
+		$this->assertSame([100], $this->rChanged);
+
+		// A row the panel stopped is not revived.
+		$this->rDb->query('UPDATE `streams_servers` SET `monitor_pid` = NULL, `pid` = NULL, `stream_status` = 0 WHERE `server_stream_id` = 11');
+		$this->assertSame(1, $this->ingest(['type' => 'stream.monitor', 'd' => ['stream_id' => 100, 'state' => $rState]])['dropped']);
+	}
+
+	#[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+	#[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
+	public function testTheNodesReconcileLeavesTheStateToTheAgentsFeed(): void {
+		define('SERVER_ID', 5);
+		$this->rDb->query('UPDATE `streams_servers` SET `monitor_pid` = 900, `stream_status` = 2 WHERE `server_stream_id` = 11');
+		$rStates = ['streams' => ['100' => ['supervised' => true, 'running' => true, 'confirmed' => true, 'pid' => 4321, 'daemon_pid' => 900]]];
+
+		file_put_contents($this->rDir . '/flows.json', json_encode(['mode' => 1, 'flows' => NodeFlows::STREAMS, 'state' => 'active', 'features' => ['fanout_events']]));
+		NodeFlows::usePath($this->rDir . '/flows.json');
+		$this->assertSame([100], \XcVm\Domain\Stream\StreamProcess::reconcileSupervised($rStates));
+		$this->assertSame([], $this->spooled(), 'the agent\'s feed carries it');
+
+		$this->flows(NodeFlows::STREAMS); // an agent that does not follow the feed
+		\XcVm\Domain\Stream\StreamProcess::reconcileSupervised($rStates);
+		$this->assertSame(['stream.state'], array_column($this->spooled(), 'type'));
 	}
 
 	public function testContentEventsNeedTheContentFlow(): void {

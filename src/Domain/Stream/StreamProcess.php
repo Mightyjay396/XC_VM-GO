@@ -1623,6 +1623,10 @@ class StreamProcess {
 
 		$rKept = [];
 		$rChanged = [];
+		// On a node whose agent follows the fanout's monitor feed, MAIN derives
+		// this state from those events (EventIngest, stream.monitor); the
+		// reconcile only releases what nothing should produce.
+		$rWrite = !(NodeFlows::on(NodeFlows::STREAMS) && NodeFlows::agentHas('fanout_events'));
 		foreach ($rStates['streams'] as $rID => $rState) {
 			$rID = intval($rID);
 			$rRow = $rRows[$rID] ?? null;
@@ -1633,6 +1637,9 @@ class StreamProcess {
 				continue;
 			}
 			$rKept[] = $rID;
+			if (!$rWrite) {
+				continue;
+			}
 			$rSet = self::supervisedRowUpdate($rRow, $rState, (bool) SettingsManager::get('player_allow_hevc'), time());
 			if (count($rSet) > 0) {
 				StreamStateWriter::update($rID, intval(SERVER_ID), $rSet, $db);
@@ -1647,7 +1654,8 @@ class StreamProcess {
 
 	/**
 	 * The streams_servers changes one supervisor state implies, as column =>
-	 * value; only columns whose value differs. PURE.
+	 * value; only columns whose value differs. PURE. MAIN runs it too, on a
+	 * node's `stream.monitor` events (EventIngest).
 	 *
 	 * Status follows the PHP monitor's meaning: 2 while a start is in progress,
 	 * 0 once it is confirmed, 1 when the supervisor has given up or is between
@@ -1660,7 +1668,7 @@ class StreamProcess {
 	 * @param int   $rNow       Current time.
 	 * @return array Column => new value.
 	 */
-	private static function supervisedRowUpdate(array $rRow, array $rState, bool $rAllowHevc, int $rNow): array {
+	public static function supervisedRowUpdate(array $rRow, array $rState, bool $rAllowHevc, int $rNow): array {
 		$rRunning = !empty($rState['running']);
 		$rConfirmed = $rRunning && !empty($rState['confirmed']);
 		if ($rConfirmed) {
