@@ -9,8 +9,8 @@ namespace XcVm\Core\Config;
  * else the built-in default) keys stream tokens, hmac_keys and image-cache
  * names. A MAIN and its LBs must hold the same value: a token MAIN mints for a
  * redirect is read on the LB with the LB's value. A MAIN set up by the current
- * installer holds a random value, while an LB added with server:install does
- * not get that file and runs on the default.
+ * installer holds a random value, while an LB added with server:install before
+ * provisioning shipped the file runs on the default.
  *
  * Each node publishes a fingerprint of its value (never the value) in
  * servers.server_hardware, so server:diagnose can compare them.

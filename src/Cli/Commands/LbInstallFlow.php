@@ -176,11 +176,40 @@ class LbInstallFlow {
 			echo "Failed to upload node configuration! Exiting\n";
 			return false;
 		}
+		if (!self::provisionOpensslExtra($rConn, $rRunSSH, $rSendFileSSH, CONFIG_PATH . 'openssl_extra')) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Failed to upload OPENSSL_EXTRA! Exiting\n";
+			return false;
+		}
 		// install_id was created by root above and SCP writes config.enc as root;
 		// hand the whole config/ dir to xc_vm so FPM can read install_id and
 		// re-encrypt the transport blob to at-rest format on first read.
 		call_user_func($rRunSSH, $rConn, 'sudo chown -R xc_vm:xc_vm ' . CONFIG_PATH);
 		call_user_func($rRunSSH, $rConn, 'sudo chmod 600 ' . CONFIG_PATH . 'config.enc');
+
+		return true;
+	}
+
+	/**
+	 * Give the node the MAIN's OPENSSL_EXTRA, which keys the stream tokens MAIN
+	 * mints for the redirects the node serves.
+	 *
+	 * The MAIN's config/openssl_extra ($rLocalFile) is shipped when it holds a
+	 * value; without one the MAIN runs on the built-in default and so does the
+	 * node. Whatever a previous MAIN left on a reused host is removed first.
+	 * Runs before config/ is handed to xc_vm, which makes the file readable by FPM.
+	 *
+	 * @return bool False only when the upload failed.
+	 */
+	public static function provisionOpensslExtra($rConn, callable $rRunSSH, callable $rSendFileSSH, string $rLocalFile): bool {
+		call_user_func($rRunSSH, $rConn, 'sudo rm -f ' . CONFIG_PATH . 'openssl_extra');
+		if (!is_file($rLocalFile) || trim((string) @file_get_contents($rLocalFile)) === '') {
+			return true;
+		}
+		if (!call_user_func($rSendFileSSH, $rConn, $rLocalFile, CONFIG_PATH . 'openssl_extra', false)) {
+			return false;
+		}
+		call_user_func($rRunSSH, $rConn, 'sudo chmod 600 ' . CONFIG_PATH . 'openssl_extra');
 
 		return true;
 	}
