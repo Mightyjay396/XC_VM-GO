@@ -300,7 +300,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 					if ($rCodec['codec_type'] == 'video') {
 						$rInfo['width'] = intval($rCodec['width']);
 						$rInfo['height'] = intval($rCodec['height']);
-						$rInfo['vbitrate'] = intval($rCodec['bit_rate']);
+						$rInfo['vbitrate'] = intval($rCodec['bit_rate'] ?? 0);
 						$rInfo['vcodec'] = $rCodec['codec_name'];
 						$rInfo['fps'] = intval(explode('/', $rCodec['r_frame_rate'])[0]);
 
@@ -308,7 +308,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 							$rInfo['fps'] = intval(explode('/', $rCodec['avg_frame_rate'])[0]);
 						}
 					} elseif ($rCodec['codec_type'] == 'audio') {
-						$rInfo['abitrate'] = intval($rCodec['bit_rate']);
+						$rInfo['abitrate'] = intval($rCodec['bit_rate'] ?? 0);
 						$rInfo['acodec'] = $rCodec['codec_name'];
 					}
 				}
