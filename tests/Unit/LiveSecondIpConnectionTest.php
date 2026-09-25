@@ -130,6 +130,12 @@ final class LiveSecondIpConnectionTest extends TestCase {
 		$this->assertFileExists($rPath);
 		$rSource = (string) file_get_contents($rPath);
 
-		$this->assertSame(1, substr_count($rSource, 'ConnectionTracker::acceptedLineIP('), 'live.php must take the Redis-mode accepted IP from acceptedLineIP()');
+		$this->assertSame(1, substr_count($rSource, 'ConnectionTracker::acceptedIP('), 'live.php must take the accepted IP from the connection store seam');
+		$this->assertStringNotContainsString('lines_live', $rSource, 'live.php reads the store only through ConnectionTracker');
+
+		// The seam's Redis path is acceptedLineIP() (the tests above).
+		$rTracker = (string) file_get_contents(MAIN_HOME . 'Domain/Stream/ConnectionTracker.php');
+		$rSeam = substr($rTracker, (int) strpos($rTracker, 'public static function acceptedIP('), 800);
+		$this->assertStringContainsString('self::acceptedLineIP(', $rSeam);
 	}
 }
