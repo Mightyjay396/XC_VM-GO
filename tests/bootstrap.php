@@ -88,3 +88,4 @@ require_once __DIR__ . '/Unit/M3uParser/ExtCustomTag.php';
 
 // Test support: in-memory SQLite harness for DB-touching repositories/services.
 require_once __DIR__ . '/Support/TestDb.php';
+require_once __DIR__ . '/Support/ClusterReference.php';
