@@ -135,6 +135,7 @@ final class LbProvisionClusterTest extends TestCase {
 		$this->assertSame(self::SID, $rInstall['server_id']);
 		$this->assertSame(['http://10.0.0.1:25461/cluster/v1/'], $rInstall['main_urls']);
 		$this->assertSame($this->rCrypto->info()['panel_sign_pub'], base64_decode($rInstall['panel_sign_pub']));
+		$this->assertSame($this->rCrypto->info()['panel_box_pub'], base64_decode($rInstall['panel_box_pub']), 'the box key re-keys are sealed to');
 		// The token opens only with the node's per-epoch key and carries the panel's signature.
 		$rBody = Seal::open((string) $this->rEphSk, 'token', $rNode['node_uuid'], (string) base64_decode($rInstall['token_sealed']));
 		$this->assertNotNull($rBody);

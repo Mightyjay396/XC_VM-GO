@@ -26,6 +26,20 @@ final class NonceStore {
 		}
 	}
 
+	/**
+	 * Consume a value issued earlier with claim() (a `challenge`): true once,
+	 * while it is live. Atomic without affected-row counts: the consumption is
+	 * itself a claim under a sibling key, so of two concurrent callers exactly
+	 * one inserts it. The issued row is left to expire with the used marker.
+	 */
+	public static function consume(string $rNode, string $rNonce): bool {
+		self::db()->query('SELECT `exp` FROM `cluster_nonces` WHERE `node` = ? AND `nonce` = ? AND `exp` >= ?;', $rNode, $rNonce, ClusterClock::now());
+		if (self::db()->num_rows() === 0) {
+			return false;
+		}
+		return self::claim('used:' . $rNode, $rNonce);
+	}
+
 	public static function purge(): void {
 		self::db()->query('DELETE FROM `cluster_nonces` WHERE `exp` < ?;', ClusterClock::now());
 	}

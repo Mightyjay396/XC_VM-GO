@@ -228,6 +228,72 @@ final class ClusterApiTest extends TestCase {
 		return $rTok['keys'];
 	}
 
+	/** GET challenge?cn= as the agent does: the signed document's challenge. */
+	private function challenge(): string {
+		$rRes = ClusterApi::handle($this->rCrypto, ['method' => 'GET', 'path' => '/cluster/v1/challenge', 'query' => 'cn=' . $this->rUuid, 'headers' => []], $this->rSettings, $this->rMain);
+		$this->assertSame(200, $rRes['status'], $rRes['body']);
+		$this->assertTrue(PanelSig::verify($this->rCrypto->info()['panel_sign_pub'], 'hlt', $rRes['body'], (string) Enc::b64urlDecode($rRes['headers']['X-XCVM-Panel-Sig'])));
+		return (string) base64_decode(json_decode($rRes['body'], true)['challenge']);
+	}
+
+	/**
+	 * POST token_rekey as the agent does: epoch 0, no MAC, the body SEALed to
+	 * the panel box key under the request context, node-signed.
+	 *
+	 * @param array<string, mixed> $rExtra Payload fields to add or override.
+	 * @param array<string, callable> $rTamper
+	 * @return array{0: array, 1: array} response, request
+	 */
+	private function rekey(string $rChallenge, string $rEphSk, array $rExtra = [], array $rTamper = []): array {
+		$rNonce = random_bytes(16);
+		$rTs = ClusterClock::nowMs();
+		$rPath = Canonical::PATH_PREFIX . 'token_rekey';
+		$rCtx = Canonical::request([
+			'proto' => 1, 'agent' => 'xc_agent/0.1', 'method' => 'POST', 'path' => $rPath, 'query' => '',
+			'content_type' => 'application/octet-stream', 'content_encoding' => '', 'node' => $this->rUuid,
+			'epoch' => 0, 'ts_ms' => $rTs, 'nonce' => $rNonce,
+		]);
+		$rPayload = $rExtra + [
+			'challenge' => base64_encode($rChallenge), 'eph_pub' => base64_encode(sodium_crypto_scalarmult_base($rEphSk)),
+			'instance_id' => 'inst-a', 'boot_id' => 'boot-9', 'agent_version' => '0.1.2',
+		];
+		$rBody = Seal::seal($this->rCrypto->info()['panel_box_pub'], 'rekey', $rCtx, (string) json_encode($rPayload));
+		$rHeaders = [
+			'X-XCVM-Proto' => '1', 'X-XCVM-Agent' => 'xc_agent/0.1', 'X-XCVM-Node' => $this->rUuid,
+			'X-XCVM-Epoch' => '0', 'X-XCVM-Ts' => (string) $rTs, 'X-XCVM-Nonce' => bin2hex($rNonce),
+			'Content-Type' => 'application/octet-stream',
+			'X-XCVM-Node-Sig' => bin2hex(NodeSig::sign($this->rNodeSk, 'request', $rCtx . hash('sha256', $rBody, true))),
+		];
+		if (isset($rTamper['headers'])) {
+			$rHeaders = $rTamper['headers']($rHeaders);
+		}
+		$rReq = ['method' => 'POST', 'path' => $rPath, 'query' => '', 'headers' => $rHeaders, 'body' => $rBody, 'ip' => '10.0.0.5'];
+		return [ClusterApi::handle($this->rCrypto, $rReq, $this->rSettings, $this->rMain), $rReq];
+	}
+
+	/** Verify a re-key reply as the agent does: panel-signed `pre`, about this request; @return array{doc: array, keys: array} the new epoch. */
+	private function rekeyed(array $rRes, array $rReq, string $rEphSk): array {
+		$this->assertSame(200, $rRes['status'], $rRes['body']);
+		$rSig = Enc::b64urlDecode($rRes['headers']['X-XCVM-Panel-Sig']);
+		$this->assertTrue(PanelSig::verify($this->rCrypto->info()['panel_sign_pub'], 'pre', $rRes['body'], (string) $rSig), 're-key reply signature');
+		$rDoc = json_decode($rRes['body'], true);
+		$this->assertSame('xcvm-rekey', $rDoc['typ']);
+		$this->assertSame($this->rUuid, $rDoc['node']);
+		$this->assertSame($rReq['headers']['X-XCVM-Nonce'], $rDoc['req_nonce']);
+		$rTok = $this->openToken((string) base64_decode($rDoc['token_sealed']), $rEphSk);
+		$this->assertSame($rDoc['epoch'], $rTok['doc']['epoch']);
+		return $rTok;
+	}
+
+	/** An active node whose tokens are all gone (expiry without moving the clock, so it holds for the real extension too). */
+	private function expired(): array {
+		$rKeys = $this->active();
+		$this->rDb->query('DELETE FROM `cluster_node_epochs` WHERE `server_id` = 5');
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->denial($rRes, 401, 'TOKEN_EXPIRED', $rReq);
+		return $rKeys;
+	}
+
 	// ── Tests ────────────────────────────────────────────────────────────
 
 	public function testEnrolmentIssuesEpochOneAndClusterJson(): void {
@@ -488,5 +554,123 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame($this->rT0 + 60000, ClusterMeta::readyAtMs(), 'a restart restarts the silence clock');
 		$this->rDb->query("SELECT COUNT(*) AS `n` FROM `cluster_meta` WHERE `name` = 'panel_fp'");
 		$this->assertSame(1, (int) $this->rDb->get_row()['n']);
+	}
+
+	public function testRekeyAfterExpiryIssuesAFreshEpoch(): void {
+		$this->expired();
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($this->challenge(), $rEph);
+		$rTok = $this->rekeyed($rRes, $rReq, $rEph);
+		$this->assertSame(2, $rTok['doc']['epoch'], 'after the current epoch');
+		$this->assertSame(self::SID, $rTok['doc']['server_id']);
+
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 2, $rTok['keys']);
+		$this->reply($rRes, $rCtx, $rTok['keys']);
+		$rNode = NodeRegistry::byServer(self::SID);
+		$this->assertSame(2, (int) $rNode['epoch']);
+		$this->assertSame('boot-9', $rNode['boot_id']);
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_node_epochs` WHERE `server_id` = 5');
+		$this->assertSame(1, (int) $this->rDb->get_row()['n']);
+	}
+
+	public function testRekeyReplacesAnEpochWhoseReplyWasLost(): void {
+		$this->expired();
+		$rLost = random_bytes(32);
+		[$rRes] = $this->rekey($this->challenge(), $rLost);
+		$this->assertSame(200, $rRes['status']);
+		ClusterClock::fix($this->rT0 + 61000);
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($this->challenge(), $rEph);
+		$this->assertSame(3, $this->rekeyed($rRes, $rReq, $rEph)['doc']['epoch']);
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_node_epochs` WHERE `server_id` = 5');
+		$this->assertSame(1, (int) $this->rDb->get_row()['n'], 'the unused epoch 2 is gone');
+	}
+
+	public function testRekeyChallengeIsSingleUseAndIssued(): void {
+		$this->expired();
+		[$rRes, $rReq] = $this->rekey(random_bytes(32), random_bytes(32));
+		$this->denial($rRes, 401, 'CHALLENGE', $rReq);
+
+		$rChallenge = $this->challenge();
+		ClusterClock::fix($this->rT0 + 61000);
+		[$rRes] = $this->rekey($rChallenge, random_bytes(32));
+		$this->assertSame(200, $rRes['status']);
+		ClusterClock::fix($this->rT0 + 122000);
+		[$rRes, $rReq] = $this->rekey($rChallenge, random_bytes(32));
+		$this->denial($rRes, 401, 'CHALLENGE', $rReq);
+
+		// A challenge lives 180 s.
+		$rOld = $this->challenge();
+		ClusterClock::fix($this->rT0 + 122000 + 181000);
+		[$rRes, $rReq] = $this->rekey($rOld, random_bytes(32));
+		$this->denial($rRes, 401, 'CHALLENGE', $rReq);
+	}
+
+	public function testRekeyIsLimitedToOncePerMinute(): void {
+		$this->expired();
+		[$rRes] = $this->rekey($this->challenge(), random_bytes(32));
+		$this->assertSame(200, $rRes['status']);
+		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32));
+		$this->assertGreaterThan(0, $this->denial($rRes, 429, 'RATE_LIMITED', $rReq)['retry_after_ms']);
+	}
+
+	public function testRekeyNeedsTheNodeSignatureAndChargesNothingWithout(): void {
+		$this->expired();
+		$rChallenge = $this->challenge();
+		[$rRes, $rReq] = $this->rekey($rChallenge, random_bytes(32), [], ['headers' => static function ($h) {
+			$h['X-XCVM-Node-Sig'] = str_repeat('00', 64);
+			return $h;
+		}
+		]);
+		$this->denial($rRes, 401, 'BAD_NODE_SIG', $rReq);
+		// Neither the minute nor the challenge was spent.
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($rChallenge, $rEph);
+		$this->rekeyed($rRes, $rReq, $rEph);
+
+		// A MAC'd session header has no place in a re-key.
+		[$rRes] = $this->rekey($this->challenge(), random_bytes(32), [], ['headers' => static function ($h) {
+			$h['X-XCVM-Sig'] = str_repeat('00', 32);
+			return $h;
+		}
+		]);
+		$this->denial($rRes, 400, 'BAD_REQUEST');
+	}
+
+	public function testRekeyRefusedWithoutLicenceKeepsTheNode(): void {
+		if (!$this->rCrypto instanceof FakeClusterCrypto) {
+			$this->markTestSkipped('the licence cannot be withdrawn from the real extension mid-test');
+		}
+		$this->expired();
+		$this->rCrypto->rRefuseIssue = 'LICENCE';
+		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32));
+		$this->denial($rRes, 403, 'LICENCE_INVALID', $rReq);
+		$this->assertSame('active', NodeRegistry::byServer(self::SID)['state']);
+
+		// Re-licensed: the next minute's re-key goes through.
+		$this->rCrypto->rRefuseIssue = null;
+		ClusterClock::fix($this->rT0 + 61000);
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($this->challenge(), $rEph);
+		$this->rekeyed($rRes, $rReq, $rEph);
+	}
+
+	public function testRekeyFromAnotherInstanceQuarantines(): void {
+		$this->expired();
+		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32), ['instance_id' => 'inst-CLONE']);
+		$this->assertSame('quarantined', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state']);
+		$this->assertSame('quarantined', NodeRegistry::byServer(self::SID)['state']);
+
+		// A quarantined node waits for the admin.
+		ClusterClock::fix($this->rT0 + 61000);
+		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32));
+		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+	}
+
+	public function testRekeyOfARevokedNodeIsRefused(): void {
+		$this->expired();
+		$this->assertTrue(NodeRegistry::revoke(self::SID, $this->rCrypto));
+		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32));
+		$this->denial($rRes, 403, 'NODE_REVOKED', $rReq);
 	}
 }

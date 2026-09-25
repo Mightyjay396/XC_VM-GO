@@ -11,7 +11,7 @@ use XcVm\Core\Cluster\Crypto\SessionKeys;
 
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
- * token_refresh, hello, heartbeat). Transport-free: handle() takes the request
+ * token_refresh, token_rekey, hello, heartbeat). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -24,6 +24,9 @@ final class ClusterApi {
 	public const PROTO_MIN = 1;
 	public const PROTO_MAX = 1;
 
+	/** A node may re-key once per this many seconds. */
+	public const REKEY_INTERVAL = 60;
+
 	/** Largest request body accepted (nginx also caps at 8 MB). */
 	public const MAX_BODY = 8388608;
 
@@ -33,6 +36,7 @@ final class ClusterApi {
 		'challenge' => ['GET', false, null],
 		'enrol_complete' => ['POST', true, ['enrolling']],
 		'token_refresh' => ['POST', true, ['active', 'quarantined']],
+		'token_rekey' => ['POST', true, ['active']],
 		'hello' => ['POST', false, ['active', 'quarantined']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
@@ -61,6 +65,9 @@ final class ClusterApi {
 		}
 		if ($rOp === 'challenge') {
 			return self::challenge($rCrypto, (string) ($rReq['query'] ?? ''), $rSettings, $rMain);
+		}
+		if ($rOp === 'token_rekey') {
+			return self::tokenRekey($rCrypto, $rReq, $rStates);
 		}
 
 		// ── Authenticated ops ────────────────────────────────────────────
@@ -201,6 +208,103 @@ final class ClusterApi {
 			'epoch' => (int) $rIssued['epoch'], 'nbf' => (int) $rIssued['nbf'], 'exp' => (int) $rIssued['exp'],
 			'refresh_at' => (int) $rIssued['refresh_at'], 'main_time_ms' => ClusterClock::nowMs(),
 		]);
+	}
+
+	/**
+	 * `token_rekey`: recovery for a node whose tokens have all expired while
+	 * its keys are intact. There is no session, so the request carries no MAC:
+	 * it is node-signed (the enrolled key), its body is SEALed to the panel box
+	 * key under the request context, and it must return a challenge from
+	 * `GET challenge?cn=` once. The reply is panel-signed (`pre`, a granting
+	 * record: the extension signs it only under a valid licence) and names
+	 * this node and request; the token inside is sealed to the agent's new
+	 * per-epoch key.
+	 *
+	 * Order, as for session ops: nothing is recorded before the node signature
+	 * verifies. Then the nonce, the node state, the once-a-minute limit, the
+	 * body, the challenge, the attestation, and finally the licence (the mint).
+	 *
+	 * @param list<string> $rStates
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	private static function tokenRekey(ClusterCrypto $rCrypto, array $rReq, array $rStates): array {
+		$rH = Canonical::parseHeaders($rReq['headers']);
+		$rBody = (string) ($rReq['body'] ?? '');
+		if ($rH === null || $rH['sig'] !== null || $rH['epoch'] !== 0 || $rBody === '' || strlen($rBody) > 65536) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST');
+		}
+		if ($rH['proto'] < self::PROTO_MIN || $rH['proto'] > self::PROTO_MAX) {
+			return DenialFactory::deny($rCrypto, 426, 'PROTO', $rH['node'], $rH['nonce'], ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX]);
+		}
+		if (!Canonical::withinWindow($rH['ts_ms'], ClusterClock::nowMs())) {
+			return DenialFactory::deny($rCrypto, 401, 'CLOCK_SKEW', $rH['node'], $rH['nonce']);
+		}
+		$rNode = str_starts_with($rH['node'], 'sid:') ? null : NodeRegistry::byUuid($rH['node']);
+		if ($rNode === null) {
+			return DenialFactory::deny($rCrypto, 401, 'UNKNOWN_NODE', $rH['node'], $rH['nonce']);
+		}
+		if ($rNode['state'] === 'revoked') {
+			return DenialFactory::deny($rCrypto, 403, 'NODE_REVOKED', $rH['node'], $rH['nonce'], ['revoked_gen' => (int) $rNode['gen']]);
+		}
+		$rCtx = Canonical::request([
+			'proto' => $rH['proto'], 'agent' => $rH['agent'], 'method' => 'POST', 'path' => (string) $rReq['path'],
+			'query' => (string) ($rReq['query'] ?? ''), 'content_type' => self::header($rReq['headers'], 'Content-Type'),
+			'content_encoding' => self::header($rReq['headers'], 'Content-Encoding'), 'node' => $rH['node'],
+			'epoch' => 0, 'ts_ms' => $rH['ts_ms'], 'nonce' => $rH['nonce'],
+		]);
+		$rNodeSig = self::header($rReq['headers'], Canonical::H_NODE_SIG);
+		$rSig = preg_match('/^[0-9a-f]{128}$/', $rNodeSig) ? (string) hex2bin($rNodeSig) : '';
+		if (!NodeSig::verify((string) $rNode['node_sign_pub'], 'request', $rCtx . hash('sha256', $rBody, true), $rSig)) {
+			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
+		}
+		// Authenticated from here on.
+		if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
+			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+		}
+		if (!in_array($rNode['state'], $rStates, true)) {
+			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
+		}
+		// Once a minute, counted per attempt: the slot is a claim on this minute.
+		$rSlot = intdiv(ClusterClock::now(), self::REKEY_INTERVAL);
+		if (!NonceStore::claim('rekey:' . $rH['node'], substr(hash('sha256', (string) $rSlot, true), 0, 16))) {
+			return DenialFactory::deny($rCrypto, 429, 'RATE_LIMITED', $rH['node'], $rH['nonce'], ['retry_after_ms' => (($rSlot + 1) * self::REKEY_INTERVAL - ClusterClock::now()) * 1000]);
+		}
+		try {
+			$rPlain = $rCrypto->openSealed('rekey', $rBody, $rCtx);
+		} catch (ClusterRefusedException) {
+			$rPlain = null;
+		}
+		$rP = $rPlain === null ? null : json_decode($rPlain, true);
+		$rChallenge = is_array($rP) && is_string($rP['challenge'] ?? null) ? base64_decode((string) $rP['challenge'], true) : false;
+		$rEph = is_array($rP) && is_string($rP['eph_pub'] ?? null) ? base64_decode((string) $rP['eph_pub'], true) : false;
+		if ($rChallenge === false || strlen($rChallenge) !== 32 || $rEph === false || strlen($rEph) !== 32) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		if (!NonceStore::consume('chal:' . $rH['node'], substr(hash('sha256', $rChallenge, true), 0, 16))) {
+			return DenialFactory::deny($rCrypto, 401, 'CHALLENGE', $rH['node'], $rH['nonce']);
+		}
+		$rInstance = self::short($rP['instance_id'] ?? null);
+		if (!empty($rNode['instance_id']) && ($rInstance === null || !hash_equals((string) $rNode['instance_id'], $rInstance))) {
+			// Authenticated evidence of a clone, as in hello: the admin decides.
+			NodeRegistry::update((int) $rNode['server_id'], ['state' => 'quarantined', 'quarantine_reason' => 'instance_id changed (re-key)']);
+			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'rekey attest', 'was' => $rNode['instance_id'], 'now' => $rInstance], 'node');
+			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => 'quarantined']);
+		}
+		try {
+			$rIssued = TokenService::rekey($rCrypto, $rNode, $rEph);
+			NodeRegistry::update((int) $rNode['server_id'], [
+				'boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32),
+				'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(),
+			]);
+			return DenialFactory::signed($rCrypto, 200, 'pre', [
+				'v' => 1, 'typ' => 'xcvm-rekey', 'node' => $rH['node'], 'req_nonce' => bin2hex($rH['nonce']),
+				'token_sealed' => base64_encode((string) $rIssued['token_sealed']),
+				'epoch' => (int) $rIssued['epoch'], 'nbf' => (int) $rIssued['nbf'], 'exp' => (int) $rIssued['exp'],
+				'refresh_at' => (int) $rIssued['refresh_at'], 'main_time_ms' => ClusterClock::nowMs(),
+			]);
+		} catch (ClusterRefusedException $rE) {
+			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
+		}
 	}
 
 	private static function hello(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {

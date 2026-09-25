@@ -550,6 +550,7 @@ class LbInstallFlow {
 		$rInstall = (string) json_encode([
 			'server_id' => $rServerID,
 			'panel_sign_pub' => base64_encode($rPanelPub),
+			'panel_box_pub' => base64_encode((string) ($rCrypto->info()['panel_box_pub'] ?? '')),
 			'main_urls' => $rPolicy['main_urls'],
 			'policy_ver' => $rPolicy['policy_ver'],
 			'epoch' => 1,

@@ -5,8 +5,9 @@
 #
 # Runs only on an enrolled node (config/cluster/agent.json exists). One
 # supervisor at a time (flock), one agent at a time (the loop blocks on it). The
-# agent exits 3 when MAIN has stopped the node (revoked, or its token can no
-# longer be renewed): the supervisor then writes `stopped` and exits, and
+# agent exits 3 when MAIN has stopped the node (revoked, unknown, or its
+# enrolment never completed; an expired token re-keys instead): the
+# supervisor then writes `stopped` and exits, and
 # nothing restarts it until the node is enrolled again, which removes the file.
 SCRIPT=/home/xc_vm
 AGENT_DIR="$SCRIPT/bin/xc_agent"

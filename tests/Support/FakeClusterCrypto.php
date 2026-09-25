@@ -23,6 +23,9 @@ class FakeClusterCrypto extends ClusterCrypto {
 
 	public string $rB;
 
+	/** The panel box key (X25519) that pre-token bodies are sealed to. */
+	public string $rBoxSk;
+
 	public bool $rLicensed = true;
 
 	/** @var array<string, int> node uuid => generation floor */
@@ -40,6 +43,7 @@ class FakeClusterCrypto extends ClusterCrypto {
 		$this->rSeed = str_repeat("\x42", 32);
 		$this->rPrk = str_repeat("\x07", 32);
 		$this->rB = str_repeat("\x09", 16);
+		$this->rBoxSk = str_repeat("\x0b", 32);
 	}
 
 	public function info(): array {
@@ -47,7 +51,7 @@ class FakeClusterCrypto extends ClusterCrypto {
 		return [
 			'api' => 1, 'ext_version' => 'fake', 'licensed' => $this->rLicensed, 'kid' => bin2hex(substr($this->rB, 0, 4)),
 			'clock_ok' => true, 'initialised' => true, 'panel_sign_pub' => $rPub,
-			'panel_box_pub' => str_repeat("\x01", 32), 'panel_fp' => hash('sha256', $rPub, true),
+			'panel_box_pub' => sodium_crypto_scalarmult_base($this->rBoxSk), 'panel_fp' => hash('sha256', $rPub, true),
 		];
 	}
 
@@ -131,6 +135,20 @@ class FakeClusterCrypto extends ClusterCrypto {
 	}
 
 	public function sign(string $rTag, string $rPayload): string {
+		if (!$this->rLicensed && !in_array($rTag, \XcVm\Core\Cluster\Crypto\PanelSig::RESTRICTIVE_TAGS, true)) {
+			throw new ClusterRefusedException('LICENCE', 'cluster_sign');
+		}
 		return ClusterReference::panelSign($this->rSeed, $rTag, $rPayload);
+	}
+
+	public function openSealed(string $rPurpose, string $rSealed, string $rContext = ''): string {
+		if (!in_array($rPurpose, ['enrol', 'enrol_code', 'rekey'], true)) {
+			throw new ClusterRefusedException('PURPOSE', 'cluster_open_sealed');
+		}
+		$rPlain = Seal::open($this->rBoxSk, $rPurpose, $rContext, $rSealed);
+		if ($rPlain === null) {
+			throw new ClusterRefusedException('SEAL', 'cluster_open_sealed');
+		}
+		return $rPlain;
 	}
 }
