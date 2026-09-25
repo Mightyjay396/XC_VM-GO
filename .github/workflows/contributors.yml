@@ -30,7 +30,9 @@ jobs:
     if: github.repository == 'Vateron-Media/XC_VM'
     runs-on: ubuntu-latest
     steps:
-      - uses: akhilmhdh/contributors-readme-action@v2.3.11
+      # Pinned to a commit SHA: this third-party action receives an admin PAT
+      # that bypasses branch protection, so a moved tag must not change the code.
+      - uses: akhilmhdh/contributors-readme-action@83ea0b4f1ac928fbfe88b9e8460a932a528eb79f # v2.3.11
         with:
           readme_path: CONTRIBUTORS.md
           use_username: true
