@@ -17,6 +17,63 @@ use XcVm\Core\Util\Encryption;
 
 class HLSGenerator {
 	/**
+	 * Tokenize a stream's on-disk HLS playlist (`STREAMS_PATH/<id>_.m3u8`, written
+	 * by the stream's own ffmpeg or PHP producer). This is the pre-fanout client
+	 * path, used only while fanout is switched off (FanoutMode): each segment
+	 * (and an fMP4 init map) becomes a per-segment auth'd /hls/ URL that
+	 * segment.php serves from STREAMS_PATH.
+	 *
+	 * @param array       $rSettings  Settings (encrypt_hls, allow_cdn_access, live_streaming_pass, secure_stream_tokens).
+	 * @param string      $rM3U8      Path to the on-disk playlist.
+	 * @return string|false Tokenized playlist, or false when it is missing or lists no segment.
+	 */
+	public static function generateHLS($rSettings, $rM3U8, $rUsername, $rPassword, $rStreamID, $rUUID, $rIP, $rIsHMAC = null, $rIdentifier = '', $rVideoCodec = 'h264', $rOnDemand = 0, $rServerID = null, $rProxyID = null) {
+		if (!is_file($rM3U8)) {
+			return false;
+		}
+		$rSource = (string) @file_get_contents($rM3U8);
+		$rPrefix = ($rProxyID ? '/' . md5($rProxyID . '_' . $rServerID . '_' . OPENSSL_EXTRA) : '');
+		$rSecure = !empty($rSettings['secure_stream_tokens']);
+		$rURL = static function (string $rSegment) use ($rSettings, $rUsername, $rPassword, $rStreamID, $rUUID, $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, $rOnDemand, $rPrefix, $rSecure): string {
+			if ($rIsHMAC) {
+				$rPayload = 'HMAC#' . $rIsHMAC . '/' . $rIdentifier . '/' . $rIP . '/' . $rStreamID . '/' . $rSegment . '/' . $rUUID . '/' . SERVER_ID . '/' . $rVideoCodec . '/' . $rOnDemand;
+			} else {
+				$rPayload = $rUsername . '/' . $rPassword . '/' . $rIP . '/' . $rStreamID . '/' . $rSegment . '/' . $rUUID . '/' . SERVER_ID . '/' . $rVideoCodec . '/' . $rOnDemand;
+			}
+			$rToken = Encryption::mintToken($rPayload, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, $rSecure);
+			return !empty($rSettings['allow_cdn_access'])
+				? $rPrefix . '/hls/' . $rSegment . '?token=' . $rToken
+				: $rPrefix . '/hls/' . $rToken;
+		};
+
+		// Segment lines, one at a time (a blanket str_replace of each name also
+		// rewrote any other line that contained it, e.g. 1_1.ts inside 11_1.ts).
+		$rReplaced = 0;
+		$rSource = preg_replace_callback('/^([^#\r\n][^\r\n]*\.(?:ts|m4s))$/m', static function ($rM) use ($rURL, &$rReplaced) {
+			$rReplaced++;
+			return $rURL(basename(trim($rM[1])));
+		}, $rSource);
+		if ($rReplaced === 0) {
+			return false;
+		}
+
+		$rSource = preg_replace_callback('/#EXT-X-MAP:URI="([^"]+)"/', static function ($rM) use ($rURL) {
+			return '#EXT-X-MAP:URI="' . $rURL(basename($rM[1])) . '"';
+		}, $rSource);
+
+		if (!empty($rSettings['encrypt_hls'])) {
+			$rIVFile = STREAMS_PATH . intval($rStreamID) . '_.iv';
+			if (is_file($rIVFile)) {
+				$rKeyToken = Encryption::mintToken($rIP . '/' . $rStreamID, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, $rSecure);
+				$rKeyLine = '#EXT-X-KEY:METHOD=AES-128,URI="' . $rPrefix . '/key/' . $rKeyToken . '",IV=0x' . bin2hex((string) file_get_contents($rIVFile));
+				$rSource = preg_replace('/(#EXTM3U\r?\n)/', '$1' . $rKeyLine . "\n", $rSource, 1);
+			}
+		}
+
+		return $rSource;
+	}
+
+	/**
 	 * Tokenize the xc_fanout daemon's in-RAM HLS playlist (ADR 0003, Phase B).
 	 * The daemon lists plain segments by sequence (`<seq>.ts`); each is rewritten
 	 * into a per-segment auth'd URL with a segment name marked as a daemon segment

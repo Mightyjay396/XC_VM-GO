@@ -2,6 +2,10 @@
 
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Util\Encryption;
+use XcVm\Streaming\AsyncFileOperations;
+use XcVm\Streaming\Codec\FfmpegPaths;
+use XcVm\Streaming\Delivery\SignalSender;
+use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
  * HLS segment delivery endpoint
@@ -109,11 +113,21 @@ if (isset($_GET['token'])) {
 					exit();
 				}
 
-				// Client HLS is daemon-only (ADR 0003, Phase E). A LIVE segment that
-				// is not a daemon token ("<id>_d<seq>.ts", handled above) is no longer
-				// served from the on-disk tmpfs HLS — those files stay only for
-				// timeshift/thumbnail/.analyse/MonitorCommand, never for clients.
-				generate404();
+				// With fanout on, client HLS is daemon-only (ADR 0003, Phase E): a LIVE
+				// segment that is not a daemon token ("<id>_d<seq>.ts", handled above)
+				// is not served from the on-disk HLS, which stays for timeshift,
+				// thumbnails, .analyse and MonitorCommand.
+				if (!FanoutMode::legacyDelivery($rSettings)) {
+					generate404();
+				}
+
+				// Fanout switched off (or the licence denies it): the pre-fanout path. The playlist live.php
+				// built (HLSGenerator::generateHLS) names the on-disk segments.
+				$rSegment = STREAMS_PATH . $rSegmentID;
+				$rSegmentData = explode('_', $rSegmentID);
+				if (!file_exists($rSegment) || $rSegmentData[0] != $rStreamID) {
+					generate404();
+				}
 			}
 
 			if (!file_exists(CONS_TMP_PATH . $rUUID)) {
@@ -135,9 +149,76 @@ if (isset($_GET['token'])) {
 				header('Content-Type: video/mp2t');
 			}
 
+			if ($rType == 'LIVE') {
+				// Fanout off only (see above): an on-disk live segment.
+				if ($rOnDemand) {
+					$rSettings['encrypt_hls'] = false;
+				}
+
+				// A pending admin "send message" for this viewer: burn it onto
+				// this segment (the daemon does this when fanout is on).
+				if (file_exists(SIGNALS_PATH . $rUUID)) {
+					$rSignalData = json_decode(file_get_contents(SIGNALS_PATH . $rUUID), true);
+
+					if (is_array($rSignalData) && ($rSignalData['type'] ?? '') == 'signal') {
+						FfmpegPaths::resolve((string) ($rSettings['ffmpeg_cpu'] ?? ''), $rSettings['ffmpeg_gpu'] ?? null);
+						$rFFMPEG_CPU = FfmpegPaths::cpu();
+
+						if ($rSettings['encrypt_hls']) {
+							$rKey = file_get_contents(STREAMS_PATH . $rStreamID . '_.key');
+							$rIV = file_get_contents(STREAMS_PATH . $rStreamID . '_.iv');
+							$rData = SignalSender::sendSignal($rFFMPEG_CPU, $rSignalData, basename($rSegment), $rVideoCodec, true);
+							echo openssl_encrypt($rData, 'aes-128-cbc', $rKey, OPENSSL_RAW_DATA, $rIV);
+						} else {
+							SignalSender::sendSignal($rFFMPEG_CPU, $rSignalData, basename($rSegment), $rVideoCodec);
+						}
+
+						unlink(SIGNALS_PATH . $rUUID);
+
+						exit();
+					}
+				}
+
+				if ($rSettings['encrypt_hls']) {
+					// Encrypt on first read, once per segment: the first request
+					// writes <segment>.enc while others wait on the .enc_write marker.
+					if (file_exists($rSegment . '.enc_write')) {
+						if (file_exists(STREAMS_PATH . $rStreamID . '_.dur')) {
+							$rWaitSeconds = intval(file_get_contents(STREAMS_PATH . $rStreamID . '_.dur')) * 2;
+						} else {
+							$rWaitSeconds = $rSettings['seg_time'] * 2;
+						}
+
+						$rStartWait = microtime(true);
+						$rTimeout = max(1, $rWaitSeconds);
+						while (file_exists($rSegment . '.enc_write') && !file_exists($rSegment . '.enc') && (microtime(true) - $rStartWait) < $rTimeout) {
+							AsyncFileOperations::efficientSleep(100000);
+						}
+					} elseif (!file_exists($rSegment . '.enc')) {
+						ignore_user_abort(true);
+						touch($rSegment . '.enc_write');
+						$rKey = file_get_contents(STREAMS_PATH . $rStreamID . '_.key');
+						$rIV = file_get_contents(STREAMS_PATH . $rStreamID . '_.iv');
+						$rData = openssl_encrypt(file_get_contents($rSegment), 'aes-128-cbc', $rKey, OPENSSL_RAW_DATA, $rIV);
+						file_put_contents($rSegment . '.enc', $rData);
+						unset($rData);
+						unlink($rSegment . '.enc_write');
+						ignore_user_abort(false);
+					}
+
+					if (!file_exists($rSegment . '.enc')) {
+						generate404();
+					}
+					header('X-Accel-Redirect: /xc_hls/' . rawurlencode(basename($rSegment) . '.enc'));
+				} else {
+					header('X-Accel-Redirect: /xc_hls/' . rawurlencode(basename($rSegment)));
+				}
+
+				exit();
+			}
+
 			// ARCHIVE (timeshift catch-up) segments are on-disk files, served here.
-			// Live HLS is daemon-only now (handled above, else 404), so only archive
-			// requests reach this point. Offset-read a partial first segment, else readfile.
+			// Offset-read a partial first segment, else readfile.
 			if (0 < $rOffset) {
 				header('Content-Length: ' . ($rFilesize - $rOffset));
 				$rFP = @fopen($rSegment, 'rb');

@@ -54,9 +54,13 @@ src/Streaming/
 ├── Delivery/
 │   ├── HLSGenerator.php
 │   ├── OffAirHandler.php
+│   ├── SegmentReader.php     # fanout off: TS chase-read segment picking
+│   ├── SignalSender.php      # fanout off: send-message overlay
 │   └── StreamRedirector.php
 ├── Fanout/
-│   └── FanoutClient.php
+│   ├── FanoutClient.php
+│   ├── FanoutMode.php        # the fanout_enabled master switch
+│   └── IngestFeeder.php
 ├── Health/
 │   └── ProcessChecker.php
 ├── Lifecycle/
@@ -197,7 +201,8 @@ Main delivery endpoint (~650 lines):
 2. Resolve server/proxy: `StreamAuth::checkAccess()` + `ProxySelector::availableProxy()`.
 3. Enforce connection limits: `StreamAuth::validateConnections()`.
 4. Create connection record: `ConnectionTracker::createConnection()`.
-5. Hand delivery to the **`xc_fanout` daemon** (see below): PHP emits an
+5. Hand delivery to the **`xc_fanout` daemon** (see below; with fanout
+   switched off, see [Switching fanout off](#switching-fanout-off)): PHP emits an
    `X-Accel-Redirect` and exits the byte path — nginx streams the bytes.
    - **TS:** `X-Accel-Redirect: /xc_fanout/<id>?c=<uuid>&prebuffer=N` (nginx
      rewrites to the daemon's `/live/<id>`).
@@ -308,6 +313,44 @@ database write; the daemon runs what it is handed.
 
 The daemon-side runbook — enabling, verifying, rollback, the remuxer's exit codes — is
 `docs/en/09-encoder-supervision.md` in the `XC_VM_Fanout` repository.
+
+#### Switching fanout off
+
+`settings.fanout_enabled` (the **Fanout Delivery** toggle beside the other fanout settings, default
+on; migration `027`) is the master switch, read through
+`Streaming\Fanout\FanoutMode`. Switched off:
+
+- **The daemon stops on every node.** `FanoutMode::applyToNode()` writes the flag
+  file `bin/xc_fanout/disabled`, then kills `run.sh` first (so it cannot respawn
+  the daemon) and `xc_fanout` second. It runs on MAIN when the settings are
+  saved and on every node from `RootSignalsCronJob` within a minute. The
+  RootSignals keepalive and the hourly `fanout_binary` self-heal skip the daemon
+  while the flag is there. So do `service boot` and `run.sh`, which cannot read
+  settings and check the flag file instead. Switched back on, the flag goes
+  and the keepalive starts `run.sh` again.
+- **Every daemon call behaves as "daemon down".** `LicenseGate::fanoutUsable()`
+  and every `FanoutClient` control-socket call check the switch. `IngestFeeder`
+  becomes a no-op, so the PHP producers (LLOD, loopback, delay) keep only their
+  on-disk HLS. Supervision falls back to `MonitorCommand`. `fanout_sync` stops
+  writing the daemon config and closes the daemon-served (`pid = 0`) connection
+  rows the stopped daemon left behind.
+- **Viewers take the pre-fanout paths** (`FanoutMode::legacyDelivery()`, which
+  is also true when the licence denies fanout):
+  - **HLS:** `live.php` serves `HLSGenerator::generateHLS()` over the on-disk
+    `<id>_.m3u8`. `segment.php` serves `<id>_<n>.ts` from `STREAMS_PATH` through
+    `X-Accel-Redirect: /xc_hls/…`, AES-128-encrypting on first read when
+    `encrypt_hls` is on.
+  - **TS:** `live.php` chase-reads the on-disk segments (`SegmentReader`) in the
+    FPM worker, for the life of the connection.
+  - **Proxy streams:** `StreamProcess::startProxy()` runs `ProxyCommand`
+    (`XC_VMProxy[<id>]`). It pulls the source once and sends datagrams to each
+    viewer's unix socket under `CONS_TMP_PATH/<id>/`, which `live.php` relays to
+    the client. It exits a few seconds after its last viewer.
+  - **Send message:** the signal file under `SIGNALS_PATH` is burned onto the
+    viewer's next segment by `SignalSender`.
+
+With fanout **on**, a daemon that is merely down still gives not-on-air until the
+keepalive restarts it (about 2 s). Delivery never falls back per request.
 
 #### Send-message overlay
 

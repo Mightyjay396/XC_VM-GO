@@ -171,6 +171,18 @@ class StreamProcess {
 	}
 
 	/**
+	 * Start the pre-fanout proxy producer (ProxyCommand) for a proxy stream.
+	 * Used by live.php only while fanout is switched off (FanoutMode).
+	 *
+	 * @param int $rStreamID Stream id.
+	 * @return bool Always true (the producer is started in the background).
+	 */
+	public static function startProxy($rStreamID) {
+		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php proxy ' . intval($rStreamID) . ' >/dev/null 2>/dev/null &');
+		return true;
+	}
+
+	/**
 	 * Start thumbnail generation for a stream.
 	 *
 	 * @param int $rStreamID Stream id.

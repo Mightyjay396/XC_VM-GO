@@ -86,7 +86,7 @@ These commands use `DaemonTrait` and run continuously via `while(true)` loops:
 
 | Command | Class | Description |
 | --- | --- | --- |
-| `proxy` | `ProxyCommand` | MPEG-TS stream proxying via sockets |
+| `proxy` | `ProxyCommand` | MPEG-TS stream proxying via sockets — proxy streams while fanout is switched off (started by `live.php`) |
 | `archive` | `ArchiveCommand` | TV Archive — record stream into segments |
 | `created` | `CreatedCommand` | Created Channel — compose channel from sources |
 | `delay` | `DelayCommand` | Delay HLS stream playback |
