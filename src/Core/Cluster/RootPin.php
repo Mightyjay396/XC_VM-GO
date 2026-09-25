@@ -55,6 +55,12 @@ final class RootPin {
 	 */
 	public static function read(): ?array {
 		$rDir = self::dir();
+		// stat() is cached per literal path string (not per resolved file), so a
+		// permission change made via a differently-formed path (or simply a
+		// repeated call within this same long-running process, e.g. the drain
+		// loop in ClusterRootCommand) would otherwise go unnoticed for the rest
+		// of the process — unacceptable for a trust check.
+		clearstatcache(true, $rDir);
 		$rStat = @stat($rDir);
 		if ($rStat === false || is_link(rtrim($rDir, '/')) || ($rStat['mode'] & 0022) !== 0 || (self::$rDir === null && $rStat['uid'] !== 0)) {
 			return null;
