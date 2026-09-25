@@ -42,6 +42,8 @@ LB_DIRS_TO_REMOVE := \
 	bin/nginx/conf/codes \
 	Domain/User \
 	Domain/Device \
+	Domain/Cluster \
+	Public/cluster \
 	Public/Controllers/Admin \
 	Public/Controllers/Player \
 	Public/Controllers/PlayerV2 \
@@ -78,6 +80,7 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/DbMigrateCommand.php \
 	Cli/Commands/CacheHandlerCommand.php \
 	Cli/Commands/ServerInstallCommand.php \
+	Cli/Commands/ClusterInitCommand.php \
 	Cli/Commands/ServerSyncOpensslExtraCommand.php \
 	Cli/Commands/LbInstallFlow.php \
 	Cli/Commands/ProxyInstallFlow.php \

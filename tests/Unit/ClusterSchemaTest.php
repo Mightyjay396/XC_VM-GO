@@ -9,7 +9,7 @@ use PHPUnit\Framework\TestCase;
  * where CI has no database.
  */
 final class ClusterSchemaTest extends TestCase {
-	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes'];
+	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes', '035_add_cluster_epoch_eph'];
 
 	private function src(string $rPath): string {
 		return (string) file_get_contents(dirname(__DIR__, 2) . '/src/' . $rPath);
@@ -30,6 +30,25 @@ final class ClusterSchemaTest extends TestCase {
 
 	public function testClusterTablesMatchDatabaseSql(): void {
 		$rInstall = $this->tables($this->src('bin/install/database.sql'));
+		// Columns a later migration ALTERs into a table: present in database.sql,
+		// absent from the migration that created the table.
+		$rAdded = [];
+		foreach (self::MIGRATIONS as $rName) {
+			if (preg_match_all('/ALTER TABLE `([a-z_]+)` ADD COLUMN IF NOT EXISTS `([a-z_]+)`/', $this->src('migrations/database/up/' . $rName . '.sql'), $rM, PREG_SET_ORDER)) {
+				foreach ($rM as [, $rTable, $rColumn]) {
+					$rAdded[$rTable][] = $rColumn;
+				}
+			}
+		}
+		foreach ($rAdded as $rTable => $rColumns) {
+			if (!isset($rInstall[$rTable])) {
+				continue;
+			}
+			foreach ($rColumns as $rColumn) {
+				$this->assertStringContainsString('`' . $rColumn . '`', $rInstall[$rTable], $rTable . '.' . $rColumn);
+				$rInstall[$rTable] = (string) preg_replace('/\n\s*`' . $rColumn . '` [^\n]*/', '', $rInstall[$rTable]);
+			}
+		}
 		$rCount = 0;
 		foreach (self::MIGRATIONS as $rName) {
 			foreach ($this->tables($this->src('migrations/database/up/' . $rName . '.sql')) as $rTable => $rBody) {

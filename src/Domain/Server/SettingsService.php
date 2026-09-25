@@ -7,6 +7,7 @@ use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Localization\Translator;
+use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Fanout\FanoutConfig;
 use XcVm\Streaming\Fanout\FanoutMode;
@@ -72,6 +73,16 @@ class SettingsService {
 			$rEnv['nodes_https_ok'] = !$db->query("SELECT 1 FROM `cluster_nodes` WHERE `state` = 'active' LIMIT 1;") || $db->num_rows() === 0;
 		}
 		[$rValues, $rErrors] = ClusterSettings::normalize($rKeys, $rMain, $rCurrent, $rEnv);
+		if (($rValues['cluster_api_enabled'] ?? 0) === 1 && empty($rCurrent['cluster_api_enabled'])) {
+			// Create the cluster root from php-fpm, so its files belong to the
+			// user that serves /cluster/v1/. Idempotent.
+			try {
+				ClusterMeta::init(ClusterCryptoFactory::create());
+			} catch (\Throwable) {
+				unset($rValues['cluster_api_enabled']);
+				$rErrors[] = ['cluster_api_enabled', 'cluster_error_extension'];
+			}
+		}
 		foreach (array_keys($rKeys) as $rKey) {
 			unset($rArray[$rKey]);
 		}

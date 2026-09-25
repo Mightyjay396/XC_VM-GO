@@ -187,6 +187,7 @@ CREATE TABLE IF NOT EXISTS `cluster_node_epochs` (
   `epoch` int(10) unsigned NOT NULL,
   `record` varbinary(2048) NOT NULL,
   `token_sealed` varbinary(4096) DEFAULT NULL,
+  `agent_eph_pub` binary(32) DEFAULT NULL,
   `nbf` int(11) NOT NULL,
   `exp` int(11) NOT NULL,
   `refresh_at` int(11) NOT NULL,

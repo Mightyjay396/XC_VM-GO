@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams) and Phase 1 (crypto contract, schema, settings) are implemented; Phases 2–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and MAIN's side of Phase 2 (the API, below) are implemented. The Go agent, SSH enrolment wiring and Phases 3–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -72,6 +72,47 @@ The plan numbers its Phase 1 migrations 026–032. 026 and 027 were already take
 - `https_required` without working HTTPS;
 - enabling the API without the extension;
 - `api` mode before the cutover.
+
+### MAIN's API (Phase 2)
+
+`Domain\Cluster\ClusterApi` serves `/cluster/v1/<op>` behind `Public/cluster/index.php`. It is transport-free and tested without a web server. `ClusterApiTest` runs every flow against a PHP fake of the extension's token half, and opt-in against a real test-hooks `xcvm_core` (`XCVM_CLUSTER_API_REAL=1`). All of it is MAIN only: the LB build strips `Domain/Cluster`, `Public/cluster` and `cluster:init`, and the LB nginx has no `/cluster/` route.
+
+| Op | Method | Auth | Node state | Reply |
+| --- | --- | --- | --- | --- |
+| `health` | GET | none; works without the DB and with the API disabled | any | panel-signed (`hlt`): time, proto range, panel keys |
+| `challenge?cn=` | GET | none | any | panel-signed (`hlt`): a single-use 32-byte challenge, licence state, policy |
+| `enrol_complete` | POST | session + node signature, epoch 1 only | `enrolling`, before `enrol_deadline` (30 min) | BOX: state, mode, flows, gen, policy |
+| `token_refresh` | POST | session + node signature | `active`, `quarantined` | BOX: the next epoch's sealed token |
+| `hello` | POST | session | `active`, `quarantined` | BOX: state, mode, flows, proto, policy |
+| `heartbeat` | POST | session | `active`, `quarantined` | BOX: state, mode, flows, `pending` |
+
+A session request is checked in this order. Nothing is written, not even the nonce, before the MAC and, for token operations, the node signature have verified:
+
+1. header syntax and the 8 MB body cap;
+2. protocol range (426 `PROTO` carries min and max);
+3. the ±90 s window;
+4. the node (`sid:` identities are refused until the code-based enrolment path exists) and its revocation;
+5. the extension's session for the named epoch (its refusals map to `NODE_REVOKED`, `LICENCE_INVALID`, `CLOCK` or `TOKEN_EXPIRED`);
+6. the request MAC;
+7. the node signature, verified with the key from the extension-sealed epoch record, never the DB row;
+8. the nonce claim;
+9. the node state;
+10. opening the BOX.
+
+Refusals are panel-signed (`den`) and name the node and the request nonce. `STARTING` (no extension) is the one unsigned reply, and agents treat it as a transport error.
+
+Token epochs:
+
+- Enrolment (`EnrolmentService::issueFirst`, called by the SSH install flow in a later increment) mints epoch 1.
+- `token_refresh` mints the next epoch for the agent's per-epoch key. A retry with the same key gets the same unused token back. A retry with another key replaces the unused epoch under the same number. A node therefore never holds more than two valid epochs. Migration 035 adds `cluster_node_epochs.agent_eph_pub` for this.
+- Re-enrolment and revocation raise the extension's generation floor before touching the database, so a restored row cannot open a session.
+
+Other behaviour:
+
+- `hello` from an active node with a different `instance_id` quarantines it. That is authenticated evidence of a clone.
+- The first authenticated heartbeat sets `servers.status = 1`. Heartbeat telemetry is kept in shadow in `tmp/cluster/tel_<id>.json`.
+- `cluster:init`, or enabling the API in Settings, creates the extension root and records the panel keys and `ready_at` in `cluster_meta`. Enabling it from Settings runs as php-fpm, so the files belong to the user that serves the API. Liveness counts silence from `max(last_seen_at, ready_at)`.
+- Under `cluster_transport = auto`, HTTPS URLs appear in the policy only once the self-probe result is recorded. Until then, `auto` publishes HTTP URLs.
 
 ### Extension updates
 
