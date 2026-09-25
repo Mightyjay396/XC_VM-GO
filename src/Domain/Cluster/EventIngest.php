@@ -4,6 +4,9 @@ namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\Redactor;
+use XcVm\Domain\Stream\ContentSink;
+use XcVm\Domain\Stream\RecordingFinalizer;
+use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamRowMerge;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -13,8 +16,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * order and at most once.
  *
  * ```text
- * p0  stream.state                  gap-checked: first_useq must be useq_p0 + 1,
- *                                   else 409 {expected_useq} and the node rewinds
+ * p0  stream.state, stream.worker,   gap-checked: first_useq must be useq_p0 + 1,
+ *     recording.state, vod.analysis else 409 {expected_useq} and the node rewinds
  * p1  log.<type>, skip              high-water: numbers at or below useq_p1 are
  *                                   skipped, gaps are fine (dropped logs)
  * ```
@@ -34,8 +37,28 @@ final class EventIngest {
 	/** Lane of each event type, and the flow it needs. */
 	private const TYPES = [
 		'stream.state' => ['p0', NodeRegistry::FLOW_STREAMS],
+		'stream.worker' => ['p0', NodeRegistry::FLOW_STREAMS],
+		'recording.state' => ['p0', NodeRegistry::FLOW_CONTENT],
+		'vod.analysis' => ['p0', NodeRegistry::FLOW_CONTENT],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
 	];
+
+	/** State columns that do not change what the stream cache holds. */
+	private const CACHE_NEUTRAL = ['progress_info', 'delay_available_at'];
+
+	/** @var (callable(int): mixed)|null */
+	private static $rOnStreamChanged = null;
+
+	/**
+	 * What runs when an event changed a stream's routing state (tests; by
+	 * default StreamProcess::updateStream, the cache signal the node used to
+	 * write itself). Null restores the default.
+	 *
+	 * @param (callable(int): mixed)|null $rHook
+	 */
+	public static function onStreamChanged(?callable $rHook): void {
+		self::$rOnStreamChanged = $rHook;
+	}
 
 	/**
 	 * @param array<string, mixed> $rNode cluster_nodes row
@@ -97,8 +120,15 @@ final class EventIngest {
 		if ($rLog !== null) {
 			return self::logs($rServerID, $rLog, $rData);
 		}
-		if ($rType === 'stream.state') {
-			return self::streamState($rServerID, $rData);
+		switch ($rType) {
+			case 'stream.state':
+				return self::streamState($rServerID, $rData);
+			case 'stream.worker':
+				return self::streamWorker($rServerID, $rData);
+			case 'recording.state':
+				return self::recordingState($rServerID, $rData);
+			case 'vod.analysis':
+				return self::vodAnalysis($rServerID, $rData);
 		}
 		// skip: the node dropped logs past its cap.
 		ClusterAudit::log('events.skip', $rServerID, ['count' => max(0, (int) ($rData['count'] ?? 0))], 'node');
@@ -117,12 +147,84 @@ final class EventIngest {
 			}
 		}
 		if (isset($rData['ssid'])) {
-			return StreamRowMerge::apply('`server_stream_id` = ? AND `server_id` = ?', $rFields, [(int) $rData['ssid'], $rServerID], self::db());
-		}
-		if (!isset($rData['stream_id']) || (isset($rData['server_id']) && (int) $rData['server_id'] !== $rServerID)) {
+			self::db()->query('SELECT `stream_id` FROM `streams_servers` WHERE `server_stream_id` = ? AND `server_id` = ?;', (int) $rData['ssid'], $rServerID);
+			$rStreamID = self::db()->num_rows() > 0 ? (int) self::db()->get_row()['stream_id'] : 0;
+			if ($rStreamID <= 0) {
+				return false; // another node's row
+			}
+		} elseif (!isset($rData['stream_id']) || (isset($rData['server_id']) && (int) $rData['server_id'] !== $rServerID)) {
 			return false; // another node's row
+		} else {
+			$rStreamID = (int) $rData['stream_id'];
 		}
-		return StreamRowMerge::mergeNode($rServerID, (int) $rData['stream_id'], $rFields, self::db());
+		if (!StreamRowMerge::mergeNode($rServerID, $rStreamID, $rFields, self::db())) {
+			return false;
+		}
+		if (array_diff(array_keys($rFields), self::CACHE_NEUTRAL) !== []) {
+			self::streamChanged($rStreamID);
+		}
+		return true;
+	}
+
+	/** @param array<string, mixed> $rData {stream_id, worker, pid} */
+	private static function streamWorker(int $rServerID, array $rData): bool {
+		$rWorker = $rData['worker'] ?? null;
+		if (!in_array($rWorker, ContentSink::WORKERS, true) || !is_int($rData['stream_id'] ?? null) || !is_int($rData['pid'] ?? null)) {
+			return false;
+		}
+		// Only for a stream whose worker runs on this node.
+		self::db()->query('SELECT COUNT(*) AS `n` FROM `streams` WHERE `id` = ? AND `' . $rWorker . '_server_id` = ?;', $rData['stream_id'], $rServerID);
+		if ((int) (self::db()->get_row()['n'] ?? 0) === 0) {
+			return false;
+		}
+		self::db()->query('UPDATE `streams` SET `' . $rWorker . '_pid` = ? WHERE `id` = ?;', $rData['pid'], $rData['stream_id']);
+		self::streamChanged($rData['stream_id']);
+		return true;
+	}
+
+	/** @param array<string, mixed> $rData {id, status} */
+	private static function recordingState(int $rServerID, array $rData): bool {
+		$rID = is_int($rData['id'] ?? null) ? $rData['id'] : 0;
+		$rStatus = $rData['status'] ?? null;
+		if ($rID <= 0 || !in_array($rStatus, [1, 2, 3], true)) {
+			return false;
+		}
+		if ($rStatus === RecordingFinalizer::DONE) {
+			return RecordingFinalizer::finish($rID, $rServerID);
+		}
+		self::db()->query('SELECT COUNT(*) AS `n` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rID, $rServerID);
+		if ((int) (self::db()->get_row()['n'] ?? 0) === 0) {
+			return false; // another node's recording
+		}
+		self::db()->query('UPDATE `recordings` SET `status` = ? WHERE `id` = ?;', $rStatus, $rID);
+		return true;
+	}
+
+	/** @param array<string, mixed> $rData {stream_id, props}: merged into MAIN's movie_properties */
+	private static function vodAnalysis(int $rServerID, array $rData): bool {
+		$rStreamID = is_int($rData['stream_id'] ?? null) ? $rData['stream_id'] : 0;
+		$rProps = is_array($rData['props'] ?? null) ? array_intersect_key($rData['props'], array_flip(ContentSink::ANALYSIS_KEYS)) : [];
+		if ($rStreamID <= 0 || $rProps === []) {
+			return false;
+		}
+		// Only a movie this node holds.
+		self::db()->query('SELECT `movie_properties` FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.`stream_id` = t1.`id` AND t2.`server_id` = ? WHERE t1.`id` = ? AND t1.`type` IN (2, 5);', $rServerID, $rStreamID);
+		if (self::db()->num_rows() === 0) {
+			return false;
+		}
+		$rCurrent = json_decode((string) self::db()->get_row()['movie_properties'], true);
+		$rMerged = array_replace(is_array($rCurrent) ? $rCurrent : [], $rProps);
+		self::db()->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?;', json_encode($rMerged, JSON_UNESCAPED_UNICODE), $rStreamID);
+		self::streamChanged($rStreamID);
+		return true;
+	}
+
+	private static function streamChanged(int $rStreamID): void {
+		if (self::$rOnStreamChanged !== null) {
+			(self::$rOnStreamChanged)($rStreamID);
+			return;
+		}
+		StreamProcess::updateStream($rStreamID);
 	}
 
 	/** @param array<string, mixed> $rData {rows} */

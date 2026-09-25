@@ -21,6 +21,7 @@ final class ClusterAdmin {
 		'commands' => NodeRegistry::FLOW_COMMANDS,
 		'logs' => NodeRegistry::FLOW_LOGS,
 		'streams' => NodeRegistry::FLOW_STREAMS,
+		'content' => NodeRegistry::FLOW_CONTENT,
 	];
 
 	/**
@@ -118,6 +119,8 @@ final class ClusterAdmin {
 				case 'logs_off':
 				case 'streams_on':
 				case 'streams_off':
+				case 'content_on':
+				case 'content_off':
 					$rNode = NodeRegistry::byServer($rServerID);
 					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
 						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];

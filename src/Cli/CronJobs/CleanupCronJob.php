@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Server\InstallCredentials;
+use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
 use XcVm\Domain\Stream\StreamStateWriter;
@@ -168,7 +169,7 @@ class CleanupCronJob implements CommandInterface {
 							if ($rResolution) {
 								$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 							}
-							$db->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?', json_encode($rMovieProperties, JSON_UNESCAPED_UNICODE), $rRow['id']);
+							ContentSink::movieProperties((int) $rRow['id'], $rMovieProperties, $db);
 							StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['bitrate' => $rBitrate, 'to_analyze' => 0, 'stream_status' => 0, 'stream_info' => json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible], $db);
 							StreamProcess::updateStream($rRow['id']);
 							echo 'VALID MOVIE' . "\n";

@@ -3,9 +3,13 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\AgentClient;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Domain\Stream\ContentSink;
+use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Codec\FfmpegPaths;
 
@@ -67,7 +71,7 @@ class RecordCommand implements CommandInterface {
 
 		if (($recordingData['start'] - 60 > time() || time() > $recordingData['end']) && !$recordingData['archive']) {
 			echo "Programme is not currently airing.\n";
-			$db->query('UPDATE `recordings` SET `status` = 3 WHERE `id` = ?;', $recordingID);
+			ContentSink::recordingState($recordingID, 3, $db);
 			@unlink(ARCHIVE_PATH . $recordingID . '.ts');
 			return 0;
 		}
@@ -81,7 +85,7 @@ class RecordCommand implements CommandInterface {
 			return 0;
 		}
 
-		$db->query('UPDATE `recordings` SET `status` = 1 WHERE `id` = ?;', $recordingID);
+		ContentSink::recordingState($recordingID, 1, $db);
 		$db->close_mysql();
 
 		while (ProcessManager::isStreamRunning($rPID, $recordingData['stream_id'])) {
@@ -151,7 +155,6 @@ class RecordCommand implements CommandInterface {
 	}
 
 	private function processRecording($recordingID, $recordingData): void {
-		$db = self::db();
 		if (!file_exists(ARCHIVE_PATH . $recordingID . '.ts') || filesize(ARCHIVE_PATH . $recordingID . '.ts') <= 0) {
 			echo "Recording size is 0 bytes.\n";
 			$this->finishRecording($recordingID, false);
@@ -159,34 +162,22 @@ class RecordCommand implements CommandInterface {
 		}
 
 		echo "Recording complete! Converting to MP4...\n";
-		if (!empty($recordingData['stream_icon'])) {
-			$recordingData['stream_icon'] = $this->downloadAndSaveImage($recordingData['stream_icon']);
+		$rIcon = empty($recordingData['stream_icon']) ? null : $this->downloadAndSaveImage($recordingData['stream_icon']);
+		// The VOD row comes first: its id names the file. On a node whose
+		// CONTENT flow is on, MAIN creates it (recording_complete, through the
+		// agent); otherwise it is created here, in MAIN's database, as before.
+		if (NodeFlows::on(NodeFlows::CONTENT)) {
+			$rReply = AgentClient::main('recording_complete', ['recording_id' => (int) $recordingID, 'stream_icon' => $rIcon]);
+			$rInsertID = (int) ($rReply['stream_id'] ?? 0);
+		} else {
+			$rInsertID = (int) RecordingFinalizer::create((int) $recordingID, SERVER_ID, $rIcon);
 		}
-		$rSeconds = intval($recordingData['end'] - $recordingData['start']);
-		$rImportArray = $this->verifyPostTable('streams');
-		$rImportArray['type'] = 2;
-		$rImportArray['stream_source'] = '[]';
-		$rImportArray['target_container'] = 'mp4';
-		$rImportArray['stream_display_name'] = $recordingData['title'];
-		$rImportArray['year'] = date('Y');
-		$rImportArray['movie_properties'] = ['kinopoisk_url' => null, 'tmdb_id' => null, 'name' => $recordingData['title'], 'o_name' => $recordingData['title'], 'cover_big' => $recordingData['stream_icon'], 'movie_image' => $recordingData['stream_icon'], 'release_date' => date('Y-m-d', $recordingData['start']), 'episode_run_time' => intval($rSeconds / 60), 'youtube_trailer' => null, 'director' => '', 'actors' => '', 'cast' => '', 'description' => trim($recordingData['description']), 'plot' => trim($recordingData['description']), 'age' => '', 'mpaa_rating' => '', 'rating_count_kinopoisk' => 0, 'country' => '', 'genre' => '', 'backdrop_path' => [], 'duration_secs' => $rSeconds, 'duration' => sprintf('%02d:%02d:%02d', $rSeconds / 3600, ($rSeconds / 60) % 60, $rSeconds % 60), 'video' => [], 'audio' => [], 'bitrate' => 0, 'rating' => 0];
-		$rImportArray['rating'] = 0;
-		$rImportArray['read_native'] = 0;
-		$rImportArray['movie_symlink'] = 0;
-		$rImportArray['remove_subtitles'] = 0;
-		$rImportArray['transcode_profile_id'] = 0;
-		$rImportArray['order'] = $this->getNextOrder();
-		$rImportArray['added'] = time();
-		$rImportArray['category_id'] = '[' . implode(',', array_map('intval', json_decode($recordingData['category_id'], true))) . ']';
-		$rPrepare = $this->prepareArray($rImportArray);
-		$rQuery = 'REPLACE INTO `streams`(' . $rPrepare['columns'] . ') VALUES(' . $rPrepare['placeholder'] . ');';
-		if (!$db->query($rQuery, ...$rPrepare['data'])) {
+		if ($rInsertID <= 0) {
 			echo "Failed to insert into database!\n";
 			$this->finishRecording($recordingID, false);
 			return;
 		}
 
-		$rInsertID = $db->last_insert_id();
 		shell_exec((FfmpegPaths::cpu() ?: FFMPEG_BIN_40) . " -i '" . ARCHIVE_PATH . $recordingID . '.ts' . "' -c:v copy -c:a copy '" . VOD_PATH . $rInsertID . '.mp4' . "'");
 		@unlink(ARCHIVE_PATH . $recordingID . '.ts');
 
@@ -195,20 +186,14 @@ class RecordCommand implements CommandInterface {
 			$this->finishRecording($recordingID, false);
 			return;
 		}
-
-		foreach (json_decode($recordingData['bouquets'], true) as $rBouquet) {
-			$this->addToBouquet($rBouquet, $rInsertID);
-		}
-		$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode([VOD_PATH . $rInsertID . '.mp4']), $rInsertID);
-		$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `pid`, `to_analyze`) VALUES(?, ?, NULL, 1, 1);', $rInsertID, SERVER_ID);
-		$db->query('UPDATE `recordings` SET `status` = 2, `created_id` = ? WHERE `id` = ?;', $rInsertID, $recordingID);
+		ContentSink::recordingDone((int) $recordingID, SERVER_ID);
 	}
 
 	private function finishRecording($recordingID, $success): void {
 		$db = self::db();
 		if (!$success) {
 			echo "Recording incomplete!\n";
-			$db->query('UPDATE `recordings` SET `status` = 3 WHERE `id` = ?;', $recordingID);
+			ContentSink::recordingState((int) $recordingID, 3, $db);
 			@unlink(ARCHIVE_PATH . $recordingID . '.ts');
 		}
 	}
@@ -238,90 +223,6 @@ class RecordCommand implements CommandInterface {
 			return 's:' . SERVER_ID . ':/images/' . $rFilename . '.' . $rExt;
 		}
 		return null;
-	}
-
-	private function getNextOrder(): int {
-		$db = self::db();
-		$db->query('SELECT MAX(`order`) AS `order` FROM `streams`;');
-		if ($db->num_rows() != 1) {
-			return 0;
-		}
-		return intval($db->get_row()['order']) + 1;
-	}
-
-	private function getBouquet($rID) {
-		$db = self::db();
-		$db->query('SELECT * FROM `bouquets` WHERE `id` = ?;', $rID);
-		if ($db->num_rows() != 1) {
-			return null;
-		}
-		return $db->get_row();
-	}
-
-	private function addToBouquet($rBouquetID, $rID): void {
-		$db = self::db();
-		$rBouquet = $this->getBouquet($rBouquetID);
-		if (!$rBouquet) {
-			return;
-		}
-		$rMovies = json_decode($rBouquet['bouquet_movies'], true);
-		if (!in_array($rID, $rMovies)) {
-			$rMovies[] = intval($rID);
-		}
-		$rMovies = '[' . implode(',', array_map('intval', $rMovies)) . ']';
-		$db->query('UPDATE `bouquets` SET `bouquet_movies` = ? WHERE `id` = ?;', $rMovies, $rBouquetID);
-	}
-
-	private function preparecolumn($rValue): string {
-		return strtolower(preg_replace('/[^a-z0-9_]+/i', '', $rValue));
-	}
-
-	private function prepareArray($rArray): array {
-		$UpdateData = $rColumns = $rPlaceholder = $rData = [];
-		foreach (array_keys($rArray) as $rKey) {
-			$rColumns[] = '`' . $this->preparecolumn($rKey) . '`';
-			$UpdateData[] = '`' . $this->preparecolumn($rKey) . '` = ?';
-		}
-		foreach (array_values($rArray) as $rValue) {
-			if (is_array($rValue)) {
-				$rValue = json_encode($rValue, JSON_UNESCAPED_UNICODE);
-			}
-			$rPlaceholder[] = '?';
-			$rData[] = $rValue;
-		}
-		return ['placeholder' => implode(',', $rPlaceholder), 'columns' => implode(',', $rColumns), 'data' => $rData, 'update' => implode(',', $UpdateData)];
-	}
-
-	private function verifyPostTable($rTable, $rData = [], $rOnlyExisting = false): array {
-		$db = self::db();
-		$rReturn = [];
-		$db->query('SELECT `column_name`, `column_default`, `is_nullable`, `data_type` FROM `information_schema`.`columns` WHERE `table_schema` = (SELECT DATABASE()) AND `table_name` = ? ORDER BY `ordinal_position`;', $rTable);
-		foreach ($db->get_rows() as $rRow) {
-			if ($rRow['column_default'] == 'NULL') {
-				$rRow['column_default'] = null;
-			}
-			$rForceDefault = false;
-			if ($rRow['is_nullable'] == 'NO' && !$rRow['column_default']) {
-				if (in_array($rRow['data_type'], ['int', 'float', 'tinyint', 'double', 'decimal', 'smallint', 'mediumint', 'bigint', 'bit'])) {
-					$rRow['column_default'] = 0;
-				} else {
-					$rRow['column_default'] = '';
-				}
-				$rForceDefault = true;
-			}
-			if (array_key_exists($rRow['column_name'], $rData)) {
-				if (empty($rData[$rRow['column_name']]) && !is_numeric($rData[$rRow['column_name']]) && is_null($rRow['column_default'])) {
-					$rReturn[$rRow['column_name']] = ($rForceDefault ? $rRow['column_default'] : null);
-				} else {
-					$rReturn[$rRow['column_name']] = $rData[$rRow['column_name']];
-				}
-			} else {
-				if (!$rOnlyExisting) {
-					$rReturn[$rRow['column_name']] = $rRow['column_default'];
-				}
-			}
-		}
-		return $rReturn;
 	}
 
 	private function checkRunning($recordingID): void {

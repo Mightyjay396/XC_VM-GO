@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\StreamUtils;
+use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\StreamProcess;
 
 /**
@@ -100,7 +101,7 @@ class ArchiveCommand implements CommandInterface {
 			$this->logStatus('Main stream PID is empty in DB, terminating current archive worker.');
 			posix_kill(getmypid(), 9);
 		}
-		$db->query('UPDATE `streams` SET `tv_archive_pid` = ? WHERE `id` = ?', getmypid(), $rStreamID);
+		ContentSink::workerPid((int) $rStreamID, 'tv_archive', getmypid(), $db);
 		StreamProcess::updateStream($rStreamID);
 		$this->logStatus('Registered archive PID in database: ' . getmypid());
 		$db->close_mysql();
