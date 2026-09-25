@@ -1,0 +1,61 @@
+<?php
+
+use PHPUnit\Framework\TestCase;
+
+/**
+ * The cluster schema exists twice: as migrations 028–034 for upgrades and in
+ * database.sql for fresh installs. Both were loaded into MariaDB 10.11 and
+ * compared column by column when written; this test keeps them from drifting
+ * where CI has no database.
+ */
+final class ClusterSchemaTest extends TestCase {
+	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes'];
+
+	private function src(string $rPath): string {
+		return (string) file_get_contents(dirname(__DIR__, 2) . '/src/' . $rPath);
+	}
+
+	/** @return array<string, string> table => column block */
+	private function tables(string $rSql): array {
+		preg_match_all('/CREATE TABLE IF NOT EXISTS `([a-z_]+)` \((.*?)\n\) ENGINE/s', $rSql, $rM);
+		return array_combine($rM[1], array_map('trim', $rM[2]));
+	}
+
+	public function testEveryMigrationHasADownFile(): void {
+		foreach (self::MIGRATIONS as $rName) {
+			$this->assertFileExists(dirname(__DIR__, 2) . '/src/migrations/database/up/' . $rName . '.sql');
+			$this->assertFileExists(dirname(__DIR__, 2) . '/src/migrations/database/down/' . $rName . '.sql');
+		}
+	}
+
+	public function testClusterTablesMatchDatabaseSql(): void {
+		$rInstall = $this->tables($this->src('bin/install/database.sql'));
+		$rCount = 0;
+		foreach (self::MIGRATIONS as $rName) {
+			foreach ($this->tables($this->src('migrations/database/up/' . $rName . '.sql')) as $rTable => $rBody) {
+				$this->assertArrayHasKey($rTable, $rInstall, $rTable . ' missing from database.sql');
+				$this->assertSame($rBody, $rInstall[$rTable], $rTable);
+				$rCount++;
+			}
+		}
+		$this->assertSame(11, $rCount);
+	}
+
+	public function testSettingsColumnsMatchDatabaseSql(): void {
+		preg_match_all('/ADD COLUMN IF NOT EXISTS (`[a-z_]+` [^\n]*?),?\n/', $this->src('migrations/database/up/028_add_cluster_settings.sql') . "\n", $rM);
+		$this->assertCount(19, $rM[1]);
+		$rSettings = $this->tables($this->src('bin/install/database.sql'))['settings'];
+		foreach ($rM[1] as $rColumn) {
+			$this->assertStringContainsString('  ' . rtrim($rColumn, ';') . ',', $rSettings);
+		}
+	}
+
+	public function testCrontabRoles(): void {
+		$rSql = $this->src('bin/install/database.sql');
+		$this->assertStringContainsString("`role` enum('all','main','legacy')", $rSql);
+		foreach (['cleanup', 'tmdb', 'tmdb_popular', 'update'] as $rCron) {
+			$this->assertMatchesRegularExpression("/\\(\\d+, '" . $rCron . "', '[^']*', 1, 'main'\\)/", $rSql, $rCron);
+		}
+		$this->assertStringContainsString("(30, 'cluster', '* * * * *', 0, 'main')", $rSql, 'disabled until cron:cluster exists');
+	}
+}
