@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Redis\RedisManager;
@@ -347,6 +348,18 @@ class ConnectionTracker {
 	 * @return array|false MULTI/EXEC result.
 	 */
 	public static function redisSignal(int $rPID, int $rServerID, int $rRTMP, mixed $rCustomData = null) {
+		// A node with the COMMANDS flow gets a signed command instead (MAIN only):
+		// conn.kill_worker for a worker pid, conn.drop for a daemon viewer.
+		if (class_exists(ClusterRoute::class)) {
+			if ($rCustomData === null && $rPID > 0) {
+				[$rRouted, $rQueued] = ClusterRoute::kill($rServerID, $rPID, $rRTMP === 1);
+			} elseif (is_array($rCustomData) && ($rCustomData['type'] ?? '') === 'drop_con') {
+				[$rRouted, $rQueued] = ClusterRoute::drop($rServerID, (string) ($rCustomData['uuid'] ?? ''));
+			}
+			if (!empty($rRouted)) {
+				return $rQueued ? [true, true] : false;
+			}
+		}
 		$rRedis = RedisManager::instance();
 		if (!$rRedis instanceof \Redis) {
 			return false;
@@ -1066,6 +1079,9 @@ class ConnectionTracker {
 			return;
 		}
 		$rSignal = ['type' => 'drop_con', 'uuid' => $rUUID];
+		if (class_exists(ClusterRoute::class) && ClusterRoute::drop($rServerID, $rUUID)[0]) {
+			return; // a command node: a signed conn.drop
+		}
 		if (!empty($rSettings['redis_handler'])) {
 			self::redisSignal(0, $rServerID, 0, $rSignal);
 		} else {

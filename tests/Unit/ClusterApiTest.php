@@ -746,6 +746,26 @@ final class ClusterApiTest extends TestCase {
 		}
 	}
 
+	public function testRemoteKillsAndViewerDropsBecomeCommands(): void {
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS]);
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		try {
+			// ConnectionTracker's Redis-mode kills: a worker pid, an RTMP client, a daemon viewer.
+			$this->assertNotFalse(\XcVm\Domain\Stream\ConnectionTracker::redisSignal(55, self::SID, 0));
+			$this->assertNotFalse(\XcVm\Domain\Stream\ConnectionTracker::redisSignal(9, self::SID, 1));
+			$this->assertNotFalse(\XcVm\Domain\Stream\ConnectionTracker::redisSignal(0, self::SID, 0, ['type' => 'drop_con', 'uuid' => 'abc123']));
+			\XcVm\Domain\Cluster\ClusterRoute::drop(self::SID, 'abc123'); // the same viewer again: superseded, not doubled
+			$this->assertSame([false, false], \XcVm\Domain\Cluster\ClusterRoute::drop(self::SID, 'bad uuid;rm'));
+			$rDocs = array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0));
+			$this->assertSame(['conn.kill_worker', 'conn.kill_worker', 'conn.drop'], array_column($rDocs, 'type'));
+			$this->assertSame([['pid' => 55, 'rtmp' => false], ['pid' => 9, 'rtmp' => true], ['uuid' => 'abc123']], array_column($rDocs, 'args'));
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
 	public function testEventsAreAppliedInOrderAndHelloReturnsTheCursors(): void {
 		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `pid` int)');
 		$this->rDb->exec('INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `pid`) VALUES (11, 100, 5, 0)');
