@@ -53,7 +53,7 @@ final class ClusterApiTest extends TestCase {
 
 	protected function setUp(): void {
 		$this->rDb = new TestDb();
-		foreach (['029_create_cluster_nodes', '032_create_cluster_audit'] as $rName) {
+		foreach (['029_create_cluster_nodes', '030_create_cluster_commands', '032_create_cluster_audit'] as $rName) {
 			$this->rDb->exec($this->ddl((string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/' . $rName . '.sql')));
 		}
 		$this->rDb->exec('ALTER TABLE `cluster_node_epochs` ADD COLUMN `agent_eph_pub` binary(32) DEFAULT NULL');
@@ -674,5 +674,74 @@ final class ClusterApiTest extends TestCase {
 		$this->assertTrue(NodeRegistry::revoke(self::SID, $this->rCrypto));
 		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32));
 		$this->denial($rRes, 403, 'NODE_REVOKED', $rReq);
+	}
+
+	public function testCommandsAreDeliveredSignedAndAcked(): void {
+		$rKeys = $this->active();
+		$rCmd = \XcVm\Domain\Cluster\CommandBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_pids']);
+		[$rRes, $rCtx] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertCount(1, $rOut['commands']);
+		$rOne = $rOut['commands'][0];
+		$this->assertTrue(PanelSig::verify($this->rCrypto->info()['panel_sign_pub'], 'cmd', $rOne['doc'], (string) Enc::b64urlDecode($rOne['sig'])), 'panel-signed, tag cmd');
+		$rDoc = json_decode($rOne['doc'], true);
+		$this->assertSame(['node.rpc', 1, $this->rUuid, 1, $rCmd, ['action' => 'get_pids']], [$rDoc['type'], $rDoc['seq'], $rDoc['node_uuid'], $rDoc['gen'], $rDoc['cmd_id'], $rDoc['args']]);
+
+		// Nothing after the high-water.
+		[$rRes, $rCtx] = $this->call('commands', ['after_seq' => 1, 'wait_ms' => 0], 1, $rKeys);
+		$this->assertSame([], $this->reply($rRes, $rCtx, $rKeys)['commands']);
+
+		[$rRes, $rCtx] = $this->call('ack', ['cmd_id' => $rCmd, 'ok' => true, 'result' => '[1,2]'], 1, $rKeys);
+		$this->assertTrue($this->reply($rRes, $rCtx, $rKeys)['ok']);
+		$this->assertSame([true, '[1,2]'], \XcVm\Domain\Cluster\CommandBus::result($rCmd));
+		$this->assertSame(1, (int) NodeRegistry::byServer(self::SID)['cmd_seq'], 'the high-water rises with the ack');
+		[$rRes, $rCtx] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys);
+		$this->assertSame([], $this->reply($rRes, $rCtx, $rKeys)['commands'], 'an acked command is not delivered again');
+
+		// An ack for a command that is not this node's is refused.
+		[$rRes, , $rReq] = $this->call('ack', ['cmd_id' => str_repeat('ab', 16), 'ok' => true], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+	}
+
+	public function testQuarantineFreezesCommands(): void {
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['state' => 'quarantined']);
+		[$rRes, , $rReq] = $this->call('commands', ['after_seq' => 0], 1, $rKeys);
+		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+	}
+
+	public function testCommandsExpireAndDedupe(): void {
+		$this->active();
+		$rBus = \XcVm\Domain\Cluster\CommandBus::class;
+		$rFirst = $rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'stream', 'function' => 'start', 'stream_ids' => [1]], 'stream:1');
+		$rSecond = $rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'stream', 'function' => 'stop', 'stream_ids' => [1]], 'stream:1');
+		$rPending = $rBus::pending(self::SID, 0);
+		$this->assertCount(1, $rPending, 'a newer desired state replaces the unacked one');
+		$this->assertSame($rSecond, json_decode($rPending[0]['doc'], true)['cmd_id']);
+		$this->assertNotSame($rFirst, $rSecond);
+		ClusterClock::fix($this->rT0 + 601000);
+		$this->assertSame([], $rBus::pending(self::SID, 0), 'expired');
+		$rBus::prune();
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_commands`');
+		$this->assertSame(0, (int) $this->rDb->get_row()['n']);
+	}
+
+	public function testRoutingFollowsTheCommandsFlow(): void {
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		try {
+			$this->assertSame([false, false], \XcVm\Domain\Cluster\ClusterRoute::kill(self::SID, 123, false), 'flow off: legacy');
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS]);
+			$this->assertSame([true, true], \XcVm\Domain\Cluster\ClusterRoute::kill(self::SID, 123, false));
+			$this->assertSame([true, true], \XcVm\Domain\Cluster\ClusterRoute::send(self::SID, ['action' => 'free_temp']));
+			$rStart = microtime(true);
+			$this->assertSame([true, null], \XcVm\Domain\Cluster\ClusterRoute::rpc(self::SID, ['action' => 'get_pids'], 1), 'no ack: a timeout, as an offline node');
+			$this->assertLessThan(3, microtime(true) - $rStart);
+			$rTypes = array_map(static fn($rC) => json_decode($rC['doc'], true)['type'], \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0));
+			$this->assertSame(['conn.kill_worker', 'node.rpc', 'node.rpc'], $rTypes);
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
 	}
 }
