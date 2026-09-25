@@ -477,6 +477,19 @@ A chunk 0 starts over. Any other chunk out of order gets `409 SNAP_GAP {expected
 
 Still to come in Phase 6: admission when the token is minted, the agent's HLS reaper, and rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
 
+### Disaster recovery of MAIN's cluster keys
+
+`cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):
+
+- **What the bundle holds:** the root, the revocation floors and the clock high-water.
+- **How it is protected:** Argon2id (1 GiB, 4 passes) of a passphrase, plus a pepper that only an extension holds. The extension enforces the passphrase strength.
+- **Where the passphrase comes from:** typed twice without echo, `--passphrase-file`, or one line on standard input. It is never an argument, which any user could read in the process list.
+- **Export:** writes the file 0600 and never overwrites.
+- **Import:** records the panel keys as `cluster:init` does and audits `cluster.import_keys`. The extension refuses a different root already on the machine (`ROOT_EXISTS`); the same root again is a no-op. Nodes then recover with `token_rekey`, because their epoch records were sealed to the old machine.
+- **No bundle:** `cluster:init` already covers the plan's `cluster:reinit` (a new root, audited `cluster.root_changed`), followed by `server:enrol` per node. There is no fleet-wide `cluster:reenrol --all`, because each node needs its own SSH credentials.
+- **Tests:** `ClusterDrTest` covers the commands. Opt-in, with `XCVM_EXT_SO`, it runs the real extension, shrunk by `XCVM_TEST_DR_MEM_KIB`, across two config dirs.
+- **Operator procedure:** `docs/en/administration/backup-strategy.md`.
+
 ### Extension updates
 
 `console.php xcvm_core` rolls back an update whose cluster API falls outside the panel's range when the installed one was inside it. `console.php xcvm_core status` reports what is loaded. Installing an exact pinned version needs versioned paths in the binaries repo; that prerequisite is still open.

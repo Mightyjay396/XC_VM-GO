@@ -209,6 +209,35 @@ Action: `backup` (requires `adv:database` permission)
 
 ---
 
+## Cluster keys (MAIN replacement)
+
+The database backup does not contain MAIN's **cluster keys**. When the cluster API is enabled, enrolled load balancers trust those keys, and `xcvm_core` seals them to MAIN's machine. A backup made on one machine cannot be read on another. Without a separate export, replacing MAIN's hardware means re-enrolling every node.
+
+**Export** (on MAIN, after enabling the cluster API, and again whenever you like):
+
+```bash
+php console.php cluster:export-keys /root/cluster-keys.xcdr
+```
+
+- You type a passphrase twice; it is not echoed. It needs 20+ characters, or 12+ using three character classes. `--passphrase-file=<path>` reads it from a file instead.
+- The bundle is written 0600 and never overwrites an existing file.
+- The key derivation uses about 1 GiB of memory for a few seconds.
+- Keep the bundle and the passphrase **apart**, and both off MAIN. The bundle opens only inside `xcvm_core`, and only with the passphrase.
+
+**Import** (on the replacement MAIN, after restoring the database and before any node reconnects):
+
+```bash
+php console.php cluster:import-keys /root/cluster-keys.xcdr
+```
+
+- **Retire the old MAIN first.** Two MAINs sharing the same keys issue tokens independently, and a node revoked on one stays valid on the other.
+- Revoked nodes stay revoked. The import refuses to replace a *different* set of keys already on the machine. Importing the same bundle twice changes nothing.
+- Nodes re-key by themselves once they reach the new MAIN. Tokens issued by the old MAIN do not open on the new machine, and the agents replace them automatically.
+
+**No bundle:** run `php console.php cluster:init` on the new MAIN, which creates new keys, then enrol each node again with `server:enrol`.
+
+---
+
 ## Related files
 
 | File | Purpose |
@@ -217,6 +246,7 @@ Action: `backup` (requires `adv:database` permission)
 | `src/Core/Storage/DropboxClient.php` | Dropbox API client |
 | `src/Cli/CronJobs/BackupsCronJob.php` | automated backup cron |
 | `src/Cli/Commands/ToolsCommand.php` | CLI migration and database tools |
+| `src/Cli/Commands/ClusterExportKeysCommand.php`, `ClusterImportKeysCommand.php` | cluster keys export and import |
 | `src/Public/Views/admin/backups.php` | admin panel UI |
 | `src/Public/Views/admin/api.php` | API endpoint handler |
 | `src/Public/Controllers/Admin/BackupsController.php` | admin controller |
