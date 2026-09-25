@@ -7,9 +7,11 @@ Want to see your name here? [Open a PR](https://github.com/Vateron-Media/XC_VM/p
 
 ## 👥 Code Contributors
 
-This list is generated automatically from the repository's commit history.
+This list is updated automatically from the repository's commit history
+(see [`.github/workflows/contributors.yml`](.github/workflows/contributors.yml)).
 
-[![XC_VM contributors](https://contrib.rocks/image?repo=Vateron-Media/XC_VM)](https://github.com/Vateron-Media/XC_VM/graphs/contributors)
+<!-- readme: contributors,claude/- -start -->
+<!-- readme: contributors,claude/- -end -->
 
 ---
 
