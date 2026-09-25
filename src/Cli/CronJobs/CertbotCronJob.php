@@ -4,7 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
-use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -57,7 +57,7 @@ class CertbotCronJob implements CommandInterface {
 						}
 					}
 					if (count($rData['domain']) > 0) {
-						SignalDispatcher::rootAction(intval(SERVER_ID), $rData, $db);
+						NodeActions::send(intval(SERVER_ID), $rData, $db);
 					}
 				} else {
 					echo 'Certificate valid, not due for renewal.' . "\n";
@@ -77,7 +77,7 @@ class CertbotCronJob implements CommandInterface {
 					if ($rCertInfoFile && ($rCertInfo === null || $rCertInfo['serial'] != $rCertInfoFile['serial'] || !ServerRepository::getAll()[SERVER_ID]['certbot_ssl'] || $rDBCertInfo['serial'] != $rCertInfoFile['serial'])) {
 						$db->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode($rCertInfoFile), SERVER_ID);
 						echo 'Updated ssl configuration in database' . "\n";
-						SignalDispatcher::rootAction(intval(SERVER_ID), ['action' => 'reload_nginx'], $db);
+						NodeActions::reloadNginx(intval(SERVER_ID), $db);
 					}
 				} else {
 					if (ServerRepository::getAll()[SERVER_ID]['certbot_ssl']) {
@@ -89,7 +89,7 @@ class CertbotCronJob implements CommandInterface {
 							$rSSLConfig = 'ssl_certificate ' . $rCertificate . ';' . "\n" . 'ssl_certificate_key ' . $rPrivateKey . ';' . "\n" . 'ssl_trusted_certificate ' . $rChain . ';' . "\n" . 'ssl_protocols TLSv1.2 TLSv1.3;' . "\n" . 'ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;' . "\n" . 'ssl_prefer_server_ciphers off;' . "\n" . 'ssl_ecdh_curve auto;' . "\n" . 'ssl_session_timeout 10m;' . "\n" . 'ssl_session_cache shared:MozSSL:10m;' . "\n" . 'ssl_session_tickets off;';
 							file_put_contents(BIN_PATH . 'nginx/conf/ssl.conf', $rSSLConfig);
 							echo 'Fixed ssl configuration file' . "\n";
-							SignalDispatcher::rootAction(intval(SERVER_ID), ['action' => 'reload_nginx'], $db);
+							NodeActions::reloadNginx(intval(SERVER_ID), $db);
 						}
 					}
 				}

@@ -2,7 +2,7 @@
 
 namespace XcVm\Core\Module;
 
-use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Container\ServiceContainer;
@@ -987,7 +987,7 @@ class ModuleManager {
 			$rServerIDs[] = intval($rRow['id']);
 		}
 		foreach ($rServerIDs as $rServerID) {
-			SignalDispatcher::rootAction($rServerID, $payload, $db);
+			NodeActions::send($rServerID, $payload, $db);
 		}
 	}
 
@@ -1567,7 +1567,7 @@ class ModuleManager {
 		}
 
 		foreach ($rServerIDs as $rServerID) {
-			SignalDispatcher::rootAction($rServerID, $payload, $db);
+			NodeActions::send($rServerID, $payload, $db);
 		}
 	}
 

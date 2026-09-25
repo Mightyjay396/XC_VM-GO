@@ -4,7 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Backup\BackupService;
-use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Logging\UpdateLogger;
@@ -308,7 +308,7 @@ class UpdateCommand implements CommandInterface {
 					UpdateLogger::info('Broadcasting update signal to LB servers');
 					foreach (ServerRepository::getAll() as $rServer) {
 						if (($rServer['enabled'] && $rServer['status'] == 1 && time() - $rServer['last_check_ago'] <= 180) || !$rServer['is_main']) {
-							SignalDispatcher::rootAction(intval($rServer['id']), ['action' => 'update'], $db);
+							NodeActions::update(intval($rServer['id']), $db);
 						}
 					}
 				}

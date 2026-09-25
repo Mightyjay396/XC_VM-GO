@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
@@ -19,7 +20,7 @@ use XcVm\Domain\Vod\SeriesService;
  * returns the fixed `{"result":true}` envelope (as the legacy api.php did, and as
  * {@see ServerAjaxController::server()} does), NOT the raw relay response — echoing
  * the raw return blanks the page whenever the internal relay yields an empty body.
- * `force` still echoes its `ApiClient::asyncRequest()` result (always JSON).
+ * `force` still echoes its `NodeRpc::broadcast()` result (always JSON).
  *
  * @package XC_VM_Public_Controllers_Admin
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -73,7 +74,7 @@ class StreamAjaxController extends BaseAjaxController {
 				$this->fail();
 			}
 
-			echo json_encode(ApiClient::asyncRequest($rServerIDs, ['action' => 'force_stream', 'stream_id' => $rStreamID, 'force_id' => $rForceID]));
+			echo json_encode(NodeRpc::broadcast($rServerIDs, ['action' => 'force_stream', 'stream_id' => $rStreamID, 'force_id' => $rForceID]));
 
 			exit();
 		}

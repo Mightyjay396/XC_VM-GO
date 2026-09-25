@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
@@ -834,7 +835,7 @@ class StreamService {
 	 * @return array Archive file list.
 	 */
 	public static function getArchiveFiles(int $rServerID, int $rStreamID) {
-		return json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_archive_files', 'stream_id' => $rStreamID]), true)['data'];
+		return json_decode(NodeRpc::request($rServerID, ['action' => 'get_archive_files', 'stream_id' => $rStreamID]), true)['data'];
 	}
 
 	/**

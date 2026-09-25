@@ -4,8 +4,8 @@ namespace XcVm\Domain\Server;
 
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Http\ApiClient;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -207,7 +207,7 @@ class ServerRepository {
 	 */
 	public static function getFreeSpace(int $rServerID) {
 		$rReturn = [];
-		$rLines = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_free_space']), true);
+		$rLines = json_decode(NodeRpc::request($rServerID, ['action' => 'get_free_space']), true);
 
 		if (!is_array($rLines)) {
 			return $rReturn;
@@ -234,7 +234,7 @@ class ServerRepository {
 	 * @return mixed Ramdisk information.
 	 */
 	public static function getStreamsRamdisk(int $rServerID) {
-		$response = ApiClient::systemRequest($rServerID, ['action' => 'streams_ramdisk']);
+		$response = NodeRpc::request($rServerID, ['action' => 'streams_ramdisk']);
 		$rReturn = json_decode($response, true);
 
 		if (!is_array($rReturn)) {
@@ -256,7 +256,7 @@ class ServerRepository {
 	 * @return mixed Result of the kill request.
 	 */
 	public static function killPID(int $rServerID, int $rPID) {
-		ApiClient::systemRequest($rServerID, ['action' => 'kill_pid', 'pid' => $rPID]);
+		NodeRpc::request($rServerID, ['action' => 'kill_pid', 'pid' => $rPID]);
 	}
 
 	/**
@@ -266,7 +266,7 @@ class ServerRepository {
 	 * @return mixed RTMP stats.
 	 */
 	public static function getRTMPStats(int $rServerID) {
-		return json_decode(ApiClient::systemRequest($rServerID, ['action' => 'rtmp_stats']), true);
+		return json_decode(NodeRpc::request($rServerID, ['action' => 'rtmp_stats']), true);
 	}
 
 	/**
@@ -311,7 +311,7 @@ class ServerRepository {
 	 * @return mixed Result of the request.
 	 */
 	public static function freeTemp(int $rServerID) {
-		ApiClient::systemRequest($rServerID, ['action' => 'free_temp']);
+		NodeRpc::request($rServerID, ['action' => 'free_temp']);
 	}
 
 	/**
@@ -321,7 +321,7 @@ class ServerRepository {
 	 * @return mixed Result of the request.
 	 */
 	public static function freeStreams(int $rServerID) {
-		ApiClient::systemRequest($rServerID, ['action' => 'free_streams']);
+		NodeRpc::request($rServerID, ['action' => 'free_streams']);
 	}
 
 	/**
@@ -336,7 +336,7 @@ class ServerRepository {
 	 * @return mixed Probe result.
 	 */
 	public static function probeSource(int $rServerID, string $rURL, ?string $rUserAgent = null, mixed $rProxy = null, ?string $rCookies = null, mixed $rHeaders = null) {
-		return json_decode(ApiClient::systemRequest($rServerID, ['action' => 'probe', 'url' => $rURL, 'user_agent' => $rUserAgent, 'http_proxy' => $rProxy, 'cookies' => $rCookies, 'headers' => $rHeaders], 30), true);
+		return json_decode(NodeRpc::request($rServerID, ['action' => 'probe', 'url' => $rURL, 'user_agent' => $rUserAgent, 'http_proxy' => $rProxy, 'cookies' => $rCookies, 'headers' => $rHeaders], 30), true);
 	}
 
 	/**

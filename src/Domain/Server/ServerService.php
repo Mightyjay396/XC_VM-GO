@@ -4,9 +4,9 @@ namespace XcVm\Domain\Server;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Backup\BackupService;
-use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Database\QueryHelper;
-use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -178,9 +178,9 @@ class ServerService {
 
 		$rDisableRamdisk = !empty($rData['disable_ramdisk']);
 		if ($rDisableRamdisk && $rMounted) {
-			SignalDispatcher::rootAction(intval($rInsertID), ['action' => 'disable_ramdisk'], $db);
+			NodeActions::setRamdisk(intval($rInsertID), false, $db);
 		} elseif (!$rDisableRamdisk && !$rMounted) {
-			SignalDispatcher::rootAction(intval($rInsertID), ['action' => 'enable_ramdisk'], $db);
+			NodeActions::setRamdisk(intval($rInsertID), true, $db);
 		}
 
 		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
@@ -356,7 +356,7 @@ class ServerService {
 	 */
 	public static function changePort(int $rServerID, int $rType, mixed $rPorts, bool $rReload = false) {
 		$db = self::db();
-		SignalDispatcher::rootAction(intval($rServerID), ['action' => 'set_port', 'type' => intval($rType), 'ports' => $rPorts, 'reload' => $rReload], $db);
+		NodeActions::setPorts(intval($rServerID), intval($rType), $rPorts, $rReload, $db);
 	}
 
 	/**
@@ -369,7 +369,7 @@ class ServerService {
 	 */
 	public static function setServices(int $rServerID, int $rNumServices, bool $rReload = true) {
 		$db = self::db();
-		SignalDispatcher::rootAction(intval($rServerID), ['action' => 'set_services', 'count' => intval($rNumServices), 'reload' => $rReload], $db);
+		NodeActions::setServices(intval($rServerID), intval($rNumServices), $rReload, $db);
 	}
 
 	/**
@@ -381,7 +381,7 @@ class ServerService {
 	 */
 	public static function setGovernor(int $rServerID, string $rGovernor) {
 		$db = self::db();
-		SignalDispatcher::rootAction(intval($rServerID), ['action' => 'set_governor', 'data' => $rGovernor], $db);
+		NodeActions::setGovernor(intval($rServerID), $rGovernor, $db);
 	}
 
 	/**
@@ -393,7 +393,7 @@ class ServerService {
 	 */
 	public static function setSysctl(int $rServerID, mixed $rSysCtl) {
 		$db = self::db();
-		SignalDispatcher::rootAction(intval($rServerID), ['action' => 'set_sysctl', 'data' => $rSysCtl], $db);
+		NodeActions::setSysctl(intval($rServerID), $rSysCtl, $db);
 	}
 
 	/**
@@ -405,7 +405,7 @@ class ServerService {
 		global $rServers;
 		foreach (array_keys($rServers) as $rServerID) {
 			if ($rServers[$rServerID]['server_online']) {
-				ApiClient::systemRequest($rServerID, ['action' => 'restore_images']);
+				NodeRpc::request($rServerID, ['action' => 'restore_images']);
 			}
 		}
 
@@ -424,7 +424,7 @@ class ServerService {
 		global $rServers;
 		foreach ($db->get_rows() as $rRow) {
 			if ($rServers[$rRow['server_id']]['server_online']) {
-				ApiClient::systemRequest($rRow['server_id'], ['action' => 'kill_plex']);
+				NodeRpc::request($rRow['server_id'], ['action' => 'kill_plex']);
 			}
 		}
 
