@@ -1255,18 +1255,17 @@ class StreamProcess {
 		$rFFMPEGGpu = $rFFMPEG_GPU ?: FfmpegPaths::gpu();
 		$rFFProbeBin = $rFFPROBE ?: FfmpegPaths::probe();
 
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 1 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
-		if ($db->num_rows() <= 0) {
+		$rStreamRow = StreamSource::streamRow(intval($rStreamID), true, $db);
+		if ($rStreamRow === null) {
 			return null;
 		}
-		$rStream = ['stream_info' => $db->get_row()];
-		$db->query('SELECT * FROM `streams_servers` WHERE stream_id = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
-		if ($db->num_rows() <= 0) {
+		$rStream = ['stream_info' => $rStreamRow];
+		$rServerRow = StreamSource::serverRow(intval($rStreamID), null, $db);
+		if ($rServerRow === null) {
 			return null;
 		}
-		$rStream['server_info'] = $db->get_row();
-		$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-		$rStream['stream_arguments'] = $db->get_rows();
+		$rStream['server_info'] = $rServerRow;
+		$rStream['stream_arguments'] = StreamSource::arguments(intval($rStreamID), false, $db);
 
 		$rInfo = $rStream['stream_info'];
 		$rParentID = intval($rStream['server_info']['parent_id']);
@@ -1966,14 +1965,13 @@ class StreamProcess {
 		$db = self::db();
 		$rStream = [];
 		$rLoopback = false;
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 0 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
-		if ($db->num_rows() > 0) {
-			$rStream['stream_info'] = $db->get_row();
-			$db->query('SELECT * FROM `streams_servers` WHERE stream_id  = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
-			if ($db->num_rows() > 0) {
-				$rStream['server_info'] = $db->get_row();
-				$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-				$rStream['stream_arguments'] = $db->get_rows();
+		$rStreamRow = StreamSource::streamRow(intval($rStreamID), false, $db);
+		if ($rStreamRow !== null) {
+			$rStream['stream_info'] = $rStreamRow;
+			$rServerRow = StreamSource::serverRow(intval($rStreamID), null, $db);
+			if ($rServerRow !== null) {
+				$rStream['server_info'] = $rServerRow;
+				$rStream['stream_arguments'] = StreamSource::arguments(intval($rStreamID), false, $db);
 
 				list($rStreamSource) = json_decode($rStream['stream_info']['stream_source'], true);
 				if (substr($rStreamSource, 0, 2) == 's:') {
@@ -2131,16 +2129,15 @@ class StreamProcess {
 		@unlink(STREAMS_PATH . $rStreamID . '_.pid');
 
 		$rStream = [];
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 1 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
+		$rStreamRow = StreamSource::streamRow(intval($rStreamID), true, $db);
 
-		if ($db->num_rows() > 0) {
-			$rStream['stream_info'] = $db->get_row();
-			$db->query('SELECT * FROM `streams_servers` WHERE stream_id  = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
+		if ($rStreamRow !== null) {
+			$rStream['stream_info'] = $rStreamRow;
+			$rServerRow = StreamSource::serverRow(intval($rStreamID), null, $db);
 
-			if ($db->num_rows() > 0) {
-				$rStream['server_info'] = $db->get_row();
-				$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-				$rStream['stream_arguments'] = $db->get_rows();
+			if ($rServerRow !== null) {
+				$rStream['server_info'] = $rServerRow;
+				$rStream['stream_arguments'] = StreamSource::arguments(intval($rStreamID), false, $db);
 
 				list($rProbesize, $rAnalyseDuration, $rTimeout) = self::resolveProbeSettings($rStream['server_info']['on_demand'], $rStream['stream_info']['probesize_ondemand'], $rLLOD, $rSettings);
 				$rFFProbee = 'timeout ' . $rTimeout . ' ' . $rFFPROBE . ' {FETCH_OPTIONS} -probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' {CONCAT} -i {STREAM_SOURCE} -v quiet -print_format json -show_streams -show_format';

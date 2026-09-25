@@ -2,8 +2,6 @@
 
 namespace XcVm\Domain\Stream;
 
-use XcVm\Infrastructure\Database\DatabaseFactory;
-
 /**
  * Stream State Writer
  *
@@ -14,7 +12,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * pass the fields to update() or updateRow(), which refuse any column outside
  * STATE_FIELDS, and the writer applies them through a sink.
  *
- * Today the only sink writes the row in MAIN's database, as before. The
+ * Today the only sink writes the row in MAIN's database through
+ * StreamRowMerge, as before. The
  * cluster API plan (Phase 5) adds one that sends a `stream.state` event
  * instead, which MAIN merges into the row itself.
  *
@@ -82,11 +81,7 @@ final class StreamStateWriter {
 		if (self::$rSink !== null) {
 			return (bool) (self::$rSink)($rWhere, $rFields, $rWhereValues, $rDb);
 		}
-		$rSet = [];
-		foreach (array_keys($rFields) as $rColumn) {
-			$rSet[] = '`' . $rColumn . '` = ?';
-		}
-		$rDb ??= DatabaseFactory::get();
-		return (bool) $rDb->query('UPDATE `streams_servers` SET ' . implode(', ', $rSet) . ' WHERE ' . $rWhere, ...array_values($rFields), ...$rWhereValues);
+		// Legacy backend: merge into the row in MAIN's database directly.
+		return StreamRowMerge::apply($rWhere, $rFields, $rWhereValues, $rDb);
 	}
 }

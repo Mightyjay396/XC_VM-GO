@@ -3,11 +3,13 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Fanout\FanoutClient;
 
@@ -163,9 +165,9 @@ class OndemandCommand implements CommandInterface {
 				@unlink($queueFile);
 				@unlink(SIGNALS_TMP_PATH . 'admin_' . $rStreamID);
 
-				$db->query("UPDATE streams_servers SET bitrate = NULL, current_source = NULL, to_analyze = 0, pid = NULL, stream_started = NULL, stream_info = NULL, audio_codec = NULL, video_codec = NULL, resolution = NULL, compatible = 0, stream_status = 0, monitor_pid = NULL WHERE stream_id = ? AND server_id = ?", $rStreamID, SERVER_ID);
+				StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['bitrate' => null, 'current_source' => null, 'to_analyze' => 0, 'pid' => null, 'stream_started' => null, 'stream_info' => null, 'audio_codec' => null, 'video_codec' => null, 'resolution' => null, 'compatible' => 0, 'stream_status' => 0, 'monitor_pid' => null], $db);
 
-				$db->query("INSERT INTO signals (server_id, cache, time, custom_data) VALUES (?, 1, ?, ?)", $rMainID, time(), json_encode(['type' => 'update_stream', 'id' => $rStreamID]));
+				SignalDispatcher::cache(intval($rMainID), ['type' => 'update_stream', 'id' => $rStreamID], false, false, $db);
 
 				StreamProcess::updateStream($rStreamID);
 			}

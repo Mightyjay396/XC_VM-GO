@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Codec\FfmpegPaths;
 
@@ -89,8 +90,7 @@ class ProxyCommand implements CommandInterface {
 		file_put_contents(STREAMS_PATH . $rStreamID . '_.monitor', getmypid());
 		@unlink(STREAMS_PATH . $rStreamID . '_.pid');
 		$rStreamInfo = $db->get_row();
-		$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-		$rStreamArguments = $db->get_rows(true, 'argument_key');
+		$rStreamArguments = StreamSource::arguments($rStreamID, true, $db);
 
 		$this->startProxy($rStreamID, $rStreamInfo, $rStreamArguments, $rFP);
 

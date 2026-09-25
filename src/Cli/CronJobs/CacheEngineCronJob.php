@@ -8,6 +8,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\Multithread;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Domain\Stream\StreamCacheBuilder;
 
 /**
  * CacheEngineCronJob — cache engine cron job
@@ -447,44 +448,24 @@ class CacheEngineCronJob implements CommandInterface {
 					} else {
 						$rMax = $this->rSplit;
 					}
-					$db->query('SELECT t1.id,t1.epg_id,t1.added,t1.allow_record,t1.year,t1.channel_id,t1.movie_properties,t1.stream_source,t1.tv_archive_server_id,t1.vframes_server_id,t1.tv_archive_duration,t1.stream_icon,t1.custom_sid,t1.category_id,t1.stream_display_name,t1.series_no,t1.direct_source,t1.direct_proxy,t2.type_output,t1.target_container,t2.live,t1.rtmp_output,t1.order,t2.type_key,t1.tmdb_id,t1.adaptive_link FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type LIMIT ' . $rStep . ', ' . $rMax . ';');
+					$rRows = StreamCacheBuilder::streamRows($db, null, $rStep, $rMax);
 				} else {
-					$db->query('SELECT t1.id,t1.epg_id,t1.added,t1.allow_record,t1.year,t1.channel_id,t1.movie_properties,t1.stream_source,t1.tv_archive_server_id,t1.vframes_server_id,t1.tv_archive_duration,t1.stream_icon,t1.custom_sid,t1.category_id,t1.stream_display_name,t1.series_no,t1.direct_source,t1.direct_proxy,t2.type_output,t1.target_container,t2.live,t1.rtmp_output,t1.order,t2.type_key,t1.tmdb_id,t1.adaptive_link FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type WHERE `t1`.`id` IN (' . implode(',', $cacheLockMechanism) . ');');
+					$rRows = StreamCacheBuilder::streamRows($db, array_map('intval', $cacheLockMechanism));
 				}
-				if ($db->result) {
-					if ($db->result->rowCount() > 0) {
-						$rRows = $db->result->fetchAll(\PDO::FETCH_ASSOC);
-						$rStreamMap = $rStreamIDs = [];
-						foreach ($rRows as $rRow) {
-							$rStreamIDs[] = $rRow['id'];
-						}
-						if (count($rStreamIDs) > 0) {
-							if ($db->query('SELECT `stream_id`, `server_id`, `pid`, `to_analyze`, `stream_status`, `monitor_pid`, `on_demand`, `delay_available_at`, `bitrate`, `parent_id`, `on_demand`, `stream_info`, `video_codec`, `audio_codec`, `resolution`, `compatible` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', $rStreamIDs) . ')')) {
-								if ($db->result->rowCount() > 0) {
-									foreach ($db->result->fetchAll(\PDO::FETCH_ASSOC) as $rRow) {
-										$rStreamMap[intval($rRow['stream_id'])][intval($rRow['server_id'])] = $rRow;
-									}
-								}
-								$db->result = null;
-							}
-						}
-						foreach ($rRows as $rStreamInfo) {
-							$rExists[] = $rStreamInfo['id'];
-							if (!$rStreamInfo['direct_source']) {
-								unset($rStreamInfo['stream_source']);
-							}
-							$rOutput = ['info' => $rStreamInfo, 'bouquets' => ($rBouquetMap[intval($rStreamInfo['id'])] ?? []), 'servers' => ($rStreamMap[intval($rStreamInfo['id'])] ?? [])];
-							file_put_contents(STREAMS_TMP_PATH . 'stream_' . $rStreamInfo['id'], igbinary_serialize($rOutput));
-						}
-						unset($rRows, $rStreamMap, $rStreamIDs);
+				if (!empty($rRows)) {
+					$rStreamMap = StreamCacheBuilder::serverMap($db, array_map(static fn($rRow) => intval($rRow['id']), $rRows));
+					foreach ($rRows as $rStreamInfo) {
+						$rExists[] = $rStreamInfo['id'];
+						$rID = intval($rStreamInfo['id']);
+						StreamCacheBuilder::write($rID, StreamCacheBuilder::entry($rStreamInfo, $rBouquetMap[$rID] ?? [], $rStreamMap[$rID] ?? []));
 					}
-					$db->result = null;
+					unset($rRows, $rStreamMap);
 				}
 			}
 			if (count($cacheLockMechanism) > 0) {
 				foreach ($cacheLockMechanism as $rForceID) {
-					if (!in_array($rForceID, $rExists) && file_exists(STREAMS_TMP_PATH . 'stream_' . $rForceID)) {
-						unlink(STREAMS_TMP_PATH . 'stream_' . $rForceID);
+					if (!in_array($rForceID, $rExists)) {
+						StreamCacheBuilder::remove(intval($rForceID));
 					}
 				}
 			}

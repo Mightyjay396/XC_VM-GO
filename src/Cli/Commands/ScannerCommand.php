@@ -9,6 +9,7 @@ use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Http\CurlClient;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Codec\FfmpegPaths;
@@ -91,8 +92,7 @@ class ScannerCommand implements CommandInterface {
 
 		foreach ($db->get_rows() as $rRow) {
 			echo '[' . $rRow['id'] . '] - ' . $rRow['stream_display_name'] . "\n";
-			$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rRow['id']);
-			$rStreamArguments = $db->get_rows();
+			$rStreamArguments = StreamSource::arguments(intval($rRow['id']), false, $db);
 			$rProbesize = (intval($rRow['probesize_ondemand']) ?: 512000);
 			$rAnalyseDuration = '10000000';
 			$rTimeout = intval($rAnalyseDuration / 1000000) + SettingsManager::get('probe_extra_wait');

@@ -6,14 +6,15 @@ use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Cache\CacheReader;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\AsyncFileOperations;
 use XcVm\Streaming\Auth\StreamAuth;
 use XcVm\Streaming\Auth\StreamAuthMiddleware;
-use XcVm\Streaming\Delivery\HLSGenerator;
 use XcVm\Streaming\Codec\FfmpegPaths;
+use XcVm\Streaming\Delivery\HLSGenerator;
 use XcVm\Streaming\Delivery\OffAirHandler;
 use XcVm\Streaming\Delivery\SegmentReader;
 use XcVm\Streaming\Delivery\SignalSender;
@@ -129,10 +130,8 @@ if ($rChannelInfo) {
 	$rFanout = false;
 	if (!empty($rChannelInfo["proxy"]) && LicenseGate::fanoutUsable()) {
 		DatabaseFactory::connectLazy();
-		$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?', $rStreamID);
-		$rStreamRow = ($db->num_rows() > 0 ? $db->get_row() : []);
-		$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-		$rStreamArguments = $db->get_rows(true, 'argument_key');
+		$rStreamRow = StreamSource::sourceRow(intval($rStreamID), $db);
+		$rStreamArguments = StreamSource::arguments(intval($rStreamID), true, $db);
 		$rSource = FanoutClient::buildSource($rStreamRow, $rStreamArguments);
 		$rFanout = !empty($rSource["urls"]) && FanoutClient::register($rStreamID, $rSource);
 

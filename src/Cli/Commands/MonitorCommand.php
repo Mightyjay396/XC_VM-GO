@@ -11,6 +11,7 @@ use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Codec\FFprobeRunner;
 use XcVm\Streaming\Fanout\FanoutClient;
@@ -115,8 +116,7 @@ class MonitorCommand implements CommandInterface {
 		$rCurrentSource = ($rParentID <= 0) ? $rStreamInfo['current_source'] : 'Loopback: #' . $rParentID;
 		$rLastSegment = $rForceSource = null;
 
-		$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-		$rStreamArguments = $db->get_rows();
+		$rStreamArguments = StreamSource::arguments(intval($rStreamID), false, $db);
 
 		if (0 >= $rStreamInfo['delay_minutes'] && ($rStreamInfo['parent_id'] == 0)) {
 			$rDelay = false;
