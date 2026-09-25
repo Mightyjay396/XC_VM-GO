@@ -290,20 +290,7 @@ if ($rChannelInfo) {
 	if ($rSettings["disallow_2nd_ip_con"] && !$rUserInfo["is_restreamer"] && ($rUserInfo["max_connections"] <= $rSettings["disallow_2nd_ip_max"] && 0 < $rUserInfo["max_connections"] || $rSettings["disallow_2nd_ip_max"] == 0)) {
 		$rAcceptIP = null;
 
-		if ($rSettings["redis_handler"]) {
-			// The LINE# set holds connection keys; the oldest connection's IP is
-			// read from the rows behind them. HMAC identities have no line id —
-			// the MySQL branch below never matches them either.
-			$rAcceptIP = ConnectionTracker::acceptedLineIP(RedisManager::instance(), $rUserInfo["id"]);
-		} else {
-			// The FIRST connection's IP is the accepted one — as the Redis path
-			// above picks it (oldest date_start); this used to take the newest.
-			$db->query('SELECT `user_ip` FROM `lines_live` WHERE `user_id` = ? AND `hls_end` = 0 ORDER BY `activity_id` ASC LIMIT 1;', $rUserInfo["id"]);
-
-			if ($db->num_rows() == 1) {
-				$rAcceptIP = $db->get_row()["user_ip"];
-			}
-		}
+		$rAcceptIP = ConnectionTracker::acceptedIP($rSettings, $rUserInfo["id"]);
 
 		$rIPMatch = NetworkUtils::ipMatches($rSettings["ip_subnet_match"], $rAcceptIP, $rIP);
 
@@ -753,22 +740,7 @@ if ($rChannelInfo) {
 					$rConnection = null;
 					$rSettings = CacheReader::get("settings") ?: $rSettings;
 
-					if ($rSettings["redis_handler"]) {
-						RedisManager::ensureConnected();
-						$rExistingConnection = ConnectionTracker::getConnection($rTokenData["uuid"]);
-						if ($rExistingConnection) {
-							$rConnection = ConnectionTracker::updateConnection($rExistingConnection, ["hls_last_read" => time() - intval($rServers[SERVER_ID]["time_offset"])], "open");
-						}
-						RedisManager::closeInstance();
-					} else {
-						DatabaseFactory::connectLazy();
-						$db->query('UPDATE `lines_live` SET `hls_last_read` = ? WHERE `uuid` = ?', time() - intval($rServers[SERVER_ID]["time_offset"]), $rTokenData["uuid"]);
-						$db->query('SELECT `pid`, `hls_end` FROM `lines_live` WHERE `uuid` = ?', $rTokenData["uuid"]);
-						if ($db->num_rows() == 1) {
-							$rConnection = $db->get_row();
-						}
-						DatabaseFactory::close();
-					}
+					$rConnection = ConnectionTracker::heartbeat($rSettings, $rTokenData["uuid"], time() - intval($rServers[SERVER_ID]["time_offset"]));
 
 					if (!is_array($rConnection) || $rConnection["hls_end"] != 0 || $rConnection["pid"] != $rPID) {
 						exit();

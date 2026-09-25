@@ -16,7 +16,7 @@ namespace XcVm\Core\Cluster;
  * ship to LBs, where the file simply does not exist.
  */
 final class ClusterHealth {
-	/** @var array{states: array<int, string>, guard: bool}|null */
+	/** @var array{states: array<int, string>, guard: bool, ok_since: array<int, int>}|null */
 	private static ?array $rCache = null;
 
 	private static float $rReadAt = 0.0;
@@ -33,7 +33,12 @@ final class ClusterHealth {
 		return self::state($rServerID) === 'suspect' ? 2.0 : 1.0;
 	}
 
-	/** @return array{states: array<int, string>, guard: bool} */
+	/**
+	 * `ok_since` is the liveness loop's own bookkeeping (NodeHealth::settle):
+	 * since when each node has been judged ok without a break.
+	 *
+	 * @return array{states: array<int, string>, guard: bool, ok_since: array<int, int>}
+	 */
 	public static function read(): array {
 		if (self::$rCache === null || microtime(true) - self::$rReadAt >= 1.0) {
 			$rDoc = json_decode((string) @file_get_contents(self::path()), true);
@@ -43,23 +48,32 @@ final class ClusterHealth {
 					$rStates[(int) $rID] = $rState;
 				}
 			}
-			self::$rCache = ['states' => $rStates, 'guard' => !empty($rDoc['guard'])];
+			$rOkSince = [];
+			foreach ((is_array($rDoc['ok_since'] ?? null) ? $rDoc['ok_since'] : []) as $rID => $rMs) {
+				if (is_int($rMs)) {
+					$rOkSince[(int) $rID] = $rMs;
+				}
+			}
+			self::$rCache = ['states' => $rStates, 'guard' => !empty($rDoc['guard']), 'ok_since' => $rOkSince];
 			self::$rReadAt = microtime(true);
 		}
 		return self::$rCache;
 	}
 
-	/** @param array<int, string> $rStates */
-	public static function write(array $rStates, bool $rGuard): void {
+	/**
+	 * @param array<int, string> $rStates
+	 * @param array<int, int>    $rOkSince
+	 */
+	public static function write(array $rStates, bool $rGuard, array $rOkSince = []): void {
 		$rPath = self::path();
 		if (!is_dir(dirname($rPath))) {
 			@mkdir(dirname($rPath), 0750, true);
 		}
 		$rTmp = $rPath . '.tmp';
-		if (@file_put_contents($rTmp, (string) json_encode(['states' => $rStates, 'guard' => $rGuard]), LOCK_EX) !== false) {
+		if (@file_put_contents($rTmp, (string) json_encode(['states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince]), LOCK_EX) !== false) {
 			@rename($rTmp, $rPath);
 		}
-		self::$rCache = ['states' => $rStates, 'guard' => $rGuard];
+		self::$rCache = ['states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince];
 		self::$rReadAt = microtime(true);
 	}
 

@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phases 5–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry, connection limits enforced on MAIN, and the connection digest with snapshots and seeding; admission and the agent's HLS reaper are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -249,6 +249,7 @@ Other rules:
 - A node never heard from counts as offline only once the loop has been up for that long.
 - The result goes to `tmp/cluster/health.json`. `Core\Cluster\ClusterHealth` is how `ServerRepository::getAll()` (`server_online`, `cluster_health`) and `ConnectionTracker::getCapacity()` read it.
 - Each transition rewrites the servers cache at once and is audited (`node.health`).
+- **Hysteresis** (`NodeHealth::settle`): a published state gets worse at once, but better only after 30 s of steady health (`NodeHealth::RECOVER_MS`). An offline node that speaks again is `suspect` at once, so routing resumes at half weight, and `ok` after the steady period. Without this, a node whose heartbeats straddle the 10 s threshold flips on every gap: 10 flips a minute at 11.5 s gaps, one with it (`NodeHealthHysteresisTest`). The steady period is longer than the suspect threshold on purpose; at 10 s such a node would recover between gaps and flap as often. Since when each node has been ok is kept in `health.json` (`ok_since`), so the period survives passes that publish nothing.
 - **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears.
 - Nodes without the flow keep the legacy 90 s rule. The Phase 6 orphan purge at `cluster_orphan_conn_ttl_sec` is not part of this loop yet.
 
@@ -313,6 +314,182 @@ On MAIN, `Domain\Cluster\ClusterRoute` sits behind the Phase 0 seams:
   4. writes the result exclusively (`fopen 'x'`, after removing anything planted at the path), so root never follows a symlink.
 - **Readiness.** The agent reports `root_ready` in every heartbeat: the pin exists and matches its own panel key and uuid. MAIN stores it in `cluster_nodes.root_ready` (migration 039). It routes `node.root` only to nodes with the COMMANDS flow and `root_ready`. The Cluster Nodes page shows it.
 
+### Logs and stream state (Phase 5, first increment)
+
+A node whose LOGS or STREAMS flow is on stops writing its logs and stream runtime state into MAIN's database. The Phase 0 seams send them as events instead:
+
+- **LB PHP.** `LogSink::write()` and `StreamStateWriter` redact first (`Redactor`), then hand the events to `Core\Cluster\EventSpool`. The spool holds one file per write under `config/cluster/spool/<lane>/`, written aside and renamed in. The lanes are:
+  - `p0`: `stream.state`, never dropped;
+  - `p1`: `log.<type>`, one event per `LogSink::CHUNK` rows.
+
+  When the agent has not touched `flows.json` for 120 s (it does on every heartbeat), the spool refuses and the write falls back to SQL, so a stopped agent loses nothing.
+- **Agent.** One loop per lane (P0 every 200 ms, P1 every 5 s) sends the oldest files to MAIN's `events` op, numbered from the lane's cursor (`useq`). Before each send it writes the batch's first number and file list to `<lane>.inflight`, so a crash or a lost reply resends the same files under the same numbers. Past 64 MB, P1 drops its oldest files and reports the count as a `skip` event, which is spooled so it survives a restart. `p0_reset` is not in yet.
+- **MAIN.** `events` (`EventIngest`) applies a batch and the new cursor together:
+  - P0 is gap-checked: a first number other than `useq_p0 + 1` gets a signed `409 USEQ_GAP {expected_useq}` and the agent renumbers.
+  - P1 skips numbers at or below `useq_p1`.
+  - A batch at or below the cursor is a repeat and applies nothing.
+  - Every event applies as the sending node. `stream.state` merges only runtime-state columns into that node's own `streams_servers` row (`StreamRowMerge`), log rows get its `server_id`, and both are redacted again.
+  - An event whose flow is off is dropped and counted.
+  - `hello` returns the cursors.
+- **Admin.** The Cluster Nodes page switches LOGS and STREAMS per node.
+
+### Content (Phase 5, second increment)
+
+The rest of what a node writes about its own content goes the same way, as P0 events through `Domain\Stream\ContentSink`. MAIN applies each event only where the node is the owner:
+
+| Event | Flow | Written by | MAIN applies it when |
+| --- | --- | --- | --- |
+| `recording.state {id, status}` | CONTENT | `RecordCommand` | `recordings.source_id` is the node |
+| `stream.worker {stream_id, worker, pid}` | STREAMS | `ArchiveCommand`, `ThumbnailCommand` (`tv_archive`, `vframes`) | `streams.<worker>_server_id` is the node |
+| `vod.analysis {stream_id, props}` | CONTENT | `VodCronJob`, `CleanupCronJob` | the node holds the movie |
+
+`vod.analysis` carries only the ffprobe keys (`duration_secs`, `duration`, `video`, `audio`, `subtitle`, `bitrate`), and MAIN merges them into its own `movie_properties`.
+
+When an event changes a stream's routing state, MAIN writes the cache signal (`StreamProcess::updateStream`) itself. A node with STREAMS on no longer writes that signal into MAIN's database.
+
+**Recordings.** A finished recording becomes one VOD through `Domain\Stream\RecordingFinalizer`. It works in two steps around the node's conversion to `VOD_PATH/<id>.mp4`:
+
+1. `create()` makes the VOD row and its bouquets, and records it as `created_id`. It is idempotent.
+2. `finish()` attaches the VOD to the node (pid 1, `to_analyze` 1) and sets status 2.
+
+A legacy node runs both in-process, as before. A CONTENT node needs the id before it can convert, so it asks MAIN synchronously:
+
+- **Agent socket.** The node calls the `recording_complete` op through the agent's local socket. The socket is `config/cluster/agent.sock`, mode 0660, and PHP reaches it through `Core\Cluster\AgentClient`. It serves `POST /v1/main/{op}` for an allowlist of ops, which is only `recording_complete` today. The plan puts the socket under `bin/xc_agent/sockets/`; it lives beside the agent's state instead, with the spool and `flows.json`.
+- **Completion.** After converting, the node reports `recording.state` 2, and MAIN runs `finish()`.
+- **Checks.** `recording_complete` needs the CONTENT flow, or MAIN answers `409 FLOW_OFF`. It answers only for the node's own recordings, and only takes an icon from the node's own image store.
+
+The Cluster Nodes page switches CONTENT.
+
+### Fanout monitor feed and P0 compaction (Phase 5, third increment)
+
+**Fanout feed.** xc_fanout publishes its supervised streams' monitor transitions on `GET /events?boot=&since=&wait=` on its control socket:
+
+- A watcher compares states every 250 ms. It ignores the counters that move on their own (uptime, the sampled bitrate).
+- The last 4096 transitions are kept in a ring.
+- A request is held up to 25 s when there is nothing new.
+- A consumer that is new, behind the ring, or on another daemon life (`boot`) gets `reset` and a full snapshot.
+- Viewer open and close join the feed in Phase 6.
+
+**Agent side.** While STREAMS is on, the agent follows the feed (`-fanout-ctl`) and spools each transition as a P0 `stream.monitor {stream_id, state}` event.
+
+- Before spooling, it redacts `source` and drops `last_error`.
+- It names spool files on `CLOCK_MONOTONIC`, the clock of PHP's `hrtime()`, so the agent's files and PHP's sort together.
+- Once the feed answers, the agent adds `"features": ["fanout_events"]` to `flows.json`. `NodeFlows::agentHas()` reads it, and the node's `reconcileSupervised` then stops writing that state. It still releases streams that nothing should produce.
+
+**MAIN side.** MAIN derives the row from `stream.monitor` with the same pure rule PHP uses (`StreamProcess::supervisedRowUpdate`), against its own copy. It leaves a row the panel has stopped untouched and refreshes the stream cache on a change. Transitions reach MAIN within a poll step, not the reconcile's cadence.
+
+**P0 compaction.** P0 is never dropped. Past 128 MB, the agent collapses the backlog instead, keeping the latest state per key:
+
+- `stream.state` per row, with its fields merged;
+- `stream.monitor` per stream;
+- `stream.worker` per stream and worker;
+- `recording.state` per recording;
+- `vod.analysis` per movie, with its props merged.
+
+Other event types are kept as they are, in order. The result replaces the oldest file, so it still goes first. MAIN applies it like any batch, so the plan's separate `p0_reset` event is not needed.
+
+### Connections (Phase 6, first increment): kills as commands
+
+Every kill MAIN sends to another node's viewers now travels as a signed command when that node takes commands. Before this, only `SignalDispatcher::kill` in MySQL mode did.
+
+- **Kills from `ConnectionTracker::redisSignal`.** In Redis mode, a worker pid becomes `conn.kill_worker`, and so does an RTMP client (`rtmp: true`). A daemon viewer's `drop_con` becomes `conn.drop {uuid}`. This covers every caller: `ConnectionTracker::closeConnection` and `ConnectionLimiter`'s kicks. Before, all of these went through `SIGNALS#<sid>` in MAIN's Redis.
+- **Drops from `dropDaemonViewer`.** In MySQL mode, the drop of a viewer on another node also becomes `conn.drop`, instead of a `drop_con` row in `signals`.
+
+**On the node.** `conn.drop` is restrictive, so it is signed without a licence. Repeat drops for the same viewer supersede each other through `dedupe_key`.
+
+The agent runs `conn.drop` in its own process: a `DELETE /connections/<uuid>` on the fanout's control socket. A 404 is acked as "not connected here". When the agent cannot reach the fanout, `cluster:exec` does the same through `FanoutClient::dropConnection`. A kill reaches the node within a poll step of the `commands` long-poll.
+
+### Connections (Phase 6, second increment): the connection store seam
+
+The stream endpoints (`live.php`, `vod.php`, `timeshift.php`, `rtmp.php`) now reach the connection store only through `ConnectionTracker`. Before, each of them read and wrote `lines_live` or Redis inline. The seam's operations:
+
+| Operation | What it does |
+| --- | --- |
+| `openRecord($settings, $record, $dbRow)` | Records a viewer. `$record` is the Redis record; `$dbRow` holds exactly the `lines_live` columns each caller wrote before. VOD still leaves `external_device` NULL, and RTMP still writes the node's own `date_start` on the table path. `createLive` goes through it too. |
+| `findByUuid($settings, $uuid, $columns, $fallback)` | Finds a viewer by uuid. On the table path, an HTTP Range request without the uuid falls back to matching line (or HMAC key), container, agent and stream. |
+| `updateLive` | Refreshes and re-opens a viewer (unchanged). |
+| `heartbeat($settings, $uuid, $lastRead)` | The long-running viewers' five-minute check-in. |
+| `acceptedIP($settings, $lineID)` | The IP the first open connection of a line came from (`disallow_2nd_ip_con`). |
+
+It is a refactor: no store changes behaviour, as `ConnectionStoreTest` pins on both `lines_live` and a real Redis. The seam resolves the database through the current handle (`DatabaseFactory::get()`), the one the endpoints' global `$db` holds between `connectLazy()` and `close()`. A handle injected at boot may already be closed. Here, the next increment swaps in the node's agent as the store for nodes with CONNECTIONS on.
+
+### Connections (Phase 6, third increment): the agent's connection registry
+
+On a node whose CONNECTIONS flow is on, the agent holds the node's viewers, and the connection store seam reads and writes them there. CONNECTIONS needs COMMANDS and STREAMS, and the Cluster Nodes page refuses it without them.
+
+**Seam.** The seam's methods go to the agent: `openRecord`, `findByUuid` (with the Range fallback), `lookupLive`, `updateLive`, `heartbeat` and `acceptedIP`. They use `Core\Cluster\AgentConnections` over the local socket, with a 1 s timeout. The stream endpoints make no WAN call for their viewers any more. When the agent does not answer, the call falls back to MAIN's store, so a viewer is never held up by the agent. `lookupLive` applies the same owner, server, container, stream and open checks the table path's query does.
+
+**Agent.** The agent's `Registry` holds the records, in ConnectionTracker's Redis record shape, and keeps a snapshot in `config/cluster/registry.snap`. It serves `/v1/conn/...` on the local socket. It mirrors every change to MAIN as P0 events, spooling the event before changing the record:
+
+- `conn.upsert {record}` for a new or changed connection. A change of `hls_last_read` alone goes at most every 10 s, inside the 30 s after which MAIN's reaper closes an HLS viewer.
+- `conn.remove {uuid}` when the node removes a connection.
+
+**MAIN.** MAIN keeps its store current from these events, in Redis or `lines_live` as `redis_handler` says (`Domain\Cluster\ConnectionIngest`). The reaper, the limits and the admin read what they always read. A node writes only its own connections: `server_id` is the sender, the line identity is recomputed from the record's owner, and a uuid another node holds is refused.
+
+**Closes.**
+
+- **Decided on MAIN** (a kick, a limit, MAIN's reaper): the close reaches the node as `conn.close {uuid, remove}`, which is restrictive and deduplicated per viewer. The agent applies it to its registry in-process. Without this, the player's next playlist request would resume a kicked HLS viewer from the node's registry.
+- **Made by the node itself** (its reaper, in MySQL mode): the node still writes MAIN's store directly, and tells its registry with `POST /v1/conn/{uuid}/close`, which sends no event.
+
+**Known gap.** An upsert already in flight when MAIN closes the same viewer can re-open it in MAIN's store. The node's registry holds the viewer as ended, so its next request starts a new connection, with the token's checks. Admission, snapshots with digests and the agent's HLS reaper are the next increments.
+
+### Connections (Phase 6, fourth increment): limits on MAIN
+
+A node whose CONNECTIONS flow is on does not run `ConnectionLimiter` against MAIN's store any more. That would be a WAN round trip on every viewer's open, and it could evict the viewer that just opened.
+
+**Node.** When a viewer opens with a limit, `StreamAuth::validateConnections` spools a P0 `conn.limit` event after the viewer's `conn.upsert`. For a line it carries `{uuid, ip, user_agent, user_id}`. For an HMAC identity it carries `{uuid, ip, user_agent, hmac_id, hmac_identifier, max_connections}`. If the spool refuses (for example, a stale `flows.json`), the node enforces the limit itself, as before.
+
+**MAIN.** `EventIngest` accepts `conn.limit` only from a node with CONNECTIONS. It queues the check as a file in `TMP_PATH/cluster_limits/` (`Domain\Cluster\ConnectionLimits`), so the events op returns at once. `cron:signals` drains the queue on its 1 s loop, and runs each check with these rules:
+
+- The viewer must be in MAIN's store under the sending node, with the same owner. Otherwise the check is dropped: the viewer is gone, or it is not that node's.
+- A line's limit is read from `lines`, never from the event. An HMAC identity's limit is the node's, because MAIN has no row for it.
+- `StreamAuth::validateConnections` then runs on MAIN, with the viewer's IP. It closes the owner's oldest connections, preferring the requesting device, as it does on a legacy node.
+
+A viewer over its limit is closed within about 1–1.5 s of opening on another node. The viewer that just opened is not the one evicted.
+
+**Closes reach the node.** `ConnectionLimiter::closeConnection` also sends `conn.close {uuid, remove}` when the viewer is another node's and that node has CONNECTIONS. This covers any close made by the limiter, on MAIN or from another path. An ended HLS viewer is kept as ended (`remove: false`); anything else is removed. Without this, the node's registry would resume a kicked HLS viewer on the next playlist request.
+
+Admission when the token is minted (reservations) is not in this increment.
+
+### Connections (Phase 6, fifth increment): digest, snapshot and seed
+
+MAIN's store for a CONNECTIONS node can drift from the node's registry. Causes include an event lost to a bug, an upsert that re-opens a viewer MAIN closed, or a registry restored from an older `registry.snap`. The digest finds a drift, and a snapshot repairs it.
+
+**Digest.** Both sides compute it over the open connections (`hls_end` not set), in `Domain\Cluster\ConnectionDigest` and the agent's `Registry.Digest`. Both pin one test vector. The digest is `{count, users, xor64}`:
+
+- `count`: the number of open connections.
+- `users`: the number of distinct owners. An owner is `u:<user_id>`, or `h:<hmac_id>:<hmac_identifier>` for an HMAC identity.
+- `xor64`: the XOR of the first 8 bytes of SHA-256(`uuid` "\n" owner), as 16 hex digits.
+
+**Heartbeat.** An agent whose CONNECTIONS flow is on adds `conn_digest` to every heartbeat. MAIN compares it with its store for that node at most every 4 s. It answers `want_conn_snapshot` only when two checks in a row disagree, because events in flight catch up well within that. It asks one node at most once every 30 s. The check's state is a small file per node in `TMP_PATH/cluster_digest/`.
+
+**Snapshot.** The agent sends its whole registry with the `conn_snapshot` op, `{snap_id, seq, last, records}`. The registry goes in chunks of 1000 records, numbered from 0, up to 50 chunks. MAIN keeps the chunks in `TMP_PATH/cluster_snapshots/<sid>/` and applies nothing until the last one arrives. Then:
+
+- every record is upserted as `conn.upsert` would be;
+- every open connection MAIN holds for the node that the snapshot lacks is removed;
+- records that are not the node's are dropped, as at ingest.
+
+A chunk 0 starts over. Any other chunk out of order gets `409 SNAP_GAP {expected_seq}`, and the agent drops that snapshot; MAIN asks again if the drift stays. The op needs CONNECTIONS (`409 FLOW_OFF`), and each snapshot applied is audited as `conn.snapshot`.
+
+"Applied as a whole" means MAIN changes nothing before the last chunk. The apply itself is a sequence of store writes, not a transaction. Events the node spooled before the snapshot can land after it; they carry older or equal state, and a drift they leave is caught by the next check.
+
+**Seed.** `console.php cluster:seed-connections` runs on the node while it still reaches MAIN's store, before the CONNECTIONS flow is switched on. It loads the node's connections from MAIN's store (Redis `SERVER#<sid>`, or `lines_live`) into the agent through `POST /v1/conn/seed`. The first chunk empties the registry, and loading sends no event. Only the registry record's keys are sent (`AgentConnections::RECORD_KEYS`), never the line's other columns. After the switch, the first digest agrees and no snapshot is needed.
+
+Still to come in Phase 6: admission when the token is minted, the agent's HLS reaper, and rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
+
+### Disaster recovery of MAIN's cluster keys
+
+`cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):
+
+- **What the bundle holds:** the root, the revocation floors and the clock high-water.
+- **How it is protected:** Argon2id (1 GiB, 4 passes) of a passphrase, plus a pepper that only an extension holds. The extension enforces the passphrase strength.
+- **Where the passphrase comes from:** typed twice without echo, `--passphrase-file`, or one line on standard input. It is never an argument, which any user could read in the process list.
+- **Export:** writes the file 0600 and never overwrites.
+- **Import:** records the panel keys as `cluster:init` does and audits `cluster.import_keys`. The extension refuses a different root already on the machine (`ROOT_EXISTS`); the same root again is a no-op. Nodes then recover with `token_rekey`, because their epoch records were sealed to the old machine.
+- **No bundle:** `cluster:init` already covers the plan's `cluster:reinit` (a new root, audited `cluster.root_changed`), followed by `server:enrol` per node. There is no fleet-wide `cluster:reenrol --all`, because each node needs its own SSH credentials.
+- **Tests:** `ClusterDrTest` covers the commands. Opt-in, with `XCVM_EXT_SO`, it runs the real extension, shrunk by `XCVM_TEST_DR_MEM_KIB`, across two config dirs.
+- **Operator procedure:** `docs/en/administration/backup-strategy.md`.
+
 ### Extension updates
 
 `console.php xcvm_core` rolls back an update whose cluster API falls outside the panel's range when the installed one was inside it. `console.php xcvm_core status` reports what is loaded. Installing an exact pinned version needs versioned paths in the binaries repo; that prerequisite is still open.
@@ -321,5 +498,5 @@ On MAIN, `Domain\Cluster\ClusterRoute` sits behind the Phase 0 seams:
 
 - Changing any formula in Canonical changes `cluster_canonical_vectors.json`. That is a protocol change: raise `proto` and keep accepting N−1, per the plan's mixed-version rules.
 - A new extension API version needs `API_MAX` raised, and new vectors copied in, in the same panel release.
-- The crypto pipeline measures about 0.25 ms p99 for a 64 KB request against the plan's 1 ms budget. It measures about 41 ms for 8 MB in the CI container against the plan's 40 ms target, because the body is hashed twice and encrypted twice. `ClusterCryptoBenchTest` guards 8 MB at 2× the target; the target itself needs a check on bundled PHP and production hardware.
+- The crypto pipeline measures about 0.25 ms p99 for a 64 KB request against the plan's 1 ms budget. It measures about 41 ms for 8 MB in the CI container against the plan's 40 ms target, because the body is hashed twice and encrypted twice. `ClusterCryptoBenchTest` guards 8 MB at 2× the target. It is opt-in (`XCVM_BENCH=1`), because wall-clock timings depend on the machine and must not fail the unit suite on a slower one. The target itself needs a check on bundled PHP and production hardware.
 - `ClusterExtensionIntegrationTest` runs the panel against a real test-hooks build of `xcvm_core` (opt-in, throwaway `XCVM_CONFIG_DIR`). It passed against the 2.2.2 build at the time of writing.

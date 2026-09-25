@@ -97,26 +97,16 @@ if ($rChannelInfo) {
 		DatabaseFactory::connectLazy();
 	}
 
-	if ($rSettings['redis_handler']) {
-		$rConnection = ConnectionTracker::getConnection($rTokenData['uuid']);
-	} else {
-		$db->query('SELECT `server_id`, `activity_id`, `pid`, `user_ip` FROM `lines_live` WHERE `uuid` = ?;', $rTokenData['uuid']);
-
-		if (0 < $db->num_rows()) {
-			$rConnection = $db->get_row();
-		} else {
-			if (!empty($_SERVER['HTTP_RANGE'])) {
-				if (!isset($rIsHMAC) && is_null($rIsHMAC)) {
-					$db->query('SELECT `server_id`, `activity_id`, `pid`, `user_ip` FROM `lines_live` WHERE `user_id` = ? AND `container` = ? AND `user_agent` = ? AND `stream_id` = ?;', $rUserInfo['id'], 'VOD', $rUserAgent, $rStreamID);
-				} else {
-					$db->query('SELECT `server_id`, `activity_id`, `pid`, `user_ip` FROM `lines_live` WHERE `hmac_id` = ? AND `hmac_identifier` = ? AND `container` = ? AND `user_agent` = ? AND `stream_id` = ?;', $rIsHMAC, $rIdentifier, 'VOD', $rUserAgent, $rStreamID);
-				}
-
-				if ($db->num_rows() > 0) {
-					$rConnection = $db->get_row();
-				}
-			}
-		}
+	// A player's HTTP Range request may come without the uuid: match it on the
+	// line (or HMAC key), container, agent and stream instead (table path).
+	$rRangeMatch = [];
+	if (!empty($_SERVER['HTTP_RANGE'])) {
+		$rRangeMatch = (!isset($rIsHMAC) && is_null($rIsHMAC)) ? ['user_id' => $rUserInfo['id']] : ['hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
+		$rRangeMatch += ['container' => 'VOD', 'user_agent' => $rUserAgent, 'stream_id' => $rStreamID];
+	}
+	$rConnection = ConnectionTracker::findByUuid($rSettings, $rTokenData['uuid'], '`server_id`, `activity_id`, `pid`, `user_ip`', $rRangeMatch);
+	if ($rConnection === null) {
+		unset($rConnection);
 	}
 
 	if (!isset($rConnection)) {
@@ -125,21 +115,16 @@ if ($rChannelInfo) {
 			generateError('TOKEN_EXPIRED');
 		}
 
+		$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset']);
 		if (!isset($rIsHMAC) && is_null($rIsHMAC)) {
-			if ($rSettings['redis_handler']) {
-				$rConnectionData = ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset']), 'on_demand' => 0, 'identity' => $rUserInfo['id'], 'uuid' => $rTokenData['uuid']];
-				$rResult = ConnectionTracker::createConnection($rConnectionData);
-			} else {
-				$rResult = $db->query('INSERT INTO `lines_live` (`user_id`,`stream_id`,`server_id`,`proxy_id`,`user_agent`,`user_ip`,`container`,`pid`,`uuid`,`date_start`,`geoip_country_code`,`isp`,`hls_last_read`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?);', $rUserInfo['id'], $rStreamID, $rServerID, $rProxyID, $rUserAgent, $rIP, 'VOD', $rPID, $rTokenData['uuid'], $rActivityStart, $rCountryCode, $rUserInfo['con_isp_name'], time() - intval($rServers[SERVER_ID]['time_offset']));
-			}
+			$rOwner = ['user_id' => $rUserInfo['id']];
+			$rIdentity = $rUserInfo['id'];
 		} else {
-			if ($rSettings['redis_handler']) {
-				$rConnectionData = ['hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier, 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset']), 'on_demand' => 0, 'identity' => $rIsHMAC . '_' . $rIdentifier, 'uuid' => $rTokenData['uuid']];
-				$rResult = ConnectionTracker::createConnection($rConnectionData);
-			} else {
-				$rResult = $db->query('INSERT INTO `lines_live` (`hmac_id`,`hmac_identifier`,`stream_id`,`server_id`,`proxy_id`,`user_agent`,`user_ip`,`container`,`pid`,`uuid`,`date_start`,`geoip_country_code`,`isp`,`hls_last_read`) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)', $rIsHMAC, $rIdentifier, $rStreamID, $rServerID, $rProxyID, $rUserAgent, $rIP, 'VOD', $rPID, $rTokenData['uuid'], $rActivityStart, $rCountryCode, $rUserInfo['con_isp_name'], time() - intval($rServers[SERVER_ID]['time_offset']));
-			}
+			$rOwner = ['hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
+			$rIdentity = $rIsHMAC . '_' . $rIdentifier;
 		}
+		$rConnectionData = $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => 0, 'identity' => $rIdentity, 'uuid' => $rTokenData['uuid']];
+		$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'hls_last_read' => $rLastRead]);
 	} else {
 		$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rConnection['user_ip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1)) : $rConnection['user_ip'] == $rIP);
 
@@ -159,17 +144,7 @@ if ($rChannelInfo) {
 			}
 		}
 
-		if ($rSettings['redis_handler']) {
-			$rChanges = ['pid' => $rPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])];
-
-			if ($rConnection = ConnectionTracker::updateConnection($rConnection, $rChanges, 'open')) {
-				$rResult = true;
-			} else {
-				$rResult = false;
-			}
-		} else {
-			$rResult = $db->query('UPDATE `lines_live` SET `hls_end` = 0, `pid` = ?, `hls_last_read` = ? WHERE `activity_id` = ?;', $rPID, time() - intval($rServers[SERVER_ID]['time_offset']), $rConnection['activity_id']);
-		}
+		$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])]);
 	}
 
 	if (!$rResult) {
@@ -325,26 +300,7 @@ if ($rChannelInfo) {
 					$rConnection = null;
 					$rSettings = CacheReader::get('settings');
 
-					if ($rSettings['redis_handler']) {
-						RedisManager::ensureConnected();
-						$rExistingConnection = ConnectionTracker::getConnection($rTokenData['uuid']);
-						if ($rExistingConnection) {
-							$rChanges = ['hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])];
-							$rConnection = ConnectionTracker::updateConnection($rExistingConnection, $rChanges, 'open');
-						}
-						RedisManager::closeInstance();
-					} else {
-						DatabaseFactory::connectLazy();
-						$db->query('UPDATE `lines_live` SET `hls_last_read` = ? WHERE `uuid` = ?', time() - intval($rServers[SERVER_ID]['time_offset']), $rTokenData['uuid']);
-						$db->query('SELECT `pid`, `hls_end` FROM `lines_live` WHERE `uuid` = ?', $rTokenData['uuid']);
-
-						if ($db->num_rows() != 1) {
-						} else {
-							$rConnection = $db->get_row();
-						}
-
-						DatabaseFactory::close();
-					}
+					$rConnection = ConnectionTracker::heartbeat($rSettings, $rTokenData['uuid'], time() - intval($rServers[SERVER_ID]['time_offset']));
 
 					if (!(!is_array($rConnection) || $rConnection['hls_end'] != 0 || $rConnection['pid'] != $rPID)) {
 					} else {

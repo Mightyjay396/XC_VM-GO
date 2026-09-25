@@ -80,6 +80,27 @@ class ClusterCrypto {
 	}
 
 	/**
+	 * A disaster-recovery bundle of MAIN's cluster root, its revocation floors
+	 * and clock high-water, under Argon2id (1 GiB) of the passphrase plus a
+	 * pepper only an extension holds. CLI only; the extension refuses a weak
+	 * passphrase (`ARG:passphrase`).
+	 */
+	public function exportKeys(string $rPassphrase): string {
+		return $this->call('cluster_export_keys', $rPassphrase);
+	}
+
+	/**
+	 * A replacement MAIN takes the bundle's root (sealed to this machine) and
+	 * merges its floors and clock. Never replaces a different root
+	 * (`ROOT_EXISTS`); the same one again is a no-op.
+	 *
+	 * @return array{created: bool, panel_sign_pub: string, panel_box_pub: string, panel_fp: string, nodes: int, exported_at: int}
+	 */
+	public function importKeys(string $rBundle, string $rPassphrase): array {
+		return $this->call('cluster_import_keys', $rBundle, $rPassphrase);
+	}
+
+	/**
 	 * @param mixed ...$rArgs
 	 * @return mixed
 	 */

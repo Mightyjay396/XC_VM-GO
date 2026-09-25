@@ -62,6 +62,29 @@ class FakeClusterCrypto extends ClusterCrypto {
 		return ['created' => $rCreated, 'panel_sign_pub' => $rInfo['panel_sign_pub'], 'panel_box_pub' => $rInfo['panel_box_pub'], 'panel_fp' => $rInfo['panel_fp']];
 	}
 
+	/** DR bundles as the extension's contract, minus the KDF: a fixed passphrase rule, ROOT_EXISTS, a no-op on the same root. */
+	public function exportKeys(string $rPassphrase): string {
+		if (strlen($rPassphrase) < 20) {
+			throw new ClusterRefusedException('ARG:passphrase', 'cluster_export_keys');
+		}
+		return 'FAKEDR1' . hash('sha256', $rPassphrase, true) . $this->rSeed;
+	}
+
+	public function importKeys(string $rBundle, string $rPassphrase): array {
+		if (strlen($rBundle) !== 71 || !str_starts_with($rBundle, 'FAKEDR1') || !hash_equals(substr($rBundle, 7, 32), hash('sha256', $rPassphrase, true))) {
+			throw new ClusterRefusedException('CRYPTO', 'cluster_import_keys');
+		}
+		$rSeed = substr($rBundle, 39);
+		if ($this->rInitialised && $rSeed !== $this->rSeed) {
+			throw new ClusterRefusedException('ROOT_EXISTS', 'cluster_import_keys');
+		}
+		$rCreated = !$this->rInitialised;
+		$this->rSeed = $rSeed;
+		$this->rInitialised = true;
+		$rInfo = $this->info();
+		return ['created' => $rCreated, 'panel_sign_pub' => $rInfo['panel_sign_pub'], 'panel_box_pub' => $rInfo['panel_box_pub'], 'panel_fp' => $rInfo['panel_fp'], 'nodes' => 2, 'exported_at' => 1800000000];
+	}
+
 	public function tokenIssue(array $rParams): array {
 		if ($this->rRefuseIssue !== null) {
 			throw new ClusterRefusedException($this->rRefuseIssue, 'cluster_token_issue');

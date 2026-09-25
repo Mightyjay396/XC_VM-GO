@@ -746,6 +746,150 @@ final class ClusterApiTest extends TestCase {
 		}
 	}
 
+	public function testRemoteKillsAndViewerDropsBecomeCommands(): void {
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS]);
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		try {
+			// ConnectionTracker's Redis-mode kills: a worker pid, an RTMP client, a daemon viewer.
+			$this->assertNotFalse(\XcVm\Domain\Stream\ConnectionTracker::redisSignal(55, self::SID, 0));
+			$this->assertNotFalse(\XcVm\Domain\Stream\ConnectionTracker::redisSignal(9, self::SID, 1));
+			$this->assertNotFalse(\XcVm\Domain\Stream\ConnectionTracker::redisSignal(0, self::SID, 0, ['type' => 'drop_con', 'uuid' => 'abc123']));
+			\XcVm\Domain\Cluster\ClusterRoute::drop(self::SID, 'abc123'); // the same viewer again: superseded, not doubled
+			$this->assertSame([false, false], \XcVm\Domain\Cluster\ClusterRoute::drop(self::SID, 'bad uuid;rm'));
+			$rDocs = array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0));
+			$this->assertSame(['conn.kill_worker', 'conn.kill_worker', 'conn.drop'], array_column($rDocs, 'type'));
+			$this->assertSame([['pid' => 55, 'rtmp' => false], ['pid' => 9, 'rtmp' => true], ['uuid' => 'abc123']], array_column($rDocs, 'args'));
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
+	public function testMainsClosesReachANodeThatHoldsItsViewers(): void {
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		try {
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS]);
+			$this->assertSame([false, false], \XcVm\Domain\Cluster\ClusterRoute::closeConnection(self::SID, 'abc', true), 'no registry on the node: nothing to tell');
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+			$this->assertSame([true, true], \XcVm\Domain\Cluster\ClusterRoute::closeConnection(self::SID, 'abc', false));
+			$this->assertSame([true, true], \XcVm\Domain\Cluster\ClusterRoute::closeConnection(self::SID, 'abc', true)); // supersedes the first
+			$rDocs = array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0));
+			$this->assertSame([['conn.close', ['uuid' => 'abc', 'remove' => true]]], array_map(static fn($rD) => [$rD['type'], $rD['args']], $rDocs));
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
+	#[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+	#[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
+	public function testTheLimitersCloseReachesTheNodeThatHoldsTheViewer(): void {
+		define('SERVER_ID', 1); // MAIN; the viewer is on node 5
+		if (!class_exists('XC_VM', false)) {
+			eval('final class XC_VM { public static function redis_connect() { return null; } }'); // no Redis here; the limiter asks for it up front
+		}
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY, `hls_end` int NOT NULL DEFAULT 0)');
+		$this->rDb->exec('INSERT INTO `lines_live` (`activity_id`) VALUES (7)');
+		$GLOBALS['db'] = $this->rDb;
+		$GLOBALS['rSettings'] = ['redis_handler' => 0, 'save_closed_connection' => 0];
+		$rViewer = ['activity_id' => 7, 'server_id' => self::SID, 'proxy_id' => 0, 'user_id' => 3, 'stream_id' => 100, 'date_start' => 1, 'user_agent' => 'ua', 'user_ip' => '10.0.0.1', 'geoip_country_code' => '', 'isp' => '', 'pid' => 0];
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		try {
+			$this->assertTrue(\XcVm\Streaming\Protection\ConnectionLimiter::closeConnection($rViewer + ['uuid' => 'hlsviewer', 'container' => 'hls']));
+			$this->rDb->query('SELECT `hls_end` FROM `lines_live` WHERE `activity_id` = 7');
+			$this->assertSame(1, (int) $this->rDb->get_row()['hls_end']);
+			$rDocs = array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0));
+			$this->assertSame([['conn.close', ['uuid' => 'hlsviewer', 'remove' => false]]], array_map(static fn($rD) => [$rD['type'], $rD['args']], $rDocs), 'an ended HLS viewer stays ended on the node');
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
+	public function testADriftedNodeIsAskedForItsSnapshotAndItIsApplied(): void {
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT, `user_id` int, `stream_id` int, `server_id` int, `proxy_id` int, `user_agent` text, `user_ip` text, `container` text, `pid` int, `date_start` int, `geoip_country_code` text, `isp` text, `external_device` text, `hls_last_read` int, `hls_end` int DEFAULT 0, `hmac_id` int, `hmac_identifier` text, `uuid` text)');
+		$this->rDb->query("INSERT INTO `lines_live` (`uuid`, `server_id`, `user_id`) VALUES ('ghost', 5, 7)");
+		$rDir = sys_get_temp_dir() . '/xcvm-api-snap-' . bin2hex(random_bytes(4));
+		\XcVm\Domain\Cluster\ConnectionDigest::useState($rDir . '/d/', 0);
+		\XcVm\Domain\Cluster\ConnectionSnapshot::useDir($rDir . '/s/');
+		try {
+			$rKeys = $this->active();
+			$rDigest = ['count' => 0, 'users' => 0, 'xor64' => '0000000000000000'];
+			$rSnap = ['snap_id' => 'ab12ab12ab12ab12', 'seq' => 0, 'last' => true, 'records' => []];
+
+			// Without CONNECTIONS the digest is not looked at, and a snapshot is refused.
+			[$rRes, $rCtx] = $this->call('heartbeat', ['conn_digest' => $rDigest], 1, $rKeys);
+			$this->assertArrayNotHasKey('want_conn_snapshot', $this->reply($rRes, $rCtx, $rKeys));
+			[$rRes, , $rReq] = $this->call('conn_snapshot', $rSnap, 1, $rKeys);
+			$this->denial($rRes, 409, 'FLOW_OFF', $rReq);
+
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+			[$rRes, $rCtx] = $this->call('heartbeat', ['conn_digest' => $rDigest], 1, $rKeys);
+			$this->assertArrayNotHasKey('want_conn_snapshot', $this->reply($rRes, $rCtx, $rKeys), 'one miss');
+			[$rRes, $rCtx] = $this->call('heartbeat', ['conn_digest' => $rDigest], 1, $rKeys);
+			$this->assertTrue($this->reply($rRes, $rCtx, $rKeys)['want_conn_snapshot'] ?? false, 'the drift lasted');
+
+			[$rRes, , $rReq] = $this->call('conn_snapshot', ['seq' => 1] + $rSnap, 1, $rKeys);
+			$this->assertSame(0, $this->denial($rRes, 409, 'SNAP_GAP', $rReq)['expected_seq']);
+			[$rRes, $rCtx] = $this->call('conn_snapshot', $rSnap, 1, $rKeys);
+			$rOut = $this->reply($rRes, $rCtx, $rKeys);
+			$this->assertSame([true, 0, 1, 0], [$rOut['done'], $rOut['applied'], $rOut['removed'], $rOut['dropped']]);
+			$this->rDb->query('SELECT COUNT(*) AS `n` FROM `lines_live`');
+			$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'the node holds none: the ghost is gone');
+		} finally {
+			\XcVm\Domain\Cluster\ConnectionDigest::useState(null);
+			\XcVm\Domain\Cluster\ConnectionSnapshot::useDir(null);
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
+	public function testEventsAreAppliedInOrderAndHelloReturnsTheCursors(): void {
+		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `pid` int)');
+		$this->rDb->exec('INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `pid`) VALUES (11, 100, 5, 0)');
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_STREAMS]);
+		$rState = ['type' => 'stream.state', 'd' => ['stream_id' => 100, 'server_id' => self::SID, 'fields' => ['pid' => 42]]];
+
+		[$rRes, $rCtx] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => [$rState]], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame([1, 1, 0], [$rOut['useq'], $rOut['applied'], $rOut['dropped']]);
+		$this->rDb->query('SELECT `pid` FROM `streams_servers` WHERE `server_stream_id` = 11');
+		$this->assertSame(42, (int) $this->rDb->get_row()['pid']);
+
+		// A gap on P0 is refused with the number MAIN expects.
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 5, 'events' => [$rState]], 1, $rKeys);
+		$this->assertSame(2, $this->denial($rRes, 409, 'USEQ_GAP', $rReq)['expected_useq']);
+
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p9', 'first_useq' => 2, 'events' => []], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a'], 1, $rKeys);
+		$this->assertSame(['p0' => 1, 'p1' => 0], $this->reply($rRes, $rCtx, $rKeys)['cursors']);
+	}
+
+	public function testRecordingCompleteCreatesTheVodOnceForTheNodesRecording(): void {
+		$this->rDb->exec('CREATE TABLE `streams` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `type` int, `stream_display_name` text, `stream_source` text, `target_container` text, `year` text, `movie_properties` text, `rating` int, `read_native` int, `movie_symlink` int, `remove_subtitles` int, `transcode_profile_id` int, `order` int, `added` int, `category_id` text)');
+		$this->rDb->exec('CREATE TABLE `recordings` (`id` INTEGER PRIMARY KEY, `created_id` int, `category_id` text, `bouquets` text, `title` text, `description` text, `start` int, `end` int, `source_id` int, `status` int)');
+		$this->rDb->exec("INSERT INTO `recordings` VALUES (1, NULL, '[]', '[]', 'Match', '', 1800000000, 1800003600, 5, 1), (2, NULL, '[]', '[]', 'Theirs', '', 1800000000, 1800003600, 6, 1)");
+		$rKeys = $this->active();
+
+		[$rRes, , $rReq] = $this->call('recording_complete', ['recording_id' => 1, 'stream_icon' => null], 1, $rKeys);
+		$this->assertSame('content', $this->denial($rRes, 409, 'FLOW_OFF', $rReq)['flow']);
+
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_CONTENT]);
+		[$rRes, $rCtx] = $this->call('recording_complete', ['recording_id' => 1, 'stream_icon' => null], 1, $rKeys);
+		$rID = $this->reply($rRes, $rCtx, $rKeys)['stream_id'];
+		[$rRes, $rCtx] = $this->call('recording_complete', ['recording_id' => 1], 1, $rKeys);
+		$this->assertSame($rID, $this->reply($rRes, $rCtx, $rKeys)['stream_id'], 'a retry gets the same VOD');
+
+		[$rRes, , $rReq] = $this->call('recording_complete', ['recording_id' => 2], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+	}
+
 	public function testRootCommandsNeedTheNodesRootPin(): void {
 		$rKeys = $this->active();
 		SettingsManager::set($this->rSettings);

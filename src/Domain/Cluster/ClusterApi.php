@@ -8,11 +8,12 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
+use XcVm\Domain\Stream\RecordingFinalizer;
 
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
  * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat;
- * Phase 4: commands, ack). Transport-free: handle() takes the request
+ * Phase 4: commands, ack; Phase 5: events, recording_complete; Phase 6: conn_snapshot). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -43,6 +44,9 @@ final class ClusterApi {
 		'hello' => ['POST', false, ['active', 'quarantined']],
 		'commands' => ['POST', false, ['active']],
 		'ack' => ['POST', false, ['active', 'quarantined']],
+		'events' => ['POST', false, ['active']],
+		'recording_complete' => ['POST', false, ['active']],
+		'conn_snapshot' => ['POST', false, ['active']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
 
@@ -144,6 +148,9 @@ final class ClusterApi {
 			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
 			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 		};
 	}
 
@@ -431,17 +438,28 @@ final class ClusterApi {
 			'state' => $rState, 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'], 'gen' => (int) $rNode['gen'],
 			'epoch' => $rH['epoch'], 'main_time_ms' => ClusterClock::nowMs(),
 			'proto' => ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX], 'policy' => ClusterPolicy::current($rSettings, $rMain),
+			'cursors' => ['p0' => (int) $rNode['useq_p0'], 'p1' => (int) $rNode['useq_p1']],
 		]);
 	}
 
 	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {
 		HeartbeatService::record($rNode, $rP, $rH['ts_ms']);
+		// A node that holds its viewers sends its registry's digest; a drift
+		// that outlives the events in flight gets its snapshot asked for.
+		$rWant = false;
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONNECTIONS) !== 0 && isset($rP['conn_digest'])) {
+			try {
+				$rWant = ConnectionDigest::check((int) $rNode['server_id'], $rP['conn_digest']);
+			} catch (\Throwable) {
+				$rWant = false; // the store is down: the next heartbeat checks again
+			}
+		}
 		// policy_ver lets the agent notice a new transport policy (MAIN URLs)
 		// within one heartbeat; it then says hello again to fetch it.
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => (string) $rNode['state'], 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'],
 			'main_time_ms' => ClusterClock::nowMs(), 'pending' => 0, 'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
-		]);
+		] + ($rWant ? ['want_conn_snapshot' => true] : []));
 	}
 
 	/** Longest a `commands` long-poll is held (ms). */
@@ -473,6 +491,80 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, ['ok' => true, 'main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `events`: a batch from one lane, applied in order (EventIngest). A P0 gap
+	 * is refused with the number MAIN expects, and the node resends from there.
+	 */
+	private static function events(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		$rLane = $rP['lane'] ?? null;
+		$rFirst = $rP['first_useq'] ?? null;
+		$rEvents = $rP['events'] ?? null;
+		if (!in_array($rLane, ['p0', 'p1'], true) || !is_int($rFirst) || $rFirst < 1 || !is_array($rEvents) || !array_is_list($rEvents) || count($rEvents) > EventIngest::MAX_EVENTS) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		try {
+			$rOut = EventIngest::ingest($rNode, $rLane, $rFirst, $rEvents);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if (!$rOut['ok']) {
+			return DenialFactory::deny($rCrypto, 409, 'USEQ_GAP', $rH['node'], $rH['nonce'], ['expected_useq' => $rOut['expected_useq']]);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `recording_complete`: the VOD for a recording the node finished, created
+	 * once (RecordingFinalizer). The node names its file after the id, then
+	 * reports `recording.state` 2 once it has converted it.
+	 */
+	private static function recordingComplete(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONTENT) === 0) {
+			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'content']);
+		}
+		$rRecording = $rP['recording_id'] ?? null;
+		$rIcon = $rP['stream_icon'] ?? null;
+		if (!is_int($rRecording) || $rRecording <= 0 || ($rIcon !== null && !is_string($rIcon))) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		try {
+			$rID = RecordingFinalizer::create($rRecording, (int) $rNode['server_id'], $rIcon);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if ($rID === null) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, ['stream_id' => $rID, 'main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `conn_snapshot`: one chunk of a CONNECTIONS node's registry, applied
+	 * with the last (ConnectionSnapshot). A chunk out of order is refused with
+	 * the number MAIN expects; the node then starts over.
+	 */
+	private static function connSnapshot(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONNECTIONS) === 0) {
+			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'connections']);
+		}
+		try {
+			$rOut = ConnectionSnapshot::receive((int) $rNode['server_id'], $rP);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if (!empty($rOut['bad'])) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		if (!$rOut['ok']) {
+			return DenialFactory::deny($rCrypto, 409, 'SNAP_GAP', $rH['node'], $rH['nonce'], ['expected_seq' => (int) $rOut['expected_seq']]);
+		}
+		if (!empty($rOut['done'])) {
+			ClusterAudit::log('conn.snapshot', (int) $rNode['server_id'], ['applied' => $rOut['applied'], 'removed' => $rOut['removed'], 'dropped' => $rOut['dropped']], 'node');
+		}
+		unset($rOut['ok']);
+		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/** Map an extension refusal to a signed denial. */

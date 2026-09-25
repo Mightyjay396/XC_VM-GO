@@ -15,6 +15,16 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 final class ClusterAdmin {
 	use DatabaseAware;
 
+	/** The flows the page switches, by action name. */
+	public const FLOW_BITS = [
+		'telemetry' => NodeRegistry::FLOW_TELEMETRY,
+		'commands' => NodeRegistry::FLOW_COMMANDS,
+		'logs' => NodeRegistry::FLOW_LOGS,
+		'streams' => NodeRegistry::FLOW_STREAMS,
+		'content' => NodeRegistry::FLOW_CONTENT,
+		'connections' => NodeRegistry::FLOW_CONNECTIONS,
+	];
+
 	/**
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll(true)
 	 * @return list<array<string, mixed>> One row per enrolled node, with `server_name` and `health`.
@@ -106,13 +116,25 @@ final class ClusterAdmin {
 				case 'telemetry_off':
 				case 'commands_on':
 				case 'commands_off':
+				case 'logs_on':
+				case 'logs_off':
+				case 'streams_on':
+				case 'streams_off':
+				case 'content_on':
+				case 'content_off':
+				case 'connections_on':
+				case 'connections_off':
 					$rNode = NodeRegistry::byServer($rServerID);
 					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
 						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
 					}
 					[$rName, $rSwitch] = explode('_', $rAction);
-					$rBit = $rName === 'telemetry' ? NodeRegistry::FLOW_TELEMETRY : NodeRegistry::FLOW_COMMANDS;
+					$rBit = self::FLOW_BITS[$rName];
 					$rFlows = $rSwitch === 'on' ? ((int) $rNode['flows'] | $rBit) : ((int) $rNode['flows'] & ~$rBit);
+					if (!NodeRegistry::validFlows($rFlows)) {
+						// CONNECTIONS needs COMMANDS and STREAMS; DATAPLANE needs STREAMS and CONTENT.
+						return ['type' => 'warning', 'message' => 'cluster_flow_needs'];
+					}
 					NodeRegistry::update($rServerID, ['flows' => $rFlows]);
 					ClusterAudit::log('node.flows', $rServerID, ['flows' => $rFlows, 'was' => (int) $rNode['flows']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
 					return ['type' => 'success', 'message' => 'cluster_' . $rName . '_' . $rSwitch . '_done'];
