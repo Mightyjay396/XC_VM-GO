@@ -11,6 +11,7 @@ use XcVm\Core\Module\ModuleManager;
 use XcVm\Infrastructure\Bootstrap\StreamingRequestBootstrap;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Database\DatabaseFactory;
+use XcVm\Infrastructure\Redis\RedisConfigHardening;
 
 /**
  * Проверка статуса, DB-миграции, конфигурация системы.
@@ -310,6 +311,11 @@ class StatusCommand implements CommandInterface {
 			$rWrite = true;
 			$rConfig .= "\nserver-threads 4\nserver-thread-affinity true";
 			echo "Enabling multithreading on Redis\n\n";
+		}
+		[$rConfig, $rDisabled] = RedisConfigHardening::apply($rConfig);
+		if ($rDisabled) {
+			$rWrite = true;
+			echo 'Disabling unused Redis admin commands (' . implode(', ', $rDisabled) . "), effective on the next Redis restart\n\n";
 		}
 		$rPassword = trim(explode("\n", explode("\nrequirepass ", $rConfig)[1])[0]);
 		if ($rPassword === '#PASSWORD#') {
