@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ConnectionLimits;
 use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamProcess;
@@ -93,6 +94,12 @@ class SignalsCommand implements CommandInterface {
 					}
 				} catch (\Throwable $rE) {
 					echo 'Liveness: ' . $rE->getMessage() . "\n";
+				}
+				// max_connections for CONNECTIONS nodes' viewers, as they ask.
+				try {
+					ConnectionLimits::drain();
+				} catch (\Throwable $rE) {
+					echo 'Connection limits: ' . $rE->getMessage() . "\n";
 				}
 			}
 

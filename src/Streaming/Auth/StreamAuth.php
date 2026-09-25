@@ -2,6 +2,8 @@
 
 namespace XcVm\Streaming\Auth;
 
+use XcVm\Core\Cluster\AgentConnections;
+use XcVm\Core\Cluster\EventSpool;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\Protection\ConnectionLimiter;
 
@@ -105,6 +107,16 @@ class StreamAuth {
 	 * @return void
 	 */
 	public static function validateConnections(array $rUserInfo, mixed $rIsHMAC = false, ?string $rIdentifier = '', ?string $rIP = null, ?string $rUserAgent = null, ?string $rUUID = null) {
+		if ($rUserInfo['max_connections'] != 0 && $rUUID !== null && AgentConnections::enabled()) {
+			// A CONNECTIONS node's viewers live in its agent: MAIN enforces the
+			// line's limit when this request reaches it (conn.limit), so the
+			// request makes no WAN call. If the spool refuses, enforce here.
+			$rLimit = ['uuid' => $rUUID, 'ip' => (string) ($_SERVER['REMOTE_ADDR'] ?? $rIP ?? ''), 'user_agent' => (string) $rUserAgent];
+			$rLimit += $rIsHMAC ? ['hmac_id' => (int) $rIsHMAC, 'hmac_identifier' => (string) $rIdentifier, 'max_connections' => (int) $rUserInfo['max_connections']] : ['user_id' => (int) $rUserInfo['id']];
+			if (EventSpool::append('p0', [['type' => 'conn.limit', 'd' => $rLimit]])) {
+				return;
+			}
+		}
 		if ($rUserInfo['max_connections'] != 0) {
 			if (!$rIsHMAC) {
 				if (!empty($rUserInfo['pair_id'])) {
