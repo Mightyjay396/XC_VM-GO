@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and MAIN's side of Phase 2 (the API, below) are implemented. The Go agent, SSH enrolment wiring and Phases 3–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs (`server:enrol`, enrolment codes), `token_rekey` and Phases 3–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -20,7 +20,7 @@ Load balancers today reach MAIN's MariaDB and Redis directly (the `db_grant` mod
 | Node signatures (`X-XCVM-Node-Sig`, relay auth, file digests from an LB) | panel | `Core\Cluster\Crypto\NodeSig` (domain `xcvm-node-sig-v1`, never the panel's `xcvm-sig-v1`) |
 | Relay and file tickets, `X-XCVM-Relay-Auth`, `X-XCVM-File-Digest` | panel | `Ticket`, `RelayAuth`, `FileDigest` |
 
-The Go agent (`internal/clustercrypto` in XC_VM_Fanout) must pass both vector files. That package is not written yet.
+The Go agent's `internal/clustercrypto` (XC_VM_Fanout) passes both vector files.
 
 ### Canonical form
 
@@ -113,6 +113,21 @@ Other behaviour:
 - The first authenticated heartbeat sets `servers.status = 1`. Heartbeat telemetry is kept in shadow in `tmp/cluster/tel_<id>.json`.
 - `cluster:init`, or enabling the API in Settings, creates the extension root and records the panel keys and `ready_at` in `cluster_meta`. Enabling it from Settings runs as php-fpm, so the files belong to the user that serves the API. Liveness counts silence from `max(last_seen_at, ready_at)`.
 - Under `cluster_transport = auto`, HTTPS URLs appear in the policy only once the self-probe result is recorded. Until then, `auto` publishes HTTP URLs.
+
+### Enrolling a new LB at install (SSH)
+
+`LbInstallFlow::provisionCluster` runs at the end of an LB install, over the install's verified SSH session, when `cluster_api_enabled` is on and the extension is available. Otherwise the node stays legacy (mode 0), exactly as before.
+
+1. MAIN pushes `xc_agent` from its cache. `console.php agent_binary` keeps one SHA-256-verified copy per arch in `bin/xc_agent/cache/`, taken from the XC_VM_Fanout release (`xc_agent-linux-<arch>`, the same tag as `xc_fanout`). LBs never download the agent themselves.
+2. `xc_agent keygen` makes the node's Ed25519 and X25519 keys and the first per-epoch key on the node, and prints only the public halves and the SAS. MAIN recomputes the SAS and refuses keys that do not match it.
+3. `xc_agent probe` checks MAIN's signed `/cluster/v1/health` from the node, with the panel key it received over SSH, at the URLs of the node's policy. If this fails, the install stops (status 4) before any token exists.
+4. MAIN mints epoch 1 (`EnrolmentService::issueFirst`). A licence refusal stops the install with `CLUSTER_LICENCE_REQUIRED`.
+5. `xc_agent install` opens the token with the per-epoch key and checks the panel's signature, node and server before saving `config/cluster/agent.json` (0600).
+6. The agent starts (`bin/xc_agent/run.sh`) and finishes with `enrol_complete`.
+
+A missing agent binary, for example when GitHub is unreachable and there is no cached copy, leaves the node legacy and does not fail the install.
+
+`run.sh` is a flock-guarded respawn loop. `service` boot and the RootSignals cron keep it alive on enrolled nodes. The agent exits 3 when MAIN has stopped the node (revoked, or its token expired). `run.sh` then writes `bin/xc_agent/stopped` and nothing restarts it until the node is enrolled again. The `/etc/xc_vm/cluster` root pin, which the root executor needs, arrives with Phase 4.
 
 ### Extension updates
 
