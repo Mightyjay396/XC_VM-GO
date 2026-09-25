@@ -8,6 +8,7 @@
  * (ClusterNodesController → Domain\Cluster\ClusterAdmin).
  */
 
+use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Util\LayoutRenderer;
 
 $rBadge = static fn(string $rState): string => match ($rState) {
@@ -39,6 +40,10 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
 
 <?php if (empty($clusterEnabled)): ?>
     <div class="alert alert-info" role="alert"><?= $language::get('cluster_api_off'); ?> <a href="settings#cluster"><?= $language::get('cluster'); ?></a></div>
+<?php endif; ?>
+
+<?php if (ClusterHealth::read()['guard']): ?>
+    <div class="alert alert-danger" role="alert"><i class="icon-base ti tabler-alert-triangle me-1"></i><?= $language::get('cluster_fleet_silence'); ?></div>
 <?php endif; ?>
 
 <?php if (!empty($clusterPending)): ?>
@@ -77,6 +82,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('server_name'); ?></th>
                     <th><?= $language::get('status'); ?></th>
                     <th><?= $language::get('cluster_mode'); ?></th>
+                    <th><?= $language::get('cluster_telemetry_flow'); ?></th>
                     <th><?= $language::get('cluster_epoch'); ?></th>
                     <th><?= $language::get('cluster_token_expires'); ?></th>
                     <th><?= $language::get('cluster_last_seen'); ?></th>
@@ -86,7 +92,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
             </thead>
             <tbody>
                 <?php if (empty($clusterNodes)): ?>
-                    <tr><td colspan="8" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
+                    <tr><td colspan="9" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($clusterNodes as $rNode): ?>
                     <tr>
@@ -101,6 +107,17 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                             <?php endif; ?>
                         </td>
                         <td><?= (int) $rNode['mode']; ?></td>
+                        <td>
+                            <?php $rTel = ((int) $rNode['flows'] & 1) === 1; ?>
+                            <?php if (in_array($rNode['state'], ['active', 'quarantined'], true)): ?>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="<?= $rTel ? 'telemetry_off' : 'telemetry_on'; ?>" class="btn btn-sm <?= $rTel ? 'btn-label-success' : 'btn-label-secondary'; ?>" title="<?= $language::get('cluster_telemetry_help'); ?>"><?= $language::get($rTel ? 'cluster_flow_on' : 'cluster_flow_off'); ?></button>
+                                </form>
+                            <?php else: ?>
+                                <span class="text-body-secondary">—</span>
+                            <?php endif; ?>
+                        </td>
                         <td><?= (int) $rNode['epoch']; ?> <span class="small text-body-secondary">(gen <?= (int) $rNode['gen']; ?>)</span></td>
                         <td><?= $rWhen($rNode['token_exp'] === null ? null : (int) $rNode['token_exp']); ?></td>
                         <td><?= $rWhen($rNode['last_seen_at'] === null ? null : intdiv((int) $rNode['last_seen_at'], 1000)); ?></td>

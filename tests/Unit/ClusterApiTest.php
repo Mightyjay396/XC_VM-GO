@@ -350,7 +350,9 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame('boot-2', NodeRegistry::byServer(self::SID)['boot_id']);
 
 		[$rRes, $rCtx] = $this->call('heartbeat', ['telemetry' => ['cpu' => 3]], 1, $rKeys, ['ts' => $this->rT0 + 5250]);
-		$this->assertSame(0, $this->reply($rRes, $rCtx, $rKeys)['pending']);
+		$rBeat = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame(0, $rBeat['pending']);
+		$this->assertSame(1, $rBeat['policy_ver'], 'the agent compares it with its own to refetch the policy');
 		$rNode = NodeRegistry::byServer(self::SID);
 		$this->assertSame($this->rT0 + 5000, (int) $rNode['last_seen_at']);
 		$this->assertSame(250, (int) $rNode['clock_offset_ms']);

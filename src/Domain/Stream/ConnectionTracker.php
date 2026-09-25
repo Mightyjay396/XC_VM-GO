@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -126,6 +127,16 @@ class ConnectionTracker {
 					foreach ($rRows as $rServerID => $rRow) {
 						$rRows[$rServerID]['capacity'] = $rRow['online_clients'];
 					}
+				}
+			}
+		}
+
+		// A node MAIN's liveness loop finds silent for over 10 s (suspect) weighs
+		// double, so the balancer sends it fewer new viewers.
+		if (!$rProxy) {
+			foreach ($rRows as $rServerID => $rRow) {
+				if (isset($rRow['capacity'])) {
+					$rRows[$rServerID]['capacity'] = $rRow['capacity'] * ClusterHealth::weight((int) $rServerID);
 				}
 			}
 		}

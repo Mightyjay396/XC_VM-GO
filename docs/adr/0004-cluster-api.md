@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phases 3–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phases 4–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -206,6 +206,68 @@ Other rules:
 Actions POST back to the page; admin sessions are `SameSite=Strict`. The deciding admin is recorded in `decided_by` and in the audit log.
 
 `cron:cluster` runs every minute (migration 037 enables its crontab row). It deletes expired epochs, which erases their `z`, the replay cache and used challenges, unused expired codes, and decided requests after a day. It returns at once on load balancers, which get the crontab verbatim but not `Domain/Cluster`, and while the API is disabled.
+
+### Telemetry (Phase 3)
+
+Every agent samples its host each second (`clusteragent.Sampler`) and sends the latest sample in each heartbeat. The sample covers:
+
+- CPU (user + system over user, nice, system and idle, as the watchdog measured it), cores and model, load;
+- memory, disk of the deploy root, kernel and uptime;
+- stream producers (ffmpeg, `xc_fanout remux`) and the xc_vm PHP-FPM worker pids;
+- per-interface rates, totals and link speed.
+
+What only PHP knows, nginx requests per second and the fanout daemon's status, the LB's watchdog writes to `config/cluster/local.json`. The agent forwards that file while it is under 10 s old.
+
+For a node with the TELEMETRY flow on (mode ≥ 1, toggled per node on the Cluster Nodes page), `HeartbeatService` makes the sample authoritative:
+
+- **Every 5 s:** `servers.watchdog_data`, `last_check_ago`, `requests_per_second` and `php_pids`; without the Redis handler, also `connections` and `users`, counted as the watchdog counted them. `toWatchdogData()` keeps the legacy `SystemInfo::getStats()` keys and order, plus `cpu_average_array` and `fanout`. `ClusterTelemetryTest` pins that against `getStats()`'s source. `network_interface` selects interfaces as before.
+- **Every minute:** the `servers_stats` row the LB's `cron:servers` wrote.
+- **Not yet reported:** GPU, iostat and capture devices are reported empty.
+
+The node learns its mode and flows from MAIN's authenticated replies. The agent writes them to `config/cluster/flows.json`, and `Core\Cluster\NodeFlows` reads them. With TELEMETRY on:
+
+- the LB's watchdog stops writing its `servers` row and only refreshes `local.json`;
+- `cron:servers` skips its `servers_stats` row;
+- `network.py` is stopped.
+
+A stopped agent removes `flows.json`, so the node falls back to the legacy paths.
+
+### Liveness (Phase 3)
+
+`LivenessService::tick()` runs every second in MAIN's signals daemon, with `cron:cluster` as the per-minute fallback. It judges the active nodes whose TELEMETRY flow is on by their silence (`NodeHealth`):
+
+| State | When | Effect on routing |
+| --- | --- | --- |
+| `ok` | heard within 10 s | online, whatever the legacy `last_check_ago` says |
+| `suspect` | silent over 10 s | still online; capacity weight doubled |
+| `offline` | silent over `cluster_offline_after_sec` (30 s) | offline |
+
+Other rules:
+
+- A node never heard from counts as offline only once the loop has been up for that long.
+- The result goes to `tmp/cluster/health.json`. `Core\Cluster\ClusterHealth` is how `ServerRepository::getAll()` (`server_online`, `cluster_health`) and `ConnectionTracker::getCapacity()` read it.
+- Each transition rewrites the servers cache at once and is audited (`node.health`).
+- **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears.
+- Nodes without the flow keep the legacy 90 s rule. The Phase 6 orphan purge at `cluster_orphan_conn_ttl_sec` is not part of this loop yet.
+
+### MAIN endpoint changes (Phase 3)
+
+The case: MAIN's HTTP broadcast port changes on its server page, and the cluster API has no port of its own (`cluster_api_port` = 0). `ClusterEndpoint::recordChange()` then runs before the new ports are applied:
+
+1. It bumps `cluster_policy_ver`. Heartbeat replies carry that version, and an agent that sees a newer one says hello again and gets the new URLs within about 2 s.
+2. It keeps the old port for 7 days in `cluster_legacy_ports` (migration 038, with `cluster_policy_ver`).
+
+While a port is kept:
+
+- The policy lists it after the new URLs, so a node that was offline during the change still finds MAIN.
+- The root-side `set_port` handler renders `bin/nginx/conf/cluster_legacy.conf` on MAIN: one server block per kept port, serving `/cluster/v1/` and a 404 for everything else. `nginx.conf` includes it by glob, so a missing file is no error.
+
+When the 7 days are up, `cron:cluster` drops the port, bumps the policy again and re-applies MAIN's ports so nginx releases it.
+
+This was checked with nginx 1.24:
+
+- `nginx -t` passes with and without the file.
+- On the old port, only `/cluster/v1/` reaches PHP.
 
 ### Extension updates
 

@@ -22,7 +22,7 @@ final class ClusterAdmin {
 	public static function nodes(array $rServers, int $rOfflineAfterSec): array {
 		$rReady = ClusterMeta::readyAtMs(); // its own query: before ours, not between query() and get_rows()
 		$rNow = ClusterClock::nowMs();
-		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
+		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rOut = [];
 		foreach (self::db()->get_rows() as $rRow) {
 			$rLastSeen = $rRow['last_seen_at'] === null ? null : (int) $rRow['last_seen_at'];
@@ -101,6 +101,17 @@ final class ClusterAdmin {
 					return EnrolCodeService::reject($rServerID, $rUserID)
 						? ['type' => 'warning', 'message' => 'cluster_enrol_rejected']
 						: ['type' => 'info', 'message' => 'cluster_nothing_pending'];
+
+				case 'telemetry_on':
+				case 'telemetry_off':
+					$rNode = NodeRegistry::byServer($rServerID);
+					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
+						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
+					}
+					$rFlows = $rAction === 'telemetry_on' ? ((int) $rNode['flows'] | NodeRegistry::FLOW_TELEMETRY) : ((int) $rNode['flows'] & ~NodeRegistry::FLOW_TELEMETRY);
+					NodeRegistry::update($rServerID, ['flows' => $rFlows]);
+					ClusterAudit::log('node.flows', $rServerID, ['flows' => $rFlows, 'was' => (int) $rNode['flows']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return ['type' => 'success', 'message' => $rAction === 'telemetry_on' ? 'cluster_telemetry_on_done' : 'cluster_telemetry_off_done'];
 
 				case 'revoke':
 					return NodeRegistry::revoke($rServerID, $rCrypto, $rUserID === null ? 'admin' : 'admin:' . $rUserID)

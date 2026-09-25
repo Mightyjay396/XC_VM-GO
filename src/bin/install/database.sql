@@ -1606,6 +1606,8 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `servers_stats_retention_days` int(11) DEFAULT '30',
   `cluster_audit_retention_days` int(11) DEFAULT '30',
   `cluster_agent_upgrade_parallel` int(11) DEFAULT '1',
+  `cluster_policy_ver` int(11) DEFAULT '1',
+  `cluster_legacy_ports` varchar(255) DEFAULT '',
   `secure_stream_tokens` tinyint(1) DEFAULT '1',
   `disable_table_responsive` tinyint(1) DEFAULT '0'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;

@@ -138,7 +138,7 @@ final class ClusterApi {
 			'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
 			'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'hello' => self::hello($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
-			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 		};
 	}
 
@@ -429,11 +429,13 @@ final class ClusterApi {
 		]);
 	}
 
-	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {
 		HeartbeatService::record($rNode, $rP, $rH['ts_ms']);
+		// policy_ver lets the agent notice a new transport policy (MAIN URLs)
+		// within one heartbeat; it then says hello again to fetch it.
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => (string) $rNode['state'], 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'],
-			'main_time_ms' => ClusterClock::nowMs(), 'pending' => 0,
+			'main_time_ms' => ClusterClock::nowMs(), 'pending' => 0, 'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
 		]);
 	}
 

@@ -4,6 +4,7 @@ namespace XcVm\Domain\Server;
 
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -100,6 +101,12 @@ class ServerRepository {
 
 			$rRow['watchdog'] = json_decode($rRow['watchdog_data'], true);
 			$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && time() - $rRow['last_check_ago'] <= $rLastCheckTime || SERVER_ID == $rRow['id'];
+			// A node whose agent reports its telemetry is judged by MAIN's
+			// liveness loop instead (offline after 30 s of silence, not 90 s).
+			$rRow['cluster_health'] = ClusterHealth::state(intval($rRow['id']));
+			if ($rRow['cluster_health'] !== null && SERVER_ID != $rRow['id']) {
+				$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && $rRow['cluster_health'] !== 'offline';
+			}
 			if (!isset($rRow['order'])) {
 				$rRow['order'] = 0;
 			}
