@@ -165,7 +165,7 @@ class StatsAjaxController extends BaseAjaxController {
 				}
 
 				if (isset($rWatchDog['total_disk_space'])) {
-					$rReturn['fs'] = intval(($rWatchDog['total_disk_space'] - $rWatchDog['free_disk_space']) / $rWatchDog['total_disk_space'] * 100);
+					$rReturn['fs'] = intval(($rWatchDog['total_disk_space'] - ($rWatchDog['free_disk_space'] ?? 0)) / $rWatchDog['total_disk_space'] * 100);
 				}
 
 				$rReturn['bytes_received'] = intval($rWatchDog['bytes_received']);
@@ -296,7 +296,7 @@ class StatsAjaxController extends BaseAjaxController {
 						}
 
 						if (isset($rWatchDog['total_disk_space'])) {
-							$rArray['fs'] = intval(($rWatchDog['total_disk_space'] - $rWatchDog['free_disk_space']) / $rWatchDog['total_disk_space'] * 100);
+							$rArray['fs'] = intval(($rWatchDog['total_disk_space'] - ($rWatchDog['free_disk_space'] ?? 0)) / $rWatchDog['total_disk_space'] * 100);
 						}
 
 						$rArray['bytes_received'] = intval($rWatchDog['bytes_received']);
