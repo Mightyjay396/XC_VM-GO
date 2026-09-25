@@ -11,6 +11,11 @@ use XcVm\Core\Config\OpensslExtra;
  * servers.server_hardware, so the values can be compared without leaving the
  * node.
  *
+ * publish: what cron:servers adds to the node's server_hardware.
+ *
+ * signal / applySignal: the root signal server:sync-openssl-extra queues on
+ * MAIN and cron:root_signals applies on an LB; both sides share it here.
+ *
  * install / previous: the root signal that brings an LB onto MAIN's value
  * keeps the value it replaced for a short window, so tokens the LB minted with
  * it still open (Encryption::readToken).
@@ -25,8 +30,11 @@ final class OpensslExtraTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
-		OpensslExtra::usePrevFile(null);
-		exec('rm -rf ' . escapeshellarg($this->rDir));
+		try {
+			OpensslExtra::usePrevFile(null);
+		} finally {
+			exec('rm -rf ' . escapeshellarg($this->rDir));
+		}
 	}
 
 	/** Write a previous-value file (JSON unless given raw) and point previous() at it. */
@@ -57,6 +65,41 @@ final class OpensslExtraTest extends TestCase {
 		$this->assertNull(OpensslExtra::reportedFingerprint(['server_hardware' => 'not json']));
 		$this->assertNull(OpensslExtra::reportedFingerprint(['server_hardware' => null]));
 		$this->assertNull(OpensslExtra::reportedFingerprint([]));
+	}
+
+	public function testPublishAddsThisNodesFingerprintToItsHardware(): void {
+		$rHardware = OpensslExtra::publish(['cores' => 4]);
+
+		$this->assertSame(OpensslExtra::fingerprint(OPENSSL_EXTRA), OpensslExtra::reportedFingerprint(['server_hardware' => json_encode($rHardware)]));
+		$this->assertSame(4, $rHardware['cores']);
+	}
+
+	/** An LB on an older or newer build must still recognise the action: its name is the wire contract. */
+	public function testTheSignalCarriesTheValueUnderAFixedAction(): void {
+		$this->assertSame('set_openssl_extra', OpensslExtra::SIGNAL_ACTION);
+		$this->assertSame(['action' => 'set_openssl_extra', 'value' => 'main-extra'], json_decode(OpensslExtra::signal('main-extra'), true));
+		// proxy_api.php leaves out the rows that match this, so no proxy is handed the value.
+		$this->assertStringContainsString('"action":"' . OpensslExtra::SIGNAL_ACTION . '"', OpensslExtra::signal('main-extra'));
+	}
+
+	public function testAnLbAppliesTheSignalAndKeepsItsOldValueForTheWindow(): void {
+		$this->assertTrue(OpensslExtra::applySignal(json_decode(OpensslExtra::signal('main-extra'), true), false, $this->rDir, 1000));
+
+		$this->assertSame('main-extra', file_get_contents($this->rDir . 'openssl_extra'));
+		$this->assertSame(['value' => OPENSSL_EXTRA, 'valid_until' => 1600], json_decode((string) file_get_contents($this->rDir . 'openssl_extra.prev'), true));
+	}
+
+	/** The main's value keys hmac_keys and image names: a signal never changes it. */
+	public function testTheMainIgnoresTheSignal(): void {
+		$this->assertNull(OpensslExtra::applySignal(json_decode(OpensslExtra::signal('main-extra'), true), true, $this->rDir, 1000));
+		$this->assertSame([], array_values(array_diff(scandir($this->rDir), ['.', '..'])));
+	}
+
+	public function testASignalWithoutAStringValueIsNotApplied(): void {
+		foreach ([['action' => OpensslExtra::SIGNAL_ACTION], ['action' => OpensslExtra::SIGNAL_ACTION, 'value' => 42], ['action' => OpensslExtra::SIGNAL_ACTION, 'value' => ['x']], ['action' => OpensslExtra::SIGNAL_ACTION, 'value' => '']] as $rData) {
+			$this->assertFalse(OpensslExtra::applySignal($rData, false, $this->rDir, 1000), json_encode($rData));
+		}
+		$this->assertSame([], array_values(array_diff(scandir($this->rDir), ['.', '..'])));
 	}
 
 	public function testInstallWritesTheNewValueAndKeepsTheOldOneForTheWindow(): void {

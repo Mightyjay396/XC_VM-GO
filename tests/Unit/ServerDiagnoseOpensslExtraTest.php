@@ -9,6 +9,10 @@ use XcVm\Core\Config\OpensslExtra;
  * server_hardware with the MAIN's. A mismatch means every token MAIN mints for
  * a redirect is rejected by that node. A node that publishes none runs an
  * older build; proxies publish none and are not checked.
+ *
+ * The section is called through reflection. That Mode A (diagnoseFromMain) and
+ * Mode B (diagnoseLocal) still call it is pinned from their source only: running
+ * either mode probes the network and the host.
  */
 final class ServerDiagnoseOpensslExtraTest extends TestCase {
 
@@ -27,9 +31,21 @@ final class ServerDiagnoseOpensslExtraTest extends TestCase {
 		$rMethod->setAccessible(true);
 		$rProblems = [];
 		ob_start();
-		$rMethod->invokeArgs(new ServerDiagnoseCommand(), [$rServer, $rMain, &$rProblems]);
+		try {
+			$rMethod->invokeArgs(new ServerDiagnoseCommand(), [$rServer, $rMain, &$rProblems]);
+		} finally {
+			$rOutput = (string) ob_get_clean();
+		}
 
-		return [(string) ob_get_clean(), $rProblems];
+		return [$rOutput, $rProblems];
+	}
+
+	/** The source of one of the command's methods, as reflection locates it. */
+	private function body(string $rName): string {
+		$rMethod = new ReflectionMethod(ServerDiagnoseCommand::class, $rName);
+		$rLines = file((string) $rMethod->getFileName());
+
+		return implode('', array_slice($rLines, $rMethod->getStartLine() - 1, $rMethod->getEndLine() - $rMethod->getStartLine() + 1));
 	}
 
 	public function testAMismatchIsReportedAsAProblem(): void {
@@ -56,6 +72,12 @@ final class ServerDiagnoseOpensslExtraTest extends TestCase {
 		[$rOutput, $rProblems] = $this->check($this->row(2, 'lb-extra'), $this->row(1, null));
 		$this->assertStringContainsString('unknown (main not updated)', $rOutput);
 		$this->assertSame([], $rProblems);
+	}
+
+	/** Both modes still report the check (see the class comment). */
+	public function testBothModesRunTheCheck(): void {
+		$this->assertStringContainsString('$this->opensslExtraSection($rServer, $rMain, $rProblems);', $this->body('diagnoseFromMain'));
+		$this->assertStringContainsString('$this->opensslExtraSection($rMe, $rMain, $rProblems);', $this->body('diagnoseLocal'));
 	}
 
 	public function testProxiesAndAMissingMainAreSkipped(): void {

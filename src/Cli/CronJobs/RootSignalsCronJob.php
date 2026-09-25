@@ -551,16 +551,16 @@ class RootSignalsCronJob implements CommandInterface {
 							$db->close_mysql();
 							shell_exec('sudo reboot');
 							break;
-						case 'set_openssl_extra':
+						case OpensslExtra::SIGNAL_ACTION:
 							// Sent by server:sync-openssl-extra on MAIN. install() keeps the value it
 							// replaces open for tokens minted just before; php-fpm reads the new one
 							// on its next request. The MAIN's own value (hmac_keys, image names) never
 							// changes this way.
-							if (!empty($rServers[SERVER_ID]['is_main'])) {
+							$rSet = OpensslExtra::applySignal($rData, !empty($rServers[SERVER_ID]['is_main']), CONFIG_PATH, time());
+							if ($rSet === null) {
 								break;
 							}
 							echo 'Setting OPENSSL_EXTRA...' . "\n";
-							$rSet = is_string($rData['value'] ?? null) && OpensslExtra::install($rData['value'], CONFIG_PATH, time());
 							if ($rSet) {
 								shell_exec('sudo chown xc_vm:xc_vm ' . CONFIG_PATH . 'openssl_extra ' . CONFIG_PATH . 'openssl_extra.prev 2>/dev/null');
 							}

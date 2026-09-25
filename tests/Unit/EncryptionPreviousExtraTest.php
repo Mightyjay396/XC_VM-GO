@@ -25,8 +25,11 @@ final class EncryptionPreviousExtraTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
-		OpensslExtra::usePrevFile(null);
-		@unlink($this->rFile);
+		try {
+			OpensslExtra::usePrevFile(null);
+		} finally {
+			@unlink($this->rFile);
+		}
 	}
 
 	private function previous(string $rValue, int $rValidUntil): void {
@@ -51,6 +54,26 @@ final class EncryptionPreviousExtraTest extends TestCase {
 
 		$this->assertSame(self::PLAIN, Encryption::readToken($rToken, 'k', OPENSSL_EXTRA, true));
 		$this->assertFalse(Encryption::readToken($rToken, 'k', OPENSSL_EXTRA, false));
+	}
+
+	/**
+	 * Where legacy tokens are accepted, a sealed token minted with the replaced
+	 * value must not be read as a legacy one with the current value first: that
+	 * decrypt() returns garbage instead of false about once in 256 tokens (when
+	 * the padding happens to hold). 48- and 64-byte tokens can pass CBC's length
+	 * check; 2000 of them miss none only when both sealed attempts come first.
+	 */
+	public function testASealedTokenWithTheReplacedValueOpensWhereLegacyTokensAreAccepted(): void {
+		$this->previous('old-extra', time() + 600);
+
+		$rMissed = 0;
+		for ($i = 0; $i < 2000; $i++) {
+			$rPlain = str_pad('live/' . $i . '/', ($i % 2) ? 20 : 36, 'x');
+			if (Encryption::readToken(Encryption::seal($rPlain, 'k', 'old-extra'), 'k', OPENSSL_EXTRA, true) !== $rPlain) {
+				$rMissed++;
+			}
+		}
+		$this->assertSame(0, $rMissed);
 	}
 
 	public function testOnlyTheOpensslExtraContextFallsBack(): void {

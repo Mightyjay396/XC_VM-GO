@@ -80,18 +80,26 @@ final class LbInstallFlowOpensslExtraTest extends TestCase {
 		$this->assertNotContains(['run', 'sudo chmod 600 ' . CONFIG_PATH . 'openssl_extra'], $this->rCalls);
 	}
 
-	/** Shipped as root before config/ is handed to xc_vm, so FPM can read it. */
+	/**
+	 * Shipped as root after config.enc and before config/ is handed to xc_vm, so
+	 * FPM can read it; a failed upload marks the server errored (status 4).
+	 * provisionConfig() needs the xcvm_core extension (XC_VM::config_pack), so
+	 * this reads its source, located by reflection.
+	 */
 	public function testProvisionConfigShipsTheValueBeforeHandingConfigToXcVm(): void {
-		$rSource = (string) file_get_contents(MAIN_HOME . 'Cli/Commands/LbInstallFlow.php');
-		$rStart = strpos($rSource, 'function provisionConfig(');
-		$this->assertNotFalse($rStart);
-		$rEnd = strpos($rSource, "\n\t}\n", $rStart);
-		$rBody = substr($rSource, $rStart, $rEnd - $rStart);
+		$rMethod = new ReflectionMethod(LbInstallFlow::class, 'provisionConfig');
+		$rLines = file((string) $rMethod->getFileName());
+		$rBody = implode('', array_slice($rLines, $rMethod->getStartLine() - 1, $rMethod->getEndLine() - $rMethod->getStartLine() + 1));
 
-		$rProvision = strpos($rBody, 'self::provisionOpensslExtra(');
+		$rGuard = preg_quote("if (!self::provisionOpensslExtra(\$rConn, \$rRunSSH, \$rSendFileSSH, CONFIG_PATH . 'openssl_extra')) {", '/');
+		$rFail = preg_quote("\$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', \$rServerID);", '/');
+		$this->assertSame(1, preg_match('/' . $rGuard . '\s*' . $rFail . '\s*echo [^;]+;\s*return false;\s*\}/', $rBody, $rMatch, PREG_OFFSET_CAPTURE), 'a failed upload fails the install');
+
+		$rConfigEnc = strpos($rBody, "CONFIG_PATH . 'config.enc', false)");
 		$rChown = strpos($rBody, "'sudo chown -R xc_vm:xc_vm '");
-		$this->assertNotFalse($rProvision, 'provisionConfig ships OPENSSL_EXTRA');
+		$this->assertNotFalse($rConfigEnc);
 		$this->assertNotFalse($rChown);
-		$this->assertLessThan($rChown, $rProvision);
+		$this->assertGreaterThan($rConfigEnc, $rMatch[0][1]);
+		$this->assertLessThan($rChown, $rMatch[0][1]);
 	}
 }

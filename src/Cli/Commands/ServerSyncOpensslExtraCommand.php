@@ -25,8 +25,10 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * opens tokens it minted with the value it replaced. --force also sends to LBs
  * that report the same value, none (not updated yet) or are offline.
  *
+ * It refuses to send a value the main's php-fpm does not mint with (see sync()).
  * The value passes through the signals table until the LB's root cron deletes
- * the row (about a minute); a legacy LB reads that database in full anyway.
+ * the row (about a minute); a legacy LB reads that database in full anyway, and
+ * proxy_api never hands these rows to a proxy.
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -54,9 +56,27 @@ class ServerSyncOpensslExtraCommand implements CommandInterface {
 			echo "Usage: php console.php server:sync-openssl-extra <server_id>|--all [--force]\n";
 			return 1;
 		}
+		if (!defined('SERVER_ID')) {
+			echo "Run this on the MAIN server.\n";
+			return 1;
+		}
 
-		$rServers = ServerRepository::getAll(true);
-		if (!defined('SERVER_ID') || empty($rServers[SERVER_ID]['is_main'])) {
+		return self::sync(ServerRepository::getAll(true), (int) SERVER_ID, $rAll, $rTargetID, $rForce, CONFIG_PATH . 'openssl_extra');
+	}
+
+	/**
+	 * Queue the main's OPENSSL_EXTRA for the chosen nodes.
+	 *
+	 * $rFile is the main's config/openssl_extra: without a value there the main
+	 * runs on the built-in default and nothing is sent. The value sent is this
+	 * process's OPENSSL_EXTRA, and only when it is the one the main's php-fpm
+	 * mints with, as the main's own cron:servers (xc_vm) publishes it: run as
+	 * root, this process can read a file that xc_vm cannot.
+	 *
+	 * @param array<int,array<string,mixed>> $rServers ServerRepository::getAll() rows.
+	 */
+	public static function sync(array $rServers, int $rMainID, bool $rAll, int $rTargetID, bool $rForce, string $rFile): int {
+		if (empty($rServers[$rMainID]['is_main'])) {
 			echo "Run this on the MAIN server.\n";
 			return 1;
 		}
@@ -65,7 +85,6 @@ class ServerSyncOpensslExtraCommand implements CommandInterface {
 			return 1;
 		}
 
-		$rFile = CONFIG_PATH . 'openssl_extra';
 		$rValue = is_file($rFile) ? @file_get_contents($rFile) : '';
 		if ($rValue === false) {
 			echo "Cannot read {$rFile}: run this as xc_vm or root.\n";
@@ -78,24 +97,51 @@ class ServerSyncOpensslExtraCommand implements CommandInterface {
 		}
 
 		$rMainPrint = OpensslExtra::fingerprint(OPENSSL_EXTRA);
-		$rCustomData = json_encode(['action' => 'set_openssl_extra', 'value' => OPENSSL_EXTRA]);
+		$rPublished = OpensslExtra::reportedFingerprint($rServers[$rMainID]);
+		if ($rPublished === null) {
+			echo "The main has not published its OPENSSL_EXTRA fingerprint yet: wait for its next cron:servers run (within a minute) and try again.\n";
+			return 1;
+		}
+		if (!hash_equals($rPublished, $rMainPrint)) {
+			echo "The main publishes another OPENSSL_EXTRA than {$rFile} holds, so its php-fpm does not mint with that value; sending it would break every token the main mints.\n";
+			echo "Either xc_vm cannot read the file (chown xc_vm:xc_vm {$rFile} && chmod 600 {$rFile}), or it changed within the last minute (wait for cron:servers).\n";
+			return 1;
+		}
+
+		$rCustomData = OpensslExtra::signal(OPENSSL_EXTRA);
 		$rQueued = 0;
-		foreach (($rAll ? $rServers : [$rTargetID => $rServers[$rTargetID]]) as $rServerID => $rServer) {
-			if ($rAll && !empty($rServer['is_main'])) {
-				continue;
-			}
-			$rSkip = self::skipReason($rServer, $rMainPrint, $rForce);
+		foreach (self::targets($rServers, $rAll, $rTargetID, $rMainPrint, $rForce) as $rServerID => $rSkip) {
+			$rName = $rServers[$rServerID]['server_name'] ?? '';
 			if ($rSkip !== null) {
-				echo "#{$rServerID} " . ($rServer['server_name'] ?? '') . ": skipped, {$rSkip}\n";
+				echo "#{$rServerID} {$rName}: skipped, {$rSkip}\n";
 				continue;
 			}
 			self::db()->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), $rCustomData);
-			echo "#{$rServerID} " . ($rServer['server_name'] ?? '') . ": queued\n";
+			echo "#{$rServerID} {$rName}: queued\n";
 			$rQueued++;
 		}
 		echo "{$rQueued} node(s) queued. Each applies it at its next cron:root_signals run (within a minute) and reports it at its next cron:servers run; check with server:diagnose <id>.\n";
 
 		return 0;
+	}
+
+	/**
+	 * The nodes a run considers, each with why it is skipped (null: it gets the
+	 * main's value). --all leaves the main out; a single target is always listed.
+	 *
+	 * @param array<int,array<string,mixed>> $rServers
+	 * @return array<int,?string> server_id => skip reason
+	 */
+	public static function targets(array $rServers, bool $rAll, int $rTargetID, string $rMainPrint, bool $rForce): array {
+		$rTargets = [];
+		foreach (($rAll ? $rServers : [$rTargetID => $rServers[$rTargetID] ?? []]) as $rServerID => $rServer) {
+			if ($rAll && !empty($rServer['is_main'])) {
+				continue;
+			}
+			$rTargets[$rServerID] = self::skipReason($rServer, $rMainPrint, $rForce);
+		}
+
+		return $rTargets;
 	}
 
 	/**

@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Security\BlocklistService;
@@ -66,7 +67,9 @@ if (BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])) {
 	$db->query('INSERT INTO `servers_stats`(`server_id`, `cpu`, `cpu_cores`, `cpu_avg`, `total_mem`, `total_mem_free`, `total_mem_used`, `total_mem_used_percent`, `total_disk_space`, `uptime`, `total_running_streams`, `bytes_sent`, `bytes_received`, `bytes_sent_total`, `bytes_received_total`, `cpu_load_average`, `connections`, `total_users`, `users`, `time`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);', $rServerIDRequest, $rStats['cpu'], $rStats['cpu_cores'], $rStats['cpu_avg'], $rStats['total_mem'], $rStats['total_mem_free'], $rStats['total_mem_used'], $rStats['total_mem_used_percent'], $rStats['total_disk_space'], $rStats['uptime'], $rStats['total_running_streams'], $rStats['bytes_sent'], $rStats['bytes_received'], $rStats['bytes_sent_total'], $rStats['bytes_received_total'], $rStats['cpu_load_average'], $rConnections, $rAllUsers, $rUsers, time());
 	$db->query('UPDATE `servers` SET `connections` = ?, `users` = ?, `ping` = ?,`server_hardware` = ?,`whitelist_ips` = ?, `interfaces` = ?, `watchdog_data` = ?, `last_check_ago` = ? WHERE `id` = ?', $rConnections, $rUsers, $rPing, json_encode($rHardware), json_encode($rAddresses), json_encode($rStats['interfaces']), json_encode($rStats, JSON_PARTIAL_OUTPUT_ON_ERROR), time(), $rServerIDRequest);
 
-	if ($db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' ORDER BY signal_id ASC;", $rServerIDRequest)) {
+	// A proxy is never sent OPENSSL_EXTRA; this endpoint trusts the posted server_id,
+	// so those rows (an LB's, carrying the main's value) must not be handed out here.
+	if ($db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' AND `custom_data` NOT LIKE ? ORDER BY signal_id ASC;", $rServerIDRequest, '%"action":"' . OpensslExtra::SIGNAL_ACTION . '"%')) {
 		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
 				$rData = json_decode($rRow['custom_data'], true);

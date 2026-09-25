@@ -31,6 +31,9 @@ final class OpensslExtra {
 	/** Seconds a replaced value still opens tokens. */
 	public const PREVIOUS_WINDOW = 600;
 
+	/** The root-signal action server:sync-openssl-extra queues and cron:root_signals applies. */
+	public const SIGNAL_ACTION = 'set_openssl_extra';
+
 	/** Test seam: the previous-value file to read instead of CONFIG_PATH's. */
 	private static ?string $rPrevFile = null;
 
@@ -59,6 +62,32 @@ final class OpensslExtra {
 		$rPrint = is_array($rHardware) ? ($rHardware[self::HARDWARE_KEY] ?? null) : null;
 
 		return (is_string($rPrint) && $rPrint !== '') ? $rPrint : null;
+	}
+
+	/** $rHardware with this node's fingerprint added, as cron:servers publishes it. */
+	public static function publish(array $rHardware): array {
+		$rHardware[self::HARDWARE_KEY] = self::fingerprint(OPENSSL_EXTRA);
+
+		return $rHardware;
+	}
+
+	/** The signals.custom_data that brings a node onto $rValue (applied by applySignal()). */
+	public static function signal(string $rValue): string {
+		return (string) json_encode(['action' => self::SIGNAL_ACTION, 'value' => $rValue]);
+	}
+
+	/**
+	 * Apply a decoded signal() payload on this node.
+	 *
+	 * @return bool|null Null on the main, which never takes its value this way
+	 *                   (it keys hmac_keys and image names); else install()'s result.
+	 */
+	public static function applySignal(array $rData, bool $rIsMain, string $rConfigDir, int $rNow): ?bool {
+		if ($rIsMain) {
+			return null;
+		}
+
+		return is_string($rData['value'] ?? null) && self::install($rData['value'], $rConfigDir, $rNow);
 	}
 
 	/**

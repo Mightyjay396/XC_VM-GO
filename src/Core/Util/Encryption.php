@@ -130,25 +130,32 @@ class Encryption {
 	 * A token made for the OPENSSL_EXTRA context that does not open is tried once
 	 * more with the value this node replaced, while that is still accepted
 	 * (OpensslExtra::previous()), so switching a node onto MAIN's value does not
-	 * break the links it has just handed out. A token that opens pays nothing extra.
+	 * break the links it has just handed out. A sealed token that opens pays
+	 * nothing extra; a legacy one pays one more open() while a value is accepted.
+	 * The sealed format is tried with both values before the legacy one, since a
+	 * legacy decrypt() under the wrong value can return garbage instead of false
+	 * (about 1 in 256, when the padding happens to hold): a legacy token minted
+	 * with the replaced value can still be missed at that rate, a sealed one cannot.
 	 *
 	 * @return string|false
 	 */
 	public static function readToken($token, $key, $deviceId, bool $rAcceptLegacy) {
-		$rPlain = self::readTokenWith($token, $key, $deviceId, $rAcceptLegacy);
-		if ($rPlain === false && defined('OPENSSL_EXTRA') && $deviceId === OPENSSL_EXTRA && ($rPrevious = OpensslExtra::previous()) !== null) {
-			return self::readTokenWith($token, $key, $rPrevious, $rAcceptLegacy);
-		}
-		return $rPlain;
-	}
-
-	/** @return string|false */
-	private static function readTokenWith($token, $key, $deviceId, bool $rAcceptLegacy) {
 		$rPlain = self::open($token, $key, $deviceId);
-		if ($rPlain !== false || !$rAcceptLegacy || !is_string($token)) {
+		if ($rPlain !== false) {
 			return $rPlain;
 		}
-		return self::decrypt($token, $key, $deviceId);
+		$rPrevious = (defined('OPENSSL_EXTRA') && $deviceId === OPENSSL_EXTRA) ? OpensslExtra::previous() : null;
+		if ($rPrevious !== null && ($rPlain = self::open($token, $key, $rPrevious)) !== false) {
+			return $rPlain;
+		}
+		if (!$rAcceptLegacy || !is_string($token)) {
+			return false;
+		}
+		$rPlain = self::decrypt($token, $key, $deviceId);
+		if ($rPlain === false && $rPrevious !== null) {
+			return self::decrypt($token, $key, $rPrevious);
+		}
+		return $rPlain;
 	}
 
 	private const SEAL_NONCE = 12;
