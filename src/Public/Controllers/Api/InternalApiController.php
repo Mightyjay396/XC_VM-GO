@@ -62,6 +62,19 @@ class InternalApiController {
 		$this->dispatch($rAction, $rRequest, $rSettings);
 	}
 
+	/**
+	 * Run one system action for a signed `node.rpc` command (cluster:exec on
+	 * the node, Phase 4): the same handlers as the legacy /api, without its
+	 * password and source-IP checks, which the command's panel signature
+	 * replaces. Output is the action's response, as /api would send it.
+	 *
+	 * @param array<string, mixed> $rRequest action + arguments
+	 */
+	public function runCommand(array $rRequest): void {
+		$this->deny = false;
+		$this->dispatch((string) ($rRequest['action'] ?? ''), $rRequest, SettingsManager::getAll());
+	}
+
 	private function dispatch($rAction, $rRequest, $rSettings) {
 		switch ($rAction) {
 			case 'view_log':

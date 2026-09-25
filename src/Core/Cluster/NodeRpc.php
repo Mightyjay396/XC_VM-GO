@@ -3,6 +3,7 @@
 namespace XcVm\Core\Cluster;
 
 use XcVm\Core\Http\ApiClient;
+use XcVm\Domain\Cluster\ClusterRoute;
 
 /**
  * Node RPC
@@ -42,6 +43,13 @@ final class NodeRpc {
 		if (self::$rTransport !== null) {
 			return (self::$rTransport)('request', [$rServerID], $rData, $rTimeout);
 		}
+		// A node with the COMMANDS flow gets a signed node.rpc command (MAIN only).
+		if (class_exists(ClusterRoute::class)) {
+			[$rRouted, $rResult] = ClusterRoute::rpc($rServerID, $rData, $rTimeout);
+			if ($rRouted) {
+				return $rResult;
+			}
+		}
 		return ApiClient::systemRequest($rServerID, $rData, $rTimeout);
 	}
 
@@ -57,6 +65,18 @@ final class NodeRpc {
 		self::check($rData);
 		if (self::$rTransport !== null) {
 			return (self::$rTransport)('broadcast', array_map('intval', $rServerIDs), $rData, 0);
+		}
+		if (class_exists(ClusterRoute::class)) {
+			$rLegacy = [];
+			foreach ($rServerIDs as $rServerID) {
+				if (!ClusterRoute::send((int) $rServerID, $rData)[0]) {
+					$rLegacy[] = $rServerID;
+				}
+			}
+			if ($rLegacy === []) {
+				return ['result' => true];
+			}
+			$rServerIDs = $rLegacy;
 		}
 		return ApiClient::asyncRequest($rServerIDs, $rData);
 	}

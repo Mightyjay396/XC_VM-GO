@@ -104,14 +104,18 @@ final class ClusterAdmin {
 
 				case 'telemetry_on':
 				case 'telemetry_off':
+				case 'commands_on':
+				case 'commands_off':
 					$rNode = NodeRegistry::byServer($rServerID);
 					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
 						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
 					}
-					$rFlows = $rAction === 'telemetry_on' ? ((int) $rNode['flows'] | NodeRegistry::FLOW_TELEMETRY) : ((int) $rNode['flows'] & ~NodeRegistry::FLOW_TELEMETRY);
+					[$rName, $rSwitch] = explode('_', $rAction);
+					$rBit = $rName === 'telemetry' ? NodeRegistry::FLOW_TELEMETRY : NodeRegistry::FLOW_COMMANDS;
+					$rFlows = $rSwitch === 'on' ? ((int) $rNode['flows'] | $rBit) : ((int) $rNode['flows'] & ~$rBit);
 					NodeRegistry::update($rServerID, ['flows' => $rFlows]);
 					ClusterAudit::log('node.flows', $rServerID, ['flows' => $rFlows, 'was' => (int) $rNode['flows']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
-					return ['type' => 'success', 'message' => $rAction === 'telemetry_on' ? 'cluster_telemetry_on_done' : 'cluster_telemetry_off_done'];
+					return ['type' => 'success', 'message' => 'cluster_' . $rName . '_' . $rSwitch . '_done'];
 
 				case 'revoke':
 					return NodeRegistry::revoke($rServerID, $rCrypto, $rUserID === null ? 'admin' : 'admin:' . $rUserID)

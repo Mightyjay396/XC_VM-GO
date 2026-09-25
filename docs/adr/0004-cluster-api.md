@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phases 4–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills); root commands are not in yet. Phases 5–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -88,6 +88,8 @@ The plan numbers its Phase 1 migrations 026–032. 026 and 027 were already take
 | `token_rekey` | POST | node signature (epoch 0, no MAC), body SEALed to the panel box key, a challenge | `active`, once a minute | panel-signed (`pre`): a new epoch's sealed token |
 | `hello` | POST | session | `active`, `quarantined` | BOX: state, mode, flows, proto, policy |
 | `heartbeat` | POST | session | `active`, `quarantined` | BOX: state, mode, flows, `pending` |
+| `commands` | POST | session | `active` | BOX: signed commands after `after_seq`, held up to `wait_ms` (≤ 20 s) |
+| `ack` | POST | session | `active`, `quarantined` | BOX: `ok` (own commands only) |
 
 A session request is checked in this order. Nothing is written, not even the nonce, before the MAC and, for token operations, the node signature have verified:
 
@@ -268,6 +270,32 @@ This was checked with nginx 1.24:
 
 - `nginx -t` passes with and without the file.
 - On the old port, only `/cluster/v1/` reaches PHP.
+
+### Commands (Phase 4, first increment)
+
+`CommandBus` queues MAIN → node commands in `cluster_commands`, FIFO per node by `seq`. Each command is a typed JSON record signed by the panel with tag `cmd`:
+
+```text
+{"v":1, "type", "exp", "iat", "cmd_id", "seq", "node_uuid", "gen", "dedupe_key", "args"}
+```
+
+The extension derives the class from `type`. Kills and stops are restrictive and sign without a licence; the rest need it. A `dedupe_key` replaces a not-yet-acked command for the same desired state. Commands expire (`conn.*` 5 min, default 10 min), and `cron:cluster` prunes them.
+
+The flow, for a node whose COMMANDS flow is on (toggled per node on the Cluster Nodes page):
+
+1. **Poll.** The agent holds a `commands` long-poll. Each poll holds a PHP worker on MAIN; the plan's bus replaces that later.
+2. **Checks.** The agent checks each command: the panel signature under its pinned key, its own uuid and generation, `seq` above its persisted high-water `cmd_seq`, and `exp` on MAIN's clock.
+3. **Run.** It runs the command through `console.php cluster:exec`. `cluster:exec` checks the signature again and runs `node.rpc{action}` with the legacy `/api` handlers (`InternalApiController::runCommand`, actions limited to `NodeRpc::ACTIONS`) and `conn.kill_worker`.
+4. **Ack.** The agent `ack`s the command with the result (≤ 64 KB) and raises its high-water. MAIN raises `cluster_nodes.cmd_seq`.
+5. **Refusals.** A refused command is acked as refused, with the reason.
+
+On MAIN, `Domain\Cluster\ClusterRoute` sits behind the Phase 0 seams:
+
+- `NodeRpc::request()` becomes a signed `node.rpc`, and MAIN waits for its ack up to the caller's timeout.
+- `NodeRpc::broadcast()` and `SignalDispatcher::kill()` queue without waiting.
+- Nodes without the flow, and every LB, keep the legacy transport.
+
+Root actions (`NodeActions`) stay on the signals table until `cluster:root` and the root-owned panel-key pin exist.
 
 ### Extension updates
 

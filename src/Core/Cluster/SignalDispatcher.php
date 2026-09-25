@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Domain\Cluster\ClusterRoute;
+
 /**
  * Signal Dispatcher
  *
@@ -35,6 +37,13 @@ final class SignalDispatcher {
 	public static function kill(int $rServerID, int $rPID, bool $rRTMP = false, ?object $rDb = null): bool {
 		if ($rPID <= 0) {
 			return false;
+		}
+		// A node with the COMMANDS flow gets a signed conn.kill_worker (MAIN only).
+		if (class_exists(ClusterRoute::class)) {
+			[$rRouted, $rQueued] = ClusterRoute::kill($rServerID, $rPID, $rRTMP);
+			if ($rRouted) {
+				return $rQueued;
+			}
 		}
 		$rRow = ['pid' => $rPID, 'server_id' => $rServerID];
 		if ($rRTMP) {

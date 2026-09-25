@@ -11,7 +11,8 @@ use XcVm\Core\Cluster\Crypto\SessionKeys;
 
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
- * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat). Transport-free: handle() takes the request
+ * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat;
+ * Phase 4: commands, ack). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -40,6 +41,8 @@ final class ClusterApi {
 		'enrol_code' => ['POST', true, null],
 		'enrol_code_status' => ['POST', false, null],
 		'hello' => ['POST', false, ['active', 'quarantined']],
+		'commands' => ['POST', false, ['active']],
+		'ack' => ['POST', false, ['active', 'quarantined']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
 
@@ -139,6 +142,8 @@ final class ClusterApi {
 			'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'hello' => self::hello($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
+			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
+			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 		};
 	}
 
@@ -437,6 +442,37 @@ final class ClusterApi {
 			'state' => (string) $rNode['state'], 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'],
 			'main_time_ms' => ClusterClock::nowMs(), 'pending' => 0, 'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
 		]);
+	}
+
+	/** Longest a `commands` long-poll is held (ms). */
+	public const COMMANDS_WAIT_MAX_MS = 20000;
+
+	/**
+	 * `commands`: the node's queued commands after its high-water, panel-signed
+	 * (`cmd`) each. Held up to `wait_ms` while there are none, so a command
+	 * reaches the node within a poll step of being queued.
+	 */
+	private static function commands(array $rNode, SessionKeys $rKeys, string $rCtx, array $rP): array {
+		$rAfter = max(0, (int) ($rP['after_seq'] ?? 0));
+		$rWait = max(0, min(self::COMMANDS_WAIT_MAX_MS, (int) ($rP['wait_ms'] ?? 0)));
+		$rDeadline = microtime(true) + $rWait / 1000;
+		while (true) {
+			$rCommands = CommandBus::pending((int) $rNode['server_id'], $rAfter);
+			if ($rCommands !== [] || microtime(true) >= $rDeadline) {
+				break;
+			}
+			usleep(250000);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, ['commands' => $rCommands, 'main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/** `ack`: a command's outcome, accepted only for this node's own commands. */
+	private static function ack(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}$/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
+		if ($rCmdID === null || !CommandBus::ack((int) $rNode['server_id'], $rCmdID, !empty($rP['ok']), is_string($rP['result'] ?? null) ? (string) $rP['result'] : '')) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, ['ok' => true, 'main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/** Map an extension refusal to a signed denial. */
