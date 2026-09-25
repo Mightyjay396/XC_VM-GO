@@ -65,7 +65,7 @@ class SegmentReader {
 			}
 			// No #EXTINF durations: fall back to the nominal segment count.
 			$rTotalSegments = intval($rPrebuffer / $rSegmentDuration) ?: 1;
-			return array_slice($rMatches[0], 0 - $rTotalSegments);
+			return array_slice($rMatches[0], -$rTotalSegments);
 		}
 
 		preg_match('/_(.*)\./', array_pop($rMatches[0]), $rCurrentSegment);

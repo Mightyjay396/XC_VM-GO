@@ -21,7 +21,7 @@ final class LegacySqlSignalSink implements SignalSink {
 	}
 
 	public function insert(array $rRows): bool {
-		if (empty($rRows)) {
+		if ($rRows === []) {
 			return true;
 		}
 		$rColumns = array_keys($rRows[0]);

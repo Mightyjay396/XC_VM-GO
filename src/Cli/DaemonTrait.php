@@ -32,7 +32,7 @@ trait DaemonTrait {
 	protected $rRefreshInterval = 60;
 
 	/** @var int|null When the servers list was last reloaded from the DB. */
-	protected $rServersRefreshedAt = null;
+	protected $rServersRefreshedAt;
 
 	/** @var resource|null Файловый lock для singleton-демона */
 	protected $rDaemonLockHandle;

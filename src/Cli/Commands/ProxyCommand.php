@@ -166,7 +166,7 @@ class ProxyCommand implements CommandInterface {
 			} else {
 				$rLastData = time();
 			}
-			$rBuffer = $rBuffer . $rExcessBuffer . (string) $rRead;
+			$rBuffer = $rBuffer . $rExcessBuffer . $rRead;
 			$rExcessBuffer = '';
 			$rPacketNum = intdiv(strlen($rBuffer), self::PACKET_SIZE);
 			if (0 < $rPacketNum) {

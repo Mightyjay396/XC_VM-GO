@@ -410,7 +410,7 @@ use XcVm\Core\Util\LayoutRenderer;
                             <label class="col-md-2 col-form-label" for="release_date"><?= $language::get('release_date') ?></label>
                             <div class="col-md-4"><input readonly type="text" class="form-control text-center" id="release_date" name="release_date" value="<?= htmlspecialchars($rSeries['release_date']) ?>"></div>
                             <label class="col-md-2 col-form-label" for="episode_run_time"><?= $language::get('runtime') ?></label>
-                            <div class="col-md-4"><input readonly type="text" class="form-control text-center" id="episode_run_time" name="episode_run_time" value="<?= TimeUtils::secondsToTime(intval($rProperties['episode_run_time']) * 60, false) ?>"></div>
+                            <div class="col-md-4"><input readonly type="text" class="form-control text-center" id="episode_run_time" name="episode_run_time" value="<?= TimeUtils::secondsToTime(intval($rSeries['episode_run_time']) * 60, false) ?>"></div>
                         </div>
                         <div class="row mb-3">
                             <label class="col-md-2 col-form-label" for="youtube_trailer"><?= $language::get('youtube_trailer_label') ?></label>

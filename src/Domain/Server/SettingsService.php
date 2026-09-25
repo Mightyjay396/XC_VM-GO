@@ -52,7 +52,7 @@ class SettingsService {
 	 */
 	private static function normalizeCluster(array &$rArray, object $db): array {
 		$rKeys = array_intersect_key($rArray, array_flip(ClusterSettings::keys()));
-		if (empty($rKeys)) {
+		if ($rKeys === []) {
 			return [];
 		}
 		$rMain = [];
@@ -132,7 +132,7 @@ class SettingsService {
 		// what the admin meant (a taken port, HTTPS required without HTTPS, …).
 		// A refusal fails the whole save, so nothing is half-applied.
 		$rClusterErrors = self::normalizeCluster($rArray, $db);
-		if (!empty($rClusterErrors)) {
+		if ($rClusterErrors !== []) {
 			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => implode(' ', $rClusterErrors)]];
 		}
 

@@ -30,7 +30,7 @@ final class NodeRpc {
 	];
 
 	/** @var (callable(string, array<int>, array<string, mixed>, int): mixed)|null */
-	private static $rTransport = null;
+	private static $rTransport;
 
 	/**
 	 * Ask one node and wait for its answer.

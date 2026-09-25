@@ -62,11 +62,11 @@ final class StreamRowMerge {
 	 * @param list<mixed> $rWhereValues
 	 */
 	public static function apply(string $rWhere, array $rFields, array $rWhereValues, ?object $rDb = null): bool {
-		if (empty($rFields)) {
+		if ($rFields === []) {
 			return true;
 		}
 		$rUnknown = array_diff(array_keys($rFields), StreamStateWriter::STATE_FIELDS);
-		if (!empty($rUnknown)) {
+		if ($rUnknown !== []) {
 			throw new \InvalidArgumentException('Not stream runtime state: ' . implode(', ', $rUnknown));
 		}
 		$rSet = [];

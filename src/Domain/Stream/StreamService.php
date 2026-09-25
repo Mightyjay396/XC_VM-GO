@@ -601,7 +601,7 @@ class StreamService {
 						if ($rServer['parent'] != '#') {
 							$rServerID = intval($rServer['id']);
 
-							if (in_array($rData['server_type'], ['ADD', 'SET'])) {
+							if (in_array($rData['server_type'] ?? null, ['ADD', 'SET'])) {
 								$rOD = intval(in_array($rServerID, ($rData['on_demand'] ?? [])));
 								if ($rServer['parent'] == 'source') {
 									$rParent = null;
@@ -624,7 +624,7 @@ class StreamService {
 						}
 					}
 
-					if ($rData['server_type'] == 'SET') {
+					if (($rData['server_type'] ?? null) == 'SET') {
 						// A stream with no existing streams_servers rows is absent from
 						// the map; ?? [] avoids the undefined-key + foreach-on-null warnings.
 						foreach (($rStreamExists[$rStreamID] ?? []) as $rServerID => $rDBID) {

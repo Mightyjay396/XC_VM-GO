@@ -604,6 +604,10 @@ class MonitorCommand implements CommandInterface {
 	 * @return array{0:mixed,1:mixed} [clamped probe, updated segment time]
 	 */
 	private function persistSegmentDuration(mixed $rProbe, mixed $rStreamID, mixed $rSegmentTime): array {
+		if (!is_array($rProbe)) {
+			// FFprobeRunner::probeStream() returns false when the segment couldn't be probed.
+			return [$rProbe, $rSegmentTime];
+		}
 		if (10 < intval($rProbe['of_duration'])) {
 			$rProbe['of_duration'] = 10;
 		}

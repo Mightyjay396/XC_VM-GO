@@ -452,7 +452,7 @@ class CacheEngineCronJob implements CommandInterface {
 				} else {
 					$rRows = StreamCacheBuilder::streamRows($db, array_map('intval', $cacheLockMechanism));
 				}
-				if (!empty($rRows)) {
+				if ($rRows !== []) {
 					$rStreamMap = StreamCacheBuilder::serverMap($db, array_map(static fn($rRow) => intval($rRow['id']), $rRows));
 					foreach ($rRows as $rStreamInfo) {
 						$rExists[] = $rStreamInfo['id'];

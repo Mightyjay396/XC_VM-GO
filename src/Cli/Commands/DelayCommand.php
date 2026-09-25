@@ -114,8 +114,13 @@ class DelayCommand implements CommandInterface {
 						$rData .= (!empty($rValue) ? $rKey . ':' . $rValue . "\n" : $rKey . "\n");
 					}
 					foreach ($rM3U8['segments'] as $rSegment) {
+						// getData()'s old-segment bookkeeping can leak a stray 'seconds'/'file'
+						// scalar into the list; skip anything that isn't a real segment entry.
+						if (!is_array($rSegment) || !isset($rSegment['file'])) {
+							continue;
+						}
 						copy(DELAY_PATH . $rSegment['file'], STREAMS_PATH . $rSegment['file']);
-						$rData .= '#EXTINF:' . $rSegment['seconds'] . ',' . "\n" . $rSegment['file'] . "\n";
+						$rData .= '#EXTINF:' . ($rSegment['seconds'] ?? 0) . ',' . "\n" . $rSegment['file'] . "\n";
 					}
 					file_put_contents($rPlaylist, $rData, LOCK_EX);
 					if ($rFeeder->isEnabled()) {
@@ -246,7 +251,7 @@ class DelayCommand implements CommandInterface {
 				$i++;
 			}
 			$rOldSegments = array_values($rOldSegments);
-			$rSegments = array_shift($rOldSegments);
+			$rSegments = array_shift($rOldSegments) ?? [];
 			$this->updateOldPlaylist($rOldSegments, $rPlaylistOld);
 		}
 		if (file_exists($rPlaylistDelay)) {

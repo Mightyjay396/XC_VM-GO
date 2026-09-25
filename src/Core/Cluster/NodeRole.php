@@ -27,7 +27,7 @@ use XcVm\Domain\Server\ServerRepository;
 
 final class NodeRole {
 	/** @var (callable(): array<int, array<string, mixed>>)|null */
-	private static $rServers = null;
+	private static $rServers;
 
 	private static ?bool $rAudit = null;
 

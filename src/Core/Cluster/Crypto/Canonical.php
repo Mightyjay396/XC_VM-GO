@@ -141,7 +141,7 @@ final class Canonical {
 		) {
 			return null;
 		}
-		$rAgent = (string) ($rGet(self::H_AGENT) ?? '');
+		$rAgent = $rGet(self::H_AGENT) ?? '';
 		if (strlen($rAgent) > 64 || preg_match('/[^\x21-\x7e]/', $rAgent)) {
 			return null;
 		}

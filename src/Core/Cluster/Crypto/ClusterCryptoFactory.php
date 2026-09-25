@@ -20,7 +20,7 @@ final class ClusterCryptoFactory {
 	public const API_MAX = 1;
 
 	/** @var (callable(): ?array)|null Test hook: replaces the extension probe; null answer = no extension. */
-	private static $rProbe = null;
+	private static $rProbe;
 
 	public static function create(): ClusterCrypto {
 		$rStatus = self::status();
