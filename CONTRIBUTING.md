@@ -263,6 +263,9 @@ Docs are a **MkDocs Material** site under `docs/`.
   broken links/anchors). Preview locally with `make docs-serve`.
 - `docs/ru` is regenerated locally before a release (`make docs-translate`), not
   in CI.
+- **Panel UI strings:** add new keys to `src/Core/Localization/lang/en.ini`
+  only. The other `<lang>.ini` files are synced from it before a release with
+  `make lang-translate`.
 
 ## 🔥 Submitting a Pull Request
 

@@ -501,11 +501,17 @@ new:
 #   make docs-translate                                     # free web engines (yandex/...)
 #   make docs-translate DOCS_TRANSLATE_PROVIDER=anthropic   # needs ANTHROPIC_API_KEY
 #   make docs-translate DOCS_TRANSLATE_PROVIDER=noop        # copy en (fast dry-run)
+#
+# Panel language files (src/Core/Localization/lang/*.ini) use the same script:
+#   make lang-translate                 # every <lang>.ini: translate keys missing vs
+#                                       # en.ini, drop keys en.ini no longer has
+#   make lang-translate LANG_TRANSLATE=ru
 DOCS_VENV := build/docs-venv
 DOCS_PY := $(DOCS_VENV)/bin/python
 DOCS_TRANSLATE_PROVIDER ?= translators
+LANG_TRANSLATE ?= all
 
-.PHONY: docs-venv docs-translate docs-build docs-serve
+.PHONY: docs-venv docs-translate docs-build docs-serve lang-translate
 
 # The venv's mkdocs binary doubles as the install stamp (built once). Installs
 # both the build toolchain and the (local-only) translation deps.
@@ -520,6 +526,9 @@ docs-venv: $(DOCS_VENV)/bin/mkdocs
 # result with the release. NOT part of docs-build (CI builds the committed tree).
 docs-translate: $(DOCS_VENV)/bin/mkdocs
 	@DOCS_TRANSLATE_PROVIDER=$(DOCS_TRANSLATE_PROVIDER) $(DOCS_PY) -u tools/i18n/translate.py --lang ru
+
+lang-translate: $(DOCS_VENV)/bin/mkdocs
+	@DOCS_TRANSLATE_PROVIDER=$(DOCS_TRANSLATE_PROVIDER) $(DOCS_PY) -u tools/i18n/translate.py --ini --lang $(LANG_TRANSLATE)
 
 docs-build: $(DOCS_VENV)/bin/mkdocs
 	@$(DOCS_PY) -m mkdocs build --strict

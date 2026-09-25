@@ -69,6 +69,7 @@ All of these create the DI container and (for admin/CLI) call `ModuleLoader::boo
 - Outbound HTTPS from PHP-FPM must use cURL — `file_get_contents()` over https does not work in this environment.
 - The TMDb client is the legacy global `\TMDB` class (vendored in `src/Infrastructure/Tmdb/lib/`, not PSR-4). Build it through `XcVm\Infrastructure\Tmdb\TmdbApiService::createClient($apiKey, $language)` (or load via `TmdbApiService::requireLibrary()`), which loads the library itself — do not `require_once` the lib path manually.
 - Config: `config.ini` (DB creds, `server_id`), the `settings` DB table via `SettingsManager`, and `config/modules.php` for module enable/disable/version state.
+- Panel UI strings live in `src/Core/Localization/lang/<lang>.ini`; `en.ini` is the source of truth. Add new keys to `en.ini` only, then `make lang-translate` (`tools/i18n/translate.py --ini`) translates missing keys into every other language and drops keys `en.ini` no longer has.
 
 ## Documentation (`docs/`)
 
