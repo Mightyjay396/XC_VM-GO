@@ -574,7 +574,14 @@ class RootSignalsCronJob implements CommandInterface {
 							}
 							echo 'Setting OPENSSL_EXTRA...' . "\n";
 							if ($rSet) {
-								shell_exec('sudo chown xc_vm:xc_vm ' . CONFIG_PATH . 'openssl_extra ' . CONFIG_PATH . 'openssl_extra.prev 2>/dev/null');
+								// This cron runs as root: hand the files to FPM's user directly,
+								// with no shell in between.
+								foreach (['openssl_extra', 'openssl_extra.prev'] as $rFile) {
+									if (is_file(CONFIG_PATH . $rFile)) {
+										@chown(CONFIG_PATH . $rFile, 'xc_vm');
+										@chgrp(CONFIG_PATH . $rFile, 'xc_vm');
+									}
+								}
 							}
 							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'OPENSSL_EXTRA', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.', time());
 							break;

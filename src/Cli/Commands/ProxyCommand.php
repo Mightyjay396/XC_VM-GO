@@ -72,7 +72,11 @@ class ProxyCommand implements CommandInterface {
 		register_shutdown_function(function () use ($rStreamID, &$rFP) {
 			@unlink(STREAMS_PATH . $rStreamID . '_.monitor');
 			@unlink(STREAMS_PATH . $rStreamID . '_.pid');
-			shell_exec('rm -rf ' . escapeshellarg(CONS_TMP_PATH . $rStreamID . '/'));
+			// The viewer sockets (a flat directory); no shell.
+			foreach (glob(CONS_TMP_PATH . intval($rStreamID) . '/*') ?: [] as $rSocketFile) {
+				@unlink($rSocketFile);
+			}
+			@rmdir(CONS_TMP_PATH . intval($rStreamID));
 			if (is_resource($rFP)) {
 				@fclose($rFP);
 			}
@@ -139,7 +143,9 @@ class ProxyCommand implements CommandInterface {
 		if (SettingsManager::getBool('enable_cache')) {
 			StreamProcess::updateStream($rStreamID);
 		}
-		shell_exec('rm -f ' . STREAMS_PATH . intval($rStreamID) . '_*.ts');
+		foreach (glob(STREAMS_PATH . intval($rStreamID) . '_*.ts') ?: [] as $rSegment) {
+			@unlink($rSegment);
+		}
 		file_put_contents(STREAMS_PATH . $rStreamID . '_.pid', getmypid());
 		$db->close_mysql();
 
@@ -305,7 +311,14 @@ class ProxyCommand implements CommandInterface {
 			$rPID = intval(file_get_contents(STREAMS_PATH . $rStreamID . '_.monitor'));
 		}
 		if (empty($rPID)) {
-			shell_exec("kill -9 `ps -ef | grep 'XC_VMProxy\\[" . intval($rStreamID) . "\\]' | grep -v grep | awk '{print \$2}'`;");
+			// No monitor file: find a stray relay by its process title (no shell).
+			$rTitle = 'XC_VMProxy[' . intval($rStreamID) . ']';
+			foreach (glob('/proc/[0-9]*/cmdline') ?: [] as $rCmdline) {
+				$rOther = intval(basename(dirname($rCmdline)));
+				if ($rOther !== getmypid() && trim((string) @file_get_contents($rCmdline), "\0 \n") === $rTitle) {
+					posix_kill($rOther, 9);
+				}
+			}
 		} elseif (file_exists('/proc/' . $rPID)) {
 			$rCommand = trim(file_get_contents('/proc/' . $rPID . '/cmdline'));
 			if ($rCommand == 'XC_VMProxy[' . $rStreamID . ']' && 0 < $rPID) {
