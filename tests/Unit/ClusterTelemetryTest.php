@@ -168,6 +168,11 @@ final class ClusterTelemetryTest extends TestCase {
 		$this->assertSame(NodeRegistry::FLOW_TELEMETRY, (int) NodeRegistry::byServer(5)['flows']);
 		$this->assertSame('cluster_telemetry_off_done', $rAct('telemetry_off')['message']);
 		$this->assertSame(0, (int) NodeRegistry::byServer(5)['flows']);
+		$rAct('logs_on');
+		$this->assertSame('cluster_streams_on_done', $rAct('streams_on')['message']);
+		$this->assertSame(NodeRegistry::FLOW_LOGS | NodeRegistry::FLOW_STREAMS, (int) NodeRegistry::byServer(5)['flows']);
+		$rAct('logs_off');
+		$this->assertSame(NodeRegistry::FLOW_STREAMS, (int) NodeRegistry::byServer(5)['flows']);
 		NodeRegistry::update(5, ['state' => 'revoked']);
 		$this->assertSame('cluster_not_enrolled', $rAct('telemetry_on')['message']);
 	}

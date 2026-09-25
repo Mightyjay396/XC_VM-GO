@@ -12,7 +12,7 @@ use XcVm\Core\Cluster\Crypto\SessionKeys;
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
  * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat;
- * Phase 4: commands, ack). Transport-free: handle() takes the request
+ * Phase 4: commands, ack; Phase 5: events). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -43,6 +43,7 @@ final class ClusterApi {
 		'hello' => ['POST', false, ['active', 'quarantined']],
 		'commands' => ['POST', false, ['active']],
 		'ack' => ['POST', false, ['active', 'quarantined']],
+		'events' => ['POST', false, ['active']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
 
@@ -144,6 +145,7 @@ final class ClusterApi {
 			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
 			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 		};
 	}
 
@@ -431,6 +433,7 @@ final class ClusterApi {
 			'state' => $rState, 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'], 'gen' => (int) $rNode['gen'],
 			'epoch' => $rH['epoch'], 'main_time_ms' => ClusterClock::nowMs(),
 			'proto' => ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX], 'policy' => ClusterPolicy::current($rSettings, $rMain),
+			'cursors' => ['p0' => (int) $rNode['useq_p0'], 'p1' => (int) $rNode['useq_p1']],
 		]);
 	}
 
@@ -473,6 +476,28 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, ['ok' => true, 'main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `events`: a batch from one lane, applied in order (EventIngest). A P0 gap
+	 * is refused with the number MAIN expects, and the node resends from there.
+	 */
+	private static function events(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		$rLane = $rP['lane'] ?? null;
+		$rFirst = $rP['first_useq'] ?? null;
+		$rEvents = $rP['events'] ?? null;
+		if (!in_array($rLane, ['p0', 'p1'], true) || !is_int($rFirst) || $rFirst < 1 || !is_array($rEvents) || !array_is_list($rEvents) || count($rEvents) > EventIngest::MAX_EVENTS) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		try {
+			$rOut = EventIngest::ingest($rNode, $rLane, $rFirst, $rEvents);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if (!$rOut['ok']) {
+			return DenialFactory::deny($rCrypto, 409, 'USEQ_GAP', $rH['node'], $rH['nonce'], ['expected_useq' => $rOut['expected_useq']]);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/** Map an extension refusal to a signed denial. */

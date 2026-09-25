@@ -11,10 +11,10 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * The node-side crons (cron:lines_logs, cron:streams_logs, cron:errors) and
  * the cache handler collect records locally, then hand them here by type. The
  * legacy backend writes them into MAIN's database, one multi-row INSERT per
- * batch, which is what the callers used to build by hand. The cluster API
- * (Phase 5) replaces the backend with `log.*` events. Those events are
- * redacted first ({@see Redactor}); the SQL backend is not, so nothing
- * changes today.
+ * batch, which is what the callers used to build by hand. On a node whose
+ * LOGS flow is on, they become `log.<type>` events for the agent instead
+ * ({@see EventSpool}), redacted first ({@see Redactor}); MAIN's ingest writes
+ * them with insert(). The SQL backend does not redact, as before.
  */
 final class LogSink {
 	/** Rows per INSERT: well under MySQL's placeholder limit for every type. */
@@ -53,6 +53,19 @@ final class LogSink {
 		if (self::$rSink !== null) {
 			return (bool) (self::$rSink)($rType, array_values($rRows), $rDb);
 		}
+		if (NodeFlows::on(NodeFlows::LOGS) && self::spool($rType, array_values($rRows))) {
+			return true;
+		}
+		return self::insert($rType, $rRows, $rDb);
+	}
+
+	/**
+	 * The SQL backend: MAIN's own writes, a legacy node's, and MAIN's ingest of
+	 * a node's `log.*` events.
+	 *
+	 * @param list<array<string, mixed>> $rRows
+	 */
+	public static function insert(string $rType, array $rRows, ?object $rDb = null): bool {
 		[$rTable, $rColumns, $rIgnore] = self::TYPES[$rType];
 		$rDb ??= DatabaseFactory::get();
 		$rOK = true;
@@ -70,7 +83,26 @@ final class LogSink {
 		return $rOK;
 	}
 
-	/** Replace the backend (tests; later the cluster API). Null restores the SQL backend. */
+	/**
+	 * The cluster API backend (LOGS flow on): redacted `log.<type>` events on
+	 * the agent's P1 lane, in chunks of CHUNK rows.
+	 *
+	 * @param list<array<string, mixed>> $rRows
+	 */
+	private static function spool(string $rType, array $rRows): bool {
+		$rColumns = array_flip(self::TYPES[$rType][1]);
+		$rEvents = [];
+		foreach (array_chunk($rRows, self::CHUNK) as $rChunk) {
+			$rRedacted = [];
+			foreach ($rChunk as $rRow) {
+				$rRedacted[] = Redactor::redactRow(array_intersect_key($rRow, $rColumns));
+			}
+			$rEvents[] = ['type' => 'log.' . $rType, 'd' => ['rows' => $rRedacted]];
+		}
+		return EventSpool::append('p1', $rEvents);
+	}
+
+	/** Replace the backend (tests). Null restores the default: events when LOGS is on, else SQL. */
 	public static function useSink(?callable $rSink): void {
 		self::$rSink = $rSink;
 	}
