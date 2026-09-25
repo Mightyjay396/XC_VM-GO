@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Stream\StreamProcess;
@@ -206,6 +207,11 @@ class CleanupCronJob implements CommandInterface {
 			}
 		}
 
+		// Retention of cluster-wide log tables: MAIN's job. Every LB used to
+		// run the same DELETEs against MAIN's database each minute.
+		if (!NodeRole::isMain()) {
+			return;
+		}
 		$rTables = ['lines_activity' => ['keep_activity', 'date_end'], 'lines_logs' => ['keep_client', 'date'], 'login_logs' => ['keep_login', 'date'], 'streams_errors' => ['keep_errors', 'date'], 'streams_logs' => ['keep_restarts', 'date'], 'ondemand_check' => ['on_demand_scan_keep', 'date']];
 		foreach ($rTables as $rTable => $rArray) {
 			if (SettingsManager::getAll()[$rArray[0]] && 0 < SettingsManager::getAll()[$rArray[0]]) {

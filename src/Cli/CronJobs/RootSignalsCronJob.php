@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -43,7 +44,8 @@ class RootSignalsCronJob implements CommandInterface {
 		set_time_limit(0);
 		register_shutdown_function([$this, 'shutdown']);
 
-		$this->rIdentifier = CRONS_TMP_PATH . md5(Encryption::generateUniqueCode(SettingsManager::get('live_streaming_pass')) . static::class);
+		ProcessManager::exitIfCronLockHeld(ProcessManager::legacyCronLockPath(static::class, SettingsManager::get('live_streaming_pass')));
+		$this->rIdentifier = ProcessManager::cronLockPath(static::class);
 		ProcessManager::acquireCronLock($this->rIdentifier);
 
 		$pids = shell_exec("pgrep -f 'XC_VM\[Signals\]'");
@@ -728,7 +730,10 @@ class RootSignalsCronJob implements CommandInterface {
 					}
 				}
 			}
-			$db->query('DELETE FROM `signals` WHERE LENGTH(`custom_data`) > 0 AND UNIX_TIMESTAMP() - `time` >= 86400;');
+			// Purges every node's signals, not just this one's: MAIN only.
+			if (NodeRole::isMain()) {
+				$db->query('DELETE FROM `signals` WHERE LENGTH(`custom_data`) > 0 AND UNIX_TIMESTAMP() - `time` >= 86400;');
+			}
 			$db->close_mysql();
 		} else {
 			exit();

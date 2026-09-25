@@ -3,6 +3,7 @@
 namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Module\ModuleManager;
 use XcVm\Core\Module\ModuleUpdateChecker;
@@ -44,6 +45,11 @@ class ModuleUpdatesCronJob implements CommandInterface {
 				$db->close_mysql();
 			}
 		});
+
+		// Modules are MAIN-only; so is checking the marketplace for their updates.
+		if (!NodeRole::isMain()) {
+			return 0;
+		}
 
 		$rManager = new ModuleManager(container: ServiceContainer::getInstance());
 		$rChecker = new ModuleUpdateChecker();
