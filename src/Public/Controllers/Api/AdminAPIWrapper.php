@@ -1307,6 +1307,8 @@ class AdminAPIWrapper {
 		if (!($rServer = ServerRepository::getById($rID))) {
 			return ['status' => 'STATUS_FAILURE'];
 		}
+		// Worker pid list, left out as in get_servers.
+		unset($rServer['php_pids']);
 		return ['status' => 'STATUS_SUCCESS', 'data' => $rServer];
 	}
 

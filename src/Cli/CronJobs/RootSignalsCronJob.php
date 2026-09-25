@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\Encryption;
@@ -549,6 +550,21 @@ class RootSignalsCronJob implements CommandInterface {
 							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'REBOOT', 'System rebooted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
 							$db->close_mysql();
 							shell_exec('sudo reboot');
+							break;
+						case OpensslExtra::SIGNAL_ACTION:
+							// Sent by server:sync-openssl-extra on MAIN. install() keeps the value it
+							// replaces open for tokens minted just before; php-fpm reads the new one
+							// on its next request. The MAIN's own value (hmac_keys, image names) never
+							// changes this way.
+							$rSet = OpensslExtra::applySignal($rData, !empty($rServers[SERVER_ID]['is_main']), CONFIG_PATH, time());
+							if ($rSet === null) {
+								break;
+							}
+							echo 'Setting OPENSSL_EXTRA...' . "\n";
+							if ($rSet) {
+								shell_exec('sudo chown xc_vm:xc_vm ' . CONFIG_PATH . 'openssl_extra ' . CONFIG_PATH . 'openssl_extra.prev 2>/dev/null');
+							}
+							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'OPENSSL_EXTRA', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.', time());
 							break;
 						case 'restart_services':
 							echo 'Restarting services...' . "\n";

@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronJobs\ServersCronJob;
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Server\ServerRepository;
@@ -78,13 +79,13 @@ class ServerDiagnoseCommand implements CommandInterface {
 			echo "Server #{$rTargetID} is the MAIN server — nothing to diagnose (it is always 'online' to itself).\n";
 			return 0;
 		}
-		return $this->diagnoseFromMain($rServers[$rTargetID], $rTargetID);
+		return $this->diagnoseFromMain($rServers[$rTargetID], $rTargetID, $this->findMain($rServers));
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
 	//  Mode A — remote probe from the MAIN
 	// ─────────────────────────────────────────────────────────────────────────
-	private function diagnoseFromMain(array $rServer, int $rServerID): int {
+	private function diagnoseFromMain(array $rServer, int $rServerID, ?array $rMain): int {
 		self::db();
 
 		$rIP   = (string) $rServer['server_ip'];
@@ -118,6 +119,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 
 		$this->clockSection($rServer, $rProblems);
 		$this->signalSection($rServerID, $rNow, $rProblems);
+		$this->opensslExtraSection($rServer, $rMain, $rProblems);
 		return $this->summary($rProblems);
 	}
 
@@ -223,6 +225,9 @@ class ServerDiagnoseCommand implements CommandInterface {
 		// 7. Clock.
 		$this->clockSection($rMe, $rProblems);
 
+		// 8. Do tokens minted on the main open here?
+		$this->opensslExtraSection($rMe, $rMain, $rProblems);
+
 		return $this->summary($rProblems);
 	}
 
@@ -267,6 +272,27 @@ class ServerDiagnoseCommand implements CommandInterface {
 		$this->line('Signal queue', $rBacklog > 0 ? "{$rBacklog} pending (oldest {$rOldest}s)" : 'empty', $rOk);
 		if (!$rOk) {
 			$rProblems[] = "{$rBacklog} unconsumed signals (oldest {$rOldest}s): the node is not draining its signal queue — its RootSignals/callback loop is stuck.";
+		}
+	}
+
+	/**
+	 * Compare the OPENSSL_EXTRA fingerprints the node and the main publish in
+	 * server_hardware (cron:servers). Proxies publish none and are skipped.
+	 */
+	private function opensslExtraSection(array $rServer, ?array $rMain, array &$rProblems): void {
+		if ($rMain === null || (int) ($rServer['server_type'] ?? 0) === 1) {
+			return;
+		}
+		$rNodePrint = OpensslExtra::reportedFingerprint($rServer);
+		$rMainPrint = OpensslExtra::reportedFingerprint($rMain);
+		if ($rNodePrint === null || $rMainPrint === null) {
+			$this->line('OPENSSL_EXTRA', 'unknown (' . ($rNodePrint === null ? 'node' : 'main') . ' not updated)', true);
+			return;
+		}
+		$rOk = hash_equals($rMainPrint, $rNodePrint);
+		$this->line('OPENSSL_EXTRA', $rOk ? 'matches main' : 'MISMATCH with main', $rOk);
+		if (!$rOk) {
+			$rProblems[] = 'OPENSSL_EXTRA mismatch: tokens minted on MAIN are rejected by this node (playback redirected from the main fails). Repair it from the main: `php console.php server:sync-openssl-extra ' . intval($rServer['id'] ?? 0) . '`.';
 		}
 	}
 

@@ -32,6 +32,7 @@ Probes the target node from the outside and reads its panel-side state:
 | HTTP `GET /api` | Does PHP actually answer behind nginx |
 | Clock offset | `time_offset` vs the panel (skew > 30 s can flap the node online/offline) |
 | Signal queue | Unconsumed rows in `signals` for this node (backlog > 120 s = the node's callback loop is stuck) |
+| OPENSSL_EXTRA | Whether the node holds the main's `OPENSSL_EXTRA` (see [below](#repairing-an-openssl_extra-mismatch)). `unknown (node not updated)` / `unknown (main not updated)`: that side runs a build that does not publish it yet. Not checked for proxies |
 
 The probe combinations map to causes:
 
@@ -58,8 +59,30 @@ Run this **on the silent LB/proxy node itself** — the causes usually live ther
    - is the system **cron service** active (no cron → the crontab never fires);
    - is a previous `cron:servers` instance **hung on its cron lock** — a hung instance blocks every subsequent run for up to 30 minutes (`acquireCronLock` stale timeout), which is exactly how one DB blip keeps a node offline for half an hour. The command prints the holding PID and the kill command.
 7. **Clock skew** — `time_offset` vs the panel.
+8. **OPENSSL_EXTRA** — whether this node holds the main's value, as in Mode A.
 
 > **Note:** the iptables check requires passwordless sudo (`sudo -n`). Without it the check reports `cannot check (need sudo iptables)` instead of failing — run the command as `root` for a full picture.
+
+---
+
+## Repairing an OPENSSL_EXTRA mismatch
+
+`OPENSSL_EXTRA` (`config/openssl_extra`, or a built-in default when that file is absent) keys the stream tokens the main mints for the redirects an LB serves (`/auth`, `/vauth`, `/tsauth`, `/thauth`, subtitles). A main and its LBs must hold the same value; an LB that holds another one rejects all of those tokens, so playback redirected from the main fails there. The current installer gives a new main a random value, and LBs added by `server:install` before it shipped that file to them run on the default.
+
+Each node's `cron:servers` publishes a fingerprint of its value (never the value itself) in `servers.server_hardware`, and the OPENSSL_EXTRA check compares the node's with the main's. To repair a mismatch, run on the **MAIN**:
+
+```bash
+sudo /home/xc_vm/console.php server:sync-openssl-extra <server_id>
+sudo /home/xc_vm/console.php server:sync-openssl-extra --all
+```
+
+- The command queues one root signal with the main's value for each streaming LB that reports another fingerprint. The LB's `cron:root_signals` applies it within a minute: it writes `config/openssl_extra` (0600, owned by `xc_vm`) and php-fpm uses it from the next request, with no restart. The value stays in the `signals` table until then.
+- For **10 minutes** afterwards the LB still accepts tokens it minted with its old value (kept in `config/openssl_extra.prev`), so links it has just handed out keep playing. Legacy-format tokens (`secure_stream_tokens` off) can still be refused in that window, about 1 in 256.
+- LBs already in sync, LBs that publish no fingerprint (not updated yet) and offline LBs are skipped. `--force` queues them anyway; an offline LB applies the signal if it comes back within a day (queued signals expire after 24 hours). Proxies and the main are never sent the value.
+- When the main has **no** `config/openssl_extra`, it runs on the built-in default and there is nothing to send. An LB that still reports a mismatch has a stale `config/openssl_extra` of its own: delete it on that LB (`sudo rm -f /home/xc_vm/config/openssl_extra`); the change applies at the next request.
+- The command sends nothing when the main publishes another fingerprint than its `config/openssl_extra` holds: either `xc_vm` cannot read that file, so the main's php-fpm runs on the default (`sudo chown xc_vm:xc_vm /home/xc_vm/config/openssl_extra && sudo chmod 600 /home/xc_vm/config/openssl_extra`), or the file changed within the last minute (wait for `cron:servers`). It also sends nothing when the main has not published a fingerprint yet.
+
+Check the result with `server:diagnose <server_id>` a minute or two later, after the LB's next `cron:servers` run.
 
 ---
 
@@ -109,6 +132,7 @@ Probable cause(s):
 | **All nodes drop at the same moment** | A MySQL restart/blip on the main hit every node's watchdog at once (fatal for pre-fix builds; current builds wait it out) | Check the main's MySQL error log around the drop time; update the nodes so the watchdog survives outages |
 | Node flaps online/offline | Clock skew > 30 s (or recurring MySQL blips) | Sync NTP on the node; check MySQL stability on the main |
 | Status = 4 | Install/provision errored | Re-run `server:install` from the main |
+| Playback redirected from the main fails on one LB | `OPENSSL_EXTRA` mismatch (the check reports it) | `sudo /home/xc_vm/console.php server:sync-openssl-extra <server_id>` on the main (see [above](#repairing-an-openssl_extra-mismatch)) |
 
 ---
 
@@ -119,7 +143,9 @@ Probable cause(s):
 | `src/Cli/Commands/ServerDiagnoseCommand.php` | The diagnostic command (both modes) |
 | `src/Cli/Commands/WatchdogCommand.php` | The watchdog daemon — writes the heartbeat (`last_check_ago`) |
 | `src/Cli/CronJobs/ServersCronJob.php` | Babysitter cron — relaunches a dead watchdog |
-| `src/Cli/CronJobs/RootSignalsCronJob.php` | Applies iptables blocks (the false-positive source) |
+| `src/Cli/CronJobs/RootSignalsCronJob.php` | Applies iptables blocks (the false-positive source) and the `OPENSSL_EXTRA` repair signal |
+| `src/Cli/Commands/ServerSyncOpensslExtraCommand.php` | `server:sync-openssl-extra` — queues the main's `OPENSSL_EXTRA` for mismatched LBs (MAIN only) |
+| `src/Core/Config/OpensslExtra.php` | `OPENSSL_EXTRA` fingerprint, repair signal and the 10-minute fallback |
 | `src/Domain/Server/ServerRepository.php` | `servers` table access |
 
 See also: [CLI Tools](../guides/cli-tools.md), [Updating a Server](../administration/server-update.md).

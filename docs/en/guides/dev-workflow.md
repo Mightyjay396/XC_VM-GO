@@ -44,7 +44,7 @@ just to silence a real new error — fix the code.
 `make gates` bundles three guards:
 
 - **check-procedural-use** — procedural / view files import every migrated class they use (PHP imports are positional, so the `use` must precede the usage);
-- **verify-lb-archive** — the Load Balancer build excludes privileged code (admin/reseller controllers, user/device domain, install/root commands) — see [Build System (MAIN vs LB)](../builds/build_system.md) for the exclusion boundary;
+- **verify-lb-archive** — the Load Balancer build excludes privileged code (admin/reseller controllers, user/device domain, install/root commands), every LB list entry still matches a tracked path, and every script the LB nginx routes to still ships — see [Build System (MAIN vs LB)](../builds/build_system.md#build-verification) for the exclusion boundary;
 - **check-vendor-prod-only** — no `require-dev` package is committed under `src/vendor/`.
 
 ## End-to-End Tests

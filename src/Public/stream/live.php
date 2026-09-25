@@ -265,13 +265,10 @@ if ($rChannelInfo) {
 		$rAcceptIP = null;
 
 		if ($rSettings["redis_handler"]) {
-			$rConnections = ConnectionTracker::getLineConnections($rUserInfo["id"], true);
-
-			if (count($rConnections) > 0) {
-				$rDate = array_column($rConnections, "date_start");
-				array_multisort($rDate, SORT_ASC, $rConnections);
-				$rAcceptIP = $rConnections[0]["user_ip"];
-			}
+			// The LINE# set holds connection keys; the oldest connection's IP is
+			// read from the rows behind them. HMAC identities have no line id —
+			// the MySQL branch below never matches them either.
+			$rAcceptIP = ConnectionTracker::acceptedLineIP(RedisManager::instance(), $rUserInfo["id"]);
 		} else {
 			// The FIRST connection's IP is the accepted one — as the Redis path
 			// above picks it (oldest date_start); this used to take the newest.

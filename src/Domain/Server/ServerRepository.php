@@ -103,6 +103,9 @@ class ServerRepository {
 			if (!isset($rRow['order'])) {
 				$rRow['order'] = 0;
 			}
+			// One pid per live PHP-FPM worker; only cron:users needs it and it
+			// reads the column itself. Keep it out of the per-request cache.
+			unset($rRow['php_pids']);
 			$rServers[intval($rRow['id'])] = $rRow;
 		}
 
@@ -124,6 +127,8 @@ class ServerRepository {
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
 				$rRow['server_online'] = in_array($rRow['status'], [1, 3]) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
+				// Worker pid list, left out as in getAll().
+				unset($rRow['php_pids']);
 				$rReturn[$rRow['id']] = $rRow;
 			}
 		}
@@ -153,6 +158,8 @@ class ServerRepository {
 				if (!isset($rRow['order'])) {
 					$rRow['order'] = 0;
 				}
+				// Worker pid list, left out as in getAll().
+				unset($rRow['php_pids']);
 				if ($rRow['server_online'] || $type == 'all') {
 					$rReturn[$rRow['id']] = $rRow;
 				}
@@ -181,6 +188,8 @@ class ServerRepository {
 				}
 
 				$rRow['server_online'] = in_array($rRow['status'], [1, 3]) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
+				// Worker pid list, left out as in getAll().
+				unset($rRow['php_pids']);
 				if ($rRow['server_online'] != 0 || !$rOnline) {
 					$rReturn[$rRow['id']] = $rRow;
 				}
@@ -518,7 +527,8 @@ class ServerRepository {
 	}
 
 	/**
-	 * Fetch a single server by id.
+	 * Fetch a single server by id. The full row, php_pids included:
+	 * ServerService writes it back whole with REPLACE.
 	 *
 	 * @param int $rID Server id.
 	 * @return array|null The server row, or null if not found.

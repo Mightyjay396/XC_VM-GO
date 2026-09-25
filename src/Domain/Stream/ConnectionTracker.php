@@ -369,6 +369,81 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * Read a line's connection rows from its LINE# (or LINE_ALL#) sorted set.
+	 *
+	 * getLineConnections() answers the set's members — connection keys, not
+	 * the connections — so a caller that needs the rows (IP, start time) reads
+	 * them here. An unreachable Redis, a failed call and an unreadable payload
+	 * all read as "no connection".
+	 *
+	 * @param \Redis|null $rRedis  Active connection, or null when unreachable.
+	 * @param int         $rLineID Line ID.
+	 * @param bool        $rActive If true — only active (LINE#), otherwise all (LINE_ALL#).
+	 * @return array<int, array> Unserialized connection rows.
+	 */
+	public static function getLineConnectionRows(?\Redis $rRedis, int $rLineID, bool $rActive = true): array {
+		if (!$rRedis instanceof \Redis) {
+			return [];
+		}
+		// zRangeByScore returns false on a failed connection — degrade to empty.
+		$rKeys = $rRedis->zRangeByScore(($rActive ? 'LINE#' : 'LINE_ALL#') . $rLineID, '-inf', '+inf');
+		if (!is_array($rKeys) || count($rKeys) === 0) {
+			return [];
+		}
+		$rConnections = [];
+		foreach (self::readConnections($rRedis, $rKeys) as $rRow) {
+			$rRow = is_string($rRow) ? igbinary_unserialize($rRow) : false;
+			if (is_array($rRow)) {
+				$rConnections[] = $rRow;
+			}
+		}
+		return $rConnections;
+	}
+
+	/**
+	 * Pick the IP of the oldest connection — the one disallow_2nd_ip_con accepts.
+	 *
+	 * Rows that are not arrays or carry no user_ip are skipped; a row without
+	 * date_start sorts after every dated one, and on a tie the first row wins.
+	 *
+	 * @param array $rRows Connection rows (see getLineConnectionRows()).
+	 * @return string|null The oldest connection's IP, or null when there is none.
+	 */
+	public static function oldestConnectionIP(array $rRows): ?string {
+		$rAcceptIP = null;
+		$rOldestStart = PHP_INT_MAX;
+		foreach ($rRows as $rRow) {
+			if (!is_array($rRow) || empty($rRow['user_ip'])) {
+				continue;
+			}
+			$rStart = isset($rRow['date_start']) ? intval($rRow['date_start']) : PHP_INT_MAX;
+			if (is_null($rAcceptIP) || $rStart < $rOldestStart) {
+				$rAcceptIP = (string) $rRow['user_ip'];
+				$rOldestStart = $rStart;
+			}
+		}
+		return $rAcceptIP;
+	}
+
+	/**
+	 * The IP disallow_2nd_ip_con accepts for a line in Redis mode: its oldest
+	 * active connection's.
+	 *
+	 * An HMAC token has no line id (null) and is never checked — the MySQL
+	 * branch's `user_id = NULL` matches nothing either — so Redis is not asked.
+	 *
+	 * @param \Redis|null $rRedis  Active connection, or null when unreachable.
+	 * @param mixed       $rLineID Line ID; empty for an HMAC identity.
+	 * @return string|null The accepted IP, or null when there is none.
+	 */
+	public static function acceptedLineIP(?\Redis $rRedis, mixed $rLineID): ?string {
+		if (empty($rLineID)) {
+			return null;
+		}
+		return self::oldestConnectionIP(self::getLineConnectionRows($rRedis, intval($rLineID), true));
+	}
+
+	/**
 	 * Get connections for multiple users (batch).
 	 *
 	 * Uses MULTI pipeline for parallel LINE# sorted set queries.

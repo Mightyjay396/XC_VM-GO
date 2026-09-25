@@ -20,8 +20,11 @@ class ActivityCronJob implements CommandInterface {
 	use DatabaseAware;
 	use CronTrait;
 
-	/** Rows per INSERT, well under MariaDB's max_allowed_packet. */
+	/** Most rows per INSERT. */
 	private const IMPORT_BATCH = 1000;
+
+	/** Most spool bytes per INSERT: oversized rows still keep it far below max_allowed_packet (16M). */
+	private const IMPORT_BYTES = 4194304;
 
 	/** Spool keys, in `lines_activity` column order. */
 	private const COLUMNS = ['server_id', 'proxy_id', 'user_id', 'isp', 'external_device', 'stream_id', 'date_start', 'user_agent', 'user_ip', 'date_end', 'container', 'geoip_country_code', 'divergence', 'hmac_id', 'hmac_identifier'];
@@ -52,7 +55,8 @@ class ActivityCronJob implements CommandInterface {
 	/**
 	 * Import a spool, claimed by renaming it to <spool>.import so rows written
 	 * meanwhile start a fresh spool. A claim left by a run that died mid-import
-	 * goes first. Rows whose INSERT fails are dropped.
+	 * goes first, and the batches that run had inserted are inserted again
+	 * (at-least-once). Rows whose INSERT fails are dropped.
 	 *
 	 * @param string $rLogFile Spool path.
 	 * @return int Rows inserted.
@@ -71,12 +75,15 @@ class ActivityCronJob implements CommandInterface {
 		return $rCount;
 	}
 
-	/** Insert every valid row of a claimed spool, IMPORT_BATCH per INSERT, then delete it. */
+	/** Insert every valid row of a claimed spool, up to IMPORT_BATCH rows or IMPORT_BYTES per INSERT, then delete it. */
 	private function parseLog(string $rFile): int {
 		$rRows = [];
-		$rCount = 0;
+		$rCount = $rBytes = 0;
 
 		$rFP = fopen($rFile, 'r');
+		if ($rFP === false) {
+			return 0;
+		}
 		while (($rRaw = fgets($rFP)) !== false) {
 			$rLine = trim($rRaw);
 			if (empty($rLine)) {
@@ -87,9 +94,11 @@ class ActivityCronJob implements CommandInterface {
 				continue;
 			}
 			$rRows[] = $rLine;
-			if (count($rRows) >= self::IMPORT_BATCH) {
+			$rBytes += strlen($rRaw);
+			if (count($rRows) >= self::IMPORT_BATCH || $rBytes >= self::IMPORT_BYTES) {
 				$rCount += $this->insertBatch($rRows);
 				$rRows = [];
+				$rBytes = 0;
 			}
 		}
 		fclose($rFP);
@@ -105,7 +114,8 @@ class ActivityCronJob implements CommandInterface {
 	/** Insert one batch into `lines_activity` and record it as each line's last activity. */
 	private function insertBatch(array $rRows): int {
 		$db = self::db();
-		$rQuery = $rUpdateQuery = '';
+		$rQuery = $rIPs = $rActivityIDs = $rArrays = '';
+		$rLast = [];
 
 		foreach ($rRows as $rLine) {
 			$rQuery .= '(' . implode(',', array_map(static fn($rKey) => $db->escape((string) ($rLine[$rKey] ?? '')), self::COLUMNS)) . '),';
@@ -116,11 +126,20 @@ class ActivityCronJob implements CommandInterface {
 		}
 
 		// A multi-row INSERT reports its first id; the rest follow consecutively.
+		// Each line gets its latest row, in id order so concurrent nodes lock
+		// alike. An UPDATE cannot recreate a deleted line, and keeping `updated`
+		// spares cache_engine a rebuild (the line cache holds none of these).
 		$rFirstID = (int) $db->last_insert_id();
 		foreach ($rRows as $i => $rLine) {
-			$rUpdateQuery .= '(' . intval($rLine['user_id']) . ',' . $db->escape((string) $rLine['user_ip']) . ',' . ($rFirstID + $i) . ',' . $db->escape(json_encode(['date_end' => $rLine['date_end'] ?? null, 'stream_id' => $rLine['stream_id']])) . '),';
+			$rLast[intval($rLine['user_id'])] = [$rFirstID + $i, $rLine];
 		}
-		$db->query('INSERT INTO `lines`(`id`,`last_ip`,`last_activity`,`last_activity_array`) VALUES ' . rtrim($rUpdateQuery, ',') . ' ON DUPLICATE KEY UPDATE `id`=VALUES(`id`), `last_ip`=VALUES(`last_ip`), `last_activity`=VALUES(`last_activity`), `last_activity_array`=VALUES(`last_activity_array`);');
+		ksort($rLast);
+		foreach ($rLast as $rUserID => [$rActivityID, $rLine]) {
+			$rIPs .= ' WHEN ' . $rUserID . ' THEN ' . $db->escape((string) $rLine['user_ip']);
+			$rActivityIDs .= ' WHEN ' . $rUserID . ' THEN ' . $rActivityID;
+			$rArrays .= ' WHEN ' . $rUserID . ' THEN ' . $db->escape(json_encode(['date_end' => $rLine['date_end'] ?? null, 'stream_id' => $rLine['stream_id']]));
+		}
+		$db->query('UPDATE `lines` SET `last_ip` = CASE `id`' . $rIPs . ' END, `last_activity` = CASE `id`' . $rActivityIDs . ' END, `last_activity_array` = CASE `id`' . $rArrays . ' END, `updated` = `updated` WHERE `id` IN (' . implode(',', array_keys($rLast)) . ');');
 
 		return count($rRows);
 	}
