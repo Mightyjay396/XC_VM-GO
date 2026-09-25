@@ -249,6 +249,7 @@ Other rules:
 - A node never heard from counts as offline only once the loop has been up for that long.
 - The result goes to `tmp/cluster/health.json`. `Core\Cluster\ClusterHealth` is how `ServerRepository::getAll()` (`server_online`, `cluster_health`) and `ConnectionTracker::getCapacity()` read it.
 - Each transition rewrites the servers cache at once and is audited (`node.health`).
+- **Hysteresis** (`NodeHealth::settle`): a published state gets worse at once, but better only after 30 s of steady health (`NodeHealth::RECOVER_MS`). An offline node that speaks again is `suspect` at once, so routing resumes at half weight, and `ok` after the steady period. Without this, a node whose heartbeats straddle the 10 s threshold flips on every gap: 10 flips a minute at 11.5 s gaps, one with it (`NodeHealthHysteresisTest`). The steady period is longer than the suspect threshold on purpose; at 10 s such a node would recover between gaps and flap as often. Since when each node has been ok is kept in `health.json` (`ok_since`), so the period survives passes that publish nothing.
 - **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears.
 - Nodes without the flow keep the legacy 90 s rule. The Phase 6 orphan purge at `cluster_orphan_conn_ttl_sec` is not part of this loop yet.
 
