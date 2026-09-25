@@ -460,9 +460,9 @@ Each code is single use, lasts 30 minutes, and allows 5 wrong-SAS attempts.
 | `/etc/xc_vm/cluster` missing or wrongly owned | `cluster:root` refuses; re-pin via SSH, code or `cluster:pin-root` |
 | MAIN's IP changed, no DNS name or private route | Code carrying the new URL |
 | MAIN replaced, DR bundle kept | `cluster:import-keys`; the extension re-seals |
-| MAIN replaced, no bundle | `cluster:reinit`; re-enrol all (`cluster:reenrol --all` or `server:enrol`) |
+| MAIN replaced, no bundle | `cluster:init` (new root); re-enrol each node with `server:enrol` |
 
-PRK and the signing and box keys are machine-bound. `cluster:export-keys --passphrase` writes a DR bundle keyed by Argon2id (`sodium_crypto_pwhash`, sensitive limits), with a minimum passphrase strength enforced. A weak passphrase would still expose the current keys; the procedure goes into `docs/en/builds/updates_checklist.md`.
+PRK and the signing and box keys are machine-bound. `cluster:export-keys` writes a DR bundle keyed by Argon2id (the extension's, at libsodium's sensitive limits), with a minimum passphrase strength enforced; the passphrase is never an argument. A weak passphrase would still expose the current keys; the procedure is in `docs/en/administration/backup-strategy.md`.
 
 ## 7. API surface
 
@@ -936,19 +936,20 @@ Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR 
 **Phase 2: MAIN endpoint, enrolment, Go agent skeleton (\~8 pw).**
 
 - MAIN: `Domain/Cluster/ClusterApi` behind `Public/cluster/index.php`, routed by a fixed `location ^~ /cluster/v1/` in `bin/nginx/conf/nginx.conf` (MAIN only; `lb_configs/nginx.conf` has no route). `Domain/Cluster/{NodeRegistry, TokenService, EnrolmentService, EnrolCodeService, HeartbeatService, NodeHealth, ClusterAudit, ClusterClock, ClusterMeta, ClusterPolicy, ClusterReply, DenialFactory, NonceStore, ClusterAdmin}`. The admin page *Servers → Cluster Nodes* and `cron:cluster` (`ClusterCronJob`).
-- CLI: `ClusterInitCommand` (`cluster:init`), `AgentBinaryCommand` (`agent_binary`, MAIN's SHA-256-verified agent cache), `LbInstallFlow::provisionCluster` (enrolment at install), `ServerEnrolCommand` (`server:enrol`, existing LBs; expected host key, no TOFU), `ClusterEnrolCodeCommand` and `ClusterEnrolApproveCommand` (codes; SAS approval), `ClusterPinRootCommand`. Agent: Go `cmd/xc_agent` (`run`, `health`, `keygen`, `probe`, `install`, `enrol <code>`) and `internal/clusteragent` (`client.go`, `rekey.go`, `enrolcode.go`, `install.go`, `state.go`), supervised by `bin/xc_agent/run.sh`; released as `xc_agent-linux-<arch>` beside `xc_fanout`.
+- CLI: `ClusterInitCommand` (`cluster:init`, which also covers the plan's `cluster:reinit`), `ClusterExportKeysCommand` and `ClusterImportKeysCommand` (`cluster:export-keys`/`cluster:import-keys`, the DR bundle; `ClusterDrTest`), `AgentBinaryCommand` (`agent_binary`, MAIN's SHA-256-verified agent cache), `LbInstallFlow::provisionCluster` (enrolment at install), `ServerEnrolCommand` (`server:enrol`, existing LBs; expected host key, no TOFU), `ClusterEnrolCodeCommand` and `ClusterEnrolApproveCommand` (codes; SAS approval), `ClusterPinRootCommand`. Agent: Go `cmd/xc_agent` (`run`, `health`, `keygen`, `probe`, `install`, `enrol <code>`) and `internal/clusteragent` (`client.go`, `rekey.go`, `enrolcode.go`, `install.go`, `state.go`), supervised by `bin/xc_agent/run.sh`; released as `xc_agent-linux-<arch>` beside `xc_fanout`.
 - Acceptance: a fresh LB on a panel without an SSL certificate ends `active` in mode 1. Its first token arrives over SSH at install; `enrol_complete`, heartbeats and at least three refreshes then run over plain HTTP on `http_broadcast_port`.
 - Also accepted: at L = 5 (`lb_token_rotation_min` = 5 min, the fastest rotation), three overlapping rotations cause zero auth errors. Revoke returns signed `NODE_REVOKED`; heartbeats stay under 2 s during an 8 MB upload.
 - Tests: `ClusterApiTest` (enrolment, refresh, rekey, replay, bad MAC and node signature, revocation, challenge), `ClusterEnrolCodeTest`, `LbProvisionClusterTest` (opt-in against the real agent), `ClusterSchemaTest`; Go `client_test.go`, `rekey_test.go`, `enrolcode_test.go` and the opt-in `interop_test.go` against the panel's PHP API, with `-race`.
-- **Not built yet:** the cluster FPM pool (`ClusterPool`), rendered nginx config (`ClusterNginxConfig`, `cluster_locations.conf`, `cluster.d/`) and the cluster bus (`ClusterBus`, unix socket); shared-instance hardening (the 3306/6379 allowlist, Redis `rename-command`, password rotation); DR commands `cluster:export-keys` (Argon2id), `cluster:import-keys`, `cluster:reinit`, `cluster:reenrol --all`; `HttpsRequiredRecoveryTest`; E2E `admin/cluster-nodes.spec.ts`.
+- **Not built yet:** the cluster FPM pool (`ClusterPool`), rendered nginx config (`ClusterNginxConfig`, `cluster_locations.conf`, `cluster.d/`) and the cluster bus (`ClusterBus`, unix socket); shared-instance hardening (the 3306/6379 allowlist, Redis `rename-command`, password rotation); a fleet-wide `cluster:reenrol --all` (each node is re-enrolled with `server:enrol`); `HttpsRequiredRecoveryTest`; E2E `admin/cluster-nodes.spec.ts`.
 
 **Phase 3: Telemetry and liveness authoritative (\~3 pw).**
 
 - Agent `internal/clusteragent/telemetry.go` (samples the host as the watchdog does; the node's PHP writes `config/cluster/local.json` via `WatchdogCommand::writeLocalTelemetry`). `HeartbeatService` turns it into `servers.watchdog_data` with the legacy key set. `SignalsCommand` runs `LivenessService::tick` every second, with the fleet silence guard; `cron:cluster` runs it too. `Domain/Cluster/ClusterEndpoint` handles MAIN port changes.
 - The TELEMETRY flow (`Core/Cluster/NodeFlows`) turns off the LB watchdog DB write, the stats part of `cron:servers`, and `network.py`.
 - Acceptance: dashboard refresh ≤ 3 s; `getCapacity()` routing identical to legacy; a stopped agent is suspect at 10 s and offline at 30 s. Changing MAIN's HTTP port with 3 live nodes keeps all ACTIVE.
-- Tests: `ClusterTelemetryTest` (watchdog data contract), `ClusterLivenessTest` (suspect/offline, fleet silence), `ClusterEndpointTest`; Go `telemetry_test.go`.
-- **Not built yet:** hysteresis in `NodeHealth` (a node near the 10 s threshold can flap between ok and suspect) and its `NodeHealthHysteresisTest`; GPU, iostat and capture devices are reported empty; E2E `admin/lb-telemetry.spec.ts`.
+- Hysteresis (`NodeHealth::settle`): states get worse at once and better only after 30 s of steady health; an offline node heard again is `suspect` first.
+- Tests: `ClusterTelemetryTest` (watchdog data contract), `ClusterLivenessTest` (suspect/offline, fleet silence), `NodeHealthHysteresisTest`, `ClusterEndpointTest`; Go `telemetry_test.go`.
+- **Not built yet:** GPU, iostat and capture devices are reported empty; E2E `admin/lb-telemetry.spec.ts`.
 
 **Phase 4: Commands and RPC (\~4 pw).**
 
