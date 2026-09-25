@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills); root commands are not in yet. Phases 5–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phases 5–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -279,7 +279,7 @@ This was checked with nginx 1.24:
 {"v":1, "type", "exp", "iat", "cmd_id", "seq", "node_uuid", "gen", "dedupe_key", "args"}
 ```
 
-The extension derives the class from `type`. Kills and stops are restrictive and sign without a licence; the rest need it. A `dedupe_key` replaces a not-yet-acked command for the same desired state. Commands expire (`conn.*` 5 min, default 10 min), and `cron:cluster` prunes them.
+The extension derives the class from `type`. Kills and stops are restrictive and sign without a licence; the rest need it. A `dedupe_key` replaces a not-yet-acked command for the same desired state. Commands expire (`conn.*` 5 min, `node.root` 24 h, default 10 min), and `cron:cluster` prunes them.
 
 The flow, for a node whose COMMANDS flow is on (toggled per node on the Cluster Nodes page):
 
@@ -295,7 +295,23 @@ On MAIN, `Domain\Cluster\ClusterRoute` sits behind the Phase 0 seams:
 - `NodeRpc::broadcast()` and `SignalDispatcher::kill()` queue without waiting.
 - Nodes without the flow, and every LB, keep the legacy transport.
 
-Root actions (`NodeActions`) stay on the signals table until `cluster:root` and the root-owned panel-key pin exist.
+### Root commands (Phase 4, second increment)
+
+`NodeActions::send()` (reboot, update, service restarts and the other `NodeActions::ROOT_ACTIONS`) becomes a signed `node.root` command when the node takes it. Otherwise it stays on the signals table. The agent runs as `xc_vm`, and so does everything that can write its files, so root does not trust the agent's copy of the panel key.
+
+- **Pin.** Root keeps its own copy in `/etc/xc_vm/cluster/`, owned by `root:root` and writable by nobody else:
+  - `main_sign.pub` holds the panel signing key (hex).
+  - `node` holds the node's uuid.
+  - `root.seq` holds root's own high-water.
+  - `LbInstallFlow` writes the pin over SSH right after enrolment. On a node enrolled by code, root runs `console.php cluster:pin-root <panel_fp>` with the fingerprint shown on the Cluster Nodes page. The command checks it against the key the agent received.
+  - A new pin clears `root.seq`.
+- **Hand-off.** `cluster:exec` does not run a `node.root` command itself. It writes `<seq>.json` (command and signature) into `config/cluster/root-inbox/` (xc_vm, 0700) and waits up to 5 s for `<seq>.done`. On a timeout it acks `{"queued":true}`.
+- **Root side.** `cluster:root` runs from root's crontab every minute and watches the inbox for 58 s under a lock. For each file in `seq` order it:
+  1. verifies the signature under the pin, `type` `node.root`, the node's uuid, `exp` (5 min grace), `seq` above `root.seq`, and the action against `NodeActions::ROOT_ACTIONS`;
+  2. raises `root.seq` before running, so a crash cannot replay;
+  3. runs the action through `RootSignalsCronJob::executeAction()`, the same code the signals path uses;
+  4. writes the result exclusively (`fopen 'x'`, after removing anything planted at the path), so root never follows a symlink.
+- **Readiness.** The agent reports `root_ready` in every heartbeat: the pin exists and matches its own panel key and uuid. MAIN stores it in `cluster_nodes.root_ready` (migration 039). It routes `node.root` only to nodes with the COMMANDS flow and `root_ready`. The Cluster Nodes page shows it.
 
 ### Extension updates
 
