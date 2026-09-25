@@ -7,6 +7,7 @@ use XcVm\Core\Enum\Theme;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
 use XcVm\Core\Reference\GeoReference;
+use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
  * DashboardController — Dashboard page.
@@ -159,8 +160,9 @@ class DashboardController extends BaseAdminController {
 		}
 
 		// xc_fanout live-delivery daemon — flag any reporting server where it is down.
+		// Not when the admin switched fanout off: down is then what was asked for.
 		$multi = count($orderedServers) > 1;
-		foreach ($orderedServers as $srv) {
+		foreach (FanoutMode::enabled() ? $orderedServers : [] as $srv) {
 			$wd = json_decode($srv['watchdog_data'] ?? '{}', true) ?: [];
 			$fresh = (time() - intval($srv['last_check_ago'] ?? 0)) < 60;
 			if ($fresh && isset($wd['fanout']['running']) && !$wd['fanout']['running']) {

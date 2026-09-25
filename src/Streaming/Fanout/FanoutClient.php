@@ -32,6 +32,15 @@ class FanoutClient {
 	private static ?array $features = null;
 
 	/**
+	 * Whether the control socket may be used: fanout is switched on (FanoutMode)
+	 * and the daemon's socket exists. With fanout off every call below behaves
+	 * as if the daemon were down, which is the path the panel already takes.
+	 */
+	private static function socketReady(): bool {
+		return FanoutMode::enabled() && defined('FANOUT_CTL_SOCK') && file_exists(FANOUT_CTL_SOCK);
+	}
+
+	/**
 	 * Build the daemon source config from a `streams` row and its keyed
 	 * `streams_arguments` (as ProxyCommand reads them). Pure function — no I/O —
 	 * so it is unit-testable against the exact shapes ProxyCommand uses.
@@ -115,7 +124,7 @@ class FanoutClient {
 	 * @return string|null The ingest socket path, or null on failure.
 	 */
 	public static function registerIngest(int $rStreamID, ?string $rKeyHex = null, ?string $rIVHex = null): ?string {
-		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if (!function_exists('curl_init') || !self::socketReady()) {
 			return null;
 		}
 
@@ -159,7 +168,7 @@ class FanoutClient {
 	 * @return bool True when the daemon reports has_data within the window.
 	 */
 	public static function probe(int $rStreamID, int $rWaitMs): bool {
-		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if (!function_exists('curl_init') || !self::socketReady()) {
 			return false;
 		}
 
@@ -194,7 +203,7 @@ class FanoutClient {
 	 * @return bool True when the daemon reports has_data for the stream.
 	 */
 	public static function isStreamFed(int $rStreamID): bool {
-		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if (!function_exists('curl_init') || !self::socketReady()) {
 			return false;
 		}
 
@@ -234,7 +243,7 @@ class FanoutClient {
 	 * @return bool True only when a reachable daemon answered 404 for this stream.
 	 */
 	public static function daemonStreamMissing(int $rStreamID): bool {
-		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if (!function_exists('curl_init') || !self::socketReady()) {
 			return false;
 		}
 
@@ -359,7 +368,7 @@ class FanoutClient {
 	 * @return string[]|null Active connection uuids, or null on failure.
 	 */
 	public static function activeConnections(): ?array {
-		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if (!function_exists('curl_init') || !self::socketReady()) {
 			return null;
 		}
 
@@ -414,7 +423,7 @@ class FanoutClient {
 	 * @return array<string,int>|null uuid => KB/s, or null on failure.
 	 */
 	public static function connectionRates(): ?array {
-		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if (!function_exists('curl_init') || !self::socketReady()) {
 			return null;
 		}
 
@@ -451,7 +460,7 @@ class FanoutClient {
 	 * @return bool True when the daemon accepted the signal (HTTP 2xx).
 	 */
 	public static function sendSignal(string $rUUID, array $rSignal): bool {
-		if ($rUUID === '' || !function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if ($rUUID === '' || !function_exists('curl_init') || !self::socketReady()) {
 			return false;
 		}
 
@@ -634,7 +643,7 @@ class FanoutClient {
 	 * @return array{code:int,body:string|null,errno:int} code 0 / errno set when unreachable.
 	 */
 	private static function request(string $rMethod, string $rPath, ?string $rBody, int $rConnect, int $rTimeout): array {
-		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if (!function_exists('curl_init') || !self::socketReady()) {
 			return ['code' => 0, 'body' => null, 'errno' => -1];
 		}
 		$rCurl = curl_init();
@@ -666,7 +675,7 @@ class FanoutClient {
 	 * @return bool True on a 2xx (specifically 204) response.
 	 */
 	private static function call(string $rMethod, int $rStreamID, ?string $rBody): bool {
-		if (!function_exists('curl_init') || !defined('FANOUT_CTL_SOCK') || !file_exists(FANOUT_CTL_SOCK)) {
+		if (!function_exists('curl_init') || !self::socketReady()) {
 			return false;
 		}
 

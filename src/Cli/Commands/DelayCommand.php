@@ -118,7 +118,9 @@ class DelayCommand implements CommandInterface {
 						$rData .= '#EXTINF:' . $rSegment['seconds'] . ',' . "\n" . $rSegment['file'] . "\n";
 					}
 					file_put_contents($rPlaylist, $rData, LOCK_EX);
-					$this->queueForDaemon($rM3U8['segments'], $rFedSegment, $rFeedQueue);
+					if ($rFeeder->isEnabled()) {
+						$this->queueForDaemon($rM3U8['segments'], $rFedSegment, $rFeedQueue);
+					}
 					$rMD5 = $rPrevMD5;
 					$this->deleteSegments($rStreamID, $rSequence - 2);
 					$this->cleanUpSegments($rStreamID, $rDelayDuration);
