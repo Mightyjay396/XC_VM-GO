@@ -766,6 +766,23 @@ final class ClusterApiTest extends TestCase {
 		}
 	}
 
+	public function testMainsClosesReachANodeThatHoldsItsViewers(): void {
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		try {
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS]);
+			$this->assertSame([false, false], \XcVm\Domain\Cluster\ClusterRoute::closeConnection(self::SID, 'abc', true), 'no registry on the node: nothing to tell');
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+			$this->assertSame([true, true], \XcVm\Domain\Cluster\ClusterRoute::closeConnection(self::SID, 'abc', false));
+			$this->assertSame([true, true], \XcVm\Domain\Cluster\ClusterRoute::closeConnection(self::SID, 'abc', true)); // supersedes the first
+			$rDocs = array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0));
+			$this->assertSame([['conn.close', ['uuid' => 'abc', 'remove' => true]]], array_map(static fn($rD) => [$rD['type'], $rD['args']], $rDocs));
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
 	public function testEventsAreAppliedInOrderAndHelloReturnsTheCursors(): void {
 		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `pid` int)');
 		$this->rDb->exec('INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `pid`) VALUES (11, 100, 5, 0)');

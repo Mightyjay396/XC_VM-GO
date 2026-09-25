@@ -90,6 +90,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('cluster_logs_flow'); ?></th>
                     <th><?= $language::get('cluster_streams_flow'); ?></th>
                     <th><?= $language::get('cluster_content_flow'); ?></th>
+                    <th><?= $language::get('cluster_connections_flow'); ?></th>
                     <th><?= $language::get('cluster_root_pin'); ?></th>
                     <th><?= $language::get('cluster_epoch'); ?></th>
                     <th><?= $language::get('cluster_token_expires'); ?></th>
@@ -100,7 +101,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
             </thead>
             <tbody>
                 <?php if (empty($clusterNodes)): ?>
-                    <tr><td colspan="14" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
+                    <tr><td colspan="15" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($clusterNodes as $rNode): ?>
                     <tr>

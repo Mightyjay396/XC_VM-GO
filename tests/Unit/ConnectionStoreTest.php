@@ -1,6 +1,10 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\AgentClient;
+use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ConnectionIngest;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
@@ -60,6 +64,9 @@ final class ConnectionStoreTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		NodeFlows::usePath(null);
+		AgentClient::useSocket(null);
+		SettingsManager::set([]);
 		DatabaseFactory::reset();
 		$this->redis(null);
 	}
@@ -164,6 +171,45 @@ final class ConnectionStoreTest extends TestCase {
 		}
 	}
 
+	public function testAnAgentThatDoesNotAnswerLeavesTheViewerOnMainsStore(): void {
+		$rDir = sys_get_temp_dir() . '/xcvm-flows-' . bin2hex(random_bytes(4));
+		mkdir($rDir);
+		file_put_contents($rDir . '/flows.json', json_encode(['mode' => 1, 'flows' => NodeFlows::COMMANDS | NodeFlows::STREAMS | NodeFlows::CONNECTIONS, 'state' => 'active']));
+		NodeFlows::usePath($rDir . '/flows.json');
+		AgentClient::useSocket($rDir . '/no-agent.sock');
+		try {
+			$rSettings = ['redis_handler' => 0];
+			$this->assertTrue(ConnectionTracker::openRecord($rSettings, $this->record('hhhh'), ['user_id' => 7, 'user_ip' => '10.0.0.1', 'uuid' => 'hhhh', 'hls_last_read' => 1]));
+			$this->assertNotNull($this->row('hhhh'), 'written to MAIN\'s store instead');
+			$rFound = ConnectionTracker::findByUuid($rSettings, 'hhhh', '`activity_id`, `pid`, `user_ip`');
+			$this->assertSame('10.0.0.1', $rFound['user_ip']);
+			$this->assertTrue(ConnectionTracker::updateLive($rSettings, $rFound, ['pid' => 3]), 'a table row (no identity) refreshes in the table');
+			$this->assertSame('10.0.0.1', ConnectionTracker::acceptedIP($rSettings, 7));
+		} finally {
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
+	public function testIngestWritesOnlyTheSendersConnectionsInTheTable(): void {
+		SettingsManager::set(['redis_handler' => 0]);
+		$rRec = ['user_id' => 7, 'stream_id' => 100, 'server_id' => 99, 'user_ip' => '10.0.0.9', 'container' => 'hls', 'pid' => null, 'uuid' => 'iiii', 'date_start' => 1800000000, 'hls_last_read' => 1800000000, 'hls_end' => 0, 'identity' => 'forged', 'activity_id' => 1];
+		$this->assertTrue(ConnectionIngest::upsert(5, $rRec));
+		$rRow = $this->row('iiii');
+		$this->assertSame([5, 7, 'hls', 0], [(int) $rRow['server_id'], (int) $rRow['user_id'], $rRow['container'], (int) $rRow['hls_end']], 'server_id is the sender');
+
+		$this->assertTrue(ConnectionIngest::upsert(5, ['hls_last_read' => 1800000030, 'hls_end' => 1] + $rRec));
+		$rAfter = $this->row('iiii');
+		$this->assertSame([(int) $rRow['activity_id'], 1800000030, 1], [(int) $rAfter['activity_id'], (int) $rAfter['hls_last_read'], (int) $rAfter['hls_end']], 'updated in place');
+
+		$this->assertFalse(ConnectionIngest::upsert(6, $rRec), 'another node cannot take it over');
+		$this->assertFalse(ConnectionIngest::upsert(5, ['uuid' => 'jjjj', 'stream_id' => 1]), 'no owner');
+		$this->assertFalse(ConnectionIngest::upsert(5, ['uuid' => 'bad uuid;'] + $rRec));
+		ConnectionIngest::remove(6, 'iiii');
+		$this->assertNotNull($this->row('iiii'), 'another node cannot remove it');
+		ConnectionIngest::remove(5, 'iiii');
+		$this->assertNull($this->row('iiii'));
+	}
+
 	// ── Redis ────────────────────────────────────────────────────────────
 
 	public function testRedisPathKeepsTheRecordAndItsSets(): void {
@@ -191,5 +237,25 @@ final class ConnectionStoreTest extends TestCase {
 		$this->connectRedis();
 		$this->assertSame(1800000300, igbinary_unserialize($rRedis->get('ffff'))['hls_last_read']);
 		$this->assertNull(ConnectionTracker::heartbeat($rSettings, 'gone', 1));
+	}
+
+	public function testIngestOnRedisKeepsTheNodesRecordAndSets(): void {
+		$rRedis = $this->connectRedis();
+		$rRedis->flushAll();
+		SettingsManager::set(['redis_handler' => 1]);
+		$rRec = ['hmac_id' => 3, 'hmac_identifier' => 'dev', 'stream_id' => 100, 'user_ip' => '10.0.0.9', 'container' => 'ts', 'pid' => 0, 'uuid' => 'kkkk', 'date_start' => 1800000000, 'hls_last_read' => 1800000000, 'hls_end' => 0];
+		$this->assertTrue(ConnectionIngest::upsert(5, $rRec));
+		$rStored = igbinary_unserialize($rRedis->get('kkkk'));
+		$this->assertSame([5, '3_dev'], [$rStored['server_id'], $rStored['identity']]);
+		foreach (['LINE#3_dev', 'STREAM#100', 'SERVER#5', 'LIVE'] as $rSet) {
+			$this->assertNotFalse($rRedis->zScore($rSet, 'kkkk'), $rSet);
+		}
+		$this->assertTrue(ConnectionIngest::upsert(5, ['pid' => 42] + $rRec));
+		$this->assertSame(42, igbinary_unserialize($rRedis->get('kkkk'))['pid']);
+		$this->assertFalse(ConnectionIngest::upsert(6, $rRec));
+		$this->assertFalse(ConnectionIngest::remove(6, 'kkkk'));
+		$this->assertTrue(ConnectionIngest::remove(5, 'kkkk'));
+		$this->assertFalse($rRedis->get('kkkk'));
+		$this->assertFalse($rRedis->zScore('SERVER#5', 'kkkk'));
 	}
 }
