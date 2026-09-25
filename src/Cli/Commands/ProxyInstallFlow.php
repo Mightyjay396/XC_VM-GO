@@ -11,8 +11,9 @@ class ProxyInstallFlow {
 		return 'proxy.tar.gz';
 	}
 
-	public static function writeInstallMetadata(string $rInstallDir, int $rServerID, string $rUsername, string $rPassword, int $rPort, int $rHTTPPort, int $rHTTPSPort, array $rParentIDs): void {
-		file_put_contents($rInstallDir . $rServerID . '.json', json_encode(['root_username' => $rUsername, 'root_password' => $rPassword, 'ssh_port' => $rPort, 'http_broadcast_port' => $rHTTPPort, 'https_broadcast_port' => $rHTTPSPort, 'parent_id' => $rParentIDs]));
+	/** Non-secret install parameters for reinstalls; the password is never stored. */
+	public static function writeInstallMetadata(string $rInstallDir, int $rServerID, string $rUsername, int $rPort, int $rHTTPPort, int $rHTTPSPort, array $rParentIDs): void {
+		file_put_contents($rInstallDir . $rServerID . '.json', json_encode(['root_username' => $rUsername, 'ssh_port' => $rPort, 'http_broadcast_port' => $rHTTPPort, 'https_broadcast_port' => $rHTTPSPort, 'parent_id' => $rParentIDs]));
 	}
 
 	public static function installArchive($rConn, callable $rSendFileSSH, callable $rRunSSH, string $rInstallDir, string $rInstallFile, int $rServerID, $db): bool {

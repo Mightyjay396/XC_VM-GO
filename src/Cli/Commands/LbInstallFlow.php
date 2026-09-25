@@ -44,8 +44,9 @@ class LbInstallFlow {
 		];
 	}
 
-	public static function writeInstallMetadata(string $rInstallDir, int $rServerID, string $rUsername, string $rPassword, int $rPort): void {
-		file_put_contents($rInstallDir . $rServerID . '.json', json_encode(['root_username' => $rUsername, 'root_password' => $rPassword, 'ssh_port' => $rPort]));
+	/** Non-secret install parameters for reinstalls; the password is never stored. */
+	public static function writeInstallMetadata(string $rInstallDir, int $rServerID, string $rUsername, int $rPort): void {
+		file_put_contents($rInstallDir . $rServerID . '.json', json_encode(['root_username' => $rUsername, 'ssh_port' => $rPort]));
 	}
 
 	public static function installArchive($rConn, callable $rRunSSH, string $rInstallFiles, string $rHash, int $rServerID, $db): bool {

@@ -280,9 +280,9 @@ class ServerService {
 
 			$db->query('UPDATE `servers` SET `status` = 3, `parent_id` = ? WHERE `id` = ?;', '[' . implode(',', $rParentIDs) . ']', $rServer['id']);
 			if ($rData['type'] == 1) {
-				$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . intval($rData['type']) . ' ' . intval($rServer['id']) . ' ' . intval($rData['ssh_port']) . ' ' . escapeshellarg($rData['root_username']) . ' ' . escapeshellarg($rData['root_password']) . ' ' . intval($rData['http_broadcast_port']) . ' ' . intval($rData['https_broadcast_port']) . ' ' . intval($rUpdateSysctl) . ' ' . intval($rPrivateIP) . ' "' . json_encode($rParentIDs) . '" > "' . BIN_PATH . 'install/' . intval($rServer['id']) . '.install" 2>/dev/null &';
+				$rCommand = InstallCredentials::command(intval($rData['type']), intval($rServer['id']), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], [(string) intval($rData['http_broadcast_port']), (string) intval($rData['https_broadcast_port']), (string) intval($rUpdateSysctl), (string) intval($rPrivateIP), escapeshellarg(json_encode($rParentIDs))], (string) ($rData['expected_hostkey'] ?? ''));
 			} else {
-				$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . intval($rData['type']) . ' ' . intval($rServer['id']) . ' ' . intval($rData['ssh_port']) . ' ' . escapeshellarg($rData['root_username']) . ' ' . escapeshellarg($rData['root_password']) . ' 80 443 ' . intval($rUpdateSysctl) . ' > "' . BIN_PATH . 'install/' . intval($rServer['id']) . '.install" 2>/dev/null &';
+				$rCommand = InstallCredentials::command(intval($rData['type']), intval($rServer['id']), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], ['80', '443', (string) intval($rUpdateSysctl)], (string) ($rData['expected_hostkey'] ?? ''));
 			}
 			shell_exec($rCommand);
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rServer['id']]];
@@ -317,9 +317,9 @@ class ServerService {
 		}
 
 		if ($rData['type'] == 1) {
-			$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . intval($rData['type']) . ' ' . intval($rInsertID) . ' ' . intval($rData['ssh_port']) . ' ' . escapeshellarg($rData['root_username']) . ' ' . escapeshellarg($rData['root_password']) . ' ' . intval($rData['http_broadcast_port']) . ' ' . intval($rData['https_broadcast_port']) . ' ' . intval($rUpdateSysctl) . ' ' . intval($rPrivateIP) . ' "' . json_encode($rParentIDs) . '" > "' . BIN_PATH . 'install/' . intval($rInsertID) . '.install" 2>/dev/null &';
+			$rCommand = InstallCredentials::command(intval($rData['type']), intval($rInsertID), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], [(string) intval($rData['http_broadcast_port']), (string) intval($rData['https_broadcast_port']), (string) intval($rUpdateSysctl), (string) intval($rPrivateIP), escapeshellarg(json_encode($rParentIDs))], (string) ($rData['expected_hostkey'] ?? ''));
 		} else {
-			$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . intval($rData['type']) . ' ' . intval($rInsertID) . ' ' . intval($rData['ssh_port']) . ' ' . escapeshellarg($rData['root_username']) . ' ' . escapeshellarg($rData['root_password']) . ' 80 443 ' . intval($rUpdateSysctl) . ' > "' . BIN_PATH . 'install/' . intval($rInsertID) . '.install" 2>/dev/null &';
+			$rCommand = InstallCredentials::command(intval($rData['type']), intval($rInsertID), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], ['80', '443', (string) intval($rUpdateSysctl)], (string) ($rData['expected_hostkey'] ?? ''));
 		}
 
 		shell_exec($rCommand);

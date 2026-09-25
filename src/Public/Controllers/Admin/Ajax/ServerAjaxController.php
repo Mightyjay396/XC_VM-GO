@@ -8,6 +8,7 @@ use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Security\BlocklistService;
+use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\Health\ProcessChecker;
@@ -442,7 +443,12 @@ class ServerAjaxController extends BaseAjaxController {
 		$this->fail();
 	}
 
-	/** action=reinstall_server — re-run a server install from its saved params. */
+	/**
+	 * action=reinstall_server — re-run a server install from its saved params.
+	 * The saved params no longer hold the SSH password, so the request must
+	 * carry it (root_password); an optional expected_hostkey overrides the
+	 * stored host key for a rebuilt node.
+	 */
 	public function reinstallServer(): never {
 		$this->requireXhr();
 		$this->gateAny([['adv', 'add_server'], ['adv', 'edit_server']]);
@@ -458,15 +464,16 @@ class ServerAjaxController extends BaseAjaxController {
 
 		$rFilename = BIN_PATH . 'install/' . $rServerID . '.json';
 
-		if (file_exists($rFilename)) {
+		$rPassword = (string) RequestManager::get('root_password');
+
+		if (file_exists($rFilename) && $rPassword !== '') {
 			$rParams = json_decode(file_get_contents($rFilename), true);
 			$db->query('UPDATE `servers` SET `status` = 3 WHERE `id` = ?;', $rServerID);
 
-			if (isset($rParams['http_broadcast_port'])) {
-				$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . $rType . ' ' . intval($rServerID) . ' ' . intval($rParams['ssh_port']) . ' ' . escapeshellarg($rParams['root_username']) . ' ' . escapeshellarg($rParams['root_password']) . ' ' . intval($rParams['http_broadcast_port']) . ' ' . intval($rParams['https_broadcast_port']) . ' > "' . BIN_PATH . 'install/' . intval($rServerID) . '.install" 2>/dev/null &';
-			} else {
-				$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . $rType . ' ' . intval($rServerID) . ' ' . intval($rParams['ssh_port']) . ' ' . escapeshellarg($rParams['root_username']) . ' ' . escapeshellarg($rParams['root_password']) . ' > "' . BIN_PATH . 'install/' . intval($rServerID) . '.install" 2>/dev/null &';
-			}
+			$rTail = isset($rParams['http_broadcast_port'])
+				? [(string) intval($rParams['http_broadcast_port']), (string) intval($rParams['https_broadcast_port'])]
+				: [];
+			$rCommand = InstallCredentials::command($rType, intval($rServerID), intval($rParams['ssh_port']), (string) $rParams['root_username'], $rPassword, $rTail, (string) RequestManager::get('expected_hostkey'));
 
 			shell_exec($rCommand);
 

@@ -9,6 +9,7 @@ use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Proxy\ProxyArchiveUpdater;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
+use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -41,6 +42,20 @@ class ServerInstallCommand implements CommandInterface {
 		}
 
 		// server:install <type> <serverID> <port> <username> <password> [http] [https] [sysctl] [privateIP] [parentIDs]
+		//                [--cred-file=<path>] [--expect-hostkey=<sha1>]
+		// The panel passes "-" for username and password and the credentials in
+		// a 0600 --cred-file, read and deleted here, so they never sit in argv.
+		[$rArgs, $rOptions] = InstallCredentials::splitOptions($rArgs);
+		if (isset($rOptions['cred-file'])) {
+			$rCred = InstallCredentials::consume($rOptions['cred-file']);
+			if ($rCred === null) {
+				echo "Credential file missing or unreadable. Exiting\n";
+				return 1;
+			}
+			$rArgs[3] = $rCred['username'];
+			$rArgs[4] = $rCred['password'];
+		}
+		$rExpectedHostKey = InstallCredentials::normalizeHostKey($rOptions['expect-hostkey'] ?? '');
 		if (count($rArgs) < 4) {
 			return 0;
 		}
@@ -80,7 +95,7 @@ class ServerInstallCommand implements CommandInterface {
 		if ($rType == 1) {
 			$rPackages = ProxyInstallFlow::getPackages();
 			$rInstallFiles = ProxyInstallFlow::getInstallFile();
-			ProxyInstallFlow::writeInstallMetadata($rInstallDir, $rServerID, $rUsername, $rPassword, $rPort, $rHTTPPort, $rHTTPSPort, $rParentIDs);
+			ProxyInstallFlow::writeInstallMetadata($rInstallDir, $rServerID, $rUsername, $rPort, $rHTTPPort, $rHTTPSPort, $rParentIDs);
 
 			// proxy.tar.gz is fetched from XC_VM_Proxy releases (not shipped in LFS) and
 			// kept fresh by cron:proxy. Self-heal here so a brand-new panel that has not
@@ -108,7 +123,7 @@ class ServerInstallCommand implements CommandInterface {
 			$rUpdateData = LbInstallFlow::resolveUpdateData($gitRelease);
 			$rInstallFiles = $rUpdateData['url'];
 			$rHash = $rUpdateData['md5'];
-			LbInstallFlow::writeInstallMetadata($rInstallDir, $rServerID, $rUsername, $rPassword, $rPort);
+			LbInstallFlow::writeInstallMetadata($rInstallDir, $rServerID, $rUsername, $rPort);
 		} else {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
 			echo "Invalid type specified!\n";
@@ -123,12 +138,27 @@ class ServerInstallCommand implements CommandInterface {
 			return 1;
 		}
 
+		$rPresentedHostKey = (string) @ssh2_fingerprint($rConn, SSH2_FINGERPRINT_SHA1 | SSH2_FINGERPRINT_HEX);
+		$rStoredHostKey = $rServers[$rServerID]['ssh_hostkey_sha1'] ?? null;
+		$rHostKeyError = InstallCredentials::checkHostKey($rPresentedHostKey, $rExpectedHostKey, $rStoredHostKey);
+		if ($rHostKeyError !== null) {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo $rHostKeyError . ". Exiting\n";
+			return 1;
+		}
+		echo 'SSH host key (SHA-1): ' . InstallCredentials::normalizeHostKey($rPresentedHostKey) . "\n";
+
 		echo "Connected! Authenticating as user '" . $rUsername . "'...\n";
 		$rResult = @ssh2_auth_password($rConn, $rUsername, $rPassword);
 		if (!$rResult) {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
 			echo "Failed to authenticate over SSH — check the root username and password. Exiting\n";
 			return 1;
+		}
+		// Remember the host key for reinstalls to match (trust on first use).
+		$rHostKey = InstallCredentials::normalizeHostKey($rPresentedHostKey);
+		if ($rHostKey !== $rStoredHostKey) {
+			$db->query('UPDATE `servers` SET `ssh_hostkey_sha1` = ? WHERE `id` = ?;', $rHostKey, $rServerID);
 		}
 
 		$rRunSSH = function ($rConnection, string $rCommand): array {
