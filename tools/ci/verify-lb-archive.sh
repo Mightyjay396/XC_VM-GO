@@ -60,6 +60,10 @@ SENSITIVE=(
 	"Public/Controllers/PlayerV2"
 	"Domain/User"
 	"Domain/Device"
+	# The cluster API server (MAIN side of MAIN <-> LB); LBs only ever call it.
+	"Domain/Cluster"
+	"Public/cluster"
+	"Cli/Commands/ClusterInitCommand.php"
 	# Admin / reseller APIs and the MAIN-only endpoints (the LB nginx routes none
 	# of them; auth.php and probe.php need the stripped Domain/User).
 	"Public/admin/api.php"
