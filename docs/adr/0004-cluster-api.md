@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phases 5–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 has logs and stream state as events; content, recordings and fanout events are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -312,6 +312,25 @@ On MAIN, `Domain\Cluster\ClusterRoute` sits behind the Phase 0 seams:
   3. runs the action through `RootSignalsCronJob::executeAction()`, the same code the signals path uses;
   4. writes the result exclusively (`fopen 'x'`, after removing anything planted at the path), so root never follows a symlink.
 - **Readiness.** The agent reports `root_ready` in every heartbeat: the pin exists and matches its own panel key and uuid. MAIN stores it in `cluster_nodes.root_ready` (migration 039). It routes `node.root` only to nodes with the COMMANDS flow and `root_ready`. The Cluster Nodes page shows it.
+
+### Logs and stream state (Phase 5, first increment)
+
+A node whose LOGS or STREAMS flow is on stops writing its logs and stream runtime state into MAIN's database. The Phase 0 seams send them as events instead:
+
+- **LB PHP.** `LogSink::write()` and `StreamStateWriter` redact first (`Redactor`), then hand the events to `Core\Cluster\EventSpool`. The spool holds one file per write under `config/cluster/spool/<lane>/`, written aside and renamed in. The lanes are:
+  - `p0`: `stream.state`, never dropped;
+  - `p1`: `log.<type>`, one event per `LogSink::CHUNK` rows.
+
+  When the agent has not touched `flows.json` for 120 s (it does on every heartbeat), the spool refuses and the write falls back to SQL, so a stopped agent loses nothing.
+- **Agent.** One loop per lane (P0 every 200 ms, P1 every 5 s) sends the oldest files to MAIN's `events` op, numbered from the lane's cursor (`useq`). Before each send it writes the batch's first number and file list to `<lane>.inflight`, so a crash or a lost reply resends the same files under the same numbers. Past 64 MB, P1 drops its oldest files and reports the count as a `skip` event, which is spooled so it survives a restart. `p0_reset` is not in yet.
+- **MAIN.** `events` (`EventIngest`) applies a batch and the new cursor together:
+  - P0 is gap-checked: a first number other than `useq_p0 + 1` gets a signed `409 USEQ_GAP {expected_useq}` and the agent renumbers.
+  - P1 skips numbers at or below `useq_p1`.
+  - A batch at or below the cursor is a repeat and applies nothing.
+  - Every event applies as the sending node. `stream.state` merges only runtime-state columns into that node's own `streams_servers` row (`StreamRowMerge`), log rows get its `server_id`, and both are redacted again.
+  - An event whose flow is off is dropped and counted.
+  - `hello` returns the cursors.
+- **Admin.** The Cluster Nodes page switches LOGS and STREAMS per node.
 
 ### Extension updates
 

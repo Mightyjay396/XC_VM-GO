@@ -746,6 +746,30 @@ final class ClusterApiTest extends TestCase {
 		}
 	}
 
+	public function testEventsAreAppliedInOrderAndHelloReturnsTheCursors(): void {
+		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `pid` int)');
+		$this->rDb->exec('INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `pid`) VALUES (11, 100, 5, 0)');
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_STREAMS]);
+		$rState = ['type' => 'stream.state', 'd' => ['stream_id' => 100, 'server_id' => self::SID, 'fields' => ['pid' => 42]]];
+
+		[$rRes, $rCtx] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => [$rState]], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame([1, 1, 0], [$rOut['useq'], $rOut['applied'], $rOut['dropped']]);
+		$this->rDb->query('SELECT `pid` FROM `streams_servers` WHERE `server_stream_id` = 11');
+		$this->assertSame(42, (int) $this->rDb->get_row()['pid']);
+
+		// A gap on P0 is refused with the number MAIN expects.
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 5, 'events' => [$rState]], 1, $rKeys);
+		$this->assertSame(2, $this->denial($rRes, 409, 'USEQ_GAP', $rReq)['expected_useq']);
+
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p9', 'first_useq' => 2, 'events' => []], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a'], 1, $rKeys);
+		$this->assertSame(['p0' => 1, 'p1' => 0], $this->reply($rRes, $rCtx, $rKeys)['cursors']);
+	}
+
 	public function testRootCommandsNeedTheNodesRootPin(): void {
 		$rKeys = $this->active();
 		SettingsManager::set($this->rSettings);

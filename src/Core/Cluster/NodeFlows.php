@@ -55,11 +55,10 @@ final class NodeFlows {
 	private static function read(): array {
 		$rOff = ['mode' => 0, 'flows' => 0, 'state' => ''];
 		$rPath = self::$rPath ?? (defined('CONFIG_PATH') ? CONFIG_PATH . 'cluster/flows.json' : null);
-		if ($rPath === null || (self::$rPath === null && NodeRole::isMain())) {
-			return $rOff;
-		}
-		$rDoc = json_decode((string) @file_get_contents($rPath), true);
-		if (!is_array($rDoc)) {
+		// The file first: no file is the common case (MAIN, legacy nodes), and
+		// it needs no database to find out.
+		$rDoc = $rPath === null ? null : json_decode((string) @file_get_contents($rPath), true);
+		if (!is_array($rDoc) || (self::$rPath === null && NodeRole::isMain())) {
 			return $rOff;
 		}
 		return ['mode' => max(0, min(2, (int) ($rDoc['mode'] ?? 0))), 'flows' => (int) ($rDoc['flows'] ?? 0) & 255, 'state' => (string) ($rDoc['state'] ?? '')];

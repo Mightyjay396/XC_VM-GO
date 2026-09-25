@@ -2,6 +2,10 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\EventSpool;
+use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\Redactor;
+
 /**
  * Stream State Writer
  *
@@ -12,10 +16,10 @@ namespace XcVm\Domain\Stream;
  * pass the fields to update() or updateRow(), which refuse any column outside
  * STATE_FIELDS, and the writer applies them through a sink.
  *
- * Today the only sink writes the row in MAIN's database through
- * StreamRowMerge, as before. The
- * cluster API plan (Phase 5) adds one that sends a `stream.state` event
- * instead, which MAIN merges into the row itself.
+ * On a legacy node the writer merges into the row in MAIN's database through
+ * StreamRowMerge, as before. On a node whose STREAMS flow is on it sends a
+ * `stream.state` event through the agent instead ({@see EventSpool}), which
+ * MAIN merges into that node's own row (EventIngest).
  *
  * @package XC_VM_Domain_Stream
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -44,7 +48,7 @@ final class StreamStateWriter {
 	 * @param object|null $rDb The caller's DatabaseHandler, if it holds its own.
 	 */
 	public static function update(int $rStreamID, int $rServerID, array $rFields, ?object $rDb = null): bool {
-		return self::write('`stream_id` = ? AND `server_id` = ?', $rFields, [$rStreamID, $rServerID], $rDb);
+		return self::write('`stream_id` = ? AND `server_id` = ?', $rFields, [$rStreamID, $rServerID], $rDb, ['stream_id' => $rStreamID, 'server_id' => $rServerID]);
 	}
 
 	/**
@@ -53,12 +57,13 @@ final class StreamStateWriter {
 	 * @param array<string, mixed> $rFields column => value; null writes NULL.
 	 */
 	public static function updateRow(int $rServerStreamID, array $rFields, ?object $rDb = null): bool {
-		return self::write('`server_stream_id` = ?', $rFields, [$rServerStreamID], $rDb);
+		return self::write('`server_stream_id` = ?', $rFields, [$rServerStreamID], $rDb, ['ssid' => $rServerStreamID]);
 	}
 
 	/**
-	 * Replace the sink (tests; later the cluster API). It receives the WHERE
-	 * clause, the fields and the WHERE values. Null restores the SQL sink.
+	 * Replace the sink (tests). It receives the WHERE
+	 * clause, the fields and the WHERE values. Null restores the default
+	 * (events when STREAMS is on, else SQL).
 	 *
 	 * @param (callable(string, array<string, mixed>, list<mixed>, ?object): bool)|null $rSink
 	 */
@@ -67,10 +72,25 @@ final class StreamStateWriter {
 	}
 
 	/**
+	 * The cluster API backend (STREAMS flow on): a `stream.state` event on the
+	 * agent's P0 lane. MAIN merges it into the sender's own row only.
+	 *
+	 * @param array<string, int> $rKey
+	 * @param array<string, mixed> $rFields
+	 */
+	private static function spool(array $rKey, array $rFields): bool {
+		if (isset($rFields['current_source']) && is_string($rFields['current_source'])) {
+			$rFields['current_source'] = Redactor::redact($rFields['current_source']);
+		}
+		return EventSpool::append('p0', [['type' => 'stream.state', 'd' => $rKey + ['fields' => (object) $rFields]]]);
+	}
+
+	/**
 	 * @param array<string, mixed> $rFields
 	 * @param list<mixed> $rWhereValues
+	 * @param array<string, int> $rKey how a `stream.state` event names the row
 	 */
-	private static function write(string $rWhere, array $rFields, array $rWhereValues, ?object $rDb): bool {
+	private static function write(string $rWhere, array $rFields, array $rWhereValues, ?object $rDb, array $rKey): bool {
 		if (empty($rFields)) {
 			return true;
 		}
@@ -80,6 +100,9 @@ final class StreamStateWriter {
 		}
 		if (self::$rSink !== null) {
 			return (bool) (self::$rSink)($rWhere, $rFields, $rWhereValues, $rDb);
+		}
+		if (NodeFlows::on(NodeFlows::STREAMS) && self::spool($rKey, $rFields)) {
+			return true;
 		}
 		// Legacy backend: merge into the row in MAIN's database directly.
 		return StreamRowMerge::apply($rWhere, $rFields, $rWhereValues, $rDb);
