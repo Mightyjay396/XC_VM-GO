@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\CurlClient;
@@ -170,6 +171,18 @@ class StreamProcess {
 	}
 
 	/**
+	 * Start the pre-fanout proxy producer (ProxyCommand) for a proxy stream.
+	 * Used by live.php only while fanout is switched off (FanoutMode).
+	 *
+	 * @param int $rStreamID Stream id.
+	 * @return bool Always true (the producer is started in the background).
+	 */
+	public static function startProxy($rStreamID) {
+		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php proxy ' . intval($rStreamID) . ' >/dev/null 2>/dev/null &');
+		return true;
+	}
+
+	/**
 	 * Start thumbnail generation for a stream.
 	 *
 	 * @param int $rStreamID Stream id.
@@ -189,13 +202,7 @@ class StreamProcess {
 	 * @return void
 	 */
 	private static function insertCacheSignalOnce(array $rCustomData) {
-		$db = self::db();
-		$rMainID = ConnectionTracker::getMainID();
-		$rJson = json_encode($rCustomData);
-		$db->query('SELECT COUNT(*) AS `count` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 AND `custom_data` = ?;', $rMainID, $rJson);
-		if (($db->get_row()['count'] ?? 0) == 0) {
-			$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', $rMainID, time(), $rJson);
-		}
+		SignalDispatcher::cache(intval(ConnectionTracker::getMainID()), $rCustomData, true, false, self::db());
 	}
 
 	/**
@@ -797,8 +804,11 @@ class StreamProcess {
 	 * @return void
 	 */
 	private static function resetStreamServerRow(int $rStreamID, bool $rWithMonitor = false) {
-		$rMonitor = $rWithMonitor ? ',`monitor_pid` = NULL' : '';
-		self::db()->query('UPDATE `streams_servers` SET `bitrate` = NULL,`current_source` = NULL,`to_analyze` = 0,`pid` = NULL,`stream_started` = NULL,`stream_info` = NULL,`audio_codec` = NULL,`video_codec` = NULL,`resolution` = NULL,`compatible` = 0,`stream_status` = 0' . $rMonitor . ' WHERE `stream_id` = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
+		$rFields = ['bitrate' => null, 'current_source' => null, 'to_analyze' => 0, 'pid' => null, 'stream_started' => null, 'stream_info' => null, 'audio_codec' => null, 'video_codec' => null, 'resolution' => null, 'compatible' => 0, 'stream_status' => 0];
+		if ($rWithMonitor) {
+			$rFields['monitor_pid'] = null;
+		}
+		StreamStateWriter::update($rStreamID, intval(SERVER_ID), $rFields, self::db());
 	}
 
 	/**
@@ -1245,18 +1255,17 @@ class StreamProcess {
 		$rFFMPEGGpu = $rFFMPEG_GPU ?: FfmpegPaths::gpu();
 		$rFFProbeBin = $rFFPROBE ?: FfmpegPaths::probe();
 
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 1 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
-		if ($db->num_rows() <= 0) {
+		$rStreamRow = StreamSource::streamRow(intval($rStreamID), true, $db);
+		if ($rStreamRow === null) {
 			return null;
 		}
-		$rStream = ['stream_info' => $db->get_row()];
-		$db->query('SELECT * FROM `streams_servers` WHERE stream_id = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
-		if ($db->num_rows() <= 0) {
+		$rStream = ['stream_info' => $rStreamRow];
+		$rServerRow = StreamSource::serverRow(intval($rStreamID), null, $db);
+		if ($rServerRow === null) {
 			return null;
 		}
-		$rStream['server_info'] = $db->get_row();
-		$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-		$rStream['stream_arguments'] = $db->get_rows();
+		$rStream['server_info'] = $rServerRow;
+		$rStream['stream_arguments'] = StreamSource::arguments(intval($rStreamID), false, $db);
 
 		$rInfo = $rStream['stream_info'];
 		$rParentID = intval($rStream['server_info']['parent_id']);
@@ -1493,9 +1502,9 @@ class StreamProcess {
 		// an adopted, already-running one keeps its status and start time.
 		$rDaemonPID = intval($rStates['daemon_pid'] ?? 0) ?: null;
 		if ($rAdopting) {
-			self::db()->query('UPDATE `streams_servers` SET `monitor_pid` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rDaemonPID, $rStreamID, SERVER_ID);
+			StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['monitor_pid' => $rDaemonPID], self::db());
 		} else {
-			self::db()->query('UPDATE `streams_servers` SET `monitor_pid` = ?, `pid` = NULL, `stream_status` = 2, `to_analyze` = 0, `stream_started` = ?, `current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rDaemonPID, time(), $rSpec['sources'][0]['label'], $rStreamID, SERVER_ID);
+			StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['monitor_pid' => $rDaemonPID, 'pid' => null, 'stream_status' => 2, 'to_analyze' => 0, 'stream_started' => time(), 'current_source' => $rSpec['sources'][0]['label']], self::db());
 		}
 
 		if (!FanoutClient::supervise($rStreamID, $rSpec)) {
@@ -1619,15 +1628,7 @@ class StreamProcess {
 			$rKept[] = $rID;
 			$rSet = self::supervisedRowUpdate($rRow, $rState, (bool) SettingsManager::get('player_allow_hevc'), time());
 			if (count($rSet) > 0) {
-				$rCols = [];
-				$rVals = [];
-				foreach ($rSet as $rCol => $rVal) {
-					$rCols[] = '`' . $rCol . '` = ?';
-					$rVals[] = $rVal;
-				}
-				$rVals[] = $rID;
-				$rVals[] = SERVER_ID;
-				$db->query('UPDATE `streams_servers` SET ' . implode(', ', $rCols) . ' WHERE `stream_id` = ? AND `server_id` = ?', ...$rVals);
+				StreamStateWriter::update($rID, intval(SERVER_ID), $rSet, $db);
 				$rChanged[] = $rID;
 			}
 		}
@@ -1847,7 +1848,7 @@ class StreamProcess {
 		if ($rForce) {
 			self::deleteMovieFiles($rStreamID);
 		} else {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', SERVER_ID, time(), json_encode(['type' => 'delete_vod', 'id' => $rStreamID]));
+			SignalDispatcher::cache(intval(SERVER_ID), ['type' => 'delete_vod', 'id' => $rStreamID], false, false, $db);
 		}
 		self::resetStreamServerRow($rStreamID);
 		self::updateStream($rStreamID);
@@ -1964,14 +1965,13 @@ class StreamProcess {
 		$db = self::db();
 		$rStream = [];
 		$rLoopback = false;
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 0 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
-		if ($db->num_rows() > 0) {
-			$rStream['stream_info'] = $db->get_row();
-			$db->query('SELECT * FROM `streams_servers` WHERE stream_id  = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
-			if ($db->num_rows() > 0) {
-				$rStream['server_info'] = $db->get_row();
-				$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-				$rStream['stream_arguments'] = $db->get_rows();
+		$rStreamRow = StreamSource::streamRow(intval($rStreamID), false, $db);
+		if ($rStreamRow !== null) {
+			$rStream['stream_info'] = $rStreamRow;
+			$rServerRow = StreamSource::serverRow(intval($rStreamID), null, $db);
+			if ($rServerRow !== null) {
+				$rStream['server_info'] = $rServerRow;
+				$rStream['stream_arguments'] = StreamSource::arguments(intval($rStreamID), false, $db);
 
 				list($rStreamSource) = json_decode($rStream['stream_info']['stream_source'], true);
 				if (substr($rStreamSource, 0, 2) == 's:') {
@@ -2038,7 +2038,7 @@ class StreamProcess {
 				shell_exec($rFFMPEG);
 				file_put_contents(VOD_PATH . $rStreamID . '_.ffmpeg', $rFFMPEG);
 				$rPID = intval(file_get_contents(VOD_PATH . $rStreamID . '_.pid'));
-				$db->query('UPDATE `streams_servers` SET `to_analyze` = 1,`stream_started` = ?,`stream_status` = 0,`pid` = ? WHERE `stream_id` = ? AND `server_id` = ?', time(), $rPID, $rStreamID, SERVER_ID);
+				StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['to_analyze' => 1, 'stream_started' => time(), 'stream_status' => 0, 'pid' => $rPID], $db);
 				self::updateStream($rStreamID);
 				return $rPID;
 			}
@@ -2072,7 +2072,7 @@ class StreamProcess {
 					$rPID = intval(file_get_contents(STREAMS_PATH . $rStreamID . '_.pid'));
 					$rLoopURL = (!is_null($rServers[SERVER_ID]['private_url_ip']) && !is_null($rServers[$rStream['server_info']['parent_id']]['private_url_ip']) ? $rServers[$rStream['server_info']['parent_id']]['private_url_ip'] : $rServers[$rStream['server_info']['parent_id']]['public_url_ip']);
 					$rCurrentSource = $rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts';
-					$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', null, time(), null, $rPID, json_encode([]), $rCurrentSource, $rStreamID, SERVER_ID);
+					StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['delay_available_at' => null, 'to_analyze' => 0, 'stream_started' => time(), 'stream_info' => null, 'stream_status' => 2, 'pid' => $rPID, 'progress_info' => json_encode([]), 'current_source' => $rCurrentSource], $db);
 					self::updateStream($rStreamID);
 					return ['main_pid' => $rPID, 'stream_source' => $rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts', 'delay_enabled' => false, 'parent_id' => 0, 'delay_start_at' => null, 'playlist' => STREAMS_PATH . $rStreamID . '_.m3u8', 'transcode' => false, 'offset' => 0];
 				}
@@ -2105,7 +2105,7 @@ class StreamProcess {
 		self::writeStreamKeyIv($rStreamID);
 		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php llod ' . intval($rStreamID) . ' "' . base64_encode(json_encode($rSources)) . '" "' . base64_encode(json_encode($rArgumentMap)) . '" >/dev/null 2>/dev/null & echo $! > ' . STREAMS_PATH . intval($rStreamID) . '_.pid');
 		$rPID = intval(file_get_contents(STREAMS_PATH . $rStreamID . '_.pid'));
-		$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', null, time(), null, $rPID, json_encode([]), $rSources[0], $rStreamID, SERVER_ID);
+		StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['delay_available_at' => null, 'to_analyze' => 0, 'stream_started' => time(), 'stream_info' => null, 'stream_status' => 2, 'pid' => $rPID, 'progress_info' => json_encode([]), 'current_source' => $rSources[0]], $db);
 		self::updateStream($rStreamID);
 		return ['main_pid' => $rPID, 'stream_source' => $rSources[0], 'delay_enabled' => false, 'parent_id' => 0, 'delay_start_at' => null, 'playlist' => STREAMS_PATH . $rStreamID . '_.m3u8', 'transcode' => false, 'offset' => 0];
 	}
@@ -2129,16 +2129,15 @@ class StreamProcess {
 		@unlink(STREAMS_PATH . $rStreamID . '_.pid');
 
 		$rStream = [];
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 1 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
+		$rStreamRow = StreamSource::streamRow(intval($rStreamID), true, $db);
 
-		if ($db->num_rows() > 0) {
-			$rStream['stream_info'] = $db->get_row();
-			$db->query('SELECT * FROM `streams_servers` WHERE stream_id  = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
+		if ($rStreamRow !== null) {
+			$rStream['stream_info'] = $rStreamRow;
+			$rServerRow = StreamSource::serverRow(intval($rStreamID), null, $db);
 
-			if ($db->num_rows() > 0) {
-				$rStream['server_info'] = $db->get_row();
-				$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-				$rStream['stream_arguments'] = $db->get_rows();
+			if ($rServerRow !== null) {
+				$rStream['server_info'] = $rServerRow;
+				$rStream['stream_arguments'] = StreamSource::arguments(intval($rStreamID), false, $db);
 
 				list($rProbesize, $rAnalyseDuration, $rTimeout) = self::resolveProbeSettings($rStream['server_info']['on_demand'], $rStream['stream_info']['probesize_ondemand'], $rLLOD, $rSettings);
 				$rFFProbee = 'timeout ' . $rTimeout . ' ' . $rFFPROBE . ' {FETCH_OPTIONS} -probesize ' . $rProbesize . ' -analyzeduration ' . $rAnalyseDuration . ' {CONCAT} -i {STREAM_SOURCE} -v quiet -print_format json -show_streams -show_format';
@@ -2221,7 +2220,7 @@ class StreamProcess {
 				}
 
 				if ($rStream['stream_info']['type_key'] == 'created_live' && file_exists(CREATED_PATH . $rStreamID . '_.info')) {
-					$db->query('UPDATE `streams_servers` SET `cc_info` = ? WHERE `server_id` = ? AND `stream_id` = ?;', file_get_contents(CREATED_PATH . $rStreamID . '_.info'), SERVER_ID, $rStreamID);
+					StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['cc_info' => file_get_contents(CREATED_PATH . $rStreamID . '_.info')], $db);
 				}
 
 				if (!$rFromCache) {
@@ -2321,7 +2320,7 @@ class StreamProcess {
 					}
 
 					if (empty($rFFProbeOutput)) {
-						$db->query("UPDATE `streams_servers` SET `progress_info` = '',`to_analyze` = 0,`pid` = -1,`stream_status` = 1 WHERE `server_id` = ? AND `stream_id` = ?", SERVER_ID, $rStreamID);
+						StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['progress_info' => '', 'to_analyze' => 0, 'pid' => -1, 'stream_status' => 1], $db);
 
 						return 0;
 					}
@@ -2425,7 +2424,7 @@ class StreamProcess {
 				list($rCompatible, $rAudioCodec, $rVideoCodec, $rResolution) = self::resolveStreamCodecMeta($rFFProbeOutput, SettingsManager::get('player_allow_hevc'));
 
 				$rFFProbeOutputSafe = isset($rFFProbeOutput) && is_array($rFFProbeOutput) ? $rFFProbeOutput : [];
-				$db->query('UPDATE `streams_servers` SET `delay_available_at` = ?,`to_analyze` = 0,`stream_started` = ?,`stream_info` = ?,`audio_codec` = ?, `video_codec` = ?, `resolution` = ?,`compatible` = ?,`stream_status` = 2,`pid` = ?,`progress_info` = ?,`current_source` = ? WHERE `stream_id` = ? AND `server_id` = ?', $rDelayStartAt, time(), json_encode($rFFProbeOutputSafe), $rAudioCodec, $rVideoCodec, $rResolution, $rCompatible, $rPID, json_encode([]), $rSource, $rStreamID, SERVER_ID);
+				StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['delay_available_at' => $rDelayStartAt, 'to_analyze' => 0, 'stream_started' => time(), 'stream_info' => json_encode($rFFProbeOutputSafe), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible, 'stream_status' => 2, 'pid' => $rPID, 'progress_info' => json_encode([]), 'current_source' => $rSource], $db);
 				self::updateStream($rStreamID);
 				$rPlaylist = (!$rDelayEnabled ? STREAMS_PATH . $rStreamID . '_.m3u8' : DELAY_PATH . $rStreamID . '_.m3u8');
 

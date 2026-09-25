@@ -20,7 +20,15 @@ boot() {
   fi
   mkdir -p $SCRIPT/bin/xc_fanout/sockets
   sudo chown -R xc_vm:xc_vm $SCRIPT/bin/xc_fanout 2>/dev/null
-  sudo -u xc_vm bash $SCRIPT/bin/xc_fanout/run.sh &
+  # Fanout switched off in the panel (FanoutMode writes this flag): no daemon.
+  if [ ! -f $SCRIPT/bin/xc_fanout/disabled ]; then
+    sudo -u xc_vm bash $SCRIPT/bin/xc_fanout/run.sh &
+  fi
+  # Cluster agent: only on a node enrolled in the cluster API.
+  if [ -f $SCRIPT/config/cluster/agent.json ] && [ -x $SCRIPT/bin/xc_agent/xc_agent ]; then
+    sudo chown -R xc_vm:xc_vm $SCRIPT/bin/xc_agent 2>/dev/null
+    sudo -u xc_vm bash $SCRIPT/bin/xc_agent/run.sh &
+  fi
   sudo -u xc_vm $SCRIPT/bin/nginx/sbin/nginx >/dev/null 2>/dev/null
   sudo -u xc_vm $SCRIPT/bin/nginx_rtmp/sbin/nginx_rtmp >/dev/null 2>/dev/null
   sudo -u xc_vm $SCRIPT/bin/daemons.sh

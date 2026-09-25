@@ -4,8 +4,9 @@ namespace XcVm\Domain\Server;
 
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ClusterHealth;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Http\ApiClient;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -100,9 +101,18 @@ class ServerRepository {
 
 			$rRow['watchdog'] = json_decode($rRow['watchdog_data'], true);
 			$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && time() - $rRow['last_check_ago'] <= $rLastCheckTime || SERVER_ID == $rRow['id'];
+			// A node whose agent reports its telemetry is judged by MAIN's
+			// liveness loop instead (offline after 30 s of silence, not 90 s).
+			$rRow['cluster_health'] = ClusterHealth::state(intval($rRow['id']));
+			if ($rRow['cluster_health'] !== null && SERVER_ID != $rRow['id']) {
+				$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && $rRow['cluster_health'] !== 'offline';
+			}
 			if (!isset($rRow['order'])) {
 				$rRow['order'] = 0;
 			}
+			// One pid per live PHP-FPM worker; only cron:users needs it and it
+			// reads the column itself. Keep it out of the per-request cache.
+			unset($rRow['php_pids']);
 			$rServers[intval($rRow['id'])] = $rRow;
 		}
 
@@ -124,6 +134,8 @@ class ServerRepository {
 		if ($db->num_rows() > 0) {
 			foreach ($db->get_rows() as $rRow) {
 				$rRow['server_online'] = in_array($rRow['status'], [1, 3]) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
+				// Worker pid list, left out as in getAll().
+				unset($rRow['php_pids']);
 				$rReturn[$rRow['id']] = $rRow;
 			}
 		}
@@ -153,6 +165,8 @@ class ServerRepository {
 				if (!isset($rRow['order'])) {
 					$rRow['order'] = 0;
 				}
+				// Worker pid list, left out as in getAll().
+				unset($rRow['php_pids']);
 				if ($rRow['server_online'] || $type == 'all') {
 					$rReturn[$rRow['id']] = $rRow;
 				}
@@ -181,6 +195,8 @@ class ServerRepository {
 				}
 
 				$rRow['server_online'] = in_array($rRow['status'], [1, 3]) && time() - $rRow['last_check_ago'] <= 90 || $rRow['is_main'];
+				// Worker pid list, left out as in getAll().
+				unset($rRow['php_pids']);
 				if ($rRow['server_online'] != 0 || !$rOnline) {
 					$rReturn[$rRow['id']] = $rRow;
 				}
@@ -198,7 +214,7 @@ class ServerRepository {
 	 */
 	public static function getFreeSpace(int $rServerID) {
 		$rReturn = [];
-		$rLines = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_free_space']), true);
+		$rLines = json_decode(NodeRpc::request($rServerID, ['action' => 'get_free_space']), true);
 
 		if (!is_array($rLines)) {
 			return $rReturn;
@@ -225,7 +241,7 @@ class ServerRepository {
 	 * @return mixed Ramdisk information.
 	 */
 	public static function getStreamsRamdisk(int $rServerID) {
-		$response = ApiClient::systemRequest($rServerID, ['action' => 'streams_ramdisk']);
+		$response = NodeRpc::request($rServerID, ['action' => 'streams_ramdisk']);
 		$rReturn = json_decode($response, true);
 
 		if (!is_array($rReturn)) {
@@ -247,7 +263,7 @@ class ServerRepository {
 	 * @return mixed Result of the kill request.
 	 */
 	public static function killPID(int $rServerID, int $rPID) {
-		ApiClient::systemRequest($rServerID, ['action' => 'kill_pid', 'pid' => $rPID]);
+		NodeRpc::request($rServerID, ['action' => 'kill_pid', 'pid' => $rPID]);
 	}
 
 	/**
@@ -257,7 +273,7 @@ class ServerRepository {
 	 * @return mixed RTMP stats.
 	 */
 	public static function getRTMPStats(int $rServerID) {
-		return json_decode(ApiClient::systemRequest($rServerID, ['action' => 'rtmp_stats']), true);
+		return json_decode(NodeRpc::request($rServerID, ['action' => 'rtmp_stats']), true);
 	}
 
 	/**
@@ -302,7 +318,7 @@ class ServerRepository {
 	 * @return mixed Result of the request.
 	 */
 	public static function freeTemp(int $rServerID) {
-		ApiClient::systemRequest($rServerID, ['action' => 'free_temp']);
+		NodeRpc::request($rServerID, ['action' => 'free_temp']);
 	}
 
 	/**
@@ -312,7 +328,7 @@ class ServerRepository {
 	 * @return mixed Result of the request.
 	 */
 	public static function freeStreams(int $rServerID) {
-		ApiClient::systemRequest($rServerID, ['action' => 'free_streams']);
+		NodeRpc::request($rServerID, ['action' => 'free_streams']);
 	}
 
 	/**
@@ -327,7 +343,7 @@ class ServerRepository {
 	 * @return mixed Probe result.
 	 */
 	public static function probeSource(int $rServerID, string $rURL, ?string $rUserAgent = null, mixed $rProxy = null, ?string $rCookies = null, mixed $rHeaders = null) {
-		return json_decode(ApiClient::systemRequest($rServerID, ['action' => 'probe', 'url' => $rURL, 'user_agent' => $rUserAgent, 'http_proxy' => $rProxy, 'cookies' => $rCookies, 'headers' => $rHeaders], 30), true);
+		return json_decode(NodeRpc::request($rServerID, ['action' => 'probe', 'url' => $rURL, 'user_agent' => $rUserAgent, 'http_proxy' => $rProxy, 'cookies' => $rCookies, 'headers' => $rHeaders], 30), true);
 	}
 
 	/**
@@ -518,7 +534,8 @@ class ServerRepository {
 	}
 
 	/**
-	 * Fetch a single server by id.
+	 * Fetch a single server by id. The full row, php_pids included:
+	 * ServerService writes it back whole with REPLACE.
 	 *
 	 * @param int $rID Server id.
 	 * @return array|null The server row, or null if not found.

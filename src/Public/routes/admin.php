@@ -113,6 +113,7 @@ use XcVm\Public\Controllers\Admin\SeriesMassController;
 use XcVm\Public\Controllers\Admin\ServerController;
 use XcVm\Public\Controllers\Admin\ServerInstallController;
 use XcVm\Public\Controllers\Admin\ServerListController;
+use XcVm\Public\Controllers\Admin\ClusterNodesController;
 use XcVm\Public\Controllers\Admin\ServerOrderController;
 use XcVm\Public\Controllers\Admin\ServerViewController;
 use XcVm\Public\Controllers\Admin\SessionController;
@@ -197,6 +198,7 @@ $router->get('epgs', [EpgListController::class, 'index']);
 // ─── Servers ───────────────────────────────────────
 
 $router->get('servers', [ServerListController::class, 'index']);
+$router->any('cluster_nodes', [ClusterNodesController::class, 'index']);
 $router->get('server', [ServerController::class, 'index']);
 $router->get('server_view', [ServerViewController::class, 'index']);
 $router->get('server_install', [ServerInstallController::class, 'index']);

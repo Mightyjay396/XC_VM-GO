@@ -5,6 +5,7 @@ namespace XcVm\Cli;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Redis\RedisManager;
 
 /**
@@ -29,6 +30,9 @@ trait DaemonTrait {
 
 	/** @var int Интервал обновления настроек (секунды) */
 	protected $rRefreshInterval = 60;
+
+	/** @var int|null When the servers list was last reloaded from the DB. */
+	protected $rServersRefreshedAt = null;
 
 	/** @var resource|null Файловый lock для singleton-демона */
 	protected $rDaemonLockHandle;
@@ -74,6 +78,32 @@ trait DaemonTrait {
 	/**
 	 * Проверить нужно ли обновить настройки (по таймеру).
 	 */
+
+	/**
+	 * Reload the servers list at most this often. Often enough that routing,
+	 * ports and node state are never more than five seconds stale; rare
+	 * enough that a tight loop does not re-read `servers` on every pass.
+	 */
+	protected function serversRefreshInterval(): int {
+		return 5;
+	}
+
+	/** Is the servers list due for a reload? */
+	protected function serversRefreshDue(?int $rNow = null): bool {
+		return $this->rServersRefreshedAt === null
+			|| ($rNow ?? time()) - $this->rServersRefreshedAt >= $this->serversRefreshInterval();
+	}
+
+	/**
+	 * Reload the servers list from the DB (which also rewrites its cache).
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	protected function refreshServers(): array {
+		$this->rServersRefreshedAt = time();
+		return ServerRepository::getAll(true);
+	}
+
 	protected function shouldRefreshSettings(): bool {
 		return !$this->rLastCheck || $this->rRefreshInterval <= time() - $this->rLastCheck;
 	}

@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Util;
 
+use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -39,12 +40,12 @@ class SystemInfo {
 		$rJSON['total_mem'] = $rMemInfo['total'];
 		$rJSON['total_mem_free'] = $rMemInfo['free'];
 		$rJSON['total_mem_used'] = $rMemInfo['used'];
-		$rJSON['total_mem_used_percent'] = round(($rJSON['total_mem_used'] / $rJSON['total_mem']) * 100, 2);
+		$rJSON['total_mem_used_percent'] = self::memUsedPercent($rJSON['total_mem_used'], $rJSON['total_mem']);
 		$rJSON['total_disk_space'] = disk_total_space(MAIN_HOME);
 		$rJSON['free_disk_space'] = disk_free_space(MAIN_HOME);
 		$rJSON['kernel'] = trim(@shell_exec('uname -r') ?? '');
 		$rJSON['uptime'] = self::getUptime();
-		$rJSON['total_running_streams'] = (int) trim(@shell_exec('ps ax | grep -v grep | grep -c ffmpeg') ?? '0');
+		$rJSON['total_running_streams'] = ProcessManager::countStreamProducers();
 		$rJSON['bytes_sent'] = 0;
 		$rJSON['bytes_sent_total'] = 0;
 		$rJSON['bytes_received'] = 0;
@@ -71,18 +72,8 @@ class SystemInfo {
 		}
 		$rJSON['network_info'] = self::getNetwork($rNetworkInterface);
 
-		foreach ($rJSON['network_info'] as $rInterface => $rData) {
-			if (file_exists('/sys/class/net/' . $rInterface . '/speed')) {
-				$NetSpeed = intval(file_get_contents('/sys/class/net/' . $rInterface . '/speed'));
-				if (0 < $NetSpeed && $rJSON['network_speed'] == 0) {
-					$rJSON['network_speed'] = $NetSpeed;
-				}
-			}
-			$rJSON['bytes_sent_total'] = (intval(trim(file_get_contents('/sys/class/net/' . $rInterface . '/statistics/tx_bytes'))));
-			$rJSON['bytes_received_total'] = (intval(trim(file_get_contents('/sys/class/net/' . $rInterface . '/statistics/tx_bytes'))));
-			$rJSON['bytes_sent'] += $rData['out_bytes'];
-			$rJSON['bytes_received'] += $rData['in_bytes'];
-		}
+		// The bandwidth keys are initialised above, so replacing them keeps their order.
+		$rJSON = array_replace($rJSON, self::aggregateNetwork($rJSON['network_info']));
 		$rJSON['audio_devices'] = [];
 		$rJSON['video_devices'] = $rJSON['audio_devices'];
 		$rJSON['gpu_info'] = $rJSON['video_devices'];
@@ -166,6 +157,24 @@ class SystemInfo {
 	}
 
 	/**
+	 * Used memory as a percentage of the total.
+	 *
+	 * getMemory() reports a total of 0 when /proc/meminfo cannot be read or has
+	 * no MemAvailable (kernels before 3.14, some containers); dividing by it
+	 * threw DivisionByZeroError and cost the node its heartbeat.
+	 *
+	 * @param int $rUsed  Used memory (kB)
+	 * @param int $rTotal Total memory (kB)
+	 * @return float Percentage rounded to 2 places; 0 with no total
+	 */
+	public static function memUsedPercent(int $rUsed, int $rTotal) {
+		if ($rTotal <= 0) {
+			return 0.0;
+		}
+		return round(($rUsed / $rTotal) * 100, 2);
+	}
+
+	/**
 	 * Get system uptime as human-readable string.
 	 *
 	 * @return string e.g., "5d 3h 12m 4s"
@@ -213,6 +222,47 @@ class SystemInfo {
 			}
 		}
 		return $rReturn;
+	}
+
+	/**
+	 * Bandwidth figures over the interfaces getNetwork() selected.
+	 *
+	 * The per-second rates come from the cached network readings; the lifetime
+	 * totals from sysfs (tx_bytes sent, rx_bytes received). Both are summed over
+	 * every interface. network_speed is the first positive link speed (Mbit/s).
+	 * An unreadable sysfs file counts as 0.
+	 *
+	 * @param array<string, array{in_bytes: int, out_bytes: int}> $rNetworkInfo getNetwork() result
+	 * @param string $rSysNet sysfs network class directory (overridable for tests)
+	 * @return array{bytes_sent: int, bytes_sent_total: int, bytes_received: int, bytes_received_total: int, network_speed: int}
+	 */
+	public static function aggregateNetwork(array $rNetworkInfo, string $rSysNet = '/sys/class/net/') {
+		$rReturn = ['bytes_sent' => 0, 'bytes_sent_total' => 0, 'bytes_received' => 0, 'bytes_received_total' => 0, 'network_speed' => 0];
+		foreach ($rNetworkInfo as $rInterface => $rData) {
+			$rSpeed = intval(trim((string) @file_get_contents($rSysNet . $rInterface . '/speed')));
+			if (0 < $rSpeed && $rReturn['network_speed'] == 0) {
+				$rReturn['network_speed'] = $rSpeed;
+			}
+			$rReturn['bytes_sent_total'] += intval(trim((string) @file_get_contents($rSysNet . $rInterface . '/statistics/tx_bytes')));
+			$rReturn['bytes_received_total'] += intval(trim((string) @file_get_contents($rSysNet . $rInterface . '/statistics/rx_bytes')));
+			$rReturn['bytes_sent'] += $rData['out_bytes'];
+			$rReturn['bytes_received'] += $rData['in_bytes'];
+		}
+		return $rReturn;
+	}
+
+	/**
+	 * Total request count from an nginx stub_status body.
+	 *
+	 * The third line holds the accepts, handled and requests counters
+	 * (" 10 10 57 "); the request count is the third of them.
+	 *
+	 * @param string $rStatus stub_status response body ('' when unreachable)
+	 * @return float|null The request count; null when the body has none
+	 */
+	public static function nginxRequestCount(string $rStatus) {
+		$rRequests = explode(' ', trim(explode("\n", $rStatus)[2] ?? ''))[2] ?? null;
+		return is_numeric($rRequests) ? (float) $rRequests : null;
 	}
 
 	/**
@@ -287,14 +337,39 @@ class SystemInfo {
 				}
 				foreach ($rJSON['gpu'] as $rInstance) {
 					$rArray = ['name' => $rInstance['product_name'], 'power_readings' => $rInstance['power_readings'], 'utilisation' => $rInstance['utilization'], 'memory_usage' => $rInstance['fb_memory_usage'], 'fan_speed' => $rInstance['fan_speed'], 'temperature' => $rInstance['temperature'], 'clocks' => $rInstance['clocks'], 'uuid' => $rInstance['uuid'], 'id' => intval($rInstance['pci']['pci_device']), 'processes' => []];
-					foreach ($rInstance['processes']['process_info'] as $rProcess) {
-						$rArray['processes'][] = ['pid' => intval($rProcess['pid']), 'memory' => $rProcess['used_memory']];
-					}
+					$rArray['processes'] = self::gpuProcesses($rInstance);
 					$rGPU['gpus'][] = $rArray;
 				}
 				return $rGPU;
 			}
 		}
 		return [];
+	}
+
+	/**
+	 * The processes of one decoded nvidia-smi GPU entry.
+	 *
+	 * The XML decodes a single <process_info> as one associative array rather
+	 * than a list of one, the same way a single <gpu> decodes (see getGPUInfo()),
+	 * and a GPU with no processes has no process_info at all.
+	 *
+	 * @param array $rInstance One decoded <gpu> element
+	 * @return array<int, array{pid: int, memory: mixed}>
+	 */
+	public static function gpuProcesses(array $rInstance) {
+		$rProcesses = $rInstance['processes']['process_info'] ?? [];
+		if (!is_array($rProcesses)) {
+			return [];
+		}
+		if (isset($rProcesses['pid'])) {
+			$rProcesses = [$rProcesses];
+		}
+		$rReturn = [];
+		foreach ($rProcesses as $rProcess) {
+			if (is_array($rProcess)) {
+				$rReturn[] = ['pid' => intval($rProcess['pid'] ?? 0), 'memory' => $rProcess['used_memory'] ?? null];
+			}
+		}
+		return $rReturn;
 	}
 }

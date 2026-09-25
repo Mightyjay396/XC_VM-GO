@@ -141,6 +141,242 @@ CREATE TABLE IF NOT EXISTS `bouquets` (
 -- --------------------------------------------------------
 
 --
+-- Table structure for table `cluster_nodes`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_nodes` (
+  `server_id` int(11) NOT NULL,
+  `node_uuid` char(36) COLLATE utf8_unicode_ci NOT NULL,
+  `state` varchar(16) COLLATE utf8_unicode_ci NOT NULL DEFAULT 'enrolling',
+  `mode` tinyint(3) unsigned NOT NULL DEFAULT '0',
+  `flows` int(10) unsigned NOT NULL DEFAULT '0',
+  `root_ready` tinyint(1) NOT NULL DEFAULT '0',
+  `gen` int(10) unsigned NOT NULL DEFAULT '1',
+  `node_sign_pub` binary(32) DEFAULT NULL,
+  `node_box_pub` binary(32) DEFAULT NULL,
+  `attest` varbinary(64) DEFAULT NULL,
+  `instance_id` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `boot_id` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `agent_version` varchar(32) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `proto` smallint(5) unsigned NOT NULL DEFAULT '0',
+  `epoch` int(10) unsigned NOT NULL DEFAULT '0',
+  `token_exp` int(11) DEFAULT NULL,
+  `enrol_deadline` int(11) DEFAULT NULL,
+  `last_seen_at` bigint(20) DEFAULT NULL,
+  `clock_offset_ms` int(11) DEFAULT NULL,
+  `useq_p0` bigint(20) unsigned NOT NULL DEFAULT '0',
+  `useq_p1` bigint(20) unsigned NOT NULL DEFAULT '0',
+  `cmd_seq` bigint(20) unsigned NOT NULL DEFAULT '0',
+  `policy_ver` int(10) unsigned NOT NULL DEFAULT '0',
+  `quarantine_reason` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `row_mac` binary(32) DEFAULT NULL,
+  `created_at` int(11) NOT NULL,
+  `updated_at` int(11) NOT NULL,
+  PRIMARY KEY (`server_id`),
+  UNIQUE KEY `node_uuid` (`node_uuid`),
+  KEY `state` (`state`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_node_epochs`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_node_epochs` (
+  `server_id` int(11) NOT NULL,
+  `epoch` int(10) unsigned NOT NULL,
+  `record` varbinary(2048) NOT NULL,
+  `token_sealed` varbinary(4096) DEFAULT NULL,
+  `agent_eph_pub` binary(32) DEFAULT NULL,
+  `nbf` int(11) NOT NULL,
+  `exp` int(11) NOT NULL,
+  `refresh_at` int(11) NOT NULL,
+  `used` tinyint(1) NOT NULL DEFAULT '0',
+  `created_at` int(11) NOT NULL,
+  PRIMARY KEY (`server_id`, `epoch`),
+  KEY `exp` (`exp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_meta`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_meta` (
+  `name` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `value` mediumtext COLLATE utf8_unicode_ci,
+  `updated_at` int(11) NOT NULL,
+  PRIMARY KEY (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_commands`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_commands` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `server_id` int(11) NOT NULL,
+  `seq` bigint(20) unsigned NOT NULL,
+  `cmd_id` char(32) COLLATE utf8_unicode_ci NOT NULL,
+  `type` varchar(32) COLLATE utf8_unicode_ci NOT NULL,
+  `action` varchar(32) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `class` char(1) COLLATE utf8_unicode_ci NOT NULL DEFAULT 'G',
+  `dedupe_key` varchar(128) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `payload` mediumblob NOT NULL,
+  `sig` binary(64) NOT NULL,
+  `state` varchar(16) COLLATE utf8_unicode_ci NOT NULL DEFAULT 'queued',
+  `created_at` int(11) NOT NULL,
+  `exp` int(11) NOT NULL,
+  `delivered_at` int(11) DEFAULT NULL,
+  `acked_at` int(11) DEFAULT NULL,
+  `result` mediumblob,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `cmd_id` (`cmd_id`),
+  UNIQUE KEY `server_seq` (`server_id`, `seq`),
+  UNIQUE KEY `server_dedupe` (`server_id`, `dedupe_key`),
+  KEY `server_state_seq` (`server_id`, `state`, `seq`),
+  KEY `exp` (`exp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_enrol_codes`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_enrol_codes` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `server_id` int(11) NOT NULL,
+  `lookup` binary(32) NOT NULL,
+  `keys_sealed` varbinary(1024) NOT NULL,
+  `row_mac` binary(32) NOT NULL,
+  `attempts` tinyint(3) unsigned NOT NULL DEFAULT '0',
+  `created_by` int(11) DEFAULT NULL,
+  `created_at` int(11) NOT NULL,
+  `exp` int(11) NOT NULL,
+  `used_at` int(11) DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `lookup` (`lookup`),
+  KEY `server_id` (`server_id`),
+  KEY `exp` (`exp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_enrol_requests`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_enrol_requests` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `server_id` int(11) NOT NULL,
+  `code_id` int(11) DEFAULT NULL,
+  `node_uuid` char(36) COLLATE utf8_unicode_ci NOT NULL,
+  `node_sign_pub` binary(32) NOT NULL,
+  `node_box_pub` binary(32) NOT NULL,
+  `agent_eph_pub` binary(32) DEFAULT NULL,
+  `attest` varbinary(64) DEFAULT NULL,
+  `state` varchar(20) COLLATE utf8_unicode_ci NOT NULL DEFAULT 'pending_approval',
+  `created_at` int(11) NOT NULL,
+  `decided_at` int(11) DEFAULT NULL,
+  `decided_by` int(11) DEFAULT NULL,
+  `reply` mediumblob,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `server_id` (`server_id`),
+  KEY `state` (`state`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_audit`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_audit` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `time` int(11) NOT NULL,
+  `server_id` int(11) DEFAULT NULL,
+  `actor` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `event` varchar(64) COLLATE utf8_unicode_ci NOT NULL,
+  `detail` text COLLATE utf8_unicode_ci,
+  `ip` varchar(45) COLLATE utf8_unicode_ci DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `time` (`time`),
+  KEY `server_time` (`server_id`, `time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_nonces`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_nonces` (
+  `node` varchar(48) COLLATE utf8_unicode_ci NOT NULL,
+  `nonce` binary(16) NOT NULL,
+  `exp` int(11) NOT NULL,
+  PRIMARY KEY (`node`, `nonce`),
+  KEY `exp` (`exp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_reservations`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_reservations` (
+  `id` char(32) COLLATE utf8_unicode_ci NOT NULL,
+  `identity` varchar(96) COLLATE utf8_unicode_ci NOT NULL,
+  `server_id` int(11) NOT NULL,
+  `stream_id` int(11) DEFAULT NULL,
+  `created_at` int(11) NOT NULL,
+  `exp` int(11) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `identity` (`identity`),
+  KEY `exp` (`exp`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_changes`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_changes` (
+  `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `section` varchar(32) COLLATE utf8_unicode_ci NOT NULL,
+  `op` varchar(8) COLLATE utf8_unicode_ci NOT NULL,
+  `kind` varchar(16) COLLATE utf8_unicode_ci NOT NULL,
+  `value` varchar(255) COLLATE utf8_unicode_ci NOT NULL,
+  `time` int(11) NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `section_id` (`section`, `id`),
+  KEY `time` (`time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
+-- Table structure for table `cluster_stream_ver`
+--
+
+CREATE TABLE IF NOT EXISTS `cluster_stream_ver` (
+  `server_id` int(11) NOT NULL,
+  `stream_id` int(11) NOT NULL,
+  `ver` bigint(20) unsigned NOT NULL DEFAULT '1',
+  `updated_at` int(11) NOT NULL,
+  PRIMARY KEY (`server_id`, `stream_id`),
+  KEY `server_ver` (`server_id`, `ver`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+
+-- --------------------------------------------------------
+
+--
 -- Table structure for table `crontab`
 --
 
@@ -149,41 +385,43 @@ CREATE TABLE IF NOT EXISTS `crontab` (
   `filename` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `time` varchar(128) COLLATE utf8_unicode_ci DEFAULT '* * * * *',
   `enabled` int(11) DEFAULT '0',
+  `role` enum('all','main','legacy') COLLATE utf8_unicode_ci NOT NULL DEFAULT 'all',
   PRIMARY KEY (`id`),
   KEY `enabled` (`enabled`),
   KEY `filename` (`filename`)
-) ENGINE=InnoDB AUTO_INCREMENT=29 DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
+) ENGINE=InnoDB AUTO_INCREMENT=31 DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 --
 -- Dumping data for table `crontab`
 --
 
-INSERT INTO `crontab` (`id`, `filename`, `time`, `enabled`) VALUES
-(2, 'lines_logs', '* * * * *', 1),
-(3, 'epg', '0 0 * * *', 1),
-(5, 'streams', '* * * * *', 1),
-(6, 'activity', '* * * * *', 1),
-(7, 'servers', '* * * * *', 1),
-(8, 'cache', '* * * * *', 1),
-(9, 'stats', '0 * * * *', 1),
-(10, 'errors', '* * * * *', 1),
-(11, 'tmdb', '0 * * * *', 1),
-(12, 'tmp', '* * * * *', 1),
-(13, 'users', '* * * * *', 1),
-(14, 'vod', '* * * * *', 1),
-(15, 'series', '* * * * *', 1),
-(16, 'watch', '*/5 * * * *', 1),
-(17, 'backups', '* * * * *', 1),
-(18, 'streams_logs', '* * * * *', 1),
-(19, 'update', '0 0 * * *', 1),
-(20, 'cleanup', '0 * * * *', 1),
-(22, 'certbot', '0 0 * * *', 1),
-(24, 'cache_engine', '*/5 * * * *', 1),
-(25, 'providers', '0 * * * *', 1),
-(26, 'tmdb_popular', '0 * * * *', 1),
-(27, 'plex', '*/5 * * * *', 1),
-(28, 'maxmind', '0 4 * * 2', 1),
-(29, 'proxy', '0 5 * * *', 1);
+INSERT INTO `crontab` (`id`, `filename`, `time`, `enabled`, `role`) VALUES
+(2, 'lines_logs', '* * * * *', 1, 'all'),
+(3, 'epg', '0 0 * * *', 1, 'all'),
+(5, 'streams', '* * * * *', 1, 'all'),
+(6, 'activity', '* * * * *', 1, 'all'),
+(7, 'servers', '* * * * *', 1, 'all'),
+(8, 'cache', '* * * * *', 1, 'all'),
+(9, 'stats', '0 * * * *', 1, 'all'),
+(10, 'errors', '* * * * *', 1, 'all'),
+(11, 'tmdb', '0 * * * *', 1, 'main'),
+(12, 'tmp', '* * * * *', 1, 'all'),
+(13, 'users', '* * * * *', 1, 'all'),
+(14, 'vod', '* * * * *', 1, 'all'),
+(15, 'series', '* * * * *', 1, 'all'),
+(16, 'watch', '*/5 * * * *', 1, 'all'),
+(17, 'backups', '* * * * *', 1, 'all'),
+(18, 'streams_logs', '* * * * *', 1, 'all'),
+(19, 'update', '0 0 * * *', 1, 'main'),
+(20, 'cleanup', '0 * * * *', 1, 'main'),
+(22, 'certbot', '0 0 * * *', 1, 'all'),
+(24, 'cache_engine', '*/5 * * * *', 1, 'all'),
+(25, 'providers', '0 * * * *', 1, 'all'),
+(26, 'tmdb_popular', '0 * * * *', 1, 'main'),
+(27, 'plex', '*/5 * * * *', 1, 'all'),
+(28, 'maxmind', '0 4 * * 2', 1, 'all'),
+(29, 'proxy', '0 5 * * *', 1, 'all'),
+(30, 'cluster', '* * * * *', 1, 'main');
 
 -- --------------------------------------------------------
 
@@ -1010,6 +1248,7 @@ CREATE TABLE IF NOT EXISTS `servers` (
   `enable_gzip` tinyint(1) DEFAULT '0',
   `limit_requests` int(11) DEFAULT '0',
   `limit_burst` int(11) DEFAULT '0',
+  `ssh_hostkey_sha1` char(40) COLLATE utf8_unicode_ci DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `total_clients` (`total_clients`),
   KEY `status` (`status`)
@@ -1348,6 +1587,28 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `fanout_source_backend` varchar(8) DEFAULT 'auto',
   `fanout_supervise` tinyint(1) DEFAULT '1',
   `fanout_debug` varchar(128) DEFAULT '',
+  `fanout_enabled` tinyint(1) DEFAULT '1',
+  `cluster_api_enabled` tinyint(1) DEFAULT '0',
+  `cluster_api_port` int(11) DEFAULT '0',
+  `cluster_main_host` varchar(255) DEFAULT '',
+  `cluster_transport` varchar(16) DEFAULT 'auto',
+  `lb_token_rotation_min` int(11) DEFAULT '60',
+  `lb_revocation_mode` varchar(16) DEFAULT 'graceful',
+  `lb_partition_tolerance_h` int(11) DEFAULT '12',
+  `lb_fence_drain_min` int(11) DEFAULT '10',
+  `lb_telemetry_interval_sec` int(11) DEFAULT '2',
+  `cluster_offline_after_sec` int(11) DEFAULT '30',
+  `cluster_orphan_conn_ttl_sec` int(11) DEFAULT '120',
+  `lb_offline_admission` varchar(8) DEFAULT 'local',
+  `cluster_kill_on_line_disable` tinyint(1) DEFAULT '1',
+  `cluster_ingest_concurrency` int(11) DEFAULT '6',
+  `lb_new_node_mode` varchar(8) DEFAULT 'legacy',
+  `lb_scan_roots` varchar(1024) DEFAULT '["/home/xc_vm/content","/mnt","/media"]',
+  `servers_stats_retention_days` int(11) DEFAULT '30',
+  `cluster_audit_retention_days` int(11) DEFAULT '30',
+  `cluster_agent_upgrade_parallel` int(11) DEFAULT '1',
+  `cluster_policy_ver` int(11) DEFAULT '1',
+  `cluster_legacy_ports` varchar(255) DEFAULT '',
   `secure_stream_tokens` tinyint(1) DEFAULT '1',
   `disable_table_responsive` tinyint(1) DEFAULT '0'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;

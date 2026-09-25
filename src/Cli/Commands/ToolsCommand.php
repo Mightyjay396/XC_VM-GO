@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsDeletedEvent;
@@ -467,9 +468,9 @@ class ToolsCommand implements CommandInterface {
 		$db->query('SELECT `server_id` FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `streams_servers` WHERE `stream_id` IN (' . implode(',', $rIDs) . ');');
 		$db->query('DELETE FROM `streams_servers` WHERE `parent_id` IS NOT NULL AND `parent_id` > 0 AND `parent_id` NOT IN (SELECT `id` FROM `servers` WHERE `server_type` = 0);');
-		$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_streams', 'id' => $rIDs]));
+		SignalDispatcher::cache(intval(SERVER_ID), ['type' => 'update_streams', 'id' => $rIDs], false, false, $db);
 		foreach (array_keys(ServerRepository::getAll()) as $rServerID) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(['type' => 'delete_vods', 'id' => $rIDs]));
+			SignalDispatcher::cache(intval($rServerID), ['type' => 'delete_vods', 'id' => $rIDs], false, false, $db);
 		}
 		return true;
 	}

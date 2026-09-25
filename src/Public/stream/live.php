@@ -6,14 +6,20 @@ use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
+use XcVm\Infrastructure\Cache\CacheReader;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\AsyncFileOperations;
 use XcVm\Streaming\Auth\StreamAuth;
 use XcVm\Streaming\Auth\StreamAuthMiddleware;
+use XcVm\Streaming\Codec\FfmpegPaths;
 use XcVm\Streaming\Delivery\HLSGenerator;
 use XcVm\Streaming\Delivery\OffAirHandler;
+use XcVm\Streaming\Delivery\SegmentReader;
+use XcVm\Streaming\Delivery\SignalSender;
 use XcVm\Streaming\Fanout\FanoutClient;
+use XcVm\Streaming\Fanout\FanoutMode;
 use XcVm\Streaming\Lifecycle\ShutdownHandler;
 
 /**
@@ -116,13 +122,16 @@ if ($rChannelInfo) {
 	// hard kill, or a stream with no source) leaves $rFanout false, so the FULL
 	// legacy path runs — startProxy producer included. Stopping the daemon is
 	// therefore the rollback: every stream falls back automatically, no flag.
+	//
+	// With fanout switched off (FanoutMode) — or the licence denying it — every
+	// arm below takes its pre-fanout path instead: ProxyCommand for proxy
+	// streams, the on-disk HLS playlist, and the per-viewer TS chase-read.
+	$rLegacy = FanoutMode::legacyDelivery($rSettings);
 	$rFanout = false;
 	if (!empty($rChannelInfo["proxy"]) && LicenseGate::fanoutUsable()) {
-		DatabaseFactory::connect();
-		$db->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?', $rStreamID);
-		$rStreamRow = ($db->num_rows() > 0 ? $db->get_row() : []);
-		$db->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
-		$rStreamArguments = $db->get_rows(true, 'argument_key');
+		DatabaseFactory::connectLazy();
+		$rStreamRow = StreamSource::sourceRow(intval($rStreamID), $db);
+		$rStreamArguments = StreamSource::arguments(intval($rStreamID), true, $db);
 		$rSource = FanoutClient::buildSource($rStreamRow, $rStreamArguments);
 		$rFanout = !empty($rSource["urls"]) && FanoutClient::register($rStreamID, $rSource);
 
@@ -175,7 +184,7 @@ if ($rChannelInfo) {
 				@unlink(STREAMS_PATH . $rStreamID . "_.pid");
 				AsyncFileOperations::clearFileCache();
 
-				DatabaseFactory::connect(); // the hand-over reads the stream's config
+				DatabaseFactory::connectLazy(); // the hand-over reads the stream's config
 				if (StreamProcess::startMonitor($rStreamID) === StreamProcess::MONITOR_FANOUT) {
 					// The daemon is the monitor: there is no _.monitor file to wait
 					// for, and waiting its full three seconds would be pure latency
@@ -206,12 +215,29 @@ if ($rChannelInfo) {
 			if (!$rChannelInfo["pid"]) {
 				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 			}
+		} elseif ($rLegacy && !empty($rChannelInfo["proxy"])) {
+			// Fanout off: the pre-fanout proxy producer. One ProxyCommand per
+			// stream pulls the source and feeds each viewer's socket (relayed in
+			// the TS arm below); it exits a few seconds after its last viewer.
+			if (!($rChannelInfo["monitor_pid"] && ProcessManager::isMonitorAlive($rChannelInfo["monitor_pid"], $rStreamID))) {
+				@unlink(STREAMS_PATH . $rStreamID . "_.pid");
+				StreamProcess::startProxy($rStreamID);
+
+				if (AsyncFileOperations::awaitFileExists(STREAMS_PATH . $rStreamID . "_.monitor", 300, 10)) {
+					$rChannelInfo["monitor_pid"] = intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.monitor", false));
+				}
+			}
+
+			if (!$rChannelInfo["monitor_pid"]) {
+				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
+			}
+
+			$rChannelInfo["pid"] = $rChannelInfo["monitor_pid"];
 		} else {
-			// Non-on-demand: proxy streams are daemon-only now (ADR 0003, Phase E
-			// — the legacy ProxyCommand producer was removed). If we reach here
-			// $rFanout is false, i.e. the daemon is unreachable, so show
-			// not-on-air (the keepalive brings the daemon back in ~2s). A dead
-			// non-proxy stream is likewise not-on-air.
+			// Non-on-demand with fanout on: proxy streams are daemon-only (ADR
+			// 0003, Phase E). If we reach here $rFanout is false, i.e. the daemon
+			// is unreachable, so show not-on-air (the keepalive brings the daemon
+			// back in ~2s). A dead non-proxy stream is likewise not-on-air.
 			OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 		}
 	}
@@ -258,20 +284,17 @@ if ($rChannelInfo) {
 	if ($rSettings["redis_handler"]) {
 		RedisManager::ensureConnected();
 	} else {
-		DatabaseFactory::connect();
+		DatabaseFactory::connectLazy();
 	}
 
 	if ($rSettings["disallow_2nd_ip_con"] && !$rUserInfo["is_restreamer"] && ($rUserInfo["max_connections"] <= $rSettings["disallow_2nd_ip_max"] && 0 < $rUserInfo["max_connections"] || $rSettings["disallow_2nd_ip_max"] == 0)) {
 		$rAcceptIP = null;
 
 		if ($rSettings["redis_handler"]) {
-			$rConnections = ConnectionTracker::getLineConnections($rUserInfo["id"], true);
-
-			if (count($rConnections) > 0) {
-				$rDate = array_column($rConnections, "date_start");
-				array_multisort($rDate, SORT_ASC, $rConnections);
-				$rAcceptIP = $rConnections[0]["user_ip"];
-			}
+			// The LINE# set holds connection keys; the oldest connection's IP is
+			// read from the rows behind them. HMAC identities have no line id —
+			// the MySQL branch below never matches them either.
+			$rAcceptIP = ConnectionTracker::acceptedLineIP(RedisManager::instance(), $rUserInfo["id"]);
 		} else {
 			// The FIRST connection's IP is the accepted one — as the Redis path
 			// above picks it (oldest date_start); this used to take the newest.
@@ -355,18 +378,22 @@ if ($rChannelInfo) {
 				DatabaseFactory::close();
 			}
 
-			// Client HLS is daemon-only (ADR 0003, Phase E). When the stream is
-			// fed, serve the daemon's in-RAM segmenter playlist (plain or AES-128,
-			// both produced by the daemon), tokenized into auth'd /hls/<token> URLs
-			// that segment.php proxies from the daemon. A daemon that's down / not
-			// fed ⇒ not-on-air, same as the TS arm. The on-disk HLS stays only for
-			// timeshift/thumbnail/.analyse/MonitorCommand, never served to clients.
+			// With fanout on, client HLS is daemon-only (ADR 0003, Phase E). When
+			// the stream is fed, serve the daemon's in-RAM segmenter playlist
+			// (plain or AES-128, both produced by the daemon), tokenized into
+			// auth'd /hls/<token> URLs that segment.php proxies from the daemon. A
+			// daemon that's down / not fed ⇒ not-on-air, same as the TS arm.
+			// With fanout off ($rLegacy), the on-disk playlist is served instead,
+			// its segments by segment.php from STREAMS_PATH (the pre-fanout path).
 			$rHLS = false;
 			if (LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)) {
 				$rDaemonPl = FanoutClient::hlsPlaylist($rStreamID);
 				if ($rDaemonPl !== null) {
 					$rHLS = HLSGenerator::tokenizeDaemonPlaylist($rDaemonPl, $rSettings, (isset($rUsername) ? $rUsername : null), (isset($rPassword) ? $rPassword : null), $rStreamID, $rTokenData["uuid"], $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, intval($rChannelInfo["on_demand"]), $rServerID, $rProxyID);
 				}
+			}
+			if ($rHLS === false && $rLegacy) {
+				$rHLS = HLSGenerator::generateHLS($rSettings, $rPlaylist, (isset($rUsername) ? $rUsername : null), (isset($rPassword) ? $rPassword : null), $rStreamID, $rTokenData["uuid"], $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, intval($rChannelInfo["on_demand"]), $rServerID, $rProxyID);
 			}
 
 			if ($rHLS) {
@@ -446,11 +473,51 @@ if ($rChannelInfo) {
 
 			if ($rChannelInfo["proxy"]) {
 				// ────────────────────────────────────────────────────────────────
-				// Proxy streams are daemon-only (ADR 0003, Phase E — the legacy
-				// ProxyCommand producer + socket relay were removed). Auth is done
-				// and the source was already registered + probed with the daemon
-				// above (that set $rFanout; an unreachable/dead daemon already went
-				// not-on-air). Hand the byte path to nginx → daemon via
+				// Fanout off: the pre-fanout relay. ProxyCommand (started above)
+				// sends the stream to a unix datagram socket this worker binds
+				// under CONS_TMP_PATH/<id>/; relay its datagrams to the client.
+				// ────────────────────────────────────────────────────────────────
+				if ($rLegacy && !$rFanout) {
+					header("Content-Type: video/mp2t");
+
+					if (!file_exists(CONS_TMP_PATH . $rStreamID . "/")) {
+						@mkdir(CONS_TMP_PATH . $rStreamID);
+					}
+
+					$rSocketFile = CONS_TMP_PATH . $rStreamID . "/" . $rTokenData["uuid"];
+					$rSocket = socket_create(AF_UNIX, SOCK_DGRAM, 0);
+					@unlink($rSocketFile);
+					socket_bind($rSocket, $rSocketFile);
+					socket_set_option($rSocket, SOL_SOCKET, SO_RCVTIMEO, ["sec" => 20, "usec" => 0]);
+					socket_set_nonblock($rSocket);
+					// ~16 s without data (200 × 80 ms) ends the relay.
+					$rTotalFails = 200;
+					$rFails = 0;
+
+					while ($rFails <= $rTotalFails) {
+						// 64 MPEG-TS packets per read (188 × 64 = 12032 bytes), the
+						// producer's datagram size.
+						$rBuffer = @socket_read($rSocket, 188 * 64);
+
+						if ($rBuffer !== false && $rBuffer !== '') {
+							$rFails = 0;
+							echo $rBuffer;
+							flush();
+						} else {
+							$rFails++;
+							usleep(80000);
+						}
+					}
+					socket_close($rSocket);
+					@unlink($rSocketFile);
+					exit;
+				}
+
+				// ────────────────────────────────────────────────────────────────
+				// Fanout on: proxy streams are daemon-only (ADR 0003, Phase E).
+				// Auth is done and the source was already registered + probed with
+				// the daemon above (that set $rFanout; an unreachable/dead daemon
+				// already went not-on-air). Hand the byte path to nginx → daemon via
 				// X-Accel-Redirect; the FPM worker is freed the instant we return.
 				// ────────────────────────────────────────────────────────────────
 				if (!$rFanout) {
@@ -501,13 +568,211 @@ if ($rChannelInfo) {
 			}
 
 			// ────────────────────────────────────────────────────────────────
-			// Non-proxy TS is daemon-only now (ADR 0003, Phase E — the legacy
-			// per-viewer .ts chase-read was removed). Reaching here means the
-			// daemon isn't serving this stream ($rTSDaemon false), so show
-			// not-on-air, exactly like the proxy arm above. Stopping the daemon
-			// is the rollback (git revert this commit).
+			// With fanout on, non-proxy TS is daemon-only (ADR 0003, Phase E):
+			// reaching here means the daemon isn't serving this stream, so show
+			// not-on-air, exactly like the proxy arm above.
 			// ────────────────────────────────────────────────────────────────
-			OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
+			if (!$rLegacy) {
+				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
+			}
+
+			// ────────────────────────────────────────────────────────────────
+			// Fanout off: the pre-fanout TS feed. Stream the on-disk HLS segments
+			// to the client as one continuous MPEG-TS, chasing ffmpeg's write head.
+			// ────────────────────────────────────────────────────────────────
+			header("Content-Type: video/mp2t");
+
+			$rSegmentSettings = ["seg_time" => max(1, intval($rSettings["seg_time"]))];
+			// Current transfer rate, for the divergence check.
+			$rConSpeedFile = DIVERGENCE_TMP_PATH . $rTokenData["uuid"];
+
+			if (file_exists($rPlaylist)) {
+				if ($rUserInfo["is_restreamer"]) {
+					$rPrebuffer = !empty($rTokenData["prebuffer"]) ? $rSegmentSettings["seg_time"] : intval($rSettings["restreamer_prebuffer"]);
+				} else {
+					$rPrebuffer = intval($rSettings["client_prebuffer"]);
+				}
+
+				if (file_exists(STREAMS_PATH . $rStreamID . "_.dur")) {
+					$rDuration = intval(file_get_contents(STREAMS_PATH . $rStreamID . "_.dur"));
+					if ($rSegmentSettings["seg_time"] < $rDuration) {
+						$rSegmentSettings["seg_time"] = $rDuration;
+					}
+				}
+
+				// On-demand cold start: this initial prebuffer burst is the
+				// client's whole playback buffer (the loop below runs in real
+				// time), so wait until the playlist holds $rPrebuffer seconds,
+				// not just the fast-start segments that exist the instant it
+				// appears. Bounded by on_demand_wait_time. Clients only.
+				if ($rChannelInfo["on_demand"] == 1 && !$rUserInfo["is_restreamer"] && $rPrebuffer > 0) {
+					$rBufferDeadline = time() + max(1, intval($rSettings["on_demand_wait_time"]));
+					while (
+						SegmentReader::playlistBufferedSeconds($rPlaylist) < $rPrebuffer
+						&& time() < $rBufferDeadline
+						&& ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)
+					) {
+						AsyncFileOperations::efficientSleep(200000);
+					}
+				}
+
+				$rSegments = SegmentReader::getPlaylistSegments($rPlaylist, $rPrebuffer, $rSegmentSettings["seg_time"]);
+			} else {
+				$rSegments = null;
+			}
+
+			if (!is_null($rSegments)) {
+				if (is_array($rSegments)) {
+					$rBytes = 0;
+					$rStartTime = time();
+
+					foreach ($rSegments as $rSegment) {
+						$rSegmentPath = STREAMS_PATH . basename($rSegment);
+						if (!file_exists($rSegmentPath)) {
+							exit();
+						}
+						$rBytes += readfile($rSegmentPath);
+					}
+
+					$rTotalTime = max(0.1, time() - $rStartTime);
+					$rDivergence = intval($rBytes / $rTotalTime / 1024);
+					file_put_contents($rConSpeedFile, $rDivergence);
+
+					preg_match('/_(.*)\\./', array_pop($rSegments), $rCurrentSegment);
+					$rCurrent = $rCurrentSegment[1];
+				} else {
+					$rCurrent = $rSegments;
+				}
+			} elseif (!file_exists($rPlaylist)) {
+				$rCurrent = -1;
+			} else {
+				exit();
+			}
+
+			$rFails = 0;
+			$rTotalFails = max($rSegmentSettings["seg_time"] * 2, intval($rSettings["segment_wait_time"]) ?: 20);
+			$rMonitorCheck = $rLastCheck = time();
+
+			while (true) {
+				$rSegmentFile = sprintf("%d_%d.ts", $rStreamID, $rCurrent + 1);
+				$rNextSegment = sprintf("%d_%d.ts", $rStreamID, $rCurrent + 2);
+
+				if (!AsyncFileOperations::awaitFileExists(STREAMS_PATH . $rSegmentFile, max(1, $rTotalFails), 1000) || !file_exists(STREAMS_PATH . $rSegmentFile)) {
+					exit();
+				}
+
+				// A pending admin "send message" for this viewer: burn it onto the
+				// next complete segment (the daemon does this when fanout is on).
+				if (file_exists(SIGNALS_PATH . $rTokenData["uuid"])) {
+					$rSignalData = json_decode(file_get_contents(SIGNALS_PATH . $rTokenData["uuid"]), true);
+
+					if (is_array($rSignalData) && ($rSignalData["type"] ?? '') == "signal") {
+						AsyncFileOperations::awaitFileExists(STREAMS_PATH . $rNextSegment, max(1, $rTotalFails), 1000);
+						FfmpegPaths::resolve((string) ($rSettings["ffmpeg_cpu"] ?? ''), $rSettings["ffmpeg_gpu"] ?? null);
+						SignalSender::sendSignal(FfmpegPaths::cpu(), $rSignalData, $rSegmentFile, ($rVideoCodec ?: "h264"));
+						unlink(SIGNALS_PATH . $rTokenData["uuid"]);
+						$rCurrent++;
+						continue;
+					}
+				}
+
+				$rFails = 0;
+				$rTimeStart = time();
+				$rFP = fopen(STREAMS_PATH . $rSegmentFile, "r");
+
+				// Drain what ffmpeg has written without sleeping; only at the write
+				// head (no data) wait ~1 s and count a stall tick. Sleeping after
+				// every read capped throughput at read_buffer_size per second.
+				while ($rFails <= $rTotalFails && !file_exists(STREAMS_PATH . $rNextSegment)) {
+					$rData = stream_get_line($rFP, $rSettings["read_buffer_size"]);
+					if (!empty($rData)) {
+						echo $rData;
+						$rFails = 0;
+						continue;
+					}
+
+					if (ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
+						AsyncFileOperations::efficientSleep(1000000);
+						$rFails++;
+					} else {
+						AsyncFileOperations::efficientSleep(100000);
+					}
+				}
+
+				if (ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID) && $rFails <= $rTotalFails && file_exists(STREAMS_PATH . $rSegmentFile) && is_resource($rFP)) {
+					// The next segment exists: send the rest of this one.
+					$rSegmentSize = filesize(STREAMS_PATH . $rSegmentFile);
+					$rRestSize = $rSegmentSize - ftell($rFP);
+					if ($rRestSize > 0) {
+						echo stream_get_line($rFP, $rRestSize);
+					}
+
+					$rTotalTime = max(0.1, time() - $rTimeStart);
+					file_put_contents($rConSpeedFile, intval($rSegmentSize / 1024 / $rTotalTime));
+				} elseif ($rUserInfo["is_restreamer"] != 1 && $rFails <= $rTotalFails) {
+					// The producer died: wait up to one segment for its restart,
+					// then carry on from the new playlist.
+					for ($rChecks = 0; $rChecks <= $rSegmentSettings["seg_time"] && !ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID); $rChecks++) {
+						if (file_exists(STREAMS_PATH . $rStreamID . "_.pid")) {
+							$rPidContent = AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.pid", false);
+							if ($rPidContent) {
+								$rChannelInfo["pid"] = intval($rPidContent);
+							}
+						}
+						AsyncFileOperations::efficientSleep(1000000);
+					}
+
+					if ($rSegmentSettings["seg_time"] >= $rChecks && ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
+						if (!file_exists(STREAMS_PATH . $rNextSegment)) {
+							$rCurrent = -2;
+						}
+					} else {
+						exit();
+					}
+				} else {
+					exit();
+				}
+
+				fclose($rFP);
+				$rFails = 0;
+				$rCurrent++;
+
+				if ($rSettings["monitor_connection_status"] && 5 <= time() - $rMonitorCheck) {
+					if (connection_status() != CONNECTION_NORMAL) {
+						exit();
+					}
+					$rMonitorCheck = time();
+				}
+
+				// Every 5 minutes: re-read the settings and refresh hls_last_read;
+				// stop when the connection was closed or taken over by another worker.
+				if (time() - $rLastCheck > 300) {
+					$rLastCheck = time();
+					$rConnection = null;
+					$rSettings = CacheReader::get("settings") ?: $rSettings;
+
+					if ($rSettings["redis_handler"]) {
+						RedisManager::ensureConnected();
+						$rExistingConnection = ConnectionTracker::getConnection($rTokenData["uuid"]);
+						if ($rExistingConnection) {
+							$rConnection = ConnectionTracker::updateConnection($rExistingConnection, ["hls_last_read" => time() - intval($rServers[SERVER_ID]["time_offset"])], "open");
+						}
+						RedisManager::closeInstance();
+					} else {
+						DatabaseFactory::connectLazy();
+						$db->query('UPDATE `lines_live` SET `hls_last_read` = ? WHERE `uuid` = ?', time() - intval($rServers[SERVER_ID]["time_offset"]), $rTokenData["uuid"]);
+						$db->query('SELECT `pid`, `hls_end` FROM `lines_live` WHERE `uuid` = ?', $rTokenData["uuid"]);
+						if ($db->num_rows() == 1) {
+							$rConnection = $db->get_row();
+						}
+						DatabaseFactory::close();
+					}
+
+					if (!is_array($rConnection) || $rConnection["hls_end"] != 0 || $rConnection["pid"] != $rPID) {
+						exit();
+					}
+				}
+			}
 	}
 } else {
 	OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);

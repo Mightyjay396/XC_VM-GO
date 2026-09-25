@@ -4,6 +4,7 @@ namespace XcVm\Domain\Security;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -524,11 +525,11 @@ class BlocklistService {
 		shell_exec('rm ' . FLOOD_TMP_PATH . 'block_*');
 
 		foreach ($rServers as $rServer) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'flush']));
+			NodeActions::flushBlocklist(intval($rServer['id']), $db);
 		}
 
 		foreach ($rProxyServers as $rServer) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'flush']));
+			NodeActions::flushBlocklist(intval($rServer['id']), $db);
 		}
 
 		return true;

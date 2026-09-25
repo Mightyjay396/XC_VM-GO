@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\Encryption;
@@ -133,7 +134,7 @@ if ($rUserInfo) {
 	if ($rSettings['redis_handler']) {
 		RedisManager::ensureConnected();
 	} else {
-		DatabaseFactory::connect();
+		DatabaseFactory::connectLazy();
 	}
 
 	$rConnection = null;
@@ -265,7 +266,7 @@ if ($rUserInfo) {
 					if ($rConnection['server_id'] == SERVER_ID) {
 						posix_kill(intval($rConnection['pid']), 9);
 					} else {
-						$db->query('INSERT INTO `signals` (`pid`,`server_id`,`time`) VALUES(?,?,UNIX_TIMESTAMP())', $rConnection['pid'], $rConnection['server_id']);
+						SignalDispatcher::kill(intval($rConnection['server_id']), intval($rConnection['pid']), false, $db);
 					}
 				}
 
@@ -418,7 +419,7 @@ if ($rUserInfo) {
 							}
 							RedisManager::closeInstance();
 						} else {
-							DatabaseFactory::connect();
+							DatabaseFactory::connectLazy();
 							$db->query('UPDATE `lines_live` SET `hls_last_read` = ? WHERE `uuid` = ?', time() - intval($rServers[SERVER_ID]['time_offset']), $rTokenData['uuid']);
 							$db->query('SELECT `pid`, `hls_end` FROM `lines_live` WHERE `uuid` = ?', $rTokenData['uuid']);
 

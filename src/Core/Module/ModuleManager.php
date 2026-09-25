@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Module;
 
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Container\ServiceContainer;
@@ -986,12 +987,7 @@ class ModuleManager {
 			$rServerIDs[] = intval($rRow['id']);
 		}
 		foreach ($rServerIDs as $rServerID) {
-			$db->query(
-				'INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);',
-				$rServerID,
-				time(),
-				$payload
-			);
+			NodeActions::send($rServerID, $payload, $db);
 		}
 	}
 
@@ -1571,12 +1567,7 @@ class ModuleManager {
 		}
 
 		foreach ($rServerIDs as $rServerID) {
-			$db->query(
-				'INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);',
-				$rServerID,
-				time(),
-				$payload
-			);
+			NodeActions::send($rServerID, $payload, $db);
 		}
 	}
 

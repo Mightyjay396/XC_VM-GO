@@ -2,12 +2,15 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
+use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Security\BlocklistService;
+use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\Health\ProcessChecker;
@@ -19,7 +22,7 @@ use XcVm\Streaming\Health\ProcessChecker;
  * rtmp_kill, install_status, reinstall_server, fpm_status, update_all_servers,
  * update_all_binaries.
  *
- * Note: rtmp_kill echoes the raw {@see ApiClient::systemRequest()} response
+ * Note: rtmp_kill echoes the raw {@see NodeRpc::request()} response
  * rather than a JSON envelope.
  *
  * @package XC_VM_Public_Controllers_Admin
@@ -89,7 +92,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		if ($rSub == 'update') {
 			foreach ($this->normalizeServerIds() as $rID) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rID, time(), json_encode(['action' => 'update']));
+				NodeActions::update(intval($rID), $db);
 			}
 
 			$this->ok();
@@ -103,7 +106,7 @@ class ServerAjaxController extends BaseAjaxController {
 			}
 
 			foreach ($this->normalizeServerIds() as $rID) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rID, time(), json_encode(['action' => 'rollback', 'version' => $rVersion]));
+				NodeActions::rollback(intval($rID), (string) $rVersion, $db);
 			}
 
 			$this->ok();
@@ -192,7 +195,7 @@ class ServerAjaxController extends BaseAjaxController {
 		}
 
 		if ($rSub == 'update') {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', RequestManager::get('server_id'), time(), json_encode(['action' => 'update']));
+			NodeActions::update(intval(RequestManager::get('server_id')), $db);
 			$this->ok();
 		}
 
@@ -289,7 +292,7 @@ class ServerAjaxController extends BaseAjaxController {
 						}
 
 						$rArray['action'] = 'signal_send';
-						ApiClient::systemRequest(intval($rRow['server_id']), $rArray);
+						NodeRpc::request(intval($rRow['server_id']), $rArray);
 					}
 				}
 			}
@@ -307,7 +310,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				$db->query("INSERT INTO `signals`(`server_id`, `custom_data`, `time`) VALUES(?, '{\"action\": \"restart_services\"}', ?);", $rServer['id'], time());
+				NodeActions::restartServices(intval($rServer['id']), $db);
 			}
 		}
 
@@ -322,7 +325,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			$db->query("INSERT INTO `signals`(`server_id`, `custom_data`, `time`) VALUES(?, '{\"action\": \"restart_services\"}', ?);", $rID, time());
+			NodeActions::restartServices(intval($rID), $db);
 		}
 
 		$this->ok();
@@ -336,7 +339,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			$db->query("INSERT INTO `signals`(`server_id`, `custom_data`, `time`) VALUES(?, '{\"action\": \"reboot\"}', ?);", $rID, time());
+			NodeActions::reboot(intval($rID), $db);
 		}
 
 		$this->ok();
@@ -350,7 +353,7 @@ class ServerAjaxController extends BaseAjaxController {
 		global $db;
 
 		foreach ($this->normalizeServerIds() as $rID) {
-			$db->query("INSERT INTO `signals`(`server_id`, `custom_data`, `time`) VALUES(?, '{\"action\": \"update_binaries\"}', ?);", $rID, time());
+			NodeActions::updateBinaries(intval($rID), $db);
 		}
 
 		$this->ok();
@@ -416,7 +419,7 @@ class ServerAjaxController extends BaseAjaxController {
 		$this->requireXhr();
 		$this->gate('adv', 'rtmp');
 
-		$rResult = ApiClient::systemRequest(intval(RequestManager::get('server')), ['action' => 'rtmp_kill', 'name' => RequestManager::get('name')]);
+		$rResult = NodeRpc::request(intval(RequestManager::get('server')), ['action' => 'rtmp_kill', 'name' => RequestManager::get('name')]);
 
 		if (empty($rResult)) {
 			$this->fail();
@@ -442,7 +445,12 @@ class ServerAjaxController extends BaseAjaxController {
 		$this->fail();
 	}
 
-	/** action=reinstall_server — re-run a server install from its saved params. */
+	/**
+	 * action=reinstall_server — re-run a server install from its saved params.
+	 * The saved params no longer hold the SSH password, so the request must
+	 * carry it (root_password); an optional expected_hostkey overrides the
+	 * stored host key for a rebuilt node.
+	 */
 	public function reinstallServer(): never {
 		$this->requireXhr();
 		$this->gateAny([['adv', 'add_server'], ['adv', 'edit_server']]);
@@ -458,15 +466,16 @@ class ServerAjaxController extends BaseAjaxController {
 
 		$rFilename = BIN_PATH . 'install/' . $rServerID . '.json';
 
-		if (file_exists($rFilename)) {
+		$rPassword = (string) RequestManager::get('root_password');
+
+		if (file_exists($rFilename) && $rPassword !== '') {
 			$rParams = json_decode(file_get_contents($rFilename), true);
 			$db->query('UPDATE `servers` SET `status` = 3 WHERE `id` = ?;', $rServerID);
 
-			if (isset($rParams['http_broadcast_port'])) {
-				$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . $rType . ' ' . intval($rServerID) . ' ' . intval($rParams['ssh_port']) . ' ' . escapeshellarg($rParams['root_username']) . ' ' . escapeshellarg($rParams['root_password']) . ' ' . intval($rParams['http_broadcast_port']) . ' ' . intval($rParams['https_broadcast_port']) . ' > "' . BIN_PATH . 'install/' . intval($rServerID) . '.install" 2>/dev/null &';
-			} else {
-				$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . $rType . ' ' . intval($rServerID) . ' ' . intval($rParams['ssh_port']) . ' ' . escapeshellarg($rParams['root_username']) . ' ' . escapeshellarg($rParams['root_password']) . ' > "' . BIN_PATH . 'install/' . intval($rServerID) . '.install" 2>/dev/null &';
-			}
+			$rTail = isset($rParams['http_broadcast_port'])
+				? [(string) intval($rParams['http_broadcast_port']), (string) intval($rParams['https_broadcast_port'])]
+				: [];
+			$rCommand = InstallCredentials::command($rType, intval($rServerID), intval($rParams['ssh_port']), (string) $rParams['root_username'], $rPassword, $rTail, (string) RequestManager::get('expected_hostkey'));
 
 			shell_exec($rCommand);
 
@@ -482,7 +491,7 @@ class ServerAjaxController extends BaseAjaxController {
 		$this->gateAny([['adv', 'add_server'], ['adv', 'edit_server']]);
 
 		global $rServers;
-		$rData = str_replace("\n", '<br/>', ApiClient::systemRequest(RequestManager::get('server_id'), ['action' => 'fpm_status']));
+		$rData = str_replace("\n", '<br/>', NodeRpc::request(RequestManager::get('server_id'), ['action' => 'fpm_status']));
 
 		if (empty($rData)) {
 			$rData = '<strong>No response from status page.</strong>';
@@ -506,7 +515,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'update']));
+				NodeActions::update(intval($rServer['id']), $db);
 			}
 		}
 
@@ -522,7 +531,7 @@ class ServerAjaxController extends BaseAjaxController {
 
 		foreach ($rServers as $rServer) {
 			if ($rServer['server_online']) {
-				$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServer['id'], time(), json_encode(['action' => 'update_binaries']));
+				NodeActions::updateBinaries(intval($rServer['id']), $db);
 			}
 		}
 

@@ -54,6 +54,19 @@ To see all available commands:
 | `db:migrate` | `DbMigrateCommand` | Apply pending database migrations from the `migrations/` directory | xc_vm |
 | `server:install` | `ServerInstallCommand` | Install/configure server (Proxy/LB) via SSH | root |
 | `server:diagnose` | `ServerDiagnoseCommand` | Diagnose why a proxy/LB node is silent to the main (heartbeat, reachability, iptables, service) | root |
+| `server:sync-openssl-extra` | `ServerSyncOpensslExtraCommand` | Send the main's `OPENSSL_EXTRA` to load balancers that report another one (MAIN only) | root/xc_vm |
+
+> **`server:install` credentials and host key.** The panel does not put the SSH
+> password on the command line or in `bin/install/<id>.json`: it writes a 0600
+> `bin/install/<id>.cred`, passes `- -` in place of username and password plus
+> `--cred-file=<path>`, and the command reads and deletes that file before it
+> connects. `<id>.json` keeps only the non-secret parameters, so *Reinstall*
+> asks for the password again. The node's SSH host key (SHA-1) is checked against
+> `--expect-hostkey=` (the *Expected SSH Host Key* field: 40 hex digits, or the
+> `SHA1:…` line of `ssh-keygen -l -E sha1 -f /etc/ssh/ssh_host_ed25519_key.pub`
+> run on the node), else against `servers.ssh_hostkey_sha1` stored by the first
+> install, else it is trusted on first use and stored. A rebuilt node therefore
+> needs its new fingerprint entered on reinstall.
 
 > `console.php` registers **every** class it discovers in `Cli/Commands/` and `Cli/CronJobs/` (glob + reflection) — there is **no** `file_exists()` guard. A command is "optional" only in that it may be **stripped from the LB build** (`Makefile` `LB_FILES_TO_REMOVE`) or **provided by an installed module**. `plex_item` and `watch_item` above are **module-provided** (Plex/Watch) — their command classes are not in the committed core tree and exist only when that module is installed.
 
@@ -73,7 +86,7 @@ These commands use `DaemonTrait` and run continuously via `while(true)` loops:
 
 | Command | Class | Description |
 | --- | --- | --- |
-| `proxy` | `ProxyCommand` | MPEG-TS stream proxying via sockets |
+| `proxy` | `ProxyCommand` | MPEG-TS stream proxying via sockets — proxy streams while fanout is switched off (started by `live.php`) |
 | `archive` | `ArchiveCommand` | TV Archive — record stream into segments |
 | `created` | `CreatedCommand` | Created Channel — compose channel from sources |
 | `delay` | `DelayCommand` | Delay HLS stream playback |
@@ -373,7 +386,17 @@ sudo /home/xc_vm/console.php server:diagnose <server_id>
 sudo /home/xc_vm/console.php server:diagnose
 ```
 
-Finds out **why** a proxy/LB node shows offline in the panel: checks the heartbeat, reachability (ICMP/TCP/HTTP `/api`), clock skew, the signal queue, and — locally on the node — whether the node firewalled the main's IP in its own iptables, whether the `xc_vm` service/nginx are up, whether the `watchdog` heartbeat daemon is running, and whether `cron:servers` is in the `xc_vm` crontab. Read-only; exit code `0` = no problems found, `2` = probable causes printed. See the [Server Diagnostics guide](../administration/server-diagnostics.md) for details.
+Finds out **why** a proxy/LB node shows offline in the panel: checks the heartbeat, reachability (ICMP/TCP/HTTP `/api`), clock skew, the signal queue, whether an LB holds the main's `OPENSSL_EXTRA`, and — locally on the node — whether the node firewalled the main's IP in its own iptables, whether the `xc_vm` service/nginx are up, whether the `watchdog` heartbeat daemon is running, and whether `cron:servers` is in the `xc_vm` crontab. Read-only; exit code `0` = no problems found, `2` = probable causes printed. See the [Server Diagnostics guide](../administration/server-diagnostics.md) for details.
+
+### OPENSSL_EXTRA Sync
+
+```bash
+# On the MAIN — one load balancer, or every LB that reports another value
+sudo /home/xc_vm/console.php server:sync-openssl-extra <server_id>
+sudo /home/xc_vm/console.php server:sync-openssl-extra --all [--force]
+```
+
+Moves load balancers onto the main's `OPENSSL_EXTRA` when `server:diagnose` reports a mismatch (playback redirected from the main fails on that LB). Each LB applies it within a minute and still accepts its old value for 10 minutes. See [Repairing an OPENSSL_EXTRA mismatch](../administration/server-diagnostics.md#repairing-an-openssl_extra-mismatch).
 
 ### SSL Certificate
 

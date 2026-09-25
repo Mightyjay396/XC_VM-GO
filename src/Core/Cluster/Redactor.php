@@ -1,0 +1,49 @@
+<?php
+
+namespace XcVm\Core\Cluster;
+
+/**
+ * Removes credentials from text that leaves the node: log lines, a stream's
+ * current source, process command lines. It covers:
+ *
+ *  - `password=`, `token=` and `username=` values in query strings and argument
+ *    lists;
+ *  - the `/user/pass/` segments of Xtream-style URLs (`/live/u/p/1.ts`,
+ *    `/movie/…`, `/series/…`, `/timeshift/u/p/…`);
+ *  - `user:pass@` in URLs, as ffmpeg and curl command lines carry them.
+ *
+ * Pure and idempotent. The cluster API sinks (LogSink's API backend,
+ * `stream.state` events, `get_pids`) run it before anything is journaled.
+ * The legacy SQL backends keep writing what they wrote before.
+ */
+final class Redactor {
+	public const MASK = '***';
+
+	public static function redact(string $rText): string {
+		if ($rText === '') {
+			return $rText;
+		}
+		// key=value (query strings, form bodies, `-headers` arguments).
+		$rText = (string) preg_replace('/\b(password|passwd|pass|token|username|user)=([^&\s"\'\\\\]*)/i', '$1=' . self::MASK, $rText);
+		// scheme://user:pass@host
+		$rText = (string) preg_replace('#\b([a-z][a-z0-9+.\-]*://)[^/\s:@"\']+:[^/\s@"\']*@#i', '$1' . self::MASK . '@', $rText);
+		// Xtream paths: /live/<user>/<pass>/… and friends.
+		$rText = (string) preg_replace('#/(live|movie|series|timeshift)/[^/\s?"\']+/[^/\s?"\']+/#i', '/$1/' . self::MASK . '/' . self::MASK . '/', $rText);
+		return $rText;
+	}
+
+	/**
+	 * Redact every string value of a row, keys untouched.
+	 *
+	 * @param array<string, mixed> $rRow
+	 * @return array<string, mixed>
+	 */
+	public static function redactRow(array $rRow): array {
+		foreach ($rRow as $rKey => $rValue) {
+			if (is_string($rValue)) {
+				$rRow[$rKey] = self::redact($rValue);
+			}
+		}
+		return $rRow;
+	}
+}

@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Updates\GitHubReleases;
+use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
 
 /**
@@ -33,19 +34,6 @@ use XcVm\Core\Updates\UpdateChannels;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class FanoutBinaryCommand implements CommandInterface {
-	/** uname -m → release asset arch suffix. */
-	private const ARCH_MAP = [
-		'x86_64'  => 'amd64',
-		'amd64'   => 'amd64',
-		'aarch64' => 'arm64',
-		'arm64'   => 'arm64',
-		'armv7l'  => 'armv7',
-		'armv7'   => 'armv7',
-		'armhf'   => 'armv7',
-		'i386'    => '386',
-		'i686'    => '386',
-	];
-
 	/** Sidecar file (next to the binary) recording the installed version. */
 	private const VERSION_FILE = 'xc_fanout.version';
 
@@ -65,7 +53,7 @@ class FanoutBinaryCommand implements CommandInterface {
 		$rForce = in_array('force', $rArgs, true);
 
 		$rMachine = trim(php_uname('m'));
-		$rArch = self::ARCH_MAP[$rMachine] ?? null;
+		$rArch = ReleaseAsset::arch($rMachine);
 		if ($rArch === null) {
 			echo "Unsupported architecture: {$rMachine}\n";
 			return 1;
@@ -124,7 +112,7 @@ class FanoutBinaryCommand implements CommandInterface {
 			: 'installed=' . ($rInstalled ?? 'none') . ', latest=' . $rLatest;
 		echo 'xc_fanout: ' . $rReason . " → updating\n";
 
-		$rBase = 'https://github.com/' . GIT_OWNER . '/' . GIT_REPO_FANOUT . '/releases/download/' . rawurlencode($rTag) . '/';
+		$rBase = ReleaseAsset::baseUrl(GIT_OWNER, GIT_REPO_FANOUT, $rTag);
 		$rAsset = 'xc_fanout-linux-' . $rArch;
 
 		if (!is_dir($rDir) && !@mkdir($rDir, 0755, true)) {
@@ -133,13 +121,13 @@ class FanoutBinaryCommand implements CommandInterface {
 		}
 		$rTmp = $rDir . '.xc_fanout.new';
 
-		if (!$this->download($rBase . $rAsset, $rTmp)) {
+		if (!ReleaseAsset::download($rBase . $rAsset, $rTmp)) {
 			echo "Failed to download {$rAsset}\n";
 			@unlink($rTmp);
 			return 1;
 		}
 
-		$rExpected = $this->expectedSha256($rBase . 'SHA256SUMS', $rAsset);
+		$rExpected = ReleaseAsset::expectedSha256($rBase . 'SHA256SUMS', $rAsset);
 		if ($rExpected === null) {
 			echo "Failed to fetch SHA256SUMS\n";
 			@unlink($rTmp);
@@ -208,56 +196,5 @@ class FanoutBinaryCommand implements CommandInterface {
 			@chown($rFile, 'xc_vm');
 			@chgrp($rFile, 'xc_vm');
 		}
-	}
-
-	/** Download a URL to a file (following redirects). */
-	private function download(string $rUrl, string $rDest): bool {
-		$rFp = @fopen($rDest, 'wb');
-		if (!$rFp) {
-			return false;
-		}
-		$rCurl = curl_init();
-		curl_setopt_array($rCurl, [
-			CURLOPT_URL            => $rUrl,
-			CURLOPT_FILE           => $rFp,
-			CURLOPT_FOLLOWLOCATION => true,
-			CURLOPT_CONNECTTIMEOUT => 20,
-			CURLOPT_TIMEOUT        => 120,
-			CURLOPT_FAILONERROR    => true,
-			CURLOPT_USERAGENT      => 'XC_VM',
-		]);
-		$rOk = curl_exec($rCurl);
-		$rCode = curl_getinfo($rCurl, CURLINFO_HTTP_CODE);
-		curl_close($rCurl);
-		fclose($rFp);
-
-		return $rOk !== false && $rCode >= 200 && $rCode < 300 && filesize($rDest) > 0;
-	}
-
-	/** Expected sha256 for $rAsset from a SHA256SUMS file (`<hash>  <name>`). */
-	private function expectedSha256(string $rUrl, string $rAsset): ?string {
-		$rCurl = curl_init();
-		curl_setopt_array($rCurl, [
-			CURLOPT_URL            => $rUrl,
-			CURLOPT_RETURNTRANSFER => true,
-			CURLOPT_FOLLOWLOCATION => true,
-			CURLOPT_CONNECTTIMEOUT => 15,
-			CURLOPT_TIMEOUT        => 30,
-			CURLOPT_USERAGENT      => 'XC_VM',
-		]);
-		$rBody = curl_exec($rCurl);
-		$rCode = curl_getinfo($rCurl, CURLINFO_HTTP_CODE);
-		curl_close($rCurl);
-		if (!is_string($rBody) || $rCode < 200 || $rCode >= 300) {
-			return null;
-		}
-
-		foreach (explode("\n", $rBody) as $rLine) {
-			$rParts = preg_split('/\s+/', trim($rLine), 2);
-			if (count($rParts) === 2 && ltrim(trim($rParts[1]), '*./') === $rAsset) {
-				return strtolower(trim($rParts[0]));
-			}
-		}
-		return null;
 	}
 }

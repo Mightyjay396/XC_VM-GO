@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Vod;
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
@@ -934,7 +935,7 @@ class MovieService {
 		}
 
 		foreach ($rServerIDs as $rServerID) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`, `cache`) VALUES(?, ?, ?, 1);', $rServerID, time(), json_encode(['type' => 'delete_vod', 'id' => $rID]));
+			SignalDispatcher::cache(intval($rServerID), ['type' => 'delete_vod', 'id' => $rID], false, false, $db);
 		}
 
 		return true;

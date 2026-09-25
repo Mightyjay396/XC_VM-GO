@@ -4,7 +4,9 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Infrastructure\Redis\RedisManager;
@@ -52,13 +54,17 @@ class SignalsCommand implements CommandInterface {
 
 		$rServers = ServerRepository::getAll();
 		$rLastReconcile = 0;
+		$rLastLiveness = 0;
+		$rIsMain = NodeRole::isMain();
 
 		while ($db && $db->ping()) {
 			if (!$this->refreshOrBreak()) {
 				break;
 			}
-			if ($this->rLastCheck) {
-				$rServers = ServerRepository::getAll(true);
+			// Was every pass (four times a second): a `SELECT * FROM servers`
+			// against MAIN from every node, all day.
+			if ($this->serversRefreshDue()) {
+				$rServers = $this->refreshServers();
 			}
 
 			// Stop if Redis required but dead. checkRedisHealth() catches
@@ -75,6 +81,19 @@ class SignalsCommand implements CommandInterface {
 			if (time() - $rLastReconcile >= self::RECONCILE_INTERVAL) {
 				$rLastReconcile = time();
 				StreamProcess::reconcileSupervised();
+			}
+
+			// MAIN's liveness loop for nodes whose agent reports telemetry:
+			// once a second, and each transition rewrites the servers cache.
+			if ($rIsMain && time() !== $rLastLiveness && SettingsManager::get('cluster_api_enabled')) {
+				$rLastLiveness = time();
+				try {
+					if (LivenessService::tick(max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec') ?: 30)))) !== []) {
+						$rServers = $this->refreshServers();
+					}
+				} catch (\Throwable $rE) {
+					echo 'Liveness: ' . $rE->getMessage() . "\n";
+				}
 			}
 
 			// ── Kill-сигналы из БД ──────────────────────────────

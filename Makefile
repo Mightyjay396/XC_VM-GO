@@ -25,7 +25,12 @@ EXCLUDES := \
 # NOTE: Modules/ is intentionally excluded — all modules are MAIN-only
 # (e.g. the ministra portal, whose ~50 MB of assets must not ship to LB nodes).
 LB_DIRS := bin Cli config content Core Domain\
-	Infrastructure Public resources signals Streaming tmp vendor www
+	Infrastructure Public signals Streaming tmp vendor
+
+# Former LB_DIRS entries that no longer exist under src/. Nothing is copied from
+# them; lb_delete_files_list keeps their git deletions in the LB list, so an
+# update still removes them from LBs installed by older releases.
+LB_RETIRED_DIRS := resources www
 
 # Root-level files to copy from MAIN to LB (not inside directories)
 LB_ROOT_FILES := bootstrap.php console.php service update
@@ -37,9 +42,11 @@ LB_DIRS_TO_REMOVE := \
 	bin/nginx/conf/codes \
 	Domain/User \
 	Domain/Device \
-	Domain/Auth \
+	Domain/Cluster \
+	Public/cluster \
 	Public/Controllers/Admin \
 	Public/Controllers/Player \
+	Public/Controllers/PlayerV2 \
 	Public/Controllers/Reseller \
 	Public/Views \
 	Public/assets \
@@ -48,23 +55,38 @@ LB_DIRS_TO_REMOVE := \
 	Core/Localization/lang
 
 # Files to remove from LB
+# Every LB_* entry must match a tracked path under src/, and nothing that
+# lb_configs/nginx.conf executes may be stripped — tools/ci/verify-lb-archive.sh
+# (make gates) fails on a STALE entry or a MISSING routed script.
+# The viewer-API controllers (Player/Enigma2/XPlugin/Epg/PlaylistApiController,
+# BaseApiController) still ship: lb_configs/nginx.conf routes /api/player_api etc.
+# to Public/index.php. They go together with those routes in a later phase (§3
+# of the MAIN <-> LB API communication design).
 LB_FILES_TO_REMOVE := \
-	bin/maxmind/GeoLite2-City.mmdb \
+	Public/admin/api.php \
+	Public/admin/proxy_api.php \
+	Public/stream/auth.php \
+	Public/stream/probe.php \
 	Public/Controllers/Api/AdminApiController.php \
+	Public/Controllers/Api/AdminAPIWrapper.php \
+	Public/Controllers/Api/ActiveCodeApiController.php \
 	Public/Controllers/Api/ResellerRestApiController.php \
-	www/xplugin.php \
-	www/probe.php \
-	www/playlist.php \
-	www/player_api.php \
-	www/epg.php \
-	www/enigma2.php \
-	www/stream/auth.php \
-	www/admin/proxy_api.php \
-	www/admin/api.php \
+	Public/Controllers/Api/ResellerAPIWrapper.php \
+	Infrastructure/ResellerApiDispatcher.php \
+	Infrastructure/ResellerTableRenderer.php \
 	config/rclone.conf \
+	Cli/migration_logic.php \
 	Cli/Commands/MigrateCommand.php \
+	Cli/Commands/DbMigrateCommand.php \
 	Cli/Commands/CacheHandlerCommand.php \
 	Cli/Commands/ServerInstallCommand.php \
+	Cli/Commands/ClusterInitCommand.php \
+	Cli/Commands/ClusterEnrolCodeCommand.php \
+	Cli/Commands/ClusterEnrolApproveCommand.php \
+	Cli/Commands/AgentBinaryCommand.php \
+	Cli/Commands/ServerEnrolCommand.php \
+	Cli/Commands/SshChannel.php \
+	Cli/Commands/ServerSyncOpensslExtraCommand.php \
 	Cli/Commands/LbInstallFlow.php \
 	Cli/Commands/ProxyInstallFlow.php \
 	Cli/CronJobs/RootMysqlCronJob.php \
@@ -332,26 +354,37 @@ stamp_release_id:
 	printf '%s\n' "$$id" > "$(TEMP_DIR)/RELEASE_ID"; \
 	echo "==> [BUILD] Stamped RELEASE_ID: $$id"
 
+# LB-scoped deletions applied on update. An update extracts the archive over the
+# installed tree, and MigrationRunner::runFileCleanup() deletes only the files
+# that migrations/deleted_files.txt lists. The list is therefore the LB-scoped
+# part of the release's git deletions plus every file the LB build strips
+# (LB_FILES_TO_REMOVE and the tracked files under LB_DIRS_TO_REMOVE), so a file
+# newly stripped from the LB archive also leaves the LBs that already have it.
+# Stripped paths are taken from the code trees only: bin/, config/ and content/
+# hold runtime and per-server files that an update must never delete.
 lb_delete_files_list:
-	@echo "[INFO] Checking for manual deleted files list (LB-scoped)"
-	@if [ -f "$(MAIN_DIR)/migrations/deleted_files.txt" ]; then \
-		mkdir -p "$(TEMP_DIR)/migrations"; \
-		grep -v '^#' "$(MAIN_DIR)/migrations/deleted_files.txt" | grep -v '^$$' \
-			| awk -v dirs="$(LB_DIRS)" -v files="$(LB_ROOT_FILES)" ' \
-				BEGIN { n=split(dirs,d," "); m=split(files,f," ") } \
-				{ ok=0; for(i=1;i<=n;i++) if(index($$0,d[i]"/")==1){ok=1;break} \
-				  if(!ok) for(i=1;i<=m;i++) if($$0==f[i]){ok=1;break} \
-				  if(ok) print }' \
-			> "$(TEMP_DIR)/migrations/deleted_files.txt"; \
-		if [ -s "$(TEMP_DIR)/migrations/deleted_files.txt" ]; then \
-			echo "[INFO] LB files to delete on update:"; \
-			cat "$(TEMP_DIR)/migrations/deleted_files.txt"; \
-		else \
-			echo "[INFO] No LB-scoped deleted files found"; \
-			rm -f "$(TEMP_DIR)/migrations/deleted_files.txt"; \
+	@echo "[INFO] Building the LB deleted files list (git deletions + LB strip lists)"
+	@mkdir -p "$(TEMP_DIR)/migrations"
+	@{ \
+		if [ -f "$(MAIN_DIR)/migrations/deleted_files.txt" ]; then \
+			grep -v '^#' "$(MAIN_DIR)/migrations/deleted_files.txt" | grep -v '^$$' \
+				| awk -v dirs="$(LB_DIRS) $(LB_RETIRED_DIRS)" -v files="$(LB_ROOT_FILES)" ' \
+					BEGIN { n=split(dirs,d," "); m=split(files,f," ") } \
+					{ ok=0; for(i=1;i<=n;i++) if(index($$0,d[i]"/")==1){ok=1;break} \
+					  if(!ok) for(i=1;i<=m;i++) if($$0==f[i]){ok=1;break} \
+					  if(ok) print }'; \
 		fi; \
+		{ \
+			for f in $(LB_FILES_TO_REMOVE); do echo "$$f"; done; \
+			for d in $(LB_DIRS_TO_REMOVE); do git ls-files -- "src/$$d" | sed 's#^src/##'; done; \
+		} | grep -E '^(Cli|Core|Domain|Infrastructure|Public|Streaming)/'; \
+	} | sort -u > "$(TEMP_DIR)/migrations/deleted_files.txt"
+	@if [ -s "$(TEMP_DIR)/migrations/deleted_files.txt" ]; then \
+		echo "[INFO] LB files to delete on update: $$(grep -c . "$(TEMP_DIR)/migrations/deleted_files.txt")"; \
 	else \
-		echo "[INFO] No deleted_files.txt found — skipping"; \
+		echo "[INFO] No LB-scoped deleted files found"; \
+		rm -f "$(TEMP_DIR)/migrations/deleted_files.txt"; \
+		rmdir "$(TEMP_DIR)/migrations" 2>/dev/null || true; \
 	fi
 
 set_permissions:

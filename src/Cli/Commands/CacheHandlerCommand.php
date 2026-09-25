@@ -4,10 +4,10 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Domain\Line\LineService;
-use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Signal\SignalQueue;
 
 /**
@@ -58,9 +58,11 @@ class CacheHandlerCommand implements CommandInterface {
 				break;
 			}
 
+			if ($this->serversRefreshDue()) {
+				$this->refreshServers();
+			}
 			if ($this->shouldRefreshSettings()) {
 				SettingsManager::set(SettingsRepository::getAll(true));
-				ServerRepository::getAll(true);
 				if (!SettingsManager::get('enable_cache')) {
 					echo "Cache disabled! Break.\n";
 					break;
@@ -80,7 +82,7 @@ class CacheHandlerCommand implements CommandInterface {
 						case 'restream_block_user':
 							list($rBlank, $rUserID, $rStreamID, $rIP) = explode('/', $rKey);
 							$db->query('UPDATE `lines` SET `admin_enabled` = 0 WHERE `id` = ?;', $rUserID);
-							$db->query('INSERT INTO `detect_restream_logs`(`user_id`, `stream_id`, `ip`, `time`) VALUES(?, ?, ?, ?);', $rUserID, $rStreamID, $rIP, time());
+							LogSink::write('restream', [['user_id' => $rUserID, 'stream_id' => $rStreamID, 'ip' => $rIP, 'time' => time()]], $db);
 							$rUpdatedLines[] = $rUserID;
 							break;
 						case 'forced_country':

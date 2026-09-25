@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Domain\Vod\TmdbCron;
 use XcVm\Infrastructure\Tmdb\TmdbApiService;
 
@@ -36,6 +37,11 @@ class TmdbCronJob implements CommandInterface {
 		TmdbApiService::requireLibrary();
 
 		$this->initCron('XC_VM[TMDB]');
+
+		// The TMDb crawl writes catalog rows shared by the whole cluster: MAIN only.
+		if (!NodeRole::isMain()) {
+			return 0;
+		}
 
 		$rTimeout = 3600;
 		set_time_limit($rTimeout);

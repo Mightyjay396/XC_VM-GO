@@ -32,7 +32,9 @@ XC_VM supports two deployment roles from a single source tree:
 > `xc_vm.tar.gz` / `loadbalancer.tar.gz` is used for both install and update; filtering happens on
 > the server at update time (see [Update Mechanism](../administration/update-system.md)). To delete
 > files that were *removed* between releases, `make generate_deleted_files [LAST_TAG=vX.Y.Z]` diffs
-> git and writes `deleted_files.txt`, which the updater applies.
+> git and writes `deleted_files.txt`, which the updater applies. The LB archive's
+> `migrations/deleted_files.txt` also lists every file the LB build strips (see
+> [LB Build — Deleted Files on Update](#lb-build-deleted-files-on-update)).
 
 Additional outputs:
 
@@ -70,8 +72,8 @@ Only these directories are copied into the LB archive:
 
 ```text
 bin/        Cli/        config/     content/    Core/
-Domain/     Infrastructure/         Public/     resources/
-signals/    Streaming/  tmp/        vendor/     www/
+Domain/     Infrastructure/         Public/     signals/
+Streaming/  tmp/        vendor/
 ```
 
 Plus root files: `bootstrap.php`, `console.php`, `service`, `update`.
@@ -89,44 +91,45 @@ After copying, admin-specific content is **removed** from the LB build:
 | `bin/nginx/conf/codes/` | Error code pages (admin UI) |
 | `Public/Controllers/Admin/` | Admin panel controllers |
 | `Public/Controllers/Player/` | Player panel controllers |
+| `Public/Controllers/PlayerV2/` | Web player v2 controllers (player scope, not routed on LB) |
 | `Public/Controllers/Reseller/` | Reseller panel controllers |
 | `Public/Views/` | Panel templates |
 | `Public/assets/` | Panel static assets |
 | `Public/routes/` | Panel route maps |
 | `Domain/User/` | User management |
 | `Domain/Device/` | Device registration |
-| `Domain/Auth/` | Auth management (panel auth) |
 | `Core/Reference/` | Admin reference-data classes (MAIN-only) |
 | `Core/Localization/lang/` | Language resource files (`.ini`) |
 
 **Files removed** (these mirror `LB_FILES_TO_REMOVE` in the Makefile):
 
-> ⚠️ Several entries here use the legacy `www/…` prefix (e.g. `www/stream/auth.php`,
-> `www/xplugin.php`). `src/www/` no longer exists — the streaming/API endpoints moved under
-> `src/Public/stream/` and `src/Public/…`. These `www/…` removal entries are therefore **no-ops**
-> today and are worth auditing in the Makefile (a file that should be stripped from LB may in fact
-> still ship under its `Public/` path).
-
 | File | Reason |
 | --- | --- |
-| `Public/Controllers/Api/AdminApiController.php` | Full admin API removed from LB |
-| `Public/Controllers/Api/ResellerRestApiController.php` | Reseller API removed from LB |
-| `www/xplugin.php`, `www/probe.php`, `www/playlist.php` | Admin endpoints |
-| `www/player_api.php`, `www/epg.php`, `www/enigma2.php` | Client API endpoints (served by MAIN) |
-| `www/stream/auth.php` | Auth endpoint (legacy path — see note) |
-| `www/admin/api.php`, `www/admin/proxy_api.php` | Admin API |
-| `bin/maxmind/GeoLite2-City.mmdb` | GeoIP DB shipped separately |
+| `Public/admin/api.php`, `Public/admin/proxy_api.php` | Admin and proxy APIs (MAIN-only; the LB nginx routes only `/admin/{live,timeshift,thumb,vod}`) |
+| `Public/stream/auth.php`, `Public/stream/probe.php` | Viewer auth and stream probe (MAIN-only; they need the stripped `Domain/User`, and the LB nginx does not route them) |
+| `Public/Controllers/Api/AdminApiController.php`, `AdminAPIWrapper.php` | Full admin API removed from LB |
+| `Public/Controllers/Api/ResellerRestApiController.php`, `ResellerAPIWrapper.php` | Reseller API removed from LB |
+| `Public/Controllers/Api/ActiveCodeApiController.php` | Activation-code API (the LB nginx never routes `active_code`) |
+| `Infrastructure/ResellerApiDispatcher.php`, `ResellerTableRenderer.php` | Reseller panel helpers |
 | `config/rclone.conf` | Backup config |
 | `Domain/Epg/EPG.php` | EPG processing class |
+| `Core/Enum/Theme.php`, `ResellerAction.php`, `ClientFilter.php` | Panel-only enums |
 | `bin/nginx/conf/gzip.conf` | Gzip config (LB uses own) |
+
+The viewer-API controllers (`PlayerApiController`, `Enigma2ApiController`, `XPluginApiController`,
+`EpgApiController`, `PlaylistApiController` and their `BaseApiController`) still ship, because
+`lb_configs/nginx.conf` still routes `/api/player_api` and the other viewer endpoints to
+`Public/index.php`. They are removed together with those routes in a later phase.
 
 **CLI commands removed:**
 
 | File | Reason |
 | --- | --- |
-| `Cli/Commands/MigrateCommand.php` | Migration is MAIN-only |
+| `Cli/Commands/MigrateCommand.php`, `Cli/migration_logic.php` | Migration is MAIN-only |
+| `Cli/Commands/DbMigrateCommand.php` | Applies MAIN's schema migrations (MAIN-only) |
 | `Cli/Commands/CacheHandlerCommand.php` | Cache handler is MAIN-only |
 | `Cli/Commands/ServerInstallCommand.php` | Server installer (not needed on LB itself) |
+| `Cli/Commands/ServerSyncOpensslExtraCommand.php` | Sends MAIN's `OPENSSL_EXTRA` to LBs (MAIN-only) |
 | `Cli/Commands/LbInstallFlow.php` | LB install helper (not needed on LB itself) |
 | `Cli/Commands/ProxyInstallFlow.php` | Proxy install helper (not needed on LB itself) |
 
@@ -142,7 +145,9 @@ After copying, admin-specific content is **removed** from the LB build:
 | `Cli/CronJobs/ProvidersCronJob.php` | Provider sync (MAIN-only) |
 | `Cli/CronJobs/SeriesCronJob.php` | Series metadata (MAIN-only) |
 
-> **Note:** Module-related crons (TMDB, Plex, Watch) live inside `src/Modules/<name>/` and are excluded from LB builds automatically — `Modules/` is not in `LB_DIRS`.
+> **Note:** Module-related crons (Plex, Watch) live inside `src/Modules/<name>/` and are excluded from LB builds automatically — `Modules/` is not in `LB_DIRS`.
+> The TMDB crons are **not** module crons: `Cli/CronJobs/TmdbCronJob.php` and
+> `Cli/CronJobs/TmdbPopularCronJob.php` are core jobs and ship in the LB archive.
 >
 > **Ministra** (`src/Ministra/`, the Stalker portal — ~50 MB of assets) is likewise excluded by
 > **omission**: it isn't listed in `LB_DIRS`, so it's never copied into the LB archive (there is no
@@ -156,6 +161,21 @@ These files from `lb_configs/` **replace** the MAIN versions:
 | --- | --- | --- |
 | `lb_configs/nginx.conf` | `bin/nginx/conf/nginx.conf` | Performance-tuned nginx for streaming |
 | `lb_configs/live.conf` | `bin/nginx_rtmp/conf/live.conf` | RTMP callback hooks |
+
+### LB Build — Deleted Files on Update
+
+An update extracts the archive over the installed tree, so a file disappears from an installed LB
+only when `migrations/deleted_files.txt` lists it (`MigrationRunner::runFileCleanup()` runs in
+post-update). `make lb` therefore always writes the LB archive's list as the union of:
+
+- the LB-scoped entries of `src/migrations/deleted_files.txt` (paths under `LB_DIRS`, the retired
+  `LB_RETIRED_DIRS` trees `resources/` and `www/`, or an `LB_ROOT_FILES` entry);
+- every file the LB build strips: the `LB_FILES_TO_REMOVE` entries and the tracked files under
+  `LB_DIRS_TO_REMOVE`, limited to the code trees (`Cli/`, `Core/`, `Domain/`, `Infrastructure/`,
+  `Public/`, `Streaming/`). `bin/`, `config/` and `content/` hold runtime and per-server files and
+  are never taken from the strip lists.
+
+A file newly added to a strip list is thus also removed from LBs installed by an older release.
 
 ---
 
@@ -222,15 +242,13 @@ This prevents crashes when LB attempts to register a command whose file was remo
 LB servers retain the full streaming pipeline:
 
 ```text
-www/stream/*.php
-  ├── www/stream/init.php
+Public/stream/index.php (stream gateway) → Public/stream/<handler>.php
   ├── vendor/autoload.php (Composer PSR-4 autoloader)
-  ├── bootstrap.php (lightweight stream/bootstrap path)
+  ├── Infrastructure/Bootstrap/StreamingRequestBootstrap.php
   ├── Core/* (Config, Database, Cache, Auth, Http, Logging, Util)
   ├── Domain/Stream, Domain/Server, Domain/Vod, Domain/Bouquet
   ├── Streaming/* (Auth, Delivery, Codec, Protection)
-  ├── Infrastructure/Redis, Infrastructure/Database
-  └── resources/data
+  └── Infrastructure/Redis, Infrastructure/Database
 ```
 
 ---
@@ -243,7 +261,7 @@ Add it to `LB_DIRS` in the Makefile:
 
 ```makefile
 LB_DIRS := bin Cli config content Core Domain \
-    Infrastructure Public resources signals Streaming tmp vendor www your_dir
+    Infrastructure Public signals Streaming tmp vendor your_dir
 ```
 
 ### New admin-only directory
@@ -270,6 +288,19 @@ LB_FILES_TO_REMOVE = ... your_dir/admin_file.php
 ---
 
 ## Build Verification
+
+`make gates` runs `tools/ci/verify-lb-archive.sh`, which rebuilds the LB file list from the
+Makefile variables (no tarball needed) and fails on:
+
+| Finding | Meaning |
+| --- | --- |
+| `STALE` | An `LB_DIRS` / `LB_DIRS_TO_REMOVE` / `LB_FILES_TO_REMOVE` entry matches no tracked path under `src/`. A renamed or removed path would otherwise turn its strip rule into a silent no-op. |
+| `LEAK` | A privileged path from the script's `SENSITIVE` list would ship to the LB. |
+| `MISSING` | A script that `lb_configs/nginx.conf` executes is stripped: every `SCRIPT_FILENAME`, and `Public/<scope>/<handler>.php` for each handler the `/stream/` and `/admin/` gateway locations accept. |
+
+When you strip a new file, add it to `LB_FILES_TO_REMOVE` (it must be a tracked file) and, if it is
+privileged, to `SENSITIVE` in `tools/ci/verify-lb-archive.sh`. When you strip a routed handler, also
+remove its route from `lb_configs/nginx.conf`.
 
 After modifying the build, verify both variants:
 

@@ -39,3 +39,4 @@ graphify-out/
 .dev-sync-state
 .cache/*
 coverage/*
+src/bin/xc_fanout/disabled

@@ -4,7 +4,6 @@ namespace XcVm\Cli;
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
-use XcVm\Core\Util\Encryption;
 
 /**
  * Общий функционал для cron-задач.
@@ -58,9 +57,8 @@ trait CronTrait {
 	 * Если lock уже занят — выходит с кодом 0.
 	 */
 	protected function acquireCronLock(): void {
-		$this->rIdentifier = CRONS_TMP_PATH . md5(
-			Encryption::generateUniqueCode(SettingsManager::get('live_streaming_pass')) . static::class
-		);
+		ProcessManager::exitIfCronLockHeld(ProcessManager::legacyCronLockPath(static::class, SettingsManager::get('live_streaming_pass')));
+		$this->rIdentifier = ProcessManager::cronLockPath(static::class);
 		ProcessManager::acquireCronLock($this->rIdentifier);
 	}
 

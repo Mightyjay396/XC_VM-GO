@@ -64,6 +64,10 @@ $rCoverage = $rIsEdit ? (ServerRepository::getAll()[$rServerArr['id']]['parent_i
                             <label class="col-md-3 col-form-label" for="root_password"><?= $language::get('ssh_password'); ?></label>
                             <div class="col-md-3"><input type="text" class="form-control" id="root_password" name="root_password" value="" required></div>
                         </div>
+                        <div class="row mb-3">
+                            <label class="col-md-3 col-form-label" for="expected_hostkey"><?= $language::get('expected_ssh_hostkey'); ?> <i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= htmlspecialchars((string) $language::get('expected_ssh_hostkey_tooltip'), ENT_QUOTES); ?>"></i></label>
+                            <div class="col-md-9"><input type="text" class="form-control" id="expected_hostkey" name="expected_hostkey" value="" placeholder="SHA1:… / 40 hex" autocomplete="off"></div>
+                        </div>
                         <?php if ($rIsProxy): ?>
                             <div class="row mb-3">
                                 <label class="col-md-3 col-form-label" for="http_broadcast_port"><?= $language::get('http_port'); ?> <i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= htmlspecialchars((string) $language::get('install_port_tooltip'), ENT_QUOTES); ?>"></i></label>

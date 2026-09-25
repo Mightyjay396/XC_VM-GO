@@ -4,10 +4,14 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\Encryption;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
  * RootSignalsCronJob — root signals cron job
@@ -42,7 +46,8 @@ class RootSignalsCronJob implements CommandInterface {
 		set_time_limit(0);
 		register_shutdown_function([$this, 'shutdown']);
 
-		$this->rIdentifier = CRONS_TMP_PATH . md5(Encryption::generateUniqueCode(SettingsManager::get('live_streaming_pass')) . static::class);
+		ProcessManager::exitIfCronLockHeld(ProcessManager::legacyCronLockPath(static::class, SettingsManager::get('live_streaming_pass')));
+		$this->rIdentifier = ProcessManager::cronLockPath(static::class);
 		ProcessManager::acquireCronLock($this->rIdentifier);
 
 		$pids = shell_exec("pgrep -f 'XC_VM\[Signals\]'");
@@ -327,9 +332,28 @@ class RootSignalsCronJob implements CommandInterface {
 		// any racing duplicate supervisor exits at once), run as xc_vm to
 		// match `service boot`. Closes the "supervisor died → fanout stays down"
 		// gap. Runs on every node (main + LB), like the daemon self-heal below.
-		$rRunSh = MAIN_HOME . 'bin/xc_fanout/run.sh';
-		if (is_file($rRunSh) && trim((string) shell_exec('pgrep -u xc_vm -f ' . escapeshellarg($rRunSh) . ' 2>/dev/null')) === '') {
-			shell_exec('sudo -u xc_vm bash ' . escapeshellarg($rRunSh) . ' >/dev/null 2>&1 &');
+		//
+		// Fanout switched off (settings.fanout_enabled = 0, FanoutMode): write the
+		// flag the shell scripts check, stop the supervisor and the daemon, and
+		// skip the keepalive and the binary self-heal below. Switched back on:
+		// the flag goes and the keepalive starts the supervisor again.
+		$rFanoutEnabled = FanoutMode::enabled();
+		if (FanoutMode::applyToNode($rFanoutEnabled)) {
+			echo 'xc_fanout ' . ($rFanoutEnabled ? 'enabled' : 'disabled: daemon stopped') . "\n";
+		}
+		// Literal commands (no string building): the supervisors live at the fixed
+		// deploy path, as `service` and run.sh themselves assume.
+		if ($rFanoutEnabled && is_file('/home/xc_vm/bin/xc_fanout/run.sh') && trim((string) shell_exec('pgrep -u xc_vm -f /home/xc_vm/bin/xc_fanout/run.sh 2>/dev/null')) === '') {
+			shell_exec('sudo -u xc_vm bash /home/xc_vm/bin/xc_fanout/run.sh >/dev/null 2>&1 &');
+		}
+
+		// Cluster agent keepalive, on nodes enrolled in the cluster API: the same
+		// supervisor pattern as xc_fanout. Not after MAIN stopped the node
+		// (run.sh writes `stopped` when the agent exits 3); re-enrolment clears it.
+		if (is_file('/home/xc_vm/config/cluster/agent.json') && is_file('/home/xc_vm/bin/xc_agent/run.sh') && !file_exists('/home/xc_vm/bin/xc_agent/stopped')
+			&& trim((string) shell_exec('pgrep -u xc_vm -f /home/xc_vm/bin/xc_agent/run.sh 2>/dev/null')) === ''
+		) {
+			shell_exec('sudo -u xc_vm bash /home/xc_vm/bin/xc_agent/run.sh >/dev/null 2>&1 &');
 		}
 
 		// xc_fanout daemon binary — keep it installed and current (ADR 0003,
@@ -343,7 +367,7 @@ class RootSignalsCronJob implements CommandInterface {
 		// actual upgrade. Root context (this cron) is required — it installs into
 		// bin/ and chowns. Runs on every node (main + LB) since LBs need it too.
 		$rFanoutStamp = CRONS_TMP_PATH . 'fanout_binary_check';
-		if (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600) {
+		if ($rFanoutEnabled && (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600)) {
 			file_put_contents($rFanoutStamp, time());
 			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php fanout_binary >/dev/null 2>&1 &');
 		}
@@ -442,7 +466,7 @@ class RootSignalsCronJob implements CommandInterface {
 			$rCheck = ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false];
 			foreach ($rRows as $rRow) {
 				$rData = json_decode($rRow['custom_data'], true);
-				switch ($rData['action']) {
+				switch ($rData['action'] ?? '') {
 					case 'disable_ramdisk':
 					case 'enable_ramdisk':
 						$rCheck['ramdisk'] = true;
@@ -543,179 +567,220 @@ class RootSignalsCronJob implements CommandInterface {
 					if (!empty($rRow['signal_id'])) {
 						$db->query('DELETE FROM `signals` WHERE `signal_id` = ?;', $rRow['signal_id']);
 					}
-					switch ($rData['action']) {
-						case 'reboot':
-							echo 'Rebooting system...' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'REBOOT', 'System rebooted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							$db->close_mysql();
-							shell_exec('sudo reboot');
-							break;
-						case 'restart_services':
-							echo 'Restarting services...' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'RESTART', 'XC_VM services restarted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							shell_exec('sudo systemctl stop xc_vm');
-							shell_exec('sudo systemctl start xc_vm');
-							break;
-						case 'stop_services':
-							echo 'Stopping services...' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'STOP', 'XC_VM services stopped on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							shell_exec('sudo systemctl stop xc_vm');
-							break;
-						case 'reload_nginx':
-							echo 'Reloading nginx...' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'RELOAD', 'NGINX services reloaded on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							shell_exec('sudo ' . BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp -s reload');
-							shell_exec('sudo ' . BIN_PATH . 'nginx/sbin/nginx -s reload');
-							break;
-						case 'disable_ramdisk':
-							echo 'Disabling ramdisk...' . "\n";
-							$rFstab = file_get_contents('/etc/fstab');
-							$rOutput = [];
-							foreach (explode("\n", $rFstab) as $rLine) {
-								if (substr($rLine, 0, 31) == 'tmpfs /home/xc_vm/content/streams') {
-									$rLine = '#' . $rLine;
-								}
-								$rOutput[] = $rLine;
-							}
-							file_put_contents('/etc/fstab', implode("\n", $rOutput));
-							shell_exec('sudo umount -l ' . STREAMS_PATH);
-							shell_exec('sudo chown -R xc_vm:xc_vm ' . STREAMS_PATH);
-							break;
-						case 'enable_ramdisk':
-							echo 'Enabling ramdisk...' . "\n";
-							$rFstab = file_get_contents('/etc/fstab');
-							$rOutput = [];
-							foreach (explode("\n", $rFstab) as $rLine) {
-								if (substr($rLine, 0, 32) == '#tmpfs /home/xc_vm/content/streams') {
-									$rLine = ltrim($rLine, '#');
-								}
-								$rOutput[] = $rLine;
-							}
-							file_put_contents('/etc/fstab', implode("\n", $rOutput));
-							shell_exec('sudo mount ' . STREAMS_PATH);
-							shell_exec('sudo chown -R xc_vm:xc_vm ' . STREAMS_PATH);
-							break;
-						case 'certbot_generate':
-							echo 'Generating certbot certificate.' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CERTBOT', 'Attempting to generate certbot certificate on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php certbot "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
-							break;
-						case 'update_binaries':
-							echo 'Updating binaries...' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', 'Updating XC_VM binaries from XC_VM server...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php binaries 2>&1 &');
-							break;
-						case 'install_module':
-							echo 'Installing module distributed from MAIN...' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Installing module distributed from MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
-							break;
-						case 'delete_module':
-							echo 'Deleting module removed on MAIN...' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Deleting module removed on MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:delete "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
-							break;
-						case 'update':
-							echo 'Updating...' . "\n";
-							$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', 'Updating XC_VM...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-							shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update update 2>&1 &');
-							break;
-						case 'rollback':
-							$rRbVersion = isset($rData['version']) ? trim((string) $rData['version']) : '';
-							if (preg_match('/^\d+\.\d+\.\d+$/', $rRbVersion)) {
-								echo 'Rolling back to ' . $rRbVersion . '...' . "\n";
-								$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Rolling back XC_VM to ' . $rRbVersion . '...', time());
-								shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update rollback ' . escapeshellarg($rRbVersion) . ' 2>&1 &');
-							}
-							break;
-						case 'set_services':
-							echo 'Setting PHP Services' . "\n";
-							$rServices = intval($rData['count']);
-							if ($rData['reload']) {
-								shell_exec('sudo systemctl stop xc_vm');
-							}
-							shell_exec('sudo rm ' . MAIN_HOME . 'bin/php/etc/*.conf');
-							$rNewScript = '#! /bin/bash' . "\n";
-							$rNewBalance = 'upstream php {' . "\n" . '    least_conn;' . "\n";
-							$rTemplate = file_get_contents(MAIN_HOME . 'bin/php/etc/template');
-							foreach (range(1, $rServices) as $i) {
-								$rNewScript .= 'start-stop-daemon --start --quiet --pidfile ' . MAIN_HOME . 'bin/php/sockets/' . $i . '.pid --exec ' . MAIN_HOME . 'bin/php/sbin/php-fpm -- --daemonize --fpm-config ' . MAIN_HOME . 'bin/php/etc/' . $i . '.conf' . "\n";
-								$rNewBalance .= '    server unix:' . MAIN_HOME . 'bin/php/sockets/' . $i . '.sock;' . "\n";
-								file_put_contents(MAIN_HOME . 'bin/php/etc/' . $i . '.conf', str_replace('#PATH#', MAIN_HOME, str_replace('#ID#', (string) $i, $rTemplate)));
-							}
-							file_put_contents(MAIN_HOME . 'bin/daemons.sh', $rNewScript);
-							file_put_contents(MAIN_HOME . 'bin/nginx/conf/balance.conf', $rNewBalance . '}');
-							shell_exec('sudo chown xc_vm:xc_vm ' . MAIN_HOME . 'bin/php/etc/*');
-							if ($rData['reload']) {
-								shell_exec('sudo systemctl start xc_vm');
-							}
-							break;
-						case 'set_governor':
-							$rNewGovernor = $rData['data'];
-							if (!empty($rNewGovernor) && shell_exec('which cpufreq-info')) {
-								$rGovernors = array_filter(explode(' ', trim(shell_exec('cpufreq-info -g'))));
-								$rGovernor = explode(' ', trim(shell_exec('cpufreq-info -p')));
-								if ($rGovernor[2] != $rNewGovernor && in_array($rNewGovernor, $rGovernors)) {
-									shell_exec("sudo bash -c 'for ((i=0;i<\$(nproc);i++)); do cpufreq-set -c \$i -g " . $rNewGovernor . "; done'");
-									sleep(2);
-									$rGovernor = explode(' ', trim(shell_exec('cpufreq-info -p')));
-									$db->query('UPDATE `servers` SET `governor` = ? WHERE `id` = ?;', json_encode($rGovernor), SERVER_ID);
-								}
-							}
-							break;
-						case 'set_sysctl':
-							$rNewConfig = $rData['data'];
-							if (!empty($rNewConfig)) {
-								$rSysCtl = file_get_contents('/etc/sysctl.conf');
-								if ($rSysCtl != $rNewConfig) {
-									shell_exec('sudo modprobe ip_conntrack > /dev/null');
-									file_put_contents('/etc/sysctl.conf', $rNewConfig);
-									shell_exec('sudo sysctl -p > /dev/null');
-									$db->query('UPDATE `servers` SET `sysctl` = ? WHERE `id` = ?;', $rNewConfig, SERVER_ID);
-								}
-							}
-							break;
-						case 'set_port':
-							echo 'Setting NGINX Port' . "\n";
-							if (intval($rData['type']) == 0) {
-								$rListen = [];
-								foreach ($rData['ports'] as $rPort) {
-									if (is_numeric($rPort) && $rPort >= 80 && $rPort <= 65535) {
-										$rListen[] = 'listen ' . intval($rPort) . ';';
-									}
-								}
-								file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/http.conf', implode(' ', $rListen));
-								file_put_contents(MAIN_HOME . 'bin/nginx_rtmp/conf/live.conf', 'on_play http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp; on_publish http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp; on_play_done http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp;');
-								if ($rData['reload']) {
-									shell_exec('sudo ' . BIN_PATH . 'nginx/sbin/nginx -s reload');
-								}
-							} elseif (intval($rData['type']) == 1) {
-								$rListen = [];
-								foreach ($rData['ports'] as $rPort) {
-									if (is_numeric($rPort) && $rPort >= 80 && $rPort <= 65535) {
-										$rListen[] = 'listen ' . intval($rPort) . ' ssl;';
-									}
-								}
-								file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/https.conf', implode(' ', $rListen));
-								if ($rData['reload']) {
-									shell_exec('sudo ' . BIN_PATH . 'nginx/sbin/nginx -s reload');
-								}
-							} elseif (intval($rData['type']) == 2) {
-								file_put_contents(MAIN_HOME . 'bin/nginx_rtmp/conf/port.conf', 'listen ' . intval($rData['ports'][0]) . ';');
-								if ($rData['reload']) {
-									shell_exec('sudo ' . BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp -s reload');
-								}
-							}
-							// no break
-						default:
-							break;
-					}
+					$this->executeAction(is_array($rData) ? $rData : [], $rServers, $db);
 				}
 			}
-			$db->query('DELETE FROM `signals` WHERE LENGTH(`custom_data`) > 0 AND UNIX_TIMESTAMP() - `time` >= 86400;');
+			// Purges every node's signals, not just this one's: MAIN only.
+			if (NodeRole::isMain()) {
+				$db->query('DELETE FROM `signals` WHERE LENGTH(`custom_data`) > 0 AND UNIX_TIMESTAMP() - `time` >= 86400;');
+			}
 			$db->close_mysql();
 		} else {
 			exit();
+		}
+	}
+
+	/**
+	 * Run one root action: a `signals` row's custom_data here, or a verified
+	 * `node.root` command handed over by cluster:root (Phase 4). Same code for
+	 * both, so the two transports cannot drift apart.
+	 *
+	 * @param array<string, mixed> $rData {action, …}
+	 * @param array<int, array<string, mixed>> $rServers
+	 */
+	public function executeAction(array $rData, array $rServers, object $db): void {
+		switch ($rData['action'] ?? '') {
+			case 'reboot':
+				echo 'Rebooting system...' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'REBOOT', 'System rebooted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				$db->close_mysql();
+				shell_exec('sudo reboot');
+				break;
+			case OpensslExtra::SIGNAL_ACTION:
+				// Sent by server:sync-openssl-extra on MAIN. install() keeps the value it
+				// replaces open for tokens minted just before; php-fpm reads the new one
+				// on its next request. The MAIN's own value (hmac_keys, image names) never
+				// changes this way.
+				$rSet = OpensslExtra::applySignal($rData, !empty($rServers[SERVER_ID]['is_main']), CONFIG_PATH, time());
+				if ($rSet === null) {
+					break;
+				}
+				echo 'Setting OPENSSL_EXTRA...' . "\n";
+				if ($rSet) {
+					// This cron runs as root: hand the files to FPM's user directly,
+					// with no shell in between.
+					foreach (['openssl_extra', 'openssl_extra.prev'] as $rFile) {
+						if (is_file(CONFIG_PATH . $rFile)) {
+							@chown(CONFIG_PATH . $rFile, 'xc_vm');
+							@chgrp(CONFIG_PATH . $rFile, 'xc_vm');
+						}
+					}
+				}
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'OPENSSL_EXTRA', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.', time());
+				break;
+			case 'restart_services':
+				echo 'Restarting services...' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'RESTART', 'XC_VM services restarted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				shell_exec('sudo systemctl stop xc_vm');
+				shell_exec('sudo systemctl start xc_vm');
+				break;
+			case 'stop_services':
+				echo 'Stopping services...' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'STOP', 'XC_VM services stopped on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				shell_exec('sudo systemctl stop xc_vm');
+				break;
+			case 'reload_nginx':
+				echo 'Reloading nginx...' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'RELOAD', 'NGINX services reloaded on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				shell_exec('sudo ' . BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp -s reload');
+				shell_exec('sudo ' . BIN_PATH . 'nginx/sbin/nginx -s reload');
+				break;
+			case 'disable_ramdisk':
+				echo 'Disabling ramdisk...' . "\n";
+				$rFstab = file_get_contents('/etc/fstab');
+				$rOutput = [];
+				foreach (explode("\n", $rFstab) as $rLine) {
+					if (substr($rLine, 0, 31) == 'tmpfs /home/xc_vm/content/streams') {
+						$rLine = '#' . $rLine;
+					}
+					$rOutput[] = $rLine;
+				}
+				file_put_contents('/etc/fstab', implode("\n", $rOutput));
+				shell_exec('sudo umount -l ' . STREAMS_PATH);
+				shell_exec('sudo chown -R xc_vm:xc_vm ' . STREAMS_PATH);
+				break;
+			case 'enable_ramdisk':
+				echo 'Enabling ramdisk...' . "\n";
+				$rFstab = file_get_contents('/etc/fstab');
+				$rOutput = [];
+				foreach (explode("\n", $rFstab) as $rLine) {
+					if (substr($rLine, 0, 32) == '#tmpfs /home/xc_vm/content/streams') {
+						$rLine = ltrim($rLine, '#');
+					}
+					$rOutput[] = $rLine;
+				}
+				file_put_contents('/etc/fstab', implode("\n", $rOutput));
+				shell_exec('sudo mount ' . STREAMS_PATH);
+				shell_exec('sudo chown -R xc_vm:xc_vm ' . STREAMS_PATH);
+				break;
+			case 'certbot_generate':
+				echo 'Generating certbot certificate.' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CERTBOT', 'Attempting to generate certbot certificate on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php certbot "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
+				break;
+			case 'update_binaries':
+				echo 'Updating binaries...' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', 'Updating XC_VM binaries from XC_VM server...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php binaries 2>&1 &');
+				break;
+			case 'install_module':
+				echo 'Installing module distributed from MAIN...' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Installing module distributed from MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
+				break;
+			case 'delete_module':
+				echo 'Deleting module removed on MAIN...' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Deleting module removed on MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:delete "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
+				break;
+			case 'update':
+				echo 'Updating...' . "\n";
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', 'Updating XC_VM...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update update 2>&1 &');
+				break;
+			case 'rollback':
+				$rRbVersion = isset($rData['version']) ? trim((string) $rData['version']) : '';
+				if (preg_match('/^\d+\.\d+\.\d+$/', $rRbVersion)) {
+					echo 'Rolling back to ' . $rRbVersion . '...' . "\n";
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Rolling back XC_VM to ' . $rRbVersion . '...', time());
+					shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update rollback ' . escapeshellarg($rRbVersion) . ' 2>&1 &');
+				}
+				break;
+			case 'set_services':
+				echo 'Setting PHP Services' . "\n";
+				$rServices = intval($rData['count']);
+				if ($rData['reload']) {
+					shell_exec('sudo systemctl stop xc_vm');
+				}
+				shell_exec('sudo rm ' . MAIN_HOME . 'bin/php/etc/*.conf');
+				$rNewScript = '#! /bin/bash' . "\n";
+				$rNewBalance = 'upstream php {' . "\n" . '    least_conn;' . "\n";
+				$rTemplate = file_get_contents(MAIN_HOME . 'bin/php/etc/template');
+				foreach (range(1, $rServices) as $i) {
+					$rNewScript .= 'start-stop-daemon --start --quiet --pidfile ' . MAIN_HOME . 'bin/php/sockets/' . $i . '.pid --exec ' . MAIN_HOME . 'bin/php/sbin/php-fpm -- --daemonize --fpm-config ' . MAIN_HOME . 'bin/php/etc/' . $i . '.conf' . "\n";
+					$rNewBalance .= '    server unix:' . MAIN_HOME . 'bin/php/sockets/' . $i . '.sock;' . "\n";
+					file_put_contents(MAIN_HOME . 'bin/php/etc/' . $i . '.conf', str_replace('#PATH#', MAIN_HOME, str_replace('#ID#', (string) $i, $rTemplate)));
+				}
+				file_put_contents(MAIN_HOME . 'bin/daemons.sh', $rNewScript);
+				file_put_contents(MAIN_HOME . 'bin/nginx/conf/balance.conf', $rNewBalance . '}');
+				shell_exec('sudo chown xc_vm:xc_vm ' . MAIN_HOME . 'bin/php/etc/*');
+				if ($rData['reload']) {
+					shell_exec('sudo systemctl start xc_vm');
+				}
+				break;
+			case 'set_governor':
+				$rNewGovernor = $rData['data'];
+				if (!empty($rNewGovernor) && shell_exec('which cpufreq-info')) {
+					$rGovernors = array_filter(explode(' ', trim(shell_exec('cpufreq-info -g'))));
+					$rGovernor = explode(' ', trim(shell_exec('cpufreq-info -p')));
+					if ($rGovernor[2] != $rNewGovernor && in_array($rNewGovernor, $rGovernors)) {
+						shell_exec("sudo bash -c 'for ((i=0;i<\$(nproc);i++)); do cpufreq-set -c \$i -g " . $rNewGovernor . "; done'");
+						sleep(2);
+						$rGovernor = explode(' ', trim(shell_exec('cpufreq-info -p')));
+						$db->query('UPDATE `servers` SET `governor` = ? WHERE `id` = ?;', json_encode($rGovernor), SERVER_ID);
+					}
+				}
+				break;
+			case 'set_sysctl':
+				$rNewConfig = $rData['data'];
+				if (!empty($rNewConfig)) {
+					$rSysCtl = file_get_contents('/etc/sysctl.conf');
+					if ($rSysCtl != $rNewConfig) {
+						shell_exec('sudo modprobe ip_conntrack > /dev/null');
+						file_put_contents('/etc/sysctl.conf', $rNewConfig);
+						shell_exec('sudo sysctl -p > /dev/null');
+						$db->query('UPDATE `servers` SET `sysctl` = ? WHERE `id` = ?;', $rNewConfig, SERVER_ID);
+					}
+				}
+				break;
+			case 'set_port':
+				echo 'Setting NGINX Port' . "\n";
+				if (intval($rData['type']) == 0) {
+					$rListen = [];
+					foreach ($rData['ports'] as $rPort) {
+						if (is_numeric($rPort) && $rPort >= 80 && $rPort <= 65535) {
+							$rListen[] = 'listen ' . intval($rPort) . ';';
+						}
+					}
+					file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/http.conf', implode(' ', $rListen));
+					// MAIN: its old HTTP ports, kept for the cluster API alone after a port change.
+					if (NodeRole::isMain() && class_exists(ClusterEndpoint::class)) {
+						file_put_contents(MAIN_HOME . 'bin/nginx/conf/cluster_legacy.conf', ClusterEndpoint::nginxConf(ClusterEndpoint::legacyPorts(SettingsManager::getAll()), array_map('intval', $rData['ports'])));
+					}
+					file_put_contents(MAIN_HOME . 'bin/nginx_rtmp/conf/live.conf', 'on_play http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp; on_publish http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp; on_play_done http://127.0.0.1:' . intval($rData['ports'][0]) . '/stream/rtmp;');
+					if ($rData['reload']) {
+						shell_exec('sudo ' . BIN_PATH . 'nginx/sbin/nginx -s reload');
+					}
+				} elseif (intval($rData['type']) == 1) {
+					$rListen = [];
+					foreach ($rData['ports'] as $rPort) {
+						if (is_numeric($rPort) && $rPort >= 80 && $rPort <= 65535) {
+							$rListen[] = 'listen ' . intval($rPort) . ' ssl;';
+						}
+					}
+					file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/https.conf', implode(' ', $rListen));
+					if ($rData['reload']) {
+						shell_exec('sudo ' . BIN_PATH . 'nginx/sbin/nginx -s reload');
+					}
+				} elseif (intval($rData['type']) == 2) {
+					file_put_contents(MAIN_HOME . 'bin/nginx_rtmp/conf/port.conf', 'listen ' . intval($rData['ports'][0]) . ';');
+					if ($rData['reload']) {
+						shell_exec('sudo ' . BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp -s reload');
+					}
+				}
+				// no break
+			default:
+				break;
 		}
 	}
 

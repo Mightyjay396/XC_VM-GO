@@ -5,6 +5,7 @@ namespace XcVm\Domain\User;
 use XcVm\Core\Auth\Authenticator;
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Auth\AuthRepository;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Reference\UiReference;
@@ -362,7 +363,7 @@ class ResellerAPI {
 					if ($db->query($rQuery, ...$rPrepare['data'])) {
 						$rInsertID = $db->last_insert_id();
 						MagService::syncLineDevices($rInsertID);
-						$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_line', 'id' => $rInsertID]));
+						SignalDispatcher::cache(intval(SERVER_ID), ['type' => 'update_line', 'id' => $rInsertID], false, false, $db);
 						$rArray['user_id'] = $rInsertID;
 						unset($rArray['user'], $rArray['paired']);
 						if (!isset($rData['edit'])) {
@@ -613,7 +614,7 @@ class ResellerAPI {
 					if ($db->query($rQuery, ...$rPrepare['data'])) {
 						$rInsertID = $db->last_insert_id();
 						MagService::syncLineDevices($rInsertID);
-						$db->query('INSERT INTO `signals`(`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, ?, ?);', SERVER_ID, time(), json_encode(['type' => 'update_line', 'id' => $rInsertID]));
+						SignalDispatcher::cache(intval(SERVER_ID), ['type' => 'update_line', 'id' => $rInsertID], false, false, $db);
 						$rArray['user_id'] = $rInsertID;
 						unset($rArray['user'], $rArray['paired']);
 						if (!isset($rData['edit'])) {

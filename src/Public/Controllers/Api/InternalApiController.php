@@ -62,6 +62,19 @@ class InternalApiController {
 		$this->dispatch($rAction, $rRequest, $rSettings);
 	}
 
+	/**
+	 * Run one system action for a signed `node.rpc` command (cluster:exec on
+	 * the node, Phase 4): the same handlers as the legacy /api, without its
+	 * password and source-IP checks, which the command's panel signature
+	 * replaces. Output is the action's response, as /api would send it.
+	 *
+	 * @param array<string, mixed> $rRequest action + arguments
+	 */
+	public function runCommand(array $rRequest): void {
+		$this->deny = false;
+		$this->dispatch((string) ($rRequest['action'] ?? ''), $rRequest, SettingsManager::getAll());
+	}
+
 	private function dispatch($rAction, $rRequest, $rSettings) {
 		switch ($rAction) {
 			case 'view_log':
@@ -358,11 +371,11 @@ class InternalApiController {
 			case 'signal_send':
 				if (!empty($rRequest['message']) && !empty($rRequest['uuid'])) {
 					RequestManager::update('type', 'signal');
-					// Clients are served by the xc_fanout daemon now (Phase E), so push
-					// the "send message" overlay to it — it burns the banner onto the
-					// viewer's next HLS segment / a short live-TS window. The legacy
-					// tmpfs signal file is kept as a harmless no-op for any node still
-					// on the pre-daemon byte path.
+					// With fanout on, push the "send message" overlay to the xc_fanout
+					// daemon — it burns the banner onto the viewer's next HLS segment /
+					// a short live-TS window. With fanout off (FanoutMode) that call is
+					// a no-op, and the signal file below is what the pre-fanout path
+					// reads (live.php's TS feed, segment.php).
 					FanoutClient::sendSignal($rRequest['uuid'], $rRequest);
 					file_put_contents(SIGNALS_PATH . $rRequest['uuid'], json_encode($rRequest));
 				}

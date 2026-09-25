@@ -121,6 +121,7 @@ plugins:
             Admin AJAX API: AJAX-API админки
             Streaming Subsystem: Подсистема стриминга
             Streaming Diagnostics: Диагностика стриминга
+            Cluster Seams: Швы кластера
             Event System: Система событий
             Exception Hierarchy: Иерархия исключений
             Caching and Redis: Кэширование и Redis
@@ -181,6 +182,7 @@ nav:
           - Admin AJAX API: en/development/admin-ajax-api.md
           - Streaming Subsystem: en/development/streaming-subsystem.md
           - Streaming Diagnostics: en/development/streaming-diagnostics.md
+          - Cluster Seams: en/development/cluster-seams.md
           - Event System: en/development/event-system.md
           - Exception Hierarchy: en/development/exception-hierarchy.md
           - Caching and Redis: en/development/caching-and-redis.md

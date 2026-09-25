@@ -4,9 +4,12 @@ namespace XcVm\Domain\Server;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeRpc;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
-use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -140,6 +143,12 @@ class ServerService {
 		}
 
 		$rInsertID = $rData['edit'];
+		// MAIN's HTTP port moved: announce it to the cluster nodes and keep the
+		// old port for the cluster API a while (before the ports are applied,
+		// so nginx gets both at once). Domain\Cluster is not in the LB build.
+		if (!empty($rServer['is_main']) && intval($rServer['http_broadcast_port'] ?? 0) !== intval($rArray['http_broadcast_port']) && class_exists(ClusterEndpoint::class) && SettingsManager::get('cluster_api_enabled')) {
+			ClusterEndpoint::recordChange(intval($rServer['http_broadcast_port'] ?? 0), intval($rArray['http_broadcast_port']), SettingsManager::getAll());
+		}
 		$rPorts = ['http' => [], 'https' => []];
 		foreach (array_merge([intval($rArray['http_broadcast_port'])], explode(',', $rArray['http_ports_add'])) as $rPort) {
 			if (is_numeric($rPort) && 0 < $rPort && $rPort <= 65535) {
@@ -177,9 +186,9 @@ class ServerService {
 
 		$rDisableRamdisk = !empty($rData['disable_ramdisk']);
 		if ($rDisableRamdisk && $rMounted) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rInsertID, time(), json_encode(['action' => 'disable_ramdisk']));
+			NodeActions::setRamdisk(intval($rInsertID), false, $db);
 		} elseif (!$rDisableRamdisk && !$rMounted) {
-			$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rInsertID, time(), json_encode(['action' => 'enable_ramdisk']));
+			NodeActions::setRamdisk(intval($rInsertID), true, $db);
 		}
 
 		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
@@ -280,9 +289,9 @@ class ServerService {
 
 			$db->query('UPDATE `servers` SET `status` = 3, `parent_id` = ? WHERE `id` = ?;', '[' . implode(',', $rParentIDs) . ']', $rServer['id']);
 			if ($rData['type'] == 1) {
-				$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . intval($rData['type']) . ' ' . intval($rServer['id']) . ' ' . intval($rData['ssh_port']) . ' ' . escapeshellarg($rData['root_username']) . ' ' . escapeshellarg($rData['root_password']) . ' ' . intval($rData['http_broadcast_port']) . ' ' . intval($rData['https_broadcast_port']) . ' ' . intval($rUpdateSysctl) . ' ' . intval($rPrivateIP) . ' "' . json_encode($rParentIDs) . '" > "' . BIN_PATH . 'install/' . intval($rServer['id']) . '.install" 2>/dev/null &';
+				$rCommand = InstallCredentials::command(intval($rData['type']), intval($rServer['id']), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], [(string) intval($rData['http_broadcast_port']), (string) intval($rData['https_broadcast_port']), (string) intval($rUpdateSysctl), (string) intval($rPrivateIP), escapeshellarg(json_encode($rParentIDs))], (string) ($rData['expected_hostkey'] ?? ''));
 			} else {
-				$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . intval($rData['type']) . ' ' . intval($rServer['id']) . ' ' . intval($rData['ssh_port']) . ' ' . escapeshellarg($rData['root_username']) . ' ' . escapeshellarg($rData['root_password']) . ' 80 443 ' . intval($rUpdateSysctl) . ' > "' . BIN_PATH . 'install/' . intval($rServer['id']) . '.install" 2>/dev/null &';
+				$rCommand = InstallCredentials::command(intval($rData['type']), intval($rServer['id']), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], ['80', '443', (string) intval($rUpdateSysctl)], (string) ($rData['expected_hostkey'] ?? ''));
 			}
 			shell_exec($rCommand);
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rServer['id']]];
@@ -317,9 +326,9 @@ class ServerService {
 		}
 
 		if ($rData['type'] == 1) {
-			$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . intval($rData['type']) . ' ' . intval($rInsertID) . ' ' . intval($rData['ssh_port']) . ' ' . escapeshellarg($rData['root_username']) . ' ' . escapeshellarg($rData['root_password']) . ' ' . intval($rData['http_broadcast_port']) . ' ' . intval($rData['https_broadcast_port']) . ' ' . intval($rUpdateSysctl) . ' ' . intval($rPrivateIP) . ' "' . json_encode($rParentIDs) . '" > "' . BIN_PATH . 'install/' . intval($rInsertID) . '.install" 2>/dev/null &';
+			$rCommand = InstallCredentials::command(intval($rData['type']), intval($rInsertID), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], [(string) intval($rData['http_broadcast_port']), (string) intval($rData['https_broadcast_port']), (string) intval($rUpdateSysctl), (string) intval($rPrivateIP), escapeshellarg(json_encode($rParentIDs))], (string) ($rData['expected_hostkey'] ?? ''));
 		} else {
-			$rCommand = PHP_BIN . ' ' . MAIN_HOME . 'console.php server:install ' . intval($rData['type']) . ' ' . intval($rInsertID) . ' ' . intval($rData['ssh_port']) . ' ' . escapeshellarg($rData['root_username']) . ' ' . escapeshellarg($rData['root_password']) . ' 80 443 ' . intval($rUpdateSysctl) . ' > "' . BIN_PATH . 'install/' . intval($rInsertID) . '.install" 2>/dev/null &';
+			$rCommand = InstallCredentials::command(intval($rData['type']), intval($rInsertID), intval($rData['ssh_port']), (string) $rData['root_username'], (string) $rData['root_password'], ['80', '443', (string) intval($rUpdateSysctl)], (string) ($rData['expected_hostkey'] ?? ''));
 		}
 
 		shell_exec($rCommand);
@@ -355,7 +364,7 @@ class ServerService {
 	 */
 	public static function changePort(int $rServerID, int $rType, mixed $rPorts, bool $rReload = false) {
 		$db = self::db();
-		$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'set_port', 'type' => intval($rType), 'ports' => $rPorts, 'reload' => $rReload]));
+		NodeActions::setPorts(intval($rServerID), intval($rType), $rPorts, $rReload, $db);
 	}
 
 	/**
@@ -368,7 +377,7 @@ class ServerService {
 	 */
 	public static function setServices(int $rServerID, int $rNumServices, bool $rReload = true) {
 		$db = self::db();
-		$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'set_services', 'count' => intval($rNumServices), 'reload' => $rReload]));
+		NodeActions::setServices(intval($rServerID), intval($rNumServices), $rReload, $db);
 	}
 
 	/**
@@ -380,7 +389,7 @@ class ServerService {
 	 */
 	public static function setGovernor(int $rServerID, string $rGovernor) {
 		$db = self::db();
-		$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'set_governor', 'data' => $rGovernor]));
+		NodeActions::setGovernor(intval($rServerID), $rGovernor, $db);
 	}
 
 	/**
@@ -392,7 +401,7 @@ class ServerService {
 	 */
 	public static function setSysctl(int $rServerID, mixed $rSysCtl) {
 		$db = self::db();
-		$db->query('INSERT INTO `signals`(`server_id`, `time`, `custom_data`) VALUES(?, ?, ?);', $rServerID, time(), json_encode(['action' => 'set_sysctl', 'data' => $rSysCtl]));
+		NodeActions::setSysctl(intval($rServerID), $rSysCtl, $db);
 	}
 
 	/**
@@ -404,7 +413,7 @@ class ServerService {
 		global $rServers;
 		foreach (array_keys($rServers) as $rServerID) {
 			if ($rServers[$rServerID]['server_online']) {
-				ApiClient::systemRequest($rServerID, ['action' => 'restore_images']);
+				NodeRpc::request($rServerID, ['action' => 'restore_images']);
 			}
 		}
 
@@ -423,7 +432,7 @@ class ServerService {
 		global $rServers;
 		foreach ($db->get_rows() as $rRow) {
 			if ($rServers[$rRow['server_id']]['server_online']) {
-				ApiClient::systemRequest($rRow['server_id'], ['action' => 'kill_plex']);
+				NodeRpc::request($rRow['server_id'], ['action' => 'kill_plex']);
 			}
 		}
 

@@ -58,6 +58,9 @@ final class IngestFeeder {
 
 	private int $droppedPackets = 0;
 
+	/** False when fanout is switched off (FanoutMode): every call is a no-op. */
+	private bool $enabled = true;
+
 	/**
 	 * @param int           $rStreamID Stream id (the daemon key).
 	 * @param string|null   $rKeyHex   Hex AES-128 key when the stream's HLS is encrypted.
@@ -91,7 +94,16 @@ final class IngestFeeder {
 	 */
 	public static function forStream(int $rStreamID, bool $rEncrypt, ?callable $rLogger = null): self {
 		[$rKey, $rIV] = $rEncrypt ? self::streamKey($rStreamID) : [null, null];
-		return new self($rStreamID, $rKey, $rIV, $rLogger);
+		$rFeeder = new self($rStreamID, $rKey, $rIV, $rLogger);
+		// Fanout off: the producer's on-disk HLS is the delivery, so there is no
+		// daemon to register with, and nothing to buffer for one.
+		$rFeeder->enabled = FanoutMode::enabled();
+		return $rFeeder;
+	}
+
+	/** @return bool False when fanout is switched off and this feeder does nothing. */
+	public function isEnabled(): bool {
+		return $this->enabled;
 	}
 
 	/**
@@ -119,6 +131,9 @@ final class IngestFeeder {
 	 * @return bool True when connected.
 	 */
 	public function connect(): bool {
+		if (!$this->enabled) {
+			return false;
+		}
 		if ($this->conn) {
 			return true;
 		}
@@ -161,6 +176,9 @@ final class IngestFeeder {
 	 * @param string $rData Whole 188-byte packets.
 	 */
 	public function write(string $rData): void {
+		if (!$this->enabled) {
+			return;
+		}
 		if ($rData !== '') {
 			$this->pending .= $rData;
 			$this->shedOverflow();
@@ -174,6 +192,9 @@ final class IngestFeeder {
 	 * the producer's loop even when there is nothing new to write.
 	 */
 	public function flush(): void {
+		if (!$this->enabled) {
+			return;
+		}
 		if (!$this->conn) {
 			if (microtime(true) < $this->retryAt || !$this->connect()) {
 				return;

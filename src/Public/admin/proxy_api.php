@@ -1,8 +1,10 @@
 <?php
 
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Security\BlocklistService;
+use XcVm\Domain\Server\ProxyIdentity;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -19,11 +21,16 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 set_time_limit(0);
 $rSignals = [];
 
-if (BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])) {
+// The reporting proxy is the one whose address the request comes from; a
+// posted server_id naming any other server is refused.
+$rServerIDRequest = BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])
+	? ProxyIdentity::resolve(BlocklistService::getProxyIPs(), $_SERVER['REMOTE_ADDR'], $_POST['server_id'] ?? null)
+	: null;
+
+if ($rServerIDRequest !== null) {
 	$db = new DatabaseHandler();
 	DatabaseFactory::set($db);
 	$rServers = ServerRepository::getAll();
-	$rServerIDRequest = intval($_POST['server_id']);
 	$rStats = $_POST['stats'];
 	$db->query('SELECT `bytes_sent_total`, `bytes_received_total`, `time` FROM `servers_stats` WHERE `server_id` = ? ORDER BY `id` DESC LIMIT 1;', $rServerIDRequest);
 
@@ -36,7 +43,8 @@ if (BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])) {
 		$rStats['bytes_received'] = ($rStats['bytes_received_total'] - $rRow['bytes_received_total']) / $rTimeSince;
 	}
 
-	$rAddresses = $_POST['addresses'];
+	// Telemetry only: whitelist_ips feeds the /api allowlist and is admin-maintained.
+	$rStats['ips_seen'] = ProxyIdentity::seenAddresses($_POST['addresses'] ?? null);
 	$rHardware = ['total_ram' => $rStats['total_mem'], 'total_used' => $rStats['total_mem_used'], 'cores' => $rStats['cpu_cores'], 'threads' => $rStats['cpu_cores'], 'kernel' => $rStats['kernel'], 'total_running_streams' => $rStats['total_running_streams'], 'cpu_name' => $rStats['cpu_name'], 'cpu_usage' => $rStats['cpu'], 'network_speed' => $rStats['network_speed'], 'bytes_sent' => $rStats['bytes_sent'], 'bytes_received' => $rStats['bytes_received']];
 	$rPing = (pingserver($rServers[$rServerIDRequest]['server_ip'], $rServers[$rServerIDRequest]['http_broadcast_port']) ?: 0);
 
@@ -64,9 +72,11 @@ if (BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])) {
 	}
 
 	$db->query('INSERT INTO `servers_stats`(`server_id`, `cpu`, `cpu_cores`, `cpu_avg`, `total_mem`, `total_mem_free`, `total_mem_used`, `total_mem_used_percent`, `total_disk_space`, `uptime`, `total_running_streams`, `bytes_sent`, `bytes_received`, `bytes_sent_total`, `bytes_received_total`, `cpu_load_average`, `connections`, `total_users`, `users`, `time`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);', $rServerIDRequest, $rStats['cpu'], $rStats['cpu_cores'], $rStats['cpu_avg'], $rStats['total_mem'], $rStats['total_mem_free'], $rStats['total_mem_used'], $rStats['total_mem_used_percent'], $rStats['total_disk_space'], $rStats['uptime'], $rStats['total_running_streams'], $rStats['bytes_sent'], $rStats['bytes_received'], $rStats['bytes_sent_total'], $rStats['bytes_received_total'], $rStats['cpu_load_average'], $rConnections, $rAllUsers, $rUsers, time());
-	$db->query('UPDATE `servers` SET `connections` = ?, `users` = ?, `ping` = ?,`server_hardware` = ?,`whitelist_ips` = ?, `interfaces` = ?, `watchdog_data` = ?, `last_check_ago` = ? WHERE `id` = ?', $rConnections, $rUsers, $rPing, json_encode($rHardware), json_encode($rAddresses), json_encode($rStats['interfaces']), json_encode($rStats, JSON_PARTIAL_OUTPUT_ON_ERROR), time(), $rServerIDRequest);
+	$db->query('UPDATE `servers` SET `connections` = ?, `users` = ?, `ping` = ?,`server_hardware` = ?, `interfaces` = ?, `watchdog_data` = ?, `last_check_ago` = ? WHERE `id` = ?', $rConnections, $rUsers, $rPing, json_encode($rHardware), json_encode($rStats['interfaces']), json_encode($rStats, JSON_PARTIAL_OUTPUT_ON_ERROR), time(), $rServerIDRequest);
 
-	if ($db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' ORDER BY signal_id ASC;", $rServerIDRequest)) {
+	// A proxy is never sent OPENSSL_EXTRA: those rows are an LB's, carrying the
+	// main's value, and must not be handed out here.
+	if ($db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' AND `custom_data` NOT LIKE ? ORDER BY signal_id ASC;", $rServerIDRequest, '%"action":"' . OpensslExtra::SIGNAL_ACTION . '"%')) {
 		if (0 < $db->num_rows()) {
 			foreach ($db->get_rows() as $rRow) {
 				$rData = json_decode($rRow['custom_data'], true);

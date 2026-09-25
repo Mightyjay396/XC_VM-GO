@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Process;
 
+use XcVm\Core\Util\Encryption;
+
 /**
  * Process Manager
  *
@@ -377,6 +379,38 @@ class ProcessManager {
 	// ───────────────────────────────────────────────────────────
 
 	/**
+	 * Lock file of a cron class. Stable across secret rotations: the old name
+	 * hashed live_streaming_pass, so rotating that secret let a second
+	 * instance start beside one still running under the old name.
+	 */
+	public static function cronLockPath(string $rClass): string {
+		return CRONS_TMP_PATH . 'lock_' . md5($rClass);
+	}
+
+	/**
+	 * The name a cron class's lock had before cronLockPath(). Only consulted
+	 * so that an instance started by the previous release is still honoured.
+	 */
+	public static function legacyCronLockPath(string $rClass, ?string $rStreamingPass): string {
+		return CRONS_TMP_PATH . md5(Encryption::generateUniqueCode($rStreamingPass) . $rClass);
+	}
+
+	/**
+	 * Exit like acquireCronLock() when $lockFile is held by a live, fresh
+	 * process; never takes or writes the lock.
+	 */
+	public static function exitIfCronLockHeld(string $lockFile, int $timeout = 1800): void {
+		$contents = @file_get_contents($lockFile);
+		$mtime = @filemtime($lockFile);
+		if ($contents === false || $mtime === false) {
+			return;
+		}
+		if (self::procExists((int) trim($contents)) && time() - $mtime < $timeout) {
+			exit('Running...');
+		}
+	}
+
+	/**
 	 * Acquire a cron lock (PID file)
 	 *
 	 * If a lock file exists with a running process, exits with 'Running...'.
@@ -604,14 +638,15 @@ class ProcessManager {
 	 * match unrelated processes (e.g. ffmpeg's -thread_queue_size satisfied
 	 * the "queue" daemon check, so the encode queue was never revived).
 	 *
-	 * @param array $rTerms Cmdline substrings to match (exact, case-sensitive)
-	 * @param int   $rLimit Stop after this many matches (0 = no limit)
+	 * @param array  $rTerms    Cmdline substrings to match (exact, case-sensitive)
+	 * @param int    $rLimit    Stop after this many matches (0 = no limit)
+	 * @param string $rProcRoot procfs mount point (overridable for tests)
 	 * @return array<int> Matching PIDs (own PID excluded)
 	 */
-	public static function findProcessPIDs(array $rTerms, int $rLimit = 0) {
+	public static function findProcessPIDs(array $rTerms, int $rLimit = 0, string $rProcRoot = '/proc') {
 		$rPIDs = [];
 		$rSelf = getmypid();
-		foreach (glob('/proc/[0-9]*/cmdline') ?: [] as $rCmdFile) {
+		foreach (glob($rProcRoot . '/[0-9]*/cmdline') ?: [] as $rCmdFile) {
 			$rPID = intval(basename(dirname($rCmdFile)));
 			if ($rPID == $rSelf) {
 				continue;
@@ -643,5 +678,65 @@ class ProcessManager {
 	 */
 	public static function isAnyProcessRunning(array $rTerms) {
 		return count(self::findProcessPIDs($rTerms, 1)) > 0;
+	}
+
+	/**
+	 * Whether a raw /proc/PID/cmdline is a stream producer: ffmpeg itself, or
+	 * the fanout daemon's native remuxer (`xc_fanout remux`). Only the program
+	 * name is matched, so ffprobe (under bin/ffmpeg_bin/ as well), a shell
+	 * wrapper naming ffmpeg and the fanout daemon are not producers.
+	 *
+	 * @param string $rRawCmdline NUL-separated argv, as read from /proc
+	 * @return bool
+	 */
+	public static function isStreamProducerCmdline(string $rRawCmdline) {
+		$rArgv = explode("\0", $rRawCmdline);
+		$rProgram = basename($rArgv[0]);
+		if ($rProgram === 'ffmpeg') {
+			return true;
+		}
+		return $rProgram === 'xc_fanout' && ($rArgv[1] ?? '') === 'remux';
+	}
+
+	/**
+	 * Count the running stream producers (see isStreamProducerCmdline()) —
+	 * total_running_streams in the watchdog heartbeat. Reads /proc directly
+	 * instead of `ps ax | grep -c ffmpeg`.
+	 *
+	 * @param string $rProcRoot procfs mount point (overridable for tests)
+	 * @return int
+	 */
+	public static function countStreamProducers(string $rProcRoot = '/proc') {
+		$rCount = 0;
+		foreach (glob($rProcRoot . '/[0-9]*/cmdline') ?: [] as $rCmdFile) {
+			$rRaw = @file_get_contents($rCmdFile);
+			if ($rRaw && self::isStreamProducerCmdline($rRaw)) {
+				$rCount++;
+			}
+		}
+		return $rCount;
+	}
+
+	/**
+	 * PIDs of the live PHP-FPM workers of the xc_vm pool — the pids that
+	 * connection rows record (getmypid() in the stream endpoints). The watchdog
+	 * publishes them as servers.php_pids. FPM titles a worker "php-fpm: pool
+	 * xc_vm" and its master "php-fpm: master process (...)", so the pool pid
+	 * files (masters only) would never match a connection.
+	 *
+	 * With pm = ondemand an idle pool has no workers, so an empty list is only
+	 * reported while an FPM master is visible. With no master either, FPM is
+	 * down or hidden from this scan, and the list is unknown.
+	 *
+	 * @param string $rProcRoot procfs mount point (overridable for tests)
+	 * @return array<int>|null Worker PIDs, ascending; null when unknown
+	 */
+	public static function phpFpmWorkerPIDs(string $rProcRoot = '/proc') {
+		$rPIDs = self::findProcessPIDs(['php-fpm: pool xc_vm'], 0, $rProcRoot);
+		if (count($rPIDs) == 0 && count(self::findProcessPIDs(['php-fpm: master process'], 1, $rProcRoot)) == 0) {
+			return null;
+		}
+		sort($rPIDs);
+		return $rPIDs;
 	}
 }

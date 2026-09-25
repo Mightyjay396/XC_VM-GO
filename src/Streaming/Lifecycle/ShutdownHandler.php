@@ -45,7 +45,7 @@ class ShutdownHandler {
 				}
 			} else {
 				if (!is_object($db)) {
-					DatabaseFactory::connect();
+					DatabaseFactory::connectLazy();
 				}
 
 				$db->query(

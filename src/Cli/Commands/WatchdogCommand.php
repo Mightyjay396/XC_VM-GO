@@ -4,9 +4,11 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Util\CounterRateSampler;
 use XcVm\Core\Util\SystemInfo;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -54,7 +56,7 @@ class WatchdogCommand implements CommandInterface {
 		$this->initRedisIfEnabled();
 
 		$this->rRefreshInterval = (intval(SettingsManager::get('online_capacity_interval')) ?: 10);
-		$rLastRequests = $rLastRequestsTime = $rPrevStat = null;
+		$rPrevStat = null;
 		$this->rLastCheck = null;
 
 		$rServers = ServerRepository::getAll();
@@ -79,6 +81,10 @@ class WatchdogCommand implements CommandInterface {
 				$this->attemptRedisRestart();
 			}
 
+			if ($this->serversRefreshDue()) {
+				$rServers = $this->refreshServers();
+			}
+
 			if ($this->shouldRefreshSettings()) {
 				if (!ProcessManager::isNginxRunning()) {
 					echo "Not running! Break.\n";
@@ -88,7 +94,6 @@ class WatchdogCommand implements CommandInterface {
 					echo "File changed! Break.\n";
 					break;
 				}
-				$rServers = ServerRepository::getAll(true);
 				SettingsManager::set(SettingsRepository::getAll(true));
 				ConnectionTracker::getCapacity(true);
 				ConnectionTracker::getCapacity(false);
@@ -97,11 +102,19 @@ class WatchdogCommand implements CommandInterface {
 			}
 
 			// ── Nginx stats ──────────────────────────────────────
-			$rNginx = explode("\n", file_get_contents('http://127.0.0.1:' . $rServers[SERVER_ID]['http_broadcast_port'] . '/nginx_status'));
-			list($rAccepted, $rHandled, $rRequests) = explode(' ', trim($rNginx[2]));
-			$rRequestsPerSecond = ($rLastRequests ? intval((floatval($rRequests) - floatval($rLastRequests)) / (time() - $rLastRequestsTime)) : 0);
-			$rLastRequests = $rRequests;
-			$rLastRequestsTime = time();
+			// Each pass is a fresh process (restartDaemon re-execs), so the
+			// previous request count is kept in a state file, not a variable.
+			$rRequests = SystemInfo::nginxRequestCount((string) @file_get_contents('http://127.0.0.1:' . $rServers[SERVER_ID]['http_broadcast_port'] . '/nginx_status'));
+			$rRequestsPerSecond = ($rRequests === null ? 0 : (new CounterRateSampler(TMP_PATH . 'watchdog_nginx_requests.json'))->sample($rRequests, time()));
+
+			// ── TELEMETRY flow: the node's agent reports to MAIN ──
+			// MAIN writes this server's row from the agent's heartbeats; here
+			// only what PHP alone knows is sampled, for the agent to forward.
+			if (NodeFlows::on(NodeFlows::TELEMETRY)) {
+				self::writeLocalTelemetry($rRequestsPerSecond);
+				sleep(2);
+				break;
+			}
 
 			// ── CPU stats ────────────────────────────────────────
 			$rStats = SystemInfo::getStats();
@@ -134,13 +147,9 @@ class WatchdogCommand implements CommandInterface {
 			$rStats['fanout'] = FanoutClient::status();
 
 			// ── PHP PIDs ─────────────────────────────────────────
-			$rPHPPIDs = [];
-			foreach (glob(MAIN_HOME . 'bin/php/sockets/*.pid') ?: [] as $rPidFile) {
-				$rPid = trim(@file_get_contents($rPidFile) ?: '');
-				if (is_numeric($rPid) && 0 < intval($rPid)) {
-					$rPHPPIDs[] = intval($rPid);
-				}
-			}
+			// FPM worker pids, which connection rows record; the pool pid
+			// files hold only the masters. null (unknown) is stored as "null".
+			$rPHPPIDs = ProcessManager::phpFpmWorkerPIDs();
 
 			// ── Update servers table ─────────────────────────────
 			$rConnections = $rUsers = 0;
@@ -263,6 +272,22 @@ class WatchdogCommand implements CommandInterface {
 			echo "Redis restarted successfully\n";
 		} else {
 			echo "Redis restart attempted, connection still unavailable\n";
+		}
+	}
+
+	/**
+	 * `config/cluster/local.json`, beside the agent's state: what the agent
+	 * cannot sample itself. It forwards the file while it is under 10 s old.
+	 */
+	public static function writeLocalTelemetry(int|float $rRequestsPerSecond): void {
+		$rDir = CONFIG_PATH . 'cluster/';
+		if (!is_dir($rDir)) {
+			return;
+		}
+		$rTmp = $rDir . 'local.json.tmp';
+		$rJson = json_encode(['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status()], JSON_PARTIAL_OUTPUT_ON_ERROR);
+		if (@file_put_contents($rTmp, (string) $rJson, LOCK_EX) !== false) {
+			@rename($rTmp, $rDir . 'local.json');
 		}
 	}
 }

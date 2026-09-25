@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Database;
 
+use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Logging\FileLogger;
 
 /**
@@ -135,6 +136,7 @@ class Database {
 			$graceful = $migrate;
 		}
 
+		ConnectAudit::record(ConnectAudit::SQL);
 		try {
 			$this->dbh = \XC_VM::db_connect($migrate);
 			if (!$this->dbh) {

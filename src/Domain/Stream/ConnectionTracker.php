@@ -2,6 +2,8 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\ClusterHealth;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Server\ServerRepository;
@@ -125,6 +127,16 @@ class ConnectionTracker {
 					foreach ($rRows as $rServerID => $rRow) {
 						$rRows[$rServerID]['capacity'] = $rRow['online_clients'];
 					}
+				}
+			}
+		}
+
+		// A node MAIN's liveness loop finds silent for over 10 s (suspect) weighs
+		// double, so the balancer sends it fewer new viewers.
+		if (!$rProxy) {
+			foreach ($rRows as $rServerID => $rRow) {
+				if (isset($rRow['capacity'])) {
+					$rRows[$rServerID]['capacity'] = $rRow['capacity'] * ClusterHealth::weight((int) $rServerID);
 				}
 			}
 		}
@@ -366,6 +378,81 @@ class ConnectionTracker {
 		// pipelining, so anything but an array counts as "no connections".
 		$rRows = $rRedis->mGet($rKeys);
 		return is_array($rRows) ? array_values($rRows) : [];
+	}
+
+	/**
+	 * Read a line's connection rows from its LINE# (or LINE_ALL#) sorted set.
+	 *
+	 * getLineConnections() answers the set's members — connection keys, not
+	 * the connections — so a caller that needs the rows (IP, start time) reads
+	 * them here. An unreachable Redis, a failed call and an unreadable payload
+	 * all read as "no connection".
+	 *
+	 * @param \Redis|null $rRedis  Active connection, or null when unreachable.
+	 * @param int         $rLineID Line ID.
+	 * @param bool        $rActive If true — only active (LINE#), otherwise all (LINE_ALL#).
+	 * @return array<int, array> Unserialized connection rows.
+	 */
+	public static function getLineConnectionRows(?\Redis $rRedis, int $rLineID, bool $rActive = true): array {
+		if (!$rRedis instanceof \Redis) {
+			return [];
+		}
+		// zRangeByScore returns false on a failed connection — degrade to empty.
+		$rKeys = $rRedis->zRangeByScore(($rActive ? 'LINE#' : 'LINE_ALL#') . $rLineID, '-inf', '+inf');
+		if (!is_array($rKeys) || count($rKeys) === 0) {
+			return [];
+		}
+		$rConnections = [];
+		foreach (self::readConnections($rRedis, $rKeys) as $rRow) {
+			$rRow = is_string($rRow) ? igbinary_unserialize($rRow) : false;
+			if (is_array($rRow)) {
+				$rConnections[] = $rRow;
+			}
+		}
+		return $rConnections;
+	}
+
+	/**
+	 * Pick the IP of the oldest connection — the one disallow_2nd_ip_con accepts.
+	 *
+	 * Rows that are not arrays or carry no user_ip are skipped; a row without
+	 * date_start sorts after every dated one, and on a tie the first row wins.
+	 *
+	 * @param array $rRows Connection rows (see getLineConnectionRows()).
+	 * @return string|null The oldest connection's IP, or null when there is none.
+	 */
+	public static function oldestConnectionIP(array $rRows): ?string {
+		$rAcceptIP = null;
+		$rOldestStart = PHP_INT_MAX;
+		foreach ($rRows as $rRow) {
+			if (!is_array($rRow) || empty($rRow['user_ip'])) {
+				continue;
+			}
+			$rStart = isset($rRow['date_start']) ? intval($rRow['date_start']) : PHP_INT_MAX;
+			if (is_null($rAcceptIP) || $rStart < $rOldestStart) {
+				$rAcceptIP = (string) $rRow['user_ip'];
+				$rOldestStart = $rStart;
+			}
+		}
+		return $rAcceptIP;
+	}
+
+	/**
+	 * The IP disallow_2nd_ip_con accepts for a line in Redis mode: its oldest
+	 * active connection's.
+	 *
+	 * An HMAC token has no line id (null) and is never checked — the MySQL
+	 * branch's `user_id = NULL` matches nothing either — so Redis is not asked.
+	 *
+	 * @param \Redis|null $rRedis  Active connection, or null when unreachable.
+	 * @param mixed       $rLineID Line ID; empty for an HMAC identity.
+	 * @return string|null The accepted IP, or null when there is none.
+	 */
+	public static function acceptedLineIP(?\Redis $rRedis, mixed $rLineID): ?string {
+		if (empty($rLineID)) {
+			return null;
+		}
+		return self::oldestConnectionIP(self::getLineConnectionRows($rRedis, intval($rLineID), true));
 	}
 
 	/**
@@ -982,7 +1069,7 @@ class ConnectionTracker {
 		if (!empty($rSettings['redis_handler'])) {
 			self::redisSignal(0, $rServerID, 0, $rSignal);
 		} else {
-			self::db()->query('INSERT INTO `signals` (`server_id`, `cache`, `time`, `custom_data`) VALUES(?, 1, UNIX_TIMESTAMP(), ?);', $rServerID, json_encode($rSignal));
+			SignalDispatcher::cache($rServerID, $rSignal, false, true, self::db());
 		}
 	}
 
@@ -1031,7 +1118,7 @@ class ConnectionTracker {
 						if ($rSettings['redis_handler']) {
 							self::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 1);
 						} else {
-							$db->query('INSERT INTO `signals` (`pid`,`server_id`,`rtmp`,`time`) VALUES(?,?,?,UNIX_TIMESTAMP())', $rActivityInfo['pid'], $rActivityInfo['server_id'], 1);
+							SignalDispatcher::kill(intval($rActivityInfo['server_id']), intval($rActivityInfo['pid']), true, $db);
 						}
 					}
 				} else {
@@ -1055,7 +1142,7 @@ class ConnectionTracker {
 							if ($rSettings['redis_handler']) {
 								self::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 0);
 							} else {
-								$db->query('INSERT INTO `signals` (`pid`,`server_id`,`time`) VALUES(?,?,UNIX_TIMESTAMP())', $rActivityInfo['pid'], $rActivityInfo['server_id']);
+								SignalDispatcher::kill(intval($rActivityInfo['server_id']), intval($rActivityInfo['pid']), false, $db);
 							}
 						}
 					}

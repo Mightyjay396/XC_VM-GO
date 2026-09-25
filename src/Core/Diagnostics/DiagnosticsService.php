@@ -2,7 +2,7 @@
 
 namespace XcVm\Core\Diagnostics;
 
-use XcVm\Core\Http\ApiClient;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -253,7 +253,7 @@ class DiagnosticsService {
 	 */
 	public static function getPIDs(int $rServerID) {
 		$rReturn = [];
-		$rProcesses = json_decode(ApiClient::systemRequest($rServerID, ['action' => 'get_pids']), true);
+		$rProcesses = json_decode(NodeRpc::request($rServerID, ['action' => 'get_pids']), true);
 		if (!is_array($rProcesses)) {
 			return $rReturn;
 		}

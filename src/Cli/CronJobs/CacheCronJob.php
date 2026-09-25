@@ -99,7 +99,6 @@ class CacheCronJob implements CommandInterface {
 		FileCache::setCache('settings', SettingsRepository::getAll(true));
 		FileCache::setCache('bouquets', BouquetService::getAll(true));
 		$rServers = ServerRepository::getAll(true);
-		unset($rServers['php_pids']);
 		FileCache::setCache('servers', $rServers);
 		FileCache::setCache('proxy_servers', BlocklistService::getProxyIPs(true));
 		FileCache::setCache('blocked_servers', BlocklistService::getBlockedServers(true));

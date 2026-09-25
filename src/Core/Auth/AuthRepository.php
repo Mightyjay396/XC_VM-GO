@@ -2,7 +2,7 @@
 
 namespace XcVm\Core\Auth;
 
-use XcVm\Core\Http\ApiClient;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Domain\User\UserRepository;
 
 /**
@@ -159,7 +159,7 @@ class AuthRepository {
 			}
 		}
 
-		ApiClient::systemRequest($rServerId, ['action' => 'reload_nginx']);
+		NodeRpc::request($rServerId, ['action' => 'reload_nginx']);
 	}
 
 	/**

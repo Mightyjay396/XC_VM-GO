@@ -49,6 +49,14 @@ pick_ffmpeg() {
 }
 
 while true; do
+  # Fanout switched off in the panel: FanoutMode writes this flag (from the
+  # root cron, within a minute of the change) and stops the daemon, which lands
+  # us here. Exit instead of respawning; the cron restarts this supervisor once
+  # the flag is gone.
+  if [ -f "$FANOUT_DIR/disabled" ]; then
+    echo "=== $(date '+%F %T') supervisor pid=$$ exiting: fanout disabled in the panel ===" >> "$LOG"
+    exit 0
+  fi
   if [ -x "$FANOUT_DIR/xc_fanout" ]; then
     # Reap a daemon orphaned by a previous supervisor that died without it (the
     # child reparents to init and keeps holding the sockets). Our own daemon has

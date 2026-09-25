@@ -257,7 +257,8 @@ class ConstantsInitializer {
 	 * the install — OPENSSL_EXTRA must never change, since it feeds key/HMAC
 	 * derivation for persisted data (hmac_keys rows, cached image filenames,
 	 * proxy URL keys, stream tokens). The literal fallback keeps existing installs
-	 * — whose data derives from it — decrypting unchanged.
+	 * — whose data derives from it — decrypting unchanged. An LB holds its MAIN's
+	 * value; its copy is replaced only to match the MAIN (OpensslExtra::install).
 	 *
 	 * @param string $secretFile Absolute path to the per-install secret file.
 	 * @param string $fallback   Historical literal default.
