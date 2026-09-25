@@ -67,11 +67,15 @@ final class ClusterLivenessTest extends TestCase {
 		$this->assertSame([7 => ['suspect', 'offline']], $this->at(31000));
 		$this->assertSame(1.0, ClusterHealth::weight(7));
 
-		// It speaks again.
-		$this->rDb->query('UPDATE `cluster_nodes` SET `last_seen_at` = ? WHERE `server_id` = 7', $this->rT0 + 32000);
-		$rBeat(32000);
-		$this->assertSame([7 => ['offline', 'ok']], $this->at(32000));
-		$this->assertSame(3, $this->audit('node.health'), 'ok→suspect, suspect→offline, offline→ok; the first publication is not a transition');
+		// It speaks again: suspect at once, ok after steady health (NodeHealth::RECOVER_MS).
+		$rAll = fn(int $rMs) => $this->rDb->query('UPDATE `cluster_nodes` SET `last_seen_at` = ?', $this->rT0 + $rMs);
+		$rAll(32000);
+		$this->assertSame([7 => ['offline', 'suspect']], $this->at(32000));
+		$rAll(61000);
+		$this->assertSame([], $this->at(61000), 'still recovering');
+		$rAll(62000);
+		$this->assertSame([7 => ['suspect', 'ok']], $this->at(62000));
+		$this->assertSame(4, $this->audit('node.health'), 'ok→suspect, suspect→offline, offline→suspect, suspect→ok; the first publication is not a transition');
 	}
 
 	public function testFleetSilenceHoldsNodesInsteadOfMarkingThemOffline(): void {
