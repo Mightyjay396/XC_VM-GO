@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry and connection limits enforced on MAIN; admission, snapshots and the HLS reaper are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry, connection limits enforced on MAIN, and the connection digest with snapshots and seeding; admission and the agent's HLS reaper are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -449,6 +449,32 @@ A viewer over its limit is closed within about 1–1.5 s of opening on another n
 **Closes reach the node.** `ConnectionLimiter::closeConnection` also sends `conn.close {uuid, remove}` when the viewer is another node's and that node has CONNECTIONS. This covers any close made by the limiter, on MAIN or from another path. An ended HLS viewer is kept as ended (`remove: false`); anything else is removed. Without this, the node's registry would resume a kicked HLS viewer on the next playlist request.
 
 Admission when the token is minted (reservations) is not in this increment.
+
+### Connections (Phase 6, fifth increment): digest, snapshot and seed
+
+MAIN's store for a CONNECTIONS node can drift from the node's registry. Causes include an event lost to a bug, an upsert that re-opens a viewer MAIN closed, or a registry restored from an older `registry.snap`. The digest finds a drift, and a snapshot repairs it.
+
+**Digest.** Both sides compute it over the open connections (`hls_end` not set), in `Domain\Cluster\ConnectionDigest` and the agent's `Registry.Digest`. Both pin one test vector. The digest is `{count, users, xor64}`:
+
+- `count`: the number of open connections.
+- `users`: the number of distinct owners. An owner is `u:<user_id>`, or `h:<hmac_id>:<hmac_identifier>` for an HMAC identity.
+- `xor64`: the XOR of the first 8 bytes of SHA-256(`uuid` "\n" owner), as 16 hex digits.
+
+**Heartbeat.** An agent whose CONNECTIONS flow is on adds `conn_digest` to every heartbeat. MAIN compares it with its store for that node at most every 4 s. It answers `want_conn_snapshot` only when two checks in a row disagree, because events in flight catch up well within that. It asks one node at most once every 30 s. The check's state is a small file per node in `TMP_PATH/cluster_digest/`.
+
+**Snapshot.** The agent sends its whole registry with the `conn_snapshot` op, `{snap_id, seq, last, records}`. The registry goes in chunks of 1000 records, numbered from 0, up to 50 chunks. MAIN keeps the chunks in `TMP_PATH/cluster_snapshots/<sid>/` and applies nothing until the last one arrives. Then:
+
+- every record is upserted as `conn.upsert` would be;
+- every open connection MAIN holds for the node that the snapshot lacks is removed;
+- records that are not the node's are dropped, as at ingest.
+
+A chunk 0 starts over. Any other chunk out of order gets `409 SNAP_GAP {expected_seq}`, and the agent drops that snapshot; MAIN asks again if the drift stays. The op needs CONNECTIONS (`409 FLOW_OFF`), and each snapshot applied is audited as `conn.snapshot`.
+
+"Applied as a whole" means MAIN changes nothing before the last chunk. The apply itself is a sequence of store writes, not a transaction. Events the node spooled before the snapshot can land after it; they carry older or equal state, and a drift they leave is caught by the next check.
+
+**Seed.** `console.php cluster:seed-connections` runs on the node while it still reaches MAIN's store, before the CONNECTIONS flow is switched on. It loads the node's connections from MAIN's store (Redis `SERVER#<sid>`, or `lines_live`) into the agent through `POST /v1/conn/seed`. The first chunk empties the registry, and loading sends no event. Only the registry record's keys are sent (`AgentConnections::RECORD_KEYS`), never the line's other columns. After the switch, the first digest agrees and no snapshot is needed.
+
+Still to come in Phase 6: admission when the token is minted, the agent's HLS reaper, and rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
 
 ### Extension updates
 
