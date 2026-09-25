@@ -222,6 +222,9 @@ class ServerInstallCommand implements CommandInterface {
 
 		if ($rType == 2) {
 			LbInstallFlow::runStartup($rConn, $rRunSSH);
+			if (!LbInstallFlow::provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db)) {
+				return 1;
+			}
 		} else {
 			ProxyInstallFlow::runStartup($rConn, $rRunSSH);
 		}
@@ -313,46 +316,10 @@ class ServerInstallCommand implements CommandInterface {
 	}
 
 	private function sendFileSSH($rConn, string $rPath, string $rOutput, bool $rWarn = false): bool {
-		$rMD5 = md5_file($rPath);
-		ssh2_scp_send($rConn, $rPath, $rOutput);
-		$rOutMD5 = trim(explode(' ', $this->runSSH($rConn, 'md5sum "' . $rOutput . '"')['output'])[0]);
-		if ($rMD5 == $rOutMD5) {
-			return true;
-		}
-		if ($rWarn) {
-			echo "Failed to write using SCP, reverting to SFTP transfer... This will be take significantly longer!\n";
-		}
-		$rSFTP = ssh2_sftp($rConn);
-		if (!$rSFTP) {
-			return false;
-		}
-		$rSuccess = true;
-		$rStream = @fopen('ssh2.sftp://' . $rSFTP . $rOutput, 'wb');
-		if (!$rStream) {
-			return false;
-		}
-		try {
-			$rData = @file_get_contents($rPath);
-			if ($rData === false || @fwrite($rStream, $rData) === false) {
-				$rSuccess = false;
-			}
-			if (is_resource($rStream)) {
-				fclose($rStream);
-			}
-		} catch (\Exception $e) {
-			$rSuccess = false;
-			if (is_resource($rStream)) {
-				fclose($rStream);
-			}
-		}
-		return $rSuccess;
+		return SshChannel::send($rConn, $rPath, $rOutput, $rWarn);
 	}
 
 	private function runSSH($rConn, string $rCommand): array {
-		$rStream = ssh2_exec($rConn, $rCommand);
-		$rError = ssh2_fetch_stream($rStream, SSH2_STREAM_STDERR);
-		stream_set_blocking($rError, true);
-		stream_set_blocking($rStream, true);
-		return ['output' => stream_get_contents($rStream), 'error' => stream_get_contents($rError)];
+		return SshChannel::run($rConn, $rCommand);
 	}
 }
