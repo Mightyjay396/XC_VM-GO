@@ -4,6 +4,7 @@ namespace XcVm\Domain\Security;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Util\AdminHelpers;
@@ -41,6 +42,7 @@ class BlocklistService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
+			BlocklistChanges::set('ip', [$rData['ip']], $db);
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
@@ -83,6 +85,7 @@ class BlocklistService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
+			BlocklistChanges::set('isp', [$rArray['id'] ?? $rInsertID], $db);
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
@@ -129,6 +132,7 @@ class BlocklistService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
+			BlocklistChanges::set('rtmp', [$rArray['id'] ?? $rInsertID], $db);
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
@@ -161,6 +165,7 @@ class BlocklistService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
+			BlocklistChanges::set('ua', [$rArray['id'] ?? $rInsertID], $db);
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 
@@ -466,6 +471,7 @@ class BlocklistService {
 
 		$rRow = $db->get_row();
 		$db->query('DELETE FROM `blocked_ips` WHERE `id` = ?;', $rID);
+		BlocklistChanges::del('ip', [$rRow['ip']], $db);
 
 		if (file_exists(FLOOD_TMP_PATH . 'block_' . $rRow['ip'])) {
 			unlink(FLOOD_TMP_PATH . 'block_' . $rRow['ip']);
@@ -489,6 +495,7 @@ class BlocklistService {
 		}
 
 		$db->query('DELETE FROM `blocked_isps` WHERE `id` = ?;', $rID);
+		BlocklistChanges::del('isp', [$rID], $db);
 
 		return true;
 	}
@@ -508,6 +515,7 @@ class BlocklistService {
 		}
 
 		$db->query('DELETE FROM `blocked_uas` WHERE `id` = ?;', $rID);
+		BlocklistChanges::del('ua', [$rID], $db);
 
 		return true;
 	}
@@ -522,6 +530,7 @@ class BlocklistService {
 		global $rServers;
 		global $rProxyServers;
 		$db->query('TRUNCATE `blocked_ips`;');
+		BlocklistChanges::reset('ip', $db);
 		shell_exec('rm ' . FLOOD_TMP_PATH . 'block_*');
 
 		foreach ($rServers as $rServer) {
@@ -620,6 +629,7 @@ class BlocklistService {
 		}
 
 		$db->query('DELETE FROM `rtmp_ips` WHERE `id` = ?;', $rID);
+		BlocklistChanges::del('rtmp', [$rID], $db);
 
 		return true;
 	}

@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Auth;
 
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
@@ -108,6 +109,7 @@ class BruteforceGuard {
 			$db = self::getDB();
 			if ($db) {
 				$db->query('INSERT INTO `blocked_ips` (`ip`,`notes`,`date`) VALUES(?,?,?)', $ip, $reason, time());
+				BlocklistChanges::set('ip', [$ip], $db);
 			}
 			// Force-refresh blocked IPs cache
 			if (class_exists(BlocklistService::class, false)) {

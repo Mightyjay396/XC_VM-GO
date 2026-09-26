@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\Encryption;
@@ -56,6 +57,7 @@ class BlocklistAjaxController extends BaseAjaxController {
 
 		if (RequestManager::get('sub') == 'block' && filter_var(RequestManager::get('ip'), FILTER_VALIDATE_IP)) {
 			$db->query("INSERT INTO `blocked_ips`(`ip`, `notes`, `date`) VALUES(?, 'MySQL Bruteforce', ?);", RequestManager::get('ip'), time());
+			BlocklistChanges::set('ip', [RequestManager::get('ip')], $db);
 			touch(FLOOD_TMP_PATH . 'block_' . RequestManager::get('ip'));
 			$this->ok();
 		}
@@ -145,21 +147,25 @@ class BlocklistAjaxController extends BaseAjaxController {
 
 		if ($rSub == 'allow') {
 			$db->query('UPDATE `blocked_asns` SET `blocked` = 0 WHERE `id` = ?;', $rASN);
+			BlocklistChanges::set('asn', [(int) $rASN], $db);
 			$this->ok();
 		}
 
 		if ($rSub == 'block') {
 			$db->query('UPDATE `blocked_asns` SET `blocked` = 1 WHERE `id` = ?;', $rASN);
+			BlocklistChanges::set('asn', [(int) $rASN], $db);
 			$this->ok();
 		}
 
 		if ($rSub == 'allow_all') {
 			$db->query('UPDATE `blocked_asns` SET `blocked` = 0 WHERE `type` = ?;', $rASN);
+			BlocklistChanges::reset('asn', $db);
 			$this->ok();
 		}
 
 		if ($rSub == 'block_all') {
 			$db->query('UPDATE `blocked_asns` SET `blocked` = 1 WHERE `type` = ?;', $rASN);
+			BlocklistChanges::reset('asn', $db);
 			$this->ok();
 		}
 
