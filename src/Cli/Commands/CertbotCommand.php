@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Server\ServerRepository;
 
@@ -100,7 +101,7 @@ class CertbotCommand implements CommandInterface {
 									shell_exec('chown xc_vm:xc_vm ' . BIN_PATH . 'nginx/conf/ssl.conf');
 									$rInfo = DiagnosticsService::getCertificateInfo();
 									if ($rInfo['serial']) {
-										$db->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode($rInfo), SERVER_ID);
+										NodeStateSink::state(['certbot_ssl' => json_encode($rInfo)], $db);
 									}
 									$rResult = true;
 								} else {
@@ -164,7 +165,7 @@ class CertbotCommand implements CommandInterface {
 							$rSSLConfig = $this->buildSslConfig($rCertificate, $rPrivateKey, $rChain);
 							file_put_contents(BIN_PATH . 'nginx/conf/ssl.conf', $rSSLConfig);
 							shell_exec('chown xc_vm:xc_vm ' . BIN_PATH . 'nginx/conf/ssl.conf');
-							$db->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode($rSelectedDomain[1]), SERVER_ID);
+							NodeStateSink::state(['certbot_ssl' => json_encode($rSelectedDomain[1])], $db);
 							$rResult = true;
 						}
 					}

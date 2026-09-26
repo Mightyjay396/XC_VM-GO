@@ -47,8 +47,22 @@ final class EventSpool {
 			return false;
 		}
 		$rDir = self::dir() . $rLane . '/';
-		if (!is_dir($rDir) && !@mkdir($rDir, 0750, true) && !is_dir($rDir)) {
-			return false;
+		// Root (cron:root_signals, certbot) hands what it creates to the owner
+		// of the agent's state dir: a root-owned lane or file is one the agent
+		// cannot drain.
+		$rRoot = function_exists('posix_geteuid') && posix_geteuid() === 0;
+		$rHome = dirname(rtrim(self::dir(), '/'));
+		if (!is_dir($rDir)) {
+			if (!@mkdir($rDir, 0750, true) && !is_dir($rDir)) {
+				return false;
+			}
+			if ($rRoot) {
+				foreach ([self::dir(), $rDir] as $rMade) {
+					if (!self::giveToOwnerOf($rMade, $rHome, 0750)) {
+						return false;
+					}
+				}
+			}
 		}
 		$rNow = (int) floor(microtime(true) * 1000);
 		$rBody = '';
@@ -61,7 +75,7 @@ final class EventSpool {
 		}
 		$rName = sprintf('%019d-%d-%04x.ndjson', hrtime(true), getmypid(), random_int(0, 0xffff));
 		$rTmp = $rDir . '.' . $rName . '.tmp';
-		if (@file_put_contents($rTmp, $rBody) !== strlen($rBody)) {
+		if (@file_put_contents($rTmp, $rBody) !== strlen($rBody) || ($rRoot && !self::giveToOwnerOf($rTmp, $rHome, 0640))) {
 			@unlink($rTmp);
 			return false;
 		}
@@ -70,6 +84,13 @@ final class EventSpool {
 			return false;
 		}
 		return true;
+	}
+
+	/** Give what root made to the owner of $rOf (the agent's state dir). */
+	private static function giveToOwnerOf(string $rPath, string $rOf, int $rMode): bool {
+		$rOwner = @fileowner($rOf);
+		$rGroup = @filegroup($rOf);
+		return $rOwner !== false && $rGroup !== false && @chown($rPath, $rOwner) && @chgrp($rPath, $rGroup) && @chmod($rPath, $rMode);
 	}
 
 	/**

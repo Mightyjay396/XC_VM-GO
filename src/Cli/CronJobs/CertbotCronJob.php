@@ -5,6 +5,7 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -75,7 +76,7 @@ class CertbotCronJob implements CommandInterface {
 				if ($rCertificate != 'server.crt') {
 					$rCertInfoFile = DiagnosticsService::getCertificateInfo($rCertificate);
 					if ($rCertInfoFile && ($rCertInfo === null || $rCertInfo['serial'] != $rCertInfoFile['serial'] || !ServerRepository::getAll()[SERVER_ID]['certbot_ssl'] || $rDBCertInfo['serial'] != $rCertInfoFile['serial'])) {
-						$db->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode($rCertInfoFile), SERVER_ID);
+						NodeStateSink::state(['certbot_ssl' => json_encode($rCertInfoFile)], $db);
 						echo 'Updated ssl configuration in database' . "\n";
 						NodeActions::reloadNginx(intval(SERVER_ID), $db);
 					}

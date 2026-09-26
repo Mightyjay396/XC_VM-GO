@@ -5,6 +5,7 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -736,7 +737,7 @@ class RootSignalsCronJob implements CommandInterface {
 						shell_exec("sudo bash -c 'for ((i=0;i<\$(nproc);i++)); do cpufreq-set -c \$i -g " . $rNewGovernor . "; done'");
 						sleep(2);
 						$rGovernor = explode(' ', trim(shell_exec('cpufreq-info -p')));
-						$db->query('UPDATE `servers` SET `governor` = ? WHERE `id` = ?;', json_encode($rGovernor), SERVER_ID);
+						NodeStateSink::state(['governor' => json_encode($rGovernor)], $db);
 					}
 				}
 				break;
@@ -748,7 +749,7 @@ class RootSignalsCronJob implements CommandInterface {
 						shell_exec('sudo modprobe ip_conntrack > /dev/null');
 						file_put_contents('/etc/sysctl.conf', $rNewConfig);
 						shell_exec('sudo sysctl -p > /dev/null');
-						$db->query('UPDATE `servers` SET `sysctl` = ? WHERE `id` = ?;', $rNewConfig, SERVER_ID);
+						NodeStateSink::state(['sysctl' => $rNewConfig], $db);
 					}
 				}
 				break;

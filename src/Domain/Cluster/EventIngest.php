@@ -4,6 +4,7 @@ namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Cluster\LogSink;
+use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\Redactor;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ContentSink;
@@ -21,9 +22,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * p0  stream.state, stream.worker, stream.monitor,   gap-checked: first_useq must be
  *     recording.state, vod.analysis,                 useq_p0 + 1, else 409 {expected_useq}
  *     conn.upsert, conn.remove, conn.close, conn.limit,
- *     security.block_ip
+ *     security.block_ip, node.state
  *                                                    and the node rewinds
- * p1  log.<type>, skip                               high-water: numbers at or below
+ * p1  log.<type>, skip, node.inventory              high-water: numbers at or below
  *                                                    useq_p1 are skipped, gaps are fine
  * ```
  *
@@ -51,6 +52,8 @@ final class EventIngest {
 		'conn.limit' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
 		'vod.analysis' => ['p0', NodeRegistry::FLOW_CONTENT],
 		'security.block_ip' => ['p0', NodeRegistry::FLOW_CONFIG],
+		'node.state' => ['p0', NodeRegistry::FLOW_TELEMETRY],
+		'node.inventory' => ['p1', NodeRegistry::FLOW_TELEMETRY],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
 	];
 
@@ -152,6 +155,11 @@ final class EventIngest {
 				return ConnectionLimits::queue($rServerID, $rData);
 			case 'security.block_ip':
 				return self::blockIp($rServerID, $rData);
+			case 'node.state':
+				return self::nodeRow($rServerID, $rData, NodeStateSink::STATE, []);
+			case 'node.inventory':
+				// time_offset as the legacy cron measured it: node clock − MAIN's.
+				return self::nodeRow($rServerID, $rData, NodeStateSink::INVENTORY, ['time_offset' => (int) round((int) ($rNode['clock_offset_ms'] ?? 0) / 1000)]);
 		}
 		// skip: the node dropped logs past its cap.
 		ClusterAudit::log('events.skip', $rServerID, ['count' => max(0, (int) ($rData['count'] ?? 0))], 'node');
@@ -244,6 +252,30 @@ final class EventIngest {
 			$db->query('INSERT INTO `blocked_ips` (`ip`, `notes`, `date`) VALUES (?, ?, ?);', $rIP, $rReason, time());
 		}
 		ClusterAudit::log('security.block_ip', $rServerID, ['ip' => $rIP, 'reason' => $rReason], 'node');
+		return true;
+	}
+
+	/**
+	 * A node's own `servers` row: only the columns its event type may set
+	 * (NodeStateSink), each a scalar no longer than MAX_VALUE.
+	 *
+	 * @param array<string, mixed> $rData {fields}
+	 * @param list<string> $rAllowed
+	 * @param array<string, int> $rExtra set by MAIN alongside
+	 */
+	private static function nodeRow(int $rServerID, array $rData, array $rAllowed, array $rExtra): bool {
+		$rFields = is_array($rData['fields'] ?? null) ? array_intersect_key($rData['fields'], array_flip($rAllowed)) : [];
+		if ($rFields === []) {
+			return false;
+		}
+		foreach ($rFields as $rValue) {
+			if ((!is_scalar($rValue) && $rValue !== null) || strlen((string) $rValue) > NodeStateSink::MAX_VALUE) {
+				return false;
+			}
+		}
+		$rFields += $rExtra;
+		$rSet = implode(', ', array_map(static fn(string $rColumn): string => '`' . $rColumn . '` = ?', array_keys($rFields)));
+		self::db()->query('UPDATE `servers` SET ' . $rSet . ' WHERE `id` = ?;', ...[...array_values($rFields), $rServerID]);
 		return true;
 	}
 
