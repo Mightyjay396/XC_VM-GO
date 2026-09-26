@@ -13,7 +13,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * cluster:apply's work (plan, section 9, Phase 7): turn the replica the agent
  * verified into this node's caches. The agent writes
  * `config/cluster/replica/blocklist.json` from the sealed, panel-signed
- * records it holds (PHP holds no key to open them) and runs cluster:apply.
+ * records it holds and runs cluster:apply; PHP opens those records itself
+ * only from disk (below), with the agent's keys.
  *
  * ```text
  * cache            from the replica's blocklist
@@ -75,6 +76,14 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * replica too, every minute while CONFIG is on, so the caches follow the copy
  * on disk even when the agent has not run cluster:apply since a change of the
  * flow.
+ *
+ * From disk (`cluster:apply --from-disk`, which `service` runs at boot before
+ * the daemons, when the agent may not run yet), every section is taken from
+ * the sealed, panel-signed record the agent stored beside its `.json`, once
+ * it opens and verifies for this node (ReplicaRecords). A section whose record
+ * does not verify is treated as unreadable: it writes no cache, and hands
+ * back one it owned. The report names the sections under `from_disk`
+ * (`verified`, `unverified`), never their content.
  */
 final class ReplicaApply {
 	public const CACHES = ['blocked_ips', 'blocked_servers', 'blocked_ua', 'blocked_isp', 'rtmp_ips'];
@@ -95,6 +104,14 @@ final class ReplicaApply {
 	private static ?string $rDir = null;
 
 	private static ?string $rConfigDir = null;
+
+	/**
+	 * While an apply runs from disk: each section as its verified record has
+	 * it (ReplicaRecords), false when it does not verify.
+	 *
+	 * @var array<string, array<string, mixed>|false|null>|null
+	 */
+	private static ?array $rFromDisk = null;
 
 	/** Tests: another replica directory; null restores the default. */
 	public static function useDir(?string $rDir): void {
@@ -221,12 +238,39 @@ final class ReplicaApply {
 	 * wrote to apply.
 	 *
 	 * @param int|null $rServerID this node (SERVER_ID)
+	 * @param bool $rFromDisk take each section from its verified record, not
+	 *                        from the `.json` the agent wrote (ReplicaRecords)
 	 * @return array<string, mixed>|null
 	 */
-	public static function run(bool $rAuthoritative, ?int $rNow = null, ?int $rServerID = null): ?array {
+	public static function run(bool $rAuthoritative, ?int $rNow = null, ?int $rServerID = null, bool $rFromDisk = false): ?array {
 		$rServerID ??= defined('SERVER_ID') ? (int) SERVER_ID : 0;
 		$rReport = ['at' => $rNow ?? time()];
-		$rDoc = json_decode((string) @file_get_contents(self::dir() . 'blocklist.json'), true);
+		if (!$rFromDisk) {
+			return self::apply($rAuthoritative, $rServerID, $rReport);
+		}
+		$rIdentity = ReplicaRecords::identity(dirname(self::dir()) . '/agent.json');
+		self::$rFromDisk = ['blocklist' => ReplicaRecords::blocklist(self::dir(), $rIdentity)];
+		foreach ([...ReplicaSections::WHOLE, ReplicaSections::SECRETS] as $rName) {
+			self::$rFromDisk[$rName] = ReplicaRecords::whole(self::dir(), $rName, $rIdentity);
+		}
+		$rVerified = array_keys(array_filter(self::$rFromDisk, 'is_array'));
+		$rUnverified = array_keys(array_filter(self::$rFromDisk, static fn(mixed $rDoc): bool => $rDoc === false));
+		if ($rVerified !== [] || $rUnverified !== []) {
+			$rReport['from_disk'] = ['verified' => $rVerified, 'unverified' => $rUnverified];
+		}
+		try {
+			return self::apply($rAuthoritative, $rServerID, $rReport);
+		} finally {
+			self::$rFromDisk = null;
+		}
+	}
+
+	/**
+	 * @param array<string, mixed> $rReport
+	 * @return array<string, mixed>|null
+	 */
+	private static function apply(bool $rAuthoritative, int $rServerID, array $rReport): ?array {
+		$rDoc = self::$rFromDisk === null ? json_decode((string) @file_get_contents(self::dir() . 'blocklist.json'), true) : self::$rFromDisk['blocklist'];
 		$rCaches = is_array($rDoc) && is_array($rDoc['data'] ?? null) ? self::caches($rDoc['data']) : null;
 		if ($rCaches !== null) {
 			$rReport += ['seq' => (int) ($rDoc['seq'] ?? 0), 'etag' => (string) ($rDoc['etag'] ?? ''), 'mode' => $rAuthoritative ? 'applied' : 'shadow'];
@@ -401,11 +445,17 @@ final class ReplicaApply {
 
 	/**
 	 * A whole section the agent stored: `replica/<name>.json`, `{etag, data}`.
-	 * Null when there is none; false when it cannot be read.
+	 * Null when there is none; false when it cannot be read. While an apply
+	 * runs from disk, the section as its verified record has it (false when
+	 * the record does not verify).
 	 *
 	 * @return array{etag: string, data: array<mixed>}|false|null
 	 */
 	public static function whole(string $rName): array|false|null {
+		if (self::$rFromDisk !== null) {
+			$rDoc = self::$rFromDisk[$rName] ?? null;
+			return is_array($rDoc) ? ['etag' => (string) $rDoc['etag'], 'data' => (array) $rDoc['data']] : $rDoc;
+		}
 		$rFile = self::dir() . $rName . '.json';
 		if (!is_file($rFile)) {
 			return null;

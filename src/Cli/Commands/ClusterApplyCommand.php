@@ -19,8 +19,10 @@ use XcVm\Core\Cluster\ReplicaApply;
  * through the CLI profile, which needs MAIN's database: serving from the
  * replica after a reboot while MAIN is unreachable waits for ReplicaStage.
  *
- * It always reads the replica on disk (`--from-disk`, the plan's boot flag,
- * is accepted and changes nothing): PHP holds no key to fetch or open it.
+ * Without `--from-disk` it applies the `.json` files the agent wrote after
+ * verifying the records it just stored. With `--from-disk` (`service` at
+ * boot, when the agent may not run yet) it verifies the records on disk
+ * itself, with the agent's keys, and applies what they hold (ReplicaRecords).
  *
  * Runs as xc_vm. Usage: `console.php cluster:apply [--from-disk]`
  *
@@ -39,7 +41,7 @@ class ClusterApplyCommand implements CommandInterface {
 	}
 
 	public function execute(array $rArgs): int {
-		$rReport = ReplicaApply::run(NodeFlows::on(NodeFlows::CONFIG));
+		$rReport = ReplicaApply::run(NodeFlows::on(NodeFlows::CONFIG), null, null, in_array('--from-disk', $rArgs, true));
 		if ($rReport === null) {
 			fwrite(STDERR, "cluster:apply: no replica to apply\n");
 			return 2;
