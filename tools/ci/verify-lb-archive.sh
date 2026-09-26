@@ -12,7 +12,10 @@
 #     kind its list expects (WRONG-LIST),
 #   - the sensitive trees are absent (LEAK),
 #   - every script lb_configs/nginx.conf executes still ships (MISSING),
-#   - the LB update's deleted-files list names no shipped file (DELETES-SHIPPED).
+#   - neither update's deleted-files list names a shipped file (DELETES-SHIPPED):
+#     the LB list must miss every file of the LB manifest, and the committed
+#     src/migrations/deleted_files.txt (applied by MAIN and LB updates after the
+#     new tree is unpacked) must name no tracked file.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -24,6 +27,8 @@ KEEP_DIRS=$(make -s print-LB_KEEP_ON_UPDATE)
 NGINX_CONF="$(make -s print-CONFIG_DIR)/nginx.conf"
 NGINX_CONF="${NGINX_CONF#./}"
 INDEX_PHP="src/Public/index.php"
+MAIN_DIR=$(make -s print-MAIN_DIR)
+MAIN_DIR="${MAIN_DIR#./}"
 
 fail=0
 
@@ -230,8 +235,21 @@ elif [ -f "$delete_dir/migrations/deleted_files.txt" ]; then
 	done <<< "$(grep -xF -f <(printf '%s\n' "$manifest") "$delete_dir/migrations/deleted_files.txt" || true)"
 fi
 
+# MigrationRunner::runFileCleanup() deletes every listed path after the new
+# release is unpacked, so a file that was deleted and later restored (still
+# listed from an older generate_deleted_files run) would vanish from MAIN too.
+if [ -f "${MAIN_DIR}/migrations/deleted_files.txt" ]; then
+	while IFS= read -r r; do
+		case "$r" in ''|'#'*) continue ;; esac
+		if git ls-files --error-unmatch "src/${r}" >/dev/null 2>&1; then
+			echo "DELETES-SHIPPED: ${MAIN_DIR}/migrations/deleted_files.txt lists '${r}', which is tracked in src/, so every MAIN and LB update would delete it."
+			fail=1
+		fi
+	done < "${MAIN_DIR}/migrations/deleted_files.txt"
+fi
+
 if [ "$fail" -ne 0 ]; then
-	echo "FAIL: fix the Makefile LB lists, ${NGINX_CONF} or src/migrations/deleted_files.txt (STALE: entry matches nothing; WRONG-LIST: a file in a directory list or the reverse; LEAK: privileged code ships; MISSING: a routed script is stripped; DELETES-SHIPPED: the LB update deletes a shipped file)."
+	echo "FAIL: fix the Makefile LB lists, ${NGINX_CONF} or src/migrations/deleted_files.txt (STALE: entry matches nothing; WRONG-LIST: a file in a directory list or the reverse; LEAK: privileged code ships; MISSING: a routed script is stripped; DELETES-SHIPPED: an update deletes a shipped file)."
 	exit 1
 fi
 echo "OK: LB manifest has no stale entries, excludes all privileged trees, ships every routed script and deletes none of them on update ($(printf '%s\n' "$manifest" | grep -c . ) files shipped)."

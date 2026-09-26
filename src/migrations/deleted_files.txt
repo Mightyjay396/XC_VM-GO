@@ -2,7 +2,6 @@
 # Auto-generated from: git diff 2.3.9..HEAD
 # One file per line. Lines starting with # are comments.
 #
-Cli/Commands/ProxyCommand.php
 Core/Boundary/BoundaryInterface.php
 Core/Config/AppConfig.php
 Core/Config/Binaries.php
@@ -446,8 +445,6 @@ Public/assets/admin/libs/twitter-bootstrap-wizard/jquery.bootstrap.wizard.min.js
 Public/assets/admin/libs/videojs/video-js.min.css
 Public/assets/admin/libs/videojs/video.min.js
 Public/assets/admin/videos/login-bg.mp4
-Streaming/Delivery/SegmentReader.php
-Streaming/Delivery/SignalSender.php
 Streaming/TimeshiftClient.php
 config/permissions.php
 ministra/JsHttpRequest-debug.js

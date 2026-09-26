@@ -9,7 +9,8 @@ use PHPUnit\Framework\TestCase;
  * that became a no-op after a rename, as the old www/* entries did), on an entry
  * of the wrong kind for its list, on privileged code left in the manifest, on a
  * stripped file that lb_configs/nginx.conf still routes to, and on an LB
- * deleted-files list that would delete a shipped file on update. The last test
+ * deleted-files list that would delete a shipped file on update, and on a
+ * committed deleted_files.txt that names a tracked file. The last test
  * pins what `make lb_delete_files_list` puts in that list.
  *
  * Each case overrides Makefile variables through MAKEFLAGS, as `make VAR=...`
@@ -151,6 +152,20 @@ final class LbArchiveGateTest extends TestCase {
 		$this->assertSame(1, $rCode, $rOutput);
 		$this->assertStringContainsString("DELETES-SHIPPED: the LB update would delete 'Public/stream/live.php'", $rOutput);
 		$this->assertStringContainsString("DELETES-SHIPPED: the LB update would delete 'console.php'", $rOutput);
+	}
+
+	public function testListingATrackedFileForDeletionFails(): void {
+		// MigrationRunner::runFileCleanup() applies the committed list on MAIN and on
+		// LBs after the new tree is unpacked, so a restored file (listed by an older
+		// generate_deleted_files run) must not stay in it. ProxyCommand.php was deleted
+		// and later restored; www/old.php is not tracked at all.
+		$rMainDir = $this->mainDirWithDeletedFiles(['Cli/Commands/ProxyCommand.php', 'www/old.php']);
+
+		[$rCode, $rOutput] = $this->runGate(['MAIN_DIR' => [$rMainDir]]);
+
+		$this->assertSame(1, $rCode, $rOutput);
+		$this->assertStringContainsString("deleted_files.txt lists 'Cli/Commands/ProxyCommand.php', which is tracked in src/", $rOutput);
+		$this->assertStringNotContainsString("lists 'www/old.php'", $rOutput);
 	}
 
 	public function testDeletedFilesListHoldsLbGitDeletionsAndStrippedCode(): void {
