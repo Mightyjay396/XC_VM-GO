@@ -22,6 +22,8 @@ use XcVm\Infrastructure\Redis\RedisManager;
  *                        then drop it from the store
  * conn.divergence {rows} (P1) each viewer's measured rate, turned into its
  *                        divergence in `lines_divergence`
+ * conn.touch {uuid, hls_last_read} (P2) the viewer's last playlist request:
+ *                        the cluster bus, or the store's hls_last_read
  * ```
  *
  * A node writes only its own connections: `server_id` is always the sender,
@@ -222,6 +224,70 @@ final class ConnectionIngest {
 			$rDb->query('UPDATE `lines_live` SET `divergence` = CASE `activity_id`' . str_repeat(' WHEN ? THEN ?', count($rLive)) . ' ELSE `divergence` END WHERE `server_id` = ? AND `activity_id` IN (' . implode(',', array_fill(0, count($rLive), '?')) . ');', ...[...$rCase, $rServerID, ...array_keys($rLive)]);
 		}
 		return true;
+	}
+
+	/**
+	 * A node's conn.touch events (P2), folded to the latest per viewer by the
+	 * event's time: when each viewer last asked for its playlist.
+	 *
+	 * For a node whose agent ends its own idle HLS viewers ($rReaps: the
+	 * `hls_reaper` feature), nothing on MAIN decides by that time any more
+	 * (HlsReaping), so it goes to the cluster bus only (ClusterBus::touch),
+	 * and MAIN's store is spared a write per viewer. Without the bus, or for
+	 * a node that does not reap (MAIN's 30 s rule reads it), it goes into the
+	 * store as the P0 upsert put it there: the node's own connections only,
+	 * never re-opening, creating or moving one, and never back to an earlier
+	 * read.
+	 *
+	 * @param array<string, array{0: int, 1: int}> $rTouches uuid => [t (ms), hls_last_read]
+	 */
+	public static function touch(int $rServerID, bool $rReaps, array $rTouches): void {
+		if ($rTouches === [] || ($rReaps && ClusterBus::touch($rServerID, $rTouches))) {
+			return;
+		}
+		$rReads = [];
+		foreach ($rTouches as $rUUID => [, $rRead]) {
+			$rReads[(string) $rUUID] = $rRead;
+		}
+		if (SettingsManager::get('redis_handler')) {
+			self::touchRedis($rServerID, $rReads);
+			return;
+		}
+		foreach (array_chunk($rReads, 1000, true) as $rChunk) {
+			$rCase = [];
+			foreach ($rChunk as $rUUID => $rRead) {
+				array_push($rCase, (string) $rUUID, $rRead);
+			}
+			$rWhen = 'CASE `uuid`' . str_repeat(' WHEN ? THEN ?', count($rChunk)) . ' ELSE `hls_last_read` END';
+			$rIn = implode(',', array_fill(0, count($rChunk), '?'));
+			self::db()->query('UPDATE `lines_live` SET `hls_last_read` = ' . $rWhen . ' WHERE `server_id` = ? AND `uuid` IN (' . $rIn . ') AND (`hls_last_read` IS NULL OR `hls_last_read` < ' . $rWhen . ');', ...[...$rCase, $rServerID, ...array_map('strval', array_keys($rChunk)), ...$rCase]);
+		}
+	}
+
+	/**
+	 * touch() on Redis: each of the node's records gets the later read. A
+	 * record written meanwhile (an upsert, a close) is left as that write
+	 * made it (WATCH), so a touch never undoes one.
+	 *
+	 * @param array<string, int> $rReads uuid => hls_last_read
+	 */
+	private static function touchRedis(int $rServerID, array $rReads): void {
+		$rRedis = RedisManager::instance();
+		if (!$rRedis instanceof \Redis) {
+			throw new \RuntimeException('redis unavailable'); // the batch is not applied; the node resends newer values
+		}
+		foreach ($rReads as $rUUID => $rRead) {
+			$rUUID = (string) $rUUID;
+			$rRedis->watch($rUUID);
+			$rRaw = $rRedis->get($rUUID);
+			$rRecord = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;
+			if (!is_array($rRecord) || (int) ($rRecord['server_id'] ?? 0) !== $rServerID || (int) ($rRecord['hls_last_read'] ?? 0) >= $rRead) {
+				$rRedis->unwatch();
+				continue;
+			}
+			$rRecord['hls_last_read'] = $rRead;
+			$rRedis->multi()->set($rUUID, igbinary_serialize($rRecord))->exec();
+		}
 	}
 
 	/**

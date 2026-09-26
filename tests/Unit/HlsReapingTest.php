@@ -97,6 +97,25 @@ final class HlsReapingTest extends TestCase {
 		$this->assertFalse($rEnded->invoke($rCron, ['hls_end' => 0, 'hls_last_read' => self::T - 5, 'server_id' => 3], self::T));
 	}
 
+	public function testWhenTheNodesCannotBeReadTheLastKnownReapersStand(): void {
+		$this->node(2, 'active', 1, 74, 'hls_reaper', self::T - 1);
+		$this->node(3, 'active', 1, 74, null, self::T - 1);
+		HlsReaping::begin(self::T, 120);
+		$this->rDb->exec('DROP TABLE `cluster_nodes`');
+		HlsReaping::begin(self::T + 60, 120);
+		// A reaping node's touches no longer refresh MAIN's store (conn.touch
+		// stays on the bus), so the 30 s rule must not come back on a bad read.
+		$this->assertTrue(HlsReaping::nodeReaps(2));
+		$this->assertFalse(HlsReaping::nodeReaps(3));
+		$this->assertSame([], HlsReaping::orphaned(), 'nothing is purged on a read that failed');
+
+		// Nothing ever read: every node gets the 30 s rule, as before.
+		HlsReaping::usePath($this->rPath . '.fresh');
+		HlsReaping::begin(self::T + 120, 120);
+		$this->assertFalse(HlsReaping::nodeReaps(2));
+		@unlink($this->rPath . '.fresh');
+	}
+
 	public function testEveryOrphanedConnectionsNodeIsReportedForThePurge(): void {
 		$this->node(2, 'active', 1, 74, 'hls_reaper', self::T - 600);
 		$this->node(3, 'active', 1, 74, null, self::T - 600);        // an older agent: purged too

@@ -4,6 +4,7 @@ namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\HlsReaping;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\Redactor;
@@ -27,6 +28,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *                                                    and the node rewinds
  * p1  log.<type>, skip, node.inventory,             high-water: numbers at or below
  *     conn.divergence                                useq_p1 are skipped, gaps are fine
+ * p2  conn.touch                                     no number: the latest value per
+ *                                                    key by the event's time `t` wins
  * ```
  *
  * Every event is applied as the sending node: a stream's state goes to that
@@ -56,6 +59,7 @@ final class EventIngest {
 		'node.state' => ['p0', NodeRegistry::FLOW_TELEMETRY],
 		'node.inventory' => ['p1', NodeRegistry::FLOW_TELEMETRY],
 		'conn.divergence' => ['p1', NodeRegistry::FLOW_CONNECTIONS],
+		'conn.touch' => ['p2', NodeRegistry::FLOW_CONNECTIONS],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
 	];
 
@@ -82,6 +86,9 @@ final class EventIngest {
 	 * @return array{ok: bool, useq: int, applied?: int, dropped?: int, expected_useq?: int}
 	 */
 	public static function ingest(array $rNode, string $rLane, int $rFirst, array $rEvents): array {
+		if ($rLane === 'p2') {
+			return self::latest($rNode, $rEvents);
+		}
 		$rServerID = (int) $rNode['server_id'];
 		$rColumn = 'useq_' . $rLane;
 		$rCursor = (int) $rNode[$rColumn];
@@ -118,6 +125,51 @@ final class EventIngest {
 			throw $rE;
 		}
 		return ['ok' => true, 'useq' => $rLast, 'applied' => $rApplied, 'dropped' => $rDropped];
+	}
+
+	/**
+	 * The event types MAIN takes on P2, told to the agent at hello and in
+	 * every heartbeat (`p2_types`): it sends them there only while MAIN lists
+	 * them, and keeps the older way otherwise.
+	 *
+	 * @return list<string>
+	 */
+	public static function p2Types(): array {
+		return array_keys(array_filter(self::TYPES, static fn(array $rType): bool => $rType[0] === 'p2'));
+	}
+
+	/**
+	 * P2 (plan, "Ordering and backpressure"): state of which only the newest
+	 * value per key counts. The lane has no cursor and is never refused for a
+	 * gap. A batch is folded to the latest event per key by its time `t` (the
+	 * later of two with the same time), and what holds it across batches keeps
+	 * the latest too (ClusterBus::touch), so a repeated or late batch changes
+	 * nothing newer. `conn.touch {uuid, hls_last_read}` is keyed by uuid.
+	 *
+	 * @param list<mixed> $rEvents
+	 * @return array{ok: bool, useq: int, applied: int, dropped: int}
+	 */
+	private static function latest(array $rNode, array $rEvents): array {
+		$rTouches = [];
+		$rApplied = $rDropped = 0;
+		foreach ($rEvents as $rEvent) {
+			$rType = is_array($rEvent) && is_string($rEvent['type'] ?? null) ? $rEvent['type'] : '';
+			[$rLane, $rFlow] = self::TYPES[$rType] ?? [null, 0];
+			$rT = is_array($rEvent) ? ($rEvent['t'] ?? null) : null;
+			$rData = is_array($rEvent) ? ($rEvent['d'] ?? null) : null;
+			$rUUID = is_array($rData) ? ($rData['uuid'] ?? null) : null;
+			$rRead = is_array($rData) ? ($rData['hls_last_read'] ?? null) : null;
+			if ($rLane !== 'p2' || ((int) $rNode['flows'] & $rFlow) === 0 || !is_int($rT) || $rT < 0 || !is_string($rUUID) || !preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) || !is_int($rRead) || $rRead < 0) {
+				$rDropped++;
+				continue;
+			}
+			if (!isset($rTouches[$rUUID]) || $rTouches[$rUUID][0] <= $rT) {
+				$rTouches[$rUUID] = [$rT, $rRead];
+			}
+			$rApplied++;
+		}
+		ConnectionIngest::touch((int) $rNode['server_id'], HlsReaping::capable($rNode), $rTouches);
+		return ['ok' => true, 'useq' => 0, 'applied' => $rApplied, 'dropped' => $rDropped];
 	}
 
 	/** Apply one event; false when it is refused (unknown, wrong lane, flow off, not the node's). */

@@ -25,6 +25,11 @@ use XcVm\Core\Process\ProcessManager;
  * just before the waiter blocks is not lost, and a stale one costs one extra
  * query. Without the bus (not started, an LB, a test) every method reports
  * that it could not help, and the callers poll as they did before.
+ *
+ * It also keeps the viewers' touches (`conn.touch`, P2): when each of a
+ * node's viewers last asked for its playlist, `touch:<sid>:<uuid>` holding
+ * `<t>:<hls_last_read>`, for nodes whose agent ends its own idle HLS viewers
+ * (ConnectionIngest::touch). Without the bus they go to MAIN's store.
  */
 final class ClusterBus {
 	/** Seconds a wake waits for its reader. */
@@ -32,6 +37,25 @@ final class ClusterBus {
 
 	/** Seconds before a failed connect is tried again. */
 	private const RETRY_AFTER = 5;
+
+	/** Milliseconds a viewer's last read stays on the bus without a newer touch. */
+	public const TOUCH_TTL_MS = 300000;
+
+	/**
+	 * Per key: set `<t>:<value>` (ARGV[2i], ARGV[2i+1]) unless the key holds a
+	 * later t, with a TTL of ARGV[1] ms.
+	 */
+	private const TOUCH_LUA = <<<'LUA'
+		for i = 1, #KEYS do
+			local t = tonumber(ARGV[2 * i])
+			local cur = redis.call('GET', KEYS[i])
+			local at = cur and tonumber(string.match(cur, '^(%-?%d+):'))
+			if not at or at <= t then
+				redis.call('SET', KEYS[i], ARGV[2 * i] .. ':' .. ARGV[2 * i + 1], 'PX', ARGV[1])
+			end
+		end
+		return 1
+		LUA;
 
 	private static ?\Redis $rClient = null;
 
@@ -114,6 +138,70 @@ final class ClusterBus {
 	/** Wait for a command's ack, as waitNode(). */
 	public static function waitAck(string $rCmdID, float $rSeconds): ?bool {
 		return self::pop('ack:' . $rCmdID, $rSeconds);
+	}
+
+	/**
+	 * Keep a node's touches: when each viewer last asked for its playlist. A
+	 * value is replaced only by one whose event time t is not earlier, so a
+	 * late or repeated batch never takes a viewer back, and each expires
+	 * TOUCH_TTL_MS after its last write. The key names the sending node, so a
+	 * node writes only its own viewers' keys; a reader takes the connection's
+	 * server_id from MAIN's store.
+	 *
+	 * @param array<string, array{0: int, 1: int}> $rTouches uuid => [t (ms), hls_last_read]
+	 * @return bool False without the bus: the caller writes MAIN's store.
+	 */
+	public static function touch(int $rServerID, array $rTouches): bool {
+		$rRedis = self::client();
+		if ($rRedis === null) {
+			return false;
+		}
+		try {
+			foreach (array_chunk($rTouches, 1000, true) as $rChunk) {
+				$rKeys = $rArgs = [];
+				foreach ($rChunk as $rUUID => [$rT, $rRead]) {
+					$rKeys[] = 'touch:' . $rServerID . ':' . $rUUID;
+					array_push($rArgs, (string) $rT, (string) $rRead);
+				}
+				if ($rRedis->eval(self::TOUCH_LUA, [...$rKeys, (string) self::TOUCH_TTL_MS, ...$rArgs], count($rKeys)) === false) {
+					throw new \RuntimeException('touch');
+				}
+			}
+			return true;
+		} catch (\Throwable) {
+			self::drop();
+			return false;
+		}
+	}
+
+	/**
+	 * The last reads a node's touches left on the bus: uuid => hls_last_read,
+	 * for the viewers that have one. Null without the bus.
+	 *
+	 * @param list<string> $rUUIDs
+	 * @return array<string, int>|null
+	 */
+	public static function lastReads(int $rServerID, array $rUUIDs): ?array {
+		$rRedis = self::client();
+		if ($rRedis === null) {
+			return null;
+		}
+		if ($rUUIDs === []) {
+			return [];
+		}
+		try {
+			$rValues = $rRedis->mGet(array_map(static fn(string $rUUID): string => 'touch:' . $rServerID . ':' . $rUUID, $rUUIDs));
+		} catch (\Throwable) {
+			self::drop();
+			return null;
+		}
+		$rOut = [];
+		foreach (is_array($rValues) ? array_values($rValues) : [] as $i => $rValue) {
+			if (is_string($rValue) && preg_match('/^-?\d+:(-?\d+)$/', $rValue, $rM)) {
+				$rOut[$rUUIDs[$i]] = (int) $rM[1];
+			}
+		}
+		return $rOut;
 	}
 
 	/** Is the bus's redis-server running here? */

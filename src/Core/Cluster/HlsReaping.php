@@ -62,15 +62,38 @@ final class HlsReaping {
 	}
 
 	/**
+	 * Does this node's agent end its idle HLS viewers, by its cluster_nodes
+	 * row (mode ≥ 1, CONNECTIONS on, `hls_reaper` said at hello)? Its touches
+	 * then stay on MAIN's cluster bus (conn.touch).
+	 *
+	 * @param array<string, mixed> $rRow
+	 */
+	public static function capable(array $rRow): bool {
+		return (int) ($rRow['mode'] ?? 0) >= 1 && ((int) ($rRow['flows'] ?? 0) & NodeFlows::CONNECTIONS) !== 0
+			&& in_array(self::FEATURE, explode(',', (string) ($rRow['features'] ?? '')), true);
+	}
+
+	/**
 	 * MAIN, once per reaper pass: which nodes reap for themselves, and the
-	 * silence watch that finds orphaned ones. Nothing is known (every node
-	 * falls back to the 30 s rule) when cluster_nodes cannot be read.
+	 * silence watch that finds orphaned ones. When cluster_nodes cannot be
+	 * read, the reapers of the last pass that read it stand and nothing is
+	 * orphaned: a reaping node's touches reach only the cluster bus, so MAIN's
+	 * store holds no fresh read for the 30 s rule to judge by. With no such
+	 * pass, every node falls back to the 30 s rule.
 	 */
 	public static function begin(int $rNowSec, int $rOrphanTtlSec): void {
 		self::$rReaps = [];
 		self::$rOrphaned = [];
 		$db = self::db();
-		if (!$db->query("SELECT `server_id`, `mode`, `flows`, `features`, `last_seen_at` FROM `cluster_nodes` WHERE `state` = 'active';")) {
+		try {
+			$rRead = $db->query("SELECT `server_id`, `mode`, `flows`, `features`, `last_seen_at` FROM `cluster_nodes` WHERE `state` = 'active';");
+		} catch (\Throwable) {
+			$rRead = false;
+		}
+		if (!$rRead) {
+			foreach (self::load()['reaps'] as $rID) {
+				self::$rReaps[$rID] = true;
+			}
 			return;
 		}
 		$rRows = $db->get_rows();
@@ -84,7 +107,7 @@ final class HlsReaping {
 			if ((int) $rRow['mode'] < 1 || ((int) $rRow['flows'] & NodeFlows::CONNECTIONS) === 0) {
 				continue;
 			}
-			$rCapable = in_array(self::FEATURE, explode(',', (string) ($rRow['features'] ?? '')), true);
+			$rCapable = self::capable($rRow);
 			$rSilent = $rRow['last_seen_at'] === null ? PHP_INT_MAX : $rNowSec - intdiv((int) $rRow['last_seen_at'], 1000);
 			if ($rSilent >= self::WATCH_AFTER) {
 				$rKeep[$rID] = $rSince[$rID] ?? $rNowSec;
@@ -95,7 +118,7 @@ final class HlsReaping {
 				self::$rOrphaned[] = $rID;
 			}
 		}
-		self::save(['run' => $rNowSec, 'since' => $rKeep]);
+		self::save(['run' => $rNowSec, 'since' => $rKeep, 'reaps' => array_keys(array_filter(self::$rReaps))]);
 	}
 
 	/**
@@ -119,21 +142,22 @@ final class HlsReaping {
 		return self::$rPath ?? (defined('TMP_PATH') ? TMP_PATH . 'cluster_orphans.json' : null);
 	}
 
-	/** @return array{run: int, since: array<int, int>} */
+	/** @return array{run: int, since: array<int, int>, reaps: list<int>} */
 	private static function load(): array {
 		$rPath = self::path();
 		$rDoc = $rPath === null ? null : json_decode((string) @file_get_contents($rPath), true);
 		if (!is_array($rDoc) || !is_array($rDoc['since'] ?? null)) {
-			return ['run' => 0, 'since' => []];
+			return ['run' => 0, 'since' => [], 'reaps' => []];
 		}
 		$rSince = [];
 		foreach ($rDoc['since'] as $rID => $rAt) {
 			$rSince[(int) $rID] = (int) $rAt;
 		}
-		return ['run' => (int) ($rDoc['run'] ?? 0), 'since' => $rSince];
+		$rReaps = array_values(array_map('intval', array_filter(is_array($rDoc['reaps'] ?? null) ? $rDoc['reaps'] : [], 'is_int')));
+		return ['run' => (int) ($rDoc['run'] ?? 0), 'since' => $rSince, 'reaps' => $rReaps];
 	}
 
-	/** @param array{run: int, since: array<int, int>} $rState */
+	/** @param array{run: int, since: array<int, int>, reaps: list<int>} $rState */
 	private static function save(array $rState): void {
 		$rPath = self::path();
 		if ($rPath === null) {
