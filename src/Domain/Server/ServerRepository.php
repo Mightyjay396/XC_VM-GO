@@ -6,6 +6,8 @@ use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\NodeRpc;
+use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Server\ServerSavedEvent;
@@ -28,6 +30,11 @@ class ServerRepository {
 	/**
 	 * Fetch all servers (cached unless forced).
 	 *
+	 * On a node whose CONFIG flow is on and whose replica has the `servers`
+	 * and `node` sections, the servers cache is the replica's (cluster:apply
+	 * writes it in this shape), and every caller gets it however old it is,
+	 * never MAIN's database; until cluster:apply has written it, the database.
+	 *
 	 * @param bool $rForce Bypass the cache and re-read from the database.
 	 * @return array Server rows keyed by id.
 	 */
@@ -37,8 +44,9 @@ class ServerRepository {
 		if (!$rSettings) {
 			$rSettings = SettingsManager::getAll();
 		}
-		if (!$rForce) {
-			$rCache = FileCache::getCache('servers', 10);
+		$rReplica = ReplicaApply::owns(ReplicaSections::SERVERS);
+		if (!$rForce || $rReplica) {
+			$rCache = $rReplica ? FileCache::getCache('servers') : FileCache::getCache('servers', 10);
 			if (!empty($rCache)) {
 				return $rCache;
 			}
@@ -53,47 +61,7 @@ class ServerRepository {
 		$rOnlineStatus = [1];
 
 		foreach ($db->get_rows() ?: [] as $rRow) {
-			if (empty($rRow['domain_name'])) {
-				$rURL = escapeshellcmd($rRow['server_ip']);
-			} else {
-				$rURL = str_replace(['http://', '/', 'https://'], '', escapeshellcmd(explode(',', $rRow['domain_name'])[0]));
-			}
-
-			if ($rRow['enable_https'] == 1) {
-				$rProtocol = 'https';
-			} else {
-				$rProtocol = 'http';
-			}
-
-			$rPort = ($rProtocol == 'http' ? intval($rRow['http_broadcast_port']) : intval($rRow['https_broadcast_port']));
-			$rRow['server_protocol'] = $rProtocol;
-			$rRow['request_port'] = $rPort;
-			$rRow['site_url'] = $rProtocol . '://' . $rURL . ':' . $rPort . '/';
-			$rRow['http_url'] = 'http://' . $rURL . ':' . intval($rRow['http_broadcast_port']) . '/';
-			$rRow['https_url'] = 'https://' . $rURL . ':' . intval($rRow['https_broadcast_port']) . '/';
-			$rRow['rtmp_server'] = 'rtmp://' . $rURL . ':' . intval($rRow['rtmp_port']) . '/live/';
-			$rRow['domains'] = ['protocol' => $rProtocol, 'port' => $rPort, 'urls' => array_filter(array_map('escapeshellcmd', explode(',', $rRow['domain_name'] ?? '')))];
-			$rRow['rtmp_mport_url'] = 'http://127.0.0.1:31210/';
-			$rRow['api_url_ip'] = 'http://' . escapeshellcmd($rRow['server_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/api?password=' . urlencode($rSettings['live_streaming_pass']);
-			$rRow['api_url'] = $rRow['api_url_ip'];
-			$rRow['site_url_ip'] = $rProtocol . '://' . escapeshellcmd($rRow['server_ip']) . ':' . $rPort . '/';
-			$rRow['private_url_ip'] = (!empty($rRow['private_ip']) ? 'http://' . escapeshellcmd($rRow['private_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/' : null);
-			$rRow['public_url_ip'] = 'http://' . escapeshellcmd($rRow['server_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/';
-			$rRow['geoip_countries'] = (empty($rRow['geoip_countries']) ? [] : json_decode($rRow['geoip_countries'], true));
-			$rRow['isp_names'] = (empty($rRow['isp_names']) ? [] : json_decode($rRow['isp_names'], true));
-
-			if (is_numeric($rRow['parent_id'])) {
-				$rRow['parent_id'] = [intval($rRow['parent_id'])];
-			} else {
-				$decoded = json_decode($rRow['parent_id'] ?? '', true);
-				$rRow['parent_id'] = is_array($decoded) ? array_map('intval', $decoded) : [];
-			}
-
-			if ($rRow['enable_https'] == 2) {
-				$rRow['allow_http'] = false;
-			} else {
-				$rRow['allow_http'] = true;
-			}
+			$rRow = self::decorate($rRow, $rSettings);
 
 			if ($rRow['server_type'] == 1) {
 				$rLastCheckTime = 180;
@@ -101,7 +69,6 @@ class ServerRepository {
 				$rLastCheckTime = 90;
 			}
 
-			$rRow['watchdog'] = json_decode($rRow['watchdog_data'], true);
 			$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && time() - $rRow['last_check_ago'] <= $rLastCheckTime || SERVER_ID == $rRow['id'];
 			// A node whose agent reports its telemetry is judged by MAIN's
 			// liveness loop instead (offline after 30 s of silence, not 90 s).
@@ -121,6 +88,63 @@ class ServerRepository {
 		FileCache::setCache('servers', $rServers);
 
 		return $rServers;
+	}
+
+	/**
+	 * What getAll() derives from a `servers` row besides liveness: its URLs
+	 * (the api_url ones with this node's live_streaming_pass), the decoded
+	 * GeoIP, ISP and parent lists, and whether it serves plain HTTP. The node
+	 * replica builds its servers cache through it too (ReplicaApply).
+	 *
+	 * @param array<string, mixed> $rRow A `servers` row.
+	 * @param array<string, mixed> $rSettings Settings (live_streaming_pass).
+	 * @return array<string, mixed>
+	 */
+	public static function decorate(array $rRow, array $rSettings): array {
+		if (empty($rRow['domain_name'])) {
+			$rURL = escapeshellcmd((string) $rRow['server_ip']);
+		} else {
+			$rURL = str_replace(['http://', '/', 'https://'], '', escapeshellcmd(explode(',', $rRow['domain_name'])[0]));
+		}
+
+		if ($rRow['enable_https'] == 1) {
+			$rProtocol = 'https';
+		} else {
+			$rProtocol = 'http';
+		}
+
+		$rPort = ($rProtocol == 'http' ? intval($rRow['http_broadcast_port']) : intval($rRow['https_broadcast_port']));
+		$rRow['server_protocol'] = $rProtocol;
+		$rRow['request_port'] = $rPort;
+		$rRow['site_url'] = $rProtocol . '://' . $rURL . ':' . $rPort . '/';
+		$rRow['http_url'] = 'http://' . $rURL . ':' . intval($rRow['http_broadcast_port']) . '/';
+		$rRow['https_url'] = 'https://' . $rURL . ':' . intval($rRow['https_broadcast_port']) . '/';
+		$rRow['rtmp_server'] = 'rtmp://' . $rURL . ':' . intval($rRow['rtmp_port']) . '/live/';
+		$rRow['domains'] = ['protocol' => $rProtocol, 'port' => $rPort, 'urls' => array_filter(array_map('escapeshellcmd', explode(',', $rRow['domain_name'] ?? '')))];
+		$rRow['rtmp_mport_url'] = 'http://127.0.0.1:31210/';
+		$rRow['api_url_ip'] = 'http://' . escapeshellcmd((string) $rRow['server_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/api?password=' . urlencode((string) ($rSettings['live_streaming_pass'] ?? ''));
+		$rRow['api_url'] = $rRow['api_url_ip'];
+		$rRow['site_url_ip'] = $rProtocol . '://' . escapeshellcmd((string) $rRow['server_ip']) . ':' . $rPort . '/';
+		$rRow['private_url_ip'] = (!empty($rRow['private_ip']) ? 'http://' . escapeshellcmd($rRow['private_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/' : null);
+		$rRow['public_url_ip'] = 'http://' . escapeshellcmd((string) $rRow['server_ip']) . ':' . intval($rRow['http_broadcast_port']) . '/';
+		$rRow['geoip_countries'] = (empty($rRow['geoip_countries']) ? [] : json_decode($rRow['geoip_countries'], true));
+		$rRow['isp_names'] = (empty($rRow['isp_names']) ? [] : json_decode($rRow['isp_names'], true));
+
+		if (is_numeric($rRow['parent_id'])) {
+			$rRow['parent_id'] = [intval($rRow['parent_id'])];
+		} else {
+			$decoded = json_decode($rRow['parent_id'] ?? '', true);
+			$rRow['parent_id'] = is_array($decoded) ? array_map('intval', $decoded) : [];
+		}
+
+		if ($rRow['enable_https'] == 2) {
+			$rRow['allow_http'] = false;
+		} else {
+			$rRow['allow_http'] = true;
+		}
+
+		$rRow['watchdog'] = json_decode((string) ($rRow['watchdog_data'] ?? ''), true);
+		return $rRow;
 	}
 
 	/**

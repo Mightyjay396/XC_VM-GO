@@ -6,6 +6,8 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Domain\Bouquet\BouquetService;
@@ -99,8 +101,11 @@ class CacheCronJob implements CommandInterface {
 
 		FileCache::setCache('settings', SettingsRepository::getAll(true));
 		FileCache::setCache('bouquets', BouquetService::getAll(true));
-		$rServers = ServerRepository::getAll(true);
-		FileCache::setCache('servers', $rServers);
+		// With the CONFIG flow on, the node's replica writes the servers cache
+		// (cluster:apply), and getAll() reads it.
+		if (!ReplicaApply::owns(ReplicaSections::SERVERS)) {
+			FileCache::setCache('servers', ServerRepository::getAll(true));
+		}
 		FileCache::setCache('proxy_servers', BlocklistService::getProxyIPs(true));
 		// With the CONFIG flow on, the node's replica writes these (cluster:apply).
 		if (!NodeFlows::on(NodeFlows::CONFIG)) {

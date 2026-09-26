@@ -38,6 +38,12 @@ boot() {
     sudo chown -R xc_vm:xc_vm $SCRIPT/bin/xc_agent 2>/dev/null
     sudo -u xc_vm bash $SCRIPT/bin/xc_agent/run.sh &
   fi
+  # Cluster node replica: rebuild the caches it owns from the verified copy on
+  # disk before the daemons read them, so a node rebooted while MAIN is
+  # unreachable serves from it (ReplicaApply; in shadow it only reports).
+  if [ -d $SCRIPT/config/cluster/replica ]; then
+    sudo -u xc_vm timeout 60 $SCRIPT/bin/php/bin/php $SCRIPT/console.php cluster:apply --from-disk >/dev/null 2>/dev/null
+  fi
   sudo -u xc_vm $SCRIPT/bin/nginx/sbin/nginx >/dev/null 2>/dev/null
   sudo -u xc_vm $SCRIPT/bin/nginx_rtmp/sbin/nginx_rtmp >/dev/null 2>/dev/null
   sudo -u xc_vm $SCRIPT/bin/daemons.sh

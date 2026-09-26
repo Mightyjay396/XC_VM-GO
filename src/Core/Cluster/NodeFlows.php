@@ -30,6 +30,17 @@ final class NodeFlows {
 
 	private static ?string $rPath = null;
 
+	private static bool $rMainCheck = true;
+
+	/**
+	 * The file's flows while read() asks NodeRole whether this is MAIN: that
+	 * reads the servers, which on a node whose replica owns them asks here
+	 * again (ReplicaApply::owns). The inner call gets what the file says.
+	 *
+	 * @var array{mode: int, flows: int, state: string, features: list<string>}|null
+	 */
+	private static ?array $rReading = null;
+
 	/** Is a flow on for this node? */
 	public static function on(int $rFlow): bool {
 		$rNow = self::current();
@@ -46,6 +57,9 @@ final class NodeFlows {
 
 	/** @return array{mode: int, flows: int, state: string, features: list<string>} */
 	public static function current(): array {
+		if (self::$rReading !== null) {
+			return self::$rReading;
+		}
 		if (self::$rCache === null || time() - self::$rReadAt >= 5) {
 			self::$rCache = self::read();
 			self::$rReadAt = time();
@@ -53,9 +67,13 @@ final class NodeFlows {
 		return self::$rCache;
 	}
 
-	/** Tests: read another file, and forget what was read. */
-	public static function usePath(?string $rPath): void {
+	/**
+	 * Tests: read another file, and forget what was read. $rMainCheck: ignore
+	 * that file on MAIN too, as the agent's own file is.
+	 */
+	public static function usePath(?string $rPath, bool $rMainCheck = false): void {
 		self::$rPath = $rPath;
+		self::$rMainCheck = $rPath === null || $rMainCheck;
 		self::$rCache = null;
 	}
 
@@ -66,10 +84,22 @@ final class NodeFlows {
 		// The file first: no file is the common case (MAIN, legacy nodes), and
 		// it needs no database to find out.
 		$rDoc = $rPath === null ? null : json_decode((string) @file_get_contents($rPath), true);
-		if (!is_array($rDoc) || (self::$rPath === null && NodeRole::isMain())) {
+		if (!is_array($rDoc)) {
 			return $rOff;
 		}
 		$rFeatures = is_array($rDoc['features'] ?? null) ? array_values(array_filter($rDoc['features'], 'is_string')) : [];
-		return ['mode' => max(0, min(2, (int) ($rDoc['mode'] ?? 0))), 'flows' => (int) ($rDoc['flows'] ?? 0) & 255, 'state' => (string) ($rDoc['state'] ?? ''), 'features' => $rFeatures];
+		$rFlows = ['mode' => max(0, min(2, (int) ($rDoc['mode'] ?? 0))), 'flows' => (int) ($rDoc['flows'] ?? 0) & 255, 'state' => (string) ($rDoc['state'] ?? ''), 'features' => $rFeatures];
+		if (self::$rMainCheck) {
+			self::$rReading = $rFlows;
+			try {
+				$rMain = NodeRole::isMain();
+			} finally {
+				self::$rReading = null;
+			}
+			if ($rMain) {
+				return $rOff;
+			}
+		}
+		return $rFlows;
 	}
 }
