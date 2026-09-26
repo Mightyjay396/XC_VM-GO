@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry, connection limits enforced on MAIN, and the connection digest with snapshots and seeding; admission and the agent's HLS reaper are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes*, `cron:cluster` and MAIN's own FPM pools for the API are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry, connection limits enforced on MAIN, and the connection digest with snapshots and seeding; admission and the agent's HLS reaper are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -104,7 +104,7 @@ A session request is checked in this order. Nothing is written, not even the non
 9. the node state;
 10. opening the BOX.
 
-Refusals are panel-signed (`den`) and name the node and the request nonce. `STARTING` (no extension) is the one unsigned reply, and agents treat it as a transport error.
+Refusals are panel-signed (`den`) and name the node and the request nonce. `STARTING` without the extension is the one unsigned reply, and agents treat it as a transport error. While MAIN's cluster pools are starting, `STARTING` is panel-signed (see "The cluster pools").
 
 Token epochs:
 
@@ -632,6 +632,44 @@ The settings columns come from the install schema and the migrations. Secrets ar
 - telemetry (`cl:tel:<sid>`);
 - the `conn.touch` state;
 - per-op semaphores.
+
+### The cluster pools (Phase 2, second increment)
+
+**What they are.** MAIN serves the cluster API from two PHP-FPM pools of its own (`Domain\Cluster\ClusterPool`). A fleet's long-polls and ingest then never hold the workers that serve the panel and viewers, and a busy panel never delays a heartbeat.
+
+| Pool | Ops (agent lanes) | `pm.max_children` | Timeout |
+| --- | --- | --- | --- |
+| `cluster_ctl` | `health`, `challenge`, enrolment, token ops, `hello`, `heartbeat`, `conn_admit`, `commands`, `ack` (poll, ctl) | 2·nodes + 24 | 60 s |
+| `cluster_ingest` | `events`, `config`, `streams`, `conn_snapshot`, `stream_bundle`, `rpc_result`, `recording_complete`, `vod_analysis`, the three queue ops, `artefact` (p0, bulk) | min(2·`cluster_ingest_concurrency` + 8, floor(0.25 · MariaDB `max_connections`)), at least 2 | 90 s |
+
+- **Nodes** are the streaming servers other than MAIN, enrolled or not, so a pool is sized before a node's first long-poll. Proxies do not count.
+- **The floor of 2** keeps one P0 and one bulk request running when MariaDB's limit is tiny. The plan gives no floor.
+- **Unknown ops** go to `cluster_ctl`, which refuses them.
+- **Files.** Configs go in `bin/php/etc/cluster/<pool>.conf`, because `set_services` deletes and rewrites `bin/php/etc/*.conf` for the panel's pools. Sockets go in `bin/php/sockets/<pool>.sock`. Pid files go in `bin/php/var/run/`, because `restart_php_fpm` counts `sockets/*.pid` as panel pools.
+- **Workers** are titled `php-fpm: pool cluster_ctl` (or `cluster_ingest`), so they never pass for a viewer's worker in `php_pids`.
+- **Always there on MAIN.** The pools exist whether or not the API is enabled. With `pm = ondemand`, an idle pool is just its master.
+
+**Routing.** nginx's fixed `location ^~ /cluster/v1/` passes to the upstream `cluster_ctl`. A nested regex location sends the ingest ops to `cluster_ingest`. Both upstreams list the panel pool `1.sock` as `backup`, so the API still answers while a pool is down or not yet created. `ClusterPoolTest` fails when the location's list differs from `ClusterPool::INGEST_OPS`, or when an op the API serves has no lane.
+
+**Bringing them up.** `ClusterPool::ensure()`:
+
+1. writes a pool's config when its size changed;
+2. starts a pool whose master is not running, as xc_vm;
+3. reloads (`SIGUSR2`) a running pool whose config changed. The reload lets requests finish for 5 s (`process_control_timeout`); a held long-poll is cut, and the agent polls again;
+4. writes the marker `tmp/cluster_ready` once both pools answer FPM's own ping (`ping.path`, one FastCGI request over the socket), and removes it while one does not.
+
+`status` runs it while XC_VM runs: at every boot, after the migrations, and after an update. `cron:servers` runs it every minute as a watchdog, which also resizes the pools as servers come and go. A lock keeps the two from starting a pool twice. A master is found by its title, which names its config, not by its pid file.
+
+**STARTING.** Until the marker exists, `Public/cluster/index.php` answers every op but `health` with a panel-signed `503 STARTING`. The denial names the node and request nonce when the request carries them, and asks for `retry_after_ms` 5000. `health` needs neither the database nor the pools, so it is answered throughout.
+
+- **When it applies.** The service removes the marker whenever it starts, and tmp/ is a tmpfs. So a boot, a restart and an update each answer `STARTING` until the migrations have run and both pools answer.
+- **Silence clock.** Creating the marker runs `ClusterMeta::markReady()`, so the time the API was `STARTING` never counts against a node's silence.
+
+**Not built:**
+
+- the old-port servers that `ClusterEndpoint` renders into `cluster_legacy.conf` still pass to the panel pool. They move with the rendered nginx config (`ClusterNginxConfig`);
+- the plan's `cluster_ctl` listen-queue check, which should feed the fleet silence guard;
+- the ingest permits on the bus.
 
 ### Blocklist delta (Phase 7, first increment)
 
