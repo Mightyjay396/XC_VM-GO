@@ -96,4 +96,26 @@ final class HlsReapingTest extends TestCase {
 		$this->assertTrue($rEnded->invoke($rCron, ['hls_end' => 1, 'hls_last_read' => self::T, 'server_id' => 2], self::T), 'ended by the node');
 		$this->assertFalse($rEnded->invoke($rCron, ['hls_end' => 0, 'hls_last_read' => self::T - 5, 'server_id' => 3], self::T));
 	}
+
+	public function testEveryOrphanedConnectionsNodeIsReportedForThePurge(): void {
+		$this->node(2, 'active', 1, 74, 'hls_reaper', self::T - 600);
+		$this->node(3, 'active', 1, 74, null, self::T - 600);        // an older agent: purged too
+		$this->node(4, 'active', 1, 10, 'hls_reaper', self::T - 600); // CONNECTIONS off: MAIN's store is the node's own
+		$this->node(5, 'active', 1, 74, 'hls_reaper', self::T - 1);
+		HlsReaping::begin(self::T, 120);
+		$this->assertSame([], HlsReaping::orphaned(), 'the watch only starts');
+		HlsReaping::begin(self::T + 120, 120);
+		$this->assertSame([2, 3], HlsReaping::orphaned());
+	}
+
+	public function testThePurgeDropsOnlyThatNodesRowsFromTheStore(): void {
+		\XcVm\Core\Config\SettingsManager::set(['redis_handler' => 0]);
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT, `uuid` text, `server_id` int, `container` text)');
+		$this->rDb->exec("INSERT INTO `lines_live` (`uuid`, `server_id`, `container`) VALUES ('a', 2, 'ts'), ('b', 2, 'hls'), ('c', 3, 'ts')");
+		$this->assertSame(2, \XcVm\Domain\Cluster\ConnectionIngest::purgeNode(2));
+		$this->assertSame(0, \XcVm\Domain\Cluster\ConnectionIngest::purgeNode(2));
+		$this->rDb->query('SELECT `uuid` FROM `lines_live`');
+		$this->assertSame([['uuid' => 'c']], $this->rDb->get_rows());
+		\XcVm\Core\Config\SettingsManager::set([]);
+	}
 }

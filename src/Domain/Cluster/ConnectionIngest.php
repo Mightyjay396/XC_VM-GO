@@ -109,4 +109,40 @@ final class ConnectionIngest {
 		}
 		return (bool) self::db()->query('DELETE FROM `lines_live` WHERE `uuid` = ? AND `server_id` = ?;', $rUUID, $rServerID);
 	}
+
+	/**
+	 * The orphan purge (plan, "Liveness"): every connection MAIN's store holds
+	 * for a node silent past cluster_orphan_conn_ttl_sec is dropped, so its
+	 * viewers stop counting toward their lines' limits. Store only: no kill or
+	 * command goes to the node, whose own registry still holds them; if it
+	 * comes back, its digest disagrees and a snapshot puts them back.
+	 *
+	 * @return int How many were dropped.
+	 */
+	public static function purgeNode(int $rServerID): int {
+		if (SettingsManager::get('redis_handler')) {
+			$rRedis = RedisManager::instance();
+			if (!$rRedis instanceof \Redis) {
+				return 0;
+			}
+			$rUUIDs = $rRedis->zRange('SERVER#' . $rServerID, 0, -1);
+			$rCount = 0;
+			foreach (is_array($rUUIDs) ? $rUUIDs : [] as $rUUID) {
+				$rConnection = ConnectionTracker::getConnection((string) $rUUID);
+				if (is_array($rConnection) && (int) ($rConnection['server_id'] ?? 0) === $rServerID && ConnectionTracker::removeRecord($rRedis, $rConnection)) {
+					$rCount++;
+				} elseif (!is_array($rConnection)) {
+					$rRedis->zRem('SERVER#' . $rServerID, $rUUID); // a dangling index entry
+				}
+			}
+			return $rCount;
+		}
+		$rDb = self::db();
+		$rDb->query('SELECT COUNT(*) AS `n` FROM `lines_live` WHERE `server_id` = ?;', $rServerID);
+		$rCount = (int) ($rDb->get_row()['n'] ?? 0);
+		if ($rCount > 0) {
+			$rDb->query('DELETE FROM `lines_live` WHERE `server_id` = ?;', $rServerID);
+		}
+		return $rCount;
+	}
 }

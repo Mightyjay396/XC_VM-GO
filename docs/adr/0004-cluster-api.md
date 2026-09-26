@@ -502,7 +502,9 @@ An LB that reaps its own rows (MySQL mode) asks its own agent through `NodeFlows
 - its `last_seen_at` is older than `cluster_orphan_conn_ttl_sec`;
 - MAIN's reaper has itself watched it stay silent that long (`TMP_PATH/cluster_orphans.json`).
 
-A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node. An orphaned node's rows go back to the 30 s rule.
+A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node.
+
+**The orphan purge.** Every CONNECTIONS node is watched this way, whether or not its agent reaps. An orphaned node's rows, HLS and TS alike, are purged from MAIN's store only (`ConnectionIngest::purgeNode`, audited as `conn.orphan_purge`), so they stop counting toward their lines' limits. The purge sends no kill and no command: the node's registry still holds its viewers. If the node comes back, its digest disagrees and a snapshot restores them. Before this, a dead node's TS rows stayed for ever, because the reaper kept trusting the node's last `php_pids` list, and it skips daemon-served rows (pid 0) altogether.
 
 **Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way.
 
@@ -519,8 +521,9 @@ Other targets are unchanged: a legacy node limits at open, as before.
 
 **What it does.**
 1. **Reserve.** The viewer's uuid is reserved for the identity for the token's life (`create_expiration`) plus 10 s, and the identity's other reservations still in flight are counted.
-   - **Redis mode:** a Lua script on `RESV#<identity>`.
-   - **MySQL mode:** `cluster_reservations`, the table migration 032 created for this.
+   - **The cluster bus**, when MAIN runs it: a Lua script on `RESV#<identity>`, in either store mode.
+   - **Without the bus, Redis mode:** the same script on the shared Redis.
+   - **Without the bus, MySQL mode:** `cluster_reservations`, the table migration 032 created for this.
    - **No lock:** insert-then-count needs none, because of two concurrent mints at least one sees the other.
 2. **Evict.** `ConnectionLimiter::closeConnections` cuts the identity's open connections, and the pair's, to leave room for this viewer and the ones in flight. The order is the limiter's: the requesting device first, then the oldest. The new viewer is never evicted, because it is not open yet. Closes on CONNECTIONS nodes go out as commands, as every close MAIN makes does.
 3. **Release.** When the node reports the connection (`ConnectionIngest::upsert`), the reservation is released.
@@ -543,7 +546,7 @@ A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`.
 - **Where it runs:** MAIN only. `service` and `ServiceCommand` start it, and `ServersCronJob` revives it. LB builds strip `bin/cluster_bus`.
 - **Liveness checks:** it runs the same binary as the shared Redis, so `ServersCronJob` tells the two apart by process title: `redis-server unixsocket:…` for the bus, `redis-server *:6379` for the shared one. Before this, a running bus would have hidden a dead shared Redis.
 
-**What it carries.** Today, wake-ups only:
+**What it carries.** Wake-ups, and the admission reservations (`ConnectionAdmission`, seventh Phase 6 increment):
 - **`wake:<sid>`:** `CommandBus::enqueue` pushes it, and the `commands` long-poll waits on it. The long-poll used to re-read `cluster_commands` every 250 ms for up to 20 s per node. It now reads once, blocks on the bus, and reads again when woken. While it blocks it holds no MySQL connection: it closes the handle first (`waitNodeReleasing`), and `DatabaseHandler` reconnects on the next read.
 - **`ack:<cmd_id>`:** `CommandBus::ack` pushes it, and `CommandBus::await` (an RPC waiting for its answer) waits on it instead of polling every 100 ms.
 
@@ -557,7 +560,6 @@ A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`.
 **Still to come on the bus:**
 - nonces;
 - telemetry (`cl:tel:<sid>`);
-- reservations (the plan's Lua admission);
 - the `conn.touch` state;
 - per-op semaphores.
 

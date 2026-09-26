@@ -9,6 +9,8 @@ use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Validation\InputValidator;
+use XcVm\Domain\Cluster\ClusterAudit;
+use XcVm\Domain\Cluster\ConnectionIngest;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Redis\RedisManager;
@@ -296,8 +298,18 @@ class UsersCronJob implements CommandInterface {
 		$rStartTime = time();
 		$rLiveKeys = [];
 		if ($rServers[SERVER_ID]['is_main']) {
-			// Nodes whose agent ends its own idle HLS viewers (unless orphaned).
+			// Nodes whose agent ends its own idle HLS viewers, and the orphan
+			// purge: a silent CONNECTIONS node's rows leave MAIN's store.
 			HlsReaping::begin($rStartTime, SettingsManager::getInt('cluster_orphan_conn_ttl_sec', 120));
+			if (class_exists(ConnectionIngest::class)) {
+				foreach (HlsReaping::orphaned() as $rOrphan) {
+					$rPurged = ConnectionIngest::purgeNode($rOrphan);
+					if ($rPurged > 0) {
+						echo 'Orphan purge: ' . $rPurged . ' connection(s) of silent node ' . $rOrphan . "\n";
+						ClusterAudit::log('conn.orphan_purge', $rOrphan, ['connections' => $rPurged], 'liveness');
+					}
+				}
+			}
 		}
 
 		if (!$rRedis || $rServers[SERVER_ID]['is_main']) {
