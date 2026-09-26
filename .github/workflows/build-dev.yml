@@ -11,9 +11,8 @@ name: Build Dev (nightly)
 # version_compare() orders X.Y.Z-dev.N < X.Y.Z-beta.1 < X.Y.Z, so a panel on
 # the dev channel moves on to the stable release once it is published.
 #
-# Publishing needs a GitHub App installed on XC_VM_Dev with Contents: write:
-#   vars.DEV_RELEASE_APP_ID      — the App ID
-#   secrets.DEV_RELEASE_APP_KEY  — the App's private key (PEM)
+# Publishing needs secrets.DEV_RELEASE_TOKEN: a fine-grained personal access
+# token scoped to XC_VM_Dev only, with Contents: read and write.
 
 on:
   schedule:
@@ -54,19 +53,10 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      - name: Issue XC_VM_Dev token
-        id: app
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.DEV_RELEASE_APP_ID }}
-          private-key: ${{ secrets.DEV_RELEASE_APP_KEY }}
-          owner: ${{ env.DEV_OWNER }}
-          repositories: ${{ env.DEV_REPO_NAME }}
-
       - name: Decide whether to build and compute the version
         id: plan
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ secrets.DEV_RELEASE_TOKEN }}
           FORCE: ${{ github.event.inputs.force || 'false' }}
         run: |
           set -euo pipefail
@@ -175,18 +165,9 @@ jobs:
             git log --no-merges --format='- %s (%h)' "${SINCE}..${SHA}"
           } > "${RUNNER_TEMP}/notes.md"
 
-      - name: Issue XC_VM_Dev token
-        id: app
-        uses: actions/create-github-app-token@v2
-        with:
-          app-id: ${{ vars.DEV_RELEASE_APP_ID }}
-          private-key: ${{ secrets.DEV_RELEASE_APP_KEY }}
-          owner: ${{ env.DEV_OWNER }}
-          repositories: ${{ env.DEV_REPO_NAME }}
-
       - name: Publish nightly release
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ secrets.DEV_RELEASE_TOKEN }}
         run: |
           gh release create "$VERSION" dist/* \
             -R "${DEV_OWNER}/${DEV_REPO_NAME}" \
@@ -196,7 +177,7 @@ jobs:
 
       - name: Prune old nightlies
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
+          GH_TOKEN: ${{ secrets.DEV_RELEASE_TOKEN }}
         run: |
           set -euo pipefail
           DEV_REPO="${DEV_OWNER}/${DEV_REPO_NAME}"
