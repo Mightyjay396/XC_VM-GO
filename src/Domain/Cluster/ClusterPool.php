@@ -40,6 +40,10 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * of holding panel workers with their long-polls. The service removes the
  * marker whenever it (re)starts, and tmp/ is a tmpfs, so a reboot does too.
  * A request that cannot reach a pool's socket goes to a panel pool (nginx).
+ *
+ * listenQueueMs() tells MAIN's liveness loop how long `cluster_ctl` has had
+ * requests waiting for a worker: a queue lasting over 5 s raises the fleet
+ * guard (LivenessService).
  */
 final class ClusterPool {
 	use DatabaseAware;
@@ -83,6 +87,28 @@ final class ClusterPool {
 	/** Seconds one ping may take. */
 	private const PING_TIMEOUT = 2.0;
 
+	/** Seconds the listen-queue probe waits for a worker to take its request. */
+	public const QUEUE_PROBE_WAIT = 0.25;
+
+	/** `pm.status_path`, asked for with `?json`. */
+	private const STATUS_PATH = '/status';
+
+	/** The most of an answer the FastCGI client reads. */
+	private const MAX_ANSWER = 65536;
+
+	/** Linux's EAGAIN, a unix socket's connect when its listen backlog is full. */
+	private const EAGAIN = 11;
+
+	/**
+	 * The listen-queue probe, across one process's calls: its pool, its status
+	 * request while no worker has answered it (null once answered), what it
+	 * has read so far, when it was sent, and since when the pool has had a
+	 * queue (hrtime ms, null: none).
+	 *
+	 * @var array{pool: string, conn: resource|null, buf: string, sent: int, queued: ?int}|null
+	 */
+	private static ?array $rProbe = null;
+
 	private static ?string $rBase = null;
 
 	private static string $rUser = 'xc_vm';
@@ -95,6 +121,7 @@ final class ClusterPool {
 	public static function useBase(?string $rBase, string $rUser = 'xc_vm'): void {
 		self::$rBase = $rBase;
 		self::$rUser = $rUser;
+		self::dropProbe();
 	}
 
 	/**
@@ -237,6 +264,73 @@ final class ClusterPool {
 	}
 
 	/**
+	 * For how long the pool's listen queue has lasted, in ms: 0 when there is
+	 * none, null when the pool cannot tell (no socket, nobody listening, a cut
+	 * answer, no status page or another pool's). One status request per call,
+	 * blocking for QUEUE_PROBE_WAIT at most, and one waiting at a time.
+	 *
+	 * FPM counts `listen queue` on TCP sockets only; on the pools' unix
+	 * sockets it always says 0. So the probe times its own request: FPM
+	 * serves the status page from a worker, and a request no worker takes
+	 * within QUEUE_PROBE_WAIT waits in the listen queue. It is left there,
+	 * and later calls read it without blocking. A late answer says only that
+	 * the requests ahead of it were served, so a new request goes at once:
+	 * the queue has lasted from the first request that waited until one is
+	 * answered within QUEUE_PROBE_WAIT with FPM counting no queue. A connect
+	 * refused because the backlog is full is a queue as well.
+	 */
+	public static function listenQueueMs(string $rPool): ?int {
+		if (self::$rProbe !== null && self::$rProbe['pool'] !== $rPool) {
+			self::dropProbe();
+		}
+		for ($rTry = 0; $rTry < 2; $rTry++) {
+			$rProbe = self::$rProbe;
+			$rFresh = $rProbe === null || $rProbe['conn'] === null;
+			if ($rFresh) {
+				$rErrNo = 0;
+				$rConn = self::fcgiSend(self::socket($rPool), self::STATUS_PATH, 'json', self::QUEUE_PROBE_WAIT, $rErrNo);
+				if ($rConn === null && $rErrNo === self::EAGAIN) {
+					// The listen backlog is full: requests certainly wait.
+					$rNow = self::monoMs();
+					self::$rProbe = ['pool' => $rPool, 'conn' => null, 'buf' => '', 'sent' => $rNow, 'queued' => $rProbe['queued'] ?? $rNow];
+					return max(1, $rNow - self::$rProbe['queued']);
+				}
+				if ($rConn === null) {
+					self::dropProbe();
+					return null;
+				}
+				$rProbe = ['pool' => $rPool, 'conn' => $rConn, 'buf' => '', 'sent' => self::monoMs(), 'queued' => $rProbe['queued'] ?? null];
+				self::$rProbe = $rProbe;
+			}
+			$rEnded = self::fcgiRead($rProbe['conn'], $rProbe['buf'], $rFresh ? self::QUEUE_PROBE_WAIT : 0.0);
+			$rNow = self::monoMs();
+			if ($rEnded === false) {
+				// No worker has taken it: it waits in the listen queue.
+				$rProbe['queued'] ??= $rProbe['sent'];
+				self::$rProbe = $rProbe;
+				return max(1, $rNow - $rProbe['queued']);
+			}
+			$rQueue = $rEnded ? self::statusQueue((string) self::fcgiBody($rProbe['buf']), $rPool) : null;
+			if ($rQueue === null) {
+				self::dropProbe();
+				return null;
+			}
+			fclose($rProbe['conn']);
+			self::$rProbe = ['pool' => $rPool, 'conn' => null, 'buf' => '', 'sent' => $rNow, 'queued' => $rProbe['queued']];
+			if ($rQueue > 0) {
+				self::$rProbe['queued'] ??= $rNow;
+				return max(1, $rNow - self::$rProbe['queued']);
+			}
+			if ($rFresh) {
+				self::$rProbe = null;
+				return 0;
+			}
+			// A late answer: ask again.
+		}
+		return null;
+	}
+
+	/**
 	 * Bring both pools to their current size: write the configs, start a pool
 	 * that is not running, reload one whose config changed. Without the
 	 * marker, it waits up to $rWaitSec for both pools to answer and then
@@ -370,52 +464,136 @@ final class ClusterPool {
 	 * never forwards it, since the API's location fixes SCRIPT_NAME.
 	 */
 	private static function ping(string $rSocket): bool {
-		$rConn = @stream_socket_client('unix://' . $rSocket, $rErrNo, $rErrStr, self::PING_TIMEOUT);
-		if ($rConn === false) {
+		$rConn = self::fcgiSend($rSocket, self::PING_PATH, '', self::PING_TIMEOUT);
+		if ($rConn === null) {
 			return false;
 		}
-		stream_set_timeout($rConn, (int) self::PING_TIMEOUT);
-		$rRecord = static fn(int $rType, string $rBody): string => pack('CCnnCC', 1, $rType, 1, strlen($rBody), 0, 0) . $rBody;
-		$rParams = '';
-		foreach (['REQUEST_METHOD' => 'GET', 'SCRIPT_NAME' => self::PING_PATH, 'SCRIPT_FILENAME' => self::PING_PATH] as $rName => $rValue) {
-			$rParams .= chr(strlen($rName)) . chr(strlen($rValue)) . $rName . $rValue;
-		}
-		// BEGIN_REQUEST (responder, close), PARAMS, end of PARAMS, empty STDIN.
-		$rOut = '';
-		$rEnded = false;
-		if (@fwrite($rConn, $rRecord(1, pack('nCx5', 1, 0)) . $rRecord(4, $rParams) . $rRecord(4, '') . $rRecord(5, '')) !== false) {
-			while (!$rEnded && strlen($rOut) < 65536) {
-				$rHead = self::readExact($rConn, 8);
-				if ($rHead === null) {
-					break;
-				}
-				$rRec = (array) unpack('Cversion/Ctype/nid/nlength/Cpadding/Creserved', $rHead);
-				$rBody = self::readExact($rConn, (int) $rRec['length'] + (int) $rRec['padding']);
-				if ($rBody === null) {
-					break;
-				}
-				if ((int) $rRec['type'] === 6) {
-					$rOut .= substr($rBody, 0, (int) $rRec['length']);
-				}
-				$rEnded = (int) $rRec['type'] === 3;
-			}
-		}
+		$rBuf = '';
+		$rEnded = self::fcgiRead($rConn, $rBuf, self::PING_TIMEOUT);
 		fclose($rConn);
-		$rParts = preg_split('/\r?\n\r?\n/', $rOut, 2);
-		return $rEnded && is_array($rParts) && count($rParts) === 2 && trim($rParts[1]) === self::PING_RESPONSE;
+		return $rEnded === true && trim((string) self::fcgiBody($rBuf)) === self::PING_RESPONSE;
 	}
 
-	/** @param resource $rConn */
-	private static function readExact($rConn, int $rLength): ?string {
-		$rOut = '';
-		while (strlen($rOut) < $rLength) {
-			$rChunk = @fread($rConn, $rLength - strlen($rOut));
-			if ($rChunk === false || $rChunk === '') {
+	/**
+	 * FPM's `listen queue` from its JSON status page for $rPool, or null
+	 * when the body is not one.
+	 */
+	private static function statusQueue(string $rBody, string $rPool): ?int {
+		$rDoc = json_decode($rBody, true);
+		if (!is_array($rDoc) || ($rDoc['pool'] ?? null) !== $rPool || !is_int($rDoc['listen queue'] ?? null)) {
+			return null;
+		}
+		return max(0, $rDoc['listen queue']);
+	}
+
+	/**
+	 * Connect to a pool's socket and send a FastCGI GET for $rScript, its
+	 * whole request (BEGIN_REQUEST as a responder that closes, PARAMS, end of
+	 * PARAMS, empty STDIN). Null when the socket does not take it; then
+	 * $rErrNo is the connect's errno (0 when the connect was not the cause).
+	 *
+	 * @return resource|null
+	 */
+	private static function fcgiSend(string $rSocket, string $rScript, string $rQuery, float $rTimeout, int &$rErrNo = 0) {
+		$rConn = @stream_socket_client('unix://' . $rSocket, $rCode, $rErrStr, $rTimeout);
+		$rErrNo = $rConn === false ? $rCode ?? 0 : 0;
+		if ($rConn === false) {
+			return null;
+		}
+		$rRecord = static fn(int $rType, string $rBody): string => pack('CCnnCC', 1, $rType, 1, strlen($rBody), 0, 0) . $rBody;
+		$rParams = '';
+		foreach (['REQUEST_METHOD' => 'GET', 'SCRIPT_NAME' => $rScript, 'SCRIPT_FILENAME' => $rScript, 'QUERY_STRING' => $rQuery] as $rName => $rValue) {
+			$rParams .= chr(strlen($rName)) . chr(strlen($rValue)) . $rName . $rValue;
+		}
+		if (@fwrite($rConn, $rRecord(1, pack('nCx5', 1, 0)) . $rRecord(4, $rParams) . $rRecord(4, '') . $rRecord(5, '')) === false) {
+			fclose($rConn);
+			return null;
+		}
+		stream_set_blocking($rConn, false);
+		return $rConn;
+	}
+
+	/**
+	 * Read an answer's records into $rBuf for up to $rWaitSec: true once its
+	 * END_REQUEST is in, false while it is still to come, null when the
+	 * connection ends or breaks first, or the answer passes MAX_ANSWER.
+	 *
+	 * @param resource $rConn a non-blocking connection from fcgiSend()
+	 */
+	private static function fcgiRead($rConn, string &$rBuf, float $rWaitSec): ?bool {
+		$rDeadline = microtime(true) + $rWaitSec;
+		while (true) {
+			$rChunk = @fread($rConn, 8192);
+			if ($rChunk === false) {
 				return null;
 			}
-			$rOut .= $rChunk;
+			if ($rChunk !== '') {
+				$rBuf .= $rChunk;
+				if (self::fcgiRecords($rBuf)[0]) {
+					return true;
+				}
+				if (strlen($rBuf) > self::MAX_ANSWER) {
+					return null;
+				}
+				continue;
+			}
+			if (feof($rConn)) {
+				return null;
+			}
+			$rLeft = $rDeadline - microtime(true);
+			if ($rLeft <= 0) {
+				return false;
+			}
+			$rRead = [$rConn];
+			$rWrite = $rExcept = null;
+			if (@stream_select($rRead, $rWrite, $rExcept, 0, max(1, (int) ($rLeft * 1000000))) === false) {
+				return null;
+			}
 		}
-		return $rOut;
+	}
+
+	/**
+	 * The complete records in $rBuf: whether END_REQUEST is among them, and
+	 * their STDOUT.
+	 *
+	 * @return array{0: bool, 1: string}
+	 */
+	private static function fcgiRecords(string $rBuf): array {
+		$rOut = '';
+		$rAt = 0;
+		while ($rAt + 8 <= strlen($rBuf)) {
+			$rRec = (array) unpack('Cversion/Ctype/nid/nlength/Cpadding', $rBuf, $rAt);
+			$rNext = $rAt + 8 + (int) $rRec['length'] + (int) $rRec['padding'];
+			if ($rNext > strlen($rBuf)) {
+				break;
+			}
+			if ((int) $rRec['type'] === 6) {
+				$rOut .= substr($rBuf, $rAt + 8, (int) $rRec['length']);
+			} elseif ((int) $rRec['type'] === 3) {
+				return [true, $rOut];
+			}
+			$rAt = $rNext;
+		}
+		return [false, $rOut];
+	}
+
+	/** An answer's body: its STDOUT after the headers, or null. */
+	private static function fcgiBody(string $rBuf): ?string {
+		$rParts = preg_split('/\r?\n\r?\n/', self::fcgiRecords($rBuf)[1], 2);
+		return is_array($rParts) && count($rParts) === 2 ? $rParts[1] : null;
+	}
+
+	/** Close the probe's waiting request, if any, and forget the queue it saw. */
+	private static function dropProbe(): void {
+		if (self::$rProbe !== null && is_resource(self::$rProbe['conn'])) {
+			fclose(self::$rProbe['conn']);
+		}
+		self::$rProbe = null;
+	}
+
+	/** A monotonic clock (ms): the probe times waits, not dates. */
+	private static function monoMs(): int {
+		return intdiv(hrtime(true), 1000000);
 	}
 
 	/** Write $rContent when it differs from the file; true when it changed. */

@@ -8,11 +8,17 @@ use XcVm\Core\Cluster\ReplicaApply;
 
 /**
  * ClusterApplyCommand — apply the node replica the agent verified (Phase 7).
- * The agent runs it after the replica changed; see ReplicaApply. In shadow
- * (CONFIG off) it only reports how the replica differs from the caches
- * cron:cache builds from MAIN's database; with CONFIG on it writes them.
+ * The agent runs it after the replica changed, and `service` at boot on a
+ * CONFIG node before the daemons start; see ReplicaApply. In shadow (CONFIG
+ * off) it only reports how the replica differs from what the node reads from
+ * MAIN's database today; with CONFIG on it writes the caches. It still boots
+ * through the CLI profile, which needs MAIN's database: serving from the
+ * replica after a reboot while MAIN is unreachable waits for ReplicaStage.
  *
- * Runs as xc_vm. Usage: `console.php cluster:apply`
+ * It always reads the replica on disk (`--from-disk`, the plan's boot flag,
+ * is accepted and changes nothing): PHP holds no key to fetch or open it.
+ *
+ * Runs as xc_vm. Usage: `console.php cluster:apply [--from-disk]`
  *
  * @package XC_VM_CLI_Commands
  */

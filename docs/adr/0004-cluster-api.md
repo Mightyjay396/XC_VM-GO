@@ -291,7 +291,7 @@ Other rules:
 - The result goes to `tmp/cluster/health.json`. `Core\Cluster\ClusterHealth` is how `ServerRepository::getAll()` (`server_online`, `cluster_health`) and `ConnectionTracker::getCapacity()` read it.
 - Each transition rewrites the servers cache at once and is audited (`node.health`).
 - **Hysteresis** (`NodeHealth::settle`): a published state gets worse at once, but better only after 30 s of steady health (`NodeHealth::RECOVER_MS`). An offline node that speaks again is `suspect` at once, so routing resumes at half weight, and `ok` after the steady period. Without this, a node whose heartbeats straddle the 10 s threshold flips on every gap: 10 flips a minute at 11.5 s gaps, one with it (`NodeHealthHysteresisTest`). The steady period is longer than the suspect threshold on purpose; at 10 s such a node would recover between gaps and flap as often. Since when each node has been ok is kept in `health.json` (`ok_since`), so the period survives passes that publish nothing.
-- **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears.
+- **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears. A `cluster_ctl` listen queue lasting over 5 s raises the same guard, with a reason, an audit and an alert of its own. It holds only the nodes it may have silenced, for 4 offline windows at most, and for one offline window after it ends (Phase 2, fifth increment).
 - Nodes without the flow keep the legacy 90 s rule. The Phase 6 orphan purge at `cluster_orphan_conn_ttl_sec` is not part of this loop yet.
 
 ### MAIN endpoint changes (Phase 3)
@@ -931,6 +931,100 @@ The settings columns come from the install schema and the migrations. Secrets ar
 
 **Applying.** `ReplicaApply` decodes the section as the panel does, through `SettingsRepository::decode()`, now shared. It reports the keys whose value differs from the settings cache. It stays in shadow even with CONFIG on: the section withholds secrets that the node still reads, so it becomes authoritative together with the `secrets` section.
 
+### The whole sections servers, node, crontab and cluster (Phase 7, fifth increment)
+
+**What they hold.** `Core/Cluster/ReplicaSections` names the fields. MAIN builds the sections from it (`ReplicaBuilder`) and the node applies them from it (`ReplicaApply`); it lives in Core because it ships to nodes. Each section is a `rep` record, signed, sealed and served exactly as the `settings` section.
+
+| Section | `data` |
+| --- | --- |
+| `servers` | `{servers: [row], nodes: [{sid, gen, state, ed_pub}]}`. One row per `servers` row, ordered by id, with the routing and relay fields `SERVER_FIELDS`. `nodes` is every `cluster_nodes` row by `server_id`: its generation, its state and its Ed25519 key (`node_sign_pub`, base64) |
+| `node` | The node's own row: `NODE_FIELDS` (ports, `limit_requests`/`limit_burst`, `total_services`, `use_disk`, `enable_https`, `domain_name`, `network_interface`, `governor`, `sysctl`, `time_offset`) and the settings `cloudflare` and `mag_legacy_redirect`. `[]` when the row is gone |
+| `crontab` | `{jobs: [{filename, time}]}`: the enabled rows whose role fits the node's mode, in the table's order. A row that is not a job as the node takes it (below) is left out, and audited once as `replica.crontab_skipped` |
+| `cluster` | `{main_urls, urls_ver, policy_ver, transport, panel_sign_pub, panel_box_pub, min_proto, off_air}`. The policy is the one `hello` sends (`ClusterPolicy::current`). The keys are base64. `off_air` maps `connected`, `not_on_air`, `banned`, `expired` and `expiring` to the file name of the admin's video, or null for the node's default |
+
+Integer columns travel as JSON integers and text as strings, whichever driver read them; a missing column or NULL is null. Every level of a section has its keys sorted (the canonical form of the ETag), so a row's fields arrive in name order.
+
+**Nothing else.** Each `servers` column is in exactly one of `SERVER_FIELDS`, `NODE_FIELDS` and `SERVER_LOCAL`, and `ReplicaSectionsTest` fails on a new column that is in none. `SERVER_LOCAL` is what no replica carries: the liveness and telemetry columns (`status`, `last_check_ago`, `watchdog_data`, `connections`, `users`, `requests_per_second`, `ping`, the hardware and device reports), `php_pids`, `certbot_*`, `uuid` and `ssh_hostkey_sha1`. A node builds the `api_url*` itself. No section carries a setting the allowlist withholds.
+
+**How it differs from the plan.**
+
+- `servers` also carries `whitelist_ips`, which the node's `allowed_ips` cache is built from, and `xc_vm_version`, which the node's update reads.
+- `node` also carries `time_offset`: the node checks token expiry against it. It is MAIN's measure of the node's clock, set from the node's inventory in whole seconds, so it rarely moves the ETag.
+- `urls_ver` equals `policy_ver`: one counter versions both the URLs and the policy.
+- A `legacy` crontab row fits modes 0 and 1, as migration 033 defines it (nodes that still have MAIN's database). `main` rows never leave MAIN. The plan's "`users` only while CONNECTIONS is off" stays `UsersCronJob`'s own check.
+- Migration 042 makes `cleanup`'s role `all`, as the plan's cron table has it (its Phase 0 text and migration 033 made it `main`). `cron:cleanup` prunes each node's own stream files, TV archive and created channels, and only its table rotation is MAIN's. While nodes copied the crontab whole the role changed nothing; with the crontab section, a `main` row would have stopped that pruning on every node. `ReplicaSectionsTest` checks the install's own crontab.
+- Migration 043 gives the rest of the plan's `main` crons that role: `epg`, `series`, `backups`, `cache_engine` and `providers` (the LB build strips their classes), `stats` (it exits on an LB), `proxy` (it fetches the archive MAIN's installer ships) and `watch` and `plex` (module commands; modules are MAIN-only). An install had them all as `all`, so the crontab section would have sent every node jobs that fail as unknown commands. `maxmind` stays `all`, unlike the plan's table: each node keeps its own GeoIP databases current. `ReplicaSectionsTest` fails on a job whose class the Makefile strips from the LB build.
+- The whole section is panel-signed, so the node list inside it is signed.
+- A `rep` record is signed on each request, not once per content hash: a signature costs microseconds, and the plan's cache holds the data.
+- `config.changed` also goes out when a node completes its enrolment or is quarantined, so the others learn a new active key, or stop trusting a cloned one, at once.
+- `config.changed` goes only to an agent that says `config_changed` at hello (below). Today's agent would hand it to `cluster:exec`, which an LB's older PHP fails as an unknown type.
+
+**Change detection on MAIN.** The ETag is the SHA-256 of the canonical data. `ReplicaEtagCache` keeps a section and its ETag for 10 s on MAIN's clock, one file per key in `TMP_PATH/cluster_replica/`: `servers`, `settings`, `cluster`, `node.<sid>`, and `crontab.legacy` or `crontab.api`. Each entry records the cache's generation (`.gen`) from before the database was read. A bump replaces the generation with a random token and deletes the entries, so a request that read the old rows and writes them after the bump is never served. A random token, not a counter: two bumps at once never write the same one. Without that, a node pushed by `config.changed` could get the old list as `unchanged` and wait for its next poll.
+
+- `SettingsChangedEvent`, `ServerSavedEvent` and `CrontabChangedEvent` drop the cache, so the next `config` call reads the database. `SettingsService` now dispatches `SettingsChangedEvent` on the settings, backup and cache saves. `ServerService` and `ServerRepository` dispatch `ServerSavedEvent` on a server or proxy save, an install, a reorder and a delete. The cache-engine schedule save dispatches `CrontabChangedEvent`.
+- The listener is Core's own, registered by `ContainerPopulateStage`, because only modules had a subscriber registry.
+- Other writers of these tables dispatch nothing. Their change is seen within the 10 s, then at the node's next minute's poll. Among them: the admin's node actions (ports, services, governor, sysctl), which the node carries out and writes back to its own row itself, and the enrolment and liveness writers of `cluster_nodes`.
+
+**`config.changed`.** `ReplicaBuilder::nodesChanged` runs when a node is revoked, re-enrolled (`startEnrolment` over an existing row), completes its enrolment, or is quarantined on evidence of a clone (`hello` or `token_rekey` from another instance). It drops the cache, then queues `config.changed` for every other `active` node with COMMANDS on whose agent said `config_changed` at hello (`cluster_nodes.features`).
+
+- The command is restrictive, so it signs without a licence. Its `dedupe_key` is `config.changed`, so a newer one supersedes one not yet acked.
+- A failure to queue never fails the change. Each node is queued on its own, so one that cannot be told (its row gone meanwhile) is skipped and the others still are; it sees the change at its next poll.
+- Nodes without COMMANDS or without the feature fetch it at their next poll too.
+
+**The node.** `cluster:apply` reads `replica/<name>.json` and reports each section in `replica/apply.json`:
+
+- **`servers` + `node`.**
+  - **Shadow:** `missing`, `extra` (server ids) and `differ` (`<id>.<field>`, at most 100), compared with the servers cache `cron:cache` built from MAIN's database.
+  - **CONFIG on:** the `servers` cache, keyed by id, in `ServerRepository::getAll`'s shape. It is built through `ServerRepository::decorate` (split out of `getAll`), with the node section over the node's own row. `api_url*` are built with the node's own `live_streaming_pass`. Every column a section does not carry is null, and `server_online` is `enabled` (MAIN judges liveness; the node tries every enabled server).
+  - Both sections must be MAIN's for this node: the node section's `id` is `SERVER_ID`, the list holds that row, the ids are unique and the node list is well-formed. Otherwise the report says `incomplete` (one of the two is missing) or `refused`, and nothing is written.
+- **`crontab`.**
+  - **Shadow:** the jobs MAIN's table has that the section leaves out (`missing`, normally the `main` rows) and the reverse (`extra`).
+  - **CONFIG on:** the `cron_jobs` cache.
+  - A job must be a `cron:` name (`[a-z0-9_]{1,64}`) and five schedule fields of `[0-9*/,-]`, with nothing after them, not even a newline; otherwise the whole section is `refused`: the node writes the jobs into its crontab.
+- **`cluster`.** Compared with the agent's `agent.json` (`main_urls`, `panel_sign_pub`, `policy_ver`) and reported as `shadow` whatever the flow. No PHP on the node reads it; the agent does.
+
+**Who owns a cache.** With CONFIG on, the replica owns the servers cache or the crontab's jobs (`ReplicaApply::owns`) only once the agent has stored the sections (`servers.json` and `node.json`, or `crontab.json`) and an authoritative apply has built the cache from them. The apply records that in the `replica_owned` cache, beside the caches in `tmp/cache/`, so it goes with them at a reboot. Until then the readers keep MAIN's database and `cron:cache` keeps refreshing it. A database copy is therefore never taken for the replica's, frozen with the liveness it had.
+
+- A section that is refused or incomplete hands its cache back: the readers take MAIN's database again, and `cron:cache` refreshes the servers cache from it.
+- With CONFIG off, `cluster:apply` (in shadow) and `cron:cache` drop the record and the `cron_jobs` cache (`ReplicaApply::disown`), so turning CONFIG back on waits for an apply instead of reusing old jobs.
+- `cron:cache` applies the replica from disk itself every minute while CONFIG is on (`ReplicaApply::run(true)`), so the caches follow the copy on disk within a minute of a flow change even when the agent does not run `cluster:apply` then.
+
+Once owned:
+
+- `ServerRepository::getAll()` returns the servers cache however old it is, even when forced, so every reader (including `cron:root_signals`' ports, limits and services) reads the replica. Should the cache be gone, it rebuilds it from the replica on disk. It never writes the database's rows over a cache the replica owns.
+- `cron:cache` does not write the servers cache from the database.
+- `LegacyInitializer::generateCron` and `cron:root_signals`' crontab check take the crontab from `ReplicaApply::crontabText`: the replica's jobs, or MAIN's table while the replica does not own them. Null (the owned jobs are gone, or there is no database) leaves the crontab as it is; an empty string is a crontab with no job.
+- `cron:certbot` reads its own certificate record from its row in MAIN's database, not from the servers cache, which carries no `certbot_ssl` (`SERVER_LOCAL`).
+- `src/service` runs `cluster:apply --from-disk` as xc_vm before `daemons.sh` when `config/cluster/flows.json` has mode 1 or 2 and the CONFIG bit, with a 15 s `timeout`. A shadow node gains nothing from it. The flag changes nothing: `cluster:apply` always reads the disk.
+- `NodeFlows` ignores the agent's file on MAIN, and asks `NodeRole`, which reads the servers. On a node whose replica owns them that asked `NodeFlows` again, without end. The inner call now gets what the file says (`ReplicaApplyTest`).
+
+**Known limits.**
+
+- A node with CONFIG on and TELEMETRY off loses what its legacy telemetry path read from its own row: `watchdog_data`'s CPU history, and `users`/`connections` in Redis mode. The rollout turns TELEMETRY (Phase 3) on before CONFIG.
+- The settings, including `cloudflare` and `mag_legacy_redirect`, stay MAIN's until the `secrets` section exists; the `node` section's copies are not read yet.
+- No reader uses the node list before Phase 8's ticket checks.
+- `cluster:apply` and `cron:cache` boot through the CLI profile, which still connects to MAIN's database (`ReplicaStage` is not built). With MAIN's database unreachable at boot, `cluster:apply` exits before it applies anything, bounded by `service`'s 15 s `timeout`. A node rebooted while MAIN is unreachable therefore serves from its replica only once `ReplicaStage` exists; today its caches are rebuilt when MAIN's database answers again.
+
+**Tests.**
+
+- `ReplicaSectionsTest`: content per section, the classification, no liveness or secret, rows a node would refuse left out of the crontab section, and no job the LB build strips. Also the ETag's stability, the cache, bumps from each event and from a delete or reorder, and a bump in the middle of a read (through `QueryLogDb`'s before-statement hook). And `config.changed`: who is told on a revoke and a re-enrolment, never the node itself, and a node that cannot be told is skipped.
+- `ReplicaApplyTest`: shadow and authoritative per section, and `getAll`'s shape (a disabled server offline, the node's own row online and from the node section). Also missing, foreign, malformed and duplicate sections, and the crontab patterns. Ownership: only after an apply, handed back on a refusal and after CONFIG was off, an owned cache that is gone rebuilt from disk, and never overwritten by a database read an apply overtook. And `ReplicaApply::crontabText`, which both crontab readers write; the readers themselves only pass its null on.
+- `ClusterApiTest`: sections served by `have`, never to an agent that does not name them. Also `config.changed` on a completed enrolment and on both quarantines, and a sign refusal other than LICENCE that still denies the call (`FakeClusterCrypto::$rRefuseSign`).
+- `BootStageTest` (the three events have Core's listener after `ContainerPopulateStage`), `ClusterExecCommandTest` (`config.changed` acked as deferred), and `ClusterSchemaTest` (migrations 042 and 043).
+
+The suite runs with the ETag cache off (`tests/bootstrap.php`): some tests define `TMP_PATH` as a shared path and fix the clock at one instant.
+
+**The agent's contract (XC_VM_Fanout, not built yet).**
+
+- **Request.** `config`'s `have` may name `settings`, `servers`, `node`, `crontab` and `cluster`, each with the ETag the agent holds (64 lowercase hex, or `""` for none). MAIN answers only the whole sections named. It leaves out a name it does not serve, and refuses a malformed ETag with `400 BAD_REQUEST`.
+- **Reply.** Per named section, under the same name: `{"unchanged": true}`, or `{"etag": "<64 hex>", "sealed": "<base64 std>"}`. A missing field means "not served": keep what is held. That includes a changed whole section while MAIN has no licence: a `rep` record grants, so MAIN leaves it out instead of refusing the whole call, and the blocklist's bans in the same reply still arrive. Before this, one changed `settings` section made every `config` call a `LICENCE_INVALID` until the licence came back.
+- **Record.** `sealed` is base64 of XCVM-SEAL-v1 to the node's box key (purpose `replica`, context the node uuid). It opens to `u32(len) ‖ payload ‖ sig`, where `payload` is the JSON `{v: 1, section, node, gen, etag, iat, data}` (no `seq`) and `sig` the panel's signature over it under tag `rep`. Store it only if the signature verifies against the pinned panel key and `section`, `node` and `etag` match the name, this node and the announced ETag; checking `gen` against the token's generation is recommended.
+- **Files**, written atomically under `config/cluster/replica/`: `<name>.rep` (the sealed record as received) and `<name>.json` (`{"etag": "<etag>", "data": <data exactly as signed>}`). `state.json` keeps the ETag held per section (for example `whole_etags: {name: etag}`, beside today's `settings_etag`).
+- **Apply.** After storing any section, run `console.php cluster:apply` (debounced 1 s, as today). Also run it once after the first sync when the agent starts, since `tmp/cache/` does not survive a reboot. Also run it when the CONFIG bit (32) of the `flows` it writes to `flows.json` changes, either way: that is when the caches change hands. `cron:cache` applies every minute while CONFIG is on, so an agent that does not do this only delays the switch by up to a minute.
+- **Crontab jobs.** In every job MAIN sends, `filename` is 1 to 64 characters of `[a-z0-9_]`, and `time` is five fields of `[0-9*/,-]+` separated by single spaces, with nothing before or after (no newline). MAIN leaves any other row out. The agent stores the section as signed and need not check the jobs: PHP refuses a section with any other job.
+- **`config.changed`.** MAIN sends it only to an agent that lists `"config_changed"` in hello's `features` (today's agent sends `["hls_reaper"]`, so it gets none). It is a command of type `config.changed` (class R), `args: {"sections": ["servers"]}`, `dedupe_key: "config.changed"`, `exp = iat + 600`. It goes out when another node is revoked, re-enrolled, completes its enrolment or is quarantined. Verify it like any command. Then start a replica sync at once, coalesced with one already running, and ack `ok` with `{"result": true}` without waiting for the sync. Should it reach `cluster:exec` anyway, this PHP acks `{"deferred": true}` with exit 0, and the next minute's poll fetches the change.
+- **Use.** The `cluster` section is panel-signed like a challenge's policy. An agent may adopt its `main_urls` and `transport` when its `policy_ver` is above the one it holds; that is how a node rebooted without MAIN keeps a current URL list. The `servers.nodes` list is for Phase 8's relay-ticket checks.
+
 ### The cluster bus (Phase 2, first increment): wake-ups
 
 **What it is.** The cluster bus is MAIN's own Redis instance for the cluster API (`Domain\Cluster\ClusterBus`). It runs the bundled `redis-server` with `bin/cluster_bus/cluster.conf`, and is separate from the shared Redis that the panel and legacy LBs use.
@@ -1117,10 +1211,7 @@ A reload, or a pool too busy to answer, therefore keeps the marker: a resize fro
 - **When it applies.** The service removes the marker whenever it starts, and tmp/ is a tmpfs. So a boot, a restart and an update each answer `STARTING` until the migrations have run and both pools answer.
 - **Silence clock.** Creating the marker runs `ClusterMeta::markReady()`, so the time the API was `STARTING` never counts against a node's silence.
 
-**Not built:**
-
-- the plan's `cluster_ctl` listen-queue check, which should feed the fleet silence guard;
-- the ingest permits on the bus.
+**Not built:** the ingest permits on the bus. The plan's `cluster_ctl` listen-queue check came with the fifth increment.
 
 The old-port servers, which still passed to the panel pool, reach the pools since the rendered nginx config.
 
@@ -1248,6 +1339,68 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 
 - `ServerEnrolCommandTest`: one node's path. It covers no trust on first use, a changed key that runs nothing, the refusals before the flow, the flow's reason, a flow that enrols nothing (in the same second as a previous enrolment), and the node's lock.
 - `ClusterReenrolCommandTest`: selection, including nodes revoked, quarantined or removed during the run; continuing past failures and exceptions; each node's port and password; the licence stop; the dry run; the credential file; the arguments; and `main()`, the command from its arguments on (`execute()` adds only the user check). `main()` shows that a dry run stays dry, that a refused real run still deletes the file, and that a second run refuses.
+
+### The `cluster_ctl` listen queue (Phase 2, fifth increment)
+
+**Before.** The fleet guard (Liveness, Phase 3) had one input: the silence of most nodes at once. Plan section 8 gives it a second: a `cluster_ctl` listen queue lasting over 5 s. That pool takes every heartbeat, so a queue there makes live nodes look silent.
+
+**FPM's count is always 0 here.** The pools have a status page (`pm.status_path = /status`) whose `listen queue` FPM measures only on TCP sockets. On the pools' unix sockets it reports 0, and `listen queue len` 0 too: php-fpm 8.3 with one worker busy and six requests waiting still says 0. FPM also serves the status page from a worker, so a status request to a pool without a free worker waits in that same queue.
+
+**The probe.** `ClusterPool::listenQueueMs('cluster_ctl')` therefore times its own status request. It answers how long the queue has lasted, in ms; 0 when there is none; null when the pool cannot tell.
+
+- It sends `GET /status?json` (`SCRIPT_NAME` `/status`, `QUERY_STRING` `json`) over the pool's socket, through the FastCGI client the ping now shares, and waits up to 250 ms (`QUEUE_PROBE_WAIT`) for the answer.
+- Answered within 250 ms, with FPM counting no queue: 0.
+- Not answered: the request waits for a worker. The probe keeps it waiting, and later calls read it without blocking. The queue has lasted since the first request that waited.
+- A late answer says only that the requests ahead of it were served, so a new request goes out in the same call. The queue ends only when a new request is answered within 250 ms.
+- A connect refused with `EAGAIN` (the listen backlog is full) is a queue as well, and so is a `listen queue` above 0 (a pool on TCP).
+- Null: no socket, nobody listening, an answer cut before `END_REQUEST`, no status page (FPM's `File not found.`), or another pool's status.
+- A call blocks for 250 ms at most and never leaves two requests waiting. While the pool keeps up, it costs one FastCGI round trip and keeps one `cluster_ctl` worker from idling out.
+
+**The guard.** `LivenessService::tick()` reads the probe once a pass: every second in the signals daemon, each minute from `cron:cluster`.
+
+- The probe comes first in the pass, before `HeartbeatService::flush()` and the `cluster_nodes` read. A heartbeat that waited in the queue ahead of the probe's answered request is then in the same pass.
+- A run lasts from `now − age`. The guard's `ctl_queue` reason is up while the run is over 5 s old (`QUEUE_GUARD_MS`).
+- A pass that sees no queue, or cannot tell, ends the run. A pool that is down or has no status page never raises the guard. While it is down, nginx sends its requests to the panel pool.
+- A pass within 5 s (`QUEUE_GAP_MS`) of the last one that saw the run joins it, before or after it. So `cron:cluster`, whose own request has waited only 250 ms, keeps the signals daemon's run instead of restarting it. This holds even when the daemon writes `health.json` between cron's clock read and its read of the file, which leaves cron's pass a few ms behind the run's `at`. A joined run keeps the earlier `since` and the later `at`. Passes further apart start a new run, because the queue may have drained between them, and so does a clock that stepped back more than 5 s.
+- The run is kept in `tmp/cluster/health.json` as `ctl_queue: {since, at}` (MAIN's ms), so both processes see it.
+
+**What the queue holds.** The silence reason holds every node. The queue reason holds only the nodes it may have silenced, for a bounded time, and keeps holding them for a while after it ends. `health.json` keeps this hold as `ctl_queue_hold: {from, until}` (MAIN's ms, `LivenessService::queueHold()`). A node is not newly marked offline while `from ≤ now ≤ until`, if its silence counts from `from` or later. Its silence counts from `max(last heard, ready_at)`, as in `NodeHealth`.
+
+- `from` is the run's `since` minus 10 s (`NodeHealth::SUSPECT_AFTER_MS`). A node silent since before the queue began was not silenced by it. A live node is heard every 1 to 3 s, and the probe may see the queue a pass late. Such a node is marked offline as usual, with or without the guard.
+- `until` is `since` plus 4 offline windows (`QUEUE_HOLD_WINDOWS` × `cluster_offline_after_sec`, 2 min at the default). A queue whose requests each wait about a second can last while every live node is heard. Without the cap, it would keep a node that died meanwhile suspect, and routed viewers at half weight, for as long.
+- When the reason clears (`drained`, or `unknown`: the pool can no longer tell, or the run broke), `until` becomes `min(until, now + cluster_offline_after_sec)`. Heartbeats that waited in the queue are heard late or not at all: refused as `CLOCK_SKEW` once older than 90 s, or lost with a pool that died. The pass that sees the queue end may also judge heard times from before the end. So each node gets one full offline window after the queue to be heard again, as `ready_at` gives it after MAIN's own downtime. A node that is silent only while the queue lasts is never marked offline. The cap still applies.
+- A node already published offline stays offline. The hold never brings one back.
+
+**One guard, two reasons.** `health.json` keeps `guard` (either reason) and `reasons` (`silence`, `ctl_queue`, in that order).
+
+- With either reason the orphan purge waits (`HlsReaping` reads `guard`), as before. Offline marking waits as above: for every node under the silence reason, and for the nodes the queue holds under the queue reason, which also holds them for a window after it clears. `guard` itself clears with the reason.
+- Each reason is audited on its own. `cluster.fleet_silence` and `cluster.fleet_silence_clear` (`{silent, nodes}`) now follow the silence reason rather than the guard. `cluster.ctl_queue` carries `{queued_ms}`, and `cluster.ctl_queue_clear` carries `{lasted_ms, queue}`, where `queue` is `drained` (a new request was answered at once) or `unknown` (the pool could not tell, or the run broke).
+- The Cluster Nodes page shows one alert per reason (`cluster_ctl_queue`, `cluster_fleet_silence`).
+- A `health.json` written before this increment has `guard` and no `reasons`, and reads as the silence.
+
+**The agent's contract.** Nothing changes on the wire: no new op, lane, field, header, refusal, section or file. The guard changes what MAIN does about silence (no offline marking, no orphan purge), never what the API answers. `health.json` (`ctl_queue`, `ctl_queue_hold`) is MAIN's own file under `tmp/cluster/`, read by MAIN's routing and liveness only. Today's agent is unaffected, and its Go half has nothing to build.
+
+**Differs from the plan.**
+
+- **The queue is measured by the probe's own wait.** The plan reads FPM's listen queue, which FPM counts only on TCP. FPM's count still counts when it is above 0.
+- **"Lasting over 5 s"** is the time from the first status request that waited until one is answered within 250 ms. A pool that serves every request within 250 ms has no queue, whatever it holds for a moment.
+- **An alert and an audit per reason**, where the plan names one alert.
+- **`cron:cluster` alone** (the signals daemon down) never raises the queue reason: its passes are a minute apart, too far apart to make one run. A reason the daemon raised before it stopped clears at the next pass.
+- **The queue does not suspend all offline marking.** The plan suspends offline marking while MAIN suspects itself. For the queue, that is limited to the nodes it may have silenced, and to 4 offline windows. In return the suspension lasts one offline window past the queue's end, so the queue's time never counts against a node, as MAIN's own downtime never does.
+
+**Limits.**
+
+- A worker that takes over 250 ms to fork counts as a queue for that moment; the 5 s run absorbs such blips.
+- A queue that outlasts its cap (4 offline windows) no longer holds a node. On a fleet where the silence reason cannot hold (one TELEMETRY node, or a queue that silences only a minority), a live node whose heartbeats stay stuck that long is marked offline, and is suspect again once heard. On a fleet where most nodes fall silent, the silence reason still holds them with no limit.
+- A node that dies within 10 s before a queue begins, or while it lasts, is held too. It is marked offline at the cap, or one offline window after the drain, whichever comes first.
+- `cron:cluster` leaves a request that waited when it exits. FPM then serves one status page to a closed connection.
+- `EAGAIN` is Linux's errno 11; the pools run on Linux only.
+
+**Tests.**
+
+- `ClusterLivenessTest`: a queue of exactly 5 s raises nothing. One over 5 s raises `ctl_queue` and holds a lone silent node at suspect instead of offline. It clears when it drains, with each audit, and the node is offline only one offline window after that. A single TELEMETRY node silent only while the queue lasts is never marked offline, whether the queue drains or the pool can no longer tell, with the drain and the hold read from `health.json` as another process would. A node silent since before the queue is not held. A node silent since MAIN's `ready_at` is held. The cap holds, whether the queue goes on or drains within a window of it. A pool that cannot tell never raises the guard, a pass that cannot tell ends a run, and so does a reader that throws. Both reasons together, each clearing on its own in either order. Another process's pass joins the run through `health.json`, including one a few ms behind the run's `at` and one exactly 5 s after it. A 20 s gap starts a new run, and so does a clock stepped back. A `health.json` without reasons. The Cluster Nodes page's alert per reason (source).
+- `ClusterHeartbeatBusTest`: a heartbeat served while the probe waits reaches the same pass through the bus. The tests that run the liveness loop without faking the probe (`MainOutageNoPurgeTest`, `ClusterHeartbeatBusTest`, `NodeHealthHysteresisTest`, `ClusterEnrolCodeTest`) now fake a pool that cannot tell, so they never probe a socket under `MAIN_HOME`.
+- `ClusterPoolTest`: the probe against a FastCGI responder (answered at once, a request left waiting and read without blocking, a late answer and a new request, no status page, FPM's count, another pool's status, a cut answer, nobody listening, no socket). A late answer followed by a request that also waits keeps the queue's start, and a drain forgets it. A request left waiting is dropped when the probe is asked about another pool. An answer past 64 KiB without `END_REQUEST` is no answer, for the probe and the ping. Also a full backlog, and the ping on the shared client. Opt-in against a real php-fpm (`XCVM_TEST_FPM`): FPM's JSON status, and a one-worker pool held by a slow request.
 
 ### The cluster bus (Phase 2, third increment): heartbeats
 

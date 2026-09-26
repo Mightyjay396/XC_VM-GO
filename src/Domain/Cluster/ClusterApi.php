@@ -187,7 +187,7 @@ final class ClusterApi {
 		return match ($rOp) {
 			'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
 			'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'hello' => self::hello($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+			'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
 			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
@@ -195,7 +195,7 @@ final class ClusterApi {
 			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
-			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 		};
 	}
 
@@ -249,6 +249,8 @@ final class ClusterApi {
 			'last_seen_at' => ClusterClock::nowMs(),
 		]);
 		ClusterAudit::log('node.enrol_complete', (int) $rNode['server_id'], ['node' => $rNode['node_uuid'], 'agent' => $rP['agent_version'] ?? null], 'node', $rIP ?: null);
+		// Now active in the node list: parents and children learn its key at once.
+		ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => 'active', 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'], 'gen' => (int) $rNode['gen'],
 			'main_time_ms' => ClusterClock::nowMs(), 'policy' => ClusterPolicy::current($rSettings, $rMain),
@@ -360,6 +362,8 @@ final class ClusterApi {
 			// Authenticated evidence of a clone, as in hello: the admin decides.
 			NodeRegistry::update((int) $rNode['server_id'], ['state' => 'quarantined', 'quarantine_reason' => 'instance_id changed (re-key)']);
 			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'rekey attest', 'was' => $rNode['instance_id'], 'now' => $rInstance], 'node');
+			// No longer active in the node list: its peers stop trusting it at once.
+			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => 'quarantined']);
 		}
 		try {
@@ -475,7 +479,7 @@ final class ClusterApi {
 		]));
 	}
 
-	private static function hello(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
+	private static function hello(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rInstance = self::short($rP['instance_id'] ?? null);
 		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)];
 		$rState = (string) $rNode['state'];
@@ -489,6 +493,10 @@ final class ClusterApi {
 			$rFields['instance_id'] = $rInstance;
 		}
 		NodeRegistry::update((int) $rNode['server_id'], $rFields);
+		if ($rState !== (string) $rNode['state']) {
+			// Quarantined: no longer active in the node list, so its peers stop trusting it at once.
+			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
+		}
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => $rState, 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'], 'gen' => (int) $rNode['gen'],
 			'epoch' => $rH['epoch'], 'main_time_ms' => ClusterClock::nowMs(),
@@ -688,9 +696,11 @@ final class ClusterApi {
 	 * flow is on. The blocklist: a `blk` delta from `blocklist_since`, or the
 	 * whole section when there is no delta to give. `have` maps each section to
 	 * the ETag the node holds, so a section it already has is not sent again;
-	 * a section sent whole (settings) goes only to an agent that names it.
+	 * a section sent whole (settings, servers, node, crontab, cluster) goes
+	 * only to an agent that names it. A name MAIN does not serve, and a whole
+	 * section it cannot sign without a licence, are left out of the reply.
 	 */
-	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rSince = $rP['blocklist_since'] ?? 0;
 		$rHave = is_array($rP['have'] ?? null) ? $rP['have'] : [];
 		if (!is_int($rSince) || $rSince < 0) {
@@ -704,9 +714,19 @@ final class ClusterApi {
 		try {
 			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '')];
 			// Sent whole: only to an agent that asks for them (have names the section).
-			foreach (array_keys(ReplicaBuilder::WHOLE) as $rSection) {
-				if (array_key_exists($rSection, $rHave)) {
-					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection]);
+			foreach (ReplicaBuilder::WHOLE as $rSection) {
+				if (!array_key_exists($rSection, $rHave)) {
+					continue;
+				}
+				try {
+					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
+				} catch (ClusterRefusedException $rE) {
+					// A whole section grants: without a licence it is left out and
+					// the node keeps what it holds, while the blocklist's bans in
+					// the same reply still reach it.
+					if ($rE->reason() !== 'LICENCE') {
+						throw $rE;
+					}
 				}
 			}
 		} catch (ClusterRefusedException $rE) {

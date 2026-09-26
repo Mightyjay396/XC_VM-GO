@@ -46,8 +46,9 @@ final class NodeRegistry {
 	/**
 	 * Create (or re-create, on re-enrolment) the row of a node that is about to
 	 * receive its first token. A re-enrolment increments gen, so every token of
-	 * the previous generation stops working, and drops the heartbeats the
-	 * cluster bus still holds of it.
+	 * the previous generation stops working, drops the heartbeats the cluster
+	 * bus still holds of it, and announces the new key to the other nodes
+	 * (ReplicaBuilder::nodesChanged).
 	 *
 	 * @return array{gen: int} The generation the first token must carry.
 	 */
@@ -76,6 +77,9 @@ final class NodeRegistry {
 			$rNow
 		);
 		HeartbeatService::forget($rServerID);
+		if ($rExisting && $rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
+			ReplicaBuilder::nodesChanged($rCrypto, $rServerID);
+		}
 		return ['gen' => $rGen];
 	}
 
@@ -92,7 +96,8 @@ final class NodeRegistry {
 	/**
 	 * Revoke a node: raise the extension's floor to the next generation, drop
 	 * its epochs and the heartbeats the cluster bus holds of it, and mark the
-	 * row. Every later request gets a signed NODE_REVOKED.
+	 * row. Every later request gets a signed NODE_REVOKED, and the other nodes
+	 * are told at once (ReplicaBuilder::nodesChanged).
 	 */
 	public static function revoke(int $rServerID, ClusterCrypto $rCrypto, string $rActor = 'admin'): bool {
 		$rNode = self::byServer($rServerID);
@@ -105,6 +110,7 @@ final class NodeRegistry {
 		self::update($rServerID, ['state' => 'revoked', 'gen' => $rGen]);
 		HeartbeatService::forget($rServerID);
 		ClusterAudit::log('node.revoke', $rServerID, ['node' => $rNode['node_uuid'], 'gen' => $rGen], $rActor);
+		ReplicaBuilder::nodesChanged($rCrypto, $rServerID);
 		return true;
 	}
 

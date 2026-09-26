@@ -16,11 +16,20 @@ final class QueryLogDb extends DatabaseHandler {
 	/** A regex: statements it matches are refused (query() returns false). */
 	public ?string $rRefuse = null;
 
+	/**
+	 * Runs before each statement with it and its arguments: to change the
+	 * database in the middle of a code path, as another request would.
+	 */
+	public ?\Closure $rBefore = null;
+
 	public function __construct(private DatabaseHandler $rInner) {
 		$this->dbh = true;
 	}
 
 	public function query($query, ...$args): bool {
+		if ($this->rBefore !== null) {
+			($this->rBefore)((string) $query, $args);
+		}
 		$this->rQueries[] = (string) $query;
 		if ($this->rRefuse !== null && preg_match($this->rRefuse, (string) $query)) {
 			return false;

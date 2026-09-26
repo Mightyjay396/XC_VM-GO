@@ -42,6 +42,9 @@ class FakeClusterCrypto extends ClusterCrypto {
 	/** Set to a reason code to make tokenIssue() refuse (LICENCE, …). */
 	public ?string $rRefuseIssue = null;
 
+	/** Set to a reason code (CLOCK, REVOKED, …) to make sign() refuse whatever is not restrictive. */
+	public ?string $rRefuseSign = null;
+
 	public function __construct() {
 		$this->rSeed = str_repeat("\x42", 32);
 		$this->rPrk = str_repeat("\x07", 32);
@@ -170,6 +173,9 @@ class FakeClusterCrypto extends ClusterCrypto {
 		$rRestrictive = in_array($rTag, \XcVm\Core\Cluster\Crypto\PanelSig::RESTRICTIVE_TAGS, true)
 			|| ($rTag === 'blk' && empty(json_decode($rPayload, true)['remove'] ?? null))
 			|| ($rTag === 'cmd' && in_array(json_decode($rPayload, true)['type'] ?? null, self::RESTRICTIVE_COMMANDS, true));
+		if ($this->rRefuseSign !== null && !$rRestrictive) {
+			throw new ClusterRefusedException($this->rRefuseSign, 'cluster_sign');
+		}
 		if (!$this->rLicensed && !$rRestrictive) {
 			throw new ClusterRefusedException('LICENCE', 'cluster_sign');
 		}

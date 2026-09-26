@@ -8,6 +8,8 @@ use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Server\ServerSavedEvent;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -143,6 +145,7 @@ class ServerService {
 		}
 
 		$rInsertID = $rData['edit'];
+		EventDispatcher::dispatch(new ServerSavedEvent([(int) $rInsertID]));
 		// MAIN's HTTP port moved: announce it to the cluster nodes and keep the
 		// old port for the cluster API a while (before the ports are applied,
 		// so nginx gets both at once). Domain\Cluster is not in the LB build.
@@ -239,6 +242,7 @@ class ServerService {
 
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			$rInsertID = $db->last_insert_id();
+			EventDispatcher::dispatch(new ServerSavedEvent([(int) $rInsertID]));
 			if (file_exists(CACHE_TMP_PATH . 'servers')) {
 				unlink(CACHE_TMP_PATH . 'servers');
 			}
@@ -321,6 +325,7 @@ class ServerService {
 		}
 
 		$rInsertID = $db->last_insert_id();
+		EventDispatcher::dispatch(new ServerSavedEvent([(int) $rInsertID]));
 		if ($rArray['server_type'] == 0) {
 			BackupService::grantPrivileges($rArray['server_ip']);
 		}
@@ -348,6 +353,7 @@ class ServerService {
 			foreach ($rPostServers as $rOrder => $rPostServer) {
 				$db->query('UPDATE `servers` SET `order` = ? WHERE `id` = ?;', intval($rOrder) + 1, $rPostServer['id']);
 			}
+			EventDispatcher::dispatch(new ServerSavedEvent(array_map(static fn($rPostServer): int => (int) ($rPostServer['id'] ?? 0), $rPostServers)));
 		}
 
 		return ['status' => STATUS_SUCCESS];
