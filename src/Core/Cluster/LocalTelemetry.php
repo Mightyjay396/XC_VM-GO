@@ -5,7 +5,7 @@ namespace XcVm\Core\Cluster;
 /**
  * `config/cluster/local.json`: what a TELEMETRY node's agent cannot sample
  * itself, written by the node's watchdog (WatchdogCommand::writeLocalTelemetry)
- * for the agent to forward verbatim as the heartbeat's `telemetry.local`:
+ * for the agent to forward as the heartbeat's `telemetry.local`:
  *
  * ```text
  * requests_per_second  int     nginx requests per second
@@ -17,7 +17,8 @@ namespace XcVm\Core\Cluster;
  * ```
  *
  * The agent forwards the file only while it is under 10 s old and at most
- * 64 KiB; MAX_BYTES keeps a margin under that. MAIN reads the four device
+ * 64 KiB, parsed and re-encoded (key order and number formatting are not
+ * kept); MAX_BYTES keeps a margin under that. MAIN reads the four device
  * sections into watchdog_data and servers_stats (HeartbeatService).
  *
  * In Core: the watchdog that calls it ships to LBs.
@@ -29,37 +30,58 @@ final class LocalTelemetry {
 	/** Seconds a device probe is reused: the probes shell out. */
 	public const DEVICES_EVERY = 30;
 
+	/** Seconds each device tool may run (SystemInfo::getDevices()): a hung nvidia-smi must not stall the watchdog. */
+	public const PROBE_TIMEOUT = 5;
+
 	/** The device sections, in watchdog_data's order. */
 	public const DEVICES = ['audio_devices', 'video_devices', 'gpu_info', 'iostat_info'];
 
 	/**
-	 * The device sections, probed at most every $rEvery seconds. The watchdog
-	 * runs one pass per process, so the last probe is kept in $rCache
-	 * (`{"t": unix time, "devices": {...}}`), not in a variable. A missing or
-	 * unreadable cache, or a clock that went back, probes again; a cache that
-	 * cannot be written only costs a probe per pass.
+	 * Rewrite `local.json` in $rDir with $rBase (requests_per_second, fanout)
+	 * and the device sections, probed at most every $rEvery seconds.
 	 *
+	 * The watchdog runs one pass per process, so the last probe is kept in
+	 * $rCache (`{"t": unix time, "devices": {...}}`), not in a variable; a
+	 * cache that cannot be written only costs a probe per pass. When a probe
+	 * is due, the file is written first with the last probe's sections and
+	 * again after the probe, so a slow probe never ages it past the agent's
+	 * 10 s. With no recent probe (none, one 2 x $rEvery old or more, an
+	 * unreadable cache, a clock that went back) the probe runs first, as
+	 * there is nothing current to report meanwhile.
+	 *
+	 * @param array<string, mixed> $rBase
 	 * @param callable(): array<string, mixed> $rProbe SystemInfo::getDevices()
-	 * @return array<string, array<mixed>> DEVICES => section ([] for a non-array)
+	 * @return bool False when $rDir is missing (no agent) or the last write failed.
 	 */
-	public static function devices(string $rCache, int $rNow, callable $rProbe, int $rEvery = self::DEVICES_EVERY): array {
+	public static function refresh(string $rDir, string $rCache, int $rNow, array $rBase, callable $rProbe, int $rEvery = self::DEVICES_EVERY): bool {
+		if (!is_dir($rDir)) {
+			return false;
+		}
 		$rKept = json_decode((string) @file_get_contents($rCache), true);
-		if (is_array($rKept) && is_int($rKept['t'] ?? null) && is_array($rKept['devices'] ?? null) && $rKept['t'] <= $rNow && $rNow - $rKept['t'] < $rEvery) {
-			return self::sections($rKept['devices']);
+		$rAge = PHP_INT_MAX;
+		if (is_array($rKept) && is_int($rKept['t'] ?? null) && is_array($rKept['devices'] ?? null) && $rKept['t'] <= $rNow) {
+			$rAge = $rNow - $rKept['t'];
+		}
+		if ($rAge < 2 * $rEvery) {
+			$rWritten = self::write($rDir, $rBase + self::sections($rKept['devices']));
+			if ($rAge < $rEvery) {
+				return $rWritten;
+			}
 		}
 		$rDevices = self::sections($rProbe());
 		$rTmp = $rCache . '.' . getmypid() . '.tmp';
 		if (@file_put_contents($rTmp, self::json(['t' => $rNow, 'devices' => $rDevices])) === false || !@rename($rTmp, $rCache)) {
 			@unlink($rTmp);
 		}
-		return $rDevices;
+		return self::write($rDir, $rBase + $rDevices);
 	}
 
 	/**
 	 * The document as JSON of at most $rMax bytes. Over it, the GPUs' process
 	 * lists go first (one line per process on a busy transcoder), then the
 	 * largest device section, one at a time; should that still not do, only
-	 * requests_per_second is kept.
+	 * requests_per_second and the four sections as [] are kept (fanout is
+	 * dropped, so MAIN keeps its last value).
 	 *
 	 * @param array<string, mixed> $rDoc
 	 */

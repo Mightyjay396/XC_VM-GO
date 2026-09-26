@@ -91,23 +91,31 @@ class SystemInfo {
 	 * `config/cluster/local.json` (Core\Cluster\LocalTelemetry), which its
 	 * agent forwards to MAIN: both probe here, so they cannot drift apart.
 	 *
+	 * @param int $rTimeout Seconds each tool may run (the watchdog's local.json:
+	 *   a hung tool must not stall it); a tool cut short reports what it printed
+	 *   by then, as a rule []. 0, getStats()'s, waits for it.
 	 * @return array{audio_devices: array<mixed>, video_devices: array<mixed>, gpu_info: array<mixed>, iostat_info: array<mixed>}
 	 */
-	public static function getDevices() {
+	public static function getDevices(int $rTimeout = 0) {
 		$rDevices = ['audio_devices' => [], 'video_devices' => [], 'gpu_info' => [], 'iostat_info' => []];
 		if (@shell_exec('which iostat')) {
-			$rDevices['iostat_info'] = self::getIO();
+			$rDevices['iostat_info'] = self::getIO($rTimeout);
 		}
 		if (@shell_exec('which nvidia-smi')) {
-			$rDevices['gpu_info'] = self::getGPUInfo();
+			$rDevices['gpu_info'] = self::getGPUInfo($rTimeout);
 		}
 		if (@shell_exec('which v4l2-ctl')) {
-			$rDevices['video_devices'] = self::getVideoDevices();
+			$rDevices['video_devices'] = self::getVideoDevices($rTimeout);
 		}
 		if (@shell_exec('which arecord')) {
-			$rDevices['audio_devices'] = self::getAudioDevices();
+			$rDevices['audio_devices'] = self::getAudioDevices($rTimeout);
 		}
 		return $rDevices;
+	}
+
+	/** $rCommand, stopped after $rTimeout seconds (killed a second later) when that is above 0. */
+	private static function bounded(string $rCommand, int $rTimeout): string {
+		return $rTimeout > 0 ? 'timeout -k 1 ' . $rTimeout . ' ' . $rCommand : $rCommand;
 	}
 
 	/**
@@ -284,16 +292,17 @@ class SystemInfo {
 	/**
 	 * List V4L2 video capture devices.
 	 *
+	 * @param int $rTimeout Seconds v4l2-ctl may run; 0 waits (getDevices()).
 	 * @return array<int, array{name: string, video_device: string}>
 	 */
-	public static function getVideoDevices() {
+	public static function getVideoDevices(int $rTimeout = 0) {
 		$rReturn = [];
 		$rID = 0;
 		try {
 			// 2>/dev/null: with no camera present v4l2-ctl prints
 			// "Cannot open device /dev/video0, exiting." to stderr, polluting
 			// the output of every command that collects stats (watchdog, crons).
-			$rDevices = array_values(array_filter(explode("\n", @shell_exec('v4l2-ctl --list-devices 2>/dev/null') ?? '')));
+			$rDevices = array_values(array_filter(explode("\n", @shell_exec(self::bounded('v4l2-ctl --list-devices', $rTimeout) . ' 2>/dev/null') ?? '')));
 			foreach ($rDevices as $rKey => $rValue) {
 				if ($rKey % 2 == 0) {
 					$rReturn[$rID]['name'] = $rValue;
@@ -309,11 +318,12 @@ class SystemInfo {
 	/**
 	 * List ALSA audio recording devices.
 	 *
+	 * @param int $rTimeout Seconds arecord may run; 0 waits (getDevices()).
 	 * @return string[]
 	 */
-	public static function getAudioDevices() {
+	public static function getAudioDevices(int $rTimeout = 0) {
 		try {
-			return array_filter(explode("\n", @shell_exec('arecord -L | grep "hw:CARD="') ?? ''));
+			return array_filter(explode("\n", @shell_exec(self::bounded('arecord -L', $rTimeout) . ' | grep "hw:CARD="') ?? ''));
 		} catch (\Exception $e) {
 			return [];
 		}
@@ -322,11 +332,12 @@ class SystemInfo {
 	/**
 	 * Get I/O statistics via iostat (JSON mode).
 	 *
+	 * @param int $rTimeout Seconds iostat may run; 0 waits (getDevices()).
 	 * @return array
 	 */
-	public static function getIO() {
+	public static function getIO(int $rTimeout = 0) {
 		$rOutput = [];
-		@exec('iostat -o JSON -m', $rOutput, $rReturnVar);
+		@exec(self::bounded('iostat -o JSON -m', $rTimeout), $rOutput, $rReturnVar);
 		$rOutput = implode('', $rOutput);
 		$rJSON = json_decode($rOutput, true);
 		if (isset($rJSON['sysstat'])) {
@@ -338,11 +349,16 @@ class SystemInfo {
 	/**
 	 * Get GPU information via nvidia-smi (XML mode).
 	 *
+	 * @param int $rTimeout Seconds nvidia-smi may run; 0 waits (getDevices()).
 	 * @return array
 	 */
-	public static function getGPUInfo() {
+	public static function getGPUInfo(int $rTimeout = 0) {
 		$rOutput = [];
-		@exec('nvidia-smi -x -q', $rOutput, $rReturnVar);
+		@exec(self::bounded('nvidia-smi -x -q', $rTimeout), $rOutput, $rReturnVar);
+		// Stopped by the bound (timeout's 124, or 137 once killed): half an XML document.
+		if ($rTimeout > 0 && in_array($rReturnVar, [124, 137], true)) {
+			return [];
+		}
 		$rOutput = implode('', $rOutput);
 		if (stripos($rOutput, '<?xml') !== false) {
 			$rJSON = json_decode(json_encode(simplexml_load_string($rOutput)), true);
