@@ -12,12 +12,14 @@ use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterApi;
+use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
+use XcVm\Domain\Cluster\NonceStore;
 use XcVm\Domain\Cluster\ReplicaBuilder;
 use XcVm\Domain\Cluster\TokenService;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -111,6 +113,7 @@ final class ClusterApiTest extends TestCase {
 
 	protected function tearDown(): void {
 		ClusterClock::fix(null);
+		ClusterBus::useSocket(null);
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
 		if ($this->rDir !== null) {
@@ -1165,5 +1168,62 @@ final class ClusterApiTest extends TestCase {
 
 		[$rRes] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => 'nope']], 1, $rKeys);
 		$this->denial($rRes, 400, 'BAD_REQUEST');
+	}
+
+	// ── The cluster bus: nonces ──────────────────────────────────────────
+
+	private static ?string $rBusDir = null;
+
+	/** @var resource|null */
+	private static $rBusProc = null;
+
+	public static function tearDownAfterClass(): void {
+		if (self::$rBusProc !== null) {
+			proc_terminate(self::$rBusProc);
+			proc_close(self::$rBusProc);
+			self::$rBusProc = null;
+		}
+		if (self::$rBusDir !== null) {
+			exec('rm -rf ' . escapeshellarg(self::$rBusDir));
+			self::$rBusDir = null;
+		}
+	}
+
+	/**
+	 * A cluster bus (a real redis-server on a unix socket) that has been taking
+	 * claims for an hour; ClusterNonceStoreTest covers a fresh one.
+	 */
+	private function bus(): \Redis {
+		if (!class_exists(\Redis::class) || trim((string) shell_exec('command -v redis-server')) === '') {
+			$this->markTestSkipped('redis-server or phpredis not available');
+		}
+		if (self::$rBusProc === null) {
+			self::$rBusDir = sys_get_temp_dir() . '/xcvm-api-bus-' . bin2hex(random_bytes(4));
+			mkdir(self::$rBusDir);
+			$rNull = ['file', '/dev/null', 'w'];
+			self::$rBusProc = proc_open(['redis-server', '--port', '0', '--unixsocket', self::$rBusDir . '/cluster.sock', '--unixsocketperm', '700', '--save', '', '--appendonly', 'no', '--dir', self::$rBusDir], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes) ?: null;
+			for ($i = 0; $i < 100 && !file_exists(self::$rBusDir . '/cluster.sock'); $i++) {
+				usleep(20000);
+			}
+		}
+		foreach ([NonceStore::BUS_MARK, NonceStore::SQL_MARK] as $rMark) {
+			@unlink(self::$rBusDir . '/' . $rMark);
+		}
+		ClusterBus::useSocket(self::$rBusDir . '/cluster.sock');
+		$rRedis = ClusterBus::client();
+		$this->assertInstanceOf(\Redis::class, $rRedis);
+		$rRedis->flushAll();
+		$rRedis->set('nonces_since', (string) ($this->rT0 - 3600000));
+		return $rRedis;
+	}
+
+	public function testOnTheBusNoncesLeaveMySqlAlone(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		$r = $this->request('heartbeat', [], 1, $rKeys);
+		$this->assertSame(200, ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain)['status']);
+		$this->denial(ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 401, 'REPLAY', $r['req']);
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_nonces`');
+		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'no row per request');
 	}
 }

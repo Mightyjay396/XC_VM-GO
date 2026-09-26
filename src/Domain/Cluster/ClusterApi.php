@@ -132,7 +132,7 @@ final class ClusterApi {
 			}
 		}
 		// Authenticated from here on.
-		if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
+		if (!NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'])) {
 			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
 		}
 		if (!in_array($rNode['state'], $rStates, true)) {
@@ -184,7 +184,7 @@ final class ClusterApi {
 		}
 		$rChallenge = random_bytes(32);
 		// Single use, 180 s: token_rekey (later) consumes it by its hash.
-		NonceStore::claim('chal:' . $rCn, substr(hash('sha256', $rChallenge, true), 0, 16));
+		NonceStore::issue('chal:' . $rCn, substr(hash('sha256', $rChallenge, true), 0, 16));
 		return DenialFactory::signed($rCrypto, 200, 'hlt', [
 			'v' => 1,
 			'typ' => 'xcvm-challenge',
@@ -281,7 +281,7 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
 		}
 		// Authenticated from here on.
-		if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
+		if (!NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'])) {
 			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
 		}
 		if (!in_array($rNode['state'], $rStates, true)) {
@@ -373,7 +373,7 @@ final class ClusterApi {
 		}
 
 		if ($rOp === 'enrol_code_status') {
-			if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
+			if (!NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'])) {
 				return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
 			}
 			$rP = json_decode($rBody, true);
@@ -414,7 +414,7 @@ final class ClusterApi {
 		if (!NodeSig::verify($rNode['sign_pub'], 'request', $rCtx . hash('sha256', $rBody, true), $rSig)) {
 			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
 		}
-		if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
+		if (!NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'])) {
 			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
 		}
 		$rRefused = EnrolCodeService::submit($rCode, $rSid, $rNode, (string) ($rReq['ip'] ?? ''));
