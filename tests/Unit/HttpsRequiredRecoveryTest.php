@@ -73,6 +73,7 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		'maxmind_editions' => ['text', ''],
 		'shared_mount_prefixes' => ['text', ''],
 		'allow_countries' => ['text', ''],
+		'dropbox_remote' => ['int', '0'],
 	];
 
 	private TestDb $rDb;
@@ -318,6 +319,9 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		$this->assertSame(3, $this->storedVer());
 		$this->assertSame('{"25461":1800000000}', $this->settings()['cluster_legacy_ports']);
 		$this->assertSame($rKeptUrls, $this->settings()['cluster_legacy_urls']);
+		// Nor can the backup settings form, which stores any settings column posted to it.
+		$this->assertSame(STATUS_SUCCESS, SettingsService::editBackup(['cluster_policy_ver' => '1', 'cluster_legacy_ports' => '', 'cluster_legacy_urls' => '{"https://attacker.example:22/cluster/v1/":4102444800}'])['status']);
+		$this->assertSame([3, '{"25461":1800000000}', $rKeptUrls], [$this->storedVer(), $this->settings()['cluster_legacy_ports'], $this->settings()['cluster_legacy_urls']]);
 		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_policy_ver' => '1', 'cluster_transport' => 'auto'])['status']);
 		$this->assertSame(4, $this->storedVer());
 

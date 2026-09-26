@@ -397,7 +397,8 @@ final class ClusterNginxConfigTest extends TestCase {
 
 		// With the API off nothing is announced, and the ports already kept stay served.
 		$this->rTest = [0, ''];
-		$rKept = ['cluster_api_enabled' => 0, 'cluster_api_port' => 31300, 'cluster_legacy_ports' => (string) json_encode([8080 => $this->rNow + 60])];
+		$this->store('cluster_legacy_ports', (string) json_encode([8080 => $this->rNow + 60]));
+		$rKept = ['cluster_api_enabled' => 0, 'cluster_api_port' => 31300, 'cluster_legacy_ports' => ''];
 		$rStage = ClusterNginxConfig::stageApiPort(31300, 31400, $rKept, $rMain);
 		$this->assertIsArray($rStage);
 		$this->assertNull($rStage['refused']);
@@ -420,6 +421,28 @@ final class ClusterNginxConfigTest extends TestCase {
 		$this->assertNull($rStage['refused']);
 		$this->assertStringContainsString("    listen 31200;\n", (string) $this->conf(ClusterNginxConfig::LISTEN));
 		$this->assertStringContainsString("    listen 8443 ssl;\n", (string) $this->conf(ClusterNginxConfig::OLD_PORT));
+	}
+
+	/**
+	 * A save staged from settings the process loaded before ClusterEndpoint
+	 * kept a port: the port stays served while the new one is staged, and
+	 * recording the new one keeps it. Both read the kept ports as stored.
+	 */
+	public function testAnApiPortSaveKeepsAPortKeptMeanwhile(): void {
+		$rMain = ['server_ip' => '10.0.0.1', 'http_broadcast_port' => 25461];
+		$this->store('cluster_api_enabled', 1);
+		$rCurrent = $this->stored();
+		$this->store('cluster_legacy_ports', (string) json_encode([8080 => $this->rNow + 60]));
+
+		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, $rCurrent, $rMain);
+		$this->assertIsArray($rStage);
+		$this->assertNull($rStage['refused']);
+		$this->assertStringContainsString("    listen 8080;\n", (string) $this->conf(ClusterNginxConfig::OLD_PORT), 'served while the new port is staged');
+
+		$this->store('cluster_api_port', 31200);
+		$this->assertTrue(ClusterNginxConfig::commitApiPort($rStage, true)['ok']);
+		$this->assertSame([8080 => $this->rNow + 60, 25461 => $this->rNow + ClusterEndpoint::GRACE], ClusterEndpoint::legacyPorts($this->stored()), 'recorded with the port kept meanwhile');
+		$this->assertStringContainsString("    listen 8080;\n", (string) $this->conf(ClusterNginxConfig::OLD_PORT));
 	}
 
 	/**
@@ -447,7 +470,8 @@ final class ClusterNginxConfigTest extends TestCase {
 		// A port nginx listens on already (here its old-port server) is nginx's: not checked.
 		$this->assertTrue(ClusterNginxConfig::apply(['cluster_api_port' => 0, 'cluster_legacy_ports' => (string) json_encode([31200 => $this->rNow + 60])])['ok']);
 		$this->takeProbes();
-		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, ['cluster_legacy_ports' => (string) json_encode([31200 => $this->rNow + 60])] + $rCurrent, $rMain);
+		$this->store('cluster_legacy_ports', (string) json_encode([31200 => $this->rNow + 60]));
+		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, $rCurrent, $rMain);
 		$this->assertIsArray($rStage);
 		$this->assertNull($rStage['refused']);
 		$this->assertSame([], $this->takeProbes());

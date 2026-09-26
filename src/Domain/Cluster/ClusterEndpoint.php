@@ -29,8 +29,11 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   private_ip, an old HTTPS port) stays in it, last, for GRACE too
  *   (`cluster_legacy_urls`: url => expiry, at most MAX_URLS, the latest
  *   change first). nginx listens on every address, so an old address MAIN
- *   still holds keeps answering; an old HTTPS port gets a TLS server of its
- *   own in old_port.conf, with the public server's certificate.
+ *   still holds keeps answering; an old HTTPS port (the old row's HTTPS
+ *   broadcast port, which nginx served) gets a TLS server of its own in
+ *   old_port.conf, with the public server's certificate. The policy lists
+ *   a kept https:// URL only while it lists HTTPS, and a kept http:// one
+ *   never under `https_required` (ClusterPolicy).
  * - cron:cluster drops expired ports and URLs, bumps the policy again and
  *   renders the nginx config again so nginx releases them.
  */
@@ -123,8 +126,9 @@ final class ClusterEndpoint {
 	 * rewrite. When the URLs the policy lists change and a node may use them,
 	 * the change is announced: an old HTTP broadcast port is kept (while the
 	 * API has no port of its own), every other URL the policy no longer lists
-	 * is kept, one it lists again is not, and the policy version goes up.
-	 * Returns whether it was announced.
+	 * is kept (an https:// one only on the old row's HTTPS broadcast port),
+	 * one it lists again is not, and the policy version goes up. Returns
+	 * whether it was announced.
 	 *
 	 * @param array<string, mixed> $rOld
 	 * @param array<string, mixed> $rNew
@@ -149,9 +153,20 @@ final class ClusterEndpoint {
 			$rPorts = self::keep($rPorts, $rHttpFrom, $rHttpTo);
 		}
 		// What the policy lists with the old port kept: an old URL it no
-		// longer lists is kept, the latest change first.
+		// longer lists is kept, the latest change first. An https:// URL only
+		// on the HTTPS broadcast port the old row stored: nginx served it over
+		// TLS until now and keeps the socket, so ClusterNginxConfig binds it
+		// unchecked. The policy's 443 for a row with no HTTPS port (NULL) was
+		// never nginx's, and another program may hold it.
 		$rListed = ClusterPolicy::current(['cluster_legacy_ports' => (string) json_encode($rPorts)] + $rBase, $rNew)['main_urls'];
-		$rKept = array_values(array_diff($rFrom, $rListed));
+		$rTlsPort = intval($rOld['https_broadcast_port'] ?? 0);
+		$rKept = [];
+		foreach (array_diff($rFrom, $rListed) as $rUrl) {
+			$rParsed = self::parseUrl($rUrl);
+			if ($rParsed !== null && ($rParsed[0] !== 'https' || $rParsed[1] === $rTlsPort)) {
+				$rKept[] = $rUrl;
+			}
+		}
 		$rUrls = array_fill_keys($rKept, ClusterClock::now() + self::GRACE) + array_diff_key(self::legacyUrls($rSettings), array_flip($rListed));
 		arsort($rUrls);
 		self::save($rPorts, array_slice($rUrls, 0, self::MAX_URLS, true));
@@ -185,11 +200,11 @@ final class ClusterEndpoint {
 	 * and keep the old port (afterApiPortChange()). Returns whether it was
 	 * recorded.
 	 *
-	 * @param array<string, mixed> $rSettings The settings before the change.
+	 * @param array<string, mixed> $rSettings The settings before the change; the kept ports are read again (stored()).
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
 	 */
 	public static function recordApiPortChange(int $rOld, int $rNew, array $rSettings, array $rMain): bool {
-		$rPorts = self::afterApiPortChange($rOld, $rNew, $rSettings, $rMain);
+		$rPorts = self::afterApiPortChange($rOld, $rNew, self::stored($rSettings), $rMain);
 		if ($rPorts === null) {
 			return false;
 		}

@@ -11,7 +11,9 @@ use XcVm\Core\Cluster\ClusterSettings;
  * Plain HTTP on the MAIN's private (or public) IP is always listed, except
  * under `https_required`. HTTPS is listed first when `https_preferred`, or
  * when `auto` and MAIN's own certificate verifies. The old ports and URLs
- * kept for 7 days after an endpoint change (ClusterEndpoint) come last.
+ * kept for 7 days after an endpoint change (ClusterEndpoint) come last, by
+ * the same rules: a kept https:// URL only while HTTPS is listed, a kept
+ * http:// one never under `https_required`.
  */
 final class ClusterPolicy {
 	/**
@@ -38,7 +40,8 @@ final class ClusterPolicy {
 		$rHttps = [];
 		$rHttpsWanted = $rTransport === 'https_preferred' || $rTransport === 'https_required'
 			|| ($rTransport === 'auto' && ($rHttpsOk ?? false));
-		if ($rHttpsWanted && in_array((int) ($rMain['enable_https'] ?? 0), [1, 2], true)) {
+		$rHttpsListed = $rHttpsWanted && in_array((int) ($rMain['enable_https'] ?? 0), [1, 2], true);
+		if ($rHttpsListed) {
 			$rTlsName = $rName !== '' ? $rName : null;
 			foreach (explode(',', (string) ($rMain['domain_name'] ?? '')) as $rDomain) {
 				$rDomain = strtolower(trim($rDomain));
@@ -66,13 +69,15 @@ final class ClusterPolicy {
 		// (ClusterEndpoint), the latest change first, listed while MAIN serves
 		// their port with their scheme: plain HTTP on a port the API answers
 		// over HTTP, HTTPS on any other (MAIN's HTTPS ports, or an old one
-		// ClusterNginxConfig serves over TLS).
+		// ClusterNginxConfig serves over TLS). The transport rules hold for
+		// them too: HTTPS only while the policy lists it, no plain HTTP under
+		// https_required.
 		$rPlain = self::plainPorts($rSettings, $rMain, $rHttpPort);
 		$rKept = [];
 		foreach (array_keys(ClusterEndpoint::legacyUrls($rSettings)) as $rUrl) {
 			$rParsed = ClusterEndpoint::parseUrl($rUrl);
 			$rTls = $rParsed !== null && $rParsed[0] === 'https';
-			if ($rParsed !== null && $rTls !== in_array($rParsed[1], $rPlain, true) && ($rTls || $rTransport !== 'https_required')) {
+			if ($rParsed !== null && $rTls !== in_array($rParsed[1], $rPlain, true) && ($rTls ? $rHttpsListed : $rTransport !== 'https_required')) {
 				$rKept[] = $rUrl;
 			}
 		}

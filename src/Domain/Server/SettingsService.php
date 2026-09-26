@@ -29,7 +29,7 @@ use XcVm\Streaming\Fanout\FanoutMode;
 class SettingsService {
 	use DatabaseAware;
 
-	/** Settings columns MAIN keeps for the cluster API itself (ClusterEndpoint), never set from a form. */
+	/** Settings columns MAIN keeps for the cluster API itself (ClusterEndpoint), never set from a form (edit(), editBackup()). */
 	private const CLUSTER_STATE = ['cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
 
 	/**
@@ -278,7 +278,9 @@ class SettingsService {
 	 */
 	public static function editBackup(array $rData) {
 		$db = self::db();
-		$rArray = QueryHelper::verifyPostTable('settings', $rData, true);
+		// This form stores any settings column it is posted: never MAIN's own
+		// cluster state (edit()).
+		$rArray = array_diff_key(QueryHelper::verifyPostTable('settings', $rData, true), array_flip(self::CLUSTER_STATE));
 
 		foreach (['dropbox_remote'] as $rSetting) {
 			if (isset($rData[$rSetting])) {

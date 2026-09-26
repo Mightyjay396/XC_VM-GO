@@ -323,21 +323,22 @@ A change of MAIN's HTTPS broadcast port, `server_ip` or `private_ip` was not ann
 **Now.** `ClusterEndpoint::recordMainChange($rOld, $rNew, $rSettings, $rActor)` handles every change of MAIN's `servers` row. It replaces `recordChange()` and runs:
 
 - from `ServerService::process()` (MAIN's server page, and the admin API's server edit) through `announceMainEndpoints()`. It runs once the row is stored and before the new ports are applied, so nginx gets a kept old port with the new ones, as in the first increment;
-- from `cron:root_signals` when it rewrites MAIN's `server_ip` (`RootSignalsCronJob::rewriteServerIP()`, actor `system`).
+- from `cron:root_signals` when it rewrites MAIN's `server_ip` (`RootSignalsCronJob::rewriteServerIP()`, actor `system`). The helper gets MAIN's row as it was and returns it with the new address, which the cron assigns. The cron therefore cannot pass it a row that already carries the new address, which would announce nothing.
 
 It compares the policy's URLs (`ClusterPolicy::current`, without the kept entries) for the row before and after:
 
 - **The same list:** nothing happens and the version stays. Examples: a save that changes the server name, or an HTTPS port no node is sent to.
 - **A different list:** it is announced, but only while a node may use the URLs. The API must be on, and a `cluster_nodes` row must have `mode` ≥ 1 and not be `revoked`. An `enrolling` node counts, since it dials the URLs in its `cluster.json`. When that query fails, a node is assumed: a needless announcement costs each node one hello, and a missed one can strand them. Then:
   1. an old HTTP broadcast port is kept in `cluster_legacy_ports`, as before (while `cluster_api_port` = 0);
-  2. every URL the policy listed before and does not list now (counting the kept ports) is kept for 7 days in `cluster_legacy_urls`. Migration 044 adds this `settings` column as `mediumtext`, holding `{"<url>": <unix expiry>}`. A URL the policy lists again leaves the column. At most 8 URLs (`MAX_URLS`) are kept, the latest change first;
+  2. every URL the policy listed before and does not list now (counting the kept ports) is kept for 7 days in `cluster_legacy_urls`. An `https://` URL is kept only on the HTTPS broadcast port the old row stored (see "The HTTPS port"). Migration 044 adds this `settings` column as `mediumtext`, holding `{"<url>": <unix expiry>}`. A URL the policy lists again leaves the column. At most 8 URLs (`MAX_URLS`) are kept, the latest change first;
   3. `cluster_policy_ver` goes up in the same `UPDATE`. The audit event is `cluster.endpoint_change`, with `urls_from`, `urls_to`, `kept_urls` and `kept_ports`.
-- The kept lists are read again from the database before they are merged (`ClusterEndpoint::stored()`). A process that loaded its settings earlier (the root cron, a panel worker) then cannot drop what another process kept. `prune()` and `ClusterNginxConfig` read them the same way.
+- The kept lists are read again from the database before they are merged (`ClusterEndpoint::stored()`). A process that loaded its settings earlier (the root cron, a panel worker) then cannot drop what another process kept. `prune()`, `ClusterNginxConfig`'s render and a `cluster_api_port` save read them the same way: `stageApiPort()` renders from the kept ports and URLs as stored, and `recordApiPortChange()` merges into the kept ports as stored.
 
 **The HTTPS port.** A change is announced only when the policy lists HTTPS: `https_preferred` or `https_required`, with `enable_https` 1 or 2 and a TLS name. `auto` lists no HTTPS until the self-probe feeds the policy. The old HTTPS URL (`https://<tls name>:<old port>/cluster/v1/`) is kept, and nginx keeps serving the old port:
 
 - `cluster.d/old_port.conf` gets a server with `listen <port> ssl;`, `include ssl.conf;` (the public server's certificate and TLS settings), `include cluster_locations.conf;` and a 404 for everything else. It sits beside the old plain-HTTP ports.
-- As with an old HTTP port, the old HTTPS port is not checked for being free: nginx served it until the change, and keeps the socket across the reload.
+- Only the HTTPS broadcast port the old row stored is kept. A row with no HTTPS port (`https_broadcast_port` NULL, an empty `ports/https.conf`) still gets `https://<tls name>:443/cluster/v1/` in the policy, from its default. nginx never held that port, and another program, a reverse proxy say, may hold it. That URL is not kept when an HTTPS port is added.
+- So a kept HTTPS port is one nginx served over TLS until the change. nginx keeps the socket across the reload, so the port is not checked for being free, as with an old HTTP port. The check could not work there anyway. When `set_port` renders, it has already rewritten `ports/https.conf`, and the running nginx still holds the old port, so a bind test fails on nginx's own socket.
 - A port that another server here already serves gets no TLS server: the public server, the dedicated port, or a kept plain-HTTP port (listed first).
 - `ssl.conf` is already in the public server, so the extra server adds no new way for `nginx -t` to fail. Certbot's files are owned by xc_vm, so the `nginx -t` that runs as xc_vm can read the key.
 
@@ -348,7 +349,7 @@ It compares the policy's URLs (`ClusterPolicy::current`, without the kept entrie
 - an `http://` URL, on a port where MAIN answers the API over plain HTTP: the API's own port, the public server's HTTP ports, or a kept old port;
 - an `https://` URL, on any other port.
 
-Under `https_required`, only the kept `https://` URLs are listed.
+The transport's rules hold for kept URLs too. A kept `https://` URL is listed only while the policy lists HTTPS: `https_preferred` or `https_required`, or `auto` once MAIN's certificate verifies, with `enable_https` 1 or 2. So none is listed under `http`, or under `auto` without a verified certificate. A kept `http://` URL is never listed under `https_required`. A kept URL that is current again is listed once, where it is current. nginx keeps serving an old HTTPS port while its URL is not listed, until it expires.
 
 **Expiry.** `cron:cluster` (`prune()`) drops expired URLs along with expired ports, raises the version, and renders nginx again, which releases an old HTTPS port.
 
@@ -369,17 +370,25 @@ Each change raises `policy_ver`, which the heartbeat reply carries, as before.
 **The agent's contract.** For the Go half, not built yet (plan §3: "Agents keep their last 3 known-good URL sets"):
 
 1. **Known-good sets.**
-   - A URL set is a policy's `main_urls` as adopted, with its `policy_ver`.
-   - A set becomes known-good once a request to one of its URLs gets an authenticated answer: a reply whose MAC verifies, or a verified panel-signed denial. Adopting a policy does not make it known-good.
-   - The agent keeps the last 3 known-good sets, newest first, in its state file as `known_good_urls`: a list of `{"policy_ver": int, "main_urls": [string]}`. A set with the same URL list as a stored one replaces it and moves to the front.
+   - A URL set is a policy's `main_urls` as the agent adopted it, in its order, with its `policy_ver`.
+   - An authenticated answer is one of two things. The first is a reply whose MAC verifies and whose BOX opens. The second is a denial whose panel signature verifies and that names this node (`node`) and this request's nonce (`req_nonce`), as `Client.denial()` checks today. A denial that carries `node` and `req_nonce` as null is not one, since it can be replayed. Examples are `503 STARTING`, `503 DISABLED`, and the `503 DB` sent when MAIN cannot reach its database before it reads the request.
+   - Only the current policy's set is recorded. It becomes known-good when a request to one of the current policy's `main_urls` gets an authenticated answer. A `403 HTTPS_REQUIRED` denial does not count: the URL reached MAIN, but MAIN refuses ops over it. An answer through a fallback URL records nothing. Adopting a policy does not make its set known-good.
+   - The agent keeps the last 3 known-good sets, newest first, in its state file as `known_good_urls` (Go tag `json:"known_good_urls,omitempty"`). It is a list of `{"policy_ver": int, "main_urls": [string]}`.
+   - Two sets are the same when their `main_urls` are equal element by element, order included. `policy_ver` is not compared. A set that is the same as a stored one replaces it, taking the new `policy_ver`, and moves to the front. Any other set goes in front, and the fourth is dropped.
+   - The state file is written only when `known_good_urls` changes. Confirming the front set again under the same `policy_ver` writes nothing, so a heartbeat every 2 s does not rewrite the file.
+   - `Install` empties `known_good_urls`. It is the step that stores an enrolment's or re-enrolment's `main_urls` and first token. `Keygen` of a new identity already starts from an empty state. So the sets of a previous enrolment, or of a previous MAIN, are never dialled.
 2. **Dialing.**
-   - After the current policy's URLs, try the URLs of the known-good sets that the current policy does not list. Go newest set first, each set in its own order.
-   - A URL that could not be reached gets the same 10-minute backoff as today.
+   - The fallback URLs are the URLs of the known-good sets that the current policy does not list. They go newest set first, each set in its own order, and each URL once.
+   - While the current policy's `transport` is `https_required`, only the `https://` fallback URLs are dialled. Plain HTTP stays for the challenge alone, as today (item 3). MAIN would refuse the MAC'd ops over it with `403 HTTPS_REQUIRED`.
+   - The order has three groups. First come the current policy's URLs that are not in backoff, in the policy's order. Next come the fallback URLs not in backoff, in the order above. Last comes every URL in backoff: the current ones, then the fallback ones, each in the same order. This is today's `urls()` applied to the current URLs followed by the fallback URLs.
+   - A URL that could not be reached gets the same 10-minute backoff as today. A fallback URL gets it too.
    - The request itself is unchanged, since the MAC context holds the path, not the host.
    - A TLS URL is verified against its own host name, as today.
-3. **Nothing is adopted from where MAIN was reached.** A fallback URL is only a dial target. When a request succeeds only through one, say hello (as for a newer `policy_ver`). Then adopt the policy from the MAC'd reply by the existing rule: never a lower `policy_ver`.
-4. **Kept URLs need no special case.** They are ordinary entries of `main_urls`, tried last. They leave the policy after 7 days, or as soon as MAIN no longer serves their port with their scheme.
-5. **Nothing else changes:** no new op, field, header or setting.
+3. **Nothing is adopted from where MAIN was reached.**
+   - A fallback URL is only a dial target. When a request succeeds only through one, the agent says hello, as for a newer `policy_ver`. It then adopts the policy from the MAC'd reply by the existing rule: never a lower `policy_ver`.
+   - The challenge over plain HTTP under `https_required` (`PolicyOverHTTP`) is unchanged. It dials the `http://` URLs of the policies the node held (`http_urls`, at most 8), never the known-good sets.
+4. **Kept URLs need no special case.** They are ordinary entries of `main_urls`, tried last. They leave the policy after 7 days. They leave it sooner once MAIN no longer serves their port with their scheme, or once the transport no longer lists their scheme.
+5. **Nothing else changes on the wire:** no new op, field, header or setting. The only new state is `known_good_urls` in the agent's state file.
 
 **Differs from the plan.**
 
@@ -395,7 +404,7 @@ Each change raises `policy_ver`, which the heartbeat reply carries, as before.
 
 - Today's agent needs nothing (above).
 - Before migration 044 has run, the URL list cannot be stored. The ports and the version still are, so the change is still announced.
-- A rollback leaves the column in place. Older code never reads it and lists no kept URL.
+- A rollback drops the column. `MigrationRunner::rollback()` runs `down/044_add_cluster_legacy_urls.sql` for a target release without migration 044. The kept URLs are lost, which is harmless: older code never reads them and lists no kept URL.
 - LB builds strip `Domain/Cluster`. `ServerService` and `RootSignalsCronJob` reach `ClusterEndpoint` only behind `class_exists`, and the rewrite runs only on MAIN.
 
 **Limits.**
@@ -405,21 +414,26 @@ Each change raises `policy_ver`, which the heartbeat reply carries, as before.
 - A settings-side change (`cluster_transport`, `cluster_main_host`) still raises `cluster_policy_ver` without keeping the old URL.
 - `setup.php` writes MAIN's `server_ip` at first setup, before any node exists, and announces nothing.
 - An admin's save and the root cron's rewrite in the same moment can race on the lists. The later write wins, and the version goes up twice.
+- nginx holds an old port for its full 7 days: the HTTP broadcast port since the first increment, and now an old HTTPS port. An admin who moves MAIN off a port to free it for another program must wait that long. Until then, the program cannot bind the port. If the program binds the port first after a restart, nginx fails to start. Clearing the port from `cluster_legacy_ports`, or its URL from `cluster_legacy_urls`, releases it at the next `cron:cluster` render.
 
 Tests:
 
 - `ClusterEndpointTest`:
   - the HTTPS port: announced, the old URL kept and listed last (also under `https_required`), an old-port TLS server rendered, and moving back;
+  - a row with no HTTPS port gets one: announced, and the policy's 443 not kept nor rendered;
   - an HTTPS port no node uses (`auto`, `http`, no TLS name, HTTPS off): nothing;
   - `server_ip` and `private_ip` through `ServerService::announceMainEndpoints()`, the latest change first, a URL back in use leaving the list, and a save that changes nothing, or a server that is not MAIN;
-  - an address and the port changing in one save;
-  - `RootSignalsCronJob::rewriteServerIP()`, with and without a node;
+  - an address and the port changing in one save, and with the API on its own port (no broadcast port kept);
+  - an IPv6 address kept, bracketed;
+  - `RootSignalsCronJob::rewriteServerIP()`, with and without a node, and the row it returns;
   - nothing with no node, a revoked node, a node in mode 0, or the API off, and an `enrolling` node counting;
+  - the fail-safe paths: a node check that fails assumes a node, and without the `cluster_legacy_urls` column the ports and the version are still stored;
   - expiry through `prune()`, the `MAX_URLS` cap, the scheme and port rule when listing, malformed entries;
-  - the call sites and the schema;
+  - the transport rules when listing: no kept `http://` URL under `https_required`, no kept `https://` URL under `http`, under `auto` without a verified certificate or with HTTPS off, and a kept URL that is current listed once;
+  - the call sites (the root cron assigns the row the helper returns) and the schema;
   - the HTTP port and `cluster_api_port` paths, as before.
-- `ClusterNginxConfigTest`: an old HTTPS port rendered from the stored settings, and released by `cron:cluster`; `testRealNginx` passes `nginx -t` with an old HTTPS port and the shipped `ssl.conf`.
-- `HttpsRequiredRecoveryTest`: a settings form cannot set `cluster_legacy_urls`.
+- `ClusterNginxConfigTest`: an old HTTPS port rendered from the stored settings, and released by `cron:cluster`; a `cluster_api_port` save from stale settings keeps serving, and keeps recorded, a port kept meanwhile; `testRealNginx` passes `nginx -t` with an old HTTPS port and the shipped `ssl.conf`.
+- `HttpsRequiredRecoveryTest`: neither the settings form nor the backup settings form (`SettingsService::editBackup()`) can set `cluster_policy_ver`, `cluster_legacy_ports` or `cluster_legacy_urls`.
 - By hand with nginx 1.24, on a running master:
   - moving the public HTTPS port and reloading kept the old port answering over TLS with the panel's certificate;
   - on the old port, `/cluster/v1/` reached the cluster upstream, and `/get.php` got 404 where the public server passed it to PHP;

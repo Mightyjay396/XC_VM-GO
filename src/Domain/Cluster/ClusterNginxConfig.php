@@ -176,7 +176,7 @@ final class ClusterNginxConfig {
 	 * cluster_error_nginx (nginx refused it, or did not serve it after the
 	 * reload; `error` holds its words). `record` is for commitApiPort().
 	 *
-	 * @param array<string, mixed> $rCurrent The stored settings.
+	 * @param array<string, mixed> $rCurrent The settings the process loaded; the kept ports and URLs are read again (ClusterEndpoint::stored()).
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
 	 * @return array{refused: ?string, error: string, record: array{0: int, 1: int, 2: array<string, mixed>, 3: array<string, mixed>}}|null
 	 */
@@ -189,11 +189,12 @@ final class ClusterNginxConfig {
 			$rOut['refused'] = 'cluster_error_port_busy';
 			return $rOut;
 		}
-		$rKept = ClusterEndpoint::afterApiPortChange($rOld, $rNew, $rCurrent, $rMain) ?? ClusterEndpoint::legacyPorts($rCurrent);
-		// The kept URLs as stored: the settings this process loaded may
-		// predate one, and an old HTTPS port must stay served meanwhile.
-		$rUrls = (string) (ClusterEndpoint::stored($rCurrent)['cluster_legacy_urls'] ?? '');
-		$rResult = self::apply(['cluster_api_port' => $rNew, 'cluster_legacy_ports' => (string) json_encode($rKept), 'cluster_legacy_urls' => $rUrls] + $rCurrent);
+		// The kept ports and URLs as stored: the settings this process loaded
+		// may predate one ClusterEndpoint kept a moment ago, which must stay
+		// served, and must not be dropped when the port is recorded.
+		$rStored = ClusterEndpoint::stored($rCurrent);
+		$rKept = ClusterEndpoint::afterApiPortChange($rOld, $rNew, $rStored, $rMain) ?? ClusterEndpoint::legacyPorts($rStored);
+		$rResult = self::apply(['cluster_api_port' => $rNew, 'cluster_legacy_ports' => (string) json_encode($rKept), 'cluster_legacy_urls' => (string) ($rStored['cluster_legacy_urls'] ?? '')] + $rStored);
 		if (!$rResult['ok']) {
 			$rOut['refused'] = 'cluster_error_nginx';
 			$rOut['error'] = $rResult['error'];

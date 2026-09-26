@@ -9,6 +9,7 @@ use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Server\ServerService;
 use XcVm\Infrastructure\Database\DatabaseFactory;
+use XcVm\Tests\Support\QueryLogDb;
 
 /**
  * MAIN endpoint changes (plan §3, "Endpoint changes"): while a node is in
@@ -102,6 +103,15 @@ final class ClusterEndpointTest extends TestCase {
 		$this->store('cluster_api_port', 0);
 		$this->assertFalse(ClusterEndpoint::recordMainChange($this->rMain, $this->rMain, $this->live()));
 		$this->assertSame(1, $this->ver());
+
+		// The address moves with the broadcast port: the old address is kept
+		// on the API's own port, and the broadcast port, no URL of the
+		// policy's, is not kept.
+		$this->store('cluster_api_port', 31200);
+		$this->assertTrue(ClusterEndpoint::recordMainChange($this->rMain, ['server_ip' => '10.0.0.2', 'http_broadcast_port' => 8080] + $this->rMain, $this->live()));
+		$this->assertSame(2, $this->ver());
+		$this->assertSame([], ClusterEndpoint::legacyPorts($this->settings()));
+		$this->assertSame(['http://10.0.0.1:31200/cluster/v1/'], array_keys(ClusterEndpoint::legacyUrls($this->settings())));
 	}
 
 	public function testExpiredPortsArePruned(): void {
@@ -189,6 +199,28 @@ final class ClusterEndpointTest extends TestCase {
 		$this->assertSame(['https://panel.example.com:25463/cluster/v1/'], $this->audit()[0]['detail']['kept_urls']);
 	}
 
+	/**
+	 * A row with no HTTPS port (ServerService stores NULL): the policy names
+	 * port 443, which nginx never served. Adding an HTTPS port is announced,
+	 * and 443 is not kept: nginx would bind a port it never held, maybe
+	 * another program's.
+	 */
+	public function testAnHttpsUrlIsKeptOnlyOnThePortTheOldRowStored(): void {
+		$this->node(2, 'active');
+		$rOld = ['https_broadcast_port' => null, 'https_ports_add' => null] + $this->rMain;
+		$rNew = ['https_broadcast_port' => 8443] + $rOld;
+		$rSettings = $this->live(['cluster_transport' => 'https_preferred']);
+		$this->assertSame('https://panel.example.com:443/cluster/v1/', ClusterPolicy::current($rSettings, $rOld)['main_urls'][0], "the policy's default port");
+		$this->assertTrue(ClusterEndpoint::recordMainChange($rOld, $rNew, $rSettings));
+		$this->assertSame(2, $this->ver(), 'the nodes move to the new port');
+		$this->assertSame([], ClusterEndpoint::legacyUrls($this->settings()), '443 is not kept');
+		$this->assertNull(ClusterNginxConfig::render($this->live(['cluster_transport' => 'https_preferred']), [25461, 8443], $this->rNow)[ClusterNginxConfig::OLD_PORT], 'nginx gets no server on 443');
+
+		// A port the row stored is kept, 443 as any other.
+		$this->assertTrue(ClusterEndpoint::recordMainChange($rNew, ['https_broadcast_port' => 443] + $rNew, $rSettings));
+		$this->assertSame(['https://panel.example.com:8443/cluster/v1/'], array_keys(ClusterEndpoint::legacyUrls($this->settings())));
+	}
+
 	/** An HTTPS port no node is sent to (the policy lists no HTTPS URL) is nothing to announce. */
 	public function testAnHttpsPortTheNodesDoNotUseIsNotAnnounced(): void {
 		$this->node(2, 'active');
@@ -270,7 +302,7 @@ final class ClusterEndpointTest extends TestCase {
 		$this->node(2, 'active');
 		SettingsManager::set($this->live());
 
-		RootSignalsCronJob::rewriteServerIP($this->rDb, 1, $this->rMain, '10.0.0.9');
+		$this->assertSame(['server_ip' => '10.0.0.9'] + $this->rMain, RootSignalsCronJob::rewriteServerIP($this->rDb, 1, $this->rMain, '10.0.0.9'), 'the row as it is now');
 		$this->rDb->query('SELECT `server_ip` FROM `servers` WHERE `id` = 1');
 		$this->assertSame('10.0.0.9', $this->rDb->get_row()['server_ip']);
 		$this->assertSame(2, $this->ver(), 'agents refetch the policy');
@@ -343,6 +375,36 @@ final class ClusterEndpointTest extends TestCase {
 	}
 
 	/**
+	 * The fail-safe paths. When the node check fails a node is assumed, and
+	 * before migration 044 (no cluster_legacy_urls column) the ports and the
+	 * version are stored all the same. Database::query() returns false on an
+	 * SQL error, as QueryLogDb's refusals do.
+	 */
+	public function testAFailedQueryStillAnnounces(): void {
+		$rLog = new QueryLogDb($this->rDb);
+		$rLog->rRefuse = '/FROM `cluster_nodes`/';
+		DatabaseFactory::set($rLog);
+		$this->assertTrue(ClusterEndpoint::recordMainChange($this->rMain, ['server_ip' => '10.0.0.2'] + $this->rMain, $this->live()), 'a node is assumed');
+		$this->assertSame(2, $this->ver());
+
+		$this->node(2, 'active');
+		$rLog->rRefuse = '/`cluster_legacy_urls` = \?/';
+		$this->assertTrue(ClusterEndpoint::recordMainChange($this->rMain, ['http_broadcast_port' => 8080] + $this->rMain, $this->live()));
+		$this->assertSame(3, $this->ver(), 'announced');
+		$this->assertSame([25461], array_keys(ClusterEndpoint::legacyPorts($this->settings())), 'the port kept');
+	}
+
+	/** MAIN's addresses may be IPv6 (ServerService takes any IP): a kept URL brackets the address. */
+	public function testAKeptIpv6UrlIsListed(): void {
+		$this->node(2, 'active');
+		$rOld = ['server_ip' => '2001:db8::1', 'private_ip' => ''] + $this->rMain;
+		$rNew = ['server_ip' => '2001:db8::2'] + $rOld;
+		$this->assertTrue(ClusterEndpoint::recordMainChange($rOld, $rNew, $this->live()));
+		$this->assertSame(['http://[2001:db8::1]:25461/cluster/v1/'], array_keys(ClusterEndpoint::legacyUrls($this->settings())));
+		$this->assertSame(['http://[2001:db8::2]:25461/cluster/v1/', 'http://[2001:db8::1]:25461/cluster/v1/'], ClusterPolicy::current($this->live(), $rNew)['main_urls'], 'listed last');
+	}
+
+	/**
 	 * A kept URL is listed only while MAIN serves its port with its scheme:
 	 * an http:// URL on a plain-HTTP port MAIN serves the API on, an https://
 	 * URL on any other (the public server's HTTPS ports, or an old one nginx
@@ -377,6 +439,28 @@ final class ClusterEndpointTest extends TestCase {
 			'https://old.example.com:8443/cluster/v1/',
 		], ClusterPolicy::current($rSettings, $this->rMain)['main_urls']);
 
+		// The transport rules hold for them: no kept plain-HTTP URL under
+		// https_required, and a kept HTTPS URL only while the policy lists HTTPS.
+		$this->assertSame(
+			['https://panel.example.com:25463/cluster/v1/', 'https://old.example.com:8443/cluster/v1/'],
+			ClusterPolicy::current($this->live(['cluster_transport' => 'https_required']), $this->rMain)['main_urls'],
+			'no kept plain-HTTP URL under https_required'
+		);
+		$rPlain = [
+			'http://192.168.0.1:25461/cluster/v1/', 'http://10.0.0.1:25461/cluster/v1/',
+			'http://192.168.0.1:8080/cluster/v1/', 'http://10.0.0.1:8080/cluster/v1/',
+			'http://10.0.0.8:25461/cluster/v1/', 'http://10.0.0.7:8080/cluster/v1/',
+		];
+		foreach (['http', 'auto'] as $rTransport) {
+			$this->assertSame($rPlain, ClusterPolicy::current($this->live(['cluster_transport' => $rTransport]), $this->rMain)['main_urls'], $rTransport);
+		}
+		$this->assertSame($rPlain, ClusterPolicy::current($rSettings, ['enable_https' => 0] + $this->rMain)['main_urls'], 'HTTPS off on MAIN');
+		$this->assertSame(
+			array_merge(['https://panel.example.com:25463/cluster/v1/'], $rPlain, ['https://old.example.com:8443/cluster/v1/']),
+			ClusterPolicy::current($this->live(['cluster_transport' => 'auto']), $this->rMain, true)['main_urls'],
+			'auto, once MAIN\'s certificate verifies'
+		);
+
 		// nginx: an old HTTPS port gets a TLS server unless MAIN serves the port already, or keeps it for plain HTTP.
 		$rOld = (string) ClusterNginxConfig::render($rSettings, [25461, 25463], $this->rNow)[ClusterNginxConfig::OLD_PORT];
 		$this->assertStringContainsString("listen 8080;\n", $rOld);
@@ -387,6 +471,15 @@ final class ClusterEndpointTest extends TestCase {
 		$rOld = (string) ClusterNginxConfig::render($this->live(), [25461, 25463], $this->rNow)[ClusterNginxConfig::OLD_PORT];
 		$this->assertSame(1, substr_count($rOld, 'server {'), 'one server per port: the plain-HTTP one kept first');
 		$this->assertStringNotContainsString('ssl', $rOld);
+
+		// A kept URL that is current again (the HTTPS port moved back while
+		// nothing was announced, under auto) is listed once, where it is current.
+		$this->store('cluster_legacy_ports', '');
+		$this->store('cluster_legacy_urls', (string) json_encode(['https://panel.example.com:25463/cluster/v1/' => $rUntil], JSON_UNESCAPED_SLASHES));
+		$this->assertSame(
+			['https://panel.example.com:25463/cluster/v1/', 'http://192.168.0.1:25461/cluster/v1/', 'http://10.0.0.1:25461/cluster/v1/'],
+			ClusterPolicy::current($this->live(['cluster_transport' => 'https_preferred']), $this->rMain)['main_urls']
+		);
 	}
 
 	/** The call sites: the admin's save of MAIN's row, and cron:root_signals' rewrite. */
@@ -404,7 +497,9 @@ final class ClusterEndpointTest extends TestCase {
 		$this->assertStringNotContainsString('ClusterEndpoint::recordChange(', $rServer);
 
 		$rRoot = (string) file_get_contents($rSrc . 'Cli/CronJobs/RootSignalsCronJob.php');
-		$this->assertSame(1, substr_count($rRoot, 'self::rewriteServerIP($db, SERVER_ID, $rServers[SERVER_ID], $rServerIP);'));
+		$this->assertSame(1, substr_count($rRoot, '$rServers[SERVER_ID] = self::rewriteServerIP($db, SERVER_ID, $rServers[SERVER_ID], $rServerIP);'), 'announced with the row as it was, which it then updates');
+		$this->assertSame(1, substr_count($rRoot, 'self::rewriteServerIP('), 'one call');
+		$this->assertStringNotContainsString("['server_ip'] = \$rServerIP;", $rRoot, 'the row changes nowhere else');
 		$this->assertSame(1, substr_count($rRoot, 'UPDATE `servers` SET `server_ip` = ?'), 'the rewrite stores it in one place');
 	}
 

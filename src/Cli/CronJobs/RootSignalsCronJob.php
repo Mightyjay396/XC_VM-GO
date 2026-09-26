@@ -203,15 +203,20 @@ class RootSignalsCronJob implements CommandInterface {
 	 * MAIN's address on its interface changed (the automatic server_ip
 	 * rewrite): store it, and announce it to the cluster nodes as an admin's
 	 * edit is, keeping the old URL a while (ClusterEndpoint::
-	 * recordMainChange()). Domain\Cluster is not in the LB build.
+	 * recordMainChange()). Returns the row with the new address, so the
+	 * caller cannot hand it an already updated row. Domain\Cluster is not in
+	 * the LB build.
 	 *
 	 * @param array<string, mixed> $rServer MAIN's `servers` row before the change.
+	 * @return array<string, mixed>
 	 */
-	public static function rewriteServerIP(object $rDb, int $rServerID, array $rServer, string $rServerIP): void {
+	public static function rewriteServerIP(object $rDb, int $rServerID, array $rServer, string $rServerIP): array {
 		$rDb->query('UPDATE `servers` SET `server_ip` = ? WHERE `id` = ?;', $rServerIP, $rServerID);
+		$rNew = ['server_ip' => $rServerIP] + $rServer;
 		if (class_exists(ClusterEndpoint::class)) {
-			ClusterEndpoint::recordMainChange($rServer, ['server_ip' => $rServerIP] + $rServer, SettingsManager::getAll(), 'system');
+			ClusterEndpoint::recordMainChange($rServer, $rNew, SettingsManager::getAll(), 'system');
 		}
+		return $rNew;
 	}
 
 	private function loadCron(): void {
@@ -362,8 +367,7 @@ class RootSignalsCronJob implements CommandInterface {
 			$rServerIP = $this->getServerIP(($rServers[SERVER_ID]['network_interface'] == 'auto' ? null : $rServers[SERVER_ID]['network_interface']));
 			if ($rServerIP && $rServerIP != $rServers[SERVER_ID]['server_ip'] && $this->AutoUpdateServerIP) {
 				echo 'Updating server IP from ' . $rServers[SERVER_ID]['server_ip'] . ' to ' . $rServerIP . '...' . "\n";
-				self::rewriteServerIP($db, SERVER_ID, $rServers[SERVER_ID], $rServerIP);
-				$rServers[SERVER_ID]['server_ip'] = $rServerIP;
+				$rServers[SERVER_ID] = self::rewriteServerIP($db, SERVER_ID, $rServers[SERVER_ID], $rServerIP);
 			}
 
 			if (empty(SettingsManager::get('live_streaming_pass'))) {
