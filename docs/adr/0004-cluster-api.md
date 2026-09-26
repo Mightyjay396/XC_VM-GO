@@ -309,6 +309,8 @@ This was checked with nginx 1.24:
 - `nginx -t` passes with and without the file.
 - On the old port, only `/cluster/v1/` reaches PHP.
 
+**Not built:** a change of MAIN's HTTPS broadcast port, `server_ip` or `private_ip` is not announced and keeps no old URL (plan §3, "Endpoint changes"). Only the HTTP broadcast port and `cluster_api_port` bump `cluster_policy_ver`.
+
 ### Commands (Phase 4, first increment)
 
 `CommandBus` queues MAIN → node commands in `cluster_commands`, FIFO per node by `seq`. Each command is a typed JSON record signed by the panel with tag `cmd`:
@@ -855,28 +857,36 @@ The zone is declared in `nginx.conf` itself, because the location cannot load wi
 
 **Applying.** `apply()`:
 
-1. renders from the settings and the ports the public server listens on (`ports/http.conf`, `ports/https.conf`);
-2. writes each file that differs, atomically (a temporary file, then a rename);
-3. runs `nginx -t`. When it fails, it puts every file back as it was, audits `cluster.nginx` with nginx's message and reports the failure;
-4. otherwise reloads nginx, unless the caller reloads it itself.
+1. renders from the settings and the ports the public server listens on (`ports/http.conf`, `ports/https.conf`). Called without settings, it reads `cluster_api_port` and `cluster_legacy_ports` from the database, not from the settings the process loaded;
+2. checks that a new dedicated port is free: one nginx does not listen on yet by its files (`ports/`, `cluster.d/`) must bind. When it does not, nothing is written;
+3. writes each file that differs, atomically (a temporary file, then a rename);
+4. runs `nginx -t`. When it fails, it puts every file back as it was, audits `cluster.nginx` with nginx's message and reports the failure;
+5. otherwise reloads nginx, unless the caller reloads it itself. After the reload a new dedicated port must accept connections within 3 s. When it does not, the previous files go back, nginx reloads again and the failure is reported.
 
-When nothing differs there is no test and no reload. A lock serialises callers. `nginx -t` does not bind ports, so a port another process holds fails only at the reload, and nginx then keeps running its previous config.
+When nothing differs there is no test and no reload. A lock serialises callers. A refusal that repeats the last one is not audited again (`cluster.d/.refused`), since `cron:cluster` retries every minute.
+
+Steps 2 and 5 exist because neither `nginx -t` nor the reload's exit code says whether nginx can take a port. In test mode nginx binds the listen sockets but ignores `EADDRINUSE`, so `nginx -t` passes when another program holds the port. `nginx -s reload` exits 0 once the signal is sent. The master then fails to bind and keeps its previous config, and the next start (a reboot, `service xc_vm restart`, an update) fails with "still could not bind()", taking the panel and streaming down. Reproduced with nginx 1.24. The check in step 5 is a TCP connect, which a program that took the port between steps 2 and 5 would also pass.
+
+A kept old port is not checked: nginx served it until the change, so nginx holds it. Any port in nginx's config can still be taken while XC_VM is stopped, which stops nginx from starting, as for the broadcast ports.
 
 **Who runs it.**
 
 - `status`, at boot and after an update, runs `sudo -u xc_vm console.php cluster:nginx`, reloading only while XC_VM runs.
 - The root `set_port` handler runs `cluster:nginx --no-reload` after it writes the HTTP or HTTPS ports, before its own reload.
-- `cron:cluster` runs it when an old port expires. It used to re-send MAIN's ports through `set_port`.
-- A settings save that changes `cluster_api_port` runs it before the value is stored, with the new port and the kept one. When `nginx -t` fails, the save is refused with nginx's message (`cluster_error_nginx`) and nothing changes. Once the value is stored, `ClusterEndpoint::recordApiPortChange()` bumps the policy, so no node is sent a URL nginx does not serve.
+- `cron:cluster` runs it every minute, with the API on or off, after it drops expired old ports. It used to re-send MAIN's ports through `set_port`, only when a port expired. A render that matches the files is a no-op, so the minute retries a render that failed and undoes one that raced a settings save.
+- A settings save that changes `cluster_api_port` (`ClusterNginxConfig::stageApiPort()`) runs it before the value is stored, with the new port and the kept one. The save is refused, and nothing changes, when another program listens on the port (`cluster_error_port_busy`), or when `nginx -t` fails or nginx does not serve the port after the reload (`cluster_error_nginx`, with nginx's message). After the `UPDATE`, `commitApiPort()` bumps the policy (`ClusterEndpoint::recordApiPortChange()`) only if the value was stored. Either way it renders again from what is stored: that undoes a render from the old value that ran in between (`status`, `set_port`, `cron:cluster`), and a failed `UPDATE` puts nginx back on the stored port. So no node is sent a URL that nginx refused or did not serve after the reload.
 
 **As xc_vm only**, like the pools, because the files live in a directory xc_vm owns. Root no longer writes the old-port file.
 
 **The old file.** The first render removes `cluster_legacy.conf`, but only once `nginx.conf` includes `cluster.d/`. An update whose `nginx.conf` was rolled back still reads the old file, so it stays.
 
+That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `apply()` refuses any render that needs one (a dedicated port, or a kept old port), and a new `cluster_api_port` cannot be saved. Otherwise `nginx -t` would pass and the port would be stored and announced but never served. The API stays on the broadcast ports, through that `nginx.conf`'s fixed location. Its `cluster_legacy.conf` is not rendered again, so ports kept in it stay open until the next update installs an `nginx.conf` that passes `nginx -t`.
+
 **Checked** with nginx 1.24:
 
 - `testRealNginx` (opt-in, `XCVM_TEST_NGINX`): the rendered files pass `nginx -t`, and a broken include elsewhere restores the previous files.
-- By hand: on the dedicated and the old ports, `/cluster/v1/` reached the pools and every other path got 404. Past the burst, nginx answered 429.
+- `ClusterNginxConfigTest` and `SettingsServiceClusterPortTest` fake nginx and the port checks. They cover the save path (`stageApiPort()`, `commitApiPort()`, the refusals in `SettingsService::edit()`), the rollback after a failed write or reload, the `nginx.conf` that predates `cluster.d/`, `cluster:nginx` and `cron:cluster`. `testTheFreeCheckBindsThePort` runs the real bind check against a port the test holds. The lock and the atomic write are not tested.
+- By hand, with the real code and a running nginx master: a port a Python socket held was refused before anything was written. Once the port was free, it was served after the reload, the move to another port kept the old one served, and nginx restarted cleanly. With nginx stopped, a new port was rolled back. On the dedicated and the old ports, `/cluster/v1/` reached the pools and every other path got 404. Past the burst, nginx answered 429. There is no test for these checks.
 
 **Not built:**
 

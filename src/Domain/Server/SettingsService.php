@@ -7,7 +7,6 @@ use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Localization\Translator;
-use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -93,26 +92,19 @@ class SettingsService {
 	}
 
 	/**
-	 * A save that changes `cluster_api_port`: nginx gets the new port, and
-	 * keeps the old one for the nodes (ClusterEndpoint), before the value is
-	 * stored, and only once `nginx -t` passes (ClusterNginxConfig). Returns
-	 * nginx's refusal (nothing changed), the arguments of
-	 * ClusterEndpoint::recordApiPortChange() once stored, or null when the
-	 * port stays.
+	 * A save that changes `cluster_api_port`: nginx gets the new port before
+	 * the value is stored (ClusterNginxConfig::stageApiPort(), with the stored
+	 * settings and the main server's row). Null when the port stays, or on a
+	 * build without the cluster domain (LB).
 	 *
 	 * @param array<string, mixed> $rArray Settings about to be written.
-	 * @return array{0: int, 1: int, 2: array<string, mixed>, 3: array<string, mixed>}|string|null
+	 * @return array{refused: ?string, error: string, record: array{0: int, 1: int, 2: array<string, mixed>, 3: array<string, mixed>}}|null
 	 */
-	private static function stageClusterApiPort(array $rArray): array|string|null {
+	private static function stageClusterApiPort(array $rArray): ?array {
 		if (!array_key_exists('cluster_api_port', $rArray) || !class_exists(ClusterNginxConfig::class)) {
 			return null;
 		}
 		$rCurrent = SettingsManager::getAll();
-		$rOld = intval($rCurrent['cluster_api_port'] ?? 0);
-		$rNew = intval($rArray['cluster_api_port']);
-		if ($rOld === $rNew) {
-			return null;
-		}
 		$rMain = [];
 		foreach (ServerRepository::getAll() as $rServer) {
 			if (!empty($rServer['is_main'])) {
@@ -120,9 +112,7 @@ class SettingsService {
 				break;
 			}
 		}
-		$rKept = ClusterEndpoint::afterApiPortChange($rOld, $rNew, $rCurrent, $rMain) ?? ClusterEndpoint::legacyPorts($rCurrent);
-		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => $rNew, 'cluster_legacy_ports' => (string) json_encode($rKept)] + $rCurrent);
-		return $rResult['ok'] ? [$rOld, $rNew, $rCurrent, $rMain] : $rResult['error'];
+		return ClusterNginxConfig::stageApiPort(intval($rCurrent['cluster_api_port'] ?? 0), intval($rArray['cluster_api_port']), $rCurrent, $rMain);
 	}
 
 	/**
@@ -170,10 +160,6 @@ class SettingsService {
 		if ($rClusterErrors !== []) {
 			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => implode(' ', $rClusterErrors)]];
 		}
-		$rApiPort = self::stageClusterApiPort($rArray);
-		if (is_string($rApiPort)) {
-			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => Translator::get('cluster_error_nginx') . ' ' . htmlspecialchars($rApiPort, ENT_QUOTES)]];
-		}
 
 		if (!isset($rData['allowed_stb_types_for_local_recording'])) {
 			$rArray['allowed_stb_types_for_local_recording'] = [];
@@ -214,13 +200,22 @@ class SettingsService {
 			return ['status' => STATUS_FAILURE];
 		}
 
+		// A new cluster_api_port: nginx serves it before it is stored, or the
+		// save is refused and nothing changed.
+		$rApiPort = self::stageClusterApiPort($rArray);
+		if ($rApiPort !== null && $rApiPort['refused'] !== null) {
+			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => trim(Translator::get($rApiPort['refused']) . ' ' . htmlspecialchars($rApiPort['error'], ENT_QUOTES))]];
+		}
+
 		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . ';';
-		if ($db->query($rQuery, ...$rPrepare['data'])) {
+		$rStored = $db->query($rQuery, ...$rPrepare['data']);
+		if ($rApiPort !== null) {
+			// Stored: the nodes move to the new port (the old one is served for
+			// 7 days). Either way nginx follows what is stored.
+			ClusterNginxConfig::commitApiPort($rApiPort, (bool) $rStored);
+		}
+		if ($rStored) {
 			SettingsManager::clearCache();
-			if (is_array($rApiPort)) {
-				// Stored: the nodes move to the new port (the old one is served for 7 days).
-				ClusterEndpoint::recordApiPortChange(...$rApiPort);
-			}
 			FanoutConfig::sync($rArray);
 			// Apply the fanout switch on this node now; every other node picks it
 			// up from its root cron within a minute (RootSignalsCronJob).

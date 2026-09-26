@@ -117,7 +117,7 @@ On the MAIN, the nginx route for the cluster API is written by XC_VM, not fixed 
 | `cluster.d/listen.conf` | Only when **Cluster API Port** is not `0`: a plain-HTTP server on that port. It serves `/cluster/v1/` and answers `404` to anything else |
 | `cluster.d/old_port.conf` | For 7 days after the port the LBs use changes (the HTTP broadcast port, or the Cluster API Port): the old port keeps serving `/cluster/v1/` alone, so an LB that missed the change still finds the MAIN |
 
-`status` writes these files at every boot and after an update, and a port change writes them at once. A change is kept only when `nginx -t` passes; otherwise the previous files are put back, and saving a new Cluster API Port fails with nginx's error. To write them again and see what nginx says, run on the MAIN:
+`status` writes these files at every boot and after an update, a port change writes them at once, and a job checks them against the settings every minute. A change is kept only when `nginx -t` passes. A new Cluster API Port must also be free, and nginx must be serving it right after the reload. Otherwise the previous files are put back, and saving the new port fails with the reason. To write them again and see what nginx says, run on the MAIN:
 
 ```bash
 sudo -u xc_vm /home/xc_vm/console.php cluster:nginx    # exit code 0 when the files are current
@@ -179,7 +179,9 @@ Probable cause(s):
 | Status = 4 | Install/provision errored | Re-run `server:install` from the main |
 | Playback redirected from the main fails on one LB | `OPENSSL_EXTRA` mismatch (the check reports it) | `sudo /home/xc_vm/console.php server:sync-openssl-extra <server_id>` on the main (see [above](#repairing-an-openssl_extra-mismatch)) |
 | Every node reports `STARTING` | The cluster API pools on the main are not answering | `sudo -u xc_vm /home/xc_vm/console.php cluster:pools` on the main (see [above](#nodes-report-starting-the-cluster-api-pools)) |
-| Saving a new Cluster API Port fails: nginx refused it | `nginx -t` fails with the new port; the message quotes nginx | Fix what nginx names, then save again (see [above](#the-cluster-apis-nginx-config)) |
+| Saving a new Cluster API Port fails: nginx refused it | `nginx -t` fails with the new port (the message quotes nginx), or nginx did not serve the port after the reload | Fix what nginx names, check that nginx runs, then save again (see [above](#the-cluster-apis-nginx-config)) |
+| Saving a new Cluster API Port fails: another program listens on it | A service on the MAIN already uses that port | Pick another port, or stop that service (`ss -ltnp 'sport = :<port>'` names it) |
+| `cluster:nginx` says `nginx.conf predates the rendered cluster config` | An update's `nginx.conf` failed `nginx -t` and the previous one was put back | Find why the release's `nginx.conf` failed `nginx -t` (the update log records the rollback), fix it, then update again |
 
 ---
 

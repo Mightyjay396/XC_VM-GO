@@ -1,6 +1,9 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\Commands\ClusterNginxCommand;
+use XcVm\Cli\CronJobs\ClusterCronJob;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
@@ -14,8 +17,10 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * ports kept for seven days after an endpoint change. apply() writes them
  * atomically, keeps them only once `nginx -t` passes, and reloads nginx.
  *
- * nginx itself is faked in most tests; testRealNginx runs the rendered files
- * through a real `nginx -t`, opt-in: XCVM_TEST_NGINX=/path/to/nginx.
+ * nginx itself, and the port checks around a new dedicated port, are faked in
+ * most tests; testRealNginx runs the rendered files through a real `nginx -t`,
+ * opt-in: XCVM_TEST_NGINX=/path/to/nginx. Not covered: the lock that
+ * serialises callers, and that a write is a temporary file then a rename.
  */
 final class ClusterNginxConfigTest extends TestCase {
 	private TestDb $rDb;
@@ -30,6 +35,17 @@ final class ClusterNginxConfigTest extends TestCase {
 	/** What the faked `nginx -t` answers: [exit code, output]. */
 	private array $rTest = [0, ''];
 
+	/** @var list<int> ports another program listens on: the faked 'free' check fails for them */
+	private array $rBusy = [];
+
+	/** Whether nginx serves a new port after the reload (the faked 'serving' check). */
+	private bool $rServing = true;
+
+	/** @var list<string> the port checks run, as "free:31200" or "serving:31200" */
+	private array $rProbes = [];
+
+	private array $rSettingsBefore = [];
+
 	protected function setUp(): void {
 		$this->rBase = sys_get_temp_dir() . '/xcvm-nginx-' . bin2hex(random_bytes(4)) . '/';
 		mkdir($this->rBase . 'bin/nginx/conf/ports', 0777, true);
@@ -38,19 +54,29 @@ final class ClusterNginxConfigTest extends TestCase {
 		copy(dirname(__DIR__, 2) . '/src/bin/nginx/conf/nginx.conf', $this->rBase . 'bin/nginx/conf/nginx.conf');
 		$this->rDb = new TestDb();
 		$this->rDb->exec('CREATE TABLE `cluster_audit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `time` int, `server_id` int, `actor` varchar(64), `event` varchar(64), `detail` text, `ip` varchar(64))');
+		// What apply() without settings renders from: the stored values.
+		$this->rDb->exec("CREATE TABLE `settings` (`id` INTEGER PRIMARY KEY, `cluster_api_enabled` int DEFAULT 0, `cluster_api_port` int DEFAULT 0, `cluster_policy_ver` int DEFAULT 1, `cluster_legacy_ports` varchar(255) DEFAULT '')");
+		$this->rDb->exec('INSERT INTO `settings` (`id`) VALUES (1)');
 		DatabaseFactory::set($this->rDb);
 		ClusterClock::fix($this->rNow * 1000);
+		$this->rSettingsBefore = SettingsManager::getAll();
 		// apply() runs only as the user nginx runs as: here, whoever runs the tests.
 		ClusterNginxConfig::useBase($this->rBase, self::user());
 		ClusterNginxConfig::useRunner(function (array $rArgv): array {
 			$this->rRuns[] = $rArgv;
 			return in_array('-t', $rArgv, true) ? $this->rTest : [0, ''];
 		});
+		ClusterNginxConfig::useProbe(function (string $rCheck, int $rPort): bool {
+			$this->rProbes[] = $rCheck . ':' . $rPort;
+			return $rCheck === 'free' ? !in_array($rPort, $this->rBusy, true) : $this->rServing;
+		});
 	}
 
 	protected function tearDown(): void {
 		ClusterNginxConfig::useRunner(null);
+		ClusterNginxConfig::useProbe(null);
 		ClusterNginxConfig::useBase(null);
+		SettingsManager::set($this->rSettingsBefore);
 		ClusterClock::fix(null);
 		DatabaseFactory::reset();
 		exec('rm -rf ' . escapeshellarg($this->rBase));
@@ -81,6 +107,23 @@ final class ClusterNginxConfigTest extends TestCase {
 	private function audit(): array {
 		$this->rDb->query('SELECT `event`, `detail` FROM `cluster_audit` ORDER BY `id`');
 		return $this->rDb->get_rows();
+	}
+
+	/** The stored settings row. */
+	private function stored(): array {
+		$this->rDb->query('SELECT * FROM `settings`');
+		return $this->rDb->get_row();
+	}
+
+	private function store(string $rColumn, int|string $rValue): void {
+		$this->rDb->query('UPDATE `settings` SET `' . $rColumn . '` = ?', $rValue);
+	}
+
+	/** @return list<string> the port checks run since the last take */
+	private function takeProbes(): array {
+		$rOut = $this->rProbes;
+		$this->rProbes = [];
+		return $rOut;
 	}
 
 	public function testTheLocationCarriesThePlansTransportLimits(): void {
@@ -223,14 +266,32 @@ final class ClusterNginxConfigTest extends TestCase {
 		$this->assertStringContainsString('duplicate listen options', (string) end($rAudit)['detail']);
 	}
 
-	/** ClusterEndpoint's cluster_legacy.conf goes once nginx.conf reads cluster.d/ instead. */
+	/**
+	 * ClusterEndpoint's cluster_legacy.conf goes once nginx.conf reads
+	 * cluster.d/ instead. An nginx.conf from before (the update rolls back a
+	 * release's nginx.conf that fails nginx -t) reads neither cluster.d/ file:
+	 * a render that needs one is refused, so no port is stored and announced
+	 * that nginx never serves.
+	 */
 	public function testTheRetiredFileGoesOnlyWithTheNginxConfThatNoLongerReadsIt(): void {
 		$rRetired = $this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::RETIRED;
 		file_put_contents($rRetired, "server { listen 8080; }\n");
-		// An nginx.conf from before (an update whose nginx.conf was rolled back).
 		file_put_contents($this->rBase . 'bin/nginx/conf/nginx.conf', "http {\n    include cluster_legacy*.conf;\n}\n");
-		ClusterNginxConfig::apply(['cluster_api_port' => 0]);
+		$this->assertTrue(ClusterNginxConfig::apply(['cluster_api_port' => 0])['ok'], 'nothing in cluster.d/ to serve');
 		$this->assertFileExists($rRetired, 'still read by that nginx.conf');
+		$this->takeRuns();
+
+		foreach ([['cluster_api_port' => 31200], ['cluster_api_port' => 0, 'cluster_legacy_ports' => (string) json_encode([8080 => $this->rNow + 60])]] as $rSettings) {
+			$rResult = ClusterNginxConfig::apply($rSettings);
+			$this->assertFalse($rResult['ok']);
+			$this->assertStringContainsString('nginx.conf predates the rendered cluster config', $rResult['error']);
+			$this->assertNull($this->conf(ClusterNginxConfig::LISTEN));
+			$this->assertNull($this->conf(ClusterNginxConfig::OLD_PORT));
+			$this->assertSame([], $this->takeRuns(), 'nginx -t would pass');
+		}
+		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, ['cluster_api_enabled' => 1], ['http_broadcast_port' => 25461]);
+		$this->assertSame('cluster_error_nginx', $rStage['refused'] ?? null, 'the settings save is refused');
+		$this->assertStringContainsString('predates', (string) $rStage['error']);
 
 		copy(dirname(__DIR__, 2) . '/src/bin/nginx/conf/nginx.conf', $this->rBase . 'bin/nginx/conf/nginx.conf');
 		$this->assertTrue(ClusterNginxConfig::apply(['cluster_api_port' => 0])['ok']);
@@ -262,18 +323,26 @@ final class ClusterNginxConfigTest extends TestCase {
 		$rRoot = (string) file_get_contents($rSrc . 'Cli/CronJobs/RootSignalsCronJob.php');
 		$this->assertStringNotContainsString('cluster_legacy.conf', $rRoot, 'root writes nothing under bin/nginx/conf for the cluster');
 		$this->assertStringNotContainsString('ClusterNginxConfig::apply(', $rRoot);
-		$this->assertSame(2, substr_count($rRoot, "'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:nginx --no-reload'"), 'after the HTTP and the HTTPS ports; the handler reloads');
+		$rRender = "'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:nginx --no-reload'";
+		$this->assertSame(2, substr_count($rRoot, $rRender));
+		// Each render reads the ports file just written (the old port goes to
+		// old_port.conf only if the render sees the new one), and comes before
+		// the handler's own reload.
+		foreach (["file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/http.conf'", "file_put_contents(MAIN_HOME . 'bin/nginx/conf/ports/https.conf'"] as $rPorts) {
+			$rWrite = strpos($rRoot, $rPorts);
+			$this->assertNotFalse($rWrite, $rPorts);
+			$rCall = strpos($rRoot, $rRender, $rWrite);
+			$rReload = strpos($rRoot, "nginx/sbin/nginx -s reload'", $rWrite);
+			$this->assertNotFalse($rCall, 'a render after ' . $rPorts);
+			$this->assertNotFalse($rReload);
+			$this->assertLessThan($rReload, $rCall, 'the render after ' . $rPorts . ' comes before the reload');
+			$this->assertSame(1, substr_count(substr($rRoot, $rWrite, $rReload - $rWrite), $rRender), 'one render between ' . $rPorts . ' and its reload');
+		}
 
+		// cron:cluster renders every minute, with the API on or off (testCronRendersFromTheStoredSettingsEveryMinute).
 		$rCron = (string) file_get_contents($rSrc . 'Cli/CronJobs/ClusterCronJob.php');
-		$this->assertMatchesRegularExpression('#ClusterEndpoint::prune\(SettingsManager::getAll\(\)\)\) \{\s*ClusterNginxConfig::apply\(\);#', $rCron, 'an expired port is released by the render, as xc_vm');
-
-		$rSettings = (string) file_get_contents($rSrc . 'Domain/Server/SettingsService.php');
-		$rStage = strpos($rSettings, 'self::stageClusterApiPort($rArray)');
-		$rUpdate = strpos($rSettings, "\$rQuery = 'UPDATE `settings` SET '");
-		$rRecord = strpos($rSettings, 'ClusterEndpoint::recordApiPortChange(...$rApiPort);');
-		$this->assertNotFalse($rStage);
-		$this->assertNotFalse($rRecord);
-		$this->assertTrue($rStage < $rUpdate && $rUpdate < $rRecord, 'nginx takes the port before it is stored; the nodes hear of it after');
+		$this->assertStringContainsString("'endpoint' => static fn() => self::endpoint(),", $rCron);
+		$this->assertMatchesRegularExpression("#if \\(empty\\(SettingsManager::get\\('cluster_api_enabled'\\)\\)\\) \\{[^}]*static fn\\(\\) => self::endpoint\\(\\)#", $rCron, 'also with the API off');
 
 		$rMake = (string) file_get_contents(dirname($rSrc) . '/Makefile');
 		$rGate = (string) file_get_contents(dirname($rSrc) . '/tools/ci/verify-lb-archive.sh');
@@ -281,6 +350,273 @@ final class ClusterNginxConfigTest extends TestCase {
 			$this->assertMatchesRegularExpression('#^\t' . preg_quote($rFile, '#') . '(?: \\\\)?$#m', $rMake, $rFile . ' is stripped from the LB build');
 			$this->assertStringContainsString('"' . $rFile . '"', $rGate, $rFile . ' is on the LEAK list');
 		}
+	}
+
+	/**
+	 * A settings save that changes cluster_api_port: nginx serves the new
+	 * port, and keeps the old URL for the nodes, before the value is stored;
+	 * nothing is announced yet.
+	 */
+	public function testAnApiPortSaveServesTheNewPortBeforeItIsStored(): void {
+		$rMain = ['server_ip' => '10.0.0.1', 'http_broadcast_port' => 25461];
+		$rCurrent = ['cluster_api_enabled' => 1, 'cluster_api_port' => 0, 'cluster_legacy_ports' => ''];
+
+		// 0 -> 31200: the API's own server. Its old URL is the broadcast port,
+		// which the public server keeps serving: no old-port server.
+		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, $rCurrent, $rMain);
+		$this->assertSame(['refused' => null, 'error' => '', 'record' => [0, 31200, $rCurrent, $rMain]], $rStage);
+		$this->assertStringContainsString("    listen 31200;\n", (string) $this->conf(ClusterNginxConfig::LISTEN), 'the new port, not the stored one');
+		$this->assertNull($this->conf(ClusterNginxConfig::OLD_PORT));
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+		$this->assertSame(['free:31200', 'free:31200', 'serving:31200'], $this->takeProbes(), 'free before anything is written, served after the reload');
+		$this->assertSame(1, (int) $this->stored()['cluster_policy_ver'], 'nothing announced before the value is stored');
+
+		// 31200 -> 31300: 31200 is kept for the nodes that have not moved.
+		$rCurrent = ['cluster_api_port' => 31200] + $rCurrent;
+		$rStage = ClusterNginxConfig::stageApiPort(31200, 31300, $rCurrent, $rMain);
+		$this->assertIsArray($rStage);
+		$this->assertNull($rStage['refused']);
+		$this->assertSame([31200, 31300, $rCurrent, $rMain], $rStage['record']);
+		$this->assertStringContainsString("    listen 31300;\n", (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertStringNotContainsString('listen 31200;', (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$rOld = (string) $this->conf(ClusterNginxConfig::OLD_PORT);
+		$this->assertStringContainsString("    listen 31200;\n", $rOld);
+		$this->assertStringContainsString('# until ' . gmdate('Y-m-d H:i', $this->rNow + ClusterEndpoint::GRACE) . ' UTC', $rOld);
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+
+		// nginx -t refuses 31400: its words, and every file as it was.
+		$rFiles = [$this->conf(ClusterNginxConfig::LOCATIONS), $this->conf(ClusterNginxConfig::LISTEN), $this->conf(ClusterNginxConfig::OLD_PORT)];
+		$this->rTest = [1, "nginx: [emerg] unknown directive \"oops\" in custom.conf:1\nnginx: configuration file test failed\n"];
+		$rStage = ClusterNginxConfig::stageApiPort(31300, 31400, ['cluster_api_port' => 31300] + $rCurrent, $rMain);
+		$this->assertSame('cluster_error_nginx', $rStage['refused'] ?? null);
+		$this->assertStringContainsString('unknown directive "oops" in custom.conf:1', (string) $rStage['error']);
+		$this->assertSame($rFiles, [$this->conf(ClusterNginxConfig::LOCATIONS), $this->conf(ClusterNginxConfig::LISTEN), $this->conf(ClusterNginxConfig::OLD_PORT)]);
+		$this->assertSame(['test'], $this->takeRuns(), 'never reloaded');
+
+		$this->assertNull(ClusterNginxConfig::stageApiPort(31300, 31300, $rCurrent, $rMain), 'the port stays');
+
+		// With the API off nothing is announced, and the ports already kept stay served.
+		$this->rTest = [0, ''];
+		$rKept = ['cluster_api_enabled' => 0, 'cluster_api_port' => 31300, 'cluster_legacy_ports' => (string) json_encode([8080 => $this->rNow + 60])];
+		$rStage = ClusterNginxConfig::stageApiPort(31300, 31400, $rKept, $rMain);
+		$this->assertIsArray($rStage);
+		$this->assertNull($rStage['refused']);
+		$this->assertStringContainsString('listen 31400;', (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$rOld = (string) $this->conf(ClusterNginxConfig::OLD_PORT);
+		$this->assertStringContainsString('listen 8080;', $rOld, 'still kept');
+		$this->assertStringNotContainsString('listen 31300;', $rOld, 'no node uses it');
+	}
+
+	/**
+	 * `nginx -t` passes when another program holds a port, and nginx then
+	 * fails at the reload (keeping its previous config) and at its next start.
+	 * A new dedicated port must be free before anything is written.
+	 */
+	public function testAPortAnotherProgramHoldsIsRefused(): void {
+		$rMain = ['http_broadcast_port' => 25461];
+		$rCurrent = ['cluster_api_enabled' => 1, 'cluster_api_port' => 0, 'cluster_legacy_ports' => ''];
+		$this->rBusy = [31200];
+		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, $rCurrent, $rMain);
+		$this->assertSame('cluster_error_port_busy', $rStage['refused'] ?? null);
+		$this->assertNull($this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertNull($this->conf(ClusterNginxConfig::LOCATIONS), 'nothing written');
+		$this->assertSame([], $this->takeRuns());
+
+		// apply() refuses it too, whoever renders the stored port (status after an update, cron).
+		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => 31200]);
+		$this->assertFalse($rResult['ok']);
+		$this->assertSame('port 31200 is in use by another program', $rResult['error']);
+		$this->assertNull($this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertSame([], $this->takeRuns());
+
+		// A port nginx listens on already (here its old-port server) is nginx's: not checked.
+		$this->assertTrue(ClusterNginxConfig::apply(['cluster_api_port' => 0, 'cluster_legacy_ports' => (string) json_encode([31200 => $this->rNow + 60])])['ok']);
+		$this->takeProbes();
+		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, ['cluster_legacy_ports' => (string) json_encode([31200 => $this->rNow + 60])] + $rCurrent, $rMain);
+		$this->assertIsArray($rStage);
+		$this->assertNull($rStage['refused']);
+		$this->assertSame([], $this->takeProbes());
+		$this->assertStringContainsString('listen 31200;', (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertNull($this->conf(ClusterNginxConfig::OLD_PORT), 'the dedicated server has it now');
+	}
+
+	/** The real check: a port a program listens on cannot be bound. */
+	public function testTheFreeCheckBindsThePort(): void {
+		ClusterNginxConfig::useProbe(null);
+		$rHold = stream_socket_server('tcp://0.0.0.0:0', $rErrNo, $rErrStr);
+		$this->assertNotFalse($rHold, $rErrStr);
+		$rPort = (int) substr((string) strrchr((string) stream_socket_get_name($rHold, false), ':'), 1);
+		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => $rPort], false);
+		fclose($rHold);
+		$this->assertSame('port ' . $rPort . ' is in use by another program', $rResult['error']);
+		$this->assertNull($this->conf(ClusterNginxConfig::LISTEN));
+
+		$this->assertTrue(ClusterNginxConfig::apply(['cluster_api_port' => $rPort], false)['ok'], 'free again');
+		$this->assertStringContainsString('listen ' . $rPort . ';', (string) $this->conf(ClusterNginxConfig::LISTEN));
+	}
+
+	/**
+	 * `nginx -s reload` exits 0 once the signal is sent: a new port nginx does
+	 * not serve after it puts the previous files back and reloads again.
+	 */
+	public function testANewPortNginxDoesNotServeAfterTheReloadIsRolledBack(): void {
+		$this->assertTrue(ClusterNginxConfig::apply(['cluster_api_port' => 31200])['ok']);
+		$this->takeRuns();
+		$this->takeProbes();
+		$rListen = $this->conf(ClusterNginxConfig::LISTEN);
+
+		$this->rServing = false;
+		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => 31300, 'cluster_legacy_ports' => (string) json_encode([31200 => $this->rNow + 60])]);
+		$this->assertSame(['ok' => false, 'changed' => false, 'reloaded' => false], array_intersect_key($rResult, ['ok' => 0, 'changed' => 0, 'reloaded' => 0]));
+		$this->assertStringContainsString('nginx did not serve port 31300 after the reload', $rResult['error']);
+		$this->assertSame(['test', 'reload', 'reload'], $this->takeRuns(), 'the second reload puts nginx back on the previous files');
+		$this->assertSame(['free:31300', 'serving:31300'], $this->takeProbes());
+		$this->assertSame($rListen, $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertNull($this->conf(ClusterNginxConfig::OLD_PORT));
+		$rAudit = $this->audit();
+		$this->assertStringContainsString('did not serve port 31300', (string) end($rAudit)['detail']);
+
+		// A signal nginx never got (it is not running) is no better.
+		$this->rServing = true;
+		ClusterNginxConfig::useRunner(function (array $rArgv): array {
+			$this->rRuns[] = $rArgv;
+			return in_array('-t', $rArgv, true) ? [0, ''] : [1, 'nginx: [error] open() "nginx.pid" failed'];
+		});
+		$this->assertFalse(ClusterNginxConfig::apply(['cluster_api_port' => 31300])['ok']);
+		$this->assertSame($rListen, $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertSame(['free:31300'], $this->takeProbes(), 'no point waiting for it');
+
+		// Without a new port there is nothing to wait for (the kept port is nginx's already).
+		ClusterNginxConfig::useRunner(fn(array $rArgv): array => [0, '']);
+		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => 31200, 'cluster_legacy_ports' => (string) json_encode([8080 => $this->rNow + 60])]);
+		$this->assertTrue($rResult['ok'] && $rResult['reloaded']);
+		$this->assertSame([], $this->takeProbes());
+	}
+
+	/** A write that fails part-way leaves every file as it was, and nginx untouched. */
+	public function testAWriteThatFailsPutsTheEarlierFilesBack(): void {
+		file_put_contents($this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::LOCATIONS, "# an older release's location\n");
+		// cluster_locations.conf is written first; listen.conf's temporary file cannot be.
+		mkdir($this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::LISTEN . '.tmp', 0777, true);
+		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => 31200]);
+		$this->assertFalse($rResult['ok']);
+		$this->assertStringStartsWith('cannot write ' . $this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::LISTEN, $rResult['error']);
+		$this->assertSame("# an older release's location\n", $this->conf(ClusterNginxConfig::LOCATIONS), 'the file written before it is back');
+		$this->assertNull($this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertSame([], $this->rRuns, 'nginx never ran');
+		$this->assertSame([], $this->audit());
+	}
+
+	/** cron:cluster retries a failed render every minute; the refusal is audited once. */
+	public function testARefusalRetriedEveryMinuteIsAuditedOnce(): void {
+		$this->rTest = [1, "nginx: [emerg] unknown directive \"oops\" in custom.conf:1\n"];
+		$this->assertFalse(ClusterNginxConfig::apply(['cluster_api_port' => 31200])['ok']);
+		$this->assertFalse(ClusterNginxConfig::apply(['cluster_api_port' => 31200])['ok']);
+		$this->assertCount(1, $this->audit());
+		$this->assertSame(['test', 'test'], $this->takeRuns(), 'tried again all the same');
+
+		$this->rTest = [0, ''];
+		$this->assertTrue(ClusterNginxConfig::apply(['cluster_api_port' => 31200])['ok']);
+		$this->rTest = [1, "nginx: [emerg] unknown directive \"oops\" in custom.conf:1\n"];
+		$this->assertFalse(ClusterNginxConfig::apply(['cluster_api_port' => 31300])['ok']);
+		$this->assertSame(['cluster.nginx', 'cluster.nginx', 'cluster.nginx'], array_column($this->audit(), 'event'), 'a success clears it');
+	}
+
+	/**
+	 * After the settings UPDATE: stored, the nodes hear of the port; either
+	 * way nginx follows what is stored, which undoes a render from the old
+	 * value that ran in between, or a save that was not stored.
+	 */
+	public function testNginxFollowsWhatTheSaveStored(): void {
+		$rMain = ['server_ip' => '10.0.0.1', 'http_broadcast_port' => 25461];
+		$this->store('cluster_api_enabled', 1);
+		$rCurrent = $this->stored();
+
+		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, $rCurrent, $rMain);
+		// status, set_port or cron:cluster render from the old value before the UPDATE.
+		$this->assertTrue(ClusterNginxConfig::apply()['ok']);
+		$this->assertNull($this->conf(ClusterNginxConfig::LISTEN));
+		$this->takeRuns();
+
+		$this->store('cluster_api_port', 31200);
+		$rResult = ClusterNginxConfig::commitApiPort((array) $rStage, true);
+		$this->assertTrue($rResult['ok'] && $rResult['reloaded']);
+		$this->assertStringContainsString('listen 31200;', (string) $this->conf(ClusterNginxConfig::LISTEN), 'back on the stored port');
+		$this->assertSame(2, (int) $this->stored()['cluster_policy_ver'], 'the nodes move');
+		$this->assertSame([25461 => $this->rNow + ClusterEndpoint::GRACE], ClusterEndpoint::legacyPorts($this->stored()));
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+		$this->assertSame(['ok' => true, 'changed' => false, 'reloaded' => false, 'error' => ''], ClusterNginxConfig::apply(), 'current');
+
+		// A save that was not stored: nginx goes back to the stored port, nothing announced.
+		$rStage = ClusterNginxConfig::stageApiPort(31200, 31300, $this->stored(), $rMain);
+		$this->assertStringContainsString('listen 31300;', (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertTrue(ClusterNginxConfig::commitApiPort((array) $rStage, false)['ok']);
+		$this->assertStringContainsString('listen 31200;', (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertNull($this->conf(ClusterNginxConfig::OLD_PORT));
+		$this->assertSame(2, (int) $this->stored()['cluster_policy_ver']);
+	}
+
+	/** cron:cluster, every minute and also with the API off: expired ports go, and nginx follows the stored settings. */
+	public function testCronRendersFromTheStoredSettingsEveryMinute(): void {
+		$this->store('cluster_legacy_ports', (string) json_encode([8080 => $this->rNow + 60]));
+		SettingsManager::set($this->stored());
+		ClusterCronJob::endpoint();
+		$this->assertStringContainsString('listen 8080;', (string) $this->conf(ClusterNginxConfig::OLD_PORT));
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+		ClusterCronJob::endpoint();
+		$this->assertSame([], $this->takeRuns(), 'nothing differs: no test, no reload');
+
+		// Its 7 days are up: it leaves the settings (announced) and nginx.
+		ClusterClock::fix(($this->rNow + 61) * 1000);
+		ClusterCronJob::endpoint();
+		$this->assertSame('', $this->stored()['cluster_legacy_ports']);
+		$this->assertSame(2, (int) $this->stored()['cluster_policy_ver']);
+		$this->assertNull($this->conf(ClusterNginxConfig::OLD_PORT));
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+
+		// A render nginx refused is tried again the next minute.
+		$this->store('cluster_api_port', 31200);
+		$this->rTest = [1, 'nginx: [emerg] something else is wrong'];
+		ClusterCronJob::endpoint();
+		$this->assertNull($this->conf(ClusterNginxConfig::LISTEN));
+		$this->rTest = [0, ''];
+		ClusterCronJob::endpoint();
+		$this->assertStringContainsString('listen 31200;', (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertSame(['test', 'test', 'reload'], $this->takeRuns());
+	}
+
+	/** cluster:nginx renders the stored settings: --no-reload runs only nginx -t, a refusal exits 1. */
+	public function testTheCommand(): void {
+		$rRun = static function (array $rArgs): array {
+			ob_start();
+			$rCode = (new ClusterNginxCommand())->execute($rArgs);
+			return [$rCode, (string) ob_get_clean()];
+		};
+		$this->store('cluster_api_port', 31200);
+		$this->assertSame([0, "Cluster API nginx config updated; nginx not reloaded.\n"], $rRun(['--no-reload']));
+		$this->assertSame(['test'], $this->takeRuns());
+		$this->assertStringContainsString('listen 31200;', (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertSame([0, "Cluster API nginx config is current.\n"], $rRun([]));
+		$this->assertSame([], $this->takeRuns());
+
+		$this->store('cluster_api_port', 31300);
+		$this->assertSame([0, "Cluster API nginx config updated; nginx reloaded.\n"], $rRun([]));
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+
+		$this->store('cluster_api_port', 31400);
+		$this->rTest = [1, 'nginx: [emerg] bad'];
+		[$rCode, $rOut] = $rRun([]);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('nginx: [emerg] bad', $rOut);
+		$this->assertStringContainsString('listen 31300;', (string) $this->conf(ClusterNginxConfig::LISTEN));
+
+		// Only as the user nginx runs as.
+		$this->takeRuns();
+		ClusterNginxConfig::useBase($this->rBase, 'not-' . self::user());
+		[$rCode, $rOut] = $rRun([]);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('not run as not-', $rOut);
+		$this->assertSame([], $this->rRuns);
 	}
 
 	/**
