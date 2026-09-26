@@ -6,7 +6,6 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Logging\FileLogger;
-use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
 
 /**
@@ -49,7 +48,7 @@ class UpdateCronJob implements CommandInterface {
 
 		if (!$gitRelease) {
 			if (defined('GIT_OWNER') && defined('GIT_REPO_MAIN')) {
-				$gitRelease = new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, UpdateChannels::main());
+				$gitRelease = UpdateChannels::mainReleases();
 			}
 		}
 

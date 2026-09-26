@@ -1,0 +1,208 @@
+name: Build Dev (nightly)
+
+# Nightly panel builds for the 'dev' update channel. Builds are published to the
+# releases-only repository XC_VM_Dev, not to this repository: frequent releases
+# here would crowd the stable ones out of the panel's release list, feed dev
+# tags into the previous-tag detection of the release workflows, and notify
+# every watcher.
+#
+# Version: <base>-dev.<run number>, where <base> is the source version when it
+# is already bumped past the last release, else the next patch after it. PHP's
+# version_compare() orders X.Y.Z-dev.N < X.Y.Z-beta.1 < X.Y.Z, so a panel on
+# the dev channel moves on to the stable release once it is published.
+#
+# Publishing needs a GitHub App installed on XC_VM_Dev with Contents: write:
+#   vars.DEV_RELEASE_APP_ID      — the App ID
+#   secrets.DEV_RELEASE_APP_KEY  — the App's private key (PEM)
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even if main has not changed since the last nightly'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-dev
+  cancel-in-progress: false
+
+env:
+  DEV_OWNER: Vateron-Media
+  DEV_REPO_NAME: XC_VM_Dev
+  KEEP_RELEASES: 20
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
+      last_tag: ${{ steps.plan.outputs.last_tag }}
+      since: ${{ steps.plan.outputs.since }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Issue XC_VM_Dev token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DEV_RELEASE_APP_ID }}
+          private-key: ${{ secrets.DEV_RELEASE_APP_KEY }}
+          owner: ${{ env.DEV_OWNER }}
+          repositories: ${{ env.DEV_REPO_NAME }}
+
+      - name: Decide whether to build and compute the version
+        id: plan
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          set -euo pipefail
+          DEV_REPO="${DEV_OWNER}/${DEV_REPO_NAME}"
+          SHA=$(git rev-parse HEAD)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+          LAST_TAG=$(git tag --list --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n1 || true)
+          if [ -z "$LAST_TAG" ]; then
+            echo "::error::No X.Y.Z release tag found"
+            exit 1
+          fi
+          echo "last_tag=${LAST_TAG}" >> "$GITHUB_OUTPUT"
+
+          # The newest nightly records its source commit on the first line of its notes.
+          PREV_TAG=$(gh release list -R "$DEV_REPO" --limit 1 --json tagName --jq '.[0].tagName // ""')
+          PREV_SHA=""
+          if [ -n "$PREV_TAG" ]; then
+            PREV_SHA=$(gh release view "$PREV_TAG" -R "$DEV_REPO" --json body --jq '.body' | sed -nE '1s/^Source: .*commit\/([0-9a-f]{40}).*/\1/p')
+          fi
+
+          # Changelog range: since the previous nightly when it is on main's
+          # history, otherwise since the last release.
+          SINCE="$LAST_TAG"
+          if [ -n "$PREV_SHA" ] && git merge-base --is-ancestor "$PREV_SHA" "$SHA" 2>/dev/null; then
+            SINCE="$PREV_SHA"
+          fi
+          echo "since=${SINCE}" >> "$GITHUB_OUTPUT"
+
+          if [ "$FORCE" != "true" ]; then
+            if [ "$SHA" = "$PREV_SHA" ]; then
+              echo "main is unchanged since ${PREV_TAG} — skipping"
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ "$(git rev-list --count "${LAST_TAG}..${SHA}")" = "0" ]; then
+              echo "main has no commits since release ${LAST_TAG} — skipping"
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          CODE_VER=$(sed -nE "s/.*define\('XC_VM_VERSION', '([0-9]+\.[0-9]+\.[0-9]+)'\).*/\1/p" src/Core/Config/ConstantsInitializer.php | head -n1)
+          if [ -n "$CODE_VER" ] && [ "$CODE_VER" != "$LAST_TAG" ] \
+            && [ "$(printf '%s\n%s\n' "$CODE_VER" "$LAST_TAG" | sort -V | tail -n1)" = "$CODE_VER" ]; then
+            BASE="$CODE_VER"
+          else
+            IFS=. read -r MAJOR MINOR PATCH <<< "$LAST_TAG"
+            BASE="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          fi
+          VERSION="${BASE}-dev.${GITHUB_RUN_NUMBER}"
+          echo "Nightly version: ${VERSION} (last release ${LAST_TAG}, changelog since ${SINCE})"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Test, build and publish
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      LAST_TAG: ${{ needs.plan.outputs.last_tag }}
+      SINCE: ${{ needs.plan.outputs.since }}
+      SHA: ${{ needs.plan.outputs.sha }}
+    steps:
+      - name: Checkout planned commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+          coverage: none
+
+      - name: Run unit tests
+        run: php tests/phpunit.phar -c tests/phpunit.xml.dist
+
+      - name: Stamp nightly version
+        run: |
+          set -euo pipefail
+          FILE=src/Core/Config/ConstantsInitializer.php
+          sed -i -E "s/define\('XC_VM_VERSION', '[^']+'\)/define('XC_VM_VERSION', '${VERSION}')/" "$FILE"
+          grep -q "define('XC_VM_VERSION', '${VERSION}')" "$FILE" || { echo "::error::Version stamp failed"; exit 1; }
+
+      - name: Build LB and MAIN archives
+        run: |
+          make new
+          make lb LAST_TAG="${LAST_TAG}"
+          make main LAST_TAG="${LAST_TAG}"
+
+      - name: Write changelog and release notes
+        run: |
+          set -euo pipefail
+          git log --no-merges --format='%s' "${SINCE}..${SHA}" \
+            | jq -R . | jq -s --arg v "$VERSION" '{version: $v, changes: .}' > dist/changelog.json
+          {
+            echo "Source: https://github.com/${GITHUB_REPOSITORY}/commit/${SHA}"
+            echo
+            echo "Nightly build from \`main\`. Untested — for test servers only."
+            echo
+            echo "## Changes since \`${SINCE:0:12}\`"
+            git log --no-merges --format='- %s (%h)' "${SINCE}..${SHA}"
+          } > "${RUNNER_TEMP}/notes.md"
+
+      - name: Issue XC_VM_Dev token
+        id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.DEV_RELEASE_APP_ID }}
+          private-key: ${{ secrets.DEV_RELEASE_APP_KEY }}
+          owner: ${{ env.DEV_OWNER }}
+          repositories: ${{ env.DEV_REPO_NAME }}
+
+      - name: Publish nightly release
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          gh release create "$VERSION" dist/* \
+            -R "${DEV_OWNER}/${DEV_REPO_NAME}" \
+            --prerelease \
+            --title "${VERSION} (nightly)" \
+            --notes-file "${RUNNER_TEMP}/notes.md"
+
+      - name: Prune old nightlies
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          set -euo pipefail
+          DEV_REPO="${DEV_OWNER}/${DEV_REPO_NAME}"
+          gh release list -R "$DEV_REPO" --limit 200 --json tagName,createdAt \
+            --jq "sort_by(.createdAt) | reverse | .[${KEEP_RELEASES}:] | .[].tagName" \
+            | while read -r TAG; do
+                echo "Deleting ${TAG}"
+                gh release delete "$TAG" -R "$DEV_REPO" --yes --cleanup-tag
+              done

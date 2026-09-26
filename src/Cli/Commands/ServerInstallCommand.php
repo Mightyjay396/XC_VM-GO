@@ -62,7 +62,7 @@ class ServerInstallCommand implements CommandInterface {
 
 		global $db;
 
-		$gitRelease = new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, UpdateChannels::main());
+		$gitRelease = UpdateChannels::mainReleases();
 
 		$rServerID = intval($rArgs[1]);
 		if ($rServerID == 0) {
