@@ -961,10 +961,11 @@ Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR 
 
 **Phase 5: Logs, stream state, content; fanout events (\~4.5 pw).**
 
-- Agent-backed paths for `StreamStateWriter`, `LogSink` (credentials redacted by `Redactor` before the spool) and `Domain/Stream/ContentSink`: the node's PHP spools events (`Core/Cluster/EventSpool`), the agent ships them in two lanes (`internal/clusteragent/events.go`: P0 stream state ≤ 250 ms, P1 logs batched), and MAIN applies them in `Domain/Cluster/EventIngest` (`stream.state`, `stream.worker`, `stream.monitor`, `recording.state`, `vod.analysis`, logs, `skip`). Finished recordings go through the `recording_complete` op. The fanout serves `GET /events` (`internal/server/events.go`) and the agent turns it into `stream.monitor` events. A capped P0 backlog is compacted in place instead of the plan's separate `p0_reset` event.
+- Agent-backed paths for `StreamStateWriter`, `LogSink` (credentials redacted by `Redactor` before the spool) and `Domain/Stream/ContentSink`: the node's PHP spools events (`Core/Cluster/EventSpool`), the agent ships them in two lanes (`internal/clusteragent/events.go`: P0 stream state ≤ 250 ms, P1 logs batched), and MAIN applies them in `Domain/Cluster/EventIngest` (`stream.state`, `stream.worker`, `stream.monitor`, `recording.state`, `vod.analysis`, `security.block_ip`, logs, `skip`). Finished recordings go through the `recording_complete` op. The fanout serves `GET /events` (`internal/server/events.go`) and the agent turns it into `stream.monitor` events. A capped P0 backlog is compacted in place instead of the plan's separate `p0_reset` event.
 - Acceptance: LB stream transitions reach routing at p99 ≤ 1 s. No log rows are lost across restarts, and no MAIN log row holds a credential. A full journal drops P1 but P0 keeps flowing; recordings create one VOD.
 - Tests: `ClusterEventsTest` (redaction, P0 gap check and apply-once, own rows only), `ClusterContentTest` (recording → one VOD), `StreamStateWriterTest`, `LogSinkTest`; Go `events_test.go` (agent) and `internal/server/events_test.go` (fanout).
-- **Not built yet:** `stream.progress`, `security.block_ip` and `node.state`/`inventory` events.
+- `security.block_ip`: once CONFIG is on, the LB's flood and bruteforce guard spools the block instead of writing `blocked_ips`, and MAIN records it, refusing the cluster's own addresses and the admin allowlist (`ClusterEventsTest`). Its blocklist delta in `cluster_changes` comes with the R1 replica in Phase 7.
+- **Not built yet:** `stream.progress` and `node.state`/`inventory` events.
 
 **Phase 6: Connections (\~5.5 pw).**
 

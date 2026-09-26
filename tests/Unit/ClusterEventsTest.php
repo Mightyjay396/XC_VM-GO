@@ -1,9 +1,11 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\EventIngest;
 use XcVm\Domain\Cluster\NodeRegistry;
@@ -41,6 +43,7 @@ final class ClusterEventsTest extends TestCase {
 
 	protected function tearDown(): void {
 		EventSpool::useDir(null);
+		SettingsManager::set([]);
 		NodeFlows::usePath(null);
 		ClusterClock::fix(null);
 		DatabaseFactory::reset();
@@ -177,5 +180,45 @@ final class ClusterEventsTest extends TestCase {
 		$rOut = EventIngest::ingest($this->node(), 'p1', 1, [['type' => 'log.stream', 'd' => ['rows' => [['stream_id' => 1, 'action' => 'x']]]], ['type' => 'nope', 'd' => []]]);
 		$this->assertSame([2, 0, 2], [$rOut['useq'], $rOut['applied'], $rOut['dropped']]);
 		$this->assertSame(0, (int) $this->val('SELECT COUNT(*) FROM `streams_logs`'));
+	}
+
+	// ── security.block_ip ────────────────────────────────────────────────
+
+	private function spoolBlock(string $rIP, string $rReason): bool {
+		return (bool) (new \ReflectionMethod(BruteforceGuard::class, 'spoolBlock'))->invoke(null, $rIP, $rReason);
+	}
+
+	public function testABlockGoesToMainOnceTheConfigFlowIsOn(): void {
+		$this->flows(NodeFlows::STREAMS);
+		$this->assertFalse($this->spoolBlock('203.0.113.9', 'FLOOD ATTACK'), 'CONFIG off: the node writes it itself');
+		$this->flows(NodeFlows::CONFIG, EventSpool::STALE_AFTER + 5);
+		$this->assertFalse($this->spoolBlock('203.0.113.9', 'FLOOD ATTACK'), 'agent stopped');
+		$this->flows(NodeFlows::CONFIG);
+		$this->assertTrue($this->spoolBlock('203.0.113.9', 'BRUTEFORCE MAC ATTACK'));
+		$this->assertSame([['security.block_ip', ['ip' => '203.0.113.9', 'reason' => 'BRUTEFORCE MAC ATTACK']]], array_map(static fn($e) => [$e['type'], $e['d']], $this->spooled('p0')));
+	}
+
+	public function testMainRecordsABlockButNeverOneOfTheClustersOwn(): void {
+		$this->rDb->exec('CREATE TABLE `blocked_ips` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `ip` varchar(39) UNIQUE, `notes` text, `date` int)');
+		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `server_ip` varchar(64), `private_ip` varchar(64), `whitelist_ips` text)');
+		$this->rDb->exec("INSERT INTO `servers` VALUES (1, '198.51.100.1', '10.0.0.1', '[\"192.0.2.7\"]'), (5, '198.51.100.5', NULL, NULL)");
+		SettingsManager::set(['allowed_ips_admin' => '192.0.2.50, 192.0.2.51']);
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_CONFIG]);
+		$rBlock = static fn(string $rIP, string $rReason = 'FLOOD ATTACK') => ['type' => 'security.block_ip', 'd' => ['ip' => $rIP, 'reason' => $rReason]];
+		$rOut = EventIngest::ingest($this->node(), 'p0', 1, [
+			$rBlock('203.0.113.9'),
+			$rBlock('203.0.113.9', 'BRUTEFORCE USER ATTACK'), // already blocked
+			$rBlock('2001:db8::9', 'BRUTEFORCE MAC ATTACK'),
+			$rBlock('198.51.100.1'), $rBlock('10.0.0.1'), $rBlock('192.0.2.7'), $rBlock('192.0.2.51'), $rBlock('127.0.0.1'),
+			$rBlock('203.0.113.10', 'admin said so'),
+			$rBlock('not-an-ip'),
+		]);
+		$this->assertSame([10, 3, 7], [$rOut['useq'], $rOut['applied'], $rOut['dropped']]);
+		$this->assertSame([['ip' => '203.0.113.9', 'notes' => 'FLOOD ATTACK'], ['ip' => '2001:db8::9', 'notes' => 'BRUTEFORCE MAC ATTACK']], $this->rows('SELECT `ip`, `notes` FROM `blocked_ips` ORDER BY `id`'));
+		$this->assertSame(5, (int) $this->val("SELECT COUNT(*) FROM `cluster_audit` WHERE `event` = 'security.block_ip_refused'"));
+
+		// CONFIG off: MAIN takes no block from the node.
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_STREAMS]);
+		$this->assertSame(0, EventIngest::ingest($this->node(), 'p0', 11, [$rBlock('203.0.113.11')])['applied']);
 	}
 }

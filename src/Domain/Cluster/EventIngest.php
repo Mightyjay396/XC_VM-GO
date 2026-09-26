@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\Redactor;
 use XcVm\Core\Config\SettingsManager;
@@ -19,7 +20,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * ```text
  * p0  stream.state, stream.worker, stream.monitor,   gap-checked: first_useq must be
  *     recording.state, vod.analysis,                 useq_p0 + 1, else 409 {expected_useq}
- *     conn.upsert, conn.remove, conn.close, conn.limit
+ *     conn.upsert, conn.remove, conn.close, conn.limit,
+ *     security.block_ip
  *                                                    and the node rewinds
  * p1  log.<type>, skip                               high-water: numbers at or below
  *                                                    useq_p1 are skipped, gaps are fine
@@ -48,6 +50,7 @@ final class EventIngest {
 		'conn.close' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
 		'conn.limit' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
 		'vod.analysis' => ['p0', NodeRegistry::FLOW_CONTENT],
+		'security.block_ip' => ['p0', NodeRegistry::FLOW_CONFIG],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
 	];
 
@@ -147,6 +150,8 @@ final class EventIngest {
 				return ConnectionIngest::close($rServerID, (string) ($rData['uuid'] ?? ''));
 			case 'conn.limit':
 				return ConnectionLimits::queue($rServerID, $rData);
+			case 'security.block_ip':
+				return self::blockIp($rServerID, $rData);
 		}
 		// skip: the node dropped logs past its cap.
 		ClusterAudit::log('events.skip', $rServerID, ['count' => max(0, (int) ($rData['count'] ?? 0))], 'node');
@@ -212,6 +217,52 @@ final class EventIngest {
 		}
 		self::streamChanged($rStreamID);
 		return true;
+	}
+
+	/**
+	 * A node's flood or bruteforce guard blocked an IP (its CONFIG flow is on,
+	 * so the blocklist is MAIN's): recorded in `blocked_ips` as the node used to
+	 * write it, and every node picks it up with the blocklist. Only the guard's
+	 * own reasons are taken, and never an address the nodes themselves never
+	 * block (the cluster's servers, their whitelists, the admin allowlist), so a node cannot lock the cluster out.
+	 *
+	 * @param array<string, mixed> $rData {ip, reason}
+	 */
+	private static function blockIp(int $rServerID, array $rData): bool {
+		$rIP = is_string($rData['ip'] ?? null) ? $rData['ip'] : '';
+		$rReason = is_string($rData['reason'] ?? null) ? $rData['reason'] : '';
+		if (filter_var($rIP, FILTER_VALIDATE_IP) === false || !preg_match(BruteforceGuard::REASON_PATTERN, $rReason)) {
+			return false;
+		}
+		if (in_array($rIP, self::neverBlocked(), true)) {
+			ClusterAudit::log('security.block_ip_refused', $rServerID, ['ip' => $rIP], 'node');
+			return false;
+		}
+		$db = self::db();
+		$db->query('SELECT COUNT(*) AS `n` FROM `blocked_ips` WHERE `ip` = ?;', $rIP);
+		if ((int) ($db->get_row()['n'] ?? 0) === 0) {
+			$db->query('INSERT INTO `blocked_ips` (`ip`, `notes`, `date`) VALUES (?, ?, ?);', $rIP, $rReason, time());
+		}
+		ClusterAudit::log('security.block_ip', $rServerID, ['ip' => $rIP, 'reason' => $rReason], 'node');
+		return true;
+	}
+
+	/** @return list<string> the cluster's server addresses, their whitelists and the admin allowlist */
+	private static function neverBlocked(): array {
+		$rIPs = ['127.0.0.1', '::1'];
+		self::db()->query('SELECT `server_ip`, `private_ip`, `whitelist_ips` FROM `servers`;');
+		foreach (self::db()->get_rows() ?: [] as $rRow) {
+			$rIPs[] = (string) $rRow['server_ip'];
+			$rIPs[] = (string) $rRow['private_ip'];
+			$rWhitelist = json_decode((string) $rRow['whitelist_ips'], true);
+			foreach (is_array($rWhitelist) ? $rWhitelist : [] as $rIP) {
+				$rIPs[] = is_string($rIP) ? $rIP : '';
+			}
+		}
+		foreach (explode(',', (string) SettingsManager::get('allowed_ips_admin')) as $rIP) {
+			$rIPs[] = trim($rIP);
+		}
+		return array_values(array_filter($rIPs, static fn(string $rIP): bool => $rIP !== ''));
 	}
 
 	/** @param array<string, mixed> $rData {stream_id, worker, pid} */
