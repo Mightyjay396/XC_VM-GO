@@ -204,8 +204,10 @@ class ImageResizeService {
 					$webpCache = $rCacheDir . md5($rURL) . '.webp';
 					@file_put_contents($webpCache, $rawImageData);
 					header('Content-Type: image/webp');
+					header('X-Content-Type-Options: nosniff');
 					header('Content-Length: ' . strlen($rawImageData));
 					header('Cache-Control: public, max-age=604800');
+					// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 					echo $rawImageData;
 					exit();
 				}

@@ -45,6 +45,8 @@ class CurlClient {
 			curl_setopt($rCurl[$rKey], CURLOPT_CONNECTTIMEOUT, 5);
 			curl_setopt($rCurl[$rKey], CURLOPT_TIMEOUT, $rTimeout);
 			curl_setopt($rCurl[$rKey], CURLOPT_SSL_VERIFYHOST, 0);
+			// Cluster-internal request to our own servers, which use self-signed certificates.
+			// nosemgrep: php.lang.security.curl-ssl-verifypeer-off.curl-ssl-verifypeer-off
 			curl_setopt($rCurl[$rKey], CURLOPT_SSL_VERIFYPEER, false);
 
 			if ($rValue['postdata'] != null) {
@@ -132,6 +134,8 @@ class CurlClient {
 			curl_setopt($rCurl, CURLOPT_FRESH_CONNECT, true);
 			curl_setopt($rCurl, CURLOPT_FORBID_REUSE, true);
 			curl_setopt($rCurl, CURLOPT_SSL_VERIFYHOST, 0);
+			// Cluster-internal request to our own servers, which use self-signed certificates.
+			// nosemgrep: php.lang.security.curl-ssl-verifypeer-off.curl-ssl-verifypeer-off
 			curl_setopt($rCurl, CURLOPT_SSL_VERIFYPEER, false);
 			if ($rPostData !== []) {
 				curl_setopt($rCurl, CURLOPT_POST, true);

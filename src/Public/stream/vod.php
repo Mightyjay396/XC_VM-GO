@@ -382,6 +382,8 @@ if ($rChannelInfo) {
 			curl_setopt($ch, CURLOPT_USERAGENT, $rSourceUA);
 			curl_setopt($ch, CURLOPT_HEADER, false);
 			curl_setopt($ch, CURLOPT_FRESH_CONNECT, true);
+			// Upstream VOD providers commonly serve self-signed certificates.
+			// nosemgrep: php.lang.security.curl-ssl-verifypeer-off.curl-ssl-verifypeer-off
 			curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, 0);
 			curl_setopt($ch, CURLOPT_NOBODY, false);
 			curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);

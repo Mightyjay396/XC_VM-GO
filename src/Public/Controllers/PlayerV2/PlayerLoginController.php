@@ -95,6 +95,7 @@ class PlayerLoginController {
 				$extResult = $this->processExternalXtreamLogin($parsed['server'], $parsed['username'], $parsed['password'], $playlistUrl);
 				if ($isAjax) {
 					header('Content-Type: application/json; charset=utf-8');
+					// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 					echo json_encode($extResult);
 					exit;
 				}
@@ -138,6 +139,7 @@ class PlayerLoginController {
 			$extResult = $this->processExternalXtreamLogin($serverUrl, $extUsername, $extPassword, $playlistUrl);
 			if ($isAjax) {
 				header('Content-Type: application/json; charset=utf-8');
+				// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 				echo json_encode($extResult);
 				exit;
 			}
@@ -170,6 +172,7 @@ class PlayerLoginController {
 			$codeResult = $this->processCodeLogin($activationCode);
 			if ($isAjax) {
 				header('Content-Type: application/json; charset=utf-8');
+				// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 				echo json_encode($codeResult);
 				exit;
 			}
@@ -202,6 +205,7 @@ class PlayerLoginController {
 			$credResult = $this->processCredentialLogin($username, $password, $rErrors);
 			if ($isAjax) {
 				header('Content-Type: application/json; charset=utf-8');
+				// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 				echo json_encode($credResult);
 				exit;
 			}

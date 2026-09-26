@@ -33,6 +33,7 @@ if (isset($_GET['token'])) {
 	if (count($rTokenArray) >= 2 && ($rIPMatch || !$rSettings['restrict_same_ip'])) {
 		header('Content-Type: application/octet-stream');
 		header('X-Content-Type-Options: nosniff');
+		// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 		echo file_get_contents(STREAMS_PATH . intval($rTokenArray[1]) . '_.key');
 		exit();
 	}

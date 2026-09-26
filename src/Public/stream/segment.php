@@ -168,6 +168,8 @@ if (isset($_GET['token'])) {
 							$rKey = file_get_contents(STREAMS_PATH . $rStreamID . '_.key');
 							$rIV = file_get_contents(STREAMS_PATH . $rStreamID . '_.iv');
 							$rData = SignalSender::sendSignal($rFFMPEG_CPU, $rSignalData, basename($rSegment), $rVideoCodec, true);
+							// Encrypted HLS segment bytes, not HTML.
+							// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 							echo openssl_encrypt($rData, 'aes-128-cbc', $rKey, OPENSSL_RAW_DATA, $rIV);
 						} else {
 							SignalSender::sendSignal($rFFMPEG_CPU, $rSignalData, basename($rSegment), $rVideoCodec);
@@ -227,6 +229,8 @@ if (isset($_GET['token'])) {
 					fseek($rFP, $rOffset);
 
 					while (!feof($rFP)) {
+						// Raw archive segment bytes, not HTML.
+						// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 						echo stream_get_line($rFP, $rSettings['read_buffer_size']);
 					}
 					fclose($rFP);

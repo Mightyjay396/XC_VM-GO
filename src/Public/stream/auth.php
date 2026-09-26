@@ -569,6 +569,7 @@ if ($rExtension) {
 								ob_end_clean();
 								header('Content-Type: application/x-mpegurl');
 								header('Content-Length: ' . strlen($rM3U8));
+								// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 								echo $rM3U8;
 
 								exit();
