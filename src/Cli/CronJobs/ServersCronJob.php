@@ -10,6 +10,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\SystemInfo;
+use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -75,12 +76,17 @@ class ServersCronJob implements CommandInterface {
 			return;
 		}
 
+		// The shared Redis only: the cluster bus runs the same binary on a unix
+		// socket ("redis-server unixsocket:…"), and must not pass for it.
 		if ($rServers[SERVER_ID]['is_main'] && SettingsManager::get('redis_handler')) {
-			exec('pgrep -u xc_vm redis-server', $rRedis);
-			if (count($rRedis) == 0) {
+			if (!ProcessManager::isAnyProcessRunning(['redis-server *:', ':6379', 'bin/redis/redis.conf'])) {
 				echo 'Restarting Redis!' . "\n";
 				shell_exec(MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . '/bin/redis/redis.conf > /dev/null 2>/dev/null &');
 			}
+		}
+		if ($rServers[SERVER_ID]['is_main'] && class_exists(ClusterBus::class) && !ClusterBus::running()) {
+			echo 'Starting the cluster bus' . "\n";
+			ClusterBus::ensureRunning();
 		}
 
 		// Daemon liveness checks read /proc via ProcessManager: the old

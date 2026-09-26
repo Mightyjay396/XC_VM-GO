@@ -68,6 +68,11 @@ class ServiceCommand implements CommandInterface {
 		if (file_exists(MAIN_HOME . 'bin/redis/redis-server')) {
 			exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . 'bin/redis/redis.conf >/dev/null 2>/dev/null');
 		}
+		// The cluster bus (MAIN only: LB builds strip bin/cluster_bus).
+		if (file_exists(MAIN_HOME . 'bin/redis/redis-server') && file_exists(MAIN_HOME . 'bin/cluster_bus/cluster.conf')) {
+			exec('sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'bin/cluster_bus');
+			exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . 'bin/cluster_bus/cluster.conf >/dev/null 2>/dev/null');
+		}
 
 		exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/nginx/sbin/nginx >/dev/null 2>/dev/null');
 		exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/nginx_rtmp/sbin/nginx_rtmp >/dev/null 2>/dev/null');

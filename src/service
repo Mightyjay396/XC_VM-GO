@@ -18,6 +18,12 @@ boot() {
   if [ -f $SCRIPT/bin/redis/redis-server ]; then
     sudo -u xc_vm $SCRIPT/bin/redis/redis-server $SCRIPT/bin/redis/redis.conf >/dev/null 2>/dev/null
   fi
+  # The cluster bus (MAIN only: LB builds strip bin/cluster_bus): the cluster
+  # API's own Redis, on a unix socket.
+  if [ -f $SCRIPT/bin/redis/redis-server ] && [ -f $SCRIPT/bin/cluster_bus/cluster.conf ]; then
+    sudo chown -R xc_vm:xc_vm $SCRIPT/bin/cluster_bus 2>/dev/null
+    sudo -u xc_vm $SCRIPT/bin/redis/redis-server $SCRIPT/bin/cluster_bus/cluster.conf >/dev/null 2>/dev/null
+  fi
   mkdir -p $SCRIPT/bin/xc_fanout/sockets
   sudo chown -R xc_vm:xc_vm $SCRIPT/bin/xc_fanout 2>/dev/null
   # Fanout switched off in the panel (FanoutMode writes this flag): no daemon.

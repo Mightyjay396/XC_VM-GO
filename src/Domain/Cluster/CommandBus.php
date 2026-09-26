@@ -102,6 +102,7 @@ final class CommandBus {
 					$rNow,
 					$rNow + $rTtl
 				);
+				ClusterBus::wakeNode($rServerID);
 				return $rCmdID;
 			} catch (\Throwable $rE) {
 				if ($rAttempt >= 3) {
@@ -158,6 +159,7 @@ final class CommandBus {
 			$rCmdID
 		);
 		self::db()->query('UPDATE `cluster_nodes` SET `cmd_seq` = ? WHERE `server_id` = ? AND `cmd_seq` < ?;', (int) $rRow['seq'], $rServerID, (int) $rRow['seq']);
+		ClusterBus::wakeAck($rCmdID);
 		return true;
 	}
 
@@ -176,7 +178,8 @@ final class CommandBus {
 	}
 
 	/**
-	 * Wait for a command's outcome (the admin side of an RPC).
+	 * Wait for a command's outcome (the admin side of an RPC): woken by the
+	 * ack through the cluster bus, or polling without it.
 	 *
 	 * @return array{0: bool, 1: string}|null null on timeout
 	 */
@@ -187,7 +190,10 @@ final class CommandBus {
 			if ($rResult !== null) {
 				return $rResult;
 			}
-			usleep($rPollMs * 1000);
+			$rLeft = $rDeadline - microtime(true);
+			if ($rLeft > 0 && ClusterBus::waitAck($rCmdID, min($rLeft, 1.0)) === null) {
+				usleep($rPollMs * 1000);
+			}
 		} while (microtime(true) < $rDeadline);
 		return self::result($rCmdID);
 	}
