@@ -535,6 +535,32 @@ Other targets are unchanged: a legacy node limits at open, as before.
 
 A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store.
 
+### The cluster bus (Phase 2, first increment): wake-ups
+
+**What it is.** The cluster bus is MAIN's own Redis instance for the cluster API (`Domain\Cluster\ClusterBus`). It runs the bundled `redis-server` with `bin/cluster_bus/cluster.conf`, and is separate from the shared Redis that the panel and legacy LBs use.
+- **Access:** only a unix socket, `bin/cluster_bus/cluster.sock`, mode 0700, owned by xc_vm. There is no TCP port, and the admin commands are renamed away.
+- **Persistence:** none, because nothing in it has to survive a restart.
+- **Where it runs:** MAIN only. `service` and `ServiceCommand` start it, and `ServersCronJob` revives it. LB builds strip `bin/cluster_bus`.
+- **Liveness checks:** it runs the same binary as the shared Redis, so `ServersCronJob` tells the two apart by process title: `redis-server unixsocket:…` for the bus, `redis-server *:6379` for the shared one. Before this, a running bus would have hidden a dead shared Redis.
+
+**What it carries.** Today, wake-ups only:
+- **`wake:<sid>`:** `CommandBus::enqueue` pushes it, and the `commands` long-poll waits on it. The long-poll used to re-read `cluster_commands` every 250 ms for up to 20 s per node. It now reads once, blocks on the bus, and reads again when woken.
+- **`ack:<cmd_id>`:** `CommandBus::ack` pushes it, and `CommandBus::await` (an RPC waiting for its answer) waits on it instead of polling every 100 ms.
+
+**How a wake works.** A wake is a one-element list with a 60 s TTL, taken with `BLPOP`:
+- a wake pushed just before the waiter blocks is not lost;
+- repeated wakes collapse into one;
+- a stale wake costs one extra query.
+
+**Without the bus.** If the bus is not running, or this is an LB or a test, `waitNode`/`waitAck` return null and the callers poll as before.
+
+**Still to come on the bus:**
+- nonces;
+- telemetry (`cl:tel:<sid>`);
+- reservations (the plan's Lua admission);
+- the `conn.touch` state;
+- per-op semaphores.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

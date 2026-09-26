@@ -1,9 +1,9 @@
 <?php
 
 use XcVm\Core\Auth\AuthService;
+use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
-use XcVm\Core\Http\CurlClient;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Server\ServerRepository;
@@ -74,16 +74,12 @@ switch ($rAction) {
 					? array_map('intval', $rReq['servers'])
 					: ($rServerID > 0 ? [$rServerID] : array_keys($rAllServers));
 				$rForce = ($rReq['force'] ?? false);
-				$rURLs = [];
-
-				foreach ($rServerIDs as $rServerID) {
-					$rPostData = ['function' => $rSubAction, 'stream_ids' => $rStreamIDs];
-					if ($rSubAction === 'start') {
-						$rPostData['force'] = $rForce;
-					}
-					$rURLs[$rServerID] = ['url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=vod', 'postdata' => $rPostData];
+				$rPostData = ['action' => 'vod', 'function' => $rSubAction, 'stream_ids' => $rStreamIDs];
+				if ($rSubAction === 'start') {
+					$rPostData['force'] = $rForce;
 				}
-				CurlClient::getMultiCURL($rURLs);
+				// A signed command to nodes that take them, the legacy /api to the rest.
+				NodeRpc::broadcast(array_values(array_intersect($rServerIDs, array_keys($rAllServers))), $rPostData);
 				echo json_encode(['result' => true]);
 
 				exit();
@@ -96,12 +92,7 @@ switch ($rAction) {
 			case 'start':
 				$rStreamIDs = array_map('intval', RequestManager::get('stream_ids') ?? []);
 				$rServerIDs = (empty(RequestManager::get('servers')) ? array_keys($rAllServers) : array_map('intval', RequestManager::get('servers')));
-				$rURLs = [];
-
-				foreach ($rServerIDs as $rServerID) {
-					$rURLs[$rServerID] = ['url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=stream', 'postdata' => ['function' => $rSubAction, 'stream_ids' => $rStreamIDs]];
-				}
-				CurlClient::getMultiCURL($rURLs);
+				NodeRpc::broadcast(array_values(array_intersect($rServerIDs, array_keys($rAllServers))), ['action' => 'stream', 'function' => $rSubAction, 'stream_ids' => $rStreamIDs]);
 				echo json_encode(['result' => true]);
 
 				exit();
@@ -109,12 +100,7 @@ switch ($rAction) {
 			case 'stop':
 				$rStreamIDs = array_map('intval', RequestManager::get('stream_ids') ?? []);
 				$rServerIDs = (empty(RequestManager::get('servers')) ? array_keys($rAllServers) : array_map('intval', RequestManager::get('servers')));
-				$rURLs = [];
-
-				foreach ($rServerIDs as $rServerID) {
-					$rURLs[$rServerID] = ['url' => $rAllServers[$rServerID]['api_url_ip'] . '&action=stream', 'postdata' => ['function' => $rSubAction, 'stream_ids' => $rStreamIDs]];
-				}
-				CurlClient::getMultiCURL($rURLs);
+				NodeRpc::broadcast(array_values(array_intersect($rServerIDs, array_keys($rAllServers))), ['action' => 'stream', 'function' => $rSubAction, 'stream_ids' => $rStreamIDs]);
 				echo json_encode(['result' => true]);
 
 				exit();

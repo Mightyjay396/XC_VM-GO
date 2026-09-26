@@ -39,6 +39,7 @@ LB_ROOT_FILES := bootstrap.php console.php service update
 LB_DIRS_TO_REMOVE := \
 	bin/install \
 	bin/redis \
+	bin/cluster_bus \
 	bin/nginx/conf/codes \
 	Domain/User \
 	Domain/Device \

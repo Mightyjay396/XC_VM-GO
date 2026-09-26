@@ -496,10 +496,14 @@ final class ClusterApi {
 		$rDeadline = microtime(true) + $rWait / 1000;
 		while (true) {
 			$rCommands = CommandBus::pending((int) $rNode['server_id'], $rAfter);
-			if ($rCommands !== [] || microtime(true) >= $rDeadline) {
+			$rLeft = $rDeadline - microtime(true);
+			if ($rCommands !== [] || $rLeft <= 0) {
 				break;
 			}
-			usleep(250000);
+			// Woken by the cluster bus when a command is queued; polled without it.
+			if (ClusterBus::waitNode((int) $rNode['server_id'], min($rLeft, 5.0)) === null) {
+				usleep(250000);
+			}
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, ['commands' => $rCommands, 'main_time_ms' => ClusterClock::nowMs()]);
 	}

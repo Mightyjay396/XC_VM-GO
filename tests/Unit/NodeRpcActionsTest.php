@@ -103,6 +103,8 @@ final class NodeRpcActionsTest extends TestCase {
 			$rSource = (string) file_get_contents($rPath);
 			$this->assertDoesNotMatchRegularExpression('/ApiClient::(systemRequest|asyncRequest)\(/', str_ends_with($rPath, 'Cluster/NodeRpc.php') || str_ends_with($rPath, 'Http/ApiClient.php') ? '' : $rSource, $rPath);
 			$this->assertStringNotContainsString('SignalDispatcher::rootAction(', str_contains($rPath, '/Core/Cluster/') ? '' : $rSource, $rPath);
+			// A raw multi-request to the nodes' /api skips NodeRpc's signed commands.
+			$this->assertStringNotContainsString('CurlClient::getMultiCURL(', str_ends_with($rPath, 'Http/ApiClient.php') ? '' : $rSource, $rPath);
 			preg_match_all("/NodeRpc::(?:request|broadcast)\([^;]*?'action' => '([A-Za-z_]+)'/", $rSource, $rM);
 			array_push($rUsed, ...$rM[1]);
 		}
