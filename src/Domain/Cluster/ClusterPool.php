@@ -31,14 +31,15 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * - pid files in `bin/php/var/run/`, not `sockets/`, where `restart_php_fpm`
  *   counts the panel's pools.
  *
- * ensure() runs from `status` (at boot and after an update) and each minute
- * from cron:servers. It writes the configs, starts a pool that is not
- * running and reloads one whose size changed. The marker `tmp/cluster_ready`
- * exists only once both pools answer FPM's own ping. Until then nginx falls
- * back to the panel pool, and gate() answers every op but `health` with a
- * panel-signed 503 STARTING, so agents back off instead of holding panel
- * workers with their long-polls. The service removes the marker whenever it
- * (re)starts, and tmp/ is a tmpfs, so a reboot does too.
+ * ensure() runs as the pool user (xc_vm): from `status` through
+ * `cluster:pools` (at boot and after an update) and each minute from
+ * cron:servers. It writes the configs, starts a pool that is not running and
+ * reloads one whose size changed. The marker `tmp/cluster_ready` is written
+ * once both pools answer FPM's own ping. Until then gate() answers every op
+ * but `health` with a panel-signed 503 STARTING, so agents back off instead
+ * of holding panel workers with their long-polls. The service removes the
+ * marker whenever it (re)starts, and tmp/ is a tmpfs, so a reboot does too.
+ * A request that cannot reach a pool's socket goes to a panel pool (nginx).
  */
 final class ClusterPool {
 	use DatabaseAware;
@@ -88,6 +89,8 @@ final class ClusterPool {
 
 	private static ?\Closure $rProcs = null;
 
+	private static string $rProcRoot = '/proc';
+
 	/** Tests: another install root (null: MAIN_HOME), and the user the pools run as. */
 	public static function useBase(?string $rBase, string $rUser = 'xc_vm'): void {
 		self::$rBase = $rBase;
@@ -100,6 +103,11 @@ final class ClusterPool {
 	 */
 	public static function useProcs(?\Closure $rProcs): void {
 		self::$rProcs = $rProcs;
+	}
+
+	/** Tests: the procfs where a pool's master is looked up. */
+	public static function useProcRoot(string $rProcRoot = '/proc'): void {
+		self::$rProcRoot = $rProcRoot;
 	}
 
 	/** The pool that serves an op: its lane's. */
@@ -188,7 +196,7 @@ final class ClusterPool {
 		return ($rBase ?? self::base()) . 'bin/php/sockets/' . $rPool . '.sock';
 	}
 
-	/** Both pools answered when ensure() last looked. */
+	/** Both pools answered after their masters started, and ensure() has found neither master gone since. */
 	public static function ready(): bool {
 		$rBase = self::base();
 		return $rBase !== null && is_file($rBase . self::MARKER);
@@ -223,32 +231,39 @@ final class ClusterPool {
 		return self::proc('answers', $rPool);
 	}
 
+	/** Is the pool's FPM master running? */
+	public static function alive(string $rPool): bool {
+		return self::proc('alive', $rPool);
+	}
+
 	/**
 	 * Bring both pools to their current size: write the configs, start a pool
-	 * that is not running, reload one whose config changed. The marker then
-	 * exists exactly while both answer, waiting up to $rWaitSec for pools this
-	 * pass started or reloaded. Creating the marker restarts the nodes'
-	 * silence clock (ClusterMeta::markReady), since the API was not serving.
-	 * Returns whether the API is ready.
+	 * that is not running, reload one whose config changed. Without the
+	 * marker, it waits up to $rWaitSec for both pools to answer and then
+	 * writes it, which restarts the nodes' silence clock
+	 * (ClusterMeta::markReady), since the API was not serving. It removes the
+	 * marker only when a pool's master is gone. A reload keeps it: the socket
+	 * stays open and requests queue on it while FPM lets the busy ones finish,
+	 * which a held long-poll stretches to process_control_timeout. Returns
+	 * whether the API is ready.
 	 *
-	 * Serialised by a lock: `status` (root, at boot) and cron:servers (xc_vm)
-	 * can run it at the same time.
+	 * Runs only as the pool user, and does nothing otherwise: the files live
+	 * in directories that user owns, and root would follow a link it planted
+	 * there. `status` (root) therefore runs `cluster:pools` as xc_vm. A lock
+	 * serialises it with cron:servers.
 	 */
 	public static function ensure(float $rWaitSec = 10.0): bool {
 		$rBase = self::base();
-		if ($rBase === null) {
+		if ($rBase === null || !self::runsAsPoolUser()) {
 			return false;
 		}
 		foreach ([self::CONF_DIR, self::RUN_DIR] as $rDir) {
 			if (!is_dir($rBase . $rDir)) {
 				@mkdir($rBase . $rDir, 0755, true);
-				self::own($rBase . $rDir);
 			}
 		}
-		$rLockPath = $rBase . self::CONF_DIR . '.lock';
-		$rLock = @fopen($rLockPath, 'c');
+		$rLock = @fopen($rBase . self::CONF_DIR . '.lock', 'c');
 		if ($rLock !== false) {
-			self::own($rLockPath);
 			flock($rLock, LOCK_EX);
 		}
 		try {
@@ -263,7 +278,6 @@ final class ClusterPool {
 
 	private static function ensureLocked(string $rBase, float $rWaitSec): bool {
 		$rMarked = self::ready();
-		$rTouched = false;
 		foreach (self::sizes() as $rPool => $rChildren) {
 			$rChanged = self::write(self::conf($rPool), self::render($rPool, $rChildren, $rBase, self::$rUser));
 			if (!self::proc('alive', $rPool)) {
@@ -272,13 +286,12 @@ final class ClusterPool {
 					$rMarked = false;
 				}
 				self::proc('start', $rPool);
-				$rTouched = true;
 			} elseif ($rChanged) {
 				self::proc('reload', $rPool);
-				$rTouched = true;
 			}
 		}
-		if ($rMarked && !$rTouched) {
+		if ($rMarked) {
+			// Both masters run and have answered since they started.
 			return true;
 		}
 
@@ -290,23 +303,20 @@ final class ClusterPool {
 			}
 			usleep(200000);
 		}
-		if (!$rAnswer) {
-			self::unmark();
+		if (!$rAnswer || @file_put_contents($rBase . self::MARKER, (string) ClusterClock::nowMs()) === false) {
 			return false;
 		}
-		if (!$rMarked) {
-			$rMarker = $rBase . self::MARKER;
-			if (@file_put_contents($rMarker, (string) ClusterClock::nowMs()) === false) {
-				return false;
-			}
-			self::own($rMarker);
-			try {
-				ClusterMeta::markReady();
-			} catch (\Throwable) {
-				// Liveness then counts from the last ready_at; the pools serve regardless.
-			}
+		try {
+			ClusterMeta::markReady();
+		} catch (\Throwable) {
+			// Liveness then counts from the last ready_at; the pools serve regardless.
 		}
 		return true;
+	}
+
+	private static function runsAsPoolUser(): bool {
+		$rUser = function_exists('posix_getpwuid') ? posix_getpwuid(posix_geteuid()) : false;
+		return is_array($rUser) && $rUser['name'] === self::$rUser;
 	}
 
 	private static function base(): ?string {
@@ -338,20 +348,17 @@ final class ClusterPool {
 
 	/** The pool's FPM master, found by the config it was started with. */
 	private static function masterPid(string $rPool): ?int {
-		$rPIDs = ProcessManager::findProcessPIDs(['php-fpm: master process (' . self::conf($rPool) . ')'], 1);
+		$rPIDs = ProcessManager::findProcessPIDs(['php-fpm: master process (' . self::conf($rPool) . ')'], 1, self::$rProcRoot);
 		return $rPIDs === [] ? null : (int) $rPIDs[0];
 	}
 
-	/** Start the pool's FPM master, which daemonizes; as root, it runs as the pool user. */
+	/** Start the pool's FPM master, which daemonizes, as the pool user ensure() runs as. */
 	private static function start(string $rPool): bool {
 		$rBin = self::base() . 'bin/php/sbin/php-fpm';
 		if (!is_executable($rBin)) {
 			return false;
 		}
 		$rArgv = [$rBin, '--daemonize', '--fpm-config', self::conf($rPool)];
-		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-			$rArgv = array_merge(['sudo', '-u', self::$rUser], $rArgv);
-		}
 		$rNull = ['file', '/dev/null', 'w'];
 		$rProc = proc_open($rArgv, [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes);
 		return is_resource($rProc) && proc_close($rProc) === 0;
@@ -422,15 +429,6 @@ final class ClusterPool {
 			return false;
 		}
 		@chmod($rPath, 0644);
-		self::own($rPath);
 		return true;
-	}
-
-	/** As root, hand a file to the pool user, who rewrites it from cron:servers. */
-	private static function own(string $rPath): void {
-		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-			@chown($rPath, self::$rUser);
-			@chgrp($rPath, self::$rUser);
-		}
 	}
 }

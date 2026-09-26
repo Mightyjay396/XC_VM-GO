@@ -138,13 +138,15 @@ class StatusCommand implements CommandInterface {
 	/**
 	 * MAIN: the cluster API's own FPM pools, created on the first boot after
 	 * an upgrade and sized to the fleet (ClusterPool). Only while XC_VM runs:
-	 * boot starts nginx and the panel pools before this.
+	 * boot starts nginx and the panel pools before this. As xc_vm, never as
+	 * root: root would follow a link xc_vm planted among the pools' files.
 	 */
 	private function ensureClusterPools(): void {
 		if (!class_exists(ClusterPool::class) || !$this->isRunning()) {
 			return;
 		}
-		echo ClusterPool::ensure() ? "Cluster API pools are ready.\n\n" : "Cluster API pools are not answering yet.\n\n";
+		passthru('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:pools');
+		echo "\n";
 	}
 
 	private function isRunning(): bool {

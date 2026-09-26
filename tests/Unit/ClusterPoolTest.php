@@ -16,10 +16,61 @@ use XcVm\Tests\Support\FakeClusterCrypto;
  * formula; ensure() writes, starts and reloads them only when needed, and the
  * API answers a panel-signed 503 STARTING until both pools answer.
  *
- * The pools' processes are faked here; testRealPhpFpm runs a real php-fpm,
- * opt-in: XCVM_TEST_FPM=/path/to/php-fpm.
+ * The pools' processes are faked in most tests; the ping runs against a
+ * FastCGI responder, the master lookup against a fake procfs, and
+ * testRealPhpFpm against a real php-fpm, opt-in: XCVM_TEST_FPM=/path/to/php-fpm.
  */
 final class ClusterPoolTest extends TestCase {
+	/** A FastCGI responder: one connection per mode given after the socket, in order. */
+	private const RESPONDER = <<<'PHP'
+		<?php
+		$rServer = stream_socket_server('unix://' . $argv[1], $rErrNo, $rErrStr);
+		if ($rServer === false) {
+			exit(1);
+		}
+		$rRead = static function ($rConn, int $rLength): ?string {
+			$rOut = '';
+			while (strlen($rOut) < $rLength) {
+				$rChunk = fread($rConn, $rLength - strlen($rOut));
+				if ($rChunk === false || $rChunk === '') {
+					return null;
+				}
+				$rOut .= $rChunk;
+			}
+			return $rOut;
+		};
+		$rRecord = static fn(int $rType, string $rBody, int $rPad = 0): string => pack('CCnnCC', 1, $rType, 1, strlen($rBody), $rPad, 0) . $rBody . str_repeat("\0", $rPad);
+		$rEnd = $rRecord(3, pack('NCx3', 0, 0));
+		$rHeaders = "Content-type: text/plain;charset=UTF-8\r\nExpires: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n";
+		foreach (array_slice($argv, 2) as $rMode) {
+			$rConn = stream_socket_accept($rServer, 10);
+			if ($rConn === false) {
+				exit(1);
+			}
+			// The request, up to its empty STDIN record.
+			while (($rHead = $rRead($rConn, 8)) !== null) {
+				$rRec = unpack('Cversion/Ctype/nid/nlength/Cpadding/Creserved', $rHead);
+				$rRead($rConn, $rRec['length'] + $rRec['padding']);
+				if ($rRec['type'] === 5 && $rRec['length'] === 0) {
+					break;
+				}
+			}
+			$rOut = match ($rMode) {
+				'pong' => [$rRecord(6, $rHeaders . 'pong') . $rRecord(6, '') . $rEnd],
+				'other' => [$rRecord(6, $rHeaders . 'File not found.') . $rRecord(6, '') . $rEnd],
+				'cut' => [$rRecord(6, $rHeaders . 'pong')],
+				// Padded records, a STDERR record, the body across two records, in 5-byte writes.
+				'split' => str_split($rRecord(6, $rHeaders, 3) . $rRecord(7, 'a notice', 1) . $rRecord(6, 'po', 6) . $rRecord(6, 'ng', 7) . $rRecord(6, '') . $rEnd, 5),
+			};
+			foreach ($rOut as $rPiece) {
+				fwrite($rConn, $rPiece);
+				fflush($rConn);
+				usleep(2000);
+			}
+			fclose($rConn);
+		}
+		PHP;
+
 	private TestDb $rDb;
 
 	private string $rBase;
@@ -33,7 +84,11 @@ final class ClusterPoolTest extends TestCase {
 	/** @var array<string, bool> pool => once running, it answers */
 	private array $rWorks = ['cluster_ctl' => true, 'cluster_ingest' => true];
 
-	private ?int $rFpmPid = null;
+	/** @var array<string, bool> pool => reloading: FPM still lets a held long-poll finish */
+	private array $rReloading = [];
+
+	/** @var resource|null the FastCGI responder */
+	private $rResponder = null;
 
 	protected function setUp(): void {
 		$this->rBase = sys_get_temp_dir() . '/xcvm-pool-' . bin2hex(random_bytes(4)) . '/';
@@ -47,15 +102,19 @@ final class ClusterPoolTest extends TestCase {
 		$this->rDb->exec('CREATE TABLE `cluster_meta` (`name` varchar(64) PRIMARY KEY, `value` text, `updated_at` int)');
 		DatabaseFactory::set($this->rDb);
 		ClusterClock::fix(1800000000000);
-		ClusterPool::useBase($this->rBase);
+		// ensure() runs only as the pool user: here, whoever runs the tests.
+		ClusterPool::useBase($this->rBase, self::user());
 		ClusterPool::useProcs(function (string $rAction, string $rPool): bool {
 			$this->rCalls[] = $rAction . ' ' . $rPool;
 			switch ($rAction) {
 				case 'start':
 					$this->rAlive[$rPool] = true;
 					return true;
+				case 'reload':
+					$this->rReloading[$rPool] = true;
+					return true;
 				case 'answers':
-					return ($this->rAlive[$rPool] ?? false) && $this->rWorks[$rPool];
+					return ($this->rAlive[$rPool] ?? false) && $this->rWorks[$rPool] && !($this->rReloading[$rPool] ?? false);
 				case 'alive':
 					return $this->rAlive[$rPool] ?? false;
 				default:
@@ -65,14 +124,28 @@ final class ClusterPoolTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
-		if ($this->rFpmPid !== null) {
-			posix_kill($this->rFpmPid, defined('SIGTERM') ? SIGTERM : 15);
+		// Every FPM master testRealPhpFpm started, the decoy included.
+		foreach (glob($this->rBase . 'bin/php/var/run/*.pid') ?: [] as $rPidFile) {
+			$rPid = (int) @file_get_contents($rPidFile);
+			if ($rPid > 0) {
+				posix_kill($rPid, defined('SIGTERM') ? SIGTERM : 15);
+			}
+		}
+		if (is_resource($this->rResponder)) {
+			proc_terminate($this->rResponder);
+			proc_close($this->rResponder);
 		}
 		ClusterPool::useProcs(null);
+		ClusterPool::useProcRoot();
 		ClusterPool::useBase(null);
 		ClusterClock::fix(null);
 		DatabaseFactory::reset();
 		exec('rm -rf ' . escapeshellarg($this->rBase));
+	}
+
+	private static function user(): string {
+		$rUser = posix_getpwuid(posix_geteuid());
+		return is_array($rUser) ? (string) $rUser['name'] : '';
 	}
 
 	/** @return list<string> calls other than the liveness checks, since the last take */
@@ -152,10 +225,22 @@ final class ClusterPoolTest extends TestCase {
 		ClusterPool::ensure(0.0);
 		$this->takeCalls();
 		$this->rDb->exec('INSERT INTO `servers` (`id`, `is_main`, `server_type`) VALUES (5, 0, 0)');
+		// The reloading pool does not answer (the fake): FPM lets a held
+		// long-poll run for up to process_control_timeout before it re-executes.
 		$this->assertTrue(ClusterPool::ensure(0.0));
 		$this->assertSame(['reload cluster_ctl'], $this->takeCalls());
 		$this->assertStringContainsString('pm.max_children = 30', $this->conf('cluster_ctl'));
-		$this->assertTrue(ClusterPool::ready(), 'a reload keeps the API serving');
+		$this->assertTrue(ClusterPool::ready(), 'a reload keeps the API serving: its socket stays open, requests queue on it');
+		$this->assertSame(1800000000000, ClusterMeta::readyAtMs(), "and leaves the nodes' silence clock alone");
+	}
+
+	public function testEnsureRunsOnlyAsThePoolUser(): void {
+		// As root it would follow a link the pool user planted among its files.
+		ClusterPool::useBase($this->rBase, 'xcvm-no-such-user');
+		$this->assertFalse(ClusterPool::ensure(0.0));
+		$this->assertSame([], $this->rCalls, 'nothing started');
+		$this->assertDirectoryDoesNotExist($this->rBase . 'bin/php/etc/cluster', 'nothing written');
+		$this->assertFalse(ClusterPool::ready());
 	}
 
 	public function testNoMarkerUntilBothPoolsAnswer(): void {
@@ -237,13 +322,86 @@ final class ClusterPoolTest extends TestCase {
 		$this->assertSame($rIngest, $rRouted, "nginx.conf's ingest location lists INGEST_OPS");
 
 		foreach (array_keys(ClusterPool::POOLS) as $rPool) {
-			$this->assertMatchesRegularExpression('#upstream ' . $rPool . ' \{\s*server unix:' . preg_quote(ClusterPool::socket($rPool, '/home/xc_vm/'), '#') . ';\s*server unix:/home/xc_vm/bin/php/sockets/1\.sock backup;\s*\}#', $rConf, $rPool . ': its own socket, the panel pool until it answers');
+			$this->assertMatchesRegularExpression('#upstream ' . $rPool . ' \{\s*server unix:' . preg_quote(ClusterPool::socket($rPool, '/home/xc_vm/'), '#') . ' max_fails=0;\s*server unix:/home/xc_vm/bin/php/sockets/1\.sock backup;\s*\}#', $rConf, $rPool . ': its own socket, never taken out of rotation; the panel pool for a request that cannot reach it');
 		}
 	}
 
 	/**
-	 * The rendered configs against a real php-fpm: it starts them, answers the
-	 * FastCGI ping, and a new size reloads it in place.
+	 * What keeps the API STARTING until the pools answer lives outside
+	 * ClusterPool: the service, the gate's place in the API's entry point, and
+	 * who runs ensure(), as whom.
+	 */
+	public function testTheCallSitesKeepTheApiStartingUntilThePoolsAnswer(): void {
+		$rSrc = dirname(__DIR__, 2) . '/src/';
+
+		$this->assertMatchesRegularExpression('#^boot\(\) \{[^}]*^  rm -f \$SCRIPT/tmp/cluster_ready$[^}]*console\.php startup$#m', (string) file_get_contents($rSrc . 'service'), 'boot() removes the marker before startup runs status');
+		$this->assertMatchesRegularExpression('#function start\(\): int \{.*?ClusterPool::unmark\(\);.*?function stop\(#s', (string) file_get_contents($rSrc . 'Cli/Commands/ServiceCommand.php'), 'and so does the service command');
+
+		$rIndex = (string) file_get_contents($rSrc . 'Public/cluster/index.php');
+		$rOrder = [];
+		foreach (['ClusterCryptoFactory::create()', 'ClusterPool::gate($rCrypto, $rReq)', "=== '/cluster/v1/health'", 'db_connect('] as $rStep) {
+			$rAt = strpos($rIndex, $rStep);
+			$this->assertNotFalse($rAt, $rStep);
+			$rOrder[] = $rAt;
+		}
+		$rSorted = $rOrder;
+		sort($rSorted);
+		$this->assertSame($rSorted, $rOrder, 'the gate needs the crypto to sign, and comes before health and the database');
+
+		$rStatus = (string) file_get_contents($rSrc . 'Cli/Commands/StatusCommand.php');
+		$this->assertMatchesRegularExpression('#if \(\$rServers\[SERVER_ID\]\[.is_main.\]\) \{[^}]*\$this->ensureClusterPools\(\);#', $rStatus, 'MAIN only');
+		$this->assertStringContainsString("'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:pools'", $rStatus, 'status runs as root, the pools as xc_vm');
+		$this->assertStringNotContainsString('ClusterPool::ensure(', $rStatus);
+		$this->assertMatchesRegularExpression('#if \(\$rServers\[SERVER_ID\]\[.is_main.\] && class_exists\(ClusterPool::class\)\) \{\s*ClusterPool::ensure\(#', (string) file_get_contents($rSrc . 'Cli/CronJobs/ServersCronJob.php'), 'cron:servers, as xc_vm, on MAIN only');
+	}
+
+	/** The ping over a pool's socket: FPM's response, and nothing else, is an answer. */
+	public function testThePingReadsFastCgiRecords(): void {
+		ClusterPool::useProcs(null);
+		$rScript = $this->rBase . 'responder.php';
+		file_put_contents($rScript, self::RESPONDER);
+		$rSocket = ClusterPool::socket('cluster_ctl', $this->rBase);
+		mkdir(dirname($rSocket), 0777, true);
+		$rNull = ['file', '/dev/null', 'w'];
+		$this->rResponder = proc_open([PHP_BINARY, '-n', $rScript, $rSocket, 'pong', 'other', 'cut', 'split'], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes);
+		for ($i = 0; $i < 250 && !file_exists($rSocket); $i++) {
+			usleep(20000);
+		}
+		$this->assertFileExists($rSocket, 'the responder listens');
+
+		$this->assertTrue(ClusterPool::answers('cluster_ctl'), "FPM's ping response");
+		$this->assertFalse(ClusterPool::answers('cluster_ctl'), 'another body is not the ping');
+		$this->assertFalse(ClusterPool::answers('cluster_ctl'), 'a reply cut before END_REQUEST');
+		$this->assertTrue(ClusterPool::answers('cluster_ctl'), 'padded records, STDERR, a body over two records, split reads');
+		$this->assertFalse(ClusterPool::answers('cluster_ingest'), 'no socket');
+	}
+
+	/** A pool's master is the FPM master started with its own config, never a panel pool's. */
+	public function testAMasterIsFoundByItsOwnConfig(): void {
+		ClusterPool::useProcs(null);
+		$rProc = $this->rBase . 'proc/';
+		ClusterPool::useProcRoot(rtrim($rProc, '/'));
+		$rRun = static function (int $rPid, string $rTitle) use ($rProc): void {
+			mkdir($rProc . $rPid, 0777, true);
+			// FPM writes its title over its argv.
+			file_put_contents($rProc . $rPid . '/cmdline', $rTitle . str_repeat("\0", 8));
+		};
+		$rConf = $this->rBase . 'bin/php/etc/cluster/cluster_ctl.conf';
+		$rRun(9000001, 'php-fpm: master process (/home/xc_vm/bin/php/etc/1.conf)');
+		$rRun(9000002, 'php-fpm: pool cluster_ctl');
+		$rRun(9000003, 'php-fpm: master process (' . $rConf . '.tmp)');
+		$this->assertFalse(ClusterPool::alive('cluster_ctl'), "a panel pool's master, a worker and another config");
+
+		$rRun(9000004, 'php-fpm: master process (' . $rConf . ')');
+		$this->assertTrue(ClusterPool::alive('cluster_ctl'));
+		$this->assertFalse(ClusterPool::alive('cluster_ingest'));
+	}
+
+	/**
+	 * The rendered configs against a real php-fpm, beside another FPM master
+	 * as the panel's pools run on MAIN: ensure() starts the pool that is down
+	 * through bin/php/sbin/php-fpm, reloads the one whose size changed, and
+	 * both answer the FastCGI ping.
 	 */
 	public function testRealPhpFpm(): void {
 		$rFpm = (string) getenv('XCVM_TEST_FPM');
@@ -251,40 +409,47 @@ final class ClusterPoolTest extends TestCase {
 			$this->markTestSkipped('no php-fpm (set XCVM_TEST_FPM)');
 		}
 		ClusterPool::useProcs(null);
-		$rUser = (string) (posix_getpwuid(posix_geteuid())['name'] ?? '');
-		ClusterPool::useBase($this->rBase, $rUser);
-		foreach (['bin/php/etc/cluster', 'bin/php/sockets', 'bin/php/var/run'] as $rDir) {
+		$rUser = self::user();
+		foreach (['bin/php/etc/cluster', 'bin/php/sockets', 'bin/php/var/run', 'bin/php/sbin'] as $rDir) {
 			mkdir($this->rBase . $rDir, 0777, true);
 		}
+		// bin/php/sbin/php-fpm: the given binary, without a php.ini, allowed to run as root.
+		$rBin = $this->rBase . 'bin/php/sbin/php-fpm';
+		file_put_contents($rBin, "#!/bin/sh\nexec " . escapeshellarg($rFpm) . " -n -R \"\$@\"\n");
+		chmod($rBin, 0755);
+		$rRunDir = $this->rBase . 'bin/php/var/run/';
 		$rConf = $this->rBase . 'bin/php/etc/cluster/cluster_ctl.conf';
 		file_put_contents($rConf, ClusterPool::render('cluster_ctl', 28, $this->rBase, $rUser));
-		exec(escapeshellarg($rFpm) . ' -n -t -y ' . escapeshellarg($rConf) . ' -R 2>&1', $rOut, $rCode);
+		exec(escapeshellarg($rBin) . ' -t -y ' . escapeshellarg($rConf) . ' 2>&1', $rOut, $rCode);
 		$this->assertSame(0, $rCode, implode("\n", $rOut));
 
-		// Run only the control pool, so ensure() must find the ingest pool down.
-		exec(escapeshellarg($rFpm) . ' -n -y ' . escapeshellarg($rConf) . ' -R 2>&1', $rOut, $rCode);
-		$this->assertSame(0, $rCode, implode("\n", $rOut));
-		for ($i = 0; $i < 50 && !file_exists($this->rBase . 'bin/php/var/run/cluster_ctl.pid'); $i++) {
-			usleep(100000);
+		// A decoy master, as a panel pool, and the control pool, so ensure()
+		// must find the ingest pool down.
+		$rDecoy = $this->rBase . 'bin/php/etc/1.conf';
+		file_put_contents($rDecoy, str_replace('cluster_ctl', 'decoy', ClusterPool::render('cluster_ctl', 2, $this->rBase, $rUser)));
+		foreach ([$rDecoy => 'decoy', $rConf => 'cluster_ctl'] as $rFile => $rName) {
+			exec(escapeshellarg($rBin) . ' -y ' . escapeshellarg($rFile) . ' 2>&1', $rOut, $rCode);
+			$this->assertSame(0, $rCode, implode("\n", $rOut));
+			for ($i = 0; $i < 50 && !file_exists($rRunDir . $rName . '.pid'); $i++) {
+				usleep(100000);
+			}
 		}
-		$this->rFpmPid = (int) file_get_contents($this->rBase . 'bin/php/var/run/cluster_ctl.pid');
+		$rCtlPid = (int) file_get_contents($rRunDir . 'cluster_ctl.pid');
+		$this->assertTrue(ClusterPool::alive('cluster_ctl'));
+		$this->assertFalse(ClusterPool::alive('cluster_ingest'), 'the decoy is no cluster pool');
 		$this->assertTrue(ClusterPool::answers('cluster_ctl'), 'FPM answers the FastCGI ping');
 		$this->assertFalse(ClusterPool::answers('cluster_ingest'));
 
-		// A new size reloads the running pool, which answers again.
+		// A new size: the control pool reloads, the ingest pool starts.
 		$this->rDb->exec('INSERT INTO `servers` (`id`, `is_main`, `server_type`) VALUES (5, 0, 0)');
-		$this->assertFalse(ClusterPool::ensure(1.0), 'the ingest pool cannot start without bin/php/sbin/php-fpm');
-		$this->assertFalse(ClusterPool::ready());
-		for ($i = 0; $i < 50 && (int) @file_get_contents($this->rBase . 'bin/php/var/run/cluster_ctl.pid') === $this->rFpmPid; $i++) {
+		$this->assertTrue(ClusterPool::ensure(5.0), 'both pools answer');
+		$this->assertTrue(ClusterPool::ready());
+		$this->assertTrue(ClusterPool::alive('cluster_ingest'));
+		$this->assertStringContainsString('pm.max_children = 30', (string) file_get_contents($rConf));
+		for ($i = 0; $i < 50 && (int) @file_get_contents($rRunDir . 'cluster_ctl.pid') === $rCtlPid; $i++) {
 			usleep(100000);
 		}
-		$this->rFpmPid = (int) file_get_contents($this->rBase . 'bin/php/var/run/cluster_ctl.pid');
-		$this->assertStringContainsString('pm.max_children = 30', (string) file_get_contents($rConf));
-		$rAnswered = false;
-		for ($i = 0; $i < 50 && !$rAnswered; $i++) {
-			$rAnswered = ClusterPool::answers('cluster_ctl');
-			usleep($rAnswered ? 0 : 100000);
-		}
-		$this->assertTrue($rAnswered, 'reloaded in place');
+		$this->assertNotSame($rCtlPid, (int) @file_get_contents($rRunDir . 'cluster_ctl.pid'), 'reloaded: FPM re-executes itself on SIGUSR2');
+		$this->assertTrue(ClusterPool::answers('cluster_ctl'));
 	}
 }

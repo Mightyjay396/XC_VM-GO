@@ -649,16 +649,20 @@ The settings columns come from the install schema and the migrations. Secrets ar
 - **Workers** are titled `php-fpm: pool cluster_ctl` (or `cluster_ingest`), so they never pass for a viewer's worker in `php_pids`.
 - **Always there on MAIN.** The pools exist whether or not the API is enabled. With `pm = ondemand`, an idle pool is just its master.
 
-**Routing.** nginx's fixed `location ^~ /cluster/v1/` passes to the upstream `cluster_ctl`. A nested regex location sends the ingest ops to `cluster_ingest`. Both upstreams list the panel pool `1.sock` as `backup`, so the API still answers while a pool is down or not yet created. `ClusterPoolTest` fails when the location's list differs from `ClusterPool::INGEST_OPS`, or when an op the API serves has no lane.
+**Routing.** nginx's fixed `location ^~ /cluster/v1/` passes to the upstream `cluster_ctl`. A nested regex location sends the ingest ops to `cluster_ingest`. Both upstreams list the panel pool `1.sock` as `backup`, so the API still answers while a pool is down or not yet created. The pool's own socket has `max_fails=0`: only a request that cannot reach the pool goes to the backup, and one failed request (a long-poll cut by a reload, say) never sends the pool's traffic to the panel pool for `fail_timeout`. `ClusterPoolTest` fails when the location's list differs from `ClusterPool::INGEST_OPS`, or when an op the API serves has no lane.
 
 **Bringing them up.** `ClusterPool::ensure()`:
 
 1. writes a pool's config when its size changed;
 2. starts a pool whose master is not running, as xc_vm;
-3. reloads (`SIGUSR2`) a running pool whose config changed. The reload lets requests finish for 5 s (`process_control_timeout`); a held long-poll is cut, and the agent polls again;
-4. writes the marker `tmp/cluster_ready` once both pools answer FPM's own ping (`ping.path`, one FastCGI request over the socket), and removes it while one does not.
+3. reloads (`SIGUSR2`) a running pool whose config changed. The reload lets requests finish for 5 s (`process_control_timeout`); a held long-poll is cut, and the agent polls again. The socket stays open meanwhile, and new requests queue on it;
+4. writes the marker `tmp/cluster_ready`, when it is missing, once both pools answer FPM's own ping (`ping.path`, one FastCGI request over the socket). It removes the marker only when a pool's master is gone, and writes it again once the restarted pool answers.
+
+A reload, or a pool too busy to answer, therefore keeps the marker: a resize from `cron:servers` never turns the fleet `STARTING` while held long-polls stretch the reload to 5 s. A pool whose master runs but has stopped answering keeps it too; its requests wait on the socket.
 
 `status` runs it while XC_VM runs: at every boot, after the migrations, and after an update. `cron:servers` runs it every minute as a watchdog, which also resizes the pools as servers come and go. A lock keeps the two from starting a pool twice. A master is found by its title, which names its config, not by its pid file.
+
+**As xc_vm only.** The configs, the lock and the marker live in directories xc_vm owns, and root would follow a link planted there, then hand its target to xc_vm or overwrite it. So `ensure()` does nothing unless it runs as the pool user, and `status` (root) runs it through `sudo -u xc_vm console.php cluster:pools`, which prints whether both pools answer.
 
 **STARTING.** Until the marker exists, `Public/cluster/index.php` answers every op but `health` with a panel-signed `503 STARTING`. The denial names the node and request nonce when the request carries them, and asks for `retry_after_ms` 5000. `health` needs neither the database nor the pools, so it is answered throughout.
 
