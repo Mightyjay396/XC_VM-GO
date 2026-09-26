@@ -18,9 +18,11 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * The exception is a node that has gone silent (orphaned): its viewers would
  * otherwise count against their lines forever. A CONNECTIONS node is orphaned
- * once its `last_seen_at` is older than `cluster_orphan_conn_ttl_sec` and this
- * reaper has itself watched it stay silent that long, so MAIN's own downtime
- * never orphans anyone. Its rows are then purged from MAIN's store
+ * once it has been silent for `cluster_orphan_conn_ttl_sec` and this reaper
+ * has itself watched it stay silent that long, so MAIN's own downtime never
+ * orphans anyone: silence counts from max(last_seen_at, cluster_ready_at), and
+ * while the fleet silence guard is up (ClusterHealth) nobody is orphaned and
+ * the watch starts over. Its rows are then purged from MAIN's store
  * (orphaned(), ConnectionIngest::purgeNode), HLS and TS alike.
  *
  * A node that stops reaping for itself (CONNECTIONS off, mode 0, revoked,
@@ -122,6 +124,10 @@ final class HlsReaping {
 			return;
 		}
 		$rRows = $db->get_rows();
+		$rReady = self::readyAtSec();
+		// The fleet silence guard: MAIN suspects its own fault, so nobody's
+		// silence counts. No node is orphaned, and the watch starts over.
+		$rGuard = ClusterHealth::read()['guard'];
 		$rSince = $rNowSec - $rState['run'] > self::MAX_PASS_GAP ? [] : $rState['since'];
 		$rKeep = [];
 		foreach ($rRows as $rRow) {
@@ -132,8 +138,12 @@ final class HlsReaping {
 				continue;
 			}
 			$rCapable = self::capable($rRow);
-			$rSilent = $rRow['last_seen_at'] === null ? PHP_INT_MAX : $rNowSec - intdiv((int) $rRow['last_seen_at'], 1000);
-			if ($rSilent >= self::WATCH_AFTER) {
+			// Silence counts from max(last_seen_at, cluster_ready_at): the time
+			// MAIN's API was not serving is not the node's silence.
+			$rHeard = $rRow['last_seen_at'] === null ? null : intdiv((int) $rRow['last_seen_at'], 1000);
+			$rFrom = $rHeard === null ? ($rReady > 0 ? $rReady : null) : max($rHeard, $rReady);
+			$rSilent = $rFrom === null ? PHP_INT_MAX : $rNowSec - $rFrom;
+			if ($rSilent >= self::WATCH_AFTER && !$rGuard) {
 				$rKeep[$rID] = $rSince[$rID] ?? $rNowSec;
 			}
 			$rOrphaned = isset($rKeep[$rID]) && $rSilent >= $rOrphanTtlSec && $rNowSec - $rKeep[$rID] >= $rOrphanTtlSec;
@@ -185,6 +195,22 @@ final class HlsReaping {
 	 */
 	public static function orphaned(): array {
 		return self::$rOrphaned;
+	}
+
+	/**
+	 * When MAIN's cluster API last started serving (`cluster_meta.ready_at`,
+	 * written by ClusterMeta::markReady), in seconds; 0 when unknown.
+	 */
+	private static function readyAtSec(): int {
+		try {
+			$db = self::db();
+			if (!$db->query("SELECT `value` FROM `cluster_meta` WHERE `name` = 'ready_at';") || $db->num_rows() === 0) {
+				return 0;
+			}
+			return intdiv((int) ($db->get_row()['value'] ?? 0), 1000);
+		} catch (\Throwable) {
+			return 0; // no cluster tables: silence counts from last_seen_at alone
+		}
 	}
 
 	/** Tests: keep the watch elsewhere, and forget the last pass. */
