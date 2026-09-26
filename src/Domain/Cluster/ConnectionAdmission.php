@@ -20,8 +20,11 @@ use XcVm\Streaming\Protection\ConnectionLimiter;
  *    identity) for the token's life plus 10 s, and the identity's other
  *    reservations still in flight are counted. Insert-then-count needs no
  *    lock: of two concurrent mints at least one sees the other.
- *    - Redis mode: a Lua script on `RESV#<identity>` (score = expiry).
- *    - MySQL mode: `cluster_reservations` (migration 032), keyed by the uuid.
+ *    - On the cluster bus when it runs (ClusterBus): a Lua script on
+ *      `RESV#<identity>` (score = expiry), in either store mode.
+ *    - Without it, Redis mode: the same script on the shared Redis.
+ *    - Without it, MySQL mode: `cluster_reservations` (migration 032), keyed
+ *      by the uuid.
  * 2. The identity's open connections are cut, in ConnectionLimiter's order
  *    (the requesting device first, oldest first), to leave room for this
  *    viewer and the other reservations. The viewer is never evicted: it is not
@@ -126,6 +129,19 @@ LUA;
 	 */
 	public static function reserve(bool $rRedisMode, string $rIdentity, string $rUUID, int $rTtl, int $rServerID = 0, int $rStreamID = 0): ?int {
 		$rNow = self::now();
+		// The cluster bus when MAIN runs it (plan: reservations live there),
+		// whatever the store mode; else the shared Redis or the table.
+		$rBus = ClusterBus::client();
+		if ($rBus !== null) {
+			try {
+				$rOthers = $rBus->eval(self::LUA, ['RESV#' . $rIdentity, $rNow, $rNow + $rTtl, $rUUID, $rTtl], 1);
+				if (is_int($rOthers)) {
+					return max(0, $rOthers);
+				}
+			} catch (\Throwable) {
+				// Fall through to the store.
+			}
+		}
 		if ($rRedisMode) {
 			$rRedis = RedisManager::instance();
 			if (!$rRedis instanceof \Redis) {
@@ -149,6 +165,7 @@ LUA;
 	/** The node reported the connection: it is open now, no longer reserved. */
 	public static function release(bool $rRedisMode, string $rIdentity, string $rUUID): void {
 		try {
+			ClusterBus::client()?->zRem('RESV#' . $rIdentity, $rUUID);
 			if ($rRedisMode) {
 				$rRedis = RedisManager::instance();
 				if ($rRedis instanceof \Redis) {

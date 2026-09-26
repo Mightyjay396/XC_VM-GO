@@ -89,4 +89,28 @@ XcVm\Domain\Cluster\ClusterBus::wakeAck(' . var_export(str_repeat('c', 32), true
 		$this->assertGreaterThan(0.2, $rTook);
 		$this->assertLessThan(2.0, $rTook, 'woken, not timed out');
 	}
+
+	public function testTheLongPollHoldsNoDatabaseConnectionWhileBlocked(): void {
+		$rDb = new class extends \XcVm\Core\Database\DatabaseHandler {
+			public int $rClosed = 0;
+
+			public function __construct() {
+				$this->dbh = false;
+			}
+
+			public function close_mysql() {
+				$this->rClosed++;
+				return true;
+			}
+		};
+		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '.sock');
+		$this->assertNull(ClusterBus::waitNodeReleasing(5, 0.1, $rDb));
+		$this->assertSame(0, $rDb->rClosed, 'without the bus the caller polls: the connection stays');
+
+		$this->bus();
+		ClusterBus::wakeNode(5);
+		$this->assertTrue(ClusterBus::waitNodeReleasing(5, 1.0, $rDb));
+		$this->assertSame(1, $rDb->rClosed, 'released before blocking');
+		$this->assertFalse(ClusterBus::waitNodeReleasing(5, 0.1, new stdClass()), 'any other handle is left alone');
+	}
 }

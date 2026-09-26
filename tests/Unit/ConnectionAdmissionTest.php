@@ -40,6 +40,7 @@ final class ConnectionAdmissionTest extends TestCase {
 
 	protected function tearDown(): void {
 		ConnectionAdmission::useEnforcer(null);
+		\XcVm\Domain\Cluster\ClusterBus::useSocket(null);
 		SettingsManager::set([]);
 		DatabaseFactory::reset();
 		(new \ReflectionProperty(RedisManager::class, 'instance'))->setValue(null, null);
@@ -140,7 +141,7 @@ final class ConnectionAdmissionTest extends TestCase {
 		if (self::$rRedisProc === null) {
 			self::$rRedisPort = random_int(20000, 40000);
 			$rNull = ['file', '/dev/null', 'w'];
-			self::$rRedisProc = proc_open(['redis-server', '--port', (string) self::$rRedisPort, '--bind', '127.0.0.1', '--save', '', '--appendonly', 'no'], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes) ?: null;
+			self::$rRedisProc = proc_open(['redis-server', '--port', (string) self::$rRedisPort, '--bind', '127.0.0.1', '--unixsocket', sys_get_temp_dir() . '/xcvm-adm-' . self::$rRedisPort . '.sock', '--save', '', '--appendonly', 'no'], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes) ?: null;
 			for ($i = 0; $i < 50 && !@fsockopen('127.0.0.1', self::$rRedisPort); $i++) {
 				usleep(50000);
 			}
@@ -151,5 +152,18 @@ final class ConnectionAdmissionTest extends TestCase {
 		(new \ReflectionProperty(RedisManager::class, 'instance'))->setValue(null, $rRedis);
 		(new \ReflectionProperty(RedisManager::class, 'lastPingCheck'))->setValue(null, time());
 		return $rRedis;
+	}
+
+	public function testReservationsGoToTheClusterBusWhenItRuns(): void {
+		$rRedis = $this->redis();
+		\XcVm\Domain\Cluster\ClusterBus::useSocket(sys_get_temp_dir() . '/xcvm-adm-' . self::$rRedisPort . '.sock');
+		// MySQL mode, yet the bus holds them: the table stays empty.
+		$this->assertSame(0, ConnectionAdmission::reserve(false, '42', str_repeat('a', 32), 15));
+		$this->assertSame(1, ConnectionAdmission::reserve(false, '42', str_repeat('b', 32), 15));
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations`');
+		$this->assertSame(0, (int) $this->rDb->get_row()['n']);
+		$this->assertSame(2, $rRedis->zCard('RESV#42'));
+		ConnectionAdmission::release(false, '42', str_repeat('a', 32));
+		$this->assertSame([str_repeat('b', 32)], $rRedis->zRange('RESV#42', 0, -1));
 	}
 }

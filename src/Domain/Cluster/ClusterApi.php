@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
 use XcVm\Domain\Stream\RecordingFinalizer;
+use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
@@ -500,8 +501,9 @@ final class ClusterApi {
 			if ($rCommands !== [] || $rLeft <= 0) {
 				break;
 			}
-			// Woken by the cluster bus when a command is queued; polled without it.
-			if (ClusterBus::waitNode((int) $rNode['server_id'], min($rLeft, 5.0)) === null) {
+			// Woken by the cluster bus when a command is queued, with the DB
+			// connection released meanwhile; polled without the bus.
+			if (ClusterBus::waitNodeReleasing((int) $rNode['server_id'], min($rLeft, 5.0), DatabaseFactory::get()) === null) {
 				usleep(250000);
 			}
 		}
