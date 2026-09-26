@@ -6,6 +6,9 @@ use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Settings\CrontabChangedEvent;
+use XcVm\Core\Events\Settings\SettingsChangedEvent;
 use XcVm\Core\Localization\Translator;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
@@ -28,6 +31,17 @@ class SettingsService {
 
 	/** Settings columns MAIN keeps for the cluster API itself (ClusterEndpoint), never set from a form. */
 	private const CLUSTER_STATE = ['cluster_policy_ver', 'cluster_legacy_ports'];
+
+	/**
+	 * Settings were saved: tell the listeners (the node replica's ETag cache,
+	 * so nodes see the change at their next poll).
+	 *
+	 * @param array<string, mixed> $rPrevious Settings before the save.
+	 * @param array<string, mixed> $rSaved The keys saved.
+	 */
+	private static function saved(array $rPrevious, array $rSaved): void {
+		EventDispatcher::dispatch(new SettingsChangedEvent($rPrevious, array_merge($rPrevious, $rSaved), (int) ($GLOBALS['rUserInfo']['id'] ?? 0), microtime(true)));
+	}
 
 	/**
 	 * The fanout idle buffer ratio as the daemon takes it (0.1-1, two decimals),
@@ -233,6 +247,7 @@ class SettingsService {
 		// A new transport policy is announced with the save: every node sees
 		// the version go up in its next heartbeat and fetches the policy, and
 		// never adopts one older than it holds.
+		$rPrevious = SettingsManager::getAll();
 		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . (self::changesClusterPolicy($rArray) ? ', `cluster_policy_ver` = `cluster_policy_ver` + 1' : '') . ';';
 		$rStored = $db->query($rQuery, ...$rPrepare['data']);
 		if ($rApiPort !== null) {
@@ -242,6 +257,7 @@ class SettingsService {
 		}
 		if ($rStored) {
 			SettingsManager::clearCache();
+			self::saved($rPrevious, $rArray);
 			FanoutConfig::sync($rArray);
 			// Apply the fanout switch on this node now; every other node picks it
 			// up from its root cron within a minute (RootSignalsCronJob).
@@ -285,9 +301,11 @@ class SettingsService {
 			return ['status' => STATUS_FAILURE];
 		}
 
+		$rPrevious = SettingsManager::getAll();
 		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . ';';
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			SettingsManager::clearCache();
+			self::saved($rPrevious, $rArray);
 			return ['status' => STATUS_SUCCESS];
 		}
 
@@ -328,6 +346,8 @@ class SettingsService {
 			}
 
 			SettingsManager::clearCache();
+			self::saved(SettingsManager::getAll(), ['cache_thread_count' => $rData['cache_thread_count'], 'cache_changes' => $rCacheChanges]);
+			EventDispatcher::dispatch(new CrontabChangedEvent());
 			return ['status' => STATUS_SUCCESS];
 		}
 

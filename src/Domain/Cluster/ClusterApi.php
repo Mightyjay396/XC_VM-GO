@@ -195,7 +195,7 @@ final class ClusterApi {
 			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
-			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 		};
 	}
 
@@ -249,6 +249,8 @@ final class ClusterApi {
 			'last_seen_at' => ClusterClock::nowMs(),
 		]);
 		ClusterAudit::log('node.enrol_complete', (int) $rNode['server_id'], ['node' => $rNode['node_uuid'], 'agent' => $rP['agent_version'] ?? null], 'node', $rIP ?: null);
+		// Now active in the node list: parents and children learn its key at once.
+		ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => 'active', 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'], 'gen' => (int) $rNode['gen'],
 			'main_time_ms' => ClusterClock::nowMs(), 'policy' => ClusterPolicy::current($rSettings, $rMain),
@@ -688,9 +690,11 @@ final class ClusterApi {
 	 * flow is on. The blocklist: a `blk` delta from `blocklist_since`, or the
 	 * whole section when there is no delta to give. `have` maps each section to
 	 * the ETag the node holds, so a section it already has is not sent again;
-	 * a section sent whole (settings) goes only to an agent that names it.
+	 * a section sent whole (settings, servers, node, crontab, cluster) goes
+	 * only to an agent that names it, and a name MAIN does not serve is left
+	 * out of the reply.
 	 */
-	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rSince = $rP['blocklist_since'] ?? 0;
 		$rHave = is_array($rP['have'] ?? null) ? $rP['have'] : [];
 		if (!is_int($rSince) || $rSince < 0) {
@@ -704,9 +708,9 @@ final class ClusterApi {
 		try {
 			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '')];
 			// Sent whole: only to an agent that asks for them (have names the section).
-			foreach (array_keys(ReplicaBuilder::WHOLE) as $rSection) {
+			foreach (ReplicaBuilder::WHOLE as $rSection) {
 				if (array_key_exists($rSection, $rHave)) {
-					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection]);
+					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
 				}
 			}
 		} catch (ClusterRefusedException $rE) {

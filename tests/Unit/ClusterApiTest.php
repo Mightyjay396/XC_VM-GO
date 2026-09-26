@@ -1211,6 +1211,53 @@ final class ClusterApiTest extends TestCase {
 		$this->denial($rRes, 400, 'BAD_REQUEST');
 	}
 
+	public function testConfigServesTheServersNodeCrontabAndClusterSectionsByEtag(): void {
+		$this->blocklistTables();
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `api_pass` text, `cloudflare` int, `mag_legacy_redirect` int)');
+		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 'secret', 1, 0)");
+		$this->rDb->exec('CREATE TABLE `crontab` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `filename` varchar(255), `time` varchar(128), `enabled` int, `role` varchar(8))');
+		$this->rDb->exec("INSERT INTO `crontab` (`filename`, `time`, `enabled`, `role`) VALUES ('streams', '* * * * *', 1, 'all'), ('tmdb', '0 * * * *', 1, 'main')");
+		$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN `server_ip` varchar(255)');
+		$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN `http_broadcast_port` int');
+		$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN `watchdog_data` text');
+		$this->rDb->exec("UPDATE `servers` SET `server_ip` = '10.0.0.5', `http_broadcast_port` = 8080, `watchdog_data` = '{\"cpu\":1}'");
+		$rKeys = $this->active();
+		$rNew = ['servers', 'node', 'crontab', 'cluster'];
+
+		// Today's agent names only the blocklist and settings: none of the new sections.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['blocklist' => '', 'settings' => '']], 1, $rKeys);
+		$this->assertSame([], array_values(array_intersect($rNew, array_keys($this->reply($rRes, $rCtx, $rKeys)))));
+
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => array_fill_keys($rNew, '')], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$rHave = [];
+		$rData = [];
+		foreach ($rNew as $rSection) {
+			$rDoc = $this->openRecord($rOut[$rSection]['sealed'], 'rep');
+			$this->assertSame([$rSection, $this->rUuid, 1, $rOut[$rSection]['etag']], [$rDoc['section'], $rDoc['node'], $rDoc['gen'], $rDoc['etag']], $rSection);
+			$this->assertSame($rOut[$rSection]['etag'], ReplicaBuilder::etag($rDoc['data']), $rSection);
+			$this->assertStringNotContainsString('secret', (string) json_encode($rDoc['data']), $rSection);
+			$this->assertStringNotContainsString('watchdog', (string) json_encode($rDoc['data']), $rSection);
+			$rHave[$rSection] = $rOut[$rSection]['etag'];
+			$rData[$rSection] = $rDoc['data'];
+		}
+		$this->assertSame([5, '10.0.0.5', 8080], [$rData['servers']['servers'][0]['id'], $rData['servers']['servers'][0]['server_ip'], $rData['servers']['servers'][0]['http_broadcast_port']]);
+		$this->assertSame([['ed_pub' => base64_encode((string) NodeRegistry::byServer(self::SID)['node_sign_pub']), 'gen' => 1, 'sid' => 5, 'state' => 'active']], $rData['servers']['nodes'], 'keys sorted, as every level of a section');
+		$this->assertSame([5, 8080, 1], [$rData['node']['id'], $rData['node']['http_broadcast_port'], $rData['node']['cloudflare']]);
+		$this->assertSame([['filename' => 'streams', 'time' => '* * * * *']], $rData['crontab']['jobs'], 'the node\'s mode (1): never a main row');
+		$this->assertSame(ClusterPolicy::current($this->rSettings, $this->rMain)['main_urls'], $rData['cluster']['main_urls']);
+		$this->assertSame(base64_encode($this->rCrypto->info()['panel_sign_pub']), $rData['cluster']['panel_sign_pub']);
+
+		// Held: unchanged, each on its own ETag.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => $rHave], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		foreach ($rNew as $rSection) {
+			$this->assertSame(['unchanged' => true], $rOut[$rSection], $rSection);
+		}
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['node' => $rHave['servers']]], 1, $rKeys);
+		$this->assertArrayHasKey('sealed', $this->reply($rRes, $rCtx, $rKeys)['node'], 'another section\'s ETag is not this one\'s');
+	}
+
 	// ── The cluster bus: nonces and per-op semaphores ────────────────────
 
 	/**

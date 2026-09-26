@@ -7,6 +7,8 @@ use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Server\ServerSavedEvent;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -379,6 +381,7 @@ class ServerRepository {
 		$db->query('UPDATE `servers` SET `parent_id` = NULL, `enabled` = 0 WHERE `server_type` = 1 AND `parent_id` = ?;', $rID);
 		$db->query('DELETE FROM `servers_stats` WHERE `server_id` = ?;', $rID);
 		$db->query('DELETE FROM `servers` WHERE `id` = ?;', $rID);
+		EventDispatcher::dispatch(new ServerSavedEvent([$rID]));
 
 		if ($rServer['server_type'] == 0) {
 			BackupService::revokePrivileges($rServer['server_ip']);
