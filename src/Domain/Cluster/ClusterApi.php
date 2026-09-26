@@ -132,14 +132,30 @@ final class ClusterApi {
 			}
 		}
 		// Authenticated from here on.
-		if (!NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'])) {
-			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+		if (($rReplay = self::claimNonce($rCrypto, $rH)) !== null) {
+			return $rReplay;
 		}
 		if (!in_array($rNode['state'], $rStates, true)) {
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
 		}
 		// hello, config and conn_snapshot hold one of the op's bus permits.
 		return ClusterSemaphore::run($rCrypto, $rOp, $rH, static fn(): array => self::dispatch($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rBody));
+	}
+
+	/**
+	 * Claim an authenticated request's nonce: null when claimed, else its 401
+	 * REPLAY. When MAIN only cannot vouch for the nonce yet (a bus that just
+	 * started or was lost, NonceStore), the refusal carries retry_after_ms: a
+	 * request stamped anew that long after the denial's main_time_ms passes.
+	 *
+	 * @param array{node: string, nonce: string, ts_ms: int} $rH
+	 * @return array{status: int, headers: array<string, string>, body: string}|null
+	 */
+	private static function claimNonce(ClusterCrypto $rCrypto, array $rH): ?array {
+		if (NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'], $rRetryMs)) {
+			return null;
+		}
+		return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce'], $rRetryMs === null ? [] : ['retry_after_ms' => $rRetryMs]);
 	}
 
 	/**
@@ -293,8 +309,8 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
 		}
 		// Authenticated from here on.
-		if (!NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'])) {
-			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+		if (($rReplay = self::claimNonce($rCrypto, $rH)) !== null) {
+			return $rReplay;
 		}
 		if (!in_array($rNode['state'], $rStates, true)) {
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
@@ -395,8 +411,8 @@ final class ClusterApi {
 		}
 
 		if ($rOp === 'enrol_code_status') {
-			if (!NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'])) {
-				return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+			if (($rReplay = self::claimNonce($rCrypto, $rH)) !== null) {
+				return $rReplay;
 			}
 			$rP = json_decode($rBody, true);
 			if (!is_array($rP) || ($rP['node_uuid'] ?? null) !== $rPending['node_uuid']) {
@@ -436,8 +452,8 @@ final class ClusterApi {
 		if (!NodeSig::verify($rNode['sign_pub'], 'request', $rCtx . hash('sha256', $rBody, true), $rSig)) {
 			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
 		}
-		if (!NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'])) {
-			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+		if (($rReplay = self::claimNonce($rCrypto, $rH)) !== null) {
+			return $rReplay;
 		}
 		$rRefused = EnrolCodeService::submit($rCode, $rSid, $rNode, (string) ($rReq['ip'] ?? ''));
 		if ($rRefused !== null) {

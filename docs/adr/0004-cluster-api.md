@@ -100,9 +100,10 @@ A session request is checked in this order. Nothing is written, not even the non
 5. the extension's session for the named epoch (its refusals map to `NODE_REVOKED`, `LICENCE_INVALID`, `CLOCK` or `TOKEN_EXPIRED`);
 6. the request MAC;
 7. the node signature, verified with the key from the extension-sealed epoch record, never the DB row;
-8. the nonce claim;
+8. the nonce claim (401 `REPLAY`, with `retry_after_ms` when MAIN only cannot vouch for the nonce yet: see the second cluster bus increment);
 9. the node state;
-10. opening the BOX.
+10. a bus permit, for `hello`, `config` and `conn_snapshot` (503 `RATE_LIMITED`);
+11. opening the BOX.
 
 Refusals are panel-signed (`den`) and name the node and the request nonce. `STARTING` without the extension is the one unsigned reply, and agents treat it as a transport error. While MAIN's cluster pools are starting, `STARTING` is panel-signed (see "The cluster pools").
 
@@ -121,11 +122,12 @@ Re-key (`token_rekey`), for a node whose tokens have all expired while its keys 
   3. the node signature;
   4. the nonce claim;
   5. the node is `active`;
-  6. the once-a-minute limit (429 `RATE_LIMITED` with `retry_after_ms`), charged per authenticated attempt;
-  7. the SEAL opens (`cluster_open_sealed`);
-  8. the challenge is live (180 s) and unused (401 `CHALLENGE`). Consuming it is a second claim in `cluster_nonces`, so two concurrent uses cannot both win;
-  9. the attestation: an `instance_id` other than the enrolled one quarantines the node (409 `NOT_ACTIVE`, state `quarantined`);
-  10. the mint. A licence refusal returns 403 `LICENCE_INVALID` and leaves the node's rows as they were.
+  6. a bus permit (503 `RATE_LIMITED` with `retry_after_ms` and `op`), so a busy MAIN spends neither the minute nor the challenge;
+  7. the once-a-minute limit (429 `RATE_LIMITED` with `retry_after_ms`), charged per authenticated attempt;
+  8. the SEAL opens (`cluster_open_sealed`);
+  9. the challenge is live (180 s) and unused (401 `CHALLENGE`). Using it is a claim on `used:chal:<uuid>` (`NonceStore`), so two concurrent uses cannot both win;
+  10. the attestation: an `instance_id` other than the enrolled one quarantines the node (409 `NOT_ACTIVE`, state `quarantined`);
+  11. the mint. A licence refusal returns 403 `LICENCE_INVALID` and leaves the node's rows as they were.
 - The new epoch follows the node's current epoch and any epoch row still held. Every other epoch row is dropped, so a re-key whose reply was lost leaves nothing behind.
 - The reply is panel-signed with tag `pre`, a granting record the extension signs only under a valid licence. It names the node and the request nonce, and carries the token sealed to the agent's new key.
 - Nodes installed from this release get `panel_box_pub` in their install data. Nodes enrolled earlier take it once from the signed `health` document.
@@ -906,7 +908,8 @@ The settings columns come from the install schema and the migrations. Secrets ar
 **Nonces now.** While the bus runs, `NonceStore::claim()` checks and adds the nonce in one Lua script:
 - `nonce:<node>` is a sorted set. Each member is a nonce in hex, scored by its expiry: MAIN ms, 180 s after the claim. The script prunes expired members first. `purge()` (`cron:cluster`, every minute) prunes the sets of nodes gone quiet, and an empty set disappears.
 - `nonces_since` holds the MAIN ms of the first claim this bus took. The bus holds every claim made since then.
-- Neither key has a TTL. The bus's `volatile-ttl` policy evicts only keys that have one, so a nonce is never evicted while it can still be replayed. A bus full of such keys fails the script (OOM), and the claim goes to MySQL as it would without the bus.
+- Neither key has a TTL. The bus's `volatile-ttl` policy evicts only keys that have one, so a nonce is never evicted while it can still be replayed.
+- Nor is a claim refused at `maxmemory`. The script's first write (the prune) lets the rest of it through, and past `maxmemory` the bus evicts keys that have a TTL instead: wake-ups, reservations and touches, nearest expiry first. Only authenticated traffic adds nonces, which bounds them: about 150 bytes a nonce, so 1000 requests a second hold about 27 MB. (A fresh bus at `maxmemory` fails the script on `SET nonces_since`, and the claim is handled as without the bus.)
 
 MySQL stays the store while the bus is out of reach: when it is not running, its socket is gone, a connect or script fails, or during the 5 s pause `ClusterBus` takes after a failed connect.
 
@@ -918,24 +921,26 @@ MySQL stays the store while the bus is out of reach: when it is not running, its
 | A request stamped more than LEAD ahead of MAIN's clock | Also claimed in MySQL, so the rule above can leave it there. |
 | A bus younger than TTL | Also claims in MySQL, where the claims from before it are. |
 | MySQL took claims while a bus socket existed | It marks the second in `bin/cluster_bus/nonces.sql`, a file's mtime. While that mark is under TTL + 1 s old, the bus also claims in MySQL. |
-| The bus is out of reach | The bus marks each second in which it took a claim in `bin/cluster_bus/nonces.bus`. A request stamped before the end of the marked second + LEAD is refused, since the bus may hold its nonce. Workers that still reach the bus keep the mark current, so a worker that cannot reach it refuses until it can. |
+| The bus is out of reach | A worker marks the second in `bin/cluster_bus/nonces.bus` before each claim it runs on the bus. Without the bus, a request stamped before the end of the marked second + LEAD is refused, since the bus may hold its nonce. A mark from the current or the previous second means the bus may be taking claims right now, some not marked yet, so the refusal then runs to the end of the current second + LEAD. Workers that still reach the bus keep the mark current, so a worker that cannot reach it refuses until it can. |
 
-- **The marks** are written at most once a second, on disk beside the socket, so they survive a reboot. A claim whose mark cannot be written is refused.
+- **The marks** are written at most once a second, on disk beside the socket, so they survive a reboot. A mark only moves forward: a worker that read the clock in an earlier second and writes late leaves it as it is. A mark more than 1 s ahead of the clock (it stepped back) is rewritten. A claim whose mark cannot be written is refused.
 - **No socket.** Without a bus socket (the bus stopped cleanly, or never ran), MySQL takes claims without the SQL mark: the next bus to start is young, and looks in MySQL anyway.
 - **Clock steps.** A `nonces_since` more than 1 s ahead of MAIN's clock (the clock stepped back) starts a new history. That costs a short refusal instead of refusing everything until the clock catches up.
-- **The refusal** is the usual 401 `REPLAY`: MAIN cannot tell such a request from a replay.
-- **What it costs.** After a bus (re)start, requests stamped within 250 ms of its first claim are refused, and every claim for the next 180 s also goes to MySQL. After the bus is lost, requests are refused until 1.25 s past the start of the last second it took a claim in. A worker that cannot reach a running bus refuses its requests, for up to 5 s at a time (the connect pause).
+- **The refusal** is the usual 401 `REPLAY`: MAIN cannot tell such a request from a replay. It does know when a request stamped anew will pass, so this refusal carries `retry_after_ms` (below). A replay proper, a nonce the store already holds, carries none.
+- **What it costs.** After a bus (re)start, requests stamped within 250 ms of its first claim are refused, and every claim for the next 180 s also goes to MySQL. After the bus is lost, requests are refused until the end of the second after the last one it took a claim in (up to 2 s). A worker that cannot reach a running bus refuses its requests, for up to 5 s at a time (the connect pause).
 - **Unstamped values.** The re-key minute (`rekey:<uuid>`) and a used challenge (`used:chal:<uuid>`) are MAIN's own values, and the stamp rules do not apply to them. A bus that loses a re-key minute allows one more re-key attempt in that minute.
 
-**Challenges.** `challenge` now issues its value with `NonceStore::issue()` instead of a claim:
-- On the bus, the value goes into `issued:<node>`, a sorted set scored by expiry with a 180 s TTL. It is evictable on purpose: `GET challenge` is unauthenticated, and losing a value only makes its use fail.
-- Without the bus, it goes into MySQL, marked like a claim.
-- `consume()` looks on the bus, then in MySQL, and takes the value with a claim on `used:<node>`. A value is therefore used once, whichever store holds it.
+**Challenges.** `challenge` issues its value with `NonceStore::issue()`:
+- The value goes into MySQL, as before, even while the bus runs. `GET challenge` is unauthenticated, and on the bus a flood of values would push out the reservations and wake-ups (`volatile-ttl` evicts the nearest expiry first). Challenges are rare: a re-key, or a policy fetch while fenced.
+- Without the bus, the value is also marked like a claim (`nonces.sql`), so a bus that comes back records its use in MySQL too, where a worker without the bus looks.
+- `consume()` finds the value in MySQL and takes it with a claim on `used:<node>`, on the bus or in MySQL, so a value is used once.
 
 **Semaphores.** Plan section 8 gives `hello`, `conn_snapshot`, `token_rekey`, `config` and `streams` a bus semaphore of 4. `streams` has no op yet, so the other four get one (`Domain\Cluster\ClusterSemaphore`):
 - **The permit** is a member of `sem:<op>`, a sorted set without a TTL (never evicted), scored by the permit's expiry.
-- **When.** A session op takes it after the node state (step 9 of the order under "MAIN's API") and before the BOX is opened (step 10). It gives it back in `finally` when the handler ends, however it ends. `token_rekey` takes it after its node signature, nonce and node state, and before its once-a-minute slot and the challenge, so a busy MAIN spends neither.
-- **Crashes.** The permit of a holder that died expires after its lane's pool timeout: 60 s for `hello` and `token_rekey` (ctl), 90 s for `config` and `conn_snapshot` (ingest). A permit expiring later than now plus that lifetime was taken before the clock stepped back, and is dropped.
+- **When.** A session op takes it after the node state and before the BOX is opened (step 10 of the order under "MAIN's API"). It gives it back in `finally` when the handler ends, however it ends. `token_rekey` takes it after its node signature, nonce and node state, and before its once-a-minute slot and the challenge, so a busy MAIN spends neither.
+- **Crashes.** The permit of a holder that died expires after its lane's pool timeout: 60 s for `hello` and `token_rekey` (ctl), 90 s for `config` and `conn_snapshot` (ingest).
+- **Time** is the bus's own clock (`TIME`, read inside the script). Scripts run one at a time, so each sees a time no earlier than the permits it finds. A worker's own clock, read before its script reached the bus, could lag another worker's and drop that worker's live permits as taken in the future.
+- **Clock steps.** A permit expiring more than 1 s (`ClusterSemaphore::STEP_MS`) past now plus its lifetime was taken before the clock stepped back, and is dropped.
 - **Without the bus,** or when the bus call fails, no permit is taken, as before.
 
 **Wire: the busy refusal.** When all 4 of an op's permits are held, its handler does not run, and the node gets a denial like every other one: panel-signed (`den`), naming the node and the request nonce. Its fields:
@@ -946,65 +951,84 @@ MySQL stays the store while the bus is out of reach: when it is not running, its
 
 The re-key minute keeps its 429 `RATE_LIMITED` with `retry_after_ms`. The status tells the two apart.
 
+**Wire: `REPLAY` with a wait.** The 401 `REPLAY` denial (panel-signed `den`, naming the node and the request nonce, with `main_time_ms` as every denial has) gains one optional field:
+- `retry_after_ms`: int, at least 50. It is present only when MAIN refused because it cannot vouch for the nonce yet, never for a nonce it holds. A request stamped anew (`X-XCVM-Ts`) at or after the denial's `main_time_ms` + `retry_after_ms` is past the refused range. Today it is at most about 1.4 s.
+
+It is sent on every op that claims a nonce: the session ops, `token_rekey`, `enrol_code` and `enrol_code_status`. It has three causes, each a range of stamps MAIN refuses:
+- a bus started, restarted or was flushed: stamps up to 250 ms past its first claim (`nonces_since`);
+- the bus was lost: stamps before the end of the last second it took a claim in, + 250 ms;
+- the MAIN worker cannot reach a bus the others still use: stamps before the end of the current second, + 250 ms.
+
+The last two are one rule (the `nonces.bus` mark) as a worker sees it. The wait is the time from MAIN's clock to the end of the range, plus 50 ms (`NonceStore::RETRY_MARGIN_MS`).
+
 **What today's agent does.**
 - `token_rekey`: `recover()` already waits `max(1 s, retry_after_ms)`, ±10 %, on `RATE_LIMITED`, without raising its backoff.
-- `hello` (`Start`): it backs off 2 s, doubling up to 1 minute, as on any error.
+- `hello`: `Start` is called in three places. At start, `Run` backs off 2 s, doubling up to 1 minute, as on any error. After a re-key, the heartbeat loop calls `Start` once and drops a non-fatal error, so that hello is lost until the next re-key or policy change. On a newer `policy_ver`, a failed `Start` is only logged, and the next heartbeat (2 s) tries again.
 - `config`: `SyncReplica` logs the error, and the next poll comes a minute later.
 - `conn_snapshot`: the snapshot is abandoned. MAIN asks again if the digest still disagrees.
-- `REPLAY`: a heartbeat is retried at the next tick (2 s), an event batch after the lane's backoff, a long-poll after 1 s.
+- `REPLAY`: `retry_after_ms` is ignored. A heartbeat is retried at the next tick (2 s), an event batch after the lane's backoff, a long-poll after 1 s. The clock offset is not updated from a denial, so an agent with no offset yet (the first hello after it starts) lags MAIN by its clock error: after a bus start its requests are refused until that lag has passed, up to the 90 s window.
 
 All of this is safe, only slower than the contract below.
 
 **The agent's contract.** For the Go half, not built yet:
 1. **503 `RATE_LIMITED`**, a verified denial with status 503 to `hello`, `token_rekey`, `config` or `conn_snapshot`, means MAIN is busy, not failing. Wait `retry_after_ms` with ±10 % jitter, clamped to 1–60 s. Then send the same op again with a fresh nonce and stamp. Do not raise the op's backoff or count it as a failure.
-   - `hello`: in `Start`, wait `retry_after_ms` instead of the doubling start backoff.
+   - `hello`, at every call site: in `Run`'s start loop, wait `retry_after_ms` instead of the doubling start backoff. After a re-key, retry the hello after `retry_after_ms` until it succeeds or fails fatally; do not drop it. After a newer `policy_ver`, retry after `retry_after_ms` too (the heartbeat loop keeps running meanwhile).
    - `config`: retry after `retry_after_ms` instead of at the next minute's poll.
    - `conn_snapshot`: resend the refused chunk, with the same `snap_id` and `seq`. MAIN keeps the chunks it took, and a chunk it no longer expects gets 409 `SNAP_GAP`, which ends the snapshot as today.
    - `token_rekey`: as today. The challenge was not consumed, so it may be sent again while under 180 s old, or a new one fetched.
    - A 429 `RATE_LIMITED` (the re-key minute) is handled as today.
-2. **401 `REPLAY`** to a request the agent sent once means MAIN could not vouch for its nonce. That happens when it was stamped within 250 ms of a bus's first claim, or when the MAIN worker could not reach the bus. Retry once at once, with a fresh nonce and the current `MainNowMs()` stamp. A second `REPLAY` in a row takes the op's usual backoff.
-3. **Stamps.** `X-XCVM-Ts` stays `MainNowMs()`: local time plus the offset from the last MAC'd `main_time_ms`, never pushed ahead by an RTT estimate. A request stamped more than 250 ms ahead of MAIN's clock is accepted, but costs MAIN a MySQL write.
-4. **Nothing else changes:** no new op, header, reply field or setting.
+2. **401 `REPLAY` with `retry_after_ms`**, a verified denial to a request the agent sent once, on any op, means MAIN cannot vouch for its nonce yet (the three causes above). First set the clock offset from the denial's `main_time_ms`, as from a MAC'd reply: the denial is panel-signed and names this request. Then wait `retry_after_ms`, never less (jitter may only add, up to 10 %), clamped to at most 10 s. Then send the op once more with a fresh nonce, a fresh `MainNowMs()` stamp and a fresh MAC, BOX or SEAL. A second `REPLAY` in a row, or a `REPLAY` without `retry_after_ms`, takes the op's usual backoff.
+3. **Stamps.** `X-XCVM-Ts` stays `MainNowMs()`: local time plus the offset from the last authenticated `main_time_ms` (a MAC'd reply, or a `REPLAY` as in item 2), never pushed ahead by an RTT estimate. A request stamped more than 250 ms ahead of MAIN's clock is accepted, but costs MAIN a MySQL write.
+4. **Nothing else changes:** no new op, header or setting. The one new field is `retry_after_ms` on `REPLAY`.
 
 **Differs from the plan.**
 - **No `streams` semaphore.** The op does not exist yet (Phase 7, R2).
 - **A sorted set per node, not `SET NX` with a 180 s TTL.** A key with a TTL is evictable under the bus's `volatile-ttl` policy, which would reopen that nonce's replay window under memory pressure.
-- **A floor after a bus start, and MySQL writes for its first 180 s.** The plan does not say what a bus restart does to the replay cache. Since the bus is not persisted, a restart would otherwise reopen a 180 s window.
+- **The nonce floor, defined.** The plan names a nonce floor against replay after a bus restart (section 3 and the security checks) without defining it. Here it is `nonces_since` + LEAD, and a young bus also claims in MySQL for 180 s, since the bus is not persisted. The marks, for a bus out of reach, are not in the plan.
 - **MySQL writes remain** while the bus is young or out of reach, and for requests stamped ahead: the cases the bus alone cannot vouch for.
 - **The busy refusal reuses `RATE_LIMITED`.** The plan names no reason, and today's agent honours `retry_after_ms` only on `RATE_LIMITED`, so it re-keys promptly.
-- **Challenge values are evictable,** because they are not claims.
+- **Challenge values stay in MySQL.** They are issued unauthenticated, and on the bus a flood of them would evict what must stay.
+- **`REPLAY` can carry `retry_after_ms`.** The plan gives a replay refusal no wait. When MAIN only cannot vouch for a nonce yet, the refusal tells the agent when a request stamped anew will pass.
 
 **Compatibility.**
-- Older agents keep working. The only wire changes are the 503 on four ops and `REPLAY` in the cases above, both refusals they already handle.
+- Older agents keep working. The only wire changes are the 503 on four ops and `REPLAY` in the cases above, both refusals they already handle, and `retry_after_ms` on such a `REPLAY`, which they ignore.
 - On upgrade, the running bus has no `nonces_since`, so the first claim sets it. The first 250 ms of requests are refused, and for 180 s every claim also goes to MySQL, which holds the claims from before the upgrade.
 - LB builds have neither `Domain/Cluster` nor `bin/cluster_bus`.
 
 **Limits.**
 - The marks are file mtimes, and a power cut can lose the last few seconds of metadata (ext4 commits every 5 s). If MAIN then serves requests before its bus starts, and within 90 s of the cut, a request from those last seconds could be replayed once. A bus started at boot is young and covers this.
 - The rules assume MAIN's clock does not step back by more than a second.
+- Two copies of one request, one at a worker with the bus and one at a worker without it, can both pass if they arrive together after a second in which the bus took no claim. The worker without the bus must pause between reading the bus mark and writing the SQL mark while the other claims.
 - A bus that loses some nonce keys but keeps `nonces_since` goes unnoticed: a manual `DEL`, or an `allkeys-*` eviction policy. The shipped `cluster.conf` uses `volatile-ttl`.
 
 Tests:
 - `ClusterNonceStoreTest`, against a real redis-server on a unix socket as `ClusterBusTest` does:
   - MySQL without the bus;
   - on a settled bus, one write there, no TTL, expiry and purge;
-  - a fresh bus's floor and its MySQL writes;
-  - a nonce MySQL took while the bus was out of reach, refused once it is back;
-  - a nonce the bus took, refused while it is out of reach, and another worker's mark;
+  - the lead: a request stamped more than 250 ms ahead also goes to MySQL;
+  - a fresh bus's floor with its wait, and its MySQL writes for exactly its first TTL;
+  - a clock step back that restarts the history, and one of a second that does not;
+  - a nonce MySQL took while the bus was out of reach, refused once it is back, and the SQL mark's TTL + 1 s;
+  - a nonce the bus took, refused while it is out of reach, with the previous-second rule, the lead and another worker's mark;
+  - a bus mark ahead of the clock, the mark written before the claim runs, a mark that cannot be written, and marks that only move forward;
   - a killed and restarted bus, and a flushed one;
-  - challenges issued in either store, used once.
+  - challenges issued in MySQL, with the bus or without it, used once.
 - `ClusterSemaphoreTest`:
   - no limit without the bus;
-  - 4 permits per op;
+  - 4 permits per op, and each op's worst case;
   - the signed 503 with `retry_after_ms` and `op`;
   - release after the handler returns or throws;
-  - expiry after the op's worst case;
-  - a permit taken before a clock step back.
+  - expiry after the op's worst case, by the bus's clock;
+  - workers' clocks that disagree drop no permit;
+  - a permit taken before a clock step back, and a step of under 1 s.
 - `ClusterApiTest`:
   - no MySQL row per request on the bus, with replays still refused;
   - a busy `hello` refused while `heartbeat` goes on, and a served one returning its permit;
-  - `NOT_ACTIVE` before any permit;
-  - a busy `token_rekey` that spends neither the minute nor the challenge.
+  - `NOT_ACTIVE`, `BAD_MAC` and `REPLAY` before any permit;
+  - `config` and `conn_snapshot` refused when busy;
+  - a busy `token_rekey` that spends neither the minute nor the challenge;
+  - on a fresh bus, a `heartbeat` and a `token_rekey` stamped at its floor, refused with `retry_after_ms`, then served.
+- `ClusterEnrolCodeTest`: on a fresh bus, and after a restart, `enrol_code` and `enrol_code_status` stamped at its floor, refused with `retry_after_ms`, then served.
 
 ### The cluster pools (Phase 2, second increment)
 

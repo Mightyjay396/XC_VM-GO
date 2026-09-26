@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterSemaphore;
+use XcVm\Tests\Support\BusServer;
 use XcVm\Tests\Support\FakeClusterCrypto;
 
 /**
@@ -16,10 +17,7 @@ use XcVm\Tests\Support\FakeClusterCrypto;
 final class ClusterSemaphoreTest extends TestCase {
 	private const T0 = 1800000000000;
 
-	private static ?string $rDir = null;
-
-	/** @var resource|null */
-	private static $rProc = null;
+	private static ?BusServer $rBus = null;
 
 	private FakeClusterCrypto $rCrypto;
 
@@ -27,26 +25,12 @@ final class ClusterSemaphoreTest extends TestCase {
 	private array $rH;
 
 	public static function setUpBeforeClass(): void {
-		if (!class_exists(\Redis::class) || trim((string) shell_exec('command -v redis-server')) === '') {
-			return;
-		}
-		self::$rDir = sys_get_temp_dir() . '/xcvm-sem-' . bin2hex(random_bytes(4));
-		mkdir(self::$rDir);
-		$rNull = ['file', '/dev/null', 'w'];
-		self::$rProc = proc_open(['redis-server', '--port', '0', '--unixsocket', self::$rDir . '/cluster.sock', '--unixsocketperm', '700', '--save', '', '--appendonly', 'no', '--dir', self::$rDir], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes) ?: null;
-		for ($i = 0; $i < 100 && !file_exists(self::$rDir . '/cluster.sock'); $i++) {
-			usleep(20000);
-		}
+		self::$rBus = BusServer::start('sem');
 	}
 
 	public static function tearDownAfterClass(): void {
-		if (self::$rProc !== null) {
-			proc_terminate(self::$rProc);
-			proc_close(self::$rProc);
-		}
-		if (self::$rDir !== null) {
-			exec('rm -rf ' . escapeshellarg(self::$rDir));
-		}
+		self::$rBus?->stop();
+		self::$rBus = null;
 	}
 
 	protected function setUp(): void {
@@ -62,14 +46,25 @@ final class ClusterSemaphoreTest extends TestCase {
 	}
 
 	private function bus(): \Redis {
-		if (self::$rProc === null) {
+		if (self::$rBus === null) {
 			$this->markTestSkipped('redis-server or phpredis not available');
 		}
-		ClusterBus::useSocket(self::$rDir . '/cluster.sock');
+		ClusterBus::useSocket(self::$rBus->socket());
 		$rRedis = ClusterBus::client();
 		$this->assertInstanceOf(\Redis::class, $rRedis);
 		$rRedis->flushAll();
 		return $rRedis;
+	}
+
+	/**
+	 * Move every permit of an op to expire $rMs from the bus's now: how a
+	 * permit ages without waiting (a negative $rMs has expired).
+	 */
+	private function expireIn(\Redis $rRedis, string $rOp, int $rMs): void {
+		$rAt = BusServer::nowMs($rRedis) + $rMs;
+		foreach ($rRedis->zRange('sem:' . $rOp, 0, -1) as $rID) {
+			$rRedis->zAdd('sem:' . $rOp, ['XX'], $rAt, $rID);
+		}
 	}
 
 	private function ok(): array {
@@ -91,7 +86,7 @@ final class ClusterSemaphoreTest extends TestCase {
 
 	public function testEachLimitedOpHasFourPermitsOfItsOwn(): void {
 		$rRedis = $this->bus();
-		$this->assertSame(['hello', 'token_rekey', 'config', 'conn_snapshot'], array_keys(ClusterSemaphore::OPS));
+		$this->assertSame(['hello' => 60, 'token_rekey' => 60, 'config' => 90, 'conn_snapshot' => 90], ClusterSemaphore::OPS, 'the ops, and each one\'s worst case: its lane\'s pool timeout');
 		$this->assertSame(4, ClusterSemaphore::PERMITS);
 		$rHeld = [];
 		for ($i = 0; $i < 4; $i++) {
@@ -149,26 +144,51 @@ final class ClusterSemaphoreTest extends TestCase {
 	}
 
 	public function testAPermitNeverReleasedExpiresAfterTheOpsWorstCase(): void {
-		$this->bus();
+		$rRedis = $this->bus();
+		$rBefore = BusServer::nowMs($rRedis);
 		for ($i = 0; $i < 4; $i++) {
 			ClusterSemaphore::acquire('hello');
 			ClusterSemaphore::acquire('config');
 		}
-		ClusterClock::fix(self::T0 + ClusterSemaphore::OPS['hello'] * 1000);
-		$this->assertFalse(ClusterSemaphore::acquire('hello'), 'still held at the limit');
-		ClusterClock::fix(self::T0 + ClusterSemaphore::OPS['hello'] * 1000 + 1);
+		$rAfter = BusServer::nowMs($rRedis);
+		foreach (['hello', 'config'] as $rOp) {
+			foreach ($rRedis->zRange('sem:' . $rOp, 0, -1, true) as $rExp) {
+				$this->assertGreaterThanOrEqual($rBefore + ClusterSemaphore::OPS[$rOp] * 1000, (int) $rExp, $rOp . ': expires after its worst case, by the bus\'s clock');
+				$this->assertLessThanOrEqual($rAfter + ClusterSemaphore::OPS[$rOp] * 1000, (int) $rExp);
+			}
+		}
+		$this->expireIn($rRedis, 'hello', 1000);
+		$this->assertFalse(ClusterSemaphore::acquire('hello'), 'still held until then');
+		$this->expireIn($rRedis, 'hello', -1);
 		$this->assertIsString(ClusterSemaphore::acquire('hello'), 'a crashed holder\'s permit expired');
-		$this->assertFalse(ClusterSemaphore::acquire('config'), 'config runs longer');
-		ClusterClock::fix(self::T0 + ClusterSemaphore::OPS['config'] * 1000 + 1);
-		$this->assertIsString(ClusterSemaphore::acquire('config'));
+		$this->assertSame(1, $rRedis->zCard('sem:hello'), 'the expired ones are gone');
+		$this->assertFalse(ClusterSemaphore::acquire('config'), 'config\'s own permits are untouched');
+	}
+
+	public function testPermitsFollowTheBusClockNotTheWorkers(): void {
+		$rRedis = $this->bus();
+		// Workers read their clocks a few ms apart, and their scripts reach the
+		// bus in another order: no permit is dropped as one from the future.
+		ClusterClock::fix(self::T0 + 5);
+		for ($i = 0; $i < 4; $i++) {
+			$this->assertIsString(ClusterSemaphore::acquire('hello'));
+		}
+		ClusterClock::fix(self::T0);
+		$this->assertFalse(ClusterSemaphore::acquire('hello'));
+		ClusterClock::fix(self::T0 - 3600000);
+		$this->assertFalse(ClusterSemaphore::acquire('hello'), 'even an hour apart');
+		$this->assertSame(4, $rRedis->zCard('sem:hello'));
 	}
 
 	public function testAPermitFromBeforeTheClockSteppedBackDoesNotHoldForever(): void {
-		$this->bus();
+		$rRedis = $this->bus();
 		for ($i = 0; $i < 4; $i++) {
 			ClusterSemaphore::acquire('hello');
 		}
-		ClusterClock::fix(self::T0 - 3600000);
-		$this->assertIsString(ClusterSemaphore::acquire('hello'), 'an expiry past now + the op\'s lifetime is impossible: dropped');
+		$this->expireIn($rRedis, 'hello', ClusterSemaphore::OPS['hello'] * 1000 + ClusterSemaphore::STEP_MS - 100);
+		$this->assertFalse(ClusterSemaphore::acquire('hello'), 'a step back of under STEP_MS keeps them');
+		$this->expireIn($rRedis, 'hello', 3600000);
+		$this->assertIsString(ClusterSemaphore::acquire('hello'), 'an expiry past now + the op\'s lifetime + STEP_MS is impossible: dropped');
+		$this->assertSame(1, $rRedis->zCard('sem:hello'));
 	}
 }

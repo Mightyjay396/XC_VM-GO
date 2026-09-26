@@ -15,6 +15,11 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
  * op's worst case (OPS) if its holder died without giving it back. The set
  * has no TTL, so the bus's volatile-ttl policy never evicts a permit.
  *
+ * Its times are the bus's own (TIME, read inside the script). Scripts run one
+ * at a time, so each sees a time no earlier than the permits already held. A
+ * worker's own clock, read before its script reached the bus, could lag them
+ * and drop them as taken before a clock step.
+ *
  * Without the bus nothing is limited, as before it.
  */
 final class ClusterSemaphore {
@@ -32,17 +37,27 @@ final class ClusterSemaphore {
 	public const RETRY_MAX_MS = 3000;
 
 	/**
-	 * KEYS sem:<op>; ARGV now, exp, permits, id => 1 taken, 0 none free.
-	 * Expired permits go, and so do any expiring past now + the op's lifetime
-	 * (taken before the clock stepped back), so one can never be held forever.
+	 * Milliseconds past the bus's now plus the op's lifetime that a permit may
+	 * expire before it counts as taken before the clock stepped back.
+	 */
+	public const STEP_MS = 1000;
+
+	/**
+	 * KEYS sem:<op>; ARGV lifetime ms, permits, id, STEP_MS => 1 taken, 0 none
+	 * free. Expired permits go, and so do any expiring past now + the lifetime
+	 * + STEP_MS (taken before the clock stepped back), so one can never be
+	 * held forever.
 	 */
 	private const ACQUIRE_LUA = <<<'LUA'
-		redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. ARGV[1])
-		redis.call('ZREMRANGEBYSCORE', KEYS[1], '(' .. ARGV[2], '+inf')
-		if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[3]) then
+		local t = redis.call('TIME')
+		local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+		local exp = now + tonumber(ARGV[1])
+		redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. now)
+		redis.call('ZREMRANGEBYSCORE', KEYS[1], '(' .. (exp + tonumber(ARGV[4])), '+inf')
+		if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then
 			return 0
 		end
-		redis.call('ZADD', KEYS[1], ARGV[2], ARGV[4])
+		redis.call('ZADD', KEYS[1], exp, ARGV[3])
 		return 1
 		LUA;
 
@@ -80,9 +95,8 @@ final class ClusterSemaphore {
 		if ($rLife === null) {
 			return null;
 		}
-		$rNow = ClusterClock::nowMs();
 		$rID = bin2hex(random_bytes(8));
-		return match (ClusterBus::script(self::ACQUIRE_LUA, ['sem:' . $rOp], [$rNow, $rNow + $rLife * 1000, self::PERMITS, $rID])) {
+		return match (ClusterBus::script(self::ACQUIRE_LUA, ['sem:' . $rOp], [$rLife * 1000, self::PERMITS, $rID, self::STEP_MS])) {
 			1 => $rID,
 			0 => false,
 			default => null,

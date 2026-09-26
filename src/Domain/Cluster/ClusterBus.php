@@ -32,10 +32,13 @@ use XcVm\Core\Process\ProcessManager;
  * (ConnectionIngest::touch). Without the bus, or past TOUCH_MEMORY_SHARE of
  * its memory, they go to MAIN's store.
  *
- * And the request nonces (NonceStore: `nonce:<node>`, `nonces_since`,
- * `issued:<node>`) and the per-op semaphores (ClusterSemaphore: `sem:<op>`),
- * through script(). Nonces and permits are sorted sets without a TTL, so the
- * volatile-ttl policy never evicts them.
+ * And the request nonces (NonceStore: `nonce:<node>`, `nonces_since`) and
+ * the per-op semaphores (ClusterSemaphore: `sem:<op>`), through script().
+ * Nonces and permits are sorted sets without a TTL, so the volatile-ttl
+ * policy never evicts them. Nor are they refused past maxmemory (a script's
+ * first write lets the rest through): their size is bounded by
+ * authenticated traffic, and past maxmemory they push out the keys with a
+ * TTL.
  */
 final class ClusterBus {
 	/** Seconds a wake waits for its reader. */

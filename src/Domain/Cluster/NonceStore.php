@@ -24,14 +24,22 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * - MySQL takes claims only while the bus is out of reach, and marks the
  *   second it did (SQL_MARK). The bus also claims in MySQL while that mark is
  *   under TTL old.
- * - The bus marks the second it took a claim (BUS_MARK). Without the bus, a
- *   request stamped before the end of that second plus LEAD_MS is refused:
- *   the bus may hold it. While other workers still reach the bus, this worker
- *   therefore refuses until it reaches the bus too.
+ * - The bus marks the second it takes a claim (BUS_MARK), before it runs the
+ *   claim. Without the bus, a request stamped before the end of that second
+ *   plus LEAD_MS is refused: the bus may hold it. A mark from this second or
+ *   the one before means the bus may be taking claims right now, so the
+ *   refusal then runs to the end of this second plus LEAD_MS. While other
+ *   workers still reach the bus, this worker therefore refuses until it
+ *   reaches the bus too.
+ *
+ * Those refusals, and the first rule's, are not replays: claim() reports the
+ * wait after which a request stamped anew can pass.
  *
  * The marks are files beside the bus socket, on disk, so they outlive a
- * reboot. On the bus, nonces live in sorted sets without a TTL, which the
- * bus's volatile-ttl policy never evicts.
+ * reboot. A mark only moves forward, unless it is more than a second ahead
+ * of the clock (the clock stepped back). On the bus, nonces live in sorted
+ * sets without a TTL, which the bus's volatile-ttl policy never evicts; they
+ * are bounded by authenticated traffic alone.
  */
 final class NonceStore {
 	use DatabaseAware;
@@ -51,6 +59,9 @@ final class NonceStore {
 
 	/** The second MySQL last took a claim while the bus could come back. */
 	public const SQL_MARK = 'nonces.sql';
+
+	/** Milliseconds a refusal's wait adds past the first stamp that can pass. */
+	public const RETRY_MARGIN_MS = 50;
 
 	/**
 	 * KEYS nonce:<node>, nonces_since; ARGV now, exp, nonce => {fresh, since}.
@@ -72,38 +83,37 @@ final class NonceStore {
 		return {1, since}
 		LUA;
 
-	/** KEYS issued:<node>; ARGV now, exp, value, ttl ms. */
-	private const ISSUE_LUA = <<<'LUA'
-		redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. ARGV[1])
-		redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
-		redis.call('PEXPIRE', KEYS[1], ARGV[4])
-		return 1
-		LUA;
-
-	/** KEYS issued:<node>; ARGV now, value => 1 while it is live. */
-	private const ISSUED_LUA = <<<'LUA'
-		local exp = redis.call('ZSCORE', KEYS[1], ARGV[2])
-		if exp and tonumber(exp) >= tonumber(ARGV[1]) then
-			return 1
-		end
-		return 0
-		LUA;
-
 	/**
 	 * Record a nonce; false when it was already used (a replay), or when MAIN
 	 * cannot vouch that it was not (see above).
 	 *
 	 * @param ?int $rTsMs The request's X-XCVM-Ts, MAIN ms; null for a value
 	 *                    MAIN made itself (the re-key minute, a used challenge).
+	 * @param ?int $rRetryMs Set on a refusal that is not a replay: the wait,
+	 *                       in ms, after which a request stamped anew can
+	 *                       pass. Null otherwise.
 	 */
-	public static function claim(string $rNode, string $rNonce, ?int $rTsMs = null): bool {
+	public static function claim(string $rNode, string $rNonce, ?int $rTsMs = null, ?int &$rRetryMs = null): bool {
+		$rRetryMs = null;
 		$rNow = ClusterClock::nowMs();
+		if (ClusterBus::client() === null) {
+			return self::claimWithoutBus($rNode, $rNonce, $rTsMs, $rNow, $rRetryMs);
+		}
+		// Marked first: a worker without the bus never reads an older second
+		// than a claim the bus holds.
+		if (!self::mark(self::BUS_MARK, $rNow)) {
+			return false;
+		}
 		$rOut = ClusterBus::script(self::CLAIM_LUA, ['nonce:' . $rNode, 'nonces_since'], [$rNow, $rNow + self::TTL * 1000, bin2hex($rNonce)]);
 		if (!is_array($rOut) || count($rOut) !== 2) {
-			return self::claimWithoutBus($rNode, $rNonce, $rTsMs, $rNow);
+			return self::claimWithoutBus($rNode, $rNonce, $rTsMs, $rNow, $rRetryMs);
 		}
 		$rSince = (int) $rOut[1];
-		if ((int) $rOut[0] !== 1 || ($rTsMs !== null && $rTsMs <= $rSince + self::LEAD_MS) || !self::mark(self::BUS_MARK, $rNow)) {
+		if ((int) $rOut[0] !== 1) {
+			return false;
+		}
+		if ($rTsMs !== null && $rTsMs <= $rSince + self::LEAD_MS) {
+			$rRetryMs = self::waitFor($rSince + self::LEAD_MS + 1, $rNow);
 			return false;
 		}
 		if ($rNow - $rSince < self::TTL * 1000 || self::markedWithinTtl(self::SQL_MARK, $rNow) || ($rTsMs !== null && $rTsMs > $rNow + self::LEAD_MS)) {
@@ -114,35 +124,27 @@ final class NonceStore {
 
 	/**
 	 * Keep a value MAIN hands out (a `challenge`) for consume() to take once
-	 * within TTL: on the bus, else in MySQL. Losing one early only makes its
-	 * consume() fail, so on the bus it may be evicted (its set has a TTL): an
-	 * unauthenticated caller can ask for many.
+	 * within TTL. In MySQL, even with the bus: `GET challenge` is
+	 * unauthenticated, and on the bus a flood of values would push out the
+	 * keys that must stay there (volatile-ttl).
 	 */
 	public static function issue(string $rNode, string $rNonce): void {
-		$rNow = ClusterClock::nowMs();
-		if (ClusterBus::script(self::ISSUE_LUA, ['issued:' . $rNode], [$rNow, $rNow + self::TTL * 1000, bin2hex($rNonce), self::TTL * 1000]) !== null) {
-			return;
-		}
-		// Marked, so a bus that comes back records its use in MySQL too, where
-		// a worker without the bus looks.
-		if (self::markSql($rNow)) {
+		// Without the bus, marked: a bus that comes back records the value's
+		// use in MySQL too, where a worker without the bus looks.
+		if (ClusterBus::client() !== null || self::markSql(ClusterClock::nowMs())) {
 			self::insert($rNode, $rNonce);
 		}
 	}
 
 	/**
-	 * Consume a value issue() handed out, from whichever store holds it: true
-	 * once, while it is live. Atomic without affected-row counts: the
-	 * consumption is itself a claim under a sibling key, so of two concurrent
-	 * callers exactly one wins.
+	 * Consume a value issue() handed out: true once, while it is live. Atomic
+	 * without affected-row counts: the consumption is itself a claim under a
+	 * sibling key, so of two concurrent callers exactly one wins.
 	 */
 	public static function consume(string $rNode, string $rNonce): bool {
-		$rNow = ClusterClock::nowMs();
-		if (ClusterBus::script(self::ISSUED_LUA, ['issued:' . $rNode], [$rNow, bin2hex($rNonce)]) !== 1) {
-			self::db()->query('SELECT `exp` FROM `cluster_nonces` WHERE `node` = ? AND `nonce` = ? AND `exp` >= ?;', $rNode, $rNonce, intdiv($rNow, 1000));
-			if (self::db()->num_rows() === 0) {
-				return false;
-			}
+		self::db()->query('SELECT `exp` FROM `cluster_nonces` WHERE `node` = ? AND `nonce` = ? AND `exp` >= ?;', $rNode, $rNonce, ClusterClock::now());
+		if (self::db()->num_rows() === 0) {
+			return false;
 		}
 		return self::claim('used:' . $rNode, $rNonce);
 	}
@@ -167,12 +169,24 @@ final class NonceStore {
 	}
 
 	/** Without the bus: MySQL, unless the bus may hold the nonce. */
-	private static function claimWithoutBus(string $rNode, string $rNonce, ?int $rTsMs, int $rNow): bool {
+	private static function claimWithoutBus(string $rNode, string $rNonce, ?int $rTsMs, int $rNow, ?int &$rRetryMs): bool {
 		$rBusAt = self::markedAt(self::BUS_MARK);
-		if ($rTsMs !== null && $rBusAt !== null && $rTsMs < (min($rBusAt, intdiv($rNow, 1000)) + 1) * 1000 + self::LEAD_MS) {
-			return false;
+		if ($rTsMs !== null && $rBusAt !== null) {
+			// Marked this second or the one before (or ahead): the bus may be
+			// taking claims right now.
+			$rSec = intdiv($rNow, 1000);
+			$rPass = (($rBusAt >= $rSec - 1 ? $rSec : $rBusAt) + 1) * 1000 + self::LEAD_MS;
+			if ($rTsMs < $rPass) {
+				$rRetryMs = self::waitFor($rPass, $rNow);
+				return false;
+			}
 		}
 		return self::markSql($rNow) && self::insert($rNode, $rNonce);
+	}
+
+	/** The wait, from now, after which a request stamped anew is stamped at or past $rPass. */
+	private static function waitFor(int $rPass, int $rNow): int {
+		return max(0, $rPass - $rNow) + self::RETRY_MARGIN_MS;
 	}
 
 	/**
@@ -185,14 +199,20 @@ final class NonceStore {
 		return $rSocket === null || !file_exists($rSocket) || self::mark(self::SQL_MARK, $rNow);
 	}
 
-	/** Record the current second in a mark, at most one write a second; false when it cannot be written. */
+	/**
+	 * Record the current second in a mark, at most one write a second; false
+	 * when it cannot be written. A mark never moves back (a worker that read
+	 * the clock a second earlier writes late), unless it is more than a second
+	 * ahead: the clock stepped back.
+	 */
 	private static function mark(string $rName, int $rNow): bool {
 		$rPath = self::markPath($rName);
 		if ($rPath === null) {
 			return true;
 		}
 		$rSec = intdiv($rNow, 1000);
-		return self::markedAt($rName) === $rSec || @touch($rPath, $rSec);
+		$rAt = self::markedAt($rName);
+		return ($rAt !== null && $rAt >= $rSec && $rAt <= $rSec + 1) || @touch($rPath, $rSec);
 	}
 
 	private static function markedWithinTtl(string $rName, int $rNow): bool {
