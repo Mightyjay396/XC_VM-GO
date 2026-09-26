@@ -16,8 +16,12 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * that no longer reads leaves the store exactly as it was.
  *
  * MySQL mode, against `lines_live` as install/database.sql creates it (with
- * its uuid and server_id keys, so 20k upserts stay fast on SQLite too).
+ * its uuid and server_id keys, so 20k upserts stay fast on SQLite too). Each
+ * test runs in its own process: MAIN holds the whole registry while it
+ * applies it, and that peak stays out of the suite's.
  */
+#[\PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses]
+#[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
 final class LargeSnapshotChunkingTest extends TestCase {
 	private const SID = 5;
 
@@ -77,17 +81,32 @@ final class LargeSnapshotChunkingTest extends TestCase {
 		return 1000 + intdiv($i, 4); // four viewers a line
 	}
 
-	/** The node's registry, as the agent chunks it: 1000 records a chunk. @return list<list<array<string, mixed>>> */
-	private function chunks(): array {
+	/**
+	 * One chunk of the node's registry, as the agent sends it: 1000 records,
+	 * numbered from 0. Built on demand, so the test holds one chunk at a time
+	 * besides what MAIN itself holds.
+	 *
+	 * @return list<array<string, mixed>>
+	 */
+	private function chunk(int $rSeq): array {
 		$rRecords = [];
-		for ($i = 0; $i < self::TOTAL; $i++) {
+		for ($i = $rSeq * ConnectionSnapshot::MAX_RECORDS; $i < min(self::TOTAL, ($rSeq + 1) * ConnectionSnapshot::MAX_RECORDS); $i++) {
 			$rRecords[] = [
 				'uuid' => $this->uuid($i), 'user_id' => $this->user($i), 'stream_id' => 100 + $i % 50, 'user_ip' => '10.1.' . intdiv($i, 250) % 256 . '.' . $i % 250,
 				'user_agent' => 'VLC/3.0.20 LibVLC/3.0.20', 'container' => $i % 3 === 0 ? 'ts' : 'hls', 'pid' => 0, 'date_start' => 1799990000 + $i,
 				'geoip_country_code' => 'PT', 'isp' => 'Example ISP', 'hls_last_read' => 1800000000, 'hls_end' => 0,
 			];
 		}
-		return array_chunk($rRecords, ConnectionSnapshot::MAX_RECORDS);
+		return $rRecords;
+	}
+
+	/** The digest of the whole registry, as the agent computes it. */
+	private function registryDigest(): array {
+		$rOwners = [];
+		for ($i = 0; $i < self::TOTAL; $i++) {
+			$rOwners[] = ['uuid' => $this->uuid($i), 'user_id' => $this->user($i)];
+		}
+		return ConnectionDigest::of($rOwners);
 	}
 
 	/** @param list<array<string, mixed>> $rRecords */
@@ -107,21 +126,20 @@ final class LargeSnapshotChunkingTest extends TestCase {
 	}
 
 	public function testTwentyThousandConnectionsApplyWithTheLastChunkOnly(): void {
-		$rChunks = $this->chunks();
-		$this->assertCount(20, $rChunks);
-		$this->assertLessThan(ConnectionSnapshot::MAX_CHUNKS, count($rChunks));
-		foreach ($rChunks as $rChunk) {
-			// The agent BOXes each chunk into one request under nginx's 8 MB cap.
-			$this->assertLessThan(ClusterApi::MAX_BODY / 8, strlen((string) json_encode(['snap_id' => str_repeat('a', 32), 'seq' => 19, 'last' => false, 'records' => $rChunk])));
-		}
+		$rChunks = intdiv(self::TOTAL, ConnectionSnapshot::MAX_RECORDS);
+		$this->assertSame(20, $rChunks);
+		$this->assertLessThan(ConnectionSnapshot::MAX_CHUNKS, $rChunks);
 		$rBefore = $this->store();
 		$rSnap = 'a1b2c3d4e5f60718';
-		foreach (array_slice($rChunks, 0, -1) as $rSeq => $rChunk) {
+		for ($rSeq = 0; $rSeq < $rChunks - 1; $rSeq++) {
+			$rChunk = $this->chunk($rSeq);
+			// The agent BOXes each chunk into one request, well under nginx's 8 MB cap.
+			$this->assertLessThan(ClusterApi::MAX_BODY / 8, strlen((string) json_encode(['snap_id' => $rSnap, 'seq' => $rSeq, 'last' => false, 'records' => $rChunk])));
 			$this->assertSame(['ok' => true, 'done' => false], $this->send($rSnap, $rSeq, false, $rChunk));
 			$this->assertSame($rBefore, $this->store(), 'nothing applied before the last chunk (chunk ' . $rSeq . ')');
 		}
 
-		$rOut = $this->send($rSnap, 19, true, $rChunks[19]);
+		$rOut = $this->send($rSnap, 19, true, $this->chunk(19));
 		$this->assertSame(['ok' => true, 'done' => true, 'applied' => self::TOTAL, 'removed' => 500, 'dropped' => 0], $rOut);
 		$this->assertSame(self::TOTAL + 1, $this->rowsOf(self::SID), 'the whole registry, plus the viewer the node had ended');
 		$this->assertSame(3, $this->rowsOf(6), 'another node\'s viewers are untouched');
@@ -129,46 +147,46 @@ final class LargeSnapshotChunkingTest extends TestCase {
 		$this->assertSame(0, (int) $this->rDb->get_row()['n']);
 		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `lines_live` WHERE `server_id` = ? AND `hls_last_read` = 1800000000', self::SID);
 		$this->assertSame(self::TOTAL, (int) $this->rDb->get_row()['n'], 'viewers MAIN already held are updated in place, not duplicated');
-		$this->assertSame(ConnectionDigest::of(array_merge(...$rChunks)), ConnectionDigest::of(ConnectionDigest::stored(self::SID)), 'the digests agree');
+		$this->assertSame($this->registryDigest(), ConnectionDigest::of(ConnectionDigest::stored(self::SID)), 'the digests agree');
 		$this->assertSame([], glob($this->rDir . '/snap/' . self::SID . '/*.json') ?: [], 'nothing stays staged');
 	}
 
 	public function testABadChunkLeavesTheStoreUnchanged(): void {
-		$rChunks = $this->chunks();
 		$rBefore = $this->store();
 		$rSnap = 'b1b2c3d4e5f60718';
 		for ($rSeq = 0; $rSeq < 10; $rSeq++) {
-			$this->send($rSnap, $rSeq, false, $rChunks[$rSeq]);
+			$this->send($rSnap, $rSeq, false, $this->chunk($rSeq));
 		}
+		$rTen = $this->chunk(10);
 
 		// Chunks MAIN refuses outright (400): too big, not a list, past the cap.
-		$this->assertTrue($this->send($rSnap, 10, false, array_merge($rChunks[10], [$rChunks[11][0]]))['bad'] ?? false, 'over 1000 records');
-		$this->assertTrue($this->send($rSnap, 10, true, ['a' => $rChunks[10][0]])['bad'] ?? false, 'records not a list');
+		$this->assertTrue($this->send($rSnap, 10, false, array_merge($rTen, [$this->chunk(11)[0]]))['bad'] ?? false, 'over 1000 records');
+		$this->assertTrue($this->send($rSnap, 10, true, ['a' => $rTen[0]])['bad'] ?? false, 'records not a list');
 		$this->assertTrue($this->send($rSnap, ConnectionSnapshot::MAX_CHUNKS, true, [])['bad'] ?? false, 'past the chunk cap');
-		$this->assertTrue(ConnectionSnapshot::receive(self::SID, ['snap_id' => $rSnap, 'seq' => 10, 'last' => 'yes', 'records' => $rChunks[10]])['bad'] ?? false, 'last not a boolean');
+		$this->assertTrue(ConnectionSnapshot::receive(self::SID, ['snap_id' => $rSnap, 'seq' => 10, 'last' => 'yes', 'records' => $rTen])['bad'] ?? false, 'last not a boolean');
 		$this->assertSame($rBefore, $this->store());
 
 		// A chunk out of order (409 SNAP_GAP), even the last one: the agent drops the snapshot.
-		$this->assertSame(['ok' => false, 'expected_seq' => 10], $this->send($rSnap, 11, true, $rChunks[11]));
-		$this->assertSame(['ok' => false, 'expected_seq' => 0], $this->send('c1b2c3d4e5f60718', 3, true, $rChunks[3]), 'a chunk of another snapshot');
+		$this->assertSame(['ok' => false, 'expected_seq' => 10], $this->send($rSnap, 11, true, $this->chunk(11)));
+		$this->assertSame(['ok' => false, 'expected_seq' => 0], $this->send('c1b2c3d4e5f60718', 3, true, $this->chunk(3)), 'a chunk of another snapshot');
 		$this->assertSame($rBefore, $this->store());
 
 		// A staged chunk that no longer reads: the last chunk applies nothing,
 		// the staging is cleared, and the node starts over from chunk 0.
 		for ($rSeq = 10; $rSeq < 19; $rSeq++) {
-			$this->assertTrue($this->send($rSnap, $rSeq, false, $rChunks[$rSeq])['ok']);
+			$this->assertTrue($this->send($rSnap, $rSeq, false, $this->chunk($rSeq))['ok']);
 		}
 		file_put_contents($this->rDir . '/snap/' . self::SID . '/4.json', substr((string) file_get_contents($this->rDir . '/snap/' . self::SID . '/4.json'), 0, 4096));
-		$this->assertSame(['ok' => false, 'expected_seq' => 0], $this->send($rSnap, 19, true, $rChunks[19]));
+		$this->assertSame(['ok' => false, 'expected_seq' => 0], $this->send($rSnap, 19, true, $this->chunk(19)));
 		$this->assertSame($rBefore, $this->store(), 'the store is exactly as before the snapshot');
 		$this->assertSame([], glob($this->rDir . '/snap/' . self::SID . '/*.json') ?: []);
 
 		// Sent again whole, it applies.
 		$rSnap = 'd1b2c3d4e5f60718';
-		foreach ($rChunks as $rSeq => $rChunk) {
-			$rOut = $this->send($rSnap, $rSeq, $rSeq === 19, $rChunk);
+		for ($rSeq = 0; $rSeq < 20; $rSeq++) {
+			$rOut = $this->send($rSnap, $rSeq, $rSeq === 19, $this->chunk($rSeq));
 		}
 		$this->assertSame(['ok' => true, 'done' => true, 'applied' => self::TOTAL, 'removed' => 500, 'dropped' => 0], $rOut);
-		$this->assertSame(ConnectionDigest::of(array_merge(...$rChunks)), ConnectionDigest::of(ConnectionDigest::stored(self::SID)));
+		$this->assertSame($this->registryDigest(), ConnectionDigest::of(ConnectionDigest::stored(self::SID)));
 	}
 }
