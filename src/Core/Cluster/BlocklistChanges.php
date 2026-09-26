@@ -68,7 +68,11 @@ final class BlocklistChanges {
 			$rNow = time();
 			$rArgs = [];
 			foreach ($rKeys as $rKey) {
-				array_push($rArgs, self::SECTION, $rOp, $rKind, substr($rKey, 0, 255), $rNow);
+				$rArgs[] = self::SECTION;
+				$rArgs[] = $rOp;
+				$rArgs[] = $rKind;
+				$rArgs[] = substr($rKey, 0, 255);
+				$rArgs[] = $rNow;
 			}
 			$rDb->query('INSERT INTO `cluster_changes` (`section`, `op`, `kind`, `value`, `time`) VALUES ' . implode(', ', array_fill(0, count($rKeys), '(?, ?, ?, ?, ?)')) . ';', ...$rArgs);
 		} catch (\Throwable) {

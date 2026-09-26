@@ -56,7 +56,7 @@ final class ClusterBus {
 
 	/** A connected client, or null when the bus is not reachable. */
 	public static function client(): ?\Redis {
-		if (self::$rClient !== null) {
+		if (self::$rClient instanceof \Redis) {
 			return self::$rClient;
 		}
 		$rSocket = self::socket();
@@ -97,7 +97,7 @@ final class ClusterBus {
 	 * would reconnect each time.
 	 */
 	public static function waitNodeReleasing(int $rServerID, float $rSeconds, ?object $rDb): ?bool {
-		if (self::client() === null) {
+		if (!self::client() instanceof \Redis) {
 			return null;
 		}
 		if ($rDb instanceof DatabaseHandler) {
@@ -144,7 +144,7 @@ final class ClusterBus {
 
 	private static function push(string $rKey): bool {
 		$rRedis = self::client();
-		if ($rRedis === null) {
+		if (!$rRedis instanceof \Redis) {
 			return false;
 		}
 		try {
@@ -158,7 +158,7 @@ final class ClusterBus {
 
 	private static function pop(string $rKey, float $rSeconds): ?bool {
 		$rRedis = self::client();
-		if ($rRedis === null) {
+		if (!$rRedis instanceof \Redis) {
 			return null;
 		}
 		$rSeconds = max(0.01, $rSeconds);

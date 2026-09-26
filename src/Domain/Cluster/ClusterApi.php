@@ -652,7 +652,7 @@ final class ClusterApi {
 			}
 		}
 		try {
-			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, (string) ($rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? ''))];
+			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '')];
 			// Sent whole: only to an agent that asks for them (have names the section).
 			foreach (array_keys(ReplicaBuilder::WHOLE) as $rSection) {
 				if (array_key_exists($rSection, $rHave)) {

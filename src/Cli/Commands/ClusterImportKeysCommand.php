@@ -44,7 +44,7 @@ class ClusterImportKeysCommand implements CommandInterface {
 
 	public function execute(array $rArgs): int {
 		[$rArgs, $rOptions] = InstallCredentials::splitOptions($rArgs);
-		$rFile = (string) ($rArgs[0] ?? '');
+		$rFile = $rArgs[0] ?? '';
 		$rBundle = $rFile === '' ? false : @file_get_contents($rFile);
 		if ($rBundle === false || $rBundle === '') {
 			echo "Usage: cluster:import-keys <file> [--passphrase-file=<path>]\n";

@@ -62,7 +62,7 @@ final class EventIngest {
 	private const CACHE_NEUTRAL = ['progress_info', 'delay_available_at'];
 
 	/** @var (callable(int): mixed)|null */
-	private static $rOnStreamChanged = null;
+	private static $rOnStreamChanged;
 
 	/**
 	 * What runs when an event changed a stream's routing state (tests; by

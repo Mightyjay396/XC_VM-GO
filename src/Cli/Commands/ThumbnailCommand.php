@@ -55,7 +55,7 @@ class ThumbnailCommand implements CommandInterface {
 		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t1.id = t2.stream_id AND t2.server_id = t1.vframes_server_id WHERE t1.`id` = ? AND t1.`vframes_server_id` = ?', $rStreamID, SERVER_ID);
 		if (0 < $db->num_rows()) {
 			$rRow = $db->get_row();
-			ContentSink::workerPid((int) $rStreamID, 'vframes', getmypid(), $db);
+			ContentSink::workerPid($rStreamID, 'vframes', getmypid(), $db);
 			StreamProcess::updateStream($rStreamID);
 			$db->close_mysql();
 			while (ProcessManager::isStreamRunning($rRow['pid'], $rStreamID)) {

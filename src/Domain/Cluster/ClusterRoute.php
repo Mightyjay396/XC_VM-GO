@@ -89,7 +89,7 @@ final class ClusterRoute {
 			return [false, false];
 		}
 		$rCrypto = self::target($rServerID);
-		if ($rCrypto === null) {
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			return [false, false];
 		}
 		try {
@@ -120,7 +120,7 @@ final class ClusterRoute {
 			return [false, false];
 		}
 		$rCrypto = self::target($rServerID);
-		if ($rCrypto === null) {
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			return [false, false];
 		}
 		try {
