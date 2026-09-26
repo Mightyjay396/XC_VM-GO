@@ -39,7 +39,10 @@ boot() {
   sudo -u xc_vm $SCRIPT/bin/php/bin/php $SCRIPT/console.php signals >/dev/null 2>/dev/null &
   sudo -u xc_vm $SCRIPT/bin/php/bin/php $SCRIPT/console.php watchdog >/dev/null 2>/dev/null &
   sudo -u xc_vm $SCRIPT/bin/php/bin/php $SCRIPT/console.php queue >/dev/null 2>/dev/null &
-  sudo -u xc_vm $SCRIPT/bin/php/bin/php $SCRIPT/console.php cache_handler >/dev/null 2>/dev/null &
+  # MAIN only: LB builds strip the command (the cron revives it on MAIN).
+  if [ -f $SCRIPT/Cli/Commands/CacheHandlerCommand.php ]; then
+    sudo -u xc_vm $SCRIPT/bin/php/bin/php $SCRIPT/console.php cache_handler >/dev/null 2>/dev/null &
+  fi
   sudo -u xc_vm $SCRIPT/bin/php/bin/php $SCRIPT/console.php fanout_sync >/dev/null 2>/dev/null &
 }
 

@@ -78,7 +78,10 @@ class ServiceCommand implements CommandInterface {
 		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php watchdog >/dev/null 2>/dev/null &');
 		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php queue >/dev/null 2>/dev/null &');
 
-		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cache_handler >/dev/null 2>/dev/null &');
+		// MAIN only: LB builds strip the command (ServersCronJob revives it on MAIN).
+		if (file_exists(MAIN_HOME . 'Cli/Commands/CacheHandlerCommand.php')) {
+			exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cache_handler >/dev/null 2>/dev/null &');
+		}
 
 		echo "Running in foreground...\n";
 		// sleep infinity handled by systemd shell wrapper
