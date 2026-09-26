@@ -459,6 +459,9 @@ class BlocklistService {
 	 * @return array Allowed RTMP IPs.
 	 */
 	public static function getAllowedRTMP() {
+		if (NodeFlows::on(NodeFlows::CONFIG)) {
+			return FileCache::getCache('rtmp_ips') ?: []; // the node replica's (cluster:apply)
+		}
 		$db = self::db();
 		$rReturn = [];
 		$db->query('SELECT `ip`, `password`, `push`, `pull` FROM `rtmp_ips`');

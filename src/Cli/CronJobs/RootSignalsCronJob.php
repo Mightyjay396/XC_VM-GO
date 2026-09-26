@@ -4,7 +4,9 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\OpensslExtra;
@@ -177,6 +179,24 @@ class RootSignalsCronJob implements CommandInterface {
 		return null;
 	}
 
+	/**
+	 * The blocked addresses, distinct: MAIN's `blocked_ips`, or with the CONFIG
+	 * flow on the replica's `blocked_ips` cache. Null when that cache is not
+	 * there (yet): the sync then leaves iptables as it is.
+	 *
+	 * @return list<string>|null
+	 */
+	public static function blockedIPs(?object $rDb): ?array {
+		if (NodeFlows::on(NodeFlows::CONFIG)) {
+			$rCache = FileCache::getCache('blocked_ips');
+			return is_array($rCache) ? array_values(array_unique(array_map('strval', $rCache))) : null;
+		}
+		if ($rDb === null || !$rDb->query('SELECT `ip` FROM `blocked_ips`;')) {
+			return null;
+		}
+		return array_map('strval', array_keys($rDb->get_rows(true, 'ip') ?: []));
+	}
+
 	private function loadCron(): void {
 		global $db;
 		$rServers = ServerRepository::getAll(true);
@@ -207,11 +227,14 @@ class RootSignalsCronJob implements CommandInterface {
 			}
 
 			$rSyncMarker = CRONS_TMP_PATH . 'blocked_ips_sync_marker';
-			$rRunFullSync = true;
-			$db->query('SELECT COUNT(*) AS `count` FROM `blocked_ips`;');
-			$rCurrentIPCount = intval($db->get_row()['count']);
+			// The addresses iptables must block: MAIN's table, or with the
+			// CONFIG flow on the node replica's cache (cluster:apply). No cache
+			// yet means nothing to sync, never "unblock everything".
+			$rBlocked = self::blockedIPs($db);
+			$rRunFullSync = $rBlocked !== null;
+			$rCurrentIPCount = count($rBlocked ?? []);
 
-			if (file_exists($rSyncMarker)) {
+			if ($rRunFullSync && file_exists($rSyncMarker)) {
 				$rLastSyncData = json_decode(@file_get_contents($rSyncMarker), true);
 				if (is_array($rLastSyncData) && isset($rLastSyncData['count'], $rLastSyncData['time'])) {
 					if (intval($rLastSyncData['count']) == $rCurrentIPCount && (time() - intval($rLastSyncData['time'])) < 300) {
@@ -223,8 +246,6 @@ class RootSignalsCronJob implements CommandInterface {
 			if ($rRunFullSync) {
 				$rActualBlocked = $this->getBlockedIPs();
 				$rActualBlockedFlip = array_flip($rActualBlocked);
-				$db->query('SELECT `ip` FROM `blocked_ips`;');
-				$rBlocked = array_keys($db->get_rows(true, 'ip'));
 				$rBlockedFlip = array_flip($rBlocked);
 				$rAdd = $rDel = [];
 				foreach (array_count_values($rActualBlocked) as $rIP => $rCount) {

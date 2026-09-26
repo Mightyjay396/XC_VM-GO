@@ -682,13 +682,20 @@ A section carries the log head read before the snapshot, so a change made in bet
 | `blocked_servers` | the blocked ASNs |
 | `blocked_ua` | `[id => {id, exact_match, blocked_ua}]`, lower-cased |
 | `blocked_isp` | `[{id, isp, blocked}]` |
+| `rtmp_ips` | `[resolved ip => {password, push, pull}]`, as MAIN's `cron:cache` builds it; an LB used to read the database for this |
 
 What it does depends on the node's CONFIG flow:
 
 - **CONFIG off (shadow).** Nothing is written. `replica/apply.json` counts, per cache, entries the database has that the replica lacks (`missing`) and the reverse (`extra`). Rows are compared by value, whichever driver typed them. Zeros there are the evidence for switching CONFIG on.
 - **CONFIG on.** The replica writes the caches. `cron:cache` stops writing them, and `BlocklistService::getBlocked*` read the cache instead of refreshing it from the database. Without that, the next reader would overwrite the replica within 20 s.
 
-**Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. Three blocklist consumers still read MAIN's database directly: `rtmp.php`, which calls `getAllowedRTMP`, `cron:root_signals`' iptables sync, and the `rtmp_ips` cache, which MAIN alone builds. Each needs its own replica reader before a node can leave the database.
+The shadow diff for `rtmp_ips` compares against the database, because an LB never cached it. With CONFIG on, three more readers switch to the replica:
+
+- `getAllowedRTMP`, which `rtmp.php` calls, reads the cache.
+- `cron:root_signals` syncs iptables from the replica's `blocked_ips` cache (`RootSignalsCronJob::blockedIPs`).
+- When that cache is not there yet, the sync leaves iptables as it is rather than unblocking everything.
+
+**Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. On the blocklist path, the root flush still arrives as a `signals` row, until `node.root blocklist_sync` replaces it.
 
 ### Disaster recovery of MAIN's cluster keys
 

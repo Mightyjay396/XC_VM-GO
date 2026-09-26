@@ -1,10 +1,12 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Domain\Security\BlocklistService;
+use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
  * cluster:apply (cluster plan, Phase 7): the blocklist the agent verified
@@ -33,6 +35,7 @@ final class ReplicaApplyTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		DatabaseFactory::reset();
 		ReplicaApply::useDir(null);
 		NodeFlows::usePath(null);
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, null);
@@ -54,6 +57,7 @@ final class ReplicaApplyTest extends TestCase {
 			'blocked_servers' => [64500],
 			'blocked_ua' => [3 => ['id' => 3, 'exact_match' => 1, 'blocked_ua' => 'curl']],
 			'blocked_isp' => [['id' => 1, 'isp' => 'isp', 'blocked' => 1]],
+			'rtmp_ips' => ['198.51.100.9' => ['password' => 'pw', 'push' => true, 'pull' => false]],
 		], ReplicaApply::caches(self::DATA));
 		$this->assertNull(ReplicaApply::caches(['ip' => [['not' => 'a string']]]));
 		$this->assertNull(ReplicaApply::caches(['asn' => ['64500']]));
@@ -65,6 +69,11 @@ final class ReplicaApplyTest extends TestCase {
 		FileCache::setCache('blocked_servers', ['64500']);
 		FileCache::setCache('blocked_ua', [3 => ['id' => '3', 'exact_match' => '1', 'blocked_ua' => 'curl']]);
 		FileCache::setCache('blocked_isp', []);
+		// RTMP publishers, which an LB reads from MAIN's database.
+		$rDb = new TestDb();
+		$rDb->exec('CREATE TABLE `rtmp_ips` (`id` INTEGER PRIMARY KEY, `ip` varchar(255), `password` varchar(128), `push` int, `pull` int)');
+		$rDb->exec("INSERT INTO `rtmp_ips` VALUES (1, '198.51.100.9', 'old', 1, 0)");
+		DatabaseFactory::set($rDb);
 		$this->replica(self::DATA);
 
 		$rReport = ReplicaApply::run(false, 1800000000);
@@ -75,6 +84,7 @@ final class ReplicaApplyTest extends TestCase {
 			'blocked_servers' => ['missing' => 0, 'extra' => 0],
 			'blocked_ua' => ['missing' => 0, 'extra' => 0],
 			'blocked_isp' => ['missing' => 0, 'extra' => 1],
+			'rtmp_ips' => ['missing' => 1, 'extra' => 1], // the password changed
 		], $rReport['diff']);
 		$this->assertSame(['203.0.113.1', '203.0.113.9'], FileCache::getCache('blocked_ips'), 'nothing written in shadow');
 		$this->assertSame($rReport, json_decode((string) file_get_contents($this->rDir . '/replica/apply.json'), true));
@@ -90,6 +100,19 @@ final class ReplicaApplyTest extends TestCase {
 		touch($this->rDir . '/cache/blocked_ips', time() - 3600);
 		$this->assertSame(['203.0.113.1', '203.0.113.2'], BlocklistService::getBlockedIPs());
 		$this->assertSame([64500], BlocklistService::getBlockedServers(true));
+		$this->assertSame(['198.51.100.9' => ['password' => 'pw', 'push' => true, 'pull' => false]], BlocklistService::getAllowedRTMP());
+	}
+
+	public function testIptablesFollowsTheReplicaAndNeverAMissingOne(): void {
+		$rDb = new TestDb();
+		$rDb->exec('CREATE TABLE `blocked_ips` (`id` INTEGER PRIMARY KEY, `ip` varchar(39))');
+		$rDb->exec("INSERT INTO `blocked_ips` VALUES (1, '203.0.113.7')");
+		$this->assertSame(['203.0.113.7'], RootSignalsCronJob::blockedIPs($rDb), 'CONFIG off: MAIN\'s table');
+
+		$this->flows(NodeFlows::CONFIG);
+		$this->assertNull(RootSignalsCronJob::blockedIPs($rDb), 'no replica cache yet: leave iptables alone');
+		FileCache::setCache('blocked_ips', ['203.0.113.1', '203.0.113.1', '203.0.113.2']);
+		$this->assertSame(['203.0.113.1', '203.0.113.2'], RootSignalsCronJob::blockedIPs(null));
 	}
 
 	public function testNothingToApply(): void {

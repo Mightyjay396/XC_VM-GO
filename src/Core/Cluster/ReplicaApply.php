@@ -3,6 +3,7 @@
 namespace XcVm\Core\Cluster;
 
 use XcVm\Core\Cache\FileCache;
+use XcVm\Domain\Security\BlocklistService;
 
 /**
  * cluster:apply's work (plan, section 9, Phase 7): turn the replica the agent
@@ -16,6 +17,8 @@ use XcVm\Core\Cache\FileCache;
  * blocked_servers  asn  (a list of blocked ASNs)
  * blocked_ua       ua   ([id => {id, exact_match, blocked_ua (lower case)}])
  * blocked_isp      isp  ([{id, isp, blocked}])
+ * rtmp_ips         rtmp ([resolved ip => {password, push, pull}]), which
+ *                  only MAIN's cron:cache builds; an LB read its database
  * ```
  *
  * The shapes are the ones cron:cache writes from MAIN's database, so every
@@ -30,7 +33,7 @@ use XcVm\Core\Cache\FileCache;
  * Either way the report goes to `replica/apply.json`.
  */
 final class ReplicaApply {
-	public const CACHES = ['blocked_ips', 'blocked_servers', 'blocked_ua', 'blocked_isp'];
+	public const CACHES = ['blocked_ips', 'blocked_servers', 'blocked_ua', 'blocked_isp', 'rtmp_ips'];
 
 	private static ?string $rDir = null;
 
@@ -63,7 +66,7 @@ final class ReplicaApply {
 		} else {
 			$rReport['diff'] = [];
 			foreach ($rCaches as $rKey => $rValue) {
-				$rReport['diff'][$rKey] = self::diff(FileCache::getCache($rKey), $rValue);
+				$rReport['diff'][$rKey] = self::diff(self::current($rKey), $rValue);
 			}
 		}
 		$rTmp = self::dir() . '.apply.json.tmp';
@@ -85,7 +88,8 @@ final class ReplicaApply {
 		$rASNs = $rData['asn'] ?? [];
 		$rUAs = $rData['ua'] ?? [];
 		$rISPs = $rData['isp'] ?? [];
-		if (!self::listOf($rIPs, 'is_string') || !self::listOf($rASNs, 'is_int') || !self::listOf($rUAs, 'is_array') || !self::listOf($rISPs, 'is_array')) {
+		$rRTMPs = $rData['rtmp'] ?? [];
+		if (!self::listOf($rIPs, 'is_string') || !self::listOf($rASNs, 'is_int') || !self::listOf($rUAs, 'is_array') || !self::listOf($rISPs, 'is_array') || !self::listOf($rRTMPs, 'is_array')) {
 			return null;
 		}
 		$rUA = [];
@@ -97,19 +101,48 @@ final class ReplicaApply {
 		foreach ($rISPs as $rRow) {
 			$rISP[] = ['id' => (int) ($rRow['id'] ?? 0), 'isp' => (string) ($rRow['isp'] ?? ''), 'blocked' => (int) ($rRow['blocked'] ?? 0)];
 		}
-		return ['blocked_ips' => array_values($rIPs), 'blocked_servers' => array_values($rASNs), 'blocked_ua' => $rUA, 'blocked_isp' => $rISP];
+		// As cron:cache on MAIN: keyed by the resolved address.
+		$rRTMP = [];
+		foreach ($rRTMPs as $rRow) {
+			$rRTMP[gethostbyname((string) ($rRow['ip'] ?? ''))] = ['password' => (string) ($rRow['password'] ?? ''), 'push' => (bool) ($rRow['push'] ?? false), 'pull' => (bool) ($rRow['pull'] ?? false)];
+		}
+		return ['blocked_ips' => array_values($rIPs), 'blocked_servers' => array_values($rASNs), 'blocked_ua' => $rUA, 'blocked_isp' => $rISP, 'rtmp_ips' => $rRTMP];
+	}
+
+	/**
+	 * What the node uses today, for the shadow diff: the cache cron:cache built
+	 * from MAIN's database, or for RTMP (which an LB never cached) the database.
+	 */
+	private static function current(string $rKey): mixed {
+		if ($rKey === 'rtmp_ips' && class_exists(BlocklistService::class)) {
+			try {
+				return BlocklistService::getAllowedRTMP();
+			} catch (\Throwable) {
+				return [];
+			}
+		}
+		return FileCache::getCache($rKey);
 	}
 
 	/**
 	 * Entries of the current cache the replica lacks, and the reverse, compared
-	 * by value (rows by their normalised content; the drivers type them apart).
+	 * by value (rows by their normalised content; the drivers type them apart),
+	 * and by key where the cache is keyed by something outside its rows.
 	 *
 	 * @return array{missing: int, extra: int}
 	 */
 	private static function diff(mixed $rCurrent, mixed $rReplica): array {
-		$rKey = static fn($rEntry): string => is_array($rEntry) ? (string) json_encode(array_map('strval', $rEntry)) : (string) $rEntry;
-		$rHave = array_count_values(array_map($rKey, array_values(is_array($rCurrent) ? $rCurrent : [])));
-		$rWant = array_count_values(array_map($rKey, array_values(is_array($rReplica) ? $rReplica : [])));
+		$rEntries = static function (mixed $rCache): array {
+			$rCache = is_array($rCache) ? $rCache : [];
+			$rOut = [];
+			foreach ($rCache as $rKey => $rEntry) {
+				$rValue = is_array($rEntry) ? (string) json_encode(array_map('strval', $rEntry)) : (string) $rEntry;
+				$rOut[] = array_is_list($rCache) ? $rValue : $rKey . '=' . $rValue;
+			}
+			return array_count_values($rOut);
+		};
+		$rHave = $rEntries($rCurrent);
+		$rWant = $rEntries($rReplica);
 		return ['missing' => array_sum(array_diff_key($rHave, $rWant)), 'extra' => array_sum(array_diff_key($rWant, $rHave))];
 	}
 
