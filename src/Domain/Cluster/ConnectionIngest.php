@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -19,6 +20,8 @@ use XcVm\Infrastructure\Redis\RedisManager;
  * conn.remove {uuid}     drop it from the store
  * conn.close {uuid}      the viewer left the node's fanout: its activity row,
  *                        then drop it from the store
+ * conn.divergence {rows} (P1) each viewer's measured rate, turned into its
+ *                        divergence in `lines_divergence`
  * ```
  *
  * A node writes only its own connections: `server_id` is always the sender,
@@ -160,6 +163,103 @@ final class ConnectionIngest {
 			(string) ($rRow['hmac_identifier'] ?? '')
 		);
 		return self::remove($rServerID, $rUUID);
+	}
+
+	/**
+	 * A node's conn.divergence (P1): each viewer's measured rate (KiB/s)
+	 * becomes its divergence in `lines_divergence`, against the stream's
+	 * bitrate on that node, with the formula the node's cron used
+	 * (DivergenceSink). With `lines_live` as the store, the row's `divergence`
+	 * is set too, as the cron did. Only connections MAIN's store holds for the
+	 * node are written, one statement per table for the whole event.
+	 *
+	 * A store that cannot be read drops the event rather than failing the
+	 * batch: the next report comes within a minute, and the lane's logs are
+	 * not held up for it.
+	 *
+	 * @param array<string, mixed> $rData {rows: [{uuid, rate}, …]}
+	 */
+	public static function divergence(int $rServerID, array $rData): bool {
+		$rRows = $rData['rows'] ?? null;
+		if (!is_array($rRows) || $rRows === [] || !array_is_list($rRows) || count($rRows) > DivergenceSink::CHUNK) {
+			return false;
+		}
+		$rRates = [];
+		foreach ($rRows as $rRow) {
+			$rUUID = is_array($rRow) ? ($rRow['uuid'] ?? null) : null;
+			$rRate = is_array($rRow) ? ($rRow['rate'] ?? null) : null;
+			if (is_string($rUUID) && preg_match(DivergenceSink::UUID, $rUUID) && is_int($rRate) && $rRate >= 0) {
+				$rRates[$rUUID] = $rRate;
+			}
+		}
+		$rOwn = $rRates === [] ? null : self::owned($rServerID, array_map('strval', array_keys($rRates)));
+		if ($rOwn === null || $rOwn === []) {
+			return false;
+		}
+		$rDb = self::db();
+		$rStreamIDs = array_values(array_unique(array_column($rOwn, 0)));
+		$rExpected = [];
+		$rDb->query('SELECT `stream_id`, `bitrate` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', array_fill(0, count($rStreamIDs), '?')) . ');', $rServerID, ...$rStreamIDs);
+		foreach ($rDb->get_rows() ?: [] as $rRow) {
+			$rExpected[(int) $rRow['stream_id']] = DivergenceSink::expected((int) $rRow['bitrate']);
+		}
+		$rParams = $rLive = [];
+		foreach ($rOwn as $rUUID => [$rStreamID, $rActivityID]) {
+			$rDivergence = DivergenceSink::of($rRates[$rUUID], $rExpected[$rStreamID] ?? 0);
+			array_push($rParams, (string) $rUUID, $rDivergence);
+			if ($rActivityID !== null) {
+				$rLive[$rActivityID] = $rDivergence;
+			}
+		}
+		if (!$rDb->query('REPLACE INTO `lines_divergence` (`uuid`, `divergence`) VALUES ' . implode(',', array_fill(0, count($rOwn), '(?, ?)')) . ';', ...$rParams)) {
+			return false;
+		}
+		if ($rLive !== []) {
+			$rCase = [];
+			foreach ($rLive as $rActivityID => $rDivergence) {
+				array_push($rCase, $rActivityID, $rDivergence);
+			}
+			$rDb->query('UPDATE `lines_live` SET `divergence` = CASE `activity_id`' . str_repeat(' WHEN ? THEN ?', count($rLive)) . ' ELSE `divergence` END WHERE `server_id` = ? AND `activity_id` IN (' . implode(',', array_fill(0, count($rLive), '?')) . ');', ...[...$rCase, $rServerID, ...array_keys($rLive)]);
+		}
+		return true;
+	}
+
+	/**
+	 * The node's own connections among these uuids, as MAIN's store holds
+	 * them: uuid => [stream_id, activity_id], the activity id null in Redis.
+	 * Null when the store cannot be read.
+	 *
+	 * @param list<string> $rUUIDs
+	 * @return array<string, array{0: int, 1: int|null}>|null
+	 */
+	private static function owned(int $rServerID, array $rUUIDs): ?array {
+		$rOut = [];
+		if (SettingsManager::get('redis_handler')) {
+			$rRedis = RedisManager::instance();
+			try {
+				$rData = $rRedis instanceof \Redis ? $rRedis->mGet($rUUIDs) : null;
+			} catch (\Throwable) {
+				$rData = null;
+			}
+			if (!is_array($rData)) {
+				return null;
+			}
+			foreach (array_values($rData) as $i => $rRaw) {
+				$rRecord = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;
+				if (is_array($rRecord) && (int) ($rRecord['server_id'] ?? 0) === $rServerID) {
+					$rOut[$rUUIDs[$i]] = [(int) ($rRecord['stream_id'] ?? 0), null];
+				}
+			}
+			return $rOut;
+		}
+		$rDb = self::db();
+		if (!$rDb->query('SELECT `uuid`, `activity_id`, `stream_id` FROM `lines_live` WHERE `server_id` = ? AND `uuid` IN (' . implode(',', array_fill(0, count($rUUIDs), '?')) . ');', $rServerID, ...$rUUIDs)) {
+			return null;
+		}
+		foreach ($rDb->get_rows() ?: [] as $rRow) {
+			$rOut[(string) $rRow['uuid']] = [(int) $rRow['stream_id'], (int) $rRow['activity_id']];
+		}
+		return $rOut;
 	}
 
 	/**

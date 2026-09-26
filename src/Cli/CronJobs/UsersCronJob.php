@@ -4,7 +4,9 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Cluster\HlsReaping;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -192,6 +194,31 @@ class UsersCronJob implements CommandInterface {
 			return true;
 		}
 		return HlsReaping::STALE_AFTER <= $rNow - intval($rConnection['hls_last_read']) && !HlsReaping::nodeReaps((int) $rConnection['server_id']);
+	}
+
+	/**
+	 * On a node whose CONNECTIONS flow is on, the viewers' speed files (KiB/s,
+	 * named by uuid) go to MAIN as a conn.divergence event, and the files read
+	 * are removed. False when they were not sent: this cron then writes
+	 * MAIN's tables from them, as before.
+	 *
+	 * @param list<string> $rFiles DIVERGENCE_TMP_PATH files
+	 */
+	private function spoolDivergence(array $rFiles): bool {
+		if (!NodeFlows::on(NodeFlows::CONNECTIONS)) {
+			return false;
+		}
+		$rRates = [];
+		foreach ($rFiles as $rFile) {
+			$rRates[basename($rFile)] = intval(@file_get_contents($rFile));
+		}
+		if (!DivergenceSink::spool($rRates)) {
+			return false;
+		}
+		foreach ($rFiles as $rFile) {
+			@unlink($rFile);
+		}
+		return true;
 	}
 
 	private function processDeletions($rDelete, $rDelStream = []) {
@@ -567,6 +594,12 @@ class UsersCronJob implements CommandInterface {
 
 		$rConnectionSpeeds = glob(DIVERGENCE_TMP_PATH . '*');
 
+		// A CONNECTIONS node sends the rates to MAIN, which writes the
+		// divergence (conn.divergence); it writes MAIN's tables only without.
+		if (count($rConnectionSpeeds) > 0 && $this->spoolDivergence($rConnectionSpeeds)) {
+			$rConnectionSpeeds = [];
+		}
+
 		if (count($rConnectionSpeeds) > 0) {
 			$rBitrates = [];
 
@@ -577,7 +610,7 @@ class UsersCronJob implements CommandInterface {
 				foreach ($db->get_rows() as $rRow) {
 					$bitrate = intval($rRow['bitrate']);
 					if ($bitrate > 0) {
-						$rStreamMap[intval($rRow['stream_id'])] = intval($bitrate / 8 * 0.92);
+						$rStreamMap[intval($rRow['stream_id'])] = DivergenceSink::expected($bitrate);
 					}
 				}
 
@@ -622,7 +655,7 @@ class UsersCronJob implements CommandInterface {
 				foreach ($db->get_rows() as $rRow) {
 					$bitrate = intval($rRow['bitrate']);
 					if ($bitrate > 0) {
-						$rBitrates[$rRow['uuid']] = intval($bitrate / 8 * 0.92);
+						$rBitrates[$rRow['uuid']] = DivergenceSink::expected($bitrate);
 					}
 				}
 			}
@@ -655,17 +688,11 @@ class UsersCronJob implements CommandInterface {
 					continue;
 				}
 
-				$realBitrate = $rBitrates[$rUUID];
-				$rDivergence = intval(($rAverageSpeed - $realBitrate) / $realBitrate * 100);
-
-				if ($rDivergence > 0) {
-					$rDivergence = 0;
-				}
-
-				$rDivergenceUpdate[] = "('" . $rUUID . "', " . abs($rDivergence) . ')';
+				$rDivergence = DivergenceSink::of($rAverageSpeed, $rBitrates[$rUUID]);
+				$rDivergenceUpdate[] = "('" . $rUUID . "', " . $rDivergence . ')';
 
 				if (!$rRedis && isset($rUUIDMap[$rUUID])) {
-					$rLiveQuery[] = '(' . $rUUIDMap[$rUUID] . ', ' . abs($rDivergence) . ')';
+					$rLiveQuery[] = '(' . $rUUIDMap[$rUUID] . ', ' . $rDivergence . ')';
 				}
 			}
 

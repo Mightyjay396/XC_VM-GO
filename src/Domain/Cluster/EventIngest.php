@@ -25,8 +25,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *     conn.upsert, conn.remove, conn.close, conn.limit,
  *     security.block_ip, node.state
  *                                                    and the node rewinds
- * p1  log.<type>, skip, node.inventory              high-water: numbers at or below
- *                                                    useq_p1 are skipped, gaps are fine
+ * p1  log.<type>, skip, node.inventory,             high-water: numbers at or below
+ *     conn.divergence                                useq_p1 are skipped, gaps are fine
  * ```
  *
  * Every event is applied as the sending node: a stream's state goes to that
@@ -55,6 +55,7 @@ final class EventIngest {
 		'security.block_ip' => ['p0', NodeRegistry::FLOW_CONFIG],
 		'node.state' => ['p0', NodeRegistry::FLOW_TELEMETRY],
 		'node.inventory' => ['p1', NodeRegistry::FLOW_TELEMETRY],
+		'conn.divergence' => ['p1', NodeRegistry::FLOW_CONNECTIONS],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
 	];
 
@@ -154,6 +155,8 @@ final class EventIngest {
 				return ConnectionIngest::close($rServerID, (string) ($rData['uuid'] ?? ''));
 			case 'conn.limit':
 				return ConnectionLimits::queue($rServerID, $rData);
+			case 'conn.divergence':
+				return ConnectionIngest::divergence($rServerID, $rData);
 			case 'security.block_ip':
 				return self::blockIp($rServerID, $rData);
 			case 'node.state':

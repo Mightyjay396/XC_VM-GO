@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -224,6 +225,9 @@ class FanoutSyncCommand implements CommandInterface {
 		if (!is_array($rRates) || count($rRates) === 0) {
 			return; // daemon unreachable or no active viewers — nothing to record
 		}
+		if ($this->spoolDivergence($rConns, $rRates)) {
+			return; // a CONNECTIONS node: MAIN writes it (conn.divergence)
+		}
 
 		global $rSettings;
 		$rRedisMode = !empty($rSettings['redis_handler']);
@@ -238,7 +242,7 @@ class FanoutSyncCommand implements CommandInterface {
 		foreach ($db->get_rows() as $rRow) {
 			$rBitrate = intval($rRow['bitrate']);
 			if ($rBitrate > 0) {
-				$rExpected[intval($rRow['stream_id'])] = intval($rBitrate / 8 * 0.92);
+				$rExpected[intval($rRow['stream_id'])] = DivergenceSink::expected($rBitrate);
 			}
 		}
 		if (count($rExpected) === 0) {
@@ -262,12 +266,8 @@ class FanoutSyncCommand implements CommandInterface {
 
 			// divergence = how many % BELOW the expected bitrate the viewer runs
 			// (a viewer receiving faster than realtime, e.g. the prebuffer burst,
-			// clamps to 0). abs() to store a positive shortfall — matches legacy.
-			$rDivergence = intval((intval($rRates[$rUUID]) - $rExpectedKBs) / $rExpectedKBs * 100);
-			if ($rDivergence > 0) {
-				$rDivergence = 0;
-			}
-			$rDivergence = abs($rDivergence);
+			// clamps to 0), stored as a positive shortfall — matches legacy.
+			$rDivergence = DivergenceSink::of(intval($rRates[$rUUID]), $rExpectedKBs);
 
 			$rDivergenceRows[] = "('" . $rUUID . "', " . $rDivergence . ')';
 			if (!$rRedisMode && !empty($rConn['activity_id'])) {
@@ -281,6 +281,26 @@ class FanoutSyncCommand implements CommandInterface {
 		if (!$rRedisMode && count($rLiveRows) > 0) {
 			$db->query('INSERT INTO `lines_live`(`activity_id`,`divergence`) VALUES ' . implode(',', $rLiveRows) . ' ON DUPLICATE KEY UPDATE `divergence`=VALUES(`divergence`);');
 		}
+	}
+
+	/**
+	 * On a node whose CONNECTIONS flow is on, the daemon's rates for this
+	 * node's daemon-served rows go to MAIN as a conn.divergence event, and
+	 * MAIN works out the divergence from the stream's bitrate. False when they
+	 * were not sent: writeDivergence() writes MAIN's tables, as before.
+	 *
+	 * @param array<int,array<string,mixed>> $rConns Candidate pid=0 rows.
+	 * @param array<string,mixed>            $rRates uuid => KB/s from the daemon.
+	 */
+	private function spoolDivergence(array $rConns, array $rRates): bool {
+		$rOwn = [];
+		foreach ($rConns as $rConn) {
+			$rUUID = is_array($rConn) ? (string) ($rConn['uuid'] ?? '') : '';
+			if ($rUUID !== '' && isset($rRates[$rUUID])) {
+				$rOwn[$rUUID] = intval($rRates[$rUUID]);
+			}
+		}
+		return DivergenceSink::spool($rOwn);
 	}
 
 	/**
