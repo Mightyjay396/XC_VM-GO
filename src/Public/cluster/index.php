@@ -56,6 +56,8 @@ $rReq = [
 	'query' => (string) ($_SERVER['QUERY_STRING'] ?? ''),
 	'headers' => function_exists('getallheaders') ? (array) getallheaders() : [],
 	'ip' => (string) ($_SERVER['REMOTE_ADDR'] ?? ''),
+	// nginx's fastcgi_params pass HTTPS=on for a request that came over TLS.
+	'https' => !empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off',
 ];
 // Until MAIN's cluster pools answer, nginx hands the API to a panel pool, and
 // every op but health gets a signed 503 STARTING (ClusterPool).

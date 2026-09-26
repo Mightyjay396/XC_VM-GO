@@ -55,7 +55,7 @@ final class ClusterApi {
 	];
 
 	/**
-	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string} $rReq
+	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string, https?: bool} $rReq
 	 * @param array<string, mixed> $rSettings
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
 	 * @return array{status: int, headers: array<string, string>, body: string}
@@ -75,6 +75,13 @@ final class ClusterApi {
 		}
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return DenialFactory::deny($rCrypto, 503, 'DISABLED');
+		}
+		if (($rSettings['cluster_transport'] ?? '') === 'https_required' && empty($rReq['https']) && $rOp !== 'challenge') {
+			// https_required (plan section 3): over plain HTTP only the challenge
+			// is served, so a node whose HTTPS fails still fetches the signed
+			// policy there, and with it an admin's switch back to auto.
+			$rH = Canonical::parseHeaders($rReq['headers']);
+			return DenialFactory::deny($rCrypto, 403, 'HTTPS_REQUIRED', $rH['node'] ?? null, $rH['nonce'] ?? null);
 		}
 		if ($rOp === 'challenge') {
 			return self::challenge($rCrypto, (string) ($rReq['query'] ?? ''), $rSettings, $rMain);

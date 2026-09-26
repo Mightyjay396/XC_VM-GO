@@ -26,6 +26,9 @@ use XcVm\Streaming\Fanout\FanoutMode;
 class SettingsService {
 	use DatabaseAware;
 
+	/** Settings columns MAIN keeps for the cluster API itself (ClusterEndpoint), never set from a form. */
+	private const CLUSTER_STATE = ['cluster_policy_ver', 'cluster_legacy_ports'];
+
 	/**
 	 * The fanout idle buffer ratio as the daemon takes it (0.1-1, two decimals),
 	 * or null when the submitted value is not a number.
@@ -116,6 +119,23 @@ class SettingsService {
 	}
 
 	/**
+	 * Does a save change the transport policy the nodes follow
+	 * (ClusterPolicy::current): the transport, or MAIN's DNS name in its URLs?
+	 * A new `cluster_api_port` is announced by ClusterEndpoint instead.
+	 *
+	 * @param array<string, mixed> $rArray Settings about to be written.
+	 */
+	private static function changesClusterPolicy(array $rArray): bool {
+		$rCurrent = SettingsManager::getAll();
+		foreach (['cluster_transport', 'cluster_main_host'] as $rKey) {
+			if (array_key_exists($rKey, $rArray) && (string) $rArray[$rKey] !== (string) ($rCurrent[$rKey] ?? '')) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Save general panel settings from admin form data.
 	 *
 	 * @param array $rData Submitted settings.
@@ -129,6 +149,9 @@ class SettingsService {
 		}
 
 		$rArray = QueryHelper::verifyPostTable('settings', $rData, true);
+		// MAIN's own cluster state, never the form's: a POST cannot rewind the
+		// transport policy's version or drop a port kept for the nodes.
+		$rArray = array_diff_key($rArray, array_flip(self::CLUSTER_STATE));
 
 		$isFullForm = isset($rData['submit_settings']);
 		foreach (['php_loopback', 'restreamer_bypass_proxy', 'request_prebuffer', 'modal_edit', 'group_buttons', 'enable_search', 'on_demand_checker', 'ondemand_balance_equal', 'disable_mag_token', 'allow_cdn_access', 'dts_legacy_ffmpeg', 'mag_load_all_channels', 'disable_xmltv_restreamer', 'disable_playlist_restreamer', 'ffmpeg_warnings', 'reseller_ssl_domain', 'extract_subtitles', 'show_category_duplicates', 'vod_sort_newest', 'header_stats', 'mag_keep_extension', 'keep_protocol', 'read_native_hls', 'player_allow_playlist', 'player_allow_bouquet', 'player_hide_incompatible', 'player_allow_hevc', 'force_epg_timezone', 'check_vod', 'ignore_keyframes', 'save_login_logs', 'save_restart_logs', 'mag_legacy_redirect', 'restrict_playlists', 'monitor_connection_status', 'kill_rogue_ffmpeg', 'show_images', 'on_demand_instant_off', 'on_demand_failure_exit', 'playlist_from_mysql', 'ignore_invalid_users', 'legacy_mag_auth', 'ministra_allow_blank', 'block_proxies', 'block_streaming_servers', 'ip_subnet_match', 'auto_unban_ip', 'debug_show_errors', 'enable_debug_stalker', 'restart_php_fpm', 'restream_deny_unauthorised', 'api_probe', 'legacy_panel_api', 'hide_failures', 'verify_host', 'encrypt_playlist', 'encrypt_playlist_restreamer', 'mag_disable_ssl', 'legacy_get', 'legacy_xmltv', 'save_closed_connection', 'show_tickets', 'stream_logs_save', 'client_logs_save', 'streams_grouped', 'cloudflare', 'cleanup', 'dashboard_stats', 'dashboard_status', 'dashboard_map', 'dashboard_display_alt', 'recaptcha_enable', 'ip_logout', 'disable_player_api', 'disable_playlist', 'disable_xmltv', 'disable_enigma2', 'disable_ministra', 'enable_isp_lock', 'block_svp', 'disable_ts', 'disable_ts_allow_restream', 'disable_hls', 'disable_hls_allow_restream', 'disable_rtmp', 'disable_rtmp_allow_restream', 'case_sensitive_line', 'county_override_1st', 'disallow_2nd_ip_con', 'use_mdomain_in_lists', 'encrypt_hls', 'disallow_empty_user_agents', 'detect_restream_block_user', 'download_images', 'api_redirect', 'use_buffer', 'audio_restart_loss', 'show_isps', 'priority_backup', 'rtmp_random', 'show_connected_video', 'show_not_on_air_video', 'show_banned_video', 'show_expired_video', 'show_expiring_video', 'show_all_category_mag', 'always_enabled_subtitles', 'enable_connection_problem_indication', 'show_tv_channel_logo', 'show_channel_logo_in_preview', 'disable_trial', 'restrict_same_ip', 'fanout_source_insecure', 'fanout_enabled', 'fanout_supervise', 'secure_stream_tokens', 'cluster_api_enabled', 'cluster_kill_on_line_disable', 'cluster_db_allowlist', 'js_navigate'] as $rSetting) {
@@ -207,7 +230,10 @@ class SettingsService {
 			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => trim(Translator::get($rApiPort['refused']) . ' ' . htmlspecialchars($rApiPort['error'], ENT_QUOTES))]];
 		}
 
-		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . ';';
+		// A new transport policy is announced with the save: every node sees
+		// the version go up in its next heartbeat and fetches the policy, and
+		// never adopts one older than it holds.
+		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . (self::changesClusterPolicy($rArray) ? ', `cluster_policy_ver` = `cluster_policy_ver` + 1' : '') . ';';
 		$rStored = $db->query($rQuery, ...$rPrepare['data']);
 		if ($rApiPort !== null) {
 			// Stored: the nodes move to the new port (the old one is served for

@@ -55,6 +55,9 @@ final class ClusterSettings {
 	/** Ports the cluster API may never use besides MAIN's own listeners (fanout ctl, agent relay, MySQL, Redis). */
 	public const RESERVED_PORTS = [31210, 31290, 3306, 6379];
 
+	/** @var (callable(array<string, mixed>): array{ok: bool, reason: string, host: ?string, days_left: ?int})|null */
+	private static $rHttpsProbe = null;
+
 	/** Every setting this class owns. */
 	public static function keys(): array {
 		return array_merge(array_keys(self::INTS), array_keys(self::ENUMS), ['cluster_api_port', 'cluster_main_host', 'lb_scan_roots', 'cluster_db_allowlist_extra']);
@@ -220,6 +223,9 @@ final class ClusterSettings {
 	 * @return array{ok: bool, reason: string, host: ?string, days_left: ?int}
 	 */
 	public static function httpsSelfProbe(array $rMain, int $rTimeout = 3): array {
+		if (self::$rHttpsProbe !== null) {
+			return (self::$rHttpsProbe)($rMain);
+		}
 		$rOut = ['ok' => false, 'reason' => '', 'host' => null, 'days_left' => null];
 		if (!in_array((int) ($rMain['enable_https'] ?? 0), [1, 2], true)) {
 			$rOut['reason'] = 'https_disabled';
@@ -261,6 +267,11 @@ final class ClusterSettings {
 		$rOut['ok'] = true;
 		$rOut['reason'] = 'OK';
 		return $rOut;
+	}
+
+	/** Tests: answer the HTTPS self-probe without the network. Null restores it. */
+	public static function useHttpsProbe(?callable $rProbe): void {
+		self::$rHttpsProbe = $rProbe;
 	}
 
 	private static function clampInt(string $rKey, int $rValue): int {
