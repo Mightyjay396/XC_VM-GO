@@ -743,6 +743,102 @@ Tests:
 - `ClusterApiTest`: the op (MAC, flow, state, MAIN's own line, the node's reservation, 503 `DB`) and the policy in hello and heartbeat.
 - `AgentAdmissionTest`, against a stand-in agent on a unix socket: the header (ASCII whatever the user agent; `adm` judged on MAIN's clock through `time_offset`; none on a quarantined node); live.php's `createLive` passing the token on; the unchanged body; the 403 refusal recorded nowhere and cleared by the next viewer; how each reason is shown; an older agent; the 2.5 s wait; and the endpoints' wiring.
 
+### Connections (Phase 6, tenth increment): `conn.divergence`, and the P2 lane with `conn.touch`
+
+This increment builds the panel half of two rows of the plan's section 7 events table, `conn.divergence` (P1) and `conn.touch` (P2), and the P2 lane of section 8, "Ordering and backpressure". The agent needs no change for the first. The second is specified under **The agent's contract** below and is not built in the agent yet.
+
+**Divergence before.** Two writers on every node, MAIN included, put a viewer's divergence into MAIN's database:
+- `cron:users` reads the speed files (KiB/s, one per uuid in `DIVERGENCE_TMP_PATH`) that live.php's pre-fanout TS loop, vod.php and timeshift.php write.
+- `fanout_sync` reads the fanout's `GET /rates` for the node's daemon-served TS viewers.
+
+Each compared the rate with the stream's bitrate on that node and wrote `lines_divergence`, and `lines_live.divergence` in MySQL store mode. MAIN's `cron:users` deletes the `lines_divergence` rows of connections its store no longer holds.
+
+**Divergence now.** On a node whose CONNECTIONS flow is on, both writers hand the rates to `Core\Cluster\DivergenceSink::spool()`, which spools a P1 event through the `EventSpool`. When the spool refuses (flow off, the agent stopped), they write MAIN's tables as before. MAIN never has flows, so it always writes its own.
+- **Event:** `conn.divergence {rows: [{uuid, rate}, …]}`. `uuid` is a string matching `[A-Za-z0-9_-]{1,32}`, the width of `lines_divergence.uuid`. `rate` is an int ≥ 0, in KiB/s. There are at most 1000 rows per event (`DivergenceSink::CHUNK`), and the events of one write go in one spool file. Rows that do not qualify are left out on the node.
+- **MAIN** (`EventIngest`, `ConnectionIngest::divergence`) takes the event on P1 only, from a node with CONNECTIONS on:
+  - It keeps the rows whose uuid MAIN's store (Redis, or `lines_live`) holds for the sending node. Rows with a bad uuid or a rate that is not an int ≥ 0 are skipped.
+  - It works out each row's divergence with the node cron's formula, now shared: expected = `bitrate / 8 · 0.92` from the node's `streams_servers` row, and divergence = the percentage by which the rate falls short of it (0 when faster, or when no bitrate is known).
+  - It writes them with one `REPLACE INTO lines_divergence`, and in MySQL store mode one `UPDATE lines_live … CASE activity_id`.
+  - An event with none of the node's viewers, no valid row, more than 1000 rows or `rows` that is not a list is dropped and counted.
+  - A store that cannot be read also drops the event instead of failing the batch. The next report comes within a minute, and the lane's logs are not held up for it.
+- **Cleanup.** MAIN's cleanup of `lines_divergence` is unchanged, since the rows it writes are keyed by connections its store holds.
+- **Agent.** The agent ships the event like any P1 spool file and needs no change.
+
+**The P2 lane.** The `events` op takes `lane: "p2"`, for state of which only the newest value per key counts:
+- **No number.** `first_useq` is not read and may be left out. The lane has no cursor and no `cluster_nodes` column, and `hello`'s `cursors` stays `{p0, p1}`.
+- **Never a 409.** Only the 400 `BAD_REQUEST` of any malformed batch (for example `events` not a list, or more than 5000 events), 503 `DB`, and the session denials apply.
+- **Reply:** BOX'd 200 `{ok: true, useq: 0, applied, dropped, main_time_ms}`.
+- **Latest wins.** A batch is folded to the latest event per key by the event's `t`; of two with the same `t`, the later in the batch wins. Across batches, whatever holds the value keeps the latest too, so a repeated or late batch changes nothing newer.
+- **Refusals.** An event of a type MAIN does not take on P2, or whose flow is off, is dropped and counted.
+
+**`conn.touch`.** `{type: "conn.touch", t, d: {uuid, hls_last_read}}` is P2's first type: when a viewer last asked for its playlist, keyed by uuid.
+- `t`: int ≥ 0, unix milliseconds on the agent's clock, as in every spool line.
+- `uuid`: string matching `[A-Za-z0-9_-]{1,64}`.
+- `hls_last_read`: int ≥ 0, the registry record's own value (the node's clock corrected by `time_offset`, as PHP writes it).
+- It needs CONNECTIONS. Anything else is dropped.
+
+Where MAIN keeps it (`ConnectionIngest::touch`):
+- **The cluster bus only**, for a node whose agent ends its own idle HLS viewers (`HlsReaping::capable`: mode ≥ 1, CONNECTIONS on, `hls_reaper` said at hello). The key is `touch:<sid>:<uuid>` and holds `<t>:<hls_last_read>`. A Lua script replaces it only with a `t` that is not earlier, and it expires 5 minutes after its last write (`ClusterBus::TOUCH_TTL_MS`). The key names the sending node, so a node writes only its own namespace, and MAIN needs no store read per touch. `ClusterBus::lastReads()` reads it back.
+- **MAIN's store**, without the bus or for a node that does not reap, since MAIN's 30 s rule reads that node's `hls_last_read`. It writes the value as the P0 upsert did, with these limits:
+  - only the node's own connections;
+  - never back to an earlier read;
+  - never re-opening, creating or moving a connection between Redis sets;
+  - one `UPDATE … CASE uuid` per 1000 on `lines_live`;
+  - on Redis, `WATCH` per record, so a record an upsert or a close wrote meanwhile stays as that write left it.
+
+**Nothing on MAIN overlays the bus.** The plan's sink is "bus only". For a reaping node, no MAIN reader decides by a touch-only change of `hls_last_read`:
+
+| Reader | What it reads | With touches on the bus |
+| --- | --- | --- |
+| `UsersCronJob::hlsEnded` (the 30 s rule) | `hls_last_read` | Off for a reaping node, which sends its end as a P0 `conn.upsert` with `hls_end` 1 |
+| `UsersCronJob::isRemoteWorkerRunning` (Redis mode) | `max(date_start, hls_last_read)`, as when the worker pid was set | A pid change is a P0 upsert carrying `hls_last_read`; a touch only ever made the time later, which is more lenient |
+| `cron:users`' ENDED rule and 300 s rule for ended rows | the `hls_last_read` written with the end | Written by the P0 upsert of the end |
+| `fanout_sync`'s 20 s connect grace | pid-0 TS rows | Never touched after they open |
+| `ConnectionLimiter`, admission | `date_start`, `activity_id` | Not `hls_last_read` |
+| `ConnectionDigest`, `ConnectionSnapshot` | uuid, owner, `hls_end`; a snapshot writes the registry's current record | Unaffected |
+| Admin and reseller live connections, stats, the admin API | — | None shows `hls_last_read` |
+
+The one gap was `HlsReaping` itself. When `cluster_nodes` could not be read, every node fell back to the 30 s rule, which would now end a reaping node's live HLS viewers, because the store holds no fresh read for them. `HlsReaping::begin` now keeps the reapers of the last pass that read the table (`reaps` in `cluster_orphans.json`) and orphans nothing on a failed read. With no such pass, it falls back to the 30 s rule as before.
+
+**Telling the agent.** The hello reply and every heartbeat reply carry `p2_types`, a list of strings: the event types MAIN takes on P2, now `["conn.touch"]`. An older MAIN leaves the key out. It is in every heartbeat so that a MAIN rolled back to a release without P2 is noticed within one heartbeat.
+
+**The agent's contract.** For the Go half, not built yet:
+1. **When.** Touches go on P2 only while all of these hold:
+   - the latest hello or heartbeat reply's `p2_types` contains `"conn.touch"`;
+   - CONNECTIONS is on;
+   - the agent runs its HLS reaper and says `hls_reaper` at hello.
+
+   Otherwise a change of `hls_last_read` alone goes, as today, as a P0 `conn.upsert` at most every 10 s (`TouchEvery`). A panel that reaps by the 30 s rule needs that.
+2. **What moves.** Only a `Put` whose sole change is `hls_last_read` (`Touch`, or a `PUT` that `sameBut(…, "hls_last_read")` finds unchanged otherwise). It no longer emits the throttled P0 upsert: the registry keeps the latest value per uuid as a pending touch. Every other change still goes at once as a P0 `conn.upsert` of the whole record, its current `hls_last_read` included: a new record, any other key, `pid`, `hls_end` either way (the reaper's end, a re-open).
+3. **Cadence.** A uuid's pending touch is sent at most once every 60 s, and only when its value differs from the last one MAIN got for that uuid on either lane. A P2 loop on the bulk lane, with one request in flight, runs every 10 s. It sends the pending touches whose 60 s have passed, at most 2000 events and 1 MiB per request, as the other lanes.
+4. **Wire.** `POST events` with `{lane: "p2", events: [{type: "conn.touch", t: <unix ms>, d: {uuid: <string>, hls_last_read: <int>}}, …]}`. Leave out `first_useq`: it is not read on P2, and nothing is journalled or numbered.
+5. **Replies.**
+   - A MAC'd 200 `{ok, useq: 0, applied, dropped, main_time_ms}`: the values sent are done, and a newer value for the same uuid stays pending. `dropped` > 0 is logged and nothing is resent.
+   - A verified 400 `BAD_REQUEST`, which is what a MAIN without P2 answers: stop P2 until a reply lists `conn.touch` again, and handle the pending touches as in item 6.
+   - A 503 (`DB`), a 429, a transport error or a reply that does not verify: keep the pending touches (newer values replace them) and retry with the lane's backoff.
+   - There is never a 409.
+6. **Losing it.** When a condition of item 1 stops holding (MAIN rolled back, CONNECTIONS off, the reaper off), send every pending touch at once as a P0 `conn.upsert` of the uuid's current record. Then go back to the 10 s P0 touches.
+7. **Forgetting one.** Drop a uuid's pending touch when the record leaves the registry (`Delete`, a MAIN `conn.close`, `FanoutClosed`, a seed that resets). A P0 upsert of the uuid may drop it too, because the upsert carried the newer value.
+8. **State.** Pending touches may live in memory only. A restart loses at most a minute of them, which nothing on MAIN decides by, and the reaper gives every viewer restored from `registry.snap` a full window anyway.
+9. **Unchanged.** The digest, the snapshot, the reaper and `conn.divergence`.
+
+**Differs from the plan.**
+- **`conn.divergence` carries the rate, not the divergence.** MAIN holds the node's connections and its streams' bitrates, so the node needs no WAN read of `streams_servers` or of MAIN's store to report it, and the formula lives in one place.
+- **`conn.touch` is bus-only only for reaping nodes.** Without the bus, or for a node that does not reap, the touch goes into MAIN's store, because the 30 s rule reads it there.
+- **P2 has no cursor.** The plan orders P2 "latest per key by timestamp"; here that is the event's `t` on the bus. The store fallback keeps the greatest `hls_last_read`, which orders a viewer's reads the same way.
+- **`stream.progress` and `node.inventory` stay where they were:** in `stream.state` on P0, and on P1. They can move to P2 as types of their own, each listed in `p2_types`.
+
+**Compatibility.**
+- An older agent keeps sending touches as P0 `conn.upsert`, which is unchanged, and ignores `p2_types`.
+- An older MAIN lists no `p2_types`, and answers a P2 batch with 400 `BAD_REQUEST`.
+- An older panel drops an unknown `conn.divergence` on P1, so the lane still advances. The node's PHP ships with MAIN in the same release anyway.
+
+Tests:
+- `ConnectionDivergenceTest`: the node's spool and its fallback, the cron's speed files and `fanout_sync`'s rates, the shared formula, MAIN's own-rows write on `lines_live` and on Redis, and the refusals.
+- `ConnectionTouchTest`: no cursor and no gap, the latest per viewer by `t` within a batch and across batches on the bus, the refusals, the store fallback on both stores (own rows, never back, never re-opening), bus-only for a reaping node, and an older agent's P0 upsert.
+- `ClusterApiTest`: the P2 op and `p2_types` in hello and heartbeat.
+- `HlsReapingTest`: the last reapers stand on a failed read.
+
 ### The settings section (Phase 7, fourth increment)
 
 **The allowlist.** `src/Core/Cluster/lb_settings_keys.php` lists the settings a node's replica may carry. It is generated by `tools/ci/lb-settings-keys.sh --write`, and `make gates` fails when it is stale. The script builds the LB file manifest the way `verify-lb-archive.sh` does, then scans every shipped PHP file for settings reads:
@@ -767,7 +863,7 @@ The settings columns come from the install schema and the migrations. Secrets ar
 - **Where it runs:** MAIN only. `service` and `ServiceCommand` start it, and `ServersCronJob` revives it. LB builds strip `bin/cluster_bus`.
 - **Liveness checks:** it runs the same binary as the shared Redis, so `ServersCronJob` tells the two apart by process title: `redis-server unixsocket:…` for the bus, `redis-server *:6379` for the shared one. Before this, a running bus would have hidden a dead shared Redis.
 
-**What it carries.** Wake-ups, and the admission reservations (`ConnectionAdmission`, seventh Phase 6 increment):
+**What it carries.** Wake-ups, the admission reservations (`ConnectionAdmission`, seventh Phase 6 increment), and the touches of nodes that reap their own HLS viewers (`touch:<sid>:<uuid>`, tenth Phase 6 increment):
 - **`wake:<sid>`:** `CommandBus::enqueue` pushes it, and the `commands` long-poll waits on it. The long-poll used to re-read `cluster_commands` every 250 ms for up to 20 s per node. It now reads once, blocks on the bus, and reads again when woken. While it blocks it holds no MySQL connection: it closes the handle first (`waitNodeReleasing`), and `DatabaseHandler` reconnects on the next read.
 - **`ack:<cmd_id>`:** `CommandBus::ack` pushes it, and `CommandBus::await` (an RPC waiting for its answer) waits on it instead of polling every 100 ms.
 
@@ -781,7 +877,6 @@ The settings columns come from the install schema and the migrations. Secrets ar
 **Still to come on the bus:**
 - nonces;
 - telemetry (`cl:tel:<sid>`);
-- the `conn.touch` state;
 - per-op semaphores.
 
 ### The cluster pools (Phase 2, second increment)
