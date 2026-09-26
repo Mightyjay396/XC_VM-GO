@@ -153,6 +153,18 @@ final class ReplicaSectionsTest extends TestCase {
 		$this->assertSame(['streams', 'cache_engine'], array_column(ReplicaBuilder::crontabData(2)['jobs'], 'filename'), 'api mode: no legacy rows');
 	}
 
+	public function testAnInstallsCrontabKeepsEveryJobANodeRuns(): void {
+		preg_match('/INSERT INTO `crontab` [^;]*;/s', (string) file_get_contents(dirname(__DIR__, 2) . '/src/bin/install/database.sql'), $rInsert);
+		$this->rDb->exec($rInsert[0]);
+		$rJobs = array_column(ReplicaBuilder::crontabData(1)['jobs'], 'filename');
+		foreach (['streams', 'servers', 'cache', 'users', 'certbot', 'cleanup'] as $rJob) {
+			$this->assertContains($rJob, $rJobs, 'a node runs cron:' . $rJob);
+		}
+		foreach (['tmdb', 'tmdb_popular', 'update', 'cluster'] as $rJob) {
+			$this->assertNotContains($rJob, $rJobs, 'cron:' . $rJob . ' is MAIN\'s');
+		}
+	}
+
 	public function testTheClusterSectionCarriesThePolicyAndThePanelKeys(): void {
 		$rSettings = ['cluster_transport' => 'auto', 'cluster_policy_ver' => 4, 'not_on_air_video_path' => '/home/xc_vm/content/video/custom_offline.ts', 'banned_video_path' => ''] + self::SECRETS;
 		$rMain = ['id' => 1, 'server_ip' => '10.0.0.1', 'private_ip' => '192.168.0.1', 'http_broadcast_port' => 25461, 'enable_https' => 0];

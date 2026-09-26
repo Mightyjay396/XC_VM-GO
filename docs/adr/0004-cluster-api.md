@@ -952,6 +952,7 @@ Integer columns travel as JSON integers and text as strings, whichever driver re
 - `node` also carries `time_offset`: the node checks token expiry against it. It is MAIN's measure of the node's clock, set from the node's inventory in whole seconds, so it rarely moves the ETag.
 - `urls_ver` equals `policy_ver`: one counter versions both the URLs and the policy.
 - A `legacy` crontab row fits modes 0 and 1, as migration 033 defines it (nodes that still have MAIN's database). `main` rows never leave MAIN. The plan's "`users` only while CONNECTIONS is off" stays `UsersCronJob`'s own check.
+- Migration 042 makes `cleanup`'s role `all`, as the plan's cron table has it (its Phase 0 text and migration 033 made it `main`). `cron:cleanup` prunes each node's own stream files, TV archive and created channels, and only its table rotation is MAIN's. While nodes copied the crontab whole the role changed nothing; with the crontab section, a `main` row would have stopped that pruning on every node. `ReplicaSectionsTest` checks the install's own crontab.
 - The whole section is panel-signed, so the node list inside it is signed.
 - A `rep` record is signed on each request, not once per content hash: a signature costs microseconds, and the plan's cache holds the data.
 - `config.changed` also goes out when a node completes its enrolment, so the others learn a new active key at once.

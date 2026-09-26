@@ -414,7 +414,7 @@ INSERT INTO `crontab` (`id`, `filename`, `time`, `enabled`, `role`) VALUES
 (17, 'backups', '* * * * *', 1, 'all'),
 (18, 'streams_logs', '* * * * *', 1, 'all'),
 (19, 'update', '0 0 * * *', 1, 'main'),
-(20, 'cleanup', '0 * * * *', 1, 'main'),
+(20, 'cleanup', '0 * * * *', 1, 'all'),
 (22, 'certbot', '0 0 * * *', 1, 'all'),
 (24, 'cache_engine', '*/5 * * * *', 1, 'all'),
 (25, 'providers', '0 * * * *', 1, 'all'),
