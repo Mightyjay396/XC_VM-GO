@@ -171,7 +171,9 @@ final class ClusterApi {
 
 	/**
 	 * An authenticated session op, past its nonce and node state: open the
-	 * BOX and run the handler.
+	 * BOX and run the handler. An ingest op also holds an ingest permit, P0
+	 * events from their reserve; a batch's lane is known only once its BOX is
+	 * open, and opening it touches no database.
 	 *
 	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config' $rOp
 	 * @return array{status: int, headers: array<string, string>, body: string}
@@ -182,21 +184,25 @@ final class ClusterApi {
 		if (!is_array($rPayload)) {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
-		TokenService::markUsed($rNode, $rH['epoch'], $rKeys->rExp);
+		$rServe = static function () use ($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rPayload): array {
+			TokenService::markUsed($rNode, $rH['epoch'], $rKeys->rExp);
 
-		return match ($rOp) {
-			'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
-			'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
-			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
-			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
-			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
-			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+			return match ($rOp) {
+				'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
+				'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+				'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
+				'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
+				'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
+				'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+			};
 		};
+		$rLane = ClusterSemaphore::ingestLane($rOp, $rPayload);
+		return $rLane === null ? $rServe() : ClusterSemaphore::runIngest($rCrypto, $rOp, $rLane, $rSettings['cluster_ingest_concurrency'] ?? null, $rH, $rServe);
 	}
 
 	/** @return array{status: int, headers: array<string, string>, body: string} */

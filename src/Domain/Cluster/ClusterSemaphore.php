@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 
 /**
@@ -9,11 +10,19 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
  * after a MAIN restart every agent says hello, re-keys and fetches its
  * replica at once, so each of these ops runs at most PERMITS at a time.
  *
- * A permit is a member of the sorted set `sem:<op>`, scored by when it
- * expires: taken after the request is authenticated and before its handler
- * runs, given back when the handler ends (finally), and dropped after the
- * op's worst case (OPS) if its holder died without giving it back. The set
- * has no TTL, so the bus's volatile-ttl policy never evicts a permit.
+ * And the ingest permits (section 8, "Ordering and backpressure"): the ingest
+ * ops (ClusterPool::INGEST_OPS) run at most `cluster_ingest_concurrency` at a
+ * time, and ceil(n / 2) of those permits are kept for P0 `events` batches, so
+ * bulk transfers (P1/P2 events, config, snapshots, content) never hold up
+ * P0. P0 takes any free permit; bulk only the rest (ingestPermits()).
+ *
+ * A permit is a member of the sorted set `sem:<op>` (an ingest permit, of
+ * `sem:ingest:p0` or `sem:ingest:bulk`), scored by when it expires: taken
+ * after the request is authenticated and before its handler runs (an ingest
+ * permit once the BOX is open), given back when the handler ends (finally),
+ * and dropped after the op's worst case (OPS; INGEST_LIFE) if its holder died
+ * without giving it back. The set has no TTL, so the bus's volatile-ttl
+ * policy never evicts a permit.
  *
  * Its times are the bus's own (TIME, read inside the script). Scripts run one
  * at a time, so each sees a time no earlier than the permits already held. A
@@ -37,6 +46,20 @@ final class ClusterSemaphore {
 	public const RETRY_MAX_MS = 3000;
 
 	/**
+	 * A P0 batch refused an ingest permit is asked back sooner: P0 flushes
+	 * every 250 ms, and its permits are held only by other P0 batches then.
+	 */
+	public const P0_RETRY_MIN_MS = 250;
+	public const P0_RETRY_MAX_MS = 750;
+
+	/** The ingest permits' lanes (plan section 3): P0 `events` batches, and every other ingest request. */
+	public const LANE_P0 = 'p0';
+	public const LANE_BULK = 'bulk';
+
+	/** An ingest permit's worst case in seconds: the cluster_ingest pool's timeout. */
+	public const INGEST_LIFE = ClusterPool::POOLS['cluster_ingest'];
+
+	/**
 	 * Milliseconds past the bus's now plus the op's lifetime that a permit may
 	 * expire before it counts as taken before the clock stepped back.
 	 */
@@ -47,14 +70,27 @@ final class ClusterSemaphore {
 	 * free. Expired permits go, and so do any expiring past now + the lifetime
 	 * + STEP_MS (taken before the clock stepped back), so one can never be
 	 * held forever.
+	 *
+	 * The ingest permits pass a second key, the other lane's set (same
+	 * lifetime), pruned alike, and ARGV[5] total, ARGV[6] reserve: the permit
+	 * is also refused when both sets hold `total` and this lane already holds
+	 * its `reserve` (bulk: 0), so P0 always gets its reserve.
 	 */
 	private const ACQUIRE_LUA = <<<'LUA'
 		local t = redis.call('TIME')
 		local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 		local exp = now + tonumber(ARGV[1])
-		redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', '(' .. now)
-		redis.call('ZREMRANGEBYSCORE', KEYS[1], '(' .. (exp + tonumber(ARGV[4])), '+inf')
-		if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then
+		local held = 0
+		for i = 1, #KEYS do
+			redis.call('ZREMRANGEBYSCORE', KEYS[i], '-inf', '(' .. now)
+			redis.call('ZREMRANGEBYSCORE', KEYS[i], '(' .. (exp + tonumber(ARGV[4])), '+inf')
+			held = held + redis.call('ZCARD', KEYS[i])
+		end
+		local own = redis.call('ZCARD', KEYS[1])
+		if own >= tonumber(ARGV[2]) then
+			return 0
+		end
+		if #KEYS > 1 and own >= tonumber(ARGV[6]) and held >= tonumber(ARGV[5]) then
 			return 0
 		end
 		redis.call('ZADD', KEYS[1], exp, ARGV[3])
@@ -73,15 +109,107 @@ final class ClusterSemaphore {
 	 * @return array{status: int, headers: array<string, string>, body: string}
 	 */
 	public static function run(ClusterCrypto $rCrypto, string $rOp, array $rH, callable $rHandler): array {
-		$rPermit = self::acquire($rOp);
+		return self::holding($rCrypto, 'sem:' . $rOp, self::acquire($rOp), ['retry_after_ms' => random_int(self::RETRY_MIN_MS, self::RETRY_MAX_MS), 'op' => $rOp], $rH, $rHandler);
+	}
+
+	/**
+	 * Run an ingest op's handler holding one of its lane's ingest permits
+	 * (ingestLane()). When none is free, the handler does not run and the node
+	 * gets a panel-signed 503 RATE_LIMITED with retry_after_ms, the op and the
+	 * lane, naming it and the request.
+	 *
+	 * @param 'p0'|'bulk' $rLane
+	 * @param mixed $rConcurrency `cluster_ingest_concurrency` (ingestPermits())
+	 * @param array{node: string, nonce: string} $rH The request's headers (Canonical::parseHeaders).
+	 * @param callable(): array{status: int, headers: array<string, string>, body: string} $rHandler
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	public static function runIngest(ClusterCrypto $rCrypto, string $rOp, string $rLane, mixed $rConcurrency, array $rH, callable $rHandler): array {
+		$rRetry = $rLane === self::LANE_P0 ? random_int(self::P0_RETRY_MIN_MS, self::P0_RETRY_MAX_MS) : random_int(self::RETRY_MIN_MS, self::RETRY_MAX_MS);
+		return self::holding($rCrypto, 'sem:ingest:' . $rLane, self::acquireIngest($rLane, $rConcurrency), ['retry_after_ms' => $rRetry, 'op' => $rOp, 'lane' => $rLane], $rH, $rHandler);
+	}
+
+	/**
+	 * The ingest lane whose permit a request holds: `p0` for a P0 `events`
+	 * batch, `bulk` for any other ingest op (ClusterPool::INGEST_OPS), null
+	 * for a control op. The lane of a batch is in its BOX, so this is known
+	 * only once the BOX is open.
+	 *
+	 * @param array<mixed> $rPayload The opened BOX.
+	 * @return 'p0'|'bulk'|null
+	 */
+	public static function ingestLane(string $rOp, array $rPayload): ?string {
+		if (!in_array($rOp, ClusterPool::INGEST_OPS, true)) {
+			return null;
+		}
+		return $rOp === 'events' && ($rPayload['lane'] ?? null) === 'p0' ? self::LANE_P0 : self::LANE_BULK;
+	}
+
+	/**
+	 * The ingest permits for a `cluster_ingest_concurrency` of n (clamped to
+	 * the setting's range, its default when unset): ceil(n / 2) kept for P0,
+	 * the rest (at least 1, so bulk is never shut out: one P0 and one bulk, as
+	 * the pool's floor) for anyone; `total` is their sum, n from 2 up.
+	 *
+	 * @return array{p0: int, bulk: int, total: int}
+	 */
+	public static function ingestPermits(mixed $rConcurrency): array {
+		[$rDefault, $rMin, $rMax] = ClusterSettings::INTS['cluster_ingest_concurrency'];
+		$rN = is_numeric($rConcurrency) ? max($rMin, min($rMax, (int) $rConcurrency)) : $rDefault;
+		$rP0 = intdiv($rN + 1, 2);
+		$rBulk = max(1, $rN - $rP0);
+		return ['p0' => $rP0, 'bulk' => $rBulk, 'total' => $rP0 + $rBulk];
+	}
+
+	/**
+	 * Take one of a lane's ingest permits: its id, false when none is free,
+	 * null without the bus. P0 takes any free permit, and its reserve even
+	 * when the rest are held past a lowered concurrency; bulk takes only those
+	 * not kept for P0.
+	 *
+	 * @param 'p0'|'bulk' $rLane
+	 */
+	public static function acquireIngest(string $rLane, mixed $rConcurrency): string|false|null {
+		$rPermits = self::ingestPermits($rConcurrency);
+		$rP0 = $rLane === self::LANE_P0;
+		$rKeys = $rP0 ? ['sem:ingest:' . self::LANE_P0, 'sem:ingest:' . self::LANE_BULK] : ['sem:ingest:' . self::LANE_BULK, 'sem:ingest:' . self::LANE_P0];
+		$rID = bin2hex(random_bytes(8));
+		$rArgs = [self::INGEST_LIFE * 1000, $rP0 ? $rPermits['total'] : $rPermits['bulk'], $rID, self::STEP_MS, $rPermits['total'], $rP0 ? $rPermits['p0'] : 0];
+		return match (ClusterBus::script(self::ACQUIRE_LUA, $rKeys, $rArgs)) {
+			1 => $rID,
+			0 => false,
+			default => null,
+		};
+	}
+
+	/**
+	 * Give an ingest permit back.
+	 *
+	 * @param 'p0'|'bulk' $rLane
+	 */
+	public static function releaseIngest(string $rLane, string $rID): void {
+		ClusterBus::script(self::RELEASE_LUA, ['sem:ingest:' . $rLane], [$rID]);
+	}
+
+	/**
+	 * Run a handler holding a permit of the set $rKey: none free (false) is the
+	 * signed 503 RATE_LIMITED with $rDenial's fields; null (no bus, or not
+	 * limited) runs it without one. The permit goes back however it ends.
+	 *
+	 * @param array<string, mixed> $rDenial
+	 * @param array{node: string, nonce: string} $rH
+	 * @param callable(): array{status: int, headers: array<string, string>, body: string} $rHandler
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	private static function holding(ClusterCrypto $rCrypto, string $rKey, string|false|null $rPermit, array $rDenial, array $rH, callable $rHandler): array {
 		if ($rPermit === false) {
-			return DenialFactory::deny($rCrypto, 503, 'RATE_LIMITED', $rH['node'], $rH['nonce'], ['retry_after_ms' => random_int(self::RETRY_MIN_MS, self::RETRY_MAX_MS), 'op' => $rOp]);
+			return DenialFactory::deny($rCrypto, 503, 'RATE_LIMITED', $rH['node'], $rH['nonce'], $rDenial);
 		}
 		try {
 			return $rHandler();
 		} finally {
 			if ($rPermit !== null) {
-				self::release($rOp, $rPermit);
+				ClusterBus::script(self::RELEASE_LUA, [$rKey], [$rPermit]);
 			}
 		}
 	}

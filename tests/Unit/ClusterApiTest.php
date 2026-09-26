@@ -1510,4 +1510,104 @@ final class ClusterApiTest extends TestCase {
 		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
 		$this->reply($rRes, $rCtx, $rKeys);
 	}
+
+	// ── The cluster bus: ingest permits ──────────────────────────────────
+
+	public function testP0EventsKeepTheirReserveWhileBulkHoldsTheRest(): void {
+		$rRedis = $this->bus();
+		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `pid` int)');
+		$this->rDb->exec('INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `pid`) VALUES (11, 100, 5, 0)');
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_LOGS | NodeRegistry::FLOW_CONTENT | NodeRegistry::FLOW_CONNECTIONS]);
+		$rPermits = ClusterSemaphore::ingestPermits(null);
+		$this->assertSame(['p0' => 3, 'bulk' => 3, 'total' => 6], $rPermits, 'cluster_ingest_concurrency unset: its default, 6');
+		for ($i = 0; $i < $rPermits['bulk']; $i++) {
+			$this->assertIsString(ClusterSemaphore::acquireIngest('bulk', 6));
+		}
+		$rState = ['type' => 'stream.state', 'd' => ['stream_id' => 100, 'server_id' => self::SID, 'fields' => ['pid' => 42]]];
+
+		// Every bulk op is refused before its handler runs: MAIN is busy, not failing.
+		$rBulk = [
+			'events' => ['lane' => 'p1', 'first_useq' => 1, 'events' => [['type' => 'skip', 'd' => ['lane' => 'p1', 'count' => 3]]]],
+			'config' => ['blocklist_since' => 0],
+			'conn_snapshot' => ['snap_id' => 'snap-1', 'seq' => 0, 'last' => true, 'conns' => []],
+			'recording_complete' => ['recording_id' => 1],
+		];
+		foreach ($rBulk as $rOp => $rPayload) {
+			[$rRes, , $rReq] = $this->call($rOp, $rPayload, 1, $rKeys);
+			$rDoc = $this->denial($rRes, 503, 'RATE_LIMITED', $rReq);
+			$this->assertSame([$rOp, 'bulk'], [$rDoc['op'], $rDoc['lane']], 'names the op and its lane');
+			$this->assertGreaterThanOrEqual(ClusterSemaphore::RETRY_MIN_MS, $rDoc['retry_after_ms']);
+			$this->assertLessThanOrEqual(ClusterSemaphore::RETRY_MAX_MS, $rDoc['retry_after_ms']);
+		}
+		$this->assertSame([0, 0], [$rRedis->zCard('sem:config'), $rRedis->zCard('sem:conn_snapshot')], 'their per-op permits were given back');
+
+		// A P0 batch is served from the reserve, and gives its permit back.
+		[$rRes, $rCtx] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => [$rState]], 1, $rKeys);
+		$this->assertSame(1, $this->reply($rRes, $rCtx, $rKeys)['applied']);
+		$this->assertSame(0, $rRedis->zCard('sem:ingest:p0'));
+		// Control ops take no ingest permit.
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a'], 1, $rKeys);
+		$this->assertSame(['p0' => 1, 'p1' => 0], $this->reply($rRes, $rCtx, $rKeys)['cursors'], 'the refused P1 batch was not applied');
+
+		// P0 is refused only once it holds its reserve and every permit is held.
+		for ($i = 0; $i < $rPermits['total'] - $rPermits['bulk']; $i++) {
+			$this->assertIsString(ClusterSemaphore::acquireIngest('p0', 6));
+		}
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 2, 'events' => [$rState]], 1, $rKeys);
+		$rDoc = $this->denial($rRes, 503, 'RATE_LIMITED', $rReq);
+		$this->assertSame(['events', 'p0'], [$rDoc['op'], $rDoc['lane']]);
+		$this->assertGreaterThanOrEqual(ClusterSemaphore::P0_RETRY_MIN_MS, $rDoc['retry_after_ms']);
+		$this->assertLessThanOrEqual(ClusterSemaphore::P0_RETRY_MAX_MS, $rDoc['retry_after_ms'], 'P0 is asked back sooner');
+
+		// Once a permit is free, the refused batch is resent and applied once.
+		$rRedis->del('sem:ingest:bulk');
+		[$rRes, $rCtx] = $this->call('events', $rBulk['events'], 1, $rKeys);
+		$this->assertSame(1, $this->reply($rRes, $rCtx, $rKeys)['useq']);
+		[$rRes, $rCtx] = $this->call('events', $rBulk['events'], 1, $rKeys);
+		$this->assertSame([1, 0], [$this->reply($rRes, $rCtx, $rKeys)['useq'], $rRedis->zCard('sem:ingest:bulk')], 'a repeat, and the permit given back');
+	}
+
+	public function testTheConcurrencySettingSizesTheIngestPermits(): void {
+		$this->rSettings['cluster_ingest_concurrency'] = 2;
+		$this->bus();
+		$rKeys = $this->active();
+		ClusterSemaphore::acquireIngest('bulk', 2);
+		[$rRes, , $rReq] = $this->call('config', ['blocklist_since' => 0], 1, $rKeys);
+		$this->assertSame('bulk', $this->denial($rRes, 503, 'RATE_LIMITED', $rReq)['lane'], '1 of 2 for bulk');
+		ClusterSemaphore::acquireIngest('p0', 2);
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 1, $rKeys);
+		$this->assertSame('p0', $this->denial($rRes, 503, 'RATE_LIMITED', $rReq)['lane'], '1 of 2 kept for P0, and held');
+	}
+
+	public function testNothingBeforeTheBoxTakesAnIngestPermitAndARefusalWritesNothing(): void {
+		$rRedis = $this->bus();
+		$rKeys = $this->active();
+		for ($i = 0; $i < 6; $i++) {
+			ClusterSemaphore::acquireIngest('p0', 6);
+		}
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 1, $rKeys, ['body' => static fn($b) => $b . 'x']);
+		$this->denial($rRes, 401, 'BAD_MAC', $rReq);
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		$r = $this->request('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 1, $rKeys);
+		$this->denial(ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 503, 'RATE_LIMITED', $r['req']);
+		$this->assertSame([], $rLog->writes(), 'a request refused a permit writes nothing to MySQL');
+		$this->denial(ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 401, 'REPLAY', $r['req']);
+		DatabaseFactory::set($this->rDb);
+		$this->rDb->query("UPDATE `cluster_nodes` SET `state` = 'quarantined' WHERE `server_id` = 5");
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 1, $rKeys);
+		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+		$this->assertSame([6, 0], [$rRedis->zCard('sem:ingest:p0'), $rRedis->zCard('sem:ingest:bulk')], 'no refused request took a permit');
+	}
+
+	public function testWithoutTheBusIngestTakesNoPermit(): void {
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_LOGS]);
+		$this->rSettings['cluster_ingest_concurrency'] = 1;
+		for ($i = 1; $i <= 3; $i++) {
+			[$rRes, $rCtx] = $this->call('events', ['lane' => 'p1', 'first_useq' => $i, 'events' => [['type' => 'skip', 'd' => ['lane' => 'p1', 'count' => 1]]]], 1, $rKeys);
+			$this->assertSame($i, $this->reply($rRes, $rCtx, $rKeys)['useq'], 'as before the bus');
+		}
+	}
 }
