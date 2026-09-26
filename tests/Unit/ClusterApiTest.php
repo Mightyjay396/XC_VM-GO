@@ -16,6 +16,7 @@ use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterPolicy;
+use XcVm\Domain\Cluster\ClusterSemaphore;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
@@ -1170,7 +1171,7 @@ final class ClusterApiTest extends TestCase {
 		$this->denial($rRes, 400, 'BAD_REQUEST');
 	}
 
-	// ── The cluster bus: nonces ──────────────────────────────────────────
+	// ── The cluster bus: nonces and per-op semaphores ────────────────────
 
 	private static ?string $rBusDir = null;
 
@@ -1225,5 +1226,52 @@ final class ClusterApiTest extends TestCase {
 		$this->denial(ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 401, 'REPLAY', $r['req']);
 		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_nonces`');
 		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'no row per request');
+	}
+
+	public function testAnOpWithoutAFreePermitIsRefusedWithASigned503(): void {
+		$rRedis = $this->bus();
+		$rKeys = $this->active();
+		$rHeld = [];
+		for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
+			$rHeld[] = (string) ClusterSemaphore::acquire('hello');
+		}
+		[$rRes, , $rReq] = $this->call('hello', ['instance_id' => 'inst-a', 'boot_id' => 'boot-7'], 1, $rKeys);
+		$rDoc = $this->denial($rRes, 503, 'RATE_LIMITED', $rReq);
+		$this->assertSame('hello', $rDoc['op']);
+		$this->assertGreaterThanOrEqual(ClusterSemaphore::RETRY_MIN_MS, $rDoc['retry_after_ms']);
+		$this->assertNotSame('boot-7', NodeRegistry::byServer(self::SID)['boot_id'], 'the handler did not run');
+
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->reply($rRes, $rCtx, $rKeys);
+
+		ClusterSemaphore::release('hello', $rHeld[0]);
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a', 'boot_id' => 'boot-7'], 1, $rKeys);
+		$this->assertSame('active', $this->reply($rRes, $rCtx, $rKeys)['state']);
+		$this->assertSame(ClusterSemaphore::PERMITS - 1, $rRedis->zCard('sem:hello'), 'the served hello gave its permit back');
+
+		// A node that is not active is told so, not that MAIN is busy.
+		for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
+			ClusterSemaphore::acquire('config');
+		}
+		$this->rDb->query("UPDATE `cluster_nodes` SET `state` = 'quarantined' WHERE `server_id` = 5");
+		[$rRes, , $rReq] = $this->call('config', ['blocklist_since' => 0], 1, $rKeys);
+		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+	}
+
+	public function testABusyRekeySpendsNeitherTheMinuteNorTheChallenge(): void {
+		$this->bus();
+		$this->expired();
+		$rChallenge = $this->challenge();
+		$rHeld = [];
+		for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
+			$rHeld[] = (string) ClusterSemaphore::acquire('token_rekey');
+		}
+		[$rRes, $rReq] = $this->rekey($rChallenge, random_bytes(32));
+		$this->assertSame('token_rekey', $this->denial($rRes, 503, 'RATE_LIMITED', $rReq)['op']);
+
+		ClusterSemaphore::release('token_rekey', $rHeld[0]);
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($rChallenge, $rEph);
+		$this->assertSame(2, $this->rekeyed($rRes, $rReq, $rEph)['doc']['epoch'], 'the same challenge, the same minute');
 	}
 }

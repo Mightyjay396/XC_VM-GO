@@ -33,8 +33,9 @@ use XcVm\Core\Process\ProcessManager;
  * its memory, they go to MAIN's store.
  *
  * And the request nonces (NonceStore: `nonce:<node>`, `nonces_since`,
- * `issued:<node>`), through script(). Nonces are sorted sets without a TTL,
- * so the volatile-ttl policy never evicts them.
+ * `issued:<node>`) and the per-op semaphores (ClusterSemaphore: `sem:<op>`),
+ * through script(). Nonces and permits are sorted sets without a TTL, so the
+ * volatile-ttl policy never evicts them.
  */
 final class ClusterBus {
 	/** Seconds a wake waits for its reader. */
@@ -224,10 +225,10 @@ final class ClusterBus {
 	}
 
 	/**
-	 * Run a Lua script on the bus (NonceStore): its reply, or null without
-	 * the bus or when the call failed (a lost connection, an error reply such
-	 * as OOM), so the caller does what it does without the bus. A script must
-	 * never reply nil, which reads as a failure.
+	 * Run a Lua script on the bus (NonceStore, ClusterSemaphore): its reply,
+	 * or null without the bus or when the call failed (a lost connection, an
+	 * error reply such as OOM), so the caller does what it does without the
+	 * bus. A script must never reply nil, which reads as a failure.
 	 *
 	 * @param list<string> $rKeys
 	 * @param list<int|string> $rArgs

@@ -138,6 +138,18 @@ final class ClusterApi {
 		if (!in_array($rNode['state'], $rStates, true)) {
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
 		}
+		// hello, config and conn_snapshot hold one of the op's bus permits.
+		return ClusterSemaphore::run($rCrypto, $rOp, $rH, static fn(): array => self::dispatch($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rBody));
+	}
+
+	/**
+	 * An authenticated session op, past its nonce and node state: open the
+	 * BOX and run the handler.
+	 *
+	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config' $rOp
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	private static function dispatch(ClusterCrypto $rCrypto, string $rOp, array $rReq, array $rSettings, array $rMain, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, string $rBody): array {
 		$rPlain = Box::open($rKeys->rEncUp, $rCtx, $rBody);
 		$rPayload = $rPlain === null ? null : json_decode($rPlain, true);
 		if (!is_array($rPayload)) {
@@ -287,6 +299,16 @@ final class ClusterApi {
 		if (!in_array($rNode['state'], $rStates, true)) {
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
 		}
+		// A bus permit first: a busy MAIN spends neither the minute nor the challenge.
+		return ClusterSemaphore::run($rCrypto, 'token_rekey', $rH, static fn(): array => self::rekeyAuthenticated($rCrypto, $rNode, $rH, $rCtx, $rBody));
+	}
+
+	/**
+	 * `token_rekey` past its node signature, nonce and node state.
+	 *
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	private static function rekeyAuthenticated(ClusterCrypto $rCrypto, array $rNode, array $rH, string $rCtx, string $rBody): array {
 		// Once a minute, counted per attempt: the slot is a claim on this minute.
 		$rSlot = intdiv(ClusterClock::now(), self::REKEY_INTERVAL);
 		if (!NonceStore::claim('rekey:' . $rH['node'], substr(hash('sha256', (string) $rSlot, true), 0, 16))) {
