@@ -388,6 +388,40 @@ The Cluster Nodes page switches CONTENT.
 
 Other event types are kept as they are, in order. The result replaces the oldest file, so it still goes first. MAIN applies it like any batch, so the plan's separate `p0_reset` event is not needed.
 
+### Security blocks (Phase 5, fourth increment)
+
+**Node side.** An LB's flood and bruteforce guard (`Core/Auth/BruteforceGuard`) still blocks the IP locally at once, with its `block_<ip>` file. Where it wrote the block to MAIN's `blocked_ips`, it now spools a P0 `security.block_ip {ip, reason}` once the node's CONFIG flow is on. CONFIG is the flow that makes the blocklist MAIN's. With the flow off, the agent stopped, or on MAIN itself, the guard writes the row as before.
+
+**MAIN side.** `EventIngest` records the block in `blocked_ips` with the guard's reason, as the node used to, and audits it (`security.block_ip`). Every node picks it up with the blocklist. MAIN refuses and audits (`security.block_ip_refused`):
+
+- a reason that is not one of the guard's own (`BruteforceGuard::REASON_PATTERN`), or an address that is not an IP;
+- an address the guard never blocks: a cluster server's `server_ip`, `private_ip` or `whitelist_ips`, the admin allowlist (`allowed_ips_admin`), or loopback. A node therefore cannot lock the cluster out.
+
+An address that is already blocked is accepted and left as it is.
+
+**Not built:** the blocklist delta in `cluster_changes`. No block or unblock path writes it yet; it comes with the R1 replica (`ReplicaBuilder`, Phase 7), which must cover every path at once, MAIN's auto-unban included.
+
+### Node state and inventory (Phase 5, fifth increment)
+
+**Node side.** What a node writes about itself in its own `servers` row goes through `Core/Cluster/NodeStateSink`. With the TELEMETRY flow on it becomes an event; otherwise the row is written as before.
+
+- `node.state {fields}`, on P0, when it changes: `certbot_ssl` (certbot command and cron), `governor` and `sysctl` (`cron:root_signals`).
+- `node.inventory {fields}`, on P1, once a minute from `cron:servers`: `remote_status`, `xc_vm_version`, `server_hardware`, `governors`, `sysctl`, the devices, `gpu_info`, `interfaces` and `ping`. A newer inventory replaces an older one, so P1's drop-oldest cap costs nothing. The plan's P2 lane is not built; P1 serves.
+
+The plan names the second event `inventory`; it is `node.inventory` here, next to `node.state`.
+
+**Never the node's.** Columns that grant or route stay with MAIN and the admin, and MAIN refuses them in either event:
+
+- `whitelist_ips`, which feeds the allowed IPs (`/api`, the internal endpoints, the flood exemptions). The legacy cron wrote the node's interface addresses there; with TELEMETRY on the cron stops, and the column keeps what the admin or the last legacy write left.
+- `server_ip`: `cron:root_signals` still auto-updates it with a direct write, and only while the node reaches MAIN's database.
+- `status`, which the heartbeat owns.
+
+**MAIN side.** `EventIngest` writes only the event type's columns of the sending node's own row. Each value must be a scalar of at most 256 KB. An inventory also sets `time_offset` from the node's heartbeat clock offset, which is what the legacy cron measured against the database clock.
+
+**Root.** `cron:root_signals` and the certbot cron run as root. `EventSpool` hands a lane or file that root creates to the owner of the agent's state directory, so the agent can still read, compact and delete it.
+
+**`stream.progress`.** No separate event is built. `progress_info` already reaches MAIN in `stream.state`: `cron:streams` sends it at most once a minute per stream, and MAIN treats it as cache-neutral. A created channel's encoding progress, every 10 s while it encodes, is the one faster writer. P0 compaction keeps one state per row, so none of it can grow the backlog. Moving it to the bus waits for the P2 lane.
+
 ### Connections (Phase 6, first increment): kills as commands
 
 Every kill MAIN sends to another node's viewers now travels as a signed command when that node takes commands. Before this, only `SignalDispatcher::kill` in MySQL mode did.

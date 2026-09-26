@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Auth;
 
+use XcVm\Core\Cluster\EventSpool;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Security\BlocklistService;
@@ -23,6 +25,9 @@ use XcVm\Infrastructure\Signal\SignalQueue;
  */
 
 class BruteforceGuard {
+	/** The reasons blockIP() records, which MAIN accepts from a node's security.block_ip. */
+	public const REASON_PATTERN = '/^(FLOOD|BRUTEFORCE (MAC|USER)) ATTACK$/';
+
 	/**
 	 * Resolve panel settings, preferring SettingsManager over the legacy global.
 	 *
@@ -97,6 +102,8 @@ class BruteforceGuard {
 		if ($useCachedMode && !empty($GLOBALS['rCached'])) {
 			$signalKey = (stripos($reason, 'BRUTEFORCE') !== false ? 'bruteforce_attack' : 'flood_attack');
 			SignalQueue::push($signalKey . '/' . $ip, 1);
+		} elseif (self::spoolBlock($ip, $reason)) {
+			// MAIN records it (security.block_ip); the block file below applies it here now.
 		} else {
 			$db = self::getDB();
 			if ($db) {
@@ -108,6 +115,19 @@ class BruteforceGuard {
 			}
 		}
 		touch(FLOOD_TMP_PATH . 'block_' . $ip);
+	}
+
+	/**
+	 * On a load balancer whose CONFIG flow is on (cluster plan, Phase 5), the
+	 * blocklist is MAIN's: the block goes to MAIN as a P0 `security.block_ip`
+	 * event instead of a write to its database. False when it could not be
+	 * spooled (flow off, agent stopped, MAIN itself): the caller writes it.
+	 */
+	private static function spoolBlock(string $ip, string $reason): bool {
+		if (!class_exists(NodeFlows::class) || !NodeFlows::on(NodeFlows::CONFIG)) {
+			return false;
+		}
+		return EventSpool::append('p0', [['type' => 'security.block_ip', 'd' => ['ip' => $ip, 'reason' => $reason]]]);
 	}
 
 	/**
