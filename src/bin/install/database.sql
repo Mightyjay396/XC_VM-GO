@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS `cluster_nodes` (
   `mode` tinyint(3) unsigned NOT NULL DEFAULT '0',
   `flows` int(10) unsigned NOT NULL DEFAULT '0',
   `root_ready` tinyint(1) NOT NULL DEFAULT '0',
+  `features` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `gen` int(10) unsigned NOT NULL DEFAULT '1',
   `node_sign_pub` binary(32) DEFAULT NULL,
   `node_box_pub` binary(32) DEFAULT NULL,

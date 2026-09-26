@@ -58,6 +58,7 @@ final class ClusterApiTest extends TestCase {
 		}
 		$this->rDb->exec('ALTER TABLE `cluster_node_epochs` ADD COLUMN `agent_eph_pub` binary(32) DEFAULT NULL');
 		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `root_ready` tinyint(1) NOT NULL DEFAULT 0');
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `features` varchar(255) DEFAULT NULL');
 		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `status` int NOT NULL DEFAULT 0)');
 		$this->rDb->exec('INSERT INTO `servers` (`id`, `status`) VALUES (5, 0)');
 		DatabaseFactory::set($this->rDb);
@@ -344,11 +345,14 @@ final class ClusterApiTest extends TestCase {
 	public function testHelloAndHeartbeat(): void {
 		$rKeys = $this->active();
 		ClusterClock::fix($this->rT0 + 5000);
-		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a', 'boot_id' => 'boot-2', 'agent_version' => '0.1.1'], 1, $rKeys);
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a', 'boot_id' => 'boot-2', 'agent_version' => '0.1.1', 'features' => ['hls_reaper', 'Bad Name!', 'hls_reaper', 7]], 1, $rKeys);
 		$rOut = $this->reply($rRes, $rCtx, $rKeys);
 		$this->assertSame('active', $rOut['state']);
 		$this->assertSame(['min' => 1, 'max' => 1], $rOut['proto']);
 		$this->assertSame('boot-2', NodeRegistry::byServer(self::SID)['boot_id']);
+		$this->assertSame('hls_reaper', NodeRegistry::byServer(self::SID)['features'], 'only well-formed names, once');
+		$this->assertNull(ClusterApi::features(null), 'an older agent says nothing: MAIN keeps doing it all');
+		$this->assertSame('a,b', ClusterApi::features(['b', 'a']));
 
 		[$rRes, $rCtx] = $this->call('heartbeat', ['telemetry' => ['cpu' => 3]], 1, $rKeys, ['ts' => $this->rT0 + 5250]);
 		$rBeat = $this->reply($rRes, $rCtx, $rKeys);

@@ -475,7 +475,36 @@ A chunk 0 starts over. Any other chunk out of order gets `409 SNAP_GAP {expected
 
 **Seed.** `console.php cluster:seed-connections` runs on the node while it still reaches MAIN's store, before the CONNECTIONS flow is switched on. It loads the node's connections from MAIN's store (Redis `SERVER#<sid>`, or `lines_live`) into the agent through `POST /v1/conn/seed`. The first chunk empties the registry, and loading sends no event. Only the registry record's keys are sent (`AgentConnections::RECORD_KEYS`), never the line's other columns. After the switch, the first digest agrees and no snapshot is needed.
 
-Still to come in Phase 6: admission when the token is minted, the agent's HLS reaper, and rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
+Still to come in Phase 6: admission when the token is minted, and rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
+
+### Connections (Phase 6, sixth increment): the agent's HLS reaper
+
+**The problem.** An HLS viewer has no worker to watch, only its playlist requests. The legacy reaper (`UsersCronJob`) ends one 30 s after its `hls_last_read`. On a CONNECTIONS node, that time reaches MAIN only in the agent's upserts, at most every 10 s. A slow or cut link to MAIN would therefore end viewers who are still watching.
+
+**On the node.** The agent's `Registry.Reap` runs every 5 s while CONNECTIONS is on:
+
+- It ends an open HLS viewer that has made no playlist request for 30 s: `hls_end` 1, sent as a P0 `conn.upsert`, spooled before the registry changes.
+- The time is the node's own: when a request last changed the record's `hls_last_read`. A clock step does not end anyone, and neither does MAIN being out of reach.
+- After a restart, every viewer loaded from `registry.snap` gets a full 30 s window.
+- A request after the end re-opens the viewer, as before.
+
+**Telling MAIN.** The agent says `features: ["hls_reaper"]` at hello, and MAIN keeps it in `cluster_nodes.features` (migration 041). An older agent says nothing, so MAIN keeps doing everything itself. The agent also writes `hls_reaper` into `flows.json`.
+
+**MAIN's reaper.** `UsersCronJob` asks `Core\Cluster\HlsReaping`. For an active node in mode ≥ 1, with CONNECTIONS on and the feature:
+
+- the 30 s rule is off;
+- only what the node ended (`hls_end` 1) is closed, with the usual activity row and a `conn.close` back to the node.
+
+An LB that reaps its own rows (MySQL mode) asks its own agent through `NodeFlows` instead.
+
+**Orphans.** A node that falls silent would keep its viewers counted against their lines forever, so it is orphaned once both of these hold:
+
+- its `last_seen_at` is older than `cluster_orphan_conn_ttl_sec`;
+- MAIN's reaper has itself watched it stay silent that long (`TMP_PATH/cluster_orphans.json`).
+
+A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node. An orphaned node's rows go back to the 30 s rule.
+
+**Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way.
 
 ### Disaster recovery of MAIN's cluster keys
 

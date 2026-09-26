@@ -3,13 +3,13 @@
 use PHPUnit\Framework\TestCase;
 
 /**
- * The cluster schema exists twice: as migrations 028–040 for upgrades and in
+ * The cluster schema exists twice: as migrations 028–041 for upgrades and in
  * database.sql for fresh installs. Both were loaded into MariaDB 10.11 and
  * compared column by column when written; this test keeps them from drifting
  * where CI has no database.
  */
 final class ClusterSchemaTest extends TestCase {
-	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes', '035_add_cluster_epoch_eph', '036_add_cluster_enrol_request_eph', '037_enable_cluster_cron', '038_add_cluster_endpoint_settings', '039_add_cluster_node_root_ready', '040_add_cluster_db_allowlist'];
+	private const MIGRATIONS = ['028_add_cluster_settings', '029_create_cluster_nodes', '030_create_cluster_commands', '031_create_cluster_enrolment', '032_create_cluster_audit', '033_add_crontab_role', '034_create_cluster_changes', '035_add_cluster_epoch_eph', '036_add_cluster_enrol_request_eph', '037_enable_cluster_cron', '038_add_cluster_endpoint_settings', '039_add_cluster_node_root_ready', '040_add_cluster_db_allowlist', '041_add_cluster_node_features'];
 
 	private function src(string $rPath): string {
 		return (string) file_get_contents(dirname(__DIR__, 2) . '/src/' . $rPath);

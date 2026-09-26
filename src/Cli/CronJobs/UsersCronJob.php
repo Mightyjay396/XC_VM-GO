@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\HlsReaping;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -179,6 +180,18 @@ class UsersCronJob implements CommandInterface {
 		return in_array(intval($rConnection['pid']), $rPIDs);
 	}
 
+	/**
+	 * Is this HLS viewer over? The node said so (hls_end), or it made no
+	 * playlist request for 30 s and its node does not reap for itself
+	 * (HlsReaping: an agent with hls_reaper, unless orphaned).
+	 */
+	private function hlsEnded(array $rConnection, int $rNow): bool {
+		if ($rConnection['hls_end'] == 1) {
+			return true;
+		}
+		return HlsReaping::STALE_AFTER <= $rNow - intval($rConnection['hls_last_read']) && !HlsReaping::nodeReaps((int) $rConnection['server_id']);
+	}
+
 	private function processDeletions($rDelete, $rDelStream = []) {
 		$rRedis = SettingsManager::getBool('redis_handler');
 		global $db;
@@ -282,6 +295,10 @@ class UsersCronJob implements CommandInterface {
 
 		$rStartTime = time();
 		$rLiveKeys = [];
+		if ($rServers[SERVER_ID]['is_main']) {
+			// Nodes whose agent ends its own idle HLS viewers (unless orphaned).
+			HlsReaping::begin($rStartTime, SettingsManager::getInt('cluster_orphan_conn_ttl_sec', 120));
+		}
 
 		if (!$rRedis || $rServers[SERVER_ID]['is_main']) {
 			$rAutoKick = SettingsManager::getInt('user_auto_kick_hours') * 3600;
@@ -369,7 +386,7 @@ class UsersCronJob implements CommandInterface {
 
 							if ($rAutoKick == 0 || $rAutoKick > $rTotalTime || $rIsRestreamer) {
 								if ($rConnection['container'] == 'hls') {
-									if (30 <= $rStartTime - $rConnection['hls_last_read'] || $rConnection['hls_end'] == 1) {
+									if ($this->hlsEnded($rConnection, $rStartTime)) {
 										echo 'Close connection: ' . $rConnection['uuid'] . "\n";
 										ConnectionTracker::closeConnection($rConnection, false, false);
 
