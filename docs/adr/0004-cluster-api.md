@@ -939,7 +939,7 @@ The settings columns come from the install schema and the migrations. Secrets ar
 | --- | --- |
 | `servers` | `{servers: [row], nodes: [{sid, gen, state, ed_pub}]}`. One row per `servers` row, ordered by id, with the routing and relay fields `SERVER_FIELDS`. `nodes` is every `cluster_nodes` row by `server_id`: its generation, its state and its Ed25519 key (`node_sign_pub`, base64) |
 | `node` | The node's own row: `NODE_FIELDS` (ports, `limit_requests`/`limit_burst`, `total_services`, `use_disk`, `enable_https`, `domain_name`, `network_interface`, `governor`, `sysctl`, `time_offset`) and the settings `cloudflare` and `mag_legacy_redirect`. `[]` when the row is gone |
-| `crontab` | `{jobs: [{filename, time}]}`: the enabled rows whose role fits the node's mode, in the table's order |
+| `crontab` | `{jobs: [{filename, time}]}`: the enabled rows whose role fits the node's mode, in the table's order. A row that is not a job as the node takes it (below) is left out, and audited once as `replica.crontab_skipped` |
 | `cluster` | `{main_urls, urls_ver, policy_ver, transport, panel_sign_pub, panel_box_pub, min_proto, off_air}`. The policy is the one `hello` sends (`ClusterPolicy::current`). The keys are base64. `off_air` maps `connected`, `not_on_air`, `banned`, `expired` and `expiring` to the file name of the admin's video, or null for the node's default |
 
 Integer columns travel as JSON integers and text as strings, whichever driver read them; a missing column or NULL is null. Every level of a section has its keys sorted (the canonical form of the ETag), so a row's fields arrive in name order.
@@ -953,21 +953,23 @@ Integer columns travel as JSON integers and text as strings, whichever driver re
 - `urls_ver` equals `policy_ver`: one counter versions both the URLs and the policy.
 - A `legacy` crontab row fits modes 0 and 1, as migration 033 defines it (nodes that still have MAIN's database). `main` rows never leave MAIN. The plan's "`users` only while CONNECTIONS is off" stays `UsersCronJob`'s own check.
 - Migration 042 makes `cleanup`'s role `all`, as the plan's cron table has it (its Phase 0 text and migration 033 made it `main`). `cron:cleanup` prunes each node's own stream files, TV archive and created channels, and only its table rotation is MAIN's. While nodes copied the crontab whole the role changed nothing; with the crontab section, a `main` row would have stopped that pruning on every node. `ReplicaSectionsTest` checks the install's own crontab.
+- Migration 043 gives the rest of the plan's `main` crons that role: `epg`, `series`, `backups`, `cache_engine` and `providers` (the LB build strips their classes), `stats` (it exits on an LB), `proxy` (it fetches the archive MAIN's installer ships) and `watch` and `plex` (module commands; modules are MAIN-only). An install had them all as `all`, so the crontab section would have sent every node jobs that fail as unknown commands. `maxmind` stays `all`, unlike the plan's table: each node keeps its own GeoIP databases current. `ReplicaSectionsTest` fails on a job whose class the Makefile strips from the LB build.
 - The whole section is panel-signed, so the node list inside it is signed.
 - A `rep` record is signed on each request, not once per content hash: a signature costs microseconds, and the plan's cache holds the data.
-- `config.changed` also goes out when a node completes its enrolment, so the others learn a new active key at once.
+- `config.changed` also goes out when a node completes its enrolment or is quarantined, so the others learn a new active key, or stop trusting a cloned one, at once.
+- `config.changed` goes only to an agent that says `config_changed` at hello (below). Today's agent would hand it to `cluster:exec`, which an LB's older PHP fails as an unknown type.
 
-**Change detection on MAIN.** The ETag is the SHA-256 of the canonical data. `ReplicaEtagCache` keeps a section and its ETag for 10 s on MAIN's clock, one file per key in `TMP_PATH/cluster_replica/`: `servers`, `settings`, `cluster`, `node.<sid>`, and `crontab.legacy` or `crontab.api`. Each entry records the cache's generation (`.gen`) from before the database was read. A bump raises the generation and deletes the entries, so a request that read the old rows and writes them after the bump is never served. Without that, a node pushed by `config.changed` could get the old list as `unchanged` and wait for its next poll.
+**Change detection on MAIN.** The ETag is the SHA-256 of the canonical data. `ReplicaEtagCache` keeps a section and its ETag for 10 s on MAIN's clock, one file per key in `TMP_PATH/cluster_replica/`: `servers`, `settings`, `cluster`, `node.<sid>`, and `crontab.legacy` or `crontab.api`. Each entry records the cache's generation (`.gen`) from before the database was read. A bump replaces the generation with a random token and deletes the entries, so a request that read the old rows and writes them after the bump is never served. A random token, not a counter: two bumps at once never write the same one. Without that, a node pushed by `config.changed` could get the old list as `unchanged` and wait for its next poll.
 
 - `SettingsChangedEvent`, `ServerSavedEvent` and `CrontabChangedEvent` drop the cache, so the next `config` call reads the database. `SettingsService` now dispatches `SettingsChangedEvent` on the settings, backup and cache saves. `ServerService` and `ServerRepository` dispatch `ServerSavedEvent` on a server or proxy save, an install, a reorder and a delete. The cache-engine schedule save dispatches `CrontabChangedEvent`.
 - The listener is Core's own, registered by `ContainerPopulateStage`, because only modules had a subscriber registry.
-- Other writers of these tables dispatch nothing. Their change is seen within the 10 s, then at the node's next minute's poll.
+- Other writers of these tables dispatch nothing. Their change is seen within the 10 s, then at the node's next minute's poll. Among them: the admin's node actions (ports, services, governor, sysctl), which the node carries out and writes back to its own row itself, and the enrolment and liveness writers of `cluster_nodes`.
 
-**`config.changed`.** `ReplicaBuilder::nodesChanged` runs when a node is revoked, re-enrolled (`startEnrolment` over an existing row) or completes its enrolment. It drops the cache, then queues `config.changed` for every other `active` node with COMMANDS on.
+**`config.changed`.** `ReplicaBuilder::nodesChanged` runs when a node is revoked, re-enrolled (`startEnrolment` over an existing row), completes its enrolment, or is quarantined on evidence of a clone (`hello` or `token_rekey` from another instance). It drops the cache, then queues `config.changed` for every other `active` node with COMMANDS on whose agent said `config_changed` at hello (`cluster_nodes.features`).
 
 - The command is restrictive, so it signs without a licence. Its `dedupe_key` is `config.changed`, so a newer one supersedes one not yet acked.
-- A failure to queue never fails the revocation or the enrolment; the nodes then see the change at their next poll.
-- Nodes without COMMANDS fetch it at their next poll too.
+- A failure to queue never fails the change. Each node is queued on its own, so one that cannot be told (its row gone meanwhile) is skipped and the others still are; it sees the change at its next poll.
+- Nodes without COMMANDS or without the feature fetch it at their next poll too.
 
 **The node.** `cluster:apply` reads `replica/<name>.json` and reports each section in `replica/apply.json`:
 
@@ -978,15 +980,22 @@ Integer columns travel as JSON integers and text as strings, whichever driver re
 - **`crontab`.**
   - **Shadow:** the jobs MAIN's table has that the section leaves out (`missing`, normally the `main` rows) and the reverse (`extra`).
   - **CONFIG on:** the `cron_jobs` cache.
-  - A job must be a `cron:` name (`[a-z0-9_]{1,64}`) and five schedule fields, or the whole section is `refused`: the node writes the jobs into its crontab.
+  - A job must be a `cron:` name (`[a-z0-9_]{1,64}`) and five schedule fields of `[0-9*/,-]`, with nothing after them, not even a newline; otherwise the whole section is `refused`: the node writes the jobs into its crontab.
 - **`cluster`.** Compared with the agent's `agent.json` (`main_urls`, `panel_sign_pub`, `policy_ver`) and reported as `shadow` whatever the flow. No PHP on the node reads it; the agent does.
 
-With CONFIG on, the replica owns a cache only once the agent has stored its sections (`ReplicaApply::owns`: `servers.json` and `node.json`, or `crontab.json`). A node whose agent predates them keeps reading MAIN's database, so no cache is left that nothing refreshes. Once owned:
+**Who owns a cache.** With CONFIG on, the replica owns the servers cache or the crontab's jobs (`ReplicaApply::owns`) only once the agent has stored the sections (`servers.json` and `node.json`, or `crontab.json`) and an authoritative apply has built the cache from them. The apply records that in the `replica_owned` cache, beside the caches in `tmp/cache/`, so it goes with them at a reboot. Until then the readers keep MAIN's database and `cron:cache` keeps refreshing it. A database copy is therefore never taken for the replica's, frozen with the liveness it had.
 
-- `ServerRepository::getAll()` returns the servers cache however old it is, even when forced, so every reader (including `cron:root_signals`' ports, limits and services) reads the replica. It reads the database only while the cache is not there yet, as after a reboot before `cluster:apply` ran.
-- `cron:cache` stops writing the servers cache.
-- `LegacyInitializer::generateCron` and `cron:root_signals`' crontab check take the jobs from `ReplicaApply::cronJobs`. With no `cron_jobs` cache yet they leave the crontab as it is.
-- `src/service` runs `cluster:apply --from-disk` as xc_vm before `daemons.sh` on a node with a replica directory, so a node rebooted while MAIN is unreachable rebuilds its caches from disk. The flag changes nothing: `cluster:apply` always reads the disk.
+- A section that is refused or incomplete hands its cache back: the readers take MAIN's database again, and `cron:cache` refreshes the servers cache from it.
+- With CONFIG off, `cluster:apply` (in shadow) and `cron:cache` drop the record and the `cron_jobs` cache (`ReplicaApply::disown`), so turning CONFIG back on waits for an apply instead of reusing old jobs.
+- `cron:cache` applies the replica from disk itself every minute while CONFIG is on (`ReplicaApply::run(true)`), so the caches follow the copy on disk within a minute of a flow change even when the agent does not run `cluster:apply` then.
+
+Once owned:
+
+- `ServerRepository::getAll()` returns the servers cache however old it is, even when forced, so every reader (including `cron:root_signals`' ports, limits and services) reads the replica. Should the cache be gone, it rebuilds it from the replica on disk. It never writes the database's rows over a cache the replica owns.
+- `cron:cache` does not write the servers cache from the database.
+- `LegacyInitializer::generateCron` and `cron:root_signals`' crontab check take the crontab from `ReplicaApply::crontabText`: the replica's jobs, or MAIN's table while the replica does not own them. Null (the owned jobs are gone, or there is no database) leaves the crontab as it is; an empty string is a crontab with no job.
+- `cron:certbot` reads its own certificate record from its row in MAIN's database, not from the servers cache, which carries no `certbot_ssl` (`SERVER_LOCAL`).
+- `src/service` runs `cluster:apply --from-disk` as xc_vm before `daemons.sh` when `config/cluster/flows.json` has mode 1 or 2 and the CONFIG bit, with a 15 s `timeout`. A shadow node gains nothing from it. The flag changes nothing: `cluster:apply` always reads the disk.
 - `NodeFlows` ignores the agent's file on MAIN, and asks `NodeRole`, which reads the servers. On a node whose replica owns them that asked `NodeFlows` again, without end. The inner call now gets what the file says (`ReplicaApplyTest`).
 
 **Known limits.**
@@ -994,9 +1003,16 @@ With CONFIG on, the replica owns a cache only once the agent has stored its sect
 - A node with CONFIG on and TELEMETRY off loses what its legacy telemetry path read from its own row: `watchdog_data`'s CPU history, and `users`/`connections` in Redis mode. The rollout turns TELEMETRY (Phase 3) on before CONFIG.
 - The settings, including `cloudflare` and `mag_legacy_redirect`, stay MAIN's until the `secrets` section exists; the `node` section's copies are not read yet.
 - No reader uses the node list before Phase 8's ticket checks.
-- `cluster:apply` boots through the CLI profile, which still connects to MAIN's database (`ReplicaStage` is not built). With MAIN's database unreachable at boot it exits before it applies anything, bounded by `service`'s 60 s `timeout`, so serving from disk after such a reboot waits for `ReplicaStage`.
+- `cluster:apply` and `cron:cache` boot through the CLI profile, which still connects to MAIN's database (`ReplicaStage` is not built). With MAIN's database unreachable at boot, `cluster:apply` exits before it applies anything, bounded by `service`'s 15 s `timeout`. A node rebooted while MAIN is unreachable therefore serves from its replica only once `ReplicaStage` exists; today its caches are rebuilt when MAIN's database answers again.
 
-**Tests.** `ReplicaSectionsTest` (content per section, the classification, no liveness or secret, the ETag's stability, cache and bumps, `config.changed`), `ReplicaApplyTest` (shadow and authoritative per section, `getAll`'s shape, missing, foreign and malformed sections, the crontab's readers), `ClusterApiTest` (served by `have`, never to an agent that does not name them), and `ClusterExecCommandTest` (`config.changed` acked as deferred). The suite runs with the ETag cache off (`tests/bootstrap.php`): some tests define `TMP_PATH` as a shared path and fix the clock at one instant.
+**Tests.**
+
+- `ReplicaSectionsTest`: content per section, the classification, no liveness or secret, rows a node would refuse left out of the crontab section, and no job the LB build strips. Also the ETag's stability, the cache, bumps from each event and from a delete or reorder, and a bump in the middle of a read (through `QueryLogDb`'s before-statement hook). And `config.changed`: who is told on a revoke and a re-enrolment, never the node itself, and a node that cannot be told is skipped.
+- `ReplicaApplyTest`: shadow and authoritative per section, and `getAll`'s shape (a disabled server offline, the node's own row online and from the node section). Also missing, foreign, malformed and duplicate sections, and the crontab patterns. Ownership: only after an apply, handed back on a refusal and after CONFIG was off, an owned cache that is gone rebuilt from disk, and never overwritten by a database read an apply overtook. And `ReplicaApply::crontabText`, which both crontab readers write; the readers themselves only pass its null on.
+- `ClusterApiTest`: sections served by `have`, never to an agent that does not name them. Also `config.changed` on a completed enrolment and on both quarantines, and a sign refusal other than LICENCE that still denies the call (`FakeClusterCrypto::$rRefuseSign`).
+- `BootStageTest` (the three events have Core's listener after `ContainerPopulateStage`), `ClusterExecCommandTest` (`config.changed` acked as deferred), and `ClusterSchemaTest` (migrations 042 and 043).
+
+The suite runs with the ETag cache off (`tests/bootstrap.php`): some tests define `TMP_PATH` as a shared path and fix the clock at one instant.
 
 **The agent's contract (XC_VM_Fanout, not built yet).**
 
@@ -1004,8 +1020,9 @@ With CONFIG on, the replica owns a cache only once the agent has stored its sect
 - **Reply.** Per named section, under the same name: `{"unchanged": true}`, or `{"etag": "<64 hex>", "sealed": "<base64 std>"}`. A missing field means "not served": keep what is held. That includes a changed whole section while MAIN has no licence: a `rep` record grants, so MAIN leaves it out instead of refusing the whole call, and the blocklist's bans in the same reply still arrive. Before this, one changed `settings` section made every `config` call a `LICENCE_INVALID` until the licence came back.
 - **Record.** `sealed` is base64 of XCVM-SEAL-v1 to the node's box key (purpose `replica`, context the node uuid). It opens to `u32(len) ‖ payload ‖ sig`, where `payload` is the JSON `{v: 1, section, node, gen, etag, iat, data}` (no `seq`) and `sig` the panel's signature over it under tag `rep`. Store it only if the signature verifies against the pinned panel key and `section`, `node` and `etag` match the name, this node and the announced ETag; checking `gen` against the token's generation is recommended.
 - **Files**, written atomically under `config/cluster/replica/`: `<name>.rep` (the sealed record as received) and `<name>.json` (`{"etag": "<etag>", "data": <data exactly as signed>}`). `state.json` keeps the ETag held per section (for example `whole_etags: {name: etag}`, beside today's `settings_etag`).
-- **Apply.** After storing any section, run `console.php cluster:apply` (debounced 1 s, as today). Also run it once after the first sync when the agent starts, since `tmp/cache/` does not survive a reboot.
-- **`config.changed`.** A command of type `config.changed` (class R), `args: {"sections": ["servers"]}`, `dedupe_key: "config.changed"`, `exp = iat + 600`. Verify it like any command. Then start a replica sync at once, coalesced with one already running, and ack `ok` with `{"result": true}` without waiting for the sync. An agent that hands it to `cluster:exec` instead gets exit 0 and `{"deferred": true}`, and its next minute's poll fetches the change.
+- **Apply.** After storing any section, run `console.php cluster:apply` (debounced 1 s, as today). Also run it once after the first sync when the agent starts, since `tmp/cache/` does not survive a reboot. Also run it when the CONFIG bit (32) of the `flows` it writes to `flows.json` changes, either way: that is when the caches change hands. `cron:cache` applies every minute while CONFIG is on, so an agent that does not do this only delays the switch by up to a minute.
+- **Crontab jobs.** In every job MAIN sends, `filename` is 1 to 64 characters of `[a-z0-9_]`, and `time` is five fields of `[0-9*/,-]+` separated by single spaces, with nothing before or after (no newline). MAIN leaves any other row out. The agent stores the section as signed and need not check the jobs: PHP refuses a section with any other job.
+- **`config.changed`.** MAIN sends it only to an agent that lists `"config_changed"` in hello's `features` (today's agent sends `["hls_reaper"]`, so it gets none). It is a command of type `config.changed` (class R), `args: {"sections": ["servers"]}`, `dedupe_key: "config.changed"`, `exp = iat + 600`. It goes out when another node is revoked, re-enrolled, completes its enrolment or is quarantined. Verify it like any command. Then start a replica sync at once, coalesced with one already running, and ack `ok` with `{"result": true}` without waiting for the sync. Should it reach `cluster:exec` anyway, this PHP acks `{"deferred": true}` with exit 0, and the next minute's poll fetches the change.
 - **Use.** The `cluster` section is panel-signed like a challenge's policy. An agent may adopt its `main_urls` and `transport` when its `policy_ver` is above the one it holds; that is how a node rebooted without MAIN keeps a current URL list. The `servers.nodes` list is for Phase 8's relay-ticket checks.
 
 ### The cluster bus (Phase 2, first increment): wake-ups

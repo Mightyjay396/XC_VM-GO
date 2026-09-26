@@ -86,7 +86,8 @@ final class ReplicaSections {
 
 	/**
 	 * A crontab job as a node writes it into its crontab: a cron: command name
-	 * and a five-field schedule, nothing a shell would read more into.
+	 * and a five-field schedule, nothing a shell or cron would read more into
+	 * (no trailing newline either: `\z`, not `$`).
 	 *
 	 * @return array{filename: string, time: string}|null
 	 */
@@ -94,7 +95,7 @@ final class ReplicaSections {
 		if (!is_array($rJob) || !is_string($rJob['filename'] ?? null) || !is_string($rJob['time'] ?? null)) {
 			return null;
 		}
-		if (!preg_match('/^[a-z0-9_]{1,64}$/', $rJob['filename']) || !preg_match('/^[0-9*\/,-]+( [0-9*\/,-]+){4}$/', $rJob['time'])) {
+		if (!preg_match('/^[a-z0-9_]{1,64}\z/', $rJob['filename']) || !preg_match('/^[0-9*\/,-]+( [0-9*\/,-]+){4}\z/', $rJob['time'])) {
 			return null;
 		}
 		return ['filename' => $rJob['filename'], 'time' => $rJob['time']];

@@ -187,7 +187,7 @@ final class ClusterApi {
 		return match ($rOp) {
 			'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
 			'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'hello' => self::hello($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+			'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
 			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
@@ -362,6 +362,8 @@ final class ClusterApi {
 			// Authenticated evidence of a clone, as in hello: the admin decides.
 			NodeRegistry::update((int) $rNode['server_id'], ['state' => 'quarantined', 'quarantine_reason' => 'instance_id changed (re-key)']);
 			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'rekey attest', 'was' => $rNode['instance_id'], 'now' => $rInstance], 'node');
+			// No longer active in the node list: its peers stop trusting it at once.
+			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => 'quarantined']);
 		}
 		try {
@@ -477,7 +479,7 @@ final class ClusterApi {
 		]));
 	}
 
-	private static function hello(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
+	private static function hello(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rInstance = self::short($rP['instance_id'] ?? null);
 		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)];
 		$rState = (string) $rNode['state'];
@@ -491,6 +493,10 @@ final class ClusterApi {
 			$rFields['instance_id'] = $rInstance;
 		}
 		NodeRegistry::update((int) $rNode['server_id'], $rFields);
+		if ($rState !== (string) $rNode['state']) {
+			// Quarantined: no longer active in the node list, so its peers stop trusting it at once.
+			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
+		}
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => $rState, 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'], 'gen' => (int) $rNode['gen'],
 			'epoch' => $rH['epoch'], 'main_time_ms' => ClusterClock::nowMs(),

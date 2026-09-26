@@ -316,6 +316,31 @@ final class ClusterApiTest extends TestCase {
 		return $rKeys;
 	}
 
+	/** Another enrolled, active node taking commands, whose agent says $rFeatures at hello. */
+	private function peer(int $rServerID, ?string $rFeatures): void {
+		$this->rDb->query(
+			'INSERT INTO `cluster_nodes` (`server_id`, `node_uuid`, `state`, `mode`, `flows`, `gen`, `node_sign_pub`, `node_box_pub`, `epoch`, `created_at`, `updated_at`, `features`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+			$rServerID,
+			sprintf('00000000-0000-4000-a000-%012d', $rServerID),
+			'active',
+			1,
+			NodeRegistry::FLOW_COMMANDS,
+			1,
+			random_bytes(32),
+			sodium_crypto_scalarmult_base(random_bytes(32)),
+			1,
+			1800000000,
+			1800000000,
+			$rFeatures
+		);
+	}
+
+	/** @return list<int> the nodes a config.changed is queued for */
+	private function announced(): array {
+		$this->rDb->query("SELECT `server_id` FROM `cluster_commands` WHERE `type` = 'config.changed' ORDER BY `server_id`");
+		return array_map('intval', array_column($this->rDb->get_rows() ?: [], 'server_id'));
+	}
+
 	// ── Tests ────────────────────────────────────────────────────────────
 
 	public function testEnrolmentIssuesEpochOneAndClusterJson(): void {
@@ -344,6 +369,19 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame('inst-a', $rNode['instance_id']);
 		$this->assertNull($rNode['enrol_deadline']);
 		$this->assertSame(1, (int) $rNode['epoch']);
+	}
+
+	public function testEnrolCompleteAnnouncesTheNodeToThePeersThatTakeIt(): void {
+		$this->peer(6, ReplicaBuilder::FEATURE_CONFIG_CHANGED);
+		$this->peer(7, 'hls_reaper'); // today's agent: its next poll fetches the change
+		$rFirst = $this->enrol();
+		// The node would take the command too: it is never told about itself.
+		NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS, 'features' => ReplicaBuilder::FEATURE_CONFIG_CHANGED]);
+		$this->assertSame([], $this->announced(), 'not before it is active');
+		$rTok = $this->openToken($rFirst['token_sealed'], $this->rEph[1]);
+		[$rRes, $rCtx] = $this->call('enrol_complete', ['instance_id' => 'inst-a'], 1, $rTok['keys']);
+		$this->assertSame('active', $this->reply($rRes, $rCtx, $rTok['keys'])['state']);
+		$this->assertSame([6], $this->announced());
 	}
 
 	public function testEnrolCompleteAfterDeadlineIsRefused(): void {
@@ -387,11 +425,16 @@ final class ClusterApiTest extends TestCase {
 
 	public function testHelloFromAnotherInstanceQuarantines(): void {
 		$rKeys = $this->active();
+		$this->peer(6, ReplicaBuilder::FEATURE_CONFIG_CHANGED);
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a'], 1, $rKeys);
+		$this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame([], $this->announced(), 'the same instance: nothing changed');
 		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-CLONE'], 1, $rKeys);
 		$this->assertSame('quarantined', $this->reply($rRes, $rCtx, $rKeys)['state']);
 		$rNode = NodeRegistry::byServer(self::SID);
 		$this->assertSame('quarantined', $rNode['state']);
 		$this->assertSame('inst-a', $rNode['instance_id'], 'the enrolled instance is kept');
+		$this->assertSame([6], $this->announced(), 'its peers stop trusting it at once');
 	}
 
 	public function testReplayIsRefused(): void {
@@ -713,9 +756,11 @@ final class ClusterApiTest extends TestCase {
 
 	public function testRekeyFromAnotherInstanceQuarantines(): void {
 		$this->expired();
+		$this->peer(6, ReplicaBuilder::FEATURE_CONFIG_CHANGED);
 		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32), ['instance_id' => 'inst-CLONE']);
 		$this->assertSame('quarantined', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state']);
 		$this->assertSame('quarantined', NodeRegistry::byServer(self::SID)['state']);
+		$this->assertSame([6], $this->announced(), 'its peers stop trusting it at once');
 
 		// A quarantined node waits for the admin.
 		ClusterClock::fix($this->rT0 + 61000);
@@ -1123,6 +1168,31 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(['203.0.113.2'], $this->openRecord($rNext['blocklist']['delta'], 'blk')['add']);
 		$this->assertArrayNotHasKey('settings', $rNext, 'left out: not a malformed section today\'s agent would stop on');
 		$this->assertArrayNotHasKey('servers', $rNext);
+	}
+
+	public function testAWholeSectionRefusedForAnyReasonButTheLicenceDeniesTheCall(): void {
+		if (!$this->rCrypto instanceof FakeClusterCrypto) {
+			$this->markTestSkipped('the fake alone refuses to sign on demand');
+		}
+		$this->blocklistTables();
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `seg_time` int)');
+		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 6)");
+		$rKeys = $this->active();
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0], 1, $rKeys);
+		$rBlocklist = $this->reply($rRes, $rCtx, $rKeys)['blocklist'];
+		$rAsk = ['blocklist_since' => $rBlocklist['seq'], 'have' => ['blocklist' => $rBlocklist['section']['etag'], 'settings' => '']];
+
+		// The blocklist is held (nothing to sign): only the settings section is refused.
+		foreach (['CLOCK' => [503, 'CLOCK'], 'REVOKED' => [403, 'NODE_REVOKED']] as $rReason => [$rStatus, $rDenial]) {
+			$this->rCrypto->rRefuseSign = $rReason;
+			[$rRes, , $rReq] = $this->call('config', $rAsk, 1, $rKeys);
+			$this->denial($rRes, $rStatus, $rDenial, $rReq);
+		}
+		$this->rCrypto->rRefuseSign = 'LICENCE';
+		[$rRes, $rCtx] = $this->call('config', $rAsk, 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertTrue($rOut['blocklist']['unchanged']);
+		$this->assertArrayNotHasKey('settings', $rOut, 'only a licence refusal leaves the section out');
 	}
 
 	public function testConnAdmitAdmitsForTheAuthenticatedNodeFromMainsOwnLine(): void {

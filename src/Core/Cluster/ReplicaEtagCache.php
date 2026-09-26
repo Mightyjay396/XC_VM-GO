@@ -20,8 +20,9 @@ use XcVm\Core\Events\Settings\SettingsChangedEvent;
  * One file per section (and per node or mode where the section depends on
  * it) in `TMP_PATH/cluster_replica/`: `{at, gen, etag, data}`, `at` in ms on
  * MAIN's clock. `gen` is the cache's generation (`.gen`) when the section
- * was read from the database: a bump raises it, so a section read before
- * the bump and written after it is never served. In Core, not
+ * was read from the database: a bump replaces it with a random token, so a
+ * section read before the bump and written after it is never served, even
+ * when two bumps race. In Core, not
  * Domain\Cluster: the event listener is registered at boot on every node
  * (ContainerPopulateStage), and on an LB there is simply nothing to drop.
  */
@@ -45,9 +46,9 @@ final class ReplicaEtagCache {
 	}
 
 	/** The cache's generation: read it before reading a section from the database. */
-	public static function generation(): int {
+	public static function generation(): string {
 		$rDir = self::dir();
-		return $rDir === null ? 0 : (int) @file_get_contents($rDir . '.gen');
+		return $rDir === null ? '' : (string) @file_get_contents($rDir . '.gen');
 	}
 
 	/**
@@ -62,7 +63,7 @@ final class ReplicaEtagCache {
 			return null;
 		}
 		$rHit = json_decode((string) @file_get_contents($rDir . $rKey . '.json'), true);
-		if (!is_array($rHit) || !is_int($rHit['at'] ?? null) || !is_int($rHit['gen'] ?? null) || !is_string($rHit['etag'] ?? null) || !is_array($rHit['data'] ?? null)) {
+		if (!is_array($rHit) || !is_int($rHit['at'] ?? null) || !is_string($rHit['gen'] ?? null) || !is_string($rHit['etag'] ?? null) || !is_array($rHit['data'] ?? null)) {
 			return null;
 		}
 		if ($rNowMs < $rHit['at'] || $rNowMs - $rHit['at'] >= self::TTL_MS || $rHit['gen'] !== self::generation()) {
@@ -76,7 +77,7 @@ final class ReplicaEtagCache {
 	 *
 	 * @param array<mixed> $rData
 	 */
-	public static function put(string $rKey, int $rNowMs, int $rGen, string $rEtag, array $rData): void {
+	public static function put(string $rKey, int $rNowMs, string $rGen, string $rEtag, array $rData): void {
 		$rDir = self::dir();
 		if ($rDir === null || !self::validKey($rKey)) {
 			return;
@@ -92,8 +93,10 @@ final class ReplicaEtagCache {
 	}
 
 	/**
-	 * Drop every cached section: raise the generation, so a section read
-	 * before now is not served even if it is written after, and delete them.
+	 * Drop every cached section: a new generation, so a section read before
+	 * now is not served even if it is written after, and delete them. The
+	 * generation is random, not a counter: two bumps at once never write the
+	 * same one, so what a request read between them never matches either.
 	 */
 	public static function bump(?object $rEvent = null): void {
 		$rDir = self::dir();
@@ -104,7 +107,7 @@ final class ReplicaEtagCache {
 			@mkdir($rDir, 0750, true);
 		}
 		$rTmp = $rDir . '.gen.' . getmypid() . '.tmp';
-		if (@file_put_contents($rTmp, (string) (self::generation() + 1)) !== false && !@rename($rTmp, $rDir . '.gen')) {
+		if (@file_put_contents($rTmp, bin2hex(random_bytes(8))) !== false && !@rename($rTmp, $rDir . '.gen')) {
 			@unlink($rTmp);
 		}
 		foreach (glob($rDir . '*.json') ?: [] as $rFile) {

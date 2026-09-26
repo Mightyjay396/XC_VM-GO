@@ -30,10 +30,14 @@ class ServerRepository {
 	/**
 	 * Fetch all servers (cached unless forced).
 	 *
-	 * On a node whose CONFIG flow is on and whose replica has the `servers`
-	 * and `node` sections, the servers cache is the replica's (cluster:apply
-	 * writes it in this shape), and every caller gets it however old it is,
-	 * never MAIN's database; until cluster:apply has written it, the database.
+	 * On a node whose replica owns the servers cache (CONFIG on, and an apply
+	 * built it from the `servers` and `node` sections: ReplicaApply::owns),
+	 * every caller gets that cache however old it is, even when forced, never
+	 * MAIN's database. Should the cache be gone, it is rebuilt from the
+	 * replica on disk (a refused replica hands it back to the database). The
+	 * database's rows are never written over a cache the replica owns, so a
+	 * database copy never stands in for the replica's with nothing to refresh
+	 * it. Until an apply built it, the database as before.
 	 *
 	 * @param bool $rForce Bypass the cache and re-read from the database.
 	 * @return array Server rows keyed by id.
@@ -47,6 +51,10 @@ class ServerRepository {
 		$rReplica = ReplicaApply::owns(ReplicaSections::SERVERS);
 		if (!$rForce || $rReplica) {
 			$rCache = $rReplica ? FileCache::getCache('servers') : FileCache::getCache('servers', 10);
+			if (empty($rCache) && $rReplica) {
+				ReplicaApply::servers(true, (int) SERVER_ID);
+				$rCache = ReplicaApply::owns(ReplicaSections::SERVERS) ? FileCache::getCache('servers') : false;
+			}
 			if (!empty($rCache)) {
 				return $rCache;
 			}
@@ -85,7 +93,10 @@ class ServerRepository {
 			$rServers[intval($rRow['id'])] = $rRow;
 		}
 
-		FileCache::setCache('servers', $rServers);
+		// Asked again: an apply may have built the replica's cache meanwhile.
+		if (!ReplicaApply::owns(ReplicaSections::SERVERS)) {
+			FileCache::setCache('servers', $rServers);
+		}
 
 		return $rServers;
 	}

@@ -571,17 +571,13 @@ class RootSignalsCronJob implements CommandInterface {
 				}
 			}
 			// The crontab's jobs: MAIN's table, or the node replica's once it owns
-			// them (none applied yet: leave the crontab as it is).
-			$rCronJobs = file_exists(TMP_PATH . 'crontab') ? ReplicaApply::cronJobs($db) : null;
-			if ($rCronJobs !== null) {
+			// them (null: leave the crontab as it is).
+			$rCrontab = file_exists(TMP_PATH . 'crontab') ? ReplicaApply::crontabText($db) : null;
+			if ($rCrontab !== null) {
 				echo 'Checking crontab...' . "\n";
 				exec('crontab -u xc_vm -l', $rCrons);
 				$rCurrentCron = trim(implode("\n", $rCrons));
-				$rJobs = [];
-				foreach ($rCronJobs as $rRow) {
-					$rJobs[] = $rRow['time'] . ' ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:' . $rRow['filename'] . ' # XC_VM';
-				}
-				$rActualCron = trim(implode("\n", $rJobs));
+				$rActualCron = trim($rCrontab);
 				if ($rCurrentCron != $rActualCron) {
 					echo 'Updating Crons...' . "\n";
 					unlink(TMP_PATH . 'crontab');

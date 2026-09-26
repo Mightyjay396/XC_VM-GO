@@ -3,8 +3,9 @@
 namespace XcVm\Tests\Support;
 
 /**
- * Tables of the install schema (src/bin/install/database.sql), reduced to what
- * SQLite accepts, so a test works against every column a real install has.
+ * Tables of the install schema (src/bin/install/database.sql) and the
+ * migrations, reduced to what SQLite accepts, so a test works against every
+ * column a real install has.
  */
 final class InstallSchema {
 	/** The `servers` table's CREATE statement. */
@@ -37,6 +38,17 @@ final class InstallSchema {
 			}
 		}
 		return array_values(array_unique($rOut));
+	}
+
+	/** A migration's MariaDB DDL (`up/<name>.sql`), reduced to what SQLite accepts. */
+	public static function migration(string $rName): string {
+		$rSql = (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/' . $rName . '.sql');
+		$rSql = (string) preg_replace('/^--.*$/m', '', $rSql);
+		$rSql = (string) preg_replace('/`id` bigint\(20\) unsigned NOT NULL AUTO_INCREMENT/', '`id` INTEGER PRIMARY KEY AUTOINCREMENT', $rSql);
+		$rSql = (string) preg_replace('/,\s*PRIMARY KEY \(`id`\)/', '', $rSql);
+		$rSql = (string) preg_replace('/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)/', '', $rSql);
+		$rSql = (string) preg_replace('/ unsigned| COLLATE \w+/', '', $rSql);
+		return (string) preg_replace('/\) ENGINE=[^;]*;/', ');', $rSql);
 	}
 
 	private static function body(string $rTable): string {

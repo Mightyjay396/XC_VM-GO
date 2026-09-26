@@ -338,6 +338,7 @@ class SettingsService {
 		}
 
 		if ($rCheck[0] && $rCheck[1]) {
+			$rPrevious = SettingsManager::getAll();
 			$db->query("UPDATE `crontab` SET `time` = ? WHERE `filename` = 'cache_engine';", $rCronOutput);
 			$db->query('UPDATE `settings` SET `cache_thread_count` = ?, `cache_changes` = ?;', $rData['cache_thread_count'], $rCacheChanges);
 
@@ -346,7 +347,7 @@ class SettingsService {
 			}
 
 			SettingsManager::clearCache();
-			self::saved(SettingsManager::getAll(), ['cache_thread_count' => $rData['cache_thread_count'], 'cache_changes' => $rCacheChanges]);
+			self::saved($rPrevious, ['cache_thread_count' => $rData['cache_thread_count'], 'cache_changes' => $rCacheChanges]);
 			EventDispatcher::dispatch(new CrontabChangedEvent());
 			return ['status' => STATUS_SUCCESS];
 		}

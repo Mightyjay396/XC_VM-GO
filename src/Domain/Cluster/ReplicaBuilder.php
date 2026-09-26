@@ -40,8 +40,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * All but the blocklist are sent whole, to an agent that names them in
  * `have`, whenever their ETag differs from the node's. A section and its
- * ETag are reused for 10 s (ReplicaEtagCache); a revoked or re-enrolled node
- * drops the cache and is announced to the others through `config.changed`.
+ * ETag are reused for 10 s (ReplicaEtagCache); a change of the node list
+ * drops the cache and is announced to the others through `config.changed`
+ * (nodesChanged).
  */
 final class ReplicaBuilder {
 	use DatabaseAware;
@@ -54,6 +55,13 @@ final class ReplicaBuilder {
 
 	/** Sections sent whole whenever the node's ETag differs. */
 	public const WHOLE = ReplicaSections::WHOLE;
+
+	/**
+	 * What an agent says at hello (`features`) when it runs `config.changed`
+	 * itself: only those agents are sent it. Others would hand it to
+	 * cluster:exec, which an LB's older PHP fails as an unknown type.
+	 */
+	public const FEATURE_CONFIG_CHANGED = 'config_changed';
 
 	/**
 	 * The node's blocklist from change $rSince (0: it has none).
@@ -183,7 +191,10 @@ final class ReplicaBuilder {
 
 	/**
 	 * The `crontab` section: the enabled rows whose role fits a node in this
-	 * mode (ReplicaSections::cronRoles), in the table's order.
+	 * mode (ReplicaSections::cronRoles), in the table's order. A row that is
+	 * not a job as ReplicaSections::cronJob takes it (a hand-edited `@daily`,
+	 * a six-field schedule) is left out and audited once, since a node
+	 * refuses the whole section over it.
 	 *
 	 * @return array{jobs: list<array{filename: string, time: string}>}
 	 */
@@ -191,12 +202,40 @@ final class ReplicaBuilder {
 		$rRoles = ReplicaSections::cronRoles($rMode);
 		self::db()->query('SELECT `filename`, `time`, `role` FROM `crontab` WHERE `enabled` = 1 ORDER BY `id` ASC;');
 		$rJobs = [];
+		$rSkipped = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
-			if (in_array((string) ($rRow['role'] ?? 'all'), $rRoles, true)) {
-				$rJobs[] = ['filename' => (string) $rRow['filename'], 'time' => (string) $rRow['time']];
+			if (!in_array((string) ($rRow['role'] ?? 'all'), $rRoles, true)) {
+				continue;
+			}
+			$rRow = ['filename' => (string) $rRow['filename'], 'time' => (string) $rRow['time']];
+			$rJob = ReplicaSections::cronJob($rRow);
+			if ($rJob === null) {
+				$rSkipped[] = $rRow;
+			} else {
+				$rJobs[] = $rJob;
 			}
 		}
+		if ($rSkipped !== []) {
+			self::skippedJobs($rSkipped);
+		}
 		return ['jobs' => $rJobs];
+	}
+
+	/**
+	 * Audit the crontab rows the section leaves out, once per change of them.
+	 *
+	 * @param list<array{filename: string, time: string}> $rSkipped
+	 */
+	private static function skippedJobs(array $rSkipped): void {
+		try {
+			$rHash = hash('sha256', (string) json_encode($rSkipped));
+			if (ClusterMeta::get('replica_crontab_skipped') !== $rHash) {
+				ClusterMeta::set('replica_crontab_skipped', $rHash);
+				ClusterAudit::log('replica.crontab_skipped', null, ['jobs' => $rSkipped], 'system');
+			}
+		} catch (\Throwable) {
+			// The section goes out regardless.
+		}
 	}
 
 	/**
@@ -224,27 +263,37 @@ final class ReplicaBuilder {
 	}
 
 	/**
-	 * The node list changed (a node revoked, re-enrolled or activated): drop
-	 * the cached sections and tell every other node taking commands at once
-	 * (`config.changed`, restrictive, so it signs without a licence), so a
-	 * parent stops trusting a revoked child's key before its next poll. A newer
-	 * announcement supersedes one not yet acked. Never fails the change.
+	 * The node list changed (a node revoked, re-enrolled, activated or
+	 * quarantined): drop the cached sections and tell every other node at
+	 * once whose agent takes `config.changed` (COMMANDS on, and the
+	 * FEATURE_CONFIG_CHANGED feature said at hello), so a parent stops
+	 * trusting a revoked child's key before its next poll. The command is
+	 * restrictive, so it signs without a licence, and a newer announcement
+	 * supersedes one not yet acked. Every other node sees the change at its
+	 * next poll. Never fails the change: a node that cannot be told is
+	 * skipped.
 	 *
 	 * @return int the nodes told
 	 */
 	public static function nodesChanged(ClusterCrypto $rCrypto, int $rServerID): int {
 		ReplicaEtagCache::bump();
-		$rSent = 0;
 		try {
 			self::db()->query("SELECT * FROM `cluster_nodes` WHERE `server_id` <> ? AND `state` = 'active';", $rServerID);
-			foreach (self::db()->get_rows() ?: [] as $rNode) {
-				if (CommandBus::accepts($rNode)) {
-					CommandBus::enqueue($rCrypto, (int) $rNode['server_id'], 'config.changed', ['sections' => [ReplicaSections::SERVERS]], 'config.changed');
-					$rSent++;
-				}
-			}
+			$rNodes = self::db()->get_rows() ?: [];
 		} catch (\Throwable) {
-			// The nodes see the change at their next poll (60 s).
+			return 0;
+		}
+		$rSent = 0;
+		foreach ($rNodes as $rNode) {
+			if (!CommandBus::accepts($rNode) || !in_array(self::FEATURE_CONFIG_CHANGED, explode(',', (string) ($rNode['features'] ?? '')), true)) {
+				continue;
+			}
+			try {
+				CommandBus::enqueue($rCrypto, (int) $rNode['server_id'], 'config.changed', ['sections' => [ReplicaSections::SERVERS]], 'config.changed');
+				$rSent++;
+			} catch (\Throwable) {
+				// This node sees the change at its next poll (60 s).
+			}
 		}
 		return $rSent;
 	}

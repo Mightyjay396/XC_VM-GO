@@ -56,16 +56,27 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  *
  * In shadow they are only compared with what the node uses today; with
  * CONFIG on they are the caches, and their readers stop reading MAIN's
- * database (owns()). A section that is missing, names another node or is
- * malformed never writes, and never clears, a cache.
+ * database once an apply has built them (owns()). A section that is missing,
+ * names another node or is malformed never writes a cache: its readers go
+ * back to MAIN's database, as before the replica.
  *
- * Either way the report goes to `replica/apply.json`.
+ * Either way the report goes to `replica/apply.json`. cron:cache applies the
+ * replica too, every minute while CONFIG is on, so the caches follow the copy
+ * on disk even when the agent has not run cluster:apply since a change of the
+ * flow.
  */
 final class ReplicaApply {
 	public const CACHES = ['blocked_ips', 'blocked_servers', 'blocked_ua', 'blocked_isp', 'rtmp_ips'];
 
 	/** The crontab section's cache: the jobs the node's crontab runs. */
 	public const CRON_CACHE = 'cron_jobs';
+
+	/**
+	 * The sections whose cache an authoritative apply built (section => the
+	 * ETags applied). Beside the caches in `tmp/cache/`, so it goes with them
+	 * at a reboot.
+	 */
+	public const OWNED_CACHE = 'replica_owned';
 
 	/** Differing fields a shadow report names at most. */
 	private const MAX_DIFFER = 100;
@@ -82,10 +93,12 @@ final class ReplicaApply {
 	}
 
 	/**
-	 * Does the replica own this section's cache? Only with the CONFIG flow on
-	 * and once the agent has stored the section (`servers` needs `node` too);
-	 * until then the readers keep MAIN's database, so a node whose agent does
-	 * not fetch a section is not left with a cache nothing refreshes.
+	 * Does the replica own this section's cache? Only with the CONFIG flow on,
+	 * the section stored by the agent (`servers` needs `node` too), and its
+	 * cache built by an authoritative apply since it was last MAIN's
+	 * database's. Until then the readers keep MAIN's database and cron:cache
+	 * keeps refreshing it, so no database copy is ever taken for the
+	 * replica's and left with nothing to refresh it.
 	 */
 	public static function owns(string $rSection): bool {
 		if (!NodeFlows::on(NodeFlows::CONFIG)) {
@@ -97,13 +110,38 @@ final class ReplicaApply {
 				return false;
 			}
 		}
-		return true;
+		$rOwned = FileCache::getCache(self::OWNED_CACHE);
+		return is_array($rOwned) && isset($rOwned[$rSection]);
+	}
+
+	/**
+	 * CONFIG is off: the whole sections' caches are MAIN's database's again,
+	 * so turning it back on waits for an apply instead of reusing them.
+	 */
+	public static function disown(): void {
+		FileCache::delCache(self::OWNED_CACHE);
+		FileCache::delCache(self::CRON_CACHE);
+	}
+
+	/** Record that an authoritative apply built a section's cache ($rTag), or that it did not (null). */
+	private static function own(string $rSection, ?string $rTag): void {
+		$rOwned = FileCache::getCache(self::OWNED_CACHE);
+		$rOwned = is_array($rOwned) ? $rOwned : [];
+		if (($rOwned[$rSection] ?? null) === $rTag) {
+			return;
+		}
+		if ($rTag === null) {
+			unset($rOwned[$rSection]);
+		} else {
+			$rOwned[$rSection] = $rTag;
+		}
+		FileCache::setCache(self::OWNED_CACHE, $rOwned);
 	}
 
 	/**
 	 * The jobs this node's crontab runs: the replica's once it owns the
-	 * crontab (null until cluster:apply wrote them: leave the crontab as it
-	 * is), else MAIN's `crontab` table as before.
+	 * crontab, else MAIN's `crontab` table as before. Null: leave the crontab
+	 * as it is (the replica's jobs are gone, or there is no database).
 	 *
 	 * @return list<array{filename: string, time: string}>|null
 	 */
@@ -121,6 +159,24 @@ final class ReplicaApply {
 			$rOut[] = ['filename' => (string) $rRow['filename'], 'time' => (string) $rRow['time']];
 		}
 		return $rOut;
+	}
+
+	/**
+	 * The xc_vm crontab those jobs make, one `<time> <php> console.php
+	 * cron:<name> # XC_VM` line each, as LegacyInitializer::generateCron
+	 * writes it and cron:root_signals checks it. Null: leave the crontab as it
+	 * is; "" only when the source really has no job.
+	 */
+	public static function crontabText(?object $rDb): ?string {
+		$rJobs = self::cronJobs($rDb);
+		if ($rJobs === null) {
+			return null;
+		}
+		$rLines = [];
+		foreach ($rJobs as $rJob) {
+			$rLines[] = $rJob['time'] . ' ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:' . $rJob['filename'] . ' # XC_VM';
+		}
+		return implode("\n", $rLines);
 	}
 
 	/**
@@ -156,6 +212,9 @@ final class ReplicaApply {
 			if ($rPart !== null) {
 				$rReport[$rKey] = $rPart;
 			}
+		}
+		if (!$rAuthoritative) {
+			self::disown();
 		}
 		if (count($rReport) === 1) {
 			return null;
@@ -228,15 +287,22 @@ final class ReplicaApply {
 			return null;
 		}
 		$rReport = ['etag' => is_array($rServers) ? $rServers['etag'] : '', 'node_etag' => is_array($rNode) ? $rNode['etag'] : ''];
+		$rRows = is_array($rServers) && is_array($rNode) ? self::serverRows($rServers['data'], $rNode['data'], $rServerID, SettingsManager::getAll()) : null;
+		if ($rAuthoritative) {
+			// Refused or incomplete: the cache is MAIN's database's again (cron:cache).
+			if ($rRows !== null && FileCache::setCache('servers', $rRows)) {
+				self::own(ReplicaSections::SERVERS, $rReport['etag'] . '/' . $rReport['node_etag']);
+			} else {
+				self::own(ReplicaSections::SERVERS, null);
+			}
+		}
 		if ($rServers === null || $rNode === null) {
 			return $rReport + ['mode' => 'incomplete'];
 		}
-		$rRows = is_array($rServers) && is_array($rNode) ? self::serverRows($rServers['data'], $rNode['data'], $rServerID, SettingsManager::getAll()) : null;
 		if ($rRows === null) {
 			return $rReport + ['mode' => 'refused'];
 		}
 		if ($rAuthoritative) {
-			FileCache::setCache('servers', $rRows);
 			return $rReport + ['mode' => 'applied', 'rows' => count($rRows)];
 		}
 		$rCurrent = FileCache::getCache('servers');
@@ -314,11 +380,15 @@ final class ReplicaApply {
 		}
 		$rJobs = is_array($rDoc) ? self::jobs($rDoc['data']) : null;
 		$rReport = ['etag' => is_array($rDoc) ? $rDoc['etag'] : ''];
+		if ($rAuthoritative) {
+			// Refused: the crontab is MAIN's table's again.
+			$rApplied = $rJobs !== null && FileCache::setCache(self::CRON_CACHE, $rJobs);
+			self::own(ReplicaSections::CRONTAB, $rApplied ? $rReport['etag'] : null);
+		}
 		if ($rJobs === null) {
 			return $rReport + ['mode' => 'refused'];
 		}
 		if ($rAuthoritative) {
-			FileCache::setCache(self::CRON_CACHE, $rJobs);
 			return $rReport + ['mode' => 'applied', 'jobs' => count($rJobs)];
 		}
 		try {

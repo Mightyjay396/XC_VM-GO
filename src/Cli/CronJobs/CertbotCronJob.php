@@ -66,8 +66,11 @@ class CertbotCronJob implements CommandInterface {
 			}
 		}
 
+		// This node's own record, read from its row: the servers cache a node
+		// replica builds carries no certbot_ssl (ReplicaSections::SERVER_LOCAL).
 		$db->query('SELECT `certbot_ssl` FROM `servers` WHERE `id` = ?;', SERVER_ID);
-		$rDBCertInfo = json_decode($db->get_row()['certbot_ssl'], true);
+		$rDBCert = (string) (($db->get_row() ?: [])['certbot_ssl'] ?? '');
+		$rDBCertInfo = json_decode($rDBCert, true);
 		$rLines = explode("\n", file_get_contents(MAIN_HOME . 'bin/nginx/conf/ssl.conf'));
 
 		foreach ($rLines as $rLine) {
@@ -75,14 +78,14 @@ class CertbotCronJob implements CommandInterface {
 				list($rCertificate) = explode(';', explode(' ', $rLine)[1]);
 				if ($rCertificate != 'server.crt') {
 					$rCertInfoFile = DiagnosticsService::getCertificateInfo($rCertificate);
-					if ($rCertInfoFile && ($rCertInfo === null || $rCertInfo['serial'] != $rCertInfoFile['serial'] || !ServerRepository::getAll()[SERVER_ID]['certbot_ssl'] || $rDBCertInfo['serial'] != $rCertInfoFile['serial'])) {
+					if ($rCertInfoFile && ($rCertInfo === null || $rCertInfo['serial'] != $rCertInfoFile['serial'] || !$rDBCert || ($rDBCertInfo['serial'] ?? null) != $rCertInfoFile['serial'])) {
 						NodeStateSink::state(['certbot_ssl' => json_encode($rCertInfoFile)], $db);
 						echo 'Updated ssl configuration in database' . "\n";
 						NodeActions::reloadNginx(intval(SERVER_ID), $db);
 					}
 				} else {
-					if (ServerRepository::getAll()[SERVER_ID]['certbot_ssl']) {
-						$rCertInfo = json_decode(ServerRepository::getAll()[SERVER_ID]['certbot_ssl'], true);
+					if (is_array($rDBCertInfo) && !empty($rDBCertInfo['path'])) {
+						$rCertInfo = $rDBCertInfo;
 						if (file_exists($rCertInfo['path'] . '/fullchain.pem')) {
 							$rCertificate = $rCertInfo['path'] . '/fullchain.pem';
 							$rChain = $rCertInfo['path'] . '/chain.pem';

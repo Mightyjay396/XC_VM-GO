@@ -12,9 +12,16 @@ use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Cluster\ReplicaBuilder;
+use XcVm\Domain\Server\ServerRepository;
+use XcVm\Domain\Server\ServerService;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\FakeClusterCrypto;
 use XcVm\Tests\Support\InstallSchema;
+use XcVm\Tests\Support\QueryLogDb;
+
+if (!defined('STATUS_SUCCESS')) {
+	define('STATUS_SUCCESS', 1);
+}
 
 /**
  * The replica's R1 whole sections (cluster plan, section 9, Phase 7):
@@ -22,7 +29,7 @@ use XcVm\Tests\Support\InstallSchema;
  * nothing else (no liveness, telemetry, api_url or secret); their ETags are
  * the content's hash, reused for 10 s and dropped at once by a settings,
  * server or crontab save; a revoked or re-enrolled node is announced to the
- * others through `config.changed`.
+ * others whose agent takes `config.changed`.
  */
 final class ReplicaSectionsTest extends TestCase {
 	private TestDb $rDb;
@@ -40,9 +47,10 @@ final class ReplicaSectionsTest extends TestCase {
 		mkdir($this->rDir, 0777, true);
 		$this->rDb = new TestDb();
 		$this->rDb->exec(InstallSchema::serversTable());
-		$this->rDb->exec($this->migration('029_create_cluster_nodes'));
-		$this->rDb->exec($this->migration('030_create_cluster_commands'));
+		$this->rDb->exec(InstallSchema::migration('029_create_cluster_nodes'));
+		$this->rDb->exec(InstallSchema::migration('030_create_cluster_commands'));
 		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `root_ready` tinyint(1) NOT NULL DEFAULT 0');
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `features` varchar(255) DEFAULT NULL');
 		$this->rDb->exec('CREATE TABLE `crontab` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `filename` varchar(255), `time` varchar(128), `enabled` int, `role` varchar(8))');
 		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `cloudflare` tinyint, `mag_legacy_redirect` tinyint, `api_pass` text, `live_streaming_pass` text, `redis_password` text, `license` text, `seg_time` int)');
 		$this->rDb->query('INSERT INTO `settings` VALUES (1, 1, 0, ?, ?, ?, ?, 6)', ...array_values(self::SECRETS));
@@ -60,16 +68,6 @@ final class ReplicaSectionsTest extends TestCase {
 		exec('rm -rf ' . escapeshellarg($this->rDir));
 	}
 
-	private function migration(string $rName): string {
-		$rSql = (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/' . $rName . '.sql');
-		$rSql = (string) preg_replace('/^--.*$/m', '', $rSql);
-		$rSql = (string) preg_replace('/`id` bigint\(20\) unsigned NOT NULL AUTO_INCREMENT/', '`id` INTEGER PRIMARY KEY AUTOINCREMENT', $rSql);
-		$rSql = (string) preg_replace('/,\s*PRIMARY KEY \(`id`\)/', '', $rSql);
-		$rSql = (string) preg_replace('/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)/', '', $rSql);
-		$rSql = (string) preg_replace('/ unsigned| COLLATE \w+/', '', $rSql);
-		return (string) preg_replace('/\) ENGINE=[^;]*;/', ');', $rSql);
-	}
-
 	private function server(int $rID, array $rFields = []): void {
 		$rRow = $rFields + [
 			'id' => $rID, 'server_type' => 0, 'server_name' => 'LB ' . $rID, 'server_ip' => '10.0.0.' . $rID, 'private_ip' => '', 'is_main' => (int) ($rID === 1),
@@ -82,10 +80,10 @@ final class ReplicaSectionsTest extends TestCase {
 		$this->rDb->query('INSERT INTO `servers` (`' . implode('`, `', array_keys($rRow)) . '`) VALUES (' . implode(', ', array_fill(0, count($rRow), '?')) . ')', ...array_values($rRow));
 	}
 
-	private function node(int $rServerID, string $rState = 'active', int $rFlows = NodeRegistry::FLOW_COMMANDS, int $rMode = 1): string {
+	private function node(int $rServerID, string $rState = 'active', int $rFlows = NodeRegistry::FLOW_COMMANDS, int $rMode = 1, ?string $rFeatures = ReplicaBuilder::FEATURE_CONFIG_CHANGED): string {
 		$rUuid = sprintf('00000000-0000-4000-a000-%012d', $rServerID);
 		$this->rDb->query(
-			'INSERT INTO `cluster_nodes` (`server_id`, `node_uuid`, `state`, `mode`, `flows`, `gen`, `node_sign_pub`, `node_box_pub`, `epoch`, `created_at`, `updated_at`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+			'INSERT INTO `cluster_nodes` (`server_id`, `node_uuid`, `state`, `mode`, `flows`, `gen`, `node_sign_pub`, `node_box_pub`, `epoch`, `created_at`, `updated_at`, `features`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
 			$rServerID,
 			$rUuid,
 			$rState,
@@ -96,9 +94,16 @@ final class ReplicaSectionsTest extends TestCase {
 			sodium_crypto_scalarmult_base(random_bytes(32)),
 			1,
 			1800000000,
-			1800000000
+			1800000000,
+			$rFeatures
 		);
 		return $rUuid;
+	}
+
+	/** @return list<array{0: int, 1: int}> [server_id, id] of every config.changed queued */
+	private function announced(): array {
+		$this->rDb->query("SELECT `server_id`, `id` FROM `cluster_commands` WHERE `type` = 'config.changed' ORDER BY `server_id`");
+		return array_map(static fn(array $rRow): array => [(int) $rRow['server_id'], (int) $rRow['id']], $this->rDb->get_rows() ?: []);
 	}
 
 	public function testEveryServersColumnIsClassified(): void {
@@ -153,15 +158,32 @@ final class ReplicaSectionsTest extends TestCase {
 		$this->assertSame(['streams', 'cache_engine'], array_column(ReplicaBuilder::crontabData(2)['jobs'], 'filename'), 'api mode: no legacy rows');
 	}
 
+	public function testARowANodeWouldRefuseIsLeftOutOfTheCrontabSection(): void {
+		// A node refuses the whole section over one such row, so MAIN never sends it.
+		$this->rDb->exec("INSERT INTO `crontab` (`filename`, `time`, `enabled`, `role`) VALUES ('streams', '* * * * *', 1, 'all'), ('vod', '0 4 * * MON', 1, 'all'), ('tmp', '@daily', 1, 'all'), ('Bad.Name', '* * * * *', 1, 'all'), ('users', '* * * * * *', 1, 'all')");
+		$this->assertSame(['jobs' => [['filename' => 'streams', 'time' => '* * * * *']]], ReplicaBuilder::crontabData(1));
+		$this->assertSame(['jobs' => [['filename' => 'streams', 'time' => '* * * * *']]], ReplicaBuilder::crontabData(2));
+	}
+
 	public function testAnInstallsCrontabKeepsEveryJobANodeRuns(): void {
 		preg_match('/INSERT INTO `crontab` [^;]*;/s', (string) file_get_contents(dirname(__DIR__, 2) . '/src/bin/install/database.sql'), $rInsert);
 		$this->rDb->exec($rInsert[0]);
-		$rJobs = array_column(ReplicaBuilder::crontabData(1)['jobs'], 'filename');
-		foreach (['streams', 'servers', 'cache', 'users', 'certbot', 'cleanup'] as $rJob) {
-			$this->assertContains($rJob, $rJobs, 'a node runs cron:' . $rJob);
-		}
-		foreach (['tmdb', 'tmdb_popular', 'update', 'cluster'] as $rJob) {
-			$this->assertNotContains($rJob, $rJobs, 'cron:' . $rJob . ' is MAIN\'s');
+		foreach ([1, 2] as $rMode) {
+			$rJobs = array_column(ReplicaBuilder::crontabData($rMode)['jobs'], 'filename');
+			foreach (['streams', 'servers', 'cache', 'users', 'certbot', 'cleanup', 'maxmind'] as $rJob) {
+				$this->assertContains($rJob, $rJobs, 'a node runs cron:' . $rJob);
+			}
+			foreach (['tmdb', 'tmdb_popular', 'update', 'cluster', 'stats', 'proxy', 'watch', 'plex'] as $rJob) {
+				$this->assertNotContains($rJob, $rJobs, 'cron:' . $rJob . ' is MAIN\'s');
+			}
+			// No job whose class the load balancer build strips.
+			preg_match('/^LB_FILES_TO_REMOVE\s*:?=(.*?)(?:\n\s*\n|\n[A-Z_]+\s*:?=)/ms', (string) file_get_contents(dirname(__DIR__, 2) . '/Makefile'), $rList);
+			preg_match_all('#Cli/CronJobs/(\w+)CronJob\.php#', $rList[1] ?? '', $rStripped);
+			$this->assertNotEmpty($rStripped[1]);
+			foreach ($rStripped[1] as $rClass) {
+				$rName = strtolower((string) preg_replace('/(?<!^)[A-Z]/', '_$0', $rClass));
+				$this->assertNotContains($rName, $rJobs, 'cron:' . $rName . ' is not in the load balancer build (mode ' . $rMode . ')');
+			}
 		}
 	}
 
@@ -237,13 +259,36 @@ final class ReplicaSectionsTest extends TestCase {
 			new SettingsChangedEvent(['seg_time' => 6], ['seg_time' => 8], 1, 1800000000.0),
 			new ServerSavedEvent([5]),
 			new CrontabChangedEvent(),
-		] as $rEvent) {
-			$rPort = random_int(1024, 65535);
+		] as $rI => $rEvent) {
+			$rPort = 2001 + $rI;
 			ReplicaBuilder::section($this->rCrypto, $rNode, ReplicaSections::NODE, [], []);
 			$this->rDb->query('UPDATE `servers` SET `rtmp_port` = ? WHERE `id` = 5', $rPort);
 			EventDispatcher::dispatch($rEvent);
 			$this->assertSame($rPort, ReplicaBuilder::section($this->rCrypto, $rNode, ReplicaSections::NODE, [], [])['data']['rtmp_port'], get_class($rEvent));
 		}
+	}
+
+	public function testServerDeletesAndReordersAreServerSaves(): void {
+		foreach (['streams_servers', 'lines_live', 'lines_activity', 'servers_stats'] as $rTable) {
+			$this->rDb->exec('CREATE TABLE `' . $rTable . '` (`server_id` int)');
+		}
+		$this->server(1);
+		$this->server(5, ['server_type' => 1]); // a proxy: no database grant to revoke
+		$this->server(6);
+		(new \ReflectionProperty(ServerRepository::class, 'db'))->setValue(null, null);
+		$rSaved = [];
+		EventDispatcher::listen(ServerSavedEvent::class, static function (ServerSavedEvent $rEvent) use (&$rSaved): void {
+			$rSaved[] = $rEvent->serverIds;
+		});
+		$rBackup = $GLOBALS['rSettings'] ?? null;
+		$GLOBALS['rSettings'] = ['redis_handler' => 0];
+		try {
+			$this->assertTrue(ServerRepository::deleteById(5));
+			ServerService::reorder(['server_order' => json_encode([['id' => 6], ['id' => 1]])]);
+		} finally {
+			$GLOBALS['rSettings'] = $rBackup;
+		}
+		$this->assertSame([[5], [6, 1]], $rSaved);
 	}
 
 	public function testASectionReadBeforeABumpIsNeverServedAfterIt(): void {
@@ -256,6 +301,31 @@ final class ReplicaSectionsTest extends TestCase {
 		ReplicaEtagCache::put('node.5', $this->rT0, $rGen, str_repeat('0', 64), ['id' => 5, 'rtmp_port' => 1]);
 		$this->assertNull(ReplicaEtagCache::get('node.5', $this->rT0));
 		$this->assertSame(8880, ReplicaBuilder::section($this->rCrypto, $rNode, ReplicaSections::NODE, [], [])['data']['rtmp_port']);
+
+		// Every bump is a generation of its own, so none reads as another's.
+		$rSeen = [ReplicaEtagCache::generation()];
+		for ($rI = 0; $rI < 3; $rI++) {
+			ReplicaEtagCache::bump();
+			$rSeen[] = ReplicaEtagCache::generation();
+		}
+		$this->assertSame($rSeen, array_values(array_unique($rSeen)));
+	}
+
+	public function testABumpDuringTheReadIsNeverCachedOver(): void {
+		$this->server(5);
+		$rNode = ['server_id' => 5, 'mode' => 1];
+		// A save lands after the node section's row was read, before it is cached.
+		$rLog = new QueryLogDb($this->rDb);
+		$rLog->rBefore = function (string $rQuery): void {
+			if (str_contains($rQuery, 'FROM `settings`')) {
+				$this->rDb->query('UPDATE `servers` SET `rtmp_port` = 1935 WHERE `id` = 5');
+				ReplicaEtagCache::bump();
+			}
+		};
+		DatabaseFactory::set($rLog);
+		$this->assertSame(8880, ReplicaBuilder::section($this->rCrypto, $rNode, ReplicaSections::NODE, [], [])['data']['rtmp_port'], 'read before the save');
+		$rLog->rBefore = null;
+		$this->assertSame(1935, ReplicaBuilder::section($this->rCrypto, $rNode, ReplicaSections::NODE, [], [])['data']['rtmp_port'], 'never the read the bump interrupted');
 	}
 
 	public function testWithoutACacheDirNothingIsCached(): void {
@@ -269,29 +339,56 @@ final class ReplicaSectionsTest extends TestCase {
 
 	public function testRevokeAndReenrolmentAnnounceTheNodeListAtOnce(): void {
 		$this->server(1);
-		foreach ([5, 6, 7, 8] as $rID) {
+		foreach ([5, 6, 7, 8, 9, 10] as $rID) {
 			$this->server($rID);
 		}
 		$this->node(5);
 		$this->node(6);
 		$this->node(7, 'active', 0); // no COMMANDS flow: it sees the change at its next poll
 		$this->node(8, 'quarantined');
+		$this->node(9, 'active', NodeRegistry::FLOW_COMMANDS, 1, 'hls_reaper'); // today's agent: would hand it to cluster:exec
+		$this->node(10);
 		$rBefore = ReplicaBuilder::section($this->rCrypto, ['server_id' => 5, 'mode' => 1], ReplicaSections::SERVERS, [], []);
 
 		$this->assertTrue(NodeRegistry::revoke(6, $this->rCrypto));
 		$this->rDb->query("SELECT `server_id`, `type`, `class`, `dedupe_key`, `payload` FROM `cluster_commands` ORDER BY `id`");
 		$rRows = $this->rDb->get_rows();
-		$this->assertSame([[5, 'config.changed', 'R', 'config.changed']], array_map(static fn(array $rRow): array => [(int) $rRow['server_id'], $rRow['type'], $rRow['class'], $rRow['dedupe_key']], $rRows), 'only the other nodes taking commands');
+		$this->assertSame([[5, 'config.changed', 'R', 'config.changed'], [10, 'config.changed', 'R', 'config.changed']], array_map(static fn(array $rRow): array => [(int) $rRow['server_id'], $rRow['type'], $rRow['class'], $rRow['dedupe_key']], $rRows), 'only the other nodes whose agent takes it');
 		$this->assertSame(['sections' => ['servers']], json_decode($rRows[0]['payload'], true)['args']);
 		$rAfter = ReplicaBuilder::section($this->rCrypto, ['server_id' => 5, 'mode' => 1], ReplicaSections::SERVERS, [], []);
 		$this->assertNotSame($rBefore['etag'], $rAfter['etag'], 'within the 10 s: the push is not answered from the cache');
 		$this->assertSame('revoked', $rAfter['data']['nodes'][1]['state']);
 
-		// Re-enrolling node 7 again: one config.changed for node 5, which supersedes the one not yet acked.
+		// Re-enrolling node 7: a new config.changed for 5 and 10, which supersedes the one not yet acked.
+		$rRevoked = $this->announced();
 		NodeRegistry::startEnrolment(7, sprintf('00000000-0000-4000-b000-%012d', 7), str_repeat('x', 32), str_repeat('y', 32), 1, $this->rCrypto);
-		$this->rDb->query("SELECT COUNT(*) AS `n` FROM `cluster_commands` WHERE `server_id` = 5 AND `type` = 'config.changed'");
-		$this->assertSame(1, (int) $this->rDb->get_row()['n']);
+		$rReenrolled = $this->announced();
+		$this->assertSame([5, 10], array_column($rReenrolled, 0));
+		$this->assertSame([], array_values(array_intersect(array_column($rReenrolled, 1), array_column($rRevoked, 1))), 'new commands, not the revocation\'s');
 		$this->assertSame(base64_encode(str_repeat('x', 32)), ReplicaBuilder::section($this->rCrypto, ['server_id' => 5, 'mode' => 1], ReplicaSections::SERVERS, [], [])['data']['nodes'][2]['ed_pub']);
+
+		// Re-enrolling node 5 itself: the others are told, never node 5.
+		NodeRegistry::startEnrolment(5, sprintf('00000000-0000-4000-b000-%012d', 5), str_repeat('z', 32), str_repeat('y', 32), 1, $this->rCrypto);
+		$this->rDb->query("UPDATE `cluster_nodes` SET `state` = 'active', `flows` = ?, `features` = ? WHERE `server_id` = 5", NodeRegistry::FLOW_COMMANDS, ReplicaBuilder::FEATURE_CONFIG_CHANGED);
+		$this->rDb->exec("DELETE FROM `cluster_commands`");
+		$this->assertSame(1, ReplicaBuilder::nodesChanged($this->rCrypto, 5));
+		$this->assertSame([10], array_column($this->announced(), 0));
+	}
+
+	public function testANodeThatCannotBeToldIsSkippedAndTheOthersStillAre(): void {
+		$this->node(5);
+		$this->node(6);
+		$this->node(7);
+		// Node 5's row goes while the others are told (a revoke or re-enrolment of it).
+		$rLog = new QueryLogDb($this->rDb);
+		$rLog->rBefore = function (string $rQuery, array $rArgs): void {
+			if (str_contains($rQuery, 'SELECT * FROM `cluster_nodes` WHERE `server_id` = ?') && $rArgs === [5]) {
+				$this->rDb->query('DELETE FROM `cluster_nodes` WHERE `server_id` = 5');
+			}
+		};
+		DatabaseFactory::set($rLog);
+		$this->assertTrue(NodeRegistry::revoke(6, $this->rCrypto));
+		$this->assertSame([7], array_column($this->announced(), 0));
 	}
 
 	public function testAFailedPushNeverFailsTheRevocation(): void {

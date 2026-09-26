@@ -90,8 +90,8 @@ class LegacyInitializer {
 
 	/**
 	 * Regenerate the xc_vm user crontab from the `crontab` table, or on a node
-	 * whose replica owns it from the replica's crontab section (ReplicaApply::
-	 * cronJobs; until cluster:apply wrote it, the crontab is left as it is).
+	 * whose replica owns it from the replica's crontab section
+	 * (ReplicaApply::crontabText; null leaves the crontab as it is).
 	 *
 	 * Runs once per boot (guarded by a marker file in TMP_PATH).
 	 *
@@ -103,20 +103,15 @@ class LegacyInitializer {
 			return false;
 		}
 
-		$rRows = ReplicaApply::cronJobs($db);
-		if ($rRows === null) {
+		$rCrontab = ReplicaApply::crontabText($db);
+		if ($rCrontab === null) {
 			return false;
-		}
-		$rJobs = [];
-		foreach ($rRows as $rRow) {
-			$rJobs[] =
-				$rRow["time"] . " " . PHP_BIN . " " . MAIN_HOME . "console.php cron:" . $rRow["filename"] . " # XC_VM";
 		}
 
 		shell_exec("crontab -r");
 		$rTempName = tempnam("/tmp", "crontab");
 		$rHandle = fopen($rTempName, "w");
-		fwrite($rHandle, implode("\n", $rJobs) . "\n");
+		fwrite($rHandle, $rCrontab . "\n");
 		fclose($rHandle);
 		shell_exec("crontab -u xc_vm " . $rTempName);
 		@unlink($rTempName);
