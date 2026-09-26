@@ -49,6 +49,9 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 	/** The lanes' lock files (EventIngest::useLockDir). */
 	private string $rLockDir;
 
+	/** The lock directory before this test (the suite's, from tests/bootstrap.php). */
+	private ?string $rPrevLockDir = null;
+
 	public static function setUpBeforeClass(): void {
 		if (!class_exists(\Redis::class) || !function_exists('igbinary_serialize') || trim((string) shell_exec('command -v redis-server')) === '') {
 			return;
@@ -99,14 +102,14 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 		@mkdir(LOGS_TMP_PATH, 0777, true);
 		@unlink(LOGS_TMP_PATH . 'activity');
 		$this->rLockDir = sys_get_temp_dir() . '/xcvm-ingest-' . bin2hex(random_bytes(4)) . '/';
-		EventIngest::useLockDir($this->rLockDir);
+		$this->rPrevLockDir = EventIngest::useLockDir($this->rLockDir);
 	}
 
 	protected function tearDown(): void {
 		ClusterClock::fix(null);
 		SettingsManager::set([]);
 		DatabaseFactory::reset();
-		EventIngest::useLockDir(null);
+		EventIngest::useLockDir($this->rPrevLockDir);
 		exec('rm -rf ' . escapeshellarg($this->rLockDir));
 		$this->redis(null);
 		@unlink(LOGS_TMP_PATH . 'activity');

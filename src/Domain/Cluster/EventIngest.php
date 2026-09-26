@@ -35,9 +35,11 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * Every event is applied as the sending node: a stream's state goes to that
  * node's own `streams_servers` row and nothing else, log rows get its
  * server_id. A flow that is off refuses its events (dropped and counted), so
- * nothing is written twice. A batch and the new cursor commit together, and
- * MAIN applies one batch per node and lane at a time, so a copy the node
- * resent while the first was being applied is recognised as a repeat.
+ * nothing is written twice. A P0 or P1 batch and the new cursor commit
+ * together, and MAIN applies one such batch per node and lane at a time, so a
+ * copy the node resent while the first was being applied is recognised as a
+ * repeat. P2 keeps no cursor and takes no lock: the latest value per key wins,
+ * so a repeat changes nothing.
  */
 final class EventIngest {
 	use DatabaseAware;
@@ -86,9 +88,15 @@ final class EventIngest {
 		self::$rOnStreamChanged = $rHook;
 	}
 
-	/** Tests: another directory for the lanes' lock files; null restores TMP_PATH/cluster_ingest/. */
-	public static function useLockDir(?string $rDir): void {
+	/**
+	 * Tests: another directory for the lanes' lock files; null restores
+	 * TMP_PATH/cluster_ingest/. Returns the directory it replaces, so a test
+	 * can put it back.
+	 */
+	public static function useLockDir(?string $rDir): ?string {
+		$rPrevious = self::$rLockDir;
 		self::$rLockDir = $rDir;
+		return $rPrevious;
 	}
 
 	/**
