@@ -158,7 +158,10 @@ class FakeClusterCrypto extends ClusterCrypto {
 	}
 
 	public function sign(string $rTag, string $rPayload): string {
-		if (!$this->rLicensed && !in_array($rTag, \XcVm\Core\Cluster\Crypto\PanelSig::RESTRICTIVE_TAGS, true)) {
+		// As the extension: a blocklist delta restricts while it removes nothing.
+		$rRestrictive = in_array($rTag, \XcVm\Core\Cluster\Crypto\PanelSig::RESTRICTIVE_TAGS, true)
+			|| ($rTag === 'blk' && empty(json_decode($rPayload, true)['remove'] ?? null));
+		if (!$this->rLicensed && !$rRestrictive) {
 			throw new ClusterRefusedException('LICENCE', 'cluster_sign');
 		}
 		return ClusterReference::panelSign($this->rSeed, $rTag, $rPayload);

@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Events\EventDispatcher;
@@ -200,6 +201,7 @@ class ToolsCommand implements CommandInterface {
 		shell_exec('sudo rm -f ' . escapeshellarg(FLOOD_TMP_PATH) . 'block_*');
 		exec('sudo iptables-save && sudo ip6tables-save');
 		$db->query('TRUNCATE `blocked_ips`;');
+		BlocklistChanges::reset('ip', $db);
 		echo "All blocked IPs have been flushed (iptables + database).\n";
 		return 0;
 	}

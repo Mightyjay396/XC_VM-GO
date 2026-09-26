@@ -68,6 +68,11 @@ class ServiceCommand implements CommandInterface {
 		if (file_exists(MAIN_HOME . 'bin/redis/redis-server')) {
 			exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . 'bin/redis/redis.conf >/dev/null 2>/dev/null');
 		}
+		// The cluster bus (MAIN only: LB builds strip bin/cluster_bus).
+		if (file_exists(MAIN_HOME . 'bin/redis/redis-server') && file_exists(MAIN_HOME . 'bin/cluster_bus/cluster.conf')) {
+			exec('sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'bin/cluster_bus');
+			exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . 'bin/cluster_bus/cluster.conf >/dev/null 2>/dev/null');
+		}
 
 		exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/nginx/sbin/nginx >/dev/null 2>/dev/null');
 		exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/nginx_rtmp/sbin/nginx_rtmp >/dev/null 2>/dev/null');
@@ -78,7 +83,10 @@ class ServiceCommand implements CommandInterface {
 		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php watchdog >/dev/null 2>/dev/null &');
 		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php queue >/dev/null 2>/dev/null &');
 
-		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cache_handler >/dev/null 2>/dev/null &');
+		// MAIN only: LB builds strip the command (ServersCronJob revives it on MAIN).
+		if (file_exists(MAIN_HOME . 'Cli/Commands/CacheHandlerCommand.php')) {
+			exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cache_handler >/dev/null 2>/dev/null &');
+		}
 
 		echo "Running in foreground...\n";
 		// sleep infinity handled by systemd shell wrapper

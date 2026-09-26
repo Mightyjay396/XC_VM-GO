@@ -17,10 +17,11 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * reaper here then closes only what the node ended.
  *
  * The exception is a node that has gone silent (orphaned): its viewers would
- * otherwise count against their lines forever. A node is orphaned once its
- * `last_seen_at` is older than `cluster_orphan_conn_ttl_sec` and this reaper
- * has itself watched it stay silent that long, so MAIN's own downtime never
- * orphans anyone. An orphaned node's rows fall back to the 30 s rule.
+ * otherwise count against their lines forever. A CONNECTIONS node is orphaned
+ * once its `last_seen_at` is older than `cluster_orphan_conn_ttl_sec` and this
+ * reaper has itself watched it stay silent that long, so MAIN's own downtime
+ * never orphans anyone. Its rows are then purged from MAIN's store
+ * (orphaned(), ConnectionIngest::purgeNode), HLS and TS alike.
  *
  * In Core: UsersCronJob ships to LBs, which reap their own rows in MySQL
  * mode and ask their own agent (NodeFlows) instead of cluster_nodes.
@@ -41,6 +42,9 @@ final class HlsReaping {
 
 	/** @var array<int, bool> server id => the node ends its own idle HLS viewers */
 	private static array $rReaps = [];
+
+	/** @var list<int> CONNECTIONS nodes silent past the orphan TTL, watched by MAIN */
+	private static array $rOrphaned = [];
 
 	private static ?string $rPath = null;
 
@@ -64,6 +68,7 @@ final class HlsReaping {
 	 */
 	public static function begin(int $rNowSec, int $rOrphanTtlSec): void {
 		self::$rReaps = [];
+		self::$rOrphaned = [];
 		$db = self::db();
 		if (!$db->query("SELECT `server_id`, `mode`, `flows`, `features`, `last_seen_at` FROM `cluster_nodes` WHERE `state` = 'active';")) {
 			return;
@@ -74,25 +79,40 @@ final class HlsReaping {
 		$rKeep = [];
 		foreach ($rRows as $rRow) {
 			$rID = (int) $rRow['server_id'];
-			$rCapable = (int) $rRow['mode'] >= 1 && ((int) $rRow['flows'] & NodeFlows::CONNECTIONS) !== 0
-				&& in_array(self::FEATURE, explode(',', (string) ($rRow['features'] ?? '')), true);
-			if (!$rCapable) {
+			// Every CONNECTIONS node is watched (the orphan purge); only those
+			// whose agent says hls_reaper end their own idle HLS viewers.
+			if ((int) $rRow['mode'] < 1 || ((int) $rRow['flows'] & NodeFlows::CONNECTIONS) === 0) {
 				continue;
 			}
+			$rCapable = in_array(self::FEATURE, explode(',', (string) ($rRow['features'] ?? '')), true);
 			$rSilent = $rRow['last_seen_at'] === null ? PHP_INT_MAX : $rNowSec - intdiv((int) $rRow['last_seen_at'], 1000);
 			if ($rSilent >= self::WATCH_AFTER) {
 				$rKeep[$rID] = $rSince[$rID] ?? $rNowSec;
 			}
 			$rOrphaned = isset($rKeep[$rID]) && $rSilent >= $rOrphanTtlSec && $rNowSec - $rKeep[$rID] >= $rOrphanTtlSec;
-			self::$rReaps[$rID] = !$rOrphaned;
+			self::$rReaps[$rID] = $rCapable && !$rOrphaned;
+			if ($rOrphaned) {
+				self::$rOrphaned[] = $rID;
+			}
 		}
 		self::save(['run' => $rNowSec, 'since' => $rKeep]);
+	}
+
+	/**
+	 * CONNECTIONS nodes found orphaned by the last begin(): their connections
+	 * are purged from MAIN's store (ConnectionIngest::purgeNode).
+	 *
+	 * @return list<int>
+	 */
+	public static function orphaned(): array {
+		return self::$rOrphaned;
 	}
 
 	/** Tests: keep the watch elsewhere, and forget the last pass. */
 	public static function usePath(?string $rPath): void {
 		self::$rPath = $rPath;
 		self::$rReaps = [];
+		self::$rOrphaned = [];
 	}
 
 	private static function path(): ?string {

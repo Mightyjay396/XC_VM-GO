@@ -4,7 +4,11 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -175,6 +179,24 @@ class RootSignalsCronJob implements CommandInterface {
 		return null;
 	}
 
+	/**
+	 * The blocked addresses, distinct: MAIN's `blocked_ips`, or with the CONFIG
+	 * flow on the replica's `blocked_ips` cache. Null when that cache is not
+	 * there (yet): the sync then leaves iptables as it is.
+	 *
+	 * @return list<string>|null
+	 */
+	public static function blockedIPs(?object $rDb): ?array {
+		if (NodeFlows::on(NodeFlows::CONFIG)) {
+			$rCache = FileCache::getCache('blocked_ips');
+			return is_array($rCache) ? array_values(array_unique(array_map('strval', $rCache))) : null;
+		}
+		if ($rDb === null || !$rDb->query('SELECT `ip` FROM `blocked_ips`;')) {
+			return null;
+		}
+		return array_map('strval', array_keys($rDb->get_rows(true, 'ip') ?: []));
+	}
+
 	private function loadCron(): void {
 		global $db;
 		$rServers = ServerRepository::getAll(true);
@@ -194,15 +216,25 @@ class RootSignalsCronJob implements CommandInterface {
 				$rUnbanMul = ['minutes' => 60, 'hours' => 3600, 'days' => 86400];
 				$rUnbanUnit = (string) ($rUnbanSettings['ban_duration_unit'] ?? 'hours');
 				$rUnbanSecs = max(1, intval($rUnbanSettings['ban_duration_value'] ?? 24)) * ($rUnbanMul[$rUnbanUnit] ?? 3600);
-				$db->query("DELETE FROM `blocked_ips` WHERE `date` < ? AND (UPPER(`notes`) LIKE '%ATTACK%' OR UPPER(`notes`) LIKE '%BRUTEFORCE%' OR UPPER(`notes`) LIKE '%FLOOD%');", time() - $rUnbanSecs);
+				$rUnbanWhere = "`date` < ? AND (UPPER(`notes`) LIKE '%ATTACK%' OR UPPER(`notes`) LIKE '%BRUTEFORCE%' OR UPPER(`notes`) LIKE '%FLOOD%')";
+				$rUnbanBefore = time() - $rUnbanSecs;
+				$db->query('SELECT `ip` FROM `blocked_ips` WHERE ' . $rUnbanWhere . ';', $rUnbanBefore);
+				$rUnbanned = array_column($db->get_rows() ?: [], 'ip');
+				if ($rUnbanned !== []) {
+					$db->query('DELETE FROM `blocked_ips` WHERE ' . $rUnbanWhere . ';', $rUnbanBefore);
+					BlocklistChanges::del('ip', $rUnbanned, $db);
+				}
 			}
 
 			$rSyncMarker = CRONS_TMP_PATH . 'blocked_ips_sync_marker';
-			$rRunFullSync = true;
-			$db->query('SELECT COUNT(*) AS `count` FROM `blocked_ips`;');
-			$rCurrentIPCount = intval($db->get_row()['count']);
+			// The addresses iptables must block: MAIN's table, or with the
+			// CONFIG flow on the node replica's cache (cluster:apply). No cache
+			// yet means nothing to sync, never "unblock everything".
+			$rBlocked = self::blockedIPs($db);
+			$rRunFullSync = $rBlocked !== null;
+			$rCurrentIPCount = count($rBlocked ?? []);
 
-			if (file_exists($rSyncMarker)) {
+			if ($rRunFullSync && file_exists($rSyncMarker)) {
 				$rLastSyncData = json_decode(@file_get_contents($rSyncMarker), true);
 				if (is_array($rLastSyncData) && isset($rLastSyncData['count'], $rLastSyncData['time'])) {
 					if (intval($rLastSyncData['count']) == $rCurrentIPCount && (time() - intval($rLastSyncData['time'])) < 300) {
@@ -214,8 +246,6 @@ class RootSignalsCronJob implements CommandInterface {
 			if ($rRunFullSync) {
 				$rActualBlocked = $this->getBlockedIPs();
 				$rActualBlockedFlip = array_flip($rActualBlocked);
-				$db->query('SELECT `ip` FROM `blocked_ips`;');
-				$rBlocked = array_keys($db->get_rows(true, 'ip'));
 				$rBlockedFlip = array_flip($rBlocked);
 				$rAdd = $rDel = [];
 				foreach (array_count_values($rActualBlocked) as $rIP => $rCount) {
@@ -736,7 +766,7 @@ class RootSignalsCronJob implements CommandInterface {
 						shell_exec("sudo bash -c 'for ((i=0;i<\$(nproc);i++)); do cpufreq-set -c \$i -g " . $rNewGovernor . "; done'");
 						sleep(2);
 						$rGovernor = explode(' ', trim(shell_exec('cpufreq-info -p')));
-						$db->query('UPDATE `servers` SET `governor` = ? WHERE `id` = ?;', json_encode($rGovernor), SERVER_ID);
+						NodeStateSink::state(['governor' => json_encode($rGovernor)], $db);
 					}
 				}
 				break;
@@ -748,7 +778,7 @@ class RootSignalsCronJob implements CommandInterface {
 						shell_exec('sudo modprobe ip_conntrack > /dev/null');
 						file_put_contents('/etc/sysctl.conf', $rNewConfig);
 						shell_exec('sudo sysctl -p > /dev/null');
-						$db->query('UPDATE `servers` SET `sysctl` = ? WHERE `id` = ?;', $rNewConfig, SERVER_ID);
+						NodeStateSink::state(['sysctl' => $rNewConfig], $db);
 					}
 				}
 				break;

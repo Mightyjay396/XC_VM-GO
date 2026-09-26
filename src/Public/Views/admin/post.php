@@ -5,6 +5,7 @@ use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Auth\SessionManager;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
@@ -690,6 +691,7 @@ if (1 < $rICount) { ?>
 
 				if (isset($rData['flush_blocked_asns'])) {
 					$db->query('UPDATE `blocked_asns` SET `blocked` = 0;');
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
@@ -893,48 +895,56 @@ if (1 < $rICount) { ?>
 
 				if (isset($rData['block_all_isps'])) {
 					$db->query("UPDATE `blocked_asns` SET `blocked` = 1 WHERE `type` = 'isp';");
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['unblock_all_isps'])) {
 					$db->query("UPDATE `blocked_asns` SET `blocked` = 0 WHERE `type` = 'isp';");
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['block_all_servers'])) {
 					$db->query("UPDATE `blocked_asns` SET `blocked` = 1 WHERE `type` = 'hosting';");
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['unblock_all_servers'])) {
 					$db->query("UPDATE `blocked_asns` SET `blocked` = 0 WHERE `type` = 'hosting';");
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['block_all_education'])) {
 					$db->query("UPDATE `blocked_asns` SET `blocked` = 1 WHERE `type` = 'education';");
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['unblock_all_education'])) {
 					$db->query("UPDATE `blocked_asns` SET `blocked` = 0 WHERE `type` = 'education';");
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['block_all_businesses'])) {
 					$db->query("UPDATE `blocked_asns` SET `blocked` = 1 WHERE `type` = 'business';");
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}
 
 				if (isset($rData['unblock_all_businesses'])) {
 					$db->query("UPDATE `blocked_asns` SET `blocked` = 0 WHERE `type` = 'business';");
+					BlocklistChanges::reset('asn', $db);
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
 					exit();
 				}

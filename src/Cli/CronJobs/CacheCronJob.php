@@ -5,6 +5,7 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Domain\Bouquet\BouquetService;
@@ -101,10 +102,13 @@ class CacheCronJob implements CommandInterface {
 		$rServers = ServerRepository::getAll(true);
 		FileCache::setCache('servers', $rServers);
 		FileCache::setCache('proxy_servers', BlocklistService::getProxyIPs(true));
-		FileCache::setCache('blocked_servers', BlocklistService::getBlockedServers(true));
-		FileCache::setCache('blocked_isp', BlocklistService::getBlockedISP(true));
-		FileCache::setCache('blocked_ua', BlocklistService::getBlockedUA(true));
-		FileCache::setCache('blocked_ips', BlocklistService::getBlockedIPs(true));
+		// With the CONFIG flow on, the node's replica writes these (cluster:apply).
+		if (!NodeFlows::on(NodeFlows::CONFIG)) {
+			FileCache::setCache('blocked_servers', BlocklistService::getBlockedServers(true));
+			FileCache::setCache('blocked_isp', BlocklistService::getBlockedISP(true));
+			FileCache::setCache('blocked_ua', BlocklistService::getBlockedUA(true));
+			FileCache::setCache('blocked_ips', BlocklistService::getBlockedIPs(true));
+		}
 		FileCache::setCache('allowed_ips', ServerRepository::getAllowedIPs(true));
 		FileCache::setCache('categories', CategoryService::getFromDatabase(null, true));
 

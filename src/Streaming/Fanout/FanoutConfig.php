@@ -106,7 +106,7 @@ class FanoutConfig {
 		// prebuffer gets a segment of headroom on top.
 		$rNeeds = [2 * $rSegTime, $rHlsWindow * $rSegTime];
 		foreach (['client_prebuffer', 'restreamer_prebuffer', 'fanout_default_prebuffer_sec'] as $rKey) {
-			$rPrebuffer = max(0, (int) ($rSettings[$rKey] ?? 0));
+			$rPrebuffer = max(0, (int) ($rSettings[$rKey] ?? 0)); // lb-settings: client_prebuffer, restreamer_prebuffer, fanout_default_prebuffer_sec
 			if ($rPrebuffer > 0) {
 				$rNeeds[] = $rPrebuffer + $rSegTime;
 			}

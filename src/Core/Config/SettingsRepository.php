@@ -30,13 +30,23 @@ class SettingsRepository {
 			}
 		}
 
-		$rOutput = [];
 		$db->query('SELECT * FROM `settings`');
-		$rRows = $db->get_row();
-		foreach ($rRows ?: [] as $rKey => $rValue) {
-			$rOutput[$rKey] = $rValue;
-		}
+		$rOutput = self::decode($db->get_row() ?: []);
 
+		FileCache::setCache('settings', $rOutput);
+
+		return $rOutput;
+	}
+
+	/**
+	 * The settings row as the panel reads it, with its array fields decoded.
+	 * Shared with the node replica, whose `settings` section carries raw rows.
+	 *
+	 * @param array<string, mixed> $rRow the raw `settings` row
+	 * @return array<string, mixed>
+	 */
+	public static function decode(array $rRow): array {
+		$rOutput = $rRow;
 		$rOutput['allow_countries'] = json_decode($rOutput['allow_countries'] ?? '', true);
 
 		$decodedAllowedSTB = json_decode($rOutput['allowed_stb_types'] ?? '', true);
@@ -64,8 +74,6 @@ class SettingsRepository {
 			$rDecodedPrefixes = !empty($rOutput['shared_mount_prefixes']) ? explode(',', $rOutput['shared_mount_prefixes']) : [];
 		}
 		$rOutput['shared_mount_prefixes'] = array_values(array_filter(array_map('trim', $rDecodedPrefixes)));
-
-		FileCache::setCache('settings', $rOutput);
 
 		return $rOutput;
 	}

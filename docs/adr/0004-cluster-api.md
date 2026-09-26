@@ -388,6 +388,40 @@ The Cluster Nodes page switches CONTENT.
 
 Other event types are kept as they are, in order. The result replaces the oldest file, so it still goes first. MAIN applies it like any batch, so the plan's separate `p0_reset` event is not needed.
 
+### Security blocks (Phase 5, fourth increment)
+
+**Node side.** An LB's flood and bruteforce guard (`Core/Auth/BruteforceGuard`) still blocks the IP locally at once, with its `block_<ip>` file. Where it wrote the block to MAIN's `blocked_ips`, it now spools a P0 `security.block_ip {ip, reason}` once the node's CONFIG flow is on. CONFIG is the flow that makes the blocklist MAIN's. With the flow off, the agent stopped, or on MAIN itself, the guard writes the row as before.
+
+**MAIN side.** `EventIngest` records the block in `blocked_ips` with the guard's reason, as the node used to, and audits it (`security.block_ip`). Every node picks it up with the blocklist. MAIN refuses and audits (`security.block_ip_refused`):
+
+- a reason that is not one of the guard's own (`BruteforceGuard::REASON_PATTERN`), or an address that is not an IP;
+- an address the guard never blocks: a cluster server's `server_ip`, `private_ip` or `whitelist_ips`, the admin allowlist (`allowed_ips_admin`), or loopback. A node therefore cannot lock the cluster out.
+
+An address that is already blocked is accepted and left as it is.
+
+**Not built:** the blocklist delta in `cluster_changes`. No block or unblock path writes it yet; it comes with the R1 replica (`ReplicaBuilder`, Phase 7), which must cover every path at once, MAIN's auto-unban included.
+
+### Node state and inventory (Phase 5, fifth increment)
+
+**Node side.** What a node writes about itself in its own `servers` row goes through `Core/Cluster/NodeStateSink`. With the TELEMETRY flow on it becomes an event; otherwise the row is written as before.
+
+- `node.state {fields}`, on P0, when it changes: `certbot_ssl` (certbot command and cron), `governor` and `sysctl` (`cron:root_signals`).
+- `node.inventory {fields}`, on P1, once a minute from `cron:servers`: `remote_status`, `xc_vm_version`, `server_hardware`, `governors`, `sysctl`, the devices, `gpu_info`, `interfaces` and `ping`. A newer inventory replaces an older one, so P1's drop-oldest cap costs nothing. The plan's P2 lane is not built; P1 serves.
+
+The plan names the second event `inventory`; it is `node.inventory` here, next to `node.state`.
+
+**Never the node's.** Columns that grant or route stay with MAIN and the admin, and MAIN refuses them in either event:
+
+- `whitelist_ips`, which feeds the allowed IPs (`/api`, the internal endpoints, the flood exemptions). The legacy cron wrote the node's interface addresses there; with TELEMETRY on the cron stops, and the column keeps what the admin or the last legacy write left.
+- `server_ip`: `cron:root_signals` still auto-updates it with a direct write, and only while the node reaches MAIN's database.
+- `status`, which the heartbeat owns.
+
+**MAIN side.** `EventIngest` writes only the event type's columns of the sending node's own row. Each value must be a scalar of at most 256 KB. An inventory also sets `time_offset` from the node's heartbeat clock offset, which is what the legacy cron measured against the database clock.
+
+**Root.** `cron:root_signals` and the certbot cron run as root. `EventSpool` hands a lane or file that root creates to the owner of the agent's state directory, so the agent can still read, compact and delete it.
+
+**`stream.progress`.** No separate event is built. `progress_info` already reaches MAIN in `stream.state`: `cron:streams` sends it at most once a minute per stream, and MAIN treats it as cache-neutral. A created channel's encoding progress, every 10 s while it encodes, is the one faster writer. P0 compaction keeps one state per row, so none of it can grow the backlog. Moving it to the bus waits for the P2 lane.
+
 ### Connections (Phase 6, first increment): kills as commands
 
 Every kill MAIN sends to another node's viewers now travels as a signed command when that node takes commands. Before this, only `SignalDispatcher::kill` in MySQL mode did.
@@ -502,7 +536,9 @@ An LB that reaps its own rows (MySQL mode) asks its own agent through `NodeFlows
 - its `last_seen_at` is older than `cluster_orphan_conn_ttl_sec`;
 - MAIN's reaper has itself watched it stay silent that long (`TMP_PATH/cluster_orphans.json`).
 
-A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node. An orphaned node's rows go back to the 30 s rule.
+A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node.
+
+**The orphan purge.** Every CONNECTIONS node is watched this way, whether or not its agent reaps. An orphaned node's rows, HLS and TS alike, are purged from MAIN's store only (`ConnectionIngest::purgeNode`, audited as `conn.orphan_purge`), so they stop counting toward their lines' limits. The purge sends no kill and no command: the node's registry still holds its viewers. If the node comes back, its digest disagrees and a snapshot restores them. Before this, a dead node's TS rows stayed for ever, because the reaper kept trusting the node's last `php_pids` list, and it skips daemon-served rows (pid 0) altogether.
 
 **Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way.
 
@@ -519,8 +555,9 @@ Other targets are unchanged: a legacy node limits at open, as before.
 
 **What it does.**
 1. **Reserve.** The viewer's uuid is reserved for the identity for the token's life (`create_expiration`) plus 10 s, and the identity's other reservations still in flight are counted.
-   - **Redis mode:** a Lua script on `RESV#<identity>`.
-   - **MySQL mode:** `cluster_reservations`, the table migration 032 created for this.
+   - **The cluster bus**, when MAIN runs it: a Lua script on `RESV#<identity>`, in either store mode.
+   - **Without the bus, Redis mode:** the same script on the shared Redis.
+   - **Without the bus, MySQL mode:** `cluster_reservations`, the table migration 032 created for this.
    - **No lock:** insert-then-count needs none, because of two concurrent mints at least one sees the other.
 2. **Evict.** `ConnectionLimiter::closeConnections` cuts the identity's open connections, and the pair's, to leave room for this viewer and the ones in flight. The order is the limiter's: the requesting device first, then the oldest. The new viewer is never evicted, because it is not open yet. Closes on CONNECTIONS nodes go out as commands, as every close MAIN makes does.
 3. **Release.** When the node reports the connection (`ConnectionIngest::upsert`), the reservation is released.
@@ -534,6 +571,147 @@ Other targets are unchanged: a legacy node limits at open, as before.
 - the `conn_admit` op, with `lb_offline_admission`, for tokens minted without admission.
 
 A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store.
+
+### Connections (Phase 6, eighth increment): TS closes from the fanout
+
+**Before.** Under X-Accel, no PHP worker sees a daemon-served TS viewer leave. On a CONNECTIONS node, that close waited for `FanoutSyncCommand`, which reads MAIN's store over the WAN and closes rows the fanout no longer holds.
+
+**The fanout.** It now publishes `conn_close {stream, uuid}` on `GET /events` when a uuid's last connection leaves a stream, whether the client went or the panel dropped it.
+
+**The agent.** While CONNECTIONS is on, it follows that feed:
+- **Check.** It confirms against `GET /connections` that the uuid is really gone, since a viewer may have reconnected with the same uuid.
+- **Close.** For each open, non-HLS registry record with pid 0, it spools a P0 `conn.close {uuid}` and then drops the record. A spool that refuses leaves the feed where it was, so the events come again.
+- **Scope.** PHP-served viewers have a worker to watch, and HLS viewers have the reaper, so neither is touched.
+
+**MAIN.** `ConnectionIngest::close` closes the node's own row as `fanout_sync` would, with its activity row. It sends no kill and no `conn.close` back, because the viewer is already gone and the registry has already dropped it. A row that is already gone is accepted.
+
+**Compatibility and safety net.**
+- An older panel drops the unknown event, so its lane still advances.
+- An older fanout sends nothing.
+- `FanoutSyncCommand` keeps running as the safety net, for closes a feed reset loses and for when the fanout cannot answer.
+
+The close reaches MAIN within about a second, with no WAN read from the node.
+
+### The settings section (Phase 7, fourth increment)
+
+**The allowlist.** `src/Core/Cluster/lb_settings_keys.php` lists the settings a node's replica may carry. It is generated by `tools/ci/lb-settings-keys.sh --write`, and `make gates` fails when it is stale. The script builds the LB file manifest the way `verify-lb-archive.sh` does, then scans every shipped PHP file for settings reads:
+
+- `SettingsManager::get('key')`, and its `getBool`/`getInt`/`getString` forms;
+- any `['key']` index whose key is a settings column. This is over-inclusive on purpose: a server column that shares a settings name costs one extra key, never a missing one.
+- a dynamic read (`SettingsManager::get($x)`, `getAll()[$x]`, `$rSettings[$x]`). It must carry an `lb-settings: key, …` note on its line or one of the two before it, or the gate fails.
+
+The settings columns come from the install schema and the migrations. Secrets are withheld whatever reads them, and listed as such: `api_pass`, `license`, `live_streaming_pass`, `redis_password`, the third-party API keys and the reCAPTCHA secret. The node needs `live_streaming_pass`, which will come in the sealed `secrets` section. `ReplicaBuilderSecretsTest` fails on an allowlisted key that looks secret and has not been vetted.
+
+**Serving.** `ReplicaBuilder::whole()` sends a section whole, as a `rep` record without a `seq`, whenever its ETag differs from the one the node names in `have`. The `settings` section is the raw `settings` row, allowlisted keys only, with each value as a string. It goes only to an agent that names it in `have`, so an older agent is not sent a section it cannot store.
+
+**The node.** The agent stores `replica/settings.rep` and writes `replica/settings.json` (`{etag, data}`) from the verified record, then runs `cluster:apply`.
+
+**Applying.** `ReplicaApply` decodes the section as the panel does, through `SettingsRepository::decode()`, now shared. It reports the keys whose value differs from the settings cache. It stays in shadow even with CONFIG on: the section withholds secrets that the node still reads, so it becomes authoritative together with the `secrets` section.
+
+### The cluster bus (Phase 2, first increment): wake-ups
+
+**What it is.** The cluster bus is MAIN's own Redis instance for the cluster API (`Domain\Cluster\ClusterBus`). It runs the bundled `redis-server` with `bin/cluster_bus/cluster.conf`, and is separate from the shared Redis that the panel and legacy LBs use.
+- **Access:** only a unix socket, `bin/cluster_bus/cluster.sock`, mode 0700, owned by xc_vm. There is no TCP port, and the admin commands are renamed away.
+- **Persistence:** none, because nothing in it has to survive a restart.
+- **Where it runs:** MAIN only. `service` and `ServiceCommand` start it, and `ServersCronJob` revives it. LB builds strip `bin/cluster_bus`.
+- **Liveness checks:** it runs the same binary as the shared Redis, so `ServersCronJob` tells the two apart by process title: `redis-server unixsocket:…` for the bus, `redis-server *:6379` for the shared one. Before this, a running bus would have hidden a dead shared Redis.
+
+**What it carries.** Wake-ups, and the admission reservations (`ConnectionAdmission`, seventh Phase 6 increment):
+- **`wake:<sid>`:** `CommandBus::enqueue` pushes it, and the `commands` long-poll waits on it. The long-poll used to re-read `cluster_commands` every 250 ms for up to 20 s per node. It now reads once, blocks on the bus, and reads again when woken. While it blocks it holds no MySQL connection: it closes the handle first (`waitNodeReleasing`), and `DatabaseHandler` reconnects on the next read.
+- **`ack:<cmd_id>`:** `CommandBus::ack` pushes it, and `CommandBus::await` (an RPC waiting for its answer) waits on it instead of polling every 100 ms.
+
+**How a wake works.** A wake is a one-element list with a 60 s TTL, taken with `BLPOP`:
+- a wake pushed just before the waiter blocks is not lost;
+- repeated wakes collapse into one;
+- a stale wake costs one extra query.
+
+**Without the bus.** If the bus is not running, or this is an LB or a test, `waitNode`/`waitAck` return null and the callers poll as before.
+
+**Still to come on the bus:**
+- nonces;
+- telemetry (`cl:tel:<sid>`);
+- the `conn.touch` state;
+- per-op semaphores.
+
+### Blocklist delta (Phase 7, first increment)
+
+**The log.** Every path that blocks or unblocks something appends to `cluster_changes` (section `blocklist`) through `Core/Cluster/BlocklistChanges`. No triggers are used. Each row names the kind and the key that changed:
+
+| Kind | Table | Key |
+| --- | --- | --- |
+| `ip` | `blocked_ips` | the address |
+| `ua` | `blocked_uas` | `id` |
+| `isp` | `blocked_isps` | `id` |
+| `asn` | `blocked_asns` | `id` |
+| `rtmp` | `rtmp_ips` | `id` |
+
+A row does not say what the key became; MAIN reads that when it serves the change. Bulk changes record `reset` for their kind instead of keys: a flush, a whole ASN type, a migration from another panel, or more than 500 keys at once. Recording never fails the block itself.
+
+**The paths.** The admin's block, edit and delete of each kind (`BlocklistService`, the ASN and MySQL-syslog actions, the ASN bulk buttons), the flushes (admin, API, `tools`), the flood guard on MAIN and on legacy LBs, the Ministra portal's bans, `cache_handler`'s signals, `security.block_ip`, MAIN's auto-unban in `cron:root_signals` (which now selects what it removes), and the migration. The ASN catalog sync is exempt: it only upserts reference columns and prunes unblocked ASNs, so no blocked ASN changes. `BlocklistDeltaTest` fails when a new file writes a blocklist table without logging it.
+
+**The read.** `Domain/Cluster/BlocklistDelta::since($id)` gives a node everything past the last id it applied:
+
+- Blocked IPs, the kind the flood guard changes all the time, come as `add` and `remove` lists. Each changed address is added if it is blocked now and removed otherwise, so the order of two changes to one address never matters.
+- Every other kind changes rarely and by hand. A change to it, or a bulk `reset`, names the kind in `reload`, and the node takes the whole section again.
+- `full` means there is no starting point: `since` is 0, the log was pruned past it, or the log went backwards (a restore).
+
+`snapshot()` is the whole list. It holds each blocked address and ASN, and the user-agent, ISP and RTMP rows. The node needs the RTMP password to check publishers, so it is in the section; the section is sealed to the node.
+
+**Pruning.** `cron:cluster` keeps seven days of the log, and always keeps its newest row, so a quiet week does not send every node into a full reload. It prunes even while the cluster API is off, because the log is written either way.
+
+`allowed_ips`, `proxy_servers` and `allowed_domains` are not in this section. They come from `servers` and the settings, so they travel with those sections.
+
+### The replica transport (Phase 7, second increment)
+
+**Records.** `Domain/Cluster/ReplicaBuilder` builds what a node keeps. Each record is panel-signed and sealed to the node's X25519 key, with purpose `replica` and the node uuid as context:
+
+```text
+record = SEAL(node_box_pub, "replica", node_uuid, u32(len) ‖ payload ‖ sig(tag, payload))
+rep  {v, section, node, gen, etag, seq, iat, data}   a whole section (granting)
+blk  {v, seq, iat, add, remove}                      a blocklist delta
+```
+
+A `rep` record names the node and its generation. The ETag is the SHA-256 of the section's canonical data: keys sorted, numbers typed the same whichever driver read them.
+
+`blk` is the extension's record, and its strict keys admit only plain strings. So only blocked IPs travel as deltas. Additions only restrict, so they sign without a licence and bans reach nodes even then. A removal, or a whole section, grants and needs the licence; without one, MAIN answers `LICENCE_INVALID` and the node keeps what it has.
+
+**The `config` op.** The node sends `{blocklist_since, have: {blocklist: etag}}`. MAIN answers with one of four outcomes:
+
+- a `blk` delta, when only IPs changed;
+- the whole section, when there is no starting point or another kind changed;
+- `unchanged`, when the node already holds the section's current ETag;
+- nothing, when nothing changed.
+
+A section carries the log head read before the snapshot, so a change made in between comes again as a delta. The op needs an active node but no flow, because the node fetches its replica in shadow before its CONFIG flow is switched on.
+
+**The agent.** `internal/clusteragent/replica.go` calls `config` every minute, and again at once while `more` is set. It stores only records that open for this node and verify against the pinned panel key, and a `rep` must name this node and match what the reply announced. It keeps them as they came, under `config/cluster/replica/`: `blocklist.rep`, the deltas since it in `blocklist.d/<seq>.blk`, and `state.json`. A new section removes the deltas. Once a day, or past 1000 deltas, it asks from 0 with the ETag it holds, which is the plan's daily safety net. The plan puts the replica under `var/cluster/replica/`; it lives beside the agent's other state instead.
+
+### Applying the blocklist (Phase 7, third increment)
+
+**Materialising.** After a change, the agent writes `replica/blocklist.json`: the stored section with its deltas applied in seq order. It opens and verifies each record again first, and PHP holds no key to open them. It then runs `console.php cluster:apply` (`ClusterApplyCommand`, with the work in `Core/Cluster/ReplicaApply`).
+
+**The caches.** `cluster:apply` turns the file into the four caches `cron:cache` builds from MAIN's database, in the same shapes, so every reader keeps its contract:
+
+| Cache | Source |
+| --- | --- |
+| `blocked_ips` | the addresses |
+| `blocked_servers` | the blocked ASNs |
+| `blocked_ua` | `[id => {id, exact_match, blocked_ua}]`, lower-cased |
+| `blocked_isp` | `[{id, isp, blocked}]` |
+| `rtmp_ips` | `[resolved ip => {password, push, pull}]`, as MAIN's `cron:cache` builds it; an LB used to read the database for this |
+
+What it does depends on the node's CONFIG flow:
+
+- **CONFIG off (shadow).** Nothing is written. `replica/apply.json` counts, per cache, entries the database has that the replica lacks (`missing`) and the reverse (`extra`). Rows are compared by value, whichever driver typed them. Zeros there are the evidence for switching CONFIG on.
+- **CONFIG on.** The replica writes the caches. `cron:cache` stops writing them, and `BlocklistService::getBlocked*` read the cache instead of refreshing it from the database. Without that, the next reader would overwrite the replica within 20 s.
+
+The shadow diff for `rtmp_ips` compares against the database, because an LB never cached it. With CONFIG on, three more readers switch to the replica:
+
+- `getAllowedRTMP`, which `rtmp.php` calls, reads the cache.
+- `cron:root_signals` syncs iptables from the replica's `blocked_ips` cache (`RootSignalsCronJob::blockedIPs`).
+- When that cache is not there yet, the sync leaves iptables as it is rather than unblocking everything.
+
+**Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. On the blocklist path, the root flush still arrives as a `signals` row, until `node.root blocklist_sync` replaces it.
 
 ### Disaster recovery of MAIN's cluster keys
 

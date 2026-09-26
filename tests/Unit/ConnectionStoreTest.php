@@ -210,6 +210,28 @@ final class ConnectionStoreTest extends TestCase {
 		$this->assertNull($this->row('iiii'));
 	}
 
+	public function testAFanoutCloseWritesTheActivityRowThenDropsTheRow(): void {
+		if (!defined('LOGS_TMP_PATH')) {
+			define('LOGS_TMP_PATH', sys_get_temp_dir() . '/xcvm-logs-' . bin2hex(random_bytes(4)) . '/');
+		}
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		@unlink(LOGS_TMP_PATH . 'activity');
+		SettingsManager::set(['redis_handler' => 0, 'save_closed_connection' => 1]);
+		$rRec = ['user_id' => 7, 'stream_id' => 100, 'user_ip' => '10.0.0.9', 'container' => 'ts', 'pid' => 0, 'uuid' => 'llll', 'date_start' => 1800000000, 'hls_last_read' => 1800000000];
+		$this->assertTrue(ConnectionIngest::upsert(5, $rRec));
+		$this->assertFalse(ConnectionIngest::close(6, 'llll'), 'another node cannot close it');
+		$this->assertNotNull($this->row('llll'));
+		$this->assertTrue(ConnectionIngest::close(5, 'llll'));
+		$this->assertNull($this->row('llll'));
+		$rLines = file(LOGS_TMP_PATH . 'activity', FILE_IGNORE_NEW_LINES) ?: [];
+		$this->assertCount(1, $rLines);
+		$rActivity = json_decode(base64_decode($rLines[0]), true);
+		$this->assertSame([7, 100, 5, 'ts', 1800000000], [$rActivity['user_id'], $rActivity['stream_id'], $rActivity['server_id'], $rActivity['container'], $rActivity['date_start']]);
+		$this->assertTrue(ConnectionIngest::close(5, 'llll'), 'already closed (fanout_sync, a kick): nothing more');
+		$this->assertCount(1, file(LOGS_TMP_PATH . 'activity') ?: []);
+		$this->assertFalse(ConnectionIngest::close(5, 'bad uuid;'));
+	}
+
 	// ── Redis ────────────────────────────────────────────────────────────
 
 	public function testRedisPathKeepsTheRecordAndItsSets(): void {
@@ -257,5 +279,19 @@ final class ConnectionStoreTest extends TestCase {
 		$this->assertTrue(ConnectionIngest::remove(5, 'kkkk'));
 		$this->assertFalse($rRedis->get('kkkk'));
 		$this->assertFalse($rRedis->zScore('SERVER#5', 'kkkk'));
+	}
+
+	public function testAFanoutCloseOnRedisDropsTheRecordAndItsSets(): void {
+		$rRedis = $this->connectRedis();
+		$rRedis->flushAll();
+		SettingsManager::set(['redis_handler' => 1, 'save_closed_connection' => 0]);
+		$rRec = ['user_id' => 7, 'stream_id' => 100, 'user_ip' => '10.0.0.9', 'container' => 'ts', 'pid' => 0, 'uuid' => 'mmmm', 'date_start' => 1800000000, 'hls_last_read' => 1800000000, 'hls_end' => 0];
+		$this->assertTrue(ConnectionIngest::upsert(5, $rRec));
+		$this->assertFalse(ConnectionIngest::close(6, 'mmmm'));
+		$this->assertTrue(ConnectionIngest::close(5, 'mmmm'));
+		$this->assertFalse($rRedis->get('mmmm'));
+		foreach (['LINE#7', 'STREAM#100', 'SERVER#5', 'LIVE'] as $rSet) {
+			$this->assertFalse($rRedis->zScore($rSet, 'mmmm'), $rSet);
+		}
 	}
 }

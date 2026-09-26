@@ -1,9 +1,12 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeStateSink;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\EventIngest;
 use XcVm\Domain\Cluster\NodeRegistry;
@@ -41,6 +44,7 @@ final class ClusterEventsTest extends TestCase {
 
 	protected function tearDown(): void {
 		EventSpool::useDir(null);
+		SettingsManager::set([]);
 		NodeFlows::usePath(null);
 		ClusterClock::fix(null);
 		DatabaseFactory::reset();
@@ -177,5 +181,81 @@ final class ClusterEventsTest extends TestCase {
 		$rOut = EventIngest::ingest($this->node(), 'p1', 1, [['type' => 'log.stream', 'd' => ['rows' => [['stream_id' => 1, 'action' => 'x']]]], ['type' => 'nope', 'd' => []]]);
 		$this->assertSame([2, 0, 2], [$rOut['useq'], $rOut['applied'], $rOut['dropped']]);
 		$this->assertSame(0, (int) $this->val('SELECT COUNT(*) FROM `streams_logs`'));
+	}
+
+	// ── security.block_ip ────────────────────────────────────────────────
+
+	private function spoolBlock(string $rIP, string $rReason): bool {
+		return (bool) (new \ReflectionMethod(BruteforceGuard::class, 'spoolBlock'))->invoke(null, $rIP, $rReason);
+	}
+
+	public function testABlockGoesToMainOnceTheConfigFlowIsOn(): void {
+		$this->flows(NodeFlows::STREAMS);
+		$this->assertFalse($this->spoolBlock('203.0.113.9', 'FLOOD ATTACK'), 'CONFIG off: the node writes it itself');
+		$this->flows(NodeFlows::CONFIG, EventSpool::STALE_AFTER + 5);
+		$this->assertFalse($this->spoolBlock('203.0.113.9', 'FLOOD ATTACK'), 'agent stopped');
+		$this->flows(NodeFlows::CONFIG);
+		$this->assertTrue($this->spoolBlock('203.0.113.9', 'BRUTEFORCE MAC ATTACK'));
+		$this->assertSame([['security.block_ip', ['ip' => '203.0.113.9', 'reason' => 'BRUTEFORCE MAC ATTACK']]], array_map(static fn($e) => [$e['type'], $e['d']], $this->spooled('p0')));
+	}
+
+	public function testMainRecordsABlockButNeverOneOfTheClustersOwn(): void {
+		$this->rDb->exec('CREATE TABLE `blocked_ips` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `ip` varchar(39) UNIQUE, `notes` text, `date` int)');
+		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `server_ip` varchar(64), `private_ip` varchar(64), `whitelist_ips` text)');
+		$this->rDb->exec("INSERT INTO `servers` VALUES (1, '198.51.100.1', '10.0.0.1', '[\"192.0.2.7\"]'), (5, '198.51.100.5', NULL, NULL)");
+		SettingsManager::set(['allowed_ips_admin' => '192.0.2.50, 192.0.2.51']);
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_CONFIG]);
+		$rBlock = static fn(string $rIP, string $rReason = 'FLOOD ATTACK') => ['type' => 'security.block_ip', 'd' => ['ip' => $rIP, 'reason' => $rReason]];
+		$rOut = EventIngest::ingest($this->node(), 'p0', 1, [
+			$rBlock('203.0.113.9'),
+			$rBlock('203.0.113.9', 'BRUTEFORCE USER ATTACK'), // already blocked
+			$rBlock('2001:db8::9', 'BRUTEFORCE MAC ATTACK'),
+			$rBlock('198.51.100.1'), $rBlock('10.0.0.1'), $rBlock('192.0.2.7'), $rBlock('192.0.2.51'), $rBlock('127.0.0.1'),
+			$rBlock('203.0.113.10', 'admin said so'),
+			$rBlock('not-an-ip'),
+		]);
+		$this->assertSame([10, 3, 7], [$rOut['useq'], $rOut['applied'], $rOut['dropped']]);
+		$this->assertSame([['ip' => '203.0.113.9', 'notes' => 'FLOOD ATTACK'], ['ip' => '2001:db8::9', 'notes' => 'BRUTEFORCE MAC ATTACK']], $this->rows('SELECT `ip`, `notes` FROM `blocked_ips` ORDER BY `id`'));
+		$this->assertSame(5, (int) $this->val("SELECT COUNT(*) FROM `cluster_audit` WHERE `event` = 'security.block_ip_refused'"));
+
+		// CONFIG off: MAIN takes no block from the node.
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_STREAMS]);
+		$this->assertSame(0, EventIngest::ingest($this->node(), 'p0', 11, [$rBlock('203.0.113.11')])['applied']);
+	}
+
+	// ── node.state, node.inventory ───────────────────────────────────────
+
+	public function testNodeStateAndInventoryGoToMainOnceTelemetryIsOn(): void {
+		$this->flows(NodeFlows::TELEMETRY);
+		$this->assertTrue(NodeStateSink::state(['certbot_ssl' => '{"a":1}', 'server_ip' => '6.6.6.6']));
+		$this->assertTrue(NodeStateSink::inventory(['ping' => 12, 'whitelist_ips' => '["6.6.6.6"]', 'status' => 1]));
+		$this->assertSame([['node.state', ['fields' => ['certbot_ssl' => '{"a":1}']]]], array_map(static fn($e) => [$e['type'], $e['d']], $this->spooled('p0')), 'granting columns never leave the node');
+		$this->assertSame([['node.inventory', ['fields' => ['ping' => 12]]]], array_map(static fn($e) => [$e['type'], $e['d']], $this->spooled('p1')));
+
+		$this->flows(NodeFlows::STREAMS);
+		$this->assertFalse(NodeStateSink::inventory(['ping' => 12]), 'TELEMETRY off: the cron writes the row itself');
+	}
+
+	public function testMainWritesOnlyTheNodesOwnRowAndItsColumns(): void {
+		$this->rDb->exec("CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `server_ip` varchar(64), `status` int DEFAULT 1, `whitelist_ips` text, `certbot_ssl` text, `governor` text, `sysctl` text, `ping` int DEFAULT 0, `xc_vm_version` varchar(50), `interfaces` text, `time_offset` int DEFAULT 0)");
+		$this->rDb->exec("INSERT INTO `servers` (`id`, `server_ip`) VALUES (5, '198.51.100.5'), (6, '198.51.100.6')");
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_TELEMETRY, 'clock_offset_ms' => -2600]);
+		$rOut = EventIngest::ingest($this->node(), 'p0', 1, [
+			['type' => 'node.state', 'd' => ['fields' => ['certbot_ssl' => '{"a":1}', 'governor' => '["x"]']]],
+			['type' => 'node.state', 'd' => ['fields' => ['server_ip' => '6.6.6.6', 'status' => 5]]],  // not the node's to set
+			['type' => 'node.state', 'd' => ['fields' => ['sysctl' => ['nested']]]],
+			['type' => 'node.state', 'd' => ['fields' => ['sysctl' => str_repeat('x', NodeStateSink::MAX_VALUE + 1)]]],
+			['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3]]],                           // wrong lane
+		]);
+		$this->assertSame([1, 4], [$rOut['applied'], $rOut['dropped']]);
+		$rOut = EventIngest::ingest($this->node(), 'p1', 1, [['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3, 'xc_vm_version' => '2.1', 'whitelist_ips' => '["6.6.6.6"]']]]]);
+		$this->assertSame(1, $rOut['applied']);
+		$rRows = array_map(static fn($r) => array_map(static fn($v) => is_string($v) && ctype_digit(ltrim($v, '-')) ? (int) $v : $v, $r), $this->rows('SELECT * FROM `servers` ORDER BY `id`'));
+		$rMine = ['id' => 5, 'server_ip' => '198.51.100.5', 'status' => 1, 'whitelist_ips' => null, 'certbot_ssl' => '{"a":1}', 'governor' => '["x"]', 'sysctl' => null, 'ping' => 3, 'xc_vm_version' => '2.1', 'interfaces' => null, 'time_offset' => -3];
+		$rOther = ['id' => 6, 'server_ip' => '198.51.100.6', 'status' => 1, 'whitelist_ips' => null, 'certbot_ssl' => null, 'governor' => null, 'sysctl' => null, 'ping' => 0, 'xc_vm_version' => null, 'interfaces' => null, 'time_offset' => 0];
+		$this->assertSame([$rMine, $rOther], $rRows);
+
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_STREAMS]);
+		$this->assertSame(0, EventIngest::ingest($this->node(), 'p1', 2, [['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 9]]]])['applied']);
 	}
 }
