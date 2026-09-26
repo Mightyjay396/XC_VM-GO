@@ -18,6 +18,7 @@ use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\ClusterSemaphore;
 use XcVm\Domain\Cluster\EnrolmentService;
+use XcVm\Domain\Cluster\HeartbeatService;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Cluster\NonceStore;
@@ -25,8 +26,11 @@ use XcVm\Domain\Cluster\ReplicaBuilder;
 use XcVm\Domain\Cluster\TokenService;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\BusServer;
+use XcVm\Tests\Support\QueryLogDb;
 use XcVm\Tests\Support\ClusterReference;
 use XcVm\Tests\Support\FakeClusterCrypto;
+
+require_once dirname(__DIR__) . '/Support/QueryLogDb.php';
 
 /**
  * MAIN's cluster API end to end, against the real migrations' schema: SSH
@@ -1213,6 +1217,26 @@ final class ClusterApiTest extends TestCase {
 		$this->assertArrayNotHasKey('retry_after_ms', $rDoc, 'a replay: no wait would let it pass');
 		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_nonces`');
 		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'no row per request');
+	}
+
+	public function testOnTheBusAHeartbeatWritesNothingToMySql(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		HeartbeatService::flush(); // MAIN's flusher is running
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		ClusterClock::fix($this->rT0 + 2000);
+		[$rRes, $rCtx] = $this->call('heartbeat', ['root_ready' => true, 'telemetry' => ['cpu' => 3]], 1, $rKeys, ['ts' => $this->rT0 + 2250]);
+		$this->assertSame('active', $this->reply($rRes, $rCtx, $rKeys)['state']);
+		$this->assertSame([], $rLog->writes(), 'no MySQL write: the node and its epoch are only read');
+		$this->assertCount(2, $rLog->rQueries);
+		$this->assertSame($this->rT0 + 2000, HeartbeatService::lastSeen()[self::SID]);
+
+		HeartbeatService::flush();
+		$rNode = NodeRegistry::byServer(self::SID);
+		$this->assertSame([$this->rT0 + 2000, 250, 1], [(int) $rNode['last_seen_at'], (int) $rNode['clock_offset_ms'], (int) $rNode['root_ready']]);
+		$this->rDb->query('SELECT `status` FROM `servers` WHERE `id` = 5');
+		$this->assertSame(1, (int) $this->rDb->get_row()['status'], 'the flush marks the server up');
 	}
 
 	public function testAnOpWithoutAFreePermitIsRefusedWithASigned503(): void {
