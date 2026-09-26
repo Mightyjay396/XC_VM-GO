@@ -930,7 +930,7 @@ The settings columns come from the install schema and the migrations. Secrets ar
 
 **The node.** The agent stores `replica/settings.rep` and writes `replica/settings.json` (`{etag, data}`) from the verified record, then runs `cluster:apply`.
 
-**Applying.** `ReplicaApply` decodes the section as the panel does, through `SettingsRepository::decode()`, now shared. It reports the keys whose value differs from the settings cache. It stays in shadow even with CONFIG on: the section withholds secrets that the node still reads, so it becomes authoritative together with the `secrets` section.
+**Applying.** `ReplicaApply` decodes the section as the panel does, through `SettingsRepository::decode()`, now shared. It reports the keys whose value differs from the settings cache. It stays in shadow even with CONFIG on: the section withholds secrets that the node still reads, so it becomes authoritative together with the `secrets` section (sixth Phase 7 increment).
 
 ### The whole sections servers, node, crontab and cluster (Phase 7, fifth increment)
 
@@ -1002,7 +1002,7 @@ Once owned:
 **Known limits.**
 
 - A node with CONFIG on and TELEMETRY off loses what its legacy telemetry path read from its own row: `watchdog_data`'s CPU history, and `users`/`connections` in Redis mode. The rollout turns TELEMETRY (Phase 3) on before CONFIG.
-- The settings, including `cloudflare` and `mag_legacy_redirect`, stay MAIN's until the `secrets` section exists; the `node` section's copies are not read yet.
+- The settings, including `cloudflare` and `mag_legacy_redirect`, stay MAIN's until the `secrets` section exists (sixth Phase 7 increment); the `node` section's copies are not read yet.
 - No reader uses the node list before Phase 8's ticket checks.
 - `cluster:apply` and `cron:cache` boot through the CLI profile, which still connects to MAIN's database (`ReplicaStage` is not built). With MAIN's database unreachable at boot, `cluster:apply` exits before it applies anything, bounded by `service`'s 15 s `timeout`. A node rebooted while MAIN is unreachable therefore serves from its replica only once `ReplicaStage` exists; today its caches are rebuilt when MAIN's database answers again.
 
@@ -1025,6 +1025,75 @@ The suite runs with the ETag cache off (`tests/bootstrap.php`): some tests defin
 - **Crontab jobs.** In every job MAIN sends, `filename` is 1 to 64 characters of `[a-z0-9_]`, and `time` is five fields of `[0-9*/,-]+` separated by single spaces, with nothing before or after (no newline). MAIN leaves any other row out. The agent stores the section as signed and need not check the jobs: PHP refuses a section with any other job.
 - **`config.changed`.** MAIN sends it only to an agent that lists `"config_changed"` in hello's `features` (today's agent sends `["hls_reaper"]`, so it gets none). It is a command of type `config.changed` (class R), `args: {"sections": ["servers"]}`, `dedupe_key: "config.changed"`, `exp = iat + 600`. It goes out when another node is revoked, re-enrolled, completes its enrolment or is quarantined. Verify it like any command. Then start a replica sync at once, coalesced with one already running, and ack `ok` with `{"result": true}` without waiting for the sync. Should it reach `cluster:exec` anyway, this PHP acks `{"deferred": true}` with exit 0, and the next minute's poll fetches the change.
 - **Use.** The `cluster` section is panel-signed like a challenge's policy. An agent may adopt its `main_urls` and `transport` when its `policy_ver` is above the one it holds; that is how a node rebooted without MAIN keeps a current URL list. The `servers.nodes` list is for Phase 8's relay-ticket checks.
+
+### The secrets section, and the settings made authoritative (Phase 7, sixth increment)
+
+**What it holds.** `secrets` is the one section that carries secrets, and only two (`ReplicaSections::SECRET_KEYS`). Each is an entry `{kid, current, previous, previous_valid_until}`:
+
+| Key | `current` | `previous`, `previous_valid_until` |
+| --- | --- | --- |
+| `live_streaming_pass` | The `settings` row's value | Both null: nothing rotates it yet (plan section 10, step 4) |
+| `openssl_extra` | The OPENSSL_EXTRA MAIN's php-fpm mints with: its `config/openssl_extra`, or the built-in value | MAIN's `config/openssl_extra.prev` while it is open on MAIN's clock (`OpensslExtra::previousEntry`), else both null |
+
+The `kid` names the value without revealing it: the first 16 hex digits of HMAC-SHA256 keyed by the value over `xc_vm <key> fingerprint v1` (`ReplicaSections::kid`). For OPENSSL_EXTRA that is the fingerprint every node already publishes in `server_hardware` (`OpensslExtra::fingerprint`).
+
+**Serving.** Like the other whole sections: a `rep` record, signed and sealed to the node, sent whole whenever the ETag the agent names in `have` differs. Three things differ:
+
+- It goes only to an `active` node in mode 1 or 2 (`ReplicaBuilder::serves`). For a legacy node (mode 0), which reads MAIN's database, it is left out of the reply, like a name MAIN does not serve.
+- It is never cached on MAIN. `ReplicaEtagCache` keeps plain JSON in `TMP_PATH`, so the section is read from the database and the constant for each request that names it, and the cache refuses the key `secrets` outright. `secrets` is not in `ReplicaSections::WHOLE`; the `config` op adds it to that list with the mode check.
+- Nothing on MAIN logs it: the op audits nothing of a `config` reply, and a failure answers `503 DB` without a message.
+
+It grants like every whole section: without a licence the extension refuses to sign a changed one, which is left out of the reply while the blocklist's bans still arrive. An unchanged one needs no signature and is answered `unchanged`.
+
+**Nothing else carries a secret.** `ReplicaBuilderSecretsTest` checks that the section's keys are exactly those two, each with exactly those four fields, as the node takes them. It checks that no other section (the blocklist, `settings`, `servers`, `node`, `crontab`, `cluster`) carries or names OPENSSL_EXTRA or any of the nine secrets the allowlist withholds. It also checks that no file of the ETag cache holds one, and that a changed value is served at once, not 10 s later.
+
+**Applying the secrets.** `cluster:apply` reads `replica/secrets.json`:
+
+- **Shadow** (CONFIG off): nothing is written. The report is `{mode: shadow, differ}`, where `differ` names each secret whose `current` differs from what the node uses: the settings cache's `live_streaming_pass`, and OPENSSL_EXTRA as the node reads it (`OpensslExtra::inUse`: its `config/openssl_extra`, else the built-in value).
+- **CONFIG on:** OPENSSL_EXTRA goes where the node reads it (`OpensslExtra::adopt`), `config/openssl_extra`, and `live_streaming_pass` into the settings cache (below). The previous value kept in `config/openssl_extra.prev`, which `Encryption::readToken` still opens tokens with, is MAIN's `previous` until its `previous_valid_until` while that is open. Otherwise, when the value changes, it is the value replaced here, for `PREVIOUS_WINDOW` (600 s), as `server:sync-openssl-extra`'s root signal keeps it. Both files are 0600 and owned like their directory, and `.prev` is written first. Once the node holds both nothing is written, so the minute's re-apply never extends a window. The report is `{mode: applied, differ}`, or `failed` when a write fails.
+- **Refused:** a section with a key missing, an empty `current` or `kid`, or a `previous` without its `previous_valid_until` (or the reverse). Nothing is written, and the settings stay MAIN's. A key the node does not know is ignored, so a later MAIN can add one (the plan's ticket kids).
+- **No secret in the report.** It never holds a value, a kid or a hash of one, not even the section's ETag: `cluster:apply` prints it, and the agent logs the output of a failed run. An exception while writing OPENSSL_EXTRA is caught, so no stack trace prints the value among its arguments.
+
+**The settings become authoritative.** With CONFIG on and both sections usable, the settings cache is the `settings` section's raw row with the secrets' `live_streaming_pass`, decoded by `SettingsRepository::decode` as the settings loader decodes MAIN's row (report `applied`). Otherwise the report keeps the shadow diff with the mode `incomplete` (no usable secrets section), or says `refused` (not a raw row of strings), and the cache stays MAIN's database's.
+
+- Ownership works as for the servers cache: the apply records `settings` in `replica_owned`, and `ReplicaApply::owns('settings')` needs CONFIG, `settings.json`, `secrets.json` and that record.
+- Once owned, `SettingsRepository::getAll()` returns the cache however old, even when forced, and rebuilds it from the replica on disk when it is gone. It never writes MAIN's row over a cache the replica owns, and asks again after its read, since an apply may have landed meanwhile. `cron:cache` now just calls `getAll(true)`. `LegacyInitializer`, the forced reads of the watchdog and on-demand daemons, and the streaming entry points, which read the cache file directly, all get the replica's settings.
+- The servers cache built by the same apply takes its URLs (`api_url*`, with `live_streaming_pass`) from those settings, not from the ones the process loaded.
+- With CONFIG off, `disown()` drops the record. The cache is MAIN's database's again within 20 s (`getAll`'s age) or at the next `cron:cache`.
+- **Boot order.** `LegacyInitializer` loads the settings before anything else, and `owns()` asks `NodeFlows`, which on a node with an agent reads the servers to rule out MAIN. So `getAll` asks `ReplicaApply::built('settings')` first: on MAIN, a legacy node or a node with CONFIG off, the record is absent and nothing reaches `NodeFlows` there. A servers read that still comes first, on a node whose replica owns the settings but not the servers, builds its URLs from `SettingsRepository::loaded()` (the settings cache while none are loaded) instead of empty settings. `ReplicaApply::servers` does the same.
+
+**How it differs from the plan.**
+
+- No ticket kids: relay and file tickets come with Phase 8. A node ignores keys it does not know, so they can be added.
+- `live_streaming_pass` always has `previous` null until the stream-secret rotation (Phase 9) keeps one, and the node would not use it yet: `Encryption`'s multi-key support is Phase 8.
+- The kid is a fingerprint of the value, not a counter. It needs no storage, and it changes with every change of the value, the admin's Settings page included.
+- The section is read per request instead of R1's 10 s cache: at one `config` call a minute per node, that is one query each.
+- The ETag is the SHA-256 of the canonical data, as for every section, so it is a hash of the secrets. It travels only inside the boxed session, the agent keeps it beside the plaintext, MAIN never stores it and the report never shows it.
+
+**Known limits.**
+
+- The allowlist withholds eight more secrets that the LB build reads: `api_pass`, `dropbox_token`, `license`, `maxmind_license_key`, `platform_api_key`, `recaptcha_v2_secret_key`, `redis_password` and `tmdb_api_key`. Once the replica owns the settings cache they are not in it. Only `maxmind_license_key` is used on a node, by `cron:maxmind` (role `all`): a CONFIG node keeps its GeoIP databases current from the free GeoLite2 release instead of MaxMind's paid editions. The other readers are MAIN's features that the LB build ships, and a node's Redis connection takes its password from the extension, not from the settings.
+- A new `live_streaming_pass` reaches a CONFIG node at its next poll (within 60 s; no `config.changed`), as a legacy node's settings cache follows MAIN's database within `cron:cache`'s minute. Until then, tokens MAIN mints with the new value do not open there.
+- A node has one previous OPENSSL_EXTRA. When MAIN sends an open `previous` to a node that ran yet another value (a legacy LB on the built-in value), MAIN's wins, and tokens the node minted itself just before stop opening.
+- `cluster:apply` still boots through the CLI profile, which needs MAIN's database (`ReplicaStage` is not built).
+- On the node the section is plaintext in `secrets.json`, as the settings cache and `config/openssl_extra` already hold those values.
+
+**Tests.**
+
+- `ReplicaBuilderSecretsTest`: above.
+- `ClusterApiTest`: served only to an agent that names it and only in mode 1 or 2, `unchanged` by ETag, a malformed ETag refused, and a changed section left out without a licence.
+- `ReplicaApplyTest`: the shadow report names differences only, never a value, kid or ETag. It also covers the authoritative settings cache; `getAll` owned, forced and rebuilt; refused sections and an unknown key; OPENSSL_EXTRA's file, modes, idempotence and MAIN's previous value; CONFIG off handing the settings back; the servers' URLs from the applied settings; loading the settings at boot without one query to MAIN's database; and a servers read before the settings are loaded.
+- `OpensslExtraTest`: `previousEntry` and `adopt`.
+
+**The agent's contract (XC_VM_Fanout, not built yet).** The same generic whole-section storage as the fifth increment, with these rules for `secrets`:
+
+- **Request.** `config`'s `have` may name `secrets` with the ETag the agent holds (64 lowercase hex, or `""`). Name it only once the agent stores it as below. MAIN answers it only to an `active` node in mode 1 or 2. For a node in mode 0 it is left out of the reply ("not served": keep what is held).
+- **Reply and record.** As for every whole section: `{"unchanged": true}`, or `{"etag": "<64 hex>", "sealed": "<base64 std>"}`, whose record opens to a `rep` payload `{v: 1, section: "secrets", node, gen, etag, iat, data}`. Check it as the others: the panel signature under tag `rep`, then `section`, `node` and the announced `etag`, and `gen` if possible. A changed section while MAIN has no licence is left out of the reply.
+- **Data.** `{"live_streaming_pass": E, "openssl_extra": E}`, keys sorted, where E is `{"current": "<non-empty string>", "kid": "<16 lowercase hex>", "previous": "<non-empty string>" | null, "previous_valid_until": <unix seconds> | null}`; `previous` and `previous_valid_until` are both null or both set. A later MAIN may add keys. The agent stores the data exactly as signed and need not parse it: PHP checks it.
+- **Files.** `replica/secrets.rep` (the sealed record) and `replica/secrets.json` (`{"etag": "<etag>", "data": <data as signed>}`), each written atomically with mode 0600: only xc_vm, which runs `cluster:apply`, reads them. `state.json` keeps its ETag under `whole_etags.secrets`.
+- **Never logged.** The agent never logs the section: not its data, record, sealed bytes, ETag or a diff of them. An error names the section only. It may keep logging a failed `cluster:apply`'s output: PHP never prints a secret there.
+- **Apply.** Run `console.php cluster:apply` after storing it, as for the other sections. The settings become the node's only with both `settings.json` and `secrets.json` stored, so an agent that names one names both.
+- **Mode 0.** When MAIN leaves the section out, keep the files: with CONFIG off PHP only compares them.
 
 ### The cluster bus (Phase 2, first increment): wake-ups
 
