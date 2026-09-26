@@ -94,6 +94,7 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/ClusterNginxCommand.php \
 	Cli/Commands/AgentBinaryCommand.php \
 	Cli/Commands/ServerEnrolCommand.php \
+	Cli/Commands/ClusterReenrolCommand.php \
 	Cli/Commands/SshChannel.php \
 	Cli/Commands/SshSession.php \
 	Cli/Commands/ServerSyncOpensslExtraCommand.php \
