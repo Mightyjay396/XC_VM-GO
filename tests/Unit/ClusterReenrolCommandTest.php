@@ -10,8 +10,6 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\FakeClusterCrypto;
 use XcVm\Tests\Support\FakeSshFleet;
 
-require_once dirname(__DIR__) . '/Support/FakeSshFleet.php';
-
 /**
  * cluster:reenrol — re-enrols the fleet over SSH, node by node, through
  * server:enrol's path (ServerEnrolCommand::enrol → LbInstallFlow::provisionCluster).
@@ -19,8 +17,9 @@ require_once dirname(__DIR__) . '/Support/FakeSshFleet.php';
  * presents its own host key. What is checked: every selected node gets a new
  * identity and generation; a node that fails is reported and the run goes on;
  * the host key is never trusted on first use; a licence refusal stops the run;
- * a dry run contacts no node; the credential file is taken from bin/install/
- * only, owner-only, and deleted once read.
+ * a node revoked while the run goes on stays revoked; a dry run contacts no
+ * node; the credential file is taken from bin/install/ only, owner-only, and a
+ * real run deletes it even when it refuses to run.
  */
 final class ClusterReenrolCommandTest extends TestCase {
 	private TestDb $rDb;
@@ -99,14 +98,33 @@ final class ClusterReenrolCommandTest extends TestCase {
 	}
 
 	/** @return array{0: int, 1: string} [exit code, output] */
-	private function reenrol(array $rServers, ?array $rIDs, ?array $rCreds, bool $rDryRun = false, array $rStates = ['enrolling', 'active']): array {
+	private function reenrol(array $rServers, ?array $rIDs, ?array $rCreds, bool $rDryRun = false, array $rStates = ['enrolling', 'active'], ?callable $rAgentBinary = null): array {
 		ob_start();
 		try {
-			$rCode = ClusterReenrolCommand::run($rServers, $rIDs, $rStates, $rCreds, $rDryRun, $this->rCrypto, $this->rSsh, fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null, $this->rDir);
+			$rCode = ClusterReenrolCommand::run($rServers, $rIDs, $rStates, $rCreds, $rDryRun, $this->rCrypto, $this->rSsh, $rAgentBinary ?? fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null);
 		} finally {
 			$rOut = (string) ob_get_clean();
 		}
 		return [$rCode, $rOut];
+	}
+
+	/** The command from its arguments on, as execute() runs it. @return array{0: int, 1: string} [exit code, output] */
+	private function main(array $rServers, array $rArgs): array {
+		ob_start();
+		try {
+			$rCode = ClusterReenrolCommand::main($rArgs, $this->rCrypto, $rServers, $this->rSsh, fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null, $this->rDir);
+		} finally {
+			$rOut = (string) ob_get_clean();
+		}
+		return [$rCode, $rOut];
+	}
+
+	/** A credential file in the test's bin/install/. */
+	private function credFile(int $rMode = 0600): string {
+		$rPath = $this->rDir . 'fleet.cred';
+		file_put_contents($rPath, json_encode(['u' => 'root', 'p' => 'pw']));
+		chmod($rPath, $rMode);
+		return $rPath;
 	}
 
 	private static function creds(array $rNodes = []): array {
@@ -163,6 +181,98 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->assertSame([['ok' => [8], 'failed' => [7, 9, 10]]], $this->audit('cluster.reenrol'));
 	}
 
+	public function testAnErrorFailsOnlyItsNode(): void {
+		$rServers = $this->servers();
+		$this->enrolled(7);
+		$this->enrolled(8);
+		$this->rSsh->rHook = static function (string $rHost, string $rCommand): void {
+			if ($rHost === '10.0.0.7' && str_contains($rCommand, ' keygen ')) {
+				throw new \RuntimeException('channel died');
+			}
+		};
+		[$rCode, $rOut] = $this->reenrol($rServers, null, self::creds());
+		$this->assertSame(1, $rCode, $rOut);
+		$this->assertStringContainsString('#7 lb-a: failed: error: channel died', $rOut);
+		$this->assertStringContainsString('#8 lb-b: re-enrolled', $rOut, 'the run went on');
+		$this->assertContains('close 10.0.0.7', $this->rSsh->rLog, 'the session was closed');
+		$this->assertSame([['ok' => [8], 'failed' => [7]]], $this->audit('cluster.reenrol'));
+
+		$this->rSsh->rHook = null;
+		[$rCode, $rOut] = $this->reenrol($rServers, [7], self::creds(), false, []);
+		$this->assertSame(0, $rCode, 'the node is free for the next run: ' . $rOut);
+	}
+
+	public function testAFlowThatEnrolsNothingIsAFailure(): void {
+		$rServers = $this->servers();
+		$rOld = $this->enrolled(7);
+		// No xc_agent for the node's arch: provisionCluster returns true without enrolling it.
+		[$rCode, $rOut] = $this->reenrol($rServers, [7], self::creds(), false, [], static fn(string $rArch): ?string => null);
+		$this->assertSame(1, $rCode, $rOut);
+		$this->assertStringContainsString('#7 lb-a: failed: No xc_agent for this node (amd64); the node was not re-enrolled and keeps its previous identity', $rOut);
+		$this->assertSame($rOld['node_uuid'], NodeRegistry::byServer(7)['node_uuid']);
+		$this->assertSame([['ok' => [], 'failed' => [7]]], $this->audit('cluster.reenrol'));
+	}
+
+	public function testANodeRevokedDuringTheRunStaysRevoked(): void {
+		$rServers = $this->servers();
+		$this->enrolled(7);
+		$rOld = [8 => $this->enrolled(8), 9 => $this->enrolled(9)];
+		$this->enrolled(10);
+		$this->enrolled(12);
+		// While #7 is re-enrolled, an admin revokes #8, the API quarantines
+		// #9, and #10 is removed from the cluster.
+		$this->rSsh->rHook = function (string $rHost, string $rCommand): void {
+			if ($rHost === '10.0.0.7' && str_contains($rCommand, ' install ')) {
+				NodeRegistry::revoke(8, $this->rCrypto);
+				NodeRegistry::update(9, ['state' => 'quarantined']);
+				$this->rDb->query('DELETE FROM `cluster_nodes` WHERE `server_id` = 10');
+			}
+		};
+		[$rCode, $rOut] = $this->reenrol($rServers, null, self::creds());
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertStringContainsString('#7 lb-a: re-enrolled', $rOut);
+		$this->assertStringContainsString('#8 lb-b: skipped: revoked since the run started (name it to re-enrol it)', $rOut);
+		$this->assertStringContainsString('#9 lb-c: skipped: quarantined since the run started', $rOut);
+		$this->assertStringContainsString('#10 lb-d: skipped: no longer enrolled', $rOut);
+		$this->assertStringContainsString('#12 lb-e: re-enrolled', $rOut);
+		$this->assertSame('revoked', NodeRegistry::byServer(8)['state'], 'the revocation stands');
+		$this->assertSame($rOld[8]['node_uuid'], NodeRegistry::byServer(8)['node_uuid']);
+		$this->assertSame($rOld[9]['node_uuid'], NodeRegistry::byServer(9)['node_uuid']);
+		$this->assertNull(NodeRegistry::byServer(10));
+		foreach (['8', '9', '10'] as $rID) {
+			$this->assertNotContains('connect 10.0.0.' . $rID . ':22', $this->rSsh->rLog);
+		}
+		$this->assertSame([['ok' => [7, 12], 'failed' => []]], $this->audit('cluster.reenrol'));
+
+		// A node named by id is taken whatever its state, but one that is no
+		// longer enrolled is not.
+		$this->rSsh->rHook = function (string $rHost, string $rCommand): void {
+			if ($rHost === '10.0.0.7' && str_contains($rCommand, ' install ')) {
+				$this->rDb->query('DELETE FROM `cluster_nodes` WHERE `server_id` = 12');
+			}
+		};
+		[$rCode, $rOut] = $this->reenrol($rServers, [7, 8, 12], self::creds(), false, []);
+		$this->assertSame(1, $rCode, $rOut);
+		$this->assertStringContainsString('#8 lb-b: re-enrolled', $rOut);
+		$this->assertStringContainsString('#12 lb-e: not attempted: no longer enrolled', $rOut);
+	}
+
+	public function testEachNodesPortAndPasswordAreUsed(): void {
+		$rServers = $this->servers();
+		foreach ([7, 8, 9] as $rID) {
+			$this->enrolled($rID);
+		}
+		$this->rSsh->rNodes['10.0.0.8']['password'] = 'other';
+		$rCreds = self::creds([7 => ['port' => 2222], 8 => ['password' => 'other', 'port' => 2022]]);
+		$rCreds['default']['port'] = 2020;
+		[$rCode, $rOut] = $this->reenrol($rServers, null, $rCreds);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertContains('connect 10.0.0.7:2222', $this->rSsh->rLog, "the node's port");
+		$this->assertContains('connect 10.0.0.8:2022', $this->rSsh->rLog);
+		$this->assertContains('connect 10.0.0.9:2020', $this->rSsh->rLog, "the file's default port");
+		$this->assertStringContainsString('3 re-enrolled, 0 failed', $rOut, "#8 logged in with its own password");
+	}
+
 	public function testTheHostKeyIsNeverTrustedOnFirstUse(): void {
 		$rServers = $this->servers();
 		$this->enrolled(7);
@@ -212,7 +322,7 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->assertStringContainsString('#7 lb-a: skipped: enrolling', $rOut, '#7 was re-enrolled above and is enrolling now');
 
 		// A node named by id is taken whatever its state; a server that is not enrolled is not.
-		[$rCode, $rOut] = $this->reenrol($rServers, [8, 10, 1, 99], self::creds());
+		[$rCode, $rOut] = $this->reenrol($rServers, [99, 10, 1, 8], self::creds());
 		$this->assertSame(1, $rCode);
 		$this->assertNotSame($rRevoked['node_uuid'], NodeRegistry::byServer(8)['node_uuid']);
 		$this->assertSame('enrolling', NodeRegistry::byServer(8)['state']);
@@ -220,13 +330,13 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->assertStringContainsString('#1 Main: not attempted: not a load balancer', $rOut);
 		$this->assertStringContainsString('#99: not attempted: not a load balancer', $rOut);
 		$this->assertNotContains('connect 10.0.0.10:22', $this->rSsh->rLog);
+		$this->assertMatchesRegularExpression('/^#1 Main: .*\n#8 lb-b: .*\n#10 lb-d: .*\n#99: /m', $rOut, 'reported in server id order');
 	}
 
 	public function testDryRunContactsNoNode(): void {
 		$rServers = $this->servers();
 		$rOld = [7 => $this->enrolled(7), 8 => $this->enrolled(8), 9 => $this->enrolled(9)];
 		$rServers[9]['ssh_hostkey_sha1'] = null;
-		file_put_contents($this->rDir . '7.json', json_encode(['root_username' => 'root', 'ssh_port' => 2200]));
 		$rCreds = self::creds([8 => ['username' => 'admin', 'port' => 2222, 'hostkey' => sha1('host-8')]]);
 		$rCreds['default']['port'] = 2022;
 		[$rCode, $rOut] = $this->reenrol($rServers, null, $rCreds, true);
@@ -235,7 +345,7 @@ final class ClusterReenrolCommandTest extends TestCase {
 		foreach ($rOld as $rID => $rNode) {
 			$this->assertSame($rNode['node_uuid'], NodeRegistry::byServer($rID)['node_uuid']);
 		}
-		$this->assertStringContainsString('#7 lb-a: would re-enrol as root@10.0.0.7:2200, host key ' . sha1('host-7') . ' (stored at its install)', $rOut, 'the port its install used');
+		$this->assertStringContainsString('#7 lb-a: would re-enrol as root@10.0.0.7:2022, host key ' . sha1('host-7') . ' (stored at its install)', $rOut, "the file's default port");
 		$this->assertStringContainsString('#8 lb-b: would re-enrol as admin@10.0.0.8:2222, host key ' . sha1('host-8') . ' (credential file)', $rOut);
 		$this->assertStringContainsString('#9 lb-c: not attempted: no SSH host key to check', $rOut);
 		$this->assertStringContainsString('2 would be re-enrolled, 1 not attempted, 0 skipped', $rOut);
@@ -263,6 +373,11 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->assertStringContainsString('#7 lb-a: not attempted: no SSH credentials for it in the credential file', $rOut);
 		$this->assertStringContainsString('#8 lb-b: re-enrolled', $rOut);
 		$this->assertNotContains('connect 10.0.0.7:22', $this->rSsh->rLog);
+
+		// A password without a user is no credential either.
+		[$rCode, $rOut] = $this->reenrol($rServers, [7], ['default' => ['password' => 'pw'], 'nodes' => []], false, []);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('#7 lb-a: not attempted: no SSH credentials for it in the credential file', $rOut);
 	}
 
 	public function testALicenceRefusalStopsTheRun(): void {
@@ -314,9 +429,18 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->assertFileDoesNotExist($rPath, 'deleted once read');
 
 		$rWrite($rJson, 0640);
-		$this->assertIsString(ClusterReenrolCommand::readCredentials($rPath, false, $this->rDir), 'readable by others: refused');
-		$this->assertFileExists($rPath);
-		@unlink($rPath);
+		$this->assertSame('its group or others can open it (chmod 600 it)', ClusterReenrolCommand::readCredentials($rPath, true, $this->rDir), 'readable by others: refused');
+		$this->assertFileExists($rPath, 'a dry run keeps it');
+		$this->assertStringContainsString('so it was deleted', (string) ClusterReenrolCommand::readCredentials($rPath, false, $this->rDir));
+		$this->assertFileDoesNotExist($rPath, 'a real run deletes it: its secrets are out already');
+
+		mkdir($this->rDir . 'sub', 0700);
+		file_put_contents($this->rDir . 'sub/fleet.cred', $rJson);
+		chmod($this->rDir . 'sub/fleet.cred', 0600);
+		$this->assertIsString(ClusterReenrolCommand::readCredentials($this->rDir . 'sub/fleet.cred', false, $this->rDir), 'below bin/install: refused');
+		$this->assertFileExists($this->rDir . 'sub/fleet.cred', 'and not deleted');
+		unlink($this->rDir . 'sub/fleet.cred');
+		rmdir($this->rDir . 'sub');
 
 		$rOutside = sys_get_temp_dir() . '/xcvm_' . uniqid('', true) . '.cred';
 		file_put_contents($rOutside, $rJson);
@@ -364,6 +488,90 @@ final class ClusterReenrolCommandTest extends TestCase {
 		] as $rArgs) {
 			$this->assertIsString(ClusterReenrolCommand::parseArgs($rArgs), implode(' ', $rArgs));
 		}
+	}
+
+	public function testTheCommandFromItsArguments(): void {
+		$rServers = $this->servers();
+		$rOld = [7 => $this->enrolled(7), 8 => $this->enrolled(8)];
+
+		// A dry run keeps the file and contacts no node.
+		$rPath = $this->credFile();
+		[$rCode, $rOut] = $this->main($rServers, ['--all', '--dry-run', '--cred-file=' . $rPath]);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertStringContainsString('2 would be re-enrolled', $rOut);
+		$this->assertSame([], $this->rSsh->rLog);
+		$this->assertFileExists($rPath);
+		foreach ($rOld as $rID => $rNode) {
+			$this->assertSame($rNode['node_uuid'], NodeRegistry::byServer($rID)['node_uuid']);
+		}
+
+		// The same run for real deletes it and re-enrols both nodes.
+		[$rCode, $rOut] = $this->main($rServers, ['--all', '--cred-file=' . $rPath]);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertFileDoesNotExist($rPath);
+		$this->assertStringContainsString('2 re-enrolled, 0 failed', $rOut);
+		foreach ($rOld as $rID => $rNode) {
+			$this->assertNotSame($rNode['node_uuid'], NodeRegistry::byServer($rID)['node_uuid']);
+		}
+	}
+
+	public function testARefusedRunStillDeletesTheCredentialFile(): void {
+		$rServers = $this->servers();
+		$rOld = $this->enrolled(7);
+
+		SettingsManager::set(['cluster_api_enabled' => 0]);
+		$rPath = $this->credFile();
+		[$rCode, $rOut] = $this->main($rServers, ['--all', '--dry-run', '--cred-file=' . $rPath]);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('The cluster API is disabled', $rOut);
+		$this->assertFileExists($rPath, 'a dry run keeps it');
+		[$rCode, $rOut] = $this->main($rServers, ['--all', '--cred-file=' . $rPath]);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('The cluster API is disabled', $rOut);
+		$this->assertFileDoesNotExist($rPath, 'a real run deletes it whatever it refuses');
+		SettingsManager::set(['cluster_api_enabled' => 1, 'lb_token_rotation_min' => 60, 'lb_new_node_mode' => 'legacy']);
+
+		$rPath = $this->credFile();
+		[$rCode, $rOut] = $this->main($rServers, ['--all', '--cred-file=' . $rPath, '--expect-hostkey=' . sha1('x')]);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString("Unknown option '--expect-hostkey'", $rOut);
+		$this->assertFileDoesNotExist($rPath);
+
+		$rPath = $this->credFile(0644);
+		[$rCode, $rOut] = $this->main($rServers, ['--all', '--cred-file=' . $rPath]);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('Credential file refused: its group or others could open it, so it was deleted', $rOut);
+		$this->assertFileDoesNotExist($rPath);
+
+		// A file anywhere else is refused and never deleted.
+		$rOutside = sys_get_temp_dir() . '/xcvm_' . uniqid('', true) . '.cred';
+		file_put_contents($rOutside, '{"u":"root","p":"pw"}');
+		chmod($rOutside, 0600);
+		[$rCode, $rOut] = $this->main($rServers, ['--all', '--cred-file=' . $rOutside]);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('Credential file refused: it must be a .cred file in', $rOut);
+		$this->assertFileExists($rOutside);
+		@unlink($rOutside);
+
+		$this->assertSame([], $this->rSsh->rLog, 'no node was contacted');
+		$this->assertSame($rOld['node_uuid'], NodeRegistry::byServer(7)['node_uuid']);
+	}
+
+	public function testOneRunAtATime(): void {
+		$rServers = $this->servers();
+		$this->enrolled(7);
+		$rLock = fopen(ClusterReenrolCommand::lockPath(), 'c');
+		$this->assertTrue(flock($rLock, LOCK_EX | LOCK_NB));
+		try {
+			[$rCode, $rOut] = $this->main($rServers, ['--all', '--dry-run']);
+			$this->assertSame(1, $rCode);
+			$this->assertStringContainsString('Another cluster:reenrol is running', $rOut);
+		} finally {
+			flock($rLock, LOCK_UN);
+			fclose($rLock);
+		}
+		[$rCode, $rOut] = $this->main($rServers, ['--all', '--dry-run']);
+		$this->assertSame(0, $rCode, $rOut);
 	}
 
 	private function storedHostKey(int $rServerID): ?string {

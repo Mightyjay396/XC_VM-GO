@@ -16,6 +16,9 @@ final class FakeSshFleet extends SshSession {
 	/** @var list<string> connect/login/close events and "run <host> <cmd>" */
 	public array $rLog = [];
 
+	/** Called with the host and the command before each command runs: to act in the middle of a run, or to throw. */
+	public ?\Closure $rHook = null;
+
 	private ?string $rHost = null;
 
 	public function connect(string $rHost, int $rPort): bool {
@@ -35,6 +38,9 @@ final class FakeSshFleet extends SshSession {
 
 	public function run(string $rCommand): array {
 		$this->rLog[] = 'run ' . $this->rHost . ' ' . $rCommand;
+		if ($this->rHook !== null) {
+			($this->rHook)((string) $this->rHost, $rCommand);
+		}
 		$rNode = $this->rNodes[$this->rHost];
 		if (str_contains($rCommand, 'echo READY')) {
 			return ['output' => ($rNode['ready'] ?? true) ? "READY\n" : '', 'error' => ''];

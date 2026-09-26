@@ -234,7 +234,7 @@ php console.php cluster:import-keys /root/cluster-keys.xcdr
 - Revoked nodes stay revoked. The import refuses to replace a *different* set of keys already on the machine. Importing the same bundle twice changes nothing.
 - Nodes re-key by themselves once they reach the new MAIN. Tokens issued by the old MAIN do not open on the new machine, and the agents replace them automatically.
 
-**No bundle:** run `php console.php cluster:init` on the new MAIN, which creates new keys. Then re-enrol every node over SSH with `cluster:reenrol`, after restoring the database:
+**No bundle:** restore the database first. Then run `php console.php cluster:init` on the new MAIN, which creates new keys and records that the root changed. Then re-enrol every node over SSH with `cluster:reenrol`:
 
 1. Write the nodes' SSH credentials to an owner-only file in `bin/install/`. The top level applies to every node; `nodes` overrides it per server ID:
 
@@ -245,7 +245,9 @@ php console.php cluster:import-keys /root/cluster-keys.xcdr
     EOF
     ```
 
-    A node needs a `hostkey` only when the database holds none for it, for example a node installed before host keys were recorded, or one rebuilt since. Read it on the node with `ssh-keygen -l -E sha1 -f /etc/ssh/ssh_host_ed25519_key.pub`. A node with no key at all is never contacted. The SSH port defaults to the one the node was installed with, then the file's top-level `port`, then 22.
+    A node needs a `hostkey` when the database holds none for it (a node installed before host keys were recorded) or holds an old one (the node was rebuilt since). Read it on the node with `ssh-keygen -l -E sha1 -f /etc/ssh/ssh_host_ed25519_key.pub`. A node with no key at all is never contacted.
+
+    The SSH port is the node's `port`, else the file's top-level `port`, else 22. The panel does not keep the port a node was installed with, so give `port` for every node whose SSH server listens elsewhere.
 
 2. Check what would happen. A dry run contacts no node and keeps the file:
 
@@ -253,14 +255,15 @@ php console.php cluster:import-keys /root/cluster-keys.xcdr
     sudo -u xc_vm /home/xc_vm/console.php cluster:reenrol --all --cred-file=/home/xc_vm/bin/install/fleet.cred --dry-run
     ```
 
-3. Re-enrol one node by ID and check that it comes up on *Servers → Cluster Nodes*. Then re-enrol the others, by ID or with `--all` (which takes the first node again). A real run deletes the file as soon as it has read it, so write the file again before each run:
+3. Re-enrol one node by ID and check that it comes up on *Servers → Cluster Nodes*. Then re-enrol the others, by ID or with `--all` (which takes the first node again). A run without `--dry-run` deletes the file as soon as it starts, even when it then refuses to run, so write the file again before each run. A file that other users can read is refused, and deleted too:
 
     ```bash
     sudo -u xc_vm /home/xc_vm/console.php cluster:reenrol 7 --cred-file=/home/xc_vm/bin/install/fleet.cred
     sudo -u xc_vm /home/xc_vm/console.php cluster:reenrol --all --cred-file=/home/xc_vm/bin/install/fleet.cred
     ```
 
-- `--all` takes the nodes that are enrolling or active. Revoked and quarantined nodes stay as they are, unless you name them or pass `--state=`.
+- `--all` takes the nodes that are enrolling or active. Revoked and quarantined nodes stay as they are, unless you name them or pass `--state=`. A node you revoke while the run goes on is skipped when the run reaches it.
+- Only one `cluster:reenrol` runs at a time, and a node is never enrolled by `server:enrol` and `cluster:reenrol` at once.
 - A node that fails is listed with the reason, and the run goes on: for example a changed host key, a node that does not run this release yet, or a node that cannot reach MAIN's cluster API. Fix the cause and name the node in a new run. The node's agent was already stopped and given new keys if the run got as far as the reachability check, so it may not work again until that new run.
 - A licence refusal stops the run before the next node.
 - Each re-enrolled node starts over like a new node: in the mode *New Node Mode* (Settings → Cluster) gives, with every flow off. Switch its flows on again on *Servers → Cluster Nodes*.

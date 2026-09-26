@@ -20,8 +20,10 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * `--all` takes the enrolled nodes in state `enrolling` or `active`;
  * `--state=` names other states. A revoked or quarantined node was the
- * admin's decision, so it is re-enrolled only when asked. Nodes named by id
- * are taken whatever their state.
+ * admin's decision, so it is re-enrolled only when asked, and a node that
+ * leaves the chosen states while the run goes on (revoked from the panel) is
+ * skipped when the run reaches it. Nodes named by id are taken whatever their
+ * state. One run at a time.
  *
  * Each node meets server:enrol's requirements (ServerEnrolCommand::enrol):
  *   - its SSH host key matches the one the credential file gives for it, else
@@ -29,19 +31,24 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *     (never trust on first use);
  *   - it runs this release;
  *   - its new keys match their SAS.
- * A node that fails is reported and the run goes on; it keeps serving the
- * legacy way. A licence refusal stops the run: every later node would have
- * its agent stopped only to be refused the same way.
+ * A node that fails is reported and the run goes on. One that fails before
+ * its agent is stopped (host key, login, release, no xc_agent for its arch)
+ * keeps its identity; one that fails later (upload, keygen, probe, token) is
+ * left with its agent stopped and must be run again. A licence refusal stops
+ * the run: every later node would have its agent stopped only to be refused
+ * the same way.
  *
- * Credentials: one owner-only (0600) JSON file in bin/install/, read and
- * deleted before the first connection. `--dry-run` keeps it and contacts no
+ * Credentials: one owner-only (0600) JSON file in bin/install/. A run
+ * without `--dry-run` deletes it before anything else, even when it then
+ * refuses to run, as server:enrol does; `--dry-run` keeps it and contacts no
  * node. The top level is every node's default; a node's entry overrides it:
  *
  *   {"u": "root", "p": "…", "port": 22,
  *    "nodes": {"7": {"p": "…", "port": 2222, "hostkey": "SHA1:…"}}}
  *
- * The SSH port is the node's entry, else the one its install used
- * (bin/install/<id>.json), else the file's top level, else 22.
+ * The SSH port is the node's entry, else the file's top level, else 22. The
+ * panel keeps no node's SSH port (server:install's bin/install/<id>.json is
+ * gone once the install succeeds), so a node on another port needs one.
  *
  * Usage: `console.php cluster:reenrol (--all [--state=enrolling,active] | <serverID>...) --cred-file=<path> [--dry-run]`.
  * MAIN only.
@@ -72,31 +79,58 @@ class ClusterReenrolCommand implements CommandInterface {
 			echo "Please run as XC_VM!\n";
 			return 1;
 		}
-		$rArgs = self::parseArgs($rArgs);
-		if (is_string($rArgs)) {
-			echo $rArgs . "\n" . self::USAGE;
+		set_time_limit(0);
+		return self::main($rArgs);
+	}
+
+	/**
+	 * The command once the user is checked. The credential file goes first,
+	 * so a real run deletes it whatever is refused next.
+	 *
+	 * @param list<string>                          $rArgs
+	 * @param array<int, array<string, mixed>>|null $rServers     ServerRepository::getAll(true) (tests).
+	 * @param string|null                           $rDir         The credential file's directory (tests).
+	 */
+	public static function main(array $rArgs, ?ClusterCrypto $rCrypto = null, ?array $rServers = null, ?SshSession $rSsh = null, ?callable $rAgentBinary = null, ?string $rDir = null): int {
+		$rCredFile = InstallCredentials::splitOptions($rArgs)[1]['cred-file'] ?? null;
+		$rCreds = $rCredFile === null ? null : self::readCredentials($rCredFile, in_array('--dry-run', $rArgs, true), $rDir);
+		$rParsed = self::parseArgs($rArgs);
+		if (is_string($rParsed)) {
+			echo $rParsed . "\n" . self::USAGE;
+			return 1;
+		}
+		if (is_string($rCreds)) {
+			echo 'Credential file refused: ' . $rCreds . ". Exiting\n";
 			return 1;
 		}
 		if (empty(SettingsManager::get('cluster_api_enabled'))) {
 			echo "The cluster API is disabled (Settings → Cluster). Exiting\n";
 			return 1;
 		}
-		try {
-			$rCrypto = ClusterCryptoFactory::create();
-		} catch (\Throwable $rE) {
-			echo 'Cluster API unavailable: ' . $rE->getMessage() . ". Exiting\n";
-			return 1;
-		}
-		$rCreds = null;
-		if ($rArgs['cred-file'] !== null) {
-			$rCreds = self::readCredentials($rArgs['cred-file'], $rArgs['dry-run']);
-			if (is_string($rCreds)) {
-				echo 'Credential file refused: ' . $rCreds . ". Exiting\n";
+		if (!$rCrypto instanceof ClusterCrypto) {
+			try {
+				$rCrypto = ClusterCryptoFactory::create();
+			} catch (\Throwable $rE) {
+				echo 'Cluster API unavailable: ' . $rE->getMessage() . ". Exiting\n";
 				return 1;
 			}
 		}
-		set_time_limit(0);
-		return self::run(ServerRepository::getAll(true), $rArgs['ids'], $rArgs['states'], $rCreds, $rArgs['dry-run'], $rCrypto);
+		$rLock = @fopen(self::lockPath(), 'c');
+		if ($rLock === false || !flock($rLock, LOCK_EX | LOCK_NB)) {
+			echo "Another cluster:reenrol is running. Exiting\n";
+			return 1;
+		}
+		try {
+			return self::run($rServers ?? ServerRepository::getAll(true), $rParsed['ids'], $rParsed['states'], $rCreds, $rParsed['dry-run'], $rCrypto, $rSsh, $rAgentBinary);
+		} finally {
+			flock($rLock, LOCK_UN);
+			fclose($rLock);
+		}
+	}
+
+	/** The lock a run holds. */
+	public static function lockPath(): string {
+		return (defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_reenrol.lock';
 	}
 
 	/**
@@ -148,7 +182,8 @@ class ClusterReenrolCommand implements CommandInterface {
 
 	/**
 	 * Read the credential file: only a `.cred` file directly in bin/install/,
-	 * readable by its owner alone. It is deleted once read, unless $rKeep.
+	 * readable by its owner alone. Unless $rKeep, it is deleted once read, and
+	 * also when it is refused for being readable by others.
 	 *
 	 * @return array{default: array<string, mixed>, nodes: array<int, array<string, mixed>>}|string The credentials, or why the file is refused.
 	 */
@@ -159,6 +194,10 @@ class ClusterReenrolCommand implements CommandInterface {
 			return 'it must be a .cred file in ' . $rDir;
 		}
 		if ((fileperms($rReal) & 0077) !== 0) {
+			if (!$rKeep) {
+				@unlink($rReal);
+				return 'its group or others could open it, so it was deleted: write it again, owner-only (umask 077)';
+			}
 			return 'its group or others can open it (chmod 600 it)';
 		}
 		$rJson = @file_get_contents($rReal);
@@ -240,15 +279,14 @@ class ClusterReenrolCommand implements CommandInterface {
 	 * @param array{default: array<string, mixed>, nodes: array<int, array<string, mixed>>}|null $rCreds readCredentials(); null only for a dry run.
 	 * @param SshSession|null                  $rSsh         Tests.
 	 * @param callable|null                    $rAgentBinary Tests (as for provisionCluster).
-	 * @param string|null                      $rInstallDir  Where <id>.json keeps the port of each install (tests).
 	 * @return int 0 when every chosen node was (or would be) re-enrolled.
 	 */
-	public static function run(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds, bool $rDryRun, ClusterCrypto $rCrypto, ?SshSession $rSsh = null, ?callable $rAgentBinary = null, ?string $rInstallDir = null): int {
+	public static function run(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds, bool $rDryRun, ClusterCrypto $rCrypto, ?SshSession $rSsh = null, ?callable $rAgentBinary = null): int {
 		if (empty($rCrypto->info()['licensed'])) {
 			echo "CLUSTER_LICENCE_REQUIRED: this panel's extension issues no tokens, so no node can be re-enrolled. Nothing was touched.\n";
 			return 1;
 		}
-		$rTargets = self::targets($rServers, $rIDs, $rStates, $rCreds, $rInstallDir ?? InstallCredentials::dir());
+		$rTargets = self::targets($rServers, $rIDs, $rStates, $rCreds);
 		if ($rTargets === []) {
 			echo "No enrolled node to re-enrol.\n";
 			return 0;
@@ -270,6 +308,8 @@ class ClusterReenrolCommand implements CommandInterface {
 				$rResults[$rID] = ['would re-enrol', $rWho . $rAccess['host'] . ':' . $rAccess['port'] . ', host key ' . $rAccess['hostkey'] . ' (' . $rAccess['source'] . ')'];
 			} elseif ($rStopped) {
 				$rResults[$rID] = ['not attempted', 'the run stopped at the licence refusal'];
+			} elseif (($rChanged = self::changedSince($rID, $rIDs, $rStates)) !== null) {
+				$rResults[$rID] = $rChanged;
 			} else {
 				echo "\n== #{$rID} {$rTarget['name']} ({$rAccess['host']}:{$rAccess['port']})\n";
 				try {
@@ -312,12 +352,29 @@ class ClusterReenrolCommand implements CommandInterface {
 	}
 
 	/**
+	 * A node's row as the run reaches it, since the states were read at its
+	 * start: an admin may have revoked it (or the API quarantined it) since.
+	 *
+	 * @return array{0: string, 1: string}|null The node's result, or null to go ahead.
+	 */
+	private static function changedSince(int $rID, ?array $rIDs, array $rStates): ?array {
+		$rNode = NodeRegistry::byServer($rID);
+		if ($rNode === null) {
+			return [$rIDs === null ? 'skipped' : 'not attempted', 'no longer enrolled'];
+		}
+		if ($rIDs === null && !in_array((string) $rNode['state'], $rStates, true)) {
+			return ['skipped', $rNode['state'] . ' since the run started (name it to re-enrol it)'];
+		}
+		return null;
+	}
+
+	/**
 	 * The nodes a run considers, in server id order: why each is skipped (not
 	 * chosen) or cannot be attempted, else how to reach it.
 	 *
 	 * @return array<int, array{name: string, skip: string|null, why: string|null, access: array{host: string, port: int, username: string, password: string, hostkey: string, expected: string|null, source: string}|null}>
 	 */
-	private static function targets(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds, string $rInstallDir): array {
+	private static function targets(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds): array {
 		self::db()->query('SELECT `server_id`, `state` FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rEnrolled = [];
 		foreach (self::db()->get_rows() as $rRow) {
@@ -337,7 +394,7 @@ class ClusterReenrolCommand implements CommandInterface {
 			} elseif (!isset($rEnrolled[$rID])) {
 				$rTarget['why'] = 'not enrolled (server:enrol enrols it)';
 			} else {
-				$rAccess = self::access($rID, (array) $rServer, $rCreds, $rInstallDir);
+				$rAccess = self::access($rID, (array) $rServer, $rCreds);
 				if (is_string($rAccess)) {
 					$rTarget['why'] = $rAccess;
 				} else {
@@ -351,12 +408,13 @@ class ClusterReenrolCommand implements CommandInterface {
 	}
 
 	/**
-	 * How to reach a node: its credentials and port, and the host key to hold
-	 * it to (the credential file's, else the stored one).
+	 * How to reach a node: its credentials and port (its entry's, else the
+	 * file's default, else 22), and the host key to hold it to (the credential
+	 * file's, else the stored one).
 	 *
 	 * @return array{host: string, port: int, username: string, password: string, hostkey: string, expected: string|null, source: string}|string
 	 */
-	private static function access(int $rID, array $rServer, ?array $rCreds, string $rInstallDir): array|string {
+	private static function access(int $rID, array $rServer, ?array $rCreds): array|string {
 		$rEntry = ($rCreds['nodes'][$rID] ?? []) + ($rCreds['default'] ?? []);
 		$rExpected = $rCreds['nodes'][$rID]['hostkey'] ?? null;
 		$rStored = (string) ($rServer['ssh_hostkey_sha1'] ?? '');
@@ -366,11 +424,9 @@ class ClusterReenrolCommand implements CommandInterface {
 		if ($rCreds !== null && (!isset($rEntry['username']) || !isset($rEntry['password']))) {
 			return 'no SSH credentials for it in the credential file';
 		}
-		$rInstall = json_decode((string) @file_get_contents($rInstallDir . $rID . '.json'), true);
-		$rInstallPort = is_array($rInstall) && is_int($rInstall['ssh_port'] ?? null) && $rInstall['ssh_port'] > 0 ? $rInstall['ssh_port'] : null;
 		return [
 			'host' => (string) ($rServer['server_ip'] ?? ''),
-			'port' => (int) ($rCreds['nodes'][$rID]['port'] ?? $rInstallPort ?? $rCreds['default']['port'] ?? 22),
+			'port' => (int) ($rEntry['port'] ?? 22),
 			'username' => (string) ($rEntry['username'] ?? ''),
 			'password' => (string) ($rEntry['password'] ?? ''),
 			'hostkey' => (string) ($rExpected ?? $rStored),

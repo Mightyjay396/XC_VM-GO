@@ -9,8 +9,6 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\FakeClusterCrypto;
 use XcVm\Tests\Support\FakeSshFleet;
 
-require_once dirname(__DIR__) . '/Support/FakeSshFleet.php';
-
 /**
  * ServerEnrolCommand::enrol() — server:enrol's path for one node, which
  * cluster:reenrol runs node by node. The SSH layer is faked (FakeSshFleet).
@@ -79,10 +77,10 @@ final class ServerEnrolCommandTest extends TestCase {
 	}
 
 	/** @return array{0: string|null, 1: string} [enrol()'s answer, what it printed] */
-	private function enrol(array $rServers, int $rServerID = 7, string $rPassword = 'pw', ?string $rExpected = null): array {
+	private function enrol(array $rServers, int $rServerID = 7, string $rPassword = 'pw', ?string $rExpected = null, ?callable $rAgentBinary = null): array {
 		ob_start();
 		try {
-			$rWhy = ServerEnrolCommand::enrol($rServers, $rServerID, 22, ['username' => 'root', 'password' => $rPassword], $rExpected, $this->rCrypto, $this->rSsh, fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null);
+			$rWhy = ServerEnrolCommand::enrol($rServers, $rServerID, 22, ['username' => 'root', 'password' => $rPassword], $rExpected, $this->rCrypto, $this->rSsh, $rAgentBinary ?? fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null);
 		} finally {
 			$rOut = (string) ob_get_clean();
 		}
@@ -169,6 +167,41 @@ final class ServerEnrolCommandTest extends TestCase {
 		$this->rSsh->rNodes['10.0.0.7']['probe'] = true;
 		SettingsManager::set(['cluster_api_enabled' => 0]);
 		[$rWhy] = $this->enrol($this->servers());
-		$this->assertSame('The node was not enrolled (see above); it stays legacy', $rWhy);
+		$this->assertSame('The cluster API is disabled; the node was not enrolled and stays legacy', $rWhy);
+	}
+
+	public function testAFlowThatEnrolsNothingIsAFailure(): void {
+		// No xc_agent for the node's arch: provisionCluster returns true and
+		// leaves the node as it was. Its reason is kept, whatever the clock.
+		ClusterClock::fix(1_700_000_000_000);
+		[$rWhy, $rOut] = $this->enrol($this->servers(), 7, 'pw', null, static fn(string $rArch): ?string => null);
+		$this->assertSame('No xc_agent for this node (amd64); the node was not enrolled and stays legacy', $rWhy, $rOut);
+		$this->assertNull(NodeRegistry::byServer(7));
+
+		// An enrolled node keeps its identity, even one enrolled in the same second.
+		$this->assertNull($this->enrol($this->servers())[0]);
+		$rOld = NodeRegistry::byServer(7);
+		[$rWhy] = $this->enrol($this->servers(), 7, 'pw', null, static fn(string $rArch): ?string => null);
+		$this->assertSame('No xc_agent for this node (amd64); the node was not re-enrolled and keeps its previous identity', $rWhy);
+		$this->assertSame($rOld['node_uuid'], NodeRegistry::byServer(7)['node_uuid']);
+
+		// Enrolled again in the same second: a new identity is what counts.
+		$this->assertNull($this->enrol($this->servers())[0]);
+		$this->assertNotSame($rOld['node_uuid'], NodeRegistry::byServer(7)['node_uuid']);
+	}
+
+	public function testOneEnrolmentOfANodeAtATime(): void {
+		$rLock = fopen(ServerEnrolCommand::lockPath(7), 'c');
+		$this->assertTrue(flock($rLock, LOCK_EX | LOCK_NB));
+		try {
+			[$rWhy] = $this->enrol($this->servers());
+			$this->assertSame('Another enrolment of server 7 is running', $rWhy);
+			$this->assertSame([], $this->rSsh->rLog, 'nothing is contacted');
+		} finally {
+			flock($rLock, LOCK_UN);
+			fclose($rLock);
+		}
+		$this->assertNull($this->enrol($this->servers())[0], 'the lock is free once the other run ends');
+		$this->assertNull($this->enrol($this->servers())[0], 'and an enrolment releases it');
 	}
 }

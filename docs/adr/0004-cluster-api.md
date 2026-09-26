@@ -904,6 +904,7 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 - `--all` takes the enrolled nodes in state `enrolling` or `active`; `--state=` names others.
 - Revoked and quarantined nodes are skipped unless asked for, because both states record an admin's decision.
 - Nodes named by id are taken whatever their state. A server that is not an enrolled load balancer is reported and left alone; `server:enrol` enrols a legacy LB.
+- The states are read when the run starts, and each node's row is read again just before its turn. A run is sequential and can last tens of minutes, and the plan revokes a node on suspected compromise. So with `--all`, a node that an admin revoked, or the API quarantined, since the start is skipped, and a node no longer enrolled is left alone however it was chosen. The window left is the node's own enrolment, a few seconds.
 
 **Credentials.** The plan names the command but not where its SSH credentials come from, and each node needs its own. One file carries them all:
 
@@ -913,8 +914,9 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 ```
 
 - The top level is every node's default. It has the shape of `server:install`'s credential file, so a fleet that shares one root password needs only that. `nodes` overrides it per server id.
-- It must be a `.cred` file directly in `bin/install/`, like `server:enrol`'s, and owner-only (0600). It is read and deleted before the first connection. Unknown keys, bad ports and bad host keys refuse the whole file.
-- The SSH port is the node's entry, else the port its install used (`bin/install/<id>.json`), else the file's default, else 22.
+- It must be a `.cred` file directly in `bin/install/`, like `server:enrol`'s, and owner-only (0600). Unknown keys, bad ports and bad host keys refuse the whole file.
+- A run without `--dry-run` reads and deletes it before any other check, as `server:enrol` does. So a run refused for its arguments, a disabled API or a missing extension leaves no passwords on disk. A file that its group or others can read is refused and, on such a run, deleted as well, since its secrets are exposed already.
+- The SSH port is the node's entry, else the file's default, else 22. The panel keeps no node's SSH port. `server:install` writes one to `bin/install/<id>.json` but deletes that file once the install succeeds, and a replaced MAIN does not have the old disk anyway. Keeping it in `servers` would need a core migration, so a node on another port gets `port` in the file instead.
 - There is no `--expect-hostkey`: each node's `hostkey` goes in its entry.
 
 **The same checks as `server:enrol`.**
@@ -925,9 +927,12 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 
 **Failures.**
 
-- A node that fails is reported with its reason, and the run goes on. The reason is `enrol()`'s own, or what `provisionCluster` printed when it stopped. `enrol()` passes that output through as it streams and keeps a copy.
+- A node that fails is reported with its reason, and the run goes on. The reason is `enrol()`'s own, or what `provisionCluster` printed when it stopped. `enrol()` passes that output through as it streams and keeps a copy. An exception, such as an SSH channel error, fails only its node.
+- A node counts as enrolled only when it has a new `node_uuid` afterwards. `provisionCluster` returns true without enrolling when there is no `xc_agent` for the node's architecture, or when the API is off. `enrol()` reports that as a failure with the flow's own words, and the node keeps its previous identity (a legacy LB stays legacy). An earlier version compared the row's `created_at` with the start of the flow, which has one-second resolution.
 - A licence refusal stops the run. Every later node would have its agent stopped only to be refused the same way. An extension that reports no licence (`info()['licensed']`) refuses before any node is touched.
 - The exit code is 0 only when every chosen node was re-enrolled. A real run is audited as `cluster.reenrol`, with the ids that succeeded and those that failed. Each node's `node.enrol_start` is audited as before.
+
+**One at a time.** `cluster:reenrol` holds `TMP_PATH/cluster_reenrol.lock` (non-blocking, as `cluster:root` does), so a second run refuses. `ServerEnrolCommand::enrol()` holds `TMP_PATH/cluster_enrol_<id>.lock` for its node. So `server:enrol` and a fleet run cannot interleave one node's `keygen` and `startEnrolment`.
 
 **Dry run.** `--dry-run` contacts no node and changes nothing. It keeps the credential file for the real run, and it runs without one too. For each node it shows the user, the address and port, and the host key with where it comes from. It lists the nodes that cannot be attempted and why, for example no host key or no credentials.
 
@@ -937,12 +942,15 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 
 **A failed node may need another run.** `provisionCluster` stops the node's agent and runs `keygen` before the probe. A licence refusal comes after `startEnrolment` has already replaced the node's row. So a node that fails at the probe or later is left with its agent stopped and new keys made, and should be re-enrolled again once the cause is fixed. `server:enrol` behaves the same. Re-enrol one node by id before `--all`: a cause that affects the whole fleet, such as MAIN's cluster port closed to the LBs, then stops at one node.
 
-**Not built:** nodes are re-enrolled one at a time, never in parallel.
+**Not built:**
+
+- Nodes are re-enrolled one at a time, never in parallel.
+- `--all` does not skip nodes already re-enrolled under the current root, so after a canary node, or a partial failure, the rest are best named by id. Telling them apart would need the time of the last root change. `cluster:init` records it in the audit log only, and a fleet-wide re-enrolment without a root change (new identities after a suspected compromise) must still take every node.
 
 **Tests:**
 
-- `ServerEnrolCommandTest`: one node's path. It covers no trust on first use, a changed key that runs nothing, the refusals before the flow, and the flow's reason.
-- `ClusterReenrolCommandTest`: selection, continuing past failures, the licence stop, the dry run, the credential file and the arguments.
+- `ServerEnrolCommandTest`: one node's path. It covers no trust on first use, a changed key that runs nothing, the refusals before the flow, the flow's reason, a flow that enrols nothing (in the same second as a previous enrolment), and the node's lock.
+- `ClusterReenrolCommandTest`: selection, including nodes revoked, quarantined or removed during the run; continuing past failures and exceptions; each node's port and password; the licence stop; the dry run; the credential file; the arguments; and `main()`, the command from its arguments on (`execute()` adds only the user check). `main()` shows that a dry run stays dry, that a refused real run still deletes the file, and that a second run refuses.
 
 ### Blocklist delta (Phase 7, first increment)
 

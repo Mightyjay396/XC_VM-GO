@@ -6,7 +6,6 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
@@ -75,7 +74,11 @@ class ServerEnrolCommand implements CommandInterface {
 	 * node. The host key must match $rExpected, else the one stored at the
 	 * node's install; with neither, nothing is contacted (no trust on first
 	 * use). Then LbInstallFlow::provisionCluster runs on the live node without
-	 * marking it failed, so a failure leaves it serving the legacy way.
+	 * marking it failed. Only one enrolment of a node runs at a time.
+	 *
+	 * The node counts as enrolled once it has a new identity: a flow that ends
+	 * without one (the API off, no xc_agent for its arch) is a failure, and the
+	 * node keeps the identity it had, if any.
 	 *
 	 * Everything is printed as it happens.
 	 *
@@ -97,6 +100,13 @@ class ServerEnrolCommand implements CommandInterface {
 		if (($rExpected === null || $rExpected === '') && ($rStored === null || $rStored === '')) {
 			return $rFail("No SSH host key to check against: pass --expect-hostkey with the node's SHA-1 fingerprint\n"
 				. '(on the node: ssh-keygen -l -E sha1 -f /etc/ssh/ssh_host_ed25519_key.pub). Trust on first use is refused for enrolment');
+		}
+
+		// A second enrolment of the same node (server:enrol, cluster:reenrol)
+		// would interleave its keygen and startEnrolment with this one.
+		$rLock = @fopen(self::lockPath($rServerID), 'c');
+		if ($rLock === false || !flock($rLock, LOCK_EX | LOCK_NB)) {
+			return $rFail("Another enrolment of server {$rServerID} is running");
 		}
 
 		$rSsh ??= new SshSession();
@@ -124,7 +134,7 @@ class ServerEnrolCommand implements CommandInterface {
 				return $rFail('The node does not run this panel release yet (no bin/xc_agent/run.sh). Update it first, then retry');
 			}
 
-			$rStart = ClusterClock::now();
+			$rBefore = NodeRegistry::byServer($rServerID);
 			$rLog = '';
 			ob_start(static function (string $rChunk) use (&$rLog): string {
 				$rLog .= $rChunk;
@@ -149,13 +159,22 @@ class ServerEnrolCommand implements CommandInterface {
 				return self::lastWords($rLog);
 			}
 			$rNode = NodeRegistry::byServer($rServerID);
-			if ($rNode === null || intval($rNode['created_at']) < $rStart) {
-				return $rFail('The node was not enrolled (see above); it stays legacy');
+			if ($rNode !== null && ($rBefore === null || $rNode['node_uuid'] !== $rBefore['node_uuid'])) {
+				return null;
 			}
-			return null;
+			// The flow left the node as it was, and said why unless the API is off.
+			$rCause = trim($rLog) === '' ? 'The cluster API is disabled' : (string) preg_replace('/;\s*the node stays legacy.*$/s', '', self::lastWords($rLog));
+			return $rFail($rCause . ($rBefore === null ? '; the node was not enrolled and stays legacy' : '; the node was not re-enrolled and keeps its previous identity'));
 		} finally {
 			$rSsh->close();
+			flock($rLock, LOCK_UN);
+			fclose($rLock);
 		}
+	}
+
+	/** The lock one enrolment of $rServerID holds. */
+	public static function lockPath(int $rServerID): string {
+		return (defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_enrol_' . $rServerID . '.lock';
 	}
 
 	/** Why provisionCluster stopped: what it printed after its first line, without "Exiting". */
