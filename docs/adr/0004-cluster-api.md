@@ -538,6 +538,26 @@ Other targets are unchanged: a legacy node limits at open, as before.
 
 A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store.
 
+### Connections (Phase 6, eighth increment): TS closes from the fanout
+
+**Before.** Under X-Accel, no PHP worker sees a daemon-served TS viewer leave. On a CONNECTIONS node, that close waited for `FanoutSyncCommand`, which reads MAIN's store over the WAN and closes rows the fanout no longer holds.
+
+**The fanout.** It now publishes `conn_close {stream, uuid}` on `GET /events` when a uuid's last connection leaves a stream, whether the client went or the panel dropped it.
+
+**The agent.** While CONNECTIONS is on, it follows that feed:
+- **Check.** It confirms against `GET /connections` that the uuid is really gone, since a viewer may have reconnected with the same uuid.
+- **Close.** For each open, non-HLS registry record with pid 0, it spools a P0 `conn.close {uuid}` and then drops the record. A spool that refuses leaves the feed where it was, so the events come again.
+- **Scope.** PHP-served viewers have a worker to watch, and HLS viewers have the reaper, so neither is touched.
+
+**MAIN.** `ConnectionIngest::close` closes the node's own row as `fanout_sync` would, with its activity row. It sends no kill and no `conn.close` back, because the viewer is already gone and the registry has already dropped it. A row that is already gone is accepted.
+
+**Compatibility and safety net.**
+- An older panel drops the unknown event, so its lane still advances.
+- An older fanout sends nothing.
+- `FanoutSyncCommand` keeps running as the safety net, for closes a feed reset loses and for when the fanout cannot answer.
+
+The close reaches MAIN within about a second, with no WAN read from the node.
+
 ### The cluster bus (Phase 2, first increment): wake-ups
 
 **What it is.** The cluster bus is MAIN's own Redis instance for the cluster API (`Domain\Cluster\ClusterBus`). It runs the bundled `redis-server` with `bin/cluster_bus/cluster.conf`, and is separate from the shared Redis that the panel and legacy LBs use.
