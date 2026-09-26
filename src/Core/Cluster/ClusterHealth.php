@@ -14,9 +14,21 @@ namespace XcVm\Core\Cluster;
  * Nodes not in the file (legacy nodes, the TELEMETRY flow off, every LB)
  * keep the legacy rule. In Core: ServerRepository and ConnectionTracker
  * ship to LBs, where the file simply does not exist.
+ *
+ * `guard` is the fleet guard, up while MAIN suspects its own fault; its
+ * `reasons` say why (GUARD_REASONS), for the alert and the audit.
  */
 final class ClusterHealth {
-	/** @var array{states: array<int, string>, guard: bool, ok_since: array<int, int>}|null */
+	/** Over half the judged nodes, and at least two, are silent together. */
+	public const GUARD_SILENCE = 'silence';
+
+	/** The cluster_ctl pool's listen queue has lasted over 5 s. */
+	public const GUARD_CTL_QUEUE = 'ctl_queue';
+
+	/** Every guard reason, in the order they are kept. */
+	public const GUARD_REASONS = [self::GUARD_SILENCE, self::GUARD_CTL_QUEUE];
+
+	/** @var array{states: array<int, string>, guard: bool, ok_since: array<int, int>, reasons: list<string>, ctl_queue: array{since: int, at: int}|null}|null */
 	private static ?array $rCache = null;
 
 	private static float $rReadAt = 0.0;
@@ -34,10 +46,12 @@ final class ClusterHealth {
 	}
 
 	/**
-	 * `ok_since` is the liveness loop's own bookkeeping (NodeHealth::settle):
-	 * since when each node has been judged ok without a break.
+	 * `ok_since` and `ctl_queue` are the liveness loop's own bookkeeping:
+	 * since when each node has been judged ok without a break
+	 * (NodeHealth::settle), and the cluster_ctl listen queue's run, since
+	 * when it has lasted and when it was last seen (MAIN's ms).
 	 *
-	 * @return array{states: array<int, string>, guard: bool, ok_since: array<int, int>}
+	 * @return array{states: array<int, string>, guard: bool, ok_since: array<int, int>, reasons: list<string>, ctl_queue: array{since: int, at: int}|null}
 	 */
 	public static function read(): array {
 		if (self::$rCache === null || microtime(true) - self::$rReadAt >= 1.0) {
@@ -54,27 +68,52 @@ final class ClusterHealth {
 					$rOkSince[(int) $rID] = $rMs;
 				}
 			}
-			self::$rCache = ['states' => $rStates, 'guard' => !empty($rDoc['guard']), 'ok_since' => $rOkSince];
+			$rGuard = !empty($rDoc['guard']);
+			$rQueue = $rDoc['ctl_queue'] ?? null;
+			self::$rCache = [
+				'states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince,
+				'reasons' => self::reasons($rGuard, is_array($rDoc['reasons'] ?? null) ? $rDoc['reasons'] : []),
+				'ctl_queue' => is_array($rQueue) && is_int($rQueue['since'] ?? null) && is_int($rQueue['at'] ?? null) ? ['since' => $rQueue['since'], 'at' => $rQueue['at']] : null,
+			];
 			self::$rReadAt = microtime(true);
 		}
 		return self::$rCache;
 	}
 
 	/**
-	 * @param array<int, string> $rStates
-	 * @param array<int, int>    $rOkSince
+	 * @param array<int, string>                  $rStates
+	 * @param array<int, int>                     $rOkSince
+	 * @param list<string>                        $rReasons GUARD_REASONS; a guard without one is the fleet silence
+	 * @param array{since: int, at: int}|null     $rCtlQueue
 	 */
-	public static function write(array $rStates, bool $rGuard, array $rOkSince = []): void {
+	public static function write(array $rStates, bool $rGuard, array $rOkSince = [], array $rReasons = [], ?array $rCtlQueue = null): void {
 		$rPath = self::path();
 		if (!is_dir(dirname($rPath))) {
 			@mkdir(dirname($rPath), 0750, true);
 		}
+		$rDoc = ['states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince, 'reasons' => self::reasons($rGuard, $rReasons), 'ctl_queue' => $rCtlQueue];
 		$rTmp = $rPath . '.tmp';
-		if (@file_put_contents($rTmp, (string) json_encode(['states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince]), LOCK_EX) !== false) {
+		if (@file_put_contents($rTmp, (string) json_encode($rDoc), LOCK_EX) !== false) {
 			@rename($rTmp, $rPath);
 		}
-		self::$rCache = ['states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince];
+		self::$rCache = $rDoc;
 		self::$rReadAt = microtime(true);
+	}
+
+	/**
+	 * The known reasons among $rReasons, in GUARD_REASONS' order; none
+	 * without the guard. A guard without a reason, as written before the
+	 * listen queue had its own, is the fleet silence.
+	 *
+	 * @param array<mixed> $rReasons
+	 * @return list<string>
+	 */
+	private static function reasons(bool $rGuard, array $rReasons): array {
+		if (!$rGuard) {
+			return [];
+		}
+		$rKnown = array_values(array_intersect(self::GUARD_REASONS, array_filter($rReasons, 'is_string')));
+		return $rKnown === [] ? [self::GUARD_SILENCE] : $rKnown;
 	}
 
 	/** Tests: use another file, and forget what was read. */

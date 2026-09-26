@@ -14,11 +14,15 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * Published states get worse at once and better only after steady health
  * (NodeHealth::settle), so a node near the 10 s threshold does not flap.
  *
- * The fleet silence guard: when more than half of those nodes, and at least
- * two, fall silent together, MAIN is more likely the one cut off (its
- * network, its API pool). The guard then holds every node at its last
- * published state instead of marking any offline, and raises an alert,
- * until the silence clears.
+ * The fleet guard: when more than half of those nodes, and at least two,
+ * fall silent together, MAIN is more likely the one cut off (its network,
+ * its API pool). So too when the cluster_ctl pool, which takes every
+ * heartbeat, has had requests waiting for a worker for over 5 s
+ * (ClusterPool::listenQueueMs(), read once a pass). The guard then holds
+ * every node at its last published state instead of marking any offline,
+ * the orphan purge waits (Core\Cluster\HlsReaping), and each reason is
+ * audited and shown on the Cluster Nodes page, until both clear. A pool
+ * that cannot tell (down, no status page) never raises it.
  *
  * Each pass first flushes the heartbeats the cluster bus holds into MySQL
  * (HeartbeatService::flush), and judges each node by the later of the two,
@@ -29,6 +33,19 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 final class LivenessService {
 	use DatabaseAware;
 
+	/** A cluster_ctl listen queue lasting longer than this raises the fleet guard (ms). */
+	public const QUEUE_GUARD_MS = 5000;
+
+	/**
+	 * Passes further apart than this (ms) do not join one queue run: the
+	 * queue may have drained between them. A pass's own reader still counts
+	 * the whole wait of a request it has kept waiting.
+	 */
+	public const QUEUE_GAP_MS = 5000;
+
+	/** Tests: fn(): ?int, the queue's age as ClusterPool::listenQueueMs() says it (null: the real probe). */
+	private static ?\Closure $rQueueReader = null;
+
 	/**
 	 * The heard times the last pass read from the bus: [its socket, when
 	 * (MAIN's ms), server id => heard ms].
@@ -36,6 +53,11 @@ final class LivenessService {
 	 * @var array{0: ?string, 1: int, 2: array<int, int>}|null
 	 */
 	private static ?array $rBusHeard = null;
+
+	/** Tests: read the cluster_ctl listen queue's age with fn(): ?int (null: ClusterPool's probe). */
+	public static function useQueueReader(?\Closure $rReader): void {
+		self::$rQueueReader = $rReader;
+	}
 
 	/**
 	 * One pass. Returns the transitions it published, server id => [from, to];
@@ -68,7 +90,12 @@ final class LivenessService {
 		}
 
 		$rSilent = count(array_filter($rJudged, static fn($rState) => $rState !== 'ok'));
-		$rGuard = count($rJudged) >= 2 && $rSilent >= 2 && $rSilent * 2 > count($rJudged);
+		[$rQueue, $rQueueAge] = self::ctlQueue($rNow, $rPrev['ctl_queue']);
+		$rReasons = array_keys(array_filter([
+			ClusterHealth::GUARD_SILENCE => count($rJudged) >= 2 && $rSilent >= 2 && $rSilent * 2 > count($rJudged),
+			ClusterHealth::GUARD_CTL_QUEUE => $rQueue !== null && $rNow - $rQueue['since'] > self::QUEUE_GUARD_MS,
+		]));
+		$rGuard = $rReasons !== [];
 		if ($rGuard) {
 			foreach ($rJudged as $rID => $rState) {
 				if ($rState === 'offline' && ($rPrev['states'][$rID] ?? null) !== 'offline') {
@@ -76,8 +103,21 @@ final class LivenessService {
 				}
 			}
 		}
-		if ($rGuard !== $rPrev['guard']) {
-			ClusterAudit::log($rGuard ? 'cluster.fleet_silence' : 'cluster.fleet_silence_clear', null, ['silent' => $rSilent, 'nodes' => count($rJudged)], 'liveness');
+		$rWas = $rPrev['reasons'];
+		if (in_array(ClusterHealth::GUARD_SILENCE, $rReasons, true) !== in_array(ClusterHealth::GUARD_SILENCE, $rWas, true)) {
+			ClusterAudit::log(in_array(ClusterHealth::GUARD_SILENCE, $rReasons, true) ? 'cluster.fleet_silence' : 'cluster.fleet_silence_clear', null, ['silent' => $rSilent, 'nodes' => count($rJudged)], 'liveness');
+		}
+		if (in_array(ClusterHealth::GUARD_CTL_QUEUE, $rReasons, true)) {
+			if (!in_array(ClusterHealth::GUARD_CTL_QUEUE, $rWas, true)) {
+				ClusterAudit::log('cluster.ctl_queue', null, ['queued_ms' => $rNow - (int) $rQueue['since']], 'liveness');
+			}
+		} elseif (in_array(ClusterHealth::GUARD_CTL_QUEUE, $rWas, true)) {
+			$rLast = $rPrev['ctl_queue'];
+			ClusterAudit::log('cluster.ctl_queue_clear', null, [
+				'lasted_ms' => $rLast === null ? null : $rLast['at'] - $rLast['since'],
+				// Drained: a request answered at once; else the pool could not tell, or the run broke.
+				'queue' => $rQueueAge === 0 ? 'drained' : 'unknown',
+			], 'liveness');
 		}
 
 		$rTransitions = [];
@@ -92,11 +132,38 @@ final class LivenessService {
 			}
 		}
 		ksort($rOkSince);
-		if ($rTransitions !== [] || $rGuard !== $rPrev['guard'] || $rOkSince !== $rPrev['ok_since']) {
+		if ($rTransitions !== [] || $rGuard !== $rPrev['guard'] || $rOkSince !== $rPrev['ok_since'] || $rReasons !== $rWas || $rQueue !== $rPrev['ctl_queue']) {
 			ksort($rJudged);
-			ClusterHealth::write($rJudged, $rGuard, $rOkSince);
+			ClusterHealth::write($rJudged, $rGuard, $rOkSince, $rReasons, $rQueue);
 		}
 		return $rTransitions;
+	}
+
+	/**
+	 * The cluster_ctl listen queue's run after this pass, [since, at] in
+	 * MAIN's ms or null, and what the reader said (its age in ms, 0 for
+	 * none, null when the pool cannot tell). A run lasts from `now - age`;
+	 * a pass within QUEUE_GAP_MS of the last one that saw it joins that run
+	 * (cron:cluster beside the signals daemon, each with its own request).
+	 * A pass that sees none, or cannot tell, ends it.
+	 *
+	 * @param array{since: int, at: int}|null $rPrev
+	 * @return array{0: array{since: int, at: int}|null, 1: ?int}
+	 */
+	private static function ctlQueue(int $rNow, ?array $rPrev): array {
+		try {
+			$rAge = self::$rQueueReader !== null ? (self::$rQueueReader)() : ClusterPool::listenQueueMs('cluster_ctl');
+		} catch (\Throwable) {
+			$rAge = null;
+		}
+		if (!is_int($rAge) || $rAge <= 0) {
+			return [null, is_int($rAge) ? 0 : null];
+		}
+		$rSince = $rNow - $rAge;
+		if ($rPrev !== null && $rNow >= $rPrev['at'] && $rNow - $rPrev['at'] <= self::QUEUE_GAP_MS) {
+			$rSince = min($rSince, $rPrev['since']);
+		}
+		return [['since' => $rSince, 'at' => $rNow], $rAge];
 	}
 
 	/**
