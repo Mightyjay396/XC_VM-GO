@@ -291,7 +291,7 @@ Other rules:
 - The result goes to `tmp/cluster/health.json`. `Core\Cluster\ClusterHealth` is how `ServerRepository::getAll()` (`server_online`, `cluster_health`) and `ConnectionTracker::getCapacity()` read it.
 - Each transition rewrites the servers cache at once and is audited (`node.health`).
 - **Hysteresis** (`NodeHealth::settle`): a published state gets worse at once, but better only after 30 s of steady health (`NodeHealth::RECOVER_MS`). An offline node that speaks again is `suspect` at once, so routing resumes at half weight, and `ok` after the steady period. Without this, a node whose heartbeats straddle the 10 s threshold flips on every gap: 10 flips a minute at 11.5 s gaps, one with it (`NodeHealthHysteresisTest`). The steady period is longer than the suspect threshold on purpose; at 10 s such a node would recover between gaps and flap as often. Since when each node has been ok is kept in `health.json` (`ok_since`), so the period survives passes that publish nothing.
-- **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears. A `cluster_ctl` listen queue lasting over 5 s raises the same guard, with a reason, an audit and an alert of its own (Phase 2, fifth increment).
+- **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears. A `cluster_ctl` listen queue lasting over 5 s raises the same guard, with a reason, an audit and an alert of its own. It holds only the nodes it may have silenced, for 4 offline windows at most, and for one offline window after it ends (Phase 2, fifth increment).
 - Nodes without the flow keep the legacy 90 s rule. The Phase 6 orphan purge at `cluster_orphan_conn_ttl_sec` is not part of this loop yet.
 
 ### MAIN endpoint changes (Phase 3)
@@ -1358,19 +1358,27 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 
 **The guard.** `LivenessService::tick()` reads the probe once a pass: every second in the signals daemon, each minute from `cron:cluster`.
 
+- The probe comes first in the pass, before `HeartbeatService::flush()` and the `cluster_nodes` read. A heartbeat that waited in the queue ahead of the probe's answered request is then in the same pass.
 - A run lasts from `now − age`. The guard's `ctl_queue` reason is up while the run is over 5 s old (`QUEUE_GUARD_MS`).
 - A pass that sees no queue, or cannot tell, ends the run. A pool that is down or has no status page never raises the guard. While it is down, nginx sends its requests to the panel pool.
-- A pass within 5 s (`QUEUE_GAP_MS`) of the last one that saw the run joins it. So `cron:cluster`, whose own request has waited only 250 ms, keeps the signals daemon's run instead of restarting it. Passes further apart start a new run, because the queue may have drained between them.
+- A pass within 5 s (`QUEUE_GAP_MS`) of the last one that saw the run joins it, before or after it. So `cron:cluster`, whose own request has waited only 250 ms, keeps the signals daemon's run instead of restarting it. This holds even when the daemon writes `health.json` between cron's clock read and its read of the file, which leaves cron's pass a few ms behind the run's `at`. A joined run keeps the earlier `since` and the later `at`. Passes further apart start a new run, because the queue may have drained between them, and so does a clock that stepped back more than 5 s.
 - The run is kept in `tmp/cluster/health.json` as `ctl_queue: {since, at}` (MAIN's ms), so both processes see it.
+
+**What the queue holds.** The silence reason holds every node. The queue reason holds only the nodes it may have silenced, for a bounded time, and keeps holding them for a while after it ends. `health.json` keeps this hold as `ctl_queue_hold: {from, until}` (MAIN's ms, `LivenessService::queueHold()`). A node is not newly marked offline while `from ≤ now ≤ until`, if its silence counts from `from` or later. Its silence counts from `max(last heard, ready_at)`, as in `NodeHealth`.
+
+- `from` is the run's `since` minus 10 s (`NodeHealth::SUSPECT_AFTER_MS`). A node silent since before the queue began was not silenced by it. A live node is heard every 1 to 3 s, and the probe may see the queue a pass late. Such a node is marked offline as usual, with or without the guard.
+- `until` is `since` plus 4 offline windows (`QUEUE_HOLD_WINDOWS` × `cluster_offline_after_sec`, 2 min at the default). A queue whose requests each wait about a second can last while every live node is heard. Without the cap, it would keep a node that died meanwhile suspect, and routed viewers at half weight, for as long.
+- When the reason clears (`drained`, or `unknown`: the pool can no longer tell, or the run broke), `until` becomes `min(until, now + cluster_offline_after_sec)`. Heartbeats that waited in the queue are heard late or not at all: refused as `CLOCK_SKEW` once older than 90 s, or lost with a pool that died. The pass that sees the queue end may also judge heard times from before the end. So each node gets one full offline window after the queue to be heard again, as `ready_at` gives it after MAIN's own downtime. A node that is silent only while the queue lasts is never marked offline. The cap still applies.
+- A node already published offline stays offline. The hold never brings one back.
 
 **One guard, two reasons.** `health.json` keeps `guard` (either reason) and `reasons` (`silence`, `ctl_queue`, in that order).
 
-- With either reason, no node is newly marked offline and the orphan purge waits (`HlsReaping` reads `guard`), as before.
+- With either reason the orphan purge waits (`HlsReaping` reads `guard`), as before. Offline marking waits as above: for every node under the silence reason, and for the nodes the queue holds under the queue reason, which also holds them for a window after it clears. `guard` itself clears with the reason.
 - Each reason is audited on its own. `cluster.fleet_silence` and `cluster.fleet_silence_clear` (`{silent, nodes}`) now follow the silence reason rather than the guard. `cluster.ctl_queue` carries `{queued_ms}`, and `cluster.ctl_queue_clear` carries `{lasted_ms, queue}`, where `queue` is `drained` (a new request was answered at once) or `unknown` (the pool could not tell, or the run broke).
 - The Cluster Nodes page shows one alert per reason (`cluster_ctl_queue`, `cluster_fleet_silence`).
 - A `health.json` written before this increment has `guard` and no `reasons`, and reads as the silence.
 
-**The agent's contract.** Nothing changes on the wire: no new op, lane, field, header, refusal, section or file. The guard changes what MAIN does about silence (no offline marking, no orphan purge), never what the API answers. Today's agent is unaffected, and its Go half has nothing to build.
+**The agent's contract.** Nothing changes on the wire: no new op, lane, field, header, refusal, section or file. The guard changes what MAIN does about silence (no offline marking, no orphan purge), never what the API answers. `health.json` (`ctl_queue`, `ctl_queue_hold`) is MAIN's own file under `tmp/cluster/`, read by MAIN's routing and liveness only. Today's agent is unaffected, and its Go half has nothing to build.
 
 **Differs from the plan.**
 
@@ -1378,17 +1386,21 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 - **"Lasting over 5 s"** is the time from the first status request that waited until one is answered within 250 ms. A pool that serves every request within 250 ms has no queue, whatever it holds for a moment.
 - **An alert and an audit per reason**, where the plan names one alert.
 - **`cron:cluster` alone** (the signals daemon down) never raises the queue reason: its passes are a minute apart, too far apart to make one run. A reason the daemon raised before it stopped clears at the next pass.
+- **The queue does not suspend all offline marking.** The plan suspends offline marking while MAIN suspects itself. For the queue, that is limited to the nodes it may have silenced, and to 4 offline windows. In return the suspension lasts one offline window past the queue's end, so the queue's time never counts against a node, as MAIN's own downtime never does.
 
 **Limits.**
 
 - A worker that takes over 250 ms to fork counts as a queue for that moment; the 5 s run absorbs such blips.
+- A queue that outlasts its cap (4 offline windows) no longer holds a node. On a fleet where the silence reason cannot hold (one TELEMETRY node, or a queue that silences only a minority), a live node whose heartbeats stay stuck that long is marked offline, and is suspect again once heard. On a fleet where most nodes fall silent, the silence reason still holds them with no limit.
+- A node that dies within 10 s before a queue begins, or while it lasts, is held too. It is marked offline at the cap, or one offline window after the drain, whichever comes first.
 - `cron:cluster` leaves a request that waited when it exits. FPM then serves one status page to a closed connection.
 - `EAGAIN` is Linux's errno 11; the pools run on Linux only.
 
 **Tests.**
 
-- `ClusterLivenessTest`: a queue of exactly 5 s raises nothing. One over 5 s raises `ctl_queue`, holds a lone silent node at suspect instead of offline, and clears when it drains, the node then offline at once, with each audit. A pool that cannot tell never raises the guard, a pass that cannot tell ends a run, and so does a reader that throws. Both reasons together, each clearing on its own in either order. Another process's pass joins the run, and a 20 s gap starts a new one. A `health.json` without reasons.
-- `ClusterPoolTest`: the probe against a FastCGI responder (answered at once, a request left waiting and read without blocking, a late answer and a new request, no status page, FPM's count, another pool's status, a cut answer, nobody listening, no socket); a full backlog; the ping on the shared client. Opt-in against a real php-fpm (`XCVM_TEST_FPM`): FPM's JSON status, and a one-worker pool held by a slow request.
+- `ClusterLivenessTest`: a queue of exactly 5 s raises nothing. One over 5 s raises `ctl_queue` and holds a lone silent node at suspect instead of offline. It clears when it drains, with each audit, and the node is offline only one offline window after that. A single TELEMETRY node silent only while the queue lasts is never marked offline, whether the queue drains or the pool can no longer tell, with the drain and the hold read from `health.json` as another process would. A node silent since before the queue is not held. A node silent since MAIN's `ready_at` is held. The cap holds, whether the queue goes on or drains within a window of it. A pool that cannot tell never raises the guard, a pass that cannot tell ends a run, and so does a reader that throws. Both reasons together, each clearing on its own in either order. Another process's pass joins the run through `health.json`, including one a few ms behind the run's `at` and one exactly 5 s after it. A 20 s gap starts a new run, and so does a clock stepped back. A `health.json` without reasons. The Cluster Nodes page's alert per reason (source).
+- `ClusterHeartbeatBusTest`: a heartbeat served while the probe waits reaches the same pass through the bus. The tests that run the liveness loop without faking the probe (`MainOutageNoPurgeTest`, `ClusterHeartbeatBusTest`, `NodeHealthHysteresisTest`, `ClusterEnrolCodeTest`) now fake a pool that cannot tell, so they never probe a socket under `MAIN_HOME`.
+- `ClusterPoolTest`: the probe against a FastCGI responder (answered at once, a request left waiting and read without blocking, a late answer and a new request, no status page, FPM's count, another pool's status, a cut answer, nobody listening, no socket). A late answer followed by a request that also waits keeps the queue's start, and a drain forgets it. A request left waiting is dropped when the probe is asked about another pool. An answer past 64 KiB without `END_REQUEST` is no answer, for the probe and the ping. Also a full backlog, and the ping on the shared client. Opt-in against a real php-fpm (`XCVM_TEST_FPM`): FPM's JSON status, and a one-worker pool held by a slow request.
 
 ### The cluster bus (Phase 2, third increment): heartbeats
 

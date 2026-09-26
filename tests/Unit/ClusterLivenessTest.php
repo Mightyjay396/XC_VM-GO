@@ -1,5 +1,6 @@
 <?php
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Domain\Cluster\ClusterClock;
@@ -74,6 +75,12 @@ final class ClusterLivenessTest extends TestCase {
 	private function queuedAt(int $rMs, ?int $rQueue): array {
 		$this->rQueue = $rQueue;
 		return $this->at($rMs);
+	}
+
+	/** How many times a node was marked offline. */
+	private function offlineMarks(): int {
+		$this->rDb->query("SELECT COUNT(*) AS `n` FROM `cluster_audit` WHERE `event` = 'node.health' AND `detail` LIKE ?", '%"to":"offline"%');
+		return (int) $this->rDb->get_row()['n'];
 	}
 
 	public function testSilenceMakesANodeSuspectThenOffline(): void {
@@ -184,13 +191,133 @@ final class ClusterLivenessTest extends TestCase {
 		$this->assertTrue(ClusterHealth::read()['guard']);
 		$this->assertSame(1, $this->audit('cluster.ctl_queue'), 'raised once');
 
-		// It drains: the guard clears, and 7 is marked offline at once.
+		// It drains: the guard clears. 7 still gets one offline window from
+		// the drain, as a node whose heartbeats waited in the queue would.
 		$this->beat(41000, [5, 6]);
-		$this->assertSame([7 => ['suspect', 'offline']], $this->queuedAt(41000, 0));
+		$this->assertSame([], $this->queuedAt(41000, 0));
 		$this->assertFalse(ClusterHealth::read()['guard']);
 		$this->assertSame([], ClusterHealth::read()['reasons']);
 		$this->assertSame(1, $this->audit('cluster.ctl_queue_clear'));
 		$this->assertSame(['lasted_ms' => 40000, 'queue' => 'drained'], $this->auditDetail('cluster.ctl_queue_clear'));
+		$this->assertSame(['from' => $this->rT0 - 10000, 'until' => $this->rT0 + 71000], ClusterHealth::read()['ctl_queue_hold']);
+		for ($rMs = 42000; $rMs <= 71000; $rMs += 1000) {
+			$this->beat($rMs, [5, 6]);
+			$this->queuedAt($rMs, 0);
+		}
+		$this->assertSame('suspect', ClusterHealth::state(7));
+		// Never heard again: offline once that window has passed.
+		$this->beat(72000, [5, 6]);
+		$this->assertSame([7 => ['suspect', 'offline']], $this->queuedAt(72000, 0));
+		$this->assertNull(ClusterHealth::read()['ctl_queue_hold']);
+	}
+
+	/** @return array<string, array{0: ?int}> what the reader says once the queue is over */
+	public static function queueEnds(): array {
+		return ['drained' => [0], 'the pool can no longer tell' => [null]];
+	}
+
+	/**
+	 * One TELEMETRY node (one LB, or the first of a rollout), which the fleet
+	 * silence cannot hold, silent only while the queue lasts: its heartbeats
+	 * waited in it and were lost. The pass that sees the queue end still has
+	 * its old heard time, and it is heard right after: never offline.
+	 */
+	#[DataProvider('queueEnds')]
+	public function testANodeSilencedByTheQueueIsNeverMarkedOffline(?int $rEnd): void {
+		NodeRegistry::update(6, ['flows' => 0]);
+		NodeRegistry::update(7, ['flows' => 0]);
+		$this->queuedAt(0, 0);
+		for ($rMs = 1000; $rMs <= 40000; $rMs += 1000) {
+			$this->queuedAt($rMs, $rMs);
+		}
+		$this->assertSame(['suspect', ['ctl_queue']], [ClusterHealth::state(5), ClusterHealth::read()['reasons']], 'held, not offline after 40 s');
+		$this->assertSame(['from' => $this->rT0 - 10000, 'until' => $this->rT0 + 120000], ClusterHealth::read()['ctl_queue_hold']);
+
+		// The queue ends, seen by another process. Drained, the heartbeat that
+		// waited ahead of the probe's answered request is in the same pass; a
+		// pool that can no longer tell (it crashed) lost it, and the pass
+		// judges 5 by its old heard time.
+		ClusterHealth::usePath($this->rHealth);
+		LivenessService::useQueueReader(function () use ($rEnd): ?int {
+			if ($rEnd === 0) {
+				$this->beat(40900, [5]);
+			}
+			return $rEnd;
+		});
+		$this->assertSame([], $this->at(41000));
+		LivenessService::useQueueReader(fn(): ?int => $this->rQueue);
+		$this->assertSame([false, 'suspect'], [ClusterHealth::read()['guard'], ClusterHealth::state(5)]);
+		$this->assertSame($rEnd === 0 ? $this->rT0 + 41000 : null, ClusterHealth::read()['ok_since'][5] ?? null, 'heard in the pass that saw the drain');
+		$this->assertSame(['lasted_ms' => 40000, 'queue' => $rEnd === 0 ? 'drained' : 'unknown'], $this->auditDetail('cluster.ctl_queue_clear'));
+		$this->assertSame(['from' => $this->rT0 - 10000, 'until' => $this->rT0 + 71000], ClusterHealth::read()['ctl_queue_hold'], 'one offline window from the end');
+
+		// Heard right after; ok after steady health (NodeHealth::RECOVER_MS).
+		$this->beat(41500, [5]);
+		$rOk = $rEnd === 0 ? 71000 : 72000;
+		for ($rMs = 42000; $rMs < $rOk; $rMs += 1000) {
+			$this->beat($rMs, [5]);
+			ClusterHealth::usePath($this->rHealth);
+			$this->assertSame([], $this->queuedAt($rMs, $rEnd), 'at ' . $rMs . ' ms');
+		}
+		$this->beat($rOk, [5]);
+		$this->assertSame([5 => ['suspect', 'ok']], $this->queuedAt($rOk, $rEnd));
+		$this->beat(73000, [5]);
+		$this->queuedAt(73000, $rEnd);
+		$this->assertNull(ClusterHealth::read()['ctl_queue_hold']);
+		$this->assertSame(0, $this->offlineMarks());
+	}
+
+	/** A node silent since before the queue began was not silenced by it: the queue does not hold it. */
+	public function testTheQueueHoldsOnlyTheNodesItMayHaveSilenced(): void {
+		$this->queuedAt(0, 0);
+		// 7 falls silent at 0; a queue begins at 20 s.
+		for ($rMs = 1000; $rMs <= 30000; $rMs += 1000) {
+			$this->beat($rMs, [5, 6]);
+			$this->queuedAt($rMs, max(0, $rMs - 20000));
+		}
+		$this->assertSame(['ctl_queue'], ClusterHealth::read()['reasons']);
+		$this->assertSame(['from' => $this->rT0 + 10000, 'until' => $this->rT0 + 140000], ClusterHealth::read()['ctl_queue_hold']);
+		$this->beat(31000, [5, 6]);
+		$this->assertSame([7 => ['suspect', 'offline']], $this->queuedAt(31000, 11000), 'silent 10 s before the queue: offline, guard or not');
+		$this->assertSame(['ctl_queue'], ClusterHealth::read()['reasons']);
+	}
+
+	/** MAIN's API came back just before the queue: a node's silence counts from then (ready_at), so the queue holds it. */
+	public function testTheQueueHoldsANodeSilentSinceMainCameBack(): void {
+		\XcVm\Domain\Cluster\ClusterMeta::set('ready_at', (string) ($this->rT0 + 15000));
+		NodeRegistry::update(7, ['last_seen_at' => $this->rT0 - 60000]);
+		for ($rMs = 15000; $rMs <= 60000; $rMs += 1000) {
+			$this->beat($rMs, [5, 6]);
+			$this->queuedAt($rMs, max(0, $rMs - 20000));
+		}
+		$this->assertSame(['suspect', ['ctl_queue']], [ClusterHealth::state(7), ClusterHealth::read()['reasons']], "silent 45 s since MAIN's return: held");
+		$this->assertSame(0, $this->offlineMarks());
+	}
+
+	/** @return array<string, array{0: ?int}> when the queue drains, if it does */
+	public static function capEnds(): array {
+		return ['the queue goes on' => [null], 'it drains within a window of the cap' => [100000]];
+	}
+
+	/**
+	 * A queue that lasts while the live nodes are heard (each request waits
+	 * a moment) holds a node that died meanwhile for four offline windows
+	 * (LivenessService::QUEUE_HOLD_WINDOWS) from its start, not for as long;
+	 * nor does its end extend that.
+	 */
+	#[DataProvider('capEnds')]
+	public function testTheQueueHoldsItsNodesForFourOfflineWindowsAtMost(?int $rDrainAt): void {
+		$this->queuedAt(0, 0);
+		for ($rMs = 1000; $rMs <= 120000; $rMs += 1000) {
+			$this->beat($rMs - 1000, [5, 6]);
+			$this->queuedAt($rMs, $rDrainAt !== null && $rMs >= $rDrainAt ? 0 : $rMs);
+		}
+		$this->assertSame('suspect', ClusterHealth::state(7), 'held for 2 min');
+		$this->assertSame(['from' => $this->rT0 - 10000, 'until' => $this->rT0 + 120000], ClusterHealth::read()['ctl_queue_hold']);
+		$this->beat(120000, [5, 6]);
+		$this->assertSame([7 => ['suspect', 'offline']], $this->queuedAt(121000, $rDrainAt === null ? 121000 : 0));
+		$this->assertSame($rDrainAt === null ? ['ctl_queue'] : [], ClusterHealth::read()['reasons']);
+		$this->assertSame(1, $this->offlineMarks());
 	}
 
 	public function testAPoolThatCannotTellNeverRaisesTheGuard(): void {
@@ -266,25 +393,42 @@ final class ClusterLivenessTest extends TestCase {
 		$this->queuedAt(6000, 6000);
 		$this->assertTrue(ClusterHealth::read()['guard']);
 		// cron:cluster beside the signals daemon: its own request has waited 250 ms.
+		ClusterHealth::usePath($this->rHealth);
 		$this->beat(6500);
 		$this->queuedAt(6500, 250);
 		$this->assertSame(['since' => $this->rT0, 'at' => $this->rT0 + 6500], ClusterHealth::read()['ctl_queue'], 'one run');
 		$this->assertTrue(ClusterHealth::read()['guard']);
-		$this->beat(7000);
-		$this->queuedAt(7000, 7000);
+		// The daemon writes between cron's clock read and its read of
+		// health.json: cron's pass is a moment behind the run it joins.
+		$this->beat(9000);
+		$this->queuedAt(9000, 9000);
+		ClusterHealth::usePath($this->rHealth);
+		$this->queuedAt(8995, 250);
+		$this->assertSame(['since' => $this->rT0, 'at' => $this->rT0 + 9000], ClusterHealth::read()['ctl_queue'], 'the same run, seen last at 9 s');
+		$this->assertSame(['ctl_queue'], ClusterHealth::read()['reasons']);
+		// Exactly QUEUE_GAP_MS after the last pass that saw it: still that run.
+		$this->beat(14000);
+		$this->queuedAt(14000, 250);
+		$this->assertSame(['since' => $this->rT0, 'at' => $this->rT0 + 14000], ClusterHealth::read()['ctl_queue']);
 		$this->assertSame(0, $this->audit('cluster.ctl_queue_clear'));
 
 		// No pass for 20 s: whether it drained meanwhile is unknown, so a new run starts.
-		$this->beat(27000);
-		$this->queuedAt(27000, 250);
-		$this->assertSame(['since' => $this->rT0 + 26750, 'at' => $this->rT0 + 27000], ClusterHealth::read()['ctl_queue']);
+		$this->beat(34000);
+		$this->queuedAt(34000, 250);
+		$this->assertSame(['since' => $this->rT0 + 33750, 'at' => $this->rT0 + 34000], ClusterHealth::read()['ctl_queue']);
 		$this->assertFalse(ClusterHealth::read()['guard']);
-		$this->assertSame(['lasted_ms' => 7000, 'queue' => 'unknown'], $this->auditDetail('cluster.ctl_queue_clear'));
+		$this->assertSame(['lasted_ms' => 14000, 'queue' => 'unknown'], $this->auditDetail('cluster.ctl_queue_clear'));
 		// The reader's own age still counts: one request waiting 6 s is a queue of 6 s.
-		$this->beat(28000);
-		$this->queuedAt(28000, 6000);
+		$this->beat(35000);
+		$this->queuedAt(35000, 6000);
 		$this->assertTrue(ClusterHealth::read()['guard']);
 		$this->assertSame(2, $this->audit('cluster.ctl_queue'));
+
+		// The clock steps back a minute: a new run from the new now, not one last seen in the future.
+		$this->beat(-25000);
+		$this->queuedAt(-25000, 250);
+		$this->assertSame(['since' => $this->rT0 - 25250, 'at' => $this->rT0 - 25000], ClusterHealth::read()['ctl_queue']);
+		$this->assertSame([false, null], [ClusterHealth::read()['guard'], ClusterHealth::read()['ctl_queue_hold']]);
 	}
 
 	public function testAGuardWithoutAReasonIsTheFleetSilence(): void {
@@ -300,5 +444,13 @@ final class ClusterLivenessTest extends TestCase {
 		ClusterHealth::write([5 => 'ok'], true, [], ['ctl_queue', 'bogus', 'silence']);
 		ClusterHealth::usePath($this->rHealth);
 		$this->assertSame(['silence', 'ctl_queue'], ClusterHealth::read()['reasons'], 'known reasons, in one order');
+	}
+
+	/** The Cluster Nodes page shows one alert per reason, the queue's with its own string. */
+	public function testTheClusterNodesPageAlertsPerReason(): void {
+		$this->assertMatchesRegularExpression(
+			'#foreach \(ClusterHealth::read\(\)\[.reasons.\] as \$rReason\): \?>\s*<div[^>]*>.*?\$language::get\(\$rReason === ClusterHealth::GUARD_CTL_QUEUE \? .cluster_ctl_queue. : .cluster_fleet_silence.\).*?endforeach;#s',
+			(string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/Views/admin/cluster_nodes.php')
+		);
 	}
 }

@@ -66,9 +66,12 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		ClusterHealth::usePath($this->rHealth);
 		// What an earlier test's liveness passes read from the bus.
 		(new \ReflectionProperty(LivenessService::class, 'rBusHeard'))->setValue(null, null);
+		// No probe of a real cluster_ctl socket under MAIN_HOME: the pool cannot tell.
+		LivenessService::useQueueReader(static fn(): ?int => null);
 	}
 
 	protected function tearDown(): void {
+		LivenessService::useQueueReader(null);
 		HeartbeatService::useDir(null);
 		ClusterBus::useSocket(null);
 		ClusterHealth::usePath(null);
@@ -649,6 +652,28 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		ClusterClock::fix($this->rT0 + 40000);
 		$this->assertSame([], LivenessService::tick(30), '6 and 7 silent together: held, not offline');
 		$this->assertTrue(ClusterHealth::read()['guard']);
+	}
+
+	/**
+	 * A pass reads the cluster_ctl queue before it flushes the bus: a
+	 * heartbeat served while the probe's request waited behind it is in the
+	 * same pass, so the pass that sees a queue drain has the heard times the
+	 * queue held back.
+	 */
+	public function testAHeartbeatServedWhileTheQueueProbeWaitsIsInThePass(): void {
+		$rRedis = $this->bus();
+		$this->fleet();
+		LivenessService::tick(30);
+		$this->flusherFresh($rRedis); // heartbeats reach the bus alone
+		foreach ([5, 6] as $rID) {
+			$this->beat($this->rT0 + 9000, [], $rID);
+		}
+		LivenessService::useQueueReader(function (): ?int {
+			$this->beat($this->rT0 + 11000, [], 7);
+			return 0;
+		});
+		ClusterClock::fix($this->rT0 + 11000);
+		$this->assertSame([], LivenessService::tick(30), '7 heard in this pass: ok, not suspect');
 	}
 
 	public function testSilenceStillCountsFromMainsRestart(): void {

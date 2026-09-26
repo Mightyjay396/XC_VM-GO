@@ -55,6 +55,7 @@ final class ClusterEnrolCodeTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		\XcVm\Domain\Cluster\LivenessService::useQueueReader(null);
 		ClusterClock::fix(null);
 		ClusterBus::useSocket(null);
 		DatabaseFactory::reset();
@@ -322,6 +323,8 @@ final class ClusterEnrolCodeTest extends TestCase {
 		\XcVm\Domain\Cluster\NonceStore::claim('sid:5', random_bytes(16));
 		$this->rDb->query('INSERT INTO `cluster_node_epochs` (`server_id`, `epoch`, `record`, `nbf`, `exp`, `refresh_at`, `used`, `created_at`) VALUES (5, 1, ?, 0, ?, 0, 1, 0)', '{}', intdiv($this->rT0, 1000) + 60);
 		ClusterClock::fix($this->rT0 + (EnrolCodeService::TTL + 1) * 1000);
+		// Its liveness step probes no real cluster_ctl socket under MAIN_HOME: the pool cannot tell.
+		\XcVm\Domain\Cluster\LivenessService::useQueueReader(static fn(): ?int => null);
 		\XcVm\Cli\CronJobs\ClusterCronJob::housekeep();
 		foreach (['cluster_enrol_codes', 'cluster_nonces', 'cluster_node_epochs'] as $rTable) {
 			$this->rDb->query('SELECT COUNT(*) AS `n` FROM `' . $rTable . '`');

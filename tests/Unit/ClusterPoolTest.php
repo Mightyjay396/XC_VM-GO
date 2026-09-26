@@ -25,8 +25,8 @@ final class ClusterPoolTest extends TestCase {
 	/**
 	 * A FastCGI responder: one connection per mode given after the socket, in
 	 * order; `sleep` takes none, and holds the next one in the listen queue
-	 * for 1.5 s. A first mode `backlog-0` makes its listen backlog one
-	 * connection long.
+	 * for 1.5 s (`sleep:<ms>` for as long). A first mode `backlog-0` makes its
+	 * listen backlog one connection long.
 	 */
 	private const RESPONDER = <<<'PHP'
 		<?php
@@ -58,8 +58,8 @@ final class ClusterPoolTest extends TestCase {
 			. json_encode(['pool' => $rPool, 'process manager' => 'ondemand', 'accepted conn' => 9, 'listen queue' => $rQueue, 'max listen queue' => 0, 'listen queue len' => 0, 'idle processes' => 0, 'active processes' => 1, 'total processes' => 1]))
 			. $rRecord(6, '') . $rEnd;
 		foreach ($rModes as $rMode) {
-			if ($rMode === 'sleep') {
-				usleep(1500000);
+			if (str_starts_with($rMode, 'sleep')) {
+				usleep(1000 * (int) (explode(':', $rMode)[1] ?? 1500));
 				continue;
 			}
 			$rConn = stream_socket_accept($rServer, 10);
@@ -83,11 +83,18 @@ final class ClusterPoolTest extends TestCase {
 				'status' => [$rStatus('cluster_ctl', 0)],
 				'status-queue' => [$rStatus('cluster_ctl', 2)],
 				'status-www' => [$rStatus('www', 0)],
+				// Over 64 KiB of STDOUT and no END_REQUEST.
+				'huge' => [str_repeat($rRecord(6, str_repeat('x', 8000)), 9)],
 			};
 			foreach ($rOut as $rPiece) {
 				fwrite($rConn, $rPiece);
 				fflush($rConn);
 				usleep(2000);
+			}
+			if ($rMode === 'huge') {
+				// Held open until the client gives up on it.
+				stream_set_timeout($rConn, 5);
+				fread($rConn, 1);
 			}
 			fclose($rConn);
 		}
@@ -443,6 +450,42 @@ final class ClusterPoolTest extends TestCase {
 		}
 		$this->assertNull(ClusterPool::listenQueueMs('cluster_ctl'), 'nobody listens on the socket');
 		$this->assertNull(ClusterPool::listenQueueMs('cluster_ingest'), 'no socket');
+	}
+
+	/**
+	 * The queue lasts from the first request that waited: a late answer
+	 * followed by a request that waits too keeps that start, and a request
+	 * answered in time forgets it, so the next queue starts afresh.
+	 */
+	public function testALateAnswerKeepsTheStartAndADrainForgetsIt(): void {
+		$this->responder(['sleep:1000', 'status', 'sleep:1000', 'status', 'status', 'status-queue', 'status']);
+		$this->assertGreaterThanOrEqual((int) (ClusterPool::QUEUE_PROBE_WAIT * 1000), ClusterPool::listenQueueMs('cluster_ctl'), 'A waits');
+		usleep(1000000);
+		$this->assertGreaterThanOrEqual(1000, ClusterPool::listenQueueMs('cluster_ctl'), "A's late answer, then B waits too: since A");
+		usleep(750000);
+		$this->assertSame(0, ClusterPool::listenQueueMs('cluster_ctl'), "B's late answer, then C at once: drained");
+		$this->assertSame(1, ClusterPool::listenQueueMs('cluster_ctl'), 'a new queue starts now, not at A');
+		$this->assertSame(0, ClusterPool::listenQueueMs('cluster_ctl'));
+	}
+
+	/**
+	 * Asked about another pool, the probe drops the request it keeps waiting.
+	 * An answer past MAX_ANSWER without END_REQUEST is none, for the probe and
+	 * the ping alike, however long the pool keeps it open.
+	 */
+	public function testTheProbeDropsAnotherPoolsRequestAndBoundsAnAnswer(): void {
+		$this->responder(['sleep:1000', 'status', 'status', 'huge', 'huge']);
+		$this->assertGreaterThanOrEqual((int) (ClusterPool::QUEUE_PROBE_WAIT * 1000), ClusterPool::listenQueueMs('cluster_ctl'), 'A waits');
+		$this->assertNull(ClusterPool::listenQueueMs('cluster_ingest'), "another pool: A is dropped, and that pool has no socket");
+		$rT = hrtime(true);
+		$rAge = ClusterPool::listenQueueMs('cluster_ctl');
+		$this->assertGreaterThanOrEqual(200, (hrtime(true) - $rT) / 1e6, 'a new request B, which waits QUEUE_PROBE_WAIT');
+		$this->assertLessThan(450, $rAge, "B's own wait, not since A");
+		usleep(1000000);
+		$this->assertNull(ClusterPool::listenQueueMs('cluster_ctl'), "B's late answer, then C's past MAX_ANSWER");
+		$rT = hrtime(true);
+		$this->assertFalse(ClusterPool::answers('cluster_ctl'));
+		$this->assertLessThan(1000, (hrtime(true) - $rT) / 1e6, 'the ping stops reading past MAX_ANSWER');
 	}
 
 	/** A connect refused because the pool's listen backlog is full counts as a queue, without waiting. */

@@ -45,6 +45,8 @@ final class MainOutageNoPurgeTest extends TestCase {
 		mkdir($this->rDir);
 		HlsReaping::usePath($this->rDir . '/orphans.json');
 		ClusterHealth::usePath($this->rDir . '/health.json');
+		// No probe of a real cluster_ctl socket under MAIN_HOME: the pool cannot tell.
+		LivenessService::useQueueReader(static fn(): ?int => null);
 
 		// MAIN's API has been serving for an hour.
 		$this->at(self::T - 3600);
@@ -68,6 +70,7 @@ final class MainOutageNoPurgeTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		LivenessService::useQueueReader(null);
 		ClusterClock::fix(null);
 		HlsReaping::usePath(null);
 		ClusterHealth::usePath(null);

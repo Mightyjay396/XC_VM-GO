@@ -28,7 +28,7 @@ final class ClusterHealth {
 	/** Every guard reason, in the order they are kept. */
 	public const GUARD_REASONS = [self::GUARD_SILENCE, self::GUARD_CTL_QUEUE];
 
-	/** @var array{states: array<int, string>, guard: bool, ok_since: array<int, int>, reasons: list<string>, ctl_queue: array{since: int, at: int}|null}|null */
+	/** @var array{states: array<int, string>, guard: bool, ok_since: array<int, int>, reasons: list<string>, ctl_queue: array{since: int, at: int}|null, ctl_queue_hold: array{from: int, until: int}|null}|null */
 	private static ?array $rCache = null;
 
 	private static float $rReadAt = 0.0;
@@ -46,12 +46,14 @@ final class ClusterHealth {
 	}
 
 	/**
-	 * `ok_since` and `ctl_queue` are the liveness loop's own bookkeeping:
-	 * since when each node has been judged ok without a break
-	 * (NodeHealth::settle), and the cluster_ctl listen queue's run, since
-	 * when it has lasted and when it was last seen (MAIN's ms).
+	 * `ok_since`, `ctl_queue` and `ctl_queue_hold` are the liveness loop's own
+	 * bookkeeping: since when each node has been judged ok without a break
+	 * (NodeHealth::settle); the cluster_ctl listen queue's run, since when it
+	 * has lasted and when it was last seen; and that queue's hold on offline
+	 * marking, which spares the nodes heard from `from` until `until` (MAIN's
+	 * ms, LivenessService).
 	 *
-	 * @return array{states: array<int, string>, guard: bool, ok_since: array<int, int>, reasons: list<string>, ctl_queue: array{since: int, at: int}|null}
+	 * @return array{states: array<int, string>, guard: bool, ok_since: array<int, int>, reasons: list<string>, ctl_queue: array{since: int, at: int}|null, ctl_queue_hold: array{from: int, until: int}|null}
 	 */
 	public static function read(): array {
 		if (self::$rCache === null || microtime(true) - self::$rReadAt >= 1.0) {
@@ -70,10 +72,12 @@ final class ClusterHealth {
 			}
 			$rGuard = !empty($rDoc['guard']);
 			$rQueue = $rDoc['ctl_queue'] ?? null;
+			$rHold = $rDoc['ctl_queue_hold'] ?? null;
 			self::$rCache = [
 				'states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince,
 				'reasons' => self::reasons($rGuard, is_array($rDoc['reasons'] ?? null) ? $rDoc['reasons'] : []),
 				'ctl_queue' => is_array($rQueue) && is_int($rQueue['since'] ?? null) && is_int($rQueue['at'] ?? null) ? ['since' => $rQueue['since'], 'at' => $rQueue['at']] : null,
+				'ctl_queue_hold' => is_array($rHold) && is_int($rHold['from'] ?? null) && is_int($rHold['until'] ?? null) ? ['from' => $rHold['from'], 'until' => $rHold['until']] : null,
 			];
 			self::$rReadAt = microtime(true);
 		}
@@ -85,13 +89,14 @@ final class ClusterHealth {
 	 * @param array<int, int>                     $rOkSince
 	 * @param list<string>                        $rReasons GUARD_REASONS; a guard without one is the fleet silence
 	 * @param array{since: int, at: int}|null     $rCtlQueue
+	 * @param array{from: int, until: int}|null   $rCtlQueueHold
 	 */
-	public static function write(array $rStates, bool $rGuard, array $rOkSince = [], array $rReasons = [], ?array $rCtlQueue = null): void {
+	public static function write(array $rStates, bool $rGuard, array $rOkSince = [], array $rReasons = [], ?array $rCtlQueue = null, ?array $rCtlQueueHold = null): void {
 		$rPath = self::path();
 		if (!is_dir(dirname($rPath))) {
 			@mkdir(dirname($rPath), 0750, true);
 		}
-		$rDoc = ['states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince, 'reasons' => self::reasons($rGuard, $rReasons), 'ctl_queue' => $rCtlQueue];
+		$rDoc = ['states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince, 'reasons' => self::reasons($rGuard, $rReasons), 'ctl_queue' => $rCtlQueue, 'ctl_queue_hold' => $rCtlQueueHold];
 		$rTmp = $rPath . '.tmp';
 		if (@file_put_contents($rTmp, (string) json_encode($rDoc), LOCK_EX) !== false) {
 			@rename($rTmp, $rPath);
