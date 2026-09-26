@@ -1058,6 +1058,12 @@ final class ClusterApiTest extends TestCase {
 			[$rRes, , $rReq] = $this->call('conn_admit', ['line_id' => '42'] + $rAsk, 1, $rKeys);
 			$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
 
+			// A line MAIN cannot read is not a refusal: the agent's offline policy decides.
+			$this->rDb->exec('ALTER TABLE `lines` RENAME TO `lines_gone`');
+			[$rRes, , $rReq] = $this->call('conn_admit', ['uuid' => str_repeat('c', 32)] + $rAsk, 1, $rKeys);
+			$this->denial($rRes, 503, 'DB', $rReq);
+			$this->rDb->exec('ALTER TABLE `lines_gone` RENAME TO `lines`');
+
 			// Only an active node.
 			NodeRegistry::update(self::SID, ['state' => 'quarantined']);
 			[$rRes, , $rReq] = $this->call('conn_admit', $rAsk, 1, $rKeys);

@@ -133,11 +133,10 @@ class StreamAuth {
 
 	/**
 	 * Refuse a viewer the node's agent did not admit (the last
-	 * ConnectionTracker::openRecord(); cluster plan, Phase 6), as live.php
-	 * refuses a line already connected elsewhere: USER_ALREADY_CONNECTED in
-	 * the client log, with the agent's reason, and the "connected" video (or
-	 * a 404 without one). Returns, doing nothing, when the agent refused
-	 * nothing; otherwise it does not return.
+	 * ConnectionTracker::openRecord(); cluster plan, Phase 6), the way
+	 * auth.php refuses the same condition (admissionRefusal()), with
+	 * `admission: <reason>` as the client log's data. Returns, doing nothing,
+	 * when the agent refused nothing; otherwise it does not return.
 	 *
 	 * @param array<string, mixed> $rUserInfo The token's user_info.
 	 * @param mixed $rServerID The node that records the viewer (the token's, as the endpoint read it).
@@ -148,8 +147,34 @@ class StreamAuth {
 		if ($rReason === null) {
 			return;
 		}
-		DatabaseLogger::clientLog((int) $rStreamID, (int) ($rUserInfo['id'] ?? 0), 'USER_ALREADY_CONNECTED', $rIP, 'admission: ' . $rReason);
-		OffAirHandler::showVideoServer('show_connected_video', 'connected_video_path', $rExtension, $rUserInfo + ['is_restreamer' => 0, 'con_isp_name' => null], $rIP, (string) $rCountryCode, $rUserInfo['con_isp_name'] ?? null, $rServerID ? (int) $rServerID : null, $rProxyID ? (int) $rProxyID : null);
+		[$rEvent, $rShow, $rPath, $rError] = self::admissionRefusal($rReason);
+		DatabaseLogger::clientLog((int) $rStreamID, (int) ($rUserInfo['id'] ?? 0), $rEvent, $rIP, 'admission: ' . $rReason);
+		if ($rShow === null || $rPath === null) {
+			generateError((string) $rError);
+		} else {
+			OffAirHandler::showVideoServer($rShow, $rPath, $rExtension, $rUserInfo + ['is_restreamer' => 0, 'con_isp_name' => null], $rIP, (string) $rCountryCode, $rUserInfo['con_isp_name'] ?? null, $rServerID ? (int) $rServerID : null, $rProxyID ? (int) $rProxyID : null);
+		}
 		exit();
+	}
+
+	/**
+	 * How an admission refusal is shown, by its reason, as auth.php shows the
+	 * same condition at mint: [client log event, show-video setting, video
+	 * path setting, error code when there is no video]. MAIN's line reasons
+	 * get auth.php's own (USER_EXPIRED, USER_BAN, USER_DISABLED; an unknown
+	 * line or HMAC key is AUTH_FAILED and INVALID_CREDENTIALS); the agent's
+	 * LIMIT and OFFLINE, and any other reason, read as a line already
+	 * connected elsewhere.
+	 *
+	 * @return array{0: string, 1: ?string, 2: ?string, 3: ?string}
+	 */
+	public static function admissionRefusal(string $rReason): array {
+		return match ($rReason) {
+			'EXPIRED' => ['USER_EXPIRED', 'show_expired_video', 'expired_video_path', null],
+			'BANNED' => ['USER_BAN', 'show_banned_video', 'banned_video_path', null],
+			'DISABLED' => ['USER_DISABLED', 'show_banned_video', 'banned_video_path', null],
+			'UNKNOWN_LINE', 'UNKNOWN_HMAC' => ['AUTH_FAILED', null, null, 'INVALID_CREDENTIALS'],
+			default => ['USER_ALREADY_CONNECTED', 'show_connected_video', 'connected_video_path', null],
+		};
 	}
 }

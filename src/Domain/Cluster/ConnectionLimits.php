@@ -27,8 +27,9 @@ use XcVm\Streaming\Auth\StreamAuth;
  * into the client's request and stored nowhere, so it comes from the node.
  *
  * The same queue carries the cut of a `conn_admit` (queueAdmission(), written
- * by MAIN only): run by ConnectionAdmission::cut(), for a viewer that may not
- * be open yet, and dropped when its uuid is another node's.
+ * by MAIN only, marked `admission`): run by ConnectionAdmission::cut(), for a
+ * viewer that may not be open yet, and dropped when its uuid is another
+ * node's.
  */
 final class ConnectionLimits {
 	use DatabaseAware;
@@ -71,15 +72,15 @@ final class ConnectionLimits {
 
 	/**
 	 * Queue the cut a conn_admit decided (ConnectionAdmission::forNode): the
-	 * line cut to leave room for the viewer and the $rOthers reservations in
-	 * flight. Only MAIN writes this: queue(), which takes a node's event, never
-	 * sets `others`.
+	 * line cut to leave room for the viewer and the reservations in flight
+	 * when the cut runs. Only MAIN writes this: queue(), which takes a node's
+	 * event, rebuilds the check from its own keys and never sets `admission`.
 	 */
-	public static function queueAdmission(int $rServerID, string $rUUID, int $rLineID, int $rOthers, string $rIP, string $rUserAgent): bool {
+	public static function queueAdmission(int $rServerID, string $rUUID, int $rLineID, string $rIP, string $rUserAgent): bool {
 		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) || $rLineID <= 0) {
 			return false;
 		}
-		return self::write(['server_id' => $rServerID, 'uuid' => $rUUID, 'ip' => substr($rIP, 0, 64), 'user_agent' => substr($rUserAgent, 0, 512), 'user_id' => $rLineID, 'others' => max(0, $rOthers)]);
+		return self::write(['server_id' => $rServerID, 'uuid' => $rUUID, 'ip' => substr($rIP, 0, 64), 'user_agent' => substr($rUserAgent, 0, 512), 'user_id' => $rLineID, 'admission' => true]);
 	}
 
 	/** @param array<string, mixed> $rCheck */
@@ -113,7 +114,7 @@ final class ConnectionLimits {
 
 	/** @param array<string, mixed> $rCheck */
 	private static function enforce(array $rCheck): bool {
-		if (isset($rCheck['others'])) {
+		if (($rCheck['admission'] ?? null) === true) {
 			// A conn_admit's cut: the viewer may not be open yet. If it is, it
 			// must be the node's, and it counts among the open ones.
 			$rStored = self::stored((string) $rCheck['uuid']);
@@ -121,7 +122,7 @@ final class ConnectionLimits {
 				return false;
 			}
 			$rOpen = $rStored !== null && empty($rStored['hls_end']);
-			return ConnectionAdmission::cut((int) $rCheck['user_id'], (int) $rCheck['others'], $rOpen, (string) $rCheck['ip'], (string) $rCheck['user_agent'], (string) $rCheck['uuid']);
+			return ConnectionAdmission::cut((bool) SettingsManager::get('redis_handler'), (int) $rCheck['user_id'], $rOpen, (string) $rCheck['ip'], (string) $rCheck['user_agent'], (string) $rCheck['uuid']);
 		}
 		$rOwner = self::owner((int) $rCheck['server_id'], (string) $rCheck['uuid']);
 		if ($rOwner === null) {

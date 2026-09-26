@@ -145,7 +145,7 @@ final class ConnectionAdmissionTest extends TestCase {
 		$this->rDb->exec('CREATE TABLE `lines` (`id` INTEGER PRIMARY KEY, `max_connections` int, `pair_id` int, `enabled` int, `admin_enabled` int, `exp_date` int)');
 		$this->rDb->exec('CREATE TABLE `hmac_keys` (`id` INTEGER PRIMARY KEY, `enabled` int)');
 		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT, `uuid` text, `server_id` int, `user_id` int, `hmac_id` int, `hmac_identifier` text, `hls_end` int DEFAULT 0)');
-		$this->rDb->query('INSERT INTO `lines` VALUES (42, 2, 43, 1, 1, NULL), (44, 0, NULL, 1, 1, NULL), (50, 1, NULL, 1, 0, NULL), (51, 1, NULL, 0, 1, NULL), (52, 1, NULL, 1, 1, ?)', self::T);
+		$this->rDb->query('INSERT INTO `lines` VALUES (42, 2, 43, 1, 1, NULL), (44, 0, NULL, 1, 1, NULL), (50, 1, NULL, 1, 0, NULL), (51, 1, NULL, 0, 1, NULL), (52, 1, NULL, 1, 1, ?), (53, 1, NULL, 0, 0, ?)', self::T, self::T);
 		$this->rDb->query('INSERT INTO `hmac_keys` VALUES (3, 1), (4, 0)');
 		SettingsManager::set(['redis_handler' => 0]);
 		$rDir = sys_get_temp_dir() . '/xcvm-admit-' . bin2hex(random_bytes(4)) . '/';
@@ -162,6 +162,14 @@ final class ConnectionAdmissionTest extends TestCase {
 		return (int) $this->rDb->get_row()['n'];
 	}
 
+	/** `lines_live` as the install creates it, for ConnectionIngest. */
+	private function ingestTable(): void {
+		$rSql = (string) file_get_contents(dirname(__DIR__, 2) . '/src/bin/install/database.sql');
+		preg_match('/CREATE TABLE IF NOT EXISTS `lines_live` \(.*?\) ENGINE=[^;]*;/s', $rSql, $rM);
+		$this->rDb->exec('DROP TABLE IF EXISTS `lines_live`');
+		$this->rDb->exec((string) preg_replace(['/`activity_id` int\(11\) NOT NULL AUTO_INCREMENT/', '/,\s*PRIMARY KEY \(`activity_id`\)/', '/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)( USING BTREE)?/', '/ COLLATE \w+/', '/\) ENGINE=[^;]*;/'], ['`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT', '', '', '', ');'], $rM[0]));
+	}
+
 	public function testConnAdmitReadsTheLineOnMainNeverTheNodesLimit(): void {
 		$rDir = $this->mainTables();
 		try {
@@ -174,10 +182,11 @@ final class ConnectionAdmissionTest extends TestCase {
 			$this->assertSame([], $this->rCuts, 'no cut on the ctl lane: it is queued for MAIN\'s 1 s loop');
 
 			// The loop cuts the line (and its pair) to leave room for this viewer
-			// and the ones in flight, from `lines`' limit, never the viewer itself.
+			// and the ones in flight when it runs, from `lines`' limit, never the
+			// viewer itself: both are still on their way, so neither leaves room.
 			$this->forNode(['uuid' => str_repeat('b', 32), 'line_id' => 42, 'stream_id' => 100, 'ip' => '10.0.0.2', 'ua' => 'Kodi']);
 			$this->assertSame(2, ConnectionLimits::drain());
-			$this->assertSame([[43, 1, null, ''], [42, 1, null, ''], [43, 0, null, ''], [42, 0, null, '']], $this->rCuts);
+			$this->assertSame([[43, 0, null, ''], [42, 0, null, ''], [43, 0, null, ''], [42, 0, null, '']], $this->rCuts);
 			$this->assertSame([$rUUID, $rUUID, str_repeat('b', 32), str_repeat('b', 32)], $this->rCutUUIDs, 'the viewer asking is never cut');
 		} finally {
 			ConnectionLimits::useQueue(null);
@@ -200,6 +209,58 @@ final class ConnectionAdmissionTest extends TestCase {
 			$this->forNode(['uuid' => $rUUID, 'line_id' => 42, 'stream_id' => 100, 'ip' => '10.0.0.1', 'ua' => 'VLC'], 6);
 			$this->assertSame(0, ConnectionLimits::drain());
 			$this->assertSame([], $this->rCuts);
+
+			// An ended record under the uuid (a closed HLS key) is not open: the
+			// viewer still needs its own room.
+			$this->rCuts = [];
+			$rEnded = str_repeat('e', 32);
+			$this->forNode(['uuid' => $rEnded, 'line_id' => 42, 'stream_id' => 100, 'ip' => '10.0.0.1', 'ua' => 'VLC']);
+			$this->rDb->query('INSERT INTO `lines_live` (`uuid`, `server_id`, `user_id`, `hls_end`) VALUES (?, 5, 42, 1)', $rEnded);
+			ConnectionLimits::drain();
+			$this->assertSame([[43, 0, null, ''], [42, 0, null, '']], $this->rCuts, 'max 2, less a in flight, less this viewer');
+		} finally {
+			ConnectionLimits::useQueue(null);
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
+	public function testAQueuedCutRecountsTheOthersInFlightWhenItRuns(): void {
+		$rDir = $this->mainTables();
+		$this->ingestTable();
+		try {
+			$rA = str_repeat('a', 32);
+			$rB = str_repeat('b', 32);
+			$this->forNode(['uuid' => $rA, 'line_id' => 42, 'stream_id' => 100, 'ip' => '10.0.0.1', 'ua' => 'VLC']);
+			// B's admission counts A in flight.
+			$this->forNode(['uuid' => $rB, 'line_id' => 42, 'stream_id' => 100, 'ip' => '10.0.0.2', 'ua' => 'Kodi']);
+			// A opens before the loop runs: ingest releases its reservation, and
+			// it is one of the line's open connections now.
+			$this->assertTrue(ConnectionIngest::upsert(5, ['uuid' => $rA, 'user_id' => 42, 'stream_id' => 100, 'server_id' => 5, 'container' => 'ts', 'date_start' => self::T]));
+			$this->assertSame(2, ConnectionLimits::drain());
+			// A (open) with B in flight, and B with A open: 2 of 2 either way, so
+			// each cut leaves the one open connection its room. A is counted
+			// once, not also as B's reservation in flight.
+			$this->assertSame([[43, 1, null, ''], [42, 1, null, ''], [43, 1, null, ''], [42, 1, null, '']], $this->rCuts);
+
+			// B opens too before its (repeated) cut runs: both open, nothing in flight.
+			$this->rCuts = [];
+			$this->forNode(['uuid' => $rB, 'line_id' => 42, 'stream_id' => 100, 'ip' => '10.0.0.2', 'ua' => 'Kodi']);
+			$this->assertTrue(ConnectionIngest::upsert(5, ['uuid' => $rB, 'user_id' => 42, 'stream_id' => 100, 'server_id' => 5, 'container' => 'ts', 'date_start' => self::T]));
+			ConnectionLimits::drain();
+			$this->assertSame([[43, 2, null, ''], [42, 2, null, '']], $this->rCuts);
+		} finally {
+			ConnectionLimits::useQueue(null);
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
+	public function testAQueuedCutWhoseStoreCannotBeReadCutsNothing(): void {
+		$rDir = $this->mainTables();
+		try {
+			$this->forNode(['uuid' => str_repeat('a', 32), 'line_id' => 42, 'stream_id' => 100, 'ip' => '10.0.0.1', 'ua' => 'VLC']);
+			$this->rDb->exec('DROP TABLE `cluster_reservations`');
+			$this->assertSame(0, ConnectionLimits::drain());
+			$this->assertSame([], $this->rCuts, 'as at mint: conn.limit follows the open');
 		} finally {
 			ConnectionLimits::useQueue(null);
 			exec('rm -rf ' . escapeshellarg($rDir));
@@ -214,6 +275,7 @@ final class ConnectionAdmissionTest extends TestCase {
 			$this->assertSame('BANNED', $this->forNode($rAsk(50))['reason']);
 			$this->assertSame('DISABLED', $this->forNode($rAsk(51))['reason']);
 			$this->assertSame('EXPIRED', $this->forNode($rAsk(52))['reason']);
+			$this->assertSame('EXPIRED', $this->forNode($rAsk(53))['reason'], 'expired, banned and disabled: auth.php checks the expiry first');
 			$this->assertSame(0, $this->reservations(), 'a refused viewer reserves nothing');
 			$this->assertSame(['admit' => true, 'exp' => self::T + 15], $this->forNode($rAsk(44)), 'an unlimited line is admitted');
 			$this->assertSame(0, $this->reservations(), 'and needs no reservation');
@@ -271,6 +333,11 @@ final class ConnectionAdmissionTest extends TestCase {
 			] as $rBad) {
 				$this->assertNull($this->forNode($rBad), (string) json_encode($rBad));
 			}
+			// The other identity as 0 (a struct without omitempty) is absent.
+			$this->assertTrue($this->forNode(['hmac_id' => 0, 'identifier' => ''] + $rOk)['admit']);
+			$this->assertTrue($this->forNode(['uuid' => str_repeat('h', 32), 'line_id' => 0, 'hmac_id' => 3, 'identifier' => str_repeat('i', 300), 'stream_id' => 1])['admit'], 'an identifier past 255 bytes is cut, not refused');
+			$this->rDb->query('SELECT `identity` FROM `cluster_reservations` WHERE `id` = ?', str_repeat('h', 32));
+			$this->assertSame('3_' . str_repeat('i', 255), $this->rDb->get_row()['identity']);
 		} finally {
 			ConnectionLimits::useQueue(null);
 			exec('rm -rf ' . escapeshellarg($rDir));
@@ -281,10 +348,7 @@ final class ConnectionAdmissionTest extends TestCase {
 		$rDir = $this->mainTables();
 		ConnectionLimits::useQueue(null);
 		exec('rm -rf ' . escapeshellarg($rDir));
-		$rSql = (string) file_get_contents(dirname(__DIR__, 2) . '/src/bin/install/database.sql');
-		preg_match('/CREATE TABLE IF NOT EXISTS `lines_live` \(.*?\) ENGINE=[^;]*;/s', $rSql, $rM);
-		$this->rDb->exec('DROP TABLE `lines_live`');
-		$this->rDb->exec((string) preg_replace(['/`activity_id` int\(11\) NOT NULL AUTO_INCREMENT/', '/,\s*PRIMARY KEY \(`activity_id`\)/', '/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)( USING BTREE)?/', '/ COLLATE \w+/', '/\) ENGINE=[^;]*;/'], ['`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT', '', '', '', ');'], $rM[0]));
+		$this->ingestTable();
 		$rToken = str_repeat('a', 32);
 		$this->admit($this->token($rToken, 5));
 		$this->assertSame(1, $this->reservations());
@@ -312,6 +376,14 @@ final class ConnectionAdmissionTest extends TestCase {
 		$this->assertSame(0, ConnectionAdmission::reserve(true, '42', 'u4', 15), 'expired reservations are dropped');
 		$this->assertSame(['u4'], $rRedis->zRange('RESV#42', 0, -1));
 		$this->assertGreaterThan(0, $rRedis->ttl('RESV#42'));
+
+		// The count a queued cut makes when it runs: the live ones, less its own.
+		ConnectionAdmission::reserve(true, '42', 'u5', 15);
+		$this->assertSame(1, ConnectionAdmission::inFlight(true, '42', 'u5'));
+		$this->assertSame(2, ConnectionAdmission::inFlight(true, '42', 'u9'), 'a viewer with no reservation of its own');
+		$this->assertSame(0, ConnectionAdmission::inFlight(true, '99', 'u5'));
+		$this->rNow += 16;
+		$this->assertSame(0, ConnectionAdmission::inFlight(true, '42', 'u9'), 'expired ones are not in flight');
 	}
 
 	private function redis(): \Redis {
@@ -343,7 +415,9 @@ final class ConnectionAdmissionTest extends TestCase {
 		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations`');
 		$this->assertSame(0, (int) $this->rDb->get_row()['n']);
 		$this->assertSame(2, $rRedis->zCard('RESV#42'));
+		$this->assertSame(1, ConnectionAdmission::inFlight(false, '42', str_repeat('a', 32)), 'counted where they were reserved');
 		ConnectionAdmission::release(false, '42', str_repeat('a', 32));
 		$this->assertSame([str_repeat('b', 32)], $rRedis->zRange('RESV#42', 0, -1));
+		$this->assertSame(0, ConnectionAdmission::inFlight(false, '42', str_repeat('b', 32)));
 	}
 }

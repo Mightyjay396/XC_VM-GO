@@ -58,8 +58,10 @@ final class AgentConnections {
 	 * - `max_connections`: the token's limit, for the `local` offline policy
 	 *   only; the agent never sends it to MAIN.
 	 *
-	 * Null for a viewer with no limit (the token's max_connections is 0): the
-	 * register is the plain one, as before.
+	 * Null for a viewer with no limit (the token's max_connections is 0), and
+	 * on a node MAIN has not left `active` (quarantined): MAIN mints it no
+	 * claim and answers its conn_admit NOT_ACTIVE, so its viewers are admitted
+	 * without asking. The register is then the plain one, as before.
 	 *
 	 * @param array<string, mixed> $rToken  The decrypted stream token.
 	 * @param array<string, mixed> $rRecord The registry record.
@@ -68,7 +70,7 @@ final class AgentConnections {
 	 */
 	public static function admission(array $rToken, array $rRecord, int $rMainNow): ?array {
 		$rMax = (int) ((is_array($rToken['user_info'] ?? null) ? $rToken['user_info'] : [])['max_connections'] ?? 0);
-		if ($rMax <= 0) {
+		if ($rMax <= 0 || NodeFlows::current()['state'] !== 'active') {
 			return null;
 		}
 		$rOut = [];

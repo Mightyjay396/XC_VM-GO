@@ -42,7 +42,8 @@ use XcVm\Streaming\Protection\ConnectionLimiter;
  * A node whose viewer's token has no claim (minted before this, or while
  * admission could not apply, or expired) asks MAIN with the `conn_admit` op
  * (forNode()): the same reservation for the authenticated node, with the line
- * read on MAIN, and the cut queued for MAIN's 1 s loop.
+ * read on MAIN, and the cut queued for MAIN's 1 s loop, which counts the
+ * reservations in flight again when it runs (cut()).
  *
  * Admission never refuses a valid viewer and never fails the request: when the
  * store or the registry cannot be read it does nothing, and conn.limit
@@ -61,6 +62,14 @@ redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
 redis.call('ZADD', KEYS[1], ARGV[2], ARGV[3])
 redis.call('EXPIRE', KEYS[1], ARGV[4])
 return redis.call('ZCARD', KEYS[1]) - 1
+LUA;
+
+	/** The live members of `RESV#<identity>` (score after now), less ARGV[2]'s own. */
+	private const LUA_COUNT = <<<'LUA'
+local n = redis.call('ZCOUNT', KEYS[1], '(' .. ARGV[1], '+inf')
+local s = redis.call('ZSCORE', KEYS[1], ARGV[2])
+if s and tonumber(s) > tonumber(ARGV[1]) then n = n - 1 end
+return n
 LUA;
 
 	/** @var null|callable(?int, int, ?int, string, ?string, ?string, ?string): mixed */
@@ -150,8 +159,8 @@ LUA;
 	 *   for MAIN's 1 s loop (ConnectionLimits), which has the legacy globals
 	 *   ConnectionLimiter needs and this endpoint does not.
 	 * - `{admit: false, exp: 0, reason}`: a line auth.php would refuse
-	 *   (UNKNOWN_LINE, BANNED, DISABLED, EXPIRED), or an HMAC key that is
-	 *   unknown or disabled (UNKNOWN_HMAC).
+	 *   (UNKNOWN_LINE, EXPIRED, BANNED, DISABLED, in auth.php's order), or an
+	 *   HMAC key that is unknown or disabled (UNKNOWN_HMAC).
 	 *
 	 * A limited line is reserved; an unlimited one needs nothing. An HMAC
 	 * identity is reserved but not cut: its limit is signed into the client's
@@ -159,24 +168,29 @@ LUA;
 	 * enforces it. A repeated uuid refreshes its own reservation, and the cut
 	 * never evicts the viewer asking.
 	 *
+	 * The other identity's id may be absent, null or 0 (a struct without
+	 * omitempty); an identifier is cut to 255 bytes, as conn.limit's queue
+	 * cuts it.
+	 *
 	 * @param array<string, mixed> $rSettings
 	 * @param array<string, mixed> $rRequest {uuid, line_id | hmac_id + identifier, stream_id, ip, ua}
 	 * @return array{admit: bool, exp: int, reason?: string}|null null for a malformed request
 	 */
 	public static function forNode(array $rSettings, int $rServerID, array $rRequest): ?array {
 		$rUUID = $rRequest['uuid'] ?? null;
-		$rLineID = $rRequest['line_id'] ?? null;
-		$rHMAC = $rRequest['hmac_id'] ?? null;
+		$rLineID = ($rRequest['line_id'] ?? null) === 0 ? null : ($rRequest['line_id'] ?? null);
+		$rHMAC = ($rRequest['hmac_id'] ?? null) === 0 ? null : ($rRequest['hmac_id'] ?? null);
 		$rIdentifier = $rRequest['identifier'] ?? null;
 		$rStreamID = $rRequest['stream_id'] ?? 0;
 		$rIP = $rRequest['ip'] ?? '';
 		$rUserAgent = $rRequest['ua'] ?? '';
 		$rIsLine = is_int($rLineID) && $rLineID > 0 && $rHMAC === null;
-		$rIsHMAC = is_int($rHMAC) && $rHMAC > 0 && is_string($rIdentifier) && strlen($rIdentifier) <= 255 && $rLineID === null;
+		$rIsHMAC = is_int($rHMAC) && $rHMAC > 0 && is_string($rIdentifier) && $rLineID === null;
 		$rValid = is_string($rUUID) && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) && is_int($rStreamID) && $rStreamID >= 0 && is_string($rIP) && is_string($rUserAgent);
 		if (!$rValid || $rIsLine === $rIsHMAC) {
 			return null;
 		}
+		$rIdentifier = substr((string) $rIdentifier, 0, 255);
 		$rIP = substr($rIP, 0, 64);
 		$rUserAgent = substr($rUserAgent, 0, 512);
 		$rDb = self::db();
@@ -187,9 +201,9 @@ LUA;
 			$rLine = $rDb->num_rows() === 1 ? $rDb->get_row() : null;
 			$rReason = match (true) {
 				$rLine === null => 'UNKNOWN_LINE',
+				$rLine['exp_date'] !== null && (int) $rLine['exp_date'] <= self::now() => 'EXPIRED',
 				(int) $rLine['admin_enabled'] === 0 => 'BANNED',
 				(int) $rLine['enabled'] === 0 => 'DISABLED',
-				$rLine['exp_date'] !== null && (int) $rLine['exp_date'] <= self::now() => 'EXPIRED',
 				default => null,
 			};
 			if ($rReason !== null) {
@@ -210,12 +224,13 @@ LUA;
 		$rTtl = self::ttl($rSettings);
 		if ($rMax === null || $rMax > 0) {
 			try {
-				$rOthers = self::reserve(!empty($rSettings['redis_handler']), $rIdentity, $rUUID, $rTtl, $rServerID, $rStreamID);
+				$rReserved = self::reserve(!empty($rSettings['redis_handler']), $rIdentity, $rUUID, $rTtl, $rServerID, $rStreamID) !== null;
 			} catch (\Throwable) {
-				$rOthers = null; // a store that cannot be reached refuses no one: conn.limit follows the open
+				$rReserved = false; // a store that cannot be reached refuses no one: conn.limit follows the open
 			}
-			if ($rOthers !== null && $rIsLine) {
-				ConnectionLimits::queueAdmission($rServerID, $rUUID, (int) $rLineID, $rOthers, $rIP, $rUserAgent);
+			// The cut counts the reservations in flight when it runs (cut()).
+			if ($rReserved && $rIsLine) {
+				ConnectionLimits::queueAdmission($rServerID, $rUUID, (int) $rLineID, $rIP, $rUserAgent);
 			}
 		}
 		return ['admit' => true, 'exp' => self::now() + $rTtl];
@@ -224,12 +239,15 @@ LUA;
 	/**
 	 * A conn_admit's cut, run by MAIN's loop (ConnectionLimits::drain): the
 	 * line's open connections, and its pair's, down to what leaves room for
-	 * the viewer and the `others` reservations that were in flight. The limit
-	 * and pair are read from `lines` now. A viewer that opened meanwhile is
-	 * already counted among the open ones, so it takes no room of its own; it
-	 * is never cut.
+	 * the viewer and the line's other reservations still in flight. Both the
+	 * limit and the reservations are read now, not at admission: a
+	 * reservation counted then may have opened since (ingest released it),
+	 * and would count twice, open and in flight. A viewer that opened
+	 * meanwhile is already counted among the open ones, so it takes no room
+	 * of its own; it is never cut. A store that cannot be read cuts nothing,
+	 * as at mint: conn.limit follows the open.
 	 */
-	public static function cut(int $rLineID, int $rOthers, bool $rOpen, string $rIP, string $rUserAgent, string $rUUID): bool {
+	public static function cut(bool $rRedisMode, int $rLineID, bool $rOpen, string $rIP, string $rUserAgent, string $rUUID): bool {
 		$rDb = self::db();
 		$rDb->query('SELECT `max_connections`, `pair_id` FROM `lines` WHERE `id` = ?;', $rLineID);
 		if ($rDb->num_rows() !== 1) {
@@ -239,6 +257,14 @@ LUA;
 		$rMax = (int) $rLine['max_connections'];
 		if ($rMax <= 0) {
 			return true;
+		}
+		try {
+			$rOthers = self::inFlight($rRedisMode, (string) $rLineID, $rUUID);
+		} catch (\Throwable) {
+			$rOthers = null;
+		}
+		if ($rOthers === null) {
+			return false;
 		}
 		$rRoom = max(0, $rMax - $rOthers - ($rOpen ? 0 : 1));
 		self::enforce($rLineID, (int) ($rLine['pair_id'] ?? 0), $rRoom, null, '', $rIP, $rUserAgent, $rUUID);
@@ -295,6 +321,38 @@ LUA;
 		$db->query('DELETE FROM `cluster_reservations` WHERE `exp` < ?;', $rNow);
 		$db->query('REPLACE INTO `cluster_reservations` (`id`, `identity`, `server_id`, `stream_id`, `created_at`, `exp`) VALUES (?, ?, ?, ?, ?, ?);', $rUUID, $rIdentity, $rServerID, $rStreamID ?: null, $rNow, $rNow + $rTtl);
 		if (!$db->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations` WHERE `identity` = ? AND `id` <> ? AND `exp` >= ?;', $rIdentity, $rUUID, $rNow)) {
+			return null;
+		}
+		return (int) ($db->get_row()['n'] ?? 0);
+	}
+
+	/**
+	 * The identity's live reservations other than $rExceptUUID's, counted now,
+	 * in the store reserve() writes to; null when it cannot be read.
+	 */
+	public static function inFlight(bool $rRedisMode, string $rIdentity, string $rExceptUUID): ?int {
+		$rNow = self::now();
+		$rBus = ClusterBus::client();
+		if ($rBus !== null) {
+			try {
+				$rCount = $rBus->eval(self::LUA_COUNT, ['RESV#' . $rIdentity, $rNow, $rExceptUUID], 1);
+				if (is_int($rCount)) {
+					return max(0, $rCount);
+				}
+			} catch (\Throwable) {
+				// Fall through to the store.
+			}
+		}
+		if ($rRedisMode) {
+			$rRedis = RedisManager::instance();
+			if (!$rRedis instanceof \Redis) {
+				return null;
+			}
+			$rCount = $rRedis->eval(self::LUA_COUNT, ['RESV#' . $rIdentity, $rNow, $rExceptUUID], 1);
+			return is_int($rCount) ? max(0, $rCount) : null;
+		}
+		$db = self::db();
+		if (!$db->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations` WHERE `identity` = ? AND `id` <> ? AND `exp` >= ?;', $rIdentity, $rExceptUUID, $rNow)) {
 			return null;
 		}
 		return (int) ($db->get_row()['n'] ?? 0);

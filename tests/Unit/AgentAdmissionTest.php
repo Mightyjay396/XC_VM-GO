@@ -35,7 +35,7 @@ final class AgentAdmissionTest extends TestCase {
 		NodeFlows::usePath($this->rDir . '/flows.json');
 		AgentClient::useSocket($this->rDir . '/agent.sock');
 		$this->rDb = new TestDb();
-		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT, `uuid` text, `user_id` int, `stream_id` int, `server_id` int, `user_ip` text)');
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT, `uuid` text, `user_id` int, `stream_id` int, `server_id` int, `user_ip` text, `hls_end` int DEFAULT 0)');
 		DatabaseFactory::set($this->rDb);
 	}
 
@@ -47,6 +47,8 @@ final class AgentAdmissionTest extends TestCase {
 		NodeFlows::usePath(null);
 		AgentClient::useSocket(null);
 		DatabaseFactory::reset();
+		// The last refusal outlives the test otherwise, and refuseAdmission() exits on it.
+		(new \ReflectionProperty(ConnectionTracker::class, 'rRefused'))->setValue(null, null);
 		exec('rm -rf ' . escapeshellarg($this->rDir));
 	}
 
@@ -122,8 +124,14 @@ PHP);
 	}
 
 	/** @param array<string, mixed> $rDbRow */
-	private function open(array $rRecord, ?array $rToken, array $rDbRow = []): mixed {
-		return ConnectionTracker::openRecord(['redis_handler' => 0], $rRecord, $rDbRow ?: ['user_id' => 42, 'stream_id' => 100, 'server_id' => 5, 'user_ip' => '203.0.113.9', 'uuid' => $rRecord['uuid']], $rToken, 0);
+	private function open(array $rRecord, ?array $rToken, array $rDbRow = [], int $rTimeOffset = 0): mixed {
+		return ConnectionTracker::openRecord(['redis_handler' => 0], $rRecord, $rDbRow ?: ['user_id' => 42, 'stream_id' => 100, 'server_id' => 5, 'user_ip' => '203.0.113.9', 'uuid' => $rRecord['uuid']], $rToken, $rTimeOffset);
+	}
+
+	/** @return array<string, mixed>|null the admission header of the n-th request */
+	private function header(int $rIndex): ?array {
+		$rRaw = $this->requests()[$rIndex]['headers']['x-xcvm-admission'] ?? null;
+		return $rRaw === null ? null : json_decode($rRaw, true);
 	}
 
 	public function testANewViewersRegisterCarriesItsAdmissionRequest(): void {
@@ -172,10 +180,95 @@ PHP);
 	}
 
 	public function testARefusalIsNotRecordedAnywhere(): void {
-		$this->agent([[403, '{"admit":false,"reason":"LIMIT"}']]);
+		$this->agent([[403, '{"admit":false,"reason":"LIMIT"}'], [200, '{}'], [403, '{"admit":false,"reason":"no such"}']]);
 		$this->assertFalse($this->open($this->record('e1'), $this->token('e1')));
 		$this->assertSame('LIMIT', ConnectionTracker::refusedAdmission());
 		$this->assertSame(0, $this->rows(), 'not written to MAIN\'s store in the agent\'s place');
+		// The next viewer is admitted: the refusal was the last one's only.
+		$this->assertTrue($this->open($this->record('e2'), $this->token('e2')));
+		$this->assertNull(ConnectionTracker::refusedAdmission());
+		// A reason that is not one reads as REFUSED.
+		$this->assertFalse($this->open($this->record('e3'), $this->token('e3')));
+		$this->assertSame('REFUSED', ConnectionTracker::refusedAdmission());
+	}
+
+	public function testAdmClaimFreshnessGoesByMainsClock(): void {
+		$rToken = $this->token('h1', ['adm' => ['exp' => self::MAIN_NOW, 'sid' => 5]]);
+		$this->assertSame(['exp' => self::MAIN_NOW, 'sid' => 5], AgentConnections::admission($rToken, $this->record('h1'), self::MAIN_NOW)['adm'], 'not past at its own second');
+		$this->assertArrayNotHasKey('adm', AgentConnections::admission($rToken, $this->record('h1'), self::MAIN_NOW + 1));
+		// A malformed claim is not passed on; the rest of the request is.
+		$rBad = AgentConnections::admission($this->token('h1', ['adm' => ['exp' => (string) self::MAIN_NOW, 'sid' => 5]]), $this->record('h1'), self::MAIN_NOW);
+		$this->assertSame(['line_id' => 42, 'stream_id' => 100, 'max_connections' => 2, 'ip' => '203.0.113.9', 'ua' => 'VLC'], $rBad);
+
+		// servers.time_offset is this node's clock less MAIN's.
+		$this->agent([[200, '{}'], [200, '{}']]);
+		// The node runs an hour ahead: a claim that looks half an hour old here is still good on MAIN.
+		$this->assertTrue($this->open($this->record('h2'), $this->token('h2', ['adm' => ['exp' => time() - 1800, 'sid' => 5]]), [], 3600));
+		// An hour behind: one that looks half an hour away here expired on MAIN.
+		$this->assertTrue($this->open($this->record('h3'), $this->token('h3', ['adm' => ['exp' => time() + 1800, 'sid' => 5]]), [], -3600));
+		$this->assertArrayHasKey('adm', (array) $this->header(0));
+		$this->assertArrayNotHasKey('adm', (array) $this->header(1));
+	}
+
+	public function testLivesRegisterPassesTheTokenOn(): void {
+		$this->agent([[200, '{}'], [200, '{}']]);
+		$rCtx = ['is_hmac' => null, 'identifier' => null, 'user_id' => 42, 'stream_id' => 100, 'server_id' => 5, 'proxy_id' => 0, 'user_agent' => 'VLC', 'user_ip' => '203.0.113.9', 'date_start' => self::MAIN_NOW, 'geoip_country_code' => 'PT', 'isp' => 'ISP', 'external_device' => '', 'on_demand' => 0, 'time_offset' => 0];
+		$rAdm = ['exp' => time() + 15, 'sid' => 5];
+		$this->assertTrue(ConnectionTracker::createLive(['redis_handler' => 0], $rCtx + ['uuid' => 'i1', 'token' => $this->token('i1', ['adm' => $rAdm])], 'ts', 4321));
+		// HLS: live.php keeps the token's uuid as adm_uuid before it takes the playlist key.
+		$this->assertTrue(ConnectionTracker::createLive(['redis_handler' => 0], $rCtx + ['uuid' => 'hlskey', 'token' => $this->token('hlskey', ['adm' => $rAdm, 'adm_uuid' => 'i2'])], 'hls', null));
+		$this->assertSame($rAdm, $this->header(0)['adm'] ?? null);
+		$this->assertSame($rAdm, $this->header(1)['adm'] ?? null);
+		$this->assertSame('i2', $this->requests()[1]['body']['adm_uuid'] ?? null);
+	}
+
+	public function testTheHeaderIsAsciiWhateverTheUserAgent(): void {
+		$this->agent([[200, '{}']]);
+		$this->assertTrue($this->open($this->record('j1', ['user_agent' => "Kodi/\u{e9}\x80"]), $this->token('j1')));
+		$rRaw = $this->requests()[0]['headers']['x-xcvm-admission'];
+		$this->assertMatchesRegularExpression('/^[\x20-\x7e]+$/', $rRaw);
+		$this->assertSame("Kodi/\u{e9}\u{fffd}", json_decode($rRaw, true)['ua']);
+	}
+
+	public function testAQuarantinedNodeRegistersWithoutAsking(): void {
+		// MAIN mints it no claim and answers its conn_admit NOT_ACTIVE.
+		file_put_contents($this->rDir . '/flows.json', json_encode(['mode' => 1, 'flows' => NodeFlows::COMMANDS | NodeFlows::STREAMS | NodeFlows::CONNECTIONS, 'state' => 'quarantined']));
+		NodeFlows::usePath($this->rDir . '/flows.json');
+		$this->agent([[200, '{}']]);
+		$this->assertTrue($this->open($this->record('k1'), $this->token('k1')));
+		$this->assertNull($this->header(0));
+		$this->assertSame(0, $this->rows(), 'its agent still holds its viewers');
+	}
+
+	public function testARefusalIsShownAsAuthShowsItsCause(): void {
+		$this->assertSame(['USER_EXPIRED', 'show_expired_video', 'expired_video_path', null], StreamAuth::admissionRefusal('EXPIRED'));
+		$this->assertSame(['USER_BAN', 'show_banned_video', 'banned_video_path', null], StreamAuth::admissionRefusal('BANNED'));
+		$this->assertSame(['USER_DISABLED', 'show_banned_video', 'banned_video_path', null], StreamAuth::admissionRefusal('DISABLED'));
+		$this->assertSame(['AUTH_FAILED', null, null, 'INVALID_CREDENTIALS'], StreamAuth::admissionRefusal('UNKNOWN_LINE'));
+		$this->assertSame(['AUTH_FAILED', null, null, 'INVALID_CREDENTIALS'], StreamAuth::admissionRefusal('UNKNOWN_HMAC'));
+		foreach (['LIMIT', 'OFFLINE', 'REFUSED', 'SOMETHING_NEW'] as $rReason) {
+			$this->assertSame(['USER_ALREADY_CONNECTED', 'show_connected_video', 'connected_video_path', null], StreamAuth::admissionRefusal($rReason), $rReason);
+		}
+	}
+
+	public function testTheStreamEndpointsAreWiredForAdmission(): void {
+		$rRoot = dirname(__DIR__, 2) . '/src/Public/stream/';
+		$rLive = (string) file_get_contents($rRoot . 'live.php');
+		$rKeep = strpos($rLive, '$rTokenData["adm_uuid"] = $rTokenData["uuid"]');
+		$rKey = strpos($rLive, '$rTokenData["uuid"] = ConnectionTracker::hlsConnectionKey');
+		$this->assertNotFalse($rKeep);
+		$this->assertNotFalse($rKey);
+		$this->assertLessThan($rKey, $rKeep, 'the reserved uuid is kept before the playlist key replaces it');
+		$this->assertStringContainsString('"token" => $rTokenData,', $rLive);
+		$rRefusals = ['live.php' => 2, 'timeshift.php' => 2, 'vod.php' => 1];
+		foreach ($rRefusals as $rFile => $rCount) {
+			$rSource = (string) file_get_contents($rRoot . $rFile);
+			$this->assertSame($rCount, substr_count($rSource, 'StreamAuth::refuseAdmission('), $rFile);
+			$this->assertSame($rCount, substr_count($rSource, 'generateError("LINE_CREATE_FAIL")') + substr_count($rSource, "generateError('LINE_CREATE_FAIL')"), $rFile . ': every failed register is refused first');
+			if ($rFile !== 'live.php') {
+				$this->assertSame($rCount, substr_count($rSource, '$rTokenData, intval($rServers[SERVER_ID][\'time_offset\']));'), $rFile . ': openRecord gets the token and the offset');
+			}
+		}
 	}
 
 	public function testAnOlderAgentAdmitsAndAnUnexpectedAnswerFallsBack(): void {
