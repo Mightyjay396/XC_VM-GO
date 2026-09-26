@@ -1254,8 +1254,8 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 **Before.** Every heartbeat (every 2 s per node) wrote MySQL: `cluster_nodes` (`last_seen_at`, `clock_offset_ms`, `root_ready`, `updated_at`), `servers.status`, and the `used` flag of its epoch. For a TELEMETRY node it also read the `servers` row, and wrote it every 5 s. The plan (section 8) has heartbeats hold no DB connection, and the health loop copy them from `cl:tel:<sid>` into MySQL every 5 s.
 
 **Now.** While the bus runs and a flusher is working (below), `HeartbeatService::record()` asks MySQL nothing. One Lua script keeps:
-- `cl:hb`, a hash with one field per server id: `<heard ms>:<clock offset ms>:<root_ready 0|1|->:<telemetry heard ms>:<authoritative 0|1>`. `heard` is MAIN's clock when it handled the heartbeat, as `last_seen_at` was. A heartbeat without `root_ready` or `telemetry` keeps the last ones (`-`: never sent). No TTL.
-- `cl:tel:<sid>`, the telemetry document: `{"at": heard ms, "auth": 0|1, "telemetry": {…}}`, with a 10 min TTL. `auth` says whether the node was in mode ≥ 1 with TELEMETRY on when MAIN heard it. It is encoded with `JSON_PRESERVE_ZERO_FRACTION`, so the flush reads back exactly what the heartbeat carried.
+- `cl:hb`, a hash with one field per server id: `<heard ms>:<clock offset ms>:<root_ready 0|1|->:<telemetry heard ms>:<authoritative 0|1>:<gen>`. `heard` is MAIN's clock when it handled the heartbeat, as `last_seen_at` was. `gen` is the enrolment the heartbeat was authenticated for. A heartbeat without `root_ready` or `telemetry` keeps the last ones of the same `gen` (`-`: never sent). No TTL.
+- `cl:tel:<sid>`, the telemetry document: `{"at": heard ms, "auth": 0|1, "telemetry": {…}}`, with a 10 min TTL. `auth` says whether the node was in mode ≥ 1 with TELEMETRY on when MAIN heard it. It is encoded with `JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION`, so the flush reads back exactly what the heartbeat carried.
 
 Authentication still reads the node and its epoch (two SELECTs). `TokenService::markUsed()` no longer writes for an epoch that is already the node's current one: every newer epoch is minted above the current one, and an epoch becomes current only once its `used` flag is written, so that epoch was marked. So a heartbeat on the bus writes nothing to MySQL.
 
@@ -1263,13 +1263,14 @@ Authentication still reads the node and its epoch (two SELECTs). `TokenService::
 - **`cluster_nodes`** gets `last_seen_at`, `clock_offset_ms`, `root_ready` (once ever sent) and `updated_at` (heard, in seconds). This happens when the heartbeat differs from the one last flushed and one of these holds:
   - the node was never flushed on this bus;
   - its last flush is 5 s old (`FLUSH_EVERY_MS`), or ahead of MAIN's clock;
-  - `root_ready` changed, so `CommandBus::acceptsRoot()` learns it within a second.
-- **The guard.** The UPDATE never takes `last_seen_at` back: `hello`, `enrol_complete` and `token_rekey` still write it directly. The exception is a `last_seen_at` more than 1 s ahead of MAIN's clock (the clock stepped back), which a heartbeat overwrote before too. With it goes `servers.status = 1 WHERE status <> 1`, as each heartbeat did.
+  - its `root_ready` is not the one MySQL had at the last flush, so `CommandBus::acceptsRoot()` learns it within a second. After a change the flush reads `root_ready` back: `hello` may have written a newer `last_seen_at` meanwhile and kept the UPDATE from matching, and the next heartbeat must then still count as a change.
+- **The guard.** The UPDATE never takes `last_seen_at` back: `hello`, `enrol_complete` and `token_rekey` still write it directly. The exception is a `last_seen_at` more than 1 s ahead of MAIN's clock (the clock stepped back), which a heartbeat overwrote before too. With it goes `servers.status = 1 WHERE status <> 1`, as each heartbeat did. Both write only while the row's `gen` is the heartbeat's: a heartbeat of an enrolment that has since ended never reaches the new row or marks the server up again (an installer may just have set status 4).
 - **Telemetry.** An authoritative document goes through the direct path's own code (`authoritative()`), judged on the time MAIN heard it. The `servers` row is written when that time is 5 s past its `last_check_ago`, and `servers_stats` once a minute; `last_check_ago` and the stats row's `time` are the heard time. The flusher runs every second and heartbeats come every 2 s, so it writes the same documents the heartbeats wrote.
-- **Bookkeeping.** What it wrote is recorded in `cl:hb_flushed`: `<heard>:<root_ready>:<flushed at ms>:<servers written as of ms>`. What MySQL refused is not recorded, and goes again at the next pass.
-- **Forgetting.** A node silent for 10 min leaves `cl:hb` and `cl:hb_flushed` once flushed, unless a heartbeat came meanwhile.
+- **Bookkeeping.** What it wrote is recorded in `cl:hb_flushed`: `<heard>:<root_ready MySQL has>:<flushed at ms>:<servers written as of ms>`. What MySQL refused is not recorded, and goes again at the next pass.
+- **Forgetting.** A node silent for 10 min leaves `cl:hb`, `cl:hb_flushed` and `cl:tel:<sid>` once flushed, unless a heartbeat came meanwhile.
+- **Enrolments.** What the bus holds of a node belongs to the enrolment that sent it. `NodeRegistry::startEnrolment()` (re-enrolment) and `revoke()` drop the node's `cl:hb`, `cl:hb_flushed` and `cl:tel:<sid>` (`HeartbeatService::forget()`); a heartbeat of the old enrolment still in flight may land after that, and the `gen` guard keeps it out of the new row. Its telemetry, authoritative when MAIN heard it, may still be written to `servers` once, as the direct path wrote an in-flight heartbeat's.
 
-**Only with a working flusher.** A pass in which MySQL took every write it had due stamps `cl:flusher` with the bus's clock. A heartbeat stays on the bus only while that stamp is under 5 s old (`FLUSHER_STALE_MS`); otherwise it writes MySQL as before. So MySQL never lags for want of a working flusher:
+**Only with a working flusher.** A pass in which MySQL took every write it had due stamps `cl:flusher` with the bus's clock. A heartbeat stays on the bus only while that stamp is under 5 s old (`FLUSHER_STALE_MS`), either way (a stamp ahead of the bus's clock is stale too); otherwise it writes MySQL as before. So MySQL never lags for want of a working flusher:
 - the signals daemon is down, and `cron:cluster` flushes only once a minute;
 - MySQL refuses the flush;
 - a new bus has had no pass yet.
@@ -1287,15 +1288,15 @@ Authentication still reads the node and its epoch (two SELECTs). `TokenService::
 
 A bus lost between a heartbeat and its flush loses at most one flush's worth of heartbeats:
 - MySQL keeps what it had; nothing is rolled back.
-- Liveness reads MySQL, which is at most one flush behind, under the 10 s suspect threshold.
 - The next heartbeat writes MySQL itself while the bus is out of reach, or goes to a new bus once that bus's flusher has run a pass.
+- Liveness. At the loss, MySQL's `last_seen_at` can be a flush (5 s), the 1 s loop and a heartbeat interval old, and it ages one more interval until the node's next heartbeat writes MySQL: up to 12 s at 3 s, over the 10 s suspect threshold. So when a pass reads nothing from the bus (lost, or restarted empty), `LivenessService` uses the heard times it last read from that bus, for up to 5 s (`FLUSH_EVERY_MS`) after reading them. A live node is then never judged more than 5 s plus one interval (8 s) silent, and by the end of the window its next heartbeat, one interval after the loss, is in MySQL. The Cluster Nodes page has no such memory, and may show MySQL's older time until then.
 
 **The shadow copy.** Nothing in `src/` reads `tmp/cluster/tel_<sid>.json`. The direct path still writes it; a heartbeat on the bus does not. `HeartbeatService::telemetry()` returns the newer of `cl:tel:<sid>` and the file, for any reader to come.
 
 **The agent's contract.** Nothing changes on the wire: no new op, lane, field, header, refusal or setting. The `heartbeat` request and its reply are as they were, and older agents are unaffected. The agent must keep to what MAIN now relies on:
-1. **Cadence.** `heartbeat` every `lb_telemetry_interval_sec` (1–3 s, default 2). MAIN's MySQL follows the bus by up to 5 s, and a node is suspect after 10 s of silence.
-2. **`root_ready`** (bool) in every heartbeat. MAIN keeps the last value it got, and a heartbeat without the field keeps it.
-3. **`telemetry`** (object) at most 128 KiB as MAIN encodes it (its `local` is already capped at 64 KiB). A bigger document costs MAIN a direct MySQL write per heartbeat, as before.
+1. **Cadence.** `heartbeat` every `lb_telemetry_interval_sec` (1–3 s, default 2), never more than 3 s apart: MAIN's liveness bounds when the bus is lost assume at most 3 s. MAIN's MySQL copy (`cluster_nodes.last_seen_at`, `servers`) follows the bus by up to 5 s plus the 1 s loop, and a node is suspect after 10 s of silence.
+2. **`root_ready`** (bool) in every heartbeat. MAIN keeps the last value it got from the node's current enrolment: a heartbeat without the field keeps it, and a re-enrolment starts again from 0. A changed value reaches MySQL (`cluster_nodes.root_ready`, which `CommandBus::acceptsRoot()` reads) at the next flush, within about 1 s; if `hello` wrote the node's row between that heartbeat and the flush, with the next heartbeat instead. A heartbeat with an unchanged value waits for the 5 s flush.
+3. **`telemetry`** (object). It stays on the bus while MAIN's encoding of `{"at":<ms>,"auth":0|1,"telemetry":<object>}` is at most 131072 bytes. That encoding is PHP `json_encode` with `JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION`, so every non-ASCII character counts as its `\uXXXX` escape (6 or 12 bytes), a whole-number float keeps its `.0`, and the wrapper adds 42 bytes. Keep the object under about 120 KiB as encoded that way (its `local` is already capped at 64 KiB). A bigger document costs MAIN a direct MySQL write per heartbeat, as before.
 4. **No faster MySQL.** Nothing the agent does may depend on MAIN's MySQL copy (the server page, `servers.watchdog_data`) changing within about 6 s of a heartbeat.
 
 **Differs from the plan.**
@@ -1313,19 +1314,23 @@ A bus lost between a heartbeat and its flush loses at most one flush's worth of 
 **Limits.**
 - While the bus is in use, MySQL's `last_seen_at` and `servers` lag it by up to 5 s plus the 1 s loop. Everything that judges liveness also reads the bus, except the orphan purge (above).
 - The stamp uses the bus's `TIME`, the flush cadence MAIN's clock. A bus clock step of over 5 s sends heartbeats to MySQL until the next pass.
-- `cl:tel:*` have a TTL, so the bus may evict one under memory pressure. An evicted document is not written, and the next heartbeat's is.
+- `cl:tel:*` have a 10 min TTL, longer than the wake-ups (60 s) and admission reservations, so under `volatile-ttl` those are evicted first. Unlike touches, heartbeats do not leave the bus past `TOUCH_MEMORY_SHARE`: the documents take at most 128 KiB per node (usually a few KiB), bounded by the node count, so they are never what fills the bus, and a share check would send every heartbeat to MySQL whenever touches hold their half of it. An evicted document is not written, and the next heartbeat's is.
 - Memory: at most about 128 KiB per node, usually a few KiB.
 
 Tests:
 - `ClusterHeartbeatBusTest`, against a real redis-server on a unix socket:
   - no query at all on a heartbeat on the bus, then the flush's rows;
   - 130 s of heartbeats both ways, compared every second: the same `servers` and `servers_stats` rows, `root_ready` at once, `cluster_nodes` at most every 5 s and at most 5 s behind, the freshest equal to what each heartbeat wrote, and the last heartbeat flushed without another after it;
-  - MySQL per heartbeat without the bus, without a flusher, with a stale one, with one MySQL refuses, and for a document over the cap;
+  - MySQL per heartbeat without the bus, without a flusher, with a stale one (also a stamp ahead of the bus's clock), with one MySQL refuses (`cluster_nodes`, or the `servers` telemetry write, retried at the next pass), and for a document over the cap;
   - an older bus value that never overwrites a newer `last_seen_at`, and a clock step back;
-  - two flushers, one writing;
-  - a node forgotten after 10 min;
+  - telemetry judged on the time MAIN heard it, never written over a newer direct write;
+  - no `servers` write for a node that is not authoritative (no TELEMETRY, or mode 0);
+  - a heartbeat without `root_ready` or `telemetry` keeping the last ones; a `root_ready` change that `hello` overtook, flushed with the next heartbeat;
+  - two flushers, one writing, and each giving back only its own lock;
+  - a node forgotten after 10 min with its record and document, only once flushed, and not when a heartbeat came during the pass;
+  - a re-enrolment and a revocation dropping the node's heartbeats, and an in-flight heartbeat of the old enrolment kept out of the new row;
   - the newer of the bus copy and the shadow file;
-  - liveness on bus-only freshness (ok, suspect, offline, and MySQL winning when newer), the fleet guard, silence from `ready_at`;
+  - liveness on bus-only freshness (ok, suspect, offline, and MySQL winning when newer), the fleet guard, silence from `ready_at`, and no node suspect when the bus is lost just before a flush;
   - the bus killed, and the bus restarted empty between a heartbeat and its flush;
   - the Cluster Nodes page.
 - `ClusterApiTest`: a heartbeat end to end on the bus, with only the two authentication reads in MySQL, then the flush.

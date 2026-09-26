@@ -30,8 +30,6 @@ use XcVm\Tests\Support\QueryLogDb;
 use XcVm\Tests\Support\ClusterReference;
 use XcVm\Tests\Support\FakeClusterCrypto;
 
-require_once dirname(__DIR__) . '/Support/QueryLogDb.php';
-
 /**
  * MAIN's cluster API end to end, against the real migrations' schema: SSH
  * enrolment issues epoch 1, and a test agent (doing what the Go agent does:

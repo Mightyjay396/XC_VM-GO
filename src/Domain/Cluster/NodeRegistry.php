@@ -46,7 +46,8 @@ final class NodeRegistry {
 	/**
 	 * Create (or re-create, on re-enrolment) the row of a node that is about to
 	 * receive its first token. A re-enrolment increments gen, so every token of
-	 * the previous generation stops working.
+	 * the previous generation stops working, and drops the heartbeats the
+	 * cluster bus still holds of it.
 	 *
 	 * @return array{gen: int} The generation the first token must carry.
 	 */
@@ -74,6 +75,7 @@ final class NodeRegistry {
 			$rNow,
 			$rNow
 		);
+		HeartbeatService::forget($rServerID);
 		return ['gen' => $rGen];
 	}
 
@@ -89,8 +91,8 @@ final class NodeRegistry {
 
 	/**
 	 * Revoke a node: raise the extension's floor to the next generation, drop
-	 * its epochs, and mark the row. Every later request gets a signed
-	 * NODE_REVOKED.
+	 * its epochs and the heartbeats the cluster bus holds of it, and mark the
+	 * row. Every later request gets a signed NODE_REVOKED.
 	 */
 	public static function revoke(int $rServerID, ClusterCrypto $rCrypto, string $rActor = 'admin'): bool {
 		$rNode = self::byServer($rServerID);
@@ -101,6 +103,7 @@ final class NodeRegistry {
 		$rCrypto->nodeGen((string) $rNode['node_uuid'], $rGen);
 		self::db()->query('DELETE FROM `cluster_node_epochs` WHERE `server_id` = ?;', $rServerID);
 		self::update($rServerID, ['state' => 'revoked', 'gen' => $rGen]);
+		HeartbeatService::forget($rServerID);
 		ClusterAudit::log('node.revoke', $rServerID, ['node' => $rNode['node_uuid'], 'gen' => $rGen], $rActor);
 		return true;
 	}

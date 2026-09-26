@@ -12,9 +12,8 @@ use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\BusServer;
+use XcVm\Tests\Support\FakeClusterCrypto;
 use XcVm\Tests\Support\QueryLogDb;
-
-require_once dirname(__DIR__) . '/Support/QueryLogDb.php';
 
 /**
  * Heartbeats on the cluster bus (plan, section 8: "Every 5 s the health loop
@@ -65,6 +64,8 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		ClusterBus::useSocket($this->rNoBus);
 		$this->rHealth = $this->temp() . '/health.json';
 		ClusterHealth::usePath($this->rHealth);
+		// What an earlier test's liveness passes read from the bus.
+		(new \ReflectionProperty(LivenessService::class, 'rBusHeard'))->setValue(null, null);
 	}
 
 	protected function tearDown(): void {
@@ -158,6 +159,30 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		$rRedis->set(HeartbeatService::KEY_FLUSHER, (string) (BusServer::nowMs($rRedis) - 60000));
 	}
 
+	/** Make the bus believe a flusher finished a clean pass just now, however long the test has run. */
+	private function flusherFresh(\Redis $rRedis): void {
+		$rRedis->set(HeartbeatService::KEY_FLUSHER, (string) BusServer::nowMs($rRedis));
+	}
+
+	/** A node's `cl:hb` value: heard, offset, root_ready, telemetry heard, authoritative, gen. */
+	private function busValue(\Redis $rRedis, int $rServerID = 5): array {
+		return explode(':', (string) $rRedis->hGet(HeartbeatService::KEY_BEATS, (string) $rServerID));
+	}
+
+	/**
+	 * The end of a flush pass, run as the flusher runs it (a pass that read
+	 * the bus before a heartbeat came, or one whose lock another holds).
+	 */
+	private function flushEnd(string $rToken, bool $rClean, array $rForget = []): void {
+		$rKeys = [HeartbeatService::KEY_FLUSHED, HeartbeatService::KEY_LOCK, HeartbeatService::KEY_BEATS, HeartbeatService::KEY_FLUSHER];
+		$rArgs = [$rToken, $rClean ? 1 : 0, 0];
+		foreach ($rForget as $rID => $rRaw) {
+			$rKeys[] = HeartbeatService::TEL_PREFIX . $rID;
+			array_push($rArgs, $rID, $rRaw);
+		}
+		$this->assertSame(1, ClusterBus::script((string) (new \ReflectionClassConstant(HeartbeatService::class, 'FLUSH_END_LUA'))->getValue(), $rKeys, $rArgs));
+	}
+
 	public function testWithoutTheBusEachHeartbeatWritesMySqlAsBefore(): void {
 		$rLog = new QueryLogDb($this->rDb);
 		DatabaseFactory::set($rLog);
@@ -224,7 +249,7 @@ final class ClusterHeartbeatBusTest extends TestCase {
 				if ($rBus) {
 					$rBefore = count($rLog->writes());
 					HeartbeatService::flush();
-					$rNodeWrites += count(array_filter(array_slice($rLog->writes(), $rBefore), static fn(string $rQ): bool => str_contains($rQ, '`cluster_nodes`')));
+					$rNodeWrites += count(array_filter(array_slice($rLog->writes(), $rBefore), static fn(string $rQ): bool => str_starts_with($rQ, 'UPDATE `cluster_nodes`')));
 				}
 			}
 			$this->assertSame($this->server($rDirect), $this->server($rOnBus), 'servers at ' . $rS . ' s');
@@ -281,6 +306,71 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		$this->assertSame([5 => $this->rT0 + 4000], HeartbeatService::lastSeen(), 'a clean pass: back on the bus');
 	}
 
+	public function testARefusedServersWriteIsTriedAgainAndLeavesThePassUnclean(): void {
+		$rRedis = $this->bus();
+		HeartbeatService::flush();
+		$this->beat($this->rT0);
+		$this->flusherGone($rRedis); // only this pass's stamp could keep heartbeats on the bus
+		$rLog = new QueryLogDb($this->rDb);
+		$rLog->rRefuse = '/^UPDATE `servers` SET `watchdog_data`/';
+		DatabaseFactory::set($rLog);
+		HeartbeatService::flush();
+		$this->assertSame($this->rT0, (int) $this->node()['last_seen_at'], 'cluster_nodes took its write');
+		$this->assertSame(0, (int) $this->server($this->rDb)['requests_per_second'], 'servers refused it');
+		$this->assertNotSame((string) $this->rT0, explode(':', (string) $rRedis->hGet(HeartbeatService::KEY_FLUSHED, '5'))[3], 'so it is not recorded as written');
+		$this->beat($this->rT0 + 2000);
+		$this->assertSame([5 => $this->rT0], HeartbeatService::lastSeen(), 'an unclean pass stamps nothing: the heartbeat went to MySQL');
+		$this->assertSame($this->rT0 + 2000, (int) $this->node()['last_seen_at']);
+
+		$rLog->rRefuse = null;
+		ClusterClock::fix($this->rT0 + 3000);
+		HeartbeatService::flush();
+		$rServer = $this->server($this->rDb);
+		$this->assertSame([42, intdiv($this->rT0, 1000)], [(int) $rServer['requests_per_second'], (int) $rServer['last_check_ago']], 'written at the next pass, on the time MAIN heard it');
+	}
+
+	public function testTelemetryIsJudgedOnTheTimeMainHeardIt(): void {
+		$rRedis = $this->bus();
+		HeartbeatService::flush();
+		$this->beat($this->rT0);
+		ClusterClock::fix($this->rT0 + 3000);
+		HeartbeatService::flush();
+		$this->assertSame(intdiv($this->rT0, 1000), (int) $this->server($this->rDb)['last_check_ago'], 'not the flush\'s time');
+		$this->assertSame([intdiv($this->rT0, 1000)], array_map('intval', array_column($this->stats($this->rDb), 'time')));
+
+		// A document still on the bus when its flusher stopped, and a newer
+		// one written directly since: the flusher, back, never writes the
+		// older one over it.
+		$this->flusherFresh($rRedis);
+		$this->beat($this->rT0 + 6000);
+		$this->flusherGone($rRedis);
+		$this->beat($this->rT0 + 8000);
+		$this->assertSame(intdiv($this->rT0 + 8000, 1000), (int) $this->server($this->rDb)['last_check_ago'], 'written directly');
+		ClusterClock::fix($this->rT0 + 14000);
+		HeartbeatService::flush();
+		$this->assertSame(intdiv($this->rT0 + 8000, 1000), (int) $this->server($this->rDb)['last_check_ago'], 'the bus\'s document is older than the row');
+		$this->assertCount(1, $this->stats($this->rDb));
+		$this->assertSame($this->rT0 + 8000, (int) $this->node()['last_seen_at']);
+	}
+
+	public function testTelemetryOfANodeThatIsNotAuthoritativeStaysOutOfServers(): void {
+		$rRedis = $this->bus();
+		NodeRegistry::update(6, ['state' => 'active', 'flows' => 0]);
+		NodeRegistry::update(7, ['state' => 'active', 'flows' => NodeRegistry::FLOW_TELEMETRY, 'mode' => 0]);
+		HeartbeatService::flush();
+		foreach ([6, 7] as $rID) {
+			$this->beat($this->rT0, [], $rID);
+			$this->assertSame('0', $this->busValue($rRedis, $rID)[4], 'node ' . $rID . ': shadow only');
+		}
+		HeartbeatService::flush();
+		foreach ([6, 7] as $rID) {
+			$rServer = $this->server($this->rDb, $rID);
+			$this->assertSame([1, null, 0, 0], [(int) $rServer['status'], $rServer['watchdog_data'], (int) $rServer['last_check_ago'], (int) $rServer['requests_per_second']], 'server ' . $rID . ': its watchdog writes it');
+			$this->assertSame($this->rT0, (int) $this->node($rID)['last_seen_at']);
+		}
+		$this->assertSame([], $this->stats($this->rDb));
+	}
+
 	public function testATelemetryDocumentOverTheCapTakesTheDirectPath(): void {
 		$this->bus();
 		HeartbeatService::flush();
@@ -303,10 +393,49 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		HeartbeatService::flush();
 		$this->assertSame($this->rT0 + 1000, (int) $this->node()['last_seen_at'], 'unchanged, so it waits its 5 s');
 		// A heartbeat without the field keeps the last one.
+		$rRedis = ClusterBus::client();
+		$this->assertInstanceOf(\Redis::class, $rRedis);
+		$this->flusherFresh($rRedis);
 		ClusterClock::fix($this->rT0 + 7000);
 		HeartbeatService::record(NodeRegistry::byServer(5), [], $this->rT0 + 7000);
+		$rValue = $this->busValue($rRedis);
+		$this->assertSame([(string) ($this->rT0 + 7000), '1'], [$rValue[0], $rValue[2]], 'kept on the bus');
 		HeartbeatService::flush();
 		$this->assertSame([$this->rT0 + 7000, 1], [(int) $this->node()['last_seen_at'], (int) $this->node()['root_ready']]);
+	}
+
+	public function testARootReadyChangeThatHelloOvertookStillReachesMySqlAtOnce(): void {
+		$rRedis = $this->bus();
+		HeartbeatService::flush();
+		$this->beat($this->rT0);
+		HeartbeatService::flush();
+		$this->flusherFresh($rRedis);
+		$this->beat($this->rT0 + 2000, ['root_ready' => true]);
+		// hello (the reply named a newer policy) writes last_seen_at before the flush.
+		NodeRegistry::update(5, ['last_seen_at' => $this->rT0 + 2100]);
+		ClusterClock::fix($this->rT0 + 2500);
+		HeartbeatService::flush();
+		$this->assertSame([$this->rT0 + 2100, 0], [(int) $this->node()['last_seen_at'], (int) $this->node()['root_ready']], 'hello kept the UPDATE from matching');
+		$this->flusherFresh($rRedis);
+		$this->beat($this->rT0 + 4000, ['root_ready' => true]);
+		ClusterClock::fix($this->rT0 + 4500);
+		HeartbeatService::flush();
+		$this->assertSame([$this->rT0 + 4000, 1], [(int) $this->node()['last_seen_at'], (int) $this->node()['root_ready']], 'the next heartbeat still counts as a change: 2 s after the last flush, not 5');
+	}
+
+	public function testAHeartbeatWithoutTelemetryKeepsThePendingDocument(): void {
+		$rRedis = $this->bus();
+		HeartbeatService::flush();
+		$this->beat($this->rT0, ['telemetry' => ['cpu' => 99.0] + self::SAMPLE]);
+		$this->flusherFresh($rRedis);
+		ClusterClock::fix($this->rT0 + 1000);
+		HeartbeatService::record(NodeRegistry::byServer(5), ['root_ready' => false], $this->rT0 + 1000);
+		$this->assertSame([(string) $this->rT0, '1'], array_slice($this->busValue($rRedis), 3, 2), 'the document heard at T0, authoritative');
+		HeartbeatService::flush();
+		$rServer = $this->server($this->rDb);
+		$this->assertSame(intdiv($this->rT0, 1000), (int) $rServer['last_check_ago']);
+		$this->assertSame(99, (int) round(json_decode((string) $rServer['watchdog_data'], true)['cpu']));
+		$this->assertSame($this->rT0 + 1000, (int) $this->node()['last_seen_at']);
 	}
 
 	public function testAnOlderHeartbeatOnTheBusNeverOverwritesMySql(): void {
@@ -368,13 +497,102 @@ final class ClusterHeartbeatBusTest extends TestCase {
 	}
 
 	public function testANodeSilentForTenMinutesLeavesTheBusOnceFlushed(): void {
-		$this->bus();
+		$rRedis = $this->bus();
+		HeartbeatService::flush();
+		$this->beat($this->rT0, [], 6);
+		HeartbeatService::flush(); // node 6 flushed long ago
+		$this->flusherFresh($rRedis);
+		$this->beat($this->rT0, [], 5); // node 5 not yet
+		ClusterClock::fix($this->rT0 + HeartbeatService::FORGET_AFTER_MS + 1000);
+		$rHeard = HeartbeatService::flush();
+		ksort($rHeard);
+		$this->assertSame([5 => $this->rT0, 6 => $this->rT0], $rHeard, 'node 5 flushed first');
+		$this->assertSame($this->rT0, (int) $this->node()['last_seen_at']);
+		$this->assertSame([], HeartbeatService::lastSeen(), 'then both forgotten');
+		$this->assertSame([], $rRedis->hGetAll(HeartbeatService::KEY_FLUSHED), 'with their records');
+		$this->assertSame(0, $rRedis->exists(HeartbeatService::TEL_PREFIX . '5', HeartbeatService::TEL_PREFIX . '6'), 'and their documents');
+	}
+
+	public function testANodeIsForgottenOnlyOnceFlushedAndOnlyIfStillSilent(): void {
+		$rRedis = $this->bus();
 		HeartbeatService::flush();
 		$this->beat($this->rT0);
-		ClusterClock::fix($this->rT0 + HeartbeatService::FORGET_AFTER_MS + 1000);
-		$this->assertSame([5 => $this->rT0], HeartbeatService::flush(), 'flushed first');
-		$this->assertSame($this->rT0, (int) $this->node()['last_seen_at']);
-		$this->assertSame([], HeartbeatService::lastSeen(), 'then forgotten');
+		$rLog = new QueryLogDb($this->rDb);
+		$rLog->rRefuse = '/^UPDATE `cluster_nodes`/';
+		DatabaseFactory::set($rLog);
+		$rLate = $this->rT0 + HeartbeatService::FORGET_AFTER_MS + 1000;
+		ClusterClock::fix($rLate);
+		HeartbeatService::flush();
+		$this->assertSame([5 => $this->rT0], HeartbeatService::lastSeen(), 'MySQL refused it: kept until flushed');
+
+		// A pass read the node, then a heartbeat came before the pass ended.
+		$rRaw = (string) $rRedis->hGet(HeartbeatService::KEY_BEATS, '5');
+		$this->flusherFresh($rRedis);
+		$this->beat($rLate + 1000);
+		$this->flushEnd('token', false, [5 => $rRaw]);
+		$this->assertSame([5 => $rLate + 1000], HeartbeatService::lastSeen(), 'the newer heartbeat stays');
+		$this->assertSame(1, $rRedis->exists(HeartbeatService::TEL_PREFIX . '5'), 'with its document');
+	}
+
+	public function testAFlusherStampAheadOfTheBussClockIsStale(): void {
+		$rRedis = $this->bus();
+		// The bus's clock stepped back a minute after the last clean pass.
+		$rRedis->set(HeartbeatService::KEY_FLUSHER, (string) (BusServer::nowMs($rRedis) + 60000));
+		$this->beat($this->rT0);
+		$this->assertSame($this->rT0, (int) $this->node()['last_seen_at'], 'MySQL, until a pass stamps again');
+		$this->assertSame([], HeartbeatService::lastSeen());
+	}
+
+	public function testAFlusherGivesBackOnlyItsOwnLock(): void {
+		$rRedis = $this->bus();
+		$rRedis->set(HeartbeatService::KEY_LOCK, 'another', ['px' => 10000]);
+		$this->flushEnd('mine', true);
+		$this->assertSame('another', $rRedis->get(HeartbeatService::KEY_LOCK), 'a pass whose lock expired leaves the next holder\'s');
+		$this->flushEnd('another', true);
+		$this->assertSame(0, $rRedis->exists(HeartbeatService::KEY_LOCK));
+	}
+
+	public function testAReEnrolmentLeavesNothingOfThePreviousOneOnTheBus(): void {
+		$rRedis = $this->bus();
+		HeartbeatService::flush();
+		$rOld = NodeRegistry::byServer(5);
+		$this->beat($this->rT0, ['root_ready' => true]);
+		NodeRegistry::startEnrolment(5, '00000000-0000-4000-a000-000000000055', str_repeat("\3", 32), str_repeat("\4", 32), 1);
+		$this->assertSame([], HeartbeatService::lastSeen(), 'dropped with the enrolment');
+		$this->assertSame(0, $rRedis->exists(HeartbeatService::TEL_PREFIX . '5'));
+
+		// A heartbeat of the old enrolment, still in flight, lands after it,
+		// and the installer marks the server failed meanwhile.
+		$this->rDb->query('UPDATE `servers` SET `status` = 4 WHERE `id` = 5');
+		$this->flusherFresh($rRedis);
+		ClusterClock::fix($this->rT0 + 500);
+		HeartbeatService::record($rOld, ['root_ready' => true, 'telemetry' => self::SAMPLE], $this->rT0 + 750);
+		HeartbeatService::flush();
+		$rRow = $this->node();
+		$this->assertSame([null, 0], [$rRow['last_seen_at'], (int) $rRow['root_ready']], 'the new row is not the old node\'s');
+		$this->assertSame(4, (int) $this->server($this->rDb)['status']);
+
+		// The new enrolment's agent, one that sends no root_ready, carries nothing over.
+		$rNew = $this->rT0 + 500 + HeartbeatService::FLUSH_EVERY_MS;
+		$this->flusherFresh($rRedis);
+		ClusterClock::fix($rNew);
+		HeartbeatService::record((array) NodeRegistry::byServer(5), [], $rNew);
+		$this->assertSame(['-', '0'], array_slice($this->busValue($rRedis), 2, 2));
+		HeartbeatService::flush();
+		$rRow = $this->node();
+		$this->assertSame([$rNew, 0], [(int) $rRow['last_seen_at'], (int) $rRow['root_ready']]);
+		$this->assertSame(1, (int) $this->server($this->rDb)['status'], 'the new node marks it up');
+	}
+
+	public function testARevocationDropsTheNodesHeartbeats(): void {
+		$rRedis = $this->bus();
+		HeartbeatService::flush();
+		$this->beat($this->rT0);
+		NodeRegistry::revoke(5, new FakeClusterCrypto());
+		$this->assertSame([], HeartbeatService::lastSeen());
+		$this->assertSame(0, $rRedis->exists(HeartbeatService::TEL_PREFIX . '5'));
+		HeartbeatService::flush();
+		$this->assertNull($this->node()['last_seen_at']);
 	}
 
 	// ── Liveness ─────────────────────────────────────────────────────────
@@ -403,11 +621,13 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		$this->assertSame($this->rT0, (int) $this->node(6)['last_seen_at'], 'MySQL did lag');
 
 		// Node 7 goes quiet on the bus too: suspect, then offline, by the bus.
+		$this->flusherFresh($rRedis); // the other flusher's clean passes
 		foreach ([5, 6] as $rID) {
 			$this->beat($this->rT0 + 50000, [], $rID);
 		}
 		ClusterClock::fix($this->rT0 + 50000);
 		$this->assertSame([7 => ['ok', 'suspect']], LivenessService::tick(30));
+		$this->flusherFresh($rRedis);
 		foreach ([5, 6] as $rID) {
 			$this->beat($this->rT0 + 69000, [], $rID);
 		}
@@ -423,6 +643,7 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		$rRedis = $this->bus();
 		$this->fleet();
 		LivenessService::tick(30);
+		$this->flusherFresh($rRedis);
 		$this->beat($this->rT0 + 38000, [], 5);
 		$rRedis->set(HeartbeatService::KEY_LOCK, 'another', ['px' => 60000]);
 		ClusterClock::fix($this->rT0 + 40000);
@@ -480,6 +701,39 @@ final class ClusterHeartbeatBusTest extends TestCase {
 		$this->assertSame($this->rT0 + 1000, (int) $this->node()['last_seen_at']);
 		HeartbeatService::flush();
 		$this->assertSame($this->rT0 + 7000, (int) $this->node()['last_seen_at']);
+	}
+
+	public function testABusLostJustBeforeAFlushLeavesNoNodeSuspect(): void {
+		$rRedis = $this->bus();
+		$this->fleet();
+		ClusterClock::fix($this->rT0);
+		LivenessService::tick(30);
+		foreach ([500, 2500, 4500] as $rAt) {
+			$this->flusherFresh($rRedis);
+			foreach ([5, 6, 7] as $rID) {
+				$this->beat($this->rT0 + $rAt, [], $rID);
+			}
+			ClusterClock::fix($this->rT0 + $rAt + 500);
+			$this->assertSame([], LivenessService::tick(30));
+		}
+		ClusterClock::fix($this->rT0 + 5900);
+		$this->assertSame([], LivenessService::tick(30));
+		$this->assertSame($this->rT0 + 500, (int) $this->node()['last_seen_at'], 'flushed at +1 s, not due again before +6 s');
+		self::$rBus->kill();
+
+		// MySQL alone says 10.1 s; the loop's last read of the bus 6.1 s.
+		ClusterClock::fix($this->rT0 + 10600);
+		$this->assertSame([], LivenessService::tick(30), 'no node suspect');
+		$this->assertFalse(ClusterHealth::read()['guard']);
+		// By the end of that window each node's next heartbeat has written MySQL.
+		foreach ([5, 6, 7] as $rID) {
+			$this->beat($this->rT0 + 10800, [], $rID);
+		}
+		ClusterClock::fix($this->rT0 + 12000);
+		$this->assertSame([], LivenessService::tick(30));
+		// The read is kept no longer than a flush.
+		NodeRegistry::update(5, ['last_seen_at' => $this->rT0]);
+		$this->assertSame([5 => ['ok', 'suspect']], LivenessService::tick(30));
 	}
 
 	public function testTheClusterNodesPageShowsTheFreshest(): void {
