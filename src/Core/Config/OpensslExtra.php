@@ -123,6 +123,16 @@ final class OpensslExtra {
 	 * or when it is the value in use now.
 	 */
 	public static function previous(?int $rNow = null): ?string {
+		return self::previousEntry($rNow)['value'] ?? null;
+	}
+
+	/**
+	 * previous() with the end of its window: what MAIN's replica sends as the
+	 * `secrets` section's `previous` and `previous_valid_until`.
+	 *
+	 * @return array{value:string,valid_until:int}|null
+	 */
+	public static function previousEntry(?int $rNow = null): ?array {
 		if (self::$rPrevious === null) {
 			self::$rPrevious = self::readPrevious();
 		}
@@ -133,7 +143,7 @@ final class OpensslExtra {
 			return null;
 		}
 
-		return self::$rPrevious['value'];
+		return self::$rPrevious;
 	}
 
 	/** Test seam: read the previous value from $rPath (null restores CONFIG_PATH's). */

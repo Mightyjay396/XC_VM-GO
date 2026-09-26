@@ -1354,6 +1354,62 @@ final class ClusterApiTest extends TestCase {
 		$this->assertArrayHasKey('sealed', $this->reply($rRes, $rCtx, $rKeys)['node'], 'another section\'s ETag is not this one\'s');
 	}
 
+	public function testConfigServesTheSecretsSectionOnlyToANodeInModeOneOrTwo(): void {
+		$this->blocklistTables();
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `api_pass` text, `live_streaming_pass` text)');
+		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 'secret-api', 'secret-live')");
+		$rKeys = $this->active();
+
+		// Today's agent does not name it: never sent.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['blocklist' => '', 'settings' => '']], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertArrayNotHasKey('secrets', $rOut);
+		$this->assertStringNotContainsString('secret-live', (string) json_encode($this->openRecord($rOut['settings']['sealed'], 'rep')));
+
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['secrets' => '']], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys)['secrets'];
+		$rDoc = $this->openRecord($rOut['sealed'], 'rep');
+		$this->assertSame(['secrets', $this->rUuid, 1, $rOut['etag']], [$rDoc['section'], $rDoc['node'], $rDoc['gen'], $rDoc['etag']]);
+		$this->assertSame($rOut['etag'], ReplicaBuilder::etag($rDoc['data']));
+		$this->assertSame(['live_streaming_pass', 'openssl_extra'], array_keys($rDoc['data']));
+		$this->assertSame(['secret-live', OPENSSL_EXTRA], [$rDoc['data']['live_streaming_pass']['current'], $rDoc['data']['openssl_extra']['current']]);
+		$this->assertStringNotContainsString('secret-api', (string) json_encode($rDoc));
+
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['secrets' => $rOut['etag']]], 1, $rKeys);
+		$this->assertSame(['unchanged' => true], $this->reply($rRes, $rCtx, $rKeys)['secrets']);
+
+		// A legacy node (mode 0) keeps MAIN's database: left out, the rest still served.
+		$this->rDb->query('UPDATE `cluster_nodes` SET `mode` = 0 WHERE `server_id` = ?', self::SID);
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['secrets' => '', 'settings' => '']], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertArrayNotHasKey('secrets', $rOut);
+		$this->assertArrayHasKey('sealed', $rOut['settings']);
+
+		[$rRes] = $this->call('config', ['blocklist_since' => 0, 'have' => ['secrets' => 'nope']], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST');
+	}
+
+	public function testWithoutALicenceTheSecretsAreLeftOut(): void {
+		if (!$this->rCrypto instanceof FakeClusterCrypto) {
+			$this->markTestSkipped('the licence is switched off in the fake only');
+		}
+		$this->blocklistTables();
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `live_streaming_pass` text)');
+		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 'secret-live')");
+		$rKeys = $this->active();
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['secrets' => '']], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->rCrypto->rLicensed = false;
+
+		// The section grants (it opens MAIN-minted viewer tokens): a changed one is not signed.
+		$this->rDb->exec("UPDATE `settings` SET `live_streaming_pass` = 'secret-new'");
+		$rHave = ['blocklist' => $rOut['blocklist']['section']['etag'], 'secrets' => $rOut['secrets']['etag']];
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => $rOut['blocklist']['seq'], 'have' => $rHave], 1, $rKeys);
+		$rNext = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertTrue($rNext['blocklist']['unchanged']);
+		$this->assertArrayNotHasKey('secrets', $rNext);
+	}
+
 	// ── The cluster bus: nonces and per-op semaphores ────────────────────
 
 	/**

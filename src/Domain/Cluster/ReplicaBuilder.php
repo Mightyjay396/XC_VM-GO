@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -37,12 +38,16 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   every server's routing and relay fields with the node list, the node's
  *   own configuration, the crontab rows its mode runs, and MAIN's transport
  *   policy and keys.
+ * - `secrets`: `live_streaming_pass` and OPENSSL_EXTRA, each as {kid,
+ *   current, previous, previous_valid_until}, the only secrets a node gets.
  *
  * All but the blocklist are sent whole, to an agent that names them in
  * `have`, whenever their ETag differs from the node's. A section and its
  * ETag are reused for 10 s (ReplicaEtagCache); a change of the node list
  * drops the cache and is announced to the others through `config.changed`
- * (nodesChanged).
+ * (nodesChanged). `secrets` goes only to an active node in mode 1 or 2
+ * (serves()) and is read afresh each time, never cached unsealed; like every
+ * whole section it grants, so without a licence it is not signed.
  */
 final class ReplicaBuilder {
 	use DatabaseAware;
@@ -53,8 +58,10 @@ final class ReplicaBuilder {
 
 	public const SECTION_SETTINGS = ReplicaSections::SETTINGS;
 
-	/** Sections sent whole whenever the node's ETag differs. */
+	/** Sections sent whole whenever the node's ETag differs (and `secrets`, see serves()). */
 	public const WHOLE = ReplicaSections::WHOLE;
+
+	public const SECTION_SECRETS = ReplicaSections::SECRETS;
 
 	/**
 	 * What an agent says at hello (`features`) when it runs `config.changed`
@@ -116,7 +123,21 @@ final class ReplicaBuilder {
 	}
 
 	/**
-	 * A whole section for this node and its ETag, reused for 10 s.
+	 * Is this whole section served to this node? `secrets` only to an active
+	 * node in mode 1 or 2: a legacy node (mode 0) reads MAIN's database.
+	 *
+	 * @param array<string, mixed> $rNode cluster_nodes row (state, mode)
+	 */
+	public static function serves(array $rNode, string $rSection): bool {
+		if ($rSection !== ReplicaSections::SECRETS) {
+			return true;
+		}
+		return ($rNode['state'] ?? null) === 'active' && (int) ($rNode['mode'] ?? 0) >= 1;
+	}
+
+	/**
+	 * A whole section for this node and its ETag, reused for 10 s; `secrets`
+	 * is read each time, never cached.
 	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row (server_id, mode)
 	 * @param array<string, mixed> $rSettings
@@ -124,6 +145,10 @@ final class ReplicaBuilder {
 	 * @return array{etag: string, data: array<mixed>}
 	 */
 	public static function section(ClusterCrypto $rCrypto, array $rNode, string $rSection, array $rSettings, array $rMain): array {
+		if ($rSection === ReplicaSections::SECRETS) {
+			$rData = self::canonical(self::secretsData());
+			return ['etag' => self::etag($rData), 'data' => $rData];
+		}
 		$rKey = match ($rSection) {
 			ReplicaSections::NODE => $rSection . '.' . (int) $rNode['server_id'],
 			ReplicaSections::CRONTAB => $rSection . '.' . ((int) $rNode['mode'] >= 2 ? 'api' : 'legacy'),
@@ -314,6 +339,34 @@ final class ReplicaBuilder {
 			}
 		}
 		return $rOut;
+	}
+
+	/**
+	 * The `secrets` section: the viewer-token secret (`live_streaming_pass`,
+	 * from the settings row) and OPENSSL_EXTRA (the value this php-fpm mints
+	 * with), each with its kid, and the value MAIN replaced while it is still
+	 * accepted on MAIN's clock. Only OPENSSL_EXTRA has one today
+	 * (config/openssl_extra.prev); the stream secret's rotation (plan, section
+	 * 10, step 4) will fill its own.
+	 *
+	 * @return array<string, array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}>
+	 */
+	public static function secretsData(): array {
+		self::db()->query('SELECT `live_streaming_pass` FROM `settings` LIMIT 1;');
+		$rRow = self::db()->get_row() ?: [];
+		$rPrevious = OpensslExtra::previousEntry(ClusterClock::now());
+		return [
+			'live_streaming_pass' => self::secret('live_streaming_pass', (string) ($rRow['live_streaming_pass'] ?? ''), null),
+			'openssl_extra' => self::secret('openssl_extra', defined('OPENSSL_EXTRA') ? (string) OPENSSL_EXTRA : '', $rPrevious),
+		];
+	}
+
+	/**
+	 * @param array{value: string, valid_until: int}|null $rPrevious
+	 * @return array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}
+	 */
+	private static function secret(string $rName, string $rValue, ?array $rPrevious): array {
+		return ['current' => $rValue, 'kid' => ReplicaSections::kid($rName, $rValue), 'previous' => $rPrevious['value'] ?? null, 'previous_valid_until' => $rPrevious['valid_until'] ?? null];
 	}
 
 	/** @return list<string> the settings keys a node's replica may carry */

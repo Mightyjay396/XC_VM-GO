@@ -14,12 +14,20 @@ namespace XcVm\Core\Cluster;
  * crontab  {jobs: [{filename, time}]}   enabled rows whose role fits the node's mode
  * cluster  {main_urls, urls_ver, policy_ver, transport, panel_sign_pub,
  *           panel_box_pub, min_proto, off_air}
+ * secrets  {live_streaming_pass: SECRET, openssl_extra: SECRET}
+ *          SECRET = {kid, current, previous, previous_valid_until}
  * ```
  *
  * Every column of `servers` is in exactly one of SERVER_FIELDS, NODE_FIELDS
  * and SERVER_LOCAL (ReplicaSectionsTest fails on a new column that is not):
  * a replica never carries liveness, telemetry, `watchdog_data`, `php_pids`,
  * or the `api_url*` a node builds itself from its own settings.
+ *
+ * `secrets` is the one section that carries secrets (SECRET_KEYS, nothing
+ * else): the viewer-token secret and OPENSSL_EXTRA, which the `settings`
+ * section withholds and a node needs to open the tokens MAIN mints. It is
+ * not in WHOLE: MAIN serves it only to an active node in mode 1 or 2, and
+ * never keeps it unsealed (ReplicaEtagCache).
  */
 final class ReplicaSections {
 	public const SETTINGS = 'settings';
@@ -27,9 +35,17 @@ final class ReplicaSections {
 	public const NODE = 'node';
 	public const CRONTAB = 'crontab';
 	public const CLUSTER = 'cluster';
+	public const SECRETS = 'secrets';
 
-	/** Sections sent whole, by ETag, to an agent that names them in `have`. */
+	/** Sections sent whole, by ETag, to an agent that names them in `have` (and `secrets`, on its own terms). */
 	public const WHOLE = [self::SETTINGS, self::SERVERS, self::NODE, self::CRONTAB, self::CLUSTER];
+
+	/**
+	 * `secrets`: what it carries, and nothing else. `live_streaming_pass`
+	 * keys the viewer tokens, OPENSSL_EXTRA (config/openssl_extra) their
+	 * context; both are withheld from the `settings` section.
+	 */
+	public const SECRET_KEYS = ['live_streaming_pass', 'openssl_extra'];
 
 	/** `servers`: the routing and relay fields of every server, with their types. */
 	public const SERVER_FIELDS = [
@@ -99,6 +115,34 @@ final class ReplicaSections {
 			return null;
 		}
 		return ['filename' => $rJob['filename'], 'time' => $rJob['time']];
+	}
+
+	/**
+	 * A secret's key id: an HMAC keyed by the value, cut to 64 bits, which
+	 * names the value without revealing it. For OPENSSL_EXTRA it is the
+	 * fingerprint every node publishes (OpensslExtra::fingerprint).
+	 */
+	public static function kid(string $rName, string $rValue): string {
+		return substr(hash_hmac('sha256', 'xc_vm ' . $rName . ' fingerprint v1', $rValue), 0, 16);
+	}
+
+	/**
+	 * One entry of the `secrets` section as a node takes it: `current` and
+	 * `kid` non-empty strings, and `previous` (a non-empty string) with
+	 * `previous_valid_until` (unix seconds), or both null.
+	 *
+	 * @return array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}|null
+	 */
+	public static function secret(mixed $rEntry): ?array {
+		if (!is_array($rEntry) || !is_string($rEntry['current'] ?? null) || $rEntry['current'] === '' || !is_string($rEntry['kid'] ?? null) || $rEntry['kid'] === '') {
+			return null;
+		}
+		$rPrevious = $rEntry['previous'] ?? null;
+		$rUntil = $rEntry['previous_valid_until'] ?? null;
+		if (!($rPrevious === null && $rUntil === null) && !(is_string($rPrevious) && $rPrevious !== '' && is_int($rUntil))) {
+			return null;
+		}
+		return ['current' => $rEntry['current'], 'kid' => $rEntry['kid'], 'previous' => $rPrevious, 'previous_valid_until' => $rUntil];
 	}
 
 	/**
