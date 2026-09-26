@@ -353,12 +353,13 @@ class ConnectionTracker {
 		// A node with the COMMANDS flow gets a signed command instead (MAIN only):
 		// conn.kill_worker for a worker pid, conn.drop for a daemon viewer.
 		if (class_exists(ClusterRoute::class)) {
+			$rRouted = $rQueued = false;
 			if ($rCustomData === null && $rPID > 0) {
 				[$rRouted, $rQueued] = ClusterRoute::kill($rServerID, $rPID, $rRTMP === 1);
 			} elseif (is_array($rCustomData) && ($rCustomData['type'] ?? '') === 'drop_con') {
 				[$rRouted, $rQueued] = ClusterRoute::drop($rServerID, (string) ($rCustomData['uuid'] ?? ''));
 			}
-			if (!empty($rRouted)) {
+			if ($rRouted) {
 				return $rQueued ? [true, true] : false;
 			}
 		}

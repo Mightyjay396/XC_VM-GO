@@ -53,7 +53,7 @@ final class AgentClient {
 		$rData = $rBody === null ? '' : (string) json_encode((object) $rBody, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
 		fwrite($rSock, $rMethod . ' ' . $rPath . " HTTP/1.0\r\nHost: agent\r\nContent-Type: application/json\r\nContent-Length: " . strlen($rData) . "\r\nConnection: close\r\n\r\n" . $rData);
 		$rRaw = (string) stream_get_contents($rSock, 1048576);
-		$rTimedOut = (bool) (stream_get_meta_data($rSock)['timed_out'] ?? false);
+		$rTimedOut = stream_get_meta_data($rSock)['timed_out'];
 		fclose($rSock);
 		if ($rTimedOut || !preg_match('#^HTTP/1\.[01] (\d{3}) #', $rRaw, $rM)) {
 			return null;
