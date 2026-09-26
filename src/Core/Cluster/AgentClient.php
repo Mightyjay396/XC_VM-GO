@@ -13,11 +13,24 @@ namespace XcVm\Core\Cluster;
  * recording's VOD id). One-way reports go through EventSpool instead.
  */
 final class AgentClient {
+	/**
+	 * The waits (s) between the tries of mainRetrying(), two minutes in all:
+	 * longer than MAIN stays busy while its ingest permits are held.
+	 */
+	public const RETRY_WAITS_SEC = [1, 2, 4, 8, 15, 30, 30, 30];
+
 	private static ?string $rSocket = null;
+
+	private static ?\Closure $rSleep = null;
 
 	/** Tests: another socket; null restores the default. */
 	public static function useSocket(?string $rPath): void {
 		self::$rSocket = $rPath;
+	}
+
+	/** Tests: fn(int $rSec) instead of sleep(); null restores it. */
+	public static function useSleep(?\Closure $rSleep): void {
+		self::$rSleep = $rSleep;
 	}
 
 	public static function socket(): string {
@@ -36,6 +49,31 @@ final class AgentClient {
 		}
 		$rOut = self::request('POST', '/v1/main/' . $rOp, $rPayload, $rTimeout);
 		return $rOut !== null && $rOut[0] === 200 && is_array($rOut[1]) ? $rOut[1] : null;
+	}
+
+	/**
+	 * main() for an op MAIN applies once (recording_complete: a retry gets the
+	 * same VOD), asked again while it gets no answer, after each of
+	 * RETRY_WAITS_SEC. MAIN refuses such an op while its ingest permits are
+	 * held (503 RATE_LIMITED), and today's agent hands any refusal back as a
+	 * bare 409, so a busy MAIN cannot be told from any other failure here.
+	 *
+	 * @param array<string, mixed> $rPayload
+	 * @return array<string, mixed>|null MAIN's reply; null when no try got one.
+	 */
+	public static function mainRetrying(string $rOp, array $rPayload): ?array {
+		foreach ([0, ...self::RETRY_WAITS_SEC] as $rWait) {
+			if ($rWait > 0 && self::$rSleep !== null) {
+				(self::$rSleep)($rWait);
+			} elseif ($rWait > 0) {
+				sleep($rWait);
+			}
+			$rReply = self::main($rOp, $rPayload);
+			if ($rReply !== null) {
+				return $rReply;
+			}
+		}
+		return null;
 	}
 
 	/**

@@ -165,9 +165,10 @@ class RecordCommand implements CommandInterface {
 		$rIcon = empty($recordingData['stream_icon']) ? null : $this->downloadAndSaveImage($recordingData['stream_icon']);
 		// The VOD row comes first: its id names the file. On a node whose
 		// CONTENT flow is on, MAIN creates it (recording_complete, through the
-		// agent); otherwise it is created here, in MAIN's database, as before.
+		// agent), asked again while MAIN is busy; otherwise it is created here,
+		// in MAIN's database, as before.
 		if (NodeFlows::on(NodeFlows::CONTENT)) {
-			$rReply = AgentClient::main('recording_complete', ['recording_id' => (int) $recordingID, 'stream_icon' => $rIcon]);
+			$rReply = AgentClient::mainRetrying('recording_complete', ['recording_id' => (int) $recordingID, 'stream_icon' => $rIcon]);
 			$rInsertID = (int) ($rReply['stream_id'] ?? 0);
 		} else {
 			$rInsertID = (int) RecordingFinalizer::create((int) $recordingID, SERVER_ID, $rIcon);
