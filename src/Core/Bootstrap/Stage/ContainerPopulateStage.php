@@ -4,6 +4,7 @@ namespace XcVm\Core\Bootstrap\Stage;
 
 use XcVm\Core\Bootstrap\BootState;
 use XcVm\Core\Bootstrap\BootStageInterface;
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Events\EventDispatcher;
@@ -40,8 +41,9 @@ class ContainerPopulateStage implements BootStageInterface {
 		if ($state->coreReady) {
 			$container->set('settings', SettingsManager::getAll());
 			$container->set('servers', ServerRepository::getAll());
-			$container->set('bouquets', BouquetService::getAll());
-			$container->set('categories', CategoryService::getFromDatabase());
+			// Booted from the node replica: the caches as they are, never MAIN's database.
+			$container->set('bouquets', $state->replica ? ReplicaBoot::cached('bouquets') : BouquetService::getAll());
+			$container->set('categories', $state->replica ? ReplicaBoot::cached('categories') : CategoryService::getFromDatabase());
 
 			if ($state->redisReady && RedisManager::isConnected()) {
 				$container->set('redis', RedisManager::instance());

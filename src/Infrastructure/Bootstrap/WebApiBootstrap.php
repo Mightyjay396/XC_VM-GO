@@ -3,12 +3,15 @@
 namespace XcVm\Infrastructure\Bootstrap;
 
 use XcVm\Core\Bootstrap\BootPipeline;
+use XcVm\Core\Bootstrap\BootStageInterface;
 use XcVm\Core\Bootstrap\BootState;
 use XcVm\Core\Bootstrap\Stage\DatabaseStage;
 use XcVm\Core\Bootstrap\Stage\FloodProtectionStage;
 use XcVm\Core\Bootstrap\Stage\HostVerificationStage;
 use XcVm\Core\Bootstrap\Stage\LegacyCoreStage;
+use XcVm\Core\Bootstrap\Stage\ReplicaStage;
 use XcVm\Core\Bootstrap\Stage\WebApiLoggerStage;
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
@@ -59,13 +62,26 @@ class WebApiBootstrap {
 			new FloodProtectionStage(),
 			new HostVerificationStage(),
 			new WebApiLoggerStage(),
-			new DatabaseStage(),
-			new LegacyCoreStage($rUseCache),
+			...self::coreStages($rUseCache),
 		]))->run($state);
 
 		// ── 6. GithubReleases ────────────────────────────────────
 		global $gitRelease;
 		// phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- declared global $gitRelease; consumed by legacy update code
 		$gitRelease = UpdateChannels::mainReleases();
+	}
+
+	/**
+	 * The database and core stages: DatabaseStage and LegacyCoreStage, or on a
+	 * node in mode 2 ReplicaStage in their place (plan, section 10, step 2),
+	 * which boots from the node replica once an apply built its caches.
+	 *
+	 * @return list<BootStageInterface>
+	 */
+	public static function coreStages(bool $rUseCache): array {
+		if (ReplicaBoot::wanted()) {
+			return [new ReplicaStage($rUseCache, ReplicaBoot::WHEN_READY)];
+		}
+		return [new DatabaseStage(), new LegacyCoreStage($rUseCache)];
 	}
 }

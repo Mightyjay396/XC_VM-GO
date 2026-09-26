@@ -3,6 +3,7 @@
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CommandRegistry;
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Module\ModuleLoader;
 
 /**
@@ -42,6 +43,10 @@ require_once __DIR__ . '/bootstrap.php';
 
 XC_Bootstrap::boot(XC_Bootstrap::CONTEXT_CLI, [
 	'process' => 'XC_VM[Console]',
+	// cluster:apply boots from the node replica in every mode (it builds the
+	// caches, at boot too, maybe while MAIN is unreachable); for the other
+	// commands the node's mode decides (mode 2: from the replica).
+	'replica' => ReplicaBoot::forArgv($argv),
 ]);
 
 // ─── Registry ────────────────────────────────────────────────────

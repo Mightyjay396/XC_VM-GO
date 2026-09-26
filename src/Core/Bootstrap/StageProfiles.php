@@ -16,6 +16,7 @@ use XcVm\Core\Bootstrap\Stage\HostVerificationStage;
 use XcVm\Core\Bootstrap\Stage\LegacyCoreStage;
 use XcVm\Core\Bootstrap\Stage\ProcessTitleStage;
 use XcVm\Core\Bootstrap\Stage\RedisStage;
+use XcVm\Core\Bootstrap\Stage\ReplicaStage;
 use XcVm\Core\Bootstrap\Stage\SessionStage;
 use XcVm\Core\Bootstrap\Stage\StatusConstantsStage;
 use XcVm\Core\Bootstrap\Stage\TranslatorStage;
@@ -54,8 +55,14 @@ class StageProfiles {
 				break;
 
 			case BootContext::Cli:
-				$stages[] = new DatabaseStage();
-				$stages[] = new LegacyCoreStage((bool) ($options['cached'] ?? false));
+				// A node in mode 2, and cluster:apply everywhere, boots from
+				// its replica (BootKernel::resolve() decides).
+				if (is_string($options['replica'] ?? null)) {
+					$stages[] = new ReplicaStage((bool) ($options['cached'] ?? false), $options['replica']);
+				} else {
+					$stages[] = new DatabaseStage();
+					$stages[] = new LegacyCoreStage((bool) ($options['cached'] ?? false));
+				}
 				if (!empty($options['redis'])) {
 					$stages[] = new RedisStage();
 				}

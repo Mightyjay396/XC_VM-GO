@@ -42,6 +42,9 @@ class BootState {
 
 	public bool $redisReady = false;
 
+	/** The core booted from the node replica (ReplicaStage), not MAIN's database. */
+	public bool $replica = false;
+
 	public ?DatabaseHandler $db = null;
 
 	/**

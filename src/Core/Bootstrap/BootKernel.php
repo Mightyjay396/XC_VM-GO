@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Bootstrap;
 
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
 
@@ -23,7 +24,7 @@ class BootKernel {
 	 * @param array<string,mixed> $options Caller options, merged over the context defaults.
 	 */
 	public function boot(BootContext $context, array $options = []): BootState {
-		$resolved = array_merge(self::defaults($context), $options);
+		$resolved = self::resolve($context, $options);
 
 		$container = ServiceContainer::getInstance();
 		$container->set('context', $context->value);
@@ -39,19 +40,38 @@ class BootKernel {
 	}
 
 	/**
-	 * Default boot options for a context.
+	 * The caller's options over the context's defaults. For the CLI, an
+	 * unset `replica` is this node's: ReplicaBoot::WHEN_READY in mode 2
+	 * (ReplicaStage then replaces DatabaseStage and LegacyCoreStage), false
+	 * otherwise, so mode 0 and 1 nodes and MAIN boot as before. A caller's
+	 * ReplicaBoot::ALWAYS (cluster:apply) is kept in every mode.
 	 *
-	 * @return array{cached: bool, redis: bool, process: string, shutdown: ?callable}
+	 * @param array<string,mixed> $options
+	 * @return array<string,mixed>
+	 */
+	public static function resolve(BootContext $context, array $options = []): array {
+		$resolved = array_merge(self::defaults($context), $options);
+		if ($context === BootContext::Cli && $resolved['replica'] === null) {
+			$resolved['replica'] = ReplicaBoot::wanted() ? ReplicaBoot::WHEN_READY : false;
+		}
+		return $resolved;
+	}
+
+	/**
+	 * Default boot options for a context. `replica` is resolved per node
+	 * (resolve()); only the CLI profile reads it.
+	 *
+	 * @return array{cached: bool, redis: bool, process: string, shutdown: ?callable, replica: string|false|null}
 	 */
 	public static function defaults(BootContext $context): array {
 		return match ($context) {
-			BootContext::Admin   => ['cached' => false, 'redis' => true,  'process' => '', 'shutdown' => null],
-			BootContext::Stream  => ['cached' => true,  'redis' => false, 'process' => '', 'shutdown' => null],
-			BootContext::Cli     => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null],
-			BootContext::Minimal => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null],
+			BootContext::Admin   => ['cached' => false, 'redis' => true,  'process' => '', 'shutdown' => null, 'replica' => null],
+			BootContext::Stream  => ['cached' => true,  'redis' => false, 'process' => '', 'shutdown' => null, 'replica' => null],
+			BootContext::Cli     => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null, 'replica' => null],
+			BootContext::Minimal => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null, 'replica' => null],
 			// WebApi boots via WebApiBootstrap (its own pipeline), not this kernel;
 			// defined for exhaustiveness and per-endpoint 'cached' is passed directly.
-			BootContext::WebApi  => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null],
+			BootContext::WebApi  => ['cached' => false, 'redis' => false, 'process' => '', 'shutdown' => null, 'replica' => null],
 		};
 	}
 }

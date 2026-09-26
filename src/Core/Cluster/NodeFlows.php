@@ -77,18 +77,29 @@ final class NodeFlows {
 		self::$rCache = null;
 	}
 
+	/**
+	 * What the agent's file says, without ruling out MAIN (that reads the
+	 * servers) and without the 5 s reuse: for the boot, which asks before the
+	 * settings, the servers or a database handle exist (ReplicaBoot), and for
+	 * checks that must never reach a database (SettingsAudit). MAIN runs no
+	 * agent, so it has no file, and everything is off without one.
+	 *
+	 * @return array{mode: int, flows: int, state: string, features: list<string>}
+	 */
+	public static function declared(): array {
+		$rDir = defined('CONFIG_PATH') ? CONFIG_PATH : (defined('MAIN_HOME') ? MAIN_HOME . 'config/' : null);
+		return self::parse(self::$rPath ?? ($rDir === null ? null : $rDir . 'cluster/flows.json')) ?? ['mode' => 0, 'flows' => 0, 'state' => '', 'features' => []];
+	}
+
 	/** @return array{mode: int, flows: int, state: string, features: list<string>} */
 	private static function read(): array {
 		$rOff = ['mode' => 0, 'flows' => 0, 'state' => '', 'features' => []];
-		$rPath = self::$rPath ?? (defined('CONFIG_PATH') ? CONFIG_PATH . 'cluster/flows.json' : null);
 		// The file first: no file is the common case (MAIN, legacy nodes), and
 		// it needs no database to find out.
-		$rDoc = $rPath === null ? null : json_decode((string) @file_get_contents($rPath), true);
-		if (!is_array($rDoc)) {
+		$rFlows = self::parse(self::$rPath ?? (defined('CONFIG_PATH') ? CONFIG_PATH . 'cluster/flows.json' : null));
+		if ($rFlows === null) {
 			return $rOff;
 		}
-		$rFeatures = is_array($rDoc['features'] ?? null) ? array_values(array_filter($rDoc['features'], 'is_string')) : [];
-		$rFlows = ['mode' => max(0, min(2, (int) ($rDoc['mode'] ?? 0))), 'flows' => (int) ($rDoc['flows'] ?? 0) & 255, 'state' => (string) ($rDoc['state'] ?? ''), 'features' => $rFeatures];
 		if (self::$rMainCheck) {
 			self::$rReading = $rFlows;
 			try {
@@ -101,5 +112,19 @@ final class NodeFlows {
 			}
 		}
 		return $rFlows;
+	}
+
+	/**
+	 * The agent's file, or null when there is none (or it is not one).
+	 *
+	 * @return array{mode: int, flows: int, state: string, features: list<string>}|null
+	 */
+	private static function parse(?string $rPath): ?array {
+		$rDoc = $rPath === null ? null : json_decode((string) @file_get_contents($rPath), true);
+		if (!is_array($rDoc)) {
+			return null;
+		}
+		$rFeatures = is_array($rDoc['features'] ?? null) ? array_values(array_filter($rDoc['features'], 'is_string')) : [];
+		return ['mode' => max(0, min(2, (int) ($rDoc['mode'] ?? 0))), 'flows' => (int) ($rDoc['flows'] ?? 0) & 255, 'state' => (string) ($rDoc['state'] ?? ''), 'features' => $rFeatures];
 	}
 }

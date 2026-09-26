@@ -4,6 +4,7 @@ namespace XcVm\Core\Config;
 
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Cluster\ReplicaSections;
 
 /**
@@ -26,6 +27,11 @@ class SettingsRepository {
 	 * MAIN's database; should it be gone, it is rebuilt from the replica on
 	 * disk. The database's row is never written over a cache the replica owns.
 	 *
+	 * A process booted from the replica (ReplicaBoot) never reads MAIN's
+	 * database either: without a cache the replica owns, it gets the settings
+	 * cache however old, or nothing (cluster:apply at boot, before it built
+	 * one).
+	 *
 	 * @param bool $rForce Bypass the file cache and re-read from the database.
 	 * @return array Settings map (with normalized array fields).
 	 */
@@ -41,6 +47,9 @@ class SettingsRepository {
 			if (!empty($rCache)) {
 				return $rCache;
 			}
+		}
+		if (ReplicaBoot::active()) {
+			return ReplicaBoot::cached('settings');
 		}
 
 		$db->query('SELECT * FROM `settings`');

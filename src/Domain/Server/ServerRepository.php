@@ -7,6 +7,7 @@ use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Events\EventDispatcher;
@@ -37,7 +38,9 @@ class ServerRepository {
 	 * replica on disk (a refused replica hands it back to the database). The
 	 * database's rows are never written over a cache the replica owns, so a
 	 * database copy never stands in for the replica's with nothing to refresh
-	 * it. Until an apply built it, the database as before.
+	 * it. Until an apply built it, the database as before; but a process
+	 * booted from the replica (ReplicaBoot) gets the servers cache however
+	 * old, or nothing, never MAIN's database.
 	 *
 	 * @param bool $rForce Bypass the cache and re-read from the database.
 	 * @return array Server rows keyed by id.
@@ -58,6 +61,9 @@ class ServerRepository {
 			if (!empty($rCache)) {
 				return $rCache;
 			}
+		}
+		if (ReplicaBoot::active()) {
+			return ReplicaBoot::cached('servers');
 		}
 
 		if (empty($_SERVER['REQUEST_SCHEME'])) {

@@ -4,6 +4,7 @@ namespace XcVm\Core\Init;
 
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
@@ -74,8 +75,10 @@ class LegacyInitializer {
 			SettingsManager::update("on_demand_wait_time", 15);
 		}
 
+		// A string: a node that boots from its replica before an apply built
+		// the settings has none yet (cluster:apply at boot).
 		FfmpegPaths::resolve(
-			SettingsManager::get("ffmpeg_cpu"),
+			(string) SettingsManager::get("ffmpeg_cpu"),
 			SettingsManager::get("ffmpeg_gpu"),
 		);
 
@@ -91,7 +94,8 @@ class LegacyInitializer {
 	/**
 	 * Regenerate the xc_vm user crontab from the `crontab` table, or on a node
 	 * whose replica owns it from the replica's crontab section
-	 * (ReplicaApply::crontabText; null leaves the crontab as it is).
+	 * (ReplicaApply::crontabText; null leaves the crontab as it is). A process
+	 * booted from the replica (ReplicaBoot) never reads the table.
 	 *
 	 * Runs once per boot (guarded by a marker file in TMP_PATH).
 	 *
@@ -103,7 +107,7 @@ class LegacyInitializer {
 			return false;
 		}
 
-		$rCrontab = ReplicaApply::crontabText($db);
+		$rCrontab = ReplicaApply::crontabText(ReplicaBoot::active() ? null : $db);
 		if ($rCrontab === null) {
 			return false;
 		}
@@ -206,18 +210,21 @@ class LegacyInitializer {
 	}
 
 	/**
-	 * Populate the DI container with core-context services.
+	 * Populate the DI container with core-context services. A process booted
+	 * from the node replica (ReplicaBoot) takes the bouquets and categories
+	 * caches as they are: no section carries them yet.
 	 *
 	 * @return void
 	 */
 	private static function syncCoreContainer() {
 		$rContainer = ServiceContainer::getInstance();
+		$rReplica = ReplicaBoot::active();
 		$rContainer->set("core.request", RequestManager::getAll());
 		$rContainer->set("core.config", ConfigReader::getAll());
 		$rContainer->set("core.settings", SettingsManager::getAll());
 		$rContainer->set("core.servers", ServerRepository::getAll());
-		$rContainer->set("core.bouquets", BouquetService::getAll());
-		$rContainer->set("core.categories", CategoryService::getFromDatabase());
+		$rContainer->set("core.bouquets", $rReplica ? ReplicaBoot::cached("bouquets") : BouquetService::getAll());
+		$rContainer->set("core.categories", $rReplica ? ReplicaBoot::cached("categories") : CategoryService::getFromDatabase());
 	}
 
 	/**

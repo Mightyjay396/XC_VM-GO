@@ -15,9 +15,13 @@ use XcVm\Core\Cluster\ReplicaApply;
  * cache among them, and config/openssl_extra. Its output (the report) never
  * holds a secret: the agent may log it. It exits 3, after printing the
  * report, when a part of it failed (a write of config/openssl_extra), so the
- * agent logs it like any failed run; 2 when there is no replica. It still boots
- * through the CLI profile, which needs MAIN's database: serving from the
- * replica after a reboot while MAIN is unreachable waits for ReplicaStage.
+ * agent logs it like any failed run; 2 when there is no replica.
+ *
+ * It boots from the replica in every mode (ReplicaStage via
+ * ReplicaBoot::forArgv): no connection to MAIN's database at boot, and none
+ * at all once CONFIG is on, so a node rebooted while MAIN is unreachable
+ * still builds its caches. In shadow the comparison with MAIN's crontab and
+ * RTMP publishers still reads MAIN's database, on first use.
  *
  * Without `--from-disk` it applies the `.json` files the agent wrote after
  * verifying the records it just stored. With `--from-disk` (`service` at
