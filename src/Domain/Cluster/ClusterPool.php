@@ -287,6 +287,7 @@ final class ClusterPool {
 			$rProbe = self::$rProbe;
 			$rFresh = $rProbe === null || $rProbe['conn'] === null;
 			if ($rFresh) {
+				$rErrNo = 0;
 				$rConn = self::fcgiSend(self::socket($rPool), self::STATUS_PATH, 'json', self::QUEUE_PROBE_WAIT, $rErrNo);
 				if ($rConn === null && $rErrNo === self::EAGAIN) {
 					// The listen backlog is full: requests certainly wait.
@@ -493,14 +494,12 @@ final class ClusterPool {
 	 *
 	 * @return resource|null
 	 */
-	private static function fcgiSend(string $rSocket, string $rScript, string $rQuery, float $rTimeout, ?int &$rErrNo = null) {
-		$rErrNo = 0;
-		$rConn = @stream_socket_client('unix://' . $rSocket, $rErrNo, $rErrStr, $rTimeout);
+	private static function fcgiSend(string $rSocket, string $rScript, string $rQuery, float $rTimeout, int &$rErrNo = 0) {
+		$rConn = @stream_socket_client('unix://' . $rSocket, $rCode, $rErrStr, $rTimeout);
+		$rErrNo = $rConn === false ? $rCode ?? 0 : 0;
 		if ($rConn === false) {
-			$rErrNo = (int) $rErrNo;
 			return null;
 		}
-		$rErrNo = 0;
 		$rRecord = static fn(int $rType, string $rBody): string => pack('CCnnCC', 1, $rType, 1, strlen($rBody), 0, 0) . $rBody;
 		$rParams = '';
 		foreach (['REQUEST_METHOD' => 'GET', 'SCRIPT_NAME' => $rScript, 'SCRIPT_FILENAME' => $rScript, 'QUERY_STRING' => $rQuery] as $rName => $rValue) {
