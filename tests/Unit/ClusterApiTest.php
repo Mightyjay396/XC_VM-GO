@@ -880,6 +880,59 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(['p0' => 1, 'p1' => 0], $this->reply($rRes, $rCtx, $rKeys)['cursors']);
 	}
 
+	public function testP2TakesTouchesWithoutANumberAndHelloAndHeartbeatSaySo(): void {
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY, `uuid` varchar(32), `server_id` int, `hls_last_read` int, `hls_end` int NOT NULL DEFAULT 0)');
+		$this->rDb->exec("INSERT INTO `lines_live` (`uuid`, `server_id`, `hls_last_read`) VALUES ('aaaa', 5, 100)");
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+		$rTouch = ['type' => 'conn.touch', 't' => $this->rT0, 'd' => ['uuid' => 'aaaa', 'hls_last_read' => 150]];
+
+		[$rRes, $rCtx] = $this->call('events', ['lane' => 'p2', 'events' => [$rTouch]], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame([0, 1, 0], [$rOut['useq'], $rOut['applied'], $rOut['dropped']], 'no number, no cursor');
+		$this->rDb->query('SELECT `hls_last_read` FROM `lines_live` WHERE `uuid` = ?', 'aaaa');
+		$this->assertSame(150, (int) $this->rDb->get_row()['hls_last_read'], 'no bus here: MAIN\'s store');
+		[$rRes, $rCtx] = $this->call('events', ['lane' => 'p2', 'first_useq' => 'x', 'events' => [$rTouch]], 1, $rKeys);
+		$this->assertSame(1, $this->reply($rRes, $rCtx, $rKeys)['applied'], 'first_useq is not read on P2');
+
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a'], 1, $rKeys);
+		$rHello = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame(['conn.touch'], $rHello['p2_types']);
+		$this->assertSame(['p0' => 0, 'p1' => 0], $rHello['cursors']);
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame(['conn.touch'], $this->reply($rRes, $rCtx, $rKeys)['p2_types'], 'in every heartbeat too, so a rollback is noticed');
+	}
+
+	public function testP2FailsWith503WhenTheStoreIsDownAndIsClosedToAQuarantinedNode(): void {
+		if (!class_exists(\Redis::class)) {
+			$this->markTestSkipped('phpredis not available');
+		}
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+		$rTouch = ['type' => 'conn.touch', 't' => $this->rT0, 'd' => ['uuid' => 'aaaa', 'hls_last_read' => 150]];
+
+		// A store that cannot be written: 503 DB, and the node keeps its touches for a retry.
+		SettingsManager::set($this->rSettings + ['redis_handler' => 1]);
+		$rInstance = new \ReflectionProperty(\XcVm\Infrastructure\Redis\RedisManager::class, 'instance');
+		$rInstance->setValue(null, new \Redis()); // not connected
+		(new \ReflectionProperty(\XcVm\Infrastructure\Redis\RedisManager::class, 'lastPingCheck'))->setValue(null, time());
+		try {
+			[$rRes, , $rReq] = $this->call('events', ['lane' => 'p2', 'events' => [$rTouch]], 1, $rKeys);
+			$this->denial($rRes, 503, 'DB', $rReq);
+		} finally {
+			$rInstance->setValue(null, null);
+			SettingsManager::set($this->rSettings);
+		}
+
+		// Events come only from an active node, on P2 too, while heartbeat
+		// (open to a quarantined node) still lists what P2 takes.
+		NodeRegistry::update(self::SID, ['state' => 'quarantined']);
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p2', 'events' => [$rTouch]], 1, $rKeys);
+		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame(['conn.touch'], $this->reply($rRes, $rCtx, $rKeys)['p2_types']);
+	}
+
 	public function testRecordingCompleteCreatesTheVodOnceForTheNodesRecording(): void {
 		$this->rDb->exec('CREATE TABLE `streams` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `type` int, `stream_display_name` text, `stream_source` text, `target_container` text, `year` text, `movie_properties` text, `rating` int, `read_native` int, `movie_symlink` int, `remove_subtitles` int, `transcode_profile_id` int, `order` int, `added` int, `category_id` text)');
 		$this->rDb->exec('CREATE TABLE `recordings` (`id` INTEGER PRIMARY KEY, `created_id` int, `category_id` text, `bouquets` text, `title` text, `description` text, `start` int, `end` int, `source_id` int, `status` int)');

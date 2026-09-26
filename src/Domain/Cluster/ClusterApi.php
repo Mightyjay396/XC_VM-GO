@@ -445,7 +445,7 @@ final class ClusterApi {
 			'epoch' => $rH['epoch'], 'main_time_ms' => ClusterClock::nowMs(),
 			'proto' => ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX], 'policy' => ClusterPolicy::current($rSettings, $rMain),
 			'cursors' => ['p0' => (int) $rNode['useq_p0'], 'p1' => (int) $rNode['useq_p1']],
-			'offline_admission' => self::offlineAdmission($rSettings),
+			'offline_admission' => self::offlineAdmission($rSettings), 'p2_types' => EventIngest::p2Types(),
 		]);
 	}
 
@@ -498,7 +498,7 @@ final class ClusterApi {
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => (string) $rNode['state'], 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'],
 			'main_time_ms' => ClusterClock::nowMs(), 'pending' => 0, 'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
-			'offline_admission' => self::offlineAdmission($rSettings),
+			'offline_admission' => self::offlineAdmission($rSettings), 'p2_types' => EventIngest::p2Types(),
 		] + ($rWant ? ['want_conn_snapshot' => true] : []));
 	}
 
@@ -541,12 +541,13 @@ final class ClusterApi {
 	/**
 	 * `events`: a batch from one lane, applied in order (EventIngest). A P0 gap
 	 * is refused with the number MAIN expects, and the node resends from there.
+	 * P2 has no number: `first_useq` is not read, and the reply's `useq` is 0.
 	 */
 	private static function events(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		$rLane = $rP['lane'] ?? null;
-		$rFirst = $rP['first_useq'] ?? null;
+		$rFirst = $rLane === 'p2' ? 0 : ($rP['first_useq'] ?? null);
 		$rEvents = $rP['events'] ?? null;
-		if (!in_array($rLane, ['p0', 'p1'], true) || !is_int($rFirst) || $rFirst < 1 || !is_array($rEvents) || !array_is_list($rEvents) || count($rEvents) > EventIngest::MAX_EVENTS) {
+		if (!in_array($rLane, ['p0', 'p1', 'p2'], true) || !is_int($rFirst) || ($rLane !== 'p2' && $rFirst < 1) || !is_array($rEvents) || !array_is_list($rEvents) || count($rEvents) > EventIngest::MAX_EVENTS) {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
 		try {

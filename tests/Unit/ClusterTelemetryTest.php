@@ -73,6 +73,11 @@ final class ClusterTelemetryTest extends TestCase {
 		DatabaseFactory::set($this->rDb);
 		SettingsManager::set(['redis_handler' => 0, 'total_users' => 9]);
 		ClusterClock::fix($this->rT0);
+		// With TMP_PATH defined (by a test that ran earlier), HeartbeatService
+		// keeps its once-a-minute stats marker there, across tests and runs.
+		if (defined('TMP_PATH')) {
+			@unlink(TMP_PATH . 'cluster/stats_5');
+		}
 		NodeRegistry::startEnrolment(5, '3b0c1d2e-4f5a-4b6c-8d7e-9f0a1b2c3d4e', str_repeat("\1", 32), str_repeat("\2", 32), 1);
 		NodeRegistry::update(5, ['state' => 'active']);
 		// The shadow copies and the stats marker: not TMP_PATH, which another test may define.

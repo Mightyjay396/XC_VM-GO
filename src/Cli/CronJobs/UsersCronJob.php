@@ -4,7 +4,9 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Cluster\HlsReaping;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -194,6 +196,161 @@ class UsersCronJob implements CommandInterface {
 		return HlsReaping::STALE_AFTER <= $rNow - intval($rConnection['hls_last_read']) && !HlsReaping::nodeReaps((int) $rConnection['server_id']);
 	}
 
+	/**
+	 * On a node whose CONNECTIONS flow is on, the viewers' speed files (KiB/s,
+	 * named by uuid) go to MAIN as a conn.divergence event, and the files read
+	 * are removed. False when they were not sent: this cron then writes
+	 * MAIN's tables from them, as before.
+	 *
+	 * @param list<string> $rFiles DIVERGENCE_TMP_PATH files
+	 */
+	private function spoolDivergence(array $rFiles): bool {
+		if (!NodeFlows::on(NodeFlows::CONNECTIONS)) {
+			return false;
+		}
+		$rRates = [];
+		foreach ($rFiles as $rFile) {
+			$rRates[basename($rFile)] = intval(@file_get_contents($rFile));
+		}
+		if (!DivergenceSink::spool($rRates, 'cron')) {
+			return false;
+		}
+		foreach ($rFiles as $rFile) {
+			@unlink($rFile);
+		}
+		return true;
+	}
+
+	/**
+	 * This node's viewers' divergence, from the speed files (KiB/s, named by
+	 * uuid) of its PHP-served viewers: a CONNECTIONS node sends the rates to
+	 * MAIN, which writes the divergence (conn.divergence); otherwise it is
+	 * written into MAIN's tables here, as before.
+	 *
+	 * @param string|null $rDir The speed files (tests); DIVERGENCE_TMP_PATH by default.
+	 */
+	private function writeDivergence(bool $rRedis, ?string $rDir = null): void {
+		global $db;
+
+		$rDir ??= DIVERGENCE_TMP_PATH;
+		$rConnectionSpeeds = glob($rDir . '*') ?: [];
+
+		// A CONNECTIONS node sends the rates to MAIN, which writes the
+		// divergence (conn.divergence); it writes MAIN's tables only without.
+		if (count($rConnectionSpeeds) > 0 && $this->spoolDivergence($rConnectionSpeeds)) {
+			$rConnectionSpeeds = [];
+		}
+
+		if (count($rConnectionSpeeds) > 0) {
+			$rBitrates = [];
+
+			if ($rRedis) {
+				$rStreamMap = [];
+
+				$db->query('SELECT `stream_id`, `bitrate` FROM `streams_servers` WHERE `server_id` = ? AND `bitrate` IS NOT NULL;', SERVER_ID);
+				foreach ($db->get_rows() as $rRow) {
+					$bitrate = intval($rRow['bitrate']);
+					if ($bitrate > 0) {
+						$rStreamMap[intval($rRow['stream_id'])] = DivergenceSink::expected($bitrate);
+					}
+				}
+
+				$rUUIDs = [];
+				foreach ($rConnectionSpeeds as $rConnectionSpeed) {
+					if (!empty($rConnectionSpeed)) {
+						$rUUIDs[] = basename($rConnectionSpeed);
+					}
+				}
+
+				if (count($rUUIDs) > 0) {
+					$rRedisInstance = RedisManager::instance();
+					if (!$rRedisInstance instanceof \Redis) {
+						$rConnections = [];
+					} else {
+						$rConnections = array_map(
+							static fn($v) => ($v !== false) ? igbinary_unserialize($v) : null,
+							$rRedisInstance->mGet($rUUIDs)
+						);
+					}
+
+					foreach ($rConnections as $rConnection) {
+						if (!is_array($rConnection)) {
+							continue;
+						}
+
+						$uuid = $rConnection['uuid'];
+						$streamId = intval($rConnection['stream_id']);
+
+						if (!isset($rStreamMap[$streamId])) {
+							continue;
+						}
+
+						$rBitrates[$uuid] = $rStreamMap[$streamId];
+					}
+				}
+
+				unset($rStreamMap);
+			} else {
+				$db->query('SELECT `lines_live`.`uuid`, `streams_servers`.`bitrate` FROM `lines_live` LEFT JOIN `streams_servers` ON `lines_live`.`stream_id` = `streams_servers`.`stream_id` AND `lines_live`.`server_id` = `streams_servers`.`server_id` WHERE `lines_live`.`server_id` = ?;', SERVER_ID);
+
+				foreach ($db->get_rows() as $rRow) {
+					$bitrate = intval($rRow['bitrate']);
+					if ($bitrate > 0) {
+						$rBitrates[$rRow['uuid']] = DivergenceSink::expected($bitrate);
+					}
+				}
+			}
+
+			if (!$rRedis) {
+				$rUUIDMap = [];
+				$db->query('SELECT `uuid`, `activity_id` FROM `lines_live`;');
+				foreach ($db->get_rows() as $rRow) {
+					$rUUIDMap[$rRow['uuid']] = $rRow['activity_id'];
+				}
+			}
+
+			$rLiveQuery = $rDivergenceUpdate = [];
+
+			foreach ($rConnectionSpeeds as $rConnectionSpeed) {
+				if (empty($rConnectionSpeed)) {
+					continue;
+				}
+
+				$rUUID = basename($rConnectionSpeed);
+				$rAverageSpeed = intval(file_get_contents($rConnectionSpeed));
+
+				if (!isset($rBitrates[$rUUID]) || $rBitrates[$rUUID] <= 0) {
+					$rDivergenceUpdate[] = "('" . $rUUID . "', 0)";
+
+					if (!$rRedis && isset($rUUIDMap[$rUUID])) {
+						$rLiveQuery[] = '(' . $rUUIDMap[$rUUID] . ', 0)';
+					}
+
+					continue;
+				}
+
+				$rDivergence = DivergenceSink::of($rAverageSpeed, $rBitrates[$rUUID]);
+				$rDivergenceUpdate[] = "('" . $rUUID . "', " . $rDivergence . ')';
+
+				if (!$rRedis && isset($rUUIDMap[$rUUID])) {
+					$rLiveQuery[] = '(' . $rUUIDMap[$rUUID] . ', ' . $rDivergence . ')';
+				}
+			}
+
+			if (count($rDivergenceUpdate) > 0) {
+				$rUpdateQuery = implode(',', $rDivergenceUpdate);
+				$db->query('INSERT INTO `lines_divergence`(`uuid`,`divergence`) VALUES ' . $rUpdateQuery . ' ON DUPLICATE KEY UPDATE `divergence`=VALUES(`divergence`);');
+			}
+
+			if (!$rRedis && count($rLiveQuery) > 0) {
+				$rLiveQueryStr = implode(',', $rLiveQuery);
+				$db->query('INSERT INTO `lines_live`(`activity_id`,`divergence`) VALUES ' . $rLiveQueryStr . ' ON DUPLICATE KEY UPDATE `divergence`=VALUES(`divergence`);');
+			}
+
+			shell_exec('rm -f ' . escapeshellarg($rDir) . '*');
+		}
+	}
+
 	private function processDeletions($rDelete, $rDelStream = []) {
 		$rRedis = SettingsManager::getBool('redis_handler');
 		global $db;
@@ -310,6 +467,10 @@ class UsersCronJob implements CommandInterface {
 					}
 				}
 			}
+		} else {
+			// Its own rows (MySQL mode): its agent's reaper, with the same
+			// grace as on MAIN when it stops.
+			HlsReaping::beginLocal($rStartTime);
 		}
 
 		if (!$rRedis || $rServers[SERVER_ID]['is_main']) {
@@ -565,122 +726,7 @@ class UsersCronJob implements CommandInterface {
 			}
 		}
 
-		$rConnectionSpeeds = glob(DIVERGENCE_TMP_PATH . '*');
-
-		if (count($rConnectionSpeeds) > 0) {
-			$rBitrates = [];
-
-			if ($rRedis) {
-				$rStreamMap = [];
-
-				$db->query('SELECT `stream_id`, `bitrate` FROM `streams_servers` WHERE `server_id` = ? AND `bitrate` IS NOT NULL;', SERVER_ID);
-				foreach ($db->get_rows() as $rRow) {
-					$bitrate = intval($rRow['bitrate']);
-					if ($bitrate > 0) {
-						$rStreamMap[intval($rRow['stream_id'])] = intval($bitrate / 8 * 0.92);
-					}
-				}
-
-				$rUUIDs = [];
-				foreach ($rConnectionSpeeds as $rConnectionSpeed) {
-					if (!empty($rConnectionSpeed)) {
-						$rUUIDs[] = basename($rConnectionSpeed);
-					}
-				}
-
-				if (count($rUUIDs) > 0) {
-					$rRedis = RedisManager::instance();
-					if (!$rRedis instanceof \Redis) {
-						$rConnections = [];
-					} else {
-						$rConnections = array_map(
-							static fn($v) => ($v !== false) ? igbinary_unserialize($v) : null,
-							$rRedis->mGet($rUUIDs)
-						);
-					}
-
-					foreach ($rConnections as $rConnection) {
-						if (!is_array($rConnection)) {
-							continue;
-						}
-
-						$uuid = $rConnection['uuid'];
-						$streamId = intval($rConnection['stream_id']);
-
-						if (!isset($rStreamMap[$streamId])) {
-							continue;
-						}
-
-						$rBitrates[$uuid] = $rStreamMap[$streamId];
-					}
-				}
-
-				unset($rStreamMap);
-			} else {
-				$db->query('SELECT `lines_live`.`uuid`, `streams_servers`.`bitrate` FROM `lines_live` LEFT JOIN `streams_servers` ON `lines_live`.`stream_id` = `streams_servers`.`stream_id` AND `lines_live`.`server_id` = `streams_servers`.`server_id` WHERE `lines_live`.`server_id` = ?;', SERVER_ID);
-
-				foreach ($db->get_rows() as $rRow) {
-					$bitrate = intval($rRow['bitrate']);
-					if ($bitrate > 0) {
-						$rBitrates[$rRow['uuid']] = intval($bitrate / 8 * 0.92);
-					}
-				}
-			}
-
-			if (!$rRedis) {
-				$rUUIDMap = [];
-				$db->query('SELECT `uuid`, `activity_id` FROM `lines_live`;');
-				foreach ($db->get_rows() as $rRow) {
-					$rUUIDMap[$rRow['uuid']] = $rRow['activity_id'];
-				}
-			}
-
-			$rLiveQuery = $rDivergenceUpdate = [];
-
-			foreach ($rConnectionSpeeds as $rConnectionSpeed) {
-				if (empty($rConnectionSpeed)) {
-					continue;
-				}
-
-				$rUUID = basename($rConnectionSpeed);
-				$rAverageSpeed = intval(file_get_contents($rConnectionSpeed));
-
-				if (!isset($rBitrates[$rUUID]) || $rBitrates[$rUUID] <= 0) {
-					$rDivergenceUpdate[] = "('" . $rUUID . "', 0)";
-
-					if (!$rRedis && isset($rUUIDMap[$rUUID])) {
-						$rLiveQuery[] = '(' . $rUUIDMap[$rUUID] . ', 0)';
-					}
-
-					continue;
-				}
-
-				$realBitrate = $rBitrates[$rUUID];
-				$rDivergence = intval(($rAverageSpeed - $realBitrate) / $realBitrate * 100);
-
-				if ($rDivergence > 0) {
-					$rDivergence = 0;
-				}
-
-				$rDivergenceUpdate[] = "('" . $rUUID . "', " . abs($rDivergence) . ')';
-
-				if (!$rRedis && isset($rUUIDMap[$rUUID])) {
-					$rLiveQuery[] = '(' . $rUUIDMap[$rUUID] . ', ' . abs($rDivergence) . ')';
-				}
-			}
-
-			if (count($rDivergenceUpdate) > 0) {
-				$rUpdateQuery = implode(',', $rDivergenceUpdate);
-				$db->query('INSERT INTO `lines_divergence`(`uuid`,`divergence`) VALUES ' . $rUpdateQuery . ' ON DUPLICATE KEY UPDATE `divergence`=VALUES(`divergence`);');
-			}
-
-			if (!$rRedis && count($rLiveQuery) > 0) {
-				$rLiveQueryStr = implode(',', $rLiveQuery);
-				$db->query('INSERT INTO `lines_live`(`activity_id`,`divergence`) VALUES ' . $rLiveQueryStr . ' ON DUPLICATE KEY UPDATE `divergence`=VALUES(`divergence`);');
-			}
-
-			shell_exec('rm -f ' . DIVERGENCE_TMP_PATH . '*');
-		}
+		$this->writeDivergence($rRedis);
 
 		if ($rServers[SERVER_ID]['is_main']) {
 			if ($rRedis) {
