@@ -35,14 +35,20 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * Every event is applied as the sending node: a stream's state goes to that
  * node's own `streams_servers` row and nothing else, log rows get its
  * server_id. A flow that is off refuses its events (dropped and counted), so
- * nothing is written twice. A batch and the new cursor commit together; a
- * node sends one batch per lane at a time.
+ * nothing is written twice. A P0 or P1 batch and the new cursor commit
+ * together, and MAIN applies one such batch per node and lane at a time, so a
+ * copy the node resent while the first was being applied is recognised as a
+ * repeat. P2 keeps no cursor and takes no lock: the latest value per key wins,
+ * so a repeat changes nothing.
  */
 final class EventIngest {
 	use DatabaseAware;
 
 	/** Events per batch. */
 	public const MAX_EVENTS = 5000;
+
+	/** Longest a batch waits for the one before it from the same node and lane (s). */
+	private const LOCK_WAIT = 10.0;
 
 	/** Lane of each event type, and the flow it needs. */
 	private const TYPES = [
@@ -69,6 +75,8 @@ final class EventIngest {
 	/** @var (callable(int): mixed)|null */
 	private static $rOnStreamChanged;
 
+	private static ?string $rLockDir = null;
+
 	/**
 	 * What runs when an event changed a stream's routing state (tests; by
 	 * default StreamProcess::updateStream, the cache signal the node used to
@@ -78,6 +86,17 @@ final class EventIngest {
 	 */
 	public static function onStreamChanged(?callable $rHook): void {
 		self::$rOnStreamChanged = $rHook;
+	}
+
+	/**
+	 * Tests: another directory for the lanes' lock files; null restores
+	 * TMP_PATH/cluster_ingest/. Returns the directory it replaces, so a test
+	 * can put it back.
+	 */
+	public static function useLockDir(?string $rDir): ?string {
+		$rPrevious = self::$rLockDir;
+		self::$rLockDir = $rDir;
+		return $rPrevious;
 	}
 
 	/**
@@ -91,40 +110,90 @@ final class EventIngest {
 		}
 		$rServerID = (int) $rNode['server_id'];
 		$rColumn = 'useq_' . $rLane;
-		$rCursor = (int) $rNode[$rColumn];
 		$rLast = $rFirst + count($rEvents) - 1;
-		if ($rEvents === [] || $rLast <= $rCursor) {
-			return ['ok' => true, 'useq' => $rCursor, 'applied' => 0, 'dropped' => 0]; // a repeat of what was applied
-		}
-		if ($rLane === 'p0' && $rFirst !== $rCursor + 1) {
-			return ['ok' => false, 'useq' => $rCursor, 'expected_useq' => $rCursor + 1];
-		}
-		if ($rFirst <= $rCursor) {
-			$rEvents = array_slice($rEvents, $rCursor - $rFirst + 1); // p1: the part already applied
-		}
 		$rDb = self::db();
-		$rTx = method_exists($rDb, 'beginTransaction') && $rDb->beginTransaction();
+		// One batch per node and lane at a time, and the cursor as it is now,
+		// not as the request read the node's row: a batch the node sent again
+		// while its first copy was still being applied (its request timed
+		// out) waits here, then finds it applied.
+		$rLock = self::lock($rServerID, $rLane);
 		try {
-			$rApplied = 0;
-			$rDropped = 0;
-			foreach ($rEvents as $rEvent) {
-				if (self::apply($rNode, $rLane, $rEvent)) {
-					$rApplied++;
-				} else {
-					$rDropped++;
+			if (!$rDb->query('SELECT `' . $rColumn . '` AS `useq` FROM `cluster_nodes` WHERE `server_id` = ?;', $rServerID) || $rDb->num_rows() === 0) {
+				throw new \RuntimeException('cannot read the node\'s cursor');
+			}
+			$rCursor = (int) $rDb->get_row()['useq'];
+			if ($rEvents === [] || $rLast <= $rCursor) {
+				return ['ok' => true, 'useq' => $rCursor, 'applied' => 0, 'dropped' => 0]; // a repeat of what was applied
+			}
+			if ($rLane === 'p0' && $rFirst !== $rCursor + 1) {
+				return ['ok' => false, 'useq' => $rCursor, 'expected_useq' => $rCursor + 1];
+			}
+			if ($rFirst <= $rCursor) {
+				$rEvents = array_slice($rEvents, $rCursor - $rFirst + 1); // p1: the part already applied
+			}
+			$rTx = method_exists($rDb, 'beginTransaction') && $rDb->beginTransaction();
+			try {
+				$rApplied = 0;
+				$rDropped = 0;
+				foreach ($rEvents as $rEvent) {
+					if (self::apply($rNode, $rLane, $rEvent)) {
+						$rApplied++;
+					} else {
+						$rDropped++;
+					}
 				}
+				// The batch counts as applied only with its cursor. One that
+				// was not written (the connection dropped mid-batch, taking
+				// the transaction with it) fails the batch, and the node sends
+				// it again instead of moving on past events MAIN never kept.
+				if (!$rDb->query('UPDATE `cluster_nodes` SET `' . $rColumn . '` = ? WHERE `server_id` = ? AND `' . $rColumn . '` < ?;', $rLast, $rServerID, $rLast)) {
+					throw new \RuntimeException('cannot advance the node\'s cursor');
+				}
+				if ($rTx) {
+					$rDb->commit();
+				}
+			} catch (\Throwable $rE) {
+				if ($rTx) {
+					$rDb->rollback();
+				}
+				throw $rE;
 			}
-			$rDb->query('UPDATE `cluster_nodes` SET `' . $rColumn . '` = ? WHERE `server_id` = ? AND `' . $rColumn . '` < ?;', $rLast, $rServerID, $rLast);
-			if ($rTx) {
-				$rDb->commit();
+			return ['ok' => true, 'useq' => $rLast, 'applied' => $rApplied, 'dropped' => $rDropped];
+		} finally {
+			if ($rLock !== null) {
+				flock($rLock, LOCK_UN);
+				fclose($rLock);
 			}
-		} catch (\Throwable $rE) {
-			if ($rTx) {
-				$rDb->rollback();
-			}
-			throw $rE;
 		}
-		return ['ok' => true, 'useq' => $rLast, 'applied' => $rApplied, 'dropped' => $rDropped];
+	}
+
+	/**
+	 * The node's lane, held while a batch is applied (`TMP_PATH/cluster_ingest/`,
+	 * a file lock, so it never holds the node's database row, which every
+	 * heartbeat writes). Null when the file cannot be opened: the batch then
+	 * goes on unserialised, and only a copy that arrives after the first was
+	 * applied is recognised.
+	 *
+	 * @return resource|null
+	 */
+	private static function lock(int $rServerID, string $rLane) {
+		$rDir = self::$rLockDir ?? ((defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_ingest/');
+		if (!is_dir($rDir)) {
+			@mkdir($rDir, 0750, true);
+		}
+		$rHandle = @fopen($rDir . $rServerID . '_' . $rLane . '.lock', 'c');
+		if ($rHandle === false) {
+			return null;
+		}
+		$rDeadline = microtime(true) + self::LOCK_WAIT;
+		while (!flock($rHandle, LOCK_EX | LOCK_NB)) {
+			if (microtime(true) >= $rDeadline) {
+				fclose($rHandle);
+				throw new \RuntimeException('the node\'s previous batch is still being applied'); // 503: the node resends later
+			}
+			usleep(50000);
+		}
+		return $rHandle;
 	}
 
 	/**

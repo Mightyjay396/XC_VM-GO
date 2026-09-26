@@ -313,7 +313,7 @@ This was checked with nginx 1.24:
 - `nginx -t` passes with and without the file.
 - On the old port, only `/cluster/v1/` reaches PHP.
 
-**Not built:** a change of MAIN's HTTPS broadcast port, `server_ip` or `private_ip` is not announced and keeps no old URL (plan §3, "Endpoint changes"). Only the HTTP broadcast port and `cluster_api_port` bump `cluster_policy_ver`.
+**Not built:** a change of MAIN's HTTPS broadcast port, `server_ip` or `private_ip` is not announced and keeps no old URL (plan §3, "Endpoint changes"). Only the HTTP broadcast port, `cluster_api_port`, `cluster_transport` and `cluster_main_host` bump `cluster_policy_ver`.
 
 ### Commands (Phase 4, first increment)
 
@@ -576,14 +576,14 @@ An LB that reaps its own rows (MySQL mode) asks its own agent through `NodeFlows
 
 **Orphans.** A node that falls silent would keep its viewers counted against their lines forever, so it is orphaned once both of these hold:
 
-- its `last_seen_at` is older than `cluster_orphan_conn_ttl_sec`;
+- it has been silent for `cluster_orphan_conn_ttl_sec`, counted from `max(last_seen_at, cluster_ready_at)`;
 - MAIN's reaper has itself watched it stay silent that long (`TMP_PATH/cluster_orphans.json`).
 
-A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node.
+A gap of more than 3 minutes between reaper passes restarts the watch, and so does the fleet silence guard, so MAIN's own downtime never orphans a node (see "Acceptance tests that found gaps").
 
 **The orphan purge.** Every CONNECTIONS node is watched this way, whether or not its agent reaps. An orphaned node's rows, HLS and TS alike, are purged from MAIN's store only (`ConnectionIngest::purgeNode`, audited as `conn.orphan_purge`), so they stop counting toward their lines' limits. The purge sends no kill and no command: the node's registry still holds its viewers. If the node comes back, its digest disagrees and a snapshot restores them. Before this, a dead node's TS rows stayed for ever, because the reaper kept trusting the node's last `php_pids` list, and it skips daemon-served rows (pid 0) altogether.
 
-**Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way.
+**Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way. (Both were built in the tenth increment.)
 
 ### Connections (Phase 6, seventh increment): admission when the token is minted
 
@@ -863,6 +863,57 @@ Tests:
 - `ConnectionTouchTest`: no cursor and no gap; the latest per viewer by `t` within a batch and across batches on the bus; the refusals; the store fallback on both stores (own rows, never back, never re-opening); bus-only for a reaping node, and only for the viewers its store holds; a mode-0 node and a bus past its share, both to the store; a store that cannot be read or reached failing the batch; and an older agent's P0 upsert.
 - `ClusterApiTest`: the P2 op and `p2_types` in hello and heartbeat; 503 `DB` with the store down; 409 `NOT_ACTIVE` for a quarantined node.
 - `HlsReapingTest`: the last reapers stand on a failed read; the leave grace for CONNECTIONS off, mode 0, a hello without `hls_reaper`, revoked and deleted nodes; none for an orphaned node; and the same on an LB (`beginLocal`).
+
+### Acceptance tests that found gaps (Phases 2, 4 and 6)
+
+Five tests the plan lists (§13) now run against the real code. Each found MAIN doing something other than what the plan says, and each was fixed together with its test. The large-snapshot gap, and the bounds on the hard-mode denial and the fleet silence guard, came from a review of the first four fixes.
+
+**`https_required` over plain HTTP (Phase 2, `HttpsRequiredRecoveryTest`).**
+
+- MAIN did not know which transport a request came over, so under `https_required` it served every op over plain HTTP. `Public/cluster/index.php` now passes nginx's `HTTPS` flag (`fastcgi_params`). Over plain HTTP, `ClusterApi` answers every op but `challenge` with a panel-signed `403 HTTPS_REQUIRED`, bound to the node and request nonce when the headers name them.
+- `health` is answered before the settings are read, so it stays on plain HTTP. The plan names only `GET /challenge`; `health` is signed and carries nothing secret.
+- A settings save that changed `cluster_transport` left `cluster_policy_ver` as it was. Nodes never saw the new policy in their heartbeats, and a signed policy recorded before the switch had the same version as the new one, so an agent would adopt it again. A save that changes `cluster_transport` or `cluster_main_host` now raises the version in its own `UPDATE`.
+- A settings form could set `cluster_policy_ver` itself, back to 1. `SettingsService` now drops `cluster_policy_ver` and `cluster_legacy_ports`, which are MAIN's own state, from a POST.
+- The drill runs through `SettingsService::edit()`, with the HTTPS self-probe faked (`ClusterSettings::useHttpsProbe()`). A node enrolled under `https_required` loses HTTPS, is refused over HTTP, and polls the signed challenge over HTTP. It does not adopt a replayed policy of a lower version, and it is back on plain HTTP once the admin picks `auto`, with no SSH.
+- The agent must answer `HTTPS_REQUIRED` by fetching the challenge over HTTP. That is XC_VM_Fanout's part.
+
+**Kills in the hard revocation mode (Phase 4, `HardModeKillChannelTest`).**
+
+- With `lb_revocation_mode=hard` and no licence, the extension refuses the node's session, so the long-poll and every MAC'd reply stop. Kills were still signed, being restrictive, but stayed queued until they expired.
+- A `LICENCE_INVALID` from the session check now carries `commands_sealed`: the node's pending restrictive commands (`CommandBus::restrictive()`), oldest first, in the long-poll's shape (`doc`, `sig`, `seq`), as a JSON list SEALed to the node's box key (`cluster_nodes.node_box_pub`, purpose `commands`, the node uuid as context) and base64-encoded. Only a node that takes commands (active, mode ≥ 1, COMMANDS on) gets them.
+- The request is not authenticated: without a session there is no MAC to check, and the denial goes to whoever names the node, whose uuid travels in every request's headers. Hence the seal: in clear, the list would show anyone the viewers' connection uuids and the workers' pids, which a BOXed reply hides. With it, a sniffer or a forger learns only the list's size, as the plan's attacker view allows. The review of this increment also proposed checking a node signature first; heartbeats carry none (only token ops do), so the agent would have to sign every request in case MAIN turns out unlicensed, and the seal already keeps the content to the node.
+- Nothing is marked delivered. The agent checks each command's signature, uuid, generation, `seq` above its high-water and expiry, as on the long-poll, but does not raise its long-poll high-water for them: it keeps their `cmd_id`s until they expire instead. Otherwise running a kill with `seq` N would skip every granting command queued below N (an RPC, a root command), which the long-poll, asking for `seq` above the high-water, would never hand out once the licence is back; each would sit queued until it expired, and its caller would get no result. Now the long-poll hands them out, and a kill it hands out again is acked with its result, not run twice.
+- The class comes from `cluster_commands.class`, which `CommandBus` sets from the plan's list of restrictive types. A granting command signed before the lapse is not handed out.
+- `FakeClusterCrypto` now does what the extension does: it refuses a hard session without a licence, and it classes a `cmd` record by its type. Its list of restrictive types is a copy of `CommandBus::RESTRICTIVE`, and the test fails when the two drift apart; the real list is the extension's.
+- The tests also cover a forged request (no MAC, no node signature: it gets only the sealed list), another node's kill, and expired and acked kills (never carried), and the licence coming back (the RPC queued before the lapse comes on the long-poll).
+- The agent must open and run the commands a denial carries, and keep their `cmd_id`s. That is XC_VM_Fanout's part.
+
+**Apply once (Phase 6, `ConnectionIngestIdempotencyTest`).**
+
+- `EventIngest` checked a batch against the cursor in the node row that the request read when it authenticated. A node whose `events` request times out sends the batch again, while MAIN may still be applying the first copy. Both copies passed the P0 gap check, so a closed viewer was re-opened and its close wrote a second activity row.
+- MAIN now applies one batch per node and lane at a time, and reads the cursor under that lock. Only the P0 and P1 lanes take it: P2 keeps no cursor (tenth increment). The lock is a file, `TMP_PATH/cluster_ingest/<sid>_<lane>.lock`, waited for up to 10 s (then `503 DB`). It is not the node's database row: every heartbeat writes that row, and holding it for a whole batch would delay them.
+- A cursor `UPDATE` that failed was ignored. When the database connection dropped mid-batch, taking the transaction with it, the node was still told the batch was applied, and moved on past events MAIN never kept. Such a batch now fails with `503 DB`, and the node sends it again.
+- The same event under a new number already applied once: an upsert updates in place, and a remove or close of a viewer already gone is accepted and changes nothing.
+- **Known gap:** a close's activity row goes to a file, outside the transaction. A batch that fails after one of its closes was applied keeps that activity row, and the resend writes it again, in either store. In MySQL mode the connection's removal rolls back with the batch; Redis has no transaction, so there the batch's writes stay, and the resend opens and closes the viewer again. `ConnectionIngestIdempotencyTest` pins both, with the second activity row.
+- The test pins the lock too: a query hook checks that the lane's lock is held when the cursor is read and when it is moved. The lock directory has a test seam (`EventIngest::useLockDir()`); the test bootstrap points it at a directory of the test process's own under `tests/.tmp`, so no suite run shares lock files with another.
+
+**MAIN's downtime and the orphan purge (Phase 6, `MainOutageNoPurgeTest`).**
+
+- `HlsReaping` measured a node's silence from `last_seen_at` alone, and kept its watch across reaper gaps of up to 3 minutes. A watch that began while MAIN's nginx was stopping survived a short restart. The first pass after it then purged every CONNECTIONS node's viewers before the nodes could reconnect.
+- Silence now counts from `max(last_seen_at, cluster_ready_at)`, as `NodeHealth` counts it (`cluster_meta.ready_at`, or 0 when it cannot be read).
+- While the fleet silence guard is up (`ClusterHealth`), the nodes it holds are not watched, and their watch starts over when it clears, so the time MAIN suspected itself never counts. The plan says the guard suspends purges; it does not say whether the watch restarts.
+- The guard does not hold a node that was offline before it came up. The liveness loop keeps such a node offline under the guard, and its silence began before MAIN suspected itself, so its watch goes on and it is purged a TTL after the watch began.
+- The guard holds the watch for at most 4 × `cluster_orphan_conn_ttl_sec` (8 minutes at the default), counted from the reaper pass that first saw it (`guard` in `cluster_orphans.json`, beside the tenth increment's `reaps` and `leaving`). The plan triggers the guard when most nodes "go silent within 10 s"; the liveness loop raises it whenever more than half of the TELEMETRY nodes (at least two) are not ok, with no time limit. A lasting loss of most of the fleet, such as both LBs of two, never clears it. Without the bound, those nodes' viewers would count against their lines until an admin acted, and on a `max_connections=1` line they could not reconnect elsewhere. With it, such a node is purged one TTL after the hold ends. A purge during a longer cut of MAIN's own network is undone when the nodes come back: their digests disagree, and their snapshots restore the rows. The guard's hold on offline marking (routing) is unchanged.
+- `MainOutageNoPurgeTest` also covers a node never heard (its silence counts from `cluster_ready_at`), a five-minute outage, a node offline before the guard, and a lasting loss of two nodes out of three.
+
+**Large snapshots (Phase 6, `LargeSnapshotChunkingTest`).**
+
+- Twenty chunks of 1000 records, against `lines_live` as the install creates it, change the store only with the last chunk. An oversized, malformed, out-of-order or unreadable staged chunk leaves the store as it was.
+- The staging was atomic, but the apply was not: 20 000 separate autocommitted writes. The staged chunks were deleted before it, and a write that failed only counted as dropped, so a connection lost part-way left a half-applied store and was still answered `ok`. Readers could also see the store half-changed while it ran.
+- In MySQL mode the apply is now one transaction. A commit that fails (the connection was lost) rolls it back and answers `503 DB`, and the staged chunks are kept until an apply succeeds, so the last chunk sent again applies the whole snapshot.
+- The removal pass removed every connection whose upsert had not succeeded, so a write MAIN failed to make deleted a viewer the node still had. It now spares every uuid the snapshot names.
+- The review proposed failing the snapshot on any write that fails. A single record MAIN refuses or cannot write is still counted as dropped instead: a record the database rejects would otherwise fail every snapshot the node sends, and the node would never get back in step. The next heartbeat's digest check (`ConnectionDigest`) finds such a difference and asks for another snapshot.
+- Redis has no transaction across 20 000 records. A Redis error part-way answers `503 DB` and leaves the part already applied; applying the whole again converges.
 
 ### The settings section (Phase 7, fourth increment)
 

@@ -92,3 +92,16 @@ require_once __DIR__ . '/Support/ClusterReference.php';
 require_once __DIR__ . '/Support/FakeClusterCrypto.php';
 require_once __DIR__ . '/Support/FakeSshFleet.php';
 require_once __DIR__ . '/Support/BusServer.php';
+
+// EventIngest's lane locks are real flock files. Without this they would land
+// in the shared TMP_PATH or system temp dir, where suite runs from other
+// checkouts contend on the same files: give each test process its own
+// directory under tests/.tmp, removed when the process ends.
+$ingestLockDir = $tmpRoot . '/cluster_ingest/' . getmypid() . '/';
+\XcVm\Domain\Cluster\EventIngest::useLockDir($ingestLockDir);
+register_shutdown_function(static function () use ($ingestLockDir): void {
+	foreach (glob($ingestLockDir . '*') ?: array() as $lockFile) {
+		@unlink($lockFile);
+	}
+	@rmdir($ingestLockDir);
+});

@@ -8,6 +8,7 @@ use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
+use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -34,6 +35,9 @@ final class ClusterApi {
 	/** Largest request body accepted (nginx also caps at 8 MB). */
 	public const MAX_BODY = 8388608;
 
+	/** SEAL purpose of the commands a hard-mode LICENCE_INVALID carries (killsFor()). */
+	public const SEAL_COMMANDS = 'commands';
+
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
 		'health' => ['GET', false, null],
@@ -55,7 +59,7 @@ final class ClusterApi {
 	];
 
 	/**
-	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string} $rReq
+	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string, https?: bool} $rReq
 	 * @param array<string, mixed> $rSettings
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
 	 * @return array{status: int, headers: array<string, string>, body: string}
@@ -75,6 +79,13 @@ final class ClusterApi {
 		}
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return DenialFactory::deny($rCrypto, 503, 'DISABLED');
+		}
+		if (($rSettings['cluster_transport'] ?? '') === 'https_required' && empty($rReq['https']) && $rOp !== 'challenge') {
+			// https_required (plan section 3): over plain HTTP only the challenge
+			// is served, so a node whose HTTPS fails still fetches the signed
+			// policy there, and with it an admin's switch back to auto.
+			$rH = Canonical::parseHeaders($rReq['headers']);
+			return DenialFactory::deny($rCrypto, 403, 'HTTPS_REQUIRED', $rH['node'] ?? null, $rH['nonce'] ?? null);
 		}
 		if ($rOp === 'challenge') {
 			return self::challenge($rCrypto, (string) ($rReq['query'] ?? ''), $rSettings, $rMain);
@@ -108,7 +119,7 @@ final class ClusterApi {
 		try {
 			$rKeys = TokenService::session($rCrypto, $rNode, $rH['epoch']);
 		} catch (ClusterRefusedException $rE) {
-			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
+			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH, true);
 		}
 		if (!$rKeys instanceof \XcVm\Core\Cluster\Crypto\SessionKeys) {
 			return DenialFactory::deny($rCrypto, 401, 'TOKEN_EXPIRED', $rH['node'], $rH['nonce']);
@@ -706,14 +717,51 @@ final class ClusterApi {
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 
-	/** Map an extension refusal to a signed denial. */
-	private static function refusal(ClusterCrypto $rCrypto, string $rReason, array $rNode, array $rH): array {
+	/**
+	 * Map an extension refusal to a signed denial. $rSession: the extension
+	 * refused the node's session itself (a licence refusal there is the hard
+	 * revocation mode's), so the denial also carries the node's pending
+	 * restrictive commands (killsFor()).
+	 */
+	private static function refusal(ClusterCrypto $rCrypto, string $rReason, array $rNode, array $rH, bool $rSession = false): array {
 		return match (true) {
 			$rReason === 'REVOKED' => DenialFactory::deny($rCrypto, 403, 'NODE_REVOKED', $rH['node'], $rH['nonce'], ['revoked_gen' => (int) $rNode['gen']]),
-			$rReason === 'LICENCE' => DenialFactory::deny($rCrypto, 403, 'LICENCE_INVALID', $rH['node'], $rH['nonce']),
+			$rReason === 'LICENCE' => DenialFactory::deny($rCrypto, 403, 'LICENCE_INVALID', $rH['node'], $rH['nonce'], $rSession ? self::killsFor($rNode) : []),
 			$rReason === 'CLOCK' => DenialFactory::deny($rCrypto, 503, 'CLOCK', $rH['node'], $rH['nonce']),
 			default => DenialFactory::deny($rCrypto, 401, 'TOKEN_EXPIRED', $rH['node'], $rH['nonce'], ['detail' => substr($rReason, 0, 32)]),
 		};
+	}
+
+	/**
+	 * `lb_revocation_mode=hard` (plan section 4): without a licence the
+	 * extension refuses the node's session, so neither the long-poll nor a
+	 * MAC'd reply can reach it, yet kills, drops and stops must. Its pending
+	 * restrictive commands then ride the panel-signed LICENCE_INVALID that its
+	 * next request gets, in the long-poll's shape, each under its own `cmd`
+	 * signature (CommandBus::restrictive() says how the agent takes them).
+	 *
+	 * The request is not authenticated (no session, so no MAC to check), so
+	 * the list is SEALed to the node's box key, purpose SEAL_COMMANDS, the
+	 * node uuid as context: whoever names the node learns only its size, as
+	 * a sniffer does of a BOXed reply. Nothing is marked delivered. Only for
+	 * a node that takes commands.
+	 *
+	 * @param array<string, mixed> $rNode
+	 * @return array{commands_sealed?: string} base64 of SEAL(JSON list)
+	 */
+	private static function killsFor(array $rNode): array {
+		if (!CommandBus::accepts($rNode)) {
+			return [];
+		}
+		try {
+			$rCommands = CommandBus::restrictive((int) $rNode['server_id']);
+			if ($rCommands === []) {
+				return [];
+			}
+			return ['commands_sealed' => base64_encode(Seal::seal((string) $rNode['node_box_pub'], self::SEAL_COMMANDS, (string) $rNode['node_uuid'], (string) json_encode($rCommands, JSON_UNESCAPED_SLASHES)))];
+		} catch (\Throwable) {
+			return []; // the denial goes out regardless
+		}
 	}
 
 	private static function header(array $rHeaders, string $rName): string {
