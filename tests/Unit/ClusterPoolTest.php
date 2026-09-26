@@ -1,16 +1,20 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\Crypto\Enc;
+use XcVm\Core\Cluster\Crypto\PanelSig;
+use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Infrastructure\Database\DatabaseFactory;
+use XcVm\Tests\Support\FakeClusterCrypto;
 
 /**
- * MAIN's cluster FPM pools (plan §3, "Transport"): `cluster_ctl` and
- * `cluster_ingest`, each sized by the plan's formula; ensure() writes,
- * starts and reloads them only when needed, and marks the API ready only
- * once both answer.
+ * MAIN's cluster FPM pools (plan §3, "Transport"): control ops run on
+ * `cluster_ctl`, ingest on `cluster_ingest`, each sized by the plan's
+ * formula; ensure() writes, starts and reloads them only when needed, and the
+ * API answers a panel-signed 503 STARTING until both pools answer.
  *
  * The pools' processes are faked here; testRealPhpFpm runs a real php-fpm
  * when one is available (XCVM_TEST_FPM=/path/to/php-fpm, or php-fpm on PATH).
@@ -179,6 +183,62 @@ final class ClusterPoolTest extends TestCase {
 		$this->assertTrue(ClusterPool::ensure(0.0));
 		$this->assertTrue(ClusterPool::ready());
 		$this->assertSame(1800000120000, ClusterMeta::readyAtMs(), 'the time MAIN was STARTING never counts against a node');
+	}
+
+	public function testTheApiIsStartingUntilReady(): void {
+		$rCrypto = new FakeClusterCrypto();
+		$rNonce = str_repeat('ab', 16);
+		$rUuid = '0f8fad5b-d9cb-469f-a165-70867728950e';
+		$rReq = ['method' => 'POST', 'path' => '/cluster/v1/heartbeat', 'headers' => [
+			'X-XCVM-Proto' => '1', 'X-XCVM-Node' => $rUuid, 'X-XCVM-Epoch' => '1',
+			'X-XCVM-Ts' => '1800000000000', 'X-XCVM-Nonce' => $rNonce, 'X-XCVM-Sig' => str_repeat('0', 64),
+		]];
+
+		$rRes = ClusterPool::gate($rCrypto, $rReq);
+		$this->assertNotNull($rRes);
+		$this->assertSame(503, $rRes['status']);
+		$rSig = Enc::b64urlDecode($rRes['headers']['X-XCVM-Panel-Sig']);
+		$this->assertTrue(PanelSig::verify($rCrypto->info()['panel_sign_pub'], 'den', $rRes['body'], (string) $rSig), 'panel-signed');
+		$rDoc = json_decode($rRes['body'], true);
+		$this->assertSame('STARTING', $rDoc['reason']);
+		$this->assertSame($rUuid, $rDoc['node'], 'bound to the node');
+		$this->assertSame($rNonce, $rDoc['req_nonce'], 'and to the request');
+		$this->assertSame(ClusterPool::RETRY_AFTER_MS, $rDoc['retry_after_ms']);
+
+		$rChallenge = ClusterPool::gate($rCrypto, ['method' => 'GET', 'path' => '/cluster/v1/challenge', 'headers' => []]);
+		$this->assertSame(503, $rChallenge['status'] ?? null, 'unauthenticated ops wait too');
+		$this->assertNull(json_decode($rChallenge['body'], true)['node']);
+		$this->assertNull(ClusterPool::gate($rCrypto, ['method' => 'GET', 'path' => '/cluster/v1/health', 'headers' => []]), 'health needs neither the database nor the pools');
+
+		ClusterPool::ensure(0.0);
+		$this->assertNull(ClusterPool::gate($rCrypto, $rReq), 'served once both pools answer');
+	}
+
+	public function testEveryOpHasALaneAndNginxRoutesTheIngestOnes(): void {
+		$rServed = array_keys((new ReflectionClassConstant(ClusterApi::class, 'OPS'))->getValue());
+		foreach ($rServed as $rOp) {
+			$this->assertContains($rOp, array_merge(ClusterPool::CTL_OPS, ClusterPool::INGEST_OPS), $rOp . ' needs a lane');
+		}
+		$this->assertSame([], array_intersect(ClusterPool::CTL_OPS, ClusterPool::INGEST_OPS));
+		$this->assertCount(24, array_merge(ClusterPool::CTL_OPS, ClusterPool::INGEST_OPS), "the plan's 24 ops");
+		$this->assertSame('cluster_ctl', ClusterPool::poolFor('commands'), 'the long-poll');
+		$this->assertSame('cluster_ctl', ClusterPool::poolFor('heartbeat'));
+		$this->assertSame('cluster_ingest', ClusterPool::poolFor('events'));
+		$this->assertSame('cluster_ctl', ClusterPool::poolFor('no_such_op'), 'refused on the control pool');
+
+		$rConf = (string) file_get_contents(dirname(__DIR__, 2) . '/src/bin/nginx/conf/nginx.conf');
+		$this->assertMatchesRegularExpression('#location \^~ /cluster/v1/ \{[^}]*fastcgi_pass cluster_ctl;#', $rConf);
+		$this->assertMatchesRegularExpression('#location ~ \^/cluster/v1/\(([a-z_|]+)\)\$ \{\s*fastcgi_pass cluster_ingest;#', $rConf);
+		preg_match('#location ~ \^/cluster/v1/\(([a-z_|]+)\)\$ \{#', $rConf, $rMatch);
+		$rRouted = explode('|', $rMatch[1]);
+		sort($rRouted);
+		$rIngest = ClusterPool::INGEST_OPS;
+		sort($rIngest);
+		$this->assertSame($rIngest, $rRouted, "nginx.conf's ingest location lists INGEST_OPS");
+
+		foreach (array_keys(ClusterPool::POOLS) as $rPool) {
+			$this->assertMatchesRegularExpression('#upstream ' . $rPool . ' \{\s*server unix:' . preg_quote(ClusterPool::socket($rPool, '/home/xc_vm/'), '#') . ';\s*server unix:/home/xc_vm/bin/php/sockets/1\.sock backup;\s*\}#', $rConf, $rPool . ': its own socket, the panel pool until it answers');
+		}
 	}
 
 	/**

@@ -3,6 +3,8 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\Crypto\Canonical;
+use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -24,15 +26,19 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * - configs in `bin/php/etc/cluster/<pool>.conf`, a directory of their own:
  *   `set_services` deletes and rewrites `bin/php/etc/*.conf` for the panel's
  *   pools;
- * - sockets in `bin/php/sockets/<pool>.sock`;
+ * - sockets in `bin/php/sockets/<pool>.sock`, where nginx's `cluster_ctl` and
+ *   `cluster_ingest` upstreams point, with a panel pool as their backup;
  * - pid files in `bin/php/var/run/`, not `sockets/`, where `restart_php_fpm`
  *   counts the panel's pools.
  *
  * ensure() runs from `status` (at boot and after an update) and each minute
  * from cron:servers. It writes the configs, starts a pool that is not
  * running and reloads one whose size changed. The marker `tmp/cluster_ready`
- * exists only once both pools answer FPM's own ping; tmp/ is a tmpfs, so a
- * reboot removes it.
+ * exists only once both pools answer FPM's own ping. Until then nginx falls
+ * back to the panel pool, and gate() answers every op but `health` with a
+ * panel-signed 503 STARTING, so agents back off instead of holding panel
+ * workers with their long-polls. The service removes the marker whenever it
+ * (re)starts, and tmp/ is a tmpfs, so a reboot does too.
  */
 final class ClusterPool {
 	use DatabaseAware;
@@ -40,8 +46,27 @@ final class ClusterPool {
 	/** pool => request_terminate_timeout (s) */
 	public const POOLS = ['cluster_ctl' => 60, 'cluster_ingest' => 90];
 
+	/** The plan's control ops (lanes poll and ctl), served by cluster_ctl; so is an unknown op, to be refused. */
+	public const CTL_OPS = [
+		'health', 'challenge', 'enrol_complete', 'enrol_code', 'enrol_code_status', 'token_refresh',
+		'token_rekey', 'hello', 'heartbeat', 'conn_admit', 'commands', 'ack',
+	];
+
+	/**
+	 * The plan's ingest ops (lanes p0 and bulk), served by cluster_ingest,
+	 * including those the API does not serve yet. The /cluster/v1/ location in
+	 * bin/nginx/conf/nginx.conf lists the same names.
+	 */
+	public const INGEST_OPS = [
+		'events', 'config', 'streams', 'conn_snapshot', 'stream_bundle', 'rpc_result',
+		'recording_complete', 'vod_analysis', 'queue_claim', 'queue_update', 'queue_enqueue', 'artefact',
+	];
+
 	/** The ingest pool's floor: one P0 and one bulk request, however small MariaDB is. */
 	public const MIN_INGEST = 2;
+
+	/** The back-off the STARTING denial asks for. */
+	public const RETRY_AFTER_MS = 5000;
 
 	/** Relative to the install root; tmp/ is TMP_PATH. */
 	public const MARKER = 'tmp/cluster_ready';
@@ -75,6 +100,11 @@ final class ClusterPool {
 	 */
 	public static function useProcs(?\Closure $rProcs): void {
 		self::$rProcs = $rProcs;
+	}
+
+	/** The pool that serves an op: its lane's. */
+	public static function poolFor(string $rOp): string {
+		return in_array($rOp, self::INGEST_OPS, true) ? 'cluster_ingest' : 'cluster_ctl';
 	}
 
 	public static function ctlChildren(int $rNodes): int {
@@ -170,6 +200,22 @@ final class ClusterPool {
 		if ($rBase !== null) {
 			@unlink($rBase . self::MARKER);
 		}
+	}
+
+	/**
+	 * What the API answers while it is starting, or null to serve the request:
+	 * until ready(), every op but `health` gets a panel-signed 503 STARTING,
+	 * bound to the node and the nonce when the request names them.
+	 *
+	 * @param array{path: string, headers?: array<string, string>} $rReq
+	 * @return array{status: int, headers: array<string, string>, body: string}|null
+	 */
+	public static function gate(ClusterCrypto $rCrypto, array $rReq): ?array {
+		if ((string) $rReq['path'] === Canonical::PATH_PREFIX . 'health' || self::ready()) {
+			return null;
+		}
+		$rH = Canonical::parseHeaders($rReq['headers'] ?? []);
+		return DenialFactory::deny($rCrypto, 503, 'STARTING', $rH['node'] ?? null, $rH['nonce'] ?? null, ['retry_after_ms' => self::RETRY_AFTER_MS]);
 	}
 
 	/** Does the pool answer FPM's ping now? */

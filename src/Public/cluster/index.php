@@ -22,6 +22,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Cluster\ClusterApi;
+use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Domain\Cluster\DenialFactory;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -56,6 +57,13 @@ $rReq = [
 	'headers' => function_exists('getallheaders') ? (array) getallheaders() : [],
 	'ip' => (string) ($_SERVER['REMOTE_ADDR'] ?? ''),
 ];
+// Until MAIN's cluster pools answer, nginx hands the API to a panel pool, and
+// every op but health gets a signed 503 STARTING (ClusterPool).
+$rStarting = ClusterPool::gate($rCrypto, $rReq);
+if ($rStarting !== null) {
+	$rEmit($rStarting);
+	return;
+}
 if ($rReq['path'] === '/cluster/v1/health') {
 	// Needs neither the database nor settings: it is how agents tell a MAIN
 	// whose database is down from one that is gone.
