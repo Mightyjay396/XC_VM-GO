@@ -113,7 +113,7 @@ EXCLUDE_ARGS := $(addprefix --exclude=,$(EXCLUDES))
 	lb_archive_move main_archive_move main_install_archive clean \
 	verify_no_lfs_pointers \
 	lb_delete_files_list generate_deleted_files \
-	phpstan phpstan-baseline cs cs-fix check-procedural-use verify-lb-archive gates \
+	phpstan phpstan-baseline cs cs-fix check-procedural-use verify-lb-archive check-lb-settings-keys gates \
 	check-vendor-prod-only dev-tools dev-clean rector rector-fix
 
 # ─── Dev tooling ────────────────────────────────────────────────
@@ -227,7 +227,11 @@ check-vendor-prod-only:
 	@bash tools/ci/check-vendor-prod-only.sh
 
 # Run every fast PSR-4 gate.
-gates: check-procedural-use verify-lb-archive check-vendor-prod-only
+# The settings a node replica may carry: what the LB build reads, never a secret.
+check-lb-settings-keys:
+	@bash tools/ci/lb-settings-keys.sh
+
+gates: check-procedural-use verify-lb-archive check-vendor-prod-only check-lb-settings-keys
 
 # ─── Admin E2E (Playwright) ─────────────────────────────────────
 # Browser smoke tests for the admin panel. Run against a LIVE instance:

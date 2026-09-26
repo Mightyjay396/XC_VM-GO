@@ -34,6 +34,7 @@ class OffAirHandler {
 
 	public static function getOffAirVideo($rPathKey) {
 		global $rSettings;
+		// lb-settings: connected_video_path, not_on_air_video_path, banned_video_path, expired_video_path, expiring_video_path
 		if (!isset($rSettings[$rPathKey]) || 0 >= strlen($rSettings[$rPathKey])) {
 			switch ($rPathKey) {
 				case 'connected_video_path':
@@ -63,6 +64,7 @@ class OffAirHandler {
 					break;
 			}
 		} else {
+			// lb-settings: connected_video_path, not_on_air_video_path, banned_video_path, expired_video_path, expiring_video_path
 			return $rSettings[$rPathKey];
 		}
 	}
@@ -86,6 +88,7 @@ class OffAirHandler {
 	public static function showVideoServer($rShowOptionKey, $rVideoPathKey, $rExtension, $rUserInfo, $rIP, $rCountryCode, $rISP, $rServerID = null, $rProxyID = null) {
 		global $rSettings, $rServers;
 		$rVideoPath = self::getOffAirVideo($rVideoPathKey);
+		// lb-settings: show_connected_video, show_not_on_air_video, show_banned_video, show_expired_video, show_expiring_video
 		if (!(!$rUserInfo['is_restreamer'] && $rSettings[$rShowOptionKey] && (string) $rVideoPath !== '')) {
 			switch ($rShowOptionKey) {
 				case 'show_expired_video':

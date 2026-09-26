@@ -984,7 +984,8 @@ Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR 
 - The replica transport. `ReplicaBuilder` signs and seals records per node: `rep` for whole sections and the extension's `blk` for IP deltas. The `config` op serves the `blocklist` section and deltas, with an ETag `have`. The agent's `replica.go` stores the records under `config/cluster/replica/` only after they verify, and reloads the section daily.
 - `cluster:apply` for the blocklist. The agent materialises `replica/blocklist.json` from the verified records and runs it. It builds the four blocklist caches in `cron:cache`'s shapes. With CONFIG off it only writes a diff report, `replica/apply.json`; with CONFIG on the replica owns those caches (`ReplicaApplyTest`).
 - With CONFIG on, the rest of the blocklist also reads the replica: `rtmp.php` through `getAllowedRTMP` and the replica's `rtmp_ips` cache, and the root iptables sync. A missing replica cache never unblocks anything.
-- **Not built yet:** the other R1 sections, `lb-settings-keys.sh`, `ReplicaStage`, and the mode-2 refusal. The root flush still arrives as a `signals` row.
+- The `settings` section. The allowlist `lb_settings_keys.php` comes from `tools/ci/lb-settings-keys.sh`, checked in `make gates`: dynamic reads need an `lb-settings:` note, and secrets are withheld. It is served whole by ETag and stored by the agent, and `cluster:apply` diffs it in shadow (`ReplicaBuilderSecretsTest`). It becomes authoritative together with the `secrets` section.
+- **Not built yet:** the `secrets`, `servers`, `node`, `crontab` and `cluster` sections, `ReplicaStage`, the mode-2 refusal, and the API nodes' `audit.settings_misses`. The root flush still arrives as a `signals` row.
 
 **Phase 8: Data plane (\~4.5 pw).**
 

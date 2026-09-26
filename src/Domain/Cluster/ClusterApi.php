@@ -597,24 +597,36 @@ final class ClusterApi {
 
 	/**
 	 * `config`: the node's replica (ReplicaBuilder), in shadow until its CONFIG
-	 * flow is on. Today the blocklist: a `blk` delta from `blocklist_since`, or
-	 * the whole section when there is no delta to give; `have` is the ETag the
-	 * node holds, so a section it already has is not sent again.
+	 * flow is on. The blocklist: a `blk` delta from `blocklist_since`, or the
+	 * whole section when there is no delta to give. `have` maps each section to
+	 * the ETag the node holds, so a section it already has is not sent again;
+	 * a section sent whole (settings) goes only to an agent that names it.
 	 */
 	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		$rSince = $rP['blocklist_since'] ?? 0;
-		$rHave = $rP['have'][ReplicaBuilder::SECTION_BLOCKLIST] ?? '';
-		if (!is_int($rSince) || $rSince < 0 || !is_string($rHave) || ($rHave !== '' && !preg_match('/^[0-9a-f]{64}$/', $rHave))) {
+		$rHave = is_array($rP['have'] ?? null) ? $rP['have'] : [];
+		if (!is_int($rSince) || $rSince < 0) {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
+		foreach ($rHave as $rEtag) {
+			if (!is_string($rEtag) || ($rEtag !== '' && !preg_match('/^[0-9a-f]{64}$/', $rEtag))) {
+				return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+			}
+		}
 		try {
-			$rBlocklist = ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave);
+			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, (string) ($rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? ''))];
+			// Sent whole: only to an agent that asks for them (have names the section).
+			foreach (array_keys(ReplicaBuilder::WHOLE) as $rSection) {
+				if (array_key_exists($rSection, $rHave)) {
+					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection]);
+				}
+			}
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
 		} catch (\Throwable) {
 			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
 		}
-		return ClusterReply::boxed($rKeys, $rCtx, [ReplicaBuilder::SECTION_BLOCKLIST => $rBlocklist, 'main_time_ms' => ClusterClock::nowMs()]);
+		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/** Map an extension refusal to a signed denial. */
