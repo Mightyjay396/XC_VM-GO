@@ -981,7 +981,8 @@ Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR 
 - Acceptance: 0 SQL and 0 Redis connects for 7 days on the canary. Streams, HLS and crons survive a stopped MAIN MariaDB, and a reboot with MAIN unreachable serves from disk. No secret outside the allowlist ships.
 - Tests: `ReplicaBuilderSecretsTest`, `BlocklistDeltaTest`, `DbConnectRefusalTest`, the CI allowlist check.
 - Built so far: the blocklist delta. Every block and unblock path logs to `cluster_changes` through `Core/Cluster/BlocklistChanges`, and bulk changes log a per-kind `reset`. `Domain/Cluster/BlocklistDelta` reads it, and `cron:cluster` prunes it after seven days, always keeping the newest row. `BlocklistDeltaTest` also fails on any new writer that does not log.
-- **Not built yet:** everything else in this phase. That means `ReplicaBuilder` and the `config` op that serves the delta, `lb-settings-keys.sh`, `ClusterApplyCommand`, `ReplicaStage`, and the mode-2 refusal.
+- The replica transport. `ReplicaBuilder` signs and seals records per node: `rep` for whole sections and the extension's `blk` for IP deltas. The `config` op serves the `blocklist` section and deltas, with an ETag `have`. The agent's `replica.go` stores the records under `config/cluster/replica/` only after they verify, and reloads the section daily.
+- **Not built yet:** the other R1 sections, `lb-settings-keys.sh`, `ClusterApplyCommand`, `ReplicaStage`, and the mode-2 refusal.
 
 **Phase 8: Data plane (\~4.5 pw).**
 

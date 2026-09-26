@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\Crypto\Box;
 use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
@@ -17,6 +18,7 @@ use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
+use XcVm\Domain\Cluster\ReplicaBuilder;
 use XcVm\Domain\Cluster\TokenService;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\ClusterReference;
@@ -47,6 +49,8 @@ final class ClusterApiTest extends TestCase {
 	private array $rMain = ['id' => 1, 'server_ip' => '10.0.0.1', 'private_ip' => '192.168.0.1', 'http_broadcast_port' => 25461, 'enable_https' => 0];
 
 	private string $rNodeSk;
+
+	private string $rNodeBoxSk = '';
 
 	/** @var array{0: string, 1: string} current [epoch => eph sk] */
 	private array $rEph = [];
@@ -134,13 +138,14 @@ final class ClusterApiTest extends TestCase {
 	private function enrol(): array {
 		$rPair = sodium_crypto_sign_keypair();
 		$this->rNodeSk = sodium_crypto_sign_secretkey($rPair);
+		$this->rNodeBoxSk = random_bytes(32);
 		$rEphSk = random_bytes(32);
 		$rFirst = EnrolmentService::issueFirst(
 			$this->rCrypto,
 			self::SID,
 			$this->rUuid,
 			sodium_crypto_sign_publickey($rPair),
-			random_bytes(32),
+			sodium_crypto_scalarmult_base($this->rNodeBoxSk),
 			sodium_crypto_scalarmult_base($rEphSk),
 			$this->rSettings,
 			$this->rMain
@@ -912,5 +917,90 @@ final class ClusterApiTest extends TestCase {
 		} finally {
 			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
 		}
+	}
+
+	// ── config: the node replica ─────────────────────────────────────────
+
+	/** Open a replica record as the agent does: sealed to its box key, panel-signed. */
+	private function openRecord(string $rB64, string $rTag): array {
+		$rBody = Seal::open($this->rNodeBoxSk, 'replica', $this->rUuid, (string) base64_decode($rB64));
+		$this->assertNotNull($rBody, 'sealed to this node');
+		$rLen = unpack('N', substr($rBody, 0, 4))[1];
+		$rPayload = substr($rBody, 4, $rLen);
+		$this->assertTrue(PanelSig::verify($this->rCrypto->info()['panel_sign_pub'], $rTag, $rPayload, substr($rBody, 4 + $rLen)), $rTag . ' signature');
+		return json_decode($rPayload, true);
+	}
+
+	private function blocklistTables(): void {
+		$this->rDb->exec($this->ddl((string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/034_create_cluster_changes.sql')));
+		$this->rDb->exec('CREATE TABLE `blocked_ips` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `ip` varchar(39), `notes` text, `date` int)');
+		$this->rDb->exec('CREATE TABLE `blocked_uas` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `user_agent` varchar(255), `exact_match` int DEFAULT 0)');
+		$this->rDb->exec('CREATE TABLE `blocked_isps` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `isp` text, `blocked` int DEFAULT 0)');
+		$this->rDb->exec('CREATE TABLE `blocked_asns` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `asn` int, `blocked` int DEFAULT 0)');
+		$this->rDb->exec('CREATE TABLE `rtmp_ips` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `ip` varchar(255), `password` varchar(128), `push` int, `pull` int)');
+	}
+
+	private function block(string $rIP, bool $rOn = true): void {
+		$this->rDb->query($rOn ? 'INSERT INTO `blocked_ips` (`ip`) VALUES (?)' : 'DELETE FROM `blocked_ips` WHERE `ip` = ?', $rIP);
+		$rOn ? BlocklistChanges::set('ip', [$rIP]) : BlocklistChanges::del('ip', [$rIP]);
+	}
+
+	public function testConfigServesTheBlocklistAsASectionThenAsDeltas(): void {
+		$this->blocklistTables();
+		$rKeys = $this->active();
+		$this->block('203.0.113.1');
+
+		// A new node: the whole section, for it alone.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys)['blocklist'];
+		$rDoc = $this->openRecord($rOut['section']['sealed'], 'rep');
+		$this->assertSame(['blocklist', $this->rUuid, 1, $rOut['section']['etag'], $rOut['seq']], [$rDoc['section'], $rDoc['node'], $rDoc['gen'], $rDoc['etag'], $rDoc['seq']]);
+		$this->assertSame(['203.0.113.1'], $rDoc['data']['ip']);
+		$this->assertSame($rOut['section']['etag'], ReplicaBuilder::etag($rDoc['data']));
+
+		// Then only what changed, as a blk delta.
+		$this->block('203.0.113.2');
+		$this->block('203.0.113.1', false);
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => $rOut['seq']], 1, $rKeys);
+		$rNext = $this->reply($rRes, $rCtx, $rKeys)['blocklist'];
+		$this->assertArrayNotHasKey('section', $rNext);
+		$this->assertSame(['v' => 1, 'seq' => $rNext['seq'], 'iat' => $rDoc['iat'], 'add' => ['203.0.113.2'], 'remove' => ['203.0.113.1']], $this->openRecord($rNext['delta'], 'blk'));
+
+		// Nothing new: nothing sent.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => $rNext['seq']], 1, $rKeys);
+		$this->assertSame(['seq' => $rNext['seq'], 'more' => false], $this->reply($rRes, $rCtx, $rKeys)['blocklist']);
+
+		// A hand edit of another kind: the section again, unless the node holds it.
+		$this->rDb->exec("INSERT INTO `blocked_uas` (`user_agent`) VALUES ('curl')");
+		BlocklistChanges::set('ua', [1]);
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => $rNext['seq']], 1, $rKeys);
+		$rSec = $this->reply($rRes, $rCtx, $rKeys)['blocklist'];
+		$this->assertSame('curl', $this->openRecord($rSec['section']['sealed'], 'rep')['data']['ua'][0]['user_agent']);
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => $rNext['seq'], 'have' => ['blocklist' => $rSec['section']['etag']]], 1, $rKeys);
+		$this->assertSame(['seq' => $rSec['seq'], 'more' => false, 'unchanged' => true], $this->reply($rRes, $rCtx, $rKeys)['blocklist']);
+
+		[$rRes] = $this->call('config', ['blocklist_since' => -1], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST');
+	}
+
+	public function testWithoutALicenceBansStillReachTheNodeButNothingElse(): void {
+		if (!$this->rCrypto instanceof FakeClusterCrypto) {
+			$this->markTestSkipped('the licence is switched off in the fake only');
+		}
+		$this->blocklistTables();
+		$rKeys = $this->active();
+		$this->block('203.0.113.1');
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0], 1, $rKeys);
+		$rSeq = $this->reply($rRes, $rCtx, $rKeys)['blocklist']['seq'];
+		$this->rCrypto->rLicensed = false;
+
+		$this->block('203.0.113.2');
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => $rSeq], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys)['blocklist'];
+		$this->assertSame(['203.0.113.2'], $this->openRecord($rOut['delta'], 'blk')['add'], 'a ban only restricts');
+
+		$this->block('203.0.113.2', false);
+		[$rRes] = $this->call('config', ['blocklist_since' => $rOut['seq']], 1, $rKeys);
+		$this->denial($rRes, 403, 'LICENCE_INVALID');
 	}
 }

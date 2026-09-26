@@ -35,7 +35,7 @@ final class BlocklistDeltaTest extends TestCase {
 		return (int) $this->rDb->get_row()['hi'];
 	}
 
-	public function testANodeGetsEachChangedKeysCurrentRowOrItsRemoval(): void {
+	public function testIPsTravelAsAddsAndRemovesAndOtherKindsAsAReload(): void {
 		$this->rDb->exec("INSERT INTO `blocked_ips` (`ip`) VALUES ('203.0.113.1')");
 		BlocklistChanges::set('ip', ['203.0.113.1']);
 		$rSince = $this->lastID();
@@ -46,12 +46,6 @@ final class BlocklistDeltaTest extends TestCase {
 		BlocklistChanges::del('ip', ['203.0.113.3']);
 		$this->rDb->exec("DELETE FROM `blocked_ips` WHERE `ip` = '203.0.113.1'");
 		BlocklistChanges::del('ip', ['203.0.113.1']);
-		$this->rDb->exec("INSERT INTO `blocked_uas` (`user_agent`, `exact_match`) VALUES ('curl', 1)");
-		BlocklistChanges::set('ua', [1]);
-		$this->rDb->exec("INSERT INTO `rtmp_ips` (`ip`, `password`, `push`, `pull`) VALUES ('198.51.100.9', 'pw', 1, 0)");
-		BlocklistChanges::set('rtmp', [1]);
-		$this->rDb->exec("INSERT INTO `blocked_asns` (`asn`, `blocked`) VALUES (64500, 1), (64501, 0)");
-		BlocklistChanges::set('asn', [1, 2]); // 64501 was unblocked: gone for the node
 		BlocklistChanges::set('nope', ['x']);
 
 		$rOut = BlocklistDelta::since($rSince);
@@ -59,14 +53,32 @@ final class BlocklistDeltaTest extends TestCase {
 		$this->assertFalse($rOut['more']);
 		$this->assertSame($this->lastID(), $rOut['last']);
 		$this->assertSame([], $rOut['reload']);
-		$this->assertSame([['ip' => '203.0.113.2']], $rOut['set']['ip']);
-		$this->assertEqualsCanonicalizing(['203.0.113.1', '203.0.113.3'], $rOut['del']['ip']);
-		$this->assertSame('curl', $rOut['set']['ua'][0]['user_agent']);
-		$this->assertSame('pw', $rOut['set']['rtmp'][0]['password'], 'the node checks publishers against it');
-		$this->assertSame(64500, (int) $rOut['set']['asn'][0]['asn']);
-		$this->assertSame(['2'], $rOut['del']['asn']);
+		$this->assertSame(['203.0.113.2'], $rOut['add']);
+		$this->assertEqualsCanonicalizing(['203.0.113.1', '203.0.113.3'], $rOut['remove']);
 
-		$this->assertSame(['last' => $rOut['last'], 'more' => false, 'full' => false, 'reload' => [], 'set' => [], 'del' => []], BlocklistDelta::since($rOut['last']), 'nothing new');
+		$this->rDb->exec("INSERT INTO `blocked_uas` (`user_agent`, `exact_match`) VALUES ('curl', 1)");
+		BlocklistChanges::set('ua', [1]);
+		BlocklistChanges::set('rtmp', [1]);
+		$rOut = BlocklistDelta::since($rOut['last']);
+		$this->assertSame(['ua', 'rtmp'], $rOut['reload'], 'rare hand edits: the node takes the section again');
+
+		$this->assertSame(['last' => $rOut['last'], 'more' => false, 'full' => false, 'reload' => [], 'add' => [], 'remove' => []], BlocklistDelta::since($rOut['last']), 'nothing new');
+	}
+
+	public function testTheSnapshotHoldsWhatEachKindNeeds(): void {
+		$this->rDb->exec("INSERT INTO `blocked_ips` (`ip`) VALUES ('203.0.113.2'), ('203.0.113.1')");
+		$this->rDb->exec("INSERT INTO `blocked_uas` (`user_agent`, `exact_match`) VALUES ('curl', 1)");
+		$this->rDb->exec("INSERT INTO `blocked_isps` (`isp`, `blocked`) VALUES ('isp', 1)");
+		$this->rDb->exec("INSERT INTO `rtmp_ips` (`ip`, `password`, `push`, `pull`) VALUES ('198.51.100.9', 'pw', 1, 0)");
+		$this->rDb->exec("INSERT INTO `blocked_asns` (`asn`, `blocked`) VALUES (64500, 1), (64501, 0)");
+		$this->assertSame([
+			'ip' => ['203.0.113.1', '203.0.113.2'],
+			'ua' => [['id' => 1, 'user_agent' => 'curl', 'exact_match' => 1]],
+			'isp' => [['id' => 1, 'isp' => 'isp', 'blocked' => 1]],
+			'asn' => [64500],
+			// The node checks RTMP publishers against the password.
+			'rtmp' => [['id' => 1, 'ip' => '198.51.100.9', 'password' => 'pw', 'push' => 1, 'pull' => 0]],
+		], BlocklistDelta::snapshot());
 	}
 
 	public function testABulkChangeReloadsItsKindAndLongListsBecomeOne(): void {
@@ -77,7 +89,7 @@ final class BlocklistDeltaTest extends TestCase {
 		BlocklistChanges::del('ip', array_map(static fn(int $i): string => '10.0.' . intdiv($i, 256) . '.' . ($i % 256), range(1, BlocklistChanges::MAX_KEYS + 1)));
 		$rOut = BlocklistDelta::since($rSince);
 		$this->assertEqualsCanonicalizing(['asn', 'ip'], $rOut['reload']);
-		$this->assertSame([], $rOut['set']);
+		$this->assertSame([], $rOut['add']);
 		$this->assertSame($rSince + 3, $rOut['last'], 'one row each');
 
 		$rPaged = BlocklistDelta::since($rSince, 2);
@@ -122,7 +134,8 @@ final class BlocklistDeltaTest extends TestCase {
 		$this->assertTrue(BlocklistService::deleteBlockedISP(1));
 		$this->assertTrue(BlocklistService::deleteRTMPIP(1));
 		$rOut = BlocklistDelta::since($rSince);
-		$this->assertSame(['ip' => ['203.0.113.1'], 'ua' => ['1'], 'isp' => ['1'], 'rtmp' => ['1']], $rOut['del']);
+		$this->assertSame(['203.0.113.1'], $rOut['remove']);
+		$this->assertSame(['ua', 'isp', 'rtmp'], $rOut['reload']);
 	}
 
 	/**
