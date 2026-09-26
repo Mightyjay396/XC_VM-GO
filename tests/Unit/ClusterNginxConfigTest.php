@@ -248,8 +248,8 @@ final class ClusterNginxConfigTest extends TestCase {
 
 	/**
 	 * Who renders, and as whom: status at boot and after an update, the root
-	 * set_port handler and cron:cluster when an old port expires; always as
-	 * xc_vm.
+	 * set_port handler, cron:cluster when an old port expires, and a settings
+	 * save that changes cluster_api_port; always as xc_vm.
 	 */
 	public function testTheCallSitesRenderAsXcVm(): void {
 		$rSrc = dirname(__DIR__, 2) . '/src/';
@@ -266,6 +266,14 @@ final class ClusterNginxConfigTest extends TestCase {
 
 		$rCron = (string) file_get_contents($rSrc . 'Cli/CronJobs/ClusterCronJob.php');
 		$this->assertMatchesRegularExpression('#ClusterEndpoint::prune\(SettingsManager::getAll\(\)\)\) \{\s*ClusterNginxConfig::apply\(\);#', $rCron, 'an expired port is released by the render, as xc_vm');
+
+		$rSettings = (string) file_get_contents($rSrc . 'Domain/Server/SettingsService.php');
+		$rStage = strpos($rSettings, 'self::stageClusterApiPort($rArray)');
+		$rUpdate = strpos($rSettings, "\$rQuery = 'UPDATE `settings` SET '");
+		$rRecord = strpos($rSettings, 'ClusterEndpoint::recordApiPortChange(...$rApiPort);');
+		$this->assertNotFalse($rStage);
+		$this->assertNotFalse($rRecord);
+		$this->assertTrue($rStage < $rUpdate && $rUpdate < $rRecord, 'nginx takes the port before it is stored; the nodes hear of it after');
 
 		$rMake = (string) file_get_contents(dirname($rSrc) . '/Makefile');
 		$rGate = (string) file_get_contents(dirname($rSrc) . '/tools/ci/verify-lb-archive.sh');

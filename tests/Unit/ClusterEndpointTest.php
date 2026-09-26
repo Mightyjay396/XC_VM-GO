@@ -68,4 +68,36 @@ final class ClusterEndpointTest extends TestCase {
 		$this->assertSame('', $this->settings()['cluster_legacy_ports']);
 		$this->assertSame(3, (int) $this->settings()['cluster_policy_ver']);
 	}
+
+	/**
+	 * `cluster_api_port` changes the same way: the policy moves the nodes to
+	 * the new URL and the old one is kept for seven days (ClusterNginxConfig
+	 * serves it). While the API is on the broadcast port, that is its URL.
+	 */
+	public function testAnApiPortChangeIsAnnouncedAndTheOldUrlKept(): void {
+		$rMain = ['server_ip' => '10.0.0.1', 'http_broadcast_port' => 25461];
+		$rUntil = $this->rNow + ClusterEndpoint::GRACE;
+
+		$this->assertTrue(ClusterEndpoint::recordApiPortChange(0, 31200, ['cluster_api_enabled' => 1] + $this->settings(), $rMain));
+		$rSettings = ['cluster_api_enabled' => 1, 'cluster_api_port' => 31200] + $this->settings();
+		$this->assertSame(2, (int) $rSettings['cluster_policy_ver'], 'agents refetch the policy');
+		$this->assertSame([25461 => $rUntil], ClusterEndpoint::legacyPorts($rSettings));
+		$this->assertSame(['http://10.0.0.1:31200/cluster/v1/', 'http://10.0.0.1:25461/cluster/v1/'], ClusterPolicy::current($rSettings, $rMain)['main_urls'], 'new first, the old URL last');
+
+		$this->assertTrue(ClusterEndpoint::recordApiPortChange(31200, 31300, $rSettings, $rMain));
+		$rSettings = ['cluster_api_enabled' => 1, 'cluster_api_port' => 31300] + $this->settings();
+		$this->assertSame([25461 => $rUntil, 31200 => $rUntil], ClusterEndpoint::legacyPorts($rSettings));
+
+		// Back on the broadcast port: it leaves the kept list, the API's own port joins it.
+		$this->assertTrue(ClusterEndpoint::recordApiPortChange(31300, 0, $rSettings, $rMain));
+		$rSettings = ['cluster_api_enabled' => 1, 'cluster_api_port' => 0] + $this->settings();
+		$this->assertSame([31200 => $rUntil, 31300 => $rUntil], ClusterEndpoint::legacyPorts($rSettings));
+		$this->assertSame(4, (int) $rSettings['cluster_policy_ver']);
+
+		// The same URL, or no node that could use it: nothing to announce.
+		$this->assertNull(ClusterEndpoint::afterApiPortChange(0, 25461, $rSettings, $rMain), 'the broadcast port either way');
+		$this->assertFalse(ClusterEndpoint::recordApiPortChange(0, 0, $rSettings, $rMain));
+		$this->assertFalse(ClusterEndpoint::recordApiPortChange(0, 31200, ['cluster_api_enabled' => 0] + $rSettings, $rMain), 'the API is off');
+		$this->assertSame(4, (int) $this->settings()['cluster_policy_ver']);
+	}
 }

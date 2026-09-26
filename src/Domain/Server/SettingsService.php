@@ -7,7 +7,9 @@ use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Localization\Translator;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterMeta;
+use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Fanout\FanoutConfig;
 use XcVm\Streaming\Fanout\FanoutMode;
@@ -91,6 +93,39 @@ class SettingsService {
 	}
 
 	/**
+	 * A save that changes `cluster_api_port`: nginx gets the new port, and
+	 * keeps the old one for the nodes (ClusterEndpoint), before the value is
+	 * stored, and only once `nginx -t` passes (ClusterNginxConfig). Returns
+	 * nginx's refusal (nothing changed), the arguments of
+	 * ClusterEndpoint::recordApiPortChange() once stored, or null when the
+	 * port stays.
+	 *
+	 * @param array<string, mixed> $rArray Settings about to be written.
+	 * @return array{0: int, 1: int, 2: array<string, mixed>, 3: array<string, mixed>}|string|null
+	 */
+	private static function stageClusterApiPort(array $rArray): array|string|null {
+		if (!array_key_exists('cluster_api_port', $rArray) || !class_exists(ClusterNginxConfig::class)) {
+			return null;
+		}
+		$rCurrent = SettingsManager::getAll();
+		$rOld = intval($rCurrent['cluster_api_port'] ?? 0);
+		$rNew = intval($rArray['cluster_api_port']);
+		if ($rOld === $rNew) {
+			return null;
+		}
+		$rMain = [];
+		foreach (ServerRepository::getAll() as $rServer) {
+			if (!empty($rServer['is_main'])) {
+				$rMain = $rServer;
+				break;
+			}
+		}
+		$rKept = ClusterEndpoint::afterApiPortChange($rOld, $rNew, $rCurrent, $rMain) ?? ClusterEndpoint::legacyPorts($rCurrent);
+		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => $rNew, 'cluster_legacy_ports' => (string) json_encode($rKept)] + $rCurrent);
+		return $rResult['ok'] ? [$rOld, $rNew, $rCurrent, $rMain] : $rResult['error'];
+	}
+
+	/**
 	 * Save general panel settings from admin form data.
 	 *
 	 * @param array $rData Submitted settings.
@@ -135,6 +170,10 @@ class SettingsService {
 		if ($rClusterErrors !== []) {
 			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => implode(' ', $rClusterErrors)]];
 		}
+		$rApiPort = self::stageClusterApiPort($rArray);
+		if (is_string($rApiPort)) {
+			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => Translator::get('cluster_error_nginx') . ' ' . htmlspecialchars($rApiPort, ENT_QUOTES)]];
+		}
 
 		if (!isset($rData['allowed_stb_types_for_local_recording'])) {
 			$rArray['allowed_stb_types_for_local_recording'] = [];
@@ -178,6 +217,10 @@ class SettingsService {
 		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . ';';
 		if ($db->query($rQuery, ...$rPrepare['data'])) {
 			SettingsManager::clearCache();
+			if (is_array($rApiPort)) {
+				// Stored: the nodes move to the new port (the old one is served for 7 days).
+				ClusterEndpoint::recordApiPortChange(...$rApiPort);
+			}
 			FanoutConfig::sync($rArray);
 			// Apply the fanout switch on this node now; every other node picks it
 			// up from its root cron within a minute (RootSignalsCronJob).
