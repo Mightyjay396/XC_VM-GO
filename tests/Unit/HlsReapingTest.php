@@ -3,6 +3,7 @@
 use PHPUnit\Framework\TestCase;
 use XcVm\Cli\CronJobs\UsersCronJob;
 use XcVm\Core\Cluster\HlsReaping;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -27,7 +28,9 @@ final class HlsReapingTest extends TestCase {
 	protected function tearDown(): void {
 		DatabaseFactory::reset();
 		@unlink($this->rPath);
+		@unlink($this->rPath . '.flows');
 		HlsReaping::usePath(null);
+		NodeFlows::usePath(null);
 	}
 
 	private function node(int $rID, string $rState, int $rMode, int $rFlows, ?string $rFeatures, ?int $rSeenSec): void {
@@ -113,6 +116,108 @@ final class HlsReapingTest extends TestCase {
 		HlsReaping::usePath($this->rPath . '.fresh');
 		HlsReaping::begin(self::T + 120, 120);
 		$this->assertFalse(HlsReaping::nodeReaps(2));
+		@unlink($this->rPath . '.fresh');
+	}
+
+	/**
+	 * A reaping node's touches reach only the bus, so MAIN's store can hold a
+	 * read minutes old for it: a node that stops reaping for itself keeps
+	 * counting as reaping for the grace, which the node needs to hear of the
+	 * change and have its viewers' next requests refresh the store.
+	 *
+	 * @return iterable<string, array{0: string}>
+	 */
+	public static function leaving(): iterable {
+		yield 'CONNECTIONS off' => ['UPDATE `cluster_nodes` SET `flows` = 10 WHERE `server_id` = 2'];
+		yield 'mode 0' => ['UPDATE `cluster_nodes` SET `mode` = 0 WHERE `server_id` = 2'];
+		yield 'an agent without the reaper' => ['UPDATE `cluster_nodes` SET `features` = \'fanout_events\' WHERE `server_id` = 2'];
+		yield 'revoked' => ['UPDATE `cluster_nodes` SET `state` = \'revoked\' WHERE `server_id` = 2'];
+		yield 'deleted' => ['DELETE FROM `cluster_nodes` WHERE `server_id` = 2'];
+	}
+
+	#[\PHPUnit\Framework\Attributes\DataProvider('leaving')]
+	public function testANodeThatStopsReapingKeepsItForTheGrace(string $rChange): void {
+		$this->node(2, 'active', 1, 74, 'fanout_events,hls_reaper', self::T - 1);
+		HlsReaping::begin(self::T, 120);
+		$this->rDb->exec($rChange);
+		$rEnded = new ReflectionMethod(UsersCronJob::class, 'hlsEnded');
+		$rStale = ['hls_end' => 0, 'hls_last_read' => self::T - 600, 'server_id' => 2];
+
+		HlsReaping::begin(self::T + 5, 120);
+		$this->assertTrue(HlsReaping::nodeReaps(2), 'the first pass after the change');
+		$this->assertFalse($rEnded->invoke(new UsersCronJob(), $rStale, self::T + 5), 'a live viewer whose read only the bus had is not ended');
+		HlsReaping::begin(self::T + 65, 120);
+		$this->assertTrue(HlsReaping::nodeReaps(2));
+		HlsReaping::begin(self::T + 125, 120);
+		$this->assertFalse(HlsReaping::nodeReaps(2), 'the grace counts from the pass that first saw it');
+		$this->assertTrue($rEnded->invoke(new UsersCronJob(), $rStale, self::T + 125), 'then the 30 s rule, on what the store holds by now');
+		$this->assertSame([], json_decode((string) file_get_contents($this->rPath), true)['leaving'], 'and it is forgotten');
+		HlsReaping::begin(self::T + 185, 120);
+		$this->assertFalse(HlsReaping::nodeReaps(2));
+	}
+
+	public function testANodeBackWithinTheGraceReapsAndLeavingAgainStartsANewOne(): void {
+		$this->node(2, 'active', 1, 74, 'hls_reaper', self::T - 1);
+		HlsReaping::begin(self::T, 120);
+		$this->rDb->exec('UPDATE `cluster_nodes` SET `flows` = 10');
+		HlsReaping::begin(self::T + 60, 120);
+		$this->rDb->exec('UPDATE `cluster_nodes` SET `flows` = 74');
+		HlsReaping::begin(self::T + 120, 120);
+		$this->assertTrue(HlsReaping::nodeReaps(2));
+		$this->rDb->exec('UPDATE `cluster_nodes` SET `flows` = 10');
+		HlsReaping::begin(self::T + 180, 120);
+		HlsReaping::begin(self::T + 240, 120);
+		$this->assertTrue(HlsReaping::nodeReaps(2), 'a new grace, from the pass at +180');
+		HlsReaping::begin(self::T + 300, 120);
+		$this->assertFalse(HlsReaping::nodeReaps(2));
+	}
+
+	public function testAnOrphanedNodeGetsNoGraceAndAFailedReadKeepsOnlyARunningOne(): void {
+		$this->node(2, 'active', 1, 74, 'hls_reaper', self::T - 600);
+		$this->node(3, 'active', 1, 74, 'hls_reaper', self::T - 1);
+		HlsReaping::begin(self::T, 120);
+		HlsReaping::begin(self::T + 120, 120);
+		$this->assertSame([2], HlsReaping::orphaned());
+		$this->assertFalse(HlsReaping::nodeReaps(2), 'its rows are purged; no grace');
+
+		$this->rDb->exec('UPDATE `cluster_nodes` SET `flows` = 10 WHERE `server_id` = 3');
+		HlsReaping::begin(self::T + 180, 120);
+		$this->rDb->exec('DROP TABLE `cluster_nodes`');
+		HlsReaping::begin(self::T + 240, 120);
+		$this->assertTrue(HlsReaping::nodeReaps(3), 'within its grace on a failed read');
+		HlsReaping::begin(self::T + 300, 120);
+		$this->assertFalse(HlsReaping::nodeReaps(3), 'and not past it');
+		$this->assertFalse(HlsReaping::nodeReaps(2));
+	}
+
+	public function testAnLbKeepsItsOwnReaperForTheGraceToo(): void {
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', 1);
+		}
+		$rFlows = $this->rPath . '.flows';
+		$rWrite = static function (int $rFlows_, array $rFeatures) use ($rFlows): void {
+			file_put_contents($rFlows, json_encode(['mode' => 1, 'flows' => $rFlows_, 'state' => 'active', 'features' => $rFeatures]));
+			NodeFlows::usePath($rFlows); // and forget what was read
+		};
+		$rWrite(NodeFlows::CONNECTIONS | NodeFlows::COMMANDS | NodeFlows::STREAMS, ['hls_reaper']);
+		$this->assertTrue(HlsReaping::nodeReaps((int) SERVER_ID), 'no pass yet: its agent, now');
+		HlsReaping::beginLocal(self::T);
+		$this->assertTrue(HlsReaping::nodeReaps((int) SERVER_ID));
+
+		// CONNECTIONS off: the node's PHP writes lines_live again from its
+		// viewers' next requests; until then the rows hold what the bus had.
+		$rWrite(NodeFlows::COMMANDS | NodeFlows::STREAMS, ['hls_reaper']);
+		HlsReaping::beginLocal(self::T + 60);
+		$this->assertTrue(HlsReaping::nodeReaps((int) SERVER_ID));
+		HlsReaping::beginLocal(self::T + 120);
+		$this->assertTrue(HlsReaping::nodeReaps((int) SERVER_ID));
+		HlsReaping::beginLocal(self::T + 180);
+		$this->assertFalse(HlsReaping::nodeReaps((int) SERVER_ID));
+
+		// An agent that never reaped gets no grace.
+		HlsReaping::usePath($this->rPath . '.fresh');
+		HlsReaping::beginLocal(self::T + 240);
+		$this->assertFalse(HlsReaping::nodeReaps((int) SERVER_ID));
 		@unlink($this->rPath . '.fresh');
 	}
 

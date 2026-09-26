@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
 use XcVm\Core\Cluster\DivergenceSink;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -41,6 +42,16 @@ class FanoutSyncCommand implements CommandInterface {
 
 	/** Reconcile interval, seconds. */
 	private const INTERVAL = 10;
+
+	/**
+	 * Seconds between two divergence reports sent to MAIN (conn.divergence,
+	 * P1), as often as the users cron sends its own: at every pass they would
+	 * take much of the lane the node's logs share.
+	 */
+	private const DIVERGENCE_EVERY = 60;
+
+	/** When this node's divergence last went to MAIN (conn.divergence). */
+	private int $rDivergenceAt = 0;
 
 	/** @var array<string,int> Daemon viewer uuid => when it was first seen without a row. */
 	private array $rOrphanSince = [];
@@ -214,14 +225,15 @@ class FanoutSyncCommand implements CommandInterface {
 	 * is no double write.
 	 *
 	 * @param array<int,array<string,mixed>> $rConns Candidate pid=0 rows (shared).
+	 * @param array<string,mixed>|null      $rRates uuid => KB/s (tests); by default the daemon's.
 	 * @return void
 	 */
-	private function writeDivergence(array $rConns): void {
+	private function writeDivergence(array $rConns, ?array $rRates = null): void {
 		if (count($rConns) === 0) {
 			return;
 		}
 
-		$rRates = FanoutClient::connectionRates();
+		$rRates ??= FanoutClient::connectionRates();
 		if (!is_array($rRates) || count($rRates) === 0) {
 			return; // daemon unreachable or no active viewers — nothing to record
 		}
@@ -285,14 +297,21 @@ class FanoutSyncCommand implements CommandInterface {
 
 	/**
 	 * On a node whose CONNECTIONS flow is on, the daemon's rates for this
-	 * node's daemon-served rows go to MAIN as a conn.divergence event, and
-	 * MAIN works out the divergence from the stream's bitrate. False when they
-	 * were not sent: writeDivergence() writes MAIN's tables, as before.
+	 * node's daemon-served rows go to MAIN as a conn.divergence event, at most
+	 * every DIVERGENCE_EVERY, and MAIN works out the divergence from the
+	 * stream's bitrate. False when they were not sent: writeDivergence()
+	 * writes MAIN's tables, as before.
 	 *
 	 * @param array<int,array<string,mixed>> $rConns Candidate pid=0 rows.
 	 * @param array<string,mixed>            $rRates uuid => KB/s from the daemon.
 	 */
 	private function spoolDivergence(array $rConns, array $rRates): bool {
+		if (!NodeFlows::on(NodeFlows::CONNECTIONS)) {
+			return false;
+		}
+		if (time() - $this->rDivergenceAt < self::DIVERGENCE_EVERY) {
+			return true; // reported less than DIVERGENCE_EVERY ago
+		}
 		$rOwn = [];
 		foreach ($rConns as $rConn) {
 			$rUUID = is_array($rConn) ? (string) ($rConn['uuid'] ?? '') : '';
@@ -300,7 +319,11 @@ class FanoutSyncCommand implements CommandInterface {
 				$rOwn[$rUUID] = intval($rRates[$rUUID]);
 			}
 		}
-		return DivergenceSink::spool($rOwn);
+		if (!DivergenceSink::spool($rOwn, 'fanout')) {
+			return false;
+		}
+		$this->rDivergenceAt = time();
+		return true;
 	}
 
 	/**

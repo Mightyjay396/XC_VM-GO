@@ -233,17 +233,31 @@ final class ConnectionIngest {
 	 * For a node whose agent ends its own idle HLS viewers ($rReaps: the
 	 * `hls_reaper` feature), nothing on MAIN decides by that time any more
 	 * (HlsReaping), so it goes to the cluster bus only (ClusterBus::touch),
-	 * and MAIN's store is spared a write per viewer. Without the bus, or for
-	 * a node that does not reap (MAIN's 30 s rule reads it), it goes into the
-	 * store as the P0 upsert put it there: the node's own connections only,
-	 * never re-opening, creating or moving one, and never back to an earlier
-	 * read.
+	 * and MAIN's store is spared a write per viewer. Only the viewers the
+	 * store holds for the node get there, read once for the batch, so a node
+	 * can neither fill the bus with made-up uuids nor touch another node's.
+	 * Without the bus, when it is too full, or for a node that does not reap
+	 * (MAIN's 30 s rule reads it), it goes into the store as the P0 upsert put
+	 * it there: the node's own connections only, never re-opening, creating
+	 * or moving one, and never back to an earlier read.
+	 *
+	 * A store that cannot be read or written throws: the batch is not
+	 * applied (503 DB), and the node sends its newer values again.
 	 *
 	 * @param array<string, array{0: int, 1: int}> $rTouches uuid => [t (ms), hls_last_read]
 	 */
 	public static function touch(int $rServerID, bool $rReaps, array $rTouches): void {
-		if ($rTouches === [] || ($rReaps && ClusterBus::touch($rServerID, $rTouches))) {
+		if ($rTouches === []) {
 			return;
+		}
+		if ($rReaps && ClusterBus::client() !== null) {
+			$rOwn = self::owned($rServerID, array_map('strval', array_keys($rTouches)));
+			if ($rOwn === null) {
+				throw new \RuntimeException('store unavailable');
+			}
+			if (ClusterBus::touch($rServerID, array_intersect_key($rTouches, $rOwn))) {
+				return;
+			}
 		}
 		$rReads = [];
 		foreach ($rTouches as $rUUID => [, $rRead]) {
@@ -260,7 +274,9 @@ final class ConnectionIngest {
 			}
 			$rWhen = 'CASE `uuid`' . str_repeat(' WHEN ? THEN ?', count($rChunk)) . ' ELSE `hls_last_read` END';
 			$rIn = implode(',', array_fill(0, count($rChunk), '?'));
-			self::db()->query('UPDATE `lines_live` SET `hls_last_read` = ' . $rWhen . ' WHERE `server_id` = ? AND `uuid` IN (' . $rIn . ') AND (`hls_last_read` IS NULL OR `hls_last_read` < ' . $rWhen . ');', ...[...$rCase, $rServerID, ...array_map('strval', array_keys($rChunk)), ...$rCase]);
+			if (!self::db()->query('UPDATE `lines_live` SET `hls_last_read` = ' . $rWhen . ' WHERE `server_id` = ? AND `uuid` IN (' . $rIn . ') AND (`hls_last_read` IS NULL OR `hls_last_read` < ' . $rWhen . ');', ...[...$rCase, $rServerID, ...array_map('strval', array_keys($rChunk)), ...$rCase])) {
+				throw new \RuntimeException('store unavailable');
+			}
 		}
 	}
 
@@ -278,6 +294,8 @@ final class ConnectionIngest {
 		}
 		foreach ($rReads as $rUUID => $rRead) {
 			$rUUID = (string) $rUUID;
+			// An upsert or a close landing between this read and the write
+			// fails the EXEC, and its record stands.
 			$rRedis->watch($rUUID);
 			$rRaw = $rRedis->get($rUUID);
 			$rRecord = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;

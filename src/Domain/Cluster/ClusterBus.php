@@ -29,7 +29,8 @@ use XcVm\Core\Process\ProcessManager;
  * It also keeps the viewers' touches (`conn.touch`, P2): when each of a
  * node's viewers last asked for its playlist, `touch:<sid>:<uuid>` holding
  * `<t>:<hls_last_read>`, for nodes whose agent ends its own idle HLS viewers
- * (ConnectionIngest::touch). Without the bus they go to MAIN's store.
+ * (ConnectionIngest::touch). Without the bus, or past TOUCH_MEMORY_SHARE of
+ * its memory, they go to MAIN's store.
  */
 final class ClusterBus {
 	/** Seconds a wake waits for its reader. */
@@ -40,6 +41,14 @@ final class ClusterBus {
 
 	/** Milliseconds a viewer's last read stays on the bus without a newer touch. */
 	public const TOUCH_TTL_MS = 300000;
+
+	/**
+	 * The share of the bus's maxmemory past which touches go to MAIN's store
+	 * instead. The bus evicts the keys closest to expiry first
+	 * (volatile-ttl): touches, which live longest, must never push out the
+	 * admission reservations or the wake-ups.
+	 */
+	public const TOUCH_MEMORY_SHARE = 0.5;
 
 	/**
 	 * Per key: set `<t>:<value>` (ARGV[2i], ARGV[2i+1]) unless the key holds a
@@ -149,7 +158,8 @@ final class ClusterBus {
 	 * server_id from MAIN's store.
 	 *
 	 * @param array<string, array{0: int, 1: int}> $rTouches uuid => [t (ms), hls_last_read]
-	 * @return bool False without the bus: the caller writes MAIN's store.
+	 * @return bool False without the bus, or once it holds TOUCH_MEMORY_SHARE
+	 *              of its maxmemory: the caller writes MAIN's store.
 	 */
 	public static function touch(int $rServerID, array $rTouches): bool {
 		$rRedis = self::client();
@@ -157,6 +167,11 @@ final class ClusterBus {
 			return false;
 		}
 		try {
+			$rMemory = $rRedis->info('memory');
+			$rMax = is_array($rMemory) ? (int) ($rMemory['maxmemory'] ?? 0) : 0;
+			if (is_array($rMemory) && $rMax > 0 && (int) ($rMemory['used_memory'] ?? 0) >= $rMax * self::TOUCH_MEMORY_SHARE) {
+				return false;
+			}
 			foreach (array_chunk($rTouches, 1000, true) as $rChunk) {
 				$rKeys = $rArgs = [];
 				foreach ($rChunk as $rUUID => [$rT, $rRead]) {

@@ -7,12 +7,65 @@ use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ConnectionIngest;
 use XcVm\Domain\Cluster\EventIngest;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
+
+/**
+ * The legacy writers' database: every statement is recorded, and a SELECT
+ * starting with a key of $rAnswers gets those rows (MySQL's ON DUPLICATE KEY
+ * is not SQLite's).
+ */
+final class DivergenceWriterDb extends DatabaseHandler {
+	/** @var list<string> */
+	public array $rQueries = [];
+
+	/** @var array<string, list<array<string, mixed>>> */
+	public array $rAnswers = [];
+
+	/** @var list<array<string, mixed>> */
+	private array $rRows = [];
+
+	public function __construct() {
+		$this->dbh = true;
+	}
+
+	public function ping(): bool {
+		return true;
+	}
+
+	public function query($query, ...$args): bool {
+		$this->rQueries[] = $query;
+		$this->rRows = [];
+		foreach ($this->rAnswers as $rStart => $rRows) {
+			if (str_starts_with($query, $rStart)) {
+				$this->rRows = $rRows;
+			}
+		}
+		return true;
+	}
+
+	public function get_rows(bool $use_id = false, string $column_as_id = '', bool $unique_row = true, string $sub_row_id = '') {
+		return $this->rRows;
+	}
+
+	public function get_row() {
+		return $this->rRows[0] ?? [];
+	}
+
+	public function num_rows() {
+		return count($this->rRows);
+	}
+
+	/** @return list<string> the statements that write lines_divergence or lines_live */
+	public function writes(): array {
+		return array_values(array_filter($this->rQueries, static fn(string $rQuery): bool => (bool) preg_match('/^(INSERT|REPLACE|UPDATE)/', $rQuery)));
+	}
+}
 
 /**
  * Phase 6, `conn.divergence`: on a node whose CONNECTIONS flow is on, the
@@ -82,6 +135,7 @@ final class ConnectionDivergenceTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		unset($GLOBALS['db'], $GLOBALS['rSettings']);
 		EventSpool::useDir(null);
 		SettingsManager::set([]);
 		NodeFlows::usePath(null);
@@ -141,7 +195,7 @@ final class ConnectionDivergenceTest extends TestCase {
 
 	public function testTheNodeSpoolsItsViewersRatesOnP1WhenConnectionsIsOn(): void {
 		$this->flows(NodeFlows::CONNECTIONS | NodeFlows::COMMANDS | NodeFlows::STREAMS);
-		$this->assertTrue(DivergenceSink::spool(['aaaa' => 120, 'bad uuid;' => 5, 'bbbb' => 0, 'cccc' => -3, str_repeat('d', 33) => 1]));
+		$this->assertTrue(DivergenceSink::spool(['aaaa' => 120, 'bad uuid;' => 5, 'bbbb' => 0, 'cccc' => -3, str_repeat('d', 33) => 1], 'cron'));
 		$this->assertSame([['conn.divergence', ['rows' => [['uuid' => 'aaaa', 'rate' => 120], ['uuid' => 'bbbb', 'rate' => 0]]]]], array_map(static fn($e) => [$e['type'], $e['d']], $this->spooled('p1')));
 		$this->assertSame([], $this->spooled('p0'), 'divergence is P1');
 
@@ -150,51 +204,122 @@ final class ConnectionDivergenceTest extends TestCase {
 		for ($i = 0; $i < DivergenceSink::CHUNK + 5; $i++) {
 			$rMany[sprintf('v%05d', $i)] = $i;
 		}
-		$this->assertTrue(DivergenceSink::spool($rMany));
+		$this->assertTrue(DivergenceSink::spool($rMany, 'fanout'));
 		$this->assertCount(2, glob($this->rDir . '/spool/p1/*.ndjson') ?: []);
 		$rEvents = array_slice($this->spooled('p1'), 1);
 		$this->assertSame([DivergenceSink::CHUNK, 5], array_map(static fn($e) => count($e['d']['rows']), $rEvents));
+		$this->assertFalse(DivergenceSink::spool(['aaaa' => 1], 'nobody'), 'a writer it does not know');
+	}
+
+	public function testAWritersNextReportWaitsWhileItsLastIsStillInTheSpool(): void {
+		$this->flows(NodeFlows::CONNECTIONS | NodeFlows::COMMANDS | NodeFlows::STREAMS);
+		$this->assertTrue(DivergenceSink::spool(['aaaa' => 1], 'cron'));
+		$this->assertTrue(DivergenceSink::spool(['aaaa' => 2], 'cron'), 'handled: MAIN gets the one before');
+		$this->assertTrue(DivergenceSink::spool(['aaaa' => 3], 'fanout'), 'another writer\'s report does not wait for it');
+		$this->assertSame([[1], [3]], array_map(static fn($e) => array_column($e['d']['rows'], 'rate'), $this->spooled('p1')), 'no backlog of stale reports for the lane\'s cap to drop logs for');
+
+		// Once the agent has sent it, the next report goes.
+		array_map('unlink', glob($this->rDir . '/spool/p1/*.ndjson') ?: []);
+		$this->assertTrue(DivergenceSink::spool(['aaaa' => 4], 'cron'));
+		$this->assertSame([[4]], array_map(static fn($e) => array_column($e['d']['rows'], 'rate'), $this->spooled('p1')));
+
+		// An agent that stopped sends neither: the writer writes MAIN's tables.
+		$this->flows(NodeFlows::CONNECTIONS | NodeFlows::COMMANDS | NodeFlows::STREAMS, EventSpool::STALE_AFTER + 30);
+		$this->assertFalse(DivergenceSink::spool(['aaaa' => 5], 'cron'));
 	}
 
 	public function testWithoutTheFlowOrWithAStoppedAgentTheNodeWritesItself(): void {
 		$this->flows(NodeFlows::STREAMS | NodeFlows::COMMANDS);
-		$this->assertFalse(DivergenceSink::spool(['aaaa' => 120]), 'CONNECTIONS off: MAIN\'s database, as before');
+		$this->assertFalse(DivergenceSink::spool(['aaaa' => 120], 'cron'), 'CONNECTIONS off: MAIN\'s database, as before');
 		$this->flows(NodeFlows::CONNECTIONS | NodeFlows::COMMANDS | NodeFlows::STREAMS, EventSpool::STALE_AFTER + 30);
-		$this->assertFalse(DivergenceSink::spool(['aaaa' => 120]), 'agent stopped');
+		$this->assertFalse(DivergenceSink::spool(['aaaa' => 120], 'cron'), 'agent stopped');
 		$this->assertSame([], $this->spooled('p1'));
 		$this->flows(0);
-		$this->assertFalse(DivergenceSink::spool(['aaaa' => 120]), 'a legacy node');
+		$this->assertFalse(DivergenceSink::spool(['aaaa' => 120], 'cron'), 'a legacy node');
 	}
 
-	public function testTheUsersCronHandsItsSpeedFilesToTheSpool(): void {
+	/** The recording database the legacy writers reach through `global $db`. */
+	private function writerDb(): DivergenceWriterDb {
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', 5);
+		}
+		$rDb = new DivergenceWriterDb();
+		$GLOBALS['db'] = $rDb;
+		$GLOBALS['rSettings'] = ['redis_handler' => 0];
+		return $rDb;
+	}
+
+	public function testTheUsersCronSpoolsItsSpeedFilesOrWritesMainsTablesNeverBoth(): void {
 		$rSpeeds = $this->rDir . '/divergence/';
 		mkdir($rSpeeds);
-		file_put_contents($rSpeeds . 'aaaa', '300');
-		file_put_contents($rSpeeds . 'bbbb', "10\n");
-		$rFiles = glob($rSpeeds . '*') ?: [];
-		$rSpool = new \ReflectionMethod(UsersCronJob::class, 'spoolDivergence');
+		$rWrite = new \ReflectionMethod(UsersCronJob::class, 'writeDivergence');
+		$rSpeedFiles = static function () use ($rSpeeds): void {
+			file_put_contents($rSpeeds . 'aaaa', '300');
+			file_put_contents($rSpeeds . 'bbbb', "10\n");
+		};
 
+		// CONNECTIONS off: MAIN's tables, as before, and nothing spooled.
 		$this->flows(NodeFlows::STREAMS);
-		$this->assertFalse($rSpool->invoke(new UsersCronJob(), $rFiles), 'CONNECTIONS off: the cron writes MAIN\'s tables');
-		$this->assertCount(2, glob($rSpeeds . '*') ?: [], 'the files are left for that write');
+		$rDb = $this->writerDb();
+		$rSpeedFiles();
+		$rWrite->invoke(new UsersCronJob(), false, $rSpeeds);
+		$this->assertCount(1, $rDb->writes());
+		$this->assertStringStartsWith('INSERT INTO `lines_divergence`', $rDb->writes()[0]);
+		$this->assertStringContainsString("('aaaa', 0)", $rDb->writes()[0]);
+		$this->assertSame([], $this->spooled('p1'));
+		$this->assertSame([], glob($rSpeeds . '*') ?: [], 'the files it read are gone');
 
+		// CONNECTIONS on: one P1 event, and MAIN's tables are not written.
 		$this->flows(NodeFlows::CONNECTIONS | NodeFlows::COMMANDS | NodeFlows::STREAMS);
-		$this->assertTrue($rSpool->invoke(new UsersCronJob(), $rFiles));
-		$this->assertSame([], glob($rSpeeds . '*') ?: [], 'reported: the files it read are gone');
+		$rDb = $this->writerDb();
+		$rSpeedFiles();
+		$rWrite->invoke(new UsersCronJob(), false, $rSpeeds);
+		$this->assertSame([], $rDb->rQueries, 'no write of MAIN\'s tables, not even of zeros');
 		$this->assertSame([['uuid' => 'aaaa', 'rate' => 300], ['uuid' => 'bbbb', 'rate' => 10]], $this->spooled('p1')[0]['d']['rows']);
+		$this->assertSame([], glob($rSpeeds . '*') ?: []);
 	}
 
-	public function testFanoutSyncSpoolsTheRatesOfItsOwnDaemonViewersOnly(): void {
-		$rSpool = new \ReflectionMethod(FanoutSyncCommand::class, 'spoolDivergence');
-		$rConns = [['uuid' => 'tttt', 'stream_id' => 100, 'pid' => 0], ['uuid' => 'uuuu', 'stream_id' => 100, 'pid' => 0]];
-		$rRates = ['tttt' => 200, 'elsewhere' => 50];
+	public function testFanoutSyncSpoolsItsOwnDaemonViewersOnceAMinuteOrWritesMainsTablesNeverBoth(): void {
+		$rWrite = new \ReflectionMethod(FanoutSyncCommand::class, 'writeDivergence');
+		$rConns = [['uuid' => 'tttt', 'stream_id' => 100, 'pid' => 0, 'activity_id' => 9], ['uuid' => 'uuuu', 'stream_id' => 100, 'pid' => 0, 'activity_id' => 10]];
+		$rRates = ['tttt' => 57, 'elsewhere' => 50];
 
+		// CONNECTIONS off: MAIN's tables, from the stream's bitrate, as before.
 		$this->flows(NodeFlows::STREAMS);
-		$this->assertFalse($rSpool->invoke(new FanoutSyncCommand(), $rConns, $rRates));
+		$rDb = $this->writerDb();
+		$rDb->rAnswers = ['SELECT `stream_id`, `bitrate` FROM `streams_servers`' => [['stream_id' => 100, 'bitrate' => 1000]]];
+		$rSync = new FanoutSyncCommand();
+		$rWrite->invoke($rSync, $rConns, $rRates);
+		$this->assertCount(2, $rDb->writes());
+		$this->assertStringContainsString("('tttt', 50)", $rDb->writes()[0]);
+		$this->assertStringContainsString('(9, 50)', $rDb->writes()[1]);
+		$this->assertSame([], $this->spooled('p1'));
 
+		// CONNECTIONS on: the node's own daemon viewers' rates, and MAIN's
+		// tables are not written.
 		$this->flows(NodeFlows::CONNECTIONS | NodeFlows::COMMANDS | NodeFlows::STREAMS);
-		$this->assertTrue($rSpool->invoke(new FanoutSyncCommand(), $rConns, $rRates));
-		$this->assertSame([['uuid' => 'tttt', 'rate' => 200]], $this->spooled('p1')[0]['d']['rows']);
+		$rDb = $this->writerDb();
+		$rSync = new FanoutSyncCommand();
+		$rWrite->invoke($rSync, $rConns, $rRates);
+		$this->assertSame([], $rDb->rQueries);
+		$this->assertSame([['uuid' => 'tttt', 'rate' => 57]], $this->spooled('p1')[0]['d']['rows']);
+
+		// The next pass, 10 s on: nothing, until a minute has passed.
+		array_map('unlink', glob($this->rDir . '/spool/p1/*.ndjson') ?: []);
+		$rWrite->invoke($rSync, $rConns, ['tttt' => 58]);
+		$this->assertSame([], $rDb->rQueries);
+		$this->assertSame([], $this->spooled('p1'), 'P1 is shared with the node\'s logs');
+		(new \ReflectionProperty(FanoutSyncCommand::class, 'rDivergenceAt'))->setValue($rSync, time() - 60);
+		$rWrite->invoke($rSync, $rConns, ['tttt' => 58]);
+		$this->assertSame([['uuid' => 'tttt', 'rate' => 58]], $this->spooled('p1')[0]['d']['rows']);
+
+		// An agent that stopped: MAIN's tables again.
+		$this->flows(NodeFlows::CONNECTIONS | NodeFlows::COMMANDS | NodeFlows::STREAMS, EventSpool::STALE_AFTER + 30);
+		$rDb = $this->writerDb();
+		$rDb->rAnswers = ['SELECT `stream_id`, `bitrate` FROM `streams_servers`' => [['stream_id' => 100, 'bitrate' => 1000]]];
+		(new \ReflectionProperty(FanoutSyncCommand::class, 'rDivergenceAt'))->setValue($rSync, 0);
+		$rWrite->invoke($rSync, $rConns, $rRates);
+		$this->assertCount(2, $rDb->writes());
 	}
 
 	public function testTheFormulaIsTheLegacyOne(): void {

@@ -30,17 +30,29 @@ final class DivergenceSink {
 	/** What a viewer's uuid may be: the store's key, and `lines_divergence.uuid` is 32 wide. */
 	public const UUID = '/^[A-Za-z0-9_-]{1,32}$/';
 
+	/** The writers: the users cron's speed files, fanout_sync's daemon rates. */
+	public const WRITERS = ['cron', 'fanout'];
+
 	/**
 	 * Send this node's viewers' rates to MAIN when its CONNECTIONS flow is on.
 	 * Rates that are not an int ≥ 0, and uuids that do not match UUID, are
 	 * left out. False when nothing was sent: the caller writes MAIN's tables
 	 * the legacy way.
 	 *
+	 * Only a writer's latest report counts, so while its previous one is still
+	 * in the spool (MAIN out of reach, the lane behind) this one is skipped:
+	 * a backlog of stale reports would push the lane's logs out past its cap.
+	 *
 	 * @param array<string, int> $rRates uuid => KiB/s
+	 * @param string $rWriter Which writer reports (WRITERS).
 	 */
-	public static function spool(array $rRates): bool {
-		if (!NodeFlows::on(NodeFlows::CONNECTIONS)) {
+	public static function spool(array $rRates, string $rWriter): bool {
+		if (!NodeFlows::on(NodeFlows::CONNECTIONS) || !in_array($rWriter, self::WRITERS, true)) {
 			return false;
+		}
+		$rTag = 'divergence_' . $rWriter;
+		if (EventSpool::pending('p1', $rTag)) {
+			return EventSpool::agentAlive(); // the previous report goes first; a stopped agent sends neither
 		}
 		$rRows = [];
 		foreach ($rRates as $rUUID => $rRate) {
@@ -55,7 +67,7 @@ final class DivergenceSink {
 		foreach (array_chunk($rRows, self::CHUNK) as $rChunk) {
 			$rEvents[] = ['type' => 'conn.divergence', 'd' => ['rows' => $rChunk]];
 		}
-		return EventSpool::append('p1', $rEvents);
+		return EventSpool::append('p1', $rEvents, $rTag);
 	}
 
 	/** The rate (KiB/s) a stream of this bitrate (kbps) should reach, with 8 % headroom. */

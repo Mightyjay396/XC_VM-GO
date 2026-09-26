@@ -247,6 +247,72 @@ final class ConnectionTouchTest extends TestCase {
 		$this->assertNull(ClusterBus::lastReads(5, ['aaaa']), 'no bus');
 	}
 
+	public function testOnlyTheViewersTheStoreHoldsForTheNodeReachTheBus(): void {
+		$rBus = $this->bus();
+		NodeRegistry::update(5, ['features' => 'hls_reaper']);
+		$this->live('aaaa', 5, 100);
+		$this->live('cccc', 6, 100); // node 6's
+		$rOut = EventIngest::ingest($this->node(), 'p2', 0, [$this->touch('aaaa', self::T, 150), $this->touch('cccc', self::T, 150), $this->touch('zzzz', self::T, 150)]);
+		$this->assertSame([3, 0], [$rOut['applied'], $rOut['dropped']], 'taken, as by the store');
+		$this->assertSame(['aaaa' => 150], ClusterBus::lastReads(5, ['aaaa', 'cccc', 'zzzz']), 'no key for another node\'s viewer, nor for a made-up one');
+		$this->assertSame(1, $rBus->dbSize());
+		$this->assertSame([100, 0], $this->row('cccc'));
+	}
+
+	public function testAModeZeroNodeDoesNotReapSoItsTouchesGoToTheStore(): void {
+		$this->bus();
+		NodeRegistry::update(5, ['mode' => 0, 'features' => 'hls_reaper']);
+		$this->live('aaaa', 5, 100);
+		EventIngest::ingest($this->node(), 'p2', 0, [$this->touch('aaaa', self::T, 150)]);
+		$this->assertSame([150, 0], $this->row('aaaa'));
+		$this->assertSame([], ClusterBus::lastReads(5, ['aaaa']));
+	}
+
+	public function testPastItsShareOfTheBussMemoryTouchesGoToTheStore(): void {
+		$rBus = $this->bus();
+		NodeRegistry::update(5, ['features' => 'hls_reaper']);
+		$this->live('aaaa', 5, 100);
+		$rUsed = (int) $rBus->info('memory')['used_memory'];
+		$rBus->config('SET', 'maxmemory', (string) intdiv($rUsed * 3, 2));
+		try {
+			EventIngest::ingest($this->node(), 'p2', 0, [$this->touch('aaaa', self::T, 150)]);
+		} finally {
+			$rBus->config('SET', 'maxmemory', '0');
+		}
+		$this->assertSame([150, 0], $this->row('aaaa'), 'the reservations and wake-ups keep the bus');
+		$this->assertSame([], ClusterBus::lastReads(5, ['aaaa']));
+	}
+
+	public function testAStoreThatCannotBeReadFailsTheBatchForTheNodeToResend(): void {
+		$this->bus();
+		SettingsManager::set(['redis_handler' => 1]);
+		(new \ReflectionProperty(RedisManager::class, 'instance'))->setValue(null, new \Redis()); // not connected
+		(new \ReflectionProperty(RedisManager::class, 'lastPingCheck'))->setValue(null, time());
+		foreach (['a node that does not reap' => null, 'a reaping node' => 'hls_reaper'] as $rCase => $rFeatures) {
+			NodeRegistry::update(5, ['features' => $rFeatures]);
+			try {
+				EventIngest::ingest($this->node(), 'p2', 0, [$this->touch('aaaa', self::T, 150)]);
+				$this->fail($rCase . ': the batch must fail (503 DB), not be answered as applied');
+			} catch (\Throwable $rE) {
+				$this->assertNotInstanceOf(\PHPUnit\Framework\AssertionFailedError::class, $rE, $rCase);
+			}
+		}
+	}
+
+	#[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+	#[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
+	public function testWithoutRedisTheTouchesAreNotAnsweredAsApplied(): void {
+		if (!class_exists('XC_VM', false)) {
+			eval('final class XC_VM { public static function redis_connect() { return null; } }'); // Redis unreachable
+		}
+		SettingsManager::set(['redis_handler' => 1]);
+		if (RedisManager::instance() !== null) {
+			$this->markTestSkipped('a Redis answers here');
+		}
+		$this->expectExceptionMessage('redis unavailable');
+		EventIngest::ingest($this->node(), 'p2', 0, [$this->touch('aaaa', self::T, 150)]);
+	}
+
 	public function testAnOlderAgentsTouchAsAP0UpsertStillLands(): void {
 		$rRec = ['user_id' => 7, 'stream_id' => 100, 'user_ip' => '10.0.0.9', 'container' => 'hls', 'pid' => null, 'uuid' => 'aaaa', 'date_start' => 1800000000, 'hls_last_read' => 100, 'hls_end' => 0];
 		EventIngest::ingest($this->node(), 'p0', 1, [['type' => 'conn.upsert', 'd' => ['record' => $rRec]]]);
