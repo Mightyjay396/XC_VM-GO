@@ -4,7 +4,9 @@ namespace XcVm\Streaming\Auth;
 
 use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\EventSpool;
+use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Domain\Stream\ConnectionTracker;
+use XcVm\Streaming\Delivery\OffAirHandler;
 use XcVm\Streaming\Protection\ConnectionLimiter;
 
 /**
@@ -127,5 +129,27 @@ class StreamAuth {
 				ConnectionLimiter::closeConnections(null, $rUserInfo['max_connections'], $rIsHMAC, $rIdentifier, $rIP, $rUserAgent, $rUUID);
 			}
 		}
+	}
+
+	/**
+	 * Refuse a viewer the node's agent did not admit (the last
+	 * ConnectionTracker::openRecord(); cluster plan, Phase 6), as live.php
+	 * refuses a line already connected elsewhere: USER_ALREADY_CONNECTED in
+	 * the client log, with the agent's reason, and the "connected" video (or
+	 * a 404 without one). Returns, doing nothing, when the agent refused
+	 * nothing; otherwise it does not return.
+	 *
+	 * @param array<string, mixed> $rUserInfo The token's user_info.
+	 * @param mixed $rServerID The node that records the viewer (the token's, as the endpoint read it).
+	 * @param mixed $rProxyID  The proxy in front of it, if any.
+	 */
+	public static function refuseAdmission(mixed $rStreamID, array $rUserInfo, string $rIP, string $rExtension, ?string $rCountryCode, mixed $rServerID, mixed $rProxyID): void {
+		$rReason = ConnectionTracker::refusedAdmission();
+		if ($rReason === null) {
+			return;
+		}
+		DatabaseLogger::clientLog((int) $rStreamID, (int) ($rUserInfo['id'] ?? 0), 'USER_ALREADY_CONNECTED', $rIP, 'admission: ' . $rReason);
+		OffAirHandler::showVideoServer('show_connected_video', 'connected_video_path', $rExtension, $rUserInfo + ['is_restreamer' => 0, 'con_isp_name' => null], $rIP, (string) $rCountryCode, $rUserInfo['con_isp_name'] ?? null, $rServerID ? (int) $rServerID : null, $rProxyID ? (int) $rProxyID : null);
+		exit();
 	}
 }

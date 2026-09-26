@@ -42,16 +42,21 @@ final class AgentClient {
 	 * One HTTP request to the agent's socket.
 	 *
 	 * @param array<string, mixed>|null $rBody JSON body, or none.
+	 * @param array<string, string> $rHeaders Extra request headers; CR and LF are dropped from the values.
 	 * @return array{0: int, 1: array<string, mixed>|null}|null [status, decoded body]; null when the agent did not answer.
 	 */
-	public static function request(string $rMethod, string $rPath, ?array $rBody, float $rTimeout): ?array {
+	public static function request(string $rMethod, string $rPath, ?array $rBody, float $rTimeout, array $rHeaders = []): ?array {
 		$rSock = @stream_socket_client('unix://' . self::socket(), $rErrNo, $rErr, min(2.0, $rTimeout));
 		if ($rSock === false) {
 			return null;
 		}
 		stream_set_timeout($rSock, (int) floor($rTimeout), (int) (($rTimeout - floor($rTimeout)) * 1000000));
 		$rData = $rBody === null ? '' : (string) json_encode((object) $rBody, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
-		fwrite($rSock, $rMethod . ' ' . $rPath . " HTTP/1.0\r\nHost: agent\r\nContent-Type: application/json\r\nContent-Length: " . strlen($rData) . "\r\nConnection: close\r\n\r\n" . $rData);
+		$rExtra = '';
+		foreach ($rHeaders as $rName => $rValue) {
+			$rExtra .= $rName . ': ' . str_replace(["\r", "\n"], '', $rValue) . "\r\n";
+		}
+		fwrite($rSock, $rMethod . ' ' . $rPath . " HTTP/1.0\r\nHost: agent\r\nContent-Type: application/json\r\n" . $rExtra . 'Content-Length: ' . strlen($rData) . "\r\nConnection: close\r\n\r\n" . $rData);
 		$rRaw = (string) stream_get_contents($rSock, 1048576);
 		$rTimedOut = stream_get_meta_data($rSock)['timed_out'];
 		fclose($rSock);

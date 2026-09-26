@@ -16,6 +16,19 @@ final class AgentConnections {
 	/** The stream endpoints' hot path: the agent answers in well under this. */
 	public const TIMEOUT = 1.0;
 
+	/**
+	 * A new viewer's register, which may wait for the agent's conn_admit to
+	 * MAIN (1.5 s) and then its offline policy.
+	 */
+	public const ADMIT_TIMEOUT = 2.5;
+
+	/**
+	 * The admission request of a new viewer's register (`PUT /v1/conn/{uuid}`).
+	 * A header, so an agent that predates admission ignores it and the record
+	 * it stores stays the record.
+	 */
+	public const ADMISSION_HEADER = 'X-XCVM-Admission';
+
 	public static function enabled(): bool {
 		return NodeFlows::on(NodeFlows::CONNECTIONS);
 	}
@@ -24,11 +37,86 @@ final class AgentConnections {
 	 * Record (or replace) a connection.
 	 *
 	 * @param array<string, mixed> $rRecord
-	 * @return bool|null true when recorded; null when the agent did not answer or refused.
+	 * @return true|null true when recorded; null when the agent did not answer or refused.
 	 */
 	public static function put(string $rUUID, array $rRecord): ?bool {
 		$rOut = self::call('PUT', $rUUID, $rRecord);
 		return $rOut !== null && $rOut[0] === 200 ? true : null;
+	}
+
+	/**
+	 * What the agent needs to admit a new viewer (cluster plan, Phase 6,
+	 * "Global max_connections and kills", steps 4-6), from the stream token
+	 * the viewer presented (MAIN-sealed, so its content is MAIN's) and the
+	 * record about to be registered:
+	 *
+	 * - `adm` {exp, sid}: MAIN's admission at mint, passed on only while it
+	 *   holds (exp, MAIN's unix seconds, not past) and only for the node that
+	 *   records the viewer. With it the agent admits without asking MAIN.
+	 * - `line_id`, or `hmac_id` + `identifier`, `stream_id`, `ip`, `ua`: what
+	 *   the agent sends MAIN's conn_admit when there is no `adm`.
+	 * - `max_connections`: the token's limit, for the `local` offline policy
+	 *   only; the agent never sends it to MAIN.
+	 *
+	 * Null for a viewer with no limit (the token's max_connections is 0): the
+	 * register is the plain one, as before.
+	 *
+	 * @param array<string, mixed> $rToken  The decrypted stream token.
+	 * @param array<string, mixed> $rRecord The registry record.
+	 * @param int $rMainNow MAIN's clock as this node sees it (time() less servers.time_offset).
+	 * @return array<string, mixed>|null
+	 */
+	public static function admission(array $rToken, array $rRecord, int $rMainNow): ?array {
+		$rMax = (int) ((is_array($rToken['user_info'] ?? null) ? $rToken['user_info'] : [])['max_connections'] ?? 0);
+		if ($rMax <= 0) {
+			return null;
+		}
+		$rOut = [];
+		$rAdm = $rToken['adm'] ?? null;
+		if (is_array($rAdm) && is_int($rAdm['exp'] ?? null) && is_int($rAdm['sid'] ?? null) && $rAdm['exp'] >= $rMainNow && $rAdm['sid'] === (int) ($rRecord['server_id'] ?? 0)) {
+			$rOut['adm'] = ['exp' => $rAdm['exp'], 'sid' => $rAdm['sid']];
+		}
+		if (!empty($rRecord['user_id'])) {
+			$rOut['line_id'] = (int) $rRecord['user_id'];
+		} else {
+			$rOut['hmac_id'] = (int) ($rRecord['hmac_id'] ?? 0);
+			$rOut['identifier'] = (string) ($rRecord['hmac_identifier'] ?? '');
+		}
+		return $rOut + [
+			'stream_id' => (int) ($rRecord['stream_id'] ?? 0),
+			'max_connections' => $rMax,
+			'ip' => (string) ($rRecord['user_ip'] ?? ''),
+			'ua' => (string) ($rRecord['user_agent'] ?? ''),
+		];
+	}
+
+	/**
+	 * Register a new viewer, admitted by the agent when $rAdmission is given
+	 * (admission()). The agent answers 403 {admit: false, reason} for a viewer
+	 * it refuses, and records nothing; any other answer is the plain PUT's,
+	 * so an agent that predates admission admits every viewer.
+	 *
+	 * @param array<string, mixed> $rRecord
+	 * @param array<string, mixed>|null $rAdmission
+	 * @return true|string|null true when recorded; the refusal reason when the agent refused the viewer; null when the agent did not answer.
+	 */
+	public static function register(string $rUUID, array $rRecord, ?array $rAdmission): bool|string|null {
+		if ($rAdmission === null) {
+			return self::put($rUUID, $rRecord);
+		}
+		if (!preg_match('#^[A-Za-z0-9_-]{1,64}$#', $rUUID)) {
+			return null;
+		}
+		$rHeader = (string) json_encode($rAdmission, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+		$rOut = AgentClient::request('PUT', '/v1/conn/' . $rUUID, $rRecord, self::ADMIT_TIMEOUT, [self::ADMISSION_HEADER => $rHeader]);
+		if ($rOut === null) {
+			return null;
+		}
+		if ($rOut[0] === 403 && ($rOut[1]['admit'] ?? null) === false) {
+			$rReason = $rOut[1]['reason'] ?? null;
+			return is_string($rReason) && preg_match('/^[A-Z_]{1,32}$/', $rReason) ? $rReason : 'REFUSED';
+		}
+		return $rOut[0] === 200 ? true : null;
 	}
 
 	/**
