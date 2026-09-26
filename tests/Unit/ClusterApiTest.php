@@ -1003,4 +1003,27 @@ final class ClusterApiTest extends TestCase {
 		[$rRes] = $this->call('config', ['blocklist_since' => $rOut['seq']], 1, $rKeys);
 		$this->denial($rRes, 403, 'LICENCE_INVALID');
 	}
+
+	public function testConfigServesTheSettingsSectionToAnAgentThatAsks(): void {
+		$this->blocklistTables();
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `api_pass` text, `seg_time` int)');
+		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 'secret', 6)");
+		$rKeys = $this->active();
+
+		// An agent that predates it is not sent the section.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0], 1, $rKeys);
+		$this->assertArrayNotHasKey('settings', $this->reply($rRes, $rCtx, $rKeys));
+
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => '']], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys)['settings'];
+		$rDoc = $this->openRecord($rOut['sealed'], 'rep');
+		$this->assertSame(['settings', $this->rUuid, $rOut['etag']], [$rDoc['section'], $rDoc['node'], $rDoc['etag']]);
+		$this->assertSame(['id' => '1', 'seg_time' => '6', 'server_name' => 'XC'], $rDoc['data'], 'never the secret');
+
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => $rOut['etag']]], 1, $rKeys);
+		$this->assertSame(['unchanged' => true], $this->reply($rRes, $rCtx, $rKeys)['settings']);
+
+		[$rRes] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => 'nope']], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST');
+	}
 }

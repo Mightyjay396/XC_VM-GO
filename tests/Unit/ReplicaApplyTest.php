@@ -120,4 +120,14 @@ final class ReplicaApplyTest extends TestCase {
 		file_put_contents($this->rDir . '/replica/blocklist.json', '{"data": {"ip": "nope"}}');
 		$this->assertNull(ReplicaApply::run(false));
 	}
+
+	public function testSettingsStayInShadowAndNameWhatDiffers(): void {
+		FileCache::setCache('settings', ['seg_time' => 6, 'server_name' => 'XC', 'api_ips' => ['10.0.0.1'], 'redis_password' => 'kept']);
+		file_put_contents($this->rDir . '/replica/settings.json', json_encode(['etag' => str_repeat('b', 64), 'data' => ['seg_time' => '6', 'server_name' => 'Renamed', 'api_ips' => '10.0.0.1']]));
+		$this->flows(NodeFlows::CONFIG);
+		$rReport = ReplicaApply::run(true);
+		$this->assertSame(['etag' => str_repeat('b', 64), 'mode' => 'shadow', 'keys' => 3, 'differ' => ['server_name']], $rReport['settings'], 'decoded as the panel reads them');
+		$this->assertArrayNotHasKey('seq', $rReport, 'no blocklist to apply');
+		$this->assertSame('XC', FileCache::getCache('settings')['server_name'], 'not written until the secrets section exists');
+	}
 }

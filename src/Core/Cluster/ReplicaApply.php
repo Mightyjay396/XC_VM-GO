@@ -3,6 +3,7 @@
 namespace XcVm\Core\Cluster;
 
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Config\SettingsRepository;
 use XcVm\Domain\Security\BlocklistService;
 
 /**
@@ -30,6 +31,11 @@ use XcVm\Domain\Security\BlocklistService;
  * - CONFIG on: the replica is authoritative. It writes the caches, and
  *   cron:cache stops writing them from the database.
  *
+ * The `settings` section (`replica/settings.json`) is only compared: the keys
+ * whose decoded value differs from the settings cache go to the report. It
+ * becomes authoritative with the `secrets` section, which carries what the
+ * allowlist withholds.
+ *
  * Either way the report goes to `replica/apply.json`.
  */
 final class ReplicaApply {
@@ -47,33 +53,78 @@ final class ReplicaApply {
 	}
 
 	/**
-	 * Apply the materialised blocklist. Null when there is none, or it is not
-	 * one the agent wrote.
+	 * Apply the materialised replica. Null when there is nothing the agent
+	 * wrote to apply.
 	 *
-	 * @return array{at: int, seq: int, etag: string, mode: string, diff?: array<string, array{missing: int, extra: int}>}|null
+	 * @return array<string, mixed>|null
 	 */
 	public static function run(bool $rAuthoritative, ?int $rNow = null): ?array {
+		$rReport = ['at' => $rNow ?? time()];
 		$rDoc = json_decode((string) @file_get_contents(self::dir() . 'blocklist.json'), true);
 		$rCaches = is_array($rDoc) && is_array($rDoc['data'] ?? null) ? self::caches($rDoc['data']) : null;
-		if ($rCaches === null) {
-			return null;
+		if ($rCaches !== null) {
+			$rReport += ['seq' => (int) ($rDoc['seq'] ?? 0), 'etag' => (string) ($rDoc['etag'] ?? ''), 'mode' => $rAuthoritative ? 'applied' : 'shadow'];
+			if ($rAuthoritative) {
+				foreach ($rCaches as $rKey => $rValue) {
+					FileCache::setCache($rKey, $rValue);
+				}
+			} else {
+				$rReport['diff'] = [];
+				foreach ($rCaches as $rKey => $rValue) {
+					$rReport['diff'][$rKey] = self::diff(self::current($rKey), $rValue);
+				}
+			}
 		}
-		$rReport = ['at' => $rNow ?? time(), 'seq' => (int) ($rDoc['seq'] ?? 0), 'etag' => (string) ($rDoc['etag'] ?? ''), 'mode' => $rAuthoritative ? 'applied' : 'shadow'];
-		if ($rAuthoritative) {
-			foreach ($rCaches as $rKey => $rValue) {
-				FileCache::setCache($rKey, $rValue);
-			}
-		} else {
-			$rReport['diff'] = [];
-			foreach ($rCaches as $rKey => $rValue) {
-				$rReport['diff'][$rKey] = self::diff(self::current($rKey), $rValue);
-			}
+		$rSettings = self::settings();
+		if ($rSettings !== null) {
+			$rReport['settings'] = $rSettings;
+		}
+		if (count($rReport) === 1) {
+			return null;
 		}
 		$rTmp = self::dir() . '.apply.json.tmp';
 		if (@file_put_contents($rTmp, (string) json_encode($rReport)) !== false) {
 			@rename($rTmp, self::dir() . 'apply.json');
 		}
 		return $rReport;
+	}
+
+	/**
+	 * The replica's `settings` section, in shadow whatever the flow: the keys
+	 * whose value differs from the settings cache cron:cache built from MAIN's
+	 * database. It becomes authoritative with the `secrets` section, which
+	 * carries what it withholds.
+	 *
+	 * @return array{etag: string, mode: string, keys: int, differ: list<string>}|null
+	 */
+	public static function settings(): ?array {
+		$rDoc = json_decode((string) @file_get_contents(self::dir() . 'settings.json'), true);
+		if (!is_array($rDoc) || !is_array($rDoc['data'] ?? null)) {
+			return null;
+		}
+		foreach ($rDoc['data'] as $rValue) {
+			if (!is_string($rValue) && $rValue !== null) {
+				return null;
+			}
+		}
+		$rReplica = SettingsRepository::decode($rDoc['data']);
+		$rCurrent = FileCache::getCache('settings');
+		$rCurrent = is_array($rCurrent) ? $rCurrent : [];
+		$rDiffer = [];
+		foreach (array_keys($rDoc['data']) as $rKey) {
+			if (json_encode(self::loose($rReplica[$rKey] ?? null)) !== json_encode(self::loose($rCurrent[$rKey] ?? null))) {
+				$rDiffer[] = (string) $rKey;
+			}
+		}
+		return ['etag' => (string) ($rDoc['etag'] ?? ''), 'mode' => 'shadow', 'keys' => count($rDoc['data']), 'differ' => $rDiffer];
+	}
+
+	/** Scalars as strings, as a driver reads them, at any depth. */
+	private static function loose(mixed $rValue): mixed {
+		if (is_array($rValue)) {
+			return array_map([self::class, 'loose'], $rValue);
+		}
+		return $rValue === null ? null : (is_bool($rValue) ? (string) (int) $rValue : (string) $rValue);
 	}
 
 	/**

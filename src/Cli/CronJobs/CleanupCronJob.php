@@ -223,8 +223,9 @@ class CleanupCronJob implements CommandInterface {
 		InstallCredentials::scrubLegacyMetadata();
 		$rTables = ['lines_activity' => ['keep_activity', 'date_end'], 'lines_logs' => ['keep_client', 'date'], 'login_logs' => ['keep_login', 'date'], 'streams_errors' => ['keep_errors', 'date'], 'streams_logs' => ['keep_restarts', 'date'], 'ondemand_check' => ['on_demand_scan_keep', 'date']];
 		foreach ($rTables as $rTable => $rArray) {
+			// lb-settings: keep_activity, keep_client, keep_login, keep_errors, keep_restarts, on_demand_scan_keep
 			if (SettingsManager::getAll()[$rArray[0]] && 0 < SettingsManager::getAll()[$rArray[0]]) {
-				$rDeleteBefore = time() - intval(SettingsManager::getAll()[$rArray[0]]);
+				$rDeleteBefore = time() - intval(SettingsManager::getAll()[$rArray[0]]); // lb-settings: keep_activity, keep_client, keep_login, keep_errors, keep_restarts, on_demand_scan_keep
 				$db->query('DELETE FROM `' . $rTable . '` WHERE `' . $rArray[1] . '` < ?;', $rDeleteBefore);
 			}
 		}
