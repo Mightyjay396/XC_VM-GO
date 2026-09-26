@@ -105,6 +105,7 @@ SENSITIVE=(
 	# MAIN's nginx include for the cluster API (lb_configs/nginx.conf has no route).
 	"bin/nginx/conf/cluster_locations.conf"
 	"Cli/Commands/ServerEnrolCommand.php"
+	"Cli/Commands/SshSession.php"
 	# Admin / reseller APIs and the MAIN-only endpoints (the LB nginx routes none
 	# of them; auth.php and probe.php need the stripped Domain/User).
 	"Public/admin/api.php"

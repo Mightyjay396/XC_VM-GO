@@ -3,11 +3,14 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
  * ServerEnrolCommand — enrol an existing (legacy) LB in the cluster API over
@@ -28,6 +31,8 @@ use XcVm\Domain\Server\ServerRepository;
  * @package XC_VM_CLI_Commands
  */
 class ServerEnrolCommand implements CommandInterface {
+	use DatabaseAware;
+
 	public function getName(): string {
 		return 'server:enrol';
 	}
@@ -60,61 +65,106 @@ class ServerEnrolCommand implements CommandInterface {
 			return 1;
 		}
 
-		global $db;
-		$rServers = ServerRepository::getAll(true);
+		set_time_limit(0);
+		$rExpected = InstallCredentials::normalizeHostKey($rOptions['expect-hostkey'] ?? '');
+		return self::enrol(ServerRepository::getAll(true), $rServerID, $rPort, $rCred, $rExpected, $rCrypto) === null ? 0 : 1;
+	}
+
+	/**
+	 * Enrol (or re-enrol) one LB over SSH; `cluster:reenrol` runs it node by
+	 * node. The host key must match $rExpected, else the one stored at the
+	 * node's install; with neither, nothing is contacted (no trust on first
+	 * use). Then LbInstallFlow::provisionCluster runs on the live node without
+	 * marking it failed, so a failure leaves it serving the legacy way.
+	 *
+	 * Everything is printed as it happens.
+	 *
+	 * @param array<int, array<string, mixed>>           $rServers     ServerRepository::getAll(true)
+	 * @param array{username: string, password: string} $rCred
+	 * @param callable|null                              $rAgentBinary As for provisionCluster (tests).
+	 * @return string|null Null once the node is enrolled; otherwise why not.
+	 */
+	public static function enrol(array $rServers, int $rServerID, int $rPort, array $rCred, ?string $rExpected, ClusterCrypto $rCrypto, ?SshSession $rSsh = null, ?callable $rAgentBinary = null): ?string {
+		$rFail = static function (string $rWhy): string {
+			echo $rWhy . ". Exiting\n";
+			return $rWhy;
+		};
 		$rServer = $rServers[$rServerID] ?? null;
 		if ($rServer === null || !empty($rServer['is_main']) || intval($rServer['server_type'] ?? 0) !== 0) {
-			echo "Server {$rServerID} is not a load balancer. Exiting\n";
-			return 1;
+			return $rFail("Server {$rServerID} is not a load balancer");
 		}
-
-		$rExpected = InstallCredentials::normalizeHostKey($rOptions['expect-hostkey'] ?? '');
 		$rStored = $rServer['ssh_hostkey_sha1'] ?? null;
 		if (($rExpected === null || $rExpected === '') && ($rStored === null || $rStored === '')) {
-			echo "No SSH host key to check against: pass --expect-hostkey with the node's SHA-1 fingerprint\n";
-			echo "(on the node: ssh-keygen -l -E sha1 -f /etc/ssh/ssh_host_ed25519_key.pub). Trust on first use is refused for enrolment. Exiting\n";
-			return 1;
+			return $rFail("No SSH host key to check against: pass --expect-hostkey with the node's SHA-1 fingerprint\n"
+				. '(on the node: ssh-keygen -l -E sha1 -f /etc/ssh/ssh_host_ed25519_key.pub). Trust on first use is refused for enrolment');
 		}
 
-		set_time_limit(0);
+		$rSsh ??= new SshSession();
 		$rHost = (string) $rServer['server_ip'];
 		echo 'Connecting to ' . $rHost . ':' . $rPort . "\n";
-		if (!($rConn = @ssh2_connect($rHost, $rPort))) {
-			echo "Failed to connect to server. Exiting\n";
-			return 1;
-		}
-		$rPresented = (string) @ssh2_fingerprint($rConn, SSH2_FINGERPRINT_SHA1 | SSH2_FINGERPRINT_HEX);
-		$rHostKeyError = InstallCredentials::checkHostKey($rPresented, $rExpected, $rStored);
-		if ($rHostKeyError !== null) {
-			echo $rHostKeyError . ". Exiting\n";
-			return 1;
-		}
-		if (!@ssh2_auth_password($rConn, $rCred['username'], $rCred['password'])) {
-			echo "Failed to authenticate over SSH. Exiting\n";
-			return 1;
-		}
-		$rHostKey = InstallCredentials::normalizeHostKey($rPresented);
-		if ($rHostKey !== $rStored) {
-			$db->query('UPDATE `servers` SET `ssh_hostkey_sha1` = ? WHERE `id` = ?;', $rHostKey, $rServerID);
-		}
+		try {
+			if (!$rSsh->connect($rHost, $rPort)) {
+				return $rFail('Failed to connect to server');
+			}
+			$rPresented = $rSsh->hostKey();
+			$rHostKeyError = InstallCredentials::checkHostKey($rPresented, $rExpected, $rStored);
+			if ($rHostKeyError !== null) {
+				return $rFail($rHostKeyError);
+			}
+			if (!$rSsh->login($rCred['username'], $rCred['password'])) {
+				return $rFail('Failed to authenticate over SSH');
+			}
+			$rHostKey = InstallCredentials::normalizeHostKey($rPresented);
+			if ($rHostKey !== $rStored) {
+				self::db()->query('UPDATE `servers` SET `ssh_hostkey_sha1` = ? WHERE `id` = ?;', $rHostKey, $rServerID);
+			}
 
-		$rRunSSH = static fn($rC, string $rCmd): array => SshChannel::run($rC, $rCmd);
-		$rSendFileSSH = static fn($rC, string $rFrom, string $rTo, bool $rWarn = false): bool => SshChannel::send($rC, $rFrom, $rTo, $rWarn);
-		$rReady = SshChannel::run($rConn, 'test -f /home/xc_vm/bin/xc_agent/run.sh && test -f /home/xc_vm/config/config.enc && echo READY');
-		if (trim($rReady['output']) !== 'READY') {
-			echo "The node does not run this panel release yet (no bin/xc_agent/run.sh). Update it first, then retry. Exiting\n";
-			return 1;
-		}
+			$rReady = $rSsh->run('test -f /home/xc_vm/bin/xc_agent/run.sh && test -f /home/xc_vm/config/config.enc && echo READY');
+			if (trim($rReady['output']) !== 'READY') {
+				return $rFail('The node does not run this panel release yet (no bin/xc_agent/run.sh). Update it first, then retry');
+			}
 
-		$rStart = time();
-		if (!LbInstallFlow::provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, $rCrypto, null, false)) {
-			return 1;
+			$rStart = ClusterClock::now();
+			$rLog = '';
+			ob_start(static function (string $rChunk) use (&$rLog): string {
+				$rLog .= $rChunk;
+				return $rChunk;
+			}, 1);
+			try {
+				$rOk = LbInstallFlow::provisionCluster(
+					$rSsh,
+					static fn(SshSession $rC, string $rCmd): array => $rC->run($rCmd),
+					static fn(SshSession $rC, string $rFrom, string $rTo, bool $rWarn = false): bool => $rC->send($rFrom, $rTo, $rWarn),
+					$rServers,
+					$rServerID,
+					self::db(),
+					$rCrypto,
+					$rAgentBinary,
+					false
+				);
+			} finally {
+				ob_end_flush();
+			}
+			if (!$rOk) {
+				return self::lastWords($rLog);
+			}
+			$rNode = NodeRegistry::byServer($rServerID);
+			if ($rNode === null || intval($rNode['created_at']) < $rStart) {
+				return $rFail('The node was not enrolled (see above); it stays legacy');
+			}
+			return null;
+		} finally {
+			$rSsh->close();
 		}
-		$rNode = NodeRegistry::byServer($rServerID);
-		if ($rNode === null || intval($rNode['created_at']) < $rStart) {
-			echo "The node was not enrolled (see above); it stays legacy. Exiting\n";
-			return 1;
+	}
+
+	/** Why provisionCluster stopped: what it printed after its first line, without "Exiting". */
+	private static function lastWords(string $rLog): string {
+		$rLines = array_values(array_filter(array_map('trim', explode("\n", $rLog)), static fn(string $rL): bool => $rL !== ''));
+		if (count($rLines) > 1 && str_starts_with($rLines[0], 'Enrolling the node')) {
+			array_shift($rLines);
 		}
-		return 0;
+		$rWhy = (string) preg_replace('/[.!]?\s*Exiting$/', '', implode(' ', $rLines));
+		return $rWhy === '' ? 'The enrolment failed on the node' : $rWhy;
 	}
 }
