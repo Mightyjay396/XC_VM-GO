@@ -88,8 +88,9 @@ final class TokenService {
 	 * A request authenticated with this epoch: mark it used, and make it the
 	 * node's current epoch when it is newer. An epoch no newer than the
 	 * node's current one was marked when it became current (every newer
-	 * epoch is minted above it), so it costs no write: a heartbeat on the
-	 * cluster bus writes nothing to MySQL.
+	 * epoch is minted above it, and it becomes current only once marked),
+	 * so it costs no write: a heartbeat on the cluster bus writes nothing to
+	 * MySQL.
 	 *
 	 * @param array<string, mixed> $rNode
 	 */
@@ -97,7 +98,9 @@ final class TokenService {
 		if ($rEpoch <= (int) $rNode['epoch']) {
 			return;
 		}
-		self::db()->query('UPDATE `cluster_node_epochs` SET `used` = 1 WHERE `server_id` = ? AND `epoch` = ? AND `used` = 0;', (int) $rNode['server_id'], $rEpoch);
+		if (self::db()->query('UPDATE `cluster_node_epochs` SET `used` = 1 WHERE `server_id` = ? AND `epoch` = ? AND `used` = 0;', (int) $rNode['server_id'], $rEpoch) === false) {
+			return; // the next request marks it
+		}
 		NodeRegistry::update((int) $rNode['server_id'], ['epoch' => $rEpoch, 'token_exp' => $rExp]);
 	}
 

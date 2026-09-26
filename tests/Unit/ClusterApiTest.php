@@ -470,6 +470,35 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(3, $this->reply($rRes, $rCtx, $rTok2['keys'])['epoch']);
 	}
 
+	public function testAnEpochBecomesCurrentOnlyOnceMarkedUsedAndIsNotMarkedAgain(): void {
+		$rKeys = $this->active();
+		$rEph = random_bytes(32);
+		[$rRes, $rCtx] = $this->call('token_refresh', ['eph_pub' => base64_encode(sodium_crypto_scalarmult_base($rEph))], 1, $rKeys);
+		$rTok2 = $this->openToken((string) base64_decode($this->reply($rRes, $rCtx, $rKeys)['token_sealed']), $rEph);
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+
+		// MySQL refuses to mark epoch 2 used: it does not become current either.
+		$rLog->rRefuse = '/^UPDATE `cluster_node_epochs`/';
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 2, $rTok2['keys']);
+		$this->reply($rRes, $rCtx, $rTok2['keys']);
+		$this->assertSame(1, (int) NodeRegistry::byServer(self::SID)['epoch']);
+
+		// The next request marks it, and the ones after write nothing for it.
+		$rLog->rRefuse = null;
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 2, $rTok2['keys']);
+		$this->reply($rRes, $rCtx, $rTok2['keys']);
+		$this->assertSame(2, (int) NodeRegistry::byServer(self::SID)['epoch']);
+		$this->rDb->query('SELECT `used` FROM `cluster_node_epochs` WHERE `server_id` = 5 AND `epoch` = 2');
+		$this->assertSame(1, (int) $this->rDb->get_row()['used']);
+		$rLog->rQueries = [];
+		foreach ([2 => $rTok2['keys'], 1 => $rKeys] as $rEpoch => $rEpochKeys) {
+			[$rRes, $rCtx] = $this->call('heartbeat', [], $rEpoch, $rEpochKeys);
+			$this->reply($rRes, $rCtx, $rEpochKeys);
+		}
+		$this->assertSame([], array_values(array_filter($rLog->writes(), static fn(string $rQ): bool => str_contains($rQ, 'cluster_node_epochs'))), 'the current epoch, and the one before it, are not marked again');
+	}
+
 	public function testExpiredEpochIsRefused(): void {
 		$rKeys = $this->active();
 		ClusterClock::fix($this->rT0 + (75 * 60 + 1) * 1000);
