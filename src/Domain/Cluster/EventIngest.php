@@ -73,6 +73,8 @@ final class EventIngest {
 	/** @var (callable(int): mixed)|null */
 	private static $rOnStreamChanged;
 
+	private static ?string $rLockDir = null;
+
 	/**
 	 * What runs when an event changed a stream's routing state (tests; by
 	 * default StreamProcess::updateStream, the cache signal the node used to
@@ -82,6 +84,11 @@ final class EventIngest {
 	 */
 	public static function onStreamChanged(?callable $rHook): void {
 		self::$rOnStreamChanged = $rHook;
+	}
+
+	/** Tests: another directory for the lanes' lock files; null restores TMP_PATH/cluster_ingest/. */
+	public static function useLockDir(?string $rDir): void {
+		self::$rLockDir = $rDir;
 	}
 
 	/**
@@ -162,7 +169,7 @@ final class EventIngest {
 	 * @return resource|null
 	 */
 	private static function lock(int $rServerID, string $rLane) {
-		$rDir = (defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_ingest/';
+		$rDir = self::$rLockDir ?? ((defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_ingest/');
 		if (!is_dir($rDir)) {
 			@mkdir($rDir, 0750, true);
 		}

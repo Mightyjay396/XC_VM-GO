@@ -2,6 +2,9 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Config\SettingsManager;
+use XcVm\Infrastructure\Database\DatabaseAware;
+
 /**
  * `conn_snapshot`: a CONNECTIONS node's whole registry, sent when MAIN asks
  * (ConnectionDigest), so MAIN's store for that node matches it again.
@@ -16,8 +19,19 @@ namespace XcVm\Domain\Cluster;
  * open connection MAIN holds for the node that the snapshot lacks is removed.
  * A chunk 0 starts over; any other chunk out of order is refused with the
  * number MAIN expects, and the node starts the snapshot again.
+ *
+ * In MySQL mode the apply is one transaction, so readers see the store as it
+ * was or as the snapshot left it, never in between. An apply that fails (the
+ * connection drops, the commit fails; in Redis mode, which has no such
+ * transaction, a Redis error) throws, so the node gets 503 DB, and keeps the
+ * staged chunks: the last chunk sent again applies the whole. A record MAIN
+ * refuses or cannot write is counted as dropped, and never removes the
+ * connection MAIN holds under its uuid; the next heartbeat's digest check
+ * (ConnectionDigest) finds any difference left.
  */
 final class ConnectionSnapshot {
+	use DatabaseAware;
+
 	/** Records per chunk. */
 	public const MAX_RECORDS = 1000;
 
@@ -70,8 +84,9 @@ final class ConnectionSnapshot {
 			}
 			array_push($rAll, ...$rChunk);
 		}
+		$rOut = self::apply($rServerID, $rAll); // throws: the chunks stay staged
 		self::clear($rDir);
-		return ['ok' => true, 'done' => true] + self::apply($rServerID, $rAll);
+		return ['ok' => true, 'done' => true] + $rOut;
 	}
 
 	/**
@@ -81,20 +96,34 @@ final class ConnectionSnapshot {
 	 * @return array{applied: int, removed: int, dropped: int}
 	 */
 	public static function apply(int $rServerID, array $rRecords): array {
-		$rApplied = $rDropped = $rRemoved = 0;
-		$rSeen = [];
-		foreach ($rRecords as $rRecord) {
-			if (is_array($rRecord) && ConnectionIngest::upsert($rServerID, $rRecord)) {
-				$rApplied++;
-				$rSeen[(string) $rRecord['uuid']] = true;
-			} else {
-				$rDropped++;
+		$rDb = SettingsManager::get('redis_handler') ? null : self::db();
+		$rTx = $rDb !== null && method_exists($rDb, 'beginTransaction') && $rDb->beginTransaction();
+		try {
+			$rApplied = $rDropped = $rRemoved = 0;
+			$rSeen = [];
+			foreach ($rRecords as $rRecord) {
+				if (is_array($rRecord) && is_scalar($rRecord['uuid'] ?? null)) {
+					$rSeen[(string) $rRecord['uuid']] = true; // the node holds it, whether MAIN takes it or not
+				}
+				if (is_array($rRecord) && ConnectionIngest::upsert($rServerID, $rRecord)) {
+					$rApplied++;
+				} else {
+					$rDropped++;
+				}
 			}
-		}
-		foreach (array_keys(ConnectionDigest::stored($rServerID)) as $rUUID) {
-			if (!isset($rSeen[(string) $rUUID]) && ConnectionIngest::remove($rServerID, (string) $rUUID)) {
-				$rRemoved++;
+			foreach (array_keys(ConnectionDigest::stored($rServerID)) as $rUUID) {
+				if (!isset($rSeen[(string) $rUUID]) && ConnectionIngest::remove($rServerID, (string) $rUUID)) {
+					$rRemoved++;
+				}
 			}
+			if ($rTx && !$rDb->commit()) {
+				throw new \RuntimeException('cannot commit the snapshot');
+			}
+		} catch (\Throwable $rE) {
+			if ($rTx) {
+				$rDb->rollback();
+			}
+			throw $rE;
 		}
 		return ['applied' => $rApplied, 'removed' => $rRemoved, 'dropped' => $rDropped];
 	}

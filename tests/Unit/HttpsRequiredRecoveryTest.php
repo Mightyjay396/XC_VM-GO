@@ -13,6 +13,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Localization\Translator;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterClock;
+use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Server\SettingsService;
@@ -259,8 +260,11 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		$this->assertSame(2, $this->heartbeat(true)['policy_ver']);
 
 		// MAIN's certificate is removed: HTTPS fails, and plain HTTP is refused
-		// for everything but the challenge (a signed denial, bound to the request).
-		foreach (['heartbeat', 'hello', 'commands', 'token_refresh'] as $rOp) {
+		// for everything but the challenge (a signed denial, bound to the
+		// request): every op MAIN serves, the ingest ones too.
+		$rOps = array_diff(array_keys((new \ReflectionClassConstant(ClusterApi::class, 'OPS'))->getValue()), ['health', 'challenge']);
+		$this->assertContains('events', $rOps);
+		foreach ($rOps as $rOp) {
 			[$rRes, , $rReq] = $this->call($rOp, [], false);
 			$this->assertSame(403, $rRes['status'], $rOp);
 			$this->assertTrue(PanelSig::verify($this->rCrypto->info()['panel_sign_pub'], 'den', $rRes['body'], (string) Enc::b64urlDecode($rRes['headers']['X-XCVM-Panel-Sig'])));
@@ -306,9 +310,11 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		$this->assertSame(3, $this->storedVer(), 'MAIN\'s DNS name is in the URLs too');
 
 		// The version (and the kept ports) are MAIN's own state: a form that
-		// posts them cannot rewind the policy.
+		// posts them cannot rewind the policy, nor drop an old port early.
+		$this->rDb->query('UPDATE `settings` SET `cluster_legacy_ports` = ?', '{"25461":1800000000}');
 		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_policy_ver' => '1', 'cluster_legacy_ports' => ''])['status']);
 		$this->assertSame(3, $this->storedVer());
+		$this->assertSame('{"25461":1800000000}', $this->settings()['cluster_legacy_ports']);
 		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_policy_ver' => '1', 'cluster_transport' => 'auto'])['status']);
 		$this->assertSame(4, $this->storedVer());
 
@@ -327,5 +333,14 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		$rRes = ClusterApi::handle($this->rCrypto, ['method' => 'POST', 'path' => '/cluster/v1/heartbeat', 'headers' => [], 'body' => '', 'https' => false], $this->settings(), $this->rMain);
 		$this->assertSame(403, $rRes['status']);
 		$this->assertSame([null, null], [json_decode($rRes['body'], true)['node'], json_decode($rRes['body'], true)['req_nonce']]);
+	}
+
+	public function testMainLearnsTheTransportFromNginx(): void {
+		// The only way ClusterApi learns a request came over TLS: nginx's
+		// HTTPS param, which the front controller turns into the 'https' flag.
+		$rSrc = dirname(__DIR__, 2) . '/src/';
+		$this->assertMatchesRegularExpression('#\'https\' => !empty\(\$_SERVER\[\'HTTPS\'\]\) && strtolower\(\(string\) \$_SERVER\[\'HTTPS\'\]\) !== \'off\',#', (string) file_get_contents($rSrc . 'Public/cluster/index.php'));
+		$this->assertMatchesRegularExpression('#^fastcgi_param\s+HTTPS\s+\$https if_not_empty;$#m', (string) file_get_contents($rSrc . 'bin/nginx/conf/fastcgi_params'));
+		$this->assertStringContainsString("    include fastcgi_params;\n", ClusterNginxConfig::locations(), 'the cluster API location passes it');
 	}
 }

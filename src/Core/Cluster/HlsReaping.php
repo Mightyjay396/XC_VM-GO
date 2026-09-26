@@ -21,9 +21,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * once it has been silent for `cluster_orphan_conn_ttl_sec` and this reaper
  * has itself watched it stay silent that long, so MAIN's own downtime never
  * orphans anyone: silence counts from max(last_seen_at, cluster_ready_at), and
- * while the fleet silence guard is up (ClusterHealth) nobody is orphaned and
- * the watch starts over. Its rows are then purged from MAIN's store
- * (orphaned(), ConnectionIngest::purgeNode), HLS and TS alike.
+ * while the fleet silence guard is up (ClusterHealth) the nodes it holds are
+ * not watched, for at most GUARD_HOLD_TTLS. Its rows are then purged from
+ * MAIN's store (orphaned(), ConnectionIngest::purgeNode), HLS and TS alike.
  *
  * A node that stops reaping for itself (CONNECTIONS off, mode 0, revoked,
  * an agent without `hls_reaper`) keeps counting as reaping for LEAVE_GRACE:
@@ -55,6 +55,16 @@ final class HlsReaping {
 	 * the store.
 	 */
 	public const LEAVE_GRACE = 120;
+
+	/**
+	 * Longest the fleet silence guard holds the watch, in orphan TTLs from the
+	 * pass that first saw it up. The guard lasts while most nodes are silent,
+	 * which a lasting loss of most of the fleet never ends; after this, a node
+	 * that stays silent is purged one TTL later. A purge during a longer cut
+	 * of MAIN's own network is undone when the nodes come back: their digests
+	 * disagree, and their snapshots restore the rows.
+	 */
+	private const GUARD_HOLD_TTLS = 4;
 
 	/** @var array<int, bool> server id => the node ends its own idle HLS viewers */
 	private static array $rReaps = [];
@@ -125,10 +135,14 @@ final class HlsReaping {
 		}
 		$rRows = $db->get_rows();
 		$rReady = self::readyAtSec();
-		// The fleet silence guard: MAIN suspects its own fault, so nobody's
-		// silence counts. No node is orphaned, and the watch starts over.
-		$rGuard = ClusterHealth::read()['guard'];
-		$rSince = $rNowSec - $rState['run'] > self::MAX_PASS_GAP ? [] : $rState['since'];
+		$rFresh = $rNowSec - $rState['run'] <= self::MAX_PASS_GAP;
+		$rSince = $rFresh ? $rState['since'] : [];
+		// The fleet silence guard: MAIN suspects its own fault, so the silence
+		// of the nodes it holds does not count, and their watch starts over.
+		// It does not hold a node that was offline before it came up (the
+		// guard leaves such a node offline), nor anyone past GUARD_HOLD_TTLS.
+		$rGuardAt = !ClusterHealth::read()['guard'] ? 0 : ($rFresh && $rState['guard'] > 0 ? $rState['guard'] : $rNowSec);
+		$rHolding = $rGuardAt > 0 && $rNowSec - $rGuardAt < self::GUARD_HOLD_TTLS * $rOrphanTtlSec;
 		$rKeep = [];
 		foreach ($rRows as $rRow) {
 			$rID = (int) $rRow['server_id'];
@@ -143,7 +157,7 @@ final class HlsReaping {
 			$rHeard = $rRow['last_seen_at'] === null ? null : intdiv((int) $rRow['last_seen_at'], 1000);
 			$rFrom = $rHeard === null ? ($rReady > 0 ? $rReady : null) : max($rHeard, $rReady);
 			$rSilent = $rFrom === null ? PHP_INT_MAX : $rNowSec - $rFrom;
-			if ($rSilent >= self::WATCH_AFTER && !$rGuard) {
+			if ($rSilent >= self::WATCH_AFTER && !($rHolding && ClusterHealth::state($rID) !== 'offline')) {
 				$rKeep[$rID] = $rSince[$rID] ?? $rNowSec;
 			}
 			$rOrphaned = isset($rKeep[$rID]) && $rSilent >= $rOrphanTtlSec && $rNowSec - $rKeep[$rID] >= $rOrphanTtlSec;
@@ -164,7 +178,7 @@ final class HlsReaping {
 				$rLeaving[$rID] = $rLeft;
 			}
 		}
-		self::save(['run' => $rNowSec, 'since' => $rKeep, 'reaps' => $rReapers, 'leaving' => $rLeaving] + $rState);
+		self::save(['run' => $rNowSec, 'since' => $rKeep, 'guard' => $rGuardAt, 'reaps' => $rReapers, 'leaving' => $rLeaving] + $rState);
 	}
 
 	/**
@@ -226,10 +240,10 @@ final class HlsReaping {
 	}
 
 	/**
-	 * The last pass: MAIN's (run, since, reaps, leaving) and an LB's own
-	 * (local, local_left).
+	 * The last pass: MAIN's (run, since, guard, reaps, leaving) and an LB's
+	 * own (local, local_left).
 	 *
-	 * @return array{run: int, since: array<int, int>, reaps: list<int>, leaving: array<int, int>, local: bool, local_left: int|null}
+	 * @return array{run: int, since: array<int, int>, guard: int, reaps: list<int>, leaving: array<int, int>, local: bool, local_left: int|null}
 	 */
 	private static function load(): array {
 		$rPath = self::path();
@@ -237,7 +251,8 @@ final class HlsReaping {
 		$rDoc = is_array($rDoc) ? $rDoc : [];
 		$rReaps = array_values(array_map('intval', array_filter(is_array($rDoc['reaps'] ?? null) ? $rDoc['reaps'] : [], 'is_int')));
 		return [
-			'run' => (int) ($rDoc['run'] ?? 0), 'since' => self::times($rDoc['since'] ?? null), 'reaps' => $rReaps, 'leaving' => self::times($rDoc['leaving'] ?? null),
+			'run' => (int) ($rDoc['run'] ?? 0), 'since' => self::times($rDoc['since'] ?? null), 'guard' => (int) ($rDoc['guard'] ?? 0),
+			'reaps' => $rReaps, 'leaving' => self::times($rDoc['leaving'] ?? null),
 			'local' => ($rDoc['local'] ?? false) === true, 'local_left' => is_int($rDoc['local_left'] ?? null) ? $rDoc['local_left'] : null,
 		];
 	}
@@ -251,7 +266,7 @@ final class HlsReaping {
 		return $rOut;
 	}
 
-	/** @param array{run: int, since: array<int, int>, reaps: list<int>, leaving: array<int, int>, local: bool, local_left: int|null} $rState */
+	/** @param array{run: int, since: array<int, int>, guard: int, reaps: list<int>, leaving: array<int, int>, local: bool, local_left: int|null} $rState */
 	private static function save(array $rState): void {
 		$rPath = self::path();
 		if ($rPath === null) {

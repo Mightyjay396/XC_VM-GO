@@ -49,12 +49,21 @@ final class MainOutageNoPurgeTest extends TestCase {
 		// MAIN's API has been serving for an hour.
 		$this->at(self::T - 3600);
 		ClusterMeta::markReady();
-		foreach ([2, 3] as $rID) {
-			NodeRegistry::startEnrolment($rID, sprintf('00000000-0000-4000-a000-%012d', $rID), str_repeat("\1", 32), str_repeat("\2", 32), 1);
-			NodeRegistry::update($rID, ['state' => 'active', 'mode' => 1, 'flows' => NodeRegistry::FLOW_TELEMETRY | NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS, 'features' => 'hls_reaper']);
-			foreach (['a', 'b', 'c'] as $rUUID) {
-				$this->rDb->query('INSERT INTO `lines_live` (`uuid`, `server_id`, `user_id`, `container`) VALUES (?, ?, ?, ?)', $rUUID . $rID, $rID, 7, 'hls');
-			}
+		$this->node(2, ['a', 'b', 'c']);
+		$this->node(3, ['a', 'b', 'c']);
+	}
+
+	/**
+	 * An active node with every flow the purge and liveness read, and its
+	 * viewers in MAIN's store.
+	 *
+	 * @param list<string> $rViewers
+	 */
+	private function node(int $rID, array $rViewers): void {
+		NodeRegistry::startEnrolment($rID, sprintf('00000000-0000-4000-a000-%012d', $rID), str_repeat("\1", 32), str_repeat("\2", 32), 1);
+		NodeRegistry::update($rID, ['state' => 'active', 'mode' => 1, 'flows' => NodeRegistry::FLOW_TELEMETRY | NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS, 'features' => 'hls_reaper']);
+		foreach ($rViewers as $rUUID) {
+			$this->rDb->query('INSERT INTO `lines_live` (`uuid`, `server_id`, `user_id`, `container`) VALUES (?, ?, ?, ?)', $rUUID . $rID, $rID, 7, 'hls');
 		}
 	}
 
@@ -119,7 +128,8 @@ final class MainOutageNoPurgeTest extends TestCase {
 		$this->assertTrue(HlsReaping::nodeReaps(2), 'the node still ends its own idle HLS viewers');
 
 		// Node 2 reconnects; node 3 really is gone. Its silence counts from
-		// the moment MAIN could hear it again, and so does MAIN's watch.
+		// the moment MAIN could hear it again (the watch begun at T+60 stands:
+		// the pass gap was under three minutes).
 		$this->heard(2, self::T + 215);
 		$this->assertSame([], $this->usersCron(self::T + 270));
 		$this->heard(2, self::T + 300);
@@ -173,5 +183,95 @@ final class MainOutageNoPurgeTest extends TestCase {
 		$this->assertSame([], $this->usersCron(self::T + 360));
 		$this->heard(2, self::T + 420);
 		$this->assertSame([3 => 3], $this->usersCron(self::T + 420), 'watched silent for the TTL once the guard is down');
+	}
+
+	public function testStoppingMainForFiveMinutesPurgesNobody(): void {
+		$this->heard(2, self::T);
+		$this->heard(3, self::T);
+		$this->assertSame([], $this->usersCron(self::T));
+		$this->assertSame([], $this->usersCron(self::T + 60), 'MAIN\'s nginx is already down: the watch starts');
+
+		// Five minutes later MAIN serves again. Its first pass comes before the
+		// nodes reconnect, and then they speak as always.
+		$this->at(self::T + 390);
+		ClusterMeta::markReady();
+		$this->assertSame([], $this->usersCron(self::T + 400));
+		foreach ([self::T + 460, self::T + 520, self::T + 580] as $rSec) {
+			$this->heard(2, $rSec - 5);
+			$this->heard(3, $rSec - 5);
+			$this->assertSame([], $this->usersCron($rSec));
+		}
+		$this->assertSame([3, 3], [$this->stored(2), $this->stored(3)]);
+	}
+
+	public function testANodeNeverHeardIsSilentFromWhenMainServes(): void {
+		// Node 2 was enrolled and has never spoken; MAIN's API starts at T.
+		$this->heard(3, self::T);
+		$this->at(self::T);
+		ClusterMeta::markReady();
+		$this->assertSame([], $this->usersCron(self::T + 5), 'silent 5 s since MAIN serves: not watched yet');
+		$this->heard(3, self::T + 60);
+		$this->assertSame([], $this->usersCron(self::T + 65), 'the watch starts');
+		$this->heard(3, self::T + 120);
+		$this->assertSame([], $this->usersCron(self::T + 125), 'silent for the TTL, but watched for 60 s only');
+		$this->heard(3, self::T + 180);
+		$this->assertSame([2 => 3], $this->usersCron(self::T + 185));
+	}
+
+	public function testANodeOfflineBeforeTheGuardCameUpIsStillPurged(): void {
+		$this->node(4, []);
+		foreach ([2, 3, 4] as $rID) {
+			$this->heard($rID, self::T);
+		}
+		$this->at(self::T);
+		LivenessService::tick(30);
+
+		// Node 2 is gone at T, and the liveness loop marks it offline.
+		$this->heard(3, self::T + 40);
+		$this->heard(4, self::T + 40);
+		$this->at(self::T + 40);
+		LivenessService::tick(30);
+		$this->assertSame(['offline', false], [ClusterHealth::state(2), ClusterHealth::read()['guard']]);
+		$this->heard(3, self::T + 60);
+		$this->heard(4, self::T + 60);
+		$this->assertSame([], $this->usersCron(self::T + 60), 'the watch starts');
+
+		// MAIN's own network is cut: the others fall silent too, and the guard
+		// comes up. It leaves node 2 offline, and does not hold its watch.
+		$this->at(self::T + 90);
+		LivenessService::tick(30);
+		$this->assertSame([true, 'offline'], [ClusterHealth::read()['guard'], ClusterHealth::state(2)]);
+		$this->assertSame([], $this->usersCron(self::T + 120));
+		$this->at(self::T + 150);
+		LivenessService::tick(30);
+		$this->assertSame([true, 'offline'], [ClusterHealth::read()['guard'], ClusterHealth::state(2)]);
+		$this->assertSame([2 => 3], $this->usersCron(self::T + 180), 'watched silent for the TTL, from before the guard');
+		$this->assertSame([0, 3], [$this->stored(2), $this->stored(3)], 'the nodes the guard holds keep their viewers');
+	}
+
+	public function testALastingLossOfMostOfTheFleetIsPurgedOnceTheGuardHasHeldLongEnough(): void {
+		// Two nodes of three are gone for good at T, while MAIN and node 4 go
+		// on talking. The liveness loop takes it for MAIN's own fault, and
+		// nothing ever clears its guard.
+		$this->node(4, []);
+		foreach ([2, 3, 4] as $rID) {
+			$this->heard($rID, self::T);
+		}
+		$this->at(self::T);
+		LivenessService::tick(30);
+		$this->assertSame([], $this->usersCron(self::T));
+		for ($rSec = self::T + 60; $rSec <= self::T + 600; $rSec += 60) {
+			$this->heard(4, $rSec);
+			$this->at($rSec);
+			LivenessService::tick(30);
+			$this->assertTrue(ClusterHealth::read()['guard'], 'the guard is up');
+			$this->assertSame([], $this->usersCron($rSec), 'held for four TTLs from T+60, then watched for one');
+		}
+		$this->heard(4, self::T + 660);
+		$this->at(self::T + 660);
+		LivenessService::tick(30);
+		$this->assertTrue(ClusterHealth::read()['guard'], 'still up');
+		$this->assertSame([2 => 3, 3 => 3], $this->usersCron(self::T + 660), 'their viewers stop counting against their lines');
+		$this->assertSame([0, 0], [$this->stored(2), $this->stored(3)]);
 	}
 }

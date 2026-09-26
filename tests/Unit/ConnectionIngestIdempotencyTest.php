@@ -24,6 +24,9 @@ use XcVm\Infrastructure\Redis\RedisManager;
  * - a batch whose cursor MAIN could not write, which must fail so the node
  *   sends it again, rather than be reported applied.
  *
+ * MAIN reads the cursor and moves it while it holds the node's lane (a file
+ * lock), which is what makes the second of two copies a repeat.
+ *
  * "Once" is what MAIN's store holds and how many activity rows a close
  * writes. Both stores: `lines_live` and, when a redis-server is installed,
  * Redis.
@@ -38,7 +41,13 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 	/** @var resource|null */
 	private static $rRedisProc = null;
 
+	/** LOGS_TMP_PATH, when this class defined it: removed after the class. */
+	private static ?string $rOwnLogs = null;
+
 	private TestDb $rDb;
+
+	/** The lanes' lock files (EventIngest::useLockDir). */
+	private string $rLockDir;
 
 	public static function setUpBeforeClass(): void {
 		if (!class_exists(\Redis::class) || !function_exists('igbinary_serialize') || trim((string) shell_exec('command -v redis-server')) === '') {
@@ -63,6 +72,9 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 		if (self::$rRedisDir !== null) {
 			exec('rm -rf ' . escapeshellarg(self::$rRedisDir));
 		}
+		if (self::$rOwnLogs !== null) {
+			exec('rm -rf ' . escapeshellarg(self::$rOwnLogs));
+		}
 	}
 
 	public static function stores(): array {
@@ -82,17 +94,77 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 		NodeRegistry::update(self::SID, ['state' => 'active', 'mode' => 1, 'flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
 		if (!defined('LOGS_TMP_PATH')) {
 			define('LOGS_TMP_PATH', sys_get_temp_dir() . '/xcvm-logs-' . bin2hex(random_bytes(4)) . '/');
+			self::$rOwnLogs = LOGS_TMP_PATH;
 		}
 		@mkdir(LOGS_TMP_PATH, 0777, true);
 		@unlink(LOGS_TMP_PATH . 'activity');
+		$this->rLockDir = sys_get_temp_dir() . '/xcvm-ingest-' . bin2hex(random_bytes(4)) . '/';
+		EventIngest::useLockDir($this->rLockDir);
 	}
 
 	protected function tearDown(): void {
 		ClusterClock::fix(null);
 		SettingsManager::set([]);
 		DatabaseFactory::reset();
+		EventIngest::useLockDir(null);
+		exec('rm -rf ' . escapeshellarg($this->rLockDir));
 		$this->redis(null);
 		@unlink(LOGS_TMP_PATH . 'activity');
+	}
+
+	/**
+	 * MAIN's database, with $rHook run before each query: it sees the SQL,
+	 * and a false from it fails the query, as DatabaseHandler::query() answers
+	 * when the connection is gone.
+	 *
+	 * @param callable(string): ?bool $rHook
+	 */
+	private function hookedDb(callable $rHook): void {
+		DatabaseFactory::set(new class ($this->rDb, $rHook) extends DatabaseHandler {
+			/** @var callable(string): ?bool */
+			private $rHook;
+
+			public function __construct(private TestDb $rInner, callable $rHook) {
+				$this->rHook = $rHook;
+			}
+
+			public function query($query, ...$args): bool {
+				return ($this->rHook)((string) $query) !== false && $this->rInner->query($query, ...$args);
+			}
+
+			public function get_rows($use_id = false, $column_as_id = '', $unique_row = true, $sub_row_id = '') {
+				return $this->rInner->get_rows($use_id, $column_as_id, $unique_row, $sub_row_id);
+			}
+
+			public function get_row() {
+				return $this->rInner->get_row();
+			}
+
+			public function num_rows(): int {
+				return $this->rInner->num_rows();
+			}
+
+			public function beginTransaction() {
+				return $this->rInner->pdo->beginTransaction();
+			}
+
+			public function commit() {
+				return $this->rInner->pdo->commit();
+			}
+
+			public function rollback() {
+				return $this->rInner->pdo->rollBack();
+			}
+		});
+	}
+
+	/** Is the node's P0 lane held by someone? A lock of our own is refused while it is. */
+	private function laneHeld(): bool {
+		$rProbe = fopen($this->rLockDir . self::SID . '_p0.lock', 'c');
+		$this->assertIsResource($rProbe);
+		$rFree = flock($rProbe, LOCK_EX | LOCK_NB);
+		fclose($rProbe);
+		return !$rFree;
 	}
 
 	private function redis(?\Redis $rRedis): void {
@@ -229,12 +301,25 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 		$this->assertSame(1, $this->activity(), 'a remove writes no activity row');
 	}
 
+	public function testTheCursorIsReadAndMovedWhileTheLaneIsHeld(): void {
+		$this->useStore(false);
+		$rSeen = [];
+		$this->hookedDb(function (string $rSql) use (&$rSeen): ?bool {
+			if (str_contains($rSql, '`useq_p0`')) {
+				$rSeen[] = [strtok($rSql, ' '), $this->laneHeld()];
+			}
+			return null;
+		});
+		$this->assertSame(2, $this->ingest(1, [$this->upsert('aaaa'), $this->close('aaaa')])['applied']);
+		$this->assertSame([['SELECT', true], ['UPDATE', true]], $rSeen, 'a copy sent again waits, then reads the cursor this batch moved');
+		$this->assertFalse($this->laneHeld(), 'and the lane is free once the batch is applied');
+	}
+
 	public function testABatchWaitsForTheOneBeingAppliedOnItsLane(): void {
 		$this->useStore(false);
-		$rDir = (defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_ingest/';
-		@mkdir($rDir, 0750, true);
+		@mkdir($this->rLockDir, 0750, true);
 		// Another request is applying a batch of this node's P0 lane.
-		$rChild = proc_open([PHP_BINARY, '-r', '$h = fopen($argv[1], "c"); flock($h, LOCK_EX); echo "held\n"; usleep(400000);', $rDir . self::SID . '_p0.lock'], [1 => ['pipe', 'w']], $rPipes);
+		$rChild = proc_open([PHP_BINARY, '-r', '$h = fopen($argv[1], "c"); flock($h, LOCK_EX); echo "held\n"; usleep(400000);', $this->rLockDir . self::SID . '_p0.lock'], [1 => ['pipe', 'w']], $rPipes);
 		$this->assertIsResource($rChild);
 		$this->assertSame("held\n", fgets($rPipes[1]));
 		$rStart = microtime(true);
@@ -243,51 +328,21 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 		proc_close($rChild);
 	}
 
-	public function testABatchWhoseCursorWasNotWrittenFailsAndIsAppliedOnceWhenResent(): void {
-		$this->useStore(false);
+	#[DataProvider('stores')]
+	public function testABatchWhoseCursorWasNotWrittenFailsAndIsAppliedOnceWhenResent(bool $rRedis): void {
+		$this->useStore($rRedis);
 		// MAIN's database connection drops just as the batch's cursor is
 		// written: DatabaseHandler::query() answers false inside a
 		// transaction, and the transaction's writes are gone with it.
-		$rDb = new class ($this->rDb) extends DatabaseHandler {
-			public bool $rFailCursor = true;
-
-			public function __construct(private TestDb $rInner) {
+		$rFail = true;
+		$this->hookedDb(static function (string $rSql) use (&$rFail): ?bool {
+			if ($rFail && preg_match('/^UPDATE `cluster_nodes` SET `useq_p0` = \?/', $rSql)) {
+				$rFail = false;
+				return false;
 			}
-
-			public function query($query, ...$args): bool {
-				if ($this->rFailCursor && preg_match('/^UPDATE `cluster_nodes` SET `useq_p0` = \?/', (string) $query)) {
-					$this->rFailCursor = false;
-					return false;
-				}
-				return $this->rInner->query($query, ...$args);
-			}
-
-			public function get_rows($use_id = false, $column_as_id = '', $unique_row = true, $sub_row_id = '') {
-				return $this->rInner->get_rows($use_id, $column_as_id, $unique_row, $sub_row_id);
-			}
-
-			public function get_row() {
-				return $this->rInner->get_row();
-			}
-
-			public function num_rows(): int {
-				return $this->rInner->num_rows();
-			}
-
-			public function beginTransaction() {
-				return $this->rInner->pdo->beginTransaction();
-			}
-
-			public function commit() {
-				return $this->rInner->pdo->commit();
-			}
-
-			public function rollback() {
-				return $this->rInner->pdo->rollBack();
-			}
-		};
-		DatabaseFactory::set($rDb);
-		$rBatch = [$this->upsert('aaaa'), $this->upsert('bbbb'), $this->remove('aaaa')];
+			return null;
+		});
+		$rBatch = [$this->upsert('aaaa'), $this->upsert('bbbb'), $this->close('aaaa')];
 		$rOut = null;
 		try {
 			$rOut = $this->ingest(1, $rBatch);
@@ -295,11 +350,15 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 			// ClusterApi answers 503 DB, and the node sends the batch again.
 		}
 		$this->assertNull($rOut, 'not reported applied: ' . json_encode($rOut));
-		$this->assertSame([], $this->store(), 'nothing of it stays');
+		// lines_live rolls back with the cursor. Redis has no transaction: the
+		// batch's writes stay, and the resend makes the same store again.
+		$this->assertSame($rRedis ? ['bbbb' => [1800000000, 0, 1]] : [], $this->store());
 		$this->assertSame(0, $this->cursor());
+		$this->assertSame(1, $this->activity(), 'the close\'s activity row is a file, outside the transaction');
 
 		$this->assertSame(['ok' => true, 'useq' => 3, 'applied' => 3, 'dropped' => 0], $this->ingest(1, $rBatch));
 		$this->assertSame(['bbbb' => [1800000000, 0, 1]], $this->store());
+		$this->assertSame(2, $this->activity(), 'the known gap (ADR 0004): the resent close writes its activity row again');
 		$this->assertSame(['ok' => true, 'useq' => 3, 'applied' => 0, 'dropped' => 0], $this->ingest(1, $rBatch));
 	}
 }

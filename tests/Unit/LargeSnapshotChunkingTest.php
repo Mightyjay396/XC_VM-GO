@@ -2,6 +2,7 @@
 
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ConnectionDigest;
@@ -12,8 +13,9 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * A 20 000-connection `conn_snapshot` (plan, Phase 6 acceptance: "a
  * 20k-connection snapshot applies atomically"): twenty chunks of 1000, staged
  * aside, and MAIN's store for the node changes only when the last one
- * arrives, all at once. A bad chunk, a chunk out of order or a staged chunk
- * that no longer reads leaves the store exactly as it was.
+ * arrives, all at once (in MySQL mode, one transaction). A bad chunk, a
+ * chunk out of order, a staged chunk that no longer reads or a connection
+ * lost mid-apply leaves the store exactly as it was.
  *
  * MySQL mode, against `lines_live` as install/database.sql creates it (with
  * its uuid and server_id keys, so 20k upserts stay fast on SQLite too). Each
@@ -114,6 +116,64 @@ final class LargeSnapshotChunkingTest extends TestCase {
 		return ConnectionSnapshot::receive(self::SID, ['snap_id' => $rSnap, 'seq' => $rSeq, 'last' => $rLast, 'records' => $rRecords]);
 	}
 
+	/**
+	 * MAIN's database, whose connection is lost at the $rFailAt-th write to
+	 * `lines_live`: that write and everything after it fail, the commit too
+	 * (as DatabaseHandler answers once the server is gone), until restore().
+	 * With $rOnce, only that one write fails.
+	 */
+	private function failingDb(int $rFailAt, bool $rOnce = false): DatabaseHandler {
+		$rDb = new class ($this->rDb, $rFailAt, $rOnce) extends DatabaseHandler {
+			public int $rWrites = 0;
+
+			public bool $rDown = false;
+
+			public function __construct(private TestDb $rInner, private int $rFailAt, private bool $rOnce) {
+			}
+
+			public function restore(): void {
+				$this->rDown = false;
+				$this->rFailAt = PHP_INT_MAX;
+			}
+
+			public function query($query, ...$args): bool {
+				if (preg_match('/^(UPDATE|INSERT INTO) `lines_live`/', (string) $query) && ++$this->rWrites === $this->rFailAt) {
+					if ($this->rOnce) {
+						return false;
+					}
+					$this->rDown = true;
+				}
+				return !$this->rDown && $this->rInner->query($query, ...$args);
+			}
+
+			public function get_rows($use_id = false, $column_as_id = '', $unique_row = true, $sub_row_id = '') {
+				return $this->rDown ? [] : $this->rInner->get_rows($use_id, $column_as_id, $unique_row, $sub_row_id);
+			}
+
+			public function get_row() {
+				return $this->rDown ? [] : $this->rInner->get_row();
+			}
+
+			public function num_rows(): int {
+				return $this->rDown ? 0 : $this->rInner->num_rows();
+			}
+
+			public function beginTransaction() {
+				return $this->rInner->pdo->beginTransaction();
+			}
+
+			public function commit() {
+				return !$this->rDown && $this->rInner->pdo->commit();
+			}
+
+			public function rollback() {
+				return $this->rInner->pdo->rollBack();
+			}
+		};
+		DatabaseFactory::set($rDb);
+		return $rDb;
+	}
+
 	/** Every row MAIN's store holds, as [uuid, server, user, hls_last_read, hls_end]. */
 	private function store(): string {
 		$this->rDb->query('SELECT `uuid`, `server_id`, `user_id`, `hls_last_read`, `hls_end` FROM `lines_live` ORDER BY `uuid`');
@@ -188,5 +248,39 @@ final class LargeSnapshotChunkingTest extends TestCase {
 		}
 		$this->assertSame(['ok' => true, 'done' => true, 'applied' => self::TOTAL, 'removed' => 500, 'dropped' => 0], $rOut);
 		$this->assertSame($this->registryDigest(), ConnectionDigest::of(ConnectionDigest::stored(self::SID)));
+	}
+
+	public function testAConnectionLostMidApplyLeavesTheStoreAsItWasAndTheLastChunkAppliesWhenSentAgain(): void {
+		$rBefore = $this->store();
+		$rSnap = 'e1b2c3d4e5f60718';
+		for ($rSeq = 0; $rSeq < 19; $rSeq++) {
+			$this->send($rSnap, $rSeq, false, $this->chunk($rSeq));
+		}
+		$rDb = $this->failingDb(12000);
+		$rOut = null;
+		try {
+			$rOut = $this->send($rSnap, 19, true, $this->chunk(19));
+		} catch (\RuntimeException) {
+			// ClusterApi answers 503 DB.
+		}
+		$this->assertNull($rOut, 'not reported applied: ' . json_encode($rOut));
+		$this->assertGreaterThanOrEqual(12000, $rDb->rWrites, 'the connection was lost part-way through the apply');
+		$rDb->restore();
+		$this->assertSame($rBefore, $this->store(), 'rolled back: the store is exactly as before the snapshot');
+		$this->assertCount(20, glob($this->rDir . '/snap/' . self::SID . '/[0-9]*.json') ?: [], 'the chunks stay staged');
+
+		// The node sends the last chunk again, and the whole snapshot applies.
+		$this->assertSame(['ok' => true, 'done' => true, 'applied' => self::TOTAL, 'removed' => 500, 'dropped' => 0], $this->send($rSnap, 19, true, $this->chunk(19)));
+		$this->assertSame($this->registryDigest(), ConnectionDigest::of(ConnectionDigest::stored(self::SID)));
+		$this->assertSame([], glob($this->rDir . '/snap/' . self::SID . '/*.json') ?: []);
+	}
+
+	public function testAWriteMainCannotMakeNeverRemovesTheConnectionItHolds(): void {
+		// The update of a viewer MAIN already holds fails, once.
+		$this->failingDb(1, true);
+		$rOut = $this->send('f1b2c3d4e5f60718', 0, true, [$this->chunk(0)[0], ['uuid' => 'fresh000001', 'user_id' => 1, 'stream_id' => 100, 'container' => 'ts', 'hls_end' => 0]]);
+		$this->assertSame(['ok' => true, 'done' => true, 'applied' => 1, 'removed' => 1499, 'dropped' => 1], $rOut, 'every other viewer the node no longer has is removed');
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `lines_live` WHERE `uuid` IN (?, ?)', $this->uuid(0), 'fresh000001');
+		$this->assertSame(2, (int) $this->rDb->get_row()['n'], 'the node still has it: it stays, and the digest check finds the difference');
 	}
 }

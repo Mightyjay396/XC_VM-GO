@@ -144,7 +144,11 @@ final class CommandBus {
 	 * panel-signed LICENCE_INVALID instead (plan section 4). Read only: the
 	 * request that gets them is not authenticated, so nothing is marked
 	 * delivered. Each keeps its own `cmd` signature, and the agent checks it,
-	 * its uuid, generation, seq high-water and expiry as on the long-poll.
+	 * its uuid, generation, seq above its high-water and expiry as on the
+	 * long-poll, but does not raise that high-water for them: it keeps their
+	 * cmd_ids until they expire instead. So once the licence is back, the
+	 * long-poll still hands out a granting command queued before them, and a
+	 * kill it hands out again is acked with its result, not run twice.
 	 *
 	 * @return list<array{doc: string, sig: string, seq: int}>
 	 */

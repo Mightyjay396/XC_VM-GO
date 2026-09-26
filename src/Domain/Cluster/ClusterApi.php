@@ -8,6 +8,7 @@ use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
+use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -33,6 +34,9 @@ final class ClusterApi {
 
 	/** Largest request body accepted (nginx also caps at 8 MB). */
 	public const MAX_BODY = 8388608;
+
+	/** SEAL purpose of the commands a hard-mode LICENCE_INVALID carries (killsFor()). */
+	public const SEAL_COMMANDS = 'commands';
 
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
@@ -733,12 +737,17 @@ final class ClusterApi {
 	 * extension refuses the node's session, so neither the long-poll nor a
 	 * MAC'd reply can reach it, yet kills, drops and stops must. Its pending
 	 * restrictive commands then ride the panel-signed LICENCE_INVALID that its
-	 * next heartbeat gets, each under its own `cmd` signature, and the agent
-	 * checks them as it checks the long-poll's. Nothing is marked delivered:
-	 * the request is not authenticated. Only for a node that takes commands.
+	 * next request gets, in the long-poll's shape, each under its own `cmd`
+	 * signature (CommandBus::restrictive() says how the agent takes them).
+	 *
+	 * The request is not authenticated (no session, so no MAC to check), so
+	 * the list is SEALed to the node's box key, purpose SEAL_COMMANDS, the
+	 * node uuid as context: whoever names the node learns only its size, as
+	 * a sniffer does of a BOXed reply. Nothing is marked delivered. Only for
+	 * a node that takes commands.
 	 *
 	 * @param array<string, mixed> $rNode
-	 * @return array{commands?: list<array{doc: string, sig: string, seq: int}>}
+	 * @return array{commands_sealed?: string} base64 of SEAL(JSON list)
 	 */
 	private static function killsFor(array $rNode): array {
 		if (!CommandBus::accepts($rNode)) {
@@ -746,10 +755,13 @@ final class ClusterApi {
 		}
 		try {
 			$rCommands = CommandBus::restrictive((int) $rNode['server_id']);
+			if ($rCommands === []) {
+				return [];
+			}
+			return ['commands_sealed' => base64_encode(Seal::seal((string) $rNode['node_box_pub'], self::SEAL_COMMANDS, (string) $rNode['node_uuid'], (string) json_encode($rCommands, JSON_UNESCAPED_SLASHES)))];
 		} catch (\Throwable) {
 			return []; // the denial goes out regardless
 		}
-		return $rCommands === [] ? [] : ['commands' => $rCommands];
 	}
 
 	private static function header(array $rHeaders, string $rName): string {

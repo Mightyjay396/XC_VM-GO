@@ -10,6 +10,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterRoute;
+use XcVm\Domain\Cluster\CommandBus;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -27,7 +28,11 @@ use XcVm\Tests\Support\FakeClusterCrypto;
  * through the `commands` long-poll as always. With `hard`, the extension
  * refuses the session itself, so the node's next request (a heartbeat,
  * within 2 s) gets a panel-signed `LICENCE_INVALID` denial that carries its
- * pending restrictive commands, each under its own `cmd` signature.
+ * pending restrictive commands, each under its own `cmd` signature. That
+ * request is not authenticated, so the list is sealed to the node's box key:
+ * anyone else who names the node learns nothing from it. The agent does not
+ * raise its long-poll high-water for them, so a command queued before them
+ * still comes on the long-poll once the licence is back.
  *
  * The test agent does what the Go agent does: opens the sealed token,
  * derives the session keys, BOXes and MACs its requests, and checks every
@@ -43,6 +48,9 @@ final class HardModeKillChannelTest extends TestCase {
 	private string $rUuid = '0f8fad5b-d9cb-469f-a165-70867728950e';
 
 	private string $rNodeSk = '';
+
+	/** The node's X25519 box key, which a hard-mode denial's commands are sealed to. */
+	private string $rNodeBoxSk = '';
 
 	private array $rSettings = ['cluster_api_enabled' => 1, 'lb_token_rotation_min' => 60, 'lb_revocation_mode' => 'graceful', 'lb_new_node_mode' => 'legacy'];
 
@@ -86,7 +94,8 @@ final class HardModeKillChannelTest extends TestCase {
 		$rPair = sodium_crypto_sign_keypair();
 		$this->rNodeSk = sodium_crypto_sign_secretkey($rPair);
 		$rEphSk = random_bytes(32);
-		$rFirst = EnrolmentService::issueFirst($this->rCrypto, self::SID, $this->rUuid, sodium_crypto_sign_publickey($rPair), sodium_crypto_scalarmult_base(random_bytes(32)), sodium_crypto_scalarmult_base($rEphSk), $this->rSettings, $this->rMain);
+		$this->rNodeBoxSk = random_bytes(32);
+		$rFirst = EnrolmentService::issueFirst($this->rCrypto, self::SID, $this->rUuid, sodium_crypto_sign_publickey($rPair), sodium_crypto_scalarmult_base($this->rNodeBoxSk), sodium_crypto_scalarmult_base($rEphSk), $this->rSettings, $this->rMain);
 		$rBody = Seal::open($rEphSk, 'token', $this->rUuid, (string) $rFirst['token_sealed']);
 		$this->assertNotNull($rBody);
 		$rLen = unpack('N', substr($rBody, 0, 4))[1];
@@ -133,6 +142,21 @@ final class HardModeKillChannelTest extends TestCase {
 		$rDoc = json_decode($rRes['body'], true);
 		$this->assertSame([$rReason, $this->rUuid, $rReq['headers']['X-XCVM-Nonce']], [$rDoc['reason'], $rDoc['node'], $rDoc['req_nonce']]);
 		return $rDoc;
+	}
+
+	/**
+	 * The commands a denial carries, opened with the node's box key as the
+	 * agent opens them.
+	 *
+	 * @return list<array{doc: string, sig: string, seq: int}>
+	 */
+	private function carried(array $rDoc): array {
+		if (!isset($rDoc['commands_sealed'])) {
+			return [];
+		}
+		$rPlain = Seal::open($this->rNodeBoxSk, ClusterApi::SEAL_COMMANDS, $this->rUuid, (string) base64_decode($rDoc['commands_sealed'], true));
+		$this->assertNotNull($rPlain, 'sealed to this node');
+		return json_decode($rPlain, true);
 	}
 
 	/**
@@ -193,12 +217,72 @@ final class HardModeKillChannelTest extends TestCase {
 		// The node's next heartbeat: no session, but a signed denial with the kills.
 		[$rRes, , $rReq] = $this->call('heartbeat', [], $rKeys);
 		$rDoc = $this->denial($rRes, $rReq, 403, 'LICENCE_INVALID');
-		$this->assertSame([['conn.kill_worker', ['pid' => 4242, 'rtmp' => false]], ['conn.drop', ['uuid' => 'viewer1']]], $this->accepted($rDoc['commands'] ?? []), 'the kills, and not the RPC queued before');
+		$this->assertSame([['conn.kill_worker', ['pid' => 4242, 'rtmp' => false]], ['conn.drop', ['uuid' => 'viewer1']]], $this->accepted($this->carried($rDoc)), 'the kills, and not the RPC queued before');
 
 		// So does its long-poll, and nothing changed before authentication.
 		[$rRes, , $rReq] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], $rKeys);
-		$this->assertCount(2, $this->accepted($this->denial($rRes, $rReq, 403, 'LICENCE_INVALID')['commands'] ?? []));
+		$this->assertCount(2, $this->accepted($this->carried($this->denial($rRes, $rReq, 403, 'LICENCE_INVALID'))));
 		$this->assertSame(['queued', 'queued', 'queued'], $this->states(), 'an unauthenticated request marks nothing delivered');
+
+		// The agent ran the kills without raising its long-poll high-water
+		// (it keeps their cmd_ids), so once the licence is back the long-poll
+		// hands out the RPC queued before them, then the kills again, which
+		// it acks without running them twice.
+		$this->rCrypto->rLicensed = true;
+		[$rRes, $rCtx] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], $rKeys);
+		$rCommands = $this->reply($rRes, $rCtx, $rKeys)['commands'];
+		$this->assertSame(['node.rpc', 'conn.kill_worker', 'conn.drop'], array_column($this->accepted($rCommands), 0), 'the RPC queued before the lapse is not stranded');
+		foreach ($rCommands as $rOne) {
+			[$rRes, $rCtx] = $this->call('ack', ['cmd_id' => json_decode($rOne['doc'], true)['cmd_id'], 'ok' => true, 'result' => ''], $rKeys);
+			$this->reply($rRes, $rCtx, $rKeys);
+		}
+		$this->assertSame(['acked', 'acked', 'acked'], $this->states());
+	}
+
+	public function testOnlyTheNodeItselfCanReadTheKillsItsDenialCarries(): void {
+		$this->mode('hard');
+		$this->activeNode();
+		$this->rCrypto->rLicensed = false;
+		ClusterRoute::kill(self::SID, 4242, false);
+		ClusterRoute::drop(self::SID, 'viewer1');
+
+		// Anyone who knows the node's uuid (it travels in every request's
+		// headers) and forges the rest: no MAC, no node signature.
+		$rReq = ['method' => 'POST', 'path' => Canonical::PATH_PREFIX . 'heartbeat', 'query' => '', 'ip' => '203.0.113.9', 'body' => 'x', 'headers' => [
+			'X-XCVM-Proto' => '1', 'X-XCVM-Agent' => 'xc_agent/0.1', 'X-XCVM-Node' => $this->rUuid, 'X-XCVM-Epoch' => '1',
+			'X-XCVM-Ts' => (string) ClusterClock::nowMs(), 'X-XCVM-Nonce' => bin2hex(random_bytes(16)), 'Content-Type' => 'application/octet-stream',
+			'X-XCVM-Sig' => str_repeat('0', 64),
+		]];
+		$rRes = ClusterApi::handle($this->rCrypto, $rReq, $this->rSettings, $this->rMain);
+		$rDoc = $this->denial($rRes, $rReq, 403, 'LICENCE_INVALID');
+		foreach (['4242', 'viewer1', 'conn.', 'cmd_id', 'args'] as $rNeedle) {
+			$this->assertStringNotContainsString($rNeedle, $rRes['body'], 'nothing of the commands in the clear');
+		}
+		$rSealed = (string) base64_decode($rDoc['commands_sealed'], true);
+		$this->assertNull(Seal::open(random_bytes(32), ClusterApi::SEAL_COMMANDS, $this->rUuid, $rSealed), 'another key cannot open it');
+		$this->assertNull(Seal::open($this->rNodeBoxSk, 'replica', $this->rUuid, $rSealed), 'nor does it open as another record');
+		$this->assertCount(2, $this->accepted($this->carried($rDoc)), 'the node itself can');
+		$this->assertSame(['queued', 'queued'], $this->states());
+	}
+
+	public function testTheDenialCarriesOnlyThisNodesLiveKills(): void {
+		$this->mode('hard');
+		$rKeys = $this->activeNode();
+		// Before the lapse: a kill the node already acked, and a drop that
+		// lives only 10 s.
+		$rAcked = CommandBus::enqueue($this->rCrypto, self::SID, 'conn.kill_worker', ['pid' => 1111, 'rtmp' => false]);
+		$this->assertTrue(CommandBus::ack(self::SID, $rAcked, true, ''));
+		CommandBus::enqueue($this->rCrypto, self::SID, 'conn.drop', ['uuid' => 'stale'], null, 10);
+		// Another node with a kill of its own.
+		NodeRegistry::startEnrolment(6, '1b4e28ba-2fa1-41d2-883f-0016d3cca427', random_bytes(32), sodium_crypto_scalarmult_base(random_bytes(32)), 1);
+		NodeRegistry::update(6, ['state' => 'active', 'mode' => 1, 'flows' => NodeRegistry::FLOW_COMMANDS]);
+
+		$this->rCrypto->rLicensed = false;
+		CommandBus::enqueue($this->rCrypto, 6, 'conn.kill_worker', ['pid' => 6666, 'rtmp' => false]);
+		ClusterRoute::kill(self::SID, 4242, false);
+		ClusterClock::fix(1800000030000);
+		[$rRes, , $rReq] = $this->call('heartbeat', [], $rKeys);
+		$this->assertSame([['conn.kill_worker', ['pid' => 4242, 'rtmp' => false]]], $this->accepted($this->carried($this->denial($rRes, $rReq, 403, 'LICENCE_INVALID'))), 'not acked, not expired, not another node\'s');
 	}
 
 	public function testOnlyANodeThatTakesCommandsIsHandedAny(): void {
@@ -208,6 +292,12 @@ final class HardModeKillChannelTest extends TestCase {
 		ClusterRoute::kill(self::SID, 4242, false);
 		NodeRegistry::update(self::SID, ['flows' => 0]);
 		[$rRes, , $rReq] = $this->call('heartbeat', [], $rKeys);
-		$this->assertArrayNotHasKey('commands', $this->denial($rRes, $rReq, 403, 'LICENCE_INVALID'), 'its COMMANDS flow is off');
+		$this->assertArrayNotHasKey('commands_sealed', $this->denial($rRes, $rReq, 403, 'LICENCE_INVALID'), 'its COMMANDS flow is off');
+	}
+
+	public function testTheFakeClassesCommandsAsCommandBusDoes(): void {
+		// The real list is the extension's (xcvm_core); the fake and
+		// CommandBus copy it, and must not drift apart unnoticed.
+		$this->assertSame(CommandBus::RESTRICTIVE, FakeClusterCrypto::RESTRICTIVE_COMMANDS);
 	}
 }

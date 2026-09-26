@@ -866,7 +866,7 @@ Tests:
 
 ### Acceptance tests that found gaps (Phases 2, 4 and 6)
 
-Five tests the plan lists (§13) now run against the real code. Four found MAIN doing something other than what the plan says, and each was fixed together with its test.
+Five tests the plan lists (§13) now run against the real code. Each found MAIN doing something other than what the plan says, and each was fixed together with its test. The large-snapshot gap, and the bounds on the hard-mode denial and the fleet silence guard, came from a review of the first four fixes.
 
 **`https_required` over plain HTTP (Phase 2, `HttpsRequiredRecoveryTest`).**
 
@@ -880,11 +880,13 @@ Five tests the plan lists (§13) now run against the real code. Four found MAIN 
 **Kills in the hard revocation mode (Phase 4, `HardModeKillChannelTest`).**
 
 - With `lb_revocation_mode=hard` and no licence, the extension refuses the node's session, so the long-poll and every MAC'd reply stop. Kills were still signed, being restrictive, but stayed queued until they expired.
-- A `LICENCE_INVALID` from the session check now carries `commands`: the node's pending restrictive commands (`CommandBus::restrictive()`), oldest first, in the long-poll's shape (`doc`, `sig`, `seq`). Only a node that takes commands (active, mode ≥ 1, COMMANDS on) gets them.
-- The request is not authenticated, so nothing is marked delivered. The agent checks each command's signature, uuid, generation, `seq` and expiry, as on the long-poll.
+- A `LICENCE_INVALID` from the session check now carries `commands_sealed`: the node's pending restrictive commands (`CommandBus::restrictive()`), oldest first, in the long-poll's shape (`doc`, `sig`, `seq`), as a JSON list SEALed to the node's box key (`cluster_nodes.node_box_pub`, purpose `commands`, the node uuid as context) and base64-encoded. Only a node that takes commands (active, mode ≥ 1, COMMANDS on) gets them.
+- The request is not authenticated: without a session there is no MAC to check, and the denial goes to whoever names the node, whose uuid travels in every request's headers. Hence the seal: in clear, the list would show anyone the viewers' connection uuids and the workers' pids, which a BOXed reply hides. With it, a sniffer or a forger learns only the list's size, as the plan's attacker view allows. The review of this increment also proposed checking a node signature first; heartbeats carry none (only token ops do), so the agent would have to sign every request in case MAIN turns out unlicensed, and the seal already keeps the content to the node.
+- Nothing is marked delivered. The agent checks each command's signature, uuid, generation, `seq` above its high-water and expiry, as on the long-poll, but does not raise its long-poll high-water for them: it keeps their `cmd_id`s until they expire instead. Otherwise running a kill with `seq` N would skip every granting command queued below N (an RPC, a root command), which the long-poll, asking for `seq` above the high-water, would never hand out once the licence is back; each would sit queued until it expired, and its caller would get no result. Now the long-poll hands them out, and a kill it hands out again is acked with its result, not run twice.
 - The class comes from `cluster_commands.class`, which `CommandBus` sets from the plan's list of restrictive types. A granting command signed before the lapse is not handed out.
-- `FakeClusterCrypto` now does what the extension does: it refuses a hard session without a licence, and it classes a `cmd` record by its type.
-- The agent must run the commands a denial carries. That is XC_VM_Fanout's part.
+- `FakeClusterCrypto` now does what the extension does: it refuses a hard session without a licence, and it classes a `cmd` record by its type. Its list of restrictive types is a copy of `CommandBus::RESTRICTIVE`, and the test fails when the two drift apart; the real list is the extension's.
+- The tests also cover a forged request (no MAC, no node signature: it gets only the sealed list), another node's kill, and expired and acked kills (never carried), and the licence coming back (the RPC queued before the lapse comes on the long-poll).
+- The agent must open and run the commands a denial carries, and keep their `cmd_id`s. That is XC_VM_Fanout's part.
 
 **Apply once (Phase 6, `ConnectionIngestIdempotencyTest`).**
 
@@ -892,15 +894,26 @@ Five tests the plan lists (§13) now run against the real code. Four found MAIN 
 - MAIN now applies one batch per node and lane at a time, and reads the cursor under that lock. Only the P0 and P1 lanes take it: P2 keeps no cursor (tenth increment). The lock is a file, `TMP_PATH/cluster_ingest/<sid>_<lane>.lock`, waited for up to 10 s (then `503 DB`). It is not the node's database row: every heartbeat writes that row, and holding it for a whole batch would delay them.
 - A cursor `UPDATE` that failed was ignored. When the database connection dropped mid-batch, taking the transaction with it, the node was still told the batch was applied, and moved on past events MAIN never kept. Such a batch now fails with `503 DB`, and the node sends it again.
 - The same event under a new number already applied once: an upsert updates in place, and a remove or close of a viewer already gone is accepted and changes nothing.
-- **Known gap:** a close's activity row goes to a file, outside the transaction. A MySQL-mode batch that fails after one of its closes was applied rolls back the row's removal but not the activity row, and the resend writes that row again.
+- **Known gap:** a close's activity row goes to a file, outside the transaction. A batch that fails after one of its closes was applied keeps that activity row, and the resend writes it again, in either store. In MySQL mode the connection's removal rolls back with the batch; Redis has no transaction, so there the batch's writes stay, and the resend opens and closes the viewer again. `ConnectionIngestIdempotencyTest` pins both, with the second activity row.
+- The test pins the lock too: a query hook checks that the lane's lock is held when the cursor is read and when it is moved. The lock directory has a test seam (`EventIngest::useLockDir()`).
 
 **MAIN's downtime and the orphan purge (Phase 6, `MainOutageNoPurgeTest`).**
 
 - `HlsReaping` measured a node's silence from `last_seen_at` alone, and kept its watch across reaper gaps of up to 3 minutes. A watch that began while MAIN's nginx was stopping survived a short restart. The first pass after it then purged every CONNECTIONS node's viewers before the nodes could reconnect.
 - Silence now counts from `max(last_seen_at, cluster_ready_at)`, as `NodeHealth` counts it (`cluster_meta.ready_at`, or 0 when it cannot be read).
-- While the fleet silence guard is up (`ClusterHealth`), no node is orphaned, and the watch starts over, so the time MAIN suspected itself never counts. The plan says the guard suspends purges; it does not say whether the watch restarts.
+- While the fleet silence guard is up (`ClusterHealth`), the nodes it holds are not watched, and their watch starts over when it clears, so the time MAIN suspected itself never counts. The plan says the guard suspends purges; it does not say whether the watch restarts.
+- The guard does not hold a node that was offline before it came up. The liveness loop keeps such a node offline under the guard, and its silence began before MAIN suspected itself, so its watch goes on and it is purged a TTL after the watch began.
+- The guard holds the watch for at most 4 × `cluster_orphan_conn_ttl_sec` (8 minutes at the default), counted from the reaper pass that first saw it (`guard` in `cluster_orphans.json`, beside the tenth increment's `reaps` and `leaving`). The plan triggers the guard when most nodes "go silent within 10 s"; the liveness loop raises it whenever more than half of the TELEMETRY nodes (at least two) are not ok, with no time limit. A lasting loss of most of the fleet, such as both LBs of two, never clears it. Without the bound, those nodes' viewers would count against their lines until an admin acted, and on a `max_connections=1` line they could not reconnect elsewhere. With it, such a node is purged one TTL after the hold ends. A purge during a longer cut of MAIN's own network is undone when the nodes come back: their digests disagree, and their snapshots restore the rows. The guard's hold on offline marking (routing) is unchanged.
+- `MainOutageNoPurgeTest` also covers a node never heard (its silence counts from `cluster_ready_at`), a five-minute outage, a node offline before the guard, and a lasting loss of two nodes out of three.
 
-**Large snapshots (Phase 6, `LargeSnapshotChunkingTest`).** No change was needed. Twenty chunks of 1000 records, against `lines_live` as the install creates it, change the store only with the last chunk. An oversized, malformed, out-of-order or unreadable staged chunk leaves the store as it was.
+**Large snapshots (Phase 6, `LargeSnapshotChunkingTest`).**
+
+- Twenty chunks of 1000 records, against `lines_live` as the install creates it, change the store only with the last chunk. An oversized, malformed, out-of-order or unreadable staged chunk leaves the store as it was.
+- The staging was atomic, but the apply was not: 20 000 separate autocommitted writes. The staged chunks were deleted before it, and a write that failed only counted as dropped, so a connection lost part-way left a half-applied store and was still answered `ok`. Readers could also see the store half-changed while it ran.
+- In MySQL mode the apply is now one transaction. A commit that fails (the connection was lost) rolls it back and answers `503 DB`, and the staged chunks are kept until an apply succeeds, so the last chunk sent again applies the whole snapshot.
+- The removal pass removed every connection whose upsert had not succeeded, so a write MAIN failed to make deleted a viewer the node still had. It now spares every uuid the snapshot names.
+- The review proposed failing the snapshot on any write that fails. A single record MAIN refuses or cannot write is still counted as dropped instead: a record the database rejects would otherwise fail every snapshot the node sends, and the node would never get back in step. The next heartbeat's digest check (`ConnectionDigest`) finds such a difference and asks for another snapshot.
+- Redis has no transaction across 20 000 records. A Redis error part-way answers `503 DB` and leaves the part already applied; applying the whole again converges.
 
 ### The settings section (Phase 7, fourth increment)
 
