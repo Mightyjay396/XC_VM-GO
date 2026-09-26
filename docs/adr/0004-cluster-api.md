@@ -300,9 +300,9 @@ The case: MAIN's HTTP broadcast port changes on its server page, and the cluster
 While a port is kept:
 
 - The policy lists it after the new URLs, so a node that was offline during the change still finds MAIN.
-- The root-side `set_port` handler renders `bin/nginx/conf/cluster_legacy.conf` on MAIN: one server block per kept port, serving `/cluster/v1/` and a 404 for everything else. `nginx.conf` includes it by glob, so a missing file is no error.
+- The root-side `set_port` handler renders `bin/nginx/conf/cluster_legacy.conf` on MAIN: one server block per kept port, serving `/cluster/v1/` and a 404 for everything else. `nginx.conf` includes it by glob, so a missing file is no error. Since the third Phase 2 increment this is `cluster.d/old_port.conf`, rendered as xc_vm (see "The rendered nginx config").
 
-When the 7 days are up, `cron:cluster` drops the port, bumps the policy again and re-applies MAIN's ports so nginx releases it.
+When the 7 days are up, `cron:cluster` drops the port, bumps the policy again and re-applies MAIN's ports so nginx releases it. It now renders the nginx config again instead.
 
 This was checked with nginx 1.24:
 
@@ -796,7 +796,7 @@ The settings columns come from the install schema and the migrations. Secrets ar
 - **Workers** are titled `php-fpm: pool cluster_ctl` (or `cluster_ingest`), so they never pass for a viewer's worker in `php_pids`.
 - **Always there on MAIN.** The pools exist whether or not the API is enabled. With `pm = ondemand`, an idle pool is just its master.
 
-**Routing.** nginx's fixed `location ^~ /cluster/v1/` passes to the upstream `cluster_ctl`. A nested regex location sends the ingest ops to `cluster_ingest`. Both upstreams list the panel pool `1.sock` as `backup`, so the API still answers while a pool is down or not yet created. The pool's own socket has `max_fails=0`: only a request that cannot reach the pool goes to the backup, and one failed request (a long-poll cut by a reload, say) never sends the pool's traffic to the panel pool for `fail_timeout`. `ClusterPoolTest` fails when the location's list differs from `ClusterPool::INGEST_OPS`, or when an op the API serves has no lane.
+**Routing.** nginx's `location ^~ /cluster/v1/` (fixed in `nginx.conf` at first, rendered since the third increment) passes to the upstream `cluster_ctl`. A nested regex location sends the ingest ops to `cluster_ingest`. Both upstreams list the panel pool `1.sock` as `backup`, so the API still answers while a pool is down or not yet created. The pool's own socket has `max_fails=0`: only a request that cannot reach the pool goes to the backup, and one failed request (a long-poll cut by a reload, say) never sends the pool's traffic to the panel pool for `fail_timeout`. `ClusterPoolTest` fails when the location's list differs from `ClusterPool::INGEST_OPS`, or when an op the API serves has no lane.
 
 **Bringing them up.** `ClusterPool::ensure()`:
 
@@ -818,9 +818,70 @@ A reload, or a pool too busy to answer, therefore keeps the marker: a resize fro
 
 **Not built:**
 
-- the old-port servers that `ClusterEndpoint` renders into `cluster_legacy.conf` still pass to the panel pool. They move with the rendered nginx config (`ClusterNginxConfig`);
 - the plan's `cluster_ctl` listen-queue check, which should feed the fleet silence guard;
 - the ingest permits on the bus.
+
+The old-port servers, which still passed to the panel pool, reach the pools since the rendered nginx config.
+
+### The rendered nginx config (Phase 2, third increment)
+
+**What it is.** MAIN's nginx route for the cluster API is rendered by `Domain\Cluster\ClusterNginxConfig` instead of fixed in `nginx.conf`. It writes three files under `bin/nginx/conf/`:
+
+| File | Included by | Holds |
+| --- | --- | --- |
+| `cluster_locations.conf` | the public `server{}`, and each server below | `location ^~ /cluster/v1/`, its ingest lane built from `ClusterPool::INGEST_OPS` |
+| `cluster.d/listen.conf` | `http{}`, by the glob `cluster.d/*.conf` | a plain-HTTP server on `cluster_api_port`, only when it is not 0 |
+| `cluster.d/old_port.conf` | the same glob | a server per old port `ClusterEndpoint` keeps, until its 7 days are up |
+
+Both servers include the same location and answer 404 to everything else. The old ports therefore reach the cluster pools now, not a panel pool.
+
+**Transport limits.** The location applies §3's numbers:
+
+- `limit_req` zone `cluster`: 100 r/s keyed by `$realip_remote_addr`, the TCP peer, whatever `X-Forwarded-For` says; burst 400, `nodelay`, status 429. Before, the API shared the viewers' zone `one` (20 r/s per client, burst 40, status 503).
+- `client_max_body_size 8m` and `gzip off`.
+
+The zone is declared in `nginx.conf` itself, because the location cannot load without it.
+
+**Default install.** With `cluster_api_port` = 0, `cluster.d/` stays empty and the location is the one `nginx.conf` used to hold, with those limits. The release ships `cluster_locations.conf` as rendered, so an update's `nginx -t` and the first boot see the same file. `ClusterNginxConfigTest` fails when the two differ.
+
+**The public server keeps the location**, whatever `cluster_api_port` says. The plan does not say whether it should. It does, because the policy's HTTPS URLs use it, and the broadcast port's URL keeps working for a node that has not moved to the dedicated port yet.
+
+**Port changes.** `ClusterEndpoint` used to handle the broadcast port only. A `cluster_api_port` change, saved in Settings, now goes the same way: the policy version goes up and the old port is kept for 7 days.
+
+- While the API is on the broadcast port, that port is its URL. So 0 → N keeps the broadcast port listed in the policy (the public server serves it anyway), and N → 0 keeps N.
+- With the API off, nothing is announced, as for the broadcast port.
+- A kept port that MAIN serves again, on the public server or as the dedicated port, gets no server of its own.
+- The policy lists kept ports whatever `cluster_api_port` is.
+
+**Applying.** `apply()`:
+
+1. renders from the settings and the ports the public server listens on (`ports/http.conf`, `ports/https.conf`);
+2. writes each file that differs, atomically (a temporary file, then a rename);
+3. runs `nginx -t`. When it fails, it puts every file back as it was, audits `cluster.nginx` with nginx's message and reports the failure;
+4. otherwise reloads nginx, unless the caller reloads it itself.
+
+When nothing differs there is no test and no reload. A lock serialises callers. `nginx -t` does not bind ports, so a port another process holds fails only at the reload, and nginx then keeps running its previous config.
+
+**Who runs it.**
+
+- `status`, at boot and after an update, runs `sudo -u xc_vm console.php cluster:nginx`, reloading only while XC_VM runs.
+- The root `set_port` handler runs `cluster:nginx --no-reload` after it writes the HTTP or HTTPS ports, before its own reload.
+- `cron:cluster` runs it when an old port expires. It used to re-send MAIN's ports through `set_port`.
+- A settings save that changes `cluster_api_port` runs it before the value is stored, with the new port and the kept one. When `nginx -t` fails, the save is refused with nginx's message (`cluster_error_nginx`) and nothing changes. Once the value is stored, `ClusterEndpoint::recordApiPortChange()` bumps the policy, so no node is sent a URL nginx does not serve.
+
+**As xc_vm only**, like the pools, because the files live in a directory xc_vm owns. Root no longer writes the old-port file.
+
+**The old file.** The first render removes `cluster_legacy.conf`, but only once `nginx.conf` includes `cluster.d/`. An update whose `nginx.conf` was rolled back still reads the old file, so it stays.
+
+**Checked** with nginx 1.24:
+
+- `testRealNginx` (opt-in, `XCVM_TEST_NGINX`): the rendered files pass `nginx -t`, and a broken include elsewhere restores the previous files.
+- By hand: on the dedicated and the old ports, `/cluster/v1/` reached the pools and every other path got 404. Past the burst, nginx answered 429.
+
+**Not built:**
+
+- releasing an old port before its 7 days once every node uses the new URL. Neither the policy version a node last fetched nor the URL it used is recorded;
+- IPv6 listeners: the dedicated and old ports listen as `ports/http.conf` does, on IPv4.
 
 ### Blocklist delta (Phase 7, first increment)
 

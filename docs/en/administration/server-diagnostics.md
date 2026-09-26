@@ -107,6 +107,30 @@ ps -eo pid,user,args | grep 'master process (/home/xc_vm/bin/php/etc/cluster/'
 
 ---
 
+## The cluster API's nginx config
+
+On the MAIN, the nginx route for the cluster API is written by XC_VM, not fixed in `nginx.conf`:
+
+| File in `/home/xc_vm/bin/nginx/conf/` | What it holds |
+| --- | --- |
+| `cluster_locations.conf` | The `/cluster/v1/` route, included by the main web server. It passes to the cluster pools and allows each LB 100 requests a second (bursts of 400; above that nginx answers `429`) |
+| `cluster.d/listen.conf` | Only when **Cluster API Port** is not `0`: a plain-HTTP server on that port. It serves `/cluster/v1/` and answers `404` to anything else |
+| `cluster.d/old_port.conf` | For 7 days after the port the LBs use changes (the HTTP broadcast port, or the Cluster API Port): the old port keeps serving `/cluster/v1/` alone, so an LB that missed the change still finds the MAIN |
+
+`status` writes these files at every boot and after an update, and a port change writes them at once. A change is kept only when `nginx -t` passes; otherwise the previous files are put back, and saving a new Cluster API Port fails with nginx's error. To write them again and see what nginx says, run on the MAIN:
+
+```bash
+sudo -u xc_vm /home/xc_vm/console.php cluster:nginx    # exit code 0 when the files are current
+ls -l /home/xc_vm/bin/nginx/conf/cluster.d/
+```
+
+- Do not edit these files: the next write replaces them.
+- `cluster:nginx` refuses to run as root. Run it as `xc_vm`, as above.
+- A Cluster API Port other than `0` must be open from the LBs to the MAIN in every firewall between them.
+- The first write removes `cluster_legacy.conf`, which earlier releases used for old ports; `cluster.d/old_port.conf` replaces it.
+
+---
+
 ## Output & Exit Codes
 
 Each check prints one aligned `[OK]`/`[WARN]` line, followed by a numbered **Probable cause(s)** summary with the exact fix command where one exists (e.g. the `iptables -D INPUT ... -j DROP` unblock line).
@@ -155,6 +179,7 @@ Probable cause(s):
 | Status = 4 | Install/provision errored | Re-run `server:install` from the main |
 | Playback redirected from the main fails on one LB | `OPENSSL_EXTRA` mismatch (the check reports it) | `sudo /home/xc_vm/console.php server:sync-openssl-extra <server_id>` on the main (see [above](#repairing-an-openssl_extra-mismatch)) |
 | Every node reports `STARTING` | The cluster API pools on the main are not answering | `sudo -u xc_vm /home/xc_vm/console.php cluster:pools` on the main (see [above](#nodes-report-starting-the-cluster-api-pools)) |
+| Saving a new Cluster API Port fails: nginx refused it | `nginx -t` fails with the new port; the message quotes nginx | Fix what nginx names, then save again (see [above](#the-cluster-apis-nginx-config)) |
 
 ---
 
@@ -170,6 +195,8 @@ Probable cause(s):
 | `src/Core/Config/OpensslExtra.php` | `OPENSSL_EXTRA` fingerprint, repair signal and the 10-minute fallback |
 | `src/Domain/Cluster/ClusterPool.php` | The cluster API's FPM pools on the main and the `STARTING` marker |
 | `src/Cli/Commands/ClusterPoolsCommand.php` | `cluster:pools` — starts or resizes the pools as `xc_vm` (MAIN only) |
+| `src/Domain/Cluster/ClusterNginxConfig.php` | The cluster API's nginx config on the main: the route, the Cluster API Port and the old ports |
+| `src/Cli/Commands/ClusterNginxCommand.php` | `cluster:nginx` — writes that config as `xc_vm`, tests it with `nginx -t` and reloads nginx (MAIN only) |
 | `src/Domain/Server/ServerRepository.php` | `servers` table access |
 
 See also: [CLI Tools](../guides/cli-tools.md), [Updating a Server](../administration/server-update.md).
