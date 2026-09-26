@@ -163,6 +163,8 @@ A missing agent binary, for example when GitHub is unreachable and there is no c
 
 Re-enrolling stops the node's running agent before replacing its identity. The generation goes up, so every token of the previous identity stops working.
 
+`cluster:reenrol` runs this path for many nodes in one go; see *Re-enrolling the fleet*.
+
 ### Enrolling by code (break-glass)
 
 For a node MAIN cannot reach over SSH (NAT, lost keys). `Domain\Cluster\EnrolCodeService` owns it:
@@ -893,6 +895,55 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 - releasing an old port before its 7 days once every node uses the new URL. Neither the policy version a node last fetched nor the URL it used is recorded;
 - IPv6 listeners: the dedicated and old ports listen as `ports/http.conf` does, on IPv4.
 
+### Re-enrolling the fleet (Phase 2, fourth increment)
+
+**What it is.** `console.php cluster:reenrol (--all [--state=…] | <id>…) --cred-file=<path> [--dry-run]` (`ClusterReenrolCommand`) is the plan's `cluster:reenrol --all`. After `cluster:init` on a MAIN replaced without a DR bundle, it re-enrols the fleet over SSH, one node after the other. Each node goes through `ServerEnrolCommand::enrol()`, the path `server:enrol` takes, so each gets a new identity and generation.
+
+**Which nodes.**
+
+- `--all` takes the enrolled nodes in state `enrolling` or `active`; `--state=` names others.
+- Revoked and quarantined nodes are skipped unless asked for, because both states record an admin's decision.
+- Nodes named by id are taken whatever their state. A server that is not an enrolled load balancer is reported and left alone; `server:enrol` enrols a legacy LB.
+
+**Credentials.** The plan names the command but not where its SSH credentials come from, and each node needs its own. One file carries them all:
+
+```json
+{"u": "root", "p": "…", "port": 22,
+ "nodes": {"7": {"p": "…", "port": 2222, "hostkey": "SHA1:…"}}}
+```
+
+- The top level is every node's default. It has the shape of `server:install`'s credential file, so a fleet that shares one root password needs only that. `nodes` overrides it per server id.
+- It must be a `.cred` file directly in `bin/install/`, like `server:enrol`'s, and owner-only (0600). It is read and deleted before the first connection. Unknown keys, bad ports and bad host keys refuse the whole file.
+- The SSH port is the node's entry, else the port its install used (`bin/install/<id>.json`), else the file's default, else 22.
+- There is no `--expect-hostkey`: each node's `hostkey` goes in its entry.
+
+**The same checks as `server:enrol`.**
+
+- The SSH host key must match the node's `hostkey` in the file, else the one stored at its install (`ssh_hostkey_sha1`). A node with neither is never contacted: no trust on first use.
+- The node must run this release, and its new keys must match their SAS.
+- A failure never marks a live node failed.
+
+**Failures.**
+
+- A node that fails is reported with its reason, and the run goes on. The reason is `enrol()`'s own, or what `provisionCluster` printed when it stopped. `enrol()` passes that output through as it streams and keeps a copy.
+- A licence refusal stops the run. Every later node would have its agent stopped only to be refused the same way. An extension that reports no licence (`info()['licensed']`) refuses before any node is touched.
+- The exit code is 0 only when every chosen node was re-enrolled. A real run is audited as `cluster.reenrol`, with the ids that succeeded and those that failed. Each node's `node.enrol_start` is audited as before.
+
+**Dry run.** `--dry-run` contacts no node and changes nothing. It keeps the credential file for the real run, and it runs without one too. For each node it shows the user, the address and port, and the host key with where it comes from. It lists the nodes that cannot be attempted and why, for example no host key or no credentials.
+
+**The SSH seam.** `SshSession` wraps the ssh2 session: connect, host key, password login, `SshChannel`'s run and send, close. `server:enrol` now runs through it too, and the tests replace it with `FakeSshFleet`. `SshSession` and `ClusterReenrolCommand` are stripped from the LB archive.
+
+**Mode and flows.** A re-enrolled node starts over as a new node does: in the mode `lb_new_node_mode` gives, with every flow off (`NodeRegistry::startEnrolment`), as after `server:enrol`. The admin switches its flows on again.
+
+**A failed node may need another run.** `provisionCluster` stops the node's agent and runs `keygen` before the probe. A licence refusal comes after `startEnrolment` has already replaced the node's row. So a node that fails at the probe or later is left with its agent stopped and new keys made, and should be re-enrolled again once the cause is fixed. `server:enrol` behaves the same. Re-enrol one node by id before `--all`: a cause that affects the whole fleet, such as MAIN's cluster port closed to the LBs, then stops at one node.
+
+**Not built:** nodes are re-enrolled one at a time, never in parallel.
+
+**Tests:**
+
+- `ServerEnrolCommandTest`: one node's path. It covers no trust on first use, a changed key that runs nothing, the refusals before the flow, and the flow's reason.
+- `ClusterReenrolCommandTest`: selection, continuing past failures, the licence stop, the dry run, the credential file and the arguments.
+
 ### Blocklist delta (Phase 7, first increment)
 
 **The log.** Every path that blocks or unblocks something appends to `cluster_changes` (section `blocklist`) through `Core/Cluster/BlocklistChanges`. No triggers are used. Each row names the kind and the key that changed:
@@ -982,7 +1033,7 @@ The shadow diff for `rtmp_ips` compares against the database, because an LB neve
 - **Where the passphrase comes from:** typed twice without echo, `--passphrase-file`, or one line on standard input. It is never an argument, which any user could read in the process list.
 - **Export:** writes the file 0600 and never overwrites.
 - **Import:** records the panel keys as `cluster:init` does and audits `cluster.import_keys`. The extension refuses a different root already on the machine (`ROOT_EXISTS`); the same root again is a no-op. Nodes then recover with `token_rekey`, because their epoch records were sealed to the old machine.
-- **No bundle:** `cluster:init` already covers the plan's `cluster:reinit` (a new root, audited `cluster.root_changed`), followed by `server:enrol` per node. There is no fleet-wide `cluster:reenrol --all`, because each node needs its own SSH credentials.
+- **No bundle:** `cluster:init` already covers the plan's `cluster:reinit` (a new root, audited `cluster.root_changed`). Then `cluster:reenrol --all` re-enrols the fleet from one credential file (*Re-enrolling the fleet*), or `server:enrol` re-enrols one node.
 - **Tests:** `ClusterDrTest` covers the commands. Opt-in, with `XCVM_EXT_SO`, it runs the real extension, shrunk by `XCVM_TEST_DR_MEM_KIB`, across two config dirs.
 - **Operator procedure:** `docs/en/administration/backup-strategy.md`.
 
