@@ -46,7 +46,8 @@ class Authenticator {
 		curl_setopt($rCurl, CURLOPT_POSTFIELDS, $rPost);
 		curl_setopt($rCurl, CURLOPT_CONNECTTIMEOUT, 5);
 		curl_setopt($rCurl, CURLOPT_TIMEOUT, 10);
-		curl_setopt($rCurl, CURLOPT_SSL_VERIFYPEER, false);
+		curl_setopt($rCurl, CURLOPT_SSL_VERIFYPEER, true);
+		curl_setopt($rCurl, CURLOPT_SSL_VERIFYHOST, 2);
 		$rRaw = curl_exec($rCurl);
 		if ($rRaw === false) {
 			$rErr = 'curl error: ' . curl_error($rCurl);
