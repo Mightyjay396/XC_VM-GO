@@ -101,7 +101,7 @@ class ArchiveCommand implements CommandInterface {
 			$this->logStatus('Main stream PID is empty in DB, terminating current archive worker.');
 			posix_kill(getmypid(), 9);
 		}
-		ContentSink::workerPid((int) $rStreamID, 'tv_archive', getmypid(), $db);
+		ContentSink::workerPid($rStreamID, 'tv_archive', getmypid(), $db);
 		StreamProcess::updateStream($rStreamID);
 		$this->logStatus('Registered archive PID in database: ' . getmypid());
 		$db->close_mysql();

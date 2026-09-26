@@ -32,7 +32,7 @@ final class ConnectionLimits {
 	private static ?string $rDir = null;
 
 	/** @var (callable(array<string, mixed>, mixed, string, string, string, string): mixed)|null */
-	private static $rEnforce = null;
+	private static $rEnforce;
 
 	/** Tests: another queue directory and enforcer; null restores the defaults. */
 	public static function useQueue(?string $rDir, ?callable $rEnforce = null): void {

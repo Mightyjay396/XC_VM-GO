@@ -77,7 +77,7 @@ class ClusterSeedConnectionsCommand implements CommandInterface {
 			return $rOut;
 		}
 		$rDb = DatabaseFactory::get();
-		if ($rDb === null) {
+		if (!$rDb instanceof \XcVm\Core\Database\DatabaseHandler) {
 			throw new \RuntimeException('no database');
 		}
 		$rColumns = array_diff(AgentConnections::RECORD_KEYS, ['identity', 'on_demand']);

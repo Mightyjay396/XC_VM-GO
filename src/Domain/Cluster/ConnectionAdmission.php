@@ -52,10 +52,10 @@ return redis.call('ZCARD', KEYS[1]) - 1
 LUA;
 
 	/** @var null|callable(?int, int, ?int, string, ?string, ?string): mixed */
-	private static $rEnforce = null;
+	private static $rEnforce;
 
 	/** @var null|callable(): int */
-	private static $rClock = null;
+	private static $rClock;
 
 	/**
 	 * Admit the viewer a token is being minted for. Returns whether admission
@@ -132,7 +132,7 @@ LUA;
 		// The cluster bus when MAIN runs it (plan: reservations live there),
 		// whatever the store mode; else the shared Redis or the table.
 		$rBus = ClusterBus::client();
-		if ($rBus !== null) {
+		if ($rBus instanceof \Redis) {
 			try {
 				$rOthers = $rBus->eval(self::LUA, ['RESV#' . $rIdentity, $rNow, $rNow + $rTtl, $rUUID, $rTtl], 1);
 				if (is_int($rOthers)) {
