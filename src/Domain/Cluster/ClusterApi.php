@@ -48,6 +48,7 @@ final class ClusterApi {
 		'events' => ['POST', false, ['active']],
 		'recording_complete' => ['POST', false, ['active']],
 		'conn_snapshot' => ['POST', false, ['active']],
+		'config' => ['POST', false, ['active']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
 
@@ -152,6 +153,7 @@ final class ClusterApi {
 			'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 		};
 	}
 
@@ -591,6 +593,28 @@ final class ClusterApi {
 		}
 		unset($rOut['ok']);
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `config`: the node's replica (ReplicaBuilder), in shadow until its CONFIG
+	 * flow is on. Today the blocklist: a `blk` delta from `blocklist_since`, or
+	 * the whole section when there is no delta to give; `have` is the ETag the
+	 * node holds, so a section it already has is not sent again.
+	 */
+	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		$rSince = $rP['blocklist_since'] ?? 0;
+		$rHave = $rP['have'][ReplicaBuilder::SECTION_BLOCKLIST] ?? '';
+		if (!is_int($rSince) || $rSince < 0 || !is_string($rHave) || ($rHave !== '' && !preg_match('/^[0-9a-f]{64}$/', $rHave))) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		try {
+			$rBlocklist = ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave);
+		} catch (ClusterRefusedException $rE) {
+			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, [ReplicaBuilder::SECTION_BLOCKLIST => $rBlocklist, 'main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/** Map an extension refusal to a signed denial. */

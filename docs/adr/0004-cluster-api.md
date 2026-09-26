@@ -635,15 +635,42 @@ A row does not say what the key became; MAIN reads that when it serves the chang
 
 **The read.** `Domain/Cluster/BlocklistDelta::since($id)` gives a node everything past the last id it applied:
 
-- each changed key's current row, or its removal (an unblocked ASN counts as removed);
-- the kinds a `reset` touched, to reload whole;
-- `full` when there is no starting point: `since` is 0, the log was pruned past it, or the log went backwards (a restore).
+- Blocked IPs, the kind the flood guard changes all the time, come as `add` and `remove` lists. Each changed address is added if it is blocked now and removed otherwise, so the order of two changes to one address never matters.
+- Every other kind changes rarely and by hand. A change to it, or a bulk `reset`, names the kind in `reload`, and the node takes the whole section again.
+- `full` means there is no starting point: `since` is 0, the log was pruned past it, or the log went backwards (a restore).
 
-The order of two changes to one key never matters. `snapshot()` is the whole list. The node receives the RTMP password with its RTMP rows, because it checks publishers against it. The section is sealed to the node.
+`snapshot()` is the whole list. It holds each blocked address and ASN, and the user-agent, ISP and RTMP rows. The node needs the RTMP password to check publishers, so it is in the section; the section is sealed to the node.
 
 **Pruning.** `cron:cluster` keeps seven days of the log, and always keeps its newest row, so a quiet week does not send every node into a full reload. It prunes even while the cluster API is off, because the log is written either way.
 
-**Not built:** serving the delta. The `config` op, the sealed and signed R1 sections, `cluster:apply` and the node's replica come next in Phase 7. `allowed_ips`, `proxy_servers` and `allowed_domains` come from `servers` and the settings, and travel whole with the section.
+`allowed_ips`, `proxy_servers` and `allowed_domains` are not in this section. They come from `servers` and the settings, so they travel with those sections.
+
+### The replica transport (Phase 7, second increment)
+
+**Records.** `Domain/Cluster/ReplicaBuilder` builds what a node keeps. Each record is panel-signed and sealed to the node's X25519 key, with purpose `replica` and the node uuid as context:
+
+```text
+record = SEAL(node_box_pub, "replica", node_uuid, u32(len) ‖ payload ‖ sig(tag, payload))
+rep  {v, section, node, gen, etag, seq, iat, data}   a whole section (granting)
+blk  {v, seq, iat, add, remove}                      a blocklist delta
+```
+
+A `rep` record names the node and its generation. The ETag is the SHA-256 of the section's canonical data: keys sorted, numbers typed the same whichever driver read them.
+
+`blk` is the extension's record, and its strict keys admit only plain strings. So only blocked IPs travel as deltas. Additions only restrict, so they sign without a licence and bans reach nodes even then. A removal, or a whole section, grants and needs the licence; without one, MAIN answers `LICENCE_INVALID` and the node keeps what it has.
+
+**The `config` op.** The node sends `{blocklist_since, have: {blocklist: etag}}`. MAIN answers with one of four outcomes:
+
+- a `blk` delta, when only IPs changed;
+- the whole section, when there is no starting point or another kind changed;
+- `unchanged`, when the node already holds the section's current ETag;
+- nothing, when nothing changed.
+
+A section carries the log head read before the snapshot, so a change made in between comes again as a delta. The op needs an active node but no flow, because the node fetches its replica in shadow before its CONFIG flow is switched on.
+
+**The agent.** `internal/clusteragent/replica.go` calls `config` every minute, and again at once while `more` is set. It stores only records that open for this node and verify against the pinned panel key, and a `rep` must name this node and match what the reply announced. It keeps them as they came, under `config/cluster/replica/`: `blocklist.rep`, the deltas since it in `blocklist.d/<seq>.blk`, and `state.json`. A new section removes the deltas. Once a day, or past 1000 deltas, it asks from 0 with the ETag it holds, which is the plan's daily safety net. The plan puts the replica under `var/cluster/replica/`; it lives beside the agent's other state instead.
+
+**Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `cluster:apply`, which turns the stored records into the LB's caches and iptables, `ReplicaStage`, and the mode-2 refusal.
 
 ### Disaster recovery of MAIN's cluster keys
 
