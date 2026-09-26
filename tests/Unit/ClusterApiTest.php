@@ -12,15 +12,19 @@ use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterApi;
+use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterPolicy;
+use XcVm\Domain\Cluster\ClusterSemaphore;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
+use XcVm\Domain\Cluster\NonceStore;
 use XcVm\Domain\Cluster\ReplicaBuilder;
 use XcVm\Domain\Cluster\TokenService;
 use XcVm\Infrastructure\Database\DatabaseFactory;
+use XcVm\Tests\Support\BusServer;
 use XcVm\Tests\Support\ClusterReference;
 use XcVm\Tests\Support\FakeClusterCrypto;
 
@@ -54,6 +58,9 @@ final class ClusterApiTest extends TestCase {
 
 	/** @var array{0: string, 1: string} current [epoch => eph sk] */
 	private array $rEph = [];
+
+	/** The cluster bus, started by the first test that asks for it (bus()). */
+	private static ?BusServer $rBus = null;
 
 	protected function setUp(): void {
 		$this->rDb = new TestDb();
@@ -111,6 +118,7 @@ final class ClusterApiTest extends TestCase {
 
 	protected function tearDown(): void {
 		ClusterClock::fix(null);
+		ClusterBus::useSocket(null);
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
 		if ($this->rDir !== null) {
@@ -118,6 +126,11 @@ final class ClusterApiTest extends TestCase {
 			putenv('XCVM_TEST_CLUSTER_LIC_TTL');
 			@unlink($this->rDir . '/activation_key');
 		}
+	}
+
+	public static function tearDownAfterClass(): void {
+		self::$rBus?->stop();
+		self::$rBus = null;
 	}
 
 	/** The migrations' MariaDB DDL, reduced to what SQLite accepts. */
@@ -1165,5 +1178,144 @@ final class ClusterApiTest extends TestCase {
 
 		[$rRes] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => 'nope']], 1, $rKeys);
 		$this->denial($rRes, 400, 'BAD_REQUEST');
+	}
+
+	// ── The cluster bus: nonces and per-op semaphores ────────────────────
+
+	/**
+	 * The cluster bus (a real redis-server on a unix socket), emptied: by
+	 * default one that has been taking claims for an hour, else fresh.
+	 */
+	private function bus(bool $rSettled = true): \Redis {
+		self::$rBus ??= BusServer::start('api-bus');
+		if (self::$rBus === null) {
+			$this->markTestSkipped('redis-server or phpredis not available');
+		}
+		foreach ([NonceStore::BUS_MARK, NonceStore::SQL_MARK] as $rMark) {
+			@unlink(self::$rBus->rDir . '/' . $rMark);
+		}
+		ClusterBus::useSocket(self::$rBus->socket());
+		$rRedis = ClusterBus::client();
+		$this->assertInstanceOf(\Redis::class, $rRedis);
+		$rRedis->flushAll();
+		if ($rSettled) {
+			$rRedis->set('nonces_since', (string) ($this->rT0 - 3600000));
+		}
+		return $rRedis;
+	}
+
+	public function testOnTheBusNoncesLeaveMySqlAlone(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		$r = $this->request('heartbeat', [], 1, $rKeys);
+		$this->assertSame(200, ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain)['status']);
+		$rDoc = $this->denial(ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 401, 'REPLAY', $r['req']);
+		$this->assertArrayNotHasKey('retry_after_ms', $rDoc, 'a replay: no wait would let it pass');
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_nonces`');
+		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'no row per request');
+	}
+
+	public function testAnOpWithoutAFreePermitIsRefusedWithASigned503(): void {
+		$rRedis = $this->bus();
+		$rKeys = $this->active();
+		$rHeld = [];
+		for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
+			$rHeld[] = (string) ClusterSemaphore::acquire('hello');
+		}
+		[$rRes, , $rReq] = $this->call('hello', ['instance_id' => 'inst-a', 'boot_id' => 'boot-7'], 1, $rKeys);
+		$rDoc = $this->denial($rRes, 503, 'RATE_LIMITED', $rReq);
+		$this->assertSame('hello', $rDoc['op']);
+		$this->assertGreaterThanOrEqual(ClusterSemaphore::RETRY_MIN_MS, $rDoc['retry_after_ms']);
+		$this->assertNotSame('boot-7', NodeRegistry::byServer(self::SID)['boot_id'], 'the handler did not run');
+
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->reply($rRes, $rCtx, $rKeys);
+
+		ClusterSemaphore::release('hello', $rHeld[0]);
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a', 'boot_id' => 'boot-7'], 1, $rKeys);
+		$this->assertSame('active', $this->reply($rRes, $rCtx, $rKeys)['state']);
+		$this->assertSame(ClusterSemaphore::PERMITS - 1, $rRedis->zCard('sem:hello'), 'the served hello gave its permit back');
+
+		// A node that is not active is told so, not that MAIN is busy.
+		for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
+			ClusterSemaphore::acquire('config');
+		}
+		$this->rDb->query("UPDATE `cluster_nodes` SET `state` = 'quarantined' WHERE `server_id` = 5");
+		[$rRes, , $rReq] = $this->call('config', ['blocklist_since' => 0], 1, $rKeys);
+		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+	}
+
+	public function testABusyRekeySpendsNeitherTheMinuteNorTheChallenge(): void {
+		$this->bus();
+		$this->expired();
+		$rChallenge = $this->challenge();
+		$rHeld = [];
+		for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
+			$rHeld[] = (string) ClusterSemaphore::acquire('token_rekey');
+		}
+		[$rRes, $rReq] = $this->rekey($rChallenge, random_bytes(32));
+		$this->assertSame('token_rekey', $this->denial($rRes, 503, 'RATE_LIMITED', $rReq)['op']);
+
+		ClusterSemaphore::release('token_rekey', $rHeld[0]);
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($rChallenge, $rEph);
+		$this->assertSame(2, $this->rekeyed($rRes, $rReq, $rEph)['doc']['epoch'], 'the same challenge, the same minute');
+	}
+
+	public function testAFreshBusRefusesASessionRequestStampedAtItsFloorWithAWait(): void {
+		$rKeys = $this->active();
+		$this->bus(false);
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rKeys);
+		$rDoc = $this->denial($rRes, 401, 'REPLAY', $rReq);
+		$this->assertSame(NonceStore::LEAD_MS + 1 + NonceStore::RETRY_MARGIN_MS, $rDoc['retry_after_ms'], 'MAIN cannot vouch for it yet: stamped anew that long after main_time_ms, it passes');
+		$this->assertSame($this->rT0, $rDoc['main_time_ms']);
+
+		ClusterClock::fix($this->rT0 + $rDoc['retry_after_ms']);
+		$rNonce = random_bytes(16);
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys, ['nonce' => $rNonce]);
+		$this->reply($rRes, $rCtx, $rKeys);
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_nonces` WHERE `node` = ? AND `nonce` = ?', $this->rUuid, $rNonce);
+		$this->assertSame(1, (int) $this->rDb->get_row()['n'], 'a young bus claims in MySQL too');
+	}
+
+	public function testAFreshBusRefusesARekeyStampedAtItsFloorAndSpendsNothing(): void {
+		$this->expired();
+		$rChallenge = $this->challenge();
+		$this->bus(false);
+		[$rRes, $rReq] = $this->rekey($rChallenge, random_bytes(32));
+		$this->assertSame(NonceStore::LEAD_MS + 1 + NonceStore::RETRY_MARGIN_MS, $this->denial($rRes, 401, 'REPLAY', $rReq)['retry_after_ms']);
+
+		ClusterClock::fix($this->rT0 + 1000);
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($rChallenge, $rEph);
+		$this->assertSame(2, $this->rekeyed($rRes, $rReq, $rEph)['doc']['epoch'], 'the same challenge, the same minute');
+	}
+
+	public function testAuthenticationAndTheNonceComeBeforeAnyPermit(): void {
+		$rRedis = $this->bus();
+		$rKeys = $this->active();
+		for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
+			ClusterSemaphore::acquire('hello');
+		}
+		[$rRes, , $rReq] = $this->call('hello', ['instance_id' => 'inst-a'], 1, $rKeys, ['body' => static fn($b) => $b . 'x']);
+		$this->denial($rRes, 401, 'BAD_MAC', $rReq);
+		$r = $this->request('hello', ['instance_id' => 'inst-a'], 1, $rKeys);
+		$this->denial(ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 503, 'RATE_LIMITED', $r['req']);
+		$this->denial(ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 401, 'REPLAY', $r['req']);
+		$this->assertSame(ClusterSemaphore::PERMITS, $rRedis->zCard('sem:hello'), 'no refused request took a permit');
+	}
+
+	public function testConfigAndConnSnapshotHoldAPermitToo(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		foreach (['config' => ['blocklist_since' => 0], 'conn_snapshot' => ['snap_id' => 'snap-1', 'seq' => 0, 'last' => true, 'conns' => []]] as $rOp => $rPayload) {
+			for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
+				ClusterSemaphore::acquire($rOp);
+			}
+			[$rRes, , $rReq] = $this->call($rOp, $rPayload, 1, $rKeys);
+			$this->assertSame($rOp, $this->denial($rRes, 503, 'RATE_LIMITED', $rReq)['op']);
+		}
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->reply($rRes, $rCtx, $rKeys);
 	}
 }

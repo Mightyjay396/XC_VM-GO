@@ -31,6 +31,14 @@ use XcVm\Core\Process\ProcessManager;
  * `<t>:<hls_last_read>`, for nodes whose agent ends its own idle HLS viewers
  * (ConnectionIngest::touch). Without the bus, or past TOUCH_MEMORY_SHARE of
  * its memory, they go to MAIN's store.
+ *
+ * And the request nonces (NonceStore: `nonce:<node>`, `nonces_since`) and
+ * the per-op semaphores (ClusterSemaphore: `sem:<op>`), through script().
+ * Nonces and permits are sorted sets without a TTL, so the volatile-ttl
+ * policy never evicts them. Nor are they refused past maxmemory (a script's
+ * first write lets the rest through): their size is bounded by
+ * authenticated traffic, and past maxmemory they push out the keys with a
+ * TTL.
  */
 final class ClusterBus {
 	/** Seconds a wake waits for its reader. */
@@ -215,6 +223,33 @@ final class ClusterBus {
 			if (is_string($rValue) && preg_match('/^-?\d+:(-?\d+)$/', $rValue, $rM)) {
 				$rOut[$rUUIDs[$i]] = (int) $rM[1];
 			}
+		}
+		return $rOut;
+	}
+
+	/**
+	 * Run a Lua script on the bus (NonceStore, ClusterSemaphore): its reply,
+	 * or null without the bus or when the call failed (a lost connection, an
+	 * error reply such as OOM), so the caller does what it does without the
+	 * bus. A script must never reply nil, which reads as a failure.
+	 *
+	 * @param list<string> $rKeys
+	 * @param list<int|string> $rArgs
+	 */
+	public static function script(string $rLua, array $rKeys, array $rArgs): mixed {
+		$rRedis = self::client();
+		if ($rRedis === null) {
+			return null;
+		}
+		try {
+			$rOut = $rRedis->eval($rLua, [...$rKeys, ...array_map('strval', $rArgs)], count($rKeys));
+		} catch (\Throwable) {
+			self::drop();
+			return null;
+		}
+		if ($rOut === false) {
+			$rRedis->clearLastError();
+			return null;
 		}
 		return $rOut;
 	}

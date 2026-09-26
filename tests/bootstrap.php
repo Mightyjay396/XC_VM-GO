@@ -91,3 +91,4 @@ require_once __DIR__ . '/Support/TestDb.php';
 require_once __DIR__ . '/Support/ClusterReference.php';
 require_once __DIR__ . '/Support/FakeClusterCrypto.php';
 require_once __DIR__ . '/Support/FakeSshFleet.php';
+require_once __DIR__ . '/Support/BusServer.php';
