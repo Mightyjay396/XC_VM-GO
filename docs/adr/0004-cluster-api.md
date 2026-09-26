@@ -103,7 +103,8 @@ A session request is checked in this order. Nothing is written, not even the non
 8. the nonce claim (401 `REPLAY`, with `retry_after_ms` when MAIN only cannot vouch for the nonce yet: see the second cluster bus increment);
 9. the node state;
 10. a bus permit, for `hello`, `config` and `conn_snapshot` (503 `RATE_LIMITED`);
-11. opening the BOX.
+11. opening the BOX;
+12. an ingest permit, for the ingest ops, P0 `events` batches from their reserve (503 `RATE_LIMITED` with `lane`: see the fourth cluster bus increment).
 
 Refusals are panel-signed (`den`) and name the node and the request nonce. `STARTING` without the extension is the one unsigned reply, and agents treat it as a transport error. While MAIN's cluster pools are starting, `STARTING` is panel-signed (see "The cluster pools").
 
@@ -1044,7 +1045,7 @@ The suite runs with the ETag cache off (`tests/bootstrap.php`): some tests defin
 
 **Without the bus.** If the bus is not running, or this is an LB or a test, `waitNode`/`waitAck` return null and the callers poll as before.
 
-Nonces and the per-op semaphores came in the second increment, and heartbeats with their telemetry (`cl:tel:<sid>`) in the third, below.
+Nonces and the per-op semaphores came in the second increment, heartbeats with their telemetry (`cl:tel:<sid>`) in the third, and the ingest permits in the fourth, below.
 
 ### The cluster bus (Phase 2, second increment): nonces and per-op semaphores
 
@@ -1211,7 +1212,7 @@ A reload, or a pool too busy to answer, therefore keeps the marker: a resize fro
 - **When it applies.** The service removes the marker whenever it starts, and tmp/ is a tmpfs. So a boot, a restart and an update each answer `STARTING` until the migrations have run and both pools answer.
 - **Silence clock.** Creating the marker runs `ClusterMeta::markReady()`, so the time the API was `STARTING` never counts against a node's silence.
 
-**Not built:** the ingest permits on the bus. The plan's `cluster_ctl` listen-queue check came with the fifth increment.
+The ingest permits on the bus came with the fourth cluster bus increment, and the plan's `cluster_ctl` listen-queue check with the fifth increment.
 
 The old-port servers, which still passed to the panel pool, reach the pools since the rendered nginx config.
 
@@ -1487,6 +1488,92 @@ Tests:
   - the bus killed, and the bus restarted empty between a heartbeat and its flush;
   - the Cluster Nodes page.
 - `ClusterApiTest`: a heartbeat end to end on the bus, with only the two authentication reads in MySQL, then the flush.
+
+### The cluster bus (Phase 2, fourth increment): ingest permits
+
+**Before.** The `cluster_ingest` pool bounded how many ingest requests ran at once, but nothing kept a P0 batch from waiting behind bulk: a burst of snapshot chunks, `config` polls and log batches could hold every worker, and every MySQL connection the pool may open. The plan (section 8) keeps `ceil(cluster_ingest_concurrency / 2)` permits for P0, and has MAIN answer 503 with `retry_after_ms` at once when no permit is free.
+
+**Now.** Every ingest op the API serves holds an ingest permit on the cluster bus while its handler runs (`ClusterSemaphore::runIngest`):
+
+| Lane | Requests | Permits it may take |
+| --- | --- | --- |
+| `p0` | `events` with `lane: "p0"` | any free one; its reserve, ceil(n / 2), always |
+| `bulk` | every other ingest op: `events` with `lane` `p1`, `p2` or none, `config`, `conn_snapshot`, `recording_complete`, and the ingest ops still to come (`ClusterPool::INGEST_OPS`) | n − ceil(n / 2), at least 1, and only while fewer than the total are held |
+
+- **n** is `cluster_ingest_concurrency` (1–64, default 6), from the settings the request is served with. The total is n, or 2 at n = 1: one P0 and one bulk, as the ingest pool's floor (`ClusterSemaphore::ingestPermits`). At the default, 3 are kept for P0 and 3 are for anyone.
+- **The sets** are `sem:ingest:p0` and `sem:ingest:bulk`: sorted sets without a TTL, scored by each permit's expiry, as the per-op semaphores. One script prunes and counts both, then takes the permit or refuses it:
+  - bulk is refused when it holds its share, or when both sets hold the total;
+  - P0 is refused only when it holds its reserve and both sets hold the total. So a lowered n never shuts P0 out while bulk still holds permits taken before.
+- **When.** After the nonce claim, the node state and any per-op permit (`config`, `conn_snapshot`), and after the BOX is opened, since only the BOX says a batch's lane. Opening it touches no database (Phase 1's bench: 64 KB under 1 ms, 8 MB under 40 ms), and a BOX that does not open is 400 `BAD_REQUEST` without a permit. Then the epoch is marked used and the handler runs. The permit is given back in `finally`, however the handler ends.
+- **Crashes.** The permit of a holder that died expires after the `cluster_ingest` pool's timeout, 90 s (`INGEST_LIFE`), by the bus's clock. One expiring past now + 90 s + 1 s was taken before the clock stepped back, and is dropped. Both as for the per-op semaphores.
+- **Control ops** (`hello`, `heartbeat`, `commands`, `ack`, `conn_admit`, the token ops) take none.
+- **Without the bus,** or when the script fails, no permit is taken, as before.
+
+**Wire: the busy refusal on an ingest op.** When the request's lane has no free permit, its handler does not run, and the node gets the per-op semaphores' denial: panel-signed (`den`), naming the node and the request nonce, with `main_time_ms`. Its fields:
+- status 503;
+- `reason`: `RATE_LIMITED`;
+- `retry_after_ms`: int, drawn at random per refusal: 250–750 for lane `p0`, 1000–3000 for lane `bulk`;
+- `op`: string, the op refused: `events`, `config`, `conn_snapshot` or `recording_complete`;
+- `lane`: string, `p0` or `bulk`: the permit's lane, named as plan section 3's transport lanes. A per-op semaphore's refusal has no `lane`.
+
+A `config` or `conn_snapshot` request can be refused by either: by its op's semaphore (no `lane`), or past it by the bulk lane (`lane: "bulk"`). Nothing is applied either way.
+
+**What today's agent does.** It already handles a 503 `RATE_LIMITED` on every ingest op (`busyWait`: `retry_after_ms` ±10 %, clamped to 1–60 s):
+- `events` P0 and P1: the lane's in-flight batch (`<lane>.inflight`) is kept and sent again, with the same `first_useq`, after the wait (at least 1 s). The refusal is logged as an error.
+- `events` P2 (`touch.go`): the touches stay due and go after the wait.
+- `config`: `RunReplica` asks again after the wait.
+- `conn_snapshot`: the chunk goes again with the same `snap_id` and `seq`, up to 20 times.
+- `recording_complete` comes from the node's PHP (`RecordCommand`) through the agent's socket, which hands any refusal back as a bare 409. Until now the node's PHP then marked the recording failed and deleted its `.ts`; it now asks again while no answer comes (`AgentClient::mainRetrying`: after 1, 2, 4, 8, 15, 30, 30 and 30 s, two minutes in all). MAIN creates the VOD once, so a retry is safe.
+
+All of this is safe. P0 is slower than the plan wants: a refused P0 batch waits at least 1 s, and P0 shares the agent's keep-alive connections with bulk.
+
+**The agent's contract.** For the Go half, not built yet:
+1. **503 `RATE_LIMITED` with `lane`**, a verified denial to an ingest op, means MAIN's permits for that lane are all held: busy, not failing. Do not count it as a failure, raise the op's backoff, or log it as an error (a counter is enough).
+   - **Lane `p0`** (an `events` batch with `lane: "p0"`): wait `retry_after_ms` (250–750), jitter only adding, up to 10 %, and no 1 s floor; clamp to 100 ms–5 s. Then resend the same in-flight batch (same `first_useq`, same events) with a fresh nonce, stamp, MAC and BOX. No later P0 batch goes first.
+   - **Lane `bulk`, `events`** with `lane` `p1` or `p2`: wait `retry_after_ms` ±10 %, clamped to 1–60 s, then resend the same batch (P1: the same `first_useq`). While the lane is refused, stretch its interval (P1 normally 5 s, P2 10 s): double it after each refusal, up to 60 s, and go back to the normal one after the first batch MAIN serves. The batch limits (2000 events, 1 MiB) stay.
+   - **Lane `bulk`, `config`:** ask again after `retry_after_ms`, not at the next minute's poll, as for the per-op refusal.
+   - **Lane `bulk`, `conn_snapshot`:** resend the refused chunk with the same `snap_id` and `seq`, as for the per-op refusal.
+   - **Lane `bulk`, `recording_complete`** (a socket op): the agent may retry it after `retry_after_ms` while the PHP caller's request lasts (up to 15 s). A refusal it hands back stays a 409, and the node's PHP retries on its own (above).
+2. **P0 has its own connection** (plan section 8): send P0 `events` over a keep-alive connection of their own (their own `http.Transport`, one request in flight), so a bulk upload never queues them.
+3. **Nothing else changes:** no new op, header, file or setting. The one new field is `lane` on the 503 `RATE_LIMITED`. A 503 `RATE_LIMITED` without `lane` is a per-op semaphore's, handled as in the second bus increment.
+
+**Differs from the plan.**
+- **Bulk keeps at least one permit.** At n = 1, ceil(n / 2) = 1 would leave bulk none, and `config`, snapshots, logs and recordings would never be served. So n = 1 gives 2 permits, one P0 and one bulk, as the ingest pool's floor of 2.
+- **P0 may take the shared permits** as well as its reserve; the plan names only the reserve. Bulk is then refused while P0 holds them all, which is the priority the plan asks for.
+- **The permit is taken once the BOX is open**, not before it as the per-op semaphores are, since only the BOX says a batch's lane. A refused request costs MAIN one decryption more than a per-op refusal does, and writes nothing to MySQL.
+- **`retry_after_ms` is 250–750 ms for P0** and 1–3 s for bulk. The plan gives no range.
+
+**Compatibility.**
+- Older agents keep working: they already handle a 503 `RATE_LIMITED` on every ingest op (above), and ignore `lane`. The node's PHP retries `recording_complete` with any agent.
+- A rollback leaves the two sets, empty once their requests end; nothing reads them.
+- LB builds have neither `Domain/Cluster` nor the bus. `AgentClient` and `RecordCommand` ship to LBs, and reference no `Domain\Cluster` class.
+
+**Limits.**
+- **Authentication still reads MySQL** (the node and its epoch) before any permit, so the plan's "MySQL opens only inside ingest or ctl permits" holds for everything but those two reads (third bus increment).
+- **The pool size is not counted.** The permits are n (at least 2), and the `cluster_ingest` pool has min(2n + 8, floor(0.25 · `max_connections`)) workers, at least 2. When MariaDB's `max_connections` leaves the pool with no more workers than bulk's share (`max_connections` under 16 at the default n), bulk can hold every worker, and a P0 batch waits on the socket although a permit is free.
+- A worker that cannot reach the bus runs ingest without a permit, as the per-op semaphores do.
+- A changed n applies to the requests that read it; permits already held count against the new limits until their requests end.
+
+Tests:
+- `ClusterSemaphoreTest`:
+  - the split: ceil(n / 2) for P0, the rest for anyone, bulk at least 1, and the setting's range and default;
+  - the lane: only `events` with `lane: "p0"` is P0, every other ingest op is bulk, and control ops take none;
+  - no permit without the bus;
+  - P0 getting its reserve while bulk holds its share, and bulk refused when only reserved permits are free;
+  - P0 taking the shared permits, with bulk refused meanwhile;
+  - P0's reserve after n is lowered;
+  - the signed 503 with `retry_after_ms` (each lane's range), `op` and `lane`;
+  - release after the handler returns or throws, for both lanes;
+  - expiry after 90 s by the bus's clock, both sets pruned by either lane, and a permit from before a clock step.
+- `ClusterApiTest`:
+  - with bulk's share held, `events` P1, `config`, `conn_snapshot` and `recording_complete` refused with `lane: "bulk"`, their per-op permits given back and the P1 batch not applied;
+  - a P0 batch served from the reserve, its permit given back, and `hello` untouched;
+  - P0 refused with `lane: "p0"` and P0's range once every permit is held;
+  - the refused batch resent and applied once;
+  - `cluster_ingest_concurrency` 2 sizing the permits;
+  - `BAD_MAC`, `REPLAY` and `NOT_ACTIVE` before any permit, and a refused request writing nothing to MySQL;
+  - no permit without the bus.
+- `AgentClientRetryTest`: `recording_complete` asked again after each wait until answered, at once when answered, and given up after the last wait.
 
 ### Blocklist delta (Phase 7, first increment)
 
