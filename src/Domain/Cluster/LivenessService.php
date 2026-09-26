@@ -19,6 +19,10 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * network, its API pool). The guard then holds every node at its last
  * published state instead of marking any offline, and raises an alert,
  * until the silence clears.
+ *
+ * Each pass first flushes the heartbeats the cluster bus holds into MySQL
+ * (HeartbeatService::flush), and judges each node by the later of the two,
+ * so a MySQL copy up to a flush behind never makes a node look silent.
  */
 final class LivenessService {
 	use DatabaseAware;
@@ -30,6 +34,7 @@ final class LivenessService {
 	 * @return array<int, array{0: ?string, 1: ?string}>
 	 */
 	public static function tick(int $rOfflineAfterSec): array {
+		$rHeard = HeartbeatService::flush();
 		$rReady = ClusterMeta::readyAtMs();
 		$rNow = ClusterClock::nowMs();
 		self::db()->query("SELECT `server_id`, `last_seen_at` FROM `cluster_nodes` WHERE `state` = 'active' AND `mode` >= 1 AND (`flows` & ?) <> 0;", NodeRegistry::FLOW_TELEMETRY);
@@ -38,13 +43,13 @@ final class LivenessService {
 		$rJudged = [];
 		$rOkSince = [];
 		foreach ($rRows as $rRow) {
-			$rState = NodeHealth::state($rRow['last_seen_at'] === null ? null : (int) $rRow['last_seen_at'], $rReady, $rNow, $rOfflineAfterSec);
+			$rID = (int) $rRow['server_id'];
+			$rState = NodeHealth::state(HeartbeatService::freshest($rRow['last_seen_at'], $rHeard[$rID] ?? null), $rReady, $rNow, $rOfflineAfterSec);
 			// A node that has not spoken since the flow went on is judged offline
 			// only once the loop has been ready long enough to have heard it.
 			if ($rState === 'unknown') {
 				$rState = $rNow - $rReady > $rOfflineAfterSec * 1000 ? 'offline' : 'suspect';
 			}
-			$rID = (int) $rRow['server_id'];
 			[$rJudged[$rID], $rSince] = NodeHealth::settle($rPrev['states'][$rID] ?? null, $rState, $rPrev['ok_since'][$rID] ?? null, $rNow);
 			if ($rSince !== null) {
 				$rOkSince[$rID] = $rSince;
