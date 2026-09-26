@@ -190,7 +190,10 @@ final class ClusterNginxConfig {
 			return $rOut;
 		}
 		$rKept = ClusterEndpoint::afterApiPortChange($rOld, $rNew, $rCurrent, $rMain) ?? ClusterEndpoint::legacyPorts($rCurrent);
-		$rResult = self::apply(['cluster_api_port' => $rNew, 'cluster_legacy_ports' => (string) json_encode($rKept)] + $rCurrent);
+		// The kept URLs as stored: the settings this process loaded may
+		// predate one, and an old HTTPS port must stay served meanwhile.
+		$rUrls = (string) (ClusterEndpoint::stored($rCurrent)['cluster_legacy_urls'] ?? '');
+		$rResult = self::apply(['cluster_api_port' => $rNew, 'cluster_legacy_ports' => (string) json_encode($rKept), 'cluster_legacy_urls' => $rUrls] + $rCurrent);
 		if (!$rResult['ok']) {
 			$rOut['refused'] = 'cluster_error_nginx';
 			$rOut['error'] = $rResult['error'];

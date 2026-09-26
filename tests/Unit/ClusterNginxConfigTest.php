@@ -408,6 +408,21 @@ final class ClusterNginxConfigTest extends TestCase {
 	}
 
 	/**
+	 * A settings save staged from settings the process loaded before an old
+	 * HTTPS port was kept (ClusterEndpoint) still serves that port: the kept
+	 * URLs are read as stored.
+	 */
+	public function testAnApiPortSaveKeepsServingAnOldHttpsPort(): void {
+		$this->store('cluster_legacy_urls', (string) json_encode(['https://panel.example.com:8443/cluster/v1/' => $this->rNow + 60], JSON_UNESCAPED_SLASHES));
+		$rCurrent = ['cluster_api_enabled' => 1, 'cluster_api_port' => 0, 'cluster_legacy_ports' => ''];
+		$rStage = ClusterNginxConfig::stageApiPort(0, 31200, $rCurrent, ['server_ip' => '10.0.0.1', 'http_broadcast_port' => 25461]);
+		$this->assertIsArray($rStage);
+		$this->assertNull($rStage['refused']);
+		$this->assertStringContainsString("    listen 31200;\n", (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertStringContainsString("    listen 8443 ssl;\n", (string) $this->conf(ClusterNginxConfig::OLD_PORT));
+	}
+
+	/**
 	 * `nginx -t` passes when another program holds a port, and nginx then
 	 * fails at the reload (keeping its previous config) and at its next start.
 	 * A new dedicated port must be free before anything is written.
