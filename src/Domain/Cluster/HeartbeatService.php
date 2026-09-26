@@ -25,8 +25,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 final class HeartbeatService {
 	use DatabaseAware;
 
-	/** Largest telemetry document kept per node. */
-	public const MAX_TELEMETRY = 65536;
+	/** Largest telemetry document kept per node: local.json alone may be 64 KiB. */
+	public const MAX_TELEMETRY = 131072;
 
 	/** Seconds between authoritative writes to `servers` and to `servers_stats`. */
 	public const WRITE_EVERY = 5;
@@ -131,17 +131,47 @@ final class HeartbeatService {
 				$rOut['network_speed'] = (int) $rRate['speed'];
 			}
 		}
-		$rOut['audio_devices'] = [];
-		$rOut['video_devices'] = [];
-		$rOut['gpu_info'] = [];
-		$rOut['iostat_info'] = [];
+		// The node's watchdog probes these (local.json); an absent key is an absent tool.
+		$rLocal = is_array($rTel['local'] ?? null) ? $rTel['local'] : [];
+		foreach (['audio_devices', 'video_devices', 'gpu_info', 'iostat_info'] as $rKey) {
+			$rOut[$rKey] = self::deviceSection($rKey, $rLocal[$rKey] ?? null);
+		}
 		$rOut['cpu_load_average'] = $rLoad;
 		$rHistory = is_array($rPrev['cpu_average_array'] ?? null) ? array_values($rPrev['cpu_average_array']) : [];
 		$rHistory[] = $rOut['cpu'];
 		$rOut['cpu_average_array'] = array_slice($rHistory, -self::CPU_HISTORY);
-		$rLocal = is_array($rTel['local'] ?? null) ? $rTel['local'] : [];
 		$rOut['fanout'] = is_array($rLocal['fanout'] ?? null) ? $rLocal['fanout'] : ($rPrev['fanout'] ?? null);
 		return $rOut;
+	}
+
+	/**
+	 * One device section of the node's local.json, in SystemInfo's shape as
+	 * far as the panel reads it: [] for a non-array, capture devices as a
+	 * list (names, and objects for video), GPUs as objects, and iostat's CPU
+	 * figures, which the dashboard rounds, as numbers.
+	 *
+	 * @return array<mixed>
+	 */
+	private static function deviceSection(string $rKey, mixed $rValue): array {
+		if (!is_array($rValue)) {
+			return [];
+		}
+		switch ($rKey) {
+			case 'audio_devices':
+				return array_values(array_filter($rValue, 'is_string'));
+			case 'video_devices':
+				return array_values(array_filter($rValue, 'is_array'));
+			case 'gpu_info':
+				if (array_key_exists('gpus', $rValue)) {
+					$rValue['gpus'] = is_array($rValue['gpus']) ? array_values(array_filter($rValue['gpus'], 'is_array')) : [];
+				}
+				return $rValue;
+			default:
+				if (array_key_exists('avg-cpu', $rValue)) {
+					$rValue['avg-cpu'] = is_array($rValue['avg-cpu']) ? array_filter($rValue['avg-cpu'], 'is_numeric') : [];
+				}
+				return $rValue;
+		}
 	}
 
 	/**

@@ -218,13 +218,13 @@ Every agent samples its host each second (`clusteragent.Sampler`) and sends the 
 - stream producers (ffmpeg, `xc_fanout remux`) and the xc_vm PHP-FPM worker pids;
 - per-interface rates, totals and link speed.
 
-What only PHP knows, nginx requests per second and the fanout daemon's status, the LB's watchdog writes to `config/cluster/local.json`. The agent forwards that file while it is under 10 s old.
+What only PHP knows, nginx requests per second, the fanout daemon's status and the devices (next section), the LB's watchdog writes to `config/cluster/local.json`. The agent forwards that file while it is under 10 s old and at most 64 KiB.
 
 For a node with the TELEMETRY flow on (mode ≥ 1, toggled per node on the Cluster Nodes page), `HeartbeatService` makes the sample authoritative:
 
 - **Every 5 s:** `servers.watchdog_data`, `last_check_ago`, `requests_per_second` and `php_pids`; without the Redis handler, also `connections` and `users`, counted as the watchdog counted them. `toWatchdogData()` keeps the legacy `SystemInfo::getStats()` keys and order, plus `cpu_average_array` and `fanout`. `ClusterTelemetryTest` pins that against `getStats()`'s source. `network_interface` selects interfaces as before.
 - **Every minute:** the `servers_stats` row the LB's `cron:servers` wrote.
-- **Not yet reported:** GPU, iostat and capture devices are reported empty.
+- **Devices, GPUs and disk I/O:** from the node's `local.json` (next section).
 
 The node learns its mode and flows from MAIN's authenticated replies. The agent writes them to `config/cluster/flows.json`, and `Core\Cluster\NodeFlows` reads them. With TELEMETRY on:
 
@@ -233,6 +233,40 @@ The node learns its mode and flows from MAIN's authenticated replies. The agent 
 - `network.py` is stopped.
 
 A stopped agent removes `flows.json`, so the node falls back to the legacy paths.
+
+### Telemetry (Phase 3, second increment): devices, GPUs and disk I/O
+
+**Before.** `toWatchdogData()` reported `audio_devices`, `video_devices`, `gpu_info` and `iostat_info` empty. A TELEMETRY node showed 0 % I/O wait on the dashboard and its server page, and its `servers_stats` rows had no GPU or iostat history.
+
+**The node.** Only PHP probes these, so the watchdog's `local.json` now carries them. The agent is unchanged: it already forwards the file verbatim as `telemetry.local`.
+
+- **Probe.** `SystemInfo::getDevices()`: each section is `[]` unless its tool is installed (`iostat`, `nvidia-smi`, `v4l2-ctl`, `arecord`), as `getStats()` decided. `getStats()` now takes its four sections from it, so the two cannot drift apart.
+- **Every 30 s.** The probes shell out, so `Core\Cluster\LocalTelemetry::devices()` reuses a probe for 30 s. The watchdog runs one pass per process and re-execs, so the last probe is kept in `tmp/watchdog_devices.json` (`{"t": unix time, "devices": {…}}`), not in a variable. `local.json` is still rewritten every pass (about 3 s).
+- **Size.** The agent drops a `local.json` over 64 KiB, and with it the requests per second and the fanout status. `LocalTelemetry::encode()` keeps the file at most 60 KiB (61 440 bytes). Over that, it empties the GPUs' `processes` lists first, then the largest device section, one at a time. If that still does not fit, only `requests_per_second` is kept.
+
+**The contract: `telemetry.local`.** Same heartbeat, same op, no new lane or event. The keys, all optional:
+
+| Key | Type | Probe (legacy shape) |
+| --- | --- | --- |
+| `requests_per_second` | int | nginx `stub_status` |
+| `fanout` | object or null | `FanoutClient::status()` |
+| `audio_devices` | list of strings (`hw:CARD=…` names) | `SystemInfo::getAudioDevices()`, `arecord -L` |
+| `video_devices` | list of `{name, video_device}` | `getVideoDevices()`, `v4l2-ctl --list-devices` |
+| `gpu_info` | `{attached_gpus, driver_version, cuda_version, gpus: [{name, power_readings, utilisation, memory_usage, fan_speed, temperature, clocks, uuid, id, processes: [{pid, memory}]}]}` or `[]` | `getGPUInfo()`, `nvidia-smi -x -q` |
+| `iostat_info` | `{"avg-cpu": {user, nice, system, iowait, steal, idle}, disk: [{disk_device, …}]}` or `[]` | `getIO()`, `iostat -o JSON -m` |
+
+A device section is `[]` when its tool is absent or a trim dropped it. An older node's PHP does not write the four keys.
+
+**MAIN.** `toWatchdogData()` takes each section from `telemetry.local` when it is an array, else `[]`.
+
+- **No `local`** (the file is stale, missing or too big, or the watchdog is down): every section is `[]`, not the last value, since stale figures would look live. `fanout` keeps its last value, as before.
+- **Shape.** Only what the panel reads is checked: `audio_devices` keeps its strings and `video_devices` its objects, both as lists; `gpu_info.gpus` keeps its objects; `iostat_info["avg-cpu"]` keeps its numeric figures, because the dashboard rounds `iowait`.
+- **Where it lands.** Through the existing path: `watchdog_data` every 5 s, and `gpu_info` and `iostat_info` in the minute's `servers_stats` row. The dashboard's and the server page's I/O wait (`StatsAjaxController`, `server_view.php`, `ServerViewController`) now work for TELEMETRY nodes. The `servers` columns `gpu_info`, `video_devices` and `audio_devices` (GPU cards, profile editor, capture streams) already came from `node.inventory`.
+- **Shadow copy.** `tmp/cluster/tel_<id>.json` now takes up to 128 KiB (`HeartbeatService::MAX_TELEMETRY`), because `local.json` alone may be 64 KiB.
+
+**Cost.** Each heartbeat carries the sections although they change at most every 30 s: a few KiB as a rule, 60 KiB every 2 s per node at worst. An agent that sent `local` only when it changed would save that, but MAIN would then need to keep the last one; nothing does that yet.
+
+`ClusterTelemetryTest` pins the mapping, the shape checks, the `servers_stats` columns, the 30 s reuse across passes, the size cap and the node-to-MAIN round trip.
 
 ### Liveness (Phase 3)
 

@@ -946,12 +946,12 @@ Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR 
 
 **Phase 3: Telemetry and liveness authoritative (\~3 pw).**
 
-- Agent `internal/clusteragent/telemetry.go` (samples the host as the watchdog does; the node's PHP writes `config/cluster/local.json` via `WatchdogCommand::writeLocalTelemetry`). `HeartbeatService` turns it into `servers.watchdog_data` with the legacy key set. `SignalsCommand` runs `LivenessService::tick` every second, with the fleet silence guard; `cron:cluster` runs it too. `Domain/Cluster/ClusterEndpoint` handles MAIN port changes.
+- Agent `internal/clusteragent/telemetry.go` (samples the host as the watchdog does; the node's PHP writes `config/cluster/local.json` via `WatchdogCommand::writeLocalTelemetry`, with the GPU, iostat and capture devices `SystemInfo::getDevices()` probes every 30 s, kept under 60 KiB by `Core/Cluster/LocalTelemetry`). `HeartbeatService` turns it into `servers.watchdog_data` with the legacy key set. `SignalsCommand` runs `LivenessService::tick` every second, with the fleet silence guard; `cron:cluster` runs it too. `Domain/Cluster/ClusterEndpoint` handles MAIN port changes.
 - The TELEMETRY flow (`Core/Cluster/NodeFlows`) turns off the LB watchdog DB write, the stats part of `cron:servers`, and `network.py`.
 - Acceptance: dashboard refresh ≤ 3 s; `getCapacity()` routing identical to legacy; a stopped agent is suspect at 10 s and offline at 30 s. Changing MAIN's HTTP port with 3 live nodes keeps all ACTIVE.
 - Hysteresis (`NodeHealth::settle`): states get worse at once and better only after 30 s of steady health; an offline node heard again is `suspect` first.
 - Tests: `ClusterTelemetryTest` (watchdog data contract), `ClusterLivenessTest` (suspect/offline, fleet silence), `NodeHealthHysteresisTest`, `ClusterEndpointTest`; Go `telemetry_test.go`.
-- **Not built yet:** GPU, iostat and capture devices are reported empty; E2E `admin/lb-telemetry.spec.ts`.
+- **Not built yet:** E2E `admin/lb-telemetry.spec.ts`.
 
 **Phase 4: Commands and RPC (\~4 pw).**
 

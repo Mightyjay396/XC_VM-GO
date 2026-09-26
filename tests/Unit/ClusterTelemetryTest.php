@@ -97,6 +97,10 @@ final class ClusterTelemetryTest extends TestCase {
 		return $rPath;
 	}
 
+	/** The telemetry sample with this local.json, as the agent forwards it. */
+	private static function withLocal(array $rLocal): array {
+		return ['local' => $rLocal] + self::SAMPLE;
+	}
 
 	private function server(): array {
 		$this->rDb->query('SELECT * FROM `servers` WHERE `id` = 5');
@@ -138,6 +142,55 @@ final class ClusterTelemetryTest extends TestCase {
 		$this->assertSame(['eth1'], array_keys($rOne['network_info']));
 		$this->assertSame([20, 0], [$rOne['bytes_sent'], $rOne['network_speed']]);
 		$this->assertSame(['bond0'], array_keys(HeartbeatService::toWatchdogData(self::SAMPLE, [], 'bond0')['network_info']), 'a chosen bond is reported');
+	}
+
+	public function testDevicesComeFromTheNodesLocalFile(): void {
+		$rData = HeartbeatService::toWatchdogData(self::withLocal(self::SAMPLE['local'] + self::DEVICES), []);
+		foreach (self::DEVICES as $rKey => $rValue) {
+			$this->assertSame($rValue, $rData[$rKey], $rKey);
+		}
+		// What the dashboard and the server page read (StatsAjaxController, server_view.php).
+		$this->assertEquals(7.0, round($rData['iostat_info']['avg-cpu']['iowait'] ?? 0, 0));
+		$this->assertSame(['NVIDIA T4'], array_column($rData['gpu_info']['gpus'], 'name'));
+		$this->assertSame(7, $rData['fanout']['connections'], 'the fanout status still comes along');
+
+		$rOld = HeartbeatService::toWatchdogData(self::SAMPLE, self::DEVICES);
+		$rNone = HeartbeatService::toWatchdogData(['local' => null] + self::SAMPLE, self::DEVICES);
+		foreach (array_keys(self::DEVICES) as $rKey) {
+			$this->assertSame([], $rOld[$rKey], $rKey . ': a fresh local.json without it means the tool is absent (or the node predates it)');
+			$this->assertSame([], $rNone[$rKey], $rKey . ': no local.json, nothing reported, not the last value');
+		}
+	}
+
+	public function testDeviceSectionsAreCheckedForShape(): void {
+		$rData = HeartbeatService::toWatchdogData(self::withLocal([
+			'audio_devices' => ['hw:CARD=A,DEV=0', ['x'], 7],
+			'video_devices' => [['name' => 'Cam', 'video_device' => 'video0'], 'junk'],
+			'gpu_info' => ['driver_version' => '1', 'gpus' => ['junk', ['name' => 'A']]],
+			'iostat_info' => ['avg-cpu' => ['iowait' => 'lots', 'idle' => '93.5', 'user' => [1]], 'disk' => []],
+		]), []);
+		$this->assertSame(['hw:CARD=A,DEV=0'], $rData['audio_devices'], 'device names are strings');
+		$this->assertSame([['name' => 'Cam', 'video_device' => 'video0']], $rData['video_devices'], 'video devices are objects');
+		$this->assertSame([['name' => 'A']], $rData['gpu_info']['gpus'], 'GPUs are objects');
+		$this->assertSame(['idle' => '93.5'], $rData['iostat_info']['avg-cpu'], 'the CPU figures the dashboard rounds are numbers');
+
+		$rOdd = HeartbeatService::toWatchdogData(self::withLocal(['audio_devices' => 'hw:CARD=A', 'video_devices' => 5, 'gpu_info' => ['gpus' => 'x'], 'iostat_info' => ['avg-cpu' => 'x']]), []);
+		$this->assertSame([[], [], ['gpus' => []], ['avg-cpu' => []]], [$rOdd['audio_devices'], $rOdd['video_devices'], $rOdd['gpu_info'], $rOdd['iostat_info']]);
+	}
+
+	public function testTheServerAndStatsRowsCarryTheDevices(): void {
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_TELEMETRY]);
+		HeartbeatService::record(NodeRegistry::byServer(5), ['telemetry' => self::withLocal(self::SAMPLE['local'] + self::DEVICES)], $this->rT0);
+		$rWd = json_decode($this->server()['watchdog_data'], true);
+		foreach (self::DEVICES as $rKey => $rValue) {
+			$this->assertSame($rValue, $rWd[$rKey], $rKey);
+		}
+		$this->rDb->query('SELECT `gpu_info`, `iostat_info` FROM `servers_stats`');
+		$rRow = $this->rDb->get_row();
+		$this->assertSame(self::DEVICES['gpu_info'], json_decode($rRow['gpu_info'], true));
+		$this->assertSame(self::DEVICES['iostat_info'], json_decode($rRow['iostat_info'], true));
+		// What ServerViewController and the dashboard's history read.
+		$this->assertSame(7.4, floatval(json_decode($rRow['iostat_info'], true)['avg-cpu']['iowait'] ?? 0));
 	}
 
 	public function testLocalDevicesAreProbedAtMostEvery30Seconds(): void {
@@ -205,6 +258,19 @@ final class ClusterTelemetryTest extends TestCase {
 		$rJson = LocalTelemetry::encode(['requests_per_second' => 42, 'fanout' => ['memory' => str_repeat('x', 70000)]] + self::DEVICES);
 		$this->assertLessThanOrEqual(LocalTelemetry::MAX_BYTES, strlen($rJson));
 		$this->assertSame(42, json_decode($rJson, true)['requests_per_second']);
+	}
+
+	public function testLocalFileIsWrittenWholeAndReadBackOnMain(): void {
+		$rDir = $this->temp(true) . '/';
+		$this->assertTrue(LocalTelemetry::write($rDir, ['requests_per_second' => 42, 'fanout' => null] + self::DEVICES));
+		$this->assertSame(['local.json'], array_values(array_diff((array) scandir($rDir), ['.', '..'])), 'no temporary file is left');
+		// The agent forwards it verbatim (clusteragent.Sampler.local); MAIN reads it back.
+		$rLocal = json_decode((string) file_get_contents($rDir . 'local.json'), true);
+		$rData = HeartbeatService::toWatchdogData(self::withLocal($rLocal), []);
+		foreach (self::DEVICES as $rKey => $rValue) {
+			$this->assertSame($rValue, $rData[$rKey], $rKey);
+		}
+		$this->assertFalse(LocalTelemetry::write($rDir . 'missing/', ['requests_per_second' => 1]), 'no agent directory, no file');
 	}
 
 	public function testGetStatsAndLocalTelemetryProbeTheSameWay(): void {
