@@ -475,7 +475,7 @@ A chunk 0 starts over. Any other chunk out of order gets `409 SNAP_GAP {expected
 
 **Seed.** `console.php cluster:seed-connections` runs on the node while it still reaches MAIN's store, before the CONNECTIONS flow is switched on. It loads the node's connections from MAIN's store (Redis `SERVER#<sid>`, or `lines_live`) into the agent through `POST /v1/conn/seed`. The first chunk empties the registry, and loading sends no event. Only the registry record's keys are sent (`AgentConnections::RECORD_KEYS`), never the line's other columns. After the switch, the first digest agrees and no snapshot is needed.
 
-Still to come in Phase 6: admission when the token is minted, and rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
+Still to come in Phase 6: rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
 
 ### Connections (Phase 6, sixth increment): the agent's HLS reaper
 
@@ -505,6 +505,35 @@ An LB that reaps its own rows (MySQL mode) asks its own agent through `NodeFlows
 A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node. An orphaned node's rows go back to the 30 s rule.
 
 **Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way.
+
+### Connections (Phase 6, seventh increment): admission when the token is minted
+
+MAIN now applies a line's limit when it mints the stream token, before the viewer reaches a node (`Domain\Cluster\ConnectionAdmission`, called at the six viewer mint sites in `Public/stream/auth.php`). Thumbnails and subtitles are not admitted.
+
+**When it applies.** All of these must hold:
+- the cluster API is on;
+- the line or HMAC identity has a limit;
+- the node that will record the viewer is active, in mode ≥ 1, with CONNECTIONS on. Behind a proxy, that node is the originator.
+
+Other targets are unchanged: a legacy node limits at open, as before.
+
+**What it does.**
+1. **Reserve.** The viewer's uuid is reserved for the identity for the token's life (`create_expiration`) plus 10 s, and the identity's other reservations still in flight are counted.
+   - **Redis mode:** a Lua script on `RESV#<identity>`.
+   - **MySQL mode:** `cluster_reservations`, the table migration 032 created for this.
+   - **No lock:** insert-then-count needs none, because of two concurrent mints at least one sees the other.
+2. **Evict.** `ConnectionLimiter::closeConnections` cuts the identity's open connections, and the pair's, to leave room for this viewer and the ones in flight. The order is the limiter's: the requesting device first, then the oldest. The new viewer is never evicted, because it is not open yet. Closes on CONNECTIONS nodes go out as commands, as every close MAIN makes does.
+3. **Release.** When the node reports the connection (`ConnectionIngest::upsert`), the reservation is released.
+
+**The node's `conn.limit` stays.** It is the re-check that settles a race between two nodes. After admission it normally finds nothing to do.
+
+**Failures.** Admission never refuses a viewer and never fails a request. When the store or the registry cannot be read, it does nothing, and `conn.limit` enforces the limit once the viewer opens.
+
+**Not built:**
+- the `adm` claim in the token;
+- the `conn_admit` op, with `lb_offline_admission`, for tokens minted without admission.
+
+A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store.
 
 ### Disaster recovery of MAIN's cluster keys
 
