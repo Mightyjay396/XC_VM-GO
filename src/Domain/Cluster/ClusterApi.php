@@ -422,7 +422,7 @@ final class ClusterApi {
 
 	private static function hello(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rInstance = self::short($rP['instance_id'] ?? null);
-		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs()];
+		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)];
 		$rState = (string) $rNode['state'];
 		if ($rInstance !== null && !empty($rNode['instance_id']) && !hash_equals((string) $rNode['instance_id'], $rInstance) && $rState === 'active') {
 			// Authenticated evidence of a clone: the same token from another install.
@@ -440,6 +440,26 @@ final class ClusterApi {
 			'proto' => ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX], 'policy' => ClusterPolicy::current($rSettings, $rMain),
 			'cursors' => ['p0' => (int) $rNode['useq_p0'], 'p1' => (int) $rNode['useq_p1']],
 		]);
+	}
+
+	/**
+	 * What the agent says it does (e.g. `hls_reaper`), as a comma-separated
+	 * list for `cluster_nodes.features`; null when it says nothing (an older
+	 * agent), so MAIN keeps doing everything itself.
+	 */
+	public static function features(mixed $rList): ?string {
+		if (!is_array($rList)) {
+			return null;
+		}
+		$rOut = [];
+		foreach (array_slice($rList, 0, 16) as $rFeature) {
+			if (is_string($rFeature) && preg_match('/^[a-z0-9_]{1,32}$/', $rFeature)) {
+				$rOut[] = $rFeature;
+			}
+		}
+		$rOut = array_values(array_unique($rOut));
+		sort($rOut);
+		return $rOut === [] ? null : substr(implode(',', $rOut), 0, 255);
 	}
 
 	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {

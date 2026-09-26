@@ -10,6 +10,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Cluster\ClusterEndpoint;
+use XcVm\Domain\Cluster\DbAllowlist;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Streaming\Fanout\FanoutMode;
 
@@ -122,7 +123,9 @@ class RootSignalsCronJob implements CommandInterface {
 
 	private function getBlockedIPs(): array {
 		$rReturn = [];
-		exec('sudo iptables -nL --line-numbers -t filter', $rLines);
+		// INPUT only: blockip() writes nowhere else, and the DB allowlist's own
+		// chain ends in a DROP that must not read as a banned 0.0.0.0/0.
+		exec('sudo iptables -nL INPUT --line-numbers -t filter', $rLines);
 		foreach ($rLines as $rLine) {
 			$rLine = explode(' ', preg_replace('!\\s+!', ' ', $rLine));
 			if (isset($rLine[1], $rLine[4]) && $rLine[1] == 'DROP') {
@@ -130,7 +133,7 @@ class RootSignalsCronJob implements CommandInterface {
 			}
 		}
 		$rLines = '';
-		exec('sudo ip6tables -nL --line-numbers -t filter', $rLines);
+		exec('sudo ip6tables -nL INPUT --line-numbers -t filter', $rLines);
 		foreach ($rLines as $rLine) {
 			$rLine = explode(' ', preg_replace('!\\s+!', ' ', $rLine));
 			if (isset($rLine[1], $rLine[3]) && $rLine[1] == 'DROP') {
@@ -573,6 +576,12 @@ class RootSignalsCronJob implements CommandInterface {
 			// Purges every node's signals, not just this one's: MAIN only.
 			if (NodeRole::isMain()) {
 				$db->query('DELETE FROM `signals` WHERE LENGTH(`custom_data`) > 0 AND UNIX_TIMESTAMP() - `time` >= 86400;');
+				// Opt-in 3306/6379 allowlist: re-applied here after a flush or a
+				// reboot, and removed once the setting is turned off.
+				$rAllowlist = class_exists(DbAllowlist::class) ? (new DbAllowlist())->sync() : null;
+				if ($rAllowlist !== null && array_diff($rAllowlist, ['ok', 'absent', 'skipped'])) {
+					echo 'DB allowlist: IPv4 ' . $rAllowlist[4] . ', IPv6 ' . $rAllowlist[6] . "\n";
+				}
 			}
 			$db->close_mysql();
 		} else {

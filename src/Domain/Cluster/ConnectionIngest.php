@@ -32,8 +32,24 @@ final class ConnectionIngest {
 	/** The `lines_live` columns among them. */
 	private const COLUMNS = ['user_id', 'hmac_id', 'hmac_identifier', 'stream_id', 'server_id', 'proxy_id', 'user_agent', 'user_ip', 'container', 'pid', 'uuid', 'date_start', 'geoip_country_code', 'isp', 'external_device', 'hls_last_read', 'hls_end'];
 
-	/** @param array<string, mixed> $rRecord */
+	/**
+	 * Apply a node's conn.upsert. A connection that opened on the node is no
+	 * longer reserved (ConnectionAdmission): it is counted as open from here.
+	 *
+	 * @param array<string, mixed> $rRecord
+	 */
 	public static function upsert(int $rServerID, array $rRecord): bool {
+		$rOk = self::write($rServerID, $rRecord);
+		if ($rOk) {
+			$rUUID = (string) ($rRecord['uuid'] ?? '');
+			$rIdentity = !empty($rRecord['user_id']) ? (string) (int) $rRecord['user_id'] : (int) ($rRecord['hmac_id'] ?? 0) . '_' . ($rRecord['hmac_identifier'] ?? '');
+			ConnectionAdmission::release((bool) SettingsManager::get('redis_handler'), $rIdentity, $rUUID);
+		}
+		return $rOk;
+	}
+
+	/** @param array<string, mixed> $rRecord */
+	private static function write(int $rServerID, array $rRecord): bool {
 		$rRecord = array_filter(array_intersect_key($rRecord, array_flip(self::KEYS)), static fn($rValue) => is_scalar($rValue) || $rValue === null);
 		$rUUID = (string) ($rRecord['uuid'] ?? '');
 		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) || (empty($rRecord['user_id']) && empty($rRecord['hmac_id']))) {

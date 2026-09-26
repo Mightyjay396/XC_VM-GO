@@ -475,7 +475,65 @@ A chunk 0 starts over. Any other chunk out of order gets `409 SNAP_GAP {expected
 
 **Seed.** `console.php cluster:seed-connections` runs on the node while it still reaches MAIN's store, before the CONNECTIONS flow is switched on. It loads the node's connections from MAIN's store (Redis `SERVER#<sid>`, or `lines_live`) into the agent through `POST /v1/conn/seed`. The first chunk empties the registry, and loading sends no event. Only the registry record's keys are sent (`AgentConnections::RECORD_KEYS`), never the line's other columns. After the switch, the first digest agrees and no snapshot is needed.
 
-Still to come in Phase 6: admission when the token is minted, the agent's HLS reaper, and rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
+Still to come in Phase 6: rebuilding the registry from the fanout and the HLS markers after an agent restart. Until then, a restarted agent has only `registry.snap`. A snapshot makes MAIN's store match the registry, not the other way round, so viewers missing from an older `registry.snap` drop out of MAIN's store. An HLS viewer is recorded again on its next playlist request. A TS viewer the fanout serves is not counted toward its line's limit until the registry is rebuilt from the fanout.
+
+### Connections (Phase 6, sixth increment): the agent's HLS reaper
+
+**The problem.** An HLS viewer has no worker to watch, only its playlist requests. The legacy reaper (`UsersCronJob`) ends one 30 s after its `hls_last_read`. On a CONNECTIONS node, that time reaches MAIN only in the agent's upserts, at most every 10 s. A slow or cut link to MAIN would therefore end viewers who are still watching.
+
+**On the node.** The agent's `Registry.Reap` runs every 5 s while CONNECTIONS is on:
+
+- It ends an open HLS viewer that has made no playlist request for 30 s: `hls_end` 1, sent as a P0 `conn.upsert`, spooled before the registry changes.
+- The time is the node's own: when a request last changed the record's `hls_last_read`. A clock step does not end anyone, and neither does MAIN being out of reach.
+- After a restart, every viewer loaded from `registry.snap` gets a full 30 s window.
+- A request after the end re-opens the viewer, as before.
+
+**Telling MAIN.** The agent says `features: ["hls_reaper"]` at hello, and MAIN keeps it in `cluster_nodes.features` (migration 041). An older agent says nothing, so MAIN keeps doing everything itself. The agent also writes `hls_reaper` into `flows.json`.
+
+**MAIN's reaper.** `UsersCronJob` asks `Core\Cluster\HlsReaping`. For an active node in mode ≥ 1, with CONNECTIONS on and the feature:
+
+- the 30 s rule is off;
+- only what the node ended (`hls_end` 1) is closed, with the usual activity row and a `conn.close` back to the node.
+
+An LB that reaps its own rows (MySQL mode) asks its own agent through `NodeFlows` instead.
+
+**Orphans.** A node that falls silent would keep its viewers counted against their lines forever, so it is orphaned once both of these hold:
+
+- its `last_seen_at` is older than `cluster_orphan_conn_ttl_sec`;
+- MAIN's reaper has itself watched it stay silent that long (`TMP_PATH/cluster_orphans.json`).
+
+A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node. An orphaned node's rows go back to the 30 s rule.
+
+**Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way.
+
+### Connections (Phase 6, seventh increment): admission when the token is minted
+
+MAIN now applies a line's limit when it mints the stream token, before the viewer reaches a node (`Domain\Cluster\ConnectionAdmission`, called at the six viewer mint sites in `Public/stream/auth.php`). Thumbnails and subtitles are not admitted.
+
+**When it applies.** All of these must hold:
+- the cluster API is on;
+- the line or HMAC identity has a limit;
+- the node that will record the viewer is active, in mode ≥ 1, with CONNECTIONS on. Behind a proxy, that node is the originator.
+
+Other targets are unchanged: a legacy node limits at open, as before.
+
+**What it does.**
+1. **Reserve.** The viewer's uuid is reserved for the identity for the token's life (`create_expiration`) plus 10 s, and the identity's other reservations still in flight are counted.
+   - **Redis mode:** a Lua script on `RESV#<identity>`.
+   - **MySQL mode:** `cluster_reservations`, the table migration 032 created for this.
+   - **No lock:** insert-then-count needs none, because of two concurrent mints at least one sees the other.
+2. **Evict.** `ConnectionLimiter::closeConnections` cuts the identity's open connections, and the pair's, to leave room for this viewer and the ones in flight. The order is the limiter's: the requesting device first, then the oldest. The new viewer is never evicted, because it is not open yet. Closes on CONNECTIONS nodes go out as commands, as every close MAIN makes does.
+3. **Release.** When the node reports the connection (`ConnectionIngest::upsert`), the reservation is released.
+
+**The node's `conn.limit` stays.** It is the re-check that settles a race between two nodes. After admission it normally finds nothing to do.
+
+**Failures.** Admission never refuses a viewer and never fails a request. When the store or the registry cannot be read, it does nothing, and `conn.limit` enforces the limit once the viewer opens.
+
+**Not built:**
+- the `adm` claim in the token;
+- the `conn_admit` op, with `lb_offline_admission`, for tokens minted without admission.
+
+A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store.
 
 ### Disaster recovery of MAIN's cluster keys
 
@@ -489,6 +547,27 @@ Still to come in Phase 6: admission when the token is minted, the agent's HLS re
 - **No bundle:** `cluster:init` already covers the plan's `cluster:reinit` (a new root, audited `cluster.root_changed`), followed by `server:enrol` per node. There is no fleet-wide `cluster:reenrol --all`, because each node needs its own SSH credentials.
 - **Tests:** `ClusterDrTest` covers the commands. Opt-in, with `XCVM_EXT_SO`, it runs the real extension, shrunk by `XCVM_TEST_DR_MEM_KIB`, across two config dirs.
 - **Operator procedure:** `docs/en/administration/backup-strategy.md`.
+
+### Shared MariaDB and Redis before lockdown (Phase 2)
+
+Until lockdown, legacy and hybrid LBs still use MAIN's MariaDB (3306) and Redis (6379), which listen on every interface.
+
+- **Redis commands.** `CONFIG`, `DEBUG`, `SHUTDOWN`, `SLAVEOF`, `REPLICAOF`, `MIGRATE` and `MODULE` are renamed to `""`, which removes them: with the password alone, an attacker can no longer write files through `CONFIG SET dir`, replicate from a hostile host or load a module.
+  - `FLUSHALL`, `FLUSHDB` and `EVAL` stay, because the panel uses them.
+  - The shipped `bin/redis/redis.conf` carries the lines. Updates never overwrite `bin/redis`, so `status` appends them once to an existing install's config (`RedisConfigHardening`). They take effect when Redis next restarts.
+  - An operator who needs a command renames it to a secret name; any `rename-command` line for it is left alone.
+- **Allowlist.** `cluster_db_allowlist` is off by default. When on, only these may connect to the two ports:
+  - loopback and MAIN's own addresses;
+  - every other `servers` row (LBs and proxies) except nodes in cluster mode 2;
+  - `cluster_db_allowlist_extra`.
+- **Proxies.** Every proxy stays on the allowlist, because which proxies still hold a `db_grant` is not recorded.
+- **Hostnames.** A `server_ip` given as a name is resolved to its IPv4 addresses.
+- **The chain.** `DbAllowlist` keeps the rules in the chain `XCVM_DB`, jumped to from INPUT for the two ports, for IPv4 and IPv6, and touches no other rule.
+- **Reconciliation.** `RootSignalsCronJob` reconciles the chain every minute on MAIN. It compares the live chain with the wanted one and rewrites it with `iptables-restore --noflush` only when they differ, so a flush, a reboot or a server change is repaired within a minute. If the settings or the servers table cannot be read, the firewall is left as it is.
+- **The command.** `cluster:db-allowlist status` lists the allowed sources, whether each family's chain is in sync, and the established connections from outside the list (`ss`). `apply` and `undo` set the setting and act at once.
+- **Audit.** Changes are audited as `cluster.db_allowlist`.
+- **No shell.** Tools run with literal argv through `proc_open`.
+- **Password rotation** is Phase 9's (credentials and lockdown).
 
 ### Extension updates
 
