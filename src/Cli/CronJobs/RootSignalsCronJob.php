@@ -14,6 +14,7 @@ use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\Encryption;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\DbAllowlist;
 use XcVm\Domain\Server\ServerRepository;
@@ -198,6 +199,21 @@ class RootSignalsCronJob implements CommandInterface {
 		return array_map('strval', array_keys($rDb->get_rows(true, 'ip') ?: []));
 	}
 
+	/**
+	 * MAIN's address on its interface changed (the automatic server_ip
+	 * rewrite): store it, and announce it to the cluster nodes as an admin's
+	 * edit is, keeping the old URL a while (ClusterEndpoint::
+	 * recordMainChange()). Domain\Cluster is not in the LB build.
+	 *
+	 * @param array<string, mixed> $rServer MAIN's `servers` row before the change.
+	 */
+	public static function rewriteServerIP(object $rDb, int $rServerID, array $rServer, string $rServerIP): void {
+		$rDb->query('UPDATE `servers` SET `server_ip` = ? WHERE `id` = ?;', $rServerIP, $rServerID);
+		if (class_exists(ClusterEndpoint::class)) {
+			ClusterEndpoint::recordMainChange($rServer, ['server_ip' => $rServerIP] + $rServer, SettingsManager::getAll(), 'system');
+		}
+	}
+
 	private function loadCron(): void {
 		global $db;
 		$rServers = ServerRepository::getAll(true);
@@ -346,7 +362,7 @@ class RootSignalsCronJob implements CommandInterface {
 			$rServerIP = $this->getServerIP(($rServers[SERVER_ID]['network_interface'] == 'auto' ? null : $rServers[SERVER_ID]['network_interface']));
 			if ($rServerIP && $rServerIP != $rServers[SERVER_ID]['server_ip'] && $this->AutoUpdateServerIP) {
 				echo 'Updating server IP from ' . $rServers[SERVER_ID]['server_ip'] . ' to ' . $rServerIP . '...' . "\n";
-				$db->query('UPDATE `servers` SET `server_ip` = ? WHERE `id` = ?;', $rServerIP, SERVER_ID);
+				self::rewriteServerIP($db, SERVER_ID, $rServers[SERVER_ID], $rServerIP);
 				$rServers[SERVER_ID]['server_ip'] = $rServerIP;
 			}
 

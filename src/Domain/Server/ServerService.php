@@ -146,12 +146,7 @@ class ServerService {
 
 		$rInsertID = $rData['edit'];
 		EventDispatcher::dispatch(new ServerSavedEvent([(int) $rInsertID]));
-		// MAIN's HTTP port moved: announce it to the cluster nodes and keep the
-		// old port for the cluster API a while (before the ports are applied,
-		// so nginx gets both at once). Domain\Cluster is not in the LB build.
-		if (!empty($rServer['is_main']) && intval($rServer['http_broadcast_port'] ?? 0) !== intval($rArray['http_broadcast_port']) && class_exists(ClusterEndpoint::class) && SettingsManager::get('cluster_api_enabled')) {
-			ClusterEndpoint::recordChange(intval($rServer['http_broadcast_port'] ?? 0), intval($rArray['http_broadcast_port']), SettingsManager::getAll());
-		}
+		self::announceMainEndpoints($rServer, $rArray);
 		$rPorts = ['http' => [], 'https' => []];
 		foreach (array_merge([intval($rArray['http_broadcast_port'])], explode(',', $rArray['http_ports_add'])) as $rPort) {
 			if (is_numeric($rPort) && 0 < $rPort && $rPort <= 65535) {
@@ -195,6 +190,24 @@ class ServerService {
 		}
 
 		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
+	}
+
+	/**
+	 * MAIN's endpoints moved on its server page (its HTTP or HTTPS port, its
+	 * server_ip or private_ip): announce it to the cluster nodes, and keep
+	 * the old port or URL a while (ClusterEndpoint::recordMainChange()).
+	 * process() runs it once the row is stored and before the ports are
+	 * applied, so nginx gets a kept old port with the new ones. Returns
+	 * whether it was announced. Domain\Cluster is not in the LB build.
+	 *
+	 * @param array<string, mixed> $rServer The row before the save.
+	 * @param array<string, mixed> $rArray The columns the save stored.
+	 */
+	public static function announceMainEndpoints(array $rServer, array $rArray): bool {
+		if (empty($rServer['is_main']) || !class_exists(ClusterEndpoint::class)) {
+			return false;
+		}
+		return ClusterEndpoint::recordMainChange($rServer, $rArray + $rServer, SettingsManager::getAll());
 	}
 
 	/**

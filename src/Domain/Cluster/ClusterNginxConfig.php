@@ -3,7 +3,6 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
  * MAIN's nginx config for the cluster API (plan §3, "Transport" and
@@ -15,7 +14,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * | --- | --- | --- |
  * | `cluster_locations.conf` | the public `server{}`, and each server below | `location ^~ /cluster/v1/`, lanes from ClusterPool::INGEST_OPS |
  * | `cluster.d/listen.conf` | `http{}` | a plain-HTTP server on `cluster_api_port`, when it is not 0 |
- * | `cluster.d/old_port.conf` | `http{}` | a server per old port ClusterEndpoint keeps for 7 days |
+ * | `cluster.d/old_port.conf` | `http{}` | a server per old port ClusterEndpoint keeps for 7 days (an old HTTPS port over TLS, with the public server's `ssl.conf`) |
  *
  * The location applies the plan's transport limits: 100 r/s per TCP peer
  * (zone `cluster` in nginx.conf, keyed by `$realip_remote_addr`), burst 400,
@@ -42,8 +41,6 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * a render that failed and undoes one that raced a settings save.
  */
 final class ClusterNginxConfig {
-	use DatabaseAware;
-
 	public const LOCATIONS = 'cluster_locations.conf';
 
 	public const LISTEN = 'cluster.d/listen.conf';
@@ -140,6 +137,15 @@ final class ClusterNginxConfig {
 		foreach (ClusterEndpoint::legacyPorts($rSettings, $rNow) as $rPort => $rUntil) {
 			if (!in_array((int) $rPort, $rServed, true)) {
 				$rOld .= self::server((int) $rPort, (int) $rUntil);
+				$rServed[] = (int) $rPort;
+			}
+		}
+		// Old HTTPS ports (ClusterEndpoint keeps their https:// URLs), over TLS
+		// with the public server's certificate, unless a port is served above.
+		foreach (ClusterEndpoint::legacyHttpsPorts($rSettings, $rNow) as $rPort => $rUntil) {
+			if (!in_array($rPort, $rServed, true)) {
+				$rOld .= self::server($rPort, $rUntil, true);
+				$rServed[] = $rPort;
 			}
 		}
 		return [
@@ -327,25 +333,14 @@ final class ClusterNginxConfig {
 	}
 
 	/**
-	 * The stored settings, with the two the render reads read again from the
-	 * database: a settings save stores them after this process loaded its own.
+	 * The stored settings, with the ones the render reads (the API's port,
+	 * the kept ports and URLs) read again from the database: a settings save
+	 * or an endpoint change stores them after this process loaded its own.
 	 *
 	 * @return array<string, mixed>
 	 */
 	private static function stored(): array {
-		$rSettings = SettingsManager::getAll();
-		try {
-			$rDb = self::db();
-			if ($rDb->query('SELECT `cluster_api_port`, `cluster_legacy_ports` FROM `settings` LIMIT 1;')) {
-				$rRow = $rDb->get_row();
-				if (is_array($rRow) && $rRow !== []) {
-					$rSettings = $rRow + $rSettings;
-				}
-			}
-		} catch (\Throwable) {
-			// The loaded settings, then.
-		}
-		return $rSettings;
+		return ClusterEndpoint::stored(SettingsManager::getAll());
 	}
 
 	/**
@@ -429,12 +424,16 @@ final class ClusterNginxConfig {
 		return false;
 	}
 
-	/** One server{} for the cluster API alone on $rPort; $rUntil names an old port's expiry. */
-	private static function server(int $rPort, ?int $rUntil): string {
+	/**
+	 * One server{} for the cluster API alone on $rPort; $rUntil names an old
+	 * port's expiry. $rTls: over TLS, with the public server's ssl.conf.
+	 */
+	private static function server(int $rPort, ?int $rUntil, bool $rTls = false): string {
 		return "server {\n"
-			. '    listen ' . $rPort . ";\n"
+			. '    listen ' . $rPort . ($rTls ? ' ssl' : '') . ";\n"
 			. ($rUntil === null ? '' : '    # until ' . gmdate('Y-m-d H:i', $rUntil) . " UTC\n")
 			. "    server_tokens off;\n"
+			. ($rTls ? "    include ssl.conf;\n" : '')
 			. "    include cluster_locations.conf;\n"
 			. "    location / {\n"
 			. "        return 404;\n"

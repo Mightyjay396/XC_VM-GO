@@ -55,7 +55,7 @@ final class ClusterNginxConfigTest extends TestCase {
 		$this->rDb = new TestDb();
 		$this->rDb->exec('CREATE TABLE `cluster_audit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `time` int, `server_id` int, `actor` varchar(64), `event` varchar(64), `detail` text, `ip` varchar(64))');
 		// What apply() without settings renders from: the stored values.
-		$this->rDb->exec("CREATE TABLE `settings` (`id` INTEGER PRIMARY KEY, `cluster_api_enabled` int DEFAULT 0, `cluster_api_port` int DEFAULT 0, `cluster_policy_ver` int DEFAULT 1, `cluster_legacy_ports` varchar(255) DEFAULT '')");
+		$this->rDb->exec("CREATE TABLE `settings` (`id` INTEGER PRIMARY KEY, `cluster_api_enabled` int DEFAULT 0, `cluster_api_port` int DEFAULT 0, `cluster_policy_ver` int DEFAULT 1, `cluster_legacy_ports` varchar(255) DEFAULT '', `cluster_legacy_urls` text)");
 		$this->rDb->exec('INSERT INTO `settings` (`id`) VALUES (1)');
 		DatabaseFactory::set($this->rDb);
 		ClusterClock::fix($this->rNow * 1000);
@@ -556,6 +556,30 @@ final class ClusterNginxConfigTest extends TestCase {
 		$this->assertSame(2, (int) $this->stored()['cluster_policy_ver']);
 	}
 
+	/**
+	 * An old HTTPS port (ClusterEndpoint keeps the https:// URL of MAIN's
+	 * previous HTTPS port) is served over TLS for the cluster API alone. The
+	 * render reads the kept URLs from the database, not from the settings the
+	 * process loaded; cron:cluster drops them after their 7 days.
+	 */
+	public function testAnOldHttpsPortIsServedFromTheStoredSettings(): void {
+		file_put_contents($this->rBase . 'bin/nginx/conf/ports/https.conf', 'listen 8443 ssl;');
+		SettingsManager::set($this->stored());
+		$this->store('cluster_legacy_urls', (string) json_encode(['https://panel.example.com:25463/cluster/v1/' => $this->rNow + 60], JSON_UNESCAPED_SLASHES));
+		$this->assertSame(['ok' => true, 'changed' => true, 'reloaded' => true, 'error' => ''], ClusterNginxConfig::apply());
+		$rOld = (string) $this->conf(ClusterNginxConfig::OLD_PORT);
+		$this->assertStringContainsString("server {\n    listen 25463 ssl;\n    # until " . gmdate('Y-m-d H:i', $this->rNow + 60) . " UTC\n    server_tokens off;\n    include ssl.conf;\n    include cluster_locations.conf;\n", $rOld);
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+		$this->assertSame([], array_filter($this->rProbes, static fn(string $rProbe): bool => str_ends_with($rProbe, ':25463')), 'nginx served it until the change: no port check');
+
+		ClusterClock::fix(($this->rNow + 61) * 1000);
+		ClusterCronJob::endpoint();
+		$this->assertSame('', (string) $this->stored()['cluster_legacy_urls']);
+		$this->assertSame(2, (int) $this->stored()['cluster_policy_ver']);
+		$this->assertNull($this->conf(ClusterNginxConfig::OLD_PORT));
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+	}
+
 	/** cron:cluster, every minute and also with the API off: expired ports go, and nginx follows the stored settings. */
 	public function testCronRendersFromTheStoredSettingsEveryMinute(): void {
 		$this->store('cluster_legacy_ports', (string) json_encode([8080 => $this->rNow + 60]));
@@ -621,7 +645,8 @@ final class ClusterNginxConfigTest extends TestCase {
 
 	/**
 	 * The rendered files against a real nginx: the public server with the
-	 * location, a dedicated port and an old port pass `nginx -t`; a broken
+	 * location, a dedicated port, an old port and an old HTTPS port (with the
+	 * shipped ssl.conf and certificate) pass `nginx -t`; a broken
 	 * config elsewhere makes apply() put the previous files back.
 	 */
 	public function testRealNginx(): void {
@@ -643,9 +668,14 @@ final class ClusterNginxConfigTest extends TestCase {
 		file_put_contents($rBin, "#!/bin/sh\nexec " . escapeshellarg($rNginx) . ' -p ' . escapeshellarg($this->rBase . 'bin/nginx/') . " \"\$@\"\n");
 		chmod($rBin, 0755);
 
-		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => 31200, 'cluster_legacy_ports' => (string) json_encode([8080 => $this->rNow + 60])], false);
+		$rResult = ClusterNginxConfig::apply([
+			'cluster_api_port' => 31200,
+			'cluster_legacy_ports' => (string) json_encode([8080 => $this->rNow + 60]),
+			'cluster_legacy_urls' => (string) json_encode(['https://panel.example.com:8443/cluster/v1/' => $this->rNow + 60], JSON_UNESCAPED_SLASHES),
+		], false);
 		$this->assertSame(['ok' => true, 'changed' => true, 'reloaded' => false, 'error' => ''], $rResult);
 		$this->assertFileExists($this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::LISTEN);
+		$this->assertStringContainsString('listen 8443 ssl;', (string) $this->conf(ClusterNginxConfig::OLD_PORT), 'an old HTTPS port, with the shipped ssl.conf');
 
 		file_put_contents($this->rBase . 'bin/nginx/conf/custom.conf', "this is not nginx;\n");
 		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => 31300], false);

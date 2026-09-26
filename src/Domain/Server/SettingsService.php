@@ -30,7 +30,7 @@ class SettingsService {
 	use DatabaseAware;
 
 	/** Settings columns MAIN keeps for the cluster API itself (ClusterEndpoint), never set from a form. */
-	private const CLUSTER_STATE = ['cluster_policy_ver', 'cluster_legacy_ports'];
+	private const CLUSTER_STATE = ['cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
 
 	/**
 	 * Settings were saved: tell the listeners (the node replica's ETag cache,

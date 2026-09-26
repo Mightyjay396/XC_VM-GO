@@ -10,7 +10,8 @@ use XcVm\Core\Cluster\ClusterSettings;
  *
  * Plain HTTP on the MAIN's private (or public) IP is always listed, except
  * under `https_required`. HTTPS is listed first when `https_preferred`, or
- * when `auto` and MAIN's own certificate verifies.
+ * when `auto` and MAIN's own certificate verifies. The old ports and URLs
+ * kept for 7 days after an endpoint change (ClusterEndpoint) come last.
  */
 final class ClusterPolicy {
 	/**
@@ -61,12 +62,42 @@ final class ClusterPolicy {
 				}
 			}
 		}
-		$rUrls = $rTransport === 'https_required' ? $rHttps : array_merge($rHttps, $rHttp, $rOld);
+		// MAIN's old URLs after a change of its address or HTTPS port
+		// (ClusterEndpoint), the latest change first, listed while MAIN serves
+		// their port with their scheme: plain HTTP on a port the API answers
+		// over HTTP, HTTPS on any other (MAIN's HTTPS ports, or an old one
+		// ClusterNginxConfig serves over TLS).
+		$rPlain = self::plainPorts($rSettings, $rMain, $rHttpPort);
+		$rKept = [];
+		foreach (array_keys(ClusterEndpoint::legacyUrls($rSettings)) as $rUrl) {
+			$rParsed = ClusterEndpoint::parseUrl($rUrl);
+			$rTls = $rParsed !== null && $rParsed[0] === 'https';
+			if ($rParsed !== null && $rTls !== in_array($rParsed[1], $rPlain, true) && ($rTls || $rTransport !== 'https_required')) {
+				$rKept[] = $rUrl;
+			}
+		}
+		$rUrls = $rTransport === 'https_required' ? array_merge($rHttps, $rKept) : array_merge($rHttps, $rHttp, $rOld, $rKept);
 		return [
 			'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
 			'transport' => $rTransport,
-			'main_urls' => $rUrls,
+			'main_urls' => array_values(array_unique($rUrls)),
 		];
+	}
+
+	/**
+	 * The ports MAIN answers the cluster API on over plain HTTP: the API's
+	 * own, the public server's HTTP ports and the old ports kept.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @param array<string, mixed> $rMain
+	 * @return list<int>
+	 */
+	private static function plainPorts(array $rSettings, array $rMain, int $rHttpPort): array {
+		$rPorts = array_merge([$rHttpPort, intval($rMain['http_broadcast_port'] ?? 0)], array_keys(ClusterEndpoint::legacyPorts($rSettings)));
+		foreach (explode(',', (string) ($rMain['http_ports_add'] ?? '')) as $rPort) {
+			$rPorts[] = intval($rPort);
+		}
+		return array_values(array_unique(array_filter($rPorts, static fn(int $rPort): bool => $rPort > 0)));
 	}
 
 	private static function hostPort(string $rHost, int $rPort): string {

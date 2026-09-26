@@ -62,6 +62,7 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		'cluster_main_host' => ['varchar', ''],
 		'cluster_policy_ver' => ['int', '1'],
 		'cluster_legacy_ports' => ['varchar', ''],
+		'cluster_legacy_urls' => ['mediumtext', ''],
 		'lb_token_rotation_min' => ['int', '60'],
 		'lb_revocation_mode' => ['varchar', 'graceful'],
 		'lb_new_node_mode' => ['varchar', 'legacy'],
@@ -309,12 +310,14 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'main.example.com'])['status']);
 		$this->assertSame(3, $this->storedVer(), 'MAIN\'s DNS name is in the URLs too');
 
-		// The version (and the kept ports) are MAIN's own state: a form that
-		// posts them cannot rewind the policy, nor drop an old port early.
-		$this->rDb->query('UPDATE `settings` SET `cluster_legacy_ports` = ?', '{"25461":1800000000}');
-		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_policy_ver' => '1', 'cluster_legacy_ports' => ''])['status']);
+		// The version (and the kept ports and URLs) are MAIN's own state: a form
+		// that posts them cannot rewind the policy, nor drop an old URL early.
+		$rKeptUrls = '{"http://10.0.0.9:25461/cluster/v1/":1800000000}';
+		$this->rDb->query('UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_legacy_urls` = ?', '{"25461":1800000000}', $rKeptUrls);
+		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_policy_ver' => '1', 'cluster_legacy_ports' => '', 'cluster_legacy_urls' => ''])['status']);
 		$this->assertSame(3, $this->storedVer());
 		$this->assertSame('{"25461":1800000000}', $this->settings()['cluster_legacy_ports']);
+		$this->assertSame($rKeptUrls, $this->settings()['cluster_legacy_urls']);
 		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_policy_ver' => '1', 'cluster_transport' => 'auto'])['status']);
 		$this->assertSame(4, $this->storedVer());
 

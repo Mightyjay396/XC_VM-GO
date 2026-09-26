@@ -7,26 +7,43 @@ use XcVm\Core\Config\SettingsRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
- * MAIN endpoint changes (plan, "Endpoints and HTTPS"): when the port the
- * nodes reach the cluster API on changes, the nodes must not lose MAIN. That
- * port is MAIN's HTTP broadcast port while `cluster_api_port` = 0, and
- * `cluster_api_port` otherwise; either can change.
+ * MAIN endpoint changes (plan §3, "Endpoint changes"): when an address or a
+ * port the nodes reach the cluster API on changes, the nodes must not lose
+ * MAIN. What they use is the policy's URL list (ClusterPolicy): MAIN's
+ * private_ip, server_ip and `cluster_main_host` on its HTTP broadcast port
+ * (or on `cluster_api_port` when that is not 0), and its HTTPS broadcast
+ * port when the policy lists HTTPS.
  *
  * - The change is announced: `cluster_policy_ver` goes up, so every agent
  *   refetches the policy within one heartbeat (the reply carries the
- *   version) and moves to the new URLs.
- * - The old port stays up for the cluster API alone for GRACE (7 days): MAIN's
- *   nginx gets a server block on it that serves `/cluster/v1/` and nothing
- *   else (`bin/nginx/conf/cluster.d/old_port.conf`, rendered by
- *   ClusterNginxConfig), and the policy lists it after the new URLs, so a
- *   node that was offline during the change still finds MAIN.
- * - cron:cluster drops expired ports, bumps the policy again and renders the
- *   nginx config again so nginx releases them.
+ *   version) and moves to the new URLs. A change of MAIN's server row is
+ *   announced only while a node may use the URLs: the API is on and a node
+ *   is in mode ≥ 1 and not revoked.
+ * - An old plain-HTTP port stays up for the cluster API alone for GRACE (7
+ *   days): MAIN's nginx gets a server block on it that serves `/cluster/v1/`
+ *   and nothing else (`bin/nginx/conf/cluster.d/old_port.conf`, rendered by
+ *   ClusterNginxConfig), and the policy lists it on MAIN's current addresses
+ *   after the new URLs, so a node that was offline during the change still
+ *   finds MAIN (`cluster_legacy_ports`: port => expiry).
+ * - Every other URL the policy no longer lists (an old server_ip or
+ *   private_ip, an old HTTPS port) stays in it, last, for GRACE too
+ *   (`cluster_legacy_urls`: url => expiry, at most MAX_URLS, the latest
+ *   change first). nginx listens on every address, so an old address MAIN
+ *   still holds keeps answering; an old HTTPS port gets a TLS server of its
+ *   own in old_port.conf, with the public server's certificate.
+ * - cron:cluster drops expired ports and URLs, bumps the policy again and
+ *   renders the nginx config again so nginx releases them.
  */
 final class ClusterEndpoint {
 	use DatabaseAware;
 
 	public const GRACE = 7 * 86400;
+
+	/** At most this many old URLs are kept; the latest changes win. */
+	public const MAX_URLS = 8;
+
+	/** The settings columns of the endpoint state, read again from the database before use (stored()). */
+	private const STATE = ['cluster_api_port', 'cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
 
 	/**
 	 * Old ports still served for the cluster API: port => expiry (unix time).
@@ -48,18 +65,97 @@ final class ClusterEndpoint {
 	}
 
 	/**
-	 * MAIN's HTTP broadcast port went from $rOld to $rNew. Returns whether the
-	 * change was recorded (it is not when the API has its own port).
+	 * Old URLs still listed in the policy: url => expiry (unix time), the
+	 * latest change first. An entry that is no cluster API URL is dropped.
 	 *
 	 * @param array<string, mixed> $rSettings
+	 * @return array<string, int>
 	 */
-	public static function recordChange(int $rOld, int $rNew, array $rSettings): bool {
-		if ($rOld < 1 || $rOld === $rNew || intval($rSettings['cluster_api_port'] ?? 0) > 0) {
+	public static function legacyUrls(array $rSettings, ?int $rNow = null): array {
+		$rNow ??= ClusterClock::now();
+		$rOut = [];
+		$rDoc = json_decode((string) ($rSettings['cluster_legacy_urls'] ?? ''), true);
+		foreach (is_array($rDoc) ? $rDoc : [] as $rUrl => $rUntil) {
+			if (self::parseUrl((string) $rUrl) !== null && (int) $rUntil > $rNow) {
+				$rOut[(string) $rUrl] = (int) $rUntil;
+			}
+		}
+		arsort($rOut);
+		return $rOut;
+	}
+
+	/**
+	 * Old HTTPS ports: those of the kept https:// URLs, which nginx serves
+	 * over TLS for the cluster API alone unless it serves the port otherwise
+	 * (ClusterNginxConfig). port => expiry, the latest.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @return array<int, int>
+	 */
+	public static function legacyHttpsPorts(array $rSettings, ?int $rNow = null): array {
+		$rOut = [];
+		foreach (self::legacyUrls($rSettings, $rNow) as $rUrl => $rUntil) {
+			$rParsed = self::parseUrl($rUrl);
+			if ($rParsed !== null && $rParsed[0] === 'https') {
+				$rOut[$rParsed[1]] = max($rOut[$rParsed[1]] ?? 0, $rUntil);
+			}
+		}
+		ksort($rOut);
+		return $rOut;
+	}
+
+	/**
+	 * The scheme and port of a cluster API URL as the policy writes it
+	 * (`http[s]://<host>:<port>/cluster/v1/`), or null.
+	 *
+	 * @return array{0: string, 1: int}|null
+	 */
+	public static function parseUrl(string $rUrl): ?array {
+		if (!preg_match('#^(https?)://(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):(\d{1,5})/cluster/v1/$#', $rUrl, $rMatch) || (int) $rMatch[2] < 1 || (int) $rMatch[2] > 65535) {
+			return null;
+		}
+		return [$rMatch[1], (int) $rMatch[2]];
+	}
+
+	/**
+	 * MAIN's `servers` row went from $rOld to $rNew: an admin's save of its
+	 * server page (ServerService), or cron:root_signals' automatic server_ip
+	 * rewrite. When the URLs the policy lists change and a node may use them,
+	 * the change is announced: an old HTTP broadcast port is kept (while the
+	 * API has no port of its own), every other URL the policy no longer lists
+	 * is kept, one it lists again is not, and the policy version goes up.
+	 * Returns whether it was announced.
+	 *
+	 * @param array<string, mixed> $rOld
+	 * @param array<string, mixed> $rNew
+	 * @param array<string, mixed> $rSettings The loaded settings; the endpoint state is read again (stored()).
+	 */
+	public static function recordMainChange(array $rOld, array $rNew, array $rSettings, string $rActor = 'admin'): bool {
+		if (empty($rSettings['cluster_api_enabled'])) {
 			return false;
 		}
-		$rPorts = self::keep(self::legacyPorts($rSettings), $rOld, $rNew);
-		self::save($rPorts);
-		ClusterAudit::log('cluster.endpoint_change', null, ['from' => $rOld, 'to' => $rNew, 'old_until' => $rPorts[$rOld]], 'admin');
+		$rSettings = self::stored($rSettings);
+		// The URLs the policy lists for each row, without the old ones kept.
+		$rBase = ['cluster_legacy_ports' => '', 'cluster_legacy_urls' => ''] + $rSettings;
+		$rFrom = ClusterPolicy::current($rBase, $rOld)['main_urls'];
+		$rTo = ClusterPolicy::current($rBase, $rNew)['main_urls'];
+		if ($rFrom === $rTo || !self::nodesListening()) {
+			return false;
+		}
+		$rPorts = self::legacyPorts($rSettings);
+		$rHttpFrom = intval($rOld['http_broadcast_port'] ?? 0);
+		$rHttpTo = intval($rNew['http_broadcast_port'] ?? 0);
+		if (intval($rSettings['cluster_api_port'] ?? 0) === 0 && $rHttpFrom >= 1 && $rHttpFrom !== $rHttpTo) {
+			$rPorts = self::keep($rPorts, $rHttpFrom, $rHttpTo);
+		}
+		// What the policy lists with the old port kept: an old URL it no
+		// longer lists is kept, the latest change first.
+		$rListed = ClusterPolicy::current(['cluster_legacy_ports' => (string) json_encode($rPorts)] + $rBase, $rNew)['main_urls'];
+		$rKept = array_values(array_diff($rFrom, $rListed));
+		$rUrls = array_fill_keys($rKept, ClusterClock::now() + self::GRACE) + array_diff_key(self::legacyUrls($rSettings), array_flip($rListed));
+		arsort($rUrls);
+		self::save($rPorts, array_slice($rUrls, 0, self::MAX_URLS, true));
+		ClusterAudit::log('cluster.endpoint_change', null, ['urls_from' => $rFrom, 'urls_to' => $rTo, 'kept_urls' => $rKept, 'kept_ports' => $rPorts], $rActor);
 		return true;
 	}
 
@@ -103,19 +199,66 @@ final class ClusterEndpoint {
 	}
 
 	/**
-	 * Drop expired ports. Returns true when some were dropped: the caller then
-	 * renders the nginx config again (ClusterNginxConfig) so nginx releases them.
+	 * Drop expired ports and URLs. Returns true when some were dropped: the
+	 * caller then renders the nginx config again (ClusterNginxConfig) so
+	 * nginx releases them.
 	 *
 	 * @param array<string, mixed> $rSettings
 	 */
 	public static function prune(array $rSettings): bool {
-		$rDoc = json_decode((string) ($rSettings['cluster_legacy_ports'] ?? ''), true);
-		$rLive = self::legacyPorts($rSettings);
-		if (!is_array($rDoc) || count($rDoc) === count($rLive)) {
+		$rSettings = self::stored($rSettings);
+		$rPorts = self::legacyPorts($rSettings);
+		$rUrls = self::legacyUrls($rSettings);
+		$rPortDoc = json_decode((string) ($rSettings['cluster_legacy_ports'] ?? ''), true);
+		$rUrlDoc = json_decode((string) ($rSettings['cluster_legacy_urls'] ?? ''), true);
+		$rUrlsGone = is_array($rUrlDoc) && count($rUrlDoc) !== count($rUrls);
+		if (!$rUrlsGone && (!is_array($rPortDoc) || count($rPortDoc) === count($rPorts))) {
 			return false;
 		}
-		self::save($rLive);
-		ClusterAudit::log('cluster.endpoint_expired', null, ['kept' => array_keys($rLive)], 'cron');
+		self::save($rPorts, $rUrlsGone ? $rUrls : null);
+		ClusterAudit::log('cluster.endpoint_expired', null, ['kept' => array_keys($rPorts), 'kept_urls' => array_keys($rUrls)], 'cron');
+		return true;
+	}
+
+	/**
+	 * $rSettings with the endpoint state read again from the database: a
+	 * settings save, cron:cluster or cron:root_signals may have stored it
+	 * after this process loaded its settings, and a list written back from a
+	 * stale copy would lose what they kept.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @return array<string, mixed>
+	 */
+	public static function stored(array $rSettings): array {
+		try {
+			$rDb = self::db();
+			if ($rDb->query('SELECT * FROM `settings` LIMIT 1;')) {
+				$rRow = $rDb->get_row();
+				if (is_array($rRow)) {
+					$rSettings = array_intersect_key($rRow, array_flip(self::STATE)) + $rSettings;
+				}
+			}
+		} catch (\Throwable) {
+			// The loaded settings, then.
+		}
+		return $rSettings;
+	}
+
+	/**
+	 * Whether a node may use MAIN's URLs: one in mode ≥ 1 that is not
+	 * revoked (a node still enrolling dials the URLs of its cluster.json).
+	 * When the check fails, one may: a needless announcement costs each node
+	 * a hello, a missed one can strand them.
+	 */
+	private static function nodesListening(): bool {
+		try {
+			$rDb = self::db();
+			if ($rDb->query("SELECT 1 FROM `cluster_nodes` WHERE `mode` >= 1 AND `state` <> 'revoked' LIMIT 1;")) {
+				return $rDb->num_rows() > 0;
+			}
+		} catch (\Throwable) {
+			// Unknown, then.
+		}
 		return true;
 	}
 
@@ -133,10 +276,23 @@ final class ClusterEndpoint {
 		return $rPorts;
 	}
 
-	/** @param array<int, int> $rPorts */
-	private static function save(array $rPorts): void {
+	/**
+	 * Store the kept ports, and the kept URLs unless null, and announce: the
+	 * policy version goes up in the same UPDATE.
+	 *
+	 * @param array<int, int> $rPorts
+	 * @param array<string, int>|null $rUrls
+	 */
+	private static function save(array $rPorts, ?array $rUrls = null): void {
 		ksort($rPorts);
-		self::db()->query('UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1;', $rPorts === [] ? '' : (string) json_encode($rPorts));
+		$rPortDoc = $rPorts === [] ? '' : (string) json_encode($rPorts);
+		$rDb = self::db();
+		$rUrlDoc = $rUrls === null || $rUrls === [] ? '' : (string) json_encode($rUrls, JSON_UNESCAPED_SLASHES);
+		if ($rUrls === null || !$rDb->query('UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_legacy_urls` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1;', $rPortDoc, $rUrlDoc)) {
+			// The ports alone: no URL to store, or migration 044, which adds
+			// their column, has not run yet. The change is announced all the same.
+			$rDb->query('UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1;', $rPortDoc);
+		}
 		try {
 			SettingsManager::set(SettingsRepository::getAll(true));
 		} catch (\Throwable) {
