@@ -16,15 +16,26 @@ use XcVm\Tests\Support\FakeClusterCrypto;
  * formula; ensure() writes, starts and reloads them only when needed, and the
  * API answers a panel-signed 503 STARTING until both pools answer.
  *
- * The pools' processes are faked in most tests; the ping runs against a
- * FastCGI responder, the master lookup against a fake procfs, and
- * testRealPhpFpm against a real php-fpm, opt-in: XCVM_TEST_FPM=/path/to/php-fpm.
+ * The pools' processes are faked in most tests; the ping and the listen-queue
+ * probe run against a FastCGI responder, the master lookup against a fake
+ * procfs, and testRealPhpFpm and testRealPhpFpmListenQueue against a real
+ * php-fpm, opt-in: XCVM_TEST_FPM=/path/to/php-fpm.
  */
 final class ClusterPoolTest extends TestCase {
-	/** A FastCGI responder: one connection per mode given after the socket, in order. */
+	/**
+	 * A FastCGI responder: one connection per mode given after the socket, in
+	 * order; `sleep` takes none, and holds the next one in the listen queue
+	 * for 1.5 s. A first mode `backlog-0` makes its listen backlog one
+	 * connection long.
+	 */
 	private const RESPONDER = <<<'PHP'
 		<?php
-		$rServer = stream_socket_server('unix://' . $argv[1], $rErrNo, $rErrStr);
+		$rModes = array_slice($argv, 2);
+		$rBacklog = ($rModes[0] ?? '') === 'backlog-0' ? 0 : 32;
+		if ($rBacklog === 0) {
+			array_shift($rModes);
+		}
+		$rServer = stream_socket_server('unix://' . $argv[1], $rErrNo, $rErrStr, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, stream_context_create(['socket' => ['backlog' => $rBacklog]]));
 		if ($rServer === false) {
 			exit(1);
 		}
@@ -42,7 +53,15 @@ final class ClusterPoolTest extends TestCase {
 		$rRecord = static fn(int $rType, string $rBody, int $rPad = 0): string => pack('CCnnCC', 1, $rType, 1, strlen($rBody), $rPad, 0) . $rBody . str_repeat("\0", $rPad);
 		$rEnd = $rRecord(3, pack('NCx3', 0, 0));
 		$rHeaders = "Content-type: text/plain;charset=UTF-8\r\nExpires: Thu, 01 Jan 1970 00:00:00 GMT\r\n\r\n";
-		foreach (array_slice($argv, 2) as $rMode) {
+		// FPM's status page, as `pm.status_path` answers `?json`.
+		$rStatus = static fn(string $rPool, int $rQueue): string => $rRecord(6, "X-Powered-By: PHP/8.3.6\r\nContent-Type: application/json\r\n\r\n"
+			. json_encode(['pool' => $rPool, 'process manager' => 'ondemand', 'accepted conn' => 9, 'listen queue' => $rQueue, 'max listen queue' => 0, 'listen queue len' => 0, 'idle processes' => 0, 'active processes' => 1, 'total processes' => 1]))
+			. $rRecord(6, '') . $rEnd;
+		foreach ($rModes as $rMode) {
+			if ($rMode === 'sleep') {
+				usleep(1500000);
+				continue;
+			}
 			$rConn = stream_socket_accept($rServer, 10);
 			if ($rConn === false) {
 				exit(1);
@@ -61,6 +80,9 @@ final class ClusterPoolTest extends TestCase {
 				'cut' => [$rRecord(6, $rHeaders . 'pong')],
 				// Padded records, a STDERR record, the body across two records, in 5-byte writes.
 				'split' => str_split($rRecord(6, $rHeaders, 3) . $rRecord(7, 'a notice', 1) . $rRecord(6, 'po', 6) . $rRecord(6, 'ng', 7) . $rRecord(6, '') . $rEnd, 5),
+				'status' => [$rStatus('cluster_ctl', 0)],
+				'status-queue' => [$rStatus('cluster_ctl', 2)],
+				'status-www' => [$rStatus('www', 0)],
 			};
 			foreach ($rOut as $rPiece) {
 				fwrite($rConn, $rPiece);
@@ -358,25 +380,86 @@ final class ClusterPoolTest extends TestCase {
 		$this->assertMatchesRegularExpression('#if \(\$rServers\[SERVER_ID\]\[.is_main.\] && class_exists\(ClusterPool::class\)\) \{\s*ClusterPool::ensure\(#', (string) file_get_contents($rSrc . 'Cli/CronJobs/ServersCronJob.php'), 'cron:servers, as xc_vm, on MAIN only');
 	}
 
-	/** The ping over a pool's socket: FPM's response, and nothing else, is an answer. */
-	public function testThePingReadsFastCgiRecords(): void {
+	/**
+	 * Start the FastCGI responder on the control pool's socket.
+	 *
+	 * @param list<string> $rModes
+	 */
+	private function responder(array $rModes): void {
 		ClusterPool::useProcs(null);
 		$rScript = $this->rBase . 'responder.php';
 		file_put_contents($rScript, self::RESPONDER);
 		$rSocket = ClusterPool::socket('cluster_ctl', $this->rBase);
-		mkdir(dirname($rSocket), 0777, true);
+		@mkdir(dirname($rSocket), 0777, true);
 		$rNull = ['file', '/dev/null', 'w'];
-		$this->rResponder = proc_open([PHP_BINARY, '-n', $rScript, $rSocket, 'pong', 'other', 'cut', 'split'], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes);
+		$this->rResponder = proc_open([PHP_BINARY, '-n', $rScript, $rSocket, ...$rModes], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes);
 		for ($i = 0; $i < 250 && !file_exists($rSocket); $i++) {
 			usleep(20000);
 		}
 		$this->assertFileExists($rSocket, 'the responder listens');
+	}
+
+	/** The ping over a pool's socket: FPM's response, and nothing else, is an answer. */
+	public function testThePingReadsFastCgiRecords(): void {
+		$this->responder(['pong', 'other', 'cut', 'split']);
 
 		$this->assertTrue(ClusterPool::answers('cluster_ctl'), "FPM's ping response");
 		$this->assertFalse(ClusterPool::answers('cluster_ctl'), 'another body is not the ping');
 		$this->assertFalse(ClusterPool::answers('cluster_ctl'), 'a reply cut before END_REQUEST');
 		$this->assertTrue(ClusterPool::answers('cluster_ctl'), 'padded records, STDERR, a body over two records, split reads');
 		$this->assertFalse(ClusterPool::answers('cluster_ingest'), 'no socket');
+	}
+
+	/**
+	 * The listen-queue probe (plan §8, "Liveness"): FPM's status page over
+	 * the pool's socket, and the wait of its own request, which a pool with
+	 * no free worker leaves in the listen queue.
+	 */
+	public function testTheListenQueueProbeTimesItsOwnRequest(): void {
+		$this->responder(['status', 'sleep', 'status', 'status', 'other', 'status-queue', 'status', 'status-www', 'cut']);
+		$this->assertSame(0, ClusterPool::listenQueueMs('cluster_ctl'), 'answered at once, and FPM counts no queue');
+
+		// No request is taken for 1.5 s: the probe's own waits in the listen queue.
+		$rT = hrtime(true);
+		$rAge = ClusterPool::listenQueueMs('cluster_ctl');
+		$this->assertGreaterThanOrEqual((int) (ClusterPool::QUEUE_PROBE_WAIT * 1000), $rAge, 'not answered within QUEUE_PROBE_WAIT');
+		$this->assertLessThan(1000, (hrtime(true) - $rT) / 1e6, 'the probe blocks for QUEUE_PROBE_WAIT at most');
+		usleep(300000);
+		$rT = hrtime(true);
+		$this->assertGreaterThanOrEqual($rAge + 300, ClusterPool::listenQueueMs('cluster_ctl'), 'the same request, still waiting');
+		$this->assertLessThan(100, (hrtime(true) - $rT) / 1e6, 'a waiting request is read without blocking');
+
+		// Its answer comes late, which says only that the requests ahead of it
+		// were served: a new request, answered at once, says the queue drained.
+		usleep(1500000);
+		$this->assertSame(0, ClusterPool::listenQueueMs('cluster_ctl'));
+		$this->assertNull(ClusterPool::listenQueueMs('cluster_ctl'), 'no status page');
+		$this->assertGreaterThanOrEqual(1, ClusterPool::listenQueueMs('cluster_ctl'), "FPM's own count (TCP pools)");
+		$this->assertSame(0, ClusterPool::listenQueueMs('cluster_ctl'));
+		$this->assertNull(ClusterPool::listenQueueMs('cluster_ctl'), "another pool's status");
+		$this->assertNull(ClusterPool::listenQueueMs('cluster_ctl'), 'a reply cut before END_REQUEST');
+		for ($i = 0; $i < 250 && proc_get_status($this->rResponder)['running']; $i++) {
+			usleep(20000);
+		}
+		$this->assertNull(ClusterPool::listenQueueMs('cluster_ctl'), 'nobody listens on the socket');
+		$this->assertNull(ClusterPool::listenQueueMs('cluster_ingest'), 'no socket');
+	}
+
+	/** A connect refused because the pool's listen backlog is full counts as a queue, without waiting. */
+	public function testAFullBacklogIsAQueue(): void {
+		$this->responder(['backlog-0', 'sleep', 'status', 'status']);
+		// Another client's request fills the one-connection backlog.
+		$rOther = stream_socket_client('unix://' . ClusterPool::socket('cluster_ctl', $this->rBase), $rErrNo, $rErrStr, 1.0);
+		$this->assertIsResource($rOther);
+		$rT = hrtime(true);
+		$this->assertGreaterThanOrEqual(1, ClusterPool::listenQueueMs('cluster_ctl'));
+		$this->assertLessThan(100, (hrtime(true) - $rT) / 1e6, 'refused at once');
+		usleep(200000);
+		$this->assertGreaterThanOrEqual(200, ClusterPool::listenQueueMs('cluster_ctl'), 'the same queue, still full');
+		fclose($rOther);
+		// Once the responder takes the other request, the probe's is answered at once.
+		usleep(1600000);
+		$this->assertSame(0, ClusterPool::listenQueueMs('cluster_ctl'));
 	}
 
 	/** A pool's master is the FPM master started with its own config, never a panel pool's. */
@@ -454,5 +537,54 @@ final class ClusterPoolTest extends TestCase {
 		}
 		$this->assertNotSame($rCtlPid, (int) @file_get_contents($rRunDir . 'cluster_ctl.pid'), 'reloaded: FPM re-executes itself on SIGUSR2');
 		$this->assertTrue(ClusterPool::answers('cluster_ctl'));
+	}
+
+	/**
+	 * The listen-queue probe against a real php-fpm: its JSON status page,
+	 * and a pool of one worker held by a slow request, where the probe's own
+	 * request waits in the listen queue until the worker is free.
+	 */
+	public function testRealPhpFpmListenQueue(): void {
+		$rFpm = (string) getenv('XCVM_TEST_FPM');
+		if ($rFpm === '' || !is_executable($rFpm)) {
+			$this->markTestSkipped('no php-fpm (set XCVM_TEST_FPM)');
+		}
+		ClusterPool::useProcs(null);
+		foreach (['bin/php/etc/cluster', 'bin/php/sockets', 'bin/php/var/run'] as $rDir) {
+			mkdir($this->rBase . $rDir, 0777, true);
+		}
+		$rConf = $this->rBase . 'bin/php/etc/cluster/cluster_ctl.conf';
+		file_put_contents($rConf, ClusterPool::render('cluster_ctl', 1, $this->rBase, self::user()));
+		exec(escapeshellarg($rFpm) . ' -n -R -y ' . escapeshellarg($rConf) . ' 2>&1', $rOut, $rCode);
+		$this->assertSame(0, $rCode, implode("\n", $rOut));
+		for ($i = 0; $i < 50 && !ClusterPool::answers('cluster_ctl'); $i++) {
+			usleep(100000);
+		}
+		$this->assertSame(0, ClusterPool::listenQueueMs('cluster_ctl'), "FPM's JSON status, answered at once");
+
+		// The only worker runs a 2 s request.
+		$rSlow = $this->rBase . 'slow.php';
+		file_put_contents($rSlow, '<?php usleep(2000000); echo "done";');
+		$rRecord = static fn(int $rType, string $rBody): string => pack('CCnnCC', 1, $rType, 1, strlen($rBody), 0, 0) . $rBody;
+		$rParams = '';
+		foreach (['REQUEST_METHOD' => 'GET', 'SCRIPT_NAME' => '/slow.php', 'SCRIPT_FILENAME' => $rSlow] as $rName => $rValue) {
+			$rParams .= chr(strlen($rName)) . chr(strlen($rValue)) . $rName . $rValue;
+		}
+		$rHold = stream_socket_client('unix://' . ClusterPool::socket('cluster_ctl', $this->rBase), $rErrNo, $rErrStr, 2.0);
+		$this->assertIsResource($rHold);
+		fwrite($rHold, $rRecord(1, pack('nCx5', 1, 0)) . $rRecord(4, $rParams) . $rRecord(4, '') . $rRecord(5, ''));
+		usleep(300000);
+
+		$rAge = ClusterPool::listenQueueMs('cluster_ctl');
+		$this->assertGreaterThanOrEqual((int) (ClusterPool::QUEUE_PROBE_WAIT * 1000), $rAge, 'the status request waits for the worker');
+		usleep(500000);
+		$this->assertGreaterThanOrEqual($rAge + 500, ClusterPool::listenQueueMs('cluster_ctl'));
+
+		// The slow request ends: the worker serves the waiting status, then a new one at once.
+		stream_set_timeout($rHold, 5);
+		$this->assertStringContainsString('done', (string) stream_get_contents($rHold));
+		fclose($rHold);
+		usleep(300000);
+		$this->assertSame(0, ClusterPool::listenQueueMs('cluster_ctl'), 'drained');
 	}
 }
