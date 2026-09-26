@@ -16,8 +16,8 @@ use XcVm\Tests\Support\FakeClusterCrypto;
  * formula; ensure() writes, starts and reloads them only when needed, and the
  * API answers a panel-signed 503 STARTING until both pools answer.
  *
- * The pools' processes are faked here; testRealPhpFpm runs a real php-fpm
- * when one is available (XCVM_TEST_FPM=/path/to/php-fpm, or php-fpm on PATH).
+ * The pools' processes are faked here; testRealPhpFpm runs a real php-fpm,
+ * opt-in: XCVM_TEST_FPM=/path/to/php-fpm.
  */
 final class ClusterPoolTest extends TestCase {
 	private TestDb $rDb;
@@ -66,7 +66,7 @@ final class ClusterPoolTest extends TestCase {
 
 	protected function tearDown(): void {
 		if ($this->rFpmPid !== null) {
-			posix_kill($this->rFpmPid, SIGTERM);
+			posix_kill($this->rFpmPid, defined('SIGTERM') ? SIGTERM : 15);
 		}
 		ClusterPool::useProcs(null);
 		ClusterPool::useBase(null);
@@ -246,7 +246,7 @@ final class ClusterPoolTest extends TestCase {
 	 * FastCGI ping, and a new size reloads it in place.
 	 */
 	public function testRealPhpFpm(): void {
-		$rFpm = (string) (getenv('XCVM_TEST_FPM') ?: trim((string) shell_exec('command -v php-fpm 2>/dev/null')));
+		$rFpm = (string) getenv('XCVM_TEST_FPM');
 		if ($rFpm === '' || !is_executable($rFpm)) {
 			$this->markTestSkipped('no php-fpm (set XCVM_TEST_FPM)');
 		}
