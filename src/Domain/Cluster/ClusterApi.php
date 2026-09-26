@@ -691,8 +691,8 @@ final class ClusterApi {
 	 * whole section when there is no delta to give. `have` maps each section to
 	 * the ETag the node holds, so a section it already has is not sent again;
 	 * a section sent whole (settings, servers, node, crontab, cluster) goes
-	 * only to an agent that names it, and a name MAIN does not serve is left
-	 * out of the reply.
+	 * only to an agent that names it. A name MAIN does not serve, and a whole
+	 * section it cannot sign without a licence, are left out of the reply.
 	 */
 	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rSince = $rP['blocklist_since'] ?? 0;
@@ -709,8 +709,18 @@ final class ClusterApi {
 			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '')];
 			// Sent whole: only to an agent that asks for them (have names the section).
 			foreach (ReplicaBuilder::WHOLE as $rSection) {
-				if (array_key_exists($rSection, $rHave)) {
+				if (!array_key_exists($rSection, $rHave)) {
+					continue;
+				}
+				try {
 					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
+				} catch (ClusterRefusedException $rE) {
+					// A whole section grants: without a licence it is left out and
+					// the node keeps what it holds, while the blocklist's bans in
+					// the same reply still reach it.
+					if ($rE->reason() !== 'LICENCE') {
+						throw $rE;
+					}
 				}
 			}
 		} catch (ClusterRefusedException $rE) {

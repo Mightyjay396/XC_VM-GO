@@ -1101,6 +1101,30 @@ final class ClusterApiTest extends TestCase {
 		$this->denial($rRes, 403, 'LICENCE_INVALID');
 	}
 
+	public function testWithoutALicenceWholeSectionsAreLeftOutAndBansStillArrive(): void {
+		if (!$this->rCrypto instanceof FakeClusterCrypto) {
+			$this->markTestSkipped('the licence is switched off in the fake only');
+		}
+		$this->blocklistTables();
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `seg_time` int)');
+		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 6)");
+		$rKeys = $this->active();
+		$this->block('203.0.113.1');
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => '']], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->rCrypto->rLicensed = false;
+
+		// A whole section grants, so it cannot be signed: the node keeps what it
+		// holds, and the ban in the same call still reaches it.
+		$this->rDb->exec('UPDATE `settings` SET `seg_time` = 8');
+		$this->block('203.0.113.2');
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => $rOut['blocklist']['seq'], 'have' => ['settings' => $rOut['settings']['etag'], 'servers' => '']], 1, $rKeys);
+		$rNext = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame(['203.0.113.2'], $this->openRecord($rNext['blocklist']['delta'], 'blk')['add']);
+		$this->assertArrayNotHasKey('settings', $rNext, 'left out: not a malformed section today\'s agent would stop on');
+		$this->assertArrayNotHasKey('servers', $rNext);
+	}
+
 	public function testConnAdmitAdmitsForTheAuthenticatedNodeFromMainsOwnLine(): void {
 		$this->rDb->exec('CREATE TABLE `lines` (`id` INTEGER PRIMARY KEY, `max_connections` int, `pair_id` int, `enabled` int, `admin_enabled` int, `exp_date` int)');
 		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT, `uuid` text, `server_id` int, `user_id` int, `hmac_id` int, `hmac_identifier` text, `hls_end` int DEFAULT 0)');
