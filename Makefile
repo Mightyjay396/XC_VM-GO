@@ -56,9 +56,11 @@ LB_DIRS_TO_REMOVE := \
 	Core/Localization/lang
 
 # Files to remove from LB
-# Every LB_* entry must match a tracked path under src/, and nothing that
-# lb_configs/nginx.conf executes may be stripped — tools/ci/verify-lb-archive.sh
-# (make gates) fails on a STALE entry or a MISSING routed script.
+# Every LB_DIRS / LB_ROOT_FILES / LB_DIRS_TO_REMOVE / LB_FILES_TO_REMOVE entry must
+# name a tracked path under src/ of the right kind (a directory in the *DIRS*
+# lists, a file in the *FILES* lists), and nothing that lb_configs/nginx.conf
+# executes may be stripped — tools/ci/verify-lb-archive.sh (make gates) fails on a
+# STALE or WRONG-LIST entry or a MISSING routed script.
 # The viewer-API controllers (Player/Enigma2/XPlugin/Epg/PlaylistApiController,
 # BaseApiController) still ship: lb_configs/nginx.conf routes /api/player_api etc.
 # to Public/index.php. They go together with those routes in a later phase (§3
@@ -106,6 +108,13 @@ LB_FILES_TO_REMOVE := \
 	Core/Enum/ResellerAction.php \
 	Core/Enum/ClientFilter.php \
 	bin/nginx/conf/gzip.conf
+
+# Stripped trees that lb_delete_files_list must not delete from installed LBs yet.
+# Fresh LBs never get them, but LB code on routes the LB nginx still serves calls
+# them: Public/stream/rtmp.php (the RTMP on_play auth) and the viewer-API
+# controllers use Domain/User. An older LB that still carries it keeps it until
+# those routes go (§3 of the MAIN <-> LB API communication design).
+LB_KEEP_ON_UPDATE := Domain/User
 
 EXCLUDE_ARGS := $(addprefix --exclude=,$(EXCLUDES))
 
@@ -369,8 +378,10 @@ stamp_release_id:
 # part of the release's git deletions plus every file the LB build strips
 # (LB_FILES_TO_REMOVE and the tracked files under LB_DIRS_TO_REMOVE), so a file
 # newly stripped from the LB archive also leaves the LBs that already have it.
-# Stripped paths are taken from the code trees only: bin/, config/ and content/
-# hold runtime and per-server files that an update must never delete.
+# Stripped paths are taken from the code trees only, minus LB_KEEP_ON_UPDATE:
+# bin/, config/ and content/ hold runtime and per-server files that an update
+# must never delete. tools/ci/verify-lb-archive.sh fails if the list names a
+# file the LB archive ships (DELETES-SHIPPED).
 lb_delete_files_list:
 	@echo "[INFO] Building the LB deleted files list (git deletions + LB strip lists)"
 	@mkdir -p "$(TEMP_DIR)/migrations"
@@ -386,7 +397,10 @@ lb_delete_files_list:
 		{ \
 			for f in $(LB_FILES_TO_REMOVE); do echo "$$f"; done; \
 			for d in $(LB_DIRS_TO_REMOVE); do git ls-files -- "src/$$d" | sed 's#^src/##'; done; \
-		} | grep -E '^(Cli|Core|Domain|Infrastructure|Public|Streaming)/'; \
+		} | grep -E '^(Cli|Core|Domain|Infrastructure|Public|Streaming)/' \
+			| awk -v keep="$(LB_KEEP_ON_UPDATE)" ' \
+				BEGIN { n=split(keep,k," ") } \
+				{ for(i=1;i<=n;i++) if($$0==k[i] || index($$0,k[i]"/")==1) next; print }'; \
 	} | sort -u > "$(TEMP_DIR)/migrations/deleted_files.txt"
 	@if [ -s "$(TEMP_DIR)/migrations/deleted_files.txt" ]; then \
 		echo "[INFO] LB files to delete on update: $$(grep -c . "$(TEMP_DIR)/migrations/deleted_files.txt")"; \
