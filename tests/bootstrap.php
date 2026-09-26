@@ -92,6 +92,7 @@ require_once __DIR__ . '/Support/ClusterReference.php';
 require_once __DIR__ . '/Support/FakeClusterCrypto.php';
 require_once __DIR__ . '/Support/FakeSshFleet.php';
 require_once __DIR__ . '/Support/BusServer.php';
+require_once __DIR__ . '/Support/QueryLogDb.php';
 
 // EventIngest's lane locks are real flock files. Without this they would land
 // in the shared TMP_PATH or system temp dir, where suite runs from other

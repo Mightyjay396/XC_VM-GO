@@ -39,6 +39,11 @@ use XcVm\Core\Process\ProcessManager;
  * first write lets the rest through): their size is bounded by
  * authenticated traffic, and past maxmemory they push out the keys with a
  * TTL.
+ *
+ * And the heartbeats (HeartbeatService, through script()): `cl:hb` and
+ * `cl:hb_flushed` (a field per node, no TTL), `cl:tel:<sid>` (the telemetry
+ * document, 10 min TTL), `cl:flusher` and `cl:flush_lock`, which the
+ * liveness loop flushes into MySQL.
  */
 final class ClusterBus {
 	/** Seconds a wake waits for its reader. */
