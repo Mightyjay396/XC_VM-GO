@@ -359,7 +359,7 @@ class ConnectionTracker {
 			} elseif (is_array($rCustomData) && ($rCustomData['type'] ?? '') === 'drop_con') {
 				[$rRouted, $rQueued] = ClusterRoute::drop($rServerID, (string) ($rCustomData['uuid'] ?? ''));
 			}
-			if (!empty($rRouted)) {
+			if ($rRouted) {
 				return $rQueued ? [true, true] : false;
 			}
 		}

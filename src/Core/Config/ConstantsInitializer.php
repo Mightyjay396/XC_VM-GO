@@ -157,6 +157,7 @@ class ConstantsInitializer {
 			'XC_VM_VERSION'     => XC_VM_VERSION,
 			'GIT_OWNER'         => 'Vateron-Media',
 			'GIT_REPO_MAIN'     => 'XC_VM',
+			'GIT_REPO_DEV'      => 'XC_VM_Dev',
 			'GIT_REPO_UPDATE'   => 'XC_VM_Update',
 			'GIT_REPO_BIN'      => 'XC_VM_Binaries',
 			'GIT_REPO_FANOUT'   => 'XC_VM_Fanout',

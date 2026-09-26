@@ -36,6 +36,22 @@ sudo -u xc_vm /home/xc_vm/console.php update update
 
 Downloads and applies the latest update from GitHub. Usually triggered automatically through the web panel.
 
+## Update Channels
+
+**Settings → General → Updates** sets the release channel for each component. The panel channel also applies to every load balancer.
+
+| Channel | Panel receives |
+|---------|----------------|
+| `Stable` | Stable releases only |
+| `Beta` | Stable releases and pre-releases |
+| `Dev (nightly)` | Everything in `Beta`, plus nightly builds of the `main` branch (`X.Y.Z-dev.N`) |
+
+`Dev` is offered for the panel only. Nightly builds are published to the separate [XC_VM_Dev](https://github.com/Vateron-Media/XC_VM_Dev/releases) repository, at most once a day and only when `main` has changed.
+
+> ⚠️ Nightly builds are untested. Use `Dev` on test servers only: a nightly may apply a database migration that a later build revises.
+
+To leave `Dev`, switch the channel back to `Stable`. A nightly `X.Y.Z-dev.N` is older than the release `X.Y.Z`, so the panel updates to that release as soon as it is published. To return to the previous release right away, use a [rollback](#rolling-back-a-server). Nightly builds are never offered as rollback targets.
+
 ## Rolling Back a Server
 
 If an update introduces a problem, you can roll a server back to an earlier release directly from the panel. Rollback works per-server, so both the **MAIN** panel and individual **Load Balancers** can be downgraded independently.
@@ -52,7 +68,7 @@ Clicking **Rollback** inserts a `rollback` signal (carrying the chosen version) 
 
 > 💾 On the **MAIN** server a database backup is taken automatically before the rollback, saved to `/home/xc_vm/backups/pre_rollback_<from>_to_<to>_<timestamp>.sql`. Load balancers have no database, so this step is skipped.
 
-The versions offered depend on the server's update channel: on the `stable` channel only stable releases are listed; on `beta` you also see `(beta)` pre-releases.
+The versions offered depend on the server's update channel: on the `stable` channel only stable releases are listed; on `beta` and `dev` you also see `(beta)` pre-releases.
 
 > ⚠️ A rollback **does not undo database migrations** — they are forward-only. The schema is designed to stay backward-compatible, and the automatic backup is the recovery path if an older build cannot read newer data. Use rollback only as a recovery step.
 
