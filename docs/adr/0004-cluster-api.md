@@ -670,7 +670,25 @@ A section carries the log head read before the snapshot, so a change made in bet
 
 **The agent.** `internal/clusteragent/replica.go` calls `config` every minute, and again at once while `more` is set. It stores only records that open for this node and verify against the pinned panel key, and a `rep` must name this node and match what the reply announced. It keeps them as they came, under `config/cluster/replica/`: `blocklist.rep`, the deltas since it in `blocklist.d/<seq>.blk`, and `state.json`. A new section removes the deltas. Once a day, or past 1000 deltas, it asks from 0 with the ETag it holds, which is the plan's daily safety net. The plan puts the replica under `var/cluster/replica/`; it lives beside the agent's other state instead.
 
-**Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `cluster:apply`, which turns the stored records into the LB's caches and iptables, `ReplicaStage`, and the mode-2 refusal.
+### Applying the blocklist (Phase 7, third increment)
+
+**Materialising.** After a change, the agent writes `replica/blocklist.json`: the stored section with its deltas applied in seq order. It opens and verifies each record again first, and PHP holds no key to open them. It then runs `console.php cluster:apply` (`ClusterApplyCommand`, with the work in `Core/Cluster/ReplicaApply`).
+
+**The caches.** `cluster:apply` turns the file into the four caches `cron:cache` builds from MAIN's database, in the same shapes, so every reader keeps its contract:
+
+| Cache | Source |
+| --- | --- |
+| `blocked_ips` | the addresses |
+| `blocked_servers` | the blocked ASNs |
+| `blocked_ua` | `[id => {id, exact_match, blocked_ua}]`, lower-cased |
+| `blocked_isp` | `[{id, isp, blocked}]` |
+
+What it does depends on the node's CONFIG flow:
+
+- **CONFIG off (shadow).** Nothing is written. `replica/apply.json` counts, per cache, entries the database has that the replica lacks (`missing`) and the reverse (`extra`). Rows are compared by value, whichever driver typed them. Zeros there are the evidence for switching CONFIG on.
+- **CONFIG on.** The replica writes the caches. `cron:cache` stops writing them, and `BlocklistService::getBlocked*` read the cache instead of refreshing it from the database. Without that, the next reader would overwrite the replica within 20 s.
+
+**Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. Three blocklist consumers still read MAIN's database directly: `rtmp.php`, which calls `getAllowedRTMP`, `cron:root_signals`' iptables sync, and the `rtmp_ips` cache, which MAIN alone builds. Each needs its own replica reader before a node can leave the database.
 
 ### Disaster recovery of MAIN's cluster keys
 

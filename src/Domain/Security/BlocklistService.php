@@ -5,6 +5,7 @@ namespace XcVm\Domain\Security;
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Util\AdminHelpers;
@@ -311,6 +312,9 @@ class BlocklistService {
 	 * @return array Blocked user agents.
 	 */
 	public static function getBlockedUA(bool $rForce = false) {
+		if (NodeFlows::on(NodeFlows::CONFIG)) {
+			return FileCache::getCache('blocked_ua') ?: []; // the node replica's (cluster:apply)
+		}
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('blocked_ua', 20);
@@ -334,6 +338,9 @@ class BlocklistService {
 	 * @return array Blocked IPs.
 	 */
 	public static function getBlockedIPs(bool $rForce = false) {
+		if (NodeFlows::on(NodeFlows::CONFIG)) {
+			return FileCache::getCache('blocked_ips') ?: []; // the node replica's (cluster:apply)
+		}
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('blocked_ips', 20);
@@ -360,6 +367,9 @@ class BlocklistService {
 	 * @return array Blocked ISPs.
 	 */
 	public static function getBlockedISP(bool $rForce = false) {
+		if (NodeFlows::on(NodeFlows::CONFIG)) {
+			return FileCache::getCache('blocked_isp') ?: []; // the node replica's (cluster:apply)
+		}
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('blocked_isp', 20);
@@ -383,6 +393,9 @@ class BlocklistService {
 	 * @return array Blocked servers/ASNs.
 	 */
 	public static function getBlockedServers(bool $rForce = false) {
+		if (NodeFlows::on(NodeFlows::CONFIG)) {
+			return FileCache::getCache('blocked_servers') ?: []; // the node replica's (cluster:apply)
+		}
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('blocked_servers', 20);
