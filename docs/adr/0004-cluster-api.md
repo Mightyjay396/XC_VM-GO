@@ -617,6 +617,34 @@ The close reaches MAIN within about a second, with no WAN read from the node.
 - the `conn.touch` state;
 - per-op semaphores.
 
+### Blocklist delta (Phase 7, first increment)
+
+**The log.** Every path that blocks or unblocks something appends to `cluster_changes` (section `blocklist`) through `Core/Cluster/BlocklistChanges`. No triggers are used. Each row names the kind and the key that changed:
+
+| Kind | Table | Key |
+| --- | --- | --- |
+| `ip` | `blocked_ips` | the address |
+| `ua` | `blocked_uas` | `id` |
+| `isp` | `blocked_isps` | `id` |
+| `asn` | `blocked_asns` | `id` |
+| `rtmp` | `rtmp_ips` | `id` |
+
+A row does not say what the key became; MAIN reads that when it serves the change. Bulk changes record `reset` for their kind instead of keys: a flush, a whole ASN type, a migration from another panel, or more than 500 keys at once. Recording never fails the block itself.
+
+**The paths.** The admin's block, edit and delete of each kind (`BlocklistService`, the ASN and MySQL-syslog actions, the ASN bulk buttons), the flushes (admin, API, `tools`), the flood guard on MAIN and on legacy LBs, the Ministra portal's bans, `cache_handler`'s signals, `security.block_ip`, MAIN's auto-unban in `cron:root_signals` (which now selects what it removes), and the migration. The ASN catalog sync is exempt: it only upserts reference columns and prunes unblocked ASNs, so no blocked ASN changes. `BlocklistDeltaTest` fails when a new file writes a blocklist table without logging it.
+
+**The read.** `Domain/Cluster/BlocklistDelta::since($id)` gives a node everything past the last id it applied:
+
+- each changed key's current row, or its removal (an unblocked ASN counts as removed);
+- the kinds a `reset` touched, to reload whole;
+- `full` when there is no starting point: `since` is 0, the log was pruned past it, or the log went backwards (a restore).
+
+The order of two changes to one key never matters. `snapshot()` is the whole list. The node receives the RTMP password with its RTMP rows, because it checks publishers against it. The section is sealed to the node.
+
+**Pruning.** `cron:cluster` keeps seven days of the log, and always keeps its newest row, so a quiet week does not send every node into a full reload. It prunes even while the cluster API is off, because the log is written either way.
+
+**Not built:** serving the delta. The `config` op, the sealed and signed R1 sections, `cluster:apply` and the node's replica come next in Phase 7. `allowed_ips`, `proxy_servers` and `allowed_domains` come from `servers` and the settings, and travel whole with the section.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

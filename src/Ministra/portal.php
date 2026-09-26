@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\GeoIP\GeoIPService;
 use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\ImageUtils;
@@ -158,6 +159,7 @@ if (!$rSettings["disable_ministra"]) {
 					$rBanData["notes"],
 					$rBanData["date"],
 				);
+				BlocklistChanges::set('ip', [$rIP], $db);
 				http_response_code(404);
 				die();
 			}
@@ -175,6 +177,7 @@ if (!$rSettings["disable_ministra"]) {
 					$rBanData["notes"],
 					$rBanData["date"],
 				);
+				BlocklistChanges::set('ip', [$rIP], $db);
 				http_response_code(404);
 				die();
 			}

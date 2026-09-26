@@ -7,6 +7,7 @@ use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\CommandBus;
@@ -22,6 +23,7 @@ use XcVm\Domain\Server\ServerRepository;
  * - expired token epochs are deleted, which erases their `z`;
  * - the replay cache and single-use challenges past their 180 s go;
  * - enrolment codes nobody used, and decided requests after a day, go;
+ * - the blocklist's change log keeps seven days (also with the API off);
  * - the liveness loop runs once (the signals daemon runs it every second).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
@@ -45,7 +47,16 @@ class ClusterCronJob implements CommandInterface {
 		if (!$this->assertRunAsXcVm()) {
 			return 1;
 		}
-		if (!NodeRole::isMain() || empty(SettingsManager::get('cluster_api_enabled'))) {
+		if (!NodeRole::isMain()) {
+			return 0;
+		}
+		if (empty(SettingsManager::get('cluster_api_enabled'))) {
+			// The blocklist's change log is written either way; it is kept short.
+			try {
+				BlocklistDelta::prune();
+			} catch (\Throwable) {
+				// The next minute tries again.
+			}
 			return 0;
 		}
 		$this->setProcessTitle('XC_VM[Cluster]');
@@ -62,6 +73,7 @@ class ClusterCronJob implements CommandInterface {
 			'nonces' => static fn() => NonceStore::purge(),
 			'enrol_codes' => static fn() => EnrolCodeService::prune(),
 			'commands' => static fn() => CommandBus::prune(),
+			'blocklist_changes' => static fn() => BlocklistDelta::prune(),
 			// MAIN's old HTTP ports past their 7 days: release them in nginx.
 			'endpoint' => static function () {
 				if (ClusterEndpoint::prune(SettingsManager::getAll()) && defined('SERVER_ID')) {

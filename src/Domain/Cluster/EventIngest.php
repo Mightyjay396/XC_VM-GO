@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\Redactor;
@@ -250,6 +251,7 @@ final class EventIngest {
 		$db->query('SELECT COUNT(*) AS `n` FROM `blocked_ips` WHERE `ip` = ?;', $rIP);
 		if ((int) ($db->get_row()['n'] ?? 0) === 0) {
 			$db->query('INSERT INTO `blocked_ips` (`ip`, `notes`, `date`) VALUES (?, ?, ?);', $rIP, $rReason, time());
+			BlocklistChanges::set('ip', [$rIP], $db);
 		}
 		ClusterAudit::log('security.block_ip', $rServerID, ['ip' => $rIP, 'reason' => $rReason], 'node');
 		return true;

@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
@@ -104,11 +105,13 @@ class CacheHandlerCommand implements CommandInterface {
 						case 'flood_attack':
 							list($rBlank, $rIP) = explode('/', $rKey);
 							$db->query('INSERT INTO `blocked_ips` (`ip`,`notes`,`date`) VALUES(?,?,?)', $rIP, 'FLOOD ATTACK', time());
+							BlocklistChanges::set('ip', [$rIP], $db);
 							touch(FLOOD_TMP_PATH . 'block_' . $rIP);
 							break;
 						case 'bruteforce_attack':
 							list($rBlank, $rIP) = explode('/', $rKey);
 							$db->query('INSERT INTO `blocked_ips` (`ip`,`notes`,`date`) VALUES(?,?,?)', $rIP, 'BRUTEFORCE ATTACK', time());
+							BlocklistChanges::set('ip', [$rIP], $db);
 							touch(FLOOD_TMP_PATH . 'block_' . $rIP);
 							break;
 					}

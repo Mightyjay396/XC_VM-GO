@@ -1,6 +1,7 @@
 <?php
 
 use XcVm\Core\Auth\AuthRepository;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Database\QueryHelper;
 
@@ -1568,6 +1569,10 @@ try {
 }
 if (in_array('access_codes', $rMigrateOptions)) {
 	echo "\n" . 'Admin acces code: ' . $AdminAccesCode;
+}
+// The blocklist tables were rewritten whole: nodes reload them.
+foreach (BlocklistChanges::KINDS as $rKind) {
+	BlocklistChanges::reset($rKind, $db);
 }
 echo "\n" . 'Migration has been completed!' . "\n\n" . 'Your settings have been reset to the XC_VM default, please take some time to review the settings page and make the desired changes.' . "\n";
 

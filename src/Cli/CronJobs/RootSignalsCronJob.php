@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\OpensslExtra;
@@ -195,7 +196,14 @@ class RootSignalsCronJob implements CommandInterface {
 				$rUnbanMul = ['minutes' => 60, 'hours' => 3600, 'days' => 86400];
 				$rUnbanUnit = (string) ($rUnbanSettings['ban_duration_unit'] ?? 'hours');
 				$rUnbanSecs = max(1, intval($rUnbanSettings['ban_duration_value'] ?? 24)) * ($rUnbanMul[$rUnbanUnit] ?? 3600);
-				$db->query("DELETE FROM `blocked_ips` WHERE `date` < ? AND (UPPER(`notes`) LIKE '%ATTACK%' OR UPPER(`notes`) LIKE '%BRUTEFORCE%' OR UPPER(`notes`) LIKE '%FLOOD%');", time() - $rUnbanSecs);
+				$rUnbanWhere = "`date` < ? AND (UPPER(`notes`) LIKE '%ATTACK%' OR UPPER(`notes`) LIKE '%BRUTEFORCE%' OR UPPER(`notes`) LIKE '%FLOOD%')";
+				$rUnbanBefore = time() - $rUnbanSecs;
+				$db->query('SELECT `ip` FROM `blocked_ips` WHERE ' . $rUnbanWhere . ';', $rUnbanBefore);
+				$rUnbanned = array_column($db->get_rows() ?: [], 'ip');
+				if ($rUnbanned !== []) {
+					$db->query('DELETE FROM `blocked_ips` WHERE ' . $rUnbanWhere . ';', $rUnbanBefore);
+					BlocklistChanges::del('ip', $rUnbanned, $db);
+				}
 			}
 
 			$rSyncMarker = CRONS_TMP_PATH . 'blocked_ips_sync_marker';
