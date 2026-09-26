@@ -8,6 +8,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Localization\Translator;
 use XcVm\Domain\Cluster\ClusterMeta;
+use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Fanout\FanoutConfig;
 use XcVm\Streaming\Fanout\FanoutMode;
@@ -88,6 +89,30 @@ class SettingsService {
 		}
 		$rArray = array_merge($rArray, $rValues);
 		return array_map(static fn($rError) => Translator::get($rError[1]), $rErrors);
+	}
+
+	/**
+	 * A save that changes `cluster_api_port`: nginx gets the new port before
+	 * the value is stored (ClusterNginxConfig::stageApiPort(), with the stored
+	 * settings and the main server's row). Null when the port stays, or on a
+	 * build without the cluster domain (LB).
+	 *
+	 * @param array<string, mixed> $rArray Settings about to be written.
+	 * @return array{refused: ?string, error: string, record: array{0: int, 1: int, 2: array<string, mixed>, 3: array<string, mixed>}}|null
+	 */
+	private static function stageClusterApiPort(array $rArray): ?array {
+		if (!array_key_exists('cluster_api_port', $rArray) || !class_exists(ClusterNginxConfig::class)) {
+			return null;
+		}
+		$rCurrent = SettingsManager::getAll();
+		$rMain = [];
+		foreach (ServerRepository::getAll() as $rServer) {
+			if (!empty($rServer['is_main'])) {
+				$rMain = $rServer;
+				break;
+			}
+		}
+		return ClusterNginxConfig::stageApiPort(intval($rCurrent['cluster_api_port'] ?? 0), intval($rArray['cluster_api_port']), $rCurrent, $rMain);
 	}
 
 	/**
@@ -175,8 +200,21 @@ class SettingsService {
 			return ['status' => STATUS_FAILURE];
 		}
 
+		// A new cluster_api_port: nginx serves it before it is stored, or the
+		// save is refused and nothing changed.
+		$rApiPort = self::stageClusterApiPort($rArray);
+		if ($rApiPort !== null && $rApiPort['refused'] !== null) {
+			return ['status' => STATUS_INVALID_DATA, 'data' => ['message' => trim(Translator::get($rApiPort['refused']) . ' ' . htmlspecialchars($rApiPort['error'], ENT_QUOTES))]];
+		}
+
 		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . ';';
-		if ($db->query($rQuery, ...$rPrepare['data'])) {
+		$rStored = $db->query($rQuery, ...$rPrepare['data']);
+		if ($rApiPort !== null) {
+			// Stored: the nodes move to the new port (the old one is served for
+			// 7 days). Either way nginx follows what is stored.
+			ClusterNginxConfig::commitApiPort($rApiPort, (bool) $rStored);
+		}
+		if ($rStored) {
 			SettingsManager::clearCache();
 			FanoutConfig::sync($rArray);
 			// Apply the fanout switch on this node now; every other node picks it

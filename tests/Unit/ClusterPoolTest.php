@@ -311,15 +311,18 @@ final class ClusterPoolTest extends TestCase {
 		$this->assertSame('cluster_ingest', ClusterPool::poolFor('events'));
 		$this->assertSame('cluster_ctl', ClusterPool::poolFor('no_such_op'), 'refused on the control pool');
 
-		$rConf = (string) file_get_contents(dirname(__DIR__, 2) . '/src/bin/nginx/conf/nginx.conf');
-		$this->assertMatchesRegularExpression('#location \^~ /cluster/v1/ \{[^}]*fastcgi_pass cluster_ctl;#', $rConf);
-		$this->assertMatchesRegularExpression('#location ~ \^/cluster/v1/\(([a-z_|]+)\)\$ \{\s*fastcgi_pass cluster_ingest;#', $rConf);
-		preg_match('#location ~ \^/cluster/v1/\(([a-z_|]+)\)\$ \{#', $rConf, $rMatch);
+		// The location is rendered (ClusterNginxConfig) into the file the public server includes.
+		$rLocations = (string) file_get_contents(dirname(__DIR__, 2) . '/src/bin/nginx/conf/cluster_locations.conf');
+		$this->assertMatchesRegularExpression('#location \^~ /cluster/v1/ \{[^}]*fastcgi_pass cluster_ctl;#', $rLocations);
+		$this->assertMatchesRegularExpression('#location ~ \^/cluster/v1/\(([a-z_|]+)\)\$ \{\s*fastcgi_pass cluster_ingest;#', $rLocations);
+		preg_match('#location ~ \^/cluster/v1/\(([a-z_|]+)\)\$ \{#', $rLocations, $rMatch);
 		$rRouted = explode('|', $rMatch[1]);
 		sort($rRouted);
 		$rIngest = ClusterPool::INGEST_OPS;
 		sort($rIngest);
-		$this->assertSame($rIngest, $rRouted, "nginx.conf's ingest location lists INGEST_OPS");
+		$this->assertSame($rIngest, $rRouted, "the ingest location lists INGEST_OPS");
+
+		$rConf = (string) file_get_contents(dirname(__DIR__, 2) . '/src/bin/nginx/conf/nginx.conf');
 
 		foreach (array_keys(ClusterPool::POOLS) as $rPool) {
 			$this->assertMatchesRegularExpression('#upstream ' . $rPool . ' \{\s*server unix:' . preg_quote(ClusterPool::socket($rPool, '/home/xc_vm/'), '#') . ' max_fails=0;\s*server unix:/home/xc_vm/bin/php/sockets/1\.sock backup;\s*\}#', $rConf, $rPool . ': its own socket, never taken out of rotation; the panel pool for a request that cannot reach it');

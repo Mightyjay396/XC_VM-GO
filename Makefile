@@ -91,6 +91,7 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/ClusterEnrolCodeCommand.php \
 	Cli/Commands/ClusterEnrolApproveCommand.php \
 	Cli/Commands/ClusterPoolsCommand.php \
+	Cli/Commands/ClusterNginxCommand.php \
 	Cli/Commands/AgentBinaryCommand.php \
 	Cli/Commands/ServerEnrolCommand.php \
 	Cli/Commands/SshChannel.php \
@@ -108,7 +109,8 @@ LB_FILES_TO_REMOVE := \
 	Core/Enum/Theme.php \
 	Core/Enum/ResellerAction.php \
 	Core/Enum/ClientFilter.php \
-	bin/nginx/conf/gzip.conf
+	bin/nginx/conf/gzip.conf \
+	bin/nginx/conf/cluster_locations.conf
 
 # Stripped trees that lb_delete_files_list must not delete from installed LBs yet.
 # Fresh LBs never get them, but LB code on routes the LB nginx still serves calls

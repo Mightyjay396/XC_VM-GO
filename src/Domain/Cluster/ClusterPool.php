@@ -55,8 +55,8 @@ final class ClusterPool {
 
 	/**
 	 * The plan's ingest ops (lanes p0 and bulk), served by cluster_ingest,
-	 * including those the API does not serve yet. The /cluster/v1/ location in
-	 * bin/nginx/conf/nginx.conf lists the same names.
+	 * including those the API does not serve yet. ClusterNginxConfig renders
+	 * the /cluster/v1/ location's ingest lane from this list.
 	 */
 	public const INGEST_OPS = [
 		'events', 'config', 'streams', 'conn_snapshot', 'stream_bundle', 'rpc_result',

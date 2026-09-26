@@ -49,16 +49,15 @@ final class ClusterPolicy {
 				$rHttps[] = 'https://' . self::hostPort($rTlsName, intval($rMain['https_broadcast_port'] ?? 443)) . '/cluster/v1/';
 			}
 		}
-		// MAIN's old HTTP ports after a port change: still served for the
-		// cluster API (ClusterEndpoint), listed last so nodes that missed the
-		// change find MAIN and move on.
+		// MAIN's old cluster API ports after a port change (the broadcast port
+		// or cluster_api_port): still served for the cluster API
+		// (ClusterEndpoint, ClusterNginxConfig), listed last so nodes that
+		// missed the change find MAIN and move on.
 		$rOld = [];
-		if ((int) ($rSettings['cluster_api_port'] ?? 0) === 0) {
-			foreach (array_keys(ClusterEndpoint::legacyPorts($rSettings)) as $rPort) {
-				if ($rPort !== $rHttpPort) {
-					foreach ($rHosts as $rHost) {
-						$rOld[] = 'http://' . self::hostPort($rHost, $rPort) . '/cluster/v1/';
-					}
+		foreach (array_keys(ClusterEndpoint::legacyPorts($rSettings)) as $rPort) {
+			if ($rPort !== $rHttpPort) {
+				foreach ($rHosts as $rHost) {
+					$rOld[] = 'http://' . self::hostPort($rHost, $rPort) . '/cluster/v1/';
 				}
 			}
 		}
