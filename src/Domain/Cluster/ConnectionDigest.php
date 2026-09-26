@@ -36,6 +36,7 @@ final class ConnectionDigest {
 	public const COOLDOWN_MS = 30000;
 
 	private static ?string $rDir = null;
+
 	private static ?int $rEvery = null;
 
 	/** Tests: another state directory and check interval; null restores the defaults. */

@@ -40,7 +40,7 @@ class ClusterExportKeysCommand implements CommandInterface {
 
 	public function execute(array $rArgs): int {
 		[$rArgs, $rOptions] = InstallCredentials::splitOptions($rArgs);
-		$rFile = (string) ($rArgs[0] ?? '');
+		$rFile = $rArgs[0] ?? '';
 		if ($rFile === '') {
 			echo "Usage: cluster:export-keys <file> [--passphrase-file=<path>]\n";
 			return 1;

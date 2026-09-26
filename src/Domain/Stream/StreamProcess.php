@@ -1626,7 +1626,7 @@ class StreamProcess {
 		// On a node whose agent follows the fanout's monitor feed, MAIN derives
 		// this state from those events (EventIngest, stream.monitor); the
 		// reconcile only releases what nothing should produce.
-		$rWrite = !(NodeFlows::on(NodeFlows::STREAMS) && NodeFlows::agentHas('fanout_events'));
+		$rWrite = !NodeFlows::on(NodeFlows::STREAMS) || !NodeFlows::agentHas('fanout_events');
 		foreach ($rStates['streams'] as $rID => $rState) {
 			$rID = intval($rID);
 			$rRow = $rRows[$rID] ?? null;

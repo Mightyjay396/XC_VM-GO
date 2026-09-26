@@ -145,7 +145,7 @@ class DashboardController extends BaseAdminController {
 		$total = count($enabled);
 		$detail = Translator::get('dashboard_check_servers_ok', ['{online}' => (string) ($total - count($offline)), '{total}' => (string) $total]);
 
-		return self::check($offline ? 'fail' : 'ok', 'tabler-server-2', 'dashboard_check_servers', self::withDown($detail, $offline));
+		return self::check($offline !== [] ? 'fail' : 'ok', 'tabler-server-2', 'dashboard_check_servers', self::withDown($detail, $offline));
 	}
 
 	/**
@@ -198,7 +198,7 @@ class DashboardController extends BaseAdminController {
 		$down = array_keys(array_filter($states, fn($running) => !$running));
 		$detail = Translator::get('dashboard_check_fanout_ok', ['{running}' => (string) (count($states) - count($down)), '{total}' => (string) count($states)]);
 
-		return self::check($down ? 'fail' : 'ok', 'tabler-broadcast', 'dashboard_check_fanout', self::withDown($detail, $down), $down ? Translator::get('dashboard_status_fanout_text', $bin) : '');
+		return self::check($down !== [] ? 'fail' : 'ok', 'tabler-broadcast', 'dashboard_check_fanout', self::withDown($detail, $down), $down !== [] ? Translator::get('dashboard_status_fanout_text', $bin) : '');
 	}
 
 	/**
@@ -221,7 +221,7 @@ class DashboardController extends BaseAdminController {
 
 	/** @param list<string> $down */
 	private static function withDown(string $detail, array $down): string {
-		return $down ? $detail . ' · ' . Translator::get('dashboard_check_servers_down', ['{names}' => implode(', ', $down)]) : $detail;
+		return $down !== [] ? $detail . ' · ' . Translator::get('dashboard_check_servers_down', ['{names}' => implode(', ', $down)]) : $detail;
 	}
 
 	/** @return array{state:string,icon:string,title:string,detail:string,help:string} */

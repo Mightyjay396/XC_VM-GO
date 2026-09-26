@@ -279,7 +279,7 @@ final class DbAllowlist {
 				continue;
 			}
 			$rIP = str_starts_with($rM[1], '::ffff:') && filter_var(substr($rM[1], 7), FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) ? substr($rM[1], 7) : $rM[1];
-			if (!filter_var($rIP, FILTER_VALIDATE_IP) || self::isLoopback($rIP) || self::covers($rWanted[str_contains($rIP, ':') ? 6 : 4], $rIP)) {
+			if (!filter_var($rIP, FILTER_VALIDATE_IP) || $this->isLoopback($rIP) || self::covers($rWanted[str_contains($rIP, ':') ? 6 : 4], $rIP)) {
 				continue;
 			}
 			$rOut[] = $rPeer;
@@ -351,7 +351,7 @@ final class DbAllowlist {
 		return array_values(array_filter(array_map('trim', explode("\n", $rStdout)), static fn (string $rLine): bool => $rLine !== ''));
 	}
 
-	private static function isLoopback(string $rIP): bool {
+	private function isLoopback(string $rIP): bool {
 		return $rIP === '::1' || str_starts_with($rIP, '127.');
 	}
 
