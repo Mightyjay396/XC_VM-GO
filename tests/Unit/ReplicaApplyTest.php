@@ -7,7 +7,9 @@ use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Config\SettingsRepository;
 use XcVm\Domain\Cluster\ReplicaBuilder;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Server\ServerRepository;
@@ -25,12 +27,16 @@ use XcVm\Tests\Support\QueryLogDb;
  * built their caches: until then, and again after CONFIG was off or a
  * section was refused, their readers keep MAIN's database. `cluster` is only
  * compared with the agent's own policy. A missing, foreign or malformed
- * section never writes a cache.
+ * section never writes a cache. The `settings` section becomes the settings
+ * cache together with the sealed `secrets` section, whose OPENSSL_EXTRA goes
+ * to config/openssl_extra; a report never holds a secret.
  */
 final class ReplicaApplyTest extends TestCase {
 	private string $rDir;
 
 	private mixed $rSettingsBackup = null;
+
+	private mixed $rDbBackup = null;
 
 	private const DATA = [
 		'ip' => ['203.0.113.1', '203.0.113.2'],
@@ -44,17 +50,23 @@ final class ReplicaApplyTest extends TestCase {
 		$this->rDir = sys_get_temp_dir() . '/xcvm-apply-' . bin2hex(random_bytes(4));
 		mkdir($this->rDir . '/replica', 0777, true);
 		mkdir($this->rDir . '/cache', 0777, true);
+		mkdir($this->rDir . '/config', 0777, true);
 		ReplicaApply::useDir($this->rDir . '/replica/');
+		ReplicaApply::useConfigDir($this->rDir . '/config/');
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, new FileCache($this->rDir . '/cache/'));
 		$this->flows(0);
 		$this->rSettingsBackup = $GLOBALS['rSettings'] ?? null;
+		$this->rDbBackup = $GLOBALS['db'] ?? null;
 	}
 
 	protected function tearDown(): void {
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
 		$GLOBALS['rSettings'] = $this->rSettingsBackup;
+		$GLOBALS['db'] = $this->rDbBackup;
 		ReplicaApply::useDir(null);
+		ReplicaApply::useConfigDir(null);
+		OpensslExtra::usePrevFile(null);
 		NodeFlows::usePath(null);
 		NodeRole::useServers(null);
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, null);
@@ -140,14 +152,172 @@ final class ReplicaApplyTest extends TestCase {
 		$this->assertNull(ReplicaApply::run(false));
 	}
 
-	public function testSettingsStayInShadowAndNameWhatDiffers(): void {
+	public function testSettingsWithoutTheSecretsStayMainsDatabasesAndNameWhatDiffers(): void {
 		FileCache::setCache('settings', ['seg_time' => 6, 'server_name' => 'XC', 'api_ips' => ['10.0.0.1'], 'redis_password' => 'kept']);
 		file_put_contents($this->rDir . '/replica/settings.json', json_encode(['etag' => str_repeat('b', 64), 'data' => ['seg_time' => '6', 'server_name' => 'Renamed', 'api_ips' => '10.0.0.1']]));
+		$this->assertSame(['etag' => str_repeat('b', 64), 'mode' => 'shadow', 'keys' => 3, 'differ' => ['server_name']], ReplicaApply::run(false)['settings'], 'decoded as the panel reads them');
 		$this->flows(NodeFlows::CONFIG);
 		$rReport = ReplicaApply::run(true);
-		$this->assertSame(['etag' => str_repeat('b', 64), 'mode' => 'shadow', 'keys' => 3, 'differ' => ['server_name']], $rReport['settings'], 'decoded as the panel reads them');
+		$this->assertSame(['etag' => str_repeat('b', 64), 'mode' => 'incomplete', 'keys' => 3, 'differ' => ['server_name']], $rReport['settings'], 'the section withholds what the node reads');
 		$this->assertArrayNotHasKey('seq', $rReport, 'no blocklist to apply');
 		$this->assertSame('XC', FileCache::getCache('settings')['server_name'], 'not written until the secrets section exists');
+		$this->assertFalse(ReplicaApply::owns(ReplicaSections::SETTINGS));
+	}
+
+	// ── The settings and secrets sections ─────────────────────────────────
+
+	private const LIVE = 'mains-live-pass';
+
+	/** The settings section MAIN would send: raw values, as strings. */
+	private const SETTINGS = ['server_name' => 'Renamed', 'seg_time' => '8', 'api_ips' => '10.0.0.1,10.0.0.2', 'allow_countries' => '["DE"]'];
+
+	/**
+	 * Write the secrets section MAIN would send: its stream secret and its
+	 * OPENSSL_EXTRA, with the value MAIN replaced while that is accepted.
+	 *
+	 * @return array<string, array<string, mixed>>
+	 */
+	private function secrets(string $rLive = self::LIVE, string $rExtra = OPENSSL_EXTRA, ?string $rPrevious = null, ?int $rUntil = null): array {
+		$rData = [
+			'live_streaming_pass' => ['current' => $rLive, 'kid' => ReplicaSections::kid('live_streaming_pass', $rLive), 'previous' => null, 'previous_valid_until' => null],
+			'openssl_extra' => ['current' => $rExtra, 'kid' => ReplicaSections::kid('openssl_extra', $rExtra), 'previous' => $rPrevious, 'previous_valid_until' => $rUntil],
+		];
+		$this->whole('secrets', $rData);
+		return $rData;
+	}
+
+	public function testSecretsInShadowOnlySayWhichDifferAndNeverWhat(): void {
+		FileCache::setCache('settings', ['server_name' => 'XC', 'live_streaming_pass' => 'old-pass']);
+		$this->whole('settings', ['server_name' => 'XC']);
+		$rData = $this->secrets('new-pass');
+		$rReport = ReplicaApply::run(false);
+		$this->assertSame(['mode' => 'shadow', 'differ' => ['live_streaming_pass']], $rReport['secrets']);
+		$this->assertSame('shadow', $rReport['settings']['mode']);
+		$this->assertSame('old-pass', FileCache::getCache('settings')['live_streaming_pass'], 'nothing written in shadow');
+		$this->assertFileDoesNotExist($this->rDir . '/config/openssl_extra');
+
+		$this->secrets('old-pass', 'mains-extra');
+		$this->assertSame(['mode' => 'shadow', 'differ' => ['openssl_extra']], ReplicaApply::run(false)['secrets']);
+		$this->assertFileDoesNotExist($this->rDir . '/config/openssl_extra');
+
+		// The report (apply.json, and cluster:apply's output the agent may log) holds no value, kid or hash of one.
+		$rOut = json_encode($rReport) . file_get_contents($this->rDir . '/replica/apply.json');
+		foreach (['new-pass', 'old-pass', 'mains-extra', OPENSSL_EXTRA, $rData['live_streaming_pass']['kid'], $rData['openssl_extra']['kid'], ReplicaBuilder::etag($rData)] as $rSecret) {
+			$this->assertStringNotContainsString($rSecret, $rOut);
+		}
+	}
+
+	public function testWithConfigOnTheSettingsAndSecretsBecomeTheSettingsCache(): void {
+		FileCache::setCache('settings', ['server_name' => 'XC', 'live_streaming_pass' => 'old-pass', 'redis_password' => 'from-mains-db', 'seg_time' => 6]);
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets();
+		$this->flows(NodeFlows::CONFIG);
+		$rReport = ReplicaApply::run(true);
+		$this->assertSame(['mode' => 'applied', 'keys' => 4], array_intersect_key($rReport['settings'], ['mode' => 1, 'keys' => 1]));
+		$this->assertSame(['mode' => 'applied', 'differ' => ['live_streaming_pass']], $rReport['secrets']);
+		$rCache = FileCache::getCache('settings');
+		$this->assertSame(SettingsRepository::decode(['live_streaming_pass' => self::LIVE] + self::SETTINGS), $rCache, 'MAIN\'s row as the settings loader decodes it');
+		$this->assertSame([['10.0.0.1', '10.0.0.2'], ['DE'], '8'], [$rCache['api_ips'], $rCache['allow_countries'], $rCache['seg_time']]);
+		$this->assertArrayNotHasKey('redis_password', $rCache, 'what the replica withholds is not the node\'s');
+		$this->assertTrue(ReplicaApply::owns(ReplicaSections::SETTINGS));
+		$this->assertStringNotContainsString(self::LIVE, (string) file_get_contents($this->rDir . '/replica/apply.json'));
+
+		// Every reader takes it, however old, forced or not, and never MAIN's database.
+		$GLOBALS['db'] = null;
+		touch($this->rDir . '/cache/settings', time() - 3600);
+		$this->assertSame($rCache, SettingsRepository::getAll());
+		$this->assertSame($rCache, SettingsRepository::getAll(true));
+		// Gone: rebuilt from the replica on disk.
+		FileCache::delCache('settings');
+		$this->assertSame($rCache, SettingsRepository::getAll());
+		$this->assertSame($rCache, FileCache::getCache('settings'));
+	}
+
+	public function testAMalformedSecretsSectionIsRefusedAndWritesNothing(): void {
+		FileCache::setCache('settings', ['server_name' => 'XC', 'live_streaming_pass' => 'old-pass']);
+		$this->whole('settings', self::SETTINGS);
+		$this->flows(NodeFlows::CONFIG);
+		$rGood = $this->secrets(self::LIVE, 'mains-extra');
+		foreach ([
+			'no OPENSSL_EXTRA' => ['live_streaming_pass' => $rGood['live_streaming_pass']],
+			'an empty stream secret' => ['live_streaming_pass' => ['current' => ''] + $rGood['live_streaming_pass']] + $rGood,
+			'a number' => ['openssl_extra' => ['current' => 7] + $rGood['openssl_extra']] + $rGood,
+			'a previous value without its end' => ['openssl_extra' => ['previous' => 'old'] + $rGood['openssl_extra']] + $rGood,
+			'an end without a previous value' => ['openssl_extra' => ['previous_valid_until' => 1] + $rGood['openssl_extra']] + $rGood,
+			'no kid' => ['openssl_extra' => ['kid' => null] + $rGood['openssl_extra']] + $rGood,
+			'not an object' => ['live_streaming_pass' => 'x', 'openssl_extra' => 'y'],
+		] as $rWhy => $rData) {
+			$this->whole('secrets', $rData);
+			$rReport = ReplicaApply::run(true);
+			$this->assertSame(['mode' => 'refused'], $rReport['secrets'], $rWhy);
+			$this->assertSame('incomplete', $rReport['settings']['mode'], $rWhy);
+		}
+		file_put_contents($this->rDir . '/replica/secrets.json', '{"etag": "x", "data": ');
+		$this->assertSame(['mode' => 'refused'], ReplicaApply::run(true)['secrets'], 'unreadable');
+		$this->assertSame('old-pass', FileCache::getCache('settings')['live_streaming_pass']);
+		$this->assertFileDoesNotExist($this->rDir . '/config/openssl_extra');
+		$this->assertFalse(ReplicaApply::owns(ReplicaSections::SETTINGS));
+
+		// A key a later MAIN adds is left for the node that knows it.
+		$this->whole('secrets', $rGood + ['tickets' => ['kid' => 'x']]);
+		$this->assertSame('applied', ReplicaApply::run(true)['secrets']['mode']);
+		$this->assertSame(self::LIVE, FileCache::getCache('settings')['live_streaming_pass']);
+	}
+
+	public function testWithConfigOnOpensslExtraIsWrittenWhereTheNodeReadsIt(): void {
+		$rConfig = $this->rDir . '/config/';
+		$rNow = 1800000000;
+		FileCache::setCache('settings', ['live_streaming_pass' => self::LIVE]);
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets(self::LIVE, 'mains-extra');
+		$this->flows(NodeFlows::CONFIG);
+		$this->assertSame(['mode' => 'applied', 'differ' => ['openssl_extra']], ReplicaApply::run(true, $rNow)['secrets']);
+		$this->assertSame('mains-extra', file_get_contents($rConfig . 'openssl_extra'));
+		$this->assertSame(0600, fileperms($rConfig . 'openssl_extra') & 0777);
+		$this->assertSame(0600, fileperms($rConfig . 'openssl_extra.prev') & 0777);
+		$rPrev = ['value' => OPENSSL_EXTRA, 'valid_until' => $rNow + OpensslExtra::PREVIOUS_WINDOW];
+		$this->assertSame($rPrev, json_decode((string) file_get_contents($rConfig . 'openssl_extra.prev'), true), 'the value it replaced still opens the tokens it minted');
+
+		// Applied again (cron:cache, every minute): nothing to write, the window not extended.
+		$this->assertSame(['mode' => 'applied', 'differ' => []], ReplicaApply::run(true, $rNow + 60)['secrets']);
+		$this->assertSame($rPrev, json_decode((string) file_get_contents($rConfig . 'openssl_extra.prev'), true));
+
+		// MAIN rotated: its previous value stays accepted until MAIN says.
+		$this->secrets(self::LIVE, 'mains-next', 'mains-extra', $rNow + 7200);
+		ReplicaApply::run(true, $rNow + 120);
+		$this->assertSame('mains-next', file_get_contents($rConfig . 'openssl_extra'));
+		$rPrev = ['value' => 'mains-extra', 'valid_until' => $rNow + 7200];
+		$this->assertSame($rPrev, json_decode((string) file_get_contents($rConfig . 'openssl_extra.prev'), true));
+		OpensslExtra::usePrevFile($rConfig . 'openssl_extra.prev');
+		$this->assertSame('mains-extra', OpensslExtra::previous($rNow + 7200));
+		$this->assertNull(OpensslExtra::previous($rNow + 7201));
+		ReplicaApply::run(true, $rNow + 180);
+		$this->assertSame($rPrev, json_decode((string) file_get_contents($rConfig . 'openssl_extra.prev'), true));
+
+		// Turned off: back to shadow, and nothing on the node is touched.
+		$this->flows(0);
+		$this->secrets(self::LIVE, 'mains-third');
+		$this->assertSame(['mode' => 'shadow', 'differ' => ['openssl_extra']], ReplicaApply::run(false, $rNow + 240)['secrets']);
+		$this->assertSame('mains-next', file_get_contents($rConfig . 'openssl_extra'));
+	}
+
+	public function testTurningConfigOffHandsTheSettingsBackToMainsDatabase(): void {
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets();
+		$this->flows(NodeFlows::CONFIG);
+		ReplicaApply::run(true);
+		$this->assertTrue(ReplicaApply::owns(ReplicaSections::SETTINGS));
+
+		$this->flows(0);
+		ReplicaApply::run(false);
+		$this->assertFalse(ReplicaApply::owns(ReplicaSections::SETTINGS));
+		$rDb = new TestDb();
+		$rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `live_streaming_pass` text)');
+		$rDb->exec("INSERT INTO `settings` VALUES (1, 'FromDb', 'db-pass')");
+		$GLOBALS['db'] = $rDb;
+		touch($this->rDir . '/cache/settings', time() - 3600);
+		$this->assertSame(['FromDb', 'db-pass'], [SettingsRepository::getAll()['server_name'], SettingsRepository::getAll()['live_streaming_pass']]);
+		$this->assertSame('FromDb', FileCache::getCache('settings')['server_name']);
 	}
 
 	// ── The whole sections servers, node, crontab and cluster ─────────────
@@ -484,5 +654,45 @@ final class ReplicaApplyTest extends TestCase {
 		$this->assertSame(['panel_sign_pub', 'policy_ver'], ReplicaApply::run(true, null, 5)['cluster']['differ']);
 		$this->whole('cluster', ['main_urls' => 'nope'] + $rData);
 		$this->assertSame('refused', ReplicaApply::run(true, null, 5)['cluster']['mode']);
+	}
+
+	public function testTheServersCacheTakesTheStreamSecretFromTheSecretsSection(): void {
+		$this->mainDb();
+		$this->sections();
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets();
+		$this->flows(NodeFlows::CONFIG);
+		ReplicaApply::run(true, null, SERVER_ID);
+		$this->assertStringEndsWith('/api?password=' . self::LIVE, FileCache::getCache('servers')[SERVER_ID]['api_url'], 'the settings this apply made, not the ones this process loaded');
+	}
+
+	public function testANodeWhoseReplicaOwnsTheSettingsLoadsThemWithoutMainsDatabase(): void {
+		// Loading the settings asks NodeFlows, which rules out MAIN through the
+		// servers, before any settings are loaded.
+		NodeRole::useServers(null);
+		$rDb = $this->mainDb();
+		$this->sections();
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets();
+		$this->flows(NodeFlows::CONFIG);
+		ReplicaApply::run(true, null, SERVER_ID);
+		NodeFlows::usePath($this->rDir . '/flows.json', true);
+		SettingsManager::set([]);
+		$GLOBALS['rSettings'] = null;
+		$rLog = new QueryLogDb($rDb);
+		$rLog->rBefore = function (string $rQuery): void {
+			$this->fail('MAIN\'s database read: ' . $rQuery);
+		};
+		DatabaseFactory::set($rLog);
+		$GLOBALS['db'] = $rLog;
+		$this->assertSame(['Renamed', self::LIVE], [SettingsRepository::getAll()['server_name'], SettingsRepository::getAll()['live_streaming_pass']]);
+		$this->assertStringEndsWith('/api?password=' . self::LIVE, ServerRepository::getAll()[SERVER_ID]['api_url']);
+	}
+
+	public function testAServersReadBeforeTheSettingsAreLoadedTakesTheSettingsCache(): void {
+		$this->mainDb();
+		SettingsManager::set([]);
+		FileCache::setCache('settings', ['live_streaming_pass' => 'cached-pass']);
+		$this->assertStringEndsWith('/api?password=cached-pass', ServerRepository::getAll(true)[SERVER_ID]['api_url']);
 	}
 }

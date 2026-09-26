@@ -19,6 +19,10 @@ use XcVm\Core\Config\OpensslExtra;
  * install / previous: the root signal that brings an LB onto MAIN's value
  * keeps the value it replaced for a short window, so tokens the LB minted with
  * it still open (Encryption::readToken).
+ *
+ * adopt / previousEntry: the node replica's `secrets` section brings an LB
+ * onto MAIN's value every minute, keeping MAIN's previous value until MAIN's
+ * end of its window, and writes nothing once the node holds both.
  */
 final class OpensslExtraTest extends TestCase {
 
@@ -163,5 +167,36 @@ final class OpensslExtraTest extends TestCase {
 
 		$this->writePrev(['value' => OPENSSL_EXTRA, 'valid_until' => 1600]);
 		$this->assertNull(OpensslExtra::previous(1000), 'the value in use now');
+	}
+
+	public function testThePreviousEntryCarriesTheEndOfItsWindow(): void {
+		$this->writePrev(['value' => 'old-extra', 'valid_until' => 1600]);
+		$this->assertSame(['value' => 'old-extra', 'valid_until' => 1600], OpensslExtra::previousEntry(1600));
+		$this->assertNull(OpensslExtra::previousEntry(1601));
+	}
+
+	public function testAdoptTakesMainsValueOnceAndNeverExtendsAWindow(): void {
+		$this->assertSame(OPENSSL_EXTRA, OpensslExtra::inUse($this->rDir), 'no file: the built-in value this process resolved');
+		$this->assertNull(OpensslExtra::adopt(OPENSSL_EXTRA, null, null, $this->rDir, 1000), 'already MAIN\'s: nothing written');
+		$this->assertSame([], array_values(array_diff(scandir($this->rDir), ['.', '..'])));
+
+		$this->assertTrue(OpensslExtra::adopt('mains-extra', null, null, $this->rDir, 1000));
+		$this->assertSame('mains-extra', OpensslExtra::inUse($this->rDir));
+		$this->assertSame(['value' => OPENSSL_EXTRA, 'valid_until' => 1000 + OpensslExtra::PREVIOUS_WINDOW], json_decode((string) file_get_contents($this->rDir . 'openssl_extra.prev'), true));
+		$this->assertNull(OpensslExtra::adopt('mains-extra', null, null, $this->rDir, 1100));
+		$this->assertSame(1000 + OpensslExtra::PREVIOUS_WINDOW, json_decode((string) file_get_contents($this->rDir . 'openssl_extra.prev'), true)['valid_until']);
+
+		// MAIN's own previous value, until MAIN's end; once closed, left to expire.
+		$this->assertTrue(OpensslExtra::adopt('mains-extra', 'mains-older', 5000, $this->rDir, 1200));
+		$this->assertSame(['value' => 'mains-older', 'valid_until' => 5000], json_decode((string) file_get_contents($this->rDir . 'openssl_extra.prev'), true));
+		$this->assertNull(OpensslExtra::adopt('mains-extra', 'mains-older', 5000, $this->rDir, 1300));
+		$this->assertNull(OpensslExtra::adopt('mains-extra', 'mains-older', 5000, $this->rDir, 5001));
+		$this->assertSame(['openssl_extra', 'openssl_extra.prev'], array_values(array_diff(scandir($this->rDir), ['.', '..'])), 'no temporary file left behind');
+	}
+
+	public function testAdoptRefusesAnEmptyValueOrAMissingDirectory(): void {
+		$this->assertFalse(OpensslExtra::adopt(" \n", null, null, $this->rDir, 1000));
+		$this->assertFalse(OpensslExtra::adopt('mains-extra', null, null, $this->rDir . 'missing/', 1000));
+		$this->assertSame([], array_values(array_diff(scandir($this->rDir), ['.', '..'])));
 	}
 }

@@ -3,7 +3,7 @@
 namespace XcVm\Core\Cluster;
 
 use XcVm\Core\Cache\FileCache;
-use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Server\ServerRepository;
@@ -34,10 +34,21 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * - CONFIG on: the replica is authoritative. It writes the caches, and
  *   cron:cache stops writing them from the database.
  *
- * The `settings` section (`replica/settings.json`) is only compared: the keys
- * whose decoded value differs from the settings cache go to the report. It
- * becomes authoritative with the `secrets` section, which carries what the
- * allowlist withholds.
+ * The `settings` section (`replica/settings.json`) becomes the settings cache
+ * together with the sealed `secrets` section (`replica/secrets.json`), which
+ * carries what the allowlist withholds and the node needs:
+ *
+ * ```text
+ * settings  the settings cache: the section's raw row with the secrets'
+ *           live_streaming_pass, decoded as SettingsRepository decodes
+ *           MAIN's row, so every reader keeps its contract
+ * secrets   OPENSSL_EXTRA in config/openssl_extra, with the value MAIN
+ *           replaced while MAIN still accepts it (OpensslExtra::adopt)
+ * ```
+ *
+ * In shadow, and while either is missing or malformed, the report names the
+ * settings keys whose decoded value differs from the settings cache, and the
+ * secrets whose value differs from what the node uses: never a value.
  *
  * The other whole sections (`replica/<name>.json`, `{etag, data}`, written
  * by the agent from the verified `rep` record; see ReplicaSections):
@@ -83,33 +94,59 @@ final class ReplicaApply {
 
 	private static ?string $rDir = null;
 
+	private static ?string $rConfigDir = null;
+
 	/** Tests: another replica directory; null restores the default. */
 	public static function useDir(?string $rDir): void {
 		self::$rDir = $rDir;
 	}
 
 	public static function dir(): string {
-		return self::$rDir ?? ((defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/') . 'cluster/replica/');
+		return self::$rDir ?? (self::configDir() . 'cluster/replica/');
+	}
+
+	/** Tests: another config directory (where config/openssl_extra lives); null restores CONFIG_PATH. */
+	public static function useConfigDir(?string $rDir): void {
+		self::$rConfigDir = $rDir;
+	}
+
+	public static function configDir(): string {
+		return self::$rConfigDir ?? (defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/');
 	}
 
 	/**
 	 * Does the replica own this section's cache? Only with the CONFIG flow on,
-	 * the section stored by the agent (`servers` needs `node` too), and its
-	 * cache built by an authoritative apply since it was last MAIN's
-	 * database's. Until then the readers keep MAIN's database and cron:cache
-	 * keeps refreshing it, so no database copy is ever taken for the
-	 * replica's and left with nothing to refresh it.
+	 * the section stored by the agent (`servers` needs `node` too, `settings`
+	 * needs `secrets`), and its cache built by an authoritative apply since
+	 * it was last MAIN's database's. Until then the readers keep MAIN's
+	 * database and cron:cache keeps refreshing it, so no database copy is
+	 * ever taken for the replica's and left with nothing to refresh it.
 	 */
 	public static function owns(string $rSection): bool {
 		if (!NodeFlows::on(NodeFlows::CONFIG)) {
 			return false;
 		}
-		$rFiles = $rSection === ReplicaSections::SERVERS ? [ReplicaSections::SERVERS, ReplicaSections::NODE] : [$rSection];
+		$rFiles = match ($rSection) {
+			ReplicaSections::SERVERS => [ReplicaSections::SERVERS, ReplicaSections::NODE],
+			ReplicaSections::SETTINGS => [ReplicaSections::SETTINGS, ReplicaSections::SECRETS],
+			default => [$rSection],
+		};
 		foreach ($rFiles as $rFile) {
 			if (!is_file(self::dir() . $rFile . '.json')) {
 				return false;
 			}
 		}
+		return self::built($rSection);
+	}
+
+	/**
+	 * Has an authoritative apply recorded that it built this section's cache
+	 * (and nothing handed it back since)? The record alone, which owns() also
+	 * needs: SettingsRepository asks this first, since it runs before the
+	 * settings are loaded and owns() asks NodeFlows, which on a node with an
+	 * agent reads the servers to rule out MAIN.
+	 */
+	public static function built(string $rSection): bool {
 		$rOwned = FileCache::getCache(self::OWNED_CACHE);
 		return is_array($rOwned) && isset($rOwned[$rSection]);
 	}
@@ -204,11 +241,18 @@ final class ReplicaApply {
 				}
 			}
 		}
-		$rSettings = self::settings();
+		// The secrets first: they report what differs from what the node used before this apply.
+		$rSecrets = self::secrets($rAuthoritative, $rReport['at']);
+		if ($rSecrets !== null) {
+			$rReport['secrets'] = $rSecrets;
+		}
+		$rSettings = self::settings($rAuthoritative);
 		if ($rSettings !== null) {
 			$rReport['settings'] = $rSettings;
 		}
-		foreach (['servers' => self::servers($rAuthoritative, $rServerID), 'crontab' => self::crontab($rAuthoritative), 'cluster' => self::cluster()] as $rKey => $rPart) {
+		// The servers' URLs take the settings this apply made, not the ones this process loaded.
+		$rNodeSettings = ($rSettings['mode'] ?? null) === 'applied' ? FileCache::getCache('settings') : null;
+		foreach (['servers' => self::servers($rAuthoritative, $rServerID, is_array($rNodeSettings) ? $rNodeSettings : null), 'crontab' => self::crontab($rAuthoritative), 'cluster' => self::cluster()] as $rKey => $rPart) {
 			if ($rPart !== null) {
 				$rReport[$rKey] = $rPart;
 			}
@@ -227,33 +271,126 @@ final class ReplicaApply {
 	}
 
 	/**
-	 * The replica's `settings` section, in shadow whatever the flow: the keys
-	 * whose value differs from the settings cache cron:cache built from MAIN's
-	 * database. It becomes authoritative with the `secrets` section, which
-	 * carries what it withholds.
+	 * The `settings` section, with the `secrets` section. With CONFIG on and
+	 * both usable, the settings cache: the section's raw row with the secrets'
+	 * `live_streaming_pass`, decoded as SettingsRepository decodes MAIN's
+	 * row; its readers then stop reading MAIN's database (owns()). Otherwise
+	 * the keys whose value differs from the settings cache cron:cache built
+	 * from MAIN's database: `shadow` (CONFIG off) or `incomplete` (no usable
+	 * secrets section: the section withholds what the node reads, so the
+	 * cache stays MAIN's database's). A section that is not a raw row is
+	 * `refused`.
 	 *
-	 * @return array{etag: string, mode: string, keys: int, differ: list<string>}|null
+	 * @return array{etag: string, mode: string, keys?: int, differ?: list<string>}|null
 	 */
-	public static function settings(): ?array {
-		$rDoc = json_decode((string) @file_get_contents(self::dir() . 'settings.json'), true);
-		if (!is_array($rDoc) || !is_array($rDoc['data'] ?? null)) {
+	public static function settings(bool $rAuthoritative = false): ?array {
+		$rDoc = self::whole(ReplicaSections::SETTINGS);
+		if ($rDoc === null) {
 			return null;
 		}
-		foreach ($rDoc['data'] as $rValue) {
-			if (!is_string($rValue) && $rValue !== null) {
-				return null;
+		$rData = is_array($rDoc) && self::rawRow($rDoc['data']) ? $rDoc['data'] : null;
+		$rReport = ['etag' => is_array($rDoc) ? $rDoc['etag'] : ''];
+		if ($rAuthoritative) {
+			$rSecrets = self::secretEntries();
+			// Refused or incomplete: the cache is MAIN's database's again (cron:cache).
+			$rApplied = $rData !== null && $rSecrets !== null && FileCache::setCache('settings', SettingsRepository::decode(['live_streaming_pass' => $rSecrets['live_streaming_pass']['current']] + $rData));
+			self::own(ReplicaSections::SETTINGS, $rApplied ? $rReport['etag'] : null);
+			if ($rApplied) {
+				return $rReport + ['mode' => 'applied', 'keys' => count((array) $rData)];
 			}
 		}
-		$rReplica = SettingsRepository::decode($rDoc['data']);
+		if ($rData === null) {
+			return $rReport + ['mode' => 'refused'];
+		}
+		$rReplica = SettingsRepository::decode($rData);
 		$rCurrent = FileCache::getCache('settings');
 		$rCurrent = is_array($rCurrent) ? $rCurrent : [];
 		$rDiffer = [];
-		foreach (array_keys($rDoc['data']) as $rKey) {
+		foreach (array_keys($rData) as $rKey) {
 			if (json_encode(self::loose($rReplica[$rKey] ?? null)) !== json_encode(self::loose($rCurrent[$rKey] ?? null))) {
 				$rDiffer[] = (string) $rKey;
 			}
 		}
-		return ['etag' => (string) ($rDoc['etag'] ?? ''), 'mode' => 'shadow', 'keys' => count($rDoc['data']), 'differ' => $rDiffer];
+		return $rReport + ['mode' => $rAuthoritative ? 'incomplete' : 'shadow', 'keys' => count($rData), 'differ' => $rDiffer];
+	}
+
+	/**
+	 * The `secrets` section. With CONFIG on, OPENSSL_EXTRA goes where the node
+	 * reads it: config/openssl_extra, keeping the value MAIN replaced while
+	 * MAIN still accepts it (OpensslExtra::adopt, 0600). `live_streaming_pass`
+	 * goes into the settings cache with the `settings` section (settings()).
+	 * In shadow nothing is written. The report names the secrets whose value
+	 * differs from what the node used (`differ`), never a value, kid or hash
+	 * of one: cluster:apply prints it, and the agent may log that output.
+	 *
+	 * @return array{mode: string, differ?: list<string>}|null
+	 */
+	public static function secrets(bool $rAuthoritative, ?int $rNow = null): ?array {
+		if (self::whole(ReplicaSections::SECRETS) === null) {
+			return null;
+		}
+		$rEntries = self::secretEntries();
+		if ($rEntries === null) {
+			return ['mode' => 'refused'];
+		}
+		$rSettings = FileCache::getCache('settings');
+		$rInUse = [
+			'live_streaming_pass' => is_array($rSettings) ? (string) ($rSettings['live_streaming_pass'] ?? '') : '',
+			'openssl_extra' => OpensslExtra::inUse(self::configDir()),
+		];
+		$rDiffer = [];
+		foreach ($rEntries as $rKey => $rEntry) {
+			if (!hash_equals($rEntry['current'], $rInUse[$rKey] ?? '')) {
+				$rDiffer[] = $rKey;
+			}
+		}
+		if (!$rAuthoritative) {
+			return ['mode' => 'shadow', 'differ' => $rDiffer];
+		}
+		$rExtra = $rEntries['openssl_extra'];
+		try {
+			$rSet = OpensslExtra::adopt($rExtra['current'], $rExtra['previous'], $rExtra['previous_valid_until'], self::configDir(), $rNow ?? time());
+		} catch (\Throwable) {
+			// Never an uncaught trace: it would print the value among the arguments.
+			$rSet = false;
+		}
+		return ['mode' => $rSet === false ? 'failed' : 'applied', 'differ' => $rDiffer];
+	}
+
+	/**
+	 * The `secrets` section's entries (ReplicaSections::SECRET_KEYS, each as
+	 * ReplicaSections::secret takes it), or null when there is no usable one.
+	 * A key a later MAIN adds is left for the node that knows it.
+	 *
+	 * @return array<string, array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}>|null
+	 */
+	public static function secretEntries(): ?array {
+		$rDoc = self::whole(ReplicaSections::SECRETS);
+		if (!is_array($rDoc)) {
+			return null;
+		}
+		$rOut = [];
+		foreach (ReplicaSections::SECRET_KEYS as $rKey) {
+			$rEntry = ReplicaSections::secret($rDoc['data'][$rKey] ?? null);
+			if ($rEntry === null) {
+				return null;
+			}
+			$rOut[$rKey] = $rEntry;
+		}
+		return $rOut;
+	}
+
+	/** The settings section's data: MAIN's raw row, every value a string or null. */
+	private static function rawRow(array $rData): bool {
+		if ($rData !== [] && array_is_list($rData)) {
+			return false;
+		}
+		foreach ($rData as $rValue) {
+			if (!is_string($rValue) && $rValue !== null) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -278,16 +415,19 @@ final class ReplicaApply {
 	 * The `servers` and `node` sections: the servers cache (CONFIG on), or
 	 * what differs from the one cron:cache built from MAIN's database.
 	 *
+	 * @param array<string, mixed>|null $rSettings this node's settings (the
+	 *                                             ones loaded, or while they
+	 *                                             are not, the settings cache)
 	 * @return array<string, mixed>|null
 	 */
-	public static function servers(bool $rAuthoritative, int $rServerID): ?array {
+	public static function servers(bool $rAuthoritative, int $rServerID, ?array $rSettings = null): ?array {
 		$rServers = self::whole(ReplicaSections::SERVERS);
 		$rNode = self::whole(ReplicaSections::NODE);
 		if ($rServers === null && $rNode === null) {
 			return null;
 		}
 		$rReport = ['etag' => is_array($rServers) ? $rServers['etag'] : '', 'node_etag' => is_array($rNode) ? $rNode['etag'] : ''];
-		$rRows = is_array($rServers) && is_array($rNode) ? self::serverRows($rServers['data'], $rNode['data'], $rServerID, SettingsManager::getAll()) : null;
+		$rRows = is_array($rServers) && is_array($rNode) ? self::serverRows($rServers['data'], $rNode['data'], $rServerID, $rSettings ?? SettingsRepository::loaded()) : null;
 		if ($rAuthoritative) {
 			// Refused or incomplete: the cache is MAIN's database's again (cron:cache).
 			if ($rRows !== null && FileCache::setCache('servers', $rRows)) {

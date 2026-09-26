@@ -99,7 +99,9 @@ class CacheCronJob implements CommandInterface {
 			}
 		}
 
-		FileCache::setCache('settings', SettingsRepository::getAll(true));
+		// The settings cache is the replica's once it owns it; getAll() then
+		// returns that cache and never writes MAIN's row over it.
+		SettingsRepository::getAll(true);
 		FileCache::setCache('bouquets', BouquetService::getAll(true));
 		// The node replica: with the CONFIG flow on, its caches are rebuilt from
 		// the verified copy on disk every minute, whether or not the agent ran

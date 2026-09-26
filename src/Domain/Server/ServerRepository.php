@@ -8,7 +8,7 @@ use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
-use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Server\ServerSavedEvent;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -46,7 +46,7 @@ class ServerRepository {
 		global $rSettings;
 		$db = self::db();
 		if (!$rSettings) {
-			$rSettings = SettingsManager::getAll();
+			$rSettings = SettingsRepository::loaded();
 		}
 		$rReplica = ReplicaApply::owns(ReplicaSections::SERVERS);
 		if (!$rForce || $rReplica) {
