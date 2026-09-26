@@ -234,6 +234,18 @@ final class ReplicaSectionsTest extends TestCase {
 		}
 	}
 
+	public function testASectionReadBeforeABumpIsNeverServedAfterIt(): void {
+		$this->server(5);
+		$rNode = ['server_id' => 5, 'mode' => 1];
+		// Another request read the old row, then a revoke bumped the cache, then
+		// that request wrote what it had read.
+		$rGen = ReplicaEtagCache::generation();
+		ReplicaEtagCache::bump();
+		ReplicaEtagCache::put('node.5', $this->rT0, $rGen, str_repeat('0', 64), ['id' => 5, 'rtmp_port' => 1]);
+		$this->assertNull(ReplicaEtagCache::get('node.5', $this->rT0));
+		$this->assertSame(8880, ReplicaBuilder::section($this->rCrypto, $rNode, ReplicaSections::NODE, [], [])['data']['rtmp_port']);
+	}
+
 	public function testWithoutACacheDirNothingIsCached(): void {
 		ReplicaEtagCache::useDir(false);
 		$this->server(5);

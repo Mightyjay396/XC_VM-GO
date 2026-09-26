@@ -122,6 +122,7 @@ final class ReplicaBuilder {
 			default => $rSection,
 		};
 		$rNow = ClusterClock::nowMs();
+		$rGen = ReplicaEtagCache::generation();
 		$rHit = ReplicaEtagCache::get($rKey, $rNow);
 		if ($rHit !== null) {
 			return $rHit;
@@ -136,7 +137,7 @@ final class ReplicaBuilder {
 		};
 		$rData = self::canonical($rData);
 		$rEtag = self::etag($rData);
-		ReplicaEtagCache::put($rKey, $rNow, $rEtag, $rData);
+		ReplicaEtagCache::put($rKey, $rNow, $rGen, $rEtag, $rData);
 		return ['etag' => $rEtag, 'data' => $rData];
 	}
 

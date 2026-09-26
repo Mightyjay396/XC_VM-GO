@@ -18,10 +18,12 @@ use XcVm\Core\Events\Settings\SettingsChangedEvent;
  * within the 10 s.
  *
  * One file per section (and per node or mode where the section depends on
- * it) in `TMP_PATH/cluster_replica/`: `{at, etag, data}`, `at` in ms on
- * MAIN's clock. In Core, not Domain\Cluster: the event listener is
- * registered at boot on every node (ContainerPopulateStage), and on an LB
- * there is simply nothing to drop.
+ * it) in `TMP_PATH/cluster_replica/`: `{at, gen, etag, data}`, `at` in ms on
+ * MAIN's clock. `gen` is the cache's generation (`.gen`) when the section
+ * was read from the database: a bump raises it, so a section read before
+ * the bump and written after it is never served. In Core, not
+ * Domain\Cluster: the event listener is registered at boot on every node
+ * (ContainerPopulateStage), and on an LB there is simply nothing to drop.
  */
 final class ReplicaEtagCache {
 	/** How long a section is reused (ms). */
@@ -42,8 +44,15 @@ final class ReplicaEtagCache {
 		return self::$rDir ?? (defined('TMP_PATH') ? TMP_PATH . 'cluster_replica/' : null);
 	}
 
+	/** The cache's generation: read it before reading a section from the database. */
+	public static function generation(): int {
+		$rDir = self::dir();
+		return $rDir === null ? 0 : (int) @file_get_contents($rDir . '.gen');
+	}
+
 	/**
-	 * The cached section, while it is younger than TTL_MS on MAIN's clock.
+	 * The cached section, while it is younger than TTL_MS on MAIN's clock and
+	 * no bump came since it was read.
 	 *
 	 * @return array{etag: string, data: array<mixed>}|null
 	 */
@@ -53,17 +62,21 @@ final class ReplicaEtagCache {
 			return null;
 		}
 		$rHit = json_decode((string) @file_get_contents($rDir . $rKey . '.json'), true);
-		if (!is_array($rHit) || !is_int($rHit['at'] ?? null) || !is_string($rHit['etag'] ?? null) || !is_array($rHit['data'] ?? null)) {
+		if (!is_array($rHit) || !is_int($rHit['at'] ?? null) || !is_int($rHit['gen'] ?? null) || !is_string($rHit['etag'] ?? null) || !is_array($rHit['data'] ?? null)) {
 			return null;
 		}
-		if ($rNowMs < $rHit['at'] || $rNowMs - $rHit['at'] >= self::TTL_MS) {
+		if ($rNowMs < $rHit['at'] || $rNowMs - $rHit['at'] >= self::TTL_MS || $rHit['gen'] !== self::generation()) {
 			return null;
 		}
 		return ['etag' => $rHit['etag'], 'data' => $rHit['data']];
 	}
 
-	/** @param array<mixed> $rData */
-	public static function put(string $rKey, int $rNowMs, string $rEtag, array $rData): void {
+	/**
+	 * Keep a section read from the database at generation $rGen.
+	 *
+	 * @param array<mixed> $rData
+	 */
+	public static function put(string $rKey, int $rNowMs, int $rGen, string $rEtag, array $rData): void {
 		$rDir = self::dir();
 		if ($rDir === null || !self::validKey($rKey)) {
 			return;
@@ -72,17 +85,27 @@ final class ReplicaEtagCache {
 			@mkdir($rDir, 0750, true);
 		}
 		$rTmp = $rDir . '.' . $rKey . '.' . getmypid() . '.tmp';
-		$rJson = json_encode(['at' => $rNowMs, 'etag' => $rEtag, 'data' => $rData], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+		$rJson = json_encode(['at' => $rNowMs, 'gen' => $rGen, 'etag' => $rEtag, 'data' => $rData], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 		if ($rJson !== false && @file_put_contents($rTmp, $rJson) !== false && !@rename($rTmp, $rDir . $rKey . '.json')) {
 			@unlink($rTmp);
 		}
 	}
 
-	/** Drop every cached section: the next `config` call reads the database. */
+	/**
+	 * Drop every cached section: raise the generation, so a section read
+	 * before now is not served even if it is written after, and delete them.
+	 */
 	public static function bump(?object $rEvent = null): void {
 		$rDir = self::dir();
 		if ($rDir === null) {
 			return;
+		}
+		if (!is_dir($rDir)) {
+			@mkdir($rDir, 0750, true);
+		}
+		$rTmp = $rDir . '.gen.' . getmypid() . '.tmp';
+		if (@file_put_contents($rTmp, (string) (self::generation() + 1)) !== false && !@rename($rTmp, $rDir . '.gen')) {
+			@unlink($rTmp);
 		}
 		foreach (glob($rDir . '*.json') ?: [] as $rFile) {
 			@unlink($rFile);

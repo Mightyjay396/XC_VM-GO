@@ -956,7 +956,7 @@ Integer columns travel as JSON integers and text as strings, whichever driver re
 - A `rep` record is signed on each request, not once per content hash: a signature costs microseconds, and the plan's cache holds the data.
 - `config.changed` also goes out when a node completes its enrolment, so the others learn a new active key at once.
 
-**Change detection on MAIN.** The ETag is the SHA-256 of the canonical data. `ReplicaEtagCache` keeps a section and its ETag for 10 s on MAIN's clock, one file per key in `TMP_PATH/cluster_replica/`: `servers`, `settings`, `cluster`, `node.<sid>`, and `crontab.legacy` or `crontab.api`.
+**Change detection on MAIN.** The ETag is the SHA-256 of the canonical data. `ReplicaEtagCache` keeps a section and its ETag for 10 s on MAIN's clock, one file per key in `TMP_PATH/cluster_replica/`: `servers`, `settings`, `cluster`, `node.<sid>`, and `crontab.legacy` or `crontab.api`. Each entry records the cache's generation (`.gen`) from before the database was read. A bump raises the generation and deletes the entries, so a request that read the old rows and writes them after the bump is never served. Without that, a node pushed by `config.changed` could get the old list as `unchanged` and wait for its next poll.
 
 - `SettingsChangedEvent`, `ServerSavedEvent` and `CrontabChangedEvent` drop the cache, so the next `config` call reads the database. `SettingsService` now dispatches `SettingsChangedEvent` on the settings, backup and cache saves. `ServerService` and `ServerRepository` dispatch `ServerSavedEvent` on a server or proxy save, an install, a reorder and a delete. The cache-engine schedule save dispatches `CrontabChangedEvent`.
 - The listener is Core's own, registered by `ContainerPopulateStage`, because only modules had a subscriber registry.
@@ -993,6 +993,7 @@ With CONFIG on, the replica owns a cache only once the agent has stored its sect
 - A node with CONFIG on and TELEMETRY off loses what its legacy telemetry path read from its own row: `watchdog_data`'s CPU history, and `users`/`connections` in Redis mode. The rollout turns TELEMETRY (Phase 3) on before CONFIG.
 - The settings, including `cloudflare` and `mag_legacy_redirect`, stay MAIN's until the `secrets` section exists; the `node` section's copies are not read yet.
 - No reader uses the node list before Phase 8's ticket checks.
+- `cluster:apply` boots through the CLI profile, which still connects to MAIN's database (`ReplicaStage` is not built). With MAIN's database unreachable at boot it exits before it applies anything, bounded by `service`'s 60 s `timeout`, so serving from disk after such a reboot waits for `ReplicaStage`.
 
 **Tests.** `ReplicaSectionsTest` (content per section, the classification, no liveness or secret, the ETag's stability, cache and bumps, `config.changed`), `ReplicaApplyTest` (shadow and authoritative per section, `getAll`'s shape, missing, foreign and malformed sections, the crontab's readers), `ClusterApiTest` (served by `have`, never to an agent that does not name them), and `ClusterExecCommandTest` (`config.changed` acked as deferred). The suite runs with the ETag cache off (`tests/bootstrap.php`): some tests define `TMP_PATH` as a shared path and fix the clock at one instant.
 
