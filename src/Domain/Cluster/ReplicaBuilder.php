@@ -48,6 +48,12 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * (nodesChanged). `secrets` goes only to an active node in mode 1 or 2
  * (serves()) and is read afresh each time, never cached unsealed; like every
  * whole section it grants, so without a licence it is not signed.
+ *
+ * A section is never built from a failed read, a missing settings row or an
+ * unset secret: it would be signed as MAIN's word (an empty settings row the
+ * node takes as its whole settings, a crontab with no job, an empty `current`).
+ * The builder throws instead, the `config` op answers `503 DB`, and the node
+ * keeps what it holds and asks again.
  */
 final class ReplicaBuilder {
 	use DatabaseAware;
@@ -183,12 +189,12 @@ final class ReplicaBuilder {
 	 * @return array{servers: list<array<string, int|string|null>>, nodes: list<array{sid: int, gen: int, state: string, ed_pub: string}>}
 	 */
 	public static function serversData(): array {
-		self::db()->query('SELECT * FROM `servers` ORDER BY `id` ASC;');
+		self::read('SELECT * FROM `servers` ORDER BY `id` ASC;');
 		$rServers = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
 			$rServers[] = ReplicaSections::typed($rRow, ReplicaSections::SERVER_FIELDS);
 		}
-		self::db()->query('SELECT `server_id`, `gen`, `state`, `node_sign_pub` FROM `cluster_nodes` ORDER BY `server_id` ASC;');
+		self::read('SELECT `server_id`, `gen`, `state`, `node_sign_pub` FROM `cluster_nodes` ORDER BY `server_id` ASC;');
 		$rNodes = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
 			$rNodes[] = ['sid' => (int) $rRow['server_id'], 'gen' => (int) $rRow['gen'], 'state' => (string) $rRow['state'], 'ed_pub' => base64_encode((string) $rRow['node_sign_pub'])];
@@ -204,14 +210,12 @@ final class ReplicaBuilder {
 	 * @return array<string, int|string|null>
 	 */
 	public static function nodeData(int $rServerID): array {
-		self::db()->query('SELECT * FROM `servers` WHERE `id` = ?;', $rServerID);
+		self::read('SELECT * FROM `servers` WHERE `id` = ?;', $rServerID);
 		$rRow = self::db()->get_row();
 		if (!is_array($rRow) || $rRow === []) {
 			return [];
 		}
-		self::db()->query('SELECT * FROM `settings` LIMIT 1;');
-		$rSettings = self::db()->get_row() ?: [];
-		return ReplicaSections::typed($rRow, ReplicaSections::NODE_FIELDS) + ReplicaSections::typed(is_array($rSettings) ? $rSettings : [], ReplicaSections::NODE_SETTINGS);
+		return ReplicaSections::typed($rRow, ReplicaSections::NODE_FIELDS) + ReplicaSections::typed(self::settingsRow('*'), ReplicaSections::NODE_SETTINGS);
 	}
 
 	/**
@@ -225,7 +229,7 @@ final class ReplicaBuilder {
 	 */
 	public static function crontabData(int $rMode): array {
 		$rRoles = ReplicaSections::cronRoles($rMode);
-		self::db()->query('SELECT `filename`, `time`, `role` FROM `crontab` WHERE `enabled` = 1 ORDER BY `id` ASC;');
+		self::read('SELECT `filename`, `time`, `role` FROM `crontab` WHERE `enabled` = 1 ORDER BY `id` ASC;');
 		$rJobs = [];
 		$rSkipped = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
@@ -330,8 +334,7 @@ final class ReplicaBuilder {
 	 */
 	public static function settingsData(): array {
 		$rAllow = self::settingsKeys();
-		self::db()->query('SELECT * FROM `settings` LIMIT 1;');
-		$rRow = self::db()->get_row() ?: [];
+		$rRow = self::settingsRow('*');
 		$rOut = [];
 		foreach ($rAllow as $rKey) {
 			if (array_key_exists($rKey, $rRow)) {
@@ -347,17 +350,21 @@ final class ReplicaBuilder {
 	 * with), each with its kid, and the value MAIN replaced while it is still
 	 * accepted on MAIN's clock. Only OPENSSL_EXTRA has one today
 	 * (config/openssl_extra.prev); the stream secret's rotation (plan, section
-	 * 10, step 4) will fill its own.
+	 * 10, step 4) will fill its own. An unset value throws: a node refuses an
+	 * empty `current` (ReplicaSections::secret), and cron:root_signals sets a
+	 * missing stream secret on MAIN within the minute.
 	 *
 	 * @return array<string, array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}>
 	 */
 	public static function secretsData(): array {
-		self::db()->query('SELECT `live_streaming_pass` FROM `settings` LIMIT 1;');
-		$rRow = self::db()->get_row() ?: [];
-		$rPrevious = OpensslExtra::previousEntry(ClusterClock::now());
+		$rLive = (string) (self::settingsRow('`live_streaming_pass`')['live_streaming_pass'] ?? '');
+		$rExtra = defined('OPENSSL_EXTRA') ? (string) OPENSSL_EXTRA : '';
+		if ($rLive === '' || $rExtra === '') {
+			throw new \RuntimeException('replica: a secret is not set');
+		}
 		return [
-			'live_streaming_pass' => self::secret('live_streaming_pass', (string) ($rRow['live_streaming_pass'] ?? ''), null),
-			'openssl_extra' => self::secret('openssl_extra', defined('OPENSSL_EXTRA') ? (string) OPENSSL_EXTRA : '', $rPrevious),
+			'live_streaming_pass' => self::secret('live_streaming_pass', $rLive, null),
+			'openssl_extra' => self::secret('openssl_extra', $rExtra, OpensslExtra::previousEntry(ClusterClock::now())),
 		];
 	}
 
@@ -367,6 +374,27 @@ final class ReplicaBuilder {
 	 */
 	private static function secret(string $rName, string $rValue, ?array $rPrevious): array {
 		return ['current' => $rValue, 'kid' => ReplicaSections::kid($rName, $rValue), 'previous' => $rPrevious['value'] ?? null, 'previous_valid_until' => $rPrevious['valid_until'] ?? null];
+	}
+
+	/**
+	 * MAIN's settings row, these columns of it; a failed read or no row throws.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function settingsRow(string $rColumns): array {
+		self::read('SELECT ' . $rColumns . ' FROM `settings` LIMIT 1;');
+		$rRow = self::db()->get_row();
+		if (!is_array($rRow) || $rRow === []) {
+			throw new \RuntimeException('replica: no settings row');
+		}
+		return $rRow;
+	}
+
+	/** Run one of a section's reads: a failed one throws, never an empty result. */
+	private static function read(string $rQuery, mixed ...$rArgs): void {
+		if (self::db()->query($rQuery, ...$rArgs) === false) {
+			throw new \RuntimeException('replica: a read failed');
+		}
 	}
 
 	/** @return list<string> the settings keys a node's replica may carry */

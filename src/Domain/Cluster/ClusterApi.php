@@ -706,7 +706,8 @@ final class ClusterApi {
 	 * secrets) goes only to an agent that names it, and `secrets` only to a
 	 * node in mode 1 or 2 (ReplicaBuilder::serves). A name MAIN does not
 	 * serve, and a whole section it cannot sign without a licence, are left
-	 * out of the reply.
+	 * out of the reply. A section MAIN cannot read (a failed read, no settings
+	 * row, an unset secret) answers `503 DB`: the node keeps what it holds.
 	 */
 	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rSince = $rP['blocklist_since'] ?? 0;

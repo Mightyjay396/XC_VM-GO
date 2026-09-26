@@ -194,6 +194,19 @@ final class OpensslExtraTest extends TestCase {
 		$this->assertSame(['openssl_extra', 'openssl_extra.prev'], array_values(array_diff(scandir($this->rDir), ['.', '..'])), 'no temporary file left behind');
 	}
 
+	public function testAnExpiredPreviousFromMainIsNotKept(): void {
+		// Closed already (clock skew, or an old secrets.json applied from disk):
+		// the value replaced here is kept instead, for the usual window.
+		$this->assertTrue(OpensslExtra::adopt('mains-extra', 'mains-older', 999, $this->rDir, 1000));
+		$this->assertSame(['value' => OPENSSL_EXTRA, 'valid_until' => 1000 + OpensslExtra::PREVIOUS_WINDOW], json_decode((string) file_get_contents($this->rDir . 'openssl_extra.prev'), true));
+
+		// Open through its last second, as previous() reads it.
+		$this->assertTrue(OpensslExtra::adopt('mains-extra', 'mains-older', 1000, $this->rDir, 1000));
+		$this->assertSame(['value' => 'mains-older', 'valid_until' => 1000], json_decode((string) file_get_contents($this->rDir . 'openssl_extra.prev'), true));
+		OpensslExtra::usePrevFile($this->rDir . 'openssl_extra.prev');
+		$this->assertSame('mains-older', OpensslExtra::previous(1000));
+	}
+
 	public function testAdoptRefusesAnEmptyValueOrAMissingDirectory(): void {
 		$this->assertFalse(OpensslExtra::adopt(" \n", null, null, $this->rDir, 1000));
 		$this->assertFalse(OpensslExtra::adopt('mains-extra', null, null, $this->rDir . 'missing/', 1000));

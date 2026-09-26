@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\Commands\ClusterApplyCommand;
 use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\NodeFlows;
@@ -318,6 +319,84 @@ final class ReplicaApplyTest extends TestCase {
 		touch($this->rDir . '/cache/settings', time() - 3600);
 		$this->assertSame(['FromDb', 'db-pass'], [SettingsRepository::getAll()['server_name'], SettingsRepository::getAll()['live_streaming_pass']]);
 		$this->assertSame('FromDb', FileCache::getCache('settings')['server_name']);
+	}
+
+	public function testTheSettingsGoBackToMainsDatabaseWhenASectionGoesBad(): void {
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets();
+		$this->flows(NodeFlows::CONFIG);
+		$this->assertSame('applied', ReplicaApply::run(true)['settings']['mode']);
+		rename($this->rDir . '/replica/secrets.json', $this->rDir . '/secrets.bak');
+		$this->assertFalse(ReplicaApply::owns(ReplicaSections::SETTINGS), 'secrets.json gone: not owned even before the next apply');
+		rename($this->rDir . '/secrets.bak', $this->rDir . '/replica/secrets.json');
+		$this->whole('secrets', ['live_streaming_pass' => 'x']);
+		$this->assertSame('incomplete', ReplicaApply::run(true)['settings']['mode']);
+		$this->assertFalse(ReplicaApply::owns(ReplicaSections::SETTINGS));
+		$this->secrets();
+		ReplicaApply::run(true);
+		$this->assertTrue(ReplicaApply::owns(ReplicaSections::SETTINGS));
+		// Not a raw row: an empty or partial one would be the node's whole settings, every flag it lacks unset.
+		foreach (['an empty section' => [], 'no server_name' => ['seg_time' => '8'], 'a nested value' => ['server_name' => ['x']], 'a list' => ['a', 'b']] as $rWhy => $rData) {
+			$this->whole('settings', $rData);
+			$this->assertSame('refused', ReplicaApply::run(true)['settings']['mode'], $rWhy);
+			$this->assertFalse(ReplicaApply::owns(ReplicaSections::SETTINGS), $rWhy);
+			$this->assertSame('refused', ReplicaApply::run(false)['settings']['mode'], $rWhy);
+		}
+	}
+
+	public function testASettingsReadRacingAnApplyNeverOverwritesTheReplicasCache(): void {
+		$rDb = new TestDb();
+		$rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `live_streaming_pass` text, `redis_password` text)');
+		$rDb->exec("INSERT INTO `settings` VALUES (1, 'FromDb', 'db-pass', 'db-only')");
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets();
+		$this->flows(NodeFlows::CONFIG);
+		// The agent's apply lands while getAll() (cron:cache's) reads MAIN's database.
+		$rLog = new QueryLogDb($rDb);
+		$rApplied = false;
+		$rLog->rBefore = static function (string $rQuery) use (&$rApplied): void {
+			if ($rQuery === 'SELECT * FROM `settings`' && !$rApplied) {
+				$rApplied = true;
+				ReplicaApply::run(true);
+			}
+		};
+		$GLOBALS['db'] = $rLog;
+		$this->assertSame('FromDb', SettingsRepository::getAll(true)['server_name'], 'not owned when it started: MAIN\'s database');
+		$this->assertTrue(ReplicaApply::owns(ReplicaSections::SETTINGS));
+		$rCache = FileCache::getCache('settings');
+		$this->assertSame([self::LIVE, 'Renamed'], [$rCache['live_streaming_pass'], $rCache['server_name']], 'the replica\'s cache, not the row read before it');
+		$this->assertArrayNotHasKey('redis_password', $rCache);
+	}
+
+	public function testAFailedOpensslExtraWriteIsReportedAndChangesNothing(): void {
+		$rConfig = $this->rDir . '/config/';
+		// A directory where adopt() writes .prev's temporary file: that write fails, even as root.
+		$rBlock = $rConfig . 'openssl_extra.prev.' . getmypid() . '.tmp';
+		mkdir($rBlock);
+		FileCache::setCache('settings', ['live_streaming_pass' => self::LIVE]);
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets(self::LIVE, 'mains-extra');
+		$this->flows(NodeFlows::CONFIG);
+		$this->assertSame(['mode' => 'failed', 'differ' => ['openssl_extra']], ReplicaApply::run(true, 1800000000)['secrets']);
+		$this->assertFileDoesNotExist($rConfig . 'openssl_extra', '.prev first: never the new value without the one it replaces');
+
+		// cluster:apply prints the report (no secret in it) and exits 3, so the agent logs it.
+		ob_start();
+		$rExit = (new ClusterApplyCommand())->execute([]);
+		$rOut = (string) ob_get_clean();
+		$this->assertSame(ClusterApplyCommand::EXIT_FAILED, $rExit);
+		$this->assertSame('failed', json_decode($rOut, true)['secrets']['mode']);
+		foreach ([self::LIVE, 'mains-extra', OPENSSL_EXTRA] as $rSecret) {
+			$this->assertStringNotContainsString($rSecret, $rOut);
+		}
+
+		@chmod($rBlock, 0700);
+		rmdir($rBlock);
+		ob_start();
+		$rExit = (new ClusterApplyCommand())->execute([]);
+		ob_end_clean();
+		$this->assertSame(0, $rExit);
+		$this->assertSame('mains-extra', file_get_contents($rConfig . 'openssl_extra'));
 	}
 
 	// ── The whole sections servers, node, crontab and cluster ─────────────
@@ -687,6 +766,35 @@ final class ReplicaApplyTest extends TestCase {
 		$GLOBALS['db'] = $rLog;
 		$this->assertSame(['Renamed', self::LIVE], [SettingsRepository::getAll()['server_name'], SettingsRepository::getAll()['live_streaming_pass']]);
 		$this->assertStringEndsWith('/api?password=' . self::LIVE, ServerRepository::getAll()[SERVER_ID]['api_url']);
+	}
+
+	public function testWithoutAnApplyRecordLoadingTheSettingsNeverReadsTheServers(): void {
+		// MAIN, a legacy node, CONFIG off or not applied yet: nothing asks
+		// NodeFlows, which would read the servers before the settings are loaded.
+		NodeRole::useServers(null);
+		$rDb = $this->mainDb();
+		$this->flows(NodeFlows::CONFIG);
+		NodeFlows::usePath($this->rDir . '/flows.json', true);
+		SettingsManager::set([]);
+		$GLOBALS['rSettings'] = null;
+		$rLog = new QueryLogDb($rDb);
+		DatabaseFactory::set($rLog);
+		$GLOBALS['db'] = $rLog;
+		SettingsRepository::getAll(true);
+		$this->assertSame(['SELECT * FROM `settings`'], $rLog->rQueries);
+	}
+
+	public function testAServersCacheRebuiltBeforeTheSettingsAreLoadedTakesTheSettingsCache(): void {
+		$this->mainDb();
+		$this->sections();
+		$this->whole('settings', self::SETTINGS);
+		$this->secrets();
+		$this->flows(NodeFlows::CONFIG);
+		ReplicaApply::run(true, null, SERVER_ID);
+		SettingsManager::set([]);
+		$GLOBALS['rSettings'] = null;
+		FileCache::delCache('servers');
+		$this->assertStringEndsWith('/api?password=' . self::LIVE, ServerRepository::getAll()[SERVER_ID]['api_url'], 'rebuilt from the replica with the settings cache, not empty settings');
 	}
 
 	public function testAServersReadBeforeTheSettingsAreLoadedTakesTheSettingsCache(): void {

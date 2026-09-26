@@ -10,6 +10,7 @@ use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterBus;
@@ -125,6 +126,7 @@ final class ClusterApiTest extends TestCase {
 		ClusterBus::useSocket(null);
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
+		OpensslExtra::usePrevFile(null);
 		if ($this->rDir !== null) {
 			putenv('XCVM_TEST_VERDICT_PK_HEX');
 			putenv('XCVM_TEST_CLUSTER_LIC_TTL');
@@ -1354,7 +1356,13 @@ final class ClusterApiTest extends TestCase {
 		$this->assertArrayHasKey('sealed', $this->reply($rRes, $rCtx, $rKeys)['node'], 'another section\'s ETag is not this one\'s');
 	}
 
+	/** MAIN's previous OPENSSL_EXTRA: none, never the deploy root's file. */
+	private function noPreviousExtra(): void {
+		OpensslExtra::usePrevFile(sys_get_temp_dir() . '/xcvm-no-prev-' . bin2hex(random_bytes(4)));
+	}
+
 	public function testConfigServesTheSecretsSectionOnlyToANodeInModeOneOrTwo(): void {
+		$this->noPreviousExtra();
 		$this->blocklistTables();
 		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `api_pass` text, `live_streaming_pass` text)');
 		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 'secret-api', 'secret-live')");
@@ -1393,6 +1401,7 @@ final class ClusterApiTest extends TestCase {
 		if (!$this->rCrypto instanceof FakeClusterCrypto) {
 			$this->markTestSkipped('the licence is switched off in the fake only');
 		}
+		$this->noPreviousExtra();
 		$this->blocklistTables();
 		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `live_streaming_pass` text)');
 		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 'secret-live')");
@@ -1408,6 +1417,26 @@ final class ClusterApiTest extends TestCase {
 		$rNext = $this->reply($rRes, $rCtx, $rKeys);
 		$this->assertTrue($rNext['blocklist']['unchanged']);
 		$this->assertArrayNotHasKey('secrets', $rNext);
+	}
+
+	public function testConfigAnswers503ForASectionMainCannotRead(): void {
+		$this->noPreviousExtra();
+		$this->blocklistTables();
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `live_streaming_pass` text)');
+		$rKeys = $this->active();
+
+		// No settings row: never an empty section the node would take as its settings.
+		[$rRes] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => '']], 1, $rKeys);
+		$this->denial($rRes, 503, 'DB');
+		[$rRes] = $this->call('config', ['blocklist_since' => 0, 'have' => ['secrets' => '']], 1, $rKeys);
+		$this->denial($rRes, 503, 'DB');
+
+		// An unset stream secret: never an entry with an empty `current`; the settings still go.
+		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', '')");
+		[$rRes] = $this->call('config', ['blocklist_since' => 0, 'have' => ['secrets' => '']], 1, $rKeys);
+		$this->denial($rRes, 503, 'DB');
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => '']], 1, $rKeys);
+		$this->assertSame('XC', $this->openRecord($this->reply($rRes, $rCtx, $rKeys)['settings']['sealed'], 'rep')['data']['server_name']);
 	}
 
 	// ── The cluster bus: nonces and per-op semaphores ────────────────────

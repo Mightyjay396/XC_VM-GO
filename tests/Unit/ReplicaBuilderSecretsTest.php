@@ -10,6 +10,7 @@ use XcVm\Domain\Cluster\ReplicaBuilder;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\FakeClusterCrypto;
 use XcVm\Tests\Support\InstallSchema;
+use XcVm\Tests\Support\QueryLogDb;
 
 /**
  * The node replica's secrets (cluster plan, sections 9 and 10, Phase 7). The
@@ -18,7 +19,7 @@ use XcVm\Tests\Support\InstallSchema;
  * The sealed `secrets` section carries only `live_streaming_pass` and
  * OPENSSL_EXTRA, each as {kid, current, previous, previous_valid_until}, goes
  * only to an active node in mode 1 or 2, and is never kept unsealed on MAIN.
- * No other section carries a secret.
+ * No other section carries a secret, and none is built from a failed read.
  */
 final class ReplicaBuilderSecretsTest extends TestCase {
 	/** Settings whose names look secret but are not: flags and public keys. */
@@ -32,6 +33,11 @@ final class ReplicaBuilderSecretsTest extends TestCase {
 	];
 
 	private ?string $rDir = null;
+
+	protected function setUp(): void {
+		// MAIN's previous OPENSSL_EXTRA: this test's own file, never the deploy root's.
+		OpensslExtra::usePrevFile($this->dir() . '/openssl_extra.prev');
+	}
 
 	protected function tearDown(): void {
 		DatabaseFactory::reset();
@@ -193,6 +199,52 @@ final class ReplicaBuilderSecretsTest extends TestCase {
 		$this->assertSame('sekret-new', $rNext['data']['live_streaming_pass']['current']);
 		$this->assertNotSame($rFirst['etag'], $rNext['etag']);
 		$this->assertSame($rNext['etag'], ReplicaBuilder::etag($rNext['data']));
+	}
+
+	public function testASectionIsNeverBuiltFromAFailedReadANoRowOrAnUnsetSecret(): void {
+		$rDb = $this->mainDb();
+		$rCrypto = new FakeClusterCrypto();
+		$rNode = ['server_id' => 5, 'mode' => 1, 'state' => 'active', 'node_uuid' => 'uuid-5', 'gen' => 1, 'node_box_pub' => str_repeat('b', 32)];
+		$rLog = new QueryLogDb($rDb);
+		DatabaseFactory::set($rLog);
+		$rThrows = function (string $rWhy, callable $rBuild): void {
+			$rThrown = null;
+			try {
+				$rBuild();
+			} catch (\RuntimeException $rE) {
+				$rThrown = $rE;
+			}
+			$this->assertMatchesRegularExpression('/^(replica|blocklist): /', $rThrown?->getMessage() ?? 'built', $rWhy);
+			$this->assertStringNotContainsString('sekret', $rThrown->getMessage(), $rWhy);
+		};
+		// A read that fails as Database::query fails: false, while get_row()
+		// still holds the last result (here that same read's, a moment ago).
+		foreach ([
+			'settings' => 'settings', 'secrets' => 'settings', 'node' => 'settings',
+			'servers' => 'servers', 'crontab' => 'crontab',
+		] as $rSection => $rTable) {
+			$rLog->rRefuse = '/FROM `' . $rTable . '`/';
+			$rDb->query('SELECT * FROM `' . $rTable . '`');
+			$rThrows($rSection, static fn() => ReplicaBuilder::section($rCrypto, $rNode, $rSection, [], []));
+		}
+		foreach (['the range' => '/MIN\(`id`\)/', 'a table' => '/FROM `blocked_ips`/'] as $rWhy => $rRefuse) {
+			$rLog->rRefuse = $rRefuse;
+			$rThrows('blocklist, ' . $rWhy, static fn() => ReplicaBuilder::blocklist($rCrypto, $rNode, 0, ''));
+		}
+		$rLog->rRefuse = null;
+
+		// No settings row: no settings, secrets or node section.
+		$rDb->exec('DELETE FROM `settings`');
+		foreach (['settings', 'secrets', 'node'] as $rSection) {
+			$rThrows($rSection . ' without a row', static fn() => ReplicaBuilder::section($rCrypto, $rNode, $rSection, [], []));
+		}
+
+		// An unset stream secret (cron:root_signals sets one within the minute): no entry with an empty `current`.
+		$rDb->exec("INSERT INTO `settings` (`id`, `server_name`, `live_streaming_pass`) VALUES (1, 'XC', '')");
+		$rThrows('an empty stream secret', static fn() => ReplicaBuilder::section($rCrypto, $rNode, ReplicaSections::SECRETS, [], []));
+		$rDb->exec('UPDATE `settings` SET `live_streaming_pass` = NULL');
+		$rThrows('no stream secret', static fn() => ReplicaBuilder::section($rCrypto, $rNode, ReplicaSections::SECRETS, [], []));
+		$this->assertSame('XC', ReplicaBuilder::section($rCrypto, $rNode, ReplicaSections::SETTINGS, [], [])['data']['server_name'], 'the settings section does not need it');
 	}
 
 	public function testOnlyAnActiveNodeInModeOneOrTwoIsServedTheSecrets(): void {

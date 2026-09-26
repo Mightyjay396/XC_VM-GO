@@ -278,8 +278,9 @@ final class ReplicaApply {
 	 * the keys whose value differs from the settings cache cron:cache built
 	 * from MAIN's database: `shadow` (CONFIG off) or `incomplete` (no usable
 	 * secrets section: the section withholds what the node reads, so the
-	 * cache stays MAIN's database's). A section that is not a raw row is
-	 * `refused`.
+	 * cache stays MAIN's database's). A section that is not a raw row (empty,
+	 * without `server_name`, a list, a value that is not a string or null) is
+	 * `refused`, and the cache is MAIN's database's too.
 	 *
 	 * @return array{etag: string, mode: string, keys?: int, differ?: list<string>}|null
 	 */
@@ -380,9 +381,14 @@ final class ReplicaApply {
 		return $rOut;
 	}
 
-	/** The settings section's data: MAIN's raw row, every value a string or null. */
+	/**
+	 * The settings section's data: MAIN's raw row, every value a string or
+	 * null, and a row indeed (`server_name` among it). An empty or partial
+	 * section would become the node's whole settings, every flag it lacks
+	 * unset.
+	 */
 	private static function rawRow(array $rData): bool {
-		if ($rData !== [] && array_is_list($rData)) {
+		if (!is_string($rData['server_name'] ?? null)) {
 			return false;
 		}
 		foreach ($rData as $rValue) {

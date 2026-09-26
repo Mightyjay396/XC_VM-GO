@@ -13,7 +13,9 @@ use XcVm\Core\Cluster\ReplicaApply;
  * off) it only reports how the replica differs from what the node reads from
  * MAIN's database today; with CONFIG on it writes the caches, the settings
  * cache among them, and config/openssl_extra. Its output (the report) never
- * holds a secret: the agent may log it. It still boots
+ * holds a secret: the agent may log it. It exits 3, after printing the
+ * report, when a part of it failed (a write of config/openssl_extra), so the
+ * agent logs it like any failed run; 2 when there is no replica. It still boots
  * through the CLI profile, which needs MAIN's database: serving from the
  * replica after a reboot while MAIN is unreachable waits for ReplicaStage.
  *
@@ -25,6 +27,9 @@ use XcVm\Core\Cluster\ReplicaApply;
  * @package XC_VM_CLI_Commands
  */
 class ClusterApplyCommand implements CommandInterface {
+	/** The exit code when a part of the report says `failed`. */
+	public const EXIT_FAILED = 3;
+
 	public function getName(): string {
 		return 'cluster:apply';
 	}
@@ -40,6 +45,16 @@ class ClusterApplyCommand implements CommandInterface {
 			return 2;
 		}
 		echo json_encode($rReport) . "\n";
-		return 0;
+		return self::failed($rReport) ? self::EXIT_FAILED : 0;
+	}
+
+	/** @param array<string, mixed> $rReport */
+	public static function failed(array $rReport): bool {
+		foreach ($rReport as $rPart) {
+			if (is_array($rPart) && ($rPart['mode'] ?? null) === 'failed') {
+				return true;
+			}
+		}
+		return false;
 	}
 }
