@@ -607,7 +607,7 @@ Other targets are unchanged: a legacy node limits at open, as before.
 - the `adm` claim in the token;
 - the `conn_admit` op, with `lb_offline_admission`, for tokens minted without admission.
 
-A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store.
+A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store. The ninth increment builds both on the panel.
 
 ### Connections (Phase 6, eighth increment): TS closes from the fanout
 
@@ -628,6 +628,76 @@ A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`.
 - `FanoutSyncCommand` keeps running as the safety net, for closes a feed reset loses and for when the fanout cannot answer.
 
 The close reaches MAIN within about a second, with no WAN read from the node.
+
+### Connections (Phase 6, ninth increment): the `adm` claim, `conn_admit` and the offline policy
+
+This increment builds the panel half of plan section 8, "Global `max_connections` and kills", steps 4 to 6. The agent half is specified under **The agent's contract** below and is not built yet.
+
+**The claim.** A token minted after admission applied carries `adm: {exp, sid}`. `ConnectionAdmission::admitToken` adds it at the six viewer mint sites in `Public/stream/auth.php`.
+- `exp` is when the reservation expires: MAIN's unix seconds, `create_expiration` + 10 s after the mint.
+- `sid` is the node the reservation was made for: the originator behind a proxy, else the redirect target.
+- The reservation's id is the token's own `uuid`.
+
+The token is sealed with MAIN's stream secret, so a node trusts the claim once the token opens. With `secure_stream_tokens` off, the token is the legacy AES-CBC format with no MAC, and the claim is exactly as forgeable as the credentials beside it. The node's `conn.limit` re-check follows every open either way.
+
+A token without a claim was minted before this, or where admission did not apply: an unlimited line, a target without CONNECTIONS, or a store that could not be reached.
+
+**The node's PHP.** A new viewer is registered through `ConnectionTracker::openRecord`. live.php, vod.php and timeshift.php now pass it the token and the node's `time_offset`. On a CONNECTIONS node, `AgentConnections::register` adds an `X-XCVM-Admission` header to `PUT /v1/conn/{uuid}`, built by `AgentConnections::admission`.
+- **Why a header.** An agent that predates it ignores the header, and the record it stores stays the record.
+- **When.** Only a new viewer with a limited token (`max_connections` > 0) sends it. Refreshes (`updateLive`), RTMP and endpoints without a token do not.
+- **Timeout.** Such a register waits 2.5 s (`ADMIT_TIMEOUT`) instead of 1 s, since the agent may ask MAIN for up to 1.5 s.
+
+PHP reads the agent's answer as follows:
+- **200:** admitted. This is what every older agent answers.
+- **403 `{admit: false, reason}`:** refused. Nothing is recorded, in the registry or in MAIN's store. `StreamAuth::refuseAdmission` refuses the viewer on live.php's connection-limit path: `USER_ALREADY_CONNECTED` in the client log, with `admission: <reason>` as its data, and the "connected" video, or a 404 without one. A reason that is not `[A-Z_]{1,32}` reads as `REFUSED`.
+- **Anything else, or no answer:** the viewer goes to MAIN's store, as when the agent is down.
+
+**HLS.** live.php records an HLS viewer under its playlist key, not the token's uuid. So the reservation made at mint was never released, and it counted against the line until it expired. When the token has a claim and the two uuids differ, the record now names the reserved uuid as `adm_uuid`. `ConnectionIngest::upsert` releases it with the viewer. `adm_uuid` is not a store column; the agent stores and mirrors it like any other record key.
+
+**MAIN: `conn_admit`.** Admission for a viewer whose token has no claim, or an expired one (`ConnectionAdmission::forNode`).
+- **Transport.** `POST`, ctl lane, session auth (MAC and BOX, no node signature). The node must be `active` (409 `NOT_ACTIVE`) with CONNECTIONS on (409 `FLOW_OFF {flow: "connections"}`). A malformed request gets 400 `BAD_REQUEST`, and a database MAIN cannot read gets 503 `DB`.
+- **Request.** `{uuid, line_id | hmac_id + identifier, stream_id, ip, ua}`, with exactly one identity. MAIN reads the line itself and ignores any limit the node sends.
+- **Refused:** a line auth.php would refuse before it mints: `UNKNOWN_LINE`, `BANNED` (`admin_enabled` 0), `DISABLED` (`enabled` 0) or `EXPIRED` (`exp_date` not after now). An HMAC key that is unknown or disabled gets `UNKNOWN_HMAC`. Bouquets, allowed IPs and agents, countries and ISPs are not checked again: auth.php checked them before it minted the token.
+- **Admitted:** everything else, since admission never refuses a valid viewer. A limited line is reserved for the authenticated node, as at mint. The cut that makes room for the viewer is queued (below), and the viewer is never cut. An unlimited line needs no reservation. An HMAC identity is reserved but not cut, because its limit is signed into the client's request and stored nowhere. The node's `conn.limit`, which carries that limit, enforces it. A reservation store that cannot be reached reserves nothing and still admits.
+- **Idempotent.** A repeated uuid refreshes its own reservation and gets the same answer.
+
+**The cut is queued.** The cluster endpoint has none of the legacy globals `ConnectionLimiter` needs (`SERVER_ID`, `$rServers`), and the ctl lane must answer within 1.5 s. So `conn_admit` queues the cut in `conn.limit`'s queue (`ConnectionLimits::queueAdmission`, written by MAIN only), and `cron:signals` runs it within about a second (`ConnectionAdmission::cut`).
+- The limit and pair are read from `lines` again when the cut runs.
+- The room is the limit, less the reservations in flight at admission, less one for the viewer. A viewer that has opened by then is already counted among the open connections, so it takes no extra room.
+- A uuid that MAIN's store holds for another node drops the cut.
+
+**Delivering the policy.** The hello and heartbeat replies carry `offline_admission` (`local`, `allow` or `deny`) at the top level, normalised from `lb_offline_admission`. A change reaches every node within one heartbeat, without the CONFIG flow or a replica. It is not in `policy`: that object is versioned by `policy_ver`, which only endpoint changes raise.
+
+**The agent's contract.** For the Go half, not built yet:
+1. **The register.** `PUT /v1/conn/{uuid}` keeps its body (the record) and its 200 answer with the record. The new request header `X-XCVM-Admission` is a compact JSON object, ASCII-only (non-ASCII is `\u`-escaped), with no CR or LF:
+   - `adm` (optional): `{exp: int, sid: int}`. PHP passes it only when `exp` is not past on the node's clock corrected by `time_offset`, and when `sid` is the record's `server_id`.
+   - `line_id: int`, or `hmac_id: int` and `identifier: string`.
+   - `stream_id: int`, `max_connections: int` (≥ 1), `ip: string`, `ua: string`.
+   - A missing header, or one that is not a JSON object, means a plain register, as today.
+2. **With `adm`.** When `adm.exp × 1000` is not before MAIN's time as the agent keeps it (`MainNowMs`), the viewer is admitted with no WAN call: store it and answer 200.
+3. **Without it.** Otherwise, call `conn_admit` with `{uuid, line_id | hmac_id + identifier, stream_id, ip, ua}`. Never send `max_connections`. The call has 1.5 s from the PUT's arrival, waiting for the ctl lane included.
+   - A MAC'd 200 with `admit: true` admits.
+   - A MAC'd 200 with `admit: false` refuses with MAIN's `reason`.
+   - Anything else applies the offline policy: a transport error, a timeout, nginx's unsigned errors, or any signed denial (`FLOW_OFF`, `NOT_ACTIVE`, `BAD_REQUEST`, `DB`, `TOKEN_EXPIRED`, `UNKNOWN_OP` from an older MAIN, and so on).
+4. **The offline policy.** The agent uses the last `offline_admission` from a hello or heartbeat reply. It keeps it across restarts in its state file, and uses `local` until it has one.
+   - `allow`: admit.
+   - `deny`: refuse with `OFFLINE`.
+   - `local`: count the registry's open records (`hls_end` not set) with the same owner, other than this uuid. The owner is the digest's: `u:<line_id>` or `h:<hmac_id>:<identifier>`. Refuse with `LIMIT` when the count is at least `max_connections`; otherwise admit.
+5. **Answers.** Admit: store and answer 200 with the record, as today. Refuse: answer 403 with `{"admit": false, "reason": "<REASON>"}`, store nothing and spool no event. A refused uuid already in the registry, such as an ended HLS record, stays as it was.
+6. **Caching.** The agent may treat an admitting `conn_admit` answer as an `adm` for that uuid until its `exp`.
+7. **Reasons.** From MAIN: `UNKNOWN_LINE`, `BANNED`, `DISABLED`, `EXPIRED`, `UNKNOWN_HMAC`. From the agent: `LIMIT`, `OFFLINE`.
+
+**Compatibility.**
+- An older agent ignores the header and answers 200: every viewer is admitted, as before, and `conn.limit` still enforces the limit on MAIN.
+- An older agent also ignores `offline_admission`.
+- An older MAIN mints no claim and answers `conn_admit` with a signed `UNKNOWN_OP`, which the contract treats as MAIN out of reach.
+
+**Not built:**
+- the agent's half, above;
+- admission for RTMP viewers (`rtmp.php` has no stream token);
+- an audit row for refusals. A refusal is only in the client log, so a flood of expired tokens cannot fill `cluster_audit`.
+
+Tests: `ConnectionAdmissionTest` (the claim, `conn_admit`'s refusals, the HMAC case, idempotency, the queued cut, the HLS release), `ClusterApiTest` (the op: MAC, flow, state, MAIN's own line, the node's reservation, the policy in hello and heartbeat), and `AgentAdmissionTest`, against a stand-in agent on a unix socket (the header, the unchanged body, the 403 refusal recorded nowhere, an older agent, the 2.5 s wait).
 
 ### The settings section (Phase 7, fourth increment)
 
