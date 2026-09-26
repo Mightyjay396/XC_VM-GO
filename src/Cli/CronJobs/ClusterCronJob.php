@@ -4,12 +4,12 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
-use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\ClusterEndpoint;
+use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\CommandBus;
 use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Cluster\LivenessService;
@@ -24,6 +24,7 @@ use XcVm\Domain\Server\ServerRepository;
  * - the replay cache and single-use challenges past their 180 s go;
  * - enrolment codes nobody used, and decided requests after a day, go;
  * - the blocklist's change log keeps seven days (also with the API off);
+ * - MAIN's old cluster API ports past their seven days leave nginx;
  * - the liveness loop runs once (the signals daemon runs it every second).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
@@ -74,19 +75,11 @@ class ClusterCronJob implements CommandInterface {
 			'enrol_codes' => static fn() => EnrolCodeService::prune(),
 			'commands' => static fn() => CommandBus::prune(),
 			'blocklist_changes' => static fn() => BlocklistDelta::prune(),
-			// MAIN's old HTTP ports past their 7 days: release them in nginx.
+			// MAIN's old cluster API ports past their 7 days: release them in
+			// nginx (this job runs as xc_vm, the user the render needs).
 			'endpoint' => static function () {
-				if (ClusterEndpoint::prune(SettingsManager::getAll()) && defined('SERVER_ID')) {
-					$rMain = ServerRepository::getAll(true)[SERVER_ID] ?? [];
-					$rPorts = [];
-					foreach (array_merge([intval($rMain['http_broadcast_port'] ?? 0)], explode(',', (string) ($rMain['http_ports_add'] ?? ''))) as $rPort) {
-						if (is_numeric($rPort) && (int) $rPort > 0 && (int) $rPort <= 65535) {
-							$rPorts[] = (int) $rPort;
-						}
-					}
-					if ($rPorts !== []) {
-						NodeActions::setPorts(SERVER_ID, 0, $rPorts, true);
-					}
+				if (ClusterEndpoint::prune(SettingsManager::getAll())) {
+					ClusterNginxConfig::apply();
 				}
 			},
 			// The signals daemon runs this every second; the minute is its fallback.

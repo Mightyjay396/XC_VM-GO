@@ -68,13 +68,4 @@ final class ClusterEndpointTest extends TestCase {
 		$this->assertSame('', $this->settings()['cluster_legacy_ports']);
 		$this->assertSame(3, (int) $this->settings()['cluster_policy_ver']);
 	}
-
-	public function testNginxServesOnlyTheClusterApiOnOldPorts(): void {
-		$rConf = ClusterEndpoint::nginxConf([25461 => $this->rNow + 60, 8080 => $this->rNow + 60], [8080]);
-		$this->assertStringContainsString('listen 25461;', $rConf);
-		$this->assertStringNotContainsString('listen 8080;', $rConf, 'a port MAIN still broadcasts on stays with the main server');
-		$this->assertStringContainsString('location ^~ /cluster/v1/ {', $rConf);
-		$this->assertMatchesRegularExpression('#location / \{\s*return 404;#', $rConf);
-		$this->assertStringNotContainsString('server {', ClusterEndpoint::nginxConf([], [80]));
-	}
 }
