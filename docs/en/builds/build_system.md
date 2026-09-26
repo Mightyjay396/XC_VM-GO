@@ -173,9 +173,15 @@ post-update). `make lb` therefore always writes the LB archive's list as the uni
 - every file the LB build strips: the `LB_FILES_TO_REMOVE` entries and the tracked files under
   `LB_DIRS_TO_REMOVE`, limited to the code trees (`Cli/`, `Core/`, `Domain/`, `Infrastructure/`,
   `Public/`, `Streaming/`). `bin/`, `config/` and `content/` hold runtime and per-server files and
-  are never taken from the strip lists.
+  are never taken from the strip lists. The trees in `LB_KEEP_ON_UPDATE` are left out as well.
 
 A file newly added to a strip list is thus also removed from LBs installed by an older release.
+
+`LB_KEEP_ON_UPDATE` holds `Domain/User`. A fresh LB never gets it, but `Public/stream/rtmp.php` (the
+RTMP `on_play` auth) and the viewer-API controllers still call it on routes the LB nginx serves. An
+older LB that still carries it keeps it until those routes are removed.
+
+The build verification fails if the list names a file that the LB archive ships (`DELETES-SHIPPED`).
 
 ---
 
@@ -225,17 +231,23 @@ on_play_done http://127.0.0.1:8080/stream/rtmp;
 
 ## Runtime Behavior on LB
 
-### Conditional Command Loading
+### Command Discovery
 
-`console.php` uses `file_exists()` guards for commands that may not exist on LB servers:
+`console.php` does not list commands. It globs `Cli/Commands/*.php` and `Cli/CronJobs/*.php` and
+registers every concrete class that implements `CommandInterface`:
 
 ```php
-if (file_exists(__DIR__ . '/Cli/Commands/CacheHandlerCommand.php')) {
-    $rRegistry->register(new CacheHandlerCommand());
+foreach (glob($rDir . '/*.php') as $rFile) {
+    $rClass = $rNamespace . basename($rFile, '.php');
+    if (!class_exists($rClass)) {
+        continue;
+    }
+    // ... register it if it is a concrete CommandInterface
 }
 ```
 
-This prevents crashes when LB attempts to register a command whose file was removed during the build.
+A command or cron job that the LB build strips is simply absent on the LB, so it is never registered.
+No guard is needed.
 
 ### Streaming Dependency Chain
 
@@ -282,8 +294,8 @@ LB_FILES_TO_REMOVE = ... your_dir/admin_file.php
 
 ### New CLI command (admin-only)
 
-1. Add `file_exists()` guard in `console.php`
-2. Add the file to `LB_FILES_TO_REMOVE`
+Add the file to `LB_FILES_TO_REMOVE`. If it is privileged, also add it to `SENSITIVE` in
+`tools/ci/verify-lb-archive.sh`. `console.php` discovers commands by glob, so it needs no change.
 
 ---
 
@@ -294,9 +306,11 @@ Makefile variables (no tarball needed) and fails on:
 
 | Finding | Meaning |
 | --- | --- |
-| `STALE` | An `LB_DIRS` / `LB_DIRS_TO_REMOVE` / `LB_FILES_TO_REMOVE` entry matches no tracked path under `src/`. A renamed or removed path would otherwise turn its strip rule into a silent no-op. |
+| `STALE` | An `LB_DIRS` / `LB_ROOT_FILES` / `LB_DIRS_TO_REMOVE` / `LB_FILES_TO_REMOVE` / `LB_KEEP_ON_UPDATE` entry matches no tracked path under `src/`. A renamed or removed path would otherwise turn its rule into a silent no-op. |
+| `WRONG-LIST` | An entry is the wrong kind for its list: a file in `LB_DIRS`, `LB_DIRS_TO_REMOVE` or `LB_KEEP_ON_UPDATE`, or a directory in `LB_ROOT_FILES` or `LB_FILES_TO_REMOVE`. The build strips a `LB_DIRS_TO_REMOVE` path with `rm -rf`, so a file there is stripped. `rm -f` and `cp` skip a directory, so a directory in a file list does nothing. |
 | `LEAK` | A privileged path from the script's `SENSITIVE` list would ship to the LB. |
-| `MISSING` | A script that `lb_configs/nginx.conf` executes is stripped: every `SCRIPT_FILENAME`, and `Public/<scope>/<handler>.php` for each handler the `/stream/` and `/admin/` gateway locations accept. |
+| `MISSING` | A file that the LB nginx routes to is stripped. The script checks every `SCRIPT_FILENAME` and `Public/<scope>/<handler>.php` for each handler the `/stream/` and `/admin/` gateway locations accept. It also checks the controller that `Public/index.php` dispatches for each `XC_API` value (such as `internal` for `/api`), plus `BaseApiController`, `StreamingRequestBootstrap` and `WebApiBootstrap`. An `XC_API` value that `Public/index.php` does not map also fails. |
+| `DELETES-SHIPPED` | The LB `migrations/deleted_files.txt` built by `make lb_delete_files_list` names a file that the LB archive ships, so the update would delete it from every LB. |
 
 When you strip a new file, add it to `LB_FILES_TO_REMOVE` (it must be a tracked file) and, if it is
 privileged, to `SENSITIVE` in `tools/ci/verify-lb-archive.sh`. When you strip a routed handler, also

@@ -880,6 +880,59 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(['p0' => 1, 'p1' => 0], $this->reply($rRes, $rCtx, $rKeys)['cursors']);
 	}
 
+	public function testP2TakesTouchesWithoutANumberAndHelloAndHeartbeatSaySo(): void {
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY, `uuid` varchar(32), `server_id` int, `hls_last_read` int, `hls_end` int NOT NULL DEFAULT 0)');
+		$this->rDb->exec("INSERT INTO `lines_live` (`uuid`, `server_id`, `hls_last_read`) VALUES ('aaaa', 5, 100)");
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+		$rTouch = ['type' => 'conn.touch', 't' => $this->rT0, 'd' => ['uuid' => 'aaaa', 'hls_last_read' => 150]];
+
+		[$rRes, $rCtx] = $this->call('events', ['lane' => 'p2', 'events' => [$rTouch]], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame([0, 1, 0], [$rOut['useq'], $rOut['applied'], $rOut['dropped']], 'no number, no cursor');
+		$this->rDb->query('SELECT `hls_last_read` FROM `lines_live` WHERE `uuid` = ?', 'aaaa');
+		$this->assertSame(150, (int) $this->rDb->get_row()['hls_last_read'], 'no bus here: MAIN\'s store');
+		[$rRes, $rCtx] = $this->call('events', ['lane' => 'p2', 'first_useq' => 'x', 'events' => [$rTouch]], 1, $rKeys);
+		$this->assertSame(1, $this->reply($rRes, $rCtx, $rKeys)['applied'], 'first_useq is not read on P2');
+
+		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a'], 1, $rKeys);
+		$rHello = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame(['conn.touch'], $rHello['p2_types']);
+		$this->assertSame(['p0' => 0, 'p1' => 0], $rHello['cursors']);
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame(['conn.touch'], $this->reply($rRes, $rCtx, $rKeys)['p2_types'], 'in every heartbeat too, so a rollback is noticed');
+	}
+
+	public function testP2FailsWith503WhenTheStoreIsDownAndIsClosedToAQuarantinedNode(): void {
+		if (!class_exists(\Redis::class)) {
+			$this->markTestSkipped('phpredis not available');
+		}
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+		$rTouch = ['type' => 'conn.touch', 't' => $this->rT0, 'd' => ['uuid' => 'aaaa', 'hls_last_read' => 150]];
+
+		// A store that cannot be written: 503 DB, and the node keeps its touches for a retry.
+		SettingsManager::set($this->rSettings + ['redis_handler' => 1]);
+		$rInstance = new \ReflectionProperty(\XcVm\Infrastructure\Redis\RedisManager::class, 'instance');
+		$rInstance->setValue(null, new \Redis()); // not connected
+		(new \ReflectionProperty(\XcVm\Infrastructure\Redis\RedisManager::class, 'lastPingCheck'))->setValue(null, time());
+		try {
+			[$rRes, , $rReq] = $this->call('events', ['lane' => 'p2', 'events' => [$rTouch]], 1, $rKeys);
+			$this->denial($rRes, 503, 'DB', $rReq);
+		} finally {
+			$rInstance->setValue(null, null);
+			SettingsManager::set($this->rSettings);
+		}
+
+		// Events come only from an active node, on P2 too, while heartbeat
+		// (open to a quarantined node) still lists what P2 takes.
+		NodeRegistry::update(self::SID, ['state' => 'quarantined']);
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p2', 'events' => [$rTouch]], 1, $rKeys);
+		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame(['conn.touch'], $this->reply($rRes, $rCtx, $rKeys)['p2_types']);
+	}
+
 	public function testRecordingCompleteCreatesTheVodOnceForTheNodesRecording(): void {
 		$this->rDb->exec('CREATE TABLE `streams` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `type` int, `stream_display_name` text, `stream_source` text, `target_container` text, `year` text, `movie_properties` text, `rating` int, `read_native` int, `movie_symlink` int, `remove_subtitles` int, `transcode_profile_id` int, `order` int, `added` int, `category_id` text)');
 		$this->rDb->exec('CREATE TABLE `recordings` (`id` INTEGER PRIMARY KEY, `created_id` int, `category_id` text, `bouquets` text, `title` text, `description` text, `start` int, `end` int, `source_id` int, `status` int)');
@@ -1002,6 +1055,93 @@ final class ClusterApiTest extends TestCase {
 		$this->block('203.0.113.2', false);
 		[$rRes] = $this->call('config', ['blocklist_since' => $rOut['seq']], 1, $rKeys);
 		$this->denial($rRes, 403, 'LICENCE_INVALID');
+	}
+
+	public function testConnAdmitAdmitsForTheAuthenticatedNodeFromMainsOwnLine(): void {
+		$this->rDb->exec('CREATE TABLE `lines` (`id` INTEGER PRIMARY KEY, `max_connections` int, `pair_id` int, `enabled` int, `admin_enabled` int, `exp_date` int)');
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT, `uuid` text, `server_id` int, `user_id` int, `hmac_id` int, `hmac_identifier` text, `hls_end` int DEFAULT 0)');
+		$this->rDb->query('INSERT INTO `lines` VALUES (42, 1, NULL, 1, 1, NULL), (50, 1, NULL, 1, 0, NULL)');
+		// The reservations' primary key (the test DDL drops it) is what makes a retry refresh one row.
+		$this->rDb->exec('DROP TABLE `cluster_reservations`');
+		$this->rDb->exec('CREATE TABLE `cluster_reservations` (`id` char(32) PRIMARY KEY, `identity` varchar(96) NOT NULL, `server_id` int NOT NULL, `stream_id` int, `created_at` int NOT NULL, `exp` int NOT NULL)');
+		$rDir = sys_get_temp_dir() . '/xcvm-api-admit-' . bin2hex(random_bytes(4)) . '/';
+		\XcVm\Domain\Cluster\ConnectionLimits::useQueue($rDir);
+		$rCuts = [];
+		\XcVm\Domain\Cluster\ConnectionAdmission::useEnforcer(static function (?int $rLine, int $rRoom, ?int $rHMAC, string $rIdentifier, ?string $rIP, ?string $rUA, ?string $rUUID) use (&$rCuts): void {
+			$rCuts[] = [$rLine, $rRoom, $rIP, $rUUID];
+		});
+		SettingsManager::set($this->rSettings + ['redis_handler' => 0]);
+		try {
+			$rKeys = $this->active();
+			$rUUID = str_repeat('a', 32);
+			$rAsk = ['uuid' => $rUUID, 'line_id' => 42, 'stream_id' => 100, 'ip' => '203.0.113.9', 'ua' => 'VLC', 'max_connections' => 50];
+
+			// Only a node that holds its viewers asks.
+			[$rRes, , $rReq] = $this->call('conn_admit', $rAsk, 1, $rKeys);
+			$this->assertSame('connections', $this->denial($rRes, 409, 'FLOW_OFF', $rReq)['flow']);
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+
+			// Nothing happens without a good MAC.
+			[$rRes, , $rReq] = $this->call('conn_admit', $rAsk, 1, $rKeys, ['body' => static fn($b) => substr($b, 0, -1) . chr(ord(substr($b, -1)) ^ 1)]);
+			$this->denial($rRes, 401, 'BAD_MAC', $rReq);
+			$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations`');
+			$this->assertSame(0, (int) $this->rDb->get_row()['n']);
+
+			[$rRes, $rCtx] = $this->call('conn_admit', $rAsk, 1, $rKeys);
+			$rOut = $this->reply($rRes, $rCtx, $rKeys);
+			$this->assertSame([true, intdiv($this->rT0, 1000) + 5 + 10], [$rOut['admit'], $rOut['exp']], 'admitted until the reservation expires');
+			$this->assertArrayNotHasKey('reason', $rOut);
+
+			// A retry (the same viewer again) gets the same answer and keeps one reservation.
+			[$rRes, $rCtx] = $this->call('conn_admit', $rAsk, 1, $rKeys);
+			$this->assertSame($rOut['exp'], $this->reply($rRes, $rCtx, $rKeys)['exp']);
+			$this->rDb->query('SELECT `server_id`, `identity`, `stream_id` FROM `cluster_reservations` WHERE `id` = ?', $rUUID);
+			$rRows = $this->rDb->get_rows();
+			$this->assertCount(1, $rRows);
+			$this->assertSame([self::SID, '42', 100], [(int) $rRows[0]['server_id'], (string) $rRows[0]['identity'], (int) $rRows[0]['stream_id']], 'the reservation is the authenticated node\'s');
+
+			// The cut goes by `lines` (limit 1), never by the node's 50, and spares the viewer.
+			$this->assertSame(2, \XcVm\Domain\Cluster\ConnectionLimits::drain());
+			$this->assertSame([[42, 0, '203.0.113.9', $rUUID], [42, 0, '203.0.113.9', $rUUID]], $rCuts);
+
+			// A line auth.php would refuse is refused; a malformed request is a bad request.
+			[$rRes, $rCtx] = $this->call('conn_admit', ['uuid' => str_repeat('b', 32), 'line_id' => 50] + $rAsk, 1, $rKeys);
+			$rOut = $this->reply($rRes, $rCtx, $rKeys);
+			$this->assertSame([false, 0, 'BANNED'], [$rOut['admit'], $rOut['exp'], $rOut['reason']]);
+			[$rRes, , $rReq] = $this->call('conn_admit', ['line_id' => '42'] + $rAsk, 1, $rKeys);
+			$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+
+			// A line MAIN cannot read is not a refusal: the agent's offline policy decides.
+			$this->rDb->exec('ALTER TABLE `lines` RENAME TO `lines_gone`');
+			[$rRes, , $rReq] = $this->call('conn_admit', ['uuid' => str_repeat('c', 32)] + $rAsk, 1, $rKeys);
+			$this->denial($rRes, 503, 'DB', $rReq);
+			$this->rDb->exec('ALTER TABLE `lines_gone` RENAME TO `lines`');
+
+			// Only an active node.
+			NodeRegistry::update(self::SID, ['state' => 'quarantined']);
+			[$rRes, , $rReq] = $this->call('conn_admit', $rAsk, 1, $rKeys);
+			$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+		} finally {
+			\XcVm\Domain\Cluster\ConnectionLimits::useQueue(null);
+			\XcVm\Domain\Cluster\ConnectionAdmission::useEnforcer(null);
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
+	public function testHelloAndHeartbeatCarryTheOfflineAdmissionPolicy(): void {
+		$rKeys = $this->active();
+		[$rRes, $rCtx] = $this->call('hello', [], 1, $rKeys);
+		$this->assertSame('local', $this->reply($rRes, $rCtx, $rKeys)['offline_admission'], 'the default');
+
+		$this->rSettings['lb_offline_admission'] = 'deny';
+		[$rRes, $rCtx] = $this->call('hello', [], 1, $rKeys);
+		$this->assertSame('deny', $this->reply($rRes, $rCtx, $rKeys)['offline_admission']);
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame('deny', $this->reply($rRes, $rCtx, $rKeys)['offline_admission'], 'a change reaches the node within a heartbeat');
+
+		$this->rSettings['lb_offline_admission'] = 'maybe';
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame('local', $this->reply($rRes, $rCtx, $rKeys)['offline_admission']);
 	}
 
 	public function testConfigServesTheSettingsSectionToAnAgentThatAsks(): void {

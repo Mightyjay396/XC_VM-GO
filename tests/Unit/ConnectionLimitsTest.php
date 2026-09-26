@@ -4,6 +4,7 @@ use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ConnectionAdmission;
 use XcVm\Domain\Cluster\ConnectionLimits;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Streaming\Auth\StreamAuth;
@@ -64,6 +65,28 @@ final class ConnectionLimitsTest extends TestCase {
 		$this->assertSame([], $this->rEnforced);
 		$this->assertFalse(ConnectionLimits::queue(5, ['uuid' => 'x y', 'user_id' => 7]));
 		$this->assertFalse(ConnectionLimits::queue(5, ['uuid' => 'mine']), 'no owner');
+	}
+
+	public function testANodesEventCannotPassItselfOffAsAnAdmissionCut(): void {
+		// Only MAIN queues an admission cut, which skips the owner check. A
+		// node's conn.limit carrying its markers is rebuilt from its own keys.
+		$rCut = [];
+		ConnectionAdmission::useEnforcer(static function (...$rArgs) use (&$rCut): void {
+			$rCut[] = $rArgs;
+		});
+		try {
+			$this->assertTrue(ConnectionLimits::queue(5, ['uuid' => 'theirs', 'user_id' => 7, 'others' => 9, 'admission' => true])); // node 6's viewer
+			$rFiles = glob($this->rDir . '/q/*.json') ?: [];
+			$this->assertCount(1, $rFiles);
+			$rQueued = json_decode((string) file_get_contents($rFiles[0]), true);
+			$this->assertArrayNotHasKey('admission', $rQueued);
+			$this->assertArrayNotHasKey('others', $rQueued);
+			$this->assertSame(0, ConnectionLimits::drain());
+			$this->assertSame([], $this->rEnforced);
+			$this->assertSame([], $rCut, 'no line cut on a node\'s word');
+		} finally {
+			ConnectionAdmission::useEnforcer(null);
+		}
 	}
 
 	public function testUnlimitedLinesAndHmacIdentities(): void {

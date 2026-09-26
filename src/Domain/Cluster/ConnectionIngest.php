@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -19,6 +20,10 @@ use XcVm\Infrastructure\Redis\RedisManager;
  * conn.remove {uuid}     drop it from the store
  * conn.close {uuid}      the viewer left the node's fanout: its activity row,
  *                        then drop it from the store
+ * conn.divergence {rows} (P1) each viewer's measured rate, turned into its
+ *                        divergence in `lines_divergence`
+ * conn.touch {uuid, hls_last_read} (P2) the viewer's last playlist request:
+ *                        the cluster bus, or the store's hls_last_read
  * ```
  *
  * A node writes only its own connections: `server_id` is always the sender,
@@ -37,6 +42,8 @@ final class ConnectionIngest {
 	/**
 	 * Apply a node's conn.upsert. A connection that opened on the node is no
 	 * longer reserved (ConnectionAdmission): it is counted as open from here.
+	 * An HLS viewer is recorded under its playlist key; its record names the
+	 * token's uuid MAIN reserved at mint as `adm_uuid`, released too.
 	 *
 	 * @param array<string, mixed> $rRecord
 	 */
@@ -45,7 +52,12 @@ final class ConnectionIngest {
 		if ($rOk) {
 			$rUUID = (string) ($rRecord['uuid'] ?? '');
 			$rIdentity = !empty($rRecord['user_id']) ? (string) (int) $rRecord['user_id'] : (int) ($rRecord['hmac_id'] ?? 0) . '_' . ($rRecord['hmac_identifier'] ?? '');
-			ConnectionAdmission::release((bool) SettingsManager::get('redis_handler'), $rIdentity, $rUUID);
+			$rRedisMode = (bool) SettingsManager::get('redis_handler');
+			ConnectionAdmission::release($rRedisMode, $rIdentity, $rUUID);
+			$rReserved = $rRecord['adm_uuid'] ?? null;
+			if (is_string($rReserved) && $rReserved !== $rUUID && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rReserved)) {
+				ConnectionAdmission::release($rRedisMode, $rIdentity, $rReserved);
+			}
 		}
 		return $rOk;
 	}
@@ -153,6 +165,185 @@ final class ConnectionIngest {
 			(string) ($rRow['hmac_identifier'] ?? '')
 		);
 		return self::remove($rServerID, $rUUID);
+	}
+
+	/**
+	 * A node's conn.divergence (P1): each viewer's measured rate (KiB/s)
+	 * becomes its divergence in `lines_divergence`, against the stream's
+	 * bitrate on that node, with the formula the node's cron used
+	 * (DivergenceSink). With `lines_live` as the store, the row's `divergence`
+	 * is set too, as the cron did. Only connections MAIN's store holds for the
+	 * node are written, one statement per table for the whole event.
+	 *
+	 * A store that cannot be read drops the event rather than failing the
+	 * batch: the next report comes within a minute, and the lane's logs are
+	 * not held up for it.
+	 *
+	 * @param array<string, mixed> $rData {rows: [{uuid, rate}, …]}
+	 */
+	public static function divergence(int $rServerID, array $rData): bool {
+		$rRows = $rData['rows'] ?? null;
+		if (!is_array($rRows) || $rRows === [] || !array_is_list($rRows) || count($rRows) > DivergenceSink::CHUNK) {
+			return false;
+		}
+		$rRates = [];
+		foreach ($rRows as $rRow) {
+			$rUUID = is_array($rRow) ? ($rRow['uuid'] ?? null) : null;
+			$rRate = is_array($rRow) ? ($rRow['rate'] ?? null) : null;
+			if (is_string($rUUID) && preg_match(DivergenceSink::UUID, $rUUID) && is_int($rRate) && $rRate >= 0) {
+				$rRates[$rUUID] = $rRate;
+			}
+		}
+		$rOwn = $rRates === [] ? null : self::owned($rServerID, array_map('strval', array_keys($rRates)));
+		if ($rOwn === null || $rOwn === []) {
+			return false;
+		}
+		$rDb = self::db();
+		$rStreamIDs = array_values(array_unique(array_column($rOwn, 0)));
+		$rExpected = [];
+		$rDb->query('SELECT `stream_id`, `bitrate` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', array_fill(0, count($rStreamIDs), '?')) . ');', $rServerID, ...$rStreamIDs);
+		foreach ($rDb->get_rows() ?: [] as $rRow) {
+			$rExpected[(int) $rRow['stream_id']] = DivergenceSink::expected((int) $rRow['bitrate']);
+		}
+		$rParams = $rLive = [];
+		foreach ($rOwn as $rUUID => [$rStreamID, $rActivityID]) {
+			$rDivergence = DivergenceSink::of($rRates[$rUUID], $rExpected[$rStreamID] ?? 0);
+			array_push($rParams, (string) $rUUID, $rDivergence);
+			if ($rActivityID !== null) {
+				$rLive[$rActivityID] = $rDivergence;
+			}
+		}
+		if (!$rDb->query('REPLACE INTO `lines_divergence` (`uuid`, `divergence`) VALUES ' . implode(',', array_fill(0, count($rOwn), '(?, ?)')) . ';', ...$rParams)) {
+			return false;
+		}
+		if ($rLive !== []) {
+			$rCase = [];
+			foreach ($rLive as $rActivityID => $rDivergence) {
+				array_push($rCase, $rActivityID, $rDivergence);
+			}
+			$rDb->query('UPDATE `lines_live` SET `divergence` = CASE `activity_id`' . str_repeat(' WHEN ? THEN ?', count($rLive)) . ' ELSE `divergence` END WHERE `server_id` = ? AND `activity_id` IN (' . implode(',', array_fill(0, count($rLive), '?')) . ');', ...[...$rCase, $rServerID, ...array_keys($rLive)]);
+		}
+		return true;
+	}
+
+	/**
+	 * A node's conn.touch events (P2), folded to the latest per viewer by the
+	 * event's time: when each viewer last asked for its playlist.
+	 *
+	 * For a node whose agent ends its own idle HLS viewers ($rReaps: the
+	 * `hls_reaper` feature), nothing on MAIN decides by that time any more
+	 * (HlsReaping), so it goes to the cluster bus only (ClusterBus::touch),
+	 * and MAIN's store is spared a write per viewer. Only the viewers the
+	 * store holds for the node get there, read once for the batch, so a node
+	 * can neither fill the bus with made-up uuids nor touch another node's.
+	 * Without the bus, when it is too full, or for a node that does not reap
+	 * (MAIN's 30 s rule reads it), it goes into the store as the P0 upsert put
+	 * it there: the node's own connections only, never re-opening, creating
+	 * or moving one, and never back to an earlier read.
+	 *
+	 * A store that cannot be read or written throws: the batch is not
+	 * applied (503 DB), and the node sends its newer values again.
+	 *
+	 * @param array<string, array{0: int, 1: int}> $rTouches uuid => [t (ms), hls_last_read]
+	 */
+	public static function touch(int $rServerID, bool $rReaps, array $rTouches): void {
+		if ($rTouches === []) {
+			return;
+		}
+		if ($rReaps && ClusterBus::client() !== null) {
+			$rOwn = self::owned($rServerID, array_map('strval', array_keys($rTouches)));
+			if ($rOwn === null) {
+				throw new \RuntimeException('store unavailable');
+			}
+			if (ClusterBus::touch($rServerID, array_intersect_key($rTouches, $rOwn))) {
+				return;
+			}
+		}
+		$rReads = [];
+		foreach ($rTouches as $rUUID => [, $rRead]) {
+			$rReads[(string) $rUUID] = $rRead;
+		}
+		if (SettingsManager::get('redis_handler')) {
+			self::touchRedis($rServerID, $rReads);
+			return;
+		}
+		foreach (array_chunk($rReads, 1000, true) as $rChunk) {
+			$rCase = [];
+			foreach ($rChunk as $rUUID => $rRead) {
+				array_push($rCase, (string) $rUUID, $rRead);
+			}
+			$rWhen = 'CASE `uuid`' . str_repeat(' WHEN ? THEN ?', count($rChunk)) . ' ELSE `hls_last_read` END';
+			$rIn = implode(',', array_fill(0, count($rChunk), '?'));
+			if (!self::db()->query('UPDATE `lines_live` SET `hls_last_read` = ' . $rWhen . ' WHERE `server_id` = ? AND `uuid` IN (' . $rIn . ') AND (`hls_last_read` IS NULL OR `hls_last_read` < ' . $rWhen . ');', ...[...$rCase, $rServerID, ...array_map('strval', array_keys($rChunk)), ...$rCase])) {
+				throw new \RuntimeException('store unavailable');
+			}
+		}
+	}
+
+	/**
+	 * touch() on Redis: each of the node's records gets the later read. A
+	 * record written meanwhile (an upsert, a close) is left as that write
+	 * made it (WATCH), so a touch never undoes one.
+	 *
+	 * @param array<string, int> $rReads uuid => hls_last_read
+	 */
+	private static function touchRedis(int $rServerID, array $rReads): void {
+		$rRedis = RedisManager::instance();
+		if (!$rRedis instanceof \Redis) {
+			throw new \RuntimeException('redis unavailable'); // the batch is not applied; the node resends newer values
+		}
+		foreach ($rReads as $rUUID => $rRead) {
+			$rUUID = (string) $rUUID;
+			// An upsert or a close landing between this read and the write
+			// fails the EXEC, and its record stands.
+			$rRedis->watch($rUUID);
+			$rRaw = $rRedis->get($rUUID);
+			$rRecord = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;
+			if (!is_array($rRecord) || (int) ($rRecord['server_id'] ?? 0) !== $rServerID || (int) ($rRecord['hls_last_read'] ?? 0) >= $rRead) {
+				$rRedis->unwatch();
+				continue;
+			}
+			$rRecord['hls_last_read'] = $rRead;
+			$rRedis->multi()->set($rUUID, igbinary_serialize($rRecord))->exec();
+		}
+	}
+
+	/**
+	 * The node's own connections among these uuids, as MAIN's store holds
+	 * them: uuid => [stream_id, activity_id], the activity id null in Redis.
+	 * Null when the store cannot be read.
+	 *
+	 * @param list<string> $rUUIDs
+	 * @return array<string, array{0: int, 1: int|null}>|null
+	 */
+	private static function owned(int $rServerID, array $rUUIDs): ?array {
+		$rOut = [];
+		if (SettingsManager::get('redis_handler')) {
+			$rRedis = RedisManager::instance();
+			try {
+				$rData = $rRedis instanceof \Redis ? $rRedis->mGet($rUUIDs) : null;
+			} catch (\Throwable) {
+				$rData = null;
+			}
+			if (!is_array($rData)) {
+				return null;
+			}
+			foreach (array_values($rData) as $i => $rRaw) {
+				$rRecord = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;
+				if (is_array($rRecord) && (int) ($rRecord['server_id'] ?? 0) === $rServerID) {
+					$rOut[$rUUIDs[$i]] = [(int) ($rRecord['stream_id'] ?? 0), null];
+				}
+			}
+			return $rOut;
+		}
+		$rDb = self::db();
+		if (!$rDb->query('SELECT `uuid`, `activity_id`, `stream_id` FROM `lines_live` WHERE `server_id` = ? AND `uuid` IN (' . implode(',', array_fill(0, count($rUUIDs), '?')) . ');', $rServerID, ...$rUUIDs)) {
+			return null;
+		}
+		foreach ($rDb->get_rows() ?: [] as $rRow) {
+			$rOut[(string) $rRow['uuid']] = [(int) $rRow['stream_id'], (int) $rRow['activity_id']];
+		}
+		return $rOut;
 	}
 
 	/**

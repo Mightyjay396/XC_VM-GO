@@ -890,20 +890,58 @@ class ConnectionTracker {
 		return DatabaseFactory::get() ?? self::db();
 	}
 
+	/** Why the node's agent refused the viewer of the last openRecord(), or null. */
+	private static ?string $rRefused = null;
+
+	/**
+	 * The reason the node's agent refused the last viewer openRecord() was
+	 * asked to record (a refusal reason such as `LIMIT`), or null when it did
+	 * not refuse it.
+	 */
+	public static function refusedAdmission(): ?string {
+		return self::$rRefused;
+	}
+
 	/**
 	 * Store a new connection: the one place a stream endpoint records a viewer
 	 * (the connection store seam, cluster plan Phase 6). $rRecord is the Redis
 	 * record (with `identity`); $rDbRow the `lines_live` columns this caller
 	 * writes on the table path, exactly as it wrote them before.
 	 *
+	 * On a node whose agent holds its viewers, a viewer with a stream token is
+	 * also admitted by the agent (AgentConnections::admission()): with MAIN's
+	 * `adm` claim from the token, or by asking MAIN (conn_admit), or by the
+	 * offline policy. A viewer the agent refuses is recorded nowhere: this
+	 * returns false and refusedAdmission() says why, and the endpoint refuses
+	 * it (StreamAuth::refuseAdmission).
+	 *
 	 * @param array<string, mixed> $rSettings Settings (reads redis_handler).
 	 * @param array<string, mixed> $rRecord   Redis connection record.
 	 * @param array<string, mixed> $rDbRow    Column => value for `lines_live` (code-controlled keys).
+	 * @param array<string, mixed>|null $rToken The viewer's decrypted stream token, when it has one.
+	 * @param int $rTimeOffset This node's servers.time_offset (its clock less MAIN's).
 	 * @return mixed Truthy on success (Redis MULTI result or DB write result).
 	 */
-	public static function openRecord(array $rSettings, array $rRecord, array $rDbRow) {
-		if (AgentConnections::enabled() && AgentConnections::put((string) $rRecord['uuid'], $rRecord)) {
-			return true; // the node's agent holds it and tells MAIN
+	public static function openRecord(array $rSettings, array $rRecord, array $rDbRow, ?array $rToken = null, int $rTimeOffset = 0) {
+		self::$rRefused = null;
+		if (AgentConnections::enabled()) {
+			$rAdmission = $rToken === null ? null : AgentConnections::admission($rToken, $rRecord, time() - $rTimeOffset);
+			// An HLS viewer is recorded under its playlist key, not the token's
+			// uuid MAIN reserved at mint: name the reservation, so MAIN releases
+			// it with the viewer (ConnectionIngest).
+			$rReserved = (string) ($rToken['adm_uuid'] ?? $rToken['uuid'] ?? '');
+			if (is_array($rToken['adm'] ?? null) && $rReserved !== '' && $rReserved !== (string) $rRecord['uuid']) {
+				$rRecord['adm_uuid'] = $rReserved;
+			}
+			$rOut = AgentConnections::register((string) $rRecord['uuid'], $rRecord, $rAdmission);
+			if ($rOut === true) {
+				return true; // the node's agent holds it and tells MAIN
+			}
+			if (is_string($rOut)) {
+				self::$rRefused = $rOut;
+				return false;
+			}
+			unset($rRecord['adm_uuid']);
 		}
 		if ($rSettings['redis_handler']) {
 			return self::createConnection($rRecord);
@@ -996,7 +1034,9 @@ class ConnectionTracker {
 	 *                             user_id, stream_id, server_id, proxy_id,
 	 *                             user_agent, user_ip, date_start,
 	 *                             geoip_country_code, isp, external_device,
-	 *                             on_demand, uuid, time_offset.
+	 *                             on_demand, uuid, time_offset, and the
+	 *                             viewer's stream token (`token`, for
+	 *                             admission by the node's agent).
 	 * @param string   $rContainer Container: `hls` or the TS extension.
 	 * @param int|null $rPid       Owning pid (NULL for HLS).
 	 * @return mixed Truthy on success (Redis MULTI result or DB write result).
@@ -1041,7 +1081,7 @@ class ConnectionTracker {
 			"stream_id" => $rConn["stream_id"], "server_id" => $rConn["server_id"], "proxy_id" => $rConn["proxy_id"], "user_agent" => $rConn["user_agent"],
 			"user_ip" => $rConn["user_ip"], "container" => $rConn["container"], "pid" => $rConn["pid"], "uuid" => $rConn["uuid"], "date_start" => $rConn["date_start"],
 			"geoip_country_code" => $rConn["geoip_country_code"], "isp" => $rConn["isp"], "external_device" => $rConn["external_device"], "hls_last_read" => $rConn["hls_last_read"],
-		]);
+		], $rCtx["token"] ?? null, (int) $rCtx["time_offset"]);
 	}
 
 	/**

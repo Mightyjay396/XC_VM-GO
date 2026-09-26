@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes* and `cron:cluster` are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry, connection limits enforced on MAIN, and the connection digest with snapshots and seeding; admission and the agent's HLS reaper are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes*, `cron:cluster` and MAIN's own FPM pools for the API are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills) and root commands. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry, connection limits enforced on MAIN, and the connection digest with snapshots and seeding; admission and the agent's HLS reaper are not in yet. Phases 6–11 are not.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -104,7 +104,7 @@ A session request is checked in this order. Nothing is written, not even the non
 9. the node state;
 10. opening the BOX.
 
-Refusals are panel-signed (`den`) and name the node and the request nonce. `STARTING` (no extension) is the one unsigned reply, and agents treat it as a transport error.
+Refusals are panel-signed (`den`) and name the node and the request nonce. `STARTING` without the extension is the one unsigned reply, and agents treat it as a transport error. While MAIN's cluster pools are starting, `STARTING` is panel-signed (see "The cluster pools").
 
 Token epochs:
 
@@ -163,6 +163,8 @@ A missing agent binary, for example when GitHub is unreachable and there is no c
 
 Re-enrolling stops the node's running agent before replacing its identity. The generation goes up, so every token of the previous identity stops working.
 
+`cluster:reenrol` runs this path for many nodes in one go; see *Re-enrolling the fleet*.
+
 ### Enrolling by code (break-glass)
 
 For a node MAIN cannot reach over SSH (NAT, lost keys). `Domain\Cluster\EnrolCodeService` owns it:
@@ -218,13 +220,13 @@ Every agent samples its host each second (`clusteragent.Sampler`) and sends the 
 - stream producers (ffmpeg, `xc_fanout remux`) and the xc_vm PHP-FPM worker pids;
 - per-interface rates, totals and link speed.
 
-What only PHP knows, nginx requests per second and the fanout daemon's status, the LB's watchdog writes to `config/cluster/local.json`. The agent forwards that file while it is under 10 s old.
+What only PHP knows, nginx requests per second, the fanout daemon's status and the devices (next section), the LB's watchdog writes to `config/cluster/local.json`. The agent forwards that file while it is under 10 s old and at most 64 KiB, parsed as a JSON object and re-encoded.
 
 For a node with the TELEMETRY flow on (mode ≥ 1, toggled per node on the Cluster Nodes page), `HeartbeatService` makes the sample authoritative:
 
 - **Every 5 s:** `servers.watchdog_data`, `last_check_ago`, `requests_per_second` and `php_pids`; without the Redis handler, also `connections` and `users`, counted as the watchdog counted them. `toWatchdogData()` keeps the legacy `SystemInfo::getStats()` keys and order, plus `cpu_average_array` and `fanout`. `ClusterTelemetryTest` pins that against `getStats()`'s source. `network_interface` selects interfaces as before.
 - **Every minute:** the `servers_stats` row the LB's `cron:servers` wrote.
-- **Not yet reported:** GPU, iostat and capture devices are reported empty.
+- **Devices, GPUs and disk I/O:** from the node's `local.json` (next section).
 
 The node learns its mode and flows from MAIN's authenticated replies. The agent writes them to `config/cluster/flows.json`, and `Core\Cluster\NodeFlows` reads them. With TELEMETRY on:
 
@@ -233,6 +235,43 @@ The node learns its mode and flows from MAIN's authenticated replies. The agent 
 - `network.py` is stopped.
 
 A stopped agent removes `flows.json`, so the node falls back to the legacy paths.
+
+### Telemetry (Phase 3, second increment): devices, GPUs and disk I/O
+
+**Before.** `toWatchdogData()` reported `audio_devices`, `video_devices`, `gpu_info` and `iostat_info` empty. A TELEMETRY node showed 0 % I/O wait on the dashboard and its server page, and its `servers_stats` rows had no GPU or iostat history.
+
+**The node.** Only PHP probes these, so the watchdog's `local.json` now carries them. The agent is unchanged: it already parses the file as a JSON object (at most 64 KiB, under 10 s old) and re-encodes it as `telemetry.local`. Key order and number formatting are not kept (object keys come out sorted, `7.0` arrives as `7`); MAIN reads keys, not order, and relies on no int/float distinction.
+
+This differs from the plan, whose "What moves to Go" table moves the `SystemInfo` forks into the agent in Phase 3. These four probes stay in the node's PHP, every 30 s: the agent already forwards `local.json`, so no agent release is needed, and `getStats()` and the node keep one probe.
+
+- **Probe.** `SystemInfo::getDevices()`: each section is `[]` unless its tool is installed (`iostat`, `nvidia-smi`, `v4l2-ctl`, `arecord`), as `getStats()` decided. `getStats()` now takes its four sections from it, so the two cannot drift apart. For `local.json` each tool runs under `timeout -k 1 5` (`LocalTelemetry::PROBE_TIMEOUT`), so a hung `nvidia-smi` cannot stall the watchdog while the agent keeps the node looking healthy. A tool cut short reports `[]` (`nvidia-smi`, `iostat`) or the devices it listed by then (`v4l2-ctl`, `arecord`). `getStats()` waits for its tools, as before.
+- **Every 30 s.** The probes shell out, so `Core\Cluster\LocalTelemetry::refresh()` reuses a probe for 30 s. The watchdog runs one pass per process and re-execs, so the last probe is kept in `tmp/watchdog_devices.json` (`{"t": unix time, "devices": {…}}`), not in a variable. `local.json` is still rewritten every pass (about 3 s). When a probe is due, the file is written first with the last probe's sections and again after the probe, so a slow probe never ages it past the agent's 10 s. With no probe under a minute old (none, an unreadable cache, a clock that went back) the probe runs first, so an old probe is never reported as current.
+- **Size.** The agent drops a `local.json` over 64 KiB, and with it the requests per second and the fanout status. `LocalTelemetry::encode()` keeps the file at most 60 KiB (61 440 bytes). Over that, it empties every GPU's `processes` list first, then the largest device section, one at a time. If that still does not fit, only `requests_per_second` and the four sections as `[]` are kept; `fanout` is dropped, so MAIN keeps its last value.
+
+**The contract: `telemetry.local`.** Same heartbeat, same op, no new lane or event. The keys, all optional:
+
+| Key | Type | Probe (legacy shape) |
+| --- | --- | --- |
+| `requests_per_second` | int | nginx `stub_status` |
+| `fanout` | object or null | `FanoutClient::status()` |
+| `audio_devices` | list of strings (`hw:CARD=…` names) | `SystemInfo::getAudioDevices()`, `arecord -L` |
+| `video_devices` | list of `{name, video_device}` | `getVideoDevices()`, `v4l2-ctl --list-devices` |
+| `gpu_info` | `{attached_gpus, driver_version, cuda_version, gpus: [{name, power_readings, utilisation, memory_usage, fan_speed, temperature, clocks, uuid, id, processes: [{pid, memory}]}]}` or `[]` | `getGPUInfo()`, `nvidia-smi -x -q` |
+| `iostat_info` | `{"avg-cpu": {user, nice, system, iowait, steal, idle}, disk: [{disk_device, …}]}` or `[]` | `getIO()`, `iostat -o JSON -m` |
+
+A device section is `[]` when its tool is absent, timed out, or a trim dropped it. An older node's PHP does not write the four keys. The whole object is at most 64 KiB encoded (`JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE`); MAIN enforces that too (below).
+
+**MAIN.** `toWatchdogData()` takes each section from `telemetry.local` when it is an array, else `[]`.
+
+- **No `local`** (the file is stale, missing or too big, or the watchdog is down): every section is `[]`, not the last value, since stale figures would look live. `fanout` keeps its last value, as before.
+- **Over 64 KiB.** MAIN does not trust the agent's cap alone, since `gpu_info` and `iostat_info` are kept in `servers_stats` for `servers_stats_retention_days`. A `local` whose encoding is over `HeartbeatService::MAX_LOCAL` (65 536 bytes) is treated as absent: the four sections `[]`, `requests_per_second` 0, `fanout` its last value. The heartbeat itself is never refused for it.
+- **Shape.** Only what the panel reads is checked: `audio_devices` keeps its strings and `video_devices` its objects, both as lists; `gpu_info.gpus` keeps its objects; `iostat_info["avg-cpu"]` keeps its numeric figures, because the dashboard rounds `iowait`.
+- **Where it lands.** Through the existing path: `watchdog_data` every 5 s, and `gpu_info` and `iostat_info` in the minute's `servers_stats` row. The dashboard's and the server page's I/O wait (`StatsAjaxController`, `server_view.php`, `ServerViewController`) now work for TELEMETRY nodes. The `servers` columns `gpu_info`, `video_devices` and `audio_devices` (GPU cards, profile editor, capture streams) already came from `node.inventory`.
+- **Shadow copy.** `tmp/cluster/tel_<id>.json` now takes up to 128 KiB (`HeartbeatService::MAX_TELEMETRY`), because `local.json` alone may be 64 KiB.
+
+**Cost.** Each heartbeat carries the sections although they change at most every 30 s: a few KiB as a rule, 60 KiB every 2 s per node at worst. An agent that sent `local` only when it changed would save that, but MAIN would then need to keep the last one; nothing does that yet.
+
+`ClusterTelemetryTest` pins the mapping, the shape checks, the `servers_stats` columns, `refresh()` (the 30 s reuse across passes, the write before a due probe, the probe first without a recent one), the timeout wrapper, the node's size cap and its boundary, MAIN's 64 KiB cap and the shadow copy's room for it, and `local.json` as `LocalTelemetry` writes it, re-encoded as the agent does, read back by `toWatchdogData()`.
 
 ### Liveness (Phase 3)
 
@@ -263,14 +302,16 @@ The case: MAIN's HTTP broadcast port changes on its server page, and the cluster
 While a port is kept:
 
 - The policy lists it after the new URLs, so a node that was offline during the change still finds MAIN.
-- The root-side `set_port` handler renders `bin/nginx/conf/cluster_legacy.conf` on MAIN: one server block per kept port, serving `/cluster/v1/` and a 404 for everything else. `nginx.conf` includes it by glob, so a missing file is no error.
+- The root-side `set_port` handler renders `bin/nginx/conf/cluster_legacy.conf` on MAIN: one server block per kept port, serving `/cluster/v1/` and a 404 for everything else. `nginx.conf` includes it by glob, so a missing file is no error. Since the third Phase 2 increment this is `cluster.d/old_port.conf`, rendered as xc_vm (see "The rendered nginx config").
 
-When the 7 days are up, `cron:cluster` drops the port, bumps the policy again and re-applies MAIN's ports so nginx releases it.
+When the 7 days are up, `cron:cluster` drops the port, bumps the policy again and re-applies MAIN's ports so nginx releases it. It now renders the nginx config again instead.
 
 This was checked with nginx 1.24:
 
 - `nginx -t` passes with and without the file.
 - On the old port, only `/cluster/v1/` reaches PHP.
+
+**Not built:** a change of MAIN's HTTPS broadcast port, `server_ip` or `private_ip` is not announced and keeps no old URL (plan §3, "Endpoint changes"). Only the HTTP broadcast port and `cluster_api_port` bump `cluster_policy_ver`.
 
 ### Commands (Phase 4, first increment)
 
@@ -406,7 +447,7 @@ An address that is already blocked is accepted and left as it is.
 **Node side.** What a node writes about itself in its own `servers` row goes through `Core/Cluster/NodeStateSink`. With the TELEMETRY flow on it becomes an event; otherwise the row is written as before.
 
 - `node.state {fields}`, on P0, when it changes: `certbot_ssl` (certbot command and cron), `governor` and `sysctl` (`cron:root_signals`).
-- `node.inventory {fields}`, on P1, once a minute from `cron:servers`: `remote_status`, `xc_vm_version`, `server_hardware`, `governors`, `sysctl`, the devices, `gpu_info`, `interfaces` and `ping`. A newer inventory replaces an older one, so P1's drop-oldest cap costs nothing. The plan's P2 lane is not built; P1 serves.
+- `node.inventory {fields}`, on P1, once a minute from `cron:servers`: `remote_status`, `xc_vm_version`, `server_hardware`, `governors`, `sysctl`, the devices, `gpu_info`, `interfaces` and `ping`. A newer inventory replaces an older one, so P1's drop-oldest cap costs nothing. P1 serves in place of the plan's P2; the P2 lane, built in the tenth Phase 6 increment, takes only `conn.touch` so far.
 
 The plan names the second event `inventory`; it is `node.inventory` here, next to `node.state`.
 
@@ -420,7 +461,7 @@ The plan names the second event `inventory`; it is `node.inventory` here, next t
 
 **Root.** `cron:root_signals` and the certbot cron run as root. `EventSpool` hands a lane or file that root creates to the owner of the agent's state directory, so the agent can still read, compact and delete it.
 
-**`stream.progress`.** No separate event is built. `progress_info` already reaches MAIN in `stream.state`: `cron:streams` sends it at most once a minute per stream, and MAIN treats it as cache-neutral. A created channel's encoding progress, every 10 s while it encodes, is the one faster writer. P0 compaction keeps one state per row, so none of it can grow the backlog. Moving it to the bus waits for the P2 lane.
+**`stream.progress`.** No separate event is built. `progress_info` already reaches MAIN in `stream.state`: `cron:streams` sends it at most once a minute per stream, and MAIN treats it as cache-neutral. A created channel's encoding progress, every 10 s while it encodes, is the one faster writer. P0 compaction keeps one state per row, so none of it can grow the backlog. It stays in `stream.state` now that the P2 lane exists (tenth Phase 6 increment); it can move there as a type of its own.
 
 ### Connections (Phase 6, first increment): kills as commands
 
@@ -570,7 +611,7 @@ Other targets are unchanged: a legacy node limits at open, as before.
 - the `adm` claim in the token;
 - the `conn_admit` op, with `lb_offline_admission`, for tokens minted without admission.
 
-A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store.
+A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`. So these matter only when the cluster bus replaces MAIN's store. The ninth increment builds both on the panel.
 
 ### Connections (Phase 6, eighth increment): TS closes from the fanout
 
@@ -591,6 +632,235 @@ A CONNECTIONS node already makes no WAN call for limits: it spools `conn.limit`.
 - `FanoutSyncCommand` keeps running as the safety net, for closes a feed reset loses and for when the fanout cannot answer.
 
 The close reaches MAIN within about a second, with no WAN read from the node.
+
+### Connections (Phase 6, ninth increment): the `adm` claim, `conn_admit` and the offline policy
+
+This increment builds the panel half of plan section 8, "Global `max_connections` and kills", steps 4 to 6. The agent half is specified under **The agent's contract** below and is not built yet.
+
+**The claim.** A token minted after admission applied carries `adm: {exp, sid}`. `ConnectionAdmission::admitToken` adds it at the six viewer mint sites in `Public/stream/auth.php`.
+- `exp` is when the reservation expires: MAIN's unix seconds, `create_expiration` + 10 s after the mint.
+- `sid` is the node the reservation was made for: the originator behind a proxy, else the redirect target.
+- The reservation's id is the token's own `uuid`.
+
+The token is sealed with MAIN's stream secret, so a node trusts the claim once the token opens. With `secure_stream_tokens` off, the token is the legacy AES-CBC format with no MAC, and the claim is exactly as forgeable as the credentials beside it. The node's `conn.limit` re-check follows every open either way.
+
+A token without a claim was minted before this, or where admission did not apply: an unlimited line, a target without CONNECTIONS, or a store that could not be reached.
+
+**The node's PHP.** A new viewer is registered through `ConnectionTracker::openRecord`. live.php, vod.php and timeshift.php now pass it the token and the node's `time_offset`. On a CONNECTIONS node, `AgentConnections::register` adds an `X-XCVM-Admission` header to `PUT /v1/conn/{uuid}`, built by `AgentConnections::admission`.
+- **Why a header.** An agent that predates it ignores the header, and the record it stores stays the record.
+- **When.** Only a new viewer with a limited token (`max_connections` > 0) sends it, and only while `flows.json` says the node is `active`. Refreshes (`updateLive`), RTMP and endpoints without a token do not. A quarantined node sends none: MAIN mints it no claim and answers its `conn_admit` with `NOT_ACTIVE`, so its viewers are admitted without asking, as before this increment.
+- **Timeout.** Such a register waits 2.5 s (`ADMIT_TIMEOUT`) instead of 1 s, since the agent may ask MAIN for up to 1.5 s.
+
+PHP reads the agent's answer as follows:
+- **200:** admitted. This is what every older agent answers.
+- **403 `{admit: false, reason}`:** refused. Nothing is recorded, in the registry or in MAIN's store. A reason that is not `[A-Z_]{1,32}` reads as `REFUSED`. live.php (HLS and TS), vod.php and timeshift.php then refuse the viewer through `StreamAuth::refuseAdmission`, the way auth.php refuses the same condition at mint (`StreamAuth::admissionRefusal`). The client log's data is `admission: <reason>`.
+  - `EXPIRED`: `USER_EXPIRED` and the expired video.
+  - `BANNED`: `USER_BAN` and the banned video. `DISABLED`: `USER_DISABLED` and the banned video.
+  - `UNKNOWN_LINE`, `UNKNOWN_HMAC`: `AUTH_FAILED` and `INVALID_CREDENTIALS`.
+  - `LIMIT`, `OFFLINE`, `REFUSED` and any other reason: `USER_ALREADY_CONNECTED` and the "connected" video, as live.php refuses a line already connected elsewhere.
+  - Without the video, each falls back as `OffAirHandler::showVideoServer` does: `EXPIRED`, `BANNED` or a 404.
+- **Anything else, or no answer:** the viewer goes to MAIN's store, as when the agent is down.
+
+**HLS.** live.php records an HLS viewer under its playlist key, not the token's uuid. So the reservation made at mint was never released, and it counted against the line until it expired. When the token has a claim and the two uuids differ, the record now names the reserved uuid as `adm_uuid`. `ConnectionIngest::upsert` releases it with the viewer. `adm_uuid` is not a store column; the agent stores and mirrors it like any other record key.
+
+**MAIN: `conn_admit`.** Admission for a viewer whose token has no claim, or an expired one (`ConnectionAdmission::forNode`).
+- **Transport.** `POST`, ctl lane, session auth (MAC and BOX, no node signature). The node must be `active` (409 `NOT_ACTIVE`) with CONNECTIONS on (409 `FLOW_OFF {flow: "connections"}`). A malformed request gets 400 `BAD_REQUEST`, and a database MAIN cannot read gets 503 `DB`.
+- **Request.** `{uuid, line_id | hmac_id + identifier, stream_id, ip, ua}`, with exactly one identity; the exact fields are under **Wire** below. MAIN reads the line itself and ignores any limit the node sends.
+- **Refused:** a line auth.php would refuse before it mints, checked in auth.php's order: `UNKNOWN_LINE`, then `EXPIRED` (`exp_date` not after now), `BANNED` (`admin_enabled` 0), `DISABLED` (`enabled` 0). An HMAC key that is unknown or disabled gets `UNKNOWN_HMAC`. Bouquets, allowed IPs and agents, countries and ISPs are not checked again: auth.php checked them before it minted the token.
+- **Admitted:** everything else, since admission never refuses a valid viewer. A limited line is reserved for the authenticated node, as at mint. The cut that makes room for the viewer is queued (below), and the viewer is never cut. An unlimited line needs no reservation. An HMAC identity is reserved but not cut, because its limit is signed into the client's request and stored nowhere. The node's `conn.limit`, which carries that limit, enforces it. A reservation store that cannot be reached reserves nothing and still admits.
+- **Idempotent.** A repeated uuid refreshes its own reservation and gets the same answer.
+
+**Wire.** The request is the BOX'd JSON object:
+- `uuid`: string, `[A-Za-z0-9_-]{1,64}`, the PUT's uuid. In MySQL store mode without the cluster bus, a uuid longer than 32 characters is admitted but not reserved (`cluster_reservations.id` is `char(32)`, the size auth.php mints).
+- Exactly one identity:
+  - `line_id`: int > 0; or
+  - `hmac_id`: int > 0 with `identifier`: string. MAIN keeps the identifier's first 255 bytes, as `conn.limit`'s queue does.
+- The other identity's id is absent, `null` or `0`, so a Go struct without `omitempty` works. `identifier` is ignored beside `line_id`. A string where an int belongs (`"42"`), both ids > 0, or neither is 400 `BAD_REQUEST`.
+- `stream_id`: int ≥ 0, optional (0).
+- `ip`: string, optional (""). MAIN keeps its first 64 bytes.
+- `ua`: string, optional (""). MAIN keeps its first 512 bytes.
+- Any other key, `max_connections` included, is ignored.
+
+The reply is BOX'd with the session keys, status 200:
+- `admit`: bool;
+- `exp`: int, MAIN's unix seconds until which the reservation holds, 0 when refused;
+- `reason`: string, only when refused;
+- `main_time_ms`: int.
+
+The denials are signed and name the node and the request's nonce: 409 `NOT_ACTIVE`, 409 `FLOW_OFF {flow: "connections"}`, 400 `BAD_REQUEST` and 503 `DB`. The session denials of every ctl op, such as 401 `BAD_MAC` or `TOKEN_EXPIRED`, also apply.
+
+**The cut is queued.** The cluster endpoint has none of the legacy globals `ConnectionLimiter` needs (`SERVER_ID`, `$rServers`), and the ctl lane must answer within 1.5 s. So `conn_admit` queues the cut in `conn.limit`'s queue (`ConnectionLimits::queueAdmission`, written by MAIN only), and `cron:signals` runs it within about a second (`ConnectionAdmission::cut`).
+- The limit and pair are read from `lines` again when the cut runs.
+- The room is the limit, less the line's other reservations still in flight when the cut runs (`ConnectionAdmission::inFlight`, in the store `reserve` wrote to), less one for the viewer. A viewer that has opened by then is already counted among the open connections, so it takes no extra room. An ended record under its uuid, such as a closed HLS key, is not open.
+- The reservations are counted when the cut runs, not at admission. A reservation counted at admission may open before the cut runs: ingest releases it, and it is then one of the open connections. A count kept from admission would take it twice and evict a viewer within the limit.
+- A store that cannot be read cuts nothing, as at mint. `conn.limit` follows the open.
+- A uuid that MAIN's store holds for another node drops the cut.
+- The queued check is marked `admission: true`. `ConnectionLimits::queue`, which takes a node's `conn.limit`, rebuilds the check from its own keys, so a node cannot queue an admission cut, which skips the owner check.
+
+**Delivering the policy.** The hello and heartbeat replies carry `offline_admission` (`local`, `allow` or `deny`) at the top level, normalised from `lb_offline_admission`. A change reaches every node within one heartbeat, without the CONFIG flow or a replica. It is not in `policy`: that object is versioned by `policy_ver`, which only endpoint changes raise.
+
+**The agent's contract.** For the Go half, not built yet:
+1. **The register.** `PUT /v1/conn/{uuid}` keeps its body (the record) and its 200 answer with the record. The new request header `X-XCVM-Admission` is a compact JSON object, ASCII-only (non-ASCII is `\u`-escaped), with no CR or LF:
+   - `adm` (optional): `{exp: int, sid: int}`. PHP passes it only when `exp` is not past on the node's clock corrected by `time_offset`, and when `sid` is the record's `server_id`.
+   - `line_id: int`, or `hmac_id: int` and `identifier: string` (as the record's, uncapped).
+   - `stream_id: int`, `max_connections: int` (≥ 1), `ip: string`, `ua: string`.
+   - A missing header, or one that is not a JSON object, means a plain register, as today.
+   - So does an object without exactly one valid identity (`line_id` an int > 0, or `hmac_id` an int > 0 with a string `identifier`), or whose `max_connections` is missing, not an int, or < 1.
+   - An `adm` that is not an object with int `exp` and int `sid` is ignored, as if absent.
+   - The agent does not compare `adm.sid` with its own server id: PHP passes the claim only when `sid` is the record's `server_id`.
+2. **With `adm`.** When `adm.exp × 1000` is not before MAIN's time as the agent keeps it (`MainNowMs`), the viewer is admitted with no WAN call: store it and answer 200.
+3. **Without it.** When the agent's last hello or heartbeat reply has `state` other than `active`, or CONNECTIONS off, it does not call `conn_admit` and admits. Otherwise, call `conn_admit` with `{uuid, line_id | hmac_id + identifier, stream_id, ip, ua}`, as under **Wire** above: the other identity's keys left out, never `max_connections`. The call has 1.5 s from the PUT's arrival, waiting for the ctl lane included.
+   - A MAC'd 200 with `admit: true` admits.
+   - A MAC'd 200 with `admit: false` refuses with MAIN's `reason`.
+   - A verified denial (`*Denial`: panel-signed, naming this node and this request's nonce) with reason `NOT_ACTIVE`, `FLOW_OFF` or `BAD_REQUEST` admits. MAIN has answered, and admission does not apply to this node or this request. Its `conn.limit` still follows the open.
+   - Anything else applies the offline policy: a transport error, a timeout, nginx's unsigned errors or `STARTING`, a reply that does not verify (`ErrTransport`), and any other verified denial (`DB`, `TOKEN_EXPIRED`, `RATE_LIMITED`, and so on). An older MAIN's `UNKNOWN_OP` names no node or nonce, so it reaches the agent as `ErrTransport`.
+4. **The offline policy.** The agent uses the last `offline_admission` from a hello or heartbeat reply. It keeps it across restarts in its state file, and uses `local` until it has one. A value other than `local`, `allow` or `deny` is ignored, and the value it holds is kept.
+   - `allow`: admit.
+   - `deny`: refuse with `OFFLINE`.
+   - `local`: count the registry's open records (`hls_end` not set) with the viewer's owner, leaving out this uuid and the same device's records (the same `user_ip` and `user_agent` as the PUT's record). The owner is the digest's, taken from the record: `u:<line_id>` or `h:<hmac_id>:<identifier>`. Refuse with `LIMIT` when the count is at least `max_connections`; otherwise admit. It never ends a record.
+5. **Answers.** Admit: store and answer 200 with the record, as today. Refuse: answer 403 with `{"admit": false, "reason": "<REASON>"}`, store nothing and spool no event. A refused uuid already in the registry, such as an ended HLS record, stays as it was.
+6. **Caching.** The agent may treat an admitting `conn_admit` answer as an `adm` for that uuid until its `exp`.
+7. **Reasons.** From MAIN: `UNKNOWN_LINE`, `EXPIRED`, `BANNED`, `DISABLED`, `UNKNOWN_HMAC`. From the agent: `LIMIT`, `OFFLINE`.
+
+**Differs from the plan.**
+- **`local` refuses the newcomer.** Legacy enforcement, and MAIN's own cuts, admit the newest viewer and close the oldest. While MAIN is out of reach, `local` refuses a newcomer from another device instead of ending an open viewer. The plan's DEGRADED state keeps existing sessions, and Phase 6's acceptance drops no viewer while MAIN is stopped for 5 minutes. Evicting from the node would break both. The same device's records are left out of the count, so a channel switch is admitted while the old record ends. For HLS that takes up to 30 s, the reaper's wait. Once MAIN answers again, the spooled `conn.limit` applies newest-wins.
+- **An answer that admission does not apply is not an outage.** The plan applies `lb_offline_admission` only when MAIN is unreachable. A verified `NOT_ACTIVE`, `FLOW_OFF` or `BAD_REQUEST` is MAIN's answer, so the agent admits. Otherwise a quarantined node, or one in a CONNECTIONS rollback, would ask on every limited viewer and get the offline policy every time. Under `deny`, all of those viewers would be refused.
+- **Quarantined nodes are admitted without asking.** The agent's socket stays on for a quarantined node (`NodeFlows::on` accepts it), but MAIN mints no claim for one, and `conn_admit` accepts only `active` nodes. Its viewers are admitted as before this increment: PHP sends no header, and the agent skips `conn_admit`.
+
+**Compatibility.**
+- An older agent ignores the header and answers 200: every viewer is admitted, as before, and `conn.limit` still enforces the limit on MAIN.
+- An older agent also ignores `offline_admission`.
+- An older MAIN mints no claim. It answers `conn_admit` with an `UNKNOWN_OP` that names no node or nonce, which the contract treats as MAIN out of reach. The node's PHP ships in the same release as MAIN, so that happens only while a fleet is being upgraded.
+
+**Not built:**
+- the agent's half, above;
+- admission for RTMP viewers (`rtmp.php` has no stream token);
+- an audit row for refusals. A refusal is only in the client log, so a flood of expired tokens cannot fill `cluster_audit`.
+
+Tests:
+- `ConnectionAdmissionTest`: the claim; `conn_admit`'s refusals and their order; the HMAC case; idempotency; the wire's tolerance (an id of 0, a long identifier); the queued cut, which counts in flight when it runs, never twice, and cuts nothing when the store cannot be read; the HLS release.
+- `ConnectionLimitsTest`: a node's `conn.limit` cannot queue an admission cut.
+- `ClusterApiTest`: the op (MAC, flow, state, MAIN's own line, the node's reservation, 503 `DB`) and the policy in hello and heartbeat.
+- `AgentAdmissionTest`, against a stand-in agent on a unix socket: the header (ASCII whatever the user agent; `adm` judged on MAIN's clock through `time_offset`; none on a quarantined node); live.php's `createLive` passing the token on; the unchanged body; the 403 refusal recorded nowhere and cleared by the next viewer; how each reason is shown; an older agent; the 2.5 s wait; and the endpoints' wiring.
+
+### Connections (Phase 6, tenth increment): `conn.divergence`, and the P2 lane with `conn.touch`
+
+This increment builds the panel half of two rows of the plan's section 7 events table, `conn.divergence` (P1) and `conn.touch` (P2), and the P2 lane of section 8, "Ordering and backpressure". The agent needs no change for the first. The second is specified under **The agent's contract** below and is not built in the agent yet.
+
+**Divergence before.** Two writers on every node, MAIN included, put a viewer's divergence into MAIN's database:
+- `cron:users` reads the speed files (KiB/s, one per uuid in `DIVERGENCE_TMP_PATH`) that live.php's pre-fanout TS loop, vod.php and timeshift.php write.
+- `fanout_sync` reads the fanout's `GET /rates` for the node's daemon-served TS viewers.
+
+Each compared the rate with the stream's bitrate on that node and wrote `lines_divergence`, and `lines_live.divergence` in MySQL store mode. MAIN's `cron:users` deletes the `lines_divergence` rows of connections its store no longer holds.
+
+**Divergence now.** On a node whose CONNECTIONS flow is on, both writers hand the rates to `Core\Cluster\DivergenceSink::spool()`, which spools a P1 event through the `EventSpool`. When the spool refuses (flow off, the agent stopped), they write MAIN's tables as before. MAIN never has flows, so it always writes its own.
+- **Event:** `conn.divergence {rows: [{uuid, rate}, …]}`. `uuid` is a string matching `[A-Za-z0-9_-]{1,32}`, the width of `lines_divergence.uuid`. `rate` is an int ≥ 0, in KiB/s. There are at most 1000 rows per event (`DivergenceSink::CHUNK`), and the events of one write go in one spool file. Rows that do not qualify are left out on the node.
+- **MAIN** (`EventIngest`, `ConnectionIngest::divergence`) takes the event on P1 only, from a node with CONNECTIONS on:
+  - It keeps the rows whose uuid MAIN's store (Redis, or `lines_live`) holds for the sending node. Rows with a bad uuid or a rate that is not an int ≥ 0 are skipped.
+  - It works out each row's divergence with the node cron's formula, now shared: expected = `bitrate / 8 · 0.92` from the node's `streams_servers` row, and divergence = the percentage by which the rate falls short of it (0 when faster, or when no bitrate is known).
+  - It writes them with one `REPLACE INTO lines_divergence`, and in MySQL store mode one `UPDATE lines_live … CASE activity_id`.
+  - An event with none of the node's viewers, no valid row, more than 1000 rows or `rows` that is not a list is dropped and counted.
+  - A store that cannot be read also drops the event instead of failing the batch. The next report comes within a minute, and the lane's logs are not held up for it.
+- **Cleanup.** MAIN's cleanup of `lines_divergence` is unchanged, since the rows it writes are keyed by connections its store holds.
+- **Agent.** The agent ships the event like any P1 spool file and needs no change.
+- **No backlog.** Only a writer's latest report counts, and P1 is shared with the node's logs:
+  - `fanout_sync` reports at most once a minute (`FanoutSyncCommand::DIVERGENCE_EVERY`), as often as `cron:users`. At its 10 s pass, 20k daemon viewers (about 56 bytes a row) would put about 6.6 MB a minute on P1, over half of what the agent's P1 loop ships (one batch of at most 1 MiB every 5 s). Without CONNECTIONS it still writes MAIN's tables every pass, as before.
+  - A writer skips a report while its previous one is still in `spool/p1`, not yet sent (MAIN out of reach, the lane behind). `EventSpool::append` tags the file (`<hrtime>-<pid>-<rand>-divergence_cron.ndjson`, `…-divergence_fanout.ndjson`) and `EventSpool::pending()` finds it. During a MAIN outage each writer therefore leaves one report in the spool, and the lane's cap drops no logs for stale divergence. A skipped report writes nothing; with the agent stopped (`EventSpool::agentAlive()` false), the writer writes MAIN's tables as before.
+  - The agent treats spool file names as opaque: it ships every `*.ndjson` in name order, so the tag needs no agent change.
+
+**The P2 lane.** The `events` op takes `lane: "p2"`, for state of which only the newest value per key counts:
+- **No number.** `first_useq` is not read and may be left out. The lane has no cursor and no `cluster_nodes` column, and `hello`'s `cursors` stays `{p0, p1}`.
+- **Never a 409 `USEQ_GAP`.** Only the 400 `BAD_REQUEST` of any malformed batch (for example `events` not a list, or more than 5000 events), 503 `DB`, and the session denials of every op apply. Among those is 409 `NOT_ACTIVE`: the `events` op takes only an active node, while heartbeat, which a quarantined node still sends, keeps listing `p2_types`.
+- **Reply:** BOX'd 200 `{ok: true, useq: 0, applied, dropped, main_time_ms}`.
+- **Latest wins.** A batch is folded to the latest event per key by the event's `t`; of two with the same `t`, the later in the batch wins. Across batches, whatever holds the value keeps the latest too, so a repeated or late batch changes nothing newer.
+- **Refusals.** An event of a type MAIN does not take on P2, or whose flow is off, is dropped and counted.
+
+**`conn.touch`.** `{type: "conn.touch", t, d: {uuid, hls_last_read}}` is P2's first type: when a viewer last asked for its playlist, keyed by uuid.
+- `t`: int ≥ 0, unix milliseconds on the agent's clock, as in every spool line. Only the order of one viewer's touches matters (see the contract, item 4).
+- `uuid`: string matching `[A-Za-z0-9_-]{1,64}`.
+- `hls_last_read`: int ≥ 0, the registry record's own value (the node's clock corrected by `time_offset`, as PHP writes it).
+- It needs CONNECTIONS. Anything else is dropped.
+
+Where MAIN keeps it (`ConnectionIngest::touch`):
+- **The cluster bus only**, for a node whose agent ends its own idle HLS viewers (`HlsReaping::capable`: mode ≥ 1, CONNECTIONS on, `hls_reaper` said at hello). The key is `touch:<sid>:<uuid>` and holds `<t>:<hls_last_read>`. A Lua script replaces it only with a `t` that is not earlier, and it expires 5 minutes after its last write (`ClusterBus::TOUCH_TTL_MS`). Two bounds keep the bus safe from a node:
+  - **Only the node's own viewers.** MAIN reads its store once per batch (one `MGET` on Redis, one `SELECT … uuid IN` on `lines_live`) and keeps the touches of the uuids it holds for the node. A node can neither create keys for made-up uuids nor touch another node's, and the bus holds at most one key per connection of a reaping node.
+  - **At most half the bus.** Past `ClusterBus::TOUCH_MEMORY_SHARE` (0.5) of the bus's `maxmemory` (256 MB), read with `INFO memory` per batch, the touches go to MAIN's store instead. The bus evicts the keys closest to expiry first (`volatile-ttl`), so touches, which live longest, would otherwise push out the admission reservations (about 15 s) and the wake-ups (60 s) first.
+
+  Nothing on MAIN reads the bus's touches back yet. `ClusterBus::lastReads()` is the reader for when something does, and the tests use it.
+- **MAIN's store**, without the bus, with the bus past its share, or for a node that does not reap, since MAIN's 30 s rule reads that node's `hls_last_read`. It writes the value as the P0 upsert did, with these limits:
+  - only the node's own connections;
+  - never back to an earlier read;
+  - never re-opening, creating or moving a connection between Redis sets;
+  - one `UPDATE … CASE uuid` per 1000 on `lines_live`;
+  - on Redis, `WATCH` per record, so a record an upsert or a close wrote meanwhile stays as that write left it.
+- **`applied`** counts every well-formed touch taken. One for a viewer the store does not hold for the node changes nothing, on the bus as in the store. A store that cannot be read or written fails the batch with 503 `DB`, so the node sends its newer values again.
+
+**Nothing on MAIN overlays the bus.** The plan's sink is "bus only". While a node reaps for itself, no MAIN reader decides by a touch-only change of `hls_last_read`:
+
+| Reader | What it reads | With touches on the bus |
+| --- | --- | --- |
+| `UsersCronJob::hlsEnded` (the 30 s rule) | `hls_last_read` | Off for a reaping node, which sends its end as a P0 `conn.upsert` with `hls_end` 1 |
+| `UsersCronJob::isRemoteWorkerRunning` (Redis mode) | `max(date_start, hls_last_read)`, as when the worker pid was set | A pid change is a P0 upsert carrying `hls_last_read`; a touch only ever made the time later, which is more lenient |
+| `cron:users`' ENDED rule and 300 s rule for ended rows | the `hls_last_read` written with the end | Written by the P0 upsert of the end |
+| `fanout_sync`'s 20 s connect grace | pid-0 TS rows | Never touched after they open |
+| `ConnectionLimiter`, admission | `date_start`, `activity_id` | Not `hls_last_read` |
+| `ConnectionDigest`, `ConnectionSnapshot` | uuid, owner, `hls_end`; a snapshot writes the registry's current record | Unaffected |
+| Admin and reseller live connections, stats, the admin API | — | None shows `hls_last_read` |
+| `UsersCronJob::hlsEnded`, once the node stops reaping for itself | `hls_last_read` | Covered by the leave grace below |
+
+The gaps were in `HlsReaping` itself. In each, the store's `hls_last_read` for a reaping node's viewers can be minutes old, because their reads reached only the bus, and the 30 s rule would end live viewers:
+- **A failed read.** When `cluster_nodes` could not be read, every node fell back to the 30 s rule. `HlsReaping::begin` now keeps the reapers of the last pass that read the table (`reaps` in `cluster_orphans.json`) and orphans nothing on a failed read. With no such pass, it falls back to the 30 s rule as before.
+- **Leaving the reaper set.** A node stops reaping for itself when an admin turns CONNECTIONS off, its mode drops to 0, it is revoked or leaves `active`, or it says hello without `hls_reaper`. It then keeps counting as reaping for `HlsReaping::LEAVE_GRACE` (120 s, two reaper passes) from the first pass that finds it so (`leaving` in `cluster_orphans.json`), unless it is orphaned, whose rows are purged anyway. In that time the node hears of the change at its next heartbeat, and its viewers' next playlist requests put fresh reads into the store: written by the node's PHP once CONNECTIONS is off, or as an older agent's P0 upserts. Only then does the 30 s rule judge its rows.
+- **An LB in MySQL mode** judges its own rows in `lines_live` by `localReaps()`, from `flows.json`. Its `cron:users` now calls `HlsReaping::beginLocal()` once per pass, which keeps the same grace once its agent stops reaping (`local` and `local_left` in its own `cluster_orphans.json`).
+
+MAIN does not copy the bus's touches into the store on the way out: with touches sent at most once a minute (the contract, item 3), they can be older than the 30 s rule allows anyway.
+
+**Telling the agent.** The hello reply and every heartbeat reply carry `p2_types`, a list of strings: the event types MAIN takes on P2, now `["conn.touch"]`. An older MAIN leaves the key out. It is in every heartbeat so that a MAIN rolled back to a release without P2 is noticed within one heartbeat.
+
+**The agent's contract.** For the Go half, not built yet:
+1. **When.** Touches go on P2 only while all of these hold:
+   - the latest hello or heartbeat reply's `p2_types` contains `"conn.touch"`;
+   - CONNECTIONS is on;
+   - the agent runs its HLS reaper and says `hls_reaper` at hello.
+
+   Otherwise a change of `hls_last_read` alone goes, as today, as a P0 `conn.upsert` at most every 10 s (`TouchEvery`). A panel that reaps by the 30 s rule needs that.
+2. **What moves.** Only a `Put` whose sole change is `hls_last_read` (`Touch`, or a `PUT` that `sameBut(…, "hls_last_read")` finds unchanged otherwise). It no longer emits the throttled P0 upsert: the registry keeps the latest value per uuid as a pending touch. Every other change still goes at once as a P0 `conn.upsert` of the whole record, its current `hls_last_read` included: a new record, any other key, `pid`, `hls_end` either way (the reaper's end, a re-open).
+3. **Cadence.** A uuid's pending touch is sent at most once every 60 s, and only when its value differs from the last one MAIN got for that uuid on either lane. A third events loop, next to the `p0` and `p1` spool loops and sharing their client, runs every 10 s with one request in flight and never delays `p0`. It sends the pending touches whose 60 s have passed, at most 2000 events and 1 MiB per request, as the other lanes.
+4. **Wire.** `POST events` with `{lane: "p2", events: [{type: "conn.touch", t: <unix ms>, d: {uuid: <string>, hls_last_read: <int>}}, …]}`. Leave out `first_useq`: it is not read on P2, and nothing is journalled or numbered.
+   - `t` and `hls_last_read` must be JSON integers: a record seeded from `lines_live` may hold `hls_last_read` as a numeric string, which the agent converts (`intOf`). MAIN drops a string.
+   - `t` orders one viewer's touches on the bus, where a lower `t` never replaces a higher one. Take it from a clock that does not step back while the agent runs: the wall time read at start plus the monotonic time since (Go's `start.Add(time.Since(start))`). After a backward step across a restart, the bus keeps a higher `t` until the new one passes it or the key expires (5 min). Nothing on MAIN decides by the bus's value, and the store fallback orders by `hls_last_read`, so this costs nothing today.
+5. **Replies.**
+   - A MAC'd 200 `{ok, useq: 0, applied, dropped, main_time_ms}`: the values sent are done, and a newer value for the same uuid stays pending. `dropped` > 0 is logged and nothing is resent. `applied` also counts a touch MAIN ignored because its store does not hold the uuid for the node.
+   - A verified 400 `BAD_REQUEST`, which is what a MAIN without P2 answers: stop P2 until a reply lists `conn.touch` again, and handle the pending touches as in item 6.
+   - A 503 (`DB`), a 429, a transport error or a reply that does not verify: keep the pending touches (newer values replace them) and retry with the lane's backoff.
+   - A session denial, as on the `p0` and `p1` loops: 409 `NOT_ACTIVE` (the node is quarantined: `events` takes only an active node, though heartbeat still lists `p2_types`), or a token or re-key denial. Keep the pending touches, back off and retry; the heartbeat loop re-keys. `NODE_REVOKED`, `UNKNOWN_NODE` and `ENROL_EXPIRED` stop the agent, as on every op.
+   - There is never a 409 `USEQ_GAP`.
+6. **Losing it.** When a condition of item 1 stops holding, stop sending P2 at once. This MAIN does not rely on the agent to make the switch safe: it keeps a node that stops reaping for itself out of the 30 s rule for 120 s (`HlsReaping::LEAVE_GRACE`), and an LB in MySQL mode does the same for its own rows. An older MAIN has no such grace, but it leaves a node that says `hls_reaper` to its own reaper.
+   - **CONNECTIONS off.** Send nothing: MAIN refuses every `conn.upsert` once the flow is off, and the node's PHP writes MAIN's store itself again.
+   - **MAIN rolled back** (a reply without `conn.touch` in `p2_types`, or a 400 to a P2 batch), **or the reaper off**, with CONNECTIONS still on. Send at once, as a P0 `conn.upsert` of the uuid's current record, every open record whose current `hls_last_read` differs from the last value sent for it on P0. Track that apart from the last value sent on P2: a value that went on P2 reached the bus, not the store. Then go back to the 10 s P0 touches.
+7. **Forgetting one.** Drop a uuid's pending touch when the record leaves the registry (`Delete`, a MAIN `conn.close`, `FanoutClosed`, a seed that resets). A P0 upsert of the uuid may drop it too, because the upsert carried the newer value.
+8. **State.** Pending touches may live in memory only. A restart loses at most a minute of them, which nothing on MAIN decides by, and the reaper gives every viewer restored from `registry.snap` a full window anyway.
+9. **Unchanged.** The digest, the snapshot, the reaper and `conn.divergence`.
+
+**Differs from the plan.**
+- **`conn.divergence` carries the rate, not the divergence.** MAIN holds the node's connections and its streams' bitrates, so the node needs no WAN read of `streams_servers` or of MAIN's store to report it, and the formula lives in one place.
+- **`conn.divergence` keeps one report per writer in the spool.** The plan puts it on P1, which replays everything. A writer skips its report while the last one is unsent, and `fanout_sync` reports once a minute, so stale reports never take the lane or its cap from the logs.
+- **`conn.touch` is bus-only only for reaping nodes.** Without the bus, past half of it, or for a node that does not reap, the touch goes into MAIN's store, because the 30 s rule reads it there.
+- **The bus takes a touch only for a viewer MAIN's store holds for the node.** That costs one store read per batch, which the plan's "bus only" sink does not have. It keeps a node to its own viewers and bounds the bus by the reaping nodes' connections.
+- **Leaving the reaper set has a grace.** The plan does not say what happens when a node stops reaping for itself; here it keeps counting as reaping for 120 s, so a store the bus left minutes behind is refreshed before the 30 s rule reads it.
+- **P2 has no cursor.** The plan orders P2 "latest per key by timestamp"; here that is the event's `t` on the bus. The store fallback keeps the greatest `hls_last_read`, which orders a viewer's reads the same way.
+- **`stream.progress` and `node.inventory` stay where they were:** in `stream.state` on P0, and on P1. They can move to P2 as types of their own, each listed in `p2_types`.
+
+**Compatibility.**
+- An older agent keeps sending touches as P0 `conn.upsert`, which is unchanged, and ignores `p2_types`. It ships the tagged divergence spool files like any other.
+- An older MAIN lists no `p2_types`, and answers a P2 batch with 400 `BAD_REQUEST`.
+- An older panel drops an unknown `conn.divergence` on P1, so the lane still advances. The node's PHP ships with MAIN in the same release anyway.
+
+Tests:
+- `ConnectionDivergenceTest`: the node's spool and its fallback; one report per writer while the last is unsent; both writers through their call sites (`UsersCronJob::writeDivergence`, `FanoutSyncCommand::writeDivergence`), which either spool or write MAIN's tables, never both, and `fanout_sync`'s minute; the shared formula; MAIN's own-rows write on `lines_live` and on Redis; and the refusals.
+- `ConnectionTouchTest`: no cursor and no gap; the latest per viewer by `t` within a batch and across batches on the bus; the refusals; the store fallback on both stores (own rows, never back, never re-opening); bus-only for a reaping node, and only for the viewers its store holds; a mode-0 node and a bus past its share, both to the store; a store that cannot be read or reached failing the batch; and an older agent's P0 upsert.
+- `ClusterApiTest`: the P2 op and `p2_types` in hello and heartbeat; 503 `DB` with the store down; 409 `NOT_ACTIVE` for a quarantined node.
+- `HlsReapingTest`: the last reapers stand on a failed read; the leave grace for CONNECTIONS off, mode 0, a hello without `hls_reaper`, revoked and deleted nodes; none for an orphaned node; and the same on an LB (`beginLocal`).
 
 ### The settings section (Phase 7, fourth increment)
 
@@ -616,7 +886,7 @@ The settings columns come from the install schema and the migrations. Secrets ar
 - **Where it runs:** MAIN only. `service` and `ServiceCommand` start it, and `ServersCronJob` revives it. LB builds strip `bin/cluster_bus`.
 - **Liveness checks:** it runs the same binary as the shared Redis, so `ServersCronJob` tells the two apart by process title: `redis-server unixsocket:…` for the bus, `redis-server *:6379` for the shared one. Before this, a running bus would have hidden a dead shared Redis.
 
-**What it carries.** Wake-ups, and the admission reservations (`ConnectionAdmission`, seventh Phase 6 increment):
+**What it carries.** Wake-ups, the admission reservations (`ConnectionAdmission`, seventh Phase 6 increment), and the touches of nodes that reap their own HLS viewers (`touch:<sid>:<uuid>`, tenth Phase 6 increment):
 - **`wake:<sid>`:** `CommandBus::enqueue` pushes it, and the `commands` long-poll waits on it. The long-poll used to re-read `cluster_commands` every 250 ms for up to 20 s per node. It now reads once, blocks on the bus, and reads again when woken. While it blocks it holds no MySQL connection: it closes the handle first (`waitNodeReleasing`), and `DatabaseHandler` reconnects on the next read.
 - **`ack:<cmd_id>`:** `CommandBus::ack` pushes it, and `CommandBus::await` (an RPC waiting for its answer) waits on it instead of polling every 100 ms.
 
@@ -630,8 +900,175 @@ The settings columns come from the install schema and the migrations. Secrets ar
 **Still to come on the bus:**
 - nonces;
 - telemetry (`cl:tel:<sid>`);
-- the `conn.touch` state;
 - per-op semaphores.
+
+### The cluster pools (Phase 2, second increment)
+
+**What they are.** MAIN serves the cluster API from two PHP-FPM pools of its own (`Domain\Cluster\ClusterPool`). A fleet's long-polls and ingest then never hold the workers that serve the panel and viewers, and a busy panel never delays a heartbeat.
+
+| Pool | Ops (agent lanes) | `pm.max_children` | Timeout |
+| --- | --- | --- | --- |
+| `cluster_ctl` | `health`, `challenge`, enrolment, token ops, `hello`, `heartbeat`, `conn_admit`, `commands`, `ack` (poll, ctl) | 2·nodes + 24 | 60 s |
+| `cluster_ingest` | `events`, `config`, `streams`, `conn_snapshot`, `stream_bundle`, `rpc_result`, `recording_complete`, `vod_analysis`, the three queue ops, `artefact` (p0, bulk) | min(2·`cluster_ingest_concurrency` + 8, floor(0.25 · MariaDB `max_connections`)), at least 2 | 90 s |
+
+- **Nodes** are the streaming servers other than MAIN, enrolled or not, so a pool is sized before a node's first long-poll. Proxies do not count.
+- **The floor of 2** keeps one P0 and one bulk request running when MariaDB's limit is tiny. The plan gives no floor.
+- **Unknown ops** go to `cluster_ctl`, which refuses them.
+- **Files.** Configs go in `bin/php/etc/cluster/<pool>.conf`, because `set_services` deletes and rewrites `bin/php/etc/*.conf` for the panel's pools. Sockets go in `bin/php/sockets/<pool>.sock`. Pid files go in `bin/php/var/run/`, because `restart_php_fpm` counts `sockets/*.pid` as panel pools.
+- **Workers** are titled `php-fpm: pool cluster_ctl` (or `cluster_ingest`), so they never pass for a viewer's worker in `php_pids`.
+- **Always there on MAIN.** The pools exist whether or not the API is enabled. With `pm = ondemand`, an idle pool is just its master.
+
+**Routing.** nginx's `location ^~ /cluster/v1/` (fixed in `nginx.conf` at first, rendered since the third increment) passes to the upstream `cluster_ctl`. A nested regex location sends the ingest ops to `cluster_ingest`. Both upstreams list the panel pool `1.sock` as `backup`, so the API still answers while a pool is down or not yet created. The pool's own socket has `max_fails=0`: only a request that cannot reach the pool goes to the backup, and one failed request (a long-poll cut by a reload, say) never sends the pool's traffic to the panel pool for `fail_timeout`. `ClusterPoolTest` fails when the location's list differs from `ClusterPool::INGEST_OPS`, or when an op the API serves has no lane.
+
+**Bringing them up.** `ClusterPool::ensure()`:
+
+1. writes a pool's config when its size changed;
+2. starts a pool whose master is not running, as xc_vm;
+3. reloads (`SIGUSR2`) a running pool whose config changed. The reload lets requests finish for 5 s (`process_control_timeout`); a held long-poll is cut, and the agent polls again. The socket stays open meanwhile, and new requests queue on it;
+4. writes the marker `tmp/cluster_ready`, when it is missing, once both pools answer FPM's own ping (`ping.path`, one FastCGI request over the socket). It removes the marker only when a pool's master is gone, and writes it again once the restarted pool answers.
+
+A reload, or a pool too busy to answer, therefore keeps the marker: a resize from `cron:servers` never turns the fleet `STARTING` while held long-polls stretch the reload to 5 s. A pool whose master runs but has stopped answering keeps it too; its requests wait on the socket.
+
+`status` runs it while XC_VM runs: at every boot, after the migrations, and after an update. `cron:servers` runs it every minute as a watchdog, which also resizes the pools as servers come and go. A lock keeps the two from starting a pool twice. A master is found by its title, which names its config, not by its pid file.
+
+**As xc_vm only.** The configs, the lock and the marker live in directories xc_vm owns, and root would follow a link planted there, then hand its target to xc_vm or overwrite it. So `ensure()` does nothing unless it runs as the pool user, and `status` (root) runs it through `sudo -u xc_vm console.php cluster:pools`, which prints whether both pools answer.
+
+**STARTING.** Until the marker exists, `Public/cluster/index.php` answers every op but `health` with a panel-signed `503 STARTING`. The denial names the node and request nonce when the request carries them, and asks for `retry_after_ms` 5000. `health` needs neither the database nor the pools, so it is answered throughout.
+
+- **When it applies.** The service removes the marker whenever it starts, and tmp/ is a tmpfs. So a boot, a restart and an update each answer `STARTING` until the migrations have run and both pools answer.
+- **Silence clock.** Creating the marker runs `ClusterMeta::markReady()`, so the time the API was `STARTING` never counts against a node's silence.
+
+**Not built:**
+
+- the plan's `cluster_ctl` listen-queue check, which should feed the fleet silence guard;
+- the ingest permits on the bus.
+
+The old-port servers, which still passed to the panel pool, reach the pools since the rendered nginx config.
+
+### The rendered nginx config (Phase 2, third increment)
+
+**What it is.** MAIN's nginx route for the cluster API is rendered by `Domain\Cluster\ClusterNginxConfig` instead of fixed in `nginx.conf`. It writes three files under `bin/nginx/conf/`:
+
+| File | Included by | Holds |
+| --- | --- | --- |
+| `cluster_locations.conf` | the public `server{}`, and each server below | `location ^~ /cluster/v1/`, its ingest lane built from `ClusterPool::INGEST_OPS` |
+| `cluster.d/listen.conf` | `http{}`, by the glob `cluster.d/*.conf` | a plain-HTTP server on `cluster_api_port`, only when it is not 0 |
+| `cluster.d/old_port.conf` | the same glob | a server per old port `ClusterEndpoint` keeps, until its 7 days are up |
+
+Both servers include the same location and answer 404 to everything else. The old ports therefore reach the cluster pools now, not a panel pool.
+
+**Transport limits.** The location applies §3's numbers:
+
+- `limit_req` zone `cluster`: 100 r/s keyed by `$realip_remote_addr`, the TCP peer, whatever `X-Forwarded-For` says; burst 400, `nodelay`, status 429. Before, the API shared the viewers' zone `one` (20 r/s per client, burst 40, status 503).
+- `client_max_body_size 8m` and `gzip off`.
+
+The zone is declared in `nginx.conf` itself, because the location cannot load without it.
+
+**Default install.** With `cluster_api_port` = 0, `cluster.d/` stays empty and the location is the one `nginx.conf` used to hold, with those limits. The release ships `cluster_locations.conf` as rendered, so an update's `nginx -t` and the first boot see the same file. `ClusterNginxConfigTest` fails when the two differ.
+
+**The public server keeps the location**, whatever `cluster_api_port` says. The plan does not say whether it should. It does, because the policy's HTTPS URLs use it, and the broadcast port's URL keeps working for a node that has not moved to the dedicated port yet.
+
+**Port changes.** `ClusterEndpoint` used to handle the broadcast port only. A `cluster_api_port` change, saved in Settings, now goes the same way: the policy version goes up and the old port is kept for 7 days.
+
+- While the API is on the broadcast port, that port is its URL. So 0 → N keeps the broadcast port listed in the policy (the public server serves it anyway), and N → 0 keeps N.
+- With the API off, nothing is announced, as for the broadcast port.
+- A kept port that MAIN serves again, on the public server or as the dedicated port, gets no server of its own.
+- The policy lists kept ports whatever `cluster_api_port` is.
+
+**Applying.** `apply()`:
+
+1. renders from the settings and the ports the public server listens on (`ports/http.conf`, `ports/https.conf`). Called without settings, it reads `cluster_api_port` and `cluster_legacy_ports` from the database, not from the settings the process loaded;
+2. checks that a new dedicated port is free: one nginx does not listen on yet by its files (`ports/`, `cluster.d/`) must bind. When it does not, nothing is written;
+3. writes each file that differs, atomically (a temporary file, then a rename);
+4. runs `nginx -t`. When it fails, it puts every file back as it was, audits `cluster.nginx` with nginx's message and reports the failure;
+5. otherwise reloads nginx, unless the caller reloads it itself. After the reload a new dedicated port must accept connections within 3 s. When it does not, the previous files go back, nginx reloads again and the failure is reported.
+
+When nothing differs there is no test and no reload. A lock serialises callers. A refusal that repeats the last one is not audited again (`cluster.d/.refused`), since `cron:cluster` retries every minute.
+
+Steps 2 and 5 exist because neither `nginx -t` nor the reload's exit code says whether nginx can take a port. In test mode nginx binds the listen sockets but ignores `EADDRINUSE`, so `nginx -t` passes when another program holds the port. `nginx -s reload` exits 0 once the signal is sent. The master then fails to bind and keeps its previous config, and the next start (a reboot, `service xc_vm restart`, an update) fails with "still could not bind()", taking the panel and streaming down. Reproduced with nginx 1.24. The check in step 5 is a TCP connect, which a program that took the port between steps 2 and 5 would also pass.
+
+A kept old port is not checked: nginx served it until the change, so nginx holds it. Any port in nginx's config can still be taken while XC_VM is stopped, which stops nginx from starting, as for the broadcast ports.
+
+**Who runs it.**
+
+- `status`, at boot and after an update, runs `sudo -u xc_vm console.php cluster:nginx`, reloading only while XC_VM runs.
+- The root `set_port` handler runs `cluster:nginx --no-reload` after it writes the HTTP or HTTPS ports, before its own reload.
+- `cron:cluster` runs it every minute, with the API on or off, after it drops expired old ports. It used to re-send MAIN's ports through `set_port`, only when a port expired. A render that matches the files is a no-op, so the minute retries a render that failed and undoes one that raced a settings save.
+- A settings save that changes `cluster_api_port` (`ClusterNginxConfig::stageApiPort()`) runs it before the value is stored, with the new port and the kept one. The save is refused, and nothing changes, when another program listens on the port (`cluster_error_port_busy`), or when `nginx -t` fails or nginx does not serve the port after the reload (`cluster_error_nginx`, with nginx's message). After the `UPDATE`, `commitApiPort()` bumps the policy (`ClusterEndpoint::recordApiPortChange()`) only if the value was stored. Either way it renders again from what is stored: that undoes a render from the old value that ran in between (`status`, `set_port`, `cron:cluster`), and a failed `UPDATE` puts nginx back on the stored port. So no node is sent a URL that nginx refused or did not serve after the reload.
+
+**As xc_vm only**, like the pools, because the files live in a directory xc_vm owns. Root no longer writes the old-port file.
+
+**The old file.** The first render removes `cluster_legacy.conf`, but only once `nginx.conf` includes `cluster.d/`. An update whose `nginx.conf` was rolled back still reads the old file, so it stays.
+
+That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `apply()` refuses any render that needs one (a dedicated port, or a kept old port), and a new `cluster_api_port` cannot be saved. Otherwise `nginx -t` would pass and the port would be stored and announced but never served. The API stays on the broadcast ports, through that `nginx.conf`'s fixed location. Its `cluster_legacy.conf` is not rendered again, so ports kept in it stay open until the next update installs an `nginx.conf` that passes `nginx -t`.
+
+**Checked** with nginx 1.24:
+
+- `testRealNginx` (opt-in, `XCVM_TEST_NGINX`): the rendered files pass `nginx -t`, and a broken include elsewhere restores the previous files.
+- `ClusterNginxConfigTest` and `SettingsServiceClusterPortTest` fake nginx and the port checks. They cover the save path (`stageApiPort()`, `commitApiPort()`, the refusals in `SettingsService::edit()`), the rollback after a failed write or reload, the `nginx.conf` that predates `cluster.d/`, `cluster:nginx` and `cron:cluster`. `testTheFreeCheckBindsThePort` runs the real bind check against a port the test holds. The lock and the atomic write are not tested.
+- By hand, with the real code and a running nginx master: a port a Python socket held was refused before anything was written. Once the port was free, it was served after the reload, the move to another port kept the old one served, and nginx restarted cleanly. With nginx stopped, a new port was rolled back. On the dedicated and the old ports, `/cluster/v1/` reached the pools and every other path got 404. Past the burst, nginx answered 429. There is no test for these checks.
+
+**Not built:**
+
+- releasing an old port before its 7 days once every node uses the new URL. Neither the policy version a node last fetched nor the URL it used is recorded;
+- IPv6 listeners: the dedicated and old ports listen as `ports/http.conf` does, on IPv4.
+
+### Re-enrolling the fleet (Phase 2, fourth increment)
+
+**What it is.** `console.php cluster:reenrol (--all [--state=…] | <id>…) --cred-file=<path> [--dry-run]` (`ClusterReenrolCommand`) is the plan's `cluster:reenrol --all`. After `cluster:init` on a MAIN replaced without a DR bundle, it re-enrols the fleet over SSH, one node after the other. Each node goes through `ServerEnrolCommand::enrol()`, the path `server:enrol` takes, so each gets a new identity and generation.
+
+**Which nodes.**
+
+- `--all` takes the enrolled nodes in state `enrolling` or `active`; `--state=` names others.
+- Revoked and quarantined nodes are skipped unless asked for, because both states record an admin's decision.
+- Nodes named by id are taken whatever their state. A server that is not an enrolled load balancer is reported and left alone; `server:enrol` enrols a legacy LB.
+- The states are read when the run starts, and each node's row is read again just before its turn. A run is sequential and can last tens of minutes, and the plan revokes a node on suspected compromise. So with `--all`, a node that an admin revoked, or the API quarantined, since the start is skipped, and a node no longer enrolled is left alone however it was chosen. The window left is the node's own enrolment, a few seconds.
+
+**Credentials.** The plan names the command but not where its SSH credentials come from, and each node needs its own. One file carries them all:
+
+```json
+{"u": "root", "p": "…", "port": 22,
+ "nodes": {"7": {"p": "…", "port": 2222, "hostkey": "SHA1:…"}}}
+```
+
+- The top level is every node's default. It has the shape of `server:install`'s credential file, so a fleet that shares one root password needs only that. `nodes` overrides it per server id.
+- It must be a `.cred` file directly in `bin/install/`, like `server:enrol`'s, and owner-only (0600). Unknown keys, bad ports and bad host keys refuse the whole file.
+- A run without `--dry-run` reads and deletes it before any other check, as `server:enrol` does. So a run refused for its arguments, a disabled API or a missing extension leaves no passwords on disk. A file that its group or others can read is refused and, on such a run, deleted as well, since its secrets are exposed already.
+- The SSH port is the node's entry, else the file's default, else 22. The panel keeps no node's SSH port. `server:install` writes one to `bin/install/<id>.json` but deletes that file once the install succeeds, and a replaced MAIN does not have the old disk anyway. Keeping it in `servers` would need a core migration, so a node on another port gets `port` in the file instead.
+- There is no `--expect-hostkey`: each node's `hostkey` goes in its entry.
+
+**The same checks as `server:enrol`.**
+
+- The SSH host key must match the node's `hostkey` in the file, else the one stored at its install (`ssh_hostkey_sha1`). A node with neither is never contacted: no trust on first use.
+- The node must run this release, and its new keys must match their SAS.
+- A failure never marks a live node failed.
+
+**Failures.**
+
+- A node that fails is reported with its reason, and the run goes on. The reason is `enrol()`'s own, or what `provisionCluster` printed when it stopped. `enrol()` passes that output through as it streams and keeps a copy. An exception, such as an SSH channel error, fails only its node.
+- A node counts as enrolled only when it has a new `node_uuid` afterwards. `provisionCluster` returns true without enrolling when there is no `xc_agent` for the node's architecture, or when the API is off. `enrol()` reports that as a failure with the flow's own words, and the node keeps its previous identity (a legacy LB stays legacy). An earlier version compared the row's `created_at` with the start of the flow, which has one-second resolution.
+- A licence refusal stops the run. Every later node would have its agent stopped only to be refused the same way. An extension that reports no licence (`info()['licensed']`) refuses before any node is touched.
+- The exit code is 0 only when every chosen node was re-enrolled. A real run is audited as `cluster.reenrol`, with the ids that succeeded and those that failed. Each node's `node.enrol_start` is audited as before.
+
+**One at a time.** `cluster:reenrol` holds `TMP_PATH/cluster_reenrol.lock` (non-blocking, as `cluster:root` does), so a second run refuses. `ServerEnrolCommand::enrol()` holds `TMP_PATH/cluster_enrol_<id>.lock` for its node. So `server:enrol` and a fleet run cannot interleave one node's `keygen` and `startEnrolment`.
+
+**Dry run.** `--dry-run` contacts no node and changes nothing. It keeps the credential file for the real run, and it runs without one too. For each node it shows the user, the address and port, and the host key with where it comes from. It lists the nodes that cannot be attempted and why, for example no host key or no credentials.
+
+**The SSH seam.** `SshSession` wraps the ssh2 session: connect, host key, password login, `SshChannel`'s run and send, close. `server:enrol` now runs through it too, and the tests replace it with `FakeSshFleet`. `SshSession` and `ClusterReenrolCommand` are stripped from the LB archive.
+
+**Mode and flows.** A re-enrolled node starts over as a new node does: in the mode `lb_new_node_mode` gives, with every flow off (`NodeRegistry::startEnrolment`), as after `server:enrol`. The admin switches its flows on again.
+
+**A failed node may need another run.** `provisionCluster` stops the node's agent and runs `keygen` before the probe. A licence refusal comes after `startEnrolment` has already replaced the node's row. So a node that fails at the probe or later is left with its agent stopped and new keys made, and should be re-enrolled again once the cause is fixed. `server:enrol` behaves the same. Re-enrol one node by id before `--all`: a cause that affects the whole fleet, such as MAIN's cluster port closed to the LBs, then stops at one node.
+
+**Not built:**
+
+- Nodes are re-enrolled one at a time, never in parallel.
+- `--all` does not skip nodes already re-enrolled under the current root, so after a canary node, or a partial failure, the rest are best named by id. Telling them apart would need the time of the last root change. `cluster:init` records it in the audit log only, and a fleet-wide re-enrolment without a root change (new identities after a suspected compromise) must still take every node.
+
+**Tests:**
+
+- `ServerEnrolCommandTest`: one node's path. It covers no trust on first use, a changed key that runs nothing, the refusals before the flow, the flow's reason, a flow that enrols nothing (in the same second as a previous enrolment), and the node's lock.
+- `ClusterReenrolCommandTest`: selection, including nodes revoked, quarantined or removed during the run; continuing past failures and exceptions; each node's port and password; the licence stop; the dry run; the credential file; the arguments; and `main()`, the command from its arguments on (`execute()` adds only the user check). `main()` shows that a dry run stays dry, that a refused real run still deletes the file, and that a second run refuses.
 
 ### Blocklist delta (Phase 7, first increment)
 
@@ -722,7 +1159,7 @@ The shadow diff for `rtmp_ips` compares against the database, because an LB neve
 - **Where the passphrase comes from:** typed twice without echo, `--passphrase-file`, or one line on standard input. It is never an argument, which any user could read in the process list.
 - **Export:** writes the file 0600 and never overwrites.
 - **Import:** records the panel keys as `cluster:init` does and audits `cluster.import_keys`. The extension refuses a different root already on the machine (`ROOT_EXISTS`); the same root again is a no-op. Nodes then recover with `token_rekey`, because their epoch records were sealed to the old machine.
-- **No bundle:** `cluster:init` already covers the plan's `cluster:reinit` (a new root, audited `cluster.root_changed`), followed by `server:enrol` per node. There is no fleet-wide `cluster:reenrol --all`, because each node needs its own SSH credentials.
+- **No bundle:** `cluster:init` already covers the plan's `cluster:reinit` (a new root, audited `cluster.root_changed`). Then `cluster:reenrol --all` re-enrols the fleet from one credential file (*Re-enrolling the fleet*), or `server:enrol` re-enrols one node.
 - **Tests:** `ClusterDrTest` covers the commands. Opt-in, with `XCVM_EXT_SO`, it runs the real extension, shrunk by `XCVM_TEST_DR_MEM_KIB`, across two config dirs.
 - **Operator procedure:** `docs/en/administration/backup-strategy.md`.
 

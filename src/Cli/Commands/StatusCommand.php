@@ -8,6 +8,8 @@ use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Module\ModuleLoader;
 use XcVm\Core\Module\ModuleManager;
+use XcVm\Domain\Cluster\ClusterNginxConfig;
+use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Infrastructure\Bootstrap\StreamingRequestBootstrap;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -114,6 +116,8 @@ class StatusCommand implements CommandInterface {
 		if ($rServers[SERVER_ID]['is_main']) {
 			$this->broadcastUpdateBinaries($rServers);
 			$this->configureRedis();
+			$this->ensureClusterNginx();
+			$this->ensureClusterPools();
 		} else {
 			// LB nodes run no local Redis (bin/redis is stripped from the LB build)
 			// and never reach configureRedis, so the xcvm_core extension would keep
@@ -131,6 +135,34 @@ class StatusCommand implements CommandInterface {
 		$db->query('UPDATE `servers` SET `xc_vm_version` = ? WHERE `id` = ?;', XC_VM_VERSION, SERVER_ID);
 
 		return 0;
+	}
+
+	/**
+	 * MAIN: the cluster API's nginx config, rendered from the code and the
+	 * settings (ClusterNginxConfig) at boot and after an update: the location
+	 * the release ships, the cluster_api_port server and the old ports still
+	 * kept. As xc_vm, never as root: root would follow a link xc_vm planted
+	 * among the files. nginx reloads only while XC_VM runs.
+	 */
+	private function ensureClusterNginx(): void {
+		if (!class_exists(ClusterNginxConfig::class)) {
+			return;
+		}
+		passthru('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:nginx' . ($this->isRunning() ? '' : ' --no-reload'));
+	}
+
+	/**
+	 * MAIN: the cluster API's own FPM pools, created on the first boot after
+	 * an upgrade and sized to the fleet (ClusterPool). Only while XC_VM runs:
+	 * boot starts nginx and the panel pools before this. As xc_vm, never as
+	 * root: root would follow a link xc_vm planted among the pools' files.
+	 */
+	private function ensureClusterPools(): void {
+		if (!class_exists(ClusterPool::class) || !$this->isRunning()) {
+			return;
+		}
+		passthru('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:pools');
+		echo "\n";
 	}
 
 	private function isRunning(): bool {

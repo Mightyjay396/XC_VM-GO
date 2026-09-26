@@ -12,6 +12,7 @@ use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\SystemInfo;
 use XcVm\Domain\Cluster\ClusterBus;
+use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -88,6 +89,10 @@ class ServersCronJob implements CommandInterface {
 		if ($rServers[SERVER_ID]['is_main'] && class_exists(ClusterBus::class) && !ClusterBus::running()) {
 			echo 'Starting the cluster bus' . "\n";
 			ClusterBus::ensureRunning();
+		}
+		// The cluster API's FPM pools: revived, and resized as servers come and go.
+		if ($rServers[SERVER_ID]['is_main'] && class_exists(ClusterPool::class)) {
+			ClusterPool::ensure(3.0);
 		}
 
 		// Daemon liveness checks read /proc via ProcessManager: the old

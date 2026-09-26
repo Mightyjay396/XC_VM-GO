@@ -10,10 +10,13 @@ namespace XcVm\Core\Cluster;
  * MAIN has applied them; until then they survive restarts of either side.
  *
  * ```text
- * spool/p0/<hrtime>-<pid>-<rand>.ndjson   stream state (never dropped)
- * spool/p1/<hrtime>-<pid>-<rand>.ndjson   logs (oldest dropped past the cap)
+ * spool/p0/<hrtime>-<pid>-<rand>[-<tag>].ndjson   stream state (never dropped)
+ * spool/p1/<hrtime>-<pid>-<rand>[-<tag>].ndjson   logs (oldest dropped past the cap)
  * one line per event: {"type": "...", "t": <ms>, "d": {...}}
  * ```
+ *
+ * A writer that only ever needs its latest report sent tags its files, and
+ * skips a write while one of them is still pending() (DivergenceSink).
  *
  * Callers redact before appending: nothing with a credential is written here.
  * When the agent looks stopped (it has not confirmed MAIN's flows for
@@ -37,13 +40,14 @@ final class EventSpool {
 	}
 
 	/**
-	 * Append events of one lane as one file.
+	 * Append events of one lane as one file, its name ending in $rTag when
+	 * one is given (`[a-z_]+`).
 	 *
 	 * @param list<array{type: string, d: array<string, mixed>}> $rEvents
 	 * @return bool False when nothing was spooled: the caller falls back.
 	 */
-	public static function append(string $rLane, array $rEvents): bool {
-		if (!in_array($rLane, self::LANES, true) || $rEvents === [] || !self::agentAlive()) {
+	public static function append(string $rLane, array $rEvents, string $rTag = ''): bool {
+		if (!in_array($rLane, self::LANES, true) || $rEvents === [] || !preg_match('/^[a-z_]*$/', $rTag) || !self::agentAlive()) {
 			return false;
 		}
 		$rDir = self::dir() . $rLane . '/';
@@ -73,7 +77,7 @@ final class EventSpool {
 			}
 			$rBody .= $rLine . "\n";
 		}
-		$rName = sprintf('%019d-%d-%04x.ndjson', hrtime(true), getmypid(), random_int(0, 0xffff));
+		$rName = sprintf('%019d-%d-%04x', hrtime(true), getmypid(), random_int(0, 0xffff)) . ($rTag === '' ? '' : '-' . $rTag) . '.ndjson';
 		$rTmp = $rDir . '.' . $rName . '.tmp';
 		if (@file_put_contents($rTmp, $rBody) !== strlen($rBody) || ($rRoot && !self::giveToOwnerOf($rTmp, $rHome, 0640))) {
 			@unlink($rTmp);
@@ -93,11 +97,19 @@ final class EventSpool {
 		return $rOwner !== false && $rGroup !== false && @chown($rPath, $rOwner) && @chgrp($rPath, $rGroup) && @chmod($rPath, $rMode);
 	}
 
+	/** Is a file tagged $rTag still in the lane, not yet sent to MAIN by the agent? */
+	public static function pending(string $rLane, string $rTag): bool {
+		if (!in_array($rLane, self::LANES, true) || !preg_match('/^[a-z_]+$/', $rTag)) {
+			return false;
+		}
+		return (glob(self::dir() . $rLane . '/*-' . $rTag . '.ndjson') ?: []) !== [];
+	}
+
 	/**
 	 * The agent rewrites or touches flows.json on every heartbeat reply; an old
 	 * file means it stopped, and nothing would drain the spool.
 	 */
-	private static function agentAlive(): bool {
+	public static function agentAlive(): bool {
 		$rFlows = dirname(rtrim(self::dir(), '/')) . '/flows.json';
 		// A long-running process would otherwise keep reading a cached mtime.
 		clearstatcache(true, $rFlows);

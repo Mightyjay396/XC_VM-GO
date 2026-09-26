@@ -15,6 +15,9 @@ boot() {
   sudo chown -R xc_vm:xc_vm /sys/class/net
   sudo chown -R xc_vm:xc_vm /home/xc_vm/content/streams
   sudo chown -R xc_vm:xc_vm /home/xc_vm/tmp
+  # MAIN: the cluster API answers STARTING until `status` (run by startup)
+  # finds its FPM pools answering and writes this marker again (ClusterPool).
+  rm -f $SCRIPT/tmp/cluster_ready
   if [ -f $SCRIPT/bin/redis/redis-server ]; then
     sudo -u xc_vm $SCRIPT/bin/redis/redis-server $SCRIPT/bin/redis/redis.conf >/dev/null 2>/dev/null
   fi
