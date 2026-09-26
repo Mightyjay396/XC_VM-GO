@@ -14,8 +14,9 @@ namespace XcVm\Core\Cluster;
  */
 final class AgentClient {
 	/**
-	 * The waits (s) between the tries of mainRetrying(), two minutes in all:
-	 * longer than MAIN stays busy while its ingest permits are held.
+	 * The waits (s) between the tries of mainRetrying(), two minutes in all
+	 * (with each try's own timeout, up to about four): longer than MAIN stays
+	 * busy while its ingest permits are held.
 	 */
 	public const RETRY_WAITS_SEC = [1, 2, 4, 8, 15, 30, 30, 30];
 
@@ -53,8 +54,9 @@ final class AgentClient {
 
 	/**
 	 * main() for an op MAIN applies once (recording_complete: a retry gets the
-	 * same VOD), asked again while it gets no answer, after each of
-	 * RETRY_WAITS_SEC. MAIN refuses such an op while its ingest permits are
+	 * same VOD, even one that overlaps a try MAIN is still running after the
+	 * agent gave up on it), asked again while it gets no answer, after each
+	 * of RETRY_WAITS_SEC. MAIN refuses such an op while its ingest permits are
 	 * held (503 RATE_LIMITED), and today's agent hands any refusal back as a
 	 * bare 409, so a busy MAIN cannot be told from any other failure here.
 	 *

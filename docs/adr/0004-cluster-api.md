@@ -1497,13 +1497,15 @@ Tests:
 
 | Lane | Requests | Permits it may take |
 | --- | --- | --- |
-| `p0` | `events` with `lane: "p0"` | any free one; its reserve, ceil(n / 2), always |
-| `bulk` | every other ingest op: `events` with `lane` `p1`, `p2` or none, `config`, `conn_snapshot`, `recording_complete`, and the ingest ops still to come (`ClusterPool::INGEST_OPS`) | n − ceil(n / 2), at least 1, and only while fewer than the total are held |
+| `p0` | `events` with `lane: "p0"` | its reserve, ceil(n / 2), always; any other free one but bulk's reserve |
+| `bulk` | every other ingest op: `events` with `lane` `p1`, `p2` or none, `config`, `conn_snapshot`, `recording_complete`, and the ingest ops still to come (`ClusterPool::INGEST_OPS`) | its reserve, 1, always; up to its share, n − ceil(n / 2) and at least 1, while P0's reserve stays free |
 
-- **n** is `cluster_ingest_concurrency` (1–64, default 6), from the settings the request is served with. The total is n, or 2 at n = 1: one P0 and one bulk, as the ingest pool's floor (`ClusterSemaphore::ingestPermits`). At the default, 3 are kept for P0 and 3 are for anyone.
+- **n** is `cluster_ingest_concurrency` (1–64, default 6), from the settings the request is served with. The total is n, or 2 at n = 1: one P0 and one bulk, as the ingest pool's floor (`ClusterSemaphore::ingestPermits`). At the default, 3 are kept for P0, 1 for bulk (`BULK_RESERVE`), and 2 are shared.
 - **The sets** are `sem:ingest:p0` and `sem:ingest:bulk`: sorted sets without a TTL, scored by each permit's expiry, as the per-op semaphores. One script prunes and counts both, then takes the permit or refuses it:
-  - bulk is refused when it holds its share, or when both sets hold the total;
-  - P0 is refused only when it holds its reserve and both sets hold the total. So a lowered n never shuts P0 out while bulk still holds permits taken before.
+  - a lane under its reserve (P0 ceil(n / 2), bulk 1) always gets a permit;
+  - past its reserve, a lane is refused when the permits held, plus those of the other lane's reserve it does not hold yet, reach the total. So P0 never takes bulk's last permit, and bulk never takes P0's reserve;
+  - bulk is also refused once it holds its share;
+  - so a lowered n never shuts either lane out while the other still holds permits taken before.
 - **When.** After the nonce claim, the node state and any per-op permit (`config`, `conn_snapshot`), and after the BOX is opened, since only the BOX says a batch's lane. Opening it touches no database (Phase 1's bench: 64 KB under 1 ms, 8 MB under 40 ms), and a BOX that does not open is 400 `BAD_REQUEST` without a permit. Then the epoch is marked used and the handler runs. The permit is given back in `finally`, however the handler ends.
 - **Crashes.** The permit of a holder that died expires after the `cluster_ingest` pool's timeout, 90 s (`INGEST_LIFE`), by the bus's clock. One expiring past now + 90 s + 1 s was taken before the clock stepped back, and is dropped. Both as for the per-op semaphores.
 - **Control ops** (`hello`, `heartbeat`, `commands`, `ack`, `conn_admit`, the token ops) take none.
@@ -1519,27 +1521,28 @@ Tests:
 A `config` or `conn_snapshot` request can be refused by either: by its op's semaphore (no `lane`), or past it by the bulk lane (`lane: "bulk"`). Nothing is applied either way.
 
 **What today's agent does.** It already handles a 503 `RATE_LIMITED` on every ingest op (`busyWait`: `retry_after_ms` ±10 %, clamped to 1–60 s):
-- `events` P0 and P1: the lane's in-flight batch (`<lane>.inflight`) is kept and sent again, with the same `first_useq`, after the wait (at least 1 s). The refusal is logged as an error.
-- `events` P2 (`touch.go`): the touches stay due and go after the wait.
+- `events` P0 and P1: the lane's in-flight batch (`<lane>.inflight`) is kept and sent again, with the same `first_useq`, after the longer of the wait and twice the lane's interval, at most 30 s (`RunEvents`): P0 (200 ms) after about 1 s, P1 (5 s) after 10 s. The refusal is logged as an error.
+- `events` P2 (`touch.go`): the touches stay due and go after the longer of the wait and 20 s (twice its 10 s loop).
 - `config`: `RunReplica` asks again after the wait.
 - `conn_snapshot`: the chunk goes again with the same `snap_id` and `seq`, up to 20 times.
-- `recording_complete` comes from the node's PHP (`RecordCommand`) through the agent's socket, which hands any refusal back as a bare 409. Until now the node's PHP then marked the recording failed and deleted its `.ts`; it now asks again while no answer comes (`AgentClient::mainRetrying`: after 1, 2, 4, 8, 15, 30, 30 and 30 s, two minutes in all). MAIN creates the VOD once, so a retry is safe.
+- `recording_complete` comes from the node's PHP (`RecordCommand`) through the agent's socket, which hands any refusal back as a bare 409. Until now the node's PHP then marked the recording failed and deleted its `.ts`; it now asks again while no answer comes (`AgentClient::mainRetrying`: after 1, 2, 4, 8, 15, 30, 30 and 30 s, two minutes of waits; with each try's own timeout of up to 15 s, about four minutes at most). It also asks again after a timeout, while MAIN may still be running the first request: the agent's MAIN client gives up after 10 s and answers the socket with a 502, and MAIN's worker may run for 90 s. Every call gets the same VOD, overlapping or not: `RecordingFinalizer::create` records its new row as the recording's `created_id` only while none is recorded, then reads it back. A call that lost deletes its row, before any bouquet has it, and returns the winner's. Before, two overlapping calls each made a VOD.
 
-All of this is safe. P0 is slower than the plan wants: a refused P0 batch waits at least 1 s, and P0 shares the agent's keep-alive connections with bulk.
+All of this is safe. P0 is slower than the plan wants: a refused P0 batch waits about 1 s, and P0 shares the agent's keep-alive connections with bulk.
 
 **The agent's contract.** For the Go half, not built yet:
-1. **503 `RATE_LIMITED` with `lane`**, a verified denial to an ingest op, means MAIN's permits for that lane are all held: busy, not failing. Do not count it as a failure, raise the op's backoff, or log it as an error (a counter is enough).
-   - **Lane `p0`** (an `events` batch with `lane: "p0"`): wait `retry_after_ms` (250–750), jitter only adding, up to 10 %, and no 1 s floor; clamp to 100 ms–5 s. Then resend the same in-flight batch (same `first_useq`, same events) with a fresh nonce, stamp, MAC and BOX. No later P0 batch goes first.
-   - **Lane `bulk`, `events`** with `lane` `p1` or `p2`: wait `retry_after_ms` ±10 %, clamped to 1–60 s, then resend the same batch (P1: the same `first_useq`). While the lane is refused, stretch its interval (P1 normally 5 s, P2 10 s): double it after each refusal, up to 60 s, and go back to the normal one after the first batch MAIN serves. The batch limits (2000 events, 1 MiB) stay.
-   - **Lane `bulk`, `config`:** ask again after `retry_after_ms`, not at the next minute's poll, as for the per-op refusal.
-   - **Lane `bulk`, `conn_snapshot`:** resend the refused chunk with the same `snap_id` and `seq`, as for the per-op refusal.
-   - **Lane `bulk`, `recording_complete`** (a socket op): the agent may retry it after `retry_after_ms` while the PHP caller's request lasts (up to 15 s). A refusal it hands back stays a 409, and the node's PHP retries on its own (above).
+1. **503 `RATE_LIMITED` with `lane`**, a verified denial to an ingest op, means MAIN's permits for that lane are all held: busy, not failing. Do not count it as a failure or log it as an error (a counter is enough), and wait only as below. "The busy wait" is today's `busyWait`: `retry_after_ms` ±10 % jitter, clamped to 1–60 s. Every resend has a fresh nonce, stamp, MAC and BOX.
+   - **Lane `p0`** (an `events` batch with `lane: "p0"`): wait `retry_after_ms` (250–750), jitter only adding, up to 10 %, and no 1 s floor; clamp to 100 ms–5 s. Then resend the same in-flight batch (same `first_useq`, same events). No later P0 batch goes first. The lane's 200 ms interval does not change.
+   - **Lane `bulk`, `events`** with `lane` `p1` or `p2`: the lane keeps a current interval, which starts at its normal one (P1 5 s, P2 10 s). On each such refusal, double it, up to 60 s, then send again after the longer of the busy wait and the current interval. P1 sends the same in-flight batch (same `first_useq`, same events). P2 has no in-flight batch: it sends the touches due at that time, as `touch.go` gathers them on every send. After each batch MAIN serves (200) on the lane, halve the current interval, down to the normal one, and send the lane's next batch after it. Any other failure keeps today's backoff and leaves the current interval as it is. The batch limits (2000 events, 1 MiB) stay.
+   - **Lane `bulk`, `config`:** ask again after the busy wait, not at the next minute's poll, as for the per-op refusal.
+   - **Lane `bulk`, `conn_snapshot`:** resend the refused chunk with the same `snap_id` and `seq` after the busy wait, as for the per-op refusal: up to 20 times per chunk (`SnapshotBusyRetries`), as today.
+   - **Lane `bulk`, `recording_complete`** (a socket op): the agent answers the socket within 12 s of the request's arrival, since the PHP caller waits 15 s. It may send the op again after the busy wait only when that wait plus a whole try (10 s, its MAIN client's timeout) still ends by then; otherwise it hands the refusal back at once. A refusal it hands back stays a 409, and the node's PHP asks again on its own (above). Any call, even one overlapping a request MAIN is still running, gets the same VOD.
+   - **Lane `bulk`, any other ingest op** (those still to come: `streams`, `stream_bundle`, `rpc_result`, `vod_analysis`, the queue ops, `artefact`): send the same request again after the busy wait, without raising the op's backoff or counting a failure.
 2. **P0 has its own connection** (plan section 8): send P0 `events` over a keep-alive connection of their own (their own `http.Transport`, one request in flight), so a bulk upload never queues them.
 3. **Nothing else changes:** no new op, header, file or setting. The one new field is `lane` on the 503 `RATE_LIMITED`. A 503 `RATE_LIMITED` without `lane` is a per-op semaphore's, handled as in the second bus increment.
 
 **Differs from the plan.**
-- **Bulk keeps at least one permit.** At n = 1, ceil(n / 2) = 1 would leave bulk none, and `config`, snapshots, logs and recordings would never be served. So n = 1 gives 2 permits, one P0 and one bulk, as the ingest pool's floor of 2.
-- **P0 may take the shared permits** as well as its reserve; the plan names only the reserve. Bulk is then refused while P0 holds them all, which is the priority the plan asks for.
+- **Bulk keeps one permit.** Without one, P0 could hold every permit, and `config`, snapshots, logs and recordings would not be served while it does, which the plan's 200 event POSTs a second at 50 LBs can reach at peak. So one permit is kept for bulk, as ceil(n / 2) are for P0, and n = 1 gives 2 permits, one P0 and one bulk, as the ingest pool's floor of 2.
+- **P0 may take the shared permits** as well as its reserve; the plan names only the reserve. Bulk is then refused past its reserve while P0 holds them, which is the priority the plan asks for.
 - **The permit is taken once the BOX is open**, not before it as the per-op semaphores are, since only the BOX says a batch's lane. A refused request costs MAIN one decryption more than a per-op refusal does, and writes nothing to MySQL.
 - **`retry_after_ms` is 250–750 ms for P0** and 1–3 s for bulk. The plan gives no range.
 
@@ -1556,12 +1559,12 @@ All of this is safe. P0 is slower than the plan wants: a refused P0 batch waits 
 
 Tests:
 - `ClusterSemaphoreTest`:
-  - the split: ceil(n / 2) for P0, the rest for anyone, bulk at least 1, and the setting's range and default;
+  - the split: ceil(n / 2) for P0, the rest for bulk, at least 1, and the setting's range (both ends) and default;
   - the lane: only `events` with `lane: "p0"` is P0, every other ingest op is bulk, and control ops take none;
   - no permit without the bus;
   - P0 getting its reserve while bulk holds its share, and bulk refused when only reserved permits are free;
-  - P0 taking the shared permits, with bulk refused meanwhile;
-  - P0's reserve after n is lowered;
+  - P0 taking the shared permits but never bulk's reserve, with bulk refused past it meanwhile;
+  - each lane's reserve at n = 1, 2, 5, 6 and 64, and after n is lowered;
   - the signed 503 with `retry_after_ms` (each lane's range), `op` and `lane`;
   - release after the handler returns or throws, for both lanes;
   - expiry after 90 s by the bus's clock, both sets pruned by either lane, and a permit from before a clock step.
@@ -1572,8 +1575,10 @@ Tests:
   - the refused batch resent and applied once;
   - `cluster_ingest_concurrency` 2 sizing the permits;
   - `BAD_MAC`, `REPLAY` and `NOT_ACTIVE` before any permit, and a refused request writing nothing to MySQL;
-  - no permit without the bus.
-- `AgentClientRetryTest`: `recording_complete` asked again after each wait until answered, at once when answered, and given up after the last wait.
+  - a new epoch's first request refused a permit: the epoch not marked used, and marked once a request is served;
+  - no permit without the bus (none at the checkout's default socket either).
+- `AgentClientRetryTest`: `recording_complete` asked again after each wait until answered, at once when answered, with no agent at all, and given up after the last wait, one try after each; `RecordCommand::vodFor` asking MAIN this way on a node whose CONTENT flow is on.
+- `ClusterContentTest`: two overlapping `RecordingFinalizer::create` calls making one VOD, added to its bouquets once.
 
 ### Blocklist delta (Phase 7, first increment)
 

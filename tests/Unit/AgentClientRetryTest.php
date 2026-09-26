@@ -1,13 +1,16 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\Commands\RecordCommand;
 use XcVm\Core\Cluster\AgentClient;
+use XcVm\Core\Cluster\NodeFlows;
 
 /**
  * An op MAIN applies once (recording_complete) is asked again while it gets
  * no answer: MAIN refuses bulk ingest while its ingest permits are held (a
  * 503 RATE_LIMITED, ADR 0004), and today's agent relays any refusal to the
- * node's PHP as a bare 409. Giving up at once would lose the recording.
+ * node's PHP as a bare 409. Giving up at once would lose the recording, so
+ * RecordCommand asks this way on a node whose CONTENT flow is on.
  *
  * The agent here is a stand-in on a real unix socket (as AgentAdmissionTest):
  * it logs each request and answers what the test tells it to.
@@ -37,6 +40,7 @@ final class AgentClientRetryTest extends TestCase {
 		}
 		AgentClient::useSocket(null);
 		AgentClient::useSleep(null);
+		NodeFlows::usePath(null);
 		exec('rm -rf ' . escapeshellarg($this->rDir));
 	}
 
@@ -107,11 +111,32 @@ PHP);
 		$this->assertSame([], $this->rWaits);
 	}
 
-	public function testItGivesUpAfterAboutTwoMinutes(): void {
-		// No agent at all (nothing listens on the socket): every try fails.
+	public function testItGivesUpAfterTheLastWait(): void {
+		$rTries = count(AgentClient::RETRY_WAITS_SEC) + 1;
+		$this->agent(array_fill(0, $rTries, [409, 'MAIN refused (503 RATE_LIMITED)']));
 		$this->assertNull(AgentClient::mainRetrying('recording_complete', ['recording_id' => 5]));
 		$this->assertSame(AgentClient::RETRY_WAITS_SEC, $this->rWaits, 'each wait, once');
+		$this->assertCount($rTries, $this->requests(), 'one try at once, and one after each wait');
 		$this->assertGreaterThanOrEqual(60, array_sum(AgentClient::RETRY_WAITS_SEC), 'outlasts a busy spell of MAIN\'s ingest');
 		$this->assertLessThanOrEqual(180, array_sum(AgentClient::RETRY_WAITS_SEC));
+	}
+
+	public function testNoAgentIsAskedAgainToo(): void {
+		// Nothing listens on the socket: every try fails, as a timeout does.
+		$this->assertNull(AgentClient::mainRetrying('recording_complete', ['recording_id' => 5]));
+		$this->assertSame(AgentClient::RETRY_WAITS_SEC, $this->rWaits);
+	}
+
+	public function testARecordingOnANodeWithTheContentFlowAsksMainForItsVodUntilAnswered(): void {
+		file_put_contents($this->rDir . '/flows.json', json_encode(['mode' => 1, 'flows' => NodeFlows::CONTENT, 'state' => 'active']));
+		NodeFlows::usePath($this->rDir . '/flows.json');
+		$this->agent([[409, 'MAIN refused (503 RATE_LIMITED)'], [409, 'MAIN refused (503 RATE_LIMITED)'], [200, '{"stream_id":7}']]);
+		$rIcon = 's:5:/images/' . str_repeat('a', 32) . '.jpg';
+		$this->assertSame(7, RecordCommand::vodFor(3, $rIcon), 'the VOD MAIN made once it was free');
+		$rSent = $this->requests();
+		$this->assertCount(3, $rSent, 'asked again after each refusal');
+		foreach ($rSent as $rReq) {
+			$this->assertSame(['line' => 'POST /v1/main/recording_complete HTTP/1.0', 'body' => ['recording_id' => 3, 'stream_icon' => $rIcon]], $rReq);
+		}
 	}
 }

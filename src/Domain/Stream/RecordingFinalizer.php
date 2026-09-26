@@ -12,7 +12,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  *  1. create() makes the VOD row (with its bouquets) and records it as the
  *     recording's `created_id`, so the node knows the file name. Asked again
- *     for the same recording it returns the same VOD: one recording, one VOD.
+ *     for the same recording it returns the same VOD, also while the first
+ *     call is still running: one recording, one VOD.
  *  2. finish() attaches the VOD to the node that holds the file (pid 1,
  *     to_analyze 1, as a converted movie) and marks the recording done.
  *
@@ -31,6 +32,12 @@ final class RecordingFinalizer {
 
 	/**
 	 * The recording's VOD, created on first call.
+	 *
+	 * Two calls can overlap: the node asks again when its request timed out
+	 * while MAIN was still running it. Each then makes a row, and the first
+	 * to record its id as `created_id` (only while none is recorded) wins.
+	 * The other deletes its row, before any bouquet has it, and returns the
+	 * winner's.
 	 *
 	 * @param string|null $rIcon The node's local copy of the icon (`s:<sid>:/images/<md5>.jpg`), if it made one.
 	 * @return int|null The VOD's stream id; null when the recording is unknown or not the node's.
@@ -74,10 +81,19 @@ final class RecordingFinalizer {
 		}
 		$rID = (int) $rDb->last_insert_id();
 		$rDb->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode([VOD_PATH . $rID . '.mp4']), $rID);
+		$rDb->query('UPDATE `recordings` SET `created_id` = ? WHERE `id` = ? AND `source_id` = ? AND (`created_id` IS NULL OR `created_id` = 0);', $rID, $rRecordingID, $rServerID);
+		if (!$rDb->query('SELECT `created_id` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rRecordingID, $rServerID) || $rDb->num_rows() <= 0) {
+			return null; // whether this row was recorded is unknown: it stays, and the node asks again
+		}
+		$rCreated = (int) $rDb->get_row()['created_id'];
+		if ($rCreated !== $rID) {
+			// An overlapping call recorded its VOD first: this row goes.
+			$rDb->query('DELETE FROM `streams` WHERE `id` = ?;', $rID);
+			return $rCreated > 0 ? $rCreated : null;
+		}
 		foreach (json_decode((string) $rRec['bouquets'], true) ?: [] as $rBouquet) {
 			self::addToBouquet((int) $rBouquet, $rID);
 		}
-		$rDb->query('UPDATE `recordings` SET `created_id` = ? WHERE `id` = ?;', $rID, $rRecordingID);
 		return $rID;
 	}
 

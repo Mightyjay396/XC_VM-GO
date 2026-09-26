@@ -14,7 +14,8 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
  * ops (ClusterPool::INGEST_OPS) run at most `cluster_ingest_concurrency` at a
  * time, and ceil(n / 2) of those permits are kept for P0 `events` batches, so
  * bulk transfers (P1/P2 events, config, snapshots, content) never hold up
- * P0. P0 takes any free permit; bulk only the rest (ingestPermits()).
+ * P0. One is kept for bulk, so P0 never holds up bulk entirely either. Each
+ * lane always gets its reserve; the rest are shared (ingestPermits()).
  *
  * A permit is a member of the sorted set `sem:<op>` (an ingest permit, of
  * `sem:ingest:p0` or `sem:ingest:bulk`), scored by when it expires: taken
@@ -46,8 +47,9 @@ final class ClusterSemaphore {
 	public const RETRY_MAX_MS = 3000;
 
 	/**
-	 * A P0 batch refused an ingest permit is asked back sooner: P0 flushes
-	 * every 250 ms, and its permits are held only by other P0 batches then.
+	 * A P0 batch refused an ingest permit is asked back sooner: P0 goes out
+	 * within 250 ms (the agent flushes it every 200 ms), and its permits are
+	 * held only by other P0 batches then.
 	 */
 	public const P0_RETRY_MIN_MS = 250;
 	public const P0_RETRY_MAX_MS = 750;
@@ -55,6 +57,13 @@ final class ClusterSemaphore {
 	/** The ingest permits' lanes (plan section 3): P0 `events` batches, and every other ingest request. */
 	public const LANE_P0 = 'p0';
 	public const LANE_BULK = 'bulk';
+
+	/**
+	 * The ingest permits kept for bulk: P0 may take every other free one, never
+	 * these, so a busy P0 never shuts out config, snapshots, logs and
+	 * recordings.
+	 */
+	public const BULK_RESERVE = 1;
 
 	/** An ingest permit's worst case in seconds: the cluster_ingest pool's timeout. */
 	public const INGEST_LIFE = ClusterPool::POOLS['cluster_ingest'];
@@ -72,9 +81,11 @@ final class ClusterSemaphore {
 	 * held forever.
 	 *
 	 * The ingest permits pass a second key, the other lane's set (same
-	 * lifetime), pruned alike, and ARGV[5] total, ARGV[6] reserve: the permit
-	 * is also refused when both sets hold `total` and this lane already holds
-	 * its `reserve` (bulk: 0), so P0 always gets its reserve.
+	 * lifetime), pruned alike, and ARGV[5] total, ARGV[6] this lane's reserve,
+	 * ARGV[7] the other lane's. Past its own reserve, a lane takes a permit
+	 * only while the permits held, and the other lane's reserve it does not
+	 * hold yet, leave one of the total free. So each lane always gets its
+	 * reserve, even while the other holds permits taken at a higher total.
 	 */
 	private const ACQUIRE_LUA = <<<'LUA'
 		local t = redis.call('TIME')
@@ -90,7 +101,7 @@ final class ClusterSemaphore {
 		if own >= tonumber(ARGV[2]) then
 			return 0
 		end
-		if #KEYS > 1 and own >= tonumber(ARGV[6]) and held >= tonumber(ARGV[5]) then
+		if #KEYS > 1 and own >= tonumber(ARGV[6]) and held + math.max(0, tonumber(ARGV[7]) - (held - own)) >= tonumber(ARGV[5]) then
 			return 0
 		end
 		redis.call('ZADD', KEYS[1], exp, ARGV[3])
@@ -147,9 +158,11 @@ final class ClusterSemaphore {
 
 	/**
 	 * The ingest permits for a `cluster_ingest_concurrency` of n (clamped to
-	 * the setting's range, its default when unset): ceil(n / 2) kept for P0,
-	 * the rest (at least 1, so bulk is never shut out: one P0 and one bulk, as
-	 * the pool's floor) for anyone; `total` is their sum, n from 2 up.
+	 * the setting's range, its default when unset): `p0`, ceil(n / 2), kept
+	 * for P0; `bulk`, the rest (at least BULK_RESERVE: at n = 1 one P0 and one
+	 * bulk, as the pool's floor), the most bulk may hold, BULK_RESERVE of them
+	 * kept for it and the others shared with P0; `total` is their sum, n from
+	 * 2 up.
 	 *
 	 * @return array{p0: int, bulk: int, total: int}
 	 */
@@ -157,15 +170,15 @@ final class ClusterSemaphore {
 		[$rDefault, $rMin, $rMax] = ClusterSettings::INTS['cluster_ingest_concurrency'];
 		$rN = is_numeric($rConcurrency) ? max($rMin, min($rMax, (int) $rConcurrency)) : $rDefault;
 		$rP0 = intdiv($rN + 1, 2);
-		$rBulk = max(1, $rN - $rP0);
+		$rBulk = max(self::BULK_RESERVE, $rN - $rP0);
 		return ['p0' => $rP0, 'bulk' => $rBulk, 'total' => $rP0 + $rBulk];
 	}
 
 	/**
 	 * Take one of a lane's ingest permits: its id, false when none is free,
-	 * null without the bus. P0 takes any free permit, and its reserve even
-	 * when the rest are held past a lowered concurrency; bulk takes only those
-	 * not kept for P0.
+	 * null without the bus. P0 takes any free permit but those kept for bulk,
+	 * bulk any of its share not kept for P0; each gets its reserve even when
+	 * the other holds permits taken before the concurrency was lowered.
 	 *
 	 * @param 'p0'|'bulk' $rLane
 	 */
@@ -174,7 +187,7 @@ final class ClusterSemaphore {
 		$rP0 = $rLane === self::LANE_P0;
 		$rKeys = $rP0 ? ['sem:ingest:' . self::LANE_P0, 'sem:ingest:' . self::LANE_BULK] : ['sem:ingest:' . self::LANE_BULK, 'sem:ingest:' . self::LANE_P0];
 		$rID = bin2hex(random_bytes(8));
-		$rArgs = [self::INGEST_LIFE * 1000, $rP0 ? $rPermits['total'] : $rPermits['bulk'], $rID, self::STEP_MS, $rPermits['total'], $rP0 ? $rPermits['p0'] : 0];
+		$rArgs = [self::INGEST_LIFE * 1000, $rP0 ? $rPermits['total'] : $rPermits['bulk'], $rID, self::STEP_MS, $rPermits['total'], $rP0 ? $rPermits['p0'] : self::BULK_RESERVE, $rP0 ? self::BULK_RESERVE : $rPermits['p0']];
 		return match (ClusterBus::script(self::ACQUIRE_LUA, $rKeys, $rArgs)) {
 			1 => $rID,
 			0 => false,

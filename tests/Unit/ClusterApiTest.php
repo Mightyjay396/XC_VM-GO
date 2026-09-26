@@ -86,6 +86,8 @@ final class ClusterApiTest extends TestCase {
 			$this->rCrypto = new FakeClusterCrypto();
 		}
 		ClusterClock::fix($this->rT0);
+		// No bus unless a test starts one (bus()): never one at the checkout's default socket.
+		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '.sock');
 	}
 
 	/**
@@ -1583,8 +1585,8 @@ final class ClusterApiTest extends TestCase {
 	public function testNothingBeforeTheBoxTakesAnIngestPermitAndARefusalWritesNothing(): void {
 		$rRedis = $this->bus();
 		$rKeys = $this->active();
-		for ($i = 0; $i < 6; $i++) {
-			ClusterSemaphore::acquireIngest('p0', 6);
+		for ($i = 0; $i < 6 - ClusterSemaphore::BULK_RESERVE; $i++) {
+			ClusterSemaphore::acquireIngest('p0', 6); // every permit P0 may take
 		}
 		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 1, $rKeys, ['body' => static fn($b) => $b . 'x']);
 		$this->denial($rRes, 401, 'BAD_MAC', $rReq);
@@ -1598,7 +1600,35 @@ final class ClusterApiTest extends TestCase {
 		$this->rDb->query("UPDATE `cluster_nodes` SET `state` = 'quarantined' WHERE `server_id` = 5");
 		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 1, $rKeys);
 		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
-		$this->assertSame([6, 0], [$rRedis->zCard('sem:ingest:p0'), $rRedis->zCard('sem:ingest:bulk')], 'no refused request took a permit');
+		$this->assertSame([5, 0], [$rRedis->zCard('sem:ingest:p0'), $rRedis->zCard('sem:ingest:bulk')], 'no refused request took a permit');
+	}
+
+	public function testANewEpochIsMarkedUsedOnlyOnceAnIngestPermitIsTaken(): void {
+		$rRedis = $this->bus();
+		$rKeys = $this->active();
+		$rEph = random_bytes(32);
+		[$rRes, $rCtx] = $this->call('token_refresh', ['eph_pub' => base64_encode(sodium_crypto_scalarmult_base($rEph))], 1, $rKeys);
+		$rTok2 = $this->openToken((string) base64_decode($this->reply($rRes, $rCtx, $rKeys)['token_sealed']), $rEph);
+		for ($i = 0; $i < 6 - ClusterSemaphore::BULK_RESERVE; $i++) {
+			$this->assertIsString(ClusterSemaphore::acquireIngest('p0', 6));
+		}
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+
+		// The node's first request at epoch 2 is refused a permit: epoch 2 stays unused, and epoch 1 current.
+		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 2, $rTok2['keys']);
+		$this->assertSame('p0', $this->denial($rRes, 503, 'RATE_LIMITED', $rReq)['lane']);
+		$this->assertSame([], $rLog->writes(), 'nothing written, not even the epoch');
+		DatabaseFactory::set($this->rDb);
+		$this->rDb->query('SELECT `used` FROM `cluster_node_epochs` WHERE `server_id` = 5 AND `epoch` = 2');
+		$this->assertSame(0, (int) $this->rDb->get_row()['used']);
+		$this->assertSame(1, (int) NodeRegistry::byServer(self::SID)['epoch']);
+
+		// Served once a permit is free: then epoch 2 is marked used.
+		$rRedis->del('sem:ingest:p0');
+		[$rRes, $rCtx] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 2, $rTok2['keys']);
+		$this->reply($rRes, $rCtx, $rTok2['keys']);
+		$this->assertSame(2, (int) NodeRegistry::byServer(self::SID)['epoch']);
 	}
 
 	public function testWithoutTheBusIngestTakesNoPermit(): void {

@@ -13,8 +13,8 @@ use XcVm\Tests\Support\FakeClusterCrypto;
  * The per-op semaphores on the cluster bus (plan, section 8, "MAIN
  * capacity"): 4 permits each for hello, conn_snapshot, token_rekey and
  * config; and the ingest permits (section 8, "Ordering and backpressure"):
- * cluster_ingest_concurrency in all, half of them kept for P0 events. Against
- * a real redis-server on a unix socket (as ClusterBusTest).
+ * cluster_ingest_concurrency in all, half of them kept for P0 events and one
+ * for bulk. Against a real redis-server on a unix socket (as ClusterBusTest).
  */
 final class ClusterSemaphoreTest extends TestCase {
 	private const T0 = 1800000000000;
@@ -197,10 +197,12 @@ final class ClusterSemaphoreTest extends TestCase {
 	// ── Ingest permits ───────────────────────────────────────────────────
 
 	public function testTheIngestPermitsSplitTheConcurrencyWithHalfKeptForP0(): void {
-		$this->assertSame(['p0' => 3, 'bulk' => 3, 'total' => 6], ClusterSemaphore::ingestPermits(6), 'ceil(n / 2) kept for P0, the rest for anyone');
+		$this->assertSame(['p0' => 3, 'bulk' => 3, 'total' => 6], ClusterSemaphore::ingestPermits(6), 'ceil(n / 2) kept for P0, the rest the most bulk may hold');
 		$this->assertSame(['p0' => 3, 'bulk' => 2, 'total' => 5], ClusterSemaphore::ingestPermits(5));
 		$this->assertSame(['p0' => 1, 'bulk' => 1, 'total' => 2], ClusterSemaphore::ingestPermits(1), 'bulk is never shut out: one P0 and one bulk, as the pool\'s floor');
 		$this->assertSame(['p0' => 32, 'bulk' => 32, 'total' => 64], ClusterSemaphore::ingestPermits(1000), 'clamped to the setting\'s range');
+		$this->assertSame(ClusterSemaphore::ingestPermits(1), ClusterSemaphore::ingestPermits(0), 'a row edited by hand: clamped up to the setting\'s minimum');
+		$this->assertSame(ClusterSemaphore::ingestPermits(1), ClusterSemaphore::ingestPermits(-3));
 		$this->assertSame(ClusterSemaphore::ingestPermits(6), ClusterSemaphore::ingestPermits(null), 'unset: the setting\'s default');
 		$this->assertSame(ClusterSemaphore::ingestPermits(6), ClusterSemaphore::ingestPermits('lots'));
 		$this->assertSame(ClusterSemaphore::ingestPermits(2), ClusterSemaphore::ingestPermits('2'), 'as the settings row holds it');
@@ -247,20 +249,59 @@ final class ClusterSemaphoreTest extends TestCase {
 		$this->assertIsString(ClusterSemaphore::acquire('config'), 'the per-op semaphores are apart');
 	}
 
-	public function testP0MayTakeTheSharedPermitsButBulkNeverTheReserve(): void {
+	public function testP0MayTakeTheSharedPermitsButNeverBulksReserve(): void {
 		$this->bus();
 		$rHeld = [];
-		for ($i = 0; $i < 6; $i++) {
+		for ($i = 0; $i < 5; $i++) {
 			$rHeld[] = ClusterSemaphore::acquireIngest('p0', 6);
 		}
-		$this->assertContainsOnly('string', $rHeld, 'P0 may use every permit');
+		$this->assertContainsOnly('string', $rHeld, 'P0 may use its reserve and the shared permits');
+		$this->assertFalse(ClusterSemaphore::acquireIngest('p0', 6), 'never the one kept for bulk');
+		$this->assertIsString(ClusterSemaphore::acquireIngest('bulk', 6), 'bulk is served while P0 holds all it may');
+		$this->assertFalse(ClusterSemaphore::acquireIngest('bulk', 6), 'all 6 held');
 		$this->assertFalse(ClusterSemaphore::acquireIngest('p0', 6));
-		$this->assertFalse(ClusterSemaphore::acquireIngest('bulk', 6), 'none free');
 		ClusterSemaphore::releaseIngest('p0', (string) $rHeld[0]);
 		ClusterSemaphore::releaseIngest('p0', (string) $rHeld[1]);
 		$this->assertIsString(ClusterSemaphore::acquireIngest('bulk', 6), 'a shared permit P0 gave back');
 		$this->assertIsString(ClusterSemaphore::acquireIngest('bulk', 6));
 		$this->assertFalse(ClusterSemaphore::acquireIngest('bulk', 6), 'all 6 held');
+	}
+
+	public function testEachLaneAlwaysGetsItsReserve(): void {
+		$rRedis = $this->bus();
+		foreach ([1, 2, 5, 6, 64] as $rN) {
+			$rPermits = ClusterSemaphore::ingestPermits($rN);
+			$rRedis->flushAll();
+			$rP0 = 0;
+			while ($rP0 <= $rPermits['total'] && is_string(ClusterSemaphore::acquireIngest('p0', $rN))) {
+				$rP0++;
+			}
+			$this->assertSame($rPermits['total'] - ClusterSemaphore::BULK_RESERVE, $rP0, 'n = ' . $rN . ': P0 takes every permit but bulk\'s');
+			$this->assertIsString(ClusterSemaphore::acquireIngest('bulk', $rN), 'n = ' . $rN . ': bulk still gets its one');
+
+			$rRedis->flushAll();
+			$rBulk = 0;
+			while ($rBulk <= $rPermits['total'] && is_string(ClusterSemaphore::acquireIngest('bulk', $rN))) {
+				$rBulk++;
+			}
+			$this->assertSame($rPermits['bulk'], $rBulk, 'n = ' . $rN . ': bulk takes its share');
+			for ($i = 0; $i < $rPermits['p0']; $i++) {
+				$this->assertIsString(ClusterSemaphore::acquireIngest('p0', $rN), 'n = ' . $rN . ': P0 still gets its reserve');
+			}
+			$this->assertFalse(ClusterSemaphore::acquireIngest('p0', $rN), 'n = ' . $rN . ': all held');
+		}
+	}
+
+	public function testBulkKeepsItsReserveWhenTheConcurrencyIsLowered(): void {
+		$rRedis = $this->bus();
+		for ($i = 0; $i < 5; $i++) {
+			ClusterSemaphore::acquireIngest('p0', 6);
+		}
+		// Lowered to 2 (1 kept for P0, 1 for bulk) while P0 still holds 5.
+		$this->assertFalse(ClusterSemaphore::acquireIngest('p0', 2));
+		$this->assertIsString(ClusterSemaphore::acquireIngest('bulk', 2), 'bulk still gets its reserve');
+		$this->assertFalse(ClusterSemaphore::acquireIngest('bulk', 2), 'past its reserve, with every permit held');
+		$this->assertSame([5, 1], [$rRedis->zCard('sem:ingest:p0'), $rRedis->zCard('sem:ingest:bulk')]);
 	}
 
 	public function testP0KeepsItsReserveWhenTheConcurrencyIsLowered(): void {
