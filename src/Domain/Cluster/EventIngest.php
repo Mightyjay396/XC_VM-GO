@@ -19,7 +19,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * ```text
  * p0  stream.state, stream.worker, stream.monitor,   gap-checked: first_useq must be
  *     recording.state, vod.analysis,                 useq_p0 + 1, else 409 {expected_useq}
- *     conn.upsert, conn.remove, conn.limit
+ *     conn.upsert, conn.remove, conn.close, conn.limit
  *                                                    and the node rewinds
  * p1  log.<type>, skip                               high-water: numbers at or below
  *                                                    useq_p1 are skipped, gaps are fine
@@ -45,6 +45,7 @@ final class EventIngest {
 		'recording.state' => ['p0', NodeRegistry::FLOW_CONTENT],
 		'conn.upsert' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
 		'conn.remove' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
+		'conn.close' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
 		'conn.limit' => ['p0', NodeRegistry::FLOW_CONNECTIONS],
 		'vod.analysis' => ['p0', NodeRegistry::FLOW_CONTENT],
 		'skip' => ['p1', NodeRegistry::FLOW_LOGS],
@@ -142,6 +143,8 @@ final class EventIngest {
 				return is_array($rData['record'] ?? null) && ConnectionIngest::upsert($rServerID, $rData['record']);
 			case 'conn.remove':
 				return ConnectionIngest::remove($rServerID, (string) ($rData['uuid'] ?? ''));
+			case 'conn.close':
+				return ConnectionIngest::close($rServerID, (string) ($rData['uuid'] ?? ''));
 			case 'conn.limit':
 				return ConnectionLimits::queue($rServerID, $rData);
 		}

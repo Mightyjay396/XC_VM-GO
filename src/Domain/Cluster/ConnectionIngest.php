@@ -17,6 +17,8 @@ use XcVm\Infrastructure\Redis\RedisManager;
  * ```text
  * conn.upsert {record}   create, or update and re-open (hls_end 0) / end (hls_end 1)
  * conn.remove {uuid}     drop it from the store
+ * conn.close {uuid}      the viewer left the node's fanout: its activity row,
+ *                        then drop it from the store
  * ```
  *
  * A node writes only its own connections: `server_id` is always the sender,
@@ -108,6 +110,49 @@ final class ConnectionIngest {
 			return ConnectionTracker::removeRecord($rRedis, $rExisting);
 		}
 		return (bool) self::db()->query('DELETE FROM `lines_live` WHERE `uuid` = ? AND `server_id` = ?;', $rUUID, $rServerID);
+	}
+
+	/**
+	 * A daemon-served viewer the node's fanout reports gone (conn.close, the
+	 * fanout's conn_close): closed as fanout_sync's reconcile closes it, with
+	 * its activity row, but without the kill and the conn.close command back
+	 * that ConnectionTracker::closeConnection sends: the viewer is already
+	 * gone and the node's registry already dropped it.
+	 */
+	public static function close(int $rServerID, string $rUUID): bool {
+		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+			return false;
+		}
+		if (SettingsManager::get('redis_handler')) {
+			$rRow = ConnectionTracker::getConnection($rUUID);
+		} else {
+			self::db()->query('SELECT * FROM `lines_live` WHERE `uuid` = ?;', $rUUID);
+			$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		}
+		if (!is_array($rRow)) {
+			return true; // already closed (fanout_sync, a kick)
+		}
+		if ((int) ($rRow['server_id'] ?? 0) !== $rServerID) {
+			return false;
+		}
+		ConnectionTracker::writeOfflineActivity(
+			SettingsManager::getAll() + ['save_closed_connection' => 0],
+			$rServerID,
+			(int) ($rRow['proxy_id'] ?? 0),
+			(int) ($rRow['user_id'] ?? 0),
+			(int) ($rRow['stream_id'] ?? 0),
+			(int) ($rRow['date_start'] ?? 0),
+			(string) ($rRow['user_agent'] ?? ''),
+			(string) ($rRow['user_ip'] ?? ''),
+			(string) ($rRow['container'] ?? ''),
+			(string) ($rRow['geoip_country_code'] ?? ''),
+			(string) ($rRow['isp'] ?? ''),
+			(string) ($rRow['external_device'] ?? ''),
+			(int) ($rRow['divergence'] ?? 0),
+			isset($rRow['hmac_id']) ? (int) $rRow['hmac_id'] : null,
+			(string) ($rRow['hmac_identifier'] ?? '')
+		);
+		return self::remove($rServerID, $rUUID);
 	}
 
 	/**
