@@ -330,13 +330,17 @@ use XcVm\Domain\Server\ServerRepository;
 									<div class="col-md-2">
 										<select name="<?= $rChannelKey ?>" id="<?= $rChannelKey ?>" class="form-control" data-toggle="select2">
 											<?php $rCurrentChannel = (($rSettings[$rChannelKey] ?? 'stable') === 'unstable') ? 'beta' : ($rSettings[$rChannelKey] ?? 'stable'); ?>
-											<?php foreach (["stable" => "Stable", "beta" => "Beta"] as $rKey => $rValue): ?>
+											<?php $rChannelOptions = ["stable" => "Stable", "beta" => "Beta"] + ($rChannelKey === "update_channel_main" ? ["dev" => "Dev (nightly)"] : []); ?>
+											<?php foreach ($rChannelOptions as $rKey => $rValue): ?>
 												<option value="<?= $rKey ?>" <?= $rCurrentChannel == $rKey ? ' selected' : '' ?>>
 													<?= $rValue ?>
 												</option>
 											<?php endforeach; ?>
 										</select>
 									</div>
+									<?php if ($rChannelKey === "update_channel_main"): ?>
+										<div class="col-md-6 col-form-label text-warning small"><?= $language::get('update_channel_dev_warning') ?></div>
+									<?php endif; ?>
 								</div>
 							<?php endforeach; ?>
 

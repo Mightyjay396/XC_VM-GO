@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\Box;
 use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
@@ -14,7 +15,7 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
  * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat;
- * Phase 4: commands, ack; Phase 5: events, recording_complete; Phase 6: conn_snapshot). Transport-free: handle() takes the request
+ * Phase 4: commands, ack; Phase 5: events, recording_complete; Phase 6: conn_snapshot, conn_admit). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -48,6 +49,7 @@ final class ClusterApi {
 		'events' => ['POST', false, ['active']],
 		'recording_complete' => ['POST', false, ['active']],
 		'conn_snapshot' => ['POST', false, ['active']],
+		'conn_admit' => ['POST', false, ['active']],
 		'config' => ['POST', false, ['active']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
@@ -153,6 +155,7 @@ final class ClusterApi {
 			'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 		};
 	}
@@ -442,7 +445,20 @@ final class ClusterApi {
 			'epoch' => $rH['epoch'], 'main_time_ms' => ClusterClock::nowMs(),
 			'proto' => ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX], 'policy' => ClusterPolicy::current($rSettings, $rMain),
 			'cursors' => ['p0' => (int) $rNode['useq_p0'], 'p1' => (int) $rNode['useq_p1']],
+			'offline_admission' => self::offlineAdmission($rSettings),
 		]);
+	}
+
+	/**
+	 * `lb_offline_admission`, as the agent applies it to a viewer without an
+	 * `adm` claim while conn_admit gets no answer: `local`, `allow` or `deny`.
+	 * In hello and every heartbeat, so a change reaches a node within one
+	 * heartbeat and needs no CONFIG flow.
+	 */
+	private static function offlineAdmission(array $rSettings): string {
+		[$rDefault, $rAllowed] = ClusterSettings::ENUMS['lb_offline_admission'];
+		$rValue = (string) ($rSettings['lb_offline_admission'] ?? $rDefault);
+		return in_array($rValue, $rAllowed, true) ? $rValue : $rDefault;
 	}
 
 	/**
@@ -482,6 +498,7 @@ final class ClusterApi {
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => (string) $rNode['state'], 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'],
 			'main_time_ms' => ClusterClock::nowMs(), 'pending' => 0, 'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
+			'offline_admission' => self::offlineAdmission($rSettings),
 		] + ($rWant ? ['want_conn_snapshot' => true] : []));
 	}
 
@@ -592,6 +609,27 @@ final class ClusterApi {
 			ClusterAudit::log('conn.snapshot', (int) $rNode['server_id'], ['applied' => $rOut['applied'], 'removed' => $rOut['removed'], 'dropped' => $rOut['dropped']], 'node');
 		}
 		unset($rOut['ok']);
+		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `conn_admit`: admission for a viewer the node is about to record whose
+	 * token has no `adm` claim (ConnectionAdmission::forNode), for a node that
+	 * holds its viewers. The line is MAIN's, never the node's; the answer is
+	 * {admit, exp, reason?}.
+	 */
+	private static function connAdmit(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONNECTIONS) === 0) {
+			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'connections']);
+		}
+		try {
+			$rOut = ConnectionAdmission::forNode($rSettings, (int) $rNode['server_id'], $rP);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if ($rOut === null) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 

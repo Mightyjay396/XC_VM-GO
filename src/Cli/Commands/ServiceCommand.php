@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Domain\Cluster\ClusterPool;
 
 /**
  * Управление сервисом XC_VM (start/stop/restart/reload).
@@ -64,6 +65,10 @@ class ServiceCommand implements CommandInterface {
 		exec('sudo chown -R xc_vm:xc_vm /sys/class/net');
 		exec('sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'content/streams');
 		exec('sudo chown -R xc_vm:xc_vm ' . TMP_PATH);
+		// MAIN: the cluster API is STARTING until its pools answer again (ClusterPool).
+		if (class_exists(ClusterPool::class)) {
+			ClusterPool::unmark();
+		}
 
 		if (file_exists(MAIN_HOME . 'bin/redis/redis-server')) {
 			exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . 'bin/redis/redis.conf >/dev/null 2>/dev/null');

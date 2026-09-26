@@ -90,6 +90,7 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/ClusterDbAllowlistCommand.php \
 	Cli/Commands/ClusterEnrolCodeCommand.php \
 	Cli/Commands/ClusterEnrolApproveCommand.php \
+	Cli/Commands/ClusterPoolsCommand.php \
 	Cli/Commands/AgentBinaryCommand.php \
 	Cli/Commands/ServerEnrolCommand.php \
 	Cli/Commands/SshChannel.php \

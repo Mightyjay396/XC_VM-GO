@@ -15,6 +15,12 @@ if (!defined('GIT_REPO_BIN')) {
 if (!defined('GIT_REPO_FANOUT')) {
 	define('GIT_REPO_FANOUT', 'XC_VM_Fanout');
 }
+if (!defined('GIT_REPO_DEV')) {
+	define('GIT_REPO_DEV', 'XC_VM_Dev');
+}
+if (!defined('GIT_OWNER')) {
+	define('GIT_OWNER', 'Vateron-Media');
+}
 
 /**
  * UpdateChannels — per-repository release channel resolution.
@@ -87,5 +93,32 @@ final class UpdateChannelsTest extends TestCase {
 		// UPDATE (GeoLite/ASN) and PROXY have no channel of their own → follow MAIN.
 		$this->assertSame('beta', UpdateChannels::forRepo('XC_VM_Data'));
 		$this->assertSame('beta', UpdateChannels::forRepo('some-unknown-repo'));
+	}
+
+	public function testDevChannelIsOfferedForMainOnly(): void {
+		SettingsManager::set([
+			'update_channel_main'   => 'dev',
+			'update_channel_bin'    => 'dev',
+			'update_channel_fanout' => 'dev',
+		]);
+
+		$this->assertSame('dev', UpdateChannels::main());
+		$this->assertSame('stable', UpdateChannels::bin(), 'BIN has no nightly builds');
+		$this->assertSame('stable', UpdateChannels::fanout(), 'FANOUT has no nightly builds');
+		$this->assertSame('dev', UpdateChannels::forRepo('XC_VM_Update'), 'UPDATE follows MAIN');
+	}
+
+	public function testMainReleasesCarriesTheConfiguredChannelAndDevRepo(): void {
+		SettingsManager::set(['update_channel_main' => 'dev']);
+		$releases = UpdateChannels::mainReleases();
+
+		$this->assertSame(
+			'https://github.com/Vateron-Media/XC_VM_Dev/releases/download/2.5.4-dev.3/xc_vm.tar.gz',
+			$releases->assetUrl('2.5.4-dev.3', 'xc_vm.tar.gz')
+		);
+		$this->assertSame(
+			'https://github.com/Vateron-Media/XC_VM/releases/download/2.5.3/xc_vm.tar.gz',
+			$releases->assetUrl('2.5.3', 'xc_vm.tar.gz')
+		);
 	}
 }

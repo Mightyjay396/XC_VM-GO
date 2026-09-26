@@ -1004,6 +1004,93 @@ final class ClusterApiTest extends TestCase {
 		$this->denial($rRes, 403, 'LICENCE_INVALID');
 	}
 
+	public function testConnAdmitAdmitsForTheAuthenticatedNodeFromMainsOwnLine(): void {
+		$this->rDb->exec('CREATE TABLE `lines` (`id` INTEGER PRIMARY KEY, `max_connections` int, `pair_id` int, `enabled` int, `admin_enabled` int, `exp_date` int)');
+		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY AUTOINCREMENT, `uuid` text, `server_id` int, `user_id` int, `hmac_id` int, `hmac_identifier` text, `hls_end` int DEFAULT 0)');
+		$this->rDb->query('INSERT INTO `lines` VALUES (42, 1, NULL, 1, 1, NULL), (50, 1, NULL, 1, 0, NULL)');
+		// The reservations' primary key (the test DDL drops it) is what makes a retry refresh one row.
+		$this->rDb->exec('DROP TABLE `cluster_reservations`');
+		$this->rDb->exec('CREATE TABLE `cluster_reservations` (`id` char(32) PRIMARY KEY, `identity` varchar(96) NOT NULL, `server_id` int NOT NULL, `stream_id` int, `created_at` int NOT NULL, `exp` int NOT NULL)');
+		$rDir = sys_get_temp_dir() . '/xcvm-api-admit-' . bin2hex(random_bytes(4)) . '/';
+		\XcVm\Domain\Cluster\ConnectionLimits::useQueue($rDir);
+		$rCuts = [];
+		\XcVm\Domain\Cluster\ConnectionAdmission::useEnforcer(static function (?int $rLine, int $rRoom, ?int $rHMAC, string $rIdentifier, ?string $rIP, ?string $rUA, ?string $rUUID) use (&$rCuts): void {
+			$rCuts[] = [$rLine, $rRoom, $rIP, $rUUID];
+		});
+		SettingsManager::set($this->rSettings + ['redis_handler' => 0]);
+		try {
+			$rKeys = $this->active();
+			$rUUID = str_repeat('a', 32);
+			$rAsk = ['uuid' => $rUUID, 'line_id' => 42, 'stream_id' => 100, 'ip' => '203.0.113.9', 'ua' => 'VLC', 'max_connections' => 50];
+
+			// Only a node that holds its viewers asks.
+			[$rRes, , $rReq] = $this->call('conn_admit', $rAsk, 1, $rKeys);
+			$this->assertSame('connections', $this->denial($rRes, 409, 'FLOW_OFF', $rReq)['flow']);
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS]);
+
+			// Nothing happens without a good MAC.
+			[$rRes, , $rReq] = $this->call('conn_admit', $rAsk, 1, $rKeys, ['body' => static fn($b) => substr($b, 0, -1) . chr(ord(substr($b, -1)) ^ 1)]);
+			$this->denial($rRes, 401, 'BAD_MAC', $rReq);
+			$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations`');
+			$this->assertSame(0, (int) $this->rDb->get_row()['n']);
+
+			[$rRes, $rCtx] = $this->call('conn_admit', $rAsk, 1, $rKeys);
+			$rOut = $this->reply($rRes, $rCtx, $rKeys);
+			$this->assertSame([true, intdiv($this->rT0, 1000) + 5 + 10], [$rOut['admit'], $rOut['exp']], 'admitted until the reservation expires');
+			$this->assertArrayNotHasKey('reason', $rOut);
+
+			// A retry (the same viewer again) gets the same answer and keeps one reservation.
+			[$rRes, $rCtx] = $this->call('conn_admit', $rAsk, 1, $rKeys);
+			$this->assertSame($rOut['exp'], $this->reply($rRes, $rCtx, $rKeys)['exp']);
+			$this->rDb->query('SELECT `server_id`, `identity`, `stream_id` FROM `cluster_reservations` WHERE `id` = ?', $rUUID);
+			$rRows = $this->rDb->get_rows();
+			$this->assertCount(1, $rRows);
+			$this->assertSame([self::SID, '42', 100], [(int) $rRows[0]['server_id'], (string) $rRows[0]['identity'], (int) $rRows[0]['stream_id']], 'the reservation is the authenticated node\'s');
+
+			// The cut goes by `lines` (limit 1), never by the node's 50, and spares the viewer.
+			$this->assertSame(2, \XcVm\Domain\Cluster\ConnectionLimits::drain());
+			$this->assertSame([[42, 0, '203.0.113.9', $rUUID], [42, 0, '203.0.113.9', $rUUID]], $rCuts);
+
+			// A line auth.php would refuse is refused; a malformed request is a bad request.
+			[$rRes, $rCtx] = $this->call('conn_admit', ['uuid' => str_repeat('b', 32), 'line_id' => 50] + $rAsk, 1, $rKeys);
+			$rOut = $this->reply($rRes, $rCtx, $rKeys);
+			$this->assertSame([false, 0, 'BANNED'], [$rOut['admit'], $rOut['exp'], $rOut['reason']]);
+			[$rRes, , $rReq] = $this->call('conn_admit', ['line_id' => '42'] + $rAsk, 1, $rKeys);
+			$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+
+			// A line MAIN cannot read is not a refusal: the agent's offline policy decides.
+			$this->rDb->exec('ALTER TABLE `lines` RENAME TO `lines_gone`');
+			[$rRes, , $rReq] = $this->call('conn_admit', ['uuid' => str_repeat('c', 32)] + $rAsk, 1, $rKeys);
+			$this->denial($rRes, 503, 'DB', $rReq);
+			$this->rDb->exec('ALTER TABLE `lines_gone` RENAME TO `lines`');
+
+			// Only an active node.
+			NodeRegistry::update(self::SID, ['state' => 'quarantined']);
+			[$rRes, , $rReq] = $this->call('conn_admit', $rAsk, 1, $rKeys);
+			$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+		} finally {
+			\XcVm\Domain\Cluster\ConnectionLimits::useQueue(null);
+			\XcVm\Domain\Cluster\ConnectionAdmission::useEnforcer(null);
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
+	public function testHelloAndHeartbeatCarryTheOfflineAdmissionPolicy(): void {
+		$rKeys = $this->active();
+		[$rRes, $rCtx] = $this->call('hello', [], 1, $rKeys);
+		$this->assertSame('local', $this->reply($rRes, $rCtx, $rKeys)['offline_admission'], 'the default');
+
+		$this->rSettings['lb_offline_admission'] = 'deny';
+		[$rRes, $rCtx] = $this->call('hello', [], 1, $rKeys);
+		$this->assertSame('deny', $this->reply($rRes, $rCtx, $rKeys)['offline_admission']);
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame('deny', $this->reply($rRes, $rCtx, $rKeys)['offline_admission'], 'a change reaches the node within a heartbeat');
+
+		$this->rSettings['lb_offline_admission'] = 'maybe';
+		[$rRes, $rCtx] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame('local', $this->reply($rRes, $rCtx, $rKeys)['offline_admission']);
+	}
+
 	public function testConfigServesTheSettingsSectionToAnAgentThatAsks(): void {
 		$this->blocklistTables();
 		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text, `api_pass` text, `seg_time` int)');

@@ -12,7 +12,6 @@ use XcVm\Core\Bootstrap\Stage\WebApiLoggerStage;
 use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
-use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\UpdateChannels;
 
 /**
@@ -67,6 +66,6 @@ class WebApiBootstrap {
 		// ── 6. GithubReleases ────────────────────────────────────
 		global $gitRelease;
 		// phpcs:ignore SlevomatCodingStandard.Variables.UnusedVariable.UnusedVariable -- declared global $gitRelease; consumed by legacy update code
-		$gitRelease = new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, UpdateChannels::main());
+		$gitRelease = UpdateChannels::mainReleases();
 	}
 }

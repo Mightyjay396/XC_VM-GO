@@ -308,6 +308,8 @@ if ($rChannelInfo) {
 	// connection id, segment auth and the heartbeat file consistent. TS/VOD keep
 	// their per-request random uuid.
 	if ($rExtension === "m3u8") {
+		// The uuid MAIN reserved at mint (the token's adm), released with the viewer.
+		$rTokenData["adm_uuid"] = $rTokenData["uuid"] ?? null;
 		// HMAC/external-device streams have no real user id in $rUserInfo (0 is a
 		// safe placeholder: hlsConnectionKey() only uses $rUserId in the non-HMAC branch).
 		$rTokenData["uuid"] = ConnectionTracker::hlsConnectionKey($rIsHMAC, $rIdentifier, $rUserInfo["id"] ?? 0, $rStreamID, $rIP, $rUserAgent);
@@ -332,6 +334,7 @@ if ($rChannelInfo) {
 		"uuid" => $rTokenData["uuid"],
 		"adaptive" => isset($rTokenData["adaptive"]),
 		"time_offset" => intval($rServers[SERVER_ID]["time_offset"]),
+		"token" => $rTokenData,
 	];
 
 	switch ($rExtension) {
@@ -355,6 +358,7 @@ if ($rChannelInfo) {
 			}
 
 			if (!$rResult) {
+				StreamAuth::refuseAdmission($rStreamID, $rUserInfo, $rIP, $rExtension, $rCountryCode, $rServerID, $rProxyID);
 				DatabaseLogger::clientLog($rStreamID, $rUserInfo["id"], "LINE_CREATE_FAIL", $rIP, $rSettings["redis_handler"] ? "redis unavailable: connection tracking write failed" : $db->error());
 				generateError("LINE_CREATE_FAIL");
 			}
@@ -437,6 +441,7 @@ if ($rChannelInfo) {
 			}
 
 			if (!$rResult) {
+				StreamAuth::refuseAdmission($rStreamID, $rUserInfo, $rIP, $rExtension, $rCountryCode, $rServerID, $rProxyID);
 				DatabaseLogger::clientLog($rStreamID, $rUserInfo["id"], "LINE_CREATE_FAIL", $rIP, $rSettings["redis_handler"] ? "redis unavailable: connection tracking write failed" : $db->error());
 				generateError("LINE_CREATE_FAIL");
 			}

@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\LocalTelemetry;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\SystemInfo;
 use XcVm\Core\Util\TimeUtils;
@@ -25,8 +26,15 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 final class HeartbeatService {
 	use DatabaseAware;
 
-	/** Largest telemetry document kept per node. */
-	public const MAX_TELEMETRY = 65536;
+	/** Largest telemetry document kept per node: local.json alone may be 64 KiB. */
+	public const MAX_TELEMETRY = 131072;
+
+	/**
+	 * Largest `telemetry.local` read (encoded): the agent's cap on local.json,
+	 * enforced here too, since only the node would enforce it otherwise and
+	 * gpu_info and iostat_info are kept in servers_stats.
+	 */
+	public const MAX_LOCAL = 65536;
 
 	/** Seconds between authoritative writes to `servers` and to `servers_stats`. */
 	public const WRITE_EVERY = 5;
@@ -34,6 +42,13 @@ final class HeartbeatService {
 
 	/** Entries kept in watchdog_data.cpu_average_array, as the watchdog kept. */
 	public const CPU_HISTORY = 30;
+
+	private static ?string $rDir = null;
+
+	/** Tests: another directory for the shadow copies and stats markers; null restores TMP_PATH's. */
+	public static function useDir(?string $rDir): void {
+		self::$rDir = $rDir;
+	}
 
 	/**
 	 * @param array<string, mixed> $rNode
@@ -51,10 +66,10 @@ final class HeartbeatService {
 		}
 		NodeRegistry::update((int) $rNode['server_id'], $rFields);
 		$rTelemetry = $rPayload['telemetry'] ?? null;
-		if (is_array($rTelemetry) && defined('TMP_PATH')) {
+		$rDir = self::dir();
+		if (is_array($rTelemetry) && $rDir !== null) {
 			$rJson = (string) json_encode(['at' => $rNow, 'telemetry' => $rTelemetry], JSON_UNESCAPED_SLASHES);
 			if (strlen($rJson) <= self::MAX_TELEMETRY) {
-				$rDir = TMP_PATH . 'cluster/';
 				if (!is_dir($rDir)) {
 					@mkdir($rDir, 0750, true);
 				}
@@ -131,17 +146,62 @@ final class HeartbeatService {
 				$rOut['network_speed'] = (int) $rRate['speed'];
 			}
 		}
-		$rOut['audio_devices'] = [];
-		$rOut['video_devices'] = [];
-		$rOut['gpu_info'] = [];
-		$rOut['iostat_info'] = [];
+		// The node's watchdog probes these (local.json); an absent key is an absent tool.
+		$rLocal = self::local($rTel);
+		foreach (LocalTelemetry::DEVICES as $rKey) {
+			$rOut[$rKey] = self::deviceSection($rKey, $rLocal[$rKey] ?? null);
+		}
 		$rOut['cpu_load_average'] = $rLoad;
 		$rHistory = is_array($rPrev['cpu_average_array'] ?? null) ? array_values($rPrev['cpu_average_array']) : [];
 		$rHistory[] = $rOut['cpu'];
 		$rOut['cpu_average_array'] = array_slice($rHistory, -self::CPU_HISTORY);
-		$rLocal = is_array($rTel['local'] ?? null) ? $rTel['local'] : [];
 		$rOut['fanout'] = is_array($rLocal['fanout'] ?? null) ? $rLocal['fanout'] : ($rPrev['fanout'] ?? null);
 		return $rOut;
+	}
+
+	/**
+	 * The telemetry's `local` (the node's local.json), or [] when there is none
+	 * or it is over MAX_LOCAL: absent, as the agent would have left it out.
+	 *
+	 * @param array<string, mixed> $rTel
+	 * @return array<mixed>
+	 */
+	private static function local(array $rTel): array {
+		$rLocal = $rTel['local'] ?? null;
+		if (!is_array($rLocal) || strlen((string) json_encode($rLocal, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) > self::MAX_LOCAL) {
+			return [];
+		}
+		return $rLocal;
+	}
+
+	/**
+	 * One device section of the node's local.json, in SystemInfo's shape as
+	 * far as the panel reads it: [] for a non-array, capture devices as a
+	 * list (names, and objects for video), GPUs as objects, and iostat's CPU
+	 * figures, which the dashboard rounds, as numbers.
+	 *
+	 * @return array<mixed>
+	 */
+	private static function deviceSection(string $rKey, mixed $rValue): array {
+		if (!is_array($rValue)) {
+			return [];
+		}
+		switch ($rKey) {
+			case 'audio_devices':
+				return array_values(array_filter($rValue, 'is_string'));
+			case 'video_devices':
+				return array_values(array_filter($rValue, 'is_array'));
+			case 'gpu_info':
+				if (array_key_exists('gpus', $rValue)) {
+					$rValue['gpus'] = is_array($rValue['gpus']) ? array_values(array_filter($rValue['gpus'], 'is_array')) : [];
+				}
+				return $rValue;
+			default:
+				if (array_key_exists('avg-cpu', $rValue)) {
+					$rValue['avg-cpu'] = is_array($rValue['avg-cpu']) ? array_filter($rValue['avg-cpu'], 'is_numeric') : [];
+				}
+				return $rValue;
+		}
 	}
 
 	/**
@@ -159,8 +219,7 @@ final class HeartbeatService {
 		}
 		$rPrev = json_decode((string) ($rRow['watchdog_data'] ?? ''), true);
 		$rStats = self::toWatchdogData($rTel, is_array($rPrev) ? $rPrev : [], $rRow['network_interface'] ?? null);
-		$rLocal = is_array($rTel['local'] ?? null) ? $rTel['local'] : [];
-		$rRps = (int) ($rLocal['requests_per_second'] ?? 0);
+		$rRps = (int) (self::local($rTel)['requests_per_second'] ?? 0);
 		$rPIDs = array_key_exists('php_pids', $rTel) && is_array($rTel['php_pids']) ? array_values(array_map('intval', $rTel['php_pids'])) : null;
 		$rCounts = self::counts($rServerID);
 		$rSql = 'UPDATE `servers` SET `watchdog_data` = ?, `last_check_ago` = ?, `requests_per_second` = ?, `php_pids` = ?';
@@ -172,7 +231,8 @@ final class HeartbeatService {
 		}
 		self::db()->query($rSql . ' WHERE `id` = ?;', ...[...$rArgs, $rServerID]);
 
-		$rMarker = defined('TMP_PATH') ? TMP_PATH . 'cluster/stats_' . $rServerID : null;
+		$rDir = self::dir();
+		$rMarker = $rDir === null ? null : $rDir . 'stats_' . $rServerID;
 		if ($rMarker !== null && is_file($rMarker) && $rNow - (int) @file_get_contents($rMarker) < self::STATS_EVERY) {
 			return;
 		}
@@ -183,6 +243,11 @@ final class HeartbeatService {
 			}
 			@file_put_contents($rMarker, (string) $rNow, LOCK_EX);
 		}
+	}
+
+	/** Where the shadow copies and stats markers go; null (not kept) without TMP_PATH. */
+	private static function dir(): ?string {
+		return self::$rDir ?? (defined('TMP_PATH') ? TMP_PATH . 'cluster/' : null);
 	}
 
 	/**

@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\LocalTelemetry;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
@@ -277,17 +278,16 @@ class WatchdogCommand implements CommandInterface {
 
 	/**
 	 * `config/cluster/local.json`, beside the agent's state: what the agent
-	 * cannot sample itself. It forwards the file while it is under 10 s old.
+	 * cannot sample itself. It forwards the file while it is under 10 s old
+	 * and at most 64 KiB (Core\Cluster\LocalTelemetry). The devices, GPUs and
+	 * disk I/O are probed as getStats() probes them, at most every 30 s, each
+	 * tool for at most 5 s, and a due probe runs after the file is written.
 	 */
 	public static function writeLocalTelemetry(int|float $rRequestsPerSecond): void {
 		$rDir = CONFIG_PATH . 'cluster/';
 		if (!is_dir($rDir)) {
 			return;
 		}
-		$rTmp = $rDir . 'local.json.tmp';
-		$rJson = json_encode(['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status()], JSON_PARTIAL_OUTPUT_ON_ERROR);
-		if (@file_put_contents($rTmp, (string) $rJson, LOCK_EX) !== false) {
-			@rename($rTmp, $rDir . 'local.json');
-		}
+		LocalTelemetry::refresh($rDir, TMP_PATH . 'watchdog_devices.json', time(), ['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status()], static fn(): array => SystemInfo::getDevices(LocalTelemetry::PROBE_TIMEOUT));
 	}
 }

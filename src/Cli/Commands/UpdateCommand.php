@@ -8,7 +8,6 @@ use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Logging\UpdateLogger;
-use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseArchiveInspector;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Server\ServerRepository;
@@ -68,7 +67,7 @@ class UpdateCommand implements CommandInterface {
 		});
 
 		global $db;
-		$gitRelease = new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, UpdateChannels::main());
+		$gitRelease = UpdateChannels::mainReleases();
 		$gitRelease->setTimeout(30);
 
 		$rCommand = $rArgs[0];
@@ -111,7 +110,7 @@ class UpdateCommand implements CommandInterface {
 
 				if (empty($UpdateData['md5'])) {
 					$rAssetName = $rIsMain ? 'xc_vm.tar.gz' : 'loadbalancer.tar.gz';
-					$rHashUrl = "https://github.com/" . GIT_OWNER . "/" . GIT_REPO_MAIN . "/releases/download/{$rLatest}/hashes.md5";
+					$rHashUrl = $gitRelease->assetUrl($rLatest, 'hashes.md5');
 					echo "WARNING: Could not fetch MD5 hash. Retrying...\n";
 					echo "  Hash URL: {$rHashUrl}\n";
 					UpdateLogger::info('MD5 hash fetch failed for ' . $rAssetName . ', retrying...');

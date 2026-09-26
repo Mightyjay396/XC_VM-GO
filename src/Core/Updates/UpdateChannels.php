@@ -5,7 +5,7 @@ namespace XcVm\Core\Updates;
 use XcVm\Core\Config\SettingsManager;
 
 /**
- * UpdateChannels — resolves the per-repository release channel (stable/beta).
+ * UpdateChannels — resolves the per-repository release channel (stable/beta/dev).
  *
  * Replaces the former single global `update_channel` setting with one channel
  * per core GitHub repository:
@@ -13,8 +13,12 @@ use XcVm\Core\Config\SettingsManager;
  *   - BIN    (compiled binaries)       → `update_channel_bin`
  *   - FANOUT (xc_fanout daemon)        → `update_channel_fanout`
  *
+ * Only MAIN offers the 'dev' channel: nightly panel builds published to the
+ * releases-only GIT_REPO_DEV repository. BIN and FANOUT have no nightly builds.
+ *
  * The GeoLite/ASN data repo (UPDATE) and the proxy archive repo (PROXY) have no
- * channel of their own and follow the MAIN panel channel.
+ * channel of their own and follow the MAIN panel channel ('dev' there behaves
+ * like 'beta', as those repos have no dev repository).
  *
  * @package XC_VM_Core_Updates
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -26,10 +30,11 @@ final class UpdateChannels {
 	/**
 	 * Channel for the MAIN panel repository (also used by UPDATE/PROXY).
 	 *
-	 * @return string 'stable' or 'beta'
+	 * @return string 'stable', 'beta' or 'dev'
 	 */
 	public static function main(): string {
-		return self::normalize(SettingsManager::getString('update_channel_main', 'stable'));
+		$channel = SettingsManager::getString('update_channel_main', 'stable');
+		return $channel === 'dev' ? 'dev' : self::normalize($channel);
 	}
 
 	/**
@@ -55,7 +60,7 @@ final class UpdateChannels {
 	 * constant value). Unknown repos — including UPDATE and PROXY — follow MAIN.
 	 *
 	 * @param string $repo Repository name (e.g. GIT_REPO_BIN)
-	 * @return string 'stable' or 'beta'
+	 * @return string 'stable', 'beta' or (MAIN-following repos only) 'dev'
 	 */
 	public static function forRepo(string $repo): string {
 		if (defined('GIT_REPO_BIN') && $repo === GIT_REPO_BIN) {
@@ -68,8 +73,16 @@ final class UpdateChannels {
 	}
 
 	/**
+	 * Release client for the panel (MAIN) repository on the configured channel.
+	 * On 'dev' it also reads the nightly builds from GIT_REPO_DEV.
+	 */
+	public static function mainReleases(): GitHubReleases {
+		return new GitHubReleases(GIT_OWNER, GIT_REPO_MAIN, self::main(), null, GIT_REPO_DEV);
+	}
+
+	/**
 	 * Normalize a raw channel value. 'unstable' is a legacy alias for 'beta';
-	 * anything unrecognized falls back to 'stable'.
+	 * anything unrecognized (including 'dev' outside MAIN) falls back to 'stable'.
 	 *
 	 * @param string|null $channel Raw channel value (e.g. from settings)
 	 * @return string 'stable' or 'beta'

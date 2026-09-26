@@ -37,6 +37,8 @@ final class ConnectionIngest {
 	/**
 	 * Apply a node's conn.upsert. A connection that opened on the node is no
 	 * longer reserved (ConnectionAdmission): it is counted as open from here.
+	 * An HLS viewer is recorded under its playlist key; its record names the
+	 * token's uuid MAIN reserved at mint as `adm_uuid`, released too.
 	 *
 	 * @param array<string, mixed> $rRecord
 	 */
@@ -45,7 +47,12 @@ final class ConnectionIngest {
 		if ($rOk) {
 			$rUUID = (string) ($rRecord['uuid'] ?? '');
 			$rIdentity = !empty($rRecord['user_id']) ? (string) (int) $rRecord['user_id'] : (int) ($rRecord['hmac_id'] ?? 0) . '_' . ($rRecord['hmac_identifier'] ?? '');
-			ConnectionAdmission::release((bool) SettingsManager::get('redis_handler'), $rIdentity, $rUUID);
+			$rRedisMode = (bool) SettingsManager::get('redis_handler');
+			ConnectionAdmission::release($rRedisMode, $rIdentity, $rUUID);
+			$rReserved = $rRecord['adm_uuid'] ?? null;
+			if (is_string($rReserved) && $rReserved !== $rUUID && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rReserved)) {
+				ConnectionAdmission::release($rRedisMode, $rIdentity, $rReserved);
+			}
 		}
 		return $rOk;
 	}
