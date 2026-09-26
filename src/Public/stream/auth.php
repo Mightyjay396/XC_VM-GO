@@ -557,7 +557,7 @@ if ($rExtension) {
 
 								if ((0 < $rBitrate && 0 < $rHeight && 0 < $rWidth)) {
 									$rTokenData = ['stream_id' => $rAdaptiveID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'channel_info' => ['redirect_id' => $rAdaptiveInfo['redirect_id'], 'originator_id' => ($rAdaptiveInfo['originator_id'] ?? null), 'pid' => $rAdaptiveInfo['pid'], 'on_demand' => $rAdaptiveInfo['on_demand'], 'monitor_pid' => $rAdaptiveInfo['monitor_pid']], 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => ($rStreamInfo['codecs']['video']['codec_name'] ?? 'h264'), 'uuid' => $rUUID, 'adaptive' => [$rChannelInfo['redirect_id'], $rStreamID]];
-									ConnectionAdmission::admit($rSettings, $rTokenData, $rIP, $rUserAgent);
+									$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
 									$rStreamURL = (string) $rURL . '/auth/' . Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 									$rParts[$rBitrate] = '#EXT-X-STREAM-INF:BANDWIDTH=' . $rBitrate . ',RESOLUTION=' . $rWidth . 'x' . $rHeight . "\n" . $rStreamURL;
 								}
@@ -584,7 +584,7 @@ if ($rExtension) {
 								$rTokenData = ['stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'channel_info' => ['redirect_id' => $rChannelInfo['redirect_id'], 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid']], 'user_info' => $rUserInfo, 'pid' => $rPID, 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID];
 							}
 
-							ConnectionAdmission::admit($rSettings, $rTokenData, $rIP, $rUserAgent);
+							$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
 							$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 
 							if ($rSettings['allow_cdn_access']) {
@@ -608,7 +608,7 @@ if ($rExtension) {
 							$rTokenData = ['stream_id' => $rStreamID, 'hmac_hash' => $rRequest['hmac'], 'hmac_id' => $rIsHMAC, 'identifier' => $rIdentifier, 'extension' => $rExtension, 'channel_info' => ['stream_id' => $rChannelInfo['stream_id'], 'redirect_id' => ($rChannelInfo['redirect_id'] ?: null), 'originator_id' => ($rChannelInfo['originator_id'] ?? null), 'pid' => $rChannelInfo['pid'], 'on_demand' => $rChannelInfo['on_demand'], 'llod' => ($rChannelInfo['llod'] ?? 0), 'monitor_pid' => $rChannelInfo['monitor_pid'], 'proxy' => $rChannelInfo['direct_proxy']], 'user_info' => $rUserInfo, 'pid' => $rPID, 'prebuffer' => $rPrebuffer, 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'external_device' => $rExternalDevice, 'video_codec' => $rVideoCodec, 'uuid' => $rUUID];
 						}
 
-						ConnectionAdmission::admit($rSettings, $rTokenData, $rIP, $rUserAgent);
+						$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
 						$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 
 						if ($rSettings['allow_cdn_access']) {
@@ -660,7 +660,7 @@ if ($rExtension) {
 					$rTokenData['segment'] = intval($_GET['segment']);
 				}
 
-				ConnectionAdmission::admit($rSettings, $rTokenData, $rIP, $rUserAgent);
+				$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
 				$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 
 				if ($rSettings['allow_cdn_access']) {
@@ -714,7 +714,7 @@ if ($rExtension) {
 					}
 
 					$rTokenData = ['stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_line_info' => $rUserInfo['pair_line_info'], 'pair_id' => $rUserInfo['pair_id'], 'active_cons' => $rUserInfo['active_cons'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
-					ConnectionAdmission::admit($rSettings, $rTokenData, $rIP, $rUserAgent);
+					$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
 					$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 
 					if ($rSettings['allow_cdn_access']) {
@@ -734,7 +734,7 @@ if ($rExtension) {
 
 					$rActivityStart = time();
 					$rTokenData = ['stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_line_info' => $rUserInfo['pair_line_info'], 'pair_id' => $rUserInfo['pair_id'], 'active_cons' => $rUserInfo['active_cons'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
-					ConnectionAdmission::admit($rSettings, $rTokenData, $rIP, $rUserAgent);
+					$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
 					$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 
 					if ($rSettings['allow_cdn_access']) {
