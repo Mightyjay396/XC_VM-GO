@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\LocalTelemetry;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\SystemInfo;
@@ -32,6 +33,27 @@ final class ClusterTelemetryTest extends TestCase {
 		'local' => ['requests_per_second' => 42, 'fanout' => ['running' => true, 'socket' => true, 'connections' => 7, 'memory' => null]],
 	];
 
+	/** SystemInfo::getDevices() on a node with a GPU, iostat and a capture card. */
+	private const DEVICES = [
+		'audio_devices' => ['hw:CARD=Capture,DEV=0'],
+		'video_devices' => [['name' => 'USB Capture (usb-0000:00:14.0-1):', 'video_device' => 'video0']],
+		'gpu_info' => [
+			'attached_gpus' => '1', 'driver_version' => '535.54', 'cuda_version' => '12.2',
+			'gpus' => [[
+				'name' => 'NVIDIA T4', 'utilisation' => ['gpu_util' => '12 %', 'memory_util' => '3 %', 'encoder_util' => '20 %', 'decoder_util' => '8 %'],
+				'memory_usage' => ['total' => '15360 MiB', 'used' => '1024 MiB', 'free' => '14336 MiB'], 'uuid' => 'GPU-1', 'id' => 0,
+				'processes' => [['pid' => 123, 'memory' => '100 MiB']],
+			]],
+		],
+		'iostat_info' => [
+			'avg-cpu' => ['user' => 2.13, 'nice' => 0.5, 'system' => 0.98, 'iowait' => 7.4, 'steal' => 0.25, 'idle' => 89.49],
+			'disk' => [['disk_device' => 'sda', 'tps' => 3.21, 'MB_read/s' => 0.03, 'MB_wrtn/s' => 0.05, 'MB_read' => 1234, 'MB_wrtn' => 2345]],
+		],
+	];
+
+	/** @var list<string> */
+	private array $rTemp = [];
+
 	protected function setUp(): void {
 		$this->rDb = new TestDb();
 		$this->rDb->exec((string) preg_replace(['/^--.*$/m', '/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)/', '/ unsigned| COLLATE \w+/', '/\) ENGINE=[^;]*;/'], ['', '', '', ');'], (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/029_create_cluster_nodes.sql')));
@@ -57,7 +79,24 @@ final class ClusterTelemetryTest extends TestCase {
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
 		NodeFlows::usePath(null);
+		foreach ($this->rTemp as $rPath) {
+			foreach (is_dir($rPath) ? (glob($rPath . '/*') ?: []) : [] as $rFile) {
+				@unlink($rFile);
+			}
+			is_dir($rPath) ? @rmdir($rPath) : @unlink($rPath);
+		}
 	}
+
+	/** A path in the system temp directory, removed after the test (a directory's files too). */
+	private function temp(bool $rDir = false): string {
+		$rPath = sys_get_temp_dir() . '/xcvm_local_' . uniqid('', true);
+		if ($rDir) {
+			mkdir($rPath);
+		}
+		$this->rTemp[] = $rPath;
+		return $rPath;
+	}
+
 
 	private function server(): array {
 		$this->rDb->query('SELECT * FROM `servers` WHERE `id` = 5');
@@ -99,6 +138,90 @@ final class ClusterTelemetryTest extends TestCase {
 		$this->assertSame(['eth1'], array_keys($rOne['network_info']));
 		$this->assertSame([20, 0], [$rOne['bytes_sent'], $rOne['network_speed']]);
 		$this->assertSame(['bond0'], array_keys(HeartbeatService::toWatchdogData(self::SAMPLE, [], 'bond0')['network_info']), 'a chosen bond is reported');
+	}
+
+	public function testLocalDevicesAreProbedAtMostEvery30Seconds(): void {
+		$rCache = $this->temp();
+		$rCalls = 0;
+		$rProbe = function () use (&$rCalls): array {
+			$rCalls++;
+			return ['iostat_info' => ['avg-cpu' => ['iowait' => (float) $rCalls]]] + self::DEVICES;
+		};
+		$rFirst = LocalTelemetry::devices($rCache, 1000, $rProbe);
+		$this->assertSame(1, $rCalls);
+		$this->assertSame(['audio_devices', 'video_devices', 'gpu_info', 'iostat_info'], array_keys($rFirst), 'in watchdog_data order');
+		$this->assertSame(self::DEVICES['gpu_info'], $rFirst['gpu_info']);
+		// The watchdog re-execs after every pass: the next call reads the file, not a variable.
+		$this->assertSame($rFirst, LocalTelemetry::devices($rCache, 1029, $rProbe));
+		$this->assertSame(1, $rCalls, 'reused for 30 s');
+		$this->assertSame(2.0, LocalTelemetry::devices($rCache, 1030, $rProbe)['iostat_info']['avg-cpu']['iowait']);
+		$this->assertSame(2, $rCalls);
+		LocalTelemetry::devices($rCache, 1000, $rProbe);
+		$this->assertSame(3, $rCalls, 'a clock that went back probes again');
+		file_put_contents($rCache, '{broken');
+		LocalTelemetry::devices($rCache, 1001, $rProbe);
+		$this->assertSame(4, $rCalls, 'an unreadable cache probes again');
+		$this->assertSame(4, (int) (json_decode((string) file_get_contents($rCache), true)['devices']['iostat_info']['avg-cpu']['iowait'] ?? 0), 'and replaces it');
+
+		$rEmpty = ['audio_devices' => [], 'video_devices' => [], 'gpu_info' => [], 'iostat_info' => []];
+		$this->assertSame($rEmpty, LocalTelemetry::devices($this->temp(), 1000, fn(): array => ['gpu_info' => 'n/a']), 'a missing or odd section is empty');
+		$this->assertSame(self::DEVICES['audio_devices'], LocalTelemetry::devices($this->temp() . '/no/such/dir', 1000, fn(): array => self::DEVICES)['audio_devices'], 'an unwritable cache still reports');
+	}
+
+	public function testLocalFileStaysUnderTheAgentsCap(): void {
+		$this->assertLessThanOrEqual(61440, LocalTelemetry::MAX_BYTES, 'the agent drops a local.json over 64 KiB; keep a margin');
+		$rDoc = ['requests_per_second' => 42, 'fanout' => self::SAMPLE['local']['fanout']] + self::DEVICES;
+		$this->assertSame($rDoc, json_decode(LocalTelemetry::encode($rDoc), true), 'a usual document goes whole');
+
+		// A busy transcoder: one GPU process per stream.
+		$rBusy = $rDoc;
+		$rBusy['gpu_info']['gpus'][0]['processes'] = array_fill(0, 3000, ['pid' => 123456, 'memory' => '100 MiB']);
+		$rJson = LocalTelemetry::encode($rBusy);
+		$this->assertLessThanOrEqual(LocalTelemetry::MAX_BYTES, strlen($rJson));
+		$rOut = json_decode($rJson, true);
+		$this->assertSame([], $rOut['gpu_info']['gpus'][0]['processes'], 'the process lists go first');
+		$this->assertSame('NVIDIA T4', $rOut['gpu_info']['gpus'][0]['name'], 'the GPU itself stays');
+		$this->assertSame(self::DEVICES['iostat_info'], $rOut['iostat_info']);
+
+		// Then the largest section: hundreds of loop devices in iostat.
+		$rDisks = $rBusy;
+		$rDisks['iostat_info']['disk'] = array_fill(0, 2000, self::DEVICES['iostat_info']['disk'][0]);
+		$rOut = json_decode(LocalTelemetry::encode($rDisks), true);
+		$this->assertSame([], $rOut['iostat_info']);
+		$this->assertSame(self::DEVICES['video_devices'], $rOut['video_devices']);
+		$this->assertSame('NVIDIA T4', $rOut['gpu_info']['gpus'][0]['name']);
+		$this->assertSame(42, $rOut['requests_per_second']);
+
+		// Everything oversized: only PHP's own figures remain.
+		$rHuge = $rDisks;
+		$rHuge['audio_devices'] = array_fill(0, 5000, 'hw:CARD=Capture,DEV=0');
+		$rHuge['video_devices'] = array_fill(0, 5000, self::DEVICES['video_devices'][0]);
+		$rHuge['gpu_info']['gpus'] = array_fill(0, 1000, self::DEVICES['gpu_info']['gpus'][0]);
+		$rJson = LocalTelemetry::encode($rHuge);
+		$this->assertLessThanOrEqual(LocalTelemetry::MAX_BYTES, strlen($rJson));
+		$this->assertSame(['requests_per_second' => 42, 'fanout' => $rDoc['fanout'], 'audio_devices' => [], 'video_devices' => [], 'gpu_info' => [], 'iostat_info' => []], json_decode($rJson, true));
+
+		// Never over, whatever is in it.
+		$rJson = LocalTelemetry::encode(['requests_per_second' => 42, 'fanout' => ['memory' => str_repeat('x', 70000)]] + self::DEVICES);
+		$this->assertLessThanOrEqual(LocalTelemetry::MAX_BYTES, strlen($rJson));
+		$this->assertSame(42, json_decode($rJson, true)['requests_per_second']);
+	}
+
+	public function testGetStatsAndLocalTelemetryProbeTheSameWay(): void {
+		// getStats() takes its four device sections from getDevices(), the probe
+		// the watchdog's local.json uses, so the two cannot drift apart.
+		$rSource = static function (string $rMethod): string {
+			$rM = new ReflectionMethod(SystemInfo::class, $rMethod);
+			return implode('', array_slice(file((string) $rM->getFileName()), $rM->getStartLine() - 1, $rM->getEndLine() - $rM->getStartLine() + 1));
+		};
+		$this->assertStringContainsString('self::getDevices()', $rSource('getStats'));
+		$rDevices = $rSource('getDevices');
+		foreach (['which iostat' => 'getIO', 'which nvidia-smi' => 'getGPUInfo', 'which v4l2-ctl' => 'getVideoDevices', 'which arecord' => 'getAudioDevices'] as $rCheck => $rProbe) {
+			$this->assertMatchesRegularExpression('/' . preg_quote($rCheck, '/') . '.*\s+.*self::' . $rProbe . '\(\)/', $rDevices, $rProbe . ' only when its tool is installed');
+		}
+		$rWatchdog = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/Commands/WatchdogCommand.php');
+		$this->assertStringContainsString('SystemInfo::getDevices', $rWatchdog);
+		$this->assertStringContainsString('LocalTelemetry::devices(', $rWatchdog);
 	}
 
 	public function testNothingIsWrittenWhileTheFlowIsOff(): void {

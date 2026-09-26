@@ -74,24 +74,40 @@ class SystemInfo {
 
 		// The bandwidth keys are initialised above, so replacing them keeps their order.
 		$rJSON = array_replace($rJSON, self::aggregateNetwork($rJSON['network_info']));
-		$rJSON['audio_devices'] = [];
-		$rJSON['video_devices'] = $rJSON['audio_devices'];
-		$rJSON['gpu_info'] = $rJSON['video_devices'];
-		$rJSON['iostat_info'] = $rJSON['gpu_info'];
-		if (@shell_exec('which iostat')) {
-			$rJSON['iostat_info'] = self::getIO();
-		}
-		if (@shell_exec('which nvidia-smi')) {
-			$rJSON['gpu_info'] = self::getGPUInfo();
-		}
-		if (@shell_exec('which v4l2-ctl')) {
-			$rJSON['video_devices'] = self::getVideoDevices();
-		}
-		if (@shell_exec('which arecord')) {
-			$rJSON['audio_devices'] = self::getAudioDevices();
-		}
+		$rDevices = self::getDevices();
+		$rJSON['audio_devices'] = $rDevices['audio_devices'];
+		$rJSON['video_devices'] = $rDevices['video_devices'];
+		$rJSON['gpu_info'] = $rDevices['gpu_info'];
+		$rJSON['iostat_info'] = $rDevices['iostat_info'];
 		list($rJSON['cpu_load_average']) = sys_getloadavg();
 		return $rJSON;
+	}
+
+	/**
+	 * Capture devices, GPUs and disk I/O, each [] when its tool (arecord,
+	 * v4l2-ctl, nvidia-smi, iostat) is not installed.
+	 *
+	 * getStats() reports them, and so does a TELEMETRY node's watchdog in
+	 * `config/cluster/local.json` (Core\Cluster\LocalTelemetry), which its
+	 * agent forwards to MAIN: both probe here, so they cannot drift apart.
+	 *
+	 * @return array{audio_devices: array<mixed>, video_devices: array<mixed>, gpu_info: array<mixed>, iostat_info: array<mixed>}
+	 */
+	public static function getDevices() {
+		$rDevices = ['audio_devices' => [], 'video_devices' => [], 'gpu_info' => [], 'iostat_info' => []];
+		if (@shell_exec('which iostat')) {
+			$rDevices['iostat_info'] = self::getIO();
+		}
+		if (@shell_exec('which nvidia-smi')) {
+			$rDevices['gpu_info'] = self::getGPUInfo();
+		}
+		if (@shell_exec('which v4l2-ctl')) {
+			$rDevices['video_devices'] = self::getVideoDevices();
+		}
+		if (@shell_exec('which arecord')) {
+			$rDevices['audio_devices'] = self::getAudioDevices();
+		}
+		return $rDevices;
 	}
 
 	/**
