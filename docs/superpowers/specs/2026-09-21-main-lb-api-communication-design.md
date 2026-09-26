@@ -957,7 +957,7 @@ Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR 
 - `Domain/Cluster/CommandBus` signs with tag `cmd` (restrictive types such as kills sign without a licence) and queues per node; the agent takes them through the `commands` long-poll and answers with `ack`. `NodeRpc` routes RPCs to agent nodes; `ApiClient` and `ConnectionTracker` go through it. Agent `internal/clusteragent/commands.go` runs them via `ClusterExecCommand` (`cluster:exec`); root commands go to `ClusterRootCommand` (`cluster:root`), started every minute by root's crontab and gated by `RootPin`.
 - Acceptance: stream controls, probe, scandir and monitors work with MAIN blocked from the LB's HTTP port. Kill p99 is under 1 s, root actions ≤ 2 s, and commands run exactly once. An unlicensed MAIN still delivers kills.
 - Tests: `ClusterApiTest` (commands, acks, kills as commands), `ClusterExecCommandTest`, `ClusterRootCommandTest` (each command once, symlink and pin checks); Go `commands_test.go`.
-- **Not built yet:** releasing the long-poll's DB handle while it blocks on the bus (it is woken by `ClusterBus` now, but still holds a PHP worker and its connection); the `artefact` op and the agent's artefact download with its hash refusal (`ArtefactHashRefusalTest`); a dedicated `HardModeKillChannelTest`; E2E `admin/lb-streams.spec.ts`.
+- **Not built yet:** the dedicated `cluster_ctl` pool (a held long-poll, woken by `ClusterBus` and holding no DB connection while it blocks, still occupies a panel FPM worker); the `artefact` op and the agent's artefact download with its hash refusal (`ArtefactHashRefusalTest`); a dedicated `HardModeKillChannelTest`; E2E `admin/lb-streams.spec.ts`.
 
 **Phase 5: Logs, stream state, content; fanout events (\~4.5 pw).**
 

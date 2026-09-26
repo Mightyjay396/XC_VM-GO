@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Process\ProcessManager;
 
 /**
@@ -86,6 +87,23 @@ final class ClusterBus {
 	 */
 	public static function waitNode(int $rServerID, float $rSeconds): ?bool {
 		return self::pop('wake:' . $rServerID, $rSeconds);
+	}
+
+	/**
+	 * waitNode(), holding no MySQL connection while blocked: with the bus
+	 * there, $rDb is closed first (a DatabaseHandler reconnects on its next
+	 * query), so a node's long-poll does not keep a connection for 20 s.
+	 * Without the bus nothing is closed: the caller polls every 250 ms and
+	 * would reconnect each time.
+	 */
+	public static function waitNodeReleasing(int $rServerID, float $rSeconds, ?object $rDb): ?bool {
+		if (self::client() === null) {
+			return null;
+		}
+		if ($rDb instanceof DatabaseHandler) {
+			$rDb->close_mysql();
+		}
+		return self::waitNode($rServerID, $rSeconds);
 	}
 
 	/** A command was acked: wake whoever awaits its outcome. */
