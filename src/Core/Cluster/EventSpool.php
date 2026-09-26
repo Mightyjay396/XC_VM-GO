@@ -99,6 +99,8 @@ final class EventSpool {
 	 */
 	private static function agentAlive(): bool {
 		$rFlows = dirname(rtrim(self::dir(), '/')) . '/flows.json';
+		// A long-running process would otherwise keep reading a cached mtime.
+		clearstatcache(true, $rFlows);
 		$rMtime = @filemtime($rFlows);
 		return $rMtime !== false && time() - $rMtime <= self::STALE_AFTER;
 	}
