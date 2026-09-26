@@ -108,7 +108,7 @@ final class ClusterApi {
 		try {
 			$rKeys = TokenService::session($rCrypto, $rNode, $rH['epoch']);
 		} catch (ClusterRefusedException $rE) {
-			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
+			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH, true);
 		}
 		if (!$rKeys instanceof \XcVm\Core\Cluster\Crypto\SessionKeys) {
 			return DenialFactory::deny($rCrypto, 401, 'TOKEN_EXPIRED', $rH['node'], $rH['nonce']);
@@ -706,14 +706,43 @@ final class ClusterApi {
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 
-	/** Map an extension refusal to a signed denial. */
-	private static function refusal(ClusterCrypto $rCrypto, string $rReason, array $rNode, array $rH): array {
+	/**
+	 * Map an extension refusal to a signed denial. $rSession: the extension
+	 * refused the node's session itself (a licence refusal there is the hard
+	 * revocation mode's), so the denial also carries the node's pending
+	 * restrictive commands (killsFor()).
+	 */
+	private static function refusal(ClusterCrypto $rCrypto, string $rReason, array $rNode, array $rH, bool $rSession = false): array {
 		return match (true) {
 			$rReason === 'REVOKED' => DenialFactory::deny($rCrypto, 403, 'NODE_REVOKED', $rH['node'], $rH['nonce'], ['revoked_gen' => (int) $rNode['gen']]),
-			$rReason === 'LICENCE' => DenialFactory::deny($rCrypto, 403, 'LICENCE_INVALID', $rH['node'], $rH['nonce']),
+			$rReason === 'LICENCE' => DenialFactory::deny($rCrypto, 403, 'LICENCE_INVALID', $rH['node'], $rH['nonce'], $rSession ? self::killsFor($rNode) : []),
 			$rReason === 'CLOCK' => DenialFactory::deny($rCrypto, 503, 'CLOCK', $rH['node'], $rH['nonce']),
 			default => DenialFactory::deny($rCrypto, 401, 'TOKEN_EXPIRED', $rH['node'], $rH['nonce'], ['detail' => substr($rReason, 0, 32)]),
 		};
+	}
+
+	/**
+	 * `lb_revocation_mode=hard` (plan section 4): without a licence the
+	 * extension refuses the node's session, so neither the long-poll nor a
+	 * MAC'd reply can reach it, yet kills, drops and stops must. Its pending
+	 * restrictive commands then ride the panel-signed LICENCE_INVALID that its
+	 * next heartbeat gets, each under its own `cmd` signature, and the agent
+	 * checks them as it checks the long-poll's. Nothing is marked delivered:
+	 * the request is not authenticated. Only for a node that takes commands.
+	 *
+	 * @param array<string, mixed> $rNode
+	 * @return array{commands?: list<array{doc: string, sig: string, seq: int}>}
+	 */
+	private static function killsFor(array $rNode): array {
+		if (!CommandBus::accepts($rNode)) {
+			return [];
+		}
+		try {
+			$rCommands = CommandBus::restrictive((int) $rNode['server_id']);
+		} catch (\Throwable) {
+			return []; // the denial goes out regardless
+		}
+		return $rCommands === [] ? [] : ['commands' => $rCommands];
 	}
 
 	private static function header(array $rHeaders, string $rName): string {

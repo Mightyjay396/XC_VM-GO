@@ -138,6 +138,26 @@ final class CommandBus {
 	}
 
 	/**
+	 * A node's pending restrictive commands (kills, drops, closes, stops),
+	 * oldest first, for the hard revocation mode's denial: the extension
+	 * refuses the node's session without a licence, so these travel in the
+	 * panel-signed LICENCE_INVALID instead (plan section 4). Read only: the
+	 * request that gets them is not authenticated, so nothing is marked
+	 * delivered. Each keeps its own `cmd` signature, and the agent checks it,
+	 * its uuid, generation, seq high-water and expiry as on the long-poll.
+	 *
+	 * @return list<array{doc: string, sig: string, seq: int}>
+	 */
+	public static function restrictive(int $rServerID, int $rLimit = 50): array {
+		self::db()->query(
+			"SELECT `seq`, `payload`, `sig` FROM `cluster_commands` WHERE `server_id` = ? AND `class` = 'R' AND `state` IN ('queued', 'delivered') AND `exp` > ? ORDER BY `seq` ASC LIMIT " . max(1, min(200, $rLimit)) . ';',
+			$rServerID,
+			ClusterClock::now()
+		);
+		return array_map(static fn($rRow) => ['doc' => (string) $rRow['payload'], 'sig' => Enc::b64url((string) $rRow['sig']), 'seq' => (int) $rRow['seq']], self::db()->get_rows());
+	}
+
+	/**
 	 * A node's acknowledgement: only for its own commands. Raises its
 	 * high-water (cmd_seq) so a restored queue is not replayed.
 	 */
