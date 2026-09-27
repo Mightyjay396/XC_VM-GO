@@ -87,8 +87,11 @@ final class CommandBus {
 			], JSON_UNESCAPED_SLASHES);
 			$rSig = $rCrypto->sign('cmd', $rDoc);
 			if ($rDedupeKey !== null) {
-				// A newer desired state supersedes a command not yet acked.
+				// A newer desired state supersedes a command not yet acked. An
+				// acked one keeps its outcome (result()), but not the key, which
+				// UNIQUE(server_id, dedupe_key) would otherwise refuse this one.
 				self::db()->query("DELETE FROM `cluster_commands` WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` <> 'acked';", $rServerID, $rDedupeKey);
+				self::db()->query("UPDATE `cluster_commands` SET `dedupe_key` = NULL WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` = 'acked';", $rServerID, $rDedupeKey);
 			}
 			try {
 				self::db()->query(

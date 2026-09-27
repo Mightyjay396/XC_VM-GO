@@ -608,7 +608,7 @@ This increment adds the kept URL most exposed to it: an old `cluster_main_host`,
 {"v":1, "type", "exp", "iat", "cmd_id", "seq", "node_uuid", "gen", "dedupe_key", "args"}
 ```
 
-The extension derives the class from `type`. Kills and stops are restrictive and sign without a licence; the rest need it. A `dedupe_key` replaces a not-yet-acked command for the same desired state. Commands expire (`conn.*` 5 min, `node.root` 24 h, default 10 min), and `cron:cluster` prunes them.
+The extension derives the class from `type`. Kills and stops are restrictive and sign without a licence; the rest need it. A `dedupe_key` replaces a not-yet-acked command for the same desired state; an acked one keeps its outcome but gives up the key, so `UNIQUE(server_id, dedupe_key)` never refuses the next command with it (until the third Phase 4 increment's review, a node's second `config.changed`, or a second drop of the same viewer, within a day of the first one's ack failed to queue on MariaDB). Commands expire (`conn.*` 5 min, `node.root` 24 h, default 10 min), and `cron:cluster` prunes them.
 
 The flow, for a node whose COMMANDS flow is on (toggled per node on the Cluster Nodes page):
 
