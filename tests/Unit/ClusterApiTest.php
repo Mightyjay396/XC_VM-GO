@@ -514,7 +514,7 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame([], $rNode['settings_misses']);
 
 		// Counters that are not counts: the settings misses are kept, the connect report is not.
-		foreach ([['sql_connects' => -1], ['redis_connects' => '0'], ['sites' => 'x'], ['connects_since' => 'yesterday']] as $rBad) {
+		foreach ([['sql_connects' => -1], ['redis_connects' => '0'], ['sites' => 'x'], ['connects_since' => 'yesterday'], ['connects_since' => 0]] as $rBad) {
 			$rDoc = NodeAudit::normalise(array_merge($rAudit, $rBad));
 			$this->assertSame(isset($rBad['connects_since']) ? ['settings_misses', 'sql_connects', 'redis_connects', 'sites'] : ['settings_misses'], array_keys((array) $rDoc), json_encode($rBad));
 		}

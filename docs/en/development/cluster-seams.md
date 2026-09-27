@@ -59,8 +59,12 @@ action.
   `connectLazy()` or `open()`. Every connect to MAIN's MySQL or Redis passes
   `ConnectAudit::guard()`: on a node in mode 1 or 2 it is counted with its
   caller and shown on *Servers → Cluster Nodes*, and in mode 2 it throws
-  `LbDatabaseAccessException`. Do not open PDO or `\Redis` connections of your
-  own in code a load balancer runs.
+  `LbDatabaseAccessException`. Do not open PDO, `\Redis` or mysqli connections
+  of your own in code a load balancer runs.
+- The node's audit files (`storage/cluster/`, `config/cluster/audit.json`) sit
+  where xc_vm can write. A root process writes them only inside
+  `SettingsAudit::asAgentUser()`, which does the work as xc_vm, never with
+  root's own rights.
 
 Tests that pin these rules: `SignalDispatcherParityTest`, `StreamStateWriterTest`,
 `StreamRowMergeTest`, `StreamCacheBuilderSourceTest`, `LogSinkTest`,

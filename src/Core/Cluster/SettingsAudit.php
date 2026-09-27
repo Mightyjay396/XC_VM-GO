@@ -31,9 +31,11 @@ namespace XcVm\Core\Cluster;
  * day file per process: per request under PHP-FPM, which keeps no state
  * between requests.
  *
- * A root process hands every directory level and file it makes to the user
- * of the agent's directory (xc_vm), whose processes add to them; a report is
- * written only from days this process can read.
+ * A root process does all of this as the owner of the agent's directory
+ * (xc_vm), whose processes add to the same files (asAgentUser): root never
+ * writes with its own rights where xc_vm can plant a link. A report is
+ * written only from days this process can read, and a day file is read under
+ * its lock, never half rewritten.
  *
  * Lives in Core: it ships to LBs, where Domain\Cluster does not.
  */
@@ -140,39 +142,41 @@ final class SettingsAudit {
 		if ($rCounts === [] || $rDir === null) {
 			return;
 		}
+		$rAt = self::$rFlushedAt;
 		try {
-			if (!is_dir($rDir) && !self::makeDir($rDir)) {
-				return;
-			}
-			$rFile = $rDir . gmdate('Ymd', self::$rFlushedAt) . '.json';
-			$rHandle = @fopen($rFile, 'c+');
-			if ($rHandle === false) {
-				return;
-			}
-			$rNewKey = false;
-			try {
-				flock($rHandle, LOCK_EX);
-				$rDay = json_decode((string) stream_get_contents($rHandle), true);
-				$rDay = is_array($rDay) ? $rDay : [];
-				$rMerged = self::merge($rDay, $rCounts);
-				$rNewKey = array_diff_key($rMerged, $rDay) !== [];
-				ftruncate($rHandle, 0);
-				rewind($rHandle);
-				fwrite($rHandle, (string) json_encode((object) $rMerged));
-				fflush($rHandle);
-			} finally {
-				flock($rHandle, LOCK_UN);
-				fclose($rHandle);
-			}
-			self::own($rFile);
-			$rAgentDir = self::agentDir();
-			if ($rAgentDir === null) {
-				return;
-			}
-			clearstatcache(true, $rAgentDir . 'audit.json');
-			if ($rNewKey || (int) @filemtime($rAgentDir . 'audit.json') <= self::$rFlushedAt - self::FLUSH_EVERY) {
-				self::publish($rAgentDir, self::$rFlushedAt);
-			}
+			self::asAgentUser(static function () use ($rDir, $rCounts, $rAt): bool {
+				if (!self::makeDir($rDir)) {
+					return false;
+				}
+				$rHandle = @fopen($rDir . gmdate('Ymd', $rAt) . '.json', 'c+');
+				if ($rHandle === false) {
+					return false;
+				}
+				$rNewKey = false;
+				try {
+					flock($rHandle, LOCK_EX);
+					$rDay = json_decode((string) stream_get_contents($rHandle), true);
+					$rDay = is_array($rDay) ? $rDay : [];
+					$rMerged = self::merge($rDay, $rCounts);
+					$rNewKey = array_diff_key($rMerged, $rDay) !== [];
+					ftruncate($rHandle, 0);
+					rewind($rHandle);
+					fwrite($rHandle, (string) json_encode((object) $rMerged));
+					fflush($rHandle);
+				} finally {
+					flock($rHandle, LOCK_UN);
+					fclose($rHandle);
+				}
+				$rAgentDir = self::agentDir();
+				if ($rAgentDir === null) {
+					return true;
+				}
+				clearstatcache(true, $rAgentDir . 'audit.json');
+				if ($rNewKey || (int) @filemtime($rAgentDir . 'audit.json') <= $rAt - self::FLUSH_EVERY) {
+					self::publish($rAgentDir, $rAt);
+				}
+				return true;
+			});
 		} catch (\Throwable) {
 			// Counted, not needed: the next flush tries again.
 		}
@@ -196,31 +200,33 @@ final class SettingsAudit {
 	 * nothing is counted, and the connect audit's window with it. False when
 	 * there is no agent (MAIN, a legacy node), the write failed, or this
 	 * process cannot read the days (a directory or day file another user's):
-	 * the report there stays.
+	 * the report there stays. Root writes it as $rAgentDir's owner
+	 * (asAgentUser), and returns false when it cannot.
 	 */
 	public static function publish(?string $rAgentDir = null, ?int $rNow = null): bool {
 		$rAgentDir ??= self::agentDir();
 		if ($rAgentDir === null || self::dir() === null || !is_dir($rAgentDir)) {
 			return false;
 		}
-		if (NodeFlows::declared()['mode'] < 1) {
-			@unlink($rAgentDir . 'audit.json');
-			ConnectAudit::forget();
-			return false;
-		}
-		$rNow ??= time();
-		$rSum = self::days($rNow);
-		$rConnects = $rSum === null ? null : ConnectAudit::report($rNow);
-		if ($rSum === null || $rConnects === null) {
-			return false;
-		}
-		$rTmp = $rAgentDir . 'audit.json.' . getmypid() . '.tmp';
-		if (@file_put_contents($rTmp, (string) json_encode(['settings_misses' => (object) self::top($rSum)] + $rConnects, JSON_UNESCAPED_SLASHES)) === false || !@rename($rTmp, $rAgentDir . 'audit.json')) {
-			@unlink($rTmp);
-			return false;
-		}
-		self::own($rAgentDir . 'audit.json', $rAgentDir);
-		return true;
+		return self::asAgentUser(static function () use ($rAgentDir, $rNow): bool {
+			if (NodeFlows::declared()['mode'] < 1) {
+				@unlink($rAgentDir . 'audit.json');
+				ConnectAudit::forget();
+				return false;
+			}
+			$rNow ??= time();
+			$rSum = self::days($rNow);
+			$rConnects = $rSum === null ? null : ConnectAudit::report($rNow);
+			if ($rSum === null || $rConnects === null) {
+				return false;
+			}
+			$rTmp = $rAgentDir . 'audit.json.' . getmypid() . '.tmp';
+			if (@file_put_contents($rTmp, (string) json_encode(['settings_misses' => (object) self::top($rSum)] + $rConnects, JSON_UNESCAPED_SLASHES)) === false || !@rename($rTmp, $rAgentDir . 'audit.json')) {
+				@unlink($rTmp);
+				return false;
+			}
+			return true;
+		}, $rAgentDir);
 	}
 
 	/** Delete day files older than $rKeepDays. Returns how many went. */
@@ -336,7 +342,7 @@ final class SettingsAudit {
 			if (!is_file($rFile)) {
 				continue;
 			}
-			$rRaw = @file_get_contents($rFile);
+			$rRaw = self::readDay($rFile);
 			if ($rRaw === false) {
 				return null;
 			}
@@ -362,42 +368,92 @@ final class SettingsAudit {
 	}
 
 	/**
-	 * Make $rDir level by level (0750), each level made handed to the agent's
-	 * user: a level a root process left its own would shut xc_vm's processes
-	 * out of every day file below it. (ConnectAudit's directory too.)
+	 * A day file's contents, read under its shared lock: a merge rewrites the
+	 * file in place under its exclusive lock (truncated, then written), and a
+	 * read between the two would find a day without counts. False when it
+	 * cannot be read. (ConnectAudit's day files too.)
 	 */
-	public static function makeDir(string $rDir): bool {
-		$rMissing = [];
-		for ($rPath = rtrim($rDir, '/'); !is_dir($rPath); $rPath = dirname($rPath)) {
-			if (dirname($rPath) === $rPath) {
-				return false;
-			}
-			$rMissing[] = $rPath;
+	public static function readDay(string $rFile): string|false {
+		$rHandle = @fopen($rFile, 'r');
+		if ($rHandle === false) {
+			return false;
 		}
-		foreach (array_reverse($rMissing) as $rPath) {
-			if (@mkdir($rPath, 0750)) {
-				self::own($rPath);
-			} elseif (!is_dir($rPath)) {
-				return false;
-			}
+		try {
+			flock($rHandle, LOCK_SH);
+			return stream_get_contents($rHandle);
+		} finally {
+			flock($rHandle, LOCK_UN);
+			fclose($rHandle);
 		}
-		return true;
 	}
 
 	/**
-	 * What a root process made goes to the owner of the agent's directory
-	 * (xc_vm on a node), whose processes add to it. (ConnectAudit's files too.)
+	 * Make $rDir and each missing level above it, 0750. (ConnectAudit's
+	 * directory too.) Root makes them under asAgentUser, as xc_vm: a level
+	 * root's own would shut xc_vm's processes out of every day file below it.
 	 */
-	public static function own(string $rPath, ?string $rAgentDir = null): void {
+	public static function makeDir(string $rDir): bool {
+		return is_dir($rDir) || @mkdir($rDir, 0750, true) || is_dir($rDir);
+	}
+
+	/**
+	 * Run $rWork with the rights of the owner of $rAgentDir (the agent's
+	 * directory, config/cluster/: xc_vm on a node) and return what it returns.
+	 * Anyone but root runs it as itself. Root switches its effective gid, its
+	 * groups and its uid to that user's around it, and back after. The
+	 * audits' files sit in directories xc_vm can write, where root must not
+	 * create, truncate, append to or chown a file, nor follow a link xc_vm
+	 * planted, with its own rights: root trusts nothing xc_vm can write, as
+	 * RootPin has it. The kernel then applies xc_vm's permissions, and what
+	 * root makes is xc_vm's, as xc_vm's processes need. (ConnectAudit's files
+	 * too.)
+	 *
+	 * False, with nothing done, when root cannot become another user that
+	 * way: no agent directory, one that is a link or root's, an owner without
+	 * a passwd entry or whose group is root's, or a switch that fails.
+	 *
+	 * @param \Closure(): bool $rWork
+	 */
+	public static function asAgentUser(\Closure $rWork, ?string $rAgentDir = null): bool {
 		if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
-			return;
+			return $rWork();
 		}
 		$rOf = $rAgentDir ?? self::agentDir();
-		$rOwner = $rOf === null ? false : @fileowner($rOf);
-		$rGroup = $rOf === null ? false : @filegroup($rOf);
-		if ($rOwner !== false && $rGroup !== false) {
-			@chown($rPath, $rOwner);
-			@chgrp($rPath, $rGroup);
+		if ($rOf === null || !function_exists('posix_initgroups')) {
+			return false;
+		}
+		$rOf = rtrim($rOf, '/');
+		clearstatcache(true, $rOf);
+		$rStat = @lstat($rOf);
+		$rUser = is_array($rStat) && ($rStat['mode'] & 0170000) === 0040000 && $rStat['uid'] !== 0 ? posix_getpwuid($rStat['uid']) : false;
+		if (!is_array($rUser) || (int) $rUser['gid'] === 0) {
+			return false;
+		}
+		$rUid = (int) $rStat['uid'];
+		$rGid = (int) $rUser['gid'];
+		$rRootGid = posix_getegid();
+		$rRoot = posix_getpwuid(0);
+		$rRootName = is_array($rRoot) ? (string) $rRoot['name'] : 'root';
+		// Groups and gid while still root, the uid last; back in the reverse order.
+		if (!posix_initgroups((string) $rUser['name'], $rGid) || !posix_setegid($rGid) || !posix_seteuid($rUid)) {
+			self::backToRoot($rRootGid, $rRootName);
+			return false;
+		}
+		try {
+			return $rWork();
+		} finally {
+			self::backToRoot($rRootGid, $rRootName);
+		}
+	}
+
+	/**
+	 * Root's own ids back after asAgentUser: the uid first (the saved uid is
+	 * root's), then the gid and the groups. Logged when that fails: the rest
+	 * of the process would run without root's rights.
+	 */
+	private static function backToRoot(int $rGid, string $rName): void {
+		if (!posix_seteuid(0) || !posix_setegid($rGid) || !posix_initgroups($rName, $rGid)) {
+			error_log('XC_VM: the node audit could not restore root\'s user and groups');
 		}
 	}
 }

@@ -12,7 +12,8 @@ use XcVm\Core\Cache\FileCache;
  * - A node in mode 2 (api) boots its CLI processes and web API endpoints
  *   from the caches its replica built (ReplicaApply), once an apply has
  *   built the settings and servers caches since the last reboot. Until then
- *   it boots as before, through MAIN's database.
+ *   it falls back to the boot through MAIN's database, whose connect mode 2
+ *   refuses: the process ends at its boot (fails closed).
  * - `cluster:apply` always boots from the replica, whatever the mode: its
  *   work is to build those caches, at boot too (`service` runs it with
  *   `--from-disk` before the daemons), when MAIN may be unreachable.
@@ -21,9 +22,9 @@ use XcVm\Core\Cache\FileCache;
  * Once a process has booted from the replica (start()), its settings and
  * servers never come from MAIN's database: SettingsRepository and
  * ServerRepository answer the caches however old, or nothing. Any other
- * query still opens MAIN's database, lazily, on first use: that is the
- * connect ConnectAudit counts, and that mode 2 refuses once the refusal
- * exists (plan, section 10, step 1).
+ * query opens MAIN's database, lazily, on first use: that is the connect
+ * ConnectAudit counts, and on a node in mode 2 refuses (plan, section 10,
+ * step 1).
  */
 final class ReplicaBoot {
 	/** Commands that boot from the replica in every mode. */

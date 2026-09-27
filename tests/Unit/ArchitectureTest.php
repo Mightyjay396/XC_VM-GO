@@ -249,6 +249,19 @@ final class ArchitectureTest extends TestCase {
         return $out;
     }
 
+    /** PHP code with each string literal emptied: a message may name a client ("a new Redis password"). */
+    private function withoutStrings(string $code): string {
+        $out = '';
+        foreach (token_get_all($code) as $token) {
+            if (is_array($token) && in_array($token[0], [T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE], true)) {
+                $out .= "''";
+                continue;
+            }
+            $out .= is_array($token) ? $token[1] : $token;
+        }
+        return $out;
+    }
+
     /** @param list<string> $mainOnly */
     private function isMainOnly(string $relative, array $mainOnly): bool {
         foreach ($mainOnly as $path) {
@@ -285,34 +298,68 @@ final class ArchitectureTest extends TestCase {
     }
 
     /**
+     * The lower-level MySQL and Redis connects, each with the one file that
+     * may open it, behind ConnectAudit::guard() (null: none may). PHP's class
+     * and function names are case-insensitive, and a global-namespace file
+     * (Public/stream/*.php) needs no leading backslash, so the patterns take
+     * both forms.
+     */
+    private const LOW_LEVEL_CONNECTS = [
+        '/(?<![\w\\\\])\\\\?XC_VM::db_connect\s*\(/i' => 'Core/Database/Database.php',
+        '/\bnew\s+\\\\?PDO\b|(?<![\w\\\\])\\\\?PDO::connect\s*\(/i' => 'Core/Database/Database.php',
+        '/(?<![\w\\\\])\\\\?XC_VM::redis_connect\s*\(/i' => 'Infrastructure/Redis/RedisManager.php',
+        '/\bnew\s+\\\\?Redis\b/i' => 'Core/Cache/RedisCache.php',
+        '/\bnew\s+\\\\?mysqli\b|(?<![\w\\\\])\\\\?mysqli_(?:connect|real_connect|init)\s*\(/i' => null,
+    ];
+
+    /**
      * The lower-level connects, in the code a load balancer runs: \XC_VM's
-     * database and Redis connects, and PDO and \Redis clients, only where
-     * ConnectAudit::guard() stands in front of them (a node in mode 2 is
-     * refused there, and modes 1 and 2 count every attempt).
+     * database and Redis connects, and PDO, \Redis and mysqli clients, only
+     * where ConnectAudit::guard() stands in front of them (a node in mode 2
+     * is refused there, and modes 1 and 2 count every attempt).
      */
     public function testLbShippedCodeConnectsOnlyBehindTheGuard(): void {
         if (!is_file(self::SRC_DIR . '/../Makefile')) {
             $this->markTestSkipped('needs the repo\'s Makefile (the LB build lists)');
         }
         $mainOnly = $this->mainOnlyPaths();
-        $guarded = [
-            '/\\\\XC_VM::db_connect\s*\(/' => 'Core/Database/Database.php',
-            '/\bnew\s+\\\\?PDO\s*\(/' => 'Core/Database/Database.php',
-            '/\\\\XC_VM::redis_connect\s*\(/' => 'Infrastructure/Redis/RedisManager.php',
-            '/\bnew\s+\\\\?Redis\s*\(/' => 'Core/Cache/RedisCache.php',
-        ];
         foreach ($this->srcFiles() as $relative => $content) {
             if ($this->isMainOnly($relative, $mainOnly)) {
                 continue;
             }
-            foreach ($guarded as $pattern => $home) {
+            $code = $this->withoutStrings($content);
+            foreach (self::LOW_LEVEL_CONNECTS as $pattern => $home) {
                 if ($relative !== $home) {
-                    $this->assertDoesNotMatchRegularExpression($pattern, $content, $relative . ': connect through ' . $home);
+                    $this->assertDoesNotMatchRegularExpression($pattern, $code, $relative . ': ' . ($home === null ? 'no such connect on a load balancer' : 'connect through ' . $home));
                 }
             }
         }
-        foreach (array_unique($guarded) as $home) {
+        foreach (array_unique(array_filter(self::LOW_LEVEL_CONNECTS)) as $home) {
             $this->assertStringContainsString('ConnectAudit::guard(', (string) file_get_contents(self::SRC_DIR . '/' . $home), $home);
+        }
+    }
+
+    /** The patterns above catch each way PHP can spell those connects, and nothing else. */
+    public function testTheConnectPatternsCatchEveryForm(): void {
+        $caught = [
+            '\\XC_VM::db_connect();', 'XC_VM::db_connect();', '\\xc_vm::DB_CONNECT ($a);',
+            '\\XC_VM::redis_connect();', 'xc_vm::redis_connect();',
+            'new \\PDO($dsn);', 'new pdo($dsn);', 'new \\Pdo\\Mysql($dsn);', '\\PDO::connect($dsn);',
+            'new \\Redis();', 'new redis;', 'new \\REDIS ;',
+            'new mysqli(\'h\');', 'new \\MySQLi;', 'mysqli_connect(\'h\');', '\\mysqli_real_connect($m, \'h\');', 'MYSQLI_INIT();',
+        ];
+        $clean = [
+            'new RedisCache($host);', 'RedisManager::connect();', 'new PDOStatement();', '$rDb->db_connect();',
+            'Database::db_connect();', 'Other\\XC_VM::db_connect();', 'MyXC_VM::redis_connect();', '$m->real_connect();',
+        ];
+        foreach ($caught as $code) {
+            $hits = array_filter(array_keys(self::LOW_LEVEL_CONNECTS), static fn(string $pattern): bool => preg_match($pattern, '<?php ' . $code) === 1);
+            $this->assertCount(1, $hits, $code);
+        }
+        foreach ($clean as $code) {
+            foreach (array_keys(self::LOW_LEVEL_CONNECTS) as $pattern) {
+                $this->assertDoesNotMatchRegularExpression($pattern, '<?php ' . $code, $code);
+            }
         }
     }
 

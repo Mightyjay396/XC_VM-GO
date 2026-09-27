@@ -54,16 +54,20 @@ final class NodeRoleTest extends TestCase {
 	 * cron:cleanup's node-side part runs on every node, before its MAIN-only
 	 * part: it is the only path that drops old days out of the settings-miss
 	 * report (a node in mode 0 counts nothing, so never merges one) and
-	 * removes it in mode 0.
+	 * removes it in mode 0. It also runs before the cron's first query, which
+	 * a node in mode 2 refuses: the connect audit stays bounded there too.
 	 */
 	public function testCleanupKeepsEachNodesAuditsBeforeItsMainGate(): void {
 		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/CleanupCronJob.php');
 		$rGate = strpos($rSource, 'if (!NodeRole::isMain())');
+		$rQuery = strpos($rSource, '$db->query(');
 		$this->assertNotFalse($rGate);
+		$this->assertNotFalse($rQuery);
 		foreach (['ConnectAudit::prune(8);', 'SettingsAudit::prune(8);', 'SettingsAudit::publish();'] as $rCall) {
 			$rAt = strpos($rSource, $rCall);
 			$this->assertNotFalse($rAt, "CleanupCronJob.php must call $rCall");
 			$this->assertLessThan($rGate, $rAt, "$rCall runs on every node, before the MAIN-only part");
+			$this->assertLessThan($rQuery, $rAt, "$rCall runs before the first query, which mode 2 refuses");
 		}
 	}
 

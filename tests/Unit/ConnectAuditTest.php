@@ -5,6 +5,7 @@ use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\SettingsAudit;
+use XcVm\Tests\Support\AgentUser;
 
 /**
  * ConnectAudit — the trace behind the cluster plan's cutover gate (seven days
@@ -22,6 +23,7 @@ final class ConnectAuditTest extends TestCase {
 	protected function setUp(): void {
 		$this->rDir = sys_get_temp_dir() . '/xcvm-connects-' . bin2hex(random_bytes(4)) . '/';
 		mkdir($this->rDir . 'cluster', 0777, true);
+		AgentUser::own($this->rDir); // as root, the audit writes as this tree's owner
 		$this->mode(1);
 		ConnectAudit::useDir($this->rDir . 'sql_audit/');
 		ConnectAudit::useClock(self::NOW);
@@ -181,7 +183,13 @@ final class ConnectAuditTest extends TestCase {
 		ConnectAudit::useClock(self::NOW + 10);
 		$this->connect(ConnectAudit::SQL);
 		$this->assertSame(1, $this->published()['sql_connects']);
-		ConnectAudit::useClock(self::NOW + ConnectAudit::PUBLISH_EVERY);
+		// A new site rewrites it at once, however fresh.
+		touch($this->rDir . 'cluster/audit.json', self::NOW + 10);
+		ConnectAudit::guard(ConnectAudit::REDIS); $rLine = __LINE__;
+		$this->assertSame([2, 1], [$this->published()['sql_connects'], $this->published()['redis_connects']], 'a new site: at once');
+		$this->assertSame(1, $this->published()['sites']['redis ' . __FILE__ . ':' . $rLine]);
+		touch($this->rDir . 'cluster/audit.json', self::NOW + 10);
+		ConnectAudit::useClock(self::NOW + 10 + ConnectAudit::PUBLISH_EVERY);
 		$this->connect(ConnectAudit::SQL);
 		$this->assertSame(3, $this->published()['sql_connects'], 'once a minute');
 		$this->assertTrue(SettingsAudit::publish(null, self::NOW + 100));
@@ -198,8 +206,8 @@ final class ConnectAuditTest extends TestCase {
 	}
 
 	public function testANodeWithoutConnectsReportsZerosSinceItsAuditBegan(): void {
-		$this->assertTrue(SettingsAudit::publish(null, self::NOW)); // cron:cleanup, every hour
-		$this->assertSame('{"settings_misses":{},"sql_connects":0,"redis_connects":0,"sites":{},"connects_since":' . self::NOW . '}', file_get_contents($this->rDir . 'cluster/audit.json'), 'objects, as MAIN reads them');
+		$this->assertTrue(SettingsAudit::publish(null, self::NOW - 86400)); // cron:cleanup, every hour
+		$this->assertSame('{"settings_misses":{},"sql_connects":0,"redis_connects":0,"sites":{},"connects_since":' . (self::NOW - 86400) . '}', file_get_contents($this->rDir . 'cluster/audit.json'), 'objects, as MAIN reads them');
 
 		// Most connects first, at most MAX_SITES sites over the week, the rest under "*".
 		for ($i = 0; $i < ConnectAudit::MAX_SITES; $i++) {
@@ -217,6 +225,66 @@ final class ConnectAuditTest extends TestCase {
 		$this->assertCount(ConnectAudit::MAX_SITES + 1, $rDoc['sites']);
 		$this->assertSame('redis B.php:1', array_key_first($rDoc['sites']));
 		$this->assertSame([ConnectAudit::OTHER => 1], array_slice($rDoc['sites'], -1, 1, true), 'the least, last');
+	}
+
+	/**
+	 * `connects_since` marks where the counts start: a node back in mode 1
+	 * reports none of the connects it counted before mode 0, and a day before
+	 * the audit began is left out of the report.
+	 */
+	public function testTheCountsStartWhenTheAuditBegan(): void {
+		ConnectAudit::useClock(self::NOW - 3 * 86400);
+		ConnectAudit::record(ConnectAudit::SQL, 'Old.php:1');
+		$this->assertSame([1, self::NOW - 3 * 86400], [$this->published()['sql_connects'], $this->published()['connects_since']]);
+		$this->mode(0);
+		$this->assertFalse(SettingsAudit::publish(null, self::NOW - 2 * 86400));
+		$this->assertSame([], glob($this->rDir . 'sql_audit/*'), 'the window and its days went');
+		$this->mode(1);
+		$this->assertTrue(SettingsAudit::publish(null, self::NOW));
+		$this->assertSame(['settings_misses' => [], 'sql_connects' => 0, 'redis_connects' => 0, 'sites' => [], 'connects_since' => self::NOW], $this->published());
+
+		// A day file older than the window's start (a manual trace's, say) is not counted.
+		file_put_contents($this->rDir . 'sql_audit/' . gmdate('Ymd', self::NOW - 86400) . '.json', '{"sql":5,"redis":0,"sites":{"sql Old.php:1":5}}');
+		$this->assertTrue(SettingsAudit::publish(null, self::NOW + 60));
+		$this->assertSame(0, $this->published()['sql_connects']);
+		$this->assertSame(5, ConnectAudit::summary(7, self::NOW)['sql'], 'the file is still there');
+	}
+
+	/**
+	 * A count rewrites its day file in place, under its lock: a report read
+	 * at the same time (another process's publish) waits for it rather than
+	 * seeing a day emptied, so the counts it reports never go down.
+	 */
+	public function testAReportNeverReadsADayHalfWritten(): void {
+		$rScript = $this->rDir . 'count.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Core\Cluster\ConnectAudit;
+			use XcVm\Core\Cluster\NodeFlows;
+			use XcVm\Core\Cluster\SettingsAudit;
+
+			require $argv[1];
+			NodeFlows::usePath($argv[2]);
+			SettingsAudit::useDir($argv[3], $argv[4]);
+			ConnectAudit::useDir($argv[5]);
+			ConnectAudit::useClock((int) $argv[6]);
+			for ($i = 0; $i < 2000; $i++) {
+				ConnectAudit::record(ConnectAudit::SQL, 'Writer.php:1');
+			}
+			PHP);
+		$rCommand = [PHP_BINARY, $rScript, MAIN_HOME . 'vendor/autoload.php', $this->rDir . 'flows.json', $this->rDir . 'misses/', $this->rDir . 'cluster/', $this->rDir . 'sql_audit/', (string) self::NOW];
+		$rProc = proc_open($rCommand, [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
+		$this->assertIsResource($rProc);
+		[$rLast, $rReads, $rDrops] = [0, 0, 0];
+		do {
+			$rRunning = proc_get_status($rProc)['running'];
+			$rSql = ConnectAudit::summary(7, self::NOW)['sql'];
+			$rDrops += (int) ($rSql < $rLast);
+			[$rLast, $rReads] = [max($rLast, $rSql), $rReads + 1];
+		} while ($rRunning);
+		$this->assertSame(0, proc_close($rProc));
+		$this->assertSame(0, $rDrops, $rReads . ' reads while the writer counted');
+		$this->assertSame(2000, ConnectAudit::summary(7, self::NOW)['sql']);
 	}
 
 	public function testAuditJsonStaysWithinWhatMainTakes(): void {
@@ -265,21 +333,23 @@ final class ConnectAuditTest extends TestCase {
 		return json_decode($rOut) === true;
 	}
 
-	public function testARootProcessHandsWhatItMakesToTheAgentsUser(): void {
-		if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+	public function testARootProcessCountsAsTheAgentsUser(): void {
+		if (!AgentUser::root()) {
 			$this->markTestSkipped('needs root, as the node\'s root crons run');
 		}
-		// A node: storage/ is not in the LB build, and config/cluster/ is xc_vm's (nobody here).
-		chown($this->rDir . 'cluster', 65534);
-		chgrp($this->rDir . 'cluster', 65534);
+		// A node: storage/ is not in the LB build, and the deploy root and
+		// config/cluster/ are xc_vm's (nobody here, setUp): root makes each
+		// level and file as that user.
 		$rDir = $this->rDir . 'storage/cluster/sql_audit/';
 		ConnectAudit::useDir($rDir);
 		ConnectAudit::guard(ConnectAudit::SQL); // cron:root_signals boots through MAIN's database in mode 1
+		$this->assertSame(0, posix_geteuid(), 'root again after the count');
 		$rDay = $rDir . gmdate('Ymd', self::NOW) . '.json';
 		foreach ([$this->rDir . 'storage', $this->rDir . 'storage/cluster', $rDir, $rDay, $rDir . gmdate('Ymd', self::NOW) . '.ndjson', $rDir . 'since', $this->rDir . 'cluster/audit.json'] as $rPath) {
 			clearstatcache(true, $rPath);
-			$this->assertSame([65534, 65534], [fileowner($rPath), filegroup($rPath)], $rPath);
+			$this->assertSame([AgentUser::UID, AgentUser::UID], [fileowner($rPath), filegroup($rPath)], $rPath);
 		}
+		$this->assertSame(0750, fileperms($this->rDir . 'storage') & 0777);
 
 		// xc_vm's hourly publish (cron:cleanup) reads root's counts.
 		$this->assertTrue($this->publishAsNobody($rDir));
@@ -290,5 +360,54 @@ final class ConnectAuditTest extends TestCase {
 		file_put_contents($this->rDir . 'cluster/audit.json', '{"settings_misses":{},"sql_connects":7}');
 		$this->assertFalse($this->publishAsNobody($rDir));
 		$this->assertSame(7, $this->published()['sql_connects']);
+	}
+
+	/**
+	 * Root (cron:root_signals, `startup` and cluster:root boot through MAIN's
+	 * database in mode 1) counts in directories xc_vm can write. A link xc_vm
+	 * planted there leads root nowhere xc_vm could not go itself: nothing
+	 * outside them is made, written or handed over. Where the agent's
+	 * directory is root's, root has no user to count as, and writes nothing.
+	 */
+	public function testRootFollowsNoLinkTheAgentsUserPlanted(): void {
+		if (!AgentUser::root()) {
+			$this->markTestSkipped('needs root, as the node\'s root crons run');
+		}
+		$rSafe = $this->rDir . 'root-only/';
+		mkdir($rSafe, 0700);
+		chown($rSafe, 0);
+		file_put_contents($rSafe . 'log', "root's\n");
+		file_put_contents($rSafe . 'report', "root's\n");
+		$rDay = gmdate('Ymd', self::NOW);
+		$rLinks = [
+			$this->rDir . 'sql_audit/' . $rDay . '.json' => $rSafe . 'counts', // none there: root would make it
+			$this->rDir . 'sql_audit/' . $rDay . '.ndjson' => $rSafe . 'log', // root would append to it
+			$this->rDir . 'misses/' . $rDay . '.json' => $rSafe . 'misses',
+			$this->rDir . 'cluster/audit.json.' . getmypid() . '.tmp' => $rSafe . 'report', // root would overwrite and hand it over
+		];
+		foreach ($rLinks as $rLink => $rTarget) {
+			@mkdir(dirname($rLink), 0750);
+			AgentUser::own(dirname($rLink));
+			symlink($rTarget, $rLink);
+			lchown($rLink, AgentUser::UID);
+		}
+		ConnectAudit::guard(ConnectAudit::SQL);
+		SettingsAudit::read('zz_missed_by_root');
+		SettingsAudit::flush(self::NOW);
+		$this->assertSame(0, posix_geteuid());
+		clearstatcache();
+		$this->assertSame(['log', 'report'], array_values(array_diff(scandir($rSafe), ['.', '..'])), 'nothing made there');
+		foreach (['log', 'report'] as $rFile) {
+			$this->assertSame(["root's\n", 0, 0], [file_get_contents($rSafe . $rFile), fileowner($rSafe . $rFile), filegroup($rSafe . $rFile)], $rFile);
+		}
+
+		// The agent's directory root's: nothing written at all.
+		exec('rm -rf ' . escapeshellarg($this->rDir . 'sql_audit') . ' ' . escapeshellarg($this->rDir . 'misses'));
+		chown($this->rDir . 'cluster', 0);
+		ConnectAudit::guard(ConnectAudit::SQL);
+		SettingsAudit::read('zz_missed_by_root');
+		SettingsAudit::flush(self::NOW);
+		$this->assertDirectoryDoesNotExist($this->rDir . 'sql_audit');
+		$this->assertDirectoryDoesNotExist($this->rDir . 'misses');
 	}
 }

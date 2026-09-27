@@ -21,6 +21,7 @@ use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
 use XcVm\Infrastructure\Bootstrap\WebApiBootstrap;
+use XcVm\Tests\Support\AgentUser;
 use XcVm\Tests\Support\ReplicaFixture;
 
 /**
@@ -50,6 +51,8 @@ final class ReplicaBootTest extends TestCase {
 		$this->rHome = sys_get_temp_dir() . '/xcvm-boot-' . bin2hex(random_bytes(4)) . '/';
 		mkdir($this->rHome . 'config/cluster', 0777, true);
 		mkdir($this->rHome . 'tmp/cache', 0777, true);
+		// As root, a node's audits write as the owner of config/cluster/.
+		AgentUser::own($this->rHome);
 		// LegacyInitializer regenerates the xc_vm crontab once per boot: a
 		// `crontab` first on the child's PATH logs it, never the test user's.
 		mkdir($this->rHome . 'stub');

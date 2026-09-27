@@ -11,6 +11,7 @@ use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Database\LazyDatabaseHandler;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
+use XcVm\Tests\Support\AgentUser;
 
 /**
  * The mode-2 refusal (cluster plan, section 10, step 1): on a node in API
@@ -25,15 +26,19 @@ use XcVm\Infrastructure\Redis\RedisManager;
  * xcvm_core stand-in that logs each connect it is asked for.
  */
 final class DbConnectRefusalTest extends TestCase {
+	private const NOW = 1800000000; // 2027-01-15 08:00 UTC: the in-process counts' day
+
 	private string $rDir;
 
 	protected function setUp(): void {
 		$this->rDir = sys_get_temp_dir() . '/xcvm-refusal-' . bin2hex(random_bytes(4)) . '/';
 		mkdir($this->rDir . 'config/cluster', 0777, true);
+		AgentUser::own($this->rDir); // as root, the audit writes as this tree's owner
 		NodeFlows::usePath($this->rDir . 'config/cluster/flows.json');
 		NodeRole::useMainBuild(false);
 		ConnectAudit::useDir($this->rDir . 'storage/cluster/sql_audit/');
 		SettingsAudit::useDir($this->rDir . 'storage/cluster/settings_misses/', $this->rDir . 'config/cluster/');
+		ConnectAudit::useClock(self::NOW);
 		DatabaseFactory::reset();
 	}
 
@@ -42,6 +47,7 @@ final class DbConnectRefusalTest extends TestCase {
 		NodeRole::useMainBuild(null);
 		NodeRole::resetAudit();
 		ConnectAudit::useDir(false);
+		ConnectAudit::useClock(null);
 		SettingsAudit::useDir(false);
 		DatabaseFactory::reset();
 		exec('rm -rf ' . escapeshellarg($this->rDir));
@@ -111,8 +117,8 @@ final class DbConnectRefusalTest extends TestCase {
 		$this->assertNull(DatabaseFactory::get(), 'nothing kept as the process\'s handle');
 
 		$rLazy = new LazyDatabaseHandler(); // opens nothing yet
-		$rLine = __LINE__ + 1;
-		$this->assertStringEndsWith(':' . $rLine, $this->refused(static fn() => $rLazy->query('SELECT 1'))->rSite, 'a lazy handle: its first query');
+		$rLazyLine = __LINE__ + 1;
+		$this->assertStringEndsWith(':' . $rLazyLine, $this->refused(static fn() => $rLazy->query('SELECT 1'))->rSite, 'a lazy handle: its first query');
 		$this->refused(static fn() => $rLazy->db_connect(false, true)); // graceful or not: a refusal is no outage to wait out
 		$this->refused(static fn() => $rLazy->reconnect());
 		$this->refused(static fn() => $rLazy->db_explicit_connect('10.0.0.1', 3306, 'xc_vm', 'u', 'p'));
@@ -122,33 +128,36 @@ final class DbConnectRefusalTest extends TestCase {
 		$this->assertStringContainsString('Redis', $e->getMessage());
 		RedisManager::closeInstance(); // whatever an earlier test left: the singleton connects afresh
 		$this->refused(static fn() => RedisManager::instance());
-		$this->refused(static fn() => (new RedisCache('10.0.0.1'))->connect());
+		$rCache = new RedisCache('10.0.0.1');
+		$rLine = __LINE__ + 1;
+		$this->assertStringEndsWith('DbConnectRefusalTest.php:' . $rLine, $this->refused(static fn() => $rCache->connect())->rSite, 'RedisCache is connect machinery, not the caller');
 
 		// Each attempt is counted, marked refused in the log.
-		$rDay = json_decode((string) file_get_contents($this->rDir . 'storage/cluster/sql_audit/' . gmdate('Ymd') . '.json'), true);
+		$rDay = json_decode((string) file_get_contents($this->rDir . 'storage/cluster/sql_audit/' . gmdate('Ymd', self::NOW) . '.json'), true);
 		$this->assertSame([6, 3], [$rDay['sql'], $rDay['redis']]);
-		$rLog = array_map(static fn(string $rLine): array => json_decode($rLine, true), file($this->rDir . 'storage/cluster/sql_audit/' . gmdate('Ymd') . '.ndjson', FILE_IGNORE_NEW_LINES));
+		$rLog = array_map(static fn(string $rLine): array => json_decode($rLine, true), file($this->rDir . 'storage/cluster/sql_audit/' . gmdate('Ymd', self::NOW) . '.ndjson', FILE_IGNORE_NEW_LINES));
 		$this->assertCount(9, $rLog);
 		$this->assertSame([1], array_values(array_unique(array_column($rLog, 'r'))));
-		$this->assertSame(1, array_sum(array_map(static fn(string $rSite): int => (int) str_starts_with($rSite, 'sql ') * (int) str_ends_with($rSite, 'DbConnectRefusalTest.php:' . $rLine), array_keys($rDay['sites']))), 'the lazy handle\'s query, as its own site');
+		$this->assertSame(1, array_sum(array_map(static fn(string $rSite): int => (int) str_starts_with($rSite, 'sql ') * (int) str_ends_with($rSite, 'DbConnectRefusalTest.php:' . $rLazyLine), array_keys($rDay['sites']))), 'the lazy handle\'s query, as its own site');
 	}
 
 	public function testTheRefusalIsCountedEvenWithTheAuditForcedOff(): void {
 		$this->flows(2);
 		NodeRole::resetAudit(false);
 		$this->refused(static fn() => new DatabaseHandler());
-		$this->assertFileExists($this->rDir . 'storage/cluster/sql_audit/' . gmdate('Ymd') . '.json', 'a refusal is what the page must show');
+		$this->assertFileExists($this->rDir . 'storage/cluster/sql_audit/' . gmdate('Ymd', self::NOW) . '.json', 'a refusal is what the page must show');
 	}
 
 	// ── The real boot, in a child PHP ────────────────────────────────
 
 	/**
 	 * Run $rCode after the real bootstrap's autoloader, in a throwaway deploy
-	 * root whose xcvm_core logs each connect it is asked for.
+	 * root whose xcvm_core logs each connect it is asked for (and answers it
+	 * with an SQLite handle when $rEnv sets XCVM_TEST_PDO=1).
 	 *
 	 * @return array{0: int, 1: string, 2: list<string>} exit code, output, the connects xcvm_core saw
 	 */
-	private function child(string $rCode, array $rArgs = []): array {
+	private function child(string $rCode, array $rArgs = [], array $rEnv = []): array {
 		$rPrepend = $this->rDir . 'prepend.php';
 		file_put_contents($rPrepend, <<<'PHP'
 			<?php
@@ -160,7 +169,7 @@ final class DbConnectRefusalTest extends TestCase {
 
 				public static function db_connect(bool $rMigrate = false) {
 					file_put_contents(MAIN_HOME . 'connects.log', "sql\n", FILE_APPEND);
-					return false;
+					return getenv('XCVM_TEST_PDO') === '1' ? new PDO('sqlite::memory:') : false;
 				}
 
 				public static function redis_connect() {
@@ -172,7 +181,7 @@ final class DbConnectRefusalTest extends TestCase {
 		$rScript = $this->rDir . 'child.php';
 		file_put_contents($rScript, $rCode);
 		@unlink($this->rDir . 'connects.log');
-		$rProc = proc_open(array_merge([PHP_BINARY, '-d', 'auto_prepend_file=' . $rPrepend, $rScript], $rArgs), [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $rPipes, $this->rDir, ['XCVM_TEST_HOME' => $this->rDir, 'XCVM_TEST_SRC' => dirname(__DIR__, 2) . '/src/', 'PATH' => (string) getenv('PATH')]);
+		$rProc = proc_open(array_merge([PHP_BINARY, '-d', 'auto_prepend_file=' . $rPrepend, $rScript], $rArgs), [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $rPipes, $this->rDir, $rEnv + ['XCVM_TEST_HOME' => $this->rDir, 'XCVM_TEST_SRC' => dirname(__DIR__, 2) . '/src/', 'PATH' => (string) getenv('PATH')]);
 		$this->assertIsResource($rProc);
 		$rOut = (string) stream_get_contents($rPipes[1]) . (string) stream_get_contents($rPipes[2]);
 		fclose($rPipes[1]);
@@ -204,9 +213,16 @@ final class DbConnectRefusalTest extends TestCase {
 			PHP;
 	}
 
-	/** @return array<string, mixed>|null the child's counts for today */
+	/**
+	 * The child's counts: its one day file, whichever UTC day it counted on
+	 * (the child runs on the real clock).
+	 *
+	 * @return array<string, mixed>|null
+	 */
 	private function counted(): ?array {
-		$rDay = json_decode((string) @file_get_contents($this->rDir . 'storage/cluster/sql_audit/' . gmdate('Ymd') . '.json'), true);
+		$rFiles = glob($this->rDir . 'storage/cluster/sql_audit/*.json') ?: [];
+		$this->assertLessThanOrEqual(1, count($rFiles), 'one boot, one day file');
+		$rDay = $rFiles === [] ? null : json_decode((string) file_get_contents($rFiles[0]), true);
 		return is_array($rDay) ? $rDay : null;
 	}
 
@@ -245,5 +261,24 @@ final class DbConnectRefusalTest extends TestCase {
 			PHP);
 		$this->assertSame(['redis'], $rConnects);
 		$this->assertSame('NULL', trim($rOut));
+	}
+
+	/**
+	 * DatabaseFactory::open(), which the load balancer's direct connects
+	 * take, keeps the handle it builds as the process's, as each of them did
+	 * with DatabaseFactory::set().
+	 */
+	public function testOpenKeepsItsHandleAsTheProcesss(): void {
+		[$rCode, $rOut, $rConnects] = $this->child(<<<'PHP'
+			<?php
+			use XcVm\Infrastructure\Database\DatabaseFactory;
+
+			require getenv('XCVM_TEST_SRC') . 'vendor/autoload.php';
+			$rDb = DatabaseFactory::open();
+			echo json_encode([$rDb === DatabaseFactory::get(), $rDb->query('SELECT 1')]);
+			PHP, [], ['XCVM_TEST_PDO' => '1']);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertSame(['sql'], $rConnects);
+		$this->assertSame([true, true], json_decode($rOut, true));
 	}
 }

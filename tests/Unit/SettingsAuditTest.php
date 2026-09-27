@@ -4,6 +4,7 @@ use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\SettingsAudit;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Tests\Support\AgentUser;
 
 /**
  * `audit.settings_misses` on the node (cluster plan, section 9, R1
@@ -21,6 +22,7 @@ final class SettingsAuditTest extends TestCase {
 	protected function setUp(): void {
 		$this->rDir = sys_get_temp_dir() . '/xcvm-misses-' . bin2hex(random_bytes(4)) . '/';
 		mkdir($this->rDir . 'cluster', 0777, true);
+		AgentUser::own($this->rDir); // as root, the audit writes as this tree's owner
 		$this->mode(1);
 		SettingsManager::set(['server_name' => 'Panel', 'api_pass' => 'x']);
 	}
@@ -200,21 +202,22 @@ final class SettingsAuditTest extends TestCase {
 		return json_decode($rOut) === true;
 	}
 
-	public function testARootProcessHandsEveryLevelItMakesToTheAgentsUser(): void {
-		if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+	public function testARootProcessMergesAsTheAgentsUser(): void {
+		if (!AgentUser::root()) {
 			$this->markTestSkipped('needs root, as the node\'s root crons run');
 		}
-		// A node: storage/ is not in the LB build, and config/cluster/ is xc_vm's (nobody here).
-		chown($this->rDir . 'cluster', 65534);
-		chgrp($this->rDir . 'cluster', 65534);
+		// A node: storage/ is not in the LB build, and the deploy root and
+		// config/cluster/ are xc_vm's (nobody here, setUp): root makes each
+		// level and file as that user.
 		$rDir = $this->rDir . 'storage/cluster/settings_misses/';
 		SettingsAudit::useDir($rDir, $this->rDir . 'cluster/');
 		SettingsManager::get('update_channel_x'); // as a root-only command reads it
 		SettingsAudit::flush(self::NOW);
+		$this->assertSame(0, posix_geteuid(), 'root again after the merge');
 		$rDay = $rDir . gmdate('Ymd', self::NOW) . '.json';
 		foreach ([$this->rDir . 'storage', $this->rDir . 'storage/cluster', $rDir, $rDay, $this->rDir . 'cluster/audit.json'] as $rPath) {
 			clearstatcache(true, $rPath);
-			$this->assertSame([65534, 65534], [fileowner($rPath), filegroup($rPath)], $rPath);
+			$this->assertSame([AgentUser::UID, AgentUser::UID], [fileowner($rPath), filegroup($rPath)], $rPath);
 		}
 		$this->assertSame(0750, fileperms($this->rDir . 'storage') & 0777);
 
@@ -233,6 +236,41 @@ final class SettingsAuditTest extends TestCase {
 		chmod($rDay, 0600);
 		$this->assertFalse($this->publishAsNobody());
 		$this->assertSame(['settings_misses' => ['update_channel_x' => 1]], $this->published());
+	}
+
+	/**
+	 * A merge rewrites its day file in place, under its lock: a report read
+	 * at the same time waits for it rather than seeing a day emptied, so the
+	 * counts it reports never go down.
+	 */
+	public function testAReportNeverReadsADayHalfWritten(): void {
+		$rScript = $this->rDir . 'merge.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Core\Cluster\NodeFlows;
+			use XcVm\Core\Cluster\SettingsAudit;
+
+			require $argv[1];
+			NodeFlows::usePath($argv[2]);
+			SettingsAudit::useDir($argv[3], $argv[4]);
+			for ($i = 0; $i < 2000; $i++) {
+				SettingsAudit::read('zz_writer');
+				SettingsAudit::flush((int) $argv[5]);
+			}
+			PHP);
+		$rCommand = [PHP_BINARY, $rScript, MAIN_HOME . 'vendor/autoload.php', $this->rDir . 'flows.json', $this->rDir . 'misses/', $this->rDir . 'cluster/', (string) self::NOW];
+		$rProc = proc_open($rCommand, [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
+		$this->assertIsResource($rProc);
+		[$rLast, $rReads, $rDrops] = [0, 0, 0];
+		do {
+			$rRunning = proc_get_status($rProc)['running'];
+			$rCount = SettingsAudit::summary(self::NOW)['zz_writer'] ?? 0;
+			$rDrops += (int) ($rCount < $rLast);
+			[$rLast, $rReads] = [max($rLast, $rCount), $rReads + 1];
+		} while ($rRunning);
+		$this->assertSame(0, proc_close($rProc));
+		$this->assertSame(0, $rDrops, $rReads . ' reads while the writer merged');
+		$this->assertSame(['zz_writer' => 2000], SettingsAudit::summary(self::NOW));
 	}
 
 	public function testALongRunningProcessMergesEveryMinute(): void {

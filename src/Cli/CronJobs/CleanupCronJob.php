@@ -57,6 +57,15 @@ class CleanupCronJob implements CommandInterface {
 	private function loadCron(): void {
 		global $db;
 
+		// First, and without a database: on a node in mode 2 the queries below
+		// are refused (ConnectAudit::guard), and this cron ends at the first.
+		// This node's connect audit: the cutover gate reads seven days of it.
+		ConnectAudit::prune(8);
+		// Its settings misses: the days that left the report's window drop out
+		// of the audit.json its agent sends.
+		SettingsAudit::prune(8);
+		SettingsAudit::publish();
+
 		if (intval(SettingsManager::get('cleanup')) == 1) {
 			$rStreams = [];
 			$db->query('SELECT `id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `streams`.`type` IN (1,3,4) AND `streams_servers`.`server_id` = ?;', SERVER_ID);
@@ -211,13 +220,6 @@ class CleanupCronJob implements CommandInterface {
 				}
 			}
 		}
-
-		// This node's connect audit: the cutover gate reads seven days of it.
-		ConnectAudit::prune(8);
-		// Its settings misses: the days that left the report's window drop out
-		// of the audit.json its agent sends.
-		SettingsAudit::prune(8);
-		SettingsAudit::publish();
 
 		// Retention of cluster-wide log tables: MAIN's job. Every LB used to
 		// run the same DELETEs against MAIN's database each minute.

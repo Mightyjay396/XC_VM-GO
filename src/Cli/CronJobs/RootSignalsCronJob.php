@@ -119,12 +119,13 @@ class RootSignalsCronJob implements CommandInterface {
 		}
 	}
 
-	private function flushIPs(): void {
+	/** Flush iptables and the flood guard's block files (protected: a test records the call). */
+	protected function flushIPs(): void {
 		exec('sudo iptables -F && sudo ip6tables -F');
 		shell_exec('sudo rm ' . FLOOD_TMP_PATH . 'block_*');
 	}
 
-	private function saveiptables(): void {
+	protected function saveiptables(): void {
 		exec('sudo iptables-save && sudo ip6tables-save');
 	}
 

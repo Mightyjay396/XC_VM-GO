@@ -62,19 +62,71 @@ final class ClusterRootCommandTest extends TestCase {
 				NodeFlows::usePath($rFlows);
 				$this->assertSame($rExpected, RootSignalsCronJob::rootCommandsFromMain(), json_encode($rDoc));
 			}
-			// Without root's pin MAIN keeps the signals table for them.
+			// The same flows without a pin root trusts: MAIN keeps the signals table for them.
+			file_put_contents($rFlows, json_encode(['mode' => 1, 'flows' => NodeFlows::COMMANDS, 'state' => 'active']));
+			NodeFlows::usePath($rFlows);
+			$this->assertTrue(RootSignalsCronJob::rootCommandsFromMain(), 'COMMANDS on, the pin in place');
 			chmod($this->rBase . 'etc', 0775);
-			$this->assertFalse(RootSignalsCronJob::rootCommandsFromMain());
+			$this->assertFalse(RootSignalsCronJob::rootCommandsFromMain(), 'COMMANDS on, no pin');
 		} finally {
 			NodeFlows::usePath(null);
 		}
 		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/RootSignalsCronJob.php');
-		$rAction = substr($rSource, (int) strpos($rSource, 'public function executeAction('));
-		$this->assertStringContainsString("case 'flush':", $rAction, 'a node.root flush runs');
 		$rGate = strpos($rSource, 'if (!self::rootCommandsFromMain()) {');
 		$rRead = strpos($rSource, "SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{");
 		$this->assertNotFalse($rGate);
 		$this->assertTrue($rRead > $rGate && $rRead - $rGate < 120, 'the legacy flush row is read only where MAIN still sends it');
+	}
+
+	/**
+	 * What the flush does, run as cluster:root runs it: iptables flushed and
+	 * saved, one FLUSH line in mysql_syslog, and nothing of the next case
+	 * (reboot: its REBOOT line, close_mysql, `sudo reboot`). The database
+	 * throws on any statement but the FLUSH line, so a fall-through stops
+	 * before the reboot's shell_exec.
+	 */
+	public function testTheFlushActionFlushesIptablesAndLogsOnce(): void {
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', 5);
+		}
+		$rJob = new class extends RootSignalsCronJob {
+			/** @var list<string> */
+			public array $rCalls = [];
+
+			protected function flushIPs(): void {
+				$this->rCalls[] = 'flushIPs';
+			}
+
+			protected function saveiptables(): void {
+				$this->rCalls[] = 'saveiptables';
+			}
+		};
+		$rDb = new class {
+			/** @var list<string> */
+			public array $rCalls = [];
+
+			public function query(string $rQuery, mixed ...$rArgs): bool {
+				$this->rCalls[] = $rQuery;
+				if (!str_contains($rQuery, "VALUES(?, 'FLUSH',")) {
+					throw new \RuntimeException('not the flush\'s line: ' . $rQuery);
+				}
+				return true;
+			}
+
+			public function close_mysql(): void {
+				$this->rCalls[] = 'close_mysql';
+			}
+		};
+		ob_start();
+		try {
+			$rJob->executeAction(['action' => 'flush'], [], $rDb);
+		} finally {
+			$rOut = (string) ob_get_clean();
+		}
+		$this->assertSame(['flushIPs', 'saveiptables'], $rJob->rCalls, 'flushed, then saved, once each');
+		$this->assertCount(1, $rDb->rCalls, 'one statement, and no close_mysql');
+		$this->assertStringStartsWith('INSERT INTO `mysql_syslog`', $rDb->rCalls[0]);
+		$this->assertStringNotContainsString('Rebooting', $rOut);
 	}
 
 	public function testThePinIsReadOnlyFromASafeDirectory(): void {
