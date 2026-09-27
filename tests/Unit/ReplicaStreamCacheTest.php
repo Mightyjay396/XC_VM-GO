@@ -375,11 +375,19 @@ final class ReplicaStreamCacheTest extends TestCase {
 		$this->assertSame(['streams'], $rReport['from_disk']['unverified']);
 		$this->assertSame([10], ReplicaStreamCache::cached());
 		$this->assertStringNotContainsString('src.example', (string) json_encode($rReport), 'the report names streams, never their content');
+		// Nor is a stream whose record did not verify built later from its unsigned .json.
+		$this->assertNull(StreamSource::streamRow(11, false));
+		$this->assertNull(StreamSource::streamRow(12, true));
+		$this->assertSame([10], ReplicaStreamCache::cached());
+		// Once the agent's apply reads them, they are.
+		ReplicaApply::run(false, 1800000000, $this->rSid);
+		$this->assertSame('Film', StreamSource::streamRow(11, false)['stream_display_name']);
 	}
 
 	public function testAnEntryGoneIsBuiltAgainFromTheAgentsFile(): void {
 		$this->storeSection();
 		$this->apply();
+		$this->assertSame('0700', substr(sprintf('%o', fileperms($this->rDir . 'cache/' . ReplicaStreamCache::DIR)), -4), 'the entries hold the sources');
 		ReplicaStreamCache::store()->delete('10');
 		$this->mainUnreachable();
 		$this->assertSame('News', StreamSource::streamRow(10, true)['stream_display_name'], 'the agent\'s file, never MAIN\'s database');

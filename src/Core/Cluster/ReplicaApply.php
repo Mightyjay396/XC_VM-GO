@@ -601,7 +601,7 @@ final class ReplicaApply {
 				$rRemoved++;
 			}
 		}
-		ReplicaStreamCache::writeIndex($rIndex);
+		ReplicaStreamCache::writeIndex($rIndex, $rUnreadable);
 		self::own(ReplicaSections::STREAMS, (string) $rReport['since']);
 		return $rReport + ['mode' => 'applied', 'written' => $rWritten, 'removed' => $rRemoved, 'unreadable' => array_slice($rUnreadable, 0, self::MAX_IDS)];
 	}

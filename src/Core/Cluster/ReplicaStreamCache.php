@@ -26,8 +26,13 @@ use XcVm\Core\Cache\FileCache;
  *   recordings  its `recordings` rows scheduled on the node (every column)
  *   children    the servers that relay it from the node
  *   etag, ver   the record's
- * <cache dir>/replica_streams/index   {streams: {id: {etag, ver, rec: [recording ids]}}}
+ * <cache dir>/replica_streams/index   {streams: {id: {etag, ver, rec: [recording ids]}},
+ *                                      unreadable: [ids whose record did not read]}
  * ```
+ *
+ * The directory is 0700: an entry holds the stream's sources, which may
+ * carry an upstream's credentials (the agent keeps its files 0600 for the
+ * same reason).
  *
  * The cache directory is the other caches' (tmp/cache/, a tmpfs), so the
  * entries go with `replica_owned` at a reboot and an apply builds them again
@@ -36,8 +41,10 @@ use XcVm\Core\Cache\FileCache;
  * (owned()): the STREAMS flow on, the section stored by the agent, and an
  * apply that built them since. Then no reader reads MAIN's database for a
  * stream's definition: an entry missing is built from the agent's file
- * (`replica/streams/<id>.json`), and a stream without one is a stream the
- * node does not hold.
+ * (`replica/streams/<id>.json`, a record it stored since that apply), and a
+ * stream without one is a stream the node does not hold. A stream whose
+ * record did not read at the last apply (from disk: did not verify) is never
+ * built from its file: it keeps the entry it had, or has none.
  *
  * What no record carries stays null: the node's own runtime state (pids,
  * status, the current source, probe results, the created channel's build
@@ -57,7 +64,13 @@ final class ReplicaStreamCache {
 	/** The entries' store, in the default cache directory. */
 	public static function store(): FileCache {
 		$rPath = FileCache::defaultPath() . self::DIR;
-		return self::$rStores[$rPath] ??= new FileCache($rPath);
+		if (!isset(self::$rStores[$rPath])) {
+			self::$rStores[$rPath] = new FileCache($rPath);
+			if (is_dir($rPath) && (fileperms($rPath) & 0777) !== 0700) {
+				@chmod($rPath, 0700);
+			}
+		}
+		return self::$rStores[$rPath];
 	}
 
 	/**
@@ -140,6 +153,10 @@ final class ReplicaStreamCache {
 		$rEntry = self::store()->get((string) $rID);
 		if (is_array($rEntry)) {
 			return $rEntry;
+		}
+		// Its record did not read (from disk: did not verify) at the last apply.
+		if (in_array($rID, self::unreadable(), true)) {
+			return null;
 		}
 		$rDoc = json_decode((string) @file_get_contents(ReplicaApply::dir() . 'streams/' . $rID . '.json'), true);
 		if (!is_array($rDoc) || !is_array($rDoc['data'] ?? null) || !is_string($rDoc['etag'] ?? null) || !is_int($rDoc['ver'] ?? null)) {
@@ -232,10 +249,24 @@ final class ReplicaStreamCache {
 		return is_array($rIndex) && is_array($rIndex['streams'] ?? null) ? $rIndex['streams'] : [];
 	}
 
-	/** @param array<int, array{etag: string, ver: int, rec: list<int>}> $rStreams */
-	public static function writeIndex(array $rStreams): bool {
+	/**
+	 * The streams whose record did not read at the last apply: never built
+	 * from their file until an apply reads it.
+	 *
+	 * @return list<int>
+	 */
+	public static function unreadable(): array {
+		$rIndex = self::store()->get(self::INDEX);
+		return is_array($rIndex) && is_array($rIndex['unreadable'] ?? null) ? $rIndex['unreadable'] : [];
+	}
+
+	/**
+	 * @param array<int, array{etag: string, ver: int, rec: list<int>}> $rStreams
+	 * @param list<int> $rUnreadable
+	 */
+	public static function writeIndex(array $rStreams, array $rUnreadable = []): bool {
 		ksort($rStreams);
-		return self::store()->set(self::INDEX, ['streams' => $rStreams]);
+		return self::store()->set(self::INDEX, ['streams' => $rStreams, 'unreadable' => array_values($rUnreadable)]);
 	}
 
 	/**
