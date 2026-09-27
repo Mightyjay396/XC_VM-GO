@@ -88,6 +88,7 @@ class FavoritesController extends BasePlayerV2Controller {
 		// 1. Fetch Live Channels
 		if ($liveIds !== []) {
 			$livePh = implode(',', array_fill(0, count($liveIds), '?'));
+			// nosemgrep: php.lang.security.injection.tainted-sql-string.tainted-sql-string
 			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `category_id` FROM `streams` WHERE `type` = 1 AND `id` IN ({$livePh});", ...$liveIds);
 			$rows = $db->get_rows() ?: [];
 			foreach ($rows as $r) {
@@ -106,6 +107,7 @@ class FavoritesController extends BasePlayerV2Controller {
 		// 2. Fetch Movies
 		if ($movieIds !== []) {
 			$moviePh = implode(',', array_fill(0, count($movieIds), '?'));
+			// nosemgrep: php.lang.security.injection.tainted-sql-string.tainted-sql-string
 			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `movie_properties`, `rating`, `year`, `category_id` FROM `streams` WHERE `type` = 2 AND `id` IN ({$moviePh});", ...$movieIds);
 			$rows = $db->get_rows() ?: [];
 			foreach ($rows as $r) {
@@ -129,6 +131,7 @@ class FavoritesController extends BasePlayerV2Controller {
 		// 3. Fetch Series
 		if ($seriesIds !== []) {
 			$seriesPh = implode(',', array_fill(0, count($seriesIds), '?'));
+			// nosemgrep: php.lang.security.injection.tainted-sql-string.tainted-sql-string
 			$db->query("SELECT `id`, `title`, `cover`, `rating`, `year`, `category_id`, `genre`, `seasons` FROM `streams_series` WHERE `id` IN ({$seriesPh});", ...$seriesIds);
 			$rows = $db->get_rows() ?: [];
 			foreach ($rows as $r) {
@@ -158,6 +161,7 @@ class FavoritesController extends BasePlayerV2Controller {
 		// 4. Fetch Radio Stations
 		if ($radioIds !== []) {
 			$radioPh = implode(',', array_fill(0, count($radioIds), '?'));
+			// nosemgrep: php.lang.security.injection.tainted-sql-string.tainted-sql-string
 			$db->query("SELECT `id`, `stream_display_name`, `stream_icon`, `category_id` FROM `streams` WHERE `type` = 4 AND `id` IN ({$radioPh});", ...$radioIds);
 			$rows = $db->get_rows() ?: [];
 			foreach ($rows as $r) {

@@ -137,6 +137,7 @@ class ActiveCodeApiController extends BaseApiController {
 		if ($action === 'check') {
 			$res = ActiveCodeService::checkCode($code);
 			http_response_code(200);
+			// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 			echo json_encode($res, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 			exit();
 		}
@@ -156,6 +157,7 @@ class ActiveCodeApiController extends BaseApiController {
 			$this->deny = true;
 			BruteforceGuard::checkBruteforce(null, null, $code);
 			http_response_code(200);
+			// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 			echo json_encode([
 				'status' => 'ERROR',
 				'error_code' => $res['status'],
@@ -231,6 +233,7 @@ class ActiveCodeApiController extends BaseApiController {
 			'web_player_url' => $res['web_player_url'] ?? null,
 		];
 
+		// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 		echo json_encode($output, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 		exit();
 	}

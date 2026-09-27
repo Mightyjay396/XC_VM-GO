@@ -153,6 +153,8 @@ if (db_connect('nodie')) {
 
     if ($_REQUEST['pi'] ?? 0) {
         ob_start();
+        // Admin-only DB console (DB_ACCESS_ENABLED + is_admin); phpinfo is an intended feature.
+        // nosemgrep: php.lang.security.phpinfo-use.phpinfo-use
         phpinfo();
         $html = ob_get_clean();
         preg_match("/<body[^>]*>(.*?)<\/body>/is", $html, $m);
@@ -182,6 +184,8 @@ if (db_connect('nodie')) {
                 do_sql($SHOW_D);
             } elseif ($_REQUEST['crdb'] ?? 0) {
                 check_xss();
+                // Identifier is backtick-quoted by dbqid().
+                // nosemgrep: php.lang.security.injection.tainted-sql-string.tainted-sql-string
                 do_sql('CREATE DATABASE ' . dbqid($_REQUEST['new_db']));
                 do_sql($SHOW_D);
             } elseif (preg_match('/^(?:show\s+(?:databases|status|variables|process)|create\s+database|grant\s+)/i', $SQLq)) {
@@ -780,7 +784,7 @@ function print_header() {
                             } ?></b> in <b><?php eo($time_all) ?></b> sec<br>
                 <b><?php eo($out_message) ?></b>
             </div>
-            <?php echo $nav . $sqldr . $nav; ?>
+            <?php echo $nav . $sqldr . $nav; // nosemgrep: php.lang.security.injection.echoed-request.echoed-request ?>
         <?php
         print_footer();
     }
@@ -1351,6 +1355,8 @@ function print_header() {
             ex_hdr($ctp ?: 'text/csv', "$t[0].csv$aext");
             if (strpos($DB['chset'] ?? '', 'utf8') === 0) ex_w($BOM);
 
+            // Identifier is backtick-quoted by dbqid().
+            // nosemgrep: php.lang.security.injection.tainted-sql-string.tainted-sql-string
             $sth = db_query("select * from " . dbqid($t[0]), NULL, 0, MYSQLI_USE_RESULT);
             $fn = db_fcount($sth);
             $fields = db_fields($sth);

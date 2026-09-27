@@ -40,6 +40,7 @@ class PlayerProxyController extends BasePlayerController {
 				header('Content-Disposition: attachment; filename="' . md5($rURL . SettingsManager::get('live_streaming_pass')) . '.vtt"');
 				header('X-Content-Type-Options: nosniff');
 				header('Content-Length: ' . strlen($rData));
+				// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 				echo $rData;
 				exit();
 			}

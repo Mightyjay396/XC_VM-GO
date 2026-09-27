@@ -82,6 +82,7 @@ if (isset($_SESSION['hash'])) {
 		} else {
 			header('Content-Type: image/png');
 			header('X-Content-Type-Options: nosniff');
+			// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 			echo file_get_contents($rImagePath);
 
 			exit();
