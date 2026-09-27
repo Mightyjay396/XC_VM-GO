@@ -19,8 +19,9 @@ namespace XcVm\Core\Cluster;
  *                {key: count}, at most MAX_KEYS keys, the rest under OTHER
  * audit.json     config/cluster/audit.json, {"settings_misses": {key: count}}:
  *                the last WINDOW_DAYS days, most missed first, at most
- *                MAX_KEYS keys and OTHER; the agent sends it as the
- *                heartbeat's `audit`, and MAIN keeps it with the node
+ *                MAX_KEYS keys and OTHER, with ConnectAudit's counters; the
+ *                agent sends it as the heartbeat's `audit`, and MAIN keeps
+ *                it with the node
  * ```
  *
  * audit.json is rewritten when a merge adds a key to the day, or finds it
@@ -189,10 +190,13 @@ final class SettingsAudit {
 
 	/**
 	 * Write `audit.json` for the agent in $rAgentDir (config/cluster/):
-	 * `{"settings_misses": summary()}` on a node in mode 1 or 2; removed in
-	 * mode 0, where nothing is counted. False when there is no agent (MAIN, a
-	 * legacy node), the write failed, or this process cannot read the days
-	 * (a directory or day file another user's): the report there stays.
+	 * `{"settings_misses": summary()}` and this node's connects
+	 * (ConnectAudit::report: `sql_connects`, `redis_connects`, `sites`,
+	 * `connects_since`) on a node in mode 1 or 2; removed in mode 0, where
+	 * nothing is counted, and the connect audit's window with it. False when
+	 * there is no agent (MAIN, a legacy node), the write failed, or this
+	 * process cannot read the days (a directory or day file another user's):
+	 * the report there stays.
 	 */
 	public static function publish(?string $rAgentDir = null, ?int $rNow = null): bool {
 		$rAgentDir ??= self::agentDir();
@@ -201,14 +205,17 @@ final class SettingsAudit {
 		}
 		if (NodeFlows::declared()['mode'] < 1) {
 			@unlink($rAgentDir . 'audit.json');
+			ConnectAudit::forget();
 			return false;
 		}
-		$rSum = self::days($rNow ?? time());
-		if ($rSum === null) {
+		$rNow ??= time();
+		$rSum = self::days($rNow);
+		$rConnects = $rSum === null ? null : ConnectAudit::report($rNow);
+		if ($rSum === null || $rConnects === null) {
 			return false;
 		}
 		$rTmp = $rAgentDir . 'audit.json.' . getmypid() . '.tmp';
-		if (@file_put_contents($rTmp, (string) json_encode(['settings_misses' => (object) self::top($rSum)])) === false || !@rename($rTmp, $rAgentDir . 'audit.json')) {
+		if (@file_put_contents($rTmp, (string) json_encode(['settings_misses' => (object) self::top($rSum)] + $rConnects, JSON_UNESCAPED_SLASHES)) === false || !@rename($rTmp, $rAgentDir . 'audit.json')) {
 			@unlink($rTmp);
 			return false;
 		}
@@ -277,20 +284,20 @@ final class SettingsAudit {
 	}
 
 	/**
-	 * Most missed first (then by name), at most MAX_KEYS names; the rest,
-	 * and OTHER, last under OTHER.
+	 * Most counted first (then by name), at most $rMax names (MAX_KEYS for
+	 * the misses); the rest, and OTHER, last under OTHER.
 	 *
 	 * @param array<string, int> $rCounts
 	 * @return array<string, int>
 	 */
-	public static function top(array $rCounts): array {
+	public static function top(array $rCounts, int $rMax = self::MAX_KEYS): array {
 		$rOther = $rCounts[self::OTHER] ?? 0;
 		unset($rCounts[self::OTHER]);
 		$rKeys = array_map('strval', array_keys($rCounts));
 		usort($rKeys, static fn(string $a, string $b): int => [$rCounts[$b], $a] <=> [$rCounts[$a], $b]);
 		$rOut = [];
 		foreach ($rKeys as $i => $rKey) {
-			if ($i < self::MAX_KEYS) {
+			if ($i < $rMax) {
 				$rOut[$rKey] = $rCounts[$rKey];
 			} else {
 				$rOther += $rCounts[$rKey];
@@ -344,8 +351,8 @@ final class SettingsAudit {
 		return $rSum;
 	}
 
-	/** Can this process search $rDir, or the nearest level above it that exists? */
-	private static function searchable(string $rDir): bool {
+	/** Can this process search $rDir, or the nearest level above it that exists? (ConnectAudit's too.) */
+	public static function searchable(string $rDir): bool {
 		for ($rPath = rtrim($rDir, '/'); !is_dir($rPath); $rPath = dirname($rPath)) {
 			if (dirname($rPath) === $rPath) {
 				return false;
@@ -357,9 +364,9 @@ final class SettingsAudit {
 	/**
 	 * Make $rDir level by level (0750), each level made handed to the agent's
 	 * user: a level a root process left its own would shut xc_vm's processes
-	 * out of every day file below it.
+	 * out of every day file below it. (ConnectAudit's directory too.)
 	 */
-	private static function makeDir(string $rDir): bool {
+	public static function makeDir(string $rDir): bool {
 		$rMissing = [];
 		for ($rPath = rtrim($rDir, '/'); !is_dir($rPath); $rPath = dirname($rPath)) {
 			if (dirname($rPath) === $rPath) {
@@ -379,9 +386,9 @@ final class SettingsAudit {
 
 	/**
 	 * What a root process made goes to the owner of the agent's directory
-	 * (xc_vm on a node), whose processes add to it.
+	 * (xc_vm on a node), whose processes add to it. (ConnectAudit's files too.)
 	 */
-	private static function own(string $rPath, ?string $rAgentDir = null): void {
+	public static function own(string $rPath, ?string $rAgentDir = null): void {
 		if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
 			return;
 		}

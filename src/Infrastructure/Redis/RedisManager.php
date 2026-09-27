@@ -116,7 +116,8 @@ class RedisManager {
 	 * Connect to \Redis (low-level, non-singleton).
 	 *
 	 * If $rRedis is already a live connection, returns it as-is.
-	 * Otherwise creates a new connection via \XC_VM::redis_connect().
+	 * Otherwise creates a new connection via \XC_VM::redis_connect(), past
+	 * ConnectAudit::guard(): counted on a node in cluster mode 1 or 2.
 	 *
 	 * @param \Redis|null $rRedis Existing \Redis instance or null.
 	 * @return \Redis|null Connected \Redis instance, or null on failure.
@@ -131,7 +132,7 @@ class RedisManager {
 			}
 		}
 
-		ConnectAudit::record(ConnectAudit::REDIS);
+		ConnectAudit::guard(ConnectAudit::REDIS);
 		try {
 			$rRedis = \XC_VM::redis_connect();
 			if (!is_object($rRedis)) {

@@ -119,3 +119,8 @@ register_shutdown_function(static function () use ($ingestLockDir): void {
 // 2, and many tests point NodeFlows at such a file: off for the suite; a
 // test that checks it gives it its own directories.
 \XcVm\Core\Cluster\SettingsAudit::useDir(false);
+
+// The connect audit (ConnectAudit) counts connects on nodes in mode 1 or 2,
+// in STORAGE_PATH, which some tests define as a shared path: off for the
+// suite; a test that checks it gives it its own directory.
+\XcVm\Core\Cluster\ConnectAudit::useDir(false);

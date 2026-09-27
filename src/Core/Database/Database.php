@@ -125,6 +125,9 @@ class Database {
 	 * exist". Callers that only want to fail gracefully on the MAIN database must
 	 * pass $graceful, NOT $migrate.
 	 *
+	 * On a load balancer every connect passes ConnectAudit::guard() first:
+	 * counted in cluster mode 1 and 2.
+	 *
 	 * @param bool      $migrate  Connect to the `xc_vm_migrate` schema instead of
 	 *                            the configured one. Use only for migration code.
 	 * @param bool|null $graceful Return false on failure instead of exiting. When
@@ -136,7 +139,7 @@ class Database {
 			$graceful = $migrate;
 		}
 
-		ConnectAudit::record(ConnectAudit::SQL);
+		ConnectAudit::guard(ConnectAudit::SQL);
 		try {
 			$this->dbh = \XC_VM::db_connect($migrate);
 			if (!$this->dbh) {
