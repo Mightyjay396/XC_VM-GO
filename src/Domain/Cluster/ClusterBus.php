@@ -44,6 +44,12 @@ use XcVm\Core\Process\ProcessManager;
  * `cl:hb_flushed` (a field per node, no TTL), `cl:tel:<sid>` (the telemetry
  * document, 10 min TTL), `cl:flusher` and `cl:flush_lock`, which the
  * liveness loop flushes into MySQL.
+ *
+ * And what a request's authentication reads (NodeAuthCache, through
+ * script()): `cl:auth:<uuid>` (the node's row) and `cl:auth:<uuid>:<epoch>`
+ * (an epoch's sealed record), 30 s TTL, valid for the node's version in
+ * `cl:auth_ver`, which every writer raises; `cl:auth_seq` (no TTL) turns
+ * away a fill that read MySQL before a write.
  */
 final class ClusterBus {
 	/** Seconds a wake waits for its reader. */
@@ -261,10 +267,12 @@ final class ClusterBus {
 
 	/**
 	 * Record the current second in a mark, a file beside the bus socket
-	 * (NonceStore), at most one write a second; false when it cannot be
-	 * written, true where there is no bus. A mark never moves back (a worker
-	 * that read the clock a second earlier writes late), unless it is more
-	 * than a second ahead: the clock stepped back.
+	 * (NonceStore, NodeAuthCache), at most one write a second; false when it
+	 * cannot be written, true where there is no bus. A mark never moves back
+	 * (a worker that read the clock a second earlier writes late), unless it
+	 * is more than a second ahead: the clock stepped back. One that root
+	 * creates goes to the owner of the bus's directory, so that the workers
+	 * can move it on.
 	 */
 	public static function mark(string $rName, int $rNowMs): bool {
 		$rPath = self::markPath($rName);
@@ -273,7 +281,19 @@ final class ClusterBus {
 		}
 		$rSec = intdiv($rNowMs, 1000);
 		$rAt = self::markedAt($rName);
-		return ($rAt !== null && $rAt >= $rSec && $rAt <= $rSec + 1) || @touch($rPath, $rSec);
+		if ($rAt !== null && $rAt >= $rSec && $rAt <= $rSec + 1) {
+			return true;
+		}
+		if (!@touch($rPath, $rSec)) {
+			return false;
+		}
+		if ($rAt === null && function_exists('posix_geteuid') && posix_geteuid() === 0) {
+			$rOwner = @fileowner(dirname($rPath));
+			if ($rOwner !== false && $rOwner !== 0) {
+				@chown($rPath, $rOwner);
+			}
+		}
+		return true;
 	}
 
 	/** The second a mark holds, or null without one. */

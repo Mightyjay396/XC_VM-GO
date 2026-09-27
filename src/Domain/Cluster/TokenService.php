@@ -60,6 +60,9 @@ final class TokenService {
 			0,
 			ClusterClock::now()
 		);
+		// The number may be minted again (a refresh retried with another key):
+		// the node's next request reads the new record.
+		NodeAuthCache::forget($rServerID);
 		return $rIssued;
 	}
 
@@ -70,13 +73,15 @@ final class TokenService {
 	}
 
 	/**
-	 * The session keys of the epoch a request names. Throws the extension's
-	 * ClusterRefusedException (REVOKED, CLOCK, EXPIRED, …) when it refuses.
+	 * The session keys of the epoch a request names, from its row (epoch(),
+	 * or the cluster bus's copy: NodeAuthCache::load()); null without a live
+	 * row. Throws the extension's ClusterRefusedException (REVOKED, CLOCK,
+	 * EXPIRED, …) when it refuses.
 	 *
 	 * @param array<string, mixed> $rNode
+	 * @param array<string, mixed>|null $rRow The epoch's row, or its record alone.
 	 */
-	public static function session(ClusterCrypto $rCrypto, array $rNode, int $rEpoch): ?SessionKeys {
-		$rRow = self::epoch((int) $rNode['server_id'], $rEpoch);
+	public static function open(ClusterCrypto $rCrypto, array $rNode, ?array $rRow): ?SessionKeys {
 		if ($rRow === null) {
 			return null;
 		}
@@ -147,6 +152,7 @@ final class TokenService {
 		// Minted first: a licence refusal leaves the node's rows as they were.
 		$rIssued = self::issue($rCrypto, $rNode, $rEpoch, $rAgentEphPub);
 		self::db()->query('DELETE FROM `cluster_node_epochs` WHERE `server_id` = ? AND `epoch` <> ?;', $rServerID, $rEpoch);
+		NodeAuthCache::forget($rServerID);
 		ClusterAudit::log('token.rekey', $rServerID, ['epoch' => $rEpoch]);
 		return $rIssued;
 	}

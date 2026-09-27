@@ -24,6 +24,7 @@ use XcVm\Domain\Cluster\ClusterSemaphore;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\HeartbeatService;
 use XcVm\Domain\Cluster\NodeAudit;
+use XcVm\Domain\Cluster\NodeAuthCache;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Cluster\NonceStore;
@@ -320,6 +321,8 @@ final class ClusterApiTest extends TestCase {
 	private function expired(): array {
 		$rKeys = $this->active();
 		$this->rDb->query('DELETE FROM `cluster_node_epochs` WHERE `server_id` = 5');
+		// A write that bypasses MAIN's writers: the bus must not hold the epoch either.
+		NodeAuthCache::forget(self::SID);
 		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rKeys);
 		$this->denial($rRes, 401, 'TOKEN_EXPIRED', $rReq);
 		return $rKeys;
@@ -1647,7 +1650,7 @@ final class ClusterApiTest extends TestCase {
 		for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
 			ClusterSemaphore::acquire('config');
 		}
-		$this->rDb->query("UPDATE `cluster_nodes` SET `state` = 'quarantined' WHERE `server_id` = 5");
+		NodeRegistry::update(self::SID, ['state' => 'quarantined']);
 		[$rRes, , $rReq] = $this->call('config', ['blocklist_since' => 0], 1, $rKeys);
 		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
 	}
@@ -1810,7 +1813,7 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame([], $rLog->writes(), 'a request refused a permit writes nothing to MySQL');
 		$this->denial(ClusterApi::handle($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 401, 'REPLAY', $r['req']);
 		DatabaseFactory::set($this->rDb);
-		$this->rDb->query("UPDATE `cluster_nodes` SET `state` = 'quarantined' WHERE `server_id` = 5");
+		NodeRegistry::update(self::SID, ['state' => 'quarantined']);
 		[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => []], 1, $rKeys);
 		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
 		$this->assertSame([5, 0], [$rRedis->zCard('sem:ingest:p0'), $rRedis->zCard('sem:ingest:bulk')], 'no refused request took a permit');
@@ -1852,5 +1855,158 @@ final class ClusterApiTest extends TestCase {
 			[$rRes, $rCtx] = $this->call('events', ['lane' => 'p1', 'first_useq' => $i, 'events' => [['type' => 'skip', 'd' => ['lane' => 'p1', 'count' => 1]]]], 1, $rKeys);
 			$this->assertSame($i, $this->reply($rRes, $rCtx, $rKeys)['useq'], 'as before the bus');
 		}
+	}
+
+	// ── The cluster bus: authentication ──────────────────────────────────
+
+	/** A request the agent sends, served: its reply. */
+	private function served(string $rOp, array $rPayload, int $rEpoch, array $rKeys): array {
+		[$rRes, $rCtx] = $this->call($rOp, $rPayload, $rEpoch, $rKeys);
+		return $this->reply($rRes, $rCtx, $rKeys);
+	}
+
+	/** The servers ClusterAdmin acts on: MAIN and the node, a load balancer. */
+	private function servers(): array {
+		return [1 => ['server_name' => 'main', 'is_main' => 1, 'server_type' => 0] + $this->rMain, self::SID => ['server_name' => 'lb', 'is_main' => 0, 'server_type' => 0]];
+	}
+
+	public function testOnTheBusAHeldHeartbeatAsksMySqlNothingAndALongPollOnlyForItsCommands(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		HeartbeatService::flush(); // MAIN's flusher is running
+		$this->served('heartbeat', [], 1, $rKeys); // the first request since enrol_complete reads MySQL
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		foreach ([1, 2, 3] as $i) {
+			ClusterClock::fix($this->rT0 + 2000 * $i);
+			$this->assertSame('active', $this->served('heartbeat', ['root_ready' => true, 'telemetry' => ['cpu' => 3]], 1, $rKeys)['state']);
+		}
+		$this->assertSame([], $rLog->rQueries, 'a heartbeat on the bus asks MySQL nothing at all, its authentication included');
+
+		$this->assertSame([], $this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys)['commands']);
+		$this->assertNotSame([], $rLog->rQueries);
+		foreach ($rLog->rQueries as $rQuery) {
+			$this->assertStringContainsString('`cluster_commands`', $rQuery, 'the long-poll reads its commands, and nothing to authenticate');
+		}
+	}
+
+	public function testOnTheBusEnrolCompleteIsSeenAtTheNextRequest(): void {
+		$this->bus();
+		$rFirst = $this->enrol();
+		$rTok = $this->openToken($rFirst['token_sealed'], $this->rEph[1]);
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rTok['keys']);
+		$this->assertSame('enrolling', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state'], 'the enrolling row, now held on the bus');
+		$this->assertSame('active', $this->served('enrol_complete', ['instance_id' => 'inst-a'], 1, $rTok['keys'])['state']);
+		$this->assertSame('active', $this->served('heartbeat', [], 1, $rTok['keys'])['state']);
+	}
+
+	public function testOnTheBusARevokedNodeIsRefusedAtItsNextRequest(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		$this->served('heartbeat', [], 1, $rKeys);
+		$this->served('heartbeat', [], 1, $rKeys); // held on the bus
+		$this->assertSame('cluster_node_revoked', ClusterAdmin::act($this->rCrypto, ['cluster_action' => 'revoke', 'server_id' => self::SID], $this->servers(), 1, $this->rSettings, 1)['message']);
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame(2, $this->denial($rRes, 403, 'NODE_REVOKED', $rReq)['revoked_gen'], 'the revoked row, not the one the bus held');
+	}
+
+	public function testOnTheBusAQuarantineIsSeenAtTheNextRequest(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		$this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys); // held on the bus
+		$this->assertSame('quarantined', $this->served('hello', ['instance_id' => 'inst-CLONE'], 1, $rKeys)['state']);
+		[$rRes, , $rReq] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys);
+		$this->assertSame('quarantined', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state']);
+		$this->assertSame('quarantined', $this->served('heartbeat', [], 1, $rKeys)['state']);
+	}
+
+	public function testOnTheBusARekeysQuarantineIsSeenAtTheNextRequest(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		$this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys); // held on the bus
+		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32), ['instance_id' => 'inst-CLONE']);
+		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+		[$rRes, , $rReq] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys);
+		$this->assertSame('quarantined', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state']);
+	}
+
+	public function testOnTheBusHelloReturnsTheCursorsAsMySqlHasThem(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_LOGS]);
+		$this->served('heartbeat', [], 1, $rKeys); // held on the bus, its cursors at 0
+		$this->assertSame(1, $this->served('events', ['lane' => 'p1', 'first_useq' => 1, 'events' => [['type' => 'skip', 'd' => ['lane' => 'p1', 'count' => 1]]]], 1, $rKeys)['useq']);
+		$this->assertSame(['p0' => 0, 'p1' => 1], $this->served('hello', ['instance_id' => 'inst-a'], 1, $rKeys)['cursors'], 'the batch just applied, not the held row\'s cursor');
+	}
+
+	public function testOnTheBusAnAdminsFlowSwitchIsSeenAtTheNextRequest(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		$rFlows = NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONNECTIONS;
+		NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => $rFlows]);
+		$this->assertSame($rFlows, $this->served('heartbeat', [], 1, $rKeys)['flows']);
+		$this->assertSame($rFlows, $this->served('heartbeat', [], 1, $rKeys)['flows']); // held on the bus
+		$this->assertSame('success', ClusterAdmin::act($this->rCrypto, ['cluster_action' => 'connections_off', 'server_id' => self::SID], $this->servers(), 1, $this->rSettings, 1)['type']);
+		$this->assertSame($rFlows & ~NodeRegistry::FLOW_CONNECTIONS, $this->served('heartbeat', [], 1, $rKeys)['flows']);
+		[$rRes, , $rReq] = $this->call('conn_admit', ['uuid' => 'viewer-1'], 1, $rKeys);
+		$this->denial($rRes, 409, 'FLOW_OFF', $rReq);
+	}
+
+	public function testOnTheBusAnEpochMintedAgainUnderItsNumberIsReadAgain(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		$rEphA = random_bytes(32);
+		$rTokA = $this->openToken((string) base64_decode($this->served('token_refresh', ['eph_pub' => base64_encode(sodium_crypto_scalarmult_base($rEphA))], 1, $rKeys)['token_sealed']), $rEphA);
+		// Epoch 2 is named once, so the bus holds its record, and not used.
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 2, $rTokA['keys'], ['body' => static fn($b) => $b . 'x']);
+		$this->denial($rRes, 401, 'BAD_MAC', $rReq);
+		// The refresh reply was lost: asked again with another key, epoch 2 is minted anew.
+		$rEphB = random_bytes(32);
+		$rTokB = $this->openToken((string) base64_decode($this->served('token_refresh', ['eph_pub' => base64_encode(sodium_crypto_scalarmult_base($rEphB))], 1, $rKeys)['token_sealed']), $rEphB);
+		$this->assertSame(2, $rTokB['doc']['epoch']);
+		$this->assertSame('active', $this->served('heartbeat', [], 2, $rTokB['keys'])['state'], 'the new record, not the one the bus held');
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 2, $rTokA['keys']);
+		$this->denial($rRes, 401, 'BAD_MAC', $rReq);
+	}
+
+	public function testOnTheBusARekeyDropsTheEpochsItReplaces(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		$this->served('heartbeat', [], 1, $rKeys); // epoch 1 held on the bus
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($this->challenge(), $rEph);
+		$rTok = $this->rekeyed($rRes, $rReq, $rEph);
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->denial($rRes, 401, 'TOKEN_EXPIRED', $rReq);
+		$this->assertSame('active', $this->served('heartbeat', [], $rTok['doc']['epoch'], $rTok['keys'])['state']);
+	}
+
+	public function testOnTheBusAReEnrolmentIsSeenAtTheNextRequest(): void {
+		$this->bus();
+		$rOld = $this->active();
+		$this->served('heartbeat', [], 1, $rOld); // the old enrolment's epoch 1 held on the bus
+		$rSecond = $this->enrol();
+		$rTok = $this->openToken($rSecond['token_sealed'], $this->rEph[1]);
+		$this->assertSame(2, $this->served('enrol_complete', ['instance_id' => 'inst-b'], 1, $rTok['keys'])['gen'], 'the new epoch 1, not the one the bus held');
+		[$rRes] = $this->call('heartbeat', [], 1, $rOld);
+		$this->assertSame(401, $rRes['status']);
+	}
+
+	public function testOnTheBusANewEpochIsMarkedOnceThenAsksMySqlNothing(): void {
+		$this->bus();
+		$rKeys = $this->active();
+		HeartbeatService::flush();
+		$rEph = random_bytes(32);
+		$rTok2 = $this->openToken((string) base64_decode($this->served('token_refresh', ['eph_pub' => base64_encode(sodium_crypto_scalarmult_base($rEph))], 1, $rKeys)['token_sealed']), $rEph);
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		$this->served('heartbeat', [], 2, $rTok2['keys']);
+		$this->assertNotSame([], $rLog->writes(), 'epoch 2 becomes current');
+		$rLog->rQueries = [];
+		$this->served('heartbeat', [], 2, $rTok2['keys']);
+		$this->assertSame([], $rLog->writes(), 'read again once, with epoch 2 current: not marked again');
+		$rLog->rQueries = [];
+		$this->served('heartbeat', [], 2, $rTok2['keys']);
+		$this->assertSame([], $rLog->rQueries);
 	}
 }

@@ -109,7 +109,9 @@ final class ClusterApi {
 		if (!Canonical::withinWindow($rH['ts_ms'], ClusterClock::nowMs())) {
 			return DenialFactory::deny($rCrypto, 401, 'CLOCK_SKEW', $rH['node'], $rH['nonce']);
 		}
-		$rNode = str_starts_with($rH['node'], 'sid:') ? null : NodeRegistry::byUuid($rH['node']);
+		// The node and its epoch's record: from the cluster bus while it holds
+		// them, else MySQL (NodeAuthCache).
+		[$rNode, $rEpochRow] = str_starts_with($rH['node'], 'sid:') ? [null, null] : NodeAuthCache::load($rH['node'], $rH['epoch']);
 		if ($rNode === null) {
 			return DenialFactory::deny($rCrypto, 401, 'UNKNOWN_NODE', $rH['node'], $rH['nonce']);
 		}
@@ -117,7 +119,7 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 403, 'NODE_REVOKED', $rH['node'], $rH['nonce'], ['revoked_gen' => (int) $rNode['gen']]);
 		}
 		try {
-			$rKeys = TokenService::session($rCrypto, $rNode, $rH['epoch']);
+			$rKeys = TokenService::open($rCrypto, $rNode, $rEpochRow);
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH, true);
 		}
@@ -486,6 +488,10 @@ final class ClusterApi {
 	}
 
 	private static function hello(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain, int $rPort): array {
+		// Its cursors as MySQL has them now: the row the request was
+		// authenticated with may be the cluster bus's copy, whose event
+		// cursors lag (NodeAuthCache::LAGGING).
+		$rNode = NodeRegistry::byServer((int) $rNode['server_id']) ?? $rNode;
 		$rInstance = self::short($rP['instance_id'] ?? null);
 		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)]
 			+ ClusterEndpoint::nodeUses($rNode, $rP, $rPort);
