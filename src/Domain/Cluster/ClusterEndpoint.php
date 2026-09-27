@@ -45,6 +45,9 @@ final class ClusterEndpoint {
 	/** At most this many old URLs are kept; the latest changes win. */
 	public const MAX_URLS = 8;
 
+	/** The largest policy version a node may say it dials (`cluster_nodes.policy_ver`, int unsigned). */
+	private const MAX_VER = 4294967295;
+
 	/** The settings columns of the endpoint state, read again from the database before use (stored()). */
 	private const STATE = ['cluster_api_port', 'cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
 
@@ -233,6 +236,34 @@ final class ClusterEndpoint {
 		self::save($rPorts, $rUrlsGone ? $rUrls : null);
 		ClusterAudit::log('cluster.endpoint_expired', null, ['kept' => array_keys($rPorts), 'kept_urls' => array_keys($rUrls)], 'cron');
 		return true;
+	}
+
+	/**
+	 * What a node's hello or heartbeat says of the URL it uses, as the
+	 * `cluster_nodes` fields that changed; none, so a heartbeat stays off
+	 * MySQL, when neither did:
+	 *
+	 * - `policy_ver`: the version of the policy whose main_urls the agent
+	 *   dials, as it says in the payload; 0, unknown, when it does not say
+	 *   it as an integer (an older agent);
+	 * - `main_port`: the MAIN port nginx took the request on (`$server_port`),
+	 *   when nginx passed one, once migration 046 added the column.
+	 *
+	 * @param array<string, mixed> $rNode The node's row, as the request was authenticated against.
+	 * @param array<string, mixed> $rPayload
+	 * @return array<string, int>
+	 */
+	public static function nodeUses(array $rNode, array $rPayload, int $rPort): array {
+		$rVer = $rPayload['policy_ver'] ?? 0;
+		$rVer = is_int($rVer) && $rVer >= 0 && $rVer <= self::MAX_VER ? $rVer : 0;
+		$rOut = [];
+		if (array_key_exists('policy_ver', $rNode) && (int) $rNode['policy_ver'] !== $rVer) {
+			$rOut['policy_ver'] = $rVer;
+		}
+		if ($rPort >= 1 && $rPort <= 65535 && array_key_exists('main_port', $rNode) && (int) $rNode['main_port'] !== $rPort) {
+			$rOut['main_port'] = $rPort;
+		}
+		return $rOut;
 	}
 
 	/**

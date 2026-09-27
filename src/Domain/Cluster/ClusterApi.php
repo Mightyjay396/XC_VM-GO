@@ -59,7 +59,7 @@ final class ClusterApi {
 	];
 
 	/**
-	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string, https?: bool} $rReq
+	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string, https?: bool, port?: int} $rReq
 	 * @param array<string, mixed> $rSettings
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
 	 * @return array{status: int, headers: array<string, string>, body: string}
@@ -190,8 +190,8 @@ final class ClusterApi {
 			return match ($rOp) {
 				'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
 				'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-				'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
-				'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
+				'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (int) ($rReq['port'] ?? 0)),
+				'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, (int) ($rReq['port'] ?? 0)),
 				'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
 				'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
@@ -485,9 +485,10 @@ final class ClusterApi {
 		]));
 	}
 
-	private static function hello(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
+	private static function hello(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain, int $rPort): array {
 		$rInstance = self::short($rP['instance_id'] ?? null);
-		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)];
+		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)]
+			+ ClusterEndpoint::nodeUses($rNode, $rP, $rPort);
 		$rState = (string) $rNode['state'];
 		if ($rInstance !== null && !empty($rNode['instance_id']) && !hash_equals((string) $rNode['instance_id'], $rInstance) && $rState === 'active') {
 			// Authenticated evidence of a clone: the same token from another install.
@@ -544,8 +545,14 @@ final class ClusterApi {
 		return $rOut === [] ? null : substr(implode(',', $rOut), 0, 255);
 	}
 
-	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {
+	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, int $rPort): array {
 		HeartbeatService::record($rNode, $rP, $rH['ts_ms']);
+		// The policy the node dials and the MAIN port it reached, written only
+		// when either changed (ClusterEndpoint::nodeUses()).
+		$rUses = ClusterEndpoint::nodeUses($rNode, $rP, $rPort);
+		if ($rUses !== []) {
+			NodeRegistry::update((int) $rNode['server_id'], $rUses);
+		}
 		// A node that holds its viewers sends its registry's digest; a drift
 		// that outlives the events in flight gets its snapshot asked for.
 		$rWant = false;

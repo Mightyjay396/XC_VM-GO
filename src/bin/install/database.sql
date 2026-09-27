@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS `cluster_nodes` (
   `useq_p1` bigint(20) unsigned NOT NULL DEFAULT '0',
   `cmd_seq` bigint(20) unsigned NOT NULL DEFAULT '0',
   `policy_ver` int(10) unsigned NOT NULL DEFAULT '0',
+  `main_port` smallint(5) unsigned DEFAULT NULL,
   `quarantine_reason` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `row_mac` binary(32) DEFAULT NULL,
   `created_at` int(11) NOT NULL,

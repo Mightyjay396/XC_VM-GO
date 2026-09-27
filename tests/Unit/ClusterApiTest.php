@@ -427,6 +427,49 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(1, (int) $this->rDb->get_row()['status'], 'first authenticated heartbeat marks the server up');
 	}
 
+	/**
+	 * The hello and the heartbeat say which policy the agent dials
+	 * (`policy_ver`), and nginx which MAIN port took them (`$server_port`).
+	 * Both are recorded when they change, and only then, so a heartbeat that
+	 * changes neither writes nothing more.
+	 */
+	public function testHelloAndHeartbeatRecordThePolicyAndPortTheNodeUses(): void {
+		$rKeys = $this->active();
+		$rSend = function (string $rOp, array $rPayload, int $rPort) use ($rKeys): void {
+			ClusterClock::fix(ClusterClock::nowMs() + 2000);
+			$r = $this->request($rOp, $rPayload, 1, $rKeys);
+			$this->reply(ClusterApi::handle($this->rCrypto, ['port' => $rPort] + $r['req'], $this->rSettings, $this->rMain), $r['ctx'], $rKeys);
+		};
+		$rNode = static fn(): array => NodeRegistry::byServer(self::SID);
+
+		// Before migration 046 there is no main_port column: the version alone.
+		$rSend('hello', ['instance_id' => 'inst-a', 'policy_ver' => 1], 25461);
+		$this->assertSame(1, (int) $rNode()['policy_ver']);
+		$this->assertArrayNotHasKey('main_port', $rNode());
+
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `main_port` int DEFAULT NULL');
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		$rRecorded = static fn(): array => array_values(array_filter($rLog->writes(), static fn(string $rQuery): bool => str_contains($rQuery, '`main_port`') || str_contains($rQuery, '`policy_ver`')));
+		$rSend('heartbeat', ['policy_ver' => 1], 25461);
+		$this->assertSame([1, 25461], [(int) $rNode()['policy_ver'], (int) $rNode()['main_port']]);
+		$this->assertCount(1, $rRecorded());
+		$rSend('heartbeat', ['policy_ver' => 1], 25461);
+		$this->assertCount(1, $rRecorded(), 'nothing changed: nothing written');
+
+		$rSend('heartbeat', ['policy_ver' => 2, 'telemetry' => ['cpu' => 3]], 8080);
+		$this->assertSame([2, 8080], [(int) $rNode()['policy_ver'], (int) $rNode()['main_port']]);
+		$rSend('hello', ['instance_id' => 'inst-a', 'policy_ver' => 3], 8443);
+		$this->assertSame([3, 8443], [(int) $rNode()['policy_ver'], (int) $rNode()['main_port']]);
+		$this->assertSame('active', $rNode()['state']);
+
+		// An agent that says nothing (an older one, after a downgrade) is
+		// unknown again; a request nginx gave no port changes no port.
+		$rSend('heartbeat', [], 0);
+		$this->assertSame([0, 8443], [(int) $rNode()['policy_ver'], (int) $rNode()['main_port']]);
+		$this->assertCount(4, $rRecorded());
+	}
+
 	public function testHelloFromAnotherInstanceQuarantines(): void {
 		$rKeys = $this->active();
 		$this->peer(6, ReplicaBuilder::FEATURE_CONFIG_CHANGED);

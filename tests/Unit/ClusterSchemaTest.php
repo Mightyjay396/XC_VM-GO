@@ -21,6 +21,23 @@ final class ClusterSchemaTest extends TestCase {
 		return array_combine($rM[1], array_map('trim', $rM[2]));
 	}
 
+	/**
+	 * The cluster migrations above, then every later core migration from 028
+	 * on: one may ALTER a column into a cluster table (046 adds
+	 * `cluster_nodes.main_port`) without being listed.
+	 *
+	 * @return list<string>
+	 */
+	private function migrations(): array {
+		$rNames = self::MIGRATIONS;
+		foreach (glob(dirname(__DIR__, 2) . '/src/migrations/database/up/*.sql') ?: [] as $rFile) {
+			if ((int) basename($rFile) >= 28) {
+				$rNames[] = basename($rFile, '.sql');
+			}
+		}
+		return array_values(array_unique($rNames));
+	}
+
 	public function testEveryMigrationHasADownFile(): void {
 		foreach (self::MIGRATIONS as $rName) {
 			$this->assertFileExists(dirname(__DIR__, 2) . '/src/migrations/database/up/' . $rName . '.sql');
@@ -33,7 +50,7 @@ final class ClusterSchemaTest extends TestCase {
 		// Columns a later migration ALTERs into a table: present in database.sql,
 		// absent from the migration that created the table.
 		$rAdded = [];
-		foreach (self::MIGRATIONS as $rName) {
+		foreach ($this->migrations() as $rName) {
 			if (preg_match_all('/ALTER TABLE `([a-z_]+)` ADD COLUMN IF NOT EXISTS `([a-z_]+)`/', $this->src('migrations/database/up/' . $rName . '.sql'), $rM, PREG_SET_ORDER)) {
 				foreach ($rM as [, $rTable, $rColumn]) {
 					$rAdded[$rTable][] = $rColumn;
