@@ -156,7 +156,7 @@ final class ProcessRunnerTest extends TestCase {
 	 * element per argument, whatever shell syntax a value holds.
 	 */
 	public function testStartDoesNotWaitForTheProgram(): void {
-		$rProgram = $this->program('slow', 'sleep 5; touch "$0.late"');
+		$rProgram = $this->program('slow', 'sleep 1; touch "$0.late"');
 		$rBefore = microtime(true);
 
 		$this->assertTrue(ProcessRunner::start([$rProgram, '; touch "' . $this->rDir . 'injected"']));
@@ -165,7 +165,8 @@ final class ProcessRunnerTest extends TestCase {
 		$this->assertFileDoesNotExist($rProgram . '.late', 'and it has not finished yet');
 		// The argument is text, not a command: the shell in between reads the
 		// script only, never the values.
-		usleep(300000);
+		usleep(1200000);
+		$this->assertFileExists($rProgram . '.late', 'and it has finished before teardown');
 		$this->assertFileDoesNotExist($this->rDir . 'injected');
 	}
 
