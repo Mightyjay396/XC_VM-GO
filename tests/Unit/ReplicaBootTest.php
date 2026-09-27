@@ -359,15 +359,21 @@ final class ReplicaBootTest extends TestCase {
 	public function testFromDiskBuildsTheCachesWhileMainsDatabaseIsUnreachable(): void {
 		$this->flows(1, 63);
 		$this->rFixture->node();
+		// The R2 streams section too (the STREAMS flow is on): the stream
+		// definitions live in tmp/ as well, lost at every reboot.
+		$this->rFixture->stream(10, ReplicaFixture::streamData(10, 5), 4);
+		$this->rFixture->streamsSince(4);
 		[$rCode, $rOut, $rConnects] = $this->child(['cluster:apply', '--from-disk']);
 		$this->assertSame(0, $rCode, $rOut);
 		$this->assertSame([], $rConnects, 'no connection to MAIN\'s database, at boot or after');
 		$rReport = json_decode($rOut, true);
-		$this->assertSame(['verified' => ['blocklist', 'settings', 'servers', 'node', 'crontab', 'secrets'], 'unverified' => []], $rReport['from_disk']);
-		foreach (['secrets', 'settings', 'servers', 'crontab'] as $rPart) {
+		$this->assertSame(['verified' => ['blocklist', 'settings', 'servers', 'node', 'crontab', 'secrets', 'streams'], 'unverified' => []], $rReport['from_disk']);
+		foreach (['secrets', 'settings', 'servers', 'crontab', 'streams'] as $rPart) {
 			$this->assertSame('applied', $rReport[$rPart]['mode'], $rPart);
 		}
 		$this->assertSame('applied', $rReport['mode'], 'the blocklist');
+		$this->assertSame('["http://src.example/10"]', $this->cache('replica_streams/10')['stream']['stream_source']);
+		$this->assertSame([10], array_keys($this->cache('replica_streams/index')['streams']));
 
 		$rSettings = $this->cache('settings');
 		$this->assertSame(['stream-pass', 'UTC'], [$rSettings['live_streaming_pass'], $rSettings['default_timezone']]);
@@ -375,7 +381,7 @@ final class ReplicaBootTest extends TestCase {
 		$this->assertStringContainsString('password=stream-pass', $this->cache('servers')[5]['api_url']);
 		$this->assertSame(['203.0.113.1'], $this->cache('blocked_ips'));
 		$this->assertSame('extra-from-main', trim((string) file_get_contents($this->rHome . 'config/openssl_extra')));
-		$this->assertSame(['settings', 'servers', 'crontab'], array_keys($this->cache('replica_owned')));
+		$this->assertSame(['settings', 'servers', 'crontab', 'streams'], array_keys($this->cache('replica_owned')));
 		$this->assertFileDoesNotExist($this->rHome . 'crontab.log', 'the replica did not own the crontab at boot: left as it is, and MAIN\'s table not read');
 	}
 

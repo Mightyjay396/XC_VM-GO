@@ -2,6 +2,7 @@
 
 namespace XcVm\Tests\Support;
 
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Domain\Cluster\ReplicaBuilder;
 
 /**
@@ -105,6 +106,50 @@ final class ReplicaFixture {
 	public function delta(int $rSeq, array $rAdd, array $rRemove = []): void {
 		$rDoc = ['v' => 1, 'seq' => $rSeq, 'iat' => 1800000000, 'add' => $rAdd, 'remove' => $rRemove];
 		file_put_contents($this->dir() . sprintf('blocklist.d/%019d.blk', $rSeq), $this->record('blk', $rDoc));
+	}
+
+	/**
+	 * Store an R2 `stream` record as the agent does: `streams/<id>.rep` (the
+	 * sealed record), then `streams/<id>.json` (`{etag, ver, data}`;
+	 * $rJsonData: what it says, when it differs from the record).
+	 *
+	 * @param array<mixed> $rData
+	 * @param array<mixed>|null $rJsonData
+	 * @param array<string, mixed> $rDocOver fields of the signed payload to override
+	 */
+	public function stream(int $rID, array $rData, int $rVer = 1, ?array $rJsonData = null, array $rDocOver = []): string {
+		@mkdir($this->dir() . 'streams', 0700, true);
+		$rEtag = ReplicaBuilder::etag($rData);
+		$rDoc = $rDocOver + ['v' => 1, 'section' => 'stream', 'node' => $this->rUuid, 'gen' => 1, 'stream_id' => $rID, 'ver' => $rVer, 'etag' => $rEtag, 'iat' => 1800000000, 'data' => ReplicaBuilder::canonical($rData)];
+		file_put_contents($this->dir() . 'streams/' . $rID . '.rep', $this->record('rep', $rDoc));
+		file_put_contents($this->dir() . 'streams/' . $rID . '.json', json_encode(['etag' => $rEtag, 'ver' => $rVer, 'data' => $rJsonData ?? ReplicaBuilder::canonical($rData)], JSON_UNESCAPED_SLASHES));
+		return $rEtag;
+	}
+
+	/**
+	 * A `stream` record's data as MAIN builds it (StreamRecords::data): a
+	 * live stream assigned to $rServerID, on demand, with one option.
+	 *
+	 * @param array<string, mixed> $rStream `streams` columns to set
+	 * @return array<string, mixed>
+	 */
+	public static function streamData(int $rID, int $rServerID, array $rStream = []): array {
+		return ReplicaBuilder::canonical([
+			'children' => [],
+			'options' => [['argument_id' => 1, 'value' => 'curl/8', 'argument_cat' => 'fetch', 'argument_name' => 'User Agent', 'argument_wprotocol' => 'http', 'argument_key' => 'user_agent', 'argument_cmd' => '-user_agent "%s"', 'argument_type' => 'text', 'argument_default_value' => 'VLC']],
+			'profile' => null,
+			'recordings' => [],
+			'server' => ['server_stream_id' => $rID, 'stream_id' => $rID, 'server_id' => $rServerID, 'parent_id' => null, 'on_demand' => 1],
+			'stream' => ReplicaSections::typed($rStream + ['id' => $rID, 'type' => 1, 'stream_display_name' => 'S' . $rID, 'stream_source' => '["http://src.example/' . $rID . '"]', 'direct_source' => 0], ReplicaSections::STREAM_FIELDS),
+			'tickets' => null,
+			'type' => ['live' => 1, 'type_id' => 1, 'type_key' => 'live', 'type_name' => 'Live Streams', 'type_output' => 'live'],
+		]);
+	}
+
+	/** The streams section's cursor (`streams.json`), as the agent writes it once a pass completed. */
+	public function streamsSince(int $rSince): void {
+		@mkdir($this->dir() . 'streams', 0700, true);
+		file_put_contents($this->dir() . 'streams.json', json_encode(['since' => $rSince]));
 	}
 
 	/** Flip one byte of a stored record. */

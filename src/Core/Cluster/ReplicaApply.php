@@ -81,8 +81,28 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * on disk even when the agent has not run cluster:apply since a change of the
  * flow.
  *
- * The whole sections are applied before the blocklist, whose RTMP publishers
- * may wait on DNS.
+ * The R2 `streams` section (`replica/streams.json`, the agent's cursor, and
+ * `replica/streams/<id>.json`, one `stream` record each) becomes the node's
+ * stream caches (ReplicaStreamCache): one entry per stream, in the shapes the
+ * node's readers took from MAIN's database (StreamSource). Its flow is
+ * STREAMS, not CONFIG:
+ *
+ * - STREAMS on: the entries are written, those of streams the agent removed
+ *   deleted, and StreamSource reads them instead of MAIN's database once an
+ *   apply built them (ReplicaStreamCache::owned). A record that does not
+ *   read (or, from disk, does not verify) writes nothing and deletes
+ *   nothing: its stream keeps the entry it had.
+ * - STREAMS off (shadow): nothing is written; the report names the streams
+ *   MAIN's database says the node holds that the section lacks (`missing`),
+ *   the reverse (`extra`), and the parts and fields that differ (`differ`):
+ *   ids and names only, never a value (stream sources carry credentials)
+ *   and never the tickets.
+ * - Without a whole section (no cursor above 0, no readable `streams/`) or
+ *   with a file that names no stream, nothing is written either, and the
+ *   readers keep MAIN's database.
+ *
+ * The whole sections are applied before the streams section, and both
+ * before the blocklist, whose RTMP publishers may wait on DNS.
  *
  * From disk (`cluster:apply --from-disk`, which `service` runs at boot before
  * the daemons, when the agent may not run yet), every section is taken from
@@ -120,6 +140,17 @@ final class ReplicaApply {
 	 */
 	private static ?array $rFromDisk = null;
 
+	/**
+	 * While an apply runs from disk: the agent's keys, which the streams
+	 * section's records are verified with one by one (ReplicaRecords::stream).
+	 *
+	 * @var array{node: string, box_sk: string, sign_pub: string}|null
+	 */
+	private static ?array $rIdentity = null;
+
+	/** Stream ids a report names at most (`missing`, `extra`, `unreadable`). */
+	private const MAX_IDS = 100;
+
 	/** Tests: another replica directory; null restores the default. */
 	public static function useDir(?string $rDir): void {
 		self::$rDir = $rDir;
@@ -139,15 +170,16 @@ final class ReplicaApply {
 	}
 
 	/**
-	 * Does the replica own this section's cache? Only with the CONFIG flow on,
-	 * the section stored by the agent (`servers` needs `node` too, `settings`
-	 * needs `secrets`), and its cache built by an authoritative apply since
-	 * it was last MAIN's database's. Until then the readers keep MAIN's
-	 * database and cron:cache keeps refreshing it, so no database copy is
-	 * ever taken for the replica's and left with nothing to refresh it.
+	 * Does the replica own this section's cache? Only with its flow on (CONFIG;
+	 * STREAMS for `streams`), the section stored by the agent (`servers` needs
+	 * `node` too, `settings` needs `secrets`, `streams` is `streams.json`), and
+	 * its cache built by an authoritative apply since it was last MAIN's
+	 * database's. Until then the readers keep MAIN's database and cron:cache
+	 * keeps refreshing it, so no database copy is ever taken for the replica's
+	 * and left with nothing to refresh it.
 	 */
 	public static function owns(string $rSection): bool {
-		if (!NodeFlows::on(NodeFlows::CONFIG)) {
+		if (!NodeFlows::on($rSection === ReplicaSections::STREAMS ? NodeFlows::STREAMS : NodeFlows::CONFIG)) {
 			return false;
 		}
 		$rFiles = match ($rSection) {
@@ -177,11 +209,26 @@ final class ReplicaApply {
 
 	/**
 	 * CONFIG is off: the whole sections' caches are MAIN's database's again,
-	 * so turning it back on waits for an apply instead of reusing them.
+	 * so turning it back on waits for an apply instead of reusing them. The
+	 * streams section follows its own flow (disownStreams()).
 	 */
 	public static function disown(): void {
-		FileCache::delCache(self::OWNED_CACHE);
+		$rOwned = FileCache::getCache(self::OWNED_CACHE);
+		if (is_array($rOwned) && isset($rOwned[ReplicaSections::STREAMS])) {
+			FileCache::setCache(self::OWNED_CACHE, [ReplicaSections::STREAMS => $rOwned[ReplicaSections::STREAMS]]);
+		} else {
+			FileCache::delCache(self::OWNED_CACHE);
+		}
 		FileCache::delCache(self::CRON_CACHE);
+	}
+
+	/**
+	 * STREAMS is off, or the section is gone or unusable: the streams'
+	 * definitions are MAIN's database's again, so turning it back on waits
+	 * for an apply. The entries stay; the next apply checks each again.
+	 */
+	public static function disownStreams(): void {
+		self::own(ReplicaSections::STREAMS, null);
 	}
 
 	/** Record that an authoritative apply built a section's cache ($rTag), or that it did not (null). */
@@ -244,18 +291,26 @@ final class ReplicaApply {
 	 * Apply the materialised replica. Null when there is nothing the agent
 	 * wrote to apply.
 	 *
+	 * @param bool $rAuthoritative the CONFIG flow (the whole sections and the
+	 *                             blocklist); the streams section follows
+	 *                             STREAMS
 	 * @param int|null $rServerID this node (SERVER_ID)
 	 * @param bool $rFromDisk take each section from its verified record, not
 	 *                        from the `.json` the agent wrote (ReplicaRecords)
+	 * @param bool $rMinute cron:cache's minute: a streams section in shadow is
+	 *                      not compared with MAIN's database (the agent's
+	 *                      cluster:apply does that); the last comparison stays
+	 *                      in the report
 	 * @return array<string, mixed>|null
 	 */
-	public static function run(bool $rAuthoritative, ?int $rNow = null, ?int $rServerID = null, bool $rFromDisk = false): ?array {
+	public static function run(bool $rAuthoritative, ?int $rNow = null, ?int $rServerID = null, bool $rFromDisk = false, bool $rMinute = false): ?array {
 		$rServerID ??= defined('SERVER_ID') ? (int) SERVER_ID : 0;
 		$rReport = ['at' => $rNow ?? time()];
 		if (!$rFromDisk) {
-			return self::apply($rAuthoritative, $rServerID, $rReport);
+			return self::apply($rAuthoritative, $rServerID, $rReport, $rMinute);
 		}
 		$rIdentity = ReplicaRecords::identity(dirname(self::dir()) . '/agent.json');
+		self::$rIdentity = $rIdentity;
 		self::$rFromDisk = ['blocklist' => ReplicaRecords::blocklist(self::dir(), $rIdentity)];
 		foreach ([...ReplicaSections::WHOLE, ReplicaSections::SECRETS] as $rName) {
 			self::$rFromDisk[$rName] = ReplicaRecords::whole(self::dir(), $rName, $rIdentity);
@@ -266,17 +321,33 @@ final class ReplicaApply {
 			$rReport['from_disk'] = ['verified' => $rVerified, 'unverified' => $rUnverified];
 		}
 		try {
-			return self::apply($rAuthoritative, $rServerID, $rReport);
+			return self::apply($rAuthoritative, $rServerID, $rReport, $rMinute);
 		} finally {
 			self::$rFromDisk = null;
+			self::$rIdentity = null;
 		}
+	}
+
+	/**
+	 * cron:cache's minute while CONFIG is off: the streams section alone,
+	 * authoritative while STREAMS is on, else handed back. Writes no report:
+	 * the agent's cluster:apply keeps it.
+	 *
+	 * @return array<string, mixed>|null the streams part
+	 */
+	public static function streamsMinute(?int $rServerID = null): ?array {
+		if (!NodeFlows::on(NodeFlows::STREAMS)) {
+			self::disownStreams();
+			return null;
+		}
+		return self::streams(true, $rServerID ?? (defined('SERVER_ID') ? (int) SERVER_ID : 0));
 	}
 
 	/**
 	 * @param array<string, mixed> $rReport
 	 * @return array<string, mixed>|null
 	 */
-	private static function apply(bool $rAuthoritative, int $rServerID, array $rReport): ?array {
+	private static function apply(bool $rAuthoritative, int $rServerID, array $rReport, bool $rMinute = false): ?array {
 		// The whole sections first: they are what a boot from the replica needs
 		// (ReplicaBoot::ready), and the blocklist may wait on DNS for its RTMP
 		// publishers. The secrets before the settings: they report what differs
@@ -298,6 +369,14 @@ final class ReplicaApply {
 		}
 		// Mode 2 compares nothing with MAIN's database (crontab()).
 		$rUnchecked = !$rAuthoritative && NodeRole::refusesConnects() && ($rReport['crontab']['mode'] ?? null) === 'shadow' ? ['crontab'] : [];
+		$rStreams = self::streamsPart($rServerID, $rMinute);
+		if ($rStreams !== null) {
+			$rReport[ReplicaSections::STREAMS] = $rStreams;
+			if (self::$rFromDisk !== null && isset($rStreams['unreadable'])) {
+				$rReport['from_disk'] ??= ['verified' => [], 'unverified' => []];
+				$rReport['from_disk'][$rStreams['unreadable'] === [] ? 'verified' : 'unverified'][] = ReplicaSections::STREAMS;
+			}
+		}
 		$rDoc = self::$rFromDisk === null ? json_decode((string) @file_get_contents(self::dir() . 'blocklist.json'), true) : self::$rFromDisk['blocklist'];
 		$rCaches = is_array($rDoc) && is_array($rDoc['data'] ?? null) ? self::caches($rDoc['data'], self::$rFromDisk === null) : null;
 		if ($rCaches !== null) {
@@ -332,6 +411,165 @@ final class ReplicaApply {
 			@rename($rTmp, self::dir() . 'apply.json');
 		}
 		return $rReport;
+	}
+
+	/**
+	 * The streams part of an apply: authoritative while STREAMS is on. On
+	 * cron:cache's minute a section in shadow is only handed back, and the
+	 * last comparison the agent's cluster:apply reported stays.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	private static function streamsPart(int $rServerID, bool $rMinute): ?array {
+		$rOn = NodeFlows::on(NodeFlows::STREAMS);
+		if ($rOn || !$rMinute) {
+			return self::streams($rOn, $rServerID);
+		}
+		self::disownStreams();
+		$rLast = json_decode((string) @file_get_contents(self::dir() . 'apply.json'), true);
+		$rLast = is_array($rLast) ? ($rLast[ReplicaSections::STREAMS] ?? null) : null;
+		return is_array($rLast) && ($rLast['mode'] ?? null) !== 'applied' ? $rLast : null;
+	}
+
+	/**
+	 * The R2 `streams` section: the node's stream caches (STREAMS on), or how
+	 * the section differs from what MAIN's database says the node holds.
+	 * Null when the agent stores no such section.
+	 *
+	 * ```text
+	 * applied     {since, streams, written, removed, unreadable: [ids]}
+	 * shadow      {since, streams, missing: [ids], extra: [ids], unreadable: [ids],
+	 *              differ: ["<id>.<part>" | "<id>.<part>.<field>"]}
+	 * incomplete  no cursor above 0 or no readable streams/: nothing written
+	 * refused     a file in streams/ names no stream: nothing written
+	 * ```
+	 *
+	 * Ids and names only: never a value, and never the tickets.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function streams(bool $rAuthoritative, int $rServerID): ?array {
+		$rDir = self::dir();
+		if (!is_file($rDir . 'streams.json') && !is_dir($rDir . 'streams')) {
+			self::disownStreams();
+			return null;
+		}
+		$rReport = ['since' => ReplicaStreams::since()];
+		$rIDs = ReplicaStreams::ids();
+		if (!is_array($rIDs)) {
+			// The readers keep (or take again) MAIN's database; no entry is touched.
+			self::disownStreams();
+			return $rReport + ['mode' => $rIDs === false ? 'refused' : 'incomplete'];
+		}
+		$rReport['streams'] = count($rIDs);
+		if (!$rAuthoritative) {
+			self::disownStreams();
+			return $rReport + self::streamsShadow($rIDs, $rServerID);
+		}
+		$rStore = ReplicaStreamCache::store();
+		$rIndex = ReplicaStreamCache::index();
+		$rWritten = 0;
+		$rUnreadable = [];
+		foreach ($rIDs as $rID) {
+			$rDoc = self::streamRecord($rID);
+			$rEntry = is_array($rDoc) ? ReplicaStreamCache::entry($rID, $rDoc['data'], $rServerID, $rDoc['etag'], $rDoc['ver']) : null;
+			if ($rEntry === null) {
+				// Never a removal: the stream keeps the entry it had.
+				$rUnreadable[] = $rID;
+				continue;
+			}
+			// Unchanged since the last apply: not written again. From disk every
+			// entry is written from its verified record.
+			if (self::$rFromDisk === null && ($rIndex[$rID]['etag'] ?? null) === $rEntry['etag'] && ($rIndex[$rID]['ver'] ?? null) === $rEntry['ver'] && $rStore->has((string) $rID)) {
+				continue;
+			}
+			if (!$rStore->set((string) $rID, $rEntry)) {
+				$rUnreadable[] = $rID;
+				continue;
+			}
+			$rIndex[$rID] = ['etag' => $rEntry['etag'], 'ver' => $rEntry['ver'], 'rec' => array_column($rEntry['recordings'], 'id')];
+			$rWritten++;
+		}
+		// Removals: the streams whose file the agent deleted, never one whose record does not read.
+		$rHeld = array_flip($rIDs);
+		$rRemoved = 0;
+		foreach (array_unique(array_merge(ReplicaStreamCache::cached(), array_keys($rIndex))) as $rID) {
+			if (!isset($rHeld[$rID])) {
+				$rStore->delete((string) $rID);
+				unset($rIndex[$rID]);
+				$rRemoved++;
+			}
+		}
+		ReplicaStreamCache::writeIndex($rIndex);
+		self::own(ReplicaSections::STREAMS, (string) $rReport['since']);
+		return $rReport + ['mode' => 'applied', 'written' => $rWritten, 'removed' => $rRemoved, 'unreadable' => array_slice($rUnreadable, 0, self::MAX_IDS)];
+	}
+
+	/**
+	 * The shadow comparison of the streams section with MAIN's database, in
+	 * the record's own shape (StreamRecords, MAIN's reads of a record).
+	 *
+	 * @param list<int> $rIDs the streams the section holds
+	 * @return array<string, mixed>
+	 */
+	private static function streamsShadow(array $rIDs, int $rServerID): array {
+		$rReplica = [];
+		$rUnreadable = [];
+		foreach ($rIDs as $rID) {
+			$rDoc = self::streamRecord($rID);
+			if (is_array($rDoc) && ReplicaStreamCache::entry($rID, $rDoc['data'], $rServerID, $rDoc['etag'], $rDoc['ver']) !== null) {
+				$rReplica[$rID] = $rDoc['data'];
+			} else {
+				$rUnreadable[] = $rID;
+			}
+		}
+		try {
+			$rMain = StreamRecords::data($rServerID, StreamRecords::held($rServerID, null));
+		} catch (\Throwable) {
+			// MAIN's database did not answer (or mode 2 refused it): nothing to compare with.
+			return ['mode' => 'shadow', 'compared' => false, 'unreadable' => array_slice($rUnreadable, 0, self::MAX_IDS)];
+		}
+		$rDiffer = [];
+		foreach (array_intersect_key($rReplica, $rMain) as $rID => $rData) {
+			foreach (['stream', 'type', 'profile', 'server', 'options', 'children', 'recordings'] as $rPart) {
+				$rHave = $rMain[$rID][$rPart] ?? null;
+				$rWant = $rData[$rPart] ?? null;
+				if (in_array($rPart, ['stream', 'server'], true) && is_array($rHave) && is_array($rWant)) {
+					foreach (array_unique(array_merge(array_keys($rHave), array_keys($rWant))) as $rField) {
+						if (json_encode(self::loose($rHave[$rField] ?? null)) !== json_encode(self::loose($rWant[$rField] ?? null))) {
+							$rDiffer[] = $rID . '.' . $rPart . '.' . $rField;
+						}
+					}
+				} elseif (json_encode(self::loose($rHave)) !== json_encode(self::loose($rWant))) {
+					$rDiffer[] = $rID . '.' . $rPart;
+				}
+			}
+		}
+		return [
+			'mode' => 'shadow',
+			'missing' => array_slice(array_values(array_diff(array_keys($rMain), $rIDs)), 0, self::MAX_IDS),
+			'extra' => array_slice(array_values(array_diff(array_keys($rReplica), array_keys($rMain))), 0, self::MAX_IDS),
+			'unreadable' => array_slice($rUnreadable, 0, self::MAX_IDS),
+			'differ' => array_slice($rDiffer, 0, self::MAX_DIFFER),
+		];
+	}
+
+	/**
+	 * One stream's record as the agent stored it: `streams/<id>.json`, or
+	 * while an apply runs from disk the verified `streams/<id>.rep`
+	 * (ReplicaRecords::stream). False when it does not read or verify.
+	 *
+	 * @return array{etag: string, ver: int, data: array<mixed>}|false
+	 */
+	private static function streamRecord(int $rID): array|false {
+		if (self::$rFromDisk !== null) {
+			return ReplicaRecords::stream(self::dir(), $rID, self::$rIdentity) ?? false;
+		}
+		$rDoc = json_decode((string) @file_get_contents(self::dir() . 'streams/' . $rID . '.json'), true);
+		if (!is_array($rDoc) || !is_string($rDoc['etag'] ?? null) || !is_int($rDoc['ver'] ?? null) || !is_array($rDoc['data'] ?? null)) {
+			return false;
+		}
+		return ['etag' => $rDoc['etag'], 'ver' => $rDoc['ver'], 'data' => $rDoc['data']];
 	}
 
 	/**

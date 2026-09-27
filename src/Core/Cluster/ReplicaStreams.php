@@ -13,11 +13,15 @@ namespace XcVm\Core\Cluster;
  * `streams/` directory, empty when the node holds nothing, so a missing or
  * unreadable one is a section lost, never an empty one.
  *
- * Every reader answers null unless the whole section is there and every
- * file reads: a caller that prunes files by the list (cron:cleanup's
- * archive and stream checks) must never take a partial list for the node's
- * streams. It then keeps its own source (MAIN's database while the node has
- * one) or does nothing.
+ * Every reader of the records answers null unless the whole section is
+ * there and every file reads: a caller that prunes files by the list
+ * (cron:cleanup's archive and stream checks) must never take a partial list
+ * for the node's streams. It then keeps its own source (MAIN's database
+ * while the node has one) or does nothing; ReplicaStreamCache::owned() says
+ * whether the replica owns the streams (STREAMS on and an apply built the
+ * stream caches). ids() and since() give the section's shape by the files'
+ * names alone, for cluster:apply, which builds the stream caches the node's
+ * readers take (ReplicaApply::streams, ReplicaStreamCache) record by record.
  *
  * The section carries what MAIN decides, never the node's runtime state:
  * cron:cleanup's VOD check takes its carried columns from assigned([2, 5])
@@ -39,9 +43,42 @@ final class ReplicaStreams {
 	 * @return array<int, array<string, mixed>>|null
 	 */
 	public static function records(): ?array {
+		$rIDs = self::ids();
+		if (!is_array($rIDs)) {
+			return null;
+		}
+		$rOut = [];
+		foreach ($rIDs as $rID) {
+			$rRecord = json_decode((string) @file_get_contents(ReplicaApply::dir() . 'streams/' . $rID . '.json'), true);
+			$rData = is_array($rRecord) ? ($rRecord['data'] ?? null) : null;
+			if (!is_array($rData) || !is_array($rData['stream'] ?? null) || ($rData['stream']['id'] ?? null) !== $rID) {
+				return null;
+			}
+			$rOut[$rID] = $rData;
+		}
+		return $rOut;
+	}
+
+	/**
+	 * The cursor of the section the files hold (`streams.json`), 0 when there
+	 * is none: the agent has not completed a pass over every stream.
+	 */
+	public static function since(): int {
+		$rIndex = json_decode((string) @file_get_contents(ReplicaApply::dir() . 'streams.json'), true);
+		return is_array($rIndex) && is_int($rIndex['since'] ?? null) && $rIndex['since'] > 0 ? $rIndex['since'] : 0;
+	}
+
+	/**
+	 * The ids of the streams the node holds, ascending, by the names of the
+	 * files alone: a file that does not read still names a stream the node
+	 * holds. Null without a whole section (no cursor above 0, no readable
+	 * `streams/`); false when a file's name is not a stream id.
+	 *
+	 * @return list<int>|false|null
+	 */
+	public static function ids(): array|false|null {
 		$rDir = ReplicaApply::dir();
-		$rIndex = json_decode((string) @file_get_contents($rDir . 'streams.json'), true);
-		if (!is_array($rIndex) || !is_int($rIndex['since'] ?? null) || $rIndex['since'] <= 0) {
+		if (self::since() <= 0) {
 			return null;
 		}
 		// A missing or unreadable directory is never a node that holds nothing.
@@ -56,16 +93,11 @@ final class ReplicaStreams {
 		foreach ($rFiles as $rFile) {
 			$rName = basename($rFile, '.json');
 			if (!preg_match('/^[1-9][0-9]{0,9}$/', $rName)) {
-				return null;
+				return false;
 			}
-			$rRecord = json_decode((string) @file_get_contents($rFile), true);
-			$rData = is_array($rRecord) ? ($rRecord['data'] ?? null) : null;
-			if (!is_array($rData) || !is_array($rData['stream'] ?? null) || ($rData['stream']['id'] ?? null) !== (int) $rName) {
-				return null;
-			}
-			$rOut[(int) $rName] = $rData;
+			$rOut[] = (int) $rName;
 		}
-		ksort($rOut);
+		sort($rOut);
 		return $rOut;
 	}
 

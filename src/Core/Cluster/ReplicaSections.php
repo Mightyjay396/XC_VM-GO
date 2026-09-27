@@ -64,6 +64,13 @@ final class ReplicaSections {
 	public const CLUSTER = 'cluster';
 	public const SECRETS = 'secrets';
 
+	/**
+	 * The R2 section on the node: `replica/streams.json` (the agent's cursor)
+	 * and `replica/streams/<id>.json`, one `stream` record each; also its
+	 * name in the apply's report and in `replica_owned`.
+	 */
+	public const STREAMS = 'streams';
+
 	/** Sections sent whole, by ETag, to an agent that names them in `have` (and `secrets`, on its own terms). */
 	public const WHOLE = [self::SETTINGS, self::SERVERS, self::NODE, self::CRONTAB, self::CLUSTER];
 

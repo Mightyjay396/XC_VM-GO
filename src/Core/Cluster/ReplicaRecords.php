@@ -16,6 +16,7 @@ use XcVm\Core\Cluster\Crypto\Seal;
  * replica/<name>.rep          a whole section: the sealed `rep` record as MAIN sent it
  * replica/blocklist.rep       the blocklist's last whole section (`rep`, with its seq)
  * replica/blocklist.d/*.blk   the blocklist's deltas since, in name (seq) order (`blk`)
+ * replica/streams/<id>.rep    an R2 `stream` record (`rep`, naming the stream and its version)
  * ../agent.json               the agent's state: node_uuid, node_box_sk, panel_sign_pub
  * ```
  *
@@ -93,6 +94,26 @@ final class ReplicaRecords {
 			return false;
 		}
 		return ['etag' => $rDoc['etag'], 'data' => $rDoc['data']];
+	}
+
+	/**
+	 * One record of the R2 `streams` section from `streams/<id>.rep`:
+	 * `{etag, ver, data}` as the agent writes `streams/<id>.json`. Null when
+	 * the agent stored no `streams/<id>.json`; false when the record is
+	 * missing or does not verify as this node's record of this stream.
+	 *
+	 * @param array{node: string, box_sk: string, sign_pub: string}|null $rIdentity
+	 * @return array{etag: string, ver: int, data: array<mixed>}|false|null
+	 */
+	public static function stream(string $rDir, int $rID, ?array $rIdentity): array|false|null {
+		if (!is_file($rDir . 'streams/' . $rID . '.json')) {
+			return null;
+		}
+		$rDoc = self::payload($rDir . 'streams/' . $rID . '.rep', 'rep', $rIdentity);
+		if ($rDoc === null || ($rDoc['section'] ?? null) !== ReplicaSections::STREAM || ($rDoc['stream_id'] ?? null) !== $rID || !is_int($rDoc['ver'] ?? null) || !self::etag($rDoc['etag'] ?? null) || !is_array($rDoc['data'] ?? null)) {
+			return false;
+		}
+		return ['etag' => $rDoc['etag'], 'ver' => $rDoc['ver'], 'data' => $rDoc['data']];
 	}
 
 	/**

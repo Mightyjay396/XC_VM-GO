@@ -10,6 +10,7 @@ use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\RecordingFinalizer;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Codec\FfmpegPaths;
 
@@ -59,15 +60,14 @@ class RecordCommand implements CommandInterface {
 
 		$db = self::db();
 
-		$db->query('SELECT * FROM `recordings` WHERE `id` = ?;', $recordingID);
-		if ($db->num_rows() <= 0) {
+		$recordingData = StreamSource::recording($recordingID, $db);
+		if ($recordingData === null) {
 			echo "Recording entry doesn't exist.\n";
 			return 0;
 		}
 
 		$rFails = $totalBytes = 0;
 		$isComplete = false;
-		$recordingData = $db->get_row();
 
 		if (($recordingData['start'] - 60 > time() || time() > $recordingData['end']) && !$recordingData['archive']) {
 			echo "Programme is not currently airing.\n";

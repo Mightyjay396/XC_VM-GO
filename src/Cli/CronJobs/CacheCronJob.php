@@ -107,11 +107,14 @@ class CacheCronJob implements CommandInterface {
 		// the verified copy on disk every minute, whether or not the agent ran
 		// cluster:apply since the flow changed; with it off they are MAIN's
 		// database's again. The servers cache is written here only while the
-		// replica does not own it.
+		// replica does not own it. The streams section follows the STREAMS
+		// flow the same way, CONFIG or not; the minute never compares a shadow
+		// section with MAIN's database (the agent's cluster:apply does).
 		if (NodeFlows::on(NodeFlows::CONFIG)) {
-			ReplicaApply::run(true);
+			ReplicaApply::run(true, null, null, false, true);
 		} else {
 			ReplicaApply::disown();
+			ReplicaApply::streamsMinute();
 		}
 		if (!ReplicaApply::owns(ReplicaSections::SERVERS)) {
 			FileCache::setCache('servers', ServerRepository::getAll(true));

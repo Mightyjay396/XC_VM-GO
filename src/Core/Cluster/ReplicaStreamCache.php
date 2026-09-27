@@ -1,0 +1,269 @@
+<?php
+
+namespace XcVm\Core\Cluster;
+
+use XcVm\Core\Cache\FileCache;
+
+/**
+ * The node's stream caches built from its R2 `streams` section (plan,
+ * section 9, "Storage and boot"): one entry per stream the node holds, in the
+ * shapes the node's readers took from MAIN's database, so they keep their
+ * contract (StreamSource, and through it the stream starts, the monitor,
+ * the proxy producer, live.php's fanout hand-off, the scanner, and the
+ * recordings):
+ *
+ * ```text
+ * <cache dir>/replica_streams/<id>   one entry per stream:
+ *   stream      the `streams` row: the record's STREAM_FIELDS, the local
+ *               columns (STREAM_LOCAL) null
+ *   type        its `streams_types` row, or null
+ *   profile     its transcoding profile, or null
+ *   server      the node's `streams_servers` row: STREAM_SERVER_FIELDS,
+ *               the runtime columns (STREAM_SERVER_LOCAL) null; or null
+ *   arguments   `SELECT t1.*, t2.*` of streams_options ⨝ streams_arguments:
+ *               the argument's id as `id` (it wins the join), and
+ *               `argument_description`, which no record carries, null
+ *   recordings  its `recordings` rows scheduled on the node (every column)
+ *   children    the servers that relay it from the node
+ *   etag, ver   the record's
+ * <cache dir>/replica_streams/index   {streams: {id: {etag, ver, rec: [recording ids]}}}
+ * ```
+ *
+ * The cache directory is the other caches' (tmp/cache/, a tmpfs), so the
+ * entries go with `replica_owned` at a reboot and an apply builds them again
+ * (`cluster:apply --from-disk` in `service`). ReplicaApply::streams() writes
+ * them; the readers here take them only while the replica owns the section
+ * (owned()): the STREAMS flow on, the section stored by the agent, and an
+ * apply that built them since. Then no reader reads MAIN's database for a
+ * stream's definition: an entry missing is built from the agent's file
+ * (`replica/streams/<id>.json`), and a stream without one is a stream the
+ * node does not hold.
+ *
+ * What no record carries stays null: the node's own runtime state (pids,
+ * status, the current source, probe results, the created channel's build
+ * state), which it reports as events and does not keep yet, and MAIN's
+ * catalogue metadata.
+ */
+final class ReplicaStreamCache {
+	/** The entries' directory, under the other caches'. */
+	public const DIR = 'replica_streams/';
+
+	/** The index's name in that directory (a stream's entry is its id). */
+	public const INDEX = 'index';
+
+	/** @var array<string, FileCache> */
+	private static array $rStores = [];
+
+	/** The entries' store, in the default cache directory. */
+	public static function store(): FileCache {
+		$rPath = FileCache::defaultPath() . self::DIR;
+		return self::$rStores[$rPath] ??= new FileCache($rPath);
+	}
+
+	/**
+	 * Does the replica own the streams' definitions? The record first (no
+	 * flows.json read on MAIN or a legacy node, which have none), then the
+	 * STREAMS flow and the agent's section (ReplicaApply::owns).
+	 */
+	public static function owned(): bool {
+		return ReplicaApply::built(ReplicaSections::STREAMS) && ReplicaApply::owns(ReplicaSections::STREAMS);
+	}
+
+	/**
+	 * A record's data as the node's readers take it (above), or null when it
+	 * is not the record of this stream for this node: its `stream` is another
+	 * stream, its `server` row or a recording names another server, or a part
+	 * is not what MAIN sends. A key a later MAIN adds is left out.
+	 *
+	 * @param array<mixed> $rData the record's data, as MAIN signed it
+	 * @return array<string, mixed>|null
+	 */
+	public static function entry(int $rID, array $rData, int $rServerID, string $rEtag, int $rVer): ?array {
+		$rStream = $rData['stream'] ?? null;
+		$rType = $rData['type'] ?? null;
+		$rProfile = $rData['profile'] ?? null;
+		$rServer = $rData['server'] ?? null;
+		if (!is_array($rStream) || ($rStream['id'] ?? null) !== $rID || $rServerID <= 0) {
+			return null;
+		}
+		if (($rType !== null && (!is_array($rType) || !is_int($rType['type_id'] ?? null))) || ($rProfile !== null && (!is_array($rProfile) || !is_int($rProfile['profile_id'] ?? null)))) {
+			return null;
+		}
+		if ($rServer !== null && (!is_array($rServer) || ($rServer['server_id'] ?? null) !== $rServerID || ($rServer['stream_id'] ?? null) !== $rID)) {
+			return null;
+		}
+		if (!self::listOf($rData['options'] ?? [], 'is_array') || !self::listOf($rData['children'] ?? [], 'is_int') || !self::listOf($rData['recordings'] ?? [], 'is_array')) {
+			return null;
+		}
+		$rArguments = [];
+		foreach ($rData['options'] ?? [] as $rOption) {
+			if (!is_int($rOption['argument_id'] ?? null)) {
+				return null;
+			}
+			$rRow = ReplicaSections::typed($rOption, ReplicaSections::OPTION_FIELDS + ReplicaSections::ARGUMENT_FIELDS);
+			// As `SELECT t1.*, t2.*` returns it: the option's columns, then the
+			// argument's, whose `id` (the option's argument_id) wins the join.
+			$rArguments[] = [
+				'id' => $rRow['argument_id'], 'stream_id' => $rID, 'argument_id' => $rRow['argument_id'], 'value' => $rRow['value'],
+				'argument_cat' => $rRow['argument_cat'], 'argument_name' => $rRow['argument_name'], 'argument_description' => null,
+				'argument_wprotocol' => $rRow['argument_wprotocol'], 'argument_key' => $rRow['argument_key'], 'argument_cmd' => $rRow['argument_cmd'],
+				'argument_type' => $rRow['argument_type'], 'argument_default_value' => $rRow['argument_default_value'],
+			];
+		}
+		$rRecordings = [];
+		foreach ($rData['recordings'] ?? [] as $rRecording) {
+			if (!is_int($rRecording['id'] ?? null) || ($rRecording['stream_id'] ?? null) !== $rID || ($rRecording['source_id'] ?? null) !== $rServerID) {
+				return null;
+			}
+			$rRecordings[] = ReplicaSections::typed($rRecording, ReplicaSections::RECORDING_FIELDS);
+		}
+		return [
+			'etag' => $rEtag, 'ver' => $rVer,
+			'stream' => ReplicaSections::typed($rStream, ReplicaSections::STREAM_FIELDS) + array_fill_keys(ReplicaSections::STREAM_LOCAL, null),
+			'type' => $rType === null ? null : ReplicaSections::typed($rType, ReplicaSections::STREAM_TYPE_FIELDS),
+			'profile' => $rProfile === null ? null : ReplicaSections::typed($rProfile, ReplicaSections::PROFILE_FIELDS),
+			'server' => $rServer === null ? null : ReplicaSections::typed($rServer, ReplicaSections::STREAM_SERVER_FIELDS) + array_fill_keys(ReplicaSections::STREAM_SERVER_LOCAL, null),
+			'arguments' => $rArguments,
+			'recordings' => $rRecordings,
+			'children' => array_values($rData['children'] ?? []),
+		];
+	}
+
+	/**
+	 * The entry of a stream the node holds: the cache, or when it is gone the
+	 * agent's file (written to the cache again); null when the node does not
+	 * hold it or its record does not read. Never MAIN's database.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function get(int $rID): ?array {
+		$rEntry = self::store()->get((string) $rID);
+		if (is_array($rEntry)) {
+			return $rEntry;
+		}
+		$rDoc = json_decode((string) @file_get_contents(ReplicaApply::dir() . 'streams/' . $rID . '.json'), true);
+		if (!is_array($rDoc) || !is_array($rDoc['data'] ?? null) || !is_string($rDoc['etag'] ?? null) || !is_int($rDoc['ver'] ?? null)) {
+			return null;
+		}
+		$rEntry = self::entry($rID, $rDoc['data'], defined('SERVER_ID') ? (int) SERVER_ID : 0, $rDoc['etag'], $rDoc['ver']);
+		if ($rEntry !== null) {
+			self::store()->set((string) $rID, $rEntry);
+		}
+		return $rEntry;
+	}
+
+	/**
+	 * StreamSource::streamRow's answer: the `streams` row with its type (live
+	 * or not) and profile, or null (not held, another kind, a direct source,
+	 * no type), as the SQL join answers.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function streamRow(int $rID, bool $rLive): ?array {
+		$rEntry = self::get($rID);
+		if ($rEntry === null || $rEntry['type'] === null || $rEntry['type']['live'] !== ($rLive ? 1 : 0) || $rEntry['stream']['direct_source'] !== 0) {
+			return null;
+		}
+		return $rEntry['stream'] + $rEntry['type'] + ($rEntry['profile'] ?? array_fill_keys(array_keys(ReplicaSections::PROFILE_FIELDS), null));
+	}
+
+	/**
+	 * StreamSource::serverRow's answer for this node.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function serverRow(int $rID): ?array {
+		return self::get($rID)['server'] ?? null;
+	}
+
+	/**
+	 * StreamSource::arguments' answer: a list, or keyed by `argument_key`.
+	 *
+	 * @return array<int|string, array<string, mixed>>
+	 */
+	public static function arguments(int $rID, bool $rKeyed): array {
+		$rRows = self::get($rID)['arguments'] ?? [];
+		if (!$rKeyed) {
+			return $rRows;
+		}
+		$rOut = [];
+		foreach ($rRows as $rRow) {
+			$rOut[(string) $rRow['argument_key']] = $rRow;
+		}
+		return $rOut;
+	}
+
+	/**
+	 * StreamSource::sourceRow's answer.
+	 *
+	 * @return array{stream_source?: string|null}
+	 */
+	public static function sourceRow(int $rID): array {
+		$rEntry = self::get($rID);
+		return $rEntry === null ? [] : ['stream_source' => $rEntry['stream']['stream_source']];
+	}
+
+	/**
+	 * A recording scheduled on this node (every `recordings` column), or null.
+	 * Its `status` is MAIN's, as last heard.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function recording(int $rRecordingID): ?array {
+		foreach (self::index() as $rID => $rMeta) {
+			if (in_array($rRecordingID, $rMeta['rec'] ?? [], true)) {
+				foreach (self::get((int) $rID)['recordings'] ?? [] as $rRow) {
+					if ($rRow['id'] === $rRecordingID) {
+						return $rRow;
+					}
+				}
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * What the last apply built: stream id => {etag, ver, rec}.
+	 *
+	 * @return array<int, array{etag: string, ver: int, rec: list<int>}>
+	 */
+	public static function index(): array {
+		$rIndex = self::store()->get(self::INDEX);
+		return is_array($rIndex) && is_array($rIndex['streams'] ?? null) ? $rIndex['streams'] : [];
+	}
+
+	/** @param array<int, array{etag: string, ver: int, rec: list<int>}> $rStreams */
+	public static function writeIndex(array $rStreams): bool {
+		ksort($rStreams);
+		return self::store()->set(self::INDEX, ['streams' => $rStreams]);
+	}
+
+	/**
+	 * The streams with an entry in the cache, by the files' names.
+	 *
+	 * @return list<int>
+	 */
+	public static function cached(): array {
+		$rOut = [];
+		foreach (glob(self::store()->getBasePath() . '*') ?: [] as $rFile) {
+			$rName = basename($rFile);
+			if (preg_match('/^[1-9][0-9]{0,9}$/', $rName)) {
+				$rOut[] = (int) $rName;
+			}
+		}
+		sort($rOut);
+		return $rOut;
+	}
+
+	private static function listOf(mixed $rList, callable $rIs): bool {
+		if (!is_array($rList) || !array_is_list($rList)) {
+			return false;
+		}
+		foreach ($rList as $rEntry) {
+			if (!$rIs($rEntry)) {
+				return false;
+			}
+		}
+		return true;
+	}
+}
