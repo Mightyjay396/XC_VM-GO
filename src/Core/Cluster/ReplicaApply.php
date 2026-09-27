@@ -82,9 +82,9 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * back to MAIN's database, as before the replica.
  *
  * Either way the report goes to `replica/apply.json`. cron:cache applies the
- * replica too, every minute while CONFIG is on, so the caches follow the copy
- * on disk even when the agent has not run cluster:apply since a change of the
- * flow.
+ * replica too, every minute while CONFIG is on (minute()), so the caches
+ * follow the copy on disk even when the agent has not run cluster:apply since
+ * a change of the flow.
  *
  * The R2 `streams` section (`replica/streams.json`, the agent's cursor, and
  * `replica/streams/<id>.json`, one `stream` record each) becomes the node's
@@ -101,13 +101,16 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  *   MAIN's database says the node holds that the section lacks (`missing`),
  *   the reverse (`extra`), and the parts and fields that differ (`differ`):
  *   ids and names only, never a value (stream sources carry credentials)
- *   and never the tickets.
+ *   and never the tickets. MAIN serves the section only while STREAMS is
+ *   on, so this measures how far the files the agent kept lag behind.
  * - Without a whole section (no cursor above 0, no readable `streams/`) or
  *   with a file that names no stream, nothing is written either, and the
  *   readers keep MAIN's database.
  *
- * The whole sections are applied before the streams section, and both
- * before the blocklist, whose RTMP publishers may wait on DNS.
+ * The whole sections are applied first, then the blocklist, then the streams
+ * section: a node may hold tens of thousands of streams, each verified from
+ * disk at boot within `service`'s timeout, and neither that nor a shadow
+ * comparison that fails may keep the blocklist from being applied.
  *
  * From disk (`cluster:apply --from-disk`, which `service` runs at boot before
  * the daemons, when the agent may not run yet), every section is taken from
@@ -155,6 +158,9 @@ final class ReplicaApply {
 
 	/** Stream ids a report names at most (`missing`, `extra`, `unreadable`). */
 	private const MAX_IDS = 100;
+
+	/** Held streams the shadow comparison reads from MAIN's database per step. */
+	private const SHADOW_STEP = 1000;
 
 	/** Tests: another replica directory; null restores the default. */
 	public static function useDir(?string $rDir): void {
@@ -334,6 +340,27 @@ final class ReplicaApply {
 	}
 
 	/**
+	 * cron:cache's minute. With CONFIG on, the whole replica, authoritative
+	 * (run()); a streams section in shadow is only handed back, never
+	 * compared with MAIN's database, and the agent's last comparison stays in
+	 * the report. With CONFIG off, the whole sections' caches are MAIN's
+	 * database's again (disown()) and the streams section alone follows
+	 * STREAMS (streamsMinute()), with no report written.
+	 *
+	 * @return array<string, mixed>|null what was applied: the report, or
+	 *                                   with CONFIG off the streams part
+	 *                                   alone; null when there is none
+	 */
+	public static function minute(?int $rServerID = null): ?array {
+		if (NodeFlows::on(NodeFlows::CONFIG)) {
+			return self::run(true, null, $rServerID, false, true);
+		}
+		self::disown();
+		$rStreams = self::streamsMinute($rServerID);
+		return $rStreams === null ? null : [ReplicaSections::STREAMS => $rStreams];
+	}
+
+	/**
 	 * cron:cache's minute while CONFIG is off: the streams section alone,
 	 * authoritative while STREAMS is on, else handed back. Writes no report:
 	 * the agent's cluster:apply keeps it.
@@ -356,7 +383,7 @@ final class ReplicaApply {
 		// The whole sections first: they are what a boot from the replica needs
 		// (ReplicaBoot::ready), and the blocklist may wait on DNS for its RTMP
 		// publishers. The secrets before the settings: they report what differs
-		// from what the node used before this apply.
+		// from what the node used before this apply. The streams last (below).
 		$rSecrets = self::secrets($rAuthoritative, $rReport['at']);
 		if ($rSecrets !== null) {
 			$rReport['secrets'] = $rSecrets;
@@ -377,14 +404,6 @@ final class ReplicaApply {
 		}
 		// Mode 2 compares nothing with MAIN's database (crontab()).
 		$rUnchecked = !$rAuthoritative && NodeRole::refusesConnects() && ($rReport['crontab']['mode'] ?? null) === 'shadow' ? ['crontab'] : [];
-		$rStreams = self::streamsPart($rServerID, $rMinute);
-		if ($rStreams !== null) {
-			$rReport[ReplicaSections::STREAMS] = $rStreams;
-			if (self::$rFromDisk !== null && isset($rStreams['unreadable'])) {
-				$rReport['from_disk'] ??= ['verified' => [], 'unverified' => []];
-				$rReport['from_disk'][$rStreams['unreadable'] === [] ? 'verified' : 'unverified'][] = ReplicaSections::STREAMS;
-			}
-		}
 		$rDoc = self::$rFromDisk === null ? json_decode((string) @file_get_contents(self::dir() . 'blocklist.json'), true) : self::$rFromDisk['blocklist'];
 		$rCaches = is_array($rDoc) && is_array($rDoc['data'] ?? null) ? self::caches($rDoc['data'], self::$rFromDisk === null) : null;
 		if ($rCaches !== null) {
@@ -407,6 +426,18 @@ final class ReplicaApply {
 		}
 		if ($rUnchecked !== []) {
 			$rReport['unchecked'] = $rUnchecked;
+		}
+		// The streams last: from disk each record is verified on its own (a
+		// node may hold tens of thousands, within `service`'s timeout), and
+		// neither that nor a failed shadow comparison may keep the sections
+		// above from being applied.
+		$rStreams = self::streamsPart($rServerID, $rMinute);
+		if ($rStreams !== null) {
+			$rReport[ReplicaSections::STREAMS] = $rStreams;
+			if (self::$rFromDisk !== null && isset($rStreams['unreadable'])) {
+				$rReport['from_disk'] ??= ['verified' => [], 'unverified' => []];
+				$rReport['from_disk'][$rStreams['unreadable'] === [] ? 'verified' : 'unverified'][] = ReplicaSections::STREAMS;
+			}
 		}
 		if (!$rAuthoritative) {
 			self::disown();
@@ -608,51 +639,97 @@ final class ReplicaApply {
 
 	/**
 	 * The shadow comparison of the streams section with MAIN's database, in
-	 * the record's own shape (StreamRecords, MAIN's reads of a record).
+	 * the record's own shape (StreamRecords, MAIN's reads of a record). It
+	 * walks the ids in steps: the next SHADOW_STEP streams MAIN's database
+	 * says the node holds, their records' data, and the section's records in
+	 * that id range, one at a time. Only the ids and names a report keeps are
+	 * held, so a node holding tens of thousands of streams stays within the
+	 * CLI's memory.
 	 *
-	 * @param list<int> $rIDs the streams the section holds
+	 * @param list<int> $rIDs the streams the section holds, ascending
 	 * @return array<string, mixed>
 	 */
 	private static function streamsShadow(array $rIDs, int $rServerID): array {
-		$rReplica = [];
-		$rUnreadable = [];
-		foreach ($rIDs as $rID) {
-			$rDoc = self::streamRecord($rID);
-			if (is_array($rDoc) && ReplicaStreamCache::entry($rID, $rDoc['data'], $rServerID, $rDoc['etag'], $rDoc['ver']) !== null) {
-				$rReplica[$rID] = $rDoc['data'];
-			} else {
-				$rUnreadable[] = $rID;
+		$rOut = ['missing' => [], 'extra' => [], 'unreadable' => [], 'differ' => []];
+		$rCaps = ['missing' => self::MAX_IDS, 'extra' => self::MAX_IDS, 'unreadable' => self::MAX_IDS, 'differ' => self::MAX_DIFFER];
+		$rNote = static function (string $rList, int|string $rWhat) use (&$rOut, $rCaps): void {
+			if (count($rOut[$rList]) < $rCaps[$rList]) {
+				$rOut[$rList][] = $rWhat;
 			}
-		}
-		try {
-			$rMain = StreamRecords::data($rServerID, StreamRecords::held($rServerID, null));
-		} catch (\Throwable) {
-			// MAIN's database did not answer (or mode 2 refused it): nothing to compare with.
-			return ['mode' => 'shadow', 'compared' => false, 'unreadable' => array_slice($rUnreadable, 0, self::MAX_IDS)];
-		}
-		$rDiffer = [];
-		foreach (array_intersect_key($rReplica, $rMain) as $rID => $rData) {
-			foreach (['stream', 'type', 'profile', 'server', 'options', 'children', 'recordings'] as $rPart) {
-				$rHave = $rMain[$rID][$rPart] ?? null;
-				$rWant = $rData[$rPart] ?? null;
-				if (in_array($rPart, ['stream', 'server'], true) && is_array($rHave) && is_array($rWant)) {
-					foreach (array_unique(array_merge(array_keys($rHave), array_keys($rWant))) as $rField) {
-						if (json_encode(self::loose($rHave[$rField] ?? null)) !== json_encode(self::loose($rWant[$rField] ?? null))) {
-							$rDiffer[] = $rID . '.' . $rPart . '.' . $rField;
-						}
+		};
+		$rCompared = true;
+		$rCount = count($rIDs);
+		$rPos = 0;
+		$rFrom = 0;
+		do {
+			$rMain = null;
+			$rTo = StreamRecords::MAX_ID;
+			if ($rCompared) {
+				try {
+					$rHeld = StreamRecords::held($rServerID, null, $rFrom, StreamRecords::MAX_ID, self::SHADOW_STEP);
+					// A full step: this range ends at its last id, the next starts after it.
+					if (count($rHeld) >= self::SHADOW_STEP) {
+						$rTo = (int) end($rHeld);
 					}
-				} elseif (json_encode(self::loose($rHave)) !== json_encode(self::loose($rWant))) {
-					$rDiffer[] = $rID . '.' . $rPart;
+					$rMain = StreamRecords::data($rServerID, $rHeld);
+				} catch (\Throwable) {
+					// MAIN's database did not answer (or mode 2 refused it): nothing
+					// to compare with; the records are still read for `unreadable`.
+					$rCompared = false;
+					$rTo = StreamRecords::MAX_ID;
 				}
 			}
+			for (; $rPos < $rCount && $rIDs[$rPos] <= $rTo; $rPos++) {
+				$rID = $rIDs[$rPos];
+				$rDoc = self::streamRecord($rID);
+				$rHave = $rMain[$rID] ?? null;
+				unset($rMain[$rID]);
+				if (!is_array($rDoc) || ReplicaStreamCache::entry($rID, $rDoc['data'], $rServerID, $rDoc['etag'], $rDoc['ver']) === null) {
+					$rNote('unreadable', $rID);
+				} elseif ($rMain !== null && $rHave === null) {
+					$rNote('extra', $rID);
+				} elseif ($rHave !== null) {
+					foreach (self::streamDiffer($rHave, $rDoc['data']) as $rWhat) {
+						$rNote('differ', $rID . '.' . $rWhat);
+					}
+				}
+			}
+			// What MAIN's database holds in the range that the section lacks.
+			foreach (array_keys($rMain ?? []) as $rID) {
+				$rNote('missing', (int) $rID);
+			}
+			$rFrom = $rTo + 1;
+		} while ($rTo < StreamRecords::MAX_ID);
+		if (!$rCompared) {
+			return ['mode' => 'shadow', 'compared' => false, 'unreadable' => $rOut['unreadable']];
 		}
-		return [
-			'mode' => 'shadow',
-			'missing' => array_slice(array_values(array_diff(array_keys($rMain), $rIDs)), 0, self::MAX_IDS),
-			'extra' => array_slice(array_values(array_diff(array_keys($rReplica), array_keys($rMain))), 0, self::MAX_IDS),
-			'unreadable' => array_slice($rUnreadable, 0, self::MAX_IDS),
-			'differ' => array_slice($rDiffer, 0, self::MAX_DIFFER),
-		];
+		return ['mode' => 'shadow'] + $rOut;
+	}
+
+	/**
+	 * The parts, and for `stream` and `server` the fields, in which a record's
+	 * data differs from MAIN's (never `tickets`): `<part>` or `<part>.<field>`.
+	 *
+	 * @param array<string, mixed> $rMain the record MAIN's database gives
+	 * @param array<mixed> $rData the section's
+	 * @return list<string>
+	 */
+	private static function streamDiffer(array $rMain, array $rData): array {
+		$rOut = [];
+		foreach (['stream', 'type', 'profile', 'server', 'options', 'children', 'recordings'] as $rPart) {
+			$rHave = $rMain[$rPart] ?? null;
+			$rWant = $rData[$rPart] ?? null;
+			if (in_array($rPart, ['stream', 'server'], true) && is_array($rHave) && is_array($rWant)) {
+				foreach (array_unique(array_merge(array_keys($rHave), array_keys($rWant))) as $rField) {
+					if (json_encode(self::loose($rHave[$rField] ?? null)) !== json_encode(self::loose($rWant[$rField] ?? null))) {
+						$rOut[] = $rPart . '.' . $rField;
+					}
+				}
+			} elseif (json_encode(self::loose($rHave)) !== json_encode(self::loose($rWant))) {
+				$rOut[] = $rPart;
+			}
+		}
+		return $rOut;
 	}
 
 	/**

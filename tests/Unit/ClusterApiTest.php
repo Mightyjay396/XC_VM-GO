@@ -1536,20 +1536,76 @@ final class ClusterApiTest extends TestCase {
 		}
 
 		// Bouquets too large for the agent's reply (8 MiB, with everything else):
-		// left out, audited once; the rest of the reply still arrives.
+		// `too_large` with their ETag, so the node drops the bouquets it holds and
+		// its readers take MAIN's database again; audited once; the rest of the
+		// reply still arrives.
 		$this->rDb->query("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_channels`, `bouquet_order`) VALUES (3, 'Everything', ?, 2)", '[' . implode(',', range(100000, 700000)) . ']');
+		$rLarge = '';
 		foreach ([1, 2] as $rTry) {
 			[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => $rHave], 1, $rKeys);
 			$rOut = $this->reply($rRes, $rCtx, $rKeys);
-			$this->assertArrayNotHasKey(ReplicaSections::BOUQUETS, $rOut, 'try ' . $rTry . ': the node keeps what it holds');
+			$this->assertSame(['too_large', 'etag'], array_keys($rOut[ReplicaSections::BOUQUETS]), 'try ' . $rTry . ': no record');
+			$this->assertTrue($rOut[ReplicaSections::BOUQUETS]['too_large']);
+			$this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $rOut[ReplicaSections::BOUQUETS]['etag']);
+			$this->assertNotSame($rHave[ReplicaSections::BOUQUETS], $rOut[ReplicaSections::BOUQUETS]['etag'], 'the section as it is now');
 			$this->assertSame(['unchanged' => true], $rOut[ReplicaSections::CATEGORIES]);
 			$this->assertArrayHasKey('blocklist', $rOut);
+			$rLarge = $rOut[ReplicaSections::BOUQUETS]['etag'];
 		}
 		$this->rDb->query("SELECT `detail` FROM `cluster_audit` WHERE `event` = 'replica.section_too_large'");
 		$rRows = $this->rDb->get_rows();
 		$this->assertCount(1, $rRows, 'once per ETag');
 		$this->assertSame(['section' => 'bouquets', 'max' => ReplicaBuilder::MAX_WHOLE_BYTES], array_intersect_key(json_decode($rRows[0]['detail'], true), ['section' => 0, 'max' => 0]));
 		$this->assertGreaterThan(ReplicaBuilder::MAX_WHOLE_BYTES, json_decode($rRows[0]['detail'], true)['bytes']);
+		// The agent keeps that ETag, with no files: nothing is sealed again until the bouquets change.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => [ReplicaSections::BOUQUETS => $rLarge] + $rHave], 1, $rKeys);
+		$this->assertSame(['unchanged' => true], $this->reply($rRes, $rCtx, $rKeys)[ReplicaSections::BOUQUETS]);
+		// Smaller again: sent.
+		$this->rDb->exec('DELETE FROM `bouquets` WHERE `id` = 3');
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => [ReplicaSections::BOUQUETS => $rLarge] + $rHave], 1, $rKeys);
+		$this->assertSame($rHave[ReplicaSections::BOUQUETS], $this->reply($rRes, $rCtx, $rKeys)[ReplicaSections::BOUQUETS]['etag']);
+
+		// An agent that names neither catalogue section predates `too_large`: a
+		// section past the bound is left out for it, as before.
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `server_name` text)');
+		$this->rDb->query('INSERT INTO `settings` VALUES (1, ?)', str_repeat('x', 3500000));
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => '']], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertArrayNotHasKey('settings', $rOut, 'today\'s agent would take a reply without a record as a malformed section');
+		$this->assertArrayHasKey('blocklist', $rOut);
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['settings' => '', ReplicaSections::CATEGORIES => '']], 1, $rKeys);
+		$this->assertTrue($this->reply($rRes, $rCtx, $rKeys)['settings']['too_large']);
+	}
+
+	public function testConfigKeepsTheWholeReplyWithinWhatTheAgentReads(): void {
+		$this->blocklistTables();
+		$this->rDb->exec(InstallSchema::table('bouquets'));
+		$this->rDb->exec(InstallSchema::table('streams_categories'));
+		// Each section under the bound, together past the agent's 8 MiB, with a blocklist section to send too.
+		$this->rDb->query("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_order`) VALUES (1, ?, 1)", str_repeat('b', 2900000));
+		$this->rDb->query("INSERT INTO `streams_categories` (`id`, `category_type`, `category_name`, `parent_id`, `cat_order`, `is_adult`) VALUES (4, 'live', ?, 0, 1, 0)", str_repeat('c', 2900000));
+		$this->rDb->query('INSERT INTO `blocked_uas` (`user_agent`) VALUES (?)', str_repeat('u', 700000));
+		BlocklistChanges::set('ua', [1]);
+		$rKeys = $this->active();
+		$rNew = [ReplicaSections::BOUQUETS => '', ReplicaSections::CATEGORIES => ''];
+
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => $rNew], 1, $rKeys);
+		$this->assertLessThanOrEqual(8 << 20, strlen($rRes['body']), 'the agent reads it');
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertArrayHasKey('section', $rOut['blocklist']);
+		$this->assertLessThan(ReplicaBuilder::MAX_WHOLE_BYTES, strlen($rOut[ReplicaSections::BOUQUETS]['sealed']));
+		$this->assertArrayNotHasKey(ReplicaSections::CATEGORIES, $rOut, 'no room left: the next poll has it');
+		$this->assertLessThanOrEqual(ReplicaBuilder::MAX_REPLY, strlen((string) json_encode($rOut, JSON_UNESCAPED_SLASHES)));
+
+		// The next poll: what the last one carried is unchanged, and the categories fit.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => $rOut['blocklist']['seq'], 'have' => ['blocklist' => $rOut['blocklist']['section']['etag'], ReplicaSections::BOUQUETS => $rOut[ReplicaSections::BOUQUETS]['etag'], ReplicaSections::CATEGORIES => '']], 1, $rKeys);
+		$rNext = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame(['unchanged' => true], $rNext[ReplicaSections::BOUQUETS]);
+		$this->assertSame(ReplicaSections::CATEGORIES, $this->openRecord($rNext[ReplicaSections::CATEGORIES]['sealed'], 'rep')['section']);
+		$this->assertLessThan(ReplicaBuilder::MAX_WHOLE_BYTES, strlen($rNext[ReplicaSections::CATEGORIES]['sealed']));
+		$this->assertGreaterThan(8 << 20, strlen($rOut['blocklist']['section']['sealed']) + strlen($rOut[ReplicaSections::BOUQUETS]['sealed']) + strlen($rNext[ReplicaSections::CATEGORIES]['sealed']), 'all three in one reply: past what the agent reads');
+		$this->assertSame([], array_values(array_diff(array_merge(ReplicaBuilder::WHOLE, [ReplicaSections::SECRETS]), ReplicaBuilder::REPLY_ORDER)), 'every section has its place in a reply');
+		$this->assertSame([ReplicaSections::BOUQUETS, ReplicaSections::CATEGORIES], array_slice(ReplicaBuilder::REPLY_ORDER, -2), 'the catalogue last');
 	}
 
 	/** MAIN's previous OPENSSL_EXTRA: none, never the deploy root's file. */

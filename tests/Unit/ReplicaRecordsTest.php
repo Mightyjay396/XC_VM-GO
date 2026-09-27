@@ -155,6 +155,33 @@ final class ReplicaRecordsTest extends TestCase {
 		$this->assertSame(['blocklist'], $this->fromDisk()['from_disk']['unverified']);
 	}
 
+	public function testAStreamRecordIsCheckedForWhatItClaims(): void {
+		$rIdentity = ReplicaRecords::identity($this->rDir . 'cluster/agent.json');
+		$rData = ReplicaFixture::streamData(10, 5);
+		$rEtag = $this->rFixture->stream(10, $rData, 3);
+		$this->assertSame(['etag' => $rEtag, 'ver' => 3, 'data' => $rData], ReplicaRecords::stream($this->rFixture->dir(), 10, $rIdentity));
+		foreach ([
+			'another stream\'s record' => ['stream_id' => 11],
+			'another section\'s record' => ['section' => 'settings'],
+			'another node\'s record' => ['node' => '00000000-0000-4000-a000-000000000000'],
+			'a version that is not an integer' => ['ver' => '3'],
+			'an ETag that is not MAIN\'s' => ['etag' => strtoupper($rEtag)],
+			'no data' => ['data' => 'x'],
+		] as $rWhy => $rOver) {
+			$this->rFixture->stream(10, $rData, 3, null, $rOver);
+			$this->assertFalse(ReplicaRecords::stream($this->rFixture->dir(), 10, $rIdentity), $rWhy);
+		}
+		// Another stream's valid record under this one's name.
+		$this->rFixture->stream(11, ReplicaFixture::streamData(11, 5));
+		copy($this->rFixture->dir() . 'streams/11.rep', $this->rFixture->dir() . 'streams/10.rep');
+		$this->assertFalse(ReplicaRecords::stream($this->rFixture->dir(), 10, $rIdentity), 'named after another stream');
+		// A record without its .json is not one the agent stored.
+		$this->rFixture->stream(10, $rData, 3);
+		unlink($this->rFixture->dir() . 'streams/10.json');
+		$this->assertNull(ReplicaRecords::stream($this->rFixture->dir(), 10, $rIdentity));
+		$this->assertNull(ReplicaRecords::stream($this->rFixture->dir(), 12, $rIdentity), 'none at all');
+	}
+
 	public function testFromDiskRtmpPublishersAreNotResolvedAndTheWholeSectionsComeFirst(): void {
 		$this->rFixture->node();
 		$rRow = ['id' => 1, 'ip' => 'localhost', 'password' => 'pw', 'push' => 1, 'pull' => 0];

@@ -35,16 +35,21 @@ use XcVm\Core\Cache\FileCache;
  * same reason).
  *
  * The cache directory is the other caches' (tmp/cache/, a tmpfs), so the
- * entries go with `replica_owned` at a reboot and an apply builds them again
- * (`cluster:apply --from-disk` in `service`). ReplicaApply::streams() writes
- * them; the readers here take them only while the replica owns the section
- * (owned()): the STREAMS flow on, the section stored by the agent, and an
- * apply that built them since. Then no reader reads MAIN's database for a
- * stream's definition: an entry missing is built from the agent's file
- * (`replica/streams/<id>.json`, a record it stored since that apply), and a
- * stream without one is a stream the node does not hold. A stream whose
- * record did not read at the last apply (from disk: did not verify) is never
- * built from its file: it keeps the entry it had, or has none.
+ * entries go with `replica_owned` at a reboot and an apply builds them again:
+ * `cluster:apply --from-disk` in `service` on a node whose CONFIG flow is on;
+ * otherwise `startup`'s `cron:cache` (the minute's apply), once the node
+ * booted through MAIN's database as it does for every other cache then.
+ * ReplicaApply::streams() writes them; the readers here take them only while
+ * the replica owns the section (owned()): the STREAMS flow on, the section
+ * stored by the agent, and an apply that built them since. Then no reader
+ * reads MAIN's database for a stream's definition: an entry missing is built
+ * from the agent's file (`replica/streams/<id>.json`, a record it stored
+ * since that apply), and a stream without one is a stream the node does not
+ * hold. A stream whose record did not read at the last apply (from disk: did
+ * not verify) is not built from its file: it keeps the entry it had, or has
+ * none, until the next apply reads its record. That apply, without
+ * `--from-disk` (the agent's, or cron:cache's minute), trusts the agent's
+ * `.json` as it does for every section.
  *
  * What no record carries stays null: the node's own runtime state (pids,
  * status, the current source, probe results, the created channel's build
@@ -222,17 +227,40 @@ final class ReplicaStreamCache {
 
 	/**
 	 * A recording scheduled on this node (every `recordings` column), or null.
-	 * Its `status` is MAIN's, as last heard.
+	 * Its `status` is MAIN's, as last heard. The index names the recordings of
+	 * the entries the last apply built; on a miss, the streams whose record
+	 * the agent stored since (not in the index) are looked through too, their
+	 * entries built from its files as get() builds them.
 	 *
 	 * @return array<string, mixed>|null
 	 */
 	public static function recording(int $rRecordingID): ?array {
-		foreach (self::index() as $rID => $rMeta) {
+		$rIndex = self::index();
+		$rIDs = [];
+		foreach ($rIndex as $rID => $rMeta) {
 			if (in_array($rRecordingID, $rMeta['rec'] ?? [], true)) {
-				foreach (self::get((int) $rID)['recordings'] ?? [] as $rRow) {
-					if ($rRow['id'] === $rRecordingID) {
-						return $rRow;
-					}
+				$rIDs[] = (int) $rID;
+			}
+		}
+		$rFound = self::recordingOf($rIDs, $rRecordingID);
+		if ($rFound !== null) {
+			return $rFound;
+		}
+		$rHeld = ReplicaStreams::ids();
+		return is_array($rHeld) ? self::recordingOf(array_diff($rHeld, array_keys($rIndex)), $rRecordingID) : null;
+	}
+
+	/**
+	 * That recording among these streams' entries, or null.
+	 *
+	 * @param array<int> $rIDs
+	 * @return array<string, mixed>|null
+	 */
+	private static function recordingOf(array $rIDs, int $rRecordingID): ?array {
+		foreach ($rIDs as $rID) {
+			foreach (self::get((int) $rID)['recordings'] ?? [] as $rRow) {
+				if ($rRow['id'] === $rRecordingID) {
+					return $rRow;
 				}
 			}
 		}

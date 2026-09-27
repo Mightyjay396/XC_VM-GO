@@ -44,10 +44,11 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   catalogue the node's caches of those names hold for the viewer APIs.
  *
  * All but the blocklist are sent whole, to an agent that names them in
- * `have`, whenever their ETag differs from the node's. One whose sealed
- * record would pass MAX_WHOLE_BYTES is left out of the reply instead, and
- * audited once per ETag: the agent reads at most 8 MiB of a reply, and one
- * section too large for it would stop every section. A section and its
+ * `have`, whenever their ETag differs from the node's. The agent reads at
+ * most 8 MiB of a reply, and one reply too large for it would stop every
+ * section: one whose sealed record would pass MAX_WHOLE_BYTES is answered
+ * `too_large` instead (whole()), and audited once per ETag, and the `config`
+ * op keeps the whole reply within MAX_REPLY, in REPLY_ORDER. A section and its
  * ETag are reused for 10 s (ReplicaEtagCache); a change of the node list
  * drops the cache and is announced to the others through `config.changed`
  * (nodesChanged). `secrets` goes only to an active node in mode 1 or 2
@@ -85,9 +86,25 @@ final class ReplicaBuilder {
 	 * The largest sealed whole section served (base64): the agent reads at
 	 * most 8 MiB of a reply, which also carries the blocklist and the other
 	 * sections. A larger one (the bouquets of a panel with many resellers'
-	 * packages) is left out; the node keeps what it holds.
+	 * packages) is answered `too_large`, and the node's readers go back to
+	 * MAIN's database for it (ADR 0004, tenth Phase 7 increment).
 	 */
 	public const MAX_WHOLE_BYTES = 4194304;
+
+	/**
+	 * The most a `config` reply's JSON may take: the plan's boxed plaintext
+	 * limit, 8 MiB less 64 KiB, within the agent's 8 MiB `MaxReply`.
+	 */
+	public const MAX_REPLY = 8323072;
+
+	/**
+	 * The order a `config` reply takes the sections sent whole in, within
+	 * MAX_REPLY: the viewer catalogue, the largest, last.
+	 */
+	public const REPLY_ORDER = [
+		ReplicaSections::SETTINGS, ReplicaSections::SERVERS, ReplicaSections::NODE, ReplicaSections::CRONTAB, ReplicaSections::CLUSTER,
+		ReplicaSections::SECRETS, ReplicaSections::BOUQUETS, ReplicaSections::CATEGORIES,
+	];
 
 	/**
 	 * The node's blocklist from change $rSince (0: it has none).
@@ -122,15 +139,15 @@ final class ReplicaBuilder {
 
 	/**
 	 * A section sent whole: `unchanged` when the node holds its ETag, else the
-	 * sealed `rep` record; null when that record would pass MAX_WHOLE_BYTES
-	 * (left out of the reply).
+	 * sealed `rep` record; `too_large` with the ETag when that record would
+	 * pass MAX_WHOLE_BYTES (audited once per ETag).
 	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row
 	 * @param array<string, mixed> $rSettings MAIN's settings (the `cluster` section's policy)
 	 * @param array<string, mixed> $rMain MAIN's `servers` row
-	 * @return array{unchanged?: bool, etag?: string, sealed?: string}|null
+	 * @return array{unchanged?: bool, too_large?: bool, etag?: string, sealed?: string}
 	 */
-	public static function whole(ClusterCrypto $rCrypto, array $rNode, string $rSection, string $rHave, array $rSettings = [], array $rMain = []): ?array {
+	public static function whole(ClusterCrypto $rCrypto, array $rNode, string $rSection, string $rHave, array $rSettings = [], array $rMain = []): array {
 		['etag' => $rEtag, 'data' => $rData] = self::section($rCrypto, $rNode, $rSection, $rSettings, $rMain);
 		if (hash_equals($rEtag, $rHave)) {
 			return ['unchanged' => true];
@@ -142,12 +159,12 @@ final class ReplicaBuilder {
 		$rSealed = base64_encode(self::record($rCrypto, $rNode, 'rep', self::json($rDoc)));
 		if (strlen($rSealed) > self::MAX_WHOLE_BYTES) {
 			self::tooLarge($rSection, $rEtag, strlen($rSealed));
-			return null;
+			return ['too_large' => true, 'etag' => $rEtag];
 		}
 		return ['etag' => $rEtag, 'sealed' => $rSealed];
 	}
 
-	/** Audit a section left out for its size, once per ETag. */
+	/** Audit a section too large to send, once per ETag. */
 	private static function tooLarge(string $rSection, string $rEtag, int $rBytes): void {
 		try {
 			if (ClusterMeta::get('replica_too_large.' . $rSection) !== $rEtag) {

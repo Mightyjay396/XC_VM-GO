@@ -109,12 +109,7 @@ class CacheCronJob implements CommandInterface {
 		// replica does not own it. The streams section follows the STREAMS
 		// flow the same way, CONFIG or not; the minute never compares a shadow
 		// section with MAIN's database (the agent's cluster:apply does).
-		if (NodeFlows::on(NodeFlows::CONFIG)) {
-			ReplicaApply::run(true, null, null, false, true);
-		} else {
-			ReplicaApply::disown();
-			ReplicaApply::streamsMinute();
-		}
+		ReplicaApply::minute();
 		// The bouquets and categories are the replica's too once it owns them
 		// (its `bouquets` and `categories` sections); a process booted from the
 		// replica keeps them as they are (their readers never read MAIN's

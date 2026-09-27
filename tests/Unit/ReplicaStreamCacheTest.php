@@ -238,6 +238,29 @@ final class ReplicaStreamCacheTest extends TestCase {
 		$this->assertSame(['since' => 7, 'streams' => 5, 'mode' => 'shadow', 'compared' => false, 'unreadable' => []], $this->apply()[ReplicaSections::STREAMS]);
 	}
 
+	public function testTheShadowComparisonWalksTheStreamsInSteps(): void {
+		// Past two steps of 1000 held streams, whatever holds them.
+		$rRows = [];
+		foreach (range(100, 2199) as $rID) {
+			$rRows[] = "({$rID}, 1, 'S{$rID}', '[\"http://src.example/{$rID}\"]', 0)";
+		}
+		$this->rDb->exec('INSERT INTO `streams` (`id`, `type`, `stream_display_name`, `stream_source`, `direct_source`) VALUES ' . implode(', ', $rRows));
+		$this->rDb->exec("INSERT INTO `streams_servers` (`stream_id`, `server_id`, `on_demand`) SELECT `id`, {$this->rSid}, 0 FROM `streams` WHERE `id` >= 100");
+		$this->storeSection();
+		$this->rFixture->stream(5000, ReplicaFixture::streamData(5000, $this->rSid));
+		// Since the agent's last sync: one stream renamed at each end, one
+		// taken off the node, and two the section lacks, in the second and third steps.
+		$this->rDb->exec("UPDATE `streams` SET `stream_display_name` = 'Renamed' WHERE `id` IN (100, 2199)");
+		$this->rDb->exec('DELETE FROM `streams_servers` WHERE `stream_id` = 1500');
+		foreach ([1105, 2150] as $rID) {
+			unlink($this->rFixture->dir() . 'streams/' . $rID . '.json');
+		}
+		$this->flows(0);
+		$rReport = $this->apply()[ReplicaSections::STREAMS];
+		$this->assertSame(['mode' => 'shadow', 'missing' => [1105, 2150], 'extra' => [1500, 5000], 'unreadable' => [], 'differ' => ['100.stream.stream_display_name', '2199.stream.stream_display_name']], array_diff_key($rReport, ['since' => 0, 'streams' => 0]));
+		$this->assertSame(2104, $rReport['streams']);
+	}
+
 	public function testTheFlowDecidesAndHandsTheStreamsBack(): void {
 		$this->storeSection();
 		$this->apply();
@@ -275,6 +298,94 @@ final class ReplicaStreamCacheTest extends TestCase {
 		$this->assertFalse(ReplicaStreamCache::owned());
 	}
 
+	public function testCronCachesMinuteFollowsBothFlows(): void {
+		$this->storeSection();
+		// CONFIG off, STREAMS on (the rollout's order): the minute applies the
+		// section and owns it, and writes no report (the agent's apply keeps it).
+		$this->assertSame('applied', ReplicaApply::minute($this->rSid)[ReplicaSections::STREAMS]['mode']);
+		$this->assertTrue(ReplicaStreamCache::owned());
+		$this->assertFileDoesNotExist($this->rFixture->dir() . 'apply.json');
+		$this->rDb->exec("UPDATE `streams` SET `stream_display_name` = 'Renamed' WHERE `id` = 10");
+		$this->assertSame('News', StreamSource::streamRow(10, true)['stream_display_name']);
+
+		// STREAMS off, CONFIG off: handed back at the minute, and turning it on
+		// again waits for the next minute instead of reusing the entries.
+		$this->flows(0);
+		$this->assertNull(ReplicaApply::minute($this->rSid));
+		$this->assertFalse(ReplicaApply::built(ReplicaSections::STREAMS));
+		$this->flows(NodeFlows::STREAMS);
+		$this->assertFalse(ReplicaStreamCache::owned());
+		$this->assertSame('Renamed', StreamSource::streamRow(10, true)['stream_display_name'], 'MAIN\'s database until then');
+		ReplicaApply::minute($this->rSid);
+		$this->assertTrue(ReplicaStreamCache::owned());
+
+		// CONFIG on, STREAMS off: the agent's apply compares with MAIN's
+		// database; the minute never does, and keeps the agent's comparison.
+		$this->flows(NodeFlows::CONFIG);
+		$rAgent = ReplicaApply::run(true, 1800000000, $this->rSid)[ReplicaSections::STREAMS];
+		$this->assertSame(['shadow', ['10.stream.stream_display_name']], [$rAgent['mode'], $rAgent['differ']]);
+		$this->mainUnreachable();
+		$rMinute = ReplicaApply::minute($this->rSid);
+		$this->assertSame($rAgent, $rMinute[ReplicaSections::STREAMS], 'no comparison: MAIN\'s database was never read');
+		$this->assertSame($rAgent, json_decode((string) file_get_contents($this->rFixture->dir() . 'apply.json'), true)[ReplicaSections::STREAMS]);
+		$this->assertFalse(ReplicaApply::built(ReplicaSections::STREAMS));
+	}
+
+	public function testAStreamTheAgentRemovedLosesAnEntryItsFileBuilt(): void {
+		$this->storeSection();
+		$this->apply();
+		// Stored after the apply: built from the agent's file at the first read, not indexed.
+		$this->rFixture->stream(20, ReplicaFixture::streamData(20, $this->rSid));
+		$this->assertSame('S20', StreamSource::streamRow(20, true)['stream_display_name']);
+		$this->assertContains(20, ReplicaStreamCache::cached());
+		$this->assertArrayNotHasKey(20, ReplicaStreamCache::index());
+		unlink($this->rFixture->dir() . 'streams/20.json');
+		unlink($this->rFixture->dir() . 'streams/20.rep');
+		$this->assertSame(1, $this->apply()[ReplicaSections::STREAMS]['removed']);
+		$this->mainUnreachable();
+		$this->assertNull(StreamSource::streamRow(20, true));
+		$this->assertNotContains(20, ReplicaStreamCache::cached());
+	}
+
+	public function testARecordingStoredSinceTheLastApplyIsFound(): void {
+		$this->storeSection();
+		$this->apply();
+		$rData = ReplicaFixture::streamData(21, $this->rSid);
+		$rData['recordings'] = [ReplicaSections::typed(['id' => 777, 'stream_id' => 21, 'source_id' => $this->rSid, 'title' => 'Late', 'start' => 100, 'end' => 200], ReplicaSections::RECORDING_FIELDS)];
+		$this->rFixture->stream(21, $rData);
+		$this->mainUnreachable();
+		$this->assertSame('Late', StreamSource::recording(777)['title'], 'the recorder starts it');
+		$this->assertSame('Match', StreamSource::recording(1)['title'], 'the index first');
+		$this->assertNull(StreamSource::recording(778));
+	}
+
+	public function testFromDiskTheBlocklistIsAppliedBeforeTheStreams(): void {
+		$this->storeSection();
+		$this->rFixture->blocklist(['ip' => ['203.0.113.1'], 'asn' => [], 'ua' => [], 'isp' => [], 'rtmp' => []], 7);
+		$this->flows(NodeFlows::CONFIG | NodeFlows::STREAMS);
+		// The streams part fails (as `service`'s timeout or a full tmpfs would stop it).
+		$rPath = FileCache::defaultPath() . ReplicaStreamCache::DIR;
+		$rStores = new \ReflectionProperty(ReplicaStreamCache::class, 'rStores');
+		$rStores->setValue(null, [$rPath => new class ($rPath) extends FileCache {
+			public function set($key, $data, $ttl = 0) {
+				throw new \RuntimeException('the streams part stopped');
+			}
+		}]);
+		try {
+			ReplicaApply::run(true, 1800000000, $this->rSid, true);
+			$this->fail('the streams part ran');
+		} catch (\RuntimeException $rE) {
+			$this->assertSame('the streams part stopped', $rE->getMessage());
+		} finally {
+			$rStores->setValue(null, []);
+		}
+		$this->assertSame(['203.0.113.1'], FileCache::getCache('blocked_ips'), 'the bans are in place');
+		$this->assertFalse(ReplicaApply::built(ReplicaSections::STREAMS), 'the streams are not the replica\'s');
+		$rReport = ReplicaApply::run(true, 1800000000, $this->rSid, true);
+		$this->assertSame(['verified' => ['blocklist', 'streams'], 'unverified' => []], $rReport['from_disk']);
+		$this->assertTrue(ReplicaStreamCache::owned());
+	}
+
 	public function testARecordThatDoesNotReadNeverDeletesItsStreamsEntry(): void {
 		$rData = StreamRecords::data($this->rSid, [10, 11]);
 		$this->storeSection();
@@ -287,11 +398,25 @@ final class ReplicaStreamCacheTest extends TestCase {
 		// One that is another stream's, or names another server's row, is not this one's either.
 		$this->rFixture->stream(10, $rData[11]);
 		$this->assertSame([10], $this->apply()[ReplicaSections::STREAMS]['unreadable']);
-		$rTen = $rData[10];
-		$rTen['server']['server_id'] = $this->rOther;
-		$this->rFixture->stream(10, $rTen);
-		$this->assertSame([10], $this->apply()[ReplicaSections::STREAMS]['unreadable']);
-		$this->assertSame('News', StreamSource::streamRow(10, true)['stream_display_name']);
+		$rRecording = ReplicaSections::typed(['id' => 9, 'stream_id' => 10, 'source_id' => $this->rOther, 'title' => 'Elsewhere'], ReplicaSections::RECORDING_FIELDS);
+		foreach ([
+			'a server row naming another server' => ['server', 'server_id', $this->rOther],
+			'a server row of another stream' => ['server', 'stream_id', 11],
+			'a recording scheduled on another server' => ['recordings', null, [$rRecording]],
+			'a type that is not MAIN\'s' => ['type', null, ['type_id' => 'x']],
+			'a profile that is not MAIN\'s' => ['profile', null, 'x'],
+			'children that are not server ids' => ['children', null, ['x']],
+		] as $rWhy => [$rPart, $rField, $rValue]) {
+			$rTen = $rData[10];
+			if ($rField === null) {
+				$rTen[$rPart] = $rValue;
+			} else {
+				$rTen[$rPart][$rField] = $rValue;
+			}
+			$this->rFixture->stream(10, $rTen);
+			$this->assertSame([10], $this->apply()[ReplicaSections::STREAMS]['unreadable'], $rWhy);
+			$this->assertSame('News', StreamSource::streamRow(10, true)['stream_display_name'], $rWhy . ': kept as it was');
+		}
 
 		// From disk, a record missing behind its .json is not a removal either.
 		DatabaseFactory::set($this->rDb);
@@ -375,18 +500,23 @@ final class ReplicaStreamCacheTest extends TestCase {
 		$this->assertSame(['streams'], $rReport['from_disk']['unverified']);
 		$this->assertSame([10], ReplicaStreamCache::cached());
 		$this->assertStringNotContainsString('src.example', (string) json_encode($rReport), 'the report names streams, never their content');
-		// Nor is a stream whose record did not verify built later from its unsigned .json.
+		// Nor is a stream whose record did not verify built from its unsigned
+		// .json at a read until the next apply.
 		$this->assertNull(StreamSource::streamRow(11, false));
 		$this->assertNull(StreamSource::streamRow(12, true));
 		$this->assertSame([10], ReplicaStreamCache::cached());
-		// Once the agent's apply reads them, they are.
-		ReplicaApply::run(false, 1800000000, $this->rSid);
+		// That apply (the agent's, or cron:cache's minute) trusts the agent's .json, as for every section.
+		ReplicaApply::minute($this->rSid);
 		$this->assertSame('Film', StreamSource::streamRow(11, false)['stream_display_name']);
 	}
 
 	public function testAnEntryGoneIsBuiltAgainFromTheAgentsFile(): void {
 		$this->storeSection();
 		$this->apply();
+		// The next apply writes it again, unchanged record or not.
+		ReplicaStreamCache::store()->delete('10');
+		$this->assertSame(1, $this->apply()[ReplicaSections::STREAMS]['written']);
+		$this->assertContains(10, ReplicaStreamCache::cached());
 		$this->assertSame('0700', substr(sprintf('%o', fileperms($this->rDir . 'cache/' . ReplicaStreamCache::DIR)), -4), 'the entries hold the sources');
 		ReplicaStreamCache::store()->delete('10');
 		$this->mainUnreachable();

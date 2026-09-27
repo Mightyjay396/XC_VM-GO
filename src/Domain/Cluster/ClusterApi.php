@@ -10,6 +10,7 @@ use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -737,9 +738,15 @@ final class ClusterApi {
 	 * a section sent whole (settings, servers, node, crontab, cluster,
 	 * bouquets, categories, secrets) goes only to an agent that names it, and
 	 * `secrets` only to a node in mode 1 or 2 (ReplicaBuilder::serves). A name
-	 * MAIN does not serve, a whole section it cannot sign without a licence,
-	 * and one too large for the agent's reply (ReplicaBuilder::MAX_WHOLE_BYTES)
-	 * are left out of the reply. A section MAIN cannot read (a failed read, no
+	 * MAIN does not serve and a whole section it cannot sign without a licence
+	 * are left out of the reply. The agent reads at most 8 MiB of a reply: a
+	 * section whose sealed record passes ReplicaBuilder::MAX_WHOLE_BYTES is
+	 * answered `{too_large, etag}` to an agent that names `bouquets` or
+	 * `categories` (the contract that takes it) and left out for an older
+	 * one, and the sections are added in ReplicaBuilder::REPLY_ORDER while
+	 * the reply stays within ReplicaBuilder::MAX_REPLY; one past it is left
+	 * out, and the node asks again at its next poll, when what this reply
+	 * carried is `unchanged`. A section MAIN cannot read (a failed read, no
 	 * settings row, an unset secret) answers `503 DB`: the node keeps what it
 	 * holds.
 	 */
@@ -756,17 +763,17 @@ final class ClusterApi {
 		}
 		try {
 			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '')];
+			// What the sections sent whole may take of the reply, after the blocklist.
+			$rRoom = ReplicaBuilder::MAX_REPLY - strlen((string) json_encode($rOut, JSON_UNESCAPED_SLASHES));
+			// An agent that names the catalogue takes `too_large` for any section it names.
+			$rTooLarge = array_key_exists(ReplicaSections::BOUQUETS, $rHave) || array_key_exists(ReplicaSections::CATEGORIES, $rHave);
 			// Sent whole: only to an agent that asks for them (have names the section).
-			foreach ([...ReplicaBuilder::WHOLE, ReplicaBuilder::SECTION_SECRETS] as $rSection) {
+			foreach (ReplicaBuilder::REPLY_ORDER as $rSection) {
 				if (!array_key_exists($rSection, $rHave) || !ReplicaBuilder::serves($rNode, $rSection)) {
 					continue;
 				}
 				try {
-					// Null: too large for the agent's reply; left out, the node keeps what it holds.
 					$rPart = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
-					if ($rPart !== null) {
-						$rOut[$rSection] = $rPart;
-					}
 				} catch (ClusterRefusedException $rE) {
 					// A whole section grants: without a licence it is left out and
 					// the node keeps what it holds, while the blocklist's bans in
@@ -774,7 +781,20 @@ final class ClusterApi {
 					if ($rE->reason() !== 'LICENCE') {
 						throw $rE;
 					}
+					continue;
 				}
+				// An older agent: left out, as before; it keeps what it holds.
+				if (!empty($rPart['too_large']) && !$rTooLarge) {
+					continue;
+				}
+				// No room left in this reply: the next poll has it, the sections
+				// sent now being `unchanged` then.
+				$rSize = strlen((string) json_encode([$rSection => $rPart], JSON_UNESCAPED_SLASHES));
+				if ($rSize > $rRoom) {
+					continue;
+				}
+				$rRoom -= $rSize;
+				$rOut[$rSection] = $rPart;
 			}
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);

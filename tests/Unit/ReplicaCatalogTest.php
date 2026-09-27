@@ -195,6 +195,7 @@ final class ReplicaCatalogTest extends TestCase {
 			'no list' => ['bouquets' => 'x'],
 			'a row without an id' => ['bouquets' => [['bouquet_name' => 'x']]],
 			'two rows with one id' => ['bouquets' => [['id' => 1], ['id' => 1]]],
+			'an id that is no row\'s' => ['bouquets' => [['id' => 0]]],
 			'another section\'s rows' => ['categories' => []],
 		] as $rWhy => $rData) {
 			$this->rFixture->whole(ReplicaSections::BOUQUETS, $rData);
@@ -209,6 +210,29 @@ final class ReplicaCatalogTest extends TestCase {
 		$rPart = $this->apply(true)[ReplicaSections::BOUQUETS];
 		$this->assertSame(['applied', 0], [$rPart['mode'], $rPart['rows']]);
 		$this->assertSame([], BouquetService::getAll(true));
+	}
+
+	public function testASectionMainNoLongerSendsForItsSizeHandsItsCacheBack(): void {
+		$this->store();
+		$this->apply(true);
+		$this->assertTrue(ReplicaApply::owns(ReplicaSections::BOUQUETS));
+		// MAIN's bouquets grew past what one reply carries: MAIN answers
+		// `too_large`, and the agent deletes the section it held (ADR 0004).
+		$this->rDb->exec("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_order`) VALUES (4, 'Everything', 3)");
+		unlink($this->rFixture->dir() . 'bouquets.rep');
+		unlink($this->rFixture->dir() . 'bouquets.json');
+		$this->assertFalse(ReplicaApply::owns(ReplicaSections::BOUQUETS), 'no section: MAIN\'s database\'s again');
+		$this->assertSame([3, 1, 4, 2], array_keys(BouquetService::getAll(true)), 'the bouquets MAIN has now');
+		$rReport = $this->apply(true);
+		$this->assertArrayNotHasKey(ReplicaSections::BOUQUETS, $rReport, 'nothing to apply');
+		$this->assertSame('applied', $rReport[ReplicaSections::CATEGORIES]['mode'], 'the other section stays');
+		$this->assertFalse(ReplicaApply::owns(ReplicaSections::BOUQUETS));
+		// Sent again once it fits: the replica's once an apply built it.
+		$this->store();
+		$this->apply(true);
+		$this->assertTrue(ReplicaApply::owns(ReplicaSections::BOUQUETS));
+		$this->rDb->exec('DELETE FROM `bouquets` WHERE `id` = 4');
+		$this->assertSame([3, 1, 4, 2], array_keys(BouquetService::getAll(true)), 'the replica\'s');
 	}
 
 	public function testFromDiskTheRecordsWin(): void {
