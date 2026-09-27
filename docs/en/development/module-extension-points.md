@@ -378,3 +378,13 @@ a successful install; `uninstallModule()` clears it.
   `MigratableInterface` is optional
 
 ---
+
+## Source drivers (`SourceDriverInterface`)
+
+A module can own a kind of live source that ffmpeg cannot read (for example DASH with
+DRM) and run its own engine for it in ffmpeg's place. The module declares the driver
+classes in `module.json` (`"source_drivers": [...]`), and each driver claims its own URL
+scheme. Streams stay ordinary XC_VM streams. See [Source Drivers](source-drivers.md) for
+the interface, the producer contract and a full example.
+
+---
