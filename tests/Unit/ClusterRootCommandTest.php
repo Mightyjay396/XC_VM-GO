@@ -72,7 +72,7 @@ final class ClusterRootCommandTest extends TestCase {
 			NodeFlows::usePath(null);
 		}
 		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/RootSignalsCronJob.php');
-		$rGate = strpos($rSource, 'if (!self::rootCommandsFromMain()) {');
+		$rGate = strpos($rSource, 'if (self::readsMainDatabase() && !self::rootCommandsFromMain()) {');
 		$rRead = strpos($rSource, "SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{");
 		$this->assertNotFalse($rGate);
 		$this->assertTrue($rRead > $rGate && $rRead - $rGate < 120, 'the legacy flush row is read only where MAIN still sends it');

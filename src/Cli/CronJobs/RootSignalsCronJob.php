@@ -11,6 +11,7 @@ use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
@@ -187,7 +188,8 @@ class RootSignalsCronJob implements CommandInterface {
 	/**
 	 * The blocked addresses, distinct: MAIN's `blocked_ips`, or with the CONFIG
 	 * flow on the replica's `blocked_ips` cache. Null when that cache is not
-	 * there (yet): the sync then leaves iptables as it is.
+	 * there (yet), and on a node in mode 2 without CONFIG, which may not read
+	 * MAIN's table: the sync then leaves iptables as it is.
 	 *
 	 * @return list<string>|null
 	 */
@@ -196,7 +198,7 @@ class RootSignalsCronJob implements CommandInterface {
 			$rCache = FileCache::getCache('blocked_ips');
 			return is_array($rCache) ? array_values(array_unique(array_map('strval', $rCache))) : null;
 		}
-		if ($rDb === null || !$rDb->query('SELECT `ip` FROM `blocked_ips`;')) {
+		if ($rDb === null || !self::readsMainDatabase() || !$rDb->query('SELECT `ip` FROM `blocked_ips`;')) {
 			return null;
 		}
 		return array_map('strval', array_keys($rDb->get_rows(true, 'ip') ?: []));
@@ -235,11 +237,53 @@ class RootSignalsCronJob implements CommandInterface {
 		return NodeFlows::on(NodeFlows::COMMANDS) && RootPin::read() !== null;
 	}
 
+	/**
+	 * Does this cron read MAIN's database: its `signals` table, the crontab
+	 * table, and `blocked_ips` without CONFIG? Not on a node in mode 2
+	 * (plan, section 10), whose connects are refused
+	 * (NodeRole::refusesConnects): MAIN sends it root's actions as signed
+	 * `node.root` commands, which cluster:root runs, and its replica says
+	 * when its own row changed (replicaChecks()). MAIN, mode 0 and mode 1
+	 * read it as before, `signals` rows MAIN queued before COMMANDS or
+	 * root's pin included.
+	 */
+	public static function readsMainDatabase(): bool {
+		return !NodeRole::refusesConnects();
+	}
+
+	/**
+	 * The ramdisk, ports and services checks of a node that reads no
+	 * `signals` row (mode 2). A `set_services`, `set_port` or `*_ramdisk` row
+	 * made them run against the node's own row; MAIN sends those as
+	 * `node.root` commands now, which cluster:root runs as they come. What
+	 * tells the node that its row changed is its replica: the servers cache
+	 * an apply built from the `servers` and `node` sections, whose ETags
+	 * ReplicaApply::OWNED_CACHE records. Each time they change, and once
+	 * after a reboot, the three checks run against that cache, as a row of
+	 * each kind made them run, so a command that never arrived (it expired
+	 * while the node was away) is made good. None while the replica does not
+	 * own the servers cache.
+	 *
+	 * @return array{php: bool, services: bool, ports: bool, ramdisk: bool}
+	 */
+	private function replicaChecks(): array {
+		$rCheck = ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false];
+		$rOwned = ReplicaApply::owns(ReplicaSections::SERVERS) ? FileCache::getCache(ReplicaApply::OWNED_CACHE) : null;
+		$rTag = is_array($rOwned) ? ($rOwned[ReplicaSections::SERVERS] ?? null) : null;
+		$rMarker = CRONS_TMP_PATH . 'replica_servers_checked';
+		if (!is_string($rTag) || $rTag === '' || (string) @file_get_contents($rMarker) === $rTag) {
+			return $rCheck;
+		}
+		// Before the checks, as a signal row was deleted before it ran: at most once.
+		@file_put_contents($rMarker, $rTag);
+		return ['php' => false, 'services' => true, 'ports' => true, 'ramdisk' => true];
+	}
+
 	private function loadCron(): void {
 		global $db;
 		$rServers = ServerRepository::getAll(true);
 		$rFlush = false;
-		if (!self::rootCommandsFromMain()) {
+		if (self::readsMainDatabase() && !self::rootCommandsFromMain()) {
 			$db->query("SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{\"action\":\"flush\"}' AND `cache` = 0;", SERVER_ID);
 			$rFlush = $db->num_rows() > 0;
 		}
@@ -541,9 +585,12 @@ class RootSignalsCronJob implements CommandInterface {
 				}
 			}
 		}
-		if ($db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' AND `cache` = 0 ORDER BY signal_id ASC;", SERVER_ID)) {
-			$rRows = $db->get_rows();
-			$rCheck = ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false];
+		// A node in mode 2 reads no `signals` row: its replica says when to
+		// check its ramdisk, ports and services.
+		$rReads = self::readsMainDatabase();
+		if (!$rReads || $db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' AND `cache` = 0 ORDER BY signal_id ASC;", SERVER_ID)) {
+			$rRows = $rReads ? $db->get_rows() : [];
+			$rCheck = $rReads ? ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false] : $this->replicaChecks();
 			foreach ($rRows as $rRow) {
 				$rData = json_decode($rRow['custom_data'], true);
 				switch ($rData['action'] ?? '') {
@@ -617,8 +664,8 @@ class RootSignalsCronJob implements CommandInterface {
 				}
 			}
 			// The crontab's jobs: MAIN's table, or the node replica's once it owns
-			// them (null: leave the crontab as it is).
-			$rCrontab = file_exists(TMP_PATH . 'crontab') ? ReplicaApply::crontabText($db) : null;
+			// them (null: leave the crontab as it is; so in mode 2 without them).
+			$rCrontab = file_exists(TMP_PATH . 'crontab') ? ReplicaApply::crontabText($rReads ? $db : null) : null;
 			if ($rCrontab !== null) {
 				echo 'Checking crontab...' . "\n";
 				exec('crontab -u xc_vm -l', $rCrons);

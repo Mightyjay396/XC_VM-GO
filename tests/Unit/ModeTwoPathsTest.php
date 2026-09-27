@@ -1,8 +1,11 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\LogSink;
+use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Tests\Support\AgentUser;
 use XcVm\Tests\Support\FakeClusterCrypto;
@@ -10,9 +13,11 @@ use XcVm\Tests\Support\ReplicaFixture;
 
 /**
  * The paths a node in mode 2 (api) still took to MAIN's database (cluster
- * plan, section 10; ADR 0004, ninth Phase 7 increment), each without one.
- * First the root actions' system log lines: a P1 `log.syslog` event, never
- * a write to MAIN's database before acting.
+ * plan, section 10; ADR 0004, ninth Phase 7 increment), each without one:
+ * cron:root_signals' minute (its signals loop, the ramdisk, ports and
+ * services checks from the replica, the crontab and sysctl checks), the
+ * root actions' system log lines (a P1 `log.syslog` event, never before
+ * acting on MAIN's database) and the PHP-FPM restart.
  *
  * Each runs in a child PHP booted for real from the node replica, in a
  * throwaway deploy root: an xcvm_core stand-in logs every connect it is
@@ -30,9 +35,12 @@ final class ModeTwoPathsTest extends TestCase {
 
 	private ReplicaFixture $rFixture;
 
+	/** @var resource|null a process whose command line reads as nginx's master */
+	private $rNginx = null;
+
 	protected function setUp(): void {
 		$this->rHome = sys_get_temp_dir() . '/xcvm-mode2-' . bin2hex(random_bytes(4)) . '/';
-		foreach (['config/cluster', 'tmp/cache', 'tmp/flood', 'storage', 'stub'] as $rDir) {
+		foreach (['config/cluster', 'tmp/cache', 'tmp/crons', 'tmp/flood', 'bin/nginx/conf/ports', 'bin/nginx_rtmp/conf', 'storage', 'stub'] as $rDir) {
 			mkdir($this->rHome . $rDir, 0777, true);
 		}
 		// As root, a node's audits write as the owner of config/cluster/.
@@ -41,10 +49,29 @@ final class ModeTwoPathsTest extends TestCase {
 			file_put_contents($this->rHome . 'stub/' . $rTool, "#!/bin/sh\necho \"" . $rTool . " \$*\" >> " . escapeshellarg($this->rHome . 'commands.log') . "\nexit 0\n");
 			chmod($this->rHome . 'stub/' . $rTool, 0755);
 		}
+		// What the node runs today: two PHP-FPM pools (the replica says four),
+		// the HTTP and RTMP ports as the replica has them, not its HTTPS port.
+		file_put_contents($this->rHome . 'bin/daemons.sh', "#! /bin/bash\nstart-stop-daemon --start 1\nstart-stop-daemon --start 2\n");
+		file_put_contents($this->rHome . 'bin/nginx/conf/ports/http.conf', 'listen 8080;');
+		file_put_contents($this->rHome . 'bin/nginx/conf/ports/https.conf', '');
+		file_put_contents($this->rHome . 'bin/nginx_rtmp/conf/port.conf', 'listen 8880;');
+		foreach (['realip_xc_vm.conf', 'realip_cloudflare.conf', 'limit.conf', 'limit_queue.conf', 'ministra_legacy.conf'] as $rConf) {
+			file_put_contents($this->rHome . 'bin/nginx/conf/' . $rConf, '');
+		}
+		// The hourly self-heals are not this test's: done a moment ago.
+		foreach (['fanout_binary_check', 'xcvm_core_check', 'ytdlp_check'] as $rStamp) {
+			file_put_contents($this->rHome . 'tmp/crons/' . $rStamp, (string) time());
+		}
 		$this->rFixture = new ReplicaFixture($this->rHome . 'config/cluster/');
 	}
 
 	protected function tearDown(): void {
+		if (is_resource($this->rNginx)) {
+			proc_terminate($this->rNginx, 9);
+			proc_close($this->rNginx);
+		}
+		NodeFlows::usePath(null);
+		NodeRole::useMainBuild(null);
 		RootPin::useDirs(null, null);
 		exec('rm -rf ' . escapeshellarg($this->rHome));
 	}
@@ -121,6 +148,7 @@ final class ModeTwoPathsTest extends TestCase {
 		file_put_contents($rScript, <<<'PHP'
 			<?php
 			use XcVm\Cli\Commands\ClusterRootCommand;
+			use XcVm\Cli\CronJobs\RootSignalsCronJob;
 			use XcVm\Core\Cluster\ReplicaBoot;
 			use XcVm\Core\Cluster\RootPin;
 			use XcVm\Core\Enum\BootContext;
@@ -141,6 +169,31 @@ final class ModeTwoPathsTest extends TestCase {
 				XC_Bootstrap::boot(BootContext::Cli);
 				$rResult['replica'] = ReplicaBoot::active();
 				switch ($argv[1] ?? '') {
+					case 'root_signals':
+						$rJob = new class extends RootSignalsCronJob {
+							/** @var list<array<string, mixed>> */
+							public array $rRan = [];
+
+							public function executeAction(array $rData, array $rServers, object $db): void {
+								$this->rRan[] = $rData;
+							}
+						};
+						foreach ([0, 1] as $i) {
+							ob_start();
+							try {
+								(new ReflectionMethod(RootSignalsCronJob::class, 'loadCron'))->invoke($rJob);
+							} finally {
+								$rResult['output'][$i] = (string) ob_get_clean();
+							}
+							$rResult['ran'][$i] = $rJob->rRan;
+							$rJob->rRan = [];
+						}
+						break;
+					case 'php_fpm':
+						// The restart ends the cron with exit(), as it always did.
+						(new ReflectionMethod(RootSignalsCronJob::class, 'loadCron'))->invoke(new RootSignalsCronJob());
+						$rResult['exited'] = false;
+						break;
 					case 'root_actions':
 						RootPin::useDirs(getenv('XCVM_TEST_PIN'), getenv('XCVM_TEST_INBOX'));
 						$rResult['done'] = ClusterRootCommand::drain([ClusterRootCommand::class, 'runAction'], (int) getenv('XCVM_TEST_NOW'));
@@ -183,6 +236,63 @@ final class ModeTwoPathsTest extends TestCase {
 			}
 		}
 		return $rOut;
+	}
+
+	/** A process whose command line reads as nginx's master (ProcessManager::isNginxRunning). */
+	private function nginxRunning(): void {
+		$this->rNginx = proc_open([PHP_BINARY, '-r', 'sleep(60);', '--', 'nginx: master process'], [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
+		$this->assertIsResource($this->rNginx);
+		for ($i = 0; $i < 50 && !str_contains((string) @file_get_contents('/proc/' . proc_get_status($this->rNginx)['pid'] . '/cmdline'), 'nginx: master'); $i++) {
+			usleep(20000);
+		}
+	}
+
+	// ── cron:root_signals ────────────────────────────────────────────
+
+	/**
+	 * The minute's root work, on a node that reads no `signals` row: the
+	 * iptables sync from the replica's blocklist, the ramdisk, ports and
+	 * services checked against the replica's own row once it changed (as a
+	 * signal row of each kind made them run), and the crontab against the
+	 * replica's jobs. The server IP rewrite is MAIN's alone: `ip` is never
+	 * asked.
+	 */
+	public function testTheRootSignalsMinuteReadsTheReplicaNotMainsDatabase(): void {
+		$this->node();
+		[, $rOut, $rResult] = $this->child(['root_signals']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertTrue($rResult['replica']);
+		$this->assertNoConnect();
+
+		// The replica's node row: four services, HTTPS on 8443, a ramdisk.
+		$this->assertSame([
+			['action' => 'enable_ramdisk'],
+			['action' => 'set_port', 'type' => 1, 'ports' => [8443], 'reload' => true],
+			['action' => 'set_services', 'count' => 4, 'reload' => true],
+		], $rResult['ran'][0]);
+		$this->assertSame([], $rResult['ran'][1], 'checked once per change of the replica, not every minute');
+		$this->assertStringContainsString('Updating Crons...', $rResult['output'][0], 'the replica\'s jobs, not MAIN\'s table');
+		$this->assertContains('sudo iptables -I INPUT -s 203.0.113.1 -j DROP', $this->commands(), 'the blocklist from the replica');
+		$this->assertSame([], preg_grep('/^ip /', $this->commands()), 'no server IP check on a node');
+	}
+
+	/**
+	 * A suspected PHP-FPM crash restarts the services: its line reaches
+	 * MAIN's system log through the spool, and the restart happens.
+	 */
+	public function testThePhpFpmRestartLogsThroughTheSpool(): void {
+		$this->node(['restart_php_fpm' => '1']);
+		$this->nginxRunning();
+		[, $rOut, $rResult] = $this->child(['php_fpm']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertArrayNotHasKey('exited', $rResult, 'the cron ends after the restart, as before');
+		$this->assertNoConnect();
+		$this->assertSame(['sudo systemctl stop xc_vm', 'sudo systemctl start xc_vm'], array_values(preg_grep('/systemctl/', $this->commands())));
+		$rEvents = $this->spooled('p1');
+		$this->assertSame(['log.syslog'], array_values(array_unique(array_column($rEvents, 'type'))));
+		$this->assertSame(['server_id' => 5, 'type' => 'PHP-FPM', 'error' => 'Restarted PHP-FPM instances due to a suspected crash.', 'username' => 'root', 'ip' => 'localhost', 'database' => null], array_diff_key($rEvents[0]['d']['rows'][0], ['date' => 1]));
 	}
 
 	// ── Root actions ─────────────────────────────────────────────────
@@ -228,6 +338,27 @@ final class ModeTwoPathsTest extends TestCase {
 	}
 
 	// ── Everywhere else, as before ───────────────────────────────────
+
+	/**
+	 * Only a node in mode 2 stops reading MAIN's `signals` table; MAIN,
+	 * mode 0 and mode 1 keep their loop (root actions MAIN queued before
+	 * COMMANDS, or while it lacked root's pin, still run there).
+	 */
+	public function testOnlyAModeTwoNodeStopsReadingSignals(): void {
+		NodeFlows::usePath($this->rHome . 'config/cluster/flows.json');
+		NodeRole::useMainBuild(false);
+		foreach ([[null, true], [0, true], [1, true], [2, false]] as [$rMode, $rReads]) {
+			$this->flows($rMode);
+			$this->assertSame($rReads, RootSignalsCronJob::readsMainDatabase(), 'mode ' . var_export($rMode, true));
+		}
+		foreach (['quarantined' => false, 'revoked' => true, 'enrolling' => true] as $rState => $rReads) {
+			$this->flows(2, 255, $rState);
+			$this->assertSame($rReads, RootSignalsCronJob::readsMainDatabase(), $rState);
+		}
+		$this->flows(2);
+		NodeRole::useMainBuild(true);
+		$this->assertTrue(RootSignalsCronJob::readsMainDatabase(), 'MAIN, even with a stray flows.json');
+	}
 
 	/**
 	 * Every system log line root writes goes through LogSink::syslog()
