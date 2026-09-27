@@ -284,7 +284,7 @@ final class EventIngest {
 				return self::nodeRow($rServerID, $rData, NodeStateSink::STATE, []);
 			case 'node.inventory':
 				// time_offset as the legacy cron measured it: node clock − MAIN's.
-				return self::nodeRow($rServerID, $rData, NodeStateSink::INVENTORY, ['time_offset' => (int) round((int) ($rNode['clock_offset_ms'] ?? 0) / 1000)]);
+				return self::nodeRow($rServerID, $rData, NodeStateSink::INVENTORY, ['time_offset' => (int) round(self::clockOffsetMs($rNode) / 1000)]);
 		}
 		// skip: the node dropped logs past its cap.
 		ClusterAudit::log('events.skip', $rServerID, ['count' => max(0, (int) ($rData['count'] ?? 0))], 'node');
@@ -403,6 +403,23 @@ final class EventIngest {
 		$rSet = implode(', ', array_map(static fn(string $rColumn): string => '`' . $rColumn . '` = ?', array_keys($rFields)));
 		self::db()->query('UPDATE `servers` SET ' . $rSet . ' WHERE `id` = ?;', ...[...array_values($rFields), $rServerID]);
 		return true;
+	}
+
+	/**
+	 * The node's clock offset (ms) as MySQL has it. The heartbeat flush
+	 * writes it without the registry, so the row the request was
+	 * authenticated with may be the cluster bus's copy, up to
+	 * NodeAuthCache::TTL_MS behind: the previous run's offset, or none, just
+	 * after the agent restarts. That row's when MySQL cannot say.
+	 *
+	 * @param array<string, mixed> $rNode
+	 */
+	private static function clockOffsetMs(array $rNode): int {
+		$rDb = self::db();
+		if ($rDb->query('SELECT `clock_offset_ms` FROM `cluster_nodes` WHERE `server_id` = ?;', (int) $rNode['server_id']) && $rDb->num_rows() > 0) {
+			return (int) ($rDb->get_row()['clock_offset_ms'] ?? 0);
+		}
+		return (int) ($rNode['clock_offset_ms'] ?? 0);
 	}
 
 	/** @return list<string> the cluster's server addresses, their whitelists and the admin allowlist */

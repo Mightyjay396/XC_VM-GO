@@ -8,7 +8,8 @@ namespace XcVm\Domain\Cluster;
  * not hit MySQL): the node's `cluster_nodes` row and the sealed record of the
  * epoch the request names (`cluster_node_epochs.record` and `exp`, what the
  * extension opens into the session keys; never the sealed token). A request
- * whose handler needs no MySQL then asks it nothing.
+ * whose handler needs no MySQL then sends it no query of its own (the entry
+ * point still connects, and the connection's setup runs).
  *
  * - `cl:auth:<uuid>` holds the row and `cl:auth:<uuid>:<epoch>` the record,
  *   each as `<sid>:<version>:<filled at ms>:<json>`, for TTL_MS.
@@ -24,7 +25,8 @@ namespace XcVm\Domain\Cluster;
  * - The columns written without forget() (LAGGING: the heartbeat flush's,
  *   the event cursors, the command high-water) may be up to TTL_MS behind in
  *   an entry. What needs them current reads MySQL (hello's cursors,
- *   EventIngest's cursor, CommandBus::enqueue()).
+ *   EventIngest's cursor and node.inventory's clock offset,
+ *   CommandBus::enqueue()).
  * - A writer that finds the bus's socket but cannot reach the bus marks the
  *   second (STALE_MARK, beside the socket): nothing filled before the end of
  *   the second after it counts.

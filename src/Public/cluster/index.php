@@ -95,7 +95,8 @@ try {
 	}
 	SettingsManager::set($rSettings);
 	// MAIN's row, for the ops that read it (the policy, the replica): a
-	// heartbeat whose node the cluster bus holds asks MySQL nothing.
+	// heartbeat whose node the cluster bus holds sends MySQL no query of its
+	// own, only the connection's setup above.
 	$rMain = [];
 	if (ClusterApi::readsMain($rReq['path'])) {
 		$rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;');

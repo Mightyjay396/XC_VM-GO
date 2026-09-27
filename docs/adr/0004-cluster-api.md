@@ -744,7 +744,7 @@ The plan names the second event `inventory`; it is `node.inventory` here, next t
 - `server_ip`: `cron:root_signals` still auto-updates it with a direct write, and only while the node reaches MAIN's database.
 - `status`, which the heartbeat owns.
 
-**MAIN side.** `EventIngest` writes only the event type's columns of the sending node's own row. Each value must be a scalar of at most 256 KB. An inventory also sets `time_offset` from the node's heartbeat clock offset, which is what the legacy cron measured against the database clock.
+**MAIN side.** `EventIngest` writes only the event type's columns of the sending node's own row. Each value must be a scalar of at most 256 KB. An inventory also sets `time_offset` from the node's heartbeat clock offset (`cluster_nodes.clock_offset_ms`, read when the inventory is applied: fifth cluster bus increment), which is what the legacy cron measured against the database clock.
 
 **Root.** `cron:root_signals` and the certbot cron run as root. `EventSpool` hands a lane or file that root creates to the owner of the agent's state directory, so the agent can still read, compact and delete it.
 
@@ -2129,7 +2129,7 @@ Tests:
   - liveness on bus-only freshness (ok, suspect, offline, and MySQL winning when newer), the fleet guard, silence from `ready_at`, and no node suspect when the bus is lost just before a flush;
   - the bus killed, and the bus restarted empty between a heartbeat and its flush;
   - the Cluster Nodes page.
-- `ClusterApiTest`: a heartbeat end to end on the bus, with only the two authentication reads in MySQL, then the flush. Since the fifth bus increment those are the first request's after `enrol_complete`; the next ones read nothing.
+- `ClusterApiTest`: a heartbeat end to end on the bus, with only the two authentication reads in MySQL, then the flush. Since the fifth bus increment those are the first request's after `enrol_complete`; the next ones send no query of their own.
 
 ### The cluster bus (Phase 2, fourth increment): ingest permits
 
@@ -2233,7 +2233,7 @@ Tests:
 - An unknown node, and an epoch MySQL does not hold live, are never kept. Each such request reads MySQL, as before, so nobody fills the bus by naming nodes or epochs that do not exist. A revoked node's epoch is not read, as before.
 - With the row held and the epoch not (the first request of a new epoch), the epoch alone is read.
 
-So a heartbeat on the bus sends MySQL no query at all, and a `commands` long-poll reads only `cluster_commands`. Every other op saves the two reads and reads what its handler needs.
+So a heartbeat on the bus sends MySQL no query of its own, only the connection's setup (`SET NAMES` and the session timeouts, see Limits). That holds with the settings file cache on (the default; without it the entry point reads `settings` for every request) and a heartbeat flusher running (third increment; without one a heartbeat writes `cluster_nodes`). A `commands` long-poll reads only `cluster_commands`. Every other op saves the two reads and reads what its handler needs.
 
 **Writers.** An entry counts only while it carries its node's version: `cl:auth_ver`, a hash with a field per server id and no TTL. Every writer of what authentication reads calls `NodeAuthCache::forget()` right after its MySQL write:
 
@@ -2248,7 +2248,7 @@ So a heartbeat on the bus sends MySQL no query at all, and a `commands` long-pol
 `forget()` raises the node's version, so its next request reads MySQL, and `cl:auth_seq`:
 - **The fill guard.** `load()` reads `cl:auth_seq` in the script that reads the entries, before MySQL. It keeps what it then read from MySQL only while the sequence is unchanged, checked in the script that writes it. A request that read a row before a write and fills after it therefore fills nothing. Every write raises the sequence, so a fill racing any node's write is dropped, which costs that node one more miss.
 - **A lost bus.** The sequence starts at a random value below 2^52 the first time a script finds it missing. A request that read it from a bus that has since restarted or been flushed never matches the new one.
-- **Columns that lag.** The heartbeat flush (`last_seen_at`, `clock_offset_ms`, `root_ready`, `updated_at`), the event cursors (`useq_p0`, `useq_p1`) and the command high-water (`cmd_seq`) are written without the registry (`NodeAuthCache::LAGGING`). They may be up to 30 s behind in an entry, and a registry write of those columns alone (a heartbeat without a flusher) keeps it. What needs them current reads MySQL: `hello` reads its row again for the `cursors` it returns, `EventIngest` reads its cursor under its lock, and `CommandBus::enqueue()` reads the row itself. `node.inventory`'s `time_offset` comes from the held row's clock offset, at most 30 s older than the flush's.
+- **Columns that lag.** The heartbeat flush (`last_seen_at`, `clock_offset_ms`, `root_ready`, `updated_at`), the event cursors (`useq_p0`, `useq_p1`) and the command high-water (`cmd_seq`) are written without the registry (`NodeAuthCache::LAGGING`). They may be up to 30 s behind in an entry, and a registry write of those columns alone (a heartbeat without a flusher) keeps it. What needs them current reads MySQL: `hello` reads its row again for the `cursors` it returns, `EventIngest` reads its cursor under its lock and, for `node.inventory`'s `time_offset`, the node's clock offset (the held row's may be the previous run's, or none, for up to 30 s after the agent restarts: `hello` drops the entry, and the first heartbeat fills it again before its own offset is flushed), and `CommandBus::enqueue()` reads the row itself.
 - **A writer that cannot reach the bus.** The bus socket exists, but the script fails: a worker in its 5 s pause after a failed connect, a lost connection, or a full bus that refuses the script's first write. `forget()` then marks the second in `bin/cluster_bus/auth.stale` (`ClusterBus::mark()`, the nonce marks' rules, shared since this increment). A mark that root creates goes to the bus directory's owner, so the workers can move it on. Nothing filled before the end of the second after the mark counts, and nothing is filled until then: those requests read MySQL. Without a socket there is nothing to drop, and a bus that starts is empty.
 
 **Without the bus.** Not started, an LB, a test, or a failed script: `load()` reads MySQL, the same two SELECTs in the same order, exactly as before.
@@ -2286,16 +2286,21 @@ Tests:
   - on the bus, the second request asking MySQL nothing, with the row and record byte for byte, a TTL of at most 30 s, no token, and no key for an unknown node or epoch;
   - a registry write read at the next request while other nodes stay held, and a write of lagging columns alone keeping the entry;
   - each registry writer (mode, flows, epoch, revocation, re-enrolment) dropping the entry;
+  - each writer (`update()`, `issue()`, `startEnrolment()`) raising the version after its MySQL write: a row or record a request read just before the write, and kept, not served afterwards;
   - the epoch read alone while the row is held, an expired epoch not served, a revoked node's epoch never read;
   - a write between a request's MySQL read and its fill, for the row and for the epoch alone, and a bus flushed in between: nothing filled;
+  - a bus restarted empty between a request's read and its fill, a writer that found no socket meanwhile, and another request starting the new bus's sequence: the fill does not match it;
   - a request filling epoch 1 while a re-key mints epoch 2: epoch 1 not served afterwards;
-  - a writer out of reach marking the second, entries held before it not counted, nothing counted within the next second, and entries counted again after it;
+  - a writer out of reach marking the second, entries held before it not counted, nothing filled or counted within the next second, and entries counted again after it;
   - a killed bus: MySQL, and its writers marking.
 - `ClusterApiTest`:
-  - a held heartbeat sending MySQL no query, and a long-poll only `cluster_commands` queries;
+  - a held heartbeat sending MySQL no query of its own, and a long-poll only `cluster_commands` queries;
+  - a heartbeat reporting a new `policy_ver` and MAIN port: written once, the row read again once, then no query;
   - the next request seeing `enrol_complete`, a revocation (`revoked_gen` of the new generation), a clone quarantine from `hello` and from `token_rekey`, an admin's flow switch, an epoch minted again under its number, the epochs a re-key drops, a re-enrolment, and a new epoch marked once;
   - `hello`'s cursors after a batch, with the row held;
   - `readsMain()`, no dispatch arm of the listed ops passing MAIN's row, and a heartbeat and a long-poll served without it.
+- `ClusterBusTest`: a mark root creates handed to the owner of the bus's directory, and moved on later (root only).
+- `ClusterEventsTest`: `node.inventory`'s `time_offset` from MySQL's clock offset, not the request row's.
 
 ### Blocklist delta (Phase 7, first increment)
 

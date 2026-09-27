@@ -248,7 +248,9 @@ final class ClusterEventsTest extends TestCase {
 			['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3]]],                           // wrong lane
 		]);
 		$this->assertSame([1, 4], [$rOut['applied'], $rOut['dropped']]);
-		$rOut = EventIngest::ingest($this->node(), 'p1', 1, [['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3, 'xc_vm_version' => '2.1', 'whitelist_ips' => '["6.6.6.6"]']]]]);
+		// The request's row may be the cluster bus's copy, whose clock offset
+		// lags the heartbeat flush's (NodeAuthCache::LAGGING): MySQL's is used.
+		$rOut = EventIngest::ingest(['clock_offset_ms' => 9000] + $this->node(), 'p1', 1, [['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3, 'xc_vm_version' => '2.1', 'whitelist_ips' => '["6.6.6.6"]']]]]);
 		$this->assertSame(1, $rOut['applied']);
 		$rRows = array_map(static fn($r) => array_map(static fn($v) => is_string($v) && ctype_digit(ltrim($v, '-')) ? (int) $v : $v, $r), $this->rows('SELECT * FROM `servers` ORDER BY `id`'));
 		$rMine = ['id' => 5, 'server_ip' => '198.51.100.5', 'status' => 1, 'whitelist_ips' => null, 'certbot_ssl' => '{"a":1}', 'governor' => '["x"]', 'sysctl' => null, 'ping' => 3, 'xc_vm_version' => '2.1', 'interfaces' => null, 'time_offset' => -3];

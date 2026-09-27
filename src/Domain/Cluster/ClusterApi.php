@@ -41,7 +41,8 @@ final class ClusterApi {
 	/**
 	 * Ops whose handlers never read MAIN's `servers` row: the entry point
 	 * (Public/cluster/index.php) reads it for every other op alone, so a
-	 * heartbeat on the cluster bus asks MySQL nothing.
+	 * heartbeat on the cluster bus sends MySQL no query of its own (only the
+	 * connection's setup).
 	 */
 	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'conn_snapshot', 'conn_admit', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
 

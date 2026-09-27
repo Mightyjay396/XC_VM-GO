@@ -93,8 +93,10 @@ final class ClusterApiTest extends TestCase {
 			$this->rCrypto = new FakeClusterCrypto();
 		}
 		ClusterClock::fix($this->rT0);
-		// No bus unless a test starts one (bus()): never one at the checkout's default socket.
-		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '.sock');
+		// No bus unless a test starts one (bus()): never one at the checkout's
+		// default socket, and in a directory of its own, so that the marks
+		// beside it are never a shared path.
+		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '/cluster.sock');
 	}
 
 	/**
@@ -1581,7 +1583,7 @@ final class ClusterApiTest extends TestCase {
 		if (self::$rBus === null) {
 			$this->markTestSkipped('redis-server or phpredis not available');
 		}
-		foreach ([NonceStore::BUS_MARK, NonceStore::SQL_MARK] as $rMark) {
+		foreach ([NonceStore::BUS_MARK, NonceStore::SQL_MARK, NodeAuthCache::STALE_MARK] as $rMark) {
 			@unlink(self::$rBus->rDir . '/' . $rMark);
 		}
 		ClusterBus::useSocket(self::$rBus->socket());
@@ -1881,13 +1883,45 @@ final class ClusterApiTest extends TestCase {
 			ClusterClock::fix($this->rT0 + 2000 * $i);
 			$this->assertSame('active', $this->served('heartbeat', ['root_ready' => true, 'telemetry' => ['cpu' => 3]], 1, $rKeys)['state']);
 		}
-		$this->assertSame([], $rLog->rQueries, 'a heartbeat on the bus asks MySQL nothing at all, its authentication included');
+		$this->assertSame([], $rLog->rQueries, 'a heartbeat on the bus sends MySQL no query of its own, its authentication included (the connection\'s setup is the entry point\'s)');
 
 		$this->assertSame([], $this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys)['commands']);
 		$this->assertNotSame([], $rLog->rQueries);
 		foreach ($rLog->rQueries as $rQuery) {
 			$this->assertStringContainsString('`cluster_commands`', $rQuery, 'the long-poll reads its commands, and nothing to authenticate');
 		}
+	}
+
+	/**
+	 * A heartbeat that reports a new policy version and MAIN port writes them
+	 * through the registry, which drops the bus's copy of the row: the next
+	 * heartbeat reads it again once, and the one after asks MySQL nothing.
+	 * Columns written without that drop would be written again by every
+	 * heartbeat while the copy lives.
+	 */
+	public function testOnTheBusAHeartbeatWritesANewPolicyVersionAndPortOnce(): void {
+		$this->bus();
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `main_port` int DEFAULT NULL');
+		$rKeys = $this->active();
+		HeartbeatService::flush(); // MAIN's flusher is running
+		$this->served('heartbeat', [], 1, $rKeys); // held on the bus: policy_ver 0, no port
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		$rBeat = function (int $i) use ($rKeys, $rLog): array {
+			$rLog->rQueries = [];
+			ClusterClock::fix($this->rT0 + 2000 * $i);
+			$r = $this->request('heartbeat', ['policy_ver' => 3], 1, $rKeys);
+			$this->assertSame('active', $this->reply(ClusterApi::handle($this->rCrypto, ['port' => 8443] + $r['req'], $this->rSettings, $this->rMain), $r['ctx'], $rKeys)['state']);
+			return $rLog->rQueries;
+		};
+		$rBeat(1);
+		$this->assertCount(1, $rLog->writes(), 'the new version and port, written once');
+		$rQueries = $rBeat(2);
+		$this->assertCount(2, $rQueries, 'the row read again once, and nothing written');
+		$this->assertSame([], $rLog->writes());
+		$this->assertSame([], $rBeat(3), 'then held with them: MySQL asked nothing');
+		$rNode = NodeRegistry::byServer(self::SID);
+		$this->assertSame([3, 8443], [(int) $rNode['policy_ver'], (int) $rNode['main_port']]);
 	}
 
 	public function testOnTheBusEnrolCompleteIsSeenAtTheNextRequest(): void {

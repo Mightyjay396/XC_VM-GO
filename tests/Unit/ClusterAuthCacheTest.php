@@ -42,7 +42,8 @@ final class ClusterAuthCacheTest extends TestCase {
 
 	protected function setUp(): void {
 		ClusterClock::fix(self::T0);
-		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '.sock');
+		// A directory of its own, so that a mark beside the socket is never a shared path.
+		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '/cluster.sock');
 		$this->rDb = new TestDb();
 		$this->rDb->exec((string) preg_replace(['/^--.*$/m', '/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)/', '/ unsigned| COLLATE \w+/', '/\) ENGINE=[^;]*;/'], ['', '', '', ');'], (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/029_create_cluster_nodes.sql')));
 		$this->rDb->exec('ALTER TABLE `cluster_node_epochs` ADD COLUMN `agent_eph_pub` binary(32) DEFAULT NULL');
@@ -125,6 +126,26 @@ final class ClusterAuthCacheTest extends TestCase {
 		rename(self::$rBus->socket() . '.live', self::$rBus->socket());
 		ClusterBus::useSocket(self::$rBus->socket());
 		$this->assertInstanceOf(\Redis::class, ClusterBus::client());
+	}
+
+	/**
+	 * Run a writer while another request reads the node from MySQL just
+	 * before the writer's statement matching $rStatement runs, and fills the
+	 * bus with what it read, as a request in flight would: what that request
+	 * read. @return array{0: ?array, 1: ?array}
+	 */
+	private function readJustBefore(string $rStatement, int $rEpoch, callable $rWrite): array {
+		$rLog = $this->rLog;
+		$rRead = null;
+		$this->rLog->rBefore = function (string $rQuery) use ($rLog, $rStatement, $rEpoch, &$rRead): void {
+			if (preg_match($rStatement, $rQuery)) {
+				$rLog->rBefore = null;
+				$rRead = NodeAuthCache::load($this->uuid(self::SID), $rEpoch);
+			}
+		};
+		$rWrite();
+		$this->assertNotNull($rRead, 'the writer ran ' . $rStatement);
+		return $rRead;
 	}
 
 	public function testWithoutTheBusEveryRequestReadsMySql(): void {
@@ -294,6 +315,42 @@ final class ClusterAuthCacheTest extends TestCase {
 		$this->assertNotNull($this->load(self::SID, 2)[1]);
 	}
 
+	/**
+	 * Each writer raises the node's version after its MySQL write, never
+	 * before: what a request read just before the write, and kept on the bus,
+	 * is then not served. A version raised first would count that fill.
+	 */
+	public function testEveryWriterRaisesTheVersionAfterItsWrite(): void {
+		$rRedis = $this->bus();
+		$rKey = NodeAuthCache::PREFIX . $this->uuid(self::SID);
+
+		[$rNode] = $this->readJustBefore('/^UPDATE `cluster_nodes`/', 1, static fn() => NodeRegistry::update(self::SID, ['state' => 'quarantined']));
+		$this->assertSame('active', $rNode['state'], 'update(): read just before its write');
+		$this->assertSame(1, $rRedis->exists($rKey), 'and kept on the bus');
+		[$rNode, , $rQueries] = $this->load(self::SID);
+		$this->assertSame('quarantined', $rNode['state'], 'update(): not served after the write');
+		$this->assertCount(2, $rQueries);
+
+		// A refresh retried with another key mints epoch 2 again, with a new record.
+		$this->epoch(self::SID, 2, 'record-A');
+		$rMint = static fn() => TokenService::issue(new FakeClusterCrypto(), (array) NodeRegistry::byServer(self::SID), 2, sodium_crypto_scalarmult_base(random_bytes(32)));
+		[, $rRow] = $this->readJustBefore('/^DELETE FROM `cluster_node_epochs` WHERE `server_id` = \? AND `epoch` = \?/', 2, $rMint);
+		$this->assertSame('record-A', $rRow['record'], 'issue(): read just before its write');
+		$this->assertSame(1, $rRedis->exists($rKey . ':2'));
+		[, $rRow] = $this->load(self::SID, 2);
+		$this->assertNotSame('record-A', $rRow['record'], 'issue(): the new record, not the one read before it');
+		$this->assertSame(1, $rRedis->exists($rKey . ':2'), 'the new record held');
+
+		// A re-enrolment: the row, still there until it is replaced.
+		$rRedis->del($rKey);
+		$rEnrol = fn() => NodeRegistry::startEnrolment(self::SID, $this->uuid(self::SID), random_bytes(32), random_bytes(32), 1);
+		[$rNode] = $this->readJustBefore('/^DELETE FROM `cluster_nodes`/', 1, $rEnrol);
+		$this->assertSame(['quarantined', 1], [$rNode['state'], (int) $rNode['gen']], 'startEnrolment(): read just before its write');
+		$this->assertSame(1, $rRedis->exists($rKey));
+		[$rNode] = $this->load(self::SID);
+		$this->assertSame(['enrolling', 2], [$rNode['state'], (int) $rNode['gen']], 'startEnrolment(): the new row, not the one read before it');
+	}
+
 	public function testAFillAcrossABusFlushGoesNowhere(): void {
 		$rRedis = $this->bus();
 		$rLog = $this->rLog;
@@ -309,8 +366,42 @@ final class ClusterAuthCacheTest extends TestCase {
 		$this->assertSame([], $this->load(self::SID)[2]);
 	}
 
+	public function testAFillAcrossABusRestartNeverMatchesTheNewBusSequence(): void {
+		$rRedis = $this->bus();
+		$rLog = $this->rLog;
+		$rSocket = self::$rBus->socket();
+		// Between this request's read of the node and its fill, the bus
+		// restarts empty; a writer meanwhile finds no socket (nothing to drop,
+		// nothing to mark); then another request starts the new bus's
+		// sequence. A sequence that started at a fixed value would match the
+		// one this request read from the old bus.
+		$this->rLog->rBefore = function (string $rQuery) use ($rRedis, $rLog, $rSocket): void {
+			if (!str_contains($rQuery, 'cluster_node_epochs')) {
+				return;
+			}
+			$rLog->rBefore = null;
+			$rRedis->flushAll();
+			rename($rSocket, $rSocket . '.live');
+			try {
+				ClusterBus::useSocket($rSocket);
+				NodeRegistry::update(self::SID, ['state' => 'quarantined']);
+			} finally {
+				rename($rSocket . '.live', $rSocket);
+				ClusterBus::useSocket($rSocket);
+			}
+			$this->assertNull(ClusterBus::markedAt(NodeAuthCache::STALE_MARK), 'no socket: nothing marked');
+			$this->assertSame('active', NodeAuthCache::load($this->uuid(6), 1)[0]['state'], 'the new bus\'s sequence starts');
+		};
+		[$rNode] = $this->load(self::SID);
+		$this->assertNull($rLog->rBefore, 'the bus restarted mid-request');
+		$this->assertSame('active', $rNode['state'], 'this request read the row before the write');
+		[$rNode, , $rQueries] = $this->load(self::SID);
+		$this->assertSame('quarantined', $rNode['state'], 'its fill does not match the new bus\'s sequence');
+		$this->assertCount(2, $rQueries);
+	}
+
 	public function testAWriterThatCannotReachTheBusMarksItAndNothingHeldBeforeCounts(): void {
-		$this->bus();
+		$rRedis = $this->bus();
 		$this->load(self::SID);
 		$this->load(6);
 		$this->outOfReach();
@@ -327,9 +418,13 @@ final class ClusterAuthCacheTest extends TestCase {
 			$this->assertCount(2, $this->load($rID)[2], 'what the bus held before the mark does not count');
 		}
 		$this->assertSame('quarantined', $this->load(self::SID)[0]['state']);
-		// Nor what is filled within a second of it (a clock that stepped back by one).
+		// Nothing is filled, nor counted, within the second after it (a clock
+		// that stepped back by one): what the bus held before the mark is gone.
 		ClusterClock::fix(self::T0 + 1999);
+		$rRedis->del(NodeAuthCache::PREFIX . $this->uuid(self::SID));
 		$this->assertCount(2, $this->load(self::SID)[2]);
+		$this->assertCount(2, $this->load(self::SID)[2], 'nothing filled, nothing counted within the second after the mark');
+		$this->assertSame(0, $rRedis->exists(NodeAuthCache::PREFIX . $this->uuid(self::SID)));
 		ClusterClock::fix(self::T0 + 2000);
 		$this->load(self::SID);
 		$this->assertSame([], $this->load(self::SID)[2], 'held again once filled past it');
