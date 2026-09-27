@@ -263,12 +263,14 @@ final class SettingsAuditTest extends TestCase {
 		$this->assertIsResource($rProc);
 		[$rLast, $rReads, $rDrops] = [0, 0, 0];
 		do {
-			$rRunning = proc_get_status($rProc)['running'];
+			// PHP < 8.3: once this sees the exit, proc_close() returns -1; the code is here.
+			$rStatus = proc_get_status($rProc);
 			$rCount = SettingsAudit::summary(self::NOW)['zz_writer'] ?? 0;
 			$rDrops += (int) ($rCount < $rLast);
 			[$rLast, $rReads] = [max($rLast, $rCount), $rReads + 1];
-		} while ($rRunning);
-		$this->assertSame(0, proc_close($rProc));
+		} while ($rStatus['running']);
+		proc_close($rProc);
+		$this->assertSame(0, $rStatus['exitcode']);
 		$this->assertSame(0, $rDrops, $rReads . ' reads while the writer merged');
 		$this->assertSame(['zz_writer' => 2000], SettingsAudit::summary(self::NOW));
 	}

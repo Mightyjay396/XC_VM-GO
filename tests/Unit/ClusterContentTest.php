@@ -3,6 +3,7 @@
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\EventIngest;
 use XcVm\Domain\Cluster\NodeRegistry;
@@ -21,6 +22,9 @@ final class ClusterContentTest extends TestCase {
 	private TestDb $rDb;
 
 	private string $rDir;
+
+	/** The store's directory before this test (the suite's own, tests/bootstrap.php). */
+	private string $rRuntimeDir;
 
 	/** @var list<int> */
 	private array $rChanged = [];
@@ -48,11 +52,15 @@ final class ClusterContentTest extends TestCase {
 		$this->rDir = sys_get_temp_dir() . '/xcvm-content-' . bin2hex(random_bytes(4));
 		mkdir($this->rDir);
 		EventSpool::useDir($this->rDir . '/spool/');
+		// With STREAMS on the node keeps recording statuses: in this test's directory.
+		$this->rRuntimeDir = StreamRuntime::dir();
+		StreamRuntime::useDir($this->rDir . '/runtime/');
 	}
 
 	protected function tearDown(): void {
 		EventIngest::onStreamChanged(null);
 		EventSpool::useDir(null);
+		StreamRuntime::useDir($this->rRuntimeDir);
 		NodeFlows::usePath(null);
 		ClusterClock::fix(null);
 		DatabaseFactory::reset();
