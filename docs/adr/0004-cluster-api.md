@@ -1282,12 +1282,12 @@ Without `--from-disk` nothing changes: the agent runs `cluster:apply` right afte
 
 **Known limits.**
 
-- Mode 2 is not switched on yet, and its refusal is not built: in a process booted from the replica, a query outside the settings and servers still opens MAIN's database.
+- Mode 2 is not switched on yet, and its refusal is not built: in a process booted from the replica, a query outside the settings and servers still opens MAIN's database. Since the eighth Phase 7 increment such a query is refused.
 - No section carries the bouquets, categories, proxies or allowed-IPs caches (R2). A mode 2 node's `cron:cache` still builds them from MAIN's database, and during a MAIN outage it stops at the first such read. The agent's `cluster:apply` still applies the replica then.
 - After a reboot the streaming endpoints have no stream definitions until MAIN answers: they live in `tmp/`, a tmpfs, and no section carries them (R2 `streams`, not built). The same holds in mode 2. In mode 1 the daemons and crons also still boot through MAIN's database (the watchdog waits for it), as the plan has it for hybrid mode.
 - A mode 2 process that boots before an apply built the caches after a reboot (a cron in the first minute, before `service`'s apply) boots through MAIN's database.
 - After a re-enrolment (new node keys) or a new panel root, the stored records no longer verify, and `--from-disk` applies none of them until the agent fetches them again. Today's agent keeps its ETags and never does while the data is unchanged (contract below).
-- The misses reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`. The heartbeat's other audit counters (`audit.sql_connects`, `audit.redis_connects`, `audit.sites`) are not reported yet; the same `audit` object is meant to carry them.
+- The misses reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`. The heartbeat's other audit counters (`audit.sql_connects`, `audit.redis_connects`, `audit.sites`) are not reported yet; the same `audit` object is meant to carry them. It does since the eighth Phase 7 increment.
 
 **Tests.**
 
@@ -1304,6 +1304,98 @@ Without `--from-disk` nothing changes: the agent runs `cluster:apply` right afte
 - **Stored records.** Keep writing each record as received: `<name>.rep` (sealed bytes, not base64), `blocklist.rep`, and the deltas as `blocklist.d/<seq, 19 digits>.blk`, since PHP verifies them at boot. Write `.rep` before `.json`: PHP reads a section only where its `.json` exists, and then takes the `.rep`.
 - **Records that no longer verify.** When the agent starts, and after an enrolment or re-key that changed its box key or pinned panel key, open and verify every stored record with the current keys. For each whole section whose record fails, set its held ETag to `""` (`whole_etags`, `settings_etag`). For a blocklist that fails, set `blocklist_etag` to `""` and `blocklist_seq` to 0, so the next `config` call fetches it again. Otherwise MAIN answers `unchanged` while the data is unchanged, and `--from-disk` keeps refusing the old records.
 - **Nothing else changes for the boot.** `service` runs `cluster:apply --from-disk` itself; the agent keeps running plain `cluster:apply` after it stores something. The output gains `from_disk` only with `--from-disk`. The exit codes are the sixth increment's.
+
+### The mode-2 refusal and the connect audit (Phase 7, eighth increment)
+
+**The guard.** Every connect a node opens to MAIN's MySQL or Redis passes `Core/Cluster/ConnectAudit::guard()` first (plan, section 10, step 1): in `Database::db_connect()` and `db_explicit_connect()`, `RedisManager::connect()` and `RedisCache::connect()`. It asks `NodeRole`, from the files alone and at each connect, so a mode switch takes effect at the next one:
+
+| Node | A connect is |
+| --- | --- |
+| MAIN, no `flows.json`, mode 0 | opened as before, not counted |
+| mode 1 (any state) | counted, then opened |
+| mode 2, `active` or `quarantined` | counted, then refused with `LbDatabaseAccessException`; nothing is opened and `\XC_VM` is never asked |
+| mode 2, any other state | counted, then opened |
+| mode 2 on MAIN's build | counted, then opened |
+
+- **Mode 2** is `ReplicaBoot::wanted()`: the agent's `flows.json` says mode 2 and a state MAIN counts as active. It is the node that boots from its replica (seventh increment).
+- **Never on MAIN.** A stray `flows.json` on MAIN would otherwise lock it out of its own database, so `NodeRole::mainBuild()` answers from the files: MAIN's build ships `Public/cluster/index.php`, and the load balancer build strips it (`verify-lb-archive.sh` fails the build otherwise). No database or servers cache is needed for the answer.
+- **Graceful or not.** `db_connect(false, true)` and `DatabaseHandler::reconnect()` are refused too, rather than answering `false`: a refusal is not an outage to wait out, and the watchdog's wait loop would otherwise spin without end. The exception extends `XcVmException` (a `RuntimeException`) and carries `rKind` (`sql` or `redis`) and `rSite`; its message is `MySQL: refused on a node in cluster API mode (mode 2), at <site>` (`Redis:` for Redis).
+- **The boot.** A mode 2 node rebooted before its first apply falls back to `DatabaseStage` (seventh increment), whose connect is now refused: the process ends at its boot, the refusal in the panel's error log and in the audit. `cluster:apply` boots from the replica and is not affected, so `service`'s `cluster:apply --from-disk` builds the caches and the next processes boot from them.
+- **A manual trace** (`XCVM_CONNECT_AUDIT=1`, or `STORAGE_PATH/cluster/sql_audit/enabled`) still counts in mode 0; nothing wrote that file, so until now nothing was counted.
+
+**Direct connects.** Sixteen places built `new DatabaseHandler()`, each an eager connect. The eight a load balancer runs now take `DatabaseFactory::open()`, which builds the same handle and keeps it as the process's (`DatabaseFactory::set` was called at each): `LegacyCoreStage`'s reconnect, `Public/admin/{live,thumb,timeshift,vod}.php` and the enigma2, xplugin and playlist API controllers. `DatabaseFactory` and `DatabaseStage` keep theirs; the other five (`Public/admin/api.php`, `proxy_api.php`, `ActiveCodeApiController`, the setup view and `migration_logic.php`) are MAIN-only. `ArchitectureTest` enforces it, reading the Makefile's `LB_DIRS_TO_REMOVE` and `LB_FILES_TO_REMOVE` for what is MAIN-only and skipping comments:
+
+- no `new Database(`/`new DatabaseHandler(` outside `DatabaseFactory`, `DatabaseStage`, migrations and MAIN-only files;
+- in load balancer code, `\XC_VM::db_connect(` and `new \PDO(` only in `Core/Database/Database.php`, `\XC_VM::redis_connect(` only in `RedisManager`, `new \Redis(` only in `RedisCache`, and each of those three calls `ConnectAudit::guard(`.
+
+**The audit.** `STORAGE_PATH/cluster/sql_audit/` (the plan's `var/cluster/sql_audit/`; `STORAGE_PATH` survives reboots):
+
+```text
+YYYYMMDD.json    the UTC day's counts, exact, under the file's lock:
+                 {"sql": n, "redis": n, "sites": {"<kind> <path>:<line>": n}}
+YYYYMMDD.ndjson  one line per connect, up to 1 MiB a day, then counted only:
+                 {"t": unix, "k": "sql"|"redis", "s": "<path>:<line>", "p": pid[, "r": 1 when refused]}
+since            unix seconds: when this node's audit began
+```
+
+- **A site** is the first caller outside the connect machinery (`Database`, `DatabaseHandler`, `LazyDatabaseHandler`, `DatabaseFactory`, `RedisManager`, `RedisCache`): `<path>:<line>`, relative to `MAIN_HOME`. Its key is `<kind> <path>:<line>`, every byte outside printable ASCII replaced by `?`, at most 160 bytes: a longer path keeps its end after `...`. A boot's connect names `Core/Bootstrap/Stage/DatabaseStage.php:<line>`.
+- **Bounded.** At most 32 sites a day, the rest under `*`. Eight days are kept (`cron:cleanup`, both files), so the directory stays under 9 MiB. A broken day file starts over. The counts never throw: an audit must not break the connect it audits.
+- **Ownership.** As `SettingsAudit` (seventh increment), whose helpers it shares: a root process (`cron:root_signals` boots through MAIN's database in mode 1) makes each level 0750 and hands each level and file it makes to the owner of `config/cluster/`.
+
+**The report.** The last seven UTC days, today included, go into the `audit.json` the agent sends as the heartbeat's `audit` (seventh increment), beside `settings_misses`:
+
+```json
+{"settings_misses": {}, "sql_connects": 1440, "redis_connects": 0,
+ "sites": {"sql Core/Bootstrap/Stage/DatabaseStage.php:27": 1440}, "connects_since": 1790380800}
+```
+
+- `sql_connects`, `redis_connects`: integers ≥ 0, attempts, refused ones included.
+- `sites`: most first, then by name, at most 32 names, the rest (and `*`) last under `*`. `{}` when there were none.
+- `connects_since`: when the node's audit began. It is written at the first report in mode 1 or 2 and removed with `audit.json` in mode 0, so a node back in mode 1 starts a new window. The seven-day gate needs both: zero connects, and a `connects_since` at least seven days old.
+- **When.** A connect rewrites `audit.json` when it adds a site to its day or the file is at least 60 s old; `cron:cleanup` rewrites it every hour, so a node without connects reports zeros. A process that cannot read the days (a level it may not search, a day file it may not read) leaves the report as it is. The file is written with unescaped slashes. Its largest form (64 settings keys and 32 sites of 160 bytes, with ten-digit counts) stays under 11 KiB, within the 16 KiB the agent sends and MAIN takes.
+
+**On MAIN.** `Domain/Cluster/NodeAudit` keeps the connect members in `cluster_nodes.audit` with the misses, as the seventh increment keeps those: only with an object `settings_misses`, and only when `sql_connects` and `redis_connects` are integers ≥ 0 and `sites` an object, all three or none. Sites that are not `(sql|redis) <printable ASCII>` of at most 160 bytes (or `*`) with an integer count ≥ 1 are dropped; past 32 the least counted fold into `*`. A `connects_since` that is not an integer ≥ 1 is dropped alone. The row is written only when the report changed. The Cluster Nodes page adds a column for nodes in mode 1 or 2: `—` without a report, else `SQL n · Redis n` (green at zero), when the count began, and the sites.
+
+**The root flush.** `NodeActions::flushBlocklist()` already reached a node with the COMMANDS flow and root's pin as a signed `node.root {action: "flush"}` (Phase 4), but `RootSignalsCronJob::executeAction()`, which `cluster:root` runs, had no `flush` case: the command was acked and nothing flushed. Only the `signals` row, matched by its exact payload at the top of `cron:root_signals`, flushed iptables.
+
+- `executeAction()` now handles `flush` as the row did: `iptables -F`, `ip6tables -F`, the flood guard's block files, `iptables-save`, a `FLUSH` line in `mysql_syslog`.
+- `cron:root_signals` stops polling the `signals` table for the flush row on a node that takes MAIN's root commands (`RootSignalsCronJob::rootCommandsFromMain()`: COMMANDS on and root's pin in place). A row queued before, or while MAIN lacked `root_ready`, still runs through the same case from the signals loop. Legacy nodes are unchanged.
+- With CONFIG on, the minute's iptables sync follows the replica's `blocked_ips` cache, which drops the flushed addresses at the agent's next `config` pull (the flush logs a `reset`), so an address may be blocked again for up to a minute, as with the row.
+
+**How it differs from the plan.**
+
+- The plan names a log; this keeps exact per-day counts beside it and bounds both, since a mode 1 node logs every boot and stream request. The report's window and `connects_since` are not in the plan: the gate needs to know a count covers seven days.
+- Refusing graceful callers, the MAIN build check, and `DatabaseFactory::open()` for the direct sites are not in the plan. It counts 14 direct sites; there were 16, five of them MAIN-only.
+- `ArchitectureTest` also covers the lower-level connects (`\XC_VM`, PDO, `\Redis`), which the plan leaves out.
+- The plan's `blocklist_sync` root action is not built. The replica's minute sync already applies the blocklist; the flush, a `node.root` action since Phase 4, now runs.
+- Moving the flush off the row is only feasible where MAIN sends root commands (COMMANDS and the pin). Elsewhere the row stays.
+
+**Known limits.**
+
+- Mode 2 cannot be switched on yet (`lb_new_node_mode = api` waits for the cutover phase), and a node in mode 2 still has paths that need MAIN's database. The refusal stops them, counted:
+  - `cron:root_signals` reads the `signals` table for its loop (the crontab and sysctl checks are inside it), so it ends there, before the fanout and agent keepalives.
+  - Root actions log to `mysql_syslog` through MAIN's database, several before acting (reboot, restarting or stopping the services), so `cluster:root` reports them refused and those never act.
+  - `cron:cache` builds the bouquets, categories, proxies and allowed-IPs caches from MAIN's database (R2).
+  - The watchdog waits for MAIN's database.
+  - `cluster:apply`'s shadow comparison (CONFIG off) reads MAIN's crontab and RTMP publishers.
+- Mode 1 still boots through MAIN's database (seventh increment), so a mode 1 node's `sql_connects` is never zero. The boot's site shows it apart from the rest, but the plan's seven-day zero cannot be reached in mode 1 until mode 1 boots from its replica too.
+- A tree that holds MAIN's `Public/cluster/index.php` (a node installed from MAIN's archive) never refuses; it still counts.
+- A CLI process refused at its boot ends through the panel's exception handler, with exit status 0.
+- The counters reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`.
+
+**Tests.**
+
+- `DbConnectRefusalTest`: who refuses and who counts, per mode and state, and a switch taking effect at the next connect; MAIN's build never refusing a stray `flows.json`. In this process every path is refused before `\XC_VM` is asked, the first three naming their caller: `new DatabaseHandler()`, `DatabaseFactory::open()` (keeping no handle), a lazy handle's first query, a graceful `db_connect`, `reconnect`, `db_explicit_connect`, `RedisManager::connect` and `instance`, and `RedisCache`. Each is counted and logged with `r`, even with the audit forced off. In a child PHP, the real bootstrap in a throwaway deploy root with an `\XC_VM` that logs each connect: a mode 2 node's boot and Redis are refused without one connect, the boot's site counted; MAIN, mode 0 and mode 1 connect as before, mode 1 counted.
+- `ConnectAuditTest`: MAIN and mode 0 write nothing, a manual trace still counts; the caller as the site through the lazy handle; the caps (sites, site length and bytes, the log); a broken day file; the seven-day window and the eight-day pruning; `audit.json` with both audits, rewritten for a new site or once a minute, `connects_since` kept and reset through mode 0; zeros in a report without connects; the ranking across days; the largest report within 16 KiB; the hooks in both connect paths. As root: every level and file handed to the agent's user, a publish as that user reading them, and a day file it cannot read leaving the report as it is.
+- `ArchitectureTest`: the two rules above. `ReplicaBootTest`: a mode 2 node before its first apply is refused at boot, the CLI and the web API alike.
+- `ClusterApiTest`: a heartbeat's connect counters stored with the misses and shown on the page; malformed counters dropping the connect report and keeping the misses; a bad `connects_since` dropped alone; the sites cap.
+- `ClusterRootCommandTest`: `rootCommandsFromMain()` per flows and pin; the `flush` case, and the row read only where MAIN still sends it. `NodeRpcActionsTest`: every root action, `flush` included, is a case of `executeAction()`.
+
+**The agent's contract (XC_VM_Fanout).** No change is needed:
+
+- **`audit`.** The seventh increment's contract is unchanged: read `audit.json` beside `flows.json`, and when it is at most 16384 bytes and a JSON object, send it as the heartbeat payload's `audit`, parsed and re-encoded. It now also holds `sql_connects`, `redis_connects` (integers), `sites` (an object of `"<kind> <path>:<line>"` to integer counts, printable ASCII keys of at most 160 bytes) and `connects_since` (an integer). Pass them through as they are. Go's HTML escaping of `<`, `>` and `&` does not matter: MAIN measures what it decodes, in PHP's shortest encoding. MAIN ignores members it does not know, so a heartbeat without them keeps what MAIN has.
+- **The refusal.** It is PHP's alone and needs nothing from the agent: `cluster:apply` boots from the replica in every mode and opens no connect with CONFIG on. With CONFIG off, its shadow comparison reads MAIN's database, which mode 2 refuses. An agent that switches a node to mode 2 must not rely on that report.
+- **The flush.** It arrives as the Phase 4 `node.root` command it already was: `args` `{"action": "flush"}`, handed to root's inbox by `cluster:exec`. Root's result is `{ok, result}` as for every root action. `ok` is true once iptables was flushed, unless the `mysql_syslog` line was refused (mode 2): then `ok` is false with the refusal's message.
 
 ### The cluster bus (Phase 2, first increment): wake-ups
 
@@ -2045,7 +2137,7 @@ The shadow diff for `rtmp_ips` compares against the database, because an LB neve
 - `cron:root_signals` syncs iptables from the replica's `blocked_ips` cache (`RootSignalsCronJob::blockedIPs`).
 - When that cache is not there yet, the sync leaves iptables as it is rather than unblocking everything.
 
-**Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. On the blocklist path, the root flush still arrives as a `signals` row, until `node.root blocklist_sync` replaces it.
+**Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. On the blocklist path, the root flush still arrives as a `signals` row, until `node.root blocklist_sync` replaces it. The eighth Phase 7 increment built the refusal, and runs the flush from the `node.root` command MAIN already sent where it sends one.
 
 ### Disaster recovery of MAIN's cluster keys
 
