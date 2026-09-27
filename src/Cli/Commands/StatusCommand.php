@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\LbDatabaseAccessException;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\MigrationRunner;
@@ -71,13 +72,18 @@ class StatusCommand implements CommandInterface {
 
 		echo "Database\n------------------------------\n";
 
-		$db = self::db();
-		DatabaseFactory::connect();
-
-		if (!$db->connected) {
+		try {
+			$rConnected = self::mainDatabaseAnswers();
+		} catch (LbDatabaseAccessException $e) {
+			// Mode 2: status still reads MAIN's servers and settings.
+			echo $e->getMessage() . "\n\n";
+			return 1;
+		}
+		if (!$rConnected) {
 			echo "Couldn't connect to database. Please add them to config.ini.\n\n";
 			return 1;
 		}
+		$db = self::db();
 
 		echo "Connected successfully.\n\n";
 		$rServers = $this->getServers();
@@ -163,6 +169,21 @@ class StatusCommand implements CommandInterface {
 		}
 		passthru('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cluster:pools');
 		echo "\n";
+	}
+
+	/**
+	 * Connect MAIN's database, as status always did, and ask it whether it
+	 * answers: with a query, not the handle's `connected`. A process booted
+	 * from the node replica (ReplicaBoot: mode 1 with the CONFIG flow on, or
+	 * mode 2, once an apply built the caches) holds a lazy handle, which opens
+	 * only at its first query. It opens here, so ConnectAudit counts status's
+	 * connect at this site in mode 1, and refuses it here in mode 2.
+	 *
+	 * @throws LbDatabaseAccessException on a node in cluster mode 2 (api)
+	 */
+	public static function mainDatabaseAnswers(): bool {
+		DatabaseFactory::connect();
+		return (bool) self::db()->query('SELECT 1');
 	}
 
 	private function isRunning(): bool {

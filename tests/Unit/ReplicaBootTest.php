@@ -69,6 +69,7 @@ final class ReplicaBootTest extends TestCase {
 	protected function tearDown(): void {
 		NodeFlows::usePath(null);
 		NodeRole::useMainBuild(null);
+		NodeRole::resetAudit();
 		ReplicaBoot::reset();
 		ServiceContainer::resetInstance();
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, null);
@@ -154,6 +155,26 @@ final class ReplicaBootTest extends TestCase {
 		$this->assertSame([true, false], [ReplicaBoot::active(), ReplicaBoot::hybrid()], 'mode 2: never (refused)');
 		ReplicaBoot::reset();
 		$this->assertSame([false, false], [ReplicaBoot::active(), ReplicaBoot::hybrid()]);
+
+		// The refusal is asked at each read, as at each connect: a daemon that
+		// booted in mode 1 keeps the caches once the node is switched to mode
+		// 2, and reads MAIN's database again once it is back in mode 1.
+		$this->flows(1, 63);
+		ReplicaBoot::start(ReplicaBoot::WHEN_READY);
+		$this->assertTrue(ReplicaBoot::hybrid());
+		$this->flows(2);
+		$this->assertFalse(ReplicaBoot::hybrid(), 'switched to mode 2: refused, so the caches');
+		$this->flows(1, 63);
+		$this->assertTrue(ReplicaBoot::hybrid(), 'back in mode 1');
+
+		// MAIN's build never refuses (a node installed from MAIN's archive), so
+		// there mode 2 reads MAIN's database as mode 1 does, counted.
+		NodeRole::useMainBuild(true);
+		$this->flows(2);
+		ReplicaBoot::start(ReplicaBoot::WHEN_READY);
+		$this->assertTrue(ReplicaBoot::hybrid(), 'mode 2 on MAIN\'s build: not refused');
+		ReplicaBoot::start(ReplicaBoot::ALWAYS);
+		$this->assertFalse(ReplicaBoot::hybrid(), 'cluster:apply: never');
 	}
 
 	public function testClusterApplyBootsFromTheReplicaInEveryMode(): void {
@@ -555,13 +576,20 @@ final class ReplicaBootTest extends TestCase {
 		$this->child(['cluster:apply', '--from-disk']);
 
 		// Mode 0, MAIN, mode 1 without CONFIG: connected at once, as before.
+		// The eager connect ends the child before the script's dump line, which
+		// a lazy handle would print before its query connects.
 		foreach ([[0, 255], [null], [1, 31]] as $rCase) {
 			$this->flows(...$rCase);
 			$this->clearAudit();
 			[, $rOut, $rConnects] = $this->child([], $rScript);
 			$this->assertSame(['sql'], $rConnects, json_encode($rCase));
 			$this->assertStringContainsString('Cannot connect to database', $rOut, json_encode($rCase));
-			$this->assertSame($rCase === [1, 31] ? 1 : 0, $this->audited()[0], json_encode($rCase));
+			$this->assertStringNotContainsString('LazyDatabaseHandler', $rOut, json_encode($rCase) . ': connected at once, before the request');
+			[$rSql, $rSites] = $this->audited();
+			$this->assertSame($rCase === [1, 31] ? 1 : 0, $rSql, json_encode($rCase));
+			if ($rCase === [1, 31]) {
+				$this->assertStringContainsString('Core/Init/LegacyInitializer.php:', $rSites[0] ?? '', 'counted at the boot\'s site');
+			}
 		}
 
 		// Mode 1 with CONFIG, once an apply built the caches: nothing at the
@@ -587,8 +615,69 @@ final class ReplicaBootTest extends TestCase {
 		// Mode 1 rebooted, nothing applied yet: connected at once, as before.
 		$this->flows(1, 63);
 		unlink($this->rHome . 'tmp/cache/replica_owned');
-		[, , $rConnects] = $this->child([], $rScript);
+		$this->clearAudit();
+		[, $rOut, $rConnects] = $this->child([], $rScript);
 		$this->assertSame(['sql'], $rConnects);
+		$this->assertStringNotContainsString('LazyDatabaseHandler', $rOut, 'connected at once');
+		[$rSql, $rSites] = $this->audited();
+		$this->assertSame(1, $rSql);
+		$this->assertStringContainsString('Core/Init/LegacyInitializer.php:', $rSites[0] ?? '', 'counted at the boot\'s site');
+	}
+
+	public function testStatusAsksMainsDatabaseItselfOnANodeBootedFromItsReplica(): void {
+		if (!extension_loaded('igbinary')) {
+			$this->markTestSkipped('status\'s streaming boot reads the caches with igbinary');
+		}
+		// `console.php status` runs as root, so the child runs its steps up to
+		// its database check: console.php's boot, then status's own.
+		$rScript = $this->rHome . 'status.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Cli\Commands\StatusCommand;
+			use XcVm\Core\Cluster\LbDatabaseAccessException;
+			use XcVm\Core\Cluster\ReplicaBoot;
+			use XcVm\Core\Enum\BootContext;
+			use XcVm\Infrastructure\Bootstrap\StreamingRequestBootstrap;
+
+			require getenv('XCVM_TEST_SRC') . 'bootstrap.php';
+			XC_Bootstrap::boot(BootContext::Cli, ['replica' => ReplicaBoot::forArgv(['console.php', 'status', '1'])]);
+			StreamingRequestBootstrap::init('status');
+			echo json_encode(['booted' => ReplicaBoot::active(), 'connected' => $GLOBALS['db']->connected]), "\n";
+			try {
+				echo json_encode(['answers' => StatusCommand::mainDatabaseAnswers()]), "\n";
+			} catch (LbDatabaseAccessException $e) {
+				echo json_encode(['refused' => $e->rSite]), "\n";
+			}
+			PHP);
+		$this->rFixture->node();
+		$rMainDb = $this->mainDb([]);
+		$rStatusSite = static fn(array $rSites): bool => count($rSites) === 1 && str_starts_with($rSites[0], 'sql ') && str_contains($rSites[0], 'Cli/Commands/StatusCommand.php:');
+
+		// A mode 1 node booted from its replica: an unopened lazy handle, whose
+		// `connected` status read as "Couldn't connect" and stopped. It asks
+		// the database itself now: connected on first use, counted at its site.
+		$this->flows(1, 63);
+		$this->child(['cluster:apply', '--from-disk']);
+		$this->clearAudit();
+		[$rCode, $rOut, $rConnects] = $this->child([], $rScript, $rMainDb);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertSame([['booted' => true, 'connected' => false], ['answers' => true]], array_map(static fn(string $rLine): mixed => json_decode($rLine, true), explode("\n", trim($rOut))));
+		$this->assertSame(['sql'], $rConnects);
+		[$rSql, $rSites] = $this->audited();
+		$this->assertSame(1, $rSql);
+		$this->assertTrue($rStatusSite($rSites), 'counted at status\'s site: ' . json_encode($rSites));
+
+		// Mode 2: refused there, counted, where status used to stop uncounted.
+		$this->flows(2);
+		$this->clearAudit();
+		[$rCode, $rOut, $rConnects] = $this->child([], $rScript, $rMainDb);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertSame(['booted' => true, 'connected' => false], json_decode(strtok($rOut, "\n"), true));
+		$this->assertStringContainsString('Cli/Commands/StatusCommand.php:', json_decode(explode("\n", trim($rOut))[1] ?? '', true)['refused'] ?? '', $rOut);
+		$this->assertSame([], $rConnects);
+		[$rSql, $rSites] = $this->audited();
+		$this->assertSame(1, $rSql);
+		$this->assertTrue($rStatusSite($rSites), json_encode($rSites));
 	}
 
 	public function testAModeTwoNodeBootsFromItsReplicaOnceAnApplyBuiltIt(): void {

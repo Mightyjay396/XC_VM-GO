@@ -60,8 +60,10 @@ action.
 - Do not open MAIN's database before a query needs it. A connect at boot or at
   the top of an entry point counts against a mode 1 node's seven-day zero even
   when the request ends without a query. Where the replica may not answer
-  (`ReplicaBoot::hybrid()`, mode 1 only), read MAIN's database on the lazy
-  handle, never on a new one.
+  (`ReplicaBoot::hybrid()`: mode 1, never where connects are refused), read
+  MAIN's database on the lazy handle, never on a new one. To learn whether
+  MAIN's database answers, query it: a lazy handle's `connected` stays false
+  until its first query (`StatusCommand::mainDatabaseAnswers()`).
 - Do not write `new DatabaseHandler()`. Take the process's handle
   (`DatabaseAware`, `DatabaseFactory::get()`), or `DatabaseFactory::connect()`,
   `connectLazy()` or `open()`. Every connect to MAIN's MySQL or Redis passes

@@ -29,8 +29,9 @@ use XcVm\Core\Cache\FileCache;
  * with its site, and on a node in mode 2 refuses (plan, section 10, step 1).
  * What the replica does not own, a mode 1 process reads from MAIN's
  * database the same lazy way (hybrid()): the settings and servers once an
- * apply handed them back, the crontab's jobs. `cluster:apply` and mode 2
- * never do: they get the caches however old, or nothing.
+ * apply handed them back, the crontab's jobs. `cluster:apply` and a node
+ * whose connects are refused (mode 2) never do: they get the caches however
+ * old, or nothing.
  */
 final class ReplicaBoot {
 	/** Commands that boot from the replica in every mode. */
@@ -110,7 +111,7 @@ final class ReplicaBoot {
 	 */
 	public static function start(string $rWhen = self::ALWAYS): void {
 		self::$rActive = true;
-		self::$rHybrid = $rWhen === self::WHEN_READY && !NodeRole::refusesConnects();
+		self::$rHybrid = $rWhen === self::WHEN_READY;
 	}
 
 	/** Did this process boot from the replica? Its settings and servers then come from the replica's caches (in mode 1 while it owns them: hybrid()). */
@@ -122,13 +123,17 @@ final class ReplicaBoot {
 	 * May this process, booted from the replica, still read from MAIN's
 	 * database what the replica does not answer: the settings, the servers
 	 * and the crontab's jobs while it does not own them (CONFIG went off, a
-	 * section was refused or never stored)? On a node in mode 1: lazily, on
-	 * first use, counted by ConnectAudit at its site, as mode 1 read them
+	 * section was refused or never stored)? Where its connects are not
+	 * refused (mode 1; mode 2 on MAIN's build, which never refuses): lazily,
+	 * on first use, counted by ConnectAudit at its site, as mode 1 read them
 	 * before it booted from the replica. Never `cluster:apply` (ALWAYS: its
-	 * apply needs no database) nor a node in mode 2 (refused).
+	 * apply needs no database), nor where they are refused
+	 * (NodeRole::refusesConnects, mode 2). The refusal is asked at each call,
+	 * as each connect asks it: a daemon that booted in mode 1 keeps the caches
+	 * however old once the node is switched to mode 2.
 	 */
 	public static function hybrid(): bool {
-		return self::$rHybrid;
+		return self::$rHybrid && !NodeRole::refusesConnects();
 	}
 
 	/** Tests: forget the boot. */
