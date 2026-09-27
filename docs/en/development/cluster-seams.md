@@ -15,8 +15,9 @@ Each seam has a hook for tests and for the future transport (`useSink()`,
 | Seam | Wraps | Legacy backend | API backend (phase) |
 | --- | --- | --- | --- |
 | `Core\Cluster\SignalDispatcher` | the 47 `INSERT INTO signals` sites (kill, cache jobs, root actions) | `LegacySqlSignalSink` | commands and events (4/5) |
-| `Domain\Stream\StreamStateWriter` | a node's runtime state in `streams_servers`; refuses any column outside `STATE_FIELDS` | `StreamRowMerge::apply()` | `stream.state` event (5) |
-| `Domain\Stream\StreamSource` | the stream row, this node's `streams_servers` row, the stream options and a recording, read before running a stream or a recording | SQL | the node's stream caches, built by `cluster:apply` from the R2 `streams` section once the STREAMS flow is on (`ReplicaStreamCache`, 7); `stream_bundle` on a miss (not built) |
+| `Domain\Stream\StreamStateWriter` | a node's runtime state in `streams_servers`; refuses any column outside `STATE_FIELDS` | `StreamRowMerge::apply()` | `stream.state` event (5), kept in the node's own store (`Core\Cluster\StreamRuntime`, 7) |
+| `Domain\Stream\StreamSource` | the stream row, this node's `streams_servers` row, the stream options and a recording, read before running a stream or a recording; the stream with this node's row and its runtime state (`nodeRow()`, `workerRow()`, `plainRow()`, `createdRow()`, `builtServerRow()`, `channelRow()`, `movieRow()`) | SQL | the node's stream caches, built by `cluster:apply` from the R2 `streams` section once the STREAMS flow is on (`ReplicaStreamCache`, 7), with the runtime state from the node's own store once it is seeded (`StreamRuntime`, 7); `stream_bundle` on a miss (not built) |
+| `Domain\Stream\NodeStreams` | the lists of this node's streams its crons and daemons select with their runtime state (`cron:streams`, `cron:vod`, `cron:cleanup`, the on-demand daemon) | SQL | the stream caches and the node's own store, or the R2 section whole (`ReplicaStreams`) for the lists `cron:cleanup` prunes files by (7) |
 | `Core\Cluster\LogSink` | client, stream, stream-error, panel-error and restream-detection records; root's system log lines (`syslog()`) | one multi-row INSERT per batch (chunks of 1000); the caller's own `mysql_syslog` INSERT | `log.*` events, redacted first (5); `log.syslog` (7) |
 
 ## MAIN side
@@ -49,8 +50,14 @@ action.
 - Node-side code reads stream definitions through `StreamSource`, not with its
   own queries on `streams`, `streams_options` or `recordings`. Once the node's
   replica owns the streams (STREAMS flow on), its answers come from the stream
-  caches `cluster:apply` built, never from MAIN's database, and a column no
-  record carries (the node's runtime state) is null there.
+  caches `cluster:apply` built, never from MAIN's database. A stream read with
+  this node's runtime state (a joined `streams ⨝ streams_servers` row, or a
+  list filtered on `pid` or `stream_status`) goes through `StreamSource` or
+  `NodeStreams` too: with `StreamSource::local()` (the replica owns the
+  streams and the node's own store `StreamRuntime` is seeded) the runtime
+  columns come from that store, which the writers keep with STREAMS on, and
+  the seam keeps MAIN's statement for everywhere else. Do not reconnect
+  MAIN's database in a daemon where `StreamSource::local()` holds.
 - Node-side code reads settings through `SettingsManager`'s getters and servers
   through `ServerRepository`. A node in mode 2, or in mode 1 with the CONFIG
   flow on, boots from its replica (`ReplicaStage`) once an apply built its
@@ -82,8 +89,11 @@ action.
   that still needs MAIN's database is refused up front in mode 2
   (`RootSignalsCronJob::updatesHere()` for `update` and `rollback`).
   Work that needs MAIN's data no replica section carries yet is skipped in
-  mode 2 behind a named seam (`CleanupCronJob::streamChecks()`), never run
-  against an empty answer.
+  mode 2 behind a named seam (`CleanupCronJob::streamChecks()`, which holds
+  once the replica and the node's own store answer), never run against an
+  empty or partial answer. A stream-state write the agent did not take stays
+  in the node's own store in mode 2 (`StreamStateWriter::resend()` sends it
+  later) instead of falling back to MAIN's row.
 - A file a node needs from MAIN (a custom off-air video, a module's archive,
   a binary MAIN pinned) is an artefact: MAIN names it in
   `Domain\Cluster\ArtefactRegistry` and grants it with a signed command
@@ -105,4 +115,5 @@ action.
 Tests that pin these rules: `SignalDispatcherParityTest`, `StreamStateWriterTest`,
 `StreamRowMergeTest`, `StreamCacheBuilderSourceTest`, `LogSinkTest`,
 `NodeRpcActionsTest`, `ArchitectureTest`, `DbConnectRefusalTest`,
-`ReplicaBootTest`, `ModeTwoPathsTest` and `ArtefactHashRefusalTest`.
+`ReplicaBootTest`, `ModeTwoPathsTest`, `ArtefactHashRefusalTest`,
+`StreamRuntimeTest` and `StreamRuntimeReadersTest`.
