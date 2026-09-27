@@ -215,9 +215,12 @@ final class ReplicaSectionsTest extends TestCase {
 		$this->rDb->exec($rInsert[0]);
 		foreach ([1, 2] as $rMode) {
 			$rJobs = array_column(ReplicaBuilder::crontabData($rMode)['jobs'], 'filename');
-			foreach (['streams', 'servers', 'cache', 'users', 'certbot', 'cleanup', 'maxmind'] as $rJob) {
+			foreach (['streams', 'servers', 'cache', 'certbot', 'cleanup', 'maxmind'] as $rJob) {
 				$this->assertContains($rJob, $rJobs, 'a node runs cron:' . $rJob);
 			}
+			// `users` writes MAIN's rows itself, so the install ships it as a legacy job:
+			// a node runs it while it still has the database, never in mode 2.
+			$this->assertSame($rMode < 2, in_array('users', $rJobs, true), 'cron:users is legacy');
 			foreach (['tmdb', 'tmdb_popular', 'update', 'cluster', 'stats', 'proxy', 'watch', 'plex'] as $rJob) {
 				$this->assertNotContains($rJob, $rJobs, 'cron:' . $rJob . ' is MAIN\'s');
 			}

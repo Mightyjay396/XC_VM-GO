@@ -264,7 +264,6 @@ class StatusCommand implements CommandInterface {
 		return $rReload;
 	}
 
-
 	private function configureFileLimits(): void {
 		$rFile = file('/etc/systemd/system.conf');
 		$rHasHard = false;

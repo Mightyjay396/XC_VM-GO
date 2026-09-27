@@ -180,8 +180,7 @@ final class NodeStreams {
 				continue;
 			}
 			[$rStream, $rServer] = self::entry($rID) ?? [null, null];
-			if (
-				$rStream === null || $rServer === null || (int) ($rStream['type'] ?? 0) !== 1
+			if ($rStream === null || $rServer === null || (int) ($rStream['type'] ?? 0) !== 1
 				|| (int) ($rStream['direct_source'] ?? 0) !== 0 || ($rServer['on_demand'] ?? null) !== 1
 				|| $rServer['parent_id'] !== null || $rServer['pid'] !== null || !self::scanDue($rID, $rEvery)
 			) {

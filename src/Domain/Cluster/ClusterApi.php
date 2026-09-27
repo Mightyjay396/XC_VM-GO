@@ -698,6 +698,26 @@ final class ClusterApi {
 	 * once (RecordingFinalizer). The node names its file after the id, then
 	 * reports `recording.state` 2 once it has converted it.
 	 */
+	private static function recordingComplete(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONTENT) === 0) {
+			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'content']);
+		}
+		$rRecording = $rP['recording_id'] ?? null;
+		$rIcon = $rP['stream_icon'] ?? null;
+		if (!is_int($rRecording) || $rRecording <= 0 || ($rIcon !== null && !is_string($rIcon))) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		try {
+			$rID = RecordingFinalizer::create($rRecording, (int) $rNode['server_id'], $rIcon);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if ($rID === null) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, ['stream_id' => $rID, 'main_time_ms' => ClusterClock::nowMs()]);
+	}
+
 	/**
 	 * The encoding queue of one node ({@see NodeQueue}; `queue` is MAIN's table):
 	 *
@@ -742,26 +762,6 @@ final class ClusterApi {
 		}
 
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
-	}
-
-	private static function recordingComplete(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
-		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONTENT) === 0) {
-			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'content']);
-		}
-		$rRecording = $rP['recording_id'] ?? null;
-		$rIcon = $rP['stream_icon'] ?? null;
-		if (!is_int($rRecording) || $rRecording <= 0 || ($rIcon !== null && !is_string($rIcon))) {
-			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
-		}
-		try {
-			$rID = RecordingFinalizer::create($rRecording, (int) $rNode['server_id'], $rIcon);
-		} catch (\Throwable) {
-			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
-		}
-		if ($rID === null) {
-			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
-		}
-		return ClusterReply::boxed($rKeys, $rCtx, ['stream_id' => $rID, 'main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/**

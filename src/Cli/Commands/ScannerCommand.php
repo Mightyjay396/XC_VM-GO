@@ -64,7 +64,7 @@ class ScannerCommand implements CommandInterface {
 		// log events and its due list comes from the replica.
 		$rApi = NodeRole::refusesConnects();
 
-		while ($rApi || ($db && $db->ping())) {
+		while ($rApi || $db->ping()) {
 			if (!$this->shouldRefreshSettings()) {
 				// skip
 			} else {
@@ -80,7 +80,7 @@ class ScannerCommand implements CommandInterface {
 			sleep(60);
 		}
 
-		if (!$rApi && $db) {
+		if (!$rApi) {
 			$db->close_mysql();
 		}
 

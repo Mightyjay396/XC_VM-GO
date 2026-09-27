@@ -2165,9 +2165,9 @@ class StreamProcess {
 	 * Start a movie (VOD) stream.
 	 *
 	 * @param int $rStreamID Stream id.
-	 * @return mixed Start result.
+	 * @return int|false The encoder's pid, or false when it did not start.
 	 */
-	public static function startMovie(int $rStreamID) {
+	public static function startMovie(int $rStreamID): int|false {
 		global $rSettings, $rServers, $rFFMPEG_CPU, $rFFMPEG_GPU;
 		$db = self::db();
 		$rStream = [];

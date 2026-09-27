@@ -254,7 +254,7 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		$rEphSk = random_bytes(32);
 		$rFirst = EnrolmentService::issueFirst($this->rCrypto, self::SID, $this->rUuid, sodium_crypto_sign_publickey($rPair), sodium_crypto_scalarmult_base(random_bytes(32)), sodium_crypto_scalarmult_base($rEphSk), $this->settings(), $this->rMain);
 		$this->rPolicy = $rFirst['cluster']['policy'];
-		$this->assertSame(['policy_ver' => 2, 'transport' => 'https_required', 'main_urls' => ['https://panel.example.com:25463/cluster/v1/']], $this->rPolicy);
+		$this->assertSame(['policy_ver' => 2, 'transport' => 'https_required', 'heartbeat_sec' => 2, 'main_urls' => ['https://panel.example.com:25463/cluster/v1/']], $this->rPolicy);
 		$rBody = (string) Seal::open($rEphSk, 'token', $this->rUuid, (string) $rFirst['token_sealed']);
 		$this->rKeys = ClusterReference::sessionKeys((string) hex2bin(json_decode(substr($rBody, 4, unpack('N', substr($rBody, 0, 4))[1]), true)['token']));
 		[$rRes] = $this->call('enrol_complete', ['instance_id' => 'inst-a', 'agent_version' => '0.1.0'], true);
@@ -296,7 +296,7 @@ final class HttpsRequiredRecoveryTest extends TestCase {
 		ClusterClock::fix(1800000120000);
 		$rDoc = $this->challenge(false);
 		$this->assertTrue($this->adopt($rDoc['policy']));
-		$this->assertSame(['policy_ver' => 3, 'transport' => 'auto', 'main_urls' => ['http://192.168.0.1:25461/cluster/v1/', 'http://10.0.0.1:25461/cluster/v1/']], $this->rPolicy);
+		$this->assertSame(['policy_ver' => 3, 'transport' => 'auto', 'heartbeat_sec' => 2, 'main_urls' => ['http://192.168.0.1:25461/cluster/v1/', 'http://10.0.0.1:25461/cluster/v1/']], $this->rPolicy);
 		$this->assertSame(3, $this->heartbeat(false)['policy_ver'], 'over plain HTTP, on the policy it follows');
 		$this->assertGreaterThan($rSeen, (int) NodeRegistry::byServer(self::SID)['last_seen_at'], 'MAIN hears the node again');
 		$this->assertSame('active', NodeRegistry::byServer(self::SID)['state']);
