@@ -10,8 +10,11 @@ use XcVm\Core\Cluster\Redactor;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\ReplicaStreamCache;
+use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\SignalSink;
 use XcVm\Core\Cluster\StreamRecords;
 use XcVm\Core\Cluster\StreamRuntime;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\LazyDatabaseHandler;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\NodeStreams;
@@ -52,6 +55,9 @@ final class StreamRuntimeReadersTest extends TestCase {
 	/** The database the readers get once the replica answers: it refuses every connect, and counts them. */
 	private LazyDatabaseHandler $rRefusing;
 
+	/** The store's directory before this test (the suite's own, tests/bootstrap.php). */
+	private string $rRuntimeDir;
+
 	protected function setUp(): void {
 		if (!defined('SERVER_ID')) {
 			define('SERVER_ID', 5);
@@ -67,6 +73,7 @@ final class StreamRuntimeReadersTest extends TestCase {
 		ReplicaApply::useConfigDir($this->rDir);
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, new FileCache($this->rDir . 'cache/'));
 		EventSpool::useDir($this->rDir . 'cluster/spool/');
+		$this->rRuntimeDir = StreamRuntime::dir();
 		StreamRuntime::useDir($this->rDir . 'cluster/runtime/');
 		AgentClient::useSocket($this->rDir . 'no-agent.sock');
 		NodeRole::useMainBuild(false);
@@ -90,8 +97,10 @@ final class StreamRuntimeReadersTest extends TestCase {
 		ReplicaApply::useDir(null);
 		ReplicaApply::useConfigDir(null);
 		EventSpool::useDir(null);
-		StreamRuntime::useDir(null);
+		StreamRuntime::useDir($this->rRuntimeDir);
 		AgentClient::useSocket(null);
+		SignalDispatcher::useSink(null);
+		SettingsManager::set([]);
 		NodeRole::useMainBuild(null);
 		NodeFlows::usePath(null);
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, null);
@@ -115,8 +124,13 @@ final class StreamRuntimeReadersTest extends TestCase {
 	 * episode (17) to analyse; a stopped stream (12); a created channel
 	 * built from its sources (13); a stream on the other server alone (14);
 	 * a direct-proxy stream (15); a stream relayed from the other server
-	 * that failed (16). Recordings on 10: one airing, one recording, one
-	 * elsewhere. One open TS viewer of 10 here.
+	 * that failed (16). One row for each filter a reader applies: a live
+	 * stream not running with an analysis due (20); a live stream whose
+	 * archive is recorded here with no days kept (21); a movie with no
+	 * producer (22); a created channel with one of its two sources built
+	 * (23); a created channel relayed from the other server (24); a direct
+	 * source that is not proxied, with a pid (25). Recordings on 10: one
+	 * airing, one recording, one elsewhere. One open TS viewer of 10 here.
 	 */
 	private function main(): TestDb {
 		$rDb = new TestDb();
@@ -148,7 +162,13 @@ final class StreamRuntimeReadersTest extends TestCase {
 			(14, 1, 'Elsewhere', '[\"http://src.example/e\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL),
 			(15, 1, 'Proxied', '[\"http://src.example/f\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, NULL, NULL),
 			(16, 1, 'Relayed', '[\"http://src.example/g\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, NULL, NULL),
-			(17, 5, 'Episode', '[\"http://src.example/ep.mp4\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'mp4', NULL)");
+			(17, 5, 'Episode', '[\"http://src.example/ep.mp4\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'mp4', NULL),
+			(20, 1, 'Due', '[\"http://src.example/h\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL),
+			(21, 1, 'No days', '[\"http://src.example/i\"]', NULL, 0, 0, {$s}, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL),
+			(22, 2, 'Queued', '[\"http://src.example/q.mkv\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 'mkv', NULL),
+			(23, 3, 'Half built', '[\"s:{$s}:/media/c.mp4\",\"s:{$s}:/media/d.mp4\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL),
+			(24, 3, 'Relayed channel', '[\"s:{$o}:/media/e.mp4\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, NULL, NULL),
+			(25, 1, 'Direct', '[\"http://src.example/j\"]', NULL, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, NULL, NULL)");
 		$rDb->exec("INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `parent_id`, `on_demand`, `pid`, `monitor_pid`, `stream_status`, `stream_started`, `stream_info`, `progress_info`, `current_source`, `bitrate`, `to_analyze`, `compatible`, `cc_info`, `cchannel_rsources`, `pids_create_channel`, `delay_pid`, `audio_codec`, `video_codec`, `resolution`, `ondemand_check`) VALUES
 			(1, 10, {$s}, NULL, 1, 4242, 4243, 0, 1700000000, '{\"codecs\":{}}', '{\"fps\":25}', 'http://user:pass@src.example/a', 3000, 0, 1, NULL, NULL, NULL, NULL, 'aac', 'h264', 1080, 12),
 			(2, 10, {$o}, {$s}, 0, 70, 71, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
@@ -158,7 +178,13 @@ final class StreamRuntimeReadersTest extends TestCase {
 			(6, 14, {$o}, NULL, 0, 1, 1, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
 			(7, 15, {$s}, NULL, 0, 55, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
 			(8, 16, {$s}, {$o}, 0, NULL, NULL, 1, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, 81, NULL, NULL, NULL, NULL),
-			(9, 17, {$s}, NULL, 0, 88, NULL, 1, NULL, NULL, NULL, NULL, NULL, 1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)");
+			(9, 17, {$s}, NULL, 0, 88, NULL, 1, NULL, NULL, NULL, NULL, NULL, 1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+			(10, 20, {$s}, NULL, 0, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, 1, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+			(11, 21, {$s}, NULL, 0, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+			(12, 22, {$s}, NULL, 0, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+			(13, 23, {$s}, NULL, 0, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, '[\"s:{$s}:/media/c.mp4\"]', '[]', NULL, NULL, NULL, NULL, NULL),
+			(14, 24, {$s}, {$o}, 0, NULL, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, '[]', '[]', NULL, NULL, NULL, NULL, NULL),
+			(15, 25, {$s}, NULL, 0, 66, NULL, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)");
 		$rDb->exec("INSERT INTO `recordings` (`id`, `stream_id`, `created_id`, `source_id`, `title`, `start`, `end`, `archive`, `status`) VALUES
 			(1, 10, 0, {$s}, 'Airing', " . ($rNow - 100) . ', ' . ($rNow + 3600) . ", 0, 0),
 			(2, 10, 0, {$s}, 'Recording', " . ($rNow - 100) . ', ' . ($rNow + 3600) . ", 0, 1),
@@ -175,20 +201,20 @@ final class StreamRuntimeReadersTest extends TestCase {
 			$rOut['server'][$rID] = StreamSource::serverRow($rID);
 		}
 		$rOut += [
-			'archive' => [10 => StreamSource::workerRow(10, 'tv_archive'), 12 => StreamSource::workerRow(12, 'tv_archive')],
+			'archive' => [10 => StreamSource::workerRow(10, 'tv_archive'), 12 => StreamSource::workerRow(12, 'tv_archive'), 21 => StreamSource::workerRow(21, 'tv_archive')],
 			'thumbs' => [10 => StreamSource::workerRow(10, 'vframes'), 16 => StreamSource::workerRow(16, 'vframes')],
-			'plain' => [10 => StreamSource::plainRow(10), 15 => StreamSource::plainRow(15)],
+			'plain' => [10 => StreamSource::plainRow(10), 15 => StreamSource::plainRow(15), 25 => StreamSource::plainRow(25)],
 			'created' => [13 => StreamSource::createdRow(13), 12 => StreamSource::createdRow(12)],
-			'built' => [13 => StreamSource::builtServerRow(13), 16 => StreamSource::builtServerRow(16)],
+			'built' => [13 => StreamSource::builtServerRow(13), 16 => StreamSource::builtServerRow(16), 24 => StreamSource::builtServerRow(24)],
 			'channel' => [13 => StreamSource::channelRow(13), 10 => StreamSource::channelRow(10)],
 			'stream' => [10 => StreamSource::streamRow(10, true), 11 => StreamSource::streamRow(11, false)],
-			'movie' => [11 => StreamSource::movieRow(11), 17 => StreamSource::movieRow(17), 10 => StreamSource::movieRow(10)],
+			'movie' => [11 => StreamSource::movieRow(11), 17 => StreamSource::movieRow(17), 10 => StreamSource::movieRow(10), 22 => StreamSource::movieRow(22)],
 			'recording' => [1 => StreamSource::recording(1)],
 			'live_redis' => self::byStream(NodeStreams::liveChecks(true)),
 			'live_mysql' => self::byStream(NodeStreams::liveChecks(false)),
 			'proxied' => NodeStreams::proxied(),
 			'on_demand' => array_map('intval', NodeStreams::onDemandIDs()),
-			'created_channels' => NodeStreams::createdChannels(),
+			'created_channels' => self::byStream(NodeStreams::createdChannels()),
 			'due' => NodeStreams::recordingsDue(),
 			'analysis_count' => NodeStreams::analysisCount(),
 			'analysis' => self::byStream(NodeStreams::analysis(0)),
@@ -228,6 +254,8 @@ final class StreamRuntimeReadersTest extends TestCase {
 		$this->rFixture->streamsSince(7);
 		$this->flows($rFlows, 1);
 		ReplicaApply::run(false, 1800000000, $this->rSid, false);
+		// The node's user's, as cluster:apply leaves them (a root writer reads the index as that user).
+		AgentUser::own($this->rDir . 'cache');
 		$this->assertTrue(ReplicaStreamCache::owned());
 		$this->assertTrue(StreamRuntime::seed($this->rDb), 'seeded from MAIN\'s rows');
 		$this->flows($rFlows, $rMode);
@@ -273,29 +301,42 @@ final class StreamRuntimeReadersTest extends TestCase {
 	public function testEachReaderAnswersFromTheReplicaAndTheStoreAsMainsDatabaseDid(): void {
 		$rSql = $this->answers();
 		// What the readers select, spelled out once.
-		$this->assertSame([10, 16], array_keys($rSql['live_redis']));
+		$this->assertSame([10, 16, 20], array_keys($rSql['live_redis']), '20: an analysis due');
 		$this->assertSame(1, (int) $rSql['live_redis'][10]['attached']);
 		$this->assertSame(1, (int) $rSql['live_mysql'][10]['online_clients']);
-		$this->assertSame([['id' => '15']], self::loose($rSql['proxied']));
+		$this->assertSame([['id' => '15']], self::loose($rSql['proxied']), 'not 25, a direct source not proxied');
 		$this->assertSame([10], $rSql['on_demand']);
-		$this->assertSame([11, 17], array_keys($rSql['analysis']));
-		$this->assertSame(2, $rSql['analysis_count']);
-		$this->assertSame([10, 12, 13, 15, 16], $rSql['file_streams']);
-		$this->assertCount(1, $rSql['built_channels']);
-		$this->assertCount(2, $rSql['vod']);
+		$this->assertSame([13, 23], array_keys($rSql['created_channels']), 'not 24, relayed from a parent');
+		$this->assertSame([11, 17], array_keys($rSql['analysis']), 'not 20, a live stream');
+		$this->assertSame(3, $rSql['analysis_count']);
+		$this->assertSame([10, 12, 13, 15, 16, 20, 21, 23, 24, 25], $rSql['file_streams']);
+		$this->assertSame([10 => '24'], self::loose($rSql['archives']), 'not 21, no days kept');
+		$this->assertSame([13], array_map('intval', array_column($rSql['built_channels'], 'id')), 'not 23, half built, nor 24');
+		$this->assertSame([11, 17], array_map('intval', array_column($rSql['vod'], 'id')), 'not 22, no producer');
 		$this->assertSame([['id' => '1']], self::loose($rSql['due']), 'airing, neither recording nor done');
 		$this->assertNull($rSql['node'][14], 'another server\'s stream');
 		$this->assertNull($rSql['archive'][12]);
+		$this->assertNull($rSql['archive'][21], 'no days kept');
 		$this->assertNull($rSql['plain'][15], 'a direct source');
+		$this->assertNull($rSql['plain'][25]);
 		$this->assertNull($rSql['built'][16], 'relayed from a parent');
+		$this->assertNull($rSql['built'][24]);
 		$this->assertNull($rSql['channel'][10], 'not a created channel');
 		$this->assertNull($rSql['movie'][10], 'not a movie');
+		$this->assertNull($rSql['movie'][22], 'no producer');
 		$this->assertNotNull($rSql['movie'][17], 'an episode');
 
 		$this->replica();
 		$rReplica = $this->answers();
 		foreach ($rSql as $rReader => $rAnswer) {
 			$this->assertSameAnswer($rAnswer, $rReplica[$rReader], $rReader);
+		}
+		// An index written before it carried the lists' filter columns (or a
+		// stream the index lacks): every stream is read and filtered by its entry.
+		ReplicaStreamCache::writeIndex(array_map(static fn (array $rMeta): array => array_intersect_key($rMeta, array_flip(['etag', 'ver', 'rec', 'ssid'])), ReplicaStreamCache::index()));
+		$rUnindexed = $this->answers();
+		foreach ($rSql as $rReader => $rAnswer) {
+			$this->assertSameAnswer($rAnswer, $rUnindexed[$rReader], $rReader . ' (unindexed)');
 		}
 		$this->assertSame(0, $this->rRefusing->rConnects, 'MAIN\'s database was never asked');
 		// The runtime state the replica alone never carried: now the node's.
@@ -306,11 +347,13 @@ final class StreamRuntimeReadersTest extends TestCase {
 
 	public function testTheReadersFollowWhatTheNodeWritesSince(): void {
 		$this->replica();
-		StreamStateWriter::updateRow((int) StreamSource::nodeRow(12)['server_stream_id'], ['pid' => 321, 'stream_status' => 0]);
+		// A process that read no row names its stream by server_stream_id through the stream caches' index.
+		StreamRuntime::useDir($this->rDir . 'cluster/runtime/');
+		StreamStateWriter::updateRow(4, ['pid' => 321, 'stream_status' => 0]);
 		ContentSink::workerPid(10, 'tv_archive', 6000);
 		ContentSink::recordingState(1, 1);
 		$this->assertSame(321, StreamSource::nodeRow(12)['pid']);
-		$this->assertSame([10, 12, 16], array_keys(self::byStream(NodeStreams::liveChecks(true))), 'a stream started since');
+		$this->assertSame([10, 12, 16, 20], array_keys(self::byStream(NodeStreams::liveChecks(true))), 'a stream started since');
 		$this->assertSame(6000, StreamSource::workerRow(10, 'tv_archive')['tv_archive_pid']);
 		$this->assertSame(1, StreamSource::recording(1)['status'], 'the node\'s own status wins over its record\'s');
 		$this->assertSame([], NodeStreams::recordingsDue(), 'a recording the node started is not started again');
@@ -323,9 +366,89 @@ final class StreamRuntimeReadersTest extends TestCase {
 		$this->replica(NodeFlows::STREAMS | NodeFlows::CONNECTIONS | NodeFlows::CONTENT | NodeFlows::CONFIG, 2);
 		$this->assertTrue(NodeRole::refusesConnects());
 		$rReplica = $this->answers();
-		foreach (['node', 'archive', 'live_redis', 'vod', 'built_channels', 'analysis'] as $rReader) {
+		foreach (['node', 'archive', 'plain', 'built', 'movie', 'live_redis', 'proxied', 'created_channels', 'analysis_count', 'analysis', 'file_streams', 'archives', 'vod', 'built_channels', 'active'] as $rReader) {
 			$this->assertSameAnswer($rSql[$rReader], $rReplica[$rReader], $rReader);
 		}
+		$this->assertSame(0, $this->rRefusing->rConnects);
+	}
+
+	/**
+	 * A recording finished here: MAIN attaches its VOD to this node itself
+	 * (RecordingFinalizer::finish, from the node's `recording.state`), which
+	 * no event of the node's carries, and the node's store keeps that row's
+	 * state as the recorder reports it done. cron:vod then analyses the VOD
+	 * and the VOD relay serves it, from the replica and the store.
+	 */
+	public function testARecordingFinishedHereIsAnalysedAndServed(): void {
+		$this->replica();
+		$s = $this->rSid;
+		$rBefore = NodeStreams::analysisCount();
+		$this->assertTrue(ContentSink::recordingDone(2, $s, 18));
+		// MAIN: the VOD, attached to this node as finish() inserts it; its record stored by the agent and applied.
+		$this->rDb->exec("INSERT INTO `streams` (`id`, `type`, `stream_display_name`, `stream_source`, `direct_source`, `direct_proxy`, `target_container`) VALUES (18, 2, 'Recorded', '[]', 0, 0, 'mp4')");
+		$this->rDb->exec("INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `parent_id`, `pid`, `to_analyze`) VALUES (30, 18, {$s}, NULL, 1, 1)");
+		DatabaseFactory::set($this->rDb);
+		foreach (StreamRecords::data($s, [18]) as $rID => $rData) {
+			$this->rFixture->stream($rID, $rData, 4);
+		}
+		DatabaseFactory::set($this->rRefusing);
+		ReplicaApply::run(false, 1800000100, $s, false);
+		$this->assertTrue(StreamSource::local());
+		$this->assertSame($rBefore + 1, NodeStreams::analysisCount());
+		$this->assertContains(18, array_map('intval', array_column(NodeStreams::analysis(0), 'stream_id')));
+		$this->assertSame(18, StreamSource::movieRow(18)['id'] ?? null, 'served with its producer');
+		$this->assertSame(0, $this->rRefusing->rConnects);
+	}
+
+	/**
+	 * StreamProcess's own lookups once the store answers: a stream's pids
+	 * without a pid file, and its PHP monitor, from the store; and no cache
+	 * signal for MAIN with STREAMS on (MAIN refreshes from the events).
+	 */
+	public function testStreamProcessTakesThePidsFromTheStore(): void {
+		if (!defined('STREAMS_PATH')) {
+			define('STREAMS_PATH', $this->rDir . 'streams/');
+		}
+		$this->replica();
+		$rID = 987654;
+		$this->assertFileDoesNotExist(STREAMS_PATH . $rID . '_.pid');
+		$rMonitor = proc_open([PHP_BINARY, '-r', 'cli_set_process_title("XC_VM[' . $rID . ']"); sleep(30);'], [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
+		$this->assertIsResource($rMonitor);
+		try {
+			$rPid = proc_get_status($rMonitor)['pid'];
+			for ($i = 0; $i < 100 && trim((string) @file_get_contents('/proc/' . $rPid . '/cmdline')) !== 'XC_VM[' . $rID . ']'; $i++) {
+				usleep(20000);
+			}
+			StreamStateWriter::update($rID, $this->rSid, ['pid' => 4321, 'monitor_pid' => $rPid]);
+			$rLookup = new \ReflectionMethod(StreamProcess::class, 'pidFromFileOrColumn');
+			$this->assertSame(4321, $rLookup->invoke(null, $rID, 'pid', '_.pid'));
+			$this->assertSame($rPid, $rLookup->invoke(null, $rID, 'monitor_pid', '_.monitor'));
+			(new \ReflectionMethod(StreamProcess::class, 'killPhpMonitor'))->invoke(null, $rID);
+			for ($i = 0; $i < 100 && proc_get_status($rMonitor)['running']; $i++) {
+				usleep(20000);
+			}
+			$this->assertFalse(proc_get_status($rMonitor)['running'], 'its monitor, named by the store, stopped');
+		} finally {
+			proc_terminate($rMonitor, 9);
+			proc_close($rMonitor);
+		}
+		$rSignals = new class implements SignalSink {
+			/** @var list<array<string, mixed>> */
+			public array $rRows = [];
+
+			public function insert(array $rRows): bool {
+				array_push($this->rRows, ...$rRows);
+				return true;
+			}
+
+			public function pending(int $rServerID, string $rCustomData): bool {
+				return false;
+			}
+		};
+		SignalDispatcher::useSink($rSignals);
+		SettingsManager::set(['enable_cache' => 1]);
+		StreamProcess::updateStreams([10, 12]);
+		$this->assertSame([], $rSignals->rRows, 'no cache signal: MAIN refreshes from the node\'s events');
 		$this->assertSame(0, $this->rRefusing->rConnects);
 	}
 

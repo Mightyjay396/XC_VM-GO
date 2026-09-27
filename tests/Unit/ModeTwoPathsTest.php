@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\RootPin;
+use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Tests\Support\AgentUser;
 use XcVm\Tests\Support\FakeClusterCrypto;
 use XcVm\Tests\Support\ReplicaFixture;
@@ -162,6 +163,7 @@ final class ModeTwoPathsTest extends TestCase {
 			use XcVm\Cli\Commands\WatchdogCommand;
 			use XcVm\Cli\CronJobs\CleanupCronJob;
 			use XcVm\Cli\CronJobs\RootSignalsCronJob;
+			use XcVm\Cli\CronJobs\StreamsCronJob;
 			use XcVm\Cli\CronJobs\VodCronJob;
 			use XcVm\Core\Cluster\ReplicaBoot;
 			use XcVm\Core\Cluster\RootPin;
@@ -263,6 +265,19 @@ final class ModeTwoPathsTest extends TestCase {
 						ob_start();
 						try {
 							(new ReflectionMethod(VodCronJob::class, 'loadCron'))->invoke(new VodCronJob());
+						} finally {
+							$rResult['output'] = (string) ob_get_clean();
+						}
+						break;
+					case 'streams':
+						// It kills what `ps` names: only ever with the stand-in's empty list.
+						if (trim((string) shell_exec('command -v ps')) !== getenv('XCVM_TEST_HOME') . 'stub_ps/ps') {
+							$rResult['error'] = 'unsafe: ps is not the stand-in';
+							break;
+						}
+						ob_start();
+						try {
+							(new ReflectionMethod(StreamsCronJob::class, 'loadCron'))->invoke(new StreamsCronJob());
 						} finally {
 							$rResult['output'] = (string) ob_get_clean();
 						}
@@ -560,17 +575,22 @@ final class ModeTwoPathsTest extends TestCase {
 
 	/**
 	 * The node's own store as a seed in mode 1 left it: $rStreams' runtime
-	 * columns, $rRecordings' statuses, the node user's.
+	 * columns, $rRecordings' statuses, the node user's; $rUnsent's columns
+	 * as a node in mode 2 kept them while its agent took no event.
 	 *
 	 * @param array<int, array<string, mixed>> $rStreams
 	 * @param array<int, int> $rRecordings
+	 * @param array<int, list<string>> $rUnsent
 	 */
-	private function runtime(array $rStreams, array $rRecordings = []): void {
+	private function runtime(array $rStreams, array $rRecordings = [], array $rUnsent = []): void {
 		$rDir = $this->rHome . 'config/cluster/runtime/';
 		@mkdir($rDir . 'streams', 0700, true);
 		@mkdir($rDir . 'recordings', 0700, true);
 		foreach ($rStreams as $rID => $rFields) {
-			file_put_contents($rDir . 'streams/' . $rID . '.json', json_encode(['id' => $rID, 'ssid' => $rID, 'fields' => $rFields, 'unsent' => []]));
+			file_put_contents($rDir . 'streams/' . $rID . '.json', json_encode(['id' => $rID, 'ssid' => $rID, 'fields' => $rFields, 'unsent' => $rUnsent[$rID] ?? []]));
+		}
+		if ($rUnsent !== []) {
+			file_put_contents($rDir . 'unsent', json_encode(['at' => time(), 'token' => 'kept-in-mode-2']));
 		}
 		foreach ($rRecordings as $rID => $rStatus) {
 			file_put_contents($rDir . 'recordings/' . $rID . '.json', json_encode(['id' => $rID, 'status' => $rStatus]));
@@ -595,7 +615,10 @@ final class ModeTwoPathsTest extends TestCase {
 	public function testCleanupChecksItsStreamsFromTheReplica(): void {
 		$this->streams();
 		$this->node(['cleanup' => '1', 'check_vod' => '1']);
-		$this->runtime([8 => ['pid' => 4000, 'stream_status' => 0], 3 => ['cchannel_rsources' => '["s:5:/media/a.mp4","s:5:/media/b.mp4"]']]);
+		// 70 and recording 9: no longer held, kept long ago; 71: held since the section was read, kept just now.
+		$this->runtime([8 => ['pid' => 4000, 'stream_status' => 0], 3 => ['cchannel_rsources' => '["s:5:/media/a.mp4","s:5:/media/b.mp4"]'], 70 => ['pid' => 1], 71 => ['pid' => 2]], [9 => 1]);
+		touch($this->rHome . 'config/cluster/runtime/streams/70.json', time() - StreamRuntime::PRUNE_GRACE - 60);
+		touch($this->rHome . 'config/cluster/runtime/recordings/9.json', time() - StreamRuntime::PRUNE_GRACE - 60);
 		foreach (['7_.m3u8', '70_.m3u8', '70_1.ts'] as $rFile) {
 			file_put_contents($this->rHome . 'content/streams/' . $rFile, 'x');
 		}
@@ -629,6 +652,65 @@ final class ModeTwoPathsTest extends TestCase {
 		$rEvents = array_column($this->spooled('p0'), 'd');
 		$this->assertContains(['ssid' => 8, 'fields' => ['stream_status' => 1]], $rEvents, 'and MAIN hears them');
 		$this->assertContains(['ssid' => 3, 'fields' => ['cchannel_rsources' => '[]']], $rEvents);
+		// The store pruned to what the node holds, but for what was kept in the last minutes.
+		$this->assertFileDoesNotExist($this->rHome . 'config/cluster/runtime/streams/70.json');
+		$this->assertFileDoesNotExist($this->rHome . 'config/cluster/runtime/recordings/9.json');
+		foreach ([3, 8, 71] as $rID) {
+			$this->assertFileExists($this->rHome . 'config/cluster/runtime/streams/' . $rID . '.json');
+		}
+	}
+
+	/**
+	 * A section the agent's files do not hold whole (a record stored since
+	 * the apply that does not read): every check that prunes by its list is
+	 * skipped, never run against a partial one, and the store is not pruned.
+	 */
+	public function testCleanupSkipsTheChecksWhenTheSectionIsNotWhole(): void {
+		$this->streams();
+		$this->node(['cleanup' => '1', 'check_vod' => '1']);
+		$this->runtime([8 => ['pid' => 4000, 'stream_status' => 0], 70 => ['pid' => 1]]);
+		touch($this->rHome . 'config/cluster/runtime/streams/70.json', time() - StreamRuntime::PRUNE_GRACE - 60);
+		file_put_contents($this->rFixture->dir() . 'streams/71.json', '{"etag":');
+		foreach (['7_.m3u8', '70_.m3u8'] as $rFile) {
+			file_put_contents($this->rHome . 'content/streams/' . $rFile, 'x');
+		}
+		mkdir($this->rHome . 'content/archive/90');
+		file_put_contents($this->rHome . 'content/created/30_abc.ts', 'x');
+
+		[, $rOut, $rResult] = $this->child(['cleanup']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertTrue($rResult['replica']);
+		$this->assertNoConnect();
+		$this->assertStringNotContainsString('Deleting', $rResult['output']);
+		$this->assertStringNotContainsString('BAD MOVIE', $rResult['output']);
+		$this->assertFileExists($this->rHome . 'content/streams/70_.m3u8');
+		$this->assertDirectoryExists($this->rHome . 'content/archive/90');
+		$this->assertFileExists($this->rHome . 'content/created/30_abc.ts');
+		$this->assertFileExists($this->rHome . 'config/cluster/runtime/streams/70.json', 'not pruned by a partial list');
+	}
+
+	/**
+	 * cron:streams in mode 2 once the agent is back: what the node's store
+	 * kept unsent while it took no event goes to MAIN (a `stream.state` keyed
+	 * by stream and server), and the marker goes with it. No connect.
+	 */
+	public function testTheStreamsMinuteSendsWhatTheStoreKeptUnsent(): void {
+		$this->streams();
+		$this->node(['redis_handler' => '0', 'kill_rogue_ffmpeg' => '0']);
+		$this->runtime([7 => ['bitrate' => 3000, 'stream_info' => '{}']], [], [7 => ['bitrate']]);
+		// `ps` answers with nothing to kill.
+		mkdir($this->rHome . 'stub_ps');
+		file_put_contents($this->rHome . 'stub_ps/ps', "#!/bin/sh\necho 'root 1 0.0 grep XC_VM'\n");
+		chmod($this->rHome . 'stub_ps/ps', 0755);
+
+		[, $rOut, $rResult] = $this->child(['streams'], null, ['PATH' => $this->rHome . 'stub_ps:' . $this->rHome . 'stub:' . getenv('PATH')]);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertContains(['stream_id' => 7, 'server_id' => 5, 'fields' => ['bitrate' => 3000]], array_column($this->spooled('p0'), 'd'));
+		$this->assertFileDoesNotExist($this->rHome . 'config/cluster/runtime/unsent');
+		$this->assertSame([], json_decode((string) file_get_contents($this->rHome . 'config/cluster/runtime/streams/7.json'), true)['unsent']);
 	}
 
 	/**

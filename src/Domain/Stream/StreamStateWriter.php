@@ -24,9 +24,10 @@ use XcVm\Core\Cluster\StreamRuntime;
  * MAIN merges into that node's own row (EventIngest), and keeps the fields
  * in the node's own store ({@see StreamRuntime}), under one lock, so the
  * node's readers take them from there. When the agent takes no event (it
- * stopped), a node that may reach MAIN's database writes its row as before;
- * a node in mode 2 keeps them in its store alone, and resend() sends them
- * once the agent is back.
+ * stopped), a node that may reach MAIN's database writes its row as before
+ * (and its store lapses: MAIN's row alone is then whole); a node in mode 2
+ * keeps them in its store alone, and resend() sends them once the agent is
+ * back.
  *
  * @package XC_VM_Domain_Stream
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -80,10 +81,11 @@ final class StreamStateWriter {
 
 	/**
 	 * Send what the node's store kept but the agent did not take (it was
-	 * stopped): a `stream.state` event of each stream's unsent columns, and a
-	 * `stream.worker` event per unsent worker pid. cron:streams runs it every
-	 * minute while the store follows the streams; nothing without STREAMS or
-	 * while the agent still takes no event.
+	 * stopped, in mode 2): a `stream.state` event of each stream's unsent
+	 * columns, and a `stream.worker` event per unsent worker pid. cron:streams
+	 * runs it every minute, whether or not the readers take the store (a seed
+	 * waits for it); nothing without STREAMS or while the agent still takes
+	 * no event.
 	 *
 	 * @return int the streams sent
 	 */
@@ -148,11 +150,13 @@ final class StreamStateWriter {
 			if (NodeRole::refusesConnects()) {
 				return false;
 			}
-		} else {
-			// MAIN's row alone has it: a store this node kept no longer follows.
+		}
+		// Legacy backend: merge into the row in MAIN's database directly. MAIN's
+		// row alone has it: once it landed, a store this node kept lapses.
+		try {
+			return StreamRowMerge::apply($rWhere, $rFields, $rWhereValues, $rDb);
+		} finally {
 			StreamRuntime::lapse();
 		}
-		// Legacy backend: merge into the row in MAIN's database directly.
-		return StreamRowMerge::apply($rWhere, $rFields, $rWhereValues, $rDb);
 	}
 }

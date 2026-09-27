@@ -25,10 +25,11 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * ```
  *
  * While the node's STREAMS flow is on, the node also keeps the workers'
- * pids and its recordings' statuses in its own store ({@see StreamRuntime}),
- * which its readers take (the recording's status wins over the one its R2
- * record carries). A node in mode 2 whose agent takes no event keeps them
- * there alone: it has no database to write.
+ * pids, its recordings' statuses and a finished recording's VOD (as MAIN
+ * attaches it to the node) in its own store ({@see StreamRuntime}), which
+ * its readers take (the recording's status wins over the one its R2 record
+ * carries). A node in mode 2 whose agent takes no event keeps them there
+ * alone, and writes no movie analysis: it has no database to write.
  *
  * @package XC_VM_Domain_Stream
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
@@ -52,13 +53,21 @@ final class ContentSink {
 		return (bool) ($rDb ?? DatabaseFactory::get())->query('UPDATE `recordings` SET `status` = ? WHERE `id` = ?;', $rStatus, $rRecordingID);
 	}
 
-	/** The node converted the recording into its VOD's file. */
-	public static function recordingDone(int $rRecordingID, int $rServerID): bool {
+	/**
+	 * The node converted the recording into its VOD's file ($rVodID, its
+	 * name). MAIN then attaches the VOD to the node (RecordingFinalizer::finish:
+	 * its row with a producer, analysis due), which no event of the node's
+	 * carries: with STREAMS on the node's store keeps that row's state too,
+	 * so its readers analyse and serve the VOD.
+	 */
+	public static function recordingDone(int $rRecordingID, int $rServerID, int $rVodID = 0): bool {
 		self::keepRecording($rRecordingID, RecordingFinalizer::DONE);
-		if (NodeFlows::on(NodeFlows::CONTENT) && EventSpool::append('p0', [['type' => 'recording.state', 'd' => ['id' => $rRecordingID, 'status' => RecordingFinalizer::DONE]]])) {
-			return true;
+		$rDone = (NodeFlows::on(NodeFlows::CONTENT) && EventSpool::append('p0', [['type' => 'recording.state', 'd' => ['id' => $rRecordingID, 'status' => RecordingFinalizer::DONE]]])) || RecordingFinalizer::finish($rRecordingID, $rServerID);
+		if ($rDone && $rVodID > 0 && StreamRuntime::keeps()) {
+			// What finish() inserts for this node: MAIN writes that row itself, so no event.
+			StreamRuntime::keep(['stream_id' => $rVodID], ['pid' => 1, 'to_analyze' => 1], static fn (): bool => true);
 		}
-		return RecordingFinalizer::finish($rRecordingID, $rServerID);
+		return $rDone;
 	}
 
 	/** The pid of a stream's archive or thumbnail worker on this node. */
@@ -73,10 +82,13 @@ final class ContentSink {
 			if (NodeRole::refusesConnects()) {
 				return false;
 			}
-		} else {
+		}
+		// MAIN's row alone has it: once it landed, a store this node kept lapses.
+		try {
+			return (bool) ($rDb ?? DatabaseFactory::get())->query('UPDATE `streams` SET `' . $rWorker . '_pid` = ? WHERE `id` = ?', $rPid, $rStreamID);
+		} finally {
 			StreamRuntime::lapse();
 		}
-		return (bool) ($rDb ?? DatabaseFactory::get())->query('UPDATE `streams` SET `' . $rWorker . '_pid` = ? WHERE `id` = ?', $rPid, $rStreamID);
 	}
 
 	/**
@@ -95,7 +107,9 @@ final class ContentSink {
 	/**
 	 * A movie's `movie_properties` after the node analysed its file. Legacy
 	 * writes the whole document, as before; the event carries only the keys an
-	 * analysis sets, and MAIN merges them into its own copy.
+	 * analysis sets, and MAIN merges them into its own copy. A node in mode 2
+	 * whose agent takes no event has no database to write: false, and the
+	 * caller analyses the movie again later.
 	 *
 	 * @param array<string, mixed> $rProperties
 	 */
@@ -105,6 +119,9 @@ final class ContentSink {
 			if (EventSpool::append('p0', [['type' => 'vod.analysis', 'd' => ['stream_id' => $rStreamID, 'props' => (object) $rProps]]])) {
 				return true;
 			}
+		}
+		if (NodeRole::refusesConnects()) {
+			return false;
 		}
 		return (bool) ($rDb ?? DatabaseFactory::get())->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?', json_encode($rProperties, JSON_UNESCAPED_UNICODE), $rStreamID);
 	}

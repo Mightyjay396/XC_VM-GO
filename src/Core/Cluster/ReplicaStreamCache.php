@@ -26,9 +26,7 @@ use XcVm\Core\Cache\FileCache;
  *   recordings  its `recordings` rows scheduled on the node (every column)
  *   children    the servers that relay it from the node
  *   etag, ver   the record's
- * <cache dir>/replica_streams/index   {streams: {id: {etag, ver, rec: [recording ids],
- *                                      ssid: its server_stream_id on the node or null}},
- *                                      unreadable: [ids whose record did not read]}
+ * <cache dir>/replica_streams/index   {streams: {id: meta()}, unreadable: [ids whose record did not read]}
  * ```
  *
  * The directory is 0700: an entry holds the stream's sources, which may
@@ -146,6 +144,27 @@ final class ReplicaStreamCache {
 			'arguments' => $rArguments,
 			'recordings' => $rRecordings,
 			'children' => array_values($rData['children'] ?? []),
+		];
+	}
+
+	/**
+	 * A built entry's line in the index: its record's `etag` and `ver`, its
+	 * recordings (`rec`), its `server_stream_id` on the node (`ssid`), and
+	 * what the lists walking the node's streams filter on (NodeStreams), so
+	 * they read an entry only when it may pass: its `on_demand` on the node
+	 * (`od`, null without a row there), its `streams.type` (`type`), its
+	 * type's `live` flag (`live`, null without a type), its `direct_source`
+	 * (`ds`) and `direct_proxy` (`dp`). As the entries, the last apply's.
+	 *
+	 * @param array<string, mixed> $rEntry
+	 * @return array{etag: string, ver: int, rec: list<int>, ssid: int|null, od: int|null, type: int|null, live: int|null, ds: int|null, dp: int|null}
+	 */
+	public static function meta(array $rEntry): array {
+		return [
+			'etag' => $rEntry['etag'], 'ver' => $rEntry['ver'], 'rec' => array_column($rEntry['recordings'], 'id'),
+			'ssid' => $rEntry['server']['server_stream_id'] ?? null, 'od' => $rEntry['server']['on_demand'] ?? null,
+			'type' => $rEntry['stream']['type'] ?? null, 'live' => $rEntry['type']['live'] ?? null,
+			'ds' => $rEntry['stream']['direct_source'] ?? null, 'dp' => $rEntry['stream']['direct_proxy'] ?? null,
 		];
 	}
 
@@ -287,9 +306,9 @@ final class ReplicaStreamCache {
 	}
 
 	/**
-	 * What the last apply built: stream id => {etag, ver, rec, ssid}.
+	 * What the last apply built: stream id => its meta().
 	 *
-	 * @return array<int, array{etag: string, ver: int, rec: list<int>, ssid?: int|null}>
+	 * @return array<int, array{etag: string, ver: int, rec: list<int>, ssid?: int|null, od?: int|null, type?: int|null, live?: int|null, ds?: int|null, dp?: int|null}>
 	 */
 	public static function index(): array {
 		$rIndex = self::store()->get(self::INDEX);
@@ -308,7 +327,7 @@ final class ReplicaStreamCache {
 	}
 
 	/**
-	 * @param array<int, array{etag: string, ver: int, rec: list<int>, ssid?: int|null}> $rStreams
+	 * @param array<int, array{etag: string, ver: int, rec: list<int>, ssid?: int|null, od?: int|null, type?: int|null, live?: int|null, ds?: int|null, dp?: int|null}> $rStreams
 	 * @param list<int> $rUnreadable
 	 */
 	public static function writeIndex(array $rStreams, array $rUnreadable = []): bool {

@@ -57,7 +57,10 @@ action.
   streams and the node's own store `StreamRuntime` is seeded) the runtime
   columns come from that store, which the writers keep with STREAMS on, and
   the seam keeps MAIN's statement for everywhere else. Do not reconnect
-  MAIN's database in a daemon where `StreamSource::local()` holds.
+  MAIN's database in a daemon where `StreamSource::local()` holds. A
+  runtime column MAIN writes itself for this node reaches that store only
+  where node code keeps it too (the recorder keeps the VOD MAIN attaches to
+  the node for a finished recording).
 - Node-side code reads settings through `SettingsManager`'s getters and servers
   through `ServerRepository`. A node in mode 2, or in mode 1 with the CONFIG
   flow on, boots from its replica (`ReplicaStage`) once an apply built its
@@ -93,7 +96,8 @@ action.
   once the replica and the node's own store answer), never run against an
   empty or partial answer. A stream-state write the agent did not take stays
   in the node's own store in mode 2 (`StreamStateWriter::resend()` sends it
-  later) instead of falling back to MAIN's row.
+  later) instead of falling back to MAIN's row; in mode 0 and 1 it falls back,
+  and the store lapses once MAIN's row has it (`StreamRuntime::lapse()`).
 - A file a node needs from MAIN (a custom off-air video, a module's archive,
   a binary MAIN pinned) is an artefact: MAIN names it in
   `Domain\Cluster\ArtefactRegistry` and grants it with a signed command

@@ -21,6 +21,13 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * files by come from the agent's whole section (ReplicaStreams): null when
  * the section is not whole, and the caller then skips that check.
  *
+ * The lists that walk every stream the node holds or keeps state for read
+ * a stream's cache entry and its state only when the stream caches' index
+ * (ReplicaStreamCache::meta, the last apply's copy of what they filter on)
+ * does not already rule it out, so a node holding many movies does not read
+ * each one's files for its few live or on-demand streams; a stream the index
+ * lacks (its record stored since) is read.
+ *
  * What the node cannot know stays as close as it can: a stream's relaying
  * children with a running feed (`attached`) are the children configured to
  * relay it from this node (its record's `children`), so an on-demand stream
@@ -35,6 +42,9 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 final class NodeStreams {
 	/** cron:vod's analysis step: rows per page. */
 	public const STEP = 1000;
+
+	/** @var list<int>|null cron:vod's run: the streams whose analysis is due, as analysis(0) found them */
+	private static ?array $rDue = null;
 
 	/**
 	 * cron:streams: this node's live streams that run or should (a pid, a
@@ -57,7 +67,11 @@ final class NodeStreams {
 			return $rDb->num_rows() > 0 ? self::remembered($rDb->get_rows()) : [];
 		}
 		$rOut = [];
+		$rIndex = ReplicaStreamCache::index();
 		foreach (StreamRuntime::ids() as $rID) {
+			if (!self::candidate($rIndex, $rID, ['live' => 1, 'ds' => 0])) {
+				continue;
+			}
 			[$rStream, $rServer, $rEntry] = self::entry($rID) ?? [null, null, null];
 			if ($rServer === null || $rEntry['type'] === null || $rEntry['type']['live'] !== 1 || $rStream['direct_source'] !== 0) {
 				continue;
@@ -103,7 +117,11 @@ final class NodeStreams {
 			return $rDb->num_rows() > 0 ? $rDb->get_rows() : [];
 		}
 		$rOut = [];
+		$rIndex = ReplicaStreamCache::index();
 		foreach (StreamRuntime::ids() as $rID) {
+			if (!self::candidate($rIndex, $rID, ['ds' => 1, 'dp' => 1])) {
+				continue;
+			}
 			[$rStream, $rServer] = self::entry($rID) ?? [null, null];
 			if ($rServer !== null && $rStream['direct_source'] === 1 && $rStream['direct_proxy'] === 1 && (int) $rServer['pid'] > 0) {
 				$rOut[] = ['id' => $rStream['id']];
@@ -124,7 +142,11 @@ final class NodeStreams {
 			return array_keys($rDb->get_rows(true, 'stream_id'));
 		}
 		$rOut = [];
+		$rIndex = ReplicaStreamCache::index();
 		foreach (ReplicaStreamCache::held() as $rID) {
+			if (!self::candidate($rIndex, $rID, ['od' => 1])) {
+				continue;
+			}
 			$rServer = ReplicaStreamCache::get($rID)['server'] ?? null;
 			if (is_array($rServer) && $rServer['on_demand'] === 1) {
 				$rOut[] = $rID;
@@ -145,7 +167,11 @@ final class NodeStreams {
 			return ConnectionTracker::activeOnDemandStreamIDs(intval(SERVER_ID));
 		}
 		$rOut = [];
+		$rIndex = ReplicaStreamCache::index();
 		foreach (StreamRuntime::ids() as $rID) {
+			if (!self::candidate($rIndex, $rID, ['od' => 1])) {
+				continue;
+			}
 			[, $rServer] = self::entry($rID) ?? [null, null];
 			if ($rServer !== null && $rServer['on_demand'] === 1 && $rServer['pid'] !== null && (int) $rServer['pid'] > 0) {
 				$rOut[] = $rID;
@@ -214,7 +240,11 @@ final class NodeStreams {
 			return $rDb->num_rows() > 0 ? self::remembered($rDb->get_rows()) : [];
 		}
 		$rOut = [];
+		$rIndex = ReplicaStreamCache::index();
 		foreach (ReplicaStreamCache::held() as $rID) {
+			if (!self::candidate($rIndex, $rID, ['type' => 3])) {
+				continue;
+			}
 			[$rStream, $rServer, $rEntry] = self::entry($rID) ?? [null, null, null];
 			if ($rServer !== null && $rStream['type'] === 3 && $rServer['parent_id'] === null) {
 				$rOut[] = array_merge($rStream, $rServer, $rEntry['profile'] ?? ['profile_id' => null, 'profile_name' => null, 'profile_options' => null]);
@@ -264,6 +294,10 @@ final class NodeStreams {
 		}
 		$rCount = 0;
 		foreach (StreamRuntime::ids() as $rID) {
+			// The store first: the few streams with an analysis due are the only ones whose entry is read.
+			if ((int) (StreamRuntime::get($rID)['to_analyze'] ?? 0) !== 1) {
+				continue;
+			}
 			[, $rServer] = self::entry($rID) ?? [null, null];
 			if ($rServer !== null && (int) $rServer['to_analyze'] === 1) {
 				$rCount++;
@@ -275,6 +309,10 @@ final class NodeStreams {
 	/**
 	 * cron:vod: a page (STEP rows from $rStep) of this node's movies and
 	 * episodes with an analysis due, each row `streams_servers` ⨝ `streams`.
+	 * From the replica and the store, a run's streams are found once, at its
+	 * first page (step 0), and each later page takes the next of them that
+	 * are still due, so a run reads each stream's state once rather than
+	 * once a page.
 	 *
 	 * @return list<array<string, mixed>>
 	 */
@@ -284,14 +322,23 @@ final class NodeStreams {
 			$rDb->query('SELECT t1.*,t2.* FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type AND t3.live = 0 WHERE t1.to_analyze = 1 AND t1.server_id = ? LIMIT ' . $rStep . ', ' . self::STEP, SERVER_ID);
 			return $rDb->num_rows() > 0 ? self::remembered($rDb->get_rows()) : [];
 		}
+		if ($rStep === 0 || self::$rDue === null) {
+			$rIndex = ReplicaStreamCache::index();
+			self::$rDue = [];
+			foreach (StreamRuntime::ids() as $rID) {
+				if ((int) (StreamRuntime::get($rID)['to_analyze'] ?? 0) === 1 && self::candidate($rIndex, $rID, ['live' => 0, 'ds' => 0])) {
+					self::$rDue[] = $rID;
+				}
+			}
+		}
 		$rOut = [];
-		foreach (StreamRuntime::ids() as $rID) {
+		foreach (array_slice(self::$rDue, $rStep, self::STEP) as $rID) {
 			[$rStream, $rServer, $rEntry] = self::entry($rID) ?? [null, null, null];
 			if ($rServer !== null && (int) $rServer['to_analyze'] === 1 && $rStream['direct_source'] === 0 && ($rEntry['type']['live'] ?? null) === 0) {
 				$rOut[] = array_merge($rServer, $rStream);
 			}
 		}
-		return array_slice($rOut, $rStep, self::STEP);
+		return $rOut;
 	}
 
 	/**
@@ -452,6 +499,28 @@ final class NodeStreams {
 			return null;
 		}
 		return [StreamSource::stream($rStreamID, $rEntry), StreamSource::server($rStreamID, $rEntry), $rEntry];
+	}
+
+	/**
+	 * May this stream pass a list's filter, by what the stream caches' index
+	 * copied from its record at the last apply (ReplicaStreamCache::meta)? A
+	 * stream the index lacks, or a key its line does not have (an index
+	 * written before it), may: its entry is read.
+	 *
+	 * @param array<int, array<string, mixed>> $rIndex
+	 * @param array<string, int> $rWhere meta key => the value it must hold
+	 */
+	private static function candidate(array $rIndex, int $rID, array $rWhere): bool {
+		$rMeta = $rIndex[$rID] ?? null;
+		if (!is_array($rMeta)) {
+			return true;
+		}
+		foreach ($rWhere as $rKey => $rValue) {
+			if (array_key_exists($rKey, $rMeta) && $rMeta[$rKey] !== $rValue) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**

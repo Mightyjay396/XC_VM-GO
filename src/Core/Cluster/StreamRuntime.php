@@ -21,7 +21,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * config/cluster/runtime/          0700, the node's user (the agent's directory's owner)
  *   .lock                          the writers and the seed take it (flock)
  *   seeded                         {"at", "server_id", "streams"}: the store is whole
- *   unsent                         an entry holds what the agent did not take (resend())
+ *   generation                     a count every kept write and every lapse bumps (seed())
+ *   unsent                         {"at", "token"}: an entry holds what the agent did not take (resend())
  *   streams/<id>.json              {"id", "ssid", "fields": {column: value}, "unsent": [columns]}
  *   recordings/<id>.json           {"id", "status"}
  *   .<name>.<pid>.tmp              a write in progress
@@ -39,7 +40,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * - **Bounded.** An entry per stream and per recording the node holds:
  *   cron:cleanup prunes the others (prune()), at most MAX_STREAMS and
  *   MAX_RECORDINGS in any case, each value at most MAX_VALUE (what MAIN's
- *   column holds). A write past a bound is not kept.
+ *   column holds). A write past a bound is not kept, and a node whose rows
+ *   on MAIN pass MAX_STREAMS is not seeded.
  * - **Owned by the node's user.** Written as the owner of the agent's
  *   directory (xc_vm); a root process switches to that user first
  *   (SettingsAudit::asAgentUser) and keeps nothing when it cannot.
@@ -49,12 +51,13 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * **Whole or not used.** A reader takes the store only once it is seeded
  * (ready()): a node that switches STREAMS on has run its streams with MAIN's
  * row, so its first CLI reader then copies that row once (seed(), mode 1:
- * one counted connect), under the lock the writers take, once the agent has
- * delivered every event the node spooled (the P0 lane empty) so that row
- * holds all the node wrote. A write made while STREAMS is off goes to MAIN's
- * row alone, so it lapses the store (lapse()): the next reader seeds again.
- * A node in mode 2 cannot seed; its readers keep MAIN's database, which
- * refuses them, until it is seeded in mode 1.
+ * one counted connect), once the agent has delivered every event the node
+ * spooled (the P0 lane empty) so that row holds all the node wrote, and
+ * only if no write landed while it read. A write that goes to MAIN's row
+ * alone (STREAMS off, or the agent took no event in mode 0 or 1) lapses the
+ * store once it landed (lapse()): the next reader seeds again. A node in
+ * mode 2 cannot seed; its readers keep MAIN's database, which refuses them,
+ * until it is seeded in mode 1.
  */
 final class StreamRuntime {
 	/** The `streams` columns the node keeps besides StreamStateWriter::STATE_FIELDS: its workers' pids. */
@@ -75,13 +78,21 @@ final class StreamRuntime {
 	/** How long the seed waits for the writers' lock, in seconds. */
 	public const SEED_WAIT = 2.0;
 
+	/** A process whose seed failed tries again after this many seconds (each try may connect to MAIN's database). */
+	public const SEED_RETRY = 30;
+
 	private const SEEDED = 'seeded';
 
 	private const UNSENT = 'unsent';
 
+	private const GENERATION = 'generation';
+
 	private const LOCK = '.lock';
 
 	private static ?string $rDir = null;
+
+	/** When this process's last seed failed, or null. */
+	private static ?int $rSeedFailed = null;
 
 	/** @var array<int, int> server_stream_id => stream id, from the rows this process read */
 	private static array $rSsids = [];
@@ -97,6 +108,7 @@ final class StreamRuntime {
 		self::$rDir = $rDir;
 		self::$rSsids = [];
 		self::$rIndexSsids = null;
+		self::$rSeedFailed = null;
 	}
 
 	/** Tests: smaller bounds (streams, recordings, a value's bytes); null restores them. */
@@ -115,11 +127,12 @@ final class StreamRuntime {
 
 	/**
 	 * Keep what a writer reports about one of this node's streams, and hand
-	 * it on ($rSend: the agent's event), both under the store's lock, so no
-	 * seed runs between the two. $rKey names the row as the event does:
-	 * `{stream_id, server_id?}` or `{ssid}`; another server's row is not the
-	 * node's to keep. The fields $rSend did not take stay marked unsent, for
-	 * resend().
+	 * it on ($rSend: the agent's event), both under the store's lock. $rKey
+	 * names the row as the event does: `{stream_id, server_id?}` or `{ssid}`;
+	 * another server's row is not the node's to keep. In mode 2 the fields
+	 * $rSend did not take stay marked unsent, for resend(); elsewhere the
+	 * writer then writes MAIN's row itself (and lapses the store), so nothing
+	 * is left to resend.
 	 *
 	 * @param array<string, int> $rKey
 	 * @param array<string, mixed> $rFields StreamStateWriter::STATE_FIELDS and WORKER_FIELDS
@@ -132,7 +145,7 @@ final class StreamRuntime {
 		$rKept = self::locked(static function () use ($rKey, $rFields, $rSend, &$rSent, &$rID): bool {
 			$rID = self::streamOfKey($rKey);
 			$rSent = (bool) $rSend();
-			return is_int($rID) && self::merge($rID, $rKey['ssid'] ?? null, $rFields, $rSent);
+			return is_int($rID) && self::merge($rID, $rKey['ssid'] ?? null, $rFields, $rSent || !NodeRole::refusesConnects());
 		});
 		if ($rSent === null) {
 			// The store is out of reach (no directory, or root could not switch).
@@ -163,11 +176,12 @@ final class StreamRuntime {
 	/**
 	 * A recording's status was written while the store does not follow
 	 * (STREAMS off): MAIN's row has it, so the node's own is no longer the
-	 * latest.
+	 * latest. Under the store's lock, as the node's user.
 	 */
 	public static function forgetRecording(int $rRecordingID): void {
 		$rFile = self::dir() . 'recordings/' . $rRecordingID . '.json';
-		if (is_file($rFile)) {
+		// Out of the lock's reach (root could not switch): gone all the same.
+		if (is_file($rFile) && !self::locked(static fn (): bool => @unlink($rFile))) {
 			@unlink($rFile);
 		}
 	}
@@ -254,7 +268,8 @@ final class StreamRuntime {
 	 * process of a node that may still reach MAIN's database (mode 1)
 	 * seeds it here the first time; a streaming request never does (it
 	 * reads MAIN's database until a CLI process has), and a node in mode 2
-	 * cannot.
+	 * cannot. A process whose seed failed does not try again for
+	 * SEED_RETRY seconds.
 	 */
 	public static function ready(): bool {
 		if (self::seeded()) {
@@ -263,35 +278,66 @@ final class StreamRuntime {
 		if (PHP_SAPI !== 'cli' || !self::keeps() || NodeRole::refusesConnects()) {
 			return false;
 		}
-		return self::seed();
+		if (self::$rSeedFailed !== null && time() - self::$rSeedFailed < self::SEED_RETRY) {
+			return false;
+		}
+		$rSeeded = self::seed();
+		self::$rSeedFailed = $rSeeded ? null : time();
+		return $rSeeded;
 	}
 
 	/**
 	 * Copy this node's runtime state from MAIN's database into the store:
 	 * its `streams_servers` rows' runtime columns and the pids of the
-	 * workers it runs. Under the writers' lock, and only while the agent
-	 * takes events and has delivered every one the node spooled (the P0
-	 * lane empty), so MAIN's rows hold all the node wrote before, and no
-	 * write lands between the read and the copy. An entry left from an
-	 * earlier seed and not in MAIN's rows goes. The recordings' statuses are
-	 * not copied: the record carries MAIN's. False when it could not seed
-	 * (the lock busy, the agent stopped, events still pending, MAIN's
-	 * database not answering): the readers then keep MAIN's database.
+	 * workers it runs. Only while the agent takes events and has delivered
+	 * every one the node spooled (the P0 lane empty), so MAIN's rows hold all
+	 * the node wrote before, and nothing is left unsent. MAIN's rows are read
+	 * outside the store's lock, so a slow database never holds up a writer;
+	 * the copy is made under it, only if no write was kept and the store did
+	 * not lapse since the read began (its generation unchanged) and nothing
+	 * is pending again. An entry left from an earlier seed and not in MAIN's
+	 * rows goes. The recordings' statuses are not copied: the record carries
+	 * MAIN's. False when it could not seed (the lock busy, the agent stopped,
+	 * events pending or unsent, MAIN's database not answering, a write since
+	 * the read, more rows than MAX_STREAMS): the readers then keep MAIN's
+	 * database.
 	 */
 	public static function seed(?object $rDb = null): bool {
 		if (!defined('SERVER_ID') || !EventSpool::agentAlive()) {
 			return false;
 		}
 		$rServerID = (int) SERVER_ID;
-		return self::locked(static function () use ($rDb, $rServerID): bool {
+		// The generation before the read (the directory made first, so a
+		// write's lapse finds the store).
+		$rGeneration = null;
+		$rReachable = self::locked(static function () use (&$rGeneration): bool {
+			$rGeneration = self::generation();
+			return true;
+		}, self::SEED_WAIT);
+		if (!$rReachable) {
+			return false;
+		}
+		if (self::seeded()) {
+			return true;
+		}
+		if (!self::quiet()) {
+			return false;
+		}
+		$rRows = self::mainRows($rDb, $rServerID);
+		if ($rRows === null) {
+			return false;
+		}
+		$rMax = self::$rLimits['streams'] ?? self::MAX_STREAMS;
+		if (count($rRows) > $rMax) {
+			error_log('XC_VM: stream state not seeded on this node: ' . count($rRows) . ' streams with state, more than ' . $rMax);
+			return false;
+		}
+		return self::locked(static function () use ($rRows, $rServerID, $rGeneration): bool {
 			if (self::seeded()) {
 				return true;
 			}
-			if ((glob(EventSpool::dir() . 'p0/*.ndjson') ?: []) !== []) {
-				return false;
-			}
-			$rRows = self::mainRows($rDb, $rServerID);
-			if ($rRows === null) {
+			// A write kept or a lapse since the read, or events pending again: MAIN's rows may lack it.
+			if (self::generation() !== $rGeneration || !self::quiet()) {
 				return false;
 			}
 			$rDir = self::dir();
@@ -312,12 +358,27 @@ final class StreamRuntime {
 	}
 
 	/**
-	 * A write the store did not keep: the store no longer follows this
-	 * node's streams, and is seeded again before a reader takes it.
+	 * A write that went to MAIN's row alone (STREAMS off, or the agent took
+	 * no event and the node wrote MAIN's database itself), called once that
+	 * write landed, or one the store did not keep: the store no longer
+	 * follows this node's streams, and is seeded again before a reader takes
+	 * it. Under the store's lock, as the node's user, so a seed that read
+	 * MAIN's rows before the write landed is not left marked whole: it sees
+	 * the generation move, or its marker goes here. A node with no store
+	 * (MAIN, mode 0) has nothing to lapse, and none is made.
 	 */
 	public static function lapse(): void {
+		if (!is_dir(self::dir())) {
+			return;
+		}
 		$rFile = self::dir() . self::SEEDED;
-		if (is_file($rFile)) {
+		$rDone = self::locked(static function () use ($rFile): bool {
+			self::bump();
+			@unlink($rFile);
+			return true;
+		});
+		// Out of the lock's reach (root could not switch): never left marked whole.
+		if (!$rDone) {
 			@unlink($rFile);
 		}
 	}
@@ -350,38 +411,48 @@ final class StreamRuntime {
 
 	/**
 	 * Hand on what the node kept but the agent did not take (it was
-	 * stopped): each entry's unsent columns, once, as $rSend spools them.
-	 * A column $rSend took is no longer unsent.
+	 * stopped, in mode 2): each entry's unsent columns, once, as $rSend
+	 * spools them. A column $rSend took is no longer unsent. The `unsent`
+	 * marker goes only after a walk that left nothing unsent, and only if no
+	 * write marked it again since the walk began (its token); a walk that
+	 * died on the way leaves it for the next.
 	 *
 	 * @param callable(int, array<string, mixed>): bool $rSend
 	 * @return int the entries handed on
 	 */
 	public static function resend(callable $rSend): int {
-		// Only when a write left something unsent; a write that does so marks it again.
+		// Only when a write left something unsent.
 		$rMarker = self::dir() . self::UNSENT;
-		if (!is_file($rMarker) || !self::locked(static fn (): bool => @unlink($rMarker))) {
+		if (!is_file($rMarker)) {
 			return 0;
 		}
+		$rToken = self::read($rMarker)['token'] ?? null;
 		$rDone = 0;
+		$rLeft = false;
 		foreach (self::ids() as $rID) {
 			$rFile = self::dir() . 'streams/' . $rID . '.json';
 			$rDoc = self::read($rFile, true);
 			if (!is_array($rDoc) || $rDoc['unsent'] === []) {
 				continue;
 			}
-			self::locked(static function () use ($rFile, $rID, $rSend, &$rDone): bool {
+			$rLeft = !self::locked(static function () use ($rFile, $rID, $rSend, &$rDone): bool {
 				$rDoc = self::read($rFile, true);
 				if (!is_array($rDoc) || $rDoc['unsent'] === []) {
 					return true;
 				}
 				if (!$rSend($rID, array_intersect_key($rDoc['fields'], array_flip($rDoc['unsent'])))) {
-					// Not taken this time: the next resend() looks again.
-					self::put(self::dir() . self::UNSENT, ['at' => time()]);
+					// Not taken this time: the marker stays, and the next resend() looks again.
 					return false;
 				}
 				$rDoc['unsent'] = [];
 				$rDone++;
 				return self::put($rFile, $rDoc);
+			}) || $rLeft;
+		}
+		if (!$rLeft) {
+			self::locked(static function () use ($rMarker, $rToken): bool {
+				$rNow = self::read($rMarker);
+				return !is_array($rNow) || ($rNow['token'] ?? null) !== $rToken || @unlink($rMarker);
 			});
 		}
 		return $rDone;
@@ -463,7 +534,8 @@ final class StreamRuntime {
 	/**
 	 * A write for this node's stream that the store did not keep: logged,
 	 * and on a node that may still reach MAIN's database the store lapses,
-	 * to be seeded again. A node in mode 2 cannot seed, so it keeps it.
+	 * to be seeded again. A node in mode 2 cannot seed, so it keeps it (the
+	 * readers may then miss that write: a known limit past MAX_STREAMS).
 	 *
 	 * @param array<string, int> $rKey
 	 */
@@ -475,7 +547,10 @@ final class StreamRuntime {
 	}
 
 	/**
+	 * Merge a write into its stream's entry, and bump the generation.
+	 *
 	 * @param array<string, mixed> $rFields
+	 * @param bool $rSent nothing to resend: the agent took it, or the writer writes MAIN's row itself
 	 */
 	private static function merge(int $rID, ?int $rSsid, array $rFields, bool $rSent): bool {
 		$rFile = self::dir() . 'streams/' . $rID . '.json';
@@ -497,7 +572,30 @@ final class StreamRuntime {
 		}
 		$rColumns = array_keys($rFields);
 		$rEntry['unsent'] = array_values($rSent ? array_diff($rEntry['unsent'], $rColumns) : array_unique(array_merge($rEntry['unsent'], $rColumns)));
-		return self::put($rFile, $rEntry) && ($rSent || self::put(self::dir() . self::UNSENT, ['at' => time()]));
+		// The marker before the entry: an entry holding unsent columns is never left without it.
+		if (!$rSent && !self::put(self::dir() . self::UNSENT, ['at' => time(), 'token' => bin2hex(random_bytes(8))])) {
+			return false;
+		}
+		if (!self::put($rFile, $rEntry)) {
+			return false;
+		}
+		self::bump();
+		return true;
+	}
+
+	/** The store's generation (under its lock): 0 before any write. */
+	private static function generation(): int {
+		return (int) @file_get_contents(self::dir() . self::GENERATION);
+	}
+
+	/** A write was kept or the store lapsed: a seed that read MAIN's rows before it must not copy them. Under the lock. */
+	private static function bump(): void {
+		@file_put_contents(self::dir() . self::GENERATION, (string) (self::generation() + 1));
+	}
+
+	/** Nothing the node spooled is still pending (the P0 lane empty), and nothing it kept is unsent. */
+	private static function quiet(): bool {
+		return (glob(EventSpool::dir() . 'p0/*.ndjson') ?: []) === [] && !is_file(self::dir() . self::UNSENT);
 	}
 
 	private static function defaultOf(string $rColumn, ?int $rType): mixed {

@@ -191,7 +191,10 @@ class CleanupCronJob implements CommandInterface {
 							if ($rResolution) {
 								$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 							}
-							ContentSink::movieProperties((int) $rRow['id'], $rMovieProperties, $db);
+							if (!ContentSink::movieProperties((int) $rRow['id'], $rMovieProperties, $db) && NodeRole::refusesConnects()) {
+								// Mode 2 and the agent took no event: checked again once it is back.
+								continue;
+							}
 							StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['bitrate' => $rBitrate, 'to_analyze' => 0, 'stream_status' => 0, 'stream_info' => json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible], $db);
 							StreamProcess::updateStream($rRow['id']);
 							echo 'VALID MOVIE' . "\n";

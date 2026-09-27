@@ -134,15 +134,14 @@ class StreamsCronJob implements CommandInterface {
 			echo 'XC_VM not running...' . "\n";
 		}
 
+		// What the node's store kept while the agent took no event (mode 2),
+		// first: a seed waits for it (a no-op without STREAMS or the agent).
+		StreamStateWriter::resend();
 		// This node's streams from its replica and its own store (mode 1 or 2
 		// with STREAMS on): an on-demand stream's viewers then come from the
 		// agent's registry with CONNECTIONS on, not MAIN's Redis.
 		$rLocal = StreamSource::local();
 		$rAgentViewers = $rLocal && AgentConnections::enabled();
-		if ($rLocal) {
-			// What the store kept while the agent took no event.
-			StreamStateWriter::resend();
-		}
 
 		if ($rRedis && !$rAgentViewers) {
 			RedisManager::ensureConnected();
