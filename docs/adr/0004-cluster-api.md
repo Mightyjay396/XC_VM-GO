@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes*, `cron:cluster` and MAIN's own FPM pools for the API are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills), root commands and artefacts. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry, connection limits enforced on MAIN, and the connection digest with snapshots and seeding; admission and the agent's HLS reaper are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Phase 8 (the data plane without bearer credentials) and Phase 9 (the licence lease, cutover and lockdown) are not; Phase 9 waits on the `xcvm_core` cluster API. No node runs mode 2 in production yet: `api_mode_allowed` is false and nothing promotes a node's mode.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -3078,6 +3078,18 @@ The shadow diff for `rtmp_ips` compares against the database, because an LB neve
 - When that cache is not there yet, the sync leaves iptables as it is rather than unblocking everything.
 
 **Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. On the blocklist path, the root flush still arrives as a `signals` row, until `node.root blocklist_sync` replaces it. The eighth Phase 7 increment built the refusal, and runs the flush from the `node.root` command MAIN already sent where it sends one.
+
+### The node system API's own inputs (Phase 4, fifth increment)
+
+`/api` is the legacy control plane, and the cluster command channel routes four of its actions to a node unchanged. Three took an input from MAIN and used it as given, which made MAIN's cluster-wide secret the only thing between a caller and the node's filesystem:
+
+- **Paths.** `scandir`, `scandir_recursive` and `getFile` took any absolute path. `getFile` asked only for an extension from its allowlist and `is_readable`. `ClusterSettings::pathAllowed()` now confines them to `lb_scan_roots` (default `/home/xc_vm/content`, `/mnt`, `/media`), which existed as a setting but had no reader. `getFile` passes `MAIN_HOME` as an extra root: its callers want VOD sources (scan roots) and panel files (certbot logs at `BIN_PATH`, subtitles, module archives). Both sides go through `realpath()`, so `..` and a symlink pointing out of a root are refused rather than string-matched, and a path that does not exist is refused.
+- **Probe targets.** `probe` handed its URL to ffprobe, which follows what it is given: the node's own loopback services, `169.254.169.254`, and `file:`/`concat:` for local reads. `NetworkUtils::probeTargetAllowed()` requires `http`/`https` and refuses a host that is — or resolves to — loopback, link-local, unspecified or multicast. Private LAN ranges stay allowed, because parents and proxies sit on them. The host is resolved here and again by ffprobe, so a hostile resolver can still answer differently between the two; the endpoint is reachable only with MAIN's secret from an allowlisted address, and the guard is about MAIN's own inputs, not about a DNS attacker.
+- **Process lines.** `get_pids` returned whole `ps` command lines. A producer's argv carries the source URL, and a relay's carries a viewer token, so provider credentials reached MAIN's admin UI and were stored in `cluster_commands.result`. It now runs `Redactor::redact()` over every line, as the docblock already claimed and as `stream.state` and the log sinks do.
+
+`NetworkUtils::ipInCIDR()` compared addresses with `ip2long()`, which returns `false` for IPv6: `false & mask` made **every** IPv6 address match **every** IPv6 range. It compares packed bytes now and refuses a mismatched family. It had no callers before this increment.
+
+**Not built:** `/xfile` (Phase 8) will inherit `serveFile`'s confinement, and the ticket that replaces `password=` in its URL is still Phase 8 work.
 
 ### Disaster recovery of MAIN's cluster keys
 
