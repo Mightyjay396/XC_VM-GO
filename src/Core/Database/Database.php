@@ -3,6 +3,7 @@
 namespace XcVm\Core\Database;
 
 use XcVm\Core\Cluster\ConnectAudit;
+use XcVm\Core\Cluster\LbDatabaseAccessException;
 use XcVm\Core\Logging\FileLogger;
 
 /**
@@ -126,13 +127,15 @@ class Database {
 	 * pass $graceful, NOT $migrate.
 	 *
 	 * On a load balancer every connect passes ConnectAudit::guard() first:
-	 * counted in cluster mode 1 and 2.
+	 * counted in cluster mode 1 and 2, refused in mode 2, graceful or not (a
+	 * refusal is not an outage to wait out).
 	 *
 	 * @param bool      $migrate  Connect to the `xc_vm_migrate` schema instead of
 	 *                            the configured one. Use only for migration code.
 	 * @param bool|null $graceful Return false on failure instead of exiting. When
 	 *                            null it defaults to $migrate (legacy behaviour).
 	 * @return bool True on success.
+	 * @throws LbDatabaseAccessException on a node in cluster mode 2 (api)
 	 */
 	public function db_connect(bool $migrate = false, ?bool $graceful = null) {
 		if ($graceful === null) {
@@ -196,8 +199,10 @@ class Database {
 	 * @param string $rUsername Username.
 	 * @param string $rPassword Password.
 	 * @return bool True on success, false on failure.
+	 * @throws LbDatabaseAccessException on a node in cluster mode 2 (api), as db_connect()
 	 */
 	public function db_explicit_connect(string $rHost, int $rPort, string $rDatabase, string $rUsername, string $rPassword) {
+		ConnectAudit::guard(ConnectAudit::SQL);
 		try {
 			$this->dbh = new \PDO('mysql:host=' . $this->normalizeHost($rHost) . ';port=' . $rPort . ';dbname=' . $rDatabase, $rUsername, $rPassword);
 		} catch (\PDOException $e) {

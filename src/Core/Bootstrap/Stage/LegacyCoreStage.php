@@ -5,7 +5,6 @@ namespace XcVm\Core\Bootstrap\Stage;
 use XcVm\Core\Bootstrap\BootState;
 use XcVm\Core\Bootstrap\BootStageInterface;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Init\LegacyInitializer;
 use XcVm\Infrastructure\Bootstrap\DomainDatabaseWiring;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -45,8 +44,7 @@ class LegacyCoreStage implements BootStageInterface {
 
 		// If cache was used and is incomplete — reconnect to DB
 		if ($this->cached && !SettingsManager::getBool('enable_cache')) {
-			$db = new DatabaseHandler();
-			DatabaseFactory::set($db);
+			$db = DatabaseFactory::open();
 			DomainDatabaseWiring::wire($db);
 		}
 

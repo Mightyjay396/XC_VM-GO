@@ -2,7 +2,6 @@
 
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
@@ -54,8 +53,7 @@ if (!empty($rRequestData['uitoken'])) {
 	generate404();
 }
 
-$db = new DatabaseHandler();
-DatabaseFactory::set($db);
+$db = DatabaseFactory::open();
 $rPassword = SettingsManager::get('live_streaming_pass');
 $rStreamID = intval($rRequestData['stream']);
 $rExtension = $rRequestData['extension'];

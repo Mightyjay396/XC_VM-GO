@@ -1,7 +1,6 @@
 <?php
 
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Server\ServerRepository;
@@ -35,8 +34,7 @@ if (!empty(RequestManager::get('uitoken'))) {
 	generate404();
 }
 
-$db = new DatabaseHandler();
-DatabaseFactory::set($db);
+$db = DatabaseFactory::open();
 $rStreamID = intval(RequestManager::get('stream'));
 $rStream = [];
 $db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 1 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);

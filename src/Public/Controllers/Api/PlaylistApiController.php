@@ -4,7 +4,6 @@ namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\GeoIP;
 use XcVm\Core\Util\NetworkUtils;
@@ -71,8 +70,7 @@ class PlaylistApiController extends BaseApiController {
 
 		if (NetworkUtils::startDownload('playlist', $rUserInfo, getmypid(), intval(SettingsManager::get('max_simultaneous_downloads')))) {
 			global $db;
-			$db = new DatabaseHandler();
-			DatabaseFactory::set($db);
+			$db = DatabaseFactory::open();
 			$rProxyIP = ($_SERVER['HTTP_X_IP'] ?? ($_SERVER['REMOTE_ADDR'] ?? ''));
 
 			if (!PlaylistGenerator::generate($rUserInfo, $rDeviceKey, $rOutputKey, $rTypeKey, $rNoCache, BlocklistService::isProxy($rProxyIP))) {

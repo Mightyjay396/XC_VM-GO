@@ -7,10 +7,12 @@ namespace XcVm\Core\Cluster;
  *
  * Every connection this node opens to MAIN's MySQL or Redis passes guard()
  * first (Database::db_connect, RedisManager::connect; the plan's section 10,
- * step 1). On a node in mode 1 or 2 it is counted, with its site. The
- * cluster API plan moves a node to mode 2 only after seven days with none
- * (the cutover gate), and the per-site counts show which code paths still
- * connect. MAIN and mode 0 nodes count nothing (NodeRole).
+ * step 1). On a node in mode 1 or 2 it is counted, with its site, and in
+ * mode 2 it is refused (LbDatabaseAccessException) before anything opens.
+ * The cluster API plan moves a node to mode 2 only after seven days with
+ * none (the cutover gate), and the per-site counts show which code paths
+ * still connect. MAIN and mode 0 nodes count nothing and refuse nothing
+ * (NodeRole).
  *
  * ```text
  * STORAGE_PATH/cluster/sql_audit/   (the plan's var/cluster/sql_audit/)
@@ -18,8 +20,8 @@ namespace XcVm\Core\Cluster;
  *                    "sites": {"sql path:line": n}}, at most MAX_SITES sites,
  *                    the rest under OTHER
  *   YYYYMMDD.ndjson  one line per connect: {"t": unix time, "k": "sql"|"redis",
- *                    "s": "path:line", "p": pid}; at most LOG_MAX_BYTES a
- *                    day, then connects are only counted
+ *                    "s": "path:line", "p": pid, "r": 1 when refused}; at
+ *                    most LOG_MAX_BYTES a day, then connects are only counted
  *   since            when this node's audit began (unix time)
  * ```
  *
@@ -30,7 +32,7 @@ namespace XcVm\Core\Cluster;
  * rewritten when a connect adds a site to its day or the file is a minute
  * old, and by cron:cleanup every hour. A root process hands every level and
  * file it makes to the agent's user, as SettingsAudit does. Nothing here
- * throws.
+ * throws but the refusal.
  *
  * Lives in Core: it ships to LBs, where Domain\Cluster does not.
  *
@@ -70,6 +72,7 @@ final class ConnectAudit {
 		'XcVm\\Core\\Database\\LazyDatabaseHandler',
 		'XcVm\\Infrastructure\\Database\\DatabaseFactory',
 		'XcVm\\Infrastructure\\Redis\\RedisManager',
+		'XcVm\\Core\\Cache\\RedisCache',
 		self::class,
 	];
 
@@ -98,12 +101,20 @@ final class ConnectAudit {
 
 	/**
 	 * A connect of $rKind to MAIN is about to be opened: count it where
-	 * NodeRole says so. Costs a read of the agent's flows.json when it does
-	 * not.
+	 * NodeRole says so, and refuse it on a node in mode 2. Costs a read of
+	 * the agent's flows.json when neither applies.
+	 *
+	 * @throws LbDatabaseAccessException on a node in mode 2 (api)
 	 */
 	public static function guard(string $rKind): void {
-		if (NodeRole::auditConnects()) {
-			self::record($rKind, self::site(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 16)));
+		$rRefused = NodeRole::refusesConnects();
+		if (!$rRefused && !NodeRole::auditConnects()) {
+			return;
+		}
+		$rSite = self::site(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 16));
+		self::record($rKind, $rSite, $rRefused);
+		if ($rRefused) {
+			throw new LbDatabaseAccessException($rKind, $rSite);
 		}
 	}
 
@@ -111,7 +122,7 @@ final class ConnectAudit {
 	 * Count one connect of $rKind at $rSite in today's file and log it.
 	 * Never throws: an audit must not break the connection it audits.
 	 */
-	public static function record(string $rKind, string $rSite): void {
+	public static function record(string $rKind, string $rSite, bool $rRefused = false): void {
 		$rDir = self::dir();
 		if ($rDir === null || !in_array($rKind, [self::SQL, self::REDIS], true)) {
 			return;
@@ -124,7 +135,7 @@ final class ConnectAudit {
 			$rDay = $rDir . gmdate('Ymd', $rNow);
 			$rKey = self::siteKey($rKind, $rSite);
 			$rNew = self::count($rDay . '.json', $rKind, $rKey);
-			self::log($rDay . '.ndjson', ['t' => $rNow, 'k' => $rKind, 's' => substr($rKey, strlen($rKind) + 1), 'p' => getmypid()]);
+			self::log($rDay . '.ndjson', ['t' => $rNow, 'k' => $rKind, 's' => substr($rKey, strlen($rKind) + 1), 'p' => getmypid()] + ($rRefused ? ['r' => 1] : []));
 			$rAgentDir = SettingsAudit::agentDir();
 			if ($rAgentDir === null) {
 				return;

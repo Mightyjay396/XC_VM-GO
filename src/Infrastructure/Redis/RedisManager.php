@@ -3,6 +3,7 @@
 namespace XcVm\Infrastructure\Redis;
 
 use XcVm\Core\Cluster\ConnectAudit;
+use XcVm\Core\Cluster\LbDatabaseAccessException;
 use XcVm\Infrastructure\Signal\SignalQueue;
 
 /**
@@ -117,10 +118,12 @@ class RedisManager {
 	 *
 	 * If $rRedis is already a live connection, returns it as-is.
 	 * Otherwise creates a new connection via \XC_VM::redis_connect(), past
-	 * ConnectAudit::guard(): counted on a node in cluster mode 1 or 2.
+	 * ConnectAudit::guard(): counted on a node in cluster mode 1 or 2,
+	 * refused in mode 2.
 	 *
 	 * @param \Redis|null $rRedis Existing \Redis instance or null.
 	 * @return \Redis|null Connected \Redis instance, or null on failure.
+	 * @throws LbDatabaseAccessException on a node in cluster mode 2 (api)
 	 */
 	public static function connect(?\Redis $rRedis = null): ?\Redis {
 		if (is_object($rRedis)) {

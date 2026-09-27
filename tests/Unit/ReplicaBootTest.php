@@ -300,11 +300,13 @@ final class ReplicaBootTest extends TestCase {
 	public function testAModeTwoNodeBootsFromItsReplicaOnceAnApplyBuiltIt(): void {
 		$this->flows(2);
 		$this->rFixture->node();
-		// Rebooted, nothing applied yet: through MAIN's database, the CLI and the web API alike.
-		[, , $rConnects] = $this->child(['--list']);
-		$this->assertSame(['sql'], $rConnects, 'nothing to boot from yet');
-		[, , $rConnects] = $this->child(['webapi'], $this->dumpScript());
-		$this->assertSame(['sql'], $rConnects, 'nor for the web API');
+		// Rebooted, nothing applied yet: nothing to boot from, and MAIN's database
+		// is refused (DbConnectRefusalTest), the CLI and the web API alike.
+		[, $rOut, $rConnects] = $this->child(['--list']);
+		$this->assertSame([], $rConnects, 'nothing to boot from yet: the boot fails closed');
+		$this->assertStringNotContainsString('cluster:apply', $rOut, 'the process ends at its boot');
+		[, $rOut, $rConnects] = $this->child(['webapi'], $this->dumpScript());
+		$this->assertSame([[], null], [$rConnects, json_decode($rOut, true)], 'nor for the web API');
 
 		[$rCode, $rOut] = $this->child(['cluster:apply', '--from-disk']);
 		$this->assertSame(0, $rCode, $rOut);

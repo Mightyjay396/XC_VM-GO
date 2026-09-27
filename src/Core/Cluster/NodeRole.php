@@ -12,11 +12,12 @@ use XcVm\Domain\Server\ServerRepository;
  * state (table rotation, the TMDb crawl, the signals purge, the update check)
  * ask here and do nothing on an LB. Then what a connect to MAIN's MySQL or
  * Redis meets on this node (plan, section 10, step 1; ConnectAudit): counted
- * in mode 1 and 2. The node's mode and flow bits are NodeFlows'.
+ * in mode 1 and 2, refused in mode 2. The node's mode and flow bits are
+ * NodeFlows'.
  *
  * An unknown answer to isMain() (servers cache and DB both unavailable) reads
  * as "not MAIN": every caller guards destructive or cluster-wide work, so
- * skipping one run is the safe side. The connect answer needs neither.
+ * skipping one run is the safe side. The connect answers need neither.
  *
  * @package XC_VM_Core_Cluster
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -34,6 +35,9 @@ final class NodeRole {
 
 	/** A manual trace (XCVM_CONNECT_AUDIT=1 or the `enabled` file), read once per process. */
 	private static ?bool $rTrace = null;
+
+	/** Tests: mainBuild()'s answer. */
+	private static ?bool $rMainBuild = null;
 
 	public static function isMain(): bool {
 		$rServers = self::$rServers !== null ? (self::$rServers)() : ServerRepository::getAll();
@@ -57,10 +61,38 @@ final class NodeRole {
 		return self::$rTrace || NodeFlows::declared()['mode'] >= 1;
 	}
 
+	/**
+	 * Is every connect to MAIN's MySQL/Redis refused (plan, section 10, step
+	 * 1: LbDatabaseAccessException)? On a node in mode 2 (api) that MAIN
+	 * counts as active or quarantined, as its agent's flows.json says: the
+	 * node ReplicaBoot boots from its replica. Read at each connect, without
+	 * a database. Never on MAIN, even with a stray flows.json: MAIN's build
+	 * ships the cluster API, which the load balancer build never does.
+	 */
+	public static function refusesConnects(): bool {
+		return ReplicaBoot::wanted() && !self::mainBuild();
+	}
+
+	/**
+	 * Is this MAIN's build? It ships MAIN's cluster API endpoint
+	 * (`Public/cluster/index.php`), which the load balancer build strips
+	 * (tools/ci/verify-lb-archive.sh fails the build otherwise). Known from
+	 * the files alone, so it holds while the servers and the database are
+	 * out of reach.
+	 */
+	public static function mainBuild(): bool {
+		return self::$rMainBuild ?? (defined('MAIN_HOME') && is_file(MAIN_HOME . 'Public/cluster/index.php'));
+	}
+
 	/** Tests: force auditConnects()'s answer; null lets the node's mode decide again. */
 	public static function resetAudit(?bool $rValue = null): void {
 		self::$rAudit = $rValue;
 		self::$rTrace = null;
+	}
+
+	/** Tests: force mainBuild()'s answer; null reads the files again. */
+	public static function useMainBuild(?bool $rMain): void {
+		self::$rMainBuild = $rMain;
 	}
 
 	/**

@@ -98,7 +98,7 @@ final class ConnectAuditTest extends TestCase {
 		$this->assertSame(1, $rDay['sites']['sql ' . __FILE__ . ':' . $rLine2]);
 		$rLog = $this->log();
 		$this->assertCount(3, $rLog);
-		$this->assertSame(['t' => self::NOW, 'k' => 'sql', 's' => __FILE__ . ':' . $rLine, 'p' => getmypid()], $rLog[0], 'one line per connect');
+		$this->assertSame(['t' => self::NOW, 'k' => 'sql', 's' => __FILE__ . ':' . $rLine, 'p' => getmypid()], $rLog[0], 'not refused: no `r`');
 		$this->assertEquals(['sql' => 2, 'redis' => 1, 'sites' => $rDay['sites']], ConnectAudit::summary(7, self::NOW), 'the same, ranked');
 	}
 
