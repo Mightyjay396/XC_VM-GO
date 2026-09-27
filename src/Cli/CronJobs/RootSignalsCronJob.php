@@ -10,6 +10,7 @@ use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -219,11 +220,28 @@ class RootSignalsCronJob implements CommandInterface {
 		return $rNew;
 	}
 
+	/**
+	 * Does MAIN send this node's root actions as signed `node.root` commands
+	 * (the COMMANDS flow on, and root's own pin of the panel key in place)?
+	 * MAIN then sends the blocklist flush that way too (NodeActions::send,
+	 * ClusterRoute::root), and cluster:root runs it through executeAction()
+	 * within a second; this cron no longer polls the signals table for it.
+	 * A flush row queued before (or while MAIN lacked the pin) still runs,
+	 * from the signals loop below.
+	 */
+	public static function rootCommandsFromMain(): bool {
+		return NodeFlows::on(NodeFlows::COMMANDS) && RootPin::read() !== null;
+	}
+
 	private function loadCron(): void {
 		global $db;
 		$rServers = ServerRepository::getAll(true);
-		$db->query("SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{\"action\":\"flush\"}' AND `cache` = 0;", SERVER_ID);
-		if ($db->num_rows() > 0) {
+		$rFlush = false;
+		if (!self::rootCommandsFromMain()) {
+			$db->query("SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{\"action\":\"flush\"}' AND `cache` = 0;", SERVER_ID);
+			$rFlush = $db->num_rows() > 0;
+		}
+		if ($rFlush) {
 			echo "Flushing IP's...";
 			$this->flushIPs();
 			$this->saveiptables();
@@ -648,6 +666,15 @@ class RootSignalsCronJob implements CommandInterface {
 	 */
 	public function executeAction(array $rData, array $rServers, object $db): void {
 		switch ($rData['action'] ?? '') {
+			case 'flush':
+				// The blocklist flush; with the CONFIG flow on, the minute's sync
+				// then follows the replica, which drops the flushed addresses at
+				// the agent's next `config` pull.
+				echo "Flushing IP's...\n";
+				$this->flushIPs();
+				$this->saveiptables();
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'FLUSH', 'Flushed blocked IP\\'s from iptables.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				break;
 			case 'reboot':
 				echo 'Rebooting system...' . "\n";
 				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'REBOOT', 'System rebooted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
