@@ -97,12 +97,13 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('cluster_last_seen'); ?></th>
                     <th><?= $language::get('cluster_agent'); ?></th>
                     <th title="<?= $language::get('cluster_settings_misses_help'); ?>"><?= $language::get('cluster_settings_misses'); ?></th>
+                    <th title="<?= $language::get('cluster_main_connects_help'); ?>"><?= $language::get('cluster_main_connects'); ?></th>
                     <th><?= $language::get('actions'); ?></th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($clusterNodes)): ?>
-                    <tr><td colspan="16" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
+                    <tr><td colspan="17" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($clusterNodes as $rNode): ?>
                     <tr>
@@ -152,6 +153,25 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                                     <ul class="list-unstyled small font-monospace mb-0">
                                         <?php foreach ($rNode['settings_misses'] as $rKey => $rCount): ?>
                                             <li><?= htmlspecialchars((string) $rKey, ENT_QUOTES); ?> × <?= (int) $rCount; ?></li>
+                                        <?php endforeach; ?>
+                                    </ul>
+                                </details>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php $rConnects = $rNode['connects'] ?? null; ?>
+                            <?php if ((int) $rNode['mode'] < 1 || !is_array($rConnects)): ?>
+                                <span class="text-body-secondary">—</span>
+                            <?php else: ?>
+                                <?php $rNone = $rConnects['sql_connects'] === 0 && $rConnects['redis_connects'] === 0; ?>
+                                <details>
+                                    <summary><span class="badge bg-label-<?= $rNone ? 'success' : 'warning'; ?>">SQL <?= (int) $rConnects['sql_connects']; ?> · Redis <?= (int) $rConnects['redis_connects']; ?></span></summary>
+                                    <?php if ($rConnects['connects_since'] !== null): ?>
+                                        <div class="small text-body-secondary"><?= $language::get('cluster_connects_since'); ?> <?= $rWhen($rConnects['connects_since']); ?></div>
+                                    <?php endif; ?>
+                                    <ul class="list-unstyled small font-monospace mb-0">
+                                        <?php foreach ($rConnects['sites'] as $rSite => $rCount): ?>
+                                            <li><?= htmlspecialchars((string) $rSite, ENT_QUOTES); ?> × <?= (int) $rCount; ?></li>
                                         <?php endforeach; ?>
                                     </ul>
                                 </details>

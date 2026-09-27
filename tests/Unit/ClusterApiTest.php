@@ -10,6 +10,7 @@ use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
+use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\SettingsAudit;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
@@ -498,6 +499,34 @@ final class ClusterApiTest extends TestCase {
 		$this->reply($rRes, $rCtx, $rKeys);
 		$this->assertSame('{"settings_misses":{}}', NodeRegistry::byServer(self::SID)['audit']);
 		$this->assertSame([], ClusterAdmin::nodes([], 30)[0]['settings_misses']);
+		$this->assertNull(ClusterAdmin::nodes([], 30)[0]['connects'], 'no connect counters reported');
+	}
+
+	public function testAHeartbeatKeepsTheNodesConnectCounters(): void {
+		$rKeys = $this->active();
+		$rSites = ['sql Public/stream/live.php:61' => 10, 'sql Core/Bootstrap/Stage/DatabaseStage.php:27' => 2, 'redis Streaming/X.php:1' => 0, 'mysql Streaming/X.php:1' => 3, "sql \x01.php:1" => 1, 'redis ' . str_repeat('a', ConnectAudit::MAX_SITE_LEN) => 1, '*' => 1];
+		$rAudit = ['settings_misses' => [], 'sql_connects' => 12, 'redis_connects' => 0, 'sites' => $rSites, 'connects_since' => 1800000000];
+		[$rRes, $rCtx] = $this->call('heartbeat', ['audit' => $rAudit], 1, $rKeys);
+		$this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame('{"settings_misses":{},"sql_connects":12,"redis_connects":0,"sites":{"sql Public/stream/live.php:61":10,"sql Core/Bootstrap/Stage/DatabaseStage.php:27":2,"*":1},"connects_since":1800000000}', NodeRegistry::byServer(self::SID)['audit'], 'only sites a node writes, most first');
+		$rNode = ClusterAdmin::nodes([], 30)[0];
+		$this->assertSame(['sql_connects' => 12, 'redis_connects' => 0, 'sites' => ['sql Public/stream/live.php:61' => 10, 'sql Core/Bootstrap/Stage/DatabaseStage.php:27' => 2, '*' => 1], 'connects_since' => 1800000000], $rNode['connects'], 'on the Cluster Nodes page');
+		$this->assertSame([], $rNode['settings_misses']);
+
+		// Counters that are not counts: the settings misses are kept, the connect report is not.
+		foreach ([['sql_connects' => -1], ['redis_connects' => '0'], ['sites' => 'x'], ['connects_since' => 'yesterday']] as $rBad) {
+			$rDoc = NodeAudit::normalise(array_merge($rAudit, $rBad));
+			$this->assertSame(isset($rBad['connects_since']) ? ['settings_misses', 'sql_connects', 'redis_connects', 'sites'] : ['settings_misses'], array_keys((array) $rDoc), json_encode($rBad));
+		}
+		// Past MAX_SITES sites, the least fold into "*".
+		$rMany = [];
+		for ($i = 0; $i < ConnectAudit::MAX_SITES + 3; $i++) {
+			$rMany['sql S' . $i . '.php:1'] = $i + 1;
+		}
+		$rDoc = NodeAudit::normalise(['settings_misses' => [], 'sql_connects' => 999, 'redis_connects' => 0, 'sites' => $rMany]);
+		$this->assertCount(ConnectAudit::MAX_SITES + 1, $rDoc['sites']);
+		$this->assertSame(1 + 2 + 3, $rDoc['sites']['*']);
+		$this->assertArrayNotHasKey('connects_since', $rDoc, 'an agent\'s report without it: none');
 	}
 
 	public function testAnAuditOverTheCapKeepsTheMostMissed(): void {
@@ -509,7 +538,7 @@ final class ClusterApiTest extends TestCase {
 		$this->assertCount(SettingsAudit::MAX_KEYS + 1, $rDoc['settings_misses']);
 		$this->assertSame(sprintf('key_%03d', SettingsAudit::MAX_KEYS + 2), array_key_first($rDoc['settings_misses']));
 		$this->assertSame(5 + 1 + 2 + 3, $rDoc['settings_misses']['*'], 'the three least missed, with the node\'s own rest');
-		$this->assertSame(['settings_misses'], array_keys($rDoc), 'members MAIN does not know yet are not kept');
+		$this->assertSame(['settings_misses'], array_keys($rDoc), 'a connect report without its other counters, and members MAIN does not know, are not kept');
 		$this->assertNull(NodeAudit::normalise(null));
 		$this->assertNull(NodeAudit::normalise(['sql_connects' => 1]));
 		// The bound is on the shortest encoding, as the agent measures audit.json: the "path:line" sites fit although escaped slashes would not.
