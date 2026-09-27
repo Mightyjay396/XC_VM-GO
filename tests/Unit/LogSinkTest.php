@@ -89,6 +89,30 @@ final class LogSinkTest extends TestCase {
 		}
 	}
 
+	public function testActivityRowsAlsoPointEachLineAtItsNewestRow(): void {
+		$rDb = new class() {
+			/** @var list<array{string, list<mixed>}> */
+			public array $rQueries = [];
+			public function query(string $rSql, mixed ...$rParams): bool {
+				$this->rQueries[] = [$rSql, $rParams];
+				return true;
+			}
+			public function last_insert_id(): int {
+				return 100;
+			}
+		};
+		$this->assertTrue(LogSink::write('activity', [
+			['server_id' => 1, 'user_id' => 7, 'stream_id' => 3, 'user_ip' => '192.0.2.7', 'date_end' => 50],
+			['server_id' => 1, 'user_id' => 0, 'stream_id' => 4, 'user_ip' => '192.0.2.8'],
+		], $rDb));
+
+		$this->assertStringStartsWith('INSERT INTO `lines_activity` (`server_id`,`proxy_id`,`user_id`,', $rDb->rQueries[0][0]);
+		// Only the line that exists is pointed at its row, and at the right id.
+		$this->assertStringContainsString('`last_activity` = CASE `id` WHEN 7 THEN 100 END', $rDb->rQueries[1][0]);
+		$this->assertStringEndsWith('WHERE `id` IN (7);', $rDb->rQueries[1][0]);
+		$this->assertSame(['192.0.2.7', '{"date_end":50,"stream_id":3}'], $rDb->rQueries[1][1]);
+	}
+
 	public function testRedactorStripsCredentials(): void {
 		$this->assertSame('http://h/get.php?username=***&password=***&type=m3u', Redactor::redact('http://h/get.php?username=bob&password=s3cret&type=m3u'));
 		$this->assertSame('http://h:80/live/***/***/12.ts', Redactor::redact('http://h:80/live/bob/s3cret/12.ts'));

@@ -36,6 +36,7 @@ final class LogSink {
 		'panel_error'  => ['panel_logs', ['server_id', 'type', 'log_message', 'log_extra', 'line', 'date', 'file', 'env', 'version', 'unique'], true],
 		'restream'     => ['detect_restream_logs', ['user_id', 'stream_id', 'ip', 'time'], false],
 		'syslog'       => ['mysql_syslog', ['server_id', 'type', 'error', 'username', 'ip', 'database', 'date'], false],
+		'activity'     => ['lines_activity', ['server_id', 'proxy_id', 'user_id', 'isp', 'external_device', 'stream_id', 'date_start', 'user_agent', 'user_ip', 'date_end', 'container', 'geoip_country_code', 'divergence', 'hmac_id', 'hmac_identifier'], false],
 	];
 
 	/**
@@ -138,9 +139,57 @@ final class LogSink {
 				}
 			}
 			$rSql = 'INSERT ' . ($rIgnore ? 'IGNORE ' : '') . 'INTO `' . $rTable . '` (`' . implode('`,`', $rColumns) . '`) VALUES ' . implode(',', array_fill(0, count($rChunk), $rTuple)) . ';';
-			$rOK = (bool) $rDb->query($rSql, ...$rParams) && $rOK;
+			$rWritten = (bool) $rDb->query($rSql, ...$rParams);
+			// Viewer activity is also each line's "last seen": the rows and that
+			// update belong together, wherever they are written from.
+			if ($rWritten && $rType === 'activity') {
+				self::lastActivity($rChunk, (int) $rDb->last_insert_id(), $rDb);
+			}
+			$rOK = $rWritten && $rOK;
 		}
 		return $rOK;
+	}
+
+	/**
+	 * Point each line at its newest activity row, as cron:activity did when it
+	 * built the INSERT itself. A multi-row INSERT reports its first id and the
+	 * rest follow consecutively. Lines are updated in id order so concurrent
+	 * nodes lock alike, and `updated` is kept so the line cache is not
+	 * rebuilt for it (it holds none of these columns).
+	 *
+	 * @param list<array<string, mixed>> $rRows One chunk, as it was inserted.
+	 */
+	private static function lastActivity(array $rRows, int $rFirstID, object $rDb): void {
+		if ($rFirstID <= 0) {
+			return;
+		}
+		$rLast = [];
+		foreach (array_values($rRows) as $i => $rRow) {
+			$rUserID = (int) ($rRow['user_id'] ?? 0);
+			if ($rUserID > 0) {
+				$rLast[$rUserID] = [$rFirstID + $i, $rRow];
+			}
+		}
+		if ($rLast === []) {
+			return;
+		}
+		ksort($rLast);
+
+		$rIPs = $rIDs = $rArrays = '';
+		$rIPParams = $rArrayParams = [];
+		foreach ($rLast as $rUserID => [$rActivityID, $rRow]) {
+			$rIPs .= ' WHEN ' . $rUserID . ' THEN ?';
+			$rIPParams[] = (string) ($rRow['user_ip'] ?? '');
+			$rIDs .= ' WHEN ' . $rUserID . ' THEN ' . $rActivityID;
+			$rArrays .= ' WHEN ' . $rUserID . ' THEN ?';
+			$rArrayParams[] = (string) json_encode(['date_end' => $rRow['date_end'] ?? null, 'stream_id' => $rRow['stream_id'] ?? null]);
+		}
+		$rDb->query(
+			'UPDATE `lines` SET `last_ip` = CASE `id`' . $rIPs . ' END, `last_activity` = CASE `id`' . $rIDs
+			. ' END, `last_activity_array` = CASE `id`' . $rArrays . ' END, `updated` = `updated` WHERE `id` IN ('
+			. implode(',', array_keys($rLast)) . ');',
+			...[...$rIPParams, ...$rArrayParams]
+		);
 	}
 
 	/**

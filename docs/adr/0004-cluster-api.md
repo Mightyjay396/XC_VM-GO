@@ -3142,6 +3142,18 @@ Six places still treated every node as MAIN, or MAIN as every node:
 
 **Not built:** MAIN does not push a node's queue to it; the node asks each pass, as it always has.
 
+### What a node in mode 2 still could not do (Phase 5, seventh increment)
+
+Three jobs still assumed the node had MAIN's database:
+
+- **Viewer activity.** `cron:activity` drains the node's `activity` spool into `lines_activity` and points each line at its newest row. It built that INSERT itself, so on a node whose LOGS flow is on nothing was sent, and in mode 2 the import died on the connect. `activity` is a `LogSink` type now, which makes it a redacted `log.activity` event on P1 that MAIN's ingest writes with the same insert. The `lines` update (`last_ip`, `last_activity`, `last_activity_array`) moved into `LogSink::insert()` beside the rows, because the rows and that update belong together wherever they are written from — the cron's own copy used `escape()` and hand-built SQL, the sink binds every value.
+- **`console.php status`.** The database section returned 1 on a mode 2 node, which skipped everything status does *locally*: the permissions, nginx's config, root's crontab, the file limits, the init-script cleanup. The dashboard tells admins to run `status`, and a node that never finished it is a node that does not boot right. It now says which mode it is in and carries on; `configureRedisLb` (which points the extension at MAIN's Redis) and the closing `xc_vm_version` UPDATE are skipped — the version reaches MAIN with the next inventory event, within the minute.
+- **`fanout_sync`.** Its candidate rows came from MAIN's Redis or `lines_live` through `DatabaseFactory::connect()`, so in mode 2 the daemon threw on every pass. On a node whose CONNECTIONS flow is on, the agent owns the registry and reconciles it against the fanout itself, so there is nothing here to close or drop: the pass only reports the rates it measures, and every uuid the fanout reports is this node's own — the rows it used to filter them against were MAIN's copy of the same thing. In mode 2 with CONNECTIONS off the pass is skipped, which is the "could not be read" answer the loop has always had.
+
+`admin/thumb` (which ships to LBs: the panel redirects the admin's browser to the node that holds a stream's thumbnails) opened MAIN's database for one `streams` join. It asks `StreamSource::streamRow()` instead — the same join, from the replica where that owns the streams — and opens nothing when it does.
+
+**Not built:** `scanner` (the on-demand check) still reads `streams`/`ondemand_check` and writes `ondemand_check` directly. The plan gives it a log type of its own (`log.ondemand_check`), which is the next increment.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

@@ -123,6 +123,11 @@ class LogImportCronJobsTest extends TestCase {
 		], $rOverride), array_flip($rUnset))));
 	}
 
+	/** The bound values of a recorded statement. @return list<mixed> */
+	private function paramsOf(string $rQuery): array {
+		return $this->db->params[array_search($rQuery, $this->db->queries, true)];
+	}
+
 	/** @return array<int, int> The `lines` UPDATE, as line id => last_activity. */
 	private function lastActivity(string $rQuery): array {
 		preg_match('/`last_activity` = CASE `id`(.*?) END/', $rQuery, $rCase);
@@ -147,18 +152,24 @@ class LogImportCronJobsTest extends TestCase {
 		$rInserts = $this->db->startingWith(self::ACTIVITY_INSERT);
 		$this->assertCount(1, $rInserts);
 		$this->assertSame(4, self::tuples($rInserts[0]));
-		$this->assertStringContainsString("('1','0','11','Example ISP','','7','1700000000','VLC/3.0','192.0.2.11','1700000060','ts','NL','0','','box')", $rInserts[0]);
-		$this->assertStringContainsString("('1','0','12','Example ISP','','7','1700000000','VLC/3.0','192.0.2.12','1700000060','ts','NL','0','','')", $rInserts[0], 'a missing key imports as empty');
+		// lines_activity goes through LogSink, which binds the values.
+		$rRows = array_chunk($this->paramsOf($rInserts[0]), 15);
+		$this->assertSame([1, 0, 13, 'Example ISP', '', 7, 1700000000, 'VLC/3.0', '192.0.2.13', 1700000060, 'ts', 'NL', 0, null, 'box'], $rRows[0]);
+		$this->assertSame([1, 0, 12, 'Example ISP', '', 7, 1700000000, 'VLC/3.0', '192.0.2.12', 1700000060, 'ts', 'NL', 0, null, null], $rRows[1], 'a missing key imports as NULL');
 
 		// One UPDATE, never an INSERT into `lines`: each line once, in id order, with its latest row (13 closed twice).
-		$rArray7 = '\'{\"date_end\":1700000060,\"stream_id\":7}\'';
-		$rArray8 = '\'{\"date_end\":1700000060,\"stream_id\":8}\'';
+		$rUpdates = $this->db->startingWith(self::LINES_UPDATE);
 		$this->assertSame(
-			["UPDATE `lines` SET `last_ip` = CASE `id` WHEN 11 THEN '192.0.2.11' WHEN 12 THEN '192.0.2.12' WHEN 13 THEN '192.0.2.113' END, "
+			['UPDATE `lines` SET `last_ip` = CASE `id` WHEN 11 THEN ? WHEN 12 THEN ? WHEN 13 THEN ? END, '
 				. '`last_activity` = CASE `id` WHEN 11 THEN 103 WHEN 12 THEN 101 WHEN 13 THEN 102 END, '
-				. '`last_activity_array` = CASE `id` WHEN 11 THEN ' . $rArray7 . ' WHEN 12 THEN ' . $rArray7 . ' WHEN 13 THEN ' . $rArray8 . ' END, '
+				. '`last_activity_array` = CASE `id` WHEN 11 THEN ? WHEN 12 THEN ? WHEN 13 THEN ? END, '
 				. '`updated` = `updated` WHERE `id` IN (11,12,13);'],
-			$this->db->startingWith(self::LINES_UPDATE)
+			$rUpdates
+		);
+		$rArray7 = '{"date_end":1700000060,"stream_id":7}';
+		$this->assertSame(
+			['192.0.2.11', '192.0.2.12', '192.0.2.113', $rArray7, $rArray7, '{"date_end":1700000060,"stream_id":8}'],
+			$this->paramsOf($rUpdates[0])
 		);
 		$this->assertCount(2, $this->db->queries);
 		$this->assertFileDoesNotExist($rFile);

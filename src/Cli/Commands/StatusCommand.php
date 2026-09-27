@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\LbDatabaseAccessException;
 use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Module\ModuleManager;
@@ -71,20 +72,28 @@ class StatusCommand implements CommandInterface {
 
 		echo "Database\n------------------------------\n";
 
-		try {
-			$rConnected = self::mainDatabaseAnswers();
-		} catch (LbDatabaseAccessException $e) {
-			// Mode 2: status still reads MAIN's servers and settings.
-			echo $e->getMessage() . "\n\n";
-			return 1;
+		// A node in cluster mode 2 (api) has no database of MAIN's: its agent
+		// keeps the replica status reads from. Everything status does locally —
+		// the permissions, nginx's config, root's crontab, the file limits — still
+		// has to run, and returning here left a node without any of it.
+		$rApi = NodeRole::refusesConnects();
+		$db = null;
+		if ($rApi) {
+			echo "Cluster mode 2 (api): not this node's database, its agent keeps the replica.\n\n";
+		} else {
+			try {
+				$rConnected = self::mainDatabaseAnswers();
+			} catch (LbDatabaseAccessException $e) {
+				echo $e->getMessage() . "\n\n";
+				return 1;
+			}
+			if (!$rConnected) {
+				echo "Couldn't connect to database. Please add them to config.ini.\n\n";
+				return 1;
+			}
+			$db = self::db();
+			echo "Connected successfully.\n\n";
 		}
-		if (!$rConnected) {
-			echo "Couldn't connect to database. Please add them to config.ini.\n\n";
-			return 1;
-		}
-		$db = self::db();
-
-		echo "Connected successfully.\n\n";
 		$rServers = $this->getServers();
 
 		if ($rServers[SERVER_ID]['is_main']) {
@@ -123,7 +132,7 @@ class StatusCommand implements CommandInterface {
 			$this->configureRedis();
 			$this->ensureClusterNginx();
 			$this->ensureClusterPools();
-		} else {
+		} elseif (!$rApi) {
 			// LB nodes run no local Redis (bin/redis is stripped from the LB build)
 			// and never reach configureRedis, so the xcvm_core extension would keep
 			// its default Redis target of 127.0.0.1 and every connection refuses —
@@ -137,7 +146,11 @@ class StatusCommand implements CommandInterface {
 			$this->printStatusReport($rServers);
 		}
 
-		$db->query('UPDATE `servers` SET `xc_vm_version` = ? WHERE `id` = ?;', XC_VM_VERSION, SERVER_ID);
+		// In mode 2 the version goes to MAIN with the next inventory event
+		// (cron:servers, NodeStateSink::INVENTORY), within the minute.
+		if ($db !== null) {
+			$db->query('UPDATE `servers` SET `xc_vm_version` = ? WHERE `id` = ?;', XC_VM_VERSION, SERVER_ID);
+		}
 
 		return 0;
 	}
