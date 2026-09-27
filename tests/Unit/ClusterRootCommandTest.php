@@ -3,7 +3,9 @@
 use PHPUnit\Framework\TestCase;
 use XcVm\Cli\Commands\ClusterExecCommand;
 use XcVm\Cli\Commands\ClusterRootCommand;
+use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Core\Cluster\Crypto\Enc;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Tests\Support\FakeClusterCrypto;
 
@@ -40,6 +42,94 @@ final class ClusterRootCommandTest extends TestCase {
 
 	private function inbox(int $rSeq, array $rCmd): void {
 		file_put_contents($this->rBase . 'inbox/' . $rSeq . '.json', json_encode($rCmd));
+	}
+
+	/**
+	 * The blocklist flush (plan, section 7: `cron:root_signals` blocklist is
+	 * applied by `cluster:root`): a node that takes MAIN's root commands gets
+	 * it as a signed node.root, which runs through executeAction like every
+	 * other root action, and stops polling the signals table for it.
+	 */
+	public function testTheFlushComesAsARootCommandOnceTheNodeTakesThem(): void {
+		$rFlows = $this->rBase . 'flows.json';
+		NodeFlows::usePath($rFlows);
+		try {
+			foreach ([[null, false], [['mode' => 1, 'flows' => NodeFlows::TELEMETRY], false], [['mode' => 1, 'flows' => NodeFlows::COMMANDS, 'state' => 'active'], true], [['mode' => 2, 'flows' => 255, 'state' => 'quarantined'], true], [['mode' => 1, 'flows' => NodeFlows::COMMANDS, 'state' => 'revoked'], false]] as [$rDoc, $rExpected]) {
+				@unlink($rFlows);
+				if ($rDoc !== null) {
+					file_put_contents($rFlows, json_encode($rDoc));
+				}
+				NodeFlows::usePath($rFlows);
+				$this->assertSame($rExpected, RootSignalsCronJob::rootCommandsFromMain(), json_encode($rDoc));
+			}
+			// The same flows without a pin root trusts: MAIN keeps the signals table for them.
+			file_put_contents($rFlows, json_encode(['mode' => 1, 'flows' => NodeFlows::COMMANDS, 'state' => 'active']));
+			NodeFlows::usePath($rFlows);
+			$this->assertTrue(RootSignalsCronJob::rootCommandsFromMain(), 'COMMANDS on, the pin in place');
+			chmod($this->rBase . 'etc', 0775);
+			$this->assertFalse(RootSignalsCronJob::rootCommandsFromMain(), 'COMMANDS on, no pin');
+		} finally {
+			NodeFlows::usePath(null);
+		}
+		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/RootSignalsCronJob.php');
+		$rReads = strpos($rSource, '$rReads = self::readsMainDatabase();');
+		$rGate = strpos($rSource, 'if ($rReads && !self::rootCommandsFromMain()) {');
+		$rRead = strpos($rSource, "SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{");
+		$this->assertNotFalse($rReads);
+		$this->assertNotFalse($rGate);
+		$this->assertLessThan($rGate, $rReads);
+		$this->assertTrue($rRead > $rGate && $rRead - $rGate < 120, 'the legacy flush row is read only where MAIN still sends it');
+	}
+
+	/**
+	 * What the flush does, run as cluster:root runs it: iptables flushed and
+	 * saved, one FLUSH line in mysql_syslog, and nothing of the next case
+	 * (reboot: its REBOOT line, close_mysql, `sudo reboot`). The database
+	 * throws on any statement but the FLUSH line, so a fall-through stops
+	 * before the reboot's shell_exec.
+	 */
+	public function testTheFlushActionFlushesIptablesAndLogsOnce(): void {
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', 5);
+		}
+		$rJob = new class extends RootSignalsCronJob {
+			/** @var list<string> */
+			public array $rCalls = [];
+
+			protected function flushIPs(): void {
+				$this->rCalls[] = 'flushIPs';
+			}
+
+			protected function saveiptables(): void {
+				$this->rCalls[] = 'saveiptables';
+			}
+		};
+		$rDb = new class {
+			/** @var list<string> */
+			public array $rCalls = [];
+
+			public function query(string $rQuery, mixed ...$rArgs): bool {
+				$this->rCalls[] = $rQuery;
+				if (!str_contains($rQuery, "VALUES(?, 'FLUSH',")) {
+					throw new \RuntimeException('not the flush\'s line: ' . $rQuery);
+				}
+				return true;
+			}
+
+			public function close_mysql(): void {
+				$this->rCalls[] = 'close_mysql';
+			}
+		};
+		ob_start();
+		try {
+			$rJob->executeAction(['action' => 'flush'], [], $rDb);
+		} finally {
+			$rOut = (string) ob_get_clean();
+		}
+		$this->assertSame(['flushIPs', 'saveiptables'], $rJob->rCalls, 'flushed, then saved, once each');
+		$this->assertCount(1, $rDb->rCalls, 'one statement, and no close_mysql');
+		$this->assertStringStartsWith('INSERT INTO `mysql_syslog`', $rDb->rCalls[0]);
+		$this->assertStringNotContainsString('Rebooting', $rOut);
 	}
 
 	public function testThePinIsReadOnlyFromASafeDirectory(): void {

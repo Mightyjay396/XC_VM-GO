@@ -2,6 +2,8 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -12,7 +14,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  *  1. create() makes the VOD row (with its bouquets) and records it as the
  *     recording's `created_id`, so the node knows the file name. Asked again
- *     for the same recording it returns the same VOD: one recording, one VOD.
+ *     for the same recording it returns the same VOD, also while the first
+ *     call is still running: one recording, one VOD.
  *  2. finish() attaches the VOD to the node that holds the file (pid 1,
  *     to_analyze 1, as a converted movie) and marks the recording done.
  *
@@ -31,6 +34,12 @@ final class RecordingFinalizer {
 
 	/**
 	 * The recording's VOD, created on first call.
+	 *
+	 * Two calls can overlap: the node asks again when its request timed out
+	 * while MAIN was still running it. Each then makes a row, and the first
+	 * to record its id as `created_id` (only while none is recorded) wins.
+	 * The other deletes its row, before any bouquet has it, and returns the
+	 * winner's.
 	 *
 	 * @param string|null $rIcon The node's local copy of the icon (`s:<sid>:/images/<md5>.jpg`), if it made one.
 	 * @return int|null The VOD's stream id; null when the recording is unknown or not the node's.
@@ -74,18 +83,30 @@ final class RecordingFinalizer {
 		}
 		$rID = (int) $rDb->last_insert_id();
 		$rDb->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode([VOD_PATH . $rID . '.mp4']), $rID);
+		$rDb->query('UPDATE `recordings` SET `created_id` = ? WHERE `id` = ? AND `source_id` = ? AND (`created_id` IS NULL OR `created_id` = 0);', $rID, $rRecordingID, $rServerID);
+		if (!$rDb->query('SELECT `created_id` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rRecordingID, $rServerID) || $rDb->num_rows() <= 0) {
+			return null; // whether this row was recorded is unknown: it stays, and the node asks again
+		}
+		$rCreated = (int) $rDb->get_row()['created_id'];
+		if ($rCreated !== $rID) {
+			// An overlapping call recorded its VOD first: this row goes.
+			$rDb->query('DELETE FROM `streams` WHERE `id` = ?;', $rID);
+			return $rCreated > 0 ? $rCreated : null;
+		}
 		foreach (json_decode((string) $rRec['bouquets'], true) ?: [] as $rBouquet) {
 			self::addToBouquet((int) $rBouquet, $rID);
 		}
-		$rDb->query('UPDATE `recordings` SET `created_id` = ? WHERE `id` = ?;', $rID, $rRecordingID);
+		// The recording names its VOD now: the recorded stream's R2 record changed.
+		EventDispatcher::dispatch(new StreamsChangedEvent([(int) ($rRec['stream_id'] ?? 0)]));
 		return $rID;
 	}
 
 	/** The node converted the file: attach the VOD to it and mark the recording done. */
 	public static function finish(int $rRecordingID, int $rServerID): bool {
 		$rDb = self::db();
-		$rDb->query('SELECT `created_id` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rRecordingID, $rServerID);
-		$rCreated = $rDb->num_rows() > 0 ? (int) $rDb->get_row()['created_id'] : 0;
+		$rDb->query('SELECT `created_id`, `stream_id` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rRecordingID, $rServerID);
+		$rRec = $rDb->num_rows() > 0 ? $rDb->get_row() : [];
+		$rCreated = (int) ($rRec['created_id'] ?? 0);
 		if ($rCreated <= 0) {
 			return false;
 		}
@@ -94,6 +115,8 @@ final class RecordingFinalizer {
 			$rDb->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `pid`, `to_analyze`) VALUES(?, ?, NULL, 1, 1);', $rCreated, $rServerID);
 		}
 		$rDb->query('UPDATE `recordings` SET `status` = ? WHERE `id` = ?;', self::DONE, $rRecordingID);
+		// The node holds the VOD now, and the recording is done.
+		EventDispatcher::dispatch(new StreamsChangedEvent([$rCreated, (int) ($rRec['stream_id'] ?? 0)]));
 		return true;
 	}
 

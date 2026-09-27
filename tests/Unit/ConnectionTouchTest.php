@@ -255,7 +255,7 @@ final class ConnectionTouchTest extends TestCase {
 		$rOut = EventIngest::ingest($this->node(), 'p2', 0, [$this->touch('aaaa', self::T, 150), $this->touch('cccc', self::T, 150), $this->touch('zzzz', self::T, 150)]);
 		$this->assertSame([3, 0], [$rOut['applied'], $rOut['dropped']], 'taken, as by the store');
 		$this->assertSame(['aaaa' => 150], ClusterBus::lastReads(5, ['aaaa', 'cccc', 'zzzz']), 'no key for another node\'s viewer, nor for a made-up one');
-		$this->assertSame(1, $rBus->dbSize());
+		$this->assertSame(['touch:5:aaaa'], $rBus->keys('touch:*'));
 		$this->assertSame([100, 0], $this->row('cccc'));
 	}
 

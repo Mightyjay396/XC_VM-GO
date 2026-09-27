@@ -2,10 +2,15 @@
 
 namespace XcVm\Core\Config;
 
+use XcVm\Core\Cluster\SettingsAudit;
+
 /**
  * SettingsManager — singleton-хранилище настроек приложения.
  *
  * Entry points вызывают set(), потребители — getAll() или get().
+ *
+ * On a cluster node in mode 1 or 2, a read through the getters of a key the
+ * node replica does not carry is counted (SettingsAudit).
  *
  * @package XC_VM_Core_Config
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -38,6 +43,7 @@ class SettingsManager {
 	 * @return mixed
 	 */
 	public static function get(string $key, mixed $default = null) {
+		SettingsAudit::read($key);
 		return self::$settings[$key] ?? $default;
 	}
 
@@ -52,6 +58,7 @@ class SettingsManager {
 	 * Проверяет наличие ключа в настройках.
 	 */
 	public static function has(string $key): bool {
+		SettingsAudit::read($key);
 		return array_key_exists($key, self::$settings);
 	}
 
@@ -64,6 +71,7 @@ class SettingsManager {
 	 * @param bool   $default Значение, если ключ отсутствует.
 	 */
 	public static function getBool(string $key, bool $default = false): bool {
+		SettingsAudit::read($key);
 		return array_key_exists($key, self::$settings) ? (bool) self::$settings[$key] : $default;
 	}
 
@@ -71,6 +79,7 @@ class SettingsManager {
 	 * Возвращает значение как int.
 	 */
 	public static function getInt(string $key, int $default = 0): int {
+		SettingsAudit::read($key);
 		return array_key_exists($key, self::$settings) ? (int) self::$settings[$key] : $default;
 	}
 
@@ -78,6 +87,7 @@ class SettingsManager {
 	 * Возвращает значение как строку.
 	 */
 	public static function getString(string $key, string $default = ''): string {
+		SettingsAudit::read($key);
 		return array_key_exists($key, self::$settings) ? (string) self::$settings[$key] : $default;
 	}
 
@@ -88,6 +98,7 @@ class SettingsManager {
 	 * достаточно проверить тип; для скаляров/null возвращается $default.
 	 */
 	public static function getArray(string $key, array $default = []): array {
+		SettingsAudit::read($key);
 		$rValue = self::$settings[$key] ?? null;
 		return is_array($rValue) ? $rValue : $default;
 	}

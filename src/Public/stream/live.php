@@ -79,7 +79,7 @@ if (isset($rRequest["token"])) {
 		$rPlaylist = "";
 	} else {
 		header("Content-Type: video/mp2t");
-		readfile($rTokenData["video_path"]);
+		readfile(OffAirHandler::localVideo((string) $rTokenData["video_path"]));
 
 		exit();
 	}

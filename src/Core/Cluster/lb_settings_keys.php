@@ -182,6 +182,8 @@ return [
 		'stream_logs_save',
 		'stream_max_analyze',
 		'tmdb_language',
+		'update_channel_bin',
+		'update_channel_fanout',
 		'update_channel_main',
 		'update_version',
 		'use_buffer',

@@ -21,6 +21,7 @@
 
 use XcVm\Core\Bootstrap\BootKernel;
 use XcVm\Core\Bootstrap\BootState;
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\Database;
@@ -95,6 +96,9 @@ class XC_Bootstrap {
 	 *   'redis'       => bool   Connect Redis (default: true for admin, false for others)
 	 *   'process'     => string Process name for cli_set_process_title()
 	 *   'shutdown'    => callable Shutdown callback (replaces register_shutdown_function)
+	 *   'replica'     => ?string  CLI: boot from the node replica (ReplicaBoot::ALWAYS
+	 *                             or WHEN_READY); null (default) lets the node's
+	 *                             mode decide, false never
 	 */
 	public static function boot(string|BootContext $context = BootContext::Cli, array $options = []): void {
 		if (self::$state?->booted) {
@@ -160,6 +164,7 @@ class XC_Bootstrap {
 		ServiceContainer::resetInstance();
 		EventDispatcher::resetInstance();
 		DatabaseFactory::reset();
+		ReplicaBoot::reset();
 	}
 
 	/**

@@ -69,4 +69,21 @@ final class QueryLogDb extends DatabaseHandler {
 	public function ping(): bool {
 		return true;
 	}
+
+	/** Transactions are the inner database's: what it rolls back, nothing kept. */
+	public function beginTransaction() {
+		return $this->rInner->beginTransaction();
+	}
+
+	public function commit() {
+		return $this->rInner->commit();
+	}
+
+	public function rollback() {
+		return $this->rInner->rollback();
+	}
+
+	public function isInTransaction() {
+		return $this->rInner->isInTransaction();
+	}
 }

@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Streaming\Codec\FfmpegPaths;
 
 /**
@@ -52,9 +53,9 @@ class ThumbnailCommand implements CommandInterface {
 
 		global $db;
 
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t1.id = t2.stream_id AND t2.server_id = t1.vframes_server_id WHERE t1.`id` = ? AND t1.`vframes_server_id` = ?', $rStreamID, SERVER_ID);
-		if (0 < $db->num_rows()) {
-			$rRow = $db->get_row();
+		// The stream and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+		$rRow = StreamSource::workerRow($rStreamID, 'vframes', $db);
+		if ($rRow !== null) {
 			ContentSink::workerPid($rStreamID, 'vframes', getmypid(), $db);
 			StreamProcess::updateStream($rStreamID);
 			$db->close_mysql();

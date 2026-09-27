@@ -25,6 +25,9 @@ use XcVm\Core\Events\Settings\SettingsChangedEvent;
  * when two bumps race. In Core, not
  * Domain\Cluster: the event listener is registered at boot on every node
  * (ContainerPopulateStage), and on an LB there is simply nothing to drop.
+ *
+ * The `secrets` section is never kept: these files are plain JSON, and a
+ * secret must not rest unsealed on MAIN's disk. It is read for each request.
  */
 final class ReplicaEtagCache {
 	/** How long a section is reused (ms). */
@@ -122,7 +125,8 @@ final class ReplicaEtagCache {
 		}
 	}
 
+	/** A section this cache may keep: never `secrets`. */
 	private static function validKey(string $rKey): bool {
-		return (bool) preg_match('/^[a-z]+(\.[a-z0-9]+)?$/', $rKey);
+		return $rKey !== ReplicaSections::SECRETS && preg_match('/^[a-z]+(\.[a-z0-9]+)?$/', $rKey);
 	}
 }

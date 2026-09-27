@@ -4,6 +4,8 @@ namespace XcVm\Domain\Epg;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -241,9 +243,12 @@ class EpgService {
 			return false;
 		}
 
+		$db->query('SELECT `id` FROM `streams` WHERE `epg_id` = ?;', $rID);
+		$rStreamIDs = array_map('intval', array_column($db->get_rows() ?: [], 'id'));
 		$db->query('DELETE FROM `epg` WHERE `id` = ?;', $rID);
 		$db->query('DELETE FROM `epg_channels` WHERE `epg_id` = ?;', $rID);
 		$db->query('UPDATE `streams` SET `epg_id` = null, `channel_id` = null, `epg_lang` = null WHERE `epg_id` = ?;', $rID);
+		EventDispatcher::dispatch(new StreamsChangedEvent($rStreamIDs));
 
 		return true;
 	}

@@ -4,7 +4,6 @@ namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\User\UserRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -60,8 +59,7 @@ class XPluginApiController {
 			exit();
 		}
 
-		$db = new DatabaseHandler();
-		DatabaseFactory::set($db);
+		$db = DatabaseFactory::open();
 
 		if (!empty($rRequest['action']) && $rRequest['action'] == 'auth') {
 			$this->handleAuth($rRequest, $rIP, $rUserAgent);

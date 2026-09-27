@@ -46,8 +46,9 @@ final class NodeRegistry {
 	/**
 	 * Create (or re-create, on re-enrolment) the row of a node that is about to
 	 * receive its first token. A re-enrolment increments gen, so every token of
-	 * the previous generation stops working, drops the heartbeats the cluster
-	 * bus still holds of it, and announces the new key to the other nodes
+	 * the previous generation stops working, drops what the cluster bus still
+	 * holds of it (its heartbeats, and the row and epochs its requests were
+	 * authenticated with), and announces the new key to the other nodes
 	 * (ReplicaBuilder::nodesChanged).
 	 *
 	 * @return array{gen: int} The generation the first token must carry.
@@ -76,6 +77,7 @@ final class NodeRegistry {
 			$rNow,
 			$rNow
 		);
+		NodeAuthCache::forget($rServerID);
 		HeartbeatService::forget($rServerID);
 		if ($rExisting && $rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
 			ReplicaBuilder::nodesChanged($rCrypto, $rServerID);
@@ -83,7 +85,14 @@ final class NodeRegistry {
 		return ['gen' => $rGen];
 	}
 
-	/** @param array<string, mixed> $rFields */
+	/**
+	 * Write a node's columns. Then the node's next request reads its row
+	 * from MySQL again (NodeAuthCache::forget()), unless only columns the
+	 * cluster bus's copy may lag on were written (a heartbeat's, without the
+	 * bus's flusher).
+	 *
+	 * @param array<string, mixed> $rFields
+	 */
 	public static function update(int $rServerID, array $rFields): void {
 		if ($rFields === []) {
 			return;
@@ -91,13 +100,17 @@ final class NodeRegistry {
 		$rFields['updated_at'] = ClusterClock::now();
 		$rSet = implode(', ', array_map(static fn($rKey) => '`' . $rKey . '` = ?', array_keys($rFields)));
 		self::db()->query('UPDATE `cluster_nodes` SET ' . $rSet . ' WHERE `server_id` = ?;', ...array_values($rFields), ...[$rServerID]);
+		if (NodeAuthCache::changes(array_keys($rFields))) {
+			NodeAuthCache::forget($rServerID);
+		}
 	}
 
 	/**
 	 * Revoke a node: raise the extension's floor to the next generation, drop
 	 * its epochs and the heartbeats the cluster bus holds of it, and mark the
-	 * row. Every later request gets a signed NODE_REVOKED, and the other nodes
-	 * are told at once (ReplicaBuilder::nodesChanged).
+	 * row (which drops the bus's copy of it, update()). Every later request
+	 * gets a signed NODE_REVOKED, and the other nodes are told at once
+	 * (ReplicaBuilder::nodesChanged).
 	 */
 	public static function revoke(int $rServerID, ClusterCrypto $rCrypto, string $rActor = 'admin'): bool {
 		$rNode = self::byServer($rServerID);

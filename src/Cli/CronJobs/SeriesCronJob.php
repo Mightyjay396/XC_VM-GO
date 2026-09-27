@@ -5,6 +5,8 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Vod\SeriesService;
 
@@ -67,6 +69,8 @@ class SeriesCronJob implements CommandInterface {
 					}
 					if ($UpdateSeries) {
 						$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode($rPlaylist['sources'], JSON_UNESCAPED_UNICODE), $rRow['id']);
+						// The created channel's sources: the nodes that run it build from them.
+						EventDispatcher::dispatch(new StreamsChangedEvent([intval($rRow['id'])]));
 						echo 'Updated: ' . $rRow['stream_display_name'] . "\n";
 					}
 				}

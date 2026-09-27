@@ -94,6 +94,8 @@ require_once __DIR__ . '/Support/FakeSshFleet.php';
 require_once __DIR__ . '/Support/BusServer.php';
 require_once __DIR__ . '/Support/QueryLogDb.php';
 require_once __DIR__ . '/Support/InstallSchema.php';
+require_once __DIR__ . '/Support/ReplicaFixture.php';
+require_once __DIR__ . '/Support/AgentUser.php';
 
 // EventIngest's lane locks are real flock files. Without this they would land
 // in the shared TMP_PATH or system temp dir, where suite runs from other
@@ -113,3 +115,25 @@ register_shutdown_function(static function () use ($ingestLockDir): void {
 // the same instant, so a cached section would outlive the test that built it:
 // off for the suite; a test that checks the caching gives it a directory.
 \XcVm\Core\Cluster\ReplicaEtagCache::useDir(false);
+
+// The settings-miss audit (SettingsAudit) counts reads on nodes in mode 1 or
+// 2, and many tests point NodeFlows at such a file: off for the suite; a
+// test that checks it gives it its own directories.
+\XcVm\Core\Cluster\SettingsAudit::useDir(false);
+
+// The connect audit (ConnectAudit) counts connects on nodes in mode 1 or 2,
+// in STORAGE_PATH, which some tests define as a shared path: off for the
+// suite; a test that checks it gives it its own directory.
+\XcVm\Core\Cluster\ConnectAudit::useDir(false);
+
+// The node's own store of its streams' runtime state (StreamRuntime) defaults
+// to the deploy's config/cluster/runtime/, and every stream state write with
+// STREAMS off lapses it (or with STREAMS on keeps into it): a per-run
+// directory under tests/.tmp, removed when the process ends, so no test
+// touches an install on this machine. A test that checks the store gives it
+// its own directory and restores this one (StreamRuntime::dir()) after.
+$runtimeDir = $tmpRoot . '/cluster_runtime/' . getmypid() . '/';
+\XcVm\Core\Cluster\StreamRuntime::useDir($runtimeDir);
+register_shutdown_function(static function () use ($runtimeDir): void {
+	exec('rm -rf ' . escapeshellarg($runtimeDir));
+});

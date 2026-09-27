@@ -4,7 +4,9 @@ namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\Redactor;
+use XcVm\Core\Cluster\StreamRuntime;
 
 /**
  * Stream State Writer
@@ -19,7 +21,13 @@ use XcVm\Core\Cluster\Redactor;
  * On a legacy node the writer merges into the row in MAIN's database through
  * StreamRowMerge, as before. On a node whose STREAMS flow is on it sends a
  * `stream.state` event through the agent instead ({@see EventSpool}), which
- * MAIN merges into that node's own row (EventIngest).
+ * MAIN merges into that node's own row (EventIngest), and keeps the fields
+ * in the node's own store ({@see StreamRuntime}), under one lock, so the
+ * node's readers take them from there. When the agent takes no event (it
+ * stopped), a node that may reach MAIN's database writes its row as before
+ * (and its store lapses: MAIN's row alone is then whole); a node in mode 2
+ * keeps them in its store alone, and resend() sends them once the agent is
+ * back.
  *
  * @package XC_VM_Domain_Stream
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -72,6 +80,38 @@ final class StreamStateWriter {
 	}
 
 	/**
+	 * Send what the node's store kept but the agent did not take (it was
+	 * stopped, in mode 2): a `stream.state` event of each stream's unsent
+	 * columns, and a `stream.worker` event per unsent worker pid. cron:streams
+	 * runs it every minute, whether or not the readers take the store (a seed
+	 * waits for it); nothing without STREAMS or while the agent still takes
+	 * no event.
+	 *
+	 * @return int the streams sent
+	 */
+	public static function resend(): int {
+		if (!NodeFlows::on(NodeFlows::STREAMS) || !EventSpool::agentAlive() || !defined('SERVER_ID')) {
+			return 0;
+		}
+		return StreamRuntime::resend(static function (int $rStreamID, array $rFields): bool {
+			$rEvents = [];
+			$rState = array_intersect_key($rFields, array_flip(self::STATE_FIELDS));
+			if ($rState !== []) {
+				if (isset($rState['current_source']) && is_string($rState['current_source'])) {
+					$rState['current_source'] = Redactor::redact($rState['current_source']);
+				}
+				$rEvents[] = ['type' => 'stream.state', 'd' => ['stream_id' => $rStreamID, 'server_id' => (int) SERVER_ID, 'fields' => (object) $rState]];
+			}
+			foreach (ContentSink::WORKERS as $rWorker) {
+				if (array_key_exists($rWorker . '_pid', $rFields)) {
+					$rEvents[] = ['type' => 'stream.worker', 'd' => ['stream_id' => $rStreamID, 'worker' => $rWorker, 'pid' => (int) $rFields[$rWorker . '_pid']]];
+				}
+			}
+			return $rEvents === [] || EventSpool::append('p0', $rEvents);
+		});
+	}
+
+	/**
 	 * The cluster API backend (STREAMS flow on): a `stream.state` event on the
 	 * agent's P0 lane. MAIN merges it into the sender's own row only.
 	 *
@@ -101,10 +141,22 @@ final class StreamStateWriter {
 		if (self::$rSink !== null) {
 			return (bool) (self::$rSink)($rWhere, $rFields, $rWhereValues, $rDb);
 		}
-		if (NodeFlows::on(NodeFlows::STREAMS) && self::spool($rKey, $rFields)) {
-			return true;
+		if (NodeFlows::on(NodeFlows::STREAMS)) {
+			// Kept in the node's store and spooled for MAIN, under one lock.
+			if (StreamRuntime::keep($rKey, $rFields, static fn (): bool => self::spool($rKey, $rFields))) {
+				return true;
+			}
+			// The agent took no event. Mode 2 has no database: the store keeps it for resend().
+			if (NodeRole::refusesConnects()) {
+				return false;
+			}
 		}
-		// Legacy backend: merge into the row in MAIN's database directly.
-		return StreamRowMerge::apply($rWhere, $rFields, $rWhereValues, $rDb);
+		// Legacy backend: merge into the row in MAIN's database directly. MAIN's
+		// row alone has it: once it landed, a store this node kept lapses.
+		try {
+			return StreamRowMerge::apply($rWhere, $rFields, $rWhereValues, $rDb);
+		} finally {
+			StreamRuntime::lapse();
+		}
 	}
 }

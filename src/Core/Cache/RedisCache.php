@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Cache;
 
+use XcVm\Core\Cluster\ConnectAudit;
+use XcVm\Core\Cluster\LbDatabaseAccessException;
 use XcVm\Infrastructure\Redis\RedisManager;
 
 /**
@@ -73,15 +75,18 @@ class RedisCache implements CacheInterface {
 	}
 
 	/**
-	 * Establish \Redis connection (lazy — called on first operation)
+	 * Establish \Redis connection (lazy — called on first operation), past
+	 * ConnectAudit::guard() as every Redis connect on a node.
 	 *
 	 * @return bool
+	 * @throws LbDatabaseAccessException on a node in cluster mode 2 (api)
 	 */
 	public function connect() {
 		if ($this->connected && $this->redis !== null) {
 			return true;
 		}
 
+		ConnectAudit::guard(ConnectAudit::REDIS);
 		try {
 			$this->redis = new \Redis();
 			$this->redis->connect($this->host, $this->port);

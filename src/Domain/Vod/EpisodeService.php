@@ -4,6 +4,8 @@ namespace XcVm\Domain\Vod;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
@@ -251,6 +253,7 @@ class EpisodeService {
 					$db->query('UPDATE `streams_series` SET `last_modified` = ? WHERE `id` = ?;', time(), $rSeriesID);
 				}
 				StreamProcess::updateStream($rInsertID);
+				EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rInsertID]));
 			} else {
 				return ['status' => STATUS_FAILURE];
 			}
@@ -432,6 +435,7 @@ class EpisodeService {
 			}
 
 			StreamProcess::updateStreams($rStreamIDs);
+			EventDispatcher::dispatch(new StreamsChangedEvent(array_values(array_map('intval', $rStreamIDs))));
 
 			if (isset($rData['reencode_on_edit'])) {
 				foreach ($rQueueMovies as $rServerID => $rQueueIDs) {

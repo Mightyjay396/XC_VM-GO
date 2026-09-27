@@ -15,6 +15,12 @@ boot() {
   sudo chown -R xc_vm:xc_vm /sys/class/net
   sudo chown -R xc_vm:xc_vm /home/xc_vm/content/streams
   sudo chown -R xc_vm:xc_vm /home/xc_vm/tmp
+  # The node audits' day files (ConnectAudit, SettingsAudit) live under
+  # storage/cluster/, which an LB build does not ship: make it xc_vm's before
+  # a root process can create it as root's and shut xc_vm's processes out.
+  mkdir -p $SCRIPT/storage/cluster
+  sudo chown xc_vm:xc_vm $SCRIPT/storage
+  sudo chown -R xc_vm:xc_vm $SCRIPT/storage/cluster
   # MAIN: the cluster API answers STARTING until `status` (run by startup)
   # finds its FPM pools answering and writes this marker again (ClusterPool).
   rm -f $SCRIPT/tmp/cluster_ready
@@ -39,11 +45,11 @@ boot() {
     sudo -u xc_vm bash $SCRIPT/bin/xc_agent/run.sh &
   fi
   # Cluster node replica, CONFIG flow on (bit 32 of flows.json, mode >= 1):
-  # rebuild the caches it owns from the verified copy on disk before the
-  # daemons read them (ReplicaApply; cron:cache also does every minute).
-  # Today the command still needs MAIN's database to boot, and exits without
-  # it, hence the short timeout; serving from disk after a reboot while MAIN
-  # is unreachable waits for ReplicaStage.
+  # rebuild the caches it owns from the copy on disk before the daemons read
+  # them (ReplicaApply; cron:cache also does every minute). --from-disk
+  # verifies the stored records itself, since the agent may not run yet, and
+  # the command boots from the replica (ReplicaStage), so a node rebooted
+  # while MAIN is unreachable serves from it. The timeout bounds a stuck disk.
   if [ -f $SCRIPT/config/cluster/flows.json ]; then
     FLOWS=$(sed -n 's/.*"flows":\([0-9]*\).*/\1/p' $SCRIPT/config/cluster/flows.json)
     MODE=$(sed -n 's/.*"mode":\([0-9]*\).*/\1/p' $SCRIPT/config/cluster/flows.json)

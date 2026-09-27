@@ -3,7 +3,11 @@
 namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -131,6 +135,13 @@ class CategoryService {
 	 * @return array Categories keyed by id.
 	 */
 	public static function getFromDatabase(?string $rType = null, bool $rForce = false) {
+		// A node whose replica owns the categories (CONFIG on, and an apply
+		// built them) takes its cache however old, even when forced; a process
+		// booted from the replica never reads MAIN's database either.
+		$rReplica = ReplicaApply::catalogCache(ReplicaSections::CATEGORIES);
+		if ($rReplica !== null) {
+			return is_string($rType) ? array_filter($rReplica, static fn(mixed $rRow): bool => is_array($rRow) && ($rRow['category_type'] ?? null) === $rType) : $rReplica;
+		}
 		$db = self::db();
 		if (is_string($rType)) {
 			$db->query('SELECT t1.* FROM `streams_categories` t1 WHERE t1.category_type = ? GROUP BY t1.id ORDER BY t1.cat_order ASC', $rType);
@@ -217,6 +228,7 @@ class CategoryService {
 		}
 
 		$db->query("SELECT `id`, `category_id` FROM `streams` WHERE JSON_CONTAINS(`category_id`, ?, '\$');", $rID);
+		$rStreamIDs = [];
 
 		foreach ($db->get_rows() as $rRow) {
 			$rRow['category_id'] = json_decode($rRow['category_id'], true);
@@ -226,7 +238,9 @@ class CategoryService {
 			}
 
 			$db->query("UPDATE `streams` SET `category_id` = ? WHERE `id` = ?;", '[' . implode(',', array_map('intval', $rRow['category_id'])) . ']', $rRow['id']);
+			$rStreamIDs[] = intval($rRow['id']);
 		}
+		EventDispatcher::dispatch(new StreamsChangedEvent($rStreamIDs));
 		$db->query("SELECT `id`, `category_id` FROM `streams_series` WHERE JSON_CONTAINS(`category_id`, ?, '\$');", $rID);
 
 		foreach ($db->get_rows() as $rRow) {

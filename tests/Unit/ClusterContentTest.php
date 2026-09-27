@@ -9,6 +9,7 @@ use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
+use XcVm\Tests\Support\QueryLogDb;
 
 /**
  * Phase 5, content: recordings, worker pids and movie analysis. A legacy node
@@ -158,6 +159,29 @@ final class ClusterContentTest extends TestCase {
 		$this->ingest(['type' => 'recording.state', 'd' => ['id' => 1, 'status' => 2]]);
 		$this->assertSame(1, (int) $this->val('SELECT COUNT(*) FROM `streams_servers` WHERE `stream_id` = ' . $rID . ' AND `server_id` = 5 AND `pid` = 1 AND `to_analyze` = 1'));
 		$this->assertSame(2, (int) $this->val('SELECT `status` FROM `recordings` WHERE `id` = 1'));
+	}
+
+	public function testTwoOverlappingCallsForARecordingMakeOneVod(): void {
+		// The node asked again while MAIN was still running its first request
+		// (the agent gave up on it): the second call runs to its end just
+		// before the first records its VOD.
+		$rLog = new QueryLogDb($this->rDb);
+		$rSecond = null;
+		$rLog->rBefore = static function (string $rQuery) use ($rLog, &$rSecond): void {
+			if (str_starts_with($rQuery, 'UPDATE `recordings` SET `created_id`')) {
+				$rLog->rBefore = null;
+				$rSecond = RecordingFinalizer::create(1, 5, null);
+			}
+		};
+		DatabaseFactory::set($rLog);
+		$rFirst = RecordingFinalizer::create(1, 5, null);
+		DatabaseFactory::set($this->rDb);
+		$this->assertIsInt($rSecond);
+		$this->assertSame($rSecond, $rFirst, 'both get the VOD recorded first');
+		$this->assertSame($rFirst, (int) $this->val('SELECT `created_id` FROM `recordings` WHERE `id` = 1'));
+		$this->assertSame(1, (int) $this->val('SELECT COUNT(*) FROM `streams` WHERE `type` = 2 AND `stream_display_name` = \'Match\''), 'the other row is gone');
+		$this->assertSame('[1,' . $rFirst . ']', $this->val('SELECT `bouquet_movies` FROM `bouquets` WHERE `id` = 9'), 'added to its bouquets once');
+		$this->assertSame($rFirst, RecordingFinalizer::create(1, 5, null), 'asked again: the same VOD');
 	}
 
 	public function testAnIconFromElsewhereIsNotTaken(): void {

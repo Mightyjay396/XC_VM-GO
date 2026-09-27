@@ -3,12 +3,15 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\ConnectionTracker;
+use XcVm\Domain\Stream\NodeStreams;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Fanout\FanoutClient;
@@ -61,7 +64,12 @@ class OndemandCommand implements CommandInterface {
 			return 0;
 		}
 
-		if (SettingsManager::get('redis_handler')) {
+		// This node's streams from its replica and its own store (mode 1 or 2
+		// with STREAMS on, NodeStreams); their viewers then from the agent's
+		// registry with CONNECTIONS on, not MAIN's Redis.
+		$rLocal = StreamSource::local();
+		$rAgentViewers = $rLocal && AgentConnections::enabled();
+		if (SettingsManager::get('redis_handler') && !$rAgentViewers) {
 			RedisManager::ensureConnected();
 		}
 
@@ -71,7 +79,7 @@ class OndemandCommand implements CommandInterface {
 		$rMD5 = md5_file(__FILE__);
 
 		while (true) {
-			if (!$db || !$db->ping() || (SettingsManager::get('redis_handler') && RedisManager::instance() && !RedisManager::instance()->ping())) {
+			if (!$db || !$db->ping() || (SettingsManager::get('redis_handler') && !$rAgentViewers && RedisManager::instance() && !RedisManager::instance()->ping())) {
 				break;
 			}
 
@@ -80,19 +88,23 @@ class OndemandCommand implements CommandInterface {
 				SettingsManager::set(SettingsRepository::getAll(true));
 				$rLastCheck = time();
 				$rMD5 = $rCurentMD5Hash;
+				$rLocal = StreamSource::local();
+				$rAgentViewers = $rLocal && AgentConnections::enabled();
 			}
 
-			$rStreamIDs = ConnectionTracker::activeOnDemandStreamIDs(SERVER_ID);
+			$rStreamIDs = NodeStreams::activeOnDemand($rLocal);
 			if ($rStreamIDs === []) {
 				usleep(800000);
 				continue;
 			}
 
-			$rAttached = ConnectionTracker::attachedRestreamCounts($rStreamIDs, SERVER_ID);
+			$rAttached = NodeStreams::attached($rStreamIDs, $rLocal);
 
 			// Viewer counts come from Redis when enabled (per-server slice of the
 			// stream's connection set), else from the lines_live table.
-			if (SettingsManager::get('redis_handler') && RedisManager::instance()) {
+			if ($rAgentViewers) {
+				$rOnline = NodeStreams::viewers(array_map('intval', $rStreamIDs));
+			} elseif (SettingsManager::get('redis_handler') && RedisManager::instance()) {
 				$rConnections = ConnectionTracker::getStreamConnections($rStreamIDs, false, false);
 				$rOnline = [];
 				foreach ($rStreamIDs as $rStreamID) {
@@ -167,7 +179,10 @@ class OndemandCommand implements CommandInterface {
 
 				StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['bitrate' => null, 'current_source' => null, 'to_analyze' => 0, 'pid' => null, 'stream_started' => null, 'stream_info' => null, 'audio_codec' => null, 'video_codec' => null, 'resolution' => null, 'compatible' => 0, 'stream_status' => 0, 'monitor_pid' => null], $db);
 
-				SignalDispatcher::cache(intval($rMainID), ['type' => 'update_stream', 'id' => $rStreamID], false, false, $db);
+				// MAIN refreshes its cache from the node's events once its store keeps the streams.
+				if (!$rLocal) {
+					SignalDispatcher::cache(intval($rMainID), ['type' => 'update_stream', 'id' => $rStreamID], false, false, $db);
+				}
 
 				StreamProcess::updateStream($rStreamID);
 			}

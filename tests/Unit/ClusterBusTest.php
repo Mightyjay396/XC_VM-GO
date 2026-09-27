@@ -113,4 +113,33 @@ XcVm\Domain\Cluster\ClusterBus::wakeAck(' . var_export(str_repeat('c', 32), true
 		$this->assertSame(1, $rDb->rClosed, 'released before blocking');
 		$this->assertFalse(ClusterBus::waitNodeReleasing(5, 0.1, new stdClass()), 'any other handle is left alone');
 	}
+
+	/**
+	 * A mark that root creates (a cron, a CLI command) goes to the owner of
+	 * the bus's directory, xc_vm on MAIN: the workers cannot set the mtime of
+	 * a file root owns, so they could never move it on. Root only.
+	 */
+	public function testAMarkRootCreatesGoesToTheOwnerOfTheBusDirectory(): void {
+		if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+			$this->markTestSkipped('only root hands a mark on');
+		}
+		$rDir = sys_get_temp_dir() . '/xcvm-bus-owner-' . bin2hex(random_bytes(4));
+		mkdir($rDir);
+		try {
+			// A mark is a file beside the socket: no bus is needed.
+			ClusterBus::useSocket($rDir . '/cluster.sock');
+			$this->assertTrue(ClusterBus::mark('root.stale', 1800000000000));
+			$this->assertSame(0, fileowner($rDir . '/root.stale'), 'a directory root owns: the mark stays root\'s');
+
+			$this->assertTrue(chown($rDir, 65534));
+			$this->assertTrue(ClusterBus::mark('owner.stale', 1800000000000));
+			clearstatcache();
+			$this->assertSame(65534, fileowner($rDir . '/owner.stale'), 'the bus directory\'s owner');
+			$this->assertTrue(ClusterBus::mark('owner.stale', 1800000005000));
+			clearstatcache();
+			$this->assertSame([1800000005, 65534], [ClusterBus::markedAt('owner.stale'), fileowner($rDir . '/owner.stale')], 'moved on, and still the owner\'s');
+		} finally {
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
 }

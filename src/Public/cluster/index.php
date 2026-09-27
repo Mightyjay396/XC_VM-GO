@@ -17,10 +17,12 @@
 
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Database\DatabaseHandler;
+use XcVm\Core\Events\EventDispatcher;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Domain\Cluster\DenialFactory;
@@ -58,6 +60,9 @@ $rReq = [
 	'ip' => (string) ($_SERVER['REMOTE_ADDR'] ?? ''),
 	// nginx's fastcgi_params pass HTTPS=on for a request that came over TLS.
 	'https' => !empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off',
+	// And SERVER_PORT, the port nginx took it on: which of MAIN's ports a
+	// node reaches it on (ClusterEndpoint::nodeUses()). 0: not passed.
+	'port' => (int) ($_SERVER['SERVER_PORT'] ?? 0),
 ];
 // Until MAIN's cluster pools answer, nginx hands the API to a panel pool, and
 // every op but health gets a signed 503 STARTING (ClusterPool).
@@ -91,12 +96,21 @@ try {
 		$rSettings = SettingsRepository::getAll(true);
 	}
 	SettingsManager::set($rSettings);
-	$rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;');
-	$rMain = $rDb->num_rows() > 0 ? (array) $rDb->get_row() : [];
+	// MAIN's row, for the ops that read it (the policy, the replica): a
+	// heartbeat whose node the cluster bus holds sends MySQL no query of its
+	// own, only the connection's setup above.
+	$rMain = [];
+	if (ClusterApi::readsMain($rReq['path'])) {
+		$rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;');
+		$rMain = $rDb->num_rows() > 0 ? (array) $rDb->get_row() : [];
+	}
 } catch (\Throwable) {
 	$rEmit(DenialFactory::deny($rCrypto, 503, 'DB'));
 	return;
 }
 
 $rReq['body'] = (string) file_get_contents('php://input', false, null, 0, ClusterApi::MAX_BODY + 1);
+// The one listener an op needs: a recording a node finished becomes a VOD it
+// holds (recording_complete), which stamps the stream's R2 version.
+EventDispatcher::subscribe(StreamVersions::class);
 $rEmit(ClusterApi::handle($rCrypto, $rReq, $rSettings, $rMain));

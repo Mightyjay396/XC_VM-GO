@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Codec\FFmpegCommand;
 use XcVm\Streaming\Codec\FfmpegPaths;
@@ -53,19 +54,18 @@ class CreatedCommand implements CommandInterface {
 
 		global $db;
 
-		$db->query('SELECT * FROM `streams` t1 LEFT JOIN `profiles` t3 ON t1.transcode_profile_id = t3.profile_id WHERE t1.`id` = ?', $rStreamID);
-		if ($db->num_rows() == 0) {
+		// The channel and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+		$rStreamInfo = StreamSource::createdRow($rStreamID, $db);
+		if ($rStreamInfo === null) {
 			echo "Channel doesn't exist.\n";
 			return 1;
 		}
-		$rStreamInfo = $db->get_row();
-		$db->query('SELECT * FROM `streams_servers` WHERE stream_id  = ? AND `server_id` = ? AND `parent_id` IS NULL', $rStreamID, SERVER_ID);
+		$rServerInfo = StreamSource::builtServerRow($rStreamID, $db);
 
-		if ($db->num_rows() == 0) {
+		if ($rServerInfo === null) {
 			echo "Channel doesn't exist on this server.\n";
 			return 1;
 		}
-		$rServerInfo = $db->get_row();
 
 		$rStreamInfo['stream_source'] = json_decode($rStreamInfo['stream_source'], true);
 		$rServerInfo['cchannel_rsources'] = json_decode($rServerInfo['cchannel_rsources'], true);
@@ -132,7 +132,7 @@ class CreatedCommand implements CommandInterface {
 						. ($rDuration > 0 ? ' / ' . gmdate('H:i:s', (int) $rDuration) . ' (' . $rPct . '%)' : '')
 						. (isset($rEncode['speed']) ? ' @ ' . $rEncode['speed'] : '') . "\n";
 
-					$db->db_connect();
+					$this->reconnect($db);
 					StreamStateWriter::updateRow(intval($rServerInfo['server_stream_id']), ['progress_info' => json_encode(['cc_encode' => [
 						'source'   => $rDone + 1,
 						'total'    => $rTotal,
@@ -145,7 +145,7 @@ class CreatedCommand implements CommandInterface {
 					$db->close_mysql();
 				}
 			}
-			$db->db_connect();
+			$this->reconnect($db);
 			@unlink(CREATED_PATH . intval($rStreamID) . '_' . $rMD5 . '.pid');
 			@unlink(CREATED_PATH . intval($rStreamID) . '_' . $rMD5 . '.errors');
 			@unlink($rProgressFile);
@@ -222,6 +222,17 @@ class CreatedCommand implements CommandInterface {
 		@unlink(CREATED_PATH . $rStreamID . '_.create');
 
 		return 0;
+	}
+
+	/**
+	 * MAIN's database again after an encode, unless this node's streams are
+	 * its own (StreamSource::local): its writes then go to its store and the
+	 * agent, and a write that falls back to MAIN's row reconnects by itself.
+	 */
+	private function reconnect(object $rDb): void {
+		if (!StreamSource::local()) {
+			$rDb->db_connect();
+		}
 	}
 
 	/**

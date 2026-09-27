@@ -56,6 +56,20 @@ class DatabaseFactory {
 	}
 
 	/**
+	 * A new handler, connected now, kept as the process's handle (the caller
+	 * keeps it in its own $db): what the stream and web API endpoints used to
+	 * build with `new DatabaseHandler()`. Every eager connect starts here or
+	 * in the boot's DatabaseStage (ArchitectureTest), and each one passes
+	 * ConnectAudit::guard(): a node in cluster mode 2 is refused.
+	 *
+	 * @throws \XcVm\Core\Cluster\LbDatabaseAccessException on a node in cluster mode 2 (api)
+	 */
+	public static function open(): DatabaseHandler {
+		self::$instance = new DatabaseHandler();
+		return self::$instance;
+	}
+
+	/**
 	 * Like connect(), but the handler opens its connection only when first
 	 * used (LazyDatabaseHandler). For the streaming endpoints, where many
 	 * requests end without a query.

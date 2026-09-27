@@ -85,13 +85,13 @@ class MonitorCommand implements CommandInterface {
 		set_time_limit(0);
 		cli_set_process_title('XC_VM[' . $rStreamID . ']');
 
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.id = ?', SERVER_ID, $rStreamID);
-		if ($db->num_rows() <= 0) {
+		// The stream and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+		$rStreamInfo = StreamSource::nodeRow($rStreamID, $db);
+		if ($rStreamInfo === null) {
 			StreamProcess::stopStream($rStreamID);
 			return 0;
 		}
 
-		$rStreamInfo = $db->get_row();
 		StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['monitor_pid' => getmypid()], $db);
 
 		if (SettingsManager::get('enable_cache')) {
@@ -311,7 +311,10 @@ class MonitorCommand implements CommandInterface {
 					StreamProcess::streamLog($rStreamID, SERVER_ID, 'STREAM_FAILED', $rCurrentSource);
 					echo "Stream failed!\n";
 				}
-				$db->db_connect();
+				// MAIN's database again, unless this node's streams are its own (a write reconnects when it needs to).
+				if (!StreamSource::local()) {
+					$db->db_connect();
+				}
 			}
 			if (ProcessManager::isStreamRunning($rPID, $rStreamID)) {
 				echo "Killing stream...\n";

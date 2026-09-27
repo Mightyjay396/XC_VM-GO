@@ -2,6 +2,8 @@
 
 namespace XcVm\Public\Controllers\Admin;
 
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Stream\CategoryService;
@@ -78,6 +80,7 @@ class StreamReviewController extends BaseAdminController {
 					}
 				}
 			}
+			EventDispatcher::dispatch(new StreamsChangedEvent(array_keys($rChanges)));
 			header('Location: ./streams?status=' . STATUS_SUCCESS);
 
 			exit();

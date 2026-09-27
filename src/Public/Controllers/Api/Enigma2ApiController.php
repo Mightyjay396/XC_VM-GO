@@ -4,7 +4,6 @@ namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\ImageUtils;
@@ -80,8 +79,7 @@ class Enigma2ApiController {
 		}
 
 		$this->deny = false;
-		$db = new DatabaseHandler();
-		DatabaseFactory::set($db);
+		$db = DatabaseFactory::open();
 		BruteforceGuard::checkAuthFlood($this->userInfo);
 		$this->liveCategories = CategoryService::getFromDatabase('live');
 		$this->vodCategories = CategoryService::getFromDatabase('movie');

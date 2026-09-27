@@ -10,13 +10,15 @@ use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
  * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat;
- * Phase 4: commands, ack; Phase 5: events, recording_complete; Phase 6: conn_snapshot, conn_admit). Transport-free: handle() takes the request
+ * Phase 4: commands, ack, artefact; Phase 5: events, recording_complete; Phase 6: conn_snapshot, conn_admit;
+ * Phase 7: config, streams). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -38,6 +40,14 @@ final class ClusterApi {
 	/** SEAL purpose of the commands a hard-mode LICENCE_INVALID carries (killsFor()). */
 	public const SEAL_COMMANDS = 'commands';
 
+	/**
+	 * Ops whose handlers never read MAIN's `servers` row: the entry point
+	 * (Public/cluster/index.php) reads it for every other op alone, so a
+	 * heartbeat on the cluster bus sends MySQL no query of its own (only the
+	 * connection's setup).
+	 */
+	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'conn_snapshot', 'conn_admit', 'streams', 'artefact', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
+
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
 		'health' => ['GET', false, null],
@@ -55,11 +65,13 @@ final class ClusterApi {
 		'conn_snapshot' => ['POST', false, ['active']],
 		'conn_admit' => ['POST', false, ['active']],
 		'config' => ['POST', false, ['active']],
+		'streams' => ['POST', false, ['active']],
+		'artefact' => ['POST', false, ['active']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
 
 	/**
-	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string, https?: bool} $rReq
+	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string, https?: bool, port?: int} $rReq
 	 * @param array<string, mixed> $rSettings
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
 	 * @return array{status: int, headers: array<string, string>, body: string}
@@ -109,7 +121,9 @@ final class ClusterApi {
 		if (!Canonical::withinWindow($rH['ts_ms'], ClusterClock::nowMs())) {
 			return DenialFactory::deny($rCrypto, 401, 'CLOCK_SKEW', $rH['node'], $rH['nonce']);
 		}
-		$rNode = str_starts_with($rH['node'], 'sid:') ? null : NodeRegistry::byUuid($rH['node']);
+		// The node and its epoch's record: from the cluster bus while it holds
+		// them, else MySQL (NodeAuthCache).
+		[$rNode, $rEpochRow] = str_starts_with($rH['node'], 'sid:') ? [null, null] : NodeAuthCache::load($rH['node'], $rH['epoch']);
 		if ($rNode === null) {
 			return DenialFactory::deny($rCrypto, 401, 'UNKNOWN_NODE', $rH['node'], $rH['nonce']);
 		}
@@ -117,7 +131,7 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 403, 'NODE_REVOKED', $rH['node'], $rH['nonce'], ['revoked_gen' => (int) $rNode['gen']]);
 		}
 		try {
-			$rKeys = TokenService::session($rCrypto, $rNode, $rH['epoch']);
+			$rKeys = TokenService::open($rCrypto, $rNode, $rEpochRow);
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH, true);
 		}
@@ -149,8 +163,14 @@ final class ClusterApi {
 		if (!in_array($rNode['state'], $rStates, true)) {
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
 		}
-		// hello, config and conn_snapshot hold one of the op's bus permits.
+		// hello, config, streams and conn_snapshot hold one of the op's bus permits.
 		return ClusterSemaphore::run($rCrypto, $rOp, $rH, static fn(): array => self::dispatch($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rBody));
+	}
+
+	/** Does the op at this path read MAIN's `servers` row (the policy, the replica)? */
+	public static function readsMain(string $rPath): bool {
+		$rOp = str_starts_with($rPath, Canonical::PATH_PREFIX) ? substr($rPath, strlen(Canonical::PATH_PREFIX)) : '';
+		return !in_array($rOp, self::WITHOUT_MAIN, true);
 	}
 
 	/**
@@ -171,9 +191,11 @@ final class ClusterApi {
 
 	/**
 	 * An authenticated session op, past its nonce and node state: open the
-	 * BOX and run the handler.
+	 * BOX and run the handler. An ingest op also holds an ingest permit, P0
+	 * events from their reserve; a batch's lane is known only once its BOX is
+	 * open, and opening it touches no database.
 	 *
-	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config' $rOp
+	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config'|'streams'|'artefact' $rOp
 	 * @return array{status: int, headers: array<string, string>, body: string}
 	 */
 	private static function dispatch(ClusterCrypto $rCrypto, string $rOp, array $rReq, array $rSettings, array $rMain, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, string $rBody): array {
@@ -182,21 +204,27 @@ final class ClusterApi {
 		if (!is_array($rPayload)) {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
-		TokenService::markUsed($rNode, $rH['epoch'], $rKeys->rExp);
+		$rServe = static function () use ($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rPayload): array {
+			TokenService::markUsed($rNode, $rH['epoch'], $rKeys->rExp);
 
-		return match ($rOp) {
-			'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
-			'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
-			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
-			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
-			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
-			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+			return match ($rOp) {
+				'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
+				'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (int) ($rReq['port'] ?? 0)),
+				'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, (int) ($rReq['port'] ?? 0)),
+				'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
+				'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
+				'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+				'streams' => self::streams($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'artefact' => self::artefact($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
+			};
 		};
+		$rLane = ClusterSemaphore::ingestLane($rOp, $rPayload);
+		return $rLane === null ? $rServe() : ClusterSemaphore::runIngest($rCrypto, $rOp, $rLane, $rSettings['cluster_ingest_concurrency'] ?? null, $rH, $rServe);
 	}
 
 	/** @return array{status: int, headers: array<string, string>, body: string} */
@@ -479,9 +507,14 @@ final class ClusterApi {
 		]));
 	}
 
-	private static function hello(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
+	private static function hello(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain, int $rPort): array {
+		// Its cursors as MySQL has them now: the row the request was
+		// authenticated with may be the cluster bus's copy, whose event
+		// cursors lag (NodeAuthCache::LAGGING).
+		$rNode = NodeRegistry::byServer((int) $rNode['server_id']) ?? $rNode;
 		$rInstance = self::short($rP['instance_id'] ?? null);
-		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)];
+		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)]
+			+ ClusterEndpoint::nodeUses($rNode, $rP, $rPort);
 		$rState = (string) $rNode['state'];
 		if ($rInstance !== null && !empty($rNode['instance_id']) && !hash_equals((string) $rNode['instance_id'], $rInstance) && $rState === 'active') {
 			// Authenticated evidence of a clone: the same token from another install.
@@ -538,8 +571,16 @@ final class ClusterApi {
 		return $rOut === [] ? null : substr(implode(',', $rOut), 0, 255);
 	}
 
-	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {
+	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, int $rPort): array {
 		HeartbeatService::record($rNode, $rP, $rH['ts_ms']);
+		// The policy the node dials and the MAIN port it reached, written only
+		// when either changed (ClusterEndpoint::nodeUses()).
+		$rUses = ClusterEndpoint::nodeUses($rNode, $rP, $rPort);
+		if ($rUses !== []) {
+			NodeRegistry::update((int) $rNode['server_id'], $rUses);
+		}
+		// Its own audit (settings misses), kept only when it changed.
+		NodeAudit::record($rNode, $rP['audit'] ?? null);
 		// A node that holds its viewers sends its registry's digest; a drift
 		// that outlives the events in flight gets its snapshot asked for.
 		$rWant = false;
@@ -586,11 +627,24 @@ final class ClusterApi {
 		return ClusterReply::boxed($rKeys, $rCtx, ['commands' => $rCommands, 'main_time_ms' => ClusterClock::nowMs()]);
 	}
 
-	/** `ack`: a command's outcome, accepted only for this node's own commands. */
+	/**
+	 * `ack`: a command's outcome, accepted only for this node's own commands.
+	 * The first ack of a command type that may carry an artefact grant is
+	 * audited when it failed (ArtefactGrants::acked); no other ack reads more.
+	 */
 	private static function ack(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}$/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
-		if ($rCmdID === null || !CommandBus::ack((int) $rNode['server_id'], $rCmdID, !empty($rP['ok']), is_string($rP['result'] ?? null) ? (string) $rP['result'] : '')) {
+		$rOk = !empty($rP['ok']);
+		$rResult = is_string($rP['result'] ?? null) ? (string) $rP['result'] : '';
+		if ($rCmdID === null || !CommandBus::ack((int) $rNode['server_id'], $rCmdID, $rOk, $rResult, $rFirst, $rType)) {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		if ($rFirst && in_array($rType, ArtefactGrants::GRANT_TYPES, true)) {
+			try {
+				ArtefactGrants::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
+			} catch (\Throwable) {
+				// The ack stands; an off-air grant not recorded is offered again later.
+			}
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, ['ok' => true, 'main_time_ms' => ClusterClock::nowMs()]);
 	}
@@ -696,9 +750,20 @@ final class ClusterApi {
 	 * flow is on. The blocklist: a `blk` delta from `blocklist_since`, or the
 	 * whole section when there is no delta to give. `have` maps each section to
 	 * the ETag the node holds, so a section it already has is not sent again;
-	 * a section sent whole (settings, servers, node, crontab, cluster) goes
-	 * only to an agent that names it. A name MAIN does not serve, and a whole
-	 * section it cannot sign without a licence, are left out of the reply.
+	 * a section sent whole (settings, servers, node, crontab, cluster,
+	 * bouquets, categories, secrets) goes only to an agent that names it, and
+	 * `secrets` only to a node in mode 1 or 2 (ReplicaBuilder::serves). A name
+	 * MAIN does not serve and a whole section it cannot sign without a licence
+	 * are left out of the reply. The agent reads at most 8 MiB of a reply: a
+	 * section whose sealed record passes ReplicaBuilder::MAX_WHOLE_BYTES is
+	 * answered `{too_large, etag}` to an agent that names `bouquets` or
+	 * `categories` (the contract that takes it) and left out for an older
+	 * one, and the sections are added in ReplicaBuilder::REPLY_ORDER while
+	 * the reply stays within ReplicaBuilder::MAX_REPLY; one past it is left
+	 * out, and the node asks again at its next poll, when what this reply
+	 * carried is `unchanged`. A section MAIN cannot read (a failed read, no
+	 * settings row, an unset secret) answers `503 DB`: the node keeps what it
+	 * holds.
 	 */
 	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rSince = $rP['blocklist_since'] ?? 0;
@@ -713,13 +778,17 @@ final class ClusterApi {
 		}
 		try {
 			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '')];
+			// What the sections sent whole may take of the reply, after the blocklist.
+			$rRoom = ReplicaBuilder::MAX_REPLY - strlen((string) json_encode($rOut, JSON_UNESCAPED_SLASHES));
+			// An agent that names the catalogue takes `too_large` for any section it names.
+			$rTooLarge = array_key_exists(ReplicaSections::BOUQUETS, $rHave) || array_key_exists(ReplicaSections::CATEGORIES, $rHave);
 			// Sent whole: only to an agent that asks for them (have names the section).
-			foreach (ReplicaBuilder::WHOLE as $rSection) {
-				if (!array_key_exists($rSection, $rHave)) {
+			foreach (ReplicaBuilder::REPLY_ORDER as $rSection) {
+				if (!array_key_exists($rSection, $rHave) || !ReplicaBuilder::serves($rNode, $rSection)) {
 					continue;
 				}
 				try {
-					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
+					$rPart = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
 				} catch (ClusterRefusedException $rE) {
 					// A whole section grants: without a licence it is left out and
 					// the node keeps what it holds, while the blocklist's bans in
@@ -727,7 +796,20 @@ final class ClusterApi {
 					if ($rE->reason() !== 'LICENCE') {
 						throw $rE;
 					}
+					continue;
 				}
+				// An older agent: left out, as before; it keeps what it holds.
+				if (!empty($rPart['too_large']) && !$rTooLarge) {
+					continue;
+				}
+				// No room left in this reply: the next poll has it, the sections
+				// sent now being `unchanged` then.
+				$rSize = strlen((string) json_encode([$rSection => $rPart], JSON_UNESCAPED_SLASHES));
+				if ($rSize > $rRoom) {
+					continue;
+				}
+				$rRoom -= $rSize;
+				$rOut[$rSection] = $rPart;
 			}
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
@@ -735,6 +817,58 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `streams`: the node's R2 streams section (StreamReplica), for a node
+	 * whose STREAMS flow is on and whose agent said `streams` at hello. With
+	 * `since` alone, what changed past the node's cursor (`full` when it must
+	 * check every stream); with `resync` ({from, to, hashes}), the records of
+	 * the streams it holds in that range whose ETag differs from the one it
+	 * names, and the removals. Each record is `rep`-signed and sealed to the
+	 * node; one that cannot be signed without a licence is left out
+	 * (`withheld`). A section MAIN cannot read answers `503 DB`.
+	 */
+	private static function streams(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		$rMissing = StreamReplica::refused($rNode);
+		if ($rMissing !== null) {
+			// An older agent never asks; one whose hello did not say it keeps the section is told which.
+			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'streams'] + ($rMissing === 'feature' ? ['feature' => StreamReplica::FEATURE] : []));
+		}
+		$rSince = $rP['since'] ?? null;
+		// `resync: null` is a delta, as if absent (an agent's empty field).
+		$rAsk = $rP['resync'] ?? null;
+		$rResync = $rAsk === null ? null : StreamReplica::resyncRequest($rAsk);
+		if (!is_int($rSince) || $rSince < 0 || ($rAsk !== null && $rResync === null)) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		try {
+			$rOut = $rResync === null ? StreamReplica::delta($rCrypto, $rNode, $rSince) : StreamReplica::resync($rCrypto, $rNode, $rSince, $rResync['from'], $rResync['to'], $rResync['hashes']);
+		} catch (ClusterRefusedException $rE) {
+			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `artefact`: a chunk (at most 4 MiB, in the BOX) of the file a live grant
+	 * of this node's names (ArtefactGrants::serve): an off-air video, a custom
+	 * module's archive, the pinned agent. Bulk lane, under an ingest permit.
+	 * The node names the grant's command id, an offset and a length; never a
+	 * path. A grant MAIN cannot read answers `503 DB`.
+	 */
+	private static function artefact(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {
+		try {
+			[$rOut, $rDenied] = ArtefactGrants::serve($rNode, $rP, $rSettings);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if ($rDenied !== null) {
+			return DenialFactory::deny($rCrypto, $rDenied[0], $rDenied[1], $rH['node'], $rH['nonce'], $rDenied[2]);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, (array) $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/**

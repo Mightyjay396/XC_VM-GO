@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS `cluster_nodes` (
   `flows` int(10) unsigned NOT NULL DEFAULT '0',
   `root_ready` tinyint(1) NOT NULL DEFAULT '0',
   `features` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `audit` text COLLATE utf8_unicode_ci DEFAULT NULL,
   `gen` int(10) unsigned NOT NULL DEFAULT '1',
   `node_sign_pub` binary(32) DEFAULT NULL,
   `node_box_pub` binary(32) DEFAULT NULL,
@@ -169,6 +170,7 @@ CREATE TABLE IF NOT EXISTS `cluster_nodes` (
   `useq_p1` bigint(20) unsigned NOT NULL DEFAULT '0',
   `cmd_seq` bigint(20) unsigned NOT NULL DEFAULT '0',
   `policy_ver` int(10) unsigned NOT NULL DEFAULT '0',
+  `main_port` smallint(5) unsigned DEFAULT NULL,
   `quarantine_reason` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `row_mac` binary(32) DEFAULT NULL,
   `created_at` int(11) NOT NULL,
@@ -372,7 +374,8 @@ CREATE TABLE IF NOT EXISTS `cluster_stream_ver` (
   `ver` bigint(20) unsigned NOT NULL DEFAULT '1',
   `updated_at` int(11) NOT NULL,
   PRIMARY KEY (`server_id`, `stream_id`),
-  KEY `server_ver` (`server_id`, `ver`)
+  KEY `server_ver` (`server_id`, `ver`),
+  KEY `stream_id` (`stream_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------
@@ -1610,6 +1613,7 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `cluster_agent_upgrade_parallel` int(11) DEFAULT '1',
   `cluster_policy_ver` int(11) DEFAULT '1',
   `cluster_legacy_ports` varchar(255) DEFAULT '',
+  `cluster_legacy_urls` mediumtext COLLATE utf8_unicode_ci,
   `cluster_db_allowlist` tinyint(1) DEFAULT '0',
   `cluster_db_allowlist_extra` varchar(1024) DEFAULT '',
   `secure_stream_tokens` tinyint(1) DEFAULT '1',

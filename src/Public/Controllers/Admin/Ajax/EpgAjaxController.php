@@ -3,6 +3,8 @@
 namespace XcVm\Public\Controllers\Admin\Ajax;
 
 use XcVm\Core\Auth\Authorization;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Domain\Epg\EpgService;
@@ -167,6 +169,7 @@ class EpgAjaxController extends BaseAjaxController {
 		);
 		$rStreams    = $db->get_rows();
 		$rAssigned   = 0;
+		$rAssignedIDs = [];
 		$rSkipped    = 0;
 		$rNextLastId = $rLastId;
 
@@ -222,11 +225,13 @@ class EpgAjaxController extends BaseAjaxController {
 					$rMatch['lang'],
 					intval($rStream['id'])
 				);
+				$rAssignedIDs[] = intval($rStream['id']);
 				$rAssigned++;
 			} else {
 				$rSkipped++;
 			}
 		}
+		EventDispatcher::dispatch(new StreamsChangedEvent($rAssignedIDs));
 
 		$this->json([
 			'status' => STATUS_SUCCESS,

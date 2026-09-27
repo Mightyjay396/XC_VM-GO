@@ -3,7 +3,9 @@
 namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\CurlClient;
@@ -235,6 +237,10 @@ class StreamProcess {
 	 */
 	public static function updateStreams(array $rStreamIDs) {
 		if (!SettingsManager::get('enable_cache')) {
+			return;
+		}
+		if (NodeFlows::on(NodeFlows::STREAMS)) {
+			// As updateStream(): MAIN refreshes the streams' cache from the node's events.
 			return;
 		}
 		self::insertCacheSignalOnce(['type' => 'update_streams', 'id' => $rStreamIDs]);
@@ -795,6 +801,9 @@ class StreamProcess {
 	private static function pidFromFileOrColumn(int $rStreamID, string $rColumn, string $rSuffix) {
 		if (file_exists(STREAMS_PATH . $rStreamID . $rSuffix)) {
 			return intval(file_get_contents(STREAMS_PATH . $rStreamID . $rSuffix));
+		}
+		if (StreamSource::local()) {
+			return intval(StreamRuntime::get($rStreamID)[$rColumn] ?? 0);
 		}
 		$db = self::db();
 		$db->query('SELECT `' . $rColumn . '` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` = ? LIMIT 1;', SERVER_ID, $rStreamID);
@@ -1437,9 +1446,13 @@ class StreamProcess {
 		if (file_exists(STREAMS_PATH . $rStreamID . '_.monitor')) {
 			$rCandidates[] = intval(@file_get_contents(STREAMS_PATH . $rStreamID . '_.monitor'));
 		}
-		self::db()->query('SELECT `monitor_pid` FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
-		if (self::db()->num_rows() > 0) {
-			$rCandidates[] = intval(self::db()->get_row()['monitor_pid']);
+		if (StreamSource::local()) {
+			$rCandidates[] = intval(StreamRuntime::get($rStreamID)['monitor_pid'] ?? 0);
+		} else {
+			self::db()->query('SELECT `monitor_pid` FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
+			if (self::db()->num_rows() > 0) {
+				$rCandidates[] = intval(self::db()->get_row()['monitor_pid']);
+			}
 		}
 		foreach (array_unique($rCandidates) as $rPID) {
 			if ($rPID > 0 && ProcessManager::isMonitorAlive($rPID, $rStreamID)) {
@@ -1615,17 +1628,31 @@ class StreamProcess {
 			return [];
 		}
 		$db = self::db();
-		$db->query('SELECT `stream_id`, `pid`, `monitor_pid`, `stream_status`, `current_source`, `stream_started`, `stream_info`, `audio_codec`, `video_codec`, `resolution`, `bitrate`, `compatible` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', $rIDs) . ')', SERVER_ID);
+		$rColumns = ['stream_id', 'pid', 'monitor_pid', 'stream_status', 'current_source', 'stream_started', 'stream_info', 'audio_codec', 'video_codec', 'resolution', 'bitrate', 'compatible'];
+		$rLocal = StreamSource::local();
 		$rRows = [];
-		foreach ($db->get_rows() as $rRow) {
-			$rRows[intval($rRow['stream_id'])] = $rRow;
+		if ($rLocal) {
+			// This node's rows from its replica, their state from its own store.
+			foreach ($rIDs as $rID) {
+				$rEntry = ReplicaStreamCache::get($rID);
+				$rServer = $rEntry === null ? null : StreamSource::server($rID, $rEntry);
+				if ($rServer !== null) {
+					$rRows[$rID] = array_intersect_key($rServer, array_flip($rColumns));
+				}
+			}
+		} else {
+			$db->query('SELECT `' . implode('`, `', $rColumns) . '` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', $rIDs) . ')', SERVER_ID);
+			foreach ($db->get_rows() as $rRow) {
+				$rRows[intval($rRow['stream_id'])] = $rRow;
+			}
 		}
 
 		$rKept = [];
 		$rChanged = [];
 		// On a node whose agent follows the fanout's monitor feed, MAIN derives
 		// this state from those events (EventIngest, stream.monitor); the
-		// reconcile only releases what nothing should produce.
+		// reconcile only releases what nothing should produce, and keeps the
+		// state in the node's own store when its readers take it from there.
 		$rWrite = !NodeFlows::on(NodeFlows::STREAMS) || !NodeFlows::agentHas('fanout_events');
 		foreach ($rStates['streams'] as $rID => $rState) {
 			$rID = intval($rID);
@@ -1637,13 +1664,16 @@ class StreamProcess {
 				continue;
 			}
 			$rKept[] = $rID;
-			if (!$rWrite) {
+			if (!$rWrite && !$rLocal) {
 				continue;
 			}
 			$rSet = self::supervisedRowUpdate($rRow, $rState, (bool) SettingsManager::get('player_allow_hevc'), time());
-			if (count($rSet) > 0) {
+			if (count($rSet) > 0 && $rWrite) {
 				StreamStateWriter::update($rID, intval(SERVER_ID), $rSet, $db);
 				$rChanged[] = $rID;
+			} elseif (count($rSet) > 0) {
+				// The agent sends MAIN this state (stream.monitor): kept, not sent again.
+				StreamRuntime::keep(['stream_id' => $rID], $rSet, static fn (): bool => true);
 			}
 		}
 		if (count($rChanged) > 0) {
@@ -1759,12 +1789,13 @@ class StreamProcess {
 		$db = self::db();
 		$rStream = [];
 		$rLoopback = false;
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t1.type = 3 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
-		if ($db->num_rows() > 0) {
-			$rStream['stream_info'] = $db->get_row();
-			$db->query('SELECT * FROM `streams_servers` WHERE stream_id  = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
-			if ($db->num_rows() > 0) {
-				$rStream['server_info'] = $db->get_row();
+		// The channel and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+		$rChannel = StreamSource::channelRow(intval($rStreamID), $db);
+		if ($rChannel !== null) {
+			$rStream['stream_info'] = $rChannel;
+			$rServer = self::ownServerRow(intval($rStreamID), $db);
+			if ($rServer !== null) {
+				$rStream['server_info'] = $rServer;
 				$rMD5 = md5($rSource);
 				list($rServerID, $rSourcePath) = self::resolveChannelSource($rSource, $rServers);
 
@@ -2063,6 +2094,21 @@ class StreamProcess {
 	}
 
 	/**
+	 * This node's `streams_servers` row for a stream (startLoopback,
+	 * createChannelItem): with its runtime state from its own store once its
+	 * replica answers (StreamSource::local), else MAIN's row as before.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	private static function ownServerRow(int $rStreamID, object $db): ?array {
+		if (StreamSource::local()) {
+			return StreamSource::serverRow($rStreamID, null, $db);
+		}
+		$db->query('SELECT * FROM `streams_servers` WHERE stream_id  = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
+		return $db->num_rows() > 0 ? $db->get_row() : null;
+	}
+
+	/**
 	 * Start a loopback stream.
 	 *
 	 * @param int $rStreamID Stream id.
@@ -2073,12 +2119,13 @@ class StreamProcess {
 		$db = self::db();
 		self::clearStreamPidSegments($rStreamID);
 		$rStream = [];
-		$db->query('SELECT * FROM `streams` WHERE direct_source = 0 AND id = ?', $rStreamID);
-		if ($db->num_rows() > 0) {
-			$rStream['stream_info'] = $db->get_row();
-			$db->query('SELECT * FROM `streams_servers` WHERE stream_id  = ? AND `server_id` = ?', $rStreamID, SERVER_ID);
-			if ($db->num_rows() > 0) {
-				$rStream['server_info'] = $db->get_row();
+		// The stream and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+		$rPlain = StreamSource::plainRow($rStreamID, $db);
+		if ($rPlain !== null) {
+			$rStream['stream_info'] = $rPlain;
+			$rServer = self::ownServerRow($rStreamID, $db);
+			if ($rServer !== null) {
+				$rStream['server_info'] = $rServer;
 				if ($rStream['server_info']['parent_id'] != 0) {
 					// The key first: the relay hands it to the daemon when it
 					// registers its ingest, moments after it starts.

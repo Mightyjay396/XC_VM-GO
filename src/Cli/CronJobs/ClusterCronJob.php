@@ -4,8 +4,10 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ArtefactGrants;
 use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\ClusterEndpoint;
@@ -14,6 +16,7 @@ use XcVm\Domain\Cluster\CommandBus;
 use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\NonceStore;
+use XcVm\Domain\Cluster\StreamReplica;
 use XcVm\Domain\Cluster\TokenService;
 use XcVm\Domain\Server\ServerRepository;
 
@@ -24,9 +27,12 @@ use XcVm\Domain\Server\ServerRepository;
  * - the replay cache and single-use challenges past their 180 s go;
  * - enrolment codes nobody used, and decided requests after a day, go;
  * - the blocklist's change log keeps seven days (also with the API off);
- * - MAIN's old cluster API ports past their seven days go, and nginx's
- *   cluster config is rendered from the settings (also with the API off);
- * - the liveness loop runs once (the signals daemon runs it every second).
+ * - MAIN's old cluster API ports past their seven days go, and so do those
+ *   every node has moved off (ClusterEndpoint::release()); nginx's cluster
+ *   config is rendered from the settings (also with the API off);
+ * - the liveness loop runs once (the signals daemon runs it every second);
+ * - nodes whose agent downloads artefacts are granted the admin's off-air
+ *   videos they do not hold yet (ArtefactGrants::offerOffAir).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
  * the rest; there the job returns before touching anything, as the cluster
@@ -53,9 +59,10 @@ class ClusterCronJob implements CommandInterface {
 			return 0;
 		}
 		if (empty(SettingsManager::get('cluster_api_enabled'))) {
-			// The blocklist's change log is written either way; it is kept short.
-			// Ports kept before the API was switched off still expire.
-			foreach ([static fn() => BlocklistDelta::prune(), static fn() => self::endpoint()] as $rRun) {
+			// The blocklist's change log and the stream versions are written
+			// either way; they are kept short. Ports kept before the API was
+			// switched off still expire.
+			foreach ([static fn() => BlocklistDelta::prune(), static fn() => StreamReplica::prune(), static fn() => self::endpoint()] as $rRun) {
 				try {
 					$rRun();
 				} catch (\Throwable) {
@@ -79,7 +86,9 @@ class ClusterCronJob implements CommandInterface {
 			'enrol_codes' => static fn() => EnrolCodeService::prune(),
 			'commands' => static fn() => CommandBus::prune(),
 			'blocklist_changes' => static fn() => BlocklistDelta::prune(),
+			'stream_versions' => static fn() => StreamReplica::prune(),
 			'endpoint' => static fn() => self::endpoint(),
+			'artefacts' => static fn() => ArtefactGrants::offerOffAir(static fn() => ClusterCryptoFactory::create(), SettingsManager::getAll()),
 			// The signals daemon runs this every second; the minute is its fallback.
 			'liveness' => static function () {
 				if (LivenessService::tick(max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec') ?: 30)))) !== []) {
@@ -97,13 +106,17 @@ class ClusterCronJob implements CommandInterface {
 
 	/**
 	 * MAIN's old cluster API ports past their 7 days leave the settings, and
-	 * nginx's cluster config is rendered from the stored settings, as xc_vm
-	 * (the user this job runs as). Every minute, not only when a port
-	 * expires: a render that matches the files is a no-op, so this retries
-	 * one that failed and undoes one that raced a settings save.
+	 * so do those every node has moved off before then (every node heard on
+	 * the current policy, none on the port). nginx's cluster config is then
+	 * rendered from the stored settings, as xc_vm (the user this job runs
+	 * as). Every minute, not only when a port goes: a render that matches
+	 * the files is a no-op, so this retries one that failed and undoes one
+	 * that raced a settings save.
 	 */
 	public static function endpoint(): void {
-		ClusterEndpoint::prune(SettingsManager::getAll());
+		$rSettings = SettingsManager::getAll();
+		ClusterEndpoint::prune($rSettings);
+		ClusterEndpoint::release($rSettings);
 		ClusterNginxConfig::apply();
 	}
 }

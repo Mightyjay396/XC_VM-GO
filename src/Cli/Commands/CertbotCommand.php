@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Server\ServerRepository;
@@ -47,6 +48,13 @@ class CertbotCommand implements CommandInterface {
 
 		$rData = json_decode(base64_decode($rArgs[0]), true);
 		if ($rData['action'] == 'certbot_generate') {
+			// The admin's regenerate cleared MAIN's record first: a node in
+			// mode 2, which cannot read it, forgets its copy of it too. It
+			// does for MAIN's renewal (NodeCertbot) as well, which keeps its
+			// record: when certbot then writes no certificate, the node
+			// points nginx at the newest one it holds for the names and
+			// reports it, which mode 0 and 1 leave as it is.
+			NodeStateSink::forget('certbot_ssl');
 			if (file_exists(BIN_PATH . 'certbot/logs/xc_vm.log')) {
 				unlink(BIN_PATH . 'certbot/logs/xc_vm.log');
 			}
@@ -136,8 +144,15 @@ class CertbotCommand implements CommandInterface {
 				$rError = 3;
 			}
 			if (in_array($rError, [0, 1])) {
-				$db->query('SELECT `certbot_ssl` FROM `servers` WHERE `id` = ?;', SERVER_ID);
-				$rCertInfo = json_decode($db->get_row()['certbot_ssl'], true);
+				// MAIN's record of this node's certificate. A node in mode 2
+				// reaches no database of MAIN's: its copy of what it
+				// reported since this command began (none: forgotten above).
+				if (NodeRole::refusesConnects()) {
+					$rCertInfo = json_decode((string) NodeStateSink::reported('certbot_ssl'), true);
+				} else {
+					$db->query('SELECT `certbot_ssl` FROM `servers` WHERE `id` = ?;', SERVER_ID);
+					$rCertInfo = json_decode($db->get_row()['certbot_ssl'], true);
+				}
 				if (!$rCertInfo) {
 					$rSelectedDomain = [null, null];
 					foreach (scandir(BIN_PATH . 'certbot/config/live/') as $rDir) {

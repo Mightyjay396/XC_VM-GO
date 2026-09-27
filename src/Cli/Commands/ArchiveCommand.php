@@ -7,6 +7,7 @@ use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 
 /**
  * ArchiveCommand — records a live HLS stream into 1-minute .ts archive segments.
@@ -84,12 +85,12 @@ class ArchiveCommand implements CommandInterface {
 			return 0;
 		}
 		$this->logStatus('Detected source stream PID: ' . $rPID);
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t1.id = t2.stream_id AND t2.server_id = t1.tv_archive_server_id WHERE t1.`id` = ? AND t1.`tv_archive_server_id` = ? AND t1.`tv_archive_duration` > 0', $rStreamID, SERVER_ID);
-		if (0 >= $db->num_rows()) {
+		// The stream and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+		$rRow = StreamSource::workerRow($rStreamID, 'tv_archive', $db);
+		if ($rRow === null) {
 			$this->logStatus('Archive is disabled for this stream on current server, exiting.');
 			return 0;
 		}
-		$rRow = $db->get_row();
 		$this->logStatus('Archive duration is set to ' . $rRow['tv_archive_duration'] . ' day(s).');
 		if (ProcessManager::isRunning($rRow['tv_archive_pid'], PHP_BIN)) {
 			if (is_numeric($rRow['tv_archive_pid']) && 0 < $rRow['tv_archive_pid']) {

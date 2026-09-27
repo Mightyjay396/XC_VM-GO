@@ -2,7 +2,6 @@
 
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\NetworkUtils;
@@ -11,6 +10,7 @@ use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\AdminStreamToken;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -58,18 +58,26 @@ if (!empty(RequestManager::get('uitoken'))) {
 	}
 }
 
-$db = new DatabaseHandler();
-DatabaseFactory::set($db);
+// This node's stream row: MAIN's database (opened now, as before), or with
+// its replica and its own store none at all (StreamSource::local).
+$rLocal = StreamSource::local();
+$db = $rLocal ? DatabaseFactory::get() : DatabaseFactory::open();
 $rPassword = SettingsManager::get('live_streaming_pass');
 $rStreamID = intval(RequestManager::get('stream'));
 $rExtension = RequestManager::get('extension');
 $rWaitTime = 20;
-$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.`id` = ?', SERVER_ID, $rStreamID);
+if ($rLocal) {
+	$rChannelInfo = StreamSource::joined($rStreamID);
+} else {
+	$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.`id` = ?', SERVER_ID, $rStreamID);
+	$rChannelInfo = 0 < $db->num_rows() ? $db->get_row() : null;
+}
 
-if (0 < $db->num_rows()) {
+if ($rChannelInfo !== null) {
 	touch(SIGNALS_TMP_PATH . 'admin_' . intval($rStreamID));
-	$rChannelInfo = $db->get_row();
-	$db->close_mysql();
+	if (is_object($db)) {
+		$db->close_mysql();
+	}
 
 	if (file_exists(STREAMS_PATH . $rStreamID . '_.pid')) {
 		$rChannelInfo['pid'] = intval(file_get_contents(STREAMS_PATH . $rStreamID . '_.pid'));
@@ -88,7 +96,9 @@ if (0 < $db->num_rows()) {
 
 		if ($rChannelInfo['on_demand'] == 1) {
 			if (!StreamProcess::isWatched($rStreamID, $rChannelInfo['monitor_pid'])) {
-				DatabaseFactory::connect(); // closed above; the hand-over reads the stream's config
+				if (!$rLocal) {
+					DatabaseFactory::connect(); // closed above; the hand-over reads the stream's config
+				}
 				if (StreamProcess::startMonitor($rStreamID) === StreamProcess::MONITOR_FANOUT) {
 					// The daemon is the monitor, and writes no _.monitor file.
 					$rChannelInfo['monitor_pid'] = -1;
