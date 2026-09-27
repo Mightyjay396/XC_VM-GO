@@ -3433,10 +3433,28 @@ not a re-encoding of it.
   node's PHP can read it — `agent.json` is the file `ReplicaRecords::identity()` already parses.
   "MAIN sent none" is not a refusal and records nothing: MAIN sends the token without a lease
   whenever the extension signs none, and the node then keeps what it holds.
-- **It judges no clock.** Nothing here compares the lease to a time. The node's own clock is what a
-  lease exists to distrust, and the agent's MAIN-time offset comes from a challenge document nobody
-  signs (`Client.Challenge` checks `typ` and `cn` only), so an anchor worth fencing on does not
-  exist yet. `xc_agent lease` reports the window and says whose clock it is measured by.
+- **It judges no clock, and the clock a judgement needs is kept separately.** Nothing in the lease
+  path compares the lease to a time. What a fence would need is an anchor on MAIN's clock that
+  nothing unauthenticated can move, and `MainNowMs` was not it: it is also set from the pre-token
+  challenge, which carries no signature at all (`Client.Challenge` checks `typ` and `cn` only) — good
+  enough for stamping a request MAIN checks the window of, no basis for deciding a node may stop
+  serving viewers. The agent therefore also keeps `MainAnchorMs`:
+  - **Authenticated statements only** move it: a MAC'd, unboxed reply, a panel-signed denial, a
+    panel-signed re-key document.
+  - **It re-anchors on MAIN's own number**, not on what it has extrapolated to, so a replayed older
+    reply (an older number) is ignored while a fresh statement always wins, even when this machine's
+    clock has over-run. Between statements it advances on the process's monotonic clock, so moving
+    the machine's wall clock in either direction gains nothing.
+  - **A restart cannot start further back**: the highest MAIN time an authenticated statement carried
+    is kept in the state file (`main_seen_ms`, written at most once a minute), and the anchor resumes
+    from it and counts forward from the restart — undercounting a long outage rather than over, which
+    is the direction that serves viewers longer rather than shorter.
+  - It answers 0 until MAIN has ever been heard on that node, and a caller with a judgement to make
+    reads 0 as "no anchor", never as 1970.
+
+  `xc_agent lease` reports the window twice: against this machine's clock, saying MAIN vouches for
+  none of it, and against MAIN's clock as last heard — how much of the lease was certainly still
+  unspent then, which is what a fence would go by.
 
 **What the reading settled for the increment that enforces.** Four things were checked in the
 extension and the panel rather than assumed, and each one rules out a design that looked obvious:
