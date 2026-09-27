@@ -3300,6 +3300,37 @@ DATAPLANE (the data plane itself is not built), so every node today writes `set 
 MAIN's own `/api` keeps no toggle: what may retire it is every node being in mode 2 with the
 data plane on, which is a cluster-wide judgement and belongs with the rest of Phase 8.
 
+### The data plane's two local helpers (Phase 8, third increment)
+
+Two things a node's PHP cannot do for itself while it serves a relay or file request, and which
+the plan puts on the agent's local socket:
+
+- **`POST /v1/nonce`.** A parent must see each relay nonce once, or a sniffer's copied headers
+  replay inside the signature's window. MAIN has the cluster bus for that; a load balancer
+  serving as a parent has only its agent, so the window lives there: two buckets rotating on
+  use over 180 s, no goroutine and no timer, and a full window (100 000 nonces) **refuses**
+  rather than growing — a refused relay retries, an agent that ran out of memory does not.
+- **`POST /v1/file_digest`.** The owner of a file vouches for what it served with its *node*
+  key, which the agent holds and PHP does not. The agent signs `FileDigest`'s document — whose
+  keys PHP sorts, so the Go struct declares them in that order and a byte of difference would
+  fail the fetcher's verification — with the `digest` purpose, which the closed purpose set
+  already had.
+
+`Core\Cluster\AgentDataPlane` is PHP's half. Both calls answer null when the agent did not,
+and the caller must read that as "I cannot prove this" and refuse: a parent that cannot spend a
+nonce cannot tell a replay from a first attempt, and an owner that cannot have its digest
+signed must serve nothing. Nothing calls either yet, and nothing here reaches MAIN.
+
+**Why the rest of the relay half is still one change.** The tickets themselves belong in the R2
+`streams` record (its `tickets` slot is still null), and a ticket that changes every 12 h would
+change the record's hash — so a refresh would look like a stream change to every reader, resync
+the section and, before the plan's M17 re-spec, restart the encoders daily. Making the refresh
+invisible means excluding tickets from the record's version, teaching the delta path to carry
+them, and having the agent's loopback proxy swap them into the header it sends — the same change
+as the proxy and the loopback URL builders. It lands whole, and its acceptance (no encoder
+restart over 48 h, a refused MITM body, replayed headers rejected) is measured on a running
+fleet.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):
