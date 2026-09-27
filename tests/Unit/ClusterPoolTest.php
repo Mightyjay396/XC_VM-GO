@@ -367,7 +367,7 @@ final class ClusterPoolTest extends TestCase {
 		$rSrc = dirname(__DIR__, 2) . '/src/';
 
 		$this->assertMatchesRegularExpression('#^boot\(\) \{[^}]*^  rm -f \$SCRIPT/tmp/cluster_ready$[^}]*console\.php startup$#m', (string) file_get_contents($rSrc . 'service'), 'boot() removes the marker before startup runs status');
-		$this->assertMatchesRegularExpression('#function start\(\): int \{.*?ClusterPool::unmark\(\);.*?function stop\(#s', (string) file_get_contents($rSrc . 'Cli/Commands/ServiceCommand.php'), 'and so does the service command');
+		$this->assertMatchesRegularExpression('#ACTIONS = \[\'start\' => \'boot\'.*?ProcessRunner::passThrough\(\[\'/bin/sh\', \$rScript, \$rAction\]\)#s', (string) file_get_contents($rSrc . 'Cli/Commands/ServiceCommand.php'), 'and the service command runs that same boot(), rather than a second copy of it');
 
 		$rIndex = (string) file_get_contents($rSrc . 'Public/cluster/index.php');
 		$rOrder = [];

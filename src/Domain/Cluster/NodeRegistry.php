@@ -93,6 +93,18 @@ final class NodeRegistry {
 	 *
 	 * @param array<string, mixed> $rFields
 	 */
+	public static function update(int $rServerID, array $rFields): void {
+		if ($rFields === []) {
+			return;
+		}
+		$rFields['updated_at'] = ClusterClock::now();
+		$rSet = implode(', ', array_map(static fn($rKey) => '`' . $rKey . '` = ?', array_keys($rFields)));
+		self::db()->query('UPDATE `cluster_nodes` SET ' . $rSet . ' WHERE `server_id` = ?;', ...array_values($rFields), ...[$rServerID]);
+		if (NodeAuthCache::changes(array_keys($rFields))) {
+			NodeAuthCache::forget($rServerID);
+		}
+	}
+
 	/**
 	 * Do all the active nodes report a feature (their agent's `features` at
 	 * hello)? True with no active node at all: there is nobody to lose.
@@ -105,18 +117,6 @@ final class NodeRegistry {
 			}
 		}
 		return true;
-	}
-
-	public static function update(int $rServerID, array $rFields): void {
-		if ($rFields === []) {
-			return;
-		}
-		$rFields['updated_at'] = ClusterClock::now();
-		$rSet = implode(', ', array_map(static fn($rKey) => '`' . $rKey . '` = ?', array_keys($rFields)));
-		self::db()->query('UPDATE `cluster_nodes` SET ' . $rSet . ' WHERE `server_id` = ?;', ...array_values($rFields), ...[$rServerID]);
-		if (NodeAuthCache::changes(array_keys($rFields))) {
-			NodeAuthCache::forget($rServerID);
-		}
 	}
 
 	/**

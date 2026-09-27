@@ -3331,6 +3331,26 @@ as the proxy and the loopback URL builders. It lands whole, and its acceptance (
 restart over 48 h, a refused MITM body, replayed headers rejected) is measured on a running
 fleet.
 
+### Three launches that were shell lines (Phase 0, seventh increment)
+
+Semgrep blocked three lines these increments touched, and it was right to: each built a command
+by concatenation (`php.lang.security.exec-use`). None was reachable with a value an attacker
+supplies — a stream id typed `int`, a word from a four-entry allowlist, constant paths — but a
+command assembled as text is a command someone will later interpolate into.
+
+`Core\Process\ProcessRunner` already ran a program from an argv list with no shell in between,
+and only waited for it. It gains the two shapes the callers needed:
+
+- **`start()`** — what a line ending in `&` did. `proc_close()` waits, so a detached child needs
+  one shell to background it and exit, leaving the child to init; the script is constant
+  (`"$0" "$@" >/dev/null 2>&1 &`) and the argv is the shell's own arguments, never interpolated
+  into it. It answers whether the launch was handed off, not whether the program exists — the
+  callers learn that as they always did, from the pid file that never appears. The queue
+  daemon's channel build and `startup`'s cache pass use it.
+- **`passThrough()`** — an operator's own command: descriptors 1 and 2 are left out of the spec,
+  which inherits them, so the boot script's output stays where `passthru()` put it, and the exit
+  status comes back. `console.php service` uses it.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

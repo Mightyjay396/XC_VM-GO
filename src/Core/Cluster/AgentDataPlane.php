@@ -2,8 +2,6 @@
 
 namespace XcVm\Core\Cluster;
 
-use XcVm\Core\Cluster\Crypto\FileDigest;
-
 /**
  * The two things a node's PHP cannot do for itself while it serves a data-plane
  * request, and asks its agent for over the local socket (plan, section 6.6):
@@ -19,7 +17,7 @@ use XcVm\Core\Cluster\Crypto\FileDigest;
  *   `NonceWindow` (180 s) — longer than the window a signature is accepted in.
  * - **The file digest.** The owner of a file vouches for what it served with
  *   its *node* key, which the agent holds and PHP does not; the fetcher
- *   verifies the same document ({@see FileDigest}).
+ *   verifies the same document ({@see \XcVm\Core\Cluster\Crypto\FileDigest}).
  *
  * Both answer null when the agent did not: no agent, no socket, a refusal. A
  * caller must treat null as "I cannot prove this" and refuse the request — a
