@@ -410,11 +410,11 @@ Each change raises `policy_ver`, which the heartbeat reply carries, as before.
 **Limits.**
 
 - Nodes that knew only an old address that no longer reaches MAIN are stranded. They need `cluster_main_host` or a private route (plan D21), or re-enrolment by code.
-- An old port or URL is released after 7 days, not once every node uses the new URL: which URL a node uses is not recorded (Phase 2). Since the sixth Phase 2 increment, a kept port and the kept URLs on it go sooner once every node uses the new URLs, for an agent that says which policy it dials.
+- An old port or URL is released after 7 days, not once every node uses the new URL: which URL a node uses is not recorded (Phase 2). Since the sixth Phase 2 increment, a kept port and the kept URLs on it go sooner once every node uses the new URLs, for an agent that says which policy it dials (none does yet).
 - A settings-side change (`cluster_transport`, `cluster_main_host`) still raises `cluster_policy_ver` without keeping the old URL.
 - `setup.php` writes MAIN's `server_ip` at first setup, before any node exists, and announces nothing.
 - An admin's save and the root cron's rewrite in the same moment can race on the lists. The later write wins, and the version goes up twice.
-- nginx holds an old port for its full 7 days: the HTTP broadcast port since the first increment, and now an old HTTPS port. An admin who moves MAIN off a port to free it for another program must wait that long. Until then, the program cannot bind the port. If the program binds the port first after a restart, nginx fails to start. Clearing the port from `cluster_legacy_ports`, or its URL from `cluster_legacy_urls`, releases it at the next `cron:cluster` render. Since the sixth Phase 2 increment, nginx closes the port sooner once every node has moved off it.
+- nginx holds an old port for its full 7 days: the HTTP broadcast port since the first increment, and now an old HTTPS port. An admin who moves MAIN off a port to free it for another program must wait that long. Until then, the program cannot bind the port. If the program binds the port first after a restart, nginx fails to start. Clearing the port from `cluster_legacy_ports`, or its URL from `cluster_legacy_urls`, releases it at the next `cron:cluster` render. Since the sixth Phase 2 increment, nginx closes the port sooner once every node has moved off it and says which policy it dials.
 
 Tests:
 
@@ -1604,21 +1604,26 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 
 **Before.** A kept old port (`cluster_legacy_ports`) or old URL (`cluster_legacy_urls`) stayed for its full 7 days. Plan §3 keeps it "until every node uses the new URL, or 7 days", but MAIN recorded neither the policy a node dials nor the URL it used. `cluster_nodes.policy_ver` has existed since migration 029, and nothing wrote it. The agent sends neither, at master or on the newer agent branch. Its hello carries `instance_id`, `boot_id`, `agent_version` and `features`, and its heartbeat `root_ready`, `telemetry` and `conn_digest`.
 
-**What MAIN records.** `ClusterEndpoint::nodeUses()` returns the `cluster_nodes` fields that changed. The hello writes them with its other fields, in its one `UPDATE`. The heartbeat writes them only when one changed, so a heartbeat on the bus still writes nothing to MySQL.
+**What MAIN records.** `ClusterEndpoint::nodeUses()` returns the `cluster_nodes` fields that changed. The hello writes them with its other fields, in its one `UPDATE`. The heartbeat writes them only when one changed, so a heartbeat on the bus still writes nothing to MySQL unless the node's version or port changed. Both are recorded in every mode and state the heartbeat is served in.
 
 - `policy_ver` is the payload's `policy_ver` when that is a JSON integer from 0 to 4294967295, and 0 (unknown) otherwise. That covers an agent that does not send it, including one downgraded from an agent that did.
 - `main_port` (migration 046, `smallint(5) unsigned`, NULL by default, after `policy_ver`) is the MAIN port nginx took the request on. `Public/cluster/index.php` passes it to `ClusterApi` as `port`, from the `SERVER_PORT` that nginx's `fastcgi_params` set to `$server_port`. The address is not used: nginx listens on every address, and behind NAT the local address says nothing of the one the node dialled. In MAIN's nginx each port is one listener, plain HTTP or TLS, so the port alone tells a kept port from a current one. Before migration 046 the row has no `main_port`, and only `policy_ver` is written.
 
-**When a port goes.** `ClusterEndpoint::release()` runs from `cron:cluster` every minute, with the API on or off: in `ClusterCronJob::endpoint()`, after `prune()` and before `ClusterNginxConfig::apply()`. It reads the kept lists and `cluster_policy_ver` again from the database (`stored()`), then every `cluster_nodes` row in mode ≥ 1 that is not revoked. It releases nothing when:
+**When a port goes.** `ClusterEndpoint::release()` runs from `cron:cluster` every minute, with the API on or off: in `ClusterCronJob::endpoint()`, after `prune()` and before `ClusterNginxConfig::apply()`. It reads the kept lists, `cluster_policy_ver` and `cluster_transport` again from the database (`stored()`, the transport as an extra column, not from the settings cache, which may be 20 s old). It then reads every `cluster_nodes` row that is not revoked and whose server still exists (`EXISTS` on `servers`). `ServerRepository::deleteById()` leaves the row, and a deleted LB is no node of MAIN's. It releases nothing when:
 
 - the rows cannot be read;
+- an enrolment by code may still dial an old URL: a `cluster_enrol_codes` row has not expired (`exp` > now, used or not), or a `cluster_enrol_requests` row is `pending_approval` and less than `EnrolCodeService::TTL` (30 min) old. The code carries one MAIN URL, the policy's first when `cluster:enrol-code` ran. The agent sends `enrol_code` to that URL alone, then polls `enrol_code_status` on it every 10 s for up to 30 minutes (`EnrolWait`). Once the admin approves, the node's `enrolling` row holds everything until its enrolment completes or expires (below). Either table that cannot be read also releases nothing;
 - a node is offline or unknown by `NodeHealth::state()` with `cluster_offline_after_sec`: silent past that window, or never heard. Silence counts from `last_seen_at` alone, not from `ready_at` as for liveness: a node MAIN has not heard since its own restart has said nothing since about the URL it uses. A suspect node (silent from 10 s to the window) counts as heard;
 - a node's `policy_ver` is not the current `cluster_policy_ver`. It may be behind, 0 (an agent that does not say), or above (a MAIN restored from an older backup never announced that version);
 - a node has no `main_port`: before migration 046, or an nginx that passes no `SERVER_PORT`.
 
-An `enrolling` row past its `enrol_deadline` is skipped. `enrol_complete` refuses it with `ENROL_EXPIRED`, and a new enrolment writes the current URLs into `cluster.json`. A row still within its deadline has never been heard, so it holds everything.
+The last three apply to rows in mode ≥ 1. A node in mode 0 is not waited for: no change is announced for it (`nodesListening()`), and its version is not asked. Its agent still heartbeats MAIN's URLs in every mode, though, and a switch back to mode 1 reaches it only in a heartbeat reply. So while it is heard (not offline or unknown), the port it last reached MAIN on is in use.
 
-Otherwise each kept port that no such node's `main_port` names is released. It leaves `cluster_legacy_ports`, and every kept URL on that port leaves `cluster_legacy_urls`. A port a node still reaches MAIN on stays: that node has the new policy, but its new URL fails, so it dials the kept one. With no such node at all (every one revoked or in mode 0), everything kept goes.
+An `enrolling` row past its `enrol_deadline` is skipped. `enrol_complete` refuses it with `ENROL_EXPIRED`, and a new enrolment writes the current URLs into `cluster.json`. A row still within its deadline, the last second included (`enrol_complete` refuses only once now > `enrol_deadline`), has never been heard, so it holds everything.
+
+Otherwise each kept port that no such node's `main_port` names is released. It leaves `cluster_legacy_ports`, and every kept URL on that port leaves `cluster_legacy_urls`. A port a node still reaches MAIN on stays, with the kept URLs on it: that node has the new policy, but its new URL fails, so it dials the kept one. With no such node at all (every one revoked, deleted, or in mode 0 and not heard), everything kept goes.
+
+**Under `https_required`** a kept plain-HTTP port (`cluster_legacy_ports`) or `http://` URL is never released early. It keeps its 7 days. The nodes reach MAIN over HTTPS alone, so none reports a plain port, and the policy lists neither. Yet a node's way back when HTTPS fails is the signed challenge over the plain-HTTP URLs it has known (the agent's `HTTPURLs`), which an admin's switch back to `auto` relies on. Only the ports of kept `https://` URLs may go, and only a kept `https://` URL leaves the list.
 
 - The write is one `UPDATE` that raises `cluster_policy_ver`, as `prune()`'s does. It applies only over the two lists as read (`WHERE COALESCE(…, '') = ?` on both), and a read-back checks that it did. A change stored between the read and the write keeps what it kept. `release()` then writes nothing, and the next minute tries again.
 - The audit event is `cluster.endpoint_released`, with `ports` (released), `kept`, `kept_urls` and `policy_ver` (the version every node had adopted).
@@ -1650,6 +1655,8 @@ In a fleet of agents that send `policy_ver`, an old port therefore goes a minute
 
 **Differs from the plan.**
 
+- **Not only nodes hold a port.** An enrolment code that has not expired, or a request made with one that waits for approval, holds every kept port, and so does `https_required` for the plain-HTTP ones. The plan names only the nodes.
+- **A node in mode 0 holds the port it is heard on**, though the plan's announcements count only nodes in mode ≥ 1.
 - **The current version, not the announcing one.** It is enough for every node to dial a `policy_ver` at or above the one that announced the change. MAIN keeps no version per kept entry, so it compares with the current `cluster_policy_ver`, which is at or above every announcing version. That is never less strict. Nodes reach the current version within about 2 s of a bump. A bump in the same pass (`prune()`, or the release itself) delays the next release by a minute.
 - **"Uses the new URL"** means heard, dialling the current policy, and last seen on another port. Which URL a node dialled is not recorded. The port is what a release closes.
 - **Released by `cron:cluster`**, up to a minute after the fleet has moved, not at the moment the last node moves.
@@ -1657,11 +1664,15 @@ In a fleet of agents that send `policy_ver`, an old port therefore goes a minute
 
 **Limits.**
 
-- A single node that is offline, still enrolling, or on an agent that does not send `policy_ver` holds every kept port and URL for their 7 days.
+- No agent sends `policy_ver` yet, neither master nor the newer agent branch. Until the Go half ships, every kept port and URL keeps its 7 days. After that, a node on an agent that does not send it holds them for their 7 days. A node that is offline holds them until it is heard on the current policy, and one still enrolling until its enrolment completes or its deadline passes.
+- An enrolment code holds every kept port and URL while it lives (30 minutes), and a request made with it for up to 30 minutes more while it waits for approval. Without that, a code issued before a change would lose MAIN a minute or two after it.
+- Under `https_required`, kept plain-HTTP ports and URLs keep their 7 days (above).
+- A node in mode 0 holds a port only while it is heard. One that is offline at the release and comes back only on the old port finds it closed. With no node in mode ≥ 1, nothing is kept for it in the first place (`nodesListening()`).
+- A deleted LB's `cluster_nodes` row stays, since nothing removes it, but holds nothing. An agent still running on that LB loses MAIN when its port goes.
 - `main_port` is the port of the node's latest hello or heartbeat. The other lanes (commands, events) are not observed; today they dial in the same order, with the same backoff.
 - A node that goes back to a kept port after its release finds it closed, as after the 7 days. It still holds the current URLs of the policy it adopted.
 - A kept address URL on the current port stays for its 7 days while nodes use that port (above).
-- The Cluster Nodes page shows neither `policy_ver` nor `main_port`.
+- The Cluster Nodes page shows neither `policy_ver` nor `main_port`. An early release shows only as the `cluster.endpoint_released` audit event.
 
 **Compatibility.**
 
@@ -1671,16 +1682,23 @@ In a fleet of agents that send `policy_ver`, an old port therefore goes a minute
 **Tests.**
 
 - `ClusterEndpointReleaseTest`:
-  - a port released once the only node has adopted the version and moved to the new port, with a node in mode 0 and a revoked one ignored, and the audit;
+  - a port released once the only node has adopted the version and moved to the new port, with a node in mode 0 never heard and a revoked one ignored, and the audit;
   - a node behind, or ahead of MAIN's version, holding the port, and a later version still releasing;
-  - an offline node, one never heard, one with no recorded port and one still enrolling each holding the port. An enrolment past its deadline does not hold it, a suspect node counts as heard, and the offline window follows `cluster_offline_after_sec`;
+  - an offline node, one never heard, one with no recorded port and one still enrolling (its last second included) each holding the port. An enrolment past its deadline does not hold it, a suspect node counts as heard, and the offline window follows `cluster_offline_after_sec`, bounded to 10–300 s;
+  - a quarantined node waited for like any other;
+  - a node in mode 0 holding the port it is heard on, and not once offline;
+  - a row whose server was deleted holding nothing;
+  - an enrolment code that has not expired, then a request made with one that waits for approval, holding everything until 30 minutes after the request;
   - a node still on the old port keeping it while an old HTTPS port no node uses goes, then going once it moves and every node has fetched the new version;
+  - the reverse: an old HTTP port going while the kept `https://` URL on the port a node still uses stays;
+  - under `https_required`, a kept plain port and `http://` URL staying while a kept `https://` URL goes, then going after a switch back to `auto`;
+  - the port read from nginx's `SERVER_PORT` (`$server_port` in `fastcgi_params`), not the node's source port;
   - an old address on the current port staying while nodes use the port;
   - an agent that says nothing: nothing released early, and `prune()` still releasing after 7 days;
   - no node left: everything released;
   - a node read that fails or throws: nothing released;
   - a change stored between the read and the write: kept, with no release;
-  - `nodeUses()`: the fields that changed, 0 for a missing or malformed version, no port without one from nginx or without the column;
+  - `nodeUses()`: the fields that changed, 0 for a missing or malformed version, 4294967295 accepted, no port without one from nginx or without the column;
   - migration 046 and `database.sql`.
 - `ClusterApiTest`:
   - hello and heartbeat record the version and the port;
@@ -1698,7 +1716,7 @@ In a fleet of agents that send `policy_ver`, an old port therefore goes a minute
 - `cl:hb`, a hash with one field per server id: `<heard ms>:<clock offset ms>:<root_ready 0|1|->:<telemetry heard ms>:<authoritative 0|1>:<gen>`. `heard` is MAIN's clock when it handled the heartbeat, as `last_seen_at` was. `gen` is the enrolment the heartbeat was authenticated for. A heartbeat without `root_ready` or `telemetry` keeps the last ones of the same `gen` (`-`: never sent). No TTL.
 - `cl:tel:<sid>`, the telemetry document: `{"at": heard ms, "auth": 0|1, "telemetry": {…}}`, with a 10 min TTL. `auth` says whether the node was in mode ≥ 1 with TELEMETRY on when MAIN heard it. It is encoded with `JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION`, so the flush reads back exactly what the heartbeat carried.
 
-Authentication still reads the node and its epoch (two SELECTs). `TokenService::markUsed()` no longer writes for an epoch that is already the node's current one: every newer epoch is minted above the current one, and an epoch becomes current only once its `used` flag is written, so that epoch was marked. So a heartbeat on the bus writes nothing to MySQL.
+Authentication still reads the node and its epoch (two SELECTs). `TokenService::markUsed()` no longer writes for an epoch that is already the node's current one: every newer epoch is minted above the current one, and an epoch becomes current only once its `used` flag is written, so that epoch was marked. So a heartbeat on the bus writes nothing to MySQL. Since the sixth Phase 2 increment it writes `cluster_nodes` when the node's `policy_ver` or MAIN port changed.
 
 **The flusher.** `HeartbeatService::flush()` runs at the start of every `LivenessService::tick()`: every second in MAIN's signals daemon, and each minute from `cron:cluster`. One flusher at a time holds `cl:flush_lock` (`SET NX`, 10 s); another one only reads. Per node:
 - **`cluster_nodes`** gets `last_seen_at`, `clock_offset_ms`, `root_ready` (once ever sent) and `updated_at` (heard, in seconds). This happens when the heartbeat differs from the one last flushed and one of these holds:

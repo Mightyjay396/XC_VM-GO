@@ -3,7 +3,8 @@
 use PHPUnit\Framework\TestCase;
 
 /**
- * The cluster schema exists twice: as migrations 028–043 for upgrades and in
+ * The cluster schema exists twice: as the core migrations from 028 on for
+ * upgrades (028–043, then later ones that ALTER a cluster table) and in
  * database.sql for fresh installs. Both were loaded into MariaDB 10.11 and
  * compared column by column when written; this test keeps them from drifting
  * where CI has no database.

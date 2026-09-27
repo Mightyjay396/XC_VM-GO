@@ -655,6 +655,10 @@ final class ClusterNginxConfigTest extends TestCase {
 	 */
 	public function testCronReleasesAnOldPortOnceEveryNodeUsesTheNewUrl(): void {
 		$this->rDb->exec("CREATE TABLE `cluster_nodes` (`server_id` INTEGER PRIMARY KEY, `state` varchar(16) NOT NULL DEFAULT 'active', `mode` int NOT NULL DEFAULT 1, `enrol_deadline` int DEFAULT NULL, `last_seen_at` bigint DEFAULT NULL, `policy_ver` int NOT NULL DEFAULT 0, `main_port` int DEFAULT NULL, `updated_at` int NOT NULL DEFAULT 0)");
+		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY)');
+		$this->rDb->exec('INSERT INTO `servers` (`id`) VALUES (2)');
+		$this->rDb->exec('CREATE TABLE `cluster_enrol_codes` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `exp` int NOT NULL)');
+		$this->rDb->exec('CREATE TABLE `cluster_enrol_requests` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `state` varchar(20) NOT NULL, `created_at` int NOT NULL)');
 		$this->store('cluster_policy_ver', 2);
 		$this->store('cluster_legacy_ports', (string) json_encode([8080 => $this->rNow + ClusterEndpoint::GRACE]));
 		$this->rDb->query('INSERT INTO `cluster_nodes` (`server_id`, `last_seen_at`, `policy_ver`, `main_port`) VALUES (2, ?, 1, 8080)', $this->rNow * 1000 - 1000);

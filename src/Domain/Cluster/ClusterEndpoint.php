@@ -40,8 +40,10 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   (release()): every node that may use MAIN's URLs is heard, says in its
  *   hello and heartbeat that it dials the current policy
  *   (`cluster_nodes.policy_ver`, nodeUses()), and last reached MAIN on
- *   another port (`cluster_nodes.main_port`, nginx's `$server_port`). An
- *   agent that does not say which policy it dials keeps the 7 days.
+ *   another port (`cluster_nodes.main_port`, nginx's `$server_port`), and
+ *   no enrolment code may still dial an old URL. An agent that does not say
+ *   which policy it dials keeps the 7 days, and so does a kept plain-HTTP
+ *   port or URL under `https_required`.
  */
 final class ClusterEndpoint {
 	use DatabaseAware;
@@ -247,18 +249,25 @@ final class ClusterEndpoint {
 	/**
 	 * Release kept ports before their 7 days once every node uses the new
 	 * URLs (plan §3). Every node that may use MAIN's URLs (mode ≥ 1, not
-	 * revoked) must be heard, say it dials the current policy (which lists
-	 * the new URLs first, at a version at or above the one that announced
-	 * each change) and have reached MAIN on a known port (portsInUse()).
-	 * Then each kept port none of them last reached MAIN on goes, from the
-	 * kept ports and with every kept URL on it. The policy version goes up,
-	 * and the caller renders the nginx config again (cron:cluster) so nginx
-	 * closes the port. Returns whether one went.
+	 * revoked, its server not deleted) must be heard, say it dials the
+	 * current policy (which lists the new URLs first, at a version at or
+	 * above the one that announced each change) and have reached MAIN on a
+	 * known port, and no enrolment by code may be under way (portsInUse()).
+	 * Then each kept port none of them, nor a node in mode 0 still heard,
+	 * last reached MAIN on goes, from the kept ports and with every kept URL
+	 * on it. The policy version goes up, and the caller renders the nginx
+	 * config again (cron:cluster) so nginx closes the port. Returns whether
+	 * one went.
 	 *
-	 * @param array<string, mixed> $rSettings The loaded settings; the endpoint state is read again (stored()).
+	 * Under `https_required` a kept plain-HTTP port or http:// URL keeps its
+	 * 7 days: the nodes reach MAIN over HTTPS alone, so none reports a plain
+	 * port, yet a node's way back when HTTPS fails is the signed challenge
+	 * over the plain-HTTP URLs it has known.
+	 *
+	 * @param array<string, mixed> $rSettings The loaded settings; the endpoint state and the transport are read again (stored()).
 	 */
 	public static function release(array $rSettings): bool {
-		$rSettings = self::stored($rSettings);
+		$rSettings = self::stored($rSettings, ['cluster_transport']);
 		$rPorts = self::legacyPorts($rSettings);
 		$rUrls = self::legacyUrls($rSettings);
 		if ($rPorts === [] && $rUrls === []) {
@@ -269,11 +278,18 @@ final class ClusterEndpoint {
 		if ($rInUse === null) {
 			return false;
 		}
+		// The ports that may go, and the kept URLs on each: under
+		// https_required, only those of the kept https:// URLs.
+		$rPlainStays = (string) ($rSettings['cluster_transport'] ?? 'auto') === 'https_required';
+		$rCandidates = $rPlainStays ? [] : array_keys($rPorts);
 		$rUrlPorts = [];
 		foreach (array_keys($rUrls) as $rUrl) {
-			$rUrlPorts[$rUrl] = (self::parseUrl($rUrl) ?? ['', 0])[1];
+			$rParsed = self::parseUrl($rUrl) ?? ['', 0];
+			if (!$rPlainStays || $rParsed[0] === 'https') {
+				$rUrlPorts[$rUrl] = $rCandidates[] = $rParsed[1];
+			}
 		}
-		$rFree = array_values(array_diff(array_unique(array_merge(array_keys($rPorts), array_values($rUrlPorts))), $rInUse));
+		$rFree = array_values(array_diff(array_unique($rCandidates), $rInUse, $rPlainStays ? array_keys($rPorts) : []));
 		if ($rFree === []) {
 			return false;
 		}
@@ -324,13 +340,34 @@ final class ClusterEndpoint {
 	 * say), with no port recorded (before migration 046, or no SERVER_PORT
 	 * from nginx), or the nodes cannot be read. An enrolment past its
 	 * deadline can no longer complete, and a new one sends the current URLs.
+	 * A row whose server was deleted is no node of MAIN's.
+	 *
+	 * Also null while an enrolment by code may still dial the one URL its
+	 * code carries (ClusterEnrolCodeCommand: the policy's first when it was
+	 * issued): a code that has not expired, or a request made with one that
+	 * waits for the admin's approval, which the agent polls for as long as a
+	 * code lives (EnrolCodeService::TTL). Once approved, the node's row holds
+	 * the ports until its enrolment completes or expires.
+	 *
+	 * A node in mode 0 holds only the port it was last heard on, while it is
+	 * heard: no change waits for it (nodesListening()), but its agent still
+	 * heartbeats MAIN's URLs, and a later mode reaches it in the replies.
 	 *
 	 * @return list<int>|null
 	 */
 	private static function portsInUse(int $rVer, int $rOfflineAfterSec): ?array {
+		$rNow = ClusterClock::now();
 		try {
 			$rDb = self::db();
-			if (!$rDb->query("SELECT * FROM `cluster_nodes` WHERE `mode` >= 1 AND `state` <> 'revoked';")) {
+			foreach ([
+				['SELECT 1 FROM `cluster_enrol_codes` WHERE `exp` > ? LIMIT 1;', $rNow],
+				["SELECT 1 FROM `cluster_enrol_requests` WHERE `state` = 'pending_approval' AND `created_at` > ? LIMIT 1;", $rNow - EnrolCodeService::TTL],
+			] as [$rQuery, $rSince]) {
+				if (!$rDb->query($rQuery, $rSince) || $rDb->num_rows() > 0) {
+					return null;
+				}
+			}
+			if (!$rDb->query("SELECT * FROM `cluster_nodes` WHERE `state` <> 'revoked' AND EXISTS (SELECT 1 FROM `servers` WHERE `servers`.`id` = `cluster_nodes`.`server_id`);")) {
 				return null;
 			}
 			$rNodes = (array) $rDb->get_rows();
@@ -339,11 +376,18 @@ final class ClusterEndpoint {
 		}
 		$rPorts = [];
 		foreach ($rNodes as $rNode) {
-			if ($rNode['state'] === 'enrolling' && ClusterClock::now() > (int) ($rNode['enrol_deadline'] ?? 0)) {
+			$rSeen = isset($rNode['last_seen_at']) ? (int) $rNode['last_seen_at'] : null;
+			$rHeard = !in_array(NodeHealth::state($rSeen, 0, ClusterClock::nowMs(), $rOfflineAfterSec), ['offline', 'unknown'], true);
+			if ((int) $rNode['mode'] < 1) {
+				if ($rHeard && !empty($rNode['main_port'])) {
+					$rPorts[] = (int) $rNode['main_port'];
+				}
 				continue;
 			}
-			$rSeen = isset($rNode['last_seen_at']) ? (int) $rNode['last_seen_at'] : null;
-			if (in_array(NodeHealth::state($rSeen, 0, ClusterClock::nowMs(), $rOfflineAfterSec), ['offline', 'unknown'], true) || (int) ($rNode['policy_ver'] ?? 0) !== $rVer || empty($rNode['main_port'])) {
+			if ($rNode['state'] === 'enrolling' && $rNow > (int) ($rNode['enrol_deadline'] ?? 0)) {
+				continue;
+			}
+			if (!$rHeard || (int) ($rNode['policy_ver'] ?? 0) !== $rVer || empty($rNode['main_port'])) {
 				return null;
 			}
 			$rPorts[] = (int) $rNode['main_port'];
@@ -355,18 +399,20 @@ final class ClusterEndpoint {
 	 * $rSettings with the endpoint state read again from the database: a
 	 * settings save, cron:cluster or cron:root_signals may have stored it
 	 * after this process loaded its settings, and a list written back from a
-	 * stale copy would lose what they kept.
+	 * stale copy would lose what they kept. $rMore names other columns to
+	 * read again.
 	 *
 	 * @param array<string, mixed> $rSettings
+	 * @param list<string> $rMore
 	 * @return array<string, mixed>
 	 */
-	public static function stored(array $rSettings): array {
+	public static function stored(array $rSettings, array $rMore = []): array {
 		try {
 			$rDb = self::db();
 			if ($rDb->query('SELECT * FROM `settings` LIMIT 1;')) {
 				$rRow = $rDb->get_row();
 				if (is_array($rRow)) {
-					$rSettings = array_intersect_key($rRow, array_flip(self::STATE)) + $rSettings;
+					$rSettings = array_intersect_key($rRow, array_flip(array_merge(self::STATE, $rMore))) + $rSettings;
 				}
 			}
 		} catch (\Throwable) {
