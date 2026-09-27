@@ -28,7 +28,8 @@ use XcVm\Domain\Server\ServerRepository;
  *                       and checks its size and SHA-256 against MAIN's signed
  *                       grant, and the payload names that copy as `archive`
  *                       (with the grant as `artefact`); it is checked again
- *                       here and nothing is pulled from MAIN.
+ *                       here, refused and audited as an artefact when it is
+ *                       not the grant's, and nothing is pulled from MAIN.
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -48,7 +49,7 @@ class ModuleInstallCommand implements CommandInterface {
 	public function execute(array $rArgs): int {
 		register_shutdown_function(function () {
 			global $db;
-			if (is_object($db)) {
+			if (is_object($db) && method_exists($db, 'close_mysql')) {
 				$db->close_mysql();
 			}
 		});
@@ -82,9 +83,10 @@ class ModuleInstallCommand implements CommandInterface {
 			} elseif (isset($rPayload['archive'])) {
 				// Staged by cluster:root from MAIN's grant: only that copy, only its bytes.
 				$rStaged = (string) $rPayload['archive'];
-				$rRefused = ArtefactStage::stagedArchive($rStaged, is_array($rPayload['artefact'] ?? null) ? $rPayload['artefact'] : null);
+				$rGrant = is_array($rPayload['artefact'] ?? null) ? $rPayload['artefact'] : null;
+				$rRefused = ArtefactStage::stagedArchive($rStaged, $rGrant);
 				if ($rRefused !== null) {
-					echo "module:install: {$rRefused}.\n";
+					echo 'module:install: ' . ArtefactStage::refuseGrant($rGrant ?? [], $rRefused) . "\n";
 					return 1;
 				}
 				echo "Installing custom module '{$rName}' v{$rVersion} from the archive MAIN granted...\n";

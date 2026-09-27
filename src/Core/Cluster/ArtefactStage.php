@@ -54,6 +54,8 @@ final class ArtefactStage {
 
 	private static ?string $rVideos = null;
 
+	private static ?string $rAgent = null;
+
 	/**
 	 * The root artefact the action cluster:root runs now was staged as, while
 	 * it runs (withStaged()); null otherwise, and always on the signals path.
@@ -62,10 +64,11 @@ final class ArtefactStage {
 	 */
 	private static ?array $rCurrent = null;
 
-	/** Tests: other directories; null restores the defaults. */
-	public static function useDirs(?string $rDownloads, ?string $rVideos): void {
+	/** Tests: other directories (and agent binary); null restores the defaults. */
+	public static function useDirs(?string $rDownloads, ?string $rVideos, ?string $rAgent = null): void {
 		self::$rDownloads = $rDownloads;
 		self::$rVideos = $rVideos;
+		self::$rAgent = $rAgent;
 	}
 
 	/** Where the agent writes what it downloaded, one file per command: `<cmd_id>`. */
@@ -81,6 +84,11 @@ final class ArtefactStage {
 	/** Where the node keeps the off-air videos MAIN granted it. */
 	public static function videoDir(): string {
 		return self::$rVideos ?? ((defined('VIDEO_PATH') ? VIDEO_PATH : '/home/xc_vm/content/video/') . 'cluster/');
+	}
+
+	/** The xc_agent binary run.sh starts, which `agent_binary` replaces. */
+	public static function agentBinary(): string {
+		return self::$rAgent ?? ((defined('BIN_PATH') ? BIN_PATH : '/home/xc_vm/bin/') . 'xc_agent/xc_agent');
 	}
 
 	/**
@@ -200,6 +208,7 @@ final class ArtefactStage {
 		}
 		$rStage = self::stageDir();
 		if (!self::ownStage($rStage)) {
+			self::spend($rGrant['cmd_id']);
 			return self::refuse($rCmd, 'root\'s stage ' . $rStage . ' is not root\'s alone');
 		}
 		$rWhy = 'the agent\'s directory is not the agent\'s';
@@ -251,6 +260,20 @@ final class ArtefactStage {
 		return self::$rCurrent;
 	}
 
+	/**
+	 * Remove the agent's download of a command root refused before staging
+	 * it (a replay, an expired command, a bad signature), so it does not stay
+	 * for the agent's 25 hours: only `<cmd_id>` (32 hex) in the agent's own
+	 * directory, as the agent's user, which the agent could remove itself.
+	 */
+	public static function spendRefused(string $rDoc): void {
+		$rCmd = json_decode($rDoc, true);
+		$rCmdID = is_array($rCmd) && is_array($rCmd['args']['artefact'] ?? null) ? ($rCmd['cmd_id'] ?? null) : null;
+		if (is_string($rCmdID) && preg_match('/^[0-9a-f]{32}\z/', $rCmdID)) {
+			self::spend($rCmdID);
+		}
+	}
+
 	/** Remove a staged copy once its action ran. */
 	public static function discard(array $rStaged): void {
 		@unlink((string) $rStaged['path']);
@@ -268,7 +291,9 @@ final class ArtefactStage {
 	/**
 	 * `agent_binary` (root): install the staged, checked agent binary where
 	 * run.sh starts it, as the agent's user (the directory is xc_vm's), from
-	 * root's copy. It is checked again as it is written, then renamed in.
+	 * root's copy. It is checked again as it is written aside, run once there
+	 * (runs(): a binary that does not start on this node is never put where
+	 * run.sh would restart it every 2 s), then renamed in.
 	 *
 	 * @param array{path: string, grant: array<string, mixed>} $rStaged
 	 * @return string|null null once installed, else why not
@@ -279,18 +304,45 @@ final class ArtefactStage {
 			return 'the staged copy is gone';
 		}
 		$rDir = dirname($rTarget) . '/';
+		$rTmp = $rDir . '.' . basename($rTarget) . '.new';
 		$rWhy = 'the agent\'s directory is not the agent\'s';
-		SettingsAudit::asAgentUser(static function () use ($rIn, $rDir, $rTarget, $rStaged, &$rWhy): bool {
-			$rTmp = $rDir . '.' . basename($rTarget) . '.new';
+		SettingsAudit::asAgentUser(static function () use ($rIn, $rTmp, $rStaged, &$rWhy): bool {
 			$rWhy = self::copyChecked($rIn, $rTmp, $rStaged['grant'], 0755);
-			if ($rWhy === null && !@rename($rTmp, $rTarget)) {
-				@unlink($rTmp);
-				$rWhy = 'cannot install it';
-			}
 			return $rWhy === null;
 		}, $rDir);
 		fclose($rIn);
-		return $rWhy;
+		if ($rWhy === null && !self::runs($rTmp, $rDir)) {
+			$rWhy = 'it does not run on this node (' . php_uname('m') . ')';
+		}
+		$rPlaced = SettingsAudit::asAgentUser(static function () use ($rTmp, $rTarget, &$rWhy): bool {
+			if ($rWhy === null && @rename($rTmp, $rTarget)) {
+				return true;
+			}
+			@unlink($rTmp);
+			return false;
+		}, $rDir);
+		return $rPlaced ? null : ($rWhy ?? 'cannot install it');
+	}
+
+	/**
+	 * Does this binary start here: `<binary> version` exits 0 with a line
+	 * within 10 s, run as the owner of its directory (the agent's user; from
+	 * root through sudo, never with root's rights).
+	 */
+	private static function runs(string $rBinary, string $rDir): bool {
+		$rAs = '';
+		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+			clearstatcache(true, rtrim($rDir, '/'));
+			$rStat = @lstat(rtrim($rDir, '/'));
+			if (!is_array($rStat) || $rStat['uid'] === 0) {
+				return false;
+			}
+			$rAs = 'sudo -n -u ' . escapeshellarg('#' . $rStat['uid']) . ' ';
+		}
+		$rOut = [];
+		$rCode = 1;
+		@exec($rAs . 'timeout 10 ' . escapeshellarg($rBinary) . ' version 2>/dev/null', $rOut, $rCode);
+		return $rCode === 0 && trim((string) ($rOut[0] ?? '')) !== '';
 	}
 
 	/**
@@ -330,6 +382,16 @@ final class ArtefactStage {
 		}
 		$rLocal = self::videoDir() . $rName;
 		return is_file($rLocal) ? $rLocal : $rPath;
+	}
+
+	/**
+	 * Refuse a staged grant (ArtefactStage::current()'s, which carries its
+	 * command's id) that its action cannot take, audited as refuse() does.
+	 *
+	 * @param array<string, mixed> $rGrant
+	 */
+	public static function refuseGrant(array $rGrant, string $rWhy): string {
+		return self::refuse(['cmd_id' => $rGrant['cmd_id'] ?? null, 'args' => ['artefact' => $rGrant]], $rWhy);
 	}
 
 	/**
@@ -384,11 +446,13 @@ final class ArtefactStage {
 			return null;
 		}
 		$rIn = @fopen($rPath, 'rb');
-		$rStat = $rIn === false ? false : fstat($rIn);
-		if ($rIn === false || $rStat === false || $rStat['ino'] !== $rLink['ino'] || $rStat['dev'] !== $rLink['dev']) {
-			if ($rIn !== false) {
-				fclose($rIn);
-			}
+		if ($rIn === false) {
+			$rWhy = 'the download cannot be read with the agent\'s rights';
+			return null;
+		}
+		$rStat = fstat($rIn);
+		if ($rStat === false || $rStat['ino'] !== $rLink['ino'] || $rStat['dev'] !== $rLink['dev']) {
+			fclose($rIn);
 			$rWhy = 'the download changed while it was opened';
 			return null;
 		}

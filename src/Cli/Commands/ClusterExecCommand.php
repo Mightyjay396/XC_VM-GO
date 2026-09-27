@@ -36,15 +36,22 @@ use XcVm\Streaming\Fanout\FanoutClient;
  *   the node's off-air code plays it once its size and SHA-256 are the
  *   grant's (ArtefactStage::placeOffAir), else refused and audited (exit 1).
  *
- * Runs as xc_vm.
+ * Runs as xc_vm. `console.php cluster:exec --types` prints the command
+ * types this node's PHP runs (TYPES, a JSON array) and reads nothing: the
+ * agent asks it before it says a feature at hello whose commands only a
+ * newer PHP runs (`artefact`: `artefact.fetch`). A PHP from before this
+ * option reads its empty stdin as a command and exits 2.
  *
- * Usage: `console.php cluster:exec < command.json`
+ * Usage: `console.php cluster:exec < command.json`, `console.php cluster:exec --types`
  *
  * @package XC_VM_CLI_Commands
  */
 class ClusterExecCommand implements CommandInterface {
 	/** Commands older than their exp by more than this (LB clock) are refused. */
 	public const SKEW = 300;
+
+	/** The command types run here (`--types`). */
+	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH];
 
 	public function getName(): string {
 		return 'cluster:exec';
@@ -55,6 +62,10 @@ class ClusterExecCommand implements CommandInterface {
 	}
 
 	public function execute(array $rArgs): int {
+		if (in_array('--types', $rArgs, true)) {
+			echo json_encode(self::TYPES);
+			return 0;
+		}
 		$rIn = json_decode((string) stream_get_contents(STDIN), true);
 		$rState = json_decode((string) @file_get_contents(CONFIG_PATH . 'cluster/agent.json'), true);
 		$rCmd = self::verify(is_array($rIn) ? $rIn : [], is_array($rState) ? $rState : [], time());
@@ -63,7 +74,7 @@ class ClusterExecCommand implements CommandInterface {
 			return 2;
 		}
 		if (($rCmd['type'] ?? '') === 'node.root') {
-			return self::handToRoot($rIn, (int) ($rCmd['seq'] ?? 0));
+			return self::handToRoot($rIn, (int) ($rCmd['seq'] ?? 0), isset($rCmd['args']['artefact']) ? self::ROOT_WAIT_ARTEFACT : self::ROOT_WAIT);
 		}
 		return self::run($rCmd);
 	}
@@ -72,9 +83,18 @@ class ClusterExecCommand implements CommandInterface {
 	public const ROOT_WAIT = 5;
 
 	/**
+	 * The same for a root command that carries an artefact, which root
+	 * stages and checks (up to 128 MiB) before its action runs: long enough
+	 * for root's refusal to reach MAIN in the ack, within the agent's minute.
+	 */
+	public const ROOT_WAIT_ARTEFACT = 45;
+
+	/**
 	 * `node.root`: root runs it (cluster:root), after checking it against its
 	 * own pin of the panel key; here the signed command is only handed over,
-	 * and root's result waited for briefly.
+	 * and root's result waited for briefly. Root's result goes to stdout; a
+	 * failure (exit 1) goes to stderr too, since the agent acks a non-zero
+	 * exit with stderr alone.
 	 *
 	 * @param array<string, mixed> $rIn {doc, sig}
 	 */
@@ -96,8 +116,13 @@ class ClusterExecCommand implements CommandInterface {
 			if (is_file($rDone)) {
 				$rOut = json_decode((string) file_get_contents($rDone), true);
 				@unlink($rDone);
-				echo is_array($rOut) ? (string) ($rOut['result'] ?? '') : '';
-				return is_array($rOut) && !empty($rOut['ok']) ? 0 : 1;
+				$rResult = is_array($rOut) ? (string) ($rOut['result'] ?? '') : '';
+				echo $rResult;
+				if (!is_array($rOut) || empty($rOut['ok'])) {
+					fwrite(STDERR, 'cluster:exec: ' . ($rResult !== '' ? $rResult : 'root\'s result is unreadable') . "\n");
+					return 1;
+				}
+				return 0;
 			}
 			usleep(200000);
 		}

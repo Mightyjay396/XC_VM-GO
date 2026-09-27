@@ -39,7 +39,10 @@ final class ArtefactRegistry {
 
 	private static ?string $rAgents = null;
 
-	/** @var array<string, array{path: string, size: int, mtime: int, ino: int, sha256: string}>|null */
+	/** A file changed this recently (s) is hashed, but its hash is not kept: a write in the same second leaves its stat as it was. */
+	private const SETTLED = 2;
+
+	/** @var array<string, array<string, mixed>>|null */
 	private static ?array $rHashes = null;
 
 	/** Tests: other directories for module archives and the agent cache; null restores the defaults. */
@@ -53,7 +56,7 @@ final class ArtefactRegistry {
 	 * Where artefact $rId is on MAIN now.
 	 *
 	 * @param array<string, mixed> $rSettings MAIN's settings (the off-air videos' paths).
-	 * @return array{id: string, kind: string, path: string, name: string, size: int, mtime: int, ino: int, version: ?string}|null
+	 * @return array{id: string, kind: string, path: string, name: string, size: int, mtime: int, ctime: int, dev: int, ino: int, version: ?string}|null
 	 */
 	public static function locate(string $rId, array $rSettings): ?array {
 		if (!ArtefactStage::validId($rId)) {
@@ -100,24 +103,31 @@ final class ArtefactRegistry {
 		if ($rStat === false || $rStat['size'] < 1 || $rStat['size'] > self::MAX_SIZE[$rParts[0]]) {
 			return null;
 		}
-		return ['id' => $rId, 'kind' => $rParts[0], 'path' => $rReal, 'name' => $rName, 'size' => (int) $rStat['size'], 'mtime' => (int) $rStat['mtime'], 'ino' => (int) $rStat['ino'], 'version' => $rVersion];
+		return [
+			'id' => $rId, 'kind' => $rParts[0], 'path' => $rReal, 'name' => $rName, 'size' => (int) $rStat['size'], 'mtime' => (int) $rStat['mtime'],
+			'ctime' => (int) $rStat['ctime'], 'dev' => (int) $rStat['dev'], 'ino' => (int) $rStat['ino'], 'version' => $rVersion,
+		];
 	}
 
 	/**
 	 * locate() and the artefact's SHA-256, hashed again only when the file
-	 * changed (its path, size, mtime or inode).
+	 * changed: its path, device, inode, size, mtime or ctime (which every
+	 * write and every touch moves, so a video rewritten in place with its
+	 * size and mtime kept is hashed again). The hash of a file changed within
+	 * the last SETTLED seconds is not kept, since a write in that same second
+	 * would leave its stat unchanged.
 	 *
 	 * @param array<string, mixed> $rSettings
-	 * @return array{id: string, kind: string, path: string, name: string, size: int, mtime: int, ino: int, version: ?string, sha256: string}|null
+	 * @return array{id: string, kind: string, path: string, name: string, size: int, mtime: int, ctime: int, dev: int, ino: int, version: ?string, sha256: string}|null
 	 */
 	public static function describe(string $rId, array $rSettings): ?array {
 		$rFound = self::locate($rId, $rSettings);
 		if ($rFound === null) {
 			return null;
 		}
+		$rKey = static fn(array $rOf): array => [$rOf['path'] ?? null, $rOf['dev'] ?? null, $rOf['ino'] ?? null, $rOf['size'] ?? null, $rOf['mtime'] ?? null, $rOf['ctime'] ?? null];
 		$rKnown = self::hashes()[$rId] ?? null;
-		$rSame = is_array($rKnown) && [$rKnown['path'] ?? null, $rKnown['size'] ?? null, $rKnown['mtime'] ?? null, $rKnown['ino'] ?? null] === [$rFound['path'], $rFound['size'], $rFound['mtime'], $rFound['ino']];
-		if ($rSame && is_string($rKnown['sha256'] ?? null)) {
+		if (is_array($rKnown) && $rKey($rKnown) === $rKey($rFound) && is_string($rKnown['sha256'] ?? null)) {
 			return $rFound + ['sha256' => (string) $rKnown['sha256']];
 		}
 		$rHash = @hash_file('sha256', $rFound['path']);
@@ -128,7 +138,11 @@ final class ArtefactRegistry {
 		if (self::locate($rId, $rSettings) !== $rFound) {
 			return null;
 		}
-		self::$rHashes[$rId] = ['path' => $rFound['path'], 'size' => $rFound['size'], 'mtime' => $rFound['mtime'], 'ino' => $rFound['ino'], 'sha256' => $rHash];
+		if (max($rFound['mtime'], $rFound['ctime']) >= ClusterClock::now() - self::SETTLED) {
+			unset(self::$rHashes[$rId]);
+			return $rFound + ['sha256' => $rHash];
+		}
+		self::$rHashes[$rId] = array_combine(['path', 'dev', 'ino', 'size', 'mtime', 'ctime'], $rKey($rFound)) + ['sha256' => $rHash];
 		try {
 			ClusterMeta::set(self::HASHES, (string) json_encode(self::$rHashes, JSON_UNESCAPED_SLASHES));
 		} catch (\Throwable) {

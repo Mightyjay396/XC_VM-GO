@@ -24,7 +24,9 @@ use XcVm\Domain\Server\ServerRepository;
  * archive) has its artefact copied from the agent's download into root's
  * own stage (/etc/xc_vm/cluster/stage/) and checked there for the grant's
  * size and SHA-256 before the action runs; a mismatch is refused and
- * audited, and the action never runs (ArtefactStage::stage).
+ * audited, and the action never runs (ArtefactStage::stage). A command
+ * refused before that (a replay: root.seq only goes up, so the agent hands
+ * root commands over in seq order) has its download removed.
  *
  * Without a pin it does nothing: root actions then keep the signals table.
  *
@@ -113,6 +115,8 @@ class ClusterRootCommand implements CommandInterface {
 			@unlink($rFile);
 			$rCmd = RootPin::verify($rPin, (string) ($rIn['doc'] ?? ''), (string) Enc::b64urlDecode((string) ($rIn['sig'] ?? '')), $rNow, RootPin::highWater());
 			if (is_string($rCmd)) {
+				// Its download, if it carried a grant, is spent too.
+				ArtefactStage::spendRefused((string) ($rIn['doc'] ?? ''));
 				RootPin::writeDone($rDonePath, (string) json_encode(['ok' => false, 'result' => 'refused by root: ' . $rCmd]));
 				$rDone[] = ['seq' => $rSeq, 'ok' => false, 'detail' => $rCmd];
 				continue;

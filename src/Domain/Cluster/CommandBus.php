@@ -171,17 +171,21 @@ final class CommandBus {
 	/**
 	 * A node's acknowledgement: only for its own commands. Raises its
 	 * high-water (cmd_seq) so a restored queue is not replayed. $rFirst says
-	 * whether this ack recorded the outcome (false for a repeated one).
+	 * whether this ack recorded the outcome (false for a repeated one), and
+	 * $rType the command's type.
 	 *
 	 * @param-out bool $rFirst
+	 * @param-out string $rType
 	 */
-	public static function ack(int $rServerID, string $rCmdID, bool $rOk, string $rResult, ?bool &$rFirst = null): bool {
+	public static function ack(int $rServerID, string $rCmdID, bool $rOk, string $rResult, ?bool &$rFirst = null, ?string &$rType = null): bool {
 		$rFirst = false;
-		self::db()->query('SELECT `seq`, `state` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ?;', $rServerID, $rCmdID);
+		$rType = '';
+		self::db()->query('SELECT `seq`, `state`, `type` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ?;', $rServerID, $rCmdID);
 		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
 		if ($rRow === null) {
 			return false;
 		}
+		$rType = (string) $rRow['type'];
 		if (in_array($rRow['state'], ['acked', 'failed'], true)) {
 			return true; // a repeated ack
 		}

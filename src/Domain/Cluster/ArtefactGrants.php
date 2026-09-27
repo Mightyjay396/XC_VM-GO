@@ -17,7 +17,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * ```text
  * {"id": "offair/<name>" | "module/<name>/<version>" | "agent/<arch>",
- *  "name": "<file name>", "size": <bytes>, "sha256": "<hex>", "mtime": <MAIN's>, "exp": <the command's exp>}
+ *  "name": "<file name>", "size": <bytes>, "sha256": "<hex>", "mtime": <MAIN's>, "ctime": <MAIN's>, "exp": <the command's exp>}
  * ```
  *
  * - `artefact.fetch {artefact}` grants an off-air video (offerOffAir(),
@@ -49,8 +49,15 @@ final class ArtefactGrants {
 	/** The commands that may carry a grant. */
 	public const GRANT_TYPES = [ArtefactStage::TYPE_FETCH, 'node.root'];
 
-	/** An off-air grant that failed (or was never fetched) is offered again after this long (s): its command's lifetime. */
+	/**
+	 * An off-air grant that failed (or was never fetched) is offered again
+	 * after this long (s), its command's lifetime; each further try of the
+	 * same video waits twice as long, up to RETRY_MAX.
+	 */
 	public const RETRY_AFTER = 3600;
+
+	/** The longest wait (s) before an off-air video a node keeps failing is offered again. */
+	public const RETRY_MAX = 86400;
 
 	/** cluster_meta prefix: what each node was offered of the off-air videos, and how it went. */
 	private const OFFERED = 'artefact_offair.';
@@ -70,10 +77,13 @@ final class ArtefactGrants {
 	 * is its command's (CommandBus::enqueue()).
 	 *
 	 * @param array<string, mixed> $rFound
-	 * @return array{id: string, name: string, size: int, sha256: string, mtime: int}
+	 * @return array{id: string, name: string, size: int, sha256: string, mtime: int, ctime: int}
 	 */
 	public static function grant(array $rFound): array {
-		return ['id' => (string) $rFound['id'], 'name' => (string) $rFound['name'], 'size' => (int) $rFound['size'], 'sha256' => (string) $rFound['sha256'], 'mtime' => (int) $rFound['mtime']];
+		return [
+			'id' => (string) $rFound['id'], 'name' => (string) $rFound['name'], 'size' => (int) $rFound['size'], 'sha256' => (string) $rFound['sha256'],
+			'mtime' => (int) $rFound['mtime'], 'ctime' => (int) $rFound['ctime'],
+		];
 	}
 
 	/**
@@ -109,9 +119,12 @@ final class ArtefactGrants {
 	 * does not hold yet (cron:cluster, every minute): one `artefact.fetch`
 	 * per video that is new to it (or to its generation: a re-enrolled node
 	 * starts afresh), changed since, or whose last grant failed or went
-	 * unfetched more than RETRY_AFTER ago. Without a licence nothing is
-	 * signed, and nothing is recorded as offered. The extension is asked for
-	 * only once there is a grant to sign.
+	 * unfetched: RETRY_AFTER after the first try, then twice as long after
+	 * each further one, up to RETRY_MAX (retryAfter()). A video whose file
+	 * name another one shares with other bytes is offered to no node
+	 * (withoutCollisions()). Without a licence nothing is signed, and
+	 * nothing is recorded as offered; what was queued before is. The
+	 * extension is asked for only once there is a grant to sign.
 	 *
 	 * @param ClusterCrypto|callable(): ClusterCrypto $rCrypto
 	 * @param array<string, mixed> $rSettings
@@ -125,6 +138,7 @@ final class ArtefactGrants {
 				$rVideos[$rId] = $rFound;
 			}
 		}
+		$rVideos = self::withoutCollisions($rVideos);
 		if ($rVideos === []) {
 			return 0;
 		}
@@ -139,31 +153,57 @@ final class ArtefactGrants {
 			$rSid = (int) $rNode['server_id'];
 			$rOffered = self::offered($rSid, (int) $rNode['gen']);
 			$rKeep = array_intersect_key($rOffered, $rVideos);
-			foreach ($rVideos as $rId => $rFound) {
-				$rWas = $rOffered[$rId] ?? null;
-				$rDue = !is_array($rWas) || ($rWas['sha256'] ?? null) !== $rFound['sha256'] || (empty($rWas['ok']) && $rNow - (int) ($rWas['at'] ?? 0) >= self::RETRY_AFTER);
-				if (!$rDue) {
-					continue;
-				}
-				if (!$rCrypto instanceof ClusterCrypto) {
-					$rCrypto = $rCrypto();
-				}
-				try {
-					$rCmdID = CommandBus::enqueue($rCrypto, $rSid, self::TYPE, ['artefact' => self::grant($rFound)]);
-				} catch (ClusterRefusedException $rE) {
-					if ($rE->reason() === 'LICENCE') {
-						return $rQueued; // nothing grants without a licence; the next pass offers again
+			try {
+				foreach ($rVideos as $rId => $rFound) {
+					$rWas = $rOffered[$rId] ?? null;
+					$rAgain = is_array($rWas) && ($rWas['sha256'] ?? null) === $rFound['sha256'];
+					if ($rAgain && (!empty($rWas['ok']) || $rNow - (int) ($rWas['at'] ?? 0) < self::retryAfter((int) ($rWas['tries'] ?? 1)))) {
+						continue;
 					}
-					throw $rE;
+					if (!$rCrypto instanceof ClusterCrypto) {
+						$rCrypto = $rCrypto();
+					}
+					try {
+						$rCmdID = CommandBus::enqueue($rCrypto, $rSid, self::TYPE, ['artefact' => self::grant($rFound)]);
+					} catch (ClusterRefusedException $rE) {
+						if ($rE->reason() === 'LICENCE') {
+							return $rQueued; // nothing grants without a licence; the next pass offers again
+						}
+						throw $rE;
+					}
+					$rKeep[$rId] = ['sha256' => $rFound['sha256'], 'ok' => false, 'at' => $rNow, 'cmd_id' => $rCmdID, 'tries' => $rAgain ? (int) ($rWas['tries'] ?? 1) + 1 : 1];
+					$rQueued++;
 				}
-				$rKeep[$rId] = ['sha256' => $rFound['sha256'], 'ok' => false, 'at' => $rNow, 'cmd_id' => $rCmdID];
-				$rQueued++;
-			}
-			if ($rKeep !== $rOffered) {
-				self::record($rSid, (int) $rNode['gen'], $rKeep);
+			} finally {
+				// What was queued is recorded however the pass ends, so it is never queued twice.
+				if ($rKeep !== $rOffered) {
+					self::record($rSid, (int) $rNode['gen'], $rKeep);
+				}
 			}
 		}
 		return $rQueued;
+	}
+
+	/** How long (s) after its last try an off-air video offered $rTries times without success is offered again. */
+	public static function retryAfter(int $rTries): int {
+		return (int) min(self::RETRY_MAX, self::RETRY_AFTER * 2 ** min(16, max(0, $rTries - 1)));
+	}
+
+	/**
+	 * The off-air videos without those whose file name another one shares
+	 * with other bytes: a node finds its copy by the file name alone
+	 * (ArtefactStage::offAirVideo), so it would play one in place of the
+	 * other. Two settings naming the same bytes stay.
+	 *
+	 * @param array<string, array<string, mixed>> $rVideos
+	 * @return array<string, array<string, mixed>>
+	 */
+	private static function withoutCollisions(array $rVideos): array {
+		$rByName = [];
+		foreach ($rVideos as $rFound) {
+			$rByName[(string) $rFound['name']][(string) $rFound['sha256']] = true;
+		}
+		return array_filter($rVideos, static fn(array $rFound): bool => count($rByName[(string) $rFound['name']]) === 1);
 	}
 
 	/**
@@ -172,7 +212,7 @@ final class ArtefactGrants {
 	 * whose artefact id is the registry's.
 	 *
 	 * @param array<string, mixed> $rNode
-	 * @return array{id: string, name: string, size: int, sha256: string, mtime: int, exp: int}|null
+	 * @return array{id: string, name: string, size: int, sha256: string, mtime: int, ctime: int, exp: int}|null
 	 */
 	public static function live(array $rNode, string $rCmdID): ?array {
 		self::db()->query("SELECT `type`, `payload`, `exp` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ? AND `state` IN ('queued', 'delivered');", (int) $rNode['server_id'], $rCmdID);
@@ -186,7 +226,7 @@ final class ArtefactGrants {
 		if (!is_array($rGrant) || ($rDoc['node_uuid'] ?? null) !== $rNode['node_uuid'] || (int) ($rDoc['gen'] ?? -1) !== (int) $rNode['gen'] || (int) $rRow['exp'] <= $rNow) {
 			return null;
 		}
-		foreach (['id' => 'is_string', 'name' => 'is_string', 'size' => 'is_int', 'sha256' => 'is_string', 'mtime' => 'is_int', 'exp' => 'is_int'] as $rKey => $rIs) {
+		foreach (['id' => 'is_string', 'name' => 'is_string', 'size' => 'is_int', 'sha256' => 'is_string', 'mtime' => 'is_int', 'ctime' => 'is_int', 'exp' => 'is_int'] as $rKey => $rIs) {
 			if (!$rIs($rGrant[$rKey] ?? null)) {
 				return null;
 			}
@@ -194,7 +234,7 @@ final class ArtefactGrants {
 		if ($rGrant['exp'] <= $rNow || !ArtefactStage::validId($rGrant['id'])) {
 			return null;
 		}
-		return ['id' => $rGrant['id'], 'name' => $rGrant['name'], 'size' => $rGrant['size'], 'sha256' => $rGrant['sha256'], 'mtime' => $rGrant['mtime'], 'exp' => $rGrant['exp']];
+		return ['id' => $rGrant['id'], 'name' => $rGrant['name'], 'size' => $rGrant['size'], 'sha256' => $rGrant['sha256'], 'mtime' => $rGrant['mtime'], 'ctime' => $rGrant['ctime'], 'exp' => $rGrant['exp']];
 	}
 
 	/**
@@ -206,8 +246,8 @@ final class ArtefactGrants {
 	 * at the end). Refusals: a malformed request 400 BAD_REQUEST; no live
 	 * grant of this node's by that id 403 GRANT_INVALID; an offset at or past
 	 * the end, or a length over MAX_CHUNK, 416 BAD_RANGE {size, max_chunk}; a
-	 * file that is no longer the one the grant describes 409
-	 * ARTEFACT_CHANGED.
+	 * file that is no longer the one the grant describes (its name, size,
+	 * mtime or ctime) 409 ARTEFACT_CHANGED.
 	 *
 	 * @param array<string, mixed> $rNode
 	 * @param array<string, mixed> $rP The opened BOX.
@@ -229,7 +269,7 @@ final class ArtefactGrants {
 			return [null, [416, 'BAD_RANGE', ['size' => $rGrant['size'], 'max_chunk' => ArtefactStage::MAX_CHUNK]]];
 		}
 		$rFound = ArtefactRegistry::locate($rGrant['id'], $rSettings);
-		if ($rFound === null || $rFound['size'] !== $rGrant['size'] || $rFound['mtime'] !== $rGrant['mtime'] || $rFound['name'] !== $rGrant['name']) {
+		if ($rFound === null || $rFound['size'] !== $rGrant['size'] || $rFound['mtime'] !== $rGrant['mtime'] || $rFound['ctime'] !== $rGrant['ctime'] || $rFound['name'] !== $rGrant['name']) {
 			return [null, [409, 'ARTEFACT_CHANGED', []]];
 		}
 		$rLength = min($rLength, $rGrant['size'] - $rOffset);
@@ -249,7 +289,8 @@ final class ArtefactGrants {
 	}
 
 	/**
-	 * A command's first ack. For one that carried a grant: a failure is
+	 * A command's first ack, for a command of GRANT_TYPES (ClusterApi calls
+	 * it for those alone). For one that carried a grant: a failure is
 	 * audited (`artefact.refused` when the node refused what it fetched,
 	 * its size or SHA-256 not the grant's; `artefact.failed` otherwise), and
 	 * an off-air grant's outcome is recorded for offerOffAir().

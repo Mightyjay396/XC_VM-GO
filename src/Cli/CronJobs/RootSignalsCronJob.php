@@ -17,6 +17,7 @@ use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
@@ -40,6 +41,14 @@ class RootSignalsCronJob implements CommandInterface {
 	private $rSaveIPTables = false;
 
 	private $AutoUpdateServerIP = true;
+
+	/**
+	 * Tests: runs the shell lines of the artefact actions (module:install,
+	 * the agent's restart) instead of exec(); null restores it.
+	 *
+	 * @var (callable(string): array{0: int, 1: string})|null
+	 */
+	private static $rShell = null;
 
 	public function getName(): string {
 		return 'cron:root_signals';
@@ -223,6 +232,42 @@ class RootSignalsCronJob implements CommandInterface {
 			ClusterEndpoint::recordMainChange($rServer, $rNew, SettingsManager::getAll(), 'system');
 		}
 		return $rNew;
+	}
+
+	/** Tests: run the artefact actions' shell lines through $rShell (line => [exit status, output]); null restores exec(). */
+	public static function useShell(?callable $rShell): void {
+		self::$rShell = $rShell;
+	}
+
+	/**
+	 * module:install's command line for an install_module payload. With the
+	 * archive cluster:root staged and checked (ArtefactStage::current()), it
+	 * runs now, not in the background, from that copy, and gets the checked
+	 * grant (with its command's id) to check it again against; without one,
+	 * in the background as before, the node pulling the archive the legacy
+	 * way. A payload never names the archive itself (a `signals` row's
+	 * `archive` and `artefact` are dropped).
+	 *
+	 * @param array<string, mixed> $rData {action: install_module, source, name, version, …}
+	 * @param array{path: string, grant: array<string, mixed>}|null $rStaged
+	 */
+	public static function moduleInstallLine(array $rData, ?array $rStaged): string {
+		unset($rData['archive'], $rData['artefact']);
+		if ($rStaged === null) {
+			return 'sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode((string) json_encode($rData)) . '" 2>&1 &';
+		}
+		return 'sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode((string) json_encode(['archive' => $rStaged['path'], 'artefact' => $rStaged['grant']] + $rData)) . '" 2>&1';
+	}
+
+	/** @return array{0: int, 1: string} [exit status, output] */
+	private static function shell(string $rLine): array {
+		if (self::$rShell !== null) {
+			return (self::$rShell)($rLine);
+		}
+		$rOut = [];
+		$rCode = 0;
+		exec($rLine, $rOut, $rCode);
+		return [$rCode, implode("\n", $rOut)];
 	}
 
 	/**
@@ -867,40 +912,57 @@ class RootSignalsCronJob implements CommandInterface {
 				if (!LogSink::syslog('MODULE', 'Installing module distributed from MAIN...')) {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Installing module distributed from MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
 				}
-				// Only cluster:root names a staged archive (never a signals row).
-				unset($rData['archive']);
+				// Only cluster:root stages an archive (never a signals row).
 				$rStaged = ArtefactStage::current();
 				if ($rStaged !== null) {
 					// The custom module's archive MAIN granted, staged by
-					// cluster:root and checked there: installed from that copy,
-					// now, before the stage is emptied (module:install checks it
-					// again against the grant the payload carries).
-					echo (string) shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode((string) json_encode(['archive' => $rStaged['path']] + $rData)) . '" 2>&1');
+					// cluster:root and checked there: only this module's, and
+					// installed from that copy now, before the stage is emptied
+					// (module:install checks it again against the grant). What
+					// module:install refused or failed is the command's failure.
+					$rWant = 'module/' . (string) ($rData['name'] ?? '') . '/' . (string) ($rData['version'] ?? '');
+					if ($rStaged['grant']['id'] !== $rWant) {
+						throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not the archive of ' . $rWant));
+					}
+					[$rCode, $rOutput] = self::shell(self::moduleInstallLine($rData, $rStaged));
+					if ($rCode !== 0) {
+						throw new \RuntimeException(trim($rOutput) !== '' ? trim($rOutput) : 'module:install exited ' . $rCode);
+					}
+					echo $rOutput . "\n";
 					break;
 				}
-				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
+				self::shell(self::moduleInstallLine($rData, null));
 				break;
 			case 'agent_binary':
 				// The xc_agent MAIN pinned (plan section 5: `node.root
 				// agent_binary{version, sha256}`): only its artefact, staged by
 				// cluster:root and checked there, never a path a payload names.
 				$rStaged = ArtefactStage::current();
-				if ($rStaged === null || !str_starts_with((string) $rStaged['grant']['id'], 'agent/')) {
+				if ($rStaged === null) {
 					echo "agent_binary: refused: no xc_agent binary staged and checked by cluster:root\n";
 					break;
+				}
+				// Only this node's arch: a binary that cannot start here would
+				// leave run.sh restarting it, and the node out of MAIN's reach.
+				$rArch = ReleaseAsset::arch(php_uname('m'));
+				if (!str_starts_with((string) $rStaged['grant']['id'], 'agent/')) {
+					throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not an xc_agent binary'));
+				}
+				if ($rArch === null || $rStaged['grant']['id'] !== 'agent/' . $rArch || ($rData['arch'] ?? null) !== $rArch) {
+					throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not this node\'s arch (' . php_uname('m') . ')'));
 				}
 				$rVersion = preg_replace('/[^0-9A-Za-z._-]/', '', (string) ($rData['version'] ?? '')) ?: 'unknown';
 				echo 'Installing xc_agent ' . $rVersion . ' from MAIN...' . "\n";
 				if (!LogSink::syslog('BINARIES', 'Installing xc_agent ' . $rVersion . ' from MAIN...')) {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Installing xc_agent ' . $rVersion . ' from MAIN...', time());
 				}
-				$rFailed = ArtefactStage::installAgent($rStaged, BIN_PATH . 'xc_agent/xc_agent');
+				$rFailed = ArtefactStage::installAgent($rStaged, ArtefactStage::agentBinary());
 				if ($rFailed !== null) {
 					throw new \RuntimeException('agent_binary: ' . $rFailed);
 				}
 				// run.sh restarts it with the new binary; after a pause, so the
 				// agent acks this command first (its high-water, then the ack).
-				shell_exec('(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &');
+				self::shell('(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &');
 				echo "xc_agent installed; it restarts in 10 s\n";
 				break;
 			case 'delete_module':

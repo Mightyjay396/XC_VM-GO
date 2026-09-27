@@ -46,6 +46,17 @@ final class ClusterExecCommandTest extends TestCase {
 		$this->assertSame(['deferred' => true], json_decode((string) ob_get_clean(), true));
 	}
 
+	/** `--types` says what this node's PHP runs, reading nothing: the agent says `artefact` at hello only while `artefact.fetch` is among them. */
+	public function testItSaysWhichCommandTypesItRuns(): void {
+		ob_start();
+		$rExit = (new ClusterExecCommand())->execute(['--types']);
+		$rTypes = json_decode((string) ob_get_clean(), true);
+		$this->assertSame(0, $rExit);
+		$this->assertSame(ClusterExecCommand::TYPES, $rTypes);
+		$this->assertContains('artefact.fetch', $rTypes);
+		$this->assertContains('node.root', $rTypes);
+	}
+
 	public function testUnknownTypesAndActionsDoNothing(): void {
 		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.root', 'args' => ['action' => 'reboot']]));
 		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.rpc', 'args' => ['action' => 'view_log']]), 'not in NodeRpc::ACTIONS');

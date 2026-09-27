@@ -9,12 +9,15 @@ use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\SignalSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ArtefactGrants;
 use XcVm\Domain\Cluster\ArtefactRegistry;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Cluster\ClusterClock;
+use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Cluster\ClusterSemaphore;
@@ -271,6 +274,7 @@ final class ClusterArtefactTest extends TestCase {
 		$rGrant = $rCommands[0]['args']['artefact'];
 		$this->assertSame(['offair/not_on_air', 'custom_offline.ts', 5000, hash_file('sha256', $rPath), $rCommands[0]['exp']], [$rGrant['id'], $rGrant['name'], $rGrant['size'], $rGrant['sha256'], $rGrant['exp']], 'id, size, SHA-256, and the command\'s own expiry');
 		$this->assertSame(ClusterClock::now() + CommandBus::TTL['artefact.'], $rGrant['exp']);
+		$this->assertSame([filemtime($rPath), filectime($rPath)], [$rGrant['mtime'], $rGrant['ctime']], 'the file as granted');
 		$this->assertIsArray(ArtefactStage::grant($rCommands[0]), 'the node takes its shape');
 
 		$this->assertSame(0, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings), 'granted once, not every minute');
@@ -341,6 +345,9 @@ final class ClusterArtefactTest extends TestCase {
 		[$rRes, , $rReq] = $this->call('artefact', ['grant' => $rCmd['cmd_id'], 'offset' => 0, 'length' => 4096], $rKeys);
 		$this->denial($rRes, $rReq, 403, 'GRANT_INVALID');
 		$this->assertSame(0, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings), 'the node holds it: not granted again');
+		ClusterClock::fix(1800000000000 + (ArtefactGrants::RETRY_MAX + 1) * 1000);
+		$this->assertSame(0, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings), 'placed: never again, however long after');
+		ClusterClock::fix(1800000000000);
 
 		// The op is an ingest op on the bulk lane (its permit, ClusterSemaphore::runIngest) and reads no MAIN row.
 		$this->assertContains('artefact', ClusterPool::INGEST_OPS);
@@ -434,6 +441,15 @@ final class ClusterArtefactTest extends TestCase {
 		$rPath = $this->video('expiring', 'expiring_custom.ts', str_repeat('e', 2000));
 		ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings);
 		$rGrant = $this->commands($rKeys)[0]['cmd_id'];
+		[$rRes, $rCtx] = $this->call('artefact', ['grant' => $rGrant, 'offset' => 0, 'length' => 100], $rKeys);
+		$this->assertSame(str_repeat('e', 100), base64_decode($this->reply($rRes, $rCtx, $rKeys)['data']));
+		// Only its ctime moved (rewritten in place, its size and mtime kept): not the file granted either.
+		$this->rDb->query('SELECT `payload` FROM `cluster_commands` WHERE `cmd_id` = ?', $rGrant);
+		$rDoc = json_decode($this->rDb->get_row()['payload'], true);
+		$rDoc['args']['artefact']['ctime']--;
+		$this->rDb->query('UPDATE `cluster_commands` SET `payload` = ? WHERE `cmd_id` = ?', json_encode($rDoc, JSON_UNESCAPED_SLASHES), $rGrant);
+		[$rRes, , $rReq] = $this->call('artefact', ['grant' => $rGrant, 'offset' => 0, 'length' => 100], $rKeys);
+		$this->denial($rRes, $rReq, 409, 'ARTEFACT_CHANGED');
 		file_put_contents($rPath, str_repeat('E', 2000));
 		touch($rPath, time() + 10);
 		clearstatcache();
@@ -550,5 +566,197 @@ final class ClusterArtefactTest extends TestCase {
 		$this->reply($rRes, $rCtx, $rKeys);
 		$this->assertCount(1, $this->audit('artefact.refused'));
 		$this->assertCount(1, $this->audit('artefact.failed'));
+	}
+
+	/** The first try's command, as MAIN has it: the newest one queued for the node. */
+	private function newest(): string {
+		$this->rDb->query('SELECT `cmd_id` FROM `cluster_commands` WHERE `server_id` = ? ORDER BY `seq` DESC LIMIT 1', self::SID);
+		return (string) $this->rDb->get_row()['cmd_id'];
+	}
+
+	/** Ack a command as ClusterApi::ack does (the session aside, which hours of MAIN's clock would expire). */
+	private function ackAs(string $rCmdID, bool $rOk, string $rResult): void {
+		$this->assertTrue(CommandBus::ack(self::SID, $rCmdID, $rOk, $rResult, $rFirst, $rType));
+		$this->assertTrue($rFirst);
+		$this->assertContains($rType, ArtefactGrants::GRANT_TYPES);
+		ArtefactGrants::acked(self::SID, $rCmdID, $rOk, $rResult);
+	}
+
+	/** A grant lives only for the node it names, in its current generation: a re-enrolled node's old grants are dead, though their rows remain. */
+	public function testALiveGrantIsThisNodesInItsCurrentGeneration(): void {
+		$rKeys = $this->activeNode();
+		$this->video('banned', 'custom_banned.ts', str_repeat('b', 500));
+		ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings);
+		$rGrant = $this->commands($rKeys)[0]['cmd_id'];
+		$rServe = fn(): array => $this->call('artefact', ['grant' => $rGrant, 'offset' => 0, 'length' => 10], $rKeys);
+		[$rRes, $rCtx] = $rServe();
+		$this->assertSame(str_repeat('b', 10), base64_decode($this->reply($rRes, $rCtx, $rKeys)['data']));
+
+		NodeRegistry::update(self::SID, ['gen' => 2]);
+		[$rRes, , $rReq] = $rServe();
+		$this->denial($rRes, $rReq, 403, 'GRANT_INVALID');
+		NodeRegistry::update(self::SID, ['gen' => 1]);
+		[$rRes, $rCtx] = $rServe();
+		$this->reply($rRes, $rCtx, $rKeys);
+
+		// A grant row whose command names another node.
+		$this->rDb->query('SELECT `payload` FROM `cluster_commands` WHERE `cmd_id` = ?', $rGrant);
+		$rDoc = json_decode($this->rDb->get_row()['payload'], true);
+		$rDoc['node_uuid'] = '1b4e28ba-2fa1-41d2-883f-0016d3cca427';
+		$this->rDb->query('UPDATE `cluster_commands` SET `payload` = ? WHERE `cmd_id` = ?', json_encode($rDoc, JSON_UNESCAPED_SLASHES), $rGrant);
+		[$rRes, , $rReq] = $rServe();
+		$this->denial($rRes, $rReq, 403, 'GRANT_INVALID');
+	}
+
+	/** agent_binary rides the cluster API alone: for a node it does not route, nothing is queued, and never as a signals row. */
+	public function testAnActionOnlyTheClusterCarriesIsNeverASignalsRow(): void {
+		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64', 'bin');
+		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64.version', "1.5.0\n");
+		$rSink = new class implements SignalSink {
+			/** @var list<array<string, mixed>> */
+			public array $rRows = [];
+
+			public function insert(array $rRows): bool {
+				array_push($this->rRows, ...$rRows);
+				return true;
+			}
+
+			public function pending(int $rServerID, string $rCustomData): bool {
+				return false;
+			}
+		};
+		SignalDispatcher::useSink($rSink);
+		try {
+			$this->assertFalse(NodeActions::agentBinary(9, 'amd64'), 'a legacy node');
+			$this->assertSame([], $rSink->rRows);
+			$this->assertTrue(NodeActions::reloadNginx(9));
+			$this->assertCount(1, $rSink->rRows, 'what the signals table does carry');
+		} finally {
+			SignalDispatcher::useSink(null);
+		}
+	}
+
+	/** An artefact's SHA-256 is kept only for the file it was taken from: its device, inode, size, mtime and ctime. */
+	public function testAHashIsKeptOnlyForTheFileItWasTakenFrom(): void {
+		$rPath = $this->video('not_on_air', 'custom_offline.ts', str_repeat('A', 4096));
+		$rFirst = ArtefactRegistry::describe('offair/not_on_air', $this->rSettings);
+		$rKept = static fn(): array => json_decode((string) ClusterMeta::get('artefact_hashes'), true) ?: [];
+		$this->assertSame($rFirst['sha256'], $rKept()['offair/not_on_air']['sha256'] ?? null, 'kept');
+		$rForge = function (array $rOver) use ($rKept): void {
+			$rAll = $rKept();
+			$rAll['offair/not_on_air'] = $rOver + $rAll['offair/not_on_air'];
+			ClusterMeta::set('artefact_hashes', (string) json_encode($rAll));
+			ArtefactRegistry::useDirs($this->rDir . 'modules_archives/', $this->rDir . 'agent_cache/');
+		};
+		$rFake = str_repeat('f', 64);
+		$rForge(['sha256' => $rFake]);
+		$this->assertSame($rFake, ArtefactRegistry::describe('offair/not_on_air', $this->rSettings)['sha256'], 'the kept hash serves the same file');
+		// Rewritten in place with its size and mtime kept: only its ctime says so.
+		$rForge(['sha256' => $rFake, 'ctime' => $rFirst['ctime'] - 5]);
+		$this->assertSame(hash_file('sha256', $rPath), ArtefactRegistry::describe('offair/not_on_air', $this->rSettings)['sha256']);
+
+		// A file changed within the last seconds is hashed, but its hash is
+		// not kept: another write in the same second leaves its stat as it was.
+		ClusterClock::fix(null);
+		$rVideo = $this->video('banned', 'custom_banned.ts', str_repeat('A', 4096));
+		$rMtime = filemtime($rVideo);
+		foreach (['A', 'B', 'C'] as $rByte) {
+			$rHandle = fopen($rVideo, 'r+');
+			fwrite($rHandle, str_repeat($rByte, 4096));
+			fclose($rHandle);
+			touch($rVideo, $rMtime);
+			clearstatcache();
+			$this->assertSame(hash('sha256', str_repeat($rByte, 4096)), ArtefactRegistry::describe('offair/banned', $this->rSettings)['sha256'], $rByte);
+			$this->assertArrayNotHasKey('offair/banned', $rKept());
+		}
+	}
+
+	/** A node finds its copy of a video by the file name alone: two videos that share one, with other bytes, go to no node. */
+	public function testVideosThatShareAFileNameAreGrantedOnlyWithTheSameBytes(): void {
+		$rKeys = $this->activeNode();
+		mkdir($this->rDir . 'video/banned');
+		mkdir($this->rDir . 'video/expired');
+		$this->video('banned', 'banned/video.ts', 'BANNED');
+		$rExpired = $this->video('expired', 'expired/video.ts', 'EXPIRED');
+		$this->video('not_on_air', 'custom_offline.ts', 'n');
+		$this->assertSame(1, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings));
+		$this->assertSame(['offair/not_on_air'], array_map(static fn(array $rCmd): string => $rCmd['args']['artefact']['id'], $this->commands($rKeys)));
+		// The same bytes under both: whichever a node plays is right.
+		file_put_contents($rExpired, 'BANNED');
+		clearstatcache();
+		$this->assertSame(2, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings));
+	}
+
+	/** A video a node keeps failing (or never fetches) is offered again an hour after the first try, then twice as long after each, up to a day. */
+	public function testAVideoANodeKeepsFailingIsOfferedLessOften(): void {
+		$this->activeNode();
+		$this->video('not_on_air', 'custom_offline.ts', str_repeat('n', 300));
+		$rAt = static fn(int $rS) => ClusterClock::fix($rS * 1000);
+		$rT = 1800000000;
+		$this->assertSame(1, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings));
+		$this->ackAs($this->newest(), false, 'cluster:exec: exit status 1: cluster:exec: artefact refused: offair/not_on_air (custom_offline.ts): cannot write video');
+		foreach ([1 => ArtefactGrants::RETRY_AFTER, 2 => 2 * ArtefactGrants::RETRY_AFTER, 3 => 4 * ArtefactGrants::RETRY_AFTER] as $rTries => $rWait) {
+			$this->assertSame($rWait, ArtefactGrants::retryAfter($rTries));
+			$rAt($rT + $rWait - 1);
+			$this->assertSame(0, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings), 'try ' . $rTries . ': not yet');
+			$rAt($rT += $rWait);
+			$this->assertSame(1, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings), 'try ' . $rTries . ': again');
+			if ($rTries < 3) {
+				$this->ackAs($this->newest(), false, 'artefact offair/not_on_air: GRANT_INVALID');
+			}
+		}
+		// The fourth try went unfetched (no ack): it counts as a try too.
+		$rAt($rT + 8 * ArtefactGrants::RETRY_AFTER - 1);
+		$this->assertSame(0, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings));
+		$this->assertSame(ArtefactGrants::RETRY_MAX, ArtefactGrants::retryAfter(40), 'at most a day');
+		// A new video starts over.
+		$this->video('not_on_air', 'custom_offline.ts', str_repeat('N', 301));
+		clearstatcache();
+		$this->assertSame(1, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings));
+	}
+
+	/** What a pass queued is recorded however the pass ends (a licence refusal, an error), so it is never queued twice. */
+	public function testWhatAPassQueuedIsNotQueuedAgain(): void {
+		$this->activeNode();
+		$this->video('not_on_air', 'custom_offline.ts', 'n');
+		$this->video('banned', 'custom_banned.ts', 'b');
+		$this->video('expired', 'custom_expired.ts', 'e');
+		$rCount = function (): int {
+			$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_commands`');
+			return (int) $this->rDb->get_row()['n'];
+		};
+		// The licence lapses after the first grant of the pass.
+		$rOnce = new class extends FakeClusterCrypto {
+			public int $rGrants = 1;
+
+			public function sign(string $rTag, string $rPayload): string {
+				if ($this->rGrants-- <= 0) {
+					$this->rLicensed = false;
+				}
+				return parent::sign($rTag, $rPayload);
+			}
+		};
+		$this->assertSame(1, ArtefactGrants::offerOffAir($rOnce, $this->rSettings));
+		// Another refusal after the next grant: the error goes up, the grant stays recorded.
+		$rThen = new class extends FakeClusterCrypto {
+			public int $rGrants = 1;
+
+			public function sign(string $rTag, string $rPayload): string {
+				if ($this->rGrants-- <= 0) {
+					$this->rRefuseSign = 'CLOCK';
+				}
+				return parent::sign($rTag, $rPayload);
+			}
+		};
+		try {
+			ArtefactGrants::offerOffAir($rThen, $this->rSettings);
+			$this->fail('the refusal is not swallowed');
+		} catch (\Throwable $rE) {
+			$this->assertStringContainsString('CLOCK', $rE->getMessage() . (method_exists($rE, 'reason') ? $rE->reason() : ''));
+		}
+		$this->assertSame(2, $rCount());
+		$this->assertSame(1, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings), 'only the video not queued yet');
+		$this->assertSame(3, $rCount());
+		$this->assertSame(0, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings));
 	}
 }

@@ -629,17 +629,17 @@ final class ClusterApi {
 
 	/**
 	 * `ack`: a command's outcome, accepted only for this node's own commands.
-	 * The first ack of one that carried an artefact grant is audited when it
-	 * failed (ArtefactGrants::acked).
+	 * The first ack of a command type that may carry an artefact grant is
+	 * audited when it failed (ArtefactGrants::acked); no other ack reads more.
 	 */
 	private static function ack(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}$/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
 		$rOk = !empty($rP['ok']);
 		$rResult = is_string($rP['result'] ?? null) ? (string) $rP['result'] : '';
-		if ($rCmdID === null || !CommandBus::ack((int) $rNode['server_id'], $rCmdID, $rOk, $rResult, $rFirst)) {
+		if ($rCmdID === null || !CommandBus::ack((int) $rNode['server_id'], $rCmdID, $rOk, $rResult, $rFirst, $rType)) {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
-		if ($rFirst) {
+		if ($rFirst && in_array($rType, ArtefactGrants::GRANT_TYPES, true)) {
 			try {
 				ArtefactGrants::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
 			} catch (\Throwable) {
