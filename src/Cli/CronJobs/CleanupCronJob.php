@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\SettingsAudit;
@@ -254,6 +255,16 @@ class CleanupCronJob implements CommandInterface {
 				$rDeleteBefore = time() - intval(SettingsManager::getAll()[$rArray[0]]); // lb-settings: keep_activity, keep_client, keep_login, keep_errors, keep_restarts, on_demand_scan_keep
 				$db->query('DELETE FROM `' . $rTable . '` WHERE `' . $rArray[1] . '` < ?;', $rDeleteBefore);
 			}
+		}
+
+		// The cluster settings' own retention, in days (ClusterSettings::INTS,
+		// which also holds each one's bounds and default): the dashboard's
+		// server graphs and the cluster audit log. Both were settings with a
+		// form field and no reader, so neither table was ever pruned.
+		foreach (['servers_stats' => 'servers_stats_retention_days', 'cluster_audit' => 'cluster_audit_retention_days'] as $rTable => $rSetting) {
+			// lb-settings: servers_stats_retention_days, cluster_audit_retention_days
+			$rDays = ClusterSettings::clampInt($rSetting, intval(SettingsManager::getAll()[$rSetting] ?? 0));
+			$db->query('DELETE FROM `' . $rTable . '` WHERE `time` < ?;', time() - $rDays * 86400);
 		}
 	}
 }

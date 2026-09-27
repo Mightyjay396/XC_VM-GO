@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Cluster\AgentUpgrades;
 use XcVm\Domain\Cluster\ClusterAudit;
@@ -114,6 +115,23 @@ final class AgentUpgradeTest extends TestCase {
 		$this->assertSame([[5, 'amd64']], $this->push($this->node()));
 	}
 
+	public function testTheRolloutIsStagedByTheParallelSetting(): void {
+		$rNodes = [$this->node(['server_id' => 5]), $this->node(['server_id' => 6]), $this->node(['server_id' => 7])];
+
+		// The default is one node at a time, lowest server id first.
+		$this->assertSame([[5, 'amd64']], $this->push(...$rNodes));
+		// 5 has not come back on the new version yet: it still holds the slot.
+		$this->assertSame([], $this->push(...$rNodes));
+
+		SettingsManager::set(['cluster_agent_upgrade_parallel' => 3]);
+		try {
+			// 5 is still in flight, so only two more start.
+			$this->assertSame([[6, 'amd64'], [7, 'amd64']], $this->push(...$rNodes));
+		} finally {
+			SettingsManager::set([]);
+		}
+	}
+
 	public function testTheSameVersionIsNotOfferedTwiceInAWindow(): void {
 		$this->assertSame([[5, 'amd64']], $this->push($this->node()));
 		$this->assertSame([], $this->push($this->node()), 'already offered');
@@ -142,6 +160,31 @@ final class AgentUpgradeTest extends TestCase {
 
 	public function testANodeAlreadyOnThePinnedVersionIsLeftAlone(): void {
 		$this->assertSame([], $this->push($this->node(['agent_version' => '1.4.0'])));
+	}
+
+	/**
+	 * An operator may move the fleet to https_required only once every active
+	 * node has reached MAIN over HTTPS, which its agent reports as the `https`
+	 * feature. Before this the guard refused while any active node existed at
+	 * all, so the setting could never be switched on a running cluster.
+	 */
+	public function testHttpsRequiredNeedsEveryActiveNodeToHaveHttps(): void {
+		NodeRegistry::setDb($this->rDb);
+		try {
+			$this->rDb->rNodes = [];
+			$this->assertTrue(NodeRegistry::allActiveHaveFeature('https'), 'no node, nobody to lose');
+
+			$this->rDb->rNodes = [['features' => 'artefact,https'], ['features' => 'https']];
+			$this->assertTrue(NodeRegistry::allActiveHaveFeature('https'));
+
+			$this->rDb->rNodes = [['features' => 'https'], ['features' => 'artefact']];
+			$this->assertFalse(NodeRegistry::allActiveHaveFeature('https'));
+
+			$this->rDb->rNodes = [['features' => null]];
+			$this->assertFalse(NodeRegistry::allActiveHaveFeature('https'));
+		} finally {
+			(new ReflectionProperty(NodeRegistry::class, 'db'))->setValue(null, null);
+		}
 	}
 
 	public function testOnlyAnAgentThatTakesArtefactsIsSentABinary(): void {

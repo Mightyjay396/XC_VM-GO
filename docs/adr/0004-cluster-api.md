@@ -3182,6 +3182,23 @@ MAIN pins the agent: it keeps one SHA-256-verified `xc_agent` per architecture (
 
 `AgentUpgradeTest` pins the decision (older version, retry window, generation, no arch, no cached binary, an agent that does not take artefacts) with the send injected, because what matters is which nodes are asked, not how the command travels.
 
+### Moving a running fleet to HTTPS (Phase 3, later increment)
+
+Plain HTTP is the default and `https_required` is the operator's choice, but it could not be made on a cluster that had any node at all: the guard read *"until telemetry reports each node's HTTPS (Phase 3), any active node blocks it"* and refused whenever an active node existed. Telemetry arrived; the guard did not.
+
+The node knows the answer, because it is the one dialling: the agent remembers whether MAIN has ever given it an authenticated answer over an `https://` URL (`Client.answered`, beside the known-good URL sets) and reports it as the `https` feature at hello. MAIN's guard now requires that feature on every active node — `NodeRegistry::allActiveHaveFeature('https')`, true with no nodes at all — in addition to its own HTTPS self-probe. A node that has never reached MAIN over HTTPS would be left talking to nobody, which is exactly what the refusal is for; an operator who sees the refusal can tell from the nodes page which node is missing it.
+
+The feature says nothing about plain HTTP, which always works: it is only ever the permission to require HTTPS.
+
+### Settings with a form field and no reader (Phase 0, third increment)
+
+Five of the cluster settings were stored, clamped, shown in the settings form with a description — and read by nothing. Three of them now do what their description says:
+
+- **`servers_stats_retention_days`** and **`cluster_audit_retention_days`** (both 1-365, default 30). `cron:cleanup` prunes the log tables by the `keep_*` settings (seconds); these two are days, so they get their own pass beside it, on MAIN only, as those DELETEs already are. `servers_stats` grows with every node every minute and `cluster_audit` with every cluster decision, and neither was ever pruned.
+- **`cluster_agent_upgrade_parallel`** (1-50, default 1) now stages the agent rollout above: a node offered the binary and not yet back on the new version holds a slot until `RETRY_SEC`, so with the default one node upgrades at a time, lowest server id first.
+
+**Still inert:** `lb_partition_tolerance_h` (how long a node keeps serving after its token expires while MAIN is unreachable) and `lb_fence_drain_min` (how long existing sessions drain after a node is fenced). Both are the node's own behaviour under a partition and belong to Phase 9's fencing, which is not built; the settings are kept because the plan names them.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

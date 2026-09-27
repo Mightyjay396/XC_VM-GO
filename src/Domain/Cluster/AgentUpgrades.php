@@ -3,7 +3,9 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Cli\Commands\AgentBinaryCommand;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -36,7 +38,10 @@ final class AgentUpgrades {
 	private const PUSHED = 'agent_push:';
 
 	/**
-	 * Offer every active node the agent MAIN pinned for its arch.
+	 * Offer the active nodes the agent MAIN pinned for their arch, at most
+	 * `cluster_agent_upgrade_parallel` of them at a time (a node offered it and
+	 * not yet back on the new version counts against that, until RETRY_SEC).
+	 * Lowest server id first, so a staged rollout is in a fixed order.
 	 *
 	 * @param callable(int, string): bool|null $rSend fn(serverID, arch): queued (tests)
 	 * @return int The pushes queued.
@@ -44,8 +49,11 @@ final class AgentUpgrades {
 	public static function push(?callable $rSend = null, ?int $rNow = null): int {
 		$rNow ??= ClusterClock::now();
 		$rSend ??= static fn(int $rServerID, string $rArch): bool => NodeActions::agentBinary($rServerID, $rArch);
+		// lb-settings: cluster_agent_upgrade_parallel
+		$rAtOnce = ClusterSettings::clampInt('cluster_agent_upgrade_parallel', (int) SettingsManager::get('cluster_agent_upgrade_parallel'));
 		self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` = 'active' ORDER BY `server_id` ASC;");
 		$rQueued = 0;
+		$rBusy = 0;
 
 		foreach (self::db()->get_rows() ?: [] as $rNode) {
 			$rArch = (string) ($rNode['arch'] ?? '');
@@ -59,12 +67,16 @@ final class AgentUpgrades {
 			}
 			$rServerID = (int) $rNode['server_id'];
 			if (!self::due($rServerID, (int) $rNode['gen'], $rWant, $rNow)) {
+				$rBusy++;
 				continue;
+			}
+			if ($rQueued + $rBusy >= $rAtOnce) {
+				break;
 			}
 			$rOK = (bool) $rSend($rServerID, $rArch);
 			self::record($rServerID, (int) $rNode['gen'], $rWant, $rNow);
 			ClusterAudit::log('node.agent_push', $rServerID, ['arch' => $rArch, 'version' => $rWant, 'was' => $rNode['agent_version'], 'queued' => $rOK], 'cron');
-			$rQueued += $rOK ? 1 : 0;
+			$rQueued++;
 		}
 
 		return $rQueued;

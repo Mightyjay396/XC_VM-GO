@@ -314,7 +314,7 @@ final class ClusterSettings {
 		self::$rHttpsProbe = $rProbe;
 	}
 
-	private static function clampInt(string $rKey, int $rValue): int {
+	public static function clampInt(string $rKey, int $rValue): int {
 		[, $rMin, $rMax] = self::INTS[$rKey];
 		return max($rMin, min($rMax, $rValue));
 	}
