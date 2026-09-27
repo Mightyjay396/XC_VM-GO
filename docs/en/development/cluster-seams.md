@@ -16,7 +16,7 @@ Each seam has a hook for tests and for the future transport (`useSink()`,
 | --- | --- | --- | --- |
 | `Core\Cluster\SignalDispatcher` | the 47 `INSERT INTO signals` sites (kill, cache jobs, root actions) | `LegacySqlSignalSink` | commands and events (4/5) |
 | `Domain\Stream\StreamStateWriter` | a node's runtime state in `streams_servers`; refuses any column outside `STATE_FIELDS` | `StreamRowMerge::apply()` | `stream.state` event (5) |
-| `Domain\Stream\StreamSource` | the stream row, this node's `streams_servers` row and the stream options, read before running a stream | SQL | R2 stream delta, `stream_bundle` on a miss (5) |
+| `Domain\Stream\StreamSource` | the stream row, this node's `streams_servers` row, the stream options and a recording, read before running a stream or a recording | SQL | the node's stream caches, built by `cluster:apply` from the R2 `streams` section once the STREAMS flow is on (`ReplicaStreamCache`, 7); `stream_bundle` on a miss (not built) |
 | `Core\Cluster\LogSink` | client, stream, stream-error, panel-error and restream-detection records; root's system log lines (`syslog()`) | one multi-row INSERT per batch (chunks of 1000); the caller's own `mysql_syslog` INSERT | `log.*` events, redacted first (5); `log.syslog` (7) |
 
 ## MAIN side
@@ -24,7 +24,7 @@ Each seam has a hook for tests and for the future transport (`useSink()`,
 | Seam | Role |
 | --- | --- |
 | `Domain\Stream\StreamRowMerge` | Merges a node's runtime state into that node's row only. `eventFields()` keeps only runtime columns and redacts the source URL. |
-| `Domain\Stream\StreamCacheBuilder` | The `stream_<id>` cache entry: columns, per-server rows, and the rule that a stream's source URLs stay out of the cache unless it is a direct source. `cron:cache_engine` builds it with this class. |
+| `Domain\Stream\StreamCacheBuilder` | The `stream_<id>` cache entry: columns, per-server rows, and the rule that a stream's source URLs stay out of the cache unless it is a direct source. `cron:cache_engine`, which only MAIN runs, builds it with this class. |
 | `Core\Cluster\Redactor` | Strips `password=`, `token=` and `username=` values, the `/user/pass/` segments of Xtream URLs, and `user:pass@` from text before it is journaled. |
 
 ## MAIN → node
@@ -47,7 +47,10 @@ action.
   `SignalDispatcher::rootAction()` outside `Core\Cluster`; add the action to the
   catalogue and use `NodeRpc` / `NodeActions`.
 - Node-side code reads stream definitions through `StreamSource`, not with its
-  own queries on `streams_options`.
+  own queries on `streams`, `streams_options` or `recordings`. Once the node's
+  replica owns the streams (STREAMS flow on), its answers come from the stream
+  caches `cluster:apply` built, never from MAIN's database, and a column no
+  record carries (the node's runtime state) is null there.
 - Node-side code reads settings through `SettingsManager`'s getters and servers
   through `ServerRepository`. A node in mode 2, or in mode 1 with the CONFIG
   flow on, boots from its replica (`ReplicaStage`) once an apply built its

@@ -1443,8 +1443,8 @@ Without `--from-disk` nothing changes: the agent runs `cluster:apply` right afte
 **Known limits.**
 
 - Mode 2 is not switched on yet, and its refusal is not built: in a process booted from the replica, a query outside the settings and servers still opens MAIN's database. Since the eighth Phase 7 increment such a query is refused.
-- No section carries the bouquets, categories, proxies or allowed-IPs caches (R2). A mode 2 node's `cron:cache` still builds them from MAIN's database, and during a MAIN outage it stops at the first such read. The agent's `cluster:apply` still applies the replica then.
-- After a reboot the streaming endpoints have no stream definitions until MAIN answers: they live in `tmp/`, a tmpfs, and no section carries them (R2 `streams`, not built). The same holds in mode 2. In mode 1 the daemons and crons also still boot through MAIN's database (the watchdog waits for it), as the plan has it for hybrid mode. Since the eleventh Phase 7 increment they boot from the replica there too once CONFIG is on and an apply built the caches.
+- No section carries the bouquets, categories, proxies or allowed-IPs caches (R2). A mode 2 node's `cron:cache` still builds them from MAIN's database, and during a MAIN outage it stops at the first such read. The agent's `cluster:apply` still applies the replica then. Since the twelfth Phase 7 increment the proxies and allowed IPs come from the `servers` and `settings` sections, the bouquets and categories have sections of their own, and a mode 2 node's `cron:cache` reads no database.
+- After a reboot the streaming endpoints have no stream definitions until MAIN answers: they live in `tmp/`, a tmpfs, and no section carries them (R2 `streams`, not built). The same holds in mode 2. Since the twelfth Phase 7 increment `--from-disk` builds the node's stream caches from the R2 section, once an agent stores it. In mode 1 the daemons and crons also still boot through MAIN's database (the watchdog waits for it), as the plan has it for hybrid mode. Since the eleventh Phase 7 increment they boot from the replica there too once CONFIG is on and an apply built the caches.
 - A mode 2 process that boots before an apply built the caches after a reboot (a cron in the first minute, before `service`'s apply) boots through MAIN's database. Since the eighth Phase 7 increment that boot is refused: the process fails closed.
 - After a re-enrolment (new node keys) or a new panel root, the stored records no longer verify, and `--from-disk` applies none of them until the agent fetches them again. Today's agent keeps its ETags and never does while the data is unchanged (contract below).
 - The misses reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`. The heartbeat's other audit counters (`audit.sql_connects`, `audit.redis_connects`, `audit.sites`) are not reported yet; the same `audit` object is meant to carry them. It does since the eighth Phase 7 increment.
@@ -1538,7 +1538,7 @@ since            unix seconds: when this node's audit began
   - `cron:root_signals` reads MAIN's `signals` table. Without COMMANDS or root's pin its first read is the flush-row poll at the top, which stops it before the iptables sync and the fanout and agent keepalives. With both (the intended mode 2 setup) it runs the iptables sync (from the replica's cache with CONFIG on) and the keepalives, and stops at the signals loop: the signal actions, the ramdisk and ports reconciliation, the crontab and sysctl checks and `close_mysql` are lost. A server IP that differs from the replica's, which it writes to `servers`, stops it before the keepalives too. Since the tenth Phase 7 increment it reads nothing of MAIN's database in mode 2, and the server IP rewrite turned out to run only on MAIN.
   - `cron:cleanup`'s stream, archive and VOD checks read `streams` from MAIN's database whenever `cleanup` (on by default) or `check_vod` is on. Its audit pruning and hourly `audit.json` run before them. Since the tenth Phase 7 increment a node in mode 2 skips them until R2.
   - Root actions log to `mysql_syslog` through MAIN's database, several before acting (reboot, restarting or stopping the services), so `cluster:root` reports them refused and those never act. Since the tenth Phase 7 increment the lines go through the agent and the actions act, but for `update` and `rollback`, refused before they run.
-  - `cron:cache` builds the bouquets, categories, proxies and allowed-IPs caches from MAIN's database (R2).
+  - `cron:cache` builds the bouquets, categories, proxies and allowed-IPs caches from MAIN's database (R2). Not since the twelfth Phase 7 increment.
   - The watchdog waits for MAIN's database. Since the tenth Phase 7 increment it neither waits nor uses Redis in mode 2.
   - `cluster:apply`'s shadow comparison (CONFIG off) reads MAIN's crontab and RTMP publishers. Since the tenth Phase 7 increment mode 2 compares neither and says so.
 - Mode 1 still boots through MAIN's database (seventh increment), so a mode 1 node's `sql_connects` is never zero. The boot's site shows it apart from the rest, but the plan's seven-day zero cannot be reached in mode 1 until mode 1 boots from its replica too. It does since the eleventh Phase 7 increment, with CONFIG on.
@@ -1718,10 +1718,10 @@ Values are typed as in the whole sections (integers as JSON integers, text as st
 
 **Known limits.**
 
-- The node's half is not built: no agent stores the section yet, and no PHP applies it (the stream caches, `StreamSource`, `stream_bundle` on a start miss). The node keeps reading its streams from MAIN's database.
+- The node's half is not built: no agent stores the section yet, and no PHP applies it (the stream caches, `StreamSource`, `stream_bundle` on a start miss). The node keeps reading its streams from MAIN's database. Since the tenth Phase 7 increment PHP applies it; the agent's half and `stream_bundle` are still not built.
 - A holder added by a path that dispatches nothing (a module, an SQL edit) has no version row. When the stream is later taken off it, the node learns it only from the resync, within 5 minutes.
 - The delta cursor's correctness rests on the bump's transaction (InnoDB). A connection that cannot begin one (none in production) could commit the counter before the rows; the resync repairs what that misses.
-- The stream cache entry a node builds today also holds the stream's `bouquets`, which the section does not carry.
+- The stream cache entry a node builds today also holds the stream's `bouquets`, which the section does not carry. The tenth Phase 7 increment found that no node builds that entry (`cron:cache_engine` is MAIN's); the bouquets reach a node as a section of their own.
 - The resync reads a node's whole set every 5 minutes, 1000 streams per call.
 - The pruning walks the table 10,000 rows a minute: on a panel with a million rows, a row no node holds may wait up to 100 minutes past its seven days.
 - Without a licence, a delta stops at the first changed record: removals past it wait for the licence or the resync.
@@ -1760,7 +1760,7 @@ Values are typed as in the whole sections (integers as JSON integers, text as st
   - **Delta:** after every `config` sync (every 60 s), and at once while `more`.
   - **Full pass:** on `full`, or when the cursor is 0. Walk from 0 with the hashes held (none on a new node) and no deltas meanwhile. Once the walk ends with no `withheld` in any reply, set the cursor to the `head` of the pass's first reply and write it to `streams.json`. With a `withheld` reply, keep the cursor as it was: a new node stays at 0 and walks again at the next poll.
   - **Resync:** every 5 minutes, jittered by ±10 %, the same walk with the cursor unchanged.
-- **Apply.** After storing any record or removal, run `console.php cluster:apply`, debounced 1 s as today. Nothing in PHP applies the section yet; its readers read the files.
+- **Apply.** After storing any record or removal, run `console.php cluster:apply`, debounced 1 s as today. Nothing in PHP applies the section yet; its readers read the files. Since the tenth Phase 7 increment `cluster:apply` builds the node's stream caches from them (its contract adds to this one).
 - **Never logged:** a record, its data or a diff of it. Name the stream id only.
 - **Compatibility.** Today's agent never lists `streams`, so it never calls the op and MAIN never serves it; nothing else changes on the wire. A rollback below migration 047 empties `cluster_stream_ver` and removes the `cluster_meta` keys `stream_ver`, `stream_ver_floor`, `stream_ver_floor.<sid>` and `stream_ver_prune`; MAIN then answers the op `404 UNKNOWN_OP`. An upgrade seeds them afresh with the counter at 1, never below a row, so a node whose cursor is above MAIN's head is answered `full` and walks again.
 
@@ -1832,6 +1832,113 @@ Values are typed as in the whole sections (integers as JSON integers, text as st
 - `cluster:apply` (with or without `--from-disk`), its output and its exit codes are the sixth and seventh increments'. `service` already runs `cluster:apply --from-disk` at boot on a node in mode 1 or 2 with CONFIG on.
 - The fifth increment's rule is the one this relies on: run `cluster:apply` once after the first sync when the agent starts, and whenever the CONFIG bit it writes to `flows.json` changes. A mode 1 node boots from its replica only once an apply built the caches since the reboot; until then it boots through MAIN's database, counted.
 - `audit.json` keeps the eighth increment's members (`sql_connects`, `redis_connects`, `sites`, `connects_since`); on a mode 1 node with CONFIG on its counts no longer include the boots from the replica. `sites` may now name `sql Cli/Commands/StatusCommand.php:<line>` (`status`, in mode 1 and 2), a key like any other. Send it as the heartbeat's `audit` as before.
+
+### The R2 streams section on the node, and the catalogue sections (Phase 7, tenth increment)
+
+**The node's stream caches.** `cluster:apply` turns the `stream` records the agent stores (`replica/streams.json` and `replica/streams/<id>.json`, ninth increment) into the node's stream caches (plan, section 9, "Storage and boot"): one entry per stream the node holds, `tmp/cache/replica_streams/<id>` (`Core/Cluster/ReplicaStreamCache`), in the shapes the node's readers took from MAIN's database. The directory is 0700: an entry holds the stream's sources, which may carry an upstream's credentials.
+
+| Entry | Shape | What no record carries (null) |
+| --- | --- | --- |
+| `stream` | the `streams` row (`SELECT *`) | `STREAM_LOCAL`: the workers' pids, `updated`, MAIN's catalogue metadata |
+| `type` | its `streams_types` row, or null | |
+| `profile` | its `profiles` row, or null | |
+| `server` | the node's `streams_servers` row, or null | `STREAM_SERVER_LOCAL`: the node's runtime state (pids, status, current source, probe results, the created channel's build state) |
+| `arguments` | `SELECT t1.*, t2.*` of `streams_options` ⨝ `streams_arguments`: the argument's id wins the join as `id` | `argument_description` |
+| `recordings` | its `recordings` rows scheduled on the node, every column; `status` as MAIN last heard it | |
+| `children` | the servers that relay it from the node | |
+| `etag`, `ver` | the record's | |
+
+`replica_streams/index` is `{streams: {id: {etag, ver, rec: [recording ids]}}, unreadable: [ids]}`: what the last apply built, and the streams whose record did not read.
+
+**Who reads them.** `Domain/Stream/StreamSource`, the seam Phase 0 made for this, answers from the entries once the replica owns the streams (`ReplicaStreamCache::owned()`), and reads MAIN's database otherwise, as before:
+
+| `StreamSource::` | From the entry | Its callers |
+| --- | --- | --- |
+| `streamRow($id, $live)` | `stream` + `type` + `profile` (null columns without one); null when not held, without a type, of the other kind, or a direct source, as the SQL join answers | `StreamProcess::startStream`, `startMovie`, `buildSupervisorSpec` |
+| `serverRow($id)` | `server`, for this node only; another server's row still comes from MAIN's database | the same |
+| `arguments($id, $keyed)` | `arguments`, a list or keyed by `argument_key` | the same, `MonitorCommand`, `ProxyCommand`, `ScannerCommand`, `live.php` |
+| `sourceRow($id)` | `{stream_source}`, or `[]` | `live.php`'s fanout hand-off |
+| `recording($id)` (new) | a `recordings` row scheduled on this node, or null | `RecordCommand`, which read it with its own query |
+
+Once owned, none of them reads MAIN's database for this node. A stream without an entry is one the node does not hold, unless the agent stored its record after the last apply: the entry is then built from `replica/streams/<id>.json` at the first read. A stream whose record did not read at the last apply (from disk: did not verify) is never built from its file; it keeps the entry it had, or has none.
+
+**The flow.** The section follows STREAMS (8), not CONFIG:
+
+- **STREAMS on:** the apply writes the entry of every stream whose ETag or version changed since the last apply (every one from disk), deletes the entries of the streams whose file the agent removed, and records `streams` in `replica_owned` (the cursor). `ReplicaApply::owns('streams')` needs STREAMS, `streams.json` and that record; `ReplicaStreamCache::owned()` asks `built()` first, so MAIN and legacy nodes never read `flows.json` for it.
+- **A record that does not read** (a `.json` that does not parse, another stream's record, a `server` row or a recording naming another server, a part that is not what MAIN sends, or from disk a record that does not verify) writes nothing and deletes nothing: its stream keeps its entry. Only a stream whose `.json` is gone is a removal.
+- **STREAMS off (shadow):** nothing is written, ownership is dropped, and the report compares the section with MAIN's database in the record's own shape, through MAIN's own reads (`held()` and `data()` moved from `Domain/Cluster/StreamReplica` to `Core/Cluster/StreamRecords`, which the node can run). Ids and names only: `missing` (MAIN's database says the node holds them, the section lacks them), `extra`, `unreadable`, and `differ` (`<id>.<part>` or `<id>.<part>.<field>` for `stream` and `server`; never `tickets`), at most 100 ids and 100 differences. When MAIN's database does not answer: `compared: false`.
+- **No whole section** (a cursor of 0, a missing or unreadable `streams/`) is `incomplete`, and a file in `streams/` that names no stream is `refused`: no entry is touched and the readers take MAIN's database again.
+- CONFIG's `disown()` leaves `streams` in `replica_owned`. `cron:cache` applies the section every minute while STREAMS is on, with CONFIG on (`ReplicaApply::run(true, …, minute: true)`) or off (`ReplicaApply::streamsMinute()`), and hands it back while STREAMS is off. The minute never runs the shadow comparison (it reads MAIN's database); `apply.json` keeps the agent's last one.
+
+**From disk.** `cluster:apply --from-disk` takes each record from `streams/<id>.rep` (`ReplicaRecords::stream`): it must open with the agent's box key, verify under its pinned panel key with tag `rep`, and name section `stream`, this node, the stream of its file name, an integer `ver`, an `etag` of 64 lowercase hex digits and a `data` object. The report's `from_disk` names `streams` among `verified` when every record did, else among `unverified`. The whole sections are applied first, then the streams, then the blocklist.
+
+**The report.**
+
+```text
+streams  {since, streams, mode: applied, written, removed, unreadable: [ids]}
+         {since, streams, mode: shadow, missing, extra, unreadable, differ}
+         {since, streams, mode: shadow, compared: false, unreadable}
+         {since, mode: incomplete | refused}
+```
+
+**The caches `cron:cache` builds on a node.** Each one's source, now that the replica carries them all:
+
+| Cache | Plan | On a node, from |
+| --- | --- | --- |
+| `settings`, `servers`, `blocked_*` | R1, blocklist | their sections (earlier increments) |
+| `proxy_servers` | blocklist section | the `servers` a process booted with: the proxies (`server_type` 1) by `server_ip` and `private_ip`. The R1 `servers` section carries them; no database read |
+| `allowed_ips` | blocklist section | the `servers` and settings a process booted with: `server_ip`, `private_ip`, `whitelist_ips`, domain names that are addresses, `allowed_ips_admin`. The R1 `servers` and `settings` sections carry them; no database read |
+| `allowed_domains` | blocklist section | nothing: no node (and no MAIN) builds it. `ServerRepository::getAllowedDomains` has no caller; the readers skip a missing file |
+| `bouquets` | none | the new R1 `bouquets` section |
+| `categories` | none | the new R1 `categories` section |
+| `stream_<id>` (`STREAMS_TMP_PATH`) | R2 | nothing: `cron:cache_engine` builds it, and it is MAIN's (migration 043; the LB build strips it). Its node-side readers (player_api, the Ministra portal) take it only with `cache_complete`, which no node writes |
+
+**The `bouquets` and `categories` sections.** Two new whole sections (`ReplicaSections::WHOLE`), served like `settings` to an agent that names them in `have`, sent whole when the ETag differs, `rep`-signed and sealed to the node, reused for 10 s on MAIN (`ReplicaEtagCache`; no event drops them: a bouquet or category save is seen within 10 s, then at the node's next poll):
+
+- `bouquets`: `{bouquets: [row]}`, every column of every `bouquets` row (`BOUQUET_FIELDS`: the lists stay the JSON text the row holds), in `BouquetService::getAll`'s order (`bouquet_order`, 0 last, then id).
+- `categories`: `{categories: [row]}`, every column of every `streams_categories` row (`CATEGORY_FIELDS`), by `cat_order`, then id.
+- Typed as every section (integers as JSON integers), keys sorted. `ReplicaSectionsTest` fails on a new column of either table. A failed read throws (`503 DB`), as for every section.
+- With CONFIG on, `cluster:apply` builds the `bouquets` cache through `BouquetService::fromRows` (split out of `getAll`) and the `categories` cache keyed by id, and records them in `replica_owned`. Once owned, `BouquetService::getAll` and `CategoryService::getFromDatabase` (typed or not) answer from the caches however old, even when forced, rebuilding one from the section on disk when it is gone; `cron:cache` stops writing them. In shadow the report names the bouquets and categories whose row differs from the cache `cron:cache` built (`missing`, `extra`, `differ`: ids). A section that is not a list of rows with distinct integer ids is `refused` and hands the cache back; a cache that cannot be written is `failed` (exit 3).
+- In a process booted from the replica (`ReplicaBoot::active`), both readers answer the caches as they are, `[]` without one, owned or not: they never read MAIN's database there. So a mode 2 node's `cron:cache` no longer stops at the bouquets when its agent does not keep these sections.
+
+**A size bound on whole sections.** The agent reads at most 8 MiB of a reply (`MaxReply`), and one `config` reply carries every section it names. A whole section whose sealed record passes `ReplicaBuilder::MAX_WHOLE_BYTES` (4 MiB of base64) is now left out of the reply, like a section MAIN cannot sign without a licence, and audited once per ETag (`replica.section_too_large`, `{section, bytes, max}`). The node keeps what it holds. Without it, the bouquets of a panel with many large packages would have stopped every section from reaching the node.
+
+**How it differs from the plan.**
+
+- The plan's step 3 rewrites the `tmp/cache/` files `CacheReader` and `StreamingRequestBootstrap` read. For streams, those are MAIN's `stream_<id>` routing entries, which no node builds or reads without `cache_complete`. The node's stream caches are new files in the shapes `StreamSource` returned from MAIN's database, since that is how every node-side reader gets a stream's definition.
+- The stream caches follow the STREAMS flow, not CONFIG: STREAMS (Phase 5) switches before CONFIG, and it is the flow that serves the section (ninth increment).
+- `stream_bundle` on a start miss is not built. An entry missing is built from the agent's file instead, which covers a record stored since the last apply.
+- The plan's local `recording.state` override is not built: `StreamSource::recording` answers MAIN's `status`.
+- Section 9 lists neither the bouquets nor the categories, and does not replicate the viewer accounts that their readers serve. Two new R1 sections carry them, so that `cron:cache` needs no database; they are small beside the tmpfs the plan protects (they were already cached there).
+- The plan puts `allowed_ips`, `proxy_servers` and `allowed_domains` in the blocklist section. The first two are built from the `servers` and `settings` sections, which already carry every field they need (`whitelist_ips` since the fifth increment), so the blocklist section does not repeat them; the third is built nowhere.
+- The size bound on whole sections is not in the plan.
+
+**Known limits.**
+
+- The agent's half is not built: no agent stores the streams, `bouquets` or `categories` sections yet, so the node keeps reading MAIN's database for all three.
+- Readers that still read MAIN's database for a stream on a node, because they also read its runtime state, which no record carries and the node does not keep locally yet (the plan's local store, and the other half of the mode-2 work): the monitor's, proxy producer's, delay's, TV archive's and thumbnails' joined `streams ⨝ streams_servers` row (`MonitorCommand`, `ProxyCommand`, `DelayCommand`, `ArchiveCommand`, `ThumbnailCommand`); the created channel's (`CreatedCommand`, `StreamProcess::createChannelItem`, `cron:vod`'s created channels); `StreamProcess::startLoopback`; `cron:streams`, `cron:vod`'s analysis queue and `QueueCommand`; the scanner's selection; `cron:cleanup`'s checks (the other mode-2 work; `ReplicaStreams::assigned()` and `archives()`, gated by `ReplicaStreamCache::owned()`, give it the streams it selects).
+- `StreamSource`'s answers from the replica carry no runtime state: a stream starts from its first source (`current_source` null), and a created channel restarted at a position finds no `cc_info`.
+- The shadow comparison reads every stream the node holds from MAIN's database at each `cluster:apply` while STREAMS is off, 1000 per statement.
+- A bouquets section larger than 4 MiB sealed is not replicated: that node's bouquets cache keeps MAIN's database in mode 0 and 1, and stays as it was in mode 2.
+- The bouquets' and categories' readers are the viewer APIs a load balancer still serves (player_api, the Ministra portal, the playlists), which also read the viewer's line from MAIN's database. In mode 2 they have no line until the data plane (Phase 8) moves those routes.
+
+**Tests.**
+
+- `ReplicaStreamCacheTest`: every answer `StreamSource` gives from the entries against its SQL answer for the same catalogue (same columns, same values, null only where no record carries the column), with MAIN's database gone; a stream or recording not held answers nothing; shadow with STREAMS off (missing, extra, the differing field and part, no value or ticket in the report, nothing written, MAIN's database unreachable); the flow deciding and handing back, CONFIG's `disown()` leaving the streams, the minute's apply and the last comparison kept; a torn, foreign or other server's record and a record missing from disk never deleting its entry, and a removal deleting it; no cursor, a stray file and a lost directory touching nothing; from disk, the record winning over a planted `.json`, every entry rewritten from its record, records signed by another panel, for another node or stream, or corrupt refused and never built from their `.json` later; an entry gone built from the agent's file; the directory 0700; mode 0 unchanged.
+- `ReplicaCatalogTest`: both caches in the shapes and order `BouquetService::getAll` and `CategoryService::getFromDatabase` build; the readers owned (forced, typed, rebuilt from disk, MAIN's database gone) and handed back with CONFIG off; shadow naming ids; malformed sections refused and handing back; from disk; a process booted from the replica; mode 0.
+- `ReplicaSectionsTest`: every column of `bouquets` and `streams_categories` carried, their order and types. `ReplicaBuilderSecretsTest`: neither section carries a secret, nor is built from a failed read. `ClusterApiTest`: both served by `have` and ETag, never to today's agent; a section past 4 MiB left out and audited once, the rest of the reply still served.
+- `ReplicaBootTest`: `cluster:apply --from-disk` builds the stream caches without a connect; a mode 2 node's `cron:cache`, in a child PHP with the real bootstrap, makes not one connect (none refused either) once the replica holds every section, and writes every cache from it: settings, servers, proxies, allowed IPs, blocklist, bouquets, categories, streams.
+
+**The agent's contract (XC_VM_Fanout, not built yet).**
+
+- **`have`.** `config`'s `have` may name `bouquets` and `categories`, each with the ETag held (64 lowercase hex, or `""`). Name them only once the agent stores them as below. The reply, record and files are the fifth increment's whole-section contract: `{"unchanged": true}` or `{"etag", "sealed"}`, a `rep` record `{v: 1, section, node, gen, etag, iat, data}` checked as every whole section, stored as `replica/bouquets.rep` and `replica/bouquets.json` (`{"etag", "data"}`), the same for `categories`, `.rep` written before `.json`, their ETags in `state.json`'s `whole_etags`. Today's agent names neither and gets neither.
+- **Data.** `bouquets`: `{"bouquets": [{"bouquet_channels": <string|null>, "bouquet_movies": <string|null>, "bouquet_name": <string|null>, "bouquet_order": <int|null>, "bouquet_radios": <string|null>, "bouquet_series": <string|null>, "id": <int ≥ 1>}, …]}`. `categories`: `{"categories": [{"cat_order": <int|null>, "category_name": <string|null>, "category_type": <string|null>, "id": <int ≥ 1>, "is_adult": <int|null>, "parent_id": <int|null>}, …]}`. Keys sorted, rows in MAIN's order. Store as signed; PHP checks them. A later MAIN may add keys.
+- **Left out.** A missing field for a named section means "not served": keep what is held. That now also covers a whole section whose sealed record passes 4194304 bytes (base64), which MAIN leaves out rather than send a reply past the agent's 8 MiB `MaxReply`. Keep `MaxReply` at 8 MiB or more.
+- **Streams: apply.** The ninth increment's contract stands; PHP now applies what it stores. Run `console.php cluster:apply` after storing any record or removal, debounced 1 s, and also when the STREAMS bit (8) of the `flows` written to `flows.json` changes, either way. `cron:cache` applies the section every minute while STREAMS is on, so an agent that does not delays the switch by up to a minute.
+- **Streams: files PHP reads.** At each apply, `streams.json` (`{"since": <int>}`, above 0 once a pass completed), the names in `streams/` (only `<id>.json` besides dot files and `.rep`), and each `streams/<id>.json` (`{"etag": "<64 hex>", "ver": <int>, "data": <object>}`); at boot, each `streams/<id>.rep`. A `.json` PHP cannot read keeps its stream's last entry, so write each atomically (dot-named temporary file, then rename). A removal deletes both files. Keep `streams/` 0700 and the files 0600: PHP builds entries readable by xc_vm alone.
+- **Streams: records that no longer verify.** As for the whole sections (seventh increment): when the agent starts, and after an enrolment or re-key that changed its box key or pinned panel key, open and verify every `streams/<id>.rep` with the current keys. Leave out of the next resync's `hashes` every stream whose record failed, so MAIN resends it; or set the cursor to 0 (`streams.json` included) and walk a full pass with no hashes. Otherwise MAIN answers nothing for an unchanged stream, and `--from-disk` keeps refusing the old record.
+- **Report and exit codes.** `apply.json` gains `streams`, `bouquets` and `categories` parts (above); names and ids only. The exit codes are the sixth increment's: a `streams` part is never `failed`; a `bouquets` or `categories` part is `failed` (exit 3) when its cache could not be written. Log the output as for any failed run.
+- **Compatibility.** Today's agent never lists `streams`, names neither new section, and runs `cluster:apply` as before: nothing changes for it. MAIN's older builds do not serve the new sections; an agent that names them gets no field and keeps what it holds.
 
 ### The cluster bus (Phase 2, first increment): wake-ups
 
