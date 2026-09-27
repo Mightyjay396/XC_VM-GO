@@ -305,7 +305,7 @@ final class ClusterApi {
 			'token_sealed' => base64_encode((string) $rIssued['token_sealed']),
 			'epoch' => (int) $rIssued['epoch'], 'nbf' => (int) $rIssued['nbf'], 'exp' => (int) $rIssued['exp'],
 			'refresh_at' => (int) $rIssued['refresh_at'], 'main_time_ms' => ClusterClock::nowMs(),
-		]);
+		] + LeaseService::wire($rIssued['lease'] ?? null));
 	}
 
 	/**
@@ -411,7 +411,7 @@ final class ClusterApi {
 				'token_sealed' => base64_encode((string) $rIssued['token_sealed']),
 				'epoch' => (int) $rIssued['epoch'], 'nbf' => (int) $rIssued['nbf'], 'exp' => (int) $rIssued['exp'],
 				'refresh_at' => (int) $rIssued['refresh_at'], 'main_time_ms' => ClusterClock::nowMs(),
-			]);
+			] + LeaseService::wire($rIssued['lease'] ?? null));
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
 		}

@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) three increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, and the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest). Its relay half — the tickets in the R2 stream record, the delta path that carries them, the agent's loopback proxy and the URL builders — lands as one change, on a running fleet. Of Phase 9 (the licence lease, cutover and lockdown) only the first increment is in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days. The rest waits on the `xcvm_core` cluster API. `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it: flipping that flag is the cutover decision, and it stays with the operator.
+- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) three increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, and the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest). Its relay half — the tickets in the R2 stream record, the delta path that carries them, the agent's loopback proxy and the URL builders — lands as one change, on a running fleet. Of Phase 9 (the licence lease, cutover and lockdown) two increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days, and every token MAIN hands a node now carries the lease it may serve on without MAIN. The node's half of that lease, and the cutover itself, are not. `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it: flipping that flag is the cutover decision, and it stays with the operator.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -3350,6 +3350,56 @@ and only waited for it. It gains the two shapes the callers needed:
 - **`passThrough()`** — an operator's own command: descriptors 1 and 2 are left out of the spec,
   which inherits them, so the boot script's output stays where `passthru()` put it, and the exit
   status comes back. `console.php service` uses it.
+
+### The lease a token carries (Phase 9, second increment)
+
+`xcvm_core` 2.2.2 ships the cluster API's lease (ADR-002, "Lease"), so the first thing Phase 9
+waited for is here. `ClusterCrypto::leaseIssue()` had been a wrapper with no caller: MAIN minted
+tokens and no node ever held a lease, which is the document that says how long it may keep serving
+viewers once it can no longer reach MAIN.
+
+Every path that hands a node a token now hands it a lease with it, from one seam —
+`TokenService::issue()`, which enrolment over SSH, an approved enrol code, `token_refresh` and
+`token_rekey` all mint through — plus the one path that does not go through it, a `token_refresh`
+whose reply was lost and whose token is sent a second time. On the wire it is
+`lease: {payload, sig, exp}`, base64 of the bytes the extension signed and never re-encoded JSON:
+the node verifies the signature over exactly those bytes.
+
+- **The extension holds the ceilings.** MAIN asks with `lb_partition_tolerance_h` (a setting that
+  until now nothing read); the extension clamps it to 0-24 h and caps the lease at
+  `min(token_exp + tolerance · 3600, iat + 26 h)`. It signs only under a valid licence and only
+  above the node's revocation floor — that is what stops a revoked panel's fleet: MAIN hands out no
+  further leases, and each node runs out of the one it holds.
+- **MAIN stores none of them.** A lease is minted whenever a token goes out, a resent token
+  included, so there is nothing to keep in step with `cluster_node_epochs` and nothing to expire.
+  A resend therefore carries a lease issued at that moment, for the same window (the token's `exp`
+  has not moved), which is also why a licence that lapsed between the two sends stops extending it.
+- **A refusal is not the caller's error.** `LeaseService` catches it, audits `node.lease_refused`
+  with the extension's reason, and the reply goes out with the token and no lease. The node keeps
+  the lease it has until its own `exp`, which is the whole reason it holds one; a node without a
+  lease is not a node without a session.
+
+**Not built (the rest of Phase 9).** The node's half: `cluster_pin` of MAIN's `core.pin` blob
+(`cluster_pack`, also a wrapper with no caller), `cluster_lease_verify` against a MAIN-time anchor,
+and the state machine the plan gives it — DEGRADED, PARTITIONED to the lease's `exp`, FENCED with
+`lb_fence_drain_min` of drain. `xc_agent` ignores the new field until then: it parses install data
+and replies without `DisallowUnknownFields`, so a lease it does not read costs it nothing.
+
+One thing that half has to settle: a lease reaches a node with a token, and tokens refresh at half
+the rotation (30 min at the default), while the plan wants a re-licensed fleet serving again in
+about two minutes. Either a node whose lease is running out refreshes its token early, or a
+heartbeat reply carries one when the node's is close to its `exp`. That belongs with the state
+machine that reads the lease, not with MAIN's side of the wire, which is why it is not decided
+here. Then
+the cutover itself: `strip_db_credentials`, `install_config`, the full
+`cluster:rotate-stream-secret` and `cluster:lockdown`, and the flag `api_mode_allowed`.
+
+`ClusterApiTest` covers the first token and both refresh replies (the document verifies under tag
+`lea`, names the node and its generation, announces the `exp` it holds, and a resend's is issued
+now for the same window), the rekey reply, and a refused lease (no `lease` key, a token all the
+same, the audit row). `ClusterEnrolCodeTest` covers the signed approval, `LbProvisionClusterTest`
+the install data, and `ClusterExtensionIntegrationTest` pins all of it against the real extension,
+including that a token expiry far out with a 99 h tolerance still leaves 26 h.
 
 ### Disaster recovery of MAIN's cluster keys
 

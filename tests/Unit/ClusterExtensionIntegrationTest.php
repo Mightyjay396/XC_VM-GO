@@ -7,6 +7,7 @@ use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
+use XcVm\Domain\Cluster\LeaseService;
 use XcVm\Tests\Support\ClusterReference as Ref;
 
 /**
@@ -95,6 +96,34 @@ final class ClusterExtensionIntegrationTest extends TestCase {
 		// A record sealed for this node does not open as another node.
 		$this->expectException(ClusterRefusedException::class);
 		$rCrypto->session($rIssued['epoch_record'], '11111111-2222-4333-8444-555555555555');
+	}
+
+	/**
+	 * The lease MAIN sends with a token, against the extension that signs it:
+	 * the panel's own `lea` verification, the fields the node reads, and the
+	 * caps the extension applies whatever MAIN asks for (ADR-002, "Lease").
+	 */
+	public function testALeaseTravelsWithATokenAndTheExtensionCapsIt(): void {
+		$rCrypto = ClusterCryptoFactory::create();
+		$rPub = $rCrypto->init()['panel_sign_pub'];
+		$rUuid = '0f8fad5b-d9cb-469f-a165-70867728950e';
+		$rNode = ['node_uuid' => $rUuid, 'server_id' => 7, 'gen' => 1];
+		$rTokenExp = time() + 4500;
+
+		$rLease = LeaseService::issue($rCrypto, $rNode, $rTokenExp);
+		$this->assertNotNull($rLease, 'a licensed panel gets one');
+		$this->assertTrue(PanelSig::verify($rPub, 'lea', $rLease['payload'], $rLease['sig']), 'the tag a lease is signed under');
+		$this->assertFalse(PanelSig::verify($rPub, 'tok', $rLease['payload'], $rLease['sig']), 'and not a token signature');
+		$rDoc = json_decode($rLease['payload'], true);
+		$this->assertSame(['xcvm-lease', $rUuid, 7, 1], [$rDoc['typ'], $rDoc['node_uuid'], $rDoc['server_id'], $rDoc['gen']]);
+		$this->assertSame($rLease['exp'], $rDoc['exp']);
+		$this->assertSame(min($rTokenExp + LeaseService::toleranceHours() * 3600, $rDoc['iat'] + 26 * 3600), $rDoc['exp']);
+
+		// The extension, not the panel, holds the ceilings: a token expiry far out
+		// and a tolerance beyond 24 h still leave a lease of at most 26 h.
+		$rFar = $rCrypto->leaseIssue(['node_uuid' => $rUuid, 'server_id' => 7, 'gen' => 1, 'token_exp' => time() + 86000, 'tolerance_h' => 99]);
+		$rFarDoc = json_decode((string) $rFar['payload'], true);
+		$this->assertSame($rFarDoc['iat'] + 26 * 3600, (int) $rFar['exp'], 'the 26 h cap');
 	}
 
 	public function testSignedRecordsVerifyWithThePanelClass(): void {

@@ -13,6 +13,7 @@ use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\EnrolmentService;
+use XcVm\Domain\Cluster\LeaseService;
 
 class LbInstallFlow {
 	// Per-distribution package lists, mirrored from the MAIN installer (install -> PACKAGES),
@@ -555,7 +556,7 @@ class LbInstallFlow {
 			'policy_ver' => $rPolicy['policy_ver'],
 			'epoch' => 1,
 			'token_sealed' => base64_encode($rFirst['token_sealed']),
-		], JSON_UNESCAPED_SLASHES);
+		] + LeaseService::wire($rFirst['lease']), JSON_UNESCAPED_SLASHES);
 		$rTmp = TMP_PATH . 'agent_install_' . $rServerID . '.json';
 		$rRemote = '/tmp/xc_agent_install_' . $rServerID . '.json';
 		file_put_contents($rTmp, $rInstall);

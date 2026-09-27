@@ -662,6 +662,88 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(3, $this->reply($rRes, $rCtx, $rTok2['keys'])['epoch']);
 	}
 
+	/**
+	 * The lease as the node reads it: the panel signature over the exact bytes
+	 * MAIN sent (ed25519 is deterministic, so re-signing proves them), and the
+	 * document those bytes hold.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private function leaseDoc(string $rPayload, string $rSig, int $rExp): array {
+		$this->assertSame(ClusterReference::panelSign($this->rCrypto->rSeed, 'lea', $rPayload), $rSig, 'signed under tag lea, over these bytes');
+		$rDoc = json_decode($rPayload, true);
+		$this->assertIsArray($rDoc);
+		$this->assertSame('xcvm-lease', $rDoc['typ']);
+		$this->assertSame($this->rUuid, $rDoc['node_uuid']);
+		$this->assertSame(self::SID, $rDoc['server_id']);
+		$this->assertSame($rExp, $rDoc['exp'], 'the exp announced beside the lease is the one inside it');
+		return $rDoc;
+	}
+
+	/**
+	 * Phase 9: a token is handed over with the lease that says how long its node
+	 * may keep serving viewers once it can no longer reach MAIN. The first token
+	 * (install data over SSH) and both refresh replies — a fresh epoch and a
+	 * token sent a second time — carry one.
+	 */
+	public function testTheFirstTokenAndEveryRefreshCarryTheNodesLease(): void {
+		SettingsManager::set(['lb_partition_tolerance_h' => 2] + $this->rSettings);
+		$rFirst = $this->enrol();
+		$rNow = ClusterClock::now();
+		$this->assertNotNull($rFirst['lease'], 'the token the installer writes leaves with one');
+		$rDoc = $this->leaseDoc((string) $rFirst['lease']['payload'], (string) $rFirst['lease']['sig'], (int) $rFirst['lease']['exp']);
+		$this->assertSame(min((int) $rFirst['exp'] + 2 * 3600, $rNow + 26 * 3600), $rDoc['exp'], "the token's exp plus the tolerance, under the 26 h cap");
+		$this->assertSame(1, $rDoc['gen'], "the node's generation: a revoked one gets no lease");
+
+		$rTok = $this->openToken($rFirst['token_sealed'], $this->rEph[1]);
+		[$rRes, $rCtx] = $this->call('enrol_complete', ['instance_id' => 'inst-a', 'agent_version' => '0.1.0'], 1, $rTok['keys']);
+		$this->reply($rRes, $rCtx, $rTok['keys']);
+		$rKeys = $rTok['keys'];
+
+		$rEph = random_bytes(32);
+		$rPayload = ['eph_pub' => base64_encode(sodium_crypto_scalarmult_base($rEph))];
+		[$rRes, $rCtx] = $this->call('token_refresh', $rPayload, 1, $rKeys);
+		$rReply = $this->reply($rRes, $rCtx, $rKeys);
+		$rLease = $this->leaseDoc((string) base64_decode($rReply['lease']['payload'], true), (string) base64_decode($rReply['lease']['sig'], true), (int) $rReply['lease']['exp']);
+		$this->assertSame((int) $rReply['exp'] + 2 * 3600, $rLease['exp'], 'the epoch it accompanies');
+
+		// A reply that was lost: the same token again, and a lease again — minted
+		// now, not kept beside the token, so nothing stale is re-sent.
+		ClusterClock::fix($this->rT0 + 30000);
+		[$rRes, $rCtx] = $this->call('token_refresh', $rPayload, 1, $rKeys);
+		$rAgain = $this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame($rReply['token_sealed'], $rAgain['token_sealed'], 'the same epoch');
+		$rReLease = $this->leaseDoc((string) base64_decode($rAgain['lease']['payload'], true), (string) base64_decode($rAgain['lease']['sig'], true), (int) $rAgain['lease']['exp']);
+		$this->assertSame(ClusterClock::now(), $rReLease['iat'], 'issued at this moment');
+		$this->assertSame($rLease['exp'], $rReLease['exp'], 'the same window: it follows the token, not the request');
+	}
+
+	/**
+	 * A rekey carries one too, and a panel the extension will not sign a lease
+	 * for sends the token without one: the node keeps the lease it holds until
+	 * its own `exp`, which is what a lease is for.
+	 */
+	public function testARekeyCarriesALeaseAndARefusedOneIsAuditedNotFatal(): void {
+		SettingsManager::set(['lb_partition_tolerance_h' => 1] + $this->rSettings);
+		$this->expired();
+		$rEph = random_bytes(32);
+		[$rRes, $rReq] = $this->rekey($this->challenge(), $rEph);
+		$rTok = $this->rekeyed($rRes, $rReq, $rEph);
+		// The lease rides in the panel-signed reply, beside the sealed token.
+		$rDoc = json_decode((string) $rRes['body'], true);
+		$rLease = $this->leaseDoc((string) base64_decode($rDoc['lease']['payload'], true), (string) base64_decode($rDoc['lease']['sig'], true), (int) $rDoc['lease']['exp']);
+		$this->assertSame((int) $rDoc['exp'] + 3600, $rLease['exp']);
+
+		$this->rCrypto->rRefuseLease = 'LICENCE';
+		ClusterClock::fix($this->rT0 + 61000);
+		[$rRes, $rCtx] = $this->call('token_refresh', ['eph_pub' => base64_encode(sodium_crypto_scalarmult_base(random_bytes(32)))], 2, $rTok['keys']);
+		$rReply = $this->reply($rRes, $rCtx, $rTok['keys']);
+		$this->assertArrayNotHasKey('lease', $rReply, 'no lease');
+		$this->assertNotEmpty($rReply['token_sealed'], 'and still a token: a node without a lease is not a node without a session');
+		$this->rDb->query("SELECT `detail` FROM `cluster_audit` WHERE `event` = 'node.lease_refused'");
+		$this->assertSame('LICENCE', json_decode((string) $this->rDb->get_row()['detail'], true)['reason']);
+	}
+
 	public function testAnEpochBecomesCurrentOnlyOnceMarkedUsedAndIsNotMarkedAgain(): void {
 		$rKeys = $this->active();
 		$rEph = random_bytes(32);

@@ -45,6 +45,14 @@ class FakeClusterCrypto extends ClusterCrypto {
 	/** Set to a reason code (CLOCK, REVOKED, …) to make sign() refuse whatever is not restrictive. */
 	public ?string $rRefuseSign = null;
 
+	/** Set to a reason code to make leaseIssue() refuse (LICENCE, CLOCK, …). */
+	public ?string $rRefuseLease = null;
+
+	/** The extension's own bounds on a lease (ADR-002, "Lease"). */
+	public const MAX_TOLERANCE_H = 24;
+
+	public const MAX_LEASE_SEC = 26 * 3600;
+
 	public function __construct() {
 		$this->rSeed = str_repeat("\x42", 32);
 		$this->rPrk = str_repeat("\x07", 32);
@@ -123,6 +131,31 @@ class FakeClusterCrypto extends ClusterCrypto {
 			'epoch' => (int) $rParams['epoch'], 'iat' => $rNow, 'nbf' => $rNbf, 'exp' => $rExp, 'refresh_at' => $rRefreshAt,
 			'rotation_min' => $rRotation, 'grace_min' => $rGrace, 'kid' => bin2hex(substr($this->rB, 0, 4)),
 		];
+	}
+
+	/**
+	 * As the extension: `exp = min(token_exp + tolerance_h · 3600, iat + 26 h)`
+	 * with the tolerance clamped to 0-24 h, the document's keys in its order,
+	 * signed under tag `lea`, and nothing at all without a licence.
+	 *
+	 * @param array{node_uuid: string, server_id: int, gen: int, token_exp: int, tolerance_h: int} $rParams
+	 * @return array{payload: string, sig: string, exp: int}
+	 */
+	public function leaseIssue(array $rParams): array {
+		if ($this->rRefuseLease !== null) {
+			throw new ClusterRefusedException($this->rRefuseLease, 'cluster_lease_issue');
+		}
+		if (!$this->rLicensed) {
+			throw new ClusterRefusedException('LICENCE', 'cluster_lease_issue');
+		}
+		$rNow = \XcVm\Domain\Cluster\ClusterClock::now();
+		$rTolerance = max(0, min(self::MAX_TOLERANCE_H, (int) $rParams['tolerance_h']));
+		$rExp = min((int) $rParams['token_exp'] + $rTolerance * 3600, $rNow + self::MAX_LEASE_SEC);
+		$rDoc = (string) json_encode([
+			'v' => 1, 'typ' => 'xcvm-lease', 'node_uuid' => $rParams['node_uuid'], 'server_id' => (int) $rParams['server_id'],
+			'gen' => (int) $rParams['gen'], 'iat' => $rNow, 'exp' => $rExp, 'kid' => bin2hex(substr($this->rB, 0, 4)),
+		], JSON_UNESCAPED_SLASHES);
+		return ['payload' => $rDoc, 'sig' => ClusterReference::panelSign($this->rSeed, 'lea', $rDoc), 'exp' => $rExp];
 	}
 
 	public function session(string $rEpochRecord, string $rNodeUuid, bool $rHard = false): SessionKeys {

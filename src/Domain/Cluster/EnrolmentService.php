@@ -18,7 +18,7 @@ final class EnrolmentService {
 	/**
 	 * @param array<string, mixed> $rSettings
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
-	 * @return array{node_uuid: string, gen: int, epoch: int, token_sealed: string, exp: int, refresh_at: int, cluster: array<string, mixed>}
+	 * @return array{node_uuid: string, gen: int, epoch: int, token_sealed: string, exp: int, refresh_at: int, lease: array{payload: string, sig: string, exp: int}|null, cluster: array<string, mixed>}
 	 */
 	public static function issueFirst(ClusterCrypto $rCrypto, int $rServerID, string $rNodeUuid, string $rSignPub, string $rBoxPub, string $rAgentEphPub, array $rSettings, array $rMain): array {
 		if (!self::validUuid($rNodeUuid) || strlen($rSignPub) !== 32 || strlen($rBoxPub) !== 32 || strlen($rAgentEphPub) !== 32) {
@@ -36,6 +36,7 @@ final class EnrolmentService {
 			'token_sealed' => (string) $rIssued['token_sealed'],
 			'exp' => (int) $rIssued['exp'],
 			'refresh_at' => (int) $rIssued['refresh_at'],
+			'lease' => $rIssued['lease'] ?? null,
 			'cluster' => self::clusterJson($rCrypto, $rServerID, $rNodeUuid, $rSettings, $rMain),
 		];
 	}

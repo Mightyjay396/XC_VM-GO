@@ -187,6 +187,15 @@ final class ClusterEnrolCodeTest extends TestCase {
 		$this->assertSame($rNode['uuid'], $rDoc['node_uuid']);
 		$this->assertSame(['http://10.0.0.1:25461/cluster/v1/'], $rDoc['cluster']['policy']['main_urls']);
 		$this->assertSame('enrolling', NodeRegistry::byServer(self::SID)['state']);
+		// The token's lease travels inside the signed approval, so a node enrolled
+		// by code holds one from its first epoch, as an SSH-enrolled one does.
+		$rLeaseDoc = json_decode((string) base64_decode($rDoc['lease']['payload'], true), true);
+		$this->assertSame(['xcvm-lease', $rNode['uuid'], (int) $rDoc['lease']['exp']], [$rLeaseDoc['typ'], $rLeaseDoc['node_uuid'], $rLeaseDoc['exp']]);
+		$this->assertSame(
+			ClusterReference::panelSign($this->rCrypto->rSeed, 'lea', (string) base64_decode($rDoc['lease']['payload'], true)),
+			(string) base64_decode($rDoc['lease']['sig'], true),
+			'signed under tag lea'
+		);
 
 		// The token opens with the node's per-epoch key; enrol_complete activates.
 		$rBody = Seal::open($rNode['eph_sk'], 'token', $rNode['uuid'], (string) base64_decode($rDoc['token_sealed']));
