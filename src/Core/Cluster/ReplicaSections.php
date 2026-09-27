@@ -240,6 +240,21 @@ final class ReplicaSections {
 	}
 
 	/**
+	 * A section's canonical form, which its ETag hashes: keys sorted at every
+	 * level; lists keep their order. MAIN signs every section in this form
+	 * (ReplicaBuilder::canonical).
+	 */
+	public static function canonical(mixed $rValue): mixed {
+		if (!is_array($rValue)) {
+			return $rValue;
+		}
+		if (!array_is_list($rValue)) {
+			ksort($rValue, SORT_STRING);
+		}
+		return array_map([self::class, 'canonical'], $rValue);
+	}
+
+	/**
 	 * A row's fields, typed the same whichever driver read them: integers
 	 * as int, text as string, a missing column or NULL as null.
 	 *

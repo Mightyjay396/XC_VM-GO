@@ -414,15 +414,9 @@ final class ReplicaBuilder {
 		return hash('sha256', self::json(self::canonical($rData)));
 	}
 
-	/** Keys sorted at every level; lists keep their order. */
+	/** Keys sorted at every level; lists keep their order (ReplicaSections::canonical). */
 	public static function canonical(mixed $rValue): mixed {
-		if (!is_array($rValue)) {
-			return $rValue;
-		}
-		if (!array_is_list($rValue)) {
-			ksort($rValue, SORT_STRING);
-		}
-		return array_map([self::class, 'canonical'], $rValue);
+		return ReplicaSections::canonical($rValue);
 	}
 
 	/** A record's payload, as signed: JSON with slashes and Unicode as they are. */
