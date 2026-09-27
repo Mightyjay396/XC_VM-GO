@@ -51,18 +51,27 @@ class ClusterRootCommand implements CommandInterface {
 		cli_set_process_title('XC_VM[ClusterRoot]');
 		$rUntil = time() + (in_array('--once', $rArgs, true) ? 0 : self::WATCH_SECONDS);
 		do {
-			self::drain(static function (array $rAction): string {
-				global $db;
-				ob_start();
-				(new RootSignalsCronJob())->executeAction($rAction, ServerRepository::getAll(), $db);
-				return (string) ob_get_clean();
-			}, time());
+			self::drain([self::class, 'runAction'], time());
 			if (time() >= $rUntil) {
 				break;
 			}
 			sleep(1);
 		} while (true);
 		return 0;
+	}
+
+	/**
+	 * Run one verified root action through the signals cron's code; what it
+	 * prints is the command's result. On a node in mode 2 it reaches no
+	 * database: its system log line goes to the agent (LogSink::syslog).
+	 *
+	 * @param array<string, mixed> $rAction {action, …}
+	 */
+	public static function runAction(array $rAction): string {
+		global $db;
+		ob_start();
+		(new RootSignalsCronJob())->executeAction($rAction, ServerRepository::getAll(), $db);
+		return (string) ob_get_clean();
 	}
 
 	/**

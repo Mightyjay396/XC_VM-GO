@@ -35,7 +35,8 @@ final class NodeStateSink {
 
 	/**
 	 * Set state columns of this node's row: an event with TELEMETRY on, else
-	 * the row itself.
+	 * the row itself. A node in mode 2 never writes MAIN's database: false
+	 * when the spool did not take the event (the next change sends it).
 	 *
 	 * @param array<string, scalar|null> $rFields keys from STATE
 	 */
@@ -46,6 +47,9 @@ final class NodeStateSink {
 		}
 		if (NodeFlows::on(NodeFlows::TELEMETRY) && EventSpool::append('p0', [['type' => 'node.state', 'd' => ['fields' => (object) $rFields]]])) {
 			return true;
+		}
+		if (NodeRole::refusesConnects()) {
+			return false;
 		}
 		$rSet = implode(', ', array_map(static fn(string $rColumn): string => '`' . $rColumn . '` = ?', array_keys($rFields)));
 		return (bool) ($rDb ?? DatabaseFactory::get())->query('UPDATE `servers` SET ' . $rSet . ' WHERE `id` = ?;', ...[...array_values($rFields), (int) SERVER_ID]);

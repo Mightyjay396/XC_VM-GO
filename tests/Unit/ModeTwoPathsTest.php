@@ -1,0 +1,248 @@
+<?php
+
+use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\Crypto\Enc;
+use XcVm\Core\Cluster\LogSink;
+use XcVm\Core\Cluster\RootPin;
+use XcVm\Tests\Support\AgentUser;
+use XcVm\Tests\Support\FakeClusterCrypto;
+use XcVm\Tests\Support\ReplicaFixture;
+
+/**
+ * The paths a node in mode 2 (api) still took to MAIN's database (cluster
+ * plan, section 10; ADR 0004, ninth Phase 7 increment), each without one.
+ * First the root actions' system log lines: a P1 `log.syslog` event, never
+ * a write to MAIN's database before acting.
+ *
+ * Each runs in a child PHP booted for real from the node replica, in a
+ * throwaway deploy root: an xcvm_core stand-in logs every connect it is
+ * asked for, the refusal (ConnectAudit) counts every attempt, and `sudo`,
+ * `crontab` and `ip` are stand-ins first on the child's PATH that log what
+ * they were asked, so nothing reaches this machine's firewall, services or
+ * crontab. The child checks that before it boots.
+ */
+final class ModeTwoPathsTest extends TestCase {
+	private const NODE = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+	private const NOW = 1800000000;
+
+	private string $rHome;
+
+	private ReplicaFixture $rFixture;
+
+	protected function setUp(): void {
+		$this->rHome = sys_get_temp_dir() . '/xcvm-mode2-' . bin2hex(random_bytes(4)) . '/';
+		foreach (['config/cluster', 'tmp/cache', 'tmp/flood', 'storage', 'stub'] as $rDir) {
+			mkdir($this->rHome . $rDir, 0777, true);
+		}
+		// As root, a node's audits write as the owner of config/cluster/.
+		AgentUser::own($this->rHome);
+		foreach (['sudo', 'crontab', 'ip'] as $rTool) {
+			file_put_contents($this->rHome . 'stub/' . $rTool, "#!/bin/sh\necho \"" . $rTool . " \$*\" >> " . escapeshellarg($this->rHome . 'commands.log') . "\nexit 0\n");
+			chmod($this->rHome . 'stub/' . $rTool, 0755);
+		}
+		$this->rFixture = new ReplicaFixture($this->rHome . 'config/cluster/');
+	}
+
+	protected function tearDown(): void {
+		RootPin::useDirs(null, null);
+		exec('rm -rf ' . escapeshellarg($this->rHome));
+	}
+
+	private function flows(?int $rMode, int $rFlows = 255, string $rState = 'active'): void {
+		$rFile = $this->rHome . 'config/cluster/flows.json';
+		@unlink($rFile);
+		if ($rMode !== null) {
+			file_put_contents($rFile, json_encode(['mode' => $rMode, 'flows' => $rFlows, 'state' => $rState]));
+		}
+	}
+
+	/**
+	 * A node in mode 2 with every flow on, its replica applied from disk as
+	 * `service` does at boot (so its processes boot from it).
+	 *
+	 * @param array<string, string|null> $rSettings MAIN's settings the replica carries
+	 */
+	private function node(array $rSettings = []): void {
+		$this->flows(2);
+		$this->rFixture->node($rSettings);
+		[$rCode, $rOut] = $this->child(['cluster:apply', '--from-disk'], dirname(__DIR__, 2) . '/src/console.php');
+		$this->assertSame(0, $rCode, $rOut);
+		@unlink($this->rHome . 'commands.log');
+	}
+
+	/**
+	 * Run $rScript (the scenario script by default) in the throwaway deploy root.
+	 *
+	 * @param list<string> $rArgs
+	 * @param array<string, string> $rEnv
+	 * @return array{0: int, 1: string, 2: array<string, mixed>|null} exit code, output, the scenario's result
+	 */
+	private function child(array $rArgs, ?string $rScript = null, array $rEnv = []): array {
+		$rPrepend = $this->rHome . 'prepend.php';
+		file_put_contents($rPrepend, <<<'PHP'
+			<?php
+			// A throwaway deploy root, and an xcvm_core whose MAIN database and Redis never answer.
+			define('MAIN_HOME', getenv('XCVM_TEST_HOME'));
+			final class XC_VM {
+				public static function config_server(): array {
+					return ['server_id' => 5];
+				}
+
+				public static function db_connect(bool $rMigrate = false) {
+					file_put_contents(MAIN_HOME . 'connects.log', "sql\n", FILE_APPEND);
+					return false;
+				}
+
+				public static function redis_connect() {
+					file_put_contents(MAIN_HOME . 'connects.log', "redis\n", FILE_APPEND);
+					return null;
+				}
+			}
+			PHP);
+		@unlink($this->rHome . 'connects.log');
+		$rCommand = array_merge([PHP_BINARY, '-d', 'auto_prepend_file=' . $rPrepend, $rScript ?? $this->scenarios()], $rArgs);
+		$rProc = proc_open($rCommand, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $rPipes, $this->rHome, $rEnv + ['XCVM_TEST_HOME' => $this->rHome, 'XCVM_TEST_SRC' => dirname(__DIR__, 2) . '/src/', 'PATH' => $this->rHome . 'stub:' . getenv('PATH')]);
+		$this->assertIsResource($rProc);
+		$rOut = (string) stream_get_contents($rPipes[1]) . (string) stream_get_contents($rPipes[2]);
+		fclose($rPipes[1]);
+		fclose($rPipes[2]);
+		$rCode = proc_close($rProc);
+		$rResult = null;
+		if (preg_match('/^RESULT:(.*)$/m', $rOut, $rMatch)) {
+			$rResult = json_decode($rMatch[1], true);
+		}
+		return [$rCode, $rOut, $rResult];
+	}
+
+	/** The scenario script: boots as a CLI command (from the replica), then runs one path. */
+	private function scenarios(): string {
+		$rScript = $this->rHome . 'scenario.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Cli\Commands\ClusterRootCommand;
+			use XcVm\Core\Cluster\ReplicaBoot;
+			use XcVm\Core\Cluster\RootPin;
+			use XcVm\Core\Enum\BootContext;
+
+			// Nothing runs unless the stand-ins answer for sudo, crontab and ip.
+			foreach (['sudo', 'crontab', 'ip'] as $rTool) {
+				if (trim((string) shell_exec('command -v ' . $rTool)) !== getenv('XCVM_TEST_HOME') . 'stub/' . $rTool) {
+					echo "\nRESULT:" . json_encode(['error' => 'unsafe: ' . $rTool . ' is not the stand-in']) . "\n";
+					exit(1);
+				}
+			}
+			require getenv('XCVM_TEST_SRC') . 'bootstrap.php';
+			$rResult = [];
+			register_shutdown_function(static function () use (&$rResult): void {
+				echo "\nRESULT:" . json_encode($rResult) . "\n";
+			});
+			try {
+				XC_Bootstrap::boot(BootContext::Cli);
+				$rResult['replica'] = ReplicaBoot::active();
+				switch ($argv[1] ?? '') {
+					case 'root_actions':
+						RootPin::useDirs(getenv('XCVM_TEST_PIN'), getenv('XCVM_TEST_INBOX'));
+						$rResult['done'] = ClusterRootCommand::drain([ClusterRootCommand::class, 'runAction'], (int) getenv('XCVM_TEST_NOW'));
+						break;
+				}
+			} catch (\Throwable $e) {
+				$rResult['error'] = get_class($e) . ': ' . $e->getMessage();
+			}
+			PHP);
+		return $rScript;
+	}
+
+	/**
+	 * No connect to MAIN: xcvm_core was never asked for one, and none was
+	 * even attempted (the refusal counts each attempt, refused or not).
+	 */
+	private function assertNoConnect(): void {
+		$this->assertSame([], is_file($this->rHome . 'connects.log') ? file($this->rHome . 'connects.log', FILE_IGNORE_NEW_LINES) : [], 'xcvm_core was never asked to connect');
+		$rAttempts = 0;
+		foreach (glob($this->rHome . 'storage/cluster/sql_audit/*.json') ?: [] as $rFile) {
+			$rDay = json_decode((string) file_get_contents($rFile), true);
+			$rAttempts += (int) ($rDay['sql'] ?? 0) + (int) ($rDay['redis'] ?? 0);
+		}
+		$this->assertSame(0, $rAttempts, 'no connect attempted, refused or not');
+	}
+
+	/** @return list<string> what the stand-ins were asked, in order */
+	private function commands(): array {
+		return is_file($this->rHome . 'commands.log') ? file($this->rHome . 'commands.log', FILE_IGNORE_NEW_LINES) : [];
+	}
+
+	/** @return list<array<string, mixed>> the spooled events of a lane, in file order */
+	private function spooled(string $rLane): array {
+		$rFiles = glob($this->rHome . 'config/cluster/spool/' . $rLane . '/*.ndjson') ?: [];
+		sort($rFiles);
+		$rOut = [];
+		foreach ($rFiles as $rFile) {
+			foreach (array_filter(explode("\n", (string) file_get_contents($rFile))) as $rLine) {
+				$rOut[] = json_decode($rLine, true);
+			}
+		}
+		return $rOut;
+	}
+
+	// ── Root actions ─────────────────────────────────────────────────
+
+	/**
+	 * Reboot, restart and stop logged to MAIN's database before acting, so
+	 * in mode 2 the refusal stopped them and cluster:root reported them
+	 * failed. Now each acts, and its line goes to the spool.
+	 */
+	public function testRootActionsActAndLogThroughTheSpool(): void {
+		$this->node();
+		$rCrypto = new FakeClusterCrypto();
+		$rPin = $this->rHome . 'rootpin/';
+		mkdir($rPin . 'etc', 0755, true);
+		mkdir($rPin . 'inbox', 0700, true);
+		RootPin::useDirs($rPin . 'etc/', $rPin . 'inbox/');
+		$this->assertTrue(RootPin::write($rCrypto->info()['panel_sign_pub'], self::NODE));
+		foreach (['reboot', 'restart_services', 'stop_services', 'flush'] as $i => $rAction) {
+			$rDoc = (string) json_encode(['v' => 1, 'type' => 'node.root', 'exp' => self::NOW + 600, 'iat' => self::NOW, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $i + 1, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => ['action' => $rAction]]);
+			file_put_contents($rPin . 'inbox/' . ($i + 1) . '.json', json_encode(['doc' => $rDoc, 'sig' => Enc::b64url($rCrypto->sign('cmd', $rDoc))]));
+		}
+		[, $rOut, $rResult] = $this->child(['root_actions'], null, ['XCVM_TEST_PIN' => $rPin . 'etc/', 'XCVM_TEST_INBOX' => $rPin . 'inbox/', 'XCVM_TEST_NOW' => (string) self::NOW]);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+
+		$this->assertSame([true, true, true, true], array_column($rResult['done'], 'ok'), $rOut);
+		foreach ([1, 2, 3, 4] as $rSeq) {
+			$this->assertTrue(json_decode((string) file_get_contents($rPin . 'inbox/' . $rSeq . '.done'), true)['ok'], 'cluster:root reports it done: ' . $rSeq);
+		}
+		// Each acted.
+		$this->assertSame(['sudo reboot', 'sudo systemctl stop xc_vm', 'sudo systemctl start xc_vm', 'sudo systemctl stop xc_vm', 'sudo iptables -F', 'sudo ip6tables -F'], array_values(preg_grep('/^sudo (reboot|systemctl|ip6?tables -F)/', $this->commands())));
+		// Each logged through the spool, in order, as root on this node.
+		$rRows = array_map(static fn(array $rEvent): array => $rEvent['d']['rows'][0], $this->spooled('p1'));
+		$this->assertSame(['log.syslog'], array_values(array_unique(array_column($this->spooled('p1'), 'type'))));
+		$this->assertSame([
+			['REBOOT', 'System rebooted on request.'],
+			['RESTART', 'XC_VM services restarted on request.'],
+			['STOP', 'XC_VM services stopped on request.'],
+			['FLUSH', 'Flushed blocked IP\'s from iptables.'],
+		], array_map(static fn(array $rRow): array => [$rRow['type'], $rRow['error']], $rRows));
+		$this->assertSame([5], array_values(array_unique(array_column($rRows, 'server_id'))));
+	}
+
+	// ── Everywhere else, as before ───────────────────────────────────
+
+	/**
+	 * Every system log line root writes goes through LogSink::syslog()
+	 * first, with its own type, and keeps its row as it was where the
+	 * node writes MAIN's database (MAIN, mode 0, mode 1 with LOGS off).
+	 */
+	public function testEveryRootSyslogLineIsHandedToTheAgentFirst(): void {
+		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/RootSignalsCronJob.php');
+		$rInserts = substr_count($rSource, 'INSERT INTO `mysql_syslog`');
+		$this->assertGreaterThanOrEqual(15, $rInserts);
+		preg_match_all('/if \(!LogSink::syslog\(\'([A-Z_-]+)\',[^\n]*\) \{\n\t+\$db->query\("INSERT INTO `mysql_syslog`\(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`\) VALUES\(\?, \'([A-Z_-]+)\', /', $rSource, $rGuarded, PREG_SET_ORDER);
+		$this->assertCount($rInserts, $rGuarded, 'no line written to MAIN\'s database without asking the agent first');
+		foreach ($rGuarded as [, $rEvent, $rRow]) {
+			$this->assertSame($rRow, $rEvent);
+			$this->assertContains($rEvent, LogSink::SYSLOG_TYPES);
+		}
+	}
+}
