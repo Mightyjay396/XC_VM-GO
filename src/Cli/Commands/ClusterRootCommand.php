@@ -63,15 +63,21 @@ class ClusterRootCommand implements CommandInterface {
 	/**
 	 * Run one verified root action through the signals cron's code; what it
 	 * prints is the command's result. On a node in mode 2 it reaches no
-	 * database: its system log line goes to the agent (LogSink::syslog).
+	 * database: its system log line goes to the agent (LogSink::syslog), and
+	 * an update or rollback is refused (RootSignalsCronJob::updatesHere).
+	 * An action that throws leaves no output buffer open.
 	 *
 	 * @param array<string, mixed> $rAction {action, …}
 	 */
 	public static function runAction(array $rAction): string {
 		global $db;
 		ob_start();
-		(new RootSignalsCronJob())->executeAction($rAction, ServerRepository::getAll(), $db);
-		return (string) ob_get_clean();
+		try {
+			(new RootSignalsCronJob())->executeAction($rAction, ServerRepository::getAll(), $db);
+		} finally {
+			$rOutput = (string) ob_get_clean();
+		}
+		return $rOutput;
 	}
 
 	/**

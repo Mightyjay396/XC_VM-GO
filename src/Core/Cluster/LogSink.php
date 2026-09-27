@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Logging\FileLogger;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -77,8 +78,9 @@ final class LogSink {
 	 * event on P1, as root on this node, and MAIN writes the row for it
 	 * (EventIngest). A node in mode 2 never writes MAIN's database (its
 	 * connect is refused): a line the spool does not take (the agent
-	 * stopped) goes to the panel's error log only. Either way the action it
-	 * records runs after this, whatever became of the line.
+	 * stopped, or LOGS off) goes to the panel's error log only (dropped()).
+	 * Either way the action it records runs after this, whatever became of
+	 * the line.
 	 *
 	 * @return bool False when the caller writes the row itself, as before:
 	 *              MAIN, a node in mode 0, and one in mode 1 whose LOGS flow
@@ -92,8 +94,28 @@ final class LogSink {
 		if (!NodeRole::refusesConnects()) {
 			return false;
 		}
-		error_log('XC_VM ' . $rType . ': ' . Redactor::redact($rError) . ' (not in MAIN\'s system log: mode 2, and the agent took no event)');
+		self::dropped($rType, $rError);
 		return true;
+	}
+
+	/**
+	 * A system log line a node in mode 2 could not hand to its agent, kept
+	 * in the panel's error log (FileLogger: `LOGS_TMP_PATH/error_log.log`),
+	 * which cron:errors sends on as a `log.panel_error` once the agent takes
+	 * events again. Redacted. Root writes it as the owner of the agent's
+	 * directory (SettingsAudit::asAgentUser): the logs directory is xc_vm's,
+	 * where root neither creates a file of its own nor follows a link. PHP's
+	 * error_log (a cron's stderr) only when root cannot switch.
+	 */
+	private static function dropped(string $rType, string $rError): void {
+		$rLine = 'Not in MAIN\'s system log (mode 2, and the agent took no event): ' . $rType . ': ' . Redactor::redact($rError);
+		$rKept = SettingsAudit::asAgentUser(static function () use ($rLine): bool {
+			FileLogger::log('syslog', $rLine);
+			return true;
+		}, dirname(rtrim(EventSpool::dir(), '/')));
+		if (!$rKept) {
+			error_log('XC_VM ' . $rLine);
+		}
 	}
 
 	/**

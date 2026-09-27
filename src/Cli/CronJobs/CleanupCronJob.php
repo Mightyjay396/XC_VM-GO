@@ -59,8 +59,10 @@ class CleanupCronJob implements CommandInterface {
 	 * streams? Everywhere but mode 2 it reads them from MAIN's database, as
 	 * before. A node in mode 2 may not (its connect is refused), and no
 	 * replica section carries its streams yet (R2 `streams`), so the checks
-	 * are skipped there: files of streams deleted on MAIN stay until R2.
-	 * Never against an empty list, which would delete every file.
+	 * are skipped there until R2: files of streams deleted on MAIN stay,
+	 * TV archive segments are kept past their retention, and neither the
+	 * VOD analysis nor the created-channel checks run. Never against an
+	 * empty list, which would delete every file.
 	 *
 	 * The seam R2 fills: once the `streams` section is applied, a mode 2
 	 * node answers true and the checks read this node's streams from the
@@ -73,8 +75,8 @@ class CleanupCronJob implements CommandInterface {
 	private function loadCron(): void {
 		global $db;
 
-		// First, and without a database: on a node in mode 2 the queries below
-		// are refused (ConnectAudit::guard), and this cron ends at the first.
+		// First, and without a database: everything after streamChecks()
+		// reads MAIN's database, which a node in mode 2 skips.
 		// This node's connect audit: the cutover gate reads seven days of it.
 		ConnectAudit::prune(8);
 		// Its settings misses: the days that left the report's window drop out

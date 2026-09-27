@@ -34,9 +34,9 @@ class FileLogger implements LoggerInterface {
 	/**
 	 * Установить путь к файлу лога.
 	 *
-	 * @param string $path Полный путь к файлу
+	 * @param string|null $path Полный путь к файлу; null — путь по умолчанию
 	 */
-	public static function setLogFile(string $path): void {
+	public static function setLogFile(?string $path): void {
 		self::$logFile = $path;
 	}
 

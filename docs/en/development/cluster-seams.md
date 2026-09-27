@@ -64,7 +64,10 @@ action.
 - A node in mode 2 (`NodeRole::refusesConnects()`) never falls back to MAIN's
   database. A write with an agent path goes through its seam first
   (`LogSink`, `LogSink::syslog()` for root's system log lines, `NodeStateSink`),
-  and a root action runs after its log line whatever became of the line.
+  and a root action runs after its log line whatever became of the line
+  (a line the agent did not take stays in the panel's error log). An action
+  that still needs MAIN's database is refused up front in mode 2
+  (`RootSignalsCronJob::updatesHere()` for `update` and `rollback`).
   Work that needs MAIN's data no replica section carries yet is skipped in
   mode 2 behind a named seam (`CleanupCronJob::streamChecks()`), never run
   against an empty answer.

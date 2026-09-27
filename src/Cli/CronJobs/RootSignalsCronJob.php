@@ -258,20 +258,23 @@ class RootSignalsCronJob implements CommandInterface {
 	 * `node.root` commands now, which cluster:root runs as they come. What
 	 * tells the node that its row changed is its replica: the servers cache
 	 * an apply built from the `servers` and `node` sections, whose ETags
-	 * ReplicaApply::OWNED_CACHE records. Each time they change, and once
-	 * after a reboot, the three checks run against that cache, as a row of
-	 * each kind made them run, so a command that never arrived (it expired
-	 * while the node was away) is made good. None while the replica does not
-	 * own the servers cache.
+	 * ReplicaApply::OWNED_CACHE records ($rTag, replicaServersTag()). Each
+	 * time they change, and once after a reboot, the three checks run
+	 * against that cache, as a row of each kind made them run, so a command
+	 * that never arrived (it expired while the node was away) is made good.
+	 * None while the replica does not own the servers cache.
+	 *
+	 * $rTag must be read before the servers the checks use (loadCron): an
+	 * apply writes the cache, then its ETags, so those rows are at least as
+	 * new as the ETags marked checked here, and ETags an apply records in
+	 * between run the checks again the next minute.
 	 *
 	 * @return array{php: bool, services: bool, ports: bool, ramdisk: bool}
 	 */
-	private function replicaChecks(): array {
+	private function replicaChecks(?string $rTag): array {
 		$rCheck = ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false];
-		$rOwned = ReplicaApply::owns(ReplicaSections::SERVERS) ? FileCache::getCache(ReplicaApply::OWNED_CACHE) : null;
-		$rTag = is_array($rOwned) ? ($rOwned[ReplicaSections::SERVERS] ?? null) : null;
 		$rMarker = CRONS_TMP_PATH . 'replica_servers_checked';
-		if (!is_string($rTag) || $rTag === '' || (string) @file_get_contents($rMarker) === $rTag) {
+		if ($rTag === null || (string) @file_get_contents($rMarker) === $rTag) {
 			return $rCheck;
 		}
 		// Before the checks, as a signal row was deleted before it ran: at most once.
@@ -279,11 +282,41 @@ class RootSignalsCronJob implements CommandInterface {
 		return ['php' => false, 'services' => true, 'ports' => true, 'ramdisk' => true];
 	}
 
+	/**
+	 * Can this node run an update or a rollback? Not in mode 2 yet: the
+	 * update command writes MAIN's servers row (`status` 5 before the
+	 * updater starts, the version after), which mode 2 refuses, so the node
+	 * would download the archive and stop there, reported started. Refused
+	 * here, before anything runs: cluster:root reports it failed with this
+	 * message.
+	 *
+	 * @throws \RuntimeException on a node in mode 2
+	 */
+	private static function updatesHere(string $rAction): void {
+		if (!self::readsMainDatabase()) {
+			throw new \RuntimeException($rAction . ': refused on a node in cluster API mode (mode 2): the updater still writes MAIN\'s servers row');
+		}
+	}
+
+	/**
+	 * What the replica's servers cache was built from: its entry in
+	 * ReplicaApply::OWNED_CACHE (`<servers ETag>/<node ETag>`). Null while
+	 * the replica does not own that cache.
+	 */
+	private static function replicaServersTag(): ?string {
+		$rOwned = ReplicaApply::owns(ReplicaSections::SERVERS) ? FileCache::getCache(ReplicaApply::OWNED_CACHE) : null;
+		$rTag = is_array($rOwned) ? ($rOwned[ReplicaSections::SERVERS] ?? null) : null;
+		return is_string($rTag) && $rTag !== '' ? $rTag : null;
+	}
+
 	private function loadCron(): void {
 		global $db;
+		$rReads = self::readsMainDatabase();
+		// Before the servers the replica's checks use (replicaChecks()).
+		$rServersTag = $rReads ? null : self::replicaServersTag();
 		$rServers = ServerRepository::getAll(true);
 		$rFlush = false;
-		if (self::readsMainDatabase() && !self::rootCommandsFromMain()) {
+		if ($rReads && !self::rootCommandsFromMain()) {
 			$db->query("SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{\"action\":\"flush\"}' AND `cache` = 0;", SERVER_ID);
 			$rFlush = $db->num_rows() > 0;
 		}
@@ -587,10 +620,9 @@ class RootSignalsCronJob implements CommandInterface {
 		}
 		// A node in mode 2 reads no `signals` row: its replica says when to
 		// check its ramdisk, ports and services.
-		$rReads = self::readsMainDatabase();
 		if (!$rReads || $db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' AND `cache` = 0 ORDER BY signal_id ASC;", SERVER_ID)) {
 			$rRows = $rReads ? $db->get_rows() : [];
-			$rCheck = $rReads ? ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false] : $this->replicaChecks();
+			$rCheck = $rReads ? ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false] : $this->replicaChecks($rServersTag);
 			foreach ($rRows as $rRow) {
 				$rData = json_decode($rRow['custom_data'], true);
 				switch ($rData['action'] ?? '') {
@@ -844,6 +876,7 @@ class RootSignalsCronJob implements CommandInterface {
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:delete "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
 				break;
 			case 'update':
+				self::updatesHere('update');
 				echo 'Updating...' . "\n";
 				if (!LogSink::syslog('UPDATE', 'Updating XC_VM...')) {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', 'Updating XC_VM...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
@@ -851,6 +884,7 @@ class RootSignalsCronJob implements CommandInterface {
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update update 2>&1 &');
 				break;
 			case 'rollback':
+				self::updatesHere('rollback');
 				$rRbVersion = isset($rData['version']) ? trim((string) $rData['version']) : '';
 				if (preg_match('/^\d+\.\d+\.\d+$/', $rRbVersion)) {
 					echo 'Rolling back to ' . $rRbVersion . '...' . "\n";

@@ -14,7 +14,7 @@ use XcVm\Tests\Support\ReplicaFixture;
 
 /**
  * The paths a node in mode 2 (api) still took to MAIN's database (cluster
- * plan, section 10; ADR 0004, ninth Phase 7 increment), each without one:
+ * plan, section 10; ADR 0004, tenth Phase 7 increment), each without one:
  * cron:root_signals' minute (its signals loop, the ramdisk, ports and
  * services checks from the replica, the crontab and sysctl checks), the
  * root actions' system log lines (a P1 `log.syslog` event, never before
@@ -42,13 +42,13 @@ final class ModeTwoPathsTest extends TestCase {
 
 	protected function setUp(): void {
 		$this->rHome = sys_get_temp_dir() . '/xcvm-mode2-' . bin2hex(random_bytes(4)) . '/';
-		foreach (['config/cluster', 'tmp/cache', 'tmp/crons', 'tmp/flood', 'bin/nginx/conf/ports', 'bin/nginx_rtmp/conf', 'content/streams', 'content/archive', 'content/created', 'content/vod', 'storage', 'stub'] as $rDir) {
+		foreach (['config/cluster', 'tmp/cache', 'tmp/crons', 'tmp/flood', 'tmp/logs', 'bin/nginx/conf/ports', 'bin/nginx_rtmp/conf', 'content/streams', 'content/archive', 'content/created', 'content/vod', 'storage', 'stub'] as $rDir) {
 			mkdir($this->rHome . $rDir, 0777, true);
 		}
 		// As root, a node's audits write as the owner of config/cluster/.
 		AgentUser::own($this->rHome);
 		foreach (['sudo', 'crontab', 'ip'] as $rTool) {
-			file_put_contents($this->rHome . 'stub/' . $rTool, "#!/bin/sh\necho \"" . $rTool . " \$*\" >> " . escapeshellarg($this->rHome . 'commands.log') . "\nexit 0\n");
+			file_put_contents($this->rHome . 'stub/' . $rTool, "#!/bin/sh\necho \"" . $rTool . " \$*\" >> " . escapeshellarg($this->rHome . 'commands.log') . "\n" . ($rTool === 'sudo' ? self::spoolCount($this->rHome) : '') . "exit 0\n");
 			chmod($this->rHome . 'stub/' . $rTool, 0755);
 		}
 		// What the node runs today: two PHP-FPM pools (the replica says four),
@@ -65,6 +65,14 @@ final class ModeTwoPathsTest extends TestCase {
 			file_put_contents($this->rHome . 'tmp/crons/' . $rStamp, (string) time());
 		}
 		$this->rFixture = new ReplicaFixture($this->rHome . 'config/cluster/');
+	}
+
+	/**
+	 * The sudo stand-in's second line: what it was asked, and how many P1
+	 * spool files there were at that moment (sudo.log).
+	 */
+	private static function spoolCount(string $rHome): string {
+		return 'echo "$* $(ls ' . escapeshellarg($rHome . 'config/cluster/spool/p1') . ' 2>/dev/null | wc -l)" >> ' . escapeshellarg($rHome . 'sudo.log') . "\n";
 	}
 
 	protected function tearDown(): void {
@@ -95,9 +103,9 @@ final class ModeTwoPathsTest extends TestCase {
 	private function node(array $rSettings = [], int $rOff = 0): void {
 		$this->flows(2, 255 & ~$rOff);
 		$this->rFixture->node($rSettings);
-		[$rCode, $rOut] = $this->child(['cluster:apply', '--from-disk'], dirname(__DIR__, 2) . '/src/console.php');
-		$this->assertSame(0, $rCode, $rOut);
+		$this->apply();
 		@unlink($this->rHome . 'commands.log');
+		@unlink($this->rHome . 'sudo.log');
 	}
 
 	/**
@@ -267,6 +275,26 @@ final class ModeTwoPathsTest extends TestCase {
 		return is_file($this->rHome . 'commands.log') ? file($this->rHome . 'commands.log', FILE_IGNORE_NEW_LINES) : [];
 	}
 
+	/** @return list<array{0: string, 1: int}> what sudo was asked, with the P1 spool files there were then */
+	private function sudoSpooled(): array {
+		$rOut = [];
+		foreach (is_file($this->rHome . 'sudo.log') ? file($this->rHome . 'sudo.log', FILE_IGNORE_NEW_LINES) : [] as $rLine) {
+			if (preg_match('/^(.*) +(\d+)$/', $rLine, $rMatch)) {
+				$rOut[] = [$rMatch[1], (int) $rMatch[2]];
+			}
+		}
+		return $rOut;
+	}
+
+	/**
+	 * A node's replica applied from disk again, as `service` or the agent
+	 * does after it stored a section.
+	 */
+	private function apply(): void {
+		[$rCode, $rOut] = $this->child(['cluster:apply', '--from-disk'], dirname(__DIR__, 2) . '/src/console.php');
+		$this->assertSame(0, $rCode, $rOut);
+	}
+
 	/** @return list<array<string, mixed>> the spooled events of a lane, in file order */
 	private function spooled(string $rLane): array {
 		$rFiles = glob($this->rHome . 'config/cluster/spool/' . $rLane . '/*.ndjson') ?: [];
@@ -320,6 +348,51 @@ final class ModeTwoPathsTest extends TestCase {
 	}
 
 	/**
+	 * The checks follow the replica: MAIN moves the node's HTTPS port while
+	 * it is in mode 2, the agent stores the new `node` section and the apply
+	 * rebuilds the servers cache, so the next minute checks the ports again
+	 * (and only that minute).
+	 */
+	public function testTheChecksRunAgainWhenTheReplicasRowChanges(): void {
+		$this->node();
+		[, $rOut, $rResult] = $this->child(['root_signals']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertContains(['action' => 'set_port', 'type' => 1, 'ports' => [8443], 'reload' => true], $rResult['ran'][0]);
+		$this->assertSame([], $rResult['ran'][1]);
+
+		$rNode = json_decode((string) file_get_contents($this->rFixture->dir() . 'node.json'), true)['data'];
+		$this->rFixture->whole('node', ['https_broadcast_port' => 9443] + $rNode);
+		$this->apply();
+		[, $rOut, $rResult] = $this->child(['root_signals']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertContains(['action' => 'set_port', 'type' => 1, 'ports' => [9443], 'reload' => true], $rResult['ran'][0], 'the new ETags run the checks against the new row');
+		$this->assertSame([], $rResult['ran'][1]);
+	}
+
+	/**
+	 * A replica that does not own the crontab (its section refused) leaves
+	 * the crontab as it is in mode 2: MAIN's `crontab` table is never read,
+	 * and the minute goes on to its sysctl check and actions.
+	 */
+	public function testTheCrontabIsLeftAsItIsWhenTheReplicaDoesNotOwnIt(): void {
+		$this->flows(2);
+		$this->rFixture->node();
+		$this->rFixture->whole('crontab', ['jobs' => 'not a list']);
+		$this->apply();
+		touch($this->rHome . 'tmp/crontab');
+		[, $rOut, $rResult] = $this->child(['root_signals']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertStringNotContainsString('Checking crontab', $rResult['output'][0]);
+		$this->assertFileExists($this->rHome . 'tmp/crontab', 'the crontab left as it is');
+		$this->assertNotSame([], $rResult['ran'][0], 'the checks\' actions still run');
+	}
+
+	/**
 	 * A suspected PHP-FPM crash restarts the services: its line reaches
 	 * MAIN's system log through the spool, and the restart happens.
 	 */
@@ -342,7 +415,8 @@ final class ModeTwoPathsTest extends TestCase {
 	/**
 	 * Reboot, restart and stop logged to MAIN's database before acting, so
 	 * in mode 2 the refusal stopped them and cluster:root reported them
-	 * failed. Now each acts, and its line goes to the spool.
+	 * failed. Now each acts, and its line goes to the spool first. An update
+	 * or rollback is still refused, now before it downloads anything.
 	 */
 	public function testRootActionsActAndLogThroughTheSpool(): void {
 		$this->node();
@@ -352,8 +426,8 @@ final class ModeTwoPathsTest extends TestCase {
 		mkdir($rPin . 'inbox', 0700, true);
 		RootPin::useDirs($rPin . 'etc/', $rPin . 'inbox/');
 		$this->assertTrue(RootPin::write($rCrypto->info()['panel_sign_pub'], self::NODE));
-		foreach (['reboot', 'restart_services', 'stop_services', 'flush'] as $i => $rAction) {
-			$rDoc = (string) json_encode(['v' => 1, 'type' => 'node.root', 'exp' => self::NOW + 600, 'iat' => self::NOW, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $i + 1, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => ['action' => $rAction]]);
+		foreach ([['action' => 'reboot'], ['action' => 'restart_services'], ['action' => 'stop_services'], ['action' => 'flush'], ['action' => 'update'], ['action' => 'rollback', 'version' => '2.0.0']] as $i => $rArgs) {
+			$rDoc = (string) json_encode(['v' => 1, 'type' => 'node.root', 'exp' => self::NOW + 600, 'iat' => self::NOW, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $i + 1, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => $rArgs]);
 			file_put_contents($rPin . 'inbox/' . ($i + 1) . '.json', json_encode(['doc' => $rDoc, 'sig' => Enc::b64url($rCrypto->sign('cmd', $rDoc))]));
 		}
 		[, $rOut, $rResult] = $this->child(['root_actions'], null, ['XCVM_TEST_PIN' => $rPin . 'etc/', 'XCVM_TEST_INBOX' => $rPin . 'inbox/', 'XCVM_TEST_NOW' => (string) self::NOW]);
@@ -361,12 +435,23 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertArrayNotHasKey('error', $rResult, $rOut);
 		$this->assertNoConnect();
 
-		$this->assertSame([true, true, true, true], array_column($rResult['done'], 'ok'), $rOut);
+		$this->assertSame([true, true, true, true, false, false], array_column($rResult['done'], 'ok'), $rOut);
 		foreach ([1, 2, 3, 4] as $rSeq) {
 			$this->assertTrue(json_decode((string) file_get_contents($rPin . 'inbox/' . $rSeq . '.done'), true)['ok'], 'cluster:root reports it done: ' . $rSeq);
 		}
 		// Each acted.
 		$this->assertSame(['sudo reboot', 'sudo systemctl stop xc_vm', 'sudo systemctl start xc_vm', 'sudo systemctl stop xc_vm', 'sudo iptables -F', 'sudo ip6tables -F'], array_values(preg_grep('/^sudo (reboot|systemctl|ip6?tables -F)/', $this->commands())));
+		// Reboot, restart and stop spool their line before they act, so a
+		// reboot's survives it; the flush logs once it flushed.
+		$this->assertSame([['reboot', 1], ['systemctl stop xc_vm', 2], ['systemctl start xc_vm', 2], ['systemctl stop xc_vm', 3], ['iptables -F', 3]], array_values(array_filter($this->sudoSpooled(), static fn(array $rCall): bool => (bool) preg_match('/^(reboot|systemctl|iptables -F)/', $rCall[0]))));
+		// An update or rollback is refused before anything runs: the updater
+		// still writes MAIN's servers row.
+		foreach ([5, 6] as $rSeq) {
+			$rDone = json_decode((string) file_get_contents($rPin . 'inbox/' . $rSeq . '.done'), true);
+			$this->assertFalse($rDone['ok']);
+			$this->assertStringContainsString('refused on a node in cluster API mode (mode 2)', $rDone['result']);
+		}
+		$this->assertSame([], preg_grep('/console\.php update/', $this->commands()), 'no update started');
 		// Each logged through the spool, in order, as root on this node.
 		$rRows = array_map(static fn(array $rEvent): array => $rEvent['d']['rows'][0], $this->spooled('p1'));
 		$this->assertSame(['log.syslog'], array_values(array_unique(array_column($this->spooled('p1'), 'type'))));
@@ -388,6 +473,19 @@ final class ModeTwoPathsTest extends TestCase {
 	 */
 	public function testTheWatchdogPassNeedsNeitherDatabaseNorRedis(): void {
 		$this->node(['redis_handler' => '1']);
+		$this->watchdogPass();
+	}
+
+	/**
+	 * Without TELEMETRY too the pass never writes the servers row (nor
+	 * counts `lines_live`, with Redis off): it writes its sample and ends.
+	 */
+	public function testAWatchdogWithoutTelemetryStillLeavesTheRowToMain(): void {
+		$this->node([], NodeFlows::TELEMETRY);
+		$this->watchdogPass();
+	}
+
+	private function watchdogPass(): void {
 		$this->nginxRunning();
 		file_put_contents($this->rHome . 'tmp/watchdog_devices.json', json_encode(['t' => time(), 'devices' => new stdClass()]));
 		[, $rOut, $rResult] = $this->child(['watchdog']);
