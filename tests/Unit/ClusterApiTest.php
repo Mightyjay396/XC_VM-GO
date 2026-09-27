@@ -31,6 +31,7 @@ use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\HeartbeatService;
 use XcVm\Domain\Cluster\NodeAudit;
 use XcVm\Domain\Cluster\NodeAuthCache;
+use XcVm\Domain\Cluster\NodeCertbot;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Cluster\NonceStore;
@@ -1069,6 +1070,66 @@ final class ClusterApiTest extends TestCase {
 			$this->assertTrue(SignalDispatcher::cacheBatch(self::SID, [['type' => 'delete_con', 'uuid' => 'abc']]));
 			$this->assertSame([1, self::SID], array_column(array_slice($rRows, 1), 'server_id'));
 			$this->assertCount(4, $rJobs());
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+			SignalDispatcher::useSink(null);
+		}
+	}
+
+	/**
+	 * A node in mode 2 cannot queue its own certificate renewal (its root
+	 * reads no `signals` row), so MAIN's daily cron:certbot sends it the
+	 * `node.root certbot_generate` on the node's own rule: HTTPS on, and the
+	 * certificate it last reported due within a week; for its names, not
+	 * its addresses. Nodes in mode 0 or 1 queue their own; a node root
+	 * does not take commands from gets nothing, not even a row.
+	 */
+	public function testMainSendsTheCertificateRenewalsOfModeTwoNodes(): void {
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		foreach (['`enable_https` tinyint(4) NOT NULL DEFAULT 0', '`domain_name` text', '`certbot_ssl` mediumtext'] as $rColumn) {
+			$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN ' . $rColumn);
+		}
+		$rNow = intdiv($this->rT0, 1000);
+		$rDue = (string) json_encode(['serial' => '0A', 'expiration' => $rNow + 3 * 86400, 'subject' => 'CN = node.example', 'path' => '/home/xc_vm/bin/certbot/config/live/node.example']);
+		$this->rDb->query('UPDATE `servers` SET `enable_https` = 1, `domain_name` = ?, `certbot_ssl` = ? WHERE `id` = ?;', 'node.example,192.0.2.5,www.node.example', $rDue, self::SID);
+		$rRows = [];
+		SignalDispatcher::useSink(new class($rRows) implements \XcVm\Core\Cluster\SignalSink {
+			public function __construct(private array &$rRows) {
+			}
+
+			public function insert(array $rRows): bool {
+				array_push($this->rRows, ...$rRows);
+				return true;
+			}
+
+			public function pending(int $rServerID, string $rCustomData): bool {
+				return false;
+			}
+		});
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		$rRoot = static fn(): array => array_values(array_filter(array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0, 200)), static fn(array $rDoc): bool => $rDoc['type'] === 'node.root'));
+		try {
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS, 'mode' => 1, 'root_ready' => 1]);
+			$this->assertSame([], NodeCertbot::renewDue(), 'mode 1 queues its own');
+			NodeRegistry::update(self::SID, ['mode' => 2, 'root_ready' => 0]);
+			$this->assertSame([], NodeCertbot::renewDue(), 'root takes no command yet');
+			NodeRegistry::update(self::SID, ['root_ready' => 1]);
+			$this->assertSame([self::SID], NodeCertbot::renewDue());
+			$rSent = $rRoot();
+			$this->assertCount(1, $rSent);
+			$this->assertSame(['action' => 'certbot_generate', 'domain' => ['node.example', 'www.node.example']], $rSent[0]['args']);
+
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode(['serial' => '0B', 'expiration' => $rNow + 30 * 86400]), self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'not due');
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ?, `enable_https` = 0 WHERE `id` = ?;', $rDue, self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'HTTPS off');
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = NULL, `enable_https` = 1 WHERE `id` = ?;', self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'nothing reported');
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ?, `domain_name` = ? WHERE `id` = ?;', $rDue, '192.0.2.5', self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'no name to certify');
+			$this->assertCount(1, $rRoot());
+			$this->assertSame([], $rRows, 'never a signals row');
 		} finally {
 			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
 			SignalDispatcher::useSink(null);

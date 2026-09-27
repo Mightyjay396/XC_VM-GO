@@ -6,15 +6,18 @@ use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Tests\Support\AgentUser;
 use XcVm\Tests\Support\ReplicaFixture;
 
 /**
- * The signals daemon on a node in mode 2 (api), which has no database or
- * Redis of MAIN's (cluster plan, section 10; ADR 0004, fourteenth Phase 7
- * increment): it reads no `signals` row and no Redis signal (kills come as
- * `conn.kill_worker` and `conn.drop`, cache jobs as `node.cache`, which
- * cluster:exec runs, and the node runs its own where they are queued).
+ * The signals daemon, cron:certbot and the `certbot` command on a node in
+ * mode 2 (api), which has no database or Redis of MAIN's (cluster plan,
+ * section 10; ADR 0004, fourteenth Phase 7 increment): the daemon reads no
+ * `signals` row and no Redis signal (kills come as `conn.kill_worker` and
+ * `conn.drop`, cache jobs as `node.cache`, which cluster:exec runs), and the
+ * certificate work keeps its own copy of the `certbot_ssl` it reported,
+ * reloads its nginx itself and leaves the renewal to MAIN.
  *
  * Each path runs in a child PHP booted for real from the node replica, in a
  * throwaway deploy root, as ModeTwoPathsTest does: an xcvm_core stand-in logs
@@ -155,8 +158,17 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		$rScript = $this->rHome . 'scenario.php';
 		file_put_contents($rScript, <<<'PHP'
 			<?php
+			namespace XcVm\Cli\Commands {
+				// The certbot command runs as root; this child need not.
+				function posix_getpwuid(int $rUid): array {
+					return ['name' => 'root'];
+				}
+			}
+
 			namespace {
+				use XcVm\Cli\Commands\CertbotCommand;
 				use XcVm\Cli\Commands\SignalsCommand;
+				use XcVm\Cli\CronJobs\CertbotCronJob;
 				use XcVm\Core\Cluster\ReplicaBoot;
 				use XcVm\Core\Cluster\SignalDispatcher;
 				use XcVm\Core\Enum\BootContext;
@@ -207,12 +219,28 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 							}
 							$rResult['restarts'] = $rDaemon->rRestarts;
 							break;
+						case 'certbot_cron':
+							ob_start();
+							try {
+								(new ReflectionMethod(CertbotCronJob::class, 'loadCron'))->invoke(new CertbotCronJob(), ($argv[2] ?? '') === '1');
+							} finally {
+								$rResult['output'] = (string) ob_get_clean();
+							}
+							break;
 						case 'own_jobs':
 							// A job the node queues for itself (a movie stopped here, a closed connection).
 							$rResult['queued'] = [
 								SignalDispatcher::cache(5, ['type' => 'delete_vod', 'id' => 7]),
 								SignalDispatcher::cacheBatch(5, [['type' => 'delete_con', 'uuid' => str_repeat('ab', 16)], ['type' => 'delete_con', 'uuid' => '../../config/cluster/agent.json'], ['type' => 'update_line', 'id' => 3]]),
 							];
+							break;
+						case 'certbot':
+							ob_start();
+							try {
+								$rResult['code'] = (new CertbotCommand())->execute([base64_encode((string) json_encode(['action' => 'certbot_generate', 'domain' => ['node.example', '192.0.2.5']]))]);
+							} finally {
+								$rResult['output'] = (string) ob_get_clean();
+							}
 							break;
 					}
 				} catch (\Throwable $e) {
@@ -255,6 +283,17 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		return $rOut;
 	}
 
+	/** The certbot_ssl values spooled as node.state, in order. */
+	private function reportedCertificates(): array {
+		$rOut = [];
+		foreach ($this->spooled('p0') as $rEvent) {
+			if (($rEvent['type'] ?? '') === 'node.state' && array_key_exists('certbot_ssl', $rEvent['d']['fields'])) {
+				$rOut[] = json_decode((string) $rEvent['d']['fields']['certbot_ssl'], true);
+			}
+		}
+		return $rOut;
+	}
+
 	/** A process whose command line reads as nginx's master (ProcessManager::isNginxRunning). */
 	private function nginxRunning(): void {
 		$this->rNginx = proc_open([PHP_BINARY, '-r', 'sleep(60);', '--', 'nginx: master process'], [0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
@@ -262,6 +301,28 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		for ($i = 0; $i < 50 && !str_contains((string) @file_get_contents('/proc/' . proc_get_status($this->rNginx)['pid'] . '/cmdline'), 'nginx: master'); $i++) {
 			usleep(20000);
 		}
+	}
+
+	/**
+	 * A certificate as the openssl stand-in reads it, under $rDir (with the
+	 * chain and key certbot writes beside it); returns its fullchain path.
+	 */
+	private function certificate(string $rDir, string $rSerial, int $rExpires): string {
+		@mkdir($rDir, 0777, true);
+		file_put_contents($rDir . '/fullchain.pem', 'serial=' . $rSerial . "\nnotAfter=" . gmdate('M j H:i:s Y', $rExpires) . " GMT\nsubject=CN = node.example\n");
+		file_put_contents($rDir . '/chain.pem', 'chain');
+		file_put_contents($rDir . '/privkey.pem', 'key');
+		return $rDir . '/fullchain.pem';
+	}
+
+	private function sslConf(string $rCertificate): void {
+		file_put_contents($this->rHome . 'bin/nginx/conf/ssl.conf', 'ssl_certificate ' . $rCertificate . ";\nssl_certificate_key " . dirname($rCertificate) . "/privkey.pem;\n");
+	}
+
+	/** What the node keeps of what it reported (NodeStateSink::reported), as its file holds it. */
+	private function kept(): ?array {
+		$rKept = json_decode((string) @file_get_contents($this->rHome . 'config/cluster/node_state.json'), true);
+		return is_array($rKept) ? $rKept : null;
 	}
 
 	// ── The signals daemon ───────────────────────────────────────────
@@ -338,6 +399,118 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		$this->assertSame([], preg_grep('/cache_engine/', $this->commands()), 'MAIN\'s cache rebuilds are not a node\'s');
 	}
 
+	// ── cron:certbot ─────────────────────────────────────────────────
+
+	/**
+	 * The certificate nginx serves differs from what the node reported (it
+	 * reported none yet): its record goes to MAIN as node.state through the
+	 * spool, the node keeps its own copy, and it reloads its nginx itself
+	 * (no `signals` row for root to read), logging root's RELOAD line
+	 * through the spool. MAIN's panel logs are MAIN's own cron's to send.
+	 * The next run finds its copy current: nothing is sent or reloaded.
+	 */
+	public function testCronCertbotReportsItsCertificateAndReloadsItself(): void {
+		$this->node();
+		$rCert = $this->certificate($this->rHome . 'bin/certbot/config/live/node.example', '0A1B', time() + 60 * 86400);
+		$this->sslConf($rCert);
+		[, $rOut, $rResult] = $this->child(['certbot_cron']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertStringContainsString('Certificate valid, not due for renewal.', $rResult['output']);
+		$rReported = $this->reportedCertificates();
+		$this->assertCount(1, $rReported);
+		$this->assertSame(['serial' => '0A1B', 'path' => dirname($rCert)], array_intersect_key($rReported[0], ['serial' => 1, 'path' => 1]));
+		$this->assertSame(['certbot_ssl'], array_keys((array) $this->kept()));
+		$this->assertSame('0A1B', json_decode((string) $this->kept()['certbot_ssl'], true)['serial'], 'the node keeps what it reported');
+		$this->assertSame(['nginx_rtmp -s reload', 'nginx -s reload'], $this->commands(), 'reloaded here, without sudo');
+		$rLines = array_map(static fn(array $rEvent): array => $rEvent['d']['rows'][0], $this->spooled('p1'));
+		$this->assertSame([['RELOAD', 'NGINX services reloaded on request.']], array_map(static fn(array $rRow): array => [$rRow['type'], $rRow['error']], $rLines));
+
+		@unlink($this->rHome . 'commands.log');
+		[, $rOut, $rResult] = $this->child(['certbot_cron']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertCount(1, $this->reportedCertificates(), 'nothing new to report');
+		$this->assertSame([], $this->commands(), 'nor to reload');
+	}
+
+	/**
+	 * A certificate due for renewal: a node in mode 2 queues no renewal for
+	 * its root (MAIN sends it the `node.root certbot_generate`), and makes
+	 * no connect.
+	 */
+	public function testCronCertbotLeavesTheRenewalToMain(): void {
+		$this->node();
+		$rCert = $this->certificate($this->rHome . 'bin/certbot/config/live/node.example', '0C', time() + 3 * 86400);
+		$this->sslConf($rCert);
+		[, $rOut, $rResult] = $this->child(['certbot_cron']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertStringContainsString('Certificate due for renewal.', $rResult['output']);
+		$this->assertStringContainsString('MAIN sends the renewal', $rResult['output']);
+		$this->assertSame([], preg_grep('/certbot/', $this->commands()), 'certbot is not run here');
+	}
+
+	/**
+	 * nginx back on the default certificate while the node's record names
+	 * the certbot one: the configuration is restored from the node's own
+	 * copy and nginx reloaded, all without MAIN's database.
+	 */
+	public function testCronCertbotRestoresTheSslConfigurationFromItsOwnRecord(): void {
+		$this->node();
+		$rCert = $this->certificate($this->rHome . 'bin/certbot/config/live/node.example', '0D', time() + 60 * 86400);
+		file_put_contents($this->rHome . 'config/cluster/node_state.json', json_encode(['certbot_ssl' => json_encode(['serial' => '0D', 'expiration' => time() + 60 * 86400, 'subject' => 'CN = node.example', 'path' => dirname($rCert)])]));
+		$this->certificate($this->rHome . 'bin/nginx/conf/default', '01', time() + 3650 * 86400);
+		file_put_contents($this->rHome . 'bin/nginx/conf/ssl.conf', "ssl_certificate server.crt;\nssl_certificate_key server.key;\n");
+		[, $rOut, $rResult] = $this->child(['certbot_cron', '1']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertStringContainsString('Fixed ssl configuration file', $rResult['output']);
+		$this->assertStringStartsWith('ssl_certificate ' . $rCert . ";\n", (string) file_get_contents($this->rHome . 'bin/nginx/conf/ssl.conf'));
+		$this->assertSame(['nginx_rtmp -s reload', 'nginx -s reload'], $this->commands());
+	}
+
+	// ── The certbot command ──────────────────────────────────────────
+
+	/**
+	 * certbot says the certificate is not due: where MAIN has no record of
+	 * the node's certificate (its row, or in mode 2 the node's copy, which
+	 * the command forgets first as the admin's regenerate clears MAIN's),
+	 * the command points nginx at the newest certificate certbot holds for
+	 * the name and reports it through the spool, without MAIN's database.
+	 * A copy from an earlier report does not stop it.
+	 */
+	public function testTheCertbotCommandsFailurePathNeedsNoDatabase(): void {
+		$this->node();
+		$rCert = $this->certificate($this->rHome . 'bin/certbot/config/live/node.example', '0E', time() + 60 * 86400);
+		file_put_contents($this->rHome . 'bin/nginx/conf/ssl.conf', "ssl_certificate server.crt;\n");
+		file_put_contents($this->rHome . 'certbot.out', "Certificate not yet due for renewal\n");
+		[, $rOut, $rResult] = $this->child(['certbot']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertSame(0, $rResult['code']);
+		$this->assertNoConnect();
+		$this->assertStringContainsString('Warning: Certificate not due for renewal!', $rResult['output']);
+		$this->assertCount(2, preg_grep('/^sudo certbot .* certonly .* -d node\.example$/', $this->commands()), 'the dry run and the run, for the name only');
+		$this->assertStringStartsWith('ssl_certificate ' . $rCert . ";\n", (string) file_get_contents($this->rHome . 'bin/nginx/conf/ssl.conf'));
+		$this->assertSame(['0E'], array_column($this->reportedCertificates(), 'serial'));
+		$this->assertSame('0E', json_decode((string) $this->kept()['certbot_ssl'], true)['serial']);
+		$this->assertTrue(json_decode((string) file_get_contents($this->rHome . 'bin/certbot/logs/xc_vm.log'), true)['status']);
+		$this->assertCount(1, preg_grep('/^php .*console\.php cron:certbot 1$/', $this->commands()), 'and it checks the result as before');
+
+		file_put_contents($this->rHome . 'bin/nginx/conf/ssl.conf', "ssl_certificate server.crt;\n");
+		[, $rOut, $rResult] = $this->child(['certbot']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertStringStartsWith('ssl_certificate ' . $rCert . ";\n", (string) file_get_contents($this->rHome . 'bin/nginx/conf/ssl.conf'), 'repaired again');
+		$this->assertSame(['0E', '0E'], array_column($this->reportedCertificates(), 'serial'));
+	}
+
 	// ── Everywhere else, as before ───────────────────────────────────
 
 	/**
@@ -356,5 +529,42 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		$this->here(2);
 		NodeRole::useMainBuild(true);
 		$this->assertTrue(SignalsCommand::readsMainDatabase(), 'MAIN, even with a stray flows.json');
+	}
+
+	/**
+	 * A node keeps its own copy of the certificate record it reported only
+	 * in mode 2, and only once the spool took the event; a field MAIN keeps
+	 * no use for is not kept.
+	 */
+	public function testANodeInModeTwoKeepsWhatItReported(): void {
+		EventSpool::useDir($this->rHome . 'config/cluster/spool/');
+
+		$this->here(1);
+		$this->assertTrue(NodeStateSink::state(['certbot_ssl' => '{"serial":"01"}']));
+		$this->assertNull($this->kept(), 'mode 1 reads MAIN\'s row');
+
+		$this->here(2, 255 & ~NodeFlows::TELEMETRY);
+		$this->assertFalse(NodeStateSink::state(['certbot_ssl' => '{"serial":"02"}']), 'no event, and no row in mode 2');
+		$this->assertNull(NodeStateSink::reported('certbot_ssl'));
+
+		$this->here(2);
+		$this->assertTrue(NodeStateSink::state(['certbot_ssl' => '{"serial":"03"}', 'governor' => 'performance']));
+		$this->assertSame('{"serial":"03"}', NodeStateSink::reported('certbot_ssl'));
+		$this->assertSame(['certbot_ssl'], array_keys((array) $this->kept()));
+		$this->assertNull(NodeStateSink::reported('governor'));
+
+		// The agent stopped: nothing spooled, so nothing kept.
+		touch($this->rHome . 'config/cluster/flows.json', time() - EventSpool::STALE_AFTER - 5);
+		$this->assertFalse(NodeStateSink::state(['certbot_ssl' => '{"serial":"04"}']));
+		$this->assertSame('{"serial":"03"}', NodeStateSink::reported('certbot_ssl'));
+
+		// Forgotten in mode 2 only (MAIN may have cleared its record).
+		$this->here(1);
+		NodeStateSink::forget('certbot_ssl');
+		$this->assertSame('{"serial":"03"}', NodeStateSink::reported('certbot_ssl'));
+		$this->here(2);
+		NodeStateSink::forget('certbot_ssl', 'governor');
+		$this->assertNull(NodeStateSink::reported('certbot_ssl'));
+		$this->assertSame([], (array) $this->kept());
 	}
 }

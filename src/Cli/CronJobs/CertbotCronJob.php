@@ -4,9 +4,13 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
+use XcVm\Domain\Cluster\NodeCertbot;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -42,9 +46,14 @@ class CertbotCronJob implements CommandInterface {
 	private function loadCron(bool $rCheck): void {
 		$db = self::db();
 		$rCertInfo = null;
+		// A node in mode 2 reaches no database of MAIN's (plan, section 10):
+		// MAIN sends its renewal, MAIN's record of its certificate is the one
+		// it last reported, and it reloads its own nginx.
+		$rApi = NodeRole::refusesConnects();
 
 		if (!$rCheck) {
-			if (!PHP_ERRORS) {
+			// MAIN's panel logs (MAIN's own run sends them).
+			if (!PHP_ERRORS && !$rApi) {
 				DiagnosticsService::submitPanelLogs();
 			}
 			$rCertInfo = DiagnosticsService::getCertificateInfo();
@@ -57,7 +66,11 @@ class CertbotCronJob implements CommandInterface {
 							$rData['domain'][] = $rDomain;
 						}
 					}
-					if (count($rData['domain']) > 0) {
+					if ($rApi) {
+						// Its root reads no `signals` row: MAIN sends it the
+						// signed node.root certbot_generate (NodeCertbot).
+						echo 'MAIN sends the renewal.' . "\n";
+					} elseif (count($rData['domain']) > 0) {
 						NodeActions::send(intval(SERVER_ID), $rData, $db);
 					}
 				} else {
@@ -68,8 +81,13 @@ class CertbotCronJob implements CommandInterface {
 
 		// This node's own record, read from its row: the servers cache a node
 		// replica builds carries no certbot_ssl (ReplicaSections::SERVER_LOCAL).
-		$db->query('SELECT `certbot_ssl` FROM `servers` WHERE `id` = ?;', SERVER_ID);
-		$rDBCert = (string) (($db->get_row() ?: [])['certbot_ssl'] ?? '');
+		// In mode 2, what it last reported, which is what MAIN has.
+		if ($rApi) {
+			$rDBCert = (string) NodeStateSink::reported('certbot_ssl');
+		} else {
+			$db->query('SELECT `certbot_ssl` FROM `servers` WHERE `id` = ?;', SERVER_ID);
+			$rDBCert = (string) (($db->get_row() ?: [])['certbot_ssl'] ?? '');
+		}
 		$rDBCertInfo = json_decode($rDBCert, true);
 		$rLines = explode("\n", file_get_contents(MAIN_HOME . 'bin/nginx/conf/ssl.conf'));
 
@@ -81,7 +99,7 @@ class CertbotCronJob implements CommandInterface {
 					if ($rCertInfoFile && ($rCertInfo === null || $rCertInfo['serial'] != $rCertInfoFile['serial'] || !$rDBCert || ($rDBCertInfo['serial'] ?? null) != $rCertInfoFile['serial'])) {
 						NodeStateSink::state(['certbot_ssl' => json_encode($rCertInfoFile)], $db);
 						echo 'Updated ssl configuration in database' . "\n";
-						NodeActions::reloadNginx(intval(SERVER_ID), $db);
+						$this->reloadNginx($rApi, $db);
 					}
 				} else {
 					if (is_array($rDBCertInfo) && !empty($rDBCertInfo['path'])) {
@@ -93,11 +111,38 @@ class CertbotCronJob implements CommandInterface {
 							$rSSLConfig = 'ssl_certificate ' . $rCertificate . ';' . "\n" . 'ssl_certificate_key ' . $rPrivateKey . ';' . "\n" . 'ssl_trusted_certificate ' . $rChain . ';' . "\n" . 'ssl_protocols TLSv1.2 TLSv1.3;' . "\n" . 'ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;' . "\n" . 'ssl_prefer_server_ciphers off;' . "\n" . 'ssl_ecdh_curve auto;' . "\n" . 'ssl_session_timeout 10m;' . "\n" . 'ssl_session_cache shared:MozSSL:10m;' . "\n" . 'ssl_session_tickets off;';
 							file_put_contents(BIN_PATH . 'nginx/conf/ssl.conf', $rSSLConfig);
 							echo 'Fixed ssl configuration file' . "\n";
-							NodeActions::reloadNginx(intval(SERVER_ID), $db);
+							$this->reloadNginx($rApi, $db);
 						}
 					}
 				}
 			}
 		}
+
+		// MAIN sends the renewals of nodes in mode 2, which cannot queue their own.
+		if (!$rCheck && class_exists(NodeCertbot::class) && !empty(SettingsManager::get('cluster_api_enabled')) && NodeRole::isMain()) {
+			try {
+				foreach (NodeCertbot::renewDue() as $rServerID) {
+					echo 'Certificate renewal sent to server ' . $rServerID . '.' . "\n";
+				}
+			} catch (\Throwable $rE) {
+				echo 'Node certificates: ' . $rE->getMessage() . "\n";
+			}
+		}
+	}
+
+	/**
+	 * Reload nginx for a new SSL configuration: root's `reload_nginx`, as a
+	 * `signals` row (NodeActions). A node in mode 2 has no row for its root
+	 * to read, and its nginx runs as xc_vm: it reloads it here, as the
+	 * `reload_nginx` RPC does, and logs root's line through its agent.
+	 */
+	private function reloadNginx(bool $rApi, object $db): void {
+		if (!$rApi) {
+			NodeActions::reloadNginx(intval(SERVER_ID), $db);
+			return;
+		}
+		LogSink::syslog('RELOAD', 'NGINX services reloaded on request.');
+		shell_exec(BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp -s reload');
+		shell_exec(BIN_PATH . 'nginx/sbin/nginx -s reload');
 	}
 }
