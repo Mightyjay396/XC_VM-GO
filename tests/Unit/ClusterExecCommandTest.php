@@ -39,6 +39,13 @@ final class ClusterExecCommandTest extends TestCase {
 		$this->assertIsString(ClusterExecCommand::verify($rGood, $this->rState, 1800000600 + ClusterExecCommand::SKEW + 1), 'stale');
 	}
 
+	public function testConfigChangedIsLeftToTheAgentsNextReplicaPoll(): void {
+		ob_start();
+		$rExit = ClusterExecCommand::run(['type' => 'config.changed', 'args' => ['sections' => ['servers']]]);
+		$this->assertSame(0, $rExit, 'an agent that does not run it itself still acks it');
+		$this->assertSame(['deferred' => true], json_decode((string) ob_get_clean(), true));
+	}
+
 	public function testUnknownTypesAndActionsDoNothing(): void {
 		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.root', 'args' => ['action' => 'reboot']]));
 		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.rpc', 'args' => ['action' => 'view_log']]), 'not in NodeRpc::ACTIONS');

@@ -35,6 +35,11 @@ final class ServerRepositorySimpleTest extends TestCase {
 		ServerRepository::setDb($this->db);
 	}
 
+	protected function tearDown(): void {
+		// The injected connection would outlive this test and stand in for the next one's.
+		(new ReflectionProperty(ServerRepository::class, 'db'))->setValue(null, null);
+	}
+
 	public function testGetStreamingSimpleAcceptsNullPermissions(): void {
 		// Regression: null perms (login-page boot) must not throw.
 		$servers = ServerRepository::getStreamingSimple(null);

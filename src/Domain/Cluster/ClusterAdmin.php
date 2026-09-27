@@ -31,11 +31,13 @@ final class ClusterAdmin {
 	 */
 	public static function nodes(array $rServers, int $rOfflineAfterSec): array {
 		$rReady = ClusterMeta::readyAtMs(); // its own query: before ours, not between query() and get_rows()
+		$rHeard = HeartbeatService::lastSeen(); // MySQL's copy may be a flush behind
 		$rNow = ClusterClock::nowMs();
 		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rOut = [];
 		foreach (self::db()->get_rows() as $rRow) {
-			$rLastSeen = $rRow['last_seen_at'] === null ? null : (int) $rRow['last_seen_at'];
+			$rLastSeen = HeartbeatService::freshest($rRow['last_seen_at'], $rHeard[(int) $rRow['server_id']] ?? null);
+			$rRow['last_seen_at'] = $rLastSeen;
 			$rRow['server_name'] = (string) ($rServers[(int) $rRow['server_id']]['server_name'] ?? ('#' . $rRow['server_id']));
 			$rRow['health'] = $rRow['state'] === 'active' ? NodeHealth::state($rLastSeen, $rReady, $rNow, $rOfflineAfterSec) : (string) $rRow['state'];
 			$rOut[] = $rRow;

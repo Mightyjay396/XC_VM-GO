@@ -38,6 +38,19 @@ boot() {
     sudo chown -R xc_vm:xc_vm $SCRIPT/bin/xc_agent 2>/dev/null
     sudo -u xc_vm bash $SCRIPT/bin/xc_agent/run.sh &
   fi
+  # Cluster node replica, CONFIG flow on (bit 32 of flows.json, mode >= 1):
+  # rebuild the caches it owns from the verified copy on disk before the
+  # daemons read them (ReplicaApply; cron:cache also does every minute).
+  # Today the command still needs MAIN's database to boot, and exits without
+  # it, hence the short timeout; serving from disk after a reboot while MAIN
+  # is unreachable waits for ReplicaStage.
+  if [ -f $SCRIPT/config/cluster/flows.json ]; then
+    FLOWS=$(sed -n 's/.*"flows":\([0-9]*\).*/\1/p' $SCRIPT/config/cluster/flows.json)
+    MODE=$(sed -n 's/.*"mode":\([0-9]*\).*/\1/p' $SCRIPT/config/cluster/flows.json)
+    if [ -n "$FLOWS" ] && [ -n "$MODE" ] && [ "$MODE" -ge 1 ] && [ $((FLOWS & 32)) -ne 0 ]; then
+      sudo -u xc_vm timeout 15 $SCRIPT/bin/php/bin/php $SCRIPT/console.php cluster:apply --from-disk >/dev/null 2>/dev/null
+    fi
+  fi
   sudo -u xc_vm $SCRIPT/bin/nginx/sbin/nginx >/dev/null 2>/dev/null
   sudo -u xc_vm $SCRIPT/bin/nginx_rtmp/sbin/nginx_rtmp >/dev/null 2>/dev/null
   sudo -u xc_vm $SCRIPT/bin/daemons.sh

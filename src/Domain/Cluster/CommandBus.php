@@ -30,8 +30,8 @@ final class CommandBus {
 	/** Lifetime of a command by type prefix (seconds). */
 	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'default' => 600];
 
-	/** Types this increment carries. */
-	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop', 'conn.close'];
+	/** Types MAIN sends today. */
+	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed'];
 
 	/** Types that are restrictive (always signable); the extension decides, this is informational. */
 	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
@@ -135,6 +135,30 @@ final class CommandBus {
 			self::db()->query("UPDATE `cluster_commands` SET `state` = 'delivered', `delivered_at` = ? WHERE `state` = 'queued' AND `id` IN (" . implode(',', $rIDs) . ');', ClusterClock::now());
 		}
 		return $rOut;
+	}
+
+	/**
+	 * A node's pending restrictive commands (kills, drops, closes, stops),
+	 * oldest first, for the hard revocation mode's denial: the extension
+	 * refuses the node's session without a licence, so these travel in the
+	 * panel-signed LICENCE_INVALID instead (plan section 4). Read only: the
+	 * request that gets them is not authenticated, so nothing is marked
+	 * delivered. Each keeps its own `cmd` signature, and the agent checks it,
+	 * its uuid, generation, seq above its high-water and expiry as on the
+	 * long-poll, but does not raise that high-water for them: it keeps their
+	 * cmd_ids until they expire instead. So once the licence is back, the
+	 * long-poll still hands out a granting command queued before them, and a
+	 * kill it hands out again is acked with its result, not run twice.
+	 *
+	 * @return list<array{doc: string, sig: string, seq: int}>
+	 */
+	public static function restrictive(int $rServerID, int $rLimit = 50): array {
+		self::db()->query(
+			"SELECT `seq`, `payload`, `sig` FROM `cluster_commands` WHERE `server_id` = ? AND `class` = 'R' AND `state` IN ('queued', 'delivered') AND `exp` > ? ORDER BY `seq` ASC LIMIT " . max(1, min(200, $rLimit)) . ';',
+			$rServerID,
+			ClusterClock::now()
+		);
+		return array_map(static fn($rRow) => ['doc' => (string) $rRow['payload'], 'sig' => Enc::b64url((string) $rRow['sig']), 'seq' => (int) $rRow['seq']], self::db()->get_rows());
 	}
 
 	/**

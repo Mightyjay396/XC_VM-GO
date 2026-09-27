@@ -8,6 +8,7 @@ use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
+use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -34,6 +35,9 @@ final class ClusterApi {
 	/** Largest request body accepted (nginx also caps at 8 MB). */
 	public const MAX_BODY = 8388608;
 
+	/** SEAL purpose of the commands a hard-mode LICENCE_INVALID carries (killsFor()). */
+	public const SEAL_COMMANDS = 'commands';
+
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
 		'health' => ['GET', false, null],
@@ -55,7 +59,7 @@ final class ClusterApi {
 	];
 
 	/**
-	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string} $rReq
+	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string, https?: bool} $rReq
 	 * @param array<string, mixed> $rSettings
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
 	 * @return array{status: int, headers: array<string, string>, body: string}
@@ -75,6 +79,13 @@ final class ClusterApi {
 		}
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return DenialFactory::deny($rCrypto, 503, 'DISABLED');
+		}
+		if (($rSettings['cluster_transport'] ?? '') === 'https_required' && empty($rReq['https']) && $rOp !== 'challenge') {
+			// https_required (plan section 3): over plain HTTP only the challenge
+			// is served, so a node whose HTTPS fails still fetches the signed
+			// policy there, and with it an admin's switch back to auto.
+			$rH = Canonical::parseHeaders($rReq['headers']);
+			return DenialFactory::deny($rCrypto, 403, 'HTTPS_REQUIRED', $rH['node'] ?? null, $rH['nonce'] ?? null);
 		}
 		if ($rOp === 'challenge') {
 			return self::challenge($rCrypto, (string) ($rReq['query'] ?? ''), $rSettings, $rMain);
@@ -108,7 +119,7 @@ final class ClusterApi {
 		try {
 			$rKeys = TokenService::session($rCrypto, $rNode, $rH['epoch']);
 		} catch (ClusterRefusedException $rE) {
-			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
+			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH, true);
 		}
 		if (!$rKeys instanceof \XcVm\Core\Cluster\Crypto\SessionKeys) {
 			return DenialFactory::deny($rCrypto, 401, 'TOKEN_EXPIRED', $rH['node'], $rH['nonce']);
@@ -132,12 +143,40 @@ final class ClusterApi {
 			}
 		}
 		// Authenticated from here on.
-		if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
-			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+		if (($rReplay = self::claimNonce($rCrypto, $rH)) !== null) {
+			return $rReplay;
 		}
 		if (!in_array($rNode['state'], $rStates, true)) {
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
 		}
+		// hello, config and conn_snapshot hold one of the op's bus permits.
+		return ClusterSemaphore::run($rCrypto, $rOp, $rH, static fn(): array => self::dispatch($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rBody));
+	}
+
+	/**
+	 * Claim an authenticated request's nonce: null when claimed, else its 401
+	 * REPLAY. When MAIN only cannot vouch for the nonce yet (a bus that just
+	 * started or was lost, NonceStore), the refusal carries retry_after_ms: a
+	 * request stamped anew that long after the denial's main_time_ms passes.
+	 *
+	 * @param array{node: string, nonce: string, ts_ms: int} $rH
+	 * @return array{status: int, headers: array<string, string>, body: string}|null
+	 */
+	private static function claimNonce(ClusterCrypto $rCrypto, array $rH): ?array {
+		if (NonceStore::claim($rH['node'], $rH['nonce'], $rH['ts_ms'], $rRetryMs)) {
+			return null;
+		}
+		return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce'], $rRetryMs === null ? [] : ['retry_after_ms' => $rRetryMs]);
+	}
+
+	/**
+	 * An authenticated session op, past its nonce and node state: open the
+	 * BOX and run the handler.
+	 *
+	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config' $rOp
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	private static function dispatch(ClusterCrypto $rCrypto, string $rOp, array $rReq, array $rSettings, array $rMain, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, string $rBody): array {
 		$rPlain = Box::open($rKeys->rEncUp, $rCtx, $rBody);
 		$rPayload = $rPlain === null ? null : json_decode($rPlain, true);
 		if (!is_array($rPayload)) {
@@ -148,7 +187,7 @@ final class ClusterApi {
 		return match ($rOp) {
 			'enrol_complete' => self::enrolComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain, (string) ($rReq['ip'] ?? '')),
 			'token_refresh' => self::tokenRefresh($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
-			'hello' => self::hello($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+			'hello' => self::hello($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 			'heartbeat' => self::heartbeat($rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 			'commands' => self::commands($rNode, $rKeys, $rCtx, $rPayload),
 			'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
@@ -156,7 +195,7 @@ final class ClusterApi {
 			'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
-			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+			'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 		};
 	}
 
@@ -184,7 +223,7 @@ final class ClusterApi {
 		}
 		$rChallenge = random_bytes(32);
 		// Single use, 180 s: token_rekey (later) consumes it by its hash.
-		NonceStore::claim('chal:' . $rCn, substr(hash('sha256', $rChallenge, true), 0, 16));
+		NonceStore::issue('chal:' . $rCn, substr(hash('sha256', $rChallenge, true), 0, 16));
 		return DenialFactory::signed($rCrypto, 200, 'hlt', [
 			'v' => 1,
 			'typ' => 'xcvm-challenge',
@@ -210,6 +249,8 @@ final class ClusterApi {
 			'last_seen_at' => ClusterClock::nowMs(),
 		]);
 		ClusterAudit::log('node.enrol_complete', (int) $rNode['server_id'], ['node' => $rNode['node_uuid'], 'agent' => $rP['agent_version'] ?? null], 'node', $rIP ?: null);
+		// Now active in the node list: parents and children learn its key at once.
+		ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => 'active', 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'], 'gen' => (int) $rNode['gen'],
 			'main_time_ms' => ClusterClock::nowMs(), 'policy' => ClusterPolicy::current($rSettings, $rMain),
@@ -281,12 +322,22 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
 		}
 		// Authenticated from here on.
-		if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
-			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+		if (($rReplay = self::claimNonce($rCrypto, $rH)) !== null) {
+			return $rReplay;
 		}
 		if (!in_array($rNode['state'], $rStates, true)) {
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
 		}
+		// A bus permit first: a busy MAIN spends neither the minute nor the challenge.
+		return ClusterSemaphore::run($rCrypto, 'token_rekey', $rH, static fn(): array => self::rekeyAuthenticated($rCrypto, $rNode, $rH, $rCtx, $rBody));
+	}
+
+	/**
+	 * `token_rekey` past its node signature, nonce and node state.
+	 *
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	private static function rekeyAuthenticated(ClusterCrypto $rCrypto, array $rNode, array $rH, string $rCtx, string $rBody): array {
 		// Once a minute, counted per attempt: the slot is a claim on this minute.
 		$rSlot = intdiv(ClusterClock::now(), self::REKEY_INTERVAL);
 		if (!NonceStore::claim('rekey:' . $rH['node'], substr(hash('sha256', (string) $rSlot, true), 0, 16))) {
@@ -311,6 +362,8 @@ final class ClusterApi {
 			// Authenticated evidence of a clone, as in hello: the admin decides.
 			NodeRegistry::update((int) $rNode['server_id'], ['state' => 'quarantined', 'quarantine_reason' => 'instance_id changed (re-key)']);
 			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'rekey attest', 'was' => $rNode['instance_id'], 'now' => $rInstance], 'node');
+			// No longer active in the node list: its peers stop trusting it at once.
+			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => 'quarantined']);
 		}
 		try {
@@ -373,8 +426,8 @@ final class ClusterApi {
 		}
 
 		if ($rOp === 'enrol_code_status') {
-			if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
-				return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+			if (($rReplay = self::claimNonce($rCrypto, $rH)) !== null) {
+				return $rReplay;
 			}
 			$rP = json_decode($rBody, true);
 			if (!is_array($rP) || ($rP['node_uuid'] ?? null) !== $rPending['node_uuid']) {
@@ -414,8 +467,8 @@ final class ClusterApi {
 		if (!NodeSig::verify($rNode['sign_pub'], 'request', $rCtx . hash('sha256', $rBody, true), $rSig)) {
 			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
 		}
-		if (!NonceStore::claim($rH['node'], $rH['nonce'])) {
-			return DenialFactory::deny($rCrypto, 401, 'REPLAY', $rH['node'], $rH['nonce']);
+		if (($rReplay = self::claimNonce($rCrypto, $rH)) !== null) {
+			return $rReplay;
 		}
 		$rRefused = EnrolCodeService::submit($rCode, $rSid, $rNode, (string) ($rReq['ip'] ?? ''));
 		if ($rRefused !== null) {
@@ -426,7 +479,7 @@ final class ClusterApi {
 		]));
 	}
 
-	private static function hello(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
+	private static function hello(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rInstance = self::short($rP['instance_id'] ?? null);
 		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)];
 		$rState = (string) $rNode['state'];
@@ -440,6 +493,10 @@ final class ClusterApi {
 			$rFields['instance_id'] = $rInstance;
 		}
 		NodeRegistry::update((int) $rNode['server_id'], $rFields);
+		if ($rState !== (string) $rNode['state']) {
+			// Quarantined: no longer active in the node list, so its peers stop trusting it at once.
+			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
+		}
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => $rState, 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'], 'gen' => (int) $rNode['gen'],
 			'epoch' => $rH['epoch'], 'main_time_ms' => ClusterClock::nowMs(),
@@ -639,9 +696,11 @@ final class ClusterApi {
 	 * flow is on. The blocklist: a `blk` delta from `blocklist_since`, or the
 	 * whole section when there is no delta to give. `have` maps each section to
 	 * the ETag the node holds, so a section it already has is not sent again;
-	 * a section sent whole (settings) goes only to an agent that names it.
+	 * a section sent whole (settings, servers, node, crontab, cluster) goes
+	 * only to an agent that names it. A name MAIN does not serve, and a whole
+	 * section it cannot sign without a licence, are left out of the reply.
 	 */
-	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rSince = $rP['blocklist_since'] ?? 0;
 		$rHave = is_array($rP['have'] ?? null) ? $rP['have'] : [];
 		if (!is_int($rSince) || $rSince < 0) {
@@ -655,9 +714,19 @@ final class ClusterApi {
 		try {
 			$rOut = [ReplicaBuilder::SECTION_BLOCKLIST => ReplicaBuilder::blocklist($rCrypto, $rNode, $rSince, $rHave[ReplicaBuilder::SECTION_BLOCKLIST] ?? '')];
 			// Sent whole: only to an agent that asks for them (have names the section).
-			foreach (array_keys(ReplicaBuilder::WHOLE) as $rSection) {
-				if (array_key_exists($rSection, $rHave)) {
-					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection]);
+			foreach (ReplicaBuilder::WHOLE as $rSection) {
+				if (!array_key_exists($rSection, $rHave)) {
+					continue;
+				}
+				try {
+					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
+				} catch (ClusterRefusedException $rE) {
+					// A whole section grants: without a licence it is left out and
+					// the node keeps what it holds, while the blocklist's bans in
+					// the same reply still reach it.
+					if ($rE->reason() !== 'LICENCE') {
+						throw $rE;
+					}
 				}
 			}
 		} catch (ClusterRefusedException $rE) {
@@ -668,14 +737,51 @@ final class ClusterApi {
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 
-	/** Map an extension refusal to a signed denial. */
-	private static function refusal(ClusterCrypto $rCrypto, string $rReason, array $rNode, array $rH): array {
+	/**
+	 * Map an extension refusal to a signed denial. $rSession: the extension
+	 * refused the node's session itself (a licence refusal there is the hard
+	 * revocation mode's), so the denial also carries the node's pending
+	 * restrictive commands (killsFor()).
+	 */
+	private static function refusal(ClusterCrypto $rCrypto, string $rReason, array $rNode, array $rH, bool $rSession = false): array {
 		return match (true) {
 			$rReason === 'REVOKED' => DenialFactory::deny($rCrypto, 403, 'NODE_REVOKED', $rH['node'], $rH['nonce'], ['revoked_gen' => (int) $rNode['gen']]),
-			$rReason === 'LICENCE' => DenialFactory::deny($rCrypto, 403, 'LICENCE_INVALID', $rH['node'], $rH['nonce']),
+			$rReason === 'LICENCE' => DenialFactory::deny($rCrypto, 403, 'LICENCE_INVALID', $rH['node'], $rH['nonce'], $rSession ? self::killsFor($rNode) : []),
 			$rReason === 'CLOCK' => DenialFactory::deny($rCrypto, 503, 'CLOCK', $rH['node'], $rH['nonce']),
 			default => DenialFactory::deny($rCrypto, 401, 'TOKEN_EXPIRED', $rH['node'], $rH['nonce'], ['detail' => substr($rReason, 0, 32)]),
 		};
+	}
+
+	/**
+	 * `lb_revocation_mode=hard` (plan section 4): without a licence the
+	 * extension refuses the node's session, so neither the long-poll nor a
+	 * MAC'd reply can reach it, yet kills, drops and stops must. Its pending
+	 * restrictive commands then ride the panel-signed LICENCE_INVALID that its
+	 * next request gets, in the long-poll's shape, each under its own `cmd`
+	 * signature (CommandBus::restrictive() says how the agent takes them).
+	 *
+	 * The request is not authenticated (no session, so no MAC to check), so
+	 * the list is SEALed to the node's box key, purpose SEAL_COMMANDS, the
+	 * node uuid as context: whoever names the node learns only its size, as
+	 * a sniffer does of a BOXed reply. Nothing is marked delivered. Only for
+	 * a node that takes commands.
+	 *
+	 * @param array<string, mixed> $rNode
+	 * @return array{commands_sealed?: string} base64 of SEAL(JSON list)
+	 */
+	private static function killsFor(array $rNode): array {
+		if (!CommandBus::accepts($rNode)) {
+			return [];
+		}
+		try {
+			$rCommands = CommandBus::restrictive((int) $rNode['server_id']);
+			if ($rCommands === []) {
+				return [];
+			}
+			return ['commands_sealed' => base64_encode(Seal::seal((string) $rNode['node_box_pub'], self::SEAL_COMMANDS, (string) $rNode['node_uuid'], (string) json_encode($rCommands, JSON_UNESCAPED_SLASHES)))];
+		} catch (\Throwable) {
+			return []; // the denial goes out regardless
+		}
 	}
 
 	private static function header(array $rHeaders, string $rName): string {

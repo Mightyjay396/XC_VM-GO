@@ -10,11 +10,14 @@ use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterApi;
+use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeRegistry;
+use XcVm\Domain\Cluster\NonceStore;
 use XcVm\Infrastructure\Database\DatabaseFactory;
+use XcVm\Tests\Support\BusServer;
 use XcVm\Tests\Support\ClusterReference;
 use XcVm\Tests\Support\FakeClusterCrypto;
 
@@ -52,7 +55,9 @@ final class ClusterEnrolCodeTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		\XcVm\Domain\Cluster\LivenessService::useQueueReader(null);
 		ClusterClock::fix(null);
+		ClusterBus::useSocket(null);
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
 	}
@@ -204,6 +209,36 @@ final class ClusterEnrolCodeTest extends TestCase {
 		$this->assertSame('active', NodeRegistry::byServer(self::SID)['state']);
 	}
 
+	public function testOnAFreshBusCodeRequestsStampedAtItsFloorAreRefusedWithAWait(): void {
+		$rBus = BusServer::start('code-bus');
+		if ($rBus === null) {
+			$this->markTestSkipped('redis-server or phpredis not available');
+		}
+		try {
+			ClusterBus::useSocket($rBus->socket());
+			$rCode = $this->code();
+			$rNode = $this->node();
+			[$rRes, $rReq] = $this->send('enrol_code', $rCode['req'], $rNode);
+			$this->denial($rRes, 401, 'REPLAY', $rReq);
+			$this->assertSame(NonceStore::LEAD_MS + 1 + NonceStore::RETRY_MARGIN_MS, json_decode($rRes['body'], true)['retry_after_ms']);
+			ClusterClock::fix($this->rT0 + 1000);
+			[$rRes, , $rCtx] = $this->send('enrol_code', $rCode['req'], $rNode);
+			$this->assertSame('pending_approval', $this->reply($rRes, $rCtx, $rCode['res'])['state']);
+
+			// The bus restarts and loses what it held: the status poll is at its floor.
+			$rBus->restart();
+			ClusterBus::useSocket($rBus->socket());
+			[$rRes, $rReq] = $this->send('enrol_code_status', $rCode['req'], $rNode);
+			$this->denial($rRes, 401, 'REPLAY', $rReq);
+			$this->assertSame(NonceStore::LEAD_MS + 1 + NonceStore::RETRY_MARGIN_MS, json_decode($rRes['body'], true)['retry_after_ms']);
+			ClusterClock::fix($this->rT0 + 2000);
+			[$rRes, , $rCtx] = $this->send('enrol_code_status', $rCode['req'], $rNode);
+			$this->assertSame('pending_approval', $this->reply($rRes, $rCtx, $rCode['res'])['state']);
+		} finally {
+			$rBus->stop();
+		}
+	}
+
 	public function testAWrongMacChangesNothing(): void {
 		$rCode = $this->code();
 		$rNode = $this->node();
@@ -288,6 +323,8 @@ final class ClusterEnrolCodeTest extends TestCase {
 		\XcVm\Domain\Cluster\NonceStore::claim('sid:5', random_bytes(16));
 		$this->rDb->query('INSERT INTO `cluster_node_epochs` (`server_id`, `epoch`, `record`, `nbf`, `exp`, `refresh_at`, `used`, `created_at`) VALUES (5, 1, ?, 0, ?, 0, 1, 0)', '{}', intdiv($this->rT0, 1000) + 60);
 		ClusterClock::fix($this->rT0 + (EnrolCodeService::TTL + 1) * 1000);
+		// Its liveness step probes no real cluster_ctl socket under MAIN_HOME: the pool cannot tell.
+		\XcVm\Domain\Cluster\LivenessService::useQueueReader(static fn(): ?int => null);
 		\XcVm\Cli\CronJobs\ClusterCronJob::housekeep();
 		foreach (['cluster_enrol_codes', 'cluster_nonces', 'cluster_node_epochs'] as $rTable) {
 			$this->rDb->query('SELECT COUNT(*) AS `n` FROM `' . $rTable . '`');

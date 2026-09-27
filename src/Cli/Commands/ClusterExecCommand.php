@@ -27,6 +27,9 @@ use XcVm\Streaming\Fanout\FanoutClient;
  *
  * - `node.root {action, …}` — handed to root (cluster:root) through the
  *   root inbox; root checks it against its own pin of the panel key.
+ * - `config.changed {sections}` — the agent fetches its replica at once; an
+ *   agent that hands it here instead is acked `{"deferred": true}`, and its
+ *   next minute's poll fetches the change.
  *
  * Runs as xc_vm.
  *
@@ -153,6 +156,11 @@ class ClusterExecCommand implements CommandInterface {
 					return 2;
 				}
 				echo json_encode(['result' => FanoutClient::dropConnection($rUUID)]);
+				return 0;
+
+			case 'config.changed':
+				// PHP holds no key to fetch the replica: the agent's next poll does.
+				echo json_encode(['deferred' => true]);
 				return 0;
 		}
 		fwrite(STDERR, "cluster:exec: unknown command type\n");

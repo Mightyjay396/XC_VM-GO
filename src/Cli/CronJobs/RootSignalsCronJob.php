@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
+use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
@@ -569,16 +570,14 @@ class RootSignalsCronJob implements CommandInterface {
 					}
 				}
 			}
-			if (file_exists(TMP_PATH . 'crontab')) {
+			// The crontab's jobs: MAIN's table, or the node replica's once it owns
+			// them (null: leave the crontab as it is).
+			$rCrontab = file_exists(TMP_PATH . 'crontab') ? ReplicaApply::crontabText($db) : null;
+			if ($rCrontab !== null) {
 				echo 'Checking crontab...' . "\n";
 				exec('crontab -u xc_vm -l', $rCrons);
 				$rCurrentCron = trim(implode("\n", $rCrons));
-				$rJobs = [];
-				$db->query('SELECT * FROM `crontab` WHERE `enabled` = 1;');
-				foreach ($db->get_rows() as $rRow) {
-					$rJobs[] = $rRow['time'] . ' ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:' . $rRow['filename'] . ' # XC_VM';
-				}
-				$rActualCron = trim(implode("\n", $rJobs));
+				$rActualCron = trim($rCrontab);
 				if ($rCurrentCron != $rActualCron) {
 					echo 'Updating Crons...' . "\n";
 					unlink(TMP_PATH . 'crontab');

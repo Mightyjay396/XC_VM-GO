@@ -22,11 +22,32 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * The LB's watchdog, the stats part of its cron:servers and network.py stand
  * down for that node (Core\Cluster\NodeFlows).
+ *
+ * On the cluster bus (plan, section 8): while the bus runs and a flusher has
+ * finished a clean pass (MySQL took every write it had due) within
+ * FLUSHER_STALE_MS, a heartbeat asks MySQL nothing. Its time, clock offset
+ * and root_ready go to `cl:hb` and its telemetry to `cl:tel:<sid>`, and
+ * flush() (LivenessService::tick, every second) copies them into
+ * cluster_nodes at most every FLUSH_EVERY_MS per node (at once when
+ * root_ready changed) and into servers / servers_stats by the rules above,
+ * judged on the time MAIN heard each document. Without the bus, or when it
+ * fails, or without a flusher, each heartbeat writes MySQL itself as before.
+ * A flush never takes last_seen_at back: MySQL may be newer (hello, or a
+ * heartbeat written directly), unless MySQL's is ahead of MAIN's clock
+ * (the clock stepped back), which a heartbeat overwrites as before. What the
+ * bus holds belongs to the enrolment that sent it (gen): a flush writes only
+ * that enrolment's cluster_nodes row (and servers.status with it), and a
+ * re-enrolment or a revocation drops it (forget()).
  */
 final class HeartbeatService {
 	use DatabaseAware;
 
-	/** Largest telemetry document kept per node: local.json alone may be 64 KiB. */
+	/**
+	 * Largest telemetry document kept per node, as MAIN encodes it: on the bus
+	 * {at, auth, telemetry} with JSON_UNESCAPED_SLASHES and
+	 * JSON_PRESERVE_ZERO_FRACTION (non-ASCII escaped as \uXXXX), and the
+	 * shadow file {at, telemetry}. local.json alone may be 64 KiB.
+	 */
 	public const MAX_TELEMETRY = 131072;
 
 	/**
@@ -43,6 +64,143 @@ final class HeartbeatService {
 	/** Entries kept in watchdog_data.cpu_average_array, as the watchdog kept. */
 	public const CPU_HISTORY = 30;
 
+	/** Milliseconds between two flushes of a node's heartbeat into cluster_nodes. */
+	public const FLUSH_EVERY_MS = 5000;
+
+	/**
+	 * A heartbeat stays on the bus only while a flusher has finished a clean
+	 * pass (MySQL took every write it had due) within this many ms, by the
+	 * bus's clock. Otherwise it writes MySQL itself, so MySQL never falls
+	 * behind for want of a working flusher (the signals daemon stopped, and
+	 * cron:cluster flushes only once a minute; or MySQL refusing the flush).
+	 */
+	public const FLUSHER_STALE_MS = 5000;
+
+	/**
+	 * Milliseconds a telemetry document stays on the bus without a newer one.
+	 * Longer than the wake-ups and reservations, so under volatile-ttl those
+	 * go first; the documents take at most MAX_TELEMETRY per node (usually a
+	 * few KiB), never what fills the bus.
+	 */
+	public const TEL_TTL_MS = 600000;
+
+	/** A node silent this long (ms) leaves the bus, once flushed. */
+	public const FORGET_AFTER_MS = 600000;
+
+	/** Milliseconds a flusher holds its lock at most. */
+	private const LOCK_MS = 10000;
+
+	/** A last_seen_at more than this many ms ahead of MAIN's clock was stored before the clock stepped back. */
+	private const STEP_MS = 1000;
+
+	/** Bus: server id => "<heard ms>:<clock offset ms>:<root_ready 0|1|->:<telemetry heard ms>:<authoritative 0|1>:<gen>". */
+	public const KEY_BEATS = 'cl:hb';
+
+	/** Bus: server id => "<heard ms>:<root_ready>:<flushed at ms>:<servers written as of ms>", what flush() last wrote. */
+	public const KEY_FLUSHED = 'cl:hb_flushed';
+
+	/** Bus: when the last clean flush pass ended (the bus's ms). */
+	public const KEY_FLUSHER = 'cl:flusher';
+
+	/** Bus: one flusher at a time. */
+	public const KEY_LOCK = 'cl:flush_lock';
+
+	/** Bus: `cl:tel:<sid>` holds {at, auth, telemetry}, the node's last telemetry document. */
+	public const TEL_PREFIX = 'cl:tel:';
+
+	/**
+	 * KEYS cl:hb, cl:tel:<sid>, cl:flusher; ARGV sid, heard ms, offset, root
+	 * ('-' not sent), document ('' none), auth, FLUSHER_STALE_MS, TEL_TTL_MS,
+	 * gen => 1 kept on the bus, 0 no flusher has finished a clean pass lately
+	 * (the caller writes MySQL). A heartbeat without root_ready or telemetry
+	 * keeps the last ones of the same enrolment (gen). The first write is the
+	 * one that can be refused at maxmemory, so a refused script has written
+	 * nothing.
+	 */
+	private const RECORD_LUA = <<<'LUA'
+		local t = redis.call('TIME')
+		local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+		local stamped = tonumber(redis.call('GET', KEYS[3]) or '')
+		if not stamped or math.abs(now - stamped) > tonumber(ARGV[7]) then
+			return 0
+		end
+		local root, tel, auth = ARGV[4], '0', '0'
+		local cur = redis.call('HGET', KEYS[1], ARGV[1])
+		if cur then
+			local r, tl, a, g = string.match(cur, '^%-?%d+:%-?%d+:([01%-]):(%d+):([01]):(%d+)$')
+			if g == ARGV[9] then
+				if root == '-' then
+					root = r
+				end
+				tel, auth = tl, a
+			end
+		end
+		if ARGV[5] ~= '' then
+			redis.call('SET', KEYS[2], ARGV[5], 'PX', ARGV[8])
+			tel, auth = ARGV[2], ARGV[6]
+		end
+		redis.call('HSET', KEYS[1], ARGV[1], ARGV[2] .. ':' .. ARGV[3] .. ':' .. root .. ':' .. tel .. ':' .. auth .. ':' .. ARGV[9])
+		return 1
+		LUA;
+
+	/**
+	 * KEYS cl:hb, cl:hb_flushed, cl:flush_lock; ARGV token, lock ms => {1
+	 * locked | 0 another flusher holds it, HGETALL cl:hb, HGETALL
+	 * cl:hb_flushed}.
+	 */
+	private const FLUSH_BEGIN_LUA = <<<'LUA'
+		local got = 0
+		if redis.call('SET', KEYS[3], ARGV[1], 'NX', 'PX', ARGV[2]) then
+			got = 1
+		end
+		return {got, redis.call('HGETALL', KEYS[1]), redis.call('HGETALL', KEYS[2])}
+		LUA;
+
+	/**
+	 * KEYS cl:hb_flushed, cl:flush_lock, cl:hb, cl:flusher, then cl:tel:<sid>
+	 * per node to forget; ARGV token, clean (1: stamp cl:flusher), n, n × (sid,
+	 * flushed), then per node to forget (sid, its cl:hb value as read). The
+	 * lock goes first and the stamp and records last: only those can be
+	 * refused at maxmemory, and a bus that full takes no more heartbeats. A
+	 * node is forgotten (cl:hb, its record, its document) only if no
+	 * heartbeat came meanwhile; a forgotten node has no record among the n.
+	 */
+	private const FLUSH_END_LUA = <<<'LUA'
+		if redis.call('GET', KEYS[2]) == ARGV[1] then
+			redis.call('DEL', KEYS[2])
+		end
+		local n = tonumber(ARGV[3])
+		local k = 5
+		for i = 4 + 2 * n, #ARGV, 2 do
+			if redis.call('HGET', KEYS[3], ARGV[i]) == ARGV[i + 1] then
+				redis.call('HDEL', KEYS[3], ARGV[i])
+				redis.call('HDEL', KEYS[1], ARGV[i])
+				redis.call('DEL', KEYS[k])
+			end
+			k = k + 1
+		end
+		if ARGV[2] == '1' then
+			local t = redis.call('TIME')
+			redis.call('SET', KEYS[4], t[1] .. string.format('%03d', math.floor(tonumber(t[2]) / 1000)))
+		end
+		for i = 0, n - 1 do
+			redis.call('HSET', KEYS[1], ARGV[4 + 2 * i], ARGV[5 + 2 * i])
+		end
+		return 1
+		LUA;
+
+	/** KEYS cl:hb, cl:hb_flushed, cl:tel:<sid>; ARGV sid. */
+	private const FORGET_LUA = <<<'LUA'
+		redis.call('HDEL', KEYS[1], ARGV[1])
+		redis.call('HDEL', KEYS[2], ARGV[1])
+		redis.call('DEL', KEYS[3])
+		return 1
+		LUA;
+
+	private const HGETALL_LUA = "return redis.call('HGETALL', KEYS[1])";
+
+	private const GET_LUA = "return redis.call('GET', KEYS[1]) or ''";
+
 	private static ?string $rDir = null;
 
 	/** Tests: another directory for the shadow copies and stats markers; null restores TMP_PATH's. */
@@ -55,38 +213,304 @@ final class HeartbeatService {
 	 * @param array<string, mixed> $rPayload
 	 */
 	public static function record(array $rNode, array $rPayload, int $rNodeTsMs): void {
+		$rServerID = (int) $rNode['server_id'];
 		$rNow = ClusterClock::nowMs();
-		$rFields = [
-			'last_seen_at' => $rNow,
-			'clock_offset_ms' => max(-2147483648, min(2147483647, $rNodeTsMs - $rNow)),
-		];
+		$rOffset = max(-2147483648, min(2147483647, $rNodeTsMs - $rNow));
 		// Whether the node's root-owned panel-key pin is in place (root commands).
-		if (array_key_exists('root_ready', $rPayload)) {
-			$rFields['root_ready'] = empty($rPayload['root_ready']) ? 0 : 1;
+		$rRoot = array_key_exists('root_ready', $rPayload) ? (empty($rPayload['root_ready']) ? 0 : 1) : null;
+		$rTelemetry = is_array($rPayload['telemetry'] ?? null) ? $rPayload['telemetry'] : null;
+		$rAuth = $rTelemetry !== null && (int) $rNode['mode'] >= 1 && ((int) $rNode['flows'] & NodeRegistry::FLOW_TELEMETRY);
+		if (self::onBus($rServerID, (int) $rNode['gen'], $rNow, $rOffset, $rRoot, $rTelemetry, $rAuth)) {
+			return;
 		}
-		NodeRegistry::update((int) $rNode['server_id'], $rFields);
-		$rTelemetry = $rPayload['telemetry'] ?? null;
+		$rFields = ['last_seen_at' => $rNow, 'clock_offset_ms' => $rOffset];
+		if ($rRoot !== null) {
+			$rFields['root_ready'] = $rRoot;
+		}
+		NodeRegistry::update($rServerID, $rFields);
 		$rDir = self::dir();
-		if (is_array($rTelemetry) && $rDir !== null) {
+		if ($rTelemetry !== null && $rDir !== null) {
 			$rJson = (string) json_encode(['at' => $rNow, 'telemetry' => $rTelemetry], JSON_UNESCAPED_SLASHES);
 			if (strlen($rJson) <= self::MAX_TELEMETRY) {
 				if (!is_dir($rDir)) {
 					@mkdir($rDir, 0750, true);
 				}
-				@file_put_contents($rDir . 'tel_' . intval($rNode['server_id']) . '.json', $rJson, LOCK_EX);
+				@file_put_contents($rDir . 'tel_' . $rServerID . '.json', $rJson, LOCK_EX);
 			}
 		}
-		if (is_array($rTelemetry) && (int) $rNode['mode'] >= 1 && ((int) $rNode['flows'] & NodeRegistry::FLOW_TELEMETRY)) {
-			try {
-				self::authoritative((int) $rNode['server_id'], $rTelemetry);
-			} catch (\Throwable $rE) {
-				// Telemetry must never cost the node its heartbeat.
-				ClusterAudit::log('telemetry.error', (int) $rNode['server_id'], substr($rE->getMessage(), 0, 200));
-			}
+		if ($rAuth) {
+			self::authoritativeOrAudit($rServerID, (array) $rTelemetry, intdiv($rNow, 1000));
 		}
 		// The node's first authenticated heartbeat is what marks the server up
 		// (plan, section 6); legacy nodes keep setting it through the watchdog.
-		self::db()->query('UPDATE `servers` SET `status` = 1 WHERE `id` = ? AND `status` <> 1;', (int) $rNode['server_id']);
+		self::db()->query('UPDATE `servers` SET `status` = 1 WHERE `id` = ? AND `status` <> 1;', $rServerID);
+	}
+
+	/**
+	 * Keep a heartbeat on the bus: false when it must go to MySQL (no bus, no
+	 * flusher running, the script failed, or a document too big for it).
+	 *
+	 * @param array<mixed>|null $rTelemetry
+	 */
+	private static function onBus(int $rServerID, int $rGen, int $rNow, int $rOffset, ?int $rRoot, ?array $rTelemetry, bool $rAuth): bool {
+		if (ClusterBus::client() === null) {
+			return false;
+		}
+		$rDoc = '';
+		if ($rTelemetry !== null) {
+			// Exact on the way back: 7.0 stays a float (the flush decodes it).
+			$rDoc = json_encode(['at' => $rNow, 'auth' => $rAuth ? 1 : 0, 'telemetry' => $rTelemetry], JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION);
+			if ($rDoc === false || strlen($rDoc) > self::MAX_TELEMETRY) {
+				return false;
+			}
+		}
+		return ClusterBus::script(self::RECORD_LUA, [self::KEY_BEATS, self::TEL_PREFIX . $rServerID, self::KEY_FLUSHER], [
+			$rServerID, $rNow, $rOffset, $rRoot === null ? '-' : $rRoot, $rDoc, $rAuth ? 1 : 0, self::FLUSHER_STALE_MS, self::TEL_TTL_MS, $rGen,
+		]) === 1;
+	}
+
+	/**
+	 * Drop what the bus holds of a node (`cl:hb`, `cl:hb_flushed`,
+	 * `cl:tel:<sid>`): it belongs to the enrolment that sent it, which a
+	 * re-enrolment or a revocation ends (NodeRegistry). A heartbeat of that
+	 * enrolment still in flight may land after it; the flush's gen guard
+	 * keeps it out of the new row.
+	 */
+	public static function forget(int $rServerID): void {
+		ClusterBus::script(self::FORGET_LUA, [self::KEY_BEATS, self::KEY_FLUSHED, self::TEL_PREFIX . $rServerID], [$rServerID]);
+	}
+
+	/**
+	 * One flusher pass (LivenessService::tick, every second): the heartbeats
+	 * the bus holds go to MySQL, cluster_nodes at most every FLUSH_EVERY_MS per
+	 * node (at once for a new node or a root_ready MySQL does not have yet,
+	 * with servers.status 1), and each authoritative telemetry document by
+	 * the direct path's own WRITE_EVERY / STATS_EVERY rules, on the time MAIN
+	 * heard it. What MySQL refuses is tried again at the next pass; only a
+	 * clean pass (MySQL took it all) lets heartbeats keep to the bus
+	 * (FLUSHER_STALE_MS). One flusher writes at a time; the others only read.
+	 * A node silent for FORGET_AFTER_MS leaves the bus with its record, once
+	 * flushed.
+	 *
+	 * @return array<int, int> server id => when MAIN last heard it (ms), as the
+	 *                         bus has it; [] without the bus.
+	 */
+	public static function flush(): array {
+		$rToken = bin2hex(random_bytes(8));
+		$rOut = ClusterBus::script(self::FLUSH_BEGIN_LUA, [self::KEY_BEATS, self::KEY_FLUSHED, self::KEY_LOCK], [$rToken, self::LOCK_MS]);
+		if (!is_array($rOut) || count($rOut) !== 3) {
+			return [];
+		}
+		$rBeats = self::beats($rOut[1]);
+		$rHeard = array_map(static fn(array $rBeat): int => $rBeat['heard'], $rBeats);
+		if ((int) $rOut[0] !== 1) {
+			return $rHeard;
+		}
+		$rFlushed = self::flushedRecords($rOut[2]);
+		$rNow = ClusterClock::nowMs();
+		$rRecords = $rForget = [];
+		$rClean = true;
+		try {
+			foreach ($rBeats as $rID => $rBeat) {
+				$rPrev = $rFlushed[$rID] ?? null;
+				$rRec = $rPrev ?? ['heard' => 0, 'root' => '-', 'at' => 0, 'written' => 0];
+				// What MySQL refuses is not recorded, and goes again next pass.
+				try {
+					$rDue = $rPrev === null || $rNow - $rRec['at'] >= self::FLUSH_EVERY_MS || $rRec['at'] > $rNow || $rBeat['root'] !== $rRec['root'];
+					if ($rBeat['heard'] !== $rRec['heard'] && $rDue) {
+						$rRec = ['heard' => $rBeat['heard'], 'root' => self::flushNode($rID, $rBeat, $rNow, $rRec['root']), 'at' => $rNow] + $rRec;
+					}
+				} catch (\Throwable) {
+					$rClean = false;
+				}
+				try {
+					if ($rBeat['auth'] && $rBeat['tel'] > $rRec['written'] && intdiv($rBeat['tel'], 1000) - intdiv($rRec['written'], 1000) >= self::WRITE_EVERY) {
+						$rRec['written'] = self::flushTelemetry($rID, $rBeat['tel']) ?? throw new \RuntimeException('flush');
+					}
+				} catch (\Throwable) {
+					$rClean = false;
+				}
+				if ($rNow - $rBeat['heard'] > self::FORGET_AFTER_MS && $rRec['heard'] === $rBeat['heard']) {
+					// Not recorded: FLUSH_END drops the record. A node it keeps (a
+					// heartbeat came meanwhile) has an older one, so that heartbeat
+					// is due at once.
+					$rForget[$rID] = $rBeat['raw'];
+				} elseif ($rRec !== $rPrev) {
+					$rRecords[$rID] = $rRec;
+				}
+			}
+		} finally {
+			$rKeys = [self::KEY_FLUSHED, self::KEY_LOCK, self::KEY_BEATS, self::KEY_FLUSHER];
+			$rArgs = [$rToken, $rClean ? 1 : 0, count($rRecords)];
+			foreach ($rRecords as $rID => $rRec) {
+				array_push($rArgs, $rID, $rRec['heard'] . ':' . $rRec['root'] . ':' . $rRec['at'] . ':' . $rRec['written']);
+			}
+			foreach ($rForget as $rID => $rRaw) {
+				$rKeys[] = self::TEL_PREFIX . $rID;
+				array_push($rArgs, $rID, $rRaw);
+			}
+			ClusterBus::script(self::FLUSH_END_LUA, $rKeys, $rArgs);
+		}
+		return $rHeard;
+	}
+
+	/**
+	 * When MAIN last heard each node, as the bus has it (ms): [] without the
+	 * bus. MySQL's last_seen_at may be older by up to a flush.
+	 *
+	 * @return array<int, int>
+	 */
+	public static function lastSeen(): array {
+		return array_map(static fn(array $rBeat): int => $rBeat['heard'], self::beats(ClusterBus::script(self::HGETALL_LUA, [self::KEY_BEATS], [])));
+	}
+
+	/** The later of MySQL's last_seen_at and the bus's (lastSeen(), flush()); null when neither has one. */
+	public static function freshest(mixed $rStored, ?int $rOnBus): ?int {
+		$rStored = $rStored === null ? null : (int) $rStored;
+		return $rOnBus === null ? $rStored : max($rStored ?? $rOnBus, $rOnBus);
+	}
+
+	/**
+	 * The node's last telemetry document, {at: ms MAIN heard it, telemetry}:
+	 * the bus's `cl:tel:<sid>` or the shadow file `tel_<sid>.json`, whichever
+	 * is newer. Null when neither holds one.
+	 *
+	 * @return array{at: int, telemetry: array<mixed>}|null
+	 */
+	public static function telemetry(int $rServerID): ?array {
+		$rBus = self::document(ClusterBus::script(self::GET_LUA, [self::TEL_PREFIX . $rServerID], []));
+		$rDir = self::dir();
+		$rFile = $rDir === null ? null : self::document(@file_get_contents($rDir . 'tel_' . $rServerID . '.json'));
+		$rDoc = $rBus !== null && ($rFile === null || $rBus['at'] > $rFile['at']) ? $rBus : $rFile;
+		return $rDoc === null ? null : ['at' => $rDoc['at'], 'telemetry' => $rDoc['telemetry']];
+	}
+
+	/**
+	 * A telemetry document as stored, {at, auth, telemetry}; null when it is
+	 * not one.
+	 *
+	 * @return array{at: int, auth: bool, telemetry: array<mixed>}|null
+	 */
+	private static function document(mixed $rJson): ?array {
+		$rDoc = is_string($rJson) && $rJson !== '' ? json_decode($rJson, true) : null;
+		if (!is_array($rDoc) || !is_int($rDoc['at'] ?? null) || !is_array($rDoc['telemetry'] ?? null)) {
+			return null;
+		}
+		return ['at' => $rDoc['at'], 'auth' => !empty($rDoc['auth']), 'telemetry' => $rDoc['telemetry']];
+	}
+
+	/**
+	 * `cl:hb` as HGETALL returned it.
+	 *
+	 * @return array<int, array{heard: int, offset: int, root: string, tel: int, auth: bool, gen: int, raw: string}>
+	 */
+	private static function beats(mixed $rFlat): array {
+		$rOut = [];
+		foreach (self::pairs($rFlat) as $rID => $rValue) {
+			if (preg_match('/^(-?\d+):(-?\d+):([01-]):(\d+):([01]):(\d+)$/', $rValue, $rM)) {
+				$rOut[$rID] = ['heard' => (int) $rM[1], 'offset' => (int) $rM[2], 'root' => $rM[3], 'tel' => (int) $rM[4], 'auth' => $rM[5] === '1', 'gen' => (int) $rM[6], 'raw' => $rValue];
+			}
+		}
+		return $rOut;
+	}
+
+	/**
+	 * `cl:hb_flushed` as HGETALL returned it.
+	 *
+	 * @return array<int, array{heard: int, root: string, at: int, written: int}>
+	 */
+	private static function flushedRecords(mixed $rFlat): array {
+		$rOut = [];
+		foreach (self::pairs($rFlat) as $rID => $rValue) {
+			if (preg_match('/^(-?\d+):([01-]):(-?\d+):(-?\d+)$/', $rValue, $rM)) {
+				$rOut[$rID] = ['heard' => (int) $rM[1], 'root' => $rM[2], 'at' => (int) $rM[3], 'written' => (int) $rM[4]];
+			}
+		}
+		return $rOut;
+	}
+
+	/**
+	 * A flat HGETALL reply keyed by server id.
+	 *
+	 * @return array<int, string>
+	 */
+	private static function pairs(mixed $rFlat): array {
+		$rFlat = is_array($rFlat) ? array_values($rFlat) : [];
+		$rOut = [];
+		for ($i = 0; $i + 1 < count($rFlat); $i += 2) {
+			if (is_numeric($rFlat[$i]) && is_string($rFlat[$i + 1])) {
+				$rOut[(int) $rFlat[$i]] = $rFlat[$i + 1];
+			}
+		}
+		return $rOut;
+	}
+
+	/**
+	 * A node's last heartbeat into cluster_nodes, for the enrolment that sent
+	 * it (gen) and unless MySQL already has a later one (not one ahead of
+	 * MAIN's clock), and the server marked up, as each heartbeat did.
+	 *
+	 * @param array{heard: int, offset: int, root: string, tel: int, auth: bool, gen: int, raw: string} $rBeat
+	 * @param string $rRecorded The root_ready recorded at the last flush.
+	 * @return string The root_ready to record: when it changed, what MySQL
+	 *                now holds, read back ('-' without the row), since a
+	 *                newer last_seen_at (hello) keeps the UPDATE from
+	 *                matching, and the next heartbeat must then still count
+	 *                as a change.
+	 */
+	private static function flushNode(int $rServerID, array $rBeat, int $rNow, string $rRecorded): string {
+		$rSql = 'UPDATE `cluster_nodes` SET `last_seen_at` = ?, `clock_offset_ms` = ?';
+		$rArgs = [$rBeat['heard'], $rBeat['offset']];
+		if ($rBeat['root'] !== '-') {
+			$rSql .= ', `root_ready` = ?';
+			$rArgs[] = (int) $rBeat['root'];
+		}
+		array_push($rArgs, intdiv($rBeat['heard'], 1000), $rServerID, $rBeat['gen'], $rBeat['heard'], $rNow + self::STEP_MS);
+		$rDb = self::db();
+		$rOk = $rDb->query($rSql . ', `updated_at` = ? WHERE `server_id` = ? AND `gen` = ? AND (`last_seen_at` IS NULL OR `last_seen_at` < ? OR `last_seen_at` > ?);', ...$rArgs) !== false;
+		if (!$rOk || $rDb->query('UPDATE `servers` SET `status` = 1 WHERE `id` = ? AND `status` <> 1 AND EXISTS (SELECT 1 FROM `cluster_nodes` WHERE `server_id` = ? AND `gen` = ?);', $rServerID, $rServerID, $rBeat['gen']) === false) {
+			throw new \RuntimeException('flush');
+		}
+		if ($rBeat['root'] === '-' || $rBeat['root'] === $rRecorded) {
+			return $rBeat['root'];
+		}
+		if ($rDb->query('SELECT `root_ready` FROM `cluster_nodes` WHERE `server_id` = ? AND `gen` = ?;', $rServerID, $rBeat['gen']) === false) {
+			throw new \RuntimeException('flush');
+		}
+		return $rDb->num_rows() > 0 ? (string) (int) $rDb->get_row()['root_ready'] : '-';
+	}
+
+	/**
+	 * The node's telemetry document on the bus into servers (and
+	 * servers_stats), when it is authoritative: the servers row's
+	 * last_check_ago afterwards, in ms, or null when MySQL refused (the next
+	 * pass tries again).
+	 *
+	 * @param int $rTel When MAIN heard the document cl:hb names (ms): done
+	 *                  with, when it is gone (expired, evicted).
+	 */
+	private static function flushTelemetry(int $rServerID, int $rTel): ?int {
+		$rDoc = self::document(ClusterBus::script(self::GET_LUA, [self::TEL_PREFIX . $rServerID], []));
+		if ($rDoc === null || !$rDoc['auth']) {
+			return $rTel;
+		}
+		$rLast = self::authoritativeOrAudit($rServerID, $rDoc['telemetry'], intdiv($rDoc['at'], 1000));
+		return $rLast === null ? null : $rLast * 1000;
+	}
+
+	/**
+	 * authoritative(), whose failure never costs the node its heartbeat.
+	 *
+	 * @param array<mixed> $rTel
+	 * @return int|null As authoritative(); the heard time when it failed.
+	 */
+	private static function authoritativeOrAudit(int $rServerID, array $rTel, int $rNow): ?int {
+		try {
+			return self::authoritative($rServerID, $rTel, $rNow);
+		} catch (\Throwable $rE) {
+			ClusterAudit::log('telemetry.error', $rServerID, substr($rE->getMessage(), 0, 200));
+			return $rNow;
+		}
 	}
 
 	/**
@@ -209,13 +633,20 @@ final class HeartbeatService {
 	 * cron:servers wrote them, at most every WRITE_EVERY / STATS_EVERY seconds.
 	 *
 	 * @param array<string, mixed> $rTel
+	 * @param int $rNow When MAIN heard it (s).
+	 * @return int|null The row's last_check_ago afterwards ($rNow once written;
+	 *                  $rNow too without a row), null when the write failed.
 	 */
-	private static function authoritative(int $rServerID, array $rTel): void {
-		$rNow = ClusterClock::now();
-		self::db()->query('SELECT `watchdog_data`, `last_check_ago`, `network_interface` FROM `servers` WHERE `id` = ?;', $rServerID);
+	private static function authoritative(int $rServerID, array $rTel, int $rNow): ?int {
+		if (self::db()->query('SELECT `watchdog_data`, `last_check_ago`, `network_interface` FROM `servers` WHERE `id` = ?;', $rServerID) === false) {
+			return null;
+		}
 		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
-		if ($rRow === null || $rNow - (int) $rRow['last_check_ago'] < self::WRITE_EVERY) {
-			return;
+		if ($rRow === null) {
+			return $rNow;
+		}
+		if ($rNow - (int) $rRow['last_check_ago'] < self::WRITE_EVERY) {
+			return (int) $rRow['last_check_ago'];
 		}
 		$rPrev = json_decode((string) ($rRow['watchdog_data'] ?? ''), true);
 		$rStats = self::toWatchdogData($rTel, is_array($rPrev) ? $rPrev : [], $rRow['network_interface'] ?? null);
@@ -229,20 +660,23 @@ final class HeartbeatService {
 			$rArgs[] = $rCounts['connections'];
 			$rArgs[] = $rCounts['users'];
 		}
-		self::db()->query($rSql . ' WHERE `id` = ?;', ...[...$rArgs, $rServerID]);
+		if (self::db()->query($rSql . ' WHERE `id` = ?;', ...[...$rArgs, $rServerID]) === false) {
+			return null;
+		}
 
 		$rDir = self::dir();
 		$rMarker = $rDir === null ? null : $rDir . 'stats_' . $rServerID;
 		if ($rMarker !== null && is_file($rMarker) && $rNow - (int) @file_get_contents($rMarker) < self::STATS_EVERY) {
-			return;
+			return $rNow;
 		}
-		self::statsRow($rServerID, $rStats, $rCounts);
+		self::statsRow($rServerID, $rStats, $rCounts, $rNow);
 		if ($rMarker !== null) {
 			if (!is_dir(dirname($rMarker))) {
 				@mkdir(dirname($rMarker), 0750, true);
 			}
 			@file_put_contents($rMarker, (string) $rNow, LOCK_EX);
 		}
+		return $rNow;
 	}
 
 	/** Where the shadow copies and stats markers go; null (not kept) without TMP_PATH. */
@@ -271,8 +705,9 @@ final class HeartbeatService {
 	 *
 	 * @param array<string, mixed> $rStats toWatchdogData()
 	 * @param array{connections: int, users: int}|null $rCounts
+	 * @param int $rNow When MAIN heard it (s): the row's time.
 	 */
-	private static function statsRow(int $rServerID, array $rStats, ?array $rCounts): void {
+	private static function statsRow(int $rServerID, array $rStats, ?array $rCounts, int $rNow): void {
 		if ($rCounts === null) {
 			self::db()->query('SELECT `connections`, `users` FROM `servers` WHERE `id` = ?;', $rServerID);
 			$rRow = self::db()->get_row() ?: [];
@@ -306,7 +741,7 @@ final class HeartbeatService {
 			$rStats['cpu_load_average'],
 			json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE),
 			json_encode($rStats['iostat_info'], JSON_UNESCAPED_UNICODE),
-			ClusterClock::now()
+			$rNow
 		);
 	}
 }

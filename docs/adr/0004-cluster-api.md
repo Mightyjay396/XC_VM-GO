@@ -100,9 +100,10 @@ A session request is checked in this order. Nothing is written, not even the non
 5. the extension's session for the named epoch (its refusals map to `NODE_REVOKED`, `LICENCE_INVALID`, `CLOCK` or `TOKEN_EXPIRED`);
 6. the request MAC;
 7. the node signature, verified with the key from the extension-sealed epoch record, never the DB row;
-8. the nonce claim;
+8. the nonce claim (401 `REPLAY`, with `retry_after_ms` when MAIN only cannot vouch for the nonce yet: see the second cluster bus increment);
 9. the node state;
-10. opening the BOX.
+10. a bus permit, for `hello`, `config` and `conn_snapshot` (503 `RATE_LIMITED`);
+11. opening the BOX.
 
 Refusals are panel-signed (`den`) and name the node and the request nonce. `STARTING` without the extension is the one unsigned reply, and agents treat it as a transport error. While MAIN's cluster pools are starting, `STARTING` is panel-signed (see "The cluster pools").
 
@@ -121,11 +122,12 @@ Re-key (`token_rekey`), for a node whose tokens have all expired while its keys 
   3. the node signature;
   4. the nonce claim;
   5. the node is `active`;
-  6. the once-a-minute limit (429 `RATE_LIMITED` with `retry_after_ms`), charged per authenticated attempt;
-  7. the SEAL opens (`cluster_open_sealed`);
-  8. the challenge is live (180 s) and unused (401 `CHALLENGE`). Consuming it is a second claim in `cluster_nonces`, so two concurrent uses cannot both win;
-  9. the attestation: an `instance_id` other than the enrolled one quarantines the node (409 `NOT_ACTIVE`, state `quarantined`);
-  10. the mint. A licence refusal returns 403 `LICENCE_INVALID` and leaves the node's rows as they were.
+  6. a bus permit (503 `RATE_LIMITED` with `retry_after_ms` and `op`), so a busy MAIN spends neither the minute nor the challenge;
+  7. the once-a-minute limit (429 `RATE_LIMITED` with `retry_after_ms`), charged per authenticated attempt;
+  8. the SEAL opens (`cluster_open_sealed`);
+  9. the challenge is live (180 s) and unused (401 `CHALLENGE`). Using it is a claim on `used:chal:<uuid>` (`NonceStore`), so two concurrent uses cannot both win;
+  10. the attestation: an `instance_id` other than the enrolled one quarantines the node (409 `NOT_ACTIVE`, state `quarantined`);
+  11. the mint. A licence refusal returns 403 `LICENCE_INVALID` and leaves the node's rows as they were.
 - The new epoch follows the node's current epoch and any epoch row still held. Every other epoch row is dropped, so a re-key whose reply was lost leaves nothing behind.
 - The reply is panel-signed with tag `pre`, a granting record the extension signs only under a valid licence. It names the node and the request nonce, and carries the token sealed to the agent's new key.
 - Nodes installed from this release get `panel_box_pub` in their install data. Nodes enrolled earlier take it once from the signed `health` document.
@@ -134,7 +136,7 @@ Re-key (`token_rekey`), for a node whose tokens have all expired while its keys 
 Other behaviour:
 
 - `hello` from an active node with a different `instance_id` quarantines it. That is authenticated evidence of a clone.
-- The first authenticated heartbeat sets `servers.status = 1`. Heartbeat telemetry is kept in shadow in `tmp/cluster/tel_<id>.json`.
+- The first authenticated heartbeat sets `servers.status = 1`. Heartbeat telemetry is kept in shadow in `tmp/cluster/tel_<id>.json`, or on the cluster bus in `cl:tel:<id>` (third bus increment).
 - `cluster:init`, or enabling the API in Settings, creates the extension root and records the panel keys and `ready_at` in `cluster_meta`. Enabling it from Settings runs as php-fpm, so the files belong to the user that serves the API. Liveness counts silence from `max(last_seen_at, ready_at)`.
 - Under `cluster_transport = auto`, HTTPS URLs appear in the policy only once the self-probe result is recorded. Until then, `auto` publishes HTTP URLs.
 
@@ -289,7 +291,7 @@ Other rules:
 - The result goes to `tmp/cluster/health.json`. `Core\Cluster\ClusterHealth` is how `ServerRepository::getAll()` (`server_online`, `cluster_health`) and `ConnectionTracker::getCapacity()` read it.
 - Each transition rewrites the servers cache at once and is audited (`node.health`).
 - **Hysteresis** (`NodeHealth::settle`): a published state gets worse at once, but better only after 30 s of steady health (`NodeHealth::RECOVER_MS`). An offline node that speaks again is `suspect` at once, so routing resumes at half weight, and `ok` after the steady period. Without this, a node whose heartbeats straddle the 10 s threshold flips on every gap: 10 flips a minute at 11.5 s gaps, one with it (`NodeHealthHysteresisTest`). The steady period is longer than the suspect threshold on purpose; at 10 s such a node would recover between gaps and flap as often. Since when each node has been ok is kept in `health.json` (`ok_since`), so the period survives passes that publish nothing.
-- **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears.
+- **Fleet silence guard:** when over half of those nodes, and at least two, are silent together, MAIN suspects itself. It holds every node at its last published state instead of marking any offline. It audits `cluster.fleet_silence`, and the Cluster Nodes page shows an alert until the silence clears. A `cluster_ctl` listen queue lasting over 5 s raises the same guard, with a reason, an audit and an alert of its own. It holds only the nodes it may have silenced, for 4 offline windows at most, and for one offline window after it ends (Phase 2, fifth increment).
 - Nodes without the flow keep the legacy 90 s rule. The Phase 6 orphan purge at `cluster_orphan_conn_ttl_sec` is not part of this loop yet.
 
 ### MAIN endpoint changes (Phase 3)
@@ -311,7 +313,7 @@ This was checked with nginx 1.24:
 - `nginx -t` passes with and without the file.
 - On the old port, only `/cluster/v1/` reaches PHP.
 
-**Not built:** a change of MAIN's HTTPS broadcast port, `server_ip` or `private_ip` is not announced and keeps no old URL (plan §3, "Endpoint changes"). Only the HTTP broadcast port and `cluster_api_port` bump `cluster_policy_ver`.
+**Not built:** a change of MAIN's HTTPS broadcast port, `server_ip` or `private_ip` is not announced and keeps no old URL (plan §3, "Endpoint changes"). Only the HTTP broadcast port, `cluster_api_port`, `cluster_transport` and `cluster_main_host` bump `cluster_policy_ver`.
 
 ### Commands (Phase 4, first increment)
 
@@ -574,14 +576,14 @@ An LB that reaps its own rows (MySQL mode) asks its own agent through `NodeFlows
 
 **Orphans.** A node that falls silent would keep its viewers counted against their lines forever, so it is orphaned once both of these hold:
 
-- its `last_seen_at` is older than `cluster_orphan_conn_ttl_sec`;
+- it has been silent for `cluster_orphan_conn_ttl_sec`, counted from `max(last_seen_at, cluster_ready_at)`;
 - MAIN's reaper has itself watched it stay silent that long (`TMP_PATH/cluster_orphans.json`).
 
-A gap of more than 3 minutes between reaper passes restarts the watch, so MAIN's own downtime never orphans a node.
+A gap of more than 3 minutes between reaper passes restarts the watch, and so does the fleet silence guard, so MAIN's own downtime never orphans a node (see "Acceptance tests that found gaps").
 
 **The orphan purge.** Every CONNECTIONS node is watched this way, whether or not its agent reaps. An orphaned node's rows, HLS and TS alike, are purged from MAIN's store only (`ConnectionIngest::purgeNode`, audited as `conn.orphan_purge`), so they stop counting toward their lines' limits. The purge sends no kill and no command: the node's registry still holds its viewers. If the node comes back, its digest disagrees and a snapshot restores them. Before this, a dead node's TS rows stayed for ever, because the reaper kept trusting the node's last `php_pids` list, and it skips daemon-served rows (pid 0) altogether.
 
-**Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way.
+**Touches.** Touches still reach MAIN every 10 s, because a panel that predates this reaps by the 30 s rule. Moving them to the bus (`conn.touch`, every 60 s) waits for the bus. `conn.divergence` is not built: divergence still reaches `lines_divergence` the legacy way. (Both were built in the tenth increment.)
 
 ### Connections (Phase 6, seventh increment): admission when the token is minted
 
@@ -862,6 +864,57 @@ Tests:
 - `ClusterApiTest`: the P2 op and `p2_types` in hello and heartbeat; 503 `DB` with the store down; 409 `NOT_ACTIVE` for a quarantined node.
 - `HlsReapingTest`: the last reapers stand on a failed read; the leave grace for CONNECTIONS off, mode 0, a hello without `hls_reaper`, revoked and deleted nodes; none for an orphaned node; and the same on an LB (`beginLocal`).
 
+### Acceptance tests that found gaps (Phases 2, 4 and 6)
+
+Five tests the plan lists (§13) now run against the real code. Each found MAIN doing something other than what the plan says, and each was fixed together with its test. The large-snapshot gap, and the bounds on the hard-mode denial and the fleet silence guard, came from a review of the first four fixes.
+
+**`https_required` over plain HTTP (Phase 2, `HttpsRequiredRecoveryTest`).**
+
+- MAIN did not know which transport a request came over, so under `https_required` it served every op over plain HTTP. `Public/cluster/index.php` now passes nginx's `HTTPS` flag (`fastcgi_params`). Over plain HTTP, `ClusterApi` answers every op but `challenge` with a panel-signed `403 HTTPS_REQUIRED`, bound to the node and request nonce when the headers name them.
+- `health` is answered before the settings are read, so it stays on plain HTTP. The plan names only `GET /challenge`; `health` is signed and carries nothing secret.
+- A settings save that changed `cluster_transport` left `cluster_policy_ver` as it was. Nodes never saw the new policy in their heartbeats, and a signed policy recorded before the switch had the same version as the new one, so an agent would adopt it again. A save that changes `cluster_transport` or `cluster_main_host` now raises the version in its own `UPDATE`.
+- A settings form could set `cluster_policy_ver` itself, back to 1. `SettingsService` now drops `cluster_policy_ver` and `cluster_legacy_ports`, which are MAIN's own state, from a POST.
+- The drill runs through `SettingsService::edit()`, with the HTTPS self-probe faked (`ClusterSettings::useHttpsProbe()`). A node enrolled under `https_required` loses HTTPS, is refused over HTTP, and polls the signed challenge over HTTP. It does not adopt a replayed policy of a lower version, and it is back on plain HTTP once the admin picks `auto`, with no SSH.
+- The agent must answer `HTTPS_REQUIRED` by fetching the challenge over HTTP. That is XC_VM_Fanout's part.
+
+**Kills in the hard revocation mode (Phase 4, `HardModeKillChannelTest`).**
+
+- With `lb_revocation_mode=hard` and no licence, the extension refuses the node's session, so the long-poll and every MAC'd reply stop. Kills were still signed, being restrictive, but stayed queued until they expired.
+- A `LICENCE_INVALID` from the session check now carries `commands_sealed`: the node's pending restrictive commands (`CommandBus::restrictive()`), oldest first, in the long-poll's shape (`doc`, `sig`, `seq`), as a JSON list SEALed to the node's box key (`cluster_nodes.node_box_pub`, purpose `commands`, the node uuid as context) and base64-encoded. Only a node that takes commands (active, mode ≥ 1, COMMANDS on) gets them.
+- The request is not authenticated: without a session there is no MAC to check, and the denial goes to whoever names the node, whose uuid travels in every request's headers. Hence the seal: in clear, the list would show anyone the viewers' connection uuids and the workers' pids, which a BOXed reply hides. With it, a sniffer or a forger learns only the list's size, as the plan's attacker view allows. The review of this increment also proposed checking a node signature first; heartbeats carry none (only token ops do), so the agent would have to sign every request in case MAIN turns out unlicensed, and the seal already keeps the content to the node.
+- Nothing is marked delivered. The agent checks each command's signature, uuid, generation, `seq` above its high-water and expiry, as on the long-poll, but does not raise its long-poll high-water for them: it keeps their `cmd_id`s until they expire instead. Otherwise running a kill with `seq` N would skip every granting command queued below N (an RPC, a root command), which the long-poll, asking for `seq` above the high-water, would never hand out once the licence is back; each would sit queued until it expired, and its caller would get no result. Now the long-poll hands them out, and a kill it hands out again is acked with its result, not run twice.
+- The class comes from `cluster_commands.class`, which `CommandBus` sets from the plan's list of restrictive types. A granting command signed before the lapse is not handed out.
+- `FakeClusterCrypto` now does what the extension does: it refuses a hard session without a licence, and it classes a `cmd` record by its type. Its list of restrictive types is a copy of `CommandBus::RESTRICTIVE`, and the test fails when the two drift apart; the real list is the extension's.
+- The tests also cover a forged request (no MAC, no node signature: it gets only the sealed list), another node's kill, and expired and acked kills (never carried), and the licence coming back (the RPC queued before the lapse comes on the long-poll).
+- The agent must open and run the commands a denial carries, and keep their `cmd_id`s. That is XC_VM_Fanout's part.
+
+**Apply once (Phase 6, `ConnectionIngestIdempotencyTest`).**
+
+- `EventIngest` checked a batch against the cursor in the node row that the request read when it authenticated. A node whose `events` request times out sends the batch again, while MAIN may still be applying the first copy. Both copies passed the P0 gap check, so a closed viewer was re-opened and its close wrote a second activity row.
+- MAIN now applies one batch per node and lane at a time, and reads the cursor under that lock. Only the P0 and P1 lanes take it: P2 keeps no cursor (tenth increment). The lock is a file, `TMP_PATH/cluster_ingest/<sid>_<lane>.lock`, waited for up to 10 s (then `503 DB`). It is not the node's database row: every heartbeat writes that row, and holding it for a whole batch would delay them.
+- A cursor `UPDATE` that failed was ignored. When the database connection dropped mid-batch, taking the transaction with it, the node was still told the batch was applied, and moved on past events MAIN never kept. Such a batch now fails with `503 DB`, and the node sends it again.
+- The same event under a new number already applied once: an upsert updates in place, and a remove or close of a viewer already gone is accepted and changes nothing.
+- **Known gap:** a close's activity row goes to a file, outside the transaction. A batch that fails after one of its closes was applied keeps that activity row, and the resend writes it again, in either store. In MySQL mode the connection's removal rolls back with the batch; Redis has no transaction, so there the batch's writes stay, and the resend opens and closes the viewer again. `ConnectionIngestIdempotencyTest` pins both, with the second activity row.
+- The test pins the lock too: a query hook checks that the lane's lock is held when the cursor is read and when it is moved. The lock directory has a test seam (`EventIngest::useLockDir()`); the test bootstrap points it at a directory of the test process's own under `tests/.tmp`, so no suite run shares lock files with another.
+
+**MAIN's downtime and the orphan purge (Phase 6, `MainOutageNoPurgeTest`).**
+
+- `HlsReaping` measured a node's silence from `last_seen_at` alone, and kept its watch across reaper gaps of up to 3 minutes. A watch that began while MAIN's nginx was stopping survived a short restart. The first pass after it then purged every CONNECTIONS node's viewers before the nodes could reconnect.
+- Silence now counts from `max(last_seen_at, cluster_ready_at)`, as `NodeHealth` counts it (`cluster_meta.ready_at`, or 0 when it cannot be read).
+- While the fleet silence guard is up (`ClusterHealth`), the nodes it holds are not watched, and their watch starts over when it clears, so the time MAIN suspected itself never counts. The plan says the guard suspends purges; it does not say whether the watch restarts.
+- The guard does not hold a node that was offline before it came up. The liveness loop keeps such a node offline under the guard, and its silence began before MAIN suspected itself, so its watch goes on and it is purged a TTL after the watch began.
+- The guard holds the watch for at most 4 × `cluster_orphan_conn_ttl_sec` (8 minutes at the default), counted from the reaper pass that first saw it (`guard` in `cluster_orphans.json`, beside the tenth increment's `reaps` and `leaving`). The plan triggers the guard when most nodes "go silent within 10 s"; the liveness loop raises it whenever more than half of the TELEMETRY nodes (at least two) are not ok, with no time limit. A lasting loss of most of the fleet, such as both LBs of two, never clears it. Without the bound, those nodes' viewers would count against their lines until an admin acted, and on a `max_connections=1` line they could not reconnect elsewhere. With it, such a node is purged one TTL after the hold ends. A purge during a longer cut of MAIN's own network is undone when the nodes come back: their digests disagree, and their snapshots restore the rows. The guard's hold on offline marking (routing) is unchanged.
+- `MainOutageNoPurgeTest` also covers a node never heard (its silence counts from `cluster_ready_at`), a five-minute outage, a node offline before the guard, and a lasting loss of two nodes out of three.
+
+**Large snapshots (Phase 6, `LargeSnapshotChunkingTest`).**
+
+- Twenty chunks of 1000 records, against `lines_live` as the install creates it, change the store only with the last chunk. An oversized, malformed, out-of-order or unreadable staged chunk leaves the store as it was.
+- The staging was atomic, but the apply was not: 20 000 separate autocommitted writes. The staged chunks were deleted before it, and a write that failed only counted as dropped, so a connection lost part-way left a half-applied store and was still answered `ok`. Readers could also see the store half-changed while it ran.
+- In MySQL mode the apply is now one transaction. A commit that fails (the connection was lost) rolls it back and answers `503 DB`, and the staged chunks are kept until an apply succeeds, so the last chunk sent again applies the whole snapshot.
+- The removal pass removed every connection whose upsert had not succeeded, so a write MAIN failed to make deleted a viewer the node still had. It now spares every uuid the snapshot names.
+- The review proposed failing the snapshot on any write that fails. A single record MAIN refuses or cannot write is still counted as dropped instead: a record the database rejects would otherwise fail every snapshot the node sends, and the node would never get back in step. The next heartbeat's digest check (`ConnectionDigest`) finds such a difference and asks for another snapshot.
+- Redis has no transaction across 20 000 records. A Redis error part-way answers `503 DB` and leaves the part already applied; applying the whole again converges.
+
 ### The settings section (Phase 7, fourth increment)
 
 **The allowlist.** `src/Core/Cluster/lb_settings_keys.php` lists the settings a node's replica may carry. It is generated by `tools/ci/lb-settings-keys.sh --write`, and `make gates` fails when it is stale. The script builds the LB file manifest the way `verify-lb-archive.sh` does, then scans every shipped PHP file for settings reads:
@@ -877,6 +930,100 @@ The settings columns come from the install schema and the migrations. Secrets ar
 **The node.** The agent stores `replica/settings.rep` and writes `replica/settings.json` (`{etag, data}`) from the verified record, then runs `cluster:apply`.
 
 **Applying.** `ReplicaApply` decodes the section as the panel does, through `SettingsRepository::decode()`, now shared. It reports the keys whose value differs from the settings cache. It stays in shadow even with CONFIG on: the section withholds secrets that the node still reads, so it becomes authoritative together with the `secrets` section.
+
+### The whole sections servers, node, crontab and cluster (Phase 7, fifth increment)
+
+**What they hold.** `Core/Cluster/ReplicaSections` names the fields. MAIN builds the sections from it (`ReplicaBuilder`) and the node applies them from it (`ReplicaApply`); it lives in Core because it ships to nodes. Each section is a `rep` record, signed, sealed and served exactly as the `settings` section.
+
+| Section | `data` |
+| --- | --- |
+| `servers` | `{servers: [row], nodes: [{sid, gen, state, ed_pub}]}`. One row per `servers` row, ordered by id, with the routing and relay fields `SERVER_FIELDS`. `nodes` is every `cluster_nodes` row by `server_id`: its generation, its state and its Ed25519 key (`node_sign_pub`, base64) |
+| `node` | The node's own row: `NODE_FIELDS` (ports, `limit_requests`/`limit_burst`, `total_services`, `use_disk`, `enable_https`, `domain_name`, `network_interface`, `governor`, `sysctl`, `time_offset`) and the settings `cloudflare` and `mag_legacy_redirect`. `[]` when the row is gone |
+| `crontab` | `{jobs: [{filename, time}]}`: the enabled rows whose role fits the node's mode, in the table's order. A row that is not a job as the node takes it (below) is left out, and audited once as `replica.crontab_skipped` |
+| `cluster` | `{main_urls, urls_ver, policy_ver, transport, panel_sign_pub, panel_box_pub, min_proto, off_air}`. The policy is the one `hello` sends (`ClusterPolicy::current`). The keys are base64. `off_air` maps `connected`, `not_on_air`, `banned`, `expired` and `expiring` to the file name of the admin's video, or null for the node's default |
+
+Integer columns travel as JSON integers and text as strings, whichever driver read them; a missing column or NULL is null. Every level of a section has its keys sorted (the canonical form of the ETag), so a row's fields arrive in name order.
+
+**Nothing else.** Each `servers` column is in exactly one of `SERVER_FIELDS`, `NODE_FIELDS` and `SERVER_LOCAL`, and `ReplicaSectionsTest` fails on a new column that is in none. `SERVER_LOCAL` is what no replica carries: the liveness and telemetry columns (`status`, `last_check_ago`, `watchdog_data`, `connections`, `users`, `requests_per_second`, `ping`, the hardware and device reports), `php_pids`, `certbot_*`, `uuid` and `ssh_hostkey_sha1`. A node builds the `api_url*` itself. No section carries a setting the allowlist withholds.
+
+**How it differs from the plan.**
+
+- `servers` also carries `whitelist_ips`, which the node's `allowed_ips` cache is built from, and `xc_vm_version`, which the node's update reads.
+- `node` also carries `time_offset`: the node checks token expiry against it. It is MAIN's measure of the node's clock, set from the node's inventory in whole seconds, so it rarely moves the ETag.
+- `urls_ver` equals `policy_ver`: one counter versions both the URLs and the policy.
+- A `legacy` crontab row fits modes 0 and 1, as migration 033 defines it (nodes that still have MAIN's database). `main` rows never leave MAIN. The plan's "`users` only while CONNECTIONS is off" stays `UsersCronJob`'s own check.
+- Migration 042 makes `cleanup`'s role `all`, as the plan's cron table has it (its Phase 0 text and migration 033 made it `main`). `cron:cleanup` prunes each node's own stream files, TV archive and created channels, and only its table rotation is MAIN's. While nodes copied the crontab whole the role changed nothing; with the crontab section, a `main` row would have stopped that pruning on every node. `ReplicaSectionsTest` checks the install's own crontab.
+- Migration 043 gives the rest of the plan's `main` crons that role: `epg`, `series`, `backups`, `cache_engine` and `providers` (the LB build strips their classes), `stats` (it exits on an LB), `proxy` (it fetches the archive MAIN's installer ships) and `watch` and `plex` (module commands; modules are MAIN-only). An install had them all as `all`, so the crontab section would have sent every node jobs that fail as unknown commands. `maxmind` stays `all`, unlike the plan's table: each node keeps its own GeoIP databases current. `ReplicaSectionsTest` fails on a job whose class the Makefile strips from the LB build.
+- The whole section is panel-signed, so the node list inside it is signed.
+- A `rep` record is signed on each request, not once per content hash: a signature costs microseconds, and the plan's cache holds the data.
+- `config.changed` also goes out when a node completes its enrolment or is quarantined, so the others learn a new active key, or stop trusting a cloned one, at once.
+- `config.changed` goes only to an agent that says `config_changed` at hello (below). Today's agent would hand it to `cluster:exec`, which an LB's older PHP fails as an unknown type.
+
+**Change detection on MAIN.** The ETag is the SHA-256 of the canonical data. `ReplicaEtagCache` keeps a section and its ETag for 10 s on MAIN's clock, one file per key in `TMP_PATH/cluster_replica/`: `servers`, `settings`, `cluster`, `node.<sid>`, and `crontab.legacy` or `crontab.api`. Each entry records the cache's generation (`.gen`) from before the database was read. A bump replaces the generation with a random token and deletes the entries, so a request that read the old rows and writes them after the bump is never served. A random token, not a counter: two bumps at once never write the same one. Without that, a node pushed by `config.changed` could get the old list as `unchanged` and wait for its next poll.
+
+- `SettingsChangedEvent`, `ServerSavedEvent` and `CrontabChangedEvent` drop the cache, so the next `config` call reads the database. `SettingsService` now dispatches `SettingsChangedEvent` on the settings, backup and cache saves. `ServerService` and `ServerRepository` dispatch `ServerSavedEvent` on a server or proxy save, an install, a reorder and a delete. The cache-engine schedule save dispatches `CrontabChangedEvent`.
+- The listener is Core's own, registered by `ContainerPopulateStage`, because only modules had a subscriber registry.
+- Other writers of these tables dispatch nothing. Their change is seen within the 10 s, then at the node's next minute's poll. Among them: the admin's node actions (ports, services, governor, sysctl), which the node carries out and writes back to its own row itself, and the enrolment and liveness writers of `cluster_nodes`.
+
+**`config.changed`.** `ReplicaBuilder::nodesChanged` runs when a node is revoked, re-enrolled (`startEnrolment` over an existing row), completes its enrolment, or is quarantined on evidence of a clone (`hello` or `token_rekey` from another instance). It drops the cache, then queues `config.changed` for every other `active` node with COMMANDS on whose agent said `config_changed` at hello (`cluster_nodes.features`).
+
+- The command is restrictive, so it signs without a licence. Its `dedupe_key` is `config.changed`, so a newer one supersedes one not yet acked.
+- A failure to queue never fails the change. Each node is queued on its own, so one that cannot be told (its row gone meanwhile) is skipped and the others still are; it sees the change at its next poll.
+- Nodes without COMMANDS or without the feature fetch it at their next poll too.
+
+**The node.** `cluster:apply` reads `replica/<name>.json` and reports each section in `replica/apply.json`:
+
+- **`servers` + `node`.**
+  - **Shadow:** `missing`, `extra` (server ids) and `differ` (`<id>.<field>`, at most 100), compared with the servers cache `cron:cache` built from MAIN's database.
+  - **CONFIG on:** the `servers` cache, keyed by id, in `ServerRepository::getAll`'s shape. It is built through `ServerRepository::decorate` (split out of `getAll`), with the node section over the node's own row. `api_url*` are built with the node's own `live_streaming_pass`. Every column a section does not carry is null, and `server_online` is `enabled` (MAIN judges liveness; the node tries every enabled server).
+  - Both sections must be MAIN's for this node: the node section's `id` is `SERVER_ID`, the list holds that row, the ids are unique and the node list is well-formed. Otherwise the report says `incomplete` (one of the two is missing) or `refused`, and nothing is written.
+- **`crontab`.**
+  - **Shadow:** the jobs MAIN's table has that the section leaves out (`missing`, normally the `main` rows) and the reverse (`extra`).
+  - **CONFIG on:** the `cron_jobs` cache.
+  - A job must be a `cron:` name (`[a-z0-9_]{1,64}`) and five schedule fields of `[0-9*/,-]`, with nothing after them, not even a newline; otherwise the whole section is `refused`: the node writes the jobs into its crontab.
+- **`cluster`.** Compared with the agent's `agent.json` (`main_urls`, `panel_sign_pub`, `policy_ver`) and reported as `shadow` whatever the flow. No PHP on the node reads it; the agent does.
+
+**Who owns a cache.** With CONFIG on, the replica owns the servers cache or the crontab's jobs (`ReplicaApply::owns`) only once the agent has stored the sections (`servers.json` and `node.json`, or `crontab.json`) and an authoritative apply has built the cache from them. The apply records that in the `replica_owned` cache, beside the caches in `tmp/cache/`, so it goes with them at a reboot. Until then the readers keep MAIN's database and `cron:cache` keeps refreshing it. A database copy is therefore never taken for the replica's, frozen with the liveness it had.
+
+- A section that is refused or incomplete hands its cache back: the readers take MAIN's database again, and `cron:cache` refreshes the servers cache from it.
+- With CONFIG off, `cluster:apply` (in shadow) and `cron:cache` drop the record and the `cron_jobs` cache (`ReplicaApply::disown`), so turning CONFIG back on waits for an apply instead of reusing old jobs.
+- `cron:cache` applies the replica from disk itself every minute while CONFIG is on (`ReplicaApply::run(true)`), so the caches follow the copy on disk within a minute of a flow change even when the agent does not run `cluster:apply` then.
+
+Once owned:
+
+- `ServerRepository::getAll()` returns the servers cache however old it is, even when forced, so every reader (including `cron:root_signals`' ports, limits and services) reads the replica. Should the cache be gone, it rebuilds it from the replica on disk. It never writes the database's rows over a cache the replica owns.
+- `cron:cache` does not write the servers cache from the database.
+- `LegacyInitializer::generateCron` and `cron:root_signals`' crontab check take the crontab from `ReplicaApply::crontabText`: the replica's jobs, or MAIN's table while the replica does not own them. Null (the owned jobs are gone, or there is no database) leaves the crontab as it is; an empty string is a crontab with no job.
+- `cron:certbot` reads its own certificate record from its row in MAIN's database, not from the servers cache, which carries no `certbot_ssl` (`SERVER_LOCAL`).
+- `src/service` runs `cluster:apply --from-disk` as xc_vm before `daemons.sh` when `config/cluster/flows.json` has mode 1 or 2 and the CONFIG bit, with a 15 s `timeout`. A shadow node gains nothing from it. The flag changes nothing: `cluster:apply` always reads the disk.
+- `NodeFlows` ignores the agent's file on MAIN, and asks `NodeRole`, which reads the servers. On a node whose replica owns them that asked `NodeFlows` again, without end. The inner call now gets what the file says (`ReplicaApplyTest`).
+
+**Known limits.**
+
+- A node with CONFIG on and TELEMETRY off loses what its legacy telemetry path read from its own row: `watchdog_data`'s CPU history, and `users`/`connections` in Redis mode. The rollout turns TELEMETRY (Phase 3) on before CONFIG.
+- The settings, including `cloudflare` and `mag_legacy_redirect`, stay MAIN's until the `secrets` section exists; the `node` section's copies are not read yet.
+- No reader uses the node list before Phase 8's ticket checks.
+- `cluster:apply` and `cron:cache` boot through the CLI profile, which still connects to MAIN's database (`ReplicaStage` is not built). With MAIN's database unreachable at boot, `cluster:apply` exits before it applies anything, bounded by `service`'s 15 s `timeout`. A node rebooted while MAIN is unreachable therefore serves from its replica only once `ReplicaStage` exists; today its caches are rebuilt when MAIN's database answers again.
+
+**Tests.**
+
+- `ReplicaSectionsTest`: content per section, the classification, no liveness or secret, rows a node would refuse left out of the crontab section, and no job the LB build strips. Also the ETag's stability, the cache, bumps from each event and from a delete or reorder, and a bump in the middle of a read (through `QueryLogDb`'s before-statement hook). And `config.changed`: who is told on a revoke and a re-enrolment, never the node itself, and a node that cannot be told is skipped.
+- `ReplicaApplyTest`: shadow and authoritative per section, and `getAll`'s shape (a disabled server offline, the node's own row online and from the node section). Also missing, foreign, malformed and duplicate sections, and the crontab patterns. Ownership: only after an apply, handed back on a refusal and after CONFIG was off, an owned cache that is gone rebuilt from disk, and never overwritten by a database read an apply overtook. And `ReplicaApply::crontabText`, which both crontab readers write; the readers themselves only pass its null on.
+- `ClusterApiTest`: sections served by `have`, never to an agent that does not name them. Also `config.changed` on a completed enrolment and on both quarantines, and a sign refusal other than LICENCE that still denies the call (`FakeClusterCrypto::$rRefuseSign`).
+- `BootStageTest` (the three events have Core's listener after `ContainerPopulateStage`), `ClusterExecCommandTest` (`config.changed` acked as deferred), and `ClusterSchemaTest` (migrations 042 and 043).
+
+The suite runs with the ETag cache off (`tests/bootstrap.php`): some tests define `TMP_PATH` as a shared path and fix the clock at one instant.
+
+**The agent's contract (XC_VM_Fanout, not built yet).**
+
+- **Request.** `config`'s `have` may name `settings`, `servers`, `node`, `crontab` and `cluster`, each with the ETag the agent holds (64 lowercase hex, or `""` for none). MAIN answers only the whole sections named. It leaves out a name it does not serve, and refuses a malformed ETag with `400 BAD_REQUEST`.
+- **Reply.** Per named section, under the same name: `{"unchanged": true}`, or `{"etag": "<64 hex>", "sealed": "<base64 std>"}`. A missing field means "not served": keep what is held. That includes a changed whole section while MAIN has no licence: a `rep` record grants, so MAIN leaves it out instead of refusing the whole call, and the blocklist's bans in the same reply still arrive. Before this, one changed `settings` section made every `config` call a `LICENCE_INVALID` until the licence came back.
+- **Record.** `sealed` is base64 of XCVM-SEAL-v1 to the node's box key (purpose `replica`, context the node uuid). It opens to `u32(len) ‖ payload ‖ sig`, where `payload` is the JSON `{v: 1, section, node, gen, etag, iat, data}` (no `seq`) and `sig` the panel's signature over it under tag `rep`. Store it only if the signature verifies against the pinned panel key and `section`, `node` and `etag` match the name, this node and the announced ETag; checking `gen` against the token's generation is recommended.
+- **Files**, written atomically under `config/cluster/replica/`: `<name>.rep` (the sealed record as received) and `<name>.json` (`{"etag": "<etag>", "data": <data exactly as signed>}`). `state.json` keeps the ETag held per section (for example `whole_etags: {name: etag}`, beside today's `settings_etag`).
+- **Apply.** After storing any section, run `console.php cluster:apply` (debounced 1 s, as today). Also run it once after the first sync when the agent starts, since `tmp/cache/` does not survive a reboot. Also run it when the CONFIG bit (32) of the `flows` it writes to `flows.json` changes, either way: that is when the caches change hands. `cron:cache` applies every minute while CONFIG is on, so an agent that does not do this only delays the switch by up to a minute.
+- **Crontab jobs.** In every job MAIN sends, `filename` is 1 to 64 characters of `[a-z0-9_]`, and `time` is five fields of `[0-9*/,-]+` separated by single spaces, with nothing before or after (no newline). MAIN leaves any other row out. The agent stores the section as signed and need not check the jobs: PHP refuses a section with any other job.
+- **`config.changed`.** MAIN sends it only to an agent that lists `"config_changed"` in hello's `features` (today's agent sends `["hls_reaper"]`, so it gets none). It is a command of type `config.changed` (class R), `args: {"sections": ["servers"]}`, `dedupe_key: "config.changed"`, `exp = iat + 600`. It goes out when another node is revoked, re-enrolled, completes its enrolment or is quarantined. Verify it like any command. Then start a replica sync at once, coalesced with one already running, and ack `ok` with `{"result": true}` without waiting for the sync. Should it reach `cluster:exec` anyway, this PHP acks `{"deferred": true}` with exit 0, and the next minute's poll fetches the change.
+- **Use.** The `cluster` section is panel-signed like a challenge's policy. An agent may adopt its `main_urls` and `transport` when its `policy_ver` is above the one it holds; that is how a node rebooted without MAIN keeps a current URL list. The `servers.nodes` list is for Phase 8's relay-ticket checks.
 
 ### The cluster bus (Phase 2, first increment): wake-ups
 
@@ -897,10 +1044,136 @@ The settings columns come from the install schema and the migrations. Secrets ar
 
 **Without the bus.** If the bus is not running, or this is an LB or a test, `waitNode`/`waitAck` return null and the callers poll as before.
 
-**Still to come on the bus:**
-- nonces;
-- telemetry (`cl:tel:<sid>`);
-- per-op semaphores.
+Nonces and the per-op semaphores came in the second increment, and heartbeats with their telemetry (`cl:tel:<sid>`) in the third, below.
+
+### The cluster bus (Phase 2, second increment): nonces and per-op semaphores
+
+**Nonces before.** Every authenticated request inserted its `(node, nonce)` into `cluster_nonces`, so each heartbeat, event batch and long-poll cost a MySQL write.
+
+**Nonces now.** While the bus runs, `NonceStore::claim()` checks and adds the nonce in one Lua script:
+- `nonce:<node>` is a sorted set. Each member is a nonce in hex, scored by its expiry: MAIN ms, 180 s after the claim. The script prunes expired members first. `purge()` (`cron:cluster`, every minute) prunes the sets of nodes gone quiet, and an empty set disappears.
+- `nonces_since` holds the MAIN ms of the first claim this bus took. The bus holds every claim made since then.
+- Neither key has a TTL. The bus's `volatile-ttl` policy evicts only keys that have one, so a nonce is never evicted while it can still be replayed.
+- Nor is a claim refused at `maxmemory`. The script's first write (the prune) lets the rest of it through, and past `maxmemory` the bus evicts keys that have a TTL instead: wake-ups, reservations and touches, nearest expiry first. Only authenticated traffic adds nonces, which bounds them: about 150 bytes a nonce, so 1000 requests a second hold about 27 MB. (A fresh bus at `maxmemory` fails the script on `SET nonces_since`, and the claim is handled as without the bus.)
+
+MySQL stays the store while the bus is out of reach: when it is not running, its socket is gone, a connect or script fails, or during the 5 s pause `ClusterBus` takes after a failed connect.
+
+**Replay protection never gets weaker.** The bus is not persisted, and one worker can lose it while others still reach it. With LEAD = 250 ms (`NonceStore::LEAD_MS`) and TTL = 180 s:
+
+| Case | Rule |
+| --- | --- |
+| A bus restarted or flushed, and lost the claims it held | A request stamped (`X-XCVM-Ts`) at or before `nonces_since` + LEAD is refused. Its nonce may have been claimed on the lost bus, since each such claim was stamped no later than its claim time + LEAD (next row). |
+| A request stamped more than LEAD ahead of MAIN's clock | Also claimed in MySQL, so the rule above can leave it there. |
+| A bus younger than TTL | Also claims in MySQL, where the claims from before it are. |
+| MySQL took claims while a bus socket existed | It marks the second in `bin/cluster_bus/nonces.sql`, a file's mtime. While that mark is under TTL + 1 s old, the bus also claims in MySQL. |
+| The bus is out of reach | A worker marks the second in `bin/cluster_bus/nonces.bus` before each claim it runs on the bus. Without the bus, a request stamped before the end of the marked second + LEAD is refused, since the bus may hold its nonce. A mark from the current or the previous second means the bus may be taking claims right now, some not marked yet, so the refusal then runs to the end of the current second + LEAD. Workers that still reach the bus keep the mark current, so a worker that cannot reach it refuses until it can. |
+
+- **The marks** are written at most once a second, on disk beside the socket, so they survive a reboot. A mark only moves forward: a worker that read the clock in an earlier second and writes late leaves it as it is. A mark more than 1 s ahead of the clock (it stepped back) is rewritten. A claim whose mark cannot be written is refused.
+- **No socket.** Without a bus socket (the bus stopped cleanly, or never ran), MySQL takes claims without the SQL mark: the next bus to start is young, and looks in MySQL anyway.
+- **Clock steps.** A `nonces_since` more than 1 s ahead of MAIN's clock (the clock stepped back) starts a new history. That costs a short refusal instead of refusing everything until the clock catches up.
+- **The refusal** is the usual 401 `REPLAY`: MAIN cannot tell such a request from a replay. It does know when a request stamped anew will pass, so this refusal carries `retry_after_ms` (below). A replay proper, a nonce the store already holds, carries none.
+- **What it costs.** After a bus (re)start, requests stamped within 250 ms of its first claim are refused, and every claim for the next 180 s also goes to MySQL. After the bus is lost, requests are refused until the end of the second after the last one it took a claim in (up to 2 s). A worker that cannot reach a running bus refuses its requests, for up to 5 s at a time (the connect pause).
+- **Unstamped values.** The re-key minute (`rekey:<uuid>`) and a used challenge (`used:chal:<uuid>`) are MAIN's own values, and the stamp rules do not apply to them. A bus that loses a re-key minute allows one more re-key attempt in that minute.
+
+**Challenges.** `challenge` issues its value with `NonceStore::issue()`:
+- The value goes into MySQL, as before, even while the bus runs. `GET challenge` is unauthenticated, and on the bus a flood of values would push out the reservations and wake-ups (`volatile-ttl` evicts the nearest expiry first). Challenges are rare: a re-key, or a policy fetch while fenced.
+- Without the bus, the value is also marked like a claim (`nonces.sql`), so a bus that comes back records its use in MySQL too, where a worker without the bus looks.
+- `consume()` finds the value in MySQL and takes it with a claim on `used:<node>`, on the bus or in MySQL, so a value is used once.
+
+**Semaphores.** Plan section 8 gives `hello`, `conn_snapshot`, `token_rekey`, `config` and `streams` a bus semaphore of 4. `streams` has no op yet, so the other four get one (`Domain\Cluster\ClusterSemaphore`):
+- **The permit** is a member of `sem:<op>`, a sorted set without a TTL (never evicted), scored by the permit's expiry.
+- **When.** A session op takes it after the node state and before the BOX is opened (step 10 of the order under "MAIN's API"). It gives it back in `finally` when the handler ends, however it ends. `token_rekey` takes it after its node signature, nonce and node state, and before its once-a-minute slot and the challenge, so a busy MAIN spends neither.
+- **Crashes.** The permit of a holder that died expires after its lane's pool timeout: 60 s for `hello` and `token_rekey` (ctl), 90 s for `config` and `conn_snapshot` (ingest).
+- **Time** is the bus's own clock (`TIME`, read inside the script). Scripts run one at a time, so each sees a time no earlier than the permits it finds. A worker's own clock, read before its script reached the bus, could lag another worker's and drop that worker's live permits as taken in the future.
+- **Clock steps.** A permit expiring more than 1 s (`ClusterSemaphore::STEP_MS`) past now plus its lifetime was taken before the clock stepped back, and is dropped.
+- **Without the bus,** or when the bus call fails, no permit is taken, as before.
+
+**Wire: the busy refusal.** When all 4 of an op's permits are held, its handler does not run, and the node gets a denial like every other one: panel-signed (`den`), naming the node and the request nonce. Its fields:
+- status 503;
+- `reason`: `RATE_LIMITED`;
+- `retry_after_ms`: int, from 1000 to 3000, drawn at random per refusal to spread a fleet out;
+- `op`: string, the op refused: `hello`, `token_rekey`, `config` or `conn_snapshot`.
+
+The re-key minute keeps its 429 `RATE_LIMITED` with `retry_after_ms`. The status tells the two apart.
+
+**Wire: `REPLAY` with a wait.** The 401 `REPLAY` denial (panel-signed `den`, naming the node and the request nonce, with `main_time_ms` as every denial has) gains one optional field:
+- `retry_after_ms`: int, at least 50. It is present only when MAIN refused because it cannot vouch for the nonce yet, never for a nonce it holds. A request stamped anew (`X-XCVM-Ts`) at or after the denial's `main_time_ms` + `retry_after_ms` is past the refused range. Today it is at most about 1.4 s.
+
+It is sent on every op that claims a nonce: the session ops, `token_rekey`, `enrol_code` and `enrol_code_status`. It has three causes, each a range of stamps MAIN refuses:
+- a bus started, restarted or was flushed: stamps up to 250 ms past its first claim (`nonces_since`);
+- the bus was lost: stamps before the end of the last second it took a claim in, + 250 ms;
+- the MAIN worker cannot reach a bus the others still use: stamps before the end of the current second, + 250 ms.
+
+The last two are one rule (the `nonces.bus` mark) as a worker sees it. The wait is the time from MAIN's clock to the end of the range, plus 50 ms (`NonceStore::RETRY_MARGIN_MS`).
+
+**What today's agent does.**
+- `token_rekey`: `recover()` already waits `max(1 s, retry_after_ms)`, ±10 %, on `RATE_LIMITED`, without raising its backoff.
+- `hello`: `Start` is called in three places. At start, `Run` backs off 2 s, doubling up to 1 minute, as on any error. After a re-key, the heartbeat loop calls `Start` once and drops a non-fatal error, so that hello is lost until the next re-key or policy change. On a newer `policy_ver`, a failed `Start` is only logged, and the next heartbeat (2 s) tries again.
+- `config`: `SyncReplica` logs the error, and the next poll comes a minute later.
+- `conn_snapshot`: the snapshot is abandoned. MAIN asks again if the digest still disagrees.
+- `REPLAY`: `retry_after_ms` is ignored. A heartbeat is retried at the next tick (2 s), an event batch after the lane's backoff, a long-poll after 1 s. The clock offset is not updated from a denial, so an agent with no offset yet (the first hello after it starts) lags MAIN by its clock error: after a bus start its requests are refused until that lag has passed, up to the 90 s window.
+
+All of this is safe, only slower than the contract below.
+
+**The agent's contract.** For the Go half, not built yet:
+1. **503 `RATE_LIMITED`**, a verified denial with status 503 to `hello`, `token_rekey`, `config` or `conn_snapshot`, means MAIN is busy, not failing. Wait `retry_after_ms` with ±10 % jitter, clamped to 1–60 s. Then send the same op again with a fresh nonce and stamp. Do not raise the op's backoff or count it as a failure.
+   - `hello`, at every call site: in `Run`'s start loop, wait `retry_after_ms` instead of the doubling start backoff. After a re-key, retry the hello after `retry_after_ms` until it succeeds or fails fatally; do not drop it. After a newer `policy_ver`, retry after `retry_after_ms` too (the heartbeat loop keeps running meanwhile).
+   - `config`: retry after `retry_after_ms` instead of at the next minute's poll.
+   - `conn_snapshot`: resend the refused chunk, with the same `snap_id` and `seq`. MAIN keeps the chunks it took, and a chunk it no longer expects gets 409 `SNAP_GAP`, which ends the snapshot as today.
+   - `token_rekey`: as today. The challenge was not consumed, so it may be sent again while under 180 s old, or a new one fetched.
+   - A 429 `RATE_LIMITED` (the re-key minute) is handled as today.
+2. **401 `REPLAY` with `retry_after_ms`**, a verified denial to a request the agent sent once, on any op, means MAIN cannot vouch for its nonce yet (the three causes above). First set the clock offset from the denial's `main_time_ms`, as from a MAC'd reply: the denial is panel-signed and names this request. Then wait `retry_after_ms`, never less (jitter may only add, up to 10 %), clamped to at most 10 s. Then send the op once more with a fresh nonce, a fresh `MainNowMs()` stamp and a fresh MAC, BOX or SEAL. A second `REPLAY` in a row, or a `REPLAY` without `retry_after_ms`, takes the op's usual backoff.
+3. **Stamps.** `X-XCVM-Ts` stays `MainNowMs()`: local time plus the offset from the last authenticated `main_time_ms` (a MAC'd reply, or a `REPLAY` as in item 2), never pushed ahead by an RTT estimate. A request stamped more than 250 ms ahead of MAIN's clock is accepted, but costs MAIN a MySQL write.
+4. **Nothing else changes:** no new op, header or setting. The one new field is `retry_after_ms` on `REPLAY`.
+
+**Differs from the plan.**
+- **No `streams` semaphore.** The op does not exist yet (Phase 7, R2).
+- **A sorted set per node, not `SET NX` with a 180 s TTL.** A key with a TTL is evictable under the bus's `volatile-ttl` policy, which would reopen that nonce's replay window under memory pressure.
+- **The nonce floor, defined.** The plan names a nonce floor against replay after a bus restart (section 3 and the security checks) without defining it. Here it is `nonces_since` + LEAD, and a young bus also claims in MySQL for 180 s, since the bus is not persisted. The marks, for a bus out of reach, are not in the plan.
+- **MySQL writes remain** while the bus is young or out of reach, and for requests stamped ahead: the cases the bus alone cannot vouch for.
+- **The busy refusal reuses `RATE_LIMITED`.** The plan names no reason, and today's agent honours `retry_after_ms` only on `RATE_LIMITED`, so it re-keys promptly.
+- **Challenge values stay in MySQL.** They are issued unauthenticated, and on the bus a flood of them would evict what must stay.
+- **`REPLAY` can carry `retry_after_ms`.** The plan gives a replay refusal no wait. When MAIN only cannot vouch for a nonce yet, the refusal tells the agent when a request stamped anew will pass.
+
+**Compatibility.**
+- Older agents keep working. The only wire changes are the 503 on four ops and `REPLAY` in the cases above, both refusals they already handle, and `retry_after_ms` on such a `REPLAY`, which they ignore.
+- On upgrade, the running bus has no `nonces_since`, so the first claim sets it. The first 250 ms of requests are refused, and for 180 s every claim also goes to MySQL, which holds the claims from before the upgrade.
+- LB builds have neither `Domain/Cluster` nor `bin/cluster_bus`.
+
+**Limits.**
+- The marks are file mtimes, and a power cut can lose the last few seconds of metadata (ext4 commits every 5 s). If MAIN then serves requests before its bus starts, and within 90 s of the cut, a request from those last seconds could be replayed once. A bus started at boot is young and covers this.
+- The rules assume MAIN's clock does not step back by more than a second.
+- Two copies of one request, one at a worker with the bus and one at a worker without it, can both pass if they arrive together after a second in which the bus took no claim. The worker without the bus must pause between reading the bus mark and writing the SQL mark while the other claims.
+- A bus that loses some nonce keys but keeps `nonces_since` goes unnoticed: a manual `DEL`, or an `allkeys-*` eviction policy. The shipped `cluster.conf` uses `volatile-ttl`.
+
+Tests:
+- `ClusterNonceStoreTest`, against a real redis-server on a unix socket as `ClusterBusTest` does:
+  - MySQL without the bus;
+  - on a settled bus, one write there, no TTL, expiry and purge;
+  - the lead: a request stamped more than 250 ms ahead also goes to MySQL;
+  - a fresh bus's floor with its wait, and its MySQL writes for exactly its first TTL;
+  - a clock step back that restarts the history, and one of a second that does not;
+  - a nonce MySQL took while the bus was out of reach, refused once it is back, and the SQL mark's TTL + 1 s;
+  - a nonce the bus took, refused while it is out of reach, with the previous-second rule, the lead and another worker's mark;
+  - a bus mark ahead of the clock, the mark written before the claim runs, a mark that cannot be written, and marks that only move forward;
+  - a killed and restarted bus, and a flushed one;
+  - challenges issued in MySQL, with the bus or without it, used once.
+- `ClusterSemaphoreTest`:
+  - no limit without the bus;
+  - 4 permits per op, and each op's worst case;
+  - the signed 503 with `retry_after_ms` and `op`;
+  - release after the handler returns or throws;
+  - expiry after the op's worst case, by the bus's clock;
+  - workers' clocks that disagree drop no permit;
+  - a permit taken before a clock step back, and a step of under 1 s.
+- `ClusterApiTest`:
+  - no MySQL row per request on the bus, with replays still refused;
+  - a busy `hello` refused while `heartbeat` goes on, and a served one returning its permit;
+  - `NOT_ACTIVE`, `BAD_MAC` and `REPLAY` before any permit;
+  - `config` and `conn_snapshot` refused when busy;
+  - a busy `token_rekey` that spends neither the minute nor the challenge;
+  - on a fresh bus, a `heartbeat` and a `token_rekey` stamped at its floor, refused with `retry_after_ms`, then served.
+- `ClusterEnrolCodeTest`: on a fresh bus, and after a restart, `enrol_code` and `enrol_code_status` stamped at its floor, refused with `retry_after_ms`, then served.
 
 ### The cluster pools (Phase 2, second increment)
 
@@ -938,10 +1211,7 @@ A reload, or a pool too busy to answer, therefore keeps the marker: a resize fro
 - **When it applies.** The service removes the marker whenever it starts, and tmp/ is a tmpfs. So a boot, a restart and an update each answer `STARTING` until the migrations have run and both pools answer.
 - **Silence clock.** Creating the marker runs `ClusterMeta::markReady()`, so the time the API was `STARTING` never counts against a node's silence.
 
-**Not built:**
-
-- the plan's `cluster_ctl` listen-queue check, which should feed the fleet silence guard;
-- the ingest permits on the bus.
+**Not built:** the ingest permits on the bus. The plan's `cluster_ctl` listen-queue check came with the fifth increment.
 
 The old-port servers, which still passed to the panel pool, reach the pools since the rendered nginx config.
 
@@ -1069,6 +1339,154 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 
 - `ServerEnrolCommandTest`: one node's path. It covers no trust on first use, a changed key that runs nothing, the refusals before the flow, the flow's reason, a flow that enrols nothing (in the same second as a previous enrolment), and the node's lock.
 - `ClusterReenrolCommandTest`: selection, including nodes revoked, quarantined or removed during the run; continuing past failures and exceptions; each node's port and password; the licence stop; the dry run; the credential file; the arguments; and `main()`, the command from its arguments on (`execute()` adds only the user check). `main()` shows that a dry run stays dry, that a refused real run still deletes the file, and that a second run refuses.
+
+### The `cluster_ctl` listen queue (Phase 2, fifth increment)
+
+**Before.** The fleet guard (Liveness, Phase 3) had one input: the silence of most nodes at once. Plan section 8 gives it a second: a `cluster_ctl` listen queue lasting over 5 s. That pool takes every heartbeat, so a queue there makes live nodes look silent.
+
+**FPM's count is always 0 here.** The pools have a status page (`pm.status_path = /status`) whose `listen queue` FPM measures only on TCP sockets. On the pools' unix sockets it reports 0, and `listen queue len` 0 too: php-fpm 8.3 with one worker busy and six requests waiting still says 0. FPM also serves the status page from a worker, so a status request to a pool without a free worker waits in that same queue.
+
+**The probe.** `ClusterPool::listenQueueMs('cluster_ctl')` therefore times its own status request. It answers how long the queue has lasted, in ms; 0 when there is none; null when the pool cannot tell.
+
+- It sends `GET /status?json` (`SCRIPT_NAME` `/status`, `QUERY_STRING` `json`) over the pool's socket, through the FastCGI client the ping now shares, and waits up to 250 ms (`QUEUE_PROBE_WAIT`) for the answer.
+- Answered within 250 ms, with FPM counting no queue: 0.
+- Not answered: the request waits for a worker. The probe keeps it waiting, and later calls read it without blocking. The queue has lasted since the first request that waited.
+- A late answer says only that the requests ahead of it were served, so a new request goes out in the same call. The queue ends only when a new request is answered within 250 ms.
+- A connect refused with `EAGAIN` (the listen backlog is full) is a queue as well, and so is a `listen queue` above 0 (a pool on TCP).
+- Null: no socket, nobody listening, an answer cut before `END_REQUEST`, no status page (FPM's `File not found.`), or another pool's status.
+- A call blocks for 250 ms at most and never leaves two requests waiting. While the pool keeps up, it costs one FastCGI round trip and keeps one `cluster_ctl` worker from idling out.
+
+**The guard.** `LivenessService::tick()` reads the probe once a pass: every second in the signals daemon, each minute from `cron:cluster`.
+
+- The probe comes first in the pass, before `HeartbeatService::flush()` and the `cluster_nodes` read. A heartbeat that waited in the queue ahead of the probe's answered request is then in the same pass.
+- A run lasts from `now − age`. The guard's `ctl_queue` reason is up while the run is over 5 s old (`QUEUE_GUARD_MS`).
+- A pass that sees no queue, or cannot tell, ends the run. A pool that is down or has no status page never raises the guard. While it is down, nginx sends its requests to the panel pool.
+- A pass within 5 s (`QUEUE_GAP_MS`) of the last one that saw the run joins it, before or after it. So `cron:cluster`, whose own request has waited only 250 ms, keeps the signals daemon's run instead of restarting it. This holds even when the daemon writes `health.json` between cron's clock read and its read of the file, which leaves cron's pass a few ms behind the run's `at`. A joined run keeps the earlier `since` and the later `at`. Passes further apart start a new run, because the queue may have drained between them, and so does a clock that stepped back more than 5 s.
+- The run is kept in `tmp/cluster/health.json` as `ctl_queue: {since, at}` (MAIN's ms), so both processes see it.
+
+**What the queue holds.** The silence reason holds every node. The queue reason holds only the nodes it may have silenced, for a bounded time, and keeps holding them for a while after it ends. `health.json` keeps this hold as `ctl_queue_hold: {from, until}` (MAIN's ms, `LivenessService::queueHold()`). A node is not newly marked offline while `from ≤ now ≤ until`, if its silence counts from `from` or later. Its silence counts from `max(last heard, ready_at)`, as in `NodeHealth`.
+
+- `from` is the run's `since` minus 10 s (`NodeHealth::SUSPECT_AFTER_MS`). A node silent since before the queue began was not silenced by it. A live node is heard every 1 to 3 s, and the probe may see the queue a pass late. Such a node is marked offline as usual, with or without the guard.
+- `until` is `since` plus 4 offline windows (`QUEUE_HOLD_WINDOWS` × `cluster_offline_after_sec`, 2 min at the default). A queue whose requests each wait about a second can last while every live node is heard. Without the cap, it would keep a node that died meanwhile suspect, and routed viewers at half weight, for as long.
+- When the reason clears (`drained`, or `unknown`: the pool can no longer tell, or the run broke), `until` becomes `min(until, now + cluster_offline_after_sec)`. Heartbeats that waited in the queue are heard late or not at all: refused as `CLOCK_SKEW` once older than 90 s, or lost with a pool that died. The pass that sees the queue end may also judge heard times from before the end. So each node gets one full offline window after the queue to be heard again, as `ready_at` gives it after MAIN's own downtime. A node that is silent only while the queue lasts is never marked offline. The cap still applies.
+- A node already published offline stays offline. The hold never brings one back.
+
+**One guard, two reasons.** `health.json` keeps `guard` (either reason) and `reasons` (`silence`, `ctl_queue`, in that order).
+
+- With either reason the orphan purge waits (`HlsReaping` reads `guard`), as before. Offline marking waits as above: for every node under the silence reason, and for the nodes the queue holds under the queue reason, which also holds them for a window after it clears. `guard` itself clears with the reason.
+- Each reason is audited on its own. `cluster.fleet_silence` and `cluster.fleet_silence_clear` (`{silent, nodes}`) now follow the silence reason rather than the guard. `cluster.ctl_queue` carries `{queued_ms}`, and `cluster.ctl_queue_clear` carries `{lasted_ms, queue}`, where `queue` is `drained` (a new request was answered at once) or `unknown` (the pool could not tell, or the run broke).
+- The Cluster Nodes page shows one alert per reason (`cluster_ctl_queue`, `cluster_fleet_silence`).
+- A `health.json` written before this increment has `guard` and no `reasons`, and reads as the silence.
+
+**The agent's contract.** Nothing changes on the wire: no new op, lane, field, header, refusal, section or file. The guard changes what MAIN does about silence (no offline marking, no orphan purge), never what the API answers. `health.json` (`ctl_queue`, `ctl_queue_hold`) is MAIN's own file under `tmp/cluster/`, read by MAIN's routing and liveness only. Today's agent is unaffected, and its Go half has nothing to build.
+
+**Differs from the plan.**
+
+- **The queue is measured by the probe's own wait.** The plan reads FPM's listen queue, which FPM counts only on TCP. FPM's count still counts when it is above 0.
+- **"Lasting over 5 s"** is the time from the first status request that waited until one is answered within 250 ms. A pool that serves every request within 250 ms has no queue, whatever it holds for a moment.
+- **An alert and an audit per reason**, where the plan names one alert.
+- **`cron:cluster` alone** (the signals daemon down) never raises the queue reason: its passes are a minute apart, too far apart to make one run. A reason the daemon raised before it stopped clears at the next pass.
+- **The queue does not suspend all offline marking.** The plan suspends offline marking while MAIN suspects itself. For the queue, that is limited to the nodes it may have silenced, and to 4 offline windows. In return the suspension lasts one offline window past the queue's end, so the queue's time never counts against a node, as MAIN's own downtime never does.
+
+**Limits.**
+
+- A worker that takes over 250 ms to fork counts as a queue for that moment; the 5 s run absorbs such blips.
+- A queue that outlasts its cap (4 offline windows) no longer holds a node. On a fleet where the silence reason cannot hold (one TELEMETRY node, or a queue that silences only a minority), a live node whose heartbeats stay stuck that long is marked offline, and is suspect again once heard. On a fleet where most nodes fall silent, the silence reason still holds them with no limit.
+- A node that dies within 10 s before a queue begins, or while it lasts, is held too. It is marked offline at the cap, or one offline window after the drain, whichever comes first.
+- `cron:cluster` leaves a request that waited when it exits. FPM then serves one status page to a closed connection.
+- `EAGAIN` is Linux's errno 11; the pools run on Linux only.
+
+**Tests.**
+
+- `ClusterLivenessTest`: a queue of exactly 5 s raises nothing. One over 5 s raises `ctl_queue` and holds a lone silent node at suspect instead of offline. It clears when it drains, with each audit, and the node is offline only one offline window after that. A single TELEMETRY node silent only while the queue lasts is never marked offline, whether the queue drains or the pool can no longer tell, with the drain and the hold read from `health.json` as another process would. A node silent since before the queue is not held. A node silent since MAIN's `ready_at` is held. The cap holds, whether the queue goes on or drains within a window of it. A pool that cannot tell never raises the guard, a pass that cannot tell ends a run, and so does a reader that throws. Both reasons together, each clearing on its own in either order. Another process's pass joins the run through `health.json`, including one a few ms behind the run's `at` and one exactly 5 s after it. A 20 s gap starts a new run, and so does a clock stepped back. A `health.json` without reasons. The Cluster Nodes page's alert per reason (source).
+- `ClusterHeartbeatBusTest`: a heartbeat served while the probe waits reaches the same pass through the bus. The tests that run the liveness loop without faking the probe (`MainOutageNoPurgeTest`, `ClusterHeartbeatBusTest`, `NodeHealthHysteresisTest`, `ClusterEnrolCodeTest`) now fake a pool that cannot tell, so they never probe a socket under `MAIN_HOME`.
+- `ClusterPoolTest`: the probe against a FastCGI responder (answered at once, a request left waiting and read without blocking, a late answer and a new request, no status page, FPM's count, another pool's status, a cut answer, nobody listening, no socket). A late answer followed by a request that also waits keeps the queue's start, and a drain forgets it. A request left waiting is dropped when the probe is asked about another pool. An answer past 64 KiB without `END_REQUEST` is no answer, for the probe and the ping. Also a full backlog, and the ping on the shared client. Opt-in against a real php-fpm (`XCVM_TEST_FPM`): FPM's JSON status, and a one-worker pool held by a slow request.
+
+### The cluster bus (Phase 2, third increment): heartbeats
+
+**Before.** Every heartbeat (every 2 s per node) wrote MySQL: `cluster_nodes` (`last_seen_at`, `clock_offset_ms`, `root_ready`, `updated_at`), `servers.status`, and the `used` flag of its epoch. For a TELEMETRY node it also read the `servers` row, and wrote it every 5 s. The plan (section 8) has heartbeats hold no DB connection, and the health loop copy them from `cl:tel:<sid>` into MySQL every 5 s.
+
+**Now.** While the bus runs and a flusher is working (below), `HeartbeatService::record()` asks MySQL nothing. One Lua script keeps:
+- `cl:hb`, a hash with one field per server id: `<heard ms>:<clock offset ms>:<root_ready 0|1|->:<telemetry heard ms>:<authoritative 0|1>:<gen>`. `heard` is MAIN's clock when it handled the heartbeat, as `last_seen_at` was. `gen` is the enrolment the heartbeat was authenticated for. A heartbeat without `root_ready` or `telemetry` keeps the last ones of the same `gen` (`-`: never sent). No TTL.
+- `cl:tel:<sid>`, the telemetry document: `{"at": heard ms, "auth": 0|1, "telemetry": {…}}`, with a 10 min TTL. `auth` says whether the node was in mode ≥ 1 with TELEMETRY on when MAIN heard it. It is encoded with `JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION`, so the flush reads back exactly what the heartbeat carried.
+
+Authentication still reads the node and its epoch (two SELECTs). `TokenService::markUsed()` no longer writes for an epoch that is already the node's current one: every newer epoch is minted above the current one, and an epoch becomes current only once its `used` flag is written, so that epoch was marked. So a heartbeat on the bus writes nothing to MySQL.
+
+**The flusher.** `HeartbeatService::flush()` runs at the start of every `LivenessService::tick()`: every second in MAIN's signals daemon, and each minute from `cron:cluster`. One flusher at a time holds `cl:flush_lock` (`SET NX`, 10 s); another one only reads. Per node:
+- **`cluster_nodes`** gets `last_seen_at`, `clock_offset_ms`, `root_ready` (once ever sent) and `updated_at` (heard, in seconds). This happens when the heartbeat differs from the one last flushed and one of these holds:
+  - the node was never flushed on this bus;
+  - its last flush is 5 s old (`FLUSH_EVERY_MS`), or ahead of MAIN's clock;
+  - its `root_ready` is not the one MySQL had at the last flush, so `CommandBus::acceptsRoot()` learns it within a second. After a change the flush reads `root_ready` back: `hello` may have written a newer `last_seen_at` meanwhile and kept the UPDATE from matching, and the next heartbeat must then still count as a change.
+- **The guard.** The UPDATE never takes `last_seen_at` back: `hello`, `enrol_complete` and `token_rekey` still write it directly. The exception is a `last_seen_at` more than 1 s ahead of MAIN's clock (the clock stepped back), which a heartbeat overwrote before too. With it goes `servers.status = 1 WHERE status <> 1`, as each heartbeat did. Both write only while the row's `gen` is the heartbeat's: a heartbeat of an enrolment that has since ended never reaches the new row or marks the server up again (an installer may just have set status 4).
+- **Telemetry.** An authoritative document goes through the direct path's own code (`authoritative()`), judged on the time MAIN heard it. The `servers` row is written when that time is 5 s past its `last_check_ago`, and `servers_stats` once a minute; `last_check_ago` and the stats row's `time` are the heard time. The flusher runs every second and heartbeats come every 2 s, so it writes the same documents the heartbeats wrote.
+- **Bookkeeping.** What it wrote is recorded in `cl:hb_flushed`: `<heard>:<root_ready MySQL has>:<flushed at ms>:<servers written as of ms>`. What MySQL refused is not recorded, and goes again at the next pass.
+- **Forgetting.** A node silent for 10 min leaves `cl:hb`, `cl:hb_flushed` and `cl:tel:<sid>` once flushed, unless a heartbeat came meanwhile.
+- **Enrolments.** What the bus holds of a node belongs to the enrolment that sent it. `NodeRegistry::startEnrolment()` (re-enrolment) and `revoke()` drop the node's `cl:hb`, `cl:hb_flushed` and `cl:tel:<sid>` (`HeartbeatService::forget()`); a heartbeat of the old enrolment still in flight may land after that, and the `gen` guard keeps it out of the new row. Its telemetry, authoritative when MAIN heard it, may still be written to `servers` once, as the direct path wrote an in-flight heartbeat's.
+
+**Only with a working flusher.** A pass in which MySQL took every write it had due stamps `cl:flusher` with the bus's clock. A heartbeat stays on the bus only while that stamp is under 5 s old (`FLUSHER_STALE_MS`), either way (a stamp ahead of the bus's clock is stale too); otherwise it writes MySQL as before. So MySQL never lags for want of a working flusher:
+- the signals daemon is down, and `cron:cluster` flushes only once a minute;
+- MySQL refuses the flush;
+- a new bus has had no pass yet.
+
+**Liveness.** `LivenessService::tick()` judges each node by the later of `last_seen_at` and the bus's heard time (`HeartbeatService::freshest()`).
+- **Restarts and the guard.** Silence still counts from `max(last seen, ready_at)`, and the fleet silence guard works on those states as before.
+- **The Cluster Nodes page** shows the same freshest time.
+- **The orphan purge.** `HlsReaping` lives in `Core`, which ships to LBs and cannot read the bus, so it still reads MySQL. Its `last_seen_at` is at most about 15 s behind for a live node: a 5 s flush, the 5 s a stopped flusher's stamp stays fresh, a heartbeat interval of up to 3 s and the 1 s loop. That is well under the 30 s minimum of `cluster_orphan_conn_ttl_sec`, so no live node is orphaned.
+
+**Without the bus.** In these cases `record()` writes MySQL itself, per heartbeat, as before, including the shadow file:
+- no bus;
+- a failed script (a lost connection, `maxmemory`);
+- a document over 128 KiB (`MAX_TELEMETRY`);
+- no working flusher.
+
+A bus lost between a heartbeat and its flush loses at most one flush's worth of heartbeats:
+- MySQL keeps what it had; nothing is rolled back.
+- The next heartbeat writes MySQL itself while the bus is out of reach, or goes to a new bus once that bus's flusher has run a pass.
+- Liveness. At the loss, MySQL's `last_seen_at` can be a flush (5 s), the 1 s loop and a heartbeat interval old, and it ages one more interval until the node's next heartbeat writes MySQL: up to 12 s at 3 s, over the 10 s suspect threshold. So when a pass reads nothing from the bus (lost, or restarted empty), `LivenessService` uses the heard times it last read from that bus, for up to 5 s (`FLUSH_EVERY_MS`) after reading them. A live node is then never judged more than 5 s plus one interval (8 s) silent, and by the end of the window its next heartbeat, one interval after the loss, is in MySQL. The Cluster Nodes page has no such memory, and may show MySQL's older time until then.
+
+**The shadow copy.** Nothing in `src/` reads `tmp/cluster/tel_<sid>.json`. The direct path still writes it; a heartbeat on the bus does not. `HeartbeatService::telemetry()` returns the newer of `cl:tel:<sid>` and the file, for any reader to come.
+
+**The agent's contract.** Nothing changes on the wire: no new op, lane, field, header, refusal or setting. The `heartbeat` request and its reply are as they were, and older agents are unaffected. The agent must keep to what MAIN now relies on:
+1. **Cadence.** `heartbeat` every `lb_telemetry_interval_sec` (1–3 s, default 2), never more than 3 s apart: MAIN's liveness bounds when the bus is lost assume at most 3 s. MAIN's MySQL copy (`cluster_nodes.last_seen_at`, `servers`) follows the bus by up to 5 s plus the 1 s loop, and a node is suspect after 10 s of silence.
+2. **`root_ready`** (bool) in every heartbeat. MAIN keeps the last value it got from the node's current enrolment: a heartbeat without the field keeps it, and a re-enrolment starts again from 0. A changed value reaches MySQL (`cluster_nodes.root_ready`, which `CommandBus::acceptsRoot()` reads) at the next flush, within about 1 s; if `hello` wrote the node's row between that heartbeat and the flush, with the next heartbeat instead. A heartbeat with an unchanged value waits for the 5 s flush.
+3. **`telemetry`** (object). It stays on the bus while MAIN's encoding of `{"at":<ms>,"auth":0|1,"telemetry":<object>}` is at most 131072 bytes. That encoding is PHP `json_encode` with `JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION`, so every non-ASCII character counts as its `\uXXXX` escape (6 or 12 bytes), a whole-number float keeps its `.0`, and the wrapper adds 42 bytes. Keep the object under about 120 KiB as encoded that way (its `local` is already capped at 64 KiB). A bigger document costs MAIN a direct MySQL write per heartbeat, as before.
+4. **No faster MySQL.** Nothing the agent does may depend on MAIN's MySQL copy (the server page, `servers.watchdog_data`) changing within about 6 s of a heartbeat.
+
+**Differs from the plan.**
+- **Only with a working flusher.** The plan has the health loop copy heartbeats, and says nothing of the loop being down. Here heartbeats use the bus only while a flusher has finished a clean pass within 5 s.
+- **`cl:hb` besides `cl:tel:<sid>`.** Liveness needs every node's last heartbeat each second: one small hash serves that in one read, and a document is read only when it is due.
+- **`servers` keeps the direct path's cadence** (5 s past `last_check_ago`, per document), not a flat 5 s copy. A flat copy of the latest document every 5 s would write every 6–10 s instead of every 6 s.
+- **Authentication still reads MySQL**, the node row and its epoch, so a heartbeat still uses a DB connection for those two reads; only its writes are gone. Caching those rows on the bus needs revocation and re-enrolment to reach the cache first.
+- **`servers.status`** is set with each `cluster_nodes` flush (every 5 s), not with each heartbeat.
+
+**Compatibility.**
+- On upgrade the bus has no `cl:flusher`, so heartbeats write MySQL until the signals daemon's first pass.
+- LB builds have neither `Domain/Cluster` nor the bus.
+- A rollback leaves `cl:*` keys that nothing reads. `cl:tel:*` expire, and the rest go with the next bus restart.
+
+**Limits.**
+- While the bus is in use, MySQL's `last_seen_at` and `servers` lag it by up to 5 s plus the 1 s loop. Everything that judges liveness also reads the bus, except the orphan purge (above).
+- The stamp uses the bus's `TIME`, the flush cadence MAIN's clock. A bus clock step of over 5 s sends heartbeats to MySQL until the next pass.
+- `cl:tel:*` have a 10 min TTL, longer than the wake-ups (60 s) and admission reservations, so under `volatile-ttl` those are evicted first. Unlike touches, heartbeats do not leave the bus past `TOUCH_MEMORY_SHARE`: the documents take at most 128 KiB per node (usually a few KiB), bounded by the node count, so they are never what fills the bus, and a share check would send every heartbeat to MySQL whenever touches hold their half of it. An evicted document is not written, and the next heartbeat's is.
+- Memory: at most about 128 KiB per node, usually a few KiB.
+
+Tests:
+- `ClusterHeartbeatBusTest`, against a real redis-server on a unix socket:
+  - no query at all on a heartbeat on the bus, then the flush's rows;
+  - 130 s of heartbeats both ways, compared every second: the same `servers` and `servers_stats` rows, `root_ready` at once, `cluster_nodes` at most every 5 s and at most 5 s behind, the freshest equal to what each heartbeat wrote, and the last heartbeat flushed without another after it;
+  - MySQL per heartbeat without the bus, without a flusher, with a stale one (also a stamp ahead of the bus's clock), with one MySQL refuses (`cluster_nodes`, or the `servers` telemetry write, retried at the next pass), and for a document over the cap;
+  - an older bus value that never overwrites a newer `last_seen_at`, and a clock step back;
+  - telemetry judged on the time MAIN heard it, never written over a newer direct write;
+  - no `servers` write for a node that is not authoritative (no TELEMETRY, or mode 0);
+  - a heartbeat without `root_ready` or `telemetry` keeping the last ones; a `root_ready` change that `hello` overtook, flushed with the next heartbeat;
+  - two flushers, one writing, and each giving back only its own lock;
+  - a node forgotten after 10 min with its record and document, only once flushed, and not when a heartbeat came during the pass;
+  - a re-enrolment and a revocation dropping the node's heartbeats, and an in-flight heartbeat of the old enrolment kept out of the new row;
+  - the newer of the bus copy and the shadow file;
+  - liveness on bus-only freshness (ok, suspect, offline, and MySQL winning when newer), the fleet guard, silence from `ready_at`, and no node suspect when the bus is lost just before a flush;
+  - the bus killed, and the bus restarted empty between a heartbeat and its flush;
+  - the Cluster Nodes page.
+- `ClusterApiTest`: a heartbeat end to end on the bus, with only the two authentication reads in MySQL, then the flush.
 
 ### Blocklist delta (Phase 7, first increment)
 

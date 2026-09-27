@@ -3,6 +3,7 @@
 namespace XcVm\Core\Init;
 
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
@@ -88,7 +89,9 @@ class LegacyInitializer {
 	}
 
 	/**
-	 * Regenerate the xc_vm user crontab from the `crontab` table.
+	 * Regenerate the xc_vm user crontab from the `crontab` table, or on a node
+	 * whose replica owns it from the replica's crontab section
+	 * (ReplicaApply::crontabText; null leaves the crontab as it is).
 	 *
 	 * Runs once per boot (guarded by a marker file in TMP_PATH).
 	 *
@@ -100,17 +103,15 @@ class LegacyInitializer {
 			return false;
 		}
 
-		$rJobs = [];
-		$db->query("SELECT * FROM `crontab` WHERE `enabled` = 1;");
-		foreach ($db->get_rows() as $rRow) {
-			$rJobs[] =
-				$rRow["time"] . " " . PHP_BIN . " " . MAIN_HOME . "console.php cron:" . $rRow["filename"] . " # XC_VM";
+		$rCrontab = ReplicaApply::crontabText($db);
+		if ($rCrontab === null) {
+			return false;
 		}
 
 		shell_exec("crontab -r");
 		$rTempName = tempnam("/tmp", "crontab");
 		$rHandle = fopen($rTempName, "w");
-		fwrite($rHandle, implode("\n", $rJobs) . "\n");
+		fwrite($rHandle, $rCrontab . "\n");
 		fclose($rHandle);
 		shell_exec("crontab -u xc_vm " . $rTempName);
 		@unlink($rTempName);
