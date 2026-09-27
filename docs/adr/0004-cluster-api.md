@@ -3565,10 +3565,19 @@ node's replica. It has to be switched on *before* the licence it guards lapses: 
 `settings` section is a granting record, so a panel that can no longer sign one cannot change this
 either. That is also why it is a setting and not a command.
 
-**Not built.** A viewer already inside a long `.ts` request is not dropped: that request is past
-every check above, and what ends it is the node's signal protocol, which MAIN drives with
-`conn.drop`. So a fenced node stops starting sessions and stops serving HLS, while a TS viewer
-already streaming stays until it reconnects — at which point it is a new session and is refused.
+**What the drain actually drains.** A live HLS player refreshes its playlist at
+`/live/<user>/<pass>/<id>.m3u8`, which is `auth.php` — the same request a new viewer makes, and
+indistinguishable from one without looking up whether a connection record already exists for that
+line, address and stream (the admission path, which is a flow bit away). So during the drain an HLS
+session ends at its next playlist refresh, while the segments and keys it already has URLs for keep
+being served. The drain therefore holds for a `.ts` viewer, whose one long request is past every check
+above, and for a player still working through a playlist it holds; it does not extend an HLS session
+that must re-ask for its playlist.
+
+**Not built.** A viewer already inside a long `.ts` request is never dropped, drain or no drain: what
+ends one is the node's signal protocol, which MAIN drives with `conn.drop` and nothing here writes.
+So a fenced node starts nothing and serves no HLS, while a TS viewer already streaming stays until it
+reconnects — at which point it is a new session and is refused.
 Producers are not released either. Both want the same missing piece: something on the node writing
 `SIGNALS_PATH` entries for the connections it holds while fenced, which is the agent's registry or a
 node cron, and neither is wired to this yet. MAIN's own page shows no fence: it can derive the window
