@@ -26,9 +26,9 @@ namespace XcVm\Core\Cluster;
  * The section carries what MAIN decides, never the node's runtime state:
  * cron:cleanup's VOD check takes its carried columns from assigned([2, 5])
  * (`stream.target_container`, `stream.movie_properties`,
- * `stream.direct_source`, `server.server_stream_id`), but the `pid > 0` and
- * `stream_status` it filters on are the node's own (StreamStateWriter's
- * local copy), which no record holds.
+ * `stream.direct_source`, `server.server_stream_id`), and the `pid > 0` and
+ * `stream_status` it filters on from the node's own store (StreamRuntime;
+ * NodeStreams::vodChecks).
  *
  * The agent writes these files once each record opened for the node and
  * verified under the pinned panel key; like the other sections' `.json`,

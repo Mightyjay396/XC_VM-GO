@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Fanout\IngestFeeder;
 
@@ -54,11 +55,11 @@ class DelayCommand implements CommandInterface {
 		set_time_limit(0);
 		cli_set_process_title('XC_VMDelay[' . $rStreamID . ']');
 
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.id = ?', SERVER_ID, $rStreamID);
-		if ($db->num_rows() <= 0) {
+		// The stream and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+		$rStreamInfo = StreamSource::nodeRow($rStreamID, $db);
+		if ($rStreamInfo === null) {
 			return 0;
 		}
-		$rStreamInfo = $db->get_row();
 		if ($rStreamInfo['delay_minutes'] == 0 || $rStreamInfo['parent_id']) {
 			return 0;
 		}

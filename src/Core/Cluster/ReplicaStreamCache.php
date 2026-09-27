@@ -26,7 +26,8 @@ use XcVm\Core\Cache\FileCache;
  *   recordings  its `recordings` rows scheduled on the node (every column)
  *   children    the servers that relay it from the node
  *   etag, ver   the record's
- * <cache dir>/replica_streams/index   {streams: {id: {etag, ver, rec: [recording ids]}},
+ * <cache dir>/replica_streams/index   {streams: {id: {etag, ver, rec: [recording ids],
+ *                                      ssid: its server_stream_id on the node or null}},
  *                                      unreadable: [ids whose record did not read]}
  * ```
  *
@@ -51,9 +52,10 @@ use XcVm\Core\Cache\FileCache;
  * `--from-disk` (the agent's, or cron:cache's minute), trusts the agent's
  * `.json` as it does for every section.
  *
- * What no record carries stays null: the node's own runtime state (pids,
- * status, the current source, probe results, the created channel's build
- * state), which it reports as events and does not keep yet, and MAIN's
+ * What no record carries stays null in an entry: the node's own runtime
+ * state (pids, status, the current source, probe results, the created
+ * channel's build state), which it keeps in its own store (StreamRuntime)
+ * and StreamSource lays over the entry once that is seeded, and MAIN's
  * catalogue metadata.
  */
 final class ReplicaStreamCache {
@@ -268,9 +270,26 @@ final class ReplicaStreamCache {
 	}
 
 	/**
-	 * What the last apply built: stream id => {etag, ver, rec}.
+	 * The streams the node holds: those the last apply built, and those the
+	 * agent stored since (their files), ascending.
 	 *
-	 * @return array<int, array{etag: string, ver: int, rec: list<int>}>
+	 * @return list<int>
+	 */
+	public static function held(): array {
+		$rIDs = array_keys(self::index());
+		$rStored = ReplicaStreams::ids();
+		if (is_array($rStored)) {
+			$rIDs = array_merge($rIDs, $rStored);
+		}
+		$rIDs = array_values(array_unique(array_map('intval', $rIDs)));
+		sort($rIDs);
+		return $rIDs;
+	}
+
+	/**
+	 * What the last apply built: stream id => {etag, ver, rec, ssid}.
+	 *
+	 * @return array<int, array{etag: string, ver: int, rec: list<int>, ssid?: int|null}>
 	 */
 	public static function index(): array {
 		$rIndex = self::store()->get(self::INDEX);
@@ -289,7 +308,7 @@ final class ReplicaStreamCache {
 	}
 
 	/**
-	 * @param array<int, array{etag: string, ver: int, rec: list<int>}> $rStreams
+	 * @param array<int, array{etag: string, ver: int, rec: list<int>, ssid?: int|null}> $rStreams
 	 * @param list<int> $rUnreadable
 	 */
 	public static function writeIndex(array $rStreams, array $rUnreadable = []): bool {

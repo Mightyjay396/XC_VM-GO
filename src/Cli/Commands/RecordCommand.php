@@ -141,7 +141,7 @@ class RecordCommand implements CommandInterface {
 			sleep(1);
 		}
 
-		if (!$db->connected) {
+		if (!$db->connected && !StreamSource::local()) {
 			$db->db_connect();
 		}
 

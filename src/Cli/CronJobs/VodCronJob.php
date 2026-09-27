@@ -4,11 +4,13 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Vod\MediaAnalyzedEvent;
 use XcVm\Domain\Stream\ContentSink;
+use XcVm\Domain\Stream\NodeStreams;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
 use XcVm\Domain\Stream\StreamStateWriter;
@@ -51,9 +53,10 @@ class VodCronJob implements CommandInterface {
 	private function loadCron(): void {
 		global $db;
 
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t3 ON t3.stream_id = t1.id LEFT JOIN `profiles` t2 ON t2.profile_id = t1.transcode_profile_id WHERE t1.type = 3 AND t3.server_id = ? AND t3.parent_id IS NULL;', SERVER_ID);
-		if ($db->num_rows() > 0) {
-			$rStreams = $db->get_rows();
+		// This node's streams, from its replica and its own store where they
+		// answer (NodeStreams), else from MAIN's database as before.
+		$rStreams = NodeStreams::createdChannels($db);
+		if (count($rStreams) > 0) {
 			foreach ($rStreams as $rStream) {
 				echo "\n\n" . '[*] Checking Stream ' . $rStream['stream_display_name'] . "\n";
 				$rCreateFile = CREATED_PATH . $rStream['id'] . '_.create';
@@ -64,7 +67,10 @@ class VodCronJob implements CommandInterface {
 					$rSourcesLeft = array_diff(json_decode($rStream['stream_source'], true), json_decode($rStream['cchannel_rsources'], true));
 					if (count($rSourcesLeft) > 0) {
 						echo "\t" . 'Needs Updating!' . "\n";
-						StreamProcess::queueChannel($rStream['id']);
+						// The encoding queue is MAIN's table: a node in mode 2 cannot add to it.
+						if (!NodeRole::refusesConnects()) {
+							StreamProcess::queueChannel($rStream['id']);
+						}
 					} else {
 						if (file_exists(CREATED_PATH . $rStream['id'] . '_.info')) {
 							$rCCInfo = file_get_contents(CREATED_PATH . $rStream['id'] . '_.info');
@@ -77,9 +83,9 @@ class VodCronJob implements CommandInterface {
 			}
 		}
 
-		$db->query('SELECT `id` FROM `recordings` WHERE `status` NOT IN (1,2) AND `source_id` = ? AND ((`start` <= UNIX_TIMESTAMP() AND `end` > UNIX_TIMESTAMP()) OR (`archive` = 1));', SERVER_ID);
-		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() as $rRow) {
+		$rRecordings = NodeStreams::recordingsDue($db);
+		if (count($rRecordings) > 0) {
+			foreach ($rRecordings as $rRow) {
 				echo 'Start recording ID: ' . intval($rRow['id']) . "\n";
 				shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php record ' . intval($rRow['id']) . ' > /dev/null 2>/dev/null &');
 			}
@@ -87,8 +93,7 @@ class VodCronJob implements CommandInterface {
 
 		exec("ps ax | grep 'ffmpeg' | awk '{print \$1}'", $rPIDs);
 
-		$db->query('SELECT COUNT(*) AS `count` FROM `streams_servers` WHERE `to_analyze` = 1 AND `server_id` = ?', SERVER_ID);
-		$rCount = $db->get_row()['count'];
+		$rCount = NodeStreams::analysisCount($db);
 
 		if ($rCount > 0) {
 			if ($rCount <= 1000) {
@@ -101,12 +106,11 @@ class VodCronJob implements CommandInterface {
 			}
 
 			foreach ($rSteps as $rStep) {
-				$db->query('SELECT t1.*,t2.* FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type AND t3.live = 0 WHERE t1.to_analyze = 1 AND t1.server_id = ? LIMIT ' . $rStep . ', 1000', SERVER_ID);
-				if ($db->num_rows() <= 0) {
+				$rRows = NodeStreams::analysis(intval($rStep), $db);
+				if (count($rRows) <= 0) {
 					continue;
 				}
 
-				$rRows = $db->get_rows();
 				foreach ($rRows as $rRow) {
 					echo '[*] Checking Movie ' . $rRow['stream_display_name'] . ' ' . "\t\t" . '---> ';
 					if (in_array($rRow['pid'], $rPIDs)) {

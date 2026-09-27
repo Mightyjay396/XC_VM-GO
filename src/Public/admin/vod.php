@@ -7,6 +7,7 @@ use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\AdminStreamToken;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -42,19 +43,22 @@ if (empty(RequestManager::get('stream'))) {
 	generate404();
 }
 
-$db = DatabaseFactory::open();
+// This node's stream row: MAIN's database (opened now, as before), or with
+// its replica and its own store none at all (StreamSource::local).
+$db = StreamSource::local() ? DatabaseFactory::get() : DatabaseFactory::open();
 $rStream = pathinfo(RequestManager::get('stream'));
 $rStreamID = intval($rStream['filename']);
 $rExtension = $rStream['extension'];
-$db->query("SELECT t1.* FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.pid IS NOT NULL AND t2.server_id = ? INNER JOIN `streams_types` t3 ON t3.type_id = t1.type AND t3.type_key IN ('movie', 'series') WHERE t1.`id` = ?", SERVER_ID, $rStreamID);
+$rInfo = StreamSource::movieRow($rStreamID, $db);
 
 if (SettingsManager::get('use_buffer') == 0) {
 	header('X-Accel-Buffering: no');
 }
 
-if (0 < $db->num_rows()) {
-	$rInfo = $db->get_row();
-	$db->close_mysql();
+if ($rInfo !== null) {
+	if (is_object($db)) {
+		$db->close_mysql();
+	}
 	$rRequest = VOD_PATH . $rStreamID . '.' . $rExtension;
 
 	if (file_exists($rRequest)) {
