@@ -128,7 +128,8 @@ EXCLUDE_ARGS := $(addprefix --exclude=,$(EXCLUDES))
 	lb_archive_move main_archive_move main_install_archive clean \
 	verify_no_lfs_pointers \
 	lb_delete_files_list generate_deleted_files \
-	phpstan phpstan-baseline cs cs-fix check-procedural-use verify-lb-archive check-lb-settings-keys gates \
+	phpstan phpstan-baseline cs cs-fix check-procedural-use verify-lb-archive check-lb-settings-keys \
+	check-core-cluster-refs gates \
 	check-vendor-prod-only dev-tools dev-clean rector rector-fix
 
 # ─── Dev tooling ────────────────────────────────────────────────
@@ -246,7 +247,12 @@ check-vendor-prod-only:
 check-lb-settings-keys:
 	@bash tools/ci/lb-settings-keys.sh
 
-gates: check-procedural-use verify-lb-archive check-vendor-prod-only check-lb-settings-keys
+# Core ships to load balancers, MAIN's cluster domain does not: every reference
+# from src/Core/ to XcVm\Domain\Cluster must sit behind a class_exists() guard.
+check-core-cluster-refs:
+	@php tools/ci/check-core-cluster-refs.php
+
+gates: check-procedural-use verify-lb-archive check-vendor-prod-only check-lb-settings-keys check-core-cluster-refs
 
 # ─── Semgrep (same rulesets as .github/workflows/security-scan.yml) ───
 # Scans PHP files changed vs main (override: make semgrep FILES="src/...").

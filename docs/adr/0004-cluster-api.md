@@ -3199,6 +3199,13 @@ Five of the cluster settings were stored, clamped, shown in the settings form wi
 
 **Still inert:** `lb_partition_tolerance_h` (how long a node keeps serving after its token expires while MAIN is unreachable) and `lb_fence_drain_min` (how long existing sessions drain after a node is fenced). Both are the node's own behaviour under a partition and belong to Phase 9's fencing, which is not built; the settings are kept because the plan names them.
 
+### Two gates the protocol needed (Phase 0, fourth increment)
+
+- **The crypto vectors could drift apart.** `tests/Support/cluster_vectors.json` and `cluster_canonical_vectors.json` are the contract between the panel, the extension and the Go agent, and the agent keeps its own copies under `internal/clustercrypto/testdata/`. Each side tested itself against the copy it holds, so a regenerated file that was not copied over left the two speaking different protocols with both suites green. Both tests now assert the files' SHA-256, and each records the other's digests: whichever side changes first fails until both are updated, and the failure message says to copy the file over.
+- **Core must not reach MAIN's cluster domain unguarded.** `Core/` ships to load balancers and `Domain/Cluster` does not, so a Core class calling it fatals on a node the moment that line runs. The pattern was already there (`NodeActions`, `SignalDispatcher`, `NodeRpc` all go through `class_exists(ClusterRoute::class)`), but nothing held it: `ClusterSettings::normalize()` called `DbAllowlist::parseExtra()` outright, reachable only from MAIN's settings form — a fatal waiting for the day someone validated a setting on a node. It is guarded (and an unvalidatable value is refused rather than stored), and `make gates` runs `check-core-cluster-refs`, which fails on any reference from `src/Core/` that is not inside a `class_exists()` of the same class. 13 references, all guarded.
+
+The gate is deliberately limited to `src/Core/`. Across the whole tree there are about 90 references from shipped files into stripped ones (admin controllers reach `Domain\User`, `Domain\Device`…), and nearly all are in files a node never executes; a file-level gate over all of them would be noise with an allowlist longer than the rule. Core is the one tree that by definition runs on both sides, and the runtime tests (`ModeTwoPathsTest`) cover the rest by actually running a node's code paths.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

@@ -122,7 +122,10 @@ final class ClusterSettings {
 		}
 
 		if (array_key_exists('cluster_db_allowlist_extra', $rNew)) {
-			[$rCidrs, $rBad] = DbAllowlist::parseExtra((string) $rNew['cluster_db_allowlist_extra']);
+			// The parser lives with the firewall it feeds, which is MAIN's alone
+			// (the LB build strips Domain\Cluster). A node never saves settings,
+			// so there the value is refused rather than stored unchecked.
+			[$rCidrs, $rBad] = class_exists(DbAllowlist::class) ? DbAllowlist::parseExtra((string) $rNew['cluster_db_allowlist_extra']) : [[], true];
 			$rJoined = implode("\n", $rCidrs);
 			if ($rBad || strlen($rJoined) > 1024) {
 				$rErrors[] = ['cluster_db_allowlist_extra', 'cluster_error_db_allowlist'];
