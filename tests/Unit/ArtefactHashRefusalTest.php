@@ -62,7 +62,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 	protected function tearDown(): void {
 		RootPin::useDirs(null, null);
 		ArtefactStage::useDirs(null, null);
-		RootSignalsCronJob::useShell(null);
+		RootSignalsCronJob::useRunner(null);
 		EventSpool::useDir(null);
 		NodeFlows::usePath(null);
 		FileLogger::setLogFile(null);
@@ -447,15 +447,61 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$this->assertSame([], glob($this->rBase . 'bin/xc_agent/.*.new') ?: [], 'nothing left aside');
 	}
 
+	/**
+	 * The binary's trial run (`timeout 10 <it> version`, through sudo as the
+	 * directory's owner when root) has no shell: a directory whose name holds
+	 * shell syntax (`;`, `$(…)`, backticks, quotes, spaces, a newline, `|`,
+	 * `&`) runs the binary alone, its path one argument, with `version`.
+	 */
+	public function testTheTrialRunPassesTheBinarysPathAsOneArgument(): void {
+		$rMark = $this->rBase . 'ran_';
+		$rDir = $this->rBase . 'bin/a;touch ' . $rMark . 'semicolon;b $(touch ' . $rMark . 'subst) `touch ' . $rMark . 'backtick` \'q\' "d" |touch ' . $rMark . "pipe& \n newline/";
+		mkdir($rDir, 0755, true);
+		$rRecord = $this->rBase . 'logs/argv';
+		// Records who ran it and with what, NUL-separated (the path holds a newline).
+		$rBytes = "#!/bin/sh\nprintf '%s\\0' \"\$(id -u)\" \"\$#\" \"\$0\" \"\$@\" > '" . $rRecord . "'\necho 1.5.0\n";
+		AgentUser::own($this->rBase . 'bin', $this->rBase . 'logs');
+		$rStaged = $this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes);
+		$this->assertNull(ArtefactStage::installAgent($rStaged, $rDir . 'xc_agent'));
+		$this->assertSame($rBytes, file_get_contents($rDir . 'xc_agent'));
+		$rRan = explode("\0", rtrim((string) file_get_contents($rRecord), "\0"));
+		$this->assertSame([(string) (AgentUser::root() ? AgentUser::UID : posix_geteuid()), '1', $rDir . '.xc_agent.new', 'version'], $rRan);
+		$this->assertSame([], glob($rMark . '*') ?: [], 'nothing else ran');
+	}
+
+	/**
+	 * The trial run takes the binary only when it exits 0 and the first line
+	 * of its stdout is not blank; stderr is not read. A binary that writes a
+	 * lot to either still installs: stderr goes to /dev/null and stdout is
+	 * read to its end, so it never blocks on a full pipe.
+	 */
+	public function testTheTrialRunNeedsExitZeroAndAFirstLine(): void {
+		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
+		foreach ([
+			'exits 1' => "#!/bin/sh\necho 1.5.0\nexit 1\n",
+			'a blank first line' => "#!/bin/sh\necho\necho 1.5.0\n",
+			'its line on stderr' => "#!/bin/sh\necho 1.5.0 >&2\n",
+		] as $rWhy => $rBytes) {
+			$rStaged = $this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes);
+			$this->assertStringContainsString('does not run on this node', (string) ArtefactStage::installAgent($rStaged, $rAgent), $rWhy);
+			$this->assertSame('the running agent', file_get_contents($rAgent), $rWhy);
+		}
+		// 1 MiB to stderr first, then 1 MiB to stdout after its line: head's
+		// status (a SIGPIPE, a timeout) would be the script's.
+		$rBytes = "#!/bin/sh\necho 1.5.0\nhead -c 1048576 /dev/zero >&2\nhead -c 1048576 /dev/zero\n";
+		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes), $rAgent));
+		$this->assertSame($rBytes, file_get_contents($rAgent));
+	}
+
 	/** agent_binary installs only an xc_agent of this node's arch, then has run.sh restart the agent after its ack. */
 	public function testAgentBinaryInstallsOnlyThisNodesArch(): void {
 		$rArch = $this->arch();
 		$rOther = $rArch === 'amd64' ? 'arm64' : 'amd64';
 		$rBytes = $this->runnableAgent();
 		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
-		$rLines = [];
-		RootSignalsCronJob::useShell(static function (string $rLine) use (&$rLines): array {
-			$rLines[] = $rLine;
+		$rRuns = [];
+		RootSignalsCronJob::useRunner(static function (array $rArgv) use (&$rRuns): array {
+			$rRuns[] = $rArgv;
 			return [0, ''];
 		});
 		foreach ([
@@ -473,7 +519,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 			}
 			$this->assertSame('the running agent', file_get_contents($rAgent), $rWhy);
 		}
-		$this->assertSame([], $rLines, 'nothing restarted');
+		$this->assertSame([], $rRuns, 'nothing restarted');
 		$this->assertCount(3, $this->audited(), 'each refusal audited');
 
 		// This node's arch: installed from root's copy, the agent restarted after its ack.
@@ -481,7 +527,9 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$rOut = ArtefactStage::withStaged($rStaged, fn() => $this->runAction(['action' => 'agent_binary', 'arch' => $rArch, 'version' => '1.5.0']));
 		$this->assertStringContainsString('xc_agent installed', $rOut);
 		$this->assertSame($rBytes, file_get_contents($rAgent));
-		$this->assertSame(['(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &'], $rLines);
+		// In the background, after the ack: the only shell left is this
+		// constant script, which carries nothing of the command's.
+		$this->assertSame([['/bin/sh', '-c', '(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &']], $rRuns);
 	}
 
 	/** Root's stage is trusted only while it is root's: one the agent's user owns (and could swap a checked copy in) is refused. */
@@ -561,34 +609,36 @@ final class ArtefactHashRefusalTest extends TestCase {
 	}
 
 	/**
-	 * install_module with a staged archive: only this module's, run now (not
-	 * in the background) from root's copy with the checked grant, and what
-	 * module:install refused or failed is the command's failure. A signals
-	 * row never names the archive.
+	 * install_module with a staged archive: only this module's, run from
+	 * root's copy with the checked grant before the stage is emptied, and
+	 * what module:install refused or failed is the command's failure.
+	 * Without one (a signals row), the legacy way, as before: run to its end
+	 * (exec() read the old `… 2>&1 &` line's output until module:install
+	 * closed it), its exit status and output not the command's. A payload
+	 * never names the archive, and module:install gets it as one argument.
 	 */
 	public function testInstallModuleTakesOnlyItsOwnStagedArchive(): void {
 		$rAction = ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0'];
-		$rPayload = static function (string $rLine): array {
-			preg_match('/module:install "([^"]+)"/', $rLine, $rM);
-			return json_decode((string) base64_decode($rM[1] ?? ''), true);
+		$rPayload = function (array $rArgv): array {
+			$this->assertSame(['sudo', PHP_BIN, MAIN_HOME . 'console.php', 'module:install'], array_slice($rArgv, 0, 4), 'the node\'s own PHP and console.php');
+			$this->assertCount(5, $rArgv, 'the payload is one argument');
+			return json_decode((string) base64_decode((string) $rArgv[4], true), true);
 		};
-		$rLine = RootSignalsCronJob::moduleInstallLine($rAction + ['archive' => '/etc/shadow', 'artefact' => ['id' => 'module/radio/1.0']], null);
-		$this->assertStringEndsWith(' 2>&1 &', $rLine, 'in the background, the legacy way');
-		$this->assertSame($rAction, $rPayload($rLine), 'a signals row names no archive');
+		$rArgv = RootSignalsCronJob::moduleInstallArgv($rAction + ['archive' => '/etc/shadow', 'artefact' => ['id' => 'module/radio/1.0']], null);
+		$this->assertSame($rAction, $rPayload($rArgv), 'a signals row names no archive');
 		$rStaged = $this->stagedCopy('module/radio/1.0', 'radio_1.0.zip', 'PK-archive');
-		$rLine = RootSignalsCronJob::moduleInstallLine($rAction + ['archive' => '/etc/shadow'], $rStaged);
-		$this->assertStringEndsWith(' 2>&1', $rLine, 'now, before the stage is emptied');
-		$this->assertSame(['archive' => $rStaged['path'], 'artefact' => $rStaged['grant']] + $rAction, $rPayload($rLine));
+		$rArgv = RootSignalsCronJob::moduleInstallArgv($rAction + ['archive' => '/etc/shadow'], $rStaged);
+		$this->assertSame(['archive' => $rStaged['path'], 'artefact' => $rStaged['grant']] + $rAction, $rPayload($rArgv));
 
-		$rLines = [];
+		$rRuns = [];
 		$rAnswer = [0, "module:install: 'radio' installed."];
-		RootSignalsCronJob::useShell(static function (string $rLine) use (&$rLines, &$rAnswer): array {
-			$rLines[] = $rLine;
+		RootSignalsCronJob::useRunner(static function (array $rRun) use (&$rRuns, &$rAnswer): array {
+			$rRuns[] = $rRun;
 			return $rAnswer;
 		});
 		$rOut = ArtefactStage::withStaged($rStaged, fn() => $this->runAction($rAction + ['archive' => '/etc/shadow']));
 		$this->assertStringContainsString("'radio' installed", $rOut);
-		$this->assertSame([$rLine], $rLines);
+		$this->assertSame([$rArgv], $rRuns);
 		// module:install refused it: the command fails with its refusal.
 		$rAnswer = [1, 'module:install: artefact refused: module/radio/1.0 (radio_1.0.zip): the archive is not the one MAIN granted'];
 		try {
@@ -598,7 +648,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 			$this->assertSame($rAnswer[1], $rE->getMessage());
 		}
 		// Another module's archive: refused and audited before module:install runs.
-		$rLines = [];
+		$rRuns = [];
 		$rOther = $this->stagedCopy('module/other/2.0', 'other_2.0.zip', 'PK-other');
 		try {
 			ArtefactStage::withStaged($rOther, fn() => $this->runAction($rAction));
@@ -606,14 +656,67 @@ final class ArtefactHashRefusalTest extends TestCase {
 		} catch (\RuntimeException $rE) {
 			$this->assertStringStartsWith('artefact refused: module/other/2.0 (other_2.0.zip): not the archive of module/radio/1.0', $rE->getMessage());
 		}
-		$this->assertSame([], $rLines);
+		$this->assertSame([], $rRuns);
 		$rAudited = $this->audited();
 		$this->assertSame('log.syslog:ARTEFACT', end($rAudited)[0] ?? null);
-		// No staged archive (a signals row): the legacy way, whatever it names.
-		$this->runAction($rAction + ['archive' => $rStaged['path']]);
-		$this->assertCount(1, $rLines);
-		$this->assertStringEndsWith(' 2>&1 &', $rLines[0]);
-		$this->assertSame($rAction, $rPayload($rLines[0]));
+		// No staged archive (a signals row): the legacy way, whatever it
+		// names, and what module:install answers is not the action's.
+		$rAnswer = [1, 'module:install: cannot reach MAIN'];
+		$rOut = $this->runAction($rAction + ['archive' => $rStaged['path']]);
+		$this->assertCount(1, $rRuns);
+		$this->assertSame($rAction, $rPayload($rRuns[0]));
+		$this->assertStringNotContainsString('cannot reach MAIN', $rOut);
+	}
+
+	/**
+	 * Root's commands run with no shell: each argument reaches the program
+	 * as it is, whatever shell syntax it holds (`;`, `$(…)`, backticks,
+	 * quotes, spaces, a newline, `|`, `&`, an empty one), stderr joins
+	 * stdout as the old `2>&1` did, and the exit status is the program's.
+	 * An install_module payload full of shell syntax is one argument of
+	 * module:install.
+	 */
+	public function testRootsCommandsRunWithNoShell(): void {
+		$rMark = $this->rBase . 'ran_';
+		$rArgs = [
+			'a; touch ' . $rMark . 'semicolon',
+			'$(touch ' . $rMark . 'subst)',
+			'`touch ' . $rMark . 'backtick`',
+			'it\'s "quoted"',
+			'with  spaces ',
+			"new\nline; touch " . $rMark . 'newline',
+			'|touch ' . $rMark . 'pipe &',
+			'',
+		];
+		$rProgram = 'fwrite(STDERR, "to stderr\n"); echo json_encode(array_slice($argv, 1)), "\n"; exit(3);';
+		$rRun = new \ReflectionMethod(RootSignalsCronJob::class, 'run');
+		[$rCode, $rOutput] = $rRun->invoke(null, array_merge([PHP_BINARY, '-n', '-r', $rProgram, '--'], $rArgs));
+		$this->assertSame(3, $rCode);
+		$this->assertEqualsCanonicalizing(['to stderr', json_encode($rArgs)], explode("\n", $rOutput), 'stderr joins stdout');
+		$this->assertSame([], glob($rMark . '*') ?: [], 'nothing else ran');
+
+		$rAction = ['action' => 'install_module', 'source' => $rArgs[3], 'name' => $rArgs[0], 'version' => $rArgs[5], 'url' => $rArgs[1] . $rArgs[2] . $rArgs[6]];
+		$rArgv = RootSignalsCronJob::moduleInstallArgv($rAction, null);
+		$this->assertCount(5, $rArgv);
+		$this->assertSame($rAction, json_decode((string) base64_decode($rArgv[4], true), true));
+	}
+
+	/**
+	 * run() reads stdout and stderr as they come, so a command that fills
+	 * one pipe while the other is still open never blocks (`timeout 10`
+	 * turns a regression into a failure, not a hung suite), and returns the
+	 * output as exec() did: each line without its trailing whitespace, no
+	 * trailing empty line.
+	 */
+	public function testRootsCommandsNeverBlockOnAFullPipe(): void {
+		$rRun = new \ReflectionMethod(RootSignalsCronJob::class, 'run');
+		[$rCode, $rOutput] = $rRun->invoke(null, ['timeout', '10', PHP_BINARY, '-n', '-r', 'fwrite(STDERR, str_repeat("e", 1 << 20)); echo str_repeat("o", 1 << 20);']);
+		$this->assertSame(0, $rCode, 'neither pipe fills while the other is read');
+		$this->assertSame(2 << 20, strlen($rOutput));
+		$this->assertSame(1 << 20, substr_count($rOutput, 'e'));
+
+		[, $rOutput] = $rRun->invoke(null, [PHP_BINARY, '-n', '-r', 'echo "a \\t\\r\\nb  \\n\\n";']);
+		$this->assertSame("a\nb\n", $rOutput, 'as exec() returned it');
 	}
 
 	/** module:install takes an archive only from root's stage, only with the grant's bytes; anything else is refused and audited, and nothing deploys. */

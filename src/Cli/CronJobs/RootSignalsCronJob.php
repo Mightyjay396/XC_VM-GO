@@ -43,12 +43,20 @@ class RootSignalsCronJob implements CommandInterface {
 	private $AutoUpdateServerIP = true;
 
 	/**
-	 * Tests: runs the shell lines of the artefact actions (module:install,
-	 * the agent's restart) instead of exec(); null restores it.
-	 *
-	 * @var (callable(string): array{0: int, 1: string})|null
+	 * The agent's restart after `agent_binary`: in the background, 10 s
+	 * later, so the agent acks the command first; run.sh then starts the new
+	 * binary. The only shell root's artefact actions start, and this
+	 * constant is its whole script: nothing of a command's is in it.
 	 */
-	private static $rShell = null;
+	public const AGENT_RESTART = '(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &';
+
+	/**
+	 * Tests: runs the commands of the artefact actions (module:install, the
+	 * agent's restart), as argv lists, instead of run(); null restores it.
+	 *
+	 * @var (callable(list<string>): array{0: int, 1: string})|null
+	 */
+	private static $rRunner = null;
 
 	public function getName(): string {
 		return 'cron:root_signals';
@@ -234,40 +242,87 @@ class RootSignalsCronJob implements CommandInterface {
 		return $rNew;
 	}
 
-	/** Tests: run the artefact actions' shell lines through $rShell (line => [exit status, output]); null restores exec(). */
-	public static function useShell(?callable $rShell): void {
-		self::$rShell = $rShell;
+	/** Tests: run the artefact actions' argv lists through $rRunner (argv => [exit status, output]); null restores run(). */
+	public static function useRunner(?callable $rRunner): void {
+		self::$rRunner = $rRunner;
 	}
 
 	/**
-	 * module:install's command line for an install_module payload. With the
-	 * archive cluster:root staged and checked (ArtefactStage::current()), it
-	 * runs now, not in the background, from that copy, and gets the checked
-	 * grant (with its command's id) to check it again against; without one,
-	 * in the background as before, the node pulling the archive the legacy
-	 * way. A payload never names the archive itself (a `signals` row's
-	 * `archive` and `artefact` are dropped).
+	 * module:install's argv for an install_module payload, its payload one
+	 * argument (base64 of the JSON). With the archive cluster:root staged
+	 * and checked (ArtefactStage::current()), from that copy, with the
+	 * checked grant (with its command's id) to check it again against; its
+	 * exit status and output are the action's. Without one, the node pulls
+	 * the archive the legacy way, and neither is. Either runs to its end
+	 * before the action returns, as before (exec() read the old
+	 * `… 2>&1 &` line's output until module:install closed it). A payload
+	 * never names the archive itself (a `signals` row's `archive` and
+	 * `artefact` are dropped).
 	 *
 	 * @param array<string, mixed> $rData {action: install_module, source, name, version, …}
 	 * @param array{path: string, grant: array<string, mixed>}|null $rStaged
+	 * @return list<string>
 	 */
-	public static function moduleInstallLine(array $rData, ?array $rStaged): string {
+	public static function moduleInstallArgv(array $rData, ?array $rStaged): array {
 		unset($rData['archive'], $rData['artefact']);
-		if ($rStaged === null) {
-			return 'sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode((string) json_encode($rData)) . '" 2>&1 &';
+		if ($rStaged !== null) {
+			$rData = ['archive' => $rStaged['path'], 'artefact' => $rStaged['grant']] + $rData;
 		}
-		return 'sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode((string) json_encode(['archive' => $rStaged['path'], 'artefact' => $rStaged['grant']] + $rData)) . '" 2>&1';
+		return ['sudo', PHP_BIN, MAIN_HOME . 'console.php', 'module:install', base64_encode((string) json_encode($rData))];
 	}
 
-	/** @return array{0: int, 1: string} [exit status, output] */
-	private static function shell(string $rLine): array {
-		if (self::$rShell !== null) {
-			return (self::$rShell)($rLine);
+	/**
+	 * Run a command from its argv list, with no shell in between: stdin
+	 * /dev/null, stdout and stderr read as they come into one output (the
+	 * old lines' `2>&1`) until both are closed, as exec() read its pipe, and
+	 * returned as exec() returned it (lines without their trailing
+	 * whitespace).
+	 *
+	 * @param list<string> $rArgv
+	 * @return array{0: int, 1: string} [exit status, output]
+	 */
+	private static function run(array $rArgv): array {
+		if (self::$rRunner !== null) {
+			return (self::$rRunner)($rArgv);
 		}
-		$rOut = [];
-		$rCode = 0;
-		exec($rLine, $rOut, $rCode);
-		return [$rCode, implode("\n", $rOut)];
+		// An argv list, no shell: sudo, the node's own PHP_BIN and console.php, module:install, then the payload as one base64 argument; or /bin/sh -c AGENT_RESTART, a constant script.
+		// nosemgrep: php.lang.security.exec-use.exec-use
+		$rProc = proc_open($rArgv, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $rPipes);
+		if (!is_resource($rProc)) {
+			return [127, 'cannot run ' . $rArgv[0]];
+		}
+		$rOutput = '';
+		$rOpen = [1 => $rPipes[1], 2 => $rPipes[2]];
+		while ($rOpen !== []) {
+			$rReady = $rOpen;
+			$rWrite = null;
+			$rExcept = null;
+			if (@stream_select($rReady, $rWrite, $rExcept, null) === false) {
+				// The wait failed (a signal): the rest, one pipe after the other.
+				foreach ($rOpen as $rPipe) {
+					$rOutput .= (string) stream_get_contents($rPipe);
+				}
+				break;
+			}
+			foreach ($rReady as $rFd => $rPipe) {
+				$rChunk = fread($rPipe, 8192);
+				if ($rChunk === false || $rChunk === '') {
+					fclose($rPipe);
+					unset($rOpen[$rFd]);
+					continue;
+				}
+				$rOutput .= $rChunk;
+			}
+		}
+		foreach ($rOpen as $rPipe) {
+			fclose($rPipe);
+		}
+		$rCode = proc_close($rProc);
+		$rLines = explode("\n", $rOutput);
+		if (end($rLines) === '') {
+			array_pop($rLines);
+		}
+		return [$rCode, implode("\n", array_map(static fn(string $rLine): string => rtrim($rLine, " \t\n\r\v\f"), $rLines))];
 	}
 
 	/**
@@ -924,14 +979,14 @@ class RootSignalsCronJob implements CommandInterface {
 					if ($rStaged['grant']['id'] !== $rWant) {
 						throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not the archive of ' . $rWant));
 					}
-					[$rCode, $rOutput] = self::shell(self::moduleInstallLine($rData, $rStaged));
+					[$rCode, $rOutput] = self::run(self::moduleInstallArgv($rData, $rStaged));
 					if ($rCode !== 0) {
 						throw new \RuntimeException(trim($rOutput) !== '' ? trim($rOutput) : 'module:install exited ' . $rCode);
 					}
 					echo $rOutput . "\n";
 					break;
 				}
-				self::shell(self::moduleInstallLine($rData, null));
+				self::run(self::moduleInstallArgv($rData, null));
 				break;
 			case 'agent_binary':
 				// The xc_agent MAIN pinned (plan section 5: `node.root
@@ -962,7 +1017,7 @@ class RootSignalsCronJob implements CommandInterface {
 				}
 				// run.sh restarts it with the new binary; after a pause, so the
 				// agent acks this command first (its high-water, then the ack).
-				self::shell('(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &');
+				self::run(['/bin/sh', '-c', self::AGENT_RESTART]);
 				echo "xc_agent installed; it restarts in 10 s\n";
 				break;
 			case 'delete_module':
