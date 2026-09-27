@@ -10,6 +10,7 @@ use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Settings\CrontabChangedEvent;
 use XcVm\Core\Events\Settings\SettingsChangedEvent;
 use XcVm\Core\Localization\Translator;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -73,13 +74,7 @@ class SettingsService {
 		if ($rKeys === []) {
 			return [];
 		}
-		$rMain = [];
-		foreach (ServerRepository::getAll() as $rServer) {
-			if (!empty($rServer['is_main'])) {
-				$rMain = $rServer;
-				break;
-			}
-		}
+		$rMain = self::mainServer();
 		$rCurrent = SettingsManager::getAll();
 		$rEnv = [
 			'extension_ok' => ClusterCryptoFactory::available(),
@@ -122,20 +117,29 @@ class SettingsService {
 			return null;
 		}
 		$rCurrent = SettingsManager::getAll();
-		$rMain = [];
+		return ClusterNginxConfig::stageApiPort(intval($rCurrent['cluster_api_port'] ?? 0), intval($rArray['cluster_api_port']), $rCurrent, self::mainServer());
+	}
+
+	/**
+	 * The main server's `servers` row, as the servers cache holds it (empty
+	 * when there is none).
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function mainServer(): array {
 		foreach (ServerRepository::getAll() as $rServer) {
 			if (!empty($rServer['is_main'])) {
-				$rMain = $rServer;
-				break;
+				return $rServer;
 			}
 		}
-		return ClusterNginxConfig::stageApiPort(intval($rCurrent['cluster_api_port'] ?? 0), intval($rArray['cluster_api_port']), $rCurrent, $rMain);
+		return [];
 	}
 
 	/**
 	 * Does a save change the transport policy the nodes follow
 	 * (ClusterPolicy::current): the transport, or MAIN's DNS name in its URLs?
-	 * A new `cluster_api_port` is announced by ClusterEndpoint instead.
+	 * Such a save is stored through ClusterEndpoint::storeSettings(). A new
+	 * `cluster_api_port` is announced by ClusterEndpoint once stored.
 	 *
 	 * @param array<string, mixed> $rArray Settings about to be written.
 	 */
@@ -246,10 +250,16 @@ class SettingsService {
 
 		// A new transport policy is announced with the save: every node sees
 		// the version go up in its next heartbeat and fetches the policy, and
-		// never adopts one older than it holds.
+		// never adopts one older than it holds. On MAIN the URLs the policy
+		// no longer lists are kept a while, in the same UPDATE (Domain\Cluster
+		// is not in the LB build).
 		$rPrevious = SettingsManager::getAll();
-		$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . (self::changesClusterPolicy($rArray) ? ', `cluster_policy_ver` = `cluster_policy_ver` + 1' : '') . ';';
-		$rStored = $db->query($rQuery, ...$rPrepare['data']);
+		if (self::changesClusterPolicy($rArray) && class_exists(ClusterEndpoint::class)) {
+			$rStored = ClusterEndpoint::storeSettings($rPrepare['update'], $rPrepare['data'], $rArray, self::mainServer());
+		} else {
+			$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . (self::changesClusterPolicy($rArray) ? ', `cluster_policy_ver` = `cluster_policy_ver` + 1' : '') . ';';
+			$rStored = $db->query($rQuery, ...$rPrepare['data']);
+		}
 		if ($rApiPort !== null) {
 			// Stored: the nodes move to the new port (the old one is served for
 			// 7 days). Either way nginx follows what is stored.
@@ -279,8 +289,9 @@ class SettingsService {
 	public static function editBackup(array $rData) {
 		$db = self::db();
 		// This form stores any settings column it is posted: never MAIN's own
-		// cluster state (edit()).
-		$rArray = array_diff_key(QueryHelper::verifyPostTable('settings', $rData, true), array_flip(self::CLUSTER_STATE));
+		// cluster state, nor a cluster setting, which only edit() checks and
+		// announces to the nodes.
+		$rArray = array_diff_key(QueryHelper::verifyPostTable('settings', $rData, true), array_flip(array_merge(self::CLUSTER_STATE, ClusterSettings::keys())));
 
 		foreach (['dropbox_remote'] as $rSetting) {
 			if (isset($rData[$rSetting])) {

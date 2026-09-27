@@ -34,6 +34,10 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   old_port.conf, with the public server's certificate. The policy lists
  *   a kept https:// URL only while it lists HTTPS, and a kept http:// one
  *   never under `https_required` (ClusterPolicy).
+ * - A settings save of `cluster_transport` or `cluster_main_host` moves the
+ *   URLs too, and goes the same way (storeSettings()): an old DNS name's
+ *   URLs are kept, in the save's own UPDATE. A transport change alone keeps
+ *   nothing: it drops whole schemes, which no kept URL is listed with.
  * - cron:cluster drops expired ports and URLs, bumps the policy again and
  *   renders the nginx config again so nginx releases them.
  * - It releases a kept port sooner, once every node uses the new URLs
@@ -58,6 +62,12 @@ final class ClusterEndpoint {
 
 	/** The settings columns of the endpoint state, read again from the database before use (stored()). */
 	private const STATE = ['cluster_api_port', 'cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
+
+	/** The settings that move the policy's URLs with MAIN's row unchanged: a save of them is announced (storeSettings()). */
+	private const POLICY_SETTINGS = ['cluster_transport', 'cluster_main_host'];
+
+	/** A write over the endpoint state as read is tried this many times (storeSettings()). */
+	private const TRIES = 3;
 
 	/**
 	 * Old ports still served for the cluster API: port => expiry (unix time).
@@ -183,6 +193,151 @@ final class ClusterEndpoint {
 		self::save($rPorts, array_slice($rUrls, 0, self::MAX_URLS, true));
 		ClusterAudit::log('cluster.endpoint_change', null, ['urls_from' => $rFrom, 'urls_to' => $rTo, 'kept_urls' => $rKept, 'kept_ports' => $rPorts], $rActor);
 		return true;
+	}
+
+	/**
+	 * Store a settings save that changes the transport or MAIN's DNS name in
+	 * its URLs (`cluster_transport`, `cluster_main_host`; SettingsService::
+	 * edit()): $rSet and $rData are its SET clause and values (QueryHelper::
+	 * prepareArray()), $rSave the values it stores, $rMain MAIN's `servers`
+	 * row as the form read it.
+	 *
+	 * The policy version goes up in the same UPDATE, as before. When the
+	 * policy's URLs change and a node may use them (the API on once the save
+	 * is stored, a node in mode ≥ 1 and not revoked), the change is announced
+	 * as recordMainChange() announces one: every URL the policy no longer
+	 * lists is kept for GRACE, in that UPDATE too, where the listing rules
+	 * allow it (afterSettingsChange()), one it lists again is not, and it is
+	 * audited. A change of the DNS name keeps the old name's URLs; a change
+	 * of the transport alone keeps nothing, as it drops only whole schemes.
+	 *
+	 * The UPDATE goes over the endpoint state as read (the version and both
+	 * kept lists), read again with MAIN's row from the database: a change
+	 * another process stored meanwhile (an admin's save of MAIN's row,
+	 * cron:root_signals' rewrite, cron:cluster, another settings save) makes
+	 * it read again and retry, up to TRIES times, so neither is lost. After
+	 * that, or when the settings row cannot be read (or has no
+	 * `cluster_legacy_urls` before migration 044), the save is stored as
+	 * before: with the version raised and nothing kept. Returns whether the
+	 * save was stored.
+	 *
+	 * @param list<mixed> $rData
+	 * @param array<string, mixed> $rSave
+	 * @param array<string, mixed> $rMain
+	 */
+	public static function storeSettings(string $rSet, array $rData, array $rSave, array $rMain, string $rActor = 'admin'): bool {
+		$rDb = self::db();
+		for ($rTry = 0; $rTry < self::TRIES; $rTry++) {
+			$rRow = $rDb->query('SELECT * FROM `settings` LIMIT 1;') ? $rDb->get_row() : null;
+			if (!is_array($rRow) || !array_key_exists('cluster_legacy_urls', $rRow)) {
+				break;
+			}
+			$rNew = array_intersect_key($rSave, array_flip(['cluster_api_enabled', 'cluster_api_port', ...self::POLICY_SETTINGS])) + $rRow;
+			$rFrom = $rTo = [];
+			foreach (self::POLICY_SETTINGS as $rKey) {
+				if ((string) ($rRow[$rKey] ?? '') !== (string) ($rNew[$rKey] ?? '')) {
+					$rFrom[$rKey] = (string) ($rRow[$rKey] ?? '');
+					$rTo[$rKey] = (string) ($rNew[$rKey] ?? '');
+				}
+			}
+			if ($rTo === []) {
+				// Stored already, by a save that announced it.
+				return (bool) $rDb->query('UPDATE `settings` SET ' . $rSet . ';', ...$rData);
+			}
+			$rWas = [(string) ($rRow['cluster_legacy_ports'] ?? ''), (string) ($rRow['cluster_legacy_urls'] ?? '')];
+			$rKeep = self::afterSettingsChange($rRow, $rNew, self::mainRow($rMain));
+			$rUrlDoc = $rKeep === null ? $rWas[1] : ($rKeep['urls'] === [] ? '' : (string) json_encode($rKeep['urls'], JSON_UNESCAPED_SLASHES));
+			$rStored = $rDb->query(
+				'UPDATE `settings` SET ' . $rSet . ($rKeep === null ? '' : ', `cluster_legacy_urls` = ?') . ", `cluster_policy_ver` = `cluster_policy_ver` + 1 WHERE `cluster_policy_ver` = ? AND COALESCE(`cluster_legacy_ports`, '') = ? AND COALESCE(`cluster_legacy_urls`, '') = ?;",
+				...array_merge($rData, $rKeep === null ? [] : [$rUrlDoc], [intval($rRow['cluster_policy_ver'] ?? 1), $rWas[0], $rWas[1]])
+			);
+			// Stored when the row now holds this save's transport, name and
+			// kept URLs; an UPDATE that matched no row left another's.
+			$rNow = $rStored && $rDb->query('SELECT * FROM `settings` LIMIT 1;') ? $rDb->get_row() : null;
+			$rHolds = is_array($rNow) && (string) ($rNow['cluster_legacy_urls'] ?? '') === $rUrlDoc;
+			foreach ($rTo as $rKey => $rValue) {
+				$rHolds = $rHolds && (string) ($rNow[$rKey] ?? '') === $rValue;
+			}
+			if ($rHolds) {
+				if ($rKeep !== null) {
+					ClusterAudit::log('cluster.endpoint_change', null, ['urls_from' => $rKeep['from'], 'urls_to' => $rKeep['to'], 'kept_urls' => $rKeep['kept'], 'kept_ports' => self::legacyPorts($rRow), 'settings_from' => $rFrom, 'settings_to' => $rTo], $rActor);
+				}
+				return true;
+			}
+		}
+		return (bool) $rDb->query('UPDATE `settings` SET ' . $rSet . ', `cluster_policy_ver` = `cluster_policy_ver` + 1;', ...$rData);
+	}
+
+	/**
+	 * What a settings save keeps when it changes the policy's URLs: from the
+	 * stored settings $rStored to $rNew (the save's values over them), with
+	 * MAIN's row $rMain. Null when nothing is announced: the API is off once
+	 * the save is stored, the URLs stay the same, or no node may use them.
+	 *
+	 * Both URL lists are taken on the API port the save stores: a new
+	 * `cluster_api_port` is announced, and its old port kept, once it is
+	 * stored (recordApiPortChange()). A URL the policy no longer lists is
+	 * kept only where the listing rules list it (ClusterPolicy): an https://
+	 * one only on the HTTPS broadcast port the row stores (nginx never held
+	 * the policy's 443 for a row with none) and while the new transport lists
+	 * HTTPS, an http:// one never under `https_required`. A transport change
+	 * alone moves no host or port: what it drops is a scheme the new
+	 * transport does not list, so it keeps nothing.
+	 *
+	 * @param array<string, mixed> $rStored
+	 * @param array<string, mixed> $rNew
+	 * @param array<string, mixed> $rMain
+	 * @return array{urls: array<string, int>, from: list<string>, to: list<string>, kept: list<string>}|null
+	 */
+	private static function afterSettingsChange(array $rStored, array $rNew, array $rMain): ?array {
+		if (empty($rNew['cluster_api_enabled'])) {
+			return null;
+		}
+		// The URLs the policy lists before and after, without the old ones kept.
+		$rBase = ['cluster_legacy_ports' => '', 'cluster_legacy_urls' => '', 'cluster_api_port' => $rNew['cluster_api_port'] ?? 0];
+		$rFrom = ClusterPolicy::current($rBase + $rStored, $rMain)['main_urls'];
+		$rTo = ClusterPolicy::current($rBase + $rNew, $rMain)['main_urls'];
+		if ($rFrom === $rTo || !self::nodesListening()) {
+			return null;
+		}
+		$rTlsPort = intval($rMain['https_broadcast_port'] ?? 0);
+		$rGone = [];
+		foreach (array_diff($rFrom, $rTo) as $rUrl) {
+			$rParsed = self::parseUrl($rUrl);
+			if ($rParsed !== null && ($rParsed[0] !== 'https' || $rParsed[1] === $rTlsPort)) {
+				$rGone[$rUrl] = ClusterClock::now() + self::GRACE;
+			}
+		}
+		// Only what the new policy lists as a kept URL.
+		$rListed = $rGone === [] ? [] : ClusterPolicy::current(['cluster_legacy_urls' => (string) json_encode($rGone, JSON_UNESCAPED_SLASHES)] + $rNew, $rMain)['main_urls'];
+		$rKept = array_values(array_intersect(array_keys($rGone), $rListed));
+		$rUrls = array_intersect_key($rGone, array_flip($rKept)) + array_diff_key(self::legacyUrls($rStored), array_flip($rTo));
+		arsort($rUrls);
+		return ['urls' => array_slice($rUrls, 0, self::MAX_URLS, true), 'from' => $rFrom, 'to' => $rTo, 'kept' => $rKept];
+	}
+
+	/**
+	 * MAIN's `servers` row as stored, or $rMain when it cannot be read. The
+	 * servers cache a settings save reads may be 10 s old, and a URL the
+	 * policy lists for a stale row (an old server_ip) would count as current
+	 * and leave the kept list.
+	 *
+	 * @param array<string, mixed> $rMain
+	 * @return array<string, mixed>
+	 */
+	private static function mainRow(array $rMain): array {
+		try {
+			$rDb = self::db();
+			if ($rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;')) {
+				$rRow = $rDb->get_row();
+				if (is_array($rRow) && $rRow !== []) {
+					return $rRow;
+				}
+			}
+		} catch (\Throwable) {
+			// The row the form read, then.
+		}
+		return $rMain;
 	}
 
 	/**
