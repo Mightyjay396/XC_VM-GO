@@ -53,9 +53,16 @@ final class ClusterEndpointTest extends TestCase {
 		return $this->rDb->get_row();
 	}
 
-	/** The stored settings with the cluster API on, and $rOver on top. */
+	/**
+	 * The stored settings with the cluster API on, and $rOver stored on top:
+	 * ClusterEndpoint reads the transport and the DNS name again from the
+	 * database, as another process may have stored them since.
+	 */
 	private function live(array $rOver = []): array {
-		return $rOver + ['cluster_api_enabled' => 1] + $this->settings();
+		foreach ($rOver as $rColumn => $rValue) {
+			$this->store($rColumn, $rValue);
+		}
+		return ['cluster_api_enabled' => 1] + $this->settings();
 	}
 
 	private function store(string $rColumn, int|string $rValue): void {
@@ -501,6 +508,73 @@ final class ClusterEndpointTest extends TestCase {
 		$this->assertSame(1, substr_count($rRoot, 'self::rewriteServerIP('), 'one call');
 		$this->assertStringNotContainsString("['server_ip'] = \$rServerIP;", $rRoot, 'the row changes nowhere else');
 		$this->assertSame(1, substr_count($rRoot, 'UPDATE `servers` SET `server_ip` = ?'), 'the rewrite stores it in one place');
+	}
+
+	/**
+	 * An admin's save of MAIN's row and cron:root_signals' rewrite at the
+	 * same moment: each writes over the kept lists as it read them, so the
+	 * one that finds them changed reads them again and takes what the policy
+	 * lists now from MAIN's row as stored, which holds both changes. Both old
+	 * URLs are kept.
+	 */
+	public function testTwoChangesOfMainsRowAtOnceKeepBoth(): void {
+		$this->rDb->exec("CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `is_main` int NOT NULL DEFAULT 0, `server_ip` varchar(255) DEFAULT '', `private_ip` varchar(255) DEFAULT '', `domain_name` varchar(255) DEFAULT '', `enable_https` int NOT NULL DEFAULT 0, `http_broadcast_port` int DEFAULT NULL, `https_broadcast_port` int DEFAULT NULL)");
+		$this->rDb->query('INSERT INTO `servers` (`id`, `is_main`, `server_ip`, `private_ip`, `domain_name`, `enable_https`, `http_broadcast_port`, `https_broadcast_port`) VALUES (1, 1, ?, ?, ?, 1, 25461, 25463)', '10.0.0.1', '192.168.0.1', 'panel.example.com');
+		$this->node(2, 'active');
+		SettingsManager::set($this->live());
+		$rLog = new QueryLogDb($this->rDb);
+		$rRan = false;
+		$rLog->rBefore = function (string $rQuery) use (&$rRan, $rLog): void {
+			if (!$rRan && str_starts_with($rQuery, 'UPDATE `settings` SET `cluster_legacy_ports`')) {
+				$rRan = true;
+				// The admin saves MAIN's private_ip, from the row as it was.
+				DatabaseFactory::set($this->rDb);
+				$this->rDb->query("UPDATE `servers` SET `private_ip` = '192.168.0.2' WHERE `id` = 1");
+				$this->assertTrue(ServerService::announceMainEndpoints($this->rMain, ['private_ip' => '192.168.0.2']));
+				DatabaseFactory::set($rLog);
+			}
+		};
+		DatabaseFactory::set($rLog);
+		RootSignalsCronJob::rewriteServerIP($rLog, 1, $this->rMain, '10.0.0.2');
+		$this->assertTrue($rRan);
+		$this->assertSame(['http://192.168.0.1:25461/cluster/v1/', 'http://10.0.0.1:25461/cluster/v1/'], array_keys(ClusterEndpoint::legacyUrls($this->settings())), 'both kept');
+		$this->assertSame(3, $this->ver());
+		$this->assertSame(['admin', 'system'], array_column($this->audit(), 'actor'));
+		$this->assertSame(
+			['http://192.168.0.2:25461/cluster/v1/', 'http://10.0.0.2:25461/cluster/v1/', 'http://192.168.0.1:25461/cluster/v1/', 'http://10.0.0.1:25461/cluster/v1/'],
+			ClusterPolicy::current($this->live(), ['server_ip' => '10.0.0.2', 'private_ip' => '192.168.0.2'] + $this->rMain)['main_urls']
+		);
+	}
+
+	/**
+	 * prune() writes over the kept lists as read too: a URL a settings save
+	 * keeps between its read and its write stays. The save's own write drops
+	 * the expired URL, and the expired port goes at the next pass.
+	 */
+	public function testAChangeStoredDuringAPruneIsNotLost(): void {
+		$this->node(2, 'active');
+		$this->store('cluster_api_enabled', 1);
+		$this->store('cluster_main_host', 'a.example.com');
+		$this->store('cluster_legacy_ports', (string) json_encode([8080 => $this->rNow - 1]));
+		$this->store('cluster_legacy_urls', (string) json_encode(['http://10.0.0.8:25461/cluster/v1/' => $this->rNow - 1], JSON_UNESCAPED_SLASHES));
+		$rLog = new QueryLogDb($this->rDb);
+		$rRan = false;
+		$rLog->rBefore = function (string $rQuery) use (&$rRan, $rLog): void {
+			if (!$rRan && str_starts_with($rQuery, 'UPDATE `settings`')) {
+				$rRan = true;
+				DatabaseFactory::set($this->rDb);
+				$this->assertTrue(ClusterEndpoint::storeSettings('`cluster_main_host` = ?', ['b.example.com'], ['cluster_main_host' => 'b.example.com'], $this->rMain));
+				DatabaseFactory::set($rLog);
+			}
+		};
+		DatabaseFactory::set($rLog);
+		$this->assertFalse(ClusterEndpoint::prune($this->settings()), 'nothing written over the save');
+		$this->assertTrue($rRan);
+		$this->assertSame(['http://a.example.com:25461/cluster/v1/'], array_keys(ClusterEndpoint::legacyUrls($this->settings())), 'kept meanwhile');
+		$this->assertSame(2, $this->ver());
+		$this->assertTrue(ClusterEndpoint::prune($this->settings()), 'the next pass');
+		$this->assertSame(['', ['http://a.example.com:25461/cluster/v1/']], [(string) $this->settings()['cluster_legacy_ports'], array_keys(ClusterEndpoint::legacyUrls($this->settings()))]);
+		$this->assertSame(3, $this->ver());
 	}
 
 	/** Migration 044 adds the kept URLs; database.sql has the column for fresh installs. */

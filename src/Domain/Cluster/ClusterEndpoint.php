@@ -60,13 +60,17 @@ final class ClusterEndpoint {
 	/** The largest policy version a node may say it dials (`cluster_nodes.policy_ver`, int unsigned). */
 	private const MAX_VER = 4294967295;
 
-	/** The settings columns of the endpoint state, read again from the database before use (stored()). */
-	private const STATE = ['cluster_api_port', 'cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
+	/**
+	 * The settings columns of the endpoint state, read again from the
+	 * database before use (stored()): the kept lists and the version, and
+	 * what decides the policy's URLs besides MAIN's row.
+	 */
+	private const STATE = ['cluster_api_port', 'cluster_transport', 'cluster_main_host', 'cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
 
 	/** The settings that move the policy's URLs with MAIN's row unchanged: a save of them is announced (storeSettings()). */
 	private const POLICY_SETTINGS = ['cluster_transport', 'cluster_main_host'];
 
-	/** A write over the endpoint state as read is tried this many times (storeSettings()). */
+	/** A write over the endpoint state as read is tried this many times (recordMainChange(), storeSettings()). */
 	private const TRIES = 3;
 
 	/**
@@ -151,6 +155,15 @@ final class ClusterEndpoint {
 	 * one it lists again is not, and the policy version goes up. Returns
 	 * whether it was announced.
 	 *
+	 * The write goes over the kept lists as read. When another process
+	 * stored them meanwhile (a settings save, the other of an admin's save
+	 * and cron:root_signals, cron:cluster), they are read again, with the
+	 * transport and the DNS name, and what the policy lists now is taken from
+	 * MAIN's row as stored, which holds a change of the row made meanwhile;
+	 * then it retries, so what the other kept is merged, not lost. The last
+	 * of TRIES tries writes regardless, as before: a missed announcement can
+	 * strand the nodes.
+	 *
 	 * @param array<string, mixed> $rOld
 	 * @param array<string, mixed> $rNew
 	 * @param array<string, mixed> $rSettings The loaded settings; the endpoint state is read again (stored()).
@@ -159,38 +172,44 @@ final class ClusterEndpoint {
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return false;
 		}
-		$rSettings = self::stored($rSettings);
-		// The URLs the policy lists for each row, without the old ones kept.
-		$rBase = ['cluster_legacy_ports' => '', 'cluster_legacy_urls' => ''] + $rSettings;
-		$rFrom = ClusterPolicy::current($rBase, $rOld)['main_urls'];
-		$rTo = ClusterPolicy::current($rBase, $rNew)['main_urls'];
-		if ($rFrom === $rTo || !self::nodesListening()) {
-			return false;
-		}
-		$rPorts = self::legacyPorts($rSettings);
-		$rHttpFrom = intval($rOld['http_broadcast_port'] ?? 0);
-		$rHttpTo = intval($rNew['http_broadcast_port'] ?? 0);
-		if (intval($rSettings['cluster_api_port'] ?? 0) === 0 && $rHttpFrom >= 1 && $rHttpFrom !== $rHttpTo) {
-			$rPorts = self::keep($rPorts, $rHttpFrom, $rHttpTo);
-		}
-		// What the policy lists with the old port kept: an old URL it no
-		// longer lists is kept, the latest change first. An https:// URL only
-		// on the HTTPS broadcast port the old row stored: nginx served it over
-		// TLS until now and keeps the socket, so ClusterNginxConfig binds it
-		// unchecked. The policy's 443 for a row with no HTTPS port (NULL) was
-		// never nginx's, and another program may hold it.
-		$rListed = ClusterPolicy::current(['cluster_legacy_ports' => (string) json_encode($rPorts)] + $rBase, $rNew)['main_urls'];
-		$rTlsPort = intval($rOld['https_broadcast_port'] ?? 0);
-		$rKept = [];
-		foreach (array_diff($rFrom, $rListed) as $rUrl) {
-			$rParsed = self::parseUrl($rUrl);
-			if ($rParsed !== null && ($rParsed[0] !== 'https' || $rParsed[1] === $rTlsPort)) {
-				$rKept[] = $rUrl;
+		$rTry = 0;
+		do {
+			$rTry++;
+			$rSettings = self::stored($rSettings);
+			// The URLs the policy lists for each row, without the old ones kept.
+			$rBase = ['cluster_legacy_ports' => '', 'cluster_legacy_urls' => ''] + $rSettings;
+			$rFrom = ClusterPolicy::current($rBase, $rOld)['main_urls'];
+			$rTo = ClusterPolicy::current($rBase, $rNew)['main_urls'];
+			if ($rFrom === $rTo || !self::nodesListening()) {
+				return false;
 			}
-		}
-		$rUrls = array_fill_keys($rKept, ClusterClock::now() + self::GRACE) + array_diff_key(self::legacyUrls($rSettings), array_flip($rListed));
-		arsort($rUrls);
-		self::save($rPorts, array_slice($rUrls, 0, self::MAX_URLS, true));
+			$rPorts = self::legacyPorts($rSettings);
+			$rHttpFrom = intval($rOld['http_broadcast_port'] ?? 0);
+			$rHttpTo = intval($rNew['http_broadcast_port'] ?? 0);
+			if (intval($rSettings['cluster_api_port'] ?? 0) === 0 && $rHttpFrom >= 1 && $rHttpFrom !== $rHttpTo) {
+				$rPorts = self::keep($rPorts, $rHttpFrom, $rHttpTo);
+			}
+			// What the policy lists with the old port kept: an old URL it no
+			// longer lists is kept, the latest change first. An https:// URL only
+			// on the HTTPS broadcast port the old row stored: nginx served it over
+			// TLS until now and keeps the socket, so ClusterNginxConfig binds it
+			// unchecked. The policy's 443 for a row with no HTTPS port (NULL) was
+			// never nginx's, and another program may hold it.
+			$rListed = ClusterPolicy::current(['cluster_legacy_ports' => (string) json_encode($rPorts)] + $rBase, self::mainRow($rNew))['main_urls'];
+			$rTlsPort = intval($rOld['https_broadcast_port'] ?? 0);
+			$rKept = [];
+			foreach (array_diff($rFrom, $rListed) as $rUrl) {
+				$rParsed = self::parseUrl($rUrl);
+				if ($rParsed !== null && ($rParsed[0] !== 'https' || $rParsed[1] === $rTlsPort)) {
+					$rKept[] = $rUrl;
+				}
+			}
+			$rUrls = array_fill_keys($rKept, ClusterClock::now() + self::GRACE) + array_diff_key(self::legacyUrls($rSettings), array_flip($rListed));
+			arsort($rUrls);
+			// Over the lists as read, while there is a list of URLs to read
+			// (migration 044) and tries left.
+			$rWas = $rTry < self::TRIES && array_key_exists('cluster_legacy_urls', $rSettings) ? [(string) ($rSettings['cluster_legacy_ports'] ?? ''), (string) ($rSettings['cluster_legacy_urls'] ?? '')] : null;
+		} while (!self::save($rPorts, array_slice($rUrls, 0, self::MAX_URLS, true), $rWas));
 		ClusterAudit::log('cluster.endpoint_change', null, ['urls_from' => $rFrom, 'urls_to' => $rTo, 'kept_urls' => $rKept, 'kept_ports' => $rPorts], $rActor);
 		return true;
 	}
@@ -382,7 +401,9 @@ final class ClusterEndpoint {
 	/**
 	 * Drop expired ports and URLs. Returns true when some were dropped: the
 	 * caller then renders the nginx config again (ClusterNginxConfig) so
-	 * nginx releases them.
+	 * nginx releases them. The write goes over the lists as read (once
+	 * migration 044 added the URL list): when a change stored them meanwhile,
+	 * nothing is written, and the next pass prunes.
 	 *
 	 * @param array<string, mixed> $rSettings
 	 */
@@ -396,7 +417,11 @@ final class ClusterEndpoint {
 		if (!$rUrlsGone && (!is_array($rPortDoc) || count($rPortDoc) === count($rPorts))) {
 			return false;
 		}
-		self::save($rPorts, $rUrlsGone ? $rUrls : null);
+		if (!array_key_exists('cluster_legacy_urls', $rSettings)) {
+			self::save($rPorts);
+		} elseif (!self::save($rPorts, $rUrls, [(string) ($rSettings['cluster_legacy_ports'] ?? ''), (string) ($rSettings['cluster_legacy_urls'] ?? '')])) {
+			return false;
+		}
 		ClusterAudit::log('cluster.endpoint_expired', null, ['kept' => array_keys($rPorts), 'kept_urls' => array_keys($rUrls)], 'cron');
 		return true;
 	}
@@ -422,7 +447,7 @@ final class ClusterEndpoint {
 	 * @param array<string, mixed> $rSettings The loaded settings; the endpoint state and the transport are read again (stored()).
 	 */
 	public static function release(array $rSettings): bool {
-		$rSettings = self::stored($rSettings, ['cluster_transport']);
+		$rSettings = self::stored($rSettings);
 		$rPorts = self::legacyPorts($rSettings);
 		$rUrls = self::legacyUrls($rSettings);
 		if ($rPorts === [] && $rUrls === []) {

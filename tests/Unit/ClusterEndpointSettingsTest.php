@@ -538,6 +538,41 @@ final class ClusterEndpointSettingsTest extends TestCase {
 	}
 
 	/**
+	 * The other way round: the settings save lands between cron:root_signals'
+	 * read and its write. The rewrite goes over the kept lists as read too,
+	 * so it reads them again, with the name the save stored (its own
+	 * settings were loaded before the save), and keeps both. Were the name
+	 * taken from its settings, the old name's kept URL would look current and
+	 * leave the list.
+	 */
+	public function testASaveStoredDuringAnAddressRewriteIsNotLost(): void {
+		$this->store('cluster_main_host', 'a.example.com');
+		$this->node(2);
+		$rLog = new QueryLogDb($this->rDb);
+		$rRan = false;
+		$rLog->rBefore = function (string $rQuery) use (&$rRan, $rLog): void {
+			if (!$rRan && str_starts_with($rQuery, 'UPDATE `settings` SET `cluster_legacy_ports`')) {
+				$rRan = true;
+				DatabaseFactory::set($this->rDb);
+				$rCron = SettingsManager::getAll();
+				$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'b.example.com']));
+				SettingsManager::set($rCron);
+				DatabaseFactory::set($rLog);
+			}
+		};
+		DatabaseFactory::set($rLog);
+		RootSignalsCronJob::rewriteServerIP($rLog, 1, $this->rMain, '10.0.0.9');
+		$this->assertTrue($rRan);
+		$this->assertSame(['http://10.0.0.1:25461/cluster/v1/', 'http://a.example.com:25461/cluster/v1/'], array_keys($this->kept()), 'both kept');
+		$this->assertSame(3, $this->ver());
+		$this->assertSame(['admin', 'system'], array_column($this->audit(), 'actor'));
+		$this->assertSame(
+			['http://192.168.0.1:25461/cluster/v1/', 'http://10.0.0.9:25461/cluster/v1/', 'http://b.example.com:25461/cluster/v1/', 'http://10.0.0.1:25461/cluster/v1/', 'http://a.example.com:25461/cluster/v1/'],
+			ClusterPolicy::current($this->settings(), ['server_ip' => '10.0.0.9'] + $this->rMain)['main_urls']
+		);
+	}
+
+	/**
 	 * A save that keeps losing the race to other writers is stored as before,
 	 * with the version raised and nothing kept, rather than over what they
 	 * stored.

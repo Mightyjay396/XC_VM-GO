@@ -58,9 +58,15 @@ final class ClusterEndpointReleaseTest extends TestCase {
 		return $this->rDb->get_row();
 	}
 
-	/** The stored settings with the cluster API on, and $rOver on top. */
+	/**
+	 * The stored settings with the cluster API on, and $rOver stored on top:
+	 * ClusterEndpoint reads the transport again from the database.
+	 */
 	private function live(array $rOver = []): array {
-		return $rOver + ['cluster_api_enabled' => 1] + $this->settings();
+		foreach ($rOver as $rColumn => $rValue) {
+			$this->rDb->query('UPDATE `settings` SET `' . $rColumn . '` = ?', $rValue);
+		}
+		return ['cluster_api_enabled' => 1] + $this->settings();
 	}
 
 	private function ver(): int {
