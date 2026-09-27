@@ -109,7 +109,7 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries (PHP
 
 | Version    | Codename   | Status                |
 | ---------- | ---------- | --------------------- |
-| **11**     | Bullseye   | ✅ Supported           |
+| **11**     | Bullseye   | ⚠️ *Outdated (EOL)* — installation possible, installer warns and asks to confirm |
 | **12**     | Bookworm   | ✅ **Recommended**     |
 | **13**     | Trixie     | ✅ Supported           |
 
@@ -137,7 +137,7 @@ For new installations:
 
 ## 📥 Quick Install
 
-> ✅ Ubuntu 22.04+, Debian 11+
+> ✅ Ubuntu 22.04+, Debian 12+
 
 ```bash
 # 1. Update system
