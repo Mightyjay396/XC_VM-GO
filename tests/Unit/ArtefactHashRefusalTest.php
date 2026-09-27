@@ -300,6 +300,35 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$this->assertStringContainsString($rOne['cmd']['cmd_id'], $rLines[0][1]);
 	}
 
+	/** Root's stage is its own: closed to others when it finds it open, and never a link. */
+	public function testRootsStageIsItsOwn(): void {
+		$rBytes = 'the pinned agent';
+		mkdir($this->rBase . 'etc/stage', 0755);
+		chmod($this->rBase . 'etc/stage', 0755);
+		$rOne = $this->command(7, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$this->download($rOne['cmd'], $rBytes);
+		$this->inbox(7, $rOne['wire']);
+		ClusterRootCommand::drain(static fn(): string => 'ok', 1800000000);
+		$this->assertTrue($this->done(7)['ok']);
+		$this->assertSame(0700, fileperms($this->rBase . 'etc/stage') & 0777, 'closed to others');
+
+		// A link where the stage should be: refused, nothing written through it.
+		rmdir($this->rBase . 'etc/stage');
+		mkdir($this->rBase . 'elsewhere', 0700);
+		symlink($this->rBase . 'elsewhere', $this->rBase . 'etc/stage');
+		$rTwo = $this->command(8, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$this->download($rTwo['cmd'], $rBytes);
+		$this->inbox(8, $rTwo['wire']);
+		$rRan = false;
+		ClusterRootCommand::drain(static function () use (&$rRan): string {
+			$rRan = true;
+			return 'x';
+		}, 1800000000);
+		$this->assertFalse($rRan);
+		$this->assertStringContainsString('is not root\'s alone', $this->done(8)['result']);
+		$this->assertSame([], array_values(array_diff(scandir($this->rBase . 'elsewhere'), ['.', '..'])));
+	}
+
 	/** Root never reads the agent's download with its own rights, nor follows a link planted there. */
 	public function testRootNeverFollowsALinkTheAgentPlanted(): void {
 		$rSecret = $this->rBase . 'root_only';

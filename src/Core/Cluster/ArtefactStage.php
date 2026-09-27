@@ -454,19 +454,25 @@ final class ArtefactStage {
 	}
 
 	/**
-	 * Root's stage: created 0700 when missing, and trusted only when it is a
-	 * directory (not a link) owned by this process's user (root) that no one
-	 * else can enter.
+	 * Root's stage: created 0700 when missing, closed to others when it is
+	 * already this process's, and trusted only when it is a directory (not a
+	 * link) owned by this process's user (root) that no one else can enter.
 	 */
 	private static function ownStage(string $rStage): bool {
 		$rDir = rtrim($rStage, '/');
 		if (!file_exists($rDir) && !is_link($rDir)) {
 			@mkdir($rDir, 0700);
-			@chmod($rDir, 0700);
 		}
 		clearstatcache(true, $rDir);
 		$rStat = @lstat($rDir);
-		return $rStat !== false && ($rStat['mode'] & 0170000) === 0040000 && ($rStat['mode'] & 0077) === 0
-			&& (!function_exists('posix_geteuid') || $rStat['uid'] === posix_geteuid());
+		if ($rStat === false || ($rStat['mode'] & 0170000) !== 0040000 || (function_exists('posix_geteuid') && $rStat['uid'] !== posix_geteuid())) {
+			return false;
+		}
+		if (($rStat['mode'] & 0077) !== 0) {
+			@chmod($rDir, 0700);
+			clearstatcache(true, $rDir);
+			$rStat = @lstat($rDir);
+		}
+		return $rStat !== false && ($rStat['mode'] & 0170000) === 0040000 && ($rStat['mode'] & 0077) === 0;
 	}
 }
