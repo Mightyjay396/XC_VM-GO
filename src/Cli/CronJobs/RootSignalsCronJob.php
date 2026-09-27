@@ -56,7 +56,7 @@ class RootSignalsCronJob implements CommandInterface {
 	 *
 	 * @var (callable(list<string>): array{0: int, 1: string})|null
 	 */
-	private static $rShell = null;
+	private static $rRunner = null;
 
 	public function getName(): string {
 		return 'cron:root_signals';
@@ -242,9 +242,9 @@ class RootSignalsCronJob implements CommandInterface {
 		return $rNew;
 	}
 
-	/** Tests: run the artefact actions' argv lists through $rShell (argv => [exit status, output]); null restores run(). */
-	public static function useShell(?callable $rShell): void {
-		self::$rShell = $rShell;
+	/** Tests: run the artefact actions' argv lists through $rRunner (argv => [exit status, output]); null restores run(). */
+	public static function useRunner(?callable $rRunner): void {
+		self::$rRunner = $rRunner;
 	}
 
 	/**
@@ -282,8 +282,8 @@ class RootSignalsCronJob implements CommandInterface {
 	 * @return array{0: int, 1: string} [exit status, output]
 	 */
 	private static function run(array $rArgv): array {
-		if (self::$rShell !== null) {
-			return (self::$rShell)($rArgv);
+		if (self::$rRunner !== null) {
+			return (self::$rRunner)($rArgv);
 		}
 		// An argv list, no shell: sudo, the node's own PHP_BIN and console.php, module:install, then the payload as one base64 argument; or /bin/sh -c AGENT_RESTART, a constant script.
 		// nosemgrep: php.lang.security.exec-use.exec-use

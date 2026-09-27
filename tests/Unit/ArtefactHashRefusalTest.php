@@ -62,7 +62,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 	protected function tearDown(): void {
 		RootPin::useDirs(null, null);
 		ArtefactStage::useDirs(null, null);
-		RootSignalsCronJob::useShell(null);
+		RootSignalsCronJob::useRunner(null);
 		EventSpool::useDir(null);
 		NodeFlows::usePath(null);
 		FileLogger::setLogFile(null);
@@ -469,6 +469,30 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$this->assertSame([], glob($rMark . '*') ?: [], 'nothing else ran');
 	}
 
+	/**
+	 * The trial run takes the binary only when it exits 0 and the first line
+	 * of its stdout is not blank; stderr is not read. A binary that writes a
+	 * lot to either still installs: stderr goes to /dev/null and stdout is
+	 * read to its end, so it never blocks on a full pipe.
+	 */
+	public function testTheTrialRunNeedsExitZeroAndAFirstLine(): void {
+		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
+		foreach ([
+			'exits 1' => "#!/bin/sh\necho 1.5.0\nexit 1\n",
+			'a blank first line' => "#!/bin/sh\necho\necho 1.5.0\n",
+			'its line on stderr' => "#!/bin/sh\necho 1.5.0 >&2\n",
+		] as $rWhy => $rBytes) {
+			$rStaged = $this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes);
+			$this->assertStringContainsString('does not run on this node', (string) ArtefactStage::installAgent($rStaged, $rAgent), $rWhy);
+			$this->assertSame('the running agent', file_get_contents($rAgent), $rWhy);
+		}
+		// 1 MiB to stderr first, then 1 MiB to stdout after its line: head's
+		// status (a SIGPIPE, a timeout) would be the script's.
+		$rBytes = "#!/bin/sh\necho 1.5.0\nhead -c 1048576 /dev/zero >&2\nhead -c 1048576 /dev/zero\n";
+		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes), $rAgent));
+		$this->assertSame($rBytes, file_get_contents($rAgent));
+	}
+
 	/** agent_binary installs only an xc_agent of this node's arch, then has run.sh restart the agent after its ack. */
 	public function testAgentBinaryInstallsOnlyThisNodesArch(): void {
 		$rArch = $this->arch();
@@ -476,7 +500,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$rBytes = $this->runnableAgent();
 		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
 		$rRuns = [];
-		RootSignalsCronJob::useShell(static function (array $rArgv) use (&$rRuns): array {
+		RootSignalsCronJob::useRunner(static function (array $rArgv) use (&$rRuns): array {
 			$rRuns[] = $rArgv;
 			return [0, ''];
 		});
@@ -608,7 +632,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 
 		$rRuns = [];
 		$rAnswer = [0, "module:install: 'radio' installed."];
-		RootSignalsCronJob::useShell(static function (array $rRun) use (&$rRuns, &$rAnswer): array {
+		RootSignalsCronJob::useRunner(static function (array $rRun) use (&$rRuns, &$rAnswer): array {
 			$rRuns[] = $rRun;
 			return $rAnswer;
 		});
@@ -675,6 +699,24 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$rArgv = RootSignalsCronJob::moduleInstallArgv($rAction, null);
 		$this->assertCount(5, $rArgv);
 		$this->assertSame($rAction, json_decode((string) base64_decode($rArgv[4], true), true));
+	}
+
+	/**
+	 * run() reads stdout and stderr as they come, so a command that fills
+	 * one pipe while the other is still open never blocks (`timeout 10`
+	 * turns a regression into a failure, not a hung suite), and returns the
+	 * output as exec() did: each line without its trailing whitespace, no
+	 * trailing empty line.
+	 */
+	public function testRootsCommandsNeverBlockOnAFullPipe(): void {
+		$rRun = new \ReflectionMethod(RootSignalsCronJob::class, 'run');
+		[$rCode, $rOutput] = $rRun->invoke(null, ['timeout', '10', PHP_BINARY, '-n', '-r', 'fwrite(STDERR, str_repeat("e", 1 << 20)); echo str_repeat("o", 1 << 20);']);
+		$this->assertSame(0, $rCode, 'neither pipe fills while the other is read');
+		$this->assertSame(2 << 20, strlen($rOutput));
+		$this->assertSame(1 << 20, substr_count($rOutput, 'e'));
+
+		[, $rOutput] = $rRun->invoke(null, [PHP_BINARY, '-n', '-r', 'echo "a \\t\\r\\nb  \\n\\n";']);
+		$this->assertSame("a\nb\n", $rOutput, 'as exec() returned it');
 	}
 
 	/** module:install takes an archive only from root's stage, only with the grant's bytes; anything else is refused and audited, and nothing deploys. */
