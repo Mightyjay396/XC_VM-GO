@@ -2,6 +2,8 @@
 
 namespace XcVm\Streaming\Lifecycle;
 
+use XcVm\Core\Cluster\AgentConnections;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Cache\CacheReader;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -32,28 +34,31 @@ class ShutdownHandler {
 		$rSettings = CacheReader::get('settings');
 
 		if ($rCloseCon) {
-			if (!empty($rSettings['redis_handler'])) {
-				if (!RedisManager::isConnected()) {
-					RedisManager::ensureConnected();
-				}
+			$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset']);
 
-				$rConnection = ConnectionTracker::getConnection($rTokenData['uuid']);
+			if (!self::closeInRegistry((string) ($rTokenData['uuid'] ?? ''), (int) $rPID, $rLastRead)) {
+				if (!empty($rSettings['redis_handler'])) {
+					if (!RedisManager::isConnected()) {
+						RedisManager::ensureConnected();
+					}
 
-				if ($rConnection && $rConnection['pid'] == $rPID) {
-					$rChanges = ['hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])];
-					ConnectionTracker::updateConnection($rConnection, $rChanges, 'close');
-				}
-			} else {
-				if (!is_object($db)) {
-					DatabaseFactory::connectLazy();
-				}
+					$rConnection = ConnectionTracker::getConnection($rTokenData['uuid']);
 
-				$db->query(
-					'UPDATE `lines_live` SET `hls_end` = 1, `hls_last_read` = ? WHERE `uuid` = ? AND `pid` = ?;',
-					time() - intval($rServers[SERVER_ID]['time_offset']),
-					$rTokenData['uuid'],
-					$rPID
-				);
+					if ($rConnection && $rConnection['pid'] == $rPID) {
+						ConnectionTracker::updateConnection($rConnection, ['hls_last_read' => $rLastRead], 'close');
+					}
+				} elseif (!NodeRole::refusesConnects()) {
+					if (!is_object($db)) {
+						DatabaseFactory::connectLazy();
+					}
+
+					$db->query(
+						'UPDATE `lines_live` SET `hls_end` = 1, `hls_last_read` = ? WHERE `uuid` = ? AND `pid` = ?;',
+						$rLastRead,
+						$rTokenData['uuid'],
+						$rPID
+					);
+				}
 			}
 
 			// live: clean up both connection tmp files
@@ -75,5 +80,22 @@ class ShutdownHandler {
 		} elseif (!empty($rSettings['redis_handler']) && RedisManager::isConnected()) {
 			RedisManager::closeInstance();
 		}
+	}
+
+	/**
+	 * The viewer's close in this node's own registry, where its agent holds it
+	 * (CONNECTIONS on): the agent mirrors it to MAIN as a P0 event. False when
+	 * the record is not the agent's (or it did not answer) and the close
+	 * belongs in MAIN's store, as before.
+	 */
+	public static function closeInRegistry(string $rUUID, int $rPID, int $rLastRead): bool {
+		if ($rUUID === '' || !AgentConnections::enabled()) {
+			return false;
+		}
+		$rRecord = AgentConnections::get($rUUID);
+		if (!is_array($rRecord) || (int) ($rRecord['pid'] ?? 0) !== $rPID) {
+			return false;
+		}
+		return AgentConnections::put($rUUID, array_merge($rRecord, ['hls_end' => 1, 'hls_last_read' => $rLastRead])) === true;
 	}
 }

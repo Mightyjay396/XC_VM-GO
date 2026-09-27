@@ -3,6 +3,7 @@
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\Redactor;
+use XcVm\Tests\Support\InstallSchema;
 
 /**
  * Node log records reach MAIN through LogSink. The SQL backend writes the rows
@@ -111,6 +112,30 @@ final class LogSinkTest extends TestCase {
 		$this->assertStringContainsString('`last_activity` = CASE `id` WHEN 7 THEN 100 END', $rDb->rQueries[1][0]);
 		$this->assertStringEndsWith('WHERE `id` IN (7);', $rDb->rQueries[1][0]);
 		$this->assertSame(['192.0.2.7', '{"date_end":50,"stream_id":3}'], $rDb->rQueries[1][1]);
+	}
+
+	public function testEveryTypeWritesColumnsItsTableHas(): void {
+		foreach (LogSink::TYPES as $rType => [$rTable, $rColumns]) {
+			$rHas = InstallSchema::columns($rTable);
+			$this->assertNotSame([], $rHas, $rTable . ' is not in the install schema');
+			$this->assertSame([], array_diff($rColumns, $rHas), $rType . ' writes columns `' . $rTable . '` has not');
+		}
+	}
+
+	public function testAnOnDemandCheckIsALogRecord(): void {
+		$rDb = $this->recorder();
+		// The row the scanner reports, in the plan's log.ondemand_check shape.
+		$this->assertTrue(LogSink::write('ondemand_check', [[
+			'stream_id' => 9, 'server_id' => 2, 'status' => 1, 'source_id' => 0, 'source_url' => 'http://h/live/u/p/1.ts',
+			'fps' => 25, 'video_codec' => 'h264', 'audio_codec' => 'aac', 'resolution' => 1080, 'response' => 120,
+			'errors' => null, 'date' => 1700000000,
+		]], $rDb));
+
+		[$rSql, $rParams] = $rDb->rQueries[0];
+		$this->assertStringStartsWith('INSERT INTO `ondemand_check` (`stream_id`,`server_id`,`status`,`source_id`,`source_url`,', $rSql);
+		// The SQL backend keeps what it always wrote; the API backend redacts.
+		$this->assertSame('http://h/live/u/p/1.ts', $rParams[4]);
+		$this->assertCount(1, $rDb->rQueries, 'no pointer update here: the scanner sets it from the insert id');
 	}
 
 	public function testRedactorStripsCredentials(): void {

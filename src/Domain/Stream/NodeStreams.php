@@ -156,6 +156,65 @@ final class NodeStreams {
 	}
 
 	/**
+	 * `scanner`: this node's on-demand streams whose source has not been
+	 * checked for $rEvery seconds and which nothing is streaming (no pid, no
+	 * parent), with the columns the scan needs.
+	 *
+	 * MAIN keeps the checks (`ondemand_check`), so from the replica the node
+	 * dates its own last scan by the marker it touches after one
+	 * ({@see scanned}) — it is the only one that scans its streams.
+	 *
+	 * @return list<array<string, mixed>>
+	 */
+	public static function onDemandDue(int $rEvery, ?object $rDb = null): array {
+		if (!StreamSource::local()) {
+			$rDb ??= DatabaseFactory::get();
+			$rDb->query('SELECT `streams`.* FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `streams_servers`.`pid` IS NULL AND `streams_servers`.`on_demand` = 1 AND `streams_servers`.`parent_id` IS NULL AND `streams`.`type` = 1 AND `streams`.`direct_source` = 0 AND `streams_servers`.`server_id` = ? AND (UNIX_TIMESTAMP() - (SELECT MAX(`date`) FROM `ondemand_check` WHERE `stream_id` = `streams`.`id` AND `server_id` = `streams_servers`.`server_id`) > ? OR (SELECT MAX(`date`) FROM `ondemand_check` WHERE `stream_id` = `streams`.`id` AND `server_id` = `streams_servers`.`server_id`) IS NULL);', SERVER_ID, $rEvery);
+			return $rDb->num_rows() > 0 ? $rDb->get_rows() : [];
+		}
+
+		$rOut = [];
+		$rIndex = ReplicaStreamCache::index();
+		foreach (ReplicaStreamCache::held() as $rID) {
+			if (!self::candidate($rIndex, $rID, ['od' => 1, 'type' => 1, 'ds' => 0])) {
+				continue;
+			}
+			[$rStream, $rServer] = self::entry($rID) ?? [null, null];
+			if (
+				$rStream === null || $rServer === null || (int) ($rStream['type'] ?? 0) !== 1
+				|| (int) ($rStream['direct_source'] ?? 0) !== 0 || ($rServer['on_demand'] ?? null) !== 1
+				|| $rServer['parent_id'] !== null || $rServer['pid'] !== null || !self::scanDue($rID, $rEvery)
+			) {
+				continue;
+			}
+			$rOut[] = $rStream;
+		}
+		return $rOut;
+	}
+
+	/** Record that this node has just scanned a stream's source. */
+	public static function scanned(int $rStreamID): void {
+		if (StreamSource::local()) {
+			touch(self::scanMarker($rStreamID));
+		}
+	}
+
+	/** Has $rEvery seconds passed since this node last scanned the stream? */
+	private static function scanDue(int $rStreamID, int $rEvery): bool {
+		$rMarker = self::scanMarker($rStreamID);
+		return !is_file($rMarker) || time() - (int) filemtime($rMarker) > $rEvery;
+	}
+
+	/**
+	 * The marker whose mtime dates the node's last scan of a stream, beside
+	 * the scan's own error file. A stream that is deleted leaves its marker
+	 * behind; it is a few bytes, and cron:cleanup prunes the directory.
+	 */
+	private static function scanMarker(int $rStreamID): string {
+		return STREAMS_TMP_PATH . $rStreamID . '._scan';
+	}
+
+	/**
 	 * The on-demand daemon: this node's on-demand streams with a producer
 	 * (ConnectionTracker::activeOnDemandStreamIDs). $rLocal: StreamSource::local()
 	 * as the caller last read it (the daemon asks every 0.8 s).

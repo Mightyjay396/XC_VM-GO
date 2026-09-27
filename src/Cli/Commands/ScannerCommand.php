@@ -4,10 +4,15 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\LogSink;
+use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Http\CurlClient;
+use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
+use XcVm\Domain\Stream\NodeStreams;
 use XcVm\Domain\Stream\StreamSorter;
 use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
@@ -55,7 +60,11 @@ class ScannerCommand implements CommandInterface {
 
 		$this->rRefreshInterval = 60;
 
-		while ($db->ping()) {
+		// A node in mode 2 has no database of MAIN's: its checks go to MAIN as
+		// log events and its due list comes from the replica.
+		$rApi = NodeRole::refusesConnects();
+
+		while ($rApi || ($db && $db->ping())) {
 			if (!$this->shouldRefreshSettings()) {
 				// skip
 			} else {
@@ -69,10 +78,11 @@ class ScannerCommand implements CommandInterface {
 
 			$this->scanOnDemandStreams();
 			sleep(60);
-			break;
 		}
 
-		$db->close_mysql();
+		if (!$rApi && $db) {
+			$db->close_mysql();
+		}
 
 		$this->restartDaemon('scanner');
 		return 0;
@@ -82,15 +92,7 @@ class ScannerCommand implements CommandInterface {
 		$db = self::db();
 		$rScanTime = SettingsManager::get('on_demand_scan_time') ?: 3600;
 
-		if (!$db->query('SELECT `streams`.* FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `streams_servers`.`pid` IS NULL AND `streams_servers`.`on_demand` = 1 AND `streams_servers`.`parent_id` IS NULL AND `streams`.`type` = 1 AND `streams`.`direct_source` = 0 AND `streams_servers`.`server_id` = ? AND (UNIX_TIMESTAMP() - (SELECT MAX(`date`) FROM `ondemand_check` WHERE `stream_id` = `streams`.`id` AND `server_id` = `streams_servers`.`server_id`) > ? OR (SELECT MAX(`date`) FROM `ondemand_check` WHERE `stream_id` = `streams`.`id` AND `server_id` = `streams_servers`.`server_id`) IS NULL);', SERVER_ID, $rScanTime)) {
-			return;
-		}
-
-		if ($db->num_rows() <= 0) {
-			return;
-		}
-
-		foreach ($db->get_rows() as $rRow) {
+		foreach (NodeStreams::onDemandDue(intval($rScanTime), $db) as $rRow) {
 			echo '[' . $rRow['id'] . '] - ' . $rRow['stream_display_name'] . "\n";
 			$rStreamArguments = StreamSource::arguments(intval($rRow['id']), false, $db);
 			$rProbesize = (intval($rRow['probesize_ondemand']) ?: 512000);
@@ -148,7 +150,7 @@ class ScannerCommand implements CommandInterface {
 				if ($rIsXC_VM && SettingsManager::get('api_probe')) {
 					$rProbeURL = $rURLInfo['scheme'] . '://' . $rURLInfo['host'] . ':' . $rURLInfo['port'] . '/probe/' . base64_encode($rURLInfo['path']);
 					$rTime = round(microtime(true) * 1000);
-					$rFFProbeOutput = json_decode(CurlClient::getURL($rProbeURL), true);
+					$rFFProbeOutput = NetworkUtils::probeTargetAllowed($rProbeURL) ? json_decode(CurlClient::getURL($rProbeURL), true) : null;
 					$rTimeTaken = round(microtime(true) * 1000) - $rTime;
 					if ($rFFProbeOutput && isset($rFFProbeOutput['streams'])) {
 						echo "Got stream information via API\n";
@@ -207,8 +209,18 @@ class ScannerCommand implements CommandInterface {
 			}
 
 			$rSource = $rSources[$rSourceID];
-			$db->query('INSERT INTO `ondemand_check`(`stream_id`, `server_id`, `status`, `source_id`, `source_url`, `fps`, `video_codec`, `audio_codec`, `resolution`, `response`, `errors`, `date`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);', $rRow['id'], SERVER_ID, $rStatus, $rSourceID, $rSource, $rFPS, $rVideoCodec, $rAudioCodec, $rResolution, $rTimeTaken, $rErrors, time());
-			StreamStateWriter::update(intval($rRow['id']), intval(SERVER_ID), ['ondemand_check' => $db->last_insert_id()], $db);
+			$rCheck = [
+				'stream_id' => intval($rRow['id']), 'server_id' => intval(SERVER_ID), 'status' => $rStatus, 'source_id' => $rSourceID,
+				'source_url' => $rSource, 'fps' => $rFPS, 'video_codec' => $rVideoCodec, 'audio_codec' => $rAudioCodec,
+				'resolution' => $rResolution, 'response' => $rTimeTaken, 'errors' => $rErrors, 'date' => time(),
+			];
+			// With LOGS on the check is a `log.ondemand_check` event and MAIN
+			// points the node's row at the row it inserts; here the node knows
+			// the id itself.
+			if (LogSink::write('ondemand_check', [$rCheck], $db) && !NodeFlows::on(NodeFlows::LOGS)) {
+				StreamStateWriter::update(intval($rRow['id']), intval(SERVER_ID), ['ondemand_check' => $db->last_insert_id()], $db);
+			}
+			NodeStreams::scanned(intval($rRow['id']));
 			echo "\n";
 		}
 	}

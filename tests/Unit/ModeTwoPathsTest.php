@@ -716,9 +716,9 @@ final class ModeTwoPathsTest extends TestCase {
 	/**
 	 * cron:vod in mode 2 from the replica and the store: a movie whose
 	 * analysis is due is analysed (its file is gone: broken), a channel with
-	 * sources left is not queued (MAIN's queue is its database), and a
-	 * recording the node started is not started again although its record
-	 * still says scheduled. No connect.
+	 * sources left is queued through the agent (MAIN owns the queue table, and
+	 * no agent answers here), and a recording the node started is not started
+	 * again although its record still says scheduled. No connect.
 	 */
 	public function testVodChecksItsStreamsFromTheReplica(): void {
 		$rNow = time();

@@ -36,6 +36,7 @@ final class LogSink {
 		'panel_error'  => ['panel_logs', ['server_id', 'type', 'log_message', 'log_extra', 'line', 'date', 'file', 'env', 'version', 'unique'], true],
 		'restream'     => ['detect_restream_logs', ['user_id', 'stream_id', 'ip', 'time'], false],
 		'syslog'       => ['mysql_syslog', ['server_id', 'type', 'error', 'username', 'ip', 'database', 'date'], false],
+		'ondemand_check' => ['ondemand_check', ['stream_id', 'server_id', 'status', 'source_id', 'source_url', 'fps', 'video_codec', 'audio_codec', 'resolution', 'response', 'errors', 'date'], false],
 		'activity'     => ['lines_activity', ['server_id', 'proxy_id', 'user_id', 'isp', 'external_device', 'stream_id', 'date_start', 'user_agent', 'user_ip', 'date_end', 'container', 'geoip_country_code', 'divergence', 'hmac_id', 'hmac_identifier'], false],
 	];
 

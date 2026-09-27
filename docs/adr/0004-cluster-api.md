@@ -3140,6 +3140,8 @@ Six places still treated every node as MAIN, or MAIN as every node:
 
 `ClusterQueueTest` pins the SQL, the flow routing (with the flow on, a failed agent call must not fall back to the table), the mode 2 refusal, and that no writer of `queue` is left outside the seam except the three admin surfaces that queue or cancel work on any server.
 
+`queue_update` is retried while MAIN does not answer (a pid MAIN never records is a row the daemon claims again, encoding the same stream twice); `queue_enqueue` is one try, because its callers are crons and admin actions that come round again and a cron must not sit out two minutes of retry waits for an agent that is down.
+
 **Not built:** MAIN does not push a node's queue to it; the node asks each pass, as it always has.
 
 ### What a node in mode 2 still could not do (Phase 5, seventh increment)
@@ -3152,7 +3154,23 @@ Three jobs still assumed the node had MAIN's database:
 
 `admin/thumb` (which ships to LBs: the panel redirects the admin's browser to the node that holds a stream's thumbnails) opened MAIN's database for one `streams` join. It asks `StreamSource::streamRow()` instead — the same join, from the replica where that owns the streams — and opens nothing when it does.
 
-**Not built:** `scanner` (the on-demand check) still reads `streams`/`ondemand_check` and writes `ondemand_check` directly. The plan gives it a log type of its own (`log.ondemand_check`), which is the next increment.
+### The on-demand source scanner (Phase 5, eighth increment)
+
+`scanner` probes each of the node's on-demand sources and records what it found in `ondemand_check`, which the *On-Demand Source Scanner* page shows. It selected its candidates with a join over `streams`, `streams_servers` and `ondemand_check`, inserted the row itself, and pointed `streams_servers.ondemand_check` at `last_insert_id()` — so a node booted from its replica scanned nothing.
+
+- **The check** is `log.ondemand_check`, the log type the plan names, with `ondemand_check`'s twelve columns. The node's spool redacts `source_url` and the ffprobe `errors` before they leave (both carry the source's credentials); the SQL path keeps writing them as before.
+- **The pointer** is MAIN's to set in the API path, because only MAIN knows the row's id: `EventIngest` points each of the node's `streams_servers` rows at the check it just inserted, the same `last_insert_id()` arithmetic the scanner does when it writes the row itself.
+- **The candidates** come from `NodeStreams::onDemandDue()`: the same join over MAIN's database, or from the replica (an on-demand stream of type 1, no direct source, no parent, no pid). The "not checked for `on_demand_scan_time`" half of the filter reads `ondemand_check`, which is MAIN's, so from the replica the node dates its own last scan by a marker it touches beside the scan's error file — it is the only server that scans its streams. A deleted stream leaves its marker behind; it is a few bytes in a directory `cron:cleanup` prunes.
+- **The daemon** does a pass a minute in one process now, instead of scanning once and re-executing itself through `restartDaemon()` (the loop ended in an unconditional `break`, as the queue daemon's did).
+- `api_probe` here asked a parent for codecs over `/probe/` without checking where that parent was, as `StreamProcess` did before this phase's fourth increment; it goes through `NetworkUtils::probeTargetAllowed()` too.
+
+`LogSinkTest` now also checks every log type's columns against the install schema, which is what would catch a typo in a table the unit suite cannot reach.
+
+### The viewer's own close (Phase 6, later increment)
+
+A viewer's request ending writes `hls_end = 1` and `hls_last_read` for its connection — the close the HLS reaper and the limits read. `ShutdownHandler` wrote it to Redis through `ConnectionTracker::getConnection()` (Redis only, so on a node whose CONNECTIONS flow is on the record was not there and *nothing* was written) or, in MySQL mode, straight into MAIN's `lines_live`.
+
+It asks the node's own registry first, as every other connection writer does: the record, then a `put` with the close, which the agent mirrors to MAIN as a P0 event. When the agent does not answer, or the record is another process's, the close goes to MAIN's store exactly as before — the fallback matters more than the fast path, and that is what `ShutdownCloseTest` pins. In mode 2 with CONNECTIONS off there is nothing to write and the `lines_live` UPDATE is skipped rather than refused.
 
 ### Disaster recovery of MAIN's cluster keys
 

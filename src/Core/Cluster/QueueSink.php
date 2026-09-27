@@ -47,7 +47,10 @@ final class QueueSink {
 		// Only this node's own work goes through the agent: MAIN keys the op to
 		// the caller, so queueing onto another server stays a database write.
 		if ($rServerID === (int) SERVER_ID && NodeFlows::on(NodeFlows::CONTENT)) {
-			return AgentClient::mainRetrying('queue_enqueue', ['type' => $rType, 'stream_ids' => $rStreamIDs]) !== null;
+			// One try: the callers are crons and admin actions that come round
+			// again (a movie re-queued replaces its row, a channel already queued
+			// is left alone), and a cron must not sit out an agent's retry waits.
+			return AgentClient::main('queue_enqueue', ['type' => $rType, 'stream_ids' => $rStreamIDs]) !== null;
 		}
 		if (NodeRole::refusesConnects()) {
 			return false;
@@ -125,6 +128,8 @@ final class QueueSink {
 		}
 
 		if (NodeFlows::on(NodeFlows::CONTENT)) {
+			// Retried, unlike enqueue: a pid MAIN never records is a row the
+			// daemon claims again next pass, which encodes the same stream twice.
 			$rBody = ['pids' => (object) array_map('intval', $rPids), 'delete' => $rDelete];
 			return AgentClient::mainRetrying('queue_update', $rBody) !== null;
 		}

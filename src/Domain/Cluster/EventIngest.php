@@ -525,7 +525,37 @@ final class EventIngest {
 			}
 			$rClean[] = Redactor::redactRow($rRow);
 		}
-		return LogSink::insert($rType, $rClean, self::db());
+		if (!LogSink::insert($rType, $rClean, self::db())) {
+			return false;
+		}
+		if ($rType === 'ondemand_check') {
+			self::ondemandPointers($rServerID, $rClean, (int) self::db()->last_insert_id());
+		}
+		return true;
+	}
+
+	/**
+	 * Point the node's `streams_servers` rows at the checks just inserted, as
+	 * the scanner does with `last_insert_id()` when it writes them itself. A
+	 * multi-row INSERT reports its first id and the rest follow consecutively.
+	 *
+	 * @param list<array<string, mixed>> $rRows The checks, in the order inserted.
+	 */
+	private static function ondemandPointers(int $rServerID, array $rRows, int $rFirstID): void {
+		if ($rFirstID <= 0) {
+			return;
+		}
+		$rLast = [];
+		foreach (array_values($rRows) as $i => $rRow) {
+			$rStreamID = (int) ($rRow['stream_id'] ?? 0);
+			if ($rStreamID > 0) {
+				$rLast[$rStreamID] = $rFirstID + $i;
+			}
+		}
+		ksort($rLast);
+		foreach ($rLast as $rStreamID => $rCheckID) {
+			self::db()->query('UPDATE `streams_servers` SET `ondemand_check` = ? WHERE `stream_id` = ? AND `server_id` = ?;', $rCheckID, $rStreamID, $rServerID);
+		}
 	}
 
 	/**
