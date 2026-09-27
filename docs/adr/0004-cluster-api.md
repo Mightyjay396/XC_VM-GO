@@ -1397,13 +1397,13 @@ It grants like every whole section: without a licence the extension refuses to s
 | `core.bouquets`, `core.categories`, `bouquets`, `categories` | those caches as they are, or `[]`: no section carries them yet (R2) |
 | the xc_vm crontab (once per boot) | only the jobs the replica owns (`ReplicaApply::crontabText(null)`); otherwise left as it is |
 
-Once a process booted this way (`ReplicaBoot::active`), `SettingsRepository::getAll` and `ServerRepository::getAll` never read MAIN's database, forced or not. Any other query opens it lazily, on first use: that is the connect `ConnectAudit` counts, and since the eighth Phase 7 increment mode 2's refusal refuses it.
+Once a process booted this way (`ReplicaBoot::active`), `SettingsRepository::getAll` and `ServerRepository::getAll` never read MAIN's database, forced or not. Any other query opens it lazily, on first use: that is the connect `ConnectAudit` counts, and since the eighth Phase 7 increment mode 2's refusal refuses it. Since the eleventh Phase 7 increment a mode 1 process reads them from MAIN's database once an apply handed them back (`ReplicaBoot::hybrid`).
 
 **Who boots from the replica.** `BootKernel::resolve` decides for the CLI profile, `WebApiBootstrap::coreStages` for the web API endpoints:
 
 - **A node in mode 2**, active or quarantined, by the agent's `flows.json` (`NodeFlows::declared`: the file alone, read before the settings, the servers or a database handle exist). Only once an apply built the replica's settings and servers caches since the reboot (`ReplicaBoot::ready`: both in `replica_owned`). Until then `ReplicaStage` runs `DatabaseStage` and `LegacyCoreStage` itself, so a mode 2 node without a replica boots as before; since the eighth Phase 7 increment the refusal makes that boot fail closed.
 - **`cluster:apply`**, in every mode (`console.php` passes `ReplicaBoot::forArgv`, which answers `always` for it): its work is to build those caches. With CONFIG on it needs no database at all, so the agent's applies go on with MAIN's MariaDB stopped. In shadow, its comparison with MAIN's crontab and RTMP publishers reads MAIN's database on first use, as before.
-- **Everything else boots exactly as before:** nodes in mode 0 and 1, MAIN, the admin UI (`BootContext::Admin`), the streaming entry points (`BootContext::Stream`, `StreamingRequestBootstrap`, `initStreaming`), and a caller that passes `replica => false`. A stale `flows.json` on MAIN cannot move it off its database: no apply built replica caches there.
+- **Everything else boots exactly as before:** nodes in mode 0 and 1, MAIN, the admin UI (`BootContext::Admin`), the streaming entry points (`BootContext::Stream`, `StreamingRequestBootstrap`, `initStreaming`), and a caller that passes `replica => false`. A stale `flows.json` on MAIN cannot move it off its database: no apply built replica caches there. Since the eleventh Phase 7 increment a node in mode 1 with CONFIG on boots as mode 2 does, and on both the streaming entry points take a lazy handle once an apply built the caches.
 
 **`cluster:apply --from-disk`.** `service` runs it at boot on a node with mode 1 or 2 and CONFIG on, before `daemons.sh` (fifth increment). The agent may not run yet then, and the `<name>.json` files it writes for PHP carry no signature. So with `--from-disk` each section comes from the record behind it (`Core/Cluster/ReplicaRecords`), checked as the agent checked it when it stored it:
 
@@ -1444,7 +1444,7 @@ Without `--from-disk` nothing changes: the agent runs `cluster:apply` right afte
 
 - Mode 2 is not switched on yet, and its refusal is not built: in a process booted from the replica, a query outside the settings and servers still opens MAIN's database. Since the eighth Phase 7 increment such a query is refused.
 - No section carries the bouquets, categories, proxies or allowed-IPs caches (R2). A mode 2 node's `cron:cache` still builds them from MAIN's database, and during a MAIN outage it stops at the first such read. The agent's `cluster:apply` still applies the replica then.
-- After a reboot the streaming endpoints have no stream definitions until MAIN answers: they live in `tmp/`, a tmpfs, and no section carries them (R2 `streams`, not built). The same holds in mode 2. In mode 1 the daemons and crons also still boot through MAIN's database (the watchdog waits for it), as the plan has it for hybrid mode.
+- After a reboot the streaming endpoints have no stream definitions until MAIN answers: they live in `tmp/`, a tmpfs, and no section carries them (R2 `streams`, not built). The same holds in mode 2. In mode 1 the daemons and crons also still boot through MAIN's database (the watchdog waits for it), as the plan has it for hybrid mode. Since the eleventh Phase 7 increment they boot from the replica there too once CONFIG is on and an apply built the caches.
 - A mode 2 process that boots before an apply built the caches after a reboot (a cron in the first minute, before `service`'s apply) boots through MAIN's database. Since the eighth Phase 7 increment that boot is refused: the process fails closed.
 - After a re-enrolment (new node keys) or a new panel root, the stored records no longer verify, and `--from-disk` applies none of them until the agent fetches them again. Today's agent keeps its ETags and never does while the data is unchanged (contract below).
 - The misses reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`. The heartbeat's other audit counters (`audit.sql_connects`, `audit.redis_connects`, `audit.sites`) are not reported yet; the same `audit` object is meant to carry them. It does since the eighth Phase 7 increment.
@@ -1477,7 +1477,7 @@ Without `--from-disk` nothing changes: the agent runs `cluster:apply` right afte
 | mode 2, any other state | counted, then opened |
 | mode 2 on MAIN's build | counted, then opened |
 
-- **Mode 2** is `ReplicaBoot::wanted()`: the agent's `flows.json` says mode 2 and a state MAIN counts as active. It is the node that boots from its replica (seventh increment).
+- **Mode 2** is `ReplicaBoot::wanted()`: the agent's `flows.json` says mode 2 and a state MAIN counts as active. It is the node that boots from its replica (seventh increment). Since the eleventh Phase 7 increment `wanted()` also takes in mode 1 with CONFIG on, and the refusal asks `ReplicaBoot::apiMode()`, which is this line's mode 2.
 - **Never on MAIN.** A stray `flows.json` on MAIN would otherwise lock it out of its own database, so `NodeRole::mainBuild()` answers from the files: MAIN's build ships `Public/cluster/index.php`, and the load balancer build strips it (`verify-lb-archive.sh` fails the build otherwise). No database or servers cache is needed for the answer.
 - **Graceful or not.** `db_connect(false, true)` and `DatabaseHandler::reconnect()` are refused too, rather than answering `false`: a refusal is not an outage to wait out, and the watchdog's wait loop would otherwise spin without end. The exception extends `XcVmException` (a `RuntimeException`) and carries `rKind` (`sql` or `redis`) and `rSite`; its message is `MySQL: refused on a node in cluster API mode (mode 2), at <site>` (`Redis:` for Redis).
 - **The boot.** A mode 2 node rebooted before its first apply falls back to `DatabaseStage` (seventh increment), whose connect is now refused: the process ends at its boot, the refusal in the panel's error log and in the audit. `cluster:apply` boots from the replica and is not affected, so `service`'s `cluster:apply --from-disk` builds the caches and the next processes boot from them.
@@ -1541,7 +1541,7 @@ since            unix seconds: when this node's audit began
   - `cron:cache` builds the bouquets, categories, proxies and allowed-IPs caches from MAIN's database (R2).
   - The watchdog waits for MAIN's database. Since the tenth Phase 7 increment it neither waits nor uses Redis in mode 2.
   - `cluster:apply`'s shadow comparison (CONFIG off) reads MAIN's crontab and RTMP publishers. Since the tenth Phase 7 increment mode 2 compares neither and says so.
-- Mode 1 still boots through MAIN's database (seventh increment), so a mode 1 node's `sql_connects` is never zero. The boot's site shows it apart from the rest, but the plan's seven-day zero cannot be reached in mode 1 until mode 1 boots from its replica too.
+- Mode 1 still boots through MAIN's database (seventh increment), so a mode 1 node's `sql_connects` is never zero. The boot's site shows it apart from the rest, but the plan's seven-day zero cannot be reached in mode 1 until mode 1 boots from its replica too. It does since the eleventh Phase 7 increment, with CONFIG on.
 - A tree that holds MAIN's `Public/cluster/index.php` (a node installed from MAIN's archive) never refuses; it still counts.
 - A CLI process refused at its boot ends through the panel's exception handler, with exit status 0.
 - The counters reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`.
@@ -1634,7 +1634,7 @@ The eighth increment's refusal stopped the paths a node in mode 2 still took to 
   - `cron:cache`'s bouquets, categories, proxies and allowed-IPs caches and the stream endpoints (R2).
 
   The eighth increment's list left out the first four; the connect audit's sites on the Cluster Nodes page show what remains.
-- Mode 1 is unchanged: it still boots through MAIN's database, so its `sql_connects` is never zero.
+- Mode 1 is unchanged: it still boots through MAIN's database, so its `sql_connects` is never zero. Since the eleventh Phase 7 increment it boots from its replica with CONFIG on.
 
 **Tests.**
 
@@ -1763,6 +1763,72 @@ Values are typed as in the whole sections (integers as JSON integers, text as st
 - **Apply.** After storing any record or removal, run `console.php cluster:apply`, debounced 1 s as today. Nothing in PHP applies the section yet; its readers read the files.
 - **Never logged:** a record, its data or a diff of it. Name the stream id only.
 - **Compatibility.** Today's agent never lists `streams`, so it never calls the op and MAIN never serves it; nothing else changes on the wire. A rollback below migration 047 empties `cluster_stream_ver` and removes the `cluster_meta` keys `stream_ver`, `stream_ver_floor`, `stream_ver_floor.<sid>` and `stream_ver_prune`; MAIN then answers the op `404 UNKNOWN_OP`. An upgrade seeds them afresh with the counter at 1, never below a row, so a node whose cursor is above MAIN's head is answered `full` and walks again.
+
+### Mode 1 boots from the replica too (Phase 7, eleventh increment)
+
+**Before.** Only a node in mode 2 booted from its replica (seventh increment). A node in mode 1 booted every CLI process and web API endpoint through `DatabaseStage` and `LegacyCoreStage`, and every streaming request connected in `LegacyInitializer::initStreaming()`, so the connect audit (eighth increment) counted every boot and its `sql_connects` never reached zero. The plan (section 10, step 2) has the LB run DB-free in audit (mode 1) from Phase 7, and the seven-day count start there.
+
+**Who boots from the replica.** By the agent's `flows.json` alone, read before the settings, the servers or a database handle exist:
+
+| Node | CLI profile, web API | Streaming entry points | A connect to MAIN |
+| --- | --- | --- | --- |
+| MAIN, no `flows.json`, mode 0 | as before | as before: connected at once | opened, not counted |
+| mode 1, CONFIG off | as before | as before | counted, opened |
+| mode 1, CONFIG on, `active` or `quarantined` | `ReplicaStage` once an apply built the caches; until then as before | a lazy handle once an apply built the caches; until then as before | counted, opened |
+| mode 2, `active` or `quarantined` | `ReplicaStage` once an apply built the caches (seventh increment) | a lazy handle once an apply built the caches; until then connected at once, which is refused | counted, refused |
+| mode 1 or 2, any other state | as before | as before | counted, opened |
+
+- `ReplicaBoot::wanted()` is now mode 2, or mode 1 with the CONFIG bit (32), in a state MAIN counts as active. `BootKernel::resolve` (the CLI profile) and `WebApiBootstrap::coreStages` ask it, as before. Mode 1 needs CONFIG: only then does the replica own the settings and servers. With CONFIG off a mode 1 node boots through MAIN's database at once, even before an apply hands the caches back (`ReplicaApply::disown`).
+- `ReplicaBoot::apiMode()` is mode 2 in an active state, whatever the flows: what `wanted()` was. `NodeRole::refusesConnects()` asks it, so the refusal is exactly the eighth increment's, and mode 1 never refuses.
+- "Once an apply built the caches" is `ReplicaBoot::ready()`, as for mode 2: `replica_owned` holds `settings` and `servers`. Only an authoritative apply (CONFIG on) records them, and the record goes with `tmp/` at a reboot. `service` already runs `cluster:apply --from-disk` before `daemons.sh` on a node in mode 1 with CONFIG on (fifth increment), so the daemons boot from the replica.
+- `cluster:apply` boots from the replica in every mode, as before.
+
+**What a mode 1 process booted from the replica still reads from MAIN.** Its boot opens nothing: `ReplicaStage` leaves what it leaves in mode 2, from the caches, with a lazy handle. After the boot:
+
+- Any other query opens MAIN's database on the handle's first use. `ConnectAudit` counts it at its own site, the caller that needed it, not `DatabaseStage.php`, and mode 1 opens it. So a mode 1 node's crons, daemons and endpoints keep using MAIN for what no section carries (the streams, `signals`, `lines`), and the Cluster Nodes page lists those paths instead of every boot.
+- The crontab. `LegacyInitializer::generateCron` writes the replica's jobs once the replica owns them, as in mode 2. While it does not (the agent stored no `crontab` section, or it was refused), mode 1 reads MAIN's `crontab` table as it did before, on the lazy handle (`ReplicaBoot::hybrid()`): one counted connect after each reboot (`generateCron`'s marker is in `tmp/`), at `Core/Cluster/ReplicaApply.php`. Without it the crontab would stay as the reboot left it, and `cron:root_signals` checks it only once it was written. `cluster:apply` (booted `ALWAYS`) and mode 2 never read the table: they leave the crontab as it is.
+- The settings and servers. While the replica owns them, a process booted from it reads the caches, forced or not, as in mode 2. Once an apply hands them back (CONFIG off, a refused section, `replica_owned` gone), a mode 1 process reads MAIN's database for them as before, on the lazy handle (`hybrid()`), so a daemon that booted from the replica follows CONFIG going off at its next forced read. `cluster:apply` and mode 2 keep the caches however old (seventh increment).
+- A cached web API endpoint with `enable_cache` off no longer reconnects at boot (`LegacyCoreStage`'s reopen): its queries use the lazy handle.
+
+**The streaming entry points.** Decided: `LegacyInitializer::initStreaming()` takes a lazy handle (`DatabaseFactory::connectLazy()`) where `ReplicaBoot::now()` holds (`wanted()` and `ready()`), in mode 1 and mode 2 alike, and connects at once elsewhere, as before. It boots `StreamingRequestBootstrap`'s streaming endpoints (`live`, `vod`, `timeshift`, `thumb`, `subtitle`, `rtmp`, `probe`, `status`), `player_api` and the Ministra portal, and `/stream/auth`, which calls it itself. `/stream/key` and `/stream/segment` never called it.
+
+- They choose no boot stage: their settings, servers and blocklists always came from the caches (`CacheReader`), so the connect was their only use of MAIN's database at boot.
+- A request that needs no query opens nothing. One that does opens MAIN's database at its first query: counted at that query's site in mode 1, refused there in mode 2. Which requests still query (the stream rows, viewer authentication, connection tracking without the agent) is what the counted sites show.
+- In mode 2 a request that queries still fails, now at its query instead of its boot, and one that needs no query is served, where before every streaming request was refused at its boot. That is the node the plan's section 3 describes once DATAPLANE removes the viewer-authentication endpoints from nodes.
+- `BootContext::Stream` has no caller and keeps its `DatabaseStage`. The relay endpoints `/admin/(live|thumb|timeshift|vod)` boot through `WebApiBootstrap` (above), and open the database at once for their stream rows (`DatabaseFactory::open()`), as do the Enigma2, XPlugin and playlist controllers for viewer authentication: each at its own site.
+
+**What a zero means now.** On a mode 1 node with CONFIG on, `sql_connects` and `redis_connects` count what its processes still ask of MAIN, each at its site, and no boot from the replica. A boot through MAIN's database, before an apply built the caches after a reboot, still counts at `Core/Bootstrap/Stage/DatabaseStage.php` (a streaming request at `Core/Init/LegacyInitializer.php`). So a zero over the report's seven days, with a `connects_since` at least seven days old, means none of the node's processes needed MAIN's MySQL or Redis in that week: the plan's gate for mode 2 (section 10). A mode 1 node with CONFIG off still boots through MAIN's database and cannot reach it.
+
+**How it differs from the plan.**
+
+- The plan has mode 1 run DB-free from Phase 7. Here a mode 1 node boots from its replica only with CONFIG on, and still reaches MAIN's database, counted, for what no section carries: DB-free in mode 1 is what the count measures, not what the boot enforces. Mode 2 is where it is enforced.
+- The plan names the CLI profile and `WebApiBootstrap`. The streaming entry points' lazy handle, in mode 2 too, is this increment's.
+- Mode 1's fallback to MAIN's database for what the replica does not own (the settings, the servers, the crontab's jobs) is not in the plan.
+
+**Known limits.**
+
+- A real mode 1 node does not reach the zero yet: its crons (`cron:servers`, `cron:streams`, `cron:vod`, `cron:cache`'s bouquets, categories, proxies and allowed IPs), the signals daemon, `cron:root_signals` (its `signals` rows), the relay endpoints (stream rows), viewer authentication (`auth.php`, `player_api`, the Enigma2, XPlugin and playlist controllers), and in Redis mode the connection tracking and the watchdog still use MAIN's database or Redis. That is R2, Phase 8 and the tenth increment's list for mode 2; the sites on the Cluster Nodes page show what is left.
+- A process that boots before an apply built the caches after a reboot boots through MAIN's database, counted. After a re-enrolment `service`'s `--from-disk` apply refuses the stored records (seventh increment), so that lasts until the agent's own first apply.
+- The counts reach MAIN only once the agent sends `audit.json` (seventh increment's contract; today's agent does not).
+
+**Tests.** `ReplicaBootTest`:
+
+- In this process: mode 0 whatever its flows, MAIN, mode 1 without CONFIG, and nodes in other states boot as before; mode 1 with CONFIG (active or quarantined) and mode 2 (whatever its flows) take `ReplicaStage` in the CLI profile and the web API. `apiMode()` and `refusesConnects()` hold in mode 2 only; `hybrid()` holds for mode 1's `WHEN_READY` boot only, never for `cluster:apply` or mode 2.
+- In a child PHP, the real `console.php`, bootstrap and streaming entry point in a throwaway deploy root: a mode 1 node before its first apply connects at boot, counted at `DatabaseStage.php`, the CLI and the web API alike. After `cluster:apply --from-disk`, `--list`, a CLI boot and a cached web API endpoint make no connect and leave the lazy handle unopened; the crontab is the replica's jobs; the report the agent sends says `sql_connects` 0. With CONFIG off it connects at boot again at once.
+- A query in a mode 1 process booted from the replica connects on first use (MAIN's database is an SQLite file there), answers, and is counted at the query's own site, not refused.
+- Once an apply handed the caches back, a mode 1 process booted from the replica reads its settings and servers from MAIN's database (one connect); a mode 2 process keeps the caches without one.
+- With no `crontab` section stored, `cluster:apply` reads no table; a mode 1 boot reads MAIN's `crontab` table once, counted at `ReplicaApply.php`, and installs its jobs; mode 2 leaves the crontab alone without a connect.
+- `initStreaming()`: mode 0, MAIN, mode 1 without CONFIG and mode 1 before an apply connect at once (mode 1 counted); mode 1 with CONFIG after an apply opens nothing, and the request's query connects, counted at its site; mode 2 opens nothing, and the query is refused, counted.
+
+`DbConnectRefusalTest` is unchanged: mode 1 counts and never refuses, and its boot before an apply connects as before.
+
+**The agent's contract (XC_VM_Fanout).** No change is needed, and today's agent is unaffected:
+
+- No new op, lane, field, header, refusal, file, setting or exit code.
+- PHP reads `flows.json` as today's agent writes it: `{"mode": <0-2>, "flows": <0-255>, "state": "<state>"}` (and `features`), compact and replaced atomically. On a node in mode 1, processes boot from the replica while `flows` has bit 32 (CONFIG) and `state` is `active` or `quarantined`; in mode 2, in those states whatever `flows` says. A missing or unreadable file boots through MAIN's database, as before.
+- `cluster:apply` (with or without `--from-disk`), its output and its exit codes are the sixth and seventh increments'. `service` already runs `cluster:apply --from-disk` at boot on a node in mode 1 or 2 with CONFIG on.
+- The fifth increment's rule is the one this relies on: run `cluster:apply` once after the first sync when the agent starts, and whenever the CONFIG bit it writes to `flows.json` changes. A mode 1 node boots from its replica only once an apply built the caches since the reboot; until then it boots through MAIN's database, counted.
+- `audit.json` keeps the eighth increment's members (`sql_connects`, `redis_connects`, `sites`, `connects_since`); on a mode 1 node with CONFIG on its counts no longer include the boots. Send it as the heartbeat's `audit` as before.
 
 ### The cluster bus (Phase 2, first increment): wake-ups
 

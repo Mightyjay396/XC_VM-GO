@@ -49,11 +49,19 @@ action.
 - Node-side code reads stream definitions through `StreamSource`, not with its
   own queries on `streams_options`.
 - Node-side code reads settings through `SettingsManager`'s getters and servers
-  through `ServerRepository`. A node in mode 2 boots from its replica
-  (`ReplicaStage`): those come from the replica's caches, and any other query
-  opens MAIN's database lazily, which mode 2 refuses. On a node in mode 1
+  through `ServerRepository`. A node in mode 2, or in mode 1 with the CONFIG
+  flow on, boots from its replica (`ReplicaStage`) once an apply built its
+  caches: those come from the replica's caches, and any other query opens
+  MAIN's database lazily, on first use. Mode 1 opens it, counted at the
+  query's site; mode 2 refuses it. The streaming entry points take the same
+  lazy handle there (`LegacyInitializer::initStreaming`). On a node in mode 1
   or 2, a settings key outside `lb_settings_keys.php` is counted as a miss
   (`SettingsAudit`) and shown on *Servers → Cluster Nodes*.
+- Do not open MAIN's database before a query needs it. A connect at boot or at
+  the top of an entry point counts against a mode 1 node's seven-day zero even
+  when the request ends without a query. Where the replica may not answer
+  (`ReplicaBoot::hybrid()`, mode 1 only), read MAIN's database on the lazy
+  handle, never on a new one.
 - Do not write `new DatabaseHandler()`. Take the process's handle
   (`DatabaseAware`, `DatabaseFactory::get()`), or `DatabaseFactory::connect()`,
   `connectLazy()` or `open()`. Every connect to MAIN's MySQL or Redis passes
@@ -78,5 +86,5 @@ action.
 
 Tests that pin these rules: `SignalDispatcherParityTest`, `StreamStateWriterTest`,
 `StreamRowMergeTest`, `StreamCacheBuilderSourceTest`, `LogSinkTest`,
-`NodeRpcActionsTest`, `ArchitectureTest`, `DbConnectRefusalTest` and
-`ModeTwoPathsTest`.
+`NodeRpcActionsTest`, `ArchitectureTest`, `DbConnectRefusalTest`,
+`ReplicaBootTest` and `ModeTwoPathsTest`.
