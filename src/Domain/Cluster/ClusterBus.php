@@ -259,6 +259,39 @@ final class ClusterBus {
 		return $rOut;
 	}
 
+	/**
+	 * Record the current second in a mark, a file beside the bus socket
+	 * (NonceStore), at most one write a second; false when it cannot be
+	 * written, true where there is no bus. A mark never moves back (a worker
+	 * that read the clock a second earlier writes late), unless it is more
+	 * than a second ahead: the clock stepped back.
+	 */
+	public static function mark(string $rName, int $rNowMs): bool {
+		$rPath = self::markPath($rName);
+		if ($rPath === null) {
+			return true;
+		}
+		$rSec = intdiv($rNowMs, 1000);
+		$rAt = self::markedAt($rName);
+		return ($rAt !== null && $rAt >= $rSec && $rAt <= $rSec + 1) || @touch($rPath, $rSec);
+	}
+
+	/** The second a mark holds, or null without one. */
+	public static function markedAt(string $rName): ?int {
+		$rPath = self::markPath($rName);
+		if ($rPath === null) {
+			return null;
+		}
+		clearstatcache(true, $rPath);
+		$rAt = @filemtime($rPath);
+		return $rAt === false ? null : $rAt;
+	}
+
+	private static function markPath(string $rName): ?string {
+		$rSocket = self::socket();
+		return $rSocket === null ? null : dirname($rSocket) . '/' . $rName;
+	}
+
 	/** Is the bus's redis-server running here? */
 	public static function running(): bool {
 		return ProcessManager::isAnyProcessRunning(['redis-server unixsocket:', 'bin/cluster_bus/cluster.conf']);
