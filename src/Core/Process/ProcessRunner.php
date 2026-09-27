@@ -61,4 +61,60 @@ final class ProcessRunner {
 		fclose($rPipes[1]);
 		return proc_close($rProc);
 	}
+
+	/**
+	 * Start $rArgv and do not wait for it: what a line ending in `&` did. The
+	 * caller learns of the program another way — a pid file it writes, a later
+	 * `ps` — and this process must not be held for its lifetime (a channel
+	 * build or a cache pass runs for minutes).
+	 *
+	 * `proc_close()` waits, so a detached child needs one shell to background it
+	 * and exit, leaving the child to init. The script is constant and the argv is
+	 * the shell's own arguments (`$0`, then `$@`), never interpolated into it, so
+	 * no value can be read as shell syntax.
+	 *
+	 * @param non-empty-list<string> $rArgv
+	 * @return bool whether the shell that backgrounds it started
+	 */
+	public static function start(array $rArgv): bool {
+		if (self::$rRunner !== null) {
+			return (self::$rRunner)($rArgv, true) === 0;
+		}
+		// nosemgrep: php.lang.security.exec-use.exec-use
+		$rProc = @proc_open(
+			array_merge(['/bin/sh', '-c', '"$0" "$@" >/dev/null 2>&1 &'], array_values($rArgv)),
+			[0 => ['file', '/dev/null', 'r'], 1 => ['file', '/dev/null', 'w'], 2 => ['file', '/dev/null', 'w']],
+			$rPipes
+		);
+		if (!is_resource($rProc)) {
+			return false;
+		}
+		// The shell exits as soon as it has started the child, so this waits for
+		// the shell alone.
+		return proc_close($rProc) === 0;
+	}
+
+	/**
+	 * Run $rArgv with its output left where passthru() put it — this process's
+	 * stdout and stderr — and wait for it. For a command an operator typed and
+	 * reads the output of; a daemon's launch is start(), a silent call run().
+	 *
+	 * Descriptors 1 and 2 are left out of the spec, which inherits them.
+	 *
+	 * @param non-empty-list<string> $rArgv
+	 * @return int its exit status; 127 when it did not start, as a shell answers
+	 */
+	public static function passThrough(array $rArgv): int {
+		if (self::$rRunner !== null) {
+			return (self::$rRunner)($rArgv, false);
+		}
+		// An argv list, no shell: each element one argument, and the caller's own
+		// constant words and paths.
+		// nosemgrep: php.lang.security.exec-use.exec-use
+		$rProc = @proc_open($rArgv, [0 => ['file', '/dev/null', 'r']], $rPipes);
+		if (!is_resource($rProc)) {
+			return 127;
+		}
+		return proc_close($rProc);
+	}
 }

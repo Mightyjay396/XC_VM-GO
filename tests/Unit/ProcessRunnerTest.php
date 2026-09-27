@@ -150,6 +150,55 @@ final class ProcessRunnerTest extends TestCase {
 		$this->assertSame([], $rWarnings);
 	}
 
+	/**
+	 * start(): what a line ending in `&` did. The program keeps running after
+	 * the call returns — nothing here waits for it — and its argv is still one
+	 * element per argument, whatever shell syntax a value holds.
+	 */
+	public function testStartDoesNotWaitForTheProgram(): void {
+		$rProgram = $this->program('slow', 'sleep 5; touch "$0.late"');
+		$rBefore = microtime(true);
+
+		$this->assertTrue(ProcessRunner::start([$rProgram, '; touch "' . $this->rDir . 'injected"']));
+
+		$this->assertLessThan(2.0, microtime(true) - $rBefore, 'start() waited for the program');
+		$this->assertFileDoesNotExist($rProgram . '.late', 'and it has not finished yet');
+		// The argument is text, not a command: the shell in between reads the
+		// script only, never the values.
+		usleep(300000);
+		$this->assertFileDoesNotExist($this->rDir . 'injected');
+	}
+
+	/**
+	 * What start() answers is that the launch was handed off, not that the
+	 * program exists: the shell backgrounds it and exits before it can fail, as
+	 * a line ending in `&` did. A caller learns of the program the way it always
+	 * did — the pid file it waits for never appears.
+	 */
+	public function testStartAnswersTheHandOffNotTheProgram(): void {
+		$this->assertTrue(ProcessRunner::start([$this->rDir . 'not-a-program']));
+		// False is for the hand-off itself failing, which is /bin/sh or proc_open
+		// gone — not a program that is not there.
+		$this->assertFileDoesNotExist($this->rDir . 'not-a-program');
+	}
+
+	/**
+	 * passThrough(): the operator's own command — its output is this process's,
+	 * as passthru() left it, and its exit status comes back.
+	 */
+	public function testPassThroughLeavesTheOutputWhereItWas(): void {
+		$rProgram = $this->program('talks', 'echo out; echo err >&2; exit 3');
+		[$rCode, $rOut, $rErr] = $this->child('exit(ProcessRunner::passThrough([' . var_export($rProgram, true) . ']));');
+
+		$this->assertSame(3, $rCode, 'the program\'s own status');
+		$this->assertStringContainsString('out', $rOut);
+		$this->assertStringContainsString('err', $rErr);
+	}
+
+	public function testPassThroughIs127WithoutAProgram(): void {
+		$this->assertSame(127, @ProcessRunner::passThrough([$this->rDir . 'not-a-program']));
+	}
+
 	/** Tests: another runner gets the argv list and $rQuiet, and nothing is started. */
 	public function testTheSeamStartsNothing(): void {
 		$rProgram = $this->program('never', 'touch "$0.ran"');
@@ -162,6 +211,13 @@ final class ProcessRunnerTest extends TestCase {
 		$this->assertSame(5, ProcessRunner::run([$rProgram]));
 		$this->assertSame([[[$rProgram, 'a b'], true], [[$rProgram], false]], $rSeen);
 		$this->assertFileDoesNotExist($rProgram . '.ran');
+		// start() and passThrough() go through the same seam; the seam's non-zero
+		// status is start()'s "it did not start".
+		$this->assertFalse(ProcessRunner::start([$rProgram, 'x']));
+		$this->assertSame(5, ProcessRunner::passThrough([$rProgram]));
+		$this->assertSame([[$rProgram, 'x'], true], $rSeen[2]);
+		$this->assertSame([[$rProgram], false], $rSeen[3]);
+
 		ProcessRunner::useRunner(null);
 		$this->assertSame(0, ProcessRunner::run([$rProgram]));
 		$this->assertFileExists($rProgram . '.ran');

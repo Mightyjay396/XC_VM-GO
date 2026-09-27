@@ -8,6 +8,7 @@ use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Streaming\Health\ProcessChecker;
 
@@ -155,7 +156,7 @@ class QueueCommand implements CommandInterface {
 			unlink($rCreateFile);
 		}
 
-		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php created ' . $rStreamID . ' >/dev/null 2>/dev/null &');
+		ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'created', (string) $rStreamID]);
 		// console.php bootstrap takes well over the old 300ms window; give the
 		// spawned process up to 5s to write its pid file.
 		foreach (range(1, 20) as $i) {

@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
 use XcVm\Core\Module\ModuleLoader;
+use XcVm\Core\Process\ProcessRunner;
 
 /**
  * StartupCommand — startup command
@@ -209,12 +210,12 @@ class StartupCommand implements CommandInterface {
 			// Drop to xc_vm when running as root (service boot / installer):
 			// cache files written by root cannot be refreshed later by the
 			// xc_vm daemons and crons.
-			$rPrefix = ((posix_getpwuid(posix_geteuid())['name'] ?? null) === 'root') ? 'sudo -u xc_vm ' : '';
+			$rAsXcVm = ((posix_getpwuid(posix_geteuid())['name'] ?? null) === 'root') ? ['sudo', '-u', 'xc_vm'] : [];
 			// The heavy cache pass is MAIN's: the LB build strips CacheEngineCronJob,
 			// and an LB never has cache_complete, so this ran every boot and answered
 			// "Unknown command". No database is asked, because a mode 2 node has none.
 			if (file_exists(MAIN_HOME . 'Cli/CronJobs/CacheEngineCronJob.php')) {
-				exec($rPrefix . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache_engine >/dev/null 2>/dev/null &');
+				ProcessRunner::start(array_merge($rAsXcVm, [PHP_BIN, MAIN_HOME . 'console.php', 'cron:cache_engine']));
 			}
 		}
 	}

@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Process\ProcessRunner;
 
 /**
  * Управление сервисом XC_VM (start/stop/restart/reload).
@@ -56,8 +57,8 @@ class ServiceCommand implements CommandInterface {
 			return 1;
 		}
 
-		$rCode = 0;
-		passthru('/bin/sh ' . escapeshellarg($rScript) . ' ' . escapeshellarg($rAction), $rCode);
-		return $rCode;
+		// An argv list, no shell of ours: the script's own path and one of the four
+		// words ACTIONS maps to. Its output is the operator's, as passthru left it.
+		return ProcessRunner::passThrough(['/bin/sh', $rScript, $rAction]);
 	}
 }
