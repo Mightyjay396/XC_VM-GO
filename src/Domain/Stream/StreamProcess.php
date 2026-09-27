@@ -11,6 +11,7 @@ use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\CurlClient;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Codec\FfmpegPaths;
@@ -2353,7 +2354,10 @@ class StreamProcess {
 					if (!$rStream['server_info']['on_demand'] || !$rLLOD) {
 						if ($rIsXC_VM && $rSettings['api_probe']) {
 							$rProbeURL = $rURLInfo['scheme'] . '://' . $rURLInfo['host'] . (isset($rURLInfo['port']) ? ':' . $rURLInfo['port'] : '') . '/probe/' . base64_encode($rURLInfo['path'] ?? '');
-							$rFFProbeOutput = json_decode(CurlClient::getURL($rProbeURL), true);
+							// A loopback parent is this node: asking itself for codecs it is
+							// this very moment working out answers nothing, and /probe/ is
+							// unauthenticated. ffprobe below reads the source instead.
+							$rFFProbeOutput = NetworkUtils::probeTargetAllowed($rProbeURL) ? json_decode(CurlClient::getURL($rProbeURL), true) : null;
 
 							if ($rFFProbeOutput && isset($rFFProbeOutput['codecs'])) {
 								echo 'Got stream information via API' . "\n";

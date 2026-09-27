@@ -3103,6 +3103,19 @@ The gate is pure and tested (`ClusterModeGateTest`) rather than reached through 
 
 **Not built:** `api_mode_allowed` is still false (`SettingsService.php:85`), so `lb_new_node_mode` cannot be set to `api` and a *new* node still enrols at mode 0. Promotion is the supported path to mode 2 for now. Flipping that flag is the cutover decision itself, and it stays with the operator.
 
+### The fleet-wide jobs nobody came back for (Phase 0, second increment)
+
+Six places still treated every node as MAIN, or MAIN as every node:
+
+- **Root's crontab had two writers.** `startup` installed `cron:root_signals`, `cluster:root`, `cron:root_mysql` and the module licences; `status` then rewrote the same crontab from its own older list, filtering every `# XC_VM` line — so it deleted `cluster:root` and `cron:module_licenses`. A node stopped draining MAIN's signed root commands until its unit was next started, and the dashboard tells admins to run `status` by hand. `status` now calls `StartupCommand::installRootCrontab()`; one writer, one list.
+- **`update_binaries` went to every server**, and the DELETE that clears the old signals ran once per server inside the loop. `binaries` needs `bin/install/update_binaries.sh`, which the LB build strips, so every LB answered "Updater script not found" and wrote a syslog row saying it was updating. MAIN alone is queued now. LB runtimes come from the install flow, and `fanout_binary`/`xcvm_core` keep themselves current on every node.
+- **The LB update broadcast tested nothing.** `($rServer['enabled'] && status == 1 && fresh) || !$rServer['is_main']` is true for every non-MAIN row, so a disabled or long-dead LB was queued an update anyway. It skips MAIN (which is updating itself) and requires the liveness the condition always meant to.
+- **`update_data` is one row for the cluster.** Whichever server finished an update cleared it, so an LB threw away MAIN's pending update record. MAIN clears it.
+- **The panel-log upload was gated on mode 2** rather than on MAIN, so a mode 0 or 1 LB uploaded the cluster-wide `panel_logs` and marked the rows sent — MAIN then had nothing to send.
+- **`cron:cache_engine` was started on every boot of every node.** The LB build strips `CacheEngineCronJob`, and an LB never writes `cache_complete`, so the exec answered "Unknown command" every time. It runs where the job exists, which asks no database (a mode 2 node has none).
+
+`api_probe` also asked a parent for codecs over `/probe/` without looking at where that parent was: for a loopback parent the node asked itself, mid-analysis, over an unauthenticated endpoint. It reuses `NetworkUtils::probeTargetAllowed()` and falls through to ffprobe.
+
 ### The node system API's own inputs (Phase 4, fifth increment)
 
 `/api` is the legacy control plane, and the cluster command channel routes four of its actions to a node unchanged. Three took an input from MAIN and used it as given, which made MAIN's cluster-wide secret the only thing between a caller and the node's filesystem:

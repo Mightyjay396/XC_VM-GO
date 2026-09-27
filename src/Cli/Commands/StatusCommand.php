@@ -7,7 +7,6 @@ use XcVm\Core\Cluster\LbDatabaseAccessException;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\MigrationRunner;
-use XcVm\Core\Module\ModuleLoader;
 use XcVm\Core\Module\ModuleManager;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\ClusterPool;
@@ -115,7 +114,7 @@ class StatusCommand implements CommandInterface {
 			exec('sudo service xc_vm restart');
 		}
 
-		$this->installRootCrontab();
+		StartupCommand::installRootCrontab();
 		$this->configureFileLimits();
 		$this->removeInitScript();
 
@@ -252,52 +251,6 @@ class StatusCommand implements CommandInterface {
 		return $rReload;
 	}
 
-	private function installRootCrontab(): void {
-		$rCrons = [];
-
-		$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_signals # XC_VM';
-		if (file_exists(MAIN_HOME . 'Cli/CronJobs/RootMysqlCronJob.php')) {
-			$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_mysql # XC_VM';
-		}
-
-		foreach ((new ModuleLoader())->loadAll()->collectCronEntries() as $rEntry) {
-			$rCrons[] = $rEntry;
-		}
-
-		$rWrite = false;
-		$rOutput = [];
-		exec('sudo crontab -l', $rOutput);
-
-		// Удаляем старые строки с нашим маркером (включая '# \XC_VM' от
-		// прошлой миграции), чтобы при апгрейде не появлялись дубликаты.
-		$rFiltered = [];
-		foreach ($rOutput as $rLine) {
-			if (strpos($rLine, '# XC_VM') !== false || strpos($rLine, '# \XC_VM') !== false) {
-				$rWrite = true;
-				continue;
-			}
-			$rFiltered[] = $rLine;
-		}
-		$rOutput = $rFiltered;
-
-		foreach ($rCrons as $rCron) {
-			if (!in_array($rCron, $rOutput)) {
-				$rOutput[] = $rCron;
-				$rWrite = true;
-			}
-		}
-
-		if ($rWrite) {
-			$rCronFile = tempnam(TMP_PATH, 'crontab');
-			file_put_contents($rCronFile, implode("\n", $rOutput) . "\n");
-			exec('sudo chattr -i /var/spool/cron/crontabs/root');
-			exec('sudo crontab -r');
-			exec('sudo crontab ' . $rCronFile);
-			exec('sudo chattr +i /var/spool/cron/crontabs/root');
-			unlink($rCronFile);
-			echo "Root crontab installed.\n\n";
-		}
-	}
 
 	private function configureFileLimits(): void {
 		$rFile = file('/etc/systemd/system.conf');
@@ -339,10 +292,14 @@ class StatusCommand implements CommandInterface {
 
 	private function broadcastUpdateBinaries(array $rServers): void {
 		$db = self::db();
-		foreach ($rServers as $rServerID => $rServerArray) {
-			$db->query('DELETE FROM `signals` WHERE `custom_data` = ?;', json_encode(['action' => 'update_binaries']));
-			NodeActions::updateBinaries(intval($rServerID), $db);
-		}
+		// Drop whatever an earlier run left queued, once — the same statement ran
+		// per server before. Only MAIN is queued: `binaries` needs
+		// bin/install/update_binaries.sh, which the LB build strips, so every LB
+		// answered "Updater script not found" and wrote a syslog row for it. LB
+		// runtimes are refreshed by the install flow, and fanout_binary/xcvm_core
+		// keep themselves current on every node (UpdateCommand).
+		$db->query('DELETE FROM `signals` WHERE `custom_data` = ?;', json_encode(['action' => 'update_binaries']));
+		NodeActions::updateBinaries(SERVER_ID, $db);
 	}
 
 	private function configureRedis(): void {

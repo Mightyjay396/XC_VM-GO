@@ -306,14 +306,21 @@ class UpdateCommand implements CommandInterface {
 				if (ServerRepository::getAll()[SERVER_ID]['is_main'] && SettingsManager::get('auto_update_lbs')) {
 					UpdateLogger::info('Broadcasting update signal to LB servers');
 					foreach (ServerRepository::getAll() as $rServer) {
-						if (($rServer['enabled'] && $rServer['status'] == 1 && time() - $rServer['last_check_ago'] <= 180) || !$rServer['is_main']) {
+						// `|| !is_main` made the liveness test dead: every other row was
+						// queued an update, offline or disabled. MAIN is updating itself
+						// here, so it is the one row to skip.
+						if (!$rServer['is_main'] && $rServer['enabled'] && $rServer['status'] == 1 && time() - $rServer['last_check_ago'] <= 180) {
 							NodeActions::update(intval($rServer['id']), $db);
 						}
 					}
 				}
 
 				$db->query('UPDATE `servers` SET `status` = 1, `xc_vm_version` = ? WHERE `id` = ?;', XC_VM_VERSION, SERVER_ID);
-				$db->query('UPDATE `settings` SET `update_data` = NULL;');
+				if (ServerRepository::getAll()[SERVER_ID]['is_main']) {
+					// One settings row for the cluster: an LB clearing it threw away
+					// MAIN's pending update record.
+					$db->query('UPDATE `settings` SET `update_data` = NULL;');
+				}
 				UpdateLogger::info('Server status set to 1 (online), version=' . XC_VM_VERSION);
 
 				foreach (['http', 'https'] as $rType) {

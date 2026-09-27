@@ -65,8 +65,9 @@ class CertbotCronJob implements CommandInterface {
 		$rApi = NodeRole::refusesConnects();
 
 		if (!$rCheck) {
-			// MAIN's panel logs (MAIN's own run sends them).
-			if (!PHP_ERRORS && !$rApi) {
+			// MAIN's panel logs: the table is cluster-wide and the rows are marked
+			// sent, so an LB uploading them took MAIN's logs and hid them from it.
+			if (!PHP_ERRORS && ServerRepository::getAll()[SERVER_ID]['is_main']) {
 				DiagnosticsService::submitPanelLogs();
 			}
 			$rCertInfo = DiagnosticsService::getCertificateInfo();
