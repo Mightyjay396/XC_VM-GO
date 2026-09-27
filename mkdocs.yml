@@ -117,6 +117,7 @@ plugins:
             Module Authoring: Создание модулей
             Module Lifecycle: Жизненный цикл модулей
             Module Extension Points: Точки расширения модулей
+            Source Drivers: Драйверы источников
             HTTP Request Handling: Обработка HTTP-запросов
             Admin AJAX API: AJAX-API админки
             Streaming Subsystem: Подсистема стриминга
@@ -179,6 +180,7 @@ nav:
           - Module Authoring: en/development/module-authoring.md
           - Module Lifecycle: en/development/module-lifecycle.md
           - Module Extension Points: en/development/module-extension-points.md
+          - Source Drivers: en/development/source-drivers.md
           - HTTP Request Handling: en/development/http-request-handling.md
           - Admin AJAX API: en/development/admin-ajax-api.md
           - Streaming Subsystem: en/development/streaming-subsystem.md

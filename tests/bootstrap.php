@@ -95,6 +95,7 @@ require_once __DIR__ . '/Support/BusServer.php';
 require_once __DIR__ . '/Support/QueryLogDb.php';
 require_once __DIR__ . '/Support/InstallSchema.php';
 require_once __DIR__ . '/Support/ReplicaFixture.php';
+require_once __DIR__ . '/Support/TestSourceDriver.php';
 require_once __DIR__ . '/Support/AgentUser.php';
 
 // EventIngest's lane locks are real flock files. Without this they would land

@@ -595,6 +595,9 @@ class ModuleLoader {
 			'has_settings'          => (bool) ($manifest['has_settings'] ?? false),
 			'priority'              => (int) ($manifest['priority'] ?? 0),
 			'update'                => self::normalizeUpdateBlock($manifest, $manifest['name'] ?? $name),
+			// SourceDriverRegistry: driver FQCNs and the first-output wait they need.
+			'source_drivers'        => array_values(array_filter((array) ($manifest['source_drivers'] ?? []), 'is_string')),
+			'start_timeout'         => max(0, (int) ($manifest['start_timeout'] ?? 0)),
 		];
 	}
 
