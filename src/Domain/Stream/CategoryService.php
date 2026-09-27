@@ -4,6 +4,8 @@ namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -217,6 +219,7 @@ class CategoryService {
 		}
 
 		$db->query("SELECT `id`, `category_id` FROM `streams` WHERE JSON_CONTAINS(`category_id`, ?, '\$');", $rID);
+		$rStreamIDs = [];
 
 		foreach ($db->get_rows() as $rRow) {
 			$rRow['category_id'] = json_decode($rRow['category_id'], true);
@@ -226,7 +229,9 @@ class CategoryService {
 			}
 
 			$db->query("UPDATE `streams` SET `category_id` = ? WHERE `id` = ?;", '[' . implode(',', array_map('intval', $rRow['category_id'])) . ']', $rRow['id']);
+			$rStreamIDs[] = intval($rRow['id']);
 		}
+		EventDispatcher::dispatch(new StreamsChangedEvent($rStreamIDs));
 		$db->query("SELECT `id`, `category_id` FROM `streams_series` WHERE JSON_CONTAINS(`category_id`, ?, '\$');", $rID);
 
 		foreach ($db->get_rows() as $rRow) {

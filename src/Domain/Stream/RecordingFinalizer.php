@@ -2,6 +2,8 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -94,14 +96,17 @@ final class RecordingFinalizer {
 		foreach (json_decode((string) $rRec['bouquets'], true) ?: [] as $rBouquet) {
 			self::addToBouquet((int) $rBouquet, $rID);
 		}
+		// The recording names its VOD now: the recorded stream's R2 record changed.
+		EventDispatcher::dispatch(new StreamsChangedEvent([(int) ($rRec['stream_id'] ?? 0)]));
 		return $rID;
 	}
 
 	/** The node converted the file: attach the VOD to it and mark the recording done. */
 	public static function finish(int $rRecordingID, int $rServerID): bool {
 		$rDb = self::db();
-		$rDb->query('SELECT `created_id` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rRecordingID, $rServerID);
-		$rCreated = $rDb->num_rows() > 0 ? (int) $rDb->get_row()['created_id'] : 0;
+		$rDb->query('SELECT `created_id`, `stream_id` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rRecordingID, $rServerID);
+		$rRec = $rDb->num_rows() > 0 ? $rDb->get_row() : [];
+		$rCreated = (int) ($rRec['created_id'] ?? 0);
 		if ($rCreated <= 0) {
 			return false;
 		}
@@ -110,6 +115,8 @@ final class RecordingFinalizer {
 			$rDb->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `pid`, `to_analyze`) VALUES(?, ?, NULL, 1, 1);', $rCreated, $rServerID);
 		}
 		$rDb->query('UPDATE `recordings` SET `status` = ? WHERE `id` = ?;', self::DONE, $rRecordingID);
+		// The node holds the VOD now, and the recording is done.
+		EventDispatcher::dispatch(new StreamsChangedEvent([$rCreated, (int) ($rRec['stream_id'] ?? 0)]));
 		return true;
 	}
 

@@ -9,6 +9,7 @@ use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Settings\CrontabChangedEvent;
 use XcVm\Core\Events\Settings\SettingsChangedEvent;
+use XcVm\Core\Events\Stream\StreamArgumentsChangedEvent;
 use XcVm\Core\Localization\Translator;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterMeta;
@@ -166,9 +167,22 @@ class SettingsService {
 	 */
 	public static function edit(array $rData) {
 		$db = self::db();
-		foreach (['user_agent', 'http_proxy', 'cookie', 'headers'] as $rKey) {
-			$db->query('UPDATE `streams_arguments` SET `argument_default_value` = ? WHERE `argument_key` = ?;', ($rData[$rKey] ?: null), $rKey);
+		// The stream arguments' defaults: a change reaches the streams that use
+		// them (their R2 records carry the definition).
+		$rArgumentKeys = ['user_agent', 'http_proxy', 'cookie', 'headers'];
+		$db->query('SELECT `argument_key`, `argument_default_value` FROM `streams_arguments` WHERE `argument_key` IN (?, ?, ?, ?);', ...$rArgumentKeys);
+		$rWas = array_column($db->get_rows() ?: [], 'argument_default_value', 'argument_key');
+		$rChanged = [];
+		foreach ($rArgumentKeys as $rKey) {
+			$rValue = ($rData[$rKey] ?: null);
+			$db->query('UPDATE `streams_arguments` SET `argument_default_value` = ? WHERE `argument_key` = ?;', $rValue, $rKey);
+			if (array_key_exists($rKey, $rWas) && (string) $rWas[$rKey] !== (string) $rValue) {
+				$rChanged[] = $rKey;
+			}
 			unset($rData[$rKey]);
+		}
+		if ($rChanged !== []) {
+			EventDispatcher::dispatch(new StreamArgumentsChangedEvent($rChanged));
 		}
 
 		$rArray = QueryHelper::verifyPostTable('settings', $rData, true);

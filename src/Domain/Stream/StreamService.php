@@ -5,6 +5,8 @@ namespace XcVm\Domain\Stream;
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
@@ -222,6 +224,7 @@ class StreamService {
 											$rSources = (json_decode($db->get_row()['stream_source'], true) ?: []);
 											$rSources[] = $rURL;
 											$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;', json_encode($rSources), $rBackupID);
+											EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rBackupID]));
 											$rImportStreams[] = ['update' => true, 'id' => $rBackupID];
 										}
 									} else {
@@ -441,6 +444,7 @@ class StreamService {
 						}
 
 						StreamProcess::updateStream($rInsertID);
+						EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rInsertID]));
 					} else {
 						foreach ($rBouquetCreate as $rID) {
 							$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
@@ -720,6 +724,7 @@ class StreamService {
 			}
 
 			StreamProcess::updateStreams($rStreamIDs);
+			EventDispatcher::dispatch(new StreamsChangedEvent(array_values(array_map('intval', $rStreamIDs))));
 
 			if (isset($rData['restart_on_edit'])) {
 				ApiClient::request(['action' => 'stream', 'sub' => 'start', 'stream_ids' => array_values($rStreamIDs)]);
@@ -759,8 +764,10 @@ class StreamService {
 			}
 
 			$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `server_id` = ?;', $rSource);
+			$rMoved = [];
 
 			foreach ($db->get_rows() as $rRow) {
+				$rMoved[] = intval($rRow['stream_id']);
 				if (in_array(intval($rRow['stream_id']), $rExisting)) {
 					$db->query('DELETE FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` = ?;', $rRow['stream_id'], $rSource);
 				}
@@ -771,6 +778,8 @@ class StreamService {
 			} else {
 				$db->query('UPDATE `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` SET `streams_servers`.`server_id` = ? WHERE `streams_servers`.`server_id` = ? AND `streams`.`type` = ?;', $rReplacement, $rSource, $rType);
 			}
+			// Both servers' replicas follow: the source's drops them, the replacement's takes them.
+			EventDispatcher::dispatch(new StreamsChangedEvent($rMoved));
 		}
 
 		return ['status' => STATUS_SUCCESS];
@@ -787,6 +796,8 @@ class StreamService {
 		$rOldDNS = str_replace('/', '\\/', $rData['old_dns']);
 		$rNewDNS = str_replace('/', '\\/', $rData['new_dns']);
 		$db->query('UPDATE `streams` SET `stream_source` = REPLACE(`stream_source`, ?, ?);', $rOldDNS, $rNewDNS);
+		// Any stream may have changed: every node checks all it holds.
+		EventDispatcher::dispatch(StreamsChangedEvent::all());
 
 		return ['status' => STATUS_SUCCESS];
 	}

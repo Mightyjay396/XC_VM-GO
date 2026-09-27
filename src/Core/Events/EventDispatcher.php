@@ -139,6 +139,30 @@ class EventDispatcher {
 	}
 
 	/**
+	 * Register a subscriber's #[ListensTo] methods, as ModuleLoader does for
+	 * modules: an object's public methods, or a class's public static ones
+	 * when given its name (Core's own listeners, which hold no state). An
+	 * event class that cannot be loaded is skipped.
+	 *
+	 * @param object|class-string $subscriber
+	 */
+	public static function subscribe(object|string $subscriber): void {
+		$reflection = new \ReflectionClass($subscriber);
+		foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+			if (is_string($subscriber) && !$method->isStatic()) {
+				continue;
+			}
+			foreach ($method->getAttributes(ListensTo::class) as $attribute) {
+				$listensTo = $attribute->newInstance();
+				if (!class_exists($listensTo->eventClass)) {
+					continue;
+				}
+				self::listen($listensTo->eventClass, [$subscriber, $method->getName()], $listensTo->priority);
+			}
+		}
+	}
+
+	/**
 	 * Remove a typed listener, or all listeners for an event class.
 	 *
 	 * @param class-string  $eventClass

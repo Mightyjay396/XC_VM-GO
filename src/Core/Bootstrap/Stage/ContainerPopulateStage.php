@@ -6,6 +6,7 @@ use XcVm\Core\Bootstrap\BootState;
 use XcVm\Core\Bootstrap\BootStageInterface;
 use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Cluster\ReplicaEtagCache;
+use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Localization\Translator;
@@ -60,8 +61,12 @@ class ContainerPopulateStage implements BootStageInterface {
 		$dispatcher = new EventDispatcher();
 		EventDispatcher::setInstance($dispatcher);
 		$container->set('events', $dispatcher);
-		// Core's own listener: a settings, server or crontab save drops MAIN's
-		// cached replica sections (nothing to drop on a load balancer).
+		// Core's own listeners: a settings, server or crontab save drops MAIN's
+		// cached replica sections (nothing to drop on a load balancer), and a
+		// change to a stream's configuration stamps its R2 version for the
+		// nodes that hold it (a legacy load balancer's recordings write MAIN's
+		// database too).
 		ReplicaEtagCache::subscribe();
+		EventDispatcher::subscribe(StreamVersions::class);
 	}
 }

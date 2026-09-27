@@ -2,6 +2,7 @@
 
 use XcVm\Core\Auth\AuthRepository;
 use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Database\QueryHelper;
 
@@ -1574,6 +1575,8 @@ if (in_array('access_codes', $rMigrateOptions)) {
 foreach (BlocklistChanges::KINDS as $rKind) {
 	BlocklistChanges::reset($rKind, $db);
 }
+// So were the streams: nodes check every stream of their R2 replica again.
+StreamVersions::reset($db);
 echo "\n" . 'Migration has been completed!' . "\n\n" . 'Your settings have been reset to the XC_VM default, please take some time to review the settings page and make the desired changes.' . "\n";
 
 file_put_contents(TMP_PATH . '.migration.status', 2);

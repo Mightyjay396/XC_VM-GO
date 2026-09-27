@@ -7,6 +7,7 @@ use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Events\Vod\VodImportedEvent;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
@@ -431,6 +432,7 @@ class MovieService {
 						}
 
 						StreamProcess::updateStream($rInsertID);
+						EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rInsertID]));
 					} else {
 						foreach ($rBouquetCreate as $rID) {
 							$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
@@ -889,6 +891,7 @@ class MovieService {
 			}
 
 			StreamProcess::updateStreams($rStreamIDs);
+			EventDispatcher::dispatch(new StreamsChangedEvent(array_values(array_map('intval', $rStreamIDs))));
 
 			if (isset($rData['reencode_on_edit'])) {
 				foreach ($rQueueMovies as $rServerID => $rQueueIDs) {

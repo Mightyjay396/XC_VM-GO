@@ -17,10 +17,12 @@
 
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Database\DatabaseHandler;
+use XcVm\Core\Events\EventDispatcher;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Domain\Cluster\DenialFactory;
@@ -108,4 +110,7 @@ try {
 }
 
 $rReq['body'] = (string) file_get_contents('php://input', false, null, 0, ClusterApi::MAX_BODY + 1);
+// The one listener an op needs: a recording a node finished becomes a VOD it
+// holds (recording_complete), which stamps the stream's R2 version.
+EventDispatcher::subscribe(StreamVersions::class);
 $rEmit(ClusterApi::handle($rCrypto, $rReq, $rSettings, $rMain));

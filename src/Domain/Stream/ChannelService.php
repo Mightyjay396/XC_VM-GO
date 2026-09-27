@@ -4,6 +4,8 @@ namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
@@ -209,6 +211,7 @@ class ChannelService {
 				}
 
 				StreamProcess::updateStream($rInsertID);
+				EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rInsertID]));
 
 				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 			}
@@ -389,6 +392,7 @@ class ChannelService {
 				$db->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `on_demand`) VALUES ' . $rAddQuery . ';');
 			}
 			StreamProcess::updateStreams($rStreamIDs);
+			EventDispatcher::dispatch(new StreamsChangedEvent(array_values(array_map('intval', $rStreamIDs))));
 			if (isset($rData['reencode_on_edit'])) {
 				$db->query("UPDATE `streams_servers` SET `pids_create_channel` = '[]', `cchannel_rsources` = '[]' WHERE `stream_id` IN (" . implode(',', array_map('intval', $rStreamIDs)) . ');');
 

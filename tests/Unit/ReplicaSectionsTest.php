@@ -117,6 +117,33 @@ final class ReplicaSectionsTest extends TestCase {
 		}
 	}
 
+	public function testEveryColumnOfAStreamRecordsTablesIsClassified(): void {
+		foreach ([
+			'streams' => [ReplicaSections::STREAM_FIELDS, ReplicaSections::STREAM_LOCAL],
+			'streams_servers' => [ReplicaSections::STREAM_SERVER_FIELDS, ReplicaSections::STREAM_SERVER_LOCAL],
+			'streams_types' => [ReplicaSections::STREAM_TYPE_FIELDS, []],
+			'profiles' => [ReplicaSections::PROFILE_FIELDS, []],
+			'streams_options' => [ReplicaSections::OPTION_FIELDS, ['id', 'stream_id']],
+			'streams_arguments' => [ReplicaSections::ARGUMENT_FIELDS, ['id', 'argument_description']],
+			'recordings' => [ReplicaSections::RECORDING_FIELDS, []],
+		] as $rTable => [$rFields, $rLocal]) {
+			$this->assertSame([], array_values(array_intersect(array_keys($rFields), $rLocal)), $rTable . ': a column is either carried or local');
+			$this->assertEqualsCanonicalizing(InstallSchema::columns($rTable), array_merge(array_keys($rFields), $rLocal), 'a new ' . $rTable . ' column: add it to its ReplicaSections list, carried or local');
+			foreach ($rFields as $rColumn => $rType) {
+				$this->assertContains($rType, ['int', 'str'], $rTable . '.' . $rColumn);
+			}
+		}
+		// What nodes write back is never carried, so it never moves a record's ETag.
+		foreach (['pid', 'stream_status', 'monitor_pid', 'current_source', 'progress_info', 'updated'] as $rRuntime) {
+			$this->assertContains($rRuntime, ReplicaSections::STREAM_SERVER_LOCAL);
+		}
+		foreach (['tv_archive_pid', 'vframes_pid', 'updated'] as $rRuntime) {
+			$this->assertContains($rRuntime, ReplicaSections::STREAM_LOCAL);
+		}
+		$this->assertSame('stream', ReplicaSections::STREAM);
+		$this->assertNotContains(ReplicaSections::STREAM, ReplicaSections::WHOLE, 'never sent whole');
+	}
+
 	public function testTheServersSectionCarriesRoutingAndTheSignedNodeListOnly(): void {
 		$this->server(1);
 		$this->server(5, ['parent_id' => '[1]', 'domain_name' => 'lb5.example.com']);
@@ -269,9 +296,10 @@ final class ReplicaSectionsTest extends TestCase {
 	}
 
 	public function testServerDeletesAndReordersAreServerSaves(): void {
-		foreach (['streams_servers', 'lines_live', 'lines_activity', 'servers_stats'] as $rTable) {
+		foreach (['lines_live', 'lines_activity', 'servers_stats'] as $rTable) {
 			$this->rDb->exec('CREATE TABLE `' . $rTable . '` (`server_id` int)');
 		}
+		$this->rDb->exec('CREATE TABLE `streams_servers` (`server_id` int, `stream_id` int)');
 		$this->server(1);
 		$this->server(5, ['server_type' => 1]); // a proxy: no database grant to revoke
 		$this->server(6);

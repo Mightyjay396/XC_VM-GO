@@ -28,6 +28,33 @@ namespace XcVm\Core\Cluster;
  * section withholds and a node needs to open the tokens MAIN mints. It is
  * not in WHOLE: MAIN serves it only to an active node in mode 1 or 2, and
  * never keeps it unsealed (ReplicaEtagCache).
+ *
+ * The R2 `streams` section is one `stream` record per stream the node holds,
+ * sent by the `streams` op (Domain\Cluster\StreamReplica), never whole:
+ *
+ * ```text
+ * stream  {children, options, profile, recordings, server, stream, tickets, type}
+ *   stream      STREAM_FIELDS of the `streams` row
+ *   type        STREAM_TYPE_FIELDS of its `streams_types` row, or null
+ *   profile     PROFILE_FIELDS of its transcoding profile, or null
+ *   options     [OPTION_FIELDS + ARGUMENT_FIELDS] its options with their
+ *               argument's definition, by argument_id
+ *   server      STREAM_SERVER_FIELDS of the node's own `streams_servers` row,
+ *               or null (the node records its archive, thumbnails or a
+ *               recording of it without running it)
+ *   children    [sid] the servers that relay it from this node (parent_id)
+ *   recordings  [RECORDING_FIELDS] its recordings scheduled on this node
+ *   tickets     null: the relay and file tickets of Phase 8
+ * ```
+ *
+ * A node holds a stream when it is assigned it (`streams_servers`), records
+ * its TV archive or thumbnails (`tv_archive_server_id`, `vframes_server_id`),
+ * or has a recording of it scheduled (`recordings.source_id`), and the
+ * `streams` row exists. Every column of `streams` and `streams_servers` is in
+ * exactly one of the *_FIELDS and *_LOCAL lists (ReplicaSectionsTest): a
+ * record never carries what nodes write back (pids, status, codecs,
+ * progress, `updated`), nor MAIN's catalogue metadata, so neither moves its
+ * ETag.
  */
 final class ReplicaSections {
 	public const SETTINGS = 'settings';
@@ -78,6 +105,73 @@ final class ReplicaSections {
 		'status', 'last_check_ago', 'last_status', 'remote_status', 'ping', 'watchdog_data', 'php_pids', 'connections',
 		'users', 'requests_per_second', 'server_hardware', 'video_devices', 'audio_devices', 'gpu_info', 'interfaces',
 		'governors', 'certbot_ssl', 'certbot_renew', 'uuid', 'ssh_hostkey_sha1',
+	];
+
+	/** R2: the record of one stream a node holds (the `streams` op). */
+	public const STREAM = 'stream';
+
+	/** `stream.stream`: the `streams` columns a node runs and serves a stream with. */
+	public const STREAM_FIELDS = [
+		'id' => 'int', 'type' => 'int', 'category_id' => 'str', 'stream_display_name' => 'str', 'stream_source' => 'str',
+		'stream_icon' => 'str', 'enable_transcode' => 'int', 'transcode_attributes' => 'str', 'custom_ffmpeg' => 'str',
+		'movie_properties' => 'str', 'movie_subtitles' => 'str', 'read_native' => 'int', 'target_container' => 'str',
+		'stream_all' => 'int', 'remove_subtitles' => 'int', 'custom_sid' => 'str', 'epg_id' => 'int', 'channel_id' => 'str',
+		'epg_lang' => 'str', 'auto_restart' => 'str', 'transcode_profile_id' => 'int', 'gen_timestamps' => 'int',
+		'added' => 'int', 'series_no' => 'int', 'direct_source' => 'int', 'tv_archive_duration' => 'int',
+		'tv_archive_server_id' => 'int', 'vframes_server_id' => 'int', 'movie_symlink' => 'int', 'rtmp_output' => 'int',
+		'allow_record' => 'int', 'probesize_ondemand' => 'int', 'custom_map' => 'str', 'external_push' => 'str',
+		'delay_minutes' => 'int', 'llod' => 'int', 'adaptive_link' => 'str', 'fps_restart' => 'int',
+		'fps_threshold' => 'int', 'direct_proxy' => 'int',
+	];
+
+	/**
+	 * `streams` columns no record carries: the archive and thumbnail workers'
+	 * pids (the node's, as `stream.worker` events), the row's timestamp, and
+	 * MAIN's catalogue metadata (ordering, notes, release year, ratings,
+	 * similar titles, TMDb, Plex, EPG offset, title sync, import uuid).
+	 */
+	public const STREAM_LOCAL = [
+		'tv_archive_pid', 'vframes_pid', 'updated', 'order', 'notes', 'year', 'rating', 'similar', 'tmdb_id',
+		'tmdb_language', 'plex_uuid', 'uuid', 'epg_offset', 'title_sync',
+	];
+
+	/** `stream.server`: the node's own `streams_servers` row, what MAIN decides of it. */
+	public const STREAM_SERVER_FIELDS = ['server_stream_id' => 'int', 'stream_id' => 'int', 'server_id' => 'int', 'parent_id' => 'int', 'on_demand' => 'int'];
+
+	/**
+	 * `streams_servers` columns no record carries: the node's runtime state,
+	 * which it reports as `stream.state` events, and the created channel's
+	 * build state it keeps itself (`pids_create_channel`, `cchannel_rsources`).
+	 */
+	public const STREAM_SERVER_LOCAL = [
+		'pid', 'to_analyze', 'stream_status', 'stream_started', 'stream_info', 'monitor_pid', 'aes_pid', 'current_source',
+		'bitrate', 'progress_info', 'cc_info', 'delay_pid', 'delay_available_at', 'pids_create_channel', 'cchannel_rsources',
+		'updated', 'compatible', 'audio_codec', 'video_codec', 'resolution', 'ondemand_check',
+	];
+
+	/** `stream.type`: the stream's `streams_types` row. */
+	public const STREAM_TYPE_FIELDS = ['type_id' => 'int', 'type_name' => 'str', 'type_key' => 'str', 'type_output' => 'str', 'live' => 'int'];
+
+	/** `stream.profile`: its transcoding profile. */
+	public const PROFILE_FIELDS = ['profile_id' => 'int', 'profile_name' => 'str', 'profile_options' => 'str'];
+
+	/** `stream.options[]`: a `streams_options` row (not its own id or stream_id)... */
+	public const OPTION_FIELDS = ['argument_id' => 'int', 'value' => 'str'];
+
+	/** ...with its argument's definition (`streams_arguments`, not its id or description). */
+	public const ARGUMENT_FIELDS = [
+		'argument_cat' => 'str', 'argument_name' => 'str', 'argument_wprotocol' => 'str', 'argument_key' => 'str',
+		'argument_cmd' => 'str', 'argument_type' => 'str', 'argument_default_value' => 'str',
+	];
+
+	/**
+	 * `stream.recordings[]`: a recording of the stream scheduled on the node,
+	 * `status` as MAIN last heard it (the node's own `recording.state` wins).
+	 */
+	public const RECORDING_FIELDS = [
+		'id' => 'int', 'stream_id' => 'int', 'created_id' => 'int', 'category_id' => 'str', 'bouquets' => 'str',
+		'title' => 'str', 'description' => 'str', 'stream_icon' => 'str', 'start' => 'int', 'end' => 'int',
+		'source_id' => 'int', 'archive' => 'int', 'status' => 'int',
 	];
 
 	/** `servers.nodes[].state`: cluster_nodes states. */

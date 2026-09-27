@@ -9,6 +9,8 @@ use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
@@ -1396,6 +1398,8 @@ if (1 < $rICount) { ?>
 				$rReturn = class_exists(RecordingService::class) ? RecordingService::schedule($rData) : array('status' => STATUS_FAILURE, 'data' => null);
 
 				if ($rReturn['status'] == STATUS_SUCCESS) {
+					// A recording scheduled on a node: the recorded stream's R2 record carries it.
+					EventDispatcher::dispatch(new StreamsChangedEvent(array(intval($rData['stream_id'] ?? 0))));
 					echo json_encode(array('result' => true, 'location' => 'archive?status=' . intval($rReturn['status']), 'status' => $rReturn['status']));
 					exit();
 				}

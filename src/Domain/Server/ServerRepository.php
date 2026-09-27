@@ -12,6 +12,7 @@ use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Server\ServerSavedEvent;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -405,6 +406,10 @@ class ServerRepository {
 			return false;
 		}
 
+		// Its streams: the replacement's replica takes them, the replica of any
+		// server that relayed them from it follows its new parent.
+		$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `server_id` = ?;', $rID);
+		$rStreamIDs = array_map('intval', array_column($db->get_rows() ?: [], 'stream_id'));
 		if ($rReplaceWith) {
 			$db->query('UPDATE `streams_servers` SET `server_id` = ? WHERE `server_id` = ?;', $rReplaceWith, $rID);
 			if (!$rSettings['redis_handler']) {
@@ -423,6 +428,7 @@ class ServerRepository {
 		$db->query('DELETE FROM `servers_stats` WHERE `server_id` = ?;', $rID);
 		$db->query('DELETE FROM `servers` WHERE `id` = ?;', $rID);
 		EventDispatcher::dispatch(new ServerSavedEvent([$rID]));
+		EventDispatcher::dispatch(new StreamsChangedEvent($rStreamIDs));
 
 		if ($rServer['server_type'] == 0) {
 			BackupService::revokePrivileges($rServer['server_ip']);

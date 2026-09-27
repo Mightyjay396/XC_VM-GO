@@ -374,7 +374,8 @@ CREATE TABLE IF NOT EXISTS `cluster_stream_ver` (
   `ver` bigint(20) unsigned NOT NULL DEFAULT '1',
   `updated_at` int(11) NOT NULL,
   PRIMARY KEY (`server_id`, `stream_id`),
-  KEY `server_ver` (`server_id`, `ver`)
+  KEY `server_ver` (`server_id`, `ver`),
+  KEY `stream_id` (`stream_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COLLATE=utf8_unicode_ci;
 
 -- --------------------------------------------------------

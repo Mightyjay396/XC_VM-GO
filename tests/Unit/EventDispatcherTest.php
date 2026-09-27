@@ -125,9 +125,58 @@ final class EventDispatcherTest extends TestCase {
 
         $this->assertCount(2, $results);
     }
+
+    // ── subscribe(): #[ListensTo] outside modules ──────────────
+
+    public function testSubscribeRegistersAClassesStaticListenersOnly(): void {
+        TestStaticSubscriber::$rSeen = [];
+        EventDispatcher::subscribe(TestStaticSubscriber::class);
+
+        EventDispatcher::dispatch(new TestPlainEvent('a'));
+        EventDispatcher::dispatch(new TestOtherEvent());
+
+        $this->assertSame(['high:a', 'static:a', 'static:other'], TestStaticSubscriber::$rSeen, 'priority first, both attributes, never the instance method');
+        $this->assertFalse(EventDispatcher::hasListeners('No\\Such\\Event'), 'an event class that does not load is skipped');
+    }
+
+    public function testSubscribeRegistersAnObjectsListeners(): void {
+        $rSubscriber = new TestStaticSubscriber();
+        TestStaticSubscriber::$rSeen = [];
+        EventDispatcher::subscribe($rSubscriber);
+
+        EventDispatcher::dispatch(new TestPlainEvent('b'));
+
+        $this->assertSame(['high:b', 'static:b', 'instance:b'], TestStaticSubscriber::$rSeen);
+    }
 }
 
 // ── Test event fixtures ────────────────────────────────────────────
+
+final class TestStaticSubscriber {
+    /** @var list<string> */
+    public static array $rSeen = [];
+
+    #[\XcVm\Core\Events\ListensTo(TestPlainEvent::class)]
+    #[\XcVm\Core\Events\ListensTo(TestOtherEvent::class)]
+    public static function onEvent(object $rEvent): void {
+        self::$rSeen[] = 'static:' . ($rEvent instanceof TestPlainEvent ? $rEvent->value : 'other');
+    }
+
+    #[\XcVm\Core\Events\ListensTo(TestPlainEvent::class, priority: 10)]
+    public static function first(TestPlainEvent $rEvent): void {
+        self::$rSeen[] = 'high:' . $rEvent->value;
+    }
+
+    #[\XcVm\Core\Events\ListensTo('No\\Such\\Event')]
+    public static function never(object $rEvent): void {
+        self::$rSeen[] = 'never';
+    }
+
+    #[\XcVm\Core\Events\ListensTo(TestPlainEvent::class, priority: -1)]
+    public function onInstance(TestPlainEvent $rEvent): void {
+        self::$rSeen[] = 'instance:' . $rEvent->value;
+    }
+}
 
 final class TestPlainEvent {
     public function __construct(public readonly string $value = '') {}
