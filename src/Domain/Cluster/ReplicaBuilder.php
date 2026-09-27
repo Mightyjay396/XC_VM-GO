@@ -337,7 +337,8 @@ final class ReplicaBuilder {
 		}
 		return [
 			'main_urls' => $rPolicy['main_urls'], 'urls_ver' => $rPolicy['policy_ver'], 'policy_ver' => $rPolicy['policy_ver'],
-			'transport' => $rPolicy['transport'], 'panel_sign_pub' => base64_encode((string) ($rInfo['panel_sign_pub'] ?? '')),
+			'transport' => $rPolicy['transport'], 'heartbeat_sec' => $rPolicy['heartbeat_sec'],
+			'panel_sign_pub' => base64_encode((string) ($rInfo['panel_sign_pub'] ?? '')),
 			'panel_box_pub' => base64_encode((string) ($rInfo['panel_box_pub'] ?? '')), 'min_proto' => ClusterApi::PROTO_MIN, 'off_air' => $rOffAir,
 		];
 	}

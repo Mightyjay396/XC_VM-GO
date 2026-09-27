@@ -12,8 +12,8 @@ namespace XcVm\Core\Cluster;
  * servers  {servers: [SERVER_FIELDS of every server], nodes: [{sid, gen, state, ed_pub}]}
  * node     NODE_FIELDS of the node's own row, and NODE_SETTINGS
  * crontab  {jobs: [{filename, time}]}   enabled rows whose role fits the node's mode
- * cluster  {main_urls, urls_ver, policy_ver, transport, panel_sign_pub,
- *           panel_box_pub, min_proto, off_air}
+ * cluster  {main_urls, urls_ver, policy_ver, transport, heartbeat_sec,
+ *           panel_sign_pub, panel_box_pub, min_proto, off_air}
  * bouquets    {bouquets: [BOUQUET_FIELDS of every bouquet]}, in the order
  *             BouquetService::getAll reads them (bouquet_order, 0 last; id)
  * categories  {categories: [CATEGORY_FIELDS of every stream category]}, by

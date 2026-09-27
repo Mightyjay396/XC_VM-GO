@@ -3243,6 +3243,14 @@ The file is stat-ed on each read rather than cached for the process's life: the 
 
 **Not built (the rest of Phase 8):** the relay and file tickets, the agent's loopback relay proxy, `/xfile` with its digest verification, `/v1/nonce` and `/v1/file_digest`, the loopback URL builders, and rendering `api_legacy.conf` as 404. Those are one change: tickets minted but unverified, or loopback URLs with no proxy behind them, would take a fleet's streams down, and the plan's acceptance for them (no encoder restarts over 48 h, a refused MITM body, replayed headers) can only be measured on a running cluster. `cluster:rotate-stream-secret` waits with them, because a full rotation also re-encrypts what is stored under the secret (the HMAC identities, the image cache's names) — that is the plan's Phase 9 step 5, and it is not a settings save.
 
+### The fleet's heartbeat (Phase 3, later increment)
+
+`lb_telemetry_interval_sec` (1-3 s, default 2) was stored, clamped and shown in the settings form, and reached nobody: the agent takes it as a `-interval` command-line flag, and `run.sh` — the supervisor that actually starts the agent — passes only `-state`. Every node in every fleet heartbeated at the agent's built-in 2 s, whatever the operator set.
+
+It travels with the transport policy, which is how every other fleet-wide transport decision travels: `ClusterPolicy::current()` carries `heartbeat_sec` (the stored value in its bounds, or the setting's own default when unset — 0 would clamp to the floor and quietly make the fleet beat *faster* than it was asked to), and the replica's `cluster` section carries it too, so a node booted from its replica holds the pace before its first hello.
+
+The agent keeps it in its state (a restart holds the pace), clamps what a policy asks for to the same 1-3 s and never past `MaxHeartbeatGap`, and re-tunes its ticker when the value changes — so an operator's change reaches the fleet with the next policy and no agent restart. A policy that says nothing leaves the pace alone, and the `-interval` flag still decides for a node run by hand.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):
