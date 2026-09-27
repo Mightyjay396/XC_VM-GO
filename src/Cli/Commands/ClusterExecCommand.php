@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\ArtefactStage;
+use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\NodeRpc;
@@ -28,6 +29,11 @@ use XcVm\Streaming\Fanout\FanoutClient;
  *
  * - `node.root {action, …}` — handed to root (cluster:root) through the
  *   root inbox; root checks it against its own pin of the panel key.
+ * - `node.cache {jobs}` — cache jobs for a node in mode 2, whose signals
+ *   daemon reads no `signals` row: run as the daemon ran the rows
+ *   (CacheJobs::run), only when every job is in the form MAIN signs it
+ *   (CacheJobs::job), at most CacheJobs::MAX of them; otherwise refused
+ *   whole (exit 2) before any runs.
  * - `config.changed {sections}` — the agent fetches its replica at once; an
  *   agent that hands it here instead is acked `{"deferred": true}`, and its
  *   next minute's poll fetches the change.
@@ -51,7 +57,7 @@ class ClusterExecCommand implements CommandInterface {
 	public const SKEW = 300;
 
 	/** The command types run here (`--types`). */
-	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH];
+	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH];
 
 	public function getName(): string {
 		return 'cluster:exec';
@@ -186,6 +192,28 @@ class ClusterExecCommand implements CommandInterface {
 					return 2;
 				}
 				echo json_encode(['result' => FanoutClient::dropConnection($rUUID)]);
+				return 0;
+
+			case 'node.cache':
+				$rJobs = $rArgs['jobs'] ?? null;
+				if (!is_array($rJobs) || $rJobs === [] || !array_is_list($rJobs) || count($rJobs) > CacheJobs::MAX) {
+					fwrite(STDERR, "cluster:exec: bad cache jobs\n");
+					return 2;
+				}
+				foreach ($rJobs as $rJob) {
+					// Exactly the job MAIN's form makes of it, whatever its keys' order.
+					$rClean = CacheJobs::job($rJob);
+					if ($rClean !== null && is_array($rJob)) {
+						ksort($rClean);
+						ksort($rJob);
+					}
+					if ($rClean === null || $rClean !== $rJob) {
+						fwrite(STDERR, "cluster:exec: bad cache jobs\n");
+						return 2;
+					}
+				}
+				CacheJobs::run($rJobs);
+				echo json_encode(['result' => true, 'jobs' => count($rJobs)]);
 				return 0;
 
 			case 'config.changed':

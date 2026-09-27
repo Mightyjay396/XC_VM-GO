@@ -13,6 +13,7 @@ use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\SettingsAudit;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
@@ -1009,6 +1010,68 @@ final class ClusterApiTest extends TestCase {
 			$this->assertSame([['pid' => 55, 'rtmp' => false], ['pid' => 9, 'rtmp' => true], ['uuid' => 'abc123']], array_column($rDocs, 'args'));
 		} finally {
 			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
+	/**
+	 * A node in mode 2 reads no `signals` row (its connects are refused), so
+	 * the cache jobs MAIN queues for it (a movie's files deleted, a closed
+	 * viewer's connection file, a daemon viewer's drop) go as signed
+	 * `node.cache` commands, CacheJobs::MAX at most each, only in the form the
+	 * node runs. Nodes in mode 0 or 1, one without COMMANDS and MAIN itself
+	 * keep the rows their signals daemon reads.
+	 */
+	public function testCacheJobsForAModeTwoNodeBecomeCommands(): void {
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		$rRows = [];
+		SignalDispatcher::useSink(new class($rRows) implements \XcVm\Core\Cluster\SignalSink {
+			public function __construct(private array &$rRows) {
+			}
+
+			public function insert(array $rRows): bool {
+				array_push($this->rRows, ...$rRows);
+				return true;
+			}
+
+			public function pending(int $rServerID, string $rCustomData): bool {
+				return false;
+			}
+		});
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		$rJobs = static fn(): array => array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0, 200));
+		try {
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS, 'mode' => 1]);
+			$this->assertTrue(SignalDispatcher::cache(self::SID, ['type' => 'delete_vod', 'id' => 7]));
+			$this->assertSame([], $rJobs(), 'mode 1: the row its daemon reads');
+			$this->assertCount(1, $rRows);
+
+			NodeRegistry::update(self::SID, ['mode' => 2]);
+			$this->assertTrue(SignalDispatcher::cache(self::SID, ['type' => 'delete_vods', 'id' => ['8', 9, 'x', 0]]));
+			$this->assertTrue(SignalDispatcher::cache(self::SID, ['type' => 'drop_con', 'uuid' => 'abc123'], true, true));
+			$rUUIDs = array_map(static fn(int $i): string => sprintf('%032x', $i), range(1, \XcVm\Core\Cluster\CacheJobs::MAX + 20));
+			$this->assertTrue(SignalDispatcher::cacheBatch(self::SID, array_merge(array_map(static fn(string $rUUID): array => ['type' => 'delete_con', 'uuid' => $rUUID], $rUUIDs), [['type' => 'delete_con', 'uuid' => '../x']])));
+			$this->assertFalse(SignalDispatcher::cache(self::SID, ['type' => 'delete_con', 'uuid' => 'a b']), 'nothing well-formed: nothing sent');
+			$this->assertCount(1, $rRows, 'no row for a node in mode 2');
+			$rDocs = $rJobs();
+			$this->assertSame(['node.cache', 'node.cache', 'node.cache', 'node.cache'], array_column($rDocs, 'type'));
+			$this->assertSame([['type' => 'delete_vods', 'id' => [8, 9]]], $rDocs[0]['args']['jobs'], 'ids as integers, the rest dropped');
+			$this->assertSame([['type' => 'drop_con', 'uuid' => 'abc123']], $rDocs[1]['args']['jobs']);
+			$this->assertCount(\XcVm\Core\Cluster\CacheJobs::MAX, $rDocs[2]['args']['jobs']);
+			$this->assertSame($rUUIDs, array_merge(array_column($rDocs[2]['args']['jobs'], 'uuid'), array_column($rDocs[3]['args']['jobs'], 'uuid')), 'in order, the malformed one left out');
+			$this->assertSame(86400, $rDocs[0]['exp'] - $rDocs[0]['iat'], 'kept for a day, as MAIN keeps a signals row');
+			$this->rDb->query('SELECT DISTINCT `class` FROM `cluster_commands`');
+			$this->assertSame('G', $this->rDb->get_row()['class'], 'granting to today\'s extension');
+
+			// MAIN's own jobs, and a node without COMMANDS, keep the rows.
+			$this->assertTrue(SignalDispatcher::cache(1, ['type' => 'update_line', 'id' => 3]));
+			NodeRegistry::update(self::SID, ['flows' => 0]);
+			$this->assertTrue(SignalDispatcher::cacheBatch(self::SID, [['type' => 'delete_con', 'uuid' => 'abc']]));
+			$this->assertSame([1, self::SID], array_column(array_slice($rRows, 1), 'server_id'));
+			$this->assertCount(4, $rJobs());
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+			SignalDispatcher::useSink(null);
 		}
 	}
 

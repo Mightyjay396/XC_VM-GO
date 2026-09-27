@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
@@ -125,6 +126,50 @@ final class ClusterRoute {
 		}
 		try {
 			CommandBus::enqueue($rCrypto, $rServerID, 'conn.close', ['uuid' => $rUUID, 'remove' => $rRemove], 'close:' . $rUUID);
+			return [true, true];
+		} catch (\Throwable) {
+			return [true, false];
+		}
+	}
+
+	/**
+	 * Cache jobs for a node in mode 2 (SignalDispatcher::cache and
+	 * cacheBatch): its signals daemon reads no `signals` row (its connects
+	 * to MAIN are refused), so they go as signed `node.cache {jobs}`
+	 * commands, CacheJobs::MAX at most each, in order, which the node's
+	 * cluster:exec runs as the daemon ran the rows. A job not in the form
+	 * the node runs (CacheJobs::job) is left out.
+	 * Granting to the extension, which classes by type: without a licence
+	 * nothing is sent. MAIN's own jobs, nodes in mode 0 or 1 and nodes that
+	 * take no command keep the legacy row.
+	 *
+	 * @param list<array<string, mixed>> $rJobs payloads as the signals rows carried them
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function cache(int $rServerID, array $rJobs): array {
+		if (defined('SERVER_ID') && $rServerID === (int) SERVER_ID) {
+			return [false, false];
+		}
+		try {
+			$rNode = empty(SettingsManager::get('cluster_api_enabled')) ? null : NodeRegistry::byServer($rServerID);
+		} catch (\Throwable) {
+			return [false, false];
+		}
+		if ($rNode === null || (int) $rNode['mode'] !== 2) {
+			return [false, false];
+		}
+		$rCrypto = self::target($rServerID);
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
+			return [false, false];
+		}
+		$rJobs = CacheJobs::clean($rJobs);
+		if ($rJobs === []) {
+			return [true, false];
+		}
+		try {
+			foreach (array_chunk($rJobs, CacheJobs::MAX) as $rChunk) {
+				CommandBus::enqueue($rCrypto, $rServerID, 'node.cache', ['jobs' => $rChunk]);
+			}
 			return [true, true];
 		} catch (\Throwable) {
 			return [true, false];

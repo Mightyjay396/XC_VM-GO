@@ -55,6 +55,32 @@ final class ClusterExecCommandTest extends TestCase {
 		$this->assertSame(ClusterExecCommand::TYPES, $rTypes);
 		$this->assertContains('artefact.fetch', $rTypes);
 		$this->assertContains('node.root', $rTypes);
+		$this->assertContains('node.cache', $rTypes);
+	}
+
+	/**
+	 * `node.cache` runs only jobs in the form MAIN signs them
+	 * (CacheJobs::job), at most CacheJobs::MAX a command: any other
+	 * is refused whole, before a job runs, and nothing is deleted.
+	 */
+	public function testMalformedCacheJobsAreRefusedWhole(): void {
+		$rGood = ['type' => 'delete_vod', 'id' => 7];
+		foreach ([
+			'no jobs' => [],
+			'not a list' => ['jobs' => ['a' => $rGood]],
+			'empty' => ['jobs' => []],
+			'a path for a uuid' => ['jobs' => [$rGood, ['type' => 'delete_con', 'uuid' => '../../config/cluster/agent.json']]],
+			'an id as text' => ['jobs' => [['type' => 'delete_vod', 'id' => '7']]],
+			'an id list with text' => ['jobs' => [['type' => 'delete_vods', 'id' => [7, '8;rm']]]],
+			'an unknown type' => ['jobs' => [['type' => 'delete_everything', 'id' => 1]]],
+			'an extra field' => ['jobs' => [$rGood + ['path' => '/etc']]],
+			'too many' => ['jobs' => array_fill(0, \XcVm\Core\Cluster\CacheJobs::MAX + 1, $rGood)],
+		] as $rWhy => $rArgs) {
+			ob_start();
+			$rExit = ClusterExecCommand::run(['type' => 'node.cache', 'args' => $rArgs]);
+			$this->assertSame('', ob_get_clean(), $rWhy);
+			$this->assertSame(2, $rExit, $rWhy);
+		}
 	}
 
 	public function testUnknownTypesAndActionsDoNothing(): void {
