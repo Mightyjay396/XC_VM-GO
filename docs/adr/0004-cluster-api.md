@@ -97,7 +97,7 @@ A session request is checked in this order. Nothing is written, not even the non
 2. protocol range (426 `PROTO` carries min and max);
 3. the ±90 s window;
 4. the node (`sid:` identities are refused: they are only valid on the two code ops) and its revocation;
-5. the extension's session for the named epoch (its refusals map to `NODE_REVOKED`, `LICENCE_INVALID`, `CLOCK` or `TOKEN_EXPIRED`);
+5. the extension's session for the named epoch (its refusals map to `NODE_REVOKED`, `LICENCE_INVALID`, `CLOCK` or `TOKEN_EXPIRED`). Steps 4 and 5 read the node's row and the epoch's record from the cluster bus while it holds them (fifth cluster bus increment);
 6. the request MAC;
 7. the node signature, verified with the key from the extension-sealed epoch record, never the DB row;
 8. the nonce claim (401 `REPLAY`, with `retry_after_ms` when MAIN only cannot vouch for the nonce yet: see the second cluster bus increment);
@@ -1579,7 +1579,7 @@ since            unix seconds: when this node's audit began
 
 **Without the bus.** If the bus is not running, or this is an LB or a test, `waitNode`/`waitAck` return null and the callers poll as before.
 
-Nonces and the per-op semaphores came in the second increment, heartbeats with their telemetry (`cl:tel:<sid>`) in the third, and the ingest permits in the fourth, below.
+Nonces and the per-op semaphores came in the second increment, heartbeats with their telemetry (`cl:tel:<sid>`) in the third, the ingest permits in the fourth, and what authentication reads in the fifth, below.
 
 ### The cluster bus (Phase 2, second increment): nonces and per-op semaphores
 
@@ -2053,7 +2053,7 @@ In a fleet of agents that send `policy_ver`, an old port therefore goes a minute
 - `cl:hb`, a hash with one field per server id: `<heard ms>:<clock offset ms>:<root_ready 0|1|->:<telemetry heard ms>:<authoritative 0|1>:<gen>`. `heard` is MAIN's clock when it handled the heartbeat, as `last_seen_at` was. `gen` is the enrolment the heartbeat was authenticated for. A heartbeat without `root_ready` or `telemetry` keeps the last ones of the same `gen` (`-`: never sent). No TTL.
 - `cl:tel:<sid>`, the telemetry document: `{"at": heard ms, "auth": 0|1, "telemetry": {…}}`, with a 10 min TTL. `auth` says whether the node was in mode ≥ 1 with TELEMETRY on when MAIN heard it. It is encoded with `JSON_UNESCAPED_SLASHES | JSON_PRESERVE_ZERO_FRACTION`, so the flush reads back exactly what the heartbeat carried.
 
-Authentication still reads the node and its epoch (two SELECTs). `TokenService::markUsed()` no longer writes for an epoch that is already the node's current one: every newer epoch is minted above the current one, and an epoch becomes current only once its `used` flag is written, so that epoch was marked. So a heartbeat on the bus writes nothing to MySQL. Since the sixth Phase 2 increment it writes `cluster_nodes` when the node's `policy_ver` or MAIN port changed.
+Authentication still reads the node and its epoch (two SELECTs); since the fifth bus increment it reads them from the bus. `TokenService::markUsed()` no longer writes for an epoch that is already the node's current one: every newer epoch is minted above the current one, and an epoch becomes current only once its `used` flag is written, so that epoch was marked. So a heartbeat on the bus writes nothing to MySQL. Since the sixth Phase 2 increment it writes `cluster_nodes` when the node's `policy_ver` or MAIN port changed.
 
 **The flusher.** `HeartbeatService::flush()` runs at the start of every `LivenessService::tick()`: every second in MAIN's signals daemon, and each minute from `cron:cluster`. One flusher at a time holds `cl:flush_lock` (`SET NX`, 10 s); another one only reads. Per node:
 - **`cluster_nodes`** gets `last_seen_at`, `clock_offset_ms`, `root_ready` (once ever sent) and `updated_at` (heard, in seconds). This happens when the heartbeat differs from the one last flushed and one of these holds:
@@ -2099,7 +2099,7 @@ A bus lost between a heartbeat and its flush loses at most one flush's worth of 
 - **Only with a working flusher.** The plan has the health loop copy heartbeats, and says nothing of the loop being down. Here heartbeats use the bus only while a flusher has finished a clean pass within 5 s.
 - **`cl:hb` besides `cl:tel:<sid>`.** Liveness needs every node's last heartbeat each second: one small hash serves that in one read, and a document is read only when it is due.
 - **`servers` keeps the direct path's cadence** (5 s past `last_check_ago`, per document), not a flat 5 s copy. A flat copy of the latest document every 5 s would write every 6–10 s instead of every 6 s.
-- **Authentication still reads MySQL**, the node row and its epoch, so a heartbeat still uses a DB connection for those two reads; only its writes are gone. Caching those rows on the bus needs revocation and re-enrolment to reach the cache first.
+- **Authentication still reads MySQL**, the node row and its epoch, so a heartbeat still uses a DB connection for those two reads; only its writes are gone. Caching those rows on the bus needs revocation and re-enrolment to reach the cache first. The fifth bus increment does that: every writer drops the bus's copy after its MySQL write.
 - **`servers.status`** is set with each `cluster_nodes` flush (every 5 s), not with each heartbeat.
 
 **Compatibility.**
@@ -2129,7 +2129,7 @@ Tests:
   - liveness on bus-only freshness (ok, suspect, offline, and MySQL winning when newer), the fleet guard, silence from `ready_at`, and no node suspect when the bus is lost just before a flush;
   - the bus killed, and the bus restarted empty between a heartbeat and its flush;
   - the Cluster Nodes page.
-- `ClusterApiTest`: a heartbeat end to end on the bus, with only the two authentication reads in MySQL, then the flush.
+- `ClusterApiTest`: a heartbeat end to end on the bus, with only the two authentication reads in MySQL, then the flush. Since the fifth bus increment those are the first request's after `enrol_complete`; the next ones read nothing.
 
 ### The cluster bus (Phase 2, fourth increment): ingest permits
 
@@ -2194,7 +2194,7 @@ All of this is safe. P0 is slower than the plan wants: a refused P0 batch waits 
 - LB builds have neither `Domain/Cluster` nor the bus. `AgentClient` and `RecordCommand` ship to LBs, and reference no `Domain\Cluster` class.
 
 **Limits.**
-- **Authentication still reads MySQL** (the node and its epoch) before any permit, so the plan's "MySQL opens only inside ingest or ctl permits" holds for everything but those two reads (third bus increment).
+- **Authentication still reads MySQL** (the node and its epoch) before any permit, so the plan's "MySQL opens only inside ingest or ctl permits" holds for everything but those two reads (third bus increment). Since the fifth bus increment it reads them from the bus, and MySQL only on a miss.
 - **The pool size is not counted.** The permits are n (at least 2), and the `cluster_ingest` pool has min(2n + 8, floor(0.25 · `max_connections`)) workers, at least 2. When MariaDB's `max_connections` leaves the pool with no more workers than bulk's share (`max_connections` under 16 at the default n), bulk can hold every worker, and a P0 batch waits on the socket although a permit is free.
 - A worker that cannot reach the bus runs ingest without a permit, as the per-op semaphores do.
 - A changed n applies to the requests that read it; permits already held count against the new limits until their requests end.
@@ -2221,6 +2221,81 @@ Tests:
   - no permit without the bus (none at the checkout's default socket either).
 - `AgentClientRetryTest`: `recording_complete` asked again after each wait until answered, at once when answered, with no agent at all, and given up after the last wait, one try after each; `RecordCommand::vodFor` asking MAIN this way on a node whose CONTENT flow is on.
 - `ClusterContentTest`: two overlapping `RecordingFinalizer::create` calls making one VOD, added to its bouquets once.
+
+### The cluster bus (Phase 2, fifth increment): authentication
+
+**Before.** Every authenticated request read the node's `cluster_nodes` row (`NodeRegistry::byUuid`) and the epoch it names (`TokenService::epoch`): two SELECTs, before its MAC was checked. A heartbeat on the bus wrote nothing to MySQL (third increment) but still read it twice, and the entry point read MAIN's `servers` row for every request too. The plan (section 8, "MAIN capacity") has heartbeats and long-polls hold no DB connection.
+
+**Now.** While the bus runs, `Domain\Cluster\NodeAuthCache::load()` serves what those two reads returned, and reads MySQL only on a miss:
+- `cl:auth:<uuid>`: the node's row, as `<sid>:<version>:<filled at, MAIN ms>:<json>`. Every column but `row_mac` and `attest`, which no request reads. Binary values (the node's keys) are `{"b64": …}`, so they come back byte for byte.
+- `cl:auth:<uuid>:<epoch>`: that epoch's `record` (base64) and `exp`, in the same form. The record is what MySQL keeps for this purpose: the extension's epoch record, sealed to MAIN's machine with the node uuid as context. The sealed token and the agent's per-epoch key are not kept.
+- Both live 30 s (`TTL_MS`). A held epoch whose `exp` has passed is not served, as MySQL's `exp > now` does not return it.
+- An unknown node, and an epoch MySQL does not hold live, are never kept. Each such request reads MySQL, as before, so nobody fills the bus by naming nodes or epochs that do not exist. A revoked node's epoch is not read, as before.
+- With the row held and the epoch not (the first request of a new epoch), the epoch alone is read.
+
+So a heartbeat on the bus sends MySQL no query at all, and a `commands` long-poll reads only `cluster_commands`. Every other op saves the two reads and reads what its handler needs.
+
+**Writers.** An entry counts only while it carries its node's version: `cl:auth_ver`, a hash with a field per server id and no TTL. Every writer of what authentication reads calls `NodeAuthCache::forget()` right after its MySQL write:
+
+| Writer | Callers |
+| --- | --- |
+| `NodeRegistry::update()` | `enrol_complete`; `hello` (the clone quarantine, the instance and endpoint columns); `token_rekey` (the attestation's quarantine, the boot fields); a heartbeat's endpoint columns; `TokenService::markUsed()`; the Cluster Nodes page's flow switches; and any later writer that uses it |
+| `NodeRegistry::startEnrolment()` | re-enrolment (install, `server:enrol`, `cluster:reenrol`) and code approval |
+| `NodeRegistry::revoke()` | through `update()`, after its epochs are dropped |
+| `TokenService::issue()` | every mint: a refresh retried with another key mints the same number again, with a new record |
+| `TokenService::rekey()` | after it drops the node's other epochs |
+
+`forget()` raises the node's version, so its next request reads MySQL, and `cl:auth_seq`:
+- **The fill guard.** `load()` reads `cl:auth_seq` in the script that reads the entries, before MySQL. It keeps what it then read from MySQL only while the sequence is unchanged, checked in the script that writes it. A request that read a row before a write and fills after it therefore fills nothing. Every write raises the sequence, so a fill racing any node's write is dropped, which costs that node one more miss.
+- **A lost bus.** The sequence starts at a random value below 2^52 the first time a script finds it missing. A request that read it from a bus that has since restarted or been flushed never matches the new one.
+- **Columns that lag.** The heartbeat flush (`last_seen_at`, `clock_offset_ms`, `root_ready`, `updated_at`), the event cursors (`useq_p0`, `useq_p1`) and the command high-water (`cmd_seq`) are written without the registry (`NodeAuthCache::LAGGING`). They may be up to 30 s behind in an entry, and a registry write of those columns alone (a heartbeat without a flusher) keeps it. What needs them current reads MySQL: `hello` reads its row again for the `cursors` it returns, `EventIngest` reads its cursor under its lock, and `CommandBus::enqueue()` reads the row itself. `node.inventory`'s `time_offset` comes from the held row's clock offset, at most 30 s older than the flush's.
+- **A writer that cannot reach the bus.** The bus socket exists, but the script fails: a worker in its 5 s pause after a failed connect, a lost connection, or a full bus that refuses the script's first write. `forget()` then marks the second in `bin/cluster_bus/auth.stale` (`ClusterBus::mark()`, the nonce marks' rules, shared since this increment). A mark that root creates goes to the bus directory's owner, so the workers can move it on. Nothing filled before the end of the second after the mark counts, and nothing is filled until then: those requests read MySQL. Without a socket there is nothing to drop, and a bus that starts is empty.
+
+**Without the bus.** Not started, an LB, a test, or a failed script: `load()` reads MySQL, the same two SELECTs in the same order, exactly as before.
+
+**The entry point.** `Public/cluster/index.php` reads MAIN's `servers` row only for the ops that use it (`ClusterApi::readsMain()`): `challenge`, `enrol_complete`, `hello` and `config`, and any op not listed as not reading it, such as an op still to come. It still connects to MySQL first, so a MAIN whose database is down still answers every op with the signed `503 DB` at once.
+
+**The agent's contract.** No wire change: no new op, field, header, refusal, file or setting, and nothing for the agent to build. MAIN keeps these, which the agent may rely on, as before this increment:
+1. A change MAIN stores for a node (revoked, quarantined, re-enrolled, a new mode or flows, an epoch minted again under its number, the epochs a re-key drops) applies from the node's first request that arrives after the change is stored. A request already past authentication (a held long-poll) finishes, as before.
+2. `UNKNOWN_NODE`, which stops the agent, still comes only from MySQL: the bus never holds a node MySQL does not.
+3. A `hello`'s `cursors` are MySQL's when the hello is served.
+4. The heartbeat reply's `state`, `mode` and `flows` are as current as before.
+
+**Differs from the plan.**
+- **A cache the plan does not name.** Section 8 has heartbeats and long-polls hold no DB connection, which authentication's two reads broke (third and fourth increments). This increment removes the reads; the connection stays (Limits).
+- **Versions, not deletes.** A writer knows the server id and a request the uuid. Raising the node's version drops every entry of the node without knowing their keys, and they expire.
+- **One fill sequence for all nodes.** A fill guarded by its node's own version would need the server id before the MySQL read, and only that read gives it.
+
+**Compatibility.**
+- Older agents are unaffected: nothing on the wire changes.
+- On upgrade the bus holds no `cl:auth*` keys, so each node's first request reads MySQL.
+- A rollback leaves `cl:auth:*`, gone within 30 s, `cl:auth_ver` and `cl:auth_seq`, which nothing reads until the next bus restart drops them, and `auth.stale`, harmless.
+- LB builds have neither `Domain/Cluster` nor the bus.
+
+**Limits.**
+- A write that bypasses the registry and `TokenService` is seen within 30 s: a backup restored into `cluster_nodes`, a manual SQL edit, or a new writer that does not call `forget()`. A restored row still cannot re-activate a revoked node: the extension's generation floor refuses its record, with or without the bus.
+- So is a write whose request dies between its MySQL write and its `forget()`, or whose writer can reach neither the bus nor the mark.
+- A manual `DEL` of `cl:auth_ver` while entries remain can make an entry filled before a write count again, until it expires. The shipped `cluster.conf` never evicts it (`volatile-ttl`, and it has no TTL).
+- The rules assume MAIN's clock does not step back by more than a second, as the nonce marks do.
+- The entry point still opens a MySQL connection for every request (`SET NAMES` and the session timeouts run on it), so a heartbeat holds one while it is served. A lazy connection that still answers `503 DB` when MySQL is down is not built.
+- Memory: about 1 KiB per node for the row, and the record's size (at most 2 KiB, base64-encoded) per epoch in use, each for 30 s.
+
+Tests:
+- `ClusterAuthCacheTest`, against a real redis-server on a unix socket:
+  - MySQL for every request without the bus, and nothing marked;
+  - on the bus, the second request asking MySQL nothing, with the row and record byte for byte, a TTL of at most 30 s, no token, and no key for an unknown node or epoch;
+  - a registry write read at the next request while other nodes stay held, and a write of lagging columns alone keeping the entry;
+  - each registry writer (mode, flows, epoch, revocation, re-enrolment) dropping the entry;
+  - the epoch read alone while the row is held, an expired epoch not served, a revoked node's epoch never read;
+  - a write between a request's MySQL read and its fill, for the row and for the epoch alone, and a bus flushed in between: nothing filled;
+  - a request filling epoch 1 while a re-key mints epoch 2: epoch 1 not served afterwards;
+  - a writer out of reach marking the second, entries held before it not counted, nothing counted within the next second, and entries counted again after it;
+  - a killed bus: MySQL, and its writers marking.
+- `ClusterApiTest`:
+  - a held heartbeat sending MySQL no query, and a long-poll only `cluster_commands` queries;
+  - the next request seeing `enrol_complete`, a revocation (`revoked_gen` of the new generation), a clone quarantine from `hello` and from `token_rekey`, an admin's flow switch, an epoch minted again under its number, the epochs a re-key drops, a re-enrolment, and a new epoch marked once;
+  - `hello`'s cursors after a batch, with the row held;
+  - `readsMain()`, no dispatch arm of the listed ops passing MAIN's row, and a heartbeat and a long-poll served without it.
 
 ### Blocklist delta (Phase 7, first increment)
 
