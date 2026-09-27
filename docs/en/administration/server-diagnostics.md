@@ -115,7 +115,7 @@ On the MAIN, the nginx route for the cluster API is written by XC_VM, not fixed 
 | --- | --- |
 | `cluster_locations.conf` | The `/cluster/v1/` route, included by the main web server. It passes to the cluster pools and allows each LB 100 requests a second (bursts of 400; above that nginx answers `429`) |
 | `cluster.d/listen.conf` | Only when **Cluster API Port** is not `0`: a plain-HTTP server on that port. It serves `/cluster/v1/` and answers `404` to anything else |
-| `cluster.d/old_port.conf` | For 7 days after the port the LBs use changes (the HTTP broadcast port, the Cluster API Port, or the HTTPS broadcast port while LBs are sent to HTTPS): the old port keeps serving `/cluster/v1/` alone, so an LB that missed the change still finds the MAIN. An old HTTPS port keeps HTTPS, with the main web server's certificate (`ssl.conf`) |
+| `cluster.d/old_port.conf` | For up to 7 days after the port the LBs use changes (the HTTP broadcast port, the Cluster API Port, or the HTTPS broadcast port while LBs are sent to HTTPS): the old port keeps serving `/cluster/v1/` alone, so an LB that missed the change still finds the MAIN. An old HTTPS port keeps HTTPS, with the main web server's certificate (`ssl.conf`). It closes sooner once every LB uses the new port (see below) |
 
 `status` writes these files at every boot and after an update, a port change writes them at once, and a job checks them against the settings every minute. A change is kept only when `nginx -t` passes. A new Cluster API Port must also be free, and nginx must be serving it right after the reload. Otherwise the previous files are put back, and saving the new port fails with the reason. To write them again and see what nginx says, run on the MAIN:
 
@@ -128,7 +128,8 @@ ls -l /home/xc_vm/bin/nginx/conf/cluster.d/
 - `cluster:nginx` refuses to run as root. Run it as `xc_vm`, as above.
 - A Cluster API Port other than `0` must be open from the LBs to the MAIN in every firewall between them.
 - The first write removes `cluster_legacy.conf`, which earlier releases used for old ports; `cluster.d/old_port.conf` replaces it.
-- When the MAIN's **Server IP** or **Private IP** changes, on its server page or when XC_VM updates the Server IP from the network interface, the LBs are told the new address. The old address stays in their list for 7 days. It keeps working only while it still reaches the MAIN. Set **MAIN Host Name** in the cluster settings (a DNS name) if the MAIN's IP can change.
+- When the MAIN's **Server IP** or **Private IP** changes, on its server page or when XC_VM updates the Server IP from the network interface, the LBs are told the new address. The old address stays in their list for up to 7 days. It keeps working only while it still reaches the MAIN. Set **MAIN Host Name** in the cluster settings (a DNS name) if the MAIN's IP can change.
+- An old port closes before its 7 days once every LB uses the new one. Every LB in mode 1 or 2 (the **Mode** column of *Servers → Cluster Nodes*) must be online, must report that it uses the MAIN's latest list of addresses, and must have last reached the MAIN on another port. The check runs every minute, so in a healthy cluster an old port closes a minute or two after the change. An LB that is offline, still enrolling, or runs an agent that does not report its list keeps the old port open for the full 7 days. So does an LB that still reaches the MAIN only on the old port: open the new port from that LB to the MAIN.
 
 ---
 
