@@ -50,6 +50,9 @@ final class ArtefactStage {
 	/** Bytes copied at a time. */
 	private const BLOCK = 1048576;
 
+	/** The most of an agent binary's `version` output kept, for its first line. */
+	private const VERSION_OUTPUT = 65536;
+
 	private static ?string $rDownloads = null;
 
 	private static ?string $rVideos = null;
@@ -327,22 +330,37 @@ final class ArtefactStage {
 	/**
 	 * Does this binary start here: `<binary> version` exits 0 with a line
 	 * within 10 s, run as the owner of its directory (the agent's user; from
-	 * root through sudo, never with root's rights).
+	 * root through sudo, never with root's rights). No shell: an argv list,
+	 * stdin and stderr /dev/null, and the first line of at most
+	 * VERSION_OUTPUT bytes of stdout kept (the rest is read and dropped, so
+	 * the binary never blocks on a full pipe).
 	 */
 	private static function runs(string $rBinary, string $rDir): bool {
-		$rAs = '';
+		$rArgv = ['timeout', '10', $rBinary, 'version'];
 		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
 			clearstatcache(true, rtrim($rDir, '/'));
 			$rStat = @lstat(rtrim($rDir, '/'));
 			if (!is_array($rStat) || $rStat['uid'] === 0) {
 				return false;
 			}
-			$rAs = 'sudo -n -u ' . escapeshellarg('#' . $rStat['uid']) . ' ';
+			$rArgv = array_merge(['sudo', '-n', '-u', '#' . $rStat['uid']], $rArgv);
 		}
-		$rOut = [];
-		$rCode = 1;
-		@exec($rAs . 'timeout 10 ' . escapeshellarg($rBinary) . ' version 2>/dev/null', $rOut, $rCode);
-		return $rCode === 0 && trim((string) ($rOut[0] ?? '')) !== '';
+		// An argv list, no shell: sudo and timeout, the directory owner's uid, and the copy installAgent() wrote beside the agent binary (no payload names it).
+		// nosemgrep: php.lang.security.exec-use.exec-use
+		$rProc = @proc_open($rArgv, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
+		if (!is_resource($rProc)) {
+			return false;
+		}
+		$rOut = '';
+		while (!feof($rPipes[1])) {
+			$rChunk = fread($rPipes[1], 8192);
+			if ($rChunk === false || $rChunk === '') {
+				break;
+			}
+			$rOut .= substr($rChunk, 0, max(0, self::VERSION_OUTPUT - strlen($rOut)));
+		}
+		fclose($rPipes[1]);
+		return proc_close($rProc) === 0 && trim(explode("\n", $rOut, 2)[0]) !== '';
 	}
 
 	/**
