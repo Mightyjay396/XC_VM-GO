@@ -741,7 +741,7 @@ The plan names the second event `inventory`; it is `node.inventory` here, next t
 **Never the node's.** Columns that grant or route stay with MAIN and the admin, and MAIN refuses them in either event:
 
 - `whitelist_ips`, which feeds the allowed IPs (`/api`, the internal endpoints, the flood exemptions). The legacy cron wrote the node's interface addresses there; with TELEMETRY on the cron stops, and the column keeps what the admin or the last legacy write left.
-- `server_ip`: `cron:root_signals` still auto-updates it with a direct write, and only while the node reaches MAIN's database.
+- `server_ip`: `cron:root_signals` still auto-updates it with a direct write, and only while the node reaches MAIN's database. That rewrite turned out to run only on MAIN, for MAIN's own row (ninth Phase 7 increment).
 - `status`, which the heartbeat owns.
 
 **MAIN side.** `EventIngest` writes only the event type's columns of the sending node's own row. Each value must be a scalar of at most 256 KB. An inventory also sets `time_offset` from the node's heartbeat clock offset (`cluster_nodes.clock_offset_ms`, read when the inventory is applied: fifth cluster bus increment), which is what the legacy cron measured against the database clock.
@@ -1535,12 +1535,12 @@ since            unix seconds: when this node's audit began
 **Known limits.**
 
 - Mode 2 cannot be switched on yet (`lb_new_node_mode = api` waits for the cutover phase), and a node in mode 2 still has paths that need MAIN's database. The refusal stops them, counted:
-  - `cron:root_signals` reads MAIN's `signals` table. Without COMMANDS or root's pin its first read is the flush-row poll at the top, which stops it before the iptables sync and the fanout and agent keepalives. With both (the intended mode 2 setup) it runs the iptables sync (from the replica's cache with CONFIG on) and the keepalives, and stops at the signals loop: the signal actions, the ramdisk and ports reconciliation, the crontab and sysctl checks and `close_mysql` are lost. A server IP that differs from the replica's, which it writes to `servers`, stops it before the keepalives too.
-  - `cron:cleanup`'s stream, archive and VOD checks read `streams` from MAIN's database whenever `cleanup` (on by default) or `check_vod` is on. Its audit pruning and hourly `audit.json` run before them.
-  - Root actions log to `mysql_syslog` through MAIN's database, several before acting (reboot, restarting or stopping the services), so `cluster:root` reports them refused and those never act.
+  - `cron:root_signals` reads MAIN's `signals` table. Without COMMANDS or root's pin its first read is the flush-row poll at the top, which stops it before the iptables sync and the fanout and agent keepalives. With both (the intended mode 2 setup) it runs the iptables sync (from the replica's cache with CONFIG on) and the keepalives, and stops at the signals loop: the signal actions, the ramdisk and ports reconciliation, the crontab and sysctl checks and `close_mysql` are lost. A server IP that differs from the replica's, which it writes to `servers`, stops it before the keepalives too. Since the ninth Phase 7 increment it reads nothing of MAIN's database in mode 2, and the server IP rewrite turned out to run only on MAIN.
+  - `cron:cleanup`'s stream, archive and VOD checks read `streams` from MAIN's database whenever `cleanup` (on by default) or `check_vod` is on. Its audit pruning and hourly `audit.json` run before them. Since the ninth Phase 7 increment a node in mode 2 skips them until R2.
+  - Root actions log to `mysql_syslog` through MAIN's database, several before acting (reboot, restarting or stopping the services), so `cluster:root` reports them refused and those never act. Since the ninth Phase 7 increment the lines go through the agent and the actions act.
   - `cron:cache` builds the bouquets, categories, proxies and allowed-IPs caches from MAIN's database (R2).
-  - The watchdog waits for MAIN's database.
-  - `cluster:apply`'s shadow comparison (CONFIG off) reads MAIN's crontab and RTMP publishers.
+  - The watchdog waits for MAIN's database. Since the ninth Phase 7 increment it neither waits nor uses Redis in mode 2.
+  - `cluster:apply`'s shadow comparison (CONFIG off) reads MAIN's crontab and RTMP publishers. Since the ninth Phase 7 increment mode 2 compares neither and says so.
 - Mode 1 still boots through MAIN's database (seventh increment), so a mode 1 node's `sql_connects` is never zero. The boot's site shows it apart from the rest, but the plan's seven-day zero cannot be reached in mode 1 until mode 1 boots from its replica too.
 - A tree that holds MAIN's `Public/cluster/index.php` (a node installed from MAIN's archive) never refuses; it still counts.
 - A CLI process refused at its boot ends through the panel's exception handler, with exit status 0.
@@ -1557,8 +1557,82 @@ since            unix seconds: when this node's audit began
 **The agent's contract (XC_VM_Fanout).** No change is needed:
 
 - **`audit`.** The seventh increment's contract is unchanged: read `audit.json` beside `flows.json`, and when it is at most 16384 bytes and a JSON object, send it as the heartbeat payload's `audit`, parsed and re-encoded. It now also holds `sql_connects`, `redis_connects` (integers), `sites` (an object of `"<kind> <path>:<line>"` to integer counts, printable ASCII keys of at most 160 bytes) and `connects_since` (an integer). Pass them through as they are. Go's HTML escaping of `<`, `>` and `&` does not matter: MAIN measures what it decodes, in PHP's shortest encoding. MAIN ignores members it does not know, so a heartbeat without them keeps what MAIN has.
-- **The refusal.** It is PHP's alone and needs nothing from the agent: `cluster:apply` boots from the replica in every mode and opens no connect with CONFIG on. With CONFIG off, its shadow comparison reads MAIN's database, which mode 2 refuses. An agent that switches a node to mode 2 must not rely on that report.
-- **The flush.** It arrives as the Phase 4 `node.root` command it already was: `args` `{"action": "flush"}`, handed to root's inbox by `cluster:exec`. Root's result is `{ok, result}` as for every root action. `ok` is true once iptables was flushed, unless the `mysql_syslog` line was refused (mode 2): then `ok` is false with the refusal's message.
+- **The refusal.** It is PHP's alone and needs nothing from the agent: `cluster:apply` boots from the replica in every mode and opens no connect with CONFIG on. With CONFIG off, its shadow comparison reads MAIN's database, which mode 2 refuses. An agent that switches a node to mode 2 must not rely on that report. (Since the ninth Phase 7 increment mode 2 does not read it, and names what it left out under `unchecked`.)
+- **The flush.** It arrives as the Phase 4 `node.root` command it already was: `args` `{"action": "flush"}`, handed to root's inbox by `cluster:exec`. Root's result is `{ok, result}` as for every root action. `ok` is true once iptables was flushed, unless the `mysql_syslog` line was refused (mode 2): then `ok` is false with the refusal's message. (Since the ninth Phase 7 increment that line goes through the agent in mode 2, and `ok` is true.)
+
+### The paths left to MAIN's database (Phase 7, ninth increment)
+
+The eighth increment's refusal stopped the paths a node in mode 2 still took to MAIN's database. This increment moves those it listed off it (plan, section 10: mode 2 has no database and no Redis to MAIN; everything goes through the agent). Each check below is `NodeRole::refusesConnects()`, the refusal's own test (mode 2, active or quarantined, by `flows.json`, never on MAIN's build), so MAIN, mode 0 and mode 1 run exactly as before.
+
+**`cron:root_signals`.** `RootSignalsCronJob::readsMainDatabase()` is false on a node in mode 2. There the cron reads:
+
+| What | Mode 0, 1, MAIN (unchanged) | Mode 2 |
+| --- | --- | --- |
+| the flush row (top of the cron) | polled unless root commands come from MAIN | never |
+| the signals loop | `signals` rows, then each run through `executeAction()` | no row: MAIN sends root's actions as the Phase 4 `node.root` commands `cluster:root` runs |
+| ramdisk, ports and services checks | when a `*_ramdisk`, `set_port` or `set_services` row is queued | when the replica's servers cache changes (below) |
+| crontab check | MAIN's `crontab` table, or the replica's jobs once it owns them | the replica's jobs once it owns them, else the crontab is left as it is (`ReplicaApply::crontabText(null)`) |
+| iptables sync with CONFIG off | MAIN's `blocked_ips` | nothing: iptables left as they are |
+| sysctl check, iptables sync with CONFIG on, keepalives, nginx files | unchanged, no database | unchanged, no database |
+
+- **The checks from the replica.** A `set_services`, `set_port` or `*_ramdisk` row made the cron check the node's own row (`total_services`, the ports, `use_disk`) and queue what differs. In mode 2 the replica says when that row changed: `replica_owned`'s servers entry (`<servers ETag>/<node ETag>`, what the servers cache was built from) differs from `tmp/crons/replica_servers_checked`. The cron then writes the new value there, before acting (at most once, as a signal row was deleted before it ran), and runs the three checks against the servers cache. That also happens once after a reboot, since `tmp/` is cleared, and never while the replica does not own the servers cache (CONFIG off). MAIN still sends each change as its `node.root` command; the checks make good one that expired while the node was away.
+- **`close_mysql()`** of a handle the process never opened does nothing.
+- **The server IP rewrite** needs nothing: it sits in the cron's `is_main` branch and only ever rewrites MAIN's own `server_ip`. The eighth increment's list, and the fifth Phase 5 increment's note on `server_ip`, said a node ran it; none does. A node's `server_ip` stays the admin's, and MAIN refuses it in `node.state` anyway.
+
+**Root's system log lines.** Fifteen `mysql_syslog` writes in `RootSignalsCronJob` (twelve root actions in `executeAction()`, the flush row, two PHP-FPM restarts) now ask `LogSink::syslog($type, $error)` first:
+
+| Node | The line |
+| --- | --- |
+| MAIN, mode 0 | the row, by the statement as it was |
+| mode 1, LOGS on, agent alive | a `log.syslog` event on P1 (below) |
+| mode 1 otherwise | the row, by the statement as it was |
+| mode 2, LOGS on, agent alive | a `log.syslog` event on P1 |
+| mode 2 otherwise | the panel's error log only (redacted): dropped |
+
+- The action runs after its line in every case. A line that is spooled, dropped or refused never stops it, so in mode 2 `reboot`, `restart_services` and `stop_services` act, and `cluster:root` reports them `ok`. The spool file is renamed in before the action, so a reboot's line survives it (`config/cluster/spool/` is on disk).
+- `NodeStateSink::state()` (`set_governor`, `set_sysctl`, the certbot cron's `certbot_ssl`) no longer writes the servers row in mode 2: it answers false when the spool did not take the event.
+- `ClusterRootCommand::runAction()` is the drain's runner, extracted unchanged.
+
+**`log.syslog` on MAIN.** `LogSink::TYPES` gains `syslog` (`mysql_syslog`: `server_id`, `type`, `error`, `username`, `ip`, `database`, `date`). `EventIngest` takes it on P1 with the LOGS flow, as every `log.<type>`, row by row:
+
+- `type` must be one of `LogSink::SYSLOG_TYPES` (`FLUSH`, `REBOOT`, `OPENSSL_EXTRA`, `RESTART`, `STOP`, `RELOAD`, `CERTBOT`, `BINARIES`, `MODULE`, `UPDATE`, `PHP-FPM`) and `error` a string; otherwise the whole event is refused (dropped and counted). `AUTH` never passes: `cron:root_mysql` blocks the addresses of `AUTH` rows, and a node must not be able to have MAIN block one.
+- `server_id` is the sender's; `username` is `root`, `ip` `localhost` and `database` NULL, whatever the node sent.
+- `date` is the node's when it is an integer of at least 1 and not after MAIN's clock (`ClusterClock::now()`), else MAIN's clock. The newest `date` is `cron:root_mysql`'s watermark for MySQL's own log, which a date in the future would hold back.
+- The row is redacted, as every `log.*` row.
+
+**The watchdog.** In mode 2 it sets up no Redis, checks none (`checkRedisHealth`), never pings MAIN's database or waits for it (`waitForDatabase`), and reads no capacities (`ConnectionTracker::getCapacity`: MAIN's Redis or `lines_live`). It still refreshes the servers and settings (the replica's caches) and checks nginx and its own file, then writes `config/cluster/local.json` and ends the pass, whatever TELEMETRY says: it never writes the servers row. Each pass is a new process, so a mode switch takes effect at the next one.
+
+**`cron:cleanup`.** `CleanupCronJob::streamChecks()` is false in mode 2, and the cron returns after its audit pruning and `audit.json`. The stream, archive and VOD checks read this node's streams, which no section carries yet; run against an empty list, they would delete every file. This is the seam R2 fills: once the `streams` section is applied, it answers true in mode 2 and the checks read the replica's streams.
+
+**`cluster:apply`'s shadow comparison.** Decided: mode 2 needs CONFIG, and the node does not read MAIN's database to report without it.
+
+- Without CONFIG no apply builds the caches `ReplicaBoot::ready()` needs (a shadow apply hands them back), so every process but `cluster:apply` fails closed at its boot. The switch to mode 2 (Phase 9) must therefore require every flow, CONFIG included, as the plan's section 10 has it.
+- `cluster:apply` in mode 2 with CONFIG off still reports, without MAIN's database: the crontab part is `{"etag", "mode": "shadow", "jobs"}`, without `missing` and `extra`; `diff` has no `rtmp_ips`; the report gains `"unchecked": ["crontab", "rtmp_ips"]` (those of the two it had to compare). The node's own caches (settings, servers, the other blocklist caches) are compared as before.
+
+**How it differs from the plan.**
+
+- The plan's `log.*` has seven types; there are six (`client`, `stream`, `stream_error`, `panel_error`, `restream`, `syslog`). `log.syslog` is new, and MAIN rewrites its fixed columns and bounds its date.
+- The plan has root's actions arrive as commands and says nothing of the checks a `signals` row triggered; following the replica's ETags for them is this increment's.
+- The plan does not say what a mode 2 node without CONFIG does. It cannot boot, so this increment only keeps `cluster:apply` off MAIN's database there.
+
+**Known limits.**
+
+- Mode 2 still cannot be switched on (Phase 9).
+- In mode 2 a system log line the spool refuses (the agent stopped for over two minutes, or LOGS off) is lost; the panel's error log keeps it.
+- A root action MAIN still queues as a `signals` row for a node in mode 2 never runs: MAIN does so when it lacks `root_ready` or the node is quarantined (`CommandBus::acceptsRoot` takes active nodes only). MAIN's own cron purges the row after a day. The checks from the replica make good ports, services and the ramdisk; a reboot, restart, update or module action is lost.
+- In mode 2 the files of streams deleted on MAIN stay until R2 fills `streamChecks()`.
+- Other paths still reach MAIN's database on a node in mode 2, and the refusal stops them: the signals daemon (`signals`: kills and cache jobs from MAIN's `signals` table), `cron:certbot` (this node's `servers.certbot_ssl`, and its renewal and nginx reloads queued as `signals` rows through `NodeActions`), `cron:cache`'s bouquets, categories, proxies and allowed-IPs caches and the stream endpoints (R2). The eighth increment's list left the first two out; the connect audit's sites on the Cluster Nodes page show what remains.
+- Mode 1 is unchanged: it still boots through MAIN's database, so its `sql_connects` is never zero.
+
+**Tests.**
+
+- `ModeTwoPathsTest`: each path in a child PHP booted for real from the replica (a mode 2 node, every flow on, the replica applied from disk), in a throwaway deploy root, with an `xcvm_core` stand-in that logs each connect and `sudo`, `crontab` and `ip` stand-ins first on the child's `PATH` (the child checks they answer before it boots). None opens or even attempts a connect (the audit counts every attempt): `cron:root_signals`' minute (the iptables sync from the replica, the three checks once and not again, the crontab against the replica's jobs, `ip` never asked), a PHP-FPM restart (its line spooled, the services restarted), `reboot`, `restart_services`, `stop_services` and `flush` through `cluster:root`'s drain (each acts, logs in order through the spool, reported `ok`), a watchdog pass with Redis on (the sample written, no wait), `cron:cleanup` with `cleanup` and `check_vod` on (no file deleted), and a shadow `cluster:apply` (`unchecked`). In this process: `readsMainDatabase()` per mode and state, and on MAIN's build; `streamChecks()` per mode, before the cron's first query; every `mysql_syslog` write guarded by `LogSink::syslog()` with its own type.
+- `ClusterEventsTest`: the line spooled with LOGS on; LOGS off, a stopped agent and MAIN leaving the row to the caller; mode 2 dropping it. On MAIN: `log.syslog` rows as root's on the sender, `AUTH` and a malformed row refused, a future or missing date taken as MAIN's clock, redacted, and LOGS off refusing it. `ClusterRootCommandTest`: the flush row read only where the node reads MAIN's database and root commands do not come from MAIN.
+
+**The agent's contract (XC_VM_Fanout).** No change is needed:
+
+- **`log.syslog`** is one more `log.<type>` in the P1 spool, one row per file today: `{"type": "log.syslog", "t": <ms>, "d": {"rows": [{"server_id": <int>, "type": "<one of SYSLOG_TYPES>", "error": "<text>", "username": "root", "ip": "localhost", "database": null, "date": <unix seconds>}]}}`. The agent sends P1 lines as they are and counts them in P1's cap like every log; it need not know the type. MAIN answers as for every P1 batch. A MAIN before this increment drops it (unknown type, counted).
+- **Mode 2.** An agent (or MAIN, Phase 9) that puts a node in mode 2 must have CONFIG, COMMANDS and LOGS on, and root's pin in place (`root_ready`): without CONFIG no process boots, without COMMANDS and the pin no root action reaches it, and without LOGS root's system log lines are dropped.
 
 ### The R2 streams section on MAIN (Phase 7, ninth increment)
 

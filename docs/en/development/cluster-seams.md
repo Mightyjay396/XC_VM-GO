@@ -17,7 +17,7 @@ Each seam has a hook for tests and for the future transport (`useSink()`,
 | `Core\Cluster\SignalDispatcher` | the 47 `INSERT INTO signals` sites (kill, cache jobs, root actions) | `LegacySqlSignalSink` | commands and events (4/5) |
 | `Domain\Stream\StreamStateWriter` | a node's runtime state in `streams_servers`; refuses any column outside `STATE_FIELDS` | `StreamRowMerge::apply()` | `stream.state` event (5) |
 | `Domain\Stream\StreamSource` | the stream row, this node's `streams_servers` row and the stream options, read before running a stream | SQL | R2 stream delta, `stream_bundle` on a miss (5) |
-| `Core\Cluster\LogSink` | client, stream, stream-error, panel-error and restream-detection records | one multi-row INSERT per batch (chunks of 1000) | `log.*` events, redacted first (5) |
+| `Core\Cluster\LogSink` | client, stream, stream-error, panel-error and restream-detection records; root's system log lines (`syslog()`) | one multi-row INSERT per batch (chunks of 1000); the caller's own `mysql_syslog` INSERT | `log.*` events, redacted first (5); `log.syslog` (7) |
 
 ## MAIN side
 
@@ -61,6 +61,13 @@ action.
   caller and shown on *Servers → Cluster Nodes*, and in mode 2 it throws
   `LbDatabaseAccessException`. Do not open PDO, `\Redis` or mysqli connections
   of your own in code a load balancer runs.
+- A node in mode 2 (`NodeRole::refusesConnects()`) never falls back to MAIN's
+  database. A write with an agent path goes through its seam first
+  (`LogSink`, `LogSink::syslog()` for root's system log lines, `NodeStateSink`),
+  and a root action runs after its log line whatever became of the line.
+  Work that needs MAIN's data no replica section carries yet is skipped in
+  mode 2 behind a named seam (`CleanupCronJob::streamChecks()`), never run
+  against an empty answer.
 - The node's audit files (`storage/cluster/`, `config/cluster/audit.json`) sit
   where xc_vm can write. A root process writes them only inside
   `SettingsAudit::asAgentUser()`, which does the work as xc_vm, never with
@@ -68,4 +75,5 @@ action.
 
 Tests that pin these rules: `SignalDispatcherParityTest`, `StreamStateWriterTest`,
 `StreamRowMergeTest`, `StreamCacheBuilderSourceTest`, `LogSinkTest`,
-`NodeRpcActionsTest`, `ArchitectureTest` and `DbConnectRefusalTest`.
+`NodeRpcActionsTest`, `ArchitectureTest`, `DbConnectRefusalTest` and
+`ModeTwoPathsTest`.
