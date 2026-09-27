@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS `cluster_nodes` (
   `instance_id` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
   `boot_id` varchar(64) COLLATE utf8_unicode_ci DEFAULT NULL,
   `agent_version` varchar(32) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `arch` varchar(8) COLLATE utf8_unicode_ci DEFAULT NULL,
   `proto` smallint(5) unsigned NOT NULL DEFAULT '0',
   `epoch` int(10) unsigned NOT NULL DEFAULT '0',
   `token_exp` int(11) DEFAULT NULL,

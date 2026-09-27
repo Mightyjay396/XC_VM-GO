@@ -62,6 +62,20 @@ class AgentBinaryCommand implements CommandInterface {
 	}
 
 	/**
+	 * The version of the cached binary for $rArch (the `.version` beside it),
+	 * or null when there is none. Read without asking GitHub anything, so the
+	 * fleet's upgrades are decided from what MAIN actually holds.
+	 */
+	public static function cachedVersion(string $rArch): ?string {
+		if (!in_array($rArch, ReleaseAsset::ARCH_MAP, true)) {
+			return null;
+		}
+		$rBinary = self::cacheDir() . self::ASSET_PREFIX . $rArch;
+		$rVersion = is_file($rBinary) && is_file($rBinary . '.version') ? trim((string) file_get_contents($rBinary . '.version')) : '';
+		return $rVersion === '' ? null : $rVersion;
+	}
+
+	/**
 	 * The path of a verified agent binary for $rArch at the current release,
 	 * downloading it when the cache is missing or stale. Null when it cannot
 	 * be had (GitHub unreachable, no such asset, checksum mismatch).

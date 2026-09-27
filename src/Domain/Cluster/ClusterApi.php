@@ -3,7 +3,6 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\ClusterSettings;
-use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\Crypto\Box;
 use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
@@ -11,7 +10,9 @@ use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
+use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -519,6 +520,7 @@ final class ClusterApi {
 		$rNode = NodeRegistry::byServer((int) $rNode['server_id']) ?? $rNode;
 		$rInstance = self::short($rP['instance_id'] ?? null);
 		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)]
+			+ self::arch($rNode, $rP)
 			+ ClusterEndpoint::nodeUses($rNode, $rP, $rPort);
 		$rState = (string) $rNode['state'];
 		if ($rInstance !== null && !empty($rNode['instance_id']) && !hash_equals((string) $rNode['instance_id'], $rInstance) && $rState === 'active') {
@@ -574,6 +576,20 @@ final class ClusterApi {
 		$rOut = array_values(array_unique($rOut));
 		sort($rOut);
 		return $rOut === [] ? null : substr(implode(',', $rOut), 0, 255);
+	}
+
+	/**
+	 * The machine architecture the agent reports, as the xc_agent assets name
+	 * it, written only when it changes (it changes when a node is rebuilt on
+	 * other hardware). MAIN offers it the agent binary it pinned for that arch.
+	 *
+	 * @param array<string, mixed> $rNode
+	 * @param array<string, mixed> $rP
+	 * @return array<string, string>
+	 */
+	private static function arch(array $rNode, array $rP): array {
+		$rArch = self::short($rP['arch'] ?? null, 8);
+		return $rArch !== null && in_array($rArch, ReleaseAsset::ARCH_MAP, true) && $rArch !== ($rNode['arch'] ?? null) ? ['arch' => $rArch] : [];
 	}
 
 	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, int $rPort): array {

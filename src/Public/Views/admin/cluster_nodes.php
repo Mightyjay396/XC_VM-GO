@@ -158,7 +158,12 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                         <td><?= (int) $rNode['epoch']; ?> <span class="small text-body-secondary">(gen <?= (int) $rNode['gen']; ?>)</span></td>
                         <td><?= $rWhen($rNode['token_exp'] === null ? null : (int) $rNode['token_exp']); ?></td>
                         <td><?= $rWhen($rNode['last_seen_at'] === null ? null : intdiv((int) $rNode['last_seen_at'], 1000)); ?></td>
-                        <td><?= htmlspecialchars((string) ($rNode['agent_version'] ?? '—'), ENT_QUOTES); ?></td>
+                        <td>
+                            <?= htmlspecialchars((string) ($rNode['agent_version'] ?? '—'), ENT_QUOTES); ?>
+                            <?php if (!empty($rNode['arch'])): ?>
+                                <span class="small text-body-secondary">(<?= htmlspecialchars((string) $rNode['arch'], ENT_QUOTES); ?>)</span>
+                            <?php endif; ?>
+                        </td>
                         <td>
                             <?php if ((int) $rNode['mode'] < 1 || !is_array($rNode['settings_misses'] ?? null)): ?>
                                 <span class="text-body-secondary">—</span>

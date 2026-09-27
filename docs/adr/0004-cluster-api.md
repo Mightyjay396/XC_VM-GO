@@ -3172,6 +3172,16 @@ A viewer's request ending writes `hls_end = 1` and `hls_last_read` for its conne
 
 It asks the node's own registry first, as every other connection writer does: the record, then a `put` with the close, which the agent mirrors to MAIN as a P0 event. When the agent does not answer, or the record is another process's, the close goes to MAIN's store exactly as before — the fallback matters more than the fast path, and that is what `ShutdownCloseTest` pins. In mode 2 with CONNECTIONS off there is nothing to write and the `lines_live` UPDATE is skipped rather than refused.
 
+### Keeping the fleet's agent current (Phase 4, sixth increment)
+
+MAIN pins the agent: it keeps one SHA-256-verified `xc_agent` per architecture (`console.php agent_binary`) and the install flow pushes it over SSH, "so every node runs the version MAIN pinned". A node did run it — and then ran it for ever. `NodeActions::agentBinary()`, the signed `node.root agent_binary` command with its artefact grant, had no caller at all: root's half, the staging, the checks and the restart were all built, and nothing ever asked for them. The only way to move an agent was to provision the node again.
+
+- **The node's architecture.** MAIN could not choose a binary, because it did not know what the machine was (the install flow read `uname -m` over SSH and did not keep it). The agent reports it at hello as the release assets name it (`amd64`, `arm64`, `armv7`, `386` — `runtime.GOARCH`, with `arm` as `armv7`), and MAIN stores it in `cluster_nodes.arch` when it changes, as it does the MAIN port. MAIN never guesses: without an arch, nothing is offered.
+- **The decision** is `AgentUpgrades::push()`, a `cron:cluster` step: an active node whose reported `agent_version` is not the cached one for its arch, and whose agent takes artefacts, is sent the command. Each push is recorded in `cluster_meta` (`agent_push:<sid>`, with the node's generation) so the same version is not queued every minute; a node that does not come back on it — a failed install, a stopped agent — is offered it again after `RETRY_SEC` (15 min), and a re-enrolled node (a new `gen`) is offered it afresh. Every push is audited as `node.agent_push`.
+- The *Cluster Nodes* page shows the arch beside the agent version, which is also how an operator sees why a node is not being upgraded.
+
+`AgentUpgradeTest` pins the decision (older version, retry window, generation, no arch, no cached binary, an agent that does not take artefacts) with the send injected, because what matters is which nodes are asked, not how the command travels.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

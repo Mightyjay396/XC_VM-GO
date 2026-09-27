@@ -86,7 +86,7 @@ final class ClusterAdmin {
 		$rReports = NodeAudit::reports(); // likewise
 		$rHeard = HeartbeatService::lastSeen(); // MySQL's copy may be a flush behind
 		$rNow = ClusterClock::nowMs();
-		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
+		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `arch`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rOut = [];
 		foreach (self::db()->get_rows() as $rRow) {
 			$rLastSeen = HeartbeatService::freshest($rRow['last_seen_at'], $rHeard[(int) $rRow['server_id']] ?? null);
