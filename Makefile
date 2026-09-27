@@ -247,6 +247,18 @@ check-lb-settings-keys:
 
 gates: check-procedural-use verify-lb-archive check-vendor-prod-only check-lb-settings-keys
 
+# ─── Semgrep (same rulesets as .github/workflows/security-scan.yml) ───
+# Scans PHP files changed vs main (override: make semgrep FILES="src/...").
+# Needs Docker; pulls semgrep/semgrep on first run.
+SEMGREP_CONFIGS := --config p/php --config p/security-audit --config p/command-injection \
+	--config p/sql-injection --config p/xss
+.PHONY: semgrep
+semgrep:
+	@files="$${FILES:-$$(git diff --name-only --diff-filter=d main -- 'src/*.php')}"; \
+	test -n "$$files" || { echo "semgrep: no changed PHP files"; exit 0; }; \
+	docker run --rm -v "$(CURDIR):/src" -w /src semgrep/semgrep \
+		semgrep scan $(SEMGREP_CONFIGS) --severity ERROR --metrics=off --error $$files
+
 # ─── Admin E2E (Playwright) ─────────────────────────────────────
 # Browser smoke tests for the admin panel. Run against a LIVE instance:
 # set XC_E2E_BASE_URL / XC_E2E_USER / XC_E2E_PASS (see tests/e2e/README.md).
