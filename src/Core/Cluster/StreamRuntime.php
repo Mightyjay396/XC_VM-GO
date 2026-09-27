@@ -1,0 +1,615 @@
+<?php
+
+namespace XcVm\Core\Cluster;
+
+use XcVm\Domain\Stream\StreamStateWriter;
+use XcVm\Infrastructure\Database\DatabaseFactory;
+
+/**
+ * The node's own store of its streams' runtime state (plan, section 8: the
+ * load balancer owns the `stream.state` fields "with a local copy"; section
+ * 9, R2: its recordings "plus local recording.state override"; section 10:
+ * a node in mode 2 reads no MAIN database). What the node's writers report
+ * to MAIN (StreamStateWriter: pids, status, the current source, probe
+ * results, progress, the created channel's build state; ContentSink: the
+ * archive and thumbnail workers' pids, a recording's status) is kept here
+ * too, while its STREAMS flow is on, so the node's readers take a stream's
+ * runtime state from here and its definition from the R2 stream caches
+ * (StreamSource, NodeStreams) instead of one row of MAIN's database.
+ *
+ * ```text
+ * config/cluster/runtime/          0700, the node's user (the agent's directory's owner)
+ *   .lock                          the writers and the seed take it (flock)
+ *   seeded                         {"at", "server_id", "streams"}: the store is whole
+ *   unsent                         an entry holds what the agent did not take (resend())
+ *   streams/<id>.json              {"id", "ssid", "fields": {column: value}, "unsent": [columns]}
+ *   recordings/<id>.json           {"id", "status"}
+ *   .<name>.<pid>.tmp              a write in progress
+ * ```
+ *
+ * - **Where.** On disk beside the agent's spool, not in tmp/ (a tmpfs):
+ *   a reboot keeps what MAIN's row kept, so cron:streams restarts the
+ *   streams that ran, and a created channel keeps what it built. Pids are
+ *   stale after a reboot, as they were in MAIN's row; every reader checks a
+ *   pid against the process it names.
+ * - **Crash-safe.** Each file is written aside (a dot file in the same
+ *   directory), flushed to disk (fdatasync) and renamed in: a reader sees the
+ *   old file or the new one, never a torn one. A file that does not read is
+ *   no entry.
+ * - **Bounded.** An entry per stream and per recording the node holds:
+ *   cron:cleanup prunes the others (prune()), at most MAX_STREAMS and
+ *   MAX_RECORDINGS in any case, each value at most MAX_VALUE (what MAIN's
+ *   column holds). A write past a bound is not kept.
+ * - **Owned by the node's user.** Written as the owner of the agent's
+ *   directory (xc_vm); a root process switches to that user first
+ *   (SettingsAudit::asAgentUser) and keeps nothing when it cannot.
+ * - **The current source** is redacted (Redactor), as the `stream.state`
+ *   event carries it and MAIN's row holds it on a node with STREAMS on.
+ *
+ * **Whole or not used.** A reader takes the store only once it is seeded
+ * (ready()): a node that switches STREAMS on has run its streams with MAIN's
+ * row, so its first CLI reader then copies that row once (seed(), mode 1:
+ * one counted connect), under the lock the writers take, once the agent has
+ * delivered every event the node spooled (the P0 lane empty) so that row
+ * holds all the node wrote. A write made while STREAMS is off goes to MAIN's
+ * row alone, so it lapses the store (lapse()): the next reader seeds again.
+ * A node in mode 2 cannot seed; its readers keep MAIN's database, which
+ * refuses them, until it is seeded in mode 1.
+ */
+final class StreamRuntime {
+	/** The `streams` columns the node keeps besides StreamStateWriter::STATE_FIELDS: its workers' pids. */
+	public const WORKER_FIELDS = ['tv_archive_pid', 'vframes_pid'];
+
+	/** At most this many streams have an entry. */
+	public const MAX_STREAMS = 100000;
+
+	/** At most this many recordings have an entry. */
+	public const MAX_RECORDINGS = 100000;
+
+	/** The largest value kept, in bytes: what MAIN's column (mediumtext) holds. */
+	public const MAX_VALUE = 16777215;
+
+	/** An entry written this recently is never pruned: its stream may be one assigned since the list was read. */
+	public const PRUNE_GRACE = 600;
+
+	/** How long the seed waits for the writers' lock, in seconds. */
+	public const SEED_WAIT = 2.0;
+
+	private const SEEDED = 'seeded';
+
+	private const UNSENT = 'unsent';
+
+	private const LOCK = '.lock';
+
+	private static ?string $rDir = null;
+
+	/** @var array<int, int> server_stream_id => stream id, from the rows this process read */
+	private static array $rSsids = [];
+
+	/** @var array<int, int>|null the replica's server_stream_id => stream id, read once per process */
+	private static ?array $rIndexSsids = null;
+
+	/** @var array{streams: int, recordings: int, value: int}|null tests: other bounds */
+	private static ?array $rLimits = null;
+
+	/** Tests: another directory; null restores the default. */
+	public static function useDir(?string $rDir): void {
+		self::$rDir = $rDir;
+		self::$rSsids = [];
+		self::$rIndexSsids = null;
+	}
+
+	/** Tests: smaller bounds (streams, recordings, a value's bytes); null restores them. */
+	public static function useLimits(?int $rStreams, ?int $rRecordings = null, ?int $rValue = null): void {
+		self::$rLimits = $rStreams === null ? null : ['streams' => $rStreams, 'recordings' => $rRecordings ?? self::MAX_RECORDINGS, 'value' => $rValue ?? self::MAX_VALUE];
+	}
+
+	public static function dir(): string {
+		return self::$rDir ?? ReplicaApply::configDir() . 'cluster/runtime/';
+	}
+
+	/** Do this node's writers keep their streams' state here? While its STREAMS flow is on. */
+	public static function keeps(): bool {
+		return NodeFlows::on(NodeFlows::STREAMS);
+	}
+
+	/**
+	 * Keep what a writer reports about one of this node's streams, and hand
+	 * it on ($rSend: the agent's event), both under the store's lock, so no
+	 * seed runs between the two. $rKey names the row as the event does:
+	 * `{stream_id, server_id?}` or `{ssid}`; another server's row is not the
+	 * node's to keep. The fields $rSend did not take stay marked unsent, for
+	 * resend().
+	 *
+	 * @param array<string, int> $rKey
+	 * @param array<string, mixed> $rFields StreamStateWriter::STATE_FIELDS and WORKER_FIELDS
+	 * @param callable(): bool $rSend
+	 * @return bool what $rSend answered
+	 */
+	public static function keep(array $rKey, array $rFields, callable $rSend): bool {
+		$rSent = null;
+		$rID = false;
+		$rKept = self::locked(static function () use ($rKey, $rFields, $rSend, &$rSent, &$rID): bool {
+			$rID = self::streamOfKey($rKey);
+			$rSent = (bool) $rSend();
+			return is_int($rID) && self::merge($rID, $rKey['ssid'] ?? null, $rFields, $rSent);
+		});
+		if ($rSent === null) {
+			// The store is out of reach (no directory, or root could not switch).
+			$rSent = (bool) $rSend();
+		}
+		// Another server's row is not this node's to keep; anything else not kept is missed.
+		if (!$rKept && $rID !== null) {
+			self::missed($rKey);
+		}
+		return $rSent;
+	}
+
+	/**
+	 * A recording's status as the node set it last: it wins over the one
+	 * its stream's record carries (MAIN's, as last heard).
+	 */
+	public static function recording(int $rRecordingID, int $rStatus): bool {
+		$rFile = self::dir() . 'recordings/' . $rRecordingID . '.json';
+		return self::locked(static fn (): bool => (is_file($rFile) || self::room('recordings', self::$rLimits['recordings'] ?? self::MAX_RECORDINGS)) && self::put($rFile, ['id' => $rRecordingID, 'status' => $rStatus]));
+	}
+
+	/** The status the node set last for a recording, or null. */
+	public static function recordingStatus(int $rRecordingID): ?int {
+		$rDoc = self::read(self::dir() . 'recordings/' . $rRecordingID . '.json');
+		return is_array($rDoc) && is_int($rDoc['status'] ?? null) ? $rDoc['status'] : null;
+	}
+
+	/**
+	 * A recording's status was written while the store does not follow
+	 * (STREAMS off): MAIN's row has it, so the node's own is no longer the
+	 * latest.
+	 */
+	public static function forgetRecording(int $rRecordingID): void {
+		$rFile = self::dir() . 'recordings/' . $rRecordingID . '.json';
+		if (is_file($rFile)) {
+			@unlink($rFile);
+		}
+	}
+
+	/**
+	 * What the node kept for a stream: column => value, only the columns
+	 * it wrote (or the seed copied).
+	 *
+	 * @return array<string, mixed>
+	 */
+	public static function get(int $rStreamID): array {
+		$rDoc = self::read(self::dir() . 'streams/' . $rStreamID . '.json', true);
+		if (!is_array($rDoc)) {
+			return [];
+		}
+		if (is_int($rDoc['ssid'] ?? null)) {
+			self::$rSsids[$rDoc['ssid']] = $rStreamID;
+		}
+		return $rDoc['fields'];
+	}
+
+	/**
+	 * The runtime columns of the node's `streams_servers` row for a stream,
+	 * in ReplicaSections::STREAM_SERVER_LOCAL's order: what the node kept,
+	 * else the column's default as MAIN inserts the row (0 for the status,
+	 * the analysis flag and `compatible`, `[]` for a created channel's build
+	 * state, null otherwise). `updated` and `aes_pid` are never kept.
+	 *
+	 * @param int|null $rType the stream's `streams.type`
+	 * @return array<string, mixed>
+	 */
+	public static function serverFields(int $rStreamID, ?int $rType): array {
+		$rKept = self::get($rStreamID);
+		$rOut = [];
+		foreach (ReplicaSections::STREAM_SERVER_LOCAL as $rColumn) {
+			$rOut[$rColumn] = in_array($rColumn, StreamStateWriter::STATE_FIELDS, true) && array_key_exists($rColumn, $rKept) ? $rKept[$rColumn] : self::defaultOf($rColumn, $rType);
+		}
+		return $rOut;
+	}
+
+	/**
+	 * The workers' pids on the `streams` row (0 as MAIN's default).
+	 *
+	 * @return array{tv_archive_pid: mixed, vframes_pid: mixed}
+	 */
+	public static function streamFields(int $rStreamID): array {
+		$rKept = self::get($rStreamID);
+		return ['tv_archive_pid' => $rKept['tv_archive_pid'] ?? 0, 'vframes_pid' => $rKept['vframes_pid'] ?? 0];
+	}
+
+	/**
+	 * The streams with an entry, ascending.
+	 *
+	 * @return list<int>
+	 */
+	public static function ids(): array {
+		return self::names('streams');
+	}
+
+	/**
+	 * The recordings with an entry, ascending.
+	 *
+	 * @return list<int>
+	 */
+	public static function recordingIDs(): array {
+		return self::names('recordings');
+	}
+
+	/** A row this process read names its stream: an update by server_stream_id finds it. */
+	public static function remember(mixed $rServerStreamID, mixed $rStreamID): void {
+		if (is_numeric($rServerStreamID) && is_numeric($rStreamID) && (int) $rServerStreamID > 0) {
+			self::$rSsids[(int) $rServerStreamID] = (int) $rStreamID;
+		}
+	}
+
+	/** Is the store whole: seeded for this server, and nothing written past it since? */
+	public static function seeded(): bool {
+		$rDoc = self::read(self::dir() . self::SEEDED);
+		return is_array($rDoc) && defined('SERVER_ID') && ($rDoc['server_id'] ?? null) === (int) SERVER_ID;
+	}
+
+	/**
+	 * May the node's readers take the store? Once it is seeded. A CLI
+	 * process of a node that may still reach MAIN's database (mode 1)
+	 * seeds it here the first time; a streaming request never does (it
+	 * reads MAIN's database until a CLI process has), and a node in mode 2
+	 * cannot.
+	 */
+	public static function ready(): bool {
+		if (self::seeded()) {
+			return true;
+		}
+		if (PHP_SAPI !== 'cli' || !self::keeps() || NodeRole::refusesConnects()) {
+			return false;
+		}
+		return self::seed();
+	}
+
+	/**
+	 * Copy this node's runtime state from MAIN's database into the store:
+	 * its `streams_servers` rows' runtime columns and the pids of the
+	 * workers it runs. Under the writers' lock, and only while the agent
+	 * takes events and has delivered every one the node spooled (the P0
+	 * lane empty), so MAIN's rows hold all the node wrote before, and no
+	 * write lands between the read and the copy. An entry left from an
+	 * earlier seed and not in MAIN's rows goes. The recordings' statuses are
+	 * not copied: the record carries MAIN's. False when it could not seed
+	 * (the lock busy, the agent stopped, events still pending, MAIN's
+	 * database not answering): the readers then keep MAIN's database.
+	 */
+	public static function seed(?object $rDb = null): bool {
+		if (!defined('SERVER_ID') || !EventSpool::agentAlive()) {
+			return false;
+		}
+		$rServerID = (int) SERVER_ID;
+		return self::locked(static function () use ($rDb, $rServerID): bool {
+			if (self::seeded()) {
+				return true;
+			}
+			if ((glob(EventSpool::dir() . 'p0/*.ndjson') ?: []) !== []) {
+				return false;
+			}
+			$rRows = self::mainRows($rDb, $rServerID);
+			if ($rRows === null) {
+				return false;
+			}
+			$rDir = self::dir();
+			foreach ($rRows as $rID => $rEntry) {
+				if (!self::put($rDir . 'streams/' . $rID . '.json', $rEntry, false)) {
+					return false;
+				}
+			}
+			foreach (self::ids() as $rID) {
+				if (!isset($rRows[$rID])) {
+					@unlink($rDir . 'streams/' . $rID . '.json');
+				}
+			}
+			// One flush for every entry, before the marker says they are there.
+			@exec('sync -f ' . escapeshellarg(rtrim($rDir, '/')) . ' 2>/dev/null');
+			return self::put($rDir . self::SEEDED, ['at' => time(), 'server_id' => $rServerID, 'streams' => count($rRows)]);
+		}, self::SEED_WAIT);
+	}
+
+	/**
+	 * A write the store did not keep: the store no longer follows this
+	 * node's streams, and is seeded again before a reader takes it.
+	 */
+	public static function lapse(): void {
+		$rFile = self::dir() . self::SEEDED;
+		if (is_file($rFile)) {
+			@unlink($rFile);
+		}
+	}
+
+	/**
+	 * Drop the entries of the streams and recordings the node no longer
+	 * holds (cron:cleanup, from its whole R2 section), but never one
+	 * written in the last PRUNE_GRACE seconds.
+	 *
+	 * @param list<int> $rStreams the streams the node holds
+	 * @param list<int> $rRecordings the recordings scheduled on it
+	 * @return array{streams: int, recordings: int} how many went
+	 */
+	public static function prune(array $rStreams, array $rRecordings): array {
+		$rOut = ['streams' => 0, 'recordings' => 0];
+		self::locked(static function () use ($rStreams, $rRecordings, &$rOut): bool {
+			foreach (['streams' => $rStreams, 'recordings' => $rRecordings] as $rKind => $rHeld) {
+				$rHeld = array_flip($rHeld);
+				foreach (self::names($rKind) as $rID) {
+					$rFile = self::dir() . $rKind . '/' . $rID . '.json';
+					if (!isset($rHeld[$rID]) && time() - (int) @filemtime($rFile) > self::PRUNE_GRACE && @unlink($rFile)) {
+						$rOut[$rKind]++;
+					}
+				}
+			}
+			return true;
+		});
+		return $rOut;
+	}
+
+	/**
+	 * Hand on what the node kept but the agent did not take (it was
+	 * stopped): each entry's unsent columns, once, as $rSend spools them.
+	 * A column $rSend took is no longer unsent.
+	 *
+	 * @param callable(int, array<string, mixed>): bool $rSend
+	 * @return int the entries handed on
+	 */
+	public static function resend(callable $rSend): int {
+		// Only when a write left something unsent; a write that does so marks it again.
+		$rMarker = self::dir() . self::UNSENT;
+		if (!is_file($rMarker) || !self::locked(static fn (): bool => @unlink($rMarker))) {
+			return 0;
+		}
+		$rDone = 0;
+		foreach (self::ids() as $rID) {
+			$rFile = self::dir() . 'streams/' . $rID . '.json';
+			$rDoc = self::read($rFile, true);
+			if (!is_array($rDoc) || $rDoc['unsent'] === []) {
+				continue;
+			}
+			self::locked(static function () use ($rFile, $rID, $rSend, &$rDone): bool {
+				$rDoc = self::read($rFile, true);
+				if (!is_array($rDoc) || $rDoc['unsent'] === []) {
+					return true;
+				}
+				if (!$rSend($rID, array_intersect_key($rDoc['fields'], array_flip($rDoc['unsent'])))) {
+					// Not taken this time: the next resend() looks again.
+					self::put(self::dir() . self::UNSENT, ['at' => time()]);
+					return false;
+				}
+				$rDoc['unsent'] = [];
+				$rDone++;
+				return self::put($rFile, $rDoc);
+			});
+		}
+		return $rDone;
+	}
+
+	/**
+	 * MAIN's rows for this node, as the store's entries: stream id =>
+	 * entry, only the streams with state (a row whose columns all hold
+	 * their default needs no entry). Null when MAIN's database does not
+	 * answer.
+	 *
+	 * @return array<int, array<string, mixed>>|null
+	 */
+	private static function mainRows(?object $rDb, int $rServerID): ?array {
+		try {
+			$rDb ??= DatabaseFactory::get();
+			if (!is_object($rDb) || !$rDb->query('SELECT `server_stream_id`, `stream_id`, `' . implode('`, `', StreamStateWriter::STATE_FIELDS) . '` FROM `streams_servers` WHERE `server_id` = ?;', $rServerID)) {
+				return null;
+			}
+			$rOut = [];
+			foreach ($rDb->get_rows() as $rRow) {
+				$rFields = array_intersect_key($rRow, array_flip(StreamStateWriter::STATE_FIELDS));
+				if (isset($rFields['current_source']) && is_string($rFields['current_source'])) {
+					$rFields['current_source'] = Redactor::redact($rFields['current_source']);
+				}
+				$rOut[(int) $rRow['stream_id']] = ['id' => (int) $rRow['stream_id'], 'ssid' => (int) $rRow['server_stream_id'], 'fields' => $rFields, 'unsent' => []];
+			}
+			if (!$rDb->query('SELECT `id`, `tv_archive_server_id`, `tv_archive_pid`, `vframes_server_id`, `vframes_pid` FROM `streams` WHERE `tv_archive_server_id` = ? OR `vframes_server_id` = ?;', $rServerID, $rServerID)) {
+				return null;
+			}
+			foreach ($rDb->get_rows() as $rRow) {
+				$rID = (int) $rRow['id'];
+				foreach (['tv_archive', 'vframes'] as $rWorker) {
+					if ((int) $rRow[$rWorker . '_server_id'] === $rServerID) {
+						$rOut[$rID] ??= ['id' => $rID, 'ssid' => null, 'fields' => [], 'unsent' => []];
+						$rOut[$rID]['fields'][$rWorker . '_pid'] = $rRow[$rWorker . '_pid'];
+					}
+				}
+			}
+		} catch (\Throwable) {
+			return null;
+		}
+		return array_filter($rOut, static function (array $rEntry): bool {
+			foreach ($rEntry['fields'] as $rColumn => $rValue) {
+				if ($rValue !== null && !(in_array($rColumn, ['to_analyze', 'stream_status', 'compatible', 'tv_archive_pid', 'vframes_pid'], true) && (int) $rValue === 0)) {
+					return true;
+				}
+			}
+			return false;
+		});
+	}
+
+	/**
+	 * The stream a writer's key names on this node: its id, null when the
+	 * key names another server's row, false when a server_stream_id names
+	 * none this process or the replica knows.
+	 *
+	 * @param array<string, int> $rKey
+	 */
+	private static function streamOfKey(array $rKey): int|false|null {
+		if (isset($rKey['stream_id'])) {
+			return isset($rKey['server_id']) && (!defined('SERVER_ID') || $rKey['server_id'] !== (int) SERVER_ID) ? null : (int) $rKey['stream_id'];
+		}
+		$rSsid = (int) ($rKey['ssid'] ?? 0);
+		if (isset(self::$rSsids[$rSsid])) {
+			return self::$rSsids[$rSsid];
+		}
+		if (self::$rIndexSsids === null || !isset(self::$rIndexSsids[$rSsid])) {
+			self::$rIndexSsids = [];
+			foreach (ReplicaStreamCache::index() as $rID => $rMeta) {
+				if (is_int($rMeta['ssid'] ?? null)) {
+					self::$rIndexSsids[$rMeta['ssid']] = (int) $rID;
+				}
+			}
+		}
+		return self::$rIndexSsids[$rSsid] ?? false;
+	}
+
+	/**
+	 * A write for this node's stream that the store did not keep: logged,
+	 * and on a node that may still reach MAIN's database the store lapses,
+	 * to be seeded again. A node in mode 2 cannot seed, so it keeps it.
+	 *
+	 * @param array<string, int> $rKey
+	 */
+	private static function missed(array $rKey): void {
+		error_log('XC_VM: stream state not kept on this node (' . json_encode($rKey) . ')');
+		if (!NodeRole::refusesConnects()) {
+			self::lapse();
+		}
+	}
+
+	/**
+	 * @param array<string, mixed> $rFields
+	 */
+	private static function merge(int $rID, ?int $rSsid, array $rFields, bool $rSent): bool {
+		$rFile = self::dir() . 'streams/' . $rID . '.json';
+		$rEntry = self::read($rFile, true);
+		if ($rEntry === null) {
+			if (!self::room('streams', self::$rLimits['streams'] ?? self::MAX_STREAMS)) {
+				return false;
+			}
+			$rEntry = ['id' => $rID, 'ssid' => null, 'fields' => [], 'unsent' => []];
+		}
+		foreach ($rFields as $rColumn => $rValue) {
+			if (is_string($rValue) && strlen($rValue) > (self::$rLimits['value'] ?? self::MAX_VALUE)) {
+				return false;
+			}
+			$rEntry['fields'][$rColumn] = $rColumn === 'current_source' && is_string($rValue) ? Redactor::redact($rValue) : $rValue;
+		}
+		if ($rSsid !== null) {
+			$rEntry['ssid'] = $rSsid;
+		}
+		$rColumns = array_keys($rFields);
+		$rEntry['unsent'] = array_values($rSent ? array_diff($rEntry['unsent'], $rColumns) : array_unique(array_merge($rEntry['unsent'], $rColumns)));
+		return self::put($rFile, $rEntry) && ($rSent || self::put(self::dir() . self::UNSENT, ['at' => time()]));
+	}
+
+	private static function defaultOf(string $rColumn, ?int $rType): mixed {
+		return match ($rColumn) {
+			'to_analyze', 'stream_status', 'compatible' => 0,
+			'pids_create_channel', 'cchannel_rsources' => $rType === 3 ? '[]' : null,
+			default => null,
+		};
+	}
+
+	/** Is there room for one more entry of this kind? */
+	private static function room(string $rKind, int $rMax): bool {
+		return count(glob(self::dir() . $rKind . '/*.json') ?: []) < $rMax;
+	}
+
+	/**
+	 * @return list<int>
+	 */
+	private static function names(string $rKind): array {
+		$rOut = [];
+		foreach (glob(self::dir() . $rKind . '/*.json') ?: [] as $rFile) {
+			$rName = basename($rFile, '.json');
+			if (preg_match('/^[1-9][0-9]{0,9}$/', $rName)) {
+				$rOut[] = (int) $rName;
+			}
+		}
+		sort($rOut);
+		return $rOut;
+	}
+
+	/**
+	 * A file as written; a stream's entry ($rEntry) has `fields` and `unsent`.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	private static function read(string $rFile, bool $rEntry = false): ?array {
+		$rDoc = json_decode((string) @file_get_contents($rFile), true);
+		if (!is_array($rDoc)) {
+			return null;
+		}
+		if ($rEntry && (!is_array($rDoc['fields'] ?? null) || !is_array($rDoc['unsent'] ?? null))) {
+			return null;
+		}
+		return $rDoc;
+	}
+
+	/**
+	 * Write a file aside and rename it in: 0600, flushed to disk first
+	 * unless $rSync is false (the seed flushes all its entries at once).
+	 *
+	 * @param array<string, mixed> $rDoc
+	 */
+	private static function put(string $rFile, array $rDoc, bool $rSync = true): bool {
+		$rDir = dirname($rFile);
+		if (!is_dir($rDir) && !@mkdir($rDir, 0700, true) && !is_dir($rDir)) {
+			return false;
+		}
+		$rJson = json_encode($rDoc, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+		if ($rJson === false) {
+			return false;
+		}
+		$rTmp = $rDir . '/.' . basename($rFile) . '.' . getmypid() . '.tmp';
+		$rHandle = @fopen($rTmp, 'w');
+		if ($rHandle === false) {
+			return false;
+		}
+		@chmod($rTmp, 0600);
+		$rOk = fwrite($rHandle, $rJson) === strlen($rJson) && fflush($rHandle) && (!$rSync || fdatasync($rHandle));
+		fclose($rHandle);
+		if (!$rOk || !@rename($rTmp, $rFile)) {
+			@unlink($rTmp);
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Run $rWork under the store's lock, as the node's user: false when the
+	 * store cannot be reached (no directory, root could not switch) or the
+	 * lock was not free within $rWait seconds.
+	 *
+	 * @param \Closure(): bool $rWork
+	 */
+	private static function locked(\Closure $rWork, float $rWait = INF): bool {
+		$rDir = self::dir();
+		return SettingsAudit::asAgentUser(static function () use ($rWork, $rWait, $rDir): bool {
+			if (!is_dir($rDir) && !@mkdir($rDir, 0700, true) && !is_dir($rDir)) {
+				return false;
+			}
+			if ((fileperms($rDir) & 0777) !== 0700) {
+				@chmod($rDir, 0700);
+			}
+			$rLock = @fopen($rDir . self::LOCK, 'c');
+			if ($rLock === false) {
+				return false;
+			}
+			try {
+				$rUntil = microtime(true) + $rWait;
+				while (!flock($rLock, $rWait === INF ? LOCK_EX : LOCK_EX | LOCK_NB)) {
+					if ($rWait === INF || microtime(true) >= $rUntil) {
+						return false;
+					}
+					usleep(20000);
+				}
+				try {
+					return $rWork();
+				} finally {
+					flock($rLock, LOCK_UN);
+				}
+			} finally {
+				fclose($rLock);
+			}
+		}, dirname(rtrim($rDir, '/')) . '/');
+	}
+}
