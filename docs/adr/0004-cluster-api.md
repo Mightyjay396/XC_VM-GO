@@ -3453,11 +3453,40 @@ extension and the panel rather than assumed, and each one rules out a design tha
    machine id, `IO` when the `cluster/` directory's mode drifts, and a bare `CRYPTO` for an XCVT pin
    blob read after its hard one-hour window. Fencing on those turns ordinary operations into
    blackouts; only a live expiry may fence.
-4. No node in the field holds a pin at all — `cluster_pack` is called from `LbInstallFlow` and
-   nowhere else — so enforcement without a re-pin path is a silent no-op on the existing fleet.
+4. No node holds a pin at all, fresh installs included: `ClusterCrypto::pack()` wraps
+   `cluster_pack` and nothing calls it, so `core.pin` is never written anywhere.
    `lb_fence_drain_min` likewise does not reach a node: it is not in the LB settings allowlist, and
    the replica section that would carry it is signed under a granting tag, which is refused by the
    very licence failure a fence exists for. An off switch cannot arrive that way.
+
+**Which key verifies a lease, and what each choice costs.** Two evaluators are possible, and they
+differ in provisioning rather than in cryptography:
+
+- **The agent**, with the copy of the panel key in its state file — what this increment does. It
+  needs no pin at all. That copy is not a tamper anchor, for the reason `Core\Cluster\RootPin`
+  already records about the same key: the file belongs to the node's own `xc_vm` user. The plan
+  accepts that for this purpose — "the LB lease check is not the gate; root on an LB can patch
+  `LicenseGate` and the agent fence" — because the gate is MAIN refusing to issue a lease. For a
+  fence, the agent's key is enough.
+- **The node's PHP**, through `cluster_lease_verify`, which resolves the key through the extension's
+  own `core.pin`: sealed to the machine, outside anything `xc_vm` may write, and the only option if
+  PHP is where a request is refused.
+
+**What the pin needs, if PHP is the evaluator.** Three things, none of them built:
+
+1. **MAIN must know the node's `install_id`**, because that is what `cluster_pack` targets. It
+   already reads it over SSH while provisioning (`LbInstallFlow::provisionConfig`, for ADR-001's
+   `config_pack`) and keeps it nowhere, so a later pack has nothing to aim at. Either the install
+   stores it on the node's row, or the node reports it: its PHP has `\XC_VM::install_id()`, while the
+   agent does not — the `instance_id` it sends is a random id of its own making, not the extension's.
+2. **The blob must be pinned within the hour.** XCVT's age window is a hard 3600 s checked at the
+   first read, not at the copy, so a blob left unread is dead and MAIN must pack again. At install
+   the same SSH session can write and pin it, which is also the trust-on-first-use moment; for a node
+   already in the field, a `node.root` command carries the blob and pins it at once, with the outcome
+   in the command's ack.
+3. **`$replace` only for a key change.** Trust on first use means a second blob for a *different*
+   panel signing key is refused as `PIN_MISMATCH` unless the caller passes it — which is the
+   replacement-MAIN case after `cluster:init`, and a root path by design.
 
 Also found, for whoever places the enforcement: `StreamAuthMiddleware::decryptToken()` is not the
 node's choke point (`Public/stream/segment.php`, `key.php` and `rtmp.php` read viewer tokens
