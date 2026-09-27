@@ -7,6 +7,7 @@ use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Core\Cluster\StreamRecords;
+use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\InstallSchema;
@@ -36,6 +37,9 @@ final class ReplicaStreamCacheTest extends TestCase {
 
 	private int $rOther;
 
+	/** The store's directory before this test (the suite's own, tests/bootstrap.php). */
+	private string $rRuntimeDir;
+
 	protected function setUp(): void {
 		if (!defined('SERVER_ID')) {
 			define('SERVER_ID', 5);
@@ -48,6 +52,9 @@ final class ReplicaStreamCacheTest extends TestCase {
 		$this->rFixture = new ReplicaFixture($this->rDir . 'cluster/');
 		ReplicaApply::useDir($this->rFixture->dir());
 		ReplicaApply::useConfigDir($this->rDir);
+		// A recording status another test kept would win over the record's.
+		$this->rRuntimeDir = StreamRuntime::dir();
+		StreamRuntime::useDir($this->rDir . 'cluster/runtime/');
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, new FileCache($this->rDir . 'cache/'));
 		$this->flows(NodeFlows::STREAMS);
 		$this->rDb = new TestDb();
@@ -84,6 +91,7 @@ final class ReplicaStreamCacheTest extends TestCase {
 		StreamSource::useLoader(null);
 		ReplicaApply::useDir(null);
 		ReplicaApply::useConfigDir(null);
+		StreamRuntime::useDir($this->rRuntimeDir);
 		NodeFlows::usePath(null);
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, null);
 		exec('rm -rf ' . escapeshellarg($this->rDir));

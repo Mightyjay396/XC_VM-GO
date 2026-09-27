@@ -277,12 +277,14 @@ final class ConnectAuditTest extends TestCase {
 		$this->assertIsResource($rProc);
 		[$rLast, $rReads, $rDrops] = [0, 0, 0];
 		do {
-			$rRunning = proc_get_status($rProc)['running'];
+			// PHP < 8.3: once this sees the exit, proc_close() returns -1; the code is here.
+			$rStatus = proc_get_status($rProc);
 			$rSql = ConnectAudit::summary(7, self::NOW)['sql'];
 			$rDrops += (int) ($rSql < $rLast);
 			[$rLast, $rReads] = [max($rLast, $rSql), $rReads + 1];
-		} while ($rRunning);
-		$this->assertSame(0, proc_close($rProc));
+		} while ($rStatus['running']);
+		proc_close($rProc);
+		$this->assertSame(0, $rStatus['exitcode']);
 		$this->assertSame(0, $rDrops, $rReads . ' reads while the writer counted');
 		$this->assertSame(2000, ConnectAudit::summary(7, self::NOW)['sql']);
 	}
