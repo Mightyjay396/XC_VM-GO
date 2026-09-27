@@ -32,6 +32,7 @@ final class ClusterSettings {
 		'lb_token_rotation_min' => [60, 5, 1440],
 		'lb_partition_tolerance_h' => [12, 0, 24],
 		'lb_fence_drain_min' => [10, 0, 60],
+		'lb_lease_fence' => [0, 0, 1],
 		'lb_telemetry_interval_sec' => [2, 1, 3],
 		'cluster_offline_after_sec' => [30, 10, 300],
 		'cluster_orphan_conn_ttl_sec' => [120, 30, 3600],
