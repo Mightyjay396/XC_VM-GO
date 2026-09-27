@@ -367,7 +367,7 @@ Each change raises `policy_ver`, which the heartbeat reply carries, as before.
 - A node that was offline during a change comes back on its stored URLs. If one of them still reaches MAIN (the old address, or a kept port), the node gets the new policy at hello.
 - It remembers the `http://` URLs of every policy it held (up to 8). It uses them only for the challenge over HTTP under `https_required`.
 
-**The agent's contract.** For the Go half, not built yet (plan §3: "Agents keep their last 3 known-good URL sets"):
+**The agent's contract.** For the Go half, built in xc_vm_fanout #31 (plan §3: "Agents keep their last 3 known-good URL sets"):
 
 1. **Known-good sets.**
    - A URL set is a policy's `main_urls` as the agent adopted it, in its order, with its `policy_ver`.
@@ -1005,7 +1005,7 @@ The close reaches MAIN within about a second, with no WAN read from the node.
 
 ### Connections (Phase 6, ninth increment): the `adm` claim, `conn_admit` and the offline policy
 
-This increment builds the panel half of plan section 8, "Global `max_connections` and kills", steps 4 to 6. The agent half is specified under **The agent's contract** below and is not built yet.
+This increment builds the panel half of plan section 8, "Global `max_connections` and kills", steps 4 to 6. The agent half is specified under **The agent's contract** below and is built in xc_vm_fanout #30.
 
 **The claim.** A token minted after admission applied carries `adm: {exp, sid}`. `ConnectionAdmission::admitToken` adds it at the six viewer mint sites in `Public/stream/auth.php`.
 - `exp` is when the reservation expires: MAIN's unix seconds, `create_expiration` + 10 s after the mint.
@@ -1069,7 +1069,7 @@ The denials are signed and name the node and the request's nonce: 409 `NOT_ACTIV
 
 **Delivering the policy.** The hello and heartbeat replies carry `offline_admission` (`local`, `allow` or `deny`) at the top level, normalised from `lb_offline_admission`. A change reaches every node within one heartbeat, without the CONFIG flow or a replica. It is not in `policy`: that object is versioned by `policy_ver`, which only endpoint changes raise.
 
-**The agent's contract.** For the Go half, not built yet:
+**The agent's contract.** For the Go half, built in xc_vm_fanout #30:
 1. **The register.** `PUT /v1/conn/{uuid}` keeps its body (the record) and its 200 answer with the record. The new request header `X-XCVM-Admission` is a compact JSON object, ASCII-only (non-ASCII is `\u`-escaped), with no CR or LF:
    - `adm` (optional): `{exp: int, sid: int}`. PHP passes it only when `exp` is not past on the node's clock corrected by `time_offset`, and when `sid` is the record's `server_id`.
    - `line_id: int`, or `hmac_id: int` and `identifier: string` (as the record's, uncapped).
@@ -1187,7 +1187,7 @@ MAIN does not copy the bus's touches into the store on the way out: with touches
 
 **Telling the agent.** The hello reply and every heartbeat reply carry `p2_types`, a list of strings: the event types MAIN takes on P2, now `["conn.touch"]`. An older MAIN leaves the key out. It is in every heartbeat so that a MAIN rolled back to a release without P2 is noticed within one heartbeat.
 
-**The agent's contract.** For the Go half, not built yet:
+**The agent's contract.** For the Go half, built in xc_vm_fanout #30:
 1. **When.** Touches go on P2 only while all of these hold:
    - the latest hello or heartbeat reply's `p2_types` contains `"conn.touch"`;
    - CONNECTIONS is on;
@@ -1382,7 +1382,7 @@ Once owned:
 
 The suite runs with the ETag cache off (`tests/bootstrap.php`): some tests define `TMP_PATH` as a shared path and fix the clock at one instant.
 
-**The agent's contract (XC_VM_Fanout, not built yet).**
+**The agent's contract (XC_VM_Fanout, built in xc_vm_fanout #31).**
 
 - **Request.** `config`'s `have` may name `settings`, `servers`, `node`, `crontab` and `cluster`, each with the ETag the agent holds (64 lowercase hex, or `""` for none). MAIN answers only the whole sections named. It leaves out a name it does not serve, and refuses a malformed ETag with `400 BAD_REQUEST`.
 - **Reply.** Per named section, under the same name: `{"unchanged": true}`, or `{"etag": "<64 hex>", "sealed": "<base64 std>"}`. A missing field means "not served": keep what is held. That includes a changed whole section while MAIN has no licence: a `rep` record grants, so MAIN leaves it out instead of refusing the whole call, and the blocklist's bans in the same reply still arrive. Before this, one changed `settings` section made every `config` call a `LICENCE_INVALID` until the licence came back.
@@ -1454,7 +1454,7 @@ It grants like every whole section: without a licence the extension refuses to s
 - `ReplicaApplyTest`: the shadow report names differences only, never a value, kid or ETag. It also covers the authoritative settings cache; `getAll` owned, forced and rebuilt; refused sections and an unknown key; OPENSSL_EXTRA's file, modes, idempotence and MAIN's previous value; a failed OPENSSL_EXTRA write reported `failed`, with `.prev` first and `cluster:apply` exiting 3; CONFIG off handing the settings back; a section going bad after an apply handing the settings back, an empty or partial settings section refused; a settings read racing an apply never writing MAIN's row over the replica's; the servers' URLs from the applied settings; loading the settings at boot without one query to MAIN's database; without an apply record, loading the settings reads only the settings; and a servers read, or a servers cache rebuilt, before the settings are loaded.
 - `OpensslExtraTest`: `previousEntry` and `adopt`, a `previous` from MAIN already closed not kept, and one open through its last second.
 
-**The agent's contract (XC_VM_Fanout, not built yet).** The same generic whole-section storage as the fifth increment, with these rules for `secrets`:
+**The agent's contract (XC_VM_Fanout, built in xc_vm_fanout #31).** The same generic whole-section storage as the fifth increment, with these rules for `secrets`:
 
 - **Request.** `config`'s `have` may name `secrets` with the ETag the agent holds (64 lowercase hex, or `""`). Name it only once the agent stores it as below. MAIN answers it only to an `active` node in mode 1 or 2. For a node in mode 0 it is left out of the reply ("not served": keep what is held).
 - **Reply and record.** As for every whole section: `{"unchanged": true}`, or `{"etag": "<64 hex>", "sealed": "<base64 std>"}`, whose record opens to a `rep` payload `{v: 1, section: "secrets", node, gen, etag, iat, data}`. Check it as the others: the panel signature under tag `rep`, then `section`, `node` and the announced `etag`, and `gen` if possible. A changed section while MAIN has no licence is left out of the reply.
@@ -1530,7 +1530,7 @@ Without `--from-disk` nothing changes: the agent runs `cluster:apply` right afte
 - After a reboot the streaming endpoints have no stream definitions until MAIN answers: they live in `tmp/`, a tmpfs, and no section carries them (R2 `streams`, not built). The same holds in mode 2. Since the twelfth Phase 7 increment `--from-disk` builds the node's stream caches from the R2 section, once an agent stores it, on a node whose CONFIG flow is on (`service` runs it only then). A node with STREAMS on and CONFIG off boots through MAIN's database, and `startup`'s `cron:cache` builds them. In mode 1 the daemons and crons also still boot through MAIN's database (the watchdog waits for it), as the plan has it for hybrid mode. Since the eleventh Phase 7 increment they boot from the replica there too once CONFIG is on and an apply built the caches.
 - A mode 2 process that boots before an apply built the caches after a reboot (a cron in the first minute, before `service`'s apply) boots through MAIN's database. Since the eighth Phase 7 increment that boot is refused: the process fails closed.
 - After a re-enrolment (new node keys) or a new panel root, the stored records no longer verify, and `--from-disk` applies none of them until the agent fetches them again. Today's agent keeps its ETags and never does while the data is unchanged (contract below).
-- The misses reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`. The heartbeat's other audit counters (`audit.sql_connects`, `audit.redis_connects`, `audit.sites`) are not reported yet; the same `audit` object is meant to carry them. It does since the eighth Phase 7 increment.
+- The misses reach MAIN only once the agent sends `audit.json`, which an agent before xc_vm_fanout #31 does not (the page then shows `—` for its node). The heartbeat's other audit counters (`audit.sql_connects`, `audit.redis_connects`, `audit.sites`) are not reported yet; the same `audit` object is meant to carry them. It does since the eighth Phase 7 increment.
 
 **Tests.**
 
@@ -1540,7 +1540,7 @@ Without `--from-disk` nothing changes: the agent runs `cluster:apply` right afte
 - `NodeRoleTest`: `cron:cleanup` prunes the audits and publishes `audit.json` before its MAIN-only part. `ReplicaBuilderSecretsTest`: `update_channel_bin` and `update_channel_fanout` are allowlisted.
 - `ClusterApiTest`: a heartbeat's `audit` stored once, normalised; an unchanged, missing or malformed one writing nothing; an empty one clearing the page (`ClusterAdmin::nodes`); the cap; the 16 KiB bound on the shortest encoding (`sites` full of slashes fits); no column before migration 045. `ClusterSchemaTest`: migration 045.
 
-**The agent's contract (XC_VM_Fanout, not built yet).**
+**The agent's contract (XC_VM_Fanout, built in xc_vm_fanout #31).**
 
 - **`audit`.** At every heartbeat, read `audit.json` beside `flows.json` and `local.json` (`filepath.Join(filepath.Dir(statePath), "audit.json")`). When it exists, the file is at most 16384 bytes, and it parses to a JSON object, send it as the heartbeat payload's `audit`, parsed and re-encoded like `telemetry.local`. Otherwise send no `audit`: MAIN keeps what it has. The limit is on the file's bytes: MAIN measures what it receives in its shortest encoding, which is never longer for the names, strings and integer counts PHP writes, so it drops no audit the agent sends for its size. There is no age limit: PHP rewrites the file at least every hour on a node in mode 1 or 2 and removes it in mode 0. The agent need not interpret it: MAIN checks it and ignores members it does not know, so a later PHP can add `sql_connects`, `redis_connects` and `sites` without an agent change. The reply is unchanged.
 - **`agent.json`.** `cluster:apply --from-disk` reads `node_uuid` (a lowercase UUID string), `node_box_sk` and `panel_sign_pub` (each 32 bytes, as `encoding/json` writes `[]byte`: standard base64 with padding) from the agent's state file. Keep those names and that encoding, the file readable by xc_vm (it is written 0600 by xc_vm), and the panel key the one the stored records verify under.
@@ -1627,7 +1627,7 @@ since            unix seconds: when this node's audit began
 - Mode 1 still boots through MAIN's database (seventh increment), so a mode 1 node's `sql_connects` is never zero. The boot's site shows it apart from the rest, but the plan's seven-day zero cannot be reached in mode 1 until mode 1 boots from its replica too. It does since the eleventh Phase 7 increment, with CONFIG on.
 - A tree that holds MAIN's `Public/cluster/index.php` (a node installed from MAIN's archive) never refuses; it still counts.
 - A CLI process refused at its boot ends through the panel's exception handler, with exit status 0.
-- The counters reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`.
+- The counters reach MAIN only once the agent sends `audit.json`, which an agent before xc_vm_fanout #31 does not (the page then shows `—` for its node).
 
 **Tests.**
 
@@ -1729,7 +1729,7 @@ Values are typed as in the whole sections (integers as JSON integers, text as st
 - `ClusterApiTest`: the op only with the flow and the feature, on the bulk lane, without MAIN's row, holding its semaphore; a new node's full pass, then a delta, an edit, runtime writes that move nothing, and a removal; a resync answering only what differs, in pages, and a delta past a reply's worth; a resync past what one call examines going on where it stopped, never reporting the ids past it as removals; a delta past what one call reads saying `more`; `resync: null` taken as a delta and null `hashes` as none; a node never getting another node's stream, recording or row, nor a secret or a local column, each record opening for it alone; without a licence, changed records withheld and removals still arriving, then sent once licensed; `503 DB` for every failed read; malformed requests refused; `full` below the floor, after a reset and above the head; MAIN's cluster entry point subscribing `StreamVersions` before it serves an op.
 - `ReplicaStreamsTest`: the whole section or nothing, a missing or unreadable `streams/` included. `ReplicaSectionsTest`: every column classified. `ClusterSchemaTest`: migration 047, up and down, and the key. `BootStageTest`: the listeners after `ContainerPopulateStage`. `EventDispatcherTest`: `subscribe()`. `SettingsServiceClusterPortTest`: a settings save announcing only the argument defaults it changed.
 
-**The agent's contract (XC_VM_Fanout, not built yet).**
+**The agent's contract (XC_VM_Fanout, built in xc_vm_fanout #32).**
 
 - **Feature.** List `"streams"` in hello's `features` only once the agent implements all of the following. MAIN serves the op only to such an agent, on a node whose STREAMS flow (8) is on. Otherwise it answers a signed `409 FLOW_OFF` with `flow: "streams"`, plus `feature: "streams"` when only the feature is missing. Keep what is held, say hello again if the feature was not recorded, and ask at the next poll.
 - **Op.** `POST /cluster/v1/streams`, session-authenticated, on the bulk lane, one call at a time. Refusals are those of every ingest op: `503 RATE_LIMITED` with `op: "streams"` (the per-op semaphore, no `lane`, or the bulk lane, `lane: "bulk"`): send the same request again after the busy wait. `503 DB`: keep every file and the cursor, ask again at the next poll. `409 NOT_ACTIVE` (the node is quarantined): keep every file and the cursor, ask again once the node is active. `404 UNKNOWN_OP` (a MAIN rolled back below this increment): keep every file and the cursor, ask again at the next poll. The session refusals (`LICENCE_INVALID`, `NODE_REVOKED`, `TOKEN_EXPIRED`, `CLOCK`) as for any op.
@@ -1893,7 +1893,7 @@ The eighth increment's refusal stopped the paths a node in mode 2 still took to 
 
 - A real mode 1 node does not reach the zero yet: its crons (`cron:servers`, `cron:streams`, `cron:vod`, `cron:cache`'s bouquets, categories, proxies and allowed IPs), the signals daemon, `cron:root_signals` (its `signals` rows), `status` (at every boot and update), the relay endpoints (stream rows), viewer authentication (`auth.php`, `player_api`, the Enigma2, XPlugin and playlist controllers), and in Redis mode the connection tracking and the watchdog still use MAIN's database or Redis. That is R2, Phase 8 and the tenth increment's list for mode 2; the sites on the Cluster Nodes page show what is left.
 - A process that boots before an apply built the caches after a reboot boots through MAIN's database, counted. After a re-enrolment `service`'s `--from-disk` apply refuses the stored records (seventh increment), so that lasts until the agent's own first apply.
-- The counts reach MAIN only once the agent sends `audit.json` (seventh increment's contract; today's agent does not).
+- The counts reach MAIN only once the agent sends `audit.json` (seventh increment's contract; since xc_vm_fanout #31).
 - In mode 2 `status` does none of its node work (above): it is one more path the refusal stops, until it takes the servers and the Redis settings from the replica.
 
 **Tests.** `ReplicaBootTest`:
@@ -2023,7 +2023,7 @@ Without them, the bouquets of a panel with many large packages would have stoppe
 - `ReplicaSectionsTest`: every column of `bouquets` and `streams_categories` carried, their order and types. `ReplicaBuilderSecretsTest`: neither section carries a secret, nor is built from a failed read. `ClusterApiTest`: both served by `have` and ETag, never to today's agent; a section past 4 MiB answered `too_large` with its ETag and audited once, the rest of the reply still served, the ETag then answered `unchanged`, and the section sent again once it fits; for an agent that names neither catalogue section, such a section left out; each section under the bound but together past 8 MiB with a blocklist section: the reply within `MAX_REPLY`, the section that did not fit sent at the next poll; every section placed in `REPLY_ORDER`, the catalogue last. `ReplicaRecordsTest`: a `stream` record refused when it names another stream (its own or copied under another name), section or node, or has a version that is not an integer, an ETag that is not MAIN's, or no data; none without its `.json`.
 - `ReplicaBootTest`: `cluster:apply --from-disk` builds the stream caches without a connect; a mode 2 node's `cron:cache`, in a child PHP with the real bootstrap, makes not one connect (none refused either) once the replica holds every section, and writes every cache from it: settings, servers, proxies, allowed IPs, blocklist, bouquets, categories, streams.
 
-**The agent's contract (XC_VM_Fanout, not built yet).**
+**The agent's contract (XC_VM_Fanout, built in xc_vm_fanout #32).**
 
 - **`have`.** `config`'s `have` may name `bouquets` and `categories`, each with the ETag held (64 lowercase hex, or `""`). Name them only once the agent stores them as below. The reply, record and files are the fifth increment's whole-section contract: `{"unchanged": true}` or `{"etag", "sealed"}`, a `rep` record `{v: 1, section, node, gen, etag, iat, data}` checked as every whole section, stored as `replica/bouquets.rep` and `replica/bouquets.json` (`{"etag", "data"}`), the same for `categories`, `.rep` written before `.json`, their ETags in `state.json`'s `whole_etags`. Today's agent names neither and gets neither.
 - **Data.** `bouquets`: `{"bouquets": [{"bouquet_channels": <string|null>, "bouquet_movies": <string|null>, "bouquet_name": <string|null>, "bouquet_order": <int|null>, "bouquet_radios": <string|null>, "bouquet_series": <string|null>, "id": <int ≥ 1>}, …]}`. `categories`: `{"categories": [{"cat_order": <int|null>, "category_name": <string|null>, "category_type": <string|null>, "id": <int ≥ 1>, "is_adult": <int|null>, "parent_id": <int|null>}, …]}`. Keys sorted, rows in MAIN's order. Store as signed; PHP checks them. A later MAIN may add keys.
@@ -2132,7 +2132,7 @@ The last two are one rule (the `nonces.bus` mark) as a worker sees it. The wait 
 
 All of this is safe, only slower than the contract below.
 
-**The agent's contract.** For the Go half, not built yet:
+**The agent's contract.** For the Go half, built in xc_vm_fanout #30:
 1. **503 `RATE_LIMITED`**, a verified denial with status 503 to `hello`, `token_rekey`, `config` or `conn_snapshot`, means MAIN is busy, not failing. Wait `retry_after_ms` with ±10 % jitter, clamped to 1–60 s. Then send the same op again with a fresh nonce and stamp. Do not raise the op's backoff or count it as a failure.
    - `hello`, at every call site: in `Run`'s start loop, wait `retry_after_ms` instead of the doubling start backoff. After a re-key, retry the hello after `retry_after_ms` until it succeeds or fails fatally; do not drop it. After a newer `policy_ver`, retry after `retry_after_ms` too (the heartbeat loop keeps running meanwhile).
    - `config`: retry after `retry_after_ms` instead of at the next minute's poll.
@@ -2453,7 +2453,7 @@ In a fleet of agents that send `policy_ver`, an old port therefore goes a minute
 
 **A kept URL on a port MAIN serves anyway**, such as an old `server_ip` or `private_ip` on the current port, goes by the same rule when no node reaches MAIN on that port. While nodes use that port, it stays for its 7 days, since the port cannot tell which address a node dialled. nginx has nothing to close for it.
 
-**The agent's contract.** For the Go half, not built yet:
+**The agent's contract.** For the Go half, built in xc_vm_fanout #31:
 
 1. **The field.** The hello payload and every heartbeat payload (the JSON inside the BOX) carry `"policy_ver": <int>`. Its value is the `policy_ver` of the policy whose `main_urls` the agent dials when it builds the request: the version stored with `main_urls` in its state file (`State.PolicyVer`, read under the state's lock). On the newer agent branch, `Start` sets `hello["policy_ver"] = a.Client.State.policyVer()` and `Heartbeat` sets `payload["policy_ver"] = a.Client.State.policyVer()`; master has no `policyVer()` helper and reads the field under `st.mu`. `enrol_complete` does not need it, since the hello follows at once.
 2. **Adopted, never merely seen.** A heartbeat reply with a higher `policy_ver` does not change the value. Only adopting a policy does, by the existing rule, from:
@@ -2469,7 +2469,7 @@ In a fleet of agents that send `policy_ver`, an old port therefore goes a minute
    - A request that reached MAIN through a fallback or a kept URL reports the current policy's version like any other. Its port tells MAIN that the node still needs that port.
 5. **Compatibility.**
    - MAIN before this increment ignores the field: hello and heartbeat read only the fields they know.
-   - Today's agent does not send it. MAIN records 0 for its node, and every old port and URL stays for its 7 days while that node is in mode ≥ 1.
+   - An agent before xc_vm_fanout #31 does not send it. MAIN records 0 for its node, and every old port and URL stays for its 7 days while that node is in mode ≥ 1.
    - A fleet releases early only once every node in mode ≥ 1 runs an agent that sends the field.
 
 **Differs from the plan.**
@@ -2653,7 +2653,7 @@ A `config`, `conn_snapshot` or (since the ninth Phase 7 increment) `streams` req
 
 All of this is safe. P0 is slower than the plan wants: a refused P0 batch waits about 1 s, and P0 shares the agent's keep-alive connections with bulk.
 
-**The agent's contract.** For the Go half, not built yet:
+**The agent's contract.** For the Go half, built in xc_vm_fanout #31:
 1. **503 `RATE_LIMITED` with `lane`**, a verified denial to an ingest op, means MAIN's permits for that lane are all held: busy, not failing. Do not count it as a failure or log it as an error (a counter is enough), and wait only as below. "The busy wait" is today's `busyWait`: `retry_after_ms` ±10 % jitter, clamped to 1–60 s. Every resend has a fresh nonce, stamp, MAC and BOX.
    - **Lane `p0`** (an `events` batch with `lane: "p0"`): wait `retry_after_ms` (250–750), jitter only adding, up to 10 %, and no 1 s floor; clamp to 100 ms–5 s. Then resend the same in-flight batch (same `first_useq`, same events). No later P0 batch goes first. The lane's 200 ms interval does not change.
    - **Lane `bulk`, `events`** with `lane` `p1` or `p2`: the lane keeps a current interval, which starts at its normal one (P1 5 s, P2 10 s). On each such refusal, double it, up to 60 s, then send again after the longer of the busy wait and the current interval. P1 sends the same in-flight batch (same `first_useq`, same events). P2 has no in-flight batch: it sends the touches due at that time, as `touch.go` gathers them on every send. After each batch MAIN serves (200) on the lane, halve the current interval, down to the normal one, and send the lane's next batch after it. Any other failure keeps today's backoff and leaves the current interval as it is. The batch limits (2000 events, 1 MiB) stay.
