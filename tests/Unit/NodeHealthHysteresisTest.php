@@ -95,6 +95,8 @@ final class NodeHealthHysteresisTest extends TestCase {
 		NodeRegistry::update(5, ['state' => 'active', 'flows' => NodeRegistry::FLOW_TELEMETRY, 'last_seen_at' => $this->rT0]);
 		$this->rHealth = sys_get_temp_dir() . '/health_' . bin2hex(random_bytes(4)) . '.json';
 		ClusterHealth::usePath($this->rHealth);
+		// No probe of a real cluster_ctl socket under MAIN_HOME: the pool cannot tell.
+		LivenessService::useQueueReader(static fn(): ?int => null);
 	}
 
 	private function tickAt(int $rMs): array {
@@ -103,6 +105,7 @@ final class NodeHealthHysteresisTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		LivenessService::useQueueReader(null);
 		ClusterClock::fix(null);
 		if (isset($this->rDb)) {
 			DatabaseFactory::reset();

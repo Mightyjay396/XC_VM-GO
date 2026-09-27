@@ -2,6 +2,7 @@
 
 use PHPUnit\Framework\TestCase;
 use XcVm\Cli\CronJobs\UsersCronJob;
+use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\HlsReaping;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -23,6 +24,7 @@ final class HlsReapingTest extends TestCase {
 		DatabaseFactory::set($this->rDb);
 		$this->rPath = sys_get_temp_dir() . '/orphans_' . bin2hex(random_bytes(4)) . '.json';
 		HlsReaping::usePath($this->rPath);
+		ClusterHealth::usePath($this->rPath . '.health'); // no fleet silence guard
 	}
 
 	protected function tearDown(): void {
@@ -31,6 +33,7 @@ final class HlsReapingTest extends TestCase {
 		@unlink($this->rPath . '.flows');
 		HlsReaping::usePath(null);
 		NodeFlows::usePath(null);
+		ClusterHealth::usePath(null);
 	}
 
 	private function node(int $rID, string $rState, int $rMode, int $rFlows, ?string $rFeatures, ?int $rSeenSec): void {

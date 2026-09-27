@@ -14,6 +14,9 @@ use XcVm\Core\Bootstrap\Stage\WebApiLoggerStage;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
 use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Server\ServerSavedEvent;
+use XcVm\Core\Events\Settings\CrontabChangedEvent;
+use XcVm\Core\Events\Settings\SettingsChangedEvent;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 require_once __DIR__ . '/../Support/TestDb.php';
@@ -57,6 +60,14 @@ final class BootStageTest extends TestCase {
 
 		$this->assertTrue($state->container->has('events'));
 		$this->assertInstanceOf(EventDispatcher::class, $state->container->get('events'));
+	}
+
+	public function testContainerPopulateDropsMainsReplicaSectionsOnEverySave(): void {
+		(new ContainerPopulateStage())->run($this->freshState());
+
+		foreach ([SettingsChangedEvent::class, ServerSavedEvent::class, CrontabChangedEvent::class] as $rEvent) {
+			$this->assertTrue(EventDispatcher::hasListeners($rEvent), $rEvent . ' drops ReplicaEtagCache');
+		}
 	}
 
 	public function testContainerPopulateSkipsDbWhenNotReady(): void {

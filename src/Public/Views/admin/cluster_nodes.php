@@ -45,9 +45,9 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
     <div class="alert alert-info" role="alert"><?= $language::get('cluster_api_off'); ?> <a href="settings#cluster"><?= $language::get('cluster'); ?></a></div>
 <?php endif; ?>
 
-<?php if (ClusterHealth::read()['guard']): ?>
-    <div class="alert alert-danger" role="alert"><i class="icon-base ti tabler-alert-triangle me-1"></i><?= $language::get('cluster_fleet_silence'); ?></div>
-<?php endif; ?>
+<?php foreach (ClusterHealth::read()['reasons'] as $rReason): ?>
+    <div class="alert alert-danger" role="alert"><i class="icon-base ti tabler-alert-triangle me-1"></i><?= $language::get($rReason === ClusterHealth::GUARD_CTL_QUEUE ? 'cluster_ctl_queue' : 'cluster_fleet_silence'); ?></div>
+<?php endforeach; ?>
 
 <?php if (!empty($clusterPending)): ?>
     <div class="card mb-4 border-warning">

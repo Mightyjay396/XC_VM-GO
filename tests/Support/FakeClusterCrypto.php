@@ -17,6 +17,9 @@ use XcVm\Core\Cluster\Crypto\SessionKeys;
  * JSON here; the real one is sealed to the machine.
  */
 class FakeClusterCrypto extends ClusterCrypto {
+	/** Command types the extension classes R (restrictive), signable without a licence. */
+	public const RESTRICTIVE_COMMANDS = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
+
 	public string $rSeed;
 
 	public string $rPrk;
@@ -38,6 +41,9 @@ class FakeClusterCrypto extends ClusterCrypto {
 
 	/** Set to a reason code to make tokenIssue() refuse (LICENCE, …). */
 	public ?string $rRefuseIssue = null;
+
+	/** Set to a reason code (CLOCK, REVOKED, …) to make sign() refuse whatever is not restrictive. */
+	public ?string $rRefuseSign = null;
 
 	public function __construct() {
 		$this->rSeed = str_repeat("\x42", 32);
@@ -134,6 +140,10 @@ class FakeClusterCrypto extends ClusterCrypto {
 		if ($rNow >= $rR['exp'] || $rNow < $rR['nbf']) {
 			throw new ClusterRefusedException('EXPIRED', 'cluster_session');
 		}
+		if ($rHard && !$this->rLicensed) {
+			// CLUSTER_SESSION_HARD (lb_revocation_mode=hard): no session without a licence.
+			throw new ClusterRefusedException('LICENCE', 'cluster_session');
+		}
 		$rK = ClusterReference::sessionKeys((string) hex2bin($rR['t']));
 		return new SessionKeys(
 			$rNodeUuid,
@@ -158,9 +168,14 @@ class FakeClusterCrypto extends ClusterCrypto {
 	}
 
 	public function sign(string $rTag, string $rPayload): string {
-		// As the extension: a blocklist delta restricts while it removes nothing.
+		// As the extension: a blocklist delta restricts while it removes
+		// nothing, and a command is restrictive by its type (plan section 7).
 		$rRestrictive = in_array($rTag, \XcVm\Core\Cluster\Crypto\PanelSig::RESTRICTIVE_TAGS, true)
-			|| ($rTag === 'blk' && empty(json_decode($rPayload, true)['remove'] ?? null));
+			|| ($rTag === 'blk' && empty(json_decode($rPayload, true)['remove'] ?? null))
+			|| ($rTag === 'cmd' && in_array(json_decode($rPayload, true)['type'] ?? null, self::RESTRICTIVE_COMMANDS, true));
+		if ($this->rRefuseSign !== null && !$rRestrictive) {
+			throw new ClusterRefusedException($this->rRefuseSign, 'cluster_sign');
+		}
 		if (!$this->rLicensed && !$rRestrictive) {
 			throw new ClusterRefusedException('LICENCE', 'cluster_sign');
 		}
