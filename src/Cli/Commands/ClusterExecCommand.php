@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\NodeRpc;
@@ -30,6 +31,10 @@ use XcVm\Streaming\Fanout\FanoutClient;
  * - `config.changed {sections}` — the agent fetches its replica at once; an
  *   agent that hands it here instead is acked `{"deferred": true}`, and its
  *   next minute's poll fetches the change.
+ * - `artefact.fetch {artefact}` — an off-air video MAIN granted, which the
+ *   agent downloaded into config/cluster/artefacts/<cmd_id>: placed where
+ *   the node's off-air code plays it once its size and SHA-256 are the
+ *   grant's (ArtefactStage::placeOffAir), else refused and audited (exit 1).
  *
  * Runs as xc_vm.
  *
@@ -161,6 +166,15 @@ class ClusterExecCommand implements CommandInterface {
 			case 'config.changed':
 				// PHP holds no key to fetch the replica: the agent's next poll does.
 				echo json_encode(['deferred' => true]);
+				return 0;
+
+			case ArtefactStage::TYPE_FETCH:
+				$rPlaced = ArtefactStage::placeOffAir($rCmd);
+				if (is_string($rPlaced)) {
+					fwrite(STDERR, 'cluster:exec: ' . $rPlaced . "\n");
+					return 1;
+				}
+				echo json_encode($rPlaced);
 				return 0;
 		}
 		fwrite(STDERR, "cluster:exec: unknown command type\n");

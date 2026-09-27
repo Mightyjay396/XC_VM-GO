@@ -5,6 +5,7 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeFlows;
@@ -866,7 +867,41 @@ class RootSignalsCronJob implements CommandInterface {
 				if (!LogSink::syslog('MODULE', 'Installing module distributed from MAIN...')) {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Installing module distributed from MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
 				}
+				// Only cluster:root names a staged archive (never a signals row).
+				unset($rData['archive']);
+				$rStaged = ArtefactStage::current();
+				if ($rStaged !== null) {
+					// The custom module's archive MAIN granted, staged by
+					// cluster:root and checked there: installed from that copy,
+					// now, before the stage is emptied (module:install checks it
+					// again against the grant the payload carries).
+					echo (string) shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode((string) json_encode(['archive' => $rStaged['path']] + $rData)) . '" 2>&1');
+					break;
+				}
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
+				break;
+			case 'agent_binary':
+				// The xc_agent MAIN pinned (plan section 5: `node.root
+				// agent_binary{version, sha256}`): only its artefact, staged by
+				// cluster:root and checked there, never a path a payload names.
+				$rStaged = ArtefactStage::current();
+				if ($rStaged === null || !str_starts_with((string) $rStaged['grant']['id'], 'agent/')) {
+					echo "agent_binary: refused: no xc_agent binary staged and checked by cluster:root\n";
+					break;
+				}
+				$rVersion = preg_replace('/[^0-9A-Za-z._-]/', '', (string) ($rData['version'] ?? '')) ?: 'unknown';
+				echo 'Installing xc_agent ' . $rVersion . ' from MAIN...' . "\n";
+				if (!LogSink::syslog('BINARIES', 'Installing xc_agent ' . $rVersion . ' from MAIN...')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Installing xc_agent ' . $rVersion . ' from MAIN...', time());
+				}
+				$rFailed = ArtefactStage::installAgent($rStaged, BIN_PATH . 'xc_agent/xc_agent');
+				if ($rFailed !== null) {
+					throw new \RuntimeException('agent_binary: ' . $rFailed);
+				}
+				// run.sh restarts it with the new binary; after a pause, so the
+				// agent acks this command first (its high-water, then the ack).
+				shell_exec('(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &');
+				echo "xc_agent installed; it restarts in 10 s\n";
 				break;
 			case 'delete_module':
 				echo 'Deleting module removed on MAIN...' . "\n";

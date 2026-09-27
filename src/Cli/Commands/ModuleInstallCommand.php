@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Module\ModuleManager;
 use XcVm\Domain\Server\ServerRepository;
@@ -22,6 +23,12 @@ use XcVm\Domain\Server\ServerRepository;
  *                       pulls the {name}_{version}.zip archive back from MAIN
  *                       over the internal system API (action=getFile) and
  *                       installs its files.
+ *                       Over the cluster API the archive is an artefact
+ *                       instead: cluster:root stages it in root's own stage
+ *                       and checks its size and SHA-256 against MAIN's signed
+ *                       grant, and the payload names that copy as `archive`
+ *                       (with the grant as `artefact`); it is checked again
+ *                       here and nothing is pulled from MAIN.
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -72,6 +79,16 @@ class ModuleInstallCommand implements CommandInterface {
 				}
 				echo "Installing store module '{$rName}' v{$rVersion} from platform...\n";
 				$rManager->deployFromPlatformFilesOnly($rName, $rVersion, $rApiKey);
+			} elseif (isset($rPayload['archive'])) {
+				// Staged by cluster:root from MAIN's grant: only that copy, only its bytes.
+				$rStaged = (string) $rPayload['archive'];
+				$rRefused = ArtefactStage::stagedArchive($rStaged, is_array($rPayload['artefact'] ?? null) ? $rPayload['artefact'] : null);
+				if ($rRefused !== null) {
+					echo "module:install: {$rRefused}.\n";
+					return 1;
+				}
+				echo "Installing custom module '{$rName}' v{$rVersion} from the archive MAIN granted...\n";
+				$rManager->deployFromArchiveFilesOnly($rStaged);
 			} else {
 				echo "Installing custom module '{$rName}' v{$rVersion} from MAIN...\n";
 				$rArchive = $this->fetchArchiveFromMain($rManager->archivePathFor($rName, $rVersion));
