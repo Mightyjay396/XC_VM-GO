@@ -14,9 +14,19 @@ namespace XcVm\Core\Cluster;
  * crontab  {jobs: [{filename, time}]}   enabled rows whose role fits the node's mode
  * cluster  {main_urls, urls_ver, policy_ver, transport, panel_sign_pub,
  *           panel_box_pub, min_proto, off_air}
+ * bouquets    {bouquets: [BOUQUET_FIELDS of every bouquet]}, in the order
+ *             BouquetService::getAll reads them (bouquet_order, 0 last; id)
+ * categories  {categories: [CATEGORY_FIELDS of every stream category]}, by
+ *             cat_order, then id
  * secrets  {live_streaming_pass: SECRET, openssl_extra: SECRET}
  *          SECRET = {kid, current, previous, previous_valid_until}
  * ```
+ *
+ * `bouquets` and `categories` are the viewer catalogue that the node's
+ * caches of those names hold, which cron:cache built from MAIN's database:
+ * the viewer APIs a load balancer still serves read them (player_api, the
+ * Ministra portal, the playlists). Every column of `bouquets` and
+ * `streams_categories` is carried (ReplicaSectionsTest).
  *
  * Every column of `servers` is in exactly one of SERVER_FIELDS, NODE_FIELDS
  * and SERVER_LOCAL (ReplicaSectionsTest fails on a new column that is not):
@@ -63,6 +73,8 @@ final class ReplicaSections {
 	public const CRONTAB = 'crontab';
 	public const CLUSTER = 'cluster';
 	public const SECRETS = 'secrets';
+	public const BOUQUETS = 'bouquets';
+	public const CATEGORIES = 'categories';
 
 	/**
 	 * The R2 section on the node: `replica/streams.json` (the agent's cursor)
@@ -72,7 +84,7 @@ final class ReplicaSections {
 	public const STREAMS = 'streams';
 
 	/** Sections sent whole, by ETag, to an agent that names them in `have` (and `secrets`, on its own terms). */
-	public const WHOLE = [self::SETTINGS, self::SERVERS, self::NODE, self::CRONTAB, self::CLUSTER];
+	public const WHOLE = [self::SETTINGS, self::SERVERS, self::NODE, self::CRONTAB, self::CLUSTER, self::BOUQUETS, self::CATEGORIES];
 
 	/**
 	 * `secrets`: what it carries, and nothing else. `live_streaming_pass`
@@ -180,6 +192,18 @@ final class ReplicaSections {
 		'title' => 'str', 'description' => 'str', 'stream_icon' => 'str', 'start' => 'int', 'end' => 'int',
 		'source_id' => 'int', 'archive' => 'int', 'status' => 'int',
 	];
+
+	/**
+	 * `bouquets`: every column of a `bouquets` row. The lists stay the JSON
+	 * text MAIN's row holds, so a node decodes them as BouquetService does.
+	 */
+	public const BOUQUET_FIELDS = [
+		'id' => 'int', 'bouquet_name' => 'str', 'bouquet_channels' => 'str', 'bouquet_movies' => 'str', 'bouquet_radios' => 'str',
+		'bouquet_series' => 'str', 'bouquet_order' => 'int',
+	];
+
+	/** `categories`: every column of a `streams_categories` row. */
+	public const CATEGORY_FIELDS = ['id' => 'int', 'category_type' => 'str', 'category_name' => 'str', 'parent_id' => 'int', 'cat_order' => 'int', 'is_adult' => 'int'];
 
 	/** `servers.nodes[].state`: cluster_nodes states. */
 	public const NODE_STATES = ['enrolling', 'active', 'quarantined', 'revoked'];

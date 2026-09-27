@@ -385,6 +385,54 @@ final class ReplicaBootTest extends TestCase {
 		$this->assertFileDoesNotExist($this->rHome . 'crontab.log', 'the replica did not own the crontab at boot: left as it is, and MAIN\'s table not read');
 	}
 
+	public function testAModeTwoNodesCronCacheMakesNoConnectOnceTheReplicaHoldsEverything(): void {
+		$this->flows(2);
+		$this->rFixture->node();
+		// Every section cron:cache's caches come from: a proxy and a whitelist
+		// among the servers, the catalogue, and a stream.
+		$this->rFixture->whole('servers', ['servers' => [
+			ReplicaFixture::server(1, 1, '192.0.2.1'), ReplicaFixture::server(5, 0, '192.0.2.5', ['whitelist_ips' => '["198.51.100.50"]']),
+			ReplicaFixture::server(7, 0, '192.0.2.7', ['server_type' => 1, 'private_ip' => '10.0.0.7']),
+		], 'nodes' => [['sid' => 5, 'gen' => 1, 'state' => 'active', 'ed_pub' => base64_encode(random_bytes(32))]]]);
+		$this->rFixture->catalog();
+		$this->rFixture->stream(10, ReplicaFixture::streamData(10, 5), 4);
+		$this->rFixture->streamsSince(4);
+		[$rCode, $rOut] = $this->child(['cluster:apply', '--from-disk']);
+		$this->assertSame(0, $rCode, $rOut);
+
+		// cron:cache's work as console.php runs it (as whoever runs the suite: it wants xc_vm).
+		$rScript = $this->rHome . 'cron_cache.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Cli\CronJobs\CacheCronJob;
+			use XcVm\Core\Cluster\ReplicaBoot;
+			use XcVm\Core\Enum\BootContext;
+
+			require getenv('XCVM_TEST_SRC') . 'bootstrap.php';
+			XC_Bootstrap::boot(BootContext::Cli, ['replica' => ReplicaBoot::forArgv(['console.php', 'cron:cache'])]);
+			(new ReflectionMethod(CacheCronJob::class, 'loadCron'))->invoke(new CacheCronJob(), false);
+			echo json_encode(['done' => true, 'replica' => ReplicaBoot::active()]);
+			PHP);
+		foreach ([1, 2] as $rRun) {
+			[$rCode, $rOut, $rConnects] = $this->child([], $rScript);
+			$this->assertSame(0, $rCode, $rOut);
+			$this->assertSame(['done' => true, 'replica' => true], json_decode($rOut, true), 'run ' . $rRun . ': ' . $rOut);
+			$this->assertSame([], $rConnects);
+			$this->assertSame([], glob($this->rHome . 'storage/cluster/sql_audit/*.json') ?: [], 'run ' . $rRun . ': not one connect, not even a refused one');
+		}
+		$this->assertSame([1 => ['id' => 1, 'bouquet_name' => 'Sports', 'bouquet_order' => 1, 'streams' => [10], 'series' => [], 'channels' => [10], 'movies' => [], 'radios' => []]], $this->cache('bouquets'));
+		$this->assertSame([4 => ['id' => 4, 'category_type' => 'live', 'category_name' => 'News', 'parent_id' => 0, 'cat_order' => 1, 'is_adult' => 0]], $this->cache('categories'));
+		$this->assertSame(['192.0.2.7', '10.0.0.7'], array_keys($this->cache('proxy_servers')), 'the proxies, from the replica\'s servers');
+		$rAllowed = $this->cache('allowed_ips');
+		foreach (['127.0.0.1', '192.0.2.1', '192.0.2.5', '198.51.100.50', '10.0.0.7'] as $rIP) {
+			$this->assertContains($rIP, $rAllowed, 'the allowed IPs, from the replica\'s servers');
+		}
+		$this->assertSame([1, 5, 7], array_keys($this->cache('servers')));
+		$this->assertSame(['203.0.113.1'], $this->cache('blocked_ips'));
+		$this->assertSame('["http://src.example/10"]', $this->cache('replica_streams/10')['stream']['stream_source']);
+		$this->assertSame(['settings', 'servers', 'crontab', 'bouquets', 'categories', 'streams'], array_keys($this->cache('replica_owned')));
+	}
+
 	public function testTheAgentsApplyNeedsNoDatabaseOnceConfigIsOn(): void {
 		$this->flows(1, 63);
 		$this->rFixture->node();

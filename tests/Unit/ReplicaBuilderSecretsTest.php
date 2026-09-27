@@ -65,6 +65,10 @@ final class ReplicaBuilderSecretsTest extends TestCase {
 		$rDb->exec(InstallSchema::migration('034_create_cluster_changes'));
 		$rDb->exec('CREATE TABLE `crontab` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `filename` varchar(255), `time` varchar(128), `enabled` int, `role` varchar(8))');
 		$rDb->exec("INSERT INTO `crontab` (`filename`, `time`, `enabled`, `role`) VALUES ('streams', '* * * * *', 1, 'all')");
+		$rDb->exec(InstallSchema::table('bouquets'));
+		$rDb->exec(InstallSchema::table('streams_categories'));
+		$rDb->exec("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_channels`) VALUES (1, 'B', '[1]')");
+		$rDb->exec("INSERT INTO `streams_categories` (`id`, `category_type`, `category_name`) VALUES (1, 'live', 'C')");
 		$rColumns = ['id' => 1, 'server_name' => 'XC', 'seg_time' => 6, 'cloudflare' => 1, 'mag_legacy_redirect' => 0] + self::SECRETS;
 		$rDb->exec('CREATE TABLE `settings` (`' . implode('` text, `', array_keys($rColumns)) . '` text)');
 		$rDb->query('INSERT INTO `settings` VALUES (' . implode(', ', array_fill(0, count($rColumns), '?')) . ')', ...array_values($rColumns));
@@ -223,7 +227,7 @@ final class ReplicaBuilderSecretsTest extends TestCase {
 		// still holds the last result (here that same read's, a moment ago).
 		foreach ([
 			'settings' => 'settings', 'secrets' => 'settings', 'node' => 'settings',
-			'servers' => 'servers', 'crontab' => 'crontab',
+			'servers' => 'servers', 'crontab' => 'crontab', 'bouquets' => 'bouquets', 'categories' => 'streams_categories',
 		] as $rSection => $rTable) {
 			$rLog->rRefuse = '/FROM `' . $rTable . '`/';
 			$rDb->query('SELECT * FROM `' . $rTable . '`');

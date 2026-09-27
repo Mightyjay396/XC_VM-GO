@@ -3,6 +3,8 @@
 namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
@@ -133,6 +135,13 @@ class CategoryService {
 	 * @return array Categories keyed by id.
 	 */
 	public static function getFromDatabase(?string $rType = null, bool $rForce = false) {
+		// A node whose replica owns the categories (CONFIG on, and an apply
+		// built them) takes its cache however old, even when forced; a process
+		// booted from the replica never reads MAIN's database either.
+		$rReplica = ReplicaApply::catalogCache(ReplicaSections::CATEGORIES);
+		if ($rReplica !== null) {
+			return is_string($rType) ? array_filter($rReplica, static fn(mixed $rRow): bool => is_array($rRow) && ($rRow['category_type'] ?? null) === $rType) : $rReplica;
+		}
 		$db = self::db();
 		if (is_string($rType)) {
 			$db->query('SELECT t1.* FROM `streams_categories` t1 WHERE t1.category_type = ? GROUP BY t1.id ORDER BY t1.cat_order ASC', $rType);

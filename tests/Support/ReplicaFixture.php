@@ -152,6 +152,29 @@ final class ReplicaFixture {
 		file_put_contents($this->dir() . 'streams.json', json_encode(['since' => $rSince]));
 	}
 
+	/**
+	 * A `servers` section row (SERVER_FIELDS) as MAIN sends it.
+	 *
+	 * @param array<string, int|string|null> $rOver
+	 * @return array<string, int|string|null>
+	 */
+	public static function server(int $rID, int $rMain, string $rIP, array $rOver = []): array {
+		return $rOver + [
+			'id' => $rID, 'server_type' => 0, 'server_name' => 'S' . $rID, 'is_main' => $rMain, 'enabled' => 1, 'parent_id' => null,
+			'server_ip' => $rIP, 'private_ip' => null, 'domain_name' => '', 'enable_https' => 0, 'http_broadcast_port' => 80,
+			'https_broadcast_port' => 443, 'http_ports_add' => '', 'https_ports_add' => '', 'rtmp_port' => 8880, 'total_clients' => 1000,
+			'network_guaranteed_speed' => 1000, 'enable_geoip' => 0, 'geoip_countries' => '[]', 'geoip_type' => 'low_priority',
+			'enable_isp' => 0, 'isp_names' => '[]', 'isp_type' => 'low_priority', 'timeshift_only' => 0, 'random_ip' => 0,
+			'enable_proxy' => 0, 'persistent_connections' => 0, 'enable_gzip' => 0, 'order' => $rID, 'whitelist_ips' => '[]', 'xc_vm_version' => '2.5.3',
+		];
+	}
+
+	/** The `bouquets` and `categories` sections: one bouquet of stream 10, one live category. */
+	public function catalog(): void {
+		$this->whole('bouquets', ['bouquets' => [['bouquet_channels' => '[10]', 'bouquet_movies' => '[]', 'bouquet_name' => 'Sports', 'bouquet_order' => 1, 'bouquet_radios' => '[]', 'bouquet_series' => '[]', 'id' => 1]]]);
+		$this->whole('categories', ['categories' => [['cat_order' => 1, 'category_name' => 'News', 'category_type' => 'live', 'id' => 4, 'is_adult' => 0, 'parent_id' => 0]]]);
+	}
+
 	/** Flip one byte of a stored record. */
 	public function corrupt(string $rFile): void {
 		$rBytes = (string) file_get_contents($this->dir() . $rFile);
@@ -166,14 +189,7 @@ final class ReplicaFixture {
 	 * @param array<string, string|null> $rSettings
 	 */
 	public function node(array $rSettings = []): void {
-		$rServer = static fn(int $rID, int $rMain, string $rIP): array => [
-			'id' => $rID, 'server_type' => 0, 'server_name' => 'S' . $rID, 'is_main' => $rMain, 'enabled' => 1, 'parent_id' => null,
-			'server_ip' => $rIP, 'private_ip' => null, 'domain_name' => '', 'enable_https' => 0, 'http_broadcast_port' => 80,
-			'https_broadcast_port' => 443, 'http_ports_add' => '', 'https_ports_add' => '', 'rtmp_port' => 8880, 'total_clients' => 1000,
-			'network_guaranteed_speed' => 1000, 'enable_geoip' => 0, 'geoip_countries' => '[]', 'geoip_type' => 'low_priority',
-			'enable_isp' => 0, 'isp_names' => '[]', 'isp_type' => 'low_priority', 'timeshift_only' => 0, 'random_ip' => 0,
-			'enable_proxy' => 0, 'persistent_connections' => 0, 'enable_gzip' => 0, 'order' => $rID, 'whitelist_ips' => '[]', 'xc_vm_version' => '2.5.3',
-		];
+		$rServer = [self::class, 'server'];
 		$this->whole('settings', $rSettings + ['server_name' => 'Panel', 'default_timezone' => 'UTC', 'on_demand_wait_time' => '20', 'ffmpeg_cpu' => '8.0', 'ffmpeg_gpu' => '', 'enable_cache' => '1']);
 		$this->whole('secrets', [
 			'live_streaming_pass' => ['current' => 'stream-pass', 'kid' => str_repeat('a', 16), 'previous' => null, 'previous_valid_until' => null],

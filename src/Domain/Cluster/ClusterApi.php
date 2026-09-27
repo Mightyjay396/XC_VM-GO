@@ -735,11 +735,13 @@ final class ClusterApi {
 	 * whole section when there is no delta to give. `have` maps each section to
 	 * the ETag the node holds, so a section it already has is not sent again;
 	 * a section sent whole (settings, servers, node, crontab, cluster,
-	 * secrets) goes only to an agent that names it, and `secrets` only to a
-	 * node in mode 1 or 2 (ReplicaBuilder::serves). A name MAIN does not
-	 * serve, and a whole section it cannot sign without a licence, are left
-	 * out of the reply. A section MAIN cannot read (a failed read, no settings
-	 * row, an unset secret) answers `503 DB`: the node keeps what it holds.
+	 * bouquets, categories, secrets) goes only to an agent that names it, and
+	 * `secrets` only to a node in mode 1 or 2 (ReplicaBuilder::serves). A name
+	 * MAIN does not serve, a whole section it cannot sign without a licence,
+	 * and one too large for the agent's reply (ReplicaBuilder::MAX_WHOLE_BYTES)
+	 * are left out of the reply. A section MAIN cannot read (a failed read, no
+	 * settings row, an unset secret) answers `503 DB`: the node keeps what it
+	 * holds.
 	 */
 	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
 		$rSince = $rP['blocklist_since'] ?? 0;
@@ -760,7 +762,11 @@ final class ClusterApi {
 					continue;
 				}
 				try {
-					$rOut[$rSection] = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
+					// Null: too large for the agent's reply; left out, the node keeps what it holds.
+					$rPart = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
+					if ($rPart !== null) {
+						$rOut[$rSection] = $rPart;
+					}
 				} catch (ClusterRefusedException $rE) {
 					// A whole section grants: without a licence it is left out and
 					// the node keeps what it holds, while the blocklist's bans in

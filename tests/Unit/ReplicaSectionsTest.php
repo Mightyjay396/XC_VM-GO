@@ -53,6 +53,8 @@ final class ReplicaSectionsTest extends TestCase {
 		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `features` varchar(255) DEFAULT NULL');
 		$this->rDb->exec('CREATE TABLE `crontab` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `filename` varchar(255), `time` varchar(128), `enabled` int, `role` varchar(8))');
 		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `cloudflare` tinyint, `mag_legacy_redirect` tinyint, `api_pass` text, `live_streaming_pass` text, `redis_password` text, `license` text, `seg_time` int)');
+		$this->rDb->exec(InstallSchema::table('bouquets'));
+		$this->rDb->exec(InstallSchema::table('streams_categories'));
 		$this->rDb->query('INSERT INTO `settings` VALUES (1, 1, 0, ?, ?, ?, ?, 6)', ...array_values(self::SECRETS));
 		DatabaseFactory::set($this->rDb);
 		$this->rCrypto = new FakeClusterCrypto();
@@ -142,6 +144,21 @@ final class ReplicaSectionsTest extends TestCase {
 		}
 		$this->assertSame('stream', ReplicaSections::STREAM);
 		$this->assertNotContains(ReplicaSections::STREAM, ReplicaSections::WHOLE, 'never sent whole');
+	}
+
+	public function testTheCatalogueSectionsCarryEveryColumnOfEveryRowInTheirReadersOrder(): void {
+		$this->assertEqualsCanonicalizing(InstallSchema::columns('bouquets'), array_keys(ReplicaSections::BOUQUET_FIELDS), 'a new bouquets column: add it to ReplicaSections::BOUQUET_FIELDS');
+		$this->assertEqualsCanonicalizing(InstallSchema::columns('streams_categories'), array_keys(ReplicaSections::CATEGORY_FIELDS), 'a new streams_categories column: add it to ReplicaSections::CATEGORY_FIELDS');
+		$this->rDb->exec("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_channels`, `bouquet_order`) VALUES (1, 'A', '[1]', 0), (2, 'B', '[\"2\"]', 5), (3, 'C', NULL, 5), (4, 'D', '[]', 1)");
+		$this->rDb->exec("INSERT INTO `streams_categories` (`id`, `category_type`, `category_name`, `parent_id`, `cat_order`, `is_adult`) VALUES (1, 'live', 'X', 0, 3, 0), (2, 'movie', 'Y', 0, 1, 1), (3, 'series', 'Z', 2, 1, 0)");
+		$rNode = ['server_id' => 5, 'mode' => 1];
+		$rBouquets = ReplicaBuilder::section($this->rCrypto, $rNode, ReplicaSections::BOUQUETS, [], [])['data']['bouquets'];
+		$this->assertSame([4, 2, 3, 1], array_column($rBouquets, 'id'), 'bouquet_order, then id; 0 last');
+		$this->assertSame(['bouquet_channels' => '["2"]', 'bouquet_movies' => null, 'bouquet_name' => 'B', 'bouquet_order' => 5, 'bouquet_radios' => null, 'bouquet_series' => null, 'id' => 2], $rBouquets[1], 'the lists as the row holds them');
+		$rCategories = ReplicaBuilder::section($this->rCrypto, $rNode, ReplicaSections::CATEGORIES, [], [])['data']['categories'];
+		$this->assertSame([2, 3, 1], array_column($rCategories, 'id'), 'cat_order, then id');
+		$this->assertSame(['cat_order' => 1, 'category_name' => 'Z', 'category_type' => 'series', 'id' => 3, 'is_adult' => 0, 'parent_id' => 2], $rCategories[1]);
+		$this->assertSame(['id' => 7, 'is_adult' => 1], array_intersect_key(ReplicaSections::typed(['id' => '7', 'is_adult' => '1'], ReplicaSections::CATEGORY_FIELDS), ['id' => 0, 'is_adult' => 0]), 'typed the same whichever driver read them');
 	}
 
 	public function testTheServersSectionCarriesRoutingAndTheSignedNodeListOnly(): void {

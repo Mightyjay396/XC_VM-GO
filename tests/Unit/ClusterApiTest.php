@@ -1500,6 +1500,58 @@ final class ClusterApiTest extends TestCase {
 		$this->assertArrayHasKey('sealed', $this->reply($rRes, $rCtx, $rKeys)['node'], 'another section\'s ETag is not this one\'s');
 	}
 
+	public function testConfigServesTheBouquetsAndCategoriesByEtagWithinWhatTheAgentReads(): void {
+		$this->blocklistTables();
+		$this->rDb->exec(InstallSchema::table('bouquets'));
+		$this->rDb->exec(InstallSchema::table('streams_categories'));
+		$this->rDb->exec("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_channels`, `bouquet_movies`, `bouquet_radios`, `bouquet_series`, `bouquet_order`) VALUES (1, 'Sports', '[1,2]', '[]', '[]', '[]', 0), (2, 'News', '[3]', '[]', '[]', '[9]', 1)");
+		$this->rDb->exec("INSERT INTO `streams_categories` (`id`, `category_type`, `category_name`, `parent_id`, `cat_order`, `is_adult`) VALUES (4, 'live', 'News', 0, 1, 0)");
+		$rKeys = $this->active();
+		$rNew = [ReplicaSections::BOUQUETS, ReplicaSections::CATEGORIES];
+
+		// Today's agent names neither.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['blocklist' => '']], 1, $rKeys);
+		$this->assertSame([], array_values(array_intersect($rNew, array_keys($this->reply($rRes, $rCtx, $rKeys)))));
+
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => array_fill_keys($rNew, '')], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		$rHave = [];
+		$rData = [];
+		foreach ($rNew as $rSection) {
+			$rDoc = $this->openRecord($rOut[$rSection]['sealed'], 'rep');
+			$this->assertSame([$rSection, $this->rUuid, 1, $rOut[$rSection]['etag']], [$rDoc['section'], $rDoc['node'], $rDoc['gen'], $rDoc['etag']], $rSection);
+			$this->assertSame($rOut[$rSection]['etag'], ReplicaBuilder::etag($rDoc['data']), $rSection);
+			$rHave[$rSection] = $rOut[$rSection]['etag'];
+			$rData[$rSection] = $rDoc['data'];
+		}
+		$this->assertSame([2, 1], array_column($rData['bouquets']['bouquets'], 'id'), 'in BouquetService\'s order: bouquet_order, 0 last');
+		$this->assertSame(['bouquet_channels' => '[3]', 'bouquet_movies' => '[]', 'bouquet_name' => 'News', 'bouquet_order' => 1, 'bouquet_radios' => '[]', 'bouquet_series' => '[9]', 'id' => 2], $rData['bouquets']['bouquets'][0], 'every column, typed, keys sorted');
+		$this->assertSame([['cat_order' => 1, 'category_name' => 'News', 'category_type' => 'live', 'id' => 4, 'is_adult' => 0, 'parent_id' => 0]], $rData['categories']['categories']);
+
+		// Held: unchanged.
+		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => $rHave], 1, $rKeys);
+		$rOut = $this->reply($rRes, $rCtx, $rKeys);
+		foreach ($rNew as $rSection) {
+			$this->assertSame(['unchanged' => true], $rOut[$rSection], $rSection);
+		}
+
+		// Bouquets too large for the agent's reply (8 MiB, with everything else):
+		// left out, audited once; the rest of the reply still arrives.
+		$this->rDb->query("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_channels`, `bouquet_order`) VALUES (3, 'Everything', ?, 2)", '[' . implode(',', range(100000, 700000)) . ']');
+		foreach ([1, 2] as $rTry) {
+			[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => $rHave], 1, $rKeys);
+			$rOut = $this->reply($rRes, $rCtx, $rKeys);
+			$this->assertArrayNotHasKey(ReplicaSections::BOUQUETS, $rOut, 'try ' . $rTry . ': the node keeps what it holds');
+			$this->assertSame(['unchanged' => true], $rOut[ReplicaSections::CATEGORIES]);
+			$this->assertArrayHasKey('blocklist', $rOut);
+		}
+		$this->rDb->query("SELECT `detail` FROM `cluster_audit` WHERE `event` = 'replica.section_too_large'");
+		$rRows = $this->rDb->get_rows();
+		$this->assertCount(1, $rRows, 'once per ETag');
+		$this->assertSame(['section' => 'bouquets', 'max' => ReplicaBuilder::MAX_WHOLE_BYTES], array_intersect_key(json_decode($rRows[0]['detail'], true), ['section' => 0, 'max' => 0]));
+		$this->assertGreaterThan(ReplicaBuilder::MAX_WHOLE_BYTES, json_decode($rRows[0]['detail'], true)['bytes']);
+	}
+
 	/** MAIN's previous OPENSSL_EXTRA: none, never the deploy root's file. */
 	private function noPreviousExtra(): void {
 		OpensslExtra::usePrevFile(sys_get_temp_dir() . '/xcvm-no-prev-' . bin2hex(random_bytes(4)));

@@ -40,9 +40,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   policy and keys.
  * - `secrets`: `live_streaming_pass` and OPENSSL_EXTRA, each as {kid,
  *   current, previous, previous_valid_until}, the only secrets a node gets.
+ * - `bouquets`, `categories`: every bouquet and stream category, the
+ *   catalogue the node's caches of those names hold for the viewer APIs.
  *
  * All but the blocklist are sent whole, to an agent that names them in
- * `have`, whenever their ETag differs from the node's. A section and its
+ * `have`, whenever their ETag differs from the node's. One whose sealed
+ * record would pass MAX_WHOLE_BYTES is left out of the reply instead, and
+ * audited once per ETag: the agent reads at most 8 MiB of a reply, and one
+ * section too large for it would stop every section. A section and its
  * ETag are reused for 10 s (ReplicaEtagCache); a change of the node list
  * drops the cache and is announced to the others through `config.changed`
  * (nodesChanged). `secrets` goes only to an active node in mode 1 or 2
@@ -77,6 +82,14 @@ final class ReplicaBuilder {
 	public const FEATURE_CONFIG_CHANGED = 'config_changed';
 
 	/**
+	 * The largest sealed whole section served (base64): the agent reads at
+	 * most 8 MiB of a reply, which also carries the blocklist and the other
+	 * sections. A larger one (the bouquets of a panel with many resellers'
+	 * packages) is left out; the node keeps what it holds.
+	 */
+	public const MAX_WHOLE_BYTES = 4194304;
+
+	/**
 	 * The node's blocklist from change $rSince (0: it has none).
 	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row
@@ -109,14 +122,15 @@ final class ReplicaBuilder {
 
 	/**
 	 * A section sent whole: `unchanged` when the node holds its ETag, else the
-	 * sealed `rep` record.
+	 * sealed `rep` record; null when that record would pass MAX_WHOLE_BYTES
+	 * (left out of the reply).
 	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row
 	 * @param array<string, mixed> $rSettings MAIN's settings (the `cluster` section's policy)
 	 * @param array<string, mixed> $rMain MAIN's `servers` row
-	 * @return array{unchanged?: bool, etag?: string, sealed?: string}
+	 * @return array{unchanged?: bool, etag?: string, sealed?: string}|null
 	 */
-	public static function whole(ClusterCrypto $rCrypto, array $rNode, string $rSection, string $rHave, array $rSettings = [], array $rMain = []): array {
+	public static function whole(ClusterCrypto $rCrypto, array $rNode, string $rSection, string $rHave, array $rSettings = [], array $rMain = []): ?array {
 		['etag' => $rEtag, 'data' => $rData] = self::section($rCrypto, $rNode, $rSection, $rSettings, $rMain);
 		if (hash_equals($rEtag, $rHave)) {
 			return ['unchanged' => true];
@@ -125,7 +139,24 @@ final class ReplicaBuilder {
 			'v' => 1, 'section' => $rSection, 'node' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'],
 			'etag' => $rEtag, 'iat' => ClusterClock::now(), 'data' => $rData,
 		];
-		return ['etag' => $rEtag, 'sealed' => base64_encode(self::record($rCrypto, $rNode, 'rep', self::json($rDoc)))];
+		$rSealed = base64_encode(self::record($rCrypto, $rNode, 'rep', self::json($rDoc)));
+		if (strlen($rSealed) > self::MAX_WHOLE_BYTES) {
+			self::tooLarge($rSection, $rEtag, strlen($rSealed));
+			return null;
+		}
+		return ['etag' => $rEtag, 'sealed' => $rSealed];
+	}
+
+	/** Audit a section left out for its size, once per ETag. */
+	private static function tooLarge(string $rSection, string $rEtag, int $rBytes): void {
+		try {
+			if (ClusterMeta::get('replica_too_large.' . $rSection) !== $rEtag) {
+				ClusterMeta::set('replica_too_large.' . $rSection, $rEtag);
+				ClusterAudit::log('replica.section_too_large', null, ['section' => $rSection, 'bytes' => $rBytes, 'max' => self::MAX_WHOLE_BYTES], 'system');
+			}
+		} catch (\Throwable) {
+			// The section stays out regardless.
+		}
 	}
 
 	/**
@@ -172,6 +203,8 @@ final class ReplicaBuilder {
 			ReplicaSections::NODE => self::nodeData((int) $rNode['server_id']),
 			ReplicaSections::CRONTAB => self::crontabData((int) $rNode['mode']),
 			ReplicaSections::CLUSTER => self::clusterData($rCrypto, $rSettings, $rMain),
+			ReplicaSections::BOUQUETS => self::bouquetsData(),
+			ReplicaSections::CATEGORIES => self::categoriesData(),
 			default => throw new \InvalidArgumentException('Not a whole replica section: ' . $rSection),
 		};
 		$rData = self::canonical($rData);
@@ -289,6 +322,29 @@ final class ReplicaBuilder {
 			'transport' => $rPolicy['transport'], 'panel_sign_pub' => base64_encode((string) ($rInfo['panel_sign_pub'] ?? '')),
 			'panel_box_pub' => base64_encode((string) ($rInfo['panel_box_pub'] ?? '')), 'min_proto' => ClusterApi::PROTO_MIN, 'off_air' => $rOffAir,
 		];
+	}
+
+	/**
+	 * The `bouquets` section: every bouquet, every column, in the order
+	 * BouquetService::getAll reads them (bouquet_order, 0 last; then id), so
+	 * a node builds its bouquets cache in cron:cache's shape.
+	 *
+	 * @return array{bouquets: list<array<string, int|string|null>>}
+	 */
+	public static function bouquetsData(): array {
+		self::read('SELECT * FROM `bouquets` ORDER BY CASE WHEN `bouquet_order` > 0 THEN `bouquet_order` ELSE 999 END ASC, `id` ASC;');
+		return ['bouquets' => array_map(static fn(array $rRow): array => ReplicaSections::typed($rRow, ReplicaSections::BOUQUET_FIELDS), self::db()->get_rows() ?: [])];
+	}
+
+	/**
+	 * The `categories` section: every stream category, every column, in the
+	 * order CategoryService reads them (cat_order, then id).
+	 *
+	 * @return array{categories: list<array<string, int|string|null>>}
+	 */
+	public static function categoriesData(): array {
+		self::read('SELECT * FROM `streams_categories` ORDER BY `cat_order` ASC, `id` ASC;');
+		return ['categories' => array_map(static fn(array $rRow): array => ReplicaSections::typed($rRow, ReplicaSections::CATEGORY_FIELDS), self::db()->get_rows() ?: [])];
 	}
 
 	/**

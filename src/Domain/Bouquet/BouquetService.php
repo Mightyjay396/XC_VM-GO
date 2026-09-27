@@ -4,6 +4,8 @@ namespace XcVm\Domain\Bouquet;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\Bouquet\BouquetDeletedEvent;
 use XcVm\Core\Events\EventDispatcher;
@@ -274,6 +276,13 @@ class BouquetService {
 	 * @return array Bouquet rows.
 	 */
 	public static function getAll(bool $rForce = false) {
+		// A node whose replica owns the bouquets (CONFIG on, and an apply built
+		// them) takes its cache however old, even when forced; a process booted
+		// from the replica never reads MAIN's database either.
+		$rReplica = ReplicaApply::catalogCache(ReplicaSections::BOUQUETS);
+		if ($rReplica !== null) {
+			return $rReplica;
+		}
 		$db = self::db();
 		if (!$rForce) {
 			$rCache = FileCache::getCache('bouquets', 60);
@@ -282,13 +291,30 @@ class BouquetService {
 			}
 		}
 
-		$rOutput = [];
 		$db->query('SELECT *, IF(`bouquet_order` > 0, `bouquet_order`, 999) AS `order` FROM `bouquets` ORDER BY `order` ASC;');
-		foreach ($db->get_rows(true, 'id') ?: [] as $rID => $rChannels) {
-			$rChannelsList = json_decode($rChannels['bouquet_channels'], true);
-			$rMoviesList = json_decode($rChannels['bouquet_movies'], true);
-			$rRadiosList = json_decode($rChannels['bouquet_radios'], true);
-			$rSeriesList = json_decode($rChannels['bouquet_series'], true);
+		$rOutput = self::fromRows($db->get_rows(true, 'id') ?: []);
+
+		FileCache::setCache('bouquets', $rOutput);
+
+		return $rOutput;
+	}
+
+	/**
+	 * The bouquets cache from `bouquets` rows keyed by id, in their order:
+	 * each bouquet's lists decoded (a list that is not JSON is empty). Built
+	 * from MAIN's database (getAll) or from the node replica's `bouquets`
+	 * section (ReplicaApply), the same way.
+	 *
+	 * @param array<int|string, array<string, mixed>> $rRows
+	 * @return array<int, array<string, mixed>>
+	 */
+	public static function fromRows(array $rRows): array {
+		$rOutput = [];
+		foreach ($rRows as $rID => $rChannels) {
+			$rChannelsList = json_decode((string) $rChannels['bouquet_channels'], true);
+			$rMoviesList = json_decode((string) $rChannels['bouquet_movies'], true);
+			$rRadiosList = json_decode((string) $rChannels['bouquet_radios'], true);
+			$rSeriesList = json_decode((string) $rChannels['bouquet_series'], true);
 
 			$rChannelsList = is_array($rChannelsList) ? $rChannelsList : [];
 			$rMoviesList = is_array($rMoviesList) ? $rMoviesList : [];
@@ -304,9 +330,6 @@ class BouquetService {
 			$rOutput[$rID]['movies'] = $rMoviesList;
 			$rOutput[$rID]['radios'] = $rRadiosList;
 		}
-
-		FileCache::setCache('bouquets', $rOutput);
-
 		return $rOutput;
 	}
 

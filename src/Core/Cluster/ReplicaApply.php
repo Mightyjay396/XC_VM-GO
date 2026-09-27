@@ -5,6 +5,7 @@ namespace XcVm\Core\Cluster;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsRepository;
+use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -68,6 +69,10 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  *                 LegacyInitializer::generateCron and cron:root_signals
  * cluster         compared with the agent's own policy (agent.json); no PHP
  *                 reads it, the agent does
+ * bouquets        the `bouquets` cache, in BouquetService::getAll's shape
+ *                 (BouquetService::fromRows)
+ * categories      the `categories` cache, in CategoryService's shape (every
+ *                 column, keyed by id)
  * ```
  *
  * In shadow they are only compared with what the node uses today; with
@@ -362,7 +367,10 @@ final class ReplicaApply {
 		}
 		// The servers' URLs take the settings this apply made, not the ones this process loaded.
 		$rNodeSettings = ($rSettings['mode'] ?? null) === 'applied' ? FileCache::getCache('settings') : null;
-		foreach (['servers' => self::servers($rAuthoritative, $rServerID, is_array($rNodeSettings) ? $rNodeSettings : null), 'crontab' => self::crontab($rAuthoritative), 'cluster' => self::cluster()] as $rKey => $rPart) {
+		foreach ([
+			'servers' => self::servers($rAuthoritative, $rServerID, is_array($rNodeSettings) ? $rNodeSettings : null), 'crontab' => self::crontab($rAuthoritative), 'cluster' => self::cluster(),
+			ReplicaSections::BOUQUETS => self::catalog(ReplicaSections::BOUQUETS, $rAuthoritative), ReplicaSections::CATEGORIES => self::catalog(ReplicaSections::CATEGORIES, $rAuthoritative),
+		] as $rKey => $rPart) {
 			if ($rPart !== null) {
 				$rReport[$rKey] = $rPart;
 			}
@@ -411,6 +419,99 @@ final class ReplicaApply {
 			@rename($rTmp, self::dir() . 'apply.json');
 		}
 		return $rReport;
+	}
+
+	/**
+	 * The `bouquets` or `categories` section: that cache (CONFIG on), in the
+	 * shape its reader builds from MAIN's database (BouquetService::getAll,
+	 * CategoryService::getFromDatabase), or the bouquets or categories whose
+	 * row differs from the cache cron:cache built from MAIN's database: ids
+	 * only. A section that is not a list of rows with distinct ids is
+	 * `refused` and hands the cache back to MAIN's database.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function catalog(string $rSection, bool $rAuthoritative): ?array {
+		$rDoc = self::whole($rSection);
+		if ($rDoc === null) {
+			return null;
+		}
+		$rCache = is_array($rDoc) ? self::catalogCacheOf($rSection, $rDoc['data']) : null;
+		$rReport = ['etag' => is_array($rDoc) ? $rDoc['etag'] : ''];
+		if ($rAuthoritative) {
+			// Refused: the cache is MAIN's database's again (cron:cache).
+			$rApplied = $rCache !== null && FileCache::setCache($rSection, $rCache);
+			self::own($rSection, $rApplied ? $rReport['etag'] : null);
+			if ($rApplied) {
+				return $rReport + ['mode' => 'applied', 'rows' => count($rCache)];
+			}
+		}
+		if ($rCache === null) {
+			return $rReport + ['mode' => 'refused'];
+		}
+		if ($rAuthoritative) {
+			return $rReport + ['mode' => 'failed', 'rows' => count($rCache)];
+		}
+		$rCurrent = FileCache::getCache($rSection);
+		$rCurrent = is_array($rCurrent) ? $rCurrent : [];
+		$rDiffer = [];
+		foreach (array_intersect_key($rCache, $rCurrent) as $rID => $rRow) {
+			if (json_encode(self::loose($rRow)) !== json_encode(self::loose($rCurrent[$rID]))) {
+				$rDiffer[] = (int) $rID;
+			}
+		}
+		return $rReport + [
+			'mode' => 'shadow', 'rows' => count($rCache),
+			'missing' => array_slice(array_map('intval', array_keys(array_diff_key($rCurrent, $rCache))), 0, self::MAX_IDS),
+			'extra' => array_slice(array_map('intval', array_keys(array_diff_key($rCache, $rCurrent))), 0, self::MAX_IDS),
+			'differ' => array_slice($rDiffer, 0, self::MAX_IDS),
+		];
+	}
+
+	/**
+	 * The bouquets or categories cache from its section's data, or null when
+	 * the data is not a list of rows with distinct ids.
+	 *
+	 * @param array<mixed> $rData
+	 * @return array<int, array<string, mixed>>|null
+	 */
+	private static function catalogCacheOf(string $rSection, array $rData): ?array {
+		$rRows = $rData[$rSection] ?? null;
+		if (!self::listOf($rRows, 'is_array')) {
+			return null;
+		}
+		$rFields = $rSection === ReplicaSections::BOUQUETS ? ReplicaSections::BOUQUET_FIELDS : ReplicaSections::CATEGORY_FIELDS;
+		$rOut = [];
+		foreach ($rRows as $rRow) {
+			$rID = $rRow['id'] ?? null;
+			if (!is_int($rID) || $rID <= 0 || isset($rOut[$rID])) {
+				return null;
+			}
+			$rOut[$rID] = ReplicaSections::typed($rRow, $rFields);
+		}
+		return $rSection === ReplicaSections::BOUQUETS ? BouquetService::fromRows($rOut) : $rOut;
+	}
+
+	/**
+	 * The bouquets or categories cache the node's readers take instead of
+	 * MAIN's database: the replica's once an apply built it (rebuilt from the
+	 * section on disk when it is gone), however old; or, in a process booted
+	 * from the replica (ReplicaBoot), the cache as it is, [] without one.
+	 * Null: read MAIN's database, as before.
+	 *
+	 * @return array<mixed>|null
+	 */
+	public static function catalogCache(string $rSection): ?array {
+		if (self::built($rSection) && self::owns($rSection)) {
+			$rCache = FileCache::getCache($rSection);
+			if (!is_array($rCache)) {
+				$rCache = (self::catalog($rSection, true)['mode'] ?? null) === 'applied' ? FileCache::getCache($rSection) : null;
+			}
+			if (is_array($rCache)) {
+				return $rCache;
+			}
+		}
+		return ReplicaBoot::active() ? ReplicaBoot::cached($rSection) : null;
 	}
 
 	/**
