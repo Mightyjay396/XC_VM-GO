@@ -46,6 +46,29 @@ final class ClusterFlowSwitchTest extends TestCase {
 		));
 	}
 
+	/**
+	 * The Servers list says which of its rows is a cluster node and how far it
+	 * has moved: an operator reading that list had to correlate by server id
+	 * against the Cluster Nodes page to know whether a node still holds MAIN's
+	 * credentials. The badge is rendered from the same rows that page shows, and
+	 * the list must survive the API being off (or its tables not existing yet).
+	 */
+	public function testTheServersListBadgesItsClusterNodes(): void {
+		$rView = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/Views/admin/servers.php');
+		$this->assertStringContainsString("\$rClusterNodes[(int) \$rServer['id']] ?? null", $rView);
+		$this->assertStringContainsString('cluster_node_badge_help', $rView);
+
+		$rController = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/Controllers/Admin/ServerListController.php');
+		$this->assertStringContainsString("'rClusterNodes' => self::clusterNodes(\$rServers)", $rController);
+		// The API off, or its tables not created yet, costs the list nothing.
+		$this->assertStringContainsString("if (empty(SettingsManager::get('cluster_api_enabled'))) {", $rController);
+		$this->assertStringContainsString('} catch (\Throwable) {', $rController);
+		$this->assertSame(2, substr_count($rController, 'return [];'), 'both the off switch and the failure answer with no nodes');
+
+		$rEn = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Core/Localization/lang/en.ini');
+		$this->assertStringContainsString('cluster_node_badge_help = ', $rEn);
+	}
+
 	public function testEveryFlowHasItsStrings(): void {
 		$rEn = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Core/Localization/lang/en.ini');
 

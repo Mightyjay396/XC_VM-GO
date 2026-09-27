@@ -3261,6 +3261,28 @@ MAIN's half is `ClusterRoute::rotateNow()` with a dedupe key (a double click que
 
 **Not built:** `stream.stop` and `vod.stop` are still listed as restrictive with no producer, and `node.root rotate_sign_key` — re-pinning MAIN's panel key without SSH — does not exist. Both are Phase 9's, where the fence and the credential lockdown need them.
 
+### Seeing the cluster from outside its own page (Phase 10, first increment)
+
+Everything the cluster knows about itself was on one page. The dashboard's *Service Status*
+checklist — the place an operator looks first, and the one the panel itself points them to —
+said nothing about it, and the *Servers* list gave no hint which of its rows was a node or
+how far that node had moved, so knowing whether a server still held MAIN's credentials meant
+correlating two pages by server id.
+
+- **The checklist** gains a `Cluster API` row, from the same rows the Cluster Nodes page
+  reads (their health is already settled there). A node MAIN has quarantined or revoked, or
+  one gone silent, is a **failure** — it is serving viewers from a replica nobody is
+  refreshing. A node waiting for a decision (a code enrolment, or one still enrolling) is a
+  **warning**, because it is not serving anything yet. A suspect node (a missed heartbeat or
+  two) is a warning. The API switched off, or on with no node enrolled, is neither, and the
+  row says which. The check is a pure function of those rows, so `DashboardStatusChecksTest`
+  covers every outcome without a database.
+- **The Servers list** badges each node with its state and its mode, linked to the cluster
+  page. Mode 2 is the one that says the server holds no credentials of MAIN's; mode 0 says it
+  still does.
+- Both read the cluster tables inside a `try`, and both treat the API being off as nothing to
+  show: these are pages an operator opens before `cluster:init` has ever run.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):
