@@ -2,11 +2,12 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Logging\FileLogger;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
  * Where a node's log records go: client request logs, stream logs, stream and
- * panel errors, restream detections.
+ * panel errors, restream detections, and what root did (the system log).
  *
  * The node-side crons (cron:lines_logs, cron:streams_logs, cron:errors) and
  * the cache handler collect records locally, then hand them here by type. The
@@ -15,6 +16,9 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * LOGS flow is on, they become `log.<type>` events for the agent instead
  * ({@see EventSpool}), redacted first ({@see Redactor}); MAIN's ingest writes
  * them with insert(). The SQL backend does not redact, as before.
+ *
+ * Root's system log lines (`mysql_syslog`) come through syslog(), which
+ * leaves the legacy row to its caller.
  */
 final class LogSink {
 	/** Rows per INSERT: well under MySQL's placeholder limit for every type. */
@@ -31,7 +35,16 @@ final class LogSink {
 		'stream_error' => ['streams_errors', ['stream_id', 'server_id', 'date', 'error'], false],
 		'panel_error'  => ['panel_logs', ['server_id', 'type', 'log_message', 'log_extra', 'line', 'date', 'file', 'env', 'version', 'unique'], true],
 		'restream'     => ['detect_restream_logs', ['user_id', 'stream_id', 'ip', 'time'], false],
+		'syslog'       => ['mysql_syslog', ['server_id', 'type', 'error', 'username', 'ip', 'database', 'date'], false],
 	];
+
+	/**
+	 * `syslog`: the types a node's root side writes (RootSignalsCronJob, and
+	 * ARTEFACT for an artefact it refused, ArtefactStage), and the only ones
+	 * MAIN takes from a node. Not `AUTH`: cron:root_mysql blocks the
+	 * addresses of those rows.
+	 */
+	public const SYSLOG_TYPES = ['FLUSH', 'REBOOT', 'OPENSSL_EXTRA', 'RESTART', 'STOP', 'RELOAD', 'CERTBOT', 'BINARIES', 'MODULE', 'UPDATE', 'PHP-FPM', 'ARTEFACT'];
 
 	/** @var (callable(string, list<array<string, mixed>>, ?object): bool)|null */
 	private static $rSink;
@@ -57,6 +70,53 @@ final class LogSink {
 			return true;
 		}
 		return self::insert($rType, $rRows, $rDb);
+	}
+
+	/**
+	 * A line for MAIN's system log (`mysql_syslog`, the System Logs page)
+	 * about what this node's root side did: a root action, a PHP-FPM
+	 * restart. With the LOGS flow on it becomes a redacted `log.syslog`
+	 * event on P1, as root on this node, and MAIN writes the row for it
+	 * (EventIngest). A node in mode 2 never writes MAIN's database (its
+	 * connect is refused): a line the spool does not take (the agent
+	 * stopped, or LOGS off) goes to the panel's error log only (dropped()).
+	 * Either way the action it records runs after this, whatever became of
+	 * the line.
+	 *
+	 * @return bool False when the caller writes the row itself, as before:
+	 *              MAIN, a node in mode 0, and one in mode 1 whose LOGS flow
+	 *              is off or whose agent stopped.
+	 */
+	public static function syslog(string $rType, string $rError, ?int $rTime = null): bool {
+		$rRow = ['server_id' => defined('SERVER_ID') ? (int) SERVER_ID : 0, 'type' => $rType, 'error' => $rError, 'username' => 'root', 'ip' => 'localhost', 'database' => null, 'date' => $rTime ?? time()];
+		if (NodeFlows::on(NodeFlows::LOGS) && self::spool('syslog', [$rRow])) {
+			return true;
+		}
+		if (!NodeRole::refusesConnects()) {
+			return false;
+		}
+		self::dropped($rType, $rError);
+		return true;
+	}
+
+	/**
+	 * A system log line a node in mode 2 could not hand to its agent, kept
+	 * in the panel's error log (FileLogger: `LOGS_TMP_PATH/error_log.log`),
+	 * which cron:errors sends on as a `log.panel_error` once the agent takes
+	 * events again. Redacted. Root writes it as the owner of the agent's
+	 * directory (SettingsAudit::asAgentUser): the logs directory is xc_vm's,
+	 * where root neither creates a file of its own nor follows a link. PHP's
+	 * error_log (a cron's stderr) only when root cannot switch.
+	 */
+	private static function dropped(string $rType, string $rError): void {
+		$rLine = 'Not in MAIN\'s system log (mode 2, and the agent took no event): ' . $rType . ': ' . Redactor::redact($rError);
+		$rKept = SettingsAudit::asAgentUser(static function () use ($rLine): bool {
+			FileLogger::log('syslog', $rLine);
+			return true;
+		}, dirname(rtrim(EventSpool::dir(), '/')));
+		if (!$rKept) {
+			error_log('XC_VM ' . $rLine);
+		}
 	}
 
 	/**

@@ -22,7 +22,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * publishers) changes by hand and rarely: a change names the kind in
  * `reload`, and the node takes the whole `blocklist` section again (snapshot()),
  * as it does on `full`. The log keeps seven days and always its newest row, so
- * a quiet week does not force every node into a full reload.
+ * a quiet week does not force every node into a full reload. A failed read
+ * throws: an empty result would be signed as a blocklist with nothing blocked.
  */
 final class BlocklistDelta {
 	use DatabaseAware;
@@ -45,7 +46,7 @@ final class BlocklistDelta {
 
 	/** The newest change id, 0 when nothing was logged. */
 	public static function head(): int {
-		self::db()->query('SELECT MAX(`id`) AS `hi` FROM `cluster_changes` WHERE `section` = ?;', BlocklistChanges::SECTION);
+		self::read('SELECT MAX(`id`) AS `hi` FROM `cluster_changes` WHERE `section` = ?;', BlocklistChanges::SECTION);
 		return (int) (self::db()->get_row()['hi'] ?? 0);
 	}
 
@@ -54,7 +55,7 @@ final class BlocklistDelta {
 	 */
 	public static function since(int $rSince, int $rLimit = self::MAX_CHANGES): array {
 		$db = self::db();
-		$db->query('SELECT MIN(`id`) AS `lo`, MAX(`id`) AS `hi` FROM `cluster_changes` WHERE `section` = ?;', BlocklistChanges::SECTION);
+		self::read('SELECT MIN(`id`) AS `lo`, MAX(`id`) AS `hi` FROM `cluster_changes` WHERE `section` = ?;', BlocklistChanges::SECTION);
 		$rRange = $db->get_row() ?: [];
 		$rLo = (int) ($rRange['lo'] ?? 0);
 		$rHi = (int) ($rRange['hi'] ?? 0);
@@ -62,7 +63,7 @@ final class BlocklistDelta {
 		if ($rSince <= 0 || $rHi === 0 || $rSince + 1 < $rLo || $rSince > $rHi) {
 			return ['last' => $rHi, 'more' => false, 'full' => true];
 		}
-		$db->query('SELECT `id`, `op`, `kind`, `value` FROM `cluster_changes` WHERE `section` = ? AND `id` > ? ORDER BY `id` LIMIT ' . max(1, $rLimit) . ';', BlocklistChanges::SECTION, $rSince);
+		self::read('SELECT `id`, `op`, `kind`, `value` FROM `cluster_changes` WHERE `section` = ? AND `id` > ? ORDER BY `id` LIMIT ' . max(1, $rLimit) . ';', BlocklistChanges::SECTION, $rSince);
 		$rRows = $db->get_rows() ?: [];
 		$rLast = $rSince;
 		$rReload = [];
@@ -151,7 +152,14 @@ final class BlocklistDelta {
 			$rSql .= ($rKind === 'asn' ? ' AND ' : ' WHERE ') . '`' . $rKey . '` IN (' . implode(', ', array_fill(0, count($rKeys), '?')) . ')';
 			$rArgs = $rKeys;
 		}
-		self::db()->query($rSql . ' ORDER BY `' . $rKey . '`;', ...$rArgs);
+		self::read($rSql . ' ORDER BY `' . $rKey . '`;', ...$rArgs);
 		return self::db()->get_rows() ?: [];
+	}
+
+	/** Run a read: a failed one throws, never an empty result. */
+	private static function read(string $rQuery, mixed ...$rArgs): void {
+		if (self::db()->query($rQuery, ...$rArgs) === false) {
+			throw new \RuntimeException('blocklist: a read failed');
+		}
 	}
 }

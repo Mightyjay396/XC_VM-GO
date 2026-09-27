@@ -1,0 +1,680 @@
+<?php
+
+use PHPUnit\Framework\TestCase;
+use XcVm\Cli\Commands\ClusterExecCommand;
+use XcVm\Cli\Commands\ClusterRootCommand;
+use XcVm\Cli\Commands\ModuleInstallCommand;
+use XcVm\Cli\CronJobs\RootSignalsCronJob;
+use XcVm\Core\Cluster\ArtefactStage;
+use XcVm\Core\Cluster\Crypto\Enc;
+use XcVm\Core\Cluster\EventSpool;
+use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\RootPin;
+use XcVm\Core\Logging\FileLogger;
+use XcVm\Core\Updates\ReleaseAsset;
+use XcVm\Streaming\Delivery\OffAirHandler;
+use XcVm\Tests\Support\AgentUser;
+use XcVm\Tests\Support\FakeClusterCrypto;
+
+/**
+ * An artefact on the node (plan section 7, "Root artefacts": staged in
+ * root-owned /etc/xc_vm/cluster/stage/ and checked for size and SHA-256
+ * before exec, a mismatch refused and audited; section 14: "tampered
+ * artefacts refused before extraction").
+ *
+ * The agent downloads what MAIN granted into its own directory
+ * (config/cluster/artefacts/<cmd_id>), then hands the command on: an
+ * off-air video's `artefact.fetch` to cluster:exec, which places it where
+ * the node's off-air code plays it; a `node.root` that carries a grant to
+ * cluster:root, which copies the download into its own stage and checks it
+ * there before the action runs. Both check the bytes they use against the
+ * size and SHA-256 of the signed grant, whatever the agent checked, and
+ * refuse and audit anything else.
+ */
+final class ArtefactHashRefusalTest extends TestCase {
+	private const NODE = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+	private string $rBase;
+
+	private FakeClusterCrypto $rCrypto;
+
+	protected function setUp(): void {
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', 5);
+		}
+		$this->rBase = sys_get_temp_dir() . '/artefact_node_' . bin2hex(random_bytes(4)) . '/';
+		foreach (['etc', 'config/cluster/artefacts', 'video', 'bin/xc_agent', 'logs'] as $rDir) {
+			mkdir($this->rBase . $rDir, 0755, true);
+		}
+		mkdir($this->rBase . 'config/cluster/root-inbox', 0700);
+		file_put_contents($this->rBase . 'bin/xc_agent/xc_agent', 'the running agent');
+		// The node's tree is xc_vm's (nobody here, when the suite runs as root); /etc's pin is root's.
+		AgentUser::own($this->rBase . 'config', $this->rBase . 'video', $this->rBase . 'bin', $this->rBase . 'logs');
+		RootPin::useDirs($this->rBase . 'etc/', $this->rBase . 'config/cluster/root-inbox/');
+		ArtefactStage::useDirs($this->rBase . 'config/cluster/artefacts/', $this->rBase . 'video/cluster/', $this->rBase . 'bin/xc_agent/xc_agent');
+		EventSpool::useDir($this->rBase . 'config/cluster/spool/');
+		FileLogger::setLogFile($this->rBase . 'logs/error_log.log');
+		$this->rCrypto = new FakeClusterCrypto();
+		$this->assertTrue(RootPin::write($this->rCrypto->info()['panel_sign_pub'], self::NODE));
+		$this->flows(NodeFlows::COMMANDS | NodeFlows::LOGS);
+	}
+
+	protected function tearDown(): void {
+		RootPin::useDirs(null, null);
+		ArtefactStage::useDirs(null, null);
+		RootSignalsCronJob::useShell(null);
+		EventSpool::useDir(null);
+		NodeFlows::usePath(null);
+		FileLogger::setLogFile(null);
+		exec('rm -rf ' . escapeshellarg($this->rBase));
+	}
+
+	private function flows(int $rFlows): void {
+		file_put_contents($this->rBase . 'config/cluster/flows.json', json_encode(['mode' => 1, 'flows' => $rFlows, 'state' => 'active']));
+		AgentUser::own($this->rBase . 'config/cluster/flows.json');
+		NodeFlows::usePath($this->rBase . 'config/cluster/flows.json');
+	}
+
+	/** A grant as MAIN signs it into the command, for these bytes. */
+	private function grant(string $rId, string $rName, string $rBytes, array $rOver = []): array {
+		return $rOver + ['id' => $rId, 'name' => $rName, 'size' => strlen($rBytes), 'sha256' => hash('sha256', $rBytes), 'mtime' => 1799990000, 'exp' => 1800003600];
+	}
+
+	/** A command as the agent hands it on: the signed document, decoded, and its wire form. */
+	private function command(int $rSeq, string $rType, array $rArgs): array {
+		$rDoc = (string) json_encode(['v' => 1, 'type' => $rType, 'exp' => 1800003600, 'iat' => 1800000000, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $rSeq, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => $rArgs], JSON_UNESCAPED_SLASHES);
+		return ['cmd' => json_decode($rDoc, true), 'wire' => ['doc' => $rDoc, 'sig' => Enc::b64url($this->rCrypto->sign('cmd', $rDoc))]];
+	}
+
+	/** What the agent wrote after its own download: config/cluster/artefacts/<cmd_id>, xc_vm's. */
+	private function download(array $rCmd, string $rBytes): string {
+		$rPath = $this->rBase . 'config/cluster/artefacts/' . $rCmd['cmd_id'];
+		file_put_contents($rPath, $rBytes);
+		AgentUser::own($rPath);
+		return $rPath;
+	}
+
+	/** @return list<array{0: string, 1: string}> the system log lines spooled for MAIN: [type, error] */
+	private function audited(): array {
+		$rOut = [];
+		foreach (glob($this->rBase . 'config/cluster/spool/p1/*.ndjson') ?: [] as $rFile) {
+			foreach (array_filter(explode("\n", (string) file_get_contents($rFile))) as $rLine) {
+				$rEvent = json_decode($rLine, true);
+				foreach ($rEvent['d']['rows'] ?? [] as $rRow) {
+					$rOut[] = [$rEvent['type'] . ':' . $rRow['type'], (string) $rRow['error']];
+				}
+			}
+		}
+		return $rOut;
+	}
+
+	/** @return list<string> the stage's entries */
+	private function staged(): array {
+		return is_dir($this->rBase . 'etc/stage') ? array_values(array_diff(scandir($this->rBase . 'etc/stage') ?: [], ['.', '..'])) : [];
+	}
+
+	private function inbox(int $rSeq, array $rWire): void {
+		file_put_contents($this->rBase . 'config/cluster/root-inbox/' . $rSeq . '.json', json_encode($rWire));
+	}
+
+	private function done(int $rSeq): array {
+		return json_decode((string) file_get_contents($this->rBase . 'config/cluster/root-inbox/' . $rSeq . '.done'), true);
+	}
+
+	/** An xc_agent that starts: its `version` prints one, as the real one does. */
+	private function runnableAgent(string $rVersion = '1.5.0'): string {
+		return "#!/bin/sh\necho " . $rVersion . "\n# " . bin2hex(random_bytes(64)) . "\n";
+	}
+
+	/** This machine's release arch, as the node's root checks it. */
+	private function arch(): string {
+		$rArch = ReleaseAsset::arch(php_uname('m'));
+		if ($rArch === null) {
+			$this->markTestSkipped('no release arch for ' . php_uname('m'));
+		}
+		return $rArch;
+	}
+
+	/** Run an action as cluster:root does (ClusterRootCommand::runAction), on a node with no database to reach. */
+	private function runAction(array $rAction): string {
+		$rDb = new class {
+			public function query(string $rQuery, mixed ...$rArgs): bool {
+				throw new \RuntimeException('no database here: ' . $rQuery);
+			}
+		};
+		ob_start();
+		try {
+			(new RootSignalsCronJob())->executeAction($rAction, [], $rDb);
+		} finally {
+			$rOutput = (string) ob_get_clean();
+		}
+		return $rOutput;
+	}
+
+	/** The happy path of an off-air video: placed where the node's off-air code plays it. */
+	public function testAnOffAirVideoIsPlacedOnceItsSizeAndHashAreTheGrants(): void {
+		$rBytes = random_bytes(7000);
+		$rOne = $this->command(1, 'artefact.fetch', ['artefact' => $this->grant('offair/not_on_air', 'custom_offline.ts', $rBytes)]);
+		$rDownload = $this->download($rOne['cmd'], $rBytes);
+		$this->assertIsArray(ClusterExecCommand::verify($rOne['wire'], ['node_uuid' => self::NODE, 'panel_sign_pub' => base64_encode($this->rCrypto->info()['panel_sign_pub'])], 1800000000));
+		ob_start();
+		$rExit = ClusterExecCommand::run($rOne['cmd']);
+		$rOut = json_decode((string) ob_get_clean(), true);
+		$this->assertSame(0, $rExit);
+		$this->assertSame(['placed' => 'custom_offline.ts', 'size' => 7000, 'sha256' => hash('sha256', $rBytes)], $rOut);
+		$rPlaced = $this->rBase . 'video/cluster/custom_offline.ts';
+		$this->assertSame($rBytes, file_get_contents($rPlaced));
+		$this->assertSame(0644, fileperms($rPlaced) & 0777);
+		if (AgentUser::root()) {
+			$this->assertSame(AgentUser::UID, fileowner($rPlaced), 'the node\'s tree stays xc_vm\'s');
+		}
+		$this->assertFileDoesNotExist($rDownload, 'the download is spent');
+		$this->assertSame(['custom_offline.ts'], array_values(array_diff(scandir($this->rBase . 'video/cluster'), ['.', '..'])), 'no temporary file left');
+		$this->assertSame([], $this->audited());
+
+		// MAIN's token names MAIN's path: the node plays its verified copy
+		// when it has no file there, and its own file when it has one.
+		$this->assertSame($rPlaced, OffAirHandler::localVideo('/home/xc_vm/content/video/custom_offline.ts'));
+		$rLocal = $this->rBase . 'video/offline.ts';
+		file_put_contents($rLocal, 'default');
+		$this->assertSame($rLocal, OffAirHandler::localVideo($rLocal));
+		foreach (['/home/xc_vm/content/video/other.ts', 'http://cdn/x/custom_offline.ts?a=1', '/x/../custom_offline.ts/', ''] as $rPath) {
+			$this->assertSame($rPath, OffAirHandler::localVideo($rPath), $rPath);
+		}
+	}
+
+	/** A download whose bytes are not the grant's is refused before it is placed, and audited for MAIN. */
+	public function testATamperedVideoIsRefusedAndAudited(): void {
+		$rBytes = str_repeat('v', 4000);
+		file_put_contents($this->rBase . 'video/offline.ts', 'the default');
+		mkdir($this->rBase . 'video/cluster');
+		file_put_contents($this->rBase . 'video/cluster/custom_offline.ts', 'the one verified before');
+		AgentUser::own($this->rBase . 'video');
+		foreach ([
+			'sha256 mismatch' => str_repeat('V', 4000),
+			'size mismatch' => $rBytes . 'x',
+			'size mismatch ' => substr($rBytes, 1),
+		] as $rWhy => $rGot) {
+			$rOne = $this->command(1, 'artefact.fetch', ['artefact' => $this->grant('offair/not_on_air', 'custom_offline.ts', $rBytes)]);
+			$rDownload = $this->download($rOne['cmd'], $rGot);
+			$rRefused = ArtefactStage::placeOffAir($rOne['cmd']);
+			$this->assertIsString($rRefused);
+			$this->assertStringStartsWith('artefact refused: offair/not_on_air', $rRefused);
+			$this->assertStringContainsString(trim($rWhy), $rRefused);
+			$this->assertSame('the one verified before', file_get_contents($this->rBase . 'video/cluster/custom_offline.ts'), $rWhy . ': nothing replaced');
+			$this->assertSame(['custom_offline.ts'], array_values(array_diff(scandir($this->rBase . 'video/cluster'), ['.', '..'])), 'no partial file left');
+			$this->assertFileDoesNotExist($rDownload);
+		}
+		// Through cluster:exec: refused, so the agent acks it failed.
+		$rOne = $this->command(1, 'artefact.fetch', ['artefact' => $this->grant('offair/not_on_air', 'custom_offline.ts', $rBytes)]);
+		$this->download($rOne['cmd'], str_repeat('V', 4000));
+		ob_start();
+		$rExit = ClusterExecCommand::run($rOne['cmd']);
+		$this->assertSame('', ob_get_clean(), 'no result: the refusal goes to stderr');
+		$this->assertSame(1, $rExit);
+		$this->assertSame('the one verified before', file_get_contents($this->rBase . 'video/cluster/custom_offline.ts'));
+
+		$rLines = $this->audited();
+		$this->assertCount(4, $rLines);
+		foreach ($rLines as [$rType, $rError]) {
+			$this->assertSame('log.syslog:ARTEFACT', $rType);
+			$this->assertStringStartsWith('Refused artefact offair/not_on_air (custom_offline.ts) for command ', $rError);
+		}
+		$this->assertStringContainsString('sha256 mismatch', $rLines[0][1]);
+
+		// LOGS off: the panel's error log keeps it, never MAIN's database.
+		$this->flows(NodeFlows::COMMANDS);
+		$rOne = $this->command(1, 'artefact.fetch', ['artefact' => $this->grant('offair/banned', 'custom_banned.ts', 'b')]);
+		$this->download($rOne['cmd'], 'B');
+		$this->assertIsString(ArtefactStage::placeOffAir($rOne['cmd']));
+		$rLogged = array_map(static fn(string $rLine): array => json_decode((string) base64_decode($rLine), true), file($this->rBase . 'logs/error_log.log', FILE_IGNORE_NEW_LINES) ?: []);
+		$this->assertSame('artefact', $rLogged[0]['type']);
+		$this->assertStringContainsString('Refused artefact offair/banned', $rLogged[0]['message']);
+	}
+
+	/** Nothing is read or written for a grant the node cannot trust the shape of, nor through a link. */
+	public function testAGrantItCannotTrustPlacesNothing(): void {
+		$rBytes = 'vvvv';
+		$rGood = $this->grant('offair/not_on_air', 'custom_offline.ts', $rBytes);
+		foreach ([
+			'no grant' => [],
+			'a traversing id' => ['artefact' => ['id' => 'offair/../../etc/passwd'] + $rGood],
+			'a traversing name' => ['artefact' => ['name' => '../../../etc/cron.d/x'] + $rGood],
+			'a hidden name' => ['artefact' => ['name' => '.htaccess'] + $rGood],
+			'a name with a slash' => ['artefact' => ['name' => 'a/b.ts'] + $rGood],
+			'an empty artefact' => ['artefact' => ['size' => 0] + $rGood],
+			'a malformed hash' => ['artefact' => ['sha256' => 'abc'] + $rGood],
+			'no expiry' => ['artefact' => ['exp' => null] + $rGood],
+			'a root artefact' => ['artefact' => ['id' => 'agent/amd64'] + $rGood],
+		] as $rWhy => $rArgs) {
+			$rOne = $this->command(1, 'artefact.fetch', $rArgs);
+			$this->download($rOne['cmd'], $rBytes);
+			$this->assertIsString(ArtefactStage::placeOffAir($rOne['cmd']), $rWhy);
+			$this->assertFileDoesNotExist($this->rBase . 'video/cluster/custom_offline.ts', $rWhy);
+			$this->assertFileDoesNotExist($this->rBase . 'etc/cron.d/x');
+		}
+		// No download at all.
+		$rOne = $this->command(1, 'artefact.fetch', ['artefact' => $rGood]);
+		$this->assertStringContainsString('not downloaded', (string) ArtefactStage::placeOffAir($rOne['cmd']));
+		// A link planted where the download should be is not followed.
+		file_put_contents($this->rBase . 'elsewhere', $rBytes);
+		symlink($this->rBase . 'elsewhere', $this->rBase . 'config/cluster/artefacts/' . $rOne['cmd']['cmd_id']);
+		$this->assertStringContainsString('not a file', (string) ArtefactStage::placeOffAir($rOne['cmd']));
+		$this->assertFileDoesNotExist($this->rBase . 'video/cluster/custom_offline.ts');
+		$this->assertSame($rBytes, file_get_contents($this->rBase . 'elsewhere'), 'what it named is untouched');
+		$this->assertFalse(is_link($this->rBase . 'config/cluster/artefacts/' . $rOne['cmd']['cmd_id']), 'the link itself is spent');
+	}
+
+	/**
+	 * The happy path of a binary: root copies the agent's download into its
+	 * own stage, checks it there, and only then runs the action, which takes
+	 * the staged copy (the pinned agent, installed where run.sh starts it).
+	 */
+	public function testRootStagesAndChecksABinaryBeforeTheActionRuns(): void {
+		$rBytes = $this->runnableAgent();
+		$rOne = $this->command(3, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rDownload = $this->download($rOne['cmd'], $rBytes);
+		$this->inbox(3, $rOne['wire']);
+		$rSeen = [];
+		$rRun = function (array $rAction) use (&$rSeen, $rBytes, $rDownload): string {
+			$rStaged = ArtefactStage::current();
+			$this->assertNotNull($rStaged, 'the action is handed the staged copy');
+			$rSeen = [$rAction['action'], $rStaged['path'], $rStaged['grant']['id']];
+			$this->assertStringStartsWith($this->rBase . 'etc/stage/', $rStaged['path'], 'in root\'s own stage');
+			$this->assertSame($rBytes, file_get_contents($rStaged['path']));
+			$this->assertSame(0600, fileperms($rStaged['path']) & 0777);
+			$this->assertSame(0700, fileperms($this->rBase . 'etc/stage') & 0777);
+			$this->assertFileDoesNotExist($rDownload, 'the agent\'s copy is gone before the action runs');
+			$this->assertNull(ArtefactStage::installAgent($rStaged, $this->rBase . 'bin/xc_agent/xc_agent'));
+			return 'installed';
+		};
+		$rDone = ClusterRootCommand::drain($rRun, 1800000000);
+		$this->assertSame('agent_binary', $rSeen[0] ?? null, json_encode($this->done(3)));
+		$this->assertSame([['seq' => 3, 'ok' => true, 'detail' => 'agent_binary']], $rDone);
+		$this->assertSame(['ok' => true, 'result' => 'installed'], $this->done(3));
+		$this->assertNull(ArtefactStage::current(), 'only while its action runs');
+		$this->assertSame([], $this->staged(), 'the staged copy goes once the action ran');
+		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
+		$this->assertSame($rBytes, file_get_contents($rAgent));
+		$this->assertSame(0755, fileperms($rAgent) & 0777);
+		if (AgentUser::root()) {
+			$this->assertSame(AgentUser::UID, fileowner($rAgent), 'installed as the agent\'s user');
+		}
+		$this->assertSame([], glob($this->rBase . 'bin/xc_agent/.*.new') ?: []);
+	}
+
+	/** ArtefactHashRefusal: a tampered binary is refused before its action runs, the refusal audited. */
+	public function testRootRefusesATamperedBinaryAndAuditsIt(): void {
+		$rBytes = random_bytes(20000);
+		$rTampered = $rBytes;
+		$rTampered[100] = chr(ord($rTampered[100]) ^ 1);
+		$rOne = $this->command(4, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rDownload = $this->download($rOne['cmd'], $rTampered);
+		$this->inbox(4, $rOne['wire']);
+		$rRan = false;
+		$rDone = ClusterRootCommand::drain(static function () use (&$rRan): string {
+			$rRan = true;
+			return 'x';
+		}, 1800000000);
+		$this->assertFalse($rRan, 'refused before exec');
+		$this->assertFalse($rDone[0]['ok']);
+		$rResult = $this->done(4);
+		$this->assertFalse($rResult['ok']);
+		$this->assertStringStartsWith('refused by root: artefact refused: agent/amd64', $rResult['result']);
+		$this->assertStringContainsString('sha256 mismatch', $rResult['result']);
+		$this->assertSame([], $this->staged(), 'nothing left staged');
+		$this->assertFileDoesNotExist($rDownload);
+		$this->assertSame('the running agent', file_get_contents($this->rBase . 'bin/xc_agent/xc_agent'));
+		$this->assertSame(4, RootPin::highWater(), 'spent: a replay is refused too');
+		$rLines = $this->audited();
+		$this->assertCount(1, $rLines);
+		$this->assertSame('log.syslog:ARTEFACT', $rLines[0][0]);
+		$this->assertStringContainsString('agent/amd64', $rLines[0][1]);
+		$this->assertStringContainsString($rOne['cmd']['cmd_id'], $rLines[0][1]);
+	}
+
+	/** Root's stage is its own: closed to others when it finds it open, and never a link. */
+	public function testRootsStageIsItsOwn(): void {
+		$rBytes = 'the pinned agent';
+		mkdir($this->rBase . 'etc/stage', 0755);
+		chmod($this->rBase . 'etc/stage', 0755);
+		$rOne = $this->command(7, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$this->download($rOne['cmd'], $rBytes);
+		$this->inbox(7, $rOne['wire']);
+		ClusterRootCommand::drain(static fn(): string => 'ok', 1800000000);
+		$this->assertTrue($this->done(7)['ok']);
+		$this->assertSame(0700, fileperms($this->rBase . 'etc/stage') & 0777, 'closed to others');
+
+		// A link where the stage should be: refused, nothing written through it.
+		rmdir($this->rBase . 'etc/stage');
+		mkdir($this->rBase . 'elsewhere', 0700);
+		symlink($this->rBase . 'elsewhere', $this->rBase . 'etc/stage');
+		$rTwo = $this->command(8, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$this->download($rTwo['cmd'], $rBytes);
+		$this->inbox(8, $rTwo['wire']);
+		$rRan = false;
+		ClusterRootCommand::drain(static function () use (&$rRan): string {
+			$rRan = true;
+			return 'x';
+		}, 1800000000);
+		$this->assertFalse($rRan);
+		$this->assertStringContainsString('is not root\'s alone', $this->done(8)['result']);
+		$this->assertSame([], array_values(array_diff(scandir($this->rBase . 'elsewhere'), ['.', '..'])));
+	}
+
+	/** Root never reads the agent's download with its own rights, nor follows a link planted there. */
+	public function testRootNeverFollowsALinkTheAgentPlanted(): void {
+		$rSecret = $this->rBase . 'root_only';
+		file_put_contents($rSecret, 'root only');
+		chmod($rSecret, 0600);
+		$rOne = $this->command(5, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', 'root only')]);
+		symlink($rSecret, $this->rBase . 'config/cluster/artefacts/' . $rOne['cmd']['cmd_id']);
+		$this->inbox(5, $rOne['wire']);
+		$rRan = false;
+		ClusterRootCommand::drain(static function () use (&$rRan): string {
+			$rRan = true;
+			return 'x';
+		}, 1800000000);
+		$this->assertFalse($rRan);
+		$this->assertStringContainsString('artefact refused', $this->done(5)['result']);
+		$this->assertSame([], $this->staged());
+		$this->assertSame('root only', file_get_contents($rSecret));
+
+		// Nor without a download: refused, not run.
+		$rTwo = $this->command(6, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', 'PK')]);
+		$this->inbox(6, $rTwo['wire']);
+		ClusterRootCommand::drain(static function () use (&$rRan): string {
+			$rRan = true;
+			return 'x';
+		}, 1800000000);
+		$this->assertFalse($rRan);
+		$this->assertStringContainsString('not downloaded', $this->done(6)['result']);
+	}
+
+	/** The actions that use an artefact take it only from root's stage, checked: never from a signals row or a path a payload names. */
+	public function testActionsTakeOnlyAStagedArtefact(): void {
+		$rDb = new class {
+			public function query(string $rQuery, mixed ...$rArgs): bool {
+				throw new \RuntimeException('no database here: ' . $rQuery);
+			}
+		};
+		ob_start();
+		(new RootSignalsCronJob())->executeAction(['action' => 'agent_binary', 'arch' => 'amd64', 'artefact_path' => $this->rBase . 'bin/xc_agent/xc_agent'], [], $rDb);
+		$rOut = (string) ob_get_clean();
+		$this->assertStringContainsString('refused', $rOut, 'not staged by cluster:root: a signals row, or a payload naming a path');
+		$this->assertSame('the running agent', file_get_contents($this->rBase . 'bin/xc_agent/xc_agent'));
+
+		// module:install's archive: only root's stage, and only the grant's bytes.
+		mkdir($this->rBase . 'etc/stage', 0700);
+		$rGrant = $this->grant('module/radio/1.0', 'radio_1.0.zip', 'PK-archive');
+		file_put_contents($this->rBase . 'etc/stage/' . str_repeat('a', 32), 'PK-archive');
+		file_put_contents($this->rBase . 'etc/stage/' . str_repeat('b', 32), 'PK-evil!!!');
+		file_put_contents($this->rBase . 'elsewhere.zip', 'PK-archive');
+		$this->assertNull(ArtefactStage::stagedArchive($this->rBase . 'etc/stage/' . str_repeat('a', 32), $rGrant));
+		$this->assertIsString(ArtefactStage::stagedArchive($this->rBase . 'etc/stage/' . str_repeat('b', 32), $rGrant), 'not the grant\'s bytes');
+		$this->assertIsString(ArtefactStage::stagedArchive($this->rBase . 'elsewhere.zip', $rGrant), 'outside the stage');
+		$this->assertIsString(ArtefactStage::stagedArchive($this->rBase . 'etc/stage/../elsewhere.zip', $rGrant), 'out of it by a path');
+		$this->assertIsString(ArtefactStage::stagedArchive($this->rBase . 'etc/stage/' . str_repeat('a', 32), null), 'no grant');
+
+		// A crash's leftovers go after an hour.
+		touch($this->rBase . 'etc/stage/' . str_repeat('b', 32), time() - ArtefactStage::STAGE_TTL - 1);
+		ArtefactStage::pruneStage(time());
+		$this->assertSame([str_repeat('a', 32)], $this->staged());
+	}
+
+	/** A copy root staged for a grant (as ArtefactStage::stage() leaves it), with the checked grant and its command's id. */
+	private function stagedCopy(string $rId, string $rName, string $rBytes): array {
+		if (!is_dir($this->rBase . 'etc/stage')) {
+			mkdir($this->rBase . 'etc/stage', 0700);
+		}
+		$rOne = $this->command(1, 'node.root', ['action' => 'x', 'artefact' => $this->grant($rId, $rName, $rBytes)]);
+		$rGrant = ArtefactStage::grant($rOne['cmd']);
+		$this->assertIsArray($rGrant);
+		$rPath = $this->rBase . 'etc/stage/' . $rGrant['cmd_id'];
+		file_put_contents($rPath, $rBytes);
+		chmod($rPath, 0600);
+		return ['path' => $rPath, 'grant' => $rGrant];
+	}
+
+	/** A binary that does not start on this node is never put where run.sh would restart it every 2 s. */
+	public function testAnAgentThatDoesNotRunIsNeverInstalled(): void {
+		$rBytes = random_bytes(4000);
+		$rStaged = $this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes);
+		$rWhy = ArtefactStage::installAgent($rStaged, $this->rBase . 'bin/xc_agent/xc_agent');
+		$this->assertIsString($rWhy);
+		$this->assertStringContainsString('does not run on this node', $rWhy);
+		$this->assertSame('the running agent', file_get_contents($this->rBase . 'bin/xc_agent/xc_agent'));
+		$this->assertSame([], glob($this->rBase . 'bin/xc_agent/.*.new') ?: [], 'nothing left aside');
+	}
+
+	/** agent_binary installs only an xc_agent of this node's arch, then has run.sh restart the agent after its ack. */
+	public function testAgentBinaryInstallsOnlyThisNodesArch(): void {
+		$rArch = $this->arch();
+		$rOther = $rArch === 'amd64' ? 'arm64' : 'amd64';
+		$rBytes = $this->runnableAgent();
+		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
+		$rLines = [];
+		RootSignalsCronJob::useShell(static function (string $rLine) use (&$rLines): array {
+			$rLines[] = $rLine;
+			return [0, ''];
+		});
+		foreach ([
+			'another arch' => ['agent/' . $rOther, $rOther, 'not this node\'s arch'],
+			'a payload for another arch' => ['agent/' . $rArch, $rOther, 'not this node\'s arch'],
+			'a module\'s archive' => ['module/radio/1.0', $rArch, 'not an xc_agent binary'],
+		] as $rWhy => [$rId, $rPayloadArch, $rSays]) {
+			$rStaged = $this->stagedCopy($rId, 'xc_agent-linux-x', $rBytes);
+			try {
+				ArtefactStage::withStaged($rStaged, fn() => $this->runAction(['action' => 'agent_binary', 'arch' => $rPayloadArch, 'version' => '1.5.0']));
+				$this->fail($rWhy . ': installed');
+			} catch (\RuntimeException $rE) {
+				$this->assertStringStartsWith('artefact refused: ' . $rId . ' ', $rE->getMessage(), $rWhy);
+				$this->assertStringContainsString($rSays, $rE->getMessage(), $rWhy);
+			}
+			$this->assertSame('the running agent', file_get_contents($rAgent), $rWhy);
+		}
+		$this->assertSame([], $rLines, 'nothing restarted');
+		$this->assertCount(3, $this->audited(), 'each refusal audited');
+
+		// This node's arch: installed from root's copy, the agent restarted after its ack.
+		$rStaged = $this->stagedCopy('agent/' . $rArch, 'xc_agent-linux-' . $rArch, $rBytes);
+		$rOut = ArtefactStage::withStaged($rStaged, fn() => $this->runAction(['action' => 'agent_binary', 'arch' => $rArch, 'version' => '1.5.0']));
+		$this->assertStringContainsString('xc_agent installed', $rOut);
+		$this->assertSame($rBytes, file_get_contents($rAgent));
+		$this->assertSame(['(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &'], $rLines);
+	}
+
+	/** Root's stage is trusted only while it is root's: one the agent's user owns (and could swap a checked copy in) is refused. */
+	public function testRootTrustsOnlyAStageOfItsOwn(): void {
+		if (!AgentUser::root()) {
+			$this->markTestSkipped('the stage is root\'s: needs a run as root');
+		}
+		mkdir($this->rBase . 'etc/stage', 0700);
+		AgentUser::own($this->rBase . 'etc/stage');
+		$rBytes = $this->runnableAgent();
+		$rOne = $this->command(9, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rDownload = $this->download($rOne['cmd'], $rBytes);
+		$this->inbox(9, $rOne['wire']);
+		$rRan = false;
+		ClusterRootCommand::drain(static function () use (&$rRan): string {
+			$rRan = true;
+			return 'x';
+		}, 1800000000);
+		$this->assertFalse($rRan);
+		$this->assertStringContainsString('is not root\'s alone', $this->done(9)['result']);
+		$this->assertSame([], $this->staged());
+		$this->assertFileDoesNotExist($rDownload, 'spent');
+	}
+
+	/** Root opens the agent's download with the agent's rights: a hard link to a file only root may read stages nothing. */
+	public function testRootReadsTheDownloadOnlyWithTheAgentsRights(): void {
+		if (!AgentUser::root()) {
+			$this->markTestSkipped('the agent\'s rights differ from root\'s only in a run as root');
+		}
+		$rBytes = 'what only root may read';
+		$rSecret = $this->rBase . 'root_only';
+		file_put_contents($rSecret, $rBytes);
+		chmod($rSecret, 0600);
+		$rOne = $this->command(10, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rDownload = $this->rBase . 'config/cluster/artefacts/' . $rOne['cmd']['cmd_id'];
+		// A hard link: lstat sees a regular file, so only the rights stop it.
+		$this->assertTrue(link($rSecret, $rDownload));
+		$this->inbox(10, $rOne['wire']);
+		$rRan = false;
+		ClusterRootCommand::drain(static function () use (&$rRan): string {
+			$rRan = true;
+			return 'x';
+		}, 1800000000);
+		$this->assertFalse($rRan);
+		$this->assertStringContainsString('cannot be read with the agent\'s rights', $this->done(10)['result']);
+		$this->assertSame([], $this->staged(), 'nothing staged');
+		$this->assertSame($rBytes, file_get_contents($rSecret));
+		$this->assertFileDoesNotExist($rDownload, 'only the link is spent');
+	}
+
+	/**
+	 * root.seq only goes up, so a root command handed over after a later one
+	 * is refused as a replay: the agent hands `node.root` commands over in
+	 * seq order, a later one waiting while an earlier one's artefact
+	 * downloads (ADR 0004's contract). Handed over out of order, the earlier
+	 * one never runs, and its download is spent.
+	 */
+	public function testARootCommandHandedOverAfterALaterOneIsRefused(): void {
+		$rBytes = 'PK' . random_bytes(3000);
+		$rFive = $this->command(5, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'demo', 'version' => '1.0.0', 'artefact' => $this->grant('module/demo/1.0.0', 'demo_1.0.0.zip', $rBytes)]);
+		$rSix = $this->command(6, 'node.root', ['action' => 'flush']);
+		$rRan = [];
+		$rRun = static function (array $rAction) use (&$rRan): string {
+			$rRan[] = $rAction['action'];
+			return 'ok';
+		};
+		$this->inbox(6, $rSix['wire']);
+		ClusterRootCommand::drain($rRun, 1800000000);
+		$rDownload = $this->download($rFive['cmd'], $rBytes);
+		$this->inbox(5, $rFive['wire']);
+		ClusterRootCommand::drain($rRun, 1800000000);
+		$this->assertSame(['flush'], $rRan, 'the module is not installed');
+		$this->assertSame(['ok' => false, 'result' => 'refused by root: seq not above 6'], $this->done(5));
+		$this->assertFileDoesNotExist($rDownload, 'its download is spent, not left for 25 hours');
+		$this->assertSame([], $this->staged());
+		$this->assertSame(6, RootPin::highWater());
+	}
+
+	/**
+	 * install_module with a staged archive: only this module's, run now (not
+	 * in the background) from root's copy with the checked grant, and what
+	 * module:install refused or failed is the command's failure. A signals
+	 * row never names the archive.
+	 */
+	public function testInstallModuleTakesOnlyItsOwnStagedArchive(): void {
+		$rAction = ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0'];
+		$rPayload = static function (string $rLine): array {
+			preg_match('/module:install "([^"]+)"/', $rLine, $rM);
+			return json_decode((string) base64_decode($rM[1] ?? ''), true);
+		};
+		$rLine = RootSignalsCronJob::moduleInstallLine($rAction + ['archive' => '/etc/shadow', 'artefact' => ['id' => 'module/radio/1.0']], null);
+		$this->assertStringEndsWith(' 2>&1 &', $rLine, 'in the background, the legacy way');
+		$this->assertSame($rAction, $rPayload($rLine), 'a signals row names no archive');
+		$rStaged = $this->stagedCopy('module/radio/1.0', 'radio_1.0.zip', 'PK-archive');
+		$rLine = RootSignalsCronJob::moduleInstallLine($rAction + ['archive' => '/etc/shadow'], $rStaged);
+		$this->assertStringEndsWith(' 2>&1', $rLine, 'now, before the stage is emptied');
+		$this->assertSame(['archive' => $rStaged['path'], 'artefact' => $rStaged['grant']] + $rAction, $rPayload($rLine));
+
+		$rLines = [];
+		$rAnswer = [0, "module:install: 'radio' installed."];
+		RootSignalsCronJob::useShell(static function (string $rLine) use (&$rLines, &$rAnswer): array {
+			$rLines[] = $rLine;
+			return $rAnswer;
+		});
+		$rOut = ArtefactStage::withStaged($rStaged, fn() => $this->runAction($rAction + ['archive' => '/etc/shadow']));
+		$this->assertStringContainsString("'radio' installed", $rOut);
+		$this->assertSame([$rLine], $rLines);
+		// module:install refused it: the command fails with its refusal.
+		$rAnswer = [1, 'module:install: artefact refused: module/radio/1.0 (radio_1.0.zip): the archive is not the one MAIN granted'];
+		try {
+			ArtefactStage::withStaged($rStaged, fn() => $this->runAction($rAction));
+			$this->fail('acked ok');
+		} catch (\RuntimeException $rE) {
+			$this->assertSame($rAnswer[1], $rE->getMessage());
+		}
+		// Another module's archive: refused and audited before module:install runs.
+		$rLines = [];
+		$rOther = $this->stagedCopy('module/other/2.0', 'other_2.0.zip', 'PK-other');
+		try {
+			ArtefactStage::withStaged($rOther, fn() => $this->runAction($rAction));
+			$this->fail('installed');
+		} catch (\RuntimeException $rE) {
+			$this->assertStringStartsWith('artefact refused: module/other/2.0 (other_2.0.zip): not the archive of module/radio/1.0', $rE->getMessage());
+		}
+		$this->assertSame([], $rLines);
+		$rAudited = $this->audited();
+		$this->assertSame('log.syslog:ARTEFACT', end($rAudited)[0] ?? null);
+		// No staged archive (a signals row): the legacy way, whatever it names.
+		$this->runAction($rAction + ['archive' => $rStaged['path']]);
+		$this->assertCount(1, $rLines);
+		$this->assertStringEndsWith(' 2>&1 &', $rLines[0]);
+		$this->assertSame($rAction, $rPayload($rLines[0]));
+	}
+
+	/** module:install takes an archive only from root's stage, only with the grant's bytes; anything else is refused and audited, and nothing deploys. */
+	public function testModuleInstallRefusesAnArchiveThatIsNotTheGrants(): void {
+		mkdir($this->rBase . 'etc/stage', 0700);
+		$rGrant = ['cmd_id' => str_repeat('c', 32)] + $this->grant('module/radio/1.0', 'radio_1.0.zip', 'PK-archive');
+		file_put_contents($this->rBase . 'etc/stage/' . str_repeat('a', 32), 'PK-archive');
+		file_put_contents($this->rBase . 'etc/stage/' . str_repeat('b', 32), 'PK-evil!!!');
+		file_put_contents($this->rBase . 'elsewhere.zip', 'PK-archive');
+		foreach ([
+			'outside the stage' => [$this->rBase . 'elsewhere.zip', $rGrant, 'not in root\'s stage'],
+			'not the grant\'s bytes' => [$this->rBase . 'etc/stage/' . str_repeat('b', 32), $rGrant, 'not the one MAIN granted'],
+			'no grant' => [$this->rBase . 'etc/stage/' . str_repeat('a', 32), null, 'not the one MAIN granted'],
+		] as $rWhy => [$rPath, $rWith, $rSays]) {
+			$rPayload = ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'archive' => $rPath] + ($rWith === null ? [] : ['artefact' => $rWith]);
+			ob_start();
+			$rCode = (new ModuleInstallCommand())->execute([base64_encode((string) json_encode($rPayload))]);
+			$rOut = (string) ob_get_clean();
+			$this->assertSame(1, $rCode, $rWhy);
+			$this->assertStringContainsString('artefact refused: ', $rOut, $rWhy);
+			$this->assertStringContainsString($rSays, $rOut, $rWhy);
+			$this->assertStringNotContainsString('Installing', $rOut, $rWhy . ': nothing deployed');
+		}
+		$rLines = $this->audited();
+		$this->assertCount(3, $rLines);
+		$this->assertStringContainsString('Refused artefact module/radio/1.0 (radio_1.0.zip) for command ' . str_repeat('c', 32), $rLines[0][1]);
+	}
+
+	/**
+	 * Root's refusal reaches MAIN in the ack today's agent builds: on a
+	 * non-zero exit it acks `cluster:exec: <error>: <stderr>` and drops
+	 * stdout (xc_vm_fanout, ExecViaPHP), so cluster:exec writes root's
+	 * failure to stderr too. MAIN audits an ack that says `artefact refused`
+	 * as `artefact.refused` (ArtefactGrants::acked).
+	 */
+	public function testARootRefusalReachesTheAgentsAck(): void {
+		$rBytes = $this->runnableAgent();
+		$rTampered = $rBytes;
+		$rTampered[3] = 'X';
+		$rOne = $this->command(11, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$this->download($rOne['cmd'], $rTampered);
+		$rScript = $this->rBase . 'exec.php';
+		file_put_contents($rScript, "<?php\n"
+			. 'require ' . var_export(dirname(__DIR__, 2) . '/src/vendor/autoload.php', true) . ";\n"
+			. '\XcVm\Core\Cluster\RootPin::useDirs(' . var_export($this->rBase . 'etc/', true) . ', ' . var_export($this->rBase . 'config/cluster/root-inbox/', true) . ");\n"
+			. 'exit(\XcVm\Cli\Commands\ClusterExecCommand::handToRoot(' . var_export($rOne['wire'], true) . ", 11, 30));\n");
+		$rProc = proc_open([PHP_BINARY, $rScript], [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $rPipes);
+		$this->assertIsResource($rProc);
+		fclose($rPipes[0]);
+		// Root takes it from the inbox, as cluster:root does each second.
+		for ($i = 0; $i < 200 && !is_file($this->rBase . 'config/cluster/root-inbox/11.json'); $i++) {
+			usleep(50000);
+		}
+		ClusterRootCommand::drain(static fn(): string => 'ran', 1800000000);
+		$rStdout = (string) stream_get_contents($rPipes[1]);
+		$rStderr = (string) stream_get_contents($rPipes[2]);
+		fclose($rPipes[1]);
+		fclose($rPipes[2]);
+		$rCode = proc_close($rProc);
+		$this->assertSame(1, $rCode, $rStdout . $rStderr);
+		$rResult = $rCode === 0 ? $rStdout : 'cluster:exec: exit status ' . $rCode . ': ' . trim($rStderr);
+		$this->assertStringStartsWith('cluster:exec: exit status 1: cluster:exec: refused by root: artefact refused: agent/amd64 (xc_agent-linux-amd64): sha256 mismatch', $rResult);
+	}
+}

@@ -16,15 +16,15 @@ Each seam has a hook for tests and for the future transport (`useSink()`,
 | --- | --- | --- | --- |
 | `Core\Cluster\SignalDispatcher` | the 47 `INSERT INTO signals` sites (kill, cache jobs, root actions) | `LegacySqlSignalSink` | commands and events (4/5) |
 | `Domain\Stream\StreamStateWriter` | a node's runtime state in `streams_servers`; refuses any column outside `STATE_FIELDS` | `StreamRowMerge::apply()` | `stream.state` event (5) |
-| `Domain\Stream\StreamSource` | the stream row, this node's `streams_servers` row and the stream options, read before running a stream | SQL | R2 stream delta, `stream_bundle` on a miss (5) |
-| `Core\Cluster\LogSink` | client, stream, stream-error, panel-error and restream-detection records | one multi-row INSERT per batch (chunks of 1000) | `log.*` events, redacted first (5) |
+| `Domain\Stream\StreamSource` | the stream row, this node's `streams_servers` row, the stream options and a recording, read before running a stream or a recording | SQL | the node's stream caches, built by `cluster:apply` from the R2 `streams` section once the STREAMS flow is on (`ReplicaStreamCache`, 7); `stream_bundle` on a miss (not built) |
+| `Core\Cluster\LogSink` | client, stream, stream-error, panel-error and restream-detection records; root's system log lines (`syslog()`) | one multi-row INSERT per batch (chunks of 1000); the caller's own `mysql_syslog` INSERT | `log.*` events, redacted first (5); `log.syslog` (7) |
 
 ## MAIN side
 
 | Seam | Role |
 | --- | --- |
 | `Domain\Stream\StreamRowMerge` | Merges a node's runtime state into that node's row only. `eventFields()` keeps only runtime columns and redacts the source URL. |
-| `Domain\Stream\StreamCacheBuilder` | The `stream_<id>` cache entry: columns, per-server rows, and the rule that a stream's source URLs stay out of the cache unless it is a direct source. `cron:cache_engine` builds it with this class. |
+| `Domain\Stream\StreamCacheBuilder` | The `stream_<id>` cache entry: columns, per-server rows, and the rule that a stream's source URLs stay out of the cache unless it is a direct source. `cron:cache_engine`, which only MAIN runs, builds it with this class. |
 | `Core\Cluster\Redactor` | Strips `password=`, `token=` and `username=` values, the `/user/pass/` segments of Xtream URLs, and `user:pass@` from text before it is journaled. |
 
 ## MAIN → node
@@ -32,7 +32,7 @@ Each seam has a hook for tests and for the future transport (`useSink()`,
 | Seam | Wraps | Catalogue | API form (phase 4) |
 | --- | --- | --- | --- |
 | `Core\Cluster\NodeRpc` | `ApiClient::systemRequest()` / `asyncRequest()`: request/response calls to a node's `/api` | `NodeRpc::ACTIONS` | `node.rpc{action}`, answered via `ack` / `rpc_result` |
-| `Core\Cluster\NodeActions` | root actions for `RootSignalsCronJob`: reboot, services, update/rollback, ports, sysctl, certbot, modules, blocklist flush, `OPENSSL_EXTRA` | `NodeActions::ROOT_ACTIONS` | `node.root{action}` for `cluster:root` |
+| `Core\Cluster\NodeActions` | root actions for `RootSignalsCronJob`: reboot, services, update/rollback, ports, sysctl, certbot, modules, blocklist flush, `OPENSSL_EXTRA`, and the agent binary (`agent_binary`, cluster API only) | `NodeActions::ROOT_ACTIONS` | `node.root{action}` for `cluster:root`, with an artefact grant when the action needs a file of MAIN's |
 
 Both seams refuse an action that is not in their catalogue, so a new call is a
 deliberate change. `NodeRpcActionsTest` checks that every call site uses a
@@ -47,8 +47,56 @@ action.
   `SignalDispatcher::rootAction()` outside `Core\Cluster`; add the action to the
   catalogue and use `NodeRpc` / `NodeActions`.
 - Node-side code reads stream definitions through `StreamSource`, not with its
-  own queries on `streams_options`.
+  own queries on `streams`, `streams_options` or `recordings`. Once the node's
+  replica owns the streams (STREAMS flow on), its answers come from the stream
+  caches `cluster:apply` built, never from MAIN's database, and a column no
+  record carries (the node's runtime state) is null there.
+- Node-side code reads settings through `SettingsManager`'s getters and servers
+  through `ServerRepository`. A node in mode 2, or in mode 1 with the CONFIG
+  flow on, boots from its replica (`ReplicaStage`) once an apply built its
+  caches: those come from the replica's caches, and any other query opens
+  MAIN's database lazily, on first use. Mode 1 opens it, counted at the
+  query's site; mode 2 refuses it. The streaming entry points take the same
+  lazy handle there (`LegacyInitializer::initStreaming`). On a node in mode 1
+  or 2, a settings key outside `lb_settings_keys.php` is counted as a miss
+  (`SettingsAudit`) and shown on *Servers → Cluster Nodes*.
+- Do not open MAIN's database before a query needs it. A connect at boot or at
+  the top of an entry point counts against a mode 1 node's seven-day zero even
+  when the request ends without a query. Where the replica may not answer
+  (`ReplicaBoot::hybrid()`: mode 1, never where connects are refused), read
+  MAIN's database on the lazy handle, never on a new one. To learn whether
+  MAIN's database answers, query it: a lazy handle's `connected` stays false
+  until its first query (`StatusCommand::mainDatabaseAnswers()`).
+- Do not write `new DatabaseHandler()`. Take the process's handle
+  (`DatabaseAware`, `DatabaseFactory::get()`), or `DatabaseFactory::connect()`,
+  `connectLazy()` or `open()`. Every connect to MAIN's MySQL or Redis passes
+  `ConnectAudit::guard()`: on a node in mode 1 or 2 it is counted with its
+  caller and shown on *Servers → Cluster Nodes*, and in mode 2 it throws
+  `LbDatabaseAccessException`. Do not open PDO, `\Redis` or mysqli connections
+  of your own in code a load balancer runs.
+- A node in mode 2 (`NodeRole::refusesConnects()`) never falls back to MAIN's
+  database. A write with an agent path goes through its seam first
+  (`LogSink`, `LogSink::syslog()` for root's system log lines, `NodeStateSink`),
+  and a root action runs after its log line whatever became of the line
+  (a line the agent did not take stays in the panel's error log). An action
+  that still needs MAIN's database is refused up front in mode 2
+  (`RootSignalsCronJob::updatesHere()` for `update` and `rollback`).
+  Work that needs MAIN's data no replica section carries yet is skipped in
+  mode 2 behind a named seam (`CleanupCronJob::streamChecks()`), never run
+  against an empty answer.
+- A file a node needs from MAIN (a custom off-air video, a module's archive,
+  a binary MAIN pinned) is an artefact: MAIN names it in
+  `Domain\Cluster\ArtefactRegistry` and grants it with a signed command
+  (`ArtefactGrants`), and the node uses it only once `Core\Cluster\ArtefactStage`
+  checked its size and SHA-256 against the grant, as it copies it to where it
+  is used (root's own stage for a root action). Do not add a pull from MAIN by
+  path, URL or password.
+- The node's audit files (`storage/cluster/`, `config/cluster/audit.json`) sit
+  where xc_vm can write. A root process writes them only inside
+  `SettingsAudit::asAgentUser()`, which does the work as xc_vm, never with
+  root's own rights.
 
 Tests that pin these rules: `SignalDispatcherParityTest`, `StreamStateWriterTest`,
-`StreamRowMergeTest`, `StreamCacheBuilderSourceTest`, `LogSinkTest` and
-`NodeRpcActionsTest`.
+`StreamRowMergeTest`, `StreamCacheBuilderSourceTest`, `LogSinkTest`,
+`NodeRpcActionsTest`, `ArchitectureTest`, `DbConnectRefusalTest`,
+`ReplicaBootTest`, `ModeTwoPathsTest` and `ArtefactHashRefusalTest`.

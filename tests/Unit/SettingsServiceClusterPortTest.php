@@ -4,6 +4,8 @@ use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamArgumentsChangedEvent;
 use XcVm\Core\Localization\Translator;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
@@ -174,6 +176,35 @@ final class SettingsServiceClusterPortTest extends TestCase {
 		$this->assertSame([0, 1], $this->stored());
 		$this->assertFileDoesNotExist($this->rDir . 'bin/nginx/conf/' . ClusterNginxConfig::LISTEN);
 		$this->assertSame([], $this->rRuns);
+	}
+
+	/**
+	 * The stream arguments' defaults a save stores first, apart from the
+	 * settings row (whose UPDATE fails here, so nothing else of the save
+	 * runs): it announces only those whose default changed, which their
+	 * streams' R2 records carry.
+	 */
+	public function testASaveAnnouncesOnlyTheArgumentDefaultsItChanged(): void {
+		$this->rDb->exec("INSERT INTO `streams_arguments` VALUES ('user_agent', 'VLC'), ('http_proxy', NULL), ('cookie', NULL), ('headers', NULL)");
+		$rDb = $this->failingSave();
+		DatabaseFactory::set($rDb);
+		$GLOBALS['db'] = $rDb;
+		$rSeen = [];
+		EventDispatcher::resetInstance();
+		EventDispatcher::listen(StreamArgumentsChangedEvent::class, static function (StreamArgumentsChangedEvent $rEvent) use (&$rSeen): void {
+			$rSeen[] = $rEvent->argumentKeys;
+		});
+		try {
+			$rForm = ['user_agent' => 'VLC', 'http_proxy' => '', 'cookie' => '', 'headers' => '', 'search_items' => '15'];
+			SettingsService::edit($rForm);
+			$this->assertSame([], $rSeen, 'nothing changed');
+			SettingsService::edit(['user_agent' => 'curl/8', 'cookie' => 'a=b'] + $rForm);
+			$this->assertSame([['user_agent', 'cookie']], $rSeen);
+			$this->rDb->query("SELECT `argument_default_value` FROM `streams_arguments` WHERE `argument_key` = 'cookie'");
+			$this->assertSame('a=b', $this->rDb->get_row()['argument_default_value']);
+		} finally {
+			EventDispatcher::resetInstance();
+		}
 	}
 
 	/** A save whose UPDATE fails: nothing is announced, and nginx goes back to the stored port. */

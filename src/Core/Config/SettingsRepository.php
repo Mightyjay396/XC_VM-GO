@@ -3,6 +3,9 @@
 namespace XcVm\Core\Config;
 
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaBoot;
+use XcVm\Core\Cluster\ReplicaSections;
 
 /**
  * SettingsRepository — settings repository
@@ -18,24 +21,75 @@ class SettingsRepository {
 	/**
 	 * Load all panel settings, decoding JSON fields and caching the result.
 	 *
+	 * On a node whose replica owns the settings cache (CONFIG on, and an apply
+	 * built it from the `settings` and `secrets` sections: ReplicaApply::owns),
+	 * every caller gets that cache however old it is, even when forced, never
+	 * MAIN's database; should it be gone, it is rebuilt from the replica on
+	 * disk. The database's row is never written over a cache the replica owns.
+	 *
+	 * A process booted from the replica (ReplicaBoot) does not read MAIN's
+	 * database either: without a cache the replica owns, it gets the settings
+	 * cache however old, or nothing (cluster:apply at boot, before it built
+	 * one). The exception is a process on a node in mode 1
+	 * (ReplicaBoot::hybrid), which reads MAIN's row as before once the
+	 * replica no longer owns the cache (CONFIG went off, a refused section),
+	 * on the lazy handle's first use, counted.
+	 *
 	 * @param bool $rForce Bypass the file cache and re-read from the database.
 	 * @return array Settings map (with normalized array fields).
 	 */
 	public static function getAll(bool $rForce = false) {
 		global $db;
-		if (!$rForce) {
-			$rCache = FileCache::getCache('settings', 20);
+		$rReplica = self::replicaOwns();
+		if (!$rForce || $rReplica) {
+			$rCache = $rReplica ? FileCache::getCache('settings') : FileCache::getCache('settings', 20);
+			if (empty($rCache) && $rReplica) {
+				ReplicaApply::settings(true);
+				$rCache = self::replicaOwns() ? FileCache::getCache('settings') : false;
+			}
 			if (!empty($rCache)) {
 				return $rCache;
 			}
+		}
+		if (ReplicaBoot::active() && !ReplicaBoot::hybrid()) {
+			return ReplicaBoot::cached('settings');
 		}
 
 		$db->query('SELECT * FROM `settings`');
 		$rOutput = self::decode($db->get_row() ?: []);
 
-		FileCache::setCache('settings', $rOutput);
+		// Asked again: an apply may have built the replica's cache meanwhile.
+		if (!self::replicaOwns()) {
+			FileCache::setCache('settings', $rOutput);
+		}
 
 		return $rOutput;
+	}
+
+	/**
+	 * The settings this process loaded (SettingsManager), or while it has not
+	 * loaded them yet, the settings cache: the servers read to rule out MAIN
+	 * (NodeFlows) can come first, and must not build their URLs without them.
+	 *
+	 * @return array<string, mixed>
+	 */
+	public static function loaded(): array {
+		$rSettings = SettingsManager::getAll();
+		if ($rSettings === []) {
+			$rCache = FileCache::getCache('settings');
+			$rSettings = is_array($rCache) ? $rCache : [];
+		}
+		return $rSettings;
+	}
+
+	/**
+	 * Does the node replica own the settings cache? The apply's record first:
+	 * without it (MAIN, a legacy node, CONFIG off) nothing asks NodeFlows,
+	 * which on a node with an agent reads the servers, before the settings
+	 * are loaded.
+	 */
+	private static function replicaOwns(): bool {
+		return ReplicaApply::built(ReplicaSections::SETTINGS) && ReplicaApply::owns(ReplicaSections::SETTINGS);
 	}
 
 	/**

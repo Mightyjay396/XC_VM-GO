@@ -4,6 +4,7 @@ namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Events\Stream\StreamsDeletedEvent;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Domain\Bouquet\BouquetService;
@@ -302,6 +303,8 @@ class StreamRepository {
 			if ($rDeleteFiles && in_array($rType, [2, 5])) {
 				MovieService::deleteFile([$rServerID], $rID);
 			}
+			// Taken off one server: that node's replica drops it.
+			EventDispatcher::dispatch(new StreamsChangedEvent([$rID]));
 		}
 
 		$db->query('DELETE FROM `streams_servers` WHERE `parent_id` IS NOT NULL AND `parent_id` > 0 AND `parent_id` NOT IN (SELECT `id` FROM `servers` WHERE `server_type` = 0);');
@@ -365,6 +368,7 @@ class StreamRepository {
 		if (0 < count($rIDs)) {
 			$db->query('DELETE FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', $rIDs) . ');', $rServerID);
 			$db->query('UPDATE `streams_servers` SET `parent_id` = NULL WHERE `parent_id` = ? AND `stream_id` IN (' . implode(',', $rIDs) . ');', $rServerID);
+			EventDispatcher::dispatch(new StreamsChangedEvent($rIDs));
 			if ($rDeleteFiles) {
 				SignalDispatcher::cache(intval($rServerID), ['type' => 'delete_vods', 'id' => $rIDs], false, false, $db);
 			}

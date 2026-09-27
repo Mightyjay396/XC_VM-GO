@@ -2,6 +2,8 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -82,9 +84,13 @@ class StreamConfigRepository {
 			return false;
 		}
 
+		// The streams that transcoded with it, read before they stop pointing at it.
+		$db->query('SELECT `id` FROM `streams` WHERE `transcode_profile_id` = ?;', $rID);
+		$rStreamIDs = array_map('intval', array_column($db->get_rows() ?: [], 'id'));
 		$db->query('DELETE FROM `profiles` WHERE `profile_id` = ?;', $rID);
 		$db->query('UPDATE `streams` SET `transcode_profile_id` = 0 WHERE `transcode_profile_id` = ?;', $rID);
 		$db->query('UPDATE `watch_folders` SET `transcode_profile_id` = 0 WHERE `transcode_profile_id` = ?;', $rID);
+		EventDispatcher::dispatch(new StreamsChangedEvent($rStreamIDs));
 
 		return true;
 	}

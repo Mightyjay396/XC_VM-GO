@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -9,13 +10,19 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  *
  * Where a node reads the definition of a stream it is about to run: the
  * `streams` row (with its type and transcode profile), this node's
- * `streams_servers` row and the stream's options (user agent, proxy,
- * cookie, headers, …). The launcher, the monitor, the proxy producer,
- * live.php and the scanner used to run these queries themselves.
+ * `streams_servers` row, the stream's options (user agent, proxy, cookie,
+ * headers, …) and the recordings scheduled on it. The launcher, the
+ * monitor, the proxy producer, live.php, the scanner and the recorder used
+ * to run these queries themselves.
  *
- * The legacy backend reads MAIN's database, as they did. In API mode
- * (Phase 5) a node reads the R2 stream delta and falls back to
- * `stream_bundle` on a miss, which needs only this seam swapped.
+ * The legacy backend reads MAIN's database, as they did. Once the node's
+ * replica owns the streams (the STREAMS flow on, and cluster:apply built
+ * the stream caches from the R2 `streams` section: ReplicaStreamCache),
+ * every answer about this node comes from those caches, in the same shapes,
+ * and none reads MAIN's database: a stream the node does not hold is no
+ * stream. What no record carries (the node's runtime columns, MAIN's
+ * catalogue metadata, an argument's description) is null there.
+ * `stream_bundle` on a miss (plan, section 7) is not built.
  *
  * @package XC_VM_Domain_Stream
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
@@ -35,6 +42,9 @@ final class StreamSource {
 		if (self::$rLoader !== null) {
 			return (self::$rLoader)('stream', $rStreamID, ['live' => $rLive]);
 		}
+		if (ReplicaStreamCache::owned()) {
+			return ReplicaStreamCache::streamRow($rStreamID, $rLive);
+		}
 		$rDb ??= DatabaseFactory::get();
 		$rDb->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = ' . ($rLive ? 1 : 0) . ' LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
 		return $rDb->num_rows() > 0 ? $rDb->get_row() : null;
@@ -49,6 +59,9 @@ final class StreamSource {
 		$rServerID ??= intval(SERVER_ID);
 		if (self::$rLoader !== null) {
 			return (self::$rLoader)('server', $rStreamID, ['server_id' => $rServerID]);
+		}
+		if ($rServerID === intval(SERVER_ID) && ReplicaStreamCache::owned()) {
+			return ReplicaStreamCache::serverRow($rStreamID);
 		}
 		$rDb ??= DatabaseFactory::get();
 		$rDb->query('SELECT * FROM `streams_servers` WHERE stream_id = ? AND `server_id` = ?', $rStreamID, $rServerID);
@@ -65,6 +78,9 @@ final class StreamSource {
 		if (self::$rLoader !== null) {
 			return (self::$rLoader)('arguments', $rStreamID, ['keyed' => $rKeyed]);
 		}
+		if (ReplicaStreamCache::owned()) {
+			return ReplicaStreamCache::arguments($rStreamID, $rKeyed);
+		}
 		$rDb ??= DatabaseFactory::get();
 		$rDb->query('SELECT t1.*, t2.* FROM `streams_options` t1, `streams_arguments` t2 WHERE t1.stream_id = ? AND t1.argument_id = t2.id', $rStreamID);
 		return ($rKeyed ? $rDb->get_rows(true, 'argument_key') : $rDb->get_rows()) ?: [];
@@ -80,9 +96,31 @@ final class StreamSource {
 		if (self::$rLoader !== null) {
 			return (self::$rLoader)('source', $rStreamID, []);
 		}
+		if (ReplicaStreamCache::owned()) {
+			return ReplicaStreamCache::sourceRow($rStreamID);
+		}
 		$rDb ??= DatabaseFactory::get();
 		$rDb->query('SELECT `stream_source` FROM `streams` WHERE `id` = ?', $rStreamID);
 		return $rDb->num_rows() > 0 ? $rDb->get_row() : [];
+	}
+
+	/**
+	 * A recording's row (every `recordings` column), for the recorder: once
+	 * the replica owns the streams, one scheduled on this node, with the
+	 * `status` MAIN last heard.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function recording(int $rRecordingID, ?object $rDb = null): ?array {
+		if (self::$rLoader !== null) {
+			return (self::$rLoader)('recording', $rRecordingID, []);
+		}
+		if (ReplicaStreamCache::owned()) {
+			return ReplicaStreamCache::recording($rRecordingID);
+		}
+		$rDb ??= DatabaseFactory::get();
+		$rDb->query('SELECT * FROM `recordings` WHERE `id` = ?;', $rRecordingID);
+		return $rDb->num_rows() > 0 ? $rDb->get_row() : null;
 	}
 
 	/** Replace the backend (tests; later the cluster API). Null restores the SQL backend. */

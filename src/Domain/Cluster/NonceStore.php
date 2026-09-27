@@ -101,7 +101,7 @@ final class NonceStore {
 		}
 		// Marked first: a worker without the bus never reads an older second
 		// than a claim the bus holds.
-		if (!self::mark(self::BUS_MARK, $rNow)) {
+		if (!ClusterBus::mark(self::BUS_MARK, $rNow)) {
 			return false;
 		}
 		$rOut = ClusterBus::script(self::CLAIM_LUA, ['nonce:' . $rNode, 'nonces_since'], [$rNow, $rNow + self::TTL * 1000, bin2hex($rNonce)]);
@@ -170,7 +170,7 @@ final class NonceStore {
 
 	/** Without the bus: MySQL, unless the bus may hold the nonce. */
 	private static function claimWithoutBus(string $rNode, string $rNonce, ?int $rTsMs, int $rNow, ?int &$rRetryMs): bool {
-		$rBusAt = self::markedAt(self::BUS_MARK);
+		$rBusAt = ClusterBus::markedAt(self::BUS_MARK);
 		if ($rTsMs !== null && $rBusAt !== null) {
 			// Marked this second or the one before (or ahead): the bus may be
 			// taking claims right now.
@@ -196,44 +196,12 @@ final class NonceStore {
 	 */
 	private static function markSql(int $rNow): bool {
 		$rSocket = ClusterBus::socket();
-		return $rSocket === null || !file_exists($rSocket) || self::mark(self::SQL_MARK, $rNow);
-	}
-
-	/**
-	 * Record the current second in a mark, at most one write a second; false
-	 * when it cannot be written. A mark never moves back (a worker that read
-	 * the clock a second earlier writes late), unless it is more than a second
-	 * ahead: the clock stepped back.
-	 */
-	private static function mark(string $rName, int $rNow): bool {
-		$rPath = self::markPath($rName);
-		if ($rPath === null) {
-			return true;
-		}
-		$rSec = intdiv($rNow, 1000);
-		$rAt = self::markedAt($rName);
-		return ($rAt !== null && $rAt >= $rSec && $rAt <= $rSec + 1) || @touch($rPath, $rSec);
+		return $rSocket === null || !file_exists($rSocket) || ClusterBus::mark(self::SQL_MARK, $rNow);
 	}
 
 	private static function markedWithinTtl(string $rName, int $rNow): bool {
-		$rAt = self::markedAt($rName);
+		$rAt = ClusterBus::markedAt($rName);
 		return $rAt !== null && $rAt >= intdiv($rNow, 1000) - self::TTL - 1;
-	}
-
-	/** The second a mark holds, or null without one. */
-	private static function markedAt(string $rName): ?int {
-		$rPath = self::markPath($rName);
-		if ($rPath === null) {
-			return null;
-		}
-		clearstatcache(true, $rPath);
-		$rAt = @filemtime($rPath);
-		return $rAt === false ? null : $rAt;
-	}
-
-	private static function markPath(string $rName): ?string {
-		$rSocket = ClusterBus::socket();
-		return $rSocket === null ? null : dirname($rSocket) . '/' . $rName;
 	}
 
 	private static function insert(string $rNode, string $rNonce): bool {

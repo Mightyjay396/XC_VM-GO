@@ -10,6 +10,7 @@ use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\RecordingFinalizer;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Codec\FfmpegPaths;
 
@@ -59,15 +60,14 @@ class RecordCommand implements CommandInterface {
 
 		$db = self::db();
 
-		$db->query('SELECT * FROM `recordings` WHERE `id` = ?;', $recordingID);
-		if ($db->num_rows() <= 0) {
+		$recordingData = StreamSource::recording($recordingID, $db);
+		if ($recordingData === null) {
 			echo "Recording entry doesn't exist.\n";
 			return 0;
 		}
 
 		$rFails = $totalBytes = 0;
 		$isComplete = false;
-		$recordingData = $db->get_row();
 
 		if (($recordingData['start'] - 60 > time() || time() > $recordingData['end']) && !$recordingData['archive']) {
 			echo "Programme is not currently airing.\n";
@@ -163,15 +163,8 @@ class RecordCommand implements CommandInterface {
 
 		echo "Recording complete! Converting to MP4...\n";
 		$rIcon = empty($recordingData['stream_icon']) ? null : $this->downloadAndSaveImage($recordingData['stream_icon']);
-		// The VOD row comes first: its id names the file. On a node whose
-		// CONTENT flow is on, MAIN creates it (recording_complete, through the
-		// agent); otherwise it is created here, in MAIN's database, as before.
-		if (NodeFlows::on(NodeFlows::CONTENT)) {
-			$rReply = AgentClient::main('recording_complete', ['recording_id' => (int) $recordingID, 'stream_icon' => $rIcon]);
-			$rInsertID = (int) ($rReply['stream_id'] ?? 0);
-		} else {
-			$rInsertID = (int) RecordingFinalizer::create((int) $recordingID, SERVER_ID, $rIcon);
-		}
+		// The VOD row comes first: its id names the file.
+		$rInsertID = self::vodFor((int) $recordingID, $rIcon);
 		if ($rInsertID <= 0) {
 			echo "Failed to insert into database!\n";
 			$this->finishRecording($recordingID, false);
@@ -187,6 +180,19 @@ class RecordCommand implements CommandInterface {
 			return;
 		}
 		ContentSink::recordingDone((int) $recordingID, SERVER_ID);
+	}
+
+	/**
+	 * The finished recording's VOD id, 0 when none was made. On a node whose
+	 * CONTENT flow is on, MAIN creates it (recording_complete, through the
+	 * agent), asked again while MAIN is busy; otherwise it is created here, in
+	 * MAIN's database, as before.
+	 */
+	public static function vodFor(int $rRecordingID, ?string $rIcon): int {
+		if (NodeFlows::on(NodeFlows::CONTENT)) {
+			return (int) (AgentClient::mainRetrying('recording_complete', ['recording_id' => $rRecordingID, 'stream_icon' => $rIcon])['stream_id'] ?? 0);
+		}
+		return (int) RecordingFinalizer::create($rRecordingID, SERVER_ID, $rIcon);
 	}
 
 	private function finishRecording($recordingID, $success): void {

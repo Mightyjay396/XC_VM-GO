@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Config\OpensslExtra;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -37,12 +38,28 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   every server's routing and relay fields with the node list, the node's
  *   own configuration, the crontab rows its mode runs, and MAIN's transport
  *   policy and keys.
+ * - `secrets`: `live_streaming_pass` and OPENSSL_EXTRA, each as {kid,
+ *   current, previous, previous_valid_until}, the only secrets a node gets.
+ * - `bouquets`, `categories`: every bouquet and stream category, the
+ *   catalogue the node's caches of those names hold for the viewer APIs.
  *
  * All but the blocklist are sent whole, to an agent that names them in
- * `have`, whenever their ETag differs from the node's. A section and its
+ * `have`, whenever their ETag differs from the node's. The agent reads at
+ * most 8 MiB of a reply, and one reply too large for it would stop every
+ * section: one whose sealed record would pass MAX_WHOLE_BYTES is answered
+ * `too_large` instead (whole()), and audited once per ETag, and the `config`
+ * op keeps the whole reply within MAX_REPLY, in REPLY_ORDER. A section and its
  * ETag are reused for 10 s (ReplicaEtagCache); a change of the node list
  * drops the cache and is announced to the others through `config.changed`
- * (nodesChanged).
+ * (nodesChanged). `secrets` goes only to an active node in mode 1 or 2
+ * (serves()) and is read afresh each time, never cached unsealed; like every
+ * whole section it grants, so without a licence it is not signed.
+ *
+ * A section is never built from a failed read, a missing settings row or an
+ * unset secret: it would be signed as MAIN's word (an empty settings row the
+ * node takes as its whole settings, a crontab with no job, an empty `current`).
+ * The builder throws instead, the `config` op answers `503 DB`, and the node
+ * keeps what it holds and asks again.
  */
 final class ReplicaBuilder {
 	use DatabaseAware;
@@ -53,8 +70,10 @@ final class ReplicaBuilder {
 
 	public const SECTION_SETTINGS = ReplicaSections::SETTINGS;
 
-	/** Sections sent whole whenever the node's ETag differs. */
+	/** Sections sent whole whenever the node's ETag differs (and `secrets`, see serves()). */
 	public const WHOLE = ReplicaSections::WHOLE;
+
+	public const SECTION_SECRETS = ReplicaSections::SECRETS;
 
 	/**
 	 * What an agent says at hello (`features`) when it runs `config.changed`
@@ -62,6 +81,30 @@ final class ReplicaBuilder {
 	 * cluster:exec, which an LB's older PHP fails as an unknown type.
 	 */
 	public const FEATURE_CONFIG_CHANGED = 'config_changed';
+
+	/**
+	 * The largest sealed whole section served (base64): the agent reads at
+	 * most 8 MiB of a reply, which also carries the blocklist and the other
+	 * sections. A larger one (the bouquets of a panel with many resellers'
+	 * packages) is answered `too_large`, and the node's readers go back to
+	 * MAIN's database for it (ADR 0004, twelfth Phase 7 increment).
+	 */
+	public const MAX_WHOLE_BYTES = 4194304;
+
+	/**
+	 * The most a `config` reply's JSON may take: the plan's boxed plaintext
+	 * limit, 8 MiB less 64 KiB, within the agent's 8 MiB `MaxReply`.
+	 */
+	public const MAX_REPLY = 8323072;
+
+	/**
+	 * The order a `config` reply takes the sections sent whole in, within
+	 * MAX_REPLY: the viewer catalogue, the largest, last.
+	 */
+	public const REPLY_ORDER = [
+		ReplicaSections::SETTINGS, ReplicaSections::SERVERS, ReplicaSections::NODE, ReplicaSections::CRONTAB, ReplicaSections::CLUSTER,
+		ReplicaSections::SECRETS, ReplicaSections::BOUQUETS, ReplicaSections::CATEGORIES,
+	];
 
 	/**
 	 * The node's blocklist from change $rSince (0: it has none).
@@ -96,12 +139,13 @@ final class ReplicaBuilder {
 
 	/**
 	 * A section sent whole: `unchanged` when the node holds its ETag, else the
-	 * sealed `rep` record.
+	 * sealed `rep` record; `too_large` with the ETag when that record would
+	 * pass MAX_WHOLE_BYTES (audited once per ETag).
 	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row
 	 * @param array<string, mixed> $rSettings MAIN's settings (the `cluster` section's policy)
 	 * @param array<string, mixed> $rMain MAIN's `servers` row
-	 * @return array{unchanged?: bool, etag?: string, sealed?: string}
+	 * @return array{unchanged?: bool, too_large?: bool, etag?: string, sealed?: string}
 	 */
 	public static function whole(ClusterCrypto $rCrypto, array $rNode, string $rSection, string $rHave, array $rSettings = [], array $rMain = []): array {
 		['etag' => $rEtag, 'data' => $rData] = self::section($rCrypto, $rNode, $rSection, $rSettings, $rMain);
@@ -112,11 +156,42 @@ final class ReplicaBuilder {
 			'v' => 1, 'section' => $rSection, 'node' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'],
 			'etag' => $rEtag, 'iat' => ClusterClock::now(), 'data' => $rData,
 		];
-		return ['etag' => $rEtag, 'sealed' => base64_encode(self::record($rCrypto, $rNode, 'rep', self::json($rDoc)))];
+		$rSealed = base64_encode(self::record($rCrypto, $rNode, 'rep', self::json($rDoc)));
+		if (strlen($rSealed) > self::MAX_WHOLE_BYTES) {
+			self::tooLarge($rSection, $rEtag, strlen($rSealed));
+			return ['too_large' => true, 'etag' => $rEtag];
+		}
+		return ['etag' => $rEtag, 'sealed' => $rSealed];
+	}
+
+	/** Audit a section too large to send, once per ETag. */
+	private static function tooLarge(string $rSection, string $rEtag, int $rBytes): void {
+		try {
+			if (ClusterMeta::get('replica_too_large.' . $rSection) !== $rEtag) {
+				ClusterMeta::set('replica_too_large.' . $rSection, $rEtag);
+				ClusterAudit::log('replica.section_too_large', null, ['section' => $rSection, 'bytes' => $rBytes, 'max' => self::MAX_WHOLE_BYTES], 'system');
+			}
+		} catch (\Throwable) {
+			// The section stays out regardless.
+		}
 	}
 
 	/**
-	 * A whole section for this node and its ETag, reused for 10 s.
+	 * Is this whole section served to this node? `secrets` only to an active
+	 * node in mode 1 or 2: a legacy node (mode 0) reads MAIN's database.
+	 *
+	 * @param array<string, mixed> $rNode cluster_nodes row (state, mode)
+	 */
+	public static function serves(array $rNode, string $rSection): bool {
+		if ($rSection !== ReplicaSections::SECRETS) {
+			return true;
+		}
+		return ($rNode['state'] ?? null) === 'active' && (int) ($rNode['mode'] ?? 0) >= 1;
+	}
+
+	/**
+	 * A whole section for this node and its ETag, reused for 10 s; `secrets`
+	 * is read each time, never cached.
 	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row (server_id, mode)
 	 * @param array<string, mixed> $rSettings
@@ -124,6 +199,10 @@ final class ReplicaBuilder {
 	 * @return array{etag: string, data: array<mixed>}
 	 */
 	public static function section(ClusterCrypto $rCrypto, array $rNode, string $rSection, array $rSettings, array $rMain): array {
+		if ($rSection === ReplicaSections::SECRETS) {
+			$rData = self::canonical(self::secretsData());
+			return ['etag' => self::etag($rData), 'data' => $rData];
+		}
 		$rKey = match ($rSection) {
 			ReplicaSections::NODE => $rSection . '.' . (int) $rNode['server_id'],
 			ReplicaSections::CRONTAB => $rSection . '.' . ((int) $rNode['mode'] >= 2 ? 'api' : 'legacy'),
@@ -141,6 +220,8 @@ final class ReplicaBuilder {
 			ReplicaSections::NODE => self::nodeData((int) $rNode['server_id']),
 			ReplicaSections::CRONTAB => self::crontabData((int) $rNode['mode']),
 			ReplicaSections::CLUSTER => self::clusterData($rCrypto, $rSettings, $rMain),
+			ReplicaSections::BOUQUETS => self::bouquetsData(),
+			ReplicaSections::CATEGORIES => self::categoriesData(),
 			default => throw new \InvalidArgumentException('Not a whole replica section: ' . $rSection),
 		};
 		$rData = self::canonical($rData);
@@ -158,12 +239,12 @@ final class ReplicaBuilder {
 	 * @return array{servers: list<array<string, int|string|null>>, nodes: list<array{sid: int, gen: int, state: string, ed_pub: string}>}
 	 */
 	public static function serversData(): array {
-		self::db()->query('SELECT * FROM `servers` ORDER BY `id` ASC;');
+		self::read('SELECT * FROM `servers` ORDER BY `id` ASC;');
 		$rServers = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
 			$rServers[] = ReplicaSections::typed($rRow, ReplicaSections::SERVER_FIELDS);
 		}
-		self::db()->query('SELECT `server_id`, `gen`, `state`, `node_sign_pub` FROM `cluster_nodes` ORDER BY `server_id` ASC;');
+		self::read('SELECT `server_id`, `gen`, `state`, `node_sign_pub` FROM `cluster_nodes` ORDER BY `server_id` ASC;');
 		$rNodes = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
 			$rNodes[] = ['sid' => (int) $rRow['server_id'], 'gen' => (int) $rRow['gen'], 'state' => (string) $rRow['state'], 'ed_pub' => base64_encode((string) $rRow['node_sign_pub'])];
@@ -179,14 +260,12 @@ final class ReplicaBuilder {
 	 * @return array<string, int|string|null>
 	 */
 	public static function nodeData(int $rServerID): array {
-		self::db()->query('SELECT * FROM `servers` WHERE `id` = ?;', $rServerID);
+		self::read('SELECT * FROM `servers` WHERE `id` = ?;', $rServerID);
 		$rRow = self::db()->get_row();
 		if (!is_array($rRow) || $rRow === []) {
 			return [];
 		}
-		self::db()->query('SELECT * FROM `settings` LIMIT 1;');
-		$rSettings = self::db()->get_row() ?: [];
-		return ReplicaSections::typed($rRow, ReplicaSections::NODE_FIELDS) + ReplicaSections::typed(is_array($rSettings) ? $rSettings : [], ReplicaSections::NODE_SETTINGS);
+		return ReplicaSections::typed($rRow, ReplicaSections::NODE_FIELDS) + ReplicaSections::typed(self::settingsRow('*'), ReplicaSections::NODE_SETTINGS);
 	}
 
 	/**
@@ -200,7 +279,7 @@ final class ReplicaBuilder {
 	 */
 	public static function crontabData(int $rMode): array {
 		$rRoles = ReplicaSections::cronRoles($rMode);
-		self::db()->query('SELECT `filename`, `time`, `role` FROM `crontab` WHERE `enabled` = 1 ORDER BY `id` ASC;');
+		self::read('SELECT `filename`, `time`, `role` FROM `crontab` WHERE `enabled` = 1 ORDER BY `id` ASC;');
 		$rJobs = [];
 		$rSkipped = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
@@ -263,6 +342,29 @@ final class ReplicaBuilder {
 	}
 
 	/**
+	 * The `bouquets` section: every bouquet, every column, in the order
+	 * BouquetService::getAll reads them (bouquet_order, 0 last; then id), so
+	 * a node builds its bouquets cache in cron:cache's shape.
+	 *
+	 * @return array{bouquets: list<array<string, int|string|null>>}
+	 */
+	public static function bouquetsData(): array {
+		self::read('SELECT * FROM `bouquets` ORDER BY CASE WHEN `bouquet_order` > 0 THEN `bouquet_order` ELSE 999 END ASC, `id` ASC;');
+		return ['bouquets' => array_map(static fn(array $rRow): array => ReplicaSections::typed($rRow, ReplicaSections::BOUQUET_FIELDS), self::db()->get_rows() ?: [])];
+	}
+
+	/**
+	 * The `categories` section: every stream category, every column, in the
+	 * order CategoryService reads them (cat_order, then id).
+	 *
+	 * @return array{categories: list<array<string, int|string|null>>}
+	 */
+	public static function categoriesData(): array {
+		self::read('SELECT * FROM `streams_categories` ORDER BY `cat_order` ASC, `id` ASC;');
+		return ['categories' => array_map(static fn(array $rRow): array => ReplicaSections::typed($rRow, ReplicaSections::CATEGORY_FIELDS), self::db()->get_rows() ?: [])];
+	}
+
+	/**
 	 * The node list changed (a node revoked, re-enrolled, activated or
 	 * quarantined): drop the cached sections and tell every other node at
 	 * once whose agent takes `config.changed` (COMMANDS on, and the
@@ -305,8 +407,7 @@ final class ReplicaBuilder {
 	 */
 	public static function settingsData(): array {
 		$rAllow = self::settingsKeys();
-		self::db()->query('SELECT * FROM `settings` LIMIT 1;');
-		$rRow = self::db()->get_row() ?: [];
+		$rRow = self::settingsRow('*');
 		$rOut = [];
 		foreach ($rAllow as $rKey) {
 			if (array_key_exists($rKey, $rRow)) {
@@ -314,6 +415,59 @@ final class ReplicaBuilder {
 			}
 		}
 		return $rOut;
+	}
+
+	/**
+	 * The `secrets` section: the viewer-token secret (`live_streaming_pass`,
+	 * from the settings row) and OPENSSL_EXTRA (the value this php-fpm mints
+	 * with), each with its kid, and the value MAIN replaced while it is still
+	 * accepted on MAIN's clock. Only OPENSSL_EXTRA has one today
+	 * (config/openssl_extra.prev); the stream secret's rotation (plan, section
+	 * 10, step 4) will fill its own. An unset value throws: a node refuses an
+	 * empty `current` (ReplicaSections::secret), and cron:root_signals sets a
+	 * missing stream secret on MAIN within the minute.
+	 *
+	 * @return array<string, array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}>
+	 */
+	public static function secretsData(): array {
+		$rLive = (string) (self::settingsRow('`live_streaming_pass`')['live_streaming_pass'] ?? '');
+		$rExtra = defined('OPENSSL_EXTRA') ? (string) OPENSSL_EXTRA : '';
+		if ($rLive === '' || $rExtra === '') {
+			throw new \RuntimeException('replica: a secret is not set');
+		}
+		return [
+			'live_streaming_pass' => self::secret('live_streaming_pass', $rLive, null),
+			'openssl_extra' => self::secret('openssl_extra', $rExtra, OpensslExtra::previousEntry(ClusterClock::now())),
+		];
+	}
+
+	/**
+	 * @param array{value: string, valid_until: int}|null $rPrevious
+	 * @return array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}
+	 */
+	private static function secret(string $rName, string $rValue, ?array $rPrevious): array {
+		return ['current' => $rValue, 'kid' => ReplicaSections::kid($rName, $rValue), 'previous' => $rPrevious['value'] ?? null, 'previous_valid_until' => $rPrevious['valid_until'] ?? null];
+	}
+
+	/**
+	 * MAIN's settings row, these columns of it; a failed read or no row throws.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function settingsRow(string $rColumns): array {
+		self::read('SELECT ' . $rColumns . ' FROM `settings` LIMIT 1;');
+		$rRow = self::db()->get_row();
+		if (!is_array($rRow) || $rRow === []) {
+			throw new \RuntimeException('replica: no settings row');
+		}
+		return $rRow;
+	}
+
+	/** Run one of a section's reads: a failed one throws, never an empty result. */
+	private static function read(string $rQuery, mixed ...$rArgs): void {
+		if (self::db()->query($rQuery, ...$rArgs) === false) {
+			throw new \RuntimeException('replica: a read failed');
+		}
 	}
 
 	/** @return list<string> the settings keys a node's replica may carry */
@@ -333,18 +487,13 @@ final class ReplicaBuilder {
 		return hash('sha256', self::json(self::canonical($rData)));
 	}
 
-	/** Keys sorted at every level; lists keep their order. */
-	private static function canonical(mixed $rValue): mixed {
-		if (!is_array($rValue)) {
-			return $rValue;
-		}
-		if (!array_is_list($rValue)) {
-			ksort($rValue, SORT_STRING);
-		}
-		return array_map([self::class, 'canonical'], $rValue);
+	/** Keys sorted at every level; lists keep their order (ReplicaSections::canonical). */
+	public static function canonical(mixed $rValue): mixed {
+		return ReplicaSections::canonical($rValue);
 	}
 
-	private static function json(array $rDoc): string {
+	/** A record's payload, as signed: JSON with slashes and Unicode as they are. */
+	public static function json(array $rDoc): string {
 		return (string) json_encode($rDoc, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 	}
 }

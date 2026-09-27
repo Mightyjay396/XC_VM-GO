@@ -99,21 +99,30 @@ class CacheCronJob implements CommandInterface {
 			}
 		}
 
-		FileCache::setCache('settings', SettingsRepository::getAll(true));
-		FileCache::setCache('bouquets', BouquetService::getAll(true));
+		// The settings cache is the replica's once it owns it; getAll() then
+		// returns that cache and never writes MAIN's row over it.
+		SettingsRepository::getAll(true);
 		// The node replica: with the CONFIG flow on, its caches are rebuilt from
 		// the verified copy on disk every minute, whether or not the agent ran
 		// cluster:apply since the flow changed; with it off they are MAIN's
 		// database's again. The servers cache is written here only while the
-		// replica does not own it.
-		if (NodeFlows::on(NodeFlows::CONFIG)) {
-			ReplicaApply::run(true);
-		} else {
-			ReplicaApply::disown();
+		// replica does not own it. The streams section follows the STREAMS
+		// flow the same way, CONFIG or not; the minute never compares a shadow
+		// section with MAIN's database (the agent's cluster:apply does).
+		ReplicaApply::minute();
+		// The bouquets and categories are the replica's too once it owns them
+		// (its `bouquets` and `categories` sections); a process booted from the
+		// replica keeps them as they are (their readers never read MAIN's
+		// database there).
+		if (!ReplicaApply::owns(ReplicaSections::BOUQUETS)) {
+			FileCache::setCache('bouquets', BouquetService::getAll(true));
 		}
 		if (!ReplicaApply::owns(ReplicaSections::SERVERS)) {
 			FileCache::setCache('servers', ServerRepository::getAll(true));
 		}
+		// The proxies and the allowed IPs are built from the servers and the
+		// settings this process booted with (whitelist_ips, server and private
+		// IPs, domains, allowed_ips_admin): the replica's, once it owns them.
 		FileCache::setCache('proxy_servers', BlocklistService::getProxyIPs(true));
 		// With the CONFIG flow on, the node's replica writes these (cluster:apply).
 		if (!NodeFlows::on(NodeFlows::CONFIG)) {
@@ -123,7 +132,9 @@ class CacheCronJob implements CommandInterface {
 			FileCache::setCache('blocked_ips', BlocklistService::getBlockedIPs(true));
 		}
 		FileCache::setCache('allowed_ips', ServerRepository::getAllowedIPs(true));
-		FileCache::setCache('categories', CategoryService::getFromDatabase(null, true));
+		if (!ReplicaApply::owns(ReplicaSections::CATEGORIES)) {
+			FileCache::setCache('categories', CategoryService::getFromDatabase(null, true));
+		}
 
 		$rAllServers = ServerRepository::getAll();
 		if (!isset($rAllServers[SERVER_ID]) || !$rAllServers[SERVER_ID]['is_main']) {

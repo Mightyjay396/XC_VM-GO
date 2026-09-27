@@ -5,15 +5,21 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Util\Encryption;
+use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\DbAllowlist;
 use XcVm\Domain\Server\ServerRepository;
@@ -35,6 +41,14 @@ class RootSignalsCronJob implements CommandInterface {
 	private $rSaveIPTables = false;
 
 	private $AutoUpdateServerIP = true;
+
+	/**
+	 * Tests: runs the shell lines of the artefact actions (module:install,
+	 * the agent's restart) instead of exec(); null restores it.
+	 *
+	 * @var (callable(string): array{0: int, 1: string})|null
+	 */
+	private static $rShell = null;
 
 	public function getName(): string {
 		return 'cron:root_signals';
@@ -117,12 +131,13 @@ class RootSignalsCronJob implements CommandInterface {
 		}
 	}
 
-	private function flushIPs(): void {
+	/** Flush iptables and the flood guard's block files (protected: a test records the call). */
+	protected function flushIPs(): void {
 		exec('sudo iptables -F && sudo ip6tables -F');
 		shell_exec('sudo rm ' . FLOOD_TMP_PATH . 'block_*');
 	}
 
-	private function saveiptables(): void {
+	protected function saveiptables(): void {
 		exec('sudo iptables-save && sudo ip6tables-save');
 	}
 
@@ -183,7 +198,8 @@ class RootSignalsCronJob implements CommandInterface {
 	/**
 	 * The blocked addresses, distinct: MAIN's `blocked_ips`, or with the CONFIG
 	 * flow on the replica's `blocked_ips` cache. Null when that cache is not
-	 * there (yet): the sync then leaves iptables as it is.
+	 * there (yet), and on a node in mode 2 without CONFIG, which may not read
+	 * MAIN's table: the sync then leaves iptables as it is.
 	 *
 	 * @return list<string>|null
 	 */
@@ -192,21 +208,171 @@ class RootSignalsCronJob implements CommandInterface {
 			$rCache = FileCache::getCache('blocked_ips');
 			return is_array($rCache) ? array_values(array_unique(array_map('strval', $rCache))) : null;
 		}
-		if ($rDb === null || !$rDb->query('SELECT `ip` FROM `blocked_ips`;')) {
+		if ($rDb === null || !self::readsMainDatabase() || !$rDb->query('SELECT `ip` FROM `blocked_ips`;')) {
 			return null;
 		}
 		return array_map('strval', array_keys($rDb->get_rows(true, 'ip') ?: []));
 	}
 
+	/**
+	 * MAIN's address on its interface changed (the automatic server_ip
+	 * rewrite): store it, and announce it to the cluster nodes as an admin's
+	 * edit is, keeping the old URL a while (ClusterEndpoint::
+	 * recordMainChange()). Returns the row with the new address, so the
+	 * caller cannot hand it an already updated row. Domain\Cluster is not in
+	 * the LB build.
+	 *
+	 * @param array<string, mixed> $rServer MAIN's `servers` row before the change.
+	 * @return array<string, mixed>
+	 */
+	public static function rewriteServerIP(object $rDb, int $rServerID, array $rServer, string $rServerIP): array {
+		$rDb->query('UPDATE `servers` SET `server_ip` = ? WHERE `id` = ?;', $rServerIP, $rServerID);
+		$rNew = ['server_ip' => $rServerIP] + $rServer;
+		if (class_exists(ClusterEndpoint::class)) {
+			ClusterEndpoint::recordMainChange($rServer, $rNew, SettingsManager::getAll(), 'system');
+		}
+		return $rNew;
+	}
+
+	/** Tests: run the artefact actions' shell lines through $rShell (line => [exit status, output]); null restores exec(). */
+	public static function useShell(?callable $rShell): void {
+		self::$rShell = $rShell;
+	}
+
+	/**
+	 * module:install's command line for an install_module payload. With the
+	 * archive cluster:root staged and checked (ArtefactStage::current()), it
+	 * runs now, not in the background, from that copy, and gets the checked
+	 * grant (with its command's id) to check it again against; without one,
+	 * in the background as before, the node pulling the archive the legacy
+	 * way. A payload never names the archive itself (a `signals` row's
+	 * `archive` and `artefact` are dropped).
+	 *
+	 * @param array<string, mixed> $rData {action: install_module, source, name, version, …}
+	 * @param array{path: string, grant: array<string, mixed>}|null $rStaged
+	 */
+	public static function moduleInstallLine(array $rData, ?array $rStaged): string {
+		unset($rData['archive'], $rData['artefact']);
+		if ($rStaged === null) {
+			return 'sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode((string) json_encode($rData)) . '" 2>&1 &';
+		}
+		return 'sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode((string) json_encode(['archive' => $rStaged['path'], 'artefact' => $rStaged['grant']] + $rData)) . '" 2>&1';
+	}
+
+	/** @return array{0: int, 1: string} [exit status, output] */
+	private static function shell(string $rLine): array {
+		if (self::$rShell !== null) {
+			return (self::$rShell)($rLine);
+		}
+		$rOut = [];
+		$rCode = 0;
+		exec($rLine, $rOut, $rCode);
+		return [$rCode, implode("\n", $rOut)];
+	}
+
+	/**
+	 * Does MAIN send this node's root actions as signed `node.root` commands
+	 * (the COMMANDS flow on, and root's own pin of the panel key in place)?
+	 * MAIN then sends the blocklist flush that way too (NodeActions::send,
+	 * ClusterRoute::root), and cluster:root runs it through executeAction()
+	 * within a second; this cron no longer polls the signals table for it.
+	 * A flush row queued before (or while MAIN lacked the pin) still runs,
+	 * from the signals loop below.
+	 */
+	public static function rootCommandsFromMain(): bool {
+		return NodeFlows::on(NodeFlows::COMMANDS) && RootPin::read() !== null;
+	}
+
+	/**
+	 * Does this cron read MAIN's database: its `signals` table, the crontab
+	 * table, and `blocked_ips` without CONFIG? Not on a node in mode 2
+	 * (plan, section 10), whose connects are refused
+	 * (NodeRole::refusesConnects): MAIN sends it root's actions as signed
+	 * `node.root` commands, which cluster:root runs, and its replica says
+	 * when its own row changed (replicaChecks()). MAIN, mode 0 and mode 1
+	 * read it as before, `signals` rows MAIN queued before COMMANDS or
+	 * root's pin included.
+	 */
+	public static function readsMainDatabase(): bool {
+		return !NodeRole::refusesConnects();
+	}
+
+	/**
+	 * The ramdisk, ports and services checks of a node that reads no
+	 * `signals` row (mode 2). A `set_services`, `set_port` or `*_ramdisk` row
+	 * made them run against the node's own row; MAIN sends those as
+	 * `node.root` commands now, which cluster:root runs as they come. What
+	 * tells the node that its row changed is its replica: the servers cache
+	 * an apply built from the `servers` and `node` sections, whose ETags
+	 * ReplicaApply::OWNED_CACHE records ($rTag, replicaServersTag()). Each
+	 * time they change, and once after a reboot, the three checks run
+	 * against that cache, as a row of each kind made them run, so a command
+	 * that never arrived (it expired while the node was away) is made good.
+	 * None while the replica does not own the servers cache.
+	 *
+	 * $rTag must be read before the servers the checks use (loadCron): an
+	 * apply writes the cache, then its ETags, so those rows are at least as
+	 * new as the ETags marked checked here, and ETags an apply records in
+	 * between run the checks again the next minute.
+	 *
+	 * @return array{php: bool, services: bool, ports: bool, ramdisk: bool}
+	 */
+	private function replicaChecks(?string $rTag): array {
+		$rCheck = ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false];
+		$rMarker = CRONS_TMP_PATH . 'replica_servers_checked';
+		if ($rTag === null || (string) @file_get_contents($rMarker) === $rTag) {
+			return $rCheck;
+		}
+		// Before the checks, as a signal row was deleted before it ran: at most once.
+		@file_put_contents($rMarker, $rTag);
+		return ['php' => false, 'services' => true, 'ports' => true, 'ramdisk' => true];
+	}
+
+	/**
+	 * Can this node run an update or a rollback? Not in mode 2 yet: the
+	 * update command writes MAIN's servers row (`status` 5 before the
+	 * updater starts, the version after), which mode 2 refuses, so the node
+	 * would download the archive and stop there, reported started. Refused
+	 * here, before anything runs: cluster:root reports it failed with this
+	 * message.
+	 *
+	 * @throws \RuntimeException on a node in mode 2
+	 */
+	private static function updatesHere(string $rAction): void {
+		if (!self::readsMainDatabase()) {
+			throw new \RuntimeException($rAction . ': refused on a node in cluster API mode (mode 2): the updater still writes MAIN\'s servers row');
+		}
+	}
+
+	/**
+	 * What the replica's servers cache was built from: its entry in
+	 * ReplicaApply::OWNED_CACHE (`<servers ETag>/<node ETag>`). Null while
+	 * the replica does not own that cache.
+	 */
+	private static function replicaServersTag(): ?string {
+		$rOwned = ReplicaApply::owns(ReplicaSections::SERVERS) ? FileCache::getCache(ReplicaApply::OWNED_CACHE) : null;
+		$rTag = is_array($rOwned) ? ($rOwned[ReplicaSections::SERVERS] ?? null) : null;
+		return is_string($rTag) && $rTag !== '' ? $rTag : null;
+	}
+
 	private function loadCron(): void {
 		global $db;
+		$rReads = self::readsMainDatabase();
+		// Before the servers the replica's checks use (replicaChecks()).
+		$rServersTag = $rReads ? null : self::replicaServersTag();
 		$rServers = ServerRepository::getAll(true);
-		$db->query("SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{\"action\":\"flush\"}' AND `cache` = 0;", SERVER_ID);
-		if ($db->num_rows() > 0) {
+		$rFlush = false;
+		if ($rReads && !self::rootCommandsFromMain()) {
+			$db->query("SELECT `signal_id` FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{\"action\":\"flush\"}' AND `cache` = 0;", SERVER_ID);
+			$rFlush = $db->num_rows() > 0;
+		}
+		if ($rFlush) {
 			echo "Flushing IP's...";
 			$this->flushIPs();
 			$this->saveiptables();
-			$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'FLUSH', 'Flushed blocked IP\\'s from iptables.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+			if (!LogSink::syslog('FLUSH', 'Flushed blocked IP\'s from iptables.')) {
+				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'FLUSH', 'Flushed blocked IP\\'s from iptables.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+			}
 			$db->query("DELETE FROM `signals` WHERE `server_id` = ? AND `custom_data` = '{\"action\":\"flush\"}' AND `cache` = 0;", SERVER_ID);
 		} else {
 			// Auto-unban: on MAIN only, drop expired automatic IP bans (flood/
@@ -346,8 +512,7 @@ class RootSignalsCronJob implements CommandInterface {
 			$rServerIP = $this->getServerIP(($rServers[SERVER_ID]['network_interface'] == 'auto' ? null : $rServers[SERVER_ID]['network_interface']));
 			if ($rServerIP && $rServerIP != $rServers[SERVER_ID]['server_ip'] && $this->AutoUpdateServerIP) {
 				echo 'Updating server IP from ' . $rServers[SERVER_ID]['server_ip'] . ' to ' . $rServerIP . '...' . "\n";
-				$db->query('UPDATE `servers` SET `server_ip` = ? WHERE `id` = ?;', $rServerIP, SERVER_ID);
-				$rServers[SERVER_ID]['server_ip'] = $rServerIP;
+				$rServers[SERVER_ID] = self::rewriteServerIP($db, SERVER_ID, $rServers[SERVER_ID], $rServerIP);
 			}
 
 			if (empty(SettingsManager::get('live_streaming_pass'))) {
@@ -471,7 +636,9 @@ class RootSignalsCronJob implements CommandInterface {
 			if ($rNginx > 0) {
 				if ($rPHP == 0) {
 					echo 'PHP-FPM ERROR - Restarting...';
-					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'PHP-FPM', 'Restarted PHP-FPM instances due to a suspected crash.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+					if (!LogSink::syslog('PHP-FPM', 'Restarted PHP-FPM instances due to a suspected crash.')) {
+						$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'PHP-FPM', 'Restarted PHP-FPM instances due to a suspected crash.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+					}
 					shell_exec('sudo systemctl stop xc_vm');
 					shell_exec('sudo systemctl start xc_vm');
 					exit();
@@ -488,16 +655,20 @@ class RootSignalsCronJob implements CommandInterface {
 					curl_close($rHandle);
 				} else {
 					echo $rCode . ' ERROR - Restarting...';
-					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'PHP-FPM', 'Restarted services due to " . $rCode . " error.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+					if (!LogSink::syslog('PHP-FPM', 'Restarted services due to ' . $rCode . ' error.')) {
+						$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'PHP-FPM', 'Restarted services due to " . $rCode . " error.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+					}
 					shell_exec('sudo systemctl stop xc_vm');
 					shell_exec('sudo systemctl start xc_vm');
 					exit();
 				}
 			}
 		}
-		if ($db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' AND `cache` = 0 ORDER BY signal_id ASC;", SERVER_ID)) {
-			$rRows = $db->get_rows();
-			$rCheck = ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false];
+		// A node in mode 2 reads no `signals` row: its replica says when to
+		// check its ramdisk, ports and services.
+		if (!$rReads || $db->query("SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `custom_data` <> '' AND `cache` = 0 ORDER BY signal_id ASC;", SERVER_ID)) {
+			$rRows = $rReads ? $db->get_rows() : [];
+			$rCheck = $rReads ? ['php' => false, 'services' => false, 'ports' => false, 'ramdisk' => false] : $this->replicaChecks($rServersTag);
 			foreach ($rRows as $rRow) {
 				$rData = json_decode($rRow['custom_data'], true);
 				switch ($rData['action'] ?? '') {
@@ -571,8 +742,8 @@ class RootSignalsCronJob implements CommandInterface {
 				}
 			}
 			// The crontab's jobs: MAIN's table, or the node replica's once it owns
-			// them (null: leave the crontab as it is).
-			$rCrontab = file_exists(TMP_PATH . 'crontab') ? ReplicaApply::crontabText($db) : null;
+			// them (null: leave the crontab as it is; so in mode 2 without them).
+			$rCrontab = file_exists(TMP_PATH . 'crontab') ? ReplicaApply::crontabText($rReads ? $db : null) : null;
 			if ($rCrontab !== null) {
 				echo 'Checking crontab...' . "\n";
 				exec('crontab -u xc_vm -l', $rCrons);
@@ -628,9 +799,22 @@ class RootSignalsCronJob implements CommandInterface {
 	 */
 	public function executeAction(array $rData, array $rServers, object $db): void {
 		switch ($rData['action'] ?? '') {
+			case 'flush':
+				// The blocklist flush; with the CONFIG flow on, the minute's sync
+				// then follows the replica, which drops the flushed addresses at
+				// the agent's next `config` pull.
+				echo "Flushing IP's...\n";
+				$this->flushIPs();
+				$this->saveiptables();
+				if (!LogSink::syslog('FLUSH', 'Flushed blocked IP\'s from iptables.')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'FLUSH', 'Flushed blocked IP\\'s from iptables.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
+				break;
 			case 'reboot':
 				echo 'Rebooting system...' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'REBOOT', 'System rebooted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				if (!LogSink::syslog('REBOOT', 'System rebooted on request.')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'REBOOT', 'System rebooted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
 				$db->close_mysql();
 				shell_exec('sudo reboot');
 				break;
@@ -654,22 +838,30 @@ class RootSignalsCronJob implements CommandInterface {
 						}
 					}
 				}
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'OPENSSL_EXTRA', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.', time());
+				if (!LogSink::syslog('OPENSSL_EXTRA', $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'OPENSSL_EXTRA', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.', time());
+				}
 				break;
 			case 'restart_services':
 				echo 'Restarting services...' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'RESTART', 'XC_VM services restarted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				if (!LogSink::syslog('RESTART', 'XC_VM services restarted on request.')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'RESTART', 'XC_VM services restarted on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
 				shell_exec('sudo systemctl stop xc_vm');
 				shell_exec('sudo systemctl start xc_vm');
 				break;
 			case 'stop_services':
 				echo 'Stopping services...' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'STOP', 'XC_VM services stopped on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				if (!LogSink::syslog('STOP', 'XC_VM services stopped on request.')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'STOP', 'XC_VM services stopped on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
 				shell_exec('sudo systemctl stop xc_vm');
 				break;
 			case 'reload_nginx':
 				echo 'Reloading nginx...' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'RELOAD', 'NGINX services reloaded on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				if (!LogSink::syslog('RELOAD', 'NGINX services reloaded on request.')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'RELOAD', 'NGINX services reloaded on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
 				shell_exec('sudo ' . BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp -s reload');
 				shell_exec('sudo ' . BIN_PATH . 'nginx/sbin/nginx -s reload');
 				break;
@@ -703,34 +895,99 @@ class RootSignalsCronJob implements CommandInterface {
 				break;
 			case 'certbot_generate':
 				echo 'Generating certbot certificate.' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CERTBOT', 'Attempting to generate certbot certificate on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				if (!LogSink::syslog('CERTBOT', 'Attempting to generate certbot certificate on request.')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CERTBOT', 'Attempting to generate certbot certificate on request.', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php certbot "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
 				break;
 			case 'update_binaries':
 				echo 'Updating binaries...' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', 'Updating XC_VM binaries from XC_VM server...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				if (!LogSink::syslog('BINARIES', 'Updating XC_VM binaries from XC_VM server...')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', 'Updating XC_VM binaries from XC_VM server...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php binaries 2>&1 &');
 				break;
 			case 'install_module':
 				echo 'Installing module distributed from MAIN...' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Installing module distributed from MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
-				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:install "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
+				if (!LogSink::syslog('MODULE', 'Installing module distributed from MAIN...')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Installing module distributed from MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
+				// Only cluster:root stages an archive (never a signals row).
+				$rStaged = ArtefactStage::current();
+				if ($rStaged !== null) {
+					// The custom module's archive MAIN granted, staged by
+					// cluster:root and checked there: only this module's, and
+					// installed from that copy now, before the stage is emptied
+					// (module:install checks it again against the grant). What
+					// module:install refused or failed is the command's failure.
+					$rWant = 'module/' . (string) ($rData['name'] ?? '') . '/' . (string) ($rData['version'] ?? '');
+					if ($rStaged['grant']['id'] !== $rWant) {
+						throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not the archive of ' . $rWant));
+					}
+					[$rCode, $rOutput] = self::shell(self::moduleInstallLine($rData, $rStaged));
+					if ($rCode !== 0) {
+						throw new \RuntimeException(trim($rOutput) !== '' ? trim($rOutput) : 'module:install exited ' . $rCode);
+					}
+					echo $rOutput . "\n";
+					break;
+				}
+				self::shell(self::moduleInstallLine($rData, null));
+				break;
+			case 'agent_binary':
+				// The xc_agent MAIN pinned (plan section 5: `node.root
+				// agent_binary{version, sha256}`): only its artefact, staged by
+				// cluster:root and checked there, never a path a payload names.
+				$rStaged = ArtefactStage::current();
+				if ($rStaged === null) {
+					echo "agent_binary: refused: no xc_agent binary staged and checked by cluster:root\n";
+					break;
+				}
+				// Only this node's arch: a binary that cannot start here would
+				// leave run.sh restarting it, and the node out of MAIN's reach.
+				$rArch = ReleaseAsset::arch(php_uname('m'));
+				if (!str_starts_with((string) $rStaged['grant']['id'], 'agent/')) {
+					throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not an xc_agent binary'));
+				}
+				if ($rArch === null || $rStaged['grant']['id'] !== 'agent/' . $rArch || ($rData['arch'] ?? null) !== $rArch) {
+					throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not this node\'s arch (' . php_uname('m') . ')'));
+				}
+				$rVersion = preg_replace('/[^0-9A-Za-z._-]/', '', (string) ($rData['version'] ?? '')) ?: 'unknown';
+				echo 'Installing xc_agent ' . $rVersion . ' from MAIN...' . "\n";
+				if (!LogSink::syslog('BINARIES', 'Installing xc_agent ' . $rVersion . ' from MAIN...')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Installing xc_agent ' . $rVersion . ' from MAIN...', time());
+				}
+				$rFailed = ArtefactStage::installAgent($rStaged, ArtefactStage::agentBinary());
+				if ($rFailed !== null) {
+					throw new \RuntimeException('agent_binary: ' . $rFailed);
+				}
+				// run.sh restarts it with the new binary; after a pause, so the
+				// agent acks this command first (its high-water, then the ack).
+				self::shell('(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &');
+				echo "xc_agent installed; it restarts in 10 s\n";
 				break;
 			case 'delete_module':
 				echo 'Deleting module removed on MAIN...' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Deleting module removed on MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				if (!LogSink::syslog('MODULE', 'Deleting module removed on MAIN...')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'MODULE', 'Deleting module removed on MAIN...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:delete "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
 				break;
 			case 'update':
+				self::updatesHere('update');
 				echo 'Updating...' . "\n";
-				$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', 'Updating XC_VM...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				if (!LogSink::syslog('UPDATE', 'Updating XC_VM...')) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', 'Updating XC_VM...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
+				}
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update update 2>&1 &');
 				break;
 			case 'rollback':
+				self::updatesHere('rollback');
 				$rRbVersion = isset($rData['version']) ? trim((string) $rData['version']) : '';
 				if (preg_match('/^\d+\.\d+\.\d+$/', $rRbVersion)) {
 					echo 'Rolling back to ' . $rRbVersion . '...' . "\n";
-					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Rolling back XC_VM to ' . $rRbVersion . '...', time());
+					if (!LogSink::syslog('UPDATE', 'Rolling back XC_VM to ' . $rRbVersion . '...')) {
+						$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Rolling back XC_VM to ' . $rRbVersion . '...', time());
+					}
 					shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update rollback ' . escapeshellarg($rRbVersion) . ' 2>&1 &');
 				}
 				break;

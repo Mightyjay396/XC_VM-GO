@@ -96,12 +96,14 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('cluster_token_expires'); ?></th>
                     <th><?= $language::get('cluster_last_seen'); ?></th>
                     <th><?= $language::get('cluster_agent'); ?></th>
+                    <th title="<?= $language::get('cluster_settings_misses_help'); ?>"><?= $language::get('cluster_settings_misses'); ?></th>
+                    <th title="<?= $language::get('cluster_main_connects_help'); ?>"><?= $language::get('cluster_main_connects'); ?></th>
                     <th><?= $language::get('actions'); ?></th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($clusterNodes)): ?>
-                    <tr><td colspan="15" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
+                    <tr><td colspan="17" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($clusterNodes as $rNode): ?>
                     <tr>
@@ -140,6 +142,41 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                         <td><?= $rWhen($rNode['token_exp'] === null ? null : (int) $rNode['token_exp']); ?></td>
                         <td><?= $rWhen($rNode['last_seen_at'] === null ? null : intdiv((int) $rNode['last_seen_at'], 1000)); ?></td>
                         <td><?= htmlspecialchars((string) ($rNode['agent_version'] ?? '—'), ENT_QUOTES); ?></td>
+                        <td>
+                            <?php if ((int) $rNode['mode'] < 1 || !is_array($rNode['settings_misses'] ?? null)): ?>
+                                <span class="text-body-secondary">—</span>
+                            <?php elseif ($rNode['settings_misses'] === []): ?>
+                                <span class="badge bg-label-success">0</span>
+                            <?php else: ?>
+                                <details>
+                                    <summary><span class="badge bg-label-warning"><?= count($rNode['settings_misses']); ?></span></summary>
+                                    <ul class="list-unstyled small font-monospace mb-0">
+                                        <?php foreach ($rNode['settings_misses'] as $rKey => $rCount): ?>
+                                            <li><?= htmlspecialchars((string) $rKey, ENT_QUOTES); ?> × <?= (int) $rCount; ?></li>
+                                        <?php endforeach; ?>
+                                    </ul>
+                                </details>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php $rConnects = $rNode['connects'] ?? null; ?>
+                            <?php if ((int) $rNode['mode'] < 1 || !is_array($rConnects)): ?>
+                                <span class="text-body-secondary">—</span>
+                            <?php else: ?>
+                                <?php $rNone = $rConnects['sql_connects'] === 0 && $rConnects['redis_connects'] === 0; ?>
+                                <details>
+                                    <summary><span class="badge bg-label-<?= $rNone ? 'success' : 'warning'; ?>">SQL <?= (int) $rConnects['sql_connects']; ?> · Redis <?= (int) $rConnects['redis_connects']; ?></span></summary>
+                                    <?php if ($rConnects['connects_since'] !== null): ?>
+                                        <div class="small text-body-secondary"><?= $language::get('cluster_connects_since'); ?> <?= $rWhen($rConnects['connects_since']); ?></div>
+                                    <?php endif; ?>
+                                    <ul class="list-unstyled small font-monospace mb-0">
+                                        <?php foreach ($rConnects['sites'] as $rSite => $rCount): ?>
+                                            <li><?= htmlspecialchars((string) $rSite, ENT_QUOTES); ?> × <?= (int) $rCount; ?></li>
+                                        <?php endforeach; ?>
+                                    </ul>
+                                </details>
+                            <?php endif; ?>
+                        </td>
                         <td class="text-nowrap">
                             <?php if ($rNode['state'] !== 'revoked'): ?>
                                 <form method="POST" class="d-inline js-cluster-revoke">

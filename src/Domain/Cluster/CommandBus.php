@@ -28,10 +28,10 @@ final class CommandBus {
 	use DatabaseAware;
 
 	/** Lifetime of a command by type prefix (seconds). */
-	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'default' => 600];
+	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'artefact.' => 3600, 'default' => 600];
 
 	/** Types MAIN sends today. */
-	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed'];
+	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch'];
 
 	/** Types that are restrictive (always signable); the extension decides, this is informational. */
 	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
@@ -59,7 +59,8 @@ final class CommandBus {
 	}
 
 	/**
-	 * Sign and queue a command. Returns its cmd_id.
+	 * Sign and queue a command. Returns its cmd_id. An artefact grant the
+	 * command carries (`args.artefact`, ArtefactGrants) expires with it.
 	 *
 	 * @param array<string, mixed> $rArgs
 	 */
@@ -74,6 +75,9 @@ final class CommandBus {
 		$rNow = ClusterClock::now();
 		$rTtl ??= self::ttl($rType);
 		$rCmdID = bin2hex(random_bytes(16));
+		if (is_array($rArgs['artefact'] ?? null)) {
+			$rArgs['artefact']['exp'] = $rNow + $rTtl;
+		}
 		for ($rAttempt = 0;; $rAttempt++) {
 			self::db()->query('SELECT MAX(`seq`) AS `seq` FROM `cluster_commands` WHERE `server_id` = ?;', $rServerID);
 			$rSeq = max((int) (self::db()->get_row()['seq'] ?? 0), (int) $rNode['cmd_seq']) + 1;
@@ -83,8 +87,11 @@ final class CommandBus {
 			], JSON_UNESCAPED_SLASHES);
 			$rSig = $rCrypto->sign('cmd', $rDoc);
 			if ($rDedupeKey !== null) {
-				// A newer desired state supersedes a command not yet acked.
+				// A newer desired state supersedes a command not yet acked. An
+				// acked one keeps its outcome (result()), but not the key, which
+				// UNIQUE(server_id, dedupe_key) would otherwise refuse this one.
 				self::db()->query("DELETE FROM `cluster_commands` WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` <> 'acked';", $rServerID, $rDedupeKey);
+				self::db()->query("UPDATE `cluster_commands` SET `dedupe_key` = NULL WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` = 'acked';", $rServerID, $rDedupeKey);
 			}
 			try {
 				self::db()->query(
@@ -163,17 +170,26 @@ final class CommandBus {
 
 	/**
 	 * A node's acknowledgement: only for its own commands. Raises its
-	 * high-water (cmd_seq) so a restored queue is not replayed.
+	 * high-water (cmd_seq) so a restored queue is not replayed. $rFirst says
+	 * whether this ack recorded the outcome (false for a repeated one), and
+	 * $rType the command's type.
+	 *
+	 * @param-out bool $rFirst
+	 * @param-out string $rType
 	 */
-	public static function ack(int $rServerID, string $rCmdID, bool $rOk, string $rResult): bool {
-		self::db()->query('SELECT `seq`, `state` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ?;', $rServerID, $rCmdID);
+	public static function ack(int $rServerID, string $rCmdID, bool $rOk, string $rResult, ?bool &$rFirst = null, ?string &$rType = null): bool {
+		$rFirst = false;
+		$rType = '';
+		self::db()->query('SELECT `seq`, `state`, `type` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ?;', $rServerID, $rCmdID);
 		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
 		if ($rRow === null) {
 			return false;
 		}
+		$rType = (string) $rRow['type'];
 		if (in_array($rRow['state'], ['acked', 'failed'], true)) {
 			return true; // a repeated ack
 		}
+		$rFirst = true;
 		self::db()->query(
 			'UPDATE `cluster_commands` SET `state` = ?, `acked_at` = ?, `result` = ? WHERE `server_id` = ? AND `cmd_id` = ?;',
 			$rOk ? 'acked' : 'failed',

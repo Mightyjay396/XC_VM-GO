@@ -2,6 +2,7 @@
 
 namespace XcVm\Streaming\Delivery;
 
+use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\Auth\StreamAuth;
@@ -30,6 +31,19 @@ class OffAirHandler {
 	 */
 	public static function forStream(int $rStreamID): void {
 		self::$rHlsStreamID = $rStreamID;
+	}
+
+	/**
+	 * The file to play for an off-air token's `video_path`, which names the
+	 * video by its path on the server that minted the token (MAIN): this
+	 * node's own file there, as before, or else the verified copy MAIN
+	 * granted this node over the cluster API (ArtefactStage::placeOffAir),
+	 * found by the path's file name, as the `cluster` section names it.
+	 *
+	 * @param string $rPath The token's `video_path`.
+	 */
+	public static function localVideo(string $rPath): string {
+		return ArtefactStage::offAirVideo($rPath);
 	}
 
 	public static function getOffAirVideo($rPathKey) {

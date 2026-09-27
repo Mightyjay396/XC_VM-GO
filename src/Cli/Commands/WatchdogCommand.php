@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
 use XcVm\Core\Cluster\LocalTelemetry;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
@@ -48,13 +49,18 @@ class WatchdogCommand implements CommandInterface {
 		}
 
 		$db = self::db();
+		// A node in mode 2 has neither MAIN's database nor its Redis (plan,
+		// section 10): nothing to ping or wait for, and its agent reports.
+		$rApi = NodeRole::refusesConnects();
 
 		echo "Start watchdog\n";
 		$this->setProcessTitle('XC_VM[Watchdog]');
 		$this->killStaleProcesses('console.php watchdog');
 		$this->killStaleProcesses('XC_VM\\[Watchdog\\]');
 		$this->initDaemonMD5();
-		$this->initRedisIfEnabled();
+		if (!$rApi) {
+			$this->initRedisIfEnabled();
+		}
 
 		$this->rRefreshInterval = (intval(SettingsManager::get('online_capacity_interval')) ?: 10);
 		$rPrevStat = null;
@@ -69,7 +75,7 @@ class WatchdogCommand implements CommandInterface {
 			// exiting. A respawned process dies in bootstrap while the DB is
 			// down, which used to break the heartbeat chain on every node
 			// simultaneously until cron:servers revived it a minute later.
-			if (!$db->ping()) {
+			if (!$rApi && !$db->ping()) {
 				$this->waitForDatabase();
 				break; // respawn with a fresh process now that the DB is back
 			}
@@ -77,7 +83,7 @@ class WatchdogCommand implements CommandInterface {
 			// The heartbeat (last_check_ago) is pure DB — a dead Redis must not
 			// stop it, or every node goes "offline" in the panel whenever the
 			// shared Redis blips. Degrade: skip Redis-dependent stats below.
-			$rRedisAlive = $this->checkRedisHealth();
+			$rRedisAlive = $rApi || $this->checkRedisHealth();
 			if (!$rRedisAlive) {
 				$this->attemptRedisRestart();
 			}
@@ -96,8 +102,11 @@ class WatchdogCommand implements CommandInterface {
 					break;
 				}
 				SettingsManager::set(SettingsRepository::getAll(true));
-				ConnectionTracker::getCapacity(true);
-				ConnectionTracker::getCapacity(false);
+				// The capacities count MAIN's connections (its Redis or database).
+				if (!$rApi) {
+					ConnectionTracker::getCapacity(true);
+					ConnectionTracker::getCapacity(false);
+				}
 				$this->rLastCheck = time();
 				echo "Set new time LastCheck\n";
 			}
@@ -111,7 +120,8 @@ class WatchdogCommand implements CommandInterface {
 			// ── TELEMETRY flow: the node's agent reports to MAIN ──
 			// MAIN writes this server's row from the agent's heartbeats; here
 			// only what PHP alone knows is sampled, for the agent to forward.
-			if (NodeFlows::on(NodeFlows::TELEMETRY)) {
+			// Mode 2 never writes the row itself, whatever its flows.
+			if (NodeFlows::on(NodeFlows::TELEMETRY) || $rApi) {
 				self::writeLocalTelemetry($rRequestsPerSecond);
 				sleep(2);
 				break;

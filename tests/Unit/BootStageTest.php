@@ -17,6 +17,10 @@ use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Server\ServerSavedEvent;
 use XcVm\Core\Events\Settings\CrontabChangedEvent;
 use XcVm\Core\Events\Settings\SettingsChangedEvent;
+use XcVm\Core\Events\Stream\StreamArgumentsChangedEvent;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
+use XcVm\Core\Events\Stream\StreamsDeletedEvent;
+use XcVm\Core\Events\Stream\TranscodeProfileSavedEvent;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 require_once __DIR__ . '/../Support/TestDb.php';
@@ -67,6 +71,14 @@ final class BootStageTest extends TestCase {
 
 		foreach ([SettingsChangedEvent::class, ServerSavedEvent::class, CrontabChangedEvent::class] as $rEvent) {
 			$this->assertTrue(EventDispatcher::hasListeners($rEvent), $rEvent . ' drops ReplicaEtagCache');
+		}
+	}
+
+	public function testContainerPopulateStampsTheStreamVersionsOnEveryConfigurationChange(): void {
+		(new ContainerPopulateStage())->run($this->freshState());
+
+		foreach ([StreamsChangedEvent::class, StreamsDeletedEvent::class, TranscodeProfileSavedEvent::class, StreamArgumentsChangedEvent::class] as $rEvent) {
+			$this->assertTrue(EventDispatcher::hasListeners($rEvent), $rEvent . ' bumps StreamVersions');
 		}
 	}
 

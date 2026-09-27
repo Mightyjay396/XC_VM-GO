@@ -286,6 +286,14 @@ class FileCache implements CacheInterface {
 	}
 
 	/**
+	 * The default instance's directory (CACHE_TMP_PATH), for caches kept in
+	 * a directory of their own beside the others.
+	 */
+	public static function defaultPath(): string {
+		return self::getDefault()->getBasePath();
+	}
+
+	/**
 	 * Static write — drop-in for CoreUtilities::setCache()
 	 *
 	 * @param string $key   Cache key

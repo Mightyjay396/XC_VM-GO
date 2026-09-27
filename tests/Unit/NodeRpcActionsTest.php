@@ -81,8 +81,8 @@ final class NodeRpcActionsTest extends TestCase {
 		$rHandler = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/RootSignalsCronJob.php');
 		foreach (NodeActions::ROOT_ACTIONS as $rAction) {
 			if ($rAction === 'flush') {
+				// The legacy row is matched by its exact payload; a node.root flush runs as a case.
 				$this->assertStringContainsString('{\\"action\\":\\"flush\\"}', $rHandler);
-				continue;
 			}
 			if ($rAction === XcVm\Core\Config\OpensslExtra::SIGNAL_ACTION) {
 				$this->assertStringContainsString('case OpensslExtra::SIGNAL_ACTION:', $rHandler);

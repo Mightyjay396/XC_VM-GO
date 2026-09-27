@@ -4,6 +4,7 @@ namespace XcVm\Core\Init;
 
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ReplicaApply;
+use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
@@ -74,8 +75,10 @@ class LegacyInitializer {
 			SettingsManager::update("on_demand_wait_time", 15);
 		}
 
+		// A string: a node that boots from its replica before an apply built
+		// the settings has none yet (cluster:apply at boot).
 		FfmpegPaths::resolve(
-			SettingsManager::get("ffmpeg_cpu"),
+			(string) SettingsManager::get("ffmpeg_cpu"),
 			SettingsManager::get("ffmpeg_gpu"),
 		);
 
@@ -91,7 +94,11 @@ class LegacyInitializer {
 	/**
 	 * Regenerate the xc_vm user crontab from the `crontab` table, or on a node
 	 * whose replica owns it from the replica's crontab section
-	 * (ReplicaApply::crontabText; null leaves the crontab as it is).
+	 * (ReplicaApply::crontabText; null leaves the crontab as it is). A process
+	 * booted from the replica (ReplicaBoot) never reads the table, but in
+	 * mode 1 (ReplicaBoot::hybrid): there the replica's jobs come first, and
+	 * the table is read on the lazy handle's first use, counted, only while
+	 * the replica does not own them.
 	 *
 	 * Runs once per boot (guarded by a marker file in TMP_PATH).
 	 *
@@ -103,7 +110,7 @@ class LegacyInitializer {
 			return false;
 		}
 
-		$rCrontab = ReplicaApply::crontabText($db);
+		$rCrontab = ReplicaApply::crontabText(ReplicaBoot::active() && !ReplicaBoot::hybrid() ? null : $db);
 		if ($rCrontab === null) {
 			return false;
 		}
@@ -125,6 +132,13 @@ class LegacyInitializer {
 	 * Sanitizes superglobals, builds the request, loads cached settings/servers
 	 * and blocklists, resolves ffmpeg paths, connects the database and syncs the
 	 * streaming container bindings.
+	 *
+	 * On a node that boots from its replica (ReplicaBoot::now: mode 1 with the
+	 * CONFIG flow on, or mode 2, once an apply built the caches) the database
+	 * handle is lazy: a request that needs no query opens nothing, and one
+	 * that does connects at its first query, counted by ConnectAudit at that
+	 * query's site (mode 1) or refused there (mode 2). Its settings and
+	 * servers are the caches here in every mode.
 	 *
 	 * @return void
 	 */
@@ -179,7 +193,11 @@ class LegacyInitializer {
 			"seg_time" => intval($GLOBALS["rSettings"]["seg_time"]),
 			"seg_list_size" => intval($GLOBALS["rSettings"]["seg_list_size"]),
 		];
-		DatabaseFactory::connect();
+		if (ReplicaBoot::now()) {
+			DatabaseFactory::connectLazy();
+		} else {
+			DatabaseFactory::connect();
+		}
 
 		// Синхронизация singleton-менеджеров для классов, мигрированных с CU
 		SettingsManager::set($GLOBALS["rSettings"]);
@@ -206,18 +224,21 @@ class LegacyInitializer {
 	}
 
 	/**
-	 * Populate the DI container with core-context services.
+	 * Populate the DI container with core-context services. A process booted
+	 * from the node replica (ReplicaBoot) takes the bouquets and categories
+	 * caches as they are: no section carries them yet.
 	 *
 	 * @return void
 	 */
 	private static function syncCoreContainer() {
 		$rContainer = ServiceContainer::getInstance();
+		$rReplica = ReplicaBoot::active();
 		$rContainer->set("core.request", RequestManager::getAll());
 		$rContainer->set("core.config", ConfigReader::getAll());
 		$rContainer->set("core.settings", SettingsManager::getAll());
 		$rContainer->set("core.servers", ServerRepository::getAll());
-		$rContainer->set("core.bouquets", BouquetService::getAll());
-		$rContainer->set("core.categories", CategoryService::getFromDatabase());
+		$rContainer->set("core.bouquets", $rReplica ? ReplicaBoot::cached("bouquets") : BouquetService::getAll());
+		$rContainer->set("core.categories", $rReplica ? ReplicaBoot::cached("categories") : CategoryService::getFromDatabase());
 	}
 
 	/**

@@ -34,12 +34,12 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * Every event is applied as the sending node: a stream's state goes to that
  * node's own `streams_servers` row and nothing else, log rows get its
- * server_id. A flow that is off refuses its events (dropped and counted), so
- * nothing is written twice. A P0 or P1 batch and the new cursor commit
- * together, and MAIN applies one such batch per node and lane at a time, so a
- * copy the node resent while the first was being applied is recognised as a
- * repeat. P2 keeps no cursor and takes no lock: the latest value per key wins,
- * so a repeat changes nothing.
+ * server_id (a `log.syslog` row is root's on it). A flow that is off refuses
+ * its events (dropped and counted), so nothing is written twice. A P0 or P1
+ * batch and the new cursor commit together, and MAIN applies one such batch
+ * per node and lane at a time, so a copy the node resent while the first was
+ * being applied is recognised as a repeat. P2 keeps no cursor and takes no
+ * lock: the latest value per key wins, so a repeat changes nothing.
  */
 final class EventIngest {
 	use DatabaseAware;
@@ -284,7 +284,7 @@ final class EventIngest {
 				return self::nodeRow($rServerID, $rData, NodeStateSink::STATE, []);
 			case 'node.inventory':
 				// time_offset as the legacy cron measured it: node clock − MAIN's.
-				return self::nodeRow($rServerID, $rData, NodeStateSink::INVENTORY, ['time_offset' => (int) round((int) ($rNode['clock_offset_ms'] ?? 0) / 1000)]);
+				return self::nodeRow($rServerID, $rData, NodeStateSink::INVENTORY, ['time_offset' => (int) round(self::clockOffsetMs($rNode) / 1000)]);
 		}
 		// skip: the node dropped logs past its cap.
 		ClusterAudit::log('events.skip', $rServerID, ['count' => max(0, (int) ($rData['count'] ?? 0))], 'node');
@@ -405,6 +405,23 @@ final class EventIngest {
 		return true;
 	}
 
+	/**
+	 * The node's clock offset (ms) as MySQL has it. The heartbeat flush
+	 * writes it without the registry, so the row the request was
+	 * authenticated with may be the cluster bus's copy, up to
+	 * NodeAuthCache::TTL_MS behind: the previous run's offset, or none, just
+	 * after the agent restarts. That row's when MySQL cannot say.
+	 *
+	 * @param array<string, mixed> $rNode
+	 */
+	private static function clockOffsetMs(array $rNode): int {
+		$rDb = self::db();
+		if ($rDb->query('SELECT `clock_offset_ms` FROM `cluster_nodes` WHERE `server_id` = ?;', (int) $rNode['server_id']) && $rDb->num_rows() > 0) {
+			return (int) ($rDb->get_row()['clock_offset_ms'] ?? 0);
+		}
+		return (int) ($rNode['clock_offset_ms'] ?? 0);
+	}
+
 	/** @return list<string> the cluster's server addresses, their whitelists and the admin allowlist */
 	private static function neverBlocked(): array {
 		$rIPs = ['127.0.0.1', '::1'];
@@ -500,8 +517,36 @@ final class EventIngest {
 			if (isset($rColumns['server_id'])) {
 				$rRow['server_id'] = $rServerID;
 			}
+			if ($rType === 'syslog') {
+				$rRow = self::syslogRow($rRow);
+				if ($rRow === null) {
+					return false;
+				}
+			}
 			$rClean[] = Redactor::redactRow($rRow);
 		}
 		return LogSink::insert($rType, $rClean, self::db());
+	}
+
+	/**
+	 * A `log.syslog` row as MAIN keeps it: what root did on the sending node
+	 * (LogSink::syslog), so one of LogSink::SYSLOG_TYPES (never `AUTH`, whose
+	 * addresses cron:root_mysql blocks), as `root` from `localhost` with no
+	 * database, dated no later than MAIN's clock: the newest date is
+	 * cron:root_mysql's watermark for MySQL's own log. Null: refused.
+	 *
+	 * @param array<string, scalar|null> $rRow
+	 * @return array<string, scalar|null>|null
+	 */
+	private static function syslogRow(array $rRow): ?array {
+		if (!in_array($rRow['type'] ?? null, LogSink::SYSLOG_TYPES, true) || !is_string($rRow['error'] ?? null)) {
+			return null;
+		}
+		$rNow = ClusterClock::now();
+		$rDate = $rRow['date'] ?? null;
+		return [
+			'server_id' => $rRow['server_id'], 'type' => $rRow['type'], 'error' => $rRow['error'], 'username' => 'root', 'ip' => 'localhost',
+			'database' => null, 'date' => is_int($rDate) && $rDate > 0 ? min($rDate, $rNow) : $rNow,
+		];
 	}
 }

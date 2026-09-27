@@ -2,7 +2,6 @@
 
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
@@ -43,8 +42,7 @@ if (empty(RequestManager::get('stream'))) {
 	generate404();
 }
 
-$db = new DatabaseHandler();
-DatabaseFactory::set($db);
+$db = DatabaseFactory::open();
 $rStream = pathinfo(RequestManager::get('stream'));
 $rStreamID = intval($rStream['filename']);
 $rExtension = $rStream['extension'];

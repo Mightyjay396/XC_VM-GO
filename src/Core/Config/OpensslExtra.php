@@ -18,6 +18,11 @@ namespace XcVm\Core\Config;
  * keeps the value it replaces for a short window, and Encryption::readToken()
  * falls back to it, so tokens the node minted just before the switch still open.
  *
+ * On a node whose replica is authoritative (the CONFIG flow), cluster:apply
+ * brings it onto the value in MAIN's sealed `secrets` section instead
+ * (adopt()), keeping MAIN's previous value, when MAIN sends one, until MAIN's
+ * end of its window.
+ *
  * @package XC_VM_Core_Config
  * @author  Divarion_D <https://github.com/Divarion-D>
  * @copyright 2025-2026 Vateron Media
@@ -123,6 +128,16 @@ final class OpensslExtra {
 	 * or when it is the value in use now.
 	 */
 	public static function previous(?int $rNow = null): ?string {
+		return self::previousEntry($rNow)['value'] ?? null;
+	}
+
+	/**
+	 * previous() with the end of its window: what MAIN's replica sends as the
+	 * `secrets` section's `previous` and `previous_valid_until`.
+	 *
+	 * @return array{value:string,valid_until:int}|null
+	 */
+	public static function previousEntry(?int $rNow = null): ?array {
 		if (self::$rPrevious === null) {
 			self::$rPrevious = self::readPrevious();
 		}
@@ -133,7 +148,65 @@ final class OpensslExtra {
 			return null;
 		}
 
-		return self::$rPrevious['value'];
+		return self::$rPrevious;
+	}
+
+	/**
+	 * The value this node reads now: its config/openssl_extra, else the
+	 * built-in default this process resolved (ConstantsInitializer), whatever
+	 * a later write changed since.
+	 *
+	 * @param string $rConfigDir The config directory, with a trailing slash.
+	 */
+	public static function inUse(string $rConfigDir): string {
+		$rValue = is_file($rConfigDir . 'openssl_extra') ? trim((string) @file_get_contents($rConfigDir . 'openssl_extra')) : '';
+		if ($rValue === '' && defined('OPENSSL_EXTRA')) {
+			$rValue = (string) OPENSSL_EXTRA;
+		}
+
+		return $rValue;
+	}
+
+	/**
+	 * Make MAIN's $rNew this node's OPENSSL_EXTRA, as the replica's `secrets`
+	 * section carries it. The previous value kept (openssl_extra.prev) is
+	 * MAIN's $rPrevious until $rPreviousUntil, when MAIN sends one that is
+	 * still open; otherwise, when the value changes, the one it replaces here,
+	 * for PREVIOUS_WINDOW, as install() keeps it. Run every minute, it writes
+	 * nothing once the node holds both, so a window is never extended. Both
+	 * files are 0600 and take the owner of $rConfigDir.
+	 *
+	 * @param string $rConfigDir The config directory, with a trailing slash.
+	 * @return bool|null Null when there was nothing to write; else whether both writes succeeded.
+	 */
+	public static function adopt(string $rNew, ?string $rPrevious, ?int $rPreviousUntil, string $rConfigDir, int $rNow): ?bool {
+		$rNew = trim($rNew);
+		if ($rNew === '') {
+			return false;
+		}
+		$rInUse = self::inUse($rConfigDir);
+		$rKeep = null;
+		if ($rPrevious !== null && $rPrevious !== '' && $rPrevious !== $rNew && $rPreviousUntil !== null && $rPreviousUntil >= $rNow) {
+			$rKeep = ['value' => $rPrevious, 'valid_until' => $rPreviousUntil];
+		} elseif ($rInUse !== '' && $rInUse !== $rNew) {
+			$rKeep = ['value' => $rInUse, 'valid_until' => $rNow + self::PREVIOUS_WINDOW];
+		}
+		$rWrote = null;
+		if ($rKeep !== null && self::readPreviousFile($rConfigDir . 'openssl_extra.prev') !== $rKeep) {
+			if (!self::writeFile($rConfigDir . 'openssl_extra.prev', (string) json_encode($rKeep))) {
+				return false;
+			}
+			$rWrote = true;
+		}
+		if ($rInUse !== $rNew) {
+			if (!self::writeFile($rConfigDir . 'openssl_extra', $rNew)) {
+				return false;
+			}
+			$rWrote = true;
+		}
+		self::$rPrevious = null;
+
+		return $rWrote;
 	}
 
 	/** Test seam: read the previous value from $rPath (null restores CONFIG_PATH's). */
@@ -154,6 +227,12 @@ final class OpensslExtra {
 				return false;
 			}
 		}
+
+		return self::readPreviousFile($rFile);
+	}
+
+	/** @return array{value:string,valid_until:int}|false */
+	private static function readPreviousFile(string $rFile) {
 		if (!is_file($rFile)) {
 			return false;
 		}

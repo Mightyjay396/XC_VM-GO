@@ -3,6 +3,8 @@
 namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Database\QueryHelper;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\TranscodeProfileSavedEvent;
 use XcVm\Core\Validation\InputValidator;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -283,6 +285,7 @@ class ProfileService {
 
 			if ($db->query($rQuery, ...$rPrepare['data'])) {
 				$rInsertID = $db->last_insert_id();
+				EventDispatcher::dispatch(new TranscodeProfileSavedEvent((int) ($rArray['profile_id'] ?? $rInsertID)));
 				return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 			}
 

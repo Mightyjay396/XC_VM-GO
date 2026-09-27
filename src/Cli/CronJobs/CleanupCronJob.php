@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\SettingsAudit;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Server\InstallCredentials;
@@ -53,8 +54,40 @@ class CleanupCronJob implements CommandInterface {
 		return 0;
 	}
 
+	/**
+	 * Can this node check its stream, archive and VOD files against its
+	 * streams? Everywhere but mode 2 it reads them from MAIN's database, as
+	 * before. A node in mode 2 may not (its connect is refused), and no
+	 * replica section carries its streams yet (R2 `streams`), so the checks
+	 * are skipped there until R2: files of streams deleted on MAIN stay,
+	 * TV archive segments are kept past their retention, and neither the
+	 * VOD analysis nor the created-channel checks run. Never against an
+	 * empty list, which would delete every file.
+	 *
+	 * The seam R2 fills: once the `streams` section is applied, a mode 2
+	 * node answers true and the checks read this node's streams from the
+	 * replica instead of the queries below.
+	 */
+	protected function streamChecks(): bool {
+		return !NodeRole::refusesConnects();
+	}
+
 	private function loadCron(): void {
 		global $db;
+
+		// First, and without a database: everything after streamChecks()
+		// reads MAIN's database, which a node in mode 2 skips.
+		// This node's connect audit: the cutover gate reads seven days of it.
+		ConnectAudit::prune(8);
+		// Its settings misses: the days that left the report's window drop out
+		// of the audit.json its agent sends.
+		SettingsAudit::prune(8);
+		SettingsAudit::publish();
+
+		// Everything below reads MAIN's database; the MAIN-only part never runs on a node.
+		if (!$this->streamChecks()) {
+			return;
+		}
 
 		if (intval(SettingsManager::get('cleanup')) == 1) {
 			$rStreams = [];
@@ -210,9 +243,6 @@ class CleanupCronJob implements CommandInterface {
 				}
 			}
 		}
-
-		// This node's connect audit: the cutover gate reads seven days of it.
-		ConnectAudit::prune(8);
 
 		// Retention of cluster-wide log tables: MAIN's job. Every LB used to
 		// run the same DELETEs against MAIN's database each minute.

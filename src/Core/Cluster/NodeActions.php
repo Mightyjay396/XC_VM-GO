@@ -26,8 +26,14 @@ final class NodeActions {
 		'disable_ramdisk', 'enable_ramdisk', 'certbot_generate', 'update_binaries',
 		'install_module', 'delete_module', 'update', 'rollback',
 		'set_services', 'set_governor', 'set_sysctl', 'set_port', 'flush',
-		OpensslExtra::SIGNAL_ACTION,
+		OpensslExtra::SIGNAL_ACTION, 'agent_binary',
 	];
+
+	/**
+	 * Actions that run only over the cluster API, with an artefact root
+	 * stages and checks: never queued as a `signals` row.
+	 */
+	public const CLUSTER_ONLY = ['agent_binary'];
 
 	public static function reboot(int $rServerID, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => 'reboot'], $rDb);
@@ -51,6 +57,17 @@ final class NodeActions {
 
 	public static function updateBinaries(int $rServerID, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => 'update_binaries'], $rDb);
+	}
+
+	/**
+	 * Install the xc_agent binary MAIN pinned for this arch (plan section 5,
+	 * `node.root agent_binary`): a signed root command carrying the binary's
+	 * artefact grant, which root stages and checks before installing it. Only
+	 * to a node whose agent takes artefacts; false otherwise, and nothing is
+	 * queued.
+	 */
+	public static function agentBinary(int $rServerID, string $rArch, ?object $rDb = null): bool {
+		return self::send($rServerID, ['action' => 'agent_binary', 'arch' => $rArch], $rDb);
 	}
 
 	public static function setRamdisk(int $rServerID, bool $rEnabled, ?object $rDb = null): bool {
@@ -102,6 +119,9 @@ final class NodeActions {
 			if ($rRouted) {
 				return $rQueued;
 			}
+		}
+		if (in_array($rAction, self::CLUSTER_ONLY, true)) {
+			return false;
 		}
 		return SignalDispatcher::rootAction($rServerID, $rPayload, $rDb);
 	}

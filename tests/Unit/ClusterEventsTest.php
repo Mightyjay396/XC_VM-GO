@@ -5,13 +5,16 @@ use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Logging\FileLogger;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\EventIngest;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Database\DatabaseFactory;
+use XcVm\Tests\Support\AgentUser;
 
 /**
  * Phase 5, logs and stream state: on a node whose LOGS / STREAMS flow is on,
@@ -46,15 +49,23 @@ final class ClusterEventsTest extends TestCase {
 		EventSpool::useDir(null);
 		SettingsManager::set([]);
 		NodeFlows::usePath(null);
+		NodeRole::useMainBuild(null);
+		FileLogger::setLogFile(null);
 		ClusterClock::fix(null);
 		DatabaseFactory::reset();
 		exec('rm -rf ' . escapeshellarg($this->rDir));
 	}
 
-	private function flows(int $rFlows, int $rAge = 0): void {
-		file_put_contents($this->rDir . '/flows.json', json_encode(['mode' => 1, 'flows' => $rFlows, 'state' => 'active']));
+	private function flows(int $rFlows, int $rAge = 0, int $rMode = 1): void {
+		file_put_contents($this->rDir . '/flows.json', json_encode(['mode' => $rMode, 'flows' => $rFlows, 'state' => 'active']));
 		touch($this->rDir . '/flows.json', time() - $rAge);
 		NodeFlows::usePath($this->rDir . '/flows.json');
+	}
+
+	/** A node in mode 2 (on a load balancer's build), its agent's file $rAge seconds old. */
+	private function modeTwo(int $rFlows, int $rAge = 0): void {
+		$this->flows($rFlows, $rAge, 2);
+		NodeRole::useMainBuild(false);
 	}
 
 	/** @return list<array<string, mixed>> the spooled events of a lane, in file order */
@@ -131,6 +142,66 @@ final class ClusterEventsTest extends TestCase {
 		$this->assertSame([], $this->spooled('p0'));
 	}
 
+	/**
+	 * What root does on a node (a root action, a PHP-FPM restart) goes to
+	 * MAIN's system log as a `log.syslog` event once LOGS is on. Otherwise
+	 * the caller writes the row itself, as before, except in mode 2, which
+	 * never writes MAIN's database: a line the spool refuses goes to the
+	 * panel's error log, redacted, written as the agent's user.
+	 */
+	public function testRootsSystemLogLinesGoToTheSpoolOnceLogsIsOn(): void {
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', 5);
+		}
+		$this->flows(NodeFlows::LOGS);
+		$this->assertTrue(LogSink::syslog('REBOOT', 'System rebooted on request.', 1799999000));
+		$this->assertSame([['log.syslog', ['rows' => [['server_id' => SERVER_ID, 'type' => 'REBOOT', 'error' => 'System rebooted on request.', 'username' => 'root', 'ip' => 'localhost', 'database' => null, 'date' => 1799999000]]]]], array_map(static fn($e) => [$e['type'], $e['d']], $this->spooled('p1')));
+
+		$this->flows(NodeFlows::STREAMS);
+		$this->assertFalse(LogSink::syslog('REBOOT', 'System rebooted on request.'), 'LOGS off: the caller writes the row');
+		$this->flows(NodeFlows::LOGS, EventSpool::STALE_AFTER + 30);
+		$this->assertFalse(LogSink::syslog('REBOOT', 'System rebooted on request.'), 'the agent stopped: the caller writes the row');
+		NodeFlows::usePath(null);
+		$this->assertFalse(LogSink::syslog('REBOOT', 'System rebooted on request.'), 'MAIN and mode 0: the row, as before');
+
+		// Mode 2 never writes MAIN's database: with the agent stopped the
+		// line goes to the panel's error log (the agent's directory is xc_vm's).
+		AgentUser::own($this->rDir);
+		FileLogger::setLogFile($this->rDir . '/logs/error_log.log');
+		$this->modeTwo(255, EventSpool::STALE_AFTER + 30);
+		$this->assertTrue(LogSink::syslog('UPDATE', 'Updating from http://u:p@host/x'));
+		$this->assertCount(1, $this->spooled('p1'), 'nothing spooled');
+		$rLogged = array_map(static fn(string $rLine): array => json_decode((string) base64_decode($rLine), true), file($this->rDir . '/logs/error_log.log', FILE_IGNORE_NEW_LINES) ?: []);
+		$this->assertSame([['syslog', 'Not in MAIN\'s system log (mode 2, and the agent took no event): UPDATE: Updating from http://***@host/x']], array_map(static fn(array $rRow): array => [$rRow['type'], $rRow['message']], $rLogged));
+		if (AgentUser::root()) {
+			$this->assertSame(AgentUser::UID, fileowner($this->rDir . '/logs/error_log.log'), 'written as the agent\'s user, never as root');
+		}
+	}
+
+	/**
+	 * A node in mode 2 never writes its own servers row (set_governor,
+	 * set_sysctl, certbot's `certbot_ssl`): false when the spool did not take
+	 * the event, with the agent stopped or TELEMETRY off. Mode 1 writes it,
+	 * as before.
+	 */
+	public function testANodeInModeTwoNeverWritesItsStateRow(): void {
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', 5);
+		}
+		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `governor` text)');
+		$this->rDb->query('INSERT INTO `servers` (`id`, `governor`) VALUES (?, ?)', SERVER_ID, 'old');
+		$this->modeTwo(255, EventSpool::STALE_AFTER + 30);
+		$this->assertFalse(NodeStateSink::state(['governor' => 'new'], $this->rDb), 'the agent stopped');
+		$this->modeTwo(255 & ~NodeFlows::TELEMETRY);
+		$this->assertFalse(NodeStateSink::state(['governor' => 'new'], $this->rDb), 'TELEMETRY off');
+		$this->assertSame([], $this->spooled('p0'));
+		$this->assertSame([['governor' => 'old']], $this->rows('SELECT `governor` FROM `servers`'));
+
+		$this->flows(NodeFlows::STREAMS);
+		$this->assertTrue(NodeStateSink::state(['governor' => 'new'], $this->rDb), 'mode 1 without TELEMETRY: the row, as before');
+		$this->assertSame([['governor' => 'new']], $this->rows('SELECT `governor` FROM `servers`'));
+	}
+
 	// ── MAIN side ────────────────────────────────────────────────────────
 
 	public function testP0IsGapCheckedAndAppliedOnce(): void {
@@ -146,6 +217,35 @@ final class ClusterEventsTest extends TestCase {
 		$this->assertSame(0, EventIngest::ingest($this->node(), 'p0', 1, [$rState(1), $rState(2)])['applied']);
 		$this->assertSame(9, (int) $this->val('SELECT `pid` FROM `streams_servers` WHERE `server_stream_id` = 11'));
 		$this->assertSame(2, (int) $this->node()['useq_p0']);
+	}
+
+	/**
+	 * A `log.syslog` row is root's on the sending node: one of the types
+	 * root writes (never `AUTH`, whose addresses cron:root_mysql blocks),
+	 * as `root` from `localhost`, dated no later than MAIN's clock (the
+	 * newest date is cron:root_mysql's watermark), redacted.
+	 */
+	public function testMainKeepsASystemLogLineAsRootsOnTheNode(): void {
+		$this->rDb->exec('CREATE TABLE `mysql_syslog` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `type` varchar(50), `error` text, `username` varchar(64), `ip` varchar(64), `database` varchar(64), `date` int, `server_id` int DEFAULT 1)');
+		$rLine = static fn(array $rRow): array => ['type' => 'log.syslog', 'd' => ['rows' => [$rRow]]];
+		$rOut = EventIngest::ingest($this->node(), 'p1', 1, [
+			$rLine(['server_id' => 99, 'type' => 'REBOOT', 'error' => 'System rebooted on request.', 'username' => 'root', 'ip' => 'localhost', 'database' => null, 'date' => 1799999000]),
+			$rLine(['type' => 'RESTART', 'error' => 'XC_VM services restarted on request.', 'username' => 'admin', 'ip' => '203.0.113.7', 'database' => 'xc_vm', 'date' => 1900000000]),
+			$rLine(['type' => 'AUTH', 'error' => 'Access denied for user', 'username' => 'x', 'ip' => '192.0.2.50', 'date' => 1799999000]),
+			$rLine(['type' => 'UPDATE', 'error' => 'Updating from http://u:p@host/x', 'date' => 'soon']),
+			$rLine(['type' => 'UPDATE', 'error' => ['nested']]),
+		]);
+		$this->assertSame([5, 3, 2], [$rOut['useq'], $rOut['applied'], $rOut['dropped']]);
+		$rRows = array_map(static fn($r) => array_map(static fn($v) => is_string($v) && ctype_digit($v) ? (int) $v : $v, $r), $this->rows('SELECT `server_id`, `type`, `error`, `username`, `ip`, `database`, `date` FROM `mysql_syslog` ORDER BY `id`'));
+		$this->assertSame([
+			['server_id' => 5, 'type' => 'REBOOT', 'error' => 'System rebooted on request.', 'username' => 'root', 'ip' => 'localhost', 'database' => null, 'date' => 1799999000],
+			['server_id' => 5, 'type' => 'RESTART', 'error' => 'XC_VM services restarted on request.', 'username' => 'root', 'ip' => 'localhost', 'database' => null, 'date' => 1800000000],
+			['server_id' => 5, 'type' => 'UPDATE', 'error' => 'Updating from http://***@host/x', 'username' => 'root', 'ip' => 'localhost', 'database' => null, 'date' => 1800000000],
+		], $rRows);
+
+		// LOGS off: refused, as every log.* event.
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_STREAMS]);
+		$this->assertSame(0, EventIngest::ingest($this->node(), 'p1', 6, [$rLine(['type' => 'STOP', 'error' => 'x', 'date' => 1])])['applied']);
 	}
 
 	public function testANodeWritesOnlyItsOwnRowsAndStateColumns(): void {
@@ -248,7 +348,9 @@ final class ClusterEventsTest extends TestCase {
 			['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3]]],                           // wrong lane
 		]);
 		$this->assertSame([1, 4], [$rOut['applied'], $rOut['dropped']]);
-		$rOut = EventIngest::ingest($this->node(), 'p1', 1, [['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3, 'xc_vm_version' => '2.1', 'whitelist_ips' => '["6.6.6.6"]']]]]);
+		// The request's row may be the cluster bus's copy, whose clock offset
+		// lags the heartbeat flush's (NodeAuthCache::LAGGING): MySQL's is used.
+		$rOut = EventIngest::ingest(['clock_offset_ms' => 9000] + $this->node(), 'p1', 1, [['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3, 'xc_vm_version' => '2.1', 'whitelist_ips' => '["6.6.6.6"]']]]]);
 		$this->assertSame(1, $rOut['applied']);
 		$rRows = array_map(static fn($r) => array_map(static fn($v) => is_string($v) && ctype_digit(ltrim($v, '-')) ? (int) $v : $v, $r), $this->rows('SELECT * FROM `servers` ORDER BY `id`'));
 		$rMine = ['id' => 5, 'server_ip' => '198.51.100.5', 'status' => 1, 'whitelist_ips' => null, 'certbot_ssl' => '{"a":1}', 'governor' => '["x"]', 'sysctl' => null, 'ping' => 3, 'xc_vm_version' => '2.1', 'interfaces' => null, 'time_offset' => -3];
