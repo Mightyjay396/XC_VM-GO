@@ -3128,6 +3128,20 @@ Six places still treated every node as MAIN, or MAIN as every node:
 
 **Not built:** `/xfile` (Phase 8) will inherit `serveFile`'s confinement, and the ticket that replaces `password=` in its URL is still Phase 8 work.
 
+### The encoding queue (Phase 5, sixth increment)
+
+`queue_enqueue`, `queue_claim` and `queue_update` were named in `ClusterPool::INGEST_OPS` (which renders nginx's ingest lane) and nowhere else: no handler on MAIN, no caller on a node. The `queue` table is MAIN's, so on a node booted from its replica the queue daemon looped on `$db->ping()` against a database it must not dial, and `cron:vod` skipped queueing entirely (an explicit `NodeRole::refusesConnects()` guard). A mode 2 node encoded nothing and built no created channel.
+
+- **`QueueSink`** (Core, so it ships to LBs) is the node's half: `enqueue`, `claim`, `update`. With CONTENT on it asks MAIN through the agent; otherwise it runs the SQL the callers ran, over the node's own connection; in mode 2 without the flow it returns `false`/`null` rather than reaching for a database. Only the node's *own* rows go through the agent — MAIN keys every op to the calling node, so admin code queueing onto another server stays a database write.
+- **`NodeQueue`** (Domain, MAIN only) serves the three ops, every statement keyed to the authenticated node's `server_id`. A node therefore sees and changes its own work whatever its payload says, and `claim`'s limit is capped at `QueueSink::MAX_CLAIM` (200). The handler denies the ops with `FLOW_OFF` unless the node's CONTENT flow is on.
+- **`StreamProcess::queueChannel/queueMovie/queueMovies`** are now three calls into the sink, which is also where their rules live (a movie replaces what is queued for that stream, a channel already queued is left alone). The two single-stream writers report whether the work was queued.
+- **The daemon** claims each kind once a pass and reports what it started in one `update`, instead of a `SELECT`/`UPDATE` per row. Its pass also stopped falling out of the loop: the whole body sat inside the first `if ($db->query(...))` with a `break` at the end, so every pass re-executed `console.php queue` through `restartDaemon()`. The channel build's pid adoption is unchanged.
+- **The agent** allows the three ops on its local socket (`SocketOps`, `xc_agent`); everything else it still refuses.
+
+`ClusterQueueTest` pins the SQL, the flow routing (with the flow on, a failed agent call must not fall back to the table), the mode 2 refusal, and that no writer of `queue` is left outside the seam except the three admin surfaces that queue or cancel work on any server.
+
+**Not built:** MAIN does not push a node's queue to it; the node asks each pass, as it always has.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

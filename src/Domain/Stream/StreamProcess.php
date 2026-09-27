@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Cluster\StreamRuntime;
@@ -65,17 +66,10 @@ class StreamProcess {
 	 *
 	 * @param int      $rStreamID Stream id.
 	 * @param int|null $rServerID Target server id, or null for the default.
-	 * @return mixed Queue result.
+	 * @return bool False when the node could not queue it (mode 2 without the CONTENT flow).
 	 */
 	public static function queueChannel(int $rStreamID, ?int $rServerID = null) {
-		$db = self::db();
-		if (!$rServerID) {
-			$rServerID = SERVER_ID;
-		}
-		$db->query('SELECT `id` FROM `queue` WHERE `stream_id` = ? AND `server_id` = ?;', $rStreamID, $rServerID);
-		if ($db->num_rows() == 0) {
-			$db->query("INSERT INTO `queue`(`type`, `stream_id`, `server_id`, `added`) VALUES('channel', ?, ?, ?);", $rStreamID, $rServerID, time());
-		}
+		return QueueSink::enqueue('channel', [$rStreamID], $rServerID ?: (int) SERVER_ID);
 	}
 
 	/**
@@ -1939,15 +1933,10 @@ class StreamProcess {
 	 *
 	 * @param int      $rStreamID Stream id.
 	 * @param int|null $rServerID Target server id, or null for the default.
-	 * @return mixed Queue result.
+	 * @return bool False when the node could not queue it (mode 2 without the CONTENT flow).
 	 */
 	public static function queueMovie(int $rStreamID, ?int $rServerID = null) {
-		$db = self::db();
-		if (!$rServerID) {
-			$rServerID = SERVER_ID;
-		}
-		$db->query('DELETE FROM `queue` WHERE `stream_id` = ? AND `server_id` = ?;', $rStreamID, $rServerID);
-		$db->query("INSERT INTO `queue`(`type`, `stream_id`, `server_id`, `added`) VALUES('movie', ?, ?, ?);", $rStreamID, $rServerID, time());
+		return QueueSink::enqueue('movie', [$rStreamID], $rServerID ?: (int) SERVER_ID);
 	}
 
 	/**
@@ -1958,23 +1947,7 @@ class StreamProcess {
 	 * @return void
 	 */
 	public static function queueMovies(array $rStreamIDs, ?int $rServerID = null) {
-		$db = self::db();
-		if (!$rServerID) {
-			$rServerID = SERVER_ID;
-		}
-		if (0 < count($rStreamIDs)) {
-			$db->query('DELETE FROM `queue` WHERE `stream_id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ') AND `server_id` = ?;', $rServerID);
-			$rQuery = '';
-			foreach ($rStreamIDs as $rStreamID) {
-				if (0 < $rStreamID) {
-					$rQuery .= "('movie', " . intval($rStreamID) . ', ' . intval($rServerID) . ', ' . time() . '),';
-				}
-			}
-			if (!empty($rQuery)) {
-				$rQuery = rtrim($rQuery, ',');
-				$db->query('INSERT INTO `queue`(`type`, `stream_id`, `server_id`, `added`) VALUES ' . $rQuery . ';');
-			}
-		}
+		QueueSink::enqueue('movie', $rStreamIDs, $rServerID ?: (int) SERVER_ID);
 	}
 
 	/**

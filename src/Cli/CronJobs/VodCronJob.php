@@ -67,10 +67,8 @@ class VodCronJob implements CommandInterface {
 					$rSourcesLeft = array_diff(json_decode($rStream['stream_source'], true), json_decode($rStream['cchannel_rsources'], true));
 					if (count($rSourcesLeft) > 0) {
 						echo "\t" . 'Needs Updating!' . "\n";
-						// The encoding queue is MAIN's table: a node in mode 2 cannot add to it.
-						if (!NodeRole::refusesConnects()) {
-							StreamProcess::queueChannel($rStream['id']);
-						}
+						// The queue is MAIN's table: in mode 2 QueueSink asks MAIN.
+						StreamProcess::queueChannel($rStream['id']);
 					} else {
 						if (file_exists(CREATED_PATH . $rStream['id'] . '_.info')) {
 							$rCCInfo = file_get_contents(CREATED_PATH . $rStream['id'] . '_.info');
