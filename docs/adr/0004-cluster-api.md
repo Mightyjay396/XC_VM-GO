@@ -3089,6 +3089,20 @@ The new strings are English-only until `make lang-translate` runs (it needs the 
 
 **Not built:** promoting a node's `mode`. `mode` is written once at enrolment from `lb_new_node_mode`, and `api_mode_allowed` is still false (`SettingsService.php:85`), so CONFIG can be switched on a node in mode 0 or 1 — where it is read — but no node runs mode 2 yet. That, and the gate that reads the connect audit before promoting, is Phase 9.
 
+### Promoting a node's mode (Phase 9, first increment)
+
+`cluster_nodes.mode` was written once, at enrolment, from `lb_new_node_mode`. Nothing moved a node afterwards, so the modes every reader honours (mode ≥ 1 boots from the replica, mode 2 refuses MAIN's database through `LbDatabaseAccessException`) were unreachable.
+
+The Cluster Nodes page gets `mode_up` and `mode_down` beside the mode, and `ClusterAdmin::modeGate()` decides:
+
+- **Down is always allowed.** It is the way back when a node misbehaves.
+- **Up to 1** needs the CONFIG flow: that is what the node boots from.
+- **Up to 2** needs every flow but the data plane (`ClusterAdmin::MODE2_FLOWS`, Phase 8 is not built), and the node's own connect audit must report `sql_connects` and `redis_connects` at zero with `connects_since` at least `CUTOVER_CLEAN_DAYS` (7) old. That is the plan's cutover gate, read from the report the node already sends in its heartbeat (`NodeAudit`), which the page has been showing all along.
+
+The gate is pure and tested (`ClusterModeGateTest`) rather than reached through a request. The agent learns its new mode from the `mode` its next `hello` or `heartbeat` answer carries, and `NodeAuthCache` drops its copy of the row because `mode` is not a lagging column.
+
+**Not built:** `api_mode_allowed` is still false (`SettingsService.php:85`), so `lb_new_node_mode` cannot be set to `api` and a *new* node still enrols at mode 0. Promotion is the supported path to mode 2 for now. Flipping that flag is the cutover decision itself, and it stays with the operator.
+
 ### The node system API's own inputs (Phase 4, fifth increment)
 
 `/api` is the legacy control plane, and the cluster command channel routes four of its actions to a node unchanged. Three took an input from MAIN and used it as given, which made MAIN's cluster-wide secret the only thing between a caller and the node's filesystem:

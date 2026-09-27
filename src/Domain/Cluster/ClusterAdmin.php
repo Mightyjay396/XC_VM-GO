@@ -26,6 +26,56 @@ final class ClusterAdmin {
 		'connections' => NodeRegistry::FLOW_CONNECTIONS,
 	];
 
+	/** Flows a node must have before it can run without MAIN's database: everything but the data plane (Phase 8). */
+	public const MODE2_FLOWS = NodeRegistry::FLOW_TELEMETRY | NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_LOGS
+		| NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT | NodeRegistry::FLOW_CONFIG | NodeRegistry::FLOW_CONNECTIONS;
+
+	/** Days of zero MySQL and Redis connects a node must report before mode 2 (plan, section 11: the cutover gate). */
+	public const CUTOVER_CLEAN_DAYS = 7;
+
+	/**
+	 * May this node move to $rMode? Pure, so the gate is tested without a request.
+	 *
+	 * Going down is always allowed: it is the way back when a node misbehaves.
+	 * Going up to 1 needs the config replica, because that is what a node boots
+	 * from. Going up to 2 stops the node reaching MAIN's database at all, so it
+	 * needs every flow but the data plane, and the node's own connect audit must
+	 * show it has not opened MySQL or Redis for CUTOVER_CLEAN_DAYS.
+	 *
+	 * @param array<string, mixed>  $rNode     cluster_nodes row.
+	 * @param array<string, mixed>|null $rConnects NodeAudit::connectsOf() of its last report.
+	 * @param int $rNow Unix seconds.
+	 * @return array{0: bool, 1: string} [allowed, message key]
+	 */
+	public static function modeGate(array $rNode, ?array $rConnects, int $rMode, int $rNow): array {
+		if ($rMode < 0 || $rMode > 2) {
+			return [false, 'cluster_mode_unknown'];
+		}
+		if ($rMode <= (int) $rNode['mode']) {
+			return [true, 'cluster_mode_done'];
+		}
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONFIG) !== NodeRegistry::FLOW_CONFIG) {
+			return [false, 'cluster_mode_needs_config'];
+		}
+		if ($rMode < 2) {
+			return [true, 'cluster_mode_done'];
+		}
+		if (((int) $rNode['flows'] & self::MODE2_FLOWS) !== self::MODE2_FLOWS) {
+			return [false, 'cluster_mode_needs_flows'];
+		}
+		if ($rConnects === null) {
+			return [false, 'cluster_mode_no_audit'];
+		}
+		if ((int) $rConnects['sql_connects'] !== 0 || (int) $rConnects['redis_connects'] !== 0) {
+			return [false, 'cluster_mode_still_connects'];
+		}
+		$rSince = (int) ($rConnects['connects_since'] ?? 0);
+		if ($rSince <= 0 || $rNow - $rSince < self::CUTOVER_CLEAN_DAYS * 86400) {
+			return [false, 'cluster_mode_too_soon'];
+		}
+		return [true, 'cluster_mode_done'];
+	}
+
 	/**
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll(true)
 	 * @return list<array<string, mixed>> One row per enrolled node, with `server_name`, `health`,
@@ -147,6 +197,24 @@ final class ClusterAdmin {
 					NodeRegistry::update($rServerID, ['flows' => $rFlows]);
 					ClusterAudit::log('node.flows', $rServerID, ['flows' => $rFlows, 'was' => (int) $rNode['flows']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
 					return ['type' => 'success', 'message' => 'cluster_' . $rName . '_' . $rSwitch . '_done'];
+
+				case 'mode_up':
+				case 'mode_down':
+					$rNode = NodeRegistry::byServer($rServerID);
+					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
+						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
+					}
+					$rWanted = (int) $rNode['mode'] + ($rAction === 'mode_up' ? 1 : -1);
+					if ($rWanted < 0 || $rWanted > 2) {
+						return ['type' => 'info', 'message' => 'cluster_mode_unknown'];
+					}
+					[$rAllowed, $rWhy] = self::modeGate($rNode, NodeAudit::connectsOf(NodeAudit::reports()[$rServerID] ?? null), $rWanted, time());
+					if (!$rAllowed) {
+						return ['type' => 'warning', 'message' => $rWhy];
+					}
+					NodeRegistry::update($rServerID, ['mode' => $rWanted]);
+					ClusterAudit::log('node.mode', $rServerID, ['mode' => $rWanted, 'was' => (int) $rNode['mode']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return ['type' => 'success', 'message' => 'cluster_mode_done'];
 
 				case 'revoke':
 					return NodeRegistry::revoke($rServerID, $rCrypto, $rUserID === null ? 'admin' : 'admin:' . $rUserID)

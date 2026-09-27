@@ -118,7 +118,23 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                                 <div class="small text-body-secondary"><?= htmlspecialchars((string) $rNode['quarantine_reason'], ENT_QUOTES); ?></div>
                             <?php endif; ?>
                         </td>
-                        <td><?= (int) $rNode['mode']; ?></td>
+                        <td>
+                            <?= (int) $rNode['mode']; ?>
+                            <?php if (in_array($rNode['state'], ['active', 'quarantined'], true)): ?>
+                                <?php if ((int) $rNode['mode'] < 2): ?>
+                                    <form method="POST" class="d-inline">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="mode_up" class="btn btn-sm btn-label-secondary" title="<?= $language::get('cluster_mode_up_help'); ?>">+</button>
+                                    </form>
+                                <?php endif; ?>
+                                <?php if ((int) $rNode['mode'] > 0): ?>
+                                    <form method="POST" class="d-inline">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="mode_down" class="btn btn-sm btn-label-secondary" title="<?= $language::get('cluster_mode_down_help'); ?>">&minus;</button>
+                                    </form>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </td>
                         <?php foreach (\XcVm\Domain\Cluster\ClusterAdmin::FLOW_BITS as $rFlowName => $rFlowBit): ?>
                         <td>
                             <?php $rOn = ((int) $rNode['flows'] & $rFlowBit) === $rFlowBit; ?>
