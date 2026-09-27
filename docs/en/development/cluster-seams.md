@@ -91,6 +91,12 @@ action.
   checked its size and SHA-256 against the grant, as it copies it to where it
   is used (root's own stage for a root action). Do not add a pull from MAIN by
   path, URL or password.
+- MAIN's work for a node goes through `SignalDispatcher` and `NodeActions`, never
+  a `signals` row written by hand: a node in mode 2 reads none. There MAIN
+  sends cache jobs as `node.cache` commands in `CacheJobs::job()`'s form, the
+  node runs the jobs it queues for itself at once, and a value the node read
+  back from its own row in MAIN's database comes from the copy
+  `NodeStateSink` keeps of what it reported (`NodeStateSink::reported()`).
 - The node's audit files (`storage/cluster/`, `config/cluster/audit.json`) sit
   where xc_vm can write. A root process writes them only inside
   `SettingsAudit::asAgentUser()`, which does the work as xc_vm, never with
