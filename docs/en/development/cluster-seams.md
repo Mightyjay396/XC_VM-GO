@@ -48,6 +48,12 @@ action.
   catalogue and use `NodeRpc` / `NodeActions`.
 - Node-side code reads stream definitions through `StreamSource`, not with its
   own queries on `streams_options`.
+- Node-side code reads settings through `SettingsManager`'s getters and servers
+  through `ServerRepository`. A node in mode 2 boots from its replica
+  (`ReplicaStage`): those come from the replica's caches, and any other query
+  opens MAIN's database lazily, which mode 2 is to refuse. On a node in mode 1
+  or 2, a settings key outside `lb_settings_keys.php` is counted as a miss
+  (`SettingsAudit`) and shown on *Servers → Cluster Nodes*.
 
 Tests that pin these rules: `SignalDispatcherParityTest`, `StreamStateWriterTest`,
 `StreamRowMergeTest`, `StreamCacheBuilderSourceTest`, `LogSinkTest` and

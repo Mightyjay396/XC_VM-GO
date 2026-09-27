@@ -1120,7 +1120,7 @@ Once owned:
 - `cron:cache` does not write the servers cache from the database.
 - `LegacyInitializer::generateCron` and `cron:root_signals`' crontab check take the crontab from `ReplicaApply::crontabText`: the replica's jobs, or MAIN's table while the replica does not own them. Null (the owned jobs are gone, or there is no database) leaves the crontab as it is; an empty string is a crontab with no job.
 - `cron:certbot` reads its own certificate record from its row in MAIN's database, not from the servers cache, which carries no `certbot_ssl` (`SERVER_LOCAL`).
-- `src/service` runs `cluster:apply --from-disk` as xc_vm before `daemons.sh` when `config/cluster/flows.json` has mode 1 or 2 and the CONFIG bit, with a 15 s `timeout`. A shadow node gains nothing from it. The flag changes nothing: `cluster:apply` always reads the disk.
+- `src/service` runs `cluster:apply --from-disk` as xc_vm before `daemons.sh` when `config/cluster/flows.json` has mode 1 or 2 and the CONFIG bit, with a 15 s `timeout`. A shadow node gains nothing from it. The flag changed nothing then: `cluster:apply` always read the disk. Since the seventh Phase 7 increment it verifies the stored records itself.
 - `NodeFlows` ignores the agent's file on MAIN, and asks `NodeRole`, which reads the servers. On a node whose replica owns them that asked `NodeFlows` again, without end. The inner call now gets what the file says (`ReplicaApplyTest`).
 
 **Known limits.**
@@ -1128,7 +1128,7 @@ Once owned:
 - A node with CONFIG on and TELEMETRY off loses what its legacy telemetry path read from its own row: `watchdog_data`'s CPU history, and `users`/`connections` in Redis mode. The rollout turns TELEMETRY (Phase 3) on before CONFIG.
 - The settings, including `cloudflare` and `mag_legacy_redirect`, stay MAIN's until the `secrets` section exists (sixth Phase 7 increment); the `node` section's copies are not read yet.
 - No reader uses the node list before Phase 8's ticket checks.
-- `cluster:apply` and `cron:cache` boot through the CLI profile, which still connects to MAIN's database (`ReplicaStage` is not built). With MAIN's database unreachable at boot, `cluster:apply` exits before it applies anything, bounded by `service`'s 15 s `timeout`. A node rebooted while MAIN is unreachable therefore serves from its replica only once `ReplicaStage` exists; today its caches are rebuilt when MAIN's database answers again.
+- `cluster:apply` and `cron:cache` boot through the CLI profile, which still connects to MAIN's database (`ReplicaStage` is not built). With MAIN's database unreachable at boot, `cluster:apply` exits before it applies anything, bounded by `service`'s 15 s `timeout`. A node rebooted while MAIN is unreachable therefore serves from its replica only once `ReplicaStage` exists; today its caches are rebuilt when MAIN's database answers again. (`cluster:apply` boots from the replica since the seventh Phase 7 increment.)
 
 **Tests.**
 
@@ -1201,7 +1201,7 @@ It grants like every whole section: without a licence the extension refuses to s
 - The allowlist withholds eight more secrets that the LB build reads: `api_pass`, `dropbox_token`, `license`, `maxmind_license_key`, `platform_api_key`, `recaptcha_v2_secret_key`, `redis_password` and `tmdb_api_key`. Once the replica owns the settings cache they are not in it. Only `maxmind_license_key` is used on a node, by `cron:maxmind` (role `all`): a CONFIG node keeps its GeoIP databases current from the free GeoLite2 release instead of MaxMind's paid editions. The other readers are MAIN's features that the LB build ships, and a node's Redis connection takes its password from the extension, not from the settings.
 - A new `live_streaming_pass` reaches a CONFIG node at its next poll (within 60 s; no `config.changed`), as a legacy node's settings cache follows MAIN's database within `cron:cache`'s minute. Until then, tokens MAIN mints with the new value do not open there.
 - A node has one previous OPENSSL_EXTRA. When MAIN sends an open `previous` to a node that ran yet another value (a legacy LB on the built-in value), MAIN's wins, and tokens the node minted itself just before stop opening.
-- `cluster:apply` still boots through the CLI profile, which needs MAIN's database (`ReplicaStage` is not built).
+- `cluster:apply` still boots through the CLI profile, which needs MAIN's database (`ReplicaStage` is not built; it is since the seventh Phase 7 increment).
 - On the node the section is plaintext in `secrets.json`, as the settings cache and `config/openssl_extra` already hold those values.
 
 **Tests.**
@@ -1222,6 +1222,85 @@ It grants like every whole section: without a licence the extension refuses to s
 - **Mode 0.** When MAIN leaves the section out, keep the files: with CONFIG off PHP only compares them.
 - **`503 DB`.** MAIN answers the whole `config` call with a signed `503 DB` denial when it cannot read a section it was asked for: a failed read, no settings row, or an unset secret. It never sends an empty section in their place. Keep every file and ETag held, apply nothing, and ask again at the next poll, as for any `503` (today's agent does).
 - **Exit codes.** `cluster:apply` exits 0 when it applied or compared the replica, 2 when there is nothing to apply (stderr `cluster:apply: no replica to apply`), and 3 when a part of the report has the mode `failed` (today only `secrets`, when `config/openssl_extra` cannot be written). With 3 the report is on stdout, one JSON line with no secret in it. Log that output as for any failed run, keep the stored files and ETags, and fetch nothing again because of it: `cron:cache` applies again every minute while CONFIG is on, and the next change runs `cluster:apply` again. Today's agent already logs any non-zero exit with its output (`cluster: replica: apply: …`) and carries on. `service` ignores the exit code at boot.
+
+### Booting from the replica, and the settings misses (Phase 7, seventh increment)
+
+**ReplicaStage.** `Core/Bootstrap/Stage/ReplicaStage` boots a process from the node replica's caches instead of MAIN's database (plan, section 10, step 2). It takes the place of `DatabaseStage` and `LegacyCoreStage` and leaves what they leave, so later code finds the same state:
+
+| Left by the boot | From |
+| --- | --- |
+| global `$db`, `DatabaseFactory`, the domain wiring, container `db` | a `LazyDatabaseHandler`: nothing is opened until a query needs it |
+| `SERVER_ID`, container `core.config` | `config.ini`, as before |
+| `SettingsManager`, `$rSettings`, `core.settings`, `settings` | the settings cache the replica owns; else the cache however old; else nothing |
+| `$rServers`, `core.servers`, `servers` | the servers cache, the same way |
+| `$rRequest`, `core.request`, the time zone, `on_demand_wait_time`, `$rFFMPEG_*`, `$rFFPROBE` | as `LegacyInitializer::initCore` sets them, unchanged |
+| `core.bouquets`, `core.categories`, `bouquets`, `categories` | those caches as they are, or `[]`: no section carries them yet (R2) |
+| the xc_vm crontab (once per boot) | only the jobs the replica owns (`ReplicaApply::crontabText(null)`); otherwise left as it is |
+
+Once a process booted this way (`ReplicaBoot::active`), `SettingsRepository::getAll` and `ServerRepository::getAll` never read MAIN's database, forced or not. Any other query opens it lazily, on first use: that is the connect `ConnectAudit` counts and mode 2's refusal (not built) will refuse.
+
+**Who boots from the replica.** `BootKernel::resolve` decides for the CLI profile, `WebApiBootstrap::coreStages` for the web API endpoints:
+
+- **A node in mode 2**, active or quarantined, by the agent's `flows.json` (`NodeFlows::declared`: the file alone, read before the settings, the servers or a database handle exist). Only once an apply built the replica's settings and servers caches since the reboot (`ReplicaBoot::ready`: both in `replica_owned`). Until then `ReplicaStage` runs `DatabaseStage` and `LegacyCoreStage` itself, so a mode 2 node without a replica boots as before, and the refusal will make that boot the fail-closed answer.
+- **`cluster:apply`**, in every mode (`console.php` passes `ReplicaBoot::forArgv`, which answers `always` for it): its work is to build those caches. With CONFIG on it needs no database at all, so the agent's applies go on with MAIN's MariaDB stopped. In shadow, its comparison with MAIN's crontab and RTMP publishers reads MAIN's database on first use, as before.
+- **Everything else boots exactly as before:** nodes in mode 0 and 1, MAIN, the admin UI (`BootContext::Admin`), the streaming entry points (`BootContext::Stream`, `StreamingRequestBootstrap`, `initStreaming`), and a caller that passes `replica => false`. A stale `flows.json` on MAIN cannot move it off its database: no apply built replica caches there.
+
+**`cluster:apply --from-disk`.** `service` runs it at boot on a node with mode 1 or 2 and CONFIG on, before `daemons.sh` (fifth increment). The agent may not run yet then, and the `<name>.json` files it writes for PHP carry no signature. So with `--from-disk` each section comes from the record behind it (`Core/Cluster/ReplicaRecords`), checked as the agent checked it when it stored it:
+
+- The node's keys come from the agent's `config/cluster/agent.json`: `node_uuid`, `node_box_sk` and `panel_sign_pub`, the last two as Go writes `[]byte` (standard base64, 32 bytes each).
+- A record opens with XCVM-SEAL-v1 (purpose `replica`, context the node uuid) to `u32(len) ‖ payload ‖ sig`. `sig` must verify under the panel key with tag `rep` (`blk` for the blocklist's deltas), and the payload must name this node and the section, with a 64-hex `etag` and an object `data`.
+- A whole section is `<name>.rep`. The blocklist is `blocklist.rep` (with its `seq`) and `blocklist.d/*.blk` applied in name order, each `seq` above the last, removals before additions, the addresses sorted, as the agent's `materialise` does.
+- A section is read only where the agent stored its `.json` (what `ReplicaApply::owns` and the readers go by); its data then comes from the record. A record that is missing, does not open or verify, names another node or section, or a delta out of order, makes the section unreadable: it writes no cache and hands back a cache the replica owned, as a malformed `.json` does.
+- The report gains `from_disk: {verified: [names], unverified: [names]}`, names only: no content, ETag or key.
+
+Without `--from-disk` nothing changes: the agent runs `cluster:apply` right after verifying what it stored.
+
+**`audit.settings_misses` on the node.** `Core/Cluster/SettingsAudit`, called by `SettingsManager`'s getters (`get`, `getBool`, `getInt`, `getString`, `getArray`, `has`):
+
+- It counts on a node in mode 1 or 2, by `flows.json` alone (decided once per process; MAIN and legacy nodes have no file and count nothing). A read of a key outside `lb_settings_keys.php` is a miss; the allowlist's `withheld` keys are known reads, not misses. A read costs one array lookup.
+- A process keeps its counts in memory, at most 64 names and the rest under `*`. It merges them at exit, and at most every 60 s while it runs, into `STORAGE_PATH/cluster/settings_misses/YYYYMMDD.json` (UTC day, `{key: count}`, 64 names and `*`) under the file's lock. Then it rewrites `config/cluster/audit.json`.
+- `audit.json` is `{"settings_misses": {key: count}}` over the last seven UTC days, today included: most missed first, then by name, at most 64 names, the rest (and every key that is not `[a-z0-9_]{1,64}`) under `*`, last. `{}` when nothing was missed. It is written only where the agent's directory exists, atomically, and removed in mode 0. `cron:cleanup` prunes day files older than eight days and rewrites it every hour, so days that leave the window drop out.
+- Nothing reaches a database; a failed write is dropped (the next merge tries again). Files a root process creates are handed to xc_vm.
+
+**`audit.settings_misses` on MAIN.** `Domain/Cluster/NodeAudit`: the heartbeat's `audit` is kept in `cluster_nodes.audit` (migration 045, mirrored in `database.sql`) as `{"settings_misses": {…}}`:
+
+- Only an object whose `settings_misses` is an object, at most 16 KiB as MAIN encodes it. Entries that are not a name (or `*`) with an integer count of at least 1 are dropped. Past 64 names the least missed fold into `*`. Other members are not kept yet.
+- It is written only when it differs from what the row holds. The row is read for every request already, so an unchanged report costs no query, on the cluster bus or not. A heartbeat without `audit` (today's agent), or with a malformed one, changes nothing, and neither does any heartbeat before migration 045.
+- The Cluster Nodes page shows, for a node in mode 1 or 2, `—` (nothing reported), `0`, or the number of keys with the keys and counts.
+
+**How it differs from the plan.**
+
+- `ReplicaStage` replaces the two stages only once an apply built the caches, not outright: a mode 2 node rebooted before its first apply would otherwise boot with no settings.
+- `cluster:apply` boots from the replica in every mode, not only mode 2: the plan's boot from disk is needed from mode 1 on, and so is its apply with MAIN's MariaDB stopped (Phase 7's acceptance).
+- The stream and admin boots keep their stages; the plan names only the CLI profile and `WebApiBootstrap`.
+- `--from-disk` verifies the stored records with the agent's keys. The plan had PHP trust the agent's verified files, which holds while the agent runs. It verifies under the agent's pinned panel key, not root's pin (`RootPin`): whoever could plant a record in xc_vm's files could as well write the caches the apply builds.
+- The misses are counted through `SettingsManager`'s getters only. Reads of `SettingsManager::getAll()[…]` or `$rSettings[…]` cannot be seen at run time; they are what the allowlist's CI scan covers.
+- The report is a seven-day window, like the connect audit's cutover gate, and MAIN keeps the node's last report. The plan says neither.
+- Migration 045: 044 is taken by a concurrent change on another branch.
+
+**Known limits.**
+
+- Mode 2 is not switched on yet, and its refusal is not built: in a process booted from the replica, a query outside the settings and servers still opens MAIN's database.
+- No section carries the bouquets, categories, proxies or allowed-IPs caches (R2). A mode 2 node's `cron:cache` still builds them from MAIN's database, and during a MAIN outage it stops at the first such read. The agent's `cluster:apply` still applies the replica then.
+- In mode 1 only `cluster:apply` and the streaming endpoints, which read the caches, serve during a MAIN outage after a reboot. The daemons and crons still boot through MAIN's database (the watchdog waits for it), as the plan has it for hybrid mode.
+- A mode 2 process that boots before an apply built the caches after a reboot (a cron in the first minute, before `service`'s apply) boots through MAIN's database.
+- After a re-enrolment (new node keys) or a new panel root, the stored records no longer verify, and `--from-disk` applies none of them until the agent fetches them again. Today's agent keeps its ETags and never does while the data is unchanged (contract below).
+- The misses reach MAIN only once the agent sends `audit.json`; today's agent does not, and the page shows `—`. The heartbeat's other audit counters (`audit.sql_connects`, `audit.redis_connects`, `audit.sites`) are not reported yet; the same `audit` object is meant to carry them.
+
+**Tests.**
+
+- `ReplicaBootTest`: the CLI profile and `WebApiBootstrap::coreStages` per mode and state (mode 0 and 1, MAIN, a mode 2 node that is enrolling or revoked: unchanged), `cluster:apply` in every mode, and the fallback until an apply. In a child PHP, it runs the real `console.php` and bootstrap in a throwaway deploy root, with an `xcvm_core` stand-in whose database never answers and logs each connect. `cluster:apply --from-disk` and the agent's `cluster:apply` build every cache without one connect; a mode 1 node still connects at boot; a mode 2 node boots through its database before an apply and without one connect after, its CLI and a cached web API endpoint leaving the globals and container entries above. A miss in that process reaches `audit.json` at its exit, and the boot itself reads only allowlisted settings.
+- `ReplicaRecordsTest`: the records win over a planted or stale `.json`; a corrupt record, one signed by another panel key, one for another node, another section's record and a missing one are refused and hand back their caches; no or a broken `agent.json` verifies nothing; the blocklist's deltas in and out of order; nothing stored exits 2; the report holds no content.
+- `SettingsAuditTest`: counts per getter, `withheld` not counted, mode 0 and MAIN counting nothing, the merge across processes, the caps, the seven-day window and the pruning, the empty report, and the minute's merge of a long-running process.
+- `ClusterApiTest`: a heartbeat's `audit` stored once, normalised; an unchanged, missing or malformed one writing nothing; an empty one clearing the page (`ClusterAdmin::nodes`); the cap; no column before migration 045. `ClusterSchemaTest`: migration 045.
+
+**The agent's contract (XC_VM_Fanout, not built yet).**
+
+- **`audit`.** At every heartbeat, read `audit.json` beside `flows.json` and `local.json` (`filepath.Join(filepath.Dir(statePath), "audit.json")`). When it exists, is at most 16 KiB and parses to a JSON object, send it as the heartbeat payload's `audit`, parsed and re-encoded like `telemetry.local`. Otherwise send no `audit`: MAIN keeps what it has. There is no age limit: PHP rewrites the file at least every hour on a node in mode 1 or 2 and removes it in mode 0. The agent need not interpret it: MAIN checks it and ignores members it does not know, so a later PHP can add `sql_connects`, `redis_connects` and `sites` without an agent change. The reply is unchanged.
+- **`agent.json`.** `cluster:apply --from-disk` reads `node_uuid` (a lowercase UUID string), `node_box_sk` and `panel_sign_pub` (each 32 bytes, as `encoding/json` writes `[]byte`: standard base64 with padding) from the agent's state file. Keep those names and that encoding, the file readable by xc_vm (it is written 0600 by xc_vm), and the panel key the one the stored records verify under.
+- **Stored records.** Keep writing each record as received: `<name>.rep` (sealed bytes, not base64), `blocklist.rep`, and the deltas as `blocklist.d/<seq, 19 digits>.blk`, since PHP verifies them at boot. Write `.rep` before `.json`: PHP reads a section only where its `.json` exists, and then takes the `.rep`.
+- **Records that no longer verify.** When the agent starts, and after an enrolment or re-key that changed its box key or pinned panel key, open and verify every stored record with the current keys. For each whole section whose record fails, set its held ETag to `""` (`whole_etags`, `settings_etag`). For a blocklist that fails, set `blocklist_etag` to `""` and `blocklist_seq` to 0, so the next `config` call fetches it again. Otherwise MAIN answers `unchanged` while the data is unchanged, and `--from-disk` keeps refusing the old records.
+- **Nothing else changes for the boot.** `service` runs `cluster:apply --from-disk` itself; the agent keeps running plain `cluster:apply` after it stores something. The output gains `from_disk` only with `--from-disk`. The exit codes are the sixth increment's.
 
 ### The cluster bus (Phase 2, first increment): wake-ups
 
