@@ -3283,6 +3283,23 @@ correlating two pages by server id.
 - Both read the cluster tables inside a `try`, and both treat the API being off as nothing to
   show: these are pages an operator opens before `cluster:init` has ever run.
 
+### The legacy `/api` gets its own switch (Phase 8, second increment)
+
+The plan makes `api_legacy.conf` a prerequisite of the data plane: the legacy server-to-server
+endpoint — whose authentication is `password=<live_streaming_pass>` in a URL — must be able to
+answer 404 once nothing needs it, and it could not, because its two locations were inline in
+`nginx.conf` with no toggle.
+
+It follows the pattern the Ministra legacy `/c` redirect already uses: an included file with
+one `set`, written by the root cron when it changes, and an `if` in each location. The switch
+is the node's **own** DATAPLANE flow, read from its `flows.json` — this is a node deciding
+whether its own legacy endpoint still has callers, not a fleet-wide setting. No node has
+DATAPLANE (the data plane itself is not built), so every node today writes `set $api_legacy
+1;` and serves `/api` exactly as before; `ModeTwoPathsTest` pins both directions.
+
+MAIN's own `/api` keeps no toggle: what may retire it is every node being in mode 2 with the
+data plane on, which is a cluster-wide judgement and belongs with the rest of Phase 8.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

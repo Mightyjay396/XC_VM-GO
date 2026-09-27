@@ -59,7 +59,7 @@ final class ModeTwoPathsTest extends TestCase {
 		file_put_contents($this->rHome . 'bin/nginx/conf/ports/http.conf', 'listen 8080;');
 		file_put_contents($this->rHome . 'bin/nginx/conf/ports/https.conf', '');
 		file_put_contents($this->rHome . 'bin/nginx_rtmp/conf/port.conf', 'listen 8880;');
-		foreach (['realip_xc_vm.conf', 'realip_cloudflare.conf', 'limit.conf', 'limit_queue.conf', 'ministra_legacy.conf'] as $rConf) {
+		foreach (['realip_xc_vm.conf', 'realip_cloudflare.conf', 'limit.conf', 'limit_queue.conf', 'ministra_legacy.conf', 'api_legacy.conf'] as $rConf) {
 			file_put_contents($this->rHome . 'bin/nginx/conf/' . $rConf, '');
 		}
 		// The hourly self-heals are not this test's: done a moment ago.
@@ -392,6 +392,23 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertStringContainsString('Updating Crons...', $rResult['output'][0], 'the replica\'s jobs, not MAIN\'s table');
 		$this->assertContains('sudo iptables -I INPUT -s 203.0.113.1 -j DROP', $this->commands(), 'the blocklist from the replica');
 		$this->assertSame([], preg_grep('/^ip /', $this->commands()), 'no server IP check on a node');
+		// This fixture's node has every flow, the data plane included, so the
+		// legacy `/api` — whose auth is a password in a URL — is 404 here.
+		$this->assertSame('set $api_legacy 0;', trim((string) file_get_contents($this->rHome . 'bin/nginx/conf/api_legacy.conf')));
+	}
+
+	/**
+	 * Without the data plane the legacy `/api` stays served, whatever else the
+	 * node has moved: MAIN still reaches it that way for a relay's sources, a
+	 * cross-server VOD pull and a created channel. No node has DATAPLANE today,
+	 * so this is every fleet.
+	 */
+	public function testTheLegacyApiStaysServedWithoutTheDataPlane(): void {
+		$this->node([], NodeFlows::DATAPLANE);
+		[, $rOut, $rResult] = $this->child(['root_signals']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertSame('set $api_legacy 1;', trim((string) file_get_contents($this->rHome . 'bin/nginx/conf/api_legacy.conf')));
 	}
 
 	/**
