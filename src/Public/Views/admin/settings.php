@@ -2341,6 +2341,10 @@ use XcVm\Domain\Server\ServerRepository;
 														<option value="<?= $rValue ?>" <?= ($rSettings[$rKey] ?? ClusterSettings::ENUMS[$rKey][0]) === $rValue ? 'selected' : '' ?>><?= $rValue ?></option>
 													<?php endforeach; ?>
 												</select>
+											<?php elseif ($rType === 'number'): ?>
+												<?php // The bounds the save clamps to (ClusterSettings::INTS), so the browser refuses what the panel would only correct; cluster_api_port has its own check (portProblem).
+												[, $rMin, $rMax] = ClusterSettings::INTS[$rKey] ?? [0, 0, 65535]; ?>
+												<input type="number" step="1" min="<?= (int) $rMin ?>" max="<?= (int) $rMax ?>" class="form-control text-center" id="<?= $rKey ?>" name="<?= $rKey ?>" value="<?= htmlspecialchars((string) ($rSettings[$rKey] ?? '')) ?>">
 											<?php else: ?>
 												<input type="text" class="form-control text-center" id="<?= $rKey ?>" name="<?= $rKey ?>" value="<?= htmlspecialchars((string) ($rSettings[$rKey] ?? '')) ?>">
 											<?php endif; ?>

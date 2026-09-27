@@ -3206,6 +3206,17 @@ Five of the cluster settings were stored, clamped, shown in the settings form wi
 
 The gate is deliberately limited to `src/Core/`. Across the whole tree there are about 90 references from shipped files into stripped ones (admin controllers reach `Domain\User`, `Domain\Device`…), and nearly all are in files a node never executes; a file-level gate over all of them would be noise with an allowlist longer than the rule. Core is the one tree that by definition runs on both sides, and the runtime tests (`ModeTwoPathsTest`) cover the rest by actually running a node's code paths.
 
+### Daemons that re-executed themselves every pass (Phase 0, fifth increment)
+
+Four daemons — `queue`, `scanner`, `signals`, `watchdog` — had their whole pass inside a `while` whose last statement was an unconditional `break`. Every pass therefore fell out of the loop and `restartDaemon()` re-executed `console.php`: a fresh bootstrap, settings read and database connect per pass, per node, four times a second in the signals daemon's case. The plan's acceptance asks for 24 h RSS and a per-LB queries/s figure, neither of which can be measured on a process that never lives a second.
+
+The loops stay up. Every `break` that means something — a code change, nginx stopped, MAIN's database gone — is untouched, and `restartDaemon()` still re-execs when one of those fires, which is how a deploy is picked up. Two things fell out of the change:
+
+- The signals daemon paced itself *inside* the branch that read `signals`, so a node whose first query failed spun as fast as MariaDB would answer. The `usleep` is the loop's own now (`PASS_USEC`), and mode 2 — which has no rows to read — `continue`s through it instead of breaking.
+- The watchdog's CPU sample is a delta between two reads of `/proc/stat`. A fresh process had no previous read, so it took one, slept 2 s and compared: every pass's first (and only) sample was over its own sleep. Now the delta is between passes, which is what a load average wants.
+
+`DaemonLoopTest` refuses an unconditional `break` at the end of any daemon's loop, because this is a pattern that was copied four times.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):
