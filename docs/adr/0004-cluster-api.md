@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phase 0 (seams), Phase 1 (crypto contract, schema, settings) and Phase 2's API, Go agent and SSH enrolment of new LBs (below) are implemented. Enrolling existing LBs over SSH (`server:enrol`), `token_rekey` and enrolment by code are too. The admin page *Servers → Cluster Nodes*, `cron:cluster` and MAIN's own FPM pools for the API are too. Phase 3 (authoritative telemetry, the 1 s liveness loop, MAIN endpoint changes) is too. Phase 4 has its command channel (RPCs and viewer kills), root commands and artefacts. Phase 5 (logs, stream state, content and the fanout's monitor feed as events) is too. Phase 6 has remote kills and viewer drops as commands, the connection store seam, the agent's connection registry, connection limits enforced on MAIN, and the connection digest with snapshots and seeding; admission and the agent's HLS reaper are not in yet. Phases 6–11 are not.
+- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Phase 8 (the data plane without bearer credentials) and Phase 9 (the licence lease, cutover and lockdown) are not; Phase 9 waits on the `xcvm_core` cluster API. No node runs mode 2 in production yet: `api_mode_allowed` is false and nothing promotes a node's mode.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -3078,6 +3078,258 @@ The shadow diff for `rtmp_ips` compares against the database, because an LB neve
 - When that cache is not there yet, the sync leaves iptables as it is rather than unblocking everything.
 
 **Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. On the blocklist path, the root flush still arrives as a `signals` row, until `node.root blocklist_sync` replaces it. The eighth Phase 7 increment built the refusal, and runs the flush from the `node.root` command MAIN already sent where it sends one.
+
+### Switching the CONFIG flow (Phase 7, fifteenth increment)
+
+Every Phase 7 reader keys off `NodeRegistry::FLOW_CONFIG` (`ReplicaBoot`, `ReplicaApply`, `BlocklistService`, `CacheCronJob`, `RootSignalsCronJob`, `BruteforceGuard`, `cluster:apply`), but `ClusterAdmin::FLOW_BITS` — the list the *Cluster Nodes* page renders a button from, and the only writer of `cluster_nodes.flows` — did not carry it. The replica was built, tested and switchable by nobody.
+
+`config` joins the list between `content` and `connections`, with the two actions the page posts (`config_on`, `config_off`) and its own column. `NodeRegistry::validFlows()` needed no new rule: CONFIG has no prerequisite, and the existing ones (CONNECTIONS needs COMMANDS and STREAMS, DATAPLANE needs STREAMS and CONTENT) already refuse the combinations that matter. `ClusterFlowSwitchTest` pins the header row against `FLOW_BITS`, because the page renders a fixed header and one cell per entry, and pins that each flow has its four strings.
+
+The new strings are English-only until `make lang-translate` runs (it needs the docs venv and a provider key); the Translator copies English for a missing key meanwhile.
+
+**Not built:** promoting a node's `mode`. `mode` is written once at enrolment from `lb_new_node_mode`, and `api_mode_allowed` is still false (`SettingsService.php:85`), so CONFIG can be switched on a node in mode 0 or 1 — where it is read — but no node runs mode 2 yet. That, and the gate that reads the connect audit before promoting, is Phase 9.
+
+### Promoting a node's mode (Phase 9, first increment)
+
+`cluster_nodes.mode` was written once, at enrolment, from `lb_new_node_mode`. Nothing moved a node afterwards, so the modes every reader honours (mode ≥ 1 boots from the replica, mode 2 refuses MAIN's database through `LbDatabaseAccessException`) were unreachable.
+
+The Cluster Nodes page gets `mode_up` and `mode_down` beside the mode, and `ClusterAdmin::modeGate()` decides:
+
+- **Down is always allowed.** It is the way back when a node misbehaves.
+- **Up to 1** needs the CONFIG flow: that is what the node boots from.
+- **Up to 2** needs every flow but the data plane (`ClusterAdmin::MODE2_FLOWS`, Phase 8 is not built), and the node's own connect audit must report `sql_connects` and `redis_connects` at zero with `connects_since` at least `CUTOVER_CLEAN_DAYS` (7) old. That is the plan's cutover gate, read from the report the node already sends in its heartbeat (`NodeAudit`), which the page has been showing all along.
+
+The gate is pure and tested (`ClusterModeGateTest`) rather than reached through a request. The agent learns its new mode from the `mode` its next `hello` or `heartbeat` answer carries, and `NodeAuthCache` drops its copy of the row because `mode` is not a lagging column.
+
+**Not built:** `api_mode_allowed` is still false (`SettingsService.php:85`), so `lb_new_node_mode` cannot be set to `api` and a *new* node still enrols at mode 0. Promotion is the supported path to mode 2 for now. Flipping that flag is the cutover decision itself, and it stays with the operator.
+
+### The fleet-wide jobs nobody came back for (Phase 0, second increment)
+
+Six places still treated every node as MAIN, or MAIN as every node:
+
+- **Root's crontab had two writers.** `startup` installed `cron:root_signals`, `cluster:root`, `cron:root_mysql` and the module licences; `status` then rewrote the same crontab from its own older list, filtering every `# XC_VM` line — so it deleted `cluster:root` and `cron:module_licenses`. A node stopped draining MAIN's signed root commands until its unit was next started, and the dashboard tells admins to run `status` by hand. `status` now calls `StartupCommand::installRootCrontab()`; one writer, one list.
+- **`update_binaries` went to every server**, and the DELETE that clears the old signals ran once per server inside the loop. `binaries` needs `bin/install/update_binaries.sh`, which the LB build strips, so every LB answered "Updater script not found" and wrote a syslog row saying it was updating. MAIN alone is queued now. LB runtimes come from the install flow, and `fanout_binary`/`xcvm_core` keep themselves current on every node.
+- **The LB update broadcast tested nothing.** `($rServer['enabled'] && status == 1 && fresh) || !$rServer['is_main']` is true for every non-MAIN row, so a disabled or long-dead LB was queued an update anyway. It skips MAIN (which is updating itself) and requires the liveness the condition always meant to.
+- **`update_data` is one row for the cluster.** Whichever server finished an update cleared it, so an LB threw away MAIN's pending update record. MAIN clears it.
+- **The panel-log upload was gated on mode 2** rather than on MAIN, so a mode 0 or 1 LB uploaded the cluster-wide `panel_logs` and marked the rows sent — MAIN then had nothing to send.
+- **`cron:cache_engine` was started on every boot of every node.** The LB build strips `CacheEngineCronJob`, and an LB never writes `cache_complete`, so the exec answered "Unknown command" every time. It runs where the job exists, which asks no database (a mode 2 node has none).
+
+`api_probe` also asked a parent for codecs over `/probe/` without looking at where that parent was: for a loopback parent the node asked itself, mid-analysis, over an unauthenticated endpoint. It reuses `NetworkUtils::probeTargetAllowed()` and falls through to ffprobe.
+
+### The node system API's own inputs (Phase 4, fifth increment)
+
+`/api` is the legacy control plane, and the cluster command channel routes four of its actions to a node unchanged. Three took an input from MAIN and used it as given, which made MAIN's cluster-wide secret the only thing between a caller and the node's filesystem:
+
+- **Paths.** `scandir`, `scandir_recursive` and `getFile` took any absolute path. `getFile` asked only for an extension from its allowlist and `is_readable`. `ClusterSettings::pathAllowed()` now confines them to `lb_scan_roots` (default `/home/xc_vm/content`, `/mnt`, `/media`), which existed as a setting but had no reader. `getFile` passes `MAIN_HOME` as an extra root: its callers want VOD sources (scan roots) and panel files (certbot logs at `BIN_PATH`, subtitles, module archives). Both sides go through `realpath()`, so `..` and a symlink pointing out of a root are refused rather than string-matched, and a path that does not exist is refused.
+- **Probe targets.** `probe` handed its URL to ffprobe, which follows what it is given: the node's own loopback services, `169.254.169.254`, and `file:`/`concat:` for local reads. `NetworkUtils::probeTargetAllowed()` requires `http`/`https` and refuses a host that is — or resolves to — loopback, link-local, unspecified or multicast. Private LAN ranges stay allowed, because parents and proxies sit on them. The host is resolved here and again by ffprobe, so a hostile resolver can still answer differently between the two; the endpoint is reachable only with MAIN's secret from an allowlisted address, and the guard is about MAIN's own inputs, not about a DNS attacker.
+- **Process lines.** `get_pids` returned whole `ps` command lines. A producer's argv carries the source URL, and a relay's carries a viewer token, so provider credentials reached MAIN's admin UI and were stored in `cluster_commands.result`. It now runs `Redactor::redact()` over every line, as the docblock already claimed and as `stream.state` and the log sinks do.
+
+`NetworkUtils::ipInCIDR()` compared addresses with `ip2long()`, which returns `false` for IPv6: `false & mask` made **every** IPv6 address match **every** IPv6 range. It compares packed bytes now and refuses a mismatched family. It had no callers before this increment.
+
+**Not built:** `/xfile` (Phase 8) will inherit `serveFile`'s confinement, and the ticket that replaces `password=` in its URL is still Phase 8 work.
+
+### The encoding queue (Phase 5, sixth increment)
+
+`queue_enqueue`, `queue_claim` and `queue_update` were named in `ClusterPool::INGEST_OPS` (which renders nginx's ingest lane) and nowhere else: no handler on MAIN, no caller on a node. The `queue` table is MAIN's, so on a node booted from its replica the queue daemon looped on `$db->ping()` against a database it must not dial, and `cron:vod` skipped queueing entirely (an explicit `NodeRole::refusesConnects()` guard). A mode 2 node encoded nothing and built no created channel.
+
+- **`QueueSink`** (Core, so it ships to LBs) is the node's half: `enqueue`, `claim`, `update`. With CONTENT on it asks MAIN through the agent; otherwise it runs the SQL the callers ran, over the node's own connection; in mode 2 without the flow it returns `false`/`null` rather than reaching for a database. Only the node's *own* rows go through the agent — MAIN keys every op to the calling node, so admin code queueing onto another server stays a database write.
+- **`NodeQueue`** (Domain, MAIN only) serves the three ops, every statement keyed to the authenticated node's `server_id`. A node therefore sees and changes its own work whatever its payload says, and `claim`'s limit is capped at `QueueSink::MAX_CLAIM` (200). The handler denies the ops with `FLOW_OFF` unless the node's CONTENT flow is on.
+- **`StreamProcess::queueChannel/queueMovie/queueMovies`** are now three calls into the sink, which is also where their rules live (a movie replaces what is queued for that stream, a channel already queued is left alone). The two single-stream writers report whether the work was queued.
+- **The daemon** claims each kind once a pass and reports what it started in one `update`, instead of a `SELECT`/`UPDATE` per row. Its pass also stopped falling out of the loop: the whole body sat inside the first `if ($db->query(...))` with a `break` at the end, so every pass re-executed `console.php queue` through `restartDaemon()`. The channel build's pid adoption is unchanged.
+- **The agent** allows the three ops on its local socket (`SocketOps`, `xc_agent`); everything else it still refuses.
+
+`ClusterQueueTest` pins the SQL, the flow routing (with the flow on, a failed agent call must not fall back to the table), the mode 2 refusal, and that no writer of `queue` is left outside the seam except the three admin surfaces that queue or cancel work on any server.
+
+`queue_update` is retried while MAIN does not answer (a pid MAIN never records is a row the daemon claims again, encoding the same stream twice); `queue_enqueue` is one try, because its callers are crons and admin actions that come round again and a cron must not sit out two minutes of retry waits for an agent that is down.
+
+**Not built:** MAIN does not push a node's queue to it; the node asks each pass, as it always has.
+
+### What a node in mode 2 still could not do (Phase 5, seventh increment)
+
+Three jobs still assumed the node had MAIN's database:
+
+- **Viewer activity.** `cron:activity` drains the node's `activity` spool into `lines_activity` and points each line at its newest row. It built that INSERT itself, so on a node whose LOGS flow is on nothing was sent, and in mode 2 the import died on the connect. `activity` is a `LogSink` type now, which makes it a redacted `log.activity` event on P1 that MAIN's ingest writes with the same insert. The `lines` update (`last_ip`, `last_activity`, `last_activity_array`) moved into `LogSink::insert()` beside the rows, because the rows and that update belong together wherever they are written from — the cron's own copy used `escape()` and hand-built SQL, the sink binds every value.
+  An event is also bounded in bytes now (`LogSink::SPOOL_BYTES`, 1 MiB of values) and not only in rows: a caller's batch is bounded in rows, while a row is as long as its source made it (a user agent, a query string, an ffprobe error), so a thousand oversized rows were one event of tens of megabytes to redact, serialise and post — more than MAIN's ingest takes, and more than the import survived. A single row over the budget still goes as an event of its own.
+- **`console.php status`.** The database section returned 1 on a mode 2 node, which skipped everything status does *locally*: the permissions, nginx's config, root's crontab, the file limits, the init-script cleanup. The dashboard tells admins to run `status`, and a node that never finished it is a node that does not boot right. It now says which mode it is in and carries on; `configureRedisLb` (which points the extension at MAIN's Redis) and the closing `xc_vm_version` UPDATE are skipped — the version reaches MAIN with the next inventory event, within the minute.
+- **`fanout_sync`.** Its candidate rows came from MAIN's Redis or `lines_live` through `DatabaseFactory::connect()`, so in mode 2 the daemon threw on every pass. On a node whose CONNECTIONS flow is on, the agent owns the registry and reconciles it against the fanout itself, so there is nothing here to close or drop: the pass only reports the rates it measures, and every uuid the fanout reports is this node's own — the rows it used to filter them against were MAIN's copy of the same thing. In mode 2 with CONNECTIONS off the pass is skipped, which is the "could not be read" answer the loop has always had.
+
+`admin/thumb` (which ships to LBs: the panel redirects the admin's browser to the node that holds a stream's thumbnails) opened MAIN's database for one `streams` join. It asks `StreamSource::streamRow()` instead — the same join, from the replica where that owns the streams — and opens nothing when it does.
+
+### The on-demand source scanner (Phase 5, eighth increment)
+
+`scanner` probes each of the node's on-demand sources and records what it found in `ondemand_check`, which the *On-Demand Source Scanner* page shows. It selected its candidates with a join over `streams`, `streams_servers` and `ondemand_check`, inserted the row itself, and pointed `streams_servers.ondemand_check` at `last_insert_id()` — so a node booted from its replica scanned nothing.
+
+- **The check** is `log.ondemand_check`, the log type the plan names, with `ondemand_check`'s twelve columns. The node's spool redacts `source_url` and the ffprobe `errors` before they leave (both carry the source's credentials); the SQL path keeps writing them as before.
+- **The pointer** is MAIN's to set in the API path, because only MAIN knows the row's id: `EventIngest` points each of the node's `streams_servers` rows at the check it just inserted, the same `last_insert_id()` arithmetic the scanner does when it writes the row itself.
+- **The candidates** come from `NodeStreams::onDemandDue()`: the same join over MAIN's database, or from the replica (an on-demand stream of type 1, no direct source, no parent, no pid). The "not checked for `on_demand_scan_time`" half of the filter reads `ondemand_check`, which is MAIN's, so from the replica the node dates its own last scan by a marker it touches beside the scan's error file — it is the only server that scans its streams. A deleted stream leaves its marker behind; it is a few bytes in a directory `cron:cleanup` prunes.
+- **The daemon** does a pass a minute in one process now, instead of scanning once and re-executing itself through `restartDaemon()` (the loop ended in an unconditional `break`, as the queue daemon's did).
+- `api_probe` here asked a parent for codecs over `/probe/` without checking where that parent was, as `StreamProcess` did before this phase's fourth increment; it goes through `NetworkUtils::probeTargetAllowed()` too.
+
+`LogSinkTest` now also checks every log type's columns against the install schema, which is what would catch a typo in a table the unit suite cannot reach.
+
+### The viewer's own close (Phase 6, later increment)
+
+A viewer's request ending writes `hls_end = 1` and `hls_last_read` for its connection — the close the HLS reaper and the limits read. `ShutdownHandler` wrote it to Redis through `ConnectionTracker::getConnection()` (Redis only, so on a node whose CONNECTIONS flow is on the record was not there and *nothing* was written) or, in MySQL mode, straight into MAIN's `lines_live`.
+
+It asks the node's own registry first, as every other connection writer does: the record, then a `put` with the close, which the agent mirrors to MAIN as a P0 event. When the agent does not answer, or the record is another process's, the close goes to MAIN's store exactly as before — the fallback matters more than the fast path, and that is what `ShutdownCloseTest` pins. In mode 2 with CONNECTIONS off there is nothing to write and the `lines_live` UPDATE is skipped rather than refused.
+
+### Keeping the fleet's agent current (Phase 4, sixth increment)
+
+MAIN pins the agent: it keeps one SHA-256-verified `xc_agent` per architecture (`console.php agent_binary`) and the install flow pushes it over SSH, "so every node runs the version MAIN pinned". A node did run it — and then ran it for ever. `NodeActions::agentBinary()`, the signed `node.root agent_binary` command with its artefact grant, had no caller at all: root's half, the staging, the checks and the restart were all built, and nothing ever asked for them. The only way to move an agent was to provision the node again.
+
+- **The node's architecture.** MAIN could not choose a binary, because it did not know what the machine was (the install flow read `uname -m` over SSH and did not keep it). The agent reports it at hello as the release assets name it (`amd64`, `arm64`, `armv7`, `386` — `runtime.GOARCH`, with `arm` as `armv7`), and MAIN stores it in `cluster_nodes.arch` when it changes, as it does the MAIN port. MAIN never guesses: without an arch, nothing is offered.
+- **The decision** is `AgentUpgrades::push()`, a `cron:cluster` step: an active node whose reported `agent_version` is not the cached one for its arch, and whose agent takes artefacts, is sent the command. Each push is recorded in `cluster_meta` (`agent_push:<sid>`, with the node's generation) so the same version is not queued every minute; a node that does not come back on it — a failed install, a stopped agent — is offered it again after `RETRY_SEC` (15 min), and a re-enrolled node (a new `gen`) is offered it afresh. Every push is audited as `node.agent_push`.
+- The *Cluster Nodes* page shows the arch beside the agent version, which is also how an operator sees why a node is not being upgraded.
+
+`AgentUpgradeTest` pins the decision (older version, retry window, generation, no arch, no cached binary, an agent that does not take artefacts) with the send injected, because what matters is which nodes are asked, not how the command travels.
+
+### Moving a running fleet to HTTPS (Phase 3, later increment)
+
+Plain HTTP is the default and `https_required` is the operator's choice, but it could not be made on a cluster that had any node at all: the guard read *"until telemetry reports each node's HTTPS (Phase 3), any active node blocks it"* and refused whenever an active node existed. Telemetry arrived; the guard did not.
+
+The node knows the answer, because it is the one dialling: the agent remembers whether MAIN has ever given it an authenticated answer over an `https://` URL (`Client.answered`, beside the known-good URL sets) and reports it as the `https` feature at hello. MAIN's guard now requires that feature on every active node — `NodeRegistry::allActiveHaveFeature('https')`, true with no nodes at all — in addition to its own HTTPS self-probe. A node that has never reached MAIN over HTTPS would be left talking to nobody, which is exactly what the refusal is for; an operator who sees the refusal can tell from the nodes page which node is missing it.
+
+The feature says nothing about plain HTTP, which always works: it is only ever the permission to require HTTPS.
+
+### Settings with a form field and no reader (Phase 0, third increment)
+
+Five of the cluster settings were stored, clamped, shown in the settings form with a description — and read by nothing. Three of them now do what their description says:
+
+- **`servers_stats_retention_days`** and **`cluster_audit_retention_days`** (both 1-365, default 30). `cron:cleanup` prunes the log tables by the `keep_*` settings (seconds); these two are days, so they get their own pass beside it, on MAIN only, as those DELETEs already are. `servers_stats` grows with every node every minute and `cluster_audit` with every cluster decision, and neither was ever pruned.
+- **`cluster_agent_upgrade_parallel`** (1-50, default 1) now stages the agent rollout above: a node offered the binary and not yet back on the new version holds a slot until `RETRY_SEC`, so with the default one node upgrades at a time, lowest server id first.
+
+**Still inert:** `lb_partition_tolerance_h` (how long a node keeps serving after its token expires while MAIN is unreachable) and `lb_fence_drain_min` (how long existing sessions drain after a node is fenced). Both are the node's own behaviour under a partition and belong to Phase 9's fencing, which is not built; the settings are kept because the plan names them.
+
+### Two gates the protocol needed (Phase 0, fourth increment)
+
+- **The crypto vectors could drift apart.** `tests/Support/cluster_vectors.json` and `cluster_canonical_vectors.json` are the contract between the panel, the extension and the Go agent, and the agent keeps its own copies under `internal/clustercrypto/testdata/`. Each side tested itself against the copy it holds, so a regenerated file that was not copied over left the two speaking different protocols with both suites green. Both tests now assert the files' SHA-256, and each records the other's digests: whichever side changes first fails until both are updated, and the failure message says to copy the file over.
+- **Core must not reach MAIN's cluster domain unguarded.** `Core/` ships to load balancers and `Domain/Cluster` does not, so a Core class calling it fatals on a node the moment that line runs. The pattern was already there (`NodeActions`, `SignalDispatcher`, `NodeRpc` all go through `class_exists(ClusterRoute::class)`), but nothing held it: `ClusterSettings::normalize()` called `DbAllowlist::parseExtra()` outright, reachable only from MAIN's settings form — a fatal waiting for the day someone validated a setting on a node. It is guarded (and an unvalidatable value is refused rather than stored), and `make gates` runs `check-core-cluster-refs`, which fails on any reference from `src/Core/` that is not inside a `class_exists()` of the same class. 13 references, all guarded.
+
+The gate is deliberately limited to `src/Core/`. Across the whole tree there are about 90 references from shipped files into stripped ones (admin controllers reach `Domain\User`, `Domain\Device`…), and nearly all are in files a node never executes; a file-level gate over all of them would be noise with an allowlist longer than the rule. Core is the one tree that by definition runs on both sides, and the runtime tests (`ModeTwoPathsTest`) cover the rest by actually running a node's code paths.
+
+### Daemons that re-executed themselves every pass (Phase 0, fifth increment)
+
+Four daemons — `queue`, `scanner`, `signals`, `watchdog` — had their whole pass inside a `while` whose last statement was an unconditional `break`. Every pass therefore fell out of the loop and `restartDaemon()` re-executed `console.php`: a fresh bootstrap, settings read and database connect per pass, per node, four times a second in the signals daemon's case. The plan's acceptance asks for 24 h RSS and a per-LB queries/s figure, neither of which can be measured on a process that never lives a second.
+
+The loops stay up. Every `break` that means something — a code change, nginx stopped, MAIN's database gone — is untouched, and `restartDaemon()` still re-execs when one of those fires, which is how a deploy is picked up. Two things fell out of the change:
+
+- The signals daemon paced itself *inside* the branch that read `signals`, so a node whose first query failed spun as fast as MariaDB would answer. The `usleep` is the loop's own now (`PASS_USEC`), and mode 2 — which has no rows to read — `continue`s through it instead of breaking.
+- The watchdog's CPU sample is a delta between two reads of `/proc/stat`. A fresh process had no previous read, so it took one, slept 2 s and compared: every pass's first (and only) sample was over its own sleep. Now the delta is between passes, which is what a load average wants.
+
+`DaemonLoopTest` refuses an unconditional `break` at the end of any daemon's loop, because this is a pattern that was copied four times.
+
+### Leftovers: one boot sequence, one dead setting, two ops that stay unserved (Phase 0, sixth increment)
+
+- **`console.php service` was a second boot sequence.** The script systemd runs (`MAIN_HOME/service`) starts the fanout, the agent, `fanout_sync`, the replica's `cluster:apply`, takes `storage/cluster` for xc_vm and clears the `cluster_ready` marker; the PHP command — documented for operators in the FAQ and the CLI guide — did none of that, so a panel booted through the console ran a different set of services from one booted by systemd. The command delegates to the script now, `start` mapping to a new non-blocking `boot` entry (the command never held the terminal, and the script's `start` is systemd's foreground one).
+- **`settings.connection_sync_timer`** was a Redis-tab field with no reader at all. The field, the column, its seed value and its two strings are gone, with migration 049 to drop it.
+- **`rpc_result` and `stream_bundle`** stay in `ClusterPool::INGEST_OPS` (the plan's 24 ops, which `ClusterPoolTest` counts) although nothing will ever serve them: a command's result comes back inline with its `ack`, which takes 64 KiB, and the R2 `streams` section carries a stream's whole record with the replica as its miss path. The list is what nginx's ingest lane is rendered from, and an op the API does not serve it refuses itself, so routing them costs nothing — the reason they are there is now written where the list is.
+- **A truncated command result says so.** `CommandBus::ack` cut a result at 64 KiB silently; an admin reading `cluster:exec` output could not tell a complete answer from a cut one. It ends in `[truncated: N bytes]`.
+
+### A disabled line's sessions, and who may declare an allowed IP (Phase 6/2, later increments)
+
+- **`cluster_kill_on_line_disable`** is on by default and says "drop live sessions when a line is disabled, banned or expires". Expiry was covered (`cron:users` closes a connection whose `exp_date` has passed), the rest was not: a line the admin disabled kept streaming until its HLS window ran out or its TS worker was reaped, and the setting itself had no reader. `LineService::dropDisabled()` hangs off the two signals every writer already sends after a line changes — the line form, a mass edit, the reseller API, an activation code's deactivation — so none of them has to remember it, and the close goes through `ConnectionTracker` exactly as a deleted line's does (to the owning node, or to the node's own registry with CONNECTIONS on). The lookup is on the primary key and usually matches nothing, since most saves enable rather than disable. The close block `deleteLineById` carried is now the shared `closeLineConnections()`.
+- **`servers.whitelist_ips` grants the `/api` allowed IPs**, and every node wrote its own `ip -4 addr` into it once a minute — a node that declared an address was granting it, which is the trust hole `proxy_api` was fixed for with a different writer. The API path never carried the column (`NodeStateSink` excludes it), and now the legacy path does not either: MAIN keeps publishing its own addresses (it is the panel, already trusted, and a multi-homed MAIN reaches each node from whichever address the route picks), and elsewhere the column is the admin's. Existing values are left alone, so no fleet loses access on upgrade.
+- The access-code name **`cluster`** joins the reserved list, so an admin cannot create a code whose nginx location sits over the cluster API's.
+- **`cron:users` is the `legacy` role.** The role existed (`ReplicaSections::cronRoles`: a node in mode 0 or 1 runs `all` and `legacy`, one in mode 2 only `all`) and no row used it, so the one cron that walks MAIN's own `lines_live` and Redis was still handed to a node whose database access is refused. A mode-2 node's viewers are its agent's registry, which reaps them itself (`hls_reaper`), and MAIN's copy is reaped by MAIN's own row. Migration 050 moves it on an existing install.
+- **A licence key replaced after a revocation** is audited (`cluster.licence_key`). The nodes need nothing from MAIN here — their next heartbeat mints a token again — but the operator's timeline should say when the key changed, which is the moment a fenced fleet starts coming back.
+
+### Replacing the viewer-token secret without an outage (Phase 8, first increment)
+
+Every stream link, HLS key URL and admin preview token is minted under `live_streaming_pass`, and the links are already in players' hands when the secret changes: the token a viewer sends next was minted under the old value. Changing the secret — which the settings form has always allowed — therefore broke every live link at once, so a leaked secret could not be rotated without a visible outage. The replica's `secrets` section already carried `{kid, current, previous, previous_valid_until}` for exactly this, and the `previous` half was hard-coded to null with a comment that the rotation would fill it.
+
+`StreamSecret` keeps the value replaced beside the config (`stream_secret.prev`, 0600, as OPENSSL_EXTRA keeps its own) and `Encryption::readToken()` tries it once the current secret fails — after the OPENSSL_EXTRA fallback, and for the sealed and legacy formats alike. MAIN writes it when a settings save changes the value; `ReplicaBuilder` publishes it; a node adopts what MAIN dated and never invents one of its own, so both sides accept the same two values for the same window (10 minutes, longer than any HLS window).
+
+The file is stat-ed on each read rather than cached for the process's life: the php-fpm worker that reads a viewer's token is not the process that replaced the secret, and a value cached before the change would leave that worker refusing exactly the links the window exists for. Only a token the current secret already failed to open gets that far.
+
+**Not built (the rest of Phase 8):** the relay and file tickets, the agent's loopback relay proxy, `/xfile` with its digest verification, `/v1/nonce` and `/v1/file_digest`, the loopback URL builders, and rendering `api_legacy.conf` as 404. Those are one change: tickets minted but unverified, or loopback URLs with no proxy behind them, would take a fleet's streams down, and the plan's acceptance for them (no encoder restarts over 48 h, a refused MITM body, replayed headers) can only be measured on a running cluster. `cluster:rotate-stream-secret` waits with them, because a full rotation also re-encrypts what is stored under the secret (the HMAC identities, the image cache's names) — that is the plan's Phase 9 step 5, and it is not a settings save.
+
+### The fleet's heartbeat (Phase 3, later increment)
+
+`lb_telemetry_interval_sec` (1-3 s, default 2) was stored, clamped and shown in the settings form, and reached nobody: the agent takes it as a `-interval` command-line flag, and `run.sh` — the supervisor that actually starts the agent — passes only `-state`. Every node in every fleet heartbeated at the agent's built-in 2 s, whatever the operator set.
+
+It travels with the transport policy, which is how every other fleet-wide transport decision travels: `ClusterPolicy::current()` carries `heartbeat_sec` (the stored value in its bounds, or the setting's own default when unset — 0 would clamp to the floor and quietly make the fleet beat *faster* than it was asked to), and the replica's `cluster` section carries it too, so a node booted from its replica holds the pace before its first hello.
+
+The agent keeps it in its state (a restart holds the pace), clamps what a policy asks for to the same 1-3 s and never past `MaxHeartbeatGap`, and re-tunes its ticker when the value changes — so an operator's change reaches the fleet with the next policy and no agent restart. A policy that says nothing leaves the pace alone, and the `-interval` flag still decides for a node run by hand.
+
+### Rotating a node's token on request (Phase 4, seventh increment)
+
+`token.rotate_now` was listed among the restrictive command types — the ones the extension signs even while MAIN's licence is refused — and had no producer and no executor. An operator who no longer trusted a node's token could revoke the node, which stops it, or wait out `lb_token_rotation_min`.
+
+It is the one command the agent runs itself. Every other command goes to the node's PHP (`cluster:exec`), which verifies it again and runs it with the legacy handlers; this one cannot, because the token is the agent's and the node's PHP has no idea what it is — it would answer "unknown command type". The agent therefore handles the type before the executor, triggers the refresh it already has for the halfway point, and acks; a redelivery moves the high-water and rotates nothing twice.
+
+MAIN's half is `ClusterRoute::rotateNow()` with a dedupe key (a double click queues one command), a *Rotate token* button beside *Revoke* on the Cluster Nodes page, and an audit line (`node.token_rotate`). A node that does not take commands yet is told to switch its COMMANDS flow on rather than being given a button that does nothing.
+
+**Not built:** `stream.stop` and `vod.stop` are still listed as restrictive with no producer, and `node.root rotate_sign_key` — re-pinning MAIN's panel key without SSH — does not exist. Both are Phase 9's, where the fence and the credential lockdown need them.
+
+### Seeing the cluster from outside its own page (Phase 10, first increment)
+
+Everything the cluster knows about itself was on one page. The dashboard's *Service Status*
+checklist — the place an operator looks first, and the one the panel itself points them to —
+said nothing about it, and the *Servers* list gave no hint which of its rows was a node or
+how far that node had moved, so knowing whether a server still held MAIN's credentials meant
+correlating two pages by server id.
+
+- **The checklist** gains a `Cluster API` row, from the same rows the Cluster Nodes page
+  reads (their health is already settled there). A node MAIN has quarantined or revoked, or
+  one gone silent, is a **failure** — it is serving viewers from a replica nobody is
+  refreshing. A node waiting for a decision (a code enrolment, or one still enrolling) is a
+  **warning**, because it is not serving anything yet. A suspect node (a missed heartbeat or
+  two) is a warning. The API switched off, or on with no node enrolled, is neither, and the
+  row says which. The check is a pure function of those rows, so `DashboardStatusChecksTest`
+  covers every outcome without a database.
+- **The Servers list** badges each node with its state and its mode, linked to the cluster
+  page. Mode 2 is the one that says the server holds no credentials of MAIN's; mode 0 says it
+  still does.
+- Both read the cluster tables inside a `try`, and both treat the API being off as nothing to
+  show: these are pages an operator opens before `cluster:init` has ever run.
+
+### The legacy `/api` gets its own switch (Phase 8, second increment)
+
+The plan makes `api_legacy.conf` a prerequisite of the data plane: the legacy server-to-server
+endpoint — whose authentication is `password=<live_streaming_pass>` in a URL — must be able to
+answer 404 once nothing needs it, and it could not, because its two locations were inline in
+`nginx.conf` with no toggle.
+
+It follows the pattern the Ministra legacy `/c` redirect already uses: an included file with
+one `set`, written by the root cron when it changes, and an `if` in each location. The switch
+is the node's **own** DATAPLANE flow, read from its `flows.json` — this is a node deciding
+whether its own legacy endpoint still has callers, not a fleet-wide setting. No node has
+DATAPLANE (the data plane itself is not built), so every node today writes `set $api_legacy
+1;` and serves `/api` exactly as before; `ModeTwoPathsTest` pins both directions.
+
+MAIN's own `/api` keeps no toggle: what may retire it is every node being in mode 2 with the
+data plane on, which is a cluster-wide judgement and belongs with the rest of Phase 8.
+
+### The data plane's two local helpers (Phase 8, third increment)
+
+Two things a node's PHP cannot do for itself while it serves a relay or file request, and which
+the plan puts on the agent's local socket:
+
+- **`POST /v1/nonce`.** A parent must see each relay nonce once, or a sniffer's copied headers
+  replay inside the signature's window. MAIN has the cluster bus for that; a load balancer
+  serving as a parent has only its agent, so the window lives there: two buckets rotating on
+  use over 180 s, no goroutine and no timer, and a full window (100 000 nonces) **refuses**
+  rather than growing — a refused relay retries, an agent that ran out of memory does not.
+- **`POST /v1/file_digest`.** The owner of a file vouches for what it served with its *node*
+  key, which the agent holds and PHP does not. The agent signs `FileDigest`'s document — whose
+  keys PHP sorts, so the Go struct declares them in that order and a byte of difference would
+  fail the fetcher's verification — with the `digest` purpose, which the closed purpose set
+  already had.
+
+`Core\Cluster\AgentDataPlane` is PHP's half. Both calls answer null when the agent did not,
+and the caller must read that as "I cannot prove this" and refuse: a parent that cannot spend a
+nonce cannot tell a replay from a first attempt, and an owner that cannot have its digest
+signed must serve nothing. Nothing calls either yet, and nothing here reaches MAIN.
+
+**Why the rest of the relay half is still one change.** The tickets themselves belong in the R2
+`streams` record (its `tickets` slot is still null), and a ticket that changes every 12 h would
+change the record's hash — so a refresh would look like a stream change to every reader, resync
+the section and, before the plan's M17 re-spec, restart the encoders daily. Making the refresh
+invisible means excluding tickets from the record's version, teaching the delta path to carry
+them, and having the agent's loopback proxy swap them into the header it sends — the same change
+as the proxy and the loopback URL builders. It lands whole, and its acceptance (no encoder
+restart over 48 h, a refused MITM body, replayed headers rejected) is measured on a running
+fleet.
 
 ### Disaster recovery of MAIN's cluster keys
 

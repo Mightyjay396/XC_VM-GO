@@ -7,6 +7,7 @@ use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Config\OpensslExtra;
+use XcVm\Core\Config\StreamSecret;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -336,7 +337,8 @@ final class ReplicaBuilder {
 		}
 		return [
 			'main_urls' => $rPolicy['main_urls'], 'urls_ver' => $rPolicy['policy_ver'], 'policy_ver' => $rPolicy['policy_ver'],
-			'transport' => $rPolicy['transport'], 'panel_sign_pub' => base64_encode((string) ($rInfo['panel_sign_pub'] ?? '')),
+			'transport' => $rPolicy['transport'], 'heartbeat_sec' => $rPolicy['heartbeat_sec'],
+			'panel_sign_pub' => base64_encode((string) ($rInfo['panel_sign_pub'] ?? '')),
 			'panel_box_pub' => base64_encode((string) ($rInfo['panel_box_pub'] ?? '')), 'min_proto' => ClusterApi::PROTO_MIN, 'off_air' => $rOffAir,
 		];
 	}
@@ -422,8 +424,9 @@ final class ReplicaBuilder {
 	 * from the settings row) and OPENSSL_EXTRA (the value this php-fpm mints
 	 * with), each with its kid, and the value MAIN replaced while it is still
 	 * accepted on MAIN's clock. Only OPENSSL_EXTRA has one today
-	 * (config/openssl_extra.prev); the stream secret's rotation (plan, section
-	 * 10, step 4) will fill its own. An unset value throws: a node refuses an
+	 * (config/openssl_extra.prev) and the stream secret its own
+	 * (config/stream_secret.prev, written when a settings save replaces it).
+	 * An unset value throws: a node refuses an
 	 * empty `current` (ReplicaSections::secret), and cron:root_signals sets a
 	 * missing stream secret on MAIN within the minute.
 	 *
@@ -436,7 +439,7 @@ final class ReplicaBuilder {
 			throw new \RuntimeException('replica: a secret is not set');
 		}
 		return [
-			'live_streaming_pass' => self::secret('live_streaming_pass', $rLive, null),
+			'live_streaming_pass' => self::secret('live_streaming_pass', $rLive, StreamSecret::previousEntry(ClusterClock::now())),
 			'openssl_extra' => self::secret('openssl_extra', $rExtra, OpensslExtra::previousEntry(ClusterClock::now())),
 		];
 	}

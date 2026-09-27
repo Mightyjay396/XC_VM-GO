@@ -4,8 +4,10 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -107,7 +109,12 @@ class FanoutSyncCommand implements CommandInterface {
 			// left behind (pid 0); the PHP-served rows of the legacy path carry
 			// their php-fpm pid and are never touched here.
 			$rActive = $rEnabled ? FanoutClient::activeConnections() : [];
-			if ($rActive !== null) {
+			if ($rActive !== null && AgentConnections::enabled()) {
+				// The agent owns this node's registry and reconciles it against the
+				// fanout itself, so there are no rows here to close or drop: the
+				// daemon only reports the rates it measures.
+				$this->spoolRates($rActive);
+			} elseif ($rActive !== null) {
 				$rConns = $this->daemonConnections();
 				if ($rConns !== null) {
 					$this->reconcile(array_flip($rActive), $rConns);
@@ -296,6 +303,20 @@ class FanoutSyncCommand implements CommandInterface {
 	}
 
 	/**
+	 * A CONNECTIONS node's delivery rates, as a conn.divergence event: every
+	 * viewer the fanout reports is this node's own, so the rates need no row of
+	 * MAIN's to be filtered against.
+	 *
+	 * @param list<string> $rActive The fanout's open connection uuids.
+	 */
+	private function spoolRates(array $rActive): void {
+		$rRates = FanoutClient::connectionRates();
+		if (is_array($rRates) && $rRates !== []) {
+			$this->spoolDivergence(array_map(static fn($rUUID): array => ['uuid' => (string) $rUUID], $rActive), $rRates);
+		}
+	}
+
+	/**
 	 * On a node whose CONNECTIONS flow is on, the daemon's rates for this
 	 * node's daemon-served rows go to MAIN as a conn.divergence event, at most
 	 * every DIVERGENCE_EVERY, and MAIN works out the divergence from the
@@ -335,6 +356,16 @@ class FanoutSyncCommand implements CommandInterface {
 	 */
 	private function daemonConnections(): ?array {
 		global $rSettings;
+
+		// With CONNECTIONS on, this node's viewers live in its agent's registry,
+		// which the agent reconciles against the fanout itself; in mode 2 there is
+		// neither MAIN's Redis nor its `lines_live` to read. Null is the answer the
+		// loop already has for "could not be read": it skips the pass.
+		// A node in mode 2 has neither MAIN's Redis nor its `lines_live` to read.
+		// Null is the answer the loop already has for "could not be read".
+		if (NodeRole::refusesConnects()) {
+			return null;
+		}
 
 		if (!empty($rSettings['redis_handler'])) {
 			RedisManager::ensureConnected();

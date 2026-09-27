@@ -1,10 +1,12 @@
 <?php
 
+use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\AdminStreamToken;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -34,16 +36,16 @@ if (!empty(RequestManager::get('uitoken'))) {
 	generate404();
 }
 
-$db = DatabaseFactory::open();
+// The stream's row through the node seam: from its replica where that owns the
+// streams (a node in mode 2 has no database of MAIN's to open), else the same
+// join over MAIN's database as before.
+$db = ReplicaStreamCache::owned() ? null : DatabaseFactory::open();
 $rStreamID = intval(RequestManager::get('stream'));
-$rStream = [];
-$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_types` t2 ON t2.type_id = t1.type AND t2.live = 1 LEFT JOIN `profiles` t4 ON t1.transcode_profile_id = t4.profile_id WHERE t1.direct_source = 0 AND t1.id = ?', $rStreamID);
+$rStream = StreamSource::streamRow($rStreamID, true, $db);
 
-if ($db->num_rows() <= 0) {
+if ($rStream === null) {
 	generate404();
 }
-
-$rStream = $db->get_row();
 
 if (SERVER_ID == $rStream['vframes_server_id']) {
 	if (file_exists(STREAMS_PATH . $rStreamID . '_.jpg') && time() - filemtime(STREAMS_PATH . $rStreamID . '_.jpg') < 60) {

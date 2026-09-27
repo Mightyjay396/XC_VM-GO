@@ -141,6 +141,20 @@ $rBar = static function (int $pct): string {
                         <td class="text-center"><i class="icon-base ti tabler-circle-filled text-<?= $rServer['enable_proxy'] ? 'success' : 'secondary'; ?>"></i></td>
                         <td>
                             <a href="server_view?id=<?= (int) $rServer['id']; ?>" class="fw-medium"><?= htmlspecialchars((string) $rServer['server_name'], ENT_QUOTES); ?></a>
+                            <?php $rNode = $rClusterNodes[(int) $rServer['id']] ?? null; ?>
+                            <?php if ($rNode !== null): ?>
+                                <?php
+                                // A node's state and how far it has moved: mode 2
+                                // holds no credentials of MAIN's, mode 0 still does.
+                                $rHealth = (string) ($rNode['health'] ?? '');
+                                $rTone = $rHealth === 'ok' ? 'success' : ($rHealth === 'suspect' ? 'warning' : ($rNode['state'] === 'active' ? 'danger' : 'secondary'));
+                                ?>
+                                <a href="cluster_nodes" class="badge bg-label-<?= $rTone; ?> ms-1" title="<?= htmlspecialchars($language::get('cluster_node_badge_help'), ENT_QUOTES); ?>">
+                                    <?= htmlspecialchars($language::get('cluster'), ENT_QUOTES); ?> ·
+                                    <?= htmlspecialchars($rHealth !== '' ? $rHealth : (string) $rNode['state'], ENT_QUOTES); ?> ·
+                                    <?= htmlspecialchars($language::get('cluster_mode'), ENT_QUOTES); ?> <?= (int) $rNode['mode']; ?>
+                                </a>
+                            <?php endif; ?>
                             <?php if (!empty($rServer['domain_name'])): ?>
                                 <br><small class="text-body-secondary"><?= htmlspecialchars(explode(',', (string) $rServer['domain_name'])[0], ENT_QUOTES); ?></small>
                             <?php endif; ?>

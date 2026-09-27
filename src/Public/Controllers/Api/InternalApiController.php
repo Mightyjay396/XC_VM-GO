@@ -4,10 +4,13 @@ namespace XcVm\Public\Controllers\Api;
 
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\Redactor;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\SystemInfo;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -294,7 +297,7 @@ class InternalApiController {
 				$rDirectory = urldecode($rRequest['dir']);
 				$rAllowed = !empty($rRequest['allowed']) ? urldecode($rRequest['allowed']) : null;
 
-				if (!file_exists($rDirectory)) {
+				if (!file_exists($rDirectory) || !ClusterSettings::pathAllowed($rDirectory, $rSettings['lb_scan_roots'] ?? null)) {
 					exit(json_encode(['result' => false]));
 				}
 
@@ -314,7 +317,7 @@ class InternalApiController {
 				$rDirectory = urldecode($rRequest['dir']);
 				$rAllowed = !empty($rRequest['allowed']) ? explode('|', urldecode($rRequest['allowed'])) : [];
 
-				if (!file_exists($rDirectory)) {
+				if (!file_exists($rDirectory) || !ClusterSettings::pathAllowed($rDirectory, $rSettings['lb_scan_roots'] ?? null)) {
 					exit(json_encode(['result' => false]));
 				}
 
@@ -351,7 +354,9 @@ class InternalApiController {
 
 			case 'get_pids':
 				exec('ps -e -o user,pid,%cpu,%mem,vsz,rss,tty,stat,time,etime,command', $rReturn);
-				echo json_encode($rReturn);
+				// Full argv: stream sources and viewer tokens carry credentials, and
+				// this answer is stored in cluster_commands.result and shown in admin.
+				echo json_encode(array_map([Redactor::class, 'redact'], $rReturn));
 
 				exit();
 
@@ -472,6 +477,12 @@ class InternalApiController {
 			exit(json_encode(['result' => false, 'error' => 'Invalid file extension.']));
 		}
 
+		// Callers ask for VOD sources under the scan roots, and panel files under
+		// MAIN_HOME (certbot logs, subtitles, module archives). Nothing else.
+		if (!ClusterSettings::pathAllowed($rFilename, $rSettings['lb_scan_roots'] ?? null, [MAIN_HOME])) {
+			exit(json_encode(['result' => false, 'error' => 'Invalid file path.']));
+		}
+
 		header('Content-Type: application/octet-stream');
 		$rFP = @fopen($rFilename, 'rb');
 		clearstatcache();
@@ -539,6 +550,11 @@ class InternalApiController {
 		}
 
 		$rURL = $rRequest['url'];
+
+		if (!NetworkUtils::probeTargetAllowed($rURL)) {
+			exit(json_encode(['result' => false, 'error' => 'Invalid probe target.']));
+		}
+
 		$rFetchArguments = [];
 
 		if (!empty($rRequest['user_agent'])) {

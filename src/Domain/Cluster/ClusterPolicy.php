@@ -19,7 +19,7 @@ final class ClusterPolicy {
 	/**
 	 * @param array<string, mixed> $rSettings
 	 * @param array<string, mixed> $rMain The main server's `servers` row.
-	 * @return array{policy_ver: int, transport: string, main_urls: list<string>}
+	 * @return array{policy_ver: int, transport: string, heartbeat_sec: int, main_urls: list<string>}
 	 */
 	public static function current(array $rSettings, array $rMain, ?bool $rHttpsOk = null): array {
 		$rTransport = (string) ($rSettings['cluster_transport'] ?? 'auto');
@@ -85,8 +85,26 @@ final class ClusterPolicy {
 		return [
 			'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
 			'transport' => $rTransport,
+			// The heartbeat the fleet keeps (`lb_telemetry_interval_sec`, 1-3 s).
+			// The agent takes it as a command-line flag that nothing passes, so
+			// the setting had no way of reaching a node and every one of them
+			// heartbeated at the agent's own default; it travels with the policy,
+			// which is how every other fleet-wide transport decision travels.
+			'heartbeat_sec' => self::heartbeatSec($rSettings),
 			'main_urls' => array_values(array_unique($rUrls)),
 		];
+	}
+
+	/**
+	 * `lb_telemetry_interval_sec` as the nodes are told it: the stored value in
+	 * its bounds, or the setting's own default when it is unset (0 would clamp
+	 * to the floor and quietly make the fleet beat faster than it was asked to).
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function heartbeatSec(array $rSettings): int {
+		$rWanted = intval($rSettings['lb_telemetry_interval_sec'] ?? 0) ?: ClusterSettings::INTS['lb_telemetry_interval_sec'][0];
+		return ClusterSettings::clampInt('lb_telemetry_interval_sec', $rWanted);
 	}
 
 	/**

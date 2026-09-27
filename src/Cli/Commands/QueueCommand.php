@@ -4,8 +4,9 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Streaming\Health\ProcessChecker;
@@ -45,106 +46,130 @@ class QueueCommand implements CommandInterface {
 		$this->killStaleProcesses('console.php queue');
 		$this->killStaleProcesses('XC_VM\\[Queue\\]');
 		$this->initDaemonMD5();
+		// A node in mode 2 has no database of MAIN's: its queue is claimed and
+		// updated over the cluster API, and a pass pings nothing.
+		$rApi = NodeRole::refusesConnects();
 
-		while ($db->ping()) {
-			if ($this->shouldRefreshSettings()) {
-				if ($this->hasFileChanged()) {
-					echo "File changed! Break.\n";
-					break;
-				}
-				SettingsManager::set(SettingsRepository::getAll(true));
-				$this->rLastCheck = time();
-			}
-
-			// ── Movie queue ──────────────────────────────────────
-			if ($db->query("SELECT `id`, `pid` FROM `queue` WHERE `server_id` = ? AND `pid` IS NOT NULL AND `type` = 'movie' ORDER BY `added` ASC;", SERVER_ID)) {
-				$rDelete = $rInProgress = [];
-				if ($db->num_rows() > 0) {
-					foreach ($db->get_rows() as $rRow) {
-						if ($rRow['pid'] && (ProcessManager::isRunning($rRow['pid'], 'ffmpeg') || ProcessManager::isRunning($rRow['pid'], PHP_BIN))) {
-							$rInProgress[] = $rRow['pid'];
-						} else {
-							$rDelete[] = $rRow['id'];
-						}
-					}
-				}
-				$rFreeSlots = (0 < SettingsManager::get('max_encode_movies') ? intval(SettingsManager::get('max_encode_movies')) - count($rInProgress) : 50);
-				if ($rFreeSlots > 0) {
-					if ($db->query("SELECT `id`, `stream_id` FROM `queue` WHERE `server_id` = ? AND `pid` IS NULL AND `type` = 'movie' ORDER BY `added` ASC LIMIT " . $rFreeSlots . ';', SERVER_ID)) {
-						if ($db->num_rows() > 0) {
-							foreach ($db->get_rows() as $rRow) {
-								$rPID = StreamProcess::startMovie($rRow['stream_id']);
-								if ($rPID) {
-									$db->query('UPDATE `queue` SET `pid` = ? WHERE `id` = ?;', $rPID, $rRow['id']);
-								} else {
-									$rDelete[] = $rRow['id'];
-								}
-							}
-						}
-					}
-				}
-
-				// ── Channel queue ────────────────────────────────
-				if ($db->query("SELECT `id`, `pid` FROM `queue` WHERE `server_id` = ? AND `pid` IS NOT NULL AND `type` = 'channel' ORDER BY `added` ASC;", SERVER_ID)) {
-					$rInProgress = [];
-					if ($db->num_rows() > 0) {
-						foreach ($db->get_rows() as $rRow) {
-							if ($rRow['pid'] && ProcessManager::isRunning($rRow['pid'], PHP_BIN)) {
-								$rInProgress[] = $rRow['pid'];
-							} else {
-								$rDelete[] = $rRow['id'];
-							}
-						}
-					}
-					$rFreeSlots = (0 < SettingsManager::get('max_encode_cc') ? intval(SettingsManager::get('max_encode_cc')) - count($rInProgress) : 1);
-					if ($rFreeSlots > 0) {
-						if ($db->query("SELECT `id`, `stream_id` FROM `queue` WHERE `server_id` = ? AND `pid` IS NULL AND `type` = 'channel' ORDER BY `added` ASC LIMIT " . $rFreeSlots . ';', SERVER_ID)) {
-							if ($db->num_rows() > 0) {
-								foreach ($db->get_rows() as $rRow) {
-									$rCreateFile = CREATED_PATH . $rRow['stream_id'] . '_.create';
-									// A build for this stream may already be running (e.g. the
-									// queue row was re-added while the previous launch is still
-									// encoding). Killing it and starting over would reset the
-									// build to 0% every time — adopt the live PID instead.
-									$rExistingPID = (file_exists($rCreateFile) ? intval(file_get_contents($rCreateFile)) : 0);
-									if ($rExistingPID && ProcessChecker::checkPID($rExistingPID, 'XC_VMCreate[' . intval($rRow['stream_id']) . ']')) {
-										$db->query('UPDATE `queue` SET `pid` = ? WHERE `id` = ?;', $rExistingPID, $rRow['id']);
-										continue;
-									}
-									if (file_exists($rCreateFile)) {
-										unlink($rCreateFile);
-									}
-									shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php created ' . intval($rRow['stream_id']) . ' >/dev/null 2>/dev/null &');
-									$rPID = null;
-									// console.php bootstrap takes well over the old 300ms window;
-									// give the spawned process up to 5s to write its PID file.
-									foreach (range(1, 20) as $i) {
-										if (!file_exists($rCreateFile)) {
-											usleep(250000);
-										} else {
-											$rPID = intval(file_get_contents($rCreateFile));
-											break;
-										}
-									}
-									if ($rPID) {
-										$db->query('UPDATE `queue` SET `pid` = ? WHERE `id` = ?;', $rPID, $rRow['id']);
-									} else {
-										$rDelete[] = $rRow['id'];
-									}
-								}
-							}
-						}
-					}
-					if (count($rDelete) > 0) {
-						$db->query('DELETE FROM `queue` WHERE `id` IN (' . implode(',', $rDelete) . ');');
-					}
-					sleep((0 < SettingsManager::get('queue_loop') ? intval(SettingsManager::get('queue_loop')) : 5));
-				}
+		while ($rApi || ($db && $db->ping())) {
+			if (!$this->refreshOrBreak()) {
 				break;
 			}
+
+			$rPids = $rDelete = [];
+			$this->movies($rPids, $rDelete);
+			$this->channels($rPids, $rDelete);
+			QueueSink::update($rPids, $rDelete);
+
+			sleep($this->slots('queue_loop', 5));
 		}
 
 		$this->restartDaemon('queue');
 		return 0;
+	}
+
+	/**
+	 * One pass of the movie queue: drop the rows whose encoder is gone, start
+	 * what fits in the free slots.
+	 *
+	 * @param array<int, int> $rPids   Rows started this pass, id => pid.
+	 * @param list<int>       $rDelete Rows to drop.
+	 */
+	private function movies(array &$rPids, array &$rDelete): void {
+		$rMax = $this->slots('max_encode_movies', 50);
+		$rQueue = QueueSink::claim('movie', $rMax);
+		if ($rQueue === null) {
+			return;
+		}
+
+		$rFree = $rMax;
+		foreach ($rQueue['running'] as $rRow) {
+			if (ProcessManager::isRunning($rRow['pid'], 'ffmpeg') || ProcessManager::isRunning($rRow['pid'], PHP_BIN)) {
+				$rFree--;
+			} else {
+				$rDelete[] = $rRow['id'];
+			}
+		}
+
+		foreach ($rQueue['pending'] as $rRow) {
+			if ($rFree-- <= 0) {
+				break;
+			}
+			$rPID = StreamProcess::startMovie($rRow['stream_id']);
+			if ($rPID) {
+				$rPids[$rRow['id']] = $rPID;
+			} else {
+				$rDelete[] = $rRow['id'];
+			}
+		}
+	}
+
+	/**
+	 * The same pass for created channels, which are built by `console.php
+	 * created` and report their pid through a file.
+	 *
+	 * @param array<int, int> $rPids
+	 * @param list<int>       $rDelete
+	 */
+	private function channels(array &$rPids, array &$rDelete): void {
+		$rMax = $this->slots('max_encode_cc', 1);
+		$rQueue = QueueSink::claim('channel', $rMax);
+		if ($rQueue === null) {
+			return;
+		}
+
+		$rFree = $rMax;
+		foreach ($rQueue['running'] as $rRow) {
+			if (ProcessManager::isRunning($rRow['pid'], PHP_BIN)) {
+				$rFree--;
+			} else {
+				$rDelete[] = $rRow['id'];
+			}
+		}
+
+		foreach ($rQueue['pending'] as $rRow) {
+			if ($rFree-- <= 0) {
+				break;
+			}
+			$rPID = $this->startChannel($rRow['stream_id']);
+			if ($rPID) {
+				$rPids[$rRow['id']] = $rPID;
+			} else {
+				$rDelete[] = $rRow['id'];
+			}
+		}
+	}
+
+	/**
+	 * Build one created channel. A build for this stream may already be running
+	 * (the row was re-added while the previous launch is still encoding):
+	 * killing it and starting over would reset the build to 0% every time —
+	 * adopt the live pid instead.
+	 */
+	private function startChannel(int $rStreamID): int {
+		$rCreateFile = CREATED_PATH . $rStreamID . '_.create';
+		$rExistingPID = (file_exists($rCreateFile) ? intval(file_get_contents($rCreateFile)) : 0);
+		if ($rExistingPID && ProcessChecker::checkPID($rExistingPID, 'XC_VMCreate[' . $rStreamID . ']')) {
+			return $rExistingPID;
+		}
+		if (file_exists($rCreateFile)) {
+			unlink($rCreateFile);
+		}
+
+		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php created ' . $rStreamID . ' >/dev/null 2>/dev/null &');
+		// console.php bootstrap takes well over the old 300ms window; give the
+		// spawned process up to 5s to write its pid file.
+		foreach (range(1, 20) as $i) {
+			if (file_exists($rCreateFile)) {
+				return intval(file_get_contents($rCreateFile));
+			}
+			usleep(250000);
+		}
+		return 0;
+	}
+
+	/** A positive setting, or the default the daemon has always used. */
+	private function slots(string $rSetting, int $rDefault): int {
+		$rValue = intval(SettingsManager::get($rSetting)); // lb-settings: max_encode_movies, max_encode_cc, queue_loop
+		return 0 < $rValue ? $rValue : $rDefault;
 	}
 }

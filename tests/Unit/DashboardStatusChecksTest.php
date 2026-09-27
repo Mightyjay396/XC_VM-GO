@@ -98,4 +98,57 @@ final class DashboardStatusChecksTest extends TestCase {
 	private function fanoutServer(string $name, bool $running, int $lastCheck = self::NOW): array {
 		return ['server_name' => $name, 'watchdog_data' => json_encode(['fanout' => ['running' => $running]]), 'last_check_ago' => $lastCheck];
 	}
+
+	// ── Cluster API ──────────────────────────────────────────────────
+
+	public function testClusterOffAndEnrolledNothingAreBothOff(): void {
+		$this->assertSame('off', DashboardController::clusterCheck(false, [], [], self::BIN)['state']);
+		$this->assertSame('off', DashboardController::clusterCheck(true, [], [], self::BIN)['state'], 'on with no node is not a failure');
+	}
+
+	public function testASilentOrStoppedNodeFails(): void {
+		$rSilent = DashboardController::clusterCheck(true, [
+			$this->node('LB-1', 'active', 'ok'),
+			$this->node('LB-2', 'active', 'offline'),
+		], [], self::BIN);
+		$this->assertSame('fail', $rSilent['state']);
+		$this->assertStringContainsString('LB-2', $rSilent['detail']);
+		$this->assertStringNotContainsString('LB-1', $rSilent['detail']);
+		$this->assertNotSame('', $rSilent['help'], 'a failure says where to look');
+
+		$rStopped = DashboardController::clusterCheck(true, [$this->node('LB-3', 'quarantined', 'quarantined')], [], self::BIN);
+		$this->assertSame('fail', $rStopped['state']);
+		$this->assertStringContainsString('LB-3', $rStopped['detail']);
+	}
+
+	public function testANodeWaitingForADecisionIsAWarningNotAFailure(): void {
+		// It is not serving anything yet: nobody's viewers are affected.
+		$rCode = DashboardController::clusterCheck(true, [$this->node('LB-1', 'active', 'ok')], [['server_name' => 'LB-9']], self::BIN);
+		$this->assertSame('warn', $rCode['state']);
+		$this->assertStringContainsString('LB-9', $rCode['detail']);
+
+		$rEnrolling = DashboardController::clusterCheck(true, [$this->node('LB-4', 'enrolling', 'enrolling')], [], self::BIN);
+		$this->assertSame('warn', $rEnrolling['state']);
+
+		// A node that missed a heartbeat or two is suspect, not offline.
+		$this->assertSame('warn', DashboardController::clusterCheck(true, [$this->node('LB-5', 'active', 'suspect')], [], self::BIN)['state']);
+	}
+
+	public function testEveryActiveNodeAnsweringIsOk(): void {
+		$rCheck = DashboardController::clusterCheck(true, [
+			$this->node('LB-1', 'active', 'ok'),
+			$this->node('LB-2', 'active', 'ok'),
+			// A revoked node is MAIN's decision, not a fleet failure... but it is
+			// stopped, so it is named.
+		], [], self::BIN);
+
+		$this->assertSame('ok', $rCheck['state']);
+		$this->assertSame('', $rCheck['help'], 'nothing to do, nothing to read');
+		$this->assertStringContainsString('2', $rCheck['detail']);
+	}
+
+	/** @return array<string,mixed> A ClusterAdmin::nodes() row, as the checklist reads it. */
+	private function node(string $name, string $state, string $health): array {
+		return ['server_id' => 5, 'server_name' => $name, 'state' => $state, 'health' => $health];
+	}
 }

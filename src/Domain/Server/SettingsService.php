@@ -5,6 +5,7 @@ namespace XcVm\Domain\Server;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Config\StreamSecret;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Settings\CrontabChangedEvent;
@@ -14,6 +15,7 @@ use XcVm\Core\Localization\Translator;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
+use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Fanout\FanoutConfig;
 use XcVm\Streaming\Fanout\FanoutMode;
@@ -86,8 +88,10 @@ class SettingsService {
 		];
 		if (($rKeys['cluster_transport'] ?? null) === 'https_required') {
 			$rEnv['https_ok'] = ClusterSettings::httpsSelfProbe($rMain)['ok'];
-			// Until telemetry reports each node's HTTPS (Phase 3), any active node blocks it.
-			$rEnv['nodes_https_ok'] = !$db->query("SELECT 1 FROM `cluster_nodes` WHERE `state` = 'active' LIMIT 1;") || $db->num_rows() === 0;
+			// Every active node must have reached MAIN over HTTPS already: its
+			// agent says so with the `https` feature once MAIN has answered it
+			// there. A node that has not would be left talking to nobody.
+			$rEnv['nodes_https_ok'] = NodeRegistry::allActiveHaveFeature('https');
 		}
 		[$rValues, $rErrors] = ClusterSettings::normalize($rKeys, $rMain, $rCurrent, $rEnv);
 		if (($rValues['cluster_api_enabled'] ?? 0) === 1 && empty($rCurrent['cluster_api_enabled'])) {
@@ -288,6 +292,12 @@ class SettingsService {
 			ClusterNginxConfig::commitApiPort($rApiPort, (bool) $rStored);
 		}
 		if ($rStored) {
+			// The links already in players' hands were minted under the secret
+			// this save replaced: it stays readable for StreamSecret's window,
+			// and the nodes get it with the replica's `secrets` section.
+			if (array_key_exists('live_streaming_pass', $rArray)) {
+				StreamSecret::replaced((string) ($rPrevious['live_streaming_pass'] ?? ''), (string) $rArray['live_streaming_pass']);
+			}
 			SettingsManager::clearCache();
 			self::saved($rPrevious, $rArray);
 			FanoutConfig::sync($rArray);

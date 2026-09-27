@@ -93,6 +93,20 @@ final class NodeRegistry {
 	 *
 	 * @param array<string, mixed> $rFields
 	 */
+	/**
+	 * Do all the active nodes report a feature (their agent's `features` at
+	 * hello)? True with no active node at all: there is nobody to lose.
+	 */
+	public static function allActiveHaveFeature(string $rFeature): bool {
+		self::db()->query("SELECT `features` FROM `cluster_nodes` WHERE `state` = 'active';");
+		foreach (self::db()->get_rows() ?: [] as $rRow) {
+			if (!in_array($rFeature, explode(',', (string) ($rRow['features'] ?? '')), true)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	public static function update(int $rServerID, array $rFields): void {
 		if ($rFields === []) {
 			return;

@@ -1780,14 +1780,6 @@ use XcVm\Domain\Server\ServerRepository;
 									<input type="text" class="form-control text-center" id="read_buffer_size" name="read_buffer_size" value="<?= htmlspecialchars($rSettings["read_buffer_size"] ?? '') ?>">
 								</div>
 
-								<label class="col-md-4 col-form-label" for="connection_sync_timer">
-									<?= $language::get('redis_connection_sync_timer') ?>
-									<i class="icon-base ti tabler-info-circle text-body-secondary" data-bs-toggle="tooltip" title="<?= $language::get('time_between_runs_of_the_redis_connection_sync_script') ?>"></i>
-								</label>
-
-								<div class="col-md-2">
-									<input type="text" class="form-control text-center" id="connection_sync_timer" name="connection_sync_timer" value="<?= htmlspecialchars($rSettings["connection_sync_timer"] ?? '') ?>">
-								</div>
 							</div>
 
 							<div class="form-group row mb-4">
@@ -2341,6 +2333,10 @@ use XcVm\Domain\Server\ServerRepository;
 														<option value="<?= $rValue ?>" <?= ($rSettings[$rKey] ?? ClusterSettings::ENUMS[$rKey][0]) === $rValue ? 'selected' : '' ?>><?= $rValue ?></option>
 													<?php endforeach; ?>
 												</select>
+											<?php elseif ($rType === 'number'): ?>
+												<?php // The bounds the save clamps to (ClusterSettings::INTS), so the browser refuses what the panel would only correct; cluster_api_port has its own check (portProblem).
+												[, $rMin, $rMax] = ClusterSettings::INTS[$rKey] ?? [0, 0, 65535]; ?>
+												<input type="number" step="1" min="<?= (int) $rMin ?>" max="<?= (int) $rMax ?>" class="form-control text-center" id="<?= $rKey ?>" name="<?= $rKey ?>" value="<?= htmlspecialchars((string) ($rSettings[$rKey] ?? '')) ?>">
 											<?php else: ?>
 												<input type="text" class="form-control text-center" id="<?= $rKey ?>" name="<?= $rKey ?>" value="<?= htmlspecialchars((string) ($rSettings[$rKey] ?? '')) ?>">
 											<?php endif; ?>
@@ -3091,7 +3087,7 @@ LayoutRenderer::renderFooter('admin');
 		}
 
 		// numeric-only inputs
-		['log_clear', 'vod_bitrate_plus', 'vod_limit_perc', 'user_auto_kick_hours', 'flood_limit', 'flood_seconds', 'auth_flood_seconds', 'auth_flood_limit', 'auth_flood_sleep', 'bruteforce_mac_attempts', 'bruteforce_username_attempts', 'bruteforce_frequency', 'login_flood', 'client_prebuffer', 'restreamer_prebuffer', 'fanout_hls_window', 'fanout_grace_sec', 'fanout_write_timeout_sec', 'fanout_chunk_bytes', 'fanout_max_gop_bytes', 'fanout_default_prebuffer_sec', 'fanout_idle_buffer_grace_sec', 'read_buffer_size', 'stream_max_analyze', 'probesize', 'stream_start_delay', 'online_capacity_interval', 'on_demand_wait_time', 'seg_time', 'stream_fail_sleep', 'probe_extra_wait', 'seg_list_size', 'cpu_limit', 'mem_limit', 'playback_limit', 'connection_loop_per', 'connection_loop_count', 'max_simultaneous_downloads', 'cache_playlists', 'seg_delete_threshold', 'fails_per_time', 'create_expiration', 'max_encode_movies', 'max_encode_cc', 'queue_loop', 'player_blur', 'player_opacity', 'disallow_2nd_ip_max', 'probesize_ondemand', 'connection_sync_timer', 'segment_wait_time', 'on_demand_scan_time', 'on_demand_max_probe', 'on_demand_scan_keep', 'stop_failures', 'mysql_sleep_kill', 'threshold_cpu', 'threshold_mem', 'threshold_disk', 'threshold_network', 'threshold_clients'].forEach(function(id) {
+		['log_clear', 'vod_bitrate_plus', 'vod_limit_perc', 'user_auto_kick_hours', 'flood_limit', 'flood_seconds', 'auth_flood_seconds', 'auth_flood_limit', 'auth_flood_sleep', 'bruteforce_mac_attempts', 'bruteforce_username_attempts', 'bruteforce_frequency', 'login_flood', 'client_prebuffer', 'restreamer_prebuffer', 'fanout_hls_window', 'fanout_grace_sec', 'fanout_write_timeout_sec', 'fanout_chunk_bytes', 'fanout_max_gop_bytes', 'fanout_default_prebuffer_sec', 'fanout_idle_buffer_grace_sec', 'read_buffer_size', 'stream_max_analyze', 'probesize', 'stream_start_delay', 'online_capacity_interval', 'on_demand_wait_time', 'seg_time', 'stream_fail_sleep', 'probe_extra_wait', 'seg_list_size', 'cpu_limit', 'mem_limit', 'playback_limit', 'connection_loop_per', 'connection_loop_count', 'max_simultaneous_downloads', 'cache_playlists', 'seg_delete_threshold', 'fails_per_time', 'create_expiration', 'max_encode_movies', 'max_encode_cc', 'queue_loop', 'player_blur', 'player_opacity', 'disallow_2nd_ip_max', 'probesize_ondemand', 'segment_wait_time', 'on_demand_scan_time', 'on_demand_max_probe', 'on_demand_scan_keep', 'stop_failures', 'mysql_sleep_kill', 'threshold_cpu', 'threshold_mem', 'threshold_disk', 'threshold_network', 'threshold_clients'].forEach(function(id) {
 			var el = document.getElementById(id);
 			if (el) {
 				el.addEventListener('input', function() {

@@ -59,8 +59,15 @@ final class ClusterPool {
 
 	/**
 	 * The plan's ingest ops (lanes p0 and bulk), served by cluster_ingest,
-	 * including those the API does not serve yet. ClusterNginxConfig renders
-	 * the /cluster/v1/ location's ingest lane from this list.
+	 * including those the API does not serve. ClusterNginxConfig renders the
+	 * /cluster/v1/ location's ingest lane from this list, and the list stays
+	 * the plan's 24 ops (ClusterPoolTest) — an op nothing serves is refused by
+	 * the API itself, so routing it costs nothing.
+	 *
+	 * Two of them will not be served, and the reasons are in ADR 0004:
+	 * `rpc_result` (a command's result comes back inline with its `ack`, which
+	 * takes 64 KiB) and `stream_bundle` (the R2 `streams` section carries a
+	 * stream's whole record, and a cache miss reads it from the replica).
 	 */
 	public const INGEST_OPS = [
 		'events', 'config', 'streams', 'conn_snapshot', 'stream_bundle', 'rpc_result',

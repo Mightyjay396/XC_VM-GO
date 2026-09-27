@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Events\EventDispatcher;
@@ -241,6 +242,11 @@ final class ReplicaSectionsTest extends TestCase {
 		$this->assertSame(base64_encode($this->rCrypto->info()['panel_sign_pub']), $rData['panel_sign_pub']);
 		$this->assertSame(base64_encode($this->rCrypto->info()['panel_box_pub']), $rData['panel_box_pub']);
 		$this->assertSame(['connected' => null, 'not_on_air' => 'custom_offline.ts', 'banned' => null, 'expired' => null, 'expiring' => null], $rData['off_air']);
+		// The fleet's heartbeat travels with the policy: the agent's -interval
+		// flag is passed by nothing, so this is how the setting reaches a node.
+		$this->assertSame(ClusterSettings::INTS['lb_telemetry_interval_sec'][0], $rData['heartbeat_sec'], 'the default when it is unset');
+		$this->assertSame(1, ClusterPolicy::current(['lb_telemetry_interval_sec' => 1] + $rSettings, $rMain)['heartbeat_sec']);
+		$this->assertSame(3, ClusterPolicy::current(['lb_telemetry_interval_sec' => 30] + $rSettings, $rMain)['heartbeat_sec'], 'clamped to its bounds');
 	}
 
 	public function testNoSectionCarriesASecret(): void {

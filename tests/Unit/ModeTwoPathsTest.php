@@ -59,7 +59,7 @@ final class ModeTwoPathsTest extends TestCase {
 		file_put_contents($this->rHome . 'bin/nginx/conf/ports/http.conf', 'listen 8080;');
 		file_put_contents($this->rHome . 'bin/nginx/conf/ports/https.conf', '');
 		file_put_contents($this->rHome . 'bin/nginx_rtmp/conf/port.conf', 'listen 8880;');
-		foreach (['realip_xc_vm.conf', 'realip_cloudflare.conf', 'limit.conf', 'limit_queue.conf', 'ministra_legacy.conf'] as $rConf) {
+		foreach (['realip_xc_vm.conf', 'realip_cloudflare.conf', 'limit.conf', 'limit_queue.conf', 'ministra_legacy.conf', 'api_legacy.conf'] as $rConf) {
 			file_put_contents($this->rHome . 'bin/nginx/conf/' . $rConf, '');
 		}
 		// The hourly self-heals are not this test's: done a moment ago.
@@ -218,6 +218,19 @@ final class ModeTwoPathsTest extends TestCase {
 					case 'watchdog':
 						$rDog = new class extends WatchdogCommand {
 							public int $rRestarts = 0;
+
+							private int $rPasses = 0;
+
+							// The loop stays up until something stops it (a code
+							// change, nginx gone, the database gone), so the pass
+							// under test ends here as a deploy would end it.
+							protected function shouldRefreshSettings(): bool {
+								return true;
+							}
+
+							protected function hasFileChanged(): bool {
+								return ++$this->rPasses > 1;
+							}
 
 							protected function assertRunAsXcVm(): bool {
 								return true;
@@ -379,6 +392,23 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertStringContainsString('Updating Crons...', $rResult['output'][0], 'the replica\'s jobs, not MAIN\'s table');
 		$this->assertContains('sudo iptables -I INPUT -s 203.0.113.1 -j DROP', $this->commands(), 'the blocklist from the replica');
 		$this->assertSame([], preg_grep('/^ip /', $this->commands()), 'no server IP check on a node');
+		// This fixture's node has every flow, the data plane included, so the
+		// legacy `/api` — whose auth is a password in a URL — is 404 here.
+		$this->assertSame('set $api_legacy 0;', trim((string) file_get_contents($this->rHome . 'bin/nginx/conf/api_legacy.conf')));
+	}
+
+	/**
+	 * Without the data plane the legacy `/api` stays served, whatever else the
+	 * node has moved: MAIN still reaches it that way for a relay's sources, a
+	 * cross-server VOD pull and a created channel. No node has DATAPLANE today,
+	 * so this is every fleet.
+	 */
+	public function testTheLegacyApiStaysServedWithoutTheDataPlane(): void {
+		$this->node([], NodeFlows::DATAPLANE);
+		[, $rOut, $rResult] = $this->child(['root_signals']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertSame('set $api_legacy 1;', trim((string) file_get_contents($this->rHome . 'bin/nginx/conf/api_legacy.conf')));
 	}
 
 	/**
@@ -716,9 +746,9 @@ final class ModeTwoPathsTest extends TestCase {
 	/**
 	 * cron:vod in mode 2 from the replica and the store: a movie whose
 	 * analysis is due is analysed (its file is gone: broken), a channel with
-	 * sources left is not queued (MAIN's queue is its database), and a
-	 * recording the node started is not started again although its record
-	 * still says scheduled. No connect.
+	 * sources left is queued through the agent (MAIN owns the queue table, and
+	 * no agent answers here), and a recording the node started is not started
+	 * again although its record still says scheduled. No connect.
 	 */
 	public function testVodChecksItsStreamsFromTheReplica(): void {
 		$rNow = time();

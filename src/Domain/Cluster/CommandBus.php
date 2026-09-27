@@ -31,7 +31,7 @@ final class CommandBus {
 	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'node.cache' => 86400, 'artefact.' => 3600, 'default' => 600];
 
 	/** Types MAIN sends today. */
-	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch'];
+	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch', 'token.rotate_now'];
 
 	/** Types that are restrictive (always signable); the extension decides, this is informational. */
 	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
@@ -194,13 +194,26 @@ final class CommandBus {
 			'UPDATE `cluster_commands` SET `state` = ?, `acked_at` = ?, `result` = ? WHERE `server_id` = ? AND `cmd_id` = ?;',
 			$rOk ? 'acked' : 'failed',
 			ClusterClock::now(),
-			substr($rResult, 0, self::MAX_RESULT),
+			self::result0($rResult),
 			$rServerID,
 			$rCmdID
 		);
 		self::db()->query('UPDATE `cluster_nodes` SET `cmd_seq` = ? WHERE `server_id` = ? AND `cmd_seq` < ?;', (int) $rRow['seq'], $rServerID, (int) $rRow['seq']);
 		ClusterBus::wakeAck($rCmdID);
 		return true;
+	}
+
+	/**
+	 * The result as the row keeps it: a longer one is cut, and says so, rather
+	 * than reading as a complete answer that happens to end mid-word (the admin
+	 * sees this text, and `cluster:exec` output is how a root action is read).
+	 */
+	private static function result0(string $rResult): string {
+		if (strlen($rResult) <= self::MAX_RESULT) {
+			return $rResult;
+		}
+		$rMark = "\n[truncated: " . strlen($rResult) . ' bytes]';
+		return substr($rResult, 0, self::MAX_RESULT - strlen($rMark)) . $rMark;
 	}
 
 	/**

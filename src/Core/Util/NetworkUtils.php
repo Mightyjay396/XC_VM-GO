@@ -67,12 +67,33 @@ class NetworkUtils {
 			return $ip === $cidr;
 		}
 
-		list($subnet, $bits) = explode('/', $cidr);
-		$ip = ip2long($ip);
-		$subnet = ip2long($subnet);
-		$mask = -1 << (32 - (int) $bits);
+		// Compared as packed bytes, so IPv6 works too: ip2long() returns false for
+		// it, and false & mask made every IPv6 address match every IPv6 range.
+		list($subnet, $bits) = explode('/', $cidr, 2);
+		$rIP = @inet_pton($ip);
+		$rSubnet = @inet_pton($subnet);
 
-		return ($ip & $mask) === ($subnet & $mask);
+		if ($rIP === false || $rSubnet === false || strlen($rIP) !== strlen($rSubnet)) {
+			return false; // not an address, or one is IPv4 and the other IPv6
+		}
+
+		$rBits = (int) $bits;
+		if ($rBits < 0 || $rBits > strlen($rIP) * 8) {
+			return false;
+		}
+
+		$rWhole = intdiv($rBits, 8);
+		if ($rWhole > 0 && strncmp($rIP, $rSubnet, $rWhole) !== 0) {
+			return false;
+		}
+
+		$rRest = $rBits % 8;
+		if ($rRest === 0) {
+			return true;
+		}
+
+		$rMask = chr((0xff << (8 - $rRest)) & 0xff);
+		return ($rIP[$rWhole] & $rMask) === ($rSubnet[$rWhole] & $rMask);
 	}
 
 	/**
@@ -120,6 +141,87 @@ class NetworkUtils {
 			FILTER_VALIDATE_IP,
 			FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
 		);
+	}
+
+	/**
+	 * May the node probe this URL with ffprobe?
+	 *
+	 * `action=probe` takes a URL from MAIN and hands it to ffprobe, which follows
+	 * whatever it is given. Without this the endpoint reaches the node's own
+	 * loopback services and the cloud metadata address, and non-network protocols
+	 * (`file:`, `concat:`) read local files.
+	 *
+	 * Private LAN ranges stay allowed: parents and proxies are routinely on them.
+	 * Refused are loopback, link-local (including 169.254.169.254), unspecified,
+	 * multicast and any name that resolves to one of those.
+	 *
+	 * @param string $rUrl Probe target.
+	 * @return bool True when ffprobe may be pointed at it.
+	 */
+	public static function probeTargetAllowed(string $rUrl): bool {
+		$rParts = parse_url(trim($rUrl));
+		if ($rParts === false || empty($rParts['host']) || empty($rParts['scheme'])) {
+			return false;
+		}
+		if (!in_array(strtolower($rParts['scheme']), ['http', 'https'], true)) {
+			return false;
+		}
+
+		$rHost = trim($rParts['host'], '[]');
+		$rIPs = filter_var($rHost, FILTER_VALIDATE_IP) !== false ? [$rHost] : self::resolveHost($rHost);
+		if ($rIPs === []) {
+			return false;
+		}
+
+		foreach ($rIPs as $rIP) {
+			if (self::isLocalOrLinkLocalIP($rIP)) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Every A/AAAA address a name resolves to, or [] when it does not resolve.
+	 *
+	 * @return list<string>
+	 */
+	private static function resolveHost(string $rHost): array {
+		$rIPs = [];
+		foreach (['A' => DNS_A, 'AAAA' => DNS_AAAA] as $rKey => $rType) {
+			foreach (@dns_get_record($rHost, $rType) ?: [] as $rRecord) {
+				$rIP = $rRecord[$rKey === 'A' ? 'ip' : 'ipv6'] ?? '';
+				if ($rIP !== '') {
+					$rIPs[] = $rIP;
+				}
+			}
+		}
+		if ($rIPs === []) {
+			$rResolved = gethostbyname($rHost);
+			if ($rResolved !== $rHost) {
+				$rIPs[] = $rResolved;
+			}
+		}
+
+		return $rIPs;
+	}
+
+	/**
+	 * Loopback, link-local, unspecified or multicast — the addresses a probe
+	 * target may never resolve to. Private LAN ranges are not in this set.
+	 */
+	public static function isLocalOrLinkLocalIP(string $rIP): bool {
+		if (filter_var($rIP, FILTER_VALIDATE_IP) === false) {
+			return true;
+		}
+		// ::ffff:127.0.0.1 and friends: judge the embedded IPv4.
+		if (preg_match('/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i', $rIP, $rMatch)) {
+			$rIP = $rMatch[1];
+		}
+
+		$rBlocked = ['127.0.0.0/8', '0.0.0.0/8', '169.254.0.0/16', '224.0.0.0/4', '::1/128', '::/128', 'fe80::/10', 'ff00::/8'];
+		return self::ipInAnyCIDR($rIP, $rBlocked);
 	}
 
 	/**

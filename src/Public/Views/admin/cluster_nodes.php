@@ -90,6 +90,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('cluster_logs_flow'); ?></th>
                     <th><?= $language::get('cluster_streams_flow'); ?></th>
                     <th><?= $language::get('cluster_content_flow'); ?></th>
+                    <th><?= $language::get('cluster_config_flow'); ?></th>
                     <th><?= $language::get('cluster_connections_flow'); ?></th>
                     <th><?= $language::get('cluster_root_pin'); ?></th>
                     <th><?= $language::get('cluster_epoch'); ?></th>
@@ -117,7 +118,23 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                                 <div class="small text-body-secondary"><?= htmlspecialchars((string) $rNode['quarantine_reason'], ENT_QUOTES); ?></div>
                             <?php endif; ?>
                         </td>
-                        <td><?= (int) $rNode['mode']; ?></td>
+                        <td>
+                            <?= (int) $rNode['mode']; ?>
+                            <?php if (in_array($rNode['state'], ['active', 'quarantined'], true)): ?>
+                                <?php if ((int) $rNode['mode'] < 2): ?>
+                                    <form method="POST" class="d-inline">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="mode_up" class="btn btn-sm btn-label-secondary" title="<?= $language::get('cluster_mode_up_help'); ?>">+</button>
+                                    </form>
+                                <?php endif; ?>
+                                <?php if ((int) $rNode['mode'] > 0): ?>
+                                    <form method="POST" class="d-inline">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="mode_down" class="btn btn-sm btn-label-secondary" title="<?= $language::get('cluster_mode_down_help'); ?>">&minus;</button>
+                                    </form>
+                                <?php endif; ?>
+                            <?php endif; ?>
+                        </td>
                         <?php foreach (\XcVm\Domain\Cluster\ClusterAdmin::FLOW_BITS as $rFlowName => $rFlowBit): ?>
                         <td>
                             <?php $rOn = ((int) $rNode['flows'] & $rFlowBit) === $rFlowBit; ?>
@@ -141,7 +158,12 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                         <td><?= (int) $rNode['epoch']; ?> <span class="small text-body-secondary">(gen <?= (int) $rNode['gen']; ?>)</span></td>
                         <td><?= $rWhen($rNode['token_exp'] === null ? null : (int) $rNode['token_exp']); ?></td>
                         <td><?= $rWhen($rNode['last_seen_at'] === null ? null : intdiv((int) $rNode['last_seen_at'], 1000)); ?></td>
-                        <td><?= htmlspecialchars((string) ($rNode['agent_version'] ?? '—'), ENT_QUOTES); ?></td>
+                        <td>
+                            <?= htmlspecialchars((string) ($rNode['agent_version'] ?? '—'), ENT_QUOTES); ?>
+                            <?php if (!empty($rNode['arch'])): ?>
+                                <span class="small text-body-secondary">(<?= htmlspecialchars((string) $rNode['arch'], ENT_QUOTES); ?>)</span>
+                            <?php endif; ?>
+                        </td>
                         <td>
                             <?php if ((int) $rNode['mode'] < 1 || !is_array($rNode['settings_misses'] ?? null)): ?>
                                 <span class="text-body-secondary">—</span>
@@ -179,6 +201,10 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                         </td>
                         <td class="text-nowrap">
                             <?php if ($rNode['state'] !== 'revoked'): ?>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="rotate_now" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_rotate_now_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_rotate_now'); ?></button>
+                                </form>
                                 <form method="POST" class="d-inline js-cluster-revoke">
                                     <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
                                     <button type="submit" name="cluster_action" value="revoke" class="btn btn-sm btn-label-danger"><?= $language::get('cluster_revoke'); ?></button>

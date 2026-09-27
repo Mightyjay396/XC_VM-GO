@@ -7,6 +7,7 @@ use XcVm\Core\Enum\Theme;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
 use XcVm\Core\Reference\GeoReference;
+use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
@@ -127,12 +128,87 @@ class DashboardController extends BaseAdminController {
 		$signals = CONFIG_PATH . 'signals.last';
 		$now = time();
 
+		$rClusterOn = !empty(SettingsManager::get('cluster_api_enabled'));
+		$rNodes = $rPending = [];
+		if ($rClusterOn) {
+			try {
+				$rOfflineAfter = max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec')) ?: 30));
+				$rNodes = ClusterAdmin::nodes($orderedServers, $rOfflineAfter);
+				$rPending = ClusterAdmin::pending($orderedServers);
+			} catch (\Throwable) {
+				// The cluster tables are MAIN's and created by cluster:init: a
+				// dashboard never fails over a checklist row.
+				$rNodes = $rPending = [];
+			}
+		}
+
 		return [
 			self::serversCheck($orderedServers),
 			self::schemaCheck((string) SettingsManager::get('status_uuid'), XC_VM_VERSION, $bin),
 			self::cronCheck(file_exists($signals) ? filemtime($signals) : null, $now, $bin),
 			self::fanoutCheck(FanoutMode::enabled(), $orderedServers, $now, $bin),
+			self::clusterCheck($rClusterOn, $rNodes, $rPending, $bin),
 		];
+	}
+
+	/**
+	 * The cluster API, judged on the nodes MAIN has enrolled. Their health is
+	 * already settled (ClusterAdmin::nodes(): `ok`, `suspect`, `offline` or
+	 * `unknown` for an active node, else its state), so this row only says what
+	 * an operator should do about it:
+	 *
+	 * - a node MAIN has quarantined or revoked, or one gone silent, is a failure
+	 *   — it is serving viewers with a replica nobody is refreshing;
+	 * - a node waiting for a decision (a code enrolment, or one still enrolling)
+	 *   is a warning, because it is *not* serving anything yet;
+	 * - the API switched off, or on with no node enrolled, is neither.
+	 *
+	 * @param list<array<string,mixed>> $nodes   ClusterAdmin::nodes() rows
+	 * @param list<array<string,mixed>> $pending ClusterAdmin::pending() rows
+	 * @param array<string,string> $bin
+	 * @return array{state:string,icon:string,title:string,detail:string,help:string}
+	 */
+	public static function clusterCheck(bool $enabled, array $nodes, array $pending, array $bin): array {
+		if (!$enabled) {
+			return self::check('off', 'tabler-hierarchy-2', 'dashboard_check_cluster', Translator::get('dashboard_check_cluster_off'));
+		}
+		if ($nodes === [] && $pending === []) {
+			return self::check('off', 'tabler-hierarchy-2', 'dashboard_check_cluster', Translator::get('dashboard_check_cluster_none'));
+		}
+
+		$rName = static fn(array $rNode): string => (string) ($rNode['server_name'] ?? ('#' . ($rNode['server_id'] ?? '?')));
+		$rWith = static function (array $rNodes, callable $rWhen) use ($rName): array {
+			return array_values(array_map($rName, array_filter($rNodes, $rWhen)));
+		};
+		$rStopped = $rWith($nodes, static fn(array $rNode): bool => in_array((string) $rNode['state'], ['quarantined', 'revoked'], true));
+		$rSilent = $rWith($nodes, static fn(array $rNode): bool => in_array((string) ($rNode['health'] ?? ''), ['offline', 'unknown'], true));
+		$rSuspect = $rWith($nodes, static fn(array $rNode): bool => ($rNode['health'] ?? '') === 'suspect');
+		$rWaiting = array_merge(
+			array_values(array_map($rName, $pending)),
+			$rWith($nodes, static fn(array $rNode): bool => (string) $rNode['state'] === 'enrolling')
+		);
+
+		$rActive = count($rWith($nodes, static fn(array $rNode): bool => (string) $rNode['state'] === 'active'));
+		$rDetail = Translator::get('dashboard_check_cluster_ok', [
+			'{answering}' => (string) ($rActive - count($rSilent) - count($rSuspect)),
+			'{total}' => (string) $rActive,
+		]);
+		if ($rWaiting !== []) {
+			$rDetail .= ' · ' . Translator::get('dashboard_check_cluster_waiting', ['{names}' => implode(', ', $rWaiting)]);
+		}
+		if ($rStopped !== []) {
+			$rDetail .= ' · ' . Translator::get('dashboard_check_cluster_stopped', ['{names}' => implode(', ', $rStopped)]);
+		}
+
+		$rState = $rStopped !== [] || $rSilent !== [] ? 'fail' : ($rWaiting !== [] || $rSuspect !== [] ? 'warn' : 'ok');
+
+		return self::check(
+			$rState,
+			'tabler-hierarchy-2',
+			'dashboard_check_cluster',
+			self::withDown($rDetail, $rSilent),
+			$rState === 'ok' ? '' : Translator::get('dashboard_status_cluster_text', $bin)
+		);
 	}
 
 	/**

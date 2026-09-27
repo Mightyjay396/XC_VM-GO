@@ -47,6 +47,9 @@ class SignalsCommand implements CommandInterface {
 	 * its agent and cluster:exec run (CacheJobs). MAIN, mode 0 and mode 1
 	 * read them as before.
 	 */
+	/** The loop's pace: four passes a second, as the re-execing one had. */
+	private const PASS_USEC = 250000;
+
 	public static function readsMainDatabase(): bool {
 		return !NodeRole::refusesConnects();
 	}
@@ -122,11 +125,11 @@ class SignalsCommand implements CommandInterface {
 				}
 			}
 
-			// Mode 2: no `signals` row and no Redis signal to read. The pass
-			// ends as the legacy one does, and the next process starts.
+			// Mode 2: no `signals` row and no Redis signal to read; its kills
+			// arrive as commands (the loop above).
 			if ($rApi) {
-				usleep(250000);
-				break;
+				usleep(self::PASS_USEC);
+				continue;
 			}
 
 			// ── Kill-сигналы из БД ──────────────────────────────
@@ -189,11 +192,10 @@ class SignalsCommand implements CommandInterface {
 							RedisManager::instance()->multi()->del($rIDs)->sRem('SIGNALS#' . SERVER_ID, ...$rSignals)->exec();
 						}
 					}
-
-					usleep(250000);
 				}
-				break;
 			}
+
+			usleep(self::PASS_USEC);
 		}
 
 		$this->restartDaemon('signals');

@@ -10,7 +10,9 @@ use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
+use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -46,7 +48,7 @@ final class ClusterApi {
 	 * heartbeat on the cluster bus sends MySQL no query of its own (only the
 	 * connection's setup).
 	 */
-	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'conn_snapshot', 'conn_admit', 'streams', 'artefact', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
+	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'queue_enqueue', 'queue_claim', 'queue_update', 'conn_snapshot', 'conn_admit', 'streams', 'artefact', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
 
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
@@ -62,6 +64,9 @@ final class ClusterApi {
 		'ack' => ['POST', false, ['active', 'quarantined']],
 		'events' => ['POST', false, ['active']],
 		'recording_complete' => ['POST', false, ['active']],
+		'queue_enqueue' => ['POST', false, ['active']],
+		'queue_claim' => ['POST', false, ['active']],
+		'queue_update' => ['POST', false, ['active']],
 		'conn_snapshot' => ['POST', false, ['active']],
 		'conn_admit' => ['POST', false, ['active']],
 		'config' => ['POST', false, ['active']],
@@ -195,7 +200,7 @@ final class ClusterApi {
 	 * events from their reserve; a batch's lane is known only once its BOX is
 	 * open, and opening it touches no database.
 	 *
-	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config'|'streams'|'artefact' $rOp
+	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'queue_enqueue'|'queue_claim'|'queue_update'|'conn_snapshot'|'conn_admit'|'config'|'streams'|'artefact' $rOp
 	 * @return array{status: int, headers: array<string, string>, body: string}
 	 */
 	private static function dispatch(ClusterCrypto $rCrypto, string $rOp, array $rReq, array $rSettings, array $rMain, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, string $rBody): array {
@@ -216,6 +221,7 @@ final class ClusterApi {
 				'ack' => self::ack($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'events' => self::events($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'recording_complete' => self::recordingComplete($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'queue_enqueue', 'queue_claim', 'queue_update' => self::queue($rOp, $rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 				'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
@@ -514,6 +520,7 @@ final class ClusterApi {
 		$rNode = NodeRegistry::byServer((int) $rNode['server_id']) ?? $rNode;
 		$rInstance = self::short($rP['instance_id'] ?? null);
 		$rFields = ['boot_id' => self::short($rP['boot_id'] ?? null), 'agent_version' => self::short($rP['agent_version'] ?? null, 32), 'proto' => $rH['proto'], 'last_seen_at' => ClusterClock::nowMs(), 'features' => self::features($rP['features'] ?? null)]
+			+ self::arch($rNode, $rP)
 			+ ClusterEndpoint::nodeUses($rNode, $rP, $rPort);
 		$rState = (string) $rNode['state'];
 		if ($rInstance !== null && !empty($rNode['instance_id']) && !hash_equals((string) $rNode['instance_id'], $rInstance) && $rState === 'active') {
@@ -569,6 +576,20 @@ final class ClusterApi {
 		$rOut = array_values(array_unique($rOut));
 		sort($rOut);
 		return $rOut === [] ? null : substr(implode(',', $rOut), 0, 255);
+	}
+
+	/**
+	 * The machine architecture the agent reports, as the xc_agent assets name
+	 * it, written only when it changes (it changes when a node is rebuilt on
+	 * other hardware). MAIN offers it the agent binary it pinned for that arch.
+	 *
+	 * @param array<string, mixed> $rNode
+	 * @param array<string, mixed> $rP
+	 * @return array<string, string>
+	 */
+	private static function arch(array $rNode, array $rP): array {
+		$rArch = self::short($rP['arch'] ?? null, 8);
+		return $rArch !== null && in_array($rArch, ReleaseAsset::ARCH_MAP, true) && $rArch !== ($rNode['arch'] ?? null) ? ['arch' => $rArch] : [];
 	}
 
 	private static function heartbeat(array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, int $rPort): array {
@@ -677,6 +698,52 @@ final class ClusterApi {
 	 * once (RecordingFinalizer). The node names its file after the id, then
 	 * reports `recording.state` 2 once it has converted it.
 	 */
+	/**
+	 * The encoding queue of one node ({@see NodeQueue}; `queue` is MAIN's table):
+	 *
+	 * - `queue_enqueue` {type, stream_ids}: the node's `cron:vod` and its
+	 *   created-channel builder adding work;
+	 * - `queue_claim` {type, limit}: what is running (with the pid the node
+	 *   reported, so it checks its own processes) and what waits;
+	 * - `queue_update` {pids, delete}: after starting a job, or losing one.
+	 *
+	 * `server_id` comes from the authenticated node, never from the payload, so
+	 * a node neither reads nor touches another's work.
+	 */
+	private static function queue(string $rOp, ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONTENT) === 0) {
+			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'content']);
+		}
+		$rServerID = (int) $rNode['server_id'];
+		$rType = is_string($rP['type'] ?? null) ? $rP['type'] : '';
+		if ($rOp !== 'queue_update' && !in_array($rType, QueueSink::TYPES, true)) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+
+		try {
+			if ($rOp === 'queue_enqueue') {
+				$rIDs = is_array($rP['stream_ids'] ?? null) ? $rP['stream_ids'] : [];
+				if ($rIDs === [] || count($rIDs) > QueueSink::MAX_CLAIM) {
+					return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+				}
+				$rOut = ['queued' => NodeQueue::enqueue($rServerID, $rType, $rIDs)];
+			} elseif ($rOp === 'queue_claim') {
+				$rOut = NodeQueue::claim($rServerID, $rType, (int) ($rP['limit'] ?? 0));
+			} else {
+				$rPids = is_array($rP['pids'] ?? null) ? $rP['pids'] : [];
+				$rDelete = is_array($rP['delete'] ?? null) ? $rP['delete'] : [];
+				if (count($rPids) + count($rDelete) > 2 * QueueSink::MAX_CLAIM) {
+					return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+				}
+				$rOut = ['applied' => NodeQueue::update($rServerID, $rPids, $rDelete)];
+			}
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+
+		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
 	private static function recordingComplete(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONTENT) === 0) {
 			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'content']);

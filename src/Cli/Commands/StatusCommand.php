@@ -5,9 +5,9 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\LbDatabaseAccessException;
 use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Database\MigrationRunner;
-use XcVm\Core\Module\ModuleLoader;
 use XcVm\Core\Module\ModuleManager;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\ClusterPool;
@@ -72,20 +72,28 @@ class StatusCommand implements CommandInterface {
 
 		echo "Database\n------------------------------\n";
 
-		try {
-			$rConnected = self::mainDatabaseAnswers();
-		} catch (LbDatabaseAccessException $e) {
-			// Mode 2: status still reads MAIN's servers and settings.
-			echo $e->getMessage() . "\n\n";
-			return 1;
+		// A node in cluster mode 2 (api) has no database of MAIN's: its agent
+		// keeps the replica status reads from. Everything status does locally —
+		// the permissions, nginx's config, root's crontab, the file limits — still
+		// has to run, and returning here left a node without any of it.
+		$rApi = NodeRole::refusesConnects();
+		$db = null;
+		if ($rApi) {
+			echo "Cluster mode 2 (api): not this node's database, its agent keeps the replica.\n\n";
+		} else {
+			try {
+				$rConnected = self::mainDatabaseAnswers();
+			} catch (LbDatabaseAccessException $e) {
+				echo $e->getMessage() . "\n\n";
+				return 1;
+			}
+			if (!$rConnected) {
+				echo "Couldn't connect to database. Please add them to config.ini.\n\n";
+				return 1;
+			}
+			$db = self::db();
+			echo "Connected successfully.\n\n";
 		}
-		if (!$rConnected) {
-			echo "Couldn't connect to database. Please add them to config.ini.\n\n";
-			return 1;
-		}
-		$db = self::db();
-
-		echo "Connected successfully.\n\n";
 		$rServers = $this->getServers();
 
 		if ($rServers[SERVER_ID]['is_main']) {
@@ -115,7 +123,7 @@ class StatusCommand implements CommandInterface {
 			exec('sudo service xc_vm restart');
 		}
 
-		$this->installRootCrontab();
+		StartupCommand::installRootCrontab();
 		$this->configureFileLimits();
 		$this->removeInitScript();
 
@@ -124,7 +132,7 @@ class StatusCommand implements CommandInterface {
 			$this->configureRedis();
 			$this->ensureClusterNginx();
 			$this->ensureClusterPools();
-		} else {
+		} elseif (!$rApi) {
 			// LB nodes run no local Redis (bin/redis is stripped from the LB build)
 			// and never reach configureRedis, so the xcvm_core extension would keep
 			// its default Redis target of 127.0.0.1 and every connection refuses —
@@ -138,7 +146,11 @@ class StatusCommand implements CommandInterface {
 			$this->printStatusReport($rServers);
 		}
 
-		$db->query('UPDATE `servers` SET `xc_vm_version` = ? WHERE `id` = ?;', XC_VM_VERSION, SERVER_ID);
+		// In mode 2 the version goes to MAIN with the next inventory event
+		// (cron:servers, NodeStateSink::INVENTORY), within the minute.
+		if ($db !== null) {
+			$db->query('UPDATE `servers` SET `xc_vm_version` = ? WHERE `id` = ?;', XC_VM_VERSION, SERVER_ID);
+		}
 
 		return 0;
 	}
@@ -252,52 +264,6 @@ class StatusCommand implements CommandInterface {
 		return $rReload;
 	}
 
-	private function installRootCrontab(): void {
-		$rCrons = [];
-
-		$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_signals # XC_VM';
-		if (file_exists(MAIN_HOME . 'Cli/CronJobs/RootMysqlCronJob.php')) {
-			$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_mysql # XC_VM';
-		}
-
-		foreach ((new ModuleLoader())->loadAll()->collectCronEntries() as $rEntry) {
-			$rCrons[] = $rEntry;
-		}
-
-		$rWrite = false;
-		$rOutput = [];
-		exec('sudo crontab -l', $rOutput);
-
-		// Удаляем старые строки с нашим маркером (включая '# \XC_VM' от
-		// прошлой миграции), чтобы при апгрейде не появлялись дубликаты.
-		$rFiltered = [];
-		foreach ($rOutput as $rLine) {
-			if (strpos($rLine, '# XC_VM') !== false || strpos($rLine, '# \XC_VM') !== false) {
-				$rWrite = true;
-				continue;
-			}
-			$rFiltered[] = $rLine;
-		}
-		$rOutput = $rFiltered;
-
-		foreach ($rCrons as $rCron) {
-			if (!in_array($rCron, $rOutput)) {
-				$rOutput[] = $rCron;
-				$rWrite = true;
-			}
-		}
-
-		if ($rWrite) {
-			$rCronFile = tempnam(TMP_PATH, 'crontab');
-			file_put_contents($rCronFile, implode("\n", $rOutput) . "\n");
-			exec('sudo chattr -i /var/spool/cron/crontabs/root');
-			exec('sudo crontab -r');
-			exec('sudo crontab ' . $rCronFile);
-			exec('sudo chattr +i /var/spool/cron/crontabs/root');
-			unlink($rCronFile);
-			echo "Root crontab installed.\n\n";
-		}
-	}
 
 	private function configureFileLimits(): void {
 		$rFile = file('/etc/systemd/system.conf');
@@ -339,10 +305,14 @@ class StatusCommand implements CommandInterface {
 
 	private function broadcastUpdateBinaries(array $rServers): void {
 		$db = self::db();
-		foreach ($rServers as $rServerID => $rServerArray) {
-			$db->query('DELETE FROM `signals` WHERE `custom_data` = ?;', json_encode(['action' => 'update_binaries']));
-			NodeActions::updateBinaries(intval($rServerID), $db);
-		}
+		// Drop whatever an earlier run left queued, once — the same statement ran
+		// per server before. Only MAIN is queued: `binaries` needs
+		// bin/install/update_binaries.sh, which the LB build strips, so every LB
+		// answered "Updater script not found" and wrote a syslog row for it. LB
+		// runtimes are refreshed by the install flow, and fanout_binary/xcvm_core
+		// keep themselves current on every node (UpdateCommand).
+		$db->query('DELETE FROM `signals` WHERE `custom_data` = ?;', json_encode(['action' => 'update_binaries']));
+		NodeActions::updateBinaries(SERVER_ID, $db);
 	}
 
 	private function configureRedis(): void {

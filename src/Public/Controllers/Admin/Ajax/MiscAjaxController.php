@@ -7,6 +7,7 @@ use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Localization\Translator;
+use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamConfigRepository;
 use XcVm\Module\Watch\WatchService;
@@ -212,8 +213,15 @@ class MiscAjaxController extends BaseAjaxController {
 		// would be worse than leaving a dead one behind. Nothing trusts the
 		// file's presence any more — the dashboard banner asks LicenseGate too.
 		if (!LicenseGate::licensed()) {
+			ClusterAudit::log('cluster.licence_key', null, ['accepted' => false], 'admin');
 			$this->fail(['message' => Translator::get('activation_key_rejected')]);
 		}
+
+		// The cluster's tokens are minted from the licence, so a key replaced
+		// after a revocation is when a fleet starts coming back. The nodes need
+		// nothing from here — their next heartbeat mints again — but the
+		// operator's timeline should say when the key changed.
+		ClusterAudit::log('cluster.licence_key', null, ['accepted' => true], 'admin');
 
 		$this->ok(['message' => Translator::get('activation_saved')]);
 	}

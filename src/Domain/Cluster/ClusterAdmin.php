@@ -22,8 +22,59 @@ final class ClusterAdmin {
 		'logs' => NodeRegistry::FLOW_LOGS,
 		'streams' => NodeRegistry::FLOW_STREAMS,
 		'content' => NodeRegistry::FLOW_CONTENT,
+		'config' => NodeRegistry::FLOW_CONFIG,
 		'connections' => NodeRegistry::FLOW_CONNECTIONS,
 	];
+
+	/** Flows a node must have before it can run without MAIN's database: everything but the data plane (Phase 8). */
+	public const MODE2_FLOWS = NodeRegistry::FLOW_TELEMETRY | NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_LOGS
+		| NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT | NodeRegistry::FLOW_CONFIG | NodeRegistry::FLOW_CONNECTIONS;
+
+	/** Days of zero MySQL and Redis connects a node must report before mode 2 (plan, section 11: the cutover gate). */
+	public const CUTOVER_CLEAN_DAYS = 7;
+
+	/**
+	 * May this node move to $rMode? Pure, so the gate is tested without a request.
+	 *
+	 * Going down is always allowed: it is the way back when a node misbehaves.
+	 * Going up to 1 needs the config replica, because that is what a node boots
+	 * from. Going up to 2 stops the node reaching MAIN's database at all, so it
+	 * needs every flow but the data plane, and the node's own connect audit must
+	 * show it has not opened MySQL or Redis for CUTOVER_CLEAN_DAYS.
+	 *
+	 * @param array<string, mixed>  $rNode     cluster_nodes row.
+	 * @param array<string, mixed>|null $rConnects NodeAudit::connectsOf() of its last report.
+	 * @param int $rNow Unix seconds.
+	 * @return array{0: bool, 1: string} [allowed, message key]
+	 */
+	public static function modeGate(array $rNode, ?array $rConnects, int $rMode, int $rNow): array {
+		if ($rMode < 0 || $rMode > 2) {
+			return [false, 'cluster_mode_unknown'];
+		}
+		if ($rMode <= (int) $rNode['mode']) {
+			return [true, 'cluster_mode_done'];
+		}
+		if (((int) $rNode['flows'] & NodeRegistry::FLOW_CONFIG) !== NodeRegistry::FLOW_CONFIG) {
+			return [false, 'cluster_mode_needs_config'];
+		}
+		if ($rMode < 2) {
+			return [true, 'cluster_mode_done'];
+		}
+		if (((int) $rNode['flows'] & self::MODE2_FLOWS) !== self::MODE2_FLOWS) {
+			return [false, 'cluster_mode_needs_flows'];
+		}
+		if ($rConnects === null) {
+			return [false, 'cluster_mode_no_audit'];
+		}
+		if ((int) $rConnects['sql_connects'] !== 0 || (int) $rConnects['redis_connects'] !== 0) {
+			return [false, 'cluster_mode_still_connects'];
+		}
+		$rSince = (int) ($rConnects['connects_since'] ?? 0);
+		if ($rSince <= 0 || $rNow - $rSince < self::CUTOVER_CLEAN_DAYS * 86400) {
+			return [false, 'cluster_mode_too_soon'];
+		}
+		return [true, 'cluster_mode_done'];
+	}
 
 	/**
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll(true)
@@ -35,7 +86,7 @@ final class ClusterAdmin {
 		$rReports = NodeAudit::reports(); // likewise
 		$rHeard = HeartbeatService::lastSeen(); // MySQL's copy may be a flush behind
 		$rNow = ClusterClock::nowMs();
-		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
+		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `arch`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rOut = [];
 		foreach (self::db()->get_rows() as $rRow) {
 			$rLastSeen = HeartbeatService::freshest($rRow['last_seen_at'], $rHeard[(int) $rRow['server_id']] ?? null);
@@ -128,6 +179,8 @@ final class ClusterAdmin {
 				case 'streams_off':
 				case 'content_on':
 				case 'content_off':
+				case 'config_on':
+				case 'config_off':
 				case 'connections_on':
 				case 'connections_off':
 					$rNode = NodeRegistry::byServer($rServerID);
@@ -144,6 +197,36 @@ final class ClusterAdmin {
 					NodeRegistry::update($rServerID, ['flows' => $rFlows]);
 					ClusterAudit::log('node.flows', $rServerID, ['flows' => $rFlows, 'was' => (int) $rNode['flows']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
 					return ['type' => 'success', 'message' => 'cluster_' . $rName . '_' . $rSwitch . '_done'];
+
+				case 'mode_up':
+				case 'mode_down':
+					$rNode = NodeRegistry::byServer($rServerID);
+					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
+						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
+					}
+					$rWanted = (int) $rNode['mode'] + ($rAction === 'mode_up' ? 1 : -1);
+					if ($rWanted < 0 || $rWanted > 2) {
+						return ['type' => 'info', 'message' => 'cluster_mode_unknown'];
+					}
+					[$rAllowed, $rWhy] = self::modeGate($rNode, NodeAudit::connectsOf(NodeAudit::reports()[$rServerID] ?? null), $rWanted, time());
+					if (!$rAllowed) {
+						return ['type' => 'warning', 'message' => $rWhy];
+					}
+					NodeRegistry::update($rServerID, ['mode' => $rWanted]);
+					ClusterAudit::log('node.mode', $rServerID, ['mode' => $rWanted, 'was' => (int) $rNode['mode']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return ['type' => 'success', 'message' => 'cluster_mode_done'];
+
+				case 'rotate_now':
+					// The token is the agent's, so this is a command, not a row:
+					// the node rotates at its next poll without being stopped.
+					[$rRouted, $rQueued] = ClusterRoute::rotateNow($rServerID);
+					if (!$rRouted) {
+						return ['type' => 'info', 'message' => 'cluster_rotate_no_commands'];
+					}
+					ClusterAudit::log('node.token_rotate', $rServerID, ['queued' => $rQueued], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return $rQueued
+						? ['type' => 'success', 'message' => 'cluster_rotate_done']
+						: ['type' => 'danger', 'message' => 'cluster_rotate_failed'];
 
 				case 'revoke':
 					return NodeRegistry::revoke($rServerID, $rCrypto, $rUserID === null ? 'admin' : 'admin:' . $rUserID)

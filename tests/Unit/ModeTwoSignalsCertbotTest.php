@@ -200,6 +200,13 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 
 								public int $rServersReads = 0;
 
+								// Every pass checks, so the loop (which now stays up) reaches
+								// its second check — and its stop — in a few passes rather
+								// than in the daemon's refresh interval.
+								protected function shouldRefreshSettings(): bool {
+									return true;
+								}
+
 								// A pass's settings refresh (after its nginx check) and its servers refresh.
 								protected function hasFileChanged(): bool {
 									$this->rSettingsChecks++;
@@ -367,11 +374,11 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 	// ── The signals daemon ───────────────────────────────────────────
 
 	/**
-	 * One pass of the daemon, with Redis on in the settings: no ping of
-	 * MAIN's database, no Redis, no `signals` row read; it refreshes its
-	 * settings and servers from the replica and ends the pass, as a pass
-	 * always did, for the next one to start. The pass runs: once, with its
-	 * settings and servers refresh.
+	 * The daemon's passes, with Redis on in the settings: no ping of MAIN's
+	 * database, no Redis, no `signals` row read; it refreshes its settings and
+	 * servers from the replica and keeps passing in the one process until
+	 * something asks it to stop (here the second settings refresh, whose nginx
+	 * check the stand-in fails), and only then re-executes itself.
 	 */
 	public function testTheSignalsDaemonPassNeedsNeitherDatabaseNorRedis(): void {
 		$this->node(['redis_handler' => '1']);
@@ -382,8 +389,9 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		$this->assertTrue($rResult['replica']);
 		$this->assertNoConnect();
 		$this->assertSame([0, 1], [$rResult['code'], $rResult['restarts']], $rResult['output']);
-		$this->assertSame([1, 1], $rResult['passes'], 'one pass, which refreshed its settings and servers');
-		$this->assertStringNotContainsString('Not running', $rResult['output'], 'the pass reached its settings refresh');
+		[$rSettingsChecks, $rServersReads] = $rResult['passes'];
+		$this->assertGreaterThan(1, $rSettingsChecks, 'the loop stays up across passes');
+		$this->assertGreaterThanOrEqual(1, $rServersReads, 'and refreshed its servers from the replica');
 		$this->assertStringNotContainsString('Redis', $rResult['output']);
 	}
 

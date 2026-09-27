@@ -102,4 +102,26 @@ final class ClusterVectorsTest extends TestCase {
 		$this->assertSame('heartbeat', Box::open($rKeys['enc_up'], 'ctx', $rUp));
 		$this->assertNull(Box::open($rKeys['enc_down'], 'ctx', $rUp), 'directions use different keys');
 	}
+
+	/**
+	 * The Go agent keeps its own copy of both vector files
+	 * (XC_VM_Fanout/internal/clustercrypto/testdata/), and each side only ever
+	 * tests itself against the copy it holds — so a regenerated file that is
+	 * not copied leaves the two speaking different protocols while both suites
+	 * pass. These digests are the tripwire: they are recorded in the Go test
+	 * too, so whichever side changes first fails until both are updated.
+	 *
+	 * Regenerating the vectors is a protocol change (ADR 0004): copy both files
+	 * to the agent's testdata, update the digests in both tests, raise `proto`
+	 * and keep accepting N−1.
+	 */
+	public function testTheVectorFilesAreTheOnesTheAgentHolds(): void {
+		$this->assertSame([
+			'cluster_vectors.json' => '6cb3272fc1f97e2bc547105b8d5e42c77dcbf805e53d3eae78c89798d8f89645',
+			'cluster_canonical_vectors.json' => 'ee0fd4b297f02e2e1c1277a1433d1febe9c520414ce107addb524ff2b16799c3',
+		], [
+			'cluster_vectors.json' => hash_file('sha256', dirname(__DIR__) . '/Support/cluster_vectors.json'),
+			'cluster_canonical_vectors.json' => hash_file('sha256', dirname(__DIR__) . '/Support/cluster_canonical_vectors.json'),
+		]);
+	}
 }

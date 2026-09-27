@@ -510,6 +510,16 @@ class RootSignalsCronJob implements CommandInterface {
 			}
 		}
 		$rReload = false;
+		// The legacy `/api` on this node: served until its cluster data plane is
+		// on, when MAIN reaches it over the cluster API alone and an endpoint
+		// whose auth is a password in a URL has nothing left to serve. No node
+		// has DATAPLANE yet (it is Phase 8), so this writes 1 everywhere today.
+		$rApiLegacyConf = 'set $api_legacy ' . (NodeFlows::on(NodeFlows::DATAPLANE) ? '0' : '1') . ';';
+		if ($rApiLegacyConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/api_legacy.conf')) ?: '')) {
+			echo 'Updating the legacy /api toggle...' . "\n";
+			file_put_contents(BIN_PATH . 'nginx/conf/api_legacy.conf', $rApiLegacyConf);
+			$rReload = true;
+		}
 		$rMinistraLegacyConf = 'set $ministra_legacy_redirect ' . (SettingsManager::get('mag_legacy_redirect') ? '1' : '0') . ';';
 		$rCurrentMinistraLegacyConf = (trim(@file_get_contents(BIN_PATH . 'nginx/conf/ministra_legacy.conf')) ?: '');
 		if ($rMinistraLegacyConf != $rCurrentMinistraLegacyConf) {

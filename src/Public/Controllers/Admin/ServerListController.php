@@ -2,6 +2,8 @@
 
 namespace XcVm\Public\Controllers\Admin;
 
+use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -26,6 +28,34 @@ class ServerListController extends BaseAdminController {
 		$this->setTitle('Servers');
 
 		$rServers = ServerRepository::getAll(true);
-		$this->render('servers', ['rServers' => $rServers]);
+		// Which of these servers is a cluster node, and how far it has moved: the
+		// Cluster Nodes page has it all, and an operator reading this list had to
+		// correlate by server id to know whether a node still holds MAIN's
+		// credentials. One badge per node, from the same rows that page shows.
+		$this->render('servers', ['rServers' => $rServers, 'rClusterNodes' => self::clusterNodes($rServers)]);
+	}
+
+	/**
+	 * `server id => {state, health, mode}` for the enrolled nodes, or an empty
+	 * list when the API is off (or its tables are not there yet: the list is a
+	 * page an operator opens before `cluster:init`).
+	 *
+	 * @param array<int, array<string, mixed>> $rServers
+	 * @return array<int, array<string, mixed>>
+	 */
+	private static function clusterNodes(array $rServers): array {
+		if (empty(SettingsManager::get('cluster_api_enabled'))) {
+			return [];
+		}
+		try {
+			$rOfflineAfter = max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec')) ?: 30));
+			$rOut = [];
+			foreach (ClusterAdmin::nodes($rServers, $rOfflineAfter) as $rNode) {
+				$rOut[(int) $rNode['server_id']] = $rNode;
+			}
+			return $rOut;
+		} catch (\Throwable) {
+			return [];
+		}
 	}
 }

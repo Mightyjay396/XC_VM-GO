@@ -83,7 +83,7 @@ class StartupCommand implements CommandInterface {
 
 		// ── Установка crontab и запуск кэша ──────────────────
 		if (posix_getpwuid(posix_geteuid())['name'] == 'root') {
-			$this->installRootCrontab();
+			self::installRootCrontab();
 			if (!$rFixCron) {
 				exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache 1', $rOutput);
 				$this->generateCacheIfNeeded();
@@ -137,7 +137,13 @@ class StartupCommand implements CommandInterface {
 		}
 	}
 
-	private function installRootCrontab(): void {
+	/**
+	 * Root's crontab: cron:root_signals, cluster:root (MAIN's signed root
+	 * commands), cron:root_mysql and the module licences, plus whatever the
+	 * modules ask for. Static and public because `status` installs the same
+	 * list — two writers meant the second one deleted what the first added.
+	 */
+	public static function installRootCrontab(): void {
 		$rCrons = [];
 		$rCrons[] = '* * * * * ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:root_signals # XC_VM';
 		// MAIN's signed root commands (cluster API, Phase 4); a no-op until the node's root pin exists.
@@ -204,7 +210,12 @@ class StartupCommand implements CommandInterface {
 			// cache files written by root cannot be refreshed later by the
 			// xc_vm daemons and crons.
 			$rPrefix = ((posix_getpwuid(posix_geteuid())['name'] ?? null) === 'root') ? 'sudo -u xc_vm ' : '';
-			exec($rPrefix . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache_engine >/dev/null 2>/dev/null &');
+			// The heavy cache pass is MAIN's: the LB build strips CacheEngineCronJob,
+			// and an LB never has cache_complete, so this ran every boot and answered
+			// "Unknown command". No database is asked, because a mode 2 node has none.
+			if (file_exists(MAIN_HOME . 'Cli/CronJobs/CacheEngineCronJob.php')) {
+				exec($rPrefix . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache_engine >/dev/null 2>/dev/null &');
+			}
 		}
 	}
 }

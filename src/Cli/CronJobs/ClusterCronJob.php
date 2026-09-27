@@ -7,6 +7,7 @@ use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\AgentUpgrades;
 use XcVm\Domain\Cluster\ArtefactGrants;
 use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterAudit;
@@ -32,7 +33,9 @@ use XcVm\Domain\Server\ServerRepository;
  *   config is rendered from the settings (also with the API off);
  * - the liveness loop runs once (the signals daemon runs it every second);
  * - nodes whose agent downloads artefacts are granted the admin's off-air
- *   videos they do not hold yet (ArtefactGrants::offerOffAir).
+ *   videos they do not hold yet (ArtefactGrants::offerOffAir);
+ * - a node whose agent is not the version MAIN pinned is offered that binary
+ *   (AgentUpgrades::push).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
  * the rest; there the job returns before touching anything, as the cluster
@@ -89,6 +92,9 @@ class ClusterCronJob implements CommandInterface {
 			'stream_versions' => static fn() => StreamReplica::prune(),
 			'endpoint' => static fn() => self::endpoint(),
 			'artefacts' => static fn() => ArtefactGrants::offerOffAir(static fn() => ClusterCryptoFactory::create(), SettingsManager::getAll()),
+			// Every node runs the agent MAIN pinned: one that reports another
+			// version is offered the binary for its arch.
+			'agent' => static fn() => AgentUpgrades::push(),
 			// The signals daemon runs this every second; the minute is its fallback.
 			'liveness' => static function () {
 				if (LivenessService::tick(max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec') ?: 30)))) !== []) {
