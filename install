@@ -246,44 +246,6 @@ PACKAGES = {
         "libogg0",
         "libnuma1",
     ],
-    "debian11": [
-        "iproute2",
-        "net-tools",
-        "dirmngr",
-        "gpg-agent",
-        "software-properties-common",
-        "libcurl4",
-        "libgeoip-dev",
-        "libxslt1-dev",
-        "libonig-dev",
-        "e2fsprogs",
-        "wget",
-        "curl",
-        "unzip",
-        "zip",
-        "xz-utils",
-        "cron",
-        "git",
-        "sysstat",
-        "mariadb-server",
-        "mariadb-client",
-        "mariadb-common",
-        "alsa-utils",
-        "v4l-utils",
-        "certbot",
-        "iptables-persistent",
-        "libjpeg-dev",
-        "libpng-dev",
-        "libharfbuzz-dev",
-        "libfribidi-dev",
-        "libogg0",
-        "libnuma1",
-        "libssh2-1",
-        "libssh2-1-dev",
-        "libsodium23",
-        "cpufrequtils",
-        "mcrypt",
-    ],
     "redhat": [
         "epel-release",
         "wget",
@@ -652,7 +614,7 @@ def install_distribution_binaries(dist_id, version):
             printc(f"Ubuntu version {version} not supported for patches", col.WARNING)
             return False
     elif dist_id == "debian":
-        if major in ["11", "12", "13"]:
+        if major in ["12", "13"]:
             patch_name = f"debian_{major}.tar.gz"
             display_name = f"Debian {major}"
         else:
@@ -743,7 +705,7 @@ def install_distribution_binaries(dist_id, version):
 
         # Auto-detect directory structure
         major = version.split(".")[0]
-        # Variants: debian11, debian_11, ubuntu20, ubuntu_20
+        # Variants: debian12, debian_12, ubuntu20, ubuntu_20
         distro_variants = [
             f"{dist_id}{major}",
             f"{dist_id}_{major}",
@@ -1658,13 +1620,12 @@ _PACKAGE_KEY_MAP = {
     ("ubuntu", "20"): "ubuntu20",
     ("ubuntu", "22"): "ubuntu22",
     ("ubuntu", "24"): "ubuntu24",
-    ("debian", "11"): "debian11",
     ("debian", "12"): "debian",
     ("debian", "13"): "debian13",
 }
 
 # Distros that need OpenSSL 3 compatibility library
-_NEEDS_OPENSSL3 = {"ubuntu_18", "ubuntu_20", "debian_11"}
+_NEEDS_OPENSSL3 = {"ubuntu_18", "ubuntu_20"}
 
 
 def _install_openssl3_compat(dist_id, major):
@@ -1812,6 +1773,12 @@ if __name__ == "__main__":
         f"Detected: {dist_info['id']} {dist_info['version']} ({dist_info['family']} family)",
         col.OKGREEN,
     )
+
+    # EOL: the binaries release no longer ships debian_11 assets, so the install
+    # would fail halfway through.
+    if dist_info["id"] == "debian" and dist_info["version"].split(".")[0] == "11":
+        printc("Debian 11 is end-of-life and no longer supported. Use Debian 12 or 13.", col.FAIL)
+        sys.exit(1)
 
     # Install prerequisites before continuing
     install_prerequisites(dist_info)
@@ -2086,9 +2053,9 @@ if __name__ == "__main__":
                 )
                 sys.exit(1)
 
-        # Debian: 11, 12, 13
+        # Debian: 12, 13
         elif dist_id == "debian" and any(
-            version.startswith(v) for v in ["11", "12", "13"]
+            version.startswith(v) for v in ["12", "13"]
         ):
             if not install_distribution_binaries(dist_id, version):
                 printc(

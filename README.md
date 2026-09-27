@@ -109,7 +109,7 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries (PHP
 
 | Version    | Codename   | Status                |
 | ---------- | ---------- | --------------------- |
-| **11**     | Bullseye   | ⚠️ *Outdated (EOL)* — installation possible, installer warns and asks to confirm |
+| **11**     | Bullseye   | ❌ *EOL — not supported* |
 | **12**     | Bookworm   | ✅ **Recommended**     |
 | **13**     | Trixie     | ✅ Supported           |
 

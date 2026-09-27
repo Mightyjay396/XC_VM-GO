@@ -175,6 +175,13 @@ class ServerInstallCommand implements CommandInterface {
 		$rDistID = strtolower(trim($this->runSSH($rConn, 'lsb_release -is 2>/dev/null || (. /etc/os-release && echo $ID)')['output']));
 		echo "\nRemote OS: {$rDistID} {$rVersion}\n";
 
+		// EOL: the binaries release no longer ships debian_11 assets.
+		if ($rType == 2 && $rDistID === 'debian' && explode('.', $rVersion)[0] === '11') {
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "Debian 11 is end-of-life and no longer supported. Use Debian 12 or 13. Exiting\n";
+			return 1;
+		}
+
 		// LB package list is distribution/version-specific, so resolve it after OS detection.
 		if ($rType == 2) {
 			$rPackages = LbInstallFlow::getPackages($rDistID, $rVersion);
