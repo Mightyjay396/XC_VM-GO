@@ -59,6 +59,17 @@ final class NodeActions {
 		return self::send($rServerID, ['action' => 'update_binaries'], $rDb);
 	}
 
+	/**
+	 * Install the xc_agent binary MAIN pinned for this arch (plan section 5,
+	 * `node.root agent_binary`): a signed root command carrying the binary's
+	 * artefact grant, which root stages and checks before installing it. Only
+	 * to a node whose agent takes artefacts; false otherwise, and nothing is
+	 * queued.
+	 */
+	public static function agentBinary(int $rServerID, string $rArch, ?object $rDb = null): bool {
+		return self::send($rServerID, ['action' => 'agent_binary', 'arch' => $rArch], $rDb);
+	}
+
 	public static function setRamdisk(int $rServerID, bool $rEnabled, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => $rEnabled ? 'enable_ramdisk' : 'disable_ramdisk'], $rDb);
 	}

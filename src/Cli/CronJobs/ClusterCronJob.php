@@ -4,8 +4,10 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ArtefactGrants;
 use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\ClusterEndpoint;
@@ -28,7 +30,9 @@ use XcVm\Domain\Server\ServerRepository;
  * - MAIN's old cluster API ports past their seven days go, and so do those
  *   every node has moved off (ClusterEndpoint::release()); nginx's cluster
  *   config is rendered from the settings (also with the API off);
- * - the liveness loop runs once (the signals daemon runs it every second).
+ * - the liveness loop runs once (the signals daemon runs it every second);
+ * - nodes whose agent downloads artefacts are granted the admin's off-air
+ *   videos they do not hold yet (ArtefactGrants::offerOffAir).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
  * the rest; there the job returns before touching anything, as the cluster
@@ -84,6 +88,7 @@ class ClusterCronJob implements CommandInterface {
 			'blocklist_changes' => static fn() => BlocklistDelta::prune(),
 			'stream_versions' => static fn() => StreamReplica::prune(),
 			'endpoint' => static fn() => self::endpoint(),
+			'artefacts' => static fn() => ArtefactGrants::offerOffAir(static fn() => ClusterCryptoFactory::create(), SettingsManager::getAll()),
 			// The signals daemon runs this every second; the minute is its fallback.
 			'liveness' => static function () {
 				if (LivenessService::tick(max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec') ?: 30)))) !== []) {

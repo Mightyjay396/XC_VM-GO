@@ -17,7 +17,7 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
  * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat;
- * Phase 4: commands, ack; Phase 5: events, recording_complete; Phase 6: conn_snapshot, conn_admit;
+ * Phase 4: commands, ack, artefact; Phase 5: events, recording_complete; Phase 6: conn_snapshot, conn_admit;
  * Phase 7: config, streams). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
@@ -46,7 +46,7 @@ final class ClusterApi {
 	 * heartbeat on the cluster bus sends MySQL no query of its own (only the
 	 * connection's setup).
 	 */
-	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'conn_snapshot', 'conn_admit', 'streams', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
+	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'conn_snapshot', 'conn_admit', 'streams', 'artefact', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
 
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
@@ -66,6 +66,7 @@ final class ClusterApi {
 		'conn_admit' => ['POST', false, ['active']],
 		'config' => ['POST', false, ['active']],
 		'streams' => ['POST', false, ['active']],
+		'artefact' => ['POST', false, ['active']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
 
@@ -194,7 +195,7 @@ final class ClusterApi {
 	 * events from their reserve; a batch's lane is known only once its BOX is
 	 * open, and opening it touches no database.
 	 *
-	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config'|'streams' $rOp
+	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config'|'streams'|'artefact' $rOp
 	 * @return array{status: int, headers: array<string, string>, body: string}
 	 */
 	private static function dispatch(ClusterCrypto $rCrypto, string $rOp, array $rReq, array $rSettings, array $rMain, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, string $rBody): array {
@@ -219,6 +220,7 @@ final class ClusterApi {
 				'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 				'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
 				'streams' => self::streams($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
+				'artefact' => self::artefact($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 			};
 		};
 		$rLane = ClusterSemaphore::ingestLane($rOp, $rPayload);
@@ -625,11 +627,24 @@ final class ClusterApi {
 		return ClusterReply::boxed($rKeys, $rCtx, ['commands' => $rCommands, 'main_time_ms' => ClusterClock::nowMs()]);
 	}
 
-	/** `ack`: a command's outcome, accepted only for this node's own commands. */
+	/**
+	 * `ack`: a command's outcome, accepted only for this node's own commands.
+	 * The first ack of one that carried an artefact grant is audited when it
+	 * failed (ArtefactGrants::acked).
+	 */
 	private static function ack(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}$/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
-		if ($rCmdID === null || !CommandBus::ack((int) $rNode['server_id'], $rCmdID, !empty($rP['ok']), is_string($rP['result'] ?? null) ? (string) $rP['result'] : '')) {
+		$rOk = !empty($rP['ok']);
+		$rResult = is_string($rP['result'] ?? null) ? (string) $rP['result'] : '';
+		if ($rCmdID === null || !CommandBus::ack((int) $rNode['server_id'], $rCmdID, $rOk, $rResult, $rFirst)) {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		if ($rFirst) {
+			try {
+				ArtefactGrants::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
+			} catch (\Throwable) {
+				// The ack stands; an off-air grant not recorded is offered again later.
+			}
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, ['ok' => true, 'main_time_ms' => ClusterClock::nowMs()]);
 	}
@@ -835,6 +850,25 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
 		}
 		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `artefact`: a chunk (at most 4 MiB, in the BOX) of the file a live grant
+	 * of this node's names (ArtefactGrants::serve): an off-air video, a custom
+	 * module's archive, the pinned agent. Bulk lane, under an ingest permit.
+	 * The node names the grant's command id, an offset and a length; never a
+	 * path. A grant MAIN cannot read answers `503 DB`.
+	 */
+	private static function artefact(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings): array {
+		try {
+			[$rOut, $rDenied] = ArtefactGrants::serve($rNode, $rP, $rSettings);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		if ($rDenied !== null) {
+			return DenialFactory::deny($rCrypto, $rDenied[0], $rDenied[1], $rH['node'], $rH['nonce'], $rDenied[2]);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, (array) $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
 	}
 
 	/**
