@@ -411,9 +411,9 @@ Each change raises `policy_ver`, which the heartbeat reply carries, as before.
 
 - Nodes that knew only an old address that no longer reaches MAIN are stranded. They need `cluster_main_host` or a private route (plan D21), or re-enrolment by code.
 - An old port or URL is released after 7 days, not once every node uses the new URL: which URL a node uses is not recorded (Phase 2). Since the sixth Phase 2 increment, a kept port and the kept URLs on it go sooner once every node uses the new URLs, for an agent that says which policy it dials (none does yet).
-- A settings-side change (`cluster_transport`, `cluster_main_host`) still raises `cluster_policy_ver` without keeping the old URL.
+- A settings-side change (`cluster_transport`, `cluster_main_host`) still raises `cluster_policy_ver` without keeping the old URL. Since the third increment it keeps them, where the listing rules allow it.
 - `setup.php` writes MAIN's `server_ip` at first setup, before any node exists, and announces nothing.
-- An admin's save and the root cron's rewrite in the same moment can race on the lists. The later write wins, and the version goes up twice.
+- An admin's save and the root cron's rewrite in the same moment can race on the lists. The later write wins, and the version goes up twice. Since the third increment, each writes over the lists as it read them and merges what the other kept.
 - nginx holds an old port for its full 7 days: the HTTP broadcast port since the first increment, and now an old HTTPS port. An admin who moves MAIN off a port to free it for another program must wait that long. Until then, the program cannot bind the port. If the program binds the port first after a restart, nginx fails to start. Clearing the port from `cluster_legacy_ports`, or its URL from `cluster_legacy_urls`, releases it at the next `cron:cluster` render. Since the sixth Phase 2 increment, nginx closes the port sooner once every node has moved off it and says which policy it dials.
 
 Tests:
@@ -439,6 +439,126 @@ Tests:
   - on the old port, `/cluster/v1/` reached the cluster upstream, and `/get.php` got 404 where the public server passed it to PHP;
   - plain HTTP on the old port got 400;
   - once the URL expired and nginx reloaded, the port was closed.
+
+### MAIN endpoint changes (Phase 3, third increment): the transport and MAIN's DNS name
+
+**Before.** A settings save that changed `cluster_transport` or `cluster_main_host` raised `cluster_policy_ver` in its own `UPDATE` (`SettingsService::edit()`) and kept nothing. Both decide URLs of the policy besides MAIN's row (`ClusterPolicy::current`):
+
+- `cluster_main_host` is one of the hosts of the plain-HTTP URLs. When it is set, it is also the TLS name of the HTTPS URL, in place of the first host name in `servers.domain_name`.
+- The transport decides which schemes are listed.
+
+So a new name dropped the old name's URLs from the policy at once. A node that adopted the new policy then had nothing but MAIN's addresses and the new name. A name that did not resolve yet, or a certificate that did not cover it yet, could strand it: under `https_required` the HTTPS URL is all it has.
+
+**Now.** `SettingsService::edit()` stores a save that changes either setting (compared with the settings cache, as before) through `ClusterEndpoint::storeSettings($rSet, $rData, $rSave, $rMain)`. That runs on MAIN only: `Domain/Cluster` is not in the LB build, so the call sits behind `class_exists`. Every other save is stored as before.
+
+1. It reads the settings row and MAIN's `servers` row (`is_main = 1`) from the database. The servers cache the form reads may be 10 s old, and a URL listed for a stale row would count as current. When MAIN's row cannot be read, the form's row is used.
+2. When the stored transport and name already equal the save's, another save stored them. The save is stored without raising the version.
+3. Otherwise it compares the policy's URLs, without the kept lists, for the stored settings and for the save's values over them. Both lists are taken on the `cluster_api_port` the save stores. A new API port is announced once it is stored, by `recordApiPortChange()`, as before.
+   - **Nothing is kept** when the lists are the same, when the API is off once the save is stored, or when no node may use the URLs. A node may use them when it is in mode ≥ 1 and not revoked. An `enrolling` node counts, and a check that fails assumes one (`nodesListening()`, as in the second increment). The version still goes up, as before: the policy's `transport` field or its URLs changed.
+   - **Otherwise** every URL the old settings listed and the new do not is kept for 7 days in `cluster_legacy_urls`, where the listing rules list it. An `https://` URL is kept only on the HTTPS broadcast port the row stores, and only while the new transport lists HTTPS. The policy's default 443 for a row with no HTTPS port is never kept, as in the second increment. An `http://` URL is never kept under `https_required`. A kept URL the new policy lists again leaves the list. The rest stay, the latest change first, at most 8 (`MAX_URLS`).
+   - The audit event is `cluster.endpoint_change`, with `urls_from`, `urls_to`, `kept_urls`, `kept_ports` (unchanged), and `settings_from` and `settings_to`: the changed settings, with their old and new values.
+4. One `UPDATE` stores the save's columns, the kept URLs and `cluster_policy_ver + 1`. It applies only while `cluster_policy_ver`, `cluster_legacy_ports` and `cluster_legacy_urls` are as read. A read-back checks that the row holds the save's transport, name and kept URLs. When it does not, another process stored the state in between, and the save starts again from step 1.
+5. After 3 tries, the save is stored as before: its columns and the version, nothing kept. The same happens at once when the settings row cannot be read, or has no `cluster_legacy_urls` column (before migration 044).
+
+So no policy version lacks the kept URLs: the first version that lists the new name also lists the old one.
+
+**What a save keeps.** `a` and `b` are DNS names. The HTTPS entries apply only while MAIN lists HTTPS: `enable_https` 1 or 2, and a TLS name.
+
+| Save | `https_preferred` | `https_required` | `auto`, `http` |
+| --- | --- | --- | --- |
+| Name `a` → `b` | `https://a`, `http://a` | `https://a` | `http://a` |
+| Name set where there was none | `https://<domain_name>` (the TLS name it replaces) | the same | nothing (a URL is added) |
+| Name `a` cleared | `https://a`, `http://a` | `https://a` | `http://a` |
+| Transport alone | nothing | nothing | nothing |
+
+Each kept `http://` URL is on the API's HTTP port, and each `https://` one on the HTTPS broadcast port. A save that changes both settings keeps the old name's URLs of the schemes the new transport lists.
+
+**Why a transport change alone keeps nothing.** It moves no host and no port. What it drops is a whole scheme: `http://` for a switch to `https_required`, `https://` for a switch to `auto` or `http`. A kept URL is listed only with a scheme the transport lists, so none of the dropped URLs could be listed:
+
+- `auto` lists HTTPS only once the self-probe feeds the policy, which no caller does yet. So no `https://` URL is kept under `auto`.
+- Under `https_required` plain HTTP stays reachable for the signed challenge through the agent's own `http_urls`, as before.
+- The URLs kept before stay stored, whatever their scheme. They are listed again once the transport lists their scheme, until they expire or are released.
+
+**Concurrent changes.** Every writer of the kept URL list now writes over the lists as it read them:
+
+- `storeSettings()`, above.
+- `recordMainChange()` writes through `save()` with the lists as read: `WHERE COALESCE(…) = ?` on both, then a read-back, as `release()` does. When they changed, it reads them again and computes again:
+  - `stored()` now reads `cluster_transport` and `cluster_main_host` again with the lists. The root cron's settings may predate a settings save, and with the old name a URL that save kept looked current and left the list.
+  - What the policy lists now comes from MAIN's row as stored, or from the caller's new row when that cannot be read. Both callers store the row before they announce. A change of another column that another process stored in between then counts: an admin's save and the root cron's rewrite at the same moment keep both old addresses.
+  - The third try writes without the condition, as before, so the change is still announced. It writes without the condition at once before migration 044.
+- `prune()` writes over the lists as read. On a conflict it writes nothing and returns false, and the next minute prunes. Before migration 044 it writes the ports as before.
+- `release()` already did (sixth Phase 2 increment).
+- `recordApiPortChange()` writes the ports list alone, as before.
+
+**The backup settings form.** `SettingsService::editBackup()` stores any settings column posted to it. It already dropped MAIN's own state (`cluster_policy_ver` and the kept lists). It now also drops every cluster setting (`ClusterSettings::keys()`, `cluster_transport` and `cluster_main_host` among them). Only the settings form checks them (`ClusterSettings::normalize()`) and announces them. The backup form posts none of them.
+
+**nginx.** Nothing new. A URL this increment keeps is on a port MAIN serves already: the API's HTTP port, or the HTTPS broadcast port the row stores, which the public server serves over TLS. `ClusterNginxConfig` renders no server for it.
+
+**Expiry and early release.** These kept URLs go as the others do:
+
+- `cron:cluster` drops them after 7 days (`prune()`).
+- `release()` drops one sooner once every node dials the current policy and none reaches MAIN on its port. A kept name's URL is on a port the nodes use, so it goes early only when no node reaches MAIN on that port. An example is the old name's `http://` URL once every node dials HTTPS. The port cannot tell which name a node dialled.
+
+**Wire.** There is no new op, field, header or setting. `policy.main_urls` may carry, last and for up to 7 days after a save:
+
+- `http://<old cluster_main_host>:<HTTP port>/cluster/v1/`, where the HTTP port is `cluster_api_port`, or `http_broadcast_port` when that is 0;
+- `https://<old TLS name>:<https_broadcast_port>/cluster/v1/`. The old TLS name is the old `cluster_main_host`, or, for a name set where there was none, the first host name in `servers.domain_name`.
+
+`policy.main_urls` is in the replies to hello and enrol_complete, in the signed challenge, in `cluster.json` at install, and in the replica's `cluster` section. Each save that changes the transport or the name raises `policy_ver`, as before, and the heartbeat reply carries it.
+
+**What today's agent does.** It needs nothing new:
+
+- A heartbeat reply with a higher `policy_ver` makes it say hello. It adopts the policy from the MAC'd reply, never at a lower version.
+- It tries `main_urls` in order, and a URL it could not reach goes last for 10 minutes. The kept URLs come last, so they are dialled only when the current ones fail.
+- It resolves a host name at each dial, as it does for the current `cluster_main_host` URL today. It verifies an `https://` URL against that URL's own host name.
+- Its `http_urls` (the plain-HTTP URLs of every policy it held, at most 8) take a kept `http://` URL like any other.
+
+**The agent's contract.** For the Go half, nothing is required by this increment:
+
+1. **No new wire.** No op, field, header, agent state or setting. The contracts of the second endpoint increment (known-good URL sets) and of the sixth Phase 2 increment (`policy_ver` in hello and heartbeat) are unchanged.
+2. **Kept URLs are ordinary entries of `main_urls`.** A URL this increment keeps belongs to the URL set of the policy that lists it. Known-good sets compare `main_urls` element by element, order included, as before. The agent must not treat a host name differently from an address: it resolves the name at each dial and verifies TLS against it.
+3. **Recommended hardening, not required and not a wire change.** A kept name may come to point at another host. Requests to it stay MAC'd and sealed, so the other host can neither read nor answer them. Today's agent moves on to the next URL after any unauthenticated answer except one: a `200` with `Content-Type: application/octet-stream` whose MAC does not verify, or whose BOX does not open. That answer ends the request with `ErrTransport`, and the URL is not backed off, since the HTTP exchange itself succeeded. The Go half should treat it as that URL's failure: back the URL off for `URLRetry` (10 minutes) and try the next URL in the same request. This applies to every URL.
+
+**Differs from the plan.**
+
+- **More changes are announced.** Plan §3 announces changes of MAIN's ports and addresses, and has `cluster_main_host` "survive IP changes". A change of the name itself, or of the transport, is now handled the same way: announced, not pushed, in the same `UPDATE` that stores it, and kept as URLs.
+- **A transport change keeps nothing**, as explained above. It drops no URL the transport could still list.
+- **The version goes up on any change of the transport or the name**, even when nothing is kept (no node, the API off, the same URLs), as before this increment.
+- **Concurrent writes merge.** The plan has no rule for two changes at the same moment.
+- **The backup settings form stores no cluster setting.**
+
+**Compatibility.**
+
+- There is no migration. `cluster_legacy_urls` is migration 044's.
+- Today's agent needs nothing (above).
+- Older code, from migration 044 on, lists and expires the kept URLs of this increment by the same rules. A rollback before migration 044 drops the column, as before.
+- LB builds strip `Domain/Cluster`. `SettingsService` reaches `ClusterEndpoint` only behind `class_exists`, and stores the save as before without it.
+
+**Limits.**
+
+- Only a save through the settings form is announced this way: `SettingsService::edit()`, which the admin API's settings edit also calls. A direct SQL edit of `cluster_main_host` or `cluster_transport` announces nothing, as before.
+- The settings cache decides whether a save goes through `storeSettings()` (`changesClusterPolicy()`), as it decided the version bump before. A cache older than another admin's save of the same settings can store a changed name without announcing it.
+- A save that changes `cluster_api_port` and the name at once keeps the old name on the new port. `recordApiPortChange()` keeps the old port for the current addresses and name. The old name on the old port is not kept.
+- Under `auto`, no `https://` URL is kept (above).
+- A kept name's URL on a port the nodes use stays for its 7 days while they use that port, as an old address on the current port does.
+- After 3 lost races, a settings save is stored without keeping anything, as before this increment. When the read-back fails after the write went through, the retry finds the save stored. It then stores the save's columns again without raising the version, and the save's audit event is missing.
+- `recordMainChange()`'s last try and `recordApiPortChange()` still write without the condition.
+
+**Tests.**
+
+- `ClusterEndpointSettingsTest` (new), through `SettingsService::edit()`:
+  - a new name under `https_preferred`: both of the old name's URLs kept and listed last, no nginx server, the audit event, and moving back;
+  - a name set (nothing kept under `auto`; under `https_preferred` the replaced TLS name's `https://` URL kept), a name cleared (its URLs kept), and a kept URL current again leaving the list;
+  - a row with no HTTPS port: the old name's `https://` URL on 443 not kept;
+  - transport changes (`https_preferred`, `https_required`, `auto`, `http`): announced, nothing kept, the URLs kept before untouched, and `auto` → `http` raising the version alone;
+  - a new name under `https_required` keeping the `https://` URL alone, and the transport and the name changed at once;
+  - nothing kept with no node, a revoked node, a node in mode 0, the API off, or a save that turns it off; an `enrolling` node counting; a save that changes nothing;
+  - the forms: posted kept lists and versions ignored, and the backup form storing no cluster setting;
+  - the early release (the node on the current policy and the HTTPS port: the old name's `http://` URL released, the `https://` one kept) and the 7-day expiry;
+  - a save that also moves `cluster_api_port`;
+  - a race with `cron:root_signals` either way, three lost races, and the fail-safe paths (no settings row, no `cluster_legacy_urls` column).
+- `ClusterEndpointTest`: an admin's save and the root cron's rewrite at the same moment keeping both old addresses, and a prune racing a settings save. Its `live()` helper now stores the transport a test sets, since `stored()` reads it again. `ClusterEndpointReleaseTest` has the same helper change.
+- `HttpsRequiredRecoveryTest` is unchanged and still passes. Its recovery drill now runs through `storeSettings()`.
 
 ### Commands (Phase 4, first increment)
 
@@ -1786,7 +1906,7 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 - `policy_ver` is the payload's `policy_ver` when that is a JSON integer from 0 to 4294967295, and 0 (unknown) otherwise. That covers an agent that does not send it, including one downgraded from an agent that did.
 - `main_port` (migration 046, `smallint(5) unsigned`, NULL by default, after `policy_ver`) is the MAIN port nginx took the request on. `Public/cluster/index.php` passes it to `ClusterApi` as `port`, from the `SERVER_PORT` that nginx's `fastcgi_params` set to `$server_port`. The address is not used: nginx listens on every address, and behind NAT the local address says nothing of the one the node dialled. In MAIN's nginx each port is one listener, plain HTTP or TLS, so the port alone tells a kept port from a current one. Before migration 046 the row has no `main_port`, and only `policy_ver` is written.
 
-**When a port goes.** `ClusterEndpoint::release()` runs from `cron:cluster` every minute, with the API on or off: in `ClusterCronJob::endpoint()`, after `prune()` and before `ClusterNginxConfig::apply()`. It reads the kept lists, `cluster_policy_ver` and `cluster_transport` again from the database (`stored()`, the transport as an extra column, not from the settings cache, which may be 20 s old). It then reads every `cluster_nodes` row that is not revoked and whose server still exists (`EXISTS` on `servers`). `ServerRepository::deleteById()` leaves the row, and a deleted LB is no node of MAIN's. It releases nothing when:
+**When a port goes.** `ClusterEndpoint::release()` runs from `cron:cluster` every minute, with the API on or off: in `ClusterCronJob::endpoint()`, after `prune()` and before `ClusterNginxConfig::apply()`. It reads the kept lists, `cluster_policy_ver` and `cluster_transport` again from the database (`stored()`), not from the settings cache, which may be 20 s old. Until the third endpoint increment made the transport part of the state `stored()` reads, it was an extra column. It then reads every `cluster_nodes` row that is not revoked and whose server still exists (`EXISTS` on `servers`). `ServerRepository::deleteById()` leaves the row, and a deleted LB is no node of MAIN's. It releases nothing when:
 
 - the rows cannot be read;
 - an enrolment by code may still dial an old URL: a `cluster_enrol_codes` row has not expired (`exp` > now, used or not), or a `cluster_enrol_requests` row is `pending_approval` and less than `EnrolCodeService::TTL` (30 min) old. The code carries one MAIN URL, the policy's first when `cluster:enrol-code` ran. The agent sends `enrol_code` to that URL alone, then polls `enrol_code_status` on it every 10 s for up to 30 minutes (`EnrolWait`). Once the admin approves, the node's `enrolling` row holds everything until its enrolment completes or expires (below). Either table that cannot be read also releases nothing;
