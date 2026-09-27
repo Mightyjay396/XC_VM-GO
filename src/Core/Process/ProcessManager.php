@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Process;
 
+use XcVm\Core\Module\SourceDriverRegistry;
 use XcVm\Core\Util\Encryption;
 
 /**
@@ -144,10 +145,19 @@ class ProcessManager {
 
 		$exe = @basename(@readlink('/proc/' . $pid . '/exe'));
 
+		if (strpos($exe, 'php') === 0) {
+			return true;
+		}
+		return self::producerRunsStream($exe, (string) @file_get_contents('/proc/' . $pid . '/cmdline'), $streamId);
+	}
+
+	/**
+	 * Whether a non-PHP process is this stream's producer, from its executable
+	 * basename and NUL-separated command line. PURE.
+	 */
+	public static function producerRunsStream(string $exe, string $cmdline, int $streamId): bool {
 		if (strpos($exe, 'ffmpeg') === 0) {
-			$cmdline = trim(@file_get_contents('/proc/' . $pid . '/cmdline'));
-			return (stristr($cmdline, '/' . $streamId . '_.m3u8') ||
-				stristr($cmdline, '/' . $streamId . '_%d.ts'));
+			return stristr($cmdline, '/' . $streamId . '_.m3u8') || stristr($cmdline, '/' . $streamId . '_%d.ts');
 		}
 
 		// The fanout daemon's native remuxer (`xc_fanout remux … <streams>/<id>_.m3u8`),
@@ -155,10 +165,15 @@ class ProcessManager {
 		// and this stream's playlist must both be there: the daemon process shares
 		// the executable but names no stream playlist.
 		if (strpos($exe, 'xc_fanout') === 0) {
-			$cmdline = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
 			return strpos($cmdline, "\0remux\0") !== false && strpos($cmdline, '/' . $streamId . '_.m3u8') !== false;
 		}
-		return strpos($exe, 'php') === 0;
+
+		return self::driverRunsStream($exe, $cmdline, $streamId);
+	}
+
+	/** A module's source-driver engine, which the contract makes name the playlist too. PURE. */
+	private static function driverRunsStream(string $exe, string $cmdline, int $streamId): bool {
+		return in_array($exe, SourceDriverRegistry::binaries(), true) && strpos($cmdline, '/' . $streamId . '_.m3u8') !== false;
 	}
 
 	/**
@@ -179,14 +194,11 @@ class ProcessManager {
 			$cmdline = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
 			return strpos($cmdline, "\0remux\0") !== false ? 'fanout' : null;
 		}
-		if (strpos($exe, 'ffmpeg') === 0) {
-			return 'ffmpeg';
-		}
-		if (strpos($exe, 'php') === 0) {
-			return 'php';
+		if (preg_match('/^(ffmpeg|php)/', $exe, $m)) {
+			return $m[1];
 		}
 
-		return null;
+		return in_array($exe, SourceDriverRegistry::binaries(), true) ? 'driver' : null;
 	}
 
 	/**

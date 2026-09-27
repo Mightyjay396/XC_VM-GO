@@ -10,6 +10,8 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\CurlClient;
 use XcVm\Core\License\LicenseGate;
+use XcVm\Core\Module\SourceDriverInterface;
+use XcVm\Core\Module\SourceDriverRegistry;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -1199,6 +1201,186 @@ class StreamProcess {
 	}
 
 	/**
+	 * Who runs one source: a module's source driver, core (null), or nobody —
+	 * a refusal sentence for the stream's log. A driver refuses exactly what the
+	 * native remuxer refuses (it too replaces ffmpeg, so the stream's ffmpeg-only
+	 * settings would silently vanish) plus delay, whose worker owns the output.
+	 *
+	 * @param array $rStreamInfo streams ⨝ streams_types row.
+	 * @param array $rArgsByKey  Stream arguments keyed by argument_key.
+	 * @param string $rSource    The source as stored (before parseStreamURL).
+	 * @return SourceDriverInterface|string|null
+	 */
+	private static function sourceDriverFor(array $rStreamInfo, array $rArgsByKey, string $rSource) {
+		$rDriver = SourceDriverRegistry::for($rSource);
+		if ($rDriver === null) {
+			return SourceDriverRegistry::refusal($rSource);
+		}
+		if (intval($rStreamInfo['delay_minutes'] ?? 0) > 0) {
+			return 'a source driver cannot feed a delayed stream';
+		}
+		return self::nativeRefusal($rStreamInfo, $rArgsByKey) ?? $rDriver;
+	}
+
+	/**
+	 * The shell line that launches a driver's producer. Core escapes the argv
+	 * and adds the stderr/pid tail the PHP monitor path needs (the supervisor
+	 * does both itself). The command must name the stream's playlist: stop,
+	 * kill and adoption find the producer by it.
+	 *
+	 * @param array $rCtx See SourceDriverInterface::buildArgv().
+	 * @throws \UnexpectedValueException When the driver's argv breaks the contract.
+	 */
+	private static function driverCommand(SourceDriverInterface $rDriver, array $rCtx): string {
+		$rArgv = array_map('strval', $rDriver->buildArgv($rCtx));
+		$rBinary = $rArgv[0] ?? '';
+		if (!str_starts_with($rBinary, '/') || basename($rBinary) !== $rDriver->binary()) {
+			throw new \UnexpectedValueException('argv[0] must be the absolute path of ' . $rDriver->binary());
+		}
+		$rPlaylist = $rCtx['hls']['dir'] . $rCtx['hls']['playlist'];
+		if (count(array_filter($rArgv, static fn(string $rArg): bool => str_contains($rArg, $rPlaylist))) === 0) {
+			throw new \UnexpectedValueException('the command must name ' . $rPlaylist);
+		}
+		$rCmd = implode(' ', array_map('escapeshellarg', $rArgv));
+		if (empty($rCtx['supervised'])) {
+			$rCmd .= ' >/dev/null 2>>' . escapeshellarg($rCtx['errors_path']) . ' & echo $! > ' . escapeshellarg(STREAMS_PATH . intval($rCtx['stream_id']) . '_.pid');
+		}
+		return $rCmd;
+	}
+
+	/**
+	 * A source's supervisor spec entries when a driver runs it: one entry, none
+	 * when the source is skipped (reason in the stream's log), or null when core
+	 * (ffmpeg / remux) runs it, a loopback's http parent feed included. No
+	 * fallback_cmd — ffmpeg can't read a driver URL — and no probe_cmd, so the
+	 * supervisor never switches to it blindly.
+	 *
+	 * @param array $rStreamInfo      streams ⨝ streams_types row.
+	 * @param array $rArgsByKey       Stream arguments keyed by argument_key.
+	 * @param array $rSegmentSettings seg_time / seg_list_size / seg_delete_threshold.
+	 * @return list<array{label: string, cmd: string}>|null
+	 */
+	private static function driverSpecEntries(int $rStreamID, array $rStreamInfo, array $rArgsByKey, string $rSource, string $rLabel, array $rSegmentSettings, ?string $rIngestSock): ?array {
+		$rDriver = self::sourceDriverFor($rStreamInfo, $rArgsByKey, $rSource);
+		if ($rDriver === null) {
+			return null;
+		}
+		$rCmd = self::driverLaunch($rStreamID, $rDriver, self::driverContext($rStreamID, $rSource, $rLabel, $rArgsByKey, $rSegmentSettings, $rIngestSock, true));
+		return $rCmd === '' ? [] : [['label' => $rSource, 'cmd' => $rCmd]];
+	}
+
+	/**
+	 * driverCommand() for a driver pick, or '' with the reason in the stream's
+	 * log when the pick is a refusal or the driver breaks the contract.
+	 *
+	 * @param SourceDriverInterface|string $rPick From sourceDriverFor().
+	 */
+	private static function driverLaunch(int $rStreamID, $rPick, array $rCtx): string {
+		try {
+			if (is_string($rPick)) {
+				throw new \UnexpectedValueException($rPick);
+			}
+			return self::driverCommand($rPick, $rCtx);
+		} catch (\Throwable $e) {
+			self::noteProducer($rStreamID, 'source #' . $rCtx['label'] . ' skipped: ' . $e->getMessage());
+			return '';
+		}
+	}
+
+	/**
+	 * Whether the PHP monitor may start a driver pick now: not a refusal, and
+	 * the driver reports the source reachable (in ffprobe's place).
+	 *
+	 * @param SourceDriverInterface|string $rPick From sourceDriverFor().
+	 */
+	private static function driverAvailable(int $rStreamID, $rPick, string $rSource): bool {
+		try {
+			if (is_string($rPick)) {
+				throw new \UnexpectedValueException($rPick);
+			}
+			if ($rPick->available($rStreamID, $rSource)) {
+				return true;
+			}
+			self::noteProducer($rStreamID, 'source driver reports ' . $rSource . ' unavailable');
+		} catch (\Throwable $e) {
+			self::noteProducer($rStreamID, 'source ' . $rSource . ' skipped: ' . $e->getMessage());
+		}
+		return false;
+	}
+
+	/**
+	 * Whether a source answers right now — the check before the monitor switches
+	 * to it (priority return, forced source): its driver's word, or ffprobe.
+	 *
+	 * @param array $rStreamArguments The stream's argument rows.
+	 */
+	public static function sourceAnswers(int $rStreamID, string $rSource, array $rStreamArguments): bool {
+		$rDriver = SourceDriverRegistry::for($rSource);
+		if ($rDriver !== null) {
+			return self::driverAvailable($rStreamID, $rDriver, $rSource);
+		}
+		if (SourceDriverRegistry::refusal($rSource) !== null) {
+			return false;
+		}
+		$rStreamSource = StreamUtils::parseStreamURL($rSource);
+		$rProtocol = strtolower(substr($rStreamSource, 0, (int) strpos($rStreamSource, '://')));
+		return (bool) FFprobeRunner::probeStream($rStreamSource, implode(' ', StreamUtils::getArguments($rStreamArguments, $rProtocol, 'fetch')));
+	}
+
+	/**
+	 * The driver the PHP monitor starts this source with, or null: core runs it,
+	 * or it is refused / unreachable (reason in the stream's log).
+	 *
+	 * @param array $rStreamInfo streams ⨝ streams_types row.
+	 * @param array $rArgsByKey  Stream arguments keyed by argument_key.
+	 */
+	private static function monitorDriverPick(int $rStreamID, array $rStreamInfo, array $rArgsByKey, string $rSource): ?SourceDriverInterface {
+		$rPick = self::sourceDriverFor($rStreamInfo, $rArgsByKey, $rSource);
+		return $rPick !== null && self::driverAvailable($rStreamID, $rPick, $rSource) ? $rPick : null;
+	}
+
+	/** The longest first-output wait the drivers of these sources asked for (0: none). */
+	private static function driverStartTimeout(array $rSources): int {
+		return max([0, ...array_map(static fn($rSource): int => SourceDriverRegistry::startTimeout((string) $rSource), $rSources)]);
+	}
+
+	/**
+	 * What a driver gets to build its producer from. The fetch identity carries
+	 * only values the operator set: the stream form pre-fills the global default
+	 * user agent, which would otherwise override the provider's own.
+	 *
+	 * @param array $rArgsByKey Stream arguments keyed by argument_key.
+	 * @param array $rSegmentSettings seg_time / seg_list_size / seg_delete_threshold.
+	 */
+	private static function driverContext(int $rStreamID, string $rSource, string $rLabel, array $rArgsByKey, array $rSegmentSettings, ?string $rIngestSock, bool $rSupervised): array {
+		$rFetch = [];
+		foreach (['user_agent', 'proxy', 'cookie', 'headers'] as $rKey) {
+			$rValue = (string) ($rArgsByKey[$rKey]['value'] ?? '');
+			if ($rValue !== '' && $rValue !== (string) ($rArgsByKey[$rKey]['argument_default_value'] ?? '')) {
+				$rFetch[$rKey] = $rValue;
+			}
+		}
+		return [
+			'stream_id'     => $rStreamID,
+			'url'           => $rSource,
+			'label'         => $rLabel,
+			'fetch'         => $rFetch,
+			'hls'           => [
+				'dir'              => STREAMS_PATH,
+				'playlist'         => $rStreamID . '_.m3u8',
+				'segment_pattern'  => $rStreamID . '_%d.ts',
+				'seg_time'         => max(1, intval($rSegmentSettings['seg_time'])),
+				'list_size'        => intval($rSegmentSettings['seg_list_size']),
+				'delete_threshold' => intval($rSegmentSettings['seg_delete_threshold']),
+			],
+			'ingest'        => $rIngestSock,
+			'progress_path' => STREAMS_PATH . $rStreamID . '_.progress',
+			'errors_path'   => STREAMS_PATH . $rStreamID . '.errors',
+			'supervised'    => $rSupervised,
+		];
+	}
+
+	/**
 	 * The supervisor policy for a stream, from the panel settings the PHP monitor
 	 * obeyed. PURE.
 	 *
@@ -1350,6 +1532,11 @@ class StreamProcess {
 
 		$rSpecSources = [];
 		foreach ($rSources as $i => $rSource) {
+			$rDriverEntries = self::driverSpecEntries($rStreamID, $rInfo, $rArgsByKey, (string) $rSource, (string) $i, $rSegmentSettings, $rIngestSock);
+			if ($rDriverEntries !== null) {
+				array_push($rSpecSources, ...$rDriverEntries);
+				continue;
+			}
 			$rStreamSource = StreamUtils::parseStreamURL($rSource);
 			$rProtocol = strtolower(substr($rStreamSource, 0, (int) strpos($rStreamSource, '://')));
 			$rArguments = $rStream['stream_arguments'];
@@ -1377,22 +1564,17 @@ class StreamProcess {
 			]);
 
 			$rEntry = ['label' => $rLabels[$i], 'cmd' => $rFFMPEG];
-			if ($rNativeStream && !self::isNativeSource($rStreamSource)) {
-				self::noteProducer($rStreamID, 'ffmpeg runs source #' . $i . ': ' . strtolower((string) parse_url($rStreamSource, PHP_URL_SCHEME)) . ':// is not a scheme the remuxer reads');
-			}
 			if ($rNativeStream && self::isNativeSource($rStreamSource)) {
-				$rNativeArgs = [];
-				foreach ($rArguments as $rArg) {
-					$rNativeArgs[$rArg['argument_key']] = $rArg;
-				}
 				$rEntry['cmd'] = self::buildNativeLive([
-					'streamID' => $rStreamID, 'source' => $rStreamSource, 'arguments' => $rNativeArgs,
+					'streamID' => $rStreamID, 'source' => $rStreamSource, 'arguments' => array_column($rArguments, null, 'argument_key'),
 					'segmentSettings' => $rSegmentSettings, 'ingestSock' => $rIngestSock,
 					'settings' => $rSettings, 'binary' => FanoutClient::binaryPath(),
 				]);
 				if ($rBackend === 'auto') {
 					$rEntry['fallback_cmd'] = $rFFMPEG;
 				}
+			} elseif ($rNativeStream) {
+				self::noteProducer($rStreamID, 'ffmpeg runs source #' . $i . ': ' . strtolower((string) parse_url($rStreamSource, PHP_URL_SCHEME)) . ':// is not a scheme the remuxer reads');
 			}
 			if ($rPriority) {
 				$rProbeOptions = implode(' ', StreamUtils::getArguments($rProbeArguments, $rProtocol, 'fetch'));
@@ -1400,10 +1582,15 @@ class StreamProcess {
 			}
 			$rSpecSources[] = $rEntry;
 		}
+		if ($rSpecSources === []) {
+			return null; // every source refused; the PHP monitor refuses them too and fails the stream
+		}
+		$rPolicy = self::supervisorPolicy($rStream['server_info'], $rSettings, count($rSpecSources), intval($rTimeout));
+		$rPolicy['start_timeout_sec'] = max($rPolicy['start_timeout_sec'], self::driverStartTimeout($rSources));
 
 		return [
 			'sources'     => $rSpecSources,
-			'policy'      => self::supervisorPolicy($rStream['server_info'], $rSettings, count($rSpecSources), intval($rTimeout)),
+			'policy'      => $rPolicy,
 			'health'      => self::supervisorHealth($rInfo, $rSettings),
 			'pid_path'    => STREAMS_PATH . $rStreamID . '_.pid',
 			'errors_path' => STREAMS_PATH . $rStreamID . '.errors',
@@ -2297,8 +2484,17 @@ class StreamProcess {
 				$rStreamSource = '';
 				$rProtocol = '';
 				$rFFProbeOutput = [];
+				$rDriver = null;
+				$rArgsByKey = array_column($rStream['stream_arguments'], null, 'argument_key');
 				foreach ($rSources as $rSource) {
 					$rRealSource = $rSource;
+					// The driver answers in ffprobe's place; the codecs show once the cron reads the output.
+					// A refused or unreachable driver source falls through to ffprobe, which fails on it.
+					$rDriver = self::monitorDriverPick($rStreamID, $rStream['stream_info'], $rArgsByKey, (string) $rSource);
+					if ($rDriver !== null) {
+						$rFFProbeOutput = self::skipFFProbeOutput();
+						break;
+					}
 					$rStreamSource = StreamUtils::parseStreamURL($rSource);
 					echo 'Checking source: ' . $rSource . "\n";
 					$rURLInfo = parse_url($rStreamSource);
@@ -2345,9 +2541,8 @@ class StreamProcess {
 							break;
 						}
 					} else {
-						if ($rFromCache && file_exists(CACHE_TMP_PATH . md5($rSource))) {
-							$rFromCache = false;
-						}
+						// A stale cache entry means a fresh probe, and a write of its result below.
+						$rFromCache = $rFromCache && !file_exists(CACHE_TMP_PATH . md5($rSource));
 					}
 
 					if (!$rStream['server_info']['on_demand'] || !$rLLOD) {
@@ -2438,18 +2633,23 @@ class StreamProcess {
 					[$rEncKey, $rEncIV] = (!empty($rSettings['encrypt_hls']) && !$rDelayActive) ? IngestFeeder::streamKey(intval($rStreamID)) : [null, null];
 					$rIngestSock = !$rDelayActive ? FanoutClient::registerIngest(intval($rStreamID), $rEncKey, $rEncIV) : null;
 
-					$rFFMPEG = self::buildLive([
-						'stream' => $rStream, 'settings' => $rSettings, 'servers' => $rServers,
-						'streamID' => $rStreamID, 'streamSource' => $rStreamSource,
-						'fetchOptions' => $rFetchOptions, 'ffprobe' => $rFFProbeOutput,
-						'protocol' => $rProtocol, 'source' => $rSource,
-						'segmentSettings' => $rSegmentSettings, 'externalPush' => [],
-						'probesize' => $rProbesize, 'analyseDuration' => $rAnalyseDuration,
-						'llod' => $rLLOD, 'loopback' => $rLoopback,
-						'segmentStart' => $rSegmentStart, 'delayActive' => $rDelayActive,
-						'ffmpegCpu' => $rFFMPEG_CPU, 'ffmpegGpu' => $rFFMPEG_GPU,
-						'ingestSock' => $rIngestSock,
-					]);
+					$rFFMPEG = $rDriver !== null
+						? self::driverLaunch($rStreamID, $rDriver, self::driverContext($rStreamID, (string) $rSource, (string) $rSource, $rArgsByKey, $rSegmentSettings, $rIngestSock, false))
+						: self::buildLive([
+							'stream' => $rStream, 'settings' => $rSettings, 'servers' => $rServers,
+							'streamID' => $rStreamID, 'streamSource' => $rStreamSource,
+							'fetchOptions' => $rFetchOptions, 'ffprobe' => $rFFProbeOutput,
+							'protocol' => $rProtocol, 'source' => $rSource,
+							'segmentSettings' => $rSegmentSettings, 'externalPush' => [],
+							'probesize' => $rProbesize, 'analyseDuration' => $rAnalyseDuration,
+							'llod' => $rLLOD, 'loopback' => $rLoopback,
+							'segmentStart' => $rSegmentStart, 'delayActive' => $rDelayActive,
+							'ffmpegCpu' => $rFFMPEG_CPU, 'ffmpegGpu' => $rFFMPEG_GPU,
+							'ingestSock' => $rIngestSock,
+						]);
+				if ($rFFMPEG === '') {
+					return 0; // the driver broke the contract; the reason is in the stream's log
+				}
 
 				shell_exec($rFFMPEG);
 				file_put_contents(STREAMS_PATH . $rStreamID . '_.ffmpeg', $rFFMPEG);
@@ -2476,7 +2676,7 @@ class StreamProcess {
 					self::startThumbnail($rStreamID);
 				}
 
-				$rDelayEnabled = 0 < $rStream['stream_info']['delay_minutes'] && !$rStream['server_info']['parent_id'];
+				$rDelayEnabled = $rDelayActive;
 				$rDelayStartAt = ($rDelayEnabled ? time() + $rSleepTime : 0);
 
 				if ($rStream['stream_info']['enable_transcode']) {
@@ -2485,12 +2685,12 @@ class StreamProcess {
 
 				list($rCompatible, $rAudioCodec, $rVideoCodec, $rResolution) = self::resolveStreamCodecMeta($rFFProbeOutput, SettingsManager::get('player_allow_hevc'));
 
-				$rFFProbeOutputSafe = isset($rFFProbeOutput) && is_array($rFFProbeOutput) ? $rFFProbeOutput : [];
+				$rFFProbeOutputSafe = is_array($rFFProbeOutput) ? $rFFProbeOutput : [];
 				StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['delay_available_at' => $rDelayStartAt, 'to_analyze' => 0, 'stream_started' => time(), 'stream_info' => json_encode($rFFProbeOutputSafe), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible, 'stream_status' => 2, 'pid' => $rPID, 'progress_info' => json_encode([]), 'current_source' => $rSource], $db);
 				self::updateStream($rStreamID);
 				$rPlaylist = (!$rDelayEnabled ? STREAMS_PATH . $rStreamID . '_.m3u8' : DELAY_PATH . $rStreamID . '_.m3u8');
 
-				return ['main_pid' => $rPID, 'stream_source' => $rRealSource, 'delay_enabled' => $rDelayEnabled, 'parent_id' => $rStream['server_info']['parent_id'], 'delay_start_at' => $rDelayStartAt, 'playlist' => $rPlaylist, 'transcode' => $rStream['stream_info']['enable_transcode'], 'offset' => $rOffset];
+				return ['main_pid' => $rPID, 'stream_source' => $rRealSource, 'delay_enabled' => $rDelayEnabled, 'parent_id' => $rStream['server_info']['parent_id'], 'delay_start_at' => $rDelayStartAt, 'playlist' => $rPlaylist, 'transcode' => $rStream['stream_info']['enable_transcode'], 'offset' => $rOffset, 'start_timeout' => SourceDriverRegistry::startTimeout((string) $rSource)];
 			}
 			return false;
 		}

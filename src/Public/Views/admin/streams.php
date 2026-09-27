@@ -283,7 +283,8 @@ LayoutRenderer::renderFooter('admin');
         var PRODUCER = {
             fanout: ['info', 'fanout'],
             ffmpeg: ['secondary', 'ffmpeg'],
-            php: ['secondary', 'php']
+            php: ['secondary', 'php'],
+            driver: ['primary', 'module']
         };
 
         var selected = {};

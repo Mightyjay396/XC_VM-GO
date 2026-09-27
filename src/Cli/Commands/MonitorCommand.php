@@ -267,10 +267,7 @@ class MonitorCommand implements CommandInterface {
 						if ((!is_numeric($rKey) || (0 < $rKey))) {
 							foreach (self::higherPrioritySources($rSources, $rCurrentSource) as $rSource) {
 								if ($rSource != $rForceSource) {
-									$rStreamSource = StreamUtils::parseStreamURL($rSource);
-									$rProtocol = strtolower(substr($rStreamSource, 0, strpos($rStreamSource, '://')));
-									$rArguments = implode(' ', StreamUtils::getArguments($rStreamArguments, $rProtocol, 'fetch'));
-									if (($rProbe = FFprobeRunner::probeStream($rStreamSource, $rArguments))) {
+									if (StreamProcess::sourceAnswers($rStreamID, (string) $rSource, $rStreamArguments)) {
 										echo "Switch priority\n";
 										StreamProcess::streamLog($rStreamID, SERVER_ID, 'PRIORITY_SWITCH', $rSource);
 										$rForceSource = $rSource;
@@ -285,11 +282,8 @@ class MonitorCommand implements CommandInterface {
 					if ((file_exists(SIGNALS_TMP_PATH . $rStreamID . '.force') && ($rParentID == 0))) {
 						$rForceID = intval(file_get_contents(SIGNALS_TMP_PATH . $rStreamID . '.force'));
 						// A stale signal can name a source index that no longer exists.
-						$rStreamSource = isset($rSources[$rForceID]) ? StreamUtils::parseStreamURL($rSources[$rForceID]) : null;
-						if ($rStreamSource !== null && ($rSources[$rForceID] != $rCurrentSource)) {
-							$rProtocol = strtolower(substr($rStreamSource, 0, strpos($rStreamSource, '://')));
-							$rArguments = implode(' ', StreamUtils::getArguments($rStreamArguments, $rProtocol, 'fetch'));
-							if (($rProbe = FFprobeRunner::probeStream($rStreamSource, $rArguments))) {
+						if (isset($rSources[$rForceID]) && ($rSources[$rForceID] != $rCurrentSource)) {
+							if (StreamProcess::sourceAnswers($rStreamID, (string) $rSources[$rForceID], $rStreamArguments)) {
 								echo "Force new source\n";
 								StreamProcess::streamLog($rStreamID, SERVER_ID, 'FORCE_SOURCE', $rSources[$rForceID]);
 								$rForceSource = $rSources[$rForceID];
@@ -416,7 +410,7 @@ class MonitorCommand implements CommandInterface {
 				$rFirstSegment = $rFolder . $rStreamID . '_0.ts';
 				$rSegmentSeen = false;
 				$rChecks = 0;
-				$rMaxChecks = max(20, min($rSegmentTime * 3, 30));
+				$rMaxChecks = max(20, min($rSegmentTime * 3, 30), intval($rData['start_timeout'] ?? 0));
 				while (true) {
 					echo 'Checking for playlist ' . ($rChecks + 1) . '/' . $rMaxChecks . "...\n";
 					if (!ProcessManager::isStreamRunning($rPID, $rStreamID)) {
