@@ -41,9 +41,10 @@ class BootKernel {
 
 	/**
 	 * The caller's options over the context's defaults. For the CLI, an
-	 * unset `replica` is this node's: ReplicaBoot::WHEN_READY in mode 2
-	 * (ReplicaStage then replaces DatabaseStage and LegacyCoreStage), false
-	 * otherwise, so mode 0 and 1 nodes and MAIN boot as before. A caller's
+	 * unset `replica` is this node's: ReplicaBoot::WHEN_READY in mode 2 and
+	 * in mode 1 with the CONFIG flow on (ReplicaStage then replaces
+	 * DatabaseStage and LegacyCoreStage), false otherwise, so mode 0 nodes,
+	 * mode 1 without CONFIG and MAIN boot as before. A caller's
 	 * ReplicaBoot::ALWAYS (cluster:apply) is kept in every mode.
 	 *
 	 * @param array<string,mixed> $options

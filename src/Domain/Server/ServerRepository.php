@@ -41,7 +41,10 @@ class ServerRepository {
 	 * database copy never stands in for the replica's with nothing to refresh
 	 * it. Until an apply built it, the database as before; but a process
 	 * booted from the replica (ReplicaBoot) gets the servers cache however
-	 * old, or nothing, never MAIN's database.
+	 * old, or nothing, never MAIN's database. On a node in mode 1
+	 * (ReplicaBoot::hybrid) such a process reads the database as before once
+	 * the replica no longer owns the cache, on the lazy handle's first use,
+	 * counted.
 	 *
 	 * @param bool $rForce Bypass the cache and re-read from the database.
 	 * @return array Server rows keyed by id.
@@ -63,7 +66,7 @@ class ServerRepository {
 				return $rCache;
 			}
 		}
-		if (ReplicaBoot::active()) {
+		if (ReplicaBoot::active() && !ReplicaBoot::hybrid()) {
 			return ReplicaBoot::cached('servers');
 		}
 

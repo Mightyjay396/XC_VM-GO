@@ -17,6 +17,7 @@ use XcVm\Core\Bootstrap\Stage\ProcessTitleStage;
 use XcVm\Core\Bootstrap\Stage\ReplicaStage;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
@@ -26,15 +27,18 @@ use XcVm\Tests\Support\ReplicaFixture;
 
 /**
  * Booting from the node replica (cluster plan, section 10, step 2; section 9,
- * "Storage and boot"). A node in mode 2 boots its CLI processes and web API
- * endpoints through ReplicaStage, from the caches its replica built, once an
- * apply built them since the reboot; `cluster:apply` boots that way in every
- * mode, so `service` builds the caches at boot while MAIN is unreachable.
- * Mode 0 and 1 nodes, and MAIN, boot exactly as before.
+ * "Storage and boot"). A node in mode 2, and one in mode 1 with the CONFIG
+ * flow on, boots its CLI processes and web API endpoints through
+ * ReplicaStage, from the caches its replica built, once an apply built them
+ * since the reboot, and its streaming entry points take a lazy handle; in
+ * mode 1 whatever still needs MAIN's database connects on first use, counted
+ * at its site, never refused. `cluster:apply` boots that way in every mode,
+ * so `service` builds the caches at boot while MAIN is unreachable. Mode 0
+ * nodes, mode 1 without CONFIG, and MAIN, boot exactly as before.
  *
  * The boots themselves run in a child PHP (the real console.php and
  * bootstrap), in a throwaway deploy root, with an xcvm_core stand-in whose
- * MAIN database never answers and logs each connect.
+ * MAIN database never answers (or is an SQLite file) and logs each connect.
  */
 final class ReplicaBootTest extends TestCase {
 	private string $rHome;
@@ -64,6 +68,7 @@ final class ReplicaBootTest extends TestCase {
 
 	protected function tearDown(): void {
 		NodeFlows::usePath(null);
+		NodeRole::useMainBuild(null);
 		ReplicaBoot::reset();
 		ServiceContainer::resetInstance();
 		(new \ReflectionProperty(FileCache::class, 'defaultInstance'))->setValue(null, null);
@@ -91,30 +96,64 @@ final class ReplicaBootTest extends TestCase {
 
 	// ── Which boot ───────────────────────────────────────────────────
 
-	public function testModeZeroAndOneAndMainBootExactlyAsBefore(): void {
-		foreach ([[null], [0, 0], [1, 63], [2, 255, 'enrolling'], [2, 255, 'revoked']] as $rCase) {
+	public function testModeZeroModeOneWithoutConfigAndMainBootExactlyAsBefore(): void {
+		// No file (MAIN, a legacy node), mode 0 whatever its flows, mode 1 with
+		// every flow but CONFIG, and a node MAIN does not count as active.
+		foreach ([[null], [0, 0], [0, 255], [1, 31], [1, 255, 'enrolling'], [1, 255, 'revoked'], [2, 255, 'enrolling'], [2, 255, 'revoked']] as $rCase) {
 			$this->flows(...$rCase);
+			$this->assertFalse(ReplicaBoot::wanted(), json_encode($rCase));
 			$this->assertFalse(BootKernel::resolve(BootContext::Cli)['replica'], json_encode($rCase));
 			$this->assertSame(self::LEGACY_CLI, $this->cliProfile(), json_encode($rCase));
 			$this->assertSame([DatabaseStage::class, LegacyCoreStage::class], $this->webApiStages(), json_encode($rCase));
 		}
 		// A caller that asks for the database keeps it.
-		$this->flows(2);
-		$this->assertSame(self::LEGACY_CLI, $this->cliProfile(['replica' => false]));
+		foreach ([[1, 63], [2]] as $rCase) {
+			$this->flows(...$rCase);
+			$this->assertSame(self::LEGACY_CLI, $this->cliProfile(['replica' => false]));
+		}
 	}
 
-	public function testModeTwoBootsThroughReplicaStage(): void {
-		foreach (['active', 'quarantined'] as $rState) {
-			$this->flows(2, 255, $rState);
-			$this->assertSame(ReplicaBoot::WHEN_READY, BootKernel::resolve(BootContext::Cli)['replica']);
+	public function testModeOneWithConfigAndModeTwoBootThroughReplicaStage(): void {
+		// Mode 1 with CONFIG (bit 32), active or quarantined; mode 2 whatever its flows.
+		foreach ([[1, 63, 'active'], [1, 32, 'quarantined'], [2, 255, 'active'], [2, 255, 'quarantined'], [2, 31, 'active']] as $rCase) {
+			$this->flows(...$rCase);
+			$this->assertTrue(ReplicaBoot::wanted(), json_encode($rCase));
+			$this->assertSame(ReplicaBoot::WHEN_READY, BootKernel::resolve(BootContext::Cli)['replica'], json_encode($rCase));
 			$rProfile = $this->cliProfile();
-			$this->assertSame([ConstantsStage::class, ConfigStage::class, FloodProtectionStage::class, HostVerificationStage::class, ReplicaStage::class, ProcessTitleStage::class, ContainerPopulateStage::class, HealthCheckStage::class], $rProfile);
-			$this->assertSame([ReplicaStage::class], $this->webApiStages());
+			$this->assertSame([ConstantsStage::class, ConfigStage::class, FloodProtectionStage::class, HostVerificationStage::class, ReplicaStage::class, ProcessTitleStage::class, ContainerPopulateStage::class, HealthCheckStage::class], $rProfile, json_encode($rCase));
+			$this->assertSame([ReplicaStage::class], $this->webApiStages(), json_encode($rCase));
 			$rStage = WebApiBootstrap::coreStages(true)[0];
 			$this->assertSame(ReplicaBoot::WHEN_READY, (new \ReflectionProperty(ReplicaStage::class, 'rWhen'))->getValue($rStage), 'the web API waits for an apply too');
 		}
 		// Only the CLI profile: the admin UI (MAIN's) and streaming boots keep theirs.
 		$this->assertNull(BootKernel::resolve(BootContext::Admin)['replica']);
+	}
+
+	public function testOnlyModeTwoRefusesMainWhereModeOneBootsFromItsReplica(): void {
+		NodeRole::useMainBuild(false);
+		$this->flows(1, 63);
+		$this->assertTrue(ReplicaBoot::wanted());
+		$this->assertFalse(ReplicaBoot::apiMode());
+		$this->assertFalse(NodeRole::refusesConnects(), 'mode 1 never refuses');
+		$this->assertTrue(NodeRole::auditConnects(), 'it counts');
+		foreach (['active', 'quarantined'] as $rState) {
+			$this->flows(2, 31, $rState);
+			$this->assertTrue(ReplicaBoot::apiMode());
+			$this->assertTrue(NodeRole::refusesConnects(), 'mode 2 refuses, CONFIG or not');
+		}
+
+		// What a process booted from the replica may still read from MAIN's
+		// database (ReplicaStage starts the boot with its option).
+		$this->flows(1, 63);
+		ReplicaBoot::start(ReplicaBoot::WHEN_READY);
+		$this->assertSame([true, true], [ReplicaBoot::active(), ReplicaBoot::hybrid()], 'mode 1: lazily, counted');
+		ReplicaBoot::start(ReplicaBoot::ALWAYS);
+		$this->assertSame([true, false], [ReplicaBoot::active(), ReplicaBoot::hybrid()], 'cluster:apply: never');
+		$this->flows(2);
+		ReplicaBoot::start(ReplicaBoot::WHEN_READY);
+		$this->assertSame([true, false], [ReplicaBoot::active(), ReplicaBoot::hybrid()], 'mode 2: never (refused)');
+		ReplicaBoot::reset();
+		$this->assertSame([false, false], [ReplicaBoot::active(), ReplicaBoot::hybrid()]);
 	}
 
 	public function testClusterApplyBootsFromTheReplicaInEveryMode(): void {
@@ -157,15 +196,17 @@ final class ReplicaBootTest extends TestCase {
 
 	/**
 	 * Run the real console.php (or $rScript) in the throwaway deploy root.
+	 * MAIN's database never answers, or with $rMainDb it is that SQLite file.
 	 *
 	 * @param list<string> $rArgs
 	 * @return array{0: int, 1: string, 2: list<string>} exit code, stdout, the connects to MAIN's database
 	 */
-	private function child(array $rArgs, ?string $rScript = null): array {
+	private function child(array $rArgs, ?string $rScript = null, ?string $rMainDb = null): array {
 		$rPrepend = $this->rHome . 'prepend.php';
 		file_put_contents($rPrepend, <<<'PHP'
 			<?php
-			// A throwaway deploy root, and an xcvm_core whose MAIN database never answers.
+			// A throwaway deploy root, and an xcvm_core whose MAIN database never
+			// answers (or is XCVM_TEST_MAIN_DB, an SQLite file).
 			define('MAIN_HOME', getenv('XCVM_TEST_HOME'));
 			final class XC_VM {
 				public static function config_server(): array {
@@ -174,13 +215,50 @@ final class ReplicaBootTest extends TestCase {
 
 				public static function db_connect(bool $rMigrate = false) {
 					file_put_contents(MAIN_HOME . 'connects.log', "sql\n", FILE_APPEND);
-					return false;
+					if (!getenv('XCVM_TEST_MAIN_DB')) {
+						return false;
+					}
+					$rPdo = new PDO('sqlite:' . getenv('XCVM_TEST_MAIN_DB'));
+					$rPdo->setAttribute(PDO::ATTR_STATEMENT_CLASS, [MainDbStatement::class, []]);
+					return $rPdo;
+				}
+			}
+
+			/** SQLite counts no SELECT's rows (rowCount), which Database reads as MySQL's: buffer them. */
+			class MainDbStatement extends PDOStatement {
+				private ?array $rRows = null;
+
+				protected function __construct() {
+				}
+
+				public function execute(?array $params = null): bool {
+					$rOk = parent::execute($params);
+					$this->rRows = $rOk && $this->columnCount() > 0 ? parent::fetchAll(PDO::FETCH_ASSOC) : null;
+					return $rOk;
+				}
+
+				public function rowCount(): int {
+					return $this->rRows === null ? parent::rowCount() : count($this->rRows);
+				}
+
+				public function fetch(int $mode = PDO::FETCH_DEFAULT, int $cursorOrientation = PDO::FETCH_ORI_NEXT, int $cursorOffset = 0): mixed {
+					return $this->rRows === null || $this->rRows === [] ? false : array_shift($this->rRows);
+				}
+
+				public function fetchAll(int $mode = PDO::FETCH_DEFAULT, mixed ...$args): array {
+					$rRows = $this->rRows ?? [];
+					$this->rRows = [];
+					return $rRows;
 				}
 			}
 			PHP);
 		@unlink($this->rHome . 'connects.log');
+		$rEnv = ['XCVM_TEST_HOME' => $this->rHome, 'XCVM_TEST_SRC' => dirname(__DIR__, 2) . '/src/', 'PATH' => $this->rHome . 'stub:' . getenv('PATH')];
+		if ($rMainDb !== null) {
+			$rEnv['XCVM_TEST_MAIN_DB'] = $rMainDb;
+		}
 		$rCommand = array_merge([PHP_BINARY, '-d', 'auto_prepend_file=' . $rPrepend, $rScript ?? dirname(__DIR__, 2) . '/src/console.php'], $rArgs);
-		$rProc = proc_open($rCommand, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes, $this->rHome, ['XCVM_TEST_HOME' => $this->rHome, 'XCVM_TEST_SRC' => dirname(__DIR__, 2) . '/src/', 'PATH' => $this->rHome . 'stub:' . getenv('PATH')]);
+		$rProc = proc_open($rCommand, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes, $this->rHome, $rEnv);
 		$this->assertIsResource($rProc);
 		$rOut = (string) stream_get_contents($rPipes[1]);
 		fclose($rPipes[1]);
@@ -290,14 +368,227 @@ final class ReplicaBootTest extends TestCase {
 		$this->assertSame('stream-pass', $this->cache('settings')['live_streaming_pass']);
 	}
 
-	public function testAModeOneNodeStillConnectsAtBoot(): void {
+	/**
+	 * The connects the child's audit counted, over its day files: [sql, sites].
+	 *
+	 * @return array{0: int, 1: list<string>}
+	 */
+	private function audited(): array {
+		$rSql = 0;
+		$rSites = [];
+		foreach (glob($this->rHome . 'storage/cluster/sql_audit/*.json') ?: [] as $rFile) {
+			$rDay = json_decode((string) file_get_contents($rFile), true);
+			$rSql += (int) ($rDay['sql'] ?? 0);
+			$rSites = array_merge($rSites, array_keys($rDay['sites'] ?? []));
+		}
+		return [$rSql, $rSites];
+	}
+
+	/** Start the child's connect audit over: its counts, its log and when it began. */
+	private function clearAudit(): void {
+		exec('rm -rf ' . escapeshellarg($this->rHome . 'storage/cluster/sql_audit'));
+	}
+
+	/**
+	 * MAIN's database as an SQLite file: a `crontab` table holding $rJobs, its
+	 * settings row (`MAIN-DB`) and one server (7), neither what the replica has.
+	 *
+	 * @param array<string, string> $rJobs
+	 */
+	private function mainDb(array $rJobs): string {
+		$rFile = $this->rHome . 'main.sqlite';
+		$rPdo = new PDO('sqlite:' . $rFile);
+		$rPdo->exec('CREATE TABLE `crontab` (`id` INTEGER PRIMARY KEY, `filename` TEXT, `time` TEXT, `enabled` INTEGER)');
+		foreach ($rJobs as $rName => $rTime) {
+			$rPdo->prepare('INSERT INTO `crontab` (`filename`, `time`, `enabled`) VALUES (?, ?, 1)')->execute([$rName, $rTime]);
+		}
+		$rPdo->exec("CREATE TABLE `settings` (`server_name` TEXT, `live_streaming_pass` TEXT, `default_timezone` TEXT); INSERT INTO `settings` VALUES ('MAIN-DB', 'main-pass', 'UTC')");
+		$rPdo->exec('CREATE TABLE `servers` (`id` INTEGER, `server_type` INTEGER, `is_main` INTEGER, `enabled` INTEGER, `status` INTEGER, `last_check_ago` INTEGER, `server_ip` TEXT, `private_ip` TEXT, `domain_name` TEXT, `enable_https` INTEGER, `http_broadcast_port` INTEGER, `https_broadcast_port` INTEGER, `rtmp_port` INTEGER, `geoip_countries` TEXT, `isp_names` TEXT, `parent_id` TEXT, `watchdog_data` TEXT)');
+		$rPdo->exec("INSERT INTO `servers` VALUES (7, 0, 0, 1, 1, 0, '192.0.2.7', NULL, '', 0, 80, 443, 8880, '[]', '[]', NULL, NULL)");
+		return $rFile;
+	}
+
+	public function testAModeOneNodeBootsFromItsReplicaOnceAnApplyBuiltIt(): void {
+		$this->flows(1, 63);
+		$this->rFixture->node();
+		// Rebooted, nothing applied yet: through MAIN's database, as before, and counted.
+		[, $rOut, $rConnects] = $this->child(['--list']);
+		$this->assertSame(['sql'], $rConnects);
+		$this->assertStringContainsString('Cannot connect to database', $rOut, 'as MAIN\'s database being down always did');
+		[$rSql, $rSites] = $this->audited();
+		$this->assertSame(1, $rSql);
+		$this->assertCount(1, array_filter($rSites, static fn(string $rSite): bool => str_starts_with($rSite, 'sql ') && str_contains($rSite, 'Core/Bootstrap/Stage/DatabaseStage.php:')), 'the boot\'s site');
+		[, , $rConnects] = $this->child(['webapi'], $this->dumpScript());
+		$this->assertSame(['sql'], $rConnects, 'the web API too');
+
+		[$rCode, $rOut] = $this->child(['cluster:apply', '--from-disk']);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->clearAudit();
+		[$rCode, $rOut, $rConnects] = $this->child(['--list']);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertSame([], $rConnects, 'the boot opens no connection');
+		$this->assertStringContainsString('cluster:apply', $rOut);
+		$this->assertStringContainsString('console.php cron:cleanup # XC_VM', (string) @file_get_contents($this->rHome . 'crontab.log'), 'the crontab from the replica\'s jobs');
+
+		foreach ([false, true] as $rWebApi) {
+			$rDump = $this->dump($rWebApi);
+			$this->assertSame([], $rDump['connects'], $rWebApi ? 'web API' : 'CLI');
+			$this->assertTrue($rDump['replica']);
+			$this->assertSame(['XcVm\\Core\\Database\\LazyDatabaseHandler', false, true], [$rDump['db'], $rDump['opened'], $rDump['factory']]);
+			$this->assertSame(['stream-pass', '20', 'UTC'], [$rDump['live_streaming_pass'], $rDump['on_demand_wait_time'], $rDump['timezone']]);
+			$this->assertSame([[1, 5], [1, 5]], [$rDump['servers'], $rDump['core_servers']]);
+		}
+		$this->assertSame([0, []], $this->audited(), 'nothing counted');
+		$rAudit = json_decode((string) @file_get_contents($this->rHome . 'config/cluster/audit.json'), true);
+		$this->assertSame([0, 0, []], [$rAudit['sql_connects'] ?? null, $rAudit['redis_connects'] ?? null, $rAudit['sites'] ?? null], 'the report the agent sends: a zero');
+
+		// CONFIG off: through MAIN's database again, even before an apply hands the caches back.
+		$this->flows(1, 31);
+		[, , $rConnects] = $this->child(['--list']);
+		$this->assertSame(['sql'], $rConnects);
+	}
+
+	public function testWhatAModeOneProcessStillNeedsFromMainConnectsLazilyAndIsCounted(): void {
 		$this->flows(1, 63);
 		$this->rFixture->node();
 		$this->child(['cluster:apply', '--from-disk']);
-		// Every other command boots through MAIN's database, as before.
-		[, $rOut, $rConnects] = $this->child(['--list']);
+		$this->clearAudit();
+		$rScript = $this->rHome . 'query.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Core\Cluster\ReplicaBoot;
+			use XcVm\Core\Enum\BootContext;
+
+			require getenv('XCVM_TEST_SRC') . 'bootstrap.php';
+			XC_Bootstrap::boot(BootContext::Cli, ['replica' => ReplicaBoot::forArgv(['console.php', 'cron:servers'])]);
+			echo json_encode(['booted' => ReplicaBoot::active(), 'opened' => $GLOBALS['db']->isOpen()]), "\n";
+			$rOk = $GLOBALS['db']->query('SELECT 1 AS `one`'); // line 8: MAIN's database, first used
+			echo json_encode(['query' => $rOk, 'row' => $GLOBALS['db']->get_row()]), "\n";
+			PHP);
+		[$rCode, $rOut, $rConnects] = $this->child([], $rScript, $this->mainDb([]));
+		$this->assertSame(0, $rCode, $rOut);
+		$rLines = array_map(static fn(string $rLine): mixed => json_decode($rLine, true), explode("\n", trim($rOut)));
+		$this->assertSame(['booted' => true, 'opened' => false], $rLines[0], 'booted from the replica, nothing opened');
+		$this->assertSame(['query' => true, 'row' => ['one' => '1']], $rLines[1] ?? null, 'connected on first use, not refused');
 		$this->assertSame(['sql'], $rConnects);
-		$this->assertStringContainsString('Cannot connect to database', $rOut);
+		$this->assertSame([1, ['sql query.php:8']], $this->audited(), 'counted, at the query\'s own site');
+	}
+
+	public function testAModeOneProcessReadsItsSettingsAndServersFromMainOnceTheReplicaHandsThemBack(): void {
+		$rScript = $this->rHome . 'handback.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Core\Cluster\ReplicaBoot;
+			use XcVm\Core\Config\SettingsRepository;
+			use XcVm\Core\Enum\BootContext;
+			use XcVm\Domain\Server\ServerRepository;
+
+			require getenv('XCVM_TEST_SRC') . 'bootstrap.php';
+			XC_Bootstrap::boot(BootContext::Cli, ['replica' => ReplicaBoot::forArgv(['console.php', 'watchdog'])]);
+			$rBefore = [SettingsRepository::getAll(true)['server_name'] ?? null, array_keys(ServerRepository::getAll(true)), $GLOBALS['db']->isOpen()];
+			// A daemon's next pass, after an apply handed the caches back (CONFIG off, a refused section).
+			unlink(CACHE_TMP_PATH . 'replica_owned');
+			echo json_encode(['before' => $rBefore, 'settings' => SettingsRepository::getAll(true)['server_name'] ?? null, 'servers' => array_keys(ServerRepository::getAll(true))]);
+			PHP);
+		$this->rFixture->node();
+		$rMainDb = $this->mainDb([]);
+		foreach ([1 => [['Panel', [1, 5], false], 'MAIN-DB', [7], ['sql']], 2 => [['Panel', [1, 5], false], 'Panel', [1, 5], []]] as $rMode => [$rBefore, $rSettings, $rServers, $rConnects]) {
+			$this->flows($rMode, 63);
+			$this->child(['cluster:apply', '--from-disk']);
+			[$rCode, $rOut, $rGot] = $this->child([], $rScript, $rMainDb);
+			$this->assertSame(0, $rCode, $rOut);
+			$this->assertSame(['before' => $rBefore, 'settings' => $rSettings, 'servers' => $rServers], json_decode($rOut, true), 'mode ' . $rMode . ($rMode === 1 ? ': MAIN\'s database again, as before' : ': the caches however old'));
+			$this->assertSame($rConnects, $rGot, 'mode ' . $rMode);
+		}
+	}
+
+	public function testAModeOneBootReadsMainsCrontabLazilyWhileTheReplicaDoesNotOwnIt(): void {
+		$this->flows(1, 63);
+		$this->rFixture->node();
+		// The agent stored no crontab section: the replica owns the settings and servers only.
+		unlink($this->rFixture->dir() . 'crontab.json');
+		unlink($this->rFixture->dir() . 'crontab.rep');
+		[$rCode, $rOut, $rConnects] = $this->child(['cluster:apply', '--from-disk'], null, $this->mainDb(['servers' => '* * * * *']));
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertSame([], $rConnects, 'cluster:apply never reads the table');
+		$this->assertSame(['settings', 'servers'], array_keys($this->cache('replica_owned')));
+		$this->clearAudit();
+
+		[$rCode, $rOut, $rConnects] = $this->child(['--list'], null, $this->rHome . 'main.sqlite');
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertSame(['sql'], $rConnects, 'MAIN\'s crontab table, on first use');
+		$this->assertStringContainsString('console.php cron:servers # XC_VM', (string) @file_get_contents($this->rHome . 'crontab.log'));
+		[$rSql, $rSites] = $this->audited();
+		$this->assertSame(1, $rSql);
+		$this->assertCount(1, array_filter($rSites, static fn(string $rSite): bool => str_starts_with($rSite, 'sql ') && str_contains($rSite, 'Core/Cluster/ReplicaApply.php:')), 'counted at its site');
+
+		// Mode 2 leaves the crontab as it is, and reads nothing.
+		@unlink($this->rHome . 'tmp/crontab');
+		@unlink($this->rHome . 'crontab.log');
+		$this->flows(2);
+		[$rCode, $rOut, $rConnects] = $this->child(['--list'], null, $this->rHome . 'main.sqlite');
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertSame([], $rConnects);
+		$this->assertFileDoesNotExist($this->rHome . 'crontab.log');
+	}
+
+	public function testTheStreamingEntryPointsTakeALazyHandleOnceTheNodeBootsFromItsReplica(): void {
+		if (!extension_loaded('igbinary')) {
+			$this->markTestSkipped('the streaming boot reads the caches with igbinary');
+		}
+		$rScript = $this->rHome . 'stream.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Core\Config\ConstantsInitializer;
+			use XcVm\Core\Init\LegacyInitializer;
+
+			require getenv('XCVM_TEST_SRC') . 'vendor/autoload.php';
+			ConstantsInitializer::init();
+			$GLOBALS['rSettings'] = null; // StreamingBootstrap's, from the settings cache
+			LegacyInitializer::initStreaming();
+			echo json_encode(['db' => get_class($GLOBALS['db']), 'opened' => method_exists($GLOBALS['db'], 'isOpen') ? $GLOBALS['db']->isOpen() : null, 'servers' => array_keys($GLOBALS['rServers'])]), "\n";
+			$GLOBALS['db']->query('SELECT 1'); // line 10: a query the request needs
+			echo "queried\n";
+			PHP);
+		$this->rFixture->node();
+		$this->flows(1, 63);
+		$this->child(['cluster:apply', '--from-disk']);
+
+		// Mode 0, MAIN, mode 1 without CONFIG: connected at once, as before.
+		foreach ([[0, 255], [null], [1, 31]] as $rCase) {
+			$this->flows(...$rCase);
+			$this->clearAudit();
+			[, $rOut, $rConnects] = $this->child([], $rScript);
+			$this->assertSame(['sql'], $rConnects, json_encode($rCase));
+			$this->assertStringContainsString('Cannot connect to database', $rOut, json_encode($rCase));
+			$this->assertSame($rCase === [1, 31] ? 1 : 0, $this->audited()[0], json_encode($rCase));
+		}
+
+		// Mode 1 with CONFIG, once an apply built the caches: nothing at the
+		// boot, the request's own query at its site.
+		$this->flows(1, 63);
+		$this->clearAudit();
+		[$rCode, $rOut, $rConnects] = $this->child([], $rScript, $this->mainDb([]));
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertSame(['db' => 'XcVm\\Core\\Database\\LazyDatabaseHandler', 'opened' => false, 'servers' => [1, 5]], json_decode(strtok($rOut, "\n"), true));
+		$this->assertStringContainsString('queried', $rOut);
+		$this->assertSame(['sql'], $rConnects);
+		$this->assertSame([1, ['sql stream.php:10']], $this->audited());
+
+		// Mode 2: the boot opens nothing either, and the query is refused.
+		$this->flows(2);
+		$this->clearAudit();
+		[, $rOut, $rConnects] = $this->child([], $rScript, $this->rHome . 'main.sqlite');
+		$this->assertSame([], $rConnects);
+		$this->assertStringContainsString('"opened":false', $rOut);
+		$this->assertStringNotContainsString('queried', $rOut, 'refused');
+		$this->assertSame([1, ['sql stream.php:10']], $this->audited());
+
+		// Mode 1 rebooted, nothing applied yet: connected at once, as before.
+		$this->flows(1, 63);
+		unlink($this->rHome . 'tmp/cache/replica_owned');
+		[, , $rConnects] = $this->child([], $rScript);
+		$this->assertSame(['sql'], $rConnects);
 	}
 
 	public function testAModeTwoNodeBootsFromItsReplicaOnceAnApplyBuiltIt(): void {

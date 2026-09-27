@@ -73,8 +73,9 @@ class WebApiBootstrap {
 
 	/**
 	 * The database and core stages: DatabaseStage and LegacyCoreStage, or on a
-	 * node in mode 2 ReplicaStage in their place (plan, section 10, step 2),
-	 * which boots from the node replica once an apply built its caches.
+	 * node in mode 2 or in mode 1 with the CONFIG flow on ReplicaStage in
+	 * their place (plan, section 10, step 2), which boots from the node
+	 * replica once an apply built its caches.
 	 *
 	 * @return list<BootStageInterface>
 	 */

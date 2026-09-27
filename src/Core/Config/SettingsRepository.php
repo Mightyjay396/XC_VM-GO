@@ -27,10 +27,13 @@ class SettingsRepository {
 	 * MAIN's database; should it be gone, it is rebuilt from the replica on
 	 * disk. The database's row is never written over a cache the replica owns.
 	 *
-	 * A process booted from the replica (ReplicaBoot) never reads MAIN's
+	 * A process booted from the replica (ReplicaBoot) does not read MAIN's
 	 * database either: without a cache the replica owns, it gets the settings
 	 * cache however old, or nothing (cluster:apply at boot, before it built
-	 * one).
+	 * one). The exception is a process on a node in mode 1
+	 * (ReplicaBoot::hybrid), which reads MAIN's row as before once the
+	 * replica no longer owns the cache (CONFIG went off, a refused section),
+	 * on the lazy handle's first use, counted.
 	 *
 	 * @param bool $rForce Bypass the file cache and re-read from the database.
 	 * @return array Settings map (with normalized array fields).
@@ -48,7 +51,7 @@ class SettingsRepository {
 				return $rCache;
 			}
 		}
-		if (ReplicaBoot::active()) {
+		if (ReplicaBoot::active() && !ReplicaBoot::hybrid()) {
 			return ReplicaBoot::cached('settings');
 		}
 

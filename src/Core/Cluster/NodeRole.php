@@ -64,13 +64,15 @@ final class NodeRole {
 	/**
 	 * Is every connect to MAIN's MySQL/Redis refused (plan, section 10, step
 	 * 1: LbDatabaseAccessException)? On a node in mode 2 (api) that MAIN
-	 * counts as active or quarantined, as its agent's flows.json says: the
-	 * node ReplicaBoot boots from its replica. Read at each connect, without
-	 * a database. Never on MAIN, even with a stray flows.json: MAIN's build
-	 * ships the cluster API, which the load balancer build never does.
+	 * counts as active or quarantined, as its agent's flows.json says
+	 * (ReplicaBoot::apiMode), whatever its flows. Never in mode 1, which
+	 * boots from its replica too once CONFIG is on but may still reach
+	 * MAIN's database, counted. Read at each connect, without a database.
+	 * Never on MAIN, even with a stray flows.json: MAIN's build ships the
+	 * cluster API, which the load balancer build never does.
 	 */
 	public static function refusesConnects(): bool {
-		return ReplicaBoot::wanted() && !self::mainBuild();
+		return ReplicaBoot::apiMode() && !self::mainBuild();
 	}
 
 	/**

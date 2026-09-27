@@ -55,8 +55,9 @@ class StageProfiles {
 				break;
 
 			case BootContext::Cli:
-				// A node in mode 2, and cluster:apply everywhere, boots from
-				// its replica (BootKernel::resolve() decides).
+				// A node in mode 2 or in mode 1 with CONFIG on, and
+				// cluster:apply everywhere, boots from its replica
+				// (BootKernel::resolve() decides).
 				if (is_string($options['replica'] ?? null)) {
 					$stages[] = new ReplicaStage((bool) ($options['cached'] ?? false), $options['replica']);
 				} else {

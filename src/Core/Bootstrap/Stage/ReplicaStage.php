@@ -13,8 +13,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 /**
  * Boot from the node replica instead of MAIN's database (plan, section 10,
  * step 2): in place of DatabaseStage and LegacyCoreStage, in the CLI profile
- * and in WebApiBootstrap, for a node in mode 2, and for `cluster:apply` in
- * every mode (ReplicaBoot).
+ * and in WebApiBootstrap, for a node in mode 2 or in mode 1 with the CONFIG
+ * flow on, and for `cluster:apply` in every mode (ReplicaBoot).
  *
  * It leaves what those two stages leave, from the replica's caches: the
  * global $db (a LazyDatabaseHandler, which opens nothing until a query
@@ -24,10 +24,13 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * bouquets and categories caches (core.bouquets, core.categories). The
  * xc_vm crontab is regenerated only from jobs the replica owns.
  *
- * WHEN_READY (mode 2) boots as DatabaseStage and LegacyCoreStage do while no
- * apply has built the replica's settings and servers caches since the
- * reboot: until then there is nothing to boot from, and mode 2's refusal,
- * once it exists, turns that boot into the fail-closed answer.
+ * WHEN_READY (mode 1 with CONFIG, mode 2) boots as DatabaseStage and
+ * LegacyCoreStage do while no apply has built the replica's settings and
+ * servers caches since the reboot: until then there is nothing to boot
+ * from. Mode 1 then connects as it always did, counted; mode 2's refusal
+ * turns that boot into the fail-closed answer. Booted WHEN_READY in mode 1,
+ * a process may still read what the replica does not answer from MAIN's
+ * database, lazily (ReplicaBoot::hybrid).
  *
  * @package XC_VM_Core_Bootstrap_Stage
  */
@@ -61,7 +64,7 @@ class ReplicaStage implements BootStageInterface {
 		$db = new LazyDatabaseHandler();
 		DatabaseFactory::set($db);
 		DomainDatabaseWiring::wire($db);
-		ReplicaBoot::start();
+		ReplicaBoot::start($this->rWhen);
 
 		LegacyInitializer::initCore($this->rCached);
 
