@@ -7,6 +7,7 @@ use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\AdminStreamToken;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -53,7 +54,10 @@ if (!empty($rRequestData['uitoken'])) {
 	generate404();
 }
 
-$db = DatabaseFactory::open();
+// This node's stream row: MAIN's database (opened now, as before), or with
+// its replica and its own store none at all (StreamSource::local).
+$rLocal = StreamSource::local();
+$db = $rLocal ? DatabaseFactory::get() : DatabaseFactory::open();
 $rPassword = SettingsManager::get('live_streaming_pass');
 $rStreamID = intval($rRequestData['stream']);
 $rExtension = $rRequestData['extension'];
@@ -65,11 +69,17 @@ if (empty($rRequestData['segment'])) {
 	$rTimestamp = StreamUtils::timeshiftStartTimestamp($rStartDate);
 }
 
-$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.`id` = ?', SERVER_ID, $rStreamID);
+if ($rLocal) {
+	$rChannelInfo = StreamSource::joined($rStreamID);
+} else {
+	$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.`id` = ?', SERVER_ID, $rStreamID);
+	$rChannelInfo = 0 < $db->num_rows() ? $db->get_row() : null;
+}
 
-if (0 < $db->num_rows()) {
-	$rChannelInfo = $db->get_row();
-	$db->close_mysql();
+if ($rChannelInfo !== null) {
+	if (is_object($db)) {
+		$db->close_mysql();
+	}
 
 	if (empty($rRequestData['segment'])) {
 		$rQueue = [];

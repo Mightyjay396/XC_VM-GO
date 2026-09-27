@@ -7,12 +7,15 @@ use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\SettingsAudit;
+use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Stream\ContentSink;
+use XcVm\Domain\Stream\NodeStreams;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Streaming\Codec\FFmpegCommand;
 use XcVm\Streaming\Codec\FFprobeRunner;
@@ -56,20 +59,19 @@ class CleanupCronJob implements CommandInterface {
 
 	/**
 	 * Can this node check its stream, archive and VOD files against its
-	 * streams? Everywhere but mode 2 it reads them from MAIN's database, as
-	 * before. A node in mode 2 may not (its connect is refused), and no
-	 * replica section carries its streams yet (R2 `streams`), so the checks
-	 * are skipped there until R2: files of streams deleted on MAIN stay,
-	 * TV archive segments are kept past their retention, and neither the
-	 * VOD analysis nor the created-channel checks run. Never against an
-	 * empty list, which would delete every file.
-	 *
-	 * The seam R2 fills: once the `streams` section is applied, a mode 2
-	 * node answers true and the checks read this node's streams from the
-	 * replica instead of the queries below.
+	 * streams? Where the replica owns its streams and its own store keeps
+	 * their runtime state (StreamSource::local(), mode 1 or 2 with STREAMS
+	 * on), from those (NodeStreams); elsewhere but in mode 2 from MAIN's
+	 * database, as before. A node in mode 2 without them may not read MAIN's
+	 * database (its connect is refused), so the checks are skipped there:
+	 * files of streams deleted on MAIN stay, TV archive segments are kept
+	 * past their retention, and neither the VOD analysis nor the
+	 * created-channel checks run. Never against an empty or partial list,
+	 * which would delete every file: a check whose list the replica cannot
+	 * give whole is skipped.
 	 */
 	protected function streamChecks(): bool {
-		return !NodeRole::refusesConnects();
+		return !NodeRole::refusesConnects() || StreamSource::local();
 	}
 
 	private function loadCron(): void {
@@ -90,25 +92,17 @@ class CleanupCronJob implements CommandInterface {
 		}
 
 		if (intval(SettingsManager::get('cleanup')) == 1) {
-			$rStreams = [];
-			$db->query('SELECT `id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `streams`.`type` IN (1,3,4) AND `streams_servers`.`server_id` = ?;', SERVER_ID);
-			foreach ($db->get_rows() as $rRow) {
-				$rStreams[] = intval($rRow['id']);
-			}
-			foreach (glob(STREAMS_PATH . '*') as $rFilename) {
+			$rStreams = NodeStreams::fileStreams($db);
+			foreach ($rStreams === null ? [] : glob(STREAMS_PATH . '*') as $rFilename) {
 				$rID = intval(rtrim(explode('.', basename($rFilename))[0], '_')) . "\n";
 				if (0 < $rID && !in_array($rID, $rStreams)) {
 					echo 'Deleting: ' . $rFilename . "\n";
 					unlink($rFilename);
 				}
 			}
-			$rArchive = [];
-			$db->query('SELECT `id`, `tv_archive_duration` FROM `streams` WHERE `type` = 1 AND `tv_archive_server_id` = ? AND `tv_archive_duration` > 0;', SERVER_ID);
-			foreach ($db->get_rows() as $rRow) {
-				$rArchive[intval($rRow['id'])] = $rRow['tv_archive_duration'];
-			}
+			$rArchive = NodeStreams::archives($db);
 			date_default_timezone_set('UTC');
-			foreach (glob(ARCHIVE_PATH . '*') as $rStreamID) {
+			foreach ($rArchive === null ? [] : glob(ARCHIVE_PATH . '*') as $rStreamID) {
 				$rID = intval(basename($rStreamID));
 				if (0 < $rID && is_dir(ARCHIVE_PATH . $rID)) {
 					if (!isset($rArchive[$rID])) {
@@ -129,12 +123,8 @@ class CleanupCronJob implements CommandInterface {
 					}
 				}
 			}
-			$rCreated = [];
-			$db->query('SELECT `id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `streams`.`type` = 3 AND `streams_servers`.`server_id` = ?;', SERVER_ID);
-			foreach ($db->get_rows() as $rRow) {
-				$rCreated[] = intval($rRow['id']);
-			}
-			foreach (glob(CREATED_PATH . '*') as $rFilename) {
+			$rCreated = NodeStreams::createdIDs($db);
+			foreach ($rCreated === null ? [] : glob(CREATED_PATH . '*') as $rFilename) {
 				$rID = intval(rtrim(explode('.', basename($rFilename))[0], '_')) . "\n";
 				if (0 < $rID && !in_array($rID, $rCreated)) {
 					echo 'Deleting: ' . $rFilename . "\n";
@@ -144,9 +134,8 @@ class CleanupCronJob implements CommandInterface {
 		}
 
 		if (intval(SettingsManager::get('check_vod')) == 1) {
-			$db->query('SELECT `server_stream_id`, `id`, `target_container`, `movie_properties`, `stream_status` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `server_id` = ? AND `type` IN (2,5) AND `streams`.`direct_source` = 0 AND `streams_servers`.`pid` > 0;', SERVER_ID);
-			if ($db->num_rows() > 0) {
-				$rRows = $db->get_rows();
+			$rRows = NodeStreams::vodChecks($db) ?? [];
+			if (count($rRows) > 0) {
 				foreach ($rRows as $rRow) {
 					$rMoviePath = VOD_PATH . $rRow['id'] . '.' . $rRow['target_container'];
 					if ($rRow['stream_status'] == 0) {
@@ -202,7 +191,10 @@ class CleanupCronJob implements CommandInterface {
 							if ($rResolution) {
 								$rResolution = StreamSorter::getNearest([240, 360, 480, 576, 720, 1080, 1440, 2160], $rResolution);
 							}
-							ContentSink::movieProperties((int) $rRow['id'], $rMovieProperties, $db);
+							if (!ContentSink::movieProperties((int) $rRow['id'], $rMovieProperties, $db) && NodeRole::refusesConnects()) {
+								// Mode 2 and the agent took no event: checked again once it is back.
+								continue;
+							}
 							StreamStateWriter::updateRow(intval($rRow['server_stream_id']), ['bitrate' => $rBitrate, 'to_analyze' => 0, 'stream_status' => 0, 'stream_info' => json_encode($rFFProbee, JSON_UNESCAPED_UNICODE), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible], $db);
 							StreamProcess::updateStream($rRow['id']);
 							echo 'VALID MOVIE' . "\n";
@@ -210,9 +202,8 @@ class CleanupCronJob implements CommandInterface {
 					}
 				}
 			}
-			$db->query("SELECT `id`, `stream_display_name`, `server_stream_id` FROM `streams` t1 INNER JOIN `streams_servers` t3 ON t3.stream_id = t1.id LEFT JOIN `profiles` t2 ON t2.profile_id = t1.transcode_profile_id WHERE t1.type = 3 AND t3.server_id = ? AND JSON_CONTAINS(t3.cchannel_rsources, t1.stream_source) AND JSON_CONTAINS(t1.stream_source, t3.cchannel_rsources) AND t3.pids_create_channel = '[]';", SERVER_ID);
-			if ($db->num_rows() > 0) {
-				$rStreams = $db->get_rows();
+			$rStreams = NodeStreams::builtChannels($db) ?? [];
+			if (count($rStreams) > 0) {
 				foreach ($rStreams as $rStream) {
 					echo "\n\n" . '[*] Checking Channel ' . $rStream['stream_display_name'] . "\n";
 					if (file_exists(CREATED_PATH . $rStream['id'] . '_.list')) {
@@ -242,6 +233,11 @@ class CleanupCronJob implements CommandInterface {
 					}
 				}
 			}
+		}
+
+		// The node's own store keeps only the streams and recordings it holds.
+		if (StreamSource::local() && ($rHeld = NodeStreams::held()) !== null) {
+			StreamRuntime::prune(...$rHeld);
 		}
 
 		// Retention of cluster-wide log tables: MAIN's job. Every LB used to

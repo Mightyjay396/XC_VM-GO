@@ -4,13 +4,16 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Stream\ConnectionTracker;
+use XcVm\Domain\Stream\NodeStreams;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Codec\FFprobeRunner;
@@ -131,7 +134,16 @@ class StreamsCronJob implements CommandInterface {
 			echo 'XC_VM not running...' . "\n";
 		}
 
-		if ($rRedis) {
+		// What the node's store kept while the agent took no event (mode 2),
+		// first: a seed waits for it (a no-op without STREAMS or the agent).
+		StreamStateWriter::resend();
+		// This node's streams from its replica and its own store (mode 1 or 2
+		// with STREAMS on): an on-demand stream's viewers then come from the
+		// agent's registry with CONNECTIONS on, not MAIN's Redis.
+		$rLocal = StreamSource::local();
+		$rAgentViewers = $rLocal && AgentConnections::enabled();
+
+		if ($rRedis && !$rAgentViewers) {
 			RedisManager::ensureConnected();
 		}
 
@@ -150,14 +162,9 @@ class StreamsCronJob implements CommandInterface {
 		// moved to it — adopting their running encoder, so they do not restart.
 		$rMigrate = $rStates !== null && !empty($rStates['accepting']) && StreamProcess::supervisionEnabled();
 
-		if ($rRedis) {
-			$db->query('SELECT t2.stream_display_name, t2.delay_minutes, t1.stream_started, t1.stream_info, t2.fps_restart, t1.stream_status, t1.progress_info, t1.stream_id, t1.monitor_pid, t1.on_demand, t1.server_stream_id, t1.pid, servers_attached.attached, t2.vframes_server_id, t2.vframes_pid, t2.tv_archive_server_id, t2.tv_archive_pid FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type LEFT JOIN (SELECT `stream_id`, COUNT(*) AS `attached` FROM `streams_servers` WHERE `parent_id` = ? AND `pid` IS NOT NULL AND `pid` > 0 AND `monitor_pid` IS NOT NULL AND `monitor_pid` > 0 GROUP BY `stream_id`) AS `servers_attached` ON `servers_attached`.`stream_id` = t1.`stream_id` WHERE (t1.pid IS NOT NULL OR t1.stream_status <> 0 OR t1.to_analyze = 1) AND t1.server_id = ? AND t3.live = 1', SERVER_ID, SERVER_ID);
-		} else {
-			$db->query("SELECT t2.stream_display_name, t2.delay_minutes, t1.stream_started, t1.stream_info, t2.fps_restart, t1.stream_status, t1.progress_info, t1.stream_id, t1.monitor_pid, t1.on_demand, t1.server_stream_id, t1.pid, clients.online_clients, clients_hls.online_clients_hls, servers_attached.attached, t2.vframes_server_id, t2.vframes_pid, t2.tv_archive_server_id, t2.tv_archive_pid FROM `streams_servers` t1 INNER JOIN `streams` t2 ON t2.id = t1.stream_id AND t2.direct_source = 0 INNER JOIN `streams_types` t3 ON t3.type_id = t2.type LEFT JOIN (SELECT stream_id, COUNT(*) as online_clients FROM `lines_live` WHERE `server_id` = ? AND `hls_end` = 0 GROUP BY stream_id) AS clients ON clients.stream_id = t1.stream_id LEFT JOIN (SELECT `stream_id`, COUNT(*) AS `attached` FROM `streams_servers` WHERE `parent_id` = ? AND `pid` IS NOT NULL AND `pid` > 0 AND `monitor_pid` IS NOT NULL AND `monitor_pid` > 0 GROUP BY `stream_id`) AS `servers_attached` ON `servers_attached`.`stream_id` = t1.`stream_id` LEFT JOIN (SELECT stream_id, COUNT(*) as online_clients_hls FROM `lines_live` WHERE `server_id` = ? AND `container` = 'hls' AND `hls_end` = 0 GROUP BY stream_id) AS clients_hls ON clients_hls.stream_id = t1.stream_id WHERE (t1.pid IS NOT NULL OR t1.stream_status <> 0 OR t1.to_analyze = 1) AND t1.server_id = ? AND t3.live = 1", SERVER_ID, SERVER_ID, SERVER_ID, SERVER_ID);
-		}
-
-		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() as $rStream) {
+		$rRows = NodeStreams::liveChecks($rRedis, $db);
+		if (count($rRows) > 0) {
+			foreach ($rRows as $rStream) {
 				echo 'Stream ID: ' . $rStream['stream_id'] . "\n";
 				$rStreamIDs[] = $rStream['stream_id'];
 
@@ -173,7 +180,9 @@ class StreamsCronJob implements CommandInterface {
 				}
 				if ($rIsSupervised || ProcessManager::isMonitorAlive($rStream['monitor_pid'], $rStream['stream_id']) || $rStream['on_demand']) {
 					if ($rStream['on_demand'] == 1 && $rStream['attached'] == 0) {
-						if ($rRedis) {
+						if ($rAgentViewers) {
+							$rStream['online_clients'] = NodeStreams::viewers([intval($rStream['stream_id'])])[intval($rStream['stream_id'])] ?? 0;
+						} elseif ($rRedis) {
 							$rCount = 0;
 							$rRedis = RedisManager::instance();
 							if ($rRedis instanceof \Redis) {
@@ -368,9 +377,9 @@ class StreamsCronJob implements CommandInterface {
 			}
 		}
 
-		$db->query('SELECT `streams`.`id` FROM `streams` LEFT JOIN `streams_servers` ON `streams_servers`.`stream_id` = `streams`.`id` WHERE `streams`.`direct_source` = 1 AND `streams`.`direct_proxy` = 1 AND `streams_servers`.`server_id` = ? AND `streams_servers`.`pid` > 0;', SERVER_ID);
-		if ($db->num_rows() > 0) {
-			foreach ($db->get_rows() as $rStream) {
+		$rProxied = NodeStreams::proxied($db);
+		if (count($rProxied) > 0) {
+			foreach ($rProxied as $rStream) {
 				if (file_exists(STREAMS_PATH . $rStream['id'] . '.analyse')) {
 					$rFFProbeOutput = FFprobeRunner::probeStream(STREAMS_PATH . $rStream['id'] . '.analyse');
 					// Defaults: the UPDATE below runs even when probing fails or
@@ -393,7 +402,9 @@ class StreamsCronJob implements CommandInterface {
 					StreamStateWriter::update(intval($rStream['id']), intval(SERVER_ID), ['bitrate' => $rBitrate, 'stream_info' => json_encode($rFFProbeOutput), 'audio_codec' => $rAudioCodec, 'video_codec' => $rVideoCodec, 'resolution' => $rResolution, 'compatible' => $rCompatible], $db);
 				}
 
-				$rUUIDs = $this->connectionUuidsForStream(ConnectionTracker::getConnections(SERVER_ID, null, $rStream['id']), $rStream['id']);
+				// With the agent's registry, each viewer's socket is checked there
+				// (one it could not answer for stays).
+				$rUUIDs = $rAgentViewers ? null : $this->connectionUuidsForStream(ConnectionTracker::getConnections(SERVER_ID, null, $rStream['id']), $rStream['id']);
 
 				$rConDir = CONS_TMP_PATH . $rStream['id'] . '/';
 				// The per-stream connection dir only exists once a client connects,
@@ -402,7 +413,7 @@ class StreamsCronJob implements CommandInterface {
 				if (is_dir($rConDir) && ($rHandle = opendir($rConDir))) {
 					while (false !== ($rFilename = readdir($rHandle))) {
 						if ($rFilename != '.' && $rFilename != '..') {
-							if (!in_array($rFilename, $rUUIDs)) {
+							if ($rUUIDs === null ? AgentConnections::get($rFilename) === false : !in_array($rFilename, $rUUIDs)) {
 								unlink(CONS_TMP_PATH . $rStream['id'] . '/' . $rFilename);
 							}
 						}
@@ -412,8 +423,7 @@ class StreamsCronJob implements CommandInterface {
 			}
 		}
 
-		$db->query('SELECT `stream_id` FROM `streams_servers` WHERE `on_demand` = 1 AND `server_id` = ?;', SERVER_ID);
-		$rOnDemandIDs = array_keys($db->get_rows(true, 'stream_id'));
+		$rOnDemandIDs = NodeStreams::onDemandIDs($db);
 		$rProcesses = shell_exec('ps aux | grep XC_VM');
 		if (preg_match_all('/XC_VM\\[(.*)\\]/', $rProcesses, $rMatches)) {
 			$rRemove = array_diff($rMatches[1], $rStreamIDs);

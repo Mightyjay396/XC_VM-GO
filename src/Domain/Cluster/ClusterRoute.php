@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
@@ -132,6 +133,51 @@ final class ClusterRoute {
 	}
 
 	/**
+	 * Cache jobs for a node in mode 2 (SignalDispatcher::cache and
+	 * cacheBatch): its signals daemon reads no `signals` row (its connects
+	 * to MAIN are refused), so they go as signed `node.cache {jobs}`
+	 * commands, in order, none naming more than CacheJobs::MAX targets (a
+	 * list of ids split across them: CacheJobs::commands), which the node's
+	 * cluster:exec runs as the daemon ran the rows. A job not in the form
+	 * the node runs (CacheJobs::job) is left out.
+	 * Granting to the extension, which classes by type: without a licence
+	 * nothing is sent. MAIN's own jobs, nodes in mode 0 or 1 and nodes that
+	 * take no command keep the legacy row.
+	 *
+	 * @param list<array<string, mixed>> $rJobs payloads as the signals rows carried them
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function cache(int $rServerID, array $rJobs): array {
+		if (defined('SERVER_ID') && $rServerID === (int) SERVER_ID) {
+			return [false, false];
+		}
+		try {
+			$rNode = empty(SettingsManager::get('cluster_api_enabled')) ? null : NodeRegistry::byServer($rServerID);
+		} catch (\Throwable) {
+			return [false, false];
+		}
+		if ($rNode === null || (int) $rNode['mode'] !== 2) {
+			return [false, false];
+		}
+		$rCrypto = self::target($rServerID, false, $rNode);
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
+			return [false, false];
+		}
+		$rCommands = CacheJobs::commands($rJobs);
+		if ($rCommands === []) {
+			return [true, false];
+		}
+		try {
+			foreach ($rCommands as $rCommand) {
+				CommandBus::enqueue($rCrypto, $rServerID, 'node.cache', ['jobs' => $rCommand]);
+			}
+			return [true, true];
+		} catch (\Throwable) {
+			return [true, false];
+		}
+	}
+
+	/**
 	 * A root action (NodeActions): a signed `node.root` command, run on the
 	 * node by cluster:root after it checks the signature against its
 	 * root-owned pin of the panel key. Only for nodes that report that pin.
@@ -163,10 +209,14 @@ final class ClusterRoute {
 		self::$rCrypto = $rFactory;
 	}
 
-	/** The extension, when this node takes commands; null for the legacy path. */
-	private static function target(int $rServerID, bool $rRoot = false): ?ClusterCrypto {
+	/**
+	 * The extension, when this node takes commands; null for the legacy path.
+	 *
+	 * @param array<string, mixed>|null $rNode the node's row, when the caller read it with cluster_api_enabled on
+	 */
+	private static function target(int $rServerID, bool $rRoot = false, ?array $rNode = null): ?ClusterCrypto {
 		try {
-			$rNode = empty(SettingsManager::get('cluster_api_enabled')) ? null : NodeRegistry::byServer($rServerID);
+			$rNode ??= empty(SettingsManager::get('cluster_api_enabled')) ? null : NodeRegistry::byServer($rServerID);
 			if (!($rRoot ? CommandBus::acceptsRoot($rNode) : CommandBus::accepts($rNode))) {
 				return null;
 			}

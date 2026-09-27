@@ -7,7 +7,9 @@ use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\RootPin;
+use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Tests\Support\AgentUser;
 use XcVm\Tests\Support\FakeClusterCrypto;
 use XcVm\Tests\Support\ReplicaFixture;
@@ -161,9 +163,12 @@ final class ModeTwoPathsTest extends TestCase {
 			use XcVm\Cli\Commands\WatchdogCommand;
 			use XcVm\Cli\CronJobs\CleanupCronJob;
 			use XcVm\Cli\CronJobs\RootSignalsCronJob;
+			use XcVm\Cli\CronJobs\StreamsCronJob;
+			use XcVm\Cli\CronJobs\VodCronJob;
 			use XcVm\Core\Cluster\ReplicaBoot;
 			use XcVm\Core\Cluster\RootPin;
 			use XcVm\Core\Enum\BootContext;
+			use XcVm\Core\Http\RequestManager;
 
 			// Nothing runs unless the stand-ins answer for sudo, crontab and ip.
 			foreach (['sudo', 'crontab', 'ip'] as $rTool) {
@@ -244,6 +249,35 @@ final class ModeTwoPathsTest extends TestCase {
 						ob_start();
 						try {
 							(new ReflectionMethod(CleanupCronJob::class, 'loadCron'))->invoke(new CleanupCronJob());
+						} finally {
+							$rResult['output'] = (string) ob_get_clean();
+						}
+						break;
+					case 'relay_vod':
+						// The VOD relay endpoint, as a child server asks it for a movie.
+						$_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+						RequestManager::set(['stream' => $argv[2], 'password' => 'stream-pass']);
+						$rResult['served'] = true;
+						require getenv('XCVM_TEST_SRC') . 'Public/admin/vod.php';
+						$rResult['served'] = false;
+						break;
+					case 'vod':
+						ob_start();
+						try {
+							(new ReflectionMethod(VodCronJob::class, 'loadCron'))->invoke(new VodCronJob());
+						} finally {
+							$rResult['output'] = (string) ob_get_clean();
+						}
+						break;
+					case 'streams':
+						// It kills what `ps` names: only ever with the stand-in's empty list.
+						if (trim((string) shell_exec('command -v ps')) !== getenv('XCVM_TEST_HOME') . 'stub_ps/ps') {
+							$rResult['error'] = 'unsafe: ps is not the stand-in';
+							break;
+						}
+						ob_start();
+						try {
+							(new ReflectionMethod(StreamsCronJob::class, 'loadCron'))->invoke(new StreamsCronJob());
 						} finally {
 							$rResult['output'] = (string) ob_get_clean();
 						}
@@ -520,6 +554,217 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertStringNotContainsString('Deleting', $rResult['output']);
 	}
 
+	/**
+	 * The streams this node holds, as the agent stores its R2 section: live
+	 * 7; movie 8; live 9 whose TV archive (a day) it records; created
+	 * channel 3 from two sources; and each $rOver's `streams` columns.
+	 *
+	 * @param array<int, array<string, mixed>> $rOver
+	 */
+	private function streams(array $rOver = []): void {
+		$rStreams = [7 => [], 8 => ['type' => 2, 'target_container' => 'mp4'], 9 => ['tv_archive_server_id' => 5, 'tv_archive_duration' => 1], 3 => ['type' => 3, 'stream_source' => '["s:5:/media/a.mp4","s:5:/media/b.mp4"]']];
+		$rTypes = [2 => ['live' => 0, 'type_id' => 2, 'type_key' => 'movie', 'type_name' => 'Movies', 'type_output' => 'movie'], 3 => ['live' => 1, 'type_id' => 3, 'type_key' => 'created_live', 'type_name' => 'Created Live', 'type_output' => 'live']];
+		foreach ($rOver + $rStreams as $rID => $rStream) {
+			$rStream += $rStreams[$rID] ?? [];
+			$rData = ReplicaFixture::streamData($rID, 5, $rStream);
+			$rData['type'] = $rTypes[$rStream['type'] ?? 1] ?? $rData['type'];
+			$this->rFixture->stream($rID, $rData);
+		}
+		$this->rFixture->streamsSince(9);
+	}
+
+	/**
+	 * The node's own store as a seed in mode 1 left it: $rStreams' runtime
+	 * columns, $rRecordings' statuses, the node user's; $rUnsent's columns
+	 * as a node in mode 2 kept them while its agent took no event.
+	 *
+	 * @param array<int, array<string, mixed>> $rStreams
+	 * @param array<int, int> $rRecordings
+	 * @param array<int, list<string>> $rUnsent
+	 */
+	private function runtime(array $rStreams, array $rRecordings = [], array $rUnsent = []): void {
+		$rDir = $this->rHome . 'config/cluster/runtime/';
+		@mkdir($rDir . 'streams', 0700, true);
+		@mkdir($rDir . 'recordings', 0700, true);
+		foreach ($rStreams as $rID => $rFields) {
+			file_put_contents($rDir . 'streams/' . $rID . '.json', json_encode(['id' => $rID, 'ssid' => $rID, 'fields' => $rFields, 'unsent' => $rUnsent[$rID] ?? []]));
+		}
+		if ($rUnsent !== []) {
+			file_put_contents($rDir . 'unsent', json_encode(['at' => time(), 'token' => 'kept-in-mode-2']));
+		}
+		foreach ($rRecordings as $rID => $rStatus) {
+			file_put_contents($rDir . 'recordings/' . $rID . '.json', json_encode(['id' => $rID, 'status' => $rStatus]));
+		}
+		file_put_contents($rDir . 'seeded', json_encode(['at' => time(), 'server_id' => 5, 'streams' => count($rStreams)]));
+		AgentUser::own($rDir);
+	}
+
+	/** @return array<string, mixed> what the node's store keeps for a stream */
+	private function kept(int $rID): array {
+		return json_decode((string) file_get_contents($this->rHome . 'config/cluster/runtime/streams/' . $rID . '.json'), true)['fields'];
+	}
+
+	/**
+	 * With its R2 streams section applied and its own store seeded, a node
+	 * in mode 2 checks its files against its streams from the replica: the
+	 * files of streams it does not hold go, its TV archive keeps its
+	 * retention, a movie whose file is gone and a channel whose list is gone
+	 * are marked from the store's state (kept there and reported to MAIN),
+	 * and nothing reaches MAIN's database.
+	 */
+	public function testCleanupChecksItsStreamsFromTheReplica(): void {
+		$this->streams();
+		$this->node(['cleanup' => '1', 'check_vod' => '1']);
+		// 70 and recording 9: no longer held, kept long ago; 71: held since the section was read, kept just now.
+		$this->runtime([8 => ['pid' => 4000, 'stream_status' => 0], 3 => ['cchannel_rsources' => '["s:5:/media/a.mp4","s:5:/media/b.mp4"]'], 70 => ['pid' => 1], 71 => ['pid' => 2]], [9 => 1]);
+		touch($this->rHome . 'config/cluster/runtime/streams/70.json', time() - StreamRuntime::PRUNE_GRACE - 60);
+		touch($this->rHome . 'config/cluster/runtime/recordings/9.json', time() - StreamRuntime::PRUNE_GRACE - 60);
+		foreach (['7_.m3u8', '70_.m3u8', '70_1.ts'] as $rFile) {
+			file_put_contents($this->rHome . 'content/streams/' . $rFile, 'x');
+		}
+		mkdir($this->rHome . 'content/archive/9');
+		mkdir($this->rHome . 'content/archive/90');
+		$rOld = gmdate('Y-m-d:H-i', time() - 3 * 86400) . '.ts';
+		$rRecent = gmdate('Y-m-d:H-i', time() - 120) . '.ts';
+		file_put_contents($this->rHome . 'content/archive/9/' . $rOld, 'x');
+		file_put_contents($this->rHome . 'content/archive/9/' . $rRecent, 'x');
+		file_put_contents($this->rHome . 'content/created/30_abc.ts', 'x');
+		file_put_contents($this->rHome . 'content/created/3_abc.ts', 'x');
+
+		[, $rOut, $rResult] = $this->child(['cleanup']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertTrue($rResult['replica']);
+		$this->assertNoConnect();
+		$this->assertTrue((new ReflectionMethod(CleanupCronJob::class, 'streamChecks'))->isProtected());
+		$this->assertFileExists($this->rHome . 'content/streams/7_.m3u8', 'a stream it holds');
+		$this->assertFileDoesNotExist($this->rHome . 'content/streams/70_.m3u8', 'a stream it does not hold');
+		$this->assertFileDoesNotExist($this->rHome . 'content/streams/70_1.ts');
+		$this->assertDirectoryDoesNotExist($this->rHome . 'content/archive/90');
+		$this->assertFileDoesNotExist($this->rHome . 'content/archive/9/' . $rOld, 'past its retention');
+		$this->assertFileExists($this->rHome . 'content/archive/9/' . $rRecent);
+		$this->assertFileDoesNotExist($this->rHome . 'content/created/30_abc.ts');
+		$this->assertFileExists($this->rHome . 'content/created/3_abc.ts');
+		$this->assertStringContainsString('BAD MOVIE', $rResult['output']);
+		$this->assertStringContainsString('BAD CHANNEL', $rResult['output']);
+		$this->assertSame(1, $this->kept(8)['stream_status'], 'the store follows the node\'s writes');
+		$this->assertSame('[]', $this->kept(3)['cchannel_rsources']);
+		$rEvents = array_column($this->spooled('p0'), 'd');
+		$this->assertContains(['ssid' => 8, 'fields' => ['stream_status' => 1]], $rEvents, 'and MAIN hears them');
+		$this->assertContains(['ssid' => 3, 'fields' => ['cchannel_rsources' => '[]']], $rEvents);
+		// The store pruned to what the node holds, but for what was kept in the last minutes.
+		$this->assertFileDoesNotExist($this->rHome . 'config/cluster/runtime/streams/70.json');
+		$this->assertFileDoesNotExist($this->rHome . 'config/cluster/runtime/recordings/9.json');
+		foreach ([3, 8, 71] as $rID) {
+			$this->assertFileExists($this->rHome . 'config/cluster/runtime/streams/' . $rID . '.json');
+		}
+	}
+
+	/**
+	 * A section the agent's files do not hold whole (a record stored since
+	 * the apply that does not read): every check that prunes by its list is
+	 * skipped, never run against a partial one, and the store is not pruned.
+	 */
+	public function testCleanupSkipsTheChecksWhenTheSectionIsNotWhole(): void {
+		$this->streams();
+		$this->node(['cleanup' => '1', 'check_vod' => '1']);
+		$this->runtime([8 => ['pid' => 4000, 'stream_status' => 0], 70 => ['pid' => 1]]);
+		touch($this->rHome . 'config/cluster/runtime/streams/70.json', time() - StreamRuntime::PRUNE_GRACE - 60);
+		file_put_contents($this->rFixture->dir() . 'streams/71.json', '{"etag":');
+		foreach (['7_.m3u8', '70_.m3u8'] as $rFile) {
+			file_put_contents($this->rHome . 'content/streams/' . $rFile, 'x');
+		}
+		mkdir($this->rHome . 'content/archive/90');
+		file_put_contents($this->rHome . 'content/created/30_abc.ts', 'x');
+
+		[, $rOut, $rResult] = $this->child(['cleanup']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertTrue($rResult['replica']);
+		$this->assertNoConnect();
+		$this->assertStringNotContainsString('Deleting', $rResult['output']);
+		$this->assertStringNotContainsString('BAD MOVIE', $rResult['output']);
+		$this->assertFileExists($this->rHome . 'content/streams/70_.m3u8');
+		$this->assertDirectoryExists($this->rHome . 'content/archive/90');
+		$this->assertFileExists($this->rHome . 'content/created/30_abc.ts');
+		$this->assertFileExists($this->rHome . 'config/cluster/runtime/streams/70.json', 'not pruned by a partial list');
+	}
+
+	/**
+	 * cron:streams in mode 2 once the agent is back: what the node's store
+	 * kept unsent while it took no event goes to MAIN (a `stream.state` keyed
+	 * by stream and server), and the marker goes with it. No connect.
+	 */
+	public function testTheStreamsMinuteSendsWhatTheStoreKeptUnsent(): void {
+		$this->streams();
+		$this->node(['redis_handler' => '0', 'kill_rogue_ffmpeg' => '0']);
+		$this->runtime([7 => ['bitrate' => 3000, 'stream_info' => '{}']], [], [7 => ['bitrate']]);
+		// `ps` answers with nothing to kill.
+		mkdir($this->rHome . 'stub_ps');
+		file_put_contents($this->rHome . 'stub_ps/ps', "#!/bin/sh\necho 'root 1 0.0 grep XC_VM'\n");
+		chmod($this->rHome . 'stub_ps/ps', 0755);
+
+		[, $rOut, $rResult] = $this->child(['streams'], null, ['PATH' => $this->rHome . 'stub_ps:' . $this->rHome . 'stub:' . getenv('PATH')]);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertContains(['stream_id' => 7, 'server_id' => 5, 'fields' => ['bitrate' => 3000]], array_column($this->spooled('p0'), 'd'));
+		$this->assertFileDoesNotExist($this->rHome . 'config/cluster/runtime/unsent');
+		$this->assertSame([], json_decode((string) file_get_contents($this->rHome . 'config/cluster/runtime/streams/7.json'), true)['unsent']);
+	}
+
+	/**
+	 * cron:vod in mode 2 from the replica and the store: a movie whose
+	 * analysis is due is analysed (its file is gone: broken), a channel with
+	 * sources left is not queued (MAIN's queue is its database), and a
+	 * recording the node started is not started again although its record
+	 * still says scheduled. No connect.
+	 */
+	public function testVodChecksItsStreamsFromTheReplica(): void {
+		$rNow = time();
+		$rRecording = ['id' => 1, 'stream_id' => 7, 'created_id' => 0, 'category_id' => '[]', 'bouquets' => '[]', 'title' => 'Match', 'description' => null, 'stream_icon' => null, 'start' => $rNow - 60, 'end' => $rNow + 3600, 'source_id' => 5, 'archive' => 0, 'status' => 0];
+		$this->streams();
+		$rData = ReplicaFixture::streamData(7, 5);
+		$rData['recordings'] = [ReplicaSections::typed($rRecording, ReplicaSections::RECORDING_FIELDS)];
+		$this->rFixture->stream(7, $rData);
+		$this->node();
+		$this->runtime([8 => ['pid' => 4000, 'to_analyze' => 1, 'stream_status' => 0]], [1 => 1]);
+
+		[, $rOut, $rResult] = $this->child(['vod']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertStringContainsString('Needs Updating!', $rResult['output']);
+		$this->assertStringContainsString('BROKEN', $rResult['output']);
+		$this->assertStringNotContainsString('Start recording', $rResult['output'], 'the node\'s own status wins over its record\'s');
+		$this->assertSame(['pid' => 4000, 'to_analyze' => 0, 'stream_status' => 1], $this->kept(8));
+		$this->assertContains(['ssid' => 8, 'fields' => ['to_analyze' => 0, 'stream_status' => 1]], array_column($this->spooled('p0'), 'd'));
+	}
+
+	/**
+	 * The VOD relay endpoint in mode 2: the movie's row from the replica and
+	 * its producer from the store, the file served, and MAIN's database
+	 * never opened (it opened it at once). A stream that is no movie is not
+	 * served.
+	 */
+	public function testTheVodRelayServesFromTheReplica(): void {
+		$this->streams();
+		$this->node();
+		$this->runtime([8 => ['pid' => 4000, 'stream_status' => 0]]);
+		file_put_contents($this->rHome . 'content/vod/8.mp4', 'MOVIE-BYTES');
+		[, $rOut, $rResult] = $this->child(['relay_vod', '8.mp4']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertStringContainsString('MOVIE-BYTES', $rOut);
+		$this->assertNoConnect();
+		[, $rOut, $rResult] = $this->child(['relay_vod', '7.ts']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertFalse($rResult['served'], 'nothing served, as for a stream MAIN\'s row did not have');
+		$this->assertStringNotContainsString('MOVIE-BYTES', $rOut);
+		$this->assertNoConnect();
+	}
+
 	// ── cluster:apply ────────────────────────────────────────────────
 
 	/**
@@ -563,7 +808,10 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertTrue(RootSignalsCronJob::readsMainDatabase(), 'MAIN, even with a stray flows.json');
 	}
 
-	/** The seam R2 fills: cron:cleanup checks its streams everywhere but mode 2. */
+	/**
+	 * The seam R2 fills: cron:cleanup checks its streams everywhere but mode
+	 * 2 without its replica's streams and its own store.
+	 */
 	public function testCleanupChecksItsStreamsEverywhereButModeTwo(): void {
 		NodeFlows::usePath($this->rHome . 'config/cluster/flows.json');
 		NodeRole::useMainBuild(false);

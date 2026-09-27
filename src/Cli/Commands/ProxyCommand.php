@@ -85,15 +85,15 @@ class ProxyCommand implements CommandInterface {
 		set_time_limit(0);
 		cli_set_process_title('XC_VMProxy[' . $rStreamID . ']');
 
-		$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.id = ?', SERVER_ID, $rStreamID);
-		if ($db->num_rows() <= 0) {
+		// The stream and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+		$rStreamInfo = StreamSource::nodeRow($rStreamID, $db);
+		if ($rStreamInfo === null) {
 			StreamProcess::stopStream($rStreamID);
 			return 0;
 		}
 
 		file_put_contents(STREAMS_PATH . $rStreamID . '_.monitor', getmypid());
 		@unlink(STREAMS_PATH . $rStreamID . '_.pid');
-		$rStreamInfo = $db->get_row();
 		$rStreamArguments = StreamSource::arguments($rStreamID, true, $db);
 
 		$this->startProxy($rStreamID, $rStreamInfo, $rStreamArguments, $rFP);
@@ -236,7 +236,9 @@ class ProxyCommand implements CommandInterface {
 		}
 		fclose($rFP);
 		$rFP = null;
-		$db->db_connect();
+		if (!StreamSource::local()) {
+			$db->db_connect();
+		}
 		StreamStateWriter::updateRow(intval($rStreamInfo['server_stream_id']), ['monitor_pid' => null, 'pid' => null, 'stream_status' => 1], $db);
 		if (SettingsManager::getBool('enable_cache')) {
 			StreamProcess::updateStream($rStreamID);

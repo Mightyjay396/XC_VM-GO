@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ConnectionLimits;
@@ -37,6 +38,19 @@ class SignalsCommand implements CommandInterface {
 		return 'Daemon: process kill signals and cache signals from DB/Redis';
 	}
 
+	/**
+	 * Does the daemon read MAIN's database and Redis: its `signals` rows,
+	 * the Redis signals, and the pings that keep it running? Not on a node
+	 * in mode 2 (plan, section 10), whose connects are refused
+	 * (NodeRole::refusesConnects): MAIN sends it kills as `conn.kill_worker`
+	 * and `conn.drop` and cache jobs as `node.cache`, signed commands which
+	 * its agent and cluster:exec run (CacheJobs). MAIN, mode 0 and mode 1
+	 * read them as before.
+	 */
+	public static function readsMainDatabase(): bool {
+		return !NodeRole::refusesConnects();
+	}
+
 	public function execute(array $rArgs): int {
 		if (!$this->assertRunAsXcVm()) {
 			return 1;
@@ -51,14 +65,19 @@ class SignalsCommand implements CommandInterface {
 		$this->killStaleProcesses('console.php signals');
 		$this->killStaleProcesses('XC_VM\\[Signals\\]');
 		$this->initDaemonMD5();
-		$this->initRedisIfEnabled();
+		// A node in mode 2 has neither MAIN's database nor its Redis: its
+		// kills and cache jobs come as commands, and a pass pings nothing.
+		$rApi = !self::readsMainDatabase();
+		if (!$rApi) {
+			$this->initRedisIfEnabled();
+		}
 
 		$rServers = ServerRepository::getAll();
 		$rLastReconcile = 0;
 		$rLastLiveness = 0;
 		$rIsMain = NodeRole::isMain();
 
-		while ($db && $db->ping()) {
+		while ($rApi || ($db && $db->ping())) {
 			if (!$this->refreshOrBreak()) {
 				break;
 			}
@@ -71,7 +90,7 @@ class SignalsCommand implements CommandInterface {
 			// Stop if Redis required but dead. checkRedisHealth() catches
 			// RedisException (NOAUTH/timeouts during a restart window) — a raw
 			// ping here used to kill the daemon with an uncaught exception.
-			if (!$this->checkRedisHealth()) {
+			if (!$rApi && !$this->checkRedisHealth()) {
 				break;
 			}
 
@@ -103,6 +122,13 @@ class SignalsCommand implements CommandInterface {
 				}
 			}
 
+			// Mode 2: no `signals` row and no Redis signal to read. The pass
+			// ends as the legacy one does, and the next process starts.
+			if ($rApi) {
+				usleep(250000);
+				break;
+			}
+
 			// ── Kill-сигналы из БД ──────────────────────────────
 			if ($db->query('SELECT `signal_id`, `pid`, `rtmp` FROM `signals` WHERE `server_id` = ? AND `pid` IS NOT NULL ORDER BY `signal_id` ASC LIMIT 100', SERVER_ID)) {
 				if ($db->num_rows() > 0) {
@@ -126,62 +152,12 @@ class SignalsCommand implements CommandInterface {
 				// ── Cache-сигналы из БД ─────────────────────────
 				if ($db->query('SELECT `signal_id`, `custom_data` FROM `signals` WHERE `server_id` = ? AND `cache` = 1 ORDER BY `signal_id` ASC LIMIT 1000;', SERVER_ID)) {
 					if ($db->num_rows() > 0) {
-						$rUpdatedStreams = $rUpdatedLines = $rIDs = [];
+						$rJobs = $rIDs = [];
 						foreach ($db->get_rows() as $rRow) {
-							$rCustomData = json_decode($rRow['custom_data'], true);
+							$rJobs[] = json_decode($rRow['custom_data'], true);
 							$rIDs[] = $rRow['signal_id'];
-							switch ($rCustomData['type']) {
-								case 'update_stream':
-									if (!in_array($rCustomData['id'], $rUpdatedStreams)) {
-										$rUpdatedStreams[] = $rCustomData['id'];
-									}
-									break;
-								case 'update_line':
-									if (!in_array($rCustomData['id'], $rUpdatedLines)) {
-										$rUpdatedLines[] = $rCustomData['id'];
-									}
-									break;
-								case 'update_streams':
-									foreach ($rCustomData['id'] as $rID) {
-										if (!in_array($rID, $rUpdatedStreams)) {
-											$rUpdatedStreams[] = $rID;
-										}
-									}
-									break;
-								case 'update_lines':
-									foreach ($rCustomData['id'] as $rID) {
-										if (!in_array($rID, $rUpdatedLines)) {
-											$rUpdatedLines[] = $rID;
-										}
-									}
-									break;
-								case 'delete_con':
-									// The connection file may already be gone (the stream
-									// closed between the signal being queued and processed);
-									// suppress the harmless "No such file" warning.
-									@unlink(CONS_TMP_PATH . $rCustomData['uuid']);
-									break;
-								case 'drop_con':
-									// A daemon-served viewer on this node was kicked
-									// from another (ConnectionTracker::dropDaemonViewer).
-									FanoutClient::dropConnection((string) ($rCustomData['uuid'] ?? ''));
-									break;
-								case 'delete_vod':
-									exec('rm ' . MAIN_HOME . 'content/vod/' . intval($rCustomData['id']) . '.*');
-									break;
-								case 'delete_vods':
-									foreach ($rCustomData['id'] as $rID) {
-										exec('rm ' . MAIN_HOME . 'content/vod/' . intval($rID) . '.*');
-									}
-									break;
-							}
 						}
-						if (count($rUpdatedStreams) > 0) {
-							shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache_engine "streams_update" "' . implode(',', $rUpdatedStreams) . '"');
-						}
-						if (count($rUpdatedLines) > 0) {
-							shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache_engine "lines_update" "' . implode(',', $rUpdatedLines) . '"');
-						}
+						CacheJobs::run($rJobs);
 						if (count($rIDs) > 0) {
 							$db->query('DELETE FROM `signals` WHERE `signal_id` IN (' . implode(',', $rIDs) . ')');
 						}

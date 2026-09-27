@@ -28,10 +28,10 @@ final class CommandBus {
 	use DatabaseAware;
 
 	/** Lifetime of a command by type prefix (seconds). */
-	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'artefact.' => 3600, 'default' => 600];
+	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'node.cache' => 86400, 'artefact.' => 3600, 'default' => 600];
 
 	/** Types MAIN sends today. */
-	public const TYPES = ['node.rpc', 'node.root', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch'];
+	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch'];
 
 	/** Types that are restrictive (always signable); the extension decides, this is informational. */
 	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];

@@ -613,13 +613,14 @@ final class ReplicaApply {
 			// Unchanged since the last apply: not written again. From disk every
 			// entry is written from its verified record.
 			if (self::$rFromDisk === null && ($rIndex[$rID]['etag'] ?? null) === $rEntry['etag'] && ($rIndex[$rID]['ver'] ?? null) === $rEntry['ver'] && $rStore->has((string) $rID)) {
+				$rIndex[$rID] = ReplicaStreamCache::meta($rEntry);
 				continue;
 			}
 			if (!$rStore->set((string) $rID, $rEntry)) {
 				$rUnreadable[] = $rID;
 				continue;
 			}
-			$rIndex[$rID] = ['etag' => $rEntry['etag'], 'ver' => $rEntry['ver'], 'rec' => array_column($rEntry['recordings'], 'id')];
+			$rIndex[$rID] = ReplicaStreamCache::meta($rEntry);
 			$rWritten++;
 		}
 		// Removals: the streams whose file the agent deleted, never one whose record does not read.

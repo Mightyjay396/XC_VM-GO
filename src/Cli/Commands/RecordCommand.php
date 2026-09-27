@@ -141,7 +141,7 @@ class RecordCommand implements CommandInterface {
 			sleep(1);
 		}
 
-		if (!$db->connected) {
+		if (!$db->connected && !StreamSource::local()) {
 			$db->db_connect();
 		}
 
@@ -179,7 +179,8 @@ class RecordCommand implements CommandInterface {
 			$this->finishRecording($recordingID, false);
 			return;
 		}
-		ContentSink::recordingDone((int) $recordingID, SERVER_ID);
+		// The node's store keeps the VOD's row as MAIN attaches it here (STREAMS on).
+		ContentSink::recordingDone((int) $recordingID, SERVER_ID, $rInsertID);
 	}
 
 	/**

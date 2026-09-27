@@ -13,6 +13,7 @@ use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ConnectAudit;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\SettingsAudit;
+use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
@@ -30,6 +31,7 @@ use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\HeartbeatService;
 use XcVm\Domain\Cluster\NodeAudit;
 use XcVm\Domain\Cluster\NodeAuthCache;
+use XcVm\Domain\Cluster\NodeCertbot;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Cluster\NonceStore;
@@ -1009,6 +1011,216 @@ final class ClusterApiTest extends TestCase {
 			$this->assertSame([['pid' => 55, 'rtmp' => false], ['pid' => 9, 'rtmp' => true], ['uuid' => 'abc123']], array_column($rDocs, 'args'));
 		} finally {
 			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+		}
+	}
+
+	/**
+	 * A node in mode 2 reads no `signals` row (its connects are refused), so
+	 * the cache jobs MAIN queues for it (a movie's files deleted, a closed
+	 * viewer's connection file, a daemon viewer's drop) go as signed
+	 * `node.cache` commands, none naming more than CacheJobs::MAX targets (a
+	 * list of ids split across them), only in the form the node runs. Nodes
+	 * in mode 0 or 1, one without COMMANDS and MAIN itself (even with a node
+	 * row of its own) keep the rows their signals daemon reads. Run alone:
+	 * MAIN's SERVER_ID is 1 here, whatever another test defined.
+	 */
+	#[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+	#[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
+	public function testCacheJobsForAModeTwoNodeBecomeCommands(): void {
+		define('SERVER_ID', 1); // MAIN
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		$rRows = [];
+		SignalDispatcher::useSink(new class($rRows) implements \XcVm\Core\Cluster\SignalSink {
+			public function __construct(private array &$rRows) {
+			}
+
+			public function insert(array $rRows): bool {
+				array_push($this->rRows, ...$rRows);
+				return true;
+			}
+
+			public function pending(int $rServerID, string $rCustomData): bool {
+				return false;
+			}
+		});
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		$rJobs = static fn(int $rServerID = self::SID): array => array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending($rServerID, 0, 200));
+		$rMax = \XcVm\Core\Cluster\CacheJobs::MAX;
+		try {
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS, 'mode' => 1]);
+			$this->assertTrue(SignalDispatcher::cache(self::SID, ['type' => 'delete_vod', 'id' => 7]));
+			$this->assertSame([], $rJobs(), 'mode 1: the row its daemon reads');
+			$this->assertCount(1, $rRows);
+
+			NodeRegistry::update(self::SID, ['mode' => 2]);
+			$this->assertTrue(SignalDispatcher::cache(self::SID, ['type' => 'delete_vods', 'id' => ['8', 9, 'x', 0]]));
+			$this->assertTrue(SignalDispatcher::cache(self::SID, ['type' => 'drop_con', 'uuid' => 'abc123'], true, true));
+			$rUUIDs = array_map(static fn(int $i): string => sprintf('%032x', $i), range(1, $rMax + 20));
+			$this->assertTrue(SignalDispatcher::cacheBatch(self::SID, array_merge(array_map(static fn(string $rUUID): array => ['type' => 'delete_con', 'uuid' => $rUUID], $rUUIDs), [['type' => 'delete_con', 'uuid' => '../x']])));
+			$this->assertTrue(SignalDispatcher::cacheBatch(self::SID, [['type' => 'delete_vod', 'id' => 1], ['type' => 'delete_vods', 'id' => range(1, $rMax + 10)], ['type' => 'drop_con', 'uuid' => 'z']]));
+			$this->assertFalse(SignalDispatcher::cache(self::SID, ['type' => 'delete_con', 'uuid' => 'a b']), 'nothing well-formed: nothing sent');
+			$this->assertCount(1, $rRows, 'no row for a node in mode 2');
+			$rDocs = $rJobs();
+			$this->assertSame(array_fill(0, 6, 'node.cache'), array_column($rDocs, 'type'));
+			$this->assertSame([['type' => 'delete_vods', 'id' => [8, 9]]], $rDocs[0]['args']['jobs'], 'ids as integers, the rest dropped');
+			$this->assertSame([['type' => 'drop_con', 'uuid' => 'abc123']], $rDocs[1]['args']['jobs']);
+			$this->assertCount($rMax, $rDocs[2]['args']['jobs']);
+			$this->assertSame($rUUIDs, array_merge(array_column($rDocs[2]['args']['jobs'], 'uuid'), array_column($rDocs[3]['args']['jobs'], 'uuid')), 'in order, the malformed one left out');
+			// A list of ids longer than a command's room goes on in the next one.
+			$this->assertSame([['type' => 'delete_vod', 'id' => 1], ['type' => 'delete_vods', 'id' => range(1, $rMax - 1)]], $rDocs[4]['args']['jobs']);
+			$this->assertSame([['type' => 'delete_vods', 'id' => range($rMax, $rMax + 10)], ['type' => 'drop_con', 'uuid' => 'z']], $rDocs[5]['args']['jobs']);
+			foreach ($rDocs as $rDoc) {
+				$this->assertLessThanOrEqual($rMax, \XcVm\Core\Cluster\CacheJobs::targets($rDoc['args']['jobs']));
+			}
+			$this->assertSame(86400, $rDocs[0]['exp'] - $rDocs[0]['iat'], 'kept for a day, as MAIN keeps a signals row');
+			$this->rDb->query('SELECT DISTINCT `class` FROM `cluster_commands`');
+			$this->assertSame('G', $this->rDb->get_row()['class'], 'granting to today\'s extension');
+
+			// With the cluster API off, and for a node without COMMANDS, rows.
+			SettingsManager::set(['cluster_api_enabled' => 0] + $this->rSettings);
+			$this->assertTrue(SignalDispatcher::cache(self::SID, ['type' => 'delete_con', 'uuid' => 'off']));
+			SettingsManager::set($this->rSettings);
+			NodeRegistry::update(self::SID, ['flows' => 0]);
+			$this->assertTrue(SignalDispatcher::cacheBatch(self::SID, [['type' => 'delete_con', 'uuid' => 'abc']]));
+			$this->assertCount(6, $rJobs());
+
+			// So do MAIN's own jobs, even were MAIN's server a node in mode 2 taking commands.
+			$this->rDb->query("INSERT INTO `cluster_nodes` (`server_id`, `node_uuid`, `state`, `mode`, `flows`, `created_at`, `updated_at`) VALUES (1, ?, 'active', 2, ?, 0, 0);", '00000000-0000-4000-a000-000000000001', NodeRegistry::FLOW_COMMANDS);
+			$this->assertTrue(SignalDispatcher::cache(1, ['type' => 'delete_vod', 'id' => 3]));
+			$this->assertSame([], $rJobs(1), 'no node.cache for MAIN itself');
+			$this->assertSame([self::SID, self::SID, 1], array_column(array_slice($rRows, 1), 'server_id'));
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+			SignalDispatcher::useSink(null);
+		}
+	}
+
+	/**
+	 * A node in mode 2 cannot queue its own certificate renewal (its root
+	 * reads no `signals` row), so MAIN's daily cron:certbot sends it the
+	 * `node.root certbot_generate` on the node's own rule: HTTPS on, and the
+	 * certificate it last reported due within a week; for its names, not
+	 * its addresses. Nodes in mode 0 or 1 queue their own; a node root
+	 * does not take commands from gets nothing, not even a row.
+	 */
+	public function testMainSendsTheCertificateRenewalsOfModeTwoNodes(): void {
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		foreach (['`enable_https` tinyint(4) NOT NULL DEFAULT 0', '`domain_name` text', '`certbot_ssl` mediumtext'] as $rColumn) {
+			$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN ' . $rColumn);
+		}
+		$rNow = intdiv($this->rT0, 1000);
+		$rDue = (string) json_encode(['serial' => '0A', 'expiration' => $rNow + 3 * 86400, 'subject' => 'CN = node.example', 'path' => '/home/xc_vm/bin/certbot/config/live/node.example']);
+		$this->rDb->query('UPDATE `servers` SET `enable_https` = 1, `domain_name` = ?, `certbot_ssl` = ? WHERE `id` = ?;', 'node.example, 192.0.2.5 ,www.node.example', $rDue, self::SID);
+		$rRows = [];
+		SignalDispatcher::useSink(new class($rRows) implements \XcVm\Core\Cluster\SignalSink {
+			public function __construct(private array &$rRows) {
+			}
+
+			public function insert(array $rRows): bool {
+				array_push($this->rRows, ...$rRows);
+				return true;
+			}
+
+			public function pending(int $rServerID, string $rCustomData): bool {
+				return false;
+			}
+		});
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		$rRoot = static fn(): array => array_values(array_filter(array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0, 200)), static fn(array $rDoc): bool => $rDoc['type'] === 'node.root'));
+		try {
+			NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS, 'mode' => 1, 'root_ready' => 1]);
+			$this->assertSame([], NodeCertbot::renewDue(), 'mode 1 queues its own');
+			NodeRegistry::update(self::SID, ['mode' => 2, 'root_ready' => 0]);
+			$this->assertSame([], NodeCertbot::renewDue(), 'root takes no command yet');
+			NodeRegistry::update(self::SID, ['root_ready' => 1]);
+			$this->assertSame([self::SID], NodeCertbot::renewDue());
+			$rSent = $rRoot();
+			$this->assertCount(1, $rSent);
+			$this->assertSame(['action' => 'certbot_generate', 'domain' => ['node.example', 'www.node.example']], $rSent[0]['args'], 'names trimmed, the address left out');
+
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode(['serial' => '0B', 'expiration' => $rNow + 30 * 86400]), self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'not due');
+			// The node's own rule: due when less than a week is left.
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode(['serial' => '0B', 'expiration' => $rNow + NodeCertbot::DUE]), self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'a week left: not due yet');
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode(['serial' => '0B', 'expiration' => $rNow + NodeCertbot::DUE - 1]), self::SID);
+			$this->assertSame([self::SID], NodeCertbot::renewDue(), 'a second less: due');
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ?, `enable_https` = 0 WHERE `id` = ?;', $rDue, self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'HTTPS off');
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = NULL, `enable_https` = 1 WHERE `id` = ?;', self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'nothing reported');
+			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ?, `domain_name` = ? WHERE `id` = ?;', $rDue, '192.0.2.5', self::SID);
+			$this->assertSame([], NodeCertbot::renewDue(), 'no name to certify');
+			$this->assertCount(2, $rRoot());
+			$this->assertSame([], $rRows, 'never a signals row');
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+			SignalDispatcher::useSink(null);
+		}
+	}
+
+	/**
+	 * MAIN's daily cron:certbot sends those renewals once it saw to its own
+	 * certificate; the check the certbot command starts (`cron:certbot 1`)
+	 * sends none, nor does a run where the cluster API is off or on a node.
+	 * Run alone: MAIN's SERVER_ID is 1 here.
+	 */
+	#[\PHPUnit\Framework\Attributes\RunInSeparateProcess]
+	#[\PHPUnit\Framework\Attributes\PreserveGlobalState(false)]
+	public function testMainsDailyCronCertbotSendsTheRenewals(): void {
+		define('SERVER_ID', 1); // MAIN
+		$this->active();
+		SettingsManager::set($this->rSettings);
+		foreach (['`enable_https` tinyint(4) NOT NULL DEFAULT 0', '`domain_name` text', '`certbot_ssl` mediumtext'] as $rColumn) {
+			$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN ' . $rColumn);
+		}
+		$rDue = (string) json_encode(['serial' => '0A', 'expiration' => intdiv($this->rT0, 1000) + 3 * 86400]);
+		$this->rDb->query('UPDATE `servers` SET `enable_https` = 1, `domain_name` = ?, `certbot_ssl` = ? WHERE `id` = ?;', 'node.example', $rDue, self::SID);
+		NodeRegistry::update(self::SID, ['flows' => NodeRegistry::FLOW_COMMANDS, 'mode' => 2, 'root_ready' => 1]);
+		\XcVm\Domain\Cluster\ClusterRoute::useCrypto(fn() => $this->rCrypto);
+		$rMain = true;
+		\XcVm\Core\Cluster\NodeRole::useServers(static function () use (&$rMain): array {
+			return [1 => ['id' => 1, 'is_main' => $rMain ? 1 : 0], self::SID => ['id' => self::SID, 'is_main' => 0]];
+		});
+		// Its own certificate is not this test's: only whether it was seen to, and how.
+		$rCron = new class extends \XcVm\Cli\CronJobs\CertbotCronJob {
+			/** @var list<bool> */
+			public array $rChecks = [];
+
+			protected function checkCertificate(bool $rCheck): void {
+				$this->rChecks[] = $rCheck;
+			}
+		};
+		$rRun = static function (bool $rCheck) use ($rCron): string {
+			ob_start();
+			try {
+				(new \ReflectionMethod(\XcVm\Cli\CronJobs\CertbotCronJob::class, 'loadCron'))->invoke($rCron, $rCheck);
+			} finally {
+				$rOut = (string) ob_get_clean();
+			}
+			return $rOut;
+		};
+		$rRoot = static fn(): array => array_values(array_filter(array_map(static fn($rC) => json_decode($rC['doc'], true), \XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0, 200)), static fn(array $rDoc): bool => $rDoc['type'] === 'node.root'));
+		try {
+			$this->assertSame('', $rRun(true), 'the certbot command\'s check');
+			SettingsManager::set(['cluster_api_enabled' => 0] + $this->rSettings);
+			$this->assertSame('', $rRun(false), 'the cluster API off');
+			SettingsManager::set($this->rSettings);
+			$rMain = false;
+			$this->assertSame('', $rRun(false), 'not MAIN');
+			$this->assertSame([], $rRoot());
+
+			$rMain = true;
+			$this->assertSame('Certificate renewal sent to server ' . self::SID . '.' . "\n", $rRun(false));
+			$rSent = $rRoot();
+			$this->assertCount(1, $rSent);
+			$this->assertSame(['action' => 'certbot_generate', 'domain' => ['node.example']], $rSent[0]['args']);
+			$this->assertSame([true, false, false, false], $rCron->rChecks, 'its own certificate first, each run');
+		} finally {
+			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
+			\XcVm\Core\Cluster\NodeRole::useServers(null);
 		}
 	}
 

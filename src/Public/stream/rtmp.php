@@ -9,6 +9,7 @@ use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\User\UserRepository;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Auth\StreamAuth;
@@ -234,8 +235,13 @@ if (!($_GET['addr'] == '127.0.0.1' && $_GET['call'] == 'publish')) {
 			}
 
 			$rDeny = false;
-			$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.`id` = ?', SERVER_ID, $rStreamID);
-			$rChannelInfo = $db->get_row();
+			// The stream and this node's row: MAIN's database, or its replica and its own store (StreamSource::local).
+			if (StreamSource::local()) {
+				$rChannelInfo = StreamSource::joined(intval($rStreamID));
+			} else {
+				$db->query('SELECT * FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.stream_id = t1.id AND t2.server_id = ? WHERE t1.`id` = ?', SERVER_ID, $rStreamID);
+				$rChannelInfo = $db->get_row();
+			}
 
 			if ($rChannelInfo) {
 				if (ProcessManager::isStreamAlive($rChannelInfo['pid'], $rStreamID)) {

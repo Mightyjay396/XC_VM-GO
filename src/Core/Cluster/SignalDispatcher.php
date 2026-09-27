@@ -66,13 +66,28 @@ final class SignalDispatcher {
 	}
 
 	/**
-	 * A cache job (update_line, update_streams, delete_vod, drop_con, …).
+	 * A cache job (update_line, update_streams, delete_vod, drop_con, …;
+	 * CacheJobs). For a node in mode 2, which reads no `signals` row, MAIN
+	 * sends it as a `node.cache` command (ClusterRoute::cache), and the
+	 * node runs its own at once.
 	 *
 	 * @param array<string, mixed> $rPayload
 	 * @param bool $rOnce   Skip when an identical cache signal is already pending.
 	 * @param bool $rDbTime Stamp with the database's clock instead of PHP's.
 	 */
 	public static function cache(int $rServerID, array $rPayload, bool $rOnce = false, bool $rDbTime = false, ?object $rDb = null): bool {
+		// A node in mode 2 reads no row: its own jobs run here, and MAIN
+		// sends it the others as a signed node.cache.
+		if (self::runsHere($rServerID)) {
+			CacheJobs::run(CacheJobs::onNode([$rPayload]));
+			return true;
+		}
+		if (class_exists(ClusterRoute::class)) {
+			[$rRouted, $rQueued] = ClusterRoute::cache($rServerID, [$rPayload]);
+			if ($rRouted) {
+				return $rQueued;
+			}
+		}
 		$rJson = json_encode($rPayload);
 		$rSink = self::sink($rDb);
 		if ($rOnce && $rSink->pending($rServerID, $rJson)) {
@@ -90,12 +105,33 @@ final class SignalDispatcher {
 		if ($rPayloads === []) {
 			return true;
 		}
+		if (self::runsHere($rServerID)) {
+			CacheJobs::run(CacheJobs::onNode($rPayloads));
+			return true;
+		}
+		if (class_exists(ClusterRoute::class)) {
+			[$rRouted, $rQueued] = ClusterRoute::cache($rServerID, $rPayloads);
+			if ($rRouted) {
+				return $rQueued;
+			}
+		}
 		$rTime ??= time();
 		$rRows = [];
 		foreach ($rPayloads as $rPayload) {
 			$rRows[] = ['server_id' => $rServerID, 'cache' => 1, 'time' => $rTime, 'custom_data' => json_encode($rPayload)];
 		}
 		return self::sink($rDb)->insert($rRows);
+	}
+
+	/**
+	 * Does a node run its own cache jobs where they are queued? On a node
+	 * in mode 2 (NodeRole::refusesConnects), a row would be refused, and
+	 * its signals daemon reads none: the jobs that act on the node run at
+	 * once (CacheJobs::onNode), as the daemon would have run them a moment
+	 * later.
+	 */
+	private static function runsHere(int $rServerID): bool {
+		return defined('SERVER_ID') && $rServerID === (int) SERVER_ID && NodeRole::refusesConnects();
 	}
 
 	/** Replace the sink (tests; later the cluster API). Null restores the legacy SQL sink. */
