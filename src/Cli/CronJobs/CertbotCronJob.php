@@ -10,6 +10,7 @@ use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Domain\Cluster\NodeCertbot;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -158,7 +159,8 @@ class CertbotCronJob implements CommandInterface {
 	 * Reload nginx for a new SSL configuration: root's `reload_nginx`, as a
 	 * `signals` row (NodeActions). A node in mode 2 has no row for its root
 	 * to read, and its nginx runs as xc_vm: it reloads it here, as the
-	 * `reload_nginx` RPC does, and logs root's line through its agent.
+	 * `reload_nginx` RPC does (each binary from its argv list, no shell), and
+	 * logs root's line through its agent.
 	 */
 	private function reloadNginx(bool $rApi, object $db): void {
 		if (!$rApi) {
@@ -166,7 +168,7 @@ class CertbotCronJob implements CommandInterface {
 			return;
 		}
 		LogSink::syslog('RELOAD', 'NGINX services reloaded on request.');
-		shell_exec(BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp -s reload');
-		shell_exec(BIN_PATH . 'nginx/sbin/nginx -s reload');
+		ProcessRunner::run([BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp', '-s', 'reload']);
+		ProcessRunner::run([BIN_PATH . 'nginx/sbin/nginx', '-s', 'reload']);
 	}
 }

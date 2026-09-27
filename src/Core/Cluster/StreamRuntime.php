@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -351,8 +352,8 @@ final class StreamRuntime {
 					@unlink($rDir . 'streams/' . $rID . '.json');
 				}
 			}
-			// One flush for every entry, before the marker says they are there.
-			@exec('sync -f ' . escapeshellarg(rtrim($rDir, '/')) . ' 2>/dev/null');
+			// One flush for every entry, before the marker says they are there (no shell; its errors to /dev/null).
+			ProcessRunner::run(['sync', '-f', rtrim($rDir, '/')], true);
 			return self::put($rDir . self::SEEDED, ['at' => time(), 'server_id' => $rServerID, 'streams' => count($rRows)]);
 		}, self::SEED_WAIT);
 	}

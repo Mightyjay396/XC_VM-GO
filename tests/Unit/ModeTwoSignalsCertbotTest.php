@@ -2,11 +2,13 @@
 
 use PHPUnit\Framework\TestCase;
 use XcVm\Cli\Commands\SignalsCommand;
+use XcVm\Cli\CronJobs\CertbotCronJob;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Tests\Support\AgentUser;
 use XcVm\Tests\Support\ReplicaFixture;
 
@@ -70,6 +72,7 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 			proc_terminate($this->rNginx, 9);
 			proc_close($this->rNginx);
 		}
+		ProcessRunner::useRunner(null);
 		NodeFlows::usePath(null);
 		NodeRole::useMainBuild(null);
 		EventSpool::useDir(null);
@@ -552,6 +555,28 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		$this->assertStringContainsString('Fixed ssl configuration file', $rResult['output']);
 		$this->assertStringStartsWith('ssl_certificate ' . $rCert . ";\n", (string) file_get_contents($this->rHome . 'bin/nginx/conf/ssl.conf'));
 		$this->assertSame(['nginx_rtmp -s reload', 'nginx -s reload'], $this->commands());
+	}
+
+	/**
+	 * The reload in mode 2 starts each nginx from its argv list, with no
+	 * shell: nginx_rtmp's `-s reload`, then nginx's, from the deploy root's
+	 * binaries, their stderr the cron's as before, after root's line through
+	 * the spool.
+	 */
+	public function testTheReloadStartsEachNginxFromItsArgvList(): void {
+		EventSpool::useDir($this->rHome . 'config/cluster/spool/');
+		$this->here(2);
+		$rRuns = [];
+		ProcessRunner::useRunner(static function (array $rArgv, bool $rQuiet) use (&$rRuns): int {
+			$rRuns[] = [$rArgv, $rQuiet];
+			return 0;
+		});
+		(new ReflectionMethod(CertbotCronJob::class, 'reloadNginx'))->invoke(new CertbotCronJob(), true, new stdClass());
+		$this->assertSame([
+			[[BIN_PATH . 'nginx_rtmp/sbin/nginx_rtmp', '-s', 'reload'], false],
+			[[BIN_PATH . 'nginx/sbin/nginx', '-s', 'reload'], false],
+		], $rRuns);
+		$this->assertSame([['RELOAD', 'NGINX services reloaded on request.']], array_map(static fn(array $rEvent): array => [$rEvent['d']['rows'][0]['type'], $rEvent['d']['rows'][0]['error']], $this->spooled('p1')));
 	}
 
 	// ── The certbot command ──────────────────────────────────────────

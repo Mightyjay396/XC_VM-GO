@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Streaming\Fanout\FanoutClient;
 
 /**
@@ -34,8 +35,8 @@ final class CacheJobs {
 
 	/**
 	 * Most targets one `node.cache` command names (targets()): its jobs run
-	 * in one cluster:exec, which the agent gives a minute, and a delete runs
-	 * one `rm` per id.
+	 * in one cluster:exec, which the agent gives a minute, and a delete
+	 * removes each id's files.
 	 */
 	public const MAX = 500;
 
@@ -54,7 +55,7 @@ final class CacheJobs {
 		if (!is_string($rType) || !isset(self::TYPES[$rType])) {
 			return null;
 		}
-		$rID = static fn(mixed $rValue): ?int => (is_int($rValue) || (is_string($rValue) && preg_match('/^[0-9]{1,18}$/', $rValue))) && (int) $rValue > 0 ? (int) $rValue : null;
+		$rID = self::id(...);
 		switch (self::TYPES[$rType]) {
 			case 'id':
 				$rOne = $rID($rJob['id'] ?? null);
@@ -65,6 +66,11 @@ final class CacheJobs {
 		}
 		$rUUID = $rJob['uuid'] ?? null;
 		return is_string($rUUID) && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) ? ['type' => $rType, 'uuid' => $rUUID] : null;
+	}
+
+	/** An id in job()'s form (an integer ≥ 1, or its digits) as an integer; null for anything else. */
+	private static function id(mixed $rValue): ?int {
+		return (is_int($rValue) || (is_string($rValue) && preg_match('/^[0-9]{1,18}$/', $rValue))) && (int) $rValue > 0 ? (int) $rValue : null;
 	}
 
 	/**
@@ -190,20 +196,45 @@ final class CacheJobs {
 					FanoutClient::dropConnection((string) ($rCustomData['uuid'] ?? ''));
 					break;
 				case 'delete_vod':
-					exec('rm ' . MAIN_HOME . 'content/vod/' . intval($rCustomData['id']) . '.*');
+					self::deleteVod(intval($rCustomData['id']));
 					break;
 				case 'delete_vods':
 					foreach ($rCustomData['id'] as $rID) {
-						exec('rm ' . MAIN_HOME . 'content/vod/' . intval($rID) . '.*');
+						self::deleteVod(intval($rID));
 					}
 					break;
 			}
 		}
-		if (count($rUpdatedStreams) > 0) {
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache_engine "streams_update" "' . implode(',', $rUpdatedStreams) . '"');
+		self::rebuild('streams_update', $rUpdatedStreams);
+		self::rebuild('lines_update', $rUpdatedLines);
+	}
+
+	/**
+	 * Remove a movie's files, `content/vod/<id>.*`, as `rm` did with that
+	 * pattern: every entry it matches but a directory (rm had no -r), a
+	 * symlink itself and not what it points to. Silent: an id with no file,
+	 * or an entry that stays.
+	 */
+	private static function deleteVod(int $rID): void {
+		foreach (glob(MAIN_HOME . 'content/vod/' . $rID . '.*') ?: [] as $rFile) {
+			if (is_link($rFile) || !is_dir($rFile)) {
+				@unlink($rFile);
+			}
 		}
-		if (count($rUpdatedLines) > 0) {
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:cache_engine "lines_update" "' . implode(',', $rUpdatedLines) . '"');
+	}
+
+	/**
+	 * MAIN's cache rebuild for $rIDs: one cron:cache_engine, from an argv
+	 * list, its type and its ids (joined by commas) one argument each, as the
+	 * quoted words of the shell line it was. Only ids in job()'s form go, as
+	 * integers, each once; none left, nothing runs.
+	 *
+	 * @param list<mixed> $rIDs
+	 */
+	private static function rebuild(string $rType, array $rIDs): void {
+		$rIDs = array_values(array_unique(array_filter(array_map(self::id(...), $rIDs), static fn(?int $rID): bool => $rID !== null)));
+		if ($rIDs !== []) {
+			ProcessRunner::run([PHP_BIN, MAIN_HOME . 'console.php', 'cron:cache_engine', $rType, implode(',', $rIDs)]);
 		}
 	}
 }

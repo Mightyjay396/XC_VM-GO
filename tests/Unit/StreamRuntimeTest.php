@@ -8,6 +8,7 @@ use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Core\Cluster\StreamRuntime;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -52,6 +53,7 @@ final class StreamRuntimeTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		ProcessRunner::useRunner(null);
 		StreamStateWriter::useSink(null);
 		StreamRuntime::useDir($this->rRuntimeDir);
 		StreamRuntime::useLimits(null);
@@ -316,6 +318,24 @@ final class StreamRuntimeTest extends TestCase {
 		// Another server's store is not this one's.
 		file_put_contents($this->rDir . 'cluster/runtime/seeded', json_encode(['at' => time(), 'server_id' => $this->rSid + 1, 'streams' => 0]));
 		$this->assertFalse(StreamRuntime::seeded());
+	}
+
+	/**
+	 * The seed flushes its entries to disk once, before it writes the marker
+	 * that says they are there: `sync -f` on the store's directory, from an
+	 * argv list (no shell), its errors to /dev/null as before.
+	 */
+	public function testTheSeedFlushesItsEntriesBeforeItsMarker(): void {
+		$rDb = $this->main();
+		$rStore = $this->rDir . 'cluster/runtime/';
+		$rFlushes = [];
+		ProcessRunner::useRunner(static function (array $rArgv, bool $rQuiet) use (&$rFlushes, $rStore): int {
+			$rFlushes[] = [$rArgv, $rQuiet, count(glob($rStore . 'streams/*.json') ?: []), is_file($rStore . 'seeded')];
+			return 1;
+		});
+		$this->assertTrue(StreamRuntime::seed($rDb), 'a flush that failed does not stop it, as before');
+		$this->assertSame([[['sync', '-f', rtrim($rStore, '/')], true, 3, false]], $rFlushes, 'once, every entry written and no marker yet');
+		$this->assertTrue(StreamRuntime::seeded());
 	}
 
 	/** A node whose rows on MAIN pass the bound is not seeded: its readers keep MAIN's database. */
