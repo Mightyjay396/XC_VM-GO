@@ -233,11 +233,22 @@ class ServersCronJob implements CommandInterface {
 			$db->query('INSERT INTO `servers_stats`(`server_id`, `connections`, `total_users`, `users`, `streams`, `cpu`, `cpu_cores`, `cpu_avg`, `total_mem`, `total_mem_free`, `total_mem_used`, `total_mem_used_percent`, `total_disk_space`, `uptime`, `total_running_streams`, `bytes_sent`, `bytes_received`, `bytes_sent_total`, `bytes_received_total`, `cpu_load_average`, `gpu_info`, `iostat_info`, `time`) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UNIX_TIMESTAMP());', SERVER_ID, $rConnections, $rAllUsers, $rUsers, $rStreams, $rStats['cpu'], $rStats['cpu_cores'], $rStats['cpu_avg'], $rStats['total_mem'], $rStats['total_mem_free'], $rStats['total_mem_used'], $rStats['total_mem_used_percent'], $rStats['total_disk_space'], $rStats['uptime'], $rStats['total_running_streams'], $rStats['bytes_sent'], $rStats['bytes_received'], $rStats['bytes_sent_total'], $rStats['bytes_received_total'], $rStats['cpu_load_average'], json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), json_encode($rStats['iostat_info'], JSON_UNESCAPED_UNICODE));
 		}
 
+		// `whitelist_ips` grants the /api allowed IPs (ServerRepository), so a
+		// node's own `ip -4 addr` is not evidence for it: a node that declared an
+		// address would be granting it. MAIN keeps publishing its own — it is the
+		// panel, already trusted, and a multi-homed MAIN calls each node from
+		// whichever address the route picks. Elsewhere the column is the admin's,
+		// as it already is for proxies (ProxyIdentity) and for the API path, which
+		// never carried it.
+		$rWhitelist = $rServers[SERVER_ID]['is_main']
+			? json_encode($rAddresses, JSON_UNESCAPED_UNICODE)
+			: ($rServers[SERVER_ID]['whitelist_ips'] ?? null);
+
 		// With TELEMETRY on, the inventory goes to MAIN as an event; the node's
 		// addresses do not (whitelist_ips feeds the allowed IPs, MAIN's to set).
 		$rInventory = ['remote_status' => $rRemoteStatus ? 1 : 0, 'xc_vm_version' => XC_VM_VERSION, 'server_hardware' => json_encode($rHardware, JSON_UNESCAPED_UNICODE), 'governors' => json_encode($rGovernors, JSON_UNESCAPED_UNICODE), 'sysctl' => $rSysCtl, 'video_devices' => json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), 'audio_devices' => json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), 'gpu_info' => json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), 'interfaces' => json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), 'ping' => $rPing];
 		if (!NodeStateSink::inventory($rInventory)) {
-			$db->query('UPDATE `servers` SET `remote_status` = ?, `xc_vm_version` = ?, `server_hardware` = ?,`whitelist_ips` = ?, `governors` = ?, `sysctl` = ?, `video_devices` = ?, `audio_devices` = ?, `gpu_info` = ?, `interfaces` = ?, `time_offset` = ' . intval(time()) . ' - UNIX_TIMESTAMP(), `ping` = ? WHERE `id` = ?', $rRemoteStatus, XC_VM_VERSION, json_encode($rHardware, JSON_UNESCAPED_UNICODE), json_encode($rAddresses, JSON_UNESCAPED_UNICODE), json_encode($rGovernors, JSON_UNESCAPED_UNICODE), $rSysCtl, json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), $rPing, SERVER_ID);
+			$db->query('UPDATE `servers` SET `remote_status` = ?, `xc_vm_version` = ?, `server_hardware` = ?,`whitelist_ips` = ?, `governors` = ?, `sysctl` = ?, `video_devices` = ?, `audio_devices` = ?, `gpu_info` = ?, `interfaces` = ?, `time_offset` = ' . intval(time()) . ' - UNIX_TIMESTAMP(), `ping` = ? WHERE `id` = ?', $rRemoteStatus, XC_VM_VERSION, json_encode($rHardware, JSON_UNESCAPED_UNICODE), $rWhitelist, json_encode($rGovernors, JSON_UNESCAPED_UNICODE), $rSysCtl, json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), $rPing, SERVER_ID);
 		}
 
 		if ($rServers[SERVER_ID]['is_main']) {

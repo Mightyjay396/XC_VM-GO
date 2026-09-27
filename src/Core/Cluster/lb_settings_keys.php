@@ -41,6 +41,7 @@ return [
 		'cluster_api_port',
 		'cluster_audit_retention_days',
 		'cluster_db_allowlist_extra',
+		'cluster_kill_on_line_disable',
 		'cluster_main_host',
 		'cluster_offline_after_sec',
 		'cluster_orphan_conn_ttl_sec',

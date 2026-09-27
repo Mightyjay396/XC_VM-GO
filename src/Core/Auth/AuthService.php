@@ -79,7 +79,7 @@ class AuthService {
 			return ['status' => STATUS_INVALID_CODE, 'data' => $rData];
 		}
 
-		if (in_array($rData['code'], ['admin', 'stream', 'images', 'player_api', 'player', 'playlist', 'epg', 'live', 'movie', 'series', 'status', 'nginx_status', 'get', 'panel_api', 'xmltv', 'probe', 'thumb', 'timeshift', 'auth', 'vauth', 'tsauth', 'hls', 'play', 'key', 'api', 'c'])) {
+		if (in_array($rData['code'], ['admin', 'stream', 'images', 'player_api', 'player', 'playlist', 'epg', 'live', 'movie', 'series', 'status', 'nginx_status', 'get', 'panel_api', 'xmltv', 'probe', 'thumb', 'timeshift', 'auth', 'vauth', 'tsauth', 'hls', 'play', 'key', 'api', 'c', 'cluster'])) {
 			return ['status' => STATUS_RESERVED_CODE, 'data' => $rData];
 		}
 

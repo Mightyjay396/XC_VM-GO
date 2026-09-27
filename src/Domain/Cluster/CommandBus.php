@@ -194,13 +194,26 @@ final class CommandBus {
 			'UPDATE `cluster_commands` SET `state` = ?, `acked_at` = ?, `result` = ? WHERE `server_id` = ? AND `cmd_id` = ?;',
 			$rOk ? 'acked' : 'failed',
 			ClusterClock::now(),
-			substr($rResult, 0, self::MAX_RESULT),
+			self::result0($rResult),
 			$rServerID,
 			$rCmdID
 		);
 		self::db()->query('UPDATE `cluster_nodes` SET `cmd_seq` = ? WHERE `server_id` = ? AND `cmd_seq` < ?;', (int) $rRow['seq'], $rServerID, (int) $rRow['seq']);
 		ClusterBus::wakeAck($rCmdID);
 		return true;
+	}
+
+	/**
+	 * The result as the row keeps it: a longer one is cut, and says so, rather
+	 * than reading as a complete answer that happens to end mid-word (the admin
+	 * sees this text, and `cluster:exec` output is how a root action is read).
+	 */
+	private static function result0(string $rResult): string {
+		if (strlen($rResult) <= self::MAX_RESULT) {
+			return $rResult;
+		}
+		$rMark = "\n[truncated: " . strlen($rResult) . ' bytes]';
+		return substr($rResult, 0, self::MAX_RESULT - strlen($rMark)) . $rMark;
 	}
 
 	/**

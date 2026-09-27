@@ -309,6 +309,7 @@ class LineService {
 		$db = self::db();
 		$rCached = SettingsManager::get('enable_cache');
 		$rMainID = ConnectionTracker::getMainID();
+		self::dropDisabled([$rUserID]);
 		if ($rCached) {
 			SignalDispatcher::cache(intval($rMainID), ['type' => 'update_line', 'id' => $rUserID], true, false, $db);
 			return;
@@ -325,9 +326,60 @@ class LineService {
 		$db = self::db();
 		$rCached = SettingsManager::get('enable_cache');
 		$rMainID = ConnectionTracker::getMainID();
+		self::dropDisabled($rUserIDs);
 		if ($rCached) {
 			SignalDispatcher::cache(intval($rMainID), ['type' => 'update_lines', 'id' => $rUserIDs], true, false, $db);
 			return;
+		}
+	}
+
+	/**
+	 * `cluster_kill_on_line_disable` (on by default): a line that is now
+	 * disabled, locked by the admin or expired loses its live sessions, wherever
+	 * they are served — the close goes to the owning node exactly as a deleted
+	 * line's does. Until this, the setting was stored, clamped and shown in the
+	 * form with no reader, and a disabled line kept streaming until its HLS
+	 * window ran out or its TS worker was reaped.
+	 *
+	 * Called from the signal every writer already sends after a change (the
+	 * line form, a mass edit, the reseller API, an activation code's
+	 * deactivation), so none of them has to remember it. The SELECT is on the
+	 * primary key and usually matches nothing, since most saves enable rather
+	 * than disable.
+	 *
+	 * @param array<int|string> $rUserIDs The lines that changed.
+	 */
+	public static function dropDisabled(array $rUserIDs): void {
+		$rIDs = array_values(array_unique(array_filter(array_map('intval', $rUserIDs), static fn(int $rID): bool => $rID > 0)));
+		// lb-settings: cluster_kill_on_line_disable
+		if ($rIDs === [] || !SettingsManager::get('cluster_kill_on_line_disable')) {
+			return;
+		}
+
+		$db = self::db();
+		if (!$db->query('SELECT `id` FROM `lines` WHERE `id` IN (' . implode(',', $rIDs) . ') AND (`enabled` = 0 OR `admin_enabled` = 0 OR (`exp_date` IS NOT NULL AND `exp_date` < UNIX_TIMESTAMP()));')) {
+			return;
+		}
+		foreach ($db->get_rows() ?: [] as $rRow) {
+			self::closeLineConnections((int) $rRow['id']);
+		}
+	}
+
+	/**
+	 * Close every live session of one line, in MAIN's store or in the node's
+	 * registry (ConnectionTracker's seam decides), as deleting a line does.
+	 */
+	public static function closeLineConnections(int $rID): void {
+		if (SettingsManager::get('redis_handler')) {
+			foreach (ConnectionTracker::getRedisConnections($rID, null, null, true, false, false) as $rConnection) {
+				ConnectionTracker::closeConnection($rConnection);
+			}
+			return;
+		}
+		$db = self::db();
+		$db->query('SELECT * FROM `lines_live` WHERE `user_id` = ?;', $rID);
+		foreach ($db->get_rows() ?: [] as $rRow) {
+			ConnectionTracker::closeConnection($rRow);
 		}
 	}
 
@@ -353,17 +405,7 @@ class LineService {
 		$db->query('UPDATE `lines_activity` SET `user_id` = 0 WHERE `user_id` = ?;', $rID);
 
 		if ($rCloseCons) {
-			if (SettingsManager::get('redis_handler')) {
-				foreach (ConnectionTracker::getRedisConnections($rID, null, null, true, false, false) as $rConnection) {
-					ConnectionTracker::closeConnection($rConnection);
-				}
-			} else {
-				$db->query('SELECT * FROM `lines_live` WHERE `user_id` = ?;', $rID);
-
-				foreach ($db->get_rows() as $rRow) {
-					ConnectionTracker::closeConnection($rRow);
-				}
-			}
+			self::closeLineConnections($rID);
 		}
 
 		$db->query('SELECT `id` FROM `lines` WHERE `pair_id` = ?;', $rID);

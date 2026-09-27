@@ -128,6 +128,11 @@ case "$1" in
   start)
     start
     ;;
+  boot)
+    # Everything start does, without holding the terminal: `console.php service
+    # start` delegates here, so the panel has one boot sequence, not two.
+    boot
+    ;;
   stop)
     stop
     ;;
@@ -138,7 +143,7 @@ case "$1" in
     restart
     ;;
   *)
-    echo "Usage: $0 {start|stop|restart|reload}"
+    echo "Usage: $0 {start|boot|stop|restart|reload}"
 esac
 
 exit 0

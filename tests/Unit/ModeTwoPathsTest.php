@@ -219,6 +219,19 @@ final class ModeTwoPathsTest extends TestCase {
 						$rDog = new class extends WatchdogCommand {
 							public int $rRestarts = 0;
 
+							private int $rPasses = 0;
+
+							// The loop stays up until something stops it (a code
+							// change, nginx gone, the database gone), so the pass
+							// under test ends here as a deploy would end it.
+							protected function shouldRefreshSettings(): bool {
+								return true;
+							}
+
+							protected function hasFileChanged(): bool {
+								return ++$this->rPasses > 1;
+							}
+
 							protected function assertRunAsXcVm(): bool {
 								return true;
 							}

@@ -3,7 +3,6 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
-use XcVm\Domain\Cluster\ClusterPool;
 
 /**
  * Управление сервисом XC_VM (start/stop/restart/reload).
@@ -11,8 +10,14 @@ use XcVm\Domain\Cluster\ClusterPool;
  * Команда: service {start|stop|restart|reload}
  * Требует: root
  *
- * Заменяет shell-логику из src/service, оставляя shell-обёртку
- * для systemd, которая делегирует сюда.
+ * The boot sequence itself lives in one place only: `MAIN_HOME/service`, the
+ * script systemd runs. This command used to be a second copy of it, and had
+ * drifted — it started neither xc_fanout, nor xc_agent, nor `fanout_sync`, nor
+ * the replica's `cluster:apply`, and left `storage/cluster` and the
+ * `cluster_ready` marker alone — so a panel booted through the console ran a
+ * different set of services from one booted by systemd. It delegates now;
+ * `start` maps to the script's `boot`, which does everything its foreground
+ * `start` does without holding the terminal, as this command never did.
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -22,6 +27,9 @@ use XcVm\Domain\Cluster\ClusterPool;
  */
 
 class ServiceCommand implements CommandInterface {
+	/** The command's action => the script's. */
+	private const ACTIONS = ['start' => 'boot', 'stop' => 'stop', 'restart' => 'restart', 'reload' => 'reload'];
+
 	public function getName(): string {
 		return 'service';
 	}
@@ -36,99 +44,20 @@ class ServiceCommand implements CommandInterface {
 			return 1;
 		}
 
-		$rAction = $rArgs[0] ?? null;
-
-		switch ($rAction) {
-			case 'start':
-				return $this->start();
-			case 'stop':
-				return $this->stop();
-			case 'restart':
-				return $this->restart();
-			case 'reload':
-				return $this->reload();
-			default:
-				echo "Usage: console.php service {start|stop|restart|reload}\n";
-				return 1;
-		}
-	}
-
-	private function start(): int {
-		$rPids = intval(trim(shell_exec('pgrep -u xc_vm nginx | wc -l')));
-		if ($rPids > 0) {
-			echo "XC_VM is already running\n";
+		$rAction = self::ACTIONS[$rArgs[0] ?? ''] ?? null;
+		if ($rAction === null) {
+			echo "Usage: console.php service {start|stop|restart|reload}\n";
 			return 1;
 		}
 
-		echo "Starting XC_VM...\n";
-
-		exec('sudo chown -R xc_vm:xc_vm /sys/class/net');
-		exec('sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'content/streams');
-		exec('sudo chown -R xc_vm:xc_vm ' . TMP_PATH);
-		// MAIN: the cluster API is STARTING until its pools answer again (ClusterPool).
-		if (class_exists(ClusterPool::class)) {
-			ClusterPool::unmark();
-		}
-
-		if (file_exists(MAIN_HOME . 'bin/redis/redis-server')) {
-			exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . 'bin/redis/redis.conf >/dev/null 2>/dev/null');
-		}
-		// The cluster bus (MAIN only: LB builds strip bin/cluster_bus).
-		if (file_exists(MAIN_HOME . 'bin/redis/redis-server') && file_exists(MAIN_HOME . 'bin/cluster_bus/cluster.conf')) {
-			exec('sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'bin/cluster_bus');
-			exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . 'bin/cluster_bus/cluster.conf >/dev/null 2>/dev/null');
-		}
-
-		exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/nginx/sbin/nginx >/dev/null 2>/dev/null');
-		exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/nginx_rtmp/sbin/nginx_rtmp >/dev/null 2>/dev/null');
-		exec('sudo ' . MAIN_HOME . 'bin/daemons.sh');
-
-		exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php startup');
-		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php signals >/dev/null 2>/dev/null &');
-		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php watchdog >/dev/null 2>/dev/null &');
-		exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php queue >/dev/null 2>/dev/null &');
-
-		// MAIN only: LB builds strip the command (ServersCronJob revives it on MAIN).
-		if (file_exists(MAIN_HOME . 'Cli/Commands/CacheHandlerCommand.php')) {
-			exec('sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cache_handler >/dev/null 2>/dev/null &');
-		}
-
-		echo "Running in foreground...\n";
-		// sleep infinity handled by systemd shell wrapper
-		return 0;
-	}
-
-	private function stop(): int {
-		$rPids = intval(trim(shell_exec('pgrep -u xc_vm nginx | wc -l')));
-		if ($rPids === 0) {
-			echo "XC_VM is not running\n";
+		$rScript = MAIN_HOME . 'service';
+		if (!is_file($rScript)) {
+			echo 'Missing boot script: ' . $rScript . "\n";
 			return 1;
 		}
 
-		echo "Stopping XC_VM...\n";
-		exec('sudo killall -u xc_vm');
-		sleep(1);
-		exec('sudo killall -u xc_vm');
-		sleep(1);
-		exec('sudo killall -u xc_vm');
-		return 0;
-	}
-
-	private function restart(): int {
-		exec("ps -U xc_vm | egrep -v 'ffmpeg|PID' | awk '{print $1}' | xargs kill -9 2>/dev/null");
-		return $this->start();
-	}
-
-	private function reload(): int {
-		$rPids = intval(trim(shell_exec('pgrep -u xc_vm nginx | wc -l')));
-		if ($rPids === 0) {
-			echo "XC_VM is not running\n";
-			return 1;
-		}
-
-		echo "Reloading XC_VM...\n";
-		exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/nginx/sbin/nginx -s reload');
-		exec('sudo -u xc_vm ' . MAIN_HOME . 'bin/nginx_rtmp/sbin/nginx_rtmp -s reload');
-		return 0;
+		$rCode = 0;
+		passthru('/bin/sh ' . escapeshellarg($rScript) . ' ' . escapeshellarg($rAction), $rCode);
+		return $rCode;
 	}
 }
