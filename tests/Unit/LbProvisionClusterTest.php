@@ -141,6 +141,10 @@ final class LbProvisionClusterTest extends TestCase {
 		$this->assertNotNull($rBody);
 		$rLen = unpack('N', substr($rBody, 0, 4))[1];
 		$this->assertTrue(PanelSig::verify($this->rCrypto->info()['panel_sign_pub'], 'tok', substr($rBody, 4, $rLen), substr($rBody, 4 + $rLen)));
+		// And the lease that token serves on, panel-signed beside it (tag `lea`).
+		$rLease = (string) base64_decode((string) $rInstall['lease']['payload'], true);
+		$this->assertTrue(PanelSig::verify($this->rCrypto->info()['panel_sign_pub'], 'lea', $rLease, (string) base64_decode((string) $rInstall['lease']['sig'], true)));
+		$this->assertSame($rNode['node_uuid'], json_decode($rLease, true)['node_uuid']);
 
 		// The probe ran before the token existed, and the agent was started last.
 		$rProbeAt = array_key_first(array_filter($this->rCommands, static fn($c) => str_contains($c, ' probe ')));

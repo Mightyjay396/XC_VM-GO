@@ -238,7 +238,7 @@ final class EnrolCodeService {
 			'epoch' => 1, 'token_sealed' => base64_encode((string) $rIssued['token_sealed']),
 			'exp' => (int) $rIssued['exp'], 'refresh_at' => (int) $rIssued['refresh_at'],
 			'cluster' => EnrolmentService::clusterJson($rCrypto, $rServerID, $rUuid, $rSettings, $rMain),
-		], JSON_UNESCAPED_SLASHES);
+		] + LeaseService::wire($rIssued['lease'] ?? null), JSON_UNESCAPED_SLASHES);
 		$rSig = $rCrypto->sign('pre', $rDoc);
 		self::decide($rServerID, 'approved', (string) json_encode(['doc' => $rDoc, 'sig' => Enc::b64url($rSig)]), $rUserID);
 		ClusterAudit::log('node.enrol_start', $rServerID, ['node' => $rUuid, 'gen' => $rGen, 'mode' => $rMode, 'via' => 'code'], $rActor);

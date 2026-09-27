@@ -63,6 +63,9 @@ final class TokenService {
 		// The number may be minted again (a refresh retried with another key):
 		// the node's next request reads the new record.
 		NodeAuthCache::forget($rServerID);
+		// The lease this token carries: how long the node may serve without
+		// MAIN. Null when the extension signed none (LeaseService).
+		$rIssued['lease'] = LeaseService::issue($rCrypto, $rNode, (int) $rIssued['exp']);
 		return $rIssued;
 	}
 
@@ -124,6 +127,9 @@ final class TokenService {
 			return [
 				'token_sealed' => (string) $rNext['token_sealed'], 'epoch' => (int) $rNext['epoch'], 'nbf' => (int) $rNext['nbf'],
 				'exp' => (int) $rNext['exp'], 'refresh_at' => (int) $rNext['refresh_at'], 'resent' => true,
+				// Minted afresh, not kept beside the token: the same epoch, and a
+				// lease the licence still allows at this moment.
+				'lease' => LeaseService::issue($rCrypto, $rNode, (int) $rNext['exp']),
 			];
 		}
 		// An unused next epoch for another key is replaced (same number), so the
