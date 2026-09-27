@@ -396,7 +396,15 @@ final class ClusterEndpointTest extends TestCase {
 
 		$this->node(2, 'active');
 		$rLog->rRefuse = '/`cluster_legacy_urls` = \?/';
+		$rTries = 0;
+		$rLog->rBefore = function (string $rQuery) use (&$rTries): void {
+			// Refused every time: tries without end fail here instead of hanging.
+			if (str_starts_with($rQuery, 'UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_legacy_urls`') && ++$rTries > 10) {
+				throw new \RuntimeException('recordMainChange() tries without end');
+			}
+		};
 		$this->assertTrue(ClusterEndpoint::recordMainChange($this->rMain, ['http_broadcast_port' => 8080] + $this->rMain, $this->live()));
+		$this->assertSame(3, $rTries, 'three tries, then the ports alone');
 		$this->assertSame(3, $this->ver(), 'announced');
 		$this->assertSame([25461], array_keys(ClusterEndpoint::legacyPorts($this->settings())), 'the port kept');
 	}
@@ -409,6 +417,9 @@ final class ClusterEndpointTest extends TestCase {
 		$this->assertTrue(ClusterEndpoint::recordMainChange($rOld, $rNew, $this->live()));
 		$this->assertSame(['http://[2001:db8::1]:25461/cluster/v1/'], array_keys(ClusterEndpoint::legacyUrls($this->settings())));
 		$this->assertSame(['http://[2001:db8::2]:25461/cluster/v1/', 'http://[2001:db8::1]:25461/cluster/v1/'], ClusterPolicy::current($this->live(), $rNew)['main_urls'], 'listed last');
+		$this->assertSame([], ClusterEndpoint::drop('2001:db8::', $this->live()), 'a host, not a prefix');
+		$this->assertSame(['http://[2001:db8::1]:25461/cluster/v1/'], ClusterEndpoint::drop('2001:DB8::1', $this->live()), 'dropped by its address, brackets or not');
+		$this->assertSame([[], 3], [ClusterEndpoint::legacyUrls($this->settings()), $this->ver()]);
 	}
 
 	/**
@@ -575,6 +586,32 @@ final class ClusterEndpointTest extends TestCase {
 		$this->assertTrue(ClusterEndpoint::prune($this->settings()), 'the next pass');
 		$this->assertSame(['', ['http://a.example.com:25461/cluster/v1/']], [(string) $this->settings()['cluster_legacy_ports'], array_keys(ClusterEndpoint::legacyUrls($this->settings()))]);
 		$this->assertSame(3, $this->ver());
+	}
+
+	/**
+	 * A write that keeps losing the race is tried TRIES (3) times: twice over
+	 * the kept lists as read, then once without the condition, so the change
+	 * is announced all the same, with what the last writer kept merged in.
+	 */
+	public function testTheLastTryWritesWithoutTheCondition(): void {
+		$this->node(2, 'active');
+		$rLog = new QueryLogDb($this->rDb);
+		$rRaces = 0;
+		$rLog->rBefore = function (string $rQuery) use (&$rRaces): void {
+			// At most one race more than it takes: unbounded tries fail, not hang.
+			if ($rRaces < 3 && str_starts_with($rQuery, 'UPDATE `settings` SET `cluster_legacy_ports`') && str_contains($rQuery, 'WHERE')) {
+				$rRaces++;
+				$this->rDb->query('UPDATE `settings` SET `cluster_legacy_urls` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1', (string) json_encode(['http://10.0.0.' . $rRaces . '0:25461/cluster/v1/' => $this->rNow + 60], JSON_UNESCAPED_SLASHES));
+			}
+		};
+		DatabaseFactory::set($rLog);
+		$this->assertTrue(ClusterEndpoint::recordMainChange($this->rMain, ['server_ip' => '10.0.0.2'] + $this->rMain, $this->live()));
+		$rWrites = array_values(array_filter($rLog->writes(), static fn(string $rQuery): bool => str_starts_with($rQuery, 'UPDATE `settings`')));
+		$this->assertSame([true, true, false], array_map(static fn(string $rQuery): bool => str_contains($rQuery, 'WHERE'), $rWrites), 'two conditional writes, then one without the condition');
+		$this->assertSame(2, $rRaces);
+		$this->assertSame(4, $this->ver(), 'two other writers, and the change');
+		$this->assertSame(['http://10.0.0.1:25461/cluster/v1/', 'http://10.0.0.20:25461/cluster/v1/'], array_keys(ClusterEndpoint::legacyUrls($this->settings())));
+		$this->assertSame(['cluster.endpoint_change'], array_column($this->audit(), 'event'));
 	}
 
 	/** Migration 044 adds the kept URLs; database.sql has the column for fresh installs. */

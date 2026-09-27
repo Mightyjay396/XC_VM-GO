@@ -33,6 +33,9 @@ class SettingsService {
 	/** Settings columns MAIN keeps for the cluster API itself (ClusterEndpoint), never set from a form (edit(), editBackup()). */
 	private const CLUSTER_STATE = ['cluster_policy_ver', 'cluster_legacy_ports', 'cluster_legacy_urls'];
 
+	/** The settings that decide the transport policy's URLs besides MAIN's row: a change of them is announced (edit()). */
+	private const CLUSTER_POLICY = ['cluster_transport', 'cluster_main_host'];
+
 	/**
 	 * Settings were saved: tell the listeners (the node replica's ETag cache,
 	 * so nodes see the change at their next poll).
@@ -138,14 +141,16 @@ class SettingsService {
 	/**
 	 * Does a save change the transport policy the nodes follow
 	 * (ClusterPolicy::current): the transport, or MAIN's DNS name in its URLs?
-	 * Such a save is stored through ClusterEndpoint::storeSettings(). A new
-	 * `cluster_api_port` is announced by ClusterEndpoint once stored.
+	 * Compared with the settings cache, and asked only without ClusterEndpoint
+	 * (the LB build). On MAIN a save that posts either is stored through
+	 * ClusterEndpoint::storeSettings(), which compares it with the database.
+	 * A new `cluster_api_port` is announced by ClusterEndpoint once stored.
 	 *
 	 * @param array<string, mixed> $rArray Settings about to be written.
 	 */
 	private static function changesClusterPolicy(array $rArray): bool {
 		$rCurrent = SettingsManager::getAll();
-		foreach (['cluster_transport', 'cluster_main_host'] as $rKey) {
+		foreach (self::CLUSTER_POLICY as $rKey) {
 			if (array_key_exists($rKey, $rArray) && (string) $rArray[$rKey] !== (string) ($rCurrent[$rKey] ?? '')) {
 				return true;
 			}
@@ -250,11 +255,14 @@ class SettingsService {
 
 		// A new transport policy is announced with the save: every node sees
 		// the version go up in its next heartbeat and fetches the policy, and
-		// never adopts one older than it holds. On MAIN the URLs the policy
-		// no longer lists are kept a while, in the same UPDATE (Domain\Cluster
+		// never adopts one older than it holds. On MAIN every save that posts
+		// the transport or the name goes through ClusterEndpoint, which
+		// compares them with the database, not with this request's settings
+		// cache (another admin's save may be newer), and keeps the URLs the
+		// policy no longer lists a while, in the same UPDATE (Domain\Cluster
 		// is not in the LB build).
 		$rPrevious = SettingsManager::getAll();
-		if (self::changesClusterPolicy($rArray) && class_exists(ClusterEndpoint::class)) {
+		if (array_intersect_key($rArray, array_flip(self::CLUSTER_POLICY)) !== [] && class_exists(ClusterEndpoint::class)) {
 			$rStored = ClusterEndpoint::storeSettings($rPrepare['update'], $rPrepare['data'], $rArray, self::mainServer());
 		} else {
 			$rQuery = 'UPDATE `settings` SET ' . $rPrepare['update'] . (self::changesClusterPolicy($rArray) ? ', `cluster_policy_ver` = `cluster_policy_ver` + 1' : '') . ';';

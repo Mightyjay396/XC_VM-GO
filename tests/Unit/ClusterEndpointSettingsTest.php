@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\Commands\ClusterEndpointCommand;
 use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ClusterSettings;
@@ -183,7 +184,7 @@ final class ClusterEndpointSettingsTest extends TestCase {
 
 	/** The admin saves Settings (the Cluster tab's fields among the rest). Returns the status. */
 	private function save(array $rFields): int {
-		$rResult = SettingsService::edit(['user_agent' => '', 'http_proxy' => '', 'cookie' => '', 'headers' => '', 'search_items' => '15'] + $rFields);
+		$rResult = SettingsService::edit($rFields + ['user_agent' => '', 'http_proxy' => '', 'cookie' => '', 'headers' => '', 'search_items' => '15']);
 		SettingsManager::set($this->settings());
 		return (int) $rResult['status'];
 	}
@@ -601,7 +602,8 @@ final class ClusterEndpointSettingsTest extends TestCase {
 	/**
 	 * The fail-safe paths: when the settings row cannot be read, or before
 	 * migration 044 (no cluster_legacy_urls column), the save is stored as
-	 * before, with the version raised.
+	 * before, with the version raised. Before migration 044 a save that
+	 * changes neither is stored without raising it.
 	 */
 	public function testWithoutTheStoredStateTheSaveIsStoredAsBefore(): void {
 		$this->store('cluster_main_host', 'a.example.com');
@@ -618,12 +620,205 @@ final class ClusterEndpointSettingsTest extends TestCase {
 		$this->rDb->exec('ALTER TABLE `settings` DROP COLUMN `cluster_legacy_urls`');
 		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'c.example.com']));
 		$this->assertSame([3, 'c.example.com'], [$this->ver(), $this->settings()['cluster_main_host']]);
+		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'c.example.com', 'cluster_transport' => 'auto', 'search_items' => '20']));
+		$this->assertSame([3, 20], [$this->ver(), (int) $this->settings()['search_items']]);
 	}
 
-	/** SettingsService stores a new name or transport through ClusterEndpoint, on MAIN only. */
+	/**
+	 * The database from now on, with $rRace run once, as another process,
+	 * just before the save's UPDATE over the endpoint state as read.
+	 */
+	private function raceBeforeTheUpdate(\Closure $rRace): QueryLogDb {
+		$rLog = new QueryLogDb($this->rDb);
+		$rRan = false;
+		$rLog->rBefore = function (string $rQuery) use (&$rRan, $rLog, $rRace): void {
+			if (!$rRan && str_starts_with($rQuery, 'UPDATE `settings` SET') && str_contains($rQuery, 'WHERE')) {
+				$rRan = true;
+				DatabaseFactory::set($this->rDb);
+				$GLOBALS['db'] = $this->rDb;
+				$rRace();
+				DatabaseFactory::set($rLog);
+				$GLOBALS['db'] = $rLog;
+			}
+		};
+		DatabaseFactory::set($rLog);
+		$GLOBALS['db'] = $rLog;
+		return $rLog;
+	}
+
+	/**
+	 * Another admin saves the same new name between this save's read and its
+	 * UPDATE. The row then holds this save's name, yet its UPDATE matched no
+	 * row (the version moved) and stored none of its columns: a save counts
+	 * as stored only when its UPDATE changed the row. It reads again, finds
+	 * the name stored, and stores its columns without raising the version
+	 * again or a second audit event; with no node (nothing kept, the kept
+	 * list as it was) and with one.
+	 */
+	public function testTheSameChangeStoredMeanwhileDoesNotSwallowTheSave(): void {
+		$this->store('cluster_main_host', 'a.example.com');
+		foreach ([false, true] as $rNode) {
+			if ($rNode) {
+				$this->node(2);
+				$this->store('cluster_main_host', 'a.example.com');
+			}
+			$rVer = $this->ver();
+			$this->raceBeforeTheUpdate(function (): void {
+				$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'b.example.com', 'search_items' => '30']));
+			});
+			$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'b.example.com', 'search_items' => '20']));
+			$this->assertSame(['b.example.com', 20, $rVer + 1], [$this->settings()['cluster_main_host'], (int) $this->settings()['search_items'], $this->ver()], 'the other save raised it');
+			DatabaseFactory::set($this->rDb);
+			$GLOBALS['db'] = $this->rDb;
+		}
+		$this->assertSame(['http://a.example.com:25461/cluster/v1/'], array_keys($this->kept()));
+		$this->assertCount(1, $this->audit(), "the other save's");
+	}
+
+	/**
+	 * A transport change stored between the save's read and its UPDATE moves
+	 * the version alone, not the kept lists. The version in the UPDATE's
+	 * condition makes the save read again, so what it keeps follows the
+	 * transport as stored: both of the old name's URLs under
+	 * https_preferred, not the plain one alone. With no node, nothing is
+	 * kept, and the name is stored all the same.
+	 */
+	public function testATransportChangeStoredMeanwhileIsNotOverwritten(): void {
+		$rTransport = function (): void {
+			$this->rDb->query("UPDATE `settings` SET `cluster_transport` = 'https_preferred', `cluster_policy_ver` = `cluster_policy_ver` + 1");
+		};
+		$this->store('cluster_main_host', 'a.example.com');
+		$this->node(2);
+		$this->raceBeforeTheUpdate($rTransport);
+		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'b.example.com']));
+		$this->assertSame(['https://a.example.com:25463/cluster/v1/', 'http://a.example.com:25461/cluster/v1/'], array_keys($this->kept()));
+		$this->assertSame(['https_preferred', 'b.example.com', 3], [$this->settings()['cluster_transport'], $this->settings()['cluster_main_host'], $this->ver()]);
+
+		DatabaseFactory::set($this->rDb);
+		$GLOBALS['db'] = $this->rDb;
+		$this->rDb->query('DELETE FROM `cluster_nodes`');
+		$this->store('cluster_transport', 'auto');
+		$rKept = $this->kept();
+		$this->raceBeforeTheUpdate($rTransport);
+		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'c.example.com']));
+		$this->assertSame(['https_preferred', 'c.example.com', 5], [$this->settings()['cluster_transport'], $this->settings()['cluster_main_host'], $this->ver()]);
+		$this->assertSame($rKept, $this->kept());
+	}
+
+	/**
+	 * The settings form posts the name and the transport with every save,
+	 * and the request's settings cache may predate another admin's save. A
+	 * save is compared with the database: posting the stored name (the cache
+	 * still has none) stores the other columns without raising the version,
+	 * keeping anything or an audit event; posting the name a stale cache
+	 * holds moves the stored name back, announced.
+	 */
+	public function testASaveIsComparedWithTheStoredSettingsNotTheCache(): void {
+		$this->node(2);
+		$this->rDb->query("UPDATE `settings` SET `cluster_main_host` = 'b.example.com', `cluster_policy_ver` = 2");
+		$this->assertSame('', (string) SettingsManager::getAll()['cluster_main_host'], 'the cache predates it');
+		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'b.example.com', 'search_items' => '20']));
+		$this->assertSame([2, 20, [], []], [$this->ver(), (int) $this->settings()['search_items'], $this->kept(), $this->audit()]);
+
+		SettingsManager::set(['cluster_main_host' => 'a.example.com'] + $this->settings());
+		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'a.example.com']));
+		$this->assertSame([3, 'a.example.com', ['http://b.example.com:25461/cluster/v1/']], [$this->ver(), $this->settings()['cluster_main_host'], array_keys($this->kept())]);
+		$rAudit = $this->audit();
+		$this->assertSame([['cluster_main_host' => 'b.example.com'], ['cluster_main_host' => 'a.example.com']], [$rAudit[0]['detail']['settings_from'], $rAudit[0]['detail']['settings_to']]);
+	}
+
+	/** Each new name under https_preferred keeps two URLs: the kept list stays at MAX_URLS, the latest first. */
+	public function testAtMostMaxUrlsAreKept(): void {
+		$this->store('cluster_transport', 'https_preferred');
+		$this->store('cluster_main_host', 'n0.example.com');
+		$this->node(2);
+		for ($i = 1; $i <= 6; $i++) {
+			ClusterClock::fix(($this->rNow + $i) * 1000);
+			$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'n' . $i . '.example.com']));
+		}
+		$rKept = array_keys($this->kept());
+		$this->assertCount(ClusterEndpoint::MAX_URLS, $rKept);
+		$this->assertSame(['https://n5.example.com:25463/cluster/v1/', 'http://n5.example.com:25461/cluster/v1/'], array_slice($rKept, 0, 2), 'the latest first');
+		$this->assertNotContains('http://n1.example.com:25461/cluster/v1/', $rKept, 'the oldest went');
+	}
+
+	/**
+	 * cluster:endpoint lists what is kept, and drops a kept URL, or every one
+	 * of a host, at once: for an old name MAIN gives up. The policy version
+	 * goes up and it is audited. The command is MAIN's alone.
+	 */
+	public function testTheAdminDropsAKeptNameAtOnce(): void {
+		$rRun = static function (array $rArgs): array {
+			ob_start();
+			$rCode = (new ClusterEndpointCommand())->execute($rArgs);
+			return [$rCode, (string) ob_get_clean()];
+		};
+		$this->store('cluster_transport', 'https_preferred');
+		$this->store('cluster_main_host', 'a.example.com');
+		$this->store('cluster_legacy_ports', (string) json_encode([8080 => $this->rNow + 60]));
+		$this->node(2);
+		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'b.example.com']));
+		$rOld = $this->rMain;
+		$this->main(['server_ip' => '10.0.0.2']);
+		$this->assertTrue(ClusterEndpoint::recordMainChange($rOld, $this->rMain, $this->settings()));
+		$this->assertSame(['http://10.0.0.1:25461/cluster/v1/', 'https://a.example.com:25463/cluster/v1/', 'http://a.example.com:25461/cluster/v1/'], array_keys($this->kept()));
+		$this->assertSame(3, $this->ver());
+
+		$rUntil = gmdate('Y-m-d H:i:s', $this->rNow + ClusterEndpoint::GRACE) . ' UTC';
+		$this->assertSame([0, "Old plain-HTTP ports, served for the cluster API on MAIN's current addresses:\n  8080 until " . gmdate('Y-m-d H:i:s', $this->rNow + 60) . " UTC\nOld URLs, listed last in the policy (latest change first):\n  http://10.0.0.1:25461/cluster/v1/ until " . $rUntil . "\n  https://a.example.com:25463/cluster/v1/ until " . $rUntil . "\n  http://a.example.com:25461/cluster/v1/ until " . $rUntil . "\n"], $rRun([]));
+
+		$this->assertSame([0, "Dropped; the nodes refetch the policy at their next heartbeat:\n  https://a.example.com:25463/cluster/v1/\n  http://a.example.com:25461/cluster/v1/\n"], $rRun(['drop', 'A.example.com']));
+		$this->assertSame(['http://10.0.0.1:25461/cluster/v1/'], array_keys($this->kept()));
+		$this->assertSame([8080], array_keys(ClusterEndpoint::legacyPorts($this->settings())), 'the kept port stays');
+		$this->assertSame(4, $this->ver(), 'announced');
+		$rAudit = $this->audit();
+		$this->assertSame(['cluster.endpoint_dropped', 'admin', ['urls' => ['https://a.example.com:25463/cluster/v1/', 'http://a.example.com:25461/cluster/v1/'], 'kept_urls' => ['http://10.0.0.1:25461/cluster/v1/']]], [$rAudit[2]['event'], $rAudit[2]['actor'], $rAudit[2]['detail']]);
+
+		// One URL, as listed; nothing that matches; a usage error.
+		$this->assertSame([0, "Dropped; the nodes refetch the policy at their next heartbeat:\n  http://10.0.0.1:25461/cluster/v1/\n"], $rRun(['drop', 'http://10.0.0.1:25461/cluster/v1/']));
+		$this->assertSame([[], 5], [$this->kept(), $this->ver()]);
+		$this->assertSame([1, "No kept URL is a.example.com or on that host.\n"], $rRun(['drop', 'a.example.com']));
+		$this->assertSame([1, "Usage: cluster:endpoint [list | drop <url|host>]\n"], $rRun(['drop']));
+		$this->assertSame(5, $this->ver(), 'nothing announced');
+
+		$rRoot = dirname(__DIR__, 2);
+		$this->assertMatchesRegularExpression('#^\tCli/Commands/ClusterEndpointCommand\.php \\\\$#m', (string) file_get_contents($rRoot . '/Makefile'), 'stripped from the LB build');
+		$this->assertStringContainsString('"Cli/Commands/ClusterEndpointCommand.php"', (string) file_get_contents($rRoot . '/tools/ci/verify-lb-archive.sh'), 'on the LEAK list');
+	}
+
+	/** A drop that keeps losing the race to other writers writes nothing over what they stored. */
+	public function testADropOverAChangeStoredMeanwhileIsRetried(): void {
+		$this->store('cluster_main_host', 'a.example.com');
+		$this->node(2);
+		$this->assertSame(STATUS_SUCCESS, $this->save(['cluster_main_host' => 'b.example.com']));
+		$rLog = new QueryLogDb($this->rDb);
+		$rRaces = 0;
+		$rLog->rBefore = function (string $rQuery) use (&$rRaces): void {
+			if (str_starts_with($rQuery, 'UPDATE `settings` SET `cluster_legacy_ports`') && $rRaces < 3) {
+				$rRaces++;
+				$this->rDb->query('UPDATE `settings` SET `cluster_legacy_urls` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1', (string) json_encode(['http://a.example.com:25461/cluster/v1/' => $this->rNow + 60, 'http://10.0.0.' . $rRaces . '0:25461/cluster/v1/' => $this->rNow + 60], JSON_UNESCAPED_SLASHES));
+			}
+		};
+		DatabaseFactory::set($rLog);
+		$this->assertNull(ClusterEndpoint::drop('a.example.com', $this->settings()));
+		$this->assertSame(3, $rRaces);
+		$this->assertSame(['http://a.example.com:25461/cluster/v1/', 'http://10.0.0.30:25461/cluster/v1/'], array_keys($this->kept()), 'what the last writer stored');
+		$this->assertSame(5, $this->ver());
+
+		$rRaces = 3;
+		$this->assertSame(['http://a.example.com:25461/cluster/v1/'], ClusterEndpoint::drop('a.example.com', $this->settings()));
+		$this->assertSame([['http://10.0.0.30:25461/cluster/v1/'], 6], [array_keys($this->kept()), $this->ver()]);
+	}
+
+	/**
+	 * SettingsService stores every save that posts the name or the transport
+	 * through ClusterEndpoint, which compares them with the database, on MAIN
+	 * only.
+	 */
 	public function testTheCallSite(): void {
 		$rSrc = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Domain/Server/SettingsService.php');
 		$this->assertSame(1, substr_count($rSrc, 'ClusterEndpoint::storeSettings($rPrepare[\'update\'], $rPrepare[\'data\'], $rArray, self::mainServer())'));
-		$this->assertStringContainsString('self::changesClusterPolicy($rArray) && class_exists(ClusterEndpoint::class)', $rSrc, 'Domain\Cluster is not in the LB build');
+		$this->assertStringContainsString('if (array_intersect_key($rArray, array_flip(self::CLUSTER_POLICY)) !== [] && class_exists(ClusterEndpoint::class)) {', $rSrc, 'Domain\Cluster is not in the LB build');
+		$this->assertStringContainsString("private const CLUSTER_POLICY = ['cluster_transport', 'cluster_main_host'];", $rSrc);
 	}
 }

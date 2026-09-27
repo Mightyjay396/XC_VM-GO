@@ -129,6 +129,9 @@ ls -l /home/xc_vm/bin/nginx/conf/cluster.d/
 - A Cluster API Port other than `0` must be open from the LBs to the MAIN in every firewall between them.
 - The first write removes `cluster_legacy.conf`, which earlier releases used for old ports; `cluster.d/old_port.conf` replaces it.
 - When the MAIN's **Server IP** or **Private IP** changes, on its server page or when XC_VM updates the Server IP from the network interface, the LBs are told the new address. The old address stays in their list for up to 7 days. It keeps working only while it still reaches the MAIN. Set **MAIN Host Name** in the cluster settings (a DNS name) if the MAIN's IP can change.
+- When **MAIN Host Name** changes or is cleared in the settings, the LBs are told too, and the old name stays in their list for up to 7 days: its HTTPS address only while the LBs are sent to HTTPS (**Cluster Transport** `https_preferred` or `https_required`), and its plain-HTTP address except under `https_required`. A change of **Cluster Transport** alone keeps nothing. Each change is recorded in the `cluster_audit` table as `cluster.endpoint_change`.
+- To see the old addresses and ports the LBs still have, and until when, run `sudo -u xc_vm /home/xc_vm/console.php cluster:endpoint` on the MAIN.
+- When you give up an old host name or address (the domain is dropped, transferred or compromised, or the IP goes to someone else), remove it from the LBs' list at once: `sudo -u xc_vm /home/xc_vm/console.php cluster:endpoint drop old.example.com`. Give a host name or address to remove all of its entries, or one entry exactly as listed. The LBs are told within a heartbeat, and the change is recorded as `cluster.endpoint_dropped`. Otherwise whoever holds the name or address next receives the LBs' requests. It cannot read them or answer in a way the LBs accept, but after each outage of the MAIN it can keep today's LB agents from reaching the MAIN for up to 10 minutes.
 - An old port can close before its 7 days, once every LB uses the new one. This needs an LB agent that reports which list of MAIN addresses it uses, which comes in a later agent release. With today's agents, every old port stays open for its full 7 days. Once the LBs run such an agent:
     - Every LB in mode 1 or 2 (the **Mode** column of *Servers → Cluster Nodes*) must be online, must report the MAIN's latest list, and must have last reached the MAIN on another port. The check runs every minute, so the port can close a minute or two after the change.
     - An LB that is offline or still enrolling delays the close until it is back online, or until its enrolment completes or expires. So does an enrolment code that has not expired, and, for up to 30 minutes, a request made with one that waits for approval.
@@ -207,6 +210,8 @@ Probable cause(s):
 | `src/Cli/Commands/ClusterPoolsCommand.php` | `cluster:pools` — starts or resizes the pools as `xc_vm` (MAIN only) |
 | `src/Domain/Cluster/ClusterNginxConfig.php` | The cluster API's nginx config on the main: the route, the Cluster API Port and the old ports |
 | `src/Cli/Commands/ClusterNginxCommand.php` | `cluster:nginx` — writes that config as `xc_vm`, tests it with `nginx -t` and reloads nginx (MAIN only) |
+| `src/Domain/Cluster/ClusterEndpoint.php` | The MAIN's old ports and addresses kept in the LBs' list after a change, their expiry and early close |
+| `src/Cli/Commands/ClusterEndpointCommand.php` | `cluster:endpoint` — lists those old ports and addresses, or removes one (MAIN only) |
 | `src/Domain/Server/ServerRepository.php` | `servers` table access |
 
 See also: [CLI Tools](../guides/cli-tools.md), [Updating a Server](../administration/server-update.md).

@@ -48,6 +48,9 @@ final class TestDb extends DatabaseHandler {
 	/** @var array<int,array<string,mixed>> Buffered rows from the last SELECT. */
 	private array $rows = [];
 
+	/** @var int Rows the last statement returned (a SELECT) or changed (a write), as PDOStatement::rowCount() in Database::num_rows(). */
+	private int $count = 0;
+
 	private int $lastInsertId = 0;
 
 	public function __construct(?PDO $pdo = null) {
@@ -137,6 +140,7 @@ final class TestDb extends DatabaseHandler {
 		if (self::isDdl($query)) {
 			$this->pdo->exec($this->translate($query));
 			$this->rows = array();
+			$this->count = 0;
 			return true;
 		}
 
@@ -151,8 +155,10 @@ final class TestDb extends DatabaseHandler {
 
 		if (preg_match('/^\s*(SELECT|PRAGMA|WITH)/i', $query)) {
 			$this->rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: array();
+			$this->count = count($this->rows);
 		} else {
 			$this->rows = array();
+			$this->count = $stmt->rowCount();
 			$id = $this->pdo->lastInsertId();
 			if ($id) {
 				$this->lastInsertId = (int) $id;
@@ -204,8 +210,9 @@ final class TestDb extends DatabaseHandler {
 		return $col;
 	}
 
+	/** Rows of the last SELECT, or rows the last write changed (Database::num_rows(), PDOStatement::rowCount()). */
 	public function num_rows(): int {
-		return count($this->rows);
+		return $this->count;
 	}
 
 	public function last_insert_id() {
