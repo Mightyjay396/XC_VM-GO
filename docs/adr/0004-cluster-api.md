@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) three increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, and the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest). Its relay half — the tickets in the R2 stream record, the delta path that carries them, the agent's loopback proxy and the URL builders — lands as one change, on a running fleet. Of Phase 9 (the licence lease, cutover and lockdown) two increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days, and every token MAIN hands a node now carries the lease it may serve on without MAIN. The node's half of that lease, and the cutover itself, are not. `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it: flipping that flag is the cutover decision, and it stays with the operator.
+- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) three increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, and the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest). Its relay half — the tickets in the R2 stream record, the delta path that carries them, the agent's loopback proxy and the URL builders — lands as one change, on a running fleet. Of Phase 9 (the licence lease, cutover and lockdown) three increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days; every token MAIN hands a node carries the lease it may serve on without MAIN; and the node's agent verifies and keeps that lease. Nothing enforces it yet, and the cutover itself is not built. `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it: flipping that flag is the cutover decision, and it stays with the operator.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -3400,6 +3400,81 @@ now for the same window), the rekey reply, and a refused lease (no `lease` key, 
 same, the audit row). `ClusterEnrolCodeTest` covers the signed approval, `LbProvisionClusterTest`
 the install data, and `ClusterExtensionIntegrationTest` pins all of it against the real extension,
 including that a token expiry far out with a 99 h tolerance still leaves 26 h.
+
+### The lease the node keeps (Phase 9, third increment)
+
+The agent now reads the lease MAIN sends beside a token, verifies it and keeps it. Nothing acts on
+it yet, and that is the increment: a lease no node holds cannot be enforced, and what enforces it
+turned out to need decisions this increment's own reading settled (below).
+
+**The agent's half** (`internal/clusteragent/lease.go`). The lease is decoded at the four points a
+token arrives — the SSH install data, an approved enrol code, a `token_refresh` reply and a
+`token_rekey` reply — and checked with what the agent already holds: it has MAIN's signing key
+(`State.PanelSignPub`) and `lea` is in its closed tag registry, so `cc.VerifyPanel` needs nothing
+new. Besides the signature it checks the document itself: `typ`, `v`, its own node uuid and server
+id, a window that is positive and no longer than the 26 h a lease may hold, and that the `exp`
+announced beside the lease is the one inside it. What it keeps is the exact signed bytes and the
+signature, because whatever judges the lease later — the node's PHP through the extension's
+`cluster_lease_verify`, which resolves the key through its own pin — must verify what MAIN signed,
+not a re-encoding of it.
+
+- **The field is `json.RawMessage`.** The lease shares a reply with the token, and a lease whose
+  base64 is broken must cost the node its lease, not its session: nothing in this path can fail the
+  surrounding decode. A malformed one at install leaves the enrolment finished and the token in
+  place.
+- **Newer wins, and only newer.** A lease issued before the one held is a copy replayed at a later
+  request and never replaces it; one issued now does, a shorter window included — an operator who
+  lowers `lb_partition_tolerance_h` means the node to hold less, not to keep what it was handed
+  before. A generation that went backwards is the same replay under another name. Keeping the
+  longest lease ever issued would have made that setting unenforceable downwards.
+- **A refusal is on record, not in a log.** The paths a lease arrives on do not log (the Client is
+  silent by design, and the install's whole output is compared to `OK` by MAIN's flow), so the
+  reason goes in `State.LeaseRefused` beside the lease, where it survives a restart and where the
+  node's PHP can read it — `agent.json` is the file `ReplicaRecords::identity()` already parses.
+  "MAIN sent none" is not a refusal and records nothing: MAIN sends the token without a lease
+  whenever the extension signs none, and the node then keeps what it holds.
+- **It judges no clock.** Nothing here compares the lease to a time. The node's own clock is what a
+  lease exists to distrust, and the agent's MAIN-time offset comes from a challenge document nobody
+  signs (`Client.Challenge` checks `typ` and `cn` only), so an anchor worth fencing on does not
+  exist yet. `xc_agent lease` reports the window and says whose clock it is measured by.
+
+**What the reading settled for the increment that enforces.** Four things were checked in the
+extension and the panel rather than assumed, and each one rules out a design that looked obvious:
+
+1. `license_valid()` is `branding_ok() && activation_key_valid()` over an activation key bound to
+   `hwid == install_id`, with no lease and no pin anywhere in it, and the key never travels to a
+   node — so it is permanently false on a load balancer. The verdict cannot ride on
+   `LicenseGate::fanoutUsable()`; the plan names "the agent fence" for this reason.
+2. `cluster_lease_verify` answers `EXPIRED` both when `main_time >= exp` and when
+   `main_time < iat - 120`. A fence defined as "a verified lease and an anchor past its `exp`" is
+   therefore unsatisfiable: verification and expiry have to be separate questions, the second asked
+   of the stored document.
+3. That call's refusals also cover local events: `RECORD:core.pin` after a re-image or a changed
+   machine id, `IO` when the `cluster/` directory's mode drifts, and a bare `CRYPTO` for an XCVT pin
+   blob read after its hard one-hour window. Fencing on those turns ordinary operations into
+   blackouts; only a live expiry may fence.
+4. No node in the field holds a pin at all — `cluster_pack` is called from `LbInstallFlow` and
+   nowhere else — so enforcement without a re-pin path is a silent no-op on the existing fleet.
+   `lb_fence_drain_min` likewise does not reach a node: it is not in the LB settings allowlist, and
+   the replica section that would carry it is signed under a granting tag, which is refused by the
+   very licence failure a fence exists for. An off switch cannot arrive that way.
+
+Also found, for whoever places the enforcement: `StreamAuthMiddleware::decryptToken()` is not the
+node's choke point (`Public/stream/segment.php`, `key.php` and `rtmp.php` read viewer tokens
+themselves), and the agent's admission path is absent exactly when it would be wanted — `Unpublish()`
+removes `flows.json` when MAIN stops the node, and the path is gated by the CONNECTIONS flow.
+
+**Tests.** `lease_test.go` covers the accept and the refusal of each kind (a stranger's key, a
+tampered signature, another node's or server's lease, a 26 h window accepted and 26 h + 1 s refused,
+an `exp` that disagrees with itself, a replay, a generation that went back), that a malformed lease
+leaves the enrolment and the token alone, and the report on a node whose enrolment never finished.
+Two run against MAIN's real PHP under `php -S`: the install data's lease and both refresh replies'
+in `TestInteropWithPanel`, and the approved enrol code's in
+`TestInteropTheApprovedEnrolCarriesALease` — the one place the two languages meet over these bytes.
+That harness had been broken since migration 048: its SQLite `cluster_nodes` had no `arch` column,
+so `hello` raised a PDO error the agent saw as a bare `HTTP 500`. It now ALTERs the column in, and
+the router records every request and the text of any throwable beside its database, which the test
+prints when it fails.
 
 ### Disaster recovery of MAIN's cluster keys
 
