@@ -7,6 +7,7 @@ use ReflectionMethod;
 use ReflectionProperty;
 use XcVm\Cli\CronJobs\ActivityCronJob;
 use XcVm\Cli\CronJobs\LinesLogsCronJob;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Database\DatabaseHandler;
 
 /** Records every statement; a multi-row lines_activity INSERT hands out consecutive ids from 100. */
@@ -80,9 +81,15 @@ class LogImportCronJobsTest extends TestCase {
 		LinesLogsCronJob::setDb($this->db);
 		$this->dir = sys_get_temp_dir() . '/xcvm_logimport_' . bin2hex(random_bytes(4)) . '/';
 		mkdir($this->dir, 0775, true);
+		// The SQL backend is what these crons are tested against: with a flows
+		// file left behind by another test, LogSink would send the rows to an
+		// agent instead — and a batch of oversized rows, redacted and serialised
+		// into one event, is megabytes of it.
+		NodeFlows::usePath($this->dir . 'no-flows.json');
 	}
 
 	protected function tearDown(): void {
+		NodeFlows::usePath(null);
 		foreach (glob($this->dir . '*') ?: [] as $rFile) {
 			unlink($rFile);
 		}

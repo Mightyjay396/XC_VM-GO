@@ -3,6 +3,7 @@
 namespace XcVm\Core\Util;
 
 use XcVm\Core\Config\OpensslExtra;
+use XcVm\Core\Config\StreamSecret;
 
 /**
  * Encryption Utilities
@@ -148,12 +149,22 @@ class Encryption {
 		if ($rPrevious !== null && ($rPlain = self::open($token, $key, $rPrevious)) !== false) {
 			return $rPlain;
 		}
+		// The viewer-token secret the panel replaced last, while its window is
+		// open: the links already in players' hands were minted under it
+		// (StreamSecret). Only for that key, and only once the current one failed.
+		$rOldKey = StreamSecret::previous();
+		if ($rOldKey !== null && $rOldKey !== $key && ($rPlain = self::open($token, $rOldKey, $deviceId)) !== false) {
+			return $rPlain;
+		}
 		if (!$rAcceptLegacy || !is_string($token)) {
 			return false;
 		}
 		$rPlain = self::decrypt($token, $key, $deviceId);
 		if ($rPlain === false && $rPrevious !== null) {
-			return self::decrypt($token, $key, $rPrevious);
+			$rPlain = self::decrypt($token, $key, $rPrevious);
+		}
+		if ($rPlain === false && $rOldKey !== null && $rOldKey !== $key) {
+			return self::decrypt($token, $rOldKey, $deviceId);
 		}
 		return $rPlain;
 	}

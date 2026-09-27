@@ -24,6 +24,9 @@ final class LogSink {
 	/** Rows per INSERT: well under MySQL's placeholder limit for every type. */
 	public const CHUNK = 1000;
 
+	/** Values' bytes per `log.*` event: well under MAIN's ingest body, whatever a row carries. */
+	public const SPOOL_BYTES = 1048576;
+
 	/**
 	 * type => [table, columns, INSERT IGNORE].
 	 *
@@ -195,20 +198,41 @@ final class LogSink {
 
 	/**
 	 * The cluster API backend (LOGS flow on): redacted `log.<type>` events on
-	 * the agent's P1 lane, in chunks of CHUNK rows.
+	 * the agent's P1 lane, in chunks of CHUNK rows and SPOOL_BYTES of values.
+	 *
+	 * The byte budget is what keeps one event a request MAIN will take: a
+	 * caller's batch is bounded in rows, not in size (a user agent, a query
+	 * string or an ffprobe error is as long as the source made it), and a
+	 * thousand oversized rows in one event would be tens of megabytes to
+	 * redact, serialise and post. A single row over the budget is still an
+	 * event of its own: it is the row or nothing.
 	 *
 	 * @param list<array<string, mixed>> $rRows
 	 */
 	private static function spool(string $rType, array $rRows): bool {
 		$rColumns = array_flip(self::TYPES[$rType][1]);
 		$rEvents = [];
-		foreach (array_chunk($rRows, self::CHUNK) as $rChunk) {
-			$rRedacted = [];
-			foreach ($rChunk as $rRow) {
-				$rRedacted[] = Redactor::redactRow(array_intersect_key($rRow, $rColumns));
+		$rRedacted = [];
+		$rBytes = 0;
+
+		foreach ($rRows as $rRow) {
+			$rRow = Redactor::redactRow(array_intersect_key($rRow, $rColumns));
+			$rSize = 0;
+			foreach ($rRow as $rValue) {
+				$rSize += is_string($rValue) ? strlen($rValue) : 8;
 			}
+			if ($rRedacted !== [] && (count($rRedacted) >= self::CHUNK || $rBytes + $rSize > self::SPOOL_BYTES)) {
+				$rEvents[] = ['type' => 'log.' . $rType, 'd' => ['rows' => $rRedacted]];
+				$rRedacted = [];
+				$rBytes = 0;
+			}
+			$rRedacted[] = $rRow;
+			$rBytes += $rSize;
+		}
+		if ($rRedacted !== []) {
 			$rEvents[] = ['type' => 'log.' . $rType, 'd' => ['rows' => $rRedacted]];
 		}
+
 		return EventSpool::append('p1', $rEvents);
 	}
 

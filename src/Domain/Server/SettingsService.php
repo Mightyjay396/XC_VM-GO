@@ -5,6 +5,7 @@ namespace XcVm\Domain\Server;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Config\StreamSecret;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Settings\CrontabChangedEvent;
@@ -291,6 +292,12 @@ class SettingsService {
 			ClusterNginxConfig::commitApiPort($rApiPort, (bool) $rStored);
 		}
 		if ($rStored) {
+			// The links already in players' hands were minted under the secret
+			// this save replaced: it stays readable for StreamSecret's window,
+			// and the nodes get it with the replica's `secrets` section.
+			if (array_key_exists('live_streaming_pass', $rArray)) {
+				StreamSecret::replaced((string) ($rPrevious['live_streaming_pass'] ?? ''), (string) $rArray['live_streaming_pass']);
+			}
 			SettingsManager::clearCache();
 			self::saved($rPrevious, $rArray);
 			FanoutConfig::sync($rArray);

@@ -4,6 +4,7 @@ namespace XcVm\Core\Cluster;
 
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Config\OpensslExtra;
+use XcVm\Core\Config\StreamSecret;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Security\BlocklistService;
@@ -832,6 +833,11 @@ final class ReplicaApply {
 		$rExtra = $rEntries['openssl_extra'];
 		try {
 			$rSet = OpensslExtra::adopt($rExtra['current'], $rExtra['previous'], $rExtra['previous_valid_until'], self::configDir(), $rNow ?? time());
+			// The viewer-token secret MAIN replaced last: the node reads the
+			// links minted under it too, for the window MAIN dated
+			// (StreamSecret). Its current value arrives with the settings.
+			$rLive = $rEntries['live_streaming_pass'];
+			StreamSecret::adopt($rLive['previous'], $rLive['previous_valid_until'], $rNow ?? time());
 		} catch (\Throwable) {
 			// Never an uncaught trace: it would print the value among the arguments.
 			$rSet = false;
