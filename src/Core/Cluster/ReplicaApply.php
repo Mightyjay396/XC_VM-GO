@@ -32,7 +32,10 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  *
  * - CONFIG off (shadow): nothing is written; the report counts, per cache,
  *   entries the database has that the replica lacks (`missing`) and entries
- *   only the replica has (`extra`). Both at 0 is what lets CONFIG go on.
+ *   only the replica has (`extra`). Both at 0 is what lets CONFIG go on. A
+ *   node in mode 2 may not read MAIN's database: it compares neither the
+ *   crontab nor the RTMP publishers, and the report names them under
+ *   `unchecked`.
  * - CONFIG on: the replica is authoritative. It writes the caches, and
  *   cron:cache stops writing them from the database.
  *
@@ -293,6 +296,8 @@ final class ReplicaApply {
 				$rReport[$rKey] = $rPart;
 			}
 		}
+		// Mode 2 compares nothing with MAIN's database (crontab()).
+		$rUnchecked = !$rAuthoritative && NodeRole::refusesConnects() && ($rReport['crontab']['mode'] ?? null) === 'shadow' ? ['crontab'] : [];
 		$rDoc = self::$rFromDisk === null ? json_decode((string) @file_get_contents(self::dir() . 'blocklist.json'), true) : self::$rFromDisk['blocklist'];
 		$rCaches = is_array($rDoc) && is_array($rDoc['data'] ?? null) ? self::caches($rDoc['data'], self::$rFromDisk === null) : null;
 		if ($rCaches !== null) {
@@ -304,9 +309,17 @@ final class ReplicaApply {
 			} else {
 				$rReport['diff'] = [];
 				foreach ($rCaches as $rKey => $rValue) {
+					// An LB never cached the RTMP publishers (current()), and mode 2 may not read MAIN's.
+					if ($rKey === 'rtmp_ips' && NodeRole::refusesConnects()) {
+						$rUnchecked[] = $rKey;
+						continue;
+					}
 					$rReport['diff'][$rKey] = self::diff(self::current($rKey), $rValue);
 				}
 			}
+		}
+		if ($rUnchecked !== []) {
+			$rReport['unchecked'] = $rUnchecked;
 		}
 		if (!$rAuthoritative) {
 			self::disown();
@@ -593,6 +606,10 @@ final class ReplicaApply {
 		}
 		if ($rAuthoritative) {
 			return $rReport + ['mode' => 'applied', 'jobs' => count($rJobs)];
+		}
+		// Mode 2 may not read MAIN's table: not compared (apply()'s `unchecked`).
+		if (NodeRole::refusesConnects()) {
+			return $rReport + ['mode' => 'shadow', 'jobs' => count($rJobs)];
 		}
 		try {
 			$rCurrent = self::cronJobs(DatabaseFactory::get()) ?? [];

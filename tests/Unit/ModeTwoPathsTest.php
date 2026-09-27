@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\CronJobs\CleanupCronJob;
 use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\LogSink;
@@ -17,7 +18,8 @@ use XcVm\Tests\Support\ReplicaFixture;
  * cron:root_signals' minute (its signals loop, the ramdisk, ports and
  * services checks from the replica, the crontab and sysctl checks), the
  * root actions' system log lines (a P1 `log.syslog` event, never before
- * acting on MAIN's database) and the PHP-FPM restart.
+ * acting on MAIN's database), the PHP-FPM restart, the watchdog, cron:cleanup's
+ * stream checks, and cluster:apply's shadow comparison.
  *
  * Each runs in a child PHP booted for real from the node replica, in a
  * throwaway deploy root: an xcvm_core stand-in logs every connect it is
@@ -40,7 +42,7 @@ final class ModeTwoPathsTest extends TestCase {
 
 	protected function setUp(): void {
 		$this->rHome = sys_get_temp_dir() . '/xcvm-mode2-' . bin2hex(random_bytes(4)) . '/';
-		foreach (['config/cluster', 'tmp/cache', 'tmp/crons', 'tmp/flood', 'bin/nginx/conf/ports', 'bin/nginx_rtmp/conf', 'storage', 'stub'] as $rDir) {
+		foreach (['config/cluster', 'tmp/cache', 'tmp/crons', 'tmp/flood', 'bin/nginx/conf/ports', 'bin/nginx_rtmp/conf', 'content/streams', 'content/archive', 'content/created', 'content/vod', 'storage', 'stub'] as $rDir) {
 			mkdir($this->rHome . $rDir, 0777, true);
 		}
 		// As root, a node's audits write as the owner of config/cluster/.
@@ -85,13 +87,13 @@ final class ModeTwoPathsTest extends TestCase {
 	}
 
 	/**
-	 * A node in mode 2 with every flow on, its replica applied from disk as
-	 * `service` does at boot (so its processes boot from it).
+	 * A node in mode 2 with every flow but $rOff, its replica applied from
+	 * disk as `service` does at boot (so its processes boot from it).
 	 *
 	 * @param array<string, string|null> $rSettings MAIN's settings the replica carries
 	 */
-	private function node(array $rSettings = []): void {
-		$this->flows(2);
+	private function node(array $rSettings = [], int $rOff = 0): void {
+		$this->flows(2, 255 & ~$rOff);
 		$this->rFixture->node($rSettings);
 		[$rCode, $rOut] = $this->child(['cluster:apply', '--from-disk'], dirname(__DIR__, 2) . '/src/console.php');
 		$this->assertSame(0, $rCode, $rOut);
@@ -148,6 +150,8 @@ final class ModeTwoPathsTest extends TestCase {
 		file_put_contents($rScript, <<<'PHP'
 			<?php
 			use XcVm\Cli\Commands\ClusterRootCommand;
+			use XcVm\Cli\Commands\WatchdogCommand;
+			use XcVm\Cli\CronJobs\CleanupCronJob;
 			use XcVm\Cli\CronJobs\RootSignalsCronJob;
 			use XcVm\Core\Cluster\ReplicaBoot;
 			use XcVm\Core\Cluster\RootPin;
@@ -197,6 +201,44 @@ final class ModeTwoPathsTest extends TestCase {
 					case 'root_actions':
 						RootPin::useDirs(getenv('XCVM_TEST_PIN'), getenv('XCVM_TEST_INBOX'));
 						$rResult['done'] = ClusterRootCommand::drain([ClusterRootCommand::class, 'runAction'], (int) getenv('XCVM_TEST_NOW'));
+						break;
+					case 'watchdog':
+						$rDog = new class extends WatchdogCommand {
+							public int $rRestarts = 0;
+
+							protected function assertRunAsXcVm(): bool {
+								return true;
+							}
+
+							protected function acquireDaemonLock(string $rLockName): bool {
+								return true;
+							}
+
+							protected function killStaleProcesses(string $rPattern): void {
+							}
+
+							protected function setProcessTitle(string $rTitle): void {
+							}
+
+							protected function restartDaemon(string $rCommandName): void {
+								$this->rRestarts++;
+							}
+						};
+						ob_start();
+						try {
+							$rResult['code'] = $rDog->execute([]);
+						} finally {
+							$rResult['output'] = (string) ob_get_clean();
+						}
+						$rResult['restarts'] = $rDog->rRestarts;
+						break;
+					case 'cleanup':
+						ob_start();
+						try {
+							(new ReflectionMethod(CleanupCronJob::class, 'loadCron'))->invoke(new CleanupCronJob());
+						} finally {
+							$rResult['output'] = (string) ob_get_clean();
+						}
 						break;
 				}
 			} catch (\Throwable $e) {
@@ -337,6 +379,69 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertSame([5], array_values(array_unique(array_column($rRows, 'server_id'))));
 	}
 
+	// ── The watchdog ─────────────────────────────────────────────────
+
+	/**
+	 * One pass of the watchdog, with Redis on in the settings: no ping of
+	 * MAIN's database and no wait for it, no Redis, no capacity read, and
+	 * its sample for the agent written.
+	 */
+	public function testTheWatchdogPassNeedsNeitherDatabaseNorRedis(): void {
+		$this->node(['redis_handler' => '1']);
+		$this->nginxRunning();
+		file_put_contents($this->rHome . 'tmp/watchdog_devices.json', json_encode(['t' => time(), 'devices' => new stdClass()]));
+		[, $rOut, $rResult] = $this->child(['watchdog']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertSame([0, 1], [$rResult['code'], $rResult['restarts']]);
+		$this->assertStringNotContainsString('waiting', $rResult['output']);
+		$this->assertStringNotContainsString('Not running', $rResult['output'], 'the pass reached its settings refresh');
+		$this->assertFileExists($this->rHome . 'config/cluster/local.json', 'what PHP samples, for the agent');
+	}
+
+	// ── cron:cleanup ─────────────────────────────────────────────────
+
+	/**
+	 * The stream, archive and VOD checks need this node's streams, which
+	 * no replica section carries yet (R2): skipped, and nothing deleted,
+	 * where an empty list would have deleted every file.
+	 */
+	public function testCleanupSkipsTheStreamChecks(): void {
+		$this->node(['cleanup' => '1', 'check_vod' => '1']);
+		file_put_contents($this->rHome . 'content/streams/7_.m3u8', 'x');
+		mkdir($this->rHome . 'content/archive/9');
+		file_put_contents($this->rHome . 'content/created/3_.list', 'x');
+		[, $rOut, $rResult] = $this->child(['cleanup']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertFileExists($this->rHome . 'content/streams/7_.m3u8');
+		$this->assertDirectoryExists($this->rHome . 'content/archive/9');
+		$this->assertFileExists($this->rHome . 'content/created/3_.list');
+		$this->assertStringNotContainsString('Deleting', $rResult['output']);
+	}
+
+	// ── cluster:apply ────────────────────────────────────────────────
+
+	/**
+	 * With CONFIG off the apply only compares; in mode 2 it does not compare
+	 * with MAIN's crontab or RTMP publishers, and says so.
+	 */
+	public function testTheShadowApplyOfAModeTwoNodeComparesNothingWithMain(): void {
+		$this->node([], NodeFlows::CONFIG);
+		[$rCode, $rOut] = $this->child(['cluster:apply'], dirname(__DIR__, 2) . '/src/console.php');
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertNoConnect();
+		$rReport = json_decode($rOut, true);
+		$this->assertIsArray($rReport, $rOut);
+		$this->assertSame('shadow', $rReport['crontab']['mode']);
+		$this->assertSame(['crontab', 'rtmp_ips'], $rReport['unchecked']);
+		$this->assertArrayNotHasKey('missing', $rReport['crontab']);
+		$this->assertArrayNotHasKey('rtmp_ips', $rReport['diff']);
+		$this->assertSame(['missing' => 0, 'extra' => 1], $rReport['diff']['blocked_ips'], 'the node\'s own caches are still compared');
+	}
+
 	// ── Everywhere else, as before ───────────────────────────────────
 
 	/**
@@ -358,6 +463,19 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->flows(2);
 		NodeRole::useMainBuild(true);
 		$this->assertTrue(RootSignalsCronJob::readsMainDatabase(), 'MAIN, even with a stray flows.json');
+	}
+
+	/** The seam R2 fills: cron:cleanup checks its streams everywhere but mode 2. */
+	public function testCleanupChecksItsStreamsEverywhereButModeTwo(): void {
+		NodeFlows::usePath($this->rHome . 'config/cluster/flows.json');
+		NodeRole::useMainBuild(false);
+		$rSeam = new ReflectionMethod(CleanupCronJob::class, 'streamChecks');
+		foreach ([[null, true], [0, true], [1, true], [2, false]] as [$rMode, $rChecks]) {
+			$this->flows($rMode);
+			$this->assertSame($rChecks, $rSeam->invoke(new CleanupCronJob()), 'mode ' . var_export($rMode, true));
+		}
+		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/CleanupCronJob.php');
+		$this->assertLessThan(strpos($rSource, '$db->query('), strpos($rSource, 'if (!$this->streamChecks())'), 'the seam comes before the first query');
 	}
 
 	/**

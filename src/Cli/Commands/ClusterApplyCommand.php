@@ -21,7 +21,10 @@ use XcVm\Core\Cluster\ReplicaApply;
  * ReplicaBoot::forArgv): no connection to MAIN's database at boot, and none
  * at all once CONFIG is on, so a node rebooted while MAIN is unreachable
  * still builds its caches. In shadow the comparison with MAIN's crontab and
- * RTMP publishers still reads MAIN's database, on first use.
+ * RTMP publishers still reads MAIN's database, on first use, except on a
+ * node in mode 2, which compares neither and names them under `unchecked`
+ * (mode 2 needs CONFIG: once a shadow apply handed the caches back, no
+ * process but this one boots there).
  *
  * Without `--from-disk` it applies the `.json` files the agent wrote after
  * verifying the records it just stored. With `--from-disk` (`service` at

@@ -54,6 +54,22 @@ class CleanupCronJob implements CommandInterface {
 		return 0;
 	}
 
+	/**
+	 * Can this node check its stream, archive and VOD files against its
+	 * streams? Everywhere but mode 2 it reads them from MAIN's database, as
+	 * before. A node in mode 2 may not (its connect is refused), and no
+	 * replica section carries its streams yet (R2 `streams`), so the checks
+	 * are skipped there: files of streams deleted on MAIN stay until R2.
+	 * Never against an empty list, which would delete every file.
+	 *
+	 * The seam R2 fills: once the `streams` section is applied, a mode 2
+	 * node answers true and the checks read this node's streams from the
+	 * replica instead of the queries below.
+	 */
+	protected function streamChecks(): bool {
+		return !NodeRole::refusesConnects();
+	}
+
 	private function loadCron(): void {
 		global $db;
 
@@ -65,6 +81,11 @@ class CleanupCronJob implements CommandInterface {
 		// of the audit.json its agent sends.
 		SettingsAudit::prune(8);
 		SettingsAudit::publish();
+
+		// Everything below reads MAIN's database; the MAIN-only part never runs on a node.
+		if (!$this->streamChecks()) {
+			return;
+		}
 
 		if (intval(SettingsManager::get('cleanup')) == 1) {
 			$rStreams = [];
