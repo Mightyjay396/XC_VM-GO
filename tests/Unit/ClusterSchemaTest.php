@@ -99,11 +99,12 @@ final class ClusterSchemaTest extends TestCase {
 		foreach (['`server_id`, `stream_id`, 0, UNIX_TIMESTAMP() FROM `streams_servers`', '`tv_archive_server_id`, `id`, 0, UNIX_TIMESTAMP() FROM `streams`', '`vframes_server_id`, `id`, 0, UNIX_TIMESTAMP() FROM `streams`', '`source_id`, `stream_id`, 0, UNIX_TIMESTAMP() FROM `recordings`'] as $rSeed) {
 			$this->assertStringContainsString('INSERT IGNORE INTO `cluster_stream_ver` (`server_id`, `stream_id`, `ver`, `updated_at`) SELECT ' . $rSeed, $rUp);
 		}
-		$this->assertStringContainsString("VALUES ('stream_ver', '1', UNIX_TIMESTAMP());", $rUp, 'the counter starts at StreamVersions::START');
+		$this->assertStringContainsString("INSERT IGNORE INTO `cluster_meta` (`name`, `value`, `updated_at`) SELECT 'stream_ver', GREATEST(1, COALESCE(MAX(`ver`), 0)), UNIX_TIMESTAMP() FROM `cluster_stream_ver`;", $rUp, 'the counter starts at StreamVersions::START, never below a row\'s version');
 		$this->assertSame(1, \XcVm\Core\Cluster\StreamVersions::START);
 		$rDown = $this->src('migrations/database/down/047_add_cluster_stream_ver_holders.sql');
 		$this->assertStringContainsString('DROP KEY IF EXISTS `stream_id`', $rDown);
-		$this->assertStringContainsString("('stream_ver', 'stream_ver_floor')", $rDown);
+		$this->assertStringContainsString("DELETE FROM `cluster_stream_ver`;", $rDown, 'every row: only 047\'s code writes them');
+		$this->assertStringContainsString("('stream_ver', 'stream_ver_floor', '" . \XcVm\Domain\Cluster\StreamReplica::META_PRUNE . "')", $rDown);
 	}
 
 	public function testSettingsColumnsMatchDatabaseSql(): void {

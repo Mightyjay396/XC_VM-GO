@@ -1051,6 +1051,7 @@ if (1 < $rICount) { ?>
 
 				if (isset($rData['replace_movie_years'])) {
 					$db->query('SELECT `id`, `year`, `movie_properties`, `stream_display_name` FROM `streams` WHERE `type` = 2 ORDER BY `id` DESC;');
+					$rRenamed = array();
 
 					foreach ($db->get_rows() as $rRow) {
 						$rOriginalRow = $rRow;
@@ -1098,7 +1099,15 @@ if (1 < $rICount) { ?>
 						if (!($rRow['year'] != $rOriginalRow['year'] || $rRow['stream_display_name'] != $rOriginalRow['stream_display_name'])) {
 						} else {
 							$db->query('UPDATE `streams` SET `stream_display_name` = ?, `year` = ? WHERE `id` = ?;', $rRow['stream_display_name'], $rRow['year'], $rRow['id']);
+							if ($rRow['stream_display_name'] != $rOriginalRow['stream_display_name']) {
+								$rRenamed[] = intval($rRow['id']);
+							}
 						}
+					}
+
+					// The R2 records of the movies whose title changed carry it.
+					if (count($rRenamed) > 0) {
+						EventDispatcher::dispatch(new StreamsChangedEvent($rRenamed));
 					}
 				}
 

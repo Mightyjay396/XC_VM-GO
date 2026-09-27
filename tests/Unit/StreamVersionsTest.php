@@ -9,6 +9,7 @@ use XcVm\Core\Events\Stream\StreamArgumentsChangedEvent;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Events\Stream\StreamsDeletedEvent;
 use XcVm\Core\Events\Stream\TranscodeProfileSavedEvent;
+use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Epg\EpgService;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\RecordingFinalizer;
@@ -133,6 +134,111 @@ final class StreamVersionsTest extends TestCase {
 		$this->assertSame(4, StreamVersions::bump([11, 12]));
 	}
 
+	/**
+	 * Run migration 047 one way, statement by statement as MigrationRunner
+	 * does; on SQLite, its MariaDB-only syntax translated (the key aside).
+	 */
+	private function migrate047(string $rWay): void {
+		$rSql = (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/' . $rWay . '/047_add_cluster_stream_ver_holders.sql');
+		$rSqlite = $this->rDb->pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite';
+		foreach (array_filter(array_map('trim', explode(';', (string) preg_replace('/^--.*$/m', '', $rSql)))) as $rStatement) {
+			if ($rSqlite) {
+				if (str_starts_with($rStatement, 'ALTER TABLE')) {
+					continue;
+				}
+				$rStatement = strtr($rStatement, ['INSERT IGNORE' => 'INSERT OR IGNORE', 'UNIX_TIMESTAMP()' => "CAST(strftime('%s', 'now') AS INTEGER)", 'GREATEST(' => 'MAX(', "'stream\\_ver\\_floor.%'" => "'stream\\_ver\\_floor.%' ESCAPE '\\'"]);
+			}
+			$this->rDb->exec($rStatement);
+		}
+	}
+
+	private function maxVer(): int {
+		$this->rDb->query('SELECT MAX(`ver`) AS `ver` FROM `cluster_stream_ver`');
+		return (int) ($this->rDb->get_row()['ver'] ?? 0);
+	}
+
+	public function testARollbackThenAnUpgradeNeverStartsTheCounterBelowARow(): void {
+		$this->catalogue();
+		$this->migrate047('up');
+		$this->assertSame(['2:10' => 0, '2:11' => 0, '3:10' => 0, '4:12' => 0, '5:12' => 0, '6:11' => 0], $this->rows(), 'every holder at version 0');
+		$this->assertSame(1, StreamVersions::head());
+		for ($i = 0; $i < 20; $i++) {
+			StreamVersions::bump([10, 11, 12]);
+		}
+		$this->rDb->exec('DELETE FROM `streams_servers` WHERE `server_id` = 3');
+		StreamVersions::bump([10]);
+		StreamVersions::reset();
+		StreamVersions::raiseFloor(30, 3);
+		$this->assertSame(63, StreamVersions::head());
+
+		// Rolled back: nothing of 047's is left, the version rows included.
+		$this->migrate047('down');
+		$this->assertSame([], $this->rows());
+		$this->rDb->query("SELECT `name` FROM `cluster_meta` WHERE `name` LIKE 'stream%'");
+		$this->assertSame([], $this->rDb->get_rows());
+
+		// Upgraded again: seeded afresh, and a new change is past every row.
+		$this->migrate047('up');
+		$this->assertSame(['2:10' => 0, '2:11' => 0, '4:12' => 0, '5:12' => 0, '6:11' => 0], $this->rows());
+		$this->assertSame(1, StreamVersions::head());
+		$this->assertSame(2, StreamVersions::bump([11]));
+
+		// Rows an older rollback left (it kept those above 0): the counter starts past them.
+		$this->rDb->exec("REPLACE INTO `cluster_stream_ver` VALUES (7, 11, 52, 0)");
+		$this->rDb->exec("DELETE FROM `cluster_meta` WHERE `name` = 'stream_ver'");
+		$this->migrate047('up');
+		$this->assertSame(52, StreamVersions::head());
+		$this->assertSame(53, StreamVersions::bump([10]));
+		$this->assertSame(53, $this->maxVer());
+	}
+
+	public function testAMissingCounterStartsPastEveryRow(): void {
+		$this->catalogue();
+		$this->rDb->exec('INSERT INTO `cluster_stream_ver` VALUES (2, 10, 40, 0)');
+		$this->assertSame(41, StreamVersions::bump([11]));
+		$this->assertSame(['2:10' => 40, '2:11' => 41, '6:11' => 41], $this->rows());
+		$this->rDb->exec("DELETE FROM `cluster_meta` WHERE `name` = 'stream_ver'");
+		$this->assertSame(42, StreamVersions::reset(), 'a reset\'s floor too');
+	}
+
+	public function testABumpRunsInATransactionThatAFailedStatementRollsBack(): void {
+		$this->catalogue();
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		// Nothing refused: the bump stamps its rows, inside its own transaction.
+		$rInside = [];
+		$rLog->rBefore = function (string $rQuery) use (&$rInside): void {
+			$rInside[] = $this->rDb->isInTransaction();
+		};
+		$this->assertSame(2, StreamVersions::bump([10]));
+		$this->assertSame(['2:10' => 2, '3:10' => 2], $this->rows());
+		$this->assertNotContains(false, $rInside, 'every statement of the bump');
+		$this->assertFalse($this->rDb->isInTransaction(), 'committed');
+
+		// More holders than a statement takes: the second REPLACE refused rolls back the first, and the counter.
+		$rValues = [];
+		for ($i = 1000; $i < 1000 + StreamVersions::CHUNK + 100; $i++) {
+			$rValues[] = "($i, 1, '[]')";
+		}
+		$this->rDb->exec('INSERT INTO `streams` (`id`, `type`, `stream_source`) VALUES ' . implode(', ', $rValues));
+		$this->rDb->exec('INSERT INTO `streams_servers` (`stream_id`, `server_id`) SELECT `id`, 7 FROM `streams` WHERE `id` >= 1000');
+		$rReplaces = 0;
+		$rLog->rBefore = function (string $rQuery) use ($rLog, &$rReplaces): void {
+			if (str_starts_with($rQuery, 'REPLACE INTO `cluster_stream_ver`') && ++$rReplaces === 2) {
+				$rLog->rRefuse = '/^REPLACE INTO `cluster_stream_ver`/';
+			}
+		};
+		$rBefore = $this->rows();
+		$this->assertSame(0, StreamVersions::bump(range(1000, 999 + StreamVersions::CHUNK + 100)));
+		$this->assertSame(2, $rReplaces, 'the first statement ran');
+		$this->assertSame($rBefore, $this->rows(), 'never a partial record');
+		$this->assertSame(2, StreamVersions::head(), 'nor a version taken');
+		$this->assertFalse($this->rDb->isInTransaction(), 'rolled back');
+		$rLog->rBefore = null;
+		$rLog->rRefuse = null;
+		$this->assertSame(2 + StreamVersions::CHUNK + 100, StreamVersions::bump(range(1000, 999 + StreamVersions::CHUNK + 100)), 'the versions it did not take');
+	}
+
 	public function testAFailedStatementNeverThrowsAndStampsNothingPastIt(): void {
 		$this->catalogue();
 		$rLog = new QueryLogDb($this->rDb);
@@ -140,10 +246,20 @@ final class StreamVersionsTest extends TestCase {
 		DatabaseFactory::set($rLog);
 		$this->assertSame(0, StreamVersions::bump([10]));
 		$this->assertSame([], $this->rows());
+		$this->assertSame(1, StreamVersions::head());
+		$this->assertContains('REPLACE INTO `cluster_stream_ver` (`server_id`, `stream_id`, `ver`, `updated_at`) VALUES (?, ?, ?, ?), (?, ?, ?, ?);', $rLog->rQueries, 'refused, not skipped');
 
 		$rLog->rRefuse = '/FROM `recordings`/';
 		$this->assertSame(0, StreamVersions::bump([10]), 'a holder that cannot be read: nothing is stamped, never a partial list');
 		$this->assertSame([], $this->rows());
+		$this->assertSame(1, StreamVersions::head(), 'the counter rolled back');
+
+		// A reset whose floor cannot be written keeps the floor it had, and the counter.
+		$rLog->rRefuse = null;
+		$this->assertSame(2, StreamVersions::reset());
+		$rLog->rRefuse = '/^INSERT INTO `cluster_meta`/';
+		$this->assertSame(0, StreamVersions::reset());
+		$this->assertSame([2, 2], [StreamVersions::head(), StreamVersions::floor()]);
 		$rLog->rRefuse = '/cluster_meta/';
 		$this->assertSame(0, StreamVersions::reset());
 	}
@@ -218,18 +334,61 @@ final class StreamVersionsTest extends TestCase {
 		$this->assertContains('vframes_pid', ReplicaSections::STREAM_LOCAL);
 	}
 
+	public function testAnImportSeedsEveryHolderSoARemovalReachesItsNode(): void {
+		$this->catalogue();
+		$this->rDb->exec('INSERT INTO `cluster_stream_ver` VALUES (2, 10, 7, 0)');
+		$this->assertTrue(StreamVersions::seedHolders());
+		$rSeeded = ['2:10' => 7, '2:11' => 0, '3:10' => 0, '4:12' => 0, '5:12' => 0, '6:11' => 0];
+		$this->assertSame($rSeeded, $this->rows(), 'every holder without a row, at version 0; a row it has keeps its version');
+		$this->assertTrue(StreamVersions::seedHolders());
+		$this->assertSame($rSeeded, $this->rows(), 'again: nothing new');
+
+		// Taken off server 3 (deleted, then dispatched): its row moves, so its node sees the removal.
+		EventDispatcher::subscribe(StreamVersions::class);
+		StreamRepository::deleteStreamsByServer([10], 3);
+		$this->assertSame([8, 8], [$this->rows()['2:10'], $this->rows()['3:10']]);
+
+		$rLog = new QueryLogDb($this->rDb);
+		$rLog->rRefuse = '/^INSERT INTO `cluster_stream_ver`/';
+		$this->assertFalse(StreamVersions::seedHolders($rLog));
+	}
+
+	public function testAMassEditDispatchesItsChange(): void {
+		$this->catalogue();
+		$this->rDb->exec('CREATE TABLE `bouquets` (`id` INTEGER PRIMARY KEY, `bouquet_order` int)');
+		(new \ReflectionProperty(BouquetService::class, 'db'))->setValue(null, null);
+		$this->seed();
+		EventDispatcher::subscribe(StreamVersions::class);
+
+		$this->assertSame(['status' => STATUS_SUCCESS], StreamService::massEdit(['streams' => json_encode([11, 10]), 'c_custom_sid' => 1, 'custom_sid' => '1:0:1']));
+		$this->assertSame(['2:10' => 2, '2:11' => 3, '3:10' => 2, '4:12' => 0, '5:12' => 0, '6:11' => 3], $this->rows());
+	}
+
 	/**
-	 * Every file that writes a stream's configuration dispatches its change
-	 * (or stamps it itself). A new path fails here until it does, or is
-	 * listed with why not.
+	 * Every writer of a stream's configuration dispatches its change (or
+	 * stamps it itself), function by function: a named function or method
+	 * that writes one of the tables dispatches one of the four events (a
+	 * `use` import is not a dispatch), and top-level code (views, scripts)
+	 * dispatches after each such write before its next exit. A statement
+	 * that sets only columns no record carries (ReplicaSections'
+	 * STREAM_LOCAL and STREAM_SERVER_LOCAL) needs none. A new path fails
+	 * here until it dispatches, or is listed with why not.
 	 */
 	public function testEveryWriterOfAStreamsConfigurationDispatchesIt(): void {
 		$rSrc = dirname(__DIR__, 2) . '/src';
 		$rExempt = [
-			// What the node reports: runtime state, worker pids, its recordings' status, its VOD analysis.
-			'Domain/Stream/ContentSink.php', 'Domain/Stream/StreamRowMerge.php', 'Domain/Cluster/EventIngest.php',
+			// What the node reports: its recordings' status, its VOD analysis, workers' pids, its stream row.
+			'Domain/Stream/ContentSink.php::recordingState', 'Domain/Stream/ContentSink.php::movieProperties', 'Domain/Stream/ContentSink.php::workerPid',
+			'Domain/Cluster/EventIngest.php::recordingState', 'Domain/Cluster/EventIngest.php::vodAnalysis', 'Domain/Cluster/EventIngest.php::streamWorker',
+			'Domain/Stream/StreamRowMerge.php::apply',
 			// MAIN's catalogue metadata from TMDb and providers: the agent's section hashes pick it up.
-			'Domain/Vod/TmdbCron.php', 'Domain/Vod/TmdbPopularCron.php', 'Cli/CronJobs/ProvidersCronJob.php',
+			'Domain/Vod/TmdbCron.php::processMovie', 'Domain/Vod/TmdbCron.php::processEpisode', 'Cli/CronJobs/ProvidersCronJob.php::loadCron',
+			// Private helpers of process() and massEdit(), which dispatch for the stream.
+			'Domain/Stream/RadioService.php::saveStreamOptions', 'Domain/Stream/RadioService.php::syncServerTree', 'Domain/Stream/RadioService.php::planServerTreeForStream',
+			// Assignments whose server or stream is gone: no node to tell, or a stream whose delete dispatched.
+			'Public/Views/admin/post.php::DELETE FROM `streams_servers` WHERE (`server_id` NOT IN (SELECT `id` FROM `servers`)) OR (`stream_id` NOT IN (SELECT `id` FROM `streams`));',
+			// An import rewrites the tables whole, then seeds every holder's row and resets every node (below).
+			'Cli/migration_logic.php',
 		];
 		$rMissing = [];
 		$rIt = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($rSrc, FilesystemIterator::SKIP_DOTS));
@@ -239,15 +398,115 @@ final class StreamVersionsTest extends TestCase {
 				continue;
 			}
 			$rRel = substr($rPath, strlen($rSrc) + 1);
-			$rCode = (string) file_get_contents($rPath);
-			if (!preg_match('/(INSERT INTO|REPLACE INTO|DELETE FROM|UPDATE|TRUNCATE)\s+`(streams|streams_servers|streams_options|streams_arguments|streams_types|profiles|recordings)`/', $rCode)) {
+			if (in_array($rRel, $rExempt, true)) {
 				continue;
 			}
-			if (in_array($rRel, $rExempt, true) || preg_match('/StreamsChangedEvent|StreamsDeletedEvent|TranscodeProfileSavedEvent|StreamArgumentsChangedEvent|StreamVersions::/', $rCode)) {
-				continue;
+			foreach (self::undispatchedWrites((string) file_get_contents($rPath)) as $rWhere) {
+				if (!in_array($rRel . '::' . $rWhere, $rExempt, true)) {
+					$rMissing[] = $rRel . '::' . $rWhere;
+				}
 			}
-			$rMissing[] = $rRel;
 		}
 		$this->assertSame([], $rMissing, 'writes a stream\'s configuration without stamping its R2 version');
+		$this->assertStringContainsString("StreamVersions::seedHolders(\$db);\nStreamVersions::reset(\$db);\n", (string) file_get_contents($rSrc . '/Cli/migration_logic.php'));
+
+		// The scan itself: a write whose function only imports the event, or dispatches in another function, is found.
+		$rCode = "<?php\nuse X\\StreamsChangedEvent;\nclass A {\n\tpublic static function a(\$db) {\n\t\t\$db->query('UPDATE `streams` SET `stream_source` = ? WHERE `id` = ?;');\n\t}\n\tpublic static function b(\$db) {\n\t\t\$db->query('UPDATE `streams` SET `rating` = ? WHERE `id` = ?;');\n\t\tEventDispatcher::dispatch(new StreamsChangedEvent([1]));\n\t}\n\tpublic static function c(\$db) {\n\t\t\$db->query('UPDATE `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `stream_id` SET `pid` = IF(`pid`, `pid`, 1), `streams`.`order` = 1 WHERE 1;');\n\t\t\$db->query('UPDATE `streams` SET ' . \$rSet . ' WHERE `id` = ?;');\n\t}\n}\n\$db->query('DELETE FROM `recordings` WHERE `id` = ?;');\nif (\$x) {\n\tEventDispatcher::dispatch(new StreamsChangedEvent([1]));\n}\n\$db->query('UPDATE `profiles` SET `profile_name` = ?;');\nexit();\nEventDispatcher::dispatch(StreamsChangedEvent::all());\n";
+		$this->assertSame(['a', 'c', 'UPDATE `profiles` SET `profile_name` = ?;'], self::undispatchedWrites($rCode));
+	}
+
+	/**
+	 * The writes of a stream's configuration in a PHP file that no dispatch
+	 * covers: a named function's name when it writes and never dispatches,
+	 * and a top-level write's SQL when no dispatch follows it before the next
+	 * exit (or the file's end).
+	 *
+	 * @return list<string>
+	 */
+	private static function undispatchedWrites(string $rCode): array {
+		$rWrite = '/(INSERT INTO|REPLACE INTO|DELETE FROM|UPDATE|TRUNCATE)\s+`(streams|streams_servers|streams_options|streams_arguments|streams_types|profiles|recordings)`/';
+		$rEvents = ['StreamsChangedEvent', 'StreamsDeletedEvent', 'TranscodeProfileSavedEvent', 'StreamArgumentsChangedEvent'];
+		$rTokens = array_values(array_filter(token_get_all($rCode), static fn($rT): bool => !is_array($rT) || !in_array($rT[0], [T_WHITESPACE, T_COMMENT, T_DOC_COMMENT], true)));
+		$rText = static fn(int $rI): string => isset($rTokens[$rI]) ? (is_array($rTokens[$rI]) ? $rTokens[$rI][1] : $rTokens[$rI]) : '';
+		$rFunctions = [];
+		$rTop = [];
+		$rDepth = 0;
+		$rIn = null;
+		$rInDepth = 0;
+		$rPending = null;
+		foreach ($rTokens as $rI => $rT) {
+			$rId = is_array($rT) ? $rT[0] : null;
+			$rTok = $rText($rI);
+			if ($rId === T_FUNCTION && $rIn === null && is_array($rTokens[$rI + 1] ?? null) && $rTokens[$rI + 1][0] === T_STRING) {
+				$rPending = $rTokens[$rI + 1][1];
+			}
+			if ($rTok === '{' || $rId === T_CURLY_OPEN || $rId === T_DOLLAR_OPEN_CURLY_BRACES) {
+				$rDepth++;
+				if ($rPending !== null) {
+					[$rIn, $rInDepth, $rPending] = [$rPending, $rDepth, null];
+					$rFunctions[$rIn] ??= ['writes' => false, 'dispatches' => false];
+				}
+				continue;
+			}
+			if ($rTok === '}') {
+				if ($rIn !== null && $rDepth === $rInDepth) {
+					$rIn = null;
+				}
+				$rDepth--;
+				continue;
+			}
+			if ($rTok === ';') {
+				$rPending = null;
+			}
+			$rName = in_array($rId, [T_STRING, T_NAME_QUALIFIED, T_NAME_FULLY_QUALIFIED], true) ? substr((string) strrchr('\\' . $rTok, '\\'), 1) : '';
+			$rEvent = null;
+			if (in_array($rId, [T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE], true) && preg_match($rWrite, $rTok) && !self::setsOnlyLocalColumns($rTok)) {
+				$rEvent = trim($rTok, '\'"');
+			} elseif (($rName !== '' && in_array($rName, $rEvents, true) && ($rText($rI - 1) === 'new' || ($rText($rI + 1) === '::' && $rText($rI + 2) === 'all'))) || ($rName === 'StreamVersions' && $rText($rI + 1) === '::' && $rText($rI + 2) !== 'class')) {
+				$rEvent = true;
+			} elseif ($rId === T_EXIT) {
+				$rEvent = false;
+			}
+			if ($rEvent === null) {
+				continue;
+			}
+			if ($rIn !== null) {
+				$rFunctions[$rIn][is_string($rEvent) ? 'writes' : 'dispatches'] |= $rEvent !== false;
+				continue;
+			}
+			$rTop[] = $rEvent;
+		}
+		$rOut = array_keys(array_filter($rFunctions, static fn(array $rF): bool => $rF['writes'] && !$rF['dispatches']));
+		foreach ($rTop as $rK => $rEvent) {
+			if (!is_string($rEvent)) {
+				continue;
+			}
+			// The next dispatch or exit after it: a dispatch covers it.
+			$rNext = null;
+			foreach (array_slice($rTop, $rK + 1) as $rLater) {
+				if (!is_string($rLater)) {
+					$rNext = $rLater;
+					break;
+				}
+			}
+			if ($rNext !== true) {
+				$rOut[] = $rEvent;
+			}
+		}
+		return $rOut;
+	}
+
+	/** An UPDATE of `streams` or `streams_servers` whose every assignment is a local column. */
+	private static function setsOnlyLocalColumns(string $rSql): bool {
+		if (!preg_match('/^\W*UPDATE\s+`(streams|streams_servers)`.*?\sSET\s(.*?)\sWHERE\s/s', $rSql, $rM) || !preg_match_all('/(?:`(\w+)`\.)?`(\w+)`\s*=/', $rM[2], $rSet, PREG_SET_ORDER)) {
+			return false;
+		}
+		foreach ($rSet as [, $rTable, $rColumn]) {
+			$rLocal = ($rTable !== '' ? $rTable : $rM[1]) === 'streams' ? ReplicaSections::STREAM_LOCAL : ReplicaSections::STREAM_SERVER_LOCAL;
+			if (!in_array($rColumn, $rLocal, true)) {
+				return false;
+			}
+		}
+		return true;
 	}
 }

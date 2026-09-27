@@ -101,6 +101,34 @@ final class StreamVersions {
 		});
 	}
 
+	/**
+	 * Give every server that holds a stream now, and has no row for it, its
+	 * row at version 0, as migration 047 seeds an install's. For a writer
+	 * that adds holders without naming them (a panel migration's import):
+	 * taking the stream off one later then reaches its node as a removal.
+	 *
+	 * @return bool false when it could not all be recorded
+	 */
+	public static function seedHolders(?object $rDb = null): bool {
+		try {
+			$rDb ??= DatabaseFactory::get();
+			if (!is_object($rDb)) {
+				return false;
+			}
+			foreach ([
+				['streams_servers', '`server_id`', '`stream_id`'],
+				['streams', '`tv_archive_server_id`', '`id`'],
+				['streams', '`vframes_server_id`', '`id`'],
+				['recordings', '`source_id`', '`stream_id`'],
+			] as [$rTable, $rServer, $rStream]) {
+				self::run($rDb, 'INSERT INTO `cluster_stream_ver` (`server_id`, `stream_id`, `ver`, `updated_at`) SELECT DISTINCT h.' . $rServer . ', h.' . $rStream . ', 0, ? FROM `' . $rTable . '` h WHERE h.' . $rServer . ' > 0 AND h.' . $rStream . ' > 0 AND NOT EXISTS (SELECT 1 FROM `cluster_stream_ver` v WHERE v.`server_id` = h.' . $rServer . ' AND v.`stream_id` = h.' . $rStream . ');', time());
+			}
+			return true;
+		} catch (\Throwable) {
+			return false;
+		}
+	}
+
 	/** The newest version handed out; a failed read throws. */
 	public static function head(?object $rDb = null): int {
 		return max(self::START, self::meta($rDb ?? DatabaseFactory::get(), self::META_HEAD) ?? self::START);
@@ -184,15 +212,21 @@ final class StreamVersions {
 
 	/**
 	 * Take $rCount versions: the counter's row is held until the transaction
-	 * ends, so bumps commit in the order of their versions.
+	 * ends, so bumps commit in the order of their versions. A missing counter
+	 * starts past every version a row holds, as migration 047 starts it: a
+	 * version below a node's cursor would never reach it by a delta.
 	 *
 	 * @return int the highest of them
 	 */
 	private static function advance(object $rDb, int $rCount): int {
 		self::run($rDb, 'UPDATE `cluster_meta` SET `value` = CAST(`value` AS UNSIGNED) + ?, `updated_at` = ? WHERE `name` = ?;', $rCount, time(), self::META_HEAD);
-		if ($rDb->num_rows() < 1 && !$rDb->query('INSERT INTO `cluster_meta` (`name`, `value`, `updated_at`) VALUES (?, ?, ?);', self::META_HEAD, (string) (self::START + $rCount), time())) {
-			// Another bump created the row first.
-			self::run($rDb, 'UPDATE `cluster_meta` SET `value` = CAST(`value` AS UNSIGNED) + ?, `updated_at` = ? WHERE `name` = ?;', $rCount, time(), self::META_HEAD);
+		if ($rDb->num_rows() < 1) {
+			self::run($rDb, 'SELECT MAX(`ver`) AS `ver` FROM `cluster_stream_ver`;');
+			$rStart = max(self::START, (int) ($rDb->get_row()['ver'] ?? 0));
+			if (!$rDb->query('INSERT INTO `cluster_meta` (`name`, `value`, `updated_at`) VALUES (?, ?, ?);', self::META_HEAD, (string) ($rStart + $rCount), time())) {
+				// Another bump created the row first.
+				self::run($rDb, 'UPDATE `cluster_meta` SET `value` = CAST(`value` AS UNSIGNED) + ?, `updated_at` = ? WHERE `name` = ?;', $rCount, time(), self::META_HEAD);
+			}
 		}
 		$rHi = self::meta($rDb, self::META_HEAD);
 		if ($rHi === null || $rHi <= self::START) {

@@ -235,4 +235,33 @@ final class TestDb extends DatabaseHandler {
 	public function clean_row($row) {
 		return $row;
 	}
+
+	/**
+	 * Transactions over the backing PDO, with DatabaseHandler's semantics: one
+	 * at a time (a nested begin is refused, false), commit and rollback false
+	 * outside one. SQLite and MariaDB both roll back what ran inside.
+	 */
+	public function beginTransaction() {
+		if ($this->inTransaction) {
+			return false;
+		}
+		$this->inTransaction = $this->pdo->beginTransaction();
+		return $this->inTransaction;
+	}
+
+	public function commit() {
+		if (!$this->inTransaction) {
+			return false;
+		}
+		$this->inTransaction = false;
+		return $this->pdo->commit();
+	}
+
+	public function rollback() {
+		if (!$this->inTransaction) {
+			return false;
+		}
+		$this->inTransaction = false;
+		return $this->pdo->rollBack();
+	}
 }

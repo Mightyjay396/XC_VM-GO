@@ -65,6 +65,9 @@ final class StreamReplica {
 	/** Rows cron:cluster looks at per run. */
 	public const PRUNE_ROWS = 10000;
 
+	/** cluster_meta: the last row the pruning looked at, "<server_id>:<stream_id>" ("0:0": the start). */
+	public const META_PRUNE = 'stream_ver_prune';
+
 	/**
 	 * Is the op served to this node: its STREAMS flow is on, and its agent
 	 * said FEATURE at hello (an older agent is never sent the section).
@@ -81,21 +84,22 @@ final class StreamReplica {
 
 	/**
 	 * A resync request as the node sends it: `{from, to, hashes: {"<id>": etag}}`,
-	 * ids within from..to, at most MAX_HASHES. Null when malformed.
+	 * stream ids within from..to, at most MAX_HASHES; `hashes` null or absent
+	 * names none (an agent's empty map). Null when malformed.
 	 *
 	 * @return array{from: int, to: int, hashes: array<int, string>}|null
 	 */
 	public static function resyncRequest(mixed $rAsk): ?array {
-		if (!is_array($rAsk) || !is_int($rAsk['from'] ?? null) || !is_int($rAsk['to'] ?? null) || !is_array($rAsk['hashes'] ?? null)) {
+		if (!is_array($rAsk) || !is_int($rAsk['from'] ?? null) || !is_int($rAsk['to'] ?? null)) {
 			return null;
 		}
-		[$rFrom, $rTo, $rHashes] = [$rAsk['from'], $rAsk['to'], $rAsk['hashes']];
-		if ($rFrom < 0 || $rTo < $rFrom || $rTo > self::MAX_ID || count($rHashes) > self::MAX_HASHES) {
+		[$rFrom, $rTo, $rHashes] = [$rAsk['from'], $rAsk['to'], $rAsk['hashes'] ?? []];
+		if (!is_array($rHashes) || $rFrom < 0 || $rTo < $rFrom || $rTo > self::MAX_ID || count($rHashes) > self::MAX_HASHES) {
 			return null;
 		}
 		$rOut = [];
 		foreach ($rHashes as $rID => $rEtag) {
-			if (!is_int($rID) || $rID < $rFrom || $rID > $rTo || !is_string($rEtag) || !preg_match('/^[0-9a-f]{64}$/', $rEtag)) {
+			if (!is_int($rID) || $rID < 1 || $rID < $rFrom || $rID > $rTo || !is_string($rEtag) || !preg_match('/^[0-9a-f]{64}$/', $rEtag)) {
 				return null;
 			}
 			$rOut[$rID] = $rEtag;
@@ -353,30 +357,49 @@ final class StreamReplica {
 
 	/**
 	 * Drop the version rows of streams their server no longer holds, once
-	 * they are KEEP_DAYS old (cron:cluster). Each server's floor is raised to
-	 * the newest version it loses first, so a node whose cursor is below it
-	 * (it may not have seen that removal) checks every stream again.
+	 * they are KEEP_DAYS old (cron:cluster). A run looks at PRUNE_ROWS rows
+	 * in key order, from where the last one stopped (META_PRUNE), and starts
+	 * over once it reached the end: the rows of held streams, which stay,
+	 * never keep it from the others. Each server's floor is raised to the
+	 * newest version it loses first, so a node whose cursor is below it (it
+	 * may not have seen that removal) checks every stream again.
 	 *
 	 * @return int the rows dropped
 	 */
 	public static function prune(?int $rNow = null): int {
 		$rBefore = ($rNow ?? time()) - self::KEEP_DAYS * 86400;
-		self::read('SELECT `server_id`, `stream_id`, `ver` FROM `cluster_stream_ver` WHERE `updated_at` < ? ORDER BY `updated_at` ASC LIMIT ' . self::PRUNE_ROWS . ';', $rBefore);
+		self::read('SELECT `value` FROM `cluster_meta` WHERE `name` = ?;', self::META_PRUNE);
+		[$rFromServer, $rFromStream] = array_map('intval', explode(':', (string) (self::db()->get_row()['value'] ?? '')) + [0, 0]);
+		self::read('SELECT `server_id`, `stream_id`, `ver`, `updated_at` FROM `cluster_stream_ver` WHERE `server_id` > ? OR (`server_id` = ? AND `stream_id` > ?) ORDER BY `server_id` ASC, `stream_id` ASC LIMIT ' . self::PRUNE_ROWS . ';', $rFromServer, $rFromServer, $rFromStream);
+		$rRows = self::db()->get_rows() ?: [];
 		$rByServer = [];
-		foreach (self::db()->get_rows() ?: [] as $rRow) {
-			$rByServer[(int) $rRow['server_id']][(int) $rRow['stream_id']] = (int) $rRow['ver'];
+		foreach ($rRows as $rRow) {
+			if ((int) $rRow['updated_at'] < $rBefore) {
+				$rByServer[(int) $rRow['server_id']][(int) $rRow['stream_id']] = (int) $rRow['ver'];
+			}
 		}
 		$rDropped = 0;
 		foreach ($rByServer as $rServerID => $rVers) {
-			$rGone = array_diff_key($rVers, array_flip(self::held($rServerID, array_keys($rVers))));
+			$rHeld = [];
+			foreach (array_chunk(array_keys($rVers), self::MAX_EXAMINE) as $rChunk) {
+				$rHeld = array_merge($rHeld, self::held($rServerID, $rChunk));
+			}
+			$rGone = array_diff_key($rVers, array_flip($rHeld));
 			if ($rGone === []) {
 				continue;
 			}
 			StreamVersions::raiseFloor(max($rGone), $rServerID, self::db());
-			// Only rows not stamped again since they were read.
-			self::read('DELETE FROM `cluster_stream_ver` WHERE `server_id` = ? AND `updated_at` < ? AND `stream_id` IN (' . implode(',', array_keys($rGone)) . ');', $rServerID, $rBefore);
-			$rDropped += count($rGone);
+			foreach (array_chunk(array_keys($rGone), self::MAX_EXAMINE) as $rChunk) {
+				// Only rows not stamped again since they were read.
+				self::read('DELETE FROM `cluster_stream_ver` WHERE `server_id` = ? AND `updated_at` < ? AND `stream_id` IN (' . implode(',', $rChunk) . ');', $rServerID, $rBefore);
+				$rDropped += (int) self::db()->num_rows();
+			}
 		}
+		// The next run goes on past the last row looked at, or from the start
+		// once this one reached the end.
+		$rLast = count($rRows) < self::PRUNE_ROWS ? null : end($rRows);
+		self::read('DELETE FROM `cluster_meta` WHERE `name` = ?;', self::META_PRUNE);
+		self::read('INSERT INTO `cluster_meta` (`name`, `value`, `updated_at`) VALUES (?, ?, ?);', self::META_PRUNE, is_array($rLast) ? (int) $rLast['server_id'] . ':' . (int) $rLast['stream_id'] : '0:0', time());
 		return $rDropped;
 	}
 

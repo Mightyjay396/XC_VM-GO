@@ -9,13 +9,22 @@ namespace XcVm\Core\Cluster;
  * MAIN signed it (ReplicaSections), and `replica/streams.json`, `{since}`,
  * the cursor of the section the files hold. A cursor of 0 or none means the
  * agent has not completed a pass over every stream: the files are then not
- * the whole section.
+ * the whole section. Once the cursor is above 0 the agent keeps the
+ * `streams/` directory, empty when the node holds nothing, so a missing or
+ * unreadable one is a section lost, never an empty one.
  *
  * Every reader answers null unless the whole section is there and every
  * file reads: a caller that prunes files by the list (cron:cleanup's
  * archive and stream checks) must never take a partial list for the node's
  * streams. It then keeps its own source (MAIN's database while the node has
  * one) or does nothing.
+ *
+ * The section carries what MAIN decides, never the node's runtime state:
+ * cron:cleanup's VOD check takes its carried columns from assigned([2, 5])
+ * (`stream.target_container`, `stream.movie_properties`,
+ * `stream.direct_source`, `server.server_stream_id`), but the `pid > 0` and
+ * `stream_status` it filters on are the node's own (StreamStateWriter's
+ * local copy), which no record holds.
  *
  * The agent writes these files once each record opened for the node and
  * verified under the pinned panel key; like the other sections' `.json`,
@@ -24,7 +33,8 @@ namespace XcVm\Core\Cluster;
 final class ReplicaStreams {
 	/**
 	 * Every stream record the node holds: stream id => data. Null without a
-	 * whole section, or when a file does not read as the record of its id.
+	 * whole section (no cursor above 0, no readable `streams/`), or when a
+	 * file does not read as the record of its id.
 	 *
 	 * @return array<int, array<string, mixed>>|null
 	 */
@@ -34,7 +44,11 @@ final class ReplicaStreams {
 		if (!is_array($rIndex) || !is_int($rIndex['since'] ?? null) || $rIndex['since'] <= 0) {
 			return null;
 		}
-		$rFiles = glob($rDir . 'streams/*.json');
+		// A missing or unreadable directory is never a node that holds nothing.
+		if (!is_dir($rDir . 'streams') || !is_readable($rDir . 'streams')) {
+			return null;
+		}
+		$rFiles = glob($rDir . 'streams/*.json', GLOB_ERR);
 		if ($rFiles === false) {
 			return null;
 		}

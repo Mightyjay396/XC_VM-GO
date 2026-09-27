@@ -1840,6 +1840,7 @@ final class ClusterApiTest extends TestCase {
 			['since' => 0, 'resync' => ['from' => -1, 'to' => 4, 'hashes' => []]], ['since' => 0, 'resync' => ['from' => 0, 'to' => 2147483648, 'hashes' => []]],
 			['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => [10 => $rHash]]], ['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => [5 => 'nope']]],
 			['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => ['x' => $rHash]]], ['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => 'all']],
+			['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => [$rHash]]], ['since' => 0, 'resync' => 'all'],
 			['since' => 0, 'resync' => ['from' => 0, 'to' => 2147483647, 'hashes' => array_fill_keys(range(1, StreamReplica::MAX_HASHES + 1), $rHash)]],
 		] as $rAsk) {
 			[$rRes, , $rReq] = $this->call('streams', $rAsk, 1, $rKeys);
@@ -1858,6 +1859,71 @@ final class ClusterApiTest extends TestCase {
 		$this->assertTrue($this->served('streams', ['since' => 4], 1, $rKeys)['full'], 'a cursor past the head: MAIN\'s versions went back (a restore)');
 		StreamVersions::raiseFloor(9, self::SID);
 		$this->assertTrue($this->served('streams', ['since' => 3], 1, $rKeys)['full'], 'this node\'s own floor');
+	}
+
+	/** Streams held by this node alone (assigned, not on demand), from $rFirst on. */
+	private function heldStreams(int $rFirst, int $rCount): array {
+		$rIDs = range($rFirst, $rFirst + $rCount - 1);
+		$this->rDb->exec('INSERT INTO `streams` (`id`, `type`, `stream_source`) VALUES ' . implode(', ', array_map(static fn(int $rID): string => '(' . $rID . ", 2, '[]')", $rIDs)));
+		$this->rDb->exec('INSERT INTO `streams_servers` (`stream_id`, `server_id`, `on_demand`) SELECT `id`, ' . self::SID . ', 0 FROM `streams` WHERE `id` >= ' . $rFirst);
+		return $rIDs;
+	}
+
+	public function testAResyncPastWhatOneCallExaminesGoesOnWhereItStopped(): void {
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+		$rIDs = $this->heldStreams(1000, StreamReplica::MAX_EXAMINE + 5);
+		// The node holds every one as MAIN signs it, and names them all.
+		$rHave = array_map(static fn(array $rData): string => ReplicaBuilder::etag($rData), StreamReplica::data(self::SID, $rIDs));
+		$this->assertSame($rIDs, array_keys($rHave));
+
+		// MAIN reads MAX_EXAMINE of them: the ids named past those are the next call's, never removals.
+		$rOut = $this->served('streams', ['since' => 1, 'resync' => ['from' => 1000, 'to' => 2147483647, 'hashes' => $rHave]], 1, $rKeys);
+		$this->assertSame([[], [], 1000 + StreamReplica::MAX_EXAMINE], [$rOut['streams'], $rOut['removed'], $rOut['next']]);
+		$rOut = $this->served('streams', ['since' => 1, 'resync' => ['from' => $rOut['next'], 'to' => 2147483647, 'hashes' => array_slice($rHave, StreamReplica::MAX_EXAMINE, null, true)]], 1, $rKeys);
+		$this->assertSame([[], [], null], [$rOut['streams'], $rOut['removed'], $rOut['next']]);
+	}
+
+	public function testADeltaPastWhatOneCallReadsSaysMore(): void {
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+		$rIDs = $this->heldStreams(1000, StreamReplica::MAX_ROWS + 1);
+		EventDispatcher::dispatch(new StreamsChangedEvent($rIDs));
+		$rHead = StreamVersions::head();
+		// Taken off this node at once: more removals than a delta reads.
+		StreamRepository::deleteStreamsByServer($rIDs, self::SID);
+
+		$rOut = $this->served('streams', ['since' => $rHead], 1, $rKeys);
+		$this->assertSame([[], array_slice($rIDs, 0, StreamReplica::MAX_ROWS), $rHead + StreamReplica::MAX_ROWS, true], [$rOut['streams'], $rOut['removed'], $rOut['ver'], $rOut['more']]);
+		$rOut = $this->served('streams', ['since' => $rOut['ver']], 1, $rKeys);
+		$this->assertSame([[], [1000 + StreamReplica::MAX_ROWS], $rHead + StreamReplica::MAX_ROWS + 1, false], [$rOut['streams'], $rOut['removed'], $rOut['ver'], $rOut['more']]);
+	}
+
+	public function testANullResyncIsADeltaAndNullHashesNameNone(): void {
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+		EventDispatcher::dispatch(new StreamsChangedEvent([10]));
+		$rOut = $this->served('streams', ['since' => 1, 'resync' => null], 1, $rKeys);
+		$this->assertSame([[10], 2, false], [array_column($rOut['streams'], 'id'), $rOut['ver'], $rOut['more']], 'a delta');
+		$this->assertArrayNotHasKey('next', $rOut);
+		foreach ([['hashes' => null], []] as $rHashes) {
+			$rOut = $this->served('streams', ['since' => 1, 'resync' => self::EVERY_STREAM + $rHashes], 1, $rKeys);
+			$this->assertSame([[10, 12, 13], null], [array_column($rOut['streams'], 'id'), $rOut['next']], 'a resync that names none');
+		}
+	}
+
+	/**
+	 * MAIN's cluster entry point subscribes StreamVersions before it serves an
+	 * op: `recording_complete` makes a VOD a node holds (RecordingFinalizer),
+	 * and that entry point never runs ContainerPopulateStage.
+	 */
+	public function testTheClusterEntryPointStampsTheVersionsOfWhatItsOpsChange(): void {
+		$rIndex = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/cluster/index.php');
+		$rSubscribe = strpos($rIndex, "\nEventDispatcher::subscribe(StreamVersions::class);\n");
+		$rHandle = strpos($rIndex, '$rEmit(ClusterApi::handle($rCrypto, $rReq, $rSettings, $rMain));');
+		$this->assertNotFalse($rSubscribe);
+		$this->assertNotFalse($rHandle);
+		$this->assertLessThan($rHandle, $rSubscribe);
 	}
 
 	// ── The cluster bus: nonces and per-op semaphores ────────────────────

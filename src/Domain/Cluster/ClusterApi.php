@@ -795,8 +795,10 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'streams'] + ($rMissing === 'feature' ? ['feature' => StreamReplica::FEATURE] : []));
 		}
 		$rSince = $rP['since'] ?? null;
-		$rResync = array_key_exists('resync', $rP) ? StreamReplica::resyncRequest($rP['resync']) : null;
-		if (!is_int($rSince) || $rSince < 0 || (array_key_exists('resync', $rP) && $rResync === null)) {
+		// `resync: null` is a delta, as if absent (an agent's empty field).
+		$rAsk = $rP['resync'] ?? null;
+		$rResync = $rAsk === null ? null : StreamReplica::resyncRequest($rAsk);
+		if (!is_int($rSince) || $rSince < 0 || ($rAsk !== null && $rResync === null)) {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
 		try {

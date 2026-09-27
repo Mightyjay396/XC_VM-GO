@@ -1575,7 +1575,10 @@ if (in_array('access_codes', $rMigrateOptions)) {
 foreach (BlocklistChanges::KINDS as $rKind) {
 	BlocklistChanges::reset($rKind, $db);
 }
-// So were the streams: nodes check every stream of their R2 replica again.
+// So were the streams: every server the import made a holder gets its version
+// row (taking a stream off it later reaches its node as a removal), and nodes
+// check every stream of their R2 replica again.
+StreamVersions::seedHolders($db);
 StreamVersions::reset($db);
 echo "\n" . 'Migration has been completed!' . "\n\n" . 'Your settings have been reset to the XC_VM default, please take some time to review the settings page and make the desired changes.' . "\n";
 

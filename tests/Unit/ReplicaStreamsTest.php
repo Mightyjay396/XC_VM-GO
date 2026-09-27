@@ -70,4 +70,31 @@ final class ReplicaStreamsTest extends TestCase {
 		file_put_contents($this->rDir . 'streams/notes.json', '{}');
 		$this->assertNull(ReplicaStreams::records(), 'a file that names no stream');
 	}
+
+	public function testAMissingStreamsDirectoryIsASectionLostNeverOneThatHoldsNothing(): void {
+		$this->since(42);
+		$this->assertSame([], ReplicaStreams::records(), 'the directory kept empty: the node holds nothing');
+		$this->assertSame([], ReplicaStreams::archives(5));
+
+		rmdir($this->rDir . 'streams');
+		$this->assertNull(ReplicaStreams::records());
+		$this->assertNull(ReplicaStreams::assigned([1]));
+		$this->assertNull(ReplicaStreams::archives(5));
+
+		// A file where the directory should be.
+		file_put_contents($this->rDir . 'streams', '');
+		$this->assertNull(ReplicaStreams::records());
+		unlink($this->rDir . 'streams');
+		mkdir($this->rDir . 'streams', 0700);
+
+		if (function_exists('posix_geteuid') && posix_geteuid() !== 0) {
+			// One this process cannot read.
+			chmod($this->rDir . 'streams', 0);
+			try {
+				$this->assertNull(ReplicaStreams::records());
+			} finally {
+				chmod($this->rDir . 'streams', 0700);
+			}
+		}
+	}
 }
