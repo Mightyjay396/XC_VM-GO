@@ -32,7 +32,7 @@ Each seam has a hook for tests and for the future transport (`useSink()`,
 | Seam | Wraps | Catalogue | API form (phase 4) |
 | --- | --- | --- | --- |
 | `Core\Cluster\NodeRpc` | `ApiClient::systemRequest()` / `asyncRequest()`: request/response calls to a node's `/api` | `NodeRpc::ACTIONS` | `node.rpc{action}`, answered via `ack` / `rpc_result` |
-| `Core\Cluster\NodeActions` | root actions for `RootSignalsCronJob`: reboot, services, update/rollback, ports, sysctl, certbot, modules, blocklist flush, `OPENSSL_EXTRA` | `NodeActions::ROOT_ACTIONS` | `node.root{action}` for `cluster:root` |
+| `Core\Cluster\NodeActions` | root actions for `RootSignalsCronJob`: reboot, services, update/rollback, ports, sysctl, certbot, modules, blocklist flush, `OPENSSL_EXTRA`, and the agent binary (`agent_binary`, cluster API only) | `NodeActions::ROOT_ACTIONS` | `node.root{action}` for `cluster:root`, with an artefact grant when the action needs a file of MAIN's |
 
 Both seams refuse an action that is not in their catalogue, so a new call is a
 deliberate change. `NodeRpcActionsTest` checks that every call site uses a
@@ -84,6 +84,13 @@ action.
   Work that needs MAIN's data no replica section carries yet is skipped in
   mode 2 behind a named seam (`CleanupCronJob::streamChecks()`), never run
   against an empty answer.
+- A file a node needs from MAIN (a custom off-air video, a module's archive,
+  a binary MAIN pinned) is an artefact: MAIN names it in
+  `Domain\Cluster\ArtefactRegistry` and grants it with a signed command
+  (`ArtefactGrants`), and the node uses it only once `Core\Cluster\ArtefactStage`
+  checked its size and SHA-256 against the grant, as it copies it to where it
+  is used (root's own stage for a root action). Do not add a pull from MAIN by
+  path, URL or password.
 - The node's audit files (`storage/cluster/`, `config/cluster/audit.json`) sit
   where xc_vm can write. A root process writes them only inside
   `SettingsAudit::asAgentUser()`, which does the work as xc_vm, never with
@@ -92,4 +99,4 @@ action.
 Tests that pin these rules: `SignalDispatcherParityTest`, `StreamStateWriterTest`,
 `StreamRowMergeTest`, `StreamCacheBuilderSourceTest`, `LogSinkTest`,
 `NodeRpcActionsTest`, `ArchitectureTest`, `DbConnectRefusalTest`,
-`ReplicaBootTest` and `ModeTwoPathsTest`.
+`ReplicaBootTest`, `ModeTwoPathsTest` and `ArtefactHashRefusalTest`.
