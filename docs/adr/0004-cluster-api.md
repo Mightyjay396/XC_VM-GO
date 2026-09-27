@@ -1560,6 +1560,118 @@ since            unix seconds: when this node's audit began
 - **The refusal.** It is PHP's alone and needs nothing from the agent: `cluster:apply` boots from the replica in every mode and opens no connect with CONFIG on. With CONFIG off, its shadow comparison reads MAIN's database, which mode 2 refuses. An agent that switches a node to mode 2 must not rely on that report.
 - **The flush.** It arrives as the Phase 4 `node.root` command it already was: `args` `{"action": "flush"}`, handed to root's inbox by `cluster:exec`. Root's result is `{ok, result}` as for every root action. `ok` is true once iptables was flushed, unless the `mysql_syslog` line was refused (mode 2): then `ok` is false with the refusal's message.
 
+### The R2 streams section on MAIN (Phase 7, ninth increment)
+
+**What a node holds.** A node holds a stream when it is assigned it (`streams_servers`), records its TV archive or thumbnails (`streams.tv_archive_server_id`, `vframes_server_id`), or has a recording of it scheduled (`recordings.source_id`), and the stream's row exists. The R2 `streams` section is one `stream` record per stream the node holds (`Domain/Cluster/StreamReplica`, fields in `Core/Cluster/ReplicaSections`), never sent whole:
+
+| `data` | Content |
+| --- | --- |
+| `stream` | `STREAM_FIELDS` of the `streams` row |
+| `type` | its `streams_types` row (`STREAM_TYPE_FIELDS`), or null |
+| `profile` | its transcoding profile (`PROFILE_FIELDS`), or null |
+| `options` | its `streams_options`, each with its argument's definition (`OPTION_FIELDS` and `ARGUMENT_FIELDS`), by `argument_id`, then the option's id |
+| `server` | the node's own `streams_servers` row (`STREAM_SERVER_FIELDS`: `server_stream_id`, `stream_id`, `server_id`, `parent_id`, `on_demand`), or null when the node only records its archive, its thumbnails or a recording of it |
+| `children` | the servers whose row for the stream has this node as `parent_id`, ascending |
+| `recordings` | its recordings scheduled on this node (`RECORDING_FIELDS`), by id; `status` as MAIN last heard it |
+| `tickets` | null: the slot for Phase 8's relay and file tickets |
+
+Values are typed as in the whole sections (integers as JSON integers, text as strings, a missing column or NULL as null), and every level has its keys sorted. Every column of `streams` and `streams_servers` is in exactly one of the carried and local lists, and `ReplicaSectionsTest` fails on a new one:
+
+- **Local, `streams`** (`STREAM_LOCAL`): the workers' pids nodes report (`tv_archive_pid`, `vframes_pid`), `updated`, and MAIN's catalogue metadata: `order`, `notes`, `year`, `rating`, `similar`, `tmdb_id`, `tmdb_language`, `plex_uuid`, `uuid`, `epg_offset`, `title_sync`.
+- **Local, `streams_servers`** (`STREAM_SERVER_LOCAL`): every runtime column nodes write (`StreamStateWriter::STATE_FIELDS`, which `StreamVersionsTest` checks), `updated`, and the created channel's build state (`pids_create_channel`, `cchannel_rsources`).
+- An option's own id and `stream_id`, and an argument's `id` and `argument_description`, are not carried either.
+
+**Versions.** `cluster_stream_ver` (migration 034) holds a row per server and stream the server holds or held, with the version at which MAIN last changed what the server needs of the stream. `Core/Cluster/StreamVersions::bump()` stamps a stream anew for every server that holds it now and every server that already has a row for it, so a stream taken off a node reaches it as a removal:
+
+- One bump takes as many versions as it has streams from a counter, `cluster_meta.stream_ver` (1 before any change), one per stream in id order. It runs in a transaction that holds the counter's row, so bumps commit in the order of their versions, and a node that has read a version has read every version below it. A node's cursor is one number: the version of the last row it applied.
+- A change to every stream at once (`StreamsChangedEvent::all()`: a bulk rewrite of the source URLs; `reset()` after a panel migration) raises the floor, `cluster_meta.stream_ver_floor`, to a new version instead of stamping every row. A node whose cursor is below it checks every stream again.
+- Migration 047 keys the table by stream, seeds a version-0 row for every server that holds a stream at upgrade, and inserts the counter. A stream a node took before the upgrade therefore still reaches it as a removal. `database.sql` has the key.
+- **Recording never fails the change.** Any statement that fails rolls the bump back and returns 0; the change then reaches nodes by the resync.
+
+**Who bumps.** MAIN's writers of a stream's desired configuration dispatch a typed event, and `StreamVersions` listens with `#[ListensTo]`. `EventDispatcher::subscribe()` (new) registers a class's attributed static methods, as `ModuleLoader` does for modules; `ContainerPopulateStage` registers `StreamVersions` at every boot through the kernel (the admin UI and REST API, the CLI and crons), and `Public/cluster/index.php` does for the ops that finish recordings.
+
+| Event | Dispatched by | Bumps |
+| --- | --- | --- |
+| `StreamsChangedEvent` | stream, radio, created channel, movie and episode saves and mass edits; a stream taken off a server; `move` to another server; a server deleted; a profile deleted; an EPG source deleted; the EPG auto-assignment; a category deleted; the stream review; a recording scheduled (`post.php`) and finalised (`RecordingFinalizer`); the series cron's sources | the streams named |
+| `StreamsChangedEvent::all()` | the DNS replace | every node's floor |
+| `StreamsDeletedEvent` (existing) | stream deletes | the streams named |
+| `TranscodeProfileSavedEvent` | `ProfileService` | the streams that transcode with it |
+| `StreamArgumentsChangedEvent` | the settings save, when an argument's default changed | the streams with an option of it |
+
+- **Never bumped:** what nodes write back (`StreamRowMerge`, `StreamStateWriter`, `ContentSink`, `EventIngest`: runtime state, workers' pids, recordings' status, VOD analysis), and MAIN's TMDb and provider metadata crons. A changed carried column among those (`movie_properties`, `stream_display_name`, a recording's `status`) reaches a node by the resync.
+- `StreamVersionsTest` fails when a new file writes `streams`, `streams_servers`, `streams_options`, `streams_arguments`, `streams_types`, `profiles` or `recordings` without dispatching one of the four events, unless it is listed with the reason.
+
+**The `streams` op.** The plan's R2 op (section 7), on the bulk ingest lane with a per-op semaphore of 4 (`ClusterSemaphore::OPS`). It reads no `servers` row of MAIN's. It is served only to an `active` node whose STREAMS flow (8) is on and whose agent says `streams` at hello (`cluster_nodes.features`); otherwise it answers a signed `409 FLOW_OFF` with `flow: "streams"`, plus `feature: "streams"` when only the feature is missing.
+
+- **Delta** (`{since}`): the node's version rows past `since`, in version order, 1000 at most per call. A row whose stream the node holds is its record; any other is a removal. The reply's `ver` is the version of the last row served. `more` is set when rows remain, or when a reply could not hold them all: at most 200 records or 4 MiB of them, at least one.
+- **`full`.** A `since` of 0 (nothing held), below the node's floor, or above MAIN's head (its versions went back: a restore) is answered `full: true` and nothing else. The node then checks every stream.
+- **Resync** (`{since, resync: {from, to, hashes}}`): the plan's section hashes. MAIN reads the streams the node holds in `from..to`, at most 1000 per call, and answers the records whose ETag differs from the one the node names (or that it does not name), and removals for the ids it names that it does not hold. `next` says where to go on from when the reply could not cover the range. The node's cursor is left as it was.
+- **Records** are `rep`-signed and sealed to the node like the whole sections, and name the node, its generation, the stream and its version. The ETag is the SHA-256 of the record's canonical data.
+- **Without a licence** a record is not signed. It is left out and counted in `withheld`, and the removals still go. A delta's cursor stops before the first such record, so it comes again once the licence is back. Any other refusal to sign denies the call, as for the whole sections.
+- **Never from a failed read.** Every read throws when it fails, and the op answers `503 DB` rather than signing a partial section.
+- **Pruning.** `cron:cluster` drops the rows of streams their server no longer holds once they are seven days old, at most 10,000 rows a run, even with the API off. It first raises that server's own floor (`cluster_meta.stream_ver_floor.<sid>`) to the newest version it loses, so a node whose cursor is below it checks every stream again.
+
+**On the node, for PHP.** `Core/Cluster/ReplicaStreams` reads the section as the agent stores it (contract below). It returns the whole section or null: null without a completed pass (`streams.json` with a `since` above 0), and null when any file does not read as the record of its own stream. A caller that prunes by the list, such as `cron:cleanup`'s checks, thus never takes a partial list for the node's streams. `assigned($types)` gives what `cron:cleanup`'s stream and created-channel checks select from MAIN's database today, and `archives($sid)` its TV-archive check. Nothing calls it yet: moving `cron:cleanup` off MAIN's database is the mode-2 work.
+
+**How it differs from the plan.**
+
+- The plan names the version table, not how a node asks. Every bump takes one version per stream from a counter shared by all nodes, and bumps commit in version order, so a node's delta cursor is one number.
+- The section hashes are per stream (one ETag per record) and sent by id range, at most 2000 per call, not one hash per section: a node with thousands of streams would otherwise send them all every 5 minutes.
+- "Signed once per content hash (cached)": a record names the node and its generation, as every `rep` record has since the fifth increment, so a signature cannot be shared between nodes. Each is signed per request, as the whole sections are.
+- Removals travel in the MAC'd BOX reply, not as signed records: a removal only restricts, and the node stores nothing for it.
+- A node also holds the streams whose archive or thumbnails it records and those with a recording scheduled on it. The plan lists assigned streams and the recordings.
+- `children` lists the servers configured to relay the stream from this node, not a count of active relays. The count a node checks today (`attachedRestreamCounts`) is runtime state (children with a running feed), which R2 does not carry; Phase 8's relay tickets need the configured list.
+- Metadata crons (TMDb, the providers' title sync) dispatch nothing, as the plan has only the desired-config writers bump: the resync carries their changes.
+- No wake-up on change: a change reaches a node at its next delta, within a minute. The plan's "on change" needs a push, like `config.changed`, not built.
+- The table existed (migration 034); migration 047 adds the stream key, the holders' rows and the counter.
+- The section is served whatever the node's mode. The `secrets` section needs mode 1 or 2 for its secrets; stream sources are what a legacy node reads from MAIN's database anyway.
+
+**Known limits.**
+
+- The node's half is not built: no agent stores the section yet, and no PHP applies it (the stream caches, `StreamSource`, `stream_bundle` on a start miss). The node keeps reading its streams from MAIN's database.
+- A holder added by a path that dispatches nothing (a module, an SQL edit) has no version row. When the stream is later taken off it, the node learns it only from the resync, within 5 minutes.
+- The delta cursor's correctness rests on the bump's transaction (InnoDB). A connection that cannot begin one (none in production) could commit the counter before the rows; the resync repairs what that misses.
+- The stream cache entry a node builds today also holds the stream's `bouquets`, which the section does not carry.
+- The resync reads a node's whole set every 5 minutes, 1000 streams per call.
+- Without a licence, a delta stops at the first changed record: removals past it wait for the licence or the resync.
+
+**Tests.**
+
+- `StreamVersionsTest`: a version per stream in id order for every kind of holder; a past holder stamped too; the floor raised by a reset and never lowered; the counter kept where migration 047 started it; a failed statement stamping nothing and never throwing; each event bumping its streams; MAIN's writers dispatching (removal from a server, `move`, a profile or EPG source deleted, a recording finalised); what nodes write back never bumping, and never a carried column; the writer scan.
+- `StreamReplicaTest`: the streams a node holds by id and by range, a limited read missing none, and the pruning, with each node's floor raised first.
+- `ClusterApiTest`: the op only with the flow and the feature, on the bulk lane, without MAIN's row, holding its semaphore; a new node's full pass, then a delta, an edit, runtime writes that move nothing, and a removal; a resync answering only what differs, in pages, and a delta past a reply's worth; a node never getting another node's stream, recording or row, nor a secret or a local column, each record opening for it alone; without a licence, changed records withheld and removals still arriving, then sent once licensed; `503 DB` for every failed read; malformed requests refused; `full` below the floor, after a reset and above the head.
+- `ReplicaStreamsTest`: the whole section or nothing. `ReplicaSectionsTest`: every column classified. `ClusterSchemaTest`: migration 047 and the key. `BootStageTest`: the listeners after `ContainerPopulateStage`. `EventDispatcherTest`: `subscribe()`.
+
+**The agent's contract (XC_VM_Fanout, not built yet).**
+
+- **Feature.** List `"streams"` in hello's `features` only once the agent implements all of the following. MAIN serves the op only to such an agent, on a node whose STREAMS flow (8) is on. Otherwise it answers a signed `409 FLOW_OFF` with `flow: "streams"`, plus `feature: "streams"` when only the feature is missing. Keep what is held, say hello again if the feature was not recorded, and ask at the next poll.
+- **Op.** `POST /cluster/v1/streams`, session-authenticated, on the bulk lane, one call at a time. Refusals are those of every ingest op: `503 RATE_LIMITED` with `op: "streams"` (the per-op semaphore, no `lane`, or the bulk lane, `lane: "bulk"`): send the same request again after the busy wait. `503 DB`: keep every file and the cursor, ask again at the next poll. The session refusals (`LICENCE_INVALID`, `NODE_REVOKED`, `TOKEN_EXPIRED`, `CLOCK`) as for any op.
+- **Delta request:** `{"since": <int ≥ 0>}`, the cursor held (0 when nothing is held).
+- **Delta reply:** `{"ver": <int>, "head": <int>, "more": <bool>, "streams": [ENTRY…], "removed": [<stream id>…], "main_time_ms": <int>}`, with `"full": true` or `"withheld": <int>` when they apply.
+  - `full: true` comes with no record and no removal: start a full pass (below).
+  - Otherwise store every ENTRY, delete every removed stream, then set the cursor to `ver`. While `more` is true, ask again at once.
+  - `withheld`: records MAIN could not sign without a licence. `ver` stops before the first of them and `more` is false: ask again at the next poll.
+- **Resync request:** `{"since": <cursor>, "resync": {"from": <int ≥ 0>, "to": <int>, "hashes": {"<stream id>": "<ETag>", …}}}`, with `from ≤ to ≤ 2147483647`. `hashes` names the ETag (64 lowercase hex) of every stream held with an id in `from..to` and of no other, at most 2000; its keys are decimal ids. Anything else is `400 BAD_REQUEST`.
+- **Resync reply:** `{"ver": <since as sent>, "head": <int>, "next": <int> | null, "streams": [ENTRY…], "removed": [<stream id>…], "main_time_ms": <int>}`, with `"withheld": <int>` when some were. `streams` holds the records of the streams held in the range whose ETag differs or is not named; `removed` the named ids no longer held. `next` set: the reply covers `from..next−1` only. Null: the range is done.
+- **ENTRY:** `{"id": <stream id>, "ver": <int ≥ 0>, "etag": "<64 hex>", "sealed": "<base64 std>"}`. `sealed` is XCVM-SEAL-v1 to the node's box key, purpose `replica`, context the node uuid. It opens to `u32(len) ‖ payload ‖ sig`, where `sig` is the panel's signature over `payload` under tag `rep`, and `payload` is `{"v": 1, "section": "stream", "node": <uuid>, "gen": <int>, "stream_id": <int>, "ver": <int>, "etag": "<64 hex>", "iat": <unix seconds>, "data": DATA}`.
+  - Store a record only if the signature verifies under the pinned panel key and `section` is `stream`, `node` this node, and `stream_id` and `etag` those of the ENTRY. Checking `gen` against the token's generation is recommended.
+  - When one record of a reply fails, apply nothing of the reply and keep the cursor: log it and ask again at the next poll.
+- **DATA:** `{"children": [<sid>…], "options": [OPTION…], "profile": {…} | null, "recordings": [{…}…], "server": {…} | null, "stream": {…}, "tickets": null, "type": {…} | null}`, fields as the table above. Store it exactly as signed; the agent need not parse it, as PHP does. A later MAIN may fill `tickets` (Phase 8) or add keys.
+- **Files**, written atomically (a temporary file, then a rename) under `config/cluster/replica/`, mode 0600, since stream sources may carry an upstream's credentials:
+  - `streams/<id>.rep`: the sealed record as received (bytes, not base64).
+  - `streams/<id>.json`: `{"etag": "<etag>", "ver": <ver>, "data": <data as signed>}`. Write `.rep` before `.json`.
+  - A removal deletes `streams/<id>.json`, then `streams/<id>.rep`.
+  - `streams.json`: `{"since": <cursor>}`, rewritten whenever the cursor changes. It holds 0 until the node's first full pass completes: `Core/Cluster/ReplicaStreams` reads the section only when it is above 0.
+  - `state.json` keeps the cursor (`streams_since`), a full pass in progress (`streams_pass`: its head and the next `from`) and the last resync's time (`streams_resync_at`).
+- **The range walk.** Each call sends the ETags of the held streams with an id of at least `from`, at most 2000 in ascending order. `to` is the last of those ids when more held ids remain above it, else 2147483647. After the reply, `from` becomes `next` when set, else `to + 1`. The walk ends after a call with `to` 2147483647 answers `next` null. Recompute the hashes for each call from what is stored, so the records just stored count.
+- **Cadence.**
+  - **Delta:** after every `config` sync (every 60 s), and at once while `more`.
+  - **Full pass:** on `full`, or when the cursor is 0. Walk from 0 with the hashes held (none on a new node) and no deltas meanwhile. Once the walk ends with no `withheld` in any reply, set the cursor to the `head` of the pass's first reply and write it to `streams.json`. With a `withheld` reply, keep the cursor as it was: a new node stays at 0 and walks again at the next poll.
+  - **Resync:** every 5 minutes, jittered by ±10 %, the same walk with the cursor unchanged.
+- **Apply.** After storing any record or removal, run `console.php cluster:apply`, debounced 1 s as today. Nothing in PHP applies the section yet; its readers read the files.
+- **Never logged:** a record, its data or a diff of it. Name the stream id only.
+- **Compatibility.** Today's agent never lists `streams`, so it never calls the op and MAIN never serves it; nothing else changes on the wire. A rollback leaves the version rows and the `cluster_meta` keys, which nothing reads.
+
 ### The cluster bus (Phase 2, first increment): wake-ups
 
 **What it is.** The cluster bus is MAIN's own Redis instance for the cluster API (`Domain\Cluster\ClusterBus`). It runs the bundled `redis-server` with `bin/cluster_bus/cluster.conf`, and is separate from the shared Redis that the panel and legacy LBs use.
