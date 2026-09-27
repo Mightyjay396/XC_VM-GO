@@ -37,10 +37,10 @@ final class ClusterSemaphore {
 	public const PERMITS = 4;
 
 	/**
-	 * The limited ops (the plan's `streams` has no op yet), each with its worst
-	 * case in seconds: its lane's pool timeout (ctl 60 s, ingest 90 s).
+	 * The limited ops, each with its worst case in seconds: its lane's pool
+	 * timeout (ctl 60 s, ingest 90 s).
 	 */
-	public const OPS = ['hello' => 60, 'token_rekey' => 60, 'config' => 90, 'conn_snapshot' => 90];
+	public const OPS = ['hello' => 60, 'token_rekey' => 60, 'config' => 90, 'conn_snapshot' => 90, 'streams' => 90];
 
 	/** The refusal's retry_after_ms is drawn from this range, to spread a fleet out. */
 	public const RETRY_MIN_MS = 1000;

@@ -27,8 +27,9 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * holding the stream, so the change reaches the node as a removal.
  *
  * ```text
- * cluster_meta stream_ver        the newest version handed out (1 before any change)
- * cluster_meta stream_ver_floor  a node whose cursor is below it checks every stream again
+ * cluster_meta stream_ver              the newest version handed out (1 before any change)
+ * cluster_meta stream_ver_floor        a node whose cursor is below it checks every stream again
+ * cluster_meta stream_ver_floor.<sid>  the same for one node: its versions pruned below it
  * ```
  *
  * One bump takes as many versions as it has streams, in one transaction that
@@ -105,16 +106,26 @@ final class StreamVersions {
 		return max(self::START, self::meta($rDb ?? DatabaseFactory::get(), self::META_HEAD) ?? self::START);
 	}
 
-	/** The floor: a node whose cursor is below it checks every stream again; a failed read throws. */
-	public static function floor(?object $rDb = null): int {
-		return self::meta($rDb ?? DatabaseFactory::get(), self::META_FLOOR) ?? 0;
+	/**
+	 * A node's floor: a node whose cursor is below it checks every stream
+	 * again. The higher of every node's (reset()) and this node's own (its
+	 * versions pruned); server 0 reads the first alone. A failed read throws.
+	 */
+	public static function floor(int $rServerID = 0, ?object $rDb = null): int {
+		$rDb ??= DatabaseFactory::get();
+		$rFloor = self::meta($rDb, self::META_FLOOR) ?? 0;
+		return $rServerID > 0 ? max($rFloor, self::meta($rDb, self::META_FLOOR . '.' . $rServerID) ?? 0) : $rFloor;
 	}
 
-	/** Raise the floor (never lower it), before rows below it are pruned; a failed write throws. */
-	public static function raiseFloor(int $rVer, ?object $rDb = null): void {
+	/**
+	 * Raise a node's floor (server 0: every node's), never lower it: before
+	 * rows below it are pruned. A failed write throws.
+	 */
+	public static function raiseFloor(int $rVer, int $rServerID = 0, ?object $rDb = null): void {
 		$rDb ??= DatabaseFactory::get();
-		if ($rVer > self::floor($rDb)) {
-			self::put($rDb, self::META_FLOOR, $rVer);
+		$rName = $rServerID > 0 ? self::META_FLOOR . '.' . $rServerID : self::META_FLOOR;
+		if ($rVer > (self::meta($rDb, $rName) ?? 0)) {
+			self::put($rDb, $rName, $rVer);
 		}
 	}
 

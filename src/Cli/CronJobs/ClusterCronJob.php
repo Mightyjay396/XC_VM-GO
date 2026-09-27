@@ -14,6 +14,7 @@ use XcVm\Domain\Cluster\CommandBus;
 use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\NonceStore;
+use XcVm\Domain\Cluster\StreamReplica;
 use XcVm\Domain\Cluster\TokenService;
 use XcVm\Domain\Server\ServerRepository;
 
@@ -54,9 +55,10 @@ class ClusterCronJob implements CommandInterface {
 			return 0;
 		}
 		if (empty(SettingsManager::get('cluster_api_enabled'))) {
-			// The blocklist's change log is written either way; it is kept short.
-			// Ports kept before the API was switched off still expire.
-			foreach ([static fn() => BlocklistDelta::prune(), static fn() => self::endpoint()] as $rRun) {
+			// The blocklist's change log and the stream versions are written
+			// either way; they are kept short. Ports kept before the API was
+			// switched off still expire.
+			foreach ([static fn() => BlocklistDelta::prune(), static fn() => StreamReplica::prune(), static fn() => self::endpoint()] as $rRun) {
 				try {
 					$rRun();
 				} catch (\Throwable) {
@@ -80,6 +82,7 @@ class ClusterCronJob implements CommandInterface {
 			'enrol_codes' => static fn() => EnrolCodeService::prune(),
 			'commands' => static fn() => CommandBus::prune(),
 			'blocklist_changes' => static fn() => BlocklistDelta::prune(),
+			'stream_versions' => static fn() => StreamReplica::prune(),
 			'endpoint' => static fn() => self::endpoint(),
 			// The signals daemon runs this every second; the minute is its fallback.
 			'liveness' => static function () {

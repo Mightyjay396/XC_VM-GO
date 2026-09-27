@@ -11,15 +11,20 @@ use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ConnectAudit;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\SettingsAudit;
+use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterPolicy;
+use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Domain\Cluster\ClusterSemaphore;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\HeartbeatService;
@@ -29,12 +34,17 @@ use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Cluster\NonceStore;
 use XcVm\Domain\Cluster\ReplicaBuilder;
+use XcVm\Domain\Cluster\StreamReplica;
 use XcVm\Domain\Cluster\TokenService;
+use XcVm\Domain\Stream\ContentSink;
+use XcVm\Domain\Stream\StreamRepository;
+use XcVm\Domain\Stream\StreamRowMerge;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\BusServer;
 use XcVm\Tests\Support\QueryLogDb;
 use XcVm\Tests\Support\ClusterReference;
 use XcVm\Tests\Support\FakeClusterCrypto;
+use XcVm\Tests\Support\InstallSchema;
 
 /**
  * MAIN's cluster API end to end, against the real migrations' schema: SSH
@@ -132,6 +142,7 @@ final class ClusterApiTest extends TestCase {
 	protected function tearDown(): void {
 		ClusterClock::fix(null);
 		ClusterBus::useSocket(null);
+		EventDispatcher::resetInstance();
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
 		OpensslExtra::usePrevFile(null);
@@ -1572,6 +1583,283 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame('XC', $this->openRecord($this->reply($rRes, $rCtx, $rKeys)['settings']['sealed'], 'rep')['data']['server_name']);
 	}
 
+	// ── streams: the R2 section ──────────────────────────────────────────
+
+	/**
+	 * The stream tables, as an install has them, and a catalogue: node 5
+	 * holds 10 (assigned, relayed on by 6), 12 (records its TV archive) and
+	 * 13 (a recording of it scheduled there); 11 runs on 6 alone.
+	 */
+	private function streamsTables(): void {
+		foreach (['streams', 'streams_servers', 'recordings', 'profiles', 'streams_types', 'streams_arguments', 'streams_options'] as $rTable) {
+			$this->rDb->exec(InstallSchema::table($rTable));
+		}
+		$this->rDb->exec($this->ddl((string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/034_create_cluster_changes.sql')));
+		$this->rDb->exec("INSERT INTO `streams_types` VALUES (1, 'Live Streams', 'live', 'live', 1), (2, 'Movies', 'movie', 'movie', 0)");
+		$this->rDb->exec("INSERT INTO `profiles` VALUES (7, 'hd', '{\"3\":{\"cmd\":\"-b:v 4M\"}}')");
+		$this->rDb->exec("INSERT INTO `streams_arguments` VALUES (1, 'fetch', 'User Agent', 'shown in the form', 'http', 'user_agent', '-user_agent \"%s\"', 'text', 'VLC')");
+		$this->rDb->exec("INSERT INTO `streams` (`id`, `type`, `stream_display_name`, `stream_source`, `notes`, `transcode_profile_id`, `enable_transcode`, `tv_archive_server_id`, `tv_archive_duration`, `vframes_server_id`, `tv_archive_pid`, `order`) VALUES
+			(10, 1, 'News', '[\"http://src.example/a\"]', 'secret-notes', 7, 1, 0, 0, 0, 0, 3),
+			(11, 1, 'Other', '[\"http://src.example/b\"]', NULL, 0, 0, 0, 0, 0, 0, 4),
+			(12, 1, 'Archive', '[\"http://src.example/c\"]', NULL, 0, 0, 5, 24, 0, 0, 5),
+			(13, 1, 'Recorded', '[\"http://src.example/d\"]', NULL, 0, 0, 0, 0, 0, 0, 6)");
+		$this->rDb->exec('INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `parent_id`, `on_demand`, `pid`) VALUES (1, 10, 5, NULL, 1, 0), (2, 10, 6, 5, 0, 0), (3, 11, 6, NULL, 0, 0), (4, 13, 6, NULL, 0, 0)');
+		$this->rDb->exec("INSERT INTO `streams_options` (`id`, `stream_id`, `argument_id`, `value`) VALUES (1, 10, 1, 'curl/8')");
+		$this->rDb->exec("INSERT INTO `recordings` (`id`, `stream_id`, `source_id`, `title`, `start`, `end`, `archive`, `status`) VALUES (1, 13, 5, 'Match', 100, 200, 0, 0), (2, 13, 6, 'Match on 6', 100, 200, 0, 0), (3, 10, 6, 'News on 6', 300, 400, 0, 0)");
+		// Every holder's row at version 0, as migration 047 seeds an install's.
+		foreach (['SELECT `server_id`, `stream_id`, 0, 0 FROM `streams_servers`', 'SELECT `tv_archive_server_id`, `id`, 0, 0 FROM `streams` WHERE `tv_archive_server_id` > 0', 'SELECT `source_id`, `stream_id`, 0, 0 FROM `recordings`'] as $rSelect) {
+			$this->rDb->exec('REPLACE INTO `cluster_stream_ver` (`server_id`, `stream_id`, `ver`, `updated_at`) ' . $rSelect);
+		}
+		EventDispatcher::resetInstance();
+		EventDispatcher::subscribe(StreamVersions::class);
+		(new \ReflectionProperty(StreamRepository::class, 'db'))->setValue(null, null);
+	}
+
+	/** An active node whose agent keeps the streams section: the STREAMS flow on, and `streams` said at hello. */
+	private function streamsNode(): array {
+		$rKeys = $this->active();
+		$this->rDb->query('UPDATE `cluster_nodes` SET `flows` = ? WHERE `server_id` = ?', NodeRegistry::FLOW_STREAMS, self::SID);
+		$this->served('hello', ['instance_id' => 'inst-a', 'features' => ['hls_reaper', StreamReplica::FEATURE]], 1, $rKeys);
+		return $rKeys;
+	}
+
+	/**
+	 * Open a stream record as the agent does: sealed to this node, `rep`-signed,
+	 * naming this node, its generation, the stream and the announced ETag.
+	 *
+	 * @param array{id: int, ver: int, etag: string, sealed: string} $rEntry
+	 */
+	private function openStream(array $rEntry): array {
+		$rDoc = $this->openRecord($rEntry['sealed'], 'rep');
+		$this->assertSame(['stream', $this->rUuid, 1, $rEntry['id'], $rEntry['ver'], $rEntry['etag']], [$rDoc['section'], $rDoc['node'], $rDoc['gen'], $rDoc['stream_id'], $rDoc['ver'], $rDoc['etag']]);
+		$this->assertSame($rEntry['etag'], ReplicaBuilder::etag($rDoc['data']), 'the ETag is the data\'s hash');
+		$this->assertSame(['children', 'options', 'profile', 'recordings', 'server', 'stream', 'tickets', 'type'], array_keys($rDoc['data']));
+		return $rDoc;
+	}
+
+	/** @return array<int, string> the ETags of a reply's records, by stream */
+	private function etags(array $rOut): array {
+		return array_column($rOut['streams'], 'etag', 'id');
+	}
+
+	private const EVERY_STREAM = ['from' => 0, 'to' => 2147483647];
+
+	public function testStreamsGoOnlyToANodeWithTheFlowWhoseAgentSaysItKeepsThem(): void {
+		$this->streamsTables();
+		$rKeys = $this->active();
+		[$rRes, , $rReq] = $this->call('streams', ['since' => 0], 1, $rKeys);
+		$this->assertSame(['flow' => 'streams'], array_intersect_key($this->denial($rRes, 409, 'FLOW_OFF', $rReq), ['flow' => 0, 'feature' => 0]));
+
+		// The flow alone: today's agent never says it keeps them.
+		$this->rDb->query('UPDATE `cluster_nodes` SET `flows` = ? WHERE `server_id` = ?', NodeRegistry::FLOW_STREAMS, self::SID);
+		[$rRes, , $rReq] = $this->call('streams', ['since' => 0], 1, $rKeys);
+		$this->assertSame(['flow' => 'streams', 'feature' => 'streams'], array_intersect_key($this->denial($rRes, 409, 'FLOW_OFF', $rReq), ['flow' => 0, 'feature' => 0]));
+
+		$this->served('hello', ['instance_id' => 'inst-a', 'features' => [StreamReplica::FEATURE]], 1, $rKeys);
+		$this->assertTrue($this->served('streams', ['since' => 0], 1, $rKeys)['full']);
+		$this->assertFalse(ClusterApi::readsMain(Canonical::PATH_PREFIX . 'streams'));
+		$this->assertSame('cluster_ingest', ClusterPool::poolFor('streams'), 'the ingest pool, on the bulk lane');
+		$this->assertSame(ClusterSemaphore::LANE_BULK, ClusterSemaphore::ingestLane('streams', ['since' => 0]));
+	}
+
+	public function testANewNodeTakesEveryStreamItHoldsThenOnlyWhatChanges(): void {
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+
+		// Nothing held yet: every stream is checked, by range.
+		$this->assertSame(['ver' => 0, 'head' => 1, 'more' => false, 'full' => true, 'streams' => [], 'removed' => []], array_diff_key($this->served('streams', ['since' => 0], 1, $rKeys), ['main_time_ms' => 0]));
+		$rOut = $this->served('streams', ['since' => 0, 'resync' => self::EVERY_STREAM + ['hashes' => new \stdClass()]], 1, $rKeys);
+		$this->assertSame([10, 12, 13], array_column($rOut['streams'], 'id'), 'the node holds these three, never 11');
+		$this->assertSame([0, 1, null, []], [$rOut['ver'], $rOut['head'], $rOut['next'], $rOut['removed']]);
+		[$rTen, $rTwelve, $rThirteen] = array_map(fn(array $rEntry): array => $this->openStream($rEntry)['data'], $rOut['streams']);
+
+		$this->assertSame(['enable_transcode' => 1, 'id' => 10, 'stream_display_name' => 'News', 'stream_source' => '["http://src.example/a"]', 'transcode_profile_id' => 7, 'type' => 1], array_intersect_key($rTen['stream'], array_flip(['id', 'type', 'stream_display_name', 'stream_source', 'transcode_profile_id', 'enable_transcode'])), 'typed, keys sorted');
+		$this->assertEqualsCanonicalizing(array_keys(ReplicaSections::STREAM_FIELDS), array_keys($rTen['stream']), 'the carried columns, nothing else');
+		$this->assertSame(['live' => 1, 'type_id' => 1, 'type_key' => 'live', 'type_name' => 'Live Streams', 'type_output' => 'live'], $rTen['type']);
+		$this->assertSame(['profile_id' => 7, 'profile_name' => 'hd', 'profile_options' => '{"3":{"cmd":"-b:v 4M"}}'], $rTen['profile']);
+		$this->assertSame([['argument_cat' => 'fetch', 'argument_cmd' => '-user_agent "%s"', 'argument_default_value' => 'VLC', 'argument_id' => 1, 'argument_key' => 'user_agent', 'argument_name' => 'User Agent', 'argument_type' => 'text', 'argument_wprotocol' => 'http', 'value' => 'curl/8']], $rTen['options']);
+		$this->assertSame(['on_demand' => 1, 'parent_id' => null, 'server_id' => 5, 'server_stream_id' => 1, 'stream_id' => 10], $rTen['server']);
+		$this->assertSame([6], $rTen['children'], 'server 6 relays it from this node');
+		$this->assertSame([], $rTen['recordings'], 'another node\'s recording of it is not this node\'s');
+		$this->assertNull($rTen['tickets'], 'Phase 8\'s relay and file tickets');
+		$this->assertNull($rTwelve['server'], 'held for its archive, not run here');
+		$this->assertSame(5, $rTwelve['stream']['tv_archive_server_id']);
+		$this->assertSame([1], array_column($rThirteen['recordings'], 'id'));
+		$this->assertSame('Match', $rThirteen['recordings'][0]['title']);
+
+		// Held: nothing comes again, and a stream the node holds that it should not goes.
+		$rHave = $this->etags($rOut) + [99 => str_repeat('a', 64)];
+		$this->assertSame(['ver' => 0, 'head' => 1, 'next' => null, 'streams' => [], 'removed' => [99]], array_diff_key($this->served('streams', ['since' => 0, 'resync' => self::EVERY_STREAM + ['hashes' => $rHave]], 1, $rKeys), ['main_time_ms' => 0]));
+		// The pass done, the node takes the head it saw first as its cursor.
+		$this->assertSame(['ver' => 1, 'head' => 1, 'more' => false, 'streams' => [], 'removed' => []], array_diff_key($this->served('streams', ['since' => 1], 1, $rKeys), ['main_time_ms' => 0]));
+
+		// An edit: that stream alone, at its new version.
+		$this->rDb->exec("UPDATE `streams` SET `stream_source` = '[\"http://src.example/a2\"]' WHERE `id` = 10");
+		EventDispatcher::dispatch(new StreamsChangedEvent([10]));
+		$rOut = $this->served('streams', ['since' => 1], 1, $rKeys);
+		$this->assertSame([[10, 2]], array_map(static fn(array $rEntry): array => [$rEntry['id'], $rEntry['ver']], $rOut['streams']));
+		$this->assertSame([2, false, []], [$rOut['ver'], $rOut['more'], $rOut['removed']]);
+		$this->assertSame('["http://src.example/a2"]', $this->openStream($rOut['streams'][0])['data']['stream']['stream_source']);
+		$rTenEtag = $rOut['streams'][0]['etag'];
+
+		// What the node writes back moves no version and no ETag.
+		StreamRowMerge::mergeNode(5, 10, ['pid' => 4242, 'stream_status' => 1, 'bitrate' => 3000]);
+		ContentSink::workerPid(12, 'tv_archive', 77);
+		$this->assertSame([], $this->served('streams', ['since' => 2], 1, $rKeys)['streams']);
+		$rHave[10] = $rTenEtag;
+		unset($rHave[99]);
+		$this->assertSame([], $this->served('streams', ['since' => 2, 'resync' => self::EVERY_STREAM + ['hashes' => $rHave]], 1, $rKeys)['streams']);
+
+		// Taken off this node: a removal.
+		StreamRepository::deleteStreamsByServer([10], 5);
+		$rOut = $this->served('streams', ['since' => 2], 1, $rKeys);
+		$this->assertSame([[], [10], 3], [$rOut['streams'], $rOut['removed'], $rOut['ver']]);
+	}
+
+	public function testAHashResyncSendsOnlyTheStreamsThatDifferInPages(): void {
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+		$rHave = $this->etags($this->served('streams', ['since' => 0, 'resync' => self::EVERY_STREAM + ['hashes' => []]], 1, $rKeys));
+
+		// A write that bumps nothing (catalogue metadata): the section hashes catch it.
+		$this->rDb->exec("UPDATE `streams` SET `stream_display_name` = 'News at ten' WHERE `id` = 10");
+		$rHave[12] = str_repeat('0', 64);
+		$rOut = $this->served('streams', ['since' => 1, 'resync' => ['from' => 10, 'to' => 12, 'hashes' => array_intersect_key($rHave, [10 => 0, 12 => 0]) + [11 => str_repeat('b', 64)]]], 1, $rKeys);
+		$this->assertSame([10, 12], array_column($rOut['streams'], 'id'), 'only those that differ, within the range');
+		$this->assertSame([[11], null, 1], [$rOut['removed'], $rOut['next'], $rOut['ver']], 'the cursor stays the node\'s');
+		$this->assertSame('News at ten', $this->openStream($rOut['streams'][0])['data']['stream']['stream_display_name']);
+
+		// More than a reply holds: in pages, each naming where to go on from.
+		$rValues = [];
+		for ($i = 0; $i < StreamReplica::MAX_RECORDS + 5; $i++) {
+			$rValues[] = '(' . (1000 + $i) . ", 2, '[]')";
+		}
+		$this->rDb->exec('INSERT INTO `streams` (`id`, `type`, `stream_source`) VALUES ' . implode(', ', $rValues));
+		$this->rDb->exec('INSERT INTO `streams_servers` (`stream_id`, `server_id`, `on_demand`) SELECT `id`, 5, 0 FROM `streams` WHERE `id` >= 1000');
+		$rOut = $this->served('streams', ['since' => 1, 'resync' => ['from' => 100, 'to' => 2147483647, 'hashes' => []]], 1, $rKeys);
+		$this->assertCount(StreamReplica::MAX_RECORDS, $rOut['streams']);
+		$this->assertSame(1000 + StreamReplica::MAX_RECORDS, $rOut['next']);
+		$rOut = $this->served('streams', ['since' => 1, 'resync' => ['from' => $rOut['next'], 'to' => 2147483647, 'hashes' => []]], 1, $rKeys);
+		$this->assertSame(range(1000 + StreamReplica::MAX_RECORDS, 1004 + StreamReplica::MAX_RECORDS), array_column($rOut['streams'], 'id'));
+		$this->assertNull($rOut['next']);
+
+		// And a delta past a reply's worth: `more`, with the cursor where it stopped.
+		EventDispatcher::dispatch(new StreamsChangedEvent(range(1000, 1004 + StreamReplica::MAX_RECORDS)));
+		$rOut = $this->served('streams', ['since' => 1], 1, $rKeys);
+		$this->assertCount(StreamReplica::MAX_RECORDS, $rOut['streams']);
+		$this->assertTrue($rOut['more']);
+		$this->assertSame(end($rOut['streams'])['ver'], $rOut['ver']);
+		$rNext = $this->served('streams', ['since' => $rOut['ver']], 1, $rKeys);
+		$this->assertSame(range(1000 + StreamReplica::MAX_RECORDS, 1004 + StreamReplica::MAX_RECORDS), array_column($rNext['streams'], 'id'));
+		$this->assertFalse($rNext['more']);
+	}
+
+	public function testANodeGetsOnlyItsOwnStreamsSealedToItNeverAnotherNodesOrASecret(): void {
+		$this->streamsTables();
+		$this->rDb->exec('CREATE TABLE `settings` (`id` int, `live_streaming_pass` text, `api_pass` text)');
+		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'secret-live', 'secret-api')");
+		$this->peer(6, 'streams');
+		$rKeys = $this->streamsNode();
+		$rOut = $this->served('streams', ['since' => 0, 'resync' => self::EVERY_STREAM + ['hashes' => []]], 1, $rKeys);
+		$this->assertNotContains(11, array_column($rOut['streams'], 'id'));
+		foreach ($rOut['streams'] as $rEntry) {
+			$rDoc = $this->openStream($rEntry);
+			$rJson = (string) json_encode($rDoc);
+			foreach (['secret-live', 'secret-api', 'secret-notes', 'on 6', '"order"', 'tv_archive_pid'] as $rNever) {
+				$this->assertStringNotContainsString($rNever, $rJson, $rEntry['id'] . ': ' . $rNever);
+			}
+			$this->assertNull(Seal::open(random_bytes(32), 'replica', $this->rUuid, (string) base64_decode($rEntry['sealed'])), 'opens with this node\'s key alone');
+			$this->assertNull(Seal::open($this->rNodeBoxSk, 'replica', sprintf('00000000-0000-4000-a000-%012d', 6), (string) base64_decode($rEntry['sealed'])), 'and for this node alone');
+			if ($rDoc['data']['server'] !== null) {
+				$this->assertSame(5, $rDoc['data']['server']['server_id']);
+			}
+			foreach ($rDoc['data']['recordings'] as $rRecording) {
+				$this->assertSame(5, $rRecording['source_id']);
+			}
+		}
+		// A change to another node's stream reaches this node as nothing at all.
+		EventDispatcher::dispatch(new StreamsChangedEvent([11]));
+		$this->assertSame(['streams' => [], 'removed' => []], array_intersect_key($this->served('streams', ['since' => 1], 1, $rKeys), ['streams' => 0, 'removed' => 0]));
+	}
+
+	public function testWithoutALicenceChangedStreamsAreLeftOutAndRemovalsStillArrive(): void {
+		if (!$this->rCrypto instanceof FakeClusterCrypto) {
+			$this->markTestSkipped('the licence is switched off in the fake only');
+		}
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+		$rHave = $this->etags($this->served('streams', ['since' => 0, 'resync' => self::EVERY_STREAM + ['hashes' => []]], 1, $rKeys));
+		$this->rCrypto->rLicensed = false;
+
+		// First a removal (13's recording here is gone), then an edit of 10.
+		$this->rDb->exec('DELETE FROM `recordings` WHERE `id` = 1');
+		EventDispatcher::dispatch(new StreamsChangedEvent([13]));
+		$this->rDb->exec("UPDATE `streams` SET `stream_source` = '[]' WHERE `id` = 10");
+		EventDispatcher::dispatch(new StreamsChangedEvent([10]));
+		$rOut = $this->served('streams', ['since' => 1], 1, $rKeys);
+		$this->assertSame([[], [13], 1, 2, false], [$rOut['streams'], $rOut['removed'], $rOut['withheld'], $rOut['ver'], $rOut['more']], 'the cursor stops before what could not be signed');
+		$rOut = $this->served('streams', ['since' => 1, 'resync' => self::EVERY_STREAM + ['hashes' => $rHave]], 1, $rKeys);
+		$this->assertSame([[], [13], 1], [$rOut['streams'], $rOut['removed'], $rOut['withheld']]);
+
+		// Licensed again: the edit arrives from where the node stopped.
+		$this->rCrypto->rLicensed = true;
+		$rOut = $this->served('streams', ['since' => 2], 1, $rKeys);
+		$this->assertSame([10], array_column($rOut['streams'], 'id'));
+		$this->assertArrayNotHasKey('withheld', $rOut);
+
+		// Any other refusal to sign denies the call.
+		$this->rCrypto->rRefuseSign = 'CLOCK';
+		[$rRes, , $rReq] = $this->call('streams', ['since' => 1], 1, $rKeys);
+		$this->denial($rRes, 503, 'CLOCK', $rReq);
+	}
+
+	public function testAStreamsReadThatFailsAnswers503DbNeverAPartialSection(): void {
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+		EventDispatcher::dispatch(new StreamsChangedEvent([10, 12, 13]));
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		foreach (['cluster_meta', 'cluster_stream_ver', 'FROM `streams_servers`', 'FROM `streams` ', 'streams_types', 'profiles', 'streams_options', 'recordings'] as $rTable) {
+			$rLog->rRefuse = '/' . preg_quote($rTable, '/') . '/';
+			foreach ([['since' => 1], ['since' => 1, 'resync' => self::EVERY_STREAM + ['hashes' => []]]] as $rAsk) {
+				[$rRes, , $rReq] = $this->call('streams', $rAsk, 1, $rKeys);
+				$this->denial($rRes, 503, 'DB', $rReq);
+			}
+		}
+		$rLog->rRefuse = null;
+		$this->assertCount(3, $this->served('streams', ['since' => 1], 1, $rKeys)['streams']);
+	}
+
+	public function testAMalformedStreamsRequestIsRefused(): void {
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+		$rHash = str_repeat('c', 64);
+		foreach ([
+			[], ['since' => -1], ['since' => '1'], ['since' => 1.5],
+			['since' => 0, 'resync' => []], ['since' => 0, 'resync' => ['from' => 5, 'to' => 4, 'hashes' => []]],
+			['since' => 0, 'resync' => ['from' => -1, 'to' => 4, 'hashes' => []]], ['since' => 0, 'resync' => ['from' => 0, 'to' => 2147483648, 'hashes' => []]],
+			['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => [10 => $rHash]]], ['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => [5 => 'nope']]],
+			['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => ['x' => $rHash]]], ['since' => 0, 'resync' => ['from' => 0, 'to' => 9, 'hashes' => 'all']],
+			['since' => 0, 'resync' => ['from' => 0, 'to' => 2147483647, 'hashes' => array_fill_keys(range(1, StreamReplica::MAX_HASHES + 1), $rHash)]],
+		] as $rAsk) {
+			[$rRes, , $rReq] = $this->call('streams', $rAsk, 1, $rKeys);
+			$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+		}
+	}
+
+	public function testANodeBelowItsFloorChecksEveryStreamAgain(): void {
+		$this->streamsTables();
+		$rKeys = $this->streamsNode();
+		EventDispatcher::dispatch(new StreamsChangedEvent([10]));
+		$this->assertArrayNotHasKey('full', $this->served('streams', ['since' => 1], 1, $rKeys));
+		EventDispatcher::dispatch(StreamsChangedEvent::all());
+		$this->assertTrue($this->served('streams', ['since' => 2], 1, $rKeys)['full'], 'every stream changed at once');
+		$this->assertArrayNotHasKey('full', $this->served('streams', ['since' => 3], 1, $rKeys));
+		$this->assertTrue($this->served('streams', ['since' => 4], 1, $rKeys)['full'], 'a cursor past the head: MAIN\'s versions went back (a restore)');
+		StreamVersions::raiseFloor(9, self::SID);
+		$this->assertTrue($this->served('streams', ['since' => 3], 1, $rKeys)['full'], 'this node\'s own floor');
+	}
+
 	// ── The cluster bus: nonces and per-op semaphores ────────────────────
 
 	/**
@@ -1720,7 +2008,7 @@ final class ClusterApiTest extends TestCase {
 	public function testConfigAndConnSnapshotHoldAPermitToo(): void {
 		$this->bus();
 		$rKeys = $this->active();
-		foreach (['config' => ['blocklist_since' => 0], 'conn_snapshot' => ['snap_id' => 'snap-1', 'seq' => 0, 'last' => true, 'conns' => []]] as $rOp => $rPayload) {
+		foreach (['config' => ['blocklist_since' => 0], 'conn_snapshot' => ['snap_id' => 'snap-1', 'seq' => 0, 'last' => true, 'conns' => []], 'streams' => ['since' => 0]] as $rOp => $rPayload) {
 			for ($i = 0; $i < ClusterSemaphore::PERMITS; $i++) {
 				ClusterSemaphore::acquire($rOp);
 			}
@@ -2048,7 +2336,7 @@ final class ClusterApiTest extends TestCase {
 		foreach (['challenge', 'enrol_complete', 'hello', 'config', 'an_op_to_come'] as $rOp) {
 			$this->assertTrue(ClusterApi::readsMain(Canonical::PATH_PREFIX . $rOp), $rOp);
 		}
-		foreach (['heartbeat', 'commands', 'ack', 'events', 'conn_admit', 'conn_snapshot', 'recording_complete', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'] as $rOp) {
+		foreach (['heartbeat', 'commands', 'ack', 'events', 'conn_admit', 'conn_snapshot', 'recording_complete', 'streams', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'] as $rOp) {
 			$this->assertFalse(ClusterApi::readsMain(Canonical::PATH_PREFIX . $rOp), $rOp);
 		}
 		// No handler of those is given MAIN's row.

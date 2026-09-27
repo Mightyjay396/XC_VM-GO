@@ -88,7 +88,7 @@ final class ClusterSemaphoreTest extends TestCase {
 
 	public function testEachLimitedOpHasFourPermitsOfItsOwn(): void {
 		$rRedis = $this->bus();
-		$this->assertSame(['hello' => 60, 'token_rekey' => 60, 'config' => 90, 'conn_snapshot' => 90], ClusterSemaphore::OPS, 'the ops, and each one\'s worst case: its lane\'s pool timeout');
+		$this->assertSame(['hello' => 60, 'token_rekey' => 60, 'config' => 90, 'conn_snapshot' => 90, 'streams' => 90], ClusterSemaphore::OPS, 'the ops, and each one\'s worst case: its lane\'s pool timeout');
 		$this->assertSame(4, ClusterSemaphore::PERMITS);
 		$rHeld = [];
 		for ($i = 0; $i < 4; $i++) {

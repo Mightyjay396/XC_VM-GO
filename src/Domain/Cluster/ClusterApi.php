@@ -16,7 +16,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 /**
  * MAIN's `/cluster/v1/<op>` API (Phase 2: health, challenge, enrol_complete,
  * enrol_code, enrol_code_status, token_refresh, token_rekey, hello, heartbeat;
- * Phase 4: commands, ack; Phase 5: events, recording_complete; Phase 6: conn_snapshot, conn_admit). Transport-free: handle() takes the request
+ * Phase 4: commands, ack; Phase 5: events, recording_complete; Phase 6: conn_snapshot, conn_admit;
+ * Phase 7: config, streams). Transport-free: handle() takes the request
  * as an array and returns status, headers and body, so it is tested without
  * a web server; Public/cluster/index.php is the HTTP shell around it.
  *
@@ -44,7 +45,7 @@ final class ClusterApi {
 	 * heartbeat on the cluster bus sends MySQL no query of its own (only the
 	 * connection's setup).
 	 */
-	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'conn_snapshot', 'conn_admit', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
+	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'conn_snapshot', 'conn_admit', 'streams', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
 
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
@@ -63,6 +64,7 @@ final class ClusterApi {
 		'conn_snapshot' => ['POST', false, ['active']],
 		'conn_admit' => ['POST', false, ['active']],
 		'config' => ['POST', false, ['active']],
+		'streams' => ['POST', false, ['active']],
 		'heartbeat' => ['POST', false, ['active', 'quarantined']],
 	];
 
@@ -159,7 +161,7 @@ final class ClusterApi {
 		if (!in_array($rNode['state'], $rStates, true)) {
 			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNode['state']]);
 		}
-		// hello, config and conn_snapshot hold one of the op's bus permits.
+		// hello, config, streams and conn_snapshot hold one of the op's bus permits.
 		return ClusterSemaphore::run($rCrypto, $rOp, $rH, static fn(): array => self::dispatch($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rBody));
 	}
 
@@ -191,7 +193,7 @@ final class ClusterApi {
 	 * events from their reserve; a batch's lane is known only once its BOX is
 	 * open, and opening it touches no database.
 	 *
-	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config' $rOp
+	 * @param 'enrol_complete'|'token_refresh'|'hello'|'heartbeat'|'commands'|'ack'|'events'|'recording_complete'|'conn_snapshot'|'conn_admit'|'config'|'streams' $rOp
 	 * @return array{status: int, headers: array<string, string>, body: string}
 	 */
 	private static function dispatch(ClusterCrypto $rCrypto, string $rOp, array $rReq, array $rSettings, array $rMain, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, string $rBody): array {
@@ -215,6 +217,7 @@ final class ClusterApi {
 				'conn_snapshot' => self::connSnapshot($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 				'conn_admit' => self::connAdmit($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings),
 				'config' => self::config($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload, $rSettings, $rMain),
+				'streams' => self::streams($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rPayload),
 			};
 		};
 		$rLane = ClusterSemaphore::ingestLane($rOp, $rPayload);
@@ -767,6 +770,37 @@ final class ClusterApi {
 					}
 				}
 			}
+		} catch (ClusterRefusedException $rE) {
+			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
+		} catch (\Throwable) {
+			return DenialFactory::deny($rCrypto, 503, 'DB', $rH['node'], $rH['nonce']);
+		}
+		return ClusterReply::boxed($rKeys, $rCtx, $rOut + ['main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * `streams`: the node's R2 streams section (StreamReplica), for a node
+	 * whose STREAMS flow is on and whose agent said `streams` at hello. With
+	 * `since` alone, what changed past the node's cursor (`full` when it must
+	 * check every stream); with `resync` ({from, to, hashes}), the records of
+	 * the streams it holds in that range whose ETag differs from the one it
+	 * names, and the removals. Each record is `rep`-signed and sealed to the
+	 * node; one that cannot be signed without a licence is left out
+	 * (`withheld`). A section MAIN cannot read answers `503 DB`.
+	 */
+	private static function streams(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
+		$rMissing = StreamReplica::refused($rNode);
+		if ($rMissing !== null) {
+			// An older agent never asks; one whose hello did not say it keeps the section is told which.
+			return DenialFactory::deny($rCrypto, 409, 'FLOW_OFF', $rH['node'], $rH['nonce'], ['flow' => 'streams'] + ($rMissing === 'feature' ? ['feature' => StreamReplica::FEATURE] : []));
+		}
+		$rSince = $rP['since'] ?? null;
+		$rResync = array_key_exists('resync', $rP) ? StreamReplica::resyncRequest($rP['resync']) : null;
+		if (!is_int($rSince) || $rSince < 0 || (array_key_exists('resync', $rP) && $rResync === null)) {
+			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
+		}
+		try {
+			$rOut = $rResync === null ? StreamReplica::delta($rCrypto, $rNode, $rSince) : StreamReplica::resync($rCrypto, $rNode, $rSince, $rResync['from'], $rResync['to'], $rResync['hashes']);
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
 		} catch (\Throwable) {

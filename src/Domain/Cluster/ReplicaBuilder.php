@@ -415,7 +415,7 @@ final class ReplicaBuilder {
 	}
 
 	/** Keys sorted at every level; lists keep their order. */
-	private static function canonical(mixed $rValue): mixed {
+	public static function canonical(mixed $rValue): mixed {
 		if (!is_array($rValue)) {
 			return $rValue;
 		}
@@ -425,7 +425,8 @@ final class ReplicaBuilder {
 		return array_map([self::class, 'canonical'], $rValue);
 	}
 
-	private static function json(array $rDoc): string {
+	/** A record's payload, as signed: JSON with slashes and Unicode as they are. */
+	public static function json(array $rDoc): string {
 		return (string) json_encode($rDoc, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 	}
 }
