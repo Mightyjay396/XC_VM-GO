@@ -90,6 +90,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('cluster_logs_flow'); ?></th>
                     <th><?= $language::get('cluster_streams_flow'); ?></th>
                     <th><?= $language::get('cluster_content_flow'); ?></th>
+                    <th><?= $language::get('cluster_config_flow'); ?></th>
                     <th><?= $language::get('cluster_connections_flow'); ?></th>
                     <th><?= $language::get('cluster_root_pin'); ?></th>
                     <th><?= $language::get('cluster_epoch'); ?></th>

@@ -3079,6 +3079,16 @@ The shadow diff for `rtmp_ips` compares against the database, because an LB neve
 
 **Not built:** the other R1 sections (`settings` with its allowlist, `secrets`, `servers`, `node`, `crontab`, `cluster`), `ReplicaStage`, and the mode-2 refusal. On the blocklist path, the root flush still arrives as a `signals` row, until `node.root blocklist_sync` replaces it. The eighth Phase 7 increment built the refusal, and runs the flush from the `node.root` command MAIN already sent where it sends one.
 
+### Switching the CONFIG flow (Phase 7, fifteenth increment)
+
+Every Phase 7 reader keys off `NodeRegistry::FLOW_CONFIG` (`ReplicaBoot`, `ReplicaApply`, `BlocklistService`, `CacheCronJob`, `RootSignalsCronJob`, `BruteforceGuard`, `cluster:apply`), but `ClusterAdmin::FLOW_BITS` — the list the *Cluster Nodes* page renders a button from, and the only writer of `cluster_nodes.flows` — did not carry it. The replica was built, tested and switchable by nobody.
+
+`config` joins the list between `content` and `connections`, with the two actions the page posts (`config_on`, `config_off`) and its own column. `NodeRegistry::validFlows()` needed no new rule: CONFIG has no prerequisite, and the existing ones (CONNECTIONS needs COMMANDS and STREAMS, DATAPLANE needs STREAMS and CONTENT) already refuse the combinations that matter. `ClusterFlowSwitchTest` pins the header row against `FLOW_BITS`, because the page renders a fixed header and one cell per entry, and pins that each flow has its four strings.
+
+The new strings are English-only until `make lang-translate` runs (it needs the docs venv and a provider key); the Translator copies English for a missing key meanwhile.
+
+**Not built:** promoting a node's `mode`. `mode` is written once at enrolment from `lb_new_node_mode`, and `api_mode_allowed` is still false (`SettingsService.php:85`), so CONFIG can be switched on a node in mode 0 or 1 — where it is read — but no node runs mode 2 yet. That, and the gate that reads the connect audit before promoting, is Phase 9.
+
 ### The node system API's own inputs (Phase 4, fifth increment)
 
 `/api` is the legacy control plane, and the cluster command channel routes four of its actions to a node unchanged. Three took an input from MAIN and used it as given, which made MAIN's cluster-wide secret the only thing between a caller and the node's filesystem:

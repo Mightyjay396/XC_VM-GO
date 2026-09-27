@@ -22,6 +22,7 @@ final class ClusterAdmin {
 		'logs' => NodeRegistry::FLOW_LOGS,
 		'streams' => NodeRegistry::FLOW_STREAMS,
 		'content' => NodeRegistry::FLOW_CONTENT,
+		'config' => NodeRegistry::FLOW_CONFIG,
 		'connections' => NodeRegistry::FLOW_CONNECTIONS,
 	];
 
@@ -128,6 +129,8 @@ final class ClusterAdmin {
 				case 'streams_off':
 				case 'content_on':
 				case 'content_off':
+				case 'config_on':
+				case 'config_off':
 				case 'connections_on':
 				case 'connections_off':
 					$rNode = NodeRegistry::byServer($rServerID);
