@@ -190,6 +190,46 @@ final class ClusterSettings {
 	}
 
 	/**
+	 * Is a path inside the roots a node may read from?
+	 *
+	 * The node system API takes paths from MAIN (`scandir`, `scandir_recursive`,
+	 * `getFile`). Callers name VOD sources under the scan roots, and panel files
+	 * under MAIN_HOME (certbot logs, subtitles, module archives), so MAIN_HOME is
+	 * passed as an extra root by the `getFile` handler only.
+	 *
+	 * Resolved with realpath on both sides, so `..` and symlinks out of a root are
+	 * refused rather than string-matched. A path that does not exist is refused.
+	 *
+	 * @param string       $rPath   Absolute path from the request.
+	 * @param mixed        $rRoots  lb_scan_roots as stored (JSON, lines, array), or null for the default.
+	 * @param list<string> $rExtra  Extra roots this caller allows.
+	 * @return bool True when the path resolves inside one of the roots.
+	 */
+	public static function pathAllowed(string $rPath, mixed $rRoots = null, array $rExtra = []): bool {
+		$rReal = realpath($rPath);
+		if ($rReal === false) {
+			return false;
+		}
+
+		[$rAllowed] = self::scanRoots($rRoots);
+		foreach ($rExtra as $rRoot) {
+			$rAllowed[] = rtrim((string) $rRoot, '/');
+		}
+
+		foreach ($rAllowed as $rRoot) {
+			$rRootReal = realpath($rRoot);
+			if ($rRootReal === false) {
+				continue;
+			}
+			if ($rReal === $rRootReal || str_starts_with($rReal, rtrim($rRootReal, '/') . '/')) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
 	 * Parse scan roots from a textarea (one path per line) or a JSON/array value.
 	 *
 	 * @return array{0: list<string>, 1: bool} [roots, any invalid]
