@@ -32,8 +32,8 @@ use XcVm\Streaming\Fanout\FanoutClient;
  * - `node.cache {jobs}` — cache jobs for a node in mode 2, whose signals
  *   daemon reads no `signals` row: run as the daemon ran the rows
  *   (CacheJobs::run), only when every job is in the form MAIN signs it
- *   (CacheJobs::job), at most CacheJobs::MAX of them; otherwise refused
- *   whole (exit 2) before any runs.
+ *   (CacheJobs::job) and they name at most CacheJobs::MAX targets
+ *   (CacheJobs::targets); otherwise refused whole (exit 2) before any runs.
  * - `config.changed {sections}` — the agent fetches its replica at once; an
  *   agent that hands it here instead is acked `{"deferred": true}`, and its
  *   next minute's poll fetches the change.
@@ -211,6 +211,11 @@ class ClusterExecCommand implements CommandInterface {
 						fwrite(STDERR, "cluster:exec: bad cache jobs\n");
 						return 2;
 					}
+				}
+				// What one run may take within the agent's minute: MAIN splits longer lists.
+				if (CacheJobs::targets($rJobs) > CacheJobs::MAX) {
+					fwrite(STDERR, "cluster:exec: bad cache jobs\n");
+					return 2;
 				}
 				CacheJobs::run($rJobs);
 				echo json_encode(['result' => true, 'jobs' => count($rJobs)]);

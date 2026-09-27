@@ -44,11 +44,23 @@ class CertbotCronJob implements CommandInterface {
 	}
 
 	private function loadCron(bool $rCheck): void {
+		$this->checkCertificate($rCheck);
+		// MAIN's daily run, not the check the certbot command starts.
+		if (!$rCheck) {
+			$this->renewNodes();
+		}
+	}
+
+	/**
+	 * This server's own certificate: its renewal when due, its record (MAIN's
+	 * `servers.certbot_ssl`) kept current, nginx's configuration repaired.
+	 */
+	protected function checkCertificate(bool $rCheck): void {
 		$db = self::db();
 		$rCertInfo = null;
 		// A node in mode 2 reaches no database of MAIN's (plan, section 10):
-		// MAIN sends its renewal, MAIN's record of its certificate is the one
-		// it last reported, and it reloads its own nginx.
+		// MAIN sends its renewal, it compares with the record it last
+		// reported, and it reloads its own nginx.
 		$rApi = NodeRole::refusesConnects();
 
 		if (!$rCheck) {
@@ -81,7 +93,8 @@ class CertbotCronJob implements CommandInterface {
 
 		// This node's own record, read from its row: the servers cache a node
 		// replica builds carries no certbot_ssl (ReplicaSections::SERVER_LOCAL).
-		// In mode 2, what it last reported, which is what MAIN has.
+		// In mode 2, its copy of what it last reported (MAIN's record, unless
+		// MAIN cleared it since: the daily run reports again below).
 		if ($rApi) {
 			$rDBCert = (string) NodeStateSink::reported('certbot_ssl');
 		} else {
@@ -96,10 +109,18 @@ class CertbotCronJob implements CommandInterface {
 				list($rCertificate) = explode(';', explode(' ', $rLine)[1]);
 				if ($rCertificate != 'server.crt') {
 					$rCertInfoFile = DiagnosticsService::getCertificateInfo($rCertificate);
-					if ($rCertInfoFile && ($rCertInfo === null || $rCertInfo['serial'] != $rCertInfoFile['serial'] || !$rDBCert || ($rDBCertInfo['serial'] ?? null) != $rCertInfoFile['serial'])) {
+					$rChanged = $rCertInfoFile && ($rCertInfo === null || $rCertInfo['serial'] != $rCertInfoFile['serial'] || !$rDBCert || ($rDBCertInfo['serial'] ?? null) != $rCertInfoFile['serial']);
+					if ($rChanged) {
 						NodeStateSink::state(['certbot_ssl' => json_encode($rCertInfoFile)], $db);
 						echo 'Updated ssl configuration in database' . "\n";
 						$this->reloadNginx($rApi, $db);
+					} elseif ($rCertInfoFile && $rApi && !$rCheck) {
+						// Mode 2: the daily run reports it again, nginx left as it is.
+						// MAIN renews from its record (NodeCertbot), which the admin's
+						// regenerate may have cleared with no certbot_generate
+						// reaching this node to make it forget its copy.
+						NodeStateSink::state(['certbot_ssl' => json_encode($rCertInfoFile)], $db);
+						echo 'Reported ssl configuration to MAIN' . "\n";
 					}
 				} else {
 					if (is_array($rDBCertInfo) && !empty($rDBCertInfo['path'])) {
@@ -117,16 +138,19 @@ class CertbotCronJob implements CommandInterface {
 				}
 			}
 		}
+	}
 
-		// MAIN sends the renewals of nodes in mode 2, which cannot queue their own.
-		if (!$rCheck && class_exists(NodeCertbot::class) && !empty(SettingsManager::get('cluster_api_enabled')) && NodeRole::isMain()) {
-			try {
-				foreach (NodeCertbot::renewDue() as $rServerID) {
-					echo 'Certificate renewal sent to server ' . $rServerID . '.' . "\n";
-				}
-			} catch (\Throwable $rE) {
-				echo 'Node certificates: ' . $rE->getMessage() . "\n";
+	/** MAIN sends the renewals of nodes in mode 2, which cannot queue their own (NodeCertbot). */
+	protected function renewNodes(): void {
+		if (!class_exists(NodeCertbot::class) || empty(SettingsManager::get('cluster_api_enabled')) || !NodeRole::isMain()) {
+			return;
+		}
+		try {
+			foreach (NodeCertbot::renewDue() as $rServerID) {
+				echo 'Certificate renewal sent to server ' . $rServerID . '.' . "\n";
 			}
+		} catch (\Throwable $rE) {
+			echo 'Node certificates: ' . $rE->getMessage() . "\n";
 		}
 	}
 

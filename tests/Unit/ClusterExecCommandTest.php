@@ -60,8 +60,9 @@ final class ClusterExecCommandTest extends TestCase {
 
 	/**
 	 * `node.cache` runs only jobs in the form MAIN signs them
-	 * (CacheJobs::job), at most CacheJobs::MAX a command: any other
-	 * is refused whole, before a job runs, and nothing is deleted.
+	 * (CacheJobs::job), naming at most CacheJobs::MAX targets a command
+	 * (an id or a uuid counts one, a list its ids): any other is refused
+	 * whole, before a job runs, and nothing is deleted.
 	 */
 	public function testMalformedCacheJobsAreRefusedWhole(): void {
 		$rGood = ['type' => 'delete_vod', 'id' => 7];
@@ -75,6 +76,8 @@ final class ClusterExecCommandTest extends TestCase {
 			'an unknown type' => ['jobs' => [['type' => 'delete_everything', 'id' => 1]]],
 			'an extra field' => ['jobs' => [$rGood + ['path' => '/etc']]],
 			'too many' => ['jobs' => array_fill(0, \XcVm\Core\Cluster\CacheJobs::MAX + 1, $rGood)],
+			'too many ids' => ['jobs' => [['type' => 'delete_vods', 'id' => range(1, \XcVm\Core\Cluster\CacheJobs::MAX + 1)]]],
+			'too many targets' => ['jobs' => [['type' => 'delete_vods', 'id' => range(1, \XcVm\Core\Cluster\CacheJobs::MAX)], $rGood]],
 		] as $rWhy => $rArgs) {
 			ob_start();
 			$rExit = ClusterExecCommand::run(['type' => 'node.cache', 'args' => $rArgs]);

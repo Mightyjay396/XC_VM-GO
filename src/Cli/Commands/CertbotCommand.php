@@ -49,7 +49,11 @@ class CertbotCommand implements CommandInterface {
 		$rData = json_decode(base64_decode($rArgs[0]), true);
 		if ($rData['action'] == 'certbot_generate') {
 			// The admin's regenerate cleared MAIN's record first: a node in
-			// mode 2, which cannot read it, forgets its copy of it too.
+			// mode 2, which cannot read it, forgets its copy of it too. It
+			// does for MAIN's renewal (NodeCertbot) as well, which keeps its
+			// record: when certbot then writes no certificate, the node
+			// points nginx at the newest one it holds for the names and
+			// reports it, which mode 0 and 1 leave as it is.
 			NodeStateSink::forget('certbot_ssl');
 			if (file_exists(BIN_PATH . 'certbot/logs/xc_vm.log')) {
 				unlink(BIN_PATH . 'certbot/logs/xc_vm.log');

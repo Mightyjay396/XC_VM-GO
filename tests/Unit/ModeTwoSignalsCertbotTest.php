@@ -193,6 +193,21 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 							$rDaemon = new class extends SignalsCommand {
 								public int $rRestarts = 0;
 
+								public int $rSettingsChecks = 0;
+
+								public int $rServersReads = 0;
+
+								// A pass's settings refresh (after its nginx check) and its servers refresh.
+								protected function hasFileChanged(): bool {
+									$this->rSettingsChecks++;
+									return parent::hasFileChanged();
+								}
+
+								protected function refreshServers(): array {
+									$this->rServersReads++;
+									return parent::refreshServers();
+								}
+
 								protected function assertRunAsXcVm(): bool {
 									return true;
 								}
@@ -218,6 +233,7 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 								$rResult['output'] = (string) ob_get_clean();
 							}
 							$rResult['restarts'] = $rDaemon->rRestarts;
+							$rResult['passes'] = [$rDaemon->rSettingsChecks, $rDaemon->rServersReads];
 							break;
 						case 'certbot_cron':
 							ob_start();
@@ -232,7 +248,16 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 							$rResult['queued'] = [
 								SignalDispatcher::cache(5, ['type' => 'delete_vod', 'id' => 7]),
 								SignalDispatcher::cacheBatch(5, [['type' => 'delete_con', 'uuid' => str_repeat('ab', 16)], ['type' => 'delete_con', 'uuid' => '../../config/cluster/agent.json'], ['type' => 'update_line', 'id' => 3]]),
+								SignalDispatcher::cache(5, ['type' => 'update_stream', 'id' => 3]),
 							];
+							break;
+						case 'other_jobs':
+							// A job for another server: a row, which mode 2 refuses.
+							try {
+								$rResult['queued'] = SignalDispatcher::cache(6, ['type' => 'delete_vod', 'id' => 8]);
+							} catch (\Throwable $e) {
+								$rResult['queued'] = get_class($e);
+							}
 							break;
 						case 'certbot':
 							ob_start();
@@ -319,6 +344,17 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		file_put_contents($this->rHome . 'bin/nginx/conf/ssl.conf', 'ssl_certificate ' . $rCertificate . ";\nssl_certificate_key " . dirname($rCertificate) . "/privkey.pem;\n");
 	}
 
+	/**
+	 * A `node.cache` command for this node, signed by the panel, as the
+	 * agent hands it to cluster:exec.
+	 *
+	 * @param list<array<string, mixed>> $rJobs
+	 */
+	private function cacheCommand(array $rJobs): string {
+		$rDoc = (string) json_encode(['v' => 1, 'type' => 'node.cache', 'exp' => time() + 600, 'iat' => time(), 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => 1, 'node_uuid' => $this->rFixture->rUuid, 'gen' => 1, 'dedupe_key' => null, 'args' => ['jobs' => $rJobs]], JSON_UNESCAPED_SLASHES);
+		return (string) json_encode(['doc' => $rDoc, 'sig' => Enc::b64url($this->rFixture->rCrypto->sign('cmd', $rDoc))]);
+	}
+
 	/** What the node keeps of what it reported (NodeStateSink::reported), as its file holds it. */
 	private function kept(): ?array {
 		$rKept = json_decode((string) @file_get_contents($this->rHome . 'config/cluster/node_state.json'), true);
@@ -331,7 +367,8 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 	 * One pass of the daemon, with Redis on in the settings: no ping of
 	 * MAIN's database, no Redis, no `signals` row read; it refreshes its
 	 * settings and servers from the replica and ends the pass, as a pass
-	 * always did, for the next one to start.
+	 * always did, for the next one to start. The pass runs: once, with its
+	 * settings and servers refresh.
 	 */
 	public function testTheSignalsDaemonPassNeedsNeitherDatabaseNorRedis(): void {
 		$this->node(['redis_handler' => '1']);
@@ -342,6 +379,7 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		$this->assertTrue($rResult['replica']);
 		$this->assertNoConnect();
 		$this->assertSame([0, 1], [$rResult['code'], $rResult['restarts']], $rResult['output']);
+		$this->assertSame([1, 1], $rResult['passes'], 'one pass, which refreshed its settings and servers');
 		$this->assertStringNotContainsString('Not running', $rResult['output'], 'the pass reached its settings refresh');
 		$this->assertStringNotContainsString('Redis', $rResult['output']);
 	}
@@ -349,30 +387,51 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 	/**
 	 * Cache jobs reach a node in mode 2 as a signed `node.cache` command,
 	 * which cluster:exec runs as the daemon ran the rows: a closed viewer's
-	 * connection file and a deleted movie's files go, the rest stays.
+	 * connection file and a deleted movie's files go, the rest stays. A
+	 * job's keys may come in any order.
 	 */
 	public function testCacheJobsRunFromANodeCacheCommand(): void {
 		$this->node();
 		$rUUID = str_repeat('ab', 16);
 		touch($this->rHome . 'tmp/opened_cons/' . $rUUID);
 		touch($this->rHome . 'tmp/opened_cons/' . str_repeat('cd', 16));
-		foreach (['7.mp4', '8.mkv', '8.srt', '9.ts'] as $rFile) {
+		foreach (['7.mp4', '8.mkv', '8.srt', '9.ts', '10.mp4'] as $rFile) {
 			touch($this->rHome . 'content/vod/' . $rFile);
 		}
-		$rDoc = (string) json_encode(['v' => 1, 'type' => 'node.cache', 'exp' => time() + 600, 'iat' => time(), 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => 1, 'node_uuid' => $this->rFixture->rUuid, 'gen' => 1, 'dedupe_key' => null, 'args' => ['jobs' => [
+		$rIn = $this->cacheCommand([
 			['type' => 'delete_con', 'uuid' => $rUUID],
 			['type' => 'delete_vod', 'id' => 7],
 			['type' => 'delete_vods', 'id' => [8]],
 			['type' => 'drop_con', 'uuid' => 'no-fanout-here'],
-		]]], JSON_UNESCAPED_SLASHES);
-		$rIn = (string) json_encode(['doc' => $rDoc, 'sig' => Enc::b64url($this->rFixture->rCrypto->sign('cmd', $rDoc))]);
+			['id' => 10, 'type' => 'delete_vod'],
+		]);
 		[$rCode, $rOut] = $this->child(['cluster:exec'], dirname(__DIR__, 2) . '/src/console.php', $rIn);
 		$this->assertSame(0, $rCode, $rOut);
-		$this->assertSame(['result' => true, 'jobs' => 4], json_decode(trim($rOut), true), $rOut);
+		$this->assertSame(['result' => true, 'jobs' => 5], json_decode(trim($rOut), true), $rOut);
 		$this->assertNoConnect();
 		$this->assertFileDoesNotExist($this->rHome . 'tmp/opened_cons/' . $rUUID);
 		$this->assertFileExists($this->rHome . 'tmp/opened_cons/' . str_repeat('cd', 16));
 		$this->assertSame(['9.ts'], array_values(array_diff(scandir($this->rHome . 'content/vod/'), ['.', '..'])));
+	}
+
+	/**
+	 * A `node.cache` with one job outside MAIN's form, or naming more than
+	 * CacheJobs::MAX targets in all, is refused whole: its well-formed jobs
+	 * before the bad one do not run either.
+	 */
+	public function testACacheCommandWithABadJobRunsNone(): void {
+		$this->node();
+		touch($this->rHome . 'content/vod/7.mp4');
+		foreach ([
+			'a path for a uuid' => [['type' => 'delete_vod', 'id' => 7], ['type' => 'delete_con', 'uuid' => '../x']],
+			'too many targets' => [['type' => 'delete_vod', 'id' => 7], ['type' => 'delete_vods', 'id' => range(1, \XcVm\Core\Cluster\CacheJobs::MAX)]],
+		] as $rWhy => $rJobs) {
+			[$rCode, $rOut] = $this->child(['cluster:exec'], dirname(__DIR__, 2) . '/src/console.php', $this->cacheCommand($rJobs));
+			$this->assertSame(2, $rCode, $rWhy . ': ' . $rOut);
+			$this->assertSame('cluster:exec: bad cache jobs', trim($rOut), $rWhy);
+			$this->assertFileExists($this->rHome . 'content/vod/7.mp4', $rWhy . ': nothing ran');
+			$this->assertNoConnect();
+		}
 	}
 
 	/**
@@ -391,12 +450,28 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		$this->assertIsArray($rResult, $rOut);
 		$this->assertArrayNotHasKey('error', $rResult, $rOut);
 		$this->assertNoConnect();
-		$this->assertSame([true, true], $rResult['queued']);
+		$this->assertSame([true, true, true], $rResult['queued']);
 		$this->assertFileDoesNotExist($this->rHome . 'content/vod/7.mp4');
 		$this->assertFileExists($this->rHome . 'content/vod/8.mp4');
 		$this->assertFileDoesNotExist($this->rHome . 'tmp/opened_cons/' . str_repeat('ab', 16));
 		$this->assertFileExists($this->rHome . 'config/cluster/agent.json', 'a path is not a uuid');
 		$this->assertSame([], preg_grep('/cache_engine/', $this->commands()), 'MAIN\'s cache rebuilds are not a node\'s');
+	}
+
+	/**
+	 * A job a node in mode 2 queues for another server is a row there, which
+	 * the refusal stops: it never runs against this node's own files, and
+	 * xcvm_core is never asked for a connect.
+	 */
+	public function testAJobForAnotherServerIsNotRunHere(): void {
+		$this->node();
+		touch($this->rHome . 'content/vod/8.mp4');
+		[, $rOut, $rResult] = $this->child(['other_jobs']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertSame(\XcVm\Core\Cluster\LbDatabaseAccessException::class, $rResult['queued'], 'the row\'s write is refused');
+		$this->assertFileExists($this->rHome . 'content/vod/8.mp4');
+		$this->assertSame([], is_file($this->rHome . 'connects.log') ? file($this->rHome . 'connects.log', FILE_IGNORE_NEW_LINES) : [], 'xcvm_core was never asked to connect');
 	}
 
 	// ── cron:certbot ─────────────────────────────────────────────────
@@ -407,7 +482,10 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 	 * spool, the node keeps its own copy, and it reloads its nginx itself
 	 * (no `signals` row for root to read), logging root's RELOAD line
 	 * through the spool. MAIN's panel logs are MAIN's own cron's to send.
-	 * The next run finds its copy current: nothing is sent or reloaded.
+	 * The next daily run finds its copy current, and reports the certificate
+	 * again all the same, since MAIN may have cleared its record meanwhile
+	 * (the admin's regenerate, its certbot_generate never reaching the
+	 * node): nginx is not reloaded.
 	 */
 	public function testCronCertbotReportsItsCertificateAndReloadsItself(): void {
 		$this->node();
@@ -432,8 +510,10 @@ final class ModeTwoSignalsCertbotTest extends TestCase {
 		$this->assertIsArray($rResult, $rOut);
 		$this->assertArrayNotHasKey('error', $rResult, $rOut);
 		$this->assertNoConnect();
-		$this->assertCount(1, $this->reportedCertificates(), 'nothing new to report');
-		$this->assertSame([], $this->commands(), 'nor to reload');
+		$this->assertStringContainsString('Reported ssl configuration to MAIN', $rResult['output']);
+		$this->assertSame(['0A1B', '0A1B'], array_column($this->reportedCertificates(), 'serial'), 'reported again');
+		$this->assertSame([], $this->commands(), 'nothing to reload');
+		$this->assertSame(1, count($this->spooled('p1')), 'nor a RELOAD line');
 	}
 
 	/**

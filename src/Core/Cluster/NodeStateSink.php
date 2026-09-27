@@ -23,7 +23,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  *
  * A node in mode 2 keeps its own copy of the KEPT fields it reported
  * (`config/cluster/node_state.json`), since MAIN's row is out of its reach:
- * reported() is what MAIN has of them.
+ * reported() is what it last sent MAIN, which MAIN may have cleared since
+ * (cron:certbot reports its certificate again each day).
  *
  * In Core: the crons that call it ship to LBs.
  */
@@ -69,10 +70,11 @@ final class NodeStateSink {
 	}
 
 	/**
-	 * What MAIN has of a KEPT field of this node's row, as a node in mode 2
-	 * knows it: the value it last reported, which the spool took (P0 is
-	 * never dropped), unless forgotten since. Null when there is none. Read
-	 * with the agent's user's rights (root's processes too), as written.
+	 * A KEPT field of this node's row as a node in mode 2 last reported it:
+	 * the value the spool took (P0 is never dropped), unless forgotten
+	 * since. MAIN may have cleared its record meanwhile (the admin's
+	 * regenerate). Null when there is none. Read with the agent's user's
+	 * rights (root's processes too), as written.
 	 */
 	public static function reported(string $rField): ?string {
 		$rValue = null;
@@ -87,7 +89,8 @@ final class NodeStateSink {
 	/**
 	 * Forget the node's copy of KEPT fields, when MAIN's record may have
 	 * been cleared: the certbot command, which the admin's regenerate
-	 * starts once it cleared `certbot_ssl`. Mode 2 only.
+	 * starts once it cleared `certbot_ssl` (and MAIN's renewal starts
+	 * without clearing it). Mode 2 only.
 	 */
 	public static function forget(string ...$rFields): void {
 		if (NodeRole::refusesConnects()) {

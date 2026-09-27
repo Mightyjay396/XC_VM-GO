@@ -15,7 +15,8 @@ use XcVm\Streaming\Fanout\FanoutClient;
  * `node.cache {jobs}` commands, which cluster:exec runs, and the node runs
  * its own jobs where they are queued (SignalDispatcher).
  *
- * In Core: MAIN builds the jobs it sends with job(), and nodes run them.
+ * In Core: MAIN builds the commands it sends with commands(), and nodes run
+ * them.
  */
 final class CacheJobs {
 	/**
@@ -31,7 +32,11 @@ final class CacheJobs {
 	/** MAIN's cache rebuilds: cron:cache_engine, which only MAIN's build has. */
 	public const REBUILDS = ['update_stream', 'update_line', 'update_streams', 'update_lines'];
 
-	/** Most jobs one `node.cache` command carries. */
+	/**
+	 * Most targets one `node.cache` command names (targets()): its jobs run
+	 * in one cluster:exec, which the agent gives a minute, and a delete runs
+	 * one `rm` per id.
+	 */
 	public const MAX = 500;
 
 	/**
@@ -82,6 +87,60 @@ final class CacheJobs {
 	 */
 	public static function onNode(array $rJobs): array {
 		return array_values(array_filter(self::clean($rJobs), static fn(array $rJob): bool => !in_array($rJob['type'], self::REBUILDS, true)));
+	}
+
+	/**
+	 * How many targets jobs in job()'s form name: one for an id or a uuid,
+	 * one per id of a list.
+	 *
+	 * @param list<array{type: string, id?: int|list<int>, uuid?: string}> $rJobs
+	 */
+	public static function targets(array $rJobs): int {
+		$rTargets = 0;
+		foreach ($rJobs as $rJob) {
+			$rTargets += is_array($rJob['id'] ?? null) ? count($rJob['id']) : 1;
+		}
+		return $rTargets;
+	}
+
+	/**
+	 * The `node.cache` commands MAIN sends for jobs: the jobs in job()'s
+	 * form, in order, no command naming more than MAX targets. A list of ids
+	 * longer than what is left of a command goes on in the next one, as a
+	 * job of the same type.
+	 *
+	 * @param list<mixed> $rJobs
+	 * @return list<list<array{type: string, id?: int|list<int>, uuid?: string}>> each command's jobs
+	 */
+	public static function commands(array $rJobs): array {
+		$rCommands = [];
+		$rCommand = [];
+		$rRoom = self::MAX;
+		foreach (self::clean($rJobs) as $rJob) {
+			$rIDs = is_array($rJob['id'] ?? null) ? $rJob['id'] : null;
+			while (true) {
+				if ($rRoom === 0) {
+					$rCommands[] = $rCommand;
+					$rCommand = [];
+					$rRoom = self::MAX;
+				}
+				if ($rIDs === null) {
+					$rCommand[] = $rJob;
+					$rRoom--;
+					break;
+				}
+				$rPart = array_splice($rIDs, 0, $rRoom);
+				$rCommand[] = ['type' => $rJob['type'], 'id' => $rPart];
+				$rRoom -= count($rPart);
+				if ($rIDs === []) {
+					break;
+				}
+			}
+		}
+		if ($rCommand !== []) {
+			$rCommands[] = $rCommand;
+		}
+		return $rCommands;
 	}
 
 	/**
