@@ -27,10 +27,12 @@ final class ClusterAdmin {
 
 	/**
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll(true)
-	 * @return list<array<string, mixed>> One row per enrolled node, with `server_name` and `health`.
+	 * @return list<array<string, mixed>> One row per enrolled node, with `server_name`, `health`
+	 *                                    and `settings_misses` (NodeAudit; null when not reported).
 	 */
 	public static function nodes(array $rServers, int $rOfflineAfterSec): array {
 		$rReady = ClusterMeta::readyAtMs(); // its own query: before ours, not between query() and get_rows()
+		$rMisses = NodeAudit::settingsMisses(); // likewise
 		$rHeard = HeartbeatService::lastSeen(); // MySQL's copy may be a flush behind
 		$rNow = ClusterClock::nowMs();
 		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
@@ -40,6 +42,7 @@ final class ClusterAdmin {
 			$rRow['last_seen_at'] = $rLastSeen;
 			$rRow['server_name'] = (string) ($rServers[(int) $rRow['server_id']]['server_name'] ?? ('#' . $rRow['server_id']));
 			$rRow['health'] = $rRow['state'] === 'active' ? NodeHealth::state($rLastSeen, $rReady, $rNow, $rOfflineAfterSec) : (string) $rRow['state'];
+			$rRow['settings_misses'] = $rMisses[(int) $rRow['server_id']] ?? null;
 			$rOut[] = $rRow;
 		}
 		return $rOut;

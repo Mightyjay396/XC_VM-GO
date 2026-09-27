@@ -114,3 +114,8 @@ register_shutdown_function(static function () use ($ingestLockDir): void {
 // the same instant, so a cached section would outlive the test that built it:
 // off for the suite; a test that checks the caching gives it a directory.
 \XcVm\Core\Cluster\ReplicaEtagCache::useDir(false);
+
+// The settings-miss audit (SettingsAudit) counts reads on nodes in mode 1 or
+// 2, and many tests point NodeFlows at such a file: off for the suite; a
+// test that checks it gives it its own directories.
+\XcVm\Core\Cluster\SettingsAudit::useDir(false);

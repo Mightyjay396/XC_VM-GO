@@ -205,6 +205,7 @@ final class ReplicaBootTest extends TestCase {
 			}
 			$rC = ServiceContainer::getInstance();
 			$rSettings = SettingsManager::getAll();
+			SettingsManager::get('zz_not_carried'); // a read the replica would not answer (SettingsAudit)
 			echo json_encode([
 				'replica' => ReplicaBoot::active(),
 				'db' => get_class($GLOBALS['db']),
@@ -315,6 +316,9 @@ final class ReplicaBootTest extends TestCase {
 			if (!$rWebApi) {
 				$this->assertSame([true, true, [3 => ['id' => 3]]], [$rDump['container_db'], $rDump['container_settings'], $rDump['container_bouquets']]);
 			}
+			// The boot itself read only allowlisted settings; the process's one miss
+			// reached the audit.json the agent sends, at its exit.
+			$this->assertSame(['settings_misses' => ['zz_not_carried' => $rWebApi ? 2 : 1]], json_decode((string) @file_get_contents($this->rHome . 'config/cluster/audit.json'), true));
 		}
 	}
 }

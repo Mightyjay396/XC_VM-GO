@@ -12,6 +12,8 @@ use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Cluster\SettingsAudit;
+use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterBus;
 use XcVm\Domain\Cluster\ClusterClock;
@@ -20,6 +22,7 @@ use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\ClusterSemaphore;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\HeartbeatService;
+use XcVm\Domain\Cluster\NodeAudit;
 use XcVm\Domain\Cluster\NodeHealth;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Cluster\NonceStore;
@@ -73,6 +76,7 @@ final class ClusterApiTest extends TestCase {
 		$this->rDb->exec('ALTER TABLE `cluster_node_epochs` ADD COLUMN `agent_eph_pub` binary(32) DEFAULT NULL');
 		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `root_ready` tinyint(1) NOT NULL DEFAULT 0');
 		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `features` varchar(255) DEFAULT NULL');
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `audit` text DEFAULT NULL');
 		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `status` int NOT NULL DEFAULT 0)');
 		$this->rDb->exec('INSERT INTO `servers` (`id`, `status`) VALUES (5, 0)');
 		DatabaseFactory::set($this->rDb);
@@ -468,6 +472,50 @@ final class ClusterApiTest extends TestCase {
 		$rSend('heartbeat', [], 0);
 		$this->assertSame([0, 8443], [(int) $rNode()['policy_ver'], (int) $rNode()['main_port']]);
 		$this->assertCount(4, $rRecorded());
+	}
+
+	public function testAHeartbeatKeepsTheNodesAuditWhenItChanges(): void {
+		$rKeys = $this->active();
+		$rAudit = ['settings_misses' => ['rare_key' => 1, 'hot_key' => 40, 'Bad Key' => 3, 'neg_key' => -1, 'float_key' => 1.5, '*' => 2]];
+		[$rRes, $rCtx] = $this->call('heartbeat', ['audit' => $rAudit], 1, $rKeys);
+		$this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame('{"settings_misses":{"hot_key":40,"rare_key":1,"*":2}}', NodeRegistry::byServer(self::SID)['audit'], 'only names and counts, most missed first');
+		$this->assertSame([self::SID => ['hot_key' => 40, 'rare_key' => 1, '*' => 2]], NodeAudit::settingsMisses());
+		$this->assertSame(['hot_key' => 40, 'rare_key' => 1, '*' => 2], ClusterAdmin::nodes([], 30)[0]['settings_misses'], 'on the Cluster Nodes page');
+
+		// The same report again, today's agent (no audit) and a malformed one write nothing.
+		$rLog = new QueryLogDb($this->rDb);
+		DatabaseFactory::set($rLog);
+		foreach ([['audit' => $rAudit], [], ['audit' => 'misses'], ['audit' => ['settings_misses' => 'x']], ['audit' => ['settings_misses' => ['k' => 1], 'pad' => str_repeat('x', NodeAudit::MAX_BYTES)]]] as $rPayload) {
+			[$rRes, $rCtx] = $this->call('heartbeat', $rPayload, 1, $rKeys);
+			$this->reply($rRes, $rCtx, $rKeys);
+		}
+		$this->assertSame([], array_values(array_filter($rLog->writes(), static fn(string $rSql): bool => str_contains($rSql, '`audit`'))), 'the audit is not written again');
+		$this->assertSame(['hot_key' => 40, 'rare_key' => 1, '*' => 2], NodeAudit::settingsMisses()[self::SID]);
+
+		// Nothing missed any more: an empty report clears the list.
+		[$rRes, $rCtx] = $this->call('heartbeat', ['audit' => ['settings_misses' => new \stdClass()]], 1, $rKeys);
+		$this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame('{"settings_misses":{}}', NodeRegistry::byServer(self::SID)['audit']);
+		$this->assertSame([], ClusterAdmin::nodes([], 30)[0]['settings_misses']);
+	}
+
+	public function testAnAuditOverTheCapKeepsTheMostMissed(): void {
+		$rMisses = [];
+		for ($i = 0; $i < SettingsAudit::MAX_KEYS + 3; $i++) {
+			$rMisses[sprintf('key_%03d', $i)] = $i + 1;
+		}
+		$rDoc = NodeAudit::normalise(['settings_misses' => $rMisses + ['*' => 5], 'sql_connects' => 9]);
+		$this->assertCount(SettingsAudit::MAX_KEYS + 1, $rDoc['settings_misses']);
+		$this->assertSame(sprintf('key_%03d', SettingsAudit::MAX_KEYS + 2), array_key_first($rDoc['settings_misses']));
+		$this->assertSame(5 + 1 + 2 + 3, $rDoc['settings_misses']['*'], 'the three least missed, with the node\'s own rest');
+		$this->assertSame(['settings_misses'], array_keys($rDoc), 'members MAIN does not know yet are not kept');
+		$this->assertNull(NodeAudit::normalise(null));
+		$this->assertNull(NodeAudit::normalise(['sql_connects' => 1]));
+		// Before migration 045 the row has no `audit`: nothing to write, nothing to show.
+		NodeAudit::record(['server_id' => self::SID], ['settings_misses' => ['k' => 1]]);
+		$this->rDb->exec('CREATE TABLE `bare` (`x` int)');
+		$this->assertSame([], NodeAudit::settingsMisses());
 	}
 
 	public function testHelloFromAnotherInstanceQuarantines(): void {

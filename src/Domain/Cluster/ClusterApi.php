@@ -553,6 +553,8 @@ final class ClusterApi {
 		if ($rUses !== []) {
 			NodeRegistry::update((int) $rNode['server_id'], $rUses);
 		}
+		// Its own audit (settings misses), kept only when it changed.
+		NodeAudit::record($rNode, $rP['audit'] ?? null);
 		// A node that holds its viewers sends its registry's digest; a drift
 		// that outlives the events in flight gets its snapshot asked for.
 		$rWant = false;
