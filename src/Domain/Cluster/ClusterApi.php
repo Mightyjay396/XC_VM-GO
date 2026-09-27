@@ -38,6 +38,13 @@ final class ClusterApi {
 	/** SEAL purpose of the commands a hard-mode LICENCE_INVALID carries (killsFor()). */
 	public const SEAL_COMMANDS = 'commands';
 
+	/**
+	 * Ops whose handlers never read MAIN's `servers` row: the entry point
+	 * (Public/cluster/index.php) reads it for every other op alone, so a
+	 * heartbeat on the cluster bus asks MySQL nothing.
+	 */
+	private const WITHOUT_MAIN = ['health', 'heartbeat', 'commands', 'ack', 'events', 'recording_complete', 'conn_snapshot', 'conn_admit', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'];
+
 	/** op => [method, needs a node signature, allowed node states] */
 	private const OPS = [
 		'health' => ['GET', false, null],
@@ -153,6 +160,12 @@ final class ClusterApi {
 		}
 		// hello, config and conn_snapshot hold one of the op's bus permits.
 		return ClusterSemaphore::run($rCrypto, $rOp, $rH, static fn(): array => self::dispatch($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rBody));
+	}
+
+	/** Does the op at this path read MAIN's `servers` row (the policy, the replica)? */
+	public static function readsMain(string $rPath): bool {
+		$rOp = str_starts_with($rPath, Canonical::PATH_PREFIX) ? substr($rPath, strlen(Canonical::PATH_PREFIX)) : '';
+		return !in_array($rOp, self::WITHOUT_MAIN, true);
 	}
 
 	/**

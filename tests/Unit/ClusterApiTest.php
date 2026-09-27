@@ -2009,4 +2009,26 @@ final class ClusterApiTest extends TestCase {
 		$this->served('heartbeat', [], 2, $rTok2['keys']);
 		$this->assertSame([], $rLog->rQueries);
 	}
+
+	public function testOnlyTheOpsThatReadMainsRowAreGivenIt(): void {
+		foreach (['challenge', 'enrol_complete', 'hello', 'config', 'an_op_to_come'] as $rOp) {
+			$this->assertTrue(ClusterApi::readsMain(Canonical::PATH_PREFIX . $rOp), $rOp);
+		}
+		foreach (['heartbeat', 'commands', 'ack', 'events', 'conn_admit', 'conn_snapshot', 'recording_complete', 'token_refresh', 'token_rekey', 'enrol_code', 'enrol_code_status'] as $rOp) {
+			$this->assertFalse(ClusterApi::readsMain(Canonical::PATH_PREFIX . $rOp), $rOp);
+		}
+		// No handler of those is given MAIN's row.
+		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Domain/Cluster/ClusterApi.php');
+		preg_match_all("/^\\s*'(\\w+)' => self::\\w+\\((.*)\\),$/m", $rSource, $rArms, PREG_SET_ORDER);
+		$this->assertNotEmpty($rArms);
+		foreach ($rArms as [, $rOp, $rArgs]) {
+			if (!ClusterApi::readsMain(Canonical::PATH_PREFIX . $rOp)) {
+				$this->assertStringNotContainsString('$rMain', $rArgs, $rOp . ' is served without MAIN\'s row');
+			}
+		}
+		$rKeys = $this->active();
+		$this->rMain = [];
+		$this->assertSame('active', $this->served('heartbeat', [], 1, $rKeys)['state']);
+		$this->assertSame([], $this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys)['commands']);
+	}
 }

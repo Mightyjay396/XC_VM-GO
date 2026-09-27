@@ -94,8 +94,13 @@ try {
 		$rSettings = SettingsRepository::getAll(true);
 	}
 	SettingsManager::set($rSettings);
-	$rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;');
-	$rMain = $rDb->num_rows() > 0 ? (array) $rDb->get_row() : [];
+	// MAIN's row, for the ops that read it (the policy, the replica): a
+	// heartbeat whose node the cluster bus holds asks MySQL nothing.
+	$rMain = [];
+	if (ClusterApi::readsMain($rReq['path'])) {
+		$rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;');
+		$rMain = $rDb->num_rows() > 0 ? (array) $rDb->get_row() : [];
+	}
 } catch (\Throwable) {
 	$rEmit(DenialFactory::deny($rCrypto, 503, 'DB'));
 	return;
