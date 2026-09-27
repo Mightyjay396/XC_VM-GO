@@ -87,7 +87,7 @@ final class ReplicaBuilder {
 	 * most 8 MiB of a reply, which also carries the blocklist and the other
 	 * sections. A larger one (the bouquets of a panel with many resellers'
 	 * packages) is answered `too_large`, and the node's readers go back to
-	 * MAIN's database for it (ADR 0004, tenth Phase 7 increment).
+	 * MAIN's database for it (ADR 0004, twelfth Phase 7 increment).
 	 */
 	public const MAX_WHOLE_BYTES = 4194304;
 
