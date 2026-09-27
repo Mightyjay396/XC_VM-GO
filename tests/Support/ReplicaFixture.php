@@ -1,23 +1,26 @@
 <?php
 
-use XcVm\Core\Cluster\Crypto\PanelSig;
-use XcVm\Core\Cluster\Crypto\Seal;
+namespace XcVm\Tests\Support;
+
 use XcVm\Domain\Cluster\ReplicaBuilder;
 
 /**
  * A node replica as the agent stores it (ADR 0004, Phase 7): the node's keys
  * in `agent.json`, and per section the sealed, panel-signed record
  * (`replica/<name>.rep`) beside the data it wrote for PHP
- * (`replica/<name>.json`). Records are built as MAIN builds them
- * (ReplicaBuilder::record), with a panel key of the fixture's own.
+ * (`replica/<name>.json`). Records are built by MAIN's own code
+ * (ReplicaBuilder::record), signed by the extension's stand-in
+ * (FakeClusterCrypto) under its panel key, the one the agent pinned.
  */
 final class ReplicaFixture {
 	public string $rUuid;
 
 	public string $rBoxSk;
 
-	public string $rSignSk;
+	/** MAIN's crypto: it signs the records. */
+	public FakeClusterCrypto $rCrypto;
 
+	/** Its panel key, pinned in agent.json. */
 	public string $rSignPub;
 
 	/**
@@ -27,11 +30,17 @@ final class ReplicaFixture {
 		$rHex = bin2hex(random_bytes(16));
 		$this->rUuid = sprintf('%s-%s-4%s-a%s-%s', substr($rHex, 0, 8), substr($rHex, 8, 4), substr($rHex, 13, 3), substr($rHex, 17, 3), substr($rHex, 20, 12));
 		$this->rBoxSk = random_bytes(32);
-		$rPair = sodium_crypto_sign_keypair();
-		$this->rSignSk = sodium_crypto_sign_secretkey($rPair);
-		$this->rSignPub = sodium_crypto_sign_publickey($rPair);
+		$this->rCrypto = new FakeClusterCrypto();
+		$this->rSignPub = ClusterReference::panelPub($this->rCrypto->rSeed);
 		@mkdir($rClusterDir . 'replica/blocklist.d', 0777, true);
 		$this->agent();
+	}
+
+	/** MAIN's crypto under another panel key: a panel root this node did not pin. */
+	public static function otherPanel(): FakeClusterCrypto {
+		$rCrypto = new FakeClusterCrypto();
+		$rCrypto->rSeed = random_bytes(32);
+		return $rCrypto;
 	}
 
 	/** Write the agent's state as Go does: the key bytes as standard base64. */
@@ -48,14 +57,14 @@ final class ReplicaFixture {
 	}
 
 	/**
-	 * A record for this node: `u32(len) ‖ payload ‖ sig`, sealed to its box key.
+	 * A record for this node as MAIN builds it: `u32(len) ‖ payload ‖ sig`,
+	 * sealed to its box key ($rCrypto: signed under another panel key).
 	 *
 	 * @param array<string, mixed> $rDoc
 	 */
-	public function record(string $rTag, array $rDoc, ?string $rSignSk = null, ?string $rUuid = null): string {
-		$rPayload = (string) json_encode($rDoc, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-		$rSig = sodium_crypto_sign_detached(PanelSig::input($rTag, $rPayload), $rSignSk ?? $this->rSignSk);
-		return Seal::seal(sodium_crypto_scalarmult_base($this->rBoxSk), 'replica', $rUuid ?? $this->rUuid, pack('N', strlen($rPayload)) . $rPayload . $rSig);
+	public function record(string $rTag, array $rDoc, ?FakeClusterCrypto $rCrypto = null): string {
+		$rNode = ['node_uuid' => $this->rUuid, 'node_box_pub' => sodium_crypto_scalarmult_base($this->rBoxSk)];
+		return ReplicaBuilder::record($rCrypto ?? $this->rCrypto, $rNode, $rTag, (string) json_encode($rDoc, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 	}
 
 	/**

@@ -125,13 +125,14 @@ final class SettingsAuditTest extends TestCase {
 	}
 
 	public function testTheReportCoversSevenDaysAndOlderDaysArePruned(): void {
-		foreach ([0 => 'today', 6 => 'six_days', 7 => 'seven_days', 9 => 'nine_days'] as $rDays => $rKey) {
+		foreach ([0 => 'today', 6 => 'six_days', 7 => 'seven_days', 8 => 'eight_days', 9 => 'nine_days'] as $rDays => $rKey) {
 			@mkdir($this->rDir . 'misses/', 0777, true);
 			file_put_contents($this->rDir . 'misses/' . gmdate('Ymd', self::NOW - $rDays * 86400) . '.json', json_encode([$rKey => 1]));
 		}
 		$this->assertSame(['six_days' => 1, 'today' => 1], SettingsAudit::summary(self::NOW));
 		$this->assertSame(1, SettingsAudit::prune(8, self::NOW));
 		$this->assertFileDoesNotExist($this->rDir . 'misses/' . gmdate('Ymd', self::NOW - 9 * 86400) . '.json');
+		$this->assertFileExists($this->rDir . 'misses/' . gmdate('Ymd', self::NOW - 8 * 86400) . '.json', 'eight days old: kept');
 		$this->assertTrue(SettingsAudit::publish(null, self::NOW));
 		$this->assertSame(['settings_misses' => ['six_days' => 1, 'today' => 1]], $this->published());
 
@@ -141,6 +142,97 @@ final class SettingsAuditTest extends TestCase {
 		$this->assertSame('{"settings_misses":{}}', file_get_contents($this->rDir . 'cluster/audit.json'));
 		// No agent here (MAIN, a legacy node): nothing written.
 		$this->assertFalse(SettingsAudit::publish($this->rDir . 'no-agent/', self::NOW));
+	}
+
+	public function testAMergeRewritesTheReportForANewKeyOrOnceAMinute(): void {
+		SettingsManager::get('first_key');
+		SettingsAudit::flush(self::NOW);
+		$this->assertSame(['settings_misses' => ['first_key' => 1]], $this->published());
+		touch($this->rDir . 'cluster/audit.json', self::NOW);
+
+		// Another request within the minute, no new key: only the day file (PHP-FPM keeps no state between requests).
+		SettingsAudit::useDir($this->rDir . 'misses/', $this->rDir . 'cluster/');
+		SettingsManager::get('first_key');
+		SettingsAudit::flush(self::NOW + 30);
+		$this->assertSame(['first_key' => 2], $this->day());
+		$this->assertSame(['settings_misses' => ['first_key' => 1]], $this->published(), 'the report waits for the minute');
+
+		// A new key is in the report at once.
+		SettingsAudit::useDir($this->rDir . 'misses/', $this->rDir . 'cluster/');
+		SettingsManager::get('second_key');
+		SettingsAudit::flush(self::NOW + 31);
+		$this->assertSame(['settings_misses' => ['first_key' => 2, 'second_key' => 1]], $this->published());
+		touch($this->rDir . 'cluster/audit.json', self::NOW + 31);
+
+		// A minute after the last report, a merge rewrites it.
+		SettingsAudit::useDir($this->rDir . 'misses/', $this->rDir . 'cluster/');
+		SettingsManager::get('second_key');
+		SettingsAudit::flush(self::NOW + 31 + SettingsAudit::FLUSH_EVERY);
+		$this->assertSame(['settings_misses' => ['first_key' => 2, 'second_key' => 2]], $this->published());
+	}
+
+	/**
+	 * Run SettingsAudit::publish() in a child PHP as nobody (65534), standing
+	 * in for xc_vm, with this test's files.
+	 */
+	private function publishAsNobody(): bool {
+		$rScript = $this->rDir . 'publish.php';
+		file_put_contents($rScript, <<<'PHP'
+			<?php
+			use XcVm\Core\Cluster\NodeFlows;
+			use XcVm\Core\Cluster\SettingsAudit;
+
+			require $argv[1];
+			NodeFlows::usePath($argv[2]);
+			SettingsAudit::useDir($argv[3], $argv[4]);
+			NodeFlows::declared(); // every class loaded before the switch
+			if (!posix_setgid(65534) || !posix_setuid(65534)) {
+				exit(3);
+			}
+			echo json_encode(SettingsAudit::publish(null, (int) $argv[5]));
+			PHP);
+		$rCommand = [PHP_BINARY, $rScript, MAIN_HOME . 'vendor/autoload.php', $this->rDir . 'flows.json', $this->rDir . 'storage/cluster/settings_misses/', $this->rDir . 'cluster/', (string) self::NOW];
+		$rProc = proc_open($rCommand, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
+		$this->assertIsResource($rProc);
+		$rOut = (string) stream_get_contents($rPipes[1]);
+		fclose($rPipes[1]);
+		$this->assertSame(0, proc_close($rProc), $rOut);
+		return json_decode($rOut) === true;
+	}
+
+	public function testARootProcessHandsEveryLevelItMakesToTheAgentsUser(): void {
+		if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+			$this->markTestSkipped('needs root, as the node\'s root crons run');
+		}
+		// A node: storage/ is not in the LB build, and config/cluster/ is xc_vm's (nobody here).
+		chown($this->rDir . 'cluster', 65534);
+		chgrp($this->rDir . 'cluster', 65534);
+		$rDir = $this->rDir . 'storage/cluster/settings_misses/';
+		SettingsAudit::useDir($rDir, $this->rDir . 'cluster/');
+		SettingsManager::get('update_channel_x'); // as a root-only command reads it
+		SettingsAudit::flush(self::NOW);
+		$rDay = $rDir . gmdate('Ymd', self::NOW) . '.json';
+		foreach ([$this->rDir . 'storage', $this->rDir . 'storage/cluster', $rDir, $rDay, $this->rDir . 'cluster/audit.json'] as $rPath) {
+			clearstatcache(true, $rPath);
+			$this->assertSame([65534, 65534], [fileowner($rPath), filegroup($rPath)], $rPath);
+		}
+		$this->assertSame(0750, fileperms($this->rDir . 'storage') & 0777);
+
+		// xc_vm's hourly publish (cron:cleanup) reads root's misses and keeps them.
+		$this->assertTrue($this->publishAsNobody());
+		$this->assertSame(['settings_misses' => ['update_channel_x' => 1]], $this->published());
+
+		// A level it cannot search: no report from days it cannot read, the one there stays.
+		chown($this->rDir . 'storage/cluster', 0);
+		chmod($this->rDir . 'storage/cluster', 0700);
+		$this->assertFalse($this->publishAsNobody());
+		$this->assertSame(['settings_misses' => ['update_channel_x' => 1]], $this->published());
+		// Nor a day file it cannot read.
+		chown($this->rDir . 'storage/cluster', 65534);
+		chown($rDay, 0);
+		chmod($rDay, 0600);
+		$this->assertFalse($this->publishAsNobody());
+		$this->assertSame(['settings_misses' => ['update_channel_x' => 1]], $this->published());
 	}
 
 	public function testALongRunningProcessMergesEveryMinute(): void {

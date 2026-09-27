@@ -89,7 +89,7 @@ final class ReplicaRecords {
 			return null;
 		}
 		$rDoc = self::payload($rDir . $rName . '.rep', 'rep', $rIdentity);
-		if ($rDoc === null || ($rDoc['section'] ?? null) !== $rName || !is_string($rDoc['etag'] ?? null) || !preg_match('/^[0-9a-f]{64}$/', $rDoc['etag']) || !is_array($rDoc['data'] ?? null)) {
+		if ($rDoc === null || ($rDoc['section'] ?? null) !== $rName || !self::etag($rDoc['etag'] ?? null) || !is_array($rDoc['data'] ?? null)) {
 			return false;
 		}
 		return ['etag' => $rDoc['etag'], 'data' => $rDoc['data']];
@@ -109,7 +109,7 @@ final class ReplicaRecords {
 			return null;
 		}
 		$rDoc = self::payload($rDir . 'blocklist.rep', 'rep', $rIdentity);
-		if ($rDoc === null || ($rDoc['section'] ?? null) !== 'blocklist' || !is_int($rDoc['seq'] ?? null) || !is_string($rDoc['etag'] ?? null) || !is_array($rDoc['data'] ?? null) || !self::strings($rDoc['data']['ip'] ?? [])) {
+		if ($rDoc === null || ($rDoc['section'] ?? null) !== 'blocklist' || !is_int($rDoc['seq'] ?? null) || !self::etag($rDoc['etag'] ?? null) || !is_array($rDoc['data'] ?? null) || !self::strings($rDoc['data']['ip'] ?? [])) {
 			return false;
 		}
 		$rSeq = $rDoc['seq'];
@@ -153,6 +153,11 @@ final class ReplicaRecords {
 			return null;
 		}
 		return $rDoc;
+	}
+
+	/** An ETag as MAIN makes it (ReplicaBuilder::etag): 64 lowercase hex digits. */
+	private static function etag(mixed $rEtag): bool {
+		return is_string($rEtag) && preg_match('/^[0-9a-f]{64}$/', $rEtag) === 1;
 	}
 
 	private static function strings(mixed $rList): bool {

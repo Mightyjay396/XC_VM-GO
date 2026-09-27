@@ -10,9 +10,9 @@ use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\NodeSig;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
+use XcVm\Core\Cluster\SettingsAudit;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
-use XcVm\Core\Cluster\SettingsAudit;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterBus;
@@ -512,6 +512,14 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(['settings_misses'], array_keys($rDoc), 'members MAIN does not know yet are not kept');
 		$this->assertNull(NodeAudit::normalise(null));
 		$this->assertNull(NodeAudit::normalise(['sql_connects' => 1]));
+		// The bound is on the shortest encoding, as the agent measures audit.json: the "path:line" sites fit although escaped slashes would not.
+		$rAudit = ['settings_misses' => ['k' => 1], 'sites' => []];
+		for ($i = 0; strlen((string) json_encode($rAudit, JSON_UNESCAPED_SLASHES)) < NodeAudit::MAX_BYTES - 64; $i++) {
+			$rAudit['sites']['sql src/Domain/Stream/StreamService.php:' . $i] = $i + 1;
+		}
+		$this->assertGreaterThan(NodeAudit::MAX_BYTES, strlen((string) json_encode($rAudit)));
+		$this->assertSame(['settings_misses' => ['k' => 1]], NodeAudit::normalise($rAudit));
+		$this->assertNull(NodeAudit::normalise($rAudit + ['pad' => str_repeat('x', 100)]), 'over the bound: nothing kept');
 		// Before migration 045 the row has no `audit`: nothing to write, nothing to show.
 		NodeAudit::record(['server_id' => self::SID], ['settings_misses' => ['k' => 1]]);
 		$this->rDb->exec('CREATE TABLE `bare` (`x` int)');

@@ -13,7 +13,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * plan, section 9, R1 `settings`).
  *
  * ```text
- * audit            {"settings_misses": {key: count}}, at most MAX_BYTES as sent
+ * audit            {"settings_misses": {key: count}}, at most MAX_BYTES in its
+ *                  shortest encoding
  * settings_misses  key: [a-z0-9_]{1,64} or "*" (the rest), count: an integer >= 1;
  *                  at most SettingsAudit::MAX_KEYS keys and "*"
  * ```
@@ -26,7 +27,12 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 final class NodeAudit {
 	use DatabaseAware;
 
-	/** Largest `audit` taken, as MAIN encodes it. */
+	/**
+	 * Largest `audit` taken, measured in its shortest JSON encoding (slashes
+	 * and non-ASCII unescaped). The agent sends an audit.json of at most as
+	 * many bytes, re-encoded by Go, which escapes no slash: measured this way
+	 * whatever it sends fits, `sites`' "path:line" strings included.
+	 */
 	public const MAX_BYTES = 16384;
 
 	/**
@@ -38,7 +44,7 @@ final class NodeAudit {
 	 * @return array{settings_misses: array<string, int>}|null
 	 */
 	public static function normalise(mixed $rAudit): ?array {
-		if (!is_array($rAudit) || !is_array($rAudit['settings_misses'] ?? null) || strlen((string) json_encode($rAudit, JSON_PARTIAL_OUTPUT_ON_ERROR)) > self::MAX_BYTES) {
+		if (!is_array($rAudit) || !is_array($rAudit['settings_misses'] ?? null) || strlen((string) json_encode($rAudit, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)) > self::MAX_BYTES) {
 			return null;
 		}
 		$rMisses = [];

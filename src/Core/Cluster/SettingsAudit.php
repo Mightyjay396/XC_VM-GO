@@ -10,7 +10,7 @@ namespace XcVm\Core\Cluster;
  * outside `lb_settings_keys.php` (its `keys` and `withheld`) is counted.
  * Once the replica owns the settings such a key is absent, so the count
  * names a read the allowlist's scan missed (a key built at run time) before
- * it fails. Reading a key costs one lookup; nothing reaches a database:
+ * it fails. Reading a known key costs one lookup; nothing reaches a database:
  *
  * ```text
  * a process      counts in memory, merged into the day's file at exit and
@@ -23,9 +23,16 @@ namespace XcVm\Core\Cluster;
  *                heartbeat's `audit`, and MAIN keeps it with the node
  * ```
  *
- * audit.json is rewritten when a process merges misses, and by cron:cleanup
- * every hour, so days that leave the window drop out. Only on a node with an
- * agent (config/cluster/), and in mode 1 or 2; in mode 0 it is removed.
+ * audit.json is rewritten when a merge adds a key to the day, or finds it
+ * older than FLUSH_EVERY, and by cron:cleanup every hour, so days that leave
+ * the window drop out. Only on a node with an agent (config/cluster/), and in
+ * mode 1 or 2; in mode 0 it is removed. A miss costs one locked merge of the
+ * day file per process: per request under PHP-FPM, which keeps no state
+ * between requests.
+ *
+ * A root process hands every directory level and file it makes to the user
+ * of the agent's directory (xc_vm), whose processes add to them; a report is
+ * written only from days this process can read.
  *
  * Lives in Core: it ships to LBs, where Domain\Cluster does not.
  */
@@ -84,6 +91,11 @@ final class SettingsAudit {
 		return self::$rDir ?? (defined('STORAGE_PATH') ? STORAGE_PATH . 'cluster/settings_misses/' : null);
 	}
 
+	/** The agent's directory, where audit.json goes (config/cluster/). */
+	public static function agentDir(): ?string {
+		return self::$rAgentDir ?? (defined('CONFIG_PATH') ? CONFIG_PATH . 'cluster/' : null);
+	}
+
 	/**
 	 * A read of $rKey (SettingsManager). Counted when this is a node in mode 1
 	 * or 2 and the key is outside the allowlist. Decided once per process,
@@ -115,7 +127,9 @@ final class SettingsAudit {
 
 	/**
 	 * Merge this process's counts into the day's file (under its lock), then
-	 * rewrite audit.json. Never throws: an audit must not break a read.
+	 * rewrite audit.json when the merge added a key to the day or audit.json
+	 * is older than FLUSH_EVERY (cron:cleanup rewrites it every hour too).
+	 * Never throws: an audit must not break a read.
 	 */
 	public static function flush(?int $rNow = null): void {
 		$rCounts = self::$rCounts;
@@ -126,29 +140,38 @@ final class SettingsAudit {
 			return;
 		}
 		try {
-			if (!is_dir($rDir)) {
-				@mkdir($rDir, 0750, true);
-				self::own($rDir);
+			if (!is_dir($rDir) && !self::makeDir($rDir)) {
+				return;
 			}
 			$rFile = $rDir . gmdate('Ymd', self::$rFlushedAt) . '.json';
 			$rHandle = @fopen($rFile, 'c+');
 			if ($rHandle === false) {
 				return;
 			}
+			$rNewKey = false;
 			try {
 				flock($rHandle, LOCK_EX);
 				$rDay = json_decode((string) stream_get_contents($rHandle), true);
-				$rJson = (string) json_encode((object) self::merge(is_array($rDay) ? $rDay : [], $rCounts));
+				$rDay = is_array($rDay) ? $rDay : [];
+				$rMerged = self::merge($rDay, $rCounts);
+				$rNewKey = array_diff_key($rMerged, $rDay) !== [];
 				ftruncate($rHandle, 0);
 				rewind($rHandle);
-				fwrite($rHandle, $rJson);
+				fwrite($rHandle, (string) json_encode((object) $rMerged));
 				fflush($rHandle);
 			} finally {
 				flock($rHandle, LOCK_UN);
 				fclose($rHandle);
 			}
 			self::own($rFile);
-			self::publish(null, self::$rFlushedAt);
+			$rAgentDir = self::agentDir();
+			if ($rAgentDir === null) {
+				return;
+			}
+			clearstatcache(true, $rAgentDir . 'audit.json');
+			if ($rNewKey || (int) @filemtime($rAgentDir . 'audit.json') <= self::$rFlushedAt - self::FLUSH_EVERY) {
+				self::publish($rAgentDir, self::$rFlushedAt);
+			}
 		} catch (\Throwable) {
 			// Counted, not needed: the next flush tries again.
 		}
@@ -161,29 +184,18 @@ final class SettingsAudit {
 	 * @return array<string, int>
 	 */
 	public static function summary(?int $rNow = null): array {
-		$rDir = self::dir();
-		$rNow ??= time();
-		$rSum = [];
-		for ($d = 0; $rDir !== null && $d < self::WINDOW_DAYS; $d++) {
-			$rDay = json_decode((string) @file_get_contents($rDir . gmdate('Ymd', $rNow - $d * 86400) . '.json'), true);
-			foreach (is_array($rDay) ? $rDay : [] as $rKey => $rCount) {
-				if (is_int($rCount) && $rCount > 0) {
-					$rKey = self::name((string) $rKey);
-					$rSum[$rKey] = ($rSum[$rKey] ?? 0) + $rCount;
-				}
-			}
-		}
-		return self::top($rSum);
+		return self::top(self::days($rNow ?? time()) ?? []);
 	}
 
 	/**
 	 * Write `audit.json` for the agent in $rAgentDir (config/cluster/):
 	 * `{"settings_misses": summary()}` on a node in mode 1 or 2; removed in
 	 * mode 0, where nothing is counted. False when there is no agent (MAIN, a
-	 * legacy node) or the write failed.
+	 * legacy node), the write failed, or this process cannot read the days
+	 * (a directory or day file another user's): the report there stays.
 	 */
 	public static function publish(?string $rAgentDir = null, ?int $rNow = null): bool {
-		$rAgentDir ??= self::$rAgentDir ?? (defined('CONFIG_PATH') ? CONFIG_PATH . 'cluster/' : null);
+		$rAgentDir ??= self::agentDir();
 		if ($rAgentDir === null || self::dir() === null || !is_dir($rAgentDir)) {
 			return false;
 		}
@@ -191,12 +203,16 @@ final class SettingsAudit {
 			@unlink($rAgentDir . 'audit.json');
 			return false;
 		}
+		$rSum = self::days($rNow ?? time());
+		if ($rSum === null) {
+			return false;
+		}
 		$rTmp = $rAgentDir . 'audit.json.' . getmypid() . '.tmp';
-		if (@file_put_contents($rTmp, (string) json_encode(['settings_misses' => (object) self::summary($rNow)])) === false || !@rename($rTmp, $rAgentDir . 'audit.json')) {
+		if (@file_put_contents($rTmp, (string) json_encode(['settings_misses' => (object) self::top($rSum)])) === false || !@rename($rTmp, $rAgentDir . 'audit.json')) {
 			@unlink($rTmp);
 			return false;
 		}
-		self::own($rAgentDir . 'audit.json');
+		self::own($rAgentDir . 'audit.json', $rAgentDir);
 		return true;
 	}
 
@@ -291,11 +307,90 @@ final class SettingsAudit {
 		return preg_match('/^[a-z0-9_]{1,64}$/', $rKey) ? $rKey : self::OTHER;
 	}
 
-	/** A file or directory root made stays the panel user's, whose processes add to it. */
-	private static function own(string $rPath): void {
-		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-			@chown($rPath, 'xc_vm');
-			@chgrp($rPath, 'xc_vm');
+	/**
+	 * The last WINDOW_DAYS days' counts, summed per name. Null when this
+	 * process cannot tell: the directory (or, while it does not exist, the
+	 * level above it that does) is not one it may search, or a day file is
+	 * not one it may read. An absent day is a day without a miss.
+	 *
+	 * @return array<string, int>|null
+	 */
+	private static function days(int $rNow): ?array {
+		$rDir = self::dir();
+		if ($rDir === null) {
+			return [];
+		}
+		if (!self::searchable($rDir)) {
+			return null;
+		}
+		$rSum = [];
+		for ($d = 0; $d < self::WINDOW_DAYS; $d++) {
+			$rFile = $rDir . gmdate('Ymd', $rNow - $d * 86400) . '.json';
+			if (!is_file($rFile)) {
+				continue;
+			}
+			$rRaw = @file_get_contents($rFile);
+			if ($rRaw === false) {
+				return null;
+			}
+			$rDay = json_decode($rRaw, true);
+			foreach (is_array($rDay) ? $rDay : [] as $rKey => $rCount) {
+				if (is_int($rCount) && $rCount > 0) {
+					$rKey = self::name((string) $rKey);
+					$rSum[$rKey] = ($rSum[$rKey] ?? 0) + $rCount;
+				}
+			}
+		}
+		return $rSum;
+	}
+
+	/** Can this process search $rDir, or the nearest level above it that exists? */
+	private static function searchable(string $rDir): bool {
+		for ($rPath = rtrim($rDir, '/'); !is_dir($rPath); $rPath = dirname($rPath)) {
+			if (dirname($rPath) === $rPath) {
+				return false;
+			}
+		}
+		return is_executable($rPath);
+	}
+
+	/**
+	 * Make $rDir level by level (0750), each level made handed to the agent's
+	 * user: a level a root process left its own would shut xc_vm's processes
+	 * out of every day file below it.
+	 */
+	private static function makeDir(string $rDir): bool {
+		$rMissing = [];
+		for ($rPath = rtrim($rDir, '/'); !is_dir($rPath); $rPath = dirname($rPath)) {
+			if (dirname($rPath) === $rPath) {
+				return false;
+			}
+			$rMissing[] = $rPath;
+		}
+		foreach (array_reverse($rMissing) as $rPath) {
+			if (@mkdir($rPath, 0750)) {
+				self::own($rPath);
+			} elseif (!is_dir($rPath)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * What a root process made goes to the owner of the agent's directory
+	 * (xc_vm on a node), whose processes add to it.
+	 */
+	private static function own(string $rPath, ?string $rAgentDir = null): void {
+		if (!function_exists('posix_geteuid') || posix_geteuid() !== 0) {
+			return;
+		}
+		$rOf = $rAgentDir ?? self::agentDir();
+		$rOwner = $rOf === null ? false : @fileowner($rOf);
+		$rGroup = $rOf === null ? false : @filegroup($rOf);
+		if ($rOwner !== false && $rGroup !== false) {
+			@chown($rPath, $rOwner);
+			@chgrp($rPath, $rGroup);
 		}
 	}
 }

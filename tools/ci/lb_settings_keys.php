@@ -41,9 +41,14 @@ if (preg_match('/CREATE TABLE IF NOT EXISTS `settings` \((.*?)\) ENGINE=/s', $rS
 	preg_match_all('/^\s*`([a-z0-9_]+)`/m', $rM[1], $rCols);
 	$rColumns = $rCols[1];
 }
+// Every ADD of each ALTER TABLE `settings` statement: one statement may add
+// several columns.
 foreach (glob($rRoot . '/src/migrations/database/up/*.sql') ?: [] as $rFile) {
-	preg_match_all('/ALTER TABLE `settings`\s+ADD(?: COLUMN)?(?: IF NOT EXISTS)?\s+`([a-z0-9_]+)`/i', (string) file_get_contents($rFile), $rCols);
-	$rColumns = array_merge($rColumns, $rCols[1]);
+	preg_match_all('/ALTER TABLE `settings`\s(.*?);/is', (string) file_get_contents($rFile), $rAlters);
+	foreach ($rAlters[1] as $rAlter) {
+		preg_match_all('/\bADD(?:\s+COLUMN)?(?:\s+IF NOT EXISTS)?\s+`([a-z0-9_]+)`/i', $rAlter, $rCols);
+		$rColumns = array_merge($rColumns, $rCols[1]);
+	}
 }
 $rColumns = array_flip(array_unique($rColumns));
 if (count($rColumns) < 100) {

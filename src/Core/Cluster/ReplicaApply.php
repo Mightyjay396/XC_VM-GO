@@ -23,7 +23,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * blocked_ua       ua   ([id => {id, exact_match, blocked_ua (lower case)}])
  * blocked_isp      isp  ([{id, isp, blocked}])
  * rtmp_ips         rtmp ([resolved ip => {password, push, pull}]), which
- *                  only MAIN's cron:cache builds; an LB read its database
+ *                  only MAIN's cron:cache builds; an LB read its database.
+ *                  From disk a name is not resolved (caches())
  * ```
  *
  * The shapes are the ones cron:cache writes from MAIN's database, so every
@@ -76,6 +77,9 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * replica too, every minute while CONFIG is on, so the caches follow the copy
  * on disk even when the agent has not run cluster:apply since a change of the
  * flow.
+ *
+ * The whole sections are applied before the blocklist, whose RTMP publishers
+ * may wait on DNS.
  *
  * From disk (`cluster:apply --from-disk`, which `service` runs at boot before
  * the daemons, when the agent may not run yet), every section is taken from
@@ -270,22 +274,10 @@ final class ReplicaApply {
 	 * @return array<string, mixed>|null
 	 */
 	private static function apply(bool $rAuthoritative, int $rServerID, array $rReport): ?array {
-		$rDoc = self::$rFromDisk === null ? json_decode((string) @file_get_contents(self::dir() . 'blocklist.json'), true) : self::$rFromDisk['blocklist'];
-		$rCaches = is_array($rDoc) && is_array($rDoc['data'] ?? null) ? self::caches($rDoc['data']) : null;
-		if ($rCaches !== null) {
-			$rReport += ['seq' => (int) ($rDoc['seq'] ?? 0), 'etag' => (string) ($rDoc['etag'] ?? ''), 'mode' => $rAuthoritative ? 'applied' : 'shadow'];
-			if ($rAuthoritative) {
-				foreach ($rCaches as $rKey => $rValue) {
-					FileCache::setCache($rKey, $rValue);
-				}
-			} else {
-				$rReport['diff'] = [];
-				foreach ($rCaches as $rKey => $rValue) {
-					$rReport['diff'][$rKey] = self::diff(self::current($rKey), $rValue);
-				}
-			}
-		}
-		// The secrets first: they report what differs from what the node used before this apply.
+		// The whole sections first: they are what a boot from the replica needs
+		// (ReplicaBoot::ready), and the blocklist may wait on DNS for its RTMP
+		// publishers. The secrets before the settings: they report what differs
+		// from what the node used before this apply.
 		$rSecrets = self::secrets($rAuthoritative, $rReport['at']);
 		if ($rSecrets !== null) {
 			$rReport['secrets'] = $rSecrets;
@@ -299,6 +291,21 @@ final class ReplicaApply {
 		foreach (['servers' => self::servers($rAuthoritative, $rServerID, is_array($rNodeSettings) ? $rNodeSettings : null), 'crontab' => self::crontab($rAuthoritative), 'cluster' => self::cluster()] as $rKey => $rPart) {
 			if ($rPart !== null) {
 				$rReport[$rKey] = $rPart;
+			}
+		}
+		$rDoc = self::$rFromDisk === null ? json_decode((string) @file_get_contents(self::dir() . 'blocklist.json'), true) : self::$rFromDisk['blocklist'];
+		$rCaches = is_array($rDoc) && is_array($rDoc['data'] ?? null) ? self::caches($rDoc['data'], self::$rFromDisk === null) : null;
+		if ($rCaches !== null) {
+			$rReport += ['seq' => (int) ($rDoc['seq'] ?? 0), 'etag' => (string) ($rDoc['etag'] ?? ''), 'mode' => $rAuthoritative ? 'applied' : 'shadow'];
+			if ($rAuthoritative) {
+				foreach ($rCaches as $rKey => $rValue) {
+					FileCache::setCache($rKey, $rValue);
+				}
+			} else {
+				$rReport['diff'] = [];
+				foreach ($rCaches as $rKey => $rValue) {
+					$rReport['diff'][$rKey] = self::diff(self::current($rKey), $rValue);
+				}
 			}
 		}
 		if (!$rAuthoritative) {
@@ -658,9 +665,14 @@ final class ReplicaApply {
 	 * null when the data is not what MAIN sends.
 	 *
 	 * @param array<string, mixed> $rData
+	 * @param bool $rResolve resolve RTMP publishers' names (DNS); false from
+	 *                       disk at boot, where DNS may not answer during the
+	 *                       MAIN outage the boot is for and `service`'s
+	 *                       timeout would stop the apply: a name is kept as
+	 *                       given, matching no address until the next apply
 	 * @return array<string, mixed>|null
 	 */
-	public static function caches(array $rData): ?array {
+	public static function caches(array $rData, bool $rResolve = true): ?array {
 		$rIPs = $rData['ip'] ?? [];
 		$rASNs = $rData['asn'] ?? [];
 		$rUAs = $rData['ua'] ?? [];
@@ -681,7 +693,8 @@ final class ReplicaApply {
 		// As cron:cache on MAIN: keyed by the resolved address.
 		$rRTMP = [];
 		foreach ($rRTMPs as $rRow) {
-			$rRTMP[gethostbyname((string) ($rRow['ip'] ?? ''))] = ['password' => (string) ($rRow['password'] ?? ''), 'push' => (bool) ($rRow['push'] ?? false), 'pull' => (bool) ($rRow['pull'] ?? false)];
+			$rHost = (string) ($rRow['ip'] ?? '');
+			$rRTMP[$rResolve ? gethostbyname($rHost) : $rHost] = ['password' => (string) ($rRow['password'] ?? ''), 'push' => (bool) ($rRow['push'] ?? false), 'pull' => (bool) ($rRow['pull'] ?? false)];
 		}
 		return ['blocked_ips' => array_values($rIPs), 'blocked_servers' => array_values($rASNs), 'blocked_ua' => $rUA, 'blocked_isp' => $rISP, 'rtmp_ips' => $rRTMP];
 	}

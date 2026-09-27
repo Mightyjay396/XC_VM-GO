@@ -94,6 +94,8 @@ final class ReplicaBuilderSecretsTest extends TestCase {
 			$this->assertNotContains($rSecret, $rKeys);
 		}
 		$this->assertSame([], array_values(array_intersect($rKeys, $rList['withheld'])));
+		// Columns a migration adds after the first ADD of one ALTER TABLE (016), which the LB build reads (UpdateChannels).
+		$this->assertSame(['update_channel_bin', 'update_channel_fanout'], array_values(array_intersect(['update_channel_bin', 'update_channel_fanout'], $rKeys)));
 	}
 
 	public function testTheSectionHoldsOnlyAllowlistedKeys(): void {

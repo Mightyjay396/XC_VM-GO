@@ -15,6 +15,12 @@ boot() {
   sudo chown -R xc_vm:xc_vm /sys/class/net
   sudo chown -R xc_vm:xc_vm /home/xc_vm/content/streams
   sudo chown -R xc_vm:xc_vm /home/xc_vm/tmp
+  # The node audits' day files (ConnectAudit, SettingsAudit) live under
+  # storage/cluster/, which an LB build does not ship: make it xc_vm's before
+  # a root process can create it as root's and shut xc_vm's processes out.
+  mkdir -p $SCRIPT/storage/cluster
+  sudo chown xc_vm:xc_vm $SCRIPT/storage
+  sudo chown -R xc_vm:xc_vm $SCRIPT/storage/cluster
   # MAIN: the cluster API answers STARTING until `status` (run by startup)
   # finds its FPM pools answering and writes this marker again (ClusterPool).
   rm -f $SCRIPT/tmp/cluster_ready

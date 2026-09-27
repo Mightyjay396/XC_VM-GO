@@ -50,6 +50,23 @@ final class NodeRoleTest extends TestCase {
 		$this->assertLessThan(strpos($rSource, $rGuarded), $rGate, "$rFile must gate before: $rGuarded");
 	}
 
+	/**
+	 * cron:cleanup's node-side part runs on every node, before its MAIN-only
+	 * part: it is the only path that drops old days out of the settings-miss
+	 * report (a node in mode 0 counts nothing, so never merges one) and
+	 * removes it in mode 0.
+	 */
+	public function testCleanupKeepsEachNodesAuditsBeforeItsMainGate(): void {
+		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/CleanupCronJob.php');
+		$rGate = strpos($rSource, 'if (!NodeRole::isMain())');
+		$this->assertNotFalse($rGate);
+		foreach (['ConnectAudit::prune(8);', 'SettingsAudit::prune(8);', 'SettingsAudit::publish();'] as $rCall) {
+			$rAt = strpos($rSource, $rCall);
+			$this->assertNotFalse($rAt, "CleanupCronJob.php must call $rCall");
+			$this->assertLessThan($rGate, $rAt, "$rCall runs on every node, before the MAIN-only part");
+		}
+	}
+
 	/** @return array<string, array{string, string}> */
 	public static function mainOnlyCrons(): array {
 		return [

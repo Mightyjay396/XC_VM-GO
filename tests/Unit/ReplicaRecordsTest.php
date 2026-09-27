@@ -8,6 +8,7 @@ use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaRecords;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Tests\Support\ReplicaFixture;
 
 /**
  * `cluster:apply --from-disk` (cluster plan, section 9, "Storage and boot"):
@@ -86,7 +87,7 @@ final class ReplicaRecordsTest extends TestCase {
 		// Missing, signed by another panel key, for another node, or another section's record.
 		$this->rFixture->node();
 		unlink($this->rFixture->dir() . 'node.rep');
-		file_put_contents($this->rFixture->dir() . 'crontab.rep', $this->rFixture->record('rep', ['section' => 'crontab', 'node' => $this->rFixture->rUuid, 'etag' => str_repeat('c', 64), 'data' => ['jobs' => []]], sodium_crypto_sign_secretkey(sodium_crypto_sign_keypair())));
+		file_put_contents($this->rFixture->dir() . 'crontab.rep', $this->rFixture->record('rep', ['section' => 'crontab', 'node' => $this->rFixture->rUuid, 'etag' => str_repeat('c', 64), 'data' => ['jobs' => []]], ReplicaFixture::otherPanel()));
 		file_put_contents($this->rFixture->dir() . 'secrets.rep', $this->rFixture->record('rep', ['section' => 'secrets', 'node' => '00000000-0000-4000-a000-000000000000', 'etag' => str_repeat('c', 64), 'data' => []]));
 		copy($this->rFixture->dir() . 'servers.rep', $this->rFixture->dir() . 'settings.rep');
 		$rReport = $this->fromDisk();
@@ -129,6 +130,42 @@ final class ReplicaRecordsTest extends TestCase {
 		file_put_contents($this->rFixture->dir() . sprintf('blocklist.d/%019d.blk', 10), $this->rFixture->record('rep', ['seq' => 10, 'add' => ['198.51.100.1'], 'remove' => []]));
 		$this->assertSame(['blocklist'], $this->fromDisk()['from_disk']['unverified']);
 		$this->assertSame(['203.0.113.2', '203.0.113.3', '203.0.113.4'], FileCache::getCache('blocked_ips'), 'an unverified blocklist writes nothing');
+	}
+
+	public function testADeltaRemovesBeforeItAddsAndTheAddressesComeOutSorted(): void {
+		$this->rFixture->blocklist(['ip' => ['203.0.113.2'], 'asn' => []], 7);
+		// Removed and added again in one delta: still blocked, as the agent's materialise has it.
+		$this->rFixture->delta(8, ['203.0.113.2', '203.0.113.10', '198.51.100.1'], ['203.0.113.2']);
+		$this->fromDisk();
+		$this->assertSame(['198.51.100.1', '203.0.113.10', '203.0.113.2'], FileCache::getCache('blocked_ips'));
+	}
+
+	public function testEveryRecordIsCheckedForWhatItClaims(): void {
+		$this->rFixture->node();
+		$this->assertSame([], $this->fromDisk()['from_disk']['unverified']);
+		// An ETag that is not MAIN's (64 hex digits), in a whole section and in the blocklist.
+		$this->rFixture->whole('crontab', ['jobs' => []], null, ['etag' => 'x']);
+		$rBlocklist = ['v' => 1, 'section' => 'blocklist', 'node' => $this->rFixture->rUuid, 'etag' => 'x', 'seq' => 7, 'data' => ['ip' => []]];
+		file_put_contents($this->rFixture->dir() . 'blocklist.rep', $this->rFixture->record('rep', $rBlocklist));
+		$this->assertSame(['blocklist', 'crontab'], $this->fromDisk()['from_disk']['unverified']);
+		// Another section's record where the blocklist's goes, a seq and all.
+		$this->rFixture->node();
+		$this->rFixture->whole('settings', ['server_name' => 'Panel'], null, ['seq' => 7]);
+		copy($this->rFixture->dir() . 'settings.rep', $this->rFixture->dir() . 'blocklist.rep');
+		$this->assertSame(['blocklist'], $this->fromDisk()['from_disk']['unverified']);
+	}
+
+	public function testFromDiskRtmpPublishersAreNotResolvedAndTheWholeSectionsComeFirst(): void {
+		$this->rFixture->node();
+		$rRow = ['id' => 1, 'ip' => 'localhost', 'password' => 'pw', 'push' => 1, 'pull' => 0];
+		$this->rFixture->blocklist(['ip' => [], 'asn' => [], 'ua' => [], 'isp' => [], 'rtmp' => [$rRow, ['ip' => '198.51.100.9'] + $rRow]], 7);
+		$rReport = $this->fromDisk();
+		// DNS may not answer at boot: a name stays as given until the next apply resolves it.
+		$this->assertSame(['localhost', '198.51.100.9'], array_keys(FileCache::getCache('rtmp_ips')));
+		$rKeys = array_keys($rReport);
+		$this->assertLessThan(array_search('seq', $rKeys, true), array_search('crontab', $rKeys, true), 'the sections a boot needs are applied before the blocklist');
+		ReplicaApply::run(true, 1800000000, 5);
+		$this->assertSame(['127.0.0.1', '198.51.100.9'], array_keys(FileCache::getCache('rtmp_ips')));
 	}
 
 	public function testOnlyWhatTheAgentStoredAndNoContentInTheReport(): void {

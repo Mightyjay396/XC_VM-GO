@@ -21,6 +21,7 @@ use XcVm\Core\Cluster\ReplicaBoot;
 use XcVm\Core\Container\ServiceContainer;
 use XcVm\Core\Enum\BootContext;
 use XcVm\Infrastructure\Bootstrap\WebApiBootstrap;
+use XcVm\Tests\Support\ReplicaFixture;
 
 /**
  * Booting from the node replica (cluster plan, section 10, step 2; section 9,
@@ -49,8 +50,11 @@ final class ReplicaBootTest extends TestCase {
 		$this->rHome = sys_get_temp_dir() . '/xcvm-boot-' . bin2hex(random_bytes(4)) . '/';
 		mkdir($this->rHome . 'config/cluster', 0777, true);
 		mkdir($this->rHome . 'tmp/cache', 0777, true);
-		// LegacyInitializer regenerates the xc_vm crontab once per boot: never the test user's.
-		file_put_contents($this->rHome . 'tmp/crontab', '1');
+		// LegacyInitializer regenerates the xc_vm crontab once per boot: a
+		// `crontab` first on the child's PATH logs it, never the test user's.
+		mkdir($this->rHome . 'stub');
+		file_put_contents($this->rHome . 'stub/crontab', "#!/bin/sh\necho \"crontab \$*\" >> " . escapeshellarg($this->rHome . 'crontab.log') . "\nfor f; do if [ -f \"\$f\" ]; then cat \"\$f\" >> " . escapeshellarg($this->rHome . 'crontab.log') . "; fi; done\nexit 0\n");
+		chmod($this->rHome . 'stub/crontab', 0755);
 		$this->rFixture = new ReplicaFixture($this->rHome . 'config/cluster/');
 		NodeFlows::usePath($this->rHome . 'config/cluster/flows.json');
 	}
@@ -103,6 +107,8 @@ final class ReplicaBootTest extends TestCase {
 			$rProfile = $this->cliProfile();
 			$this->assertSame([ConstantsStage::class, ConfigStage::class, FloodProtectionStage::class, HostVerificationStage::class, ReplicaStage::class, ProcessTitleStage::class, ContainerPopulateStage::class, HealthCheckStage::class], $rProfile);
 			$this->assertSame([ReplicaStage::class], $this->webApiStages());
+			$rStage = WebApiBootstrap::coreStages(true)[0];
+			$this->assertSame(ReplicaBoot::WHEN_READY, (new \ReflectionProperty(ReplicaStage::class, 'rWhen'))->getValue($rStage), 'the web API waits for an apply too');
 		}
 		// Only the CLI profile: the admin UI (MAIN's) and streaming boots keep theirs.
 		$this->assertNull(BootKernel::resolve(BootContext::Admin)['replica']);
@@ -171,7 +177,7 @@ final class ReplicaBootTest extends TestCase {
 			PHP);
 		@unlink($this->rHome . 'connects.log');
 		$rCommand = array_merge([PHP_BINARY, '-d', 'auto_prepend_file=' . $rPrepend, $rScript ?? dirname(__DIR__, 2) . '/src/console.php'], $rArgs);
-		$rProc = proc_open($rCommand, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes, $this->rHome, ['XCVM_TEST_HOME' => $this->rHome, 'XCVM_TEST_SRC' => dirname(__DIR__, 2) . '/src/', 'PATH' => (string) getenv('PATH')]);
+		$rProc = proc_open($rCommand, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes, $this->rHome, ['XCVM_TEST_HOME' => $this->rHome, 'XCVM_TEST_SRC' => dirname(__DIR__, 2) . '/src/', 'PATH' => $this->rHome . 'stub:' . getenv('PATH')]);
 		$this->assertIsResource($rProc);
 		$rOut = (string) stream_get_contents($rPipes[1]);
 		fclose($rPipes[1]);
@@ -180,8 +186,8 @@ final class ReplicaBootTest extends TestCase {
 		return [$rCode, $rOut, $rConnects];
 	}
 
-	/** @return array<string, mixed> */
-	private function dump(bool $rWebApi = false): array {
+	/** A child script that boots as a CLI command (or `webapi`: a cached web API endpoint) and dumps what the boot left. */
+	private function dumpScript(): string {
 		$rScript = $this->rHome . 'dump.php';
 		file_put_contents($rScript, <<<'PHP'
 			<?php
@@ -230,7 +236,12 @@ final class ReplicaBootTest extends TestCase {
 				'request' => is_array($GLOBALS['rRequest']),
 			]);
 			PHP);
-		[$rCode, $rOut, $rConnects] = $this->child($rWebApi ? ['webapi'] : [], $rScript);
+		return $rScript;
+	}
+
+	/** @return array<string, mixed> */
+	private function dump(bool $rWebApi = false): array {
+		[$rCode, $rOut, $rConnects] = $this->child($rWebApi ? ['webapi'] : [], $this->dumpScript());
 		$this->assertSame(0, $rCode, $rOut);
 		$rDump = json_decode($rOut, true);
 		$this->assertIsArray($rDump, $rOut);
@@ -263,6 +274,7 @@ final class ReplicaBootTest extends TestCase {
 		$this->assertSame(['203.0.113.1'], $this->cache('blocked_ips'));
 		$this->assertSame('extra-from-main', trim((string) file_get_contents($this->rHome . 'config/openssl_extra')));
 		$this->assertSame(['settings', 'servers', 'crontab'], array_keys($this->cache('replica_owned')));
+		$this->assertFileDoesNotExist($this->rHome . 'crontab.log', 'the replica did not own the crontab at boot: left as it is, and MAIN\'s table not read');
 	}
 
 	public function testTheAgentsApplyNeedsNoDatabaseOnceConfigIsOn(): void {
@@ -288,9 +300,11 @@ final class ReplicaBootTest extends TestCase {
 	public function testAModeTwoNodeBootsFromItsReplicaOnceAnApplyBuiltIt(): void {
 		$this->flows(2);
 		$this->rFixture->node();
-		// Rebooted, nothing applied yet: through MAIN's database.
+		// Rebooted, nothing applied yet: through MAIN's database, the CLI and the web API alike.
 		[, , $rConnects] = $this->child(['--list']);
 		$this->assertSame(['sql'], $rConnects, 'nothing to boot from yet');
+		[, , $rConnects] = $this->child(['webapi'], $this->dumpScript());
+		$this->assertSame(['sql'], $rConnects, 'nor for the web API');
 
 		[$rCode, $rOut] = $this->child(['cluster:apply', '--from-disk']);
 		$this->assertSame(0, $rCode, $rOut);
@@ -298,6 +312,8 @@ final class ReplicaBootTest extends TestCase {
 		$this->assertSame(0, $rCode, $rOut);
 		$this->assertSame([], $rConnects);
 		$this->assertStringContainsString('cluster:apply', $rOut);
+		// That boot wrote the xc_vm crontab from the replica's jobs, without MAIN's table.
+		$this->assertStringContainsString('console.php cron:cleanup # XC_VM', (string) @file_get_contents($this->rHome . 'crontab.log'));
 
 		file_put_contents($this->rHome . 'tmp/cache/bouquets', function_exists('igbinary_serialize') ? igbinary_serialize([3 => ['id' => 3]]) : serialize([3 => ['id' => 3]]));
 		foreach ([false, true] as $rWebApi) {
@@ -317,8 +333,13 @@ final class ReplicaBootTest extends TestCase {
 				$this->assertSame([true, true, [3 => ['id' => 3]]], [$rDump['container_db'], $rDump['container_settings'], $rDump['container_bouquets']]);
 			}
 			// The boot itself read only allowlisted settings; the process's one miss
-			// reached the audit.json the agent sends, at its exit.
-			$this->assertSame(['settings_misses' => ['zz_not_carried' => $rWebApi ? 2 : 1]], json_decode((string) @file_get_contents($this->rHome . 'config/cluster/audit.json'), true));
+			// reached the day file at its exit, and the audit.json the agent sends.
+			$rDays = 0;
+			foreach (glob($this->rHome . 'storage/cluster/settings_misses/*.json') ?: [] as $rFile) {
+				$rDays += json_decode((string) file_get_contents($rFile), true)['zz_not_carried'] ?? 0;
+			}
+			$this->assertSame($rWebApi ? 2 : 1, $rDays);
+			$this->assertSame(['zz_not_carried'], array_keys(json_decode((string) @file_get_contents($this->rHome . 'config/cluster/audit.json'), true)['settings_misses'] ?? []));
 		}
 	}
 }
