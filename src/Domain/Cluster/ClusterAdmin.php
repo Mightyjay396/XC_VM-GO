@@ -216,6 +216,18 @@ final class ClusterAdmin {
 					ClusterAudit::log('node.mode', $rServerID, ['mode' => $rWanted, 'was' => (int) $rNode['mode']], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
 					return ['type' => 'success', 'message' => 'cluster_mode_done'];
 
+				case 'rotate_now':
+					// The token is the agent's, so this is a command, not a row:
+					// the node rotates at its next poll without being stopped.
+					[$rRouted, $rQueued] = ClusterRoute::rotateNow($rServerID);
+					if (!$rRouted) {
+						return ['type' => 'info', 'message' => 'cluster_rotate_no_commands'];
+					}
+					ClusterAudit::log('node.token_rotate', $rServerID, ['queued' => $rQueued], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return $rQueued
+						? ['type' => 'success', 'message' => 'cluster_rotate_done']
+						: ['type' => 'danger', 'message' => 'cluster_rotate_failed'];
+
 				case 'revoke':
 					return NodeRegistry::revoke($rServerID, $rCrypto, $rUserID === null ? 'admin' : 'admin:' . $rUserID)
 						? ['type' => 'warning', 'message' => 'cluster_node_revoked']

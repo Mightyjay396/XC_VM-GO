@@ -3251,6 +3251,16 @@ It travels with the transport policy, which is how every other fleet-wide transp
 
 The agent keeps it in its state (a restart holds the pace), clamps what a policy asks for to the same 1-3 s and never past `MaxHeartbeatGap`, and re-tunes its ticker when the value changes — so an operator's change reaches the fleet with the next policy and no agent restart. A policy that says nothing leaves the pace alone, and the `-interval` flag still decides for a node run by hand.
 
+### Rotating a node's token on request (Phase 4, seventh increment)
+
+`token.rotate_now` was listed among the restrictive command types — the ones the extension signs even while MAIN's licence is refused — and had no producer and no executor. An operator who no longer trusted a node's token could revoke the node, which stops it, or wait out `lb_token_rotation_min`.
+
+It is the one command the agent runs itself. Every other command goes to the node's PHP (`cluster:exec`), which verifies it again and runs it with the legacy handlers; this one cannot, because the token is the agent's and the node's PHP has no idea what it is — it would answer "unknown command type". The agent therefore handles the type before the executor, triggers the refresh it already has for the halfway point, and acks; a redelivery moves the high-water and rotates nothing twice.
+
+MAIN's half is `ClusterRoute::rotateNow()` with a dedupe key (a double click queues one command), a *Rotate token* button beside *Revoke* on the Cluster Nodes page, and an audit line (`node.token_rotate`). A node that does not take commands yet is told to switch its COMMANDS flow on rather than being given a button that does nothing.
+
+**Not built:** `stream.stop` and `vod.stop` are still listed as restrictive with no producer, and `node.root rotate_sign_key` — re-pinning MAIN's panel key without SSH — does not exist. Both are Phase 9's, where the fence and the credential lockdown need them.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

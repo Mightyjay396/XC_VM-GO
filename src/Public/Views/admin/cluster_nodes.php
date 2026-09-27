@@ -201,6 +201,10 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                         </td>
                         <td class="text-nowrap">
                             <?php if ($rNode['state'] !== 'revoked'): ?>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="rotate_now" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_rotate_now_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_rotate_now'); ?></button>
+                                </form>
                                 <form method="POST" class="d-inline js-cluster-revoke">
                                     <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
                                     <button type="submit" name="cluster_action" value="revoke" class="btn btn-sm btn-label-danger"><?= $language::get('cluster_revoke'); ?></button>

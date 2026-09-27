@@ -79,6 +79,28 @@ final class ClusterRoute {
 	}
 
 	/**
+	 * Rotate a node's token now (`token.rotate_now`): the operator's answer to a
+	 * token they no longer trust, without waiting for its refresh window or
+	 * stopping the node. The command is the agent's own — the token lives there,
+	 * not in the node's PHP — and it is restrictive, so the extension signs it
+	 * even while MAIN's licence is refused.
+	 *
+	 * @return array{0: bool, 1: bool} [routed, queued]
+	 */
+	public static function rotateNow(int $rServerID): array {
+		$rCrypto = self::target($rServerID);
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
+			return [false, false];
+		}
+		try {
+			CommandBus::enqueue($rCrypto, $rServerID, 'token.rotate_now', [], 'token.rotate_now');
+			return [true, true];
+		} catch (\Throwable) {
+			return [true, false];
+		}
+	}
+
+	/**
 	 * Drop a viewer the node's fanout serves (a daemon viewer has no worker
 	 * pid): `conn.drop {uuid}`, run by the node's agent against its fanout.
 	 * Restrictive, like kill.
