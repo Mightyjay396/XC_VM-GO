@@ -24,8 +24,9 @@ use XcVm\Domain\Server\ServerRepository;
  * - the replay cache and single-use challenges past their 180 s go;
  * - enrolment codes nobody used, and decided requests after a day, go;
  * - the blocklist's change log keeps seven days (also with the API off);
- * - MAIN's old cluster API ports past their seven days go, and nginx's
- *   cluster config is rendered from the settings (also with the API off);
+ * - MAIN's old cluster API ports past their seven days go, and so do those
+ *   every node has moved off (ClusterEndpoint::release()); nginx's cluster
+ *   config is rendered from the settings (also with the API off);
  * - the liveness loop runs once (the signals daemon runs it every second).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
@@ -97,13 +98,17 @@ class ClusterCronJob implements CommandInterface {
 
 	/**
 	 * MAIN's old cluster API ports past their 7 days leave the settings, and
-	 * nginx's cluster config is rendered from the stored settings, as xc_vm
-	 * (the user this job runs as). Every minute, not only when a port
-	 * expires: a render that matches the files is a no-op, so this retries
-	 * one that failed and undoes one that raced a settings save.
+	 * so do those every node has moved off before then (every node heard on
+	 * the current policy, none on the port). nginx's cluster config is then
+	 * rendered from the stored settings, as xc_vm (the user this job runs
+	 * as). Every minute, not only when a port goes: a render that matches
+	 * the files is a no-op, so this retries one that failed and undoes one
+	 * that raced a settings save.
 	 */
 	public static function endpoint(): void {
-		ClusterEndpoint::prune(SettingsManager::getAll());
+		$rSettings = SettingsManager::getAll();
+		ClusterEndpoint::prune($rSettings);
+		ClusterEndpoint::release($rSettings);
 		ClusterNginxConfig::apply();
 	}
 }

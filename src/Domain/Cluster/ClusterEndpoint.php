@@ -36,6 +36,12 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   never under `https_required` (ClusterPolicy).
  * - cron:cluster drops expired ports and URLs, bumps the policy again and
  *   renders the nginx config again so nginx releases them.
+ * - It releases a kept port sooner, once every node uses the new URLs
+ *   (release()): every node that may use MAIN's URLs is heard, says in its
+ *   hello and heartbeat that it dials the current policy
+ *   (`cluster_nodes.policy_ver`, nodeUses()), and last reached MAIN on
+ *   another port (`cluster_nodes.main_port`, nginx's `$server_port`). An
+ *   agent that does not say which policy it dials keeps the 7 days.
  */
 final class ClusterEndpoint {
 	use DatabaseAware;
@@ -239,6 +245,50 @@ final class ClusterEndpoint {
 	}
 
 	/**
+	 * Release kept ports before their 7 days once every node uses the new
+	 * URLs (plan §3). Every node that may use MAIN's URLs (mode ≥ 1, not
+	 * revoked) must be heard, say it dials the current policy (which lists
+	 * the new URLs first, at a version at or above the one that announced
+	 * each change) and have reached MAIN on a known port (portsInUse()).
+	 * Then each kept port none of them last reached MAIN on goes, from the
+	 * kept ports and with every kept URL on it. The policy version goes up,
+	 * and the caller renders the nginx config again (cron:cluster) so nginx
+	 * closes the port. Returns whether one went.
+	 *
+	 * @param array<string, mixed> $rSettings The loaded settings; the endpoint state is read again (stored()).
+	 */
+	public static function release(array $rSettings): bool {
+		$rSettings = self::stored($rSettings);
+		$rPorts = self::legacyPorts($rSettings);
+		$rUrls = self::legacyUrls($rSettings);
+		if ($rPorts === [] && $rUrls === []) {
+			return false;
+		}
+		$rVer = intval($rSettings['cluster_policy_ver'] ?? 1);
+		$rInUse = self::portsInUse($rVer, max(10, min(300, intval($rSettings['cluster_offline_after_sec'] ?? 0) ?: 30)));
+		if ($rInUse === null) {
+			return false;
+		}
+		$rUrlPorts = [];
+		foreach (array_keys($rUrls) as $rUrl) {
+			$rUrlPorts[$rUrl] = (self::parseUrl($rUrl) ?? ['', 0])[1];
+		}
+		$rFree = array_values(array_diff(array_unique(array_merge(array_keys($rPorts), array_values($rUrlPorts))), $rInUse));
+		if ($rFree === []) {
+			return false;
+		}
+		sort($rFree);
+		$rKeptPorts = array_diff_key($rPorts, array_flip($rFree));
+		$rKeptUrls = array_diff_key($rUrls, array_filter($rUrlPorts, static fn(int $rPort): bool => in_array($rPort, $rFree, true)));
+		// Only over the lists as read: a change stored meanwhile keeps what it kept.
+		if (!self::save($rKeptPorts, $rKeptUrls, [(string) ($rSettings['cluster_legacy_ports'] ?? ''), (string) ($rSettings['cluster_legacy_urls'] ?? '')])) {
+			return false;
+		}
+		ClusterAudit::log('cluster.endpoint_released', null, ['ports' => $rFree, 'kept' => array_keys($rKeptPorts), 'kept_urls' => array_keys($rKeptUrls), 'policy_ver' => $rVer], 'cron');
+		return true;
+	}
+
+	/**
 	 * What a node's hello or heartbeat says of the URL it uses, as the
 	 * `cluster_nodes` fields that changed; none, so a heartbeat stays off
 	 * MySQL, when neither did:
@@ -264,6 +314,41 @@ final class ClusterEndpoint {
 			$rOut['main_port'] = $rPort;
 		}
 		return $rOut;
+	}
+
+	/**
+	 * The ports the nodes that may use MAIN's URLs last reached it on, or
+	 * null while one of them cannot tell that it uses the new URLs: silent
+	 * past the offline window (NodeHealth, MAIN's own downtime included) or
+	 * never heard, on a policy version other than $rVer (0: its agent does not
+	 * say), with no port recorded (before migration 046, or no SERVER_PORT
+	 * from nginx), or the nodes cannot be read. An enrolment past its
+	 * deadline can no longer complete, and a new one sends the current URLs.
+	 *
+	 * @return list<int>|null
+	 */
+	private static function portsInUse(int $rVer, int $rOfflineAfterSec): ?array {
+		try {
+			$rDb = self::db();
+			if (!$rDb->query("SELECT * FROM `cluster_nodes` WHERE `mode` >= 1 AND `state` <> 'revoked';")) {
+				return null;
+			}
+			$rNodes = (array) $rDb->get_rows();
+		} catch (\Throwable) {
+			return null;
+		}
+		$rPorts = [];
+		foreach ($rNodes as $rNode) {
+			if ($rNode['state'] === 'enrolling' && ClusterClock::now() > (int) ($rNode['enrol_deadline'] ?? 0)) {
+				continue;
+			}
+			$rSeen = isset($rNode['last_seen_at']) ? (int) $rNode['last_seen_at'] : null;
+			if (in_array(NodeHealth::state($rSeen, 0, ClusterClock::nowMs(), $rOfflineAfterSec), ['offline', 'unknown'], true) || (int) ($rNode['policy_ver'] ?? 0) !== $rVer || empty($rNode['main_port'])) {
+				return null;
+			}
+			$rPorts[] = (int) $rNode['main_port'];
+		}
+		return array_values(array_unique($rPorts));
 	}
 
 	/**
@@ -324,17 +409,26 @@ final class ClusterEndpoint {
 
 	/**
 	 * Store the kept ports, and the kept URLs unless null, and announce: the
-	 * policy version goes up in the same UPDATE.
+	 * policy version goes up in the same UPDATE. With $rWas (both lists as
+	 * they were read), only over those: when a change stored another list
+	 * meanwhile, nothing is written and this returns false.
 	 *
 	 * @param array<int, int> $rPorts
 	 * @param array<string, int>|null $rUrls
+	 * @param array{0: string, 1: string}|null $rWas
 	 */
-	private static function save(array $rPorts, ?array $rUrls = null): void {
+	private static function save(array $rPorts, ?array $rUrls = null, ?array $rWas = null): bool {
 		ksort($rPorts);
 		$rPortDoc = $rPorts === [] ? '' : (string) json_encode($rPorts);
 		$rDb = self::db();
 		$rUrlDoc = $rUrls === null || $rUrls === [] ? '' : (string) json_encode($rUrls, JSON_UNESCAPED_SLASHES);
-		if ($rUrls === null || !$rDb->query('UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_legacy_urls` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1;', $rPortDoc, $rUrlDoc)) {
+		if ($rWas !== null) {
+			$rDb->query("UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_legacy_urls` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1 WHERE COALESCE(`cluster_legacy_ports`, '') = ? AND COALESCE(`cluster_legacy_urls`, '') = ?;", $rPortDoc, $rUrlDoc, $rWas[0], $rWas[1]);
+			$rRow = $rDb->query('SELECT `cluster_legacy_ports`, `cluster_legacy_urls` FROM `settings` LIMIT 1;') ? $rDb->get_row() : null;
+			if (!is_array($rRow) || (string) ($rRow['cluster_legacy_ports'] ?? '') !== $rPortDoc || (string) ($rRow['cluster_legacy_urls'] ?? '') !== $rUrlDoc) {
+				return false;
+			}
+		} elseif ($rUrls === null || !$rDb->query('UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_legacy_urls` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1;', $rPortDoc, $rUrlDoc)) {
 			// The ports alone: no URL to store, or migration 044, which adds
 			// their column, has not run yet. The change is announced all the same.
 			$rDb->query('UPDATE `settings` SET `cluster_legacy_ports` = ?, `cluster_policy_ver` = `cluster_policy_ver` + 1;', $rPortDoc);
@@ -344,5 +438,6 @@ final class ClusterEndpoint {
 		} catch (\Throwable) {
 			// The settings cache catches up on its next refresh.
 		}
+		return true;
 	}
 }

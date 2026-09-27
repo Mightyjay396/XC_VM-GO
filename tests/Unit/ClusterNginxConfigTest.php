@@ -648,6 +648,29 @@ final class ClusterNginxConfigTest extends TestCase {
 		$this->assertSame(['test', 'test', 'reload'], $this->takeRuns());
 	}
 
+	/**
+	 * cron:cluster releases a kept old port before its 7 days once every
+	 * node uses the new URL (ClusterEndpoint::release()), and nginx stops
+	 * serving it in the same pass.
+	 */
+	public function testCronReleasesAnOldPortOnceEveryNodeUsesTheNewUrl(): void {
+		$this->rDb->exec("CREATE TABLE `cluster_nodes` (`server_id` INTEGER PRIMARY KEY, `state` varchar(16) NOT NULL DEFAULT 'active', `mode` int NOT NULL DEFAULT 1, `enrol_deadline` int DEFAULT NULL, `last_seen_at` bigint DEFAULT NULL, `policy_ver` int NOT NULL DEFAULT 0, `main_port` int DEFAULT NULL, `updated_at` int NOT NULL DEFAULT 0)");
+		$this->store('cluster_policy_ver', 2);
+		$this->store('cluster_legacy_ports', (string) json_encode([8080 => $this->rNow + ClusterEndpoint::GRACE]));
+		$this->rDb->query('INSERT INTO `cluster_nodes` (`server_id`, `last_seen_at`, `policy_ver`, `main_port`) VALUES (2, ?, 1, 8080)', $this->rNow * 1000 - 1000);
+		SettingsManager::set($this->stored());
+		ClusterCronJob::endpoint();
+		$this->assertStringContainsString('listen 8080;', (string) $this->conf(ClusterNginxConfig::OLD_PORT), 'the node has not moved yet');
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+
+		$this->rDb->query('UPDATE `cluster_nodes` SET `policy_ver` = 2, `main_port` = 25461');
+		ClusterCronJob::endpoint();
+		$this->assertSame('', $this->stored()['cluster_legacy_ports']);
+		$this->assertSame(3, (int) $this->stored()['cluster_policy_ver'], 'announced');
+		$this->assertNull($this->conf(ClusterNginxConfig::OLD_PORT));
+		$this->assertSame(['test', 'reload'], $this->takeRuns());
+	}
+
 	/** cluster:nginx renders the stored settings: --no-reload runs only nginx -t, a refusal exits 1. */
 	public function testTheCommand(): void {
 		$rRun = static function (array $rArgs): array {
