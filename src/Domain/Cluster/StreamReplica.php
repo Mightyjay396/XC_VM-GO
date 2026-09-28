@@ -100,7 +100,7 @@ final class StreamReplica {
 		}
 		$rOut = [];
 		foreach ($rHashes as $rID => $rEtag) {
-			if (!is_int($rID) || $rID < 1 || $rID < $rFrom || $rID > $rTo || !is_string($rEtag) || !preg_match('/^[0-9a-f]{64}$/', $rEtag)) {
+			if (!is_int($rID) || $rID < 1 || $rID < $rFrom || $rID > $rTo || !is_string($rEtag) || !preg_match('/^[0-9a-f]{64}\z/', $rEtag)) {
 				return null;
 			}
 			$rOut[$rID] = $rEtag;

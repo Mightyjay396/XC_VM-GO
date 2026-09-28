@@ -118,7 +118,7 @@ LUA;
 			$rUser = is_array($rTokenData['user_info'] ?? null) ? $rTokenData['user_info'] : [];
 			$rMax = (int) ($rUser['max_connections'] ?? 0);
 			$rUUID = (string) ($rTokenData['uuid'] ?? '');
-			if ($rMax <= 0 || empty($rSettings['cluster_api_enabled']) || !preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+			if ($rMax <= 0 || empty($rSettings['cluster_api_enabled']) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
 				return null;
 			}
 			$rNode = self::nodeOf($rTokenData);
@@ -186,7 +186,7 @@ LUA;
 		$rUserAgent = $rRequest['ua'] ?? '';
 		$rIsLine = is_int($rLineID) && $rLineID > 0 && $rHMAC === null;
 		$rIsHMAC = is_int($rHMAC) && $rHMAC > 0 && is_string($rIdentifier) && $rLineID === null;
-		$rValid = is_string($rUUID) && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) && is_int($rStreamID) && $rStreamID >= 0 && is_string($rIP) && is_string($rUserAgent);
+		$rValid = is_string($rUUID) && preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) && is_int($rStreamID) && $rStreamID >= 0 && is_string($rIP) && is_string($rUserAgent);
 		if (!$rValid || $rIsLine === $rIsHMAC) {
 			return null;
 		}

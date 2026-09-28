@@ -127,6 +127,6 @@ final class ReplicaEtagCache {
 
 	/** A section this cache may keep: never `secrets`. */
 	private static function validKey(string $rKey): bool {
-		return $rKey !== ReplicaSections::SECRETS && preg_match('/^[a-z]+(\.[a-z0-9]+)?$/', $rKey);
+		return $rKey !== ReplicaSections::SECRETS && preg_match('/^[a-z]+(\.[a-z0-9]+)?\z/', $rKey);
 	}
 }

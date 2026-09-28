@@ -36,7 +36,7 @@ final class Ticket {
 		if ($rExp <= $rIat || $rExp - $rIat > $rMax) {
 			throw new \InvalidArgumentException('ticket lifetime');
 		}
-		if (!preg_match('/^[A-Za-z0-9_-]{8,64}$/', $rTid)) {
+		if (!preg_match('/^[A-Za-z0-9_-]{8,64}\z/', $rTid)) {
 			throw new \InvalidArgumentException('ticket id');
 		}
 		$rDoc = ['v' => 1, 'typ' => $rTyp, 'tid' => $rTid, 'iat' => $rIat, 'exp' => $rExp] + $rFields;

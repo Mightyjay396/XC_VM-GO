@@ -106,7 +106,7 @@ final class AgentConnections {
 		if ($rAdmission === null) {
 			return self::put($rUUID, $rRecord);
 		}
-		if (!preg_match('#^[A-Za-z0-9_-]{1,64}$#', $rUUID)) {
+		if (!preg_match('#^[A-Za-z0-9_-]{1,64}\z#', $rUUID)) {
 			return null;
 		}
 		$rHeader = (string) json_encode($rAdmission, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -116,7 +116,7 @@ final class AgentConnections {
 		}
 		if ($rOut[0] === 403 && ($rOut[1]['admit'] ?? null) === false) {
 			$rReason = $rOut[1]['reason'] ?? null;
-			return is_string($rReason) && preg_match('/^[A-Z_]{1,32}$/', $rReason) ? $rReason : 'REFUSED';
+			return is_string($rReason) && preg_match('/^[A-Z_]{1,32}\z/', $rReason) ? $rReason : 'REFUSED';
 		}
 		return $rOut[0] === 200 ? true : null;
 	}
@@ -192,7 +192,7 @@ final class AgentConnections {
 	 * @return array{0: int, 1: array<string, mixed>|null}|null
 	 */
 	private static function call(string $rMethod, string $rPath, ?array $rBody): ?array {
-		if (!preg_match('#^[A-Za-z0-9_-]{1,64}(/(touch|close))?$#', $rPath)) {
+		if (!preg_match('#^[A-Za-z0-9_-]{1,64}(/(touch|close))?\z#', $rPath)) {
 			return [400, null];
 		}
 		return AgentClient::request($rMethod, '/v1/conn/' . $rPath, $rBody, self::TIMEOUT);

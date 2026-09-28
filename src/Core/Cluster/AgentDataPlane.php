@@ -35,7 +35,7 @@ final class AgentDataPlane {
 	 * @param string $rNonceHex The relay auth header's nonce, 16 bytes as hex.
 	 */
 	public static function nonceFresh(string $rNonceHex): ?bool {
-		if (!preg_match('/^[0-9a-fA-F]{32}$/', $rNonceHex)) {
+		if (!preg_match('/^[0-9a-fA-F]{32}\z/', $rNonceHex)) {
 			return false;
 		}
 		$rOut = AgentClient::request('POST', '/v1/nonce', ['nonce' => strtolower($rNonceHex)], self::TIMEOUT);
@@ -55,7 +55,7 @@ final class AgentDataPlane {
 	 * @param string $rSha256 The file's (or range's) SHA-256, lowercase hex.
 	 */
 	public static function fileDigest(string $rTid, int $rOwnerSid, int $rSize, string $rSha256, ?int $rIat = null): ?string {
-		if (!preg_match('/^[A-Za-z0-9_-]{8,64}$/', $rTid) || !preg_match('/^[0-9a-f]{64}$/', $rSha256) || $rSize < 0 || $rOwnerSid <= 0) {
+		if (!preg_match('/^[A-Za-z0-9_-]{8,64}\z/', $rTid) || !preg_match('/^[0-9a-f]{64}\z/', $rSha256) || $rSize < 0 || $rOwnerSid <= 0) {
 			return null;
 		}
 		$rOut = AgentClient::request('POST', '/v1/file_digest', [

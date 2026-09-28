@@ -64,53 +64,61 @@ $rReq = [
 	// node reaches it on (ClusterEndpoint::nodeUses()). 0: not passed.
 	'port' => (int) ($_SERVER['SERVER_PORT'] ?? 0),
 ];
-// Until MAIN's cluster pools answer, nginx hands the API to a panel pool, and
-// every op but health gets a signed 503 STARTING (ClusterPool).
-$rStarting = ClusterPool::gate($rCrypto, $rReq);
-if ($rStarting !== null) {
-	$rEmit($rStarting);
-	return;
-}
-if ($rReq['path'] === '/cluster/v1/health') {
-	// Needs neither the database nor settings: it is how agents tell a MAIN
-	// whose database is down from one that is gone.
-	$rEmit(ClusterApi::handle($rCrypto, $rReq, [], []));
-	return;
-}
-
+// From here on, whatever throws (the extension refusing to sign even a
+// denial, a TypeError from it) is answered by ClusterApi::failed(): logged,
+// and an unsigned 503 the agent retries as a transport error, never PHP's
+// bare 500. ClusterApi::serve() does the same for the ops themselves.
 try {
-	// Connect gracefully: DatabaseHandler's constructor exit()s on failure, and
-	// an agent must get a signed 503 it can act on instead.
-	$db = new class extends DatabaseHandler {
-		public function __construct() {
-			$this->dbh = false;
-		}
-	};
-	if (!$db->db_connect(false, true)) {
-		throw new \RuntimeException('db');
+	// Until MAIN's cluster pools answer, nginx hands the API to a panel pool, and
+	// every op but health gets a signed 503 STARTING (ClusterPool).
+	$rStarting = ClusterPool::gate($rCrypto, $rReq);
+	if ($rStarting !== null) {
+		$rEmit($rStarting);
+		return;
 	}
-	$rDb = $db;
-	DatabaseFactory::set($rDb);
-	$rSettings = FileCache::getCache('settings') ?: [];
-	if (empty($rSettings['enable_cache'])) {
-		$rSettings = SettingsRepository::getAll(true);
+	if ($rReq['path'] === '/cluster/v1/health') {
+		// Needs neither the database nor settings: it is how agents tell a MAIN
+		// whose database is down from one that is gone.
+		$rEmit(ClusterApi::serve($rCrypto, $rReq, [], []));
+		return;
 	}
-	SettingsManager::set($rSettings);
-	// MAIN's row, for the ops that read it (the policy, the replica): a
-	// heartbeat whose node the cluster bus holds sends MySQL no query of its
-	// own, only the connection's setup above.
-	$rMain = [];
-	if (ClusterApi::readsMain($rReq['path'])) {
-		$rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;');
-		$rMain = $rDb->num_rows() > 0 ? (array) $rDb->get_row() : [];
-	}
-} catch (\Throwable) {
-	$rEmit(DenialFactory::deny($rCrypto, 503, 'DB'));
-	return;
-}
 
-$rReq['body'] = (string) file_get_contents('php://input', false, null, 0, ClusterApi::MAX_BODY + 1);
-// The one listener an op needs: a recording a node finished becomes a VOD it
-// holds (recording_complete), which stamps the stream's R2 version.
-EventDispatcher::subscribe(StreamVersions::class);
-$rEmit(ClusterApi::handle($rCrypto, $rReq, $rSettings, $rMain));
+	try {
+		// Connect gracefully: DatabaseHandler's constructor exit()s on failure, and
+		// an agent must get a signed 503 it can act on instead.
+		$db = new class extends DatabaseHandler {
+			public function __construct() {
+				$this->dbh = false;
+			}
+		};
+		if (!$db->db_connect(false, true)) {
+			throw new \RuntimeException('db');
+		}
+		$rDb = $db;
+		DatabaseFactory::set($rDb);
+		$rSettings = FileCache::getCache('settings') ?: [];
+		if (empty($rSettings['enable_cache'])) {
+			$rSettings = SettingsRepository::getAll(true);
+		}
+		SettingsManager::set($rSettings);
+		// MAIN's row, for the ops that read it (the policy, the replica): a
+		// heartbeat whose node the cluster bus holds sends MySQL no query of its
+		// own, only the connection's setup above.
+		$rMain = [];
+		if (ClusterApi::readsMain($rReq['path'])) {
+			$rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;');
+			$rMain = $rDb->num_rows() > 0 ? (array) $rDb->get_row() : [];
+		}
+	} catch (\Throwable) {
+		$rEmit(DenialFactory::deny($rCrypto, 503, 'DB'));
+		return;
+	}
+
+	$rReq['body'] = (string) file_get_contents('php://input', false, null, 0, ClusterApi::MAX_BODY + 1);
+	// The one listener an op needs: a recording a node finished becomes a VOD it
+	// holds (recording_complete), which stamps the stream's R2 version.
+	EventDispatcher::subscribe(StreamVersions::class);
+	$rEmit(ClusterApi::serve($rCrypto, $rReq, $rSettings, $rMain));
+} catch (\Throwable $rE) {
+	$rEmit(ClusterApi::failed($rReq['path'], $rE));
+}

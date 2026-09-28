@@ -47,7 +47,7 @@ final class ReplicaRecords {
 	 */
 	public static function identity(string $rAgentFile): ?array {
 		$rState = json_decode((string) @file_get_contents($rAgentFile), true);
-		if (!is_array($rState) || !is_string($rState['node_uuid'] ?? null) || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $rState['node_uuid'])) {
+		if (!is_array($rState) || !is_string($rState['node_uuid'] ?? null) || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/', $rState['node_uuid'])) {
 			return null;
 		}
 		$rBoxSk = is_string($rState['node_box_sk'] ?? null) ? base64_decode($rState['node_box_sk'], true) : false;
@@ -178,7 +178,7 @@ final class ReplicaRecords {
 
 	/** An ETag as MAIN makes it (ReplicaBuilder::etag): 64 lowercase hex digits. */
 	private static function etag(mixed $rEtag): bool {
-		return is_string($rEtag) && preg_match('/^[0-9a-f]{64}$/', $rEtag) === 1;
+		return is_string($rEtag) && preg_match('/^[0-9a-f]{64}\z/', $rEtag) === 1;
 	}
 
 	private static function strings(mixed $rList): bool {

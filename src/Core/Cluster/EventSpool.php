@@ -47,7 +47,7 @@ final class EventSpool {
 	 * @return bool False when nothing was spooled: the caller falls back.
 	 */
 	public static function append(string $rLane, array $rEvents, string $rTag = ''): bool {
-		if (!in_array($rLane, self::LANES, true) || $rEvents === [] || !preg_match('/^[a-z_]*$/', $rTag) || !self::agentAlive()) {
+		if (!in_array($rLane, self::LANES, true) || $rEvents === [] || !preg_match('/^[a-z_]*\z/', $rTag) || !self::agentAlive()) {
 			return false;
 		}
 		$rDir = self::dir() . $rLane . '/';
@@ -99,7 +99,7 @@ final class EventSpool {
 
 	/** Is a file tagged $rTag still in the lane, not yet sent to MAIN by the agent? */
 	public static function pending(string $rLane, string $rTag): bool {
-		if (!in_array($rLane, self::LANES, true) || !preg_match('/^[a-z_]+$/', $rTag)) {
+		if (!in_array($rLane, self::LANES, true) || !preg_match('/^[a-z_]+\z/', $rTag)) {
 			return false;
 		}
 		return (glob(self::dir() . $rLane . '/*-' . $rTag . '.ndjson') ?: []) !== [];

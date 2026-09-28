@@ -84,6 +84,6 @@ final class EnrolmentService {
 	}
 
 	public static function validUuid(string $rUuid): bool {
-		return (bool) preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $rUuid);
+		return (bool) preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/', $rUuid);
 	}
 }

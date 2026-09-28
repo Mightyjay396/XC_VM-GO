@@ -45,7 +45,7 @@ final class AgentClient {
 	 * @return array<string, mixed>|null MAIN's reply; null when the agent or MAIN did not answer, or refused.
 	 */
 	public static function main(string $rOp, array $rPayload, float $rTimeout = 15.0): ?array {
-		if (!preg_match('/^[a-z_]{1,32}$/', $rOp)) {
+		if (!preg_match('/^[a-z_]{1,32}\z/', $rOp)) {
 			return null;
 		}
 		$rOut = self::request('POST', '/v1/main/' . $rOp, $rPayload, $rTimeout);

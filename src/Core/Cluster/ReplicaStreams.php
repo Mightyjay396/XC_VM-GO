@@ -92,7 +92,7 @@ final class ReplicaStreams {
 		$rOut = [];
 		foreach ($rFiles as $rFile) {
 			$rName = basename($rFile, '.json');
-			if (!preg_match('/^[1-9][0-9]{0,9}$/', $rName)) {
+			if (!preg_match('/^[1-9][0-9]{0,9}\z/', $rName)) {
 				return false;
 			}
 			$rOut[] = (int) $rName;

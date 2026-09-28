@@ -35,6 +35,12 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * Those refusals, and the first rule's, are not replays: claim() reports the
  * wait after which a request stamped anew can pass.
  *
+ * A value MAIN made itself (a used challenge, the re-key minute) has no
+ * request stamp the first rule could hold against a lost bus, so its claim
+ * is always also taken in MySQL: a bus restarted or flushed within the
+ * value's life neither lets a used challenge pass again nor opens the
+ * minute's re-key slot a second time.
+ *
  * The marks are files beside the bus socket, on disk, so they outlive a
  * reboot. A mark only moves forward, unless it is more than a second ahead
  * of the clock (the clock stepped back). On the bus, nonces live in sorted
@@ -88,7 +94,8 @@ final class NonceStore {
 	 * cannot vouch that it was not (see above).
 	 *
 	 * @param ?int $rTsMs The request's X-XCVM-Ts, MAIN ms; null for a value
-	 *                    MAIN made itself (the re-key minute, a used challenge).
+	 *                    MAIN made itself (the re-key minute, a used challenge),
+	 *                    which is always claimed in MySQL too.
 	 * @param ?int $rRetryMs Set on a refusal that is not a replay: the wait,
 	 *                       in ms, after which a request stamped anew can
 	 *                       pass. Null otherwise.
@@ -116,7 +123,7 @@ final class NonceStore {
 			$rRetryMs = self::waitFor($rSince + self::LEAD_MS + 1, $rNow);
 			return false;
 		}
-		if ($rNow - $rSince < self::TTL * 1000 || self::markedWithinTtl(self::SQL_MARK, $rNow) || ($rTsMs !== null && $rTsMs > $rNow + self::LEAD_MS)) {
+		if ($rTsMs === null || $rNow - $rSince < self::TTL * 1000 || self::markedWithinTtl(self::SQL_MARK, $rNow) || $rTsMs > $rNow + self::LEAD_MS) {
 			return self::insert($rNode, $rNonce);
 		}
 		return true;

@@ -53,7 +53,7 @@ final class ConnectionSnapshot {
 		$rSnap = $rP['snap_id'] ?? null;
 		$rSeq = $rP['seq'] ?? null;
 		$rRecords = $rP['records'] ?? null;
-		if (!is_string($rSnap) || !preg_match('/^[0-9a-f]{16,32}$/', $rSnap) || !is_int($rSeq) || $rSeq < 0 || $rSeq >= self::MAX_CHUNKS || !is_bool($rP['last'] ?? null) || !is_array($rRecords) || !array_is_list($rRecords) || count($rRecords) > self::MAX_RECORDS) {
+		if (!is_string($rSnap) || !preg_match('/^[0-9a-f]{16,32}\z/', $rSnap) || !is_int($rSeq) || $rSeq < 0 || $rSeq >= self::MAX_CHUNKS || !is_bool($rP['last'] ?? null) || !is_array($rRecords) || !array_is_list($rRecords) || count($rRecords) > self::MAX_RECORDS) {
 			return ['ok' => false, 'bad' => true];
 		}
 		$rDir = self::dir() . $rServerID . '/';
