@@ -43,6 +43,12 @@ final class Canonical {
 	public const H_PANEL_SIG = 'X-XCVM-Panel-Sig';
 
 	/**
+	 * A node uuid (lower-case hex, 8-4-4-4-12), unanchored: the one pattern
+	 * every check of a node uuid uses (validUuid(), validNode()).
+	 */
+	public const NODE_UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+
+	/**
 	 * @param array{proto:int, agent:string, method:string, path:string, query:string, content_type:string,
 	 *              content_encoding:string, node:string, epoch:int, ts_ms:int, nonce:string} $r
 	 */
@@ -113,7 +119,12 @@ final class Canonical {
 
 	/** A node id as X-XCVM-Node may carry it. */
 	public static function validNode(string $rNode): bool {
-		return (bool) preg_match('/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|sid:[1-9][0-9]{0,9})\z/', $rNode);
+		return (bool) preg_match('/^(' . self::NODE_UUID . '|sid:[1-9][0-9]{0,9})\z/', $rNode);
+	}
+
+	/** A node uuid, and nothing else (no trailing newline either). */
+	public static function validUuid(string $rUuid): bool {
+		return (bool) preg_match('/^' . self::NODE_UUID . '\z/', $rUuid);
 	}
 
 	/**

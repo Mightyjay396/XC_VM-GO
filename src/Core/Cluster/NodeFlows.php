@@ -13,7 +13,7 @@ namespace XcVm\Core\Cluster;
  * where the Domain\Cluster registry does not.
  */
 final class NodeFlows {
-	/** Flow bits, as NodeRegistry::FLOW_* on MAIN (plan, section 12). */
+	/** Flow bits (plan, section 12); NodeRegistry::FLOW_* on MAIN are these. */
 	public const TELEMETRY = 1;
 	public const COMMANDS = 2;
 	public const LOGS = 4;

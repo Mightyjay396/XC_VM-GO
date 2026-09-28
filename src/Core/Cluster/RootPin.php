@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 
 /**
@@ -67,7 +68,7 @@ final class RootPin {
 		}
 		$rPub = @hex2bin(trim((string) @file_get_contents($rDir . 'main_sign.pub')));
 		$rNode = trim((string) @file_get_contents($rDir . 'node'));
-		if ($rPub === false || strlen($rPub) !== 32 || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/', $rNode)) {
+		if ($rPub === false || strlen($rPub) !== 32 || !Canonical::validUuid($rNode)) {
 			return null;
 		}
 		return ['pub' => $rPub, 'node' => $rNode];

@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Util\AtomicFile;
 
 /**
  * MAIN's nginx config for the cluster API (plan §3, "Transport" and
@@ -41,6 +42,8 @@ use XcVm\Core\Config\SettingsManager;
  * a render that failed and undoes one that raced a settings save.
  */
 final class ClusterNginxConfig {
+	use InstallBase;
+
 	public const LOCATIONS = 'cluster_locations.conf';
 
 	public const LISTEN = 'cluster.d/listen.conf';
@@ -61,19 +64,9 @@ final class ClusterNginxConfig {
 	/** How long nginx gets to serve a new port after the reload; its own bind retries last 2.5 s. */
 	private const SERVE_WAIT_MS = 3000;
 
-	private static ?string $rBase = null;
-
-	private static string $rUser = 'xc_vm';
-
 	private static ?\Closure $rRunner = null;
 
 	private static ?\Closure $rProbe = null;
-
-	/** Tests: another install root (null: MAIN_HOME), and the user nginx runs as. */
-	public static function useBase(?string $rBase, string $rUser = 'xc_vm'): void {
-		self::$rBase = $rBase;
-		self::$rUser = $rUser;
-	}
 
 	/** Tests: run nginx with fn(list<string> $rArgv): array{0: int, 1: string} (null: the real one). */
 	public static function useRunner(?\Closure $rRunner): void {
@@ -237,7 +230,7 @@ final class ClusterNginxConfig {
 	public static function apply(?array $rSettings = null, bool $rReload = true): array {
 		$rOut = ['ok' => false, 'changed' => false, 'reloaded' => false, 'error' => ''];
 		$rBase = self::base();
-		if ($rBase === null || !self::runsAsNginxUser()) {
+		if ($rBase === null || !self::runsAsUser()) {
 			$rOut['error'] = 'not run as ' . self::$rUser;
 			return $rOut;
 		}
@@ -450,13 +443,7 @@ final class ClusterNginxConfig {
 		if ($rContent === null) {
 			return !file_exists($rPath) || @unlink($rPath);
 		}
-		$rTmp = $rPath . '.tmp';
-		if (@file_put_contents($rTmp, $rContent) === false || !@rename($rTmp, $rPath)) {
-			@unlink($rTmp);
-			return false;
-		}
-		@chmod($rPath, 0644);
-		return true;
+		return AtomicFile::write($rPath, $rContent, 0644);
 	}
 
 	/** @param array<string, ?string> $rBefore */
@@ -487,14 +474,5 @@ final class ClusterNginxConfig {
 		fclose($rPipes[1]);
 		fclose($rPipes[2]);
 		return [proc_close($rProc), $rText];
-	}
-
-	private static function runsAsNginxUser(): bool {
-		$rUser = function_exists('posix_getpwuid') ? posix_getpwuid(posix_geteuid()) : false;
-		return is_array($rUser) && $rUser['name'] === self::$rUser;
-	}
-
-	private static function base(): ?string {
-		return self::$rBase ?? (defined('MAIN_HOME') ? (string) MAIN_HOME : null);
 	}
 }

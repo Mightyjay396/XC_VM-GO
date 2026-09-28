@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 
 /**
@@ -71,19 +72,11 @@ final class EnrolmentService {
 	/** SAS: six base32 groups of SHA-256(node_uuid ‖ ed25519_pub ‖ x25519_pub). */
 	public static function sas(string $rNodeUuid, string $rSignPub, string $rBoxPub): string {
 		$rHash = hash('sha256', $rNodeUuid . $rSignPub . $rBoxPub, true);
-		$rAlphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-		$rBits = '';
-		foreach (str_split(substr($rHash, 0, 15)) as $rByte) {
-			$rBits .= str_pad(decbin(ord($rByte)), 8, '0', STR_PAD_LEFT);
-		}
-		$rOut = '';
-		foreach (str_split($rBits, 5) as $rChunk) {
-			$rOut .= $rAlphabet[bindec($rChunk)];
-		}
-		return implode('-', str_split(substr($rOut, 0, 24), 4));
+		// 15 bytes are 24 characters exactly.
+		return implode('-', str_split(Base32::encode(substr($rHash, 0, 15)), 4));
 	}
 
 	public static function validUuid(string $rUuid): bool {
-		return (bool) preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/', $rUuid);
+		return Canonical::validUuid($rUuid);
 	}
 }

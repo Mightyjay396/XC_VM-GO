@@ -45,6 +45,8 @@ namespace XcVm\Core\Cluster;
  */
 
 final class ConnectAudit {
+	use OptionalDirSeam;
+
 	public const SQL = 'sql';
 	public const REDIS = 'redis';
 
@@ -52,7 +54,7 @@ final class ConnectAudit {
 	public const MAX_SITES = 32;
 
 	/** A site past MAX_SITES. */
-	public const OTHER = '*';
+	public const OTHER = AuditDays::OTHER;
 
 	/** Longest site key ("kind path:line") in bytes; a longer one keeps its end. */
 	public const MAX_SITE_LEN = 160;
@@ -66,6 +68,9 @@ final class ConnectAudit {
 	/** Seconds after which a connect rewrites audit.json without a new site. */
 	public const PUBLISH_EVERY = 60;
 
+	/** A day's files: its counts and its log. */
+	private const DAY_FILES = ['json', 'ndjson'];
+
 	/** Frames that are the connect machinery itself, not the caller. */
 	private const INTERNAL = [
 		'XcVm\\Core\\Database\\Database',
@@ -77,27 +82,17 @@ final class ConnectAudit {
 		self::class,
 	];
 
-	/** Tests: another directory; false: off (the suite's default). */
-	private static string|false|null $rDir = null;
-
 	/** Tests: a fixed clock. */
 	private static ?int $rNow = null;
-
-	/** Tests: another directory, or false for none; null restores STORAGE_PATH's. */
-	public static function useDir(string|false|null $rDir): void {
-		self::$rDir = $rDir;
-	}
 
 	/** Tests: a fixed time for the connects recorded; null restores the clock. */
 	public static function useClock(?int $rNow): void {
 		self::$rNow = $rNow;
 	}
 
-	public static function dir(): ?string {
-		if (self::$rDir === false) {
-			return null;
-		}
-		return self::$rDir ?? (defined('STORAGE_PATH') ? STORAGE_PATH . 'cluster/sql_audit/' : null);
+	/** STORAGE_PATH's (useDir(): tests' own, false for none, the suite's default). */
+	private static function defaultDir(): ?string {
+		return defined('STORAGE_PATH') ? STORAGE_PATH . 'cluster/sql_audit/' : null;
 	}
 
 	/**
@@ -132,21 +127,14 @@ final class ConnectAudit {
 		try {
 			// Root counts as xc_vm: these directories are xc_vm's to write.
 			SettingsAudit::asAgentUser(static function () use ($rDir, $rKind, $rSite, $rRefused, $rNow): bool {
-				if (!SettingsAudit::makeDir($rDir)) {
+				if (!AuditDays::makeDir($rDir)) {
 					return false;
 				}
 				$rDay = $rDir . gmdate('Ymd', $rNow);
 				$rKey = self::siteKey($rKind, $rSite);
 				$rNew = self::count($rDay . '.json', $rKind, $rKey);
 				self::log($rDay . '.ndjson', ['t' => $rNow, 'k' => $rKind, 's' => substr($rKey, strlen($rKind) + 1), 'p' => getmypid()] + ($rRefused ? ['r' => 1] : []));
-				$rAgentDir = SettingsAudit::agentDir();
-				if ($rAgentDir === null) {
-					return true;
-				}
-				clearstatcache(true, $rAgentDir . 'audit.json');
-				if ($rNew || (int) @filemtime($rAgentDir . 'audit.json') <= $rNow - self::PUBLISH_EVERY) {
-					SettingsAudit::publish($rAgentDir, $rNow);
-				}
+				SettingsAudit::publishIfDue($rNew, $rNow, self::PUBLISH_EVERY);
 				return true;
 			});
 		} catch (\Throwable) {
@@ -237,7 +225,7 @@ final class ConnectAudit {
 		if ($rDir === null || !@unlink($rDir . 'since')) {
 			return;
 		}
-		foreach (array_keys(self::dayFiles($rDir)) as $rFile) {
+		foreach (array_keys(AuditDays::files($rDir, self::DAY_FILES)) as $rFile) {
 			@unlink($rFile);
 		}
 	}
@@ -248,29 +236,7 @@ final class ConnectAudit {
 		if ($rDir === null) {
 			return 0;
 		}
-		$rCut = gmdate('Ymd', ($rNow ?? self::$rNow ?? time()) - $rKeepDays * 86400);
-		$rCount = 0;
-		foreach (self::dayFiles($rDir) as $rFile => $rDay) {
-			if ($rDay < $rCut && @unlink($rFile)) {
-				$rCount++;
-			}
-		}
-		return $rCount;
-	}
-
-	/**
-	 * The day files in $rDir, counts and logs: path => YYYYMMDD.
-	 *
-	 * @return array<string, string>
-	 */
-	private static function dayFiles(string $rDir): array {
-		$rOut = [];
-		foreach (array_merge(glob($rDir . '*.json') ?: [], glob($rDir . '*.ndjson') ?: []) as $rFile) {
-			if (preg_match('/^(\d{8})\.(?:json|ndjson)$/', basename($rFile), $rMatch)) {
-				$rOut[$rFile] = $rMatch[1];
-			}
-		}
-		return $rOut;
+		return AuditDays::prune($rDir, self::DAY_FILES, $rKeepDays, $rNow ?? self::$rNow ?? time());
 	}
 
 	/**
@@ -278,27 +244,15 @@ final class ConnectAudit {
 	 * True when the site (or OTHER) is new to the day.
 	 */
 	private static function count(string $rFile, string $rKind, string $rKey): bool {
-		$rHandle = @fopen($rFile, 'c+');
-		if ($rHandle === false) {
-			return false;
-		}
-		try {
-			flock($rHandle, LOCK_EX);
-			$rDay = self::day(json_decode((string) stream_get_contents($rHandle), true));
+		$rNew = false;
+		AuditDays::rewrite($rFile, static function (mixed $rDoc) use ($rKind, $rKey, &$rNew): string {
+			$rDay = self::day($rDoc);
 			$rDay[$rKind]++;
-			if (!isset($rDay['sites'][$rKey]) && count(array_diff_key($rDay['sites'], [self::OTHER => 0])) >= self::MAX_SITES) {
-				$rKey = self::OTHER;
-			}
+			$rKey = AuditDays::slot($rDay['sites'], $rKey, self::MAX_SITES);
 			$rNew = !isset($rDay['sites'][$rKey]);
 			$rDay['sites'][$rKey] = ($rDay['sites'][$rKey] ?? 0) + 1;
-			ftruncate($rHandle, 0);
-			rewind($rHandle);
-			fwrite($rHandle, (string) json_encode(['sql' => $rDay['sql'], 'redis' => $rDay['redis'], 'sites' => (object) $rDay['sites']], JSON_UNESCAPED_SLASHES));
-			fflush($rHandle);
-		} finally {
-			flock($rHandle, LOCK_UN);
-			fclose($rHandle);
-		}
+			return (string) json_encode(['sql' => $rDay['sql'], 'redis' => $rDay['redis'], 'sites' => (object) $rDay['sites']], JSON_UNESCAPED_SLASHES);
+		});
 		return $rNew;
 	}
 
@@ -346,7 +300,7 @@ final class ConnectAudit {
 	 * $rFrom's is left out. Null when this process cannot tell: the directory
 	 * (or the nearest level above it) is not one it may search, or a day file
 	 * is not one it may read. An absent day is a day without a connect. Each
-	 * day file is read under its lock (SettingsAudit::readDay), so a count
+	 * day file is read under its lock (AuditDays::window), so a count
 	 * rewriting it is never seen half done.
 	 *
 	 * @return array{sql: int, redis: int, sites: array<string, int>}|null
@@ -357,31 +311,19 @@ final class ConnectAudit {
 		if ($rDir === null) {
 			return $rOut;
 		}
-		if (!SettingsAudit::searchable($rDir)) {
+		$rDocs = AuditDays::window($rDir, $rDays, $rNow, $rFrom);
+		if ($rDocs === null) {
 			return null;
 		}
-		$rFirst = gmdate('Ymd', $rFrom);
-		for ($d = 0; $d < $rDays; $d++) {
-			$rDate = gmdate('Ymd', $rNow - $d * 86400);
-			if ($rDate < $rFirst) {
-				break;
-			}
-			$rFile = $rDir . $rDate . '.json';
-			if (!is_file($rFile)) {
-				continue;
-			}
-			$rRaw = SettingsAudit::readDay($rFile);
-			if ($rRaw === false) {
-				return null;
-			}
-			$rDay = self::day(json_decode($rRaw, true));
+		foreach ($rDocs as $rDoc) {
+			$rDay = self::day($rDoc);
 			$rOut['sql'] += $rDay['sql'];
 			$rOut['redis'] += $rDay['redis'];
 			foreach ($rDay['sites'] as $rKey => $rCount) {
 				$rOut['sites'][$rKey] = ($rOut['sites'][$rKey] ?? 0) + $rCount;
 			}
 		}
-		$rOut['sites'] = SettingsAudit::top($rOut['sites'], self::MAX_SITES);
+		$rOut['sites'] = AuditDays::top($rOut['sites'], self::MAX_SITES);
 		return $rOut;
 	}
 
@@ -397,7 +339,7 @@ final class ConnectAudit {
 		if ($rSince > 0) {
 			return $rSince;
 		}
-		if (!SettingsAudit::makeDir($rDir) || @file_put_contents($rFile, (string) $rNow) === false) {
+		if (!AuditDays::makeDir($rDir) || @file_put_contents($rFile, (string) $rNow) === false) {
 			return null;
 		}
 		return $rNow;

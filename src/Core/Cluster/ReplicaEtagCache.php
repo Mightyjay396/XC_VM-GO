@@ -6,6 +6,7 @@ use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Server\ServerSavedEvent;
 use XcVm\Core\Events\Settings\CrontabChangedEvent;
 use XcVm\Core\Events\Settings\SettingsChangedEvent;
+use XcVm\Core\Util\AtomicFile;
 
 /**
  * MAIN's cache of the replica's R1 sections (plan, section 9, "Change
@@ -30,22 +31,14 @@ use XcVm\Core\Events\Settings\SettingsChangedEvent;
  * secret must not rest unsealed on MAIN's disk. It is read for each request.
  */
 final class ReplicaEtagCache {
+	use OptionalDirSeam;
+
 	/** How long a section is reused (ms). */
 	public const TTL_MS = 10000;
 
-	/** @var string|false|null null: TMP_PATH's; false: no cache */
-	private static string|false|null $rDir = null;
-
-	/** Tests: another directory, false for no cache, null for TMP_PATH's. */
-	public static function useDir(string|false|null $rDir): void {
-		self::$rDir = $rDir;
-	}
-
-	public static function dir(): ?string {
-		if (self::$rDir === false) {
-			return null;
-		}
-		return self::$rDir ?? (defined('TMP_PATH') ? TMP_PATH . 'cluster_replica/' : null);
+	/** TMP_PATH's (useDir(): tests' own, false for no cache). */
+	private static function defaultDir(): ?string {
+		return defined('TMP_PATH') ? TMP_PATH . 'cluster_replica/' : null;
 	}
 
 	/** The cache's generation: read it before reading a section from the database. */
@@ -88,10 +81,9 @@ final class ReplicaEtagCache {
 		if (!is_dir($rDir)) {
 			@mkdir($rDir, 0750, true);
 		}
-		$rTmp = $rDir . '.' . $rKey . '.' . getmypid() . '.tmp';
 		$rJson = json_encode(['at' => $rNowMs, 'gen' => $rGen, 'etag' => $rEtag, 'data' => $rData], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
-		if ($rJson !== false && @file_put_contents($rTmp, $rJson) !== false && !@rename($rTmp, $rDir . $rKey . '.json')) {
-			@unlink($rTmp);
+		if ($rJson !== false) {
+			AtomicFile::write($rDir . $rKey . '.json', $rJson);
 		}
 	}
 
@@ -109,10 +101,7 @@ final class ReplicaEtagCache {
 		if (!is_dir($rDir)) {
 			@mkdir($rDir, 0750, true);
 		}
-		$rTmp = $rDir . '.gen.' . getmypid() . '.tmp';
-		if (@file_put_contents($rTmp, bin2hex(random_bytes(8))) !== false && !@rename($rTmp, $rDir . '.gen')) {
-			@unlink($rTmp);
-		}
+		AtomicFile::write($rDir . '.gen', bin2hex(random_bytes(8)));
 		foreach (glob($rDir . '*.json') ?: [] as $rFile) {
 			@unlink($rFile);
 		}

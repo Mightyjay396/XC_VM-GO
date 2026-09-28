@@ -3,6 +3,7 @@
 namespace XcVm\Core\Cluster;
 
 use XcVm\Core\Process\ProcessRunner;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -26,7 +27,7 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  *   unsent                         {"at", "token"}: an entry holds what the agent did not take (resend())
  *   streams/<id>.json              {"id", "ssid", "fields": {column: value}, "unsent": [columns]}
  *   recordings/<id>.json           {"id", "status"}
- *   .<name>.<pid>.tmp              a write in progress
+ *   .<name>.<pid>.<rand>.tmp       a write in progress (AtomicFile; readers skip dot files)
  * ```
  *
  * - **Where.** On disk beside the agent's spool, not in tmp/ (a tmpfs):
@@ -61,6 +62,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * until it is seeded in mode 1.
  */
 final class StreamRuntime {
+	use DirSeam;
+
 	/** The `streams` columns the node keeps besides StreamStateWriter::STATE_FIELDS: its workers' pids. */
 	public const WORKER_FIELDS = ['tv_archive_pid', 'vframes_pid'];
 
@@ -90,8 +93,6 @@ final class StreamRuntime {
 
 	private const LOCK = '.lock';
 
-	private static ?string $rDir = null;
-
 	/** When this process's last seed failed, or null. */
 	private static ?int $rSeedFailed = null;
 
@@ -104,7 +105,7 @@ final class StreamRuntime {
 	/** @var array{streams: int, recordings: int, value: int}|null tests: other bounds */
 	private static ?array $rLimits = null;
 
-	/** Tests: another directory; null restores the default. */
+	/** Tests: another directory, and what this process read forgotten; null restores the default. */
 	public static function useDir(?string $rDir): void {
 		self::$rDir = $rDir;
 		self::$rSsids = [];
@@ -117,8 +118,8 @@ final class StreamRuntime {
 		self::$rLimits = $rStreams === null ? null : ['streams' => $rStreams, 'recordings' => $rRecordings ?? self::MAX_RECORDINGS, 'value' => $rValue ?? self::MAX_VALUE];
 	}
 
-	public static function dir(): string {
-		return self::$rDir ?? ReplicaApply::configDir() . 'cluster/runtime/';
+	private static function defaultDir(): string {
+		return ReplicaApply::configDir() . 'cluster/runtime/';
 	}
 
 	/** Do this node's writers keep their streams' state here? While its STREAMS flow is on. */
@@ -475,11 +476,7 @@ final class StreamRuntime {
 			}
 			$rOut = [];
 			foreach ($rDb->get_rows() as $rRow) {
-				$rFields = array_intersect_key($rRow, array_flip(StreamStateWriter::STATE_FIELDS));
-				if (isset($rFields['current_source']) && is_string($rFields['current_source'])) {
-					$rFields['current_source'] = Redactor::redact($rFields['current_source']);
-				}
-				$rOut[(int) $rRow['stream_id']] = ['id' => (int) $rRow['stream_id'], 'ssid' => (int) $rRow['server_stream_id'], 'fields' => $rFields, 'unsent' => []];
+				$rOut[(int) $rRow['stream_id']] = ['id' => (int) $rRow['stream_id'], 'ssid' => (int) $rRow['server_stream_id'], 'fields' => StreamStateFields::pick($rRow, StreamStateWriter::STATE_FIELDS), 'unsent' => []];
 			}
 			if (!$rDb->query('SELECT `id`, `tv_archive_server_id`, `tv_archive_pid`, `vframes_server_id`, `vframes_pid` FROM `streams` WHERE `tv_archive_server_id` = ? OR `vframes_server_id` = ?;', $rServerID, $rServerID)) {
 				return null;
@@ -566,7 +563,7 @@ final class StreamRuntime {
 			if (is_string($rValue) && strlen($rValue) > (self::$rLimits['value'] ?? self::MAX_VALUE)) {
 				return false;
 			}
-			$rEntry['fields'][$rColumn] = $rColumn === 'current_source' && is_string($rValue) ? Redactor::redact($rValue) : $rValue;
+			$rEntry['fields'][$rColumn] = StreamStateFields::value($rColumn, $rValue);
 		}
 		if ($rSsid !== null) {
 			$rEntry['ssid'] = $rSsid;
@@ -658,19 +655,7 @@ final class StreamRuntime {
 		if ($rJson === false) {
 			return false;
 		}
-		$rTmp = $rDir . '/.' . basename($rFile) . '.' . getmypid() . '.tmp';
-		$rHandle = @fopen($rTmp, 'w');
-		if ($rHandle === false) {
-			return false;
-		}
-		@chmod($rTmp, 0600);
-		$rOk = fwrite($rHandle, $rJson) === strlen($rJson) && fflush($rHandle) && (!$rSync || fdatasync($rHandle));
-		fclose($rHandle);
-		if (!$rOk || !@rename($rTmp, $rFile)) {
-			@unlink($rTmp);
-			return false;
-		}
-		return true;
+		return AtomicFile::write($rFile, $rJson, 0600, $rSync);
 	}
 
 	/**
