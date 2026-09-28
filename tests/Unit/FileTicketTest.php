@@ -171,7 +171,14 @@ final class FileTicketTest extends TestCase {
 	public function testTheRouteShipsToEveryServer(): void {
 		$rRoot = dirname(__DIR__, 2);
 		foreach (['src/bin/nginx/conf/nginx.conf', 'lb_configs/nginx.conf'] as $rConf) {
-			$this->assertMatchesRegularExpression('/location = \/xfile \{[^}]*XC_ADMIN xfile;/s', (string) file_get_contents($rRoot . '/' . $rConf), $rConf);
+			$rText = (string) file_get_contents($rRoot . '/' . $rConf);
+			$this->assertMatchesRegularExpression('/location = \/xfile \{[^}]*XC_ADMIN xfile;/s', $rText, $rConf);
+			// A VOD pull is a request per 4 MiB chunk: the viewers' zone `one`
+			// (20 r/s per client, 503) would throttle it; /xfile has its own,
+			// per TCP peer, and answers 429, which the agent retries.
+			$this->assertMatchesRegularExpression('/^\s*limit_req_zone \$realip_remote_addr zone=xfile:\d+m rate=\d+r\/s;\r?$/m', $rText, $rConf);
+			$this->assertMatchesRegularExpression('/location = \/xfile \{\s*limit_req zone=xfile burst=\d+ nodelay;\s*limit_req_status 429;/', $rText, $rConf);
+			$this->assertDoesNotMatchRegularExpression('/location = \/xfile \{[^}]*zone=one/s', $rText, $rConf);
 		}
 		$this->assertStringContainsString("'xfile'     => MAIN_HOME . 'Public/admin/xfile.php'", (string) file_get_contents($rRoot . '/src/Public/admin/index.php'));
 	}

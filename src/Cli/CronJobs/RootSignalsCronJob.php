@@ -7,6 +7,7 @@ use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
@@ -267,20 +268,20 @@ class RootSignalsCronJob implements CommandInterface {
 
 	/**
 	 * api_legacy.conf for this node, or null on MAIN. The legacy `/api` of a
-	 * load balancer is served until the node's own cluster data plane is on,
-	 * when MAIN reaches it over the cluster API alone and an endpoint whose
-	 * auth is a password in a URL has nothing left to serve. No node has
-	 * DATAPLANE yet (it is Phase 8), so this is 1 on every node today.
-	 * MAIN's own `/api` keeps no toggle (ADR 0004, Phase 8): its nginx.conf
-	 * neither includes the file nor guards `/api`, so the cron does not
-	 * write it there — retiring MAIN's `/api` is a cluster-wide judgement,
-	 * not a per-node flow.
+	 * load balancer is served until nothing reads the node's files with
+	 * `getFile` any more (DataPlane::legacyApiRetired): its own data plane
+	 * on, and every server of the cluster, MAIN included, reading through
+	 * `/xfile`. MAIN has no data-plane client yet, so this is 1 on every
+	 * node today. MAIN's own `/api` keeps no toggle (ADR 0004, Phase 8): its
+	 * nginx.conf neither includes the file nor guards `/api`, so the cron
+	 * does not write it there — retiring MAIN's `/api` is a cluster-wide
+	 * judgement, not a per-node flow.
 	 */
 	public static function apiLegacyConf(): ?string {
 		if (NodeRole::isMain()) {
 			return null;
 		}
-		return 'set $api_legacy ' . (NodeFlows::on(NodeFlows::DATAPLANE) ? '0' : '1') . ';';
+		return 'set $api_legacy ' . (DataPlane::legacyApiRetired() ? '0' : '1') . ';';
 	}
 
 	/** Tests: run the artefact actions' argv lists through $rRunner (argv => [exit status, output]); null restores run(). */

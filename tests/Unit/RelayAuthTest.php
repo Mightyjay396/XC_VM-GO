@@ -4,6 +4,7 @@ use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\Crypto\RelayAuth;
 use XcVm\Core\Cluster\Crypto\Ticket;
 use XcVm\Core\Cluster\DataPlaneTrust;
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Cluster\RelayGuard;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Tests\Support\ClusterReference as Ref;
@@ -44,6 +45,16 @@ final class RelayAuthTest extends TestCase {
 		$this->rNodes = [self::CHILD => ['sid' => self::CHILD, 'gen' => 2, 'state' => 'active', 'ed_pub' => sodium_crypto_sign_publickey($rPair), 'dataplane' => true]];
 		$this->rSpent = [];
 		$this->rNow = time();
+		$this->trust();
+		SettingsManager::set(['live_streaming_pass' => 'the-stream-secret']);
+		RelayGuard::useServers(static fn(): array => [
+			[(int) SERVER_ID => ['server_ip' => '10.0.0.1', 'private_ip' => null], self::CHILD => ['server_ip' => '10.0.0.9', 'private_ip' => '192.168.0.9'], 4 => ['server_ip' => '10.0.0.4', 'private_ip' => null]],
+			['127.0.0.1', '10.0.0.1', '10.0.0.9', '192.168.0.9', '10.0.0.4'],
+		]);
+	}
+
+	/** The trust sources; $rMain forces MAIN (true) or a load balancer (false). */
+	private function trust(?bool $rMain = null): void {
 		DataPlaneTrust::useSources(
 			fn(int $rSid): ?array => $this->rNodes[$rSid] ?? null,
 			Ref::panelPub($this->rSeed),
@@ -52,13 +63,10 @@ final class RelayAuthTest extends TestCase {
 					return false;
 				}
 				return $this->rSpent[$rSid . ':' . bin2hex($rNonce)] = true;
-			}
+			},
+			null,
+			$rMain
 		);
-		SettingsManager::set(['live_streaming_pass' => 'the-stream-secret']);
-		RelayGuard::useServers(static fn(): array => [
-			[(int) SERVER_ID => ['server_ip' => '10.0.0.1', 'private_ip' => null], self::CHILD => ['server_ip' => '10.0.0.9', 'private_ip' => '192.168.0.9'], 4 => ['server_ip' => '10.0.0.4', 'private_ip' => null]],
-			['127.0.0.1', '10.0.0.1', '10.0.0.9', '192.168.0.9', '10.0.0.4'],
-		]);
 	}
 
 	protected function tearDown(): void {
@@ -143,6 +151,56 @@ final class RelayAuthTest extends TestCase {
 		$this->rNodes[self::CHILD]['dataplane'] = false;
 		$this->assertSame(RelayGuard::PASSWORD, $this->admit([], self::STREAM, 'the-stream-secret', '10.0.0.9'), 'its flow off: the password again');
 		$this->assertNull(RelayGuard::admit(self::STREAM, 'the-stream-secret', '10.0.0.4', [], false), 'an endpoint that takes no password (thumb)');
+	}
+
+	/**
+	 * `?password[]=…` reaches the guard as an array: refused, never a
+	 * TypeError (a 500 that logs the request).
+	 */
+	public function testAPasswordThatIsNotAStringIsRefused(): void {
+		foreach ([['the-stream-secret'], ['x' => 'the-stream-secret'], 42, 1.5, true, false] as $rGiven) {
+			$this->assertNull(RelayGuard::admit(self::STREAM, $rGiven, '10.0.0.4', [], true, $this->rNow * 1000), var_export($rGiven, true));
+		}
+		$this->assertSame(RelayGuard::PASSWORD, RelayGuard::admit(self::STREAM, 'the-stream-secret', '10.0.0.4', [], true, $this->rNow * 1000), 'the string still works');
+	}
+
+	/**
+	 * On a load balancer the guard judges tickets and proofs by MAIN's clock
+	 * as the agent anchored it, not the host's: a host clock an hour ahead
+	 * would otherwise refuse every fresh proof and, set back, admit tickets
+	 * MAIN let expire.
+	 */
+	public function testALoadBalancerJudgesByMainsAnchoredClock(): void {
+		$rFile = (string) tempnam(sys_get_temp_dir(), 'lease');
+		try {
+			// MAIN's clock is 2 h behind this host's.
+			$rNowMs = (int) round(microtime(true) * 1000);
+			file_put_contents($rFile, json_encode(['exp' => 0, 'gen' => 2, 'anchor_ms' => $rNowMs - 7_200_000, 'wrote_at_ms' => $rNowMs]));
+			NodeLease::usePath($rFile);
+			$this->trust(false);
+			$rMain = DataPlaneTrust::nowMs();
+			$this->assertEqualsWithDelta($rNowMs - 7_200_000, $rMain, 5_000, 'MAIN\'s time, not the host\'s');
+
+			$this->rNow = intdiv($rMain, 1000);
+			$this->assertSame(RelayGuard::RELAY, RelayGuard::admit(self::STREAM, null, '10.0.0.9', $this->request(), true), 'a proof on MAIN\'s time');
+			$this->rNow = time();
+			$this->assertNull(RelayGuard::admit(self::STREAM, null, '10.0.0.9', $this->request(), true), 'the host\'s own time is 2 h off MAIN\'s');
+
+			// No anchor (or a stale file): the host's clock.
+			file_put_contents($rFile, json_encode(['exp' => 0, 'gen' => 2, 'anchor_ms' => 0, 'wrote_at_ms' => $rNowMs]));
+			NodeLease::usePath($rFile);
+			$this->assertEqualsWithDelta((int) round(microtime(true) * 1000), DataPlaneTrust::nowMs(), 5_000);
+			$this->assertNull(NodeLease::mainNowMs());
+
+			// MAIN judges by its own clock, whatever a stray file says.
+			file_put_contents($rFile, json_encode(['exp' => 0, 'gen' => 2, 'anchor_ms' => $rNowMs - 7_200_000, 'wrote_at_ms' => $rNowMs]));
+			NodeLease::usePath($rFile);
+			$this->trust(true);
+			$this->assertEqualsWithDelta((int) round(microtime(true) * 1000), DataPlaneTrust::nowMs(), 5_000);
+		} finally {
+			NodeLease::usePath(null);
+			@unlink($rFile);
+		}
 	}
 
 	/**

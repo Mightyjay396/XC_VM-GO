@@ -48,14 +48,16 @@ final class RelayGuard {
 	/**
 	 * Admit a request for $rStreamID: RELAY, PASSWORD, or null (refused).
 	 *
+	 * @param mixed $rPassword the `password` query parameter as PHP parsed it:
+	 *                         anything but a string (`password[]=…`, absent) is refused
 	 * @param array<string, mixed> $rServer $_SERVER
 	 * @param bool $rPasswordOk whether this endpoint takes the legacy password at all
 	 */
-	public static function admit(int $rStreamID, ?string $rPassword, string $rIP, array $rServer, bool $rPasswordOk = true, ?int $rNowMs = null): ?string {
+	public static function admit(int $rStreamID, mixed $rPassword, string $rIP, array $rServer, bool $rPasswordOk = true, ?int $rNowMs = null): ?string {
 		if (self::presented($rServer)) {
-			return self::relay($rStreamID, $rServer, $rNowMs ?? (int) floor(microtime(true) * 1000)) !== null ? self::RELAY : null;
+			return self::relay($rStreamID, $rServer, $rNowMs ?? DataPlaneTrust::nowMs()) !== null ? self::RELAY : null;
 		}
-		if (!$rPasswordOk || !AuthService::secretMatches((string) SettingsManager::get('live_streaming_pass'), $rPassword)) {
+		if (!$rPasswordOk || !is_string($rPassword) || !AuthService::secretMatches((string) SettingsManager::get('live_streaming_pass'), $rPassword)) {
 			return null;
 		}
 		return self::passwordAllowed($rIP) ? self::PASSWORD : null;

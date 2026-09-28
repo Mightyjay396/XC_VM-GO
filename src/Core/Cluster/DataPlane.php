@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Domain\Server\ServerRepository;
+
 /**
  * The data plane without bearer credentials (ADR 0004, Phase 8; plan,
  * section 7, "Local socket and data plane"): how a node's PHP names what it
@@ -16,10 +18,20 @@ namespace XcVm\Core\Cluster;
  * connect: it picks the stream's current relay ticket, or the file ticket
  * whose `ref` this is, from the R2 streams section, and adds the node key's
  * `X-XCVM-Relay-Auth` (or `X-XCVM-File-Auth`). `k` is the loopback key the
- * agent keeps beside its state (`relay.key`, 0600): it never leaves the host
- * and unlocks only that listener, so a local user who reads an encoder's
+ * agent publishes beside its state (`relay.key`, 0600) once it holds the
+ * port, and removes when it lets go of it: it never leaves the host and
+ * unlocks only that listener, so a local user who reads an encoder's
  * command line holds nothing replayable. Neither URL changes when a ticket
  * does, so a refresh restarts no encoder.
+ *
+ * The port is an unprivileged one any local user could bind while the agent
+ * does not, and whoever holds it would read `k` and feed the encoders what
+ * it likes. So a URL goes to it only while the listener on it is the
+ * agent's: every socket listening on port 31290 (`/proc/net/tcp`, `tcp6`)
+ * belongs to the uid that owns `relay.key`, which only the agent's user can
+ * write. Otherwise the URL is UNAVAILABLE, on a privileged port no local
+ * user can hold: the read fails at once, the monitor retries, and neither
+ * the stream secret nor anything unauthenticated reaches the encoder.
  *
  * A server that cannot check a ticket keeps the legacy URL, password and all:
  * the parent or owner must be MAIN, or a node active in the signed node list
@@ -53,7 +65,25 @@ final class DataPlane {
 	public const SEAL_NODE = 'n.';
 	public const SEAL_MAIN = 'm.';
 
+	/**
+	 * Where a URL goes when the loopback cannot be trusted: a privileged port,
+	 * which only root could listen on, so the connect is refused.
+	 */
+	public const UNAVAILABLE = 'http://127.0.0.1:1/xcvm-dataplane-unavailable';
+
+	/** How long a verified (or refused) listener is taken as it was, in seconds. */
+	private const CHECK_TTL = 5;
+
 	private static ?string $rKeyFile = null;
+
+	/** @var list<string>|null the socket tables read (tests); null: /proc/net/tcp and tcp6 */
+	private static ?array $rProcNet = null;
+
+	/** @var array{0: int, 1: ?string}|null [when, key] of the last check */
+	private static ?array $rChecked = null;
+
+	/** @var (callable(): array<int, array<string, mixed>>)|null */
+	private static $rServers = null;
 
 	/** Does this node pull through its agent (its own DATAPLANE flow)? MAIN has no flows. */
 	public static function on(): bool {
@@ -66,9 +96,63 @@ final class DataPlane {
 		return preg_match('/^[A-Za-z0-9_-]{22,64}\z/', $rKey) ? $rKey : null;
 	}
 
-	/** Tests: another key file; null restores the agent's. */
-	public static function useKeyFile(?string $rPath): void {
+	/**
+	 * The loopback key, only while the listener on the port is the agent's
+	 * (see above); null otherwise, and the caller builds no loopback URL.
+	 */
+	public static function loopback(): ?string {
+		if (self::$rChecked !== null && time() - self::$rChecked[0] < self::CHECK_TTL) {
+			return self::$rChecked[1];
+		}
+		$rFile = self::$rKeyFile ?? AgentPaths::file(self::KEY_FILE);
+		$rKey = self::key();
+		clearstatcache(true, $rFile);
+		$rOwner = $rKey === null ? false : @fileowner($rFile);
+		$rKey = $rOwner !== false && self::listenerOwnedBy($rOwner, self::$rProcNet ?? ['/proc/net/tcp', '/proc/net/tcp6']) ? $rKey : null;
+		self::$rChecked = [time(), $rKey];
+		return $rKey;
+	}
+
+	/**
+	 * Is every socket listening on PORT (in these `/proc/net/tcp`-format
+	 * tables) owned by $rUid, and one of them on 127.0.0.1 or every address?
+	 *
+	 * @param list<string> $rTables
+	 */
+	public static function listenerOwnedBy(int $rUid, array $rTables): bool {
+		$rPort = sprintf('%04X', self::PORT);
+		$rOurs = false;
+		foreach ($rTables as $rTable) {
+			$rLines = @file($rTable, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+			foreach (is_array($rLines) ? array_slice($rLines, 1) : [] as $rLine) {
+				$rCols = preg_split('/\s+/', trim($rLine));
+				if (!is_array($rCols) || count($rCols) < 8 || strtoupper($rCols[3]) !== '0A') {
+					continue;
+				}
+				[$rAddr, $rLocalPort] = array_pad(explode(':', strtoupper($rCols[1]), 2), 2, '');
+				if ($rLocalPort !== $rPort) {
+					continue;
+				}
+				if ((int) $rCols[7] !== $rUid) {
+					return false; // someone else listens on the port too
+				}
+				// 127.0.0.1 (either byte order) or 0.0.0.0; a v6 socket counts as another's only.
+				$rOurs = $rOurs || in_array($rAddr, ['0100007F', '7F000001', '00000000'], true);
+			}
+		}
+		return $rOurs;
+	}
+
+	/**
+	 * Tests: another key file and other socket tables; null restores the
+	 * agent's and /proc's. Either forgets the last check.
+	 *
+	 * @param list<string>|null $rProcNet
+	 */
+	public static function useKeyFile(?string $rPath, ?array $rProcNet = null): void {
 		self::$rKeyFile = $rPath;
+		self::$rProcNet = $rProcNet;
+		self::$rChecked = null;
 	}
 
 	/** The epoch $rNow (unix seconds) is in. */
@@ -119,7 +203,8 @@ final class DataPlane {
 	 */
 	public static function relayUrl(array $rServers, int $rParentID, int $rStreamID, string $rPassword, bool $rPrebuffer = false): string {
 		if (self::on() && self::ticketable($rServers, $rParentID)) {
-			return 'http://' . self::HOST . ':' . self::PORT . '/relay/' . (self::key() ?? 'none') . '/' . $rStreamID . '.ts' . ($rPrebuffer ? '?prebuffer=1' : '');
+			$rKey = self::loopback();
+			return $rKey === null ? self::UNAVAILABLE : 'http://' . self::HOST . ':' . self::PORT . '/relay/' . $rKey . '/' . $rStreamID . '.ts' . ($rPrebuffer ? '?prebuffer=1' : '');
 		}
 		$rSelf = defined('SERVER_ID') ? ($rServers[SERVER_ID] ?? []) : [];
 		$rParent = $rServers[$rParentID] ?? [];
@@ -137,9 +222,52 @@ final class DataPlane {
 	 */
 	public static function fileUrl(array $rServers, int $rOwnerID, string $rPath): string {
 		if (self::on() && self::ticketable($rServers, $rOwnerID)) {
+			$rKey = self::loopback();
+			if ($rKey === null) {
+				return self::UNAVAILABLE;
+			}
 			$rExt = strtolower((string) pathinfo($rPath, PATHINFO_EXTENSION));
-			return 'http://' . self::HOST . ':' . self::PORT . '/xfile/' . (self::key() ?? 'none') . '/' . self::ref($rOwnerID, $rPath) . (preg_match('/^[a-z0-9]{1,8}\z/', $rExt) ? '.' . $rExt : '');
+			return 'http://' . self::HOST . ':' . self::PORT . '/xfile/' . $rKey . '/' . self::ref($rOwnerID, $rPath) . (preg_match('/^[a-z0-9]{1,8}\z/', $rExt) ? '.' . $rExt : '');
 		}
 		return ($rServers[$rOwnerID]['api_url'] ?? '') . '&action=getFile&filename=' . urlencode($rPath);
+	}
+
+	/**
+	 * May this node's legacy `/api` answer 404 (api_legacy.conf)? Only once
+	 * nothing reads its files with `getFile` any more: its own DATAPLANE flow
+	 * is on, and every server of the cluster — MAIN included — is a node
+	 * active in the signed node list with its DATAPLANE flow on, so each
+	 * reads through `/xfile`. MAIN has no data-plane client (and no node
+	 * entry): it still reads a node's files with `getFile` (a source probe,
+	 * the certbot log), so today this is never.
+	 */
+	public static function legacyApiRetired(): bool {
+		if (!self::on()) {
+			return false;
+		}
+		try {
+			$rServers = self::$rServers !== null ? (self::$rServers)() : ServerRepository::getAll();
+		} catch (\Throwable) {
+			return false;
+		}
+		if (!is_array($rServers) || $rServers === []) {
+			return false;
+		}
+		foreach (array_keys($rServers) as $rID) {
+			$rNode = DataPlaneTrust::node((int) $rID);
+			if ($rNode === null || $rNode['state'] !== 'active' || !$rNode['dataplane']) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Tests: the servers legacyApiRetired() goes through; null restores the repository.
+	 *
+	 * @param (callable(): array<int, array<string, mixed>>)|null $rServers
+	 */
+	public static function useServers(?callable $rServers): void {
+		self::$rServers = $rServers;
 	}
 }

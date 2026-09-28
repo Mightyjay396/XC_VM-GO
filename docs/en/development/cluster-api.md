@@ -209,7 +209,8 @@ misses, connect audit). Every decision is written to `cluster_audit`, which
 5. Switch CONFIG, then `mode_up` to 1: the node now boots from its replica.
 6. `cluster:seed-connections`, then CONNECTIONS.
 7. DATAPLANE, once the node's parents and the servers whose files it reads are MAIN or
-   active nodes: relays and file reads go through its agent from each stream's next start.
+   active nodes, and its agent runs the relay proxy (the page refuses the switch
+   otherwise): relays and file reads go through its agent from each stream's next start.
 8. Leave it for a week. When the node's connect audit shows zero MySQL and zero Redis
    connects for seven days, `mode_up` to 2.
 9. `cluster:db-allowlist apply` once every node is in mode 2.
@@ -236,10 +237,20 @@ misses, connect audit). Every decision is written to `cluster_audit`, which
     runs the listener alone, for when MAIN has an identity to sign with.
   - A file ticket names the owner's box key as it was when minted: an owner re-enrolled
     since cannot open it until the next epoch's ticket (at most 3 h).
-  - The flow also turns the node's own legacy `/api` off (`api_legacy.conf`, Phase 8's
-    second increment): whatever still reads its files with the legacy URL — MAIN (a
-    source probe, the certbot log) or a server whose own flow is off — gets a 404. Switch
-    it on once nothing reads from the node that way.
+  - The node's own legacy `/api` stays served with the flow on. `api_legacy.conf` (Phase
+    8's second increment) retires it only once nothing reads the node's files with the
+    legacy `getFile` URL any more: its own flow on, and every server of the cluster, MAIN
+    included, an active node with its data plane on. MAIN reads a node's files with
+    `getFile` (a source probe, the certbot log) and has no data-plane client, so today no
+    node's `/api` is retired.
+  - The flow can be switched on only for a node whose agent runs the loopback relay proxy
+    (it says `relay` at hello): update `xc_agent` first. The agent publishes the loopback
+    key (`relay.key`) only while it holds `127.0.0.1:31290`, and the node's PHP checks
+    that the listener belongs to the key's owner. While the port is not the agent's (held
+    by another user, or the agent is stopped), the node's relays and file reads fail and
+    are retried: they never fall back to the stream secret.
+  - `/xfile` has its own rate limit (50 requests/s per server, burst 100, answered with a
+    429 the agent retries), apart from the viewers' 20 requests/s.
   - `cluster:rotate-stream-secret` does not exist: retiring the password is Phase 9's.
 - **The licence lease is issued and checked, but not enforced** (Phase 9). Every token MAIN
   hands a node (enrolment over SSH or by code, `token_refresh`, `token_rekey`) carries a

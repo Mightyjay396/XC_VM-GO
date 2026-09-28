@@ -108,6 +108,18 @@ final class DataPlaneTrust {
 		return $rOut;
 	}
 
+	/**
+	 * Now, in milliseconds, on MAIN's clock: the clock tickets and proofs are
+	 * minted and signed by. MAIN's own; on a load balancer, MAIN's as its
+	 * agent anchored it (NodeLease::mainNowMs), so a host clock set wrong
+	 * neither admits an expired ticket nor refuses a fresh proof. A node
+	 * whose agent has written no anchor falls back to its own clock.
+	 */
+	public static function nowMs(): int {
+		$rLocal = (int) floor(microtime(true) * 1000);
+		return self::main() ? $rLocal : (NodeLease::mainNowMs() ?? $rLocal);
+	}
+
 	/** The panel key tickets and MAIN's digests verify under, or null. */
 	public static function panelPub(): ?string {
 		if (self::$rPanelPub !== null) {

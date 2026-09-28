@@ -60,6 +60,7 @@ final class ClusterTelemetryTest extends TestCase {
 	protected function setUp(): void {
 		$this->rDb = new TestDb();
 		$this->rDb->exec((string) preg_replace(['/^--.*$/m', '/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)/', '/ unsigned| COLLATE \w+/', '/\) ENGINE=[^;]*;/'], ['', '', '', ');'], (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/029_create_cluster_nodes.sql')));
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `features` varchar(255) DEFAULT NULL'); // 041
 		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `status` int NOT NULL DEFAULT 0, `watchdog_data` text, `last_check_ago` int DEFAULT 0, `requests_per_second` int DEFAULT 0, `php_pids` text, `connections` int DEFAULT 0, `users` int DEFAULT 0, `network_interface` varchar(32) DEFAULT NULL)');
 		$this->rDb->exec("INSERT INTO `servers` (`id`, `status`, `watchdog_data`, `network_interface`) VALUES (5, 1, '{\"cpu_average_array\":[10,20]}', 'auto')");
 		$this->rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY, `user_id` int, `server_id` int, `hls_end` int DEFAULT 0)');
@@ -465,6 +466,18 @@ final class ClusterTelemetryTest extends TestCase {
 		$this->assertSame('cluster_flow_needs', $rAct('commands_off')['message'], 'and cannot lose it while on');
 		$rAct('connections_off');
 		$rAct('commands_off');
+		$this->assertSame(NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT, (int) NodeRegistry::byServer(5)['flows']);
+		// The data plane points the node's encoders at its agent's relay proxy:
+		// only for an agent that says it runs one.
+		NodeRegistry::update(5, ['features' => 'hls_reaper,streams']);
+		$this->assertSame('cluster_dataplane_needs_relay', $rAct('dataplane_on')['message'], 'an agent without the relay proxy');
+		$this->assertSame(NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT, (int) NodeRegistry::byServer(5)['flows']);
+		$this->assertFalse(\XcVm\Domain\Cluster\ClusterAdmin::relayAdvertised(NodeRegistry::byServer(5)));
+		NodeRegistry::update(5, ['features' => 'hls_reaper,streams,relay']);
+		$this->assertTrue(\XcVm\Domain\Cluster\ClusterAdmin::relayAdvertised(NodeRegistry::byServer(5)));
+		$this->assertSame('cluster_dataplane_on_done', $rAct('dataplane_on')['message']);
+		NodeRegistry::update(5, ['features' => '']);
+		$this->assertSame('cluster_dataplane_off_done', $rAct('dataplane_off')['message'], 'off whatever the agent says');
 		$this->assertSame(NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT, (int) NodeRegistry::byServer(5)['flows']);
 		NodeRegistry::update(5, ['state' => 'revoked']);
 		$this->assertSame('cluster_not_enrolled', $rAct('telemetry_on')['message']);

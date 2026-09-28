@@ -53,7 +53,7 @@ final class FileTicketServer {
 	 * @return array{status: int, headers: array<string, string>, body: string}
 	 */
 	public static function serve(array $rServer, array $rQuery, array $rSettings, ?int $rNowMs = null): array {
-		$rNowMs ??= (int) floor(microtime(true) * 1000);
+		$rNowMs ??= DataPlaneTrust::nowMs();
 		$rDenied = ['status' => 404, 'headers' => [], 'body' => ''];
 		$rWire = $rServer[self::TICKET] ?? null;
 		$rHeader = $rServer[self::AUTH] ?? null;

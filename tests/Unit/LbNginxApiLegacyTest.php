@@ -2,12 +2,14 @@
 
 use PHPUnit\Framework\TestCase;
 use XcVm\Cli\CronJobs\RootSignalsCronJob;
+use XcVm\Core\Cluster\DataPlane;
+use XcVm\Core\Cluster\DataPlaneTrust;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 
 /**
- * The legacy `/api` switch (api_legacy.conf, written by the root cron from
- * the node's own DATAPLANE flow) exists for the load balancers: it is their
+ * The legacy `/api` switch (api_legacy.conf, written by the root cron once
+ * nothing reads the node's files with `getFile`: DataPlane::legacyApiRetired) exists for the load balancers: it is their
  * `/api`, authenticated by a password in a URL, that the data plane retires.
  * lb_configs/nginx.conf — the nginx.conf every LB runs — had neither the
  * include nor the guard, so a DATAPLANE node kept serving `/api`. The LB
@@ -33,6 +35,8 @@ final class LbNginxApiLegacyTest extends TestCase {
 	protected function tearDown(): void {
 		NodeFlows::usePath(null);
 		NodeRole::useServers(null);
+		DataPlane::useServers(null);
+		DataPlaneTrust::useSources(null, null, null);
 		if ($this->rFlows !== null) {
 			@unlink($this->rFlows);
 		}
@@ -70,8 +74,8 @@ final class LbNginxApiLegacyTest extends TestCase {
 	}
 
 	/**
-	 * The switch follows the node's own DATAPLANE flow and is the load
-	 * balancers' alone: MAIN's nginx.conf has neither the include nor a
+	 * The switch follows DataPlane::legacyApiRetired (the node's own
+	 * DATAPLANE flow and every server's) and is the load balancers' alone: MAIN's nginx.conf has neither the include nor a
 	 * guard, and the cron writes nothing there, even with the same stray
 	 * flows.json that retires a node's `/api`.
 	 */
@@ -88,9 +92,17 @@ final class LbNginxApiLegacyTest extends TestCase {
 		$this->rFlows = (string) tempnam(sys_get_temp_dir(), 'flows');
 		file_put_contents($this->rFlows, json_encode(['mode' => 2, 'flows' => NodeFlows::DATAPLANE, 'state' => 'active']));
 
-		NodeRole::useServers(fn () => [SERVER_ID => ['is_main' => 0], SERVER_ID + 1 => ['is_main' => 1]]);
+		$rServers = [SERVER_ID => ['is_main' => 0], SERVER_ID + 1 => ['is_main' => 1]];
+		NodeRole::useServers(fn () => $rServers);
 		NodeFlows::usePath($this->rFlows, true);
-		$this->assertSame('set $api_legacy 0;', RootSignalsCronJob::apiLegacyConf(), 'a node with the data plane');
+		DataPlane::useServers(fn () => $rServers);
+		$rNodes = [SERVER_ID => ['sid' => SERVER_ID, 'gen' => 1, 'state' => 'active', 'ed_pub' => str_repeat('x', 32), 'dataplane' => true]];
+		DataPlaneTrust::useSources(static function (int $rSid) use (&$rNodes): ?array {
+			return $rNodes[$rSid] ?? null;
+		}, null, null, null, false);
+		$this->assertSame('set $api_legacy 1;', RootSignalsCronJob::apiLegacyConf(), 'a node with the data plane, but MAIN still reads its files with getFile');
+		$rNodes[SERVER_ID + 1] = ['sid' => SERVER_ID + 1, 'gen' => 1, 'state' => 'active', 'ed_pub' => str_repeat('x', 32), 'dataplane' => true];
+		$this->assertSame('set $api_legacy 0;', RootSignalsCronJob::apiLegacyConf(), 'every server reads through /xfile');
 
 		NodeRole::useServers(fn () => [SERVER_ID => ['is_main' => 1]]);
 		NodeFlows::usePath($this->rFlows, true);
