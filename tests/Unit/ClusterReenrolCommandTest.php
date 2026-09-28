@@ -322,15 +322,18 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->assertStringContainsString('#7 lb-a: skipped: enrolling', $rOut, '#7 was re-enrolled above and is enrolling now');
 
 		// A node named by id is taken whatever its state; a server that is not enrolled is not.
-		[$rCode, $rOut] = $this->reenrol($rServers, [99, 10, 1, 8], self::creds());
+		// MAIN is SERVER_ID's row, whichever id an earlier test gave the constant.
+		[$rCode, $rOut] = $this->reenrol($rServers, [99, 10, SERVER_ID, 8], self::creds());
 		$this->assertSame(1, $rCode);
 		$this->assertNotSame($rRevoked['node_uuid'], NodeRegistry::byServer(8)['node_uuid']);
 		$this->assertSame('enrolling', NodeRegistry::byServer(8)['state']);
 		$this->assertStringContainsString('#10 lb-d: not attempted: not enrolled (server:enrol enrols it)', $rOut);
-		$this->assertStringContainsString('#1 Main: not attempted: not a load balancer', $rOut);
+		$this->assertStringContainsString('#' . SERVER_ID . ' Main: not attempted: not a load balancer', $rOut);
 		$this->assertStringContainsString('#99: not attempted: not a load balancer', $rOut);
 		$this->assertNotContains('connect 10.0.0.10:22', $this->rSsh->rLog);
-		$this->assertMatchesRegularExpression('/^#1 Main: .*\n#8 lb-b: .*\n#10 lb-d: .*\n#99: /m', $rOut, 'reported in server id order');
+		$rOrder = [SERVER_ID => '#' . SERVER_ID . ' Main: ', 8 => '#8 lb-b: ', 10 => '#10 lb-d: ', 99 => '#99: '];
+		ksort($rOrder);
+		$this->assertMatchesRegularExpression('/^' . implode('.*\n', array_map(fn (string $rLine): string => preg_quote($rLine, '/'), $rOrder)) . '/m', $rOut, 'reported in server id order');
 	}
 
 	public function testDryRunContactsNoNode(): void {

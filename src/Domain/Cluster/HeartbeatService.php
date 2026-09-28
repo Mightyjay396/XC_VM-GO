@@ -15,8 +15,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * - every 5 s it becomes the server's `watchdog_data`, `last_check_ago`,
  *   `requests_per_second` and `php_pids`, in the shape the legacy watchdog
- *   wrote (toWatchdogData(), pinned by WatchdogDataContractTest), and, without
- *   the Redis handler, its `connections` and `users`;
+ *   wrote (toWatchdogData(), pinned by
+ *   ClusterTelemetryTest::testWatchdogDataKeepsTheLegacyShape), and,
+ *   without the Redis handler, its `connections` and `users`;
  * - once a minute it becomes the node's `servers_stats` row, which
  *   `cron:servers` wrote on the LB until then.
  *
