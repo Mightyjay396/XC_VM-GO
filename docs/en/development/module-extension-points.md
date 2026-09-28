@@ -448,3 +448,44 @@ public function onStreamSaved(StreamSavedEvent $event): void {
   Clean up on `StreamsDeletedEvent` instead.
 
 ---
+
+## Import kinds (`ImportSourceRegistry`)
+
+A module can add its own source to the **Import & Review** page for live streams, next
+to the built-in M3U file. The admin picks it in the **Source** selector and fills in
+the module's inputs. The module lists channels, and they go through the ordinary
+review and import steps, so every channel becomes an ordinary stream. Register the
+kind from `boot()`; `bootAll()` resets the registry on every boot.
+
+```php
+use XcVm\Core\Module\ImportSourceRegistry;
+
+public function boot(ServiceContainer $container): void {
+    ImportSourceRegistry::add(
+        'acme-dash',                                   // key: [a-z0-9_-]
+        'Acme DASH provider',                          // label in the Source picker
+        static fn(): string => AcmeDashImport::form(), // inputs: import_source[acme-dash][...]
+        static fn(array $fields): array => AcmeDashImport::channels($fields['provider'] ?? ''),
+        'manage_acme_dash',                            // 'adv' permission, or null
+    );
+}
+
+// AcmeDashImport::channels() returns rows like:
+// ['url' => 'acmedash://prov1/demo-001', 'title' => 'Demo One',
+//  'logo' => 'https://…/logo.png', 'tvg_id' => 'demo.one', 'category' => 'News']
+```
+
+- **Inputs** of the kind are named `import_source[<key>][<field>]`. Its `list`
+  callable gets exactly that sub-array.
+- **Rows** need a `url`. `title` falls back to the URL, and `logo`, `tvg_id` (matched
+  against EPG like an M3U `tvg-id`) and `category` are optional.
+- **Existing sources.** A source URL already in the panel is left out unless the admin
+  ticks *Show Potential Duplicates*; then it is shown and flagged.
+- **Row limit.** One review page takes at most `ImportSourceRegistry::MAX_ROWS` (500)
+  rows; beyond that the page reports too many results.
+- **Failures.** A `list` callable that throws shows "no sources" and logs the message,
+  so keep provider calls inside a timeout.
+- **After the import,** `StreamSavedEvent` fires with `source = 'review'` and the new
+  stream ids. The channel identity is in each stream's source URL.
+
+---

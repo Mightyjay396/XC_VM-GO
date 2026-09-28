@@ -12,8 +12,8 @@ the stream fails over between the two with no extra code.
 !!! info "Status"
     The driver interface, registration, producer selection, process recognition,
     source checks and save-time validation are in core, and a module tab on the stream
-    form is available ([Stream form tabs](module-extension-points.md#stream-form-tabs-streamformregistry)).
-    Import kinds and HLS renditions are still planned; see
+    form and a module import kind are available ([Stream form tabs](module-extension-points.md#stream-form-tabs-streamformregistry),
+    [Import kinds](module-extension-points.md#import-kinds-importsourceregistry)). HLS renditions are still planned; see
     [Current limitations](#current-limitations).
 
 For the module basics (layout, manifest, module class) see
@@ -98,10 +98,9 @@ so the upstream URL survives intact.
 
 - **By hand:** the operator types it as a source on the normal Add/Edit Stream page.
   Core accepts any scheme there.
-- **By import:** your module can create streams whose source list already holds your
-  URLs. A native "Script" kind on the Import Streams page is planned (see
-  [Current limitations](#current-limitations)). Until then, provide your own import page
-  that writes ordinary streams.
+- **By import:** register an [import kind](module-extension-points.md#import-kinds-importsourceregistry)
+  that lists your provider's channels with your URLs. The admin picks it on the
+  Import & Review page and imports the channels as ordinary streams.
 - **As a backup:** put your URL anywhere in the source list. Primary/backup order works
   the same as for core sources.
 
@@ -510,7 +509,6 @@ If the stream keeps restarting while the engine looks healthy, check these first
 
 These pieces are planned as separate extension points and are not in core yet:
 
-- a registry of import kinds on the Import & Review page;
 - honouring exit code `4`, and `SIGTERM` with a grace period before `SIGKILL`;
 - HLS renditions (multiple audio tracks, WebVTT).
 
