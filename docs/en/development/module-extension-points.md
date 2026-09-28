@@ -388,3 +388,63 @@ scheme. Streams stay ordinary XC_VM streams. See [Source Drivers](source-drivers
 the interface, the producer contract and a full example.
 
 ---
+
+## Stream form tabs (`StreamFormRegistry`)
+
+A module can add its own tab to the admin Add/Edit Stream page and store what the tab
+posts in its own tables. Register the tab from `boot()`. `bootAll()` resets the registry
+on every boot, so a tab exists only while its module is loaded.
+
+```php
+use XcVm\Core\Container\ServiceContainer;
+use XcVm\Core\Events\ListensTo;
+use XcVm\Core\Events\Stream\StreamSavedEvent;
+use XcVm\Core\Module\StreamFormRegistry;
+
+public function boot(ServiceContainer $container): void {
+    StreamFormRegistry::add(
+        'acme-dash',                                        // id: [a-z0-9_-]
+        'DASH engine',                                      // tab title, already translated
+        static fn(?array $stream, string $mode): string =>  // $mode: 'add' | 'edit'
+            AcmeDashForm::render($stream === null ? null : (int) $stream['id']),
+        'manage_acme_dash',                                 // 'adv' permission, or null
+        static fn(array $fields, ?array $stream): ?string =>
+            ($fields['provider'] ?? '') === '' ? 'Choose a provider' : null,
+    );
+}
+
+#[ListensTo(StreamSavedEvent::class)]
+public function onStreamSaved(StreamSavedEvent $event): void {
+    if (!isset($event->moduleFields['acme-dash'])) {
+        return; // an import, an API call or a form without this tab: keep what is stored
+    }
+    foreach ($event->streamIds as $id) {
+        AcmeDashSettings::save($id, $event->moduleFields['acme-dash']);
+    }
+}
+```
+
+- **Inputs** must be named `module[<id>][<field>]`, for example
+  `<input name="module[acme-dash][provider]">`. Core hands exactly that sub-array
+  back. A module field never reaches a `streams` column, and core drops fields of
+  tabs the admin may not see.
+- **`render`** returns the pane's HTML. `$stream` is the stream row when editing and
+  `null` when adding. The tab is not shown on the import form, and mass edit has no
+  module tabs.
+- **`validate`** runs before anything is written. Returning a string refuses the save,
+  and the form shows that text as is, so translate it yourself.
+- **`StreamSavedEvent`** is dispatched once per save, after every row is written. It
+  carries:
+  - `streamIds`;
+  - `isNew`: `false` for an edit;
+  - `source`: `form` (the form or the admin API), `import` (M3U) or `review`
+    (Import & Review);
+  - `moduleFields`: tab id => posted fields.
+
+  Only act when your id is in `moduleFields`, otherwise an import or an API save
+  would wipe your settings. A listener that throws is logged and does not fail the
+  save.
+- **Do not add foreign keys to `streams`.** Saving rewrites the row (`REPLACE INTO`).
+  Clean up on `StreamsDeletedEvent` instead.
+
+---

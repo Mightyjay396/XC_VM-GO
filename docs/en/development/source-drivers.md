@@ -11,8 +11,9 @@ the stream fails over between the two with no extra code.
 
 !!! info "Status"
     The driver interface, registration, producer selection, process recognition,
-    source checks and save-time validation are in core. The stream-form tab, import
-    kinds and HLS renditions are still planned; see
+    source checks and save-time validation are in core, and a module tab on the stream
+    form is available ([Stream form tabs](module-extension-points.md#stream-form-tabs-streamformregistry)).
+    Import kinds and HLS renditions are still planned; see
     [Current limitations](#current-limitations).
 
 For the module basics (layout, manifest, module class) see
@@ -509,7 +510,6 @@ If the stream keeps restarting while the engine looks healthy, check these first
 
 These pieces are planned as separate extension points and are not in core yet:
 
-- a module tab on the Add/Edit Stream form, plus a stream-saved event carrying its fields;
 - a registry of import kinds on the Import & Review page;
 - honouring exit code `4`, and `SIGTERM` with a grace period before `SIGKILL`;
 - HLS renditions (multiple audio tracks, WebVTT).
