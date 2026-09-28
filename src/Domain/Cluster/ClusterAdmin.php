@@ -110,16 +110,32 @@ final class ClusterAdmin {
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll(true)
 	 * @return list<array<string, mixed>> One row per enrolled node, with `server_name`, `health`,
 	 *                                    `settings_misses` and `connects` (NodeAudit; null when not reported),
-	 *                                    and `relay` (its agent runs the relay proxy).
+	 *                                    `relay` (its agent runs the relay proxy), `core_pinned` (CorePins)
+	 *                                    and `db_revoked_at` (null: never).
 	 */
 	public static function nodes(array $rServers, int $rOfflineAfterSec): array {
 		$rReady = ClusterMeta::readyAtMs(); // its own query: before ours, not between query() and get_rows()
 		$rReports = NodeAudit::reports(); // likewise
 		$rHeard = HeartbeatService::lastSeen(); // MySQL's copy may be a flush behind
 		$rNow = ClusterClock::nowMs();
-		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `arch`, `quarantine_reason`, `features` FROM `cluster_nodes` ORDER BY `server_id`;');
+		try {
+			$rPanelFp = CorePins::panelFp();
+		} catch (\Throwable) {
+			$rPanelFp = null;
+		}
+		// Every column: `db_revoked_at` arrived with migration 052.
+		self::db()->query('SELECT * FROM `cluster_nodes` ORDER BY `server_id`;');
+		$rRows = self::db()->get_rows();
 		$rOut = [];
-		foreach (self::db()->get_rows() as $rRow) {
+		foreach ($rRows as $rRow) {
+			// The keys and MACs are no business of the page (nor of JSON).
+			unset($rRow['node_sign_pub'], $rRow['node_box_pub'], $rRow['attest'], $rRow['row_mac']);
+			$rRow['db_revoked_at'] = isset($rRow['db_revoked_at']) ? (int) $rRow['db_revoked_at'] : null;
+			try {
+				$rRow['core_pinned'] = CorePins::current($rRow, $rPanelFp);
+			} catch (\Throwable) {
+				$rRow['core_pinned'] = false;
+			}
 			$rLastSeen = HeartbeatService::freshest($rRow['last_seen_at'], $rHeard[(int) $rRow['server_id']] ?? null);
 			$rRow['last_seen_at'] = $rLastSeen;
 			$rRow['server_name'] = (string) ($rServers[(int) $rRow['server_id']]['server_name'] ?? ('#' . $rRow['server_id']));
@@ -313,6 +329,20 @@ final class ClusterAdmin {
 					}
 					ClusterAudit::log('node.trust', $rServerID, [], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
 					return ['type' => 'success', 'message' => 'cluster_trust_done'];
+
+				case 'pin_core':
+					// MAIN's panel key into the node's xcvm_core now, rather than at
+					// cron:cluster's next offer (CorePins).
+					$rWhy = CorePins::request($rServerID, $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return $rWhy === null ? ['type' => 'success', 'message' => 'cluster_pin_core_queued'] : ['type' => 'warning', 'message' => $rWhy];
+
+				case 'strip_credentials':
+					// Phase 9's point of no return for a node: it drops MAIN's DB and
+					// Redis credentials, and MAIN revokes its grant once it acks
+					// (DbCredentials). Only for an active node in mode 2; the page asks
+					// for confirmation first.
+					$rWhy = DbCredentials::strip($rServerID, $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return $rWhy === null ? ['type' => 'success', 'message' => 'cluster_strip_queued'] : ['type' => 'warning', 'message' => $rWhy];
 
 				case 'revoke':
 					return NodeRegistry::revoke($rServerID, $rCrypto, $rUserID === null ? 'admin' : 'admin:' . $rUserID)

@@ -171,16 +171,27 @@ final class NodeCredentialsTest extends TestCase {
 		$this->assertSame('node.db_revoke_failed', $this->rDb->get_row()['event']);
 	}
 
-	public function testOnlyANodeInMode2IsAskedToStrip(): void {
+	public function testOnlyAnActiveNodeInMode2IsAskedToStrip(): void {
 		$this->rDb->exec('UPDATE `cluster_nodes` SET `mode` = 1 WHERE `server_id` = 7');
-		$this->assertStringContainsString('mode 1', (string) DbCredentials::strip(7));
+		$this->assertSame('cluster_strip_needs_mode2', DbCredentials::strip(7));
 		$this->rDb->exec("UPDATE `cluster_nodes` SET `mode` = 2, `state` = 'quarantined' WHERE `server_id` = 7");
-		$this->assertSame('the node is quarantined', DbCredentials::strip(7));
-		$this->assertSame('not a cluster node', DbCredentials::strip(99));
+		$this->assertSame('cluster_strip_not_active', DbCredentials::strip(7));
+		$this->assertSame('cluster_not_enrolled', DbCredentials::strip(99));
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_audit`');
+		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'nothing sent, nothing audited');
 		// Mode 2 and active, but no signed channel in this suite: nothing falls
-		// back to a signals row.
+		// back to a signals row, and the attempt is audited.
 		$this->rDb->exec("UPDATE `cluster_nodes` SET `state` = 'active' WHERE `server_id` = 7");
-		$this->assertSame('the command was not queued (see the cluster log)', DbCredentials::strip(7));
+		$this->assertSame('cluster_strip_not_queued', DbCredentials::strip(7, 'admin:3'));
+		$this->rDb->query('SELECT `event`, `actor`, `detail` FROM `cluster_audit` WHERE `server_id` = 7');
+		$this->assertSame(['node.strip_credentials', 'admin:3', '{"queued":false}'], array_values($this->rDb->get_row()));
+	}
+
+	public function testRevokedAt(): void {
+		$this->assertNull(DbCredentials::revokedAt(7));
+		DbCredentials::revoke(7);
+		$this->assertSame($this->rNow, DbCredentials::revokedAt(7));
+		$this->assertNull(DbCredentials::revokedAt(99));
 	}
 
 	public function testTheColumnShipsInTheSchema(): void {

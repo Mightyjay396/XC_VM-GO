@@ -170,6 +170,14 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                             <?php else: ?>
                                 <span class="text-body-secondary" title="<?= $language::get('cluster_root_missing_help'); ?>">—</span>
                             <?php endif; ?>
+                            <?php if (!empty($rNode['core_pinned'])): ?>
+                                <span class="badge bg-label-success" title="<?= htmlspecialchars($language::get('cluster_core_pinned_help'), ENT_QUOTES); ?>">core</span>
+                            <?php elseif (!empty($rNode['root_ready']) && $rNode['state'] === 'active'): ?>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="pin_core" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_pin_core_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_pin_core'); ?></button>
+                                </form>
+                            <?php endif; ?>
                         </td>
                         <td><?= (int) $rNode['epoch']; ?> <span class="small text-body-secondary">(gen <?= (int) $rNode['gen']; ?>)</span></td>
                         <td><?= $rWhen($rNode['token_exp'] === null ? null : (int) $rNode['token_exp']); ?></td>
@@ -255,6 +263,14 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                                     <form method="POST" class="d-inline js-cluster-confirm" data-confirm="<?= htmlspecialchars($language::get('cluster_quarantine_confirm'), ENT_QUOTES); ?>">
                                         <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
                                         <button type="submit" name="cluster_action" value="quarantine" class="btn btn-sm btn-label-warning" title="<?= htmlspecialchars($language::get('cluster_quarantine_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_quarantine'); ?></button>
+                                    </form>
+                                <?php endif; ?>
+                                <?php if ($rNode['db_revoked_at'] !== null): ?>
+                                    <span class="badge bg-label-success" title="<?= htmlspecialchars($language::get('cluster_db_revoked_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_db_revoked'); ?> <?= $rWhen((int) $rNode['db_revoked_at']); ?></span>
+                                <?php elseif ((int) $rNode['mode'] === 2 && $rNode['state'] === 'active'): ?>
+                                    <form method="POST" class="d-inline js-cluster-strip">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="strip_credentials" class="btn btn-sm btn-label-warning" title="<?= htmlspecialchars($language::get('cluster_strip_credentials_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_strip_credentials'); ?></button>
                                     </form>
                                 <?php endif; ?>
                                 <form method="POST" class="d-inline js-cluster-revoke">
@@ -371,6 +387,13 @@ document.querySelectorAll('.js-cluster-confirm').forEach(function (f) {
             return;
         }
         if (!confirm(f.getAttribute('data-confirm'))) {
+            e.preventDefault();
+        }
+    });
+});
+document.querySelectorAll('.js-cluster-strip').forEach(function (f) {
+    f.addEventListener('submit', function (e) {
+        if (!confirm(<?= json_encode($language::get('cluster_strip_credentials_confirm')); ?>)) {
             e.preventDefault();
         }
     });

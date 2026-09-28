@@ -42,22 +42,88 @@ final class DbCredentials {
 	}
 
 	/**
-	 * Ask a node in mode 2 to drop MAIN's credentials. Null when the signed
-	 * command was queued, else why nothing was sent.
+	 * Ask a node in mode 2 to drop MAIN's credentials (the Cluster Nodes
+	 * page's action, `cluster:strip-credentials`). Null when the signed
+	 * command was queued, else the message key of why nothing was sent:
+	 * `cluster_not_enrolled`, `cluster_strip_needs_mode2`,
+	 * `cluster_strip_not_active`, `cluster_strip_not_queued`. Audited either
+	 * way it reached the node's row (`node.strip_credentials`).
 	 */
-	public static function strip(int $rServerID): ?string {
+	public static function strip(int $rServerID, string $rActor = 'admin'): ?string {
 		self::db()->query('SELECT `mode`, `state` FROM `cluster_nodes` WHERE `server_id` = ?;', $rServerID);
 		$rNode = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
 		if ($rNode === null) {
-			return 'not a cluster node';
+			return 'cluster_not_enrolled';
 		}
 		if ((int) $rNode['mode'] !== 2) {
-			return 'the node is in mode ' . (int) $rNode['mode'] . '; only a node in mode 2 gives up its credentials';
+			return 'cluster_strip_needs_mode2';
 		}
 		if ($rNode['state'] !== 'active') {
-			return 'the node is ' . $rNode['state'];
+			return 'cluster_strip_not_active';
 		}
-		return NodeActions::stripDbCredentials($rServerID) ? null : 'the command was not queued (see the cluster log)';
+		$rQueued = NodeActions::stripDbCredentials($rServerID);
+		ClusterAudit::log('node.strip_credentials', $rServerID, ['queued' => $rQueued], $rActor);
+		return $rQueued ? null : 'cluster_strip_not_queued';
+	}
+
+	/**
+	 * Send the node a config MAIN packed for it (`node.root install_config`):
+	 * credential-free (`$rCredentials` false: a node in mode 2 that is to hold
+	 * none of MAIN's credentials) or with them (the plan's rollback from mode 2,
+	 * before `db_grant` and mode 0). Packed for the node's recorded install_id
+	 * (CorePins) with `XC_VM::config_pack`, which the node's extension verifies
+	 * before it writes anything. Null when queued, else the message key of why
+	 * not.
+	 *
+	 * @param (callable(string, array<string, mixed>): (string|false))|null $rPack tests: `config_pack`
+	 */
+	public static function installConfig(int $rServerID, bool $rCredentials, string $rActor = 'admin', ?callable $rPack = null): ?string {
+		$rNode = NodeRegistry::byServer($rServerID);
+		if ($rNode === null || $rNode['state'] !== 'active') {
+			return 'cluster_not_enrolled';
+		}
+		if (!$rCredentials && (int) $rNode['mode'] !== 2) {
+			return 'cluster_strip_needs_mode2';
+		}
+		$rID = CorePins::installId($rServerID);
+		if ($rID === null) {
+			return 'cluster_config_needs_install_id';
+		}
+		self::db()->query('SELECT `server_ip` FROM `servers` WHERE `id` = ?;', (int) SERVER_ID);
+		$rMainIP = self::db()->num_rows() > 0 ? (string) self::db()->get_row()['server_ip'] : '';
+		if ($rMainIP === '') {
+			return 'cluster_config_not_queued';
+		}
+		// As LbInstallFlow::configPackParams: MAIN's address, the node's slot.
+		$rParams = ['hostname' => $rMainIP, 'database' => 'xc_vm', 'server_id' => $rServerID, 'is_lb' => 1, 'db_credentials' => $rCredentials];
+		if ($rPack === null) {
+			if (!class_exists('XC_VM') || !method_exists('XC_VM', 'install_config')) {
+				// An extension that has install_config also packs db_credentials.
+				return 'cluster_config_no_extension';
+			}
+			$rPack = static fn(string $rTarget, array $rP): string|false => @\XC_VM::config_pack($rTarget, $rP);
+		}
+		$rBlob = $rPack($rID, $rParams);
+		if (!is_string($rBlob) || $rBlob === '') {
+			return 'cluster_config_not_queued';
+		}
+		$rQueued = NodeActions::installConfig($rServerID, $rBlob);
+		ClusterAudit::log('node.install_config', $rServerID, ['credentials' => $rCredentials, 'queued' => $rQueued], $rActor);
+		return $rQueued ? null : 'cluster_config_not_queued';
+	}
+
+	/**
+	 * When MAIN revoked the node's grant (`cluster_nodes.db_revoked_at`), or
+	 * null. A table from before migration 052 reads as never.
+	 */
+	public static function revokedAt(int $rServerID): ?int {
+		try {
+			self::db()->query('SELECT `db_revoked_at` FROM `cluster_nodes` WHERE `server_id` = ?;', $rServerID);
+			$rAt = self::db()->num_rows() > 0 ? self::db()->get_row()['db_revoked_at'] : null;
+		} catch (\Throwable) {
+			return null;
+		}
+		return $rAt === null ? null : (int) $rAt;
 	}
 
 	/**
