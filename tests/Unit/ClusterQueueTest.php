@@ -150,10 +150,11 @@ final class ClusterQueueTest extends TestCase {
 
 	public function testTheQueueTableHasNoWriterLeftOutsideTheSeam(): void {
 		$rRoot = dirname(__DIR__, 2) . '/src/';
-		// The seam itself, and the three admin surfaces that queue or cancel work
-		// on any server: they run on MAIN, which owns the table.
+		// The seam itself, and the two admin surfaces that queue or cancel work
+		// on any server: they run on MAIN, which owns the table. NodeQueue, the
+		// seam's MAIN half, runs QueueSink's statements and writes none itself.
 		$rAllowed = [
-			'Core/Cluster/QueueSink.php', 'Domain/Cluster/NodeQueue.php',
+			'Core/Cluster/QueueSink.php',
 			'Domain/Stream/ChannelService.php', 'Controllers/Admin/Ajax/MiscAjaxController.php',
 		];
 

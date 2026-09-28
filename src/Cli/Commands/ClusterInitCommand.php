@@ -3,7 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
-use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\ClusterMeta;
 
 /**
@@ -28,10 +28,8 @@ class ClusterInitCommand implements CommandInterface {
 	}
 
 	public function execute(array $rArgs): int {
-		try {
-			$rCrypto = ClusterCryptoFactory::create();
-		} catch (\Throwable $rE) {
-			echo 'Cluster API unavailable: ' . $rE->getMessage() . "\n";
+		$rCrypto = ClusterCli::crypto(ClusterCli::UNAVAILABLE);
+		if ($rCrypto === null) {
 			return 1;
 		}
 		try {

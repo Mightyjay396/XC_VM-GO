@@ -4,6 +4,7 @@ namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\LocalTelemetry;
 use XcVm\Core\Cluster\OptionalDirSeam;
+use XcVm\Core\Cluster\StrictQuery;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\SystemInfo;
 use XcVm\Core\Util\TimeUtils;
@@ -465,16 +466,12 @@ final class HeartbeatService {
 		}
 		array_push($rArgs, intdiv($rBeat['heard'], 1000), $rServerID, $rBeat['gen'], $rBeat['heard'], $rNow + self::STEP_MS);
 		$rDb = self::db();
-		$rOk = $rDb->query($rSql . ', `updated_at` = ? WHERE `server_id` = ? AND `gen` = ? AND (`last_seen_at` IS NULL OR `last_seen_at` < ? OR `last_seen_at` > ?);', ...$rArgs) !== false;
-		if (!$rOk || $rDb->query('UPDATE `servers` SET `status` = 1 WHERE `id` = ? AND `status` <> 1 AND EXISTS (SELECT 1 FROM `cluster_nodes` WHERE `server_id` = ? AND `gen` = ?);', $rServerID, $rServerID, $rBeat['gen']) === false) {
-			throw new \RuntimeException('flush');
-		}
+		StrictQuery::orThrow($rDb, 'flush', $rSql . ', `updated_at` = ? WHERE `server_id` = ? AND `gen` = ? AND (`last_seen_at` IS NULL OR `last_seen_at` < ? OR `last_seen_at` > ?);', ...$rArgs);
+		StrictQuery::orThrow($rDb, 'flush', 'UPDATE `servers` SET `status` = 1 WHERE `id` = ? AND `status` <> 1 AND EXISTS (SELECT 1 FROM `cluster_nodes` WHERE `server_id` = ? AND `gen` = ?);', $rServerID, $rServerID, $rBeat['gen']);
 		if ($rBeat['root'] === '-' || $rBeat['root'] === $rRecorded) {
 			return $rBeat['root'];
 		}
-		if ($rDb->query('SELECT `root_ready` FROM `cluster_nodes` WHERE `server_id` = ? AND `gen` = ?;', $rServerID, $rBeat['gen']) === false) {
-			throw new \RuntimeException('flush');
-		}
+		StrictQuery::orThrow($rDb, 'flush', 'SELECT `root_ready` FROM `cluster_nodes` WHERE `server_id` = ? AND `gen` = ?;', $rServerID, $rBeat['gen']);
 		return $rDb->num_rows() > 0 ? (string) (int) $rDb->get_row()['root_ready'] : '-';
 	}
 

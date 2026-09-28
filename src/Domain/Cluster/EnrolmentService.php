@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 
@@ -30,10 +31,7 @@ final class EnrolmentService {
 		if (!self::validUuid($rNodeUuid) || strlen($rSignPub) !== 32 || strlen($rBoxPub) !== 32 || strlen($rAgentEphPub) !== 32) {
 			throw new \InvalidArgumentException('enrolment keys');
 		}
-		$rMode = ($rSettings['lb_new_node_mode'] ?? 'legacy') === 'api' ? 2 : 1;
-		$rGen = NodeRegistry::startEnrolment($rServerID, $rNodeUuid, $rSignPub, $rBoxPub, $rMode, $rCrypto)['gen'];
-		$rNode = NodeRegistry::byServer($rServerID);
-		$rIssued = TokenService::issue($rCrypto, (array) $rNode, 1, $rAgentEphPub);
+		[$rGen, $rIssued, $rMode] = self::begin($rCrypto, $rServerID, $rNodeUuid, $rSignPub, $rBoxPub, $rAgentEphPub, $rSettings);
 		ClusterAudit::log('node.enrol_start', $rServerID, ['node' => $rNodeUuid, 'gen' => $rGen, 'mode' => $rMode], 'install');
 		return [
 			'node_uuid' => $rNodeUuid,
@@ -45,6 +43,25 @@ final class EnrolmentService {
 			'lease' => $rIssued['lease'] ?? null,
 			'cluster' => self::clusterJson($rCrypto, $rServerID, $rNodeUuid, $rSettings, $rMain),
 		];
+	}
+
+	/**
+	 * Start an enrolment, as both paths do (install, and an approved code):
+	 * the node's mode from `lb_new_node_mode`, a new generation with these
+	 * keys, and epoch 1's token sealed to the agent's ephemeral key.
+	 *
+	 * The caller writes the `node.enrol_start` audit event: the install path
+	 * right after this, the code path only once the approval is signed and
+	 * stored (a refused signature leaves no enrol_start behind).
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @return array{0: int, 1: array<string, mixed>, 2: int} [gen, TokenService::issue()'s answer, mode]
+	 */
+	public static function begin(ClusterCrypto $rCrypto, int $rServerID, string $rNodeUuid, string $rSignPub, string $rBoxPub, string $rAgentEphPub, array $rSettings): array {
+		$rMode = ClusterSettings::enum('lb_new_node_mode', $rSettings['lb_new_node_mode'] ?? null) === 'api' ? 2 : 1;
+		$rGen = NodeRegistry::startEnrolment($rServerID, $rNodeUuid, $rSignPub, $rBoxPub, $rMode, $rCrypto)['gen'];
+		$rIssued = TokenService::issue($rCrypto, (array) NodeRegistry::byServer($rServerID), 1, $rAgentEphPub);
+		return [$rGen, $rIssued, $rMode];
 	}
 
 	/**
@@ -63,7 +80,7 @@ final class EnrolmentService {
 			'panel_sign_pub' => base64_encode((string) ($rInfo['panel_sign_pub'] ?? '')),
 			'panel_box_pub' => base64_encode((string) ($rInfo['panel_box_pub'] ?? '')),
 			'panel_fp' => bin2hex((string) ($rInfo['panel_fp'] ?? '')),
-			'proto' => ['min' => ClusterApi::PROTO_MIN, 'max' => ClusterApi::PROTO_MAX],
+			'proto' => ClusterApi::PROTO_RANGE,
 			'policy' => ClusterPolicy::current($rSettings, $rMain),
 			'iat' => ClusterClock::now(),
 		];
