@@ -5,8 +5,8 @@ namespace XcVm\Domain\Stream;
 use XcVm\Core\Cluster\EventSpool;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
-use XcVm\Core\Cluster\Redactor;
 use XcVm\Core\Cluster\StreamRuntime;
+use XcVm\Core\Cluster\StreamStateFields;
 
 /**
  * Stream State Writer
@@ -95,11 +95,8 @@ final class StreamStateWriter {
 		}
 		return StreamRuntime::resend(static function (int $rStreamID, array $rFields): bool {
 			$rEvents = [];
-			$rState = array_intersect_key($rFields, array_flip(self::STATE_FIELDS));
+			$rState = StreamStateFields::pick($rFields, self::STATE_FIELDS);
 			if ($rState !== []) {
-				if (isset($rState['current_source']) && is_string($rState['current_source'])) {
-					$rState['current_source'] = Redactor::redact($rState['current_source']);
-				}
 				$rEvents[] = ['type' => 'stream.state', 'd' => ['stream_id' => $rStreamID, 'server_id' => (int) SERVER_ID, 'fields' => (object) $rState]];
 			}
 			foreach (ContentSink::WORKERS as $rWorker) {
@@ -119,10 +116,7 @@ final class StreamStateWriter {
 	 * @param array<string, mixed> $rFields
 	 */
 	private static function spool(array $rKey, array $rFields): bool {
-		if (isset($rFields['current_source']) && is_string($rFields['current_source'])) {
-			$rFields['current_source'] = Redactor::redact($rFields['current_source']);
-		}
-		return EventSpool::append('p0', [['type' => 'stream.state', 'd' => $rKey + ['fields' => (object) $rFields]]]);
+		return EventSpool::append('p0', [['type' => 'stream.state', 'd' => $rKey + ['fields' => (object) StreamStateFields::redact($rFields)]]]);
 	}
 
 	/**
