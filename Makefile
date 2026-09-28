@@ -88,6 +88,7 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/ClusterImportKeysCommand.php \
 	Cli/Commands/ClusterPassphrase.php \
 	Cli/Commands/ClusterDbAllowlistCommand.php \
+	Cli/Commands/ClusterRotateStreamSecretCommand.php \
 	Cli/Commands/ClusterEnrolCodeCommand.php \
 	Cli/Commands/ClusterEnrolApproveCommand.php \
 	Cli/Commands/ClusterPoolsCommand.php \
