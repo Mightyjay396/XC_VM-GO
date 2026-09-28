@@ -358,10 +358,16 @@ final class ClusterBus {
 			return null;
 		}
 		$rSeconds = max(0.01, $rSeconds);
+		// phpredis takes a fractional block only from 6.0 (the panel ships 6.3);
+		// 5.x raises a fatal on one — "Timeout value must be a LONG" — which no
+		// catch here can stop, so a distro extension would kill the worker instead
+		// of falling back to polling. Whole seconds there, never 0: blPop reads a
+		// zero as "block until something arrives".
+		$rBlock = version_compare((string) phpversion('redis'), '6.0', '<') ? max(1, (int) ceil($rSeconds)) : $rSeconds;
 		try {
 			// The read must outlast the block.
-			$rRedis->setOption(\Redis::OPT_READ_TIMEOUT, (string) ($rSeconds + 1.0));
-			$rOut = $rRedis->blPop([$rKey], $rSeconds);
+			$rRedis->setOption(\Redis::OPT_READ_TIMEOUT, (string) ($rBlock + 1.0));
+			$rOut = $rRedis->blPop([$rKey], $rBlock);
 			return is_array($rOut) && $rOut !== [];
 		} catch (\Throwable) {
 			self::drop();
