@@ -200,6 +200,28 @@ $rBar = static function (int $pct): string {
                                         <?php else: ?>
                                             <button type="button" class="dropdown-item js-api" data-id="<?= (int) $rServer['id']; ?>" data-sub="enable_proxy"><i class="icon-base ti tabler-shield-check me-2"></i><?= $language::get('enable_proxy'); ?></button>
                                         <?php endif; ?>
+                                        <?php if (!empty($rClusterEnabled) && !$rIsMain && (int) $rServer['server_type'] === 0): ?>
+                                            <?php
+                                            // Cluster actions: each posts to the Cluster Nodes page, which
+                                            // performs it (ClusterAdmin::act) and shows the outcome.
+                                            $rNode = $rClusterNodes[(int) $rServer['id']] ?? null;
+                                            $rLive = $rNode !== null && in_array($rNode['state'], ['active', 'quarantined'], true);
+                                            ?>
+                                            <div class="dropdown-divider"></div>
+                                            <h6 class="dropdown-header"><?= $language::get('cluster_row_menu'); ?></h6>
+                                            <?php if ($rLive): ?>
+                                                <a class="dropdown-item" href="cluster_nodes#node-<?= (int) $rServer['id']; ?>"><i class="icon-base ti tabler-adjustments me-2"></i><?= $language::get('cluster_flows_link'); ?></a>
+                                                <?php if ((int) $rNode['mode'] < 2): ?>
+                                                    <form method="POST" action="cluster_nodes"><input type="hidden" name="server_id" value="<?= (int) $rServer['id']; ?>"><button type="submit" name="cluster_action" value="mode_up" class="dropdown-item" title="<?= htmlspecialchars($language::get('cluster_mode_up_help'), ENT_QUOTES); ?>"><i class="icon-base ti tabler-arrow-up me-2"></i><?= $language::get('cluster_mode_up'); ?> (<?= (int) $rNode['mode'] + 1; ?>)</button></form>
+                                                <?php endif; ?>
+                                                <?php if ((int) $rNode['mode'] > 0): ?>
+                                                    <form method="POST" action="cluster_nodes"><input type="hidden" name="server_id" value="<?= (int) $rServer['id']; ?>"><button type="submit" name="cluster_action" value="mode_down" class="dropdown-item" title="<?= htmlspecialchars($language::get('cluster_mode_down_help'), ENT_QUOTES); ?>"><i class="icon-base ti tabler-arrow-down me-2"></i><?= $language::get('cluster_mode_down'); ?> (<?= (int) $rNode['mode'] - 1; ?>)</button></form>
+                                                <?php endif; ?>
+                                                <form method="POST" action="cluster_nodes"><input type="hidden" name="server_id" value="<?= (int) $rServer['id']; ?>"><button type="submit" name="cluster_action" value="rotate_now" class="dropdown-item" title="<?= htmlspecialchars($language::get('cluster_rotate_now_help'), ENT_QUOTES); ?>"><i class="icon-base ti tabler-refresh me-2"></i><?= $language::get('cluster_rotate_now'); ?></button></form>
+                                            <?php endif; ?>
+                                            <form method="POST" action="cluster_nodes"><input type="hidden" name="server_id" value="<?= (int) $rServer['id']; ?>"><button type="submit" name="cluster_action" value="code" class="dropdown-item" title="<?= htmlspecialchars($language::get('cluster_code_help'), ENT_QUOTES); ?>"><i class="icon-base ti tabler-key me-2"></i><?= $language::get('cluster_issue_code'); ?></button></form>
+                                            <button type="button" class="dropdown-item js-cluster-reenrol" data-cmd="sudo /home/xc_vm/console.php cluster:reenrol <?= (int) $rServer['id']; ?> --cred-file=&lt;path&gt;"><i class="icon-base ti tabler-plug-connected me-2"></i><?= $language::get('cluster_reenrol_ssh'); ?></button>
+                                        <?php endif; ?>
                                         <?php if (!$rIsMain): ?>
                                             <div class="dropdown-divider"></div>
                                             <?php if ($rServer['enabled']): ?>
@@ -257,6 +279,12 @@ LayoutRenderer::renderFooter('admin');
         var canEdit = <?= $rCanEdit ? 'true' : 'false'; ?>;
 
         var toast = window.xcToast || function() {};
+
+        // Re-enrolling over SSH runs on MAIN's console (it needs the node's
+        // SSH credentials): show the command to copy.
+        $(document).on('click', '.js-cluster-reenrol', function() {
+            window.prompt(<?= json_encode($language::get('cluster_reenrol_ssh_help')); ?>, $(this).data('cmd'));
+        });
 
         function confirmSwal(text) {
             if (window.Swal) {

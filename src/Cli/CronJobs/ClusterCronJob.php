@@ -14,7 +14,9 @@ use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
+use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Cluster\CommandBus;
+use XcVm\Domain\Cluster\CorePins;
 use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\NonceStore;
@@ -36,7 +38,11 @@ use XcVm\Domain\Server\ServerRepository;
  * - nodes whose agent downloads artefacts are granted the admin's off-air
  *   videos they do not hold yet (ArtefactGrants::offerOffAir);
  * - a node whose agent is not the version MAIN pinned is offered that binary
- *   (AgentUpgrades::push).
+ *   (AgentUpgrades::push);
+ * - in the hard revocation mode without a licence, every node that takes
+ *   commands is sent the licence fence (ClusterRoute::licenceFences);
+ * - a node that takes root commands and whose xcvm_core is not pinned to this
+ *   panel's key is sent `node.root pin_core` (CorePins::offer).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
  * the rest; there the job returns before touching anything, as the cluster
@@ -96,6 +102,12 @@ class ClusterCronJob implements CommandInterface {
 			// Every node runs the agent MAIN pinned: one that reports another
 			// version is offered the binary for its arch.
 			'agent' => static fn() => AgentUpgrades::push(),
+			// lb_revocation_mode=hard without a licence: every node that takes
+			// commands is fenced, the fence riding its refused session.
+			'licence_fence' => static fn() => ClusterRoute::licenceFences(ClusterCryptoFactory::create(), SettingsManager::getAll()),
+			// Every node that takes root commands gets this panel's key pinned in
+			// its xcvm_core, which its compiled lease verdict needs (Phase 9).
+			'core_pin' => static fn() => CorePins::offer(),
 			// The signals daemon runs this every second; the minute is its fallback.
 			'liveness' => static function () {
 				if (LivenessService::tick(ClusterSettings::int('cluster_offline_after_sec', SettingsManager::get('cluster_offline_after_sec'))) !== []) {

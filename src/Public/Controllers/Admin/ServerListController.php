@@ -33,7 +33,9 @@ class ServerListController extends BaseAdminController {
 		// Cluster Nodes page has it all, and an operator reading this list had to
 		// correlate by server id to know whether a node still holds MAIN's
 		// credentials. One badge per node, from the same rows that page shows.
-		$this->render('servers', ['rServers' => $rServers, 'rClusterNodes' => self::clusterNodes($rServers)]);
+		// The row menu's cluster actions (re-enrol, enrolment code, mode, flows)
+		// post to the Cluster Nodes page, which performs and reports them.
+		$this->render('servers', ['rServers' => $rServers, 'rClusterNodes' => self::clusterNodes($rServers), 'rClusterEnabled' => !empty(SettingsManager::get('cluster_api_enabled'))]);
 	}
 
 	/**

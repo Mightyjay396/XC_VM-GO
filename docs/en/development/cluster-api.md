@@ -157,7 +157,8 @@ readers use (a shadow diff before the flow is on, so an operator sees what would
 | `cluster_agent_upgrade_parallel` | 1–50 (1) | nodes upgraded at once by `cron:cluster` |
 | `cluster_db_allowlist` (+`_extra`) | 0/1 | firewalls 3306/6379 on MAIN to the fleet |
 | `lb_scan_roots` | paths | the directories the node's scan RPC may list |
-| `lb_partition_tolerance_h`, `lb_fence_drain_min` | 0–24, 0–60 | Phase 9 (not built) |
+| `lb_partition_tolerance_h`, `lb_fence_drain_min` | 0–24 (12), 0–60 (10) | the lease's window past token expiry, and the drain after it |
+| `lb_lease_fence` | 0/1 (0) | a node stops serving when its lease runs out |
 
 ## Operating it
 
@@ -190,14 +191,30 @@ console.php agent_binary [amd64|arm64|armv7|386] [force]
 # Firewall MariaDB and Redis to the fleet (check first)
 console.php cluster:db-allowlist status | apply | undo
 
+# Phase 9: a mode-2 node gives up MAIN's credentials (asks first; --wait=<s> waits for the revoke)
+console.php cluster:strip-credentials <serverID> [--yes] [--wait=<seconds>]
+
+# Rotate the panel's DB password (MAIN), and set it on a node MAIN cannot reach (node, root)
+console.php cluster:rotate-db-password [--yes] [--password-stdin]
+echo "$NEW_PASSWORD" | console.php cluster:set-db-password
+
 # Disaster recovery of the cluster root
 console.php cluster:export-keys   /path/bundle
 console.php cluster:import-keys   /path/bundle
 ```
 
 The *Cluster Nodes* page is where a node is approved, its flows switched, its mode moved and
-its state read (epoch, token expiry, last seen, agent version and architecture, settings
-misses, connect audit). Every decision is written to `cluster_audit`, which
+its state read (epoch, token expiry, the fence window that follows it — token expiry plus
+`lb_partition_tolerance_h`, then `lb_fence_drain_min` — its queued commands, last seen, agent
+version and architecture, settings misses, connect audit). It warns when the licence is
+suspended (and, with `lb_lease_fence` on, by when the fleet stops at the latest) and when
+MAIN's certificate expires within 14 days while the nodes may dial HTTPS. It shows the figures
+MAIN records: command delivery and ack latency (p50/p99 over the last hour), queue depth, the
+ingest permits in use per lane, the `cluster_ctl` pool's listen queue, and the recent audit.
+*Rotate all tokens now* sends `token.rotate_now` to every active node that takes commands.
+The *Servers* list's row menu carries the same per-node actions (mode up/down, rotate,
+enrolment code, a link to the node's flows) and shows the `cluster:reenrol` command to run
+for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
 `cron:cluster` prunes.
 
 ### A cutover, in order
@@ -214,6 +231,9 @@ misses, connect audit). Every decision is written to `cluster_audit`, which
 8. Leave it for a week. When the node's connect audit shows zero MySQL and zero Redis
    connects for seven days, `mode_up` to 2.
 9. `cluster:db-allowlist apply` once every node is in mode 2.
+10. *Drop DB credentials* on the node (or `cluster:strip-credentials`): the node's
+    `config.enc` loses MAIN's DB and Redis credentials, then MAIN revokes its grant. There is
+    no undo from the page: rolling back needs a config with credentials and a new grant.
 
 ## Limits
 
@@ -252,18 +272,48 @@ misses, connect audit). Every decision is written to `cluster_audit`, which
   - `/xfile` has its own rate limit (50 requests/s per server, burst 100, answered with a
     429 the agent retries), apart from the viewers' 20 requests/s.
   - `cluster:rotate-stream-secret` does not exist: retiring the password is Phase 9's.
-- **The licence lease is issued and checked, but not enforced** (Phase 9). Every token MAIN
-  hands a node (enrolment over SSH or by code, `token_refresh`, `token_rekey`) carries a
-  lease signed by `xcvm_core`, capped at `min(token_exp + lb_partition_tolerance_h, iat +
-  26 h)`; when the extension refuses one (no licence, its clock gate, a revoked generation)
-  the token goes out without it. `xc_agent` verifies each lease it receives (panel
-  signature, its node, server and generation, the window on its estimate of MAIN's time),
-  keeps the newest in its state file and prints it with `xc_agent lease`.
-  Nothing acts on it yet: a node neither stops serving at the lease's `exp` nor is fenced.
-- **The fence and the credential lockdown are not built** (Phase 9). A node in mode 2
-  refuses its own connects in code; MAIN's MariaDB still has a grant for it until
-  `cluster:db-allowlist` closes the port, and `lb_new_node_mode=api` is refused until that
-  phase ships.
+- **The licence lease is issued, checked, and enforced only behind a switch** (Phase 9).
+  Every token MAIN hands a node (enrolment over SSH or by code, `token_refresh`,
+  `token_rekey`) carries a lease signed by `xcvm_core`, capped at `min(token_exp +
+  lb_partition_tolerance_h, iat + 26 h)`; when the extension refuses one (no licence, its
+  clock gate, a revoked generation) the token goes out without it, and a refusal for the
+  licence dispatches `ClusterLicenceLapsedEvent`. `xc_agent` verifies each lease it receives
+  (panel signature, its node, server and generation, the window on its estimate of MAIN's
+  time), keeps the newest in its state file and prints it with `xc_agent lease`.
+  The fence that acts on it is built in the node's PHP (`Core\Cluster\NodeLease`) behind
+  `lb_lease_fence`, which is **off by default**: with it on, past the lease's `exp` no new
+  viewer starts on the node (`stream/auth.php`), and past `lb_fence_drain_min` more the
+  sessions still running stop (`segment.php`, `key.php`). It judges the lease state the
+  agent writes to `config/cluster/lease_state.json` at every heartbeat interval, whether or
+  not MAIN answers: the lease's `exp`, and MAIN's clock carried forward on the node's
+  monotonic clock from MAIN's last authenticated statement, so moving the node's wall clock
+  does not move MAIN's time as the fence reckons it, and restarting the agent resumes it. Every
+  uncertainty serves: the switch off, a legacy node, no file or a file the agent stopped
+  refreshing, no lease, no anchor on MAIN's clock. The switch must be on *before* a licence
+  lapses — it reaches a node in the replica's `settings` section, which a panel without a
+  licence cannot sign. Where the node's `xcvm_core` offers it (`cluster_lease_state`), the
+  extension judges the lease itself — against its own pin of the panel key and an anchor on
+  MAIN's clock that runs on the monotonic clock and never moves back — and the agent's file
+  is the fallback. The same verdict makes `license_valid()` true on the node, so
+  `LicenseGate` lets it use fanout. The extension's verdict needs the node's `core.pin`:
+  the SSH install pins it over its own session, and every other node that takes root
+  commands is pinned by `cron:cluster` with a signed `node.root pin_core` (the *core* badge
+  on the Cluster Nodes page, or *Pin core* to send it now).
+- **The credential lockdown is partly built** (Phase 9). A node in mode 2 gives up MAIN's
+  credentials with a signed `node.root strip_db_credentials` (or a credential-free
+  `node.root install_config`), run by `xcvm_core` as root; when its ack reports a config
+  without credentials, MAIN revokes the node's grant (`XC_VM::db_revoke`) and records
+  `cluster_nodes.db_revoked_at` (`Domain\Cluster\DbCredentials`). Only an operator sends
+  the strip (*Drop DB credentials*, `cluster:strip-credentials`), and
+  `lb_new_node_mode=api` is still refused (`api_mode_allowed` is false): the cutover stays
+  the operator's decision. `cluster:rotate-db-password` rotates the panel's DB password
+  through `XC_VM::db_set_password` and sends each mode-1 node that takes root commands a
+  config with the new password (`install_config`, packed for that install only); every
+  other load balancer that still uses its grant keeps the old password until an operator
+  runs `cluster:set-db-password` on it (`XC_VM::config_set_db`). The password never rides a
+  command. `cluster:rotate-credentials` (Redis, and the DB through a sealed `node.root
+  rotate_db`) and the manual `cluster:lockdown` exist too (ADR 0004, Phase 9's fifth
+  increment).
 - The viewer-token secret can be *replaced* gracefully (the value it replaces stays readable
   for ten minutes, fleet-wide), but a full rotation — re-encrypting what is stored under it
   — is Phase 9's.

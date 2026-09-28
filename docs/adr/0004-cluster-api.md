@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) four increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest), and its relay half as one change — relay and file tickets minted into the R2 stream record and refreshed on the delta path without moving a record's ETag or version, the parents' `RelayGuard`, `/xfile` with a signed digest per chunk, the agent's loopback proxy and the URL builders, behind each node's DATAPLANE flow, which mode 2 now requires. Its acceptance on a running fleet (48 h without an encoder restart at L = 5) is still to be measured, and `cluster:rotate-stream-secret` waits with Phase 9. Of Phase 9 (the licence lease, cutover and lockdown) four increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days; every token MAIN hands a node carries the lease it may serve on without MAIN; the node's agent verifies and keeps that lease and anchors MAIN's clock; and past the lease's window a node refuses new viewers and, past the drain, the sessions still running — behind `lb_lease_fence`, off until an operator turns it on. The cutover itself (the licence lease's own steps, `strip_db_credentials`, `install_config`, the full stream-secret rotation and `cluster:lockdown`) is not built. `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it, at mode 1: flipping that flag is the cutover decision, and it stays with the operator.
+- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) four increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest), and its relay half as one change — relay and file tickets minted into the R2 stream record and refreshed on the delta path without moving a record's ETag or version, the parents' `RelayGuard`, `/xfile` with a signed digest per chunk, the agent's loopback proxy and the URL builders, behind each node's DATAPLANE flow, which mode 2 now requires. Its acceptance on a running fleet (48 h without an encoder restart at L = 5) is still to be measured, and `cluster:rotate-stream-secret` waits with Phase 9. Of Phase 9 (the licence lease, cutover and lockdown) six increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days; every token MAIN hands a node carries the lease it may serve on without MAIN; the node's agent verifies and keeps that lease and anchors MAIN's clock; past the lease's window a node refuses new viewers and, past the drain, the sessions still running — behind `lb_lease_fence`, off until an operator turns it on; the restrictive commands, the stream-secret and credential rotations, `rotate_sign_key` and the manual `cluster:lockdown`; and the extension's compiled lease verdict with the credential actions (`strip_db_credentials`, `install_config`, MAIN's revoke). A seventh pins MAIN's panel key in every node's `xcvm_core` (`core.pin`: at the SSH install, else `node.root pin_core`, with the node's install_id in `cluster_nodes.install_id`), gives the operator the credential strip (the Cluster Nodes page's *Drop DB credentials* and `cluster:strip-credentials`), and rotates the panel's DB password (`cluster:rotate-db-password` on MAIN, `cluster:set-db-password` on a node). `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it, at mode 1: flipping that flag is the cutover decision, and it stays with the operator.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -3514,20 +3514,25 @@ not a re-encoding of it.
   whenever the extension signs none, and the node then keeps what it holds.
 - **It judges no clock, and the clock a judgement needs is kept separately.** Nothing in the lease
   path compares the lease to a time. What a fence would need is an anchor on MAIN's clock that
-  nothing unauthenticated can move, and `MainNowMs` was not it: it is also set from the pre-token
-  challenge, which carries no signature at all (`Client.Challenge` checks `typ` and `cn` only) — good
-  enough for stamping a request MAIN checks the window of, no basis for deciding a node may stop
-  serving viewers. The agent therefore also keeps `MainAnchorMs`:
-  - **Authenticated statements only** move it: a MAC'd, unboxed reply, a panel-signed denial, a
-    panel-signed re-key document.
-  - **It re-anchors on MAIN's own number**, not on what it has extrapolated to, so a replayed older
-    reply (an older number) is ignored while a fresh statement always wins, even when this machine's
-    clock has over-run. Between statements it advances on the process's monotonic clock, so moving
-    the machine's wall clock in either direction gains nothing.
+  nothing unauthenticated can move, and `MainNowMs` was not it: it follows this machine's wall
+  clock wherever it is moved, and it is also set from the pre-token challenge, which is signed
+  (`hlt`) but answers no request of the node's, so an old copy replays — good enough for stamping a
+  request MAIN checks the window of, no basis for deciding a node may stop serving viewers. The
+  agent therefore also keeps a MAIN clock of its own (`internal/clusteragent/mainclock.go`; it
+  landed with the fourth increment's file, below):
+  - **Authenticated statements only** move it: a MAC'd, unboxed reply, a panel-signed denial naming
+    the request, a panel-signed re-key document. The challenge sets the request stamp only.
+  - **It re-anchors on MAIN's own number**, not on what it has extrapolated to, and only on a number
+    higher than any it has seen, so a replayed older reply is ignored while a fresh statement always
+    wins, even when the extrapolation has over-run. Between statements it advances on
+    `CLOCK_MONOTONIC`, so moving the machine's wall clock in either direction gains nothing.
   - **A restart cannot start further back**: the highest MAIN time an authenticated statement carried
-    is kept in the state file (`main_seen_ms`, written at most once a minute), and the anchor resumes
-    from it and counts forward from the restart — undercounting a long outage rather than over, which
-    is the direction that serves viewers longer rather than shorter.
+    (`main_seen_ms`) and the clock itself (`main_anchor`: MAIN's time at a `CLOCK_MONOTONIC` reading
+    and the boot's id) are kept in the state file, written at most once a minute and when the agent
+    stops. Within the same boot the anchor resumes with the whole time since that mark, which
+    `CLOCK_MONOTONIC` went on counting while the agent was down; after a reboot it resumes from the
+    mark and counts from the restart — undercounting the time the machine was down rather than over,
+    which is the direction that serves viewers longer rather than shorter.
   - It answers 0 until MAIN has ever been heard on that node, and a caller with a judgement to make
     reads 0 as "no anchor", never as 1970.
 
@@ -3615,6 +3620,35 @@ as the anchor last had it, and when that was written) and two settings. The agen
 no verdict: the switch is a panel setting it does not read, and the same file therefore serves an
 operator (`xc_agent lease`) and a later reader without either owning the policy.
 
+**The agent's half landed after the panel's.** `NodeLease` shipped reading a file that no agent
+wrote yet, so until XC_VM_Fanout's writer (`internal/clusteragent/lease.go`, with the MAIN clock of
+`mainclock.go`) every node answered "the agent has written no lease state" and served, switch on or
+off. The file, as the writer produces it:
+
+| Field | Unit | What it is |
+| --- | --- | --- |
+| `exp`, `iat` | unix s, MAIN's clock | the held lease's window; both 0 without a lease (`exp` 0 reads as "no lease") |
+| `gen`, `server_id` | | the held lease's generation and server; 0 without a lease |
+| `anchor_ms` | unix ms, MAIN's clock | MAIN's time at the moment of writing, as the agent's MAIN clock has it: the last authenticated statement plus `CLOCK_MONOTONIC` since; 0 until MAIN has been heard ("no anchor") |
+| `wrote_at_ms` | unix ms, the node's clock | the node's wall clock at that same moment, compared only with that clock |
+
+- **When.** At every heartbeat interval (1-3 s, the policy's pace) from the moment the agent starts,
+  whether or not MAIN answers — ahead of the first hello, which is not answered for as long as MAIN
+  is gone — and at once when a heartbeat or hello is answered or a token brings a lease. A file that
+  stopped being rewritten exactly when MAIN went away would read as stale, and serve.
+- **How.** Atomically (a temporary file renamed in), 0640 less the umask like `flows.json`, as the
+  agent's own user, which PHP-FPM runs as; without fsync, since it is rewritten from what the agent
+  holds and a crash that loses it leaves no file or the one before, both of which serve. The agent
+  removes it with `flows.json` when MAIN stops the node.
+- **Clocks.** `NodeLease` reckons MAIN's time as `anchor_ms` plus the time since `wrote_at_ms`,
+  never less than nothing. A wall clock moved back therefore adds nothing (and the anchor itself
+  never read the wall clock), and one moved forward makes the file look stale until the next write,
+  which serves. A restart resumes the anchor from the state file (above), so restarting the agent
+  is no way out of the fence.
+- **The report.** `xc_agent lease` gives the window twice: against the node's own clock, saying MAIN
+  vouches for none of it, and against MAIN's clock as this file has it, reckoned as `NodeLease`
+  reckons it, with a note when the file is old enough that the fence does not judge it.
+
 Why not `cluster_lease_verify` here: it needs the extension's `core.pin`, which no node holds, and it
 answers `EXPIRED` for both ends of the window — the one question this has to ask separately. The
 agent verified the signature when it stored the lease, with the panel key it already holds; the plan
@@ -3670,7 +3704,238 @@ a drain of 0 makes the `exp` the end, and the wiring itself: the guard's place a
 the switch shipping off, bounded, on the form, named in `en.ini` and in the allowlist. On the agent's
 side `TestTheLeaseStateIsPublishedEveryTickEvenWithMainGone` pins the one property the node's PHP
 depends on: the file keeps being refreshed while MAIN cannot be reached, because a file that has gone
-stale reads as "serve".
+stale reads as "serve"; `TestARestartedAgentWritesTheLeaseStateBeforeMainAnswers` that a restart
+during the outage resumes the anchor and writes before any hello is answered, and the `mainclock`
+tests that only a fresher authenticated number moves it and a moved wall clock never does. The
+format is pinned from both sides: the agent writes `cluster_lease_state.json` from fixed inputs and
+compares it byte for byte with its testdata, and `NodeLeaseTest` feeds the panel's copy
+(`tests/Support/`) to `NodeLease::verdict()` through serving, draining, fenced, stale and a clock
+moved back; both tests record the file's digest, as for the shared vectors. With
+`XCVM_PANEL_DIR`, `TestInteropNodeLeaseJudgesTheAgentsFile` runs the real `NodeLease` against the
+file the agent wrote for a lease MAIN's real `LeaseService` signed.
+
+### Commands, rotations and lockdown (Phase 9, fifth increment)
+
+The restrictive command types had no producer, the fence drew no line through a running `.ts`
+request, and the cutover's last steps — rotating what legacy nodes sent in cleartext, closing
+3306/6379 — did not exist. This increment builds them; `api_mode_allowed` stays false.
+
+**Commands MAIN now sends** (types and arguments exactly as the extension's registry signs them):
+
+| Type | Class | Producer | Runs |
+| --- | --- | --- | --- |
+| `stream.stop`, `vod.stop {stream_id}` | R | a `node.rpc` stream/vod *stop* becomes one per stream, deduped (`ClusterRoute::stops()`) | `cluster:exec` (`StreamProcess`) |
+| `node.fence {reason, drain_min}` | R | *Fence* on the Cluster Nodes page; `cron:cluster` in `lb_revocation_mode=hard` without a licence binding (`ClusterRoute::licenceFences()`, reason `licence`, once while one waits) | agent |
+| `node.unfence` | G | *Unfence* (shares the fence's dedupe key, so it supersedes one not yet taken) | agent |
+| `node.quarantine {reason}` | R | *Quarantine* (queued, then the row goes `quarantined`); *Trust again* sets it `active` and queues `token.rotate_now` | agent |
+| `resync {sections}` | R | *Resync* (`config`, `streams`, `connections`) | agent |
+| `policy.update` | G | `ClusterRoute::policyUpdate()` | agent: a hello now |
+
+- **A quarantined node's long-poll** hands out class R only (`CommandBus::pending(…, restrictive)`);
+  the rest stays queued for *Trust again*. Its replica stays refused, and the agent itself runs only
+  restrictive types and skips its replica sync until a reply says `active`.
+- **The licence fence is queued by the cron**, not where the refusal is written: that path runs
+  before anything is authenticated and changes no state. It rides the sealed `LICENCE_INVALID` with
+  the other kills; the agent takes a `licence` fence only from a refused session and lifts it itself
+  when MAIN accepts the session again.
+
+**The fence on the node.** The agent keeps a commanded fence in its state (a restart keeps the
+drain's start) and rewrites `config/cluster/fence.json` every second —
+`{state: draining|fenced, reason, since_ms, drain_until_ms, wrote_at_ms}`. `NodeLease` reads it
+before the lease and without the `lb_lease_fence` switch (it is MAIN's explicit word, verified by the
+agent); a file older than `STALE_SEC` serves, as every uncertainty does. Past the drain the agent
+writes one `SIGNALS_PATH/<uuid>` entry `{"type": "drop"}` per open viewer in its registry and drops
+the fanout's own viewers over its control socket; `live.php`'s TS loop ends on a `drop` entry and,
+independently, on `NodeLease::refusesEverything()` at each segment — so a PHP-served `.ts` request
+ends under a lapsed lease too, without the registry. **Still not built:** a fanout-served viewer
+under a *lease* fence (not a commanded one) is not dropped, because the agent does not judge the
+lease; and producers are still not released.
+
+**`cluster:rotate-stream-secret`** (`StreamSecretRotation`). Refused while an enrolled node has
+DATAPLANE off (`--force` warns). Resumable: `cluster_meta` `stream_secret_rotation` holds the phase,
+a cursor and both values until it ends. Switch (settings, `StreamSecret::replaced()`,
+`config.changed {secrets}` to command nodes), then `hmac_keys.key` re-encrypted in id order
+(`validateHMAC()` tries the previous secret in its window), then MAIN's image-cache files renamed
+with their `s:<sid>:/images/` references in `streams` and `streams_series` moved first. A load
+balancer's own image files keep their names.
+
+**`cluster:rotate-credentials`** (`CredentialRotation`, root side `RootCredentials`). Targets: every
+load balancer below mode 2. *Redis*: the new password is added with `ACL SETUSER default >new`
+(`CONFIG` is renamed away), MAIN moves at once (config.enc through `config_set_redis`,
+`settings.redis_password`, `requirepass`), a root-command node gets `node.root rotate_redis` with the
+password SEALed to its box key (purpose `root.credentials`, its uuid as context), a legacy node a
+`signals` row with no secret that it answers from MAIN's settings; `--finish` drops the old one by its
+SHA-256 once every command node acked, or with `--force`. *DB*: needs `XC_VM::db_set_password()` on
+MAIN and `XC_VM::config_set_db()` on the node, which xcvm_core does not have: refused until it does,
+and while a target takes no root command unless `--force`.
+
+**`cluster:lockdown [--force] [--restart] | --undo | --status`** (`ClusterLockdown`), manual only.
+Refused while a load balancer is below mode 2 or any proxy exists. MariaDB binds to 127.0.0.1 by a
+drop-in sorted after the installer's `99-custom.cnf`, Redis to `127.0.0.1 -::1`; with
+`cluster_db_allowlist_extra` set both keep their binds. The `XCVM_DB` chain is reused: while
+`cluster_meta` holds `db_lockdown`, `DbAllowlist` keeps it on whatever the setting says and admits
+loopback, MAIN and the extra list only. The last rotations stay separate commands.
+
+**`node.root rotate_sign_key {new_pub, pin_blob?}`** (`cluster:rotate-sign-key`). Root re-pins MAIN's
+panel key under a command signed with the key it pins today and restarts `root.seq`; the agent's copy
+is left alone, so the node reports `root_ready` false until its agent re-enrols (by code, or
+`cluster:reenrol`). `pin_blob` replaces the extension's `core.pin` through `cluster_pin($blob, true)`;
+MAIN cannot produce one yet, since `cluster_pack` needs the node's `install_id`, which MAIN does not
+keep.
+
+**API-mode installs.** With `lb_new_node_mode = api` (still refused while `api_mode_allowed` is
+false) a new load balancer gets no DB grant, a config.enc packed with
+`config_pack(…, ['db_credentials' => false])` — found by `method_exists('XC_VM', 'install_config')`,
+refused without it — and is enrolled in mode 2 with `ClusterAdmin::MODE2_FLOWS`.
+
+Tests: `ClusterRestrictiveProducersTest`, `StreamSecretRotationTest`, `CredentialRotationTest`,
+`ClusterLockdownTest`, `RotateSignKeyTest`, `ApiModeInstallTest`; on the agent's side `fence_test.go`,
+including `TestInteropFence` against MAIN's real `CommandBus`.
+
+### The compiled lease verdict and the credentials (Phase 9, sixth increment)
+
+`xcvm_core` (its ADR-002, "Lease verdict on a node" and "Credential-free nodes") now judges a
+node's lease itself and takes MAIN's credentials off a node. This increment wires both.
+
+**The lease verdict.** The extension keeps the lease MAIN signed (`cluster_lease_store`,
+the exact bytes), verified against its own pin of the panel key, and an anchor on MAIN's
+clock that only a verified lease's `iat` moves, only forward, and that advances on
+`CLOCK_BOOTTIME` within a boot (across a reboot only by the wall clock's forward movement).
+`cluster_lease_state()` answers `live`, `expired`, or `none` with the reason; on a node
+`license_valid()` is true while it is `live`, so `LicenseGate::fanoutUsable()` finally has a
+compiled answer there — the plan's "`license_valid()` on the LB on MAIN time".
+
+- **`NodeLease` asks the extension first**, when it has `cluster_lease_state` (a feature
+  check, `method_exists`), at the same 2 s cadence as the agent's file. Before asking it
+  hands the extension the agent's lease (`agent.json`'s `lease`, Go's base64) when that
+  lease is newer by `iat` than the one the extension holds; a lease the extension refused
+  (stale, expired, not for this node) is not offered again until a newer one arrives, and
+  nothing is offered without a pin. A `live` or `expired` answer decides — `source:
+  extension` in the verdict — with the anchor the extension reported plus the monotonic time
+  since it was read (at most 2 s). `none`, an extension without the method, or one that
+  throws falls back to the agent's file, which keeps every uncertainty serving
+  (`source: agent`). The extension's own `license_valid()` fails closed on `none`; the fence
+  does not, for the reasons the fourth increment gives.
+- **Why the compiled verdict wins.** The agent re-anchors on MAIN's latest number, so a MAIN
+  whose clock was set back moves the agent's anchor back too. The extension's anchor never
+  moves back, and it refuses a lease older than the one it holds (`RECORD:stale`), so neither
+  the node's clock nor MAIN's can lengthen the window it judges.
+- **Still missing for it to engage:** the node's `core.pin`. `cluster_pack` still has no
+  caller, so no node is pinned and the extension answers `NOT_PINNED`; until the install flow
+  (or a `node.root` command) pins the node, every node takes the fallback. The fence's switch,
+  `lb_lease_fence`, still ships off.
+
+**The credentials** (plan section 10, step 3).
+
+- **On the node:** `strip_db_credentials` and `install_config` join `NodeActions::ROOT_ACTIONS`
+  and `CLUSTER_ONLY` — a signed `node.root` only, never a `signals` row. RootSignalsCronJob runs
+  them through `Core\Cluster\NodeCredentials`, which calls `XC_VM::strip_db_credentials()`
+  or `XC_VM::install_config($blob)` (the payload's `blob`, base64 of a `config_pack` XCVT blob,
+  at most 64 KiB). An extension without the method refuses the action with a reason the ack
+  carries back ("update xcvm_core first"); an extension refusal (`RECORD:is_lb` on MAIN,
+  `RECORD:server_id`, `CRYPTO`) fails the command. The result's last line is
+  `{"config": {server_id, is_lb, db_credentials, redis_auth, changed}}`; the system log type is
+  `CONFIG` (added to `LogSink::SYSLOG_TYPES`).
+- **On MAIN:** `Domain\Cluster\DbCredentials::strip()` sends the strip only to a node in mode
+  2 and `active`. The command's first ack (ClusterApi `ack`) goes to `DbCredentials::acked()`:
+  only a successful `strip_db_credentials` or `install_config` whose result reports
+  `db_credentials: false` revokes — a result that says root only queued it, a rollback config
+  that still holds credentials, or a failed command revokes nothing. The revoke is
+  `XC_VM::db_revoke($server_ip)` (which now refuses loopback addresses and MAIN's own DB host),
+  then `cluster_nodes.db_revoked_at` (migration 052, through `NodeRegistry::update()` so the
+  auth cache is told), audited `node.db_revoked` or `node.db_revoke_failed`.
+- **Not built:** a caller of `DbCredentials::strip()` (a Cluster Nodes button or a CLI command)
+  and the credential-free SSH install (`LbInstallFlow::configPackParams` still packs credentials,
+  and `db_grant` still runs at install). `api_mode_allowed` stays false.
+
+**Tests.** `LeaseVerdictCacheTest` (the extension consulted once per 2 s window, a live or
+expired answer deciding over the agent's file, `none` and a throwing extension falling back,
+the agent's newer lease offered once with its exact bytes, a refused one not offered again),
+`TimeAnchorMonotoneTest` (the fallback's anchor never below the agent's, a clock moved forward
+reading as stale, the extension's anchor used as reported), `MainClockRollbackTest` (the
+compiled verdict outranking an agent anchor pulled back, an older lease never offered, and the
+fallback's documented limit), all with the extension absent and a fake in its place;
+`NodeCredentialsTest` (the catalogue, an old extension refusing cleanly, the result line, the
+blob as bytes, revoke only on a clean outcome, the mode-2 guard, the schema);
+`ClusterExtensionIntegrationTest` runs both halves against a real test-hooks `xcvm_core`.
+
+### Core pins, the credential strip and the DB password (Phase 9, seventh increment)
+
+The fifth increment left the compiled lease verdict without the pin it judges against, and the
+credential strip without a caller. This increment adds both, and the DB password rotation that
+`xcvm_core` now offers (its `db_set_password` and `config_set_db`, ADR-002).
+
+**The node's `core.pin`.** `cluster_pack($install_id)` is an XCVT blob that only that install
+opens, for an hour, and licence-gated, so MAIN needs each node's install_id: migration 053 adds
+`cluster_nodes.install_id` (NULL: not known; not a secret, and a wrong one only makes the node
+refuse what MAIN packs for it).
+
+- **At the SSH install** (`LbInstallFlow::pinCore`, after root's pin, before the agent starts):
+  the node's install_id is read as root — only when its file exists, since `install_id()`
+  creates one and a root-owned file would lock the panel's user out — recorded, packed for,
+  and pinned with `cluster_pin($blob, true)`: the verified SSH session is the authorised
+  re-pin path, so an earlier MAIN's pin is replaced. The node must answer with this panel's
+  key's SHA-256. A failure is a line in the log, never a failed install.
+- **Every other node** (enrolled by code, before this release, or whose MAIN's root changed)
+  is pinned over the cluster API once it takes root commands: `cron:cluster` (`CorePins::offer`,
+  at most 20 per pass, a node that did not end pinned again after an hour) or the page's *Pin
+  core* (`CorePins::request`) sends `node.root pin_core` — with the blob when the install_id is
+  known, else without, and root answers with its install_id, which the command's first ack
+  records before MAIN sends the blob. A pin that did not open (`CRYPTO`: another machine, or a
+  blob past its hour) forgets the install_id, so it is asked for again.
+- **Root pins only root's key** (`Core\Cluster\NodeCorePin`): the pinned key must be the one
+  root's own pin (`RootPin`) trusts, which also signed the command. A pin of another panel is
+  replaced; a pin of root's panel is kept against a blob for any other key (`PIN_MISMATCH`);
+  a blob that pinned another key is removed at once, so the node never trusts a key root does
+  not. The result line is `{"core": {install_id?, pinned, verdict}}`.
+- **MAIN's record** is `cluster_meta` `core_pin:<server_id>` = `{gen, fp, pinned_at,
+  tried_at}`: a re-enrolled node (a new generation) and a new panel root (another `fp`) read as
+  not pinned and are offered again. The page shows a *core* badge for a pinned node.
+
+**The credential strip's triggers.** *Drop DB credentials* on the Cluster Nodes page (for an
+active node in mode 2, behind a confirmation) and `cluster:strip-credentials <serverID>` (the
+operator types the server id back, or passes `--yes`; `--wait=<s>` waits for the revoke) both
+call `DbCredentials::strip()`, which now returns message keys and audits every attempt that
+reached a node (`node.strip_credentials`). `DbCredentials::installConfig()` sends a config MAIN
+packed for the node's install_id with `XC_VM::config_pack` — credential-free for a node in mode
+2, with credentials for a rollback or a rotation — as `node.root install_config`, audited
+`node.install_config`. Nothing strips on its own, and `api_mode_allowed` stays false.
+
+**The DB password rotation** (`Domain\Cluster\DbPassword`, `cluster:rotate-db-password`).
+
+- `XC_VM::db_set_password($new)` does the database half: MAIN's accounts (all or none), then its
+  `config.enc`, then every load balancer's grant (`PARTIAL` when one kept the old password).
+  The new password is generated (32 letters and digits) and never shown, or read from standard
+  input with `--password-stdin`; it is never an argument, never logged or audited.
+- **The password never rides a command.** A `node.root` payload sits in MAIN's
+  `cluster_commands` and the node's root inbox in the clear, and a rotation is often meant to
+  shut out a leaked password. So each active node in mode 1 that takes root commands and whose
+  install_id MAIN knows is sent a whole config instead (`installConfig` with credentials,
+  packed after the rotation, so it holds the new password encrypted to that install). A node
+  in mode 2 does not use MAIN's database and is left alone; a revoked node has no grant.
+- **Every other load balancer** (legacy, mode 0, no root commands, install_id unknown) keeps
+  the old password in its config and loses MAIN's database until an operator runs
+  `cluster:set-db-password` on it as root, which reads the password from standard input and
+  calls `XC_VM::config_set_db` (only `db.pass` changes; a node without a DB user is refused,
+  `RECORD:db.user`). The command lists these nodes before it asks for confirmation (the operator
+  types `rotate`, or passes `--yes`).
+- Both commands check the extension with `method_exists` and refuse cleanly without it.
+  `cluster:rotate-db-password` is MAIN-only (stripped from the LB build); `cluster:set-db-password`
+  ships on nodes and uses nothing the LB build strips.
+
+**Not built:** the Redis password rotation, the credential-free SSH install
+(`configPackParams` still packs credentials and `db_grant` still runs), a signed
+`rotate_sign_key`, and `cluster:lockdown`.
+
+**Tests.** `CorePinTest` (root's two steps against a fake extension: the install_id read only
+when it exists, only root's key pinned, another panel's pin replaced and root's kept, the
+refusals; MAIN's offer, retry, generation and panel-key changes, the acks, `packFor`),
+`LbProvisionClusterTest` (the pin over the SSH session, before the agent runs, and a failed
+pin not failing the install), `ClusterCredentialsActionTest` (the page's and the CLI's guards,
+confirmation and audit, the node list's new fields, the strings), `NodeCredentialsTest`
+(message keys, the audit, `revokedAt`), `DbPasswordTest` (the password rules, the plan, a
+rotation that sends configs only where it can and never logs the password, refusals, the
+config packed for the node's install, both commands, and which ships on a node).
 
 ### Disaster recovery of MAIN's cluster keys
 

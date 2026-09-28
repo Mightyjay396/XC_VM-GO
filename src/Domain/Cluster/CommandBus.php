@@ -32,10 +32,13 @@ final class CommandBus {
 	use DatabaseAware;
 
 	/** Lifetime of a command by type prefix (seconds). */
-	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'node.cache' => 86400, 'artefact.' => 3600, 'default' => 600];
+	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'node.cache' => 86400, 'node.fence' => 3600, 'node.unfence' => 3600, 'node.quarantine' => 3600, 'artefact.' => 3600, 'default' => 600];
 
 	/** Types MAIN sends today. */
-	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch', 'token.rotate_now'];
+	public const TYPES = [
+		'node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch', 'token.rotate_now',
+		'stream.stop', 'vod.stop', 'node.fence', 'node.unfence', 'node.quarantine', 'resync', 'policy.update',
+	];
 
 	/**
 	 * Types that are restrictive (always signable). The extension decides
@@ -168,13 +171,26 @@ final class CommandBus {
 	}
 
 	/**
-	 * Commands for a node after its high-water, oldest first; marks them delivered.
+	 * Is a command under this dedupe key still waiting for the node (queued
+	 * or delivered, not expired)? The lease-fence path asks before it queues
+	 * another, so a refusal answered every heartbeat queues one fence.
+	 */
+	public static function waiting(int $rServerID, string $rDedupeKey): bool {
+		self::db()->query("SELECT `id` FROM `cluster_commands` WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` IN ('queued', 'delivered') AND `exp` > ? LIMIT 1;", $rServerID, $rDedupeKey, ClusterClock::now());
+		return self::db()->num_rows() > 0;
+	}
+
+	/**
+	 * Commands for a node after its high-water, oldest first; marks them
+	 * delivered. $rRestrictiveOnly hands out only the restrictive ones (a
+	 * quarantined node: kills, stops and fences still reach it, nothing that
+	 * grants), and leaves the rest queued for when an admin trusts it again.
 	 *
 	 * @return list<array{doc: string, sig: string, seq: int}>
 	 */
-	public static function pending(int $rServerID, int $rAfterSeq, int $rLimit = 50): array {
+	public static function pending(int $rServerID, int $rAfterSeq, int $rLimit = 50, bool $rRestrictiveOnly = false): array {
 		self::db()->query(
-			"SELECT `id`, `seq`, `payload`, `sig` FROM `cluster_commands` WHERE `server_id` = ? AND `seq` > ? AND `state` IN ('queued', 'delivered') AND `exp` > ? ORDER BY `seq` ASC LIMIT " . max(1, min(200, $rLimit)) . ';',
+			"SELECT `id`, `seq`, `payload`, `sig` FROM `cluster_commands` WHERE `server_id` = ? AND `seq` > ? AND `state` IN ('queued', 'delivered') AND `exp` > ?" . ($rRestrictiveOnly ? " AND `class` = 'R'" : '') . ' ORDER BY `seq` ASC LIMIT ' . max(1, min(200, $rLimit)) . ';',
 			$rServerID,
 			$rAfterSeq,
 			ClusterClock::now()

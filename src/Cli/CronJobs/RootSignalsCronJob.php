@@ -9,11 +9,14 @@ use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\LogSink;
+use XcVm\Core\Cluster\NodeCredentials;
+use XcVm\Core\Cluster\NodeCorePin;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Cluster\RootCredentials;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
@@ -945,6 +948,20 @@ class RootSignalsCronJob implements CommandInterface {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'OPENSSL_EXTRA', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.', time());
 				}
 				break;
+			case 'rotate_redis':
+				// MAIN rotated its Redis password (cluster:rotate-credentials):
+				// config.enc follows, sealed from a signed command or read from
+				// MAIN's settings on a legacy node. A refusal throws, and
+				// cluster:root acks the command failed with its message.
+				echo RootCredentials::rotateRedis($rData, $db) . "\n";
+				break;
+			case 'rotate_db':
+				echo RootCredentials::rotateDb($rData) . "\n";
+				break;
+			case 'rotate_sign_key':
+				// Only from a node.root command, verified under the key pinned now.
+				echo RootPin::rotate($rData) . "\n";
+				break;
 			case 'restart_services':
 				echo 'Restarting services...' . "\n";
 				if (!LogSink::syslog('RESTART', 'XC_VM services restarted on request.')) {
@@ -1051,6 +1068,34 @@ class RootSignalsCronJob implements CommandInterface {
 				// agent acks this command first (its high-water, then the ack).
 				self::run(['/bin/sh', '-c', self::AGENT_RESTART]);
 				echo "xc_agent installed; it restarts in 10 s\n";
+				break;
+			case 'strip_db_credentials':
+			case 'install_config':
+				// Phase 9 (plan section 10, step 3): MAIN's credentials off this
+				// node's config.enc, or a config MAIN packed for it installed. Only
+				// a signed node.root reaches here (NodeActions::CLUSTER_ONLY); the
+				// extension verifies and refuses on MAIN itself. A refusal throws,
+				// so the command's ack says why.
+				$rLine = NodeCredentials::run($rData);
+				$rWhat = $rData['action'] === NodeCredentials::STRIP ? 'MAIN\'s DB credentials removed from config.enc.' : 'Node config installed from MAIN.';
+				if (!LogSink::syslog('CONFIG', $rWhat)) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CONFIG', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rWhat, time());
+				}
+				echo $rWhat . "\n" . $rLine . "\n";
+				break;
+			case 'pin_core':
+				// Phase 9: MAIN's panel key pinned in xcvm_core (core.pin), so the
+				// extension judges this node's lease itself. Step 1 reports the
+				// install_id MAIN packs the pin for; step 2 pins it, only to the key
+				// root's own pin trusts. A signed node.root only (CLUSTER_ONLY).
+				$rLine = NodeCorePin::run($rData, RootPin::read());
+				if (array_key_exists('blob', $rData)) {
+					$rWhat = 'MAIN\'s panel key pinned for the lease verdict.';
+					if (!LogSink::syslog('CONFIG', $rWhat)) {
+						$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CONFIG', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rWhat, time());
+					}
+				}
+				echo $rLine . "\n";
 				break;
 			case 'delete_module':
 				echo 'Deleting module removed on MAIN...' . "\n";

@@ -44,12 +44,13 @@ final class LogSink {
 	];
 
 	/**
-	 * `syslog`: the types a node's root side writes (RootSignalsCronJob, and
-	 * ARTEFACT for an artefact it refused, ArtefactStage), and the only ones
+	 * `syslog`: the types a node's root side writes (RootSignalsCronJob, with
+	 * CONFIG for its credential actions, and ARTEFACT for an artefact it
+	 * refused, ArtefactStage), and the only ones
 	 * MAIN takes from a node. Not `AUTH`: cron:root_mysql blocks the
 	 * addresses of those rows.
 	 */
-	public const SYSLOG_TYPES = ['FLUSH', 'REBOOT', 'OPENSSL_EXTRA', 'RESTART', 'STOP', 'RELOAD', 'CERTBOT', 'BINARIES', 'MODULE', 'UPDATE', 'PHP-FPM', 'ARTEFACT'];
+	public const SYSLOG_TYPES = ['FLUSH', 'REBOOT', 'OPENSSL_EXTRA', 'RESTART', 'STOP', 'RELOAD', 'CERTBOT', 'BINARIES', 'MODULE', 'UPDATE', 'PHP-FPM', 'ARTEFACT', 'CONFIG'];
 
 	/** @var (callable(string, list<array<string, mixed>>, ?object): bool)|null */
 	private static $rSink;

@@ -53,6 +53,20 @@ final class AgentClient {
 	}
 
 	/**
+	 * The agent's own standing with MAIN (`GET /v1/status`, XC_VM_Fanout
+	 * `status.go`): node state, mode and flows, the licence fence, MAIN's clock
+	 * against this machine's, the token and lease windows, the last answered
+	 * heartbeat and each event lane's backlog. For `server:diagnose`; nothing
+	 * reaches MAIN.
+	 *
+	 * @return array<string, mixed>|null The document; null when the agent did not answer, or is too old to have the endpoint.
+	 */
+	public static function status(float $rTimeout = 3.0): ?array {
+		$rOut = self::request('GET', '/v1/status', null, $rTimeout);
+		return $rOut !== null && $rOut[0] === 200 && is_array($rOut[1]) && isset($rOut[1]['v']) ? $rOut[1] : null;
+	}
+
+	/**
 	 * main() for an op MAIN applies once (recording_complete: a retry gets the
 	 * same VOD, even one that overlaps a try MAIN is still running after the
 	 * agent gave up on it), asked again while it gets no answer, after each

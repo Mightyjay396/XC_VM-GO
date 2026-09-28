@@ -30,7 +30,7 @@ final class ClusterSettingsEnumTest extends TestCase {
 	}
 
 	public function testWhatNormalizeStoresReadsBackTheSame(): void {
-		$rEnv = ['https_ok' => true, 'api_mode_allowed' => true];
+		$rEnv = ['https_ok' => true, 'api_mode_allowed' => true, 'credential_free_config' => true];
 		foreach (ClusterSettings::ENUMS as $rKey => [, $rAllowed]) {
 			foreach ([...$rAllowed, 'nope', ' ' . strtoupper($rAllowed[0]) . ' '] as $rValue) {
 				[$rOut] = ClusterSettings::normalize([$rKey => $rValue], [], [], $rEnv);

@@ -26,14 +26,18 @@ final class NodeActions {
 		'disable_ramdisk', 'enable_ramdisk', 'certbot_generate', 'update_binaries',
 		'install_module', 'delete_module', 'update', 'rollback',
 		'set_services', 'set_governor', 'set_sysctl', 'set_port', 'flush',
-		OpensslExtra::SIGNAL_ACTION, 'agent_binary',
+		OpensslExtra::SIGNAL_ACTION, 'agent_binary', 'rotate_redis', 'rotate_db', 'rotate_sign_key',
+		NodeCredentials::STRIP, NodeCredentials::INSTALL, NodeCorePin::ACTION,
 	];
 
 	/**
-	 * Actions that run only over the cluster API, with an artefact root
-	 * stages and checks: never queued as a `signals` row.
+	 * Actions that run only over the cluster API: never queued as a `signals`
+	 * row. `agent_binary` carries an artefact root stages and checks;
+	 * `rotate_db` a sealed password nothing else could carry;
+	 * `rotate_sign_key` is only worth the signature root checks it under;
+	 * the credential strip and install carry sealed configs.
 	 */
-	public const CLUSTER_ONLY = ['agent_binary'];
+	public const CLUSTER_ONLY = ['agent_binary', 'rotate_db', 'rotate_sign_key', NodeCredentials::STRIP, NodeCredentials::INSTALL, NodeCorePin::ACTION];
 
 	public static function reboot(int $rServerID, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => 'reboot'], $rDb);
@@ -68,6 +72,34 @@ final class NodeActions {
 	 */
 	public static function agentBinary(int $rServerID, string $rArch, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => 'agent_binary', 'arch' => $rArch], $rDb);
+	}
+
+	/**
+	 * Take MAIN's DB and Redis credentials off the node's config.enc (plan,
+	 * section 10, step 3: `node.root strip_db_credentials`). Signed root
+	 * command only; the caller checks the node is ready for it (mode 2).
+	 */
+	public static function stripDbCredentials(int $rServerID, ?object $rDb = null): bool {
+		return self::send($rServerID, ['action' => NodeCredentials::STRIP], $rDb);
+	}
+
+	/**
+	 * Install a config MAIN packed for this node (`config_pack`, credential-free
+	 * for mode 2, with credentials for a rollback): `node.root install_config`,
+	 * the XCVT blob in the payload as base64. Signed root command only.
+	 */
+	public static function installConfig(int $rServerID, string $rBlob, ?object $rDb = null): bool {
+		return self::send($rServerID, ['action' => NodeCredentials::INSTALL, 'blob' => base64_encode($rBlob)], $rDb);
+	}
+
+	/**
+	 * Pin MAIN's panel key in the node's xcvm_core (`node.root pin_core`,
+	 * NodeCorePin): without a blob the node reports its install_id, with one
+	 * (base64 of MAIN's `cluster_pack` for that install_id) it pins it.
+	 * Signed root command only.
+	 */
+	public static function pinCore(int $rServerID, ?string $rBlob = null, ?object $rDb = null): bool {
+		return self::send($rServerID, ['action' => NodeCorePin::ACTION] + ($rBlob === null ? [] : ['blob' => base64_encode($rBlob)]), $rDb);
 	}
 
 	public static function setRamdisk(int $rServerID, bool $rEnabled, ?object $rDb = null): bool {

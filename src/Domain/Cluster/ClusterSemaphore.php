@@ -110,6 +110,17 @@ final class ClusterSemaphore {
 
 	private const RELEASE_LUA = "return redis.call('ZREM', KEYS[1], ARGV[1])";
 
+	/** KEYS the permit sets => how many permits each holds now (unexpired, on the bus's clock). Read-only. */
+	private const HELD_LUA = <<<'LUA'
+		local t = redis.call('TIME')
+		local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+		local out = {}
+		for i = 1, #KEYS do
+			out[i] = redis.call('ZCOUNT', KEYS[i], now, '+inf')
+		end
+		return out
+		LUA;
+
 	/**
 	 * Run an op's handler holding one of its permits. When none is free, the
 	 * handler does not run and the node gets a panel-signed 503 RATE_LIMITED
@@ -192,6 +203,21 @@ final class ClusterSemaphore {
 			0 => false,
 			default => null,
 		};
+	}
+
+	/**
+	 * How many ingest permits each lane holds now, against what it may hold
+	 * (ingestPermits()), for the Cluster Nodes page: MAIN's ingest saturation.
+	 * Null without the bus, where nothing is limited.
+	 *
+	 * @return array{p0: int, bulk: int, permits: array{p0: int, bulk: int, total: int}}|null
+	 */
+	public static function ingestInUse(mixed $rConcurrency): ?array {
+		$rHeld = ClusterBus::script(self::HELD_LUA, ['sem:ingest:' . self::LANE_P0, 'sem:ingest:' . self::LANE_BULK], []);
+		if (!is_array($rHeld) || count($rHeld) !== 2) {
+			return null;
+		}
+		return ['p0' => (int) $rHeld[0], 'bulk' => (int) $rHeld[1], 'permits' => self::ingestPermits($rConcurrency)];
 	}
 
 	/**

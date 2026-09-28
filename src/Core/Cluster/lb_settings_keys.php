@@ -110,6 +110,7 @@ return [
 		'lb_fence_drain_min',
 		'lb_lease_fence',
 		'lb_new_node_mode',
+		'lb_partition_tolerance_h',
 		'lb_scan_roots',
 		'legacy_get',
 		'legacy_panel_api',

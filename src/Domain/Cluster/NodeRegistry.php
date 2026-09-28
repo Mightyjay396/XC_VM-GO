@@ -45,16 +45,32 @@ final class NodeRegistry {
 	}
 
 	/**
+	 * Every node MAIN counts as enrolled (`active` or `quarantined`), by
+	 * server id: what the fleet-wide gates and rotations go over.
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	public static function enrolled(): array {
+		self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` IN ('active', 'quarantined') ORDER BY `server_id`;");
+		$rOut = [];
+		foreach (self::db()->get_rows() as $rRow) {
+			$rOut[(int) $rRow['server_id']] = $rRow;
+		}
+		return $rOut;
+	}
+
+	/**
 	 * Create (or re-create, on re-enrolment) the row of a node that is about to
 	 * receive its first token. A re-enrolment increments gen, so every token of
 	 * the previous generation stops working, drops what the cluster bus still
 	 * holds of it (its heartbeats, and the row and epochs its requests were
 	 * authenticated with), and announces the new key to the other nodes
-	 * (ReplicaBuilder::nodesChanged).
+	 * (ReplicaBuilder::nodesChanged). $rFlows are the flow bits it starts
+	 * with (none, but for a node enrolled straight into mode 2).
 	 *
 	 * @return array{gen: int} The generation the first token must carry.
 	 */
-	public static function startEnrolment(int $rServerID, string $rUuid, string $rSignPub, string $rBoxPub, int $rMode, ?ClusterCrypto $rCrypto = null): array {
+	public static function startEnrolment(int $rServerID, string $rUuid, string $rSignPub, string $rBoxPub, int $rMode, ?ClusterCrypto $rCrypto = null, int $rFlows = 0): array {
 		$rNow = ClusterClock::now();
 		$rExisting = self::byServer($rServerID);
 		$rGen = $rExisting ? (int) $rExisting['gen'] + 1 : 1;
@@ -69,7 +85,7 @@ final class NodeRegistry {
 			$rUuid,
 			'enrolling',
 			$rMode,
-			0,
+			$rFlows,
 			$rGen,
 			$rSignPub,
 			$rBoxPub,

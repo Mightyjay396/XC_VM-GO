@@ -1035,11 +1035,27 @@ final class ClusterApiTest extends TestCase {
 		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
 	}
 
-	public function testQuarantineFreezesCommands(): void {
+	/**
+	 * A quarantine freezes what grants (plan, section 4): a quarantined node
+	 * is handed its restrictive commands only — its node.quarantine, kills,
+	 * stops, a fence — and the rest waits, queued, until an admin trusts it
+	 * again. Its replica stays refused.
+	 */
+	public function testQuarantineFreezesGrantingCommands(): void {
 		$rKeys = $this->active();
+		$rBus = \XcVm\Domain\Cluster\CommandBus::class;
+		$rGrant = $rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_pids']);
+		$rStop = $rBus::enqueue($this->rCrypto, self::SID, 'stream.stop', ['stream_id' => 7]);
 		NodeRegistry::update(self::SID, ['state' => 'quarantined']);
-		[$rRes, , $rReq] = $this->call('commands', ['after_seq' => 0], 1, $rKeys);
+		[$rRes, $rCtx] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys);
+		$rDocs = array_map(static fn(array $rC): array => json_decode($rC['doc'], true), $this->reply($rRes, $rCtx, $rKeys)['commands']);
+		$this->assertSame([$rStop], array_column($rDocs, 'cmd_id'), 'the stop only');
+		[$rRes, , $rReq] = $this->call('config', [], 1, $rKeys);
 		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
+
+		NodeRegistry::update(self::SID, ['state' => 'active']);
+		[$rRes, $rCtx] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys);
+		$this->assertContains($rGrant, array_map(static fn(array $rC): string => json_decode($rC['doc'], true)['cmd_id'], $this->reply($rRes, $rCtx, $rKeys)['commands']), 'trusted again, the granting command is handed out');
 	}
 
 	public function testCommandsExpireAndDedupe(): void {
@@ -2794,7 +2810,7 @@ final class ClusterApiTest extends TestCase {
 		$rKeys = $this->active();
 		$this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys); // held on the bus
 		$this->assertSame('quarantined', $this->served('hello', ['instance_id' => 'inst-CLONE'], 1, $rKeys)['state']);
-		[$rRes, , $rReq] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys);
+		[$rRes, , $rReq] = $this->call('config', [], 1, $rKeys);
 		$this->assertSame('quarantined', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state']);
 		$this->assertSame('quarantined', $this->served('heartbeat', [], 1, $rKeys)['state']);
 	}
@@ -2805,7 +2821,7 @@ final class ClusterApiTest extends TestCase {
 		$this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys); // held on the bus
 		[$rRes, $rReq] = $this->rekey($this->challenge(), random_bytes(32), ['instance_id' => 'inst-CLONE']);
 		$this->denial($rRes, 409, 'NOT_ACTIVE', $rReq);
-		[$rRes, , $rReq] = $this->call('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys);
+		[$rRes, , $rReq] = $this->call('config', [], 1, $rKeys);
 		$this->assertSame('quarantined', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state']);
 	}
 

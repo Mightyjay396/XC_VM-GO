@@ -142,6 +142,17 @@ class FakeClusterCrypto extends ClusterCrypto {
 	}
 
 	/**
+	 * `cluster_pack`: a stand-in pin blob naming its target and the panel key
+	 * (the real one is XCVT, which only that install opens). Licence-gated.
+	 */
+	public function pack(string $rTargetInstallID): string {
+		if (!$this->rLicensed) {
+			throw new ClusterRefusedException('LICENCE', 'cluster_pack');
+		}
+		return 'XCVT' . str_repeat("\x01", 66) . json_encode(['target' => $rTargetInstallID, 'panel_sign_pub' => bin2hex($this->info()['panel_sign_pub'])]);
+	}
+
+	/**
 	 * As the extension: `exp = min(token_exp + tolerance_h · 3600, iat + 26 h)`
 	 * with the tolerance clamped to 0-24 h, the document's keys in its order,
 	 * signed under tag `lea`, and nothing at all without a licence.

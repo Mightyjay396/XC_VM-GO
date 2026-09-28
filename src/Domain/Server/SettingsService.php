@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Server;
 
 use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\CredentialFreeConfig;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\StreamSecret;
@@ -85,6 +86,7 @@ class SettingsService {
 		$rEnv = [
 			'extension_ok' => ClusterCryptoFactory::available(),
 			'api_mode_allowed' => false, // Phase 9 (cutover) enables API-only new nodes
+			'credential_free_config' => CredentialFreeConfig::supported(),
 		];
 		if (($rKeys['cluster_transport'] ?? null) === 'https_required') {
 			$rEnv['https_ok'] = ClusterSettings::httpsSelfProbe($rMain)['ok'];

@@ -231,4 +231,69 @@ final class ClusterExtensionIntegrationTest extends TestCase {
 			$this->assertSame($rReason, $rE->reason(), $rWhy);
 		}
 	}
+
+	/**
+	 * Phase 9: the node's fence follows the extension's compiled verdict. The
+	 * agent's lease (its state file, Go's base64) is handed to
+	 * cluster_lease_store once, and license_valid() then holds on the node with
+	 * no activation key at all. MAIN and the node are one install here, so
+	 * MAIN packs its pin for itself.
+	 */
+	public function testTheNodesFenceFollowsTheCompiledLeaseVerdict(): void {
+		if (!method_exists('XC_VM', 'cluster_lease_state')) {
+			$this->markTestSkipped('xcvm_core without the lease verdict');
+		}
+		$rUuid = '0f8fad5b-d9cb-469f-a165-70867728950e';
+		$rCrypto = ClusterCryptoFactory::create();
+		$rCrypto->init();
+		$this->assertIsArray(\XC_VM::cluster_pin(\XC_VM::cluster_pack(\XC_VM::install_id())));
+		$rLease = LeaseService::issue($rCrypto, ['node_uuid' => $rUuid, 'server_id' => 7, 'gen' => 1], time() + 4500);
+		$rWork = $this->rDir . '/lease-it';
+		@mkdir($rWork);
+		file_put_contents($rWork . '/agent.json', (string) json_encode(['node_uuid' => $rUuid, 'lease' => [
+			'payload' => base64_encode($rLease['payload']), 'sig' => base64_encode($rLease['sig']), 'iat' => json_decode($rLease['payload'], true)['iat'], 'exp' => $rLease['exp'],
+		]]));
+		file_put_contents($rWork . '/flows.json', (string) json_encode(['mode' => 1, 'flows' => \XcVm\Core\Cluster\NodeFlows::CONFIG, 'state' => 'active']));
+		\XcVm\Core\Cluster\NodeFlows::usePath($rWork . '/flows.json');
+		\XcVm\Core\Cluster\NodeLease::usePath($rWork . '/lease_state.json');
+		\XcVm\Core\Cluster\NodeLease::useExtension(null, $rWork . '/agent.json');
+		SettingsManager::set(['lb_lease_fence' => 1, 'lb_fence_drain_min' => 10]);
+		try {
+			$rVerdict = \XcVm\Core\Cluster\NodeLease::verdict();
+			$this->assertSame([\XcVm\Core\Cluster\NodeLease::SERVING, 'extension', $rLease['exp']], [$rVerdict['state'], $rVerdict['source'], $rVerdict['exp']]);
+			$this->assertSame('live', \XC_VM::cluster_lease_state()['state']);
+			unlink($this->rDir . '/activation_key');
+			$this->assertTrue(\XC_VM::license_valid(), 'the lease licenses the node');
+		} finally {
+			\XcVm\Core\Cluster\NodeFlows::usePath(null);
+			\XcVm\Core\Cluster\NodeLease::usePath(null);
+			\XcVm\Core\Cluster\NodeLease::useExtension(null);
+			SettingsManager::set([]);
+			foreach (['core.pin', 'lease', 'timeanchor'] as $rFile) {
+				@unlink($this->rDir . '/cluster/' . $rFile);
+			}
+			exec('rm -rf ' . escapeshellarg($rWork));
+		}
+	}
+
+	/** Phase 9: the node's credential actions against the real extension. */
+	public function testTheNodesCredentialActionsRunOnTheRealExtension(): void {
+		if (!method_exists('XC_VM', 'strip_db_credentials')) {
+			$this->markTestSkipped('xcvm_core without credential-free nodes');
+		}
+		$this->assertTrue(\XC_VM::config_init(['db' => ['host' => '10.0.0.1', 'port' => 3306, 'name' => 'xc_vm', 'user' => 'u', 'pass' => 'p'], 'redis' => ['host' => '10.0.0.1', 'port' => 6379, 'auth' => 'r'], 'server' => ['server_id' => 7, 'is_lb' => 1]]));
+		try {
+			$rOut = \XcVm\Core\Cluster\NodeCredentials::outcome(\XcVm\Core\Cluster\NodeCredentials::run(['action' => \XcVm\Core\Cluster\NodeCredentials::STRIP]));
+			$this->assertSame(['server_id' => 7, 'is_lb' => 1, 'db_credentials' => false, 'redis_auth' => false, 'changed' => true], $rOut);
+			$this->assertSame(['server_id' => 7, 'is_lb' => 1], \XC_VM::config_server());
+			try {
+				\XcVm\Core\Cluster\NodeCredentials::run(['action' => \XcVm\Core\Cluster\NodeCredentials::INSTALL, 'blob' => base64_encode('XCVT-not-for-this-node')]);
+				$this->fail('a blob that does not open was installed');
+			} catch (\RuntimeException $rE) {
+				$this->assertStringContainsString('refused by xcvm_core: CRYPTO', $rE->getMessage());
+			}
+		} finally {
+			@unlink($this->rDir . '/config.enc');
+		}
+	}
 }

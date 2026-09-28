@@ -53,7 +53,7 @@ To see all available commands:
 | `migrate` | `MigrateCommand` | Transfer data from `xc_vm_migrate` database | xc_vm |
 | `db:migrate` | `DbMigrateCommand` | Apply pending database migrations from the `migrations/` directory | xc_vm |
 | `server:install` | `ServerInstallCommand` | Install/configure server (Proxy/LB) via SSH | root |
-| `server:diagnose` | `ServerDiagnoseCommand` | Diagnose why a proxy/LB node is silent to the main (heartbeat, reachability, iptables, service) | root |
+| `server:diagnose` | `ServerDiagnoseCommand` | Diagnose why a proxy/LB node is silent to the main (heartbeat, reachability, iptables, service, cluster state) | root |
 | `server:sync-openssl-extra` | `ServerSyncOpensslExtraCommand` | Send the main's `OPENSSL_EXTRA` to load balancers that report another one (MAIN only) | root/xc_vm |
 
 > **`server:install` credentials and host key.** The panel does not put the SSH

@@ -251,6 +251,20 @@ After publishing, the workflow will automatically:
 > on the **same version** — LBs read MAIN's database and a schema/behaviour skew can break
 > streaming. Don't leave LBs a release behind.
 
+> **Undo the cluster lockdown first when the update needs it.** Once `cluster:db-allowlist apply`
+> has closed MAIN's MariaDB and Redis to the fleet, a node can no longer reach them. If this
+> release's update path needs a node to — a node updated through the legacy `update` signal, a
+> node moved back below mode 2 for the update — run `console.php cluster:db-allowlist undo` on
+> MAIN **before** the update, and `cluster:db-allowlist apply` again once every node is back in
+> mode 2. See [Cluster API](../development/cluster-api.md#operating-it).
+
+> **Never downgrade MAIN below what its mode-2 nodes need.** While any node is in mode 2 (the
+> *Mode* column of **Servers → Cluster Nodes**), MAIN must stay on a release that serves every op
+> and replica section those nodes use — they no longer read MAIN's database, so nothing else
+> carries them. Do not roll MAIN back below the release a node was promoted to mode 2 on while it
+> is still there: move every such node down to mode 1 first (`mode_down`), and roll back only
+> once none is left in mode 2.
+
 - [ ] Verify all 4 assets are attached to the release
 - [ ] Run `md5sum -c hashes.md5` on downloaded files
 - [ ] Check Telegram notification was sent
@@ -269,6 +283,9 @@ After publishing, the workflow will automatically:
 - **A bad release already reached servers** — operators can downgrade per-server from the panel
   (**Servers → Rollback Version**, see [Update Mechanism → Rollback](../administration/update-system.md#rollback-downgrade)); on MAIN a DB backup is taken automatically first. Migrations are
   forward-only, so prefer a roll-_forward_ hotfix when the fix is small.
+  With the cluster API in use, the two cluster rules of [Post-Release](#8-post-release) apply
+  to a rollback too: never below what a mode-2 node needs, and the lockdown undone first when
+  the rollback needs nodes to reach MAIN's database.
 
 ---
 

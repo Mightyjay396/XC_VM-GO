@@ -6,7 +6,7 @@ The panel marks a proxy/LB node **offline** purely from a stale heartbeat (`enab
 /home/xc_vm/console.php server:diagnose [server_id]
 ```
 
-The command is **read-only**: it only runs ping/curl/`fsockopen` probes, `SELECT` queries, and `sudo -n iptables -nL`. It never restarts or reconfigures anything.
+The command is **read-only**: it only runs ping/curl/`fsockopen` probes, `SELECT` queries, `sudo -n iptables -nL`, and (on a cluster node) its agent's `GET /v1/status`. It never restarts or reconfigures anything.
 
 Implemented by `src/Cli/Commands/ServerDiagnoseCommand.php`. The command ships in **both** MAIN and LB builds — the local mode is the whole point of having it on the node.
 
@@ -41,6 +41,20 @@ The probe combinations map to causes:
 - **Port open but `/api` silent** — nginx is up, PHP is not: check php-fpm on the node.
 - **`/api` answers but the heartbeat is stale** — the node's watchdog daemon (the heartbeat writer) is not running, or it cannot write to the panel DB. Run the local mode on the node.
 
+For a node enrolled in the [cluster API](../development/cluster-api.md), a **Cluster API** section follows, from its `cluster_nodes` row:
+
+| Check | What it tells you |
+| --- | --- |
+| Cluster node | State and health (`ok` / `suspect` / `offline`, or `enrolling` / `quarantined` / `revoked`), mode and flows |
+| Agent heard | When MAIN last heard the node's agent, against `cluster_offline_after_sec` |
+| Token | The newest epoch and its expiry |
+| Fence window | How long the node serves without MAIN: token expiry + `lb_partition_tolerance_h`, then `lb_fence_drain_min`, and whether `lb_lease_fence` is on |
+| Clock offset | The offset the node's heartbeats carry (MAIN refuses requests past ±90 s) |
+| Command queue | Commands for the node not yet acked, and the oldest one's age (over 120 s: the node is not polling) |
+| Event cursors | The last P0 and P1 event numbers MAIN applied |
+
+With the node's TELEMETRY flow on, its agent is what keeps it online: the legacy heartbeat and `time_offset` are not judged.
+
 ### Mode B — local self-diagnosis ON the node
 
 ```bash
@@ -60,6 +74,9 @@ Run this **on the silent LB/proxy node itself** — the causes usually live ther
    - is a previous `cron:servers` instance **hung on its cron lock** — a hung instance blocks every subsequent run for up to 30 minutes (`acquireCronLock` stale timeout), which is exactly how one DB blip keeps a node offline for half an hour. The command prints the holding PID and the kill command.
 7. **Clock skew** — `time_offset` vs the panel.
 8. **OPENSSL_EXTRA** — whether this node holds the main's value, as in Mode A.
+9. **Cluster API** (a node with an agent) — the agent's own report, `GET /v1/status` on its socket (`config/cluster/agent.sock`): whether the agent answers; the state, mode and flows of MAIN's latest reply; whether MAIN refuses the session for want of a licence; the last heartbeat MAIN answered; this machine's clock against MAIN's; the token and lease windows (and why the last lease was refused, if it was); each event lane's backlog (files, bytes, oldest, the batch in flight, MAIN's cursor); and the lease verdict the node's PHP acts on (`serving`, `draining` or `fenced`, and why).
+
+With the TELEMETRY flow on, steps 1 and 7 are left to the agent's checks. In mode 2 the node reads no database of MAIN's: it takes the servers from its replica, and when it cannot read them at all the agent's report still runs.
 
 > **Note:** the iptables check requires passwordless sudo (`sudo -n`). Without it the check reports `cannot check (need sudo iptables)` instead of failing — run the command as `root` for a full picture.
 

@@ -7,6 +7,7 @@ use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterMeta;
+use XcVm\Domain\Cluster\ClusterOverview;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -45,14 +46,55 @@ class ClusterNodesController extends BaseAdminController {
 			}
 		}
 
+		$rNodes = ClusterAdmin::nodes($rServers, self::offlineAfter($rSettings));
+		$rNow = time();
 		$this->render('cluster_nodes', [
 			'clusterEnabled' => $rEnabled && $rAvailable,
-			'clusterNodes' => ClusterAdmin::nodes($rServers, self::offlineAfter($rSettings)),
+			'clusterNodes' => $rNodes,
+			'clusterFences' => ClusterOverview::fenceWindows($rNodes, $rSettings),
+			'clusterBanners' => ClusterOverview::banners(self::licensed($rEnabled && $rAvailable), $rServers[(int) SERVER_ID] ?? [], $rSettings, $rNodes, $rNow),
+			'clusterMetrics' => $rEnabled ? self::metrics($rSettings, $rNow) : null,
+			'clusterNames' => array_map(static fn(array $rServer): string => (string) ($rServer['server_name'] ?? ''), $rServers),
 			'clusterPending' => ClusterAdmin::pending($rServers),
 			'clusterLbs' => ClusterAdmin::loadBalancers($rServers),
 			'clusterFlash' => $rFlash,
 			'clusterPanelFp' => $rEnabled && $rAvailable ? ClusterMeta::get('panel_fp') ?? '' : '',
 		]);
+	}
+
+	/**
+	 * Does the extension still sign granting records (tokens, leases)? What a
+	 * node's challenge reports as `licence_ok`. True when the API is off: no
+	 * banner then.
+	 */
+	private static function licensed(bool $rOn): bool {
+		if (!$rOn) {
+			return true;
+		}
+		try {
+			return (bool) (ClusterCryptoFactory::create()->info()['licensed'] ?? false);
+		} catch (\Throwable) {
+			return true; // cannot tell: say nothing rather than a false alarm
+		}
+	}
+
+	/**
+	 * The page's figures (ClusterOverview); null when the cluster tables are
+	 * not there yet.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @return array{commands: array<string, mixed>, saturation: array<string, mixed>, audit: list<array<string, mixed>>}|null
+	 */
+	private static function metrics(array $rSettings, int $rNow): ?array {
+		try {
+			return [
+				'commands' => ClusterOverview::commandMetrics($rNow),
+				'saturation' => ClusterOverview::saturation($rSettings, $rNow * 1000),
+				'audit' => ClusterOverview::audit(),
+			];
+		} catch (\Throwable) {
+			return null;
+		}
 	}
 
 	/**

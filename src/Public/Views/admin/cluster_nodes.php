@@ -29,7 +29,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
 
 <?php if (!empty($clusterFlash)): ?>
     <div class="alert alert-<?= htmlspecialchars($clusterFlash['type'], ENT_QUOTES); ?> alert-dismissible" role="alert">
-        <?= htmlspecialchars($language::get($clusterFlash['message']), ENT_QUOTES); ?>
+        <?= htmlspecialchars($language::get($clusterFlash['message'], $clusterFlash['vars'] ?? []), ENT_QUOTES); ?>
         <?php if (!empty($clusterFlash['code'])): ?>
             <div class="mt-3">
                 <code class="d-block fs-5 text-break user-select-all js-cluster-code"><?= htmlspecialchars($clusterFlash['code'], ENT_QUOTES); ?></code>
@@ -47,6 +47,10 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
 
 <?php foreach (ClusterHealth::read()['reasons'] as $rReason): ?>
     <div class="alert alert-danger" role="alert"><i class="icon-base ti tabler-alert-triangle me-1"></i><?= $language::get($rReason === ClusterHealth::GUARD_CTL_QUEUE ? 'cluster_ctl_queue' : 'cluster_fleet_silence'); ?></div>
+<?php endforeach; ?>
+
+<?php foreach ($clusterBanners ?? [] as $rBanner): ?>
+    <div class="alert alert-<?= htmlspecialchars($rBanner['type'], ENT_QUOTES); ?>" role="alert"><i class="icon-base ti tabler-<?= $rBanner['type'] === 'danger' ? 'alert-octagon' : 'alert-triangle'; ?> me-1"></i><?= htmlspecialchars($language::get($rBanner['key'], $rBanner['vars']), ENT_QUOTES); ?></div>
 <?php endforeach; ?>
 
 <?php if (!empty($clusterPending)): ?>
@@ -76,7 +80,14 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
 
 <div class="card mb-4">
     <div class="card-header">
-        <h5 class="card-title mb-0"><i class="icon-base ti tabler-topology-star-3 me-1"></i><?= $language::get('cluster_nodes'); ?></h5>
+        <div class="d-flex align-items-center">
+            <h5 class="card-title mb-0"><i class="icon-base ti tabler-topology-star-3 me-1"></i><?= $language::get('cluster_nodes'); ?></h5>
+            <?php if (!empty($clusterEnabled) && !empty($clusterNodes)): ?>
+                <form method="POST" class="ms-auto">
+                    <button type="submit" name="cluster_action" value="rotate_all" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_rotate_all_help'), ENT_QUOTES); ?>"><i class="icon-base ti tabler-refresh me-1"></i><?= $language::get('cluster_rotate_all'); ?></button>
+                </form>
+            <?php endif; ?>
+        </div>
     </div>
     <div class="card-datatable table-responsive">
         <table class="table" style="width:100%">
@@ -96,6 +107,8 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('cluster_root_pin'); ?></th>
                     <th><?= $language::get('cluster_epoch'); ?></th>
                     <th><?= $language::get('cluster_token_expires'); ?></th>
+                    <th title="<?= htmlspecialchars($language::get('cluster_fence_window_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_fence_window'); ?></th>
+                    <th title="<?= htmlspecialchars($language::get('cluster_queue_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_queue'); ?></th>
                     <th><?= $language::get('cluster_last_seen'); ?></th>
                     <th><?= $language::get('cluster_agent'); ?></th>
                     <th title="<?= $language::get('cluster_settings_misses_help'); ?>"><?= $language::get('cluster_settings_misses'); ?></th>
@@ -105,10 +118,10 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
             </thead>
             <tbody>
                 <?php if (empty($clusterNodes)): ?>
-                    <tr><td colspan="17" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
+                    <tr><td colspan="20" class="text-center text-body-secondary"><?= $language::get('cluster_no_nodes'); ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($clusterNodes as $rNode): ?>
-                    <tr>
+                    <tr id="node-<?= (int) $rNode['server_id']; ?>">
                         <td>
                             <?= htmlspecialchars($rNode['server_name'], ENT_QUOTES); ?>
                             <div class="small text-body-secondary font-monospace"><?= htmlspecialchars((string) $rNode['node_uuid'], ENT_QUOTES); ?></div>
@@ -157,9 +170,33 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                             <?php else: ?>
                                 <span class="text-body-secondary" title="<?= $language::get('cluster_root_missing_help'); ?>">—</span>
                             <?php endif; ?>
+                            <?php if (!empty($rNode['core_pinned'])): ?>
+                                <span class="badge bg-label-success" title="<?= htmlspecialchars($language::get('cluster_core_pinned_help'), ENT_QUOTES); ?>">core</span>
+                            <?php elseif (!empty($rNode['root_ready']) && $rNode['state'] === 'active'): ?>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="pin_core" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_pin_core_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_pin_core'); ?></button>
+                                </form>
+                            <?php endif; ?>
                         </td>
                         <td><?= (int) $rNode['epoch']; ?> <span class="small text-body-secondary">(gen <?= (int) $rNode['gen']; ?>)</span></td>
                         <td><?= $rWhen($rNode['token_exp'] === null ? null : (int) $rNode['token_exp']); ?></td>
+                        <td>
+                            <?php $rFence = $clusterFences[(int) $rNode['server_id']] ?? null; ?>
+                            <?php if ($rFence === null || $rFence['lease_until'] === null || $rNode['state'] === 'revoked'): ?>
+                                <span class="text-body-secondary">—</span>
+                            <?php else: ?>
+                                <?= $rWhen($rFence['lease_until']); ?>
+                                <div class="small text-body-secondary">
+                                    <?= htmlspecialchars($language::get('cluster_fence_drain', ['{TIME}' => $rWhen((int) $rFence['drain_until'])]), ENT_QUOTES); ?>
+                                    · <span class="badge bg-label-<?= $rFence['fence_on'] ? 'warning' : 'secondary'; ?>"><?= $language::get($rFence['fence_on'] ? 'cluster_fence_on' : 'cluster_fence_off'); ?></span>
+                                </div>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php $rDepth = (int) ($clusterMetrics['commands']['per_node'][(int) $rNode['server_id']] ?? 0); ?>
+                            <span class="badge bg-label-<?= $rDepth > 0 ? 'warning' : 'secondary'; ?>"><?= $rDepth; ?></span>
+                        </td>
                         <td><?= $rWhen($rNode['last_seen_at'] === null ? null : intdiv((int) $rNode['last_seen_at'], 1000)); ?></td>
                         <td>
                             <?= htmlspecialchars((string) ($rNode['agent_version'] ?? '—'), ENT_QUOTES); ?>
@@ -208,6 +245,34 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                                     <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
                                     <button type="submit" name="cluster_action" value="rotate_now" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_rotate_now_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_rotate_now'); ?></button>
                                 </form>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="resync" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_resync_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_resync'); ?></button>
+                                </form>
+                                <form method="POST" class="d-inline js-cluster-confirm" data-confirm="<?= htmlspecialchars($language::get('cluster_fence_confirm'), ENT_QUOTES); ?>">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="fence" class="btn btn-sm btn-label-warning" title="<?= htmlspecialchars($language::get('cluster_fence_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_fence'); ?></button>
+                                    <button type="submit" name="cluster_action" value="unfence" class="btn btn-sm btn-label-secondary" formnovalidate title="<?= htmlspecialchars($language::get('cluster_unfence_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_unfence'); ?></button>
+                                </form>
+                                <?php if ($rNode['state'] === 'quarantined'): ?>
+                                    <form method="POST" class="d-inline">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="trust" class="btn btn-sm btn-label-success" title="<?= htmlspecialchars($language::get('cluster_trust_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_trust'); ?></button>
+                                    </form>
+                                <?php else: ?>
+                                    <form method="POST" class="d-inline js-cluster-confirm" data-confirm="<?= htmlspecialchars($language::get('cluster_quarantine_confirm'), ENT_QUOTES); ?>">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="quarantine" class="btn btn-sm btn-label-warning" title="<?= htmlspecialchars($language::get('cluster_quarantine_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_quarantine'); ?></button>
+                                    </form>
+                                <?php endif; ?>
+                                <?php if ($rNode['db_revoked_at'] !== null): ?>
+                                    <span class="badge bg-label-success" title="<?= htmlspecialchars($language::get('cluster_db_revoked_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_db_revoked'); ?> <?= $rWhen((int) $rNode['db_revoked_at']); ?></span>
+                                <?php elseif ((int) $rNode['mode'] === 2 && $rNode['state'] === 'active'): ?>
+                                    <form method="POST" class="d-inline js-cluster-strip">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="strip_credentials" class="btn btn-sm btn-label-warning" title="<?= htmlspecialchars($language::get('cluster_strip_credentials_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_strip_credentials'); ?></button>
+                                    </form>
+                                <?php endif; ?>
                                 <form method="POST" class="d-inline js-cluster-revoke">
                                     <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
                                     <button type="submit" name="cluster_action" value="revoke" class="btn btn-sm btn-label-danger"><?= $language::get('cluster_revoke'); ?></button>
@@ -220,6 +285,79 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
         </table>
     </div>
 </div>
+
+<?php if (!empty($clusterMetrics)): ?>
+    <?php
+    $rCmd = $clusterMetrics['commands'];
+    $rSat = $clusterMetrics['saturation'];
+    $rSec = static fn(?int $rValue): string => $rValue === null ? '—' : $rValue . ' s';
+    ?>
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0"><i class="icon-base ti tabler-chart-dots me-1"></i><?= $language::get('cluster_metrics'); ?></h5>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <div class="small text-body-secondary"><?= $language::get('cluster_metric_queue'); ?></div>
+                    <div class="fs-5"><?= (int) $rCmd['depth']; ?></div>
+                    <div class="small text-body-secondary"><?= htmlspecialchars($language::get('cluster_metric_oldest', ['{AGE}' => $rCmd['oldest'] === null ? '—' : (time() - (int) $rCmd['oldest']) . ' s']), ENT_QUOTES); ?></div>
+                </div>
+                <div class="col-md-3" title="<?= htmlspecialchars($language::get('cluster_metric_latency_help'), ENT_QUOTES); ?>">
+                    <div class="small text-body-secondary"><?= $language::get('cluster_metric_delivery'); ?></div>
+                    <div class="fs-5">p50 <?= $rSec($rCmd['deliver_p50']); ?> · p99 <?= $rSec($rCmd['deliver_p99']); ?></div>
+                    <div class="small text-body-secondary"><?= $language::get('cluster_metric_ack'); ?>: p50 <?= $rSec($rCmd['ack_p50']); ?> · p99 <?= $rSec($rCmd['ack_p99']); ?> (<?= (int) $rCmd['samples']; ?>)</div>
+                </div>
+                <div class="col-md-3" title="<?= htmlspecialchars($language::get('cluster_metric_ingest_help'), ENT_QUOTES); ?>">
+                    <div class="small text-body-secondary"><?= $language::get('cluster_metric_ingest'); ?></div>
+                    <?php if ($rSat['ingest'] === null): ?>
+                        <div class="fs-5 text-body-secondary">—</div>
+                        <div class="small text-body-secondary"><?= $language::get('cluster_metric_no_bus'); ?></div>
+                    <?php else: ?>
+                        <div class="fs-5">P0 <?= (int) $rSat['ingest']['p0']; ?>/<?= (int) $rSat['ingest']['permits']['p0']; ?> · bulk <?= (int) $rSat['ingest']['bulk']; ?>/<?= (int) $rSat['ingest']['permits']['bulk']; ?></div>
+                    <?php endif; ?>
+                </div>
+                <div class="col-md-3" title="<?= htmlspecialchars($language::get('cluster_metric_ctl_help'), ENT_QUOTES); ?>">
+                    <div class="small text-body-secondary"><?= $language::get('cluster_metric_ctl'); ?></div>
+                    <div class="fs-5 <?= $rSat['ctl_queue_ms'] === null ? '' : 'text-warning'; ?>"><?= $rSat['ctl_queue_ms'] === null ? htmlspecialchars($language::get('cluster_metric_ctl_none'), ENT_QUOTES) : number_format($rSat['ctl_queue_ms'] / 1000, 1) . ' s'; ?></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0"><i class="icon-base ti tabler-list-details me-1"></i><?= $language::get('cluster_audit_recent'); ?></h5>
+        </div>
+        <div class="card-datatable table-responsive">
+            <table class="table table-sm" style="width:100%">
+                <thead>
+                    <tr>
+                        <th><?= $language::get('date'); ?></th>
+                        <th><?= $language::get('server_name'); ?></th>
+                        <th><?= $language::get('cluster_audit_event'); ?></th>
+                        <th><?= $language::get('cluster_audit_actor'); ?></th>
+                        <th><?= $language::get('cluster_audit_detail'); ?></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (empty($clusterMetrics['audit'])): ?>
+                        <tr><td colspan="5" class="text-center text-body-secondary"><?= $language::get('cluster_audit_none'); ?></td></tr>
+                    <?php endif; ?>
+                    <?php foreach ($clusterMetrics['audit'] as $rRow): ?>
+                        <tr>
+                            <td class="text-nowrap"><?= $rWhen($rRow['time']); ?></td>
+                            <td><?= $rRow['server_id'] === null ? '—' : htmlspecialchars((string) ($clusterNames[$rRow['server_id']] ?? ('#' . $rRow['server_id'])), ENT_QUOTES); ?></td>
+                            <td><code><?= htmlspecialchars($rRow['event'], ENT_QUOTES); ?></code></td>
+                            <td><?= htmlspecialchars((string) ($rRow['actor'] ?? '—'), ENT_QUOTES); ?></td>
+                            <td class="small font-monospace text-break"><?= htmlspecialchars(mb_strimwidth($rRow['detail'], 0, 200, '…'), ENT_QUOTES); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    </div>
+<?php endif; ?>
 
 <div class="card mb-4">
     <div class="card-header">
@@ -242,6 +380,24 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
 </div>
 
 <script>
+document.querySelectorAll('.js-cluster-confirm').forEach(function (f) {
+    f.addEventListener('submit', function (e) {
+        var rButton = e.submitter;
+        if (rButton && rButton.value === 'unfence') {
+            return;
+        }
+        if (!confirm(f.getAttribute('data-confirm'))) {
+            e.preventDefault();
+        }
+    });
+});
+document.querySelectorAll('.js-cluster-strip').forEach(function (f) {
+    f.addEventListener('submit', function (e) {
+        if (!confirm(<?= json_encode($language::get('cluster_strip_credentials_confirm')); ?>)) {
+            e.preventDefault();
+        }
+    });
+});
 document.querySelectorAll('.js-cluster-revoke').forEach(function (f) {
     f.addEventListener('submit', function (e) {
         if (!confirm(<?= json_encode($language::get('cluster_revoke_confirm')); ?>)) {

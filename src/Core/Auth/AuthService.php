@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Auth;
 
+use XcVm\Core\Config\StreamSecret;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\Encryption;
@@ -229,16 +230,24 @@ class AuthService {
 			}
 		}
 
-		foreach ($rKeys as $rKey) {
-			$rSecret = Encryption::decrypt($rKey['key'], $rSettings['live_streaming_pass'], OPENSSL_EXTRA);
-			$rResult = hash_hmac('sha256', $rStreamID . '##' . $rExtension . '##' . $rExpiry . '##' . $rMACIP . '##' . $rIdentifier . '##' . $rMaxConnections, $rSecret);
+		// The current secret first; then, while its window is open, the one it
+		// replaced: cluster:rotate-stream-secret re-encrypts the rows after the
+		// switch, and a row it has not reached yet is still the old value's.
+		$rPrevious = StreamSecret::previous();
+		foreach (array_filter([$rSettings['live_streaming_pass'], $rPrevious], static fn($rPass): bool => is_string($rPass) && $rPass !== '') as $rPass) {
+			foreach ($rKeys as $rKey) {
+				$rSecret = Encryption::decrypt($rKey['key'], $rPass, OPENSSL_EXTRA);
+				if (!is_string($rSecret)) {
+					continue;
+				}
+				$rResult = hash_hmac('sha256', $rStreamID . '##' . $rExtension . '##' . $rExpiry . '##' . $rMACIP . '##' . $rIdentifier . '##' . $rMaxConnections, $rSecret);
 
-			// Constant-time and strict. The old md5($rResult) == md5($rHMAC) used
-			// loose ==, which reads two digests of the form 0e<digits> as the
-			// number 0 and so as equal: an hmac like 240610708 passed as the key.
-			if (hash_equals($rResult, $rHMAC)) {
-				$rKeyID = $rKey['id'];
-				break;
+				// Constant-time and strict. The old md5($rResult) == md5($rHMAC) used
+				// loose ==, which reads two digests of the form 0e<digits> as the
+				// number 0 and so as equal: an hmac like 240610708 passed as the key.
+				if (hash_equals($rResult, $rHMAC)) {
+					return $rKey['id'];
+				}
 			}
 		}
 

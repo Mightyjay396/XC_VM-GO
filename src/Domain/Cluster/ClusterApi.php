@@ -76,7 +76,7 @@ final class ClusterApi {
 		'enrol_code' => ['POST', true, null],
 		'enrol_code_status' => ['POST', false, null],
 		'hello' => ['POST', false, ['active', 'quarantined']],
-		'commands' => ['POST', false, ['active']],
+		'commands' => ['POST', false, ['active', 'quarantined']],
 		'ack' => ['POST', false, ['active', 'quarantined']],
 		'events' => ['POST', false, ['active']],
 		'recording_complete' => ['POST', false, ['active']],
@@ -739,7 +739,9 @@ final class ClusterApi {
 	/**
 	 * `commands`: the node's queued commands after its high-water, panel-signed
 	 * (`cmd`) each. Held up to `wait_ms` while there are none, so a command
-	 * reaches the node within a poll step of being queued.
+	 * reaches the node within a poll step of being queued. A quarantined node
+	 * gets the restrictive ones only (its node.quarantine, kills, stops, a
+	 * fence): what grants waits until an admin trusts it again.
 	 */
 	private static function commands(array $rNode, SessionKeys $rKeys, string $rCtx, array $rP): array {
 		$rAfter = max(0, (int) ($rP['after_seq'] ?? 0));
@@ -749,7 +751,7 @@ final class ClusterApi {
 			self::recordHighWater((int) $rNode['server_id'], (int) $rNode['cmd_seq'], $rAfter);
 		}
 		while (true) {
-			$rCommands = CommandBus::pending((int) $rNode['server_id'], $rAfter);
+			$rCommands = CommandBus::pending((int) $rNode['server_id'], $rAfter, 50, $rNode['state'] === 'quarantined');
 			$rLeft = $rDeadline - microtime(true);
 			if ($rCommands !== [] || $rLeft <= 0) {
 				break;
@@ -798,7 +800,10 @@ final class ClusterApi {
 	/**
 	 * `ack`: a command's outcome, accepted only for this node's own commands.
 	 * The first ack of a command type that may carry an artefact grant is
-	 * audited when it failed (ArtefactGrants::acked); no other ack reads more.
+	 * audited when it failed (ArtefactGrants::acked), and a `node.root` that
+	 * took MAIN's credentials off the node revokes its grant
+	 * (DbCredentials::acked), and one of `pin_core` moves the node's pin on
+	 * (CorePins::acked); no other ack reads more.
 	 */
 	private static function ack(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}\z/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
@@ -812,6 +817,20 @@ final class ClusterApi {
 				ArtefactGrants::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
 			} catch (\Throwable) {
 				// The ack stands; an off-air grant not recorded is offered again later.
+			}
+		}
+		if ($rFirst && $rType === 'node.root') {
+			try {
+				// A node that dropped MAIN's credentials: revoke its grant (Phase 9).
+				DbCredentials::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
+			} catch (\Throwable) {
+				// The ack stands; the revoke is audited when it fails, and can be run again.
+			}
+			try {
+				// The node's install_id or its new core.pin (Phase 9, CorePins).
+				CorePins::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
+			} catch (\Throwable) {
+				// The ack stands; cron:cluster offers the pin again.
 			}
 		}
 		return self::ok($rKeys, $rCtx, ['ok' => true]);
