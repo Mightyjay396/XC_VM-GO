@@ -39,8 +39,9 @@ final class ClusterAdmin {
 	 * Going down is always allowed: it is the way back when a node misbehaves.
 	 * Going up to 1 needs the config replica, because that is what a node boots
 	 * from. Going up to 2 stops the node reaching MAIN's database at all, so it
-	 * needs every flow but the data plane, and the node's own connect audit must
-	 * show it has not opened MySQL or Redis for CUTOVER_CLEAN_DAYS.
+	 * needs every flow but the data plane, root's pin in place (`root_ready`:
+	 * root actions then reach it only as node.root commands), and the node's own
+	 * connect audit must show it has not opened MySQL or Redis for CUTOVER_CLEAN_DAYS.
 	 *
 	 * @param array<string, mixed>  $rNode     cluster_nodes row.
 	 * @param array<string, mixed>|null $rConnects NodeAudit::connectsOf() of its last report.
@@ -62,6 +63,10 @@ final class ClusterAdmin {
 		}
 		if (((int) $rNode['flows'] & self::MODE2_FLOWS) !== self::MODE2_FLOWS) {
 			return [false, 'cluster_mode_needs_flows'];
+		}
+		if (empty($rNode['root_ready'])) {
+			// ADR 0004, Mode 2: without root's pin no root action reaches a node that no longer polls MAIN's signals table.
+			return [false, 'cluster_mode_needs_root'];
 		}
 		if ($rConnects === null) {
 			return [false, 'cluster_mode_no_audit'];
