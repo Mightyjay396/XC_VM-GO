@@ -14,7 +14,7 @@ use XcVm\Core\Module\Contract\ServiceProviderInterface;
  * implementing ModuleInterface continue to work unchanged.
  *
  * New modules can implement only the sub-interfaces they actually need:
- *   - ServiceProviderInterface   — boot(), getEventSubscribers(), getStreamMiddleware()
+ *   - ServiceProviderInterface   — boot(), getEventSubscribers()
  *   - RouteProviderInterface     — registerRoutes()
  *   - CommandProviderInterface   — registerCommands()
  *   - NavbarProviderInterface    — registerNavbar()
@@ -24,7 +24,7 @@ use XcVm\Core\Module\Contract\ServiceProviderInterface;
  *
  * Lifecycle (web context):
  *   Discovery → Load → boot() → registerRoutes() → registerNavbar()
- *               → getEventSubscribers() → getStreamMiddleware()
+ *               → getEventSubscribers()
  *
  * Lifecycle (install/uninstall):
  *   install()   — create tables, seed initial data

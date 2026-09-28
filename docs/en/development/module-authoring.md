@@ -173,7 +173,6 @@ each via `instanceof`. See [Module Extension Points](module-extension-points.md)
 
 ```text
 (optional, not in ModuleInterface)
-├── StreamMiddlewareProviderInterface → registerStreamMiddleware(StreamPipeline)
 ├── CronProviderInterface             → getCronEntries()
 ├── TopbarProviderInterface           → registerTopbar(TopbarRegistry)      · per-page action buttons
 ├── TableProviderInterface            → registerTables(TableRegistry)       · serverSide DataTable builders
@@ -184,15 +183,6 @@ each via `instanceof`. See [Module Extension Points](module-extension-points.md)
 Topbar / Table / Permission / QuickTools let a module own its whole admin
 footprint — buttons, log/report tables, grantable permissions and maintenance
 tools — instead of those living hard-coded in core.
-
-```php
-// Optional — not in ModuleInterface
-class MyModule implements ModuleInterface, StreamMiddlewareProviderInterface {
-    public function getStreamMiddleware(): array {
-        return [new MyStreamMiddleware()];
-    }
-}
-```
 
 ---
 
@@ -398,7 +388,6 @@ class MyController {
 - [ ] (If schema) Ship `database.sql` (master), `database_drop.sql` (teardown), and `migrations/<semver>.sql` deltas
 - [ ] (If PHP-logic migrations) Implement `MigratableInterface::getMigrations()`
 - [ ] (If pages) Create controller using `renderUnifiedLayoutHeader/Footer`
-- [ ] (If stream middleware) Implement `StreamMiddlewareProviderInterface` separately
 - [ ] Verify: `php -l src/Modules/<name>/<PascalName>Module.php`
 - [ ] Verify: `php console.php --list` shows the module's commands
 - [ ] Verify: removing the module directory causes no fatal error
@@ -428,8 +417,9 @@ typically inside `boot()` or a dedicated subscriber class.
 Yes. Create a plain class or extend `AbstractEvent` and call `EventDispatcher::dispatch(new MyEvent(...))`.
 
 **Q: What is `StreamMiddlewareProviderInterface` for?**
-It lets the module inject a `StreamMiddlewareInterface` into the stream processing pipeline
-without modifying `StreamProcess.php`. Implement it alongside `ModuleInterface` when needed.
+Nothing: it is deprecated. Core never ran a stream middleware pipeline, so the interface
+is kept only so old modules keep loading. For a new kind of live source use a
+[source driver](source-drivers.md); to react to stream changes, listen to events.
 
 ## Related files
 

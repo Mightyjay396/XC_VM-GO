@@ -1,6 +1,6 @@
 # Module Extension Points
 
-The core extension points a module plugs into: the DI container, stream middleware, cron tasks, versioned migrations, and typed events. To author a module see [Module Authoring](module-authoring.md); for load/lifecycle see [Module Lifecycle](module-lifecycle.md).
+The core extension points a module plugs into: the DI container, cron tasks, versioned migrations, typed events, source drivers, stream form tabs and import kinds. To author a module see [Module Authoring](module-authoring.md); for load/lifecycle see [Module Lifecycle](module-lifecycle.md).
 
 ## DI container and service decoration
 
@@ -42,36 +42,13 @@ Modules subscribe to typed events via `getEventSubscribers()` or the `#[ListensT
 
 ## Stream Middleware
 
-
-Modules can inject middleware into the stream pipeline by implementing
-`StreamMiddlewareProviderInterface` (separate from `ModuleInterface`):
-
-```php
-class MyStreamMiddleware implements StreamMiddlewareInterface {
-
-    public function getPriority(): int {
-        return 50;
-    }
-
-    public function handle(StreamContext $ctx, callable $next): StreamContext {
-        // before — read or set attributes
-        $ctx->set('my.key', 'value');
-        $ctx = $next($ctx);
-        // after
-        return $ctx;
-    }
-}
-```
-
-`StreamContext` is an attribute bag (`get`, `set`, `has`, `abort`, `isAborted`). `StreamPipeline`
-executes middleware sorted by `getPriority()` descending.
-
-### Pipeline priorities
-
-| Range | Owner |
-| ---------- | ----------------- |
-| `80–100` | Core (Auth, Permission, ConnectionLimit) |
-| `0–79` | Modules |
+!!! warning "Deprecated — never ran"
+    Core never ran a stream middleware pipeline: `getStreamMiddleware()` was never called
+    and the pipeline class is gone. `StreamMiddlewareProviderInterface`,
+    `StreamMiddlewareInterface` and `StreamContext` remain only so an existing module that
+    implements them keeps loading. Do not build on them. To act on streams, use events
+    such as `StreamSavedEvent` and `StreamsDeletedEvent`, or a
+    [source driver](source-drivers.md).
 
 ### Reserved navbar slots
 
@@ -386,5 +363,108 @@ DRM) and run its own engine for it in ffmpeg's place. The module declares the dr
 classes in `module.json` (`"source_drivers": [...]`), and each driver claims its own URL
 scheme. Streams stay ordinary XC_VM streams. See [Source Drivers](source-drivers.md) for
 the interface, the producer contract and a full example.
+
+---
+
+## Stream form tabs (`StreamFormRegistry`)
+
+A module can add its own tab to the admin Add/Edit Stream page and store what the tab
+posts in its own tables. Register the tab from `boot()`. `bootAll()` resets the registry
+on every boot, so a tab exists only while its module is loaded.
+
+```php
+use XcVm\Core\Container\ServiceContainer;
+use XcVm\Core\Events\ListensTo;
+use XcVm\Core\Events\Stream\StreamSavedEvent;
+use XcVm\Core\Module\StreamFormRegistry;
+
+public function boot(ServiceContainer $container): void {
+    StreamFormRegistry::add(
+        'acme-dash',                                        // id: [a-z0-9_-]
+        'DASH engine',                                      // tab title, already translated
+        static fn(?array $stream, string $mode): string =>  // $mode: 'add' | 'edit'
+            AcmeDashForm::render($stream === null ? null : (int) $stream['id']),
+        'manage_acme_dash',                                 // 'adv' permission, or null
+        static fn(array $fields, ?array $stream): ?string =>
+            ($fields['provider'] ?? '') === '' ? 'Choose a provider' : null,
+    );
+}
+
+#[ListensTo(StreamSavedEvent::class)]
+public function onStreamSaved(StreamSavedEvent $event): void {
+    if (!isset($event->moduleFields['acme-dash'])) {
+        return; // an import, an API call or a form without this tab: keep what is stored
+    }
+    foreach ($event->streamIds as $id) {
+        AcmeDashSettings::save($id, $event->moduleFields['acme-dash']);
+    }
+}
+```
+
+- **Inputs** must be named `module[<id>][<field>]`, for example
+  `<input name="module[acme-dash][provider]">`. Core hands exactly that sub-array
+  back. A module field never reaches a `streams` column, and core drops fields of
+  tabs the admin may not see.
+- **`render`** returns the pane's HTML. `$stream` is the stream row when editing and
+  `null` when adding. The tab is not shown on the import form, and mass edit has no
+  module tabs.
+- **`validate`** runs before anything is written, and only when the tab's fields were
+  posted: an API save or an import that carries none is never refused by it. Returning
+  a string refuses the save, and the form shows that text as is, so translate it
+  yourself.
+- **`StreamSavedEvent`** is dispatched once per save, after every row is written. It
+  carries:
+  - `streamIds`;
+  - `isNew`: `false` for an edit;
+  - `source`: `form` (the form or the admin API), `import` (M3U) or `review`
+    (Import & Review);
+  - `moduleFields`: tab id => posted fields.
+
+  Only act when your id is in `moduleFields`, otherwise an import or an API save
+  would wipe your settings. A listener that throws is logged and does not fail the
+  save.
+- **Do not add foreign keys to `streams`.** Saving rewrites the row (`REPLACE INTO`).
+  Clean up on `StreamsDeletedEvent` instead.
+
+---
+
+## Import kinds (`ImportSourceRegistry`)
+
+A module can add its own source to the **Import & Review** page for live streams, next
+to the built-in M3U file. The admin picks it in the **Source** selector and fills in
+the module's inputs. The module lists channels, and they go through the ordinary
+review and import steps, so every channel becomes an ordinary stream. Register the
+kind from `boot()`; `bootAll()` resets the registry on every boot.
+
+```php
+use XcVm\Core\Module\ImportSourceRegistry;
+
+public function boot(ServiceContainer $container): void {
+    ImportSourceRegistry::add(
+        'acme-dash',                                   // key: [a-z0-9_-]
+        'Acme DASH provider',                          // label in the Source picker
+        static fn(): string => AcmeDashImport::form(), // inputs: import_source[acme-dash][...]
+        static fn(array $fields): array => AcmeDashImport::channels($fields['provider'] ?? ''),
+        'manage_acme_dash',                            // 'adv' permission, or null
+    );
+}
+
+// AcmeDashImport::channels() returns rows like:
+// ['url' => 'acmedash://prov1/demo-001', 'title' => 'Demo One',
+//  'logo' => 'https://…/logo.png', 'tvg_id' => 'demo.one', 'category' => 'News']
+```
+
+- **Inputs** of the kind are named `import_source[<key>][<field>]`. Its `list`
+  callable gets exactly that sub-array.
+- **Rows** need a `url`. `title` falls back to the URL, and `logo`, `tvg_id` (matched
+  against EPG like an M3U `tvg-id`) and `category` are optional.
+- **Existing sources.** A source URL already in the panel is left out unless the admin
+  ticks *Show Potential Duplicates*; then it is shown and flagged.
+- **Row limit.** One review page takes at most `ImportSourceRegistry::MAX_ROWS` (500)
+  rows; beyond that the page reports too many results.
+- **Failures.** A `list` callable that throws shows "no sources" and logs the message,
+  so keep provider calls inside a timeout.
+- **After the import,** `StreamSavedEvent` fires with `source = 'review'` and the new
+  stream ids. The channel identity is in each stream's source URL.
 
 ---

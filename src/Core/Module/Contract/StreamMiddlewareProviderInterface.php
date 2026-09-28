@@ -3,19 +3,13 @@
 namespace XcVm\Core\Module\Contract;
 
 use XcVm\Core\Http\Pipeline\StreamMiddlewareInterface;
-use XcVm\Core\Http\Pipeline\StreamPipeline;
 
 /**
- * Optional contract for modules that inject middleware into the stream pipeline.
+ * Former opt-in contract for modules to add stream middleware.
  *
- * NOT part of ModuleInterface — modules opt in by implementing this interface
- * in addition to their primary contracts.
- *
- * ModuleLoader checks instanceof StreamMiddlewareProviderInterface and calls
- * getStreamMiddleware() only when the StreamPipeline is available.
- *
- * @see StreamPipeline
- * @see StreamMiddlewareInterface
+ * @deprecated Core never ran a stream pipeline, so getStreamMiddleware() was
+ *             never called; the pipeline is gone. Kept only so a module that
+ *             still implements it keeps loading. Do not implement it.
  *
  * @package XC_VM_Core_Module
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -24,7 +18,7 @@ use XcVm\Core\Http\Pipeline\StreamPipeline;
  */
 interface StreamMiddlewareProviderInterface {
 	/**
-	 * Return stream middleware instances to inject into StreamPipeline.
+	 * Stream middleware instances; never called (see the interface note).
 	 *
 	 * Modules return one or more middleware objects. Each must implement
 	 * StreamMiddlewareInterface and declare its own priority via getPriority().

@@ -126,11 +126,39 @@ final class StreamProcessSourceDriverTest extends TestCase {
 
 	// ── spec entry / monitor checks ───────────────────────────────
 
-	public function testSpecEntryHasNoFallbackOrProbe(): void {
+	/** No ffmpeg fallback; the probe asks the driver through console.php source:probe. */
+	public function testSpecEntryProbesThroughTheDriver(): void {
 		$e = self::call('driverSpecEntries', 42, self::live(), [], 'acmedash://p/c', '0', ['seg_time' => 6, 'seg_list_size' => 8, 'seg_delete_threshold' => 4], '/run/in/42.sock');
 		$this->assertCount(1, $e);
-		$this->assertSame(['label', 'cmd'], array_keys($e[0]));
+		$this->assertSame(['label', 'cmd', 'probe_cmd'], array_keys($e[0]));
 		$this->assertSame('acmedash://p/c', $e[0]['label']);
+		$this->assertSame(PHP_BIN . ' ' . MAIN_HOME . "console.php source:probe 42 '" . base64_encode('acmedash://p/c') . "'", $e[0]['probe_cmd']);
+	}
+
+	public function testDriverProbeStandsInForFfprobe(): void {
+		$this->assertNull(StreamProcess::driverProbe(42, 'http://src/live.ts'), 'core source: run ffprobe');
+		$this->assertSame(['streams' => [], 'format' => ['format_name' => 'mpegts']], StreamProcess::driverProbe(42, 'acmedash://p/c'));
+		$this->driver->up = false;
+		$this->assertSame([], StreamProcess::driverProbe(42, 'acmedash://p/c'));
+	}
+
+	public function testSourceProbeCommandExitsOnTheDriversWord(): void {
+		$rCommand = new \XcVm\Cli\Commands\SourceProbeCommand();
+		$this->assertSame('source:probe', $rCommand->getName());
+		$this->assertSame(0, $rCommand->execute(['42', base64_encode('acmedash://p/c')]));
+		$this->assertSame(1, $rCommand->execute(['42', base64_encode('http://src/live.ts')]), 'not a driver source');
+		$this->assertSame(1, $rCommand->execute(['42', '%%%']), 'undecodable');
+		$this->driver->up = false;
+		$this->assertSame(1, $rCommand->execute(['42', base64_encode('acmedash://p/c')]));
+	}
+
+	public function testAdminCheckShowsTheDriversAnswer(): void {
+		$m = new ReflectionMethod(\XcVm\Public\Controllers\Admin\Ajax\StreamToolsAjaxController::class, 'driverSourceTable');
+		$m->setAccessible(true);
+		$this->assertNull($m->invoke(null, 'http://src/live.ts'));
+		$this->assertStringContainsString('Module source available', $m->invoke(null, 'acmedash://p/c'));
+		$this->driver->up = false;
+		$this->assertStringContainsString('Module source unavailable', $m->invoke(null, 'acmedash://p/c'));
 	}
 
 	public function testRefusedSourceIsSkippedAndLogged(): void {

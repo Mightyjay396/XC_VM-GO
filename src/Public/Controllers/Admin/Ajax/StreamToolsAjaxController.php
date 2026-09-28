@@ -5,6 +5,7 @@ namespace XcVm\Public\Controllers\Admin\Ajax;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\CurlClient;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Module\SourceDriverRegistry;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamRepository;
@@ -177,7 +178,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			$rServerID = intval(RequestManager::get('server'));
 		}
 
-		$rStreamInfoText = "<table style='width: 380px;' class='table-data' align='center'><tbody><tr><td colspan='4'>Stream probe failed!</td></tr></tbody></table>";
+		$rStreamInfoText = self::driverSourceTable((string) RequestManager::get('url')) ?? "<table style='width: 380px;' class='table-data' align='center'><tbody><tr><td colspan='4'>Stream probe failed!</td></tr></tbody></table>";
 		$rStreamInfo = null;
 
 		if (!empty(RequestManager::get('url'))) {
@@ -273,7 +274,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		}
 
 		if ((string) $rURL !== '') {
-			$rStreamInfoText = "<table style='width: 300px;' class='table-data' align='center'><tbody><tr><td colspan='4'>Stream probe failed!</td></tr></tbody></table>";
+			$rStreamInfoText = self::driverSourceTable((string) $rURL) ?? "<table style='width: 300px;' class='table-data' align='center'><tbody><tr><td colspan='4'>Stream probe failed!</td></tr></tbody></table>";
 			$rStreamInfo = null;
 
 			if (StreamUtils::detectXC_VM($rURL) && SettingsManager::get('api_probe')) {
@@ -293,7 +294,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 				$rStreamInfo = json_decode(shell_exec('timeout ' . intval($rTimeout) . ' ' . FfmpegPaths::probe() . $rUA . $rCookie . ' -v quiet -probesize 5000000 -print_format json -show_format -show_streams ' . escapeshellarg($rURL)), true);
 			}
 
-			if (0 < count($rStreamInfo['streams'])) {
+			if (0 < count($rStreamInfo['streams'] ?? [])) {
 				$rInfo = [];
 
 				foreach ($rStreamInfo['streams'] as $rCodec) {
@@ -396,5 +397,23 @@ class StreamToolsAjaxController extends BaseAjaxController {
 				$rReturn[$rReturnKey][] = $db->get_row();
 			}
 		}
+	}
+
+	/**
+	 * The info table for a module source-driver URL, or null for a source
+	 * ffprobe reads. A driver source has no codecs to show before its engine
+	 * runs; the driver only says whether it is reachable.
+	 */
+	private static function driverSourceTable(string $rURL): ?string {
+		$rDriver = SourceDriverRegistry::for($rURL);
+		if ($rDriver === null) {
+			return null;
+		}
+		try {
+			$rUp = $rDriver->available(0, $rURL);
+		} catch (\Throwable $e) {
+			$rUp = false;
+		}
+		return "<table style='width: 300px;' class='table-data' align='center'><tbody><tr><td colspan='4'>Module source " . ($rUp ? 'available' : 'unavailable') . '</td></tr></tbody></table>';
 	}
 }

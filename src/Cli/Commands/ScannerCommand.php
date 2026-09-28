@@ -13,6 +13,7 @@ use XcVm\Core\Http\CurlClient;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Stream\NodeStreams;
+use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamSorter;
 use XcVm\Domain\Stream\StreamSource;
 use XcVm\Domain\Stream\StreamStateWriter;
@@ -159,7 +160,7 @@ class ScannerCommand implements CommandInterface {
 				}
 
 				$rTime = round(microtime(true) * 1000);
-				$rFFProbeOutput = json_decode(shell_exec(str_replace(['{FETCH_OPTIONS}', '{STREAM_SOURCE}'], [$rFetchOptions, escapeshellarg($rStreamSource)], $rFFProbee)), true);
+				$rFFProbeOutput = StreamProcess::driverProbe(intval($rRow['id']), (string) $rSource) ?? json_decode(shell_exec(str_replace(['{FETCH_OPTIONS}', '{STREAM_SOURCE}'], [$rFetchOptions, escapeshellarg($rStreamSource)], $rFFProbee)), true);
 				$rTimeTaken = round(microtime(true) * 1000) - $rTime;
 
 				if (file_exists(STREAMS_TMP_PATH . $rRow['id'] . '._errors') && 0 < filesize(STREAMS_TMP_PATH . $rRow['id'] . '._errors')) {

@@ -42,6 +42,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -299,34 +300,48 @@ def _ts_document(md, tr, glossary):
     return "\n".join(out)
 
 
+# (engine, lang) pairs an engine refused as an unsupported language this run.
+_TS_UNSUPPORTED: set[tuple[str, str]] = set()
+
+
 def provider_translators(text: str, lang: str, glossary: list[str]) -> str:
     """Free, key-less translation via the `translators` web engines.
 
-    Engine order is set by DOCS_TRANSLATE_TS_ENGINES (first that answers wins);
-    yandex is the default lead as it is the most reliable en->ru here.
+    Engine order is set by DOCS_TRANSLATE_TS_ENGINES (first that answers wins).
+    yandex leads as the most reliable en->ru here, but its free endpoint lacks
+    languages such as ar; modernMt / reverso / translateCom cover those and,
+    unlike google / bing, are reachable from networks that cut those off.
     """
     import translators as ts  # lazy
 
     engines = [
         e.strip()
         for e in os.environ.get(
-            "DOCS_TRANSLATE_TS_ENGINES", "yandex,google,bing,alibaba"
+            "DOCS_TRANSLATE_TS_ENGINES", "yandex,modernMt,reverso,translateCom,google,bing,alibaba"
         ).split(",")
         if e.strip()
     ]
 
     def tr(s: str) -> str:
-        last_err = None
+        errors = []
         for engine in engines:
+            if (engine, lang) in _TS_UNSUPPORTED:
+                continue
             for _ in range(3):
                 try:
                     return ts.translate_text(
                         s, translator=engine, from_language="en", to_language=lang
                     )
                 except Exception as exc:  # noqa: BLE001 — try the next engine
+                    if "Unsupported" in str(exc):  # no retry will change that
+                        _TS_UNSUPPORTED.add((engine, lang))
+                        errors.append(f"{engine}: no {lang}")
+                        break
                     last_err = exc
                     time.sleep(1.0)
-        raise RuntimeError(f"all translators engines failed: {last_err}")
+            else:
+                errors.append(f"{engine}: {last_err}")
+        raise RuntimeError("all translators engines failed: " + "; ".join(errors))
 
     return _ts_document(text, tr, glossary)
 
@@ -367,47 +382,72 @@ def parse_ini(path: Path) -> dict[str, str]:
     return entries
 
 
-def sync_ini(en_path, dst_path, lang, translate, glossary, cache, provider_name):
-    """Rebuild ``dst_path`` in en.ini order; return (kept, translated, failed, removed).
+def _write_atomic(path: Path, text: str) -> None:
+    """Replace ``path`` in one step, so a kill mid-write never leaves it truncated."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")  # per process: a rival run can't take it
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
-    ``cache`` maps a cache_key of the English value to its translation, so a
-    value the engine legitimately returns unchanged ("CPU") is not re-sent on
-    every run just because it still equals the English text.
-    """
-    current = parse_ini(dst_path)
-    en_lines = en_path.read_text(encoding="utf-8").splitlines()
-    en_keys = {m.group("key") for m in map(_INI_ENTRY.match, en_lines) if m}
-    kept = translated = failed = 0
+
+def _render_ini(en_lines, values) -> str:
+    """en.ini's layout with each key's value from ``values`` (English when absent)."""
     out = []
     for line in en_lines:
         m = _INI_ENTRY.match(line)
         if not m:
             out.append(line)  # comment, blank line or [Language] section
             continue
+        key = m.group("key")
+        out.append(f"{key} = {_ini_quote(values.get(key, _ini_unquote(m.group('val'))))}")
+    return "\n".join(out) + "\n"
+
+
+def sync_ini(en_path, dst_path, lang, translate, glossary, cache, provider_name, save_cache=lambda: None):
+    """Rebuild ``dst_path`` in en.ini order; return (kept, translated, failed, removed).
+
+    ``cache`` maps a cache_key of the English value to its translation, so a
+    value the engine legitimately returns unchanged ("CPU") is not re-sent on
+    every run just because it still equals the English text.
+
+    The file and the cache (``save_cache``) are written after EVERY new
+    translation, so a run that crashes or is killed loses at most one key; the
+    keys it had not reached yet stay as they were (or English) and the next
+    run picks them up.
+    """
+    current = parse_ini(dst_path)
+    en_lines = en_path.read_text(encoding="utf-8").splitlines()
+    en_keys = {m.group("key") for m in map(_INI_ENTRY.match, en_lines) if m}
+    values = {k: v for k, v in current.items() if k in en_keys}
+    kept = translated = failed = 0
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    for line in en_lines:
+        m = _INI_ENTRY.match(line)
+        if not m:
+            continue
         key, en_value = m.group("key"), _ini_unquote(m.group("val"))
         value = current.get(key)
         if value is not None and (value != en_value or not en_value.strip()):
             kept += 1
-        else:
-            ck = cache_key(en_value, lang, provider_name, glossary)
-            if ck in cache:
-                value = cache[ck]
-            else:
-                try:
-                    value = translate(en_value, lang, glossary).strip()
-                except Exception as exc:  # noqa: BLE001 — keep English, retry next run
-                    print(f"  WARN {key}: translation failed ({exc}); keeping English", file=sys.stderr)
-                    failed += 1
-                    value = en_value
-                else:
-                    cache[ck] = value
-                    translated += 1
-                    if translated % 25 == 0:
-                        print(f"  … {translated} keys translated", flush=True)
-        out.append(f"{key} = {_ini_quote(value)}")
+            continue
+        ck = cache_key(en_value, lang, provider_name, glossary)
+        if ck in cache:
+            values[key] = cache[ck]
+            continue
+        try:
+            value = translate(en_value, lang, glossary).strip()
+        except Exception as exc:  # noqa: BLE001 — keep English, retry next run
+            print(f"  WARN {key}: translation failed ({exc}); keeping English", file=sys.stderr)
+            failed += 1
+            values[key] = en_value
+            continue
+        cache[ck] = values[key] = value
+        translated += 1
+        _write_atomic(dst_path, _render_ini(en_lines, values))
+        save_cache()
+        if translated % 25 == 0:
+            print(f"  … {translated} keys translated", flush=True)
     removed = sorted(set(current) - en_keys)
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
-    dst_path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    _write_atomic(dst_path, _render_ini(en_lines, values))
     return kept, translated, failed, removed
 
 
@@ -426,17 +466,29 @@ def run_ini(args, translate, provider_name, glossary, repo_root) -> int:
     cache_dir = Path(args.cache)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
+    # Two runs would each rewrite the same .ini and cache and drop the other's
+    # translations; the second one stops instead. Released when the process ends.
+    lock = open(cache_dir / "ini.lock", "w")  # noqa: SIM115 — held for the whole run
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print("error: another --ini run is in progress; wait for it or stop it", file=sys.stderr)
+        return 1
+
     for lang in langs:
         cache_file = cache_dir / f"ini-{lang}.json"
         cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.is_file() else {}
+
+        def save_cache(cache=cache, cache_file=cache_file):
+            _write_atomic(cache_file, json.dumps(cache, ensure_ascii=False, indent=0))
+
         print(f"→ {lang}.ini …", flush=True)
         try:
             kept, translated, failed, removed = sync_ini(
-                en_path, dst / f"{lang}.ini", lang, translate, glossary, cache, provider_name
+                en_path, dst / f"{lang}.ini", lang, translate, glossary, cache, provider_name, save_cache
             )
         finally:
-            # Saved even on Ctrl+C, so an interrupted run resumes where it stopped.
-            cache_file.write_text(json.dumps(cache, ensure_ascii=False, indent=0), encoding="utf-8")
+            save_cache()  # the cache hits and fallbacks since the last translation, even on Ctrl+C
         for key in removed:
             print(f"  removed {key}")
         print(
