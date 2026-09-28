@@ -22,17 +22,17 @@ This list is updated automatically from the repository's commit history
                 </a>
             </td>
             <td align="center">
-                <a href="https://github.com/IPTVEX">
-                    <img src="https://avatars.githubusercontent.com/u/245210719?v=4" width="80;" alt="IPTVEX"/>
-                    <br />
-                    <sub><b>IPTVEX</b></sub>
-                </a>
-            </td>
-            <td align="center">
                 <a href="https://github.com/obscuremind">
                     <img src="https://avatars.githubusercontent.com/u/3330317?v=4" width="80;" alt="obscuremind"/>
                     <br />
                     <sub><b>obscuremind</b></sub>
+                </a>
+            </td>
+            <td align="center">
+                <a href="https://github.com/IPTVEX">
+                    <img src="https://avatars.githubusercontent.com/u/245210719?v=4" width="80;" alt="IPTVEX"/>
+                    <br />
+                    <sub><b>IPTVEX</b></sub>
                 </a>
             </td>
             <td align="center">
