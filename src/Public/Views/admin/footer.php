@@ -555,101 +555,28 @@ $xmBare  = $xmSetup || isset($_GET['modal']);
 <?php endif; ?>
 
 <?php if (!empty($rSettings['enable_search']) && !$xmSetup): ?>
+    <?php
+    $xmSearchI18n = [];
+    foreach (['no_results', 'search', 'search_searching', 'search_input_too_short', 'search_error_loading', 'search_action_done', 'error', 'cancel', 'category', 'server', 'connections', 'seasons', 'episodes', 'member_group', 'owner', 'credits', 'users', 'lines', 'expires', 'never', 'last_active', 'restreamer', 'trial', 'fingerprint', 'fingerprint_success', 'fingerprint_fail', 'type', 'activity_id', 'username', 'message', 'size', 'colour', 'position', 'custom_message', 'add_credits', 'amount', 'reason_for_adjustment'] as $xmKey) {
+        $xmSearchI18n[$xmKey] = (string) $language::get($xmKey);
+    }
+    ?>
+    <!-- Global quick search: Select2 box rendered client-side from the
+         ?action=search JSON (docs/adr/search-json-contract.md). -->
+    <style>
+        .xc-qs-wrap > .select2-container:not(.select2) { left: auto !important; right: 0; }
+        .xc-qs-wrap .select2-dropdown { width: 480px !important; max-width: 92vw; }
+        .xc-qs-wrap .select2-results > .select2-results__options { max-height: 70vh; }
+        .xc-qs-wrap .select2-selection__rendered { padding-left: 2.4rem !important; }
+        .xc-qs-thumb { width: 48px; height: 48px; }
+        .xc-qs-thumb-tall { height: 72px; }
+        .xc-qs-thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .xc-qs-progress { width: 120px; height: 1rem; }
+    </style>
     <script>
-        // Global quick search: debounced fetch of ?action=search, rendered as a
-        // lightweight dropdown (no select2 dependency, so it works on every page).
-        (function() {
-            var input = document.getElementById('xc-quick-search');
-            var box = document.getElementById('xc-search-results');
-            if (!input || !box) {
-                return;
-            }
-            var esc = function(s) {
-                var d = document.createElement('div');
-                d.textContent = (s == null ? '' : String(s));
-                return d.innerHTML;
-            };
-            // Legacy search variants -> new-UI bg-label-* palette.
-            var variant = function(v) {
-                var map = {
-                    purple: 'primary',
-                    pink: 'danger',
-                    success: 'success',
-                    danger: 'danger',
-                    info: 'info',
-                    warning: 'warning',
-                    primary: 'primary',
-                    secondary: 'secondary',
-                    dark: 'dark'
-                };
-                return map[v] || 'secondary';
-            };
-            var noRes = <?= json_encode($language::get('no_results') ?: 'No results') ?>;
-            var timer, lastTerm = '';
-
-            var empty = function(text) {
-                return '<div class="text-center text-body-secondary py-4"><small>' + esc(text) + '</small></div>';
-            };
-            var render = function(items) {
-                if (!items || !items.length || (items[0] && items[0].entity === 'no_results')) {
-                    box.innerHTML = empty(noRes);
-                    box.classList.add('show');
-                    return;
-                }
-                box.innerHTML = items.map(function(it) {
-                    var d = it.data || {};
-                    var badge = d.badge ? '<span class="badge bg-label-' + variant(d.badge.variant) + ' me-2">' + esc(d.badge.text) + '</span>' : '';
-                    var sub = d.category ? '<small class="text-body-secondary d-block text-truncate">' + esc(d.category) + '</small>' : '';
-                    var href = it.url ? esc(it.url) : 'javascript:void(0)';
-                    return '<a class="dropdown-item d-flex flex-column py-2 border-bottom" href="' + href + '">' +
-                        '<span class="text-truncate">' + badge + '<span class="fw-medium">' + esc(d.title || it.text || '') + '</span></span>' +
-                        sub + '</a>';
-                }).join('');
-                box.classList.add('show');
-            };
-
-            input.addEventListener('input', function() {
-                var term = this.value.trim();
-                clearTimeout(timer);
-                if (term.length < 3) {
-                    box.classList.remove('show');
-                    box.innerHTML = '';
-                    return;
-                }
-                box.innerHTML = '<div class="text-center text-body-secondary py-4"><span class="spinner-border spinner-border-sm"></span></div>';
-                box.classList.add('show');
-                timer = setTimeout(function() {
-                    lastTerm = term;
-                    fetch('./api?action=search&search=' + encodeURIComponent(term), {
-                            headers: {
-                                'X-Requested-With': 'XMLHttpRequest'
-                            }
-                        })
-                        .then(function(r) {
-                            return r.json();
-                        })
-                        .then(function(data) {
-                            if (input.value.trim() === lastTerm) {
-                                render((data && data.items) || []);
-                            }
-                        })
-                        .catch(function() {
-                            box.classList.remove('show');
-                        });
-                }, 300);
-            });
-            input.addEventListener('focus', function() {
-                if (box.innerHTML && this.value.trim().length >= 3) {
-                    box.classList.add('show');
-                }
-            });
-            document.addEventListener('click', function(e) {
-                if (!input.contains(e.target) && !box.contains(e.target)) {
-                    box.classList.remove('show');
-                }
-            });
-        })();
+        window.XC_SEARCH_I18N = <?= json_encode($xmSearchI18n, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     </script>
+    <script src="assets/js/search.js"></script>
 <?php endif; ?>
 
 <?php // NOTE: </body></html> are intentionally NOT emitted here. Views call

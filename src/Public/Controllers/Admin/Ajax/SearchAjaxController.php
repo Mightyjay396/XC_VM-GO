@@ -31,6 +31,9 @@ use XcVm\Domain\User\GroupService;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 class SearchAjaxController extends BaseAjaxController {
+	/** Item entities the search contract defines (docs/adr/search-json-contract.md). */
+	private const ENTITIES = ['stream', 'movie', 'channel', 'radio', 'episode', 'series', 'user', 'line', 'mag', 'enigma'];
+
 	/** action=search — global fuzzy search as structured JSON (no HTML). */
 	public function search(): never {
 		$this->requireXhr();
@@ -38,7 +41,7 @@ class SearchAjaxController extends BaseAjaxController {
 		/** @var class-string $language */
 		global $db, $rServers;
 
-		$rReturn = ['total_count' => 0, 'items' => [], 'result' => true];
+		$rBuilt = [];
 		$rTables = ['lines' => ['Lines', 'line?id=', '`username`, `admin_notes`, `reseller_notes`, `last_ip`, `contact`', 'id', 'username'], 'mag_devices' => ['MAG Devices', 'mag?id=', '`mac_filter`, `ip`', 'mag_id', 'mac'], 'enigma2_devices' => ['Enigma2 Devices', 'enigma?id=', '`mac_filter`, `public_ip`', 'device_id', 'mac'], 'users' => ['Users', 'user?id=', '`username`, `email`, `ip`, `notes`, `reseller_dns`', 'id', 'username'], 'streams' => ['Streams, Movies & Episodes', 'stream_view?id=', '`stream_display_name`, `stream_source`, `notes`, `channel_id`', 'id', 'stream_display_name'], 'streams_series' => ['TV Series', 'serie?id=', '`title`, `plot`, `cast`, `director`', 'id', 'title']];
 		$rLimit = 100;
 		$rTerm = strtolower(preg_replace('/[^[:alnum:][:space:]]/u', '', RequestManager::get('search')));
@@ -270,21 +273,30 @@ class SearchAjaxController extends BaseAjaxController {
 			$rCtx = ['rServerItems' => $rServerItems, 'rServerCount' => $rServerCount, 'rSeriesTitles' => $rSeriesTitles, 'rConnectionCount' => $rConnectionCount, 'rSeriesInfo' => $rSeriesInfo, 'rUsersCount' => $rUsersCount, 'rLinesCount' => $rLinesCount, 'rOwnerNames' => $rOwnerNames, 'rLinesInfo' => $rLinesInfo, 'rLineConnectionCount' => $rLineConnectionCount, 'rStreamNames' => $rStreamNames, 'rDeviceLines' => $rDeviceLines, 'rCategories' => $rCategories, 'rGroups' => $rGroups, 'rTables' => $rTables];
 
 			foreach ($rItems as $rItem) {
-				$rReturn['items'][] = $this->buildItem($rItem, $rCtx);
+				$rBuilt[] = $this->buildItem($rItem, $rCtx);
 			}
 		}
 
-		$rReturn['total_count'] = count($rReturn['items']);
-
-		if ($rReturn['total_count'] == 0) {
-			$rReturn['items'][] = ['id' => 'no_results', 'url' => null, 'text' => 'No Results', 'entity' => 'no_results', 'data' => null];
-		}
-
-		$this->json($rReturn, JSON_PARTIAL_OUTPUT_ON_ERROR);
+		$this->json($this->envelope($rBuilt), JSON_PARTIAL_OUTPUT_ON_ERROR);
 	}
 
-	/** Dispatch one search row to its per-entity structured payload. */
-	private function buildItem(array $rItem, array $rCtx): array {
+	/**
+	 * Wrap built items in the contract envelope. Rows that could not be
+	 * resolved (null from buildItem, e.g. a device whose owning line is gone)
+	 * are dropped, so every emitted item carries a contract entity and a data
+	 * payload. No results is simply an empty `items` list.
+	 *
+	 * @param array<int, array<string, mixed>|null> $rItems
+	 * @return array{result: true, total_count: int, items: list<array<string, mixed>>}
+	 */
+	private function envelope(array $rItems): array {
+		$rItems = array_values(array_filter($rItems, static fn($rItem): bool => is_array($rItem) && in_array($rItem['entity'] ?? null, self::ENTITIES, true) && is_array($rItem['data'] ?? null)));
+
+		return ['result' => true, 'total_count' => count($rItems), 'items' => $rItems];
+	}
+
+	/** Dispatch one search row to its per-entity structured payload (null = not representable). */
+	private function buildItem(array $rItem, array $rCtx): ?array {
 		$rTableInfo = $rCtx['rTables'][$rItem['table']];
 		$rBase = [
 			'id' => $rItem['table'] . '#' . $rItem[$rTableInfo[3]],
@@ -301,12 +313,14 @@ class SearchAjaxController extends BaseAjaxController {
 				return $rBase + ['entity' => 'user', 'data' => $this->buildUserItem($rItem, $rCtx)];
 			case 'lines':
 				return $rBase + ['entity' => 'line', 'data' => $this->buildLineItem($rItem, $rCtx)];
-			case 'enigma_devices':
+			case 'enigma2_devices':
 			case 'mag_devices':
-				return $rBase + ['entity' => ($rItem['table'] == 'mag_devices' ? 'mag' : 'enigma'), 'data' => $this->buildDeviceItem($rItem, $rCtx)];
+				$rData = $this->buildDeviceItem($rItem, $rCtx);
+
+				return $rData === null ? null : $rBase + ['entity' => ($rItem['table'] == 'mag_devices' ? 'mag' : 'enigma'), 'data' => $rData];
 		}
 
-		return $rBase + ['entity' => 'unknown', 'data' => null];
+		return null;
 	}
 
 	/** streams row -> stream/movie/channel/radio/episode payload. */
@@ -368,7 +382,7 @@ class SearchAjaxController extends BaseAjaxController {
 			'connections_link' => 'live_connections?stream_id=' . $rItem['id'],
 			'status' => $this->streamStatusPayload($rActualStatus, $rItem, $rServerItem),
 			'rating' => ($rItem['type'] == 2) ? $this->ratingData($rProperties['rating'] ?? 0, $rItem['year'] ?? '') : null,
-			'actions' => $this->streamActions($rItem, $rActualStatus, $rPage['page'], $rConnections),
+			'actions' => $this->streamActions($rItem, $rActualStatus, $rPage, $rConnections),
 		];
 	}
 
@@ -422,8 +436,8 @@ class SearchAjaxController extends BaseAjaxController {
 
 			$rActions[] = ['kind' => 'navigate', 'target' => 'user?id=' . $rItem['id'], 'icon' => 'mdi-pencil', 'title' => 'Edit'];
 			$rActions[] = $rActive
-				? ['kind' => 'api', 'entity' => 'user', 'id' => intval($rItem['id']), 'sub' => 'disable', 'icon' => 'mdi-lock', 'title' => 'Disable', 'enabled' => true]
-				: ['kind' => 'api', 'entity' => 'user', 'id' => intval($rItem['id']), 'sub' => 'enable', 'icon' => 'mdi-lock', 'title' => 'Enable', 'enabled' => true];
+				? ['kind' => 'api', 'entity' => 'user', 'sub' => 'disable', 'id' => intval($rItem['id']), 'icon' => 'mdi-lock', 'title' => 'Disable', 'enabled' => true]
+				: ['kind' => 'api', 'entity' => 'user', 'sub' => 'enable', 'id' => intval($rItem['id']), 'icon' => 'mdi-lock', 'title' => 'Enable', 'enabled' => true];
 		}
 
 		return [
@@ -477,9 +491,9 @@ class SearchAjaxController extends BaseAjaxController {
 			'expires' => $rLineInfo['exp_date'] ? date(SettingsManager::get('datetime_format'), $rLineInfo['exp_date']) : null,
 			'last_active' => $this->lastActive($rLineInfo, $rCtx),
 			'connections' => $rConn,
-			'flags' => ['trial' => (bool) $rLineInfo['is_trial']],
+			'flags' => ['restreamer' => (bool) ($rLineInfo['is_restreamer'] ?? false), 'trial' => (bool) $rLineInfo['is_trial']],
 			'badge' => ['variant' => 'pink'],
-			'actions' => $this->lineActions(intval($rLineInfo['id']), $rType . '?id=' . $rItem['id'], $rItem['admin_enabled'], $rItem['enabled'], $rConn),
+			'actions' => $this->lineActions(intval($rLineInfo['id']), $rType . '?id=' . intval($rItem[$rItem['table'] == 'mag_devices' ? 'mag_id' : 'device_id']), $rItem['admin_enabled'], $rItem['enabled'], $rConn),
 		];
 	}
 
@@ -647,8 +661,10 @@ class SearchAjaxController extends BaseAjaxController {
 	}
 
 	/**
-	 * Action list for a line/device. Buttons target $rTargetId (the owning line);
-	 * ban/unban + enable/disable state comes from the row's own flags.
+	 * Action list for a line/device. Actions act on $rTargetId (the owning line),
+	 * which every `api` action carries as its `id` — for a MAG/Enigma2 device that
+	 * is the line id, not the device id. Ban/unban + enable/disable state comes
+	 * from the row's own flags.
 	 *
 	 * @return array<int, array<string, mixed>>
 	 */
@@ -659,20 +675,30 @@ class SearchAjaxController extends BaseAjaxController {
 
 		return [
 			['kind' => 'navigate', 'target' => $rEditTarget, 'icon' => 'mdi-pencil', 'title' => 'Edit'],
-			['kind' => 'api', 'entity' => 'line', 'id' => $rTargetId, 'sub' => 'kill', 'icon' => 'fa-hammer', 'title' => 'Kill Connections', 'enabled' => true],
+			['kind' => 'api', 'entity' => 'line', 'sub' => 'kill', 'id' => $rTargetId, 'icon' => 'mdi-hammer', 'title' => 'Kill Connections', 'enabled' => true],
 			$rAdminEnabled
-				? ['kind' => 'api', 'entity' => 'line', 'id' => $rTargetId, 'sub' => 'ban', 'icon' => 'mdi-power', 'title' => 'Ban', 'enabled' => true]
-				: ['kind' => 'api', 'entity' => 'line', 'id' => $rTargetId, 'sub' => 'unban', 'icon' => 'mdi-power', 'title' => 'Unban', 'enabled' => true],
+				? ['kind' => 'api', 'entity' => 'line', 'sub' => 'ban', 'id' => $rTargetId, 'icon' => 'mdi-power', 'title' => 'Ban', 'enabled' => true]
+				: ['kind' => 'api', 'entity' => 'line', 'sub' => 'unban', 'id' => $rTargetId, 'icon' => 'mdi-power', 'title' => 'Unban', 'enabled' => true],
 			$rEnabled
-				? ['kind' => 'api', 'entity' => 'line', 'id' => $rTargetId, 'sub' => 'disable', 'icon' => 'mdi-lock', 'title' => 'Disable', 'enabled' => true]
-				: ['kind' => 'api', 'entity' => 'line', 'id' => $rTargetId, 'sub' => 'enable', 'icon' => 'mdi-lock', 'title' => 'Enable', 'enabled' => true],
+				? ['kind' => 'api', 'entity' => 'line', 'sub' => 'disable', 'id' => $rTargetId, 'icon' => 'mdi-lock', 'title' => 'Disable', 'enabled' => true]
+				: ['kind' => 'api', 'entity' => 'line', 'sub' => 'enable', 'id' => $rTargetId, 'icon' => 'mdi-lock', 'title' => 'Enable', 'enabled' => true],
 			['kind' => 'fingerprint', 'id' => $rTargetId, 'context' => 'user', 'icon' => 'mdi-fingerprint', 'enabled' => (bool) $rConnections],
 		];
 	}
 
-	/** Action list for a stream/movie/etc. row. */
-	private function streamActions(array $rItem, int $rActualStatus, string $rPage, int $rConnections): array {
+	/**
+	 * Action list for a stream/movie/etc. row. `api` actions carry the stream
+	 * id they act on as `id` (contract). Live types (stream/channel/radio)
+	 * are all driven through the `stream` endpoint; VOD types name their own
+	 * item entity (movie/episode).
+	 *
+	 * @param array{entity: string, page: string, text: string} $rPageInfo streamPage() descriptor
+	 * @return array<int, array<string, mixed>>
+	 */
+	private function streamActions(array $rItem, int $rActualStatus, array $rPageInfo, int $rConnections): array {
 		$rId = intval($rItem['id']);
+		$rPage = $rPageInfo['page'];
+		$rEntity = $rPageInfo['entity'];
 		$rActions = [];
 
 		if (in_array(intval($rItem['type']), [1, 3, 4], true)) {
@@ -684,10 +710,10 @@ class SearchAjaxController extends BaseAjaxController {
 			$rRunning = in_array(intval($rActualStatus), [1, 2, 3], true) || $rItem['on_demand'] == 1 || $rActualStatus == 5 || $rActualStatus == 7;
 
 			$rActions[] = $rRunning
-				? ['kind' => 'api', 'entity' => 'stream', 'id' => $rId, 'sub' => 'stop', 'icon' => 'mdi-stop', 'title' => 'Stop', 'enabled' => true]
-				: ['kind' => 'api', 'entity' => 'stream', 'id' => $rId, 'sub' => 'start', 'icon' => 'mdi-play', 'title' => 'Start', 'enabled' => true];
-			$rActions[] = ['kind' => 'api', 'entity' => 'stream', 'id' => $rId, 'sub' => 'restart', 'icon' => 'mdi-refresh', 'title' => 'Restart', 'enabled' => $rRunning];
-			$rActions[] = ['kind' => 'api', 'entity' => 'stream', 'id' => $rId, 'sub' => 'purge', 'icon' => 'mdi-hammer', 'title' => 'Purge', 'enabled' => $rRunning];
+				? ['kind' => 'api', 'entity' => 'stream', 'sub' => 'stop', 'id' => $rId, 'icon' => 'mdi-stop', 'title' => 'Stop', 'enabled' => true]
+				: ['kind' => 'api', 'entity' => 'stream', 'sub' => 'start', 'id' => $rId, 'icon' => 'mdi-play', 'title' => 'Start', 'enabled' => true];
+			$rActions[] = ['kind' => 'api', 'entity' => 'stream', 'sub' => 'restart', 'id' => $rId, 'icon' => 'mdi-refresh', 'title' => 'Restart', 'enabled' => $rRunning];
+			$rActions[] = ['kind' => 'api', 'entity' => 'stream', 'sub' => 'purge', 'id' => $rId, 'icon' => 'mdi-hammer', 'title' => 'Purge', 'enabled' => $rRunning];
 
 			if ($rItem['type'] == 1) {
 				$rActions[] = ['kind' => 'fingerprint', 'id' => $rId, 'context' => 'stream', 'icon' => 'mdi-fingerprint', 'enabled' => (bool) $rConnections];
@@ -703,16 +729,16 @@ class SearchAjaxController extends BaseAjaxController {
 		$rActions[] = ['kind' => 'navigate', 'target' => $rPage . '?id=' . $rId, 'icon' => 'mdi-pencil', 'title' => 'Edit'];
 
 		if (intval($rActualStatus) == 9) {
-			$rActions[] = ['kind' => 'api', 'entity' => $rPage, 'id' => $rId, 'sub' => 'start', 'icon' => 'mdi-refresh', 'title' => 'Re-Encode', 'enabled' => true];
+			$rActions[] = ['kind' => 'api', 'entity' => $rEntity, 'sub' => 'start', 'id' => $rId, 'icon' => 'mdi-refresh', 'title' => 'Re-Encode', 'enabled' => true];
 		} elseif (intval($rActualStatus) == 5) {
-			$rActions[] = ['kind' => 'api', 'entity' => $rPage, 'id' => $rId, 'sub' => 'stop', 'icon' => 'mdi-stop', 'title' => 'Stop', 'enabled' => false];
+			$rActions[] = ['kind' => 'api', 'entity' => $rEntity, 'sub' => 'stop', 'id' => $rId, 'icon' => 'mdi-stop', 'title' => 'Stop', 'enabled' => false];
 		} elseif (intval($rActualStatus) == 7) {
-			$rActions[] = ['kind' => 'api', 'entity' => $rPage, 'id' => $rId, 'sub' => 'stop', 'icon' => 'mdi-stop', 'title' => 'Stop Encoding', 'enabled' => true];
+			$rActions[] = ['kind' => 'api', 'entity' => $rEntity, 'sub' => 'stop', 'id' => $rId, 'icon' => 'mdi-stop', 'title' => 'Stop Encoding', 'enabled' => true];
 		} else {
-			$rActions[] = ['kind' => 'api', 'entity' => $rPage, 'id' => $rId, 'sub' => 'start', 'icon' => 'mdi-play', 'title' => 'Start Encoding', 'enabled' => true];
+			$rActions[] = ['kind' => 'api', 'entity' => $rEntity, 'sub' => 'start', 'id' => $rId, 'icon' => 'mdi-play', 'title' => 'Start Encoding', 'enabled' => true];
 		}
 
-		$rActions[] = ['kind' => 'api', 'entity' => $rPage, 'id' => $rId, 'sub' => 'purge', 'icon' => 'mdi-hammer', 'title' => 'Purge', 'enabled' => true];
+		$rActions[] = ['kind' => 'api', 'entity' => $rEntity, 'sub' => 'purge', 'id' => $rId, 'icon' => 'mdi-hammer', 'title' => 'Purge', 'enabled' => true];
 
 		return $rActions;
 	}

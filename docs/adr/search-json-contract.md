@@ -26,11 +26,13 @@ Every `data.actions[]` entry is **self-describing** so the client needs no per-a
 
 ```jsonc
 { "kind": "navigate",    "target": "movie?id=512", "icon": "mdi-pencil", "title": "Edit" }
-{ "kind": "api",         "entity": "stream", "sub": "stop", "icon": "mdi-stop", "title": "Stop", "enabled": true }
+{ "kind": "api",         "entity": "stream", "sub": "stop", "id": 512, "icon": "mdi-stop", "title": "Stop", "enabled": true }
 { "kind": "fingerprint", "id": 512, "context": "stream", "icon": "mdi-fingerprint", "enabled": true }
 { "kind": "credits",     "id": 5, "icon": "mdi-coin", "title": "Add credits" }
 ```
 `kind` → client call: `navigate(target)` · `searchAPI(entity,id,sub)` · `modalFingerprint(id,context)` · `addCredits(id)`. `enabled:false` renders a disabled button.
+
+An `api` action is `{kind, entity, sub, id, icon, title, enabled}`. `id` is the numeric id the `entity` endpoint acts on: the item's own id for stream/movie/channel/radio/episode/user/line items, and **the owning line's id** for `mag`/`enigma` device items (their ban/enable/kill actions act on the line, not the device row). The client passes `action.id` to `searchAPI`; an action without one falls back to the item's `<table>#<id>` suffix (never for a device item).
 
 ## data by entity
 
@@ -81,3 +83,7 @@ Every `data.actions[]` entry is **self-describing** so the client needs no per-a
 
 ## Status codes (streams)
 Server resolves `$rActualStatus` (-1…10) exactly as today; label + variant are derived from the existing `$rSearchStatusArray` constant, so they stay the single source of truth. Codes `1` (running → uptime) and `6` (created-channel encode → progress) are special-cased into the `uptime` / `progress` kinds.
+
+## Amendment (2026-09-28) — `id` on `api` actions
+
+**Decision (from the user):** `api` actions keep their `id`, and it is now part of the contract (shape and meaning above). This supersedes the earlier reading that `api` actions carry no id and the client derives it from the item — which for device items meant reading the line id off the `fingerprint` action. The other contract fixes stand: `entity` is always one of the listed values, there is no `no_results`/`unknown` pseudo-item (no results is an empty `items` list), and the envelope is always `{result, total_count, items}`.
