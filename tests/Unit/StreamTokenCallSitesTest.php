@@ -12,9 +12,14 @@ use PHPUnit\Framework\TestCase;
  */
 #[Group('skip-on-panel')]
 final class StreamTokenCallSitesTest extends TestCase {
-	/** Stored data that must stay deterministic: HMAC keys are looked up by ciphertext, image cache names are reversed by the self-heal. */
+	/**
+	 * Stored data that must stay deterministic: HMAC keys are looked up by
+	 * ciphertext, image cache names are reversed by the self-heal, and
+	 * cluster:rotate-stream-secret re-encrypts both under the new secret.
+	 */
 	private const LEGACY_ALLOWED = array(
 		'Core/Auth/AuthService.php',
+		'Domain/Cluster/StreamSecretRotation.php',
 		'Core/Util/Encryption.php',
 		'Core/Util/ImageUtils.php',
 		'Cli/Commands/ToolsCommand.php',
