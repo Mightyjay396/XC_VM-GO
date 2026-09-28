@@ -4,8 +4,17 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronJobs\ServersCronJob;
+use XcVm\Core\Cluster\AgentClient;
+use XcVm\Core\Cluster\AgentPaths;
+use XcVm\Core\Cluster\ClusterDiagnosis;
+use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeLease;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\OpensslExtra;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -29,7 +38,23 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *     exits when its DB connection drops; `cron:servers` in the xc_vm crontab
  *     relaunches it. A MySQL blip on the main therefore drops ALL nodes at once.)
  *
- * Read-only: only ping/curl/fsockopen, `SELECT`s, and `sudo -n iptables -nL`.
+ * A node in the cluster API (ADR 0004) is judged by its cluster state as well:
+ *
+ *   • ON THE MAIN — the node's `cluster_nodes` row: state and health, mode and
+ *     flows, when its agent was last heard, its token and the fence window
+ *     that follows it (token expiry + `lb_partition_tolerance_h`, then
+ *     `lb_fence_drain_min`), the clock offset its heartbeats carry, and its
+ *     command queue's lag.
+ *   • ON THE NODE — its agent's own report (`GET /v1/status` on the agent's
+ *     socket): whether the agent answers, the licence fence, the last
+ *     heartbeat MAIN answered, the clock against MAIN's, token and lease
+ *     windows, each event lane's backlog, and the lease verdict the node's PHP
+ *     acts on (NodeLease). With the TELEMETRY flow on the legacy heartbeat is
+ *     not the authority and is not judged; in mode 2 the node has no database
+ *     of MAIN's, so the checks that need one are skipped.
+ *
+ * Read-only: only ping/curl/fsockopen, `SELECT`s, `sudo -n iptables -nL`, and
+ * the agent's status endpoint.
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -51,17 +76,30 @@ class ServerDiagnoseCommand implements CommandInterface {
 	}
 
 	public function getDescription(): string {
-		return 'Diagnose why a proxy/LB node is silent to the main (heartbeat, reachability, iptables, service)';
+		return 'Diagnose why a proxy/LB node is silent to the main (heartbeat, reachability, iptables, service, cluster state)';
 	}
 
 	public function execute(array $rArgs): int {
-		$rServers = ServerRepository::getAll(true);
+		// A node in mode 2 reads its servers from its replica; one whose replica
+		// is not there yet cannot read them at all. The agent still answers.
+		try {
+			$rServers = ServerRepository::getAll(true);
+		} catch (\Throwable) {
+			$rServers = null;
+		}
 
-		$rMe = (defined('SERVER_ID') && isset($rServers[SERVER_ID])) ? $rServers[SERVER_ID] : null;
+		$rMe = ($rServers !== null && defined('SERVER_ID') && isset($rServers[SERVER_ID])) ? $rServers[SERVER_ID] : null;
 
-		// Where are we? The main row has is_main=1; anything else is a node.
-		if ($rMe !== null && empty($rMe['is_main'])) {
-			return $this->diagnoseLocal($rServers, $rMe);
+		// Where are we? The main row has is_main=1; anything else is a node. With
+		// no servers to go by, a node's agent file or a build without MAIN's
+		// cluster endpoint says it.
+		$rIsNode = $rMe !== null ? empty($rMe['is_main']) : ($rServers === null && (NodeFlows::declared()['mode'] >= 1 || !NodeRole::mainBuild()));
+		if ($rIsNode) {
+			return $this->diagnoseLocal($rServers ?? [], $rMe);
+		}
+		if ($rServers === null) {
+			echo "Cannot read the servers (no database, no replica).\n";
+			return 1;
 		}
 
 		// On the main (or is_main undeterminable): probe a target by id.
@@ -78,15 +116,21 @@ class ServerDiagnoseCommand implements CommandInterface {
 			echo "Server #{$rTargetID} is the MAIN server — nothing to diagnose (it is always 'online' to itself).\n";
 			return 0;
 		}
-		return $this->diagnoseFromMain($rServers[$rTargetID], $rTargetID, $this->findMain($rServers));
+		return $this->diagnoseFromMain($rServers, $rTargetID, $this->findMain($rServers));
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
 	//  Mode A — remote probe from the MAIN
 	// ─────────────────────────────────────────────────────────────────────────
-	private function diagnoseFromMain(array $rServer, int $rServerID, ?array $rMain): int {
+
+	/**
+	 * @param array<int, array<string, mixed>> $rServers
+	 * @param array<string, mixed>|null $rMain
+	 */
+	private function diagnoseFromMain(array $rServers, int $rServerID, ?array $rMain): int {
 		self::db();
 
+		$rServer = $rServers[$rServerID];
 		$rIP   = (string) $rServer['server_ip'];
 		$rPort = intval($rServer['http_broadcast_port']);
 		$rNow  = time();
@@ -95,7 +139,17 @@ class ServerDiagnoseCommand implements CommandInterface {
 		echo str_repeat('-', 64) . "\n";
 		$rProblems = [];
 
-		$this->heartbeatSection($rServer, $rNow, $rProblems);
+		// The cluster API's view first: with the TELEMETRY flow on, the node's
+		// agent is what keeps it online, not the legacy heartbeat.
+		$rSettings = SettingsManager::getAll();
+		$rNode = $this->clusterNode($rServers, $rServerID, $rSettings);
+		$rTelemetry = $rNode !== null && (int) $rNode['mode'] >= 1 && ((int) $rNode['flows'] & NodeFlows::TELEMETRY) === NodeFlows::TELEMETRY;
+
+		if (!$rTelemetry) {
+			$this->heartbeatSection($rServer, $rNow, $rProblems);
+		} else {
+			$this->enabledSection($rServer, $rProblems);
+		}
 
 		$rIcmp = $this->icmpPing($rIP);
 		$this->line('ICMP ping', $rIcmp ? 'reply' : 'no reply', $rIcmp);
@@ -105,7 +159,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 		$rHttpOk = ($rCode >= 200 && $rCode < 500);
 		$this->line('HTTP /api', $rCode ? "HTTP {$rCode}" : ('curl: ' . ($rCurlErr ?: 'no response')), $rHttpOk);
 
-		$rBeatStale = (($rNow - intval($rServer['last_check_ago'])) > (((int) $rServer['server_type'] === 1) ? 180 : 90));
+		$rBeatStale = !$rTelemetry && (($rNow - intval($rServer['last_check_ago'])) > (((int) $rServer['server_type'] === 1) ? 180 : 90));
 		if (!$rIcmp && $rTcp !== true) {
 			$rProblems[] = "Host unreachable (no ICMP, port {$rPort} closed): the node is powered off, network-partitioned, or fully firewalled from the main.";
 		} elseif ($rIcmp && $rTcp !== true) {
@@ -116,34 +170,102 @@ class ServerDiagnoseCommand implements CommandInterface {
 			$rProblems[] = "The node answers /api yet its heartbeat is stale: its watchdog daemon (the heartbeat writer) is not running — it exits when its DB connection to the main drops — or it cannot WRITE to the panel DB. Run `server:diagnose` ON the node.";
 		}
 
-		$this->clockSection($rServer, $rProblems);
+		if ($rNode !== null) {
+			echo "-- Cluster API --\n";
+			$this->checks(ClusterDiagnosis::node($rNode, $this->commandQueue($rServerID), (int) round(microtime(true) * 1000), $rSettings), $rProblems);
+		} elseif (!empty($rSettings['cluster_api_enabled']) && ClusterAdmin::isLoadBalancer($rServer)) {
+			$this->line('Cluster node', 'not enrolled (legacy node)', true);
+		}
+
+		if (!$rTelemetry) {
+			$this->clockSection($rServer, $rProblems);
+		}
 		$this->signalSection($rServerID, $rNow, $rProblems);
 		$this->opensslExtraSection($rServer, $rMain, $rProblems);
 		return $this->summary($rProblems);
 	}
 
+	/**
+	 * The node's `cluster_nodes` row as the Cluster Nodes page reads it (health
+	 * and the freshest last_seen_at), or null when it is not enrolled or the
+	 * cluster tables are not there yet.
+	 *
+	 * @param array<int, array<string, mixed>> $rServers
+	 * @param array<string, mixed> $rSettings
+	 * @return array<string, mixed>|null
+	 */
+	private function clusterNode(array $rServers, int $rServerID, array $rSettings): ?array {
+		if (empty($rSettings['cluster_api_enabled'])) {
+			return null;
+		}
+		try {
+			foreach (ClusterAdmin::nodes($rServers, ClusterSettings::int('cluster_offline_after_sec', $rSettings['cluster_offline_after_sec'] ?? null)) as $rNode) {
+				if ((int) $rNode['server_id'] === $rServerID) {
+					$rDb = self::db();
+					if ($rDb->query('SELECT `clock_offset_ms`, `useq_p0`, `useq_p1` FROM `cluster_nodes` WHERE `server_id` = ?;', $rServerID) && $rDb->num_rows() > 0) {
+						$rNode += $rDb->get_row();
+					}
+					return $rNode;
+				}
+			}
+		} catch (\Throwable) {
+			// No cluster tables yet (before cluster:init's migrations).
+		}
+		return null;
+	}
+
+	/**
+	 * The node's commands not yet acked: how many, and when the oldest was queued.
+	 *
+	 * @return array{count: int, oldest: ?int}
+	 */
+	private function commandQueue(int $rServerID): array {
+		$rDb = self::db();
+		if (!$rDb->query("SELECT COUNT(*) AS `c`, MIN(`created_at`) AS `oldest` FROM `cluster_commands` WHERE `server_id` = ? AND `state` IN ('queued', 'delivered') AND `exp` > ?;", $rServerID, time())) {
+			return ['count' => 0, 'oldest' => null];
+		}
+		$rRow = $rDb->get_row() ?: [];
+		return ['count' => (int) ($rRow['c'] ?? 0), 'oldest' => isset($rRow['oldest']) ? (int) $rRow['oldest'] : null];
+	}
+
 	// ─────────────────────────────────────────────────────────────────────────
 	//  Mode B — local self-diagnosis ON the LB/node
 	// ─────────────────────────────────────────────────────────────────────────
-	private function diagnoseLocal(array $rMe, array $rMeRow): int {
-		// Note: $rMe is the full server map; $rMeRow is this node's row.
-		$rServers = $rMe;
-		$rMe      = $rMeRow;
-		$rNow     = time();
 
-		echo "Self-diagnosis on node #" . SERVER_ID . " — " . ($rMe['server_name'] ?? '(no name)') . " (type " . ($rMe['server_type'] ?? '?') . ")\n";
+	/**
+	 * @param array<int, array<string, mixed>> $rServers The server map; empty when it cannot be read.
+	 * @param array<string, mixed>|null $rMe This node's row; null when it cannot be read.
+	 */
+	private function diagnoseLocal(array $rServers, ?array $rMe): int {
+		$rNow      = time();
+		$rDeclared = NodeFlows::declared();
+		$rMode     = (int) $rDeclared['mode'];
+		$rTelemetry = $rMode >= 1 && ((int) $rDeclared['flows'] & NodeFlows::TELEMETRY) === NodeFlows::TELEMETRY;
+
+		echo "Self-diagnosis on node #" . (defined('SERVER_ID') ? SERVER_ID : '?') . " — " . ($rMe['server_name'] ?? '(no name)') . " (type " . ($rMe['server_type'] ?? '?') . ", cluster mode {$rMode})\n";
 		echo str_repeat('-', 64) . "\n";
 		$rProblems = [];
 
-		// 1. How the main currently sees me (my own row in the shared DB).
-		$this->heartbeatSection($rMe, $rNow, $rProblems);
+		// 1. How the main currently sees me (my own row). With TELEMETRY on the
+		// agent's heartbeat is the authority (section 9 below), not this row.
+		if ($rMe !== null && !$rTelemetry) {
+			$this->heartbeatSection($rMe, $rNow, $rProblems);
+		} elseif ($rMe !== null) {
+			$this->enabledSection($rMe, $rProblems);
+		}
 
-		// 2. Can I reach the MAIN? (I just used the DB, so DB→main already works.)
-		$this->line('DB → main', 'reachable (this query ran)', true);
-		$rMain = $this->findMain($rServers);
+		// 2. Can I reach the MAIN? In mode 2 the node reads no database of MAIN's.
+		if ($rMode >= 2) {
+			$this->line('DB → main', 'not used (mode 2: servers from the replica)', true);
+		} elseif ($rMe !== null) {
+			$this->line('DB → main', 'reachable (this query ran)', true);
+		}
+		$rMain = $rServers === [] ? null : $this->findMain($rServers);
 		if ($rMain === null) {
-			$this->line('Main server', 'NOT found in servers table', false);
-			$rProblems[] = 'No is_main server row found — the panel DB has no main record; this node cannot know where to report.';
+			$this->line('Main server', 'NOT found in the servers', false);
+			$rProblems[] = $rServers === []
+				? 'This node cannot read the servers at all (no database of MAIN\'s, and no replica yet): it does not know where MAIN is. The agent below still reports what it holds.'
+				: 'No is_main server row found — the panel DB has no main record; this node cannot know where to report.';
 		} else {
 			$rMainIP   = (string) $rMain['server_ip'];
 			$rMainPort = intval($rMain['http_broadcast_port']);
@@ -152,7 +274,7 @@ class ServerDiagnoseCommand implements CommandInterface {
 			$rT = $this->tcpOpen($rMainIP, $rMainPort);
 			$this->line("Main :{$rMainPort}", $rT === true ? 'open' : (string) $rT, $rT === true);
 			if (!$rP && $rT !== true) {
-				$rProblems[] = "Cannot reach the main ({$rMainIP}): network/route/firewall between this node and the main is down — the DB works but the HTTP callback path does not.";
+				$rProblems[] = "Cannot reach the main ({$rMainIP}): network/route/firewall between this node and the main is down — " . ($rMode >= 1 ? 'the agent cannot reach MAIN\'s cluster API either.' : 'the DB works but the HTTP callback path does not.');
 			}
 
 			// 3. Did THIS node firewall the main's IP? (the silent classic)
@@ -171,13 +293,14 @@ class ServerDiagnoseCommand implements CommandInterface {
 		if (!$rSvc) {
 			$rProblems[] = 'The xc_vm systemd service is not active — `sudo systemctl restart xc_vm` (it launches nginx + startup).';
 		}
-		$rMyPort = intval($rMe['http_broadcast_port']);
-		$rNginx  = $this->tcpOpen('127.0.0.1', $rMyPort) === true;
-		$this->line("nginx :{$rMyPort}", $rNginx ? 'listening' : 'NOT listening (localhost)', $rNginx);
-		if (!$rNginx) {
-			$rProblems[] = "nginx is not listening on {$rMyPort} locally — `sudo " . BIN_PATH . "nginx/sbin/nginx -t` then restart the service.";
+		if ($rMe !== null) {
+			$rMyPort = intval($rMe['http_broadcast_port']);
+			$rNginx  = $this->tcpOpen('127.0.0.1', $rMyPort) === true;
+			$this->line("nginx :{$rMyPort}", $rNginx ? 'listening' : 'NOT listening (localhost)', $rNginx);
+			if (!$rNginx) {
+				$rProblems[] = "nginx is not listening on {$rMyPort} locally — `sudo " . BIN_PATH . "nginx/sbin/nginx -t` then restart the service.";
+			}
 		}
-
 		// 5. The heartbeat writer: the watchdog daemon self-respawns every few
 		// seconds via `(sleep 1; console.php 'watchdog') &`, so a single pgrep
 		// can land in the ~1s window where only the sleeping subshell exists.
@@ -221,11 +344,34 @@ class ServerDiagnoseCommand implements CommandInterface {
 			}
 		}
 
-		// 7. Clock.
-		$this->clockSection($rMe, $rProblems);
+		// 7. Clock (the legacy row's offset; the agent's own measure is below).
+		if ($rMe !== null && !$rTelemetry) {
+			$this->clockSection($rMe, $rProblems);
+		}
 
 		// 8. Do tokens minted on the main open here?
-		$this->opensslExtraSection($rMe, $rMain, $rProblems);
+		if ($rMe !== null) {
+			$this->opensslExtraSection($rMe, $rMain, $rProblems);
+		}
+
+		// 9. The cluster API: the agent's own report and the lease verdict.
+		if ($rMode >= 1 || is_file(AgentPaths::file(AgentPaths::STATE))) {
+			echo "-- Cluster API --\n";
+			try {
+				$rSettings = SettingsManager::getAll();
+			} catch (\Throwable) {
+				$rSettings = [];
+			}
+			$this->checks(ClusterDiagnosis::agent(AgentClient::status(), (int) round(microtime(true) * 1000), $rSettings), $rProblems);
+			$rVerdict = NodeLease::verdict($rSettings);
+			$rServing = $rVerdict['state'] === NodeLease::SERVING;
+			$this->line('Lease verdict', $rVerdict['state'] . ($rVerdict['why'] !== '' ? ' (' . $rVerdict['why'] . ')' : ''), $rServing);
+			if (!$rServing) {
+				$rProblems[] = $rVerdict['state'] === NodeLease::FENCED
+					? 'This node is fenced: its lease ran out and the drain is over, so it serves no viewer. It needs a new token (and lease) from a licensed, reachable MAIN.'
+					: 'This node is draining: its lease ran out, so no new viewer starts here and the running ones stop at ' . gmdate('Y-m-d H:i', $rVerdict['drain_until']) . ' UTC (MAIN\'s clock).';
+			}
+		}
 
 		return $this->summary($rProblems);
 	}
@@ -248,6 +394,31 @@ class ServerDiagnoseCommand implements CommandInterface {
 		$this->line('Heartbeat', "last check-in {$rStale}s ago (limit {$rThreshold}s)", $rBeatOk);
 		if (!$rBeatOk) {
 			$rProblems[] = "Heartbeat is stale ({$rStale}s > {$rThreshold}s): the node stopped reporting — the checks below narrow down why.";
+		}
+	}
+
+	/** The panel's enable switch alone, for a node whose heartbeat is the cluster API's. */
+	private function enabledSection(array $rServer, array &$rProblems): void {
+		$rEnabled = !empty($rServer['enabled']);
+		$this->line('Enabled', $rEnabled ? 'yes' : 'NO (disabled in panel)', $rEnabled);
+		if (!$rEnabled) {
+			$rProblems[] = 'The server is disabled in the panel.';
+		}
+		$this->line('Heartbeat', 'judged by the cluster API (TELEMETRY flow on)', true);
+	}
+
+	/**
+	 * Print ClusterDiagnosis checks, and take their problems.
+	 *
+	 * @param list<array{label: string, value: string, ok: bool, problem: ?string}> $rChecks
+	 * @param list<string> $rProblems
+	 */
+	private function checks(array $rChecks, array &$rProblems): void {
+		foreach ($rChecks as $rCheck) {
+			$this->line($rCheck['label'], $rCheck['value'], $rCheck['ok']);
+			if ($rCheck['problem'] !== null) {
+				$rProblems[] = $rCheck['problem'];
+			}
 		}
 	}
 
