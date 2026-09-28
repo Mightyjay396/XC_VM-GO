@@ -4,9 +4,9 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
-use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Domain\Cluster\ClusterAudit;
+use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Server\InstallCredentials;
 
 /**
@@ -49,10 +49,8 @@ class ClusterExportKeysCommand implements CommandInterface {
 			echo "{$rFile} exists; choose a new file. Exiting\n";
 			return 1;
 		}
-		try {
-			$rCrypto = $this->rCrypto ?? ClusterCryptoFactory::create();
-		} catch (\Throwable $rE) {
-			echo 'Cluster API unavailable: ' . $rE->getMessage() . "\n";
+		$rCrypto = $this->rCrypto ?? ClusterCli::crypto(ClusterCli::UNAVAILABLE);
+		if ($rCrypto === null) {
 			return 1;
 		}
 		$rPass = ClusterPassphrase::read($rOptions, true, $this->rIn);

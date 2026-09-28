@@ -112,6 +112,17 @@ final class ClusterAdmin {
 	}
 
 	/**
+	 * Is this `servers` row a load balancer (not MAIN, not a proxy): what a
+	 * node can be enrolled, re-enrolled or issued a code for, from this page
+	 * or the CLI (cluster:enrol-code, cluster:reenrol, server:enrol).
+	 *
+	 * @param array<string, mixed>|null $rServer
+	 */
+	public static function isLoadBalancer(?array $rServer): bool {
+		return $rServer !== null && empty($rServer['is_main']) && intval($rServer['server_type'] ?? 0) === 0;
+	}
+
+	/**
 	 * Load balancers a code may be issued for.
 	 *
 	 * @return array<int, string> server id => name
@@ -119,7 +130,7 @@ final class ClusterAdmin {
 	public static function loadBalancers(array $rServers): array {
 		$rOut = [];
 		foreach ($rServers as $rID => $rServer) {
-			if (empty($rServer['is_main']) && (int) ($rServer['server_type'] ?? 0) === 0) {
+			if (self::isLoadBalancer($rServer)) {
 				$rOut[(int) $rID] = (string) ($rServer['server_name'] ?? ('#' . $rID));
 			}
 		}

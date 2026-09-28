@@ -359,6 +359,27 @@ final class ConnectionAdmissionTest extends TestCase {
 		$this->assertSame(1, (int) $this->rDb->get_row()['n'], 'adm_uuid is not a store column');
 	}
 
+	public function testTheTableReservesAndCountsAsTheScriptDoes(): void {
+		$rA = str_repeat('a', 32);
+		$rB = str_repeat('b', 32);
+		$this->assertSame(0, ConnectionAdmission::reserve(false, '42', $rA, 15, 5, 100));
+		$this->assertSame(1, ConnectionAdmission::reserve(false, '42', $rB, 15, 5));
+		$this->assertSame(1, ConnectionAdmission::reserve(false, '42', $rB, 15, 5), 'the same viewer is not counted twice');
+		$this->assertSame(0, ConnectionAdmission::reserve(false, '43', str_repeat('c', 32), 15), 'another line');
+		$this->assertNull(ConnectionAdmission::reserve(false, '42', str_repeat('d', 33), 15), 'longer than the table\'s id: not reserved');
+		$this->rDb->query('SELECT `id`, `identity`, `server_id`, `stream_id`, `exp` FROM `cluster_reservations` ORDER BY `id`');
+		$this->assertSame([[$rA, '42', 5, 100, self::T + 15], [$rB, '42', 5, null, self::T + 15], [str_repeat('c', 32), '43', 0, null, self::T + 15]], array_map(static fn(array $rRow): array => [$rRow['id'], $rRow['identity'], (int) $rRow['server_id'], $rRow['stream_id'] === null ? null : (int) $rRow['stream_id'], (int) $rRow['exp']], $this->rDb->get_rows()));
+
+		// The count a queued cut makes when it runs: the live ones, less its own.
+		$this->assertSame(1, ConnectionAdmission::inFlight(false, '42', $rA));
+		$this->assertSame(2, ConnectionAdmission::inFlight(false, '42', str_repeat('d', 33)), 'a viewer with no reservation of its own');
+		$this->rNow += 16;
+		$this->assertSame(0, ConnectionAdmission::inFlight(false, '42', str_repeat('d', 33)), 'expired ones are not in flight');
+		$this->assertSame(0, ConnectionAdmission::reserve(false, '42', str_repeat('e', 32), 15), 'expired reservations are dropped');
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations`');
+		$this->assertSame(1, (int) $this->rDb->get_row()['n']);
+	}
+
 	public function testNothingHappensWhenTheStoreIsDown(): void {
 		$this->assertFalse($this->admit($this->token(str_repeat('a', 32), 5), ['redis_handler' => 1]));
 		$this->assertSame([], $this->rCuts);

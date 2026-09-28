@@ -2,6 +2,9 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\AgentConnections;
+use XcVm\Core\Cluster\StoredConnections;
+use XcVm\Core\Cluster\StrictQuery;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Redis\RedisManager;
 use XcVm\Streaming\Protection\ConnectionLimiter;
@@ -118,7 +121,7 @@ LUA;
 			$rUser = is_array($rTokenData['user_info'] ?? null) ? $rTokenData['user_info'] : [];
 			$rMax = (int) ($rUser['max_connections'] ?? 0);
 			$rUUID = (string) ($rTokenData['uuid'] ?? '');
-			if ($rMax <= 0 || empty($rSettings['cluster_api_enabled']) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
+			if ($rMax <= 0 || empty($rSettings['cluster_api_enabled']) || !preg_match(AgentConnections::CONN_UUID, $rUUID)) {
 				return null;
 			}
 			$rNode = self::nodeOf($rTokenData);
@@ -131,7 +134,7 @@ LUA;
 			if ($rHMAC === 0 && $rLineID === 0) {
 				return null;
 			}
-			$rIdentity = $rHMAC !== 0 ? $rHMAC . '_' . $rIdentifier : (string) $rLineID;
+			$rIdentity = StoredConnections::identity(['user_id' => $rLineID, 'hmac_id' => $rHMAC, 'hmac_identifier' => $rIdentifier]);
 			$rTtl = self::ttl($rSettings);
 			$rStreamID = (int) ($rTokenData['stream_id'] ?? $rTokenData['stream'] ?? 0);
 			$rOthers = self::reserve(!empty($rSettings['redis_handler']), $rIdentity, $rUUID, $rTtl, $rNode, $rStreamID);
@@ -186,18 +189,17 @@ LUA;
 		$rUserAgent = $rRequest['ua'] ?? '';
 		$rIsLine = is_int($rLineID) && $rLineID > 0 && $rHMAC === null;
 		$rIsHMAC = is_int($rHMAC) && $rHMAC > 0 && is_string($rIdentifier) && $rLineID === null;
-		$rValid = is_string($rUUID) && preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) && is_int($rStreamID) && $rStreamID >= 0 && is_string($rIP) && is_string($rUserAgent);
+		$rValid = is_string($rUUID) && preg_match(AgentConnections::CONN_UUID, $rUUID) && is_int($rStreamID) && $rStreamID >= 0 && is_string($rIP) && is_string($rUserAgent);
 		if (!$rValid || $rIsLine === $rIsHMAC) {
 			return null;
 		}
 		$rIdentifier = substr((string) $rIdentifier, 0, 255);
 		$rIP = substr($rIP, 0, 64);
 		$rUserAgent = substr($rUserAgent, 0, 512);
+		$rIdentity = StoredConnections::identity(['user_id' => $rLineID, 'hmac_id' => $rHMAC, 'hmac_identifier' => $rIdentifier]);
 		$rDb = self::db();
 		if ($rIsLine) {
-			if ($rDb->query('SELECT `max_connections`, `enabled`, `admin_enabled`, `exp_date` FROM `lines` WHERE `id` = ?;', $rLineID) === false) {
-				throw new \RuntimeException('db');
-			}
+			StrictQuery::orThrow($rDb, 'db', 'SELECT `max_connections`, `enabled`, `admin_enabled`, `exp_date` FROM `lines` WHERE `id` = ?;', $rLineID);
 			$rLine = $rDb->num_rows() === 1 ? $rDb->get_row() : null;
 			$rReason = match (true) {
 				$rLine === null => 'UNKNOWN_LINE',
@@ -209,16 +211,12 @@ LUA;
 			if ($rReason !== null) {
 				return ['admit' => false, 'exp' => 0, 'reason' => $rReason];
 			}
-			$rIdentity = (string) $rLineID;
 			$rMax = (int) $rLine['max_connections'];
 		} else {
-			if ($rDb->query('SELECT `id` FROM `hmac_keys` WHERE `id` = ? AND `enabled` = 1;', $rHMAC) === false) {
-				throw new \RuntimeException('db');
-			}
+			StrictQuery::orThrow($rDb, 'db', 'SELECT `id` FROM `hmac_keys` WHERE `id` = ? AND `enabled` = 1;', $rHMAC);
 			if ($rDb->num_rows() !== 1) {
 				return ['admit' => false, 'exp' => 0, 'reason' => 'UNKNOWN_HMAC'];
 			}
-			$rIdentity = $rHMAC . '_' . $rIdentifier;
 			$rMax = null;
 		}
 		$rTtl = self::ttl($rSettings);
@@ -293,37 +291,15 @@ LUA;
 	 */
 	public static function reserve(bool $rRedisMode, string $rIdentity, string $rUUID, int $rTtl, int $rServerID = 0, int $rStreamID = 0): ?int {
 		$rNow = self::now();
-		// The cluster bus when MAIN runs it (plan: reservations live there),
-		// whatever the store mode; else the shared Redis or the table.
-		$rBus = ClusterBus::client();
-		if ($rBus instanceof \Redis) {
-			try {
-				$rOthers = $rBus->eval(self::LUA, ['RESV#' . $rIdentity, $rNow, $rNow + $rTtl, $rUUID, $rTtl], 1);
-				if (is_int($rOthers)) {
-					return max(0, $rOthers);
-				}
-			} catch (\Throwable) {
-				// Fall through to the store.
+		return self::counted($rRedisMode, self::LUA, ['RESV#' . $rIdentity, $rNow, $rNow + $rTtl, $rUUID, $rTtl], $rIdentity, $rUUID, $rNow, static function () use ($rIdentity, $rUUID, $rNow, $rTtl, $rServerID, $rStreamID): bool {
+			if (strlen($rUUID) > 32) {
+				return false; // the table's id is char(32), the size auth.php mints
 			}
-		}
-		if ($rRedisMode) {
-			$rRedis = RedisManager::instance();
-			if (!$rRedis instanceof \Redis) {
-				return null;
-			}
-			$rOthers = $rRedis->eval(self::LUA, ['RESV#' . $rIdentity, $rNow, $rNow + $rTtl, $rUUID, $rTtl], 1);
-			return is_int($rOthers) ? max(0, $rOthers) : null;
-		}
-		if (strlen($rUUID) > 32) {
-			return null; // the table's id is char(32), the size auth.php mints
-		}
-		$db = self::db();
-		$db->query('DELETE FROM `cluster_reservations` WHERE `exp` < ?;', $rNow);
-		$db->query('REPLACE INTO `cluster_reservations` (`id`, `identity`, `server_id`, `stream_id`, `created_at`, `exp`) VALUES (?, ?, ?, ?, ?, ?);', $rUUID, $rIdentity, $rServerID, $rStreamID ?: null, $rNow, $rNow + $rTtl);
-		if (!$db->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations` WHERE `identity` = ? AND `id` <> ? AND `exp` >= ?;', $rIdentity, $rUUID, $rNow)) {
-			return null;
-		}
-		return (int) ($db->get_row()['n'] ?? 0);
+			$db = self::db();
+			$db->query('DELETE FROM `cluster_reservations` WHERE `exp` < ?;', $rNow);
+			$db->query('REPLACE INTO `cluster_reservations` (`id`, `identity`, `server_id`, `stream_id`, `created_at`, `exp`) VALUES (?, ?, ?, ?, ?, ?);', $rUUID, $rIdentity, $rServerID, $rStreamID ?: null, $rNow, $rNow + $rTtl);
+			return true;
+		});
 	}
 
 	/**
@@ -332,10 +308,27 @@ LUA;
 	 */
 	public static function inFlight(bool $rRedisMode, string $rIdentity, string $rExceptUUID): ?int {
 		$rNow = self::now();
+		return self::counted($rRedisMode, self::LUA_COUNT, ['RESV#' . $rIdentity, $rNow, $rExceptUUID], $rIdentity, $rExceptUUID, $rNow);
+	}
+
+	/**
+	 * reserve()'s and inFlight()'s store walk: $rLua (keys: `RESV#<identity>`,
+	 * then $rArgs) on the cluster bus when MAIN runs it, falling through to
+	 * the store when it fails; else on the shared Redis in Redis mode; else
+	 * `cluster_reservations`, where $rWrite first writes the reservation (or
+	 * answers false, for null) and the identity's live reservations other
+	 * than $rUUID's are counted. Null when the store cannot be read.
+	 *
+	 * @param list<int|string> $rArgs KEYS[1], then ARGV
+	 * @param (\Closure(): bool)|null $rWrite
+	 */
+	private static function counted(bool $rRedisMode, string $rLua, array $rArgs, string $rIdentity, string $rUUID, int $rNow, ?\Closure $rWrite = null): ?int {
+		// The cluster bus when MAIN runs it (plan: reservations live there),
+		// whatever the store mode; else the shared Redis or the table.
 		$rBus = ClusterBus::client();
-		if ($rBus !== null) {
+		if ($rBus instanceof \Redis) {
 			try {
-				$rCount = $rBus->eval(self::LUA_COUNT, ['RESV#' . $rIdentity, $rNow, $rExceptUUID], 1);
+				$rCount = $rBus->eval($rLua, $rArgs, 1);
 				if (is_int($rCount)) {
 					return max(0, $rCount);
 				}
@@ -348,11 +341,14 @@ LUA;
 			if (!$rRedis instanceof \Redis) {
 				return null;
 			}
-			$rCount = $rRedis->eval(self::LUA_COUNT, ['RESV#' . $rIdentity, $rNow, $rExceptUUID], 1);
+			$rCount = $rRedis->eval($rLua, $rArgs, 1);
 			return is_int($rCount) ? max(0, $rCount) : null;
 		}
+		if ($rWrite !== null && !$rWrite()) {
+			return null;
+		}
 		$db = self::db();
-		if (!$db->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations` WHERE `identity` = ? AND `id` <> ? AND `exp` >= ?;', $rIdentity, $rExceptUUID, $rNow)) {
+		if (!$db->query('SELECT COUNT(*) AS `n` FROM `cluster_reservations` WHERE `identity` = ? AND `id` <> ? AND `exp` >= ?;', $rIdentity, $rUUID, $rNow)) {
 			return null;
 		}
 		return (int) ($db->get_row()['n'] ?? 0);

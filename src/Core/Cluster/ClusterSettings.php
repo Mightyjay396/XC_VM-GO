@@ -345,6 +345,21 @@ final class ClusterSettings {
 		return self::clampInt($rKey, (int) $rValue);
 	}
 
+	/**
+	 * An enum setting as its readers take it, from the value as stored: the
+	 * value when it is one of the allowed ones exactly (normalize() stores
+	 * them trimmed and lower-case), else its default, unset included. Every
+	 * reader goes through here, so a default lives in ENUMS alone.
+	 *
+	 * @param string $rKey   A key of ENUMS.
+	 * @param mixed  $rValue The stored value; null when unset.
+	 * @return string The value to use.
+	 */
+	public static function enum(string $rKey, mixed $rValue): string {
+		[$rDefault, $rAllowed] = self::ENUMS[$rKey];
+		return is_scalar($rValue) && in_array((string) $rValue, $rAllowed, true) ? (string) $rValue : $rDefault;
+	}
+
 	public static function clampInt(string $rKey, int $rValue): int {
 		[, $rMin, $rMax] = self::INTS[$rKey];
 		return max($rMin, min($rMax, $rValue));

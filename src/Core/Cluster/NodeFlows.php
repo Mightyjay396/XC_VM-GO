@@ -23,6 +23,12 @@ final class NodeFlows {
 	public const CONNECTIONS = 64;
 	public const DATAPLANE = 128;
 
+	/** The agent's file, relative to the config directory. */
+	public const FILE = AgentPaths::DIR . 'flows.json';
+
+	/** Every flow off: no file, or not one. */
+	private const OFF = ['mode' => 0, 'flows' => 0, 'state' => '', 'features' => []];
+
 	/** @var array{mode: int, flows: int, state: string, features: list<string>}|null */
 	private static ?array $rCache = null;
 
@@ -87,18 +93,18 @@ final class NodeFlows {
 	 * @return array{mode: int, flows: int, state: string, features: list<string>}
 	 */
 	public static function declared(): array {
-		$rDir = defined('CONFIG_PATH') ? CONFIG_PATH : (defined('MAIN_HOME') ? MAIN_HOME . 'config/' : null);
-		return self::parse(self::$rPath ?? ($rDir === null ? null : $rDir . 'cluster/flows.json')) ?? ['mode' => 0, 'flows' => 0, 'state' => '', 'features' => []];
+		// fileEarly(): console.php asks (ReplicaBoot::forArgv) before its
+		// boot defines CONFIG_PATH.
+		return self::parse(self::$rPath ?? AgentPaths::fileEarly(self::FILE)) ?? self::OFF;
 	}
 
 	/** @return array{mode: int, flows: int, state: string, features: list<string>} */
 	private static function read(): array {
-		$rOff = ['mode' => 0, 'flows' => 0, 'state' => '', 'features' => []];
 		// The file first: no file is the common case (MAIN, legacy nodes), and
 		// it needs no database to find out.
-		$rFlows = self::parse(self::$rPath ?? (defined('CONFIG_PATH') ? CONFIG_PATH . 'cluster/flows.json' : null));
+		$rFlows = self::parse(self::$rPath ?? AgentPaths::fileOrNull(self::FILE));
 		if ($rFlows === null) {
-			return $rOff;
+			return self::OFF;
 		}
 		if (self::$rMainCheck) {
 			self::$rReading = $rFlows;
@@ -108,7 +114,7 @@ final class NodeFlows {
 				self::$rReading = null;
 			}
 			if ($rMain) {
-				return $rOff;
+				return self::OFF;
 			}
 		}
 		return $rFlows;

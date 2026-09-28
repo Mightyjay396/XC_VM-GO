@@ -284,7 +284,7 @@ final class ClusterEndpoint {
 			$rUrlDoc = $rKeep === null ? $rWas[1] : ($rKeep['urls'] === [] ? '' : (string) json_encode($rKeep['urls'], JSON_UNESCAPED_SLASHES));
 			$rStored = $rDb->query(
 				'UPDATE `settings` SET ' . $rSet . ($rKeep === null ? '' : ', `cluster_legacy_urls` = ?') . ", `cluster_policy_ver` = `cluster_policy_ver` + 1 WHERE `cluster_policy_ver` = ? AND COALESCE(`cluster_legacy_ports`, '') = ? AND COALESCE(`cluster_legacy_urls`, '') = ?;",
-				...array_merge($rData, $rKeep === null ? [] : [$rUrlDoc], [intval($rRow['cluster_policy_ver'] ?? 1), $rWas[0], $rWas[1]])
+				...array_merge($rData, $rKeep === null ? [] : [$rUrlDoc], [ClusterPolicy::ver($rRow), $rWas[0], $rWas[1]])
 			);
 			// Stored when the UPDATE changed the row (the affected-row count),
 			// which it always does once it matches: the version goes up. One
@@ -468,14 +468,14 @@ final class ClusterEndpoint {
 		if ($rPorts === [] && $rUrls === []) {
 			return false;
 		}
-		$rVer = intval($rSettings['cluster_policy_ver'] ?? 1);
+		$rVer = ClusterPolicy::ver($rSettings);
 		$rInUse = self::portsInUse($rVer, ClusterSettings::int('cluster_offline_after_sec', $rSettings['cluster_offline_after_sec'] ?? null));
 		if ($rInUse === null) {
 			return false;
 		}
 		// The ports that may go, and the kept URLs on each: under
 		// https_required, only those of the kept https:// URLs.
-		$rPlainStays = (string) ($rSettings['cluster_transport'] ?? 'auto') === 'https_required';
+		$rPlainStays = ClusterSettings::enum('cluster_transport', $rSettings['cluster_transport'] ?? null) === 'https_required';
 		$rCandidates = $rPlainStays ? [] : array_keys($rPorts);
 		$rUrlPorts = [];
 		foreach (array_keys($rUrls) as $rUrl) {

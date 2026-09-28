@@ -4,9 +4,10 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
-use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterAudit;
+use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
@@ -108,10 +109,8 @@ class ClusterReenrolCommand implements CommandInterface {
 			return 1;
 		}
 		if (!$rCrypto instanceof ClusterCrypto) {
-			try {
-				$rCrypto = ClusterCryptoFactory::create();
-			} catch (\Throwable $rE) {
-				echo 'Cluster API unavailable: ' . $rE->getMessage() . ". Exiting\n";
+			$rCrypto = ClusterCli::crypto();
+			if ($rCrypto === null) {
 				return 1;
 			}
 		}
@@ -383,7 +382,7 @@ class ClusterReenrolCommand implements CommandInterface {
 		$rTargets = [];
 		foreach ($rIDs ?? array_keys($rEnrolled) as $rID) {
 			$rServer = $rServers[$rID] ?? null;
-			$rIsLb = $rServer !== null && empty($rServer['is_main']) && intval($rServer['server_type'] ?? 0) === 0;
+			$rIsLb = ClusterAdmin::isLoadBalancer($rServer);
 			$rTarget = ['name' => (string) ($rServer['server_name'] ?? ''), 'skip' => null, 'why' => null, 'access' => null];
 			if ($rIDs === null && !$rIsLb) {
 				$rTarget['skip'] = 'no load balancer with this id';

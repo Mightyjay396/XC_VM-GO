@@ -88,7 +88,7 @@ final class TokenService {
 		if ($rRow === null) {
 			return null;
 		}
-		$rHard = SettingsManager::get('lb_revocation_mode') === 'hard';
+		$rHard = ClusterSettings::enum('lb_revocation_mode', SettingsManager::get('lb_revocation_mode')) === 'hard';
 		return $rCrypto->session((string) $rRow['record'], (string) $rNode['node_uuid'], $rHard);
 	}
 

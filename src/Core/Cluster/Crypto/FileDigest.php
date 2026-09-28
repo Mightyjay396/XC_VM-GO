@@ -17,6 +17,9 @@ namespace XcVm\Core\Cluster\Crypto;
  * mismatch before the file is used.
  */
 final class FileDigest {
+	/** Longest `X-XCVM-File-Digest` header accepted, in bytes. */
+	public const MAX_HEADER = 2048;
+
 	public static function document(string $rTid, int $rOwnerSid, int $rSize, string $rSha256Hex, int $rIat): string {
 		if (!preg_match('/^[0-9a-f]{64}\z/', $rSha256Hex) || $rSize < 0 || $rOwnerSid <= 0) {
 			throw new \InvalidArgumentException('file digest fields');
@@ -27,7 +30,7 @@ final class FileDigest {
 	}
 
 	public static function header(string $rDoc, string $rSig): string {
-		return Enc::b64url($rDoc) . '.' . Enc::b64url($rSig);
+		return Enc::joinSigned($rDoc, $rSig);
 	}
 
 	/**
@@ -37,15 +40,11 @@ final class FileDigest {
 	 * @return array<string, mixed>|null
 	 */
 	public static function verify(string $rHeader, string $rTid, ?string $rPanelSignPub, ?string $rNodeSignPub = null): ?array {
-		if (strlen($rHeader) > 2048 || substr_count($rHeader, '.') !== 1) {
+		$rParts = Enc::splitSigned($rHeader, self::MAX_HEADER);
+		if ($rParts === null) {
 			return null;
 		}
-		[$rDocPart, $rSigPart] = explode('.', $rHeader);
-		$rDoc = Enc::b64urlDecode($rDocPart);
-		$rSig = Enc::b64urlDecode($rSigPart);
-		if ($rDoc === null || $rSig === null) {
-			return null;
-		}
+		[$rDoc, $rSig] = $rParts;
 		$rOK = $rPanelSignPub !== null
 			? PanelSig::verify($rPanelSignPub, 'dig', $rDoc, $rSig)
 			: ($rNodeSignPub !== null && NodeSig::verify($rNodeSignPub, 'digest', $rDoc, $rSig));

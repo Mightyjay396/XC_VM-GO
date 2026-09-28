@@ -3,6 +3,8 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\AgentPaths;
+use XcVm\Core\Cluster\ReplicaRecords;
 use XcVm\Core\Cluster\RootPin;
 
 /**
@@ -31,14 +33,14 @@ class ClusterPinRootCommand implements CommandInterface {
 			return 1;
 		}
 		$rFp = strtolower(trim((string) ($rArgs[0] ?? '')));
-		$rState = json_decode((string) @file_get_contents(CONFIG_PATH . 'cluster/agent.json'), true);
-		$rPub = is_array($rState) ? base64_decode((string) ($rState['panel_sign_pub'] ?? ''), true) : false;
-		$rNode = is_array($rState) ? (string) ($rState['node_uuid'] ?? '') : '';
+		$rState = AgentPaths::readState();
+		$rPub = ReplicaRecords::key32($rState, 'panel_sign_pub');
+		$rNode = (string) ($rState['node_uuid'] ?? '');
 		if (!preg_match('/^[0-9a-f]{64}\z/', $rFp)) {
 			echo "Usage: cluster:pin-root <panel_fp> (64 hex digits, from MAIN)\n";
 			return 1;
 		}
-		if ($rPub === false || strlen($rPub) !== 32 || $rNode === '') {
+		if ($rPub === null || $rNode === '') {
 			echo "This node is not enrolled (config/cluster/agent.json). Exiting\n";
 			return 1;
 		}

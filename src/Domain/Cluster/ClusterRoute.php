@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
@@ -36,15 +37,9 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: mixed} the node's raw result, or null on failure/timeout
 	 */
 	public static function rpc(int $rServerID, array $rData, int $rTimeout): array {
-		$rCrypto = self::target($rServerID);
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			return [false, null];
-		}
-		try {
-			$rCmdID = CommandBus::enqueue($rCrypto, $rServerID, 'node.rpc', $rData);
-		} catch (\Throwable $rE) {
-			self::unsent($rServerID, 'node.rpc', $rE);
-			return [true, null];
+		[$rRouted, $rCmdID] = self::command($rServerID, 'node.rpc', static fn(ClusterCrypto $rCrypto): string => CommandBus::enqueue($rCrypto, $rServerID, 'node.rpc', $rData), null);
+		if ($rCmdID === null) {
+			return [$rRouted, null];
 		}
 		$rOutcome = CommandBus::await($rCmdID, max(1, $rTimeout));
 		return [true, $rOutcome !== null && $rOutcome[0] ? $rOutcome[1] : null];
@@ -57,17 +52,7 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool} queued?
 	 */
 	public static function send(int $rServerID, array $rData): array {
-		$rCrypto = self::target($rServerID);
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			return [false, false];
-		}
-		try {
-			CommandBus::enqueue($rCrypto, $rServerID, 'node.rpc', $rData);
-			return [true, true];
-		} catch (\Throwable $rE) {
-			self::unsent($rServerID, 'node.rpc', $rE);
-			return [true, false];
-		}
+		return self::enqueue($rServerID, 'node.rpc', $rData);
 	}
 
 	/**
@@ -77,17 +62,7 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool}
 	 */
 	public static function kill(int $rServerID, int $rPID, bool $rRTMP): array {
-		$rCrypto = self::target($rServerID);
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			return [false, false];
-		}
-		try {
-			CommandBus::enqueue($rCrypto, $rServerID, 'conn.kill_worker', ['pid' => $rPID, 'rtmp' => $rRTMP]);
-			return [true, true];
-		} catch (\Throwable $rE) {
-			self::unsent($rServerID, 'conn.kill_worker', $rE);
-			return [true, false];
-		}
+		return self::enqueue($rServerID, 'conn.kill_worker', ['pid' => $rPID, 'rtmp' => $rRTMP]);
 	}
 
 	/**
@@ -100,17 +75,7 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool} [routed, queued]
 	 */
 	public static function rotateNow(int $rServerID): array {
-		$rCrypto = self::target($rServerID);
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			return [false, false];
-		}
-		try {
-			CommandBus::enqueue($rCrypto, $rServerID, 'token.rotate_now', [], 'token.rotate_now');
-			return [true, true];
-		} catch (\Throwable $rE) {
-			self::unsent($rServerID, 'token.rotate_now', $rE);
-			return [true, false];
-		}
+		return self::enqueue($rServerID, 'token.rotate_now', [], 'token.rotate_now');
 	}
 
 	/**
@@ -121,20 +86,10 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool}
 	 */
 	public static function drop(int $rServerID, string $rUUID): array {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
+		if (!preg_match(AgentConnections::CONN_UUID, $rUUID)) {
 			return [false, false];
 		}
-		$rCrypto = self::target($rServerID);
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			return [false, false];
-		}
-		try {
-			CommandBus::enqueue($rCrypto, $rServerID, 'conn.drop', ['uuid' => $rUUID], 'drop:' . $rUUID);
-			return [true, true];
-		} catch (\Throwable $rE) {
-			self::unsent($rServerID, 'conn.drop', $rE);
-			return [true, false];
-		}
+		return self::enqueue($rServerID, 'conn.drop', ['uuid' => $rUUID], 'drop:' . $rUUID);
 	}
 
 	/**
@@ -145,7 +100,7 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool}
 	 */
 	public static function closeConnection(int $rServerID, string $rUUID, bool $rRemove): array {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
+		if (!preg_match(AgentConnections::CONN_UUID, $rUUID)) {
 			return [false, false];
 		}
 		try {
@@ -156,17 +111,7 @@ final class ClusterRoute {
 		if ($rNode === null || ((int) $rNode['flows'] & NodeRegistry::FLOW_CONNECTIONS) === 0) {
 			return [false, false];
 		}
-		$rCrypto = self::target($rServerID);
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			return [false, false];
-		}
-		try {
-			CommandBus::enqueue($rCrypto, $rServerID, 'conn.close', ['uuid' => $rUUID, 'remove' => $rRemove], 'close:' . $rUUID);
-			return [true, true];
-		} catch (\Throwable $rE) {
-			self::unsent($rServerID, 'conn.close', $rE);
-			return [true, false];
-		}
+		return self::enqueue($rServerID, 'conn.close', ['uuid' => $rUUID, 'remove' => $rRemove], 'close:' . $rUUID);
 	}
 
 	/**
@@ -196,23 +141,16 @@ final class ClusterRoute {
 		if ($rNode === null || (int) $rNode['mode'] !== 2) {
 			return [false, false];
 		}
-		$rCrypto = self::target($rServerID, false, $rNode);
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			return [false, false];
-		}
-		$rCommands = CacheJobs::commands($rJobs);
-		if ($rCommands === []) {
-			return [true, false];
-		}
-		try {
+		return self::command($rServerID, 'node.cache', static function (ClusterCrypto $rCrypto) use ($rServerID, $rJobs): bool {
+			$rCommands = CacheJobs::commands($rJobs);
+			if ($rCommands === []) {
+				return false;
+			}
 			foreach ($rCommands as $rCommand) {
 				CommandBus::enqueue($rCrypto, $rServerID, 'node.cache', ['jobs' => $rCommand]);
 			}
-			return [true, true];
-		} catch (\Throwable $rE) {
-			self::unsent($rServerID, 'node.cache', $rE);
-			return [true, false];
-		}
+			return true;
+		}, false, false, $rNode);
 	}
 
 	/**
@@ -226,20 +164,51 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool}
 	 */
 	public static function root(int $rServerID, array $rPayload): array {
-		$rCrypto = self::target($rServerID, true);
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			return [false, false];
-		}
-		try {
+		return self::command($rServerID, 'node.root', static function (ClusterCrypto $rCrypto) use ($rServerID, $rPayload): bool {
 			$rPayload = ArtefactGrants::forRoot($rServerID, $rPayload);
 			if ($rPayload === null) {
-				return [true, false];
+				return false;
 			}
 			CommandBus::enqueue($rCrypto, $rServerID, 'node.root', $rPayload);
-			return [true, true];
+			return true;
+		}, false, true);
+	}
+
+	/**
+	 * One command for a node that takes them (target()), its type's TTL and
+	 * the given dedupe key: [routed, queued].
+	 *
+	 * @param array<string, mixed> $rArgs
+	 * @return array{0: bool, 1: bool}
+	 */
+	private static function enqueue(int $rServerID, string $rType, array $rArgs, ?string $rDedupeKey = null): array {
+		return self::command($rServerID, $rType, static function (ClusterCrypto $rCrypto) use ($rServerID, $rType, $rArgs, $rDedupeKey): bool {
+			CommandBus::enqueue($rCrypto, $rServerID, $rType, $rArgs, $rDedupeKey);
+			return true;
+		});
+	}
+
+	/**
+	 * Every route's shape: [false, $rFailed] when the node takes no command
+	 * (target(), with $rRoot and $rNode as it takes them), else [true, what
+	 * $rSend queued with the extension], or [true, $rFailed] when it threw,
+	 * the reason logged (unsent(), under $rType). The legacy path is never
+	 * tried once routed.
+	 *
+	 * @param \Closure(ClusterCrypto): mixed $rSend
+	 * @param array<string, mixed>|null $rNode
+	 * @return array{0: bool, 1: mixed}
+	 */
+	private static function command(int $rServerID, string $rType, \Closure $rSend, mixed $rFailed = false, bool $rRoot = false, ?array $rNode = null): array {
+		$rCrypto = self::target($rServerID, $rRoot, $rNode);
+		if (!$rCrypto instanceof ClusterCrypto) {
+			return [false, $rFailed];
+		}
+		try {
+			return [true, $rSend($rCrypto)];
 		} catch (\Throwable $rE) {
-			self::unsent($rServerID, 'node.root', $rE);
-			return [true, false];
+			self::unsent($rServerID, $rType, $rE);
+			return [true, $rFailed];
 		}
 	}
 

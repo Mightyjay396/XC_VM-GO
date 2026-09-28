@@ -22,8 +22,19 @@ final class StrictQuery {
 	 * @throws \RuntimeException `<section>: a read failed`
 	 */
 	public static function run(object $rDb, string $rSection, string $rQuery, mixed ...$rArgs): void {
+		self::orThrow($rDb, $rSection . ': a read failed', $rQuery, ...$rArgs);
+	}
+
+	/**
+	 * Run $rQuery on $rDb, and throw $rMessage as it is when it fails: for a
+	 * caller whose op already answers a failure by its own word (the
+	 * admission and heartbeat paths' `db` and `flush`), read or write alike.
+	 *
+	 * @throws \RuntimeException $rMessage
+	 */
+	public static function orThrow(object $rDb, string $rMessage, string $rQuery, mixed ...$rArgs): void {
 		if ($rDb->query($rQuery, ...$rArgs) === false) {
-			throw new \RuntimeException($rSection . ': a read failed');
+			throw new \RuntimeException($rMessage);
 		}
 	}
 }

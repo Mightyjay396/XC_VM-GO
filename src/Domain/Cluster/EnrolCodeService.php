@@ -209,10 +209,8 @@ final class EnrolCodeService {
 			}
 			return 'wrong_sas';
 		}
-		$rMode = ($rSettings['lb_new_node_mode'] ?? 'legacy') === 'api' ? 2 : 1;
 		$rUuid = (string) $rReq['node_uuid'];
-		$rGen = NodeRegistry::startEnrolment($rServerID, $rUuid, (string) $rReq['node_sign_pub'], (string) $rReq['node_box_pub'], $rMode, $rCrypto)['gen'];
-		$rIssued = TokenService::issue($rCrypto, (array) NodeRegistry::byServer($rServerID), 1, (string) $rReq['agent_eph_pub']);
+		[$rGen, $rIssued, $rMode] = EnrolmentService::begin($rCrypto, $rServerID, $rUuid, (string) $rReq['node_sign_pub'], (string) $rReq['node_box_pub'], (string) $rReq['agent_eph_pub'], $rSettings);
 		$rDoc = (string) json_encode([
 			'v' => 1, 'typ' => 'xcvm-enrol-approved', 'node_uuid' => $rUuid, 'server_id' => $rServerID, 'gen' => $rGen,
 			'epoch' => 1, 'token_sealed' => base64_encode((string) $rIssued['token_sealed']),

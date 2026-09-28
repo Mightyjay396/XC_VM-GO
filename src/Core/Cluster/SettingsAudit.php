@@ -95,7 +95,7 @@ final class SettingsAudit {
 
 	/** The agent's directory, where audit.json goes (config/cluster/). */
 	public static function agentDir(): ?string {
-		return self::$rAgentDir ?? (defined('CONFIG_PATH') ? CONFIG_PATH . 'cluster/' : null);
+		return self::$rAgentDir ?? AgentPaths::fileOrNull(AgentPaths::DIR);
 	}
 
 	/**

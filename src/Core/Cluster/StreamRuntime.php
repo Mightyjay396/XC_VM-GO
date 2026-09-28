@@ -613,15 +613,7 @@ final class StreamRuntime {
 	 * @return list<int>
 	 */
 	private static function names(string $rKind): array {
-		$rOut = [];
-		foreach (glob(self::dir() . $rKind . '/*.json') ?: [] as $rFile) {
-			$rName = basename($rFile, '.json');
-			if (preg_match('/^[1-9][0-9]{0,9}\z/', $rName)) {
-				$rOut[] = (int) $rName;
-			}
-		}
-		sort($rOut);
-		return $rOut;
+		return FileIds::of(glob(self::dir() . $rKind . '/*.json') ?: [], '.json', false);
 	}
 
 	/**
