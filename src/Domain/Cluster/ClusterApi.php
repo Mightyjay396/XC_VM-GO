@@ -800,7 +800,9 @@ final class ClusterApi {
 	/**
 	 * `ack`: a command's outcome, accepted only for this node's own commands.
 	 * The first ack of a command type that may carry an artefact grant is
-	 * audited when it failed (ArtefactGrants::acked); no other ack reads more.
+	 * audited when it failed (ArtefactGrants::acked), and a `node.root` that
+	 * took MAIN's credentials off the node revokes its grant
+	 * (DbCredentials::acked); no other ack reads more.
 	 */
 	private static function ack(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}\z/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
@@ -814,6 +816,14 @@ final class ClusterApi {
 				ArtefactGrants::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
 			} catch (\Throwable) {
 				// The ack stands; an off-air grant not recorded is offered again later.
+			}
+		}
+		if ($rFirst && $rType === 'node.root') {
+			try {
+				// A node that dropped MAIN's credentials: revoke its grant (Phase 9).
+				DbCredentials::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
+			} catch (\Throwable) {
+				// The ack stands; the revoke is audited when it fails, and can be run again.
 			}
 		}
 		return self::ok($rKeys, $rCtx, ['ok' => true]);

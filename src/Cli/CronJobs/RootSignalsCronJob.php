@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\LogSink;
+use XcVm\Core\Cluster\NodeCredentials;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
@@ -1066,6 +1067,20 @@ class RootSignalsCronJob implements CommandInterface {
 				// agent acks this command first (its high-water, then the ack).
 				self::run(['/bin/sh', '-c', self::AGENT_RESTART]);
 				echo "xc_agent installed; it restarts in 10 s\n";
+				break;
+			case 'strip_db_credentials':
+			case 'install_config':
+				// Phase 9 (plan section 10, step 3): MAIN's credentials off this
+				// node's config.enc, or a config MAIN packed for it installed. Only
+				// a signed node.root reaches here (NodeActions::CLUSTER_ONLY); the
+				// extension verifies and refuses on MAIN itself. A refusal throws,
+				// so the command's ack says why.
+				$rLine = NodeCredentials::run($rData);
+				$rWhat = $rData['action'] === NodeCredentials::STRIP ? 'MAIN\'s DB credentials removed from config.enc.' : 'Node config installed from MAIN.';
+				if (!LogSink::syslog('CONFIG', $rWhat)) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CONFIG', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rWhat, time());
+				}
+				echo $rWhat . "\n" . $rLine . "\n";
 				break;
 			case 'delete_module':
 				echo 'Deleting module removed on MAIN...' . "\n";

@@ -231,4 +231,25 @@ final class ClusterExtensionIntegrationTest extends TestCase {
 			$this->assertSame($rReason, $rE->reason(), $rWhy);
 		}
 	}
+
+	/** Phase 9: the node's credential actions against the real extension. */
+	public function testTheNodesCredentialActionsRunOnTheRealExtension(): void {
+		if (!method_exists('XC_VM', 'strip_db_credentials')) {
+			$this->markTestSkipped('xcvm_core without credential-free nodes');
+		}
+		$this->assertTrue(\XC_VM::config_init(['db' => ['host' => '10.0.0.1', 'port' => 3306, 'name' => 'xc_vm', 'user' => 'u', 'pass' => 'p'], 'redis' => ['host' => '10.0.0.1', 'port' => 6379, 'auth' => 'r'], 'server' => ['server_id' => 7, 'is_lb' => 1]]));
+		try {
+			$rOut = \XcVm\Core\Cluster\NodeCredentials::outcome(\XcVm\Core\Cluster\NodeCredentials::run(['action' => \XcVm\Core\Cluster\NodeCredentials::STRIP]));
+			$this->assertSame(['server_id' => 7, 'is_lb' => 1, 'db_credentials' => false, 'redis_auth' => false, 'changed' => true], $rOut);
+			$this->assertSame(['server_id' => 7, 'is_lb' => 1], \XC_VM::config_server());
+			try {
+				\XcVm\Core\Cluster\NodeCredentials::run(['action' => \XcVm\Core\Cluster\NodeCredentials::INSTALL, 'blob' => base64_encode('XCVT-not-for-this-node')]);
+				$this->fail('a blob that does not open was installed');
+			} catch (\RuntimeException $rE) {
+				$this->assertStringContainsString('refused by xcvm_core: CRYPTO', $rE->getMessage());
+			}
+		} finally {
+			@unlink($this->rDir . '/config.enc');
+		}
+	}
 }
