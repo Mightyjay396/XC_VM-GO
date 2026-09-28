@@ -8,7 +8,7 @@ namespace XcVm\Core\Cluster;
  *
  * ```text
  * POST /v1/nonce        {nonce}                             -> {fresh}
- * POST /v1/file_digest  {tid, owner_sid, size, sha256, iat} -> {header}
+ * POST /v1/file_digest  {tid, owner_sid, size, sha256[, offset, total]} -> {header}
  * ```
  *
  * - **The nonce window.** A parent verifying a child's relay or file request
@@ -22,7 +22,8 @@ namespace XcVm\Core\Cluster;
  * Both answer null when the agent did not: no agent, no socket, a refusal. A
  * caller must treat null as "I cannot prove this" and refuse the request — a
  * parent that cannot spend a nonce cannot tell a replay from a first attempt.
- * Nothing here reaches MAIN.
+ * Nothing here reaches MAIN. The parent's and the owner's checks that use
+ * them are RelayGuard's and FileTicketServer's.
  */
 final class AgentDataPlane {
 	/** Seconds one call may take: the request that needs it is already waiting. */
@@ -51,20 +52,27 @@ final class AgentDataPlane {
 	 * not answer, and the caller then serves nothing — an unvouched body is
 	 * what the digest exists to prevent.
 	 *
-	 * @param string $rTid    The file ticket's id, which binds the digest to this request.
-	 * @param string $rSha256 The file's (or range's) SHA-256, lowercase hex.
+	 * @param string   $rTid    The file ticket's id, which binds the digest to this request.
+	 * @param string   $rSha256 The file's (or chunk's) SHA-256, lowercase hex.
+	 * @param int|null $rOffset Where the chunk starts, with $rTotal the file's size (`/xfile`'s chunks); null for a whole file.
 	 */
-	public static function fileDigest(string $rTid, int $rOwnerSid, int $rSize, string $rSha256, ?int $rIat = null): ?string {
-		if (!preg_match('/^[A-Za-z0-9_-]{8,64}\z/', $rTid) || !preg_match('/^[0-9a-f]{64}\z/', $rSha256) || $rSize < 0 || $rOwnerSid <= 0) {
+	public static function fileDigest(string $rTid, int $rOwnerSid, int $rSize, string $rSha256, ?int $rIat = null, ?int $rOffset = null, ?int $rTotal = null): ?string {
+		if (!preg_match('/^[A-Za-z0-9_-]{8,64}\z/', $rTid) || !preg_match('/^[0-9a-f]{64}\z/', $rSha256) || $rSize < 0 || $rOwnerSid <= 0
+			|| ($rOffset === null) !== ($rTotal === null) || ($rOffset !== null && ($rOffset < 0 || $rTotal < $rOffset + $rSize))
+		) {
 			return null;
 		}
-		$rOut = AgentClient::request('POST', '/v1/file_digest', [
+		$rBody = [
 			'tid' => $rTid,
 			'owner_sid' => $rOwnerSid,
 			'size' => $rSize,
 			'sha256' => $rSha256,
 			'iat' => $rIat ?? time(),
-		], self::TIMEOUT);
+		];
+		if ($rOffset !== null) {
+			$rBody += ['offset' => $rOffset, 'total' => $rTotal];
+		}
+		$rOut = AgentClient::request('POST', '/v1/file_digest', $rBody, self::TIMEOUT);
 		if ($rOut === null || $rOut[0] !== 200 || !is_array($rOut[1])) {
 			return null;
 		}

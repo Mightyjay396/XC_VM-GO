@@ -1,11 +1,10 @@
 <?php
 
-use XcVm\Core\Auth\AuthService;
+use XcVm\Core\Cluster\RelayGuard;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
-use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\AdminStreamToken;
 use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -48,9 +47,11 @@ if (!empty($rRequestData['uitoken'])) {
 	if ($rToken->duration !== null) {
 		RequestManager::update('duration', $rToken->duration);
 	}
-} elseif (!in_array($rIP, ServerRepository::getAllowedIPs())) {
+} elseif (($rAdmitted = RelayGuard::admit(intval($rRequestData['stream'] ?? 0), $rRequestData['password'] ?? null, $rIP, $_SERVER)) === null) {
+	// A relay ticket naming the stream, or the legacy password from a server's address (RelayGuard).
 	generate404();
-} elseif (!AuthService::secretMatches(SettingsManager::get('live_streaming_pass'), $rRequestData['password'] ?? null)) {
+} elseif ($rAdmitted === RelayGuard::RELAY && ($rRequestData['extension'] ?? null) === 'm3u8') {
+	// The playlist's segment URLs carry the password.
 	generate404();
 }
 

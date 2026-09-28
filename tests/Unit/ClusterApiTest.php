@@ -1114,7 +1114,7 @@ final class ClusterApiTest extends TestCase {
 		$this->active();
 		SettingsManager::set($this->rSettings);
 		$rRows = [];
-		SignalDispatcher::useSink(new class($rRows) implements \XcVm\Core\Cluster\SignalSink {
+		SignalDispatcher::useSink(new class ($rRows) implements \XcVm\Core\Cluster\SignalSink {
 			public function __construct(private array &$rRows) {
 			}
 
@@ -1197,7 +1197,7 @@ final class ClusterApiTest extends TestCase {
 		$rDue = (string) json_encode(['serial' => '0A', 'expiration' => $rNow + 3 * 86400, 'subject' => 'CN = node.example', 'path' => '/home/xc_vm/bin/certbot/config/live/node.example']);
 		$this->rDb->query('UPDATE `servers` SET `enable_https` = 1, `domain_name` = ?, `certbot_ssl` = ? WHERE `id` = ?;', 'node.example, 192.0.2.5 ,www.node.example', $rDue, self::SID);
 		$rRows = [];
-		SignalDispatcher::useSink(new class($rRows) implements \XcVm\Core\Cluster\SignalSink {
+		SignalDispatcher::useSink(new class ($rRows) implements \XcVm\Core\Cluster\SignalSink {
 			public function __construct(private array &$rRows) {
 			}
 
@@ -1779,7 +1779,7 @@ final class ClusterApiTest extends TestCase {
 			$rData[$rSection] = $rDoc['data'];
 		}
 		$this->assertSame([5, '10.0.0.5', 8080], [$rData['servers']['servers'][0]['id'], $rData['servers']['servers'][0]['server_ip'], $rData['servers']['servers'][0]['http_broadcast_port']]);
-		$this->assertSame([['ed_pub' => base64_encode((string) NodeRegistry::byServer(self::SID)['node_sign_pub']), 'gen' => 1, 'sid' => 5, 'state' => 'active']], $rData['servers']['nodes'], 'keys sorted, as every level of a section');
+		$this->assertSame([['dataplane' => false, 'ed_pub' => base64_encode((string) NodeRegistry::byServer(self::SID)['node_sign_pub']), 'gen' => 1, 'sid' => 5, 'state' => 'active']], $rData['servers']['nodes'], 'keys sorted, as every level of a section');
 		$this->assertSame([5, 8080, 1], [$rData['node']['id'], $rData['node']['http_broadcast_port'], $rData['node']['cloudflare']]);
 		$this->assertSame([['filename' => 'streams', 'time' => '* * * * *']], $rData['crontab']['jobs'], 'the node\'s mode (1): never a main row');
 		$this->assertSame(ClusterPolicy::current($this->rSettings, $this->rMain)['main_urls'], $rData['cluster']['main_urls']);
@@ -2046,6 +2046,94 @@ final class ClusterApiTest extends TestCase {
 	}
 
 	private const EVERY_STREAM = ['from' => 0, 'to' => 2147483647];
+
+	/**
+	 * Phase 8: with the node's DATAPLANE flow on, a record carries the relay
+	 * and file tickets of the moment in its `tickets` slot, and a delta that
+	 * asks carries the next epoch's. Neither moves the record's ETag (taken
+	 * with the slot empty) or its version, so a refresh resends no record, and
+	 * the node's stream cache entry (what its encoder starts from) does not
+	 * change: no restart.
+	 */
+	public function testTicketsRideTheRecordAndTheDeltaWithoutMovingItsEtagOrVersion(): void {
+		$this->streamsTables();
+		$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN `is_main` int NOT NULL DEFAULT 0');
+		$this->rDb->exec('INSERT INTO `servers` (`id`, `status`, `is_main`) VALUES (1, 0, 1)');
+		// Node 5 relays stream 10 from MAIN, and reads 12's movie file from MAIN and its subtitles from server 8 (a legacy LB).
+		$this->rDb->exec('UPDATE `streams_servers` SET `parent_id` = 1 WHERE `stream_id` = 10 AND `server_id` = 5');
+		$this->rDb->exec("UPDATE `streams` SET `stream_source` = '[\"s:1:/media/movies/film.mkv\"]', `movie_subtitles` = '{\"location\":8,\"files\":[\"/subs/a.srt\"]}' WHERE `id` = 12");
+		$rKeys = $this->streamsNode();
+		$this->rDb->query('UPDATE `cluster_nodes` SET `flows` = ? WHERE `server_id` = ?', NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT | NodeRegistry::FLOW_DATAPLANE, self::SID);
+		\XcVm\Domain\Cluster\TicketService::forget();
+		$rPanel = $this->rCrypto->info()['panel_sign_pub'];
+		$rEpoch = \XcVm\Core\Cluster\DataPlane::epoch(intdiv($this->rT0, 1000));
+		$rOpen = function (array $rEntry): array {
+			$rDoc = $this->openRecord($rEntry['sealed'], 'rep');
+			$this->assertSame($rEntry['etag'], $rDoc['etag']);
+			$this->assertSame($rEntry['etag'], ReplicaBuilder::etag(['tickets' => null] + $rDoc['data']), 'the ETag is taken with the slot empty');
+			return $rDoc['data'];
+		};
+
+		$rOut = $this->served('streams', ['since' => 0, 'resync' => self::EVERY_STREAM + ['hashes' => new \stdClass()]], 1, $rKeys);
+		$rData = array_combine(array_column($rOut['streams'], 'id'), array_map($rOpen, $rOut['streams']));
+		$rRelay = \XcVm\Core\Cluster\Crypto\Ticket::verify($rPanel, 'rly', (string) $rData[10]['tickets']['relay'], intdiv($this->rT0, 1000));
+		$this->assertSame(['child_gen' => 1, 'child_sid' => 5, 'parent_sid' => 1, 'stream_id' => 10, 'tid' => \XcVm\Core\Cluster\DataPlane::relayTid($rEpoch, 5, 10)], array_intersect_key((array) $rRelay, array_flip(['child_gen', 'child_sid', 'parent_sid', 'stream_id', 'tid'])));
+		$this->assertNull($rData[10]['tickets']['files']);
+		$rRef = \XcVm\Core\Cluster\DataPlane::ref(1, '/media/movies/film.mkv');
+		$this->assertSame([$rRef], array_keys((array) $rData[12]['tickets']['files']), 'MAIN\'s file only: server 8 checks no ticket');
+		$rFile = \XcVm\Core\Cluster\Crypto\Ticket::verify($rPanel, 'fil', $rData[12]['tickets']['files'][$rRef], intdiv($this->rT0, 1000));
+		$this->assertSame([5, 1, 1, $rRef], [$rFile['fetcher_sid'], $rFile['fetcher_gen'], $rFile['owner_sid'], $rFile['ref']]);
+		$this->assertStringNotContainsString('film', (string) json_encode($rFile), 'no path on the wire');
+		$this->assertSame('/media/movies/film.mkv', $this->rCrypto->openLocal('xfile', (string) Enc::b64urlDecode(substr($rFile['file'], 2)), $rRef), 'sealed by MAIN to itself');
+		$this->assertNull($rData[13]['tickets'], 'a stream that pulls nothing from another server');
+		$rEtags = $this->etags($rOut);
+		$this->rDb->query('SELECT `stream_id`, `ver` FROM `cluster_stream_ver` ORDER BY `server_id`, `stream_id`');
+		$rVersions = $this->rDb->get_rows();
+
+		// A node holding the previous epoch's asks on its delta: the current
+		// epoch's come, with no record and no version moved.
+		$rDelta = $this->served('streams', ['since' => 1, 'tickets' => ['epoch' => $rEpoch - 1, 'from' => 0]], 1, $rKeys);
+		$this->assertSame([1, [], [], false], [$rDelta['ver'], $rDelta['streams'], $rDelta['removed'], $rDelta['more']], 'no version moved');
+		$this->assertSame([$rEpoch, null], [$rDelta['tickets']['epoch'], $rDelta['tickets']['next']]);
+		$this->assertSame(['10', '12'], array_map('strval', array_keys($rDelta['tickets']['streams'])));
+		$this->assertSame($rData[10]['tickets']['relay'], $rDelta['tickets']['streams'][10]['relay'], 'the epoch\'s ticket, as the record has it');
+		$this->rDb->query('SELECT `stream_id`, `ver` FROM `cluster_stream_ver` ORDER BY `server_id`, `stream_id`');
+		$this->assertSame($rVersions, $this->rDb->get_rows(), 'no version stamped');
+		$this->assertArrayNotHasKey('tickets', $this->served('streams', ['since' => 1, 'tickets' => ['epoch' => $rEpoch, 'from' => 0]], 1, $rKeys), 'this epoch\'s held: nothing');
+		// Paged: a node part-way through a refresh goes on from where it was.
+		$rPage = $this->served('streams', ['since' => 1, 'tickets' => ['epoch' => $rEpoch, 'from' => 11]], 1, $rKeys)['tickets'];
+		$this->assertSame(['12'], array_map('strval', array_keys($rPage['streams'])));
+
+		// The next epoch's tickets differ, and change neither the ETag nor the
+		// cache entry the node's encoder starts from.
+		$rNode = NodeRegistry::byServer(self::SID);
+		$rLater = \XcVm\Domain\Cluster\TicketService::forRecord($this->rCrypto, $rNode, ['tickets' => null] + $rData[10], intdiv($this->rT0, 1000) + \XcVm\Core\Cluster\DataPlane::EPOCH);
+		$this->assertNotSame($rData[10]['tickets']['relay'], $rLater['relay']);
+		$this->assertSame(\XcVm\Core\Cluster\DataPlane::relayTid($rEpoch + 1, 5, 10), \XcVm\Core\Cluster\Crypto\Ticket::verify($rPanel, 'rly', (string) $rLater['relay'], intdiv($this->rT0, 1000) + \XcVm\Core\Cluster\DataPlane::EPOCH)['tid']);
+		$rTen = ['tickets' => $rLater] + $rData[10];
+		$this->assertSame($rEtags[10], ReplicaBuilder::etag(['tickets' => null] + $rTen));
+		$this->assertSame(
+			\XcVm\Core\Cluster\ReplicaStreamCache::entry(10, $rData[10], 5, $rEtags[10], 0),
+			\XcVm\Core\Cluster\ReplicaStreamCache::entry(10, $rTen, 5, $rEtags[10], 0),
+			'the stream cache entry the encoder starts from is unchanged'
+		);
+		$this->assertSame([], $this->served('streams', ['since' => 0, 'resync' => self::EVERY_STREAM + ['hashes' => $rEtags]], 1, $rKeys)['streams'], 'no record resent for a ticket');
+
+		// Without a licence nothing is minted: the refresh keeps the node's epoch.
+		$this->rCrypto->rLicensed = false;
+		$rRefused = $this->served('streams', ['since' => 1, 'tickets' => ['epoch' => $rEpoch - 1, 'from' => 0]], 1, $rKeys)['tickets'];
+		$this->assertSame([$rEpoch - 1, true, null], [$rRefused['epoch'], $rRefused['withheld'], $rRefused['next']]);
+		$this->rCrypto->rLicensed = true;
+
+		// A malformed ask is refused; the flow off, no tickets at all.
+		[$rRes, , $rReq] = $this->call('streams', ['since' => 1, 'tickets' => ['epoch' => -1]], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+		$this->rDb->query('UPDATE `cluster_nodes` SET `flows` = ? WHERE `server_id` = ?', NodeRegistry::FLOW_STREAMS, self::SID);
+		$this->assertArrayNotHasKey('tickets', $this->served('streams', ['since' => 1, 'tickets' => ['epoch' => 0, 'from' => 0]], 1, $rKeys));
+		$rOff = $this->served('streams', ['since' => 0, 'resync' => self::EVERY_STREAM + ['hashes' => new \stdClass()]], 1, $rKeys);
+		$this->assertNull($rOpen($rOff['streams'][0])['tickets']);
+		$this->assertSame($rEtags, $this->etags($rOff));
+	}
 
 	public function testStreamsGoOnlyToANodeWithTheFlowWhoseAgentSaysItKeepsThem(): void {
 		$this->streamsTables();

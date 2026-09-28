@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Streaming\Codec\FfmpegPaths;
 use XcVm\Streaming\Fanout\FanoutClient;
@@ -150,8 +151,8 @@ class LoopbackCommand implements CommandInterface {
 		$rSegListSize = $rSettings['seg_list_size'];
 		$rSegDeleteThreshold = $rSettings['seg_delete_threshold'];
 
-		$rLoopURL = (!is_null($rServers[SERVER_ID]['private_url_ip']) && !is_null($rServers[$rServerID]['private_url_ip']) ? $rServers[$rServerID]['private_url_ip'] : $rServers[$rServerID]['public_url_ip']);
-		$rFP = @fopen($rLoopURL . 'admin/live?stream=' . @intval($rStreamID) . '&password=' . @urlencode($rSettings['live_streaming_pass']) . '&extension=ts&prebuffer=1', 'rb');
+		// Through the node's agent with DATAPLANE on, else the legacy URL (DataPlane).
+		$rFP = @fopen(DataPlane::relayUrl($rServers, intval($rServerID), intval($rStreamID), (string) $rSettings['live_streaming_pass'], true), 'rb');
 		if (!$rFP) {
 			return 0;
 		}

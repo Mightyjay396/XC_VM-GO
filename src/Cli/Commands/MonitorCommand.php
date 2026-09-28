@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Diagnostics\DiagnosticsService;
@@ -344,7 +345,7 @@ class MonitorCommand implements CommandInterface {
 							$rData = StreamProcess::startStream($rStreamID, false, $rStartSource, true);
 						} else {
 							if ($rStreamInfo['parent_id']) {
-								$rForceSource = (!is_null(ServerRepository::getAll()[SERVER_ID]['private_url_ip']) && !is_null(ServerRepository::getAll()[$rStreamInfo['parent_id']]['private_url_ip']) ? ServerRepository::getAll()[$rStreamInfo['parent_id']]['private_url_ip'] : ServerRepository::getAll()[$rStreamInfo['parent_id']]['public_url_ip']) . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode(SettingsManager::get('live_streaming_pass')) . '&extension=ts';
+								$rForceSource = DataPlane::relayUrl(ServerRepository::getAll(), intval($rStreamInfo['parent_id']), intval($rStreamID), (string) SettingsManager::get('live_streaming_pass'));
 							}
 							$rData = StreamProcess::startLLOD($rStreamID, $rStreamInfo, $rStreamInfo['parent_id'] ? [] : $rStreamArguments, $rForceSource);
 						}

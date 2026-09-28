@@ -1039,8 +1039,9 @@ final class ClusterApi {
 	 * `since` alone, what changed past the node's cursor (`full` when it must
 	 * check every stream); with `resync` ({from, to, hashes}), the records of
 	 * the streams it holds in that range whose ETag differs from the one it
-	 * names, and the removals. Each record is `rep`-signed and sealed to the
-	 * node; one that cannot be signed without a licence is left out
+	 * names, and the removals. A delta's `tickets` ({epoch, from}) asks for
+	 * the relay and file tickets of the current epoch (TicketService). Each
+	 * record is `rep`-signed and sealed to the node; one that cannot be signed without a licence is left out
 	 * (`withheld`). A section MAIN cannot read answers `503 DB`.
 	 */
 	private static function streams(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
@@ -1053,11 +1054,13 @@ final class ClusterApi {
 		// `resync: null` is a delta, as if absent (an agent's empty field).
 		$rAsk = $rP['resync'] ?? null;
 		$rResync = $rAsk === null ? null : StreamReplica::resyncRequest($rAsk);
-		if (!is_int($rSince) || $rSince < 0 || ($rAsk !== null && $rResync === null)) {
+		// A delta may ask for the epoch's tickets ({epoch, from}; Phase 8).
+		$rTickets = TicketService::request($rP['tickets'] ?? null);
+		if (!is_int($rSince) || $rSince < 0 || ($rAsk !== null && $rResync === null) || $rTickets === false) {
 			return self::badRequest($rCrypto, $rH);
 		}
 		try {
-			$rOut = $rResync === null ? StreamReplica::delta($rCrypto, $rNode, $rSince) : StreamReplica::resync($rCrypto, $rNode, $rSince, $rResync['from'], $rResync['to'], $rResync['hashes']);
+			$rOut = $rResync === null ? StreamReplica::delta($rCrypto, $rNode, $rSince, $rTickets) : StreamReplica::resync($rCrypto, $rNode, $rSince, $rResync['from'], $rResync['to'], $rResync['hashes']);
 		} catch (ClusterRefusedException $rE) {
 			return self::refusal($rCrypto, $rE->reason(), $rNode, $rH);
 		} catch (\Throwable) {

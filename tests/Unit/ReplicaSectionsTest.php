@@ -177,8 +177,8 @@ final class ReplicaSectionsTest extends TestCase {
 		$rFive = $rData['servers'][1];
 		$this->assertSame(['[1]', 'lb5.example.com', 8080, '["10.9.9.5"]'], [$rFive['parent_id'], $rFive['domain_name'], $rFive['http_broadcast_port'], $rFive['whitelist_ips']]);
 		$this->assertSame([
-			['sid' => 5, 'gen' => 1, 'state' => 'active', 'ed_pub' => base64_encode(str_repeat(chr(5), 32))],
-			['sid' => 6, 'gen' => 1, 'state' => 'revoked', 'ed_pub' => base64_encode(str_repeat(chr(6), 32))],
+			['sid' => 5, 'gen' => 1, 'state' => 'active', 'ed_pub' => base64_encode(str_repeat(chr(5), 32)), 'dataplane' => false],
+			['sid' => 6, 'gen' => 1, 'state' => 'revoked', 'ed_pub' => base64_encode(str_repeat(chr(6), 32)), 'dataplane' => false],
 		], $rData['nodes']);
 
 		$rJson = (string) json_encode($rData);

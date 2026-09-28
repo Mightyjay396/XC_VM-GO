@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Cluster\RelayGuard;
 use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
@@ -32,7 +33,8 @@ if (!empty(RequestManager::get('uitoken'))) {
 	}
 
 	RequestManager::update('stream', $rToken->streamId);
-} else {
+} elseif (RelayGuard::admit(intval(RequestManager::get('stream')), null, $rIP, $_SERVER, false) === null) {
+	// Without an admin token, only a relay ticket naming the stream (RelayGuard).
 	generate404();
 }
 

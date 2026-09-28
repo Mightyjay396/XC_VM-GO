@@ -33,7 +33,10 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * A record names the node, its generation and the stream, so it opens and
  * verifies only there; its ETag is the SHA-256 of its canonical data, as a
- * whole section's. It grants (a stream to run), so without a licence it is
+ * whole section's, taken with the `tickets` slot empty: a node with its
+ * DATAPLANE flow on finds its relay and file tickets there (TicketService),
+ * and fresh ones on the delta path each epoch, without the record's ETag or
+ * version moving. It grants (a stream to run), so without a licence it is
  * not signed: it is left out and counted in `withheld`, the removals still
  * go, and a delta's cursor stops before it. Every read throws when it fails,
  * so the op answers `503 DB` instead of signing a partial section.
@@ -113,14 +116,18 @@ final class StreamReplica {
 	 * What changed past the node's cursor.
 	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row
-	 * @return array{ver: int, head: int, more: bool, full?: bool, streams: list<array{id: int, ver: int, etag: string, sealed: string}>, removed: list<int>, withheld?: int}
+	 * @param array{epoch: int, from: int}|null $rTickets the node's ticket refresh (TicketService::request), if it asks
+	 * @return array{ver: int, head: int, more: bool, full?: bool, streams: list<array{id: int, ver: int, etag: string, sealed: string}>, removed: list<int>, withheld?: int, tickets?: array{epoch: int, streams: object, next: ?int, withheld?: bool}}
 	 */
-	public static function delta(ClusterCrypto $rCrypto, array $rNode, int $rSince): array {
+	public static function delta(ClusterCrypto $rCrypto, array $rNode, int $rSince, ?array $rTickets = null): array {
 		$rServerID = (int) $rNode['server_id'];
 		$rHead = StreamVersions::head(self::db());
 		if ($rSince <= 0 || $rSince < StreamVersions::floor($rServerID, self::db()) || $rSince > $rHead) {
 			return ['ver' => $rSince, 'head' => $rHead, 'more' => false, 'full' => true, 'streams' => [], 'removed' => []];
 		}
+		// The ticket refresh rides the delta (TicketService::refresh); it
+		// moves no version and no ETag.
+		$rRefresh = $rTickets === null ? null : TicketService::refresh($rCrypto, $rNode, $rTickets, ClusterClock::now());
 		self::read('SELECT `stream_id`, `ver` FROM `cluster_stream_ver` WHERE `server_id` = ? AND `ver` > ? ORDER BY `ver` ASC LIMIT ' . self::MAX_ROWS . ';', $rServerID, $rSince);
 		$rRows = array_map(static fn(array $rRow): array => [(int) $rRow['stream_id'], (int) $rRow['ver']], self::db()->get_rows() ?: []);
 		$rData = self::data($rServerID, self::held($rServerID, array_column($rRows, 0)));
@@ -131,7 +138,7 @@ final class StreamReplica {
 			'more' => $rDone < count($rRows) ? !$rPage['withheld'] : count($rRows) >= self::MAX_ROWS,
 			'streams' => $rPage['streams'], 'removed' => $rPage['removed'],
 		];
-		return $rOut + ($rPage['withheld'] > 0 ? ['withheld' => $rPage['withheld']] : []);
+		return $rOut + ($rPage['withheld'] > 0 ? ['withheld' => $rPage['withheld']] : []) + ($rRefresh !== null ? ['tickets' => $rRefresh] : []);
 	}
 
 	/**
@@ -202,11 +209,15 @@ final class StreamReplica {
 			if (count($rStreams) >= self::MAX_RECORDS) {
 				break;
 			}
-			$rDoc = [
-				'v' => 1, 'section' => ReplicaSections::STREAM, 'node' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'],
-				'stream_id' => $rID, 'ver' => $rVer, 'etag' => $rEtag, 'iat' => ClusterClock::now(), 'data' => $rData[$rID],
-			];
 			try {
+				// The tickets of the moment go in the record, after its ETag was
+				// taken without them (TicketService): a refresh moves no ETag.
+				$rRecord = $rData[$rID];
+				$rRecord['tickets'] = TicketService::forRecord($rCrypto, $rNode, $rRecord, ClusterClock::now());
+				$rDoc = [
+					'v' => 1, 'section' => ReplicaSections::STREAM, 'node' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'],
+					'stream_id' => $rID, 'ver' => $rVer, 'etag' => $rEtag, 'iat' => ClusterClock::now(), 'data' => $rRecord,
+				];
 				$rSealed = base64_encode(ReplicaBuilder::record($rCrypto, $rNode, 'rep', ReplicaBuilder::json($rDoc)));
 			} catch (ClusterRefusedException $rE) {
 				if ($rE->reason() !== 'LICENCE') {

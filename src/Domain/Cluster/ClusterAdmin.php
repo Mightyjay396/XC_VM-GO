@@ -24,11 +24,17 @@ final class ClusterAdmin {
 		'content' => NodeRegistry::FLOW_CONTENT,
 		'config' => NodeRegistry::FLOW_CONFIG,
 		'connections' => NodeRegistry::FLOW_CONNECTIONS,
+		'dataplane' => NodeRegistry::FLOW_DATAPLANE,
 	];
 
-	/** Flows a node must have before it can run without MAIN's database: everything but the data plane (Phase 8). */
+	/**
+	 * Flows a node must have before it can run without MAIN's database: every
+	 * one, the data plane included (Phase 8): a node in mode 2 pulls its relays
+	 * and files through its agent, with no stream secret in a URL.
+	 */
 	public const MODE2_FLOWS = NodeRegistry::FLOW_TELEMETRY | NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_LOGS
-		| NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT | NodeRegistry::FLOW_CONFIG | NodeRegistry::FLOW_CONNECTIONS;
+		| NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT | NodeRegistry::FLOW_CONFIG | NodeRegistry::FLOW_CONNECTIONS
+		| NodeRegistry::FLOW_DATAPLANE;
 
 	/** Days of zero MySQL and Redis connects a node must report before mode 2 (plan, section 11: the cutover gate). */
 	public const CUTOVER_CLEAN_DAYS = 7;
@@ -39,7 +45,7 @@ final class ClusterAdmin {
 	 * Going down is always allowed: it is the way back when a node misbehaves.
 	 * Going up to 1 needs the config replica, because that is what a node boots
 	 * from. Going up to 2 stops the node reaching MAIN's database at all, so it
-	 * needs every flow but the data plane, root's pin in place (`root_ready`:
+	 * needs every flow, the data plane included, root's pin in place (`root_ready`:
 	 * root actions then reach it only as node.root commands), and the node's own
 	 * connect audit must show it has not opened MySQL or Redis for CUTOVER_CLEAN_DAYS.
 	 *
@@ -199,6 +205,8 @@ final class ClusterAdmin {
 				case 'config_off':
 				case 'connections_on':
 				case 'connections_off':
+				case 'dataplane_on':
+				case 'dataplane_off':
 					$rNode = NodeRegistry::byServer($rServerID);
 					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
 						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];

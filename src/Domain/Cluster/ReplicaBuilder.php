@@ -235,10 +235,11 @@ final class ReplicaBuilder {
 	/**
 	 * The `servers` section: every server's routing and relay fields, and the
 	 * node list parents check relay tickets against and children file-digest
-	 * keys (`{sid, gen, state, ed_pub}`). Never liveness, telemetry or a
+	 * keys (`{sid, gen, state, ed_pub, dataplane}`; `dataplane`: the node's
+	 * DATAPLANE flow is on, Phase 8). Never liveness, telemetry or a
 	 * node's own settings (ReplicaSections::SERVER_LOCAL).
 	 *
-	 * @return array{servers: list<array<string, int|string|null>>, nodes: list<array{sid: int, gen: int, state: string, ed_pub: string}>}
+	 * @return array{servers: list<array<string, int|string|null>>, nodes: list<array{sid: int, gen: int, state: string, ed_pub: string, dataplane: bool}>}
 	 */
 	public static function serversData(): array {
 		self::read('SELECT * FROM `servers` ORDER BY `id` ASC;');
@@ -246,10 +247,15 @@ final class ReplicaBuilder {
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
 			$rServers[] = ReplicaSections::typed($rRow, ReplicaSections::SERVER_FIELDS);
 		}
-		self::read('SELECT `server_id`, `gen`, `state`, `node_sign_pub` FROM `cluster_nodes` ORDER BY `server_id` ASC;');
+		self::read('SELECT * FROM `cluster_nodes` ORDER BY `server_id` ASC;');
 		$rNodes = [];
 		foreach (self::db()->get_rows() ?: [] as $rRow) {
-			$rNodes[] = ['sid' => (int) $rRow['server_id'], 'gen' => (int) $rRow['gen'], 'state' => (string) $rRow['state'], 'ed_pub' => base64_encode((string) $rRow['node_sign_pub'])];
+			// dataplane: the node pulls through its agent, so a parent refuses the
+			// legacy password from its address (RelayGuard).
+			$rNodes[] = [
+				'sid' => (int) $rRow['server_id'], 'gen' => (int) $rRow['gen'], 'state' => (string) $rRow['state'], 'ed_pub' => base64_encode((string) $rRow['node_sign_pub']),
+				'dataplane' => (int) ($rRow['mode'] ?? 0) >= 1 && ((int) ($rRow['flows'] ?? 0) & NodeRegistry::FLOW_DATAPLANE) !== 0,
+			];
 		}
 		return ['servers' => $rServers, 'nodes' => $rNodes];
 	}

@@ -54,7 +54,9 @@ namespace XcVm\Core\Cluster;
  *               recording of it without running it)
  *   children    [sid] the servers that relay it from this node (parent_id)
  *   recordings  [RECORDING_FIELDS] its recordings scheduled on this node
- *   tickets     null: the relay and file tickets of Phase 8
+ *   tickets     the relay and file tickets of Phase 8, for a node whose
+ *               DATAPLANE flow is on (Domain\Cluster\TicketService), else
+ *               null; filled after the ETag was taken with it null
  * ```
  *
  * A node holds a stream when it is assigned it (`streams_servers`), records
