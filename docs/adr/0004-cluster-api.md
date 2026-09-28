@@ -3714,6 +3714,84 @@ moved back; both tests record the file's digest, as for the shared vectors. With
 `XCVM_PANEL_DIR`, `TestInteropNodeLeaseJudgesTheAgentsFile` runs the real `NodeLease` against the
 file the agent wrote for a lease MAIN's real `LeaseService` signed.
 
+### Commands, rotations and lockdown (Phase 9, fifth increment)
+
+The restrictive command types had no producer, the fence drew no line through a running `.ts`
+request, and the cutover's last steps — rotating what legacy nodes sent in cleartext, closing
+3306/6379 — did not exist. This increment builds them; `api_mode_allowed` stays false.
+
+**Commands MAIN now sends** (types and arguments exactly as the extension's registry signs them):
+
+| Type | Class | Producer | Runs |
+| --- | --- | --- | --- |
+| `stream.stop`, `vod.stop {stream_id}` | R | a `node.rpc` stream/vod *stop* becomes one per stream, deduped (`ClusterRoute::stops()`) | `cluster:exec` (`StreamProcess`) |
+| `node.fence {reason, drain_min}` | R | *Fence* on the Cluster Nodes page; `cron:cluster` in `lb_revocation_mode=hard` without a licence binding (`ClusterRoute::licenceFences()`, reason `licence`, once while one waits) | agent |
+| `node.unfence` | G | *Unfence* (shares the fence's dedupe key, so it supersedes one not yet taken) | agent |
+| `node.quarantine {reason}` | R | *Quarantine* (queued, then the row goes `quarantined`); *Trust again* sets it `active` and queues `token.rotate_now` | agent |
+| `resync {sections}` | R | *Resync* (`config`, `streams`, `connections`) | agent |
+| `policy.update` | G | `ClusterRoute::policyUpdate()` | agent: a hello now |
+
+- **A quarantined node's long-poll** hands out class R only (`CommandBus::pending(…, restrictive)`);
+  the rest stays queued for *Trust again*. Its replica stays refused, and the agent itself runs only
+  restrictive types and skips its replica sync until a reply says `active`.
+- **The licence fence is queued by the cron**, not where the refusal is written: that path runs
+  before anything is authenticated and changes no state. It rides the sealed `LICENCE_INVALID` with
+  the other kills; the agent takes a `licence` fence only from a refused session and lifts it itself
+  when MAIN accepts the session again.
+
+**The fence on the node.** The agent keeps a commanded fence in its state (a restart keeps the
+drain's start) and rewrites `config/cluster/fence.json` every second —
+`{state: draining|fenced, reason, since_ms, drain_until_ms, wrote_at_ms}`. `NodeLease` reads it
+before the lease and without the `lb_lease_fence` switch (it is MAIN's explicit word, verified by the
+agent); a file older than `STALE_SEC` serves, as every uncertainty does. Past the drain the agent
+writes one `SIGNALS_PATH/<uuid>` entry `{"type": "drop"}` per open viewer in its registry and drops
+the fanout's own viewers over its control socket; `live.php`'s TS loop ends on a `drop` entry and,
+independently, on `NodeLease::refusesEverything()` at each segment — so a PHP-served `.ts` request
+ends under a lapsed lease too, without the registry. **Still not built:** a fanout-served viewer
+under a *lease* fence (not a commanded one) is not dropped, because the agent does not judge the
+lease; and producers are still not released.
+
+**`cluster:rotate-stream-secret`** (`StreamSecretRotation`). Refused while an enrolled node has
+DATAPLANE off (`--force` warns). Resumable: `cluster_meta` `stream_secret_rotation` holds the phase,
+a cursor and both values until it ends. Switch (settings, `StreamSecret::replaced()`,
+`config.changed {secrets}` to command nodes), then `hmac_keys.key` re-encrypted in id order
+(`validateHMAC()` tries the previous secret in its window), then MAIN's image-cache files renamed
+with their `s:<sid>:/images/` references in `streams` and `streams_series` moved first. A load
+balancer's own image files keep their names.
+
+**`cluster:rotate-credentials`** (`CredentialRotation`, root side `RootCredentials`). Targets: every
+load balancer below mode 2. *Redis*: the new password is added with `ACL SETUSER default >new`
+(`CONFIG` is renamed away), MAIN moves at once (config.enc through `config_set_redis`,
+`settings.redis_password`, `requirepass`), a root-command node gets `node.root rotate_redis` with the
+password SEALed to its box key (purpose `root.credentials`, its uuid as context), a legacy node a
+`signals` row with no secret that it answers from MAIN's settings; `--finish` drops the old one by its
+SHA-256 once every command node acked, or with `--force`. *DB*: needs `XC_VM::db_set_password()` on
+MAIN and `XC_VM::config_set_db()` on the node, which xcvm_core does not have: refused until it does,
+and while a target takes no root command unless `--force`.
+
+**`cluster:lockdown [--force] [--restart] | --undo | --status`** (`ClusterLockdown`), manual only.
+Refused while a load balancer is below mode 2 or any proxy exists. MariaDB binds to 127.0.0.1 by a
+drop-in sorted after the installer's `99-custom.cnf`, Redis to `127.0.0.1 -::1`; with
+`cluster_db_allowlist_extra` set both keep their binds. The `XCVM_DB` chain is reused: while
+`cluster_meta` holds `db_lockdown`, `DbAllowlist` keeps it on whatever the setting says and admits
+loopback, MAIN and the extra list only. The last rotations stay separate commands.
+
+**`node.root rotate_sign_key {new_pub, pin_blob?}`** (`cluster:rotate-sign-key`). Root re-pins MAIN's
+panel key under a command signed with the key it pins today and restarts `root.seq`; the agent's copy
+is left alone, so the node reports `root_ready` false until its agent re-enrols (by code, or
+`cluster:reenrol`). `pin_blob` replaces the extension's `core.pin` through `cluster_pin($blob, true)`;
+MAIN cannot produce one yet, since `cluster_pack` needs the node's `install_id`, which MAIN does not
+keep.
+
+**API-mode installs.** With `lb_new_node_mode = api` (still refused while `api_mode_allowed` is
+false) a new load balancer gets no DB grant, a config.enc packed with
+`config_pack(…, ['db_credentials' => false])` — found by `method_exists('XC_VM', 'install_config')`,
+refused without it — and is enrolled in mode 2 with `ClusterAdmin::MODE2_FLOWS`.
+
+Tests: `ClusterRestrictiveProducersTest`, `StreamSecretRotationTest`, `CredentialRotationTest`,
+`ClusterLockdownTest`, `RotateSignKeyTest`, `ApiModeInstallTest`; on the agent's side `fence_test.go`,
+including `TestInteropFence` against MAIN's real `CommandBus`.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):
