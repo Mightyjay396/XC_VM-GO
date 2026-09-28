@@ -36,11 +36,14 @@ final class NodeLeaseTest extends TestCase {
 		file_put_contents($this->rDir . '/flows.json', json_encode(['mode' => 1, 'flows' => NodeFlows::CONFIG, 'state' => 'active']));
 		NodeFlows::usePath($this->rDir . '/flows.json');
 		SettingsManager::set(['lb_lease_fence' => 1, 'lb_fence_drain_min' => 10]);
+		// The agent's file alone: the compiled verdict is LeaseVerdictCacheTest's.
+		NodeLease::useExtension(false);
 	}
 
 	protected function tearDown(): void {
 		NodeFlows::usePath(null);
 		NodeLease::usePath(null);
+		NodeLease::useExtension(null);
 		SettingsManager::set([]);
 		exec('rm -rf ' . escapeshellarg($this->rDir));
 	}

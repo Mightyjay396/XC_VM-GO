@@ -24,6 +24,19 @@ use XcVm\Core\Config\SettingsManager;
  * failing open here costs the operator nothing they cannot see, while failing
  * closed would take a fleet off the air over a stopped agent or a stale file.
  *
+ * **The compiled verdict first.** When the node's `xcvm_core` offers it
+ * (`cluster_lease_state`, ADR-002 "Lease verdict on a node"), the extension
+ * judges the lease itself: it keeps the exact bytes MAIN signed (handed over
+ * from the agent's state with `cluster_lease_store`), verifies them against its
+ * own pin of the panel key, and holds an anchor on MAIN's clock that only a
+ * verified lease moves, only forward, and that runs on the monotonic clock —
+ * so neither the node's clock nor a MAIN whose clock was set back can lengthen
+ * the window. A `live` or `expired` answer decides; `none` (no pin, no lease
+ * stored yet, a file that does not open) falls back to the agent's file below,
+ * which keeps every uncertainty serving. An extension without the method (or
+ * none at all) is the same fallback. The extension's own `license_valid()`
+ * fails closed on `none`; this fence does not, for the reasons above.
+ *
  * The switch is `lb_lease_fence`, off until an operator turns it on, and it
  * reaches a node the way its other settings do (MAIN's database, or the
  * replica's `settings` section). It must be on before the licence it guards
@@ -76,6 +89,22 @@ final class NodeLease {
 	private static int $rReadAt = 0;
 
 	/**
+	 * How the extension is reached: null for `\XC_VM` when it offers the lease
+	 * verdict, false for none, or a test's `fn(string $rMethod, mixed ...$rArgs)`.
+	 */
+	private static \Closure|false|null $rExt = null;
+
+	private static ?string $rAgentState = null;
+
+	/** @var array{state: string, exp: int, gen: int, main_time: int, at_ns: int}|null The compiled verdict as last read. */
+	private static ?array $rCompiled = null;
+
+	private static int $rCompiledAt = 0;
+
+	/** The newest lease `iat` handed to the extension, so a refusal is not retried every read. */
+	private static int $rOffered = 0;
+
+	/**
 	 * The two settings this reads are passed in by the streaming endpoints, which
 	 * hold their own $rSettings from the node's cache file and populate no
 	 * SettingsManager (`Public/stream/segment.php`, `key.php`). Anything else —
@@ -104,11 +133,13 @@ final class NodeLease {
 	/**
 	 * The whole verdict, for the operator's page and the node's telemetry:
 	 * `exp` and `drain_until` are on MAIN's clock, `anchor` is where MAIN's
-	 * clock stands as the agent last vouched for it, and `why` names the reason
-	 * a verdict is SERVING when no lease decided it.
+	 * clock stands as the extension's anchor or the agent last vouched for it,
+	 * `source` says which of the two decided (`extension`, `agent`, or `none`
+	 * when nothing did), and `why` names the reason a verdict is SERVING when no
+	 * lease decided it.
 	 *
 	 * @param array<string, mixed>|null $rSettings
-	 * @return array{state: string, exp: int, drain_until: int, anchor: int, gen: int, why: string}
+	 * @return array{state: string, exp: int, drain_until: int, anchor: int, gen: int, why: string, source: string}
 	 */
 	public static function verdict(?array $rSettings = null): array {
 		return self::judge($rSettings);
@@ -138,14 +169,33 @@ final class NodeLease {
 		self::$rDoc = null;
 		self::$rFence = null;
 		self::$rReadAt = 0;
+		self::$rCompiled = null;
+		self::$rCompiledAt = 0;
+	}
+
+	/**
+	 * Tests: reach the extension through $rCall (`fn(string $rMethod, mixed
+	 * ...$rArgs)`), or none at all (false); null restores `\XC_VM`. $rAgentState
+	 * is the agent's state file the lease is taken from (null: the node's own).
+	 */
+	public static function useExtension(\Closure|false|null $rCall, ?string $rAgentState = null): void {
+		self::$rExt = $rCall;
+		self::$rAgentState = $rAgentState;
+		self::forgetCompiled();
+	}
+
+	private static function forgetCompiled(): void {
+		self::$rCompiled = null;
+		self::$rCompiledAt = 0;
+		self::$rOffered = 0;
 	}
 
 	/**
 	 * @param array<string, mixed>|null $rSettings
-	 * @return array{state: string, exp: int, drain_until: int, anchor: int, gen: int, why: string}
+	 * @return array{state: string, exp: int, drain_until: int, anchor: int, gen: int, why: string, source: string}
 	 */
 	private static function judge(?array $rSettings): array {
-		$rServing = ['state' => self::SERVING, 'exp' => 0, 'drain_until' => 0, 'anchor' => 0, 'gen' => 0, 'why' => ''];
+		$rServing = ['state' => self::SERVING, 'exp' => 0, 'drain_until' => 0, 'anchor' => 0, 'gen' => 0, 'why' => '', 'source' => 'none'];
 		// MAIN's own fence (`node.fence`) needs no switch: it is an operator's
 		// or a lapsed licence's explicit word, verified by the agent.
 		$rFenced = self::commandFence();
@@ -158,6 +208,18 @@ final class NodeLease {
 		// A node MAIN does not hold a lease for: mode 0, no agent, or MAIN itself.
 		if (NodeFlows::current()['mode'] < 1) {
 			return ['why' => 'not a cluster node'] + $rServing;
+		}
+		$rCompiled = self::compiled();
+		if ($rCompiled !== null) {
+			// MAIN's time as the extension's anchor has it, plus the (monotonic)
+			// time since it was read, at most the 2 s it is kept.
+			$rAnchor = $rCompiled['main_time'] + min(2, intdiv(max(0, hrtime(true) - $rCompiled['at_ns']), 1_000_000_000));
+			$rDrainUntil = $rCompiled['exp'] + self::drainMinutes($rSettings) * 60;
+			$rOut = ['exp' => $rCompiled['exp'], 'drain_until' => $rDrainUntil, 'anchor' => $rAnchor, 'gen' => $rCompiled['gen'], 'why' => '', 'source' => 'extension'];
+			if ($rAnchor < $rCompiled['exp']) {
+				return ['state' => self::SERVING] + $rOut;
+			}
+			return ['state' => $rAnchor < $rDrainUntil ? self::DRAINING : self::FENCED] + $rOut;
 		}
 		$rDoc = self::agentFile();
 		if ($rDoc === null) {
@@ -179,7 +241,7 @@ final class NodeLease {
 		// shortens the window.
 		$rAnchor = intdiv($rDoc['anchor_ms'] + max(0, $rNowMs - $rDoc['wrote_at_ms']), 1000);
 		$rDrainUntil = $rDoc['exp'] + self::drainMinutes($rSettings) * 60;
-		$rOut = ['exp' => $rDoc['exp'], 'drain_until' => $rDrainUntil, 'anchor' => $rAnchor, 'gen' => $rDoc['gen'], 'why' => ''];
+		$rOut = ['exp' => $rDoc['exp'], 'drain_until' => $rDrainUntil, 'anchor' => $rAnchor, 'gen' => $rDoc['gen'], 'why' => '', 'source' => 'agent'];
 		if ($rAnchor < $rDoc['exp']) {
 			return ['state' => self::SERVING] + $rOut;
 		}
@@ -228,6 +290,99 @@ final class NodeLease {
 			return null;
 		}
 		return ['state' => $rFence['state'], 'drain_until' => intdiv($rFence['drain_until_ms'], 1000), 'why' => 'fenced by MAIN (' . $rFence['reason'] . ')'];
+	}
+
+	/**
+	 * The extension's verdict when it judged one (`live` or `expired`), read at
+	 * most every 2 s like the agent's file; null when it has none to give.
+	 *
+	 * @return array{state: string, exp: int, gen: int, main_time: int, at_ns: int}|null
+	 */
+	private static function compiled(): ?array {
+		if (self::$rCompiledAt === 0 || time() - self::$rCompiledAt >= 2) {
+			self::$rCompiled = self::askExtension();
+			self::$rCompiledAt = time();
+		}
+		return self::$rCompiled;
+	}
+
+	/** The way to the extension, or null when it does not offer the verdict. */
+	private static function extension(): ?\Closure {
+		if (self::$rExt !== null) {
+			return self::$rExt === false ? null : self::$rExt;
+		}
+		if (!class_exists('XC_VM') || !method_exists('XC_VM', 'cluster_lease_state') || !method_exists('XC_VM', 'cluster_lease_store')) {
+			return null;
+		}
+		return static fn(string $rMethod, mixed ...$rArgs): mixed => \XC_VM::$rMethod(...$rArgs);
+	}
+
+	/**
+	 * Hand the extension the agent's newest lease, then read its verdict. What
+	 * throws or answers anything but an array is no verdict.
+	 *
+	 * @return array{state: string, exp: int, gen: int, main_time: int, at_ns: int}|null
+	 */
+	private static function askExtension(): ?array {
+		$rCall = self::extension();
+		if ($rCall === null) {
+			return null;
+		}
+		try {
+			$rState = $rCall('cluster_lease_state');
+			if (!is_array($rState)) {
+				return null;
+			}
+			$rState = self::offer($rCall, $rState);
+		} catch (\Throwable) {
+			return null;
+		}
+		if (!in_array($rState['state'] ?? null, ['live', 'expired'], true) || (int) ($rState['exp'] ?? 0) <= 0) {
+			return null;
+		}
+		return [
+			'state' => (string) $rState['state'],
+			'exp' => (int) $rState['exp'],
+			'gen' => (int) ($rState['gen'] ?? 0),
+			'main_time' => (int) ($rState['main_time'] ?? 0),
+			'at_ns' => hrtime(true),
+		];
+	}
+
+	/**
+	 * The lease the agent holds, stored in the extension when it is newer (by
+	 * `iat`) than the one the extension judged. The extension checks it: the
+	 * pinned panel key, this node, not older than what it holds, live on its
+	 * own anchor. A lease it refused is not offered again until a newer one
+	 * arrives. Without a pin there is nothing to check it against, and nothing
+	 * is offered.
+	 *
+	 * @param array<string, mixed> $rState the extension's verdict
+	 * @return array<string, mixed> the verdict, after a store if one was made
+	 */
+	private static function offer(\Closure $rCall, array $rState): array {
+		if (($rState['why'] ?? '') === 'NOT_PINNED') {
+			return $rState;
+		}
+		$rAgent = AgentPaths::readState(self::$rAgentState ?? AgentPaths::fileOrNull(AgentPaths::STATE) ?? '');
+		$rLease = $rAgent['lease'] ?? null;
+		$rNode = $rAgent['node_uuid'] ?? null;
+		if (!is_array($rLease) || !is_string($rNode) || !is_string($rLease['payload'] ?? null) || !is_string($rLease['sig'] ?? null)) {
+			return $rState;
+		}
+		$rIat = (int) ($rLease['iat'] ?? 0);
+		$rHeld = in_array($rState['state'] ?? null, ['live', 'expired'], true) ? (int) ($rState['iat'] ?? 0) : 0;
+		if ($rIat <= $rHeld || $rIat <= self::$rOffered) {
+			return $rState;
+		}
+		self::$rOffered = $rIat;
+		$rPayload = base64_decode($rLease['payload'], true);
+		$rSig = base64_decode($rLease['sig'], true);
+		if ($rPayload === false || $rSig === false) {
+			return $rState;
+		}
+		$rStored = $rCall('cluster_lease_store', $rPayload, $rSig, $rNode);
+		return is_array($rStored) ? $rStored : $rState;
 	}
 
 	/**
