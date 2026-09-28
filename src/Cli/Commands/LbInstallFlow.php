@@ -261,9 +261,9 @@ class LbInstallFlow {
 		$rServices = (intval(call_user_func($rRunSSH, $rConn, 'sudo cat /proc/cpuinfo | grep "^processor" | wc -l')['output']) ?: 4);
 		call_user_func($rRunSSH, $rConn, 'sudo rm ' . MAIN_HOME . 'bin/php/etc/*.conf');
 		// The pool configs, daemons.sh and balance.conf, each through a
-		// temporary file named md5(time() . <its basename>).
+		// temporary file under an unpredictable name.
 		foreach (PhpFpmPools::files($rServices, (string) file_get_contents(MAIN_HOME . 'bin/php/etc/template'), MAIN_HOME) as $rPath => $rBody) {
-			$rTmpPath = TMP_PATH . md5(time() . basename($rPath));
+			$rTmpPath = TMP_PATH . bin2hex(random_bytes(16)) . '_' . basename($rPath);
 			file_put_contents($rTmpPath, $rBody);
 			call_user_func($rSendFileSSH, $rConn, $rTmpPath, $rPath, false);
 		}
