@@ -101,6 +101,28 @@ class AuthRepository {
 	}
 
 	/**
+	 * An access-code type's nginx location: its XC_SCOPE (#TYPE#), the
+	 * directory under MAIN_HOME it aliases (#ALIAS#) and its burst. An
+	 * unknown type is an admin code.
+	 *
+	 * Type 5, the legacy "Ministra (new)" code, serves the one Ministra
+	 * portal there is (src/Ministra/, the type-2 directory): its `new`
+	 * subdirectory never existed, so such a code served no portal files.
+	 *
+	 * @return array{0: string, 1: string, 2: int} [type, alias, burst]
+	 */
+	public static function codeLocation(int $rCodeType): array {
+		// NOTE: 'includes/api/admin' and 'includes/api/reseller' are legacy nginx route
+		// identifiers baked into generated access-code configs — NOT filesystem paths.
+		// Do not rename without regenerating all deployed nginx configs.
+		$rTypeMap = [0 => 'admin', 1 => 'reseller', 2 => 'ministra', 3 => 'includes/api/admin', 4 => 'includes/api/reseller', 5 => 'ministra/new', 6 => 'player', 7 => 'portal', 8 => 'player_v2'];
+		$rAliasMap = [0 => 'Public/Views/admin', 1 => 'reseller', 2 => 'Ministra', 3 => 'includes/api/admin', 4 => 'includes/api/reseller', 5 => 'Ministra', 6 => 'Public/assets/player', 7 => 'Public/Views/portal', 8 => 'Public/Views/player_v2'];
+		$rBurstMap = [0 => 500, 1 => 50, 2 => 50, 3 => 1000, 4 => 1000, 5 => 50, 6 => 500, 7 => 500, 8 => 500];
+
+		return [$rTypeMap[$rCodeType] ?? 'admin', $rAliasMap[$rCodeType] ?? 'Public/Views/admin', $rBurstMap[$rCodeType] ?? 500];
+	}
+
+	/**
 	 * Regenerate per-code nginx config files from the database and reload nginx.
 	 *
 	 * Rebuilds `bin/nginx/conf/codes/*.conf` for every enabled access code,
@@ -129,16 +151,7 @@ class AuthRepository {
 					$rWhitelist[] = 'deny all;';
 				}
 
-				// NOTE: 'includes/api/admin' and 'includes/api/reseller' are legacy nginx route
-				// identifiers baked into generated access-code configs — NOT filesystem paths.
-				// Do not rename without regenerating all deployed nginx configs.
-				$rTypeMap = [0 => 'admin', 1 => 'reseller', 2 => 'ministra', 3 => 'includes/api/admin', 4 => 'includes/api/reseller', 5 => 'ministra/new', 6 => 'player', 7 => 'portal', 8 => 'player_v2'];
-				$rAliasMap = [0 => 'Public/Views/admin', 1 => 'reseller', 2 => 'Ministra', 3 => 'includes/api/admin', 4 => 'includes/api/reseller', 5 => 'Ministra/new', 6 => 'Public/assets/player', 7 => 'Public/Views/portal', 8 => 'Public/Views/player_v2'];
-				$rBurstMap = [0 => 500, 1 => 50, 2 => 50, 3 => 1000, 4 => 1000, 5 => 50, 6 => 500, 7 => 500, 8 => 500];
-
-				$rType = $rTypeMap[(int) $rCode['type']] ?? 'admin';
-				$rAlias = $rAliasMap[(int) $rCode['type']] ?? 'Public/Views/admin';
-				$rBurst = $rBurstMap[(int) $rCode['type']] ?? 500;
+				[$rType, $rAlias, $rBurst] = self::codeLocation((int) $rCode['type']);
 				$rCurrentTemplate = in_array($rType, ['ministra', 'ministra/new']) ? $rMinistraTemplate : $rTemplate;
 
 				if (in_array($rType, ['ministra', 'ministra/new']) || strlen($rCode['code']) >= 4) {
