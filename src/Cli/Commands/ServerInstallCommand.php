@@ -301,18 +301,18 @@ class ServerInstallCommand implements CommandInterface {
 	private function finalizeHostAfterRuntime($rConn, callable $rRunSSH, string $rHost): void {
 		$rSystemConf = call_user_func($rRunSSH, $rConn, 'sudo cat "/etc/systemd/system.conf"')['output'];
 		if (strpos($rSystemConf, 'DefaultLimitNOFILE=1048576') === false) {
-			call_user_func($rRunSSH, $rConn, 'sudo echo "' . "\n" . 'DefaultLimitNOFILE=1048576" >> "/etc/systemd/system.conf"');
-			call_user_func($rRunSSH, $rConn, 'sudo echo "' . "\n" . 'DefaultLimitNOFILE=1048576" >> "/etc/systemd/user.conf"');
+			call_user_func($rRunSSH, $rConn, LbInstallFlow::sudoWrite("\n" . 'DefaultLimitNOFILE=1048576', '/etc/systemd/system.conf', true));
+			call_user_func($rRunSSH, $rConn, LbInstallFlow::sudoWrite("\n" . 'DefaultLimitNOFILE=1048576', '/etc/systemd/user.conf', true));
 		}
 		if (strpos($rSystemConf, 'DefaultLimitNOFILESoft=1048576') === false) {
-			call_user_func($rRunSSH, $rConn, 'sudo echo "' . "\n" . 'DefaultLimitNOFILESoft=1048576" >> "/etc/systemd/system.conf"');
-			call_user_func($rRunSSH, $rConn, 'sudo echo "' . "\n" . 'DefaultLimitNOFILESoft=1048576" >> "/etc/systemd/user.conf"');
+			call_user_func($rRunSSH, $rConn, LbInstallFlow::sudoWrite("\n" . 'DefaultLimitNOFILESoft=1048576', '/etc/systemd/system.conf', true));
+			call_user_func($rRunSSH, $rConn, LbInstallFlow::sudoWrite("\n" . 'DefaultLimitNOFILESoft=1048576', '/etc/systemd/user.conf', true));
 		}
 
 		call_user_func($rRunSSH, $rConn, 'sudo systemctl stop apparmor');
 		call_user_func($rRunSSH, $rConn, 'sudo systemctl disable apparmor');
 		call_user_func($rRunSSH, $rConn, 'sudo mount -a');
-		call_user_func($rRunSSH, $rConn, "sudo echo 'net.ipv4.ip_unprivileged_port_start=0' > /etc/sysctl.d/50-allports-nonroot.conf && sudo sysctl --system");
+		call_user_func($rRunSSH, $rConn, LbInstallFlow::sudoWrite('net.ipv4.ip_unprivileged_port_start=0', '/etc/sysctl.d/50-allports-nonroot.conf') . ' && sudo sysctl --system');
 		sleep(3);
 		call_user_func($rRunSSH, $rConn, 'sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'tmp');
 		call_user_func($rRunSSH, $rConn, 'sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'content/streams');

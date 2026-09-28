@@ -68,8 +68,8 @@ class ProxyInstallFlow {
 			call_user_func($rSendFileSSH, $rConn, $rTmpPath, '/home/xc_vm/bin/nginx/conf/servers/' . intval($rParentID) . '.conf', false);
 		}
 
-		call_user_func($rRunSSH, $rConn, 'sudo echo "listen ' . $rHTTPPort . ';" > "/home/xc_vm/bin/nginx/conf/ports/http.conf"');
-		call_user_func($rRunSSH, $rConn, 'sudo echo "listen ' . $rHTTPSPort . ' ssl;" > "/home/xc_vm/bin/nginx/conf/ports/https.conf"');
+		call_user_func($rRunSSH, $rConn, LbInstallFlow::sudoWrite('listen ' . $rHTTPPort . ';', '/home/xc_vm/bin/nginx/conf/ports/http.conf'));
+		call_user_func($rRunSSH, $rConn, LbInstallFlow::sudoWrite('listen ' . $rHTTPSPort . ' ssl;', '/home/xc_vm/bin/nginx/conf/ports/https.conf'));
 		call_user_func($rRunSSH, $rConn, 'sudo chmod 0777 /home/xc_vm/bin');
 
 		return $rServices;

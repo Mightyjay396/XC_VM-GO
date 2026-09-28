@@ -50,6 +50,9 @@ class RootSignalsCronJob implements CommandInterface {
 	 */
 	public const AGENT_RESTART = '(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &';
 
+	/** The start of the streams ramdisk's fstab line (install, LbInstallFlow). */
+	public const RAMDISK_MOUNT = 'tmpfs /home/xc_vm/content/streams';
+
 	/**
 	 * Tests: runs the commands of the artefact actions (module:install, the
 	 * agent's restart), as argv lists, instead of run(); null restores it.
@@ -240,6 +243,38 @@ class RootSignalsCronJob implements CommandInterface {
 			ClusterEndpoint::recordMainChange($rServer, $rNew, SettingsManager::getAll(), 'system');
 		}
 		return $rNew;
+	}
+
+	/**
+	 * /etc/fstab with the streams ramdisk mount switched on or off: the
+	 * `tmpfs /home/xc_vm/content/streams …` line the installers write is
+	 * commented out to disable it and uncommented to enable it. Every other
+	 * line, and a line already in the wanted state, is left as it is.
+	 */
+	public static function ramdiskFstab(string $rFstab, bool $rEnable): string {
+		$rOutput = [];
+		foreach (explode("\n", $rFstab) as $rLine) {
+			if ($rEnable && str_starts_with($rLine, '#' . self::RAMDISK_MOUNT)) {
+				$rLine = ltrim($rLine, '#');
+			} elseif (!$rEnable && str_starts_with($rLine, self::RAMDISK_MOUNT)) {
+				$rLine = '#' . $rLine;
+			}
+			$rOutput[] = $rLine;
+		}
+		return implode("\n", $rOutput);
+	}
+
+	/**
+	 * api_legacy.conf for this node. The legacy `/api` is served until the
+	 * node's own cluster data plane is on, when MAIN reaches it over the
+	 * cluster API alone and an endpoint whose auth is a password in a URL has
+	 * nothing left to serve. No node has DATAPLANE yet (it is Phase 8), so
+	 * this is 1 everywhere today. MAIN's own `/api` keeps no toggle (ADR
+	 * 0004): MAIN never has flows, so its file is always 1 — retiring it is
+	 * a cluster-wide judgement, not a per-node flow.
+	 */
+	public static function apiLegacyConf(): string {
+		return 'set $api_legacy ' . (NodeFlows::on(NodeFlows::DATAPLANE) ? '0' : '1') . ';';
 	}
 
 	/** Tests: run the artefact actions' argv lists through $rRunner (argv => [exit status, output]); null restores run(). */
@@ -510,11 +545,7 @@ class RootSignalsCronJob implements CommandInterface {
 			}
 		}
 		$rReload = false;
-		// The legacy `/api` on this node: served until its cluster data plane is
-		// on, when MAIN reaches it over the cluster API alone and an endpoint
-		// whose auth is a password in a URL has nothing left to serve. No node
-		// has DATAPLANE yet (it is Phase 8), so this writes 1 everywhere today.
-		$rApiLegacyConf = 'set $api_legacy ' . (NodeFlows::on(NodeFlows::DATAPLANE) ? '0' : '1') . ';';
+		$rApiLegacyConf = self::apiLegacyConf();
 		if ($rApiLegacyConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/api_legacy.conf')) ?: '')) {
 			echo 'Updating the legacy /api toggle...' . "\n";
 			file_put_contents(BIN_PATH . 'nginx/conf/api_legacy.conf', $rApiLegacyConf);
@@ -932,29 +963,13 @@ class RootSignalsCronJob implements CommandInterface {
 				break;
 			case 'disable_ramdisk':
 				echo 'Disabling ramdisk...' . "\n";
-				$rFstab = file_get_contents('/etc/fstab');
-				$rOutput = [];
-				foreach (explode("\n", $rFstab) as $rLine) {
-					if (substr($rLine, 0, 31) == 'tmpfs /home/xc_vm/content/streams') {
-						$rLine = '#' . $rLine;
-					}
-					$rOutput[] = $rLine;
-				}
-				file_put_contents('/etc/fstab', implode("\n", $rOutput));
+				file_put_contents('/etc/fstab', self::ramdiskFstab((string) file_get_contents('/etc/fstab'), false));
 				shell_exec('sudo umount -l ' . STREAMS_PATH);
 				shell_exec('sudo chown -R xc_vm:xc_vm ' . STREAMS_PATH);
 				break;
 			case 'enable_ramdisk':
 				echo 'Enabling ramdisk...' . "\n";
-				$rFstab = file_get_contents('/etc/fstab');
-				$rOutput = [];
-				foreach (explode("\n", $rFstab) as $rLine) {
-					if (substr($rLine, 0, 32) == '#tmpfs /home/xc_vm/content/streams') {
-						$rLine = ltrim($rLine, '#');
-					}
-					$rOutput[] = $rLine;
-				}
-				file_put_contents('/etc/fstab', implode("\n", $rOutput));
+				file_put_contents('/etc/fstab', self::ramdiskFstab((string) file_get_contents('/etc/fstab'), true));
 				shell_exec('sudo mount ' . STREAMS_PATH);
 				shell_exec('sudo chown -R xc_vm:xc_vm ' . STREAMS_PATH);
 				break;
