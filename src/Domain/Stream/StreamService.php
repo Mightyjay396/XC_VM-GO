@@ -342,9 +342,9 @@ class StreamService {
 						}
 					}
 
-					foreach (array_keys($rImportStream) as $rKey) {
-						$rImportArray[$rKey] = $rImportStream[$rKey];
-					}
+					// Only `streams` columns (and the id of a stream being updated): a review
+					// row's form-only keys (epg_api) used to reach the REPLACE and fail it.
+					$rImportArray = array_replace($rImportArray, array_intersect_key($rImportStream, $rArray + ['id' => null]));
 
 					if (!isset($rData['edit']) && !isset($rImportStream['id'])) {
 						$rImportArray['order'] = StreamRepository::getNextOrder();
