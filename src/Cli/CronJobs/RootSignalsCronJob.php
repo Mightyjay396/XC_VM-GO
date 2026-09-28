@@ -14,6 +14,7 @@ use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Cluster\RootCredentials;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
@@ -944,6 +945,16 @@ class RootSignalsCronJob implements CommandInterface {
 				if (!LogSink::syslog('OPENSSL_EXTRA', $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.')) {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'OPENSSL_EXTRA', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rSet ? 'OPENSSL_EXTRA set to the value sent by MAIN.' : 'Failed to write the OPENSSL_EXTRA sent by MAIN.', time());
 				}
+				break;
+			case 'rotate_redis':
+				// MAIN rotated its Redis password (cluster:rotate-credentials):
+				// config.enc follows, sealed from a signed command or read from
+				// MAIN's settings on a legacy node. A refusal throws, and
+				// cluster:root acks the command failed with its message.
+				echo RootCredentials::rotateRedis($rData, $db) . "\n";
+				break;
+			case 'rotate_db':
+				echo RootCredentials::rotateDb($rData) . "\n";
 				break;
 			case 'restart_services':
 				echo 'Restarting services...' . "\n";

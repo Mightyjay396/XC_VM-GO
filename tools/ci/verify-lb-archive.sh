@@ -99,6 +99,7 @@ SENSITIVE=(
 	"Cli/Commands/ClusterImportKeysCommand.php"
 	"Cli/Commands/ClusterDbAllowlistCommand.php"
 	"Cli/Commands/ClusterRotateStreamSecretCommand.php"
+	"Cli/Commands/ClusterRotateCredentialsCommand.php"
 	"Cli/Commands/ClusterEnrolCodeCommand.php"
 	"Cli/Commands/ClusterEnrolApproveCommand.php"
 	"Cli/Commands/ClusterPoolsCommand.php"

@@ -26,14 +26,15 @@ final class NodeActions {
 		'disable_ramdisk', 'enable_ramdisk', 'certbot_generate', 'update_binaries',
 		'install_module', 'delete_module', 'update', 'rollback',
 		'set_services', 'set_governor', 'set_sysctl', 'set_port', 'flush',
-		OpensslExtra::SIGNAL_ACTION, 'agent_binary',
+		OpensslExtra::SIGNAL_ACTION, 'agent_binary', 'rotate_redis', 'rotate_db',
 	];
 
 	/**
-	 * Actions that run only over the cluster API, with an artefact root
-	 * stages and checks: never queued as a `signals` row.
+	 * Actions that run only over the cluster API: never queued as a `signals`
+	 * row. `agent_binary` carries an artefact root stages and checks;
+	 * `rotate_db` a sealed password nothing else could carry.
 	 */
-	public const CLUSTER_ONLY = ['agent_binary'];
+	public const CLUSTER_ONLY = ['agent_binary', 'rotate_db'];
 
 	public static function reboot(int $rServerID, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => 'reboot'], $rDb);
