@@ -191,6 +191,13 @@ console.php agent_binary [amd64|arm64|armv7|386] [force]
 # Firewall MariaDB and Redis to the fleet (check first)
 console.php cluster:db-allowlist status | apply | undo
 
+# Phase 9: a mode-2 node gives up MAIN's credentials (asks first; --wait=<s> waits for the revoke)
+console.php cluster:strip-credentials <serverID> [--yes] [--wait=<seconds>]
+
+# Rotate the panel's DB password (MAIN), and set it on a node MAIN cannot reach (node, root)
+console.php cluster:rotate-db-password [--yes] [--password-stdin]
+echo "$NEW_PASSWORD" | console.php cluster:set-db-password
+
 # Disaster recovery of the cluster root
 console.php cluster:export-keys   /path/bundle
 console.php cluster:import-keys   /path/bundle
@@ -224,6 +231,9 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
 8. Leave it for a week. When the node's connect audit shows zero MySQL and zero Redis
    connects for seven days, `mode_up` to 2.
 9. `cluster:db-allowlist apply` once every node is in mode 2.
+10. *Drop DB credentials* on the node (or `cluster:strip-credentials`): the node's
+    `config.enc` loses MAIN's DB and Redis credentials, then MAIN revokes its grant. There is
+    no undo from the page: rolling back needs a config with credentials and a new grant.
 
 ## Limits
 
@@ -285,15 +295,25 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   extension judges the lease itself — against its own pin of the panel key and an anchor on
   MAIN's clock that runs on the monotonic clock and never moves back — and the agent's file
   is the fallback. The same verdict makes `license_valid()` true on the node, so
-  `LicenseGate` lets it use fanout. The extension's verdict needs the node's `core.pin`.
+  `LicenseGate` lets it use fanout. The extension's verdict needs the node's `core.pin`:
+  the SSH install pins it over its own session, and every other node that takes root
+  commands is pinned by `cron:cluster` with a signed `node.root pin_core` (the *core* badge
+  on the Cluster Nodes page, or *Pin core* to send it now).
 - **The credential lockdown is partly built** (Phase 9). A node in mode 2 gives up MAIN's
   credentials with a signed `node.root strip_db_credentials` (or a credential-free
   `node.root install_config`), run by `xcvm_core` as root; when its ack reports a config
   without credentials, MAIN revokes the node's grant (`XC_VM::db_revoke`) and records
-  `cluster_nodes.db_revoked_at` (`Domain\Cluster\DbCredentials`). Nothing sends the strip
-  on its own, and `lb_new_node_mode=api` is still refused (`api_mode_allowed` is false):
-  the cutover stays the operator's decision. `cluster:rotate-credentials` and the manual
-  `cluster:lockdown` exist (see ADR 0004, Phase 9's fifth increment).
+  `cluster_nodes.db_revoked_at` (`Domain\Cluster\DbCredentials`). Only an operator sends
+  the strip (*Drop DB credentials*, `cluster:strip-credentials`), and
+  `lb_new_node_mode=api` is still refused (`api_mode_allowed` is false): the cutover stays
+  the operator's decision. `cluster:rotate-db-password` rotates the panel's DB password
+  through `XC_VM::db_set_password` and sends each mode-1 node that takes root commands a
+  config with the new password (`install_config`, packed for that install only); every
+  other load balancer that still uses its grant keeps the old password until an operator
+  runs `cluster:set-db-password` on it (`XC_VM::config_set_db`). The password never rides a
+  command. `cluster:rotate-credentials` (Redis, and the DB through a sealed `node.root
+  rotate_db`) and the manual `cluster:lockdown` exist too (ADR 0004, Phase 9's fifth
+  increment).
 - The viewer-token secret can be *replaced* gracefully (the value it replaces stays readable
   for ten minutes, fleet-wide), but a full rotation — re-encrypting what is stored under it
   — is Phase 9's.

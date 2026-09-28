@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) four increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest), and its relay half as one change — relay and file tickets minted into the R2 stream record and refreshed on the delta path without moving a record's ETag or version, the parents' `RelayGuard`, `/xfile` with a signed digest per chunk, the agent's loopback proxy and the URL builders, behind each node's DATAPLANE flow, which mode 2 now requires. Its acceptance on a running fleet (48 h without an encoder restart at L = 5) is still to be measured, and `cluster:rotate-stream-secret` waits with Phase 9. Of Phase 9 (the licence lease, cutover and lockdown) six increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days; every token MAIN hands a node carries the lease it may serve on without MAIN; the node's agent verifies and keeps that lease and anchors MAIN's clock; past the lease's window a node refuses new viewers and, past the drain, the sessions still running — behind `lb_lease_fence`, off until an operator turns it on; the restrictive commands, the stream-secret and credential rotations, `rotate_sign_key` and the manual `cluster:lockdown`; and the extension's compiled lease verdict with the credential actions (`strip_db_credentials`, `install_config`, MAIN's revoke). `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it, at mode 1: flipping that flag is the cutover decision, and it stays with the operator.
+- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) four increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest), and its relay half as one change — relay and file tickets minted into the R2 stream record and refreshed on the delta path without moving a record's ETag or version, the parents' `RelayGuard`, `/xfile` with a signed digest per chunk, the agent's loopback proxy and the URL builders, behind each node's DATAPLANE flow, which mode 2 now requires. Its acceptance on a running fleet (48 h without an encoder restart at L = 5) is still to be measured, and `cluster:rotate-stream-secret` waits with Phase 9. Of Phase 9 (the licence lease, cutover and lockdown) six increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days; every token MAIN hands a node carries the lease it may serve on without MAIN; the node's agent verifies and keeps that lease and anchors MAIN's clock; past the lease's window a node refuses new viewers and, past the drain, the sessions still running — behind `lb_lease_fence`, off until an operator turns it on; the restrictive commands, the stream-secret and credential rotations, `rotate_sign_key` and the manual `cluster:lockdown`; and the extension's compiled lease verdict with the credential actions (`strip_db_credentials`, `install_config`, MAIN's revoke). A seventh pins MAIN's panel key in every node's `xcvm_core` (`core.pin`: at the SSH install, else `node.root pin_core`, with the node's install_id in `cluster_nodes.install_id`), gives the operator the credential strip (the Cluster Nodes page's *Drop DB credentials* and `cluster:strip-credentials`), and rotates the panel's DB password (`cluster:rotate-db-password` on MAIN, `cluster:set-db-password` on a node). `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it, at mode 1: flipping that flag is the cutover decision, and it stays with the operator.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -3858,6 +3858,84 @@ fallback's documented limit), all with the extension absent and a fake in its pl
 `NodeCredentialsTest` (the catalogue, an old extension refusing cleanly, the result line, the
 blob as bytes, revoke only on a clean outcome, the mode-2 guard, the schema);
 `ClusterExtensionIntegrationTest` runs both halves against a real test-hooks `xcvm_core`.
+
+### Core pins, the credential strip and the DB password (Phase 9, seventh increment)
+
+The fifth increment left the compiled lease verdict without the pin it judges against, and the
+credential strip without a caller. This increment adds both, and the DB password rotation that
+`xcvm_core` now offers (its `db_set_password` and `config_set_db`, ADR-002).
+
+**The node's `core.pin`.** `cluster_pack($install_id)` is an XCVT blob that only that install
+opens, for an hour, and licence-gated, so MAIN needs each node's install_id: migration 053 adds
+`cluster_nodes.install_id` (NULL: not known; not a secret, and a wrong one only makes the node
+refuse what MAIN packs for it).
+
+- **At the SSH install** (`LbInstallFlow::pinCore`, after root's pin, before the agent starts):
+  the node's install_id is read as root — only when its file exists, since `install_id()`
+  creates one and a root-owned file would lock the panel's user out — recorded, packed for,
+  and pinned with `cluster_pin($blob, true)`: the verified SSH session is the authorised
+  re-pin path, so an earlier MAIN's pin is replaced. The node must answer with this panel's
+  key's SHA-256. A failure is a line in the log, never a failed install.
+- **Every other node** (enrolled by code, before this release, or whose MAIN's root changed)
+  is pinned over the cluster API once it takes root commands: `cron:cluster` (`CorePins::offer`,
+  at most 20 per pass, a node that did not end pinned again after an hour) or the page's *Pin
+  core* (`CorePins::request`) sends `node.root pin_core` — with the blob when the install_id is
+  known, else without, and root answers with its install_id, which the command's first ack
+  records before MAIN sends the blob. A pin that did not open (`CRYPTO`: another machine, or a
+  blob past its hour) forgets the install_id, so it is asked for again.
+- **Root pins only root's key** (`Core\Cluster\NodeCorePin`): the pinned key must be the one
+  root's own pin (`RootPin`) trusts, which also signed the command. A pin of another panel is
+  replaced; a pin of root's panel is kept against a blob for any other key (`PIN_MISMATCH`);
+  a blob that pinned another key is removed at once, so the node never trusts a key root does
+  not. The result line is `{"core": {install_id?, pinned, verdict}}`.
+- **MAIN's record** is `cluster_meta` `core_pin:<server_id>` = `{gen, fp, pinned_at,
+  tried_at}`: a re-enrolled node (a new generation) and a new panel root (another `fp`) read as
+  not pinned and are offered again. The page shows a *core* badge for a pinned node.
+
+**The credential strip's triggers.** *Drop DB credentials* on the Cluster Nodes page (for an
+active node in mode 2, behind a confirmation) and `cluster:strip-credentials <serverID>` (the
+operator types the server id back, or passes `--yes`; `--wait=<s>` waits for the revoke) both
+call `DbCredentials::strip()`, which now returns message keys and audits every attempt that
+reached a node (`node.strip_credentials`). `DbCredentials::installConfig()` sends a config MAIN
+packed for the node's install_id with `XC_VM::config_pack` — credential-free for a node in mode
+2, with credentials for a rollback or a rotation — as `node.root install_config`, audited
+`node.install_config`. Nothing strips on its own, and `api_mode_allowed` stays false.
+
+**The DB password rotation** (`Domain\Cluster\DbPassword`, `cluster:rotate-db-password`).
+
+- `XC_VM::db_set_password($new)` does the database half: MAIN's accounts (all or none), then its
+  `config.enc`, then every load balancer's grant (`PARTIAL` when one kept the old password).
+  The new password is generated (32 letters and digits) and never shown, or read from standard
+  input with `--password-stdin`; it is never an argument, never logged or audited.
+- **The password never rides a command.** A `node.root` payload sits in MAIN's
+  `cluster_commands` and the node's root inbox in the clear, and a rotation is often meant to
+  shut out a leaked password. So each active node in mode 1 that takes root commands and whose
+  install_id MAIN knows is sent a whole config instead (`installConfig` with credentials,
+  packed after the rotation, so it holds the new password encrypted to that install). A node
+  in mode 2 does not use MAIN's database and is left alone; a revoked node has no grant.
+- **Every other load balancer** (legacy, mode 0, no root commands, install_id unknown) keeps
+  the old password in its config and loses MAIN's database until an operator runs
+  `cluster:set-db-password` on it as root, which reads the password from standard input and
+  calls `XC_VM::config_set_db` (only `db.pass` changes; a node without a DB user is refused,
+  `RECORD:db.user`). The command lists these nodes before it asks for confirmation (the operator
+  types `rotate`, or passes `--yes`).
+- Both commands check the extension with `method_exists` and refuse cleanly without it.
+  `cluster:rotate-db-password` is MAIN-only (stripped from the LB build); `cluster:set-db-password`
+  ships on nodes and uses nothing the LB build strips.
+
+**Not built:** the Redis password rotation, the credential-free SSH install
+(`configPackParams` still packs credentials and `db_grant` still runs), a signed
+`rotate_sign_key`, and `cluster:lockdown`.
+
+**Tests.** `CorePinTest` (root's two steps against a fake extension: the install_id read only
+when it exists, only root's key pinned, another panel's pin replaced and root's kept, the
+refusals; MAIN's offer, retry, generation and panel-key changes, the acks, `packFor`),
+`LbProvisionClusterTest` (the pin over the SSH session, before the agent runs, and a failed
+pin not failing the install), `ClusterCredentialsActionTest` (the page's and the CLI's guards,
+confirmation and audit, the node list's new fields, the strings), `NodeCredentialsTest`
+(message keys, the audit, `revokedAt`), `DbPasswordTest` (the password rules, the plan, a
+rotation that sends configs only where it can and never logs the password, refusals, the
+config packed for the node's install, both commands, and which ships on a node).
 
 ### Disaster recovery of MAIN's cluster keys
 
