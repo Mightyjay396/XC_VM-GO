@@ -13,8 +13,9 @@ use XcVm\Core\Cluster\NodeRole;
  * include nor the guard, so a DATAPLANE node kept serving `/api`. The LB
  * config must include the switch and guard both locations, and the LB build
  * must ship every file its nginx.conf includes: nginx refuses to start on a
- * missing one. MAIN's own `/api` keeps no toggle (ADR 0004): MAIN never has
- * flows, so the cron writes 1 there whatever a stray flows.json says.
+ * missing one. MAIN's own `/api` keeps no toggle (ADR 0004, Phase 8): its
+ * nginx.conf neither includes the switch nor guards `/api`, and the cron
+ * does not write the file there, whatever a stray flows.json says.
  */
 final class LbNginxApiLegacyTest extends TestCase {
 
@@ -69,11 +70,21 @@ final class LbNginxApiLegacyTest extends TestCase {
 	}
 
 	/**
-	 * The switch follows the node's own DATAPLANE flow, and MAIN has none:
-	 * the same stray flows.json that retires a node's `/api` leaves MAIN's
-	 * served.
+	 * The switch follows the node's own DATAPLANE flow and is the load
+	 * balancers' alone: MAIN's nginx.conf has neither the include nor a
+	 * guard, and the cron writes nothing there, even with the same stray
+	 * flows.json that retires a node's `/api`.
 	 */
 	public function testMainsOwnApiKeepsNoToggle(): void {
+		$rMain = str_replace("\r\n", "\n", (string) file_get_contents($this->rRoot . '/src/bin/nginx/conf/nginx.conf'));
+		$this->assertStringNotContainsString('include api_legacy.conf;', $rMain);
+		$this->assertStringNotContainsString('if ($api_legacy', $rMain);
+		foreach (['/api', '/api.php'] as $rPath) {
+			$rBody = $this->location($rMain, $rPath);
+			$this->assertStringNotContainsString('return 404;', $rBody, $rPath);
+			$this->assertStringContainsString('fastcgi_param XC_API internal;', $rBody, $rPath);
+		}
+
 		$this->rFlows = (string) tempnam(sys_get_temp_dir(), 'flows');
 		file_put_contents($this->rFlows, json_encode(['mode' => 2, 'flows' => NodeFlows::DATAPLANE, 'state' => 'active']));
 
@@ -83,7 +94,7 @@ final class LbNginxApiLegacyTest extends TestCase {
 
 		NodeRole::useServers(fn () => [SERVER_ID => ['is_main' => 1]]);
 		NodeFlows::usePath($this->rFlows, true);
-		$this->assertSame('set $api_legacy 1;', RootSignalsCronJob::apiLegacyConf(), 'MAIN');
+		$this->assertNull(RootSignalsCronJob::apiLegacyConf(), 'MAIN: nothing to write');
 	}
 
 	public function testTheShippedDefaultKeepsTheApiServed(): void {

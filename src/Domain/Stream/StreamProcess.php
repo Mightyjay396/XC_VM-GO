@@ -1442,7 +1442,7 @@ class StreamProcess {
 	 * Whether live streams on this server are handed to the fanout supervisor.
 	 */
 	public static function supervisionEnabled(): bool {
-		return !empty(SettingsManager::get('fanout_supervise')) && LicenseGate::fanoutUsable();
+		return !empty(SettingsManager::get('fanout_supervise', 1)) && LicenseGate::fanoutUsable();
 	}
 
 	/**

@@ -109,23 +109,21 @@ if ($rChannelInfo) {
 	}
 
 	// Fanout (ADR 0002/0003, P2): route proxy-mode live TS through the xc_fanout
-	// daemon when it is reachable — there is NO settings flag; the switch is the
-	// daemon itself. If its control socket is present AND registering the source
+	// daemon. If its control socket is present AND registering the source
 	// succeeds, this stream is committed to the daemon path: we skip the whole
-	// legacy startProxy/startMonitor block below (the daemon owns the producer —
-	// starts the puller on the first viewer, stops it after the last leaves) and
-	// no streams_servers pid is written, so the streams cron leaves it alone; the
-	// delivery arm then hands the byte path to nginx via X-Accel-Redirect.
+	// start block below (the daemon owns the producer — starts the puller on the
+	// first viewer, stops it after the last leaves) and no streams_servers pid
+	// is written, so the streams cron leaves it alone; the delivery arm then
+	// hands the byte path to nginx via X-Accel-Redirect.
 	//
-	// Deciding on *registration success* (not just socket presence) makes the
-	// fallback correct: a stopped/unreachable daemon (or a stale socket after a
-	// hard kill, or a stream with no source) leaves $rFanout false, so the FULL
-	// legacy path runs — startProxy producer included. Stopping the daemon is
-	// therefore the rollback: every stream falls back automatically, no flag.
-	//
-	// With fanout switched off (FanoutMode) — or the licence denying it — every
-	// arm below takes its pre-fanout path instead: ProxyCommand for proxy
-	// streams, the on-disk HLS playlist, and the per-viewer TS chase-read.
+	// The rollback is the admin's master switch, settings.fanout_enabled = 0
+	// (FanoutMode), or a licence that denies fanout: $rLegacy is then true and
+	// every arm below takes its pre-fanout path — ProxyCommand for proxy
+	// streams, the PHP monitor, the on-disk HLS playlist and the per-viewer TS
+	// chase-read. Stopping the daemon is NOT a rollback: with fanout on and the
+	// daemon down (or its socket stale, or registration failing) $rFanout stays
+	// false and the viewer gets not-on-air until the keepalive brings the
+	// daemon back (~2 s).
 	$rLegacy = FanoutMode::legacyDelivery($rSettings);
 	$rFanout = false;
 	if (!empty($rChannelInfo["proxy"]) && LicenseGate::fanoutUsable()) {
@@ -159,8 +157,37 @@ if ($rChannelInfo) {
 
 	if (!$rFanout && !ProcessManager::isStreamAlive($rChannelInfo["pid"], $rStreamID)) {
 		$rChannelInfo["pid"] = null;
+		$rStart = FanoutMode::startFor($rLegacy, !empty($rChannelInfo["proxy"]), $rChannelInfo["on_demand"] == 1);
 
-		if ($rChannelInfo["on_demand"] == 1) {
+		if ($rStart === FanoutMode::START_PROXY) {
+			// Fanout off: the pre-fanout proxy producer, on demand or not (the PHP
+			// monitor does not run direct sources). One ProxyCommand per stream
+			// pulls the source and feeds each viewer's socket (relayed in the TS
+			// arm below); it exits a few seconds after its last viewer. Viewers
+			// arriving together start it once: a second ProxyCommand would kill
+			// the first while it is still opening the source.
+			$rStartLock = StreamProcess::lockOnDemandStart($rStreamID);
+			AsyncFileOperations::clearFileCache();
+			$rChannelInfo["monitor_pid"] = (intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.monitor", false)) ?: null);
+			if (!($rChannelInfo["monitor_pid"] && ProcessManager::isNamedProcessRunning($rChannelInfo["monitor_pid"], "XC_VMProxy", $rStreamID))) {
+				@unlink(STREAMS_PATH . $rStreamID . "_.monitor");
+				@unlink(STREAMS_PATH . $rStreamID . "_.pid");
+				AsyncFileOperations::clearFileCache();
+				$rChannelInfo["monitor_pid"] = null;
+				StreamProcess::startProxy($rStreamID);
+
+				if (AsyncFileOperations::awaitFileExists(STREAMS_PATH . $rStreamID . "_.monitor", 300, 10)) {
+					$rChannelInfo["monitor_pid"] = (intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.monitor", false)) ?: null);
+				}
+			}
+			StreamProcess::unlockOnDemandStart($rStartLock);
+
+			if (!$rChannelInfo["monitor_pid"]) {
+				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
+			}
+
+			$rChannelInfo["pid"] = $rChannelInfo["monitor_pid"];
+		} elseif ($rStart === FanoutMode::START_MONITOR) {
 			// One viewer starts a stopped stream; others arriving meanwhile wait
 			// here, then read the monitor it started (see lockOnDemandStart).
 			$rStartLock = StreamProcess::lockOnDemandStart($rStreamID);
@@ -215,29 +242,12 @@ if ($rChannelInfo) {
 			if (!$rChannelInfo["pid"]) {
 				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 			}
-		} elseif ($rLegacy && !empty($rChannelInfo["proxy"])) {
-			// Fanout off: the pre-fanout proxy producer. One ProxyCommand per
-			// stream pulls the source and feeds each viewer's socket (relayed in
-			// the TS arm below); it exits a few seconds after its last viewer.
-			if (!($rChannelInfo["monitor_pid"] && ProcessManager::isMonitorAlive($rChannelInfo["monitor_pid"], $rStreamID))) {
-				@unlink(STREAMS_PATH . $rStreamID . "_.pid");
-				StreamProcess::startProxy($rStreamID);
-
-				if (AsyncFileOperations::awaitFileExists(STREAMS_PATH . $rStreamID . "_.monitor", 300, 10)) {
-					$rChannelInfo["monitor_pid"] = intval(AsyncFileOperations::readFile(STREAMS_PATH . $rStreamID . "_.monitor", false));
-				}
-			}
-
-			if (!$rChannelInfo["monitor_pid"]) {
-				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
-			}
-
-			$rChannelInfo["pid"] = $rChannelInfo["monitor_pid"];
 		} else {
-			// Non-on-demand with fanout on: proxy streams are daemon-only (ADR
-			// 0003, Phase E). If we reach here $rFanout is false, i.e. the daemon
-			// is unreachable, so show not-on-air (the keepalive brings the daemon
-			// back in ~2s). A dead non-proxy stream is likewise not-on-air.
+			// A proxy stream with fanout on is daemon-only (ADR 0003, Phase E):
+			// reaching here means $rFanout is false, i.e. the daemon is
+			// unreachable, so show not-on-air (the keepalive brings it back in
+			// ~2 s). A dead always-on stream is likewise not-on-air: its watchdog
+			// (the cron's) restarts it.
 			OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 		}
 	}
@@ -379,13 +389,11 @@ if ($rChannelInfo) {
 			// With fanout off ($rLegacy), the on-disk playlist is served instead,
 			// its segments by segment.php from STREAMS_PATH (the pre-fanout path).
 			$rHLS = false;
-			if (LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)) {
-				$rDaemonPl = FanoutClient::hlsPlaylist($rStreamID);
-				if ($rDaemonPl !== null) {
-					$rHLS = HLSGenerator::tokenizeDaemonPlaylist($rDaemonPl, $rSettings, (isset($rUsername) ? $rUsername : null), (isset($rPassword) ? $rPassword : null), $rStreamID, $rTokenData["uuid"], $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, intval($rChannelInfo["on_demand"]), $rServerID, $rProxyID);
-				}
-			}
-			if ($rHLS === false && $rLegacy) {
+			$rDaemonPl = (!$rLegacy && LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)) ? FanoutClient::hlsPlaylist($rStreamID) : null;
+			$rHLSVia = FanoutMode::hlsDelivery($rLegacy, $rDaemonPl !== null);
+			if ($rHLSVia === FanoutMode::VIA_DAEMON) {
+				$rHLS = HLSGenerator::tokenizeDaemonPlaylist($rDaemonPl, $rSettings, (isset($rUsername) ? $rUsername : null), (isset($rPassword) ? $rPassword : null), $rStreamID, $rTokenData["uuid"], $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, intval($rChannelInfo["on_demand"]), $rServerID, $rProxyID);
+			} elseif ($rHLSVia === FanoutMode::VIA_LEGACY) {
 				$rHLS = HLSGenerator::generateHLS($rSettings, $rPlaylist, (isset($rUsername) ? $rUsername : null), (isset($rPassword) ? $rPassword : null), $rStreamID, $rTokenData["uuid"], $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, intval($rChannelInfo["on_demand"]), $rServerID, $rProxyID);
 			}
 
@@ -411,12 +419,9 @@ if ($rChannelInfo) {
 			// immediately under X-Accel, so the reaper's isRunning(pid) check
 			// can't track them; the fanout_sync daemon reconciles pid=0 rows
 			// against the daemon's live-connection set (see UsersCronJob).
-			$rTSDaemon = false;
-			if ($rChannelInfo["proxy"]) {
-				$rTSDaemon = $rFanout;
-			} elseif (LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)) {
-				$rTSDaemon = true;
-			}
+			// With fanout off ($rLegacy) the daemon is never asked: VIA_LEGACY.
+			$rTSVia = FanoutMode::tsDelivery($rLegacy, $rChannelInfo["proxy"] ? $rFanout : (!$rLegacy && LicenseGate::fanoutUsable() && FanoutClient::isStreamFed($rStreamID)));
+			$rTSDaemon = $rTSVia === FanoutMode::VIA_DAEMON;
 			$rConnPID = $rTSDaemon ? 0 : $rPID;
 
 			$rConnection = ConnectionTracker::lookupLive($rSettings, $rConnCtx, $rExtension, true, false, false);
@@ -471,7 +476,7 @@ if ($rChannelInfo) {
 				// sends the stream to a unix datagram socket this worker binds
 				// under CONS_TMP_PATH/<id>/; relay its datagrams to the client.
 				// ────────────────────────────────────────────────────────────────
-				if ($rLegacy && !$rFanout) {
+				if ($rTSVia === FanoutMode::VIA_LEGACY) {
 					header("Content-Type: video/mp2t");
 
 					if (!file_exists(CONS_TMP_PATH . $rStreamID . "/")) {
@@ -514,7 +519,7 @@ if ($rChannelInfo) {
 				// already went not-on-air). Hand the byte path to nginx → daemon via
 				// X-Accel-Redirect; the FPM worker is freed the instant we return.
 				// ────────────────────────────────────────────────────────────────
-				if (!$rFanout) {
+				if (!$rTSDaemon) {
 					OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 				}
 				// client_prebuffer / restreamer_prebuffer (seconds) → the daemon
@@ -539,9 +544,9 @@ if ($rChannelInfo) {
 			// writes the on-disk HLS, so once we reach delivery (playlist ready
 			// above) the daemon has data. If it's reachable and serving this
 			// stream, hand the byte path to nginx→daemon via X-Accel-Redirect —
-			// like proxy mode. Non-proxy TS is daemon-only (ADR 0003, Phase E — the
-			// legacy per-viewer .ts chase-read was removed); daemon down / not fed
-			// ⇒ not-on-air, same as the proxy arm.
+			// like proxy mode. With fanout on, non-proxy TS is daemon-only (ADR
+			// 0003, Phase E); daemon down / not fed ⇒ not-on-air, same as the proxy
+			// arm. With fanout off the chase-read below serves it.
 			// ────────────────────────────────────────────────────────────────
 			if ($rTSDaemon) {
 				// client_prebuffer / restreamer_prebuffer (seconds) → the daemon
@@ -566,7 +571,7 @@ if ($rChannelInfo) {
 			// reaching here means the daemon isn't serving this stream, so show
 			// not-on-air, exactly like the proxy arm above.
 			// ────────────────────────────────────────────────────────────────
-			if (!$rLegacy) {
+			if ($rTSVia !== FanoutMode::VIA_LEGACY) {
 				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 			}
 

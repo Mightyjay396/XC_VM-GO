@@ -105,7 +105,10 @@ if (isset($_GET['token'])) {
 				// daemon's RAM via an internal X-Accel location (2-path-segment
 				// target so the server-level rewrites don't hijack it).
 				if (preg_match('/^' . intval($rStreamID) . '_d(\d+)\.ts$/', $rSegmentID, $rDSeg)) {
-					if (!file_exists(CONS_TMP_PATH . $rUUID)) {
+					// Fanout switched off (or the licence denies it): the daemon is
+					// stopped and serves nothing; a player still holding a daemon
+					// playlist gets a 404 and reloads the on-disk one from live.php.
+					if (FanoutMode::legacyDelivery($rSettings) || !file_exists(CONS_TMP_PATH . $rUUID)) {
 						generate404();
 					}
 					$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rUserIP), 0, -1)) == implode('.', array_slice(explode('.', getuserip()), 0, -1)) : $rUserIP == getuserip());

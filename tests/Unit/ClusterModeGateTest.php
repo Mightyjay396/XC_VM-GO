@@ -15,8 +15,8 @@ final class ClusterModeGateTest extends TestCase {
 	private const NOW = 1790000000;
 	private const CLEAN = ['sql_connects' => 0, 'redis_connects' => 0, 'connects_since' => self::NOW - 8 * 86400];
 
-	private function node(int $rMode, int $rFlows, string $rState = 'active'): array {
-		return ['mode' => $rMode, 'flows' => $rFlows, 'state' => $rState];
+	private function node(int $rMode, int $rFlows, string $rState = 'active', int $rRootReady = 1): array {
+		return ['mode' => $rMode, 'flows' => $rFlows, 'state' => $rState, 'root_ready' => $rRootReady];
 	}
 
 	private function gate(array $rNode, int $rMode, ?array $rConnects = null): array {
@@ -69,6 +69,22 @@ final class ClusterModeGateTest extends TestCase {
 		$this->assertTrue($this->gate($rNode, 2, self::CLEAN)[0]);
 	}
 
+	/** ADR 0004, Mode 2: every flow on and root's pin in place (root_ready). */
+	public function testModeTwoNeedsRootsPin(): void {
+		[$rOk, $rWhy] = $this->gate($this->node(1, ClusterAdmin::MODE2_FLOWS, 'active', 0), 2, self::CLEAN);
+		$this->assertFalse($rOk);
+		$this->assertSame('cluster_mode_needs_root', $rWhy);
+
+		// A row without the column (never reported) is refused the same way.
+		$this->assertSame('cluster_mode_needs_root', $this->gate(['mode' => 1, 'flows' => ClusterAdmin::MODE2_FLOWS, 'state' => 'active'], 2, self::CLEAN)[1]);
+
+		// Mode 1 and going down do not need it.
+		$this->assertTrue($this->gate($this->node(0, NodeRegistry::FLOW_CONFIG, 'active', 0), 1)[0]);
+		$this->assertTrue($this->gate($this->node(2, ClusterAdmin::MODE2_FLOWS, 'active', 0), 1)[0]);
+
+		$this->assertTrue($this->gate($this->node(1, ClusterAdmin::MODE2_FLOWS, 'active', 1), 2, self::CLEAN)[0]);
+	}
+
 	public function testOnlyModesZeroToTwoExist(): void {
 		$this->assertFalse($this->gate($this->node(2, ClusterAdmin::MODE2_FLOWS), 3, self::CLEAN)[0]);
 		$this->assertFalse($this->gate($this->node(0, 0), -1)[0]);
@@ -78,7 +94,7 @@ final class ClusterModeGateTest extends TestCase {
 		$rEn = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Core/Localization/lang/en.ini');
 
 		foreach ([
-			'cluster_mode_done', 'cluster_mode_unknown', 'cluster_mode_needs_config', 'cluster_mode_needs_flows',
+			'cluster_mode_done', 'cluster_mode_unknown', 'cluster_mode_needs_config', 'cluster_mode_needs_flows', 'cluster_mode_needs_root',
 			'cluster_mode_no_audit', 'cluster_mode_still_connects', 'cluster_mode_too_soon',
 			'cluster_mode_up_help', 'cluster_mode_down_help',
 		] as $rKey) {

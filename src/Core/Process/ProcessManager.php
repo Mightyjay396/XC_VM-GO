@@ -569,10 +569,10 @@ class ProcessManager {
 	}
 
 	/**
-	 * Check if a monitor/proxy process is running.
+	 * Check if a stream's PHP monitor (MonitorCommand) is running.
 	 *
-	 * Extracted from ProcessManager::isMonitorAlive().
-	 * Checks for XC_VM[streamID] OR XC_VMProxy[streamID] in cmdline.
+	 * Matches the title XC_VM[streamID] only. A ProxyCommand (XC_VMProxy[streamID])
+	 * is checked with isNamedProcessRunning($pid, 'XC_VMProxy', $streamID).
 	 *
 	 * @param int|null $pid Process ID (null/0 -> not running)
 	 * @param int|string $streamID Stream identifier
