@@ -93,6 +93,7 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/ClusterLockdownCommand.php \
 	Cli/Commands/ClusterRotateSignKeyCommand.php \
 	Cli/Commands/ClusterStripCredentialsCommand.php \
+	Cli/Commands/ClusterRotateDbPasswordCommand.php \
 	Cli/Commands/ClusterEnrolCodeCommand.php \
 	Cli/Commands/ClusterEnrolApproveCommand.php \
 	Cli/Commands/ClusterPoolsCommand.php \
