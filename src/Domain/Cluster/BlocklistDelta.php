@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\BlocklistChanges;
+use XcVm\Core\Cluster\StrictQuery;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -158,8 +159,6 @@ final class BlocklistDelta {
 
 	/** Run a read: a failed one throws, never an empty result. */
 	private static function read(string $rQuery, mixed ...$rArgs): void {
-		if (self::db()->query($rQuery, ...$rArgs) === false) {
-			throw new \RuntimeException('blocklist: a read failed');
-		}
+		StrictQuery::run(self::db(), 'blocklist', $rQuery, ...$rArgs);
 	}
 }

@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Cluster\StrictQuery;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\StreamSecret;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -468,9 +469,7 @@ final class ReplicaBuilder {
 
 	/** Run one of a section's reads: a failed one throws, never an empty result. */
 	private static function read(string $rQuery, mixed ...$rArgs): void {
-		if (self::db()->query($rQuery, ...$rArgs) === false) {
-			throw new \RuntimeException('replica: a read failed');
-		}
+		StrictQuery::run(self::db(), 'replica', $rQuery, ...$rArgs);
 	}
 
 	/** @return list<string> the settings keys a node's replica may carry */
