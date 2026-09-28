@@ -956,6 +956,10 @@ class RootSignalsCronJob implements CommandInterface {
 			case 'rotate_db':
 				echo RootCredentials::rotateDb($rData) . "\n";
 				break;
+			case 'rotate_sign_key':
+				// Only from a node.root command, verified under the key pinned now.
+				echo RootPin::rotate($rData) . "\n";
+				break;
 			case 'restart_services':
 				echo 'Restarting services...' . "\n";
 				if (!LogSink::syslog('RESTART', 'XC_VM services restarted on request.')) {

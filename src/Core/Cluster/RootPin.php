@@ -87,6 +87,57 @@ final class RootPin {
 			&& @chmod($rDir . 'main_sign.pub', 0644) && @chmod($rDir . 'node', 0644);
 	}
 
+	/**
+	 * `node.root rotate_sign_key {new_pub, pin_blob?}` (ADR 0004, Phase 9;
+	 * plan, section 7): re-pin MAIN's panel signing key without SSH. The
+	 * command itself was verified under the key pinned now (cluster:root), so
+	 * only the MAIN that holds this node's trust can hand it on — to a
+	 * replacement MAIN after `cluster:init`, whose fingerprint the operator
+	 * read there. root.seq starts afresh, as for any new pin: the new key's
+	 * commands are a new stream.
+	 *
+	 * The agent's own copy of the key is not touched: it no longer matches, so
+	 * the node reports root_ready false and MAIN sends it no root command until
+	 * its agent holds the new key too (an enrolment by code, or cluster:reenrol).
+	 *
+	 * `pin_blob` is the extension's own pin (`cluster_pack` for this node's
+	 * install_id, from the new MAIN), replaced through `cluster_pin($blob,
+	 * true)` when the extension has it; refused before anything changes when
+	 * it does not open.
+	 *
+	 * @param array<string, mixed> $rData
+	 * @throws \RuntimeException refused (the ack carries the message)
+	 */
+	public static function rotate(array $rData): string {
+		$rPub = is_string($rData['new_pub'] ?? null) && preg_match('/^[0-9a-f]{64}$/', $rData['new_pub']) ? (string) hex2bin($rData['new_pub']) : null;
+		$rPin = self::read();
+		if ($rPub === null || $rPin === null) {
+			throw new \RuntimeException('rotate_sign_key: ' . ($rPub === null ? 'new_pub is not a 32-byte hex key' : 'no pin in place'));
+		}
+		if (hash_equals($rPin['pub'], $rPub)) {
+			return 'rotate_sign_key: already pinned (' . self::fingerprint($rPub) . ')';
+		}
+		if (isset($rData['pin_blob'])) {
+			$rBlob = is_string($rData['pin_blob']) ? base64_decode($rData['pin_blob'], true) : false;
+			if ($rBlob === false || !method_exists('XC_VM', 'cluster_pin')) {
+				throw new \RuntimeException('rotate_sign_key: the extension pin cannot be replaced here');
+			}
+			$rPinned = call_user_func(['XC_VM', 'cluster_pin'], $rBlob, true);
+			if (!is_array($rPinned) || !hash_equals((string) ($rPinned['panel_sign_pub'] ?? ''), $rPub)) {
+				throw new \RuntimeException('rotate_sign_key: the extension refused the pin blob, or it names another key');
+			}
+		}
+		if (!self::write($rPub, $rPin['node'])) {
+			throw new \RuntimeException('rotate_sign_key: cannot write ' . self::dir());
+		}
+		return 'Panel signing key re-pinned: ' . self::fingerprint($rPub) . ' (was ' . self::fingerprint($rPin['pub']) . ')';
+	}
+
+	/** A panel key's fingerprint as the operator compares it: SHA-256, hex. */
+	public static function fingerprint(string $rPub): string {
+		return hash('sha256', $rPub);
+	}
+
 	/** Does the agent's panel key match root's pin? (the agent reports this) */
 	public static function matches(string $rAgentPub, string $rNode): bool {
 		$rPin = self::read();
