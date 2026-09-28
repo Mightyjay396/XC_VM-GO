@@ -266,15 +266,20 @@ class RootSignalsCronJob implements CommandInterface {
 	}
 
 	/**
-	 * api_legacy.conf for this node. The legacy `/api` is served until the
-	 * node's own cluster data plane is on, when MAIN reaches it over the
-	 * cluster API alone and an endpoint whose auth is a password in a URL has
-	 * nothing left to serve. No node has DATAPLANE yet (it is Phase 8), so
-	 * this is 1 everywhere today. MAIN's own `/api` keeps no toggle (ADR
-	 * 0004): MAIN never has flows, so its file is always 1 — retiring it is
-	 * a cluster-wide judgement, not a per-node flow.
+	 * api_legacy.conf for this node, or null on MAIN. The legacy `/api` of a
+	 * load balancer is served until the node's own cluster data plane is on,
+	 * when MAIN reaches it over the cluster API alone and an endpoint whose
+	 * auth is a password in a URL has nothing left to serve. No node has
+	 * DATAPLANE yet (it is Phase 8), so this is 1 on every node today.
+	 * MAIN's own `/api` keeps no toggle (ADR 0004, Phase 8): its nginx.conf
+	 * neither includes the file nor guards `/api`, so the cron does not
+	 * write it there — retiring MAIN's `/api` is a cluster-wide judgement,
+	 * not a per-node flow.
 	 */
-	public static function apiLegacyConf(): string {
+	public static function apiLegacyConf(): ?string {
+		if (NodeRole::isMain()) {
+			return null;
+		}
 		return 'set $api_legacy ' . (NodeFlows::on(NodeFlows::DATAPLANE) ? '0' : '1') . ';';
 	}
 
@@ -547,7 +552,7 @@ class RootSignalsCronJob implements CommandInterface {
 		}
 		$rReload = false;
 		$rApiLegacyConf = self::apiLegacyConf();
-		if ($rApiLegacyConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/api_legacy.conf')) ?: '')) {
+		if ($rApiLegacyConf !== null && $rApiLegacyConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/api_legacy.conf')) ?: '')) {
 			echo 'Updating the legacy /api toggle...' . "\n";
 			file_put_contents(BIN_PATH . 'nginx/conf/api_legacy.conf', $rApiLegacyConf);
 			$rReload = true;
