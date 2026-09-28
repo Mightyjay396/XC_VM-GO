@@ -257,7 +257,8 @@ misses, connect audit). Every decision is written to `cluster_audit`, which
   Every token MAIN hands a node (enrolment over SSH or by code, `token_refresh`,
   `token_rekey`) carries a lease signed by `xcvm_core`, capped at `min(token_exp +
   lb_partition_tolerance_h, iat + 26 h)`; when the extension refuses one (no licence, its
-  clock gate, a revoked generation) the token goes out without it. `xc_agent` verifies each lease it receives
+  clock gate, a revoked generation) the token goes out without it, and a refusal for the
+  licence dispatches `ClusterLicenceLapsedEvent`. `xc_agent` verifies each lease it receives
   (panel signature, its node, server and generation, the window on its estimate of MAIN's
   time), keeps the newest in its state file and prints it with `xc_agent lease`.
   The fence that acts on it is built in the node's PHP (`Core\Cluster\NodeLease`) behind

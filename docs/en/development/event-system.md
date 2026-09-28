@@ -145,6 +145,7 @@ Dispatched by core:
 | `VodImportedEvent` | `Events/Vod/` | A VOD item was imported |
 | `MediaAnalyzedEvent` | `Events/Vod/` | A VOD file was analysed |
 | `ServerSavedEvent` | `Events/Server/` | A server was saved |
+| `ClusterLicenceLapsedEvent` | `Events/Cluster/` | `xcvm_core` refused a node's lease for want of a licence (the token went out without it); once per refused issue |
 | `SettingsChangedEvent` | `Events/Settings/` | Settings were saved |
 | `CrontabChangedEvent` | `Events/Settings/` | The crontab changed |
 | `PackageInstalledEvent` | `Events/Module/` | A marketplace package was installed |

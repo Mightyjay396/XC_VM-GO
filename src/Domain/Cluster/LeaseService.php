@@ -6,6 +6,8 @@ use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Events\Cluster\ClusterLicenceLapsedEvent;
+use XcVm\Core\Events\EventDispatcher;
 
 /**
  * The lease that travels with a node's token: how long that node may keep
@@ -33,6 +35,9 @@ use XcVm\Core\Config\SettingsManager;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class LeaseService {
+	/** The extension's refusal code for a licence that is gone (ClusterRefusedException::reason()). */
+	public const LICENCE = 'LICENCE';
+
 	/**
 	 * A lease for the token that expires at `$rTokenExp`.
 	 *
@@ -40,18 +45,22 @@ final class LeaseService {
 	 * @return array{payload: string, sig: string, exp: int}|null Null when the extension signed none.
 	 */
 	public static function issue(ClusterCrypto $rCrypto, array $rNode, int $rTokenExp): ?array {
+		$rTolerance = self::toleranceHours();
 		try {
 			$rLease = $rCrypto->leaseIssue([
 				'node_uuid' => (string) $rNode['node_uuid'],
 				'server_id' => (int) $rNode['server_id'],
 				'gen' => (int) $rNode['gen'],
 				'token_exp' => $rTokenExp,
-				'tolerance_h' => self::toleranceHours(),
+				'tolerance_h' => $rTolerance,
 			]);
 		} catch (ClusterRefusedException $rE) {
 			// A licence gone, a clock the extension will not vouch for, a node
 			// below its floor: the token still goes out, the lease does not.
 			ClusterAudit::log('node.lease_refused', (int) $rNode['server_id'], ['reason' => $rE->reason(), 'token_exp' => $rTokenExp]);
+			if ($rE->reason() === self::LICENCE) {
+				self::lapsed(new ClusterLicenceLapsedEvent((int) $rNode['server_id'], $rTokenExp, $rTolerance, $rE->reason()));
+			}
 			return null;
 		}
 		return [
@@ -80,6 +89,19 @@ final class LeaseService {
 				'exp' => $rLease['exp'],
 			],
 		];
+	}
+
+	/**
+	 * Tell whoever listens that the licence lapsed (ClusterLicenceLapsedEvent).
+	 * A listener's failure is its own: the reply this lease was for still goes
+	 * out, without it, as every refusal's does.
+	 */
+	private static function lapsed(ClusterLicenceLapsedEvent $rEvent): void {
+		try {
+			EventDispatcher::dispatch($rEvent);
+		} catch (\Throwable) {
+			// The node gets its token; the lapse is audited above.
+		}
 	}
 
 	/** `lb_partition_tolerance_h`, as the extension's 0-24 h bound takes it. */
