@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\DivergenceSink;
+use XcVm\Core\Cluster\StoredConnections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -61,7 +62,7 @@ final class ConnectionIngest {
 		$rOk = self::write($rServerID, $rRecord, $rFailBatch);
 		if ($rOk) {
 			$rUUID = (string) ($rRecord['uuid'] ?? '');
-			$rIdentity = !empty($rRecord['user_id']) ? (string) (int) $rRecord['user_id'] : (int) ($rRecord['hmac_id'] ?? 0) . '_' . ($rRecord['hmac_identifier'] ?? '');
+			$rIdentity = StoredConnections::identity($rRecord);
 			$rRedisMode = (bool) SettingsManager::get('redis_handler');
 			ConnectionAdmission::release($rRedisMode, $rIdentity, $rUUID);
 			$rReserved = $rRecord['adm_uuid'] ?? null;
@@ -82,7 +83,7 @@ final class ConnectionIngest {
 		$rRecord += ['user_id' => null, 'proxy_id' => null]; // the store reads both
 		$rRecord['server_id'] = $rServerID;
 		$rRecord['hls_end'] = empty($rRecord['hls_end']) ? 0 : 1;
-		$rRecord['identity'] = !empty($rRecord['user_id']) ? $rRecord['user_id'] : $rRecord['hmac_id'] . '_' . ($rRecord['hmac_identifier'] ?? '');
+		$rRecord['identity'] = StoredConnections::identity($rRecord);
 
 		if (SettingsManager::get('redis_handler')) {
 			$rRedis = RedisManager::instance();

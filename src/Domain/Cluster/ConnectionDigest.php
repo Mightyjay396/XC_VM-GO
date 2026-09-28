@@ -2,9 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
-use XcVm\Core\Config\SettingsManager;
-use XcVm\Infrastructure\Database\DatabaseAware;
-use XcVm\Infrastructure\Redis\RedisManager;
+use XcVm\Core\Cluster\StoredConnections;
 
 /**
  * A node's open connections in one short value (cluster plan, Phase 6,
@@ -24,8 +22,6 @@ use XcVm\Infrastructure\Redis\RedisManager;
  * one vector in their tests.
  */
 final class ConnectionDigest {
-	use DatabaseAware;
-
 	/** Least time between two checks of one node (ms). */
 	public const EVERY_MS = 4000;
 
@@ -34,6 +30,9 @@ final class ConnectionDigest {
 
 	/** Least time between two snapshot requests to one node (ms). */
 	public const COOLDOWN_MS = 30000;
+
+	/** What of() reads of a record: the uuid, its owner and whether it ended. */
+	private const KEYS = ['uuid', 'user_id', 'hmac_id', 'hmac_identifier', 'hls_end'];
 
 	private static ?string $rDir = null;
 
@@ -74,38 +73,15 @@ final class ConnectionDigest {
 	}
 
 	/**
-	 * The node's open connections in MAIN's store, by uuid.
+	 * The node's open connections in MAIN's store, by uuid, with what the
+	 * digest reads of them (KEYS).
 	 *
 	 * @return array<string, array<string, mixed>>
 	 */
 	public static function stored(int $rServerID): array {
 		$rOut = [];
-		if (SettingsManager::get('redis_handler')) {
-			$rRedis = RedisManager::instance();
-			if (!$rRedis instanceof \Redis) {
-				throw new \RuntimeException('redis unavailable');
-			}
-			$rKeys = $rRedis->zRangeByScore('SERVER#' . $rServerID, '-inf', '+inf');
-			if (!is_array($rKeys)) {
-				throw new \RuntimeException('redis unavailable');
-			}
-			foreach (array_chunk($rKeys, 1000) as $rChunk) {
-				$rData = $rRedis->mGet($rChunk);
-				foreach (is_array($rData) ? $rData : [] as $rRaw) {
-					$rRecord = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;
-					if (is_array($rRecord) && isset($rRecord['uuid']) && (int) ($rRecord['server_id'] ?? 0) === $rServerID) {
-						$rOut[(string) $rRecord['uuid']] = $rRecord;
-					}
-				}
-			}
-			return $rOut;
-		}
-		$rDb = self::db();
-		$rDb->query('SELECT `uuid`, `user_id`, `hmac_id`, `hmac_identifier`, `hls_end` FROM `lines_live` WHERE `server_id` = ? AND `hls_end` = 0;', $rServerID);
-		foreach ($rDb->get_rows() as $rRow) {
-			if ($rRow['uuid'] !== null && $rRow['uuid'] !== '') {
-				$rOut[(string) $rRow['uuid']] = $rRow;
-			}
+		foreach (StoredConnections::ofServer($rServerID, true, self::KEYS) as $rRecord) {
+			$rOut[(string) $rRecord['uuid']] = $rRecord;
 		}
 		return $rOut;
 	}
