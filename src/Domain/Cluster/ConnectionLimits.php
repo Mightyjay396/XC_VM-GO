@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\AtomicFile;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -57,7 +58,7 @@ final class ConnectionLimits {
 	 */
 	public static function queue(int $rServerID, array $rData): bool {
 		$rUUID = $rData['uuid'] ?? null;
-		if (!is_string($rUUID) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
+		if (!is_string($rUUID) || !preg_match(AgentConnections::CONN_UUID, $rUUID)) {
 			return false;
 		}
 		$rCheck = ['server_id' => $rServerID, 'uuid' => $rUUID, 'ip' => substr((string) ($rData['ip'] ?? ''), 0, 64), 'user_agent' => substr((string) ($rData['user_agent'] ?? ''), 0, 512)];
@@ -78,7 +79,7 @@ final class ConnectionLimits {
 	 * event, rebuilds the check from its own keys and never sets `admission`.
 	 */
 	public static function queueAdmission(int $rServerID, string $rUUID, int $rLineID, string $rIP, string $rUserAgent): bool {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) || $rLineID <= 0) {
+		if (!preg_match(AgentConnections::CONN_UUID, $rUUID) || $rLineID <= 0) {
 			return false;
 		}
 		return self::write(['server_id' => $rServerID, 'uuid' => $rUUID, 'ip' => substr($rIP, 0, 64), 'user_agent' => substr($rUserAgent, 0, 512), 'user_id' => $rLineID, 'admission' => true]);

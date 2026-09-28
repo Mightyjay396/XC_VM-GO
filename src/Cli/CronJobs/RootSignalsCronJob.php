@@ -16,6 +16,7 @@ use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Process\PhpFpmPools;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Util\Encryption;
@@ -1078,16 +1079,10 @@ class RootSignalsCronJob implements CommandInterface {
 					shell_exec('sudo systemctl stop xc_vm');
 				}
 				shell_exec('sudo rm ' . MAIN_HOME . 'bin/php/etc/*.conf');
-				$rNewScript = '#! /bin/bash' . "\n";
-				$rNewBalance = 'upstream php {' . "\n" . '    least_conn;' . "\n";
-				$rTemplate = file_get_contents(MAIN_HOME . 'bin/php/etc/template');
-				foreach (range(1, $rServices) as $i) {
-					$rNewScript .= 'start-stop-daemon --start --quiet --pidfile ' . MAIN_HOME . 'bin/php/sockets/' . $i . '.pid --exec ' . MAIN_HOME . 'bin/php/sbin/php-fpm -- --daemonize --fpm-config ' . MAIN_HOME . 'bin/php/etc/' . $i . '.conf' . "\n";
-					$rNewBalance .= '    server unix:' . MAIN_HOME . 'bin/php/sockets/' . $i . '.sock;' . "\n";
-					file_put_contents(MAIN_HOME . 'bin/php/etc/' . $i . '.conf', str_replace('#PATH#', MAIN_HOME, str_replace('#ID#', (string) $i, $rTemplate)));
+				// The pool configs, then daemons.sh, then balance.conf.
+				foreach (PhpFpmPools::files($rServices, (string) file_get_contents(MAIN_HOME . 'bin/php/etc/template'), MAIN_HOME) as $rPath => $rBody) {
+					file_put_contents($rPath, $rBody);
 				}
-				file_put_contents(MAIN_HOME . 'bin/daemons.sh', $rNewScript);
-				file_put_contents(MAIN_HOME . 'bin/nginx/conf/balance.conf', $rNewBalance . '}');
 				shell_exec('sudo chown xc_vm:xc_vm ' . MAIN_HOME . 'bin/php/etc/*');
 				if ($rData['reload']) {
 					shell_exec('sudo systemctl start xc_vm');

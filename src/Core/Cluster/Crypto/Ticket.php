@@ -25,6 +25,9 @@ final class Ticket {
 	/** Clock tolerance for `iat` in the future. */
 	public const SKEW = 120;
 
+	/** Longest wire ticket accepted, in bytes. */
+	public const MAX_WIRE = 4096;
+
 	/**
 	 * The document to sign. Keys are sorted so the same ticket always has the
 	 * same bytes (the signature is cached per content hash).
@@ -45,7 +48,7 @@ final class Ticket {
 	}
 
 	public static function wire(string $rDoc, string $rSig): string {
-		return Enc::b64url($rDoc) . '.' . Enc::b64url($rSig);
+		return Enc::joinSigned($rDoc, $rSig);
 	}
 
 	/**
@@ -55,13 +58,12 @@ final class Ticket {
 	 */
 	public static function verify(string $rPanelSignPub, string $rTag, string $rWire, int $rNow): ?array {
 		[$rTyp, $rMax] = self::kind($rTag);
-		if (strlen($rWire) > 4096 || substr_count($rWire, '.') !== 1) {
+		$rParts = Enc::splitSigned($rWire, self::MAX_WIRE);
+		if ($rParts === null) {
 			return null;
 		}
-		[$rDocPart, $rSigPart] = explode('.', $rWire);
-		$rDoc = Enc::b64urlDecode($rDocPart);
-		$rSig = Enc::b64urlDecode($rSigPart);
-		if ($rDoc === null || $rSig === null || !PanelSig::verify($rPanelSignPub, $rTag, $rDoc, $rSig)) {
+		[$rDoc, $rSig] = $rParts;
+		if (!PanelSig::verify($rPanelSignPub, $rTag, $rDoc, $rSig)) {
 			return null;
 		}
 		$rData = json_decode($rDoc, true);

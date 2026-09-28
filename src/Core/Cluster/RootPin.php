@@ -45,7 +45,7 @@ final class RootPin {
 	}
 
 	public static function inbox(): string {
-		return self::$rInbox ?? ((defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/') . 'cluster/root-inbox/');
+		return self::$rInbox ?? AgentPaths::file(AgentPaths::DIR . 'root-inbox/');
 	}
 
 	/**

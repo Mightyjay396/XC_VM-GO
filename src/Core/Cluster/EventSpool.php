@@ -34,7 +34,7 @@ final class EventSpool {
 
 	/** The spool (useDir(): tests' own). */
 	private static function defaultDir(): string {
-		return (defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/') . 'cluster/spool/';
+		return AgentPaths::file(AgentPaths::DIR . 'spool/');
 	}
 
 	/**

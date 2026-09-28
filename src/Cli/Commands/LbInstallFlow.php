@@ -2,14 +2,16 @@
 
 namespace XcVm\Cli\Commands;
 
+use XcVm\Core\Cluster\AgentPaths;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
-use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Process\PhpFpmPools;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
+use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\LeaseService;
@@ -258,23 +260,13 @@ class LbInstallFlow {
 		call_user_func($rRunSSH, $rConn, self::sudoWrite('on_play http://' . $rIP . '/stream/rtmp; on_publish http://' . $rIP . '/stream/rtmp; on_play_done http://' . $rIP . '/stream/rtmp;', '/home/xc_vm/bin/nginx_rtmp/conf/live.conf'));
 		$rServices = (intval(call_user_func($rRunSSH, $rConn, 'sudo cat /proc/cpuinfo | grep "^processor" | wc -l')['output']) ?: 4);
 		call_user_func($rRunSSH, $rConn, 'sudo rm ' . MAIN_HOME . 'bin/php/etc/*.conf');
-		$rNewScript = '#! /bin/bash' . "\n";
-		$rNewBalance = 'upstream php {' . "\n" . '    least_conn;' . "\n";
-		$rTemplate = file_get_contents(MAIN_HOME . 'bin/php/etc/template');
-		foreach (range(1, $rServices) as $i) {
-			$rNewScript .= 'start-stop-daemon --start --quiet --pidfile ' . MAIN_HOME . 'bin/php/sockets/' . $i . '.pid --exec ' . MAIN_HOME . 'bin/php/sbin/php-fpm -- --daemonize --fpm-config ' . MAIN_HOME . 'bin/php/etc/' . $i . '.conf' . "\n";
-			$rNewBalance .= '    server unix:' . MAIN_HOME . 'bin/php/sockets/' . $i . '.sock;' . "\n";
-			$rTmpPath = TMP_PATH . md5(time() . $i . '.conf');
-			file_put_contents($rTmpPath, str_replace('#PATH#', MAIN_HOME, str_replace('#ID#', (string) $i, $rTemplate)));
-			call_user_func($rSendFileSSH, $rConn, $rTmpPath, MAIN_HOME . 'bin/php/etc/' . $i . '.conf', false);
+		// The pool configs, daemons.sh and balance.conf, each through a
+		// temporary file under an unpredictable name.
+		foreach (PhpFpmPools::files($rServices, (string) file_get_contents(MAIN_HOME . 'bin/php/etc/template'), MAIN_HOME) as $rPath => $rBody) {
+			$rTmpPath = TMP_PATH . bin2hex(random_bytes(16)) . '_' . basename($rPath);
+			file_put_contents($rTmpPath, $rBody);
+			call_user_func($rSendFileSSH, $rConn, $rTmpPath, $rPath, false);
 		}
-		$rNewBalance .= '}';
-		$rTmpPath = TMP_PATH . md5(time() . 'daemons.sh');
-		file_put_contents($rTmpPath, $rNewScript);
-		call_user_func($rSendFileSSH, $rConn, $rTmpPath, MAIN_HOME . 'bin/daemons.sh', false);
-		$rTmpPath = TMP_PATH . md5(time() . 'balance.conf');
-		file_put_contents($rTmpPath, $rNewBalance);
-		call_user_func($rSendFileSSH, $rConn, $rTmpPath, MAIN_HOME . 'bin/nginx/conf/balance.conf', false);
 		call_user_func($rRunSSH, $rConn, 'sudo chmod +x ' . MAIN_HOME . 'bin/daemons.sh');
 		call_user_func($rRunSSH, $rConn, 'sudo chmod 0777 /home/xc_vm/bin');
 
@@ -477,7 +469,7 @@ class LbInstallFlow {
 
 	/** Where the agent and its state live on the node. */
 	public const AGENT_BIN = MAIN_HOME . 'bin/xc_agent/xc_agent';
-	public const AGENT_STATE = CONFIG_PATH . 'cluster/agent.json';
+	public const AGENT_STATE = CONFIG_PATH . AgentPaths::STATE;
 
 	/**
 	 * Enrol the new LB in the cluster API (MAIN ↔ LB plan, section 6), over the
@@ -508,10 +500,8 @@ class LbInstallFlow {
 			return true;
 		}
 		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			try {
-				$rCrypto = ClusterCryptoFactory::create();
-			} catch (\Throwable $rE) {
-				echo 'Cluster API unavailable (' . $rE->getMessage() . "); the node stays legacy\n";
+			$rCrypto = ClusterCli::crypto("Cluster API unavailable (%s); the node stays legacy\n");
+			if ($rCrypto === null) {
 				return true;
 			}
 		}

@@ -37,7 +37,7 @@ use XcVm\Core\Config\SettingsManager;
  */
 final class NodeLease {
 	/** The agent's file, under the config directory. */
-	public const FILE = 'cluster/lease_state.json';
+	public const FILE = AgentPaths::DIR . 'lease_state.json';
 
 	/** Serving: the lease has time left on MAIN's clock, or there is nothing to go by. */
 	public const SERVING = 'serving';
@@ -180,7 +180,7 @@ final class NodeLease {
 	 */
 	private static function agentFile(): ?array {
 		if (self::$rReadAt === 0 || time() - self::$rReadAt >= 2) {
-			self::$rDoc = self::parse(self::$rPath ?? (defined('CONFIG_PATH') ? CONFIG_PATH . self::FILE : null));
+			self::$rDoc = self::parse(self::$rPath ?? AgentPaths::fileOrNull(self::FILE));
 			self::$rReadAt = time();
 		}
 		return self::$rDoc;

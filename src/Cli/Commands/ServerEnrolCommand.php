@@ -4,8 +4,9 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
-use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ClusterAdmin;
+use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
@@ -57,10 +58,8 @@ class ServerEnrolCommand implements CommandInterface {
 			echo "The cluster API is disabled (Settings → Cluster). Exiting\n";
 			return 1;
 		}
-		try {
-			$rCrypto = ClusterCryptoFactory::create();
-		} catch (\Throwable $rE) {
-			echo 'Cluster API unavailable: ' . $rE->getMessage() . ". Exiting\n";
+		$rCrypto = ClusterCli::crypto();
+		if ($rCrypto === null) {
 			return 1;
 		}
 
@@ -93,7 +92,7 @@ class ServerEnrolCommand implements CommandInterface {
 			return $rWhy;
 		};
 		$rServer = $rServers[$rServerID] ?? null;
-		if ($rServer === null || !empty($rServer['is_main']) || intval($rServer['server_type'] ?? 0) !== 0) {
+		if (!ClusterAdmin::isLoadBalancer($rServer)) {
 			return $rFail("Server {$rServerID} is not a load balancer");
 		}
 		$rStored = $rServer['ssh_hostkey_sha1'] ?? null;

@@ -73,6 +73,12 @@ The plan numbers its Phase 1 migrations 026–032. 026 and 027 were already take
 - enabling the API without the extension;
 - `api` mode before the cutover.
 
+**Reading an enum setting.** Every reader of `cluster_transport`, `lb_new_node_mode` and `lb_revocation_mode` goes through `ClusterSettings::enum()`. It returns the stored value only when it is exactly one of `ENUMS`, and the `ENUMS` default otherwise.
+
+- **Before.** `ClusterPolicy::current` published a stored `cluster_transport` it did not know (`bogus`, `HTTPS_REQUIRED`, ` auto`) raw as the policy's `transport`, and listed only HTTP URLs for it.
+- **Now.** It publishes such a value as the default, `auto`, with `auto`'s URLs: HTTPS first once the self-probe feeds the policy and MAIN lists HTTPS.
+- `normalize()` never stores such a value, so only a direct SQL edit can produce one. Every other reader already treated it as its default.
+
 ### MAIN's API (Phase 2)
 
 `Domain\Cluster\ClusterApi` serves `/cluster/v1/<op>` behind `Public/cluster/index.php`. It is transport-free and tested without a web server. `ClusterApiTest` runs every flow against a PHP fake of the extension's token half, and opt-in against a real test-hooks `xcvm_core` (`XCVM_CLUSTER_API_REAL=1`). All of it is MAIN only: the LB build strips `Domain/Cluster`, `Public/cluster` and `cluster:init`, and the LB nginx has no `/cluster/` route.

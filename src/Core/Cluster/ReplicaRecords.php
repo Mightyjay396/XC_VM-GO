@@ -51,12 +51,24 @@ final class ReplicaRecords {
 		if (!is_array($rState) || !is_string($rState['node_uuid'] ?? null) || !Canonical::validUuid($rState['node_uuid'])) {
 			return null;
 		}
-		$rBoxSk = is_string($rState['node_box_sk'] ?? null) ? base64_decode($rState['node_box_sk'], true) : false;
-		$rSignPub = is_string($rState['panel_sign_pub'] ?? null) ? base64_decode($rState['panel_sign_pub'], true) : false;
-		if ($rBoxSk === false || strlen($rBoxSk) !== 32 || $rSignPub === false || strlen($rSignPub) !== 32) {
+		$rBoxSk = self::key32($rState, 'node_box_sk');
+		$rSignPub = self::key32($rState, 'panel_sign_pub');
+		if ($rBoxSk === null || $rSignPub === null) {
 			return null;
 		}
 		return ['node' => $rState['node_uuid'], 'box_sk' => $rBoxSk, 'sign_pub' => $rSignPub];
+	}
+
+	/**
+	 * A 32-byte key from the agent's state as Go writes `[]byte` (standard
+	 * base64, strict), or null when it is missing, not a string, not base64
+	 * or another length. `panel_sign_pub` is the key cluster:pin-root pins.
+	 *
+	 * @param array<mixed> $rState
+	 */
+	public static function key32(array $rState, string $rField): ?string {
+		$rKey = is_string($rState[$rField] ?? null) ? base64_decode($rState[$rField], true) : false;
+		return $rKey === false || strlen($rKey) !== 32 ? null : $rKey;
 	}
 
 	/**
@@ -118,6 +130,26 @@ final class ReplicaRecords {
 	}
 
 	/**
+	 * One record of the R2 `streams` section as the agent stored it for PHP,
+	 * unsigned: `streams/<id>.json`, `{etag, ver, data}` (an `etag` string, an
+	 * integer `ver`, a `data` object or list). Null when the file is missing
+	 * or not of that shape. Every reader of the file takes it from here, so
+	 * none serves one another would refuse: the apply (ReplicaApply), the
+	 * stream caches built at a read (ReplicaStreamCache) and the whole
+	 * section (ReplicaStreams, which checks its stream id on top). Whether
+	 * `data` is the record of this stream for this node is the caller's.
+	 *
+	 * @return array{etag: string, ver: int, data: array<mixed>}|null
+	 */
+	public static function storedStream(string $rDir, int $rID): ?array {
+		$rDoc = json_decode((string) @file_get_contents($rDir . 'streams/' . $rID . '.json'), true);
+		if (!is_array($rDoc) || !is_string($rDoc['etag'] ?? null) || !is_int($rDoc['ver'] ?? null) || !is_array($rDoc['data'] ?? null)) {
+			return null;
+		}
+		return ['etag' => $rDoc['etag'], 'ver' => $rDoc['ver'], 'data' => $rDoc['data']];
+	}
+
+	/**
 	 * The blocklist as the agent materialises `blocklist.json`: the stored
 	 * section with its deltas applied in seq order, each verified. Null when
 	 * the agent stored no `blocklist.json`; false when a record is missing,
@@ -131,7 +163,7 @@ final class ReplicaRecords {
 			return null;
 		}
 		$rDoc = self::payload($rDir . 'blocklist.rep', 'rep', $rIdentity);
-		if ($rDoc === null || ($rDoc['section'] ?? null) !== 'blocklist' || !is_int($rDoc['seq'] ?? null) || !self::etag($rDoc['etag'] ?? null) || !is_array($rDoc['data'] ?? null) || !self::strings($rDoc['data']['ip'] ?? [])) {
+		if ($rDoc === null || ($rDoc['section'] ?? null) !== 'blocklist' || !is_int($rDoc['seq'] ?? null) || !self::etag($rDoc['etag'] ?? null) || !is_array($rDoc['data'] ?? null) || !self::listOf($rDoc['data']['ip'] ?? [], 'is_string')) {
 			return false;
 		}
 		$rSeq = $rDoc['seq'];
@@ -140,7 +172,7 @@ final class ReplicaRecords {
 		sort($rDeltas, SORT_STRING);
 		foreach ($rDeltas as $rFile) {
 			$rDelta = self::payload($rFile, 'blk', $rIdentity, false);
-			if ($rDelta === null || !is_int($rDelta['seq'] ?? null) || $rDelta['seq'] <= $rSeq || !self::strings($rDelta['add'] ?? []) || !self::strings($rDelta['remove'] ?? [])) {
+			if ($rDelta === null || !is_int($rDelta['seq'] ?? null) || $rDelta['seq'] <= $rSeq || !self::listOf($rDelta['add'] ?? [], 'is_string') || !self::listOf($rDelta['remove'] ?? [], 'is_string')) {
 				return false;
 			}
 			foreach ($rDelta['remove'] ?? [] as $rIP) {
@@ -182,12 +214,17 @@ final class ReplicaRecords {
 		return is_string($rEtag) && preg_match('/^[0-9a-f]{64}\z/', $rEtag) === 1;
 	}
 
-	private static function strings(mixed $rList): bool {
+	/**
+	 * Is $rList a JSON list (not an object) each of whose entries passes
+	 * $rIs? What a section's lists are checked with, here, at the apply
+	 * (ReplicaApply) and in the stream caches (ReplicaStreamCache).
+	 */
+	public static function listOf(mixed $rList, callable $rIs): bool {
 		if (!is_array($rList) || !array_is_list($rList)) {
 			return false;
 		}
 		foreach ($rList as $rEntry) {
-			if (!is_string($rEntry)) {
+			if (!$rIs($rEntry)) {
 				return false;
 			}
 		}

@@ -43,8 +43,8 @@ final class ClusterApi {
 	/** Largest body of an op without a session: token_rekey and the code ops. */
 	private const MAX_BODY_UNSESSIONED = 65536;
 
-	/** The protocol range, as health, hello and a 426 PROTO name it. */
-	private const PROTO_RANGE = ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX];
+	/** The protocol range, as health, hello, a 426 PROTO and cluster.json name it. */
+	public const PROTO_RANGE = ['min' => self::PROTO_MIN, 'max' => self::PROTO_MAX];
 
 	/**
 	 * How a request that names a node proves its sender (preflight()): a
@@ -112,7 +112,7 @@ final class ClusterApi {
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return DenialFactory::deny($rCrypto, 503, 'DISABLED');
 		}
-		if (($rSettings['cluster_transport'] ?? '') === 'https_required' && empty($rReq['https']) && $rOp !== 'challenge') {
+		if (ClusterSettings::enum('cluster_transport', $rSettings['cluster_transport'] ?? null) === 'https_required' && empty($rReq['https']) && $rOp !== 'challenge') {
 			// https_required (plan section 3): over plain HTTP only the challenge
 			// is served, so a node whose HTTPS fails still fetches the signed
 			// policy there, and with it an admin's switch back to auto.
@@ -667,9 +667,7 @@ final class ClusterApi {
 	 * heartbeat and needs no CONFIG flow.
 	 */
 	private static function offlineAdmission(array $rSettings): string {
-		[$rDefault, $rAllowed] = ClusterSettings::ENUMS['lb_offline_admission'];
-		$rValue = (string) ($rSettings['lb_offline_admission'] ?? $rDefault);
-		return in_array($rValue, $rAllowed, true) ? $rValue : $rDefault;
+		return ClusterSettings::enum('lb_offline_admission', $rSettings['lb_offline_admission'] ?? null);
 	}
 
 	/**
@@ -730,7 +728,7 @@ final class ClusterApi {
 		// within one heartbeat; it then says hello again to fetch it.
 		return ClusterReply::boxed($rKeys, $rCtx, [
 			'state' => (string) $rNode['state'], 'mode' => (int) $rNode['mode'], 'flows' => (int) $rNode['flows'],
-			'main_time_ms' => ClusterClock::nowMs(), 'pending' => 0, 'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
+			'main_time_ms' => ClusterClock::nowMs(), 'pending' => 0, 'policy_ver' => ClusterPolicy::ver($rSettings),
 			'offline_admission' => self::offlineAdmission($rSettings), 'p2_types' => EventIngest::p2Types(),
 		] + ($rWant ? ['want_conn_snapshot' => true] : []));
 	}

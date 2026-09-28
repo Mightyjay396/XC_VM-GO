@@ -182,6 +182,40 @@ final class ReplicaRecordsTest extends TestCase {
 		$this->assertNull(ReplicaRecords::stream($this->rFixture->dir(), 12, $rIdentity), 'none at all');
 	}
 
+	public function testTheStoredStreamFileIsTakenOnlyInItsWholeShape(): void {
+		$rDir = $this->rFixture->dir();
+		@mkdir($rDir . 'streams', 0700);
+		$rData = ['stream' => ['id' => 10]];
+		$rEtag = str_repeat('a', 64);
+		file_put_contents($rDir . 'streams/10.json', json_encode(['etag' => $rEtag, 'ver' => 3, 'data' => $rData, 'later' => 1]));
+		$this->assertSame(['etag' => $rEtag, 'ver' => 3, 'data' => $rData], ReplicaRecords::storedStream($rDir, 10), 'a key a later agent adds is left out');
+		foreach ([
+			'no etag' => ['ver' => 3, 'data' => $rData],
+			'an etag that is not a string' => ['etag' => 7, 'ver' => 3, 'data' => $rData],
+			'no version' => ['etag' => $rEtag, 'data' => $rData],
+			'a version that is not an integer' => ['etag' => $rEtag, 'ver' => '3', 'data' => $rData],
+			'no data' => ['etag' => $rEtag, 'ver' => 3],
+			'data that is not an object' => ['etag' => $rEtag, 'ver' => 3, 'data' => 'x'],
+		] as $rWhy => $rDoc) {
+			file_put_contents($rDir . 'streams/10.json', json_encode($rDoc));
+			$this->assertNull(ReplicaRecords::storedStream($rDir, 10), $rWhy);
+		}
+		file_put_contents($rDir . 'streams/10.json', '{');
+		$this->assertNull(ReplicaRecords::storedStream($rDir, 10), 'torn');
+		$this->assertNull(ReplicaRecords::storedStream($rDir, 11), 'none at all');
+	}
+
+	public function testListOfTakesOnlyAListWhoseEveryEntryPasses(): void {
+		$this->assertTrue(ReplicaRecords::listOf([], 'is_string'));
+		$this->assertTrue(ReplicaRecords::listOf(['a', 'b'], 'is_string'));
+		$this->assertTrue(ReplicaRecords::listOf([[], ['x' => 1]], 'is_array'));
+		$this->assertFalse(ReplicaRecords::listOf(['a', 1], 'is_string'));
+		$this->assertFalse(ReplicaRecords::listOf([1 => 'a'], 'is_string'), 'an object, not a list');
+		$this->assertFalse(ReplicaRecords::listOf(['k' => 'a'], 'is_string'));
+		$this->assertFalse(ReplicaRecords::listOf(null, 'is_string'));
+		$this->assertFalse(ReplicaRecords::listOf('a', 'is_string'));
+	}
+
 	public function testFromDiskRtmpPublishersAreNotResolvedAndTheWholeSectionsComeFirst(): void {
 		$this->rFixture->node();
 		$rRow = ['id' => 1, 'ip' => 'localhost', 'password' => 'pw', 'push' => 1, 'pull' => 0];

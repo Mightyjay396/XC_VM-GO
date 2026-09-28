@@ -22,7 +22,7 @@ final class ClusterPolicy {
 	 * @return array{policy_ver: int, transport: string, heartbeat_sec: int, main_urls: list<string>}
 	 */
 	public static function current(array $rSettings, array $rMain, ?bool $rHttpsOk = null): array {
-		$rTransport = (string) ($rSettings['cluster_transport'] ?? 'auto');
+		$rTransport = ClusterSettings::enum('cluster_transport', $rSettings['cluster_transport'] ?? null);
 		$rHttpPort = intval($rSettings['cluster_api_port'] ?? 0) ?: intval($rMain['http_broadcast_port'] ?? 80);
 		$rHosts = [];
 		foreach (['private_ip', 'server_ip'] as $rKey) {
@@ -83,7 +83,7 @@ final class ClusterPolicy {
 		}
 		$rUrls = $rTransport === 'https_required' ? array_merge($rHttps, $rKept) : array_merge($rHttps, $rHttp, $rOld, $rKept);
 		return [
-			'policy_ver' => intval($rSettings['cluster_policy_ver'] ?? 1),
+			'policy_ver' => self::ver($rSettings),
 			'transport' => $rTransport,
 			// The heartbeat the fleet keeps (`lb_telemetry_interval_sec`, 1-3 s).
 			// The agent takes it as a command-line flag that nothing passes, so
@@ -104,6 +104,17 @@ final class ClusterPolicy {
 	 */
 	public static function heartbeatSec(array $rSettings): int {
 		return ClusterSettings::int('lb_telemetry_interval_sec', $rSettings['lb_telemetry_interval_sec'] ?? null);
+	}
+
+	/**
+	 * `cluster_policy_ver` as stored (migration 038 starts it at 1): the
+	 * version the policy, the heartbeat reply and an endpoint save's
+	 * compare-and-set all name.
+	 *
+	 * @param array<string, mixed> $rSettings The settings, or the settings row as read.
+	 */
+	public static function ver(array $rSettings): int {
+		return intval($rSettings['cluster_policy_ver'] ?? 1);
 	}
 
 	/**

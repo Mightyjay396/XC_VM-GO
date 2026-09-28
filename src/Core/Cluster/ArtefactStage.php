@@ -76,7 +76,7 @@ final class ArtefactStage {
 
 	/** Where the agent writes what it downloaded, one file per command: `<cmd_id>`. */
 	public static function downloads(): string {
-		return self::$rDownloads ?? ((defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/') . 'cluster/artefacts/');
+		return self::$rDownloads ?? AgentPaths::file(AgentPaths::DIR . 'artefacts/');
 	}
 
 	/** Root's own stage, beside its pin of the panel key. */

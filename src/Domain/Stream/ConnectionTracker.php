@@ -5,6 +5,7 @@ namespace XcVm\Domain\Stream;
 use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\StoredConnections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Cluster\ClusterRoute;
@@ -508,39 +509,7 @@ class ConnectionTracker {
 	 * @return array Map of userID => connections[] (or count, or keys).
 	 */
 	public static function getUserConnections(array $rUserIDs, bool $rCount = false, bool $rKeysOnly = false): array {
-		$rRedis = RedisManager::instance();
-		if (!$rRedis instanceof \Redis) {
-			return [];
-		}
-		$rMulti = $rRedis->multi();
-		foreach ($rUserIDs as $rUserID) {
-			$rMulti->zRevRangeByScore('LINE#' . $rUserID, '+inf', '-inf');
-		}
-		$rGroups = $rMulti->exec();
-		$rConnectionMap = $rRedisKeys = [];
-		if (!is_array($rGroups)) {
-			return ($rKeysOnly ? $rRedisKeys : $rConnectionMap);
-		}
-		foreach ($rGroups as $rGroupID => $rKeys) {
-			if ($rCount) {
-				$rConnectionMap[$rUserIDs[$rGroupID]] = count($rKeys);
-			} else {
-				if (0 < count($rKeys)) {
-					$rRedisKeys = array_merge($rRedisKeys, $rKeys);
-				}
-			}
-		}
-		$rRedisKeys = array_unique($rRedisKeys);
-		if (!$rKeysOnly) {
-			if (!$rCount && $rRedisKeys !== []) {
-				foreach ($rRedis->mGet($rRedisKeys) as $rRow) {
-					$rRow = igbinary_unserialize($rRow);
-					$rConnectionMap[$rRow['user_id']][] = $rRow;
-				}
-			}
-			return $rConnectionMap;
-		}
-		return $rRedisKeys;
+		return self::connectionsBySet($rUserIDs, 'LINE#', 'user_id', $rCount, $rKeysOnly);
 	}
 
 	/**
@@ -555,13 +524,26 @@ class ConnectionTracker {
 	 * @return array Map of serverID => connections[] (or count, or keys).
 	 */
 	public static function getServerConnections(array $rServerIDs, bool $rProxy = false, bool $rCount = false, bool $rKeysOnly = false): array {
+		return self::connectionsBySet($rServerIDs, $rProxy ? 'PROXY#' : 'SERVER#', 'server_id', $rCount, $rKeysOnly);
+	}
+
+	/**
+	 * getUserConnections() and getServerConnections(): the sorted sets
+	 * `<$rPrefix><id>` for each id, read in one MULTI pipeline. With $rCount,
+	 * id => how many uuids its set holds; with $rKeysOnly, the uuids of all
+	 * the sets, deduplicated; else their records, grouped by $rGroupField.
+	 *
+	 * @param array<int, int|string> $rIDs
+	 * @return array
+	 */
+	private static function connectionsBySet(array $rIDs, string $rPrefix, string $rGroupField, bool $rCount, bool $rKeysOnly): array {
 		$rRedis = RedisManager::instance();
 		if (!$rRedis instanceof \Redis) {
 			return [];
 		}
 		$rMulti = $rRedis->multi();
-		foreach ($rServerIDs as $rServerID) {
-			$rMulti->zRevRangeByScore(($rProxy ? 'PROXY#' . $rServerID : 'SERVER#' . $rServerID), '+inf', '-inf');
+		foreach ($rIDs as $rID) {
+			$rMulti->zRevRangeByScore($rPrefix . $rID, '+inf', '-inf');
 		}
 		$rGroups = $rMulti->exec();
 		$rConnectionMap = $rRedisKeys = [];
@@ -570,7 +552,7 @@ class ConnectionTracker {
 		}
 		foreach ($rGroups as $rGroupID => $rKeys) {
 			if ($rCount) {
-				$rConnectionMap[$rServerIDs[$rGroupID]] = count($rKeys);
+				$rConnectionMap[$rIDs[$rGroupID]] = count($rKeys);
 			} else {
 				if (0 < count($rKeys)) {
 					$rRedisKeys = array_merge($rRedisKeys, $rKeys);
@@ -582,7 +564,7 @@ class ConnectionTracker {
 			if (!$rCount && $rRedisKeys !== []) {
 				foreach ($rRedis->mGet($rRedisKeys) as $rRow) {
 					$rRow = igbinary_unserialize($rRow);
-					$rConnectionMap[$rRow['server_id']][] = $rRow;
+					$rConnectionMap[$rRow[$rGroupField]][] = $rRow;
 				}
 			}
 			return $rConnectionMap;
@@ -697,17 +679,7 @@ class ConnectionTracker {
 	 * @return array<int,int> stream_id => restreamer count.
 	 */
 	public static function attachedRestreamCounts(array $rStreamIDs, int $rServerID): array {
-		if ($rStreamIDs === []) {
-			return [];
-		}
-		$db = self::db();
-		$rPlaceholders = str_repeat('?,', count($rStreamIDs) - 1) . '?';
-		$db->query("SELECT stream_id, COUNT(*) AS cnt FROM streams_servers WHERE parent_id = ? AND pid > 0 AND monitor_pid > 0 AND stream_id IN ($rPlaceholders) GROUP BY stream_id", $rServerID, ...$rStreamIDs);
-		$rCounts = [];
-		foreach ($db->get_rows(true, 'stream_id') as $rID => $rRow) {
-			$rCounts[$rID] = (int) $rRow['cnt'];
-		}
-		return $rCounts;
+		return self::countByStream('SELECT stream_id, COUNT(*) AS cnt FROM streams_servers WHERE parent_id = ? AND pid > 0 AND monitor_pid > 0', $rServerID, $rStreamIDs);
 	}
 
 	/**
@@ -720,12 +692,24 @@ class ConnectionTracker {
 	 * @return array<int,int> stream_id => viewer count.
 	 */
 	public static function onlineClientCounts(array $rStreamIDs, int $rServerID): array {
+		return self::countByStream('SELECT stream_id, COUNT(*) AS cnt FROM lines_live WHERE server_id = ? AND hls_end = 0', $rServerID, $rStreamIDs);
+	}
+
+	/**
+	 * attachedRestreamCounts() and onlineClientCounts(): $rSelect (a
+	 * `COUNT(*) AS cnt` over one table, its one placeholder the server) for
+	 * $rStreamIDs, grouped by stream: stream_id => count.
+	 *
+	 * @param array<int,int> $rStreamIDs
+	 * @return array<int,int>
+	 */
+	private static function countByStream(string $rSelect, int $rServerID, array $rStreamIDs): array {
 		if ($rStreamIDs === []) {
 			return [];
 		}
 		$db = self::db();
 		$rPlaceholders = str_repeat('?,', count($rStreamIDs) - 1) . '?';
-		$db->query("SELECT stream_id, COUNT(*) AS cnt FROM lines_live WHERE server_id = ? AND hls_end = 0 AND stream_id IN ($rPlaceholders) GROUP BY stream_id", $rServerID, ...$rStreamIDs);
+		$db->query($rSelect . " AND stream_id IN ($rPlaceholders) GROUP BY stream_id", $rServerID, ...$rStreamIDs);
 		$rCounts = [];
 		foreach ($db->get_rows(true, 'stream_id') as $rID => $rRow) {
 			$rCounts[$rID] = (int) $rRow['cnt'];
@@ -777,7 +761,7 @@ class ConnectionTracker {
 			foreach ($rRedis->mGet(array_unique($rKeys)) as $rRow) {
 				$rRow = igbinary_unserialize($rRow);
 				if ((!$rServerID || $rServerID == $rRow['server_id']) && (!$rStreamID || $rStreamID == $rRow['stream_id']) && (!$rUserID || $rUserID == $rRow['user_id']) && (!$rHLSOnly || $rRow['container'] != 'hls')) {
-					$rUUID = ($rRow['user_id'] ?: $rRow['hmac_id'] . '_' . $rRow['hmac_identifier']);
+					$rUUID = StoredConnections::identity(is_array($rRow) ? $rRow : []); // a record gone since the zRange reads as false
 					if ($rCountOnly) {
 						$rReturn[0]++;
 						$rUniqueUsers[] = $rUUID;

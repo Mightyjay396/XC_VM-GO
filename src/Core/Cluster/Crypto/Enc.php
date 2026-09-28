@@ -44,4 +44,32 @@ final class Enc {
 		$rOut = base64_decode(strtr($rText, '-_', '+/') . str_repeat('=', (4 - strlen($rText) % 4) % 4), true);
 		return $rOut === false ? null : $rOut;
 	}
+
+	/**
+	 * The signed-header wire form shared by tickets and file digests:
+	 * `b64url(doc) "." b64url(sig)`.
+	 */
+	public static function joinSigned(string $rDoc, string $rSig): string {
+		return self::b64url($rDoc) . '.' . self::b64url($rSig);
+	}
+
+	/**
+	 * Split a `joinSigned()` wire back into `[doc, sig]`, or null when it is
+	 * longer than `$rMaxLen` bytes, does not hold exactly one dot, or either
+	 * half is not strict unpadded b64url. The signature is NOT checked here.
+	 *
+	 * @return array{0: string, 1: string}|null
+	 */
+	public static function splitSigned(string $rWire, int $rMaxLen): ?array {
+		if (strlen($rWire) > $rMaxLen || substr_count($rWire, '.') !== 1) {
+			return null;
+		}
+		[$rDocPart, $rSigPart] = explode('.', $rWire);
+		$rDoc = self::b64urlDecode($rDocPart);
+		$rSig = self::b64urlDecode($rSigPart);
+		if ($rDoc === null || $rSig === null) {
+			return null;
+		}
+		return [$rDoc, $rSig];
+	}
 }

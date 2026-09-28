@@ -166,7 +166,7 @@ final class ReplicaApply {
 
 	/** The replica's directory (useDir(): tests' own). */
 	private static function defaultDir(): string {
-		return self::configDir() . 'cluster/replica/';
+		return self::configDir() . AgentPaths::DIR . 'replica/';
 	}
 
 	/** Tests: another config directory (where config/openssl_extra lives); null restores CONFIG_PATH. */
@@ -175,7 +175,12 @@ final class ReplicaApply {
 	}
 
 	public static function configDir(): string {
-		return self::$rConfigDir ?? (defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/');
+		return self::$rConfigDir ?? AgentPaths::configDir();
+	}
+
+	/** The agent's state file, beside the replica's directory (so useDir() moves it too). */
+	private static function agentState(): string {
+		return dirname(self::dir()) . '/' . basename(AgentPaths::STATE);
 	}
 
 	/**
@@ -318,7 +323,7 @@ final class ReplicaApply {
 		if (!$rFromDisk) {
 			return self::apply($rAuthoritative, $rServerID, $rReport, $rMinute);
 		}
-		$rIdentity = ReplicaRecords::identity(dirname(self::dir()) . '/agent.json');
+		$rIdentity = ReplicaRecords::identity(self::agentState());
 		self::$rIdentity = $rIdentity;
 		self::$rFromDisk = ['blocklist' => ReplicaRecords::blocklist(self::dir(), $rIdentity)];
 		foreach ([...ReplicaSections::WHOLE, ReplicaSections::SECRETS] as $rName) {
@@ -503,7 +508,7 @@ final class ReplicaApply {
 	 */
 	private static function catalogCacheOf(string $rSection, array $rData): ?array {
 		$rRows = $rData[$rSection] ?? null;
-		if (!self::listOf($rRows, 'is_array')) {
+		if (!ReplicaRecords::listOf($rRows, 'is_array')) {
 			return null;
 		}
 		$rFields = $rSection === ReplicaSections::BOUQUETS ? ReplicaSections::BOUQUET_FIELDS : ReplicaSections::CATEGORY_FIELDS;
@@ -729,9 +734,10 @@ final class ReplicaApply {
 	}
 
 	/**
-	 * One stream's record as the agent stored it: `streams/<id>.json`, or
-	 * while an apply runs from disk the verified `streams/<id>.rep`
-	 * (ReplicaRecords::stream). False when it does not read or verify.
+	 * One stream's record as the agent stored it: `streams/<id>.json`
+	 * (ReplicaRecords::storedStream), or while an apply runs from disk the
+	 * verified `streams/<id>.rep` (ReplicaRecords::stream). False when it
+	 * does not read or verify.
 	 *
 	 * @return array{etag: string, ver: int, data: array<mixed>}|false
 	 */
@@ -739,11 +745,7 @@ final class ReplicaApply {
 		if (self::$rFromDisk !== null) {
 			return ReplicaRecords::stream(self::dir(), $rID, self::$rIdentity) ?? false;
 		}
-		$rDoc = json_decode((string) @file_get_contents(self::dir() . 'streams/' . $rID . '.json'), true);
-		if (!is_array($rDoc) || !is_string($rDoc['etag'] ?? null) || !is_int($rDoc['ver'] ?? null) || !is_array($rDoc['data'] ?? null)) {
-			return false;
-		}
-		return ['etag' => $rDoc['etag'], 'ver' => $rDoc['ver'], 'data' => $rDoc['data']];
+		return ReplicaRecords::storedStream(self::dir(), $rID) ?? false;
 	}
 
 	/**
@@ -968,7 +970,7 @@ final class ReplicaApply {
 	 * @return array<int, array<string, mixed>>|null
 	 */
 	public static function serverRows(array $rServers, array $rNode, int $rServerID, array $rSettings): ?array {
-		if ($rServerID <= 0 || ($rNode['id'] ?? null) !== $rServerID || !self::listOf($rServers['servers'] ?? null, 'is_array') || !self::listOf($rServers['nodes'] ?? [], 'is_array')) {
+		if ($rServerID <= 0 || ($rNode['id'] ?? null) !== $rServerID || !ReplicaRecords::listOf($rServers['servers'] ?? null, 'is_array') || !ReplicaRecords::listOf($rServers['nodes'] ?? [], 'is_array')) {
 			return null;
 		}
 		foreach ($rServers['nodes'] ?? [] as $rEntry) {
@@ -1044,7 +1046,7 @@ final class ReplicaApply {
 	 * @return list<array{filename: string, time: string}>|null
 	 */
 	private static function jobs(array $rData): ?array {
-		if (!self::listOf($rData['jobs'] ?? null, 'is_array')) {
+		if (!ReplicaRecords::listOf($rData['jobs'] ?? null, 'is_array')) {
 			return null;
 		}
 		$rOut = [];
@@ -1072,11 +1074,10 @@ final class ReplicaApply {
 		}
 		$rData = is_array($rDoc) ? $rDoc['data'] : [];
 		$rReport = ['etag' => is_array($rDoc) ? $rDoc['etag'] : ''];
-		if (!self::listOf($rData['main_urls'] ?? null, 'is_string') || !is_int($rData['policy_ver'] ?? null) || !is_string($rData['panel_sign_pub'] ?? null)) {
+		if (!ReplicaRecords::listOf($rData['main_urls'] ?? null, 'is_string') || !is_int($rData['policy_ver'] ?? null) || !is_string($rData['panel_sign_pub'] ?? null)) {
 			return $rReport + ['mode' => 'refused'];
 		}
-		$rAgent = json_decode((string) @file_get_contents(dirname(self::dir()) . '/agent.json'), true);
-		$rAgent = is_array($rAgent) ? $rAgent : [];
+		$rAgent = AgentPaths::readState(self::agentState());
 		$rDiffer = [];
 		foreach (['main_urls', 'panel_sign_pub', 'policy_ver'] as $rKey) {
 			if (($rAgent[$rKey] ?? null) !== $rData[$rKey]) {
@@ -1112,7 +1113,7 @@ final class ReplicaApply {
 		$rUAs = $rData['ua'] ?? [];
 		$rISPs = $rData['isp'] ?? [];
 		$rRTMPs = $rData['rtmp'] ?? [];
-		if (!self::listOf($rIPs, 'is_string') || !self::listOf($rASNs, 'is_int') || !self::listOf($rUAs, 'is_array') || !self::listOf($rISPs, 'is_array') || !self::listOf($rRTMPs, 'is_array')) {
+		if (!ReplicaRecords::listOf($rIPs, 'is_string') || !ReplicaRecords::listOf($rASNs, 'is_int') || !ReplicaRecords::listOf($rUAs, 'is_array') || !ReplicaRecords::listOf($rISPs, 'is_array') || !ReplicaRecords::listOf($rRTMPs, 'is_array')) {
 			return null;
 		}
 		$rUA = [];
@@ -1168,17 +1169,5 @@ final class ReplicaApply {
 		$rHave = $rEntries($rCurrent);
 		$rWant = $rEntries($rReplica);
 		return ['missing' => array_sum(array_diff_key($rHave, $rWant)), 'extra' => array_sum(array_diff_key($rWant, $rHave))];
-	}
-
-	private static function listOf(mixed $rList, callable $rIs): bool {
-		if (!is_array($rList) || !array_is_list($rList)) {
-			return false;
-		}
-		foreach ($rList as $rEntry) {
-			if (!$rIs($rEntry)) {
-				return false;
-			}
-		}
-		return true;
 	}
 }

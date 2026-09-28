@@ -35,7 +35,7 @@ final class AgentClient {
 	}
 
 	public static function socket(): string {
-		return self::$rSocket ?? ((defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/') . 'cluster/agent.sock');
+		return self::$rSocket ?? AgentPaths::file(AgentPaths::SOCKET);
 	}
 
 	/**

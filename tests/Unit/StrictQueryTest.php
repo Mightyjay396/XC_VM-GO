@@ -61,6 +61,21 @@ final class StrictQueryTest extends TestCase {
 		StrictQuery::run(new StrictQueryDb(false), 'replica', 'SELECT 1;');
 	}
 
+	public function testOrThrowThrowsItsMessageAsItIs(): void {
+		$rDb = new StrictQueryDb();
+		StrictQuery::orThrow($rDb, 'flush', 'UPDATE `t` SET `a` = ?;', 3);
+		$this->assertSame([['UPDATE `t` SET `a` = ?;', [3]]], $rDb->rQueries);
+		foreach ([0, null, ''] as $rResult) {
+			StrictQuery::orThrow(new StrictQueryDb($rResult), 'db', 'SELECT 1;');
+		}
+		try {
+			StrictQuery::orThrow(new StrictQueryDb(false), 'db', 'SELECT 1;');
+			$this->fail('a failed statement did not throw');
+		} catch (\RuntimeException $rE) {
+			$this->assertSame('db', $rE->getMessage());
+		}
+	}
+
 	public function testEachCallerNamesItsSection(): void {
 		$rCases = [
 			'streams (StreamRecords)' => [StreamRecords::class, static fn() => StreamRecords::held(5, null), 'streams: a read failed'],

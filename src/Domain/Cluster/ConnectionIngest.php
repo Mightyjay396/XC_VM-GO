@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Cluster\StoredConnections;
 use XcVm\Core\Config\SettingsManager;
@@ -66,7 +67,7 @@ final class ConnectionIngest {
 			$rRedisMode = (bool) SettingsManager::get('redis_handler');
 			ConnectionAdmission::release($rRedisMode, $rIdentity, $rUUID);
 			$rReserved = $rRecord['adm_uuid'] ?? null;
-			if (is_string($rReserved) && $rReserved !== $rUUID && preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rReserved)) {
+			if (is_string($rReserved) && $rReserved !== $rUUID && preg_match(AgentConnections::CONN_UUID, $rReserved)) {
 				ConnectionAdmission::release($rRedisMode, $rIdentity, $rReserved);
 			}
 		}
@@ -77,7 +78,7 @@ final class ConnectionIngest {
 	private static function write(int $rServerID, array $rRecord, bool $rFailBatch): bool {
 		$rRecord = array_filter(array_intersect_key($rRecord, array_flip(self::KEYS)), static fn($rValue) => is_scalar($rValue) || $rValue === null);
 		$rUUID = (string) ($rRecord['uuid'] ?? '');
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) || (empty($rRecord['user_id']) && empty($rRecord['hmac_id']))) {
+		if (!preg_match(AgentConnections::CONN_UUID, $rUUID) || (empty($rRecord['user_id']) && empty($rRecord['hmac_id']))) {
 			return false;
 		}
 		$rRecord += ['user_id' => null, 'proxy_id' => null]; // the store reads both
@@ -122,7 +123,7 @@ final class ConnectionIngest {
 
 	/** @param bool $rFailBatch A store that fails throws (an events batch), rather than answer false. */
 	public static function remove(int $rServerID, string $rUUID, bool $rFailBatch = false): bool {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
+		if (!preg_match(AgentConnections::CONN_UUID, $rUUID)) {
 			return false;
 		}
 		if (SettingsManager::get('redis_handler')) {
@@ -163,7 +164,7 @@ final class ConnectionIngest {
 	 * gone and the node's registry already dropped it.
 	 */
 	public static function close(int $rServerID, string $rUUID): bool {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
+		if (!preg_match(AgentConnections::CONN_UUID, $rUUID)) {
 			return false;
 		}
 		if (SettingsManager::get('redis_handler')) {

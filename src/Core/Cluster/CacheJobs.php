@@ -43,7 +43,7 @@ final class CacheJobs {
 	/**
 	 * A job in the one form a `node.cache` command carries it: `type` from
 	 * TYPES, then `id` (an integer ≥ 1, or a non-empty list of them) or
-	 * `uuid` (`[A-Za-z0-9_-]{1,64}`), and nothing else. Ids given as digits
+	 * `uuid` (AgentConnections::CONN_UUID), and nothing else. Ids given as digits
 	 * become integers, and a list keeps those of its ids that are; null for
 	 * anything else. MAIN sends only this form, and a node refuses a command
 	 * with a job not already in it (ClusterExecCommand).
@@ -65,7 +65,7 @@ final class CacheJobs {
 				return $rIDs === [] ? null : ['type' => $rType, 'id' => $rIDs];
 		}
 		$rUUID = $rJob['uuid'] ?? null;
-		return is_string($rUUID) && preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) ? ['type' => $rType, 'uuid' => $rUUID] : null;
+		return is_string($rUUID) && preg_match(AgentConnections::CONN_UUID, $rUUID) ? ['type' => $rType, 'uuid' => $rUUID] : null;
 	}
 
 	/** An id in job()'s form (an integer ≥ 1, or its digits) as an integer; null for anything else. */

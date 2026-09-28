@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Cluster\HlsReaping;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\Cluster\StoredConnections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Validation\InputValidator;
@@ -93,11 +94,7 @@ class UsersCronJob implements CommandInterface {
 						foreach ($rRows as $rRow) {
 							echo 'Resynchronising UUID: ' . $rRow['uuid'] . "\n";
 
-							if (empty($rRow['hmac_id'])) {
-								$rRow['identity'] = $rRow['user_id'];
-							} else {
-								$rRow['identity'] = $rRow['hmac_id'] . '_' . $rRow['hmac_identifier'];
-							}
+							$rRow['identity'] = StoredConnections::identity($rRow);
 
 							$rRow['on_demand'] = ($rOnDemand[$rRow['stream_id']][$rRow['server_id']]);
 							$rRedis->zAdd('LINE#' . $rRow['identity'], $rRow['date_start'], $rRow['uuid']);
@@ -425,7 +422,8 @@ class UsersCronJob implements CommandInterface {
 
 	/**
 	 * Blob 'identity' may be absent (written by an external component or a
-	 * pre-identity build) — derive it the same way the sync path does.
+	 * pre-identity build) — derive it the same way the sync path does
+	 * (StoredConnections::identity()).
 	 *
 	 * @param array $rConnection Deserialized connection blob.
 	 * @return int|string
@@ -434,12 +432,7 @@ class UsersCronJob implements CommandInterface {
 		if (isset($rConnection['identity'])) {
 			return $rConnection['identity'];
 		}
-
-		if (empty($rConnection['hmac_id'])) {
-			return intval($rConnection['user_id'] ?? 0);
-		}
-
-		return $rConnection['hmac_id'] . '_' . ($rConnection['hmac_identifier'] ?? '');
+		return StoredConnections::identity($rConnection);
 	}
 
 	private function loadCron(): void {

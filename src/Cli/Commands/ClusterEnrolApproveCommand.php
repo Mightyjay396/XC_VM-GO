@@ -3,9 +3,9 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
-use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Server\ServerRepository;
 
@@ -50,10 +50,8 @@ class ClusterEnrolApproveCommand implements CommandInterface {
 			echo "Rejected.\n";
 			return 0;
 		}
-		try {
-			$rCrypto = ClusterCryptoFactory::create();
-		} catch (\Throwable $rE) {
-			echo 'Cluster API unavailable: ' . $rE->getMessage() . ". Exiting\n";
+		$rCrypto = ClusterCli::crypto();
+		if ($rCrypto === null) {
 			return 1;
 		}
 		$rServers = ServerRepository::getAll(true);
