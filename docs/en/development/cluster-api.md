@@ -157,7 +157,8 @@ readers use (a shadow diff before the flow is on, so an operator sees what would
 | `cluster_agent_upgrade_parallel` | 1–50 (1) | nodes upgraded at once by `cron:cluster` |
 | `cluster_db_allowlist` (+`_extra`) | 0/1 | firewalls 3306/6379 on MAIN to the fleet |
 | `lb_scan_roots` | paths | the directories the node's scan RPC may list |
-| `lb_partition_tolerance_h`, `lb_fence_drain_min` | 0–24, 0–60 | Phase 9 (not built) |
+| `lb_partition_tolerance_h`, `lb_fence_drain_min` | 0–24 (12), 0–60 (10) | the lease's window past token expiry, and the drain after it |
+| `lb_lease_fence` | 0/1 (0) | a node stops serving when its lease runs out |
 
 ## Operating it
 
@@ -252,18 +253,24 @@ misses, connect audit). Every decision is written to `cluster_audit`, which
   - `/xfile` has its own rate limit (50 requests/s per server, burst 100, answered with a
     429 the agent retries), apart from the viewers' 20 requests/s.
   - `cluster:rotate-stream-secret` does not exist: retiring the password is Phase 9's.
-- **The licence lease is issued and checked, but not enforced** (Phase 9). Every token MAIN
-  hands a node (enrolment over SSH or by code, `token_refresh`, `token_rekey`) carries a
-  lease signed by `xcvm_core`, capped at `min(token_exp + lb_partition_tolerance_h, iat +
-  26 h)`; when the extension refuses one (no licence, its clock gate, a revoked generation)
-  the token goes out without it. `xc_agent` verifies each lease it receives (panel
-  signature, its node, server and generation, the window on its estimate of MAIN's time),
-  keeps the newest in its state file and prints it with `xc_agent lease`.
-  Nothing acts on it yet: a node neither stops serving at the lease's `exp` nor is fenced.
-- **The fence and the credential lockdown are not built** (Phase 9). A node in mode 2
-  refuses its own connects in code; MAIN's MariaDB still has a grant for it until
-  `cluster:db-allowlist` closes the port, and `lb_new_node_mode=api` is refused until that
-  phase ships.
+- **The licence lease is issued, checked, and enforced only behind a switch** (Phase 9).
+  Every token MAIN hands a node (enrolment over SSH or by code, `token_refresh`,
+  `token_rekey`) carries a lease signed by `xcvm_core`, capped at `min(token_exp +
+  lb_partition_tolerance_h, iat + 26 h)`; when the extension refuses one (no licence, its
+  clock gate, a revoked generation) the token goes out without it. `xc_agent` verifies each lease it receives
+  (panel signature, its node, server and generation, the window on its estimate of MAIN's
+  time), keeps the newest in its state file and prints it with `xc_agent lease`.
+  The fence that acts on it is built in the node's PHP (`Core\Cluster\NodeLease`) behind
+  `lb_lease_fence`, which is **off by default**: with it on, past the lease's `exp` no new
+  viewer starts on the node (`stream/auth.php`), and past `lb_fence_drain_min` more the
+  sessions still running stop (`segment.php`, `key.php`). It judges the lease state the
+  agent writes to `config/cluster/lease_state.json`, and every uncertainty serves: the
+  switch off, a legacy node, no file or a file the agent stopped refreshing, no lease, no
+  anchor on MAIN's clock. The switch must be on *before* a licence lapses — it reaches a
+  node in the replica's `settings` section, which a panel without a licence cannot sign.
+- **The credential lockdown is not built** (Phase 9). A node in mode 2 refuses its own
+  connects in code; MAIN's MariaDB still has a grant for it until `cluster:db-allowlist`
+  closes the port, and `lb_new_node_mode=api` is refused until that phase ships.
 - The viewer-token secret can be *replaced* gracefully (the value it replaces stays readable
   for ten minutes, fleet-wide), but a full rotation — re-encrypting what is stored under it
   — is Phase 9's.
