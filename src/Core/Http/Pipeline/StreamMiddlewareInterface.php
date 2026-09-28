@@ -3,14 +3,10 @@
 namespace XcVm\Core\Http\Pipeline;
 
 /**
- * Contract for stream pipeline middleware.
+ * Former contract for stream pipeline middleware.
  *
- * Middleware receives a StreamContext and a $next callable.
- * It must either call $next($ctx) to continue the chain or abort via $ctx->abort().
- *
- * Core middleware (Auth, Permission, ConnectionLimit) use high priorities (80–100).
- * Module middleware should use priorities in the 0–79 range.
- * The terminal ExecuteMiddleware uses priority -1 and must always be last.
+ * @deprecated Core never ran a stream pipeline; nothing calls handle(). Kept
+ *             only so a module class that still implements it keeps loading.
  *
  * @package XC_VM_Core_Http_Pipeline
  * @author  Divarion_D <https://github.com/Divarion-D>

@@ -12,8 +12,6 @@ use XcVm\Core\Exception\Module\ModuleCycleException;
 use XcVm\Core\Exception\Module\ModuleLoadException;
 use XcVm\Core\Exception\Module\ModuleManifestException;
 use XcVm\Core\Exception\Module\ModuleNotFoundException;
-use XcVm\Core\Http\Pipeline\StreamMiddlewareInterface;
-use XcVm\Core\Http\Pipeline\StreamPipeline;
 use XcVm\Core\Http\Router;
 use XcVm\Core\Module\Contract\CommandProviderInterface;
 use XcVm\Core\Module\Contract\CronProviderInterface;
@@ -22,7 +20,6 @@ use XcVm\Core\Module\Contract\PermissionProviderInterface;
 use XcVm\Core\Module\Contract\QuickToolsProviderInterface;
 use XcVm\Core\Module\Contract\ResellerNavbarProviderInterface;
 use XcVm\Core\Module\Contract\ServiceProviderInterface;
-use XcVm\Core\Module\Contract\StreamMiddlewareProviderInterface;
 use XcVm\Core\Module\Contract\TableProviderInterface;
 use XcVm\Core\Module\Contract\TopbarProviderInterface;
 
@@ -225,9 +222,8 @@ class ModuleLoader {
 	 *
 	 * @param ServiceContainer $container Service container for dependency injection.
 	 * @param Router|null $router Optional router for module route registration.
-	 * @param StreamPipeline|null $pipeline Optional stream pipeline for middleware registration.
 	 */
-	public function bootAll(ServiceContainer $container, ?Router $router = null, ?StreamPipeline $pipeline = null): void {
+	public function bootAll(ServiceContainer $container, ?Router $router = null): void {
 		$navbarRegistry = new NavbarRegistry();
 		(new CoreNavbarProvider())->registerNavbar($navbarRegistry);
 
@@ -267,10 +263,6 @@ class ModuleLoader {
 			if ($module instanceof ServiceProviderInterface) {
 				$module->boot($container);
 				$this->registerEventSubscribers($module, $container);
-			}
-
-			if ($pipeline instanceof \XcVm\Core\Http\Pipeline\StreamPipeline) {
-				$this->registerStreamMiddleware($module, $pipeline);
 			}
 
 			if ($router instanceof \XcVm\Core\Http\Router) {
@@ -855,22 +847,6 @@ class ModuleLoader {
 					[$module, $method->getName()],
 					$listensTo->priority,
 				);
-			}
-		}
-	}
-
-	/**
-	 * Registers stream middleware declared by a module into the pipeline.
-	 *
-	 * Only called for modules implementing StreamMiddlewareProviderInterface.
-	 */
-	private function registerStreamMiddleware(ModuleInterface $module, StreamPipeline $pipeline): void {
-		if (!$module instanceof StreamMiddlewareProviderInterface) {
-			return;
-		}
-		foreach ($module->getStreamMiddleware() as $middleware) {
-			if ($middleware instanceof StreamMiddlewareInterface) {
-				$pipeline->pipe($middleware);
 			}
 		}
 	}

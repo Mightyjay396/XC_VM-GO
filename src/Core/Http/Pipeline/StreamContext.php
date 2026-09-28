@@ -3,11 +3,8 @@
 namespace XcVm\Core\Http\Pipeline;
 
 /**
- * Mutable context object passed through the stream middleware pipeline.
- *
- * A middleware reads params, may abort processing, or passes the context
- * to the next middleware via $next($ctx). The final middleware (ExecuteMiddleware)
- * actually starts the stream.
+ * Mutable context object of the deprecated stream-middleware contract
+ * (StreamMiddlewareInterface); core never runs it.
  *
  * @package XC_VM_Core_Http_Pipeline
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -45,7 +42,6 @@ final class StreamContext {
 	/**
 	 * Abort pipeline execution with a reason and optional HTTP-style code.
 	 *
-	 * Once aborted, StreamPipeline will not call further middleware.
 	 *
 	 * @param string $reason Human-readable reason (logged / returned to client)
 	 * @param int    $code   Application-level error code (0 = unspecified)
