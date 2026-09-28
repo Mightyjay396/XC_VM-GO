@@ -10,10 +10,11 @@ use XcVm\Core\Config\SettingsManager;
  * MAIN signs a lease with every token it hands a node: how long that node may
  * keep serving viewers once it can no longer reach MAIN. The node's agent
  * verifies it, keeps it, and writes what it holds — the lease's window and its
- * anchor on MAIN's clock — into `config/cluster/lease_state.json` on every
- * heartbeat (XC_VM_Fanout, `lease.go`). This reads that file and answers what
- * the streaming paths ask: may a new viewer start, and may the ones running
- * carry on.
+ * anchor on MAIN's clock — into `config/cluster/lease_state.json` at every
+ * heartbeat interval, whether or not MAIN answers (XC_VM_Fanout, `lease.go`;
+ * the anchor is MAIN's last authenticated time carried on the node's monotonic
+ * clock, `mainclock.go`). This reads that file and answers what the streaming
+ * paths ask: may a new viewer start, and may the ones running carry on.
  *
  * Every uncertainty serves. No file, a file the agent has stopped refreshing,
  * no lease, no anchor (MAIN never heard on this node), a legacy node, or the

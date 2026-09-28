@@ -16,6 +16,18 @@ use XcVm\Core\Config\SettingsManager;
  * the gate on a revoked licence is MAIN refusing to sign a lease at all.
  */
 final class NodeLeaseTest extends TestCase {
+	/**
+	 * The agent's file as its writer produces it (XC_VM_Fanout,
+	 * `internal/clusteragent/lease.go`), byte for byte: the agent's
+	 * TestTheLeaseStateFileIsTheFixtureThePanelReads writes it from fixed inputs
+	 * and compares it with its own copy (`testdata/cluster_lease_state.json`),
+	 * and records this digest too — so whichever side changes the format first
+	 * fails until the file is copied over and both digests are updated.
+	 */
+	private const AGENT_FIXTURE = 'cluster_lease_state.json';
+
+	private const AGENT_FIXTURE_SHA256 = '09389ff2b7f238bf3375b8201d24a2be500ddf7b596068d0b3d4cb20974d72cc';
+
 	private string $rDir;
 
 	protected function setUp(): void {
@@ -49,6 +61,60 @@ final class NodeLeaseTest extends TestCase {
 			'wrote_at_ms' => $rNowMs - $rAgeMs,
 		]));
 		NodeLease::usePath($this->rDir . '/lease_state.json');
+	}
+
+	/**
+	 * The fixture, rewritten as the agent would have written it $rAgeMs ago by
+	 * this machine's clock: `wrote_at_ms` is the only field on local time, and
+	 * everything else — the lease, and MAIN's clock as the agent vouched for
+	 * it — stays as the Go writer put it.
+	 *
+	 * @return array<string, int>
+	 */
+	private function agentFile(int $rAgeMs): array {
+		$rDoc = json_decode((string) file_get_contents(dirname(__DIR__) . '/Support/' . self::AGENT_FIXTURE), true);
+		$rDoc['wrote_at_ms'] = (int) round(microtime(true) * 1000) - $rAgeMs;
+		file_put_contents($this->rDir . '/lease_state.json', (string) json_encode($rDoc));
+		NodeLease::usePath($this->rDir . '/lease_state.json');
+		return $rDoc;
+	}
+
+	public function testTheAgentsFileIsWhatThisReads(): void {
+		$rPath = dirname(__DIR__) . '/Support/' . self::AGENT_FIXTURE;
+		$rBytes = (string) file_get_contents($rPath);
+		$this->assertSame(self::AGENT_FIXTURE_SHA256, hash('sha256', $rBytes), 'copy it from the agent\'s testdata/ and update the digest in both tests');
+
+		// The fields this reads, all integers: exp and iat in seconds on MAIN's
+		// clock, the anchor (MAIN's clock) and the write (this machine's) in ms.
+		$rDoc = json_decode($rBytes, true);
+		$this->assertSame(['exp', 'iat', 'gen', 'server_id', 'anchor_ms', 'wrote_at_ms'], array_keys($rDoc));
+		$this->assertContainsOnly('int', $rDoc);
+		$this->assertSame($rDoc['exp'] * 1000 - 30000, $rDoc['anchor_ms'], 'the fixture\'s anchor sits 30 s short of its exp');
+
+		// As written, long ago: an agent that has stopped rewriting it.
+		NodeLease::usePath($rPath);
+		$this->assertSame('the agent has stopped refreshing it', NodeLease::verdict()['why']);
+
+		// Just written: MAIN's clock 30 s short of the exp.
+		$this->agentFile(0);
+		$rVerdict = NodeLease::verdict();
+		$this->assertSame(NodeLease::SERVING, $rVerdict['state']);
+		$this->assertSame('', $rVerdict['why'], 'the lease decided it');
+		$this->assertSame([$rDoc['exp'], 4, $rDoc['exp'] - 30, $rDoc['exp'] + 600], [$rVerdict['exp'], $rVerdict['gen'], $rVerdict['anchor'], $rVerdict['drain_until']]);
+
+		// Not rewritten for 45 s (still fresher than STALE_SEC): MAIN's clock is
+		// carried forward by the time since, which takes it past the exp.
+		$this->agentFile(45000);
+		$this->assertSame(NodeLease::DRAINING, NodeLease::state());
+		SettingsManager::set(['lb_lease_fence' => 1, 'lb_fence_drain_min' => 0]);
+		$this->agentFile(45000);
+		$this->assertSame(NodeLease::FENCED, NodeLease::state());
+
+		// Written in this machine's future (its clock moved back an hour since):
+		// nothing is added, and the anchor stands where the agent put it.
+		$this->agentFile(-3600 * 1000);
+		$rVerdict = NodeLease::verdict();
+		$this->assertSame([NodeLease::SERVING, $rDoc['exp'] - 30], [$rVerdict['state'], $rVerdict['anchor']]);
 	}
 
 	public function testALiveLeaseServes(): void {
