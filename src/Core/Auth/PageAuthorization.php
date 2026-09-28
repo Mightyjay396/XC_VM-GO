@@ -71,10 +71,12 @@ class PageAuthorization {
 	 * Maps the requested page to the required admin/reseller capability and
 	 * returns whether the current user/access-code is permitted.
 	 *
-	 * @param string|null $rPage Page key, or null to derive from the current script.
+	 * @param string|null $rPage    Page key, or null to derive from the current script.
+	 * @param bool        $rDefault The answer for a page no rule names: pages stay open,
+	 *                              post.php save actions (checkPostAction) are refused.
 	 * @return bool True if the current user may access the page.
 	 */
-	public static function checkPermissions(?string $rPage = null, ?bool $rIsEdit = null): bool {
+	public static function checkPermissions(?string $rPage = null, ?bool $rIsEdit = null, bool $rDefault = true): bool {
 		if (!$rPage) {
 			// Under the front controller SCRIPT_FILENAME is always Public/index.php,
 			// so deriving the page from it checked "index" — a page no rule names —
@@ -432,7 +434,7 @@ class PageAuthorization {
 				return Authorization::check('adv', 'restream_logs');
 
 			default:
-				return true;
+				return $rDefault;
 		}
 
 		return false;
@@ -443,15 +445,19 @@ class PageAuthorization {
 	 *
 	 * post.php handles every admin form, and each action is held to the rule of
 	 * the page whose form it saves. Most actions are named after that page; the
-	 * rest are mapped here. Actions no rule covers (the administrator's own
-	 * profile, module settings) stay open, as they were.
+	 * rest are mapped here. An action no rule covers is refused: a new form that
+	 * forgot its rule must not be open to every administrator. Only the
+	 * administrator's own profile is open by design.
 	 *
 	 * @param string $rAction The post.php `action`.
 	 * @param bool   $rIsEdit Whether the form edits an existing record (`edit`).
 	 */
 	public static function checkPostAction(string $rAction, bool $rIsEdit): bool {
+		if (isset(self::MODULE_POST_ACTIONS[$rAction])) {
+			return Authorization::check('adv', self::MODULE_POST_ACTIONS[$rAction]);
+		}
 		if (str_starts_with($rAction, 'mass_delete_')) {
-			return self::checkPermissions('mass_delete', $rIsEdit);
+			return self::checkPermissions('mass_delete', $rIsEdit, false);
 		}
 
 		$rPage = ['import_tmdb_categories' => 'stream_categories'][$rAction] ?? $rAction;
@@ -459,6 +465,18 @@ class PageAuthorization {
 			return $rPage === 'edit_profile';
 		}
 
-		return self::checkPermissions($rPage, $rIsEdit);
+		return self::checkPermissions($rPage, $rIsEdit, false);
 	}
+
+	/**
+	 * Plex / Watch saves core's post.php still serves, held to the permissions the
+	 * modules give their own pages. They go when the modules post to their own
+	 * api routes (Module_*\/docs/agents/migrate-post-actions.md).
+	 */
+	private const MODULE_POST_ACTIONS = [
+		'settings_plex'  => 'folder_watch_settings',
+		'settings_watch' => 'folder_watch_settings',
+		'plex_add'       => 'folder_watch_add',
+		'watch_add'      => 'folder_watch_add',
+	];
 }
