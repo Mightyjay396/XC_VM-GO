@@ -281,10 +281,19 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   uncertainty serves: the switch off, a legacy node, no file or a file the agent stopped
   refreshing, no lease, no anchor on MAIN's clock. The switch must be on *before* a licence
   lapses — it reaches a node in the replica's `settings` section, which a panel without a
-  licence cannot sign.
-- **The credential lockdown is not built** (Phase 9). A node in mode 2 refuses its own
-  connects in code; MAIN's MariaDB still has a grant for it until `cluster:db-allowlist`
-  closes the port, and `lb_new_node_mode=api` is refused until that phase ships.
+  licence cannot sign. Where the node's `xcvm_core` offers it (`cluster_lease_state`), the
+  extension judges the lease itself — against its own pin of the panel key and an anchor on
+  MAIN's clock that runs on the monotonic clock and never moves back — and the agent's file
+  is the fallback. The same verdict makes `license_valid()` true on the node, so
+  `LicenseGate` lets it use fanout. The extension's verdict needs the node's `core.pin`.
+- **The credential lockdown is partly built** (Phase 9). A node in mode 2 gives up MAIN's
+  credentials with a signed `node.root strip_db_credentials` (or a credential-free
+  `node.root install_config`), run by `xcvm_core` as root; when its ack reports a config
+  without credentials, MAIN revokes the node's grant (`XC_VM::db_revoke`) and records
+  `cluster_nodes.db_revoked_at` (`Domain\Cluster\DbCredentials`). Nothing sends the strip
+  on its own, and `lb_new_node_mode=api` is still refused (`api_mode_allowed` is false):
+  the cutover stays the operator's decision. `cluster:rotate-credentials` and the manual
+  `cluster:lockdown` exist (see ADR 0004, Phase 9's fifth increment).
 - The viewer-token secret can be *replaced* gracefully (the value it replaces stays readable
   for ten minutes, fleet-wide), but a full rotation — re-encrypting what is stored under it
   — is Phase 9's.
