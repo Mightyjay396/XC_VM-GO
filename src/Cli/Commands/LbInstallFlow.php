@@ -15,6 +15,7 @@ use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\ClusterPolicy;
+use XcVm\Domain\Cluster\CorePins;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\LeaseService;
 
@@ -619,9 +620,59 @@ class LbInstallFlow {
 			. ' && sudo chmod 0644 ' . escapeshellarg($rPinDir . 'main_sign.pub') . ' ' . escapeshellarg($rPinDir . 'node')
 			. ' && sudo rm -f ' . escapeshellarg($rPinDir . 'root.seq')
 			. ' && sudo -u xc_vm mkdir -p ' . escapeshellarg(dirname(self::AGENT_STATE) . '/root-inbox') . ' && sudo chmod 0700 ' . escapeshellarg(dirname(self::AGENT_STATE) . '/root-inbox'));
+		// The extension's own pin of the panel key (core.pin), which its compiled
+		// lease verdict needs: packed for the node's install_id and pinned over this
+		// same verified session. Not fatal: MAIN pins it over the cluster API later.
+		$rWhyNot = self::pinCore($rConn, $rRunSSH, $rCrypto, $rServerID);
+		echo $rWhyNot === null ? "Panel key pinned in the node's xcvm_core\n" : 'The node\'s xcvm_core is not pinned yet (' . $rWhyNot . "); MAIN pins it once the node takes root commands\n";
 		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm bash ' . escapeshellarg(MAIN_HOME . 'bin/xc_agent/run.sh') . ' >/dev/null 2>&1 &');
 		echo 'Node enrolled (uuid ' . $rUuid . ', SAS ' . $rSas . "); it finishes with enrol_complete within 30 minutes\n";
 		return true;
+	}
+
+	/**
+	 * Pin MAIN's panel key in the node's xcvm_core over an SSH session (plan,
+	 * section 6; the extension's ADR-002 "Pin"): read the node's install_id,
+	 * pack the pin for it (`cluster_pack`, an XCVT blob only that install
+	 * opens, for an hour) and pin it there at once, as root. The session's host
+	 * key was verified, which is what makes this the authorised re-pin path, so
+	 * a pin of an earlier MAIN is replaced. The node must answer with this
+	 * panel's key, and the pin is recorded (CorePins), as is the node's
+	 * install_id (`cluster_nodes.install_id`). Returns null when
+	 * pinned, else why not — never fatal, and an extension without the cluster
+	 * API on either side is only a reason.
+	 */
+	public static function pinCore($rConn, callable $rRunSSH, ClusterCrypto $rCrypto, int $rServerID): ?string {
+		$rLast = static function (array $rOut): string {
+			$rLines = preg_split('/\R/', trim((string) ($rOut['output'] ?? ''))) ?: [];
+			return trim((string) end($rLines));
+		};
+		// install_id() would create a root-owned file were there none: ask only
+		// when it exists (provisionConfig created it).
+		$rAsk = 'echo is_file(' . var_export(CONFIG_PATH . 'install_id', true) . ') && class_exists("XC_VM") && method_exists("XC_VM", "cluster_pin") ? XC_VM::install_id() : "";';
+		$rID = $rLast((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg($rAsk)));
+		if (!CorePins::validInstallId($rID)) {
+			return 'no install_id, or an xcvm_core without the cluster API on the node';
+		}
+		// Kept: what MAIN packs this node's pin and config for later (CorePins).
+		CorePins::rememberInstallId($rServerID, $rID);
+		try {
+			$rPub = (string) ($rCrypto->info()['panel_sign_pub'] ?? '');
+			$rBlob = $rCrypto->pack($rID);
+		} catch (ClusterRefusedException $rE) {
+			return 'cluster_pack refused: ' . $rE->reason();
+		} catch (\Throwable $rE) {
+			return 'cluster_pack failed: ' . $rE->getMessage();
+		}
+		$rPin = '$r = XC_VM::cluster_pin(base64_decode(' . var_export(base64_encode($rBlob), true) . '), true);'
+			. ' echo $r === false ? "ERR " . XC_VM::cluster_last_error() : "OK " . hash("sha256", $r["panel_sign_pub"]);';
+		$rOut = $rLast((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg($rPin)));
+		$rFp = hash('sha256', $rPub);
+		if ($rOut !== 'OK ' . $rFp) {
+			return 'cluster_pin: ' . ($rOut === '' ? 'no answer' : substr($rOut, 0, 120));
+		}
+		CorePins::recorded($rServerID, $rFp, 'install');
+		return null;
 	}
 
 	private static function uuid4(): string {

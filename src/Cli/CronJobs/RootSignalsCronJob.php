@@ -10,6 +10,7 @@ use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeCredentials;
+use XcVm\Core\Cluster\NodeCorePin;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
@@ -1081,6 +1082,20 @@ class RootSignalsCronJob implements CommandInterface {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CONFIG', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rWhat, time());
 				}
 				echo $rWhat . "\n" . $rLine . "\n";
+				break;
+			case 'pin_core':
+				// Phase 9: MAIN's panel key pinned in xcvm_core (core.pin), so the
+				// extension judges this node's lease itself. Step 1 reports the
+				// install_id MAIN packs the pin for; step 2 pins it, only to the key
+				// root's own pin trusts. A signed node.root only (CLUSTER_ONLY).
+				$rLine = NodeCorePin::run($rData, RootPin::read());
+				if (array_key_exists('blob', $rData)) {
+					$rWhat = 'MAIN\'s panel key pinned for the lease verdict.';
+					if (!LogSink::syslog('CONFIG', $rWhat)) {
+						$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'CONFIG', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rWhat, time());
+					}
+				}
+				echo $rLine . "\n";
 				break;
 			case 'delete_module':
 				echo 'Deleting module removed on MAIN...' . "\n";

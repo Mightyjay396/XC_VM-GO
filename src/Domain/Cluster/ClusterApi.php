@@ -802,7 +802,8 @@ final class ClusterApi {
 	 * The first ack of a command type that may carry an artefact grant is
 	 * audited when it failed (ArtefactGrants::acked), and a `node.root` that
 	 * took MAIN's credentials off the node revokes its grant
-	 * (DbCredentials::acked); no other ack reads more.
+	 * (DbCredentials::acked), and one of `pin_core` moves the node's pin on
+	 * (CorePins::acked); no other ack reads more.
 	 */
 	private static function ack(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
 		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}\z/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
@@ -824,6 +825,12 @@ final class ClusterApi {
 				DbCredentials::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
 			} catch (\Throwable) {
 				// The ack stands; the revoke is audited when it fails, and can be run again.
+			}
+			try {
+				// The node's install_id or its new core.pin (Phase 9, CorePins).
+				CorePins::acked((int) $rNode['server_id'], $rCmdID, $rOk, $rResult);
+			} catch (\Throwable) {
+				// The ack stands; cron:cluster offers the pin again.
 			}
 		}
 		return self::ok($rKeys, $rCtx, ['ok' => true]);

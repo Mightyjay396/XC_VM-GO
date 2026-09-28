@@ -27,7 +27,7 @@ final class NodeActions {
 		'install_module', 'delete_module', 'update', 'rollback',
 		'set_services', 'set_governor', 'set_sysctl', 'set_port', 'flush',
 		OpensslExtra::SIGNAL_ACTION, 'agent_binary', 'rotate_redis', 'rotate_db', 'rotate_sign_key',
-		NodeCredentials::STRIP, NodeCredentials::INSTALL,
+		NodeCredentials::STRIP, NodeCredentials::INSTALL, NodeCorePin::ACTION,
 	];
 
 	/**
@@ -37,7 +37,7 @@ final class NodeActions {
 	 * `rotate_sign_key` is only worth the signature root checks it under;
 	 * the credential strip and install carry sealed configs.
 	 */
-	public const CLUSTER_ONLY = ['agent_binary', 'rotate_db', 'rotate_sign_key', NodeCredentials::STRIP, NodeCredentials::INSTALL];
+	public const CLUSTER_ONLY = ['agent_binary', 'rotate_db', 'rotate_sign_key', NodeCredentials::STRIP, NodeCredentials::INSTALL, NodeCorePin::ACTION];
 
 	public static function reboot(int $rServerID, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => 'reboot'], $rDb);
@@ -90,6 +90,16 @@ final class NodeActions {
 	 */
 	public static function installConfig(int $rServerID, string $rBlob, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => NodeCredentials::INSTALL, 'blob' => base64_encode($rBlob)], $rDb);
+	}
+
+	/**
+	 * Pin MAIN's panel key in the node's xcvm_core (`node.root pin_core`,
+	 * NodeCorePin): without a blob the node reports its install_id, with one
+	 * (base64 of MAIN's `cluster_pack` for that install_id) it pins it.
+	 * Signed root command only.
+	 */
+	public static function pinCore(int $rServerID, ?string $rBlob = null, ?object $rDb = null): bool {
+		return self::send($rServerID, ['action' => NodeCorePin::ACTION] + ($rBlob === null ? [] : ['blob' => base64_encode($rBlob)]), $rDb);
 	}
 
 	public static function setRamdisk(int $rServerID, bool $rEnabled, ?object $rDb = null): bool {
