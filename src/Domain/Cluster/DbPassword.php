@@ -2,6 +2,8 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\RootCredentials;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -18,21 +20,25 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * What each load balancer needs afterwards (plan()):
  *
- * - `config`: an active node in mode 1 that takes root commands and whose
- *   install_id MAIN knows (CorePins) is sent a config with the new password,
- *   packed by `\XC_VM::config_pack` for that install only
- *   (DbCredentials::installConfig, `node.root install_config`).
+ * - `sealed`: an active node below mode 2 that takes root commands is sent
+ *   `node.root rotate_db` with the new password SEALed to its box key
+ *   (RootCredentials::seal, purpose `root.credentials`, its uuid as context);
+ *   its root side opens it with the key its agent holds and hands it to
+ *   `\XC_VM::config_set_db`, which changes `db.pass` and nothing else.
  * - `mode2`: a node in mode 2 does not use MAIN's database; the stale password
  *   in its config does nothing (strip it: `cluster:strip-credentials`).
  * - `revoked`: MAIN revoked the node's grant; there is nothing to change.
  * - `manual`: any other load balancer (legacy, mode 0, not taking root
- *   commands, install_id unknown) keeps the old password in its config and
- *   loses MAIN's database until an operator runs `cluster:set-db-password`
- *   on it (`\XC_VM::config_set_db`), or re-installs it.
+ *   commands) keeps the old password in its config and loses MAIN's database
+ *   until an operator runs `cluster:set-db-password` on it
+ *   (`\XC_VM::config_set_db`), or re-installs it.
  *
- * The password never rides a command: a `node.root` payload is stored in
- * MAIN's `cluster_commands` and the node's root inbox in the clear, so a
- * rotation meant to shut out a leaked password would leak the new one there.
+ * The password never rides a command in the clear: the `node.root` payload
+ * MAIN keeps in `cluster_commands` and the agent relays to root's inbox holds
+ * only the sealed box, which only that node's box key opens. (A config packed
+ * with `config_pack` was the other candidate and is not used: its transport
+ * key derives from the install_id, which MAIN's own database holds, and it
+ * would replace the node's whole `config.enc`, Redis section included.)
  *
  * @package XC_VM_Domain_Cluster
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -55,18 +61,18 @@ final class DbPassword {
 	/** @var \Closure(): (string|null)|null Tests: `cluster_last_error`. */
 	private static ?\Closure $rLastError = null;
 
-	/** @var \Closure(int, string): (string|null)|null Tests: sending a node its config. */
-	private static ?\Closure $rInstall = null;
+	/** @var \Closure(int, array<string, mixed>, string): (string|null)|null Tests: sending a node its sealed password. */
+	private static ?\Closure $rSend = null;
 
 	/**
-	 * Tests: reach the extension through these, and send configs through
-	 * $rInstall (server id, actor → null or why not); null restores `\XC_VM`
-	 * and DbCredentials::installConfig.
+	 * Tests: reach the extension through these, and send the sealed password
+	 * through $rSend (server id, cluster_nodes row, password → null or why
+	 * not); null restores `\XC_VM` and sendSealed().
 	 */
-	public static function useExtension(?\Closure $rSet, ?\Closure $rLastError = null, ?\Closure $rInstall = null): void {
+	public static function useExtension(?\Closure $rSet, ?\Closure $rLastError = null, ?\Closure $rSend = null): void {
 		self::$rSet = $rSet;
 		self::$rLastError = $rLastError;
-		self::$rInstall = $rInstall;
+		self::$rSend = $rSend;
 	}
 
 	public static function valid(string $rPassword): bool {
@@ -92,18 +98,32 @@ final class DbPassword {
 	 * What a rotation does to each load balancer, before it runs.
 	 *
 	 * @return list<array{server_id: int, server_name: string, how: string, why: string|null}>
-	 *         `how`: config, mode2, revoked or manual; `why`: what makes a node manual
+	 *         `how`: sealed, mode2, revoked or manual; `why`: what makes a node manual
 	 */
 	public static function plan(): array {
+		$rApi = !empty(SettingsManager::get('cluster_api_enabled'));
+		$rOut = [];
+		foreach (self::nodes() as $rServerID => [$rServer, $rNode]) {
+			[$rHow, $rWhy] = self::how($rServerID, $rNode, $rApi);
+			$rOut[] = ['server_id' => $rServerID, 'server_name' => (string) $rServer['server_name'], 'how' => $rHow, 'why' => $rWhy];
+		}
+		return $rOut;
+	}
+
+	/**
+	 * Every load balancer with its cluster_nodes row (null when not enrolled,
+	 * or the cluster API is off).
+	 *
+	 * @return array<int, array{0: array<string, mixed>, 1: array<string, mixed>|null}>
+	 */
+	private static function nodes(): array {
 		self::db()->query('SELECT `id`, `server_name` FROM `servers` WHERE `server_type` = 0 AND `is_main` = 0 ORDER BY `id` ASC;');
 		$rServers = self::db()->get_rows() ?: [];
 		$rApi = !empty(SettingsManager::get('cluster_api_enabled'));
 		$rOut = [];
 		foreach ($rServers as $rServer) {
 			$rServerID = (int) $rServer['id'];
-			$rNode = $rApi ? NodeRegistry::byServer($rServerID) : null;
-			[$rHow, $rWhy] = self::how($rServerID, $rNode, $rApi);
-			$rOut[] = ['server_id' => $rServerID, 'server_name' => (string) $rServer['server_name'], 'how' => $rHow, 'why' => $rWhy];
+			$rOut[$rServerID] = [$rServer, $rApi ? NodeRegistry::byServer($rServerID) : null];
 		}
 		return $rOut;
 	}
@@ -128,10 +148,10 @@ final class DbPassword {
 		if (!CommandBus::acceptsRoot($rNode)) {
 			return ['manual', 'the node takes no root commands (mode 1, COMMANDS on, root pin)'];
 		}
-		if (CorePins::installId($rServerID) === null) {
-			return ['manual', 'MAIN does not know its install_id (Pin core records it)'];
+		if (empty($rNode['node_box_pub']) || empty($rNode['node_uuid'])) {
+			return ['manual', 'MAIN holds no box key for it to seal to'];
 		}
-		return ['config', null];
+		return ['sealed', null];
 	}
 
 	/**
@@ -151,7 +171,8 @@ final class DbPassword {
 		if (!self::available()) {
 			return $rFail('no_extension');
 		}
-		$rPlan = self::plan();
+		$rApi = !empty(SettingsManager::get('cluster_api_enabled'));
+		$rNodes = self::nodes();
 		$rSet = self::$rSet ?? static fn(string $rPass): bool => (bool) \XC_VM::db_set_password($rPass);
 		$rLast = self::$rLastError ?? static fn(): ?string => method_exists('XC_VM', 'cluster_last_error') ? \XC_VM::cluster_last_error() : null;
 		if (!$rSet($rNew)) {
@@ -160,26 +181,38 @@ final class DbPassword {
 			return $rFail(is_string($rWhy) && $rWhy !== '' ? $rWhy : 'unknown');
 		}
 		$rPartial = $rLast() === 'PARTIAL';
-		$rInstall = self::$rInstall ?? static fn(int $rServerID, string $rBy): ?string => DbCredentials::installConfig($rServerID, true, $rBy);
-		$rNodes = [];
-		foreach ($rPlan as $rRow) {
-			$rRow['result'] = null;
-			if ($rRow['how'] === 'config') {
+		$rSend = self::$rSend ?? static fn(int $rServerID, array $rNode, string $rPass): ?string => self::sendSealed($rServerID, $rNode, $rPass);
+		$rOut = [];
+		foreach ($rNodes as $rServerID => [$rServer, $rNode]) {
+			[$rHow, $rWhy] = self::how($rServerID, $rNode, $rApi);
+			$rRow = ['server_id' => $rServerID, 'server_name' => (string) $rServer['server_name'], 'how' => $rHow, 'why' => $rWhy, 'result' => null];
+			if ($rHow === 'sealed' && $rNode !== null) {
 				try {
-					$rRow['result'] = $rInstall($rRow['server_id'], $rActor);
+					$rRow['result'] = $rSend($rServerID, $rNode, $rNew);
 				} catch (\Throwable) {
-					$rRow['result'] = 'cluster_config_not_queued';
+					$rRow['result'] = 'cluster_rotate_db_not_queued';
 				}
 			}
-			$rNodes[] = $rRow;
+			$rOut[] = $rRow;
 		}
-		$rCount = static fn(string $rHow): int => count(array_filter($rNodes, static fn(array $rN): bool => $rN['how'] === $rHow));
+		$rCount = static fn(string $rHow): int => count(array_filter($rOut, static fn(array $rN): bool => $rN['how'] === $rHow));
 		ClusterAudit::log('db.password_rotated', null, [
 			'partial' => $rPartial,
-			'config' => $rCount('config'),
+			'sealed' => $rCount('sealed'),
 			'manual' => $rCount('manual'),
-			'not_queued' => count(array_filter($rNodes, static fn(array $rN): bool => $rN['how'] === 'config' && $rN['result'] !== null)),
+			'not_queued' => count(array_filter($rOut, static fn(array $rN): bool => $rN['how'] === 'sealed' && $rN['result'] !== null)),
 		], $rActor);
-		return ['ok' => true, 'why' => null, 'partial' => $rPartial, 'nodes' => $rNodes];
+		return ['ok' => true, 'why' => null, 'partial' => $rPartial, 'nodes' => $rOut];
+	}
+
+	/**
+	 * Queue `node.root rotate_db {auth_sealed}` for a node: the password
+	 * SEALed to its box key. Null when queued, else the message key of why not.
+	 *
+	 * @param array<string, mixed> $rNode cluster_nodes row
+	 */
+	public static function sendSealed(int $rServerID, array $rNode, string $rPass): ?string {
+		$rSealed = RootCredentials::seal((string) $rNode['node_box_pub'], (string) $rNode['node_uuid'], $rPass);
+		return NodeActions::send($rServerID, ['action' => 'rotate_db', 'auth_sealed' => $rSealed]) ? null : 'cluster_rotate_db_not_queued';
 	}
 }

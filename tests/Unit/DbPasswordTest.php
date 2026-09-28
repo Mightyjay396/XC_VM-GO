@@ -11,11 +11,12 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
  * Phase 9's DB password rotation: MAIN rotates through xcvm_core's
- * `db_set_password`, sends a config with the new password to each node it
- * can (`install_config`, packed for that install), and lists the rest, which
- * an operator updates on the node with `cluster:set-db-password`
- * (`config_set_db`). The password never rides a command. The extension is a
- * fake here.
+ * `db_set_password`, sends the new password sealed to each node that takes
+ * root commands (`node.root rotate_db`), and lists the rest, which an
+ * operator updates on the node with `cluster:set-db-password`
+ * (`config_set_db`). The password never rides a command in the clear. The
+ * extension is a fake here; CredentialRotationTest seals and opens a real
+ * command.
  */
 final class DbPasswordTest extends TestCase {
 	private const PASS = 'N3wPassw0rd-For.The~Panel';
@@ -33,8 +34,8 @@ final class DbPasswordTest extends TestCase {
 
 	private ?string $rLastError = null;
 
-	/** @var list<int> Servers sent a config. */
-	private array $rInstalled = [];
+	/** @var list<int> Servers sent the sealed password. */
+	private array $rSent = [];
 
 	protected function setUp(): void {
 		if (!defined('SERVER_ID')) {
@@ -43,17 +44,17 @@ final class DbPasswordTest extends TestCase {
 		$this->rDb = new TestDb();
 		$this->rDb->exec('CREATE TABLE `cluster_audit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `time` int, `server_id` int, `actor` varchar(64), `event` varchar(64), `detail` text, `ip` varchar(64))');
 		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `server_name` varchar(255), `server_ip` varchar(255), `server_type` int DEFAULT 0, `is_main` int DEFAULT 0)');
-		$this->rDb->exec("CREATE TABLE `cluster_nodes` (`server_id` INTEGER PRIMARY KEY, `node_uuid` char(36), `state` varchar(16) NOT NULL DEFAULT 'active', `mode` int NOT NULL DEFAULT 1, `flows` int NOT NULL DEFAULT 2, `root_ready` int NOT NULL DEFAULT 1, `gen` int NOT NULL DEFAULT 1, `install_id` varchar(64) DEFAULT NULL, `db_revoked_at` int DEFAULT NULL, `updated_at` int NOT NULL DEFAULT 0)");
+		$this->rDb->exec("CREATE TABLE `cluster_nodes` (`server_id` INTEGER PRIMARY KEY, `node_uuid` char(36), `state` varchar(16) NOT NULL DEFAULT 'active', `mode` int NOT NULL DEFAULT 1, `flows` int NOT NULL DEFAULT 2, `root_ready` int NOT NULL DEFAULT 1, `gen` int NOT NULL DEFAULT 1, `node_box_pub` varbinary(32) DEFAULT 'box-pub', `install_id` varchar(64) DEFAULT NULL, `db_revoked_at` int DEFAULT NULL, `updated_at` int NOT NULL DEFAULT 0)");
 		$this->rDb->query("INSERT INTO `servers` (`id`, `server_name`, `server_ip`, `is_main`) VALUES (?, 'main', '10.0.0.1', 1)", (int) SERVER_ID);
-		foreach ([11 => 'config', 12 => 'mode2', 13 => 'revoked', 14 => 'no-root', 15 => 'no-iid', 16 => 'legacy'] as $rSid => $rName) {
+		foreach ([11 => 'sealed', 12 => 'mode2', 13 => 'revoked', 14 => 'no-root', 15 => 'no-box', 16 => 'legacy'] as $rSid => $rName) {
 			$this->rDb->query('INSERT INTO `servers` (`id`, `server_name`, `server_ip`) VALUES (?, ?, ?)', $rSid, $rName, '10.0.0.' . $rSid);
 		}
 		$this->rDb->exec("INSERT INTO `servers` (`id`, `server_name`, `server_ip`, `server_type`) VALUES (17, 'proxy', '10.0.0.17', 1)");
-		$this->rDb->query('INSERT INTO `cluster_nodes` (`server_id`, `install_id`) VALUES (11, ?)', self::IID);
+		$this->rDb->query("INSERT INTO `cluster_nodes` (`server_id`, `node_uuid`, `install_id`) VALUES (11, '0f8fad5b-d9cb-469f-a165-70867728950e', ?)", self::IID);
 		$this->rDb->query('INSERT INTO `cluster_nodes` (`server_id`, `mode`, `install_id`) VALUES (12, 2, ?)', self::IID);
 		$this->rDb->query('INSERT INTO `cluster_nodes` (`server_id`, `mode`, `db_revoked_at`) VALUES (13, 2, 1800000000)');
 		$this->rDb->query('INSERT INTO `cluster_nodes` (`server_id`, `root_ready`, `install_id`) VALUES (14, 0, ?)', self::IID);
-		$this->rDb->exec('INSERT INTO `cluster_nodes` (`server_id`) VALUES (15)');
+		$this->rDb->exec("INSERT INTO `cluster_nodes` (`server_id`, `node_uuid`, `node_box_pub`) VALUES (15, '2f8fad5b-d9cb-469f-a165-70867728950e', NULL)");
 		DatabaseFactory::set($this->rDb);
 		ClusterClock::fix(1800000000000);
 		$this->rSettingsBefore = SettingsManager::getAll();
@@ -64,8 +65,8 @@ final class DbPasswordTest extends TestCase {
 				return $this->rSetOk;
 			},
 			fn(): ?string => $this->rLastError,
-			function (int $rSid, string $rActor): ?string {
-				$this->rInstalled[] = $rSid;
+			function (int $rSid, array $rNode, string $rPass): ?string {
+				$this->rSent[] = $rSid;
 				return null;
 			},
 		);
@@ -108,27 +109,27 @@ final class DbPasswordTest extends TestCase {
 
 	public function testThePlanSaysWhatEachLoadBalancerNeeds(): void {
 		$rPlan = array_column(DbPassword::plan(), 'how', 'server_id');
-		$this->assertSame([11 => 'config', 12 => 'mode2', 13 => 'revoked', 14 => 'manual', 15 => 'manual', 16 => 'manual'], $rPlan, 'MAIN and the proxy are not in it');
+		$this->assertSame([11 => 'sealed', 12 => 'mode2', 13 => 'revoked', 14 => 'manual', 15 => 'manual', 16 => 'manual'], $rPlan, 'MAIN and the proxy are not in it');
 		$rWhy = array_column(DbPassword::plan(), 'why', 'server_id');
 		$this->assertStringContainsString('root commands', (string) $rWhy[14]);
-		$this->assertStringContainsString('install_id', (string) $rWhy[15]);
+		$this->assertStringContainsString('box key', (string) $rWhy[15]);
 		$this->assertStringContainsString('not enrolled', (string) $rWhy[16]);
 
 		SettingsManager::set(['cluster_api_enabled' => 0]);
 		$this->assertSame(['manual'], array_values(array_unique(array_column(DbPassword::plan(), 'how'))), 'no cluster API: every node by hand');
 	}
 
-	public function testARotationSendsConfigsOnlyWhereItCan(): void {
+	public function testARotationSendsThePasswordOnlyWhereItCan(): void {
 		$this->rLastError = null;
 		$rOut = DbPassword::rotate(self::PASS, 'cli');
 		$this->assertTrue($rOut['ok']);
 		$this->assertFalse($rOut['partial']);
 		$this->assertSame([self::PASS], $this->rSet);
-		$this->assertSame([11], $this->rInstalled);
+		$this->assertSame([11], $this->rSent);
 		$this->assertCount(6, $rOut['nodes']);
 		$rEvents = $this->events();
 		$this->assertCount(1, $rEvents);
-		$this->assertStringStartsWith('db.password_rotated {"partial":false,"config":1,"manual":3,"not_queued":0}', $rEvents[0]);
+		$this->assertStringStartsWith('db.password_rotated {"partial":false,"sealed":1,"manual":3,"not_queued":0}', $rEvents[0]);
 		$this->assertStringNotContainsString(self::PASS, implode("\n", $rEvents), 'never audited');
 	}
 
@@ -141,7 +142,7 @@ final class DbPasswordTest extends TestCase {
 		$this->rSetOk = false;
 		$this->rLastError = 'DB';
 		$this->assertSame(['ok' => false, 'why' => 'DB', 'partial' => false, 'nodes' => []], DbPassword::rotate(self::PASS));
-		$this->assertSame([], $this->rInstalled);
+		$this->assertSame([], $this->rSent);
 		$this->assertSame(['db.password_rotate_failed {"why":"DB"}'], $this->events());
 
 		$this->rSet = [];
@@ -161,9 +162,9 @@ final class DbPasswordTest extends TestCase {
 		$this->assertStringContainsString('update xcvm_core', $rOut);
 	}
 
-	// ── The config a node is sent ───────────────────────────────────────────
+	// ── A node's whole config (rollback from mode 2), not a rotation ───────
 
-	public function testTheConfigIsPackedForTheNodesInstallWithCredentials(): void {
+	public function testARollbackConfigIsPackedForTheNodesInstallWithCredentials(): void {
 		$rPacked = [];
 		$rPack = static function (string $rTarget, array $rParams) use (&$rPacked): string {
 			$rPacked[] = [$rTarget, $rParams];
@@ -186,7 +187,7 @@ final class DbPasswordTest extends TestCase {
 	public function testTheRotateCommandListsTheNodesAndAsksFirst(): void {
 		[$rCode, $rOut] = self::exec(new ClusterRotateDbPasswordCommand(), []);
 		$this->assertSame(1, $rCode);
-		$this->assertStringContainsString('server 11 (config): sent a config with the new password', $rOut);
+		$this->assertStringContainsString('server 11 (sealed): sent the new password sealed to its box key (node.root rotate_db)', $rOut);
 		$this->assertStringContainsString('server 16 (legacy): BY HAND: not enrolled', $rOut);
 		$this->assertStringContainsString("3 load balancer(s) keep the old password", $rOut);
 		$this->assertStringContainsString('pass --password-stdin', $rOut);
@@ -201,7 +202,7 @@ final class DbPasswordTest extends TestCase {
 		[$rCode, $rOut] = self::exec(new ClusterRotateDbPasswordCommand(), []);
 		$this->assertSame(0, $rCode, $rOut);
 		$this->assertStringContainsString('MAIN runs on the new password.', $rOut);
-		$this->assertStringContainsString('server 11: new config sent', $rOut);
+		$this->assertStringContainsString('server 11: new password sent sealed', $rOut);
 		$this->assertCount(1, $this->rSet);
 		$this->assertTrue(DbPassword::valid($this->rSet[0]));
 		$this->assertStringNotContainsString($this->rSet[0], $rOut, 'a generated password is never shown');
@@ -230,11 +231,11 @@ final class DbPasswordTest extends TestCase {
 
 		$this->rSetOk = true;
 		$this->rLastError = 'PARTIAL';
-		DbPassword::useExtension(static fn(string $rPass): bool => true, static fn(): string => 'PARTIAL', static fn(int $rSid, string $rActor): string => 'cluster_config_not_queued');
+		DbPassword::useExtension(static fn(string $rPass): bool => true, static fn(): string => 'PARTIAL', static fn(int $rSid, array $rNode, string $rPass): string => 'cluster_rotate_db_not_queued');
 		[$rCode, $rOut] = self::exec(new ClusterRotateDbPasswordCommand(), ['--yes']);
 		$this->assertSame(2, $rCode);
 		$this->assertStringContainsString('(PARTIAL)', $rOut);
-		$this->assertStringContainsString('server 11: config NOT sent (cluster_config_not_queued)', $rOut);
+		$this->assertStringContainsString('server 11: password NOT sent (cluster_rotate_db_not_queued)', $rOut);
 	}
 
 	public function testTheNodeCommandSetsThePasswordFromStandardInput(): void {

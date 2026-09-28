@@ -71,7 +71,7 @@ class ClusterLockdownCommand implements CommandInterface {
 		if (!in_array('--undo', $rArgs, true)) {
 			// The plan's lockdown ends with a last rotation of each; they stay
 			// separate commands, each run by the operator.
-			echo "Next, rotate once more: cluster:rotate-credentials redis (then --finish), cluster:rotate-credentials db, cluster:rotate-stream-secret.\n";
+			echo "Next, rotate once more: cluster:rotate-credentials redis (then --finish), cluster:rotate-db-password, cluster:rotate-stream-secret.\n";
 		}
 		return 0;
 	}

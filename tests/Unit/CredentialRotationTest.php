@@ -11,6 +11,7 @@ use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Cluster\CommandBus;
 use XcVm\Domain\Cluster\CredentialRotation;
+use XcVm\Domain\Cluster\DbPassword;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\FakeClusterCrypto;
@@ -18,8 +19,10 @@ use XcVm\Tests\Support\FakeClusterCrypto;
 /**
  * Redis and DB password rotation for the nodes that still use them (plan,
  * section 10, step 3): MAIN rotates, and pushes the new password sealed to
- * each node's box key in a `node.root` command, or, to a legacy node without
- * root commands, as a `signals` row it answers from MAIN's settings.
+ * each node's box key in a `node.root` command, or, for Redis only, to a
+ * legacy node without root commands as a `signals` row it answers from
+ * MAIN's settings. The DB password is `cluster:rotate-db-password`'s
+ * (DbPassword); here its sealed command goes through the real bus.
  */
 final class CredentialRotationTest extends TestCase {
 	private const ROOT_NODE = 21;
@@ -59,6 +62,7 @@ final class CredentialRotationTest extends TestCase {
 		$this->rDb->exec("INSERT INTO `settings` VALUES (1, 'old-redis-password')");
 		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `is_main` tinyint, `server_type` tinyint, `server_ip` varchar(64), `private_ip` varchar(64))');
 		$this->rDb->exec("INSERT INTO `servers` VALUES (1, 1, 0, '203.0.113.1', '10.0.0.1'), (21, 0, 0, '203.0.113.21', NULL), (22, 0, 0, '203.0.113.22', NULL), (23, 0, 0, '203.0.113.23', NULL), (30, 0, 1, '203.0.113.30', NULL)");
+		$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN `server_name` varchar(255)');
 		$this->rDb->exec('CREATE TABLE `signals` (`signal_id` INTEGER PRIMARY KEY AUTOINCREMENT, `server_id` int, `time` int, `custom_data` text, `cache` tinyint DEFAULT 0)');
 		DatabaseFactory::set($this->rDb);
 		ClusterClock::fix(1800000000000);
@@ -83,12 +87,13 @@ final class CredentialRotationTest extends TestCase {
 		ClusterBus::useSocket(null);
 		ClusterClock::fix(null);
 		RootCredentials::useSeams(null);
+		DbPassword::useExtension(null);
 		SettingsManager::set([]);
 		DatabaseFactory::reset();
 		exec('rm -rf ' . escapeshellarg($this->rDir));
 	}
 
-	private function rotation(?callable $rDb = null, bool $rRedisOk = true, bool $rConfigOk = true): CredentialRotation {
+	private function rotation(bool $rRedisOk = true, bool $rConfigOk = true): CredentialRotation {
 		return new CredentialRotation(
 			function (array $rArgs) use ($rRedisOk): mixed {
 				$this->rRedis[] = $rArgs;
@@ -98,7 +103,6 @@ final class CredentialRotationTest extends TestCase {
 				$this->rMainConfig[] = [$rHost, $rPort, $rAuth];
 				return $rConfigOk;
 			},
-			$rDb,
 			$this->rDir . '/redis.conf'
 		);
 	}
@@ -163,7 +167,7 @@ final class CredentialRotationTest extends TestCase {
 	/** MAIN's config.enc must move first: without it the new password is withdrawn and nothing else changes. */
 	public function testAFailedMainConfigWithdrawsTheNewPassword(): void {
 		try {
-			$this->rotation(null, true, false)->redis('new-redis-password');
+			$this->rotation(true, false)->redis('new-redis-password');
 			$this->fail('rotated without MAIN\'s config.enc');
 		} catch (\RuntimeException) {
 		}
@@ -195,29 +199,26 @@ final class CredentialRotationTest extends TestCase {
 		$this->rotation()->redis('newer-redis-password');
 	}
 
-	/** Without the extension's setter nothing changes; with it, a node without root commands blocks unless --force. */
-	public function testTheDbPasswordNeedsTheExtensionAndRootCommands(): void {
-		$this->assertFalse($this->rotation()->dbSupported());
-		ob_start();
-		$rCode = (new ClusterRotateCredentialsCommand($this->rotation()))->execute(['db']);
-		$rText = (string) ob_get_clean();
-		$this->assertSame(1, $rCode);
-		$this->assertStringContainsString('XC_VM::' . CredentialRotation::DB_ROTATOR, $rText);
+	/**
+	 * `cluster:rotate-db-password` seals the new DB password to a root node's
+	 * box key; the command row holds ciphertext only, the node opens it and
+	 * hands it to config_set_db. A legacy node gets nothing (set by hand), and
+	 * `cluster:rotate-credentials db` points at the one command.
+	 */
+	public function testTheDbPasswordTravelsSealed(): void {
+		DbPassword::useExtension(static fn(string $rPass): bool => true, static fn(): ?string => null);
+		$rOut = DbPassword::rotate('N3wPassw0rd-For.The~Panel');
+		$this->assertTrue($rOut['ok']);
+		$rHow = array_column($rOut['nodes'], 'how', 'server_id');
+		$this->assertSame([self::ROOT_NODE => 'sealed', self::LEGACY_NODE => 'manual', self::API_NODE => 'mode2'], $rHow);
+		$this->assertSame([self::ROOT_NODE => null, self::LEGACY_NODE => null, self::API_NODE => null], array_column($rOut['nodes'], 'result', 'server_id'));
 
-		$rChanged = [];
-		$rDb = function (string $rPass) use (&$rChanged): bool {
-			$rChanged[] = $rPass;
-			return true;
-		};
-		$this->assertSame(['blockers' => [self::LEGACY_NODE], 'nodes' => []], $this->rotation($rDb)->rotateDb(false));
-		$this->assertSame([], $rChanged, 'refused before anything changed');
-
-		$rOut = $this->rotation($rDb)->rotateDb(true, 'new-db-password');
-		$this->assertSame(['new-db-password'], $rChanged);
-		$this->assertSame([self::ROOT_NODE => 'queued', self::LEGACY_NODE => 'not reached (no root commands)'], $rOut['nodes']);
 		$rCmd = $this->rootCommand(self::ROOT_NODE);
-		$this->assertSame('rotate_db', $rCmd['action']);
-		$this->assertStringNotContainsString('new-db-password', json_encode($rCmd));
+		$this->assertSame(['node.root', 'rotate_db'], [$rCmd['type'], $rCmd['action']]);
+		$this->assertStringNotContainsString('N3wPassw0rd-For.The~Panel', json_encode($rCmd), 'the command row holds ciphertext only');
+		$this->assertSame([], CommandBus::pending(self::API_NODE, 0));
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `signals`');
+		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'a DB password never goes out as a signals row');
 
 		file_put_contents($this->rDir . '/agent.json', json_encode(['node_uuid' => '0f8fad5b-d9cb-469f-a165-70867728950e', 'node_box_sk' => base64_encode($this->rBoxSk)]));
 		$rSet = [];
@@ -225,8 +226,13 @@ final class CredentialRotationTest extends TestCase {
 			$rSet[] = $rPass;
 			return true;
 		}, $this->rDir . '/agent.json', $this->rDir . '/');
-		RootCredentials::rotateDb($rCmd['args']);
-		$this->assertSame(['new-db-password'], $rSet);
+		$this->assertSame('Database credentials updated', RootCredentials::rotateDb($rCmd['args']));
+		$this->assertSame(['N3wPassw0rd-For.The~Panel'], $rSet);
+
+		ob_start();
+		$rCode = (new ClusterRotateCredentialsCommand($this->rotation()))->execute(['db']);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('cluster:rotate-db-password', (string) ob_get_clean());
 	}
 
 	public function testTheRootActionsAreCatalogued(): void {

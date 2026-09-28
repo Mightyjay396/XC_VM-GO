@@ -19,8 +19,8 @@ use XcVm\Core\Cluster\Crypto\Seal;
  * it can only because it still holds MAIN's database. The DB password has no
  * such path, so `rotate_db` needs the sealed form.
  *
- * config.enc is written by xcvm_core (config_set_redis, and the DB setter the
- * extension provides) as root; it is handed back to the config directory's
+ * config.enc is written by xcvm_core (config_set_redis, config_set_db) as
+ * root; it is handed back to the config directory's
  * owner so php-fpm (xc_vm) still reads it.
  */
 final class RootCredentials {
@@ -28,9 +28,10 @@ final class RootCredentials {
 	public const SEAL_PURPOSE = 'root.credentials';
 
 	/**
-	 * The extension's setter for the DB password in config.enc, when it has
-	 * one: `XC_VM::config_set_db(string $password): bool`, keeping host, port,
-	 * database and user (not in xcvm_core yet).
+	 * The extension's setter for the DB password in config.enc:
+	 * `XC_VM::config_set_db(string $password): bool`, keeping host, port,
+	 * database and user (xcvm_core's ADR-002). `cluster:rotate-db-password`
+	 * sends the password it takes.
 	 */
 	public const DB_SETTER = 'config_set_db';
 
