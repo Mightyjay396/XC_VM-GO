@@ -1,0 +1,231 @@
+<?php
+
+namespace XcVm\Domain\Cluster;
+
+use XcVm\Core\Cluster\ClusterDiagnosis;
+use XcVm\Core\Cluster\ClusterHealth;
+use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Infrastructure\Database\DatabaseAware;
+
+/**
+ * What the Cluster Nodes page shows beside the node list (plan section 11,
+ * "Admin UI"): each node's fence window, the licence and certificate banners,
+ * the figures MAIN already records (command delivery and ack latency, command
+ * queue depth, MAIN's ingest and control-pool saturation, the recent audit),
+ * and the fleet-wide "Rotate all tokens now".
+ *
+ * Only figures MAIN records are shown. Heartbeat latency, ingest lag and the
+ * 503 counters the plan also lists are not recorded anywhere yet, so the page
+ * says nothing about them rather than a number that means nothing.
+ *
+ * @package XC_VM_Domain_Cluster
+ * @author  Divarion_D <https://github.com/Divarion-D>
+ * @copyright 2025-2026 Vateron Media
+ * @link    https://github.com/Vateron-Media/XC_VM
+ * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
+ */
+final class ClusterOverview {
+	use DatabaseAware;
+
+	/** Days before MAIN's certificate expires that the page warns, when the nodes dial HTTPS. */
+	public const CERT_WARN_DAYS = 14;
+
+	/** The window (s) of acked commands the latency percentiles are drawn from. */
+	public const LATENCY_WINDOW_SEC = 3600;
+
+	/** The most acked commands the percentiles read. */
+	public const LATENCY_SAMPLES = 2000;
+
+	/** Audit rows shown. */
+	public const AUDIT_ROWS = 25;
+
+	/** A control-pool queue last seen this long ago (ms) is over. */
+	public const CTL_QUEUE_FRESH_MS = 10000;
+
+	/**
+	 * Each node's fence window (ClusterDiagnosis::fenceWindow), by server id.
+	 *
+	 * @param list<array<string, mixed>> $rNodes ClusterAdmin::nodes()
+	 * @param array<string, mixed> $rSettings
+	 * @return array<int, array{lease_until: ?int, drain_until: ?int, tolerance_h: int, drain_min: int, fence_on: bool}>
+	 */
+	public static function fenceWindows(array $rNodes, array $rSettings): array {
+		$rOut = [];
+		foreach ($rNodes as $rNode) {
+			$rOut[(int) $rNode['server_id']] = ClusterDiagnosis::fenceWindow(isset($rNode['token_exp']) ? (int) $rNode['token_exp'] : null, $rSettings);
+		}
+		return $rOut;
+	}
+
+	/**
+	 * The page's banners. Pure.
+	 *
+	 * - Licence suspended: MAIN signs no lease (or any granting record), so each
+	 *   node serves on the lease it holds. With `lb_lease_fence` on, the last
+	 *   active node's window says when the fleet stops at the latest; with it
+	 *   off, nothing stops, and the banner says the fence is off.
+	 * - MAIN's certificate expiring within CERT_WARN_DAYS while the nodes may
+	 *   dial HTTPS (`cluster_transport` not `http`, MAIN's HTTPS on). Under
+	 *   `https_required` an expired certificate cuts the fleet off MAIN, so it
+	 *   is a danger there and a warning otherwise (the nodes fall back to HTTP).
+	 *
+	 * @param array<string, mixed> $rMain MAIN's `servers` row.
+	 * @param array<string, mixed> $rSettings
+	 * @param list<array<string, mixed>> $rNodes ClusterAdmin::nodes()
+	 * @return list<array{type: string, key: string, vars: array<string, string>}>
+	 */
+	public static function banners(bool $rLicensed, array $rMain, array $rSettings, array $rNodes, int $rNow): array {
+		if (empty($rSettings['cluster_api_enabled'])) {
+			return [];
+		}
+		$rOut = [];
+		if (!$rLicensed) {
+			$rStop = null;
+			$rFenceOn = false;
+			foreach ($rNodes as $rNode) {
+				if (($rNode['state'] ?? '') !== 'active') {
+					continue;
+				}
+				$rWindow = ClusterDiagnosis::fenceWindow(isset($rNode['token_exp']) ? (int) $rNode['token_exp'] : null, $rSettings);
+				$rFenceOn = $rWindow['fence_on'];
+				if ($rWindow['drain_until'] !== null) {
+					$rStop = max($rStop ?? 0, $rWindow['drain_until']);
+				}
+			}
+			if ($rStop !== null && $rFenceOn) {
+				$rOut[] = ['type' => 'danger', 'key' => 'cluster_banner_licence_stop', 'vars' => ['{TIME}' => gmdate('Y-m-d H:i', $rStop) . ' UTC']];
+			} elseif ($rStop !== null) {
+				$rOut[] = ['type' => 'danger', 'key' => 'cluster_banner_licence_no_fence', 'vars' => []];
+			} else {
+				$rOut[] = ['type' => 'danger', 'key' => 'cluster_banner_licence', 'vars' => []];
+			}
+		}
+		$rTransport = ClusterSettings::enum('cluster_transport', $rSettings['cluster_transport'] ?? null);
+		$rCert = json_decode((string) ($rMain['certbot_ssl'] ?? ''), true);
+		$rExpires = is_array($rCert) ? (int) ($rCert['expiration'] ?? 0) : 0;
+		if ($rTransport !== 'http' && !empty($rMain['enable_https']) && $rExpires > 0 && $rExpires - $rNow < self::CERT_WARN_DAYS * 86400) {
+			$rOut[] = [
+				'type' => $rTransport === 'https_required' || $rExpires <= $rNow ? 'danger' : 'warning',
+				'key' => $rExpires <= $rNow ? 'cluster_banner_cert_expired' : 'cluster_banner_cert_expiring',
+				'vars' => ['{DATE}' => gmdate('Y-m-d H:i', $rExpires) . ' UTC', '{DAYS}' => (string) max(0, intdiv($rExpires - $rNow, 86400)), '{TRANSPORT}' => $rTransport],
+			];
+		}
+		return $rOut;
+	}
+
+	/**
+	 * The command channel's figures, from `cluster_commands`: the queue (commands
+	 * not yet acked and not expired) per node and in all, its oldest entry, and
+	 * the delivery and ack latency percentiles over the commands acked within
+	 * LATENCY_WINDOW_SEC. The table keeps whole seconds, so the percentiles are
+	 * too.
+	 *
+	 * @return array{depth: int, oldest: ?int, per_node: array<int, int>, samples: int, deliver_p50: ?int, deliver_p99: ?int, ack_p50: ?int, ack_p99: ?int}
+	 */
+	public static function commandMetrics(int $rNow): array {
+		$rOut = ['depth' => 0, 'oldest' => null, 'per_node' => [], 'samples' => 0, 'deliver_p50' => null, 'deliver_p99' => null, 'ack_p50' => null, 'ack_p99' => null];
+		$rDb = self::db();
+		if ($rDb->query("SELECT `server_id`, COUNT(*) AS `c`, MIN(`created_at`) AS `oldest` FROM `cluster_commands` WHERE `state` IN ('queued', 'delivered') AND `exp` > ? GROUP BY `server_id`;", $rNow)) {
+			foreach ($rDb->get_rows() ?: [] as $rRow) {
+				$rOut['per_node'][(int) $rRow['server_id']] = (int) $rRow['c'];
+				$rOut['depth'] += (int) $rRow['c'];
+				$rOut['oldest'] = $rOut['oldest'] === null ? (int) $rRow['oldest'] : min($rOut['oldest'], (int) $rRow['oldest']);
+			}
+		}
+		if ($rDb->query('SELECT `created_at`, `delivered_at`, `acked_at` FROM `cluster_commands` WHERE `acked_at` IS NOT NULL AND `created_at` >= ? ORDER BY `id` DESC LIMIT ' . self::LATENCY_SAMPLES . ';', $rNow - self::LATENCY_WINDOW_SEC)) {
+			$rDeliver = [];
+			$rAck = [];
+			foreach ($rDb->get_rows() ?: [] as $rRow) {
+				$rCreated = (int) $rRow['created_at'];
+				$rAck[] = max(0, (int) $rRow['acked_at'] - $rCreated);
+				// An ack with no delivery recorded: the ack is the latest it was delivered.
+				$rDeliver[] = max(0, (int) ($rRow['delivered_at'] ?? $rRow['acked_at']) - $rCreated);
+			}
+			$rOut['samples'] = count($rAck);
+			$rOut['deliver_p50'] = self::percentile($rDeliver, 50);
+			$rOut['deliver_p99'] = self::percentile($rDeliver, 99);
+			$rOut['ack_p50'] = self::percentile($rAck, 50);
+			$rOut['ack_p99'] = self::percentile($rAck, 99);
+		}
+		return $rOut;
+	}
+
+	/**
+	 * The nearest-rank percentile of $rValues; null for none.
+	 *
+	 * @param list<int> $rValues
+	 */
+	public static function percentile(array $rValues, int $rP): ?int {
+		if ($rValues === []) {
+			return null;
+		}
+		sort($rValues);
+		$rRank = (int) ceil($rP / 100 * count($rValues));
+		return $rValues[max(0, min(count($rValues) - 1, $rRank - 1))];
+	}
+
+	/**
+	 * MAIN's own saturation: the ingest permits held per lane against what
+	 * each may hold (null without the bus, where nothing is limited), and how
+	 * long the cluster_ctl pool's listen queue has lasted, as the liveness loop
+	 * last saw it (null when there is none).
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @return array{ingest: array{p0: int, bulk: int, permits: array{p0: int, bulk: int, total: int}}|null, ctl_queue_ms: ?int}
+	 */
+	public static function saturation(array $rSettings, int $rNowMs): array {
+		$rQueue = ClusterHealth::read()['ctl_queue'];
+		$rCtl = $rQueue !== null && $rNowMs - $rQueue['at'] <= self::CTL_QUEUE_FRESH_MS ? max(0, $rQueue['at'] - $rQueue['since']) : null;
+		return ['ingest' => ClusterSemaphore::ingestInUse($rSettings['cluster_ingest_concurrency'] ?? null), 'ctl_queue_ms' => $rCtl];
+	}
+
+	/**
+	 * The latest cluster_audit rows, newest first.
+	 *
+	 * @return list<array{time: int, server_id: ?int, actor: ?string, event: string, detail: string}>
+	 */
+	public static function audit(int $rLimit = self::AUDIT_ROWS): array {
+		$rDb = self::db();
+		if (!$rDb->query('SELECT `time`, `server_id`, `actor`, `event`, `detail` FROM `cluster_audit` ORDER BY `id` DESC LIMIT ' . max(1, min(200, $rLimit)) . ';')) {
+			return [];
+		}
+		$rOut = [];
+		foreach ($rDb->get_rows() ?: [] as $rRow) {
+			$rOut[] = [
+				'time' => (int) $rRow['time'],
+				'server_id' => $rRow['server_id'] === null ? null : (int) $rRow['server_id'],
+				'actor' => $rRow['actor'] === null ? null : (string) $rRow['actor'],
+				'event' => (string) $rRow['event'],
+				'detail' => (string) ($rRow['detail'] ?? ''),
+			];
+		}
+		return $rOut;
+	}
+
+	/**
+	 * "Rotate all tokens now": `token.rotate_now` to every active node, as the
+	 * per-node button sends it (ClusterRoute::rotateNow(), deduplicated by its
+	 * key, so a second click replaces a rotation still waiting rather than
+	 * adding one), each audited.
+	 *
+	 * @return array{queued: int, no_commands: int, failed: int}
+	 */
+	public static function rotateAll(?int $rUserID): array {
+		$rOut = ['queued' => 0, 'no_commands' => 0, 'failed' => 0];
+		$rDb = self::db();
+		if (!$rDb->query("SELECT `server_id` FROM `cluster_nodes` WHERE `state` = 'active' ORDER BY `server_id`;")) {
+			return $rOut;
+		}
+		$rActor = $rUserID === null ? 'admin' : 'admin:' . $rUserID;
+		foreach (array_map(static fn(array $rRow): int => (int) $rRow['server_id'], $rDb->get_rows() ?: []) as $rServerID) {
+			[$rRouted, $rQueued] = ClusterRoute::rotateNow($rServerID);
+			if (!$rRouted) {
+				$rOut['no_commands']++;
+				continue;
+			}
+			ClusterAudit::log('node.token_rotate', $rServerID, ['queued' => $rQueued, 'all' => true], $rActor);
+			$rOut[$rQueued ? 'queued' : 'failed']++;
+		}
+		return $rOut;
+	}
+}

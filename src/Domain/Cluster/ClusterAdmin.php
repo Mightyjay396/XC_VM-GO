@@ -174,10 +174,19 @@ final class ClusterAdmin {
 	 * @param array<string, mixed> $rInput cluster_action, server_id, sas, url
 	 * @param array<int, array<string, mixed>> $rServers
 	 * @param array<string, mixed> $rSettings
-	 * @return array{type: string, message: string, code?: string, server_id?: int}
+	 * @return array{type: string, message: string, code?: string, server_id?: int, vars?: array<string, string>}
 	 */
 	public static function act(ClusterCrypto $rCrypto, array $rInput, array $rServers, int $rMainID, array $rSettings, ?int $rUserID): array {
 		$rAction = (string) ($rInput['cluster_action'] ?? '');
+		if ($rAction === 'rotate_all') {
+			// Fleet-wide, so no server id: every active node, as rotate_now one.
+			$rDone = ClusterOverview::rotateAll($rUserID);
+			return [
+				'type' => $rDone['failed'] > 0 ? 'warning' : ($rDone['queued'] > 0 ? 'success' : 'info'),
+				'message' => 'cluster_rotate_all_done',
+				'vars' => ['{QUEUED}' => (string) $rDone['queued'], '{SKIPPED}' => (string) $rDone['no_commands'], '{FAILED}' => (string) $rDone['failed']],
+			];
+		}
 		$rServerID = (int) ($rInput['server_id'] ?? 0);
 		$rMain = $rServers[$rMainID] ?? [];
 		$rLbs = self::loadBalancers($rServers);

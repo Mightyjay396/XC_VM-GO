@@ -197,8 +197,17 @@ console.php cluster:import-keys   /path/bundle
 ```
 
 The *Cluster Nodes* page is where a node is approved, its flows switched, its mode moved and
-its state read (epoch, token expiry, last seen, agent version and architecture, settings
-misses, connect audit). Every decision is written to `cluster_audit`, which
+its state read (epoch, token expiry, the fence window that follows it — token expiry plus
+`lb_partition_tolerance_h`, then `lb_fence_drain_min` — its queued commands, last seen, agent
+version and architecture, settings misses, connect audit). It warns when the licence is
+suspended (and, with `lb_lease_fence` on, by when the fleet stops at the latest) and when
+MAIN's certificate expires within 14 days while the nodes may dial HTTPS. It shows the figures
+MAIN records: command delivery and ack latency (p50/p99 over the last hour), queue depth, the
+ingest permits in use per lane, the `cluster_ctl` pool's listen queue, and the recent audit.
+*Rotate all tokens now* sends `token.rotate_now` to every active node that takes commands.
+The *Servers* list's row menu carries the same per-node actions (mode up/down, rotate,
+enrolment code, a link to the node's flows) and shows the `cluster:reenrol` command to run
+for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
 `cron:cluster` prunes.
 
 ### A cutover, in order
