@@ -6,9 +6,11 @@ use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamSavedEvent;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Module\SourceDriverRegistry;
+use XcVm\Core\Module\StreamFormRegistry;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Domain\Bouquet\BouquetService;
@@ -259,9 +261,10 @@ class StreamService {
 			}
 		}
 
-		$rConflict = self::importDriverConflict($rImportStreams, $rArray, self::postedServerTree($rData, false), self::mainServerIDs(...));
-		if ($rConflict !== null) {
-			return ['status' => STATUS_INVALID_INPUT, 'data' => ['error' => $rConflict]];
+		$rModuleFields = StreamFormRegistry::posted($rData);
+		$rRefusal = self::saveRefusal($rImportStreams, $rArray, $rData, $rModuleFields);
+		if ($rRefusal !== null) {
+			return ['status' => STATUS_INVALID_INPUT, 'data' => $rRefusal];
 		}
 
 		if (0 < count($rImportStreams)) {
@@ -293,6 +296,7 @@ class StreamService {
 			}
 
 			$rInsertID = 0;
+			$rSavedIDs = [];
 
 			foreach ($rImportStreams as $rImportStream) {
 				if (!($rImportStream['update'] ?? false)) {
@@ -444,6 +448,7 @@ class StreamService {
 
 						StreamProcess::updateStream($rInsertID);
 						EventDispatcher::dispatch(new StreamsChangedEvent([(int) $rInsertID]));
+						$rSavedIDs[] = (int) $rInsertID;
 					} else {
 						foreach ($rBouquetCreate as $rID) {
 							$db->query('DELETE FROM `bouquets` WHERE `id` = ?;', $rID);
@@ -458,9 +463,48 @@ class StreamService {
 				}
 			}
 
+			self::dispatchSaved($rSavedIDs, $rData, $rReview, $rModuleFields);
 			return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
 		}
 		return ['status' => STATUS_NO_SOURCES, 'data' => $rData];
+	}
+
+	/**
+	 * Why a save must not be written, as response data, or null: a core rule
+	 * (`error`, a language key) or a module tab's validator (`message`, shown
+	 * as the module wrote it).
+	 *
+	 * @param array                $rImportStreams Streams about to be written.
+	 * @param array                $rArray         The settings they are written with.
+	 * @param array                $rData          The posted form.
+	 * @param array<string, array> $rModuleFields  StreamFormRegistry::posted().
+	 * @return array{error: string}|array{message: string}|null
+	 */
+	private static function saveRefusal(array $rImportStreams, array $rArray, array $rData, array $rModuleFields): ?array {
+		$rConflict = self::importDriverConflict($rImportStreams, $rArray, self::postedServerTree($rData, false), self::mainServerIDs(...));
+		if ($rConflict !== null) {
+			return ['error' => $rConflict];
+		}
+		$rMessage = StreamFormRegistry::validate($rModuleFields, isset($rData['edit']) ? $rArray : null);
+		return $rMessage === null ? null : ['message' => $rMessage];
+	}
+
+	/**
+	 * Tell modules which streams a save wrote (StreamSavedEvent). The rows are
+	 * already committed, so a failing listener is logged, not surfaced: the
+	 * save itself succeeded.
+	 *
+	 * @param int[]                $rSavedIDs     Streams written.
+	 * @param array                $rData         The posted form.
+	 * @param array<string, array> $rModuleFields StreamFormRegistry::posted().
+	 */
+	private static function dispatchSaved(array $rSavedIDs, array $rData, bool $rReview, array $rModuleFields): void {
+		$rSource = $rReview ? 'review' : (isset($_FILES['m3u_file']) ? 'import' : 'form');
+		try {
+			EventDispatcher::dispatch(new StreamSavedEvent($rSavedIDs, !isset($rData['edit']), $rSource, $rModuleFields));
+		} catch (\Throwable $e) {
+			error_log('StreamSavedEvent listener failed: ' . $e->getMessage());
+		}
 	}
 
 	/**

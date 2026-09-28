@@ -15,6 +15,7 @@
  */
 
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Module\StreamFormRegistry;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Stream\CategoryService;
 use XcVm\Core\Util\LayoutRenderer;
@@ -89,6 +90,9 @@ $rTitle = $rIsEdit ? $rStream['stream_display_name'] : ($rIsImport ? 'Import Str
                             <li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-rtmp" role="tab"><i class="icon-base ti tabler-cloud-upload me-1"></i><?= $language::get('rtmp_push'); ?></button></li>
                         <?php endif; ?>
                         <li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-capture" role="tab"><i class="icon-base ti tabler-device-cctv me-1"></i><?= $language::get('capture_server'); ?></button></li>
+                        <?php foreach (StreamFormRegistry::tabs() as $rTabID => $rTab): ?>
+                            <li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-module-<?= $rTabID; ?>" role="tab"><i class="icon-base ti tabler-puzzle me-1"></i><?= htmlspecialchars($rTab['label'], ENT_QUOTES); ?></button></li>
+                        <?php endforeach; ?>
                     <?php endif; ?>
                     <li class="nav-item"><button type="button" class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-server" role="tab"><i class="icon-base ti tabler-server me-1"></i><?= $language::get('servers'); ?></button></li>
                 </ul>
@@ -365,6 +369,12 @@ $rTitle = $rIsEdit ? $rStream['stream_display_name'] : ($rIsImport ? 'Import Str
                             </select>
                         </div>
                     </div>
+                <?php endif; ?>
+
+                <?php if (!$rIsImport): ?>
+                    <?php foreach (StreamFormRegistry::tabs() as $rTabID => $rTab): ?>
+                        <div class="tab-pane fade" id="tab-module-<?= $rTabID; ?>" role="tabpanel"><?= ($rTab['render'])($rStream ?? null, $rIsEdit ? 'edit' : 'add'); ?></div>
+                    <?php endforeach; ?>
                 <?php endif; ?>
 
                 <div class="tab-pane fade" id="tab-server" role="tabpanel">

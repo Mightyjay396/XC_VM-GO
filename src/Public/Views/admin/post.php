@@ -1283,7 +1283,7 @@ if (1 < $rICount) { ?>
 					exit();
 				}
 
-				echo json_encode(array('result' => false, 'data' => ($rReturn['data'] ?? array()), 'status' => $rReturn['status'], 'message' => isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null));
+				echo json_encode(array('result' => false, 'data' => ($rReturn['data'] ?? array()), 'status' => $rReturn['status'], 'message' => $rReturn['data']['message'] ?? (isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null)));
 				exit();
 
 			case 'movie':
