@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\HlsReaping;
 use XcVm\Core\Cluster\LogSink;
@@ -292,7 +293,7 @@ final class EventIngest {
 			$rData = is_array($rEvent) ? ($rEvent['d'] ?? null) : null;
 			$rUUID = is_array($rData) ? ($rData['uuid'] ?? null) : null;
 			$rRead = is_array($rData) ? ($rData['hls_last_read'] ?? null) : null;
-			if ($rLane !== 'p2' || ((int) $rNode['flows'] & $rFlow) === 0 || !is_int($rT) || $rT < 0 || !is_string($rUUID) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) || !is_int($rRead) || $rRead < 0) {
+			if ($rLane !== 'p2' || ((int) $rNode['flows'] & $rFlow) === 0 || !is_int($rT) || $rT < 0 || !is_string($rUUID) || !preg_match(AgentConnections::CONN_UUID, $rUUID) || !is_int($rRead) || $rRead < 0) {
 				$rDropped++;
 				continue;
 			}

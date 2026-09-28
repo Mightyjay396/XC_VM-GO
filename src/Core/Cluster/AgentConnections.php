@@ -29,6 +29,16 @@ final class AgentConnections {
 	 */
 	public const ADMISSION_HEADER = 'X-XCVM-Admission';
 
+	/**
+	 * A connection's uuid, as a regex fragment: what every store, event and
+	 * command naming a connection carries (ADR 0004). CONN_UUID matches it
+	 * whole.
+	 */
+	public const CONN_UUID_CHARS = '[A-Za-z0-9_-]{1,64}';
+
+	/** A whole connection uuid (CONN_UUID_CHARS), for preg_match(). */
+	public const CONN_UUID = '/^' . self::CONN_UUID_CHARS . '\z/';
+
 	public static function enabled(): bool {
 		return NodeFlows::on(NodeFlows::CONNECTIONS);
 	}
@@ -106,7 +116,7 @@ final class AgentConnections {
 		if ($rAdmission === null) {
 			return self::put($rUUID, $rRecord);
 		}
-		if (!preg_match('#^[A-Za-z0-9_-]{1,64}\z#', $rUUID)) {
+		if (!preg_match(self::CONN_UUID, $rUUID)) {
 			return null;
 		}
 		$rHeader = (string) json_encode($rAdmission, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
@@ -192,7 +202,7 @@ final class AgentConnections {
 	 * @return array{0: int, 1: array<string, mixed>|null}|null
 	 */
 	private static function call(string $rMethod, string $rPath, ?array $rBody): ?array {
-		if (!preg_match('#^[A-Za-z0-9_-]{1,64}(/(touch|close))?\z#', $rPath)) {
+		if (!preg_match('#^' . self::CONN_UUID_CHARS . '(/(touch|close))?\z#', $rPath)) {
 			return [400, null];
 		}
 		return AgentClient::request($rMethod, '/v1/conn/' . $rPath, $rBody, self::TIMEOUT);
