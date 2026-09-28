@@ -224,7 +224,7 @@ final class ClusterNginxConfigTest extends TestCase {
 		$this->assertSame(ClusterNginxConfig::locations(), $this->conf(ClusterNginxConfig::LOCATIONS));
 		$this->assertStringContainsString('listen 31200;', (string) $this->conf(ClusterNginxConfig::LISTEN));
 		$this->assertStringContainsString('listen 8080;', (string) $this->conf(ClusterNginxConfig::OLD_PORT));
-		$this->assertSame([], glob($this->rBase . 'bin/nginx/conf/{,cluster.d/}*.tmp', GLOB_BRACE), 'no temporary file left');
+		$this->assertSame([], glob($this->rBase . 'bin/nginx/conf/{,cluster.d/}{,.}*.tmp', GLOB_BRACE), 'no temporary file left');
 		$this->assertSame('cluster.nginx', $this->audit()[0]['event']);
 
 		// Nothing to change: no test, no reload.
@@ -535,8 +535,8 @@ final class ClusterNginxConfigTest extends TestCase {
 	/** A write that fails part-way leaves every file as it was, and nginx untouched. */
 	public function testAWriteThatFailsPutsTheEarlierFilesBack(): void {
 		file_put_contents($this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::LOCATIONS, "# an older release's location\n");
-		// cluster_locations.conf is written first; listen.conf's temporary file cannot be.
-		mkdir($this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::LISTEN . '.tmp', 0777, true);
+		// cluster_locations.conf is written first; listen.conf cannot be renamed in (a directory holds its name).
+		mkdir($this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::LISTEN, 0777, true);
 		$rResult = ClusterNginxConfig::apply(['cluster_api_port' => 31200]);
 		$this->assertFalse($rResult['ok']);
 		$this->assertStringStartsWith('cannot write ' . $this->rBase . 'bin/nginx/conf/' . ClusterNginxConfig::LISTEN, $rResult['error']);

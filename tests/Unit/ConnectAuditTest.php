@@ -385,7 +385,7 @@ final class ConnectAuditTest extends TestCase {
 			$this->rDir . 'sql_audit/' . $rDay . '.json' => $rSafe . 'counts', // none there: root would make it
 			$this->rDir . 'sql_audit/' . $rDay . '.ndjson' => $rSafe . 'log', // root would append to it
 			$this->rDir . 'misses/' . $rDay . '.json' => $rSafe . 'misses',
-			$this->rDir . 'cluster/audit.json.' . getmypid() . '.tmp' => $rSafe . 'report', // root would overwrite and hand it over
+			$this->rDir . 'cluster/audit.json' => $rSafe . 'report', // the rename replaces the link, never writes through it
 		];
 		foreach ($rLinks as $rLink => $rTarget) {
 			@mkdir(dirname($rLink), 0750);

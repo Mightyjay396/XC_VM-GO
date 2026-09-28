@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -272,9 +273,6 @@ final class HlsReaping {
 		if ($rPath === null) {
 			return;
 		}
-		$rTmp = $rPath . '.tmp';
-		if (@file_put_contents($rTmp, json_encode($rState)) !== false) {
-			@rename($rTmp, $rPath);
-		}
+		AtomicFile::write($rPath, (string) json_encode($rState));
 	}
 }

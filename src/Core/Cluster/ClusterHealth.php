@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Util\AtomicFile;
+
 /**
  * Liveness of the nodes whose telemetry is authoritative, as MAIN's liveness
  * loop last judged it (`tmp/cluster/health.json`, written by
@@ -97,10 +99,7 @@ final class ClusterHealth {
 			@mkdir(dirname($rPath), 0750, true);
 		}
 		$rDoc = ['states' => $rStates, 'guard' => $rGuard, 'ok_since' => $rOkSince, 'reasons' => self::reasons($rGuard, $rReasons), 'ctl_queue' => $rCtlQueue, 'ctl_queue_hold' => $rCtlQueueHold];
-		$rTmp = $rPath . '.tmp';
-		if (@file_put_contents($rTmp, (string) json_encode($rDoc), LOCK_EX) !== false) {
-			@rename($rTmp, $rPath);
-		}
+		AtomicFile::write($rPath, (string) json_encode($rDoc));
 		self::$rCache = $rDoc;
 		self::$rReadAt = microtime(true);
 	}
