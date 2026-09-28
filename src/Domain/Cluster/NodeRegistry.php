@@ -65,11 +65,12 @@ final class NodeRegistry {
 	 * the previous generation stops working, drops what the cluster bus still
 	 * holds of it (its heartbeats, and the row and epochs its requests were
 	 * authenticated with), and announces the new key to the other nodes
-	 * (ReplicaBuilder::nodesChanged).
+	 * (ReplicaBuilder::nodesChanged). $rFlows are the flow bits it starts
+	 * with (none, but for a node enrolled straight into mode 2).
 	 *
 	 * @return array{gen: int} The generation the first token must carry.
 	 */
-	public static function startEnrolment(int $rServerID, string $rUuid, string $rSignPub, string $rBoxPub, int $rMode, ?ClusterCrypto $rCrypto = null): array {
+	public static function startEnrolment(int $rServerID, string $rUuid, string $rSignPub, string $rBoxPub, int $rMode, ?ClusterCrypto $rCrypto = null, int $rFlows = 0): array {
 		$rNow = ClusterClock::now();
 		$rExisting = self::byServer($rServerID);
 		$rGen = $rExisting ? (int) $rExisting['gen'] + 1 : 1;
@@ -84,7 +85,7 @@ final class NodeRegistry {
 			$rUuid,
 			'enrolling',
 			$rMode,
-			0,
+			$rFlows,
 			$rGen,
 			$rSignPub,
 			$rBoxPub,

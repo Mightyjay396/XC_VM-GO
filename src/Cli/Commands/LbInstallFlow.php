@@ -3,6 +3,8 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Core\Cluster\AgentPaths;
+use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\CredentialFreeConfig;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\RootPin;
@@ -139,8 +141,16 @@ class LbInstallFlow {
 	 *
 	 * @return bool True on success; on failure marks the server as errored (status 4).
 	 */
-	public static function provisionConfig($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db): bool {
+	public static function provisionConfig($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?bool $rApiMode = null): bool {
 		echo "Generating configuration file\n";
+		$rApiMode ??= self::apiMode(SettingsManager::getAll());
+		if ($rApiMode && !CredentialFreeConfig::supported()) {
+			// Refused before anything is written: an older extension would pack
+			// MAIN's credentials into a node meant never to hold them.
+			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
+			echo "lb_new_node_mode is api, but this panel's xcvm_core cannot pack a configuration without MAIN's credentials (it needs install_config). Update the extension, or install the node in legacy mode. Exiting\n";
+			return false;
+		}
 
 		// Generate the node's install_id AS root. At this point in the flow the
 		// bundled PHP under bin/ is still root-owned (ownership is handed to
@@ -170,8 +180,9 @@ class LbInstallFlow {
 		}
 
 		// Pack config.enc targeted at the node's install_id. Credentials are
-		// read from MAIN's config.enc inside the extension, never exposed here.
-		$rBlob = \XC_VM::config_pack($rInstallId, self::configPackParams($rServers, $rServerID));
+		// read from MAIN's config.enc inside the extension, never exposed here;
+		// in API mode there are none (CredentialFreeConfig).
+		$rBlob = $rApiMode ? CredentialFreeConfig::pack($rInstallId, self::configPackParams($rServers, $rServerID)) : \XC_VM::config_pack($rInstallId, self::configPackParams($rServers, $rServerID));
 		if (empty($rBlob)) {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
 			echo "Failed to pack node configuration! Exiting\n";
@@ -202,6 +213,15 @@ class LbInstallFlow {
 		call_user_func($rRunSSH, $rConn, 'sudo chmod 600 ' . CONFIG_PATH . 'config.enc');
 
 		return true;
+	}
+
+	/**
+	 * Is this install in API mode? (ClusterSettings::newNodesInApiMode)
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function apiMode(array $rSettings): bool {
+		return ClusterSettings::newNodesInApiMode($rSettings);
 	}
 
 	/**
@@ -499,13 +519,6 @@ class LbInstallFlow {
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return true;
 		}
-		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
-			$rCrypto = ClusterCli::crypto("Cluster API unavailable (%s); the node stays legacy\n");
-			if ($rCrypto === null) {
-				return true;
-			}
-		}
-		echo "Enrolling the node in the cluster API\n";
 		$rFail = static function (string $rWhy) use ($db, $rServerID, $rMarkFailed): bool {
 			if ($rMarkFailed) {
 				$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
@@ -513,10 +526,23 @@ class LbInstallFlow {
 			echo $rWhy . "\n";
 			return false;
 		};
+		// An API-mode node holds no DB grant and no credentials: without its
+		// enrolment it could reach nothing, so it never "stays legacy".
+		$rApiMode = self::apiMode($rSettings);
+		if (!$rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {
+			$rCrypto = ClusterCli::crypto($rApiMode ? "Cluster API unavailable (%s)\n" : "Cluster API unavailable (%s); the node stays legacy\n");
+			if ($rCrypto === null) {
+				return $rApiMode ? $rFail('An API-mode node cannot run without the cluster API. Exiting') : true;
+			}
+		}
+		echo "Enrolling the node in the cluster API\n";
 
 		$rArch = ReleaseAsset::arch((string) call_user_func($rRunSSH, $rConn, 'uname -m')['output']);
 		$rLocal = $rArch === null ? null : call_user_func($rAgentBinary ?? static fn(string $rA) => AgentBinaryCommand::cached($rA), $rArch);
 		if ($rLocal === null) {
+			if ($rApiMode) {
+				return $rFail('No xc_agent for this node (' . ($rArch ?? 'unsupported arch') . '): an API-mode node cannot run without it. Exiting');
+			}
 			echo 'No xc_agent for this node (' . ($rArch ?? 'unsupported arch') . "); the node stays legacy and can be enrolled later\n";
 			return true;
 		}

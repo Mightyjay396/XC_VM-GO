@@ -47,8 +47,9 @@ final class EnrolmentService {
 
 	/**
 	 * Start an enrolment, as both paths do (install, and an approved code):
-	 * the node's mode from `lb_new_node_mode`, a new generation with these
-	 * keys, and epoch 1's token sealed to the agent's ephemeral key.
+	 * the node's mode from `lb_new_node_mode` (mode 2, `api`, with the flows
+	 * mode 2 needs), a new generation with these keys, and epoch 1's token
+	 * sealed to the agent's ephemeral key.
 	 *
 	 * The caller writes the `node.enrol_start` audit event: the install path
 	 * right after this, the code path only once the approval is signed and
@@ -59,7 +60,10 @@ final class EnrolmentService {
 	 */
 	public static function begin(ClusterCrypto $rCrypto, int $rServerID, string $rNodeUuid, string $rSignPub, string $rBoxPub, string $rAgentEphPub, array $rSettings): array {
 		$rMode = ClusterSettings::enum('lb_new_node_mode', $rSettings['lb_new_node_mode'] ?? null) === 'api' ? 2 : 1;
-		$rGen = NodeRegistry::startEnrolment($rServerID, $rNodeUuid, $rSignPub, $rBoxPub, $rMode, $rCrypto)['gen'];
+		// A node born in mode 2 has no DB grant and no credentials to fall back
+		// on: every flow but the data plane is on from its first hello, as the
+		// mode gate asks of a promoted one (ClusterAdmin::MODE2_FLOWS).
+		$rGen = NodeRegistry::startEnrolment($rServerID, $rNodeUuid, $rSignPub, $rBoxPub, $rMode, $rCrypto, $rMode === 2 ? ClusterAdmin::MODE2_FLOWS : 0)['gen'];
 		$rIssued = TokenService::issue($rCrypto, (array) NodeRegistry::byServer($rServerID), 1, $rAgentEphPub);
 		return [$rGen, $rIssued, $rMode];
 	}

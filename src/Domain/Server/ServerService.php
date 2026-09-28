@@ -4,6 +4,7 @@ namespace XcVm\Domain\Server;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Config\SettingsManager;
@@ -339,7 +340,9 @@ class ServerService {
 
 		$rInsertID = $db->last_insert_id();
 		EventDispatcher::dispatch(new ServerSavedEvent([(int) $rInsertID]));
-		if ($rArray['server_type'] == 0) {
+		// An LB installed in API mode never gets MAIN's database (plan, section
+		// 10): no grant, and a credential-free config.enc (LbInstallFlow).
+		if ($rArray['server_type'] == 0 && !ClusterSettings::newNodesInApiMode(SettingsManager::getAll())) {
 			BackupService::grantPrivileges($rArray['server_ip']);
 		}
 

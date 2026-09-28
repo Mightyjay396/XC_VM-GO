@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Backup\BackupService;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Proxy\ProxyArchiveUpdater;
@@ -225,7 +226,7 @@ class ServerInstallCommand implements CommandInterface {
 			$rServices = LbInstallFlow::configureRuntime($rConn, $rSendFileSSH, $rRunSSH, $rServers, $rServerID);
 		}
 
-		$this->finalizeHostAfterRuntime($rConn, $rRunSSH, $rHost);
+		$this->finalizeHostAfterRuntime($rConn, $rRunSSH, $rHost, !($rType == 2 && ClusterSettings::newNodesInApiMode(SettingsManager::getAll())));
 
 		if ($rType == 2) {
 			LbInstallFlow::runStartup($rConn, $rRunSSH);
@@ -298,7 +299,8 @@ class ServerInstallCommand implements CommandInterface {
 		call_user_func($rRunSSH, $rConn, 'sudo systemctl enable xc_vm');
 	}
 
-	private function finalizeHostAfterRuntime($rConn, callable $rRunSSH, string $rHost): void {
+	/** $rGrant false: a load balancer installed in API mode, which never gets MAIN's database. */
+	private function finalizeHostAfterRuntime($rConn, callable $rRunSSH, string $rHost, bool $rGrant = true): void {
 		$rSystemConf = call_user_func($rRunSSH, $rConn, 'sudo cat "/etc/systemd/system.conf"')['output'];
 		if (strpos($rSystemConf, 'DefaultLimitNOFILE=1048576') === false) {
 			call_user_func($rRunSSH, $rConn, LbInstallFlow::sudoWrite("\n" . 'DefaultLimitNOFILE=1048576', '/etc/systemd/system.conf', true));
@@ -317,7 +319,9 @@ class ServerInstallCommand implements CommandInterface {
 		call_user_func($rRunSSH, $rConn, 'sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'tmp');
 		call_user_func($rRunSSH, $rConn, 'sudo chown -R xc_vm:xc_vm ' . MAIN_HOME . 'content/streams');
 		call_user_func($rRunSSH, $rConn, 'sudo chown -R xc_vm:xc_vm ' . MAIN_HOME);
-		BackupService::grantPrivileges($rHost);
+		if ($rGrant) {
+			BackupService::grantPrivileges($rHost);
+		}
 		echo "Installation complete! Starting XC_VM\n";
 		call_user_func($rRunSSH, $rConn, 'sudo service xc_vm restart');
 	}
