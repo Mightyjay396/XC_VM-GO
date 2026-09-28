@@ -22,7 +22,8 @@ use XcVm\Core\Auth\Authorization;
  *   - $permission 'adv' sub-permission needed to see the tab and to have its
  *                 fields accepted; null = anyone who may edit streams.
  *   - $validate   fn(array $fields, ?array $stream): ?string — an error message
- *                 (shown as is) to refuse the save, or null.
+ *                 (shown as is) to refuse the save, or null. Runs only when
+ *                 the tab's fields were posted (not for an API save or import).
  *
  * @package XC_VM_Core_Module
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -68,8 +69,10 @@ final class StreamFormRegistry {
 	 * @param array|null           $rStream The stream row when editing.
 	 */
 	public static function validate(array $rPosted, ?array $rStream): ?string {
-		foreach (self::tabs() as $rID => $rTab) {
-			$rError = self::runValidator($rTab['validate'], $rPosted[$rID] ?? [], $rStream);
+		// Only tabs whose fields were posted: an API save or an import carries none,
+		// and must not be refused by a tab the admin never saw.
+		foreach (array_intersect_key(self::tabs(), $rPosted) as $rID => $rTab) {
+			$rError = self::runValidator($rTab['validate'], $rPosted[$rID], $rStream);
 			if ($rError !== null) {
 				return $rError;
 			}

@@ -62,8 +62,15 @@ final class StreamFormRegistryTest extends TestCase {
 		self::tab('ok', null, static fn(array $f, ?array $s): ?string => null);
 		self::tab('picky', null, static fn(array $f, ?array $s): ?string => ($f['q'] ?? '') === '' ? 'Pick a quality' : null);
 		self::tab('plain');
-		$this->assertSame('Pick a quality', StreamFormRegistry::validate([], null));
+		$this->assertSame('Pick a quality', StreamFormRegistry::validate(['ok' => [], 'picky' => []], null));
 		$this->assertNull(StreamFormRegistry::validate(['picky' => ['q' => 'hd']], null));
+	}
+
+	/** An API save or an import posts no module fields: no tab may refuse it. */
+	public function testTabWithoutPostedFieldsIsNotValidated(): void {
+		self::tab('picky', null, static fn(array $f, ?array $s): ?string => 'Pick a quality');
+		$this->assertNull(StreamFormRegistry::validate([], null));
+		$this->assertSame('Pick a quality', StreamFormRegistry::validate(['picky' => []], null));
 	}
 
 	public function testValidatorSeesTheStreamWhenEditing(): void {

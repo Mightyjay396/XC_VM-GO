@@ -408,8 +408,10 @@ public function onStreamSaved(StreamSavedEvent $event): void {
 - **`render`** returns the pane's HTML. `$stream` is the stream row when editing and
   `null` when adding. The tab is not shown on the import form, and mass edit has no
   module tabs.
-- **`validate`** runs before anything is written. Returning a string refuses the save,
-  and the form shows that text as is, so translate it yourself.
+- **`validate`** runs before anything is written, and only when the tab's fields were
+  posted: an API save or an import that carries none is never refused by it. Returning
+  a string refuses the save, and the form shows that text as is, so translate it
+  yourself.
 - **`StreamSavedEvent`** is dispatched once per save, after every row is written. It
   carries:
   - `streamIds`;
