@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Util\Encryption;
 
@@ -21,6 +22,12 @@ if (!defined('SERVER_ID')) {
 }
 
 if (empty($rSettings['live_streaming_pass'])) {
+	generate404();
+}
+
+// As segment.php: past the lease's window and its drain, this node hands out no
+// more decryption keys either (NodeLease).
+if (NodeLease::refusesEverything($rSettings)) {
 	generate404();
 }
 

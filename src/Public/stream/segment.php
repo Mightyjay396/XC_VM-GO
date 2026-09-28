@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Util\Encryption;
 use XcVm\Streaming\AsyncFileOperations;
@@ -28,6 +29,12 @@ if (!defined('SERVER_ID')) {
 }
 
 if (empty($rSettings['live_streaming_pass'])) {
+	generate404();
+}
+
+// Past the lease's window and its drain (NodeLease): the sessions that were
+// running when it ended stop here, where each of their segments is asked for.
+if (NodeLease::refusesEverything($rSettings)) {
 	generate404();
 }
 
