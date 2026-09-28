@@ -2,6 +2,7 @@
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
+use XcVm\Core\Module\ImportSourceRegistry;
 use XcVm\Core\Reference\LocaleReference;
 use XcVm\Core\Util\LayoutRenderer;
 use XcVm\Domain\Bouquet\BouquetService;
@@ -89,7 +90,10 @@ if (RequestManager::has('post_data')) {
         }
     }
 } else {
-    if (!isset($_FILES['m3u_file'])) {
+    // A module import kind (live streams) lists its channels instead of an M3U file.
+    $rImportKind = $rType == 1 ? (string) RequestManager::get('import_kind') : '';
+    $rImportKind = isset(ImportSourceRegistry::kinds()[$rImportKind]) ? $rImportKind : '';
+    if (!isset($_FILES['m3u_file']) && $rImportKind === '') {
     } else {
         unset(RequestManager::getAll()['submit_stream']);
         $rPostData = base64_encode(json_encode(RequestManager::getAll()));
@@ -109,7 +113,17 @@ if (RequestManager::has('post_data')) {
         }
         $rStreamDatabase = array();
 
-        if (empty($_FILES['m3u_file']['tmp_name']) || !in_array(strtolower(pathinfo($_FILES['m3u_file']['name'], PATHINFO_EXTENSION)), array('m3u', 'm3u8'))) {
+        if ($rImportKind !== '') {
+            $rListed = ImportSourceRegistry::rows($rImportKind, RequestManager::getAll(), $rSources, (bool) RequestManager::get('duplicates'));
+            $rImport = $rListed['rows'];
+            if ($rListed['truncated']) {
+                $_STATUS = STATUS_TOO_MANY_RESULTS;
+            }
+            if (count($rImport) == 0) {
+                $_STATUS = STATUS_NO_SOURCES;
+                $rImport = null;
+            }
+        } elseif (empty($_FILES['m3u_file']['tmp_name']) || !in_array(strtolower(pathinfo($_FILES['m3u_file']['name'], PATHINFO_EXTENSION)), array('m3u', 'm3u8'))) {
             $_STATUS = STATUS_INVALID_FILE;
         } else {
             $rImport = array();
@@ -351,6 +365,23 @@ $rBackHref   = $rType == 1 ? 'streams' : 'movies';
             <div class="card-body">
                 <div class="tab-content p-0">
                     <div class="tab-pane fade show active" id="tab-options" role="tabpanel">
+                        <?php $rImportKinds = $rType == 1 ? ImportSourceRegistry::kinds() : array(); ?>
+                        <?php if ($rImportKinds): ?>
+                            <div class="row mb-6">
+                                <div class="col-md-6">
+                                    <label class="form-label" for="import_kind"><?= $language::get('import_source'); ?></label>
+                                    <select name="import_kind" id="import_kind" class="form-select">
+                                        <option value=""><?= $language::get('m3u_file'); ?></option>
+                                        <?php foreach ($rImportKinds as $rKey => $rKind): ?>
+                                            <option value="<?= $rKey; ?>"><?= htmlspecialchars($rKind['label'], ENT_QUOTES); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                            </div>
+                            <?php foreach ($rImportKinds as $rKey => $rKind): ?>
+                                <div class="mb-6 d-none" data-import-kind="<?= $rKey; ?>"><?= ($rKind['render'])(); ?></div>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
                         <div class="row mb-6">
                             <div class="col-md-6">
                                 <div class="form-check form-switch">
@@ -358,7 +389,7 @@ $rBackHref   = $rType == 1 ? 'streams' : 'movies';
                                     <label class="form-check-label" for="duplicates"><?= $language::get('show_potential_duplicates') ?: 'Show Potential Duplicates'; ?> <i class="icon-base ti tabler-help-circle text-muted" title="<?= $language::get('this_option_will_remove_all_tooltip'); ?>"></i></label>
                                 </div>
                             </div>
-                            <div class="col-md-6">
+                            <div class="col-md-6" id="m3u_file_col">
                                 <label class="form-label" for="m3u_file"><?= $language::get('m3u_file'); ?></label>
                                 <input type="file" class="form-control" id="m3u_file" name="m3u_file" accept=".m3u,.m3u8">
                             </div>
@@ -939,12 +970,19 @@ LayoutRenderer::renderFooter('admin');
                     evaluateDirectSource();
                 }
 
+                $('#import_kind').on('change', function() {
+                    var kind = $(this).val();
+                    $('[data-import-kind]').addClass('d-none');
+                    $('[data-import-kind="' + kind + '"]').removeClass('d-none');
+                    $('#m3u_file_col').toggleClass('d-none', kind !== '');
+                });
+
                 $('#stream_form').on('submit', function(e) {
                     if ($('#server_tree_data').length) {
                         $('#server_tree_data').val(JSON.stringify($('#server_tree').jstree(true).get_json('source', {
                             flat: true
                         })));
-                        if (!$('#m3u_file').val()) {
+                        if (!$('#import_kind').val() && !$('#m3u_file').val()) {
                             if (window.xcToast) {
                                 window.xcToast(lang.selectPlaylist, 'error');
                             } else {

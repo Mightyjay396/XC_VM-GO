@@ -259,8 +259,9 @@ class ModuleLoader {
 		$quickToolsRegistry = new QuickToolsRegistry();
 		QuickToolsRegistry::reset();
 
-		// Module tabs on the stream form (modules add them from boot()).
+		// Module stream-form tabs and import kinds (modules add them from boot()).
 		StreamFormRegistry::reset();
+		ImportSourceRegistry::reset();
 
 		foreach ($this->modules as $module) {
 			if ($module instanceof ServiceProviderInterface) {
