@@ -65,12 +65,12 @@ final class CacheJobs {
 				return $rIDs === [] ? null : ['type' => $rType, 'id' => $rIDs];
 		}
 		$rUUID = $rJob['uuid'] ?? null;
-		return is_string($rUUID) && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) ? ['type' => $rType, 'uuid' => $rUUID] : null;
+		return is_string($rUUID) && preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) ? ['type' => $rType, 'uuid' => $rUUID] : null;
 	}
 
 	/** An id in job()'s form (an integer ≥ 1, or its digits) as an integer; null for anything else. */
 	private static function id(mixed $rValue): ?int {
-		return (is_int($rValue) || (is_string($rValue) && preg_match('/^[0-9]{1,18}$/', $rValue))) && (int) $rValue > 0 ? (int) $rValue : null;
+		return (is_int($rValue) || (is_string($rValue) && preg_match('/^[0-9]{1,18}\z/', $rValue))) && (int) $rValue > 0 ? (int) $rValue : null;
 	}
 
 	/**

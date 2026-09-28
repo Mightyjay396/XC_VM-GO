@@ -38,7 +38,7 @@ final class RelayAuth {
 	 * @return array{ts_ms: int, nonce: string}|null The timestamp and nonce, for the window and replay checks.
 	 */
 	public static function verify(string $rChildSignPub, string $rHeader, string $rTicketWire, string $rMethod, string $rTarget, int $rNowMs): ?array {
-		if (!preg_match('/^([1-9][0-9]{12,15})\.([0-9a-f]{32})\.([A-Za-z0-9_-]{86})$/', $rHeader, $rM)) {
+		if (!preg_match('/^([1-9][0-9]{12,15})\.([0-9a-f]{32})\.([A-Za-z0-9_-]{86})\z/', $rHeader, $rM)) {
 			return null;
 		}
 		$rTs = (int) $rM[1];

@@ -67,7 +67,7 @@ final class RootPin {
 		}
 		$rPub = @hex2bin(trim((string) @file_get_contents($rDir . 'main_sign.pub')));
 		$rNode = trim((string) @file_get_contents($rDir . 'node'));
-		if ($rPub === false || strlen($rPub) !== 32 || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/', $rNode)) {
+		if ($rPub === false || strlen($rPub) !== 32 || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/', $rNode)) {
 			return null;
 		}
 		return ['pub' => $rPub, 'node' => $rNode];
@@ -94,8 +94,9 @@ final class RootPin {
 
 	/**
 	 * Check a command against the pin: panel signature (tag `cmd`), a
-	 * `node.root` for this node, a known action, not stale, and above root's
-	 * own high-water.
+	 * `node.root` for this node, a known action (the envelope's `action`, as
+	 * the extension classes it; none among the arguments), not stale, and
+	 * above root's own high-water.
 	 *
 	 * @param array{pub: string, node: string} $rPin
 	 * @return array<string, mixed>|string the command, or why it is refused
@@ -114,7 +115,7 @@ final class RootPin {
 		if ((int) ($rCmd['seq'] ?? 0) <= $rHighWater) {
 			return 'seq not above ' . $rHighWater;
 		}
-		if (!in_array($rCmd['args']['action'] ?? null, NodeActions::ROOT_ACTIONS, true)) {
+		if (!in_array($rCmd['action'] ?? null, NodeActions::ROOT_ACTIONS, true) || (is_array($rCmd['args'] ?? null) && array_key_exists('action', $rCmd['args']))) {
 			return 'unknown root action';
 		}
 		return $rCmd;

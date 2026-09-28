@@ -619,7 +619,7 @@ final class StreamRuntime {
 		$rOut = [];
 		foreach (glob(self::dir() . $rKind . '/*.json') ?: [] as $rFile) {
 			$rName = basename($rFile, '.json');
-			if (preg_match('/^[1-9][0-9]{0,9}$/', $rName)) {
+			if (preg_match('/^[1-9][0-9]{0,9}\z/', $rName)) {
 				$rOut[] = (int) $rName;
 			}
 		}

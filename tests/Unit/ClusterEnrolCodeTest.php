@@ -372,4 +372,10 @@ final class ClusterEnrolCodeTest extends TestCase {
 		$this->assertSame('revoked', \XcVm\Domain\Cluster\ClusterAdmin::nodes($rServers, 30)[0]['health']);
 		$this->assertSame('cluster_unknown_action', $rAct(['cluster_action' => 'x', 'server_id' => 5])['message']);
 	}
+
+	/** A MAIN URL with a trailing newline is refused (`$` would match before it). */
+	public function testAMainUrlWithATrailingNewlineIsRefused(): void {
+		$this->expectException(\InvalidArgumentException::class);
+		EnrolCodeService::generate($this->rCrypto, self::SID, "http://10.0.0.1:25461\n");
+	}
 }

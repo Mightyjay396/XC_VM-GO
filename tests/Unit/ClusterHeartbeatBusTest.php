@@ -87,9 +87,14 @@ final class ClusterHeartbeatBusTest extends TestCase {
 	private function newDb(): TestDb {
 		$rDb = new TestDb();
 		$rDb->exec((string) preg_replace(['/^--.*$/m', '/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)/', '/ unsigned| COLLATE \w+/', '/\) ENGINE=[^;]*;/'], ['', '', '', ');'], (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/029_create_cluster_nodes.sql')));
-		$rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `root_ready` tinyint(1) NOT NULL DEFAULT 0');
-		$rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `features` varchar(255) DEFAULT NULL');
-		$rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `arch` varchar(8) DEFAULT NULL');
+		// Every column the later migrations add (root_ready, features, audit,
+		// main_port, arch, …), so the fixture keeps up with the real table.
+		foreach (glob(dirname(__DIR__, 2) . '/src/migrations/database/up/*.sql') ?: [] as $rFile) {
+			preg_match_all('/^ALTER TABLE `cluster_nodes` ADD COLUMN (?:IF NOT EXISTS )?(`\w+` [^;]*?)(?: AFTER `\w+`)?;$/m', (string) file_get_contents($rFile), $rAdd);
+			foreach ($rAdd[1] as $rColumn) {
+				$rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN ' . preg_replace('/ unsigned| COLLATE \w+/', '', $rColumn));
+			}
+		}
 		$rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `server_name` varchar(64), `status` int NOT NULL DEFAULT 0, `watchdog_data` text, `last_check_ago` int DEFAULT 0, `requests_per_second` int DEFAULT 0, `php_pids` text, `connections` int DEFAULT 0, `users` int DEFAULT 0, `network_interface` varchar(32) DEFAULT NULL)');
 		$rDb->exec("INSERT INTO `servers` (`id`, `status`, `watchdog_data`, `network_interface`) VALUES (5, 0, '{\"cpu_average_array\":[10,20]}', 'auto'), (6, 0, NULL, 'auto'), (7, 0, NULL, 'auto')");
 		$rDb->exec('CREATE TABLE `lines_live` (`activity_id` INTEGER PRIMARY KEY, `user_id` int, `server_id` int, `hls_end` int DEFAULT 0)');

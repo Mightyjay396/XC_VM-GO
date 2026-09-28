@@ -28,7 +28,7 @@ final class DivergenceSink {
 	public const CHUNK = 1000;
 
 	/** What a viewer's uuid may be: the store's key, and `lines_divergence.uuid` is 32 wide. */
-	public const UUID = '/^[A-Za-z0-9_-]{1,32}$/';
+	public const UUID = '/^[A-Za-z0-9_-]{1,32}\z/';
 
 	/** The writers: the users cron's speed files, fanout_sync's daemon rates. */
 	public const WRITERS = ['cron', 'fanout'];

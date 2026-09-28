@@ -36,8 +36,14 @@ final class ClusterRootCommandTest extends TestCase {
 	}
 
 	private function command(int $rSeq, array $rOver = [], string $rTag = 'cmd'): array {
-		$rDoc = (string) json_encode($rOver + ['v' => 1, 'type' => 'node.root', 'exp' => 1800000600, 'iat' => 1800000000, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $rSeq, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => ['action' => 'reload_nginx']]);
+		$rDoc = (string) json_encode($rOver + ['v' => 1, 'type' => 'node.root', 'exp' => 1800000600, 'iat' => 1800000000, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $rSeq, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'action' => 'reload_nginx', 'args' => new \stdClass()]);
 		return ['doc' => $rDoc, 'sig' => Enc::b64url($this->rCrypto->sign($rTag, $rDoc))];
+	}
+
+	/** A document of the old shape (no top-level action), which the extension would not sign: signed with the raw key. */
+	private function rawCommand(int $rSeq, array $rOver): array {
+		$rDoc = (string) json_encode($rOver + ['v' => 1, 'type' => 'node.root', 'exp' => 1800000600, 'iat' => 1800000000, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $rSeq, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null]);
+		return ['doc' => $rDoc, 'sig' => Enc::b64url(\XcVm\Tests\Support\ClusterReference::panelSign($this->rCrypto->rSeed, 'cmd', $rDoc))];
 	}
 
 	private function inbox(int $rSeq, array $rCmd): void {
@@ -151,7 +157,11 @@ final class ClusterRootCommandTest extends TestCase {
 			'not root' => [$this->command(3, ['type' => 'node.rpc']), 2],
 			'stale' => [$this->command(3, ['exp' => 1799999000]), 2],
 			'replay' => [$this->command(3), 3],
-			'unknown action' => [$this->command(3, ['args' => ['action' => 'rm_rf']]), 2],
+			'unknown action' => [$this->command(3, ['action' => 'rm_rf']), 2],
+			// The action is the envelope's (the extension classes by it): one
+			// among the arguments as well, or instead, is refused.
+			'a second action among the arguments' => [$this->command(3, ['args' => ['action' => 'update']]), 2],
+			'the action among the arguments only' => [$this->rawCommand(3, ['args' => ['action' => 'reload_nginx']]), 2],
 		];
 		foreach ($rCases as $rName => [$rCmd, $rHigh]) {
 			$this->assertIsString(RootPin::verify($rPin, $rCmd['doc'], (string) Enc::b64urlDecode($rCmd['sig']), 1800000000, $rHigh), $rName);
@@ -165,7 +175,7 @@ final class ClusterRootCommandTest extends TestCase {
 			return "Reloading nginx...\n";
 		};
 		$this->inbox(1, $this->command(1));
-		$this->inbox(2, $this->command(2, ['args' => ['action' => 'update']]));
+		$this->inbox(2, $this->command(2, ['action' => 'update']));
 		$rDone = ClusterRootCommand::drain($rRun, 1800000000);
 		$this->assertSame(['reload_nginx', 'update'], $rRan);
 		$this->assertSame(2, RootPin::highWater());

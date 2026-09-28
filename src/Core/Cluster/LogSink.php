@@ -145,9 +145,11 @@ final class LogSink {
 			$rSql = 'INSERT ' . ($rIgnore ? 'IGNORE ' : '') . 'INTO `' . $rTable . '` (`' . implode('`,`', $rColumns) . '`) VALUES ' . implode(',', array_fill(0, count($rChunk), $rTuple)) . ';';
 			$rWritten = (bool) $rDb->query($rSql, ...$rParams);
 			// Viewer activity is also each line's "last seen": the rows and that
-			// update belong together, wherever they are written from.
+			// update belong together, wherever they are written from, and an
+			// update that failed fails the write (inside a node's event batch
+			// a deadlock on `lines` rolled back the batch's rows with it).
 			if ($rWritten && $rType === 'activity') {
-				self::lastActivity($rChunk, (int) $rDb->last_insert_id(), $rDb);
+				$rWritten = self::lastActivity($rChunk, (int) $rDb->last_insert_id(), $rDb);
 			}
 			$rOK = $rWritten && $rOK;
 		}
@@ -162,10 +164,11 @@ final class LogSink {
 	 * rebuilt for it (it holds none of these columns).
 	 *
 	 * @param list<array<string, mixed>> $rRows One chunk, as it was inserted.
+	 * @return bool False when the update failed.
 	 */
-	private static function lastActivity(array $rRows, int $rFirstID, object $rDb): void {
+	private static function lastActivity(array $rRows, int $rFirstID, object $rDb): bool {
 		if ($rFirstID <= 0) {
-			return;
+			return true;
 		}
 		$rLast = [];
 		foreach (array_values($rRows) as $i => $rRow) {
@@ -175,7 +178,7 @@ final class LogSink {
 			}
 		}
 		if ($rLast === []) {
-			return;
+			return true;
 		}
 		ksort($rLast);
 
@@ -188,7 +191,7 @@ final class LogSink {
 			$rArrays .= ' WHEN ' . $rUserID . ' THEN ?';
 			$rArrayParams[] = (string) json_encode(['date_end' => $rRow['date_end'] ?? null, 'stream_id' => $rRow['stream_id'] ?? null]);
 		}
-		$rDb->query(
+		return (bool) $rDb->query(
 			'UPDATE `lines` SET `last_ip` = CASE `id`' . $rIPs . ' END, `last_activity` = CASE `id`' . $rIDs
 			. ' END, `last_activity_array` = CASE `id`' . $rArrays . ' END, `updated` = `updated` WHERE `id` IN ('
 			. implode(',', array_keys($rLast)) . ');',

@@ -29,6 +29,15 @@ use XcVm\Infrastructure\Redis\RedisManager;
  * A node writes only its own connections: `server_id` is always the sender,
  * the line identity is recomputed from the record's owner, and a uuid another
  * node holds is refused.
+ *
+ * In an events batch a store that fails a read or a write throws rather
+ * than answer false: false is an event refused (dropped and counted, and the
+ * cursor moves on), while a failed statement may have taken the batch's
+ * whole transaction with it (a deadlock). The batch is not applied (503 DB)
+ * and the node sends it again. conn.divergence's read of the store is the
+ * one exception (below). A snapshot (ConnectionSnapshot) calls upsert() and
+ * remove() without $rFailBatch: a record MAIN cannot write is dropped there,
+ * and the digest check asks for another snapshot.
  */
 final class ConnectionIngest {
 	use DatabaseAware;
@@ -46,16 +55,17 @@ final class ConnectionIngest {
 	 * token's uuid MAIN reserved at mint as `adm_uuid`, released too.
 	 *
 	 * @param array<string, mixed> $rRecord
+	 * @param bool $rFailBatch A store that fails throws (an events batch), rather than answer false.
 	 */
-	public static function upsert(int $rServerID, array $rRecord): bool {
-		$rOk = self::write($rServerID, $rRecord);
+	public static function upsert(int $rServerID, array $rRecord, bool $rFailBatch = false): bool {
+		$rOk = self::write($rServerID, $rRecord, $rFailBatch);
 		if ($rOk) {
 			$rUUID = (string) ($rRecord['uuid'] ?? '');
 			$rIdentity = !empty($rRecord['user_id']) ? (string) (int) $rRecord['user_id'] : (int) ($rRecord['hmac_id'] ?? 0) . '_' . ($rRecord['hmac_identifier'] ?? '');
 			$rRedisMode = (bool) SettingsManager::get('redis_handler');
 			ConnectionAdmission::release($rRedisMode, $rIdentity, $rUUID);
 			$rReserved = $rRecord['adm_uuid'] ?? null;
-			if (is_string($rReserved) && $rReserved !== $rUUID && preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rReserved)) {
+			if (is_string($rReserved) && $rReserved !== $rUUID && preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rReserved)) {
 				ConnectionAdmission::release($rRedisMode, $rIdentity, $rReserved);
 			}
 		}
@@ -63,10 +73,10 @@ final class ConnectionIngest {
 	}
 
 	/** @param array<string, mixed> $rRecord */
-	private static function write(int $rServerID, array $rRecord): bool {
+	private static function write(int $rServerID, array $rRecord, bool $rFailBatch): bool {
 		$rRecord = array_filter(array_intersect_key($rRecord, array_flip(self::KEYS)), static fn($rValue) => is_scalar($rValue) || $rValue === null);
 		$rUUID = (string) ($rRecord['uuid'] ?? '');
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) || (empty($rRecord['user_id']) && empty($rRecord['hmac_id']))) {
+		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) || (empty($rRecord['user_id']) && empty($rRecord['hmac_id']))) {
 			return false;
 		}
 		$rRecord += ['user_id' => null, 'proxy_id' => null]; // the store reads both
@@ -84,13 +94,17 @@ final class ConnectionIngest {
 				if ((int) ($rExisting['server_id'] ?? 0) !== $rServerID) {
 					return false; // another node's connection
 				}
-				return ConnectionTracker::updateConnection($rExisting, $rRecord, $rRecord['hls_end'] ? 'close' : 'open') !== null;
+				$rWritten = ConnectionTracker::updateConnection($rExisting, $rRecord, $rRecord['hls_end'] ? 'close' : 'open') !== null;
+			} else {
+				$rWritten = (bool) ConnectionTracker::createConnection($rRecord);
 			}
-			return (bool) ConnectionTracker::createConnection($rRecord);
+			return $rWritten || self::failed($rFailBatch); // its EXEC failed
 		}
 
 		$rDb = self::db();
-		$rDb->query('SELECT `activity_id`, `server_id` FROM `lines_live` WHERE `uuid` = ?;', $rUUID);
+		if (!$rDb->query('SELECT `activity_id`, `server_id` FROM `lines_live` WHERE `uuid` = ?;', $rUUID)) {
+			return self::failed($rFailBatch); // unread, it would be inserted a second time
+		}
 		$rRow = $rDb->num_rows() > 0 ? $rDb->get_row() : null;
 		$rColumns = array_intersect_key($rRecord, array_flip(self::COLUMNS));
 		if ($rRow !== null) {
@@ -98,13 +112,16 @@ final class ConnectionIngest {
 				return false;
 			}
 			unset($rColumns['uuid']);
-			return (bool) $rDb->query('UPDATE `lines_live` SET ' . implode(', ', array_map(static fn($rColumn) => '`' . $rColumn . '` = ?', array_keys($rColumns))) . ' WHERE `activity_id` = ?;', ...array_values($rColumns), ...[(int) $rRow['activity_id']]);
+			$rWritten = $rDb->query('UPDATE `lines_live` SET ' . implode(', ', array_map(static fn($rColumn) => '`' . $rColumn . '` = ?', array_keys($rColumns))) . ' WHERE `activity_id` = ?;', ...array_values($rColumns), ...[(int) $rRow['activity_id']]);
+		} else {
+			$rWritten = $rDb->query('INSERT INTO `lines_live` (`' . implode('`,`', array_keys($rColumns)) . '`) VALUES(' . implode(',', array_fill(0, count($rColumns), '?')) . ');', ...array_values($rColumns));
 		}
-		return (bool) $rDb->query('INSERT INTO `lines_live` (`' . implode('`,`', array_keys($rColumns)) . '`) VALUES(' . implode(',', array_fill(0, count($rColumns), '?')) . ');', ...array_values($rColumns));
+		return $rWritten || self::failed($rFailBatch);
 	}
 
-	public static function remove(int $rServerID, string $rUUID): bool {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+	/** @param bool $rFailBatch A store that fails throws (an events batch), rather than answer false. */
+	public static function remove(int $rServerID, string $rUUID, bool $rFailBatch = false): bool {
+		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
 			return false;
 		}
 		if (SettingsManager::get('redis_handler')) {
@@ -119,9 +136,22 @@ final class ConnectionIngest {
 			if ((int) ($rExisting['server_id'] ?? 0) !== $rServerID) {
 				return false;
 			}
-			return ConnectionTracker::removeRecord($rRedis, $rExisting);
+			return ConnectionTracker::removeRecord($rRedis, $rExisting) || self::failed($rFailBatch); // its EXEC failed
 		}
-		return (bool) self::db()->query('DELETE FROM `lines_live` WHERE `uuid` = ? AND `server_id` = ?;', $rUUID, $rServerID);
+		return self::db()->query('DELETE FROM `lines_live` WHERE `uuid` = ? AND `server_id` = ?;', $rUUID, $rServerID) || self::failed($rFailBatch);
+	}
+
+	/**
+	 * A store that failed: in an events batch it fails the batch, elsewhere
+	 * (a snapshot's record) the record is not applied.
+	 *
+	 * @return false
+	 */
+	private static function failed(bool $rFailBatch): bool {
+		if ($rFailBatch) {
+			throw new \RuntimeException('store unavailable');
+		}
+		return false;
 	}
 
 	/**
@@ -132,13 +162,16 @@ final class ConnectionIngest {
 	 * gone and the node's registry already dropped it.
 	 */
 	public static function close(int $rServerID, string $rUUID): bool {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
 			return false;
 		}
 		if (SettingsManager::get('redis_handler')) {
 			$rRow = ConnectionTracker::getConnection($rUUID);
 		} else {
-			self::db()->query('SELECT * FROM `lines_live` WHERE `uuid` = ?;', $rUUID);
+			// Unread, the viewer would count as already closed.
+			if (!self::db()->query('SELECT * FROM `lines_live` WHERE `uuid` = ?;', $rUUID)) {
+				throw new \RuntimeException('store unavailable');
+			}
 			$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
 		}
 		if (!is_array($rRow)) {
@@ -164,7 +197,7 @@ final class ConnectionIngest {
 			isset($rRow['hmac_id']) ? (int) $rRow['hmac_id'] : null,
 			(string) ($rRow['hmac_identifier'] ?? '')
 		);
-		return self::remove($rServerID, $rUUID);
+		return self::remove($rServerID, $rUUID, true);
 	}
 
 	/**
@@ -177,7 +210,9 @@ final class ConnectionIngest {
 	 *
 	 * A store that cannot be read drops the event rather than failing the
 	 * batch: the next report comes within a minute, and the lane's logs are
-	 * not held up for it.
+	 * not held up for it. Any other failed statement fails the batch, as
+	 * every statement of it does: the node's bitrates (unread, every viewer
+	 * would be written as 0 % divergent) and both writes.
 	 *
 	 * @param array<string, mixed> $rData {rows: [{uuid, rate}, …]}
 	 */
@@ -201,7 +236,9 @@ final class ConnectionIngest {
 		$rDb = self::db();
 		$rStreamIDs = array_values(array_unique(array_column($rOwn, 0)));
 		$rExpected = [];
-		$rDb->query('SELECT `stream_id`, `bitrate` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', array_fill(0, count($rStreamIDs), '?')) . ');', $rServerID, ...$rStreamIDs);
+		if (!$rDb->query('SELECT `stream_id`, `bitrate` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` IN (' . implode(',', array_fill(0, count($rStreamIDs), '?')) . ');', $rServerID, ...$rStreamIDs)) {
+			throw new \RuntimeException('store unavailable'); // unread, every viewer would read as 0 % divergent
+		}
 		foreach ($rDb->get_rows() ?: [] as $rRow) {
 			$rExpected[(int) $rRow['stream_id']] = DivergenceSink::expected((int) $rRow['bitrate']);
 		}
@@ -214,14 +251,16 @@ final class ConnectionIngest {
 			}
 		}
 		if (!$rDb->query('REPLACE INTO `lines_divergence` (`uuid`, `divergence`) VALUES ' . implode(',', array_fill(0, count($rOwn), '(?, ?)')) . ';', ...$rParams)) {
-			return false;
+			throw new \RuntimeException('store unavailable');
 		}
 		if ($rLive !== []) {
 			$rCase = [];
 			foreach ($rLive as $rActivityID => $rDivergence) {
 				array_push($rCase, $rActivityID, $rDivergence);
 			}
-			$rDb->query('UPDATE `lines_live` SET `divergence` = CASE `activity_id`' . str_repeat(' WHEN ? THEN ?', count($rLive)) . ' ELSE `divergence` END WHERE `server_id` = ? AND `activity_id` IN (' . implode(',', array_fill(0, count($rLive), '?')) . ');', ...[...$rCase, $rServerID, ...array_keys($rLive)]);
+			if (!$rDb->query('UPDATE `lines_live` SET `divergence` = CASE `activity_id`' . str_repeat(' WHEN ? THEN ?', count($rLive)) . ' ELSE `divergence` END WHERE `server_id` = ? AND `activity_id` IN (' . implode(',', array_fill(0, count($rLive), '?')) . ');', ...[...$rCase, $rServerID, ...array_keys($rLive)])) {
+				throw new \RuntimeException('store unavailable');
+			}
 		}
 		return true;
 	}

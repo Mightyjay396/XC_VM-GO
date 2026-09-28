@@ -1017,7 +1017,7 @@ final class ClusterApiTest extends TestCase {
 		$rOne = $rOut['commands'][0];
 		$this->assertTrue(PanelSig::verify($this->rCrypto->info()['panel_sign_pub'], 'cmd', $rOne['doc'], (string) Enc::b64urlDecode($rOne['sig'])), 'panel-signed, tag cmd');
 		$rDoc = json_decode($rOne['doc'], true);
-		$this->assertSame(['node.rpc', 1, $this->rUuid, 1, $rCmd, ['action' => 'get_pids']], [$rDoc['type'], $rDoc['seq'], $rDoc['node_uuid'], $rDoc['gen'], $rDoc['cmd_id'], $rDoc['args']]);
+		$this->assertSame(['node.rpc', 'get_pids', 1, $this->rUuid, 1, $rCmd, []], [$rDoc['type'], $rDoc['action'], $rDoc['seq'], $rDoc['node_uuid'], $rDoc['gen'], $rDoc['cmd_id'], $rDoc['args']], 'the action is the envelope\'s, as the extension classes it');
 
 		// Nothing after the high-water.
 		[$rRes, $rCtx] = $this->call('commands', ['after_seq' => 1, 'wait_ms' => 0], 1, $rKeys);
@@ -1221,7 +1221,7 @@ final class ClusterApiTest extends TestCase {
 			$this->assertSame([self::SID], NodeCertbot::renewDue());
 			$rSent = $rRoot();
 			$this->assertCount(1, $rSent);
-			$this->assertSame(['action' => 'certbot_generate', 'domain' => ['node.example', 'www.node.example']], $rSent[0]['args'], 'names trimmed, the address left out');
+			$this->assertSame(['certbot_generate', ['domain' => ['node.example', 'www.node.example']]], [$rSent[0]['action'], $rSent[0]['args']], 'names trimmed, the address left out');
 
 			$this->rDb->query('UPDATE `servers` SET `certbot_ssl` = ? WHERE `id` = ?;', json_encode(['serial' => '0B', 'expiration' => $rNow + 30 * 86400]), self::SID);
 			$this->assertSame([], NodeCertbot::renewDue(), 'not due');
@@ -1299,7 +1299,7 @@ final class ClusterApiTest extends TestCase {
 			$this->assertSame('Certificate renewal sent to server ' . self::SID . '.' . "\n", $rRun(false));
 			$rSent = $rRoot();
 			$this->assertCount(1, $rSent);
-			$this->assertSame(['action' => 'certbot_generate', 'domain' => ['node.example']], $rSent[0]['args']);
+			$this->assertSame(['certbot_generate', ['domain' => ['node.example']]], [$rSent[0]['action'], $rSent[0]['args']]);
 			$this->assertSame([true, false, false, false], $rCron->rChecks, 'its own certificate first, each run');
 		} finally {
 			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
@@ -1497,7 +1497,7 @@ final class ClusterApiTest extends TestCase {
 			$this->assertSame(1, (int) NodeRegistry::byServer(self::SID)['root_ready']);
 			$this->assertSame([true, true], \XcVm\Domain\Cluster\ClusterRoute::root(self::SID, ['action' => 'reload_nginx']));
 			$rDoc = json_decode(\XcVm\Domain\Cluster\CommandBus::pending(self::SID, 0)[0]['doc'], true);
-			$this->assertSame(['node.root', ['action' => 'reload_nginx']], [$rDoc['type'], $rDoc['args']]);
+			$this->assertSame(['node.root', 'reload_nginx', []], [$rDoc['type'], $rDoc['action'], $rDoc['args']]);
 			$this->assertSame(86400, $rDoc['exp'] - $rDoc['iat'], 'root commands live a day');
 		} finally {
 			\XcVm\Domain\Cluster\ClusterRoute::useCrypto(null);
@@ -2322,8 +2322,8 @@ final class ClusterApiTest extends TestCase {
 	 */
 	public function testTheClusterEntryPointStampsTheVersionsOfWhatItsOpsChange(): void {
 		$rIndex = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/cluster/index.php');
-		$rSubscribe = strpos($rIndex, "\nEventDispatcher::subscribe(StreamVersions::class);\n");
-		$rHandle = strpos($rIndex, '$rEmit(ClusterApi::handle($rCrypto, $rReq, $rSettings, $rMain));');
+		$rSubscribe = strpos($rIndex, "\n\tEventDispatcher::subscribe(StreamVersions::class);\n");
+		$rHandle = strpos($rIndex, '$rEmit(ClusterApi::serve($rCrypto, $rReq, $rSettings, $rMain));');
 		$this->assertNotFalse($rSubscribe);
 		$this->assertNotFalse($rHandle);
 		$this->assertLessThan($rHandle, $rSubscribe);
@@ -2821,5 +2821,178 @@ final class ClusterApiTest extends TestCase {
 		$this->rMain = [];
 		$this->assertSame('active', $this->served('heartbeat', [], 1, $rKeys)['state']);
 		$this->assertSame([], $this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys)['commands']);
+	}
+
+	// ── Regressions: seq floor, enrol race, session record, failures, anchors ─
+
+	/**
+	 * An ack lost for longer than its command lived: the row is pruned, yet
+	 * the node ran the command and raised its high-water. The next command
+	 * must take a seq above it, or the long-poll (seq > after_seq) never
+	 * hands it out.
+	 */
+	public function testACommandWhoseAckWasLostPastItsLifeNeverLendsItsSeqAgain(): void {
+		$rKeys = $this->active();
+		$rBus = \XcVm\Domain\Cluster\CommandBus::class;
+		$rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_pids']);
+		$this->assertSame([1], array_column($this->served('commands', ['after_seq' => 0, 'wait_ms' => 0], 1, $rKeys)['commands'], 'seq'));
+		$this->assertSame(1, (int) NodeRegistry::byServer(self::SID)['cmd_seq'], 'handed out: the floor is past it before any ack');
+		// The node runs it (its high-water is now 1); the ack never arrives.
+		ClusterClock::fix($this->rT0 + 601000);
+		$rBus::prune();
+		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_commands`');
+		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'pruned');
+		$rCmd = $rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_pids']);
+		$rOut = $this->served('commands', ['after_seq' => 1, 'wait_ms' => 0], 1, $rKeys)['commands'];
+		$this->assertCount(1, $rOut, 'delivered above the node\'s high-water');
+		$this->assertSame([2, $rCmd], [$rOut[0]['seq'], json_decode($rOut[0]['doc'], true)['cmd_id']]);
+	}
+
+	/**
+	 * The high-water the node reports on each poll is recorded too (a
+	 * command handed out before MAIN kept the floor at delivery), but never
+	 * past the highest seq MAIN issued it.
+	 */
+	public function testTheHighWaterANodeReportsIsKeptUpToTheHighestSeqIssued(): void {
+		$rKeys = $this->active();
+		$rBus = \XcVm\Domain\Cluster\CommandBus::class;
+		$rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_pids']);
+		$rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_free_space']);
+		// Delivered by a MAIN that did not keep the floor: the node holds 2.
+		$rBus::pending(self::SID, 0);
+		$this->assertSame(0, (int) NodeRegistry::byServer(self::SID)['cmd_seq']);
+		$this->assertSame([], $this->served('commands', ['after_seq' => 2, 'wait_ms' => 0], 1, $rKeys)['commands']);
+		$this->assertSame(2, (int) NodeRegistry::byServer(self::SID)['cmd_seq'], 'its high-water, from the poll');
+		$this->served('commands', ['after_seq' => PHP_INT_MAX, 'wait_ms' => 0], 1, $rKeys);
+		$this->assertSame(2, (int) NodeRegistry::byServer(self::SID)['cmd_seq'], 'no further than MAIN issued');
+		$this->served('commands', ['after_seq' => 1, 'wait_ms' => 0], 1, $rKeys);
+		$this->assertSame(2, (int) NodeRegistry::byServer(self::SID)['cmd_seq'], 'never lowered');
+		$rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_pids']);
+		$this->served('commands', ['after_seq' => PHP_INT_MAX, 'wait_ms' => 0], 1, $rKeys);
+		$this->assertSame(3, (int) NodeRegistry::byServer(self::SID)['cmd_seq'], 'a larger high-water raises it to the cap');
+		ClusterClock::fix($this->rT0 + 601000);
+		$rBus::prune();
+		$rBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_pids']);
+		$this->assertSame([4], array_column($rBus::pending(self::SID, 3), 'seq'));
+	}
+
+	/** A revocation that lands while enrol_complete runs keeps its row: the node is refused, not activated and announced. */
+	public function testARevocationDuringEnrolCompleteIsNotOverwritten(): void {
+		$rFirst = $this->enrol();
+		$rTok = $this->openToken($rFirst['token_sealed'], $this->rEph[1]);
+		$rLog = new QueryLogDb($this->rDb);
+		$rRevoked = false;
+		$rLog->rBefore = function (string $rQuery, array $rArgs) use (&$rRevoked): void {
+			if (!$rRevoked && str_starts_with($rQuery, 'UPDATE `cluster_nodes` SET `state` = ?') && ($rArgs[0] ?? null) === 'active') {
+				// The admin revokes the node after its state was read.
+				$rRevoked = true;
+				$this->assertTrue(NodeRegistry::revoke(self::SID, $this->rCrypto));
+			}
+		};
+		DatabaseFactory::set($rLog);
+		[$rRes, , $rReq] = $this->call('enrol_complete', ['instance_id' => 'inst-a'], 1, $rTok['keys']);
+		$this->assertTrue($rRevoked);
+		$this->assertSame(2, $this->denial($rRes, 403, 'NODE_REVOKED', $rReq)['revoked_gen']);
+		$this->assertSame('revoked', NodeRegistry::byServer(self::SID)['state']);
+		$this->rDb->query("SELECT COUNT(*) AS `n` FROM `cluster_audit` WHERE `event` = 'node.enrol_complete'");
+		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'not recorded as enrolled');
+	}
+
+	/** A re-enrolment's new row (next gen) that lands meanwhile is not activated by the old agent. */
+	public function testAReEnrolmentDuringEnrolCompleteKeepsTheNewRow(): void {
+		$rFirst = $this->enrol();
+		$rTok = $this->openToken($rFirst['token_sealed'], $this->rEph[1]);
+		$rOld = NodeRegistry::byServer(self::SID);
+		$rLog = new QueryLogDb($this->rDb);
+		$rReEnrolled = false;
+		$rLog->rBefore = function (string $rQuery, array $rArgs) use (&$rReEnrolled, $rOld): void {
+			if (!$rReEnrolled && str_starts_with($rQuery, 'UPDATE `cluster_nodes` SET `state` = ?') && ($rArgs[0] ?? null) === 'active') {
+				// The admin re-enrols the server after the old row was read.
+				$rReEnrolled = true;
+				$rPair = sodium_crypto_sign_keypair();
+				NodeRegistry::startEnrolment(self::SID, $this->rUuid, sodium_crypto_sign_publickey($rPair), sodium_crypto_scalarmult_base(random_bytes(32)), (int) $rOld['mode'], $this->rCrypto);
+			}
+		};
+		DatabaseFactory::set($rLog);
+		[$rRes, , $rReq] = $this->call('enrol_complete', ['instance_id' => 'inst-a'], 1, $rTok['keys']);
+		$this->assertTrue($rReEnrolled);
+		$this->assertSame('enrolling', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state']);
+		$rNew = NodeRegistry::byServer(self::SID);
+		$this->assertSame('enrolling', $rNew['state'], 'the new generation still waits for its own agent');
+		$this->assertSame((int) $rOld['gen'] + 1, (int) $rNew['gen']);
+		$this->assertNull($rNew['instance_id']);
+		$this->rDb->query("SELECT COUNT(*) AS `n` FROM `cluster_audit` WHERE `event` = 'node.enrol_complete'");
+		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'not recorded as enrolled');
+	}
+
+	/** The server and epoch the extension-sealed record names must be the row's and the request's. */
+	public function testASessionRecordForAnotherServerOrEpochOpensNoSession(): void {
+		$rKeys = $this->active();
+		$rEph = random_bytes(32);
+		[$rRes, $rCtx] = $this->call('token_refresh', ['eph_pub' => base64_encode(sodium_crypto_scalarmult_base($rEph))], 1, $rKeys);
+		$rTok2 = $this->openToken((string) base64_decode($this->reply($rRes, $rCtx, $rKeys)['token_sealed']), $rEph);
+
+		// Epoch 2's record under epoch 1's number: its keys would sign for epoch 1.
+		$this->rDb->query('SELECT `record` FROM `cluster_node_epochs` WHERE `server_id` = 5 AND `epoch` = 2');
+		$rRecord2 = $this->rDb->get_row()['record'];
+		$this->rDb->query('SELECT `record` FROM `cluster_node_epochs` WHERE `server_id` = 5 AND `epoch` = 1');
+		$rRecord1 = $this->rDb->get_row()['record'];
+		$this->rDb->query('UPDATE `cluster_node_epochs` SET `record` = ? WHERE `server_id` = 5 AND `epoch` = 1', $rRecord2);
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rTok2['keys']);
+		$this->assertSame('RECORD', $this->denial($rRes, 401, 'TOKEN_EXPIRED', $rReq)['detail']);
+		$this->rDb->query('UPDATE `cluster_node_epochs` SET `record` = ? WHERE `server_id` = 5 AND `epoch` = 1', $rRecord1);
+		$this->assertSame('active', $this->served('heartbeat', [], 1, $rKeys)['state'], 'its own record opens');
+
+		// The node's rows moved to another server.
+		$this->rDb->query('UPDATE `cluster_nodes` SET `server_id` = 6 WHERE `server_id` = 5');
+		$this->rDb->query('UPDATE `cluster_node_epochs` SET `server_id` = 6 WHERE `server_id` = 5');
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame('RECORD', $this->denial($rRes, 401, 'TOKEN_EXPIRED', $rReq)['detail']);
+	}
+
+	/**
+	 * What handle() throws (here the extension refusing to sign even the
+	 * denial: its clock) is logged, and answered with an unsigned 503 that
+	 * names nothing of it: the agent takes it as a transport error.
+	 */
+	public function testAThrowingRequestIsLoggedAndAnsweredWithAnUnsigned503(): void {
+		$rLogFile = sys_get_temp_dir() . '/cluster-api-log-' . bin2hex(random_bytes(4)) . '.log';
+		\XcVm\Core\Logging\FileLogger::setLogFile($rLogFile);
+		try {
+			$rCrypto = new class extends FakeClusterCrypto {
+				public function sign(string $rTag, string $rPayload): string {
+					throw new \XcVm\Core\Cluster\Crypto\ClusterRefusedException('CLOCK', 'cluster_sign');
+				}
+			};
+			$rRes = ClusterApi::serve($rCrypto, ['method' => 'POST', 'path' => '/cluster/v1/heartbeat', 'headers' => []], $this->rSettings, $this->rMain);
+			$this->assertSame(503, $rRes['status']);
+			$this->assertArrayNotHasKey('X-XCVM-Panel-Sig', $rRes['headers']);
+			$this->assertSame(['v' => 1, 'reason' => 'ERROR'], json_decode($rRes['body'], true), 'nothing of the throwable');
+			$rLine = json_decode((string) base64_decode(trim((string) file_get_contents($rLogFile))), true);
+			$this->assertSame('cluster', $rLine['type']);
+			$this->assertStringContainsString('/cluster/v1/heartbeat failed (refused: CLOCK)', $rLine['message']);
+
+			// A request that goes through is served as handle() serves it.
+			$this->assertSame(200, ClusterApi::serve($this->rCrypto, ['method' => 'GET', 'path' => '/cluster/v1/health', 'headers' => []], [], [])['status']);
+		} finally {
+			\XcVm\Core\Logging\FileLogger::setLogFile(null);
+			@unlink($rLogFile);
+		}
+		$rIndex = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/cluster/index.php');
+		$this->assertStringNotContainsString('ClusterApi::handle(', $rIndex, 'the entry point serves every op through serve()');
+		$this->assertStringContainsString('$rEmit(ClusterApi::failed($rReq[\'path\'], $rE));', $rIndex, 'and answers what throws around it by failed()');
+	}
+
+	/** A hex or uuid field with a trailing newline is not that field (`$` would match before it). */
+	public function testATrailingNewlineIsNotAValidIdOrHash(): void {
+		$rKeys = $this->active();
+		$rCmd = \XcVm\Domain\Cluster\CommandBus::enqueue($this->rCrypto, self::SID, 'node.rpc', ['action' => 'get_pids']);
+		[$rRes, , $rReq] = $this->call('ack', ['cmd_id' => $rCmd . "\n", 'ok' => true], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+		[$rRes, , $rReq] = $this->call('config', ['have' => ['settings' => str_repeat('ab', 32) . "\n"]], 1, $rKeys);
+		$this->denial($rRes, 400, 'BAD_REQUEST', $rReq);
+		$this->assertFalse(EnrolmentService::validUuid($this->rUuid . "\n"));
+		$this->assertFalse(Canonical::validNode($this->rUuid . "\n"));
+		$this->assertTrue(EnrolmentService::validUuid($this->rUuid));
 	}
 }

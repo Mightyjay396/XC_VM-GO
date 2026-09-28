@@ -9,6 +9,8 @@ use XcVm\Core\Cluster\LogSink;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Cluster\Redactor;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Events\EventDispatcher;
+use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Domain\Stream\StreamProcess;
@@ -77,6 +79,9 @@ final class EventIngest {
 
 	private static ?string $rLockDir = null;
 
+	/** @var list<callable(): mixed> What the batch being applied runs once it committed (afterCommit()). */
+	private static array $rAfterCommit = [];
+
 	/**
 	 * What runs when an event changed a stream's routing state (tests; by
 	 * default StreamProcess::updateStream, the cache signal the node used to
@@ -131,7 +136,14 @@ final class EventIngest {
 			if ($rFirst <= $rCursor) {
 				$rEvents = array_slice($rEvents, $rCursor - $rFirst + 1); // p1: the part already applied
 			}
-			$rTx = method_exists($rDb, 'beginTransaction') && $rDb->beginTransaction();
+			// The batch and its cursor commit together or not at all: without
+			// a transaction a batch that failed half way would keep its first
+			// half, and the node would send all of it again.
+			$rTx = method_exists($rDb, 'beginTransaction');
+			self::$rAfterCommit = [];
+			if ($rTx && !$rDb->beginTransaction()) {
+				throw new \RuntimeException('cannot start the batch\'s transaction');
+			}
 			try {
 				$rApplied = 0;
 				$rDropped = 0;
@@ -146,18 +158,25 @@ final class EventIngest {
 				// was not written (the connection dropped mid-batch, taking
 				// the transaction with it) fails the batch, and the node sends
 				// it again instead of moving on past events MAIN never kept.
+				// So does a commit that failed.
 				if (!$rDb->query('UPDATE `cluster_nodes` SET `' . $rColumn . '` = ? WHERE `server_id` = ? AND `' . $rColumn . '` < ?;', $rLast, $rServerID, $rLast)) {
 					throw new \RuntimeException('cannot advance the node\'s cursor');
 				}
-				if ($rTx) {
-					$rDb->commit();
+				if ($rTx && !$rDb->commit()) {
+					throw new \RuntimeException('cannot commit the batch');
 				}
 			} catch (\Throwable $rE) {
+				self::$rAfterCommit = []; // nothing of the batch was kept: nothing follows it
 				if ($rTx) {
-					$rDb->rollback();
+					try {
+						$rDb->rollback();
+					} catch (\Throwable) {
+						// MySQL already rolled it back (a deadlock): the batch's own failure stands.
+					}
 				}
 				throw $rE;
 			}
+			self::afterBatch();
 			return ['ok' => true, 'useq' => $rLast, 'applied' => $rApplied, 'dropped' => $rDropped];
 		} finally {
 			if ($rLock !== null) {
@@ -197,6 +216,51 @@ final class EventIngest {
 	}
 
 	/**
+	 * One statement of a P0 or P1 batch; the batch fails when it does (503
+	 * DB, and the node sends it again). Database::query() answers a failed
+	 * statement with false, and a deadlock rolls back the batch's whole
+	 * transaction: the statements after it would autocommit, the cursor
+	 * among them, and the events applied before it would be lost for good.
+	 * A statement that failed is therefore never an event refused (dropped
+	 * and counted). A read the event depends on is checked too, or its
+	 * failure would read as "not the node's" and drop the event.
+	 */
+	private static function run(string $rSql, mixed ...$rArgs): object {
+		$rDb = self::db();
+		if (!$rDb->query($rSql, ...$rArgs)) {
+			throw new \RuntimeException('a statement of the batch failed');
+		}
+		return $rDb;
+	}
+
+	/**
+	 * What an event writes besides its own rows: its audit line, the
+	 * blocklist's change log, the stream's cache signal, a finished
+	 * recording's stream versions (StreamVersions). Each swallows its
+	 * own failure so the request it describes goes on, which inside the
+	 * batch's transaction would hide a deadlock that rolled the whole batch
+	 * back (run()). They run once the batch committed, outside it: one that
+	 * fails then costs only itself, and a batch that failed leaves none of
+	 * them behind (they follow when the node sends it again).
+	 */
+	private static function afterCommit(callable $rAction): void {
+		self::$rAfterCommit[] = $rAction;
+	}
+
+	/** Run what the batch that just committed deferred (afterCommit()). */
+	private static function afterBatch(): void {
+		$rActions = self::$rAfterCommit;
+		self::$rAfterCommit = [];
+		foreach ($rActions as $rAction) {
+			try {
+				$rAction();
+			} catch (\Throwable) {
+				// The batch is committed: nothing that follows it undoes that.
+			}
+		}
+	}
+
+	/**
 	 * The event types MAIN takes on P2, told to the agent at hello and in
 	 * every heartbeat (`p2_types`): it sends them there only while MAIN lists
 	 * them, and keeps the older way otherwise.
@@ -228,7 +292,7 @@ final class EventIngest {
 			$rData = is_array($rEvent) ? ($rEvent['d'] ?? null) : null;
 			$rUUID = is_array($rData) ? ($rData['uuid'] ?? null) : null;
 			$rRead = is_array($rData) ? ($rData['hls_last_read'] ?? null) : null;
-			if ($rLane !== 'p2' || ((int) $rNode['flows'] & $rFlow) === 0 || !is_int($rT) || $rT < 0 || !is_string($rUUID) || !preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID) || !is_int($rRead) || $rRead < 0) {
+			if ($rLane !== 'p2' || ((int) $rNode['flows'] & $rFlow) === 0 || !is_int($rT) || $rT < 0 || !is_string($rUUID) || !preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID) || !is_int($rRead) || $rRead < 0) {
 				$rDropped++;
 				continue;
 			}
@@ -269,9 +333,9 @@ final class EventIngest {
 			case 'vod.analysis':
 				return self::vodAnalysis($rServerID, $rData);
 			case 'conn.upsert':
-				return is_array($rData['record'] ?? null) && ConnectionIngest::upsert($rServerID, $rData['record']);
+				return is_array($rData['record'] ?? null) && ConnectionIngest::upsert($rServerID, $rData['record'], true);
 			case 'conn.remove':
-				return ConnectionIngest::remove($rServerID, (string) ($rData['uuid'] ?? ''));
+				return ConnectionIngest::remove($rServerID, (string) ($rData['uuid'] ?? ''), true);
 			case 'conn.close':
 				return ConnectionIngest::close($rServerID, (string) ($rData['uuid'] ?? ''));
 			case 'conn.limit':
@@ -287,7 +351,8 @@ final class EventIngest {
 				return self::nodeRow($rServerID, $rData, NodeStateSink::INVENTORY, ['time_offset' => (int) round(self::clockOffsetMs($rNode) / 1000)]);
 		}
 		// skip: the node dropped logs past its cap.
-		ClusterAudit::log('events.skip', $rServerID, ['count' => max(0, (int) ($rData['count'] ?? 0))], 'node');
+		$rCount = max(0, (int) ($rData['count'] ?? 0));
+		self::afterCommit(static fn() => ClusterAudit::log('events.skip', $rServerID, ['count' => $rCount], 'node'));
 		return true;
 	}
 
@@ -303,8 +368,8 @@ final class EventIngest {
 			}
 		}
 		if (isset($rData['ssid'])) {
-			self::db()->query('SELECT `stream_id` FROM `streams_servers` WHERE `server_stream_id` = ? AND `server_id` = ?;', (int) $rData['ssid'], $rServerID);
-			$rStreamID = self::db()->num_rows() > 0 ? (int) self::db()->get_row()['stream_id'] : 0;
+			$rDb = self::run('SELECT `stream_id` FROM `streams_servers` WHERE `server_stream_id` = ? AND `server_id` = ?;', (int) $rData['ssid'], $rServerID);
+			$rStreamID = $rDb->num_rows() > 0 ? (int) $rDb->get_row()['stream_id'] : 0;
 			if ($rStreamID <= 0) {
 				return false; // another node's row
 			}
@@ -314,7 +379,7 @@ final class EventIngest {
 			$rStreamID = (int) $rData['stream_id'];
 		}
 		if (!StreamRowMerge::mergeNode($rServerID, $rStreamID, $rFields, self::db())) {
-			return false;
+			throw new \RuntimeException('a statement of the batch failed'); // its UPDATE, as run() fails it
 		}
 		if (array_diff(array_keys($rFields), self::CACHE_NEUTRAL) !== []) {
 			self::streamChanged($rStreamID);
@@ -336,8 +401,8 @@ final class EventIngest {
 		if ($rStreamID <= 0 || !is_array($rState) || empty($rState['supervised'])) {
 			return false;
 		}
-		self::db()->query('SELECT `stream_id`, `pid`, `monitor_pid`, `stream_status`, `current_source`, `stream_started`, `stream_info`, `audio_codec`, `video_codec`, `resolution`, `bitrate`, `compatible` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` = ?;', $rServerID, $rStreamID);
-		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		$rDb = self::run('SELECT `stream_id`, `pid`, `monitor_pid`, `stream_status`, `current_source`, `stream_started`, `stream_info`, `audio_codec`, `video_codec`, `resolution`, `bitrate`, `compatible` FROM `streams_servers` WHERE `server_id` = ? AND `stream_id` = ?;', $rServerID, $rStreamID);
+		$rRow = $rDb->num_rows() > 0 ? $rDb->get_row() : null;
 		if ($rRow === null || (is_null($rRow['monitor_pid']) && is_null($rRow['pid']) && intval($rRow['stream_status']) === 0)) {
 			return false;
 		}
@@ -346,7 +411,7 @@ final class EventIngest {
 			return true;
 		}
 		if (!StreamRowMerge::mergeNode($rServerID, $rStreamID, $rSet, self::db())) {
-			return false;
+			throw new \RuntimeException('a statement of the batch failed');
 		}
 		self::streamChanged($rStreamID);
 		return true;
@@ -368,16 +433,15 @@ final class EventIngest {
 			return false;
 		}
 		if (in_array($rIP, self::neverBlocked(), true)) {
-			ClusterAudit::log('security.block_ip_refused', $rServerID, ['ip' => $rIP], 'node');
+			self::afterCommit(static fn() => ClusterAudit::log('security.block_ip_refused', $rServerID, ['ip' => $rIP], 'node'));
 			return false;
 		}
-		$db = self::db();
-		$db->query('SELECT COUNT(*) AS `n` FROM `blocked_ips` WHERE `ip` = ?;', $rIP);
-		if ((int) ($db->get_row()['n'] ?? 0) === 0) {
-			$db->query('INSERT INTO `blocked_ips` (`ip`, `notes`, `date`) VALUES (?, ?, ?);', $rIP, $rReason, time());
-			BlocklistChanges::set('ip', [$rIP], $db);
+		if ((int) (self::run('SELECT COUNT(*) AS `n` FROM `blocked_ips` WHERE `ip` = ?;', $rIP)->get_row()['n'] ?? 0) === 0) {
+			self::run('INSERT INTO `blocked_ips` (`ip`, `notes`, `date`) VALUES (?, ?, ?);', $rIP, $rReason, time());
+			// Logged once the block committed: the daily full reload covers a change that could not be.
+			self::afterCommit(static fn() => BlocklistChanges::set('ip', [$rIP], self::db()));
 		}
-		ClusterAudit::log('security.block_ip', $rServerID, ['ip' => $rIP, 'reason' => $rReason], 'node');
+		self::afterCommit(static fn() => ClusterAudit::log('security.block_ip', $rServerID, ['ip' => $rIP, 'reason' => $rReason], 'node'));
 		return true;
 	}
 
@@ -401,7 +465,7 @@ final class EventIngest {
 		}
 		$rFields += $rExtra;
 		$rSet = implode(', ', array_map(static fn(string $rColumn): string => '`' . $rColumn . '` = ?', array_keys($rFields)));
-		self::db()->query('UPDATE `servers` SET ' . $rSet . ' WHERE `id` = ?;', ...[...array_values($rFields), $rServerID]);
+		self::run('UPDATE `servers` SET ' . $rSet . ' WHERE `id` = ?;', ...[...array_values($rFields), $rServerID]);
 		return true;
 	}
 
@@ -425,8 +489,8 @@ final class EventIngest {
 	/** @return list<string> the cluster's server addresses, their whitelists and the admin allowlist */
 	private static function neverBlocked(): array {
 		$rIPs = ['127.0.0.1', '::1'];
-		self::db()->query('SELECT `server_ip`, `private_ip`, `whitelist_ips` FROM `servers`;');
-		foreach (self::db()->get_rows() ?: [] as $rRow) {
+		// Unread, the list would miss the servers, and one could be blocked.
+		foreach (self::run('SELECT `server_ip`, `private_ip`, `whitelist_ips` FROM `servers`;')->get_rows() ?: [] as $rRow) {
 			$rIPs[] = (string) $rRow['server_ip'];
 			$rIPs[] = (string) $rRow['private_ip'];
 			$rWhitelist = json_decode((string) $rRow['whitelist_ips'], true);
@@ -447,11 +511,10 @@ final class EventIngest {
 			return false;
 		}
 		// Only for a stream whose worker runs on this node.
-		self::db()->query('SELECT COUNT(*) AS `n` FROM `streams` WHERE `id` = ? AND `' . $rWorker . '_server_id` = ?;', $rData['stream_id'], $rServerID);
-		if ((int) (self::db()->get_row()['n'] ?? 0) === 0) {
+		if ((int) (self::run('SELECT COUNT(*) AS `n` FROM `streams` WHERE `id` = ? AND `' . $rWorker . '_server_id` = ?;', $rData['stream_id'], $rServerID)->get_row()['n'] ?? 0) === 0) {
 			return false;
 		}
-		self::db()->query('UPDATE `streams` SET `' . $rWorker . '_pid` = ? WHERE `id` = ?;', $rData['pid'], $rData['stream_id']);
+		self::run('UPDATE `streams` SET `' . $rWorker . '_pid` = ? WHERE `id` = ?;', $rData['pid'], $rData['stream_id']);
 		self::streamChanged($rData['stream_id']);
 		return true;
 	}
@@ -464,13 +527,18 @@ final class EventIngest {
 			return false;
 		}
 		if ($rStatus === RecordingFinalizer::DONE) {
-			return RecordingFinalizer::finish($rID, $rServerID);
+			// A statement that failed throws, as run(). Its change is
+			// dispatched once the batch committed: StreamVersions' bump in
+			// the batch's transaction would hide a deadlock that rolled the
+			// whole batch back (afterCommit()).
+			return RecordingFinalizer::finish($rID, $rServerID, true, static function (StreamsChangedEvent $rEvent): void {
+				self::afterCommit(static fn() => EventDispatcher::dispatch($rEvent));
+			});
 		}
-		self::db()->query('SELECT COUNT(*) AS `n` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rID, $rServerID);
-		if ((int) (self::db()->get_row()['n'] ?? 0) === 0) {
+		if ((int) (self::run('SELECT COUNT(*) AS `n` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rID, $rServerID)->get_row()['n'] ?? 0) === 0) {
 			return false; // another node's recording
 		}
-		self::db()->query('UPDATE `recordings` SET `status` = ? WHERE `id` = ?;', $rStatus, $rID);
+		self::run('UPDATE `recordings` SET `status` = ? WHERE `id` = ?;', $rStatus, $rID);
 		return true;
 	}
 
@@ -482,23 +550,26 @@ final class EventIngest {
 			return false;
 		}
 		// Only a movie this node holds.
-		self::db()->query('SELECT `movie_properties` FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.`stream_id` = t1.`id` AND t2.`server_id` = ? WHERE t1.`id` = ? AND t1.`type` IN (2, 5);', $rServerID, $rStreamID);
-		if (self::db()->num_rows() === 0) {
+		$rDb = self::run('SELECT `movie_properties` FROM `streams` t1 INNER JOIN `streams_servers` t2 ON t2.`stream_id` = t1.`id` AND t2.`server_id` = ? WHERE t1.`id` = ? AND t1.`type` IN (2, 5);', $rServerID, $rStreamID);
+		if ($rDb->num_rows() === 0) {
 			return false;
 		}
-		$rCurrent = json_decode((string) self::db()->get_row()['movie_properties'], true);
+		$rCurrent = json_decode((string) $rDb->get_row()['movie_properties'], true);
 		$rMerged = array_replace(is_array($rCurrent) ? $rCurrent : [], $rProps);
-		self::db()->query('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?;', json_encode($rMerged, JSON_UNESCAPED_UNICODE), $rStreamID);
+		self::run('UPDATE `streams` SET `movie_properties` = ? WHERE `id` = ?;', json_encode($rMerged, JSON_UNESCAPED_UNICODE), $rStreamID);
 		self::streamChanged($rStreamID);
 		return true;
 	}
 
+	/** The stream's cache signal, once the batch committed (afterCommit()): the cache then reads what it kept. */
 	private static function streamChanged(int $rStreamID): void {
-		if (self::$rOnStreamChanged !== null) {
-			(self::$rOnStreamChanged)($rStreamID);
-			return;
-		}
-		StreamProcess::updateStream($rStreamID);
+		self::afterCommit(static function () use ($rStreamID): void {
+			if (self::$rOnStreamChanged !== null) {
+				(self::$rOnStreamChanged)($rStreamID);
+				return;
+			}
+			StreamProcess::updateStream($rStreamID);
+		});
 	}
 
 	/** @param array<string, mixed> $rData {rows} */
@@ -526,7 +597,7 @@ final class EventIngest {
 			$rClean[] = Redactor::redactRow($rRow);
 		}
 		if (!LogSink::insert($rType, $rClean, self::db())) {
-			return false;
+			throw new \RuntimeException('a statement of the batch failed'); // the rows are checked: its INSERT failed, or activity's UPDATE `lines`
 		}
 		if ($rType === 'ondemand_check') {
 			self::ondemandPointers($rServerID, $rClean, (int) self::db()->last_insert_id());
@@ -554,7 +625,7 @@ final class EventIngest {
 		}
 		ksort($rLast);
 		foreach ($rLast as $rStreamID => $rCheckID) {
-			self::db()->query('UPDATE `streams_servers` SET `ondemand_check` = ? WHERE `stream_id` = ? AND `server_id` = ?;', $rCheckID, $rStreamID, $rServerID);
+			self::run('UPDATE `streams_servers` SET `ondemand_check` = ? WHERE `stream_id` = ? AND `server_id` = ?;', $rCheckID, $rStreamID, $rServerID);
 		}
 	}
 

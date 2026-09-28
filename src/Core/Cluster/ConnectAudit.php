@@ -191,7 +191,7 @@ final class ConnectAudit {
 
 	/** Is $rKey a site key siteKey() makes (OTHER is not)? */
 	public static function isSite(string $rKey): bool {
-		return strlen($rKey) <= self::MAX_SITE_LEN && preg_match('/^(?:sql|redis) [\x20-\x7e]+$/', $rKey) === 1;
+		return strlen($rKey) <= self::MAX_SITE_LEN && preg_match('/^(?:sql|redis) [\x20-\x7e]+\z/', $rKey) === 1;
 	}
 
 	/**

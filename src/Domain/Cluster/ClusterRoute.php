@@ -5,7 +5,9 @@ namespace XcVm\Domain\Cluster;
 use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Logging\FileLogger;
 
 /**
  * Where MAIN's calls to a node go: the node's signed command channel when its
@@ -14,7 +16,14 @@ use XcVm\Core\Config\SettingsManager;
  * class is not in the build and they go legacy directly.
  *
  * Every method returns [routed, result]: routed false means "not a command
- * node, use the legacy path".
+ * node, use the legacy path". Routed with a false or null result means the
+ * command channel is this node's but the command was not queued: the
+ * extension refused to sign it (a granting command without a licence) or
+ * the database refused its row. The reason goes to the panel's error log
+ * (FileLogger, type `cluster`), and the legacy path is not tried: ADR 0004
+ * routes by the node's COMMANDS flow, not by an enqueue's outcome, a node in
+ * mode 2 reads no legacy row, and an unsigned legacy call would skip the
+ * licence gate the refusal enforces.
  */
 final class ClusterRoute {
 	/** @var (callable(): ClusterCrypto)|null */
@@ -33,7 +42,8 @@ final class ClusterRoute {
 		}
 		try {
 			$rCmdID = CommandBus::enqueue($rCrypto, $rServerID, 'node.rpc', $rData);
-		} catch (\Throwable) {
+		} catch (\Throwable $rE) {
+			self::unsent($rServerID, 'node.rpc', $rE);
 			return [true, null];
 		}
 		$rOutcome = CommandBus::await($rCmdID, max(1, $rTimeout));
@@ -54,7 +64,8 @@ final class ClusterRoute {
 		try {
 			CommandBus::enqueue($rCrypto, $rServerID, 'node.rpc', $rData);
 			return [true, true];
-		} catch (\Throwable) {
+		} catch (\Throwable $rE) {
+			self::unsent($rServerID, 'node.rpc', $rE);
 			return [true, false];
 		}
 	}
@@ -73,7 +84,8 @@ final class ClusterRoute {
 		try {
 			CommandBus::enqueue($rCrypto, $rServerID, 'conn.kill_worker', ['pid' => $rPID, 'rtmp' => $rRTMP]);
 			return [true, true];
-		} catch (\Throwable) {
+		} catch (\Throwable $rE) {
+			self::unsent($rServerID, 'conn.kill_worker', $rE);
 			return [true, false];
 		}
 	}
@@ -95,7 +107,8 @@ final class ClusterRoute {
 		try {
 			CommandBus::enqueue($rCrypto, $rServerID, 'token.rotate_now', [], 'token.rotate_now');
 			return [true, true];
-		} catch (\Throwable) {
+		} catch (\Throwable $rE) {
+			self::unsent($rServerID, 'token.rotate_now', $rE);
 			return [true, false];
 		}
 	}
@@ -108,7 +121,7 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool}
 	 */
 	public static function drop(int $rServerID, string $rUUID): array {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
 			return [false, false];
 		}
 		$rCrypto = self::target($rServerID);
@@ -118,7 +131,8 @@ final class ClusterRoute {
 		try {
 			CommandBus::enqueue($rCrypto, $rServerID, 'conn.drop', ['uuid' => $rUUID], 'drop:' . $rUUID);
 			return [true, true];
-		} catch (\Throwable) {
+		} catch (\Throwable $rE) {
+			self::unsent($rServerID, 'conn.drop', $rE);
 			return [true, false];
 		}
 	}
@@ -131,7 +145,7 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool}
 	 */
 	public static function closeConnection(int $rServerID, string $rUUID, bool $rRemove): array {
-		if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+		if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
 			return [false, false];
 		}
 		try {
@@ -149,7 +163,8 @@ final class ClusterRoute {
 		try {
 			CommandBus::enqueue($rCrypto, $rServerID, 'conn.close', ['uuid' => $rUUID, 'remove' => $rRemove], 'close:' . $rUUID);
 			return [true, true];
-		} catch (\Throwable) {
+		} catch (\Throwable $rE) {
+			self::unsent($rServerID, 'conn.close', $rE);
 			return [true, false];
 		}
 	}
@@ -194,7 +209,8 @@ final class ClusterRoute {
 				CommandBus::enqueue($rCrypto, $rServerID, 'node.cache', ['jobs' => $rCommand]);
 			}
 			return [true, true];
-		} catch (\Throwable) {
+		} catch (\Throwable $rE) {
+			self::unsent($rServerID, 'node.cache', $rE);
 			return [true, false];
 		}
 	}
@@ -221,9 +237,20 @@ final class ClusterRoute {
 			}
 			CommandBus::enqueue($rCrypto, $rServerID, 'node.root', $rPayload);
 			return [true, true];
-		} catch (\Throwable) {
+		} catch (\Throwable $rE) {
+			self::unsent($rServerID, 'node.root', $rE);
 			return [true, false];
 		}
+	}
+
+	/**
+	 * A command the node's channel did not take, and why (the extension's
+	 * refusal code, or the database's), in the panel's error log.
+	 */
+	private static function unsent(int $rServerID, string $rType, \Throwable $rE): void {
+		$rWhy = $rE instanceof ClusterRefusedException ? 'refused: ' . $rE->reason() : $rE->getMessage();
+		$rPrev = $rE->getPrevious();
+		FileLogger::log('cluster', 'Command ' . $rType . ' for server ' . $rServerID . ' not queued (' . $rWhy . ')', $rPrev !== null ? $rPrev->getMessage() : '');
 	}
 
 	/** Tests: supply the extension handle. Null restores the factory. */

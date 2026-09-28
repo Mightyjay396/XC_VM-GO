@@ -483,7 +483,7 @@ final class ClusterArtefactTest extends TestCase {
 		$rCommands = $this->commands($rKeys);
 		$this->assertSame(['node.root', 'node.root', 'node.root', 'node.root'], array_column($rCommands, 'type'));
 		[$rAgent, $rModule, $rStore, $rReload] = array_column($rCommands, 'args');
-		$this->assertSame(['agent_binary', 'amd64', '1.5.0'], [$rAgent['action'], $rAgent['arch'], $rAgent['version']]);
+		$this->assertSame(['agent_binary', 'amd64', '1.5.0'], [$rCommands[0]['action'], $rAgent['arch'], $rAgent['version']]);
 		$this->assertSame(['agent/amd64', 'xc_agent-linux-amd64', 9000, hash('sha256', $rBinary), $rCommands[0]['exp']], [$rAgent['artefact']['id'], $rAgent['artefact']['name'], $rAgent['artefact']['size'], $rAgent['artefact']['sha256'], $rAgent['artefact']['exp']]);
 		$this->assertSame(['module/radio/2.0.1', 702], [$rModule['artefact']['id'], $rModule['artefact']['size']]);
 		$this->assertArrayNotHasKey('artefact', $rStore, 'a store module comes from the platform, not MAIN');
@@ -507,7 +507,7 @@ final class ClusterArtefactTest extends TestCase {
 		$this->assertTrue(NodeActions::send(self::SID, ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '2.0.1']));
 		$rCommands = $this->commands($rKeys);
 		$this->assertCount(1, $rCommands);
-		$this->assertSame(['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '2.0.1'], $rCommands[0]['args'], 'as before: the node pulls the archive the legacy way');
+		$this->assertSame(['install_module', ['source' => 'local', 'name' => 'radio', 'version' => '2.0.1']], [$rCommands[0]['action'], $rCommands[0]['args']], 'as before: the node pulls the archive the legacy way');
 	}
 
 	/** A grant is a granting command: signed only under a licence, like every other. */

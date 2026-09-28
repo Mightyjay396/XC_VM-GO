@@ -82,7 +82,10 @@ final class ArtefactHashRefusalTest extends TestCase {
 
 	/** A command as the agent hands it on: the signed document, decoded, and its wire form. */
 	private function command(int $rSeq, string $rType, array $rArgs): array {
-		$rDoc = (string) json_encode(['v' => 1, 'type' => $rType, 'exp' => 1800003600, 'iat' => 1800000000, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $rSeq, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => $rArgs], JSON_UNESCAPED_SLASHES);
+		// A root action is the envelope's `action`, as CommandBus signs it.
+		$rAction = in_array($rType, \XcVm\Domain\Cluster\CommandBus::ACTION_TYPES, true) ? ['action' => $rArgs['action']] : [];
+		$rArgs = array_diff_key($rArgs, $rAction);
+		$rDoc = (string) json_encode(['v' => 1, 'type' => $rType] + $rAction + ['exp' => 1800003600, 'iat' => 1800000000, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $rSeq, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => (object) $rArgs], JSON_UNESCAPED_SLASHES);
 		return ['cmd' => json_decode($rDoc, true), 'wire' => ['doc' => $rDoc, 'sig' => Enc::b64url($this->rCrypto->sign('cmd', $rDoc))]];
 	}
 

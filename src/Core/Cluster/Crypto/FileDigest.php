@@ -18,7 +18,7 @@ namespace XcVm\Core\Cluster\Crypto;
  */
 final class FileDigest {
 	public static function document(string $rTid, int $rOwnerSid, int $rSize, string $rSha256Hex, int $rIat): string {
-		if (!preg_match('/^[0-9a-f]{64}$/', $rSha256Hex) || $rSize < 0 || $rOwnerSid <= 0) {
+		if (!preg_match('/^[0-9a-f]{64}\z/', $rSha256Hex) || $rSize < 0 || $rOwnerSid <= 0) {
 			throw new \InvalidArgumentException('file digest fields');
 		}
 		$rDoc = ['v' => 1, 'typ' => 'xcvm-file-digest', 'tid' => $rTid, 'owner_sid' => $rOwnerSid, 'size' => $rSize, 'sha256' => $rSha256Hex, 'iat' => $rIat];
@@ -54,7 +54,7 @@ final class FileDigest {
 		}
 		$rData = json_decode($rDoc, true);
 		if (!is_array($rData) || ($rData['v'] ?? null) !== 1 || ($rData['typ'] ?? null) !== 'xcvm-file-digest'
-			|| ($rData['tid'] ?? null) !== $rTid || !is_int($rData['size'] ?? null) || !preg_match('/^[0-9a-f]{64}$/', (string) ($rData['sha256'] ?? ''))
+			|| ($rData['tid'] ?? null) !== $rTid || !is_int($rData['size'] ?? null) || !preg_match('/^[0-9a-f]{64}\z/', (string) ($rData['sha256'] ?? ''))
 		) {
 			return null;
 		}

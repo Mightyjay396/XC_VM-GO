@@ -113,7 +113,7 @@ final class Canonical {
 
 	/** A node id as X-XCVM-Node may carry it. */
 	public static function validNode(string $rNode): bool {
-		return (bool) preg_match('/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|sid:[1-9][0-9]{0,9})$/', $rNode);
+		return (bool) preg_match('/^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|sid:[1-9][0-9]{0,9})\z/', $rNode);
 	}
 
 	/**
@@ -132,12 +132,12 @@ final class Canonical {
 		$rTs = $rGet(self::H_TS);
 		$rNonce = $rGet(self::H_NONCE);
 		$rSig = $rGet(self::H_SIG);
-		if ($rProto === null || !preg_match('/^[1-9][0-9]{0,3}$/', $rProto)
+		if ($rProto === null || !preg_match('/^[1-9][0-9]{0,3}\z/', $rProto)
 			|| $rNode === null || !self::validNode($rNode)
-			|| $rEpoch === null || !preg_match('/^(0|[1-9][0-9]{0,17})$/', $rEpoch)
-			|| $rTs === null || !preg_match('/^[1-9][0-9]{12,15}$/', $rTs)
-			|| $rNonce === null || !preg_match('/^[0-9a-f]{32}$/', $rNonce)
-			|| ($rSig !== null && !preg_match('/^[0-9a-f]{64}$/', $rSig))
+			|| $rEpoch === null || !preg_match('/^(0|[1-9][0-9]{0,17})\z/', $rEpoch)
+			|| $rTs === null || !preg_match('/^[1-9][0-9]{12,15}\z/', $rTs)
+			|| $rNonce === null || !preg_match('/^[0-9a-f]{32}\z/', $rNonce)
+			|| ($rSig !== null && !preg_match('/^[0-9a-f]{64}\z/', $rSig))
 		) {
 			return null;
 		}

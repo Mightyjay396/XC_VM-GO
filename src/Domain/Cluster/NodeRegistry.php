@@ -91,18 +91,31 @@ final class NodeRegistry {
 	 * cluster bus's copy may lag on were written (a heartbeat's, without the
 	 * bus's flusher).
 	 *
+	 * With $rWhere (column => value), only a row that still holds those
+	 * values is written, and the answer says whether it was: a change that
+	 * must not overwrite one made meanwhile (a revocation, or a re-enrolment's
+	 * new row). Otherwise the answer is true.
+	 *
 	 * @param array<string, mixed> $rFields
+	 * @param array<string, int|string> $rWhere
 	 */
-	public static function update(int $rServerID, array $rFields): void {
+	public static function update(int $rServerID, array $rFields, array $rWhere = []): bool {
 		if ($rFields === []) {
-			return;
+			return true;
 		}
 		$rFields['updated_at'] = ClusterClock::now();
 		$rSet = implode(', ', array_map(static fn($rKey) => '`' . $rKey . '` = ?', array_keys($rFields)));
-		self::db()->query('UPDATE `cluster_nodes` SET ' . $rSet . ' WHERE `server_id` = ?;', ...array_values($rFields), ...[$rServerID]);
+		if ($rWhere === []) {
+			self::db()->query('UPDATE `cluster_nodes` SET ' . $rSet . ' WHERE `server_id` = ?;', ...array_values($rFields), ...[$rServerID]);
+			$rWritten = true;
+		} else {
+			$rCond = implode('', array_map(static fn($rKey) => ' AND `' . $rKey . '` = ?', array_keys($rWhere)));
+			$rWritten = self::db()->query('UPDATE `cluster_nodes` SET ' . $rSet . ' WHERE `server_id` = ?' . $rCond . ';', ...array_values($rFields), ...[$rServerID], ...array_values($rWhere)) !== false && self::db()->num_rows() > 0;
+		}
 		if (NodeAuthCache::changes(array_keys($rFields))) {
 			NodeAuthCache::forget($rServerID);
 		}
+		return $rWritten;
 	}
 
 	/**

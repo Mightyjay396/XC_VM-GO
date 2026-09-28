@@ -6,7 +6,6 @@ use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\RootPin;
-use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseAsset;
@@ -57,6 +56,16 @@ class LbInstallFlow {
 		file_put_contents($rInstallDir . $rServerID . '.json', json_encode(['root_username' => $rUsername, 'ssh_port' => $rPort]));
 	}
 
+	/**
+	 * The shell line that writes $rText (and a newline) to $rPath as root
+	 * over SSH, appending when $rAppend. A `sudo echo` redirected to it runs
+	 * only the echo as root: the redirect is opened by the SSH user's shell,
+	 * so it fails unless that user is root. `tee` is what runs under sudo.
+	 */
+	public static function sudoWrite(string $rText, string $rPath, bool $rAppend = false): string {
+		return 'echo ' . escapeshellarg($rText) . ' | sudo tee ' . ($rAppend ? '-a ' : '') . escapeshellarg($rPath) . ' > /dev/null';
+	}
+
 	public static function installArchive($rConn, callable $rRunSSH, string $rInstallFiles, string $rHash, int $rServerID, $db): bool {
 		echo "Download archive\n";
 		call_user_func($rRunSSH, $rConn, 'wget --timeout=2 -O /tmp/XC_VM.tar.gz -o /dev/null "' . $rInstallFiles . '"');
@@ -90,8 +99,8 @@ class LbInstallFlow {
 
 		if (stripos(call_user_func($rRunSSH, $rConn, 'sudo cat /etc/fstab')['output'], STREAMS_PATH) === false) {
 			echo "Adding ramdisk mounts\n";
-			call_user_func($rRunSSH, $rConn, 'sudo echo "tmpfs ' . STREAMS_PATH . ' tmpfs defaults,noatime,nosuid,nodev,noexec,mode=1777,size=90% 0 0" >> /etc/fstab');
-			call_user_func($rRunSSH, $rConn, 'sudo echo "tmpfs ' . TMP_PATH . ' tmpfs defaults,noatime,nosuid,nodev,noexec,mode=1777,size=2G 0 0" >> /etc/fstab');
+			call_user_func($rRunSSH, $rConn, self::sudoWrite('tmpfs ' . STREAMS_PATH . ' tmpfs defaults,noatime,nosuid,nodev,noexec,mode=1777,size=90% 0 0', '/etc/fstab', true));
+			call_user_func($rRunSSH, $rConn, self::sudoWrite('tmpfs ' . TMP_PATH . ' tmpfs defaults,noatime,nosuid,nodev,noexec,mode=1777,size=2G 0 0', '/etc/fstab', true));
 		}
 
 		if (stripos(call_user_func($rRunSSH, $rConn, 'sudo cat /etc/sysctl.conf')['output'], 'XC_VM') === false) {
@@ -160,13 +169,7 @@ class LbInstallFlow {
 
 		// Pack config.enc targeted at the node's install_id. Credentials are
 		// read from MAIN's config.enc inside the extension, never exposed here.
-		$rBlob = \XC_VM::config_pack($rInstallId, [
-			'hostname'  => $rServers[SERVER_ID]['server_ip'],
-			'database'  => 'xc_vm',
-			'port'      => intval(ConfigReader::get('port')),
-			'server_id' => $rServerID,
-			'is_lb'     => 1,
-		]);
+		$rBlob = \XC_VM::config_pack($rInstallId, self::configPackParams($rServers, $rServerID));
 		if (empty($rBlob)) {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
 			echo "Failed to pack node configuration! Exiting\n";
@@ -200,6 +203,27 @@ class LbInstallFlow {
 	}
 
 	/**
+	 * The server parameters config_pack() builds the node's config.enc from:
+	 * MAIN's address for the node to reach the DB at, and the node's own
+	 * server_id and is_lb. There is no `port`: ConfigReader holds only the
+	 * `server` section (server_id, is_lb), so the DB port was always 0 there,
+	 * which config_pack() refuses. Without one, config_pack() packs its
+	 * documented default, 3306 (the extension's ADR-001) — the port the
+	 * installer runs MAIN's MariaDB on.
+	 *
+	 * @param array<int, array<string, mixed>> $rServers
+	 * @return array<string, mixed>
+	 */
+	public static function configPackParams(array $rServers, int $rServerID): array {
+		return [
+			'hostname'  => $rServers[SERVER_ID]['server_ip'],
+			'database'  => 'xc_vm',
+			'server_id' => $rServerID,
+			'is_lb'     => 1,
+		];
+	}
+
+	/**
 	 * Give the node the MAIN's OPENSSL_EXTRA, which keys the stream tokens MAIN
 	 * mints for the redirects the node serves.
 	 *
@@ -228,10 +252,10 @@ class LbInstallFlow {
 		call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/nginx/conf/realip_cdn.conf', MAIN_HOME . 'bin/nginx/conf/realip_cdn.conf', false);
 		call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/nginx/conf/realip_cloudflare.conf', MAIN_HOME . 'bin/nginx/conf/realip_cloudflare.conf', false);
 		call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/nginx/conf/realip_xc_vm.conf', MAIN_HOME . 'bin/nginx/conf/realip_xc_vm.conf', false);
-		call_user_func($rRunSSH, $rConn, 'sudo echo "" > "/home/xc_vm/bin/nginx/conf/limit.conf"');
-		call_user_func($rRunSSH, $rConn, 'sudo echo "" > "/home/xc_vm/bin/nginx/conf/limit_queue.conf"');
+		call_user_func($rRunSSH, $rConn, self::sudoWrite('', '/home/xc_vm/bin/nginx/conf/limit.conf'));
+		call_user_func($rRunSSH, $rConn, self::sudoWrite('', '/home/xc_vm/bin/nginx/conf/limit_queue.conf'));
 		$rIP = '127.0.0.1:' . $rServers[$rServerID]['http_broadcast_port'];
-		call_user_func($rRunSSH, $rConn, 'sudo echo "on_play http://' . $rIP . '/stream/rtmp; on_publish http://' . $rIP . '/stream/rtmp; on_play_done http://' . $rIP . '/stream/rtmp;" > "/home/xc_vm/bin/nginx_rtmp/conf/live.conf"');
+		call_user_func($rRunSSH, $rConn, self::sudoWrite('on_play http://' . $rIP . '/stream/rtmp; on_publish http://' . $rIP . '/stream/rtmp; on_play_done http://' . $rIP . '/stream/rtmp;', '/home/xc_vm/bin/nginx_rtmp/conf/live.conf'));
 		$rServices = (intval(call_user_func($rRunSSH, $rConn, 'sudo cat /proc/cpuinfo | grep "^processor" | wc -l')['output']) ?: 4);
 		call_user_func($rRunSSH, $rConn, 'sudo rm ' . MAIN_HOME . 'bin/php/etc/*.conf');
 		$rNewScript = '#! /bin/bash' . "\n";

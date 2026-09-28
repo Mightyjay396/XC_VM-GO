@@ -317,7 +317,7 @@ final class SettingsAudit {
 
 	/** A settings name, or OTHER. */
 	public static function name(string $rKey): string {
-		return preg_match('/^[a-z0-9_]{1,64}$/', $rKey) ? $rKey : self::OTHER;
+		return preg_match('/^[a-z0-9_]{1,64}\z/', $rKey) ? $rKey : self::OTHER;
 	}
 
 	/**

@@ -370,6 +370,42 @@ final class ClusterNonceStoreTest extends TestCase {
 		$this->assertFalse(NonceStore::consume('chal:node-a', $rLate), 'expired');
 	}
 
+	/**
+	 * A value MAIN made (a used challenge, the re-key minute) has no request
+	 * stamp to hold against a bus that lost its keys, so its claim is kept in
+	 * MySQL too: neither passes again after a restart or a flush within its
+	 * life.
+	 */
+	public function testValuesMainMadeOutliveABusThatLostItsKeys(): void {
+		$rRedis = $this->settledBus();
+		$rChallenge = random_bytes(16);
+		NonceStore::issue('chal:node-a', $rChallenge);
+		$this->assertTrue(NonceStore::consume('chal:node-a', $rChallenge));
+		$this->assertTrue($this->inMySql('used:chal:node-a', $rChallenge), 'its use is in MySQL, though the bus is settled');
+		$rSlot = random_bytes(16);
+		$this->assertTrue(NonceStore::claim('rekey:node-a', $rSlot));
+		$this->assertTrue($this->inMySql('rekey:node-a', $rSlot));
+		$this->assertFalse(NonceStore::claim('rekey:node-a', $rSlot), 'taken');
+
+		self::$rBus->restart();
+		ClusterBus::useSocket(self::$rBus->socket());
+		$this->assertSame(0, (int) ClusterBus::client()?->dbSize(), 'the restarted bus holds nothing');
+		$this->at(5000);
+		$this->assertFalse(NonceStore::consume('chal:node-a', $rChallenge), 'a used challenge stays used');
+		$this->assertFalse(NonceStore::claim('rekey:node-a', $rSlot), 'the minute stays taken');
+
+		// A bus emptied while running (FLUSHALL) is the same case.
+		$rRedis = ClusterBus::client();
+		$this->assertInstanceOf(\Redis::class, $rRedis);
+		$rRedis->set('nonces_since', (string) (self::T0 - 3600000));
+		$rOther = random_bytes(16);
+		NonceStore::issue('chal:node-a', $rOther);
+		$this->assertTrue(NonceStore::consume('chal:node-a', $rOther));
+		$rRedis->flushAll();
+		$this->at(6000);
+		$this->assertFalse(NonceStore::consume('chal:node-a', $rOther));
+	}
+
 	public function testWithoutTheBusMySqlIsPurged(): void {
 		NonceStore::claim('node-a', random_bytes(16), self::T0);
 		$this->at((NonceStore::TTL + 1) * 1000);

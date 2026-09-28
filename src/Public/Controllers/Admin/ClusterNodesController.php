@@ -44,14 +44,24 @@ class ClusterNodesController extends BaseAdminController {
 			}
 		}
 
-		$rOffline = max(10, min(300, intval($rSettings['cluster_offline_after_sec'] ?? 30)));
 		$this->render('cluster_nodes', [
 			'clusterEnabled' => $rEnabled && $rAvailable,
-			'clusterNodes' => ClusterAdmin::nodes($rServers, $rOffline),
+			'clusterNodes' => ClusterAdmin::nodes($rServers, self::offlineAfter($rSettings)),
 			'clusterPending' => ClusterAdmin::pending($rServers),
 			'clusterLbs' => ClusterAdmin::loadBalancers($rServers),
 			'clusterFlash' => $rFlash,
 			'clusterPanelFp' => $rEnabled && $rAvailable ? ClusterMeta::get('panel_fp') ?? '' : '',
 		]);
+	}
+
+	/**
+	 * Seconds without a heartbeat before a node shows offline: the setting,
+	 * 30 when it is unset or 0, kept within 10–300 — as the servers list, the
+	 * dashboard, the liveness tick and the endpoint's port check read it.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function offlineAfter(array $rSettings): int {
+		return max(10, min(300, intval($rSettings['cluster_offline_after_sec'] ?? 0) ?: 30));
 	}
 }

@@ -101,23 +101,58 @@ final class RecordingFinalizer {
 		return $rID;
 	}
 
-	/** The node converted the file: attach the VOD to it and mark the recording done. */
-	public static function finish(int $rRecordingID, int $rServerID): bool {
+	/**
+	 * The node converted the file: attach the VOD to it and mark the recording done.
+	 *
+	 * False when the recording is not the node's, has no VOD yet, or a
+	 * statement failed. With $rFailBatch (a node's `recording.state` event,
+	 * EventIngest) a failed statement throws instead: it runs inside the
+	 * event batch's transaction, which a deadlock rolled back whole, and the
+	 * batch then fails (503 DB) rather than counting the event as refused
+	 * while the statements after it autocommit.
+	 *
+	 * Its change (StreamsChangedEvent) goes to $rDispatch, by default
+	 * dispatched at once. The batch hands it on to after its commit
+	 * (EventIngest::afterCommit()): StreamVersions' bump would otherwise run
+	 * inside the batch's transaction, and a deadlock there rolls back the
+	 * batch's earlier events with it.
+	 *
+	 * @param (callable(StreamsChangedEvent): mixed)|null $rDispatch
+	 */
+	public static function finish(int $rRecordingID, int $rServerID, bool $rFailBatch = false, ?callable $rDispatch = null): bool {
 		$rDb = self::db();
-		$rDb->query('SELECT `created_id`, `stream_id` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rRecordingID, $rServerID);
+		if (!self::run($rDb, $rFailBatch, 'SELECT `created_id`, `stream_id` FROM `recordings` WHERE `id` = ? AND `source_id` = ?;', $rRecordingID, $rServerID)) {
+			return false;
+		}
 		$rRec = $rDb->num_rows() > 0 ? $rDb->get_row() : [];
 		$rCreated = (int) ($rRec['created_id'] ?? 0);
 		if ($rCreated <= 0) {
 			return false;
 		}
-		$rDb->query('SELECT COUNT(*) AS `n` FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` = ?;', $rCreated, $rServerID);
-		if ((int) ($rDb->get_row()['n'] ?? 0) === 0) {
-			$rDb->query('INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `pid`, `to_analyze`) VALUES(?, ?, NULL, 1, 1);', $rCreated, $rServerID);
+		if (!self::run($rDb, $rFailBatch, 'SELECT COUNT(*) AS `n` FROM `streams_servers` WHERE `stream_id` = ? AND `server_id` = ?;', $rCreated, $rServerID)) {
+			return false;
 		}
-		$rDb->query('UPDATE `recordings` SET `status` = ? WHERE `id` = ?;', self::DONE, $rRecordingID);
+		if ((int) ($rDb->get_row()['n'] ?? 0) === 0 && !self::run($rDb, $rFailBatch, 'INSERT INTO `streams_servers`(`stream_id`, `server_id`, `parent_id`, `pid`, `to_analyze`) VALUES(?, ?, NULL, 1, 1);', $rCreated, $rServerID)) {
+			return false;
+		}
+		if (!self::run($rDb, $rFailBatch, 'UPDATE `recordings` SET `status` = ? WHERE `id` = ?;', self::DONE, $rRecordingID)) {
+			return false;
+		}
 		// The node holds the VOD now, and the recording is done.
-		EventDispatcher::dispatch(new StreamsChangedEvent([$rCreated, (int) ($rRec['stream_id'] ?? 0)]));
+		$rEvent = new StreamsChangedEvent([$rCreated, (int) ($rRec['stream_id'] ?? 0)]);
+		$rDispatch !== null ? $rDispatch($rEvent) : EventDispatcher::dispatch($rEvent);
 		return true;
+	}
+
+	/** One statement of finish(): false when it failed, or with $rFailBatch a throw. */
+	private static function run(object $rDb, bool $rFailBatch, string $rSql, mixed ...$rArgs): bool {
+		if ($rDb->query($rSql, ...$rArgs)) {
+			return true;
+		}
+		if ($rFailBatch) {
+			throw new \RuntimeException('a statement of the batch failed');
+		}
+		return false;
 	}
 
 	/**

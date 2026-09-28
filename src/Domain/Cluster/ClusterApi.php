@@ -12,6 +12,7 @@ use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
 use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Logging\FileLogger;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Domain\Stream\RecordingFinalizer;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -143,6 +144,12 @@ final class ClusterApi {
 		if (!$rKeys instanceof \XcVm\Core\Cluster\Crypto\SessionKeys) {
 			return DenialFactory::deny($rCrypto, 401, 'TOKEN_EXPIRED', $rH['node'], $rH['nonce']);
 		}
+		// The extension-sealed record names its server and epoch: a row that
+		// pairs it with another (an epoch row moved to another node or number)
+		// opens no session, as a record for another node does not.
+		if ($rKeys->rServerID !== (int) $rNode['server_id'] || $rKeys->rEpoch !== $rH['epoch']) {
+			return self::refusal($rCrypto, 'RECORD', $rNode, $rH);
+		}
 
 		$rCtx = Canonical::request([
 			'proto' => $rH['proto'], 'agent' => $rH['agent'], 'method' => $rMethod, 'path' => $rPath,
@@ -155,7 +162,7 @@ final class ClusterApi {
 		}
 		if ($rNeedsNodeSig) {
 			$rNodeSig = self::header($rReq['headers'], Canonical::H_NODE_SIG);
-			$rSig = preg_match('/^[0-9a-f]{128}$/', $rNodeSig) ? (string) hex2bin($rNodeSig) : '';
+			$rSig = preg_match('/^[0-9a-f]{128}\z/', $rNodeSig) ? (string) hex2bin($rNodeSig) : '';
 			// The key comes from the extension-sealed epoch record, not the DB row.
 			if (!NodeSig::verify($rKeys->rNodeSignPub, 'request', $rCtx . hash('sha256', $rBody, true), $rSig)) {
 				return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
@@ -170,6 +177,41 @@ final class ClusterApi {
 		}
 		// hello, config, streams and conn_snapshot hold one of the op's bus permits.
 		return ClusterSemaphore::run($rCrypto, $rOp, $rH, static fn(): array => self::dispatch($rCrypto, $rOp, $rReq, $rSettings, $rMain, $rNode, $rKeys, $rCtx, $rH, $rBody));
+	}
+
+	/**
+	 * handle() for the HTTP shell (Public/cluster/index.php): whatever it
+	 * throws is answered by failed(), never by PHP's bare 500.
+	 *
+	 * @param array{method: string, path: string, query?: string, headers: array<string, string>, body?: string, ip?: string, https?: bool, port?: int} $rReq
+	 * @param array<string, mixed> $rSettings
+	 * @param array<string, mixed> $rMain
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	public static function serve(ClusterCrypto $rCrypto, array $rReq, array $rSettings, array $rMain): array {
+		try {
+			return self::handle($rCrypto, $rReq, $rSettings, $rMain);
+		} catch (\Throwable $rE) {
+			return self::failed((string) ($rReq['path'] ?? ''), $rE);
+		}
+	}
+
+	/**
+	 * A request MAIN failed to answer (the extension refusing to sign even a
+	 * denial, a TypeError from it, a lost connection): the throwable goes to
+	 * the panel's error log, and the agent gets an unsigned 503 that names
+	 * nothing of it, which it takes as a transport error and retries.
+	 *
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	public static function failed(string $rPath, \Throwable $rE): array {
+		try {
+			$rWhy = $rE instanceof ClusterRefusedException ? 'refused: ' . $rE->reason() : get_class($rE) . ': ' . $rE->getMessage();
+			FileLogger::log('cluster', 'Cluster API ' . substr(preg_replace('/[^\x21-\x7e]/', '', $rPath) ?? '', 0, 64) . ' failed (' . $rWhy . ')', $rE->getFile() . ':' . $rE->getLine());
+		} catch (\Throwable) {
+			// The reply goes out regardless.
+		}
+		return DenialFactory::unsigned(503, 'ERROR');
 	}
 
 	/** Does the op at this path read MAIN's `servers` row (the policy, the replica)? */
@@ -273,7 +315,11 @@ final class ClusterApi {
 		if ($rH['epoch'] !== 1 || ClusterClock::now() > (int) $rNode['enrol_deadline']) {
 			return DenialFactory::deny($rCrypto, 409, 'ENROL_EXPIRED', $rH['node'], $rH['nonce']);
 		}
-		NodeRegistry::update((int) $rNode['server_id'], [
+		// Only the row this request was authenticated against, still
+		// `enrolling`: a revocation, or a re-enrolment's new row (same server,
+		// next gen), that landed since it was read keeps its state, and the
+		// node is not announced.
+		$rActivated = NodeRegistry::update((int) $rNode['server_id'], [
 			'state' => 'active',
 			'instance_id' => self::short($rP['instance_id'] ?? null),
 			'boot_id' => self::short($rP['boot_id'] ?? null),
@@ -281,7 +327,17 @@ final class ClusterApi {
 			'proto' => $rH['proto'],
 			'enrol_deadline' => null,
 			'last_seen_at' => ClusterClock::nowMs(),
-		]);
+		], ['state' => 'enrolling', 'gen' => (int) $rNode['gen'], 'node_uuid' => (string) $rNode['node_uuid']]);
+		if (!$rActivated) {
+			$rNow = NodeRegistry::byServer((int) $rNode['server_id']);
+			if ($rNow === null) {
+				return DenialFactory::deny($rCrypto, 401, 'UNKNOWN_NODE', $rH['node'], $rH['nonce']);
+			}
+			if ($rNow['state'] === 'revoked') {
+				return DenialFactory::deny($rCrypto, 403, 'NODE_REVOKED', $rH['node'], $rH['nonce'], ['revoked_gen' => (int) $rNow['gen']]);
+			}
+			return DenialFactory::deny($rCrypto, 409, 'NOT_ACTIVE', $rH['node'], $rH['nonce'], ['state' => $rNow['state']]);
+		}
 		ClusterAudit::log('node.enrol_complete', (int) $rNode['server_id'], ['node' => $rNode['node_uuid'], 'agent' => $rP['agent_version'] ?? null], 'node', $rIP ?: null);
 		// Now active in the node list: parents and children learn its key at once.
 		ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
@@ -351,7 +407,7 @@ final class ClusterApi {
 			'epoch' => 0, 'ts_ms' => $rH['ts_ms'], 'nonce' => $rH['nonce'],
 		]);
 		$rNodeSig = self::header($rReq['headers'], Canonical::H_NODE_SIG);
-		$rSig = preg_match('/^[0-9a-f]{128}$/', $rNodeSig) ? (string) hex2bin($rNodeSig) : '';
+		$rSig = preg_match('/^[0-9a-f]{128}\z/', $rNodeSig) ? (string) hex2bin($rNodeSig) : '';
 		if (!NodeSig::verify((string) $rNode['node_sign_pub'], 'request', $rCtx . hash('sha256', $rBody, true), $rSig)) {
 			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
 		}
@@ -497,7 +553,7 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
 		$rNodeSig = self::header($rReq['headers'], Canonical::H_NODE_SIG);
-		$rSig = preg_match('/^[0-9a-f]{128}$/', $rNodeSig) ? (string) hex2bin($rNodeSig) : '';
+		$rSig = preg_match('/^[0-9a-f]{128}\z/', $rNodeSig) ? (string) hex2bin($rNodeSig) : '';
 		if (!NodeSig::verify($rNode['sign_pub'], 'request', $rCtx . hash('sha256', $rBody, true), $rSig)) {
 			return DenialFactory::deny($rCrypto, 401, 'BAD_NODE_SIG', $rH['node'], $rH['nonce']);
 		}
@@ -569,7 +625,7 @@ final class ClusterApi {
 		}
 		$rOut = [];
 		foreach (array_slice($rList, 0, 16) as $rFeature) {
-			if (is_string($rFeature) && preg_match('/^[a-z0-9_]{1,32}$/', $rFeature)) {
+			if (is_string($rFeature) && preg_match('/^[a-z0-9_]{1,32}\z/', $rFeature)) {
 				$rOut[] = $rFeature;
 			}
 		}
@@ -633,6 +689,9 @@ final class ClusterApi {
 		$rAfter = max(0, (int) ($rP['after_seq'] ?? 0));
 		$rWait = max(0, min(self::COMMANDS_WAIT_MAX_MS, (int) ($rP['wait_ms'] ?? 0)));
 		$rDeadline = microtime(true) + $rWait / 1000;
+		if ($rAfter > (int) $rNode['cmd_seq']) {
+			self::recordHighWater((int) $rNode['server_id'], (int) $rNode['cmd_seq'], $rAfter);
+		}
 		while (true) {
 			$rCommands = CommandBus::pending((int) $rNode['server_id'], $rAfter);
 			$rLeft = $rDeadline - microtime(true);
@@ -645,7 +704,39 @@ final class ClusterApi {
 				usleep(250000);
 			}
 		}
+		if ($rCommands !== []) {
+			// Handed out: the node may run them and raise its high-water past
+			// them though their ack never arrives.
+			self::raiseCmdSeq((int) $rNode['server_id'], max(array_column($rCommands, 'seq')));
+		}
 		return ClusterReply::boxed($rKeys, $rCtx, ['commands' => $rCommands, 'main_time_ms' => ClusterClock::nowMs()]);
+	}
+
+	/**
+	 * The node's high-water (`after_seq`) as `cluster_nodes.cmd_seq`, the
+	 * floor under the next command's seq (CommandBus::enqueue()). The agent
+	 * raises it when it runs a command, so when the ack is lost for longer
+	 * than the command lives and its row is pruned, a new command must still
+	 * not take a seq at or below it: the long-poll, asking for seqs above
+	 * `after_seq`, would never hand that one out. At most the highest seq
+	 * MAIN issued this node: a node cannot push the floor past its commands.
+	 * $rCmdSeq is the row's (the cluster bus's copy may lag): nothing is
+	 * written when the bounded high-water is not above it.
+	 */
+	private static function recordHighWater(int $rServerID, int $rCmdSeq, int $rAfter): void {
+		$rDb = DatabaseFactory::get();
+		$rDb->query('SELECT MAX(`seq`) AS `seq` FROM `cluster_commands` WHERE `server_id` = ?;', $rServerID);
+		$rSeq = min($rAfter, (int) ($rDb->get_row()['seq'] ?? 0));
+		if ($rSeq > $rCmdSeq) {
+			self::raiseCmdSeq($rServerID, $rSeq);
+		}
+	}
+
+	/** Raise a node's `cmd_seq` to $rSeq; never lowers it. */
+	private static function raiseCmdSeq(int $rServerID, int $rSeq): void {
+		if ($rSeq > 0) {
+			DatabaseFactory::get()->query('UPDATE `cluster_nodes` SET `cmd_seq` = ? WHERE `server_id` = ? AND `cmd_seq` < ?;', $rSeq, $rServerID, $rSeq);
+		}
 	}
 
 	/**
@@ -654,7 +745,7 @@ final class ClusterApi {
 	 * audited when it failed (ArtefactGrants::acked); no other ack reads more.
 	 */
 	private static function ack(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
-		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}$/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
+		$rCmdID = is_string($rP['cmd_id'] ?? null) && preg_match('/^[0-9a-f]{32}\z/', (string) $rP['cmd_id']) ? (string) $rP['cmd_id'] : null;
 		$rOk = !empty($rP['ok']);
 		$rResult = is_string($rP['result'] ?? null) ? (string) $rP['result'] : '';
 		if ($rCmdID === null || !CommandBus::ack((int) $rNode['server_id'], $rCmdID, $rOk, $rResult, $rFirst, $rType)) {
@@ -839,7 +930,7 @@ final class ClusterApi {
 			return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 		}
 		foreach ($rHave as $rEtag) {
-			if (!is_string($rEtag) || ($rEtag !== '' && !preg_match('/^[0-9a-f]{64}$/', $rEtag))) {
+			if (!is_string($rEtag) || ($rEtag !== '' && !preg_match('/^[0-9a-f]{64}\z/', $rEtag))) {
 				return DenialFactory::deny($rCrypto, 400, 'BAD_REQUEST', $rH['node'], $rH['nonce']);
 			}
 		}

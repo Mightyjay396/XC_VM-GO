@@ -11,11 +11,15 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * record, never shell, signed by the panel with tag `cmd`:
  *
  * ```text
- * {"v":1, "type", "exp", "iat", "cmd_id", "seq", "node_uuid", "gen", "dedupe_key", "args"}
+ * {"v":1, "type", ["action",] "exp", "iat", "cmd_id", "seq", "node_uuid", "gen", "dedupe_key", "args"}
  * ```
  *
- * The extension derives its class from `type`: restrictive ones (kills,
- * stops) sign without a licence, granting ones need it. Commands queue in
+ * `action` is there only for ACTION_TYPES, at the top level: callers pass
+ * it among the arguments ({action, …}, as NodeRpc and NodeActions carry it)
+ * and enqueue() lifts it out of `args`. The extension derives the class from
+ * `type` (and `node.root`'s action), and refuses any other shape: restrictive
+ * ones (kills, stops) sign without a licence, granting ones need it. Its
+ * registry is tests/Support/cluster_commands.json. Commands queue in
  * `cluster_commands`, FIFO per node by `seq`, and reach the node's agent
  * through the `commands` long-poll; the agent checks the signature, its own
  * uuid and generation, `seq` above its high-water and `exp`, runs the
@@ -33,8 +37,19 @@ final class CommandBus {
 	/** Types MAIN sends today. */
 	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch', 'token.rotate_now'];
 
-	/** Types that are restrictive (always signable); the extension decides, this is informational. */
+	/**
+	 * Types that are restrictive (always signable). The extension decides
+	 * (the `class` column is its answer, ClusterCrypto::recordClass); this
+	 * list is informational, and CommandBusRegistryTest holds it to the
+	 * extension's registry.
+	 */
 	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
+
+	/** Types that name what they run in a top-level `action`, never among their arguments. */
+	public const ACTION_TYPES = ['node.rpc', 'node.root'];
+
+	/** Tries at a free `seq` before enqueue() gives up. */
+	public const ATTEMPTS = 4;
 
 	/** Largest result stored from an ack. */
 	public const MAX_RESULT = 65536;
@@ -61,12 +76,23 @@ final class CommandBus {
 	/**
 	 * Sign and queue a command. Returns its cmd_id. An artefact grant the
 	 * command carries (`args.artefact`, ArtefactGrants) expires with it.
+	 * Throws when the extension refuses to sign it, and when no row could be
+	 * stored after ATTEMPTS tries (a concurrent enqueue taking the seq, or
+	 * the database refusing the write): nothing is then queued or woken.
 	 *
-	 * @param array<string, mixed> $rArgs
+	 * @param array<string, mixed> $rArgs {action, …} for ACTION_TYPES
 	 */
 	public static function enqueue(ClusterCrypto $rCrypto, int $rServerID, string $rType, array $rArgs, ?string $rDedupeKey = null, ?int $rTtl = null): string {
 		if (!in_array($rType, self::TYPES, true)) {
 			throw new \InvalidArgumentException('Unknown command type: ' . $rType);
+		}
+		$rAction = null;
+		if (in_array($rType, self::ACTION_TYPES, true)) {
+			$rAction = $rArgs['action'] ?? null;
+			if (!is_string($rAction) || $rAction === '') {
+				throw new \InvalidArgumentException('A ' . $rType . ' command needs an action');
+			}
+			unset($rArgs['action']);
 		}
 		$rNode = NodeRegistry::byServer($rServerID);
 		if ($rNode === null) {
@@ -78,14 +104,16 @@ final class CommandBus {
 		if (is_array($rArgs['artefact'] ?? null)) {
 			$rArgs['artefact']['exp'] = $rNow + $rTtl;
 		}
-		for ($rAttempt = 0;; $rAttempt++) {
+		$rError = null;
+		for ($rAttempt = 1; $rAttempt <= self::ATTEMPTS; $rAttempt++) {
 			self::db()->query('SELECT MAX(`seq`) AS `seq` FROM `cluster_commands` WHERE `server_id` = ?;', $rServerID);
 			$rSeq = max((int) (self::db()->get_row()['seq'] ?? 0), (int) $rNode['cmd_seq']) + 1;
-			$rDoc = (string) json_encode([
-				'v' => 1, 'type' => $rType, 'exp' => $rNow + $rTtl, 'iat' => $rNow, 'cmd_id' => $rCmdID, 'seq' => $rSeq,
+			$rDoc = (string) json_encode(self::envelope($rType, $rAction, [
+				'exp' => $rNow + $rTtl, 'iat' => $rNow, 'cmd_id' => $rCmdID, 'seq' => $rSeq,
 				'node_uuid' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'], 'dedupe_key' => $rDedupeKey, 'args' => (object) $rArgs,
-			], JSON_UNESCAPED_SLASHES);
+			]), JSON_UNESCAPED_SLASHES);
 			$rSig = $rCrypto->sign('cmd', $rDoc);
+			$rClass = $rCrypto->recordClass('cmd', $rDoc);
 			if ($rDedupeKey !== null) {
 				// A newer desired state supersedes a command not yet acked. An
 				// acked one keeps its outcome (result()), but not the key, which
@@ -93,30 +121,50 @@ final class CommandBus {
 				self::db()->query("DELETE FROM `cluster_commands` WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` <> 'acked';", $rServerID, $rDedupeKey);
 				self::db()->query("UPDATE `cluster_commands` SET `dedupe_key` = NULL WHERE `server_id` = ? AND `dedupe_key` = ? AND `state` = 'acked';", $rServerID, $rDedupeKey);
 			}
+			// The panel's Database answers a refused write (the unique seq or
+			// dedupe key a concurrent enqueue took, a lost connection) with
+			// false; another handle throws. Either way the row is not there.
 			try {
-				self::db()->query(
+				$rStored = self::db()->query(
 					'INSERT INTO `cluster_commands` (`server_id`, `seq`, `cmd_id`, `type`, `action`, `class`, `dedupe_key`, `payload`, `sig`, `state`, `created_at`, `exp`) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);',
 					$rServerID,
 					$rSeq,
 					$rCmdID,
 					$rType,
-					isset($rArgs['action']) ? substr((string) $rArgs['action'], 0, 32) : null,
-					in_array($rType, self::RESTRICTIVE, true) ? 'R' : 'G',
+					$rAction !== null ? substr($rAction, 0, 32) : null,
+					$rClass === 'R' ? 'R' : 'G',
 					$rDedupeKey,
 					$rDoc,
 					$rSig,
 					'queued',
 					$rNow,
 					$rNow + $rTtl
-				);
+				) !== false;
+			} catch (\Throwable $rE) {
+				$rStored = false;
+				$rError = $rE;
+			}
+			if ($rStored) {
 				ClusterBus::wakeNode($rServerID);
 				return $rCmdID;
-			} catch (\Throwable $rE) {
-				if ($rAttempt >= 3) {
-					throw $rE; // a concurrent enqueue took this seq three times
-				}
 			}
 		}
+		throw new \RuntimeException('Command ' . $rType . ' for server ' . $rServerID . ' not stored after ' . self::ATTEMPTS . ' tries', 0, $rError);
+	}
+
+	/**
+	 * A command's document in the extension's shape: `action`, for
+	 * ACTION_TYPES only, right after `type`.
+	 *
+	 * @param array<string, mixed> $rRest the other envelope keys, in order
+	 * @return array<string, mixed>
+	 */
+	private static function envelope(string $rType, ?string $rAction, array $rRest): array {
+		$rDoc = ['v' => 1, 'type' => $rType];
+		if ($rAction !== null) {
+			$rDoc['action'] = $rAction;
+		}
+		return $rDoc + $rRest;
 	}
 
 	/**

@@ -344,7 +344,7 @@ final class ReplicaStreamCache {
 		$rOut = [];
 		foreach (glob(self::store()->getBasePath() . '*') ?: [] as $rFile) {
 			$rName = basename($rFile);
-			if (preg_match('/^[1-9][0-9]{0,9}$/', $rName)) {
+			if (preg_match('/^[1-9][0-9]{0,9}\z/', $rName)) {
 				$rOut[] = (int) $rName;
 			}
 		}

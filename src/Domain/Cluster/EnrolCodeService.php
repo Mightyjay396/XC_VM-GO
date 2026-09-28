@@ -42,7 +42,7 @@ final class EnrolCodeService {
 	 * @return array{code: string, exp: int, main_url: string}
 	 */
 	public static function generate(ClusterCrypto $rCrypto, int $rServerID, string $rMainUrl, ?int $rUserID = null): array {
-		if ($rServerID < 1 || !preg_match('#^https?://[^/?\#\s]+$#', $rMainUrl) || strlen($rMainUrl) > 255) {
+		if ($rServerID < 1 || !preg_match('#^https?://[^/?\#\s]+\z#', $rMainUrl) || strlen($rMainUrl) > 255) {
 			throw new \InvalidArgumentException('enrolment code: server id or MAIN URL');
 		}
 		$rSecret = random_bytes(16);

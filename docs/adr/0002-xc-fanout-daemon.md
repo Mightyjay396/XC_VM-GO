@@ -1,6 +1,6 @@
 # ADR 0002 — `xc_fanout`: native live fan-out daemon (P2)
 
-- **Status:** Proposed
+- **Status:** Accepted — S1–S4 and S6 implemented (§2.4, §4). S5's ownership boundary was settled later by XC_VM_Fanout ADR 0002 ("Move the per-stream monitor into the daemon"): the daemon gets **no database connection**; PHP stays the system of record and writes `streams_servers` from what the daemon reports over the control socket. That supersedes §2.3's "read from the DB by the daemon" and "the daemon updates `streams_servers`".
 - **Date:** 2026-08-16
 - **Depends on:** ADR 0001 (tmpfs-free streaming). This is phase **P2**.
 - **Locked decisions (from Danil):** language **Go**; **daemon owns the puller** (starts on first viewer, stops on last); scope covers **both live TS sub-modes** (proxy + non-proxy).
@@ -73,7 +73,7 @@ P2 keeps the existing `ConnectionTracker` write at auth time plus a reaper for s
 
 ## 3. Packaging & placement
 
-- The Go module lives in the **separate binaries repo** `XC_VM_Binaries/xc_fanout/` (not in this repo, and never bundled into the panel/LB archive). It builds with `XC_VM_Binaries/build_xc_fanout.sh`: runs `go test`, then cross-compiles a fully static (`CGO_ENABLED=0`) binary per arch (linux amd64/arm64/armv7/386) into a per-version store `bin/xc_fanout/<version>/xc_fanout-linux-<arch>` + `SHA256SUMS`. Installed on **MAIN** first (LB is P6). One static binary per arch runs on any distro, so no per-distro Docker build is needed (unlike nginx/php/ffmpeg here).
+- The Go module lives in its **own repo** `XC_VM_Fanout` (`GIT_REPO_FANOUT`; not in this repo, and never bundled into the panel/LB archive). It builds with that repo's `release.sh`: runs `go test`, then cross-compiles a fully static (`CGO_ENABLED=0`) binary per arch (linux amd64/arm64/armv7/386) as flat release assets `xc_fanout-linux-<arch>` + `SHA256SUMS`, attached to a GitHub release of `XC_VM_Fanout`, from which `console.php fanout_binary` (`FanoutBinaryCommand`) installs it. Installed on **MAIN** first (LB is P6). One static binary per arch runs on any distro, so no per-distro Docker build is needed (unlike nginx/php/ffmpeg here).
 - Supervised as a long-lived service (systemd unit or the existing process supervisor). Sockets live in the app bin tree next to the daemon binary — `bin/xc_fanout/sockets/{control,http}.sock` — mirroring the php-fpm sockets layout (`bin/php/sockets/`), which nginx already reaches over `unix:`. (A unix socket carries no stored stream bytes — it is pure IPC — so its location is orthogonal to the tmpfs-free byte-path goal; the point is only to keep it out of the streaming content/tmpfs mount.)
 - **Rollback (superseded by ADR 0003):** S3 originally shipped behind a `settings` flag `live_fanout`. **That flag was removed** — for a permanent cutover the switch is the daemon's reachability instead: `live.php` uses the daemon iff its control socket is present *and* registration succeeds, else the full legacy path (producer included) runs. Stopping the daemon is the rollback; no DB flag, no cache rebuild. See ADR 0003 §3 Phase 0.
 

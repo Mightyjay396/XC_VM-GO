@@ -190,7 +190,7 @@ final class ClusterSettings {
 		if (strlen($rHost) > 253 || filter_var($rHost, FILTER_VALIDATE_IP)) {
 			return false;
 		}
-		return (bool) preg_match('/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/', $rHost);
+		return (bool) preg_match('/^(?=.{1,253}\z)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+\z/', $rHost);
 	}
 
 	/**
