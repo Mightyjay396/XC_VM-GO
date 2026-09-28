@@ -69,12 +69,16 @@ final class StreamFormRegistry {
 	 */
 	public static function validate(array $rPosted, ?array $rStream): ?string {
 		foreach (self::tabs() as $rID => $rTab) {
-			$rError = $rTab['validate'] === null ? null : ($rTab['validate'])($rPosted[$rID] ?? [], $rStream);
+			$rError = self::runValidator($rTab['validate'], $rPosted[$rID] ?? [], $rStream);
 			if ($rError !== null) {
 				return $rError;
 			}
 		}
 		return null;
+	}
+
+	private static function runValidator(?callable $rValidate, array $rFields, ?array $rStream): ?string {
+		return $rValidate === null ? null : $rValidate($rFields, $rStream);
 	}
 
 	/** Forget every tab (bootAll() re-registers them). */
