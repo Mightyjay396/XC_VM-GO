@@ -1050,7 +1050,7 @@ LayoutRenderer::renderFooter('admin');
                     }
                     btn.disabled = false;
                     evaluateDirectSource();
-                    xcToast(errText, 'error');
+                    xcToast((dt && dt.message) || errText, 'error');
                 })
                 .catch(function() {
                     btn.disabled = false;

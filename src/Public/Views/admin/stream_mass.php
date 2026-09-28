@@ -701,7 +701,7 @@ LayoutRenderer::renderFooter('admin');
                     if (btn) {
                         btn.disabled = false;
                     }
-                    toast(errText, 'error');
+                    toast((d && d.message) || errText, 'error');
                 })
                 .catch(function() {
                     if (btn) {

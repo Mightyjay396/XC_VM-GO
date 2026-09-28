@@ -1283,7 +1283,7 @@ if (1 < $rICount) { ?>
 					exit();
 				}
 
-				echo json_encode(array('result' => false, 'data' => ($rReturn['data'] ?? array()), 'status' => $rReturn['status']));
+				echo json_encode(array('result' => false, 'data' => ($rReturn['data'] ?? array()), 'status' => $rReturn['status'], 'message' => isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null));
 				exit();
 
 			case 'movie':
@@ -1563,7 +1563,7 @@ if (1 < $rICount) { ?>
 					exit();
 				}
 
-				echo json_encode(array('result' => false, 'data' => $rReturn['data'], 'status' => $rReturn['status']));
+				echo json_encode(array('result' => false, 'data' => $rReturn['data'], 'status' => $rReturn['status'], 'message' => isset($rReturn['data']['error']) ? $language::get($rReturn['data']['error']) : null));
 				exit();
 
 			case 'created_channel_mass':

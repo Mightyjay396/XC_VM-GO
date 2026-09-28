@@ -8,10 +8,12 @@ use XcVm\Core\Database\QueryHelper;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Http\ApiClient;
+use XcVm\Core\Module\SourceDriverRegistry;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Epg\EpgService;
+use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -70,11 +72,7 @@ class StreamService {
 		}
 
 		foreach (['fps_restart', 'gen_timestamps', 'allow_record', 'rtmp_output', 'stream_all', 'direct_source', 'direct_proxy', 'read_native'] as $rKey) {
-			if (isset($rData[$rKey])) {
-				$rArray[$rKey] = 1;
-			} else {
-				$rArray[$rKey] = 0;
-			}
+			$rArray[$rKey] = (int) isset($rData[$rKey]);
 		}
 
 		if (!$rArray['transcode_profile_id']) {
@@ -85,11 +83,7 @@ class StreamService {
 			$rArray['enable_transcode'] = 1;
 		}
 
-		if (isset($rData['restart_on_edit'])) {
-			$rRestart = true;
-		} else {
-			$rRestart = false;
-		}
+		$rRestart = isset($rData['restart_on_edit']);
 
 		$rReview = false;
 		$rImportStreams = [];
@@ -263,6 +257,11 @@ class StreamService {
 
 				$rImportStreams[] = $rImportArray;
 			}
+		}
+
+		$rConflict = self::importDriverConflict($rImportStreams, $rArray, self::postedServerTree($rData, false), self::mainServerIDs(...));
+		if ($rConflict !== null) {
+			return ['status' => STATUS_INVALID_INPUT, 'data' => ['error' => $rConflict]];
 		}
 
 		if (0 < count($rImportStreams)) {
@@ -494,11 +493,7 @@ class StreamService {
 
 		foreach (['gen_timestamps', 'allow_record', 'rtmp_output', 'fps_restart', 'stream_all', 'read_native'] as $rKey) {
 			if (isset($rData['c_' . $rKey])) {
-				if (isset($rData[$rKey])) {
-					$rArray[$rKey] = 1;
-				} else {
-					$rArray[$rKey] = 0;
-				}
+				$rArray[$rKey] = (int) isset($rData[$rKey]);
 			}
 		}
 
@@ -532,15 +527,15 @@ class StreamService {
 
 		if (isset($rData['c_transcode_profile_id'])) {
 			$rArray['transcode_profile_id'] = $rData['transcode_profile_id'];
-
-			if (0 < $rArray['transcode_profile_id']) {
-				$rArray['enable_transcode'] = 1;
-			} else {
-				$rArray['enable_transcode'] = 0;
-			}
+			$rArray['enable_transcode'] = (int) (0 < $rArray['transcode_profile_id']);
 		}
 
 		$rStreamIDs = json_decode($rData['streams'], true);
+
+		$rConflict = self::massEditDriverConflict((array) $rStreamIDs, $rArray, self::postedServerTree($rData, true), self::mainServerIDs(...));
+		if ($rConflict !== null) {
+			return ['status' => STATUS_INVALID_INPUT, 'data' => ['error' => $rConflict]];
+		}
 
 		if (count($rStreamIDs) > 0) {
 			$rCategoryMap = [];
@@ -912,5 +907,102 @@ class StreamService {
 		}
 
 		return $rReturn;
+	}
+
+	/**
+	 * The language key of why a stream save can't carry a module source-driver
+	 * URL, or null. A driver's engine runs on the main server as the stream's
+	 * producer, so the URL must never reach a client (direct source / proxy),
+	 * the PHP LLOD v2 reader, or a load balancer fed directly from the source
+	 * (the module is main-only; an LB child of main pulls over the loopback).
+	 *
+	 * @param string[]   $rSources    The stream's source URLs.
+	 * @param array      $rStream     direct_source / direct_proxy / llod as saved.
+	 * @param array|null $rServerTree Posted jstree nodes; null when servers don't change.
+	 * @param callable $rMainIDs    Ids of the main server(s), asked only when a driver source is fed to a server directly.
+	 */
+	public static function driverSourceConflict(array $rSources, array $rStream, ?array $rServerTree, callable $rMainIDs): ?string {
+		$rDriven = array_filter($rSources, static fn($rURL): bool => SourceDriverRegistry::for((string) $rURL) !== null);
+		if ($rDriven === []) {
+			return null;
+		}
+		return self::driverSettingsConflict($rStream) ?? self::driverTreeConflict($rServerTree ?? [], $rMainIDs);
+	}
+
+	private static function driverSettingsConflict(array $rStream): ?string {
+		if (!empty($rStream['direct_source']) || !empty($rStream['direct_proxy'])) {
+			return 'source_driver_no_direct';
+		}
+		return intval($rStream['llod'] ?? 0) === 2 ? 'source_driver_no_llod2' : null;
+	}
+
+	private static function driverTreeConflict(array $rServerTree, callable $rMainIDs): ?string {
+		foreach ($rServerTree as $rNode) {
+			if (($rNode['parent'] ?? '') === 'source' && !in_array(intval($rNode['id'] ?? 0), $rMainIDs(), true)) {
+				return 'source_driver_main_only';
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The posted server tree, or null when this save doesn't change servers
+	 * (a mass edit without the servers box ticked, or one that only removes).
+	 */
+	private static function postedServerTree(array $rData, bool $rMass): ?array {
+		if ($rMass && (!isset($rData['c_server_tree']) || !in_array($rData['server_type'] ?? null, ['ADD', 'SET'], true))) {
+			return null;
+		}
+		return json_decode((string) ($rData['server_tree_data'] ?? ''), true) ?: null;
+	}
+
+	/** @return int[] */
+	private static function mainServerIDs(): array {
+		return array_map('intval', array_keys(array_filter(ServerRepository::getAll(), static fn(array $rServer): bool => !empty($rServer['is_main']))));
+	}
+
+	/**
+	 * driverSourceConflict() for every stream a form save or an import writes.
+	 *
+	 * @param array $rImportStreams Streams about to be written (each with stream_source).
+	 * @param array $rArray         The settings they are written with.
+	 * @param callable $rMainIDs       Ids of the main server(s), asked only when a driver source is fed to a server directly.
+	 */
+	private static function importDriverConflict(array $rImportStreams, array $rArray, ?array $rServerTree, callable $rMainIDs): ?string {
+		foreach ($rImportStreams as $rImportStream) {
+			$rConflict = self::driverSourceConflict((array) ($rImportStream['stream_source'] ?? []), array_merge($rArray, $rImportStream), $rServerTree, $rMainIDs);
+			if ($rConflict !== null) {
+				return $rConflict;
+			}
+		}
+		return null;
+	}
+
+	/** Whether a mass edit sets anything driverSourceConflict() looks at. */
+	private static function massEditTouchesDriverRules(array $rArray, ?array $rServerTree): bool {
+		return $rServerTree !== null || array_intersect_key($rArray, array_flip(['direct_source', 'direct_proxy', 'llod'])) !== [];
+	}
+
+	/**
+	 * driverSourceConflict() for a mass edit: each selected stream's sources
+	 * against its settings after the edit. Skipped when the edit touches none of
+	 * the settings that matter.
+	 *
+	 * @param int[] $rStreamIDs Selected stream ids.
+	 * @param array $rArray     The columns the edit sets.
+	 * @param callable $rMainIDs   Ids of the main server(s), asked only when a driver source is fed to a server directly.
+	 */
+	private static function massEditDriverConflict(array $rStreamIDs, array $rArray, ?array $rServerTree, callable $rMainIDs): ?string {
+		if ($rStreamIDs === [] || !self::massEditTouchesDriverRules($rArray, $rServerTree)) {
+			return null;
+		}
+		$rRows = self::db()->fetchAll('SELECT `stream_source`, `direct_source`, `direct_proxy`, `llod` FROM `streams` WHERE `id` IN (' . implode(',', array_map('intval', $rStreamIDs)) . ');') ?: [];
+		return self::importDriverConflict(
+			// The edit's values win over the row's: they are what the streams will have.
+			array_map(static fn(array $rRow): array => ['stream_source' => json_decode((string) $rRow['stream_source'], true) ?: []] + $rArray + $rRow, $rRows),
+			$rArray,
+			$rServerTree,
+			$rMainIDs
+		);
 	}
 }
