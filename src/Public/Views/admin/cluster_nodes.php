@@ -237,6 +237,26 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                                     <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
                                     <button type="submit" name="cluster_action" value="rotate_now" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_rotate_now_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_rotate_now'); ?></button>
                                 </form>
+                                <form method="POST" class="d-inline">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="resync" class="btn btn-sm btn-label-secondary" title="<?= htmlspecialchars($language::get('cluster_resync_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_resync'); ?></button>
+                                </form>
+                                <form method="POST" class="d-inline js-cluster-confirm" data-confirm="<?= htmlspecialchars($language::get('cluster_fence_confirm'), ENT_QUOTES); ?>">
+                                    <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                    <button type="submit" name="cluster_action" value="fence" class="btn btn-sm btn-label-warning" title="<?= htmlspecialchars($language::get('cluster_fence_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_fence'); ?></button>
+                                    <button type="submit" name="cluster_action" value="unfence" class="btn btn-sm btn-label-secondary" formnovalidate title="<?= htmlspecialchars($language::get('cluster_unfence_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_unfence'); ?></button>
+                                </form>
+                                <?php if ($rNode['state'] === 'quarantined'): ?>
+                                    <form method="POST" class="d-inline">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="trust" class="btn btn-sm btn-label-success" title="<?= htmlspecialchars($language::get('cluster_trust_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_trust'); ?></button>
+                                    </form>
+                                <?php else: ?>
+                                    <form method="POST" class="d-inline js-cluster-confirm" data-confirm="<?= htmlspecialchars($language::get('cluster_quarantine_confirm'), ENT_QUOTES); ?>">
+                                        <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
+                                        <button type="submit" name="cluster_action" value="quarantine" class="btn btn-sm btn-label-warning" title="<?= htmlspecialchars($language::get('cluster_quarantine_help'), ENT_QUOTES); ?>"><?= $language::get('cluster_quarantine'); ?></button>
+                                    </form>
+                                <?php endif; ?>
                                 <form method="POST" class="d-inline js-cluster-revoke">
                                     <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
                                     <button type="submit" name="cluster_action" value="revoke" class="btn btn-sm btn-label-danger"><?= $language::get('cluster_revoke'); ?></button>
@@ -344,6 +364,17 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
 </div>
 
 <script>
+document.querySelectorAll('.js-cluster-confirm').forEach(function (f) {
+    f.addEventListener('submit', function (e) {
+        var rButton = e.submitter;
+        if (rButton && rButton.value === 'unfence') {
+            return;
+        }
+        if (!confirm(f.getAttribute('data-confirm'))) {
+            e.preventDefault();
+        }
+    });
+});
 document.querySelectorAll('.js-cluster-revoke').forEach(function (f) {
     f.addEventListener('submit', function (e) {
         if (!confirm(<?= json_encode($language::get('cluster_revoke_confirm')); ?>)) {

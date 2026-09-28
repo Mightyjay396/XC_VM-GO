@@ -151,6 +151,16 @@ final class CommandBusRegistryTest extends TestCase {
 		$this->assertSame([true, true], ClusterRoute::closeConnection(self::SID, 'viewer2', false));
 		$this->assertSame([true, true], ClusterRoute::closeConnection(self::SID, 'viewer3', true));
 		$this->assertSame([true, true], ClusterRoute::rotateNow(self::SID));
+		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'stream', 'function' => 'stop', 'stream_ids' => [5]]));
+		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'vod', 'function' => 'stop', 'stream_ids' => [6]]));
+		$this->assertSame([true, true], ClusterRoute::fence(self::SID, 'admin', 10));
+		$this->assertSame([true, true], ClusterRoute::unfence(self::SID));
+		// The unfence superseded that fence (one dedupe key): the lease-fence
+		// path's shape, sent as its own row.
+		CommandBus::enqueue($this->rCrypto, self::SID, 'node.fence', ['reason' => ClusterRoute::LICENCE_FENCE, 'drain_min' => 10]);
+		$this->assertSame([true, true], ClusterRoute::resync(self::SID));
+		$this->assertSame([true, true], ClusterRoute::policyUpdate(self::SID));
+		$this->assertSame([true, true], ClusterRoute::quarantine(self::SID, 'admin'));
 		CommandBus::enqueue($this->rCrypto, self::SID, 'config.changed', ['sections' => ['servers']], 'config.changed');
 		CommandBus::enqueue($this->rCrypto, self::SID, 'artefact.fetch', ['artefact' => ['id' => 'offair/banned', 'name' => 'banned.ts', 'size' => 3, 'sha256' => str_repeat('0', 64), 'mtime' => 1799990000, 'ctime' => 1799990000]]);
 

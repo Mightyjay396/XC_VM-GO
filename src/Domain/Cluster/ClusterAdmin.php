@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -283,6 +284,35 @@ final class ClusterAdmin {
 					return $rQueued
 						? ['type' => 'success', 'message' => 'cluster_rotate_done']
 						: ['type' => 'danger', 'message' => 'cluster_rotate_failed'];
+
+				case 'fence':
+				case 'unfence':
+				case 'quarantine':
+				case 'resync':
+					// Commands for the node's agent (ADR 0004, Phase 9): a fence,
+					// its lifting, a quarantine and a resync all go to a node that
+					// takes commands, and none of them stops it.
+					$rActor = $rUserID === null ? 'admin' : 'admin:' . $rUserID;
+					[$rRouted, $rQueued] = match ($rAction) {
+						'fence' => ClusterRoute::fence($rServerID, 'admin', ClusterSettings::int('lb_fence_drain_min', $rSettings['lb_fence_drain_min'] ?? null)),
+						'unfence' => ClusterRoute::unfence($rServerID),
+						'quarantine' => ClusterRoute::quarantine($rServerID, 'admin'),
+						default => ClusterRoute::resync($rServerID),
+					};
+					if (!$rRouted) {
+						return ['type' => 'info', 'message' => 'cluster_rotate_no_commands'];
+					}
+					ClusterAudit::log('node.' . $rAction, $rServerID, ['queued' => $rQueued], $rActor);
+					return $rQueued
+						? ['type' => 'success', 'message' => 'cluster_' . $rAction . '_done']
+						: ['type' => 'danger', 'message' => 'cluster_command_failed'];
+
+				case 'trust':
+					if (!ClusterRoute::trust($rServerID)) {
+						return ['type' => 'info', 'message' => 'cluster_trust_not_quarantined'];
+					}
+					ClusterAudit::log('node.trust', $rServerID, [], $rUserID === null ? 'admin' : 'admin:' . $rUserID);
+					return ['type' => 'success', 'message' => 'cluster_trust_done'];
 
 				case 'revoke':
 					return NodeRegistry::revoke($rServerID, $rCrypto, $rUserID === null ? 'admin' : 'admin:' . $rUserID)

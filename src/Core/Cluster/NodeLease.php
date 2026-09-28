@@ -40,6 +40,13 @@ final class NodeLease {
 	/** The agent's file, under the config directory. */
 	public const FILE = AgentPaths::DIR . 'lease_state.json';
 
+	/**
+	 * The fence MAIN commanded (`node.fence`), as the agent holds it: written
+	 * every heartbeat while the fence stands, removed by `node.unfence` (or,
+	 * for a licence fence, when MAIN accepts the node's session again).
+	 */
+	public const FENCE_FILE = AgentPaths::DIR . 'fence.json';
+
 	/** Serving: the lease has time left on MAIN's clock, or there is nothing to go by. */
 	public const SERVING = 'serving';
 
@@ -57,6 +64,11 @@ final class NodeLease {
 	public const STALE_SEC = 60;
 
 	private static ?string $rPath = null;
+
+	private static ?string $rFencePath = null;
+
+	/** @var array{state: string, reason: string, drain_until_ms: int, wrote_at_ms: int}|null */
+	private static ?array $rFence = null;
 
 	/** @var array{exp: int, gen: int, anchor_ms: int, wrote_at_ms: int}|null The agent's file as last read. */
 	private static ?array $rDoc = null;
@@ -119,10 +131,12 @@ final class NodeLease {
 		return $rDoc['anchor_ms'] + max(0, $rNowMs - $rDoc['wrote_at_ms']);
 	}
 
-	/** Tests: read another file, and forget what was read. */
-	public static function usePath(?string $rPath): void {
+	/** Tests: read other files, and forget what was read. */
+	public static function usePath(?string $rPath, ?string $rFencePath = null): void {
 		self::$rPath = $rPath;
+		self::$rFencePath = $rFencePath;
 		self::$rDoc = null;
+		self::$rFence = null;
 		self::$rReadAt = 0;
 	}
 
@@ -132,6 +146,12 @@ final class NodeLease {
 	 */
 	private static function judge(?array $rSettings): array {
 		$rServing = ['state' => self::SERVING, 'exp' => 0, 'drain_until' => 0, 'anchor' => 0, 'gen' => 0, 'why' => ''];
+		// MAIN's own fence (`node.fence`) needs no switch: it is an operator's
+		// or a lapsed licence's explicit word, verified by the agent.
+		$rFenced = self::commandFence();
+		if ($rFenced !== null) {
+			return $rFenced + $rServing;
+		}
 		if (!self::switchedOn($rSettings)) {
 			return ['why' => 'the switch is off'] + $rServing;
 		}
@@ -191,6 +211,26 @@ final class NodeLease {
 	}
 
 	/**
+	 * The verdict of a fence MAIN commanded, while the agent keeps its file
+	 * fresh; null when there is none (no file, a stale one — the agent is not
+	 * running, and a fence nobody maintains serves, as every uncertainty does —
+	 * or a state it does not name).
+	 *
+	 * @return array{state: string, drain_until: int, why: string}|null
+	 */
+	private static function commandFence(): ?array {
+		self::agentFile();
+		$rFence = self::$rFence;
+		if ($rFence === null || !in_array($rFence['state'], [self::DRAINING, self::FENCED], true)) {
+			return null;
+		}
+		if ($rFence['wrote_at_ms'] <= 0 || (int) round(microtime(true) * 1000) - $rFence['wrote_at_ms'] > self::STALE_SEC * 1000) {
+			return null;
+		}
+		return ['state' => $rFence['state'], 'drain_until' => intdiv($rFence['drain_until_ms'], 1000), 'why' => 'fenced by MAIN (' . $rFence['reason'] . ')'];
+	}
+
+	/**
 	 * The agent's file, read at most every 2 s: the streaming endpoints ask per
 	 * request, and the file changes at the heartbeat's pace at best.
 	 *
@@ -199,9 +239,28 @@ final class NodeLease {
 	private static function agentFile(): ?array {
 		if (self::$rReadAt === 0 || time() - self::$rReadAt >= 2) {
 			self::$rDoc = self::parse(self::$rPath ?? AgentPaths::fileOrNull(self::FILE));
+			self::$rFence = self::parseFence(self::$rPath !== null ? self::$rFencePath : AgentPaths::fileOrNull(self::FENCE_FILE));
 			self::$rReadAt = time();
 		}
 		return self::$rDoc;
+	}
+
+	/**
+	 * The agent's fence file, or null when there is none (or it is not one).
+	 *
+	 * @return array{state: string, reason: string, drain_until_ms: int, wrote_at_ms: int}|null
+	 */
+	private static function parseFence(?string $rPath): ?array {
+		$rDoc = $rPath === null ? null : json_decode((string) @file_get_contents($rPath), true);
+		if (!is_array($rDoc) || !is_string($rDoc['state'] ?? null)) {
+			return null;
+		}
+		return [
+			'state' => $rDoc['state'],
+			'reason' => substr(preg_replace('/[^a-z0-9_.-]/', '', strtolower((string) ($rDoc['reason'] ?? ''))) ?? '', 0, 32),
+			'drain_until_ms' => (int) ($rDoc['drain_until_ms'] ?? 0),
+			'wrote_at_ms' => (int) ($rDoc['wrote_at_ms'] ?? 0),
+		];
 	}
 
 	/**

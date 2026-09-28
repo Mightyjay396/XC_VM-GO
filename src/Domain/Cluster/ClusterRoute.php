@@ -4,6 +4,7 @@ namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\AgentConnections;
 use XcVm\Core\Cluster\CacheJobs;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
@@ -37,6 +38,16 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: mixed} the node's raw result, or null on failure/timeout
 	 */
 	public static function rpc(int $rServerID, array $rData, int $rTimeout): array {
+		$rStop = self::stops($rData);
+		if ($rStop !== null) {
+			// The legacy answer, once the node has run (or refused) the last stop.
+			[$rRouted, $rCmdIDs] = self::stop($rServerID, $rStop[0], $rStop[1]);
+			if ($rCmdIDs === null || $rCmdIDs === []) {
+				return [$rRouted, null];
+			}
+			$rOutcome = CommandBus::await((string) end($rCmdIDs), max(1, $rTimeout));
+			return [true, $rOutcome !== null && $rOutcome[0] ? (string) json_encode(['result' => true]) : null];
+		}
 		[$rRouted, $rCmdID] = self::command($rServerID, 'node.rpc', static fn(ClusterCrypto $rCrypto): string => CommandBus::enqueue($rCrypto, $rServerID, 'node.rpc', $rData), null);
 		if ($rCmdID === null) {
 			return [$rRouted, null];
@@ -46,13 +57,199 @@ final class ClusterRoute {
 	}
 
 	/**
-	 * An RPC sent without waiting (NodeRpc::broadcast).
+	 * An RPC sent without waiting (NodeRpc::broadcast). A stop becomes the
+	 * restrictive `stream.stop` / `vod.stop` (stops()).
 	 *
 	 * @param array<string, mixed> $rData
 	 * @return array{0: bool, 1: bool} queued?
 	 */
 	public static function send(int $rServerID, array $rData): array {
+		$rStop = self::stops($rData);
+		if ($rStop !== null) {
+			[$rRouted, $rCmdIDs] = self::stop($rServerID, $rStop[0], $rStop[1]);
+			return [$rRouted, $rCmdIDs !== null];
+		}
 		return self::enqueue($rServerID, 'node.rpc', $rData);
+	}
+
+	/**
+	 * The stop an RPC payload asks for, as the restrictive command types
+	 * carry it: `{action: stream|vod, function: stop, stream_ids}` →
+	 * [`stream.stop`|`vod.stop`, ids]. Null for anything else (a start, a
+	 * restart, any other action), which stays a granting `node.rpc`.
+	 *
+	 * A stop is restrictive (plan, section 7): the extension signs it even
+	 * without a licence, which is when an operator most needs a stream off a
+	 * node. As a `node.rpc` it was granting and refused then.
+	 *
+	 * @param array<string, mixed> $rData
+	 * @return array{0: string, 1: list<int>}|null
+	 */
+	public static function stops(array $rData): ?array {
+		$rAction = $rData['action'] ?? null;
+		if (!in_array($rAction, ['stream', 'vod'], true) || ($rData['function'] ?? null) !== 'stop' || !is_array($rData['stream_ids'] ?? null)) {
+			return null;
+		}
+		$rIDs = array_values(array_unique(array_filter(array_map('intval', $rData['stream_ids']), static fn(int $rID): bool => $rID > 0)));
+		return $rIDs === [] ? null : [$rAction . '.stop', $rIDs];
+	}
+
+	/**
+	 * Stop streams (or VOD) on a node: one `stream.stop {stream_id}` /
+	 * `vod.stop {stream_id}` per id, the node's cluster:exec running
+	 * StreamProcess's stop for it. Deduped per stream, so repeated clicks
+	 * queue one. Restrictive, so it also reaches a quarantined node.
+	 *
+	 * @param list<int> $rStreamIDs
+	 * @return array{0: bool, 1: list<string>|null} [routed, cmd_ids or null when not queued]
+	 */
+	public static function stop(int $rServerID, string $rType, array $rStreamIDs): array {
+		if (!in_array($rType, ['stream.stop', 'vod.stop'], true)) {
+			throw new \InvalidArgumentException('Not a stop: ' . $rType);
+		}
+		return self::command($rServerID, $rType, static function (ClusterCrypto $rCrypto) use ($rServerID, $rType, $rStreamIDs): array {
+			$rOut = [];
+			foreach ($rStreamIDs as $rID) {
+				$rOut[] = CommandBus::enqueue($rCrypto, $rServerID, $rType, ['stream_id' => (int) $rID], $rType . ':' . (int) $rID);
+			}
+			return $rOut;
+		}, null, false, null, true);
+	}
+
+	/**
+	 * Fence a node (`node.fence {reason, drain_min}`, restrictive): its agent
+	 * stops new viewers at once and, after `drain_min` minutes, drops the ones
+	 * still watching (ADR 0004, Phase 9). An operator's fence stays until
+	 * unfence(); one MAIN queues for a lapsed licence (licenceFence()) ends
+	 * when the node's session is accepted again.
+	 *
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function fence(int $rServerID, string $rReason, int $rDrainMin): array {
+		$rArgs = ['reason' => substr($rReason, 0, 64), 'drain_min' => max(0, min(60, $rDrainMin))];
+		return self::enqueue($rServerID, 'node.fence', $rArgs, self::FENCE_KEY, true);
+	}
+
+	/**
+	 * Lift a fence (`node.unfence`, granting: a panel without a licence cannot
+	 * put a fenced fleet back on the air). Shares the fence's dedupe key, so a
+	 * fence the node has not taken yet is superseded rather than run.
+	 *
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function unfence(int $rServerID): array {
+		return self::enqueue($rServerID, 'node.unfence', [], self::FENCE_KEY);
+	}
+
+	/** The dedupe key a fence and an unfence share. */
+	public const FENCE_KEY = 'node.fence';
+
+	/** The reason a fence MAIN queues for a lapsed licence carries (licenceFence()). */
+	public const LICENCE_FENCE = 'licence';
+
+	/**
+	 * The hard revocation mode's fence (plan, section 9, "FENCED"): a node
+	 * whose session MAIN refuses for want of a licence gets a restrictive
+	 * `node.fence {reason: licence}`, which rides the panel-signed
+	 * LICENCE_INVALID with its other kills (ClusterApi::killsFor()). Queued
+	 * once while one is waiting; the node's agent lifts it on its own when
+	 * MAIN accepts its session again. Never throws: the denial goes out
+	 * whatever becomes of this.
+	 *
+	 * @param array<string, mixed> $rNode cluster_nodes row
+	 */
+	public static function licenceFence(ClusterCrypto $rCrypto, array $rNode, int $rDrainMin): bool {
+		try {
+			$rServerID = (int) $rNode['server_id'];
+			if (!CommandBus::accepts($rNode) || CommandBus::waiting($rServerID, self::FENCE_KEY)) {
+				return false;
+			}
+			CommandBus::enqueue($rCrypto, $rServerID, 'node.fence', ['reason' => self::LICENCE_FENCE, 'drain_min' => max(0, min(60, $rDrainMin))], self::FENCE_KEY);
+			return true;
+		} catch (\Throwable $rE) {
+			self::unsent((int) ($rNode['server_id'] ?? 0), 'node.fence', $rE);
+			return false;
+		}
+	}
+
+	/**
+	 * Every node that takes commands gets the licence fence when MAIN runs in
+	 * the hard revocation mode and the extension no longer holds a licence
+	 * binding (ClusterCronJob, every minute): its session is refused then, so
+	 * the fence rides the refusal (licenceFence()). Queued here rather than
+	 * where the refusal is written, which is before anything is authenticated
+	 * and must change no state. Answers how many were queued.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function licenceFences(ClusterCrypto $rCrypto, array $rSettings): int {
+		if (ClusterSettings::enum('lb_revocation_mode', $rSettings['lb_revocation_mode'] ?? null) !== 'hard' || !empty($rCrypto->info()['licensed'])) {
+			return 0;
+		}
+		$rQueued = 0;
+		foreach (NodeRegistry::enrolled() as $rNode) {
+			$rQueued += self::licenceFence($rCrypto, $rNode, ClusterSettings::int('lb_fence_drain_min', $rSettings['lb_fence_drain_min'] ?? null)) ? 1 : 0;
+		}
+		return $rQueued;
+	}
+
+	/**
+	 * Quarantine a node on the operator's word: `node.quarantine {reason}`
+	 * (restrictive) is queued while the node still takes commands, then its
+	 * state becomes `quarantined`, which hands it the restrictive commands
+	 * only (ClusterApi::commands()) and stops the replica and every granting
+	 * command until trust().
+	 *
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function quarantine(int $rServerID, string $rReason): array {
+		$rReason = substr($rReason, 0, 64);
+		$rOut = self::enqueue($rServerID, 'node.quarantine', ['reason' => $rReason], 'node.quarantine', true);
+		if ($rOut[0]) {
+			NodeRegistry::update($rServerID, ['state' => 'quarantined', 'quarantine_reason' => $rReason]);
+		}
+		return $rOut;
+	}
+
+	/**
+	 * *Trust again* (plan, section 4, "Quarantine"): back to `active`, and a
+	 * forced token rotation, so whatever held the quarantined token loses it.
+	 */
+	public static function trust(int $rServerID): bool {
+		$rNode = NodeRegistry::byServer($rServerID);
+		if ($rNode === null || $rNode['state'] !== 'quarantined') {
+			return false;
+		}
+		NodeRegistry::update($rServerID, ['state' => 'active', 'quarantine_reason' => null]);
+		self::rotateNow($rServerID);
+		return true;
+	}
+
+	/**
+	 * `resync {sections}` (restrictive): the node's agent fetches its replica
+	 * again from scratch (`config`, `streams`) and sends its whole connection
+	 * set (`connections`), for a node an operator suspects has drifted.
+	 *
+	 * @param list<string> $rSections
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function resync(int $rServerID, array $rSections = self::RESYNC_SECTIONS): array {
+		$rSections = array_values(array_intersect(self::RESYNC_SECTIONS, $rSections));
+		return self::enqueue($rServerID, 'resync', ['sections' => $rSections], 'resync');
+	}
+
+	/** What a resync may name. */
+	public const RESYNC_SECTIONS = ['config', 'streams', 'connections'];
+
+	/**
+	 * `policy.update` (granting): the node says hello at once and adopts
+	 * MAIN's current transport policy and `main_urls`, instead of at the
+	 * heartbeat that would announce the newer `policy_ver`.
+	 *
+	 * @return array{0: bool, 1: bool}
+	 */
+	public static function policyUpdate(int $rServerID): array {
+		return self::enqueue($rServerID, 'policy.update', [], 'policy.update');
 	}
 
 	/**
@@ -181,11 +378,11 @@ final class ClusterRoute {
 	 * @param array<string, mixed> $rArgs
 	 * @return array{0: bool, 1: bool}
 	 */
-	private static function enqueue(int $rServerID, string $rType, array $rArgs, ?string $rDedupeKey = null): array {
+	private static function enqueue(int $rServerID, string $rType, array $rArgs, ?string $rDedupeKey = null, bool $rQuarantined = false): array {
 		return self::command($rServerID, $rType, static function (ClusterCrypto $rCrypto) use ($rServerID, $rType, $rArgs, $rDedupeKey): bool {
 			CommandBus::enqueue($rCrypto, $rServerID, $rType, $rArgs, $rDedupeKey);
 			return true;
-		});
+		}, false, false, null, $rQuarantined);
 	}
 
 	/**
@@ -195,12 +392,15 @@ final class ClusterRoute {
 	 * the reason logged (unsent(), under $rType). The legacy path is never
 	 * tried once routed.
 	 *
+	 * $rQuarantined also routes to a quarantined node, for the restrictive
+	 * commands it is still handed (ClusterApi::commands()).
+	 *
 	 * @param \Closure(ClusterCrypto): mixed $rSend
 	 * @param array<string, mixed>|null $rNode
 	 * @return array{0: bool, 1: mixed}
 	 */
-	private static function command(int $rServerID, string $rType, \Closure $rSend, mixed $rFailed = false, bool $rRoot = false, ?array $rNode = null): array {
-		$rCrypto = self::target($rServerID, $rRoot, $rNode);
+	private static function command(int $rServerID, string $rType, \Closure $rSend, mixed $rFailed = false, bool $rRoot = false, ?array $rNode = null, bool $rQuarantined = false): array {
+		$rCrypto = self::target($rServerID, $rRoot, $rNode, $rQuarantined);
 		if (!$rCrypto instanceof ClusterCrypto) {
 			return [false, $rFailed];
 		}
@@ -232,9 +432,12 @@ final class ClusterRoute {
 	 *
 	 * @param array<string, mixed>|null $rNode the node's row, when the caller read it with cluster_api_enabled on
 	 */
-	private static function target(int $rServerID, bool $rRoot = false, ?array $rNode = null): ?ClusterCrypto {
+	private static function target(int $rServerID, bool $rRoot = false, ?array $rNode = null, bool $rQuarantined = false): ?ClusterCrypto {
 		try {
 			$rNode ??= empty(SettingsManager::get('cluster_api_enabled')) ? null : NodeRegistry::byServer($rServerID);
+			if ($rQuarantined && $rNode !== null && $rNode['state'] === 'quarantined') {
+				$rNode['state'] = 'active';
+			}
 			if (!($rRoot ? CommandBus::acceptsRoot($rNode) : CommandBus::accepts($rNode))) {
 				return null;
 			}

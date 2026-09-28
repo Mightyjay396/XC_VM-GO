@@ -76,7 +76,7 @@ final class ClusterApi {
 		'enrol_code' => ['POST', true, null],
 		'enrol_code_status' => ['POST', false, null],
 		'hello' => ['POST', false, ['active', 'quarantined']],
-		'commands' => ['POST', false, ['active']],
+		'commands' => ['POST', false, ['active', 'quarantined']],
 		'ack' => ['POST', false, ['active', 'quarantined']],
 		'events' => ['POST', false, ['active']],
 		'recording_complete' => ['POST', false, ['active']],
@@ -739,7 +739,9 @@ final class ClusterApi {
 	/**
 	 * `commands`: the node's queued commands after its high-water, panel-signed
 	 * (`cmd`) each. Held up to `wait_ms` while there are none, so a command
-	 * reaches the node within a poll step of being queued.
+	 * reaches the node within a poll step of being queued. A quarantined node
+	 * gets the restrictive ones only (its node.quarantine, kills, stops, a
+	 * fence): what grants waits until an admin trusts it again.
 	 */
 	private static function commands(array $rNode, SessionKeys $rKeys, string $rCtx, array $rP): array {
 		$rAfter = max(0, (int) ($rP['after_seq'] ?? 0));
@@ -749,7 +751,7 @@ final class ClusterApi {
 			self::recordHighWater((int) $rNode['server_id'], (int) $rNode['cmd_seq'], $rAfter);
 		}
 		while (true) {
-			$rCommands = CommandBus::pending((int) $rNode['server_id'], $rAfter);
+			$rCommands = CommandBus::pending((int) $rNode['server_id'], $rAfter, 50, $rNode['state'] === 'quarantined');
 			$rLeft = $rDeadline - microtime(true);
 			if ($rCommands !== [] || $rLeft <= 0) {
 				break;

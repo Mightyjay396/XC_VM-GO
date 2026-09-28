@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
@@ -660,10 +661,24 @@ if ($rChannelInfo) {
 					exit();
 				}
 
+				// This node is fenced and its drain is over (NodeLease: a lapsed
+				// lease or MAIN's node.fence): a viewer already inside this long
+				// request is dropped at the next segment, as a new one is refused.
+				if (NodeLease::refusesEverything($rSettings)) {
+					exit();
+				}
+
 				// A pending admin "send message" for this viewer: burn it onto the
 				// next complete segment (the daemon does this when fanout is on).
+				// A `drop` entry (the node's agent writes one per viewer it holds
+				// once a fence's drain is over) ends the request here.
 				if (file_exists(SIGNALS_PATH . $rTokenData["uuid"])) {
 					$rSignalData = json_decode(file_get_contents(SIGNALS_PATH . $rTokenData["uuid"]), true);
+
+					if (is_array($rSignalData) && ($rSignalData["type"] ?? '') == "drop") {
+						@unlink(SIGNALS_PATH . $rTokenData["uuid"]);
+						exit();
+					}
 
 					if (is_array($rSignalData) && ($rSignalData["type"] ?? '') == "signal") {
 						AsyncFileOperations::awaitFileExists(STREAMS_PATH . $rNextSegment, max(1, $rTotalFails), 1000);

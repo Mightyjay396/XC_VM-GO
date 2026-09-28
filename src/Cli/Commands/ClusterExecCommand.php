@@ -13,6 +13,7 @@ use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Util\AtomicFile;
 use XcVm\Domain\Server\ServerRepository;
+use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Public\Controllers\Api\InternalApiController;
 use XcVm\Streaming\Fanout\FanoutClient;
 
@@ -42,6 +43,9 @@ use XcVm\Streaming\Fanout\FanoutClient;
  * - `config.changed {sections}` — the agent fetches its replica at once; an
  *   agent that hands it here instead is acked `{"deferred": true}`, and its
  *   next minute's poll fetches the change.
+ * - `stream.stop {stream_id}`, `vod.stop {stream_id}` — restrictive stops
+ *   (signed without a licence), run as the legacy /api's stop runs them
+ *   (StreamProcess::stopStream(), stopMovie()).
  * - `artefact.fetch {artefact}` — an off-air video MAIN granted, which the
  *   agent downloaded into config/cluster/artefacts/<cmd_id>: placed where
  *   the node's off-air code plays it once its size and SHA-256 are the
@@ -62,7 +66,7 @@ class ClusterExecCommand implements CommandInterface {
 	public const SKEW = 300;
 
 	/** The command types run here (`--types`). */
-	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH];
+	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop'];
 
 	public function getName(): string {
 		return 'cluster:exec';
@@ -160,6 +164,26 @@ class ClusterExecCommand implements CommandInterface {
 		return $rCmd;
 	}
 
+	/** @var (callable(string, int): void)|null */
+	private static $rStopper = null;
+
+	/** Tests: run stops through this instead of StreamProcess; null restores it. */
+	public static function useStopper(?callable $rStopper): void {
+		self::$rStopper = $rStopper;
+	}
+
+	private static function stopStream(string $rType, int $rStreamID): void {
+		if (self::$rStopper !== null) {
+			(self::$rStopper)($rType, $rStreamID);
+			return;
+		}
+		if ($rType === 'vod.stop') {
+			StreamProcess::stopMovie($rStreamID);
+		} else {
+			StreamProcess::stopStream($rStreamID, true);
+		}
+	}
+
 	/** @param array<string, mixed> $rCmd */
 	public static function run(array $rCmd): int {
 		$rArgs = is_array($rCmd['args'] ?? null) ? $rCmd['args'] : [];
@@ -225,6 +249,17 @@ class ClusterExecCommand implements CommandInterface {
 				}
 				CacheJobs::run($rJobs);
 				echo json_encode(['result' => true, 'jobs' => count($rJobs)]);
+				return 0;
+
+			case 'stream.stop':
+			case 'vod.stop':
+				$rStreamID = $rArgs['stream_id'] ?? null;
+				if (!is_int($rStreamID) || $rStreamID <= 0) {
+					fwrite(STDERR, "cluster:exec: bad stream id\n");
+					return 2;
+				}
+				self::stopStream($rCmd['type'], $rStreamID);
+				echo json_encode(['result' => true]);
 				return 0;
 
 			case 'config.changed':

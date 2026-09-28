@@ -45,6 +45,21 @@ final class NodeRegistry {
 	}
 
 	/**
+	 * Every node MAIN counts as enrolled (`active` or `quarantined`), by
+	 * server id: what the fleet-wide gates and rotations go over.
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	public static function enrolled(): array {
+		self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` IN ('active', 'quarantined') ORDER BY `server_id`;");
+		$rOut = [];
+		foreach (self::db()->get_rows() as $rRow) {
+			$rOut[(int) $rRow['server_id']] = $rRow;
+		}
+		return $rOut;
+	}
+
+	/**
 	 * Create (or re-create, on re-enrolment) the row of a node that is about to
 	 * receive its first token. A re-enrolment increments gen, so every token of
 	 * the previous generation stops working, drops what the cluster bus still
