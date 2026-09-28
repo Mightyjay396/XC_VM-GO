@@ -34,7 +34,7 @@ class ClusterPinRootCommand implements CommandInterface {
 		$rState = json_decode((string) @file_get_contents(CONFIG_PATH . 'cluster/agent.json'), true);
 		$rPub = is_array($rState) ? base64_decode((string) ($rState['panel_sign_pub'] ?? ''), true) : false;
 		$rNode = is_array($rState) ? (string) ($rState['node_uuid'] ?? '') : '';
-		if (!preg_match('/^[0-9a-f]{64}$/', $rFp)) {
+		if (!preg_match('/^[0-9a-f]{64}\z/', $rFp)) {
 			echo "Usage: cluster:pin-root <panel_fp> (64 hex digits, from MAIN)\n";
 			return 1;
 		}

@@ -193,7 +193,7 @@ class ClusterExecCommand implements CommandInterface {
 			case 'conn.drop':
 				// The agent drops daemon viewers itself; this is its fallback.
 				$rUUID = (string) ($rArgs['uuid'] ?? '');
-				if (!preg_match('/^[A-Za-z0-9_-]{1,64}$/', $rUUID)) {
+				if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
 					return 2;
 				}
 				echo json_encode(['result' => FanoutClient::dropConnection($rUUID)]);

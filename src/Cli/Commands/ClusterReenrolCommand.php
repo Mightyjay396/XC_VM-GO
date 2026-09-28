@@ -147,7 +147,7 @@ class ClusterReenrolCommand implements CommandInterface {
 				$rAll = true;
 			} elseif ($rArg === '--dry-run') {
 				$rDryRun = true;
-			} elseif (preg_match('/^[1-9]\d*$/', (string) $rArg)) {
+			} elseif (preg_match('/^[1-9]\d*\z/', (string) $rArg)) {
 				$rIDs[(int) $rArg] = (int) $rArg;
 			} else {
 				return "Unknown argument '{$rArg}'";
@@ -190,7 +190,7 @@ class ClusterReenrolCommand implements CommandInterface {
 	public static function readCredentials(string $rPath, bool $rKeep, ?string $rDir = null): array|string {
 		$rDir ??= InstallCredentials::dir();
 		$rReal = realpath($rPath);
-		if (realpath($rDir) === false || $rReal === false || dirname($rReal) !== realpath($rDir) || !preg_match('/^[A-Za-z0-9_-]+\.cred$/', basename($rReal)) || !is_file($rReal)) {
+		if (realpath($rDir) === false || $rReal === false || dirname($rReal) !== realpath($rDir) || !preg_match('/^[A-Za-z0-9_-]+\.cred\z/', basename($rReal)) || !is_file($rReal)) {
 			return 'it must be a .cred file in ' . $rDir;
 		}
 		if ((fileperms($rReal) & 0077) !== 0) {
@@ -229,7 +229,7 @@ class ClusterReenrolCommand implements CommandInterface {
 		}
 		$rOut = ['default' => $rDefault, 'nodes' => []];
 		foreach ($rNodes as $rID => $rEntry) {
-			if (!preg_match('/^[1-9]\d*$/', (string) $rID) || !is_array($rEntry)) {
+			if (!preg_match('/^[1-9]\d*\z/', (string) $rID) || !is_array($rEntry)) {
 				return "\"nodes\" must map server ids to entries (not '{$rID}')";
 			}
 			$rEntry = self::entry($rEntry);
