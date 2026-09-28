@@ -90,6 +90,7 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/ClusterDbAllowlistCommand.php \
 	Cli/Commands/ClusterRotateStreamSecretCommand.php \
 	Cli/Commands/ClusterRotateCredentialsCommand.php \
+	Cli/Commands/ClusterLockdownCommand.php \
 	Cli/Commands/ClusterEnrolCodeCommand.php \
 	Cli/Commands/ClusterEnrolApproveCommand.php \
 	Cli/Commands/ClusterPoolsCommand.php \

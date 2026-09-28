@@ -16,6 +16,10 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   use either port;
  * - the admin's `cluster_db_allowlist_extra` (IPs or CIDRs, one per line).
  *
+ * `cluster:lockdown` (ClusterLockdown) narrows the same chain to loopback,
+ * MAIN and the extra list, and keeps it on whatever the setting says, until
+ * `--undo`.
+ *
  * The rules live in a chain of their own, `XCVM_DB`, jumped to from INPUT for
  * the two ports; nothing else in the firewall is touched. reconcile() runs
  * every minute from the root signals cron: it compares the live chain with the
@@ -32,6 +36,14 @@ final class DbAllowlist {
 	public const CHAIN = 'XCVM_DB';
 
 	public const PORTS = [3306, 6379];
+
+	/**
+	 * `cluster_meta` row that cluster:lockdown writes (ClusterLockdown): while
+	 * it stands the chain is on whatever the setting says, and admits only
+	 * loopback, MAIN's own addresses and the admin's extra list — no load
+	 * balancer, no proxy.
+	 */
+	public const LOCKDOWN_META = 'db_lockdown';
 
 	/** @var callable(list<string>, ?string): array{0: int, 1: string} */
 	private $rExec;
@@ -149,7 +161,7 @@ final class DbAllowlist {
 		if (!$db->query('SELECT `cluster_db_allowlist` FROM `settings` LIMIT 1;')) {
 			return null;
 		}
-		$rOn = !empty($db->get_row()['cluster_db_allowlist']);
+		$rOn = !empty($db->get_row()['cluster_db_allowlist']) || self::lockedDown();
 		$rWanted = null;
 		if ($rOn) {
 			$rWanted = $this->wanted();
@@ -178,6 +190,10 @@ final class DbAllowlist {
 		if (!$rHasMain) {
 			return null;
 		}
+		if (self::lockedDown()) {
+			// Lockdown: MAIN's own addresses and the extra list only.
+			$rServers = array_values(array_filter($rServers, static fn(array $rServer): bool => !empty($rServer['is_main'])));
+		}
 		$rMode2 = [];
 		if ($db->query('SELECT `server_id` FROM `cluster_nodes` WHERE `mode` = 2;')) {
 			foreach ($db->get_rows() as $rRow) {
@@ -187,6 +203,15 @@ final class DbAllowlist {
 		$db->query('SELECT `cluster_db_allowlist_extra` FROM `settings` LIMIT 1;');
 		[$rExtra] = self::parseExtra((string) ($db->get_row()['cluster_db_allowlist_extra'] ?? ''));
 		return $this->compute($rServers, $rMode2, $rExtra);
+	}
+
+	/** Is MAIN locked down (cluster:lockdown, until --undo)? */
+	public static function lockedDown(): bool {
+		try {
+			return ClusterMeta::get(self::LOCKDOWN_META) !== null;
+		} catch (\Throwable) {
+			return false; // no cluster_meta table: never locked down
+		}
 	}
 
 	/**
