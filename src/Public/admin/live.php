@@ -1,12 +1,11 @@
 <?php
 
-use XcVm\Core\Auth\AuthService;
+use XcVm\Core\Cluster\RelayGuard;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
-use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\AdminStreamToken;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\Stream\StreamProcess;
@@ -44,9 +43,12 @@ if (!empty(RequestManager::get('uitoken'))) {
 	RequestManager::update('stream', $rToken->streamId);
 	RequestManager::update('extension', 'm3u8');
 	$rPrebuffer = $rSegmentSettings['seg_time'];
-} elseif (!AuthService::secretMatches(SettingsManager::get('live_streaming_pass'), RequestManager::get('password'))) {
+} elseif (($rAdmitted = RelayGuard::admit(intval(RequestManager::get('stream')), RequestManager::get('password'), $rIP, $_SERVER)) === null) {
+	// A child's relay ticket and node-key proof, or the legacy password from a
+	// server's address (RelayGuard; ADR 0004, Phase 8).
 	generate404();
-} elseif (!in_array($rIP, ServerRepository::getAllowedIPs())) {
+} elseif ($rAdmitted === RelayGuard::RELAY && RequestManager::get('extension') === 'm3u8') {
+	// A relay pulls the transport stream; the playlist's segment URLs carry the password.
 	generate404();
 } else {
 	$rPrebuffer = (RequestManager::has('prebuffer') ? $rSegmentSettings['seg_time'] : 0);

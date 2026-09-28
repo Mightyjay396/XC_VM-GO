@@ -40,7 +40,7 @@ use XcVm\Core\Updates\UpdateChannels;
  */
 class WebApiBootstrap {
 	/** Endpoints that read settings from the file cache instead of SQL. */
-	private const CACHED_ENDPOINTS = ['enigma2', 'epg', 'playlist', 'api', 'xplugin', 'live', 'proxy_api', 'thumb', 'timeshift', 'vod'];
+	private const CACHED_ENDPOINTS = ['enigma2', 'epg', 'playlist', 'api', 'xplugin', 'live', 'proxy_api', 'thumb', 'timeshift', 'vod', 'xfile'];
 
 	/**
 	 * Инициализирует web API контекст.

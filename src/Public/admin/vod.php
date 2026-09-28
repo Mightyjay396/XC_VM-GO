@@ -1,11 +1,10 @@
 <?php
 
-use XcVm\Core\Auth\AuthService;
+use XcVm\Core\Cluster\RelayGuard;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Util\StreamUtils;
-use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\AdminStreamToken;
 use XcVm\Domain\Stream\StreamSource;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -33,9 +32,8 @@ if (!empty(RequestManager::get('uitoken'))) {
 	}
 
 	RequestManager::update('stream', $rToken->streamId . '.' . $rToken->container);
-} elseif (!in_array($rIP, ServerRepository::getAllowedIPs())) {
-	generate404();
-} elseif (!AuthService::secretMatches(SettingsManager::get('live_streaming_pass'), RequestManager::get('password'))) {
+} elseif (RelayGuard::admit(intval(pathinfo((string) RequestManager::get('stream'), PATHINFO_FILENAME)), RequestManager::get('password'), $rIP, $_SERVER) === null) {
+	// A relay ticket naming the stream, or the legacy password from a server's address (RelayGuard).
 	generate404();
 }
 

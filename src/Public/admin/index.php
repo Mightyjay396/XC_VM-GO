@@ -33,6 +33,7 @@ $rRouteMap = [
 	'thumb'     => MAIN_HOME . 'Public/admin/thumb.php',
 	'timeshift' => MAIN_HOME . 'Public/admin/timeshift.php',
 	'vod'       => MAIN_HOME . 'Public/admin/vod.php',
+	'xfile'     => MAIN_HOME . 'Public/admin/xfile.php',
 ];
 
 if (!isset($rRouteMap[$rHandler]) || !file_exists($rRouteMap[$rHandler])) {

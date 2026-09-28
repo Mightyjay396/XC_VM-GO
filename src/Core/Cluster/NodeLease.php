@@ -101,6 +101,23 @@ final class NodeLease {
 		return self::judge($rSettings);
 	}
 
+	/**
+	 * MAIN's clock on this node, in milliseconds, as its agent last vouched
+	 * for it (`anchor_ms`) plus the time since it wrote that down; null when
+	 * the agent has written no anchor or stopped refreshing its file. It is
+	 * what a load balancer judges MAIN's tickets and its peers' proofs by
+	 * (RelayGuard, FileTicketServer): their times are MAIN's, as the peer's
+	 * agent measured them, not this host's.
+	 */
+	public static function mainNowMs(): ?int {
+		$rDoc = self::agentFile();
+		$rNowMs = (int) round(microtime(true) * 1000);
+		if ($rDoc === null || $rDoc['anchor_ms'] <= 0 || $rDoc['wrote_at_ms'] <= 0 || $rNowMs - $rDoc['wrote_at_ms'] > self::STALE_SEC * 1000) {
+			return null;
+		}
+		return $rDoc['anchor_ms'] + max(0, $rNowMs - $rDoc['wrote_at_ms']);
+	}
+
 	/** Tests: read another file, and forget what was read. */
 	public static function usePath(?string $rPath): void {
 		self::$rPath = $rPath;

@@ -92,6 +92,7 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <th><?= $language::get('cluster_content_flow'); ?></th>
                     <th><?= $language::get('cluster_config_flow'); ?></th>
                     <th><?= $language::get('cluster_connections_flow'); ?></th>
+                    <th><?= $language::get('cluster_dataplane_flow'); ?></th>
                     <th><?= $language::get('cluster_root_pin'); ?></th>
                     <th><?= $language::get('cluster_epoch'); ?></th>
                     <th><?= $language::get('cluster_token_expires'); ?></th>
@@ -138,7 +139,9 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                         <?php foreach (\XcVm\Domain\Cluster\ClusterAdmin::FLOW_BITS as $rFlowName => $rFlowBit): ?>
                         <td>
                             <?php $rOn = ((int) $rNode['flows'] & $rFlowBit) === $rFlowBit; ?>
-                            <?php if (in_array($rNode['state'], ['active', 'quarantined'], true)): ?>
+                            <?php if (!$rOn && $rFlowName === 'dataplane' && empty($rNode['relay']) && in_array($rNode['state'], ['active', 'quarantined'], true)): ?>
+                                <span class="btn btn-sm btn-label-secondary disabled" title="<?= $language::get('cluster_dataplane_needs_relay'); ?>"><?= $language::get('cluster_flow_off'); ?></span>
+                            <?php elseif (in_array($rNode['state'], ['active', 'quarantined'], true)): ?>
                                 <form method="POST" class="d-inline">
                                     <input type="hidden" name="server_id" value="<?= (int) $rNode['server_id']; ?>">
                                     <button type="submit" name="cluster_action" value="<?= $rFlowName . ($rOn ? '_off' : '_on'); ?>" class="btn btn-sm <?= $rOn ? 'btn-label-success' : 'btn-label-secondary'; ?>" title="<?= $language::get('cluster_' . $rFlowName . '_help'); ?>"><?= $language::get($rOn ? 'cluster_flow_on' : 'cluster_flow_off'); ?></button>

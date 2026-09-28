@@ -102,7 +102,7 @@ moves one part of its work to the agent and stands the legacy path down.
 | 16 | CONTENT | recordings, VOD analysis and the encoding queue go through MAIN |
 | 32 | CONFIG | the node's caches are built from the replica, not MAIN's database |
 | 64 | CONNECTIONS | the node's viewers live in its agent's registry |
-| 128 | DATAPLANE | the relay and file data plane (Phase 8, not built) |
+| 128 | DATAPLANE | relays and other servers' files go through the agent's loopback proxy, with tickets instead of the stream secret |
 
 `mode` is the node's independence:
 
@@ -113,7 +113,7 @@ moves one part of its work to the agent and stands the legacy path down.
 | 2 | api | every connect to MAIN's MariaDB or Redis is refused in code (`LbDatabaseAccessException`) |
 
 Moving a node up is gated (`ClusterAdmin::modeGate()`): mode 1 needs CONFIG; mode 2 needs
-every flow but the data plane **and** the node's own connect audit clean — zero MySQL and
+every flow, the data plane included, **and** the node's own connect audit clean — zero MySQL and
 zero Redis connects for seven days. Moving down is always allowed, because it is the way
 back. A crontab row whose role is `legacy` (today `cron:users`) is not sent to a node in
 mode 2 at all.
@@ -133,7 +133,7 @@ readers use (a shadow diff before the flow is on, so an operator sees what would
 | `cluster` | MAIN's URLs, the transport, the heartbeat, the panel keys, `min_proto` |
 | `secrets` | the viewer-token secret and `OPENSSL_EXTRA`, each with the value it replaced and how long that is still accepted |
 | `bouquets`, `categories` | as `cron:cache` builds them |
-| `streams` (R2) | one record per stream the node holds, kept by deltas and a resync |
+| `streams` (R2) | one record per stream the node holds, kept by deltas and a resync; with DATAPLANE on, its relay and file tickets too |
 
 ## Settings reference
 
@@ -208,18 +208,50 @@ misses, connect audit). Every decision is written to `cluster_audit`, which
 4. Switch STREAMS and CONTENT; watch the node's settings misses and its audit.
 5. Switch CONFIG, then `mode_up` to 1: the node now boots from its replica.
 6. `cluster:seed-connections`, then CONNECTIONS.
-7. Leave it for a week. When the node's connect audit shows zero MySQL and zero Redis
+7. DATAPLANE, once the node's parents and the servers whose files it reads are MAIN or
+   active nodes, and its agent runs the relay proxy (the page refuses the switch
+   otherwise): relays and file reads go through its agent from each stream's next start.
+8. Leave it for a week. When the node's connect audit shows zero MySQL and zero Redis
    connects for seven days, `mode_up` to 2.
-8. `cluster:db-allowlist apply` once every node is in mode 2.
+9. `cluster:db-allowlist apply` once every node is in mode 2.
 
 ## Limits
 
-- **The relay and file data plane is not built** (Phase 8). Cross-server pulls — a child
-  relaying a stream, a VOD or subtitle fetch, a created-channel source — still carry
-  `password=<live_streaming_pass>` in their URL, which means the secret is in the argv of
-  the processes that run them. The ticket and digest primitives exist
-  (`Core\Cluster\Crypto\Ticket`, `FileDigest`) and nothing uses them yet; `/xfile`, the
-  loopback URLs and the agent's relay proxy come with them, as one change.
+- **The data plane (Phase 8) covers what a node pulls from another server**, and only
+  while its DATAPLANE flow is on. A child relaying a stream, a VOD or subtitle fetch and a
+  created channel's items go through the agent's loopback proxy (`127.0.0.1:31290`), which
+  signs each upstream connect with a panel-signed ticket from the R2 streams section (a relay
+  ticket valid 24 h, a file ticket 6 h, both minted anew every 3 h and never moving a
+  record's ETag or version) and checks each 4 MiB chunk of a file against its owner's
+  signed digest. What it does not cover:
+  - A parent or owner that cannot check a ticket (a legacy server, not enrolled or not
+    active) is still reached with the legacy URL and its password, even with the flow on.
+  - Streams started before the flow was switched keep their URL until they restart.
+  - Relay bytes are authenticated at connect only, not framed: over plain HTTP they have no
+    integrity (plan, D11). Files do.
+  - The secret still appears on the node's own loopback: the local RTMP output
+    (`rtmp://127.0.0.1/live/<id>?password=`) and the recorder's pull from its own
+    `/admin/live` and `/admin/timeshift`.
+  - MAIN pulls nothing through it: MAIN has no flows, so a stream MAIN relays from a load
+    balancer, or a file MAIN reads from one, keeps the legacy URL. `xc_agent run -role main`
+    runs the listener alone, for when MAIN has an identity to sign with.
+  - A file ticket names the owner's box key as it was when minted: an owner re-enrolled
+    since cannot open it until the next epoch's ticket (at most 3 h).
+  - The node's own legacy `/api` stays served with the flow on. `api_legacy.conf` (Phase
+    8's second increment) retires it only once nothing reads the node's files with the
+    legacy `getFile` URL any more: its own flow on, and every server of the cluster, MAIN
+    included, an active node with its data plane on. MAIN reads a node's files with
+    `getFile` (a source probe, the certbot log) and has no data-plane client, so today no
+    node's `/api` is retired.
+  - The flow can be switched on only for a node whose agent runs the loopback relay proxy
+    (it says `relay` at hello): update `xc_agent` first. The agent publishes the loopback
+    key (`relay.key`) only while it holds `127.0.0.1:31290`, and the node's PHP checks
+    that the listener belongs to the key's owner. While the port is not the agent's (held
+    by another user, or the agent is stopped), the node's relays and file reads fail and
+    are retried: they never fall back to the stream secret.
+  - `/xfile` has its own rate limit (50 requests/s per server, burst 100, answered with a
+    429 the agent retries), apart from the viewers' 20 requests/s.
+  - `cluster:rotate-stream-secret` does not exist: retiring the password is Phase 9's.
 - **The licence lease is issued and checked, but not enforced** (Phase 9). Every token MAIN
   hands a node (enrolment over SSH or by code, `token_refresh`, `token_rekey`) carries a
   lease signed by `xcvm_core`, capped at `min(token_exp + lb_partition_tolerance_h, iat +

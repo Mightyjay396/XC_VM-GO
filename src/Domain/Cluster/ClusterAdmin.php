@@ -24,11 +24,35 @@ final class ClusterAdmin {
 		'content' => NodeRegistry::FLOW_CONTENT,
 		'config' => NodeRegistry::FLOW_CONFIG,
 		'connections' => NodeRegistry::FLOW_CONNECTIONS,
+		'dataplane' => NodeRegistry::FLOW_DATAPLANE,
 	];
 
-	/** Flows a node must have before it can run without MAIN's database: everything but the data plane (Phase 8). */
+	/**
+	 * What an agent says in hello's `features` once it runs the loopback relay
+	 * proxy (XC_VM_Fanout, relayproxy.go). DATAPLANE is switched on only for
+	 * such an agent: the flow points the node's encoders at 127.0.0.1:31290,
+	 * and with nothing of the agent's there every relay and file read would
+	 * fail until it was switched off again.
+	 */
+	public const FEATURE_RELAY = 'relay';
+
+	/**
+	 * Does this node's agent run the relay proxy (its `features` at hello)?
+	 *
+	 * @param array<string, mixed> $rNode a `cluster_nodes` row
+	 */
+	public static function relayAdvertised(array $rNode): bool {
+		return in_array(self::FEATURE_RELAY, explode(',', (string) ($rNode['features'] ?? '')), true);
+	}
+
+	/**
+	 * Flows a node must have before it can run without MAIN's database: every
+	 * one, the data plane included (Phase 8): a node in mode 2 pulls its relays
+	 * and files through its agent, with no stream secret in a URL.
+	 */
 	public const MODE2_FLOWS = NodeRegistry::FLOW_TELEMETRY | NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_LOGS
-		| NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT | NodeRegistry::FLOW_CONFIG | NodeRegistry::FLOW_CONNECTIONS;
+		| NodeRegistry::FLOW_STREAMS | NodeRegistry::FLOW_CONTENT | NodeRegistry::FLOW_CONFIG | NodeRegistry::FLOW_CONNECTIONS
+		| NodeRegistry::FLOW_DATAPLANE;
 
 	/** Days of zero MySQL and Redis connects a node must report before mode 2 (plan, section 11: the cutover gate). */
 	public const CUTOVER_CLEAN_DAYS = 7;
@@ -39,7 +63,7 @@ final class ClusterAdmin {
 	 * Going down is always allowed: it is the way back when a node misbehaves.
 	 * Going up to 1 needs the config replica, because that is what a node boots
 	 * from. Going up to 2 stops the node reaching MAIN's database at all, so it
-	 * needs every flow but the data plane, root's pin in place (`root_ready`:
+	 * needs every flow, the data plane included, root's pin in place (`root_ready`:
 	 * root actions then reach it only as node.root commands), and the node's own
 	 * connect audit must show it has not opened MySQL or Redis for CUTOVER_CLEAN_DAYS.
 	 *
@@ -84,14 +108,15 @@ final class ClusterAdmin {
 	/**
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll(true)
 	 * @return list<array<string, mixed>> One row per enrolled node, with `server_name`, `health`,
-	 *                                    `settings_misses` and `connects` (NodeAudit; null when not reported).
+	 *                                    `settings_misses` and `connects` (NodeAudit; null when not reported),
+	 *                                    and `relay` (its agent runs the relay proxy).
 	 */
 	public static function nodes(array $rServers, int $rOfflineAfterSec): array {
 		$rReady = ClusterMeta::readyAtMs(); // its own query: before ours, not between query() and get_rows()
 		$rReports = NodeAudit::reports(); // likewise
 		$rHeard = HeartbeatService::lastSeen(); // MySQL's copy may be a flush behind
 		$rNow = ClusterClock::nowMs();
-		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `arch`, `quarantine_reason` FROM `cluster_nodes` ORDER BY `server_id`;');
+		self::db()->query('SELECT `server_id`, `node_uuid`, `state`, `mode`, `flows`, `root_ready`, `gen`, `epoch`, `token_exp`, `last_seen_at`, `agent_version`, `arch`, `quarantine_reason`, `features` FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rOut = [];
 		foreach (self::db()->get_rows() as $rRow) {
 			$rLastSeen = HeartbeatService::freshest($rRow['last_seen_at'], $rHeard[(int) $rRow['server_id']] ?? null);
@@ -100,6 +125,7 @@ final class ClusterAdmin {
 			$rRow['health'] = $rRow['state'] === 'active' ? NodeHealth::state($rLastSeen, $rReady, $rNow, $rOfflineAfterSec) : (string) $rRow['state'];
 			$rRow['settings_misses'] = $rReports[(int) $rRow['server_id']]['settings_misses'] ?? null;
 			$rRow['connects'] = NodeAudit::connectsOf($rReports[(int) $rRow['server_id']] ?? null);
+			$rRow['relay'] = self::relayAdvertised($rRow);
 			$rOut[] = $rRow;
 		}
 		return $rOut;
@@ -199,11 +225,16 @@ final class ClusterAdmin {
 				case 'config_off':
 				case 'connections_on':
 				case 'connections_off':
+				case 'dataplane_on':
+				case 'dataplane_off':
 					$rNode = NodeRegistry::byServer($rServerID);
 					if ($rNode === null || !in_array($rNode['state'], ['active', 'quarantined'], true)) {
 						return ['type' => 'info', 'message' => 'cluster_not_enrolled'];
 					}
 					[$rName, $rSwitch] = explode('_', $rAction);
+					if ($rAction === 'dataplane_on' && !self::relayAdvertised($rNode)) {
+						return ['type' => 'warning', 'message' => 'cluster_dataplane_needs_relay'];
+					}
 					$rBit = self::FLOW_BITS[$rName];
 					$rFlows = $rSwitch === 'on' ? ((int) $rNode['flows'] | $rBit) : ((int) $rNode['flows'] & ~$rBit);
 					if (!NodeRegistry::validFlows($rFlows)) {

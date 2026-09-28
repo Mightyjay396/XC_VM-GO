@@ -392,16 +392,16 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertStringContainsString('Updating Crons...', $rResult['output'][0], 'the replica\'s jobs, not MAIN\'s table');
 		$this->assertContains('sudo iptables -I INPUT -s 203.0.113.1 -j DROP', $this->commands(), 'the blocklist from the replica');
 		$this->assertSame([], preg_grep('/^ip /', $this->commands()), 'no server IP check on a node');
-		// This fixture's node has every flow, the data plane included, so the
-		// legacy `/api` — whose auth is a password in a URL — is 404 here.
-		$this->assertSame('set $api_legacy 0;', trim((string) file_get_contents($this->rHome . 'bin/nginx/conf/api_legacy.conf')));
+		// This fixture's node has every flow, the data plane included, but MAIN
+		// is no node and still reads the node's files with getFile (a source
+		// probe, the certbot log): the legacy `/api` stays served.
+		$this->assertSame('set $api_legacy 1;', trim((string) file_get_contents($this->rHome . 'bin/nginx/conf/api_legacy.conf')));
 	}
 
 	/**
 	 * Without the data plane the legacy `/api` stays served, whatever else the
 	 * node has moved: MAIN still reaches it that way for a relay's sources, a
-	 * cross-server VOD pull and a created channel. No node has DATAPLANE today,
-	 * so this is every fleet.
+	 * cross-server VOD pull and a created channel.
 	 */
 	public function testTheLegacyApiStaysServedWithoutTheDataPlane(): void {
 		$this->node([], NodeFlows::DATAPLANE);

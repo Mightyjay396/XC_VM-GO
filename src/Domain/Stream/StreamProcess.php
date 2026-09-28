@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Stream;
 
+use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\ReplicaStreamCache;
@@ -352,7 +353,7 @@ class StreamProcess {
 					// URL-encode the raw path, then quote the whole URL for the shell.
 					// (Encoding the already shell-quoted path sent the quotes along,
 					// so the remote server looked up a filename that does not exist.)
-					$rSubtitlesImport .= '-sub_charenc ' . $rInputCharset . ' -i ' . escapeshellarg($rServers[$rSubtitles['location']]['api_url'] . '&action=getFile&filename=' . urlencode($rSubtitles['files'][$i])) . ' ';
+					$rSubtitlesImport .= '-sub_charenc ' . $rInputCharset . ' -i ' . escapeshellarg(DataPlane::fileUrl($rServers, intval($rSubtitles['location']), (string) $rSubtitles['files'][$i])) . ' ';
 				}
 			}
 			for ($i = 0; $i < $rCount; $i++) {
@@ -449,7 +450,7 @@ class StreamProcess {
 			$rSourcePath = $rSplit[2];
 			if ($rServerID != SERVER_ID && !self::isLocallyMountedPath($rSplit[2])) {
 				if (is_array($rServers) && isset($rServers[$rServerID])) {
-					$rSourcePath = $rServers[$rServerID]['api_url'] . '&action=getFile&filename=' . urlencode($rSplit[2]);
+					$rSourcePath = DataPlane::fileUrl($rServers, $rServerID, $rSplit[2]);
 				} else {
 					$rSourcePath = $rSplit[2];
 				}
@@ -1485,8 +1486,8 @@ class StreamProcess {
 		}
 
 		if ($rParentID > 0) {
-			$rLoopURL = (!is_null($rServers[SERVER_ID]['private_url_ip']) && !is_null($rServers[$rParentID]['private_url_ip']) ? $rServers[$rParentID]['private_url_ip'] : $rServers[$rParentID]['public_url_ip']);
-			$rSources = [$rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts'];
+			// Through the node's agent with DATAPLANE on (no secret in the command line), else the legacy URL.
+			$rSources = [DataPlane::relayUrl($rServers, $rParentID, intval($rStreamID), (string) $rSettings['live_streaming_pass'])];
 			$rLabels = ['Loopback: #' . $rParentID];
 		} else {
 			$rSources = array_values(array_filter(array_map('trim', (array) json_decode((string) $rInfo['stream_source'], true)), static fn(string $source): bool => $source !== ''));
@@ -2200,7 +2201,7 @@ class StreamProcess {
 					$rMovieSource = explode(':', $rStreamSource, 3);
 					$rMovieServerID = $rMovieSource[1];
 					if ($rMovieServerID != SERVER_ID && !self::isLocallyMountedPath($rMovieSource[2])) {
-						$rMoviePath = $rServers[$rMovieServerID]['api_url'] . '&action=getFile&filename=' . urlencode($rMovieSource[2]);
+						$rMoviePath = DataPlane::fileUrl($rServers, intval($rMovieServerID), $rMovieSource[2]);
 					} else {
 						// Recorded owner is a different server, but the path also
 						// resolves on THIS server's filesystem (shared mount) use
@@ -2308,11 +2309,10 @@ class StreamProcess {
 					self::writeStreamKeyIv($rStreamID);
 					shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php loopback ' . intval($rStreamID) . ' ' . intval($rStream['server_info']['parent_id']) . ' >/dev/null 2>/dev/null & echo $! > ' . STREAMS_PATH . intval($rStreamID) . '_.pid');
 					$rPID = intval(file_get_contents(STREAMS_PATH . $rStreamID . '_.pid'));
-					$rLoopURL = (!is_null($rServers[SERVER_ID]['private_url_ip']) && !is_null($rServers[$rStream['server_info']['parent_id']]['private_url_ip']) ? $rServers[$rStream['server_info']['parent_id']]['private_url_ip'] : $rServers[$rStream['server_info']['parent_id']]['public_url_ip']);
-					$rCurrentSource = $rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts';
+					$rCurrentSource = DataPlane::relayUrl($rServers, intval($rStream['server_info']['parent_id']), intval($rStreamID), (string) $rSettings['live_streaming_pass']);
 					StreamStateWriter::update(intval($rStreamID), intval(SERVER_ID), ['delay_available_at' => null, 'to_analyze' => 0, 'stream_started' => time(), 'stream_info' => null, 'stream_status' => 2, 'pid' => $rPID, 'progress_info' => json_encode([]), 'current_source' => $rCurrentSource], $db);
 					self::updateStream($rStreamID);
-					return ['main_pid' => $rPID, 'stream_source' => $rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts', 'delay_enabled' => false, 'parent_id' => 0, 'delay_start_at' => null, 'playlist' => STREAMS_PATH . $rStreamID . '_.m3u8', 'transcode' => false, 'offset' => 0];
+					return ['main_pid' => $rPID, 'stream_source' => $rCurrentSource, 'delay_enabled' => false, 'parent_id' => 0, 'delay_start_at' => null, 'playlist' => STREAMS_PATH . $rStreamID . '_.m3u8', 'transcode' => false, 'offset' => 0];
 				}
 				return 0;
 			}
@@ -2453,8 +2453,7 @@ class StreamProcess {
 						$rLLOD = true;
 					}
 
-					$rLoopURL = (!is_null($rServers[SERVER_ID]['private_url_ip']) && !is_null($rServers[$rStream['server_info']['parent_id']]['private_url_ip']) ? $rServers[$rStream['server_info']['parent_id']]['private_url_ip'] : $rServers[$rStream['server_info']['parent_id']]['public_url_ip']);
-					$rSources = [$rLoopURL . 'admin/live?stream=' . intval($rStreamID) . '&password=' . urlencode($rSettings['live_streaming_pass']) . '&extension=ts'];
+					$rSources = [DataPlane::relayUrl($rServers, intval($rStream['server_info']['parent_id']), intval($rStreamID), (string) $rSettings['live_streaming_pass'])];
 				}
 
 				if ($rStream['stream_info']['type_key'] == 'created_live' && file_exists(CREATED_PATH . $rStreamID . '_.info')) {

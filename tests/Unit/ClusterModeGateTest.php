@@ -6,12 +6,11 @@ use XcVm\Domain\Cluster\NodeRegistry;
 
 /**
  * ClusterAdmin::modeGate() — what an operator may do to a node's mode. Mode 2
- * stops the node reaching MAIN's database, so it is gated on every flow but the
- * data plane and on the node's own connect audit (plan, section 11: zero MySQL
+ * stops the node reaching MAIN's database, so it is gated on every flow (the
+ * data plane included, since Phase 8) and on the node's own connect audit (plan, section 11: zero MySQL
  * and zero Redis connects for seven days).
  */
 final class ClusterModeGateTest extends TestCase {
-
 	private const NOW = 1790000000;
 	private const CLEAN = ['sql_connects' => 0, 'redis_connects' => 0, 'connects_since' => self::NOW - 8 * 86400];
 
@@ -36,14 +35,17 @@ final class ClusterModeGateTest extends TestCase {
 		$this->assertTrue($this->gate($this->node(0, NodeRegistry::FLOW_CONFIG), 1)[0]);
 	}
 
-	public function testModeTwoNeedsEveryFlowButTheDataPlane(): void {
+	public function testModeTwoNeedsEveryFlowTheDataPlaneIncluded(): void {
 		[$rOk, $rWhy] = $this->gate($this->node(1, NodeRegistry::FLOW_CONFIG), 2, self::CLEAN);
 		$this->assertFalse($rOk);
 		$this->assertSame('cluster_mode_needs_flows', $rWhy);
 
 		$this->assertTrue($this->gate($this->node(1, ClusterAdmin::MODE2_FLOWS), 2, self::CLEAN)[0]);
-		// The data plane is Phase 8 and must not be required.
-		$this->assertSame(0, ClusterAdmin::MODE2_FLOWS & NodeRegistry::FLOW_DATAPLANE);
+		// Phase 8: a node in mode 2 puts no stream secret in a URL either.
+		$this->assertSame(NodeRegistry::FLOW_DATAPLANE, ClusterAdmin::MODE2_FLOWS & NodeRegistry::FLOW_DATAPLANE);
+		[$rOk, $rWhy] = $this->gate($this->node(1, ClusterAdmin::MODE2_FLOWS & ~NodeRegistry::FLOW_DATAPLANE), 2, self::CLEAN);
+		$this->assertFalse($rOk);
+		$this->assertSame('cluster_mode_needs_flows', $rWhy);
 	}
 
 	public function testModeTwoNeedsASevenDayCleanAudit(): void {

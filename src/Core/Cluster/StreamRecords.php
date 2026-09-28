@@ -128,7 +128,8 @@ final class StreamRecords {
 				'server' => $rServers[$rID] ?? null,
 				'children' => array_values(array_unique($rChildren[$rID] ?? [])),
 				'recordings' => $rRecordings[$rID] ?? [],
-				// Phase 8: the relay and file tickets a node pulls this stream with.
+				// Phase 8: the relay and file tickets a node pulls this stream with,
+				// which MAIN fills after taking the ETag with them null (TicketService).
 				'tickets' => null,
 			]);
 		}
