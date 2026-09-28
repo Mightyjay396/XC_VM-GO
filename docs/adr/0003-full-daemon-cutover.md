@@ -1,9 +1,26 @@
 # ADR 0003 — Full live-delivery cutover to `xc_fanout` (retire the legacy byte path)
 
-- **Status:** Accepted — in progress. Phases 0/A/B/D done & box-validated; **Phase C essentially complete** (C4 folds into G); **E** = E1 + dead-code done, E2/E3 gated (fallback); **F cancelled**; **G** = daemon proven functional on the first LB, productionisation remains. (updated 2026-08-17)
+- **Status:** Accepted, **amended 2026-09-25** — see **Amendment (2026-09-25)** below. Fanout is no longer the only live path: `settings.fanout_enabled` switches it off and the pre-fanout delivery paths serve live viewers again. That supersedes Phase 0 ("no flag"), §2 "Legacy deleted", Phase E's deletions (E1–E3, restored), and "stopping the daemon is the rollback". Phases A/B/D done & box-validated; Phase C essentially complete (C4 folds into G); F cancelled; G productionised on the first LB. (Phase progress last updated 2026-08-17.)
 - **Date:** 2026-08-16 (rev. 2026-08-17)
 - **Builds on:** ADR 0001 (tmpfs-free streaming), ADR 0002 (`xc_fanout` daemon). S3 (proxy live TS) + P3 (in-RAM HLS) are box-validated.
 - **Goal (from Danil):** make the daemon the **single, always-on** delivery layer for **all live streams** — proxy *and* non-proxy, TS *and* HLS — then delete the legacy byte-path code that becomes unused.
+
+## Amendment (2026-09-25) — fanout can be switched off
+
+**Decision (from the user):** "Fanout must be possible to disable and use the method from before fanout existed." Fanout stays the default, but it is now a mode an admin can turn off, not the single delivery layer. This supersedes the parts of this ADR that assumed a one-way cutover:
+
+- **Phase 0's "no flag"** — there is a flag again. `settings.fanout_enabled` (migration `027_add_fanout_enabled.sql`, `tinyint(1)`, default `1`; admin toggle "Fanout Delivery") is the master switch, read through `Streaming\Fanout\FanoutMode::enabled()`. A settings array without the key reads as on, so a database from before migration 027 keeps fanout.
+- **§2 "Legacy deleted" and Phase E1–E3** — the pre-fanout paths are back, restored from git history by commits `79088ff` (the switch) and `60b471d` (the delivery paths). With fanout off:
+  - proxy streams: `StreamProcess::startProxy()` starts `ProxyCommand` (`XC_VMProxy[<id>]`) and `live.php` relays its datagrams from the viewer's unix socket (E1 reversed);
+  - non-proxy TS: `live.php` chase-reads the on-disk segments with `SegmentReader` (E2 reversed);
+  - HLS: `live.php` serves `HLSGenerator::generateHLS()` over the on-disk playlist, and `segment.php`'s LIVE branch serves on-disk segments through X-Accel `/xc_hls/` (AES-128-encrypting on first read) and burns a pending send-message signal with `SignalSender` (E3 reversed);
+  - supervision falls back to the PHP monitor, and the PHP producers (LLOD, loopback, delay) skip the daemon feed.
+  `FanoutMode::applyToNode()` also stops the daemon on every node: it writes the flag file `bin/xc_fanout/disabled`, then stops `run.sh` and `xc_fanout`. It runs on MAIN when settings are saved and on every node from `RootSignalsCronJob` each minute; the keepalive, the hourly `fanout_binary` self-heal, `service boot` and `run.sh` all honour the flag. E4 (`CONS_TMP_PATH`) was never deleted.
+- **The licence gate** — `FanoutMode::legacyDelivery()` is true when fanout is off **or** `LicenseGate::fanoutAllowed()` is false, so an unlicensed install takes the pre-fanout paths too. `LicenseGate::fanoutUsable()` requires `FanoutMode::enabled()`, the control socket, and `fanoutAllowed()`.
+- **"Stopping the daemon is the rollback"** — no longer true. With fanout on and the daemon down (crash, deploy, stale socket), live viewers get **not-on-air** until the keepalive restarts it; `segment.php` still 404s a non-daemon LIVE segment. The legacy paths run only when `legacyDelivery()` is true. **The rollback is `fanout_enabled = 0`**, not stopping the daemon.
+- **Per-stream supervision by the daemon** (XC_VM_Fanout ADR 0002, "Move the per-stream monitor into the daemon", as amended 2026-09-28) is **on by default**, via `settings.fanout_supervise` (migration `018_add_fanout_supervise.sql`, default `1`). Clearing it (`0`) hands supervision back to the PHP monitor while fanout keeps delivering. `fanout_enabled = 0` still turns everything off — with fanout off, no stream is handed to the daemon and the PHP monitor supervises all of them.
+
+Sections below keep their original text as the record of the cutover; where they say "no flag", "legacy deleted" or "stop the daemon to fall back", read this amendment instead.
 
 ## Progress snapshot (2026-08-17)
 
@@ -59,6 +76,8 @@ The daemon is a **live fan-out engine**: one ingest per stream → many viewers,
 ---
 
 ## 3. Phases (each reversible — the daemon's reachability is the switch; stop it to fall back)
+
+> **Superseded 2026-09-25:** the switch is `settings.fanout_enabled`, and stopping the daemon no longer falls back — see **Amendment (2026-09-25)** at the top.
 
 **Phase 0 — ~~Schema/enablement~~ (dropped).**
 The original plan added a `live_fanout` settings column + admin toggle. **Removed** (done): for a *permanent* cutover a runtime settings flag is throwaway scaffolding, and a settings column that ends up always-1 is dead weight (cf. P1's dormant `hls_accelerator`). **The switch is the daemon itself.** `live.php` routes a proxy stream to the daemon iff its control socket is present *and* `FanoutClient::register` succeeds; otherwise the full legacy path runs (producer included). So **stopping the daemon is the rollback** — every stream falls back automatically, per node, with no DB write, no cache rebuild, no admin UI, and self-healing (crash → keepalive → back). Which *stream types* the daemon handles stays a code decision (proxy now; +non-proxy after Phase A), which is the granularity that actually matters. The test-box `live_fanout` column was dropped.

@@ -1,6 +1,6 @@
 # ADR 0001 — Tmpfs-free streaming: PHP out of the byte path, native fan-out, in-RAM HLS
 
-- **Status:** Accepted — P0–P3 and P6 shipped; P4 partial (`fanout_sync` reconciles the daemon's `GET /connections` and `/rates` into `lines_live` / `lines_divergence`; the Redis registry of §2.4 is not built, and the `opened_cons`/`divergence` writers remain); P5 cancelled by the later [ADR 0003](0003-full-daemon-cutover.md), Phase F (on-disk HLS and the streaming tmpfs mount stay).
+- **Status:** Accepted — P0–P3 and P6 shipped; P4's Redis connection telemetry (§2.4: `conn:<uuid>`, `stream:<id>:conns`) is **superseded** and will not be built — replaced by the light P4 of [ADR 0002](0002-xc-fanout-daemon.md) §2.5 (`fanout_sync` reconciles the daemon's `GET /connections` and `/rates` into `lines_live` / `lines_divergence`) and by the agent's connection registry of [ADR 0004](0004-cluster-api.md) (Phase 6); the `opened_cons`/`divergence` writers remain; P5 cancelled by the later [ADR 0003](0003-full-daemon-cutover.md), Phase F (on-disk HLS and the streaming tmpfs mount stay).
 - **Date:** 2026-08-16
 - **Scope of this iteration:** MAIN node first; LB rollout is a later phase (same components, provisioned via `LbInstallFlow`/binaries release).
 - **Decision drivers:** hard ceiling at ~400 concurrent connections; goal to remove the tmpfs mounts entirely and deliver live/HLS/MPEG-TS purely over pipes/sockets.
@@ -66,6 +66,8 @@ Replace the two separate ffmpeg invocations (HLS segmenter writing to tmpfs; pro
 
 ### 2.4 Connection telemetry → Redis (replaces `opened_cons` + `divergence`)
 
+> **Superseded.** The Redis keys below (`conn:<uuid>`, `stream:<id>:conns`) were not built and will not be. Connection telemetry went two other ways: the light P4 of ADR 0002 §2.5 — `fanout_sync` reconciles the daemon's `GET /connections` and `GET /rates` into `lines_live` / `lines_divergence` — and, on a cluster node with the CONNECTIONS flow on, the agent's connection registry (ADR 0004, "Connections (Phase 6, third increment)" onward).
+
 Redis is already bundled (`Infrastructure/Redis/RedisManager`, `Core/Cache/RedisCache`). Move the tmpfs touch-file registry into Redis, written by `xc_fanout` (authoritative on connect/disconnect) and read by the panel/crons:
 
 - `conn:<uuid>` (hash: stream_id, user_id, ip, started_at, bytes, bitrate) with TTL heartbeat — replaces `CONS_TMP_PATH/<uuid>` and `DIVERGENCE_TMP_PATH/<uuid>`.
@@ -89,7 +91,7 @@ Each phase is independently shippable and guarded by a feature flag (`settings` 
 - **P1 — HLS off PHP (HLS-B).** Add `X-Accel-Redirect` in `segment.php`/`live.php` HLS path → nginx `internal` location over `STREAMS_PATH`; PHP does auth only. No runtime flag — X-Accel is the sole path (a PHP/nginx toggle was deliberately dropped to keep the code simple); rollback via `git revert` + redeploy. **Biggest win / smallest change.**
 - **P2 — `xc_fanout` live fan-out.** New daemon ingests `-f mpegts -`, serves `GET /live/<id>`; nginx `proxy_pass` + `auth_request` replaces the `socket_read` loop in `live.php`. Retire proxy-mode datagram sockets. Flag: `live_fanout`. **Removes the worker-per-viewer ceiling.**
 - **P3 — `xc_fanout` in-RAM HLS (HLS-A).** Daemon segments the same feed in memory; nginx serves `/hls/*` from the daemon. Drop `-hls_segment_filename`. Flag: `hls_inmem`.
-- **P4 — Telemetry → Redis.** Daemon emits connect/disconnect/bytes to Redis; repoint `ConnectionTracker`, `UsersCronJob`, `StreamsCronJob`, `SignalsCommand`, admin monitor. Remove `opened_cons`/`divergence` writers.
+- **P4 — Telemetry → Redis.** _(Superseded — see §2.4: ADR 0002 §2.5's light P4 and ADR 0004's Phase 6 agent connection registry.)_ Daemon emits connect/disconnect/bytes to Redis; repoint `ConnectionTracker`, `UsersCronJob`, `StreamsCronJob`, `SignalsCommand`, admin monitor. Remove `opened_cons`/`divergence` writers.
 - **P5 — Drop tmpfs.** Remove the two fstab mounts (`install`, `LbInstallFlow`) and the ramdisk toggle (`RootSignalsCronJob`); repoint any residual `TMP_PATH` scratch to real disk/Redis. Verify no code path assumes a tmpfs mount.
 - **P6 — LB rollout.** Package `xc_fanout` in the binaries release; extend `LbInstallFlow` to install/supervise it and ship the new nginx config; canary a subset of LB nodes.
 
