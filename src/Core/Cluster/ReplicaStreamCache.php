@@ -110,7 +110,7 @@ final class ReplicaStreamCache {
 		if ($rServer !== null && (!is_array($rServer) || ($rServer['server_id'] ?? null) !== $rServerID || ($rServer['stream_id'] ?? null) !== $rID)) {
 			return null;
 		}
-		if (!self::listOf($rData['options'] ?? [], 'is_array') || !self::listOf($rData['children'] ?? [], 'is_int') || !self::listOf($rData['recordings'] ?? [], 'is_array')) {
+		if (!ReplicaRecords::listOf($rData['options'] ?? [], 'is_array') || !ReplicaRecords::listOf($rData['children'] ?? [], 'is_int') || !ReplicaRecords::listOf($rData['recordings'] ?? [], 'is_array')) {
 			return null;
 		}
 		$rArguments = [];
@@ -184,8 +184,8 @@ final class ReplicaStreamCache {
 		if (in_array($rID, self::unreadable(), true)) {
 			return null;
 		}
-		$rDoc = json_decode((string) @file_get_contents(ReplicaApply::dir() . 'streams/' . $rID . '.json'), true);
-		if (!is_array($rDoc) || !is_array($rDoc['data'] ?? null) || !is_string($rDoc['etag'] ?? null) || !is_int($rDoc['ver'] ?? null)) {
+		$rDoc = ReplicaRecords::storedStream(ReplicaApply::dir(), $rID);
+		if ($rDoc === null) {
 			return null;
 		}
 		$rEntry = self::entry($rID, $rDoc['data'], defined('SERVER_ID') ? (int) SERVER_ID : 0, $rDoc['etag'], $rDoc['ver']);
@@ -341,26 +341,6 @@ final class ReplicaStreamCache {
 	 * @return list<int>
 	 */
 	public static function cached(): array {
-		$rOut = [];
-		foreach (glob(self::store()->getBasePath() . '*') ?: [] as $rFile) {
-			$rName = basename($rFile);
-			if (preg_match('/^[1-9][0-9]{0,9}\z/', $rName)) {
-				$rOut[] = (int) $rName;
-			}
-		}
-		sort($rOut);
-		return $rOut;
-	}
-
-	private static function listOf(mixed $rList, callable $rIs): bool {
-		if (!is_array($rList) || !array_is_list($rList)) {
-			return false;
-		}
-		foreach ($rList as $rEntry) {
-			if (!$rIs($rEntry)) {
-				return false;
-			}
-		}
-		return true;
+		return FileIds::of(glob(self::store()->getBasePath() . '*') ?: [], '', false);
 	}
 }

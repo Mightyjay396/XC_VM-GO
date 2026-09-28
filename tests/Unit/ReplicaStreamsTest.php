@@ -66,6 +66,12 @@ final class ReplicaStreamsTest extends TestCase {
 		$this->assertNull(ReplicaStreams::archives(5));
 		file_put_contents($this->rDir . 'streams/13.json', '{');
 		$this->assertNull(ReplicaStreams::assigned());
+		// Its own stream's data, but not the file the agent writes: the apply
+		// and the stream caches take no entry from it, so neither does the list.
+		foreach (['no version' => ['etag' => str_repeat('a', 64)], 'no etag' => ['ver' => 3], 'a version that is not an integer' => ['etag' => str_repeat('a', 64), 'ver' => '3']] as $rWhy => $rDoc) {
+			file_put_contents($this->rDir . 'streams/13.json', json_encode($rDoc + ['data' => ['stream' => ['id' => 13, 'type' => 2]]]));
+			$this->assertNull(ReplicaStreams::records(), $rWhy);
+		}
 		unlink($this->rDir . 'streams/13.json');
 		file_put_contents($this->rDir . 'streams/notes.json', '{}');
 		$this->assertNull(ReplicaStreams::records(), 'a file that names no stream');

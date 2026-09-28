@@ -49,8 +49,8 @@ final class ReplicaStreams {
 		}
 		$rOut = [];
 		foreach ($rIDs as $rID) {
-			$rRecord = json_decode((string) @file_get_contents(ReplicaApply::dir() . 'streams/' . $rID . '.json'), true);
-			$rData = is_array($rRecord) ? ($rRecord['data'] ?? null) : null;
+			// The file's whole shape, as every reader of it checks, then its id.
+			$rData = ReplicaRecords::storedStream(ReplicaApply::dir(), $rID)['data'] ?? null;
 			if (!is_array($rData) || !is_array($rData['stream'] ?? null) || ($rData['stream']['id'] ?? null) !== $rID) {
 				return null;
 			}
@@ -89,16 +89,7 @@ final class ReplicaStreams {
 		if ($rFiles === false) {
 			return null;
 		}
-		$rOut = [];
-		foreach ($rFiles as $rFile) {
-			$rName = basename($rFile, '.json');
-			if (!preg_match('/^[1-9][0-9]{0,9}\z/', $rName)) {
-				return false;
-			}
-			$rOut[] = (int) $rName;
-		}
-		sort($rOut);
-		return $rOut;
+		return FileIds::of($rFiles, '.json', true);
 	}
 
 	/**
