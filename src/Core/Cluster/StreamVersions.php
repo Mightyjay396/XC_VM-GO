@@ -43,7 +43,11 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * node (ContainerPopulateStage, and MAIN's cluster API), and a legacy load
  * balancer still writes MAIN's database for its recordings. Recording never
  * fails the change itself: a version that could not be written leaves the
- * change to the section hashes the agent sends every 5 minutes.
+ * change to the section hashes the agent sends every 5 minutes. The one
+ * exception is a change dispatched inside the writer's open transaction:
+ * there a failure throws to the writer, for a deadlock may have rolled back
+ * its whole transaction (transaction()). A writer that must not fail for it
+ * dispatches after its commit, as EventIngest does.
  */
 final class StreamVersions {
 	/** cluster_meta: the newest version handed out. */
@@ -70,8 +74,8 @@ final class StreamVersions {
 			return 0;
 		}
 		sort($rIDs);
-		return self::transaction($rDb, static function (object $rDb) use ($rIDs): int {
-			$rHi = self::advance($rDb, count($rIDs));
+		return self::transaction($rDb, static function (object $rDb, bool $rOwn) use ($rIDs): int {
+			$rHi = self::advance($rDb, count($rIDs), $rOwn);
 			$rVer = array_combine($rIDs, range($rHi - count($rIDs) + 1, $rHi));
 			$rNow = time();
 			foreach (array_chunk($rIDs, self::CHUNK) as $rChunk) {
@@ -94,8 +98,8 @@ final class StreamVersions {
 	 * @return int the new floor; 0 when it could not be recorded
 	 */
 	public static function reset(?object $rDb = null): int {
-		return self::transaction($rDb, static function (object $rDb): int {
-			$rHi = self::advance($rDb, 1);
+		return self::transaction($rDb, static function (object $rDb, bool $rOwn): int {
+			$rHi = self::advance($rDb, 1, $rOwn);
 			self::put($rDb, self::META_FLOOR, $rHi);
 			return $rHi;
 		});
@@ -216,14 +220,22 @@ final class StreamVersions {
 	 * starts past every version a row holds, as migration 047 starts it: a
 	 * version below a node's cursor would never reach it by a delta.
 	 *
+	 * Two bumps can both find it missing, and the second's INSERT fails.
+	 * Inside the caller's transaction ($rOwn false) that failure throws
+	 * instead of being taken for the other bump's: it may be a deadlock
+	 * that rolled the caller's transaction back (transaction()).
+	 *
 	 * @return int the highest of them
 	 */
-	private static function advance(object $rDb, int $rCount): int {
+	private static function advance(object $rDb, int $rCount, bool $rOwn): int {
 		self::run($rDb, 'UPDATE `cluster_meta` SET `value` = CAST(`value` AS UNSIGNED) + ?, `updated_at` = ? WHERE `name` = ?;', $rCount, time(), self::META_HEAD);
 		if ($rDb->num_rows() < 1) {
 			self::run($rDb, 'SELECT MAX(`ver`) AS `ver` FROM `cluster_stream_ver`;');
 			$rStart = max(self::START, (int) ($rDb->get_row()['ver'] ?? 0));
 			if (!$rDb->query('INSERT INTO `cluster_meta` (`name`, `value`, `updated_at`) VALUES (?, ?, ?);', self::META_HEAD, (string) ($rStart + $rCount), time())) {
+				if (!$rOwn) {
+					throw new \RuntimeException('stream versions: the counter could not be created');
+				}
 				// Another bump created the row first.
 				self::run($rDb, 'UPDATE `cluster_meta` SET `value` = CAST(`value` AS UNSIGNED) + ?, `updated_at` = ? WHERE `name` = ?;', $rCount, time(), self::META_HEAD);
 			}
@@ -265,20 +277,33 @@ final class StreamVersions {
 	}
 
 	/**
-	 * Run $rWork in a transaction of its own (inside the caller's, when one is
-	 * open); anything that fails rolls it back and records nothing.
+	 * Run $rWork in a transaction of its own; anything that fails rolls it
+	 * back and records nothing (0).
 	 *
-	 * @param callable(object): int $rWork
+	 * Inside the caller's open transaction it runs in that one, and a failure
+	 * throws to the caller instead: a statement that failed there may be a
+	 * deadlock, which rolled back the caller's whole transaction. Swallowed,
+	 * the caller's next statements would autocommit as if its earlier ones
+	 * had been kept (an event batch's cursor, ADR 0004).
+	 *
+	 * @param callable(object, bool): int $rWork given the connection, and false inside the caller's transaction
 	 */
 	private static function transaction(?object $rDb, callable $rWork): int {
 		try {
 			$rDb ??= DatabaseFactory::get();
-			if (!is_object($rDb)) {
-				return 0;
-			}
-			$rOwn = method_exists($rDb, 'isInTransaction') && !$rDb->isInTransaction() && method_exists($rDb, 'beginTransaction') && $rDb->beginTransaction();
+		} catch (\Throwable) {
+			return 0;
+		}
+		if (!is_object($rDb)) {
+			return 0;
+		}
+		if (method_exists($rDb, 'isInTransaction') && $rDb->isInTransaction()) {
+			return $rWork($rDb, false); // the caller's transaction: its failure is the caller's
+		}
+		try {
+			$rOwn = method_exists($rDb, 'beginTransaction') && $rDb->beginTransaction();
 			try {
-				$rOut = $rWork($rDb);
+				$rOut = $rWork($rDb, true);
 				if ($rOwn && !$rDb->commit()) {
 					throw new \RuntimeException('stream versions: the commit failed');
 				}
