@@ -3765,9 +3765,10 @@ load balancer below mode 2. *Redis*: the new password is added with `ACL SETUSER
 `settings.redis_password`, `requirepass`), a root-command node gets `node.root rotate_redis` with the
 password SEALed to its box key (purpose `root.credentials`, its uuid as context), a legacy node a
 `signals` row with no secret that it answers from MAIN's settings; `--finish` drops the old one by its
-SHA-256 once every command node acked, or with `--force`. *DB*: needs `XC_VM::db_set_password()` on
-MAIN and `XC_VM::config_set_db()` on the node, which xcvm_core does not have: refused until it does,
-and while a target takes no root command unless `--force`.
+SHA-256 once every command node acked, or with `--force`. *DB*: at first `rotate-credentials db`,
+refused until xcvm_core had `db_set_password`/`config_set_db`; since the seventh increment's
+review the DB password has one command, `cluster:rotate-db-password` (below), which sends the
+same sealed `node.root rotate_db`, and `rotate-credentials db` only points at it.
 
 **`cluster:lockdown [--force] [--restart] | --undo | --status`** (`ClusterLockdown`), manual only.
 Refused while a load balancer is below mode 2 or any proxy exists. MariaDB binds to 127.0.0.1 by a
@@ -3907,13 +3908,22 @@ packed for the node's install_id with `XC_VM::config_pack` — credential-free f
   `config.enc`, then every load balancer's grant (`PARTIAL` when one kept the old password).
   The new password is generated (32 letters and digits) and never shown, or read from standard
   input with `--password-stdin`; it is never an argument, never logged or audited.
-- **The password never rides a command.** A `node.root` payload sits in MAIN's
-  `cluster_commands` and the node's root inbox in the clear, and a rotation is often meant to
-  shut out a leaked password. So each active node in mode 1 that takes root commands and whose
-  install_id MAIN knows is sent a whole config instead (`installConfig` with credentials,
-  packed after the rotation, so it holds the new password encrypted to that install). A node
-  in mode 2 does not use MAIN's database and is left alone; a revoked node has no grant.
-- **Every other load balancer** (legacy, mode 0, no root commands, install_id unknown) keeps
+- **The password never rides a command in the clear.** Each active node below mode 2 that
+  takes root commands and has a box key is sent `node.root rotate_db {auth_sealed}`: the new
+  password SEALed to its box key (`RootCredentials::seal`, purpose `root.credentials`, its uuid
+  as context), so MAIN's `cluster_commands` row and the node's root inbox hold ciphertext only.
+  Root opens it with the key its agent holds and calls `XC_VM::config_set_db` (only `db.pass`
+  changes). A node in mode 2 does not use MAIN's database and is left alone; a revoked node has
+  no grant. `rotate_db` is `CLUSTER_ONLY`: never a `signals` row.
+- **One design, not two.** This increment first sent each node a whole config
+  (`installConfig` with credentials, a `config_pack` XCVT blob for its install_id), beside the
+  fifth increment's `cluster:rotate-credentials db`, which sent the sealed `rotate_db`. The
+  review kept one command and the sealed transport, and dropped the other two paths: the XCVT
+  transport key derives from the install_id, which MAIN's own `cluster_nodes` holds, and a
+  pepper every extension build carries, so a reader of MAIN's database could open the blob;
+  and `install_config` replaces the node's whole `config.enc`, resetting the Redis section a
+  mode-1 node still uses. `installConfig` stays for the rollback from mode 2.
+- **Every other load balancer** (legacy, mode 0, no root commands, no box key) keeps
   the old password in its config and loses MAIN's database until an operator runs
   `cluster:set-db-password` on it as root, which reads the password from standard input and
   calls `XC_VM::config_set_db` (only `db.pass` changes; a node without a DB user is refused,
@@ -3923,9 +3933,8 @@ packed for the node's install_id with `XC_VM::config_pack` — credential-free f
   `cluster:rotate-db-password` is MAIN-only (stripped from the LB build); `cluster:set-db-password`
   ships on nodes and uses nothing the LB build strips.
 
-**Not built:** the Redis password rotation, the credential-free SSH install
-(`configPackParams` still packs credentials and `db_grant` still runs), a signed
-`rotate_sign_key`, and `cluster:lockdown`.
+**Not built:** the credential-free SSH install (`configPackParams` still packs credentials and
+`db_grant` still runs).
 
 **Tests.** `CorePinTest` (root's two steps against a fake extension: the install_id read only
 when it exists, only root's key pinned, another panel's pin replaced and root's kept, the
@@ -3934,8 +3943,10 @@ refusals; MAIN's offer, retry, generation and panel-key changes, the acks, `pack
 pin not failing the install), `ClusterCredentialsActionTest` (the page's and the CLI's guards,
 confirmation and audit, the node list's new fields, the strings), `NodeCredentialsTest`
 (message keys, the audit, `revokedAt`), `DbPasswordTest` (the password rules, the plan, a
-rotation that sends configs only where it can and never logs the password, refusals, the
-config packed for the node's install, both commands, and which ships on a node).
+rotation that sends the sealed password only where it can and never logs it, refusals, the
+rollback config packed for the node's install, both commands, and which ships on a node),
+`CredentialRotationTest::testTheDbPasswordTravelsSealed` (the real bus: ciphertext only in the
+row, no `signals` row, the node opening it for `config_set_db`).
 
 ### Disaster recovery of MAIN's cluster keys
 
