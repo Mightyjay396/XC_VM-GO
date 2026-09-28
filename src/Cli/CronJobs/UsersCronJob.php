@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\DivergenceSink;
 use XcVm\Core\Cluster\HlsReaping;
 use XcVm\Core\Cluster\NodeFlows;
@@ -457,7 +458,7 @@ class UsersCronJob implements CommandInterface {
 		if ($rServers[SERVER_ID]['is_main']) {
 			// Nodes whose agent ends its own idle HLS viewers, and the orphan
 			// purge: a silent CONNECTIONS node's rows leave MAIN's store.
-			HlsReaping::begin($rStartTime, SettingsManager::getInt('cluster_orphan_conn_ttl_sec', 120));
+			HlsReaping::begin($rStartTime, ClusterSettings::int('cluster_orphan_conn_ttl_sec', SettingsManager::get('cluster_orphan_conn_ttl_sec')));
 			if (class_exists(ConnectionIngest::class)) {
 				foreach (HlsReaping::orphaned() as $rOrphan) {
 					$rPurged = ConnectionIngest::purgeNode($rOrphan);

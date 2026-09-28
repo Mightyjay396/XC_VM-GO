@@ -263,7 +263,7 @@ class CleanupCronJob implements CommandInterface {
 		// form field and no reader, so neither table was ever pruned.
 		foreach (['servers_stats' => 'servers_stats_retention_days', 'cluster_audit' => 'cluster_audit_retention_days'] as $rTable => $rSetting) {
 			// lb-settings: servers_stats_retention_days, cluster_audit_retention_days
-			$rDays = ClusterSettings::clampInt($rSetting, intval(SettingsManager::getAll()[$rSetting] ?? 0));
+			$rDays = ClusterSettings::int($rSetting, SettingsManager::getAll()[$rSetting] ?? null);
 			$db->query('DELETE FROM `' . $rTable . '` WHERE `time` < ?;', time() - $rDays * 86400);
 		}
 	}

@@ -5,6 +5,7 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
 use XcVm\Core\Cluster\CacheJobs;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ConnectionLimits;
@@ -111,7 +112,7 @@ class SignalsCommand implements CommandInterface {
 			if ($rIsMain && time() !== $rLastLiveness && SettingsManager::get('cluster_api_enabled')) {
 				$rLastLiveness = time();
 				try {
-					if (LivenessService::tick(max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec') ?: 30)))) !== []) {
+					if (LivenessService::tick(ClusterSettings::int('cluster_offline_after_sec', SettingsManager::get('cluster_offline_after_sec'))) !== []) {
 						$rServers = $this->refreshServers();
 					}
 				} catch (\Throwable $rE) {

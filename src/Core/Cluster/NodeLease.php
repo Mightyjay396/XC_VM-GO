@@ -150,7 +150,7 @@ final class NodeLease {
 
 	/** @param array<string, mixed>|null $rSettings */
 	private static function switchedOn(?array $rSettings): bool {
-		return (int) self::setting($rSettings, 'lb_lease_fence', 0) === 1;
+		return ClusterSettings::int('lb_lease_fence', self::setting($rSettings, 'lb_lease_fence')) === 1;
 	}
 
 	/**
@@ -159,17 +159,17 @@ final class NodeLease {
 	 * @param array<string, mixed>|null $rSettings
 	 */
 	private static function drainMinutes(?array $rSettings): int {
-		return max(0, min(60, (int) self::setting($rSettings, 'lb_fence_drain_min', 10)));
+		return ClusterSettings::int('lb_fence_drain_min', self::setting($rSettings, 'lb_fence_drain_min'));
 	}
 
 	/** @param array<string, mixed>|null $rSettings */
-	private static function setting(?array $rSettings, string $rKey, int $rDefault): mixed {
+	private static function setting(?array $rSettings, string $rKey): mixed {
 		if ($rSettings !== null) {
 			// lb-settings: lb_lease_fence, lb_fence_drain_min
-			return $rSettings[$rKey] ?? $rDefault;
+			return $rSettings[$rKey] ?? null;
 		}
 		// lb-settings: lb_lease_fence, lb_fence_drain_min
-		return SettingsManager::get($rKey) ?? $rDefault;
+		return SettingsManager::get($rKey);
 	}
 
 	/**

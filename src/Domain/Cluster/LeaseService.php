@@ -84,9 +84,6 @@ final class LeaseService {
 
 	/** `lb_partition_tolerance_h`, as the extension's 0-24 h bound takes it. */
 	public static function toleranceHours(): int {
-		return ClusterSettings::clampInt(
-			'lb_partition_tolerance_h',
-			(int) (SettingsManager::get('lb_partition_tolerance_h') ?? ClusterSettings::INTS['lb_partition_tolerance_h'][0])
-		);
+		return ClusterSettings::int('lb_partition_tolerance_h', SettingsManager::get('lb_partition_tolerance_h'));
 	}
 }

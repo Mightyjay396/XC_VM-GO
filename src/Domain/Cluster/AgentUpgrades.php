@@ -50,7 +50,7 @@ final class AgentUpgrades {
 		$rNow ??= ClusterClock::now();
 		$rSend ??= static fn(int $rServerID, string $rArch): bool => NodeActions::agentBinary($rServerID, $rArch);
 		// lb-settings: cluster_agent_upgrade_parallel
-		$rAtOnce = ClusterSettings::clampInt('cluster_agent_upgrade_parallel', (int) SettingsManager::get('cluster_agent_upgrade_parallel'));
+		$rAtOnce = ClusterSettings::int('cluster_agent_upgrade_parallel', SettingsManager::get('cluster_agent_upgrade_parallel'));
 		self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` = 'active' ORDER BY `server_id` ASC;");
 		$rQueued = 0;
 		$rBusy = 0;

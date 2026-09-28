@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Admin;
 
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Server\ServerRepository;
@@ -48,7 +49,7 @@ class ServerListController extends BaseAdminController {
 			return [];
 		}
 		try {
-			$rOfflineAfter = max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec')) ?: 30));
+			$rOfflineAfter = ClusterSettings::int('cluster_offline_after_sec', SettingsManager::get('cluster_offline_after_sec'));
 			$rOut = [];
 			foreach (ClusterAdmin::nodes($rServers, $rOfflineAfter) as $rNode) {
 				$rOut[(int) $rNode['server_id']] = $rNode;

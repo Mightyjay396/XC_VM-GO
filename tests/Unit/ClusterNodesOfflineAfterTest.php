@@ -5,12 +5,11 @@ use XcVm\Public\Controllers\Admin\ClusterNodesController;
 
 /**
  * The Cluster Nodes page reads cluster_offline_after_sec as every other
- * reader does (`intval(…) ?: 30` within 10–300). It used `?? 30` alone, so a
- * stored 0 showed nodes offline after 10 s while the servers list, the
- * dashboard and the liveness tick waited 30 s.
+ * reader does, through ClusterSettings::int() (0 or unset is 30, within
+ * 10–300). It used `?? 30` alone, so a stored 0 showed nodes offline after
+ * 10 s while the servers list, the dashboard and the liveness tick waited 30 s.
  */
 final class ClusterNodesOfflineAfterTest extends TestCase {
-
 	public function testUnsetOrZeroIsThirtySeconds(): void {
 		foreach ([[], ['cluster_offline_after_sec' => null], ['cluster_offline_after_sec' => 0], ['cluster_offline_after_sec' => '0'], ['cluster_offline_after_sec' => '']] as $rSettings) {
 			$this->assertSame(30, ClusterNodesController::offlineAfter($rSettings), var_export($rSettings, true));
@@ -25,9 +24,9 @@ final class ClusterNodesOfflineAfterTest extends TestCase {
 	}
 
 	public function testItMatchesTheOtherReaders(): void {
-		foreach ([null, 0, '0', 3, 45, 9000] as $rValue) {
+		foreach ([[null, 30], [0, 30], ['0', 30], [3, 10], [45, 45], [9000, 300]] as [$rValue, $rExpected]) {
 			$this->assertSame(
-				max(10, min(300, intval($rValue) ?: 30)),
+				$rExpected,
 				ClusterNodesController::offlineAfter(['cluster_offline_after_sec' => $rValue]),
 				var_export($rValue, true)
 			);

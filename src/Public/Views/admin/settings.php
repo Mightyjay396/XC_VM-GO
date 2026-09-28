@@ -2282,7 +2282,7 @@ use XcVm\Domain\Server\ServerRepository;
 						}
 					}
 					$rClusterHttps = ClusterSettings::httpsSelfProbe($rClusterMain, 2);
-					$rClusterRotation = intval($rSettings['lb_token_rotation_min'] ?? 60);
+					$rClusterRotation = ClusterSettings::int('lb_token_rotation_min', $rSettings['lb_token_rotation_min'] ?? null);
 					[$rClusterRoots] = ClusterSettings::scanRoots($rSettings['lb_scan_roots'] ?? '');
 					$rClusterFields = [
 						['cluster_api_enabled', 'switch', 'Fleet switch for the LB API. Takes effect only after `console.php cluster:init`; needs xcvm_core with the cluster API.'],

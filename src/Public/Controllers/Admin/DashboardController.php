@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Admin;
 
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Enum\Theme;
 use XcVm\Core\Http\RequestManager;
@@ -132,7 +133,7 @@ class DashboardController extends BaseAdminController {
 		$rNodes = $rPending = [];
 		if ($rClusterOn) {
 			try {
-				$rOfflineAfter = max(10, min(300, intval(SettingsManager::get('cluster_offline_after_sec')) ?: 30));
+				$rOfflineAfter = ClusterSettings::int('cluster_offline_after_sec', SettingsManager::get('cluster_offline_after_sec'));
 				$rNodes = ClusterAdmin::nodes($orderedServers, $rOfflineAfter);
 				$rPending = ClusterAdmin::pending($orderedServers);
 			} catch (\Throwable) {

@@ -44,6 +44,14 @@ final class ClusterSettings {
 		'cluster_db_allowlist' => [0, 0, 1],
 	];
 
+	/**
+	 * Integers whose 0 means unset when read (int()), not the floor: the
+	 * default applies. A stored 0 is out of range for both, and clamping it
+	 * would quietly shorten what the admin never set: a fleet beating faster
+	 * (ADR 0004, `heartbeat_sec`), a node shown offline after 10 s.
+	 */
+	public const ZERO_IS_UNSET = ['lb_telemetry_interval_sec', 'cluster_offline_after_sec'];
+
 	public const ENUMS = [
 		'cluster_transport' => ['auto', ['auto', 'http', 'https_preferred', 'https_required']],
 		'lb_revocation_mode' => ['graceful', ['graceful', 'hard']],
@@ -316,6 +324,25 @@ final class ClusterSettings {
 	/** Tests: answer the HTTPS self-probe without the network. Null restores it. */
 	public static function useHttpsProbe(?callable $rProbe): void {
 		self::$rHttpsProbe = $rProbe;
+	}
+
+	/**
+	 * An integer setting as its readers take it, from the value as stored
+	 * (settings row, replica, SettingsManager::get()): clamped into its bounds
+	 * as normalize() stores it, or its default when unset or not a number (and
+	 * at 0 for ZERO_IS_UNSET). Every reader goes through here, so a default
+	 * or a bound lives in INTS alone.
+	 *
+	 * @param string $rKey   A key of INTS.
+	 * @param mixed  $rValue The stored value; null when unset.
+	 * @return int The value to use.
+	 */
+	public static function int(string $rKey, mixed $rValue): int {
+		[$rDefault] = self::INTS[$rKey];
+		if (!is_numeric($rValue) || ((int) $rValue === 0 && in_array($rKey, self::ZERO_IS_UNSET, true))) {
+			return $rDefault;
+		}
+		return self::clampInt($rKey, (int) $rValue);
 	}
 
 	public static function clampInt(string $rKey, int $rValue): int {
