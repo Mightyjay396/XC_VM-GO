@@ -275,7 +275,8 @@ class FanoutClient {
 	 * @return string|null The raw m3u8, or null if unavailable.
 	 */
 	public static function hlsPlaylist(int $rStreamID): ?string {
-		if (!function_exists('curl_init') || !defined('FANOUT_HTTP_SOCK') || !file_exists(FANOUT_HTTP_SOCK)) {
+		// Fanout switched off: the daemon serves no playlist (as socketReady()).
+		if (!function_exists('curl_init') || !FanoutMode::enabled() || !defined('FANOUT_HTTP_SOCK') || !file_exists(FANOUT_HTTP_SOCK)) {
 			return null;
 		}
 

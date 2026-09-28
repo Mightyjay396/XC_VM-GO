@@ -59,6 +59,70 @@ final class FanoutMode {
 		return !self::enabled($rSettings) || !LicenseGate::fanoutAllowed();
 	}
 
+	/** A delivery decision: the daemon serves the viewer (X-Accel hand-off / its in-RAM playlist). */
+	public const VIA_DAEMON = 'daemon';
+	/** A delivery decision: the pre-fanout path (ProxyCommand relay, TS chase-read, on-disk HLS). */
+	public const VIA_LEGACY = 'legacy';
+	/** A delivery decision: nothing can serve it now, the viewer gets not-on-air. */
+	public const OFF_AIR = 'off_air';
+	/** startFor(): start the pre-fanout proxy producer (StreamProcess::startProxy). */
+	public const START_PROXY = 'proxy';
+	/** startFor(): start the stream's watchdog (StreamProcess::startMonitor). */
+	public const START_MONITOR = 'monitor';
+
+	/**
+	 * How live.php serves a live TS viewer. With legacyDelivery() the pre-fanout
+	 * path, whatever the daemon says: the ProxyCommand relay for a proxy stream,
+	 * the chase-read of the on-disk segments otherwise. With fanout on, the
+	 * daemon when it serves the stream, else not-on-air (ADR 0003, Phase E: a
+	 * daemon that is merely down is not a reason to fall back).
+	 *
+	 * @param bool $rLegacy legacyDelivery().
+	 * @param bool $rDaemon The daemon serves this stream (a proxy stream registered and probed, or a fed one).
+	 */
+	public static function tsDelivery(bool $rLegacy, bool $rDaemon): string {
+		if ($rLegacy) {
+			return self::VIA_LEGACY;
+		}
+		return $rDaemon ? self::VIA_DAEMON : self::OFF_AIR;
+	}
+
+	/**
+	 * How live.php serves a live HLS playlist: with legacyDelivery() the on-disk
+	 * playlist (HLSGenerator::generateHLS, its segments from STREAMS_PATH by
+	 * segment.php); with fanout on, the daemon's in-RAM playlist when it has
+	 * one, else not-on-air.
+	 *
+	 * @param bool $rLegacy        legacyDelivery().
+	 * @param bool $rDaemonPlaylist The daemon is fed this stream and returned its playlist.
+	 */
+	public static function hlsDelivery(bool $rLegacy, bool $rDaemonPlaylist): string {
+		if ($rLegacy) {
+			return self::VIA_LEGACY;
+		}
+		return $rDaemonPlaylist ? self::VIA_DAEMON : self::OFF_AIR;
+	}
+
+	/**
+	 * What live.php starts for a live stream that is not running (and the
+	 * daemon did not take): with legacyDelivery() a proxy stream gets its
+	 * ProxyCommand, on demand or not — the PHP monitor does not run direct
+	 * sources. With fanout on a proxy stream is the daemon's alone, so it is
+	 * not-on-air. Any other on-demand stream gets its watchdog, which
+	 * StreamProcess::startMonitor() gives the PHP monitor while fanout is off
+	 * (supervision needs LicenseGate::fanoutUsable()).
+	 *
+	 * @param bool $rLegacy   legacyDelivery().
+	 * @param bool $rProxy    A direct-proxy stream.
+	 * @param bool $rOnDemand The stream is on demand on this server.
+	 */
+	public static function startFor(bool $rLegacy, bool $rProxy, bool $rOnDemand): string {
+		if ($rProxy) {
+			return $rLegacy ? self::START_PROXY : self::OFF_AIR;
+		}
+		return $rOnDemand ? self::START_MONITOR : self::OFF_AIR;
+	}
+
 	/**
 	 * The node-local flag the shell scripts check before starting the daemon.
 	 */
