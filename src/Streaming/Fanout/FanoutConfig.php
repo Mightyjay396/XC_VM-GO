@@ -3,6 +3,7 @@
 namespace XcVm\Streaming\Fanout;
 
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Util\AtomicFile;
 
 /**
  * FanoutConfig — writes the xc_fanout daemon's operator-tuning `config.json` from
@@ -201,17 +202,6 @@ class FanoutConfig {
 	/** Atomic write (temp + rename) so the polling daemon never reads a torn file. */
 	private static function writeAtomic(string $rPath, array $rConfig): bool {
 		$rJson = json_encode($rConfig, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-		if ($rJson === false) {
-			return false;
-		}
-		$rTmp = $rPath . '.tmp';
-		if (@file_put_contents($rTmp, $rJson . "\n", LOCK_EX) === false) {
-			return false;
-		}
-		if (!@rename($rTmp, $rPath)) {
-			@unlink($rTmp);
-			return false;
-		}
-		return true;
+		return $rJson !== false && AtomicFile::write($rPath, $rJson . "\n");
 	}
 }

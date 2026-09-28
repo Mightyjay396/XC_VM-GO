@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Streaming\Auth\StreamAuth;
@@ -90,7 +91,7 @@ final class ConnectionLimits {
 			return false;
 		}
 		$rName = sprintf('%019d-%d-%04x.json', hrtime(true), getmypid(), random_int(0, 0xffff));
-		return @file_put_contents($rDir . '.' . $rName, json_encode($rCheck)) !== false && @rename($rDir . '.' . $rName, $rDir . $rName);
+		return AtomicFile::write($rDir . $rName, (string) json_encode($rCheck));
 	}
 
 	/**

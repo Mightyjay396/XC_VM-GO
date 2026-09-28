@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
+use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -21,15 +22,15 @@ final class NodeRegistry {
 
 	public const STATES = ['enrolling', 'active', 'quarantined', 'revoked'];
 
-	/** Flow bits (plan, section 12). */
-	public const FLOW_TELEMETRY = 1;
-	public const FLOW_COMMANDS = 2;
-	public const FLOW_LOGS = 4;
-	public const FLOW_STREAMS = 8;
-	public const FLOW_CONTENT = 16;
-	public const FLOW_CONFIG = 32;
-	public const FLOW_CONNECTIONS = 64;
-	public const FLOW_DATAPLANE = 128;
+	/** Flow bits (plan, section 12): NodeFlows' (Core, so LBs have them too). */
+	public const FLOW_TELEMETRY = NodeFlows::TELEMETRY;
+	public const FLOW_COMMANDS = NodeFlows::COMMANDS;
+	public const FLOW_LOGS = NodeFlows::LOGS;
+	public const FLOW_STREAMS = NodeFlows::STREAMS;
+	public const FLOW_CONTENT = NodeFlows::CONTENT;
+	public const FLOW_CONFIG = NodeFlows::CONFIG;
+	public const FLOW_CONNECTIONS = NodeFlows::CONNECTIONS;
+	public const FLOW_DATAPLANE = NodeFlows::DATAPLANE;
 
 	/** @return array<string, mixed>|null */
 	public static function byUuid(string $rUuid): ?array {

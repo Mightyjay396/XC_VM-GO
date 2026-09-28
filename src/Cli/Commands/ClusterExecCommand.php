@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Cluster\RootPin;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Public\Controllers\Api\InternalApiController;
 use XcVm\Streaming\Fanout\FanoutClient;
@@ -112,10 +113,9 @@ class ClusterExecCommand implements CommandInterface {
 			fwrite(STDERR, "cluster:exec: no root inbox (the node's root pin is not in place)\n");
 			return 2;
 		}
-		$rTmp = $rInbox . '.' . $rSeq . '.tmp';
 		$rDone = $rInbox . $rSeq . '.done';
 		@unlink($rDone);
-		if (@file_put_contents($rTmp, (string) json_encode(['doc' => $rIn['doc'], 'sig' => $rIn['sig']])) === false || !@rename($rTmp, $rInbox . $rSeq . '.json')) {
+		if (!AtomicFile::write($rInbox . $rSeq . '.json', (string) json_encode(['doc' => $rIn['doc'], 'sig' => $rIn['sig']]))) {
 			fwrite(STDERR, "cluster:exec: cannot write the root inbox\n");
 			return 2;
 		}

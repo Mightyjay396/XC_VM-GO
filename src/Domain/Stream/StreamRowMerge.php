@@ -2,7 +2,7 @@
 
 namespace XcVm\Domain\Stream;
 
-use XcVm\Core\Cluster\Redactor;
+use XcVm\Core\Cluster\StreamStateFields;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -48,11 +48,7 @@ final class StreamRowMerge {
 	 * @return array<string, mixed>
 	 */
 	public static function eventFields(array $rFields): array {
-		$rFields = array_intersect_key($rFields, array_flip(StreamStateWriter::STATE_FIELDS));
-		if (isset($rFields['current_source']) && is_string($rFields['current_source'])) {
-			$rFields['current_source'] = Redactor::redact($rFields['current_source']);
-		}
-		return $rFields;
+		return StreamStateFields::pick($rFields, StreamStateWriter::STATE_FIELDS);
 	}
 
 	/**

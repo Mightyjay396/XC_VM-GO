@@ -103,8 +103,7 @@ final class ClusterPolicy {
 	 * @param array<string, mixed> $rSettings
 	 */
 	public static function heartbeatSec(array $rSettings): int {
-		$rWanted = intval($rSettings['lb_telemetry_interval_sec'] ?? 0) ?: ClusterSettings::INTS['lb_telemetry_interval_sec'][0];
-		return ClusterSettings::clampInt('lb_telemetry_interval_sec', $rWanted);
+		return ClusterSettings::int('lb_telemetry_interval_sec', $rSettings['lb_telemetry_interval_sec'] ?? null);
 	}
 
 	/**

@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Util\AtomicFile;
+
 /**
  * `config/cluster/local.json`: what a TELEMETRY node's agent cannot sample
  * itself, written by the node's watchdog (WatchdogCommand::writeLocalTelemetry)
@@ -69,10 +71,7 @@ final class LocalTelemetry {
 			}
 		}
 		$rDevices = self::sections($rProbe());
-		$rTmp = $rCache . '.' . getmypid() . '.tmp';
-		if (@file_put_contents($rTmp, self::json(['t' => $rNow, 'devices' => $rDevices])) === false || !@rename($rTmp, $rCache)) {
-			@unlink($rTmp);
-		}
+		AtomicFile::write($rCache, self::json(['t' => $rNow, 'devices' => $rDevices]));
 		return self::write($rDir, $rBase + $rDevices);
 	}
 
@@ -128,12 +127,7 @@ final class LocalTelemetry {
 		if (!is_dir($rDir)) {
 			return false;
 		}
-		$rTmp = $rDir . 'local.json.tmp';
-		if (@file_put_contents($rTmp, self::encode($rDoc), LOCK_EX) === false || !@rename($rTmp, $rDir . 'local.json')) {
-			@unlink($rTmp);
-			return false;
-		}
-		return true;
+		return AtomicFile::write($rDir . 'local.json', self::encode($rDoc));
 	}
 
 	/**

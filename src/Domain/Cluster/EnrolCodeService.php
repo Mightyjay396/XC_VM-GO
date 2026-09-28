@@ -33,7 +33,6 @@ final class EnrolCodeService {
 	public const TTL = 1800;
 	public const MAX_ATTEMPTS = 5;
 	private const VERSION = 1;
-	private const B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
 	/**
 	 * A new code for a server. It supersedes the server's unused codes and any
@@ -79,32 +78,13 @@ final class EnrolCodeService {
 
 	public static function encode(int $rServerID, string $rMainUrl, string $rFp, string $rSecret): string {
 		$rBytes = chr(self::VERSION) . Enc::u32($rServerID) . chr(strlen($rMainUrl)) . $rMainUrl . $rFp . $rSecret;
-		$rBits = '';
-		foreach (str_split($rBytes) as $rByte) {
-			$rBits .= str_pad(decbin(ord($rByte)), 8, '0', STR_PAD_LEFT);
-		}
-		$rOut = '';
-		foreach (str_split($rBits, 5) as $rChunk) {
-			$rOut .= self::B32[bindec(str_pad($rChunk, 5, '0'))];
-		}
-		return implode('-', str_split($rOut, 4));
+		return implode('-', str_split(Base32::encode($rBytes), 4));
 	}
 
 	/** @return array{server_id: int, main_url: string, fp: string, secret: string}|null */
 	public static function decode(string $rCode): ?array {
-		$rText = strtoupper((string) preg_replace('/[\s-]/', '', $rCode));
-		if ($rText === '' || strspn($rText, self::B32) !== strlen($rText)) {
-			return null;
-		}
-		$rBits = '';
-		foreach (str_split($rText) as $rChar) {
-			$rBits .= str_pad(decbin(strpos(self::B32, $rChar)), 5, '0', STR_PAD_LEFT);
-		}
-		$rBytes = '';
-		foreach (str_split(substr($rBits, 0, intdiv(strlen($rBits), 8) * 8), 8) as $rByte) {
-			$rBytes .= chr(bindec($rByte));
-		}
-		if (strlen($rBytes) < 6 || ord($rBytes[0]) !== self::VERSION) {
+		$rBytes = Base32::decode(strtoupper((string) preg_replace('/[\s-]/', '', $rCode)));
+		if ($rBytes === null || strlen($rBytes) < 6 || ord($rBytes[0]) !== self::VERSION) {
 			return null;
 		}
 		$rLen = ord($rBytes[5]);

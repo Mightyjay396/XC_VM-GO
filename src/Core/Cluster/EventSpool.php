@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Util\AtomicFile;
+
 /**
  * Where this load balancer's PHP hands events to its agent (plan, sections 7
  * and 8, Phase 5): one file per write under `config/cluster/spool/<lane>/`,
@@ -23,20 +25,16 @@ namespace XcVm\Core\Cluster;
  * STALE_AFTER seconds) append() refuses, and the caller writes the legacy way.
  */
 final class EventSpool {
+	use DirSeam;
+
 	public const LANES = ['p0', 'p1'];
 
 	/** Seconds without an agent heartbeat after which PHP stops spooling. */
 	public const STALE_AFTER = 120;
 
-	private static ?string $rDir = null;
-
-	/** Tests: another spool directory; null restores the default. */
-	public static function useDir(?string $rDir): void {
-		self::$rDir = $rDir;
-	}
-
-	public static function dir(): string {
-		return self::$rDir ?? ((defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/') . 'cluster/spool/');
+	/** The spool (useDir(): tests' own). */
+	private static function defaultDir(): string {
+		return (defined('CONFIG_PATH') ? CONFIG_PATH : '/home/xc_vm/config/') . 'cluster/spool/';
 	}
 
 	/**
@@ -78,16 +76,8 @@ final class EventSpool {
 			$rBody .= $rLine . "\n";
 		}
 		$rName = sprintf('%019d-%d-%04x', hrtime(true), getmypid(), random_int(0, 0xffff)) . ($rTag === '' ? '' : '-' . $rTag) . '.ndjson';
-		$rTmp = $rDir . '.' . $rName . '.tmp';
-		if (@file_put_contents($rTmp, $rBody) !== strlen($rBody) || ($rRoot && !self::giveToOwnerOf($rTmp, $rHome, 0640))) {
-			@unlink($rTmp);
-			return false;
-		}
-		if (!@rename($rTmp, $rDir . $rName)) {
-			@unlink($rTmp);
-			return false;
-		}
-		return true;
+		// Root hands the file to the agent's user before it is renamed in.
+		return AtomicFile::write($rDir . $rName, $rBody, null, false, $rRoot ? static fn(string $rTmp): bool => self::giveToOwnerOf($rTmp, $rHome, 0640) : null);
 	}
 
 	/** Give what root made to the owner of $rOf (the agent's state dir). */

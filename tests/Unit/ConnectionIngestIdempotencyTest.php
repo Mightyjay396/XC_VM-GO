@@ -2,10 +2,10 @@
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\StoredConnections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
 use XcVm\Domain\Cluster\ClusterClock;
-use XcVm\Domain\Cluster\ConnectionDigest;
 use XcVm\Domain\Cluster\EventIngest;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -217,8 +217,8 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 	private function store(): array {
 		$rOut = [];
 		if (SettingsManager::get('redis_handler')) {
-			foreach (ConnectionDigest::stored(self::SID) as $rUUID => $rRecord) {
-				$rOut[$rUUID] = [(int) $rRecord['hls_last_read'], (int) $rRecord['hls_end'], 1];
+			foreach (StoredConnections::ofServer(self::SID, false) as $rRecord) {
+				$rOut[(string) $rRecord['uuid']] = [(int) $rRecord['hls_last_read'], (int) $rRecord['hls_end'], 1];
 			}
 		} else {
 			$this->rDb->query('SELECT `uuid`, MAX(`hls_last_read`) AS `r`, MAX(`hls_end`) AS `e`, COUNT(*) AS `n` FROM `lines_live` WHERE `server_id` = ? GROUP BY `uuid`', self::SID);

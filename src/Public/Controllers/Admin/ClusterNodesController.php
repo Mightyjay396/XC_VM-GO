@@ -2,6 +2,7 @@
 
 namespace XcVm\Public\Controllers\Admin;
 
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
@@ -62,6 +63,6 @@ class ClusterNodesController extends BaseAdminController {
 	 * @param array<string, mixed> $rSettings
 	 */
 	public static function offlineAfter(array $rSettings): int {
-		return max(10, min(300, intval($rSettings['cluster_offline_after_sec'] ?? 0) ?: 30));
+		return ClusterSettings::int('cluster_offline_after_sec', $rSettings['cluster_offline_after_sec'] ?? null);
 	}
 }

@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
 
@@ -47,7 +48,7 @@ final class ReplicaRecords {
 	 */
 	public static function identity(string $rAgentFile): ?array {
 		$rState = json_decode((string) @file_get_contents($rAgentFile), true);
-		if (!is_array($rState) || !is_string($rState['node_uuid'] ?? null) || !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/', $rState['node_uuid'])) {
+		if (!is_array($rState) || !is_string($rState['node_uuid'] ?? null) || !Canonical::validUuid($rState['node_uuid'])) {
 			return null;
 		}
 		$rBoxSk = is_string($rState['node_box_sk'] ?? null) ? base64_decode($rState['node_box_sk'], true) : false;

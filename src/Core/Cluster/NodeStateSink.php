@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -128,12 +129,7 @@ final class NodeStateSink {
 			$rKept = json_decode((string) @file_get_contents($rFile), true);
 			$rKept = array_filter(array_merge(is_array($rKept) ? $rKept : [], $rFields), static fn($rValue): bool => $rValue !== null);
 			$rBody = json_encode((object) $rKept, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
-			$rTmp = dirname($rFile) . '/.node_state.' . getmypid() . '.tmp';
-			if ($rBody === false || @file_put_contents($rTmp, $rBody) !== strlen($rBody) || !@rename($rTmp, $rFile)) {
-				@unlink($rTmp);
-				return false;
-			}
-			return true;
+			return $rBody !== false && AtomicFile::write($rFile, $rBody);
 		}, dirname(self::keptFile()));
 	}
 

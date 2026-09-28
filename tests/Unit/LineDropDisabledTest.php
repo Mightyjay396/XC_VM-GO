@@ -106,6 +106,13 @@ final class LineDropDisabledTest extends TestCase {
 		$this->assertSame([], $this->rDb->rQueries);
 	}
 
+	public function testAnUnsetSettingIsOn(): void {
+		// ClusterSettings::INTS and the column default (migration 028) say on.
+		SettingsManager::set(['cluster_kill_on_line_disable' => null]);
+		LineService::dropDisabled([7]);
+		$this->assertNotSame([], $this->rDb->rQueries, 'unset: the lookup still runs');
+	}
+
 	public function testEveryLineWriterGoesThroughTheSignalThatDrops(): void {
 		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Domain/Line/LineService.php');
 

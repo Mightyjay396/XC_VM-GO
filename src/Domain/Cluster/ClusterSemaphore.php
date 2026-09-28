@@ -167,8 +167,7 @@ final class ClusterSemaphore {
 	 * @return array{p0: int, bulk: int, total: int}
 	 */
 	public static function ingestPermits(mixed $rConcurrency): array {
-		[$rDefault, $rMin, $rMax] = ClusterSettings::INTS['cluster_ingest_concurrency'];
-		$rN = is_numeric($rConcurrency) ? max($rMin, min($rMax, (int) $rConcurrency)) : $rDefault;
+		$rN = ClusterSettings::int('cluster_ingest_concurrency', $rConcurrency);
 		$rP0 = intdiv($rN + 1, 2);
 		$rBulk = max(self::BULK_RESERVE, $rN - $rP0);
 		return ['p0' => $rP0, 'bulk' => $rBulk, 'total' => $rP0 + $rBulk];

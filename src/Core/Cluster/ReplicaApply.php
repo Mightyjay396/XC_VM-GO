@@ -6,6 +6,7 @@ use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\StreamSecret;
 use XcVm\Core\Config\SettingsRepository;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Domain\Bouquet\BouquetService;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Server\ServerRepository;
@@ -122,6 +123,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * (`verified`, `unverified`), never their content.
  */
 final class ReplicaApply {
+	use DirSeam;
+
 	public const CACHES = ['blocked_ips', 'blocked_servers', 'blocked_ua', 'blocked_isp', 'rtmp_ips'];
 
 	/** The crontab section's cache: the jobs the node's crontab runs. */
@@ -136,8 +139,6 @@ final class ReplicaApply {
 
 	/** Differing fields a shadow report names at most. */
 	private const MAX_DIFFER = 100;
-
-	private static ?string $rDir = null;
 
 	private static ?string $rConfigDir = null;
 
@@ -163,13 +164,9 @@ final class ReplicaApply {
 	/** Held streams the shadow comparison reads from MAIN's database per step. */
 	private const SHADOW_STEP = 1000;
 
-	/** Tests: another replica directory; null restores the default. */
-	public static function useDir(?string $rDir): void {
-		self::$rDir = $rDir;
-	}
-
-	public static function dir(): string {
-		return self::$rDir ?? (self::configDir() . 'cluster/replica/');
+	/** The replica's directory (useDir(): tests' own). */
+	private static function defaultDir(): string {
+		return self::configDir() . 'cluster/replica/';
 	}
 
 	/** Tests: another config directory (where config/openssl_extra lives); null restores CONFIG_PATH. */
@@ -446,10 +443,7 @@ final class ReplicaApply {
 		if (count($rReport) === 1) {
 			return null;
 		}
-		$rTmp = self::dir() . '.apply.json.tmp';
-		if (@file_put_contents($rTmp, (string) json_encode($rReport)) !== false) {
-			@rename($rTmp, self::dir() . 'apply.json');
-		}
+		AtomicFile::write(self::dir() . 'apply.json', (string) json_encode($rReport));
 		return $rReport;
 	}
 

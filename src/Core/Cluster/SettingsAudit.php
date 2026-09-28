@@ -2,6 +2,8 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Core\Util\AtomicFile;
+
 /**
  * Settings reads the node replica would not answer (plan, section 9, R1
  * `settings`: "API nodes log unknown-key reads to audit.settings_misses").
@@ -40,20 +42,19 @@ namespace XcVm\Core\Cluster;
  * Lives in Core: it ships to LBs, where Domain\Cluster does not.
  */
 final class SettingsAudit {
+	use OptionalDirSeam;
+
 	/** Keys a day file, and the report, name at most; the rest count under OTHER. */
 	public const MAX_KEYS = 64;
 
 	/** A key past MAX_KEYS, or not a settings name ([a-z0-9_]{1,64}). */
-	public const OTHER = '*';
+	public const OTHER = AuditDays::OTHER;
 
 	/** Days the report covers, today included. */
 	public const WINDOW_DAYS = 7;
 
 	/** Seconds a long-running process keeps its counts before it merges them. */
 	public const FLUSH_EVERY = 60;
-
-	/** Tests: another directory for the day files; false: off. */
-	private static string|false|null $rDir = null;
 
 	/** Tests: another agent directory (where audit.json goes). */
 	private static ?string $rAgentDir = null;
@@ -87,11 +88,9 @@ final class SettingsAudit {
 		self::$rAtExit = false;
 	}
 
-	public static function dir(): ?string {
-		if (self::$rDir === false) {
-			return null;
-		}
-		return self::$rDir ?? (defined('STORAGE_PATH') ? STORAGE_PATH . 'cluster/settings_misses/' : null);
+	/** STORAGE_PATH's, for the day files (useDir(): tests' own, false for none). */
+	private static function defaultDir(): ?string {
+		return defined('STORAGE_PATH') ? STORAGE_PATH . 'cluster/settings_misses/' : null;
 	}
 
 	/** The agent's directory, where audit.json goes (config/cluster/). */
@@ -145,36 +144,20 @@ final class SettingsAudit {
 		$rAt = self::$rFlushedAt;
 		try {
 			self::asAgentUser(static function () use ($rDir, $rCounts, $rAt): bool {
-				if (!self::makeDir($rDir)) {
-					return false;
-				}
-				$rHandle = @fopen($rDir . gmdate('Ymd', $rAt) . '.json', 'c+');
-				if ($rHandle === false) {
+				if (!AuditDays::makeDir($rDir)) {
 					return false;
 				}
 				$rNewKey = false;
-				try {
-					flock($rHandle, LOCK_EX);
-					$rDay = json_decode((string) stream_get_contents($rHandle), true);
+				$rWritten = AuditDays::rewrite($rDir . gmdate('Ymd', $rAt) . '.json', static function (mixed $rDay) use ($rCounts, &$rNewKey): string {
 					$rDay = is_array($rDay) ? $rDay : [];
 					$rMerged = self::merge($rDay, $rCounts);
 					$rNewKey = array_diff_key($rMerged, $rDay) !== [];
-					ftruncate($rHandle, 0);
-					rewind($rHandle);
-					fwrite($rHandle, (string) json_encode((object) $rMerged));
-					fflush($rHandle);
-				} finally {
-					flock($rHandle, LOCK_UN);
-					fclose($rHandle);
+					return (string) json_encode((object) $rMerged);
+				});
+				if (!$rWritten) {
+					return false;
 				}
-				$rAgentDir = self::agentDir();
-				if ($rAgentDir === null) {
-					return true;
-				}
-				clearstatcache(true, $rAgentDir . 'audit.json');
-				if ($rNewKey || (int) @filemtime($rAgentDir . 'audit.json') <= $rAt - self::FLUSH_EVERY) {
-					self::publish($rAgentDir, $rAt);
-				}
+				self::publishIfDue($rNewKey, $rAt, self::FLUSH_EVERY);
 				return true;
 			});
 		} catch (\Throwable) {
@@ -220,30 +203,30 @@ final class SettingsAudit {
 			if ($rSum === null || $rConnects === null) {
 				return false;
 			}
-			$rTmp = $rAgentDir . 'audit.json.' . getmypid() . '.tmp';
-			if (@file_put_contents($rTmp, (string) json_encode(['settings_misses' => (object) self::top($rSum)] + $rConnects, JSON_UNESCAPED_SLASHES)) === false || !@rename($rTmp, $rAgentDir . 'audit.json')) {
-				@unlink($rTmp);
-				return false;
-			}
-			return true;
+			return AtomicFile::write($rAgentDir . 'audit.json', (string) json_encode(['settings_misses' => (object) self::top($rSum)] + $rConnects, JSON_UNESCAPED_SLASHES));
 		}, $rAgentDir);
+	}
+
+	/**
+	 * Rewrite audit.json after a count at $rAt (this audit's, or
+	 * ConnectAudit's) when it added a name to its day ($rNew), or audit.json
+	 * is older than $rEvery seconds. Nothing without an agent directory.
+	 */
+	public static function publishIfDue(bool $rNew, int $rAt, int $rEvery): void {
+		$rAgentDir = self::agentDir();
+		if ($rAgentDir === null) {
+			return;
+		}
+		clearstatcache(true, $rAgentDir . 'audit.json');
+		if ($rNew || (int) @filemtime($rAgentDir . 'audit.json') <= $rAt - $rEvery) {
+			self::publish($rAgentDir, $rAt);
+		}
 	}
 
 	/** Delete day files older than $rKeepDays. Returns how many went. */
 	public static function prune(int $rKeepDays = 8, ?int $rNow = null): int {
 		$rDir = self::dir();
-		if ($rDir === null) {
-			return 0;
-		}
-		$rCut = gmdate('Ymd', ($rNow ?? time()) - $rKeepDays * 86400);
-		$rCount = 0;
-		foreach (glob($rDir . '*.json') ?: [] as $rFile) {
-			$rDay = basename($rFile, '.json');
-			if (preg_match('/^\d{8}$/', $rDay) && $rDay < $rCut && @unlink($rFile)) {
-				$rCount++;
-			}
-		}
-		return $rCount;
+		return $rDir === null ? 0 : AuditDays::prune($rDir, ['json'], $rKeepDays, $rNow ?? time());
 	}
 
 	/**
@@ -280,10 +263,7 @@ final class SettingsAudit {
 			}
 		}
 		foreach ($rCounts as $rKey => $rCount) {
-			$rKey = self::name((string) $rKey);
-			if (!isset($rOut[$rKey]) && $rKey !== self::OTHER && count(array_diff_key($rOut, [self::OTHER => 0])) >= self::MAX_KEYS) {
-				$rKey = self::OTHER;
-			}
+			$rKey = AuditDays::slot($rOut, self::name((string) $rKey), self::MAX_KEYS);
 			$rOut[$rKey] = ($rOut[$rKey] ?? 0) + $rCount;
 		}
 		return $rOut;
@@ -297,22 +277,7 @@ final class SettingsAudit {
 	 * @return array<string, int>
 	 */
 	public static function top(array $rCounts, int $rMax = self::MAX_KEYS): array {
-		$rOther = $rCounts[self::OTHER] ?? 0;
-		unset($rCounts[self::OTHER]);
-		$rKeys = array_map('strval', array_keys($rCounts));
-		usort($rKeys, static fn(string $a, string $b): int => [$rCounts[$b], $a] <=> [$rCounts[$a], $b]);
-		$rOut = [];
-		foreach ($rKeys as $i => $rKey) {
-			if ($i < $rMax) {
-				$rOut[$rKey] = $rCounts[$rKey];
-			} else {
-				$rOther += $rCounts[$rKey];
-			}
-		}
-		if ($rOther > 0) {
-			$rOut[self::OTHER] = $rOther;
-		}
-		return $rOut;
+		return AuditDays::top($rCounts, $rMax);
 	}
 
 	/** A settings name, or OTHER. */
@@ -333,20 +298,12 @@ final class SettingsAudit {
 		if ($rDir === null) {
 			return [];
 		}
-		if (!self::searchable($rDir)) {
+		$rDays = AuditDays::window($rDir, self::WINDOW_DAYS, $rNow);
+		if ($rDays === null) {
 			return null;
 		}
 		$rSum = [];
-		for ($d = 0; $d < self::WINDOW_DAYS; $d++) {
-			$rFile = $rDir . gmdate('Ymd', $rNow - $d * 86400) . '.json';
-			if (!is_file($rFile)) {
-				continue;
-			}
-			$rRaw = self::readDay($rFile);
-			if ($rRaw === false) {
-				return null;
-			}
-			$rDay = json_decode($rRaw, true);
+		foreach ($rDays as $rDay) {
 			foreach (is_array($rDay) ? $rDay : [] as $rKey => $rCount) {
 				if (is_int($rCount) && $rCount > 0) {
 					$rKey = self::name((string) $rKey);
@@ -355,45 +312,6 @@ final class SettingsAudit {
 			}
 		}
 		return $rSum;
-	}
-
-	/** Can this process search $rDir, or the nearest level above it that exists? (ConnectAudit's too.) */
-	public static function searchable(string $rDir): bool {
-		for ($rPath = rtrim($rDir, '/'); !is_dir($rPath); $rPath = dirname($rPath)) {
-			if (dirname($rPath) === $rPath) {
-				return false;
-			}
-		}
-		return is_executable($rPath);
-	}
-
-	/**
-	 * A day file's contents, read under its shared lock: a merge rewrites the
-	 * file in place under its exclusive lock (truncated, then written), and a
-	 * read between the two would find a day without counts. False when it
-	 * cannot be read. (ConnectAudit's day files too.)
-	 */
-	public static function readDay(string $rFile): string|false {
-		$rHandle = @fopen($rFile, 'r');
-		if ($rHandle === false) {
-			return false;
-		}
-		try {
-			flock($rHandle, LOCK_SH);
-			return stream_get_contents($rHandle);
-		} finally {
-			flock($rHandle, LOCK_UN);
-			fclose($rHandle);
-		}
-	}
-
-	/**
-	 * Make $rDir and each missing level above it, 0750. (ConnectAudit's
-	 * directory too.) Root makes them under asAgentUser, as xc_vm: a level
-	 * root's own would shut xc_vm's processes out of every day file below it.
-	 */
-	public static function makeDir(string $rDir): bool {
-		return is_dir($rDir) || @mkdir($rDir, 0750, true) || is_dir($rDir);
 	}
 
 	/**

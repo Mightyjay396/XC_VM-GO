@@ -22,6 +22,11 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * nor touch another's work. Without the flow a node in mode 2 does nothing:
  * it has no database, and false tells the caller the work was not queued.
  *
+ * The SQL itself is here, and only here (the *Rows() methods): the node's
+ * database path runs it keyed to its own server, and MAIN's half
+ * (Domain\Cluster\NodeQueue, which serves the three ops) keyed to the
+ * authenticated node.
+ *
  * In Core: `queue`, `cron:vod` and the created-channel builder ship to LBs.
  */
 final class QueueSink {
@@ -39,7 +44,7 @@ final class QueueSink {
 	 * @return bool False when it was not queued (mode 2 without the flow).
 	 */
 	public static function enqueue(string $rType, array $rStreamIDs, int $rServerID, ?object $rDb = null): bool {
-		$rStreamIDs = array_values(array_unique(array_filter(array_map('intval', $rStreamIDs), static fn(int $rID): bool => $rID > 0)));
+		$rStreamIDs = self::ids($rStreamIDs);
 		if ($rStreamIDs === [] || !in_array($rType, self::TYPES, true)) {
 			return false;
 		}
@@ -57,25 +62,7 @@ final class QueueSink {
 		}
 
 		$rDb ??= DatabaseFactory::get();
-		$rPlaceholders = implode(',', array_fill(0, count($rStreamIDs), '?'));
-		if ($rType === 'movie') {
-			$rDb->query('DELETE FROM `queue` WHERE `stream_id` IN (' . $rPlaceholders . ') AND `server_id` = ?;', ...[...$rStreamIDs, $rServerID]);
-		} else {
-			$rDb->query('SELECT `stream_id` FROM `queue` WHERE `stream_id` IN (' . $rPlaceholders . ') AND `server_id` = ?;', ...[...$rStreamIDs, $rServerID]);
-			$rHave = array_map(static fn(array $rRow): int => (int) $rRow['stream_id'], $rDb->get_rows() ?: []);
-			$rStreamIDs = array_values(array_diff($rStreamIDs, $rHave));
-			if ($rStreamIDs === []) {
-				return true;
-			}
-		}
-
-		$rNow = time();
-		$rValues = implode(',', array_fill(0, count($rStreamIDs), '(?, ?, ?, ?)'));
-		$rArgs = [];
-		foreach ($rStreamIDs as $rStreamID) {
-			array_push($rArgs, $rType, $rStreamID, $rServerID, $rNow);
-		}
-		return (bool) $rDb->query('INSERT INTO `queue`(`type`, `stream_id`, `server_id`, `added`) VALUES ' . $rValues . ';', ...$rArgs);
+		return self::insertRows($rDb, $rServerID, $rType, $rStreamIDs)[1];
 	}
 
 	/**
@@ -100,18 +87,7 @@ final class QueueSink {
 		}
 
 		$rDb ??= DatabaseFactory::get();
-		$rRunning = $rPending = [];
-		if ($rDb->query('SELECT `id`, `pid` FROM `queue` WHERE `server_id` = ? AND `pid` IS NOT NULL AND `type` = ? ORDER BY `added` ASC;', SERVER_ID, $rType)) {
-			foreach ($rDb->get_rows() ?: [] as $rRow) {
-				$rRunning[] = ['id' => (int) $rRow['id'], 'pid' => (int) $rRow['pid']];
-			}
-		}
-		if ($rLimit > 0 && $rDb->query('SELECT `id`, `stream_id` FROM `queue` WHERE `server_id` = ? AND `pid` IS NULL AND `type` = ? ORDER BY `added` ASC LIMIT ' . $rLimit . ';', SERVER_ID, $rType)) {
-			foreach ($rDb->get_rows() ?: [] as $rRow) {
-				$rPending[] = ['id' => (int) $rRow['id'], 'stream_id' => (int) $rRow['stream_id']];
-			}
-		}
-		return ['running' => $rRunning, 'pending' => $rPending];
+		return self::claimRows($rDb, (int) SERVER_ID, $rType, $rLimit);
 	}
 
 	/**
@@ -122,7 +98,7 @@ final class QueueSink {
 	 */
 	public static function update(array $rPids, array $rDelete, ?object $rDb = null): bool {
 		$rPids = array_filter($rPids, static fn($rPid, $rID): bool => (int) $rID > 0 && (int) $rPid > 0, ARRAY_FILTER_USE_BOTH);
-		$rDelete = array_values(array_unique(array_filter(array_map('intval', $rDelete), static fn(int $rID): bool => $rID > 0)));
+		$rDelete = self::ids($rDelete);
 		if ($rPids === [] && $rDelete === []) {
 			return true;
 		}
@@ -138,13 +114,99 @@ final class QueueSink {
 		}
 
 		$rDb ??= DatabaseFactory::get();
-		foreach ($rPids as $rID => $rPid) {
-			$rDb->query('UPDATE `queue` SET `pid` = ? WHERE `id` = ? AND `server_id` = ?;', (int) $rPid, (int) $rID, SERVER_ID);
-		}
-		if ($rDelete !== []) {
-			$rDb->query('DELETE FROM `queue` WHERE `id` IN (' . implode(',', $rDelete) . ') AND `server_id` = ?;', SERVER_ID);
-		}
+		self::updateRows($rDb, (int) SERVER_ID, $rPids, $rDelete);
 		return true;
+	}
+
+	/**
+	 * Stream or row ids as the queue takes them: ints above 0, each once.
+	 *
+	 * @param array<mixed> $rIDs
+	 * @return list<int>
+	 */
+	public static function ids(array $rIDs): array {
+		return array_values(array_unique(array_filter(array_map('intval', $rIDs), static fn(int $rID): bool => $rID > 0)));
+	}
+
+	/**
+	 * enqueue()'s SQL, for one server's rows: a movie replaces what is queued
+	 * for the same stream, a channel already queued is left alone.
+	 *
+	 * @param list<int> $rStreamIDs Through ids(), not empty, of a type in TYPES.
+	 * @return array{int, bool} How many rows were new (and so inserted), and
+	 *                          whether the INSERT went through (true when none was new).
+	 */
+	public static function insertRows(object $rDb, int $rServerID, string $rType, array $rStreamIDs): array {
+		$rPlaceholders = implode(',', array_fill(0, count($rStreamIDs), '?'));
+		if ($rType === 'movie') {
+			$rDb->query('DELETE FROM `queue` WHERE `stream_id` IN (' . $rPlaceholders . ') AND `server_id` = ?;', ...[...$rStreamIDs, $rServerID]);
+		} else {
+			$rDb->query('SELECT `stream_id` FROM `queue` WHERE `stream_id` IN (' . $rPlaceholders . ') AND `server_id` = ?;', ...[...$rStreamIDs, $rServerID]);
+			$rHave = array_map(static fn(array $rRow): int => (int) $rRow['stream_id'], $rDb->get_rows() ?: []);
+			$rStreamIDs = array_values(array_diff($rStreamIDs, $rHave));
+			if ($rStreamIDs === []) {
+				return [0, true];
+			}
+		}
+
+		$rNow = time();
+		$rValues = implode(',', array_fill(0, count($rStreamIDs), '(?, ?, ?, ?)'));
+		$rArgs = [];
+		foreach ($rStreamIDs as $rStreamID) {
+			array_push($rArgs, $rType, $rStreamID, $rServerID, $rNow);
+		}
+		$rOk = (bool) $rDb->query('INSERT INTO `queue`(`type`, `stream_id`, `server_id`, `added`) VALUES ' . $rValues . ';', ...$rArgs);
+		return [count($rStreamIDs), $rOk];
+	}
+
+	/**
+	 * claim()'s SQL, for one server's rows: what runs, and at most $rLimit
+	 * (capped at MAX_CLAIM) waiting, oldest first. A read that fails counts
+	 * as no rows.
+	 *
+	 * @return array{running: list<array{id: int, pid: int}>, pending: list<array{id: int, stream_id: int}>}
+	 */
+	public static function claimRows(object $rDb, int $rServerID, string $rType, int $rLimit): array {
+		$rLimit = max(0, min(self::MAX_CLAIM, $rLimit));
+		$rRunning = $rPending = [];
+		if ($rDb->query('SELECT `id`, `pid` FROM `queue` WHERE `server_id` = ? AND `pid` IS NOT NULL AND `type` = ? ORDER BY `added` ASC;', $rServerID, $rType)) {
+			foreach ($rDb->get_rows() ?: [] as $rRow) {
+				$rRunning[] = ['id' => (int) $rRow['id'], 'pid' => (int) $rRow['pid']];
+			}
+		}
+		if ($rLimit > 0 && $rDb->query('SELECT `id`, `stream_id` FROM `queue` WHERE `server_id` = ? AND `pid` IS NULL AND `type` = ? ORDER BY `added` ASC LIMIT ' . $rLimit . ';', $rServerID, $rType)) {
+			foreach ($rDb->get_rows() ?: [] as $rRow) {
+				$rPending[] = ['id' => (int) $rRow['id'], 'stream_id' => (int) $rRow['stream_id']];
+			}
+		}
+		return ['running' => $rRunning, 'pending' => $rPending];
+	}
+
+	/**
+	 * update()'s SQL, for one server's rows: record each `id => pid` (both
+	 * above 0), then drop the $rDelete rows. Another server's rows are not
+	 * touched.
+	 *
+	 * @param array<mixed, mixed> $rPids
+	 * @param array<mixed>        $rDelete
+	 * @return int How many pids were recorded, plus how many rows were named to drop.
+	 */
+	public static function updateRows(object $rDb, int $rServerID, array $rPids, array $rDelete): int {
+		$rDone = 0;
+		foreach ($rPids as $rID => $rPid) {
+			$rID = (int) $rID;
+			$rPid = (int) $rPid;
+			if ($rID > 0 && $rPid > 0 && $rDb->query('UPDATE `queue` SET `pid` = ? WHERE `id` = ? AND `server_id` = ?;', $rPid, $rID, $rServerID)) {
+				$rDone++;
+			}
+		}
+
+		$rIDs = self::ids($rDelete);
+		if ($rIDs !== []) {
+			$rDb->query('DELETE FROM `queue` WHERE `id` IN (' . implode(',', $rIDs) . ') AND `server_id` = ?;', $rServerID);
+			$rDone += count($rIDs);
+		}
+		return $rDone;
 	}
 
 	/**

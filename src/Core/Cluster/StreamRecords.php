@@ -137,8 +137,6 @@ final class StreamRecords {
 
 	/** Run one of the section's reads: a failed one throws, never an empty result. */
 	private static function read(string $rQuery, mixed ...$rArgs): void {
-		if (self::db()->query($rQuery, ...$rArgs) === false) {
-			throw new \RuntimeException('streams: a read failed');
-		}
+		StrictQuery::run(self::db(), 'streams', $rQuery, ...$rArgs);
 	}
 }

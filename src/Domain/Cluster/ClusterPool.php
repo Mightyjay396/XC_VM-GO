@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\Canonical;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -47,6 +48,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  */
 final class ClusterPool {
 	use DatabaseAware;
+	use InstallBase;
 
 	/** pool => request_terminate_timeout (s) */
 	public const POOLS = ['cluster_ctl' => 60, 'cluster_ingest' => 90];
@@ -116,15 +118,11 @@ final class ClusterPool {
 	 */
 	private static ?array $rProbe = null;
 
-	private static ?string $rBase = null;
-
-	private static string $rUser = 'xc_vm';
-
 	private static ?\Closure $rProcs = null;
 
 	private static string $rProcRoot = '/proc';
 
-	/** Tests: another install root (null: MAIN_HOME), and the user the pools run as. */
+	/** Tests: another install root (null: MAIN_HOME), and the user the pools run as; the listen-queue probe dropped. */
 	public static function useBase(?string $rBase, string $rUser = 'xc_vm'): void {
 		self::$rBase = $rBase;
 		self::$rUser = $rUser;
@@ -155,8 +153,7 @@ final class ClusterPool {
 
 	/** @param int|null $rMaxConnections MariaDB's max_connections, null when unknown */
 	public static function ingestChildren(int $rConcurrency, ?int $rMaxConnections): int {
-		[, $rMin, $rMax] = ClusterSettings::INTS['cluster_ingest_concurrency'];
-		$rChildren = 2 * max($rMin, min($rMax, $rConcurrency)) + 8;
+		$rChildren = 2 * ClusterSettings::clampInt('cluster_ingest_concurrency', $rConcurrency) + 8;
 		if ($rMaxConnections !== null && $rMaxConnections > 0) {
 			$rChildren = min($rChildren, intdiv($rMaxConnections, 4));
 		}
@@ -171,7 +168,6 @@ final class ClusterPool {
 	 */
 	public static function sizes(): array {
 		$rNodes = 0;
-		$rConcurrency = (int) ClusterSettings::INTS['cluster_ingest_concurrency'][0];
 		$rMaxConnections = null;
 		$rRead = static function (string $rQuery): ?array {
 			try {
@@ -190,9 +186,7 @@ final class ClusterPool {
 			$rNodes = (int) $rRow['nodes'];
 		}
 		$rRow = $rRead('SELECT `cluster_ingest_concurrency` FROM `settings` LIMIT 1;');
-		if ($rRow !== null && is_numeric($rRow['cluster_ingest_concurrency'])) {
-			$rConcurrency = (int) $rRow['cluster_ingest_concurrency'];
-		}
+		$rConcurrency = ClusterSettings::int('cluster_ingest_concurrency', $rRow['cluster_ingest_concurrency'] ?? null);
 		$rRow = $rRead('SELECT @@GLOBAL.max_connections AS `max_connections`;');
 		if ($rRow !== null && is_numeric($rRow['max_connections'])) {
 			$rMaxConnections = (int) $rRow['max_connections'];
@@ -355,7 +349,7 @@ final class ClusterPool {
 	 */
 	public static function ensure(float $rWaitSec = 10.0): bool {
 		$rBase = self::base();
-		if ($rBase === null || !self::runsAsPoolUser()) {
+		if ($rBase === null || !self::runsAsUser()) {
 			return false;
 		}
 		foreach ([self::CONF_DIR, self::RUN_DIR] as $rDir) {
@@ -413,15 +407,6 @@ final class ClusterPool {
 			// Liveness then counts from the last ready_at; the pools serve regardless.
 		}
 		return true;
-	}
-
-	private static function runsAsPoolUser(): bool {
-		$rUser = function_exists('posix_getpwuid') ? posix_getpwuid(posix_geteuid()) : false;
-		return is_array($rUser) && $rUser['name'] === self::$rUser;
-	}
-
-	private static function base(): ?string {
-		return self::$rBase ?? (defined('MAIN_HOME') ? (string) MAIN_HOME : null);
 	}
 
 	private static function conf(string $rPool): string {
@@ -608,12 +593,6 @@ final class ClusterPool {
 		if (@file_get_contents($rPath) === $rContent) {
 			return false;
 		}
-		$rTmp = $rPath . '.tmp';
-		if (@file_put_contents($rTmp, $rContent) === false || !@rename($rTmp, $rPath)) {
-			@unlink($rTmp);
-			return false;
-		}
-		@chmod($rPath, 0644);
-		return true;
+		return AtomicFile::write($rPath, $rContent, 0644);
 	}
 }

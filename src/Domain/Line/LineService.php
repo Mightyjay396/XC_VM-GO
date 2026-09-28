@@ -4,6 +4,7 @@ namespace XcVm\Domain\Line;
 
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Auth\AuthRepository;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\QueryHelper;
@@ -352,7 +353,7 @@ class LineService {
 	public static function dropDisabled(array $rUserIDs): void {
 		$rIDs = array_values(array_unique(array_filter(array_map('intval', $rUserIDs), static fn(int $rID): bool => $rID > 0)));
 		// lb-settings: cluster_kill_on_line_disable
-		if ($rIDs === [] || !SettingsManager::get('cluster_kill_on_line_disable')) {
+		if ($rIDs === [] || ClusterSettings::int('cluster_kill_on_line_disable', SettingsManager::get('cluster_kill_on_line_disable')) !== 1) {
 			return;
 		}
 

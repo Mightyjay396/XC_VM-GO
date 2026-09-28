@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
 use XcVm\Infrastructure\Database\DatabaseAware;
@@ -468,7 +469,7 @@ final class ClusterEndpoint {
 			return false;
 		}
 		$rVer = intval($rSettings['cluster_policy_ver'] ?? 1);
-		$rInUse = self::portsInUse($rVer, max(10, min(300, intval($rSettings['cluster_offline_after_sec'] ?? 0) ?: 30)));
+		$rInUse = self::portsInUse($rVer, ClusterSettings::int('cluster_offline_after_sec', $rSettings['cluster_offline_after_sec'] ?? null));
 		if ($rInUse === null) {
 			return false;
 		}

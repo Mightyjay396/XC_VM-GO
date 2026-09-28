@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\LocalTelemetry;
+use XcVm\Core\Cluster\OptionalDirSeam;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\SystemInfo;
 use XcVm\Core\Util\TimeUtils;
@@ -42,6 +43,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  */
 final class HeartbeatService {
 	use DatabaseAware;
+	use OptionalDirSeam {
+		dir as private;
+	}
 
 	/**
 	 * Largest telemetry document kept per node, as MAIN encodes it: on the bus
@@ -201,13 +205,6 @@ final class HeartbeatService {
 	private const HGETALL_LUA = "return redis.call('HGETALL', KEYS[1])";
 
 	private const GET_LUA = "return redis.call('GET', KEYS[1]) or ''";
-
-	private static ?string $rDir = null;
-
-	/** Tests: another directory for the shadow copies and stats markers; null restores TMP_PATH's. */
-	public static function useDir(?string $rDir): void {
-		self::$rDir = $rDir;
-	}
 
 	/**
 	 * @param array<string, mixed> $rNode
@@ -680,9 +677,9 @@ final class HeartbeatService {
 		return $rNow;
 	}
 
-	/** Where the shadow copies and stats markers go; null (not kept) without TMP_PATH. */
-	private static function dir(): ?string {
-		return self::$rDir ?? (defined('TMP_PATH') ? TMP_PATH . 'cluster/' : null);
+	/** Where the shadow copies and stats markers go (useDir(): tests' own); null (not kept) without TMP_PATH. */
+	private static function defaultDir(): ?string {
+		return defined('TMP_PATH') ? TMP_PATH . 'cluster/' : null;
 	}
 
 	/**

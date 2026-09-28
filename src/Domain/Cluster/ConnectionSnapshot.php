@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\DirSeam;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -31,19 +32,15 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  */
 final class ConnectionSnapshot {
 	use DatabaseAware;
+	use DirSeam {
+		dir as private;
+	}
 
 	/** Records per chunk. */
 	public const MAX_RECORDS = 1000;
 
 	/** Chunks per snapshot (50 000 connections). */
 	public const MAX_CHUNKS = 50;
-
-	private static ?string $rDir = null;
-
-	/** Tests: another staging directory; null restores the default. */
-	public static function useDir(?string $rDir): void {
-		self::$rDir = $rDir;
-	}
 
 	/**
 	 * @param array<string, mixed> $rP
@@ -134,7 +131,8 @@ final class ConnectionSnapshot {
 		}
 	}
 
-	private static function dir(): string {
-		return self::$rDir ?? ((defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_snapshots/');
+	/** The staging directory (useDir(): tests' own). */
+	private static function defaultDir(): string {
+		return (defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_snapshots/';
 	}
 }

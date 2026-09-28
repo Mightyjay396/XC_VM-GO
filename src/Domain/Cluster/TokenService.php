@@ -26,7 +26,7 @@ final class TokenService {
 	use DatabaseAware;
 
 	public static function rotationMin(): int {
-		return max(5, min(1440, (int) (SettingsManager::get('lb_token_rotation_min') ?? 60)));
+		return ClusterSettings::int('lb_token_rotation_min', SettingsManager::get('lb_token_rotation_min'));
 	}
 
 	/**
