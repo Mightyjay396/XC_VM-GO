@@ -2,6 +2,7 @@
 
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\GeoIP\GeoIPService;
 use XcVm\Core\Init\LegacyInitializer;
 use XcVm\Core\Logging\DatabaseLogger;
@@ -31,6 +32,14 @@ ini_set('display_errors', 0);
 
 if (($rSettings['enable_cache'] && !file_exists(CACHE_TMP_PATH . 'cache_complete') || empty($rSettings['live_streaming_pass']))) {
 	generateError('CACHE_INCOMPLETE');
+}
+
+// This node's lease is over (NodeLease, plan section 9): no viewer starts here
+// while it lasts. MAIN sends viewers elsewhere as long as it can be reached; a
+// node that cannot reach MAIN is the case this refusal exists for. Off unless an
+// operator switched `lb_lease_fence` on, and open on every uncertainty.
+if (NodeLease::refusesNewSessions($rSettings)) {
+	generateError('STREAM_OFFLINE');
 }
 
 $rIsMag = false;

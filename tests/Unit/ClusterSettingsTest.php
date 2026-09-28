@@ -14,8 +14,8 @@ final class ClusterSettingsTest extends TestCase {
 		return ClusterSettings::normalize($rNew, self::MAIN, $rCurrent, $rEnv);
 	}
 
-	public function testThereAreTwentyOneSettings(): void {
-		$this->assertCount(21, ClusterSettings::keys());
+	public function testThereAreTwentyTwoSettings(): void {
+		$this->assertCount(22, ClusterSettings::keys());
 	}
 
 	public function testNumbersClampAndEnumsFallBack(): void {
