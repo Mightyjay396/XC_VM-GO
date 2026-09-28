@@ -1,6 +1,6 @@
 # ADR 0001 — Tmpfs-free streaming: PHP out of the byte path, native fan-out, in-RAM HLS
 
-- **Status:** Proposed
+- **Status:** Accepted — P0–P3 and P6 shipped; P4 partial (`fanout_sync` reconciles the daemon's `GET /connections` and `/rates` into `lines_live` / `lines_divergence`; the Redis registry of §2.4 is not built, and the `opened_cons`/`divergence` writers remain); P5 cancelled by the later [ADR 0003](0003-full-daemon-cutover.md), Phase F (on-disk HLS and the streaming tmpfs mount stay).
 - **Date:** 2026-08-16
 - **Scope of this iteration:** MAIN node first; LB rollout is a later phase (same components, provisioned via `LbInstallFlow`/binaries release).
 - **Decision drivers:** hard ceiling at ~400 concurrent connections; goal to remove the tmpfs mounts entirely and deliver live/HLS/MPEG-TS purely over pipes/sockets.
