@@ -1247,13 +1247,14 @@ class StreamProcess {
 	 * A source's supervisor spec entries when a driver runs it: one entry, none
 	 * when the source is skipped (reason in the stream's log), or null when core
 	 * (ffmpeg / remux) runs it, a loopback's http parent feed included. No
-	 * fallback_cmd — ffmpeg can't read a driver URL — and no probe_cmd, so the
-	 * supervisor never switches to it blindly.
+	 * fallback_cmd — ffmpeg can't read a driver URL. The probe_cmd asks the
+	 * driver (console.php source:probe); the supervisor only runs it for a
+	 * priority return, so it rides along whether priority_backup is on or not.
 	 *
 	 * @param array $rStreamInfo      streams ⨝ streams_types row.
 	 * @param array $rArgsByKey       Stream arguments keyed by argument_key.
 	 * @param array $rSegmentSettings seg_time / seg_list_size / seg_delete_threshold.
-	 * @return list<array{label: string, cmd: string}>|null
+	 * @return list<array{label: string, cmd: string, probe_cmd: string}>|null
 	 */
 	private static function driverSpecEntries(int $rStreamID, array $rStreamInfo, array $rArgsByKey, string $rSource, string $rLabel, array $rSegmentSettings, ?string $rIngestSock): ?array {
 		$rDriver = self::sourceDriverFor($rStreamInfo, $rArgsByKey, $rSource);
@@ -1261,7 +1262,8 @@ class StreamProcess {
 			return null;
 		}
 		$rCmd = self::driverLaunch($rStreamID, $rDriver, self::driverContext($rStreamID, $rSource, $rLabel, $rArgsByKey, $rSegmentSettings, $rIngestSock, true));
-		return $rCmd === '' ? [] : [['label' => $rSource, 'cmd' => $rCmd]];
+		$rProbe = PHP_BIN . ' ' . MAIN_HOME . 'console.php source:probe ' . $rStreamID . ' ' . escapeshellarg(base64_encode($rSource));
+		return $rCmd === '' ? [] : [['label' => $rSource, 'cmd' => $rCmd, 'probe_cmd' => $rProbe]];
 	}
 
 	/**
@@ -1332,6 +1334,19 @@ class StreamProcess {
 	private static function monitorDriverPick(int $rStreamID, array $rStreamInfo, array $rArgsByKey, string $rSource): ?SourceDriverInterface {
 		$rPick = self::sourceDriverFor($rStreamInfo, $rArgsByKey, $rSource);
 		return $rPick !== null && self::driverAvailable($rStreamID, $rPick, $rSource) ? $rPick : null;
+	}
+
+	/**
+	 * What a source check gets for a driver source in place of ffprobe's JSON:
+	 * null when core owns the source (run ffprobe), [] when the driver reports
+	 * it down, or an ffprobe-shaped result with no stream details when it is up.
+	 */
+	public static function driverProbe(int $rStreamID, string $rSource): ?array {
+		$rDriver = SourceDriverRegistry::for($rSource);
+		if ($rDriver === null) {
+			return null;
+		}
+		return self::driverAvailable($rStreamID, $rDriver, $rSource) ? ['streams' => [], 'format' => ['format_name' => 'mpegts']] : [];
 	}
 
 	/** The longest first-output wait the drivers of these sources asked for (0: none). */

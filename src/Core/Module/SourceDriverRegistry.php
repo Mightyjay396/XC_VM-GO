@@ -18,12 +18,18 @@ namespace XcVm\Core\Module;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 final class SourceDriverRegistry {
-	/** Schemes ffmpeg (or core) reads itself; no module may claim them. */
+	/**
+	 * Schemes ffmpeg (or core) reads itself; no module may claim them, and none
+	 * is ever refused. The union of `ffmpeg -protocols` inputs across the bundled
+	 * 4.0/7.1/8.0 builds and common distro builds, plus rtsp(s) and mms, which
+	 * ffmpeg reads through demuxers — a scheme missing here would stop existing
+	 * streams that use it, so err on the side of listing it.
+	 */
 	public const CORE_SCHEMES = [
-		'async', 'cache', 'concat', 'concatf', 'crypto', 'data', 'fd', 'file', 'ftp', 'gopher', 'gophers',
-		'hls', 'http', 'httpproxy', 'https', 'mmsh', 'mmst', 'pipe', 'rist', 'rtmp', 'rtmpe', 'rtmps',
-		'rtmpt', 'rtmpte', 'rtmpts', 'rtp', 'rtsp', 'rtsps', 'sctp', 'sftp', 'smb', 'srt', 'srtp',
-		'subfile', 'tcp', 'tee', 'tls', 'udp', 'udplite', 'unix', 'zmq',
+		'amqp', 'async', 'bluray', 'cache', 'concat', 'concatf', 'crypto', 'data', 'fd', 'ffrtmphttp', 'file',
+		'ftp', 'gopher', 'gophers', 'hls', 'http', 'httpproxy', 'https', 'ipfs', 'ipns', 'mms', 'mmsh', 'mmst',
+		'pipe', 'rist', 'rtmp', 'rtmpe', 'rtmps', 'rtmpt', 'rtmpte', 'rtmpts', 'rtp', 'rtsp', 'rtsps', 'sctp',
+		'sftp', 'smb', 'srt', 'srtp', 'subfile', 'tcp', 'tee', 'tls', 'udp', 'udplite', 'unix', 'zmq',
 	];
 
 	/** @var array<string, array{driver: SourceDriverInterface, start_timeout: int}>|null scheme => entry */

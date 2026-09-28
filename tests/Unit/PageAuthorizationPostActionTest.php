@@ -42,6 +42,27 @@ final class PageAuthorizationPostActionTest extends TestCase {
 		}
 	}
 
+	/** A save action with no rule is refused — pages without one stay open. */
+	public function testUnruledSaveIsRefusedButUnruledPageIsNot(): void {
+		$this->assertFalse(PageAuthorization::checkPostAction('no_such_form', false));
+		$this->assertFalse(PageAuthorization::checkPostAction('no_such_form', true));
+		$this->assertTrue(PageAuthorization::checkPermissions('no_such_page', false));
+	}
+
+	/** Plex / Watch saves need the permission the modules give their own pages. */
+	public function testModuleSavesNeedTheirPermission(): void {
+		foreach (['settings_plex', 'settings_watch', 'plex_add', 'watch_add'] as $rAction) {
+			$this->assertFalse(PageAuthorization::checkPostAction($rAction, false), $rAction);
+		}
+		$GLOBALS['rPermissions']['advanced'] = ['folder_watch_settings'];
+		$this->assertTrue(PageAuthorization::checkPostAction('settings_plex', false));
+		$this->assertTrue(PageAuthorization::checkPostAction('settings_watch', false));
+		$this->assertFalse(PageAuthorization::checkPostAction('plex_add', false));
+		$GLOBALS['rPermissions']['advanced'] = ['folder_watch_add'];
+		$this->assertTrue(PageAuthorization::checkPostAction('plex_add', false));
+		$this->assertTrue(PageAuthorization::checkPostAction('watch_add', true));
+	}
+
 	public function testEnigmaPageFollowsTheMagRules(): void {
 		$GLOBALS['rPermissions']['advanced'] = ['edit_e2'];
 		$this->assertTrue(PageAuthorization::checkPermissions('enigma', true));

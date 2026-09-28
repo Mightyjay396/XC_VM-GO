@@ -42,6 +42,13 @@ final class SourceDriverRegistryTest extends TestCase {
 		$this->assertSame('xcvm-test', SourceDriverRegistry::for('acmedash://x')->binary());
 	}
 
+	/** A scheme some bundled ffmpeg reads must never stop an existing stream. */
+	public function testEveryFfmpegProtocolIsCore(): void {
+		foreach (['ipfs', 'ipns', 'bluray', 'amqp', 'ffrtmphttp', 'mms', 'rtmpte', 'gophers', 'concatf', 'fd'] as $rScheme) {
+			$this->assertNull(SourceDriverRegistry::refusal($rScheme . '://x/y'), $rScheme);
+		}
+	}
+
 	public function testUnknownSchemeIsRefusedButCoreAndDriverOnesAreNot(): void {
 		$this->assertSame('no source driver for otherdash:// on this node', SourceDriverRegistry::refusal('otherdash://p/c'));
 		$this->assertNull(SourceDriverRegistry::refusal('acmedash://p/c'));

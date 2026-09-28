@@ -132,17 +132,29 @@ Listeners are skipped once `isPropagationStopped()` returns `true`.
 
 ## Built-in core events
 
-| Event class | Location | When dispatched | Stoppable |
-| ----------- | -------- | --------------- | :-------: |
-| `ModuleLoadedEvent` | `Events/Module/` | After module file is loaded | No |
-| `ModuleBootedEvent` | `Events/Module/` | After `boot()` is called | No |
-| `PackageInstalledEvent` | `Events/Module/` | After marketplace install | No |
-| `UserAuthenticatedEvent` | `Events/Auth/` | After successful login | Yes |
-| `UserLoggedOutEvent` | `Events/Auth/` | After logout | No |
-| `StreamStartingEvent` | `Events/Stream/` | Before a stream starts (gate — extends `AbstractEvent`) | Yes |
-| `StreamStartedEvent` | `Events/Stream/` | After stream started | No |
-| `StreamStoppedEvent` | `Events/Stream/` | After stream stopped | No |
-| `SettingsChangedEvent` | `Events/Settings/` | After settings saved | No |
+Dispatched by core:
+
+| Event class | Location | When dispatched |
+| ----------- | -------- | --------------- |
+| `StreamsChangedEvent` | `Events/Stream/` | Streams were created or changed (form, import, EPG, categories, servers, …) |
+| `StreamSavedEvent` | `Events/Stream/` | The stream form, an import or the admin API wrote live streams (carries module tab fields) |
+| `StreamsDeletedEvent` | `Events/Stream/` | Streams were deleted |
+| `StreamArgumentsChangedEvent` | `Events/Stream/` | Global stream argument defaults changed |
+| `TranscodeProfileSavedEvent` | `Events/Stream/` | A transcode profile was saved |
+| `BouquetDeletedEvent` | `Events/Bouquet/` | A bouquet was deleted |
+| `VodImportedEvent` | `Events/Vod/` | A VOD item was imported |
+| `MediaAnalyzedEvent` | `Events/Vod/` | A VOD file was analysed |
+| `ServerSavedEvent` | `Events/Server/` | A server was saved |
+| `SettingsChangedEvent` | `Events/Settings/` | Settings were saved |
+| `CrontabChangedEvent` | `Events/Settings/` | The crontab changed |
+| `PackageInstalledEvent` | `Events/Module/` | A marketplace package was installed |
+
+!!! warning "Defined but never dispatched"
+    `StreamStartingEvent`, `StreamStartedEvent`, `StreamStoppedEvent`,
+    `ModuleLoadedEvent`, `ModuleBootedEvent`, `UserAuthenticatedEvent` and
+    `UserLoggedOutEvent` exist as classes, but nothing in core dispatches them. A
+    listener on them never runs; do not build on them. The examples on this page use
+    `StreamStartedEvent` only to show the API.
 
 ---
 
