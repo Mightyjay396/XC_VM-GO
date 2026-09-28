@@ -16,9 +16,13 @@ final class FileTicketController {
 	public function handle(): void {
 		$rOut = FileTicketServer::serve($_SERVER, $_GET, ['lb_scan_roots' => SettingsManager::get('lb_scan_roots')]);
 		http_response_code($rOut['status']);
+		header('X-Content-Type-Options: nosniff');
 		foreach ($rOut['headers'] as $rName => $rValue) {
 			header($rName . ': ' . $rValue);
 		}
+		// The body is empty or the ticketed file's bytes as application/octet-stream
+		// (nosniff above): no request input is reflected into it.
+		// nosemgrep: php.lang.security.injection.echoed-request.echoed-request
 		echo $rOut['body'];
 	}
 }
