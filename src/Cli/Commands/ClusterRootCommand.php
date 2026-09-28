@@ -133,7 +133,8 @@ class ClusterRootCommand implements CommandInterface {
 				continue;
 			}
 			try {
-				$rArgs = (array) $rCmd['args'];
+				// The action as the signals row carried it: {action, …}.
+				$rArgs = ['action' => (string) $rCmd['action']] + (array) ($rCmd['args'] ?? []);
 				$rOutput = $rStaged === null ? $rRun($rArgs) : ArtefactStage::withStaged($rStaged, static fn() => $rRun($rArgs));
 				$rOk = true;
 			} catch (\Throwable $rE) {
@@ -145,7 +146,7 @@ class ClusterRootCommand implements CommandInterface {
 				}
 			}
 			RootPin::writeDone($rDonePath, (string) json_encode(['ok' => $rOk, 'result' => substr(trim($rOutput), 0, 4096)]));
-			$rDone[] = ['seq' => (int) $rCmd['seq'], 'ok' => $rOk, 'detail' => (string) $rCmd['args']['action']];
+			$rDone[] = ['seq' => (int) $rCmd['seq'], 'ok' => $rOk, 'detail' => (string) $rCmd['action']];
 		}
 		return $rDone;
 	}

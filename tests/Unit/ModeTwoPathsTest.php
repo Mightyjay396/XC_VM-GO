@@ -491,7 +491,7 @@ final class ModeTwoPathsTest extends TestCase {
 		RootPin::useDirs($rPin . 'etc/', $rPin . 'inbox/');
 		$this->assertTrue(RootPin::write($rCrypto->info()['panel_sign_pub'], self::NODE));
 		foreach ([['action' => 'reboot'], ['action' => 'restart_services'], ['action' => 'stop_services'], ['action' => 'flush'], ['action' => 'update'], ['action' => 'rollback', 'version' => '2.0.0']] as $i => $rArgs) {
-			$rDoc = (string) json_encode(['v' => 1, 'type' => 'node.root', 'exp' => self::NOW + 600, 'iat' => self::NOW, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $i + 1, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => $rArgs]);
+			$rDoc = (string) json_encode(['v' => 1, 'type' => 'node.root', 'action' => $rArgs['action'], 'exp' => self::NOW + 600, 'iat' => self::NOW, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $i + 1, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => (object) array_diff_key($rArgs, ['action' => 0])]);
 			file_put_contents($rPin . 'inbox/' . ($i + 1) . '.json', json_encode(['doc' => $rDoc, 'sig' => Enc::b64url($rCrypto->sign('cmd', $rDoc))]));
 		}
 		[, $rOut, $rResult] = $this->child(['root_actions'], null, ['XCVM_TEST_PIN' => $rPin . 'etc/', 'XCVM_TEST_INBOX' => $rPin . 'inbox/', 'XCVM_TEST_NOW' => (string) self::NOW]);

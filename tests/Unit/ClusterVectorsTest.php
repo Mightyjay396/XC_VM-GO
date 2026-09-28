@@ -104,24 +104,26 @@ final class ClusterVectorsTest extends TestCase {
 	}
 
 	/**
-	 * The Go agent keeps its own copy of both vector files
+	 * The Go agent keeps its own copy of the shared files
 	 * (XC_VM_Fanout/internal/clustercrypto/testdata/), and each side only ever
 	 * tests itself against the copy it holds — so a regenerated file that is
-	 * not copied leaves the two speaking different protocols while both suites
-	 * pass. These digests are the tripwire: they are recorded in the Go test
-	 * too, so whichever side changes first fails until both are updated.
+	 * not copied leaves them speaking different protocols while every suite
+	 * passes. These digests are the tripwire: they are recorded in the Go test
+	 * too, and xcvm_core's vectors.rs records those of the two files it
+	 * generates (cluster_vectors.json, and cluster_commands.json, its command
+	 * registry), which its tests/conformance/fixtures/ holds byte for byte.
+	 * Whichever side changes first fails until all are updated.
 	 *
-	 * Regenerating the vectors is a protocol change (ADR 0004): copy both files
-	 * to the agent's testdata, update the digests in both tests, raise `proto`
+	 * Regenerating the vectors is a protocol change (ADR 0004): copy the files
+	 * to the agent's testdata, update the digests in every test, raise `proto`
 	 * and keep accepting N−1.
 	 */
 	public function testTheVectorFilesAreTheOnesTheAgentHolds(): void {
+		$rFiles = ['cluster_vectors.json', 'cluster_canonical_vectors.json', 'cluster_commands.json'];
 		$this->assertSame([
 			'cluster_vectors.json' => '6cb3272fc1f97e2bc547105b8d5e42c77dcbf805e53d3eae78c89798d8f89645',
 			'cluster_canonical_vectors.json' => 'ee0fd4b297f02e2e1c1277a1433d1febe9c520414ce107addb524ff2b16799c3',
-		], [
-			'cluster_vectors.json' => hash_file('sha256', dirname(__DIR__) . '/Support/cluster_vectors.json'),
-			'cluster_canonical_vectors.json' => hash_file('sha256', dirname(__DIR__) . '/Support/cluster_canonical_vectors.json'),
-		]);
+			'cluster_commands.json' => 'af0b7fd74136f3d9f66859b26749bb6d1955b81eb7e698938fd6d2d630f00802',
+		], array_combine($rFiles, array_map(static fn(string $rName): string => (string) hash_file('sha256', dirname(__DIR__) . '/Support/' . $rName), $rFiles)));
 	}
 }

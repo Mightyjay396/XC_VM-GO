@@ -7,8 +7,15 @@ use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\Crypto\Seal;
+use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ClusterBus;
+use XcVm\Domain\Cluster\ClusterRoute;
+use XcVm\Domain\Cluster\CommandBus;
 use XcVm\Domain\Cluster\LeaseService;
+use XcVm\Domain\Cluster\NodeRegistry;
+use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\ClusterReference as Ref;
+use XcVm\Tests\Support\FakeClusterCrypto;
 
 /**
  * The panel facade against a real xcvm_core: init, token issue, the agent's
@@ -134,5 +141,94 @@ final class ClusterExtensionIntegrationTest extends TestCase {
 		$this->assertSame('R', $rCrypto->recordClass('cmd', $rCmd));
 		$this->assertTrue(PanelSig::verify($rPub, 'cmd', $rCmd, $rCrypto->sign('cmd', $rCmd)));
 		$this->assertFalse(PanelSig::verify($rPub, 'blk', $rCmd, $rCrypto->sign('cmd', $rCmd)));
+	}
+
+	/**
+	 * The registry the tests hold (tests/Support/cluster_commands.json) is the
+	 * one this extension classes by: every type, with and without its
+	 * action, with every argument a restrictive type takes and with one it
+	 * does not.
+	 */
+	public function testTheExtensionClassesByTheSharedRegistry(): void {
+		$rCrypto = ClusterCryptoFactory::create();
+		$rCrypto->init();
+		$rReg = FakeClusterCrypto::commandRegistry();
+		foreach ($rReg['types'] as $rType => $rEntry) {
+			$rDoc = ['type' => $rType, 'exp' => time() + 300] + (empty($rEntry['action']) ? [] : ['action' => 'x']);
+			$this->assertSame($rEntry['class'], $rCrypto->recordClass('cmd', (string) json_encode($rDoc)), $rType);
+			if (isset($rEntry['args'])) {
+				$this->assertSame('R', $rCrypto->recordClass('cmd', (string) json_encode($rDoc + ['args' => (object) array_fill_keys($rEntry['args'], 1)])), $rType . ' with every argument');
+				$this->assertRefused('RECORD:args', $rCrypto, (string) json_encode($rDoc + ['args' => ['zz' => 1]]), $rType);
+			}
+			if (!empty($rEntry['action'])) {
+				$this->assertRefused('RECORD:action', $rCrypto, (string) json_encode(['type' => $rType, 'exp' => time() + 300, 'args' => ['action' => 'x']]), $rType . ': the action among the arguments');
+				foreach ($rEntry['restrictive_actions'] ?? [] as $rAction => $rArgs) {
+					$this->assertSame('R', $rCrypto->recordClass('cmd', (string) json_encode(['action' => $rAction] + $rDoc)), $rType . ' ' . $rAction);
+				}
+			}
+		}
+		$this->assertRefused('RECORD:type', $rCrypto, (string) json_encode(['type' => 'rm -rf', 'exp' => time() + 300]), 'an unknown type');
+	}
+
+	/**
+	 * Every command MAIN sends, built by CommandBus and ClusterRoute, against
+	 * the real extension: signed, under the class the extension gives it (the
+	 * `class` column is its answer). Before, `conn.close`, `node.cache`,
+	 * `artefact.fetch`, `node.rpc`, `node.root` and `conn.kill_worker` (its
+	 * `rtmp`) were refused with RECORD, and only `conn.drop` was ever tried.
+	 */
+	public function testEveryCommandMainSendsIsSigned(): void {
+		$rCrypto = ClusterCryptoFactory::create();
+		$rPub = $rCrypto->init()['panel_sign_pub'];
+		$rDb = new TestDb();
+		foreach (['029_create_cluster_nodes', '030_create_cluster_commands'] as $rName) {
+			$rSql = (string) file_get_contents(dirname(__DIR__, 2) . '/src/migrations/database/up/' . $rName . '.sql');
+			$rDb->exec((string) preg_replace(
+				['/^--.*$/m', '/`id` bigint\(20\) unsigned NOT NULL AUTO_INCREMENT/', '/,\s*PRIMARY KEY \(`id`\)/', '/,\s*(UNIQUE )?KEY `\w+` \([^)]*\)/', '/ unsigned| COLLATE \w+/', '/\) ENGINE=[^;]*;/'],
+				['', '`id` INTEGER PRIMARY KEY AUTOINCREMENT', '', '', '', ');'],
+				$rSql
+			));
+		}
+		$rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `root_ready` tinyint(1) NOT NULL DEFAULT 0');
+		DatabaseFactory::set($rDb);
+		SettingsManager::set(['cluster_api_enabled' => 1]);
+		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '/cluster.sock');
+		ClusterRoute::useCrypto(static fn() => $rCrypto);
+		try {
+			$rSid = 17;
+			NodeRegistry::startEnrolment($rSid, '0f8fad5b-d9cb-469f-a165-70867728950e', random_bytes(32), random_bytes(32), 2);
+			NodeRegistry::update($rSid, ['state' => 'active', 'mode' => 2, 'flows' => NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_CONNECTIONS, 'root_ready' => 1]);
+			$this->assertSame([true, true], ClusterRoute::send($rSid, ['action' => 'free_temp']));
+			$this->assertSame([true, true], ClusterRoute::root($rSid, ['action' => 'reboot']));
+			$this->assertSame([true, true], ClusterRoute::cache($rSid, [['type' => 'delete_vod', 'id' => 7]]));
+			$this->assertSame([true, true], ClusterRoute::kill($rSid, 4242, true));
+			$this->assertSame([true, true], ClusterRoute::drop($rSid, 'viewer1'));
+			$this->assertSame([true, true], ClusterRoute::closeConnection($rSid, 'viewer2', false));
+			$this->assertSame([true, true], ClusterRoute::rotateNow($rSid));
+			CommandBus::enqueue($rCrypto, $rSid, 'config.changed', ['sections' => ['servers']], 'config.changed');
+			CommandBus::enqueue($rCrypto, $rSid, 'artefact.fetch', ['artefact' => ['id' => 'offair/banned', 'name' => 'banned.ts', 'size' => 3, 'sha256' => str_repeat('0', 64), 'mtime' => 1, 'ctime' => 1]]);
+			$rDb->query('SELECT `type`, `class`, `payload`, `sig` FROM `cluster_commands` WHERE `server_id` = ? ORDER BY `seq`', $rSid);
+			$rRows = $rDb->get_rows();
+			$this->assertEqualsCanonicalizing(CommandBus::TYPES, array_column($rRows, 'type'));
+			foreach ($rRows as $rRow) {
+				$this->assertTrue(PanelSig::verify($rPub, 'cmd', (string) $rRow['payload'], (string) $rRow['sig']), $rRow['type']);
+				$this->assertSame($rCrypto->recordClass('cmd', (string) $rRow['payload']), $rRow['class'], $rRow['type']);
+				$this->assertSame(FakeClusterCrypto::commandRegistry()['types'][$rRow['type']]['class'], $rRow['class'], $rRow['type']);
+			}
+		} finally {
+			ClusterRoute::useCrypto(null);
+			ClusterBus::useSocket(null);
+			SettingsManager::set([]);
+			DatabaseFactory::reset();
+		}
+	}
+
+	private function assertRefused(string $rReason, \XcVm\Core\Cluster\Crypto\ClusterCrypto $rCrypto, string $rPayload, string $rWhy): void {
+		try {
+			$rCrypto->sign('cmd', $rPayload);
+			$this->fail($rWhy . ': signed');
+		} catch (ClusterRefusedException $rE) {
+			$this->assertSame($rReason, $rE->reason(), $rWhy);
+		}
 	}
 }

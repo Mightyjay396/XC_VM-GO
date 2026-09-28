@@ -17,8 +17,16 @@ use XcVm\Core\Cluster\Crypto\SessionKeys;
  * JSON here; the real one is sealed to the machine.
  */
 class FakeClusterCrypto extends ClusterCrypto {
-	/** Command types the extension classes R (restrictive), signable without a licence. */
+	/**
+	 * Command types the extension classes R (restrictive), signable without a
+	 * licence. Informational, as CommandBus::RESTRICTIVE: sign() classes by
+	 * the extension's registry (commandRegistry()), and CommandBusRegistryTest
+	 * holds this list to it.
+	 */
 	public const RESTRICTIVE_COMMANDS = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
+
+	/** @var array<string, mixed>|null the extension's command registry (cluster_commands.json) */
+	private static ?array $rRegistry = null;
 
 	public string $rSeed;
 
@@ -200,12 +208,88 @@ class FakeClusterCrypto extends ClusterCrypto {
 		return ['gen' => $this->rFloor[$rNodeUuid], 'min_epoch' => $rMinEpoch];
 	}
 
+	/**
+	 * The extension's command registry, which xcvm_core generates from the
+	 * table cluster_sign classes by (tests/Support/cluster_commands.json).
+	 *
+	 * @return array<string, mixed>
+	 */
+	public static function commandRegistry(): array {
+		return self::$rRegistry ??= (array) json_decode((string) file_get_contents(__DIR__ . '/cluster_commands.json'), true);
+	}
+
+	/**
+	 * A `cmd` record's class as the extension's sign::classify decides it:
+	 * "R" or "G", or the extension's refusal (RECORD:type for a type it does
+	 * not know, RECORD:args for an argument a restrictive type does not take,
+	 * RECORD:action for an action type without its top-level action,
+	 * RECORD:key for an envelope key it does not know, RECORD:exp without an
+	 * integer exp).
+	 */
+	public static function commandClass(string $rPayload): string {
+		$rReg = self::commandRegistry();
+		$rDoc = json_decode($rPayload);
+		if (!$rDoc instanceof \stdClass) {
+			throw new ClusterRefusedException('RECORD:json_object', 'cluster_sign');
+		}
+		$rCmd = get_object_vars($rDoc);
+		$rType = $rCmd['type'] ?? null;
+		if (!is_string($rType)) {
+			throw new ClusterRefusedException('RECORD:type', 'cluster_sign');
+		}
+		// The extension also bounds exp to its clock's next max_ttl_sec; the
+		// tests sign documents dated at fixed times, so only its presence is
+		// checked here.
+		if (!is_int($rCmd['exp'] ?? null)) {
+			throw new ClusterRefusedException('RECORD:exp', 'cluster_sign');
+		}
+		if (array_key_exists('args', $rCmd) && !$rCmd['args'] instanceof \stdClass) {
+			throw new ClusterRefusedException('RECORD:args', 'cluster_sign');
+		}
+		$rEntry = $rReg['types'][$rType] ?? null;
+		$rKeys = $rReg['envelope'];
+		if (!empty($rEntry['action'])) {
+			$rKeys[] = $rReg['action_key'];
+		}
+		if (array_diff(array_keys($rCmd), $rKeys) !== []) {
+			throw new ClusterRefusedException('RECORD:key', 'cluster_sign');
+		}
+		if (!is_array($rEntry)) {
+			throw new ClusterRefusedException('RECORD:type', 'cluster_sign');
+		}
+		$rAllowed = $rEntry['args'] ?? null;
+		if (!empty($rEntry['action'])) {
+			$rAction = $rCmd[$rReg['action_key']] ?? null;
+			if (!is_string($rAction)) {
+				throw new ClusterRefusedException('RECORD:action', 'cluster_sign');
+			}
+			$rAllowed = $rEntry['restrictive_actions'][$rAction] ?? null;
+		}
+		if (!is_array($rAllowed)) {
+			return 'G';
+		}
+		if (isset($rCmd['args']) && array_diff(array_keys(get_object_vars($rCmd['args'])), $rAllowed) !== []) {
+			throw new ClusterRefusedException('RECORD:args', 'cluster_sign');
+		}
+		return 'R';
+	}
+
+	public function recordClass(string $rTag, string $rPayload): string {
+		if ($rTag === 'cmd') {
+			return self::commandClass($rPayload);
+		}
+		if ($rTag === 'blk') {
+			return empty(json_decode($rPayload, true)['remove'] ?? null) ? 'R' : 'G';
+		}
+		return in_array($rTag, \XcVm\Core\Cluster\Crypto\PanelSig::RESTRICTIVE_TAGS, true) ? 'R' : 'G';
+	}
+
 	public function sign(string $rTag, string $rPayload): string {
 		// As the extension: a blocklist delta restricts while it removes
-		// nothing, and a command is restrictive by its type (plan section 7).
-		$rRestrictive = in_array($rTag, \XcVm\Core\Cluster\Crypto\PanelSig::RESTRICTIVE_TAGS, true)
-			|| ($rTag === 'blk' && empty(json_decode($rPayload, true)['remove'] ?? null))
-			|| ($rTag === 'cmd' && in_array(json_decode($rPayload, true)['type'] ?? null, self::RESTRICTIVE_COMMANDS, true));
+		// nothing, and a command is classed by the extension's registry: a
+		// type, argument or envelope it does not know is refused, licensed or
+		// not.
+		$rRestrictive = $this->recordClass($rTag, $rPayload) === 'R';
 		if ($this->rRefuseSign !== null && !$rRestrictive) {
 			throw new ClusterRefusedException($this->rRefuseSign, 'cluster_sign');
 		}

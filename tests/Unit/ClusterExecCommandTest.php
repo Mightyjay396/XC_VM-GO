@@ -20,14 +20,14 @@ final class ClusterExecCommandTest extends TestCase {
 	}
 
 	private function command(array $rOverride = [], string $rTag = 'cmd'): array {
-		$rDoc = (string) json_encode($rOverride + ['v' => 1, 'type' => 'node.rpc', 'exp' => 1800000600, 'iat' => 1800000000, 'cmd_id' => str_repeat('a', 32), 'seq' => 1, 'node_uuid' => $this->rState['node_uuid'], 'gen' => 1, 'dedupe_key' => null, 'args' => ['action' => 'get_pids']]);
+		$rDoc = (string) json_encode($rOverride + ['v' => 1, 'type' => 'node.rpc', 'exp' => 1800000600, 'iat' => 1800000000, 'cmd_id' => str_repeat('a', 32), 'seq' => 1, 'node_uuid' => $this->rState['node_uuid'], 'gen' => 1, 'dedupe_key' => null, 'action' => 'get_pids', 'args' => new \stdClass()]);
 		return ['doc' => $rDoc, 'sig' => Enc::b64url($this->rCrypto->sign($rTag, $rDoc))];
 	}
 
 	public function testAGenuineCommandVerifies(): void {
 		$rCmd = ClusterExecCommand::verify($this->command(), $this->rState, 1800000000);
 		$this->assertIsArray($rCmd);
-		$this->assertSame('get_pids', $rCmd['args']['action']);
+		$this->assertSame(['get_pids', []], [$rCmd['action'], $rCmd['args']], 'the action is the envelope\'s');
 	}
 
 	public function testForgedOrMisaddressedCommandsAreRefused(): void {
@@ -87,8 +87,12 @@ final class ClusterExecCommandTest extends TestCase {
 	}
 
 	public function testUnknownTypesAndActionsDoNothing(): void {
-		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.root', 'args' => ['action' => 'reboot']]));
-		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.rpc', 'args' => ['action' => 'view_log']]), 'not in NodeRpc::ACTIONS');
+		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.root', 'action' => 'reboot', 'args' => []]));
+		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.rpc', 'action' => 'view_log', 'args' => []]), 'not in NodeRpc::ACTIONS');
+		// The action is the envelope's, as the extension classes it: one among
+		// the arguments (the shape before) runs nothing, alone or beside it.
+		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.rpc', 'args' => ['action' => 'get_pids']]), 'no top-level action');
+		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.rpc', 'action' => 'get_pids', 'args' => ['action' => 'kill_pid']]), 'a second action among the arguments');
 		$this->assertSame(2, ClusterExecCommand::run(['type' => 'conn.kill_worker', 'args' => ['pid' => 0]]));
 	}
 }

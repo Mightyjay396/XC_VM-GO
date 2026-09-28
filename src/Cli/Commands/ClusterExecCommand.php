@@ -20,15 +20,17 @@ use XcVm\Streaming\Fanout\FanoutClient;
  * (config/cluster/agent.json), runs it and writes its result to stdout for
  * the agent's ack. Exit 0 means done.
  *
- * - `node.rpc {action, …}` — one of NodeRpc::ACTIONS, through the handlers of
- *   the legacy /api (InternalApiController::runCommand);
+ * - `node.rpc` — its `action` (the envelope's, never an argument) one of
+ *   NodeRpc::ACTIONS, run with its `args` through the handlers of the legacy
+ *   /api (InternalApiController::runCommand);
  * - `conn.drop {uuid}` — a viewer the fanout serves (the agent runs it
  *   itself when it can reach the fanout);
  * - `conn.kill_worker {pid, rtmp}` — a viewer's PHP worker (this user's
  *   processes only) or an RTMP client.
  *
- * - `node.root {action, …}` — handed to root (cluster:root) through the
- *   root inbox; root checks it against its own pin of the panel key.
+ * - `node.root` (its `action` the envelope's too) — handed to root
+ *   (cluster:root) through the root inbox; root checks it against its own
+ *   pin of the panel key.
  * - `node.cache {jobs}` — cache jobs for a node in mode 2, whose signals
  *   daemon reads no `signals` row: run as the daemon ran the rows
  *   (CacheJobs::run), only when every job is in the form MAIN signs it
@@ -162,11 +164,14 @@ class ClusterExecCommand implements CommandInterface {
 		$rArgs = is_array($rCmd['args'] ?? null) ? $rCmd['args'] : [];
 		switch ($rCmd['type'] ?? '') {
 			case 'node.rpc':
-				if (!in_array($rArgs['action'] ?? null, NodeRpc::ACTIONS, true)) {
+				// The action is the envelope's, as the extension classes it; one
+				// among the arguments as well would be a second answer to what runs.
+				$rAction = $rCmd['action'] ?? null;
+				if (!in_array($rAction, NodeRpc::ACTIONS, true) || array_key_exists('action', $rArgs)) {
 					fwrite(STDERR, "cluster:exec: unknown action\n");
 					return 2;
 				}
-				(new InternalApiController())->runCommand($rArgs);
+				(new InternalApiController())->runCommand(['action' => $rAction] + $rArgs);
 				return 0;
 
 			case 'conn.kill_worker':
