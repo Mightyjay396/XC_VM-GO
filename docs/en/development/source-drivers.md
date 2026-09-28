@@ -10,10 +10,10 @@ A stream can mix both kinds. With the primary on your engine and a backup on pla
 the stream fails over between the two with no extra code.
 
 !!! info "Status"
-    The driver interface, registration, producer selection, process recognition and
-    source checks are in core. A few surrounding pieces are still planned, and until they
-    land some stream settings must be avoided on driver sources. See
-    [Current limitations](#current-limitations) before you ship.
+    The driver interface, registration, producer selection, process recognition,
+    source checks and save-time validation are in core. The stream-form tab, import
+    kinds and HLS renditions are still planned; see
+    [Current limitations](#current-limitations).
 
 For the module basics (layout, manifest, module class) see
 [Module Authoring](module-authoring.md); for other hooks see
@@ -422,7 +422,9 @@ read disk HLS, so write it even when `ingest` is set.
 | --- | --- |
 | Stream start | Asks `available()`. When it returns `true`, runs your argv as the producer; otherwise tries the next source. |
 | Failover | Moves to the next source in the list when your engine exits. That source can be yours or core's. |
-| Priority return (PHP monitor) | Every 5 minutes, asks `available()` for higher-priority sources and switches back when one answers. |
+| Priority return | Every 5 minutes, asks `available()` for higher-priority sources and switches back when one answers. The PHP monitor calls it directly; the supervisor runs `console.php source:probe <id> <base64 url>`, which calls it. |
+| Source checks | The probe button on the stream form, the stream tools check and the on-demand scanner report your source as "Module source available / unavailable" from `available()`, since it has no codecs to show before your engine runs. |
+| Saving a stream | Rejects Direct Source, Direct Proxy and LLOD v2 on a stream with your source, and a load balancer fed directly from the source rather than as a child of main. The same checks apply to imports and mass edits. |
 | Forced source switch | Asks `available()` before switching to your source. |
 | Stop / Restart | Kills the process found by pid and playlist, then clears `<id>_*`. |
 | Supervisor restart | Re-adopts your running engine by its playlist path instead of starting a second one. |
@@ -498,27 +500,14 @@ When the scheme is contested or invalid, look in the PHP error log for
 `SourceDriverRegistry:` lines. They name the modules involved.
 
 If the stream keeps restarting while the engine looks healthy, check these first:
+
 - the playlist path is in the engine's command line;
 - the executable's basename equals `binary()`;
 - the playlist changes at least every `6 × seg_time` seconds.
 
 ## Current limitations
 
-These pieces are planned but not in core yet. Until they land, keep the following
-settings off streams that use driver sources:
-
-- **Direct source, direct proxy, and on-demand LLOD v2** (`llod = 2`) do not refuse
-  driver URLs yet. They would pass the URL to a client or to a PHP reader.
-- **The source probe button** on the stream form and the stream tools checks still use
-  ffprobe, so they report driver sources as unreachable.
-- **Saving a stream** that puts a driver source directly on a load balancer, rather than
-  as a child of main, is not rejected yet. It would fail on the LB with
-  `no source driver … on this node`.
-- **Priority return under the supervisor.** The `xc_fanout` supervisor has no probe
-  command for driver sources, so it does not switch back to them by priority. It still
-  uses them on start and on failover.
-
-These are planned as separate extension points:
+These pieces are planned as separate extension points and are not in core yet:
 
 - a module tab on the Add/Edit Stream form, plus a stream-saved event carrying its fields;
 - a registry of import kinds on the Import & Review page;
