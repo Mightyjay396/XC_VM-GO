@@ -3,6 +3,8 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\AgentConnections;
+use XcVm\Core\Cluster\AgentPaths;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\Crypto\Enc;
@@ -76,8 +78,7 @@ class ClusterExecCommand implements CommandInterface {
 			return 0;
 		}
 		$rIn = json_decode((string) stream_get_contents(STDIN), true);
-		$rState = json_decode((string) @file_get_contents(CONFIG_PATH . 'cluster/agent.json'), true);
-		$rCmd = self::verify(is_array($rIn) ? $rIn : [], is_array($rState) ? $rState : [], time());
+		$rCmd = self::verify(is_array($rIn) ? $rIn : [], AgentPaths::readState(), time());
 		if (is_string($rCmd)) {
 			fwrite(STDERR, 'cluster:exec: ' . $rCmd . "\n");
 			return 2;
@@ -193,7 +194,7 @@ class ClusterExecCommand implements CommandInterface {
 			case 'conn.drop':
 				// The agent drops daemon viewers itself; this is its fallback.
 				$rUUID = (string) ($rArgs['uuid'] ?? '');
-				if (!preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $rUUID)) {
+				if (!preg_match(AgentConnections::CONN_UUID, $rUUID)) {
 					return 2;
 				}
 				echo json_encode(['result' => FanoutClient::dropConnection($rUUID)]);
