@@ -274,10 +274,14 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   `lb_lease_fence`, which is **off by default**: with it on, past the lease's `exp` no new
   viewer starts on the node (`stream/auth.php`), and past `lb_fence_drain_min` more the
   sessions still running stop (`segment.php`, `key.php`). It judges the lease state the
-  agent writes to `config/cluster/lease_state.json`, and every uncertainty serves: the
-  switch off, a legacy node, no file or a file the agent stopped refreshing, no lease, no
-  anchor on MAIN's clock. The switch must be on *before* a licence lapses — it reaches a
-  node in the replica's `settings` section, which a panel without a licence cannot sign.
+  agent writes to `config/cluster/lease_state.json` at every heartbeat interval, whether or
+  not MAIN answers: the lease's `exp`, and MAIN's clock carried forward on the node's
+  monotonic clock from MAIN's last authenticated statement, so moving the node's wall clock
+  does not move MAIN's time as the fence reckons it, and restarting the agent resumes it. Every
+  uncertainty serves: the switch off, a legacy node, no file or a file the agent stopped
+  refreshing, no lease, no anchor on MAIN's clock. The switch must be on *before* a licence
+  lapses — it reaches a node in the replica's `settings` section, which a panel without a
+  licence cannot sign.
 - **The credential lockdown is not built** (Phase 9). A node in mode 2 refuses its own
   connects in code; MAIN's MariaDB still has a grant for it until `cluster:db-allowlist`
   closes the port, and `lb_new_node_mode=api` is refused until that phase ships.

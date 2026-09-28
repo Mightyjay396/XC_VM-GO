@@ -3514,20 +3514,25 @@ not a re-encoding of it.
   whenever the extension signs none, and the node then keeps what it holds.
 - **It judges no clock, and the clock a judgement needs is kept separately.** Nothing in the lease
   path compares the lease to a time. What a fence would need is an anchor on MAIN's clock that
-  nothing unauthenticated can move, and `MainNowMs` was not it: it is also set from the pre-token
-  challenge, which carries no signature at all (`Client.Challenge` checks `typ` and `cn` only) — good
-  enough for stamping a request MAIN checks the window of, no basis for deciding a node may stop
-  serving viewers. The agent therefore also keeps `MainAnchorMs`:
-  - **Authenticated statements only** move it: a MAC'd, unboxed reply, a panel-signed denial, a
-    panel-signed re-key document.
-  - **It re-anchors on MAIN's own number**, not on what it has extrapolated to, so a replayed older
-    reply (an older number) is ignored while a fresh statement always wins, even when this machine's
-    clock has over-run. Between statements it advances on the process's monotonic clock, so moving
-    the machine's wall clock in either direction gains nothing.
+  nothing unauthenticated can move, and `MainNowMs` was not it: it follows this machine's wall
+  clock wherever it is moved, and it is also set from the pre-token challenge, which is signed
+  (`hlt`) but answers no request of the node's, so an old copy replays — good enough for stamping a
+  request MAIN checks the window of, no basis for deciding a node may stop serving viewers. The
+  agent therefore also keeps a MAIN clock of its own (`internal/clusteragent/mainclock.go`; it
+  landed with the fourth increment's file, below):
+  - **Authenticated statements only** move it: a MAC'd, unboxed reply, a panel-signed denial naming
+    the request, a panel-signed re-key document. The challenge sets the request stamp only.
+  - **It re-anchors on MAIN's own number**, not on what it has extrapolated to, and only on a number
+    higher than any it has seen, so a replayed older reply is ignored while a fresh statement always
+    wins, even when the extrapolation has over-run. Between statements it advances on
+    `CLOCK_MONOTONIC`, so moving the machine's wall clock in either direction gains nothing.
   - **A restart cannot start further back**: the highest MAIN time an authenticated statement carried
-    is kept in the state file (`main_seen_ms`, written at most once a minute), and the anchor resumes
-    from it and counts forward from the restart — undercounting a long outage rather than over, which
-    is the direction that serves viewers longer rather than shorter.
+    (`main_seen_ms`) and the clock itself (`main_anchor`: MAIN's time at a `CLOCK_MONOTONIC` reading
+    and the boot's id) are kept in the state file, written at most once a minute and when the agent
+    stops. Within the same boot the anchor resumes with the whole time since that mark, which
+    `CLOCK_MONOTONIC` went on counting while the agent was down; after a reboot it resumes from the
+    mark and counts from the restart — undercounting the time the machine was down rather than over,
+    which is the direction that serves viewers longer rather than shorter.
   - It answers 0 until MAIN has ever been heard on that node, and a caller with a judgement to make
     reads 0 as "no anchor", never as 1970.
 
@@ -3615,6 +3620,35 @@ as the anchor last had it, and when that was written) and two settings. The agen
 no verdict: the switch is a panel setting it does not read, and the same file therefore serves an
 operator (`xc_agent lease`) and a later reader without either owning the policy.
 
+**The agent's half landed after the panel's.** `NodeLease` shipped reading a file that no agent
+wrote yet, so until XC_VM_Fanout's writer (`internal/clusteragent/lease.go`, with the MAIN clock of
+`mainclock.go`) every node answered "the agent has written no lease state" and served, switch on or
+off. The file, as the writer produces it:
+
+| Field | Unit | What it is |
+| --- | --- | --- |
+| `exp`, `iat` | unix s, MAIN's clock | the held lease's window; both 0 without a lease (`exp` 0 reads as "no lease") |
+| `gen`, `server_id` | | the held lease's generation and server; 0 without a lease |
+| `anchor_ms` | unix ms, MAIN's clock | MAIN's time at the moment of writing, as the agent's MAIN clock has it: the last authenticated statement plus `CLOCK_MONOTONIC` since; 0 until MAIN has been heard ("no anchor") |
+| `wrote_at_ms` | unix ms, the node's clock | the node's wall clock at that same moment, compared only with that clock |
+
+- **When.** At every heartbeat interval (1-3 s, the policy's pace) from the moment the agent starts,
+  whether or not MAIN answers — ahead of the first hello, which is not answered for as long as MAIN
+  is gone — and at once when a heartbeat or hello is answered or a token brings a lease. A file that
+  stopped being rewritten exactly when MAIN went away would read as stale, and serve.
+- **How.** Atomically (a temporary file renamed in), 0640 less the umask like `flows.json`, as the
+  agent's own user, which PHP-FPM runs as; without fsync, since it is rewritten from what the agent
+  holds and a crash that loses it leaves no file or the one before, both of which serve. The agent
+  removes it with `flows.json` when MAIN stops the node.
+- **Clocks.** `NodeLease` reckons MAIN's time as `anchor_ms` plus the time since `wrote_at_ms`,
+  never less than nothing. A wall clock moved back therefore adds nothing (and the anchor itself
+  never read the wall clock), and one moved forward makes the file look stale until the next write,
+  which serves. A restart resumes the anchor from the state file (above), so restarting the agent
+  is no way out of the fence.
+- **The report.** `xc_agent lease` gives the window twice: against the node's own clock, saying MAIN
+  vouches for none of it, and against MAIN's clock as this file has it, reckoned as `NodeLease`
+  reckons it, with a note when the file is old enough that the fence does not judge it.
+
 Why not `cluster_lease_verify` here: it needs the extension's `core.pin`, which no node holds, and it
 answers `EXPIRED` for both ends of the window — the one question this has to ask separately. The
 agent verified the signature when it stored the lease, with the panel key it already holds; the plan
@@ -3670,7 +3704,15 @@ a drain of 0 makes the `exp` the end, and the wiring itself: the guard's place a
 the switch shipping off, bounded, on the form, named in `en.ini` and in the allowlist. On the agent's
 side `TestTheLeaseStateIsPublishedEveryTickEvenWithMainGone` pins the one property the node's PHP
 depends on: the file keeps being refreshed while MAIN cannot be reached, because a file that has gone
-stale reads as "serve".
+stale reads as "serve"; `TestARestartedAgentWritesTheLeaseStateBeforeMainAnswers` that a restart
+during the outage resumes the anchor and writes before any hello is answered, and the `mainclock`
+tests that only a fresher authenticated number moves it and a moved wall clock never does. The
+format is pinned from both sides: the agent writes `cluster_lease_state.json` from fixed inputs and
+compares it byte for byte with its testdata, and `NodeLeaseTest` feeds the panel's copy
+(`tests/Support/`) to `NodeLease::verdict()` through serving, draining, fenced, stale and a clock
+moved back; both tests record the file's digest, as for the shared vectors. With
+`XCVM_PANEL_DIR`, `TestInteropNodeLeaseJudgesTheAgentsFile` runs the real `NodeLease` against the
+file the agent wrote for a lease MAIN's real `LeaseService` signed.
 
 ### Disaster recovery of MAIN's cluster keys
 
