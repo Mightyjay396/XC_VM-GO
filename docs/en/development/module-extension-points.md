@@ -1,6 +1,6 @@
 # Module Extension Points
 
-The core extension points a module plugs into: the DI container, stream middleware, cron tasks, versioned migrations, and typed events. To author a module see [Module Authoring](module-authoring.md); for load/lifecycle see [Module Lifecycle](module-lifecycle.md).
+The core extension points a module plugs into: the DI container, cron tasks, versioned migrations, typed events, source drivers, stream form tabs and import kinds. To author a module see [Module Authoring](module-authoring.md); for load/lifecycle see [Module Lifecycle](module-lifecycle.md).
 
 ## DI container and service decoration
 
@@ -42,36 +42,13 @@ Modules subscribe to typed events via `getEventSubscribers()` or the `#[ListensT
 
 ## Stream Middleware
 
-
-Modules can inject middleware into the stream pipeline by implementing
-`StreamMiddlewareProviderInterface` (separate from `ModuleInterface`):
-
-```php
-class MyStreamMiddleware implements StreamMiddlewareInterface {
-
-    public function getPriority(): int {
-        return 50;
-    }
-
-    public function handle(StreamContext $ctx, callable $next): StreamContext {
-        // before — read or set attributes
-        $ctx->set('my.key', 'value');
-        $ctx = $next($ctx);
-        // after
-        return $ctx;
-    }
-}
-```
-
-`StreamContext` is an attribute bag (`get`, `set`, `has`, `abort`, `isAborted`). `StreamPipeline`
-executes middleware sorted by `getPriority()` descending.
-
-### Pipeline priorities
-
-| Range | Owner |
-| ---------- | ----------------- |
-| `80–100` | Core (Auth, Permission, ConnectionLimit) |
-| `0–79` | Modules |
+!!! warning "Deprecated — never ran"
+    Core never ran a stream middleware pipeline: `getStreamMiddleware()` was never called
+    and the pipeline class is gone. `StreamMiddlewareProviderInterface`,
+    `StreamMiddlewareInterface` and `StreamContext` remain only so an existing module that
+    implements them keeps loading. Do not build on them. To act on streams, use events
+    such as `StreamSavedEvent` and `StreamsDeletedEvent`, or a
+    [source driver](source-drivers.md).
 
 ### Reserved navbar slots
 

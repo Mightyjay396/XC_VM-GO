@@ -94,23 +94,24 @@ After `ModuleLoader::loadAll()` has discovered, filtered and **topologically sor
 module's contributions into the core registries. It checks each **sub-interface** with `instanceof`
 so a module implements only the hooks it needs (`ModuleInterface` is a composite of them).
 
-Per-module order inside `bootAll(ServiceContainer $container, ?Router $router, ?StreamPipeline $pipeline)`:
+Per-module order inside `bootAll(ServiceContainer $container, ?Router $router)`:
 
 1. **Core navbar first, once** — `(new CoreNavbarProvider())->registerNavbar(...)` before any module, so core menu nodes exist as parents.
 2. `ServiceProviderInterface` → `boot($container)` **then** `registerEventSubscribers()` — services are registered before that module's listeners are wired.
-3. `StreamMiddlewareProviderInterface` → `registerStreamMiddleware($pipeline)` — **only if a `$pipeline` was passed**.
-4. `RouteProviderInterface` → `registerRoutes($router)` — **only if a `$router` was passed** (`$router !== null`).
-5. `NavbarProviderInterface` → `registerNavbar(...)`.
-6. `TopbarProviderInterface` → `registerTopbar(...)` — per-page action buttons (merged into `Topbar::config`).
-7. `TableProviderInterface` → `registerTables(...)` — serverSide table handlers (looked up by `TableController`).
-8. `PermissionProviderInterface` → `registerPermissions(...)` — sub-permission keys (merged into `PermissionReference`).
-9. `QuickToolsProviderInterface` → `registerQuickTools(...)` — Quick Tools button + handler.
+3. `RouteProviderInterface` → `registerRoutes($router)` — **only if a `$router` was passed** (`$router !== null`).
+4. `NavbarProviderInterface` → `registerNavbar(...)`.
+5. `TopbarProviderInterface` → `registerTopbar(...)` — per-page action buttons (merged into `Topbar::config`).
+6. `TableProviderInterface` → `registerTables(...)` — serverSide table handlers (looked up by `TableController`).
+7. `PermissionProviderInterface` → `registerPermissions(...)` — sub-permission keys (merged into `PermissionReference`).
+8. `QuickToolsProviderInterface` → `registerQuickTools(...)` — Quick Tools button + handler.
 
-Steps 6–9 are the module-owned admin surface: their registries (`TopbarRegistry`,
+Steps 5–8 are the module-owned admin surface: their registries (`TopbarRegistry`,
 `TableRegistry`, `PermissionRegistry`, `QuickToolsRegistry`) are `reset()` at the
 start of `bootAll` and consulted later by the topbar/table/permission/quick-tools
 code. They run regardless of `$router` (registries only, no routes), so a module's
 table is reachable even on the REST API path, which boots modules without a router.
+`StreamFormRegistry` and `ImportSourceRegistry` are reset at the same point; modules
+fill them from `boot()` (step 2).
 
 Two contributions are **separate passes, not part of `bootAll`**:
 
@@ -189,7 +190,7 @@ To avoid duplication, the author-side and per-subsystem detail live on their own
 | Router API, `begin/endModuleRegistration`, dispatch, handler resolution | [HTTP Request Handling](http-request-handling.md) |
 | Navbar item builder, visibility rules, rendering | [Navbar Rendering](navbar-rendering.md) |
 | Module discovery, env filtering, topo-sort, enable/disable, install/update | [Module Lifecycle](module-lifecycle.md) |
-| DI decoration, stream middleware, cron, migrations — the module author's hooks | [Module Extension Points](module-extension-points.md) |
+| DI decoration, cron, migrations, source drivers, stream form tabs, import kinds — the module author's hooks | [Module Extension Points](module-extension-points.md) |
 | Writing a module (manifest, class contract, directory layout) | [Module Authoring](module-authoring.md) |
 
 ## Related files
