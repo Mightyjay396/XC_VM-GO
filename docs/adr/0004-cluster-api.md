@@ -3736,7 +3736,7 @@ request, and the cutover's last steps — rotating what legacy nodes sent in cle
 | `node.unfence` | G | *Unfence* (shares the fence's dedupe key, so it supersedes one not yet taken) | agent |
 | `node.quarantine {reason}` | R | *Quarantine* (queued, then the row goes `quarantined`); *Trust again* sets it `active` and queues `token.rotate_now` | agent |
 | `resync {sections}` | R | *Resync* (`config`, `streams`, `connections`) | agent |
-| `policy.update` | G | `ClusterRoute::policyUpdate()` | agent: a hello now |
+| `policy.update` | G | none: a newer `policy_ver` reaches the node with its heartbeat (`ClusterRoute::policyUpdate()` had no caller and is removed) | agent: a hello now |
 
 - **A quarantined node's long-poll** hands out class R only (`CommandBus::pending(…, restrictive)`);
   the rest stays queued for *Trust again*. Its replica stays refused, and the agent itself runs only
@@ -4606,6 +4606,25 @@ and sent them the not-on-air video.
 - a renewed token brings the node back at once;
 - an offline node stays offline;
 - without an extension to ask, nothing is suspended.
+
+### Members nothing used
+
+An audit of the cluster code for unused members found six in the panel and four in the agent, and
+removed them:
+- **Panel:** `ClusterDiagnosis::LEASE_MAX_SEC` (the extension enforces the 26 h itself),
+  `ReplicaApply::CACHES`, `DenialFactory::REASONS`, and `ReplicaBuilder::SECTION_SETTINGS` and
+  `SECTION_SECRETS`. None had a reference.
+- **`ClusterRoute::policyUpdate()`:** only its tests called it. The policy is announced by the
+  heartbeat's `policy_ver` (see *Announced, not pushed*). The `policy.update` type stays in the
+  registry, and the agent still takes it.
+- **Agent:** `clustercrypto.WithinWindow` had no caller. `Agent.recheckReplica`, `Agent.sendTouches`
+  and `ticketStore.drop` were wrappers that only tests still called, after the code moved to
+  `recheckLocked`, `sendTouchBatch` and `setStreams`.
+
+**Not built / limits.** Members that only tests use stay, where a test needs them (`ticketStore.held`).
+The agent's vector-parity functions (`ValidNode`, `VerifyRelayAuth`, `JoinSigned`) stay: the
+cross-language vectors pin them. `SessionKeys`' key id stays too, since it is part of the
+extension's session record.
 
 ### Disaster recovery of MAIN's cluster keys
 

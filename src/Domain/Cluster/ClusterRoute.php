@@ -242,17 +242,6 @@ final class ClusterRoute {
 	public const RESYNC_SECTIONS = ['config', 'streams', 'connections'];
 
 	/**
-	 * `policy.update` (granting): the node says hello at once and adopts
-	 * MAIN's current transport policy and `main_urls`, instead of at the
-	 * heartbeat that would announce the newer `policy_ver`.
-	 *
-	 * @return array{0: bool, 1: bool}
-	 */
-	public static function policyUpdate(int $rServerID): array {
-		return self::enqueue($rServerID, 'policy.update', [], 'policy.update');
-	}
-
-	/**
 	 * Kill a viewer's worker on its node (SignalDispatcher::kill): restrictive,
 	 * so it is signed even without a licence.
 	 *

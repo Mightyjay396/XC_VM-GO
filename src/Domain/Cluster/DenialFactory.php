@@ -22,14 +22,6 @@ use XcVm\Core\Cluster\Crypto\Enc;
  * records, signable without a licence.
  */
 final class DenialFactory {
-	public const REASONS = [
-		'BAD_REQUEST', 'BAD_MAC', 'BAD_NODE_SIG', 'REPLAY', 'CLOCK_SKEW', 'PROTO',
-		'UNKNOWN_NODE', 'NODE_REVOKED', 'TOKEN_EXPIRED', 'NOT_ACTIVE', 'ENROL_EXPIRED',
-		'LICENCE_INVALID', 'CLOCK', 'STARTING', 'DISABLED', 'DB', 'UNKNOWN_OP',
-		'CHALLENGE', 'RATE_LIMITED', 'CODE_INVALID', 'ENROL_CONFLICT', 'USEQ_GAP', 'FLOW_OFF', 'SNAP_GAP',
-		'HTTPS_REQUIRED', 'GRANT_INVALID', 'BAD_RANGE', 'ARTEFACT_CHANGED',
-	];
-
 	/**
 	 * @param array<string, mixed> $rExtra Reason-specific fields (min/max proto, revoked_gen, …).
 	 * @return array{status: int, headers: array<string, string>, body: string}
