@@ -4318,6 +4318,94 @@ it skips.
 - **The Phase 8 48-hour measurement** (no encoder restart at L = 5) needs real encoders and stays
   a fleet measure.
 
+### Producers under a fence
+
+The fourth Phase 9 increment's fence refused new viewers and, past the drain, ended the running
+ones, but the node's encoders kept running. The plan's FENCED state releases them after the drain.
+
+- **The release.** `cron:streams` asks `NodeLease::refusesEverything()` once per pass. While it
+  holds, every stream still running a producer (supervised, a live monitor, or a producer pid) is
+  released with `StreamProcess::stopStream()` without its stop: the processes end, and the
+  stream's record keeps its state.
+- **Nothing starts.** `StreamProcess::startMonitor()` returns `MONITOR_FENCED` and starts
+  nothing while the fence stands, whoever asks: the cron, a viewer's on-demand start, an admin.
+- **The way back.** The first pass after the fence lifts finds each stream selected, as for any
+  producer that died, and starts it again. A supervised stream that goes down is written with
+  status 1 or 2, never 0, so it stays selected.
+
+**Not built / limits.** VOD transcodes, TV-archive recorders and thumbnail workers are not
+released: they serve no viewer, and with the producer gone the archive records nothing.
+
+**Tests.** `FencedProducersTest` (`startMonitor` starts nothing when fenced), and
+`ModeTwoPathsTest::testAFencedNodeReleasesItsProducersAndKeepsTheirRecords` (a child PHP on a
+fenced node kills a stand-in producer, starts nothing, and keeps the record).
+
+### MAIN's writes to a node's streams
+
+Three things only reached a node at its next poll, or never. The plan's MAIN → LB commands carry
+them now.
+
+- **The R2 `streams` section changes.** `StreamVersions` hands the servers each change stamped
+  to `StreamPush` (MAIN only, behind `class_exists`). When the request ends, each gets one
+  `config.changed {sections: [streams]}`: an active node whose STREAMS flow is on and whose agent
+  takes the command. The agent syncs its replica and takes a streams delta at once. A mass edit
+  is still one command per node.
+- **MAIN's own writes to runtime columns** (Rescan VOD, Recreate channels, the symlink tools, a
+  channel saved with re-encode). A node whose STREAMS flow is on reads these from its own store,
+  so it never saw them: it analysed no movie again and rebuilt no channel's sources.
+  `StreamAssign::send()` gives such a node `stream.assign {stream_ids, set, fill?}` for the
+  streams it runs, at most 500 a command. `cluster:exec` writes them into the store
+  (`StreamRuntime::assign`) without sending them back: `set` as given, `fill` only where the
+  node's value is empty (Rescan VOD's `pid = IF(pid, pid, 1)`). Only
+  `StreamStateWriter::STATE_FIELDS` and scalar values are taken. `pids_create_channel` is not
+  sent: the store answers its default for it.
+- **Encoding work MAIN queues onto a node.** `QueueSink::enqueue()` notes the server, and
+  `StreamPush` sends it `queue.poke` when the request ends, if its CONTENT flow is on. The node
+  drops `QueueSink::POKE`, and the queue daemon's wait (`QueueSink::waitPoke`) ends at once
+  instead of within `queue_loop`.
+
+`stream.assign` and `queue.poke` are granting, so a MAIN without a licence sends neither.
+`config.changed` is restrictive.
+
+**Not built / limits.**
+- **Older node PHP.** A node PHP from before this refuses `stream.assign` and `queue.poke`
+  (`unknown command type`); the command is acked failed, and the node keeps its old behaviour.
+- **Typed starts.** `stream.start`, `vod.start` and `recording.start` still have no producer:
+  starts go as `node.rpc`, which works.
+- **Large rescans.** A Rescan VOD of a large catalogue is one command per 500 movies per node.
+
+**Tests.** `StreamPushTest` (who is told, once; everyone on a reset; a bump's holders; the queue
+poke and the daemon's wait), `StreamAssignTest` (only nodes that keep the columns, the streams
+they run, the split; the node's store written without sending anything back; malformed
+assignments refused), and `CommandBusRegistryTest` (both types signed as the registry has them).
+
+### Cache jobs without a licence
+
+A MAIN whose licence lapsed signs no granting command. So a node in mode 2 got none of its cache
+jobs, and the files of movies deleted meanwhile, and the connection files of viewers MAIN
+closed, stayed on it. `node.cache` could not simply become restrictive, since it also carries
+cache rebuilds.
+
+- **The extension** (XC_VM_CoreExtention, ADR-002) adds `node.purge {jobs}`. It is restrictive
+  only as a whole: every job is an object of `type` with `id` or `uuid`, and its type one that
+  removes something (`delete_con`, `drop_con`, `delete_vod`, `delete_vods`). Anything else is
+  refused (`RECORD:args`). The registry fixture carries `job_types` and `job_keys`, and its digest
+  moved in all three repos.
+- **MAIN** (`ClusterRoute::cache`) sends the removals first as `node.purge`, and the rest as
+  `node.cache`. An extension from before it refuses the type (`RECORD:type`), and the removals then
+  go as `node.cache`, as before.
+- **The node** runs `node.purge` like `node.cache`, with only the removal jobs
+  (`CacheJobs::PURGES`; `cluster:exec` refuses anything else). The agent runs it on a quarantined
+  node too, as a restrictive type.
+
+**Not built / limits.** It needs an `xcvm_core` release: until then MAIN's extension refuses the
+type, and every cache job stays granting.
+
+**Tests.** Extension: `sign.rs` (every removal type, each refusal shape, the registry self-check),
+`vectors.rs` (the fixture's digest). Panel: `CommandBusRegistryTest` (a removal routed as
+`node.purge`, a rebuild as `node.cache`), `ClusterVectorsTest` (the digest). Agent:
+`TestRestrictiveIsTheRegistrys` (its restrictive set is the registry's R types).
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):
