@@ -163,6 +163,7 @@ final class ModeTwoPathsTest extends TestCase {
 			use XcVm\Cli\Commands\WatchdogCommand;
 			use XcVm\Cli\CronJobs\CleanupCronJob;
 			use XcVm\Cli\CronJobs\RootSignalsCronJob;
+			use XcVm\Cli\CronJobs\ServersCronJob;
 			use XcVm\Cli\CronJobs\StreamsCronJob;
 			use XcVm\Cli\CronJobs\VodCronJob;
 			use XcVm\Core\Cluster\ReplicaBoot;
@@ -257,6 +258,14 @@ final class ModeTwoPathsTest extends TestCase {
 							$rResult['output'] = (string) ob_get_clean();
 						}
 						$rResult['restarts'] = $rDog->rRestarts;
+						break;
+					case 'servers':
+						ob_start();
+						try {
+							(new ReflectionMethod(ServersCronJob::class, 'loadCron'))->invoke(new ServersCronJob());
+						} finally {
+							$rResult['output'] = (string) ob_get_clean();
+						}
 						break;
 					case 'cleanup':
 						ob_start();
@@ -560,6 +569,25 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertStringNotContainsString('waiting', $rResult['output']);
 		$this->assertStringNotContainsString('Not running', $rResult['output'], 'the pass reached its settings refresh');
 		$this->assertFileExists($this->rHome . 'config/cluster/local.json', 'what PHP samples, for the agent');
+	}
+
+	// ── cron:servers ─────────────────────────────────────────────────
+
+	/**
+	 * The minute's node work needs no database with TELEMETRY on: the counts
+	 * that fed the servers_stats row are not taken (they were refused, and
+	 * the inventory never went), and the inventory goes to MAIN as an event.
+	 */
+	public function testTheServersMinuteSendsItsInventoryWithoutMainsDatabase(): void {
+		$this->node();
+		$this->nginxRunning();
+		[, $rOut, $rResult] = $this->child(['servers']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$rInventory = array_values(array_filter($this->spooled('p1'), static fn(array $rEvent): bool => $rEvent['type'] === 'node.inventory'));
+		$this->assertCount(1, $rInventory, $rResult['output']);
+		$this->assertArrayHasKey('xc_vm_version', $rInventory[0]['d']['fields'], 'MAIN learns the node\'s version');
 	}
 
 	// ── cron:cleanup ─────────────────────────────────────────────────

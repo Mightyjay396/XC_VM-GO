@@ -5,6 +5,7 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
@@ -186,7 +187,12 @@ class ServersCronJob implements CommandInterface {
 			$rRemoteStatus = false;
 		}
 
-		if (SettingsManager::get('redis_handler')) {
+		// The counts feed the servers_stats row alone, which the agent's
+		// telemetry replaces: with TELEMETRY on they are not taken (a node in
+		// mode 2 has no MAIN database to count them in, and the inventory
+		// below would never go).
+		$rConnections = $rUsers = $rAllUsers = $rStreams = 0;
+		if (!$rAgentTelemetry && SettingsManager::get('redis_handler')) {
 			$rConnections = $rServers[SERVER_ID]['connections'];
 			$rUsers = $rServers[SERVER_ID]['users'];
 			$rAllUsers = 0;
@@ -195,7 +201,7 @@ class ServersCronJob implements CommandInterface {
 					$rAllUsers += $rServers[$rServerID]['users'];
 				}
 			}
-		} else {
+		} elseif (!$rAgentTelemetry) {
 			$db->query('SELECT COUNT(*) AS `count` FROM `lines_live` WHERE `server_id` = ? AND `hls_end` = 0;', SERVER_ID);
 			$rConnections = intval($db->get_row()['count']);
 			$db->query('SELECT `activity_id` FROM `lines_live` WHERE `server_id` = ? AND `hls_end` = 0 GROUP BY `user_id`;', SERVER_ID);
@@ -203,9 +209,10 @@ class ServersCronJob implements CommandInterface {
 			$db->query('SELECT `activity_id` FROM `lines_live` WHERE `hls_end` = 0 GROUP BY `user_id`;');
 			$rAllUsers = intval($db->num_rows());
 		}
-
-		$db->query('SELECT COUNT(*) AS `count` FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `server_id` = ? AND `pid` > 0 AND `type` = 1;', SERVER_ID);
-		$rStreams = intval($db->get_row()['count']);
+		if (!$rAgentTelemetry) {
+			$db->query('SELECT COUNT(*) AS `count` FROM `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` WHERE `server_id` = ? AND `pid` > 0 AND `type` = 1;', SERVER_ID);
+			$rStreams = intval($db->get_row()['count']);
+		}
 
 		$rPing = 0;
 		if (!$rServers[SERVER_ID]['is_main']) {
@@ -247,7 +254,8 @@ class ServersCronJob implements CommandInterface {
 		// With TELEMETRY on, the inventory goes to MAIN as an event; the node's
 		// addresses do not (whitelist_ips feeds the allowed IPs, MAIN's to set).
 		$rInventory = ['remote_status' => $rRemoteStatus ? 1 : 0, 'xc_vm_version' => XC_VM_VERSION, 'server_hardware' => json_encode($rHardware, JSON_UNESCAPED_UNICODE), 'governors' => json_encode($rGovernors, JSON_UNESCAPED_UNICODE), 'sysctl' => $rSysCtl, 'video_devices' => json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), 'audio_devices' => json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), 'gpu_info' => json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), 'interfaces' => json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), 'ping' => $rPing];
-		if (!NodeStateSink::inventory($rInventory)) {
+		// A node in mode 2 never writes MAIN's row: an inventory the spool did not take goes next minute.
+		if (!NodeStateSink::inventory($rInventory) && !NodeRole::refusesConnects()) {
 			$db->query('UPDATE `servers` SET `remote_status` = ?, `xc_vm_version` = ?, `server_hardware` = ?,`whitelist_ips` = ?, `governors` = ?, `sysctl` = ?, `video_devices` = ?, `audio_devices` = ?, `gpu_info` = ?, `interfaces` = ?, `time_offset` = ' . intval(time()) . ' - UNIX_TIMESTAMP(), `ping` = ? WHERE `id` = ?', $rRemoteStatus, XC_VM_VERSION, json_encode($rHardware, JSON_UNESCAPED_UNICODE), $rWhitelist, json_encode($rGovernors, JSON_UNESCAPED_UNICODE), $rSysCtl, json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), $rPing, SERVER_ID);
 		}
 
