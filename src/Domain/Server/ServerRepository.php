@@ -5,6 +5,7 @@ namespace XcVm\Domain\Server;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ClusterHealth;
+use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaBoot;
@@ -333,9 +334,27 @@ class ServerRepository {
 	 * @return mixed Probe result.
 	 */
 	public static function checkSource(array $rServers, mixed $rFFProbe, int $rServerID, string $rFilename) {
-		$rAPI = $rServers[intval($rServerID)]['api_url_ip'] . '&action=getFile&filename=' . urlencode($rFilename);
+		$rAPI = self::fileUrl($rServers, $rServerID, $rFilename);
 		$rCommand = 'timeout 10 ' . $rFFProbe . ' -user_agent "Mozilla/5.0" -show_streams -v quiet "' . $rAPI . '" -of json';
 		return json_decode(shell_exec($rCommand), true);
+	}
+
+	/**
+	 * The URL MAIN reads another server's file with: through its own agent
+	 * while MAIN's data-plane client is on (DataPlane::fileUrl, ADR 0004,
+	 * Phase 9's eighth increment), else `getFile` of that server's `/api`
+	 * with its IP, as before.
+	 *
+	 * @param array<int, array<string, mixed>> $rServers
+	 */
+	private static function fileUrl(array $rServers, int $rServerID, string $rPath): string {
+		$rLegacy = ($rServers[$rServerID]['api_url_ip'] ?? '') . '&action=getFile&filename=' . urlencode($rPath);
+		if (!DataPlane::on()) {
+			return $rLegacy;
+		}
+		$rUrl = DataPlane::fileUrl($rServers, $rServerID, $rPath);
+		// DataPlane's own legacy URL is the api_url (the server's domain); keep the IP one.
+		return str_starts_with($rUrl, 'http://' . DataPlane::HOST . ':' . DataPlane::PORT . '/') ? $rUrl : $rLegacy;
 	}
 
 	/**
@@ -350,7 +369,7 @@ class ServerRepository {
 		if (!$rServer || empty($rServer['api_url_ip'])) {
 			return null;
 		}
-		$rAPI = $rServer['api_url_ip'] . '&action=getFile&filename=' . urlencode(BIN_PATH . 'certbot/logs/xc_vm.log');
+		$rAPI = self::fileUrl($rServers, intval($rServerID), BIN_PATH . 'certbot/logs/xc_vm.log');
 		$rResponse = @file_get_contents($rAPI);
 		if ($rResponse === false) {
 			return null;

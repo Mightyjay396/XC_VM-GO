@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Domain\Cluster\MainDataPlane;
 use XcVm\Domain\Server\ServerRepository;
 
 /**
@@ -85,9 +86,34 @@ final class DataPlane {
 	/** @var (callable(): array<int, array<string, mixed>>)|null */
 	private static $rServers = null;
 
-	/** Does this node pull through its agent (its own DATAPLANE flow)? MAIN has no flows. */
+	/**
+	 * Does this server pull through its agent? A node: its own DATAPLANE flow.
+	 * MAIN, which has no flows: its data-plane client is on (main.json,
+	 * MainAgentFiles; `cluster:main-dataplane on`).
+	 */
 	public static function on(): bool {
-		return NodeFlows::on(NodeFlows::DATAPLANE);
+		return NodeFlows::on(NodeFlows::DATAPLANE) || (DataPlaneTrust::main() && MainAgentFiles::on());
+	}
+
+	/**
+	 * Before MAIN builds a loopback URL: its ticket for the pull, minted now
+	 * if it holds no fresh one (MainDataPlane). A node's tickets come from
+	 * MAIN's push, so there this is always true. False when MAIN could not
+	 * mint one (no licence, the owner or parent not ticketable): the caller
+	 * keeps the legacy URL.
+	 */
+	private static function mainTicket(?int $rOwnerID, ?string $rPath, ?int $rParentID = null, ?int $rStreamID = null): bool {
+		if (!DataPlaneTrust::main() || NodeFlows::on(NodeFlows::DATAPLANE)) {
+			return true;
+		}
+		if (!class_exists(MainDataPlane::class)) {
+			return false;
+		}
+		try {
+			return $rOwnerID !== null ? MainDataPlane::ensureFile($rOwnerID, (string) $rPath) : MainDataPlane::ensureRelay((int) $rParentID, (int) $rStreamID);
+		} catch (\Throwable) {
+			return false;
+		}
 	}
 
 	/** The agent's loopback key, or null while it has written none. */
@@ -202,7 +228,7 @@ final class DataPlane {
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll()
 	 */
 	public static function relayUrl(array $rServers, int $rParentID, int $rStreamID, string $rPassword, bool $rPrebuffer = false): string {
-		if (self::on() && self::ticketable($rServers, $rParentID)) {
+		if (self::on() && !self::isSelf($rParentID) && self::ticketable($rServers, $rParentID) && self::mainTicket(null, null, $rParentID, $rStreamID)) {
 			$rKey = self::loopback();
 			return $rKey === null ? self::UNAVAILABLE : 'http://' . self::HOST . ':' . self::PORT . '/relay/' . $rKey . '/' . $rStreamID . '.ts' . ($rPrebuffer ? '?prebuffer=1' : '');
 		}
@@ -221,7 +247,7 @@ final class DataPlane {
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll()
 	 */
 	public static function fileUrl(array $rServers, int $rOwnerID, string $rPath): string {
-		if (self::on() && self::ticketable($rServers, $rOwnerID)) {
+		if (self::on() && !self::isSelf($rOwnerID) && self::ticketable($rServers, $rOwnerID) && self::mainTicket($rOwnerID, $rPath)) {
 			$rKey = self::loopback();
 			if ($rKey === null) {
 				return self::UNAVAILABLE;
@@ -232,14 +258,20 @@ final class DataPlane {
 		return ($rServers[$rOwnerID]['api_url'] ?? '') . '&action=getFile&filename=' . urlencode($rPath);
 	}
 
+	/** Is $rServerID this server? Its own files and streams are never pulled through the proxy. */
+	private static function isSelf(int $rServerID): bool {
+		return defined('SERVER_ID') && $rServerID === (int) SERVER_ID;
+	}
+
 	/**
 	 * May this node's legacy `/api` answer 404 (api_legacy.conf)? Only once
 	 * nothing reads its files with `getFile` any more: its own DATAPLANE flow
 	 * is on, and every server of the cluster — MAIN included — is a node
 	 * active in the signed node list with its DATAPLANE flow on, so each
-	 * reads through `/xfile`. MAIN has no data-plane client (and no node
-	 * entry): it still reads a node's files with `getFile` (a source probe,
-	 * the certbot log), so today this is never.
+	 * reads through `/xfile`. MAIN counts once its data-plane client is on
+	 * (`cluster:main-dataplane on`): its entry in the node list is then
+	 * active with DATAPLANE, and it reads a node's files (a source probe, the
+	 * certbot log, what it runs) through its own agent.
 	 */
 	public static function legacyApiRetired(): bool {
 		if (!self::on()) {

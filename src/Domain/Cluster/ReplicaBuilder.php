@@ -235,7 +235,8 @@ final class ReplicaBuilder {
 	/**
 	 * The `servers` section: every server's routing and relay fields, and the
 	 * node list parents check relay tickets against and children file-digest
-	 * keys (`{sid, gen, state, ed_pub, dataplane}`; `dataplane`: the node's
+	 * keys (`{sid, gen, state, ed_pub, dataplane}`, MAIN's own while its
+	 * data-plane client is on, MainDataPlane; `dataplane`: the node's
 	 * DATAPLANE flow is on, Phase 8). Never liveness, telemetry or a
 	 * node's own settings (ReplicaSections::SERVER_LOCAL).
 	 *
@@ -256,6 +257,17 @@ final class ReplicaBuilder {
 				'sid' => (int) $rRow['server_id'], 'gen' => (int) $rRow['gen'], 'state' => (string) $rRow['state'], 'ed_pub' => base64_encode((string) $rRow['node_sign_pub']),
 				'dataplane' => (int) ($rRow['mode'] ?? 0) >= 1 && ((int) ($rRow['flows'] ?? 0) & NodeRegistry::FLOW_DATAPLANE) !== 0,
 			];
+		}
+		// MAIN itself, while its data-plane client is on (MainDataPlane): its
+		// own key, so parents and owners check its proofs as any node's.
+		foreach ($rServers as $rServer) {
+			if ((int) ($rServer['is_main'] ?? 0) === 1) {
+				$rMain = MainDataPlane::nodeEntry((int) $rServer['id']);
+				if ($rMain !== null) {
+					$rNodes[] = $rMain;
+				}
+				break;
+			}
 		}
 		return ['servers' => $rServers, 'nodes' => $rNodes];
 	}
