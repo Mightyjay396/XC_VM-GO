@@ -95,6 +95,22 @@ teardown('remove test records', async ({ page }) => {
   swept.categories = await sweepList(page, 'stream_categories', 'category', 'category_id');
   swept.useragents = await sweepList(page, 'useragents', 'useragent', 'ua_id');
   swept.isps = await sweepList(page, 'isps', 'isp', 'isp_id');
+  swept.groups = await sweepList(page, 'groups', 'group', 'group_id');
+  swept.profiles = await sweepList(page, 'profiles', 'profile', 'profile_id');
+  swept.hmacs = await sweepList(page, 'hmacs', 'hmac', 'hmac_id');
+  // The RTMP list shows no notes; the suite's addresses are the only ones in
+  // 198.51.100.0/24 (RFC 5737), which no real encoder uses.
+  await page.goto('./rtmp_ips');
+  const rtmpIds = await page
+    .locator('#rtmp-table tbody tr')
+    .filter({ hasText: /\b198\.51\.100\.\d+\b/ })
+    .locator('.js-del')
+    .evaluateAll((b) => b.map((x) => x.getAttribute('data-id')).filter((id): id is string => !!id));
+  for (const id of rtmpIds) {
+    const body = await adminApi(page.request, 'rtmp_ip', { sub: 'delete', ip: id });
+    expect.soft(body?.result, `rtmp_ips: delete ${id} answered ${JSON.stringify(body)}`).toBe(true);
+  }
+  swept.rtmp = rtmpIds.length;
   // Category templates are cards; the delete entry carries the id and name.
   await page.goto('./category_templates');
   const templateIds = await page.locator('.js-btn-delete').evaluateAll(
