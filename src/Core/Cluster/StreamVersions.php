@@ -7,6 +7,7 @@ use XcVm\Core\Events\Stream\StreamArgumentsChangedEvent;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Core\Events\Stream\StreamsDeletedEvent;
 use XcVm\Core\Events\Stream\TranscodeProfileSavedEvent;
+use XcVm\Domain\Cluster\StreamPush;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -74,7 +75,8 @@ final class StreamVersions {
 			return 0;
 		}
 		sort($rIDs);
-		return self::transaction($rDb, static function (object $rDb, bool $rOwn) use ($rIDs): int {
+		$rServers = [];
+		$rHi = self::transaction($rDb, static function (object $rDb, bool $rOwn) use ($rIDs, &$rServers): int {
 			$rHi = self::advance($rDb, count($rIDs), $rOwn);
 			$rVer = array_combine($rIDs, range($rHi - count($rIDs) + 1, $rHi));
 			$rNow = time();
@@ -83,12 +85,19 @@ final class StreamVersions {
 					$rArgs = [];
 					foreach ($rPairs as [$rServerID, $rStreamID]) {
 						array_push($rArgs, $rServerID, $rStreamID, $rVer[$rStreamID], $rNow);
+						$rServers[$rServerID] = $rServerID;
 					}
 					self::run($rDb, 'REPLACE INTO `cluster_stream_ver` (`server_id`, `stream_id`, `ver`, `updated_at`) VALUES ' . implode(', ', array_fill(0, count($rPairs), '(?, ?, ?, ?)')) . ';', ...$rArgs);
 				}
 			}
 			return $rHi;
 		});
+		// MAIN wakes those nodes when the request ends (StreamPush); a node's
+		// build has no StreamPush and leaves it to their next delta.
+		if ($rHi > 0 && class_exists(StreamPush::class)) {
+			StreamPush::changed(array_values($rServers));
+		}
+		return $rHi;
 	}
 
 	/**
@@ -98,11 +107,15 @@ final class StreamVersions {
 	 * @return int the new floor; 0 when it could not be recorded
 	 */
 	public static function reset(?object $rDb = null): int {
-		return self::transaction($rDb, static function (object $rDb, bool $rOwn): int {
+		$rHi = self::transaction($rDb, static function (object $rDb, bool $rOwn): int {
 			$rHi = self::advance($rDb, 1, $rOwn);
 			self::put($rDb, self::META_FLOOR, $rHi);
 			return $rHi;
 		});
+		if ($rHi > 0 && class_exists(StreamPush::class)) {
+			StreamPush::changedAll();
+		}
+		return $rHi;
 	}
 
 	/**
