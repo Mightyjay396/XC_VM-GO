@@ -215,6 +215,7 @@ MAIN's certificate expires within 14 days while the nodes may dial HTTPS. It sho
 MAIN records: command delivery and ack latency (p50/p99 over the last hour), queue depth, the
 ingest permits in use per lane, the `cluster_ctl` pool's listen queue, and the recent audit.
 *Rotate all tokens now* sends `token.rotate_now` to every active node that takes commands.
+Saving a different activation key on the dashboard does the same, once the extension accepts it.
 The *Servers* list's row menu carries the same per-node actions (mode up/down, rotate,
 enrolment code, a link to the node's flows) and shows the `cluster:reenrol` command to run
 for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which

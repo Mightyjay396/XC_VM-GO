@@ -235,6 +235,15 @@ final class ClusterOverviewTest extends TestCase {
 		$this->assertSame(2, (int) $this->rDb->get_row()['n'], 'a second click replaces the rotation still waiting (its dedupe key), rather than adding one');
 	}
 
+	public function testANewLicenceKeyRotatesEveryToken(): void {
+		// The ajax action ends the request, so its source: a key other than the
+		// one on disk, once the extension accepts it, sends every active node
+		// token.rotate_now (another key gives the chain another base).
+		$rSrc = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/Controllers/Admin/Ajax/MiscAjaxController.php');
+		$rBody = substr($rSrc, (int) strpos($rSrc, 'function saveActivationKey'), 3000);
+		$this->assertMatchesRegularExpression('/\$rOld = .*file_put_contents\(\$rPath.*LicenseGate::licensed\(\).*\$rOld !== \$rKey \? ClusterOverview::rotateAll\(null\) : null;/s', $rBody);
+	}
+
 	public function testThePagesActionNeedsNoServer(): void {
 		$this->node(2, 'active', NodeRegistry::FLOW_COMMANDS);
 		$rFlash = ClusterAdmin::act($this->rCrypto, ['cluster_action' => 'rotate_all'], [], 1, [], 7);

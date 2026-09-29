@@ -3241,7 +3241,7 @@ The loops stay up. Every `break` that means something — a code change, nginx s
 - **`servers.whitelist_ips` grants the `/api` allowed IPs**, and every node wrote its own `ip -4 addr` into it once a minute — a node that declared an address was granting it, which is the trust hole `proxy_api` was fixed for with a different writer. The API path never carried the column (`NodeStateSink` excludes it), and now the legacy path does not either: MAIN keeps publishing its own addresses (it is the panel, already trusted, and a multi-homed MAIN reaches each node from whichever address the route picks), and elsewhere the column is the admin's. Existing values are left alone, so no fleet loses access on upgrade.
 - The access-code name **`cluster`** joins the reserved list, so an admin cannot create a code whose nginx location sits over the cluster API's.
 - **`cron:users` is the `legacy` role.** The role existed (`ReplicaSections::cronRoles`: a node in mode 0 or 1 runs `all` and `legacy`, one in mode 2 only `all`) and no row used it, so the one cron that walks MAIN's own `lines_live` and Redis was still handed to a node whose database access is refused. A mode-2 node's viewers are its agent's registry, which reaps them itself (`hls_reaper`), and MAIN's copy is reaped by MAIN's own row. Migration 050 moves it on an existing install.
-- **A licence key replaced after a revocation** is audited (`cluster.licence_key`). The nodes need nothing from MAIN here — their next heartbeat mints a token again — but the operator's timeline should say when the key changed, which is the moment a fenced fleet starts coming back.
+- **A licence key replaced after a revocation** is audited (`cluster.licence_key`). The nodes need nothing from MAIN here — their next heartbeat mints a token again — but the operator's timeline should say when the key changed, which is the moment a fenced fleet starts coming back. (A different key now also rotates every token: see *A new licence key rotates the fleet's tokens*.)
 
 ### Replacing the viewer-token secret without an outage (Phase 8, first increment)
 
@@ -4606,6 +4606,32 @@ and sent them the not-on-air video.
 - a renewed token brings the node back at once;
 - an offline node stays offline;
 - without an extension to ask, nothing is suspended.
+
+### A new licence key rotates the fleet's tokens
+
+The plan (§4, "Licence change") has another valid key push `token.rotate_now`. The key is part of the
+token chain's base (`B`, and so `CK_B`, in `xcvm_core`'s `cluster/binding.rs`). An epoch minted
+under the old key keeps its stored `B` and runs to its `exp`, so nothing breaks. Without a push,
+though, each node moves to the new key's chain only at its next scheduled refresh, up to
+`lb_token_rotation_min` later.
+
+- **The trigger.** `save_activation_key`, once the extension accepts the key
+  (`LicenseGate::licensed()`), compares it with the key it replaced. If they differ, it calls
+  `ClusterOverview::rotateAll`, the same as *Rotate all tokens now*: every active node that takes
+  commands gets `token.rotate_now`, deduplicated and audited per node (`node.token_rotate`). The
+  key's own audit line (`cluster.licence_key`) records how many were queued (`rotated`).
+- **The same key saved again** rotates nothing.
+
+**Not built / limits.**
+- **No event.** The plan names an `ActivationKeyChangedEvent`. The dashboard's save is the only
+  writer of the key, so the action calls `rotateAll` directly. An event is worth adding when a second
+  writer appears.
+- **A key written by hand** (`config/activation_key` edited on disk) rotates nothing. Its nodes move
+  at their next refresh, as before.
+- **A rejected key** rotates nothing: without a licence there is no new `B` to rotate to.
+
+**Tests.** `ClusterOverviewTest::testANewLicenceKeyRotatesEveryToken` (the action, from its source;
+it ends the request) beside `testRotateAllQueuesForEveryActiveNodeThatTakesCommands` (`rotateAll` itself).
 
 ### Members nothing used
 
