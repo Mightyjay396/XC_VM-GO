@@ -4234,10 +4234,12 @@ already puts every node on a path that asks MAIN again within a minute.
   refresh at every heartbeat tick (2 s at the default), from its `refresh_at` until its token
   expires. Each ask costs MAIN an epoch lookup and the extension's cached binding check, and the
   agent logs each refusal.
-- **The ~1 minute is measured only in the agent's tests.** No fleet measurement exists.
+- **The ~1 minute is measured in tests only.** The agent's tests and a simulated fleet
+  ([xc_cluster_sim](#xc_cluster_sim)) measure it. No real fleet has.
 
-**Tests (agent).** `TestARefreshRefusedForTheLicenceIsAskedAgainEachTick` and
-`TestAnUnlicensedRekeyIsAskedAgainEveryPoll`. Each fails if its path gains a backoff.
+**Tests.** Agent: `TestARefreshRefusedForTheLicenceIsAskedAgainEachTick` and
+`TestAnUnlicensedRekeyIsAskedAgainEveryPoll`. Each fails if its path gains a backoff. Interop:
+`TestInteropSimARelicensedFleetGetsItsLeasesBack`, three nodes against MAIN's real PHP.
 
 ### The N−1 digest report
 
@@ -4286,6 +4288,35 @@ the lease fence on and never off. `SettingsService::checkboxes()` now adds every
 `ClusterSettings::INTS` (`ClusterSettings::switches()`), so a new cluster switch is covered
 without editing the list. `SettingsCheckboxesTest` checks that every checkbox on the Settings page
 is one the full save zeroes.
+
+### xc_cluster_sim
+
+`newClusterSim(t, n)` (XC_VM_Fanout, `internal/clusteragent/interop_sim_test.go`) runs MAIN's real
+PHP `ClusterApi` under `php -S`, using the interop harness in `testdata/panel/`. It enrols n
+agents by code on servers 7, 8, …, so a fleet's behaviour can be tested without a fleet. It needs
+what the interop tests need: `XCVM_PANEL_DIR`, and `php` with sodium and pdo_sqlite. Without them
+it skips.
+
+- **More nodes.** The harness takes the extra servers from `XCVM_INTEROP_SERVERS`, and
+  `enrol_code.php` and `approve.php` take a server id (7 by default). `interopNodeEnv` is now
+  `interopMain` plus one `enrol`.
+- **MAIN's licence.** `rig.licence(t, false)` creates `<db>.unlicensed`. While that file exists,
+  `FakeClusterCrypto` issues no token and no lease, and sessions go on, as in graceful mode.
+- **The first fleet test** is `TestInteropSimARelicensedFleetGetsItsLeasesBack`:
+  1. Three nodes are past `refresh_at`.
+  2. MAIN is unlicensed for a second, and no node gets a token.
+  3. MAIN is licensed again, and every node holds a lease issued after that, within the test's
+     20 s bound. It takes about one heartbeat tick.
+
+**Not built / limits.**
+- **A test harness, not a binary.** It runs under `go test`. There is no `xc_cluster_sim`
+  command to run a fleet by hand.
+- **One `php -S` serves the whole fleet**, one request at a time. It shows ordering and recovery,
+  not MAIN's throughput.
+- **Time is real.** A path measured in hours (a lease's `exp`, a token's expiry at the default
+  rotation) needs the harness to move MAIN's clock, which it does not yet do.
+- **The Phase 8 48-hour measurement** (no encoder restart at L = 5) needs real encoders and stays
+  a fleet measure.
 
 ### Disaster recovery of MAIN's cluster keys
 
