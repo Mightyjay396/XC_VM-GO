@@ -23,6 +23,6 @@ final class SettingsCheckboxesTest extends TestCase {
 	}
 
 	public function testTheClusterSwitchesAreItsOnOffSettings(): void {
-		$this->assertSame(['cluster_api_enabled', 'lb_lease_fence', 'cluster_kill_on_line_disable', 'cluster_db_allowlist'], ClusterSettings::switches());
+		$this->assertSame(['cluster_api_enabled', 'lb_lease_fence', 'lb_digest_nonce_required', 'cluster_kill_on_line_disable', 'cluster_db_allowlist'], ClusterSettings::switches());
 	}
 }

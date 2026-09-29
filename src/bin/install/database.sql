@@ -177,6 +177,7 @@ CREATE TABLE IF NOT EXISTS `cluster_nodes` (
   `db_revoked_at` int(11) DEFAULT NULL,
   `relay_down_since` int(11) DEFAULT NULL,
   `relay_error` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `digest_n1` varchar(255) COLLATE utf8_unicode_ci DEFAULT NULL,
   `row_mac` binary(32) DEFAULT NULL,
   `created_at` int(11) NOT NULL,
   `updated_at` int(11) NOT NULL,

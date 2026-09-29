@@ -52,6 +52,7 @@ class ClusterNodesController extends BaseAdminController {
 			'clusterEnabled' => $rEnabled && $rAvailable,
 			'clusterNodes' => $rNodes,
 			'clusterFences' => ClusterOverview::fenceWindows($rNodes, $rSettings),
+			'clusterDigestN1' => ClusterOverview::digestN1($rNodes),
 			'clusterBanners' => ClusterOverview::banners(self::licensed($rEnabled && $rAvailable), $rServers[(int) SERVER_ID] ?? [], $rSettings, $rNodes, $rNow),
 			'clusterMetrics' => $rEnabled ? self::metrics($rSettings, $rNow) : null,
 			'clusterNames' => array_map(static fn(array $rServer): string => (string) ($rServer['server_name'] ?? ''), $rServers),

@@ -160,6 +160,11 @@ final class ClusterDiagnosis {
 			$rSince = (int) ($rRelay['since_ms'] ?? 0);
 			$rOut[] = self::check('Relay proxy', $rBound ? 'holds 127.0.0.1:31290' : 'cannot bind 127.0.0.1:31290' . ($rSince > 0 ? ' for ' . self::span(intdiv(max(0, $rNowMs - $rSince), 1000)) : '') . ' (' . (int) ($rRelay['failures'] ?? 0) . ' attempts)' . ($rErr !== '' ? ': ' . $rErr : ''), $rBound, 'Another process holds 127.0.0.1:31290, so this node\'s data-plane relays and file reads fail until the agent can bind it (it retries, and MAIN is told). Find it with `ss -ltnp \'sport = :31290\'`.');
 		}
+
+		// Whether this node's agent refuses a chunk digest that names no request.
+		if (ClusterSettings::int('lb_digest_nonce_required', $rSettings['lb_digest_nonce_required'] ?? null) === 1) {
+			$rOut[] = self::check('Chunk digests', 'one that names no request is refused (lb_digest_nonce_required)', true);
+		}
 		return $rOut;
 	}
 
@@ -213,6 +218,19 @@ final class ClusterDiagnosis {
 		if ($rRelayDown !== null || !empty($rNode['relay'])) {
 			$rRelayErr = self::str($rNode['relay_error'] ?? '');
 			$rOut[] = self::check('Relay proxy', $rRelayDown === null ? 'holds 127.0.0.1:31290' : 'cannot bind 127.0.0.1:31290 since ' . self::utc($rRelayDown) . ($rRelayErr !== '' ? ': ' . $rRelayErr : ''), $rRelayDown === null, 'The node\'s agent cannot bind its relay proxy\'s port (127.0.0.1:31290): another process holds it, so the node\'s data-plane relays and file reads fail until it frees. Find it on the node (`ss -ltnp \'sport = :31290\'`).');
+		}
+
+		// Chunk digests that name no request, which the agent takes from an owner
+		// from before the nonce (heartbeat `digest_n1`, NodeDigestN1) unless the
+		// setting refuses them.
+		$rRequired = ClusterSettings::int('lb_digest_nonce_required', $rSettings['lb_digest_nonce_required'] ?? null) === 1;
+		$rN1 = isset($rNode['digest_n1']) ? json_decode((string) $rNode['digest_n1'], true) : null;
+		if ($rRequired || is_array($rN1)) {
+			$rOut[] = self::check('Chunk digests', match (true) {
+				$rRequired => 'one that names no request is refused (lb_digest_nonce_required)',
+				$rN1 === [] => 'every owner read in 24 h names the request',
+				default => 'taken without a nonce from server ' . implode(', ', array_map('intval', $rN1)) . ' in 24 h',
+			}, true);
 		}
 		return $rOut;
 	}

@@ -55,7 +55,7 @@ final class ClusterSchemaTest extends TestCase {
 		$rKeys = [];
 		foreach ($this->migrations() as $rName) {
 			$rUp = $this->src('migrations/database/up/' . $rName . '.sql');
-			if (preg_match_all('/ALTER TABLE `([a-z_]+)` ADD COLUMN IF NOT EXISTS `([a-z_]+)`/', $rUp, $rM, PREG_SET_ORDER)) {
+			if (preg_match_all('/ALTER TABLE `([a-z_]+)` ADD COLUMN IF NOT EXISTS `([a-z0-9_]+)`/', $rUp, $rM, PREG_SET_ORDER)) {
 				foreach ($rM as [, $rTable, $rColumn]) {
 					$rAdded[$rTable][] = $rColumn;
 				}

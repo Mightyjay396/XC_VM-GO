@@ -717,6 +717,8 @@ final class ClusterApi {
 		// Whether its agent holds the relay proxy's port, kept only when it changed.
 		$rNowMs = ClusterClock::nowMs();
 		NodeRelay::record($rNode, $rP['relay'] ?? null, $rNowMs, (int) $rH['ts_ms'] - $rNowMs);
+		// The owners whose chunk digest named no request, kept only when the list changed.
+		NodeDigestN1::record($rNode, $rP['digest_n1'] ?? null);
 		// A node that holds its viewers sends its registry's digest; a drift
 		// that outlives the events in flight gets its snapshot asked for.
 		$rWant = false;
