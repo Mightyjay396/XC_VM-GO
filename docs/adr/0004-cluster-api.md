@@ -3469,7 +3469,7 @@ the rotation (30 min at the default), while the plan wants a re-licensed fleet s
 about two minutes. Either a node whose lease is running out refreshes its token early, or a
 heartbeat reply carries one when the node's is close to its `exp`. That belongs with the state
 machine that reads the lease, not with MAIN's side of the wire, which is why it is not decided
-here. Then
+here. (Settled in [Re-licensing a fleet](#re-licensing-a-fleet): neither is needed.) Then
 the cutover itself: `strip_db_credentials`, `install_config`, the full
 `cluster:rotate-stream-secret` and `cluster:lockdown`, and the flag `api_mode_allowed`.
 
@@ -3696,6 +3696,13 @@ Producers are not released either. Both want the same missing piece: something o
 node cron, and neither is wired to this yet. MAIN's own page shows no fence: it can derive the window
 it issued (`token_exp` plus `lb_partition_tolerance_h`) without the node reporting anything, and that
 belongs with the Cluster Nodes page rather than here.
+
+Since then, three of these are built. The fifth increment ends a PHP-served `.ts` request at its
+next segment and has the agent write the registry's `drop` entries. The eighth drops the fanout's
+viewers under a lease fence. The Cluster Nodes page has a *Fence window* column, and
+`server:diagnose` a *Fence window* line (`ClusterOverview::fenceWindows()`,
+`ClusterDiagnosis::fenceWindow()`): lease end, drain end, and whether `lb_lease_fence` is on.
+Producers are still not released.
 
 `NodeLeaseTest` covers the three states and every way of serving (the switch off, no file, a stale
 file, no lease, no anchor, a legacy node, a clock moved back), that the drain follows the `exp`, that
@@ -4179,8 +4186,9 @@ move and the vector file's `version` stays 1.
 **Not built / limits.**
 - **The N−1 fallback stays open.** A digest without a `nonce` is still taken inside the window, so
   against an owner from before this change an old answer can be replayed for about 90 s. Refusing
-  every digest without a `nonce` waits until no such owner is left. Nothing measures that yet, and
-  no setting switches it.
+  every digest without a `nonce` waits until no such owner is left. Since
+  [The N−1 digest report](#the-n1-digest-report), the fleet reports those owners and
+  `lb_digest_nonce_required` refuses them.
 - **A whole-file digest names no request.** It has no `offset` and nothing sends one over the wire
   today. It carries no `nonce`.
 - **The fetcher is Go only.** PHP's `FileDigest::verify` checks the `nonce`'s shape, but PHP never
@@ -4198,6 +4206,86 @@ move and the vector file's `version` stays 1.
   refused; an N−1 owner taken fresh, refused two minutes old or ahead).
 - Interop: `TestInteropMITMDataPlane` has "an old answer for the same chunk" among the attacks
   that are refused, against MAIN's real `FileTicketServer`.
+
+### Re-licensing a fleet
+
+The second Phase 9 increment left one question open: how a node gets a fresh lease within about
+two minutes of MAIN's licence coming back, when tokens refresh only at half the rotation. The
+options were an early token refresh, or a token in the heartbeat reply. Neither is built. A lapse
+already puts every node on a path that asks MAIN again within a minute.
+
+- **The token stops with the lease.** `xcvm_core` issues both under the same check, the licence
+  binding, so a lapsed MAIN mints neither. The extension refuses before `TokenService` writes an
+  epoch row, so a refused refresh leaves no row and no audit. A lease runs to its token's `exp`
+  plus `lb_partition_tolerance_h`, never less, so a node cannot lose its lease while it still
+  holds that lease's token.
+- **Before the token expires.** From the token's `refresh_at` on, `token_refresh` is refused with
+  `LICENCE_INVALID`. The agent asks again at every heartbeat tick, with no backoff. The first
+  refresh after the licence returns brings a token and its lease.
+- **After the token has expired.** The node re-keys. While MAIN's challenge answers
+  `licence_ok: false`, the agent waits `RekeyPoll` (60 s, ±10 %) between tries, not the doubling
+  backoff. The first re-key after the licence returns comes within about a minute, with a lease.
+- **`hard` revocation mode** also refuses the heartbeats. A licence fence MAIN queued reaches the
+  node with those refusals, and the node lifts it at the first heartbeat MAIN accepts again. Its
+  token and lease come back by the same two paths.
+
+**Not built / limits.**
+- **Nothing rate-limits the refused refreshes.** Until the licence returns, each node asks for a
+  refresh at every heartbeat tick (2 s at the default), from its `refresh_at` until its token
+  expires. Each ask costs MAIN an epoch lookup and the extension's cached binding check, and the
+  agent logs each refusal.
+- **The ~1 minute is measured only in the agent's tests.** No fleet measurement exists.
+
+**Tests (agent).** `TestARefreshRefusedForTheLicenceIsAskedAgainEachTick` and
+`TestAnUnlicensedRekeyIsAskedAgainEveryPoll`. Each fails if its path gains a backoff.
+
+### The N−1 digest report
+
+A fetcher still takes a chunk digest without a `nonce` inside the ±90 s window, because an owner
+from before [the nonce](#binding-a-chunks-digest-to-its-request) sends no other kind. Removing that
+fallback waits until no such owner is left. The fleet now reports them, and an operator removes
+the fallback with one setting.
+
+- **Who reports it.** The fetcher, because only the fetcher knows. An owner's `nonce` needs both
+  its PHP (which passes the nonce to `/v1/file_digest`) and its agent. The panel's version cannot
+  tell either: `v2.5.3` was published before the nonce, and `main` still says 2.5.3.
+- **The agent** (`relayproxy.go`, `DigestN1Report`). It notes each owner whose digest it took
+  without a `nonce`. Every heartbeat carries `digest_n1`: those owners' server ids, sorted, from
+  the last 24 h, and `[]` for none. It is sent even when empty, so MAIN can tell "none" from an
+  agent that does not report.
+- **MAIN** (`Domain\Cluster\NodeDigestN1`, from the `heartbeat` op). It keeps the list in
+  `cluster_nodes.digest_n1` (migration 055, and `database.sql`), and writes only when the list
+  changes. A heartbeat without the field changes nothing, so an older agent's row stays NULL.
+- **Shown.** The Cluster Nodes page's figures have *Chunk digests without a nonce (24 h)*: the
+  owners the active nodes name, or *none*, and how many active nodes do not report
+  (`ClusterOverview::digestN1()`). `server:diagnose <id>` has a *Chunk digests* line for the node.
+- **The switch.** `lb_digest_nonce_required` (a settings switch, off by default, migration 055)
+  reaches the nodes in the replica's `settings` section. With it on, the agent refuses a digest
+  without a `nonce` instead of taking it, and the node's own `server:diagnose` says so. Turn it on
+  once the page names no owner and every active node reports.
+
+**Not built / limits.**
+- **MAIN's own reads are not covered.** MAIN's data-plane client (`xc_agent run -role main`) sends
+  no heartbeat, and its replica directory has no `settings` section. So its fetches are neither
+  reported nor refused, and they keep the fallback.
+- **The list is capped at 32 owners per node** (the 255-character column). Past that, the page
+  names only those 32.
+- **"None" means none fetched.** An owner nobody read from in 24 h is not named, even if it is old.
+
+**Tests.** PHP: `NodeDigestN1Test` (the report read strictly, written only on change, left alone by
+an older agent and by a table from before 055, the page's summary, both `server:diagnose` lines),
+`ClusterSettingsTest`. Agent: `TestXfileReportsAnOwnerWithoutTheNonceAndCanRefuseIt`, and
+`TestHeartbeatCarriesTheRelayReport` (which now also checks `digest_n1`). Interop:
+`TestInteropWithPanel` has MAIN's real `ClusterApi` keep `[]`, then the owner.
+
+### Switching a cluster setting off
+
+The settings form posts a checkbox only while it is checked, so a full save stores 0 only for the
+boxes `SettingsService` lists. `lb_lease_fence` was not on that list: the Settings page could turn
+the lease fence on and never off. `SettingsService::checkboxes()` now adds every on/off setting of
+`ClusterSettings::INTS` (`ClusterSettings::switches()`), so a new cluster switch is covered
+without editing the list. `SettingsCheckboxesTest` checks that every checkbox on the Settings page
+is one the full save zeroes.
 
 ### Disaster recovery of MAIN's cluster keys
 
