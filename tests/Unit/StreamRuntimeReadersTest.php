@@ -490,20 +490,21 @@ final class StreamRuntimeReadersTest extends TestCase {
 	}
 
 	/**
-	 * A stream's viewers with CONNECTIONS on: the agent's registry, asked
-	 * whether it holds an open viewer of the stream (the callers only ask
-	 * whether there is any); a stream the agent did not answer for counts
-	 * one, so it is never stopped for want of an answer. MAIN's database is
-	 * not asked.
+	 * A stream's viewers with CONNECTIONS on: the agent's registry, every
+	 * stream in one call; an agent from before it (405) is asked whether it
+	 * holds an open viewer of each stream (the callers only ask whether
+	 * there is any). A stream the agent did not answer for counts one, so it
+	 * is never stopped for want of an answer. MAIN's database is not asked.
 	 */
 	public function testViewersComeFromTheAgentsRegistryWithConnectionsOn(): void {
 		$this->replica();
 		$rScript = $this->rDir . 'agent.php';
 		file_put_contents($rScript, <<<'PHP'
 			<?php
-			[, $rSock, $rLog] = $argv;
+			[, $rSock, $rLog, $rReplies] = $argv;
+			@unlink($rSock);
 			$rServer = stream_socket_server('unix://' . $rSock, $rErrNo, $rErr);
-			foreach ([[200, '{"uuid":"v1","stream_id":10,"hls_end":0}'], [404, '{}']] as [$rCode, $rBody]) {
+			foreach (json_decode($rReplies, true) as [$rCode, $rBody]) {
 				$rConn = @stream_socket_accept($rServer, 10);
 				if ($rConn === false) {
 					break;
@@ -522,22 +523,29 @@ final class StreamRuntimeReadersTest extends TestCase {
 				fclose($rConn);
 			}
 			PHP);
-		$rNull = ['file', '/dev/null', 'w'];
-		$rAgent = proc_open([PHP_BINARY, $rScript, $this->rDir . 'agent.sock', $this->rDir . 'requests.log'], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes);
-		for ($i = 0; $i < 100 && !file_exists($this->rDir . 'agent.sock'); $i++) {
-			usleep(20000);
-		}
-		AgentClient::useSocket($this->rDir . 'agent.sock');
-		try {
-			$this->assertSame([10 => 1, 16 => 0], NodeStreams::viewers([10, 16]));
-		} finally {
-			proc_terminate($rAgent);
-			proc_close($rAgent);
-		}
-		$this->assertSame([
+		$rViewers = function (array $rReplies): array {
+			@unlink($this->rDir . 'requests.log');
+			$rNull = ['file', '/dev/null', 'w'];
+			$rAgent = proc_open([PHP_BINARY, $this->rDir . 'agent.php', $this->rDir . 'agent.sock', $this->rDir . 'requests.log', json_encode($rReplies)], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes);
+			for ($i = 0; $i < 100 && !file_exists($this->rDir . 'agent.sock'); $i++) {
+				usleep(20000);
+			}
+			AgentClient::useSocket($this->rDir . 'agent.sock');
+			try {
+				return [NodeStreams::viewers([10, 16]), file($this->rDir . 'requests.log', FILE_IGNORE_NEW_LINES)];
+			} finally {
+				proc_terminate($rAgent);
+				proc_close($rAgent);
+				@unlink($this->rDir . 'agent.sock');
+			}
+		};
+
+		$this->assertSame([[10 => 3, 16 => 0], ['POST /v1/conn/counts HTTP/1.0 {"stream_ids":[10,16]}']], $rViewers([[200, '{"counts":{"10":3,"16":0}}']]));
+		$this->assertSame([[10 => 1, 16 => 0], [
+			'POST /v1/conn/counts HTTP/1.0 {"stream_ids":[10,16]}',
 			'POST /v1/conn/find HTTP/1.0 {"match":{"stream_id":10,"hls_end":0}}',
 			'POST /v1/conn/find HTTP/1.0 {"match":{"stream_id":16,"hls_end":0}}',
-		], file($this->rDir . 'requests.log', FILE_IGNORE_NEW_LINES));
+		]], $rViewers([[405, '{}'], [200, '{"uuid":"v1","stream_id":10,"hls_end":0}'], [404, '{}']]), 'an agent from before counts');
 		// No agent to answer: counted as watched.
 		AgentClient::useSocket($this->rDir . 'gone.sock');
 		$this->assertSame([10 => 1], NodeStreams::viewers([10]));

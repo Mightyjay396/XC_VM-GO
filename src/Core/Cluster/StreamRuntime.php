@@ -67,6 +67,9 @@ final class StreamRuntime {
 	/** The `streams` columns the node keeps besides StreamStateWriter::STATE_FIELDS: its workers' pids. */
 	public const WORKER_FIELDS = ['tv_archive_pid', 'vframes_pid'];
 
+	/** The most streams one `stream.assign` names (assign(); MAIN splits longer lists). */
+	public const ASSIGN_MAX = 500;
+
 	/** At most this many streams have an entry. */
 	public const MAX_STREAMS = 100000;
 
@@ -158,6 +161,43 @@ final class StreamRuntime {
 			self::missed($rKey);
 		}
 		return $rSent;
+	}
+
+	/**
+	 * MAIN's own write to this node's streams (`stream.assign`: the admin's
+	 * Rescan VOD, Recreate channels, the symlink tools, a re-encoded channel's
+	 * reset): for each of these streams the store keeps, $rSet's columns as
+	 * MAIN's row now holds them, and $rFill's where the entry's value is empty
+	 * (Rescan VOD's `pid = IF(pid, pid, 1)`). Nothing is sent back: MAIN wrote
+	 * them. A stream without an entry is left alone: its next write, or the
+	 * seed, brings MAIN's row.
+	 *
+	 * @param list<int> $rStreamIDs
+	 * @param array<string, mixed> $rSet StreamStateWriter::STATE_FIELDS
+	 * @param array<string, mixed> $rFill StreamStateWriter::STATE_FIELDS
+	 * @return int the entries changed
+	 */
+	public static function assign(array $rStreamIDs, array $rSet, array $rFill = []): int {
+		$rCount = 0;
+		self::locked(static function () use ($rStreamIDs, $rSet, $rFill, &$rCount): bool {
+			foreach ($rStreamIDs as $rID) {
+				$rEntry = self::read(self::dir() . 'streams/' . (int) $rID . '.json', true);
+				if ($rEntry === null) {
+					continue;
+				}
+				$rFields = $rSet;
+				foreach ($rFill as $rColumn => $rValue) {
+					if (empty($rEntry['fields'][$rColumn]) && !array_key_exists($rColumn, $rSet)) {
+						$rFields[$rColumn] = $rValue;
+					}
+				}
+				if ($rFields !== [] && self::merge((int) $rID, null, $rFields, true)) {
+					$rCount++;
+				}
+			}
+			return true;
+		});
+		return $rCount;
 	}
 
 	/**

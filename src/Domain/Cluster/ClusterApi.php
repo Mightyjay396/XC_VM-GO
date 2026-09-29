@@ -12,6 +12,7 @@ use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
 use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Database\DatabaseUnavailableException;
 use XcVm\Core\Logging\FileLogger;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Domain\Stream\RecordingFinalizer;
@@ -183,6 +184,14 @@ final class ClusterApi {
 		try {
 			return self::handle($rCrypto, $rReq, $rSettings, $rMain);
 		} catch (\Throwable $rE) {
+			if ($rE instanceof DatabaseUnavailableException) {
+				// The entry point opens MySQL at the first query: down there, as before it opened it eagerly.
+				try {
+					return DenialFactory::deny($rCrypto, 503, 'DB');
+				} catch (\Throwable) {
+					// Not even a denial could be signed: as below.
+				}
+			}
 			return self::failed((string) ($rReq['path'] ?? ''), $rE);
 		}
 	}
@@ -999,11 +1008,18 @@ final class ClusterApi {
 	 * one, and the sections are added in ReplicaBuilder::REPLY_ORDER while
 	 * the reply stays within ReplicaBuilder::MAX_REPLY; one past it is left
 	 * out, and the node asks again at its next poll, when what this reply
-	 * carried is `unchanged`. A section MAIN cannot read (a failed read, no
+	 * carried is `unchanged`. To an agent that says `parts`, `too_large`
+	 * also says how many parts MAIN staged the section in, which it fetches
+	 * with `config {part}` (configPart()). A section MAIN cannot read (a failed read, no
 	 * settings row, an unset secret) answers `503 DB`: the node keeps what it
 	 * holds.
 	 */
 	private static function config(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP, array $rSettings, array $rMain): array {
+		if (array_key_exists('part', $rP)) {
+			return self::configPart($rCrypto, $rNode, $rKeys, $rCtx, $rH, $rP['part']);
+		}
+		// An agent that fetches a section too large for one reply in parts.
+		$rParts = ($rP['parts'] ?? false) === true;
 		$rSince = $rP['blocklist_since'] ?? 0;
 		$rHave = is_array($rP['have'] ?? null) ? $rP['have'] : [];
 		if (!is_int($rSince) || $rSince < 0) {
@@ -1026,7 +1042,7 @@ final class ClusterApi {
 					continue;
 				}
 				try {
-					$rPart = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain);
+					$rPart = ReplicaBuilder::whole($rCrypto, $rNode, $rSection, (string) $rHave[$rSection], $rSettings, $rMain, $rParts);
 				} catch (ClusterRefusedException $rE) {
 					// A whole section grants: without a licence it is left out and
 					// the node keeps what it holds, while the blocklist's bans in
@@ -1055,6 +1071,29 @@ final class ClusterApi {
 			return self::dbDown($rCrypto, $rH);
 		}
 		return self::ok($rKeys, $rCtx, $rOut);
+	}
+
+	/**
+	 * `config {part: {section, etag, n}}`: part n of a section MAIN staged
+	 * for this node when it answered it `too_large` with `parts`
+	 * (ReplicaBuilder::part): `{part: {section, etag, n, parts, data}}`, or
+	 * `{part: {section, etag, gone: true}}` when it is no longer staged. The
+	 * node joins the parts' data into the sealed record and opens it as a
+	 * section sent whole. Only a section MAIN serves this node.
+	 *
+	 * @param array<string, mixed> $rNode
+	 * @param array<string, mixed> $rH
+	 * @return array{status: int, headers: array<string, string>, body: string}
+	 */
+	private static function configPart(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, mixed $rAsk): array {
+		$rSection = is_array($rAsk) ? ($rAsk['section'] ?? null) : null;
+		$rEtag = is_array($rAsk) ? ($rAsk['etag'] ?? null) : null;
+		$rN = is_array($rAsk) ? ($rAsk['n'] ?? null) : null;
+		$rValid = is_string($rSection) && in_array($rSection, ReplicaBuilder::REPLY_ORDER, true) && ReplicaBuilder::serves($rNode, $rSection);
+		if (!$rValid || !is_string($rEtag) || !preg_match('/^[0-9a-f]{64}\z/', $rEtag) || !is_int($rN) || $rN < 0) {
+			return self::badRequest($rCrypto, $rH);
+		}
+		return self::ok($rKeys, $rCtx, ['part' => ['section' => $rSection] + ReplicaBuilder::part($rNode, $rSection, $rEtag, $rN)]);
 	}
 
 	/**

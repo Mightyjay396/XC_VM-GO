@@ -10,10 +10,13 @@ use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\NodeRpc;
+use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\RootPin;
+use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Core\Util\AtomicFile;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Public\Controllers\Api\InternalApiController;
 use XcVm\Streaming\Fanout\FanoutClient;
 
@@ -40,12 +43,21 @@ use XcVm\Streaming\Fanout\FanoutClient;
  *   (CacheJobs::run), only when every job is in the form MAIN signs it
  *   (CacheJobs::job) and they name at most CacheJobs::MAX targets
  *   (CacheJobs::targets); otherwise refused whole (exit 2) before any runs.
+ * - `node.purge {jobs}` — the same, with only the jobs that remove something
+ *   (CacheJobs::PURGES): restrictive, so MAIN sends it without a licence.
  * - `config.changed {sections}` — the agent fetches its replica at once; an
  *   agent that hands it here instead is acked `{"deferred": true}`, and its
  *   next minute's poll fetches the change.
  * - `stream.stop {stream_id}`, `vod.stop {stream_id}` — restrictive stops
  *   (signed without a licence), run as the legacy /api's stop runs them
  *   (StreamProcess::stopStream(), stopMovie()).
+ * - `stream.assign {stream_ids, set, fill?}` — MAIN's own write to this
+ *   node's streams' runtime columns (Rescan VOD, Recreate channels, a
+ *   re-encoded channel's reset), into the node's store (StreamRuntime::assign):
+ *   only StreamStateWriter::STATE_FIELDS, scalar values, at most
+ *   StreamRuntime::ASSIGN_MAX streams; otherwise refused whole (exit 2).
+ * - `queue.poke` — MAIN queued encoding work for this node: the queue
+ *   daemon's next pass comes now (QueueSink::POKE).
  * - `artefact.fetch {artefact}` — an off-air video MAIN granted, which the
  *   agent downloaded into config/cluster/artefacts/<cmd_id>: placed where
  *   the node's off-air code plays it once its size and SHA-256 are the
@@ -66,7 +78,7 @@ class ClusterExecCommand implements CommandInterface {
 	public const SKEW = 300;
 
 	/** The command types run here (`--types`). */
-	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop'];
+	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop', 'stream.assign', 'queue.poke', 'node.purge'];
 
 	public function getName(): string {
 		return 'cluster:exec';
@@ -184,6 +196,55 @@ class ClusterExecCommand implements CommandInterface {
 		}
 	}
 
+	/**
+	 * A `node.cache`'s or `node.purge`'s jobs, when every one is in the form
+	 * MAIN signs it (CacheJobs::job) and they name at most CacheJobs::MAX
+	 * targets (what one run may take within the agent's minute: MAIN splits
+	 * longer lists); a purge's only the jobs that remove something
+	 * (CacheJobs::PURGES). Null refuses the command whole, before any runs.
+	 *
+	 * @return list<array<string, mixed>>|null
+	 */
+	private static function cacheJobs(mixed $rJobs, bool $rPurge): ?array {
+		if (!is_array($rJobs) || $rJobs === [] || !array_is_list($rJobs) || count($rJobs) > CacheJobs::MAX) {
+			return null;
+		}
+		foreach ($rJobs as $rJob) {
+			// Exactly the job MAIN's form makes of it, whatever its keys' order.
+			$rClean = CacheJobs::job($rJob);
+			if ($rClean !== null && is_array($rJob)) {
+				ksort($rClean);
+				ksort($rJob);
+			}
+			if ($rClean === null || $rClean !== $rJob || ($rPurge && !in_array($rClean['type'], CacheJobs::PURGES, true))) {
+				return null;
+			}
+		}
+		return CacheJobs::targets($rJobs) > CacheJobs::MAX ? null : $rJobs;
+	}
+
+	/**
+	 * A `stream.assign`'s arguments: 1 to StreamRuntime::ASSIGN_MAX stream ids,
+	 * and columns of StreamStateWriter::STATE_FIELDS with scalar or null values,
+	 * at least one.
+	 */
+	private static function assignable(mixed $rIDs, mixed $rSet, mixed $rFill): bool {
+		if (!is_array($rIDs) || $rIDs === [] || !array_is_list($rIDs) || count($rIDs) > StreamRuntime::ASSIGN_MAX || !is_array($rSet) || !is_array($rFill) || $rSet + $rFill === []) {
+			return false;
+		}
+		foreach ($rIDs as $rID) {
+			if (!is_int($rID) || $rID <= 0) {
+				return false;
+			}
+		}
+		foreach ($rSet + $rFill as $rColumn => $rValue) {
+			if (!in_array($rColumn, StreamStateWriter::STATE_FIELDS, true) || !(is_scalar($rValue) || $rValue === null)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	/** @param array<string, mixed> $rCmd */
 	public static function run(array $rCmd): int {
 		$rArgs = is_array($rCmd['args'] ?? null) ? $rCmd['args'] : [];
@@ -225,25 +286,9 @@ class ClusterExecCommand implements CommandInterface {
 				return 0;
 
 			case 'node.cache':
-				$rJobs = $rArgs['jobs'] ?? null;
-				if (!is_array($rJobs) || $rJobs === [] || !array_is_list($rJobs) || count($rJobs) > CacheJobs::MAX) {
-					fwrite(STDERR, "cluster:exec: bad cache jobs\n");
-					return 2;
-				}
-				foreach ($rJobs as $rJob) {
-					// Exactly the job MAIN's form makes of it, whatever its keys' order.
-					$rClean = CacheJobs::job($rJob);
-					if ($rClean !== null && is_array($rJob)) {
-						ksort($rClean);
-						ksort($rJob);
-					}
-					if ($rClean === null || $rClean !== $rJob) {
-						fwrite(STDERR, "cluster:exec: bad cache jobs\n");
-						return 2;
-					}
-				}
-				// What one run may take within the agent's minute: MAIN splits longer lists.
-				if (CacheJobs::targets($rJobs) > CacheJobs::MAX) {
+			case 'node.purge':
+				$rJobs = self::cacheJobs($rArgs['jobs'] ?? null, $rCmd['type'] === 'node.purge');
+				if ($rJobs === null) {
 					fwrite(STDERR, "cluster:exec: bad cache jobs\n");
 					return 2;
 				}
@@ -260,6 +305,21 @@ class ClusterExecCommand implements CommandInterface {
 				}
 				self::stopStream($rCmd['type'], $rStreamID);
 				echo json_encode(['result' => true]);
+				return 0;
+
+			case 'stream.assign':
+				$rIDs = $rArgs['stream_ids'] ?? null;
+				$rSet = $rArgs['set'] ?? [];
+				$rFill = $rArgs['fill'] ?? [];
+				if (!self::assignable($rIDs, $rSet, $rFill)) {
+					fwrite(STDERR, "cluster:exec: bad stream assignment\n");
+					return 2;
+				}
+				echo json_encode(['result' => true, 'kept' => StreamRuntime::assign($rIDs, $rSet, $rFill)]);
+				return 0;
+
+			case 'queue.poke':
+				echo json_encode(['result' => @touch(SIGNALS_TMP_PATH . QueueSink::POKE)]);
 				return 0;
 
 			case 'config.changed':

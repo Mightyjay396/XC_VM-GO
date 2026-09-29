@@ -38,6 +38,9 @@ final class ClusterNginxConfigTest extends TestCase {
 	/** @var list<int> ports another program listens on: the faked 'free' check fails for them */
 	private array $rBusy = [];
 
+	/** @var list<int> ports [::] can be bound on (the faked 'free6' check); none: a machine without IPv6 */
+	private array $rFree6 = [];
+
 	/** Whether nginx serves a new port after the reload (the faked 'serving' check). */
 	private bool $rServing = true;
 
@@ -67,6 +70,9 @@ final class ClusterNginxConfigTest extends TestCase {
 			return in_array('-t', $rArgv, true) ? $this->rTest : [0, ''];
 		});
 		ClusterNginxConfig::useProbe(function (string $rCheck, int $rPort): bool {
+			if ($rCheck === 'free6') {
+				return in_array($rPort, $this->rFree6, true);
+			}
 			$this->rProbes[] = $rCheck . ':' . $rPort;
 			return $rCheck === 'free' ? !in_array($rPort, $this->rBusy, true) : $this->rServing;
 		});
@@ -213,6 +219,23 @@ final class ClusterNginxConfigTest extends TestCase {
 		$this->assertSame([80, 443, 8080, 8443], ClusterNginxConfig::servedPorts($this->rBase . 'bin/nginx/conf/'));
 		unlink($this->rBase . 'bin/nginx/conf/ports/https.conf');
 		$this->assertSame([80, 8080], ClusterNginxConfig::servedPorts($this->rBase . 'bin/nginx/conf/'));
+	}
+
+	/** [::] too, on each port it can be bound on or nginx has it already: a listen nginx cannot bind would stop its next start. */
+	public function testIpv6IsListenedOnWhereItCanBeBound(): void {
+		$rSettings = ['cluster_api_port' => 31200, 'cluster_legacy_ports' => (string) json_encode([8080 => $this->rNow + 60])];
+		$this->assertTrue(ClusterNginxConfig::apply($rSettings)['ok']);
+		$this->assertStringNotContainsString('[::]', (string) $this->conf(ClusterNginxConfig::LISTEN) . $this->conf(ClusterNginxConfig::OLD_PORT), 'no IPv6 on the machine');
+
+		$this->rFree6 = [31200];
+		$this->assertTrue(ClusterNginxConfig::apply($rSettings)['changed']);
+		$this->assertStringContainsString("    listen 31200;\n    listen [::]:31200;\n", (string) $this->conf(ClusterNginxConfig::LISTEN));
+		$this->assertStringNotContainsString('[::]', (string) $this->conf(ClusterNginxConfig::OLD_PORT), 'another program holds [::]:8080');
+
+		// Once nginx has it, it keeps it without asking again.
+		$this->rFree6 = [];
+		$this->assertFalse(ClusterNginxConfig::apply($rSettings)['changed']);
+		$this->assertStringContainsString('    listen [::]:31200;', (string) $this->conf(ClusterNginxConfig::LISTEN));
 	}
 
 	public function testApplyWritesTestsAndReloadsOnlyWhatChanged(): void {

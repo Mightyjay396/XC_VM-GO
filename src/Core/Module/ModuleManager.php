@@ -1550,12 +1550,7 @@ class ModuleManager {
 			return;
 		}
 
-		$payload = json_encode([
-			'action'  => 'install_module',
-			'source'  => $source === 'platform' ? 'platform' : 'local',
-			'name'    => $name,
-			'version' => $version,
-		]);
+		$payload = (string) json_encode($this->lbInstallPayload($name, $source, $version));
 
 		// LB servers are streaming servers (server_type = 0) that are not the
 		// main panel and are enabled. Collect ids first so the INSERT loop does
@@ -1569,6 +1564,28 @@ class ModuleManager {
 		foreach ($rServerIDs as $rServerID) {
 			NodeActions::send($rServerID, $payload, $db);
 		}
+	}
+
+	/**
+	 * The install_module payload a load balancer gets. A custom module's
+	 * carries its archive's size and SHA-256, so a node that pulls the
+	 * archive the legacy way (getFile) installs only these bytes.
+	 *
+	 * @return array{action: string, source: string, name: string, version: string, size?: int, sha256?: string}
+	 */
+	public function lbInstallPayload(string $name, string $source, string $version): array {
+		$rPayload = [
+			'action'  => 'install_module',
+			'source'  => $source === 'platform' ? 'platform' : 'local',
+			'name'    => $name,
+			'version' => $version,
+		];
+		$rArchive = $this->archivePathFor($name, $version);
+		if ($rPayload['source'] === 'local' && is_file($rArchive)) {
+			$rPayload['size']   = (int) filesize($rArchive);
+			$rPayload['sha256'] = (string) hash_file('sha256', $rArchive);
+		}
+		return $rPayload;
 	}
 
 	/**

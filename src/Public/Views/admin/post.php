@@ -32,6 +32,7 @@ use XcVm\Domain\Stream\ChannelService;
 use XcVm\Domain\Stream\ProfileService;
 use XcVm\Domain\Stream\ProviderService;
 use XcVm\Domain\Stream\RadioService;
+use XcVm\Domain\Cluster\StreamAssign;
 use XcVm\Domain\Stream\StreamProcess;
 use XcVm\Domain\Stream\StreamService;
 use XcVm\Domain\User\GroupService;
@@ -996,6 +997,7 @@ if (1 < $rICount) { ?>
 
 					if (count($rStreamIDs) > 0) {
 						$db->query('UPDATE `streams_servers` SET `bitrate` = NULL, `current_source` = NULL, `to_analyze` = 0, `pid` = NULL, `stream_started` = NULL, `stream_info` = NULL, `stream_status` = 0, `monitor_pid` = NULL WHERE `stream_id` IN (' . implode(',', $rStreamIDs) . ');');
+						StreamAssign::send($rStreamIDs, StreamAssign::RESET);
 					}
 
 					foreach ($rStreams as $rStream) {
@@ -1016,6 +1018,7 @@ if (1 < $rICount) { ?>
 
 					if (count($rStreamIDs) > 0) {
 						$db->query('UPDATE `streams_servers` SET `bitrate` = NULL, `current_source` = NULL, `to_analyze` = 0, `pid` = NULL, `stream_started` = NULL, `stream_info` = NULL, `stream_status` = 0, `monitor_pid` = NULL WHERE `stream_id` IN (' . implode(',', $rStreamIDs) . ');');
+						StreamAssign::send($rStreamIDs, StreamAssign::RESET);
 					}
 
 					foreach ($rStreams as $rStream) {
@@ -1031,6 +1034,7 @@ if (1 < $rICount) { ?>
 
 					if (count($rStreamIDs) > 0) {
 						$db->query("UPDATE `streams_servers` SET `cchannel_rsources` = '[]', `pids_create_channel` = '[]', `bitrate` = NULL,`current_source` = NULL,`to_analyze` = 0,`pid` = NULL,`stream_started` = NULL,`stream_info` = NULL,`stream_status` = 0,`monitor_pid` = NULL WHERE `stream_id` IN (" . implode(',', $rStreamIDs) . ');');
+						StreamAssign::send($rStreamIDs, ['cchannel_rsources' => '[]'] + StreamAssign::RESET);
 					}
 
 					echo json_encode(array('result' => true, 'status' => STATUS_SUCCESS));
@@ -1196,6 +1200,8 @@ if (1 < $rICount) { ?>
 
 				if (isset($rData['rescan_vod'])) {
 					$db->query('UPDATE `streams_servers` LEFT JOIN `streams` ON `streams`.`id` = `streams_servers`.`stream_id` SET `to_analyze` = 1, `pid` = IF(`pid`, `pid`, 1) WHERE `type` IN (2,5) AND `direct_source` = 0;');
+					$db->query('SELECT `id` FROM `streams` WHERE `type` IN (2,5) AND `direct_source` = 0;');
+					StreamAssign::send(array_column($db->get_rows() ?: [], 'id'), ['to_analyze' => 1], ['pid' => 1]);
 				}
 
 				if (isset($rData['update_ratings'])) {

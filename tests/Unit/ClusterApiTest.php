@@ -17,6 +17,7 @@ use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Database\LazyDatabaseHandler;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Domain\Cluster\ClusterAdmin;
@@ -880,10 +881,12 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame($rFp, ClusterMeta::get('panel_fp'));
 		$this->assertSame(base64_encode((string) $this->rCrypto->info()['panel_sign_pub']), ClusterMeta::get('panel_sign_pub'));
 		$this->assertSame($this->rT0, ClusterMeta::readyAtMs());
+		$this->assertSame((string) intdiv($this->rT0, 1000), ClusterMeta::get(ClusterMeta::ROOT_AT), 'a new root: when it changed');
 
 		ClusterClock::fix($this->rT0 + 60000);
 		$this->assertFalse(ClusterMeta::init($this->rCrypto)['created'], 'idempotent');
 		$this->assertSame($this->rT0 + 60000, ClusterMeta::readyAtMs(), 'a restart restarts the silence clock');
+		$this->assertSame((string) intdiv($this->rT0, 1000), ClusterMeta::get(ClusterMeta::ROOT_AT), 'the same root: unchanged');
 		$this->rDb->query("SELECT COUNT(*) AS `n` FROM `cluster_meta` WHERE `name` = 'panel_fp'");
 		$this->assertSame(1, (int) $this->rDb->get_row()['n']);
 	}
@@ -1161,7 +1164,7 @@ final class ClusterApiTest extends TestCase {
 			$this->assertFalse(SignalDispatcher::cache(self::SID, ['type' => 'delete_con', 'uuid' => 'a b']), 'nothing well-formed: nothing sent');
 			$this->assertCount(1, $rRows, 'no row for a node in mode 2');
 			$rDocs = $rJobs();
-			$this->assertSame(array_fill(0, 6, 'node.cache'), array_column($rDocs, 'type'));
+			$this->assertSame(array_fill(0, 6, 'node.purge'), array_column($rDocs, 'type'), 'every job here removes something');
 			$this->assertSame([['type' => 'delete_vods', 'id' => [8, 9]]], $rDocs[0]['args']['jobs'], 'ids as integers, the rest dropped');
 			$this->assertSame([['type' => 'drop_con', 'uuid' => 'abc123']], $rDocs[1]['args']['jobs']);
 			$this->assertCount($rMax, $rDocs[2]['args']['jobs']);
@@ -1174,7 +1177,7 @@ final class ClusterApiTest extends TestCase {
 			}
 			$this->assertSame(86400, $rDocs[0]['exp'] - $rDocs[0]['iat'], 'kept for a day, as MAIN keeps a signals row');
 			$this->rDb->query('SELECT DISTINCT `class` FROM `cluster_commands`');
-			$this->assertSame('G', $this->rDb->get_row()['class'], 'granting to today\'s extension');
+			$this->assertSame('R', $this->rDb->get_row()['class'], 'restrictive: removals only (node.purge)');
 
 			// With the cluster API off, and for a node without COMMANDS, rows.
 			SettingsManager::set(['cluster_api_enabled' => 0] + $this->rSettings);
@@ -1888,6 +1891,64 @@ final class ClusterApiTest extends TestCase {
 		$this->assertTrue($this->reply($rRes, $rCtx, $rKeys)['settings']['too_large']);
 	}
 
+	/**
+	 * A section too large for one reply, to an agent that says `parts`: MAIN
+	 * stages the sealed record once and serves it in 4 MiB parts, which join
+	 * into the record the node opens as any section sent whole.
+	 */
+	public function testASectionTooLargeForOneReplyIsFetchedInParts(): void {
+		$this->blocklistTables();
+		$this->rDb->exec(InstallSchema::table('bouquets'));
+		$this->rDb->query("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_channels`, `bouquet_order`) VALUES (3, 'Everything', ?, 2)", '[' . implode(',', range(100000, 700000)) . ']');
+		$rKeys = $this->active();
+		$rDir = sys_get_temp_dir() . '/xcvm-xfer-' . bin2hex(random_bytes(4)) . '/';
+		ReplicaBuilder::useXferDir($rDir);
+		$rPart = function (array $rAsk) use ($rKeys): array {
+			[$rRes, $rCtx] = $this->call('config', ['part' => $rAsk], 1, $rKeys);
+			return $this->reply($rRes, $rCtx, $rKeys)['part'];
+		};
+		try {
+			// An older agent: too_large alone, and nothing staged for it.
+			[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => [ReplicaSections::BOUQUETS => '']], 1, $rKeys);
+			$this->assertSame(['too_large', 'etag'], array_keys($this->reply($rRes, $rCtx, $rKeys)[ReplicaSections::BOUQUETS]));
+			$this->assertSame([], glob($rDir . '*') ?: []);
+
+			[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'parts' => true, 'have' => [ReplicaSections::BOUQUETS => '']], 1, $rKeys);
+			$rOut = $this->reply($rRes, $rCtx, $rKeys)[ReplicaSections::BOUQUETS];
+			$this->assertTrue($rOut['too_large']);
+			$this->assertSame(2, $rOut['parts']);
+			$rEtag = $rOut['etag'];
+			$rFirst = $rPart(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 0]);
+			$this->assertSame(ReplicaBuilder::PART_BYTES, strlen($rFirst['data']));
+			$this->assertSame(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 0, 'parts' => 2], array_diff_key($rFirst, ['data' => 0]));
+
+			// The next poll finds it staged: not sealed again, so the parts still fit together.
+			[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'parts' => true, 'have' => [ReplicaSections::BOUQUETS => '']], 1, $rKeys);
+			$this->assertSame(['too_large' => true, 'etag' => $rEtag, 'parts' => 2], $this->reply($rRes, $rCtx, $rKeys)[ReplicaSections::BOUQUETS]);
+			$this->assertSame($rFirst['data'], $rPart(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 0])['data']);
+
+			$rLast = $rPart(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 1]);
+			$rDoc = $this->openRecord($rFirst['data'] . $rLast['data'], 'rep');
+			$this->assertSame([ReplicaSections::BOUQUETS, $rEtag], [$rDoc['section'], $rDoc['etag']], 'the parts join into the section\'s record');
+			$this->assertSame([], glob($rDir . '*') ?: [], 'the last part served removes the stage');
+			$this->assertSame(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'gone' => true], $rPart(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 0]));
+
+			foreach ([
+				['section' => 'streams', 'etag' => $rEtag, 'n' => 0],
+				['section' => ReplicaSections::BOUQUETS, 'etag' => 'nope', 'n' => 0],
+				['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => -1],
+				['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => '0'],
+				'bouquets',
+			] as $rBad) {
+				[$rRes] = $this->call('config', ['part' => $rBad], 1, $rKeys);
+				$this->denial($rRes, 400, 'BAD_REQUEST');
+			}
+		} finally {
+			ReplicaBuilder::useXferDir(null);
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
 	public function testConfigKeepsTheWholeReplyWithinWhatTheAgentReads(): void {
 		$this->blocklistTables();
 		$this->rDb->exec(InstallSchema::table('bouquets'));
@@ -1980,6 +2041,33 @@ final class ClusterApiTest extends TestCase {
 		$rNext = $this->reply($rRes, $rCtx, $rKeys);
 		$this->assertTrue($rNext['blocklist']['unchanged']);
 		$this->assertArrayNotHasKey('secrets', $rNext);
+	}
+
+	/**
+	 * The entry point opens MySQL at an op's first query: down there, the
+	 * agent still gets a signed 503 DB, and MySQL is tried once.
+	 */
+	public function testADatabaseDownAtTheFirstQueryIsASigned503Db(): void {
+		$rKeys = $this->active();
+		$r = $this->request('config', ['blocklist_since' => 0, 'have' => ['settings' => '']], 1, $rKeys);
+		$rDown = new class (true) extends LazyDatabaseHandler {
+			public int $rOpens = 0;
+
+			public function db_connect(bool $migrate = false, ?bool $graceful = null) {
+				$this->rOpens++;
+				return false;
+			}
+		};
+		NodeAuthCache::forget(self::SID);
+		DatabaseFactory::set($rDown);
+		try {
+			$this->denial(ClusterApi::serve($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 503, 'DB');
+		} finally {
+			DatabaseFactory::set($this->rDb);
+		}
+		$this->assertSame(1, $rDown->rOpens);
+		$rIndex = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/cluster/index.php');
+		$this->assertStringContainsString('$db = new LazyDatabaseHandler(true);', $rIndex, 'the entry point opens nothing an op does not query');
 	}
 
 	public function testConfigAnswers503ForASectionMainCannotRead(): void {

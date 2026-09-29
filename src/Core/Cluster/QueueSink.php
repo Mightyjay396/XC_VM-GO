@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Domain\Cluster\StreamPush;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -36,6 +37,9 @@ final class QueueSink {
 	/** Most rows MAIN returns for one claim, whatever the caller asks. */
 	public const MAX_CLAIM = 200;
 
+	/** Under SIGNALS_TMP_PATH: MAIN queued work for this node (`queue.poke`), so the daemon's pass comes now. */
+	public const POKE = 'queue_poke';
+
 	/**
 	 * Add work for a node: movies replace what is queued for the same stream,
 	 * channels are left alone when already queued (as the SQL did).
@@ -62,7 +66,28 @@ final class QueueSink {
 		}
 
 		$rDb ??= DatabaseFactory::get();
-		return self::insertRows($rDb, $rServerID, $rType, $rStreamIDs)[1];
+		$rQueued = self::insertRows($rDb, $rServerID, $rType, $rStreamIDs)[1];
+		// Work MAIN queued onto another server: that node's daemon is poked when
+		// the request ends (StreamPush), rather than finding it at its next pass.
+		if ($rQueued && $rServerID !== (int) SERVER_ID && class_exists(StreamPush::class)) {
+			StreamPush::queued([$rServerID]);
+		}
+		return $rQueued;
+	}
+
+	/**
+	 * The queue daemon's wait between passes: $rSeconds, or less once MAIN
+	 * pokes this node (`queue.poke`, which drops POKE).
+	 */
+	public static function waitPoke(int $rSeconds, string $rDir = SIGNALS_TMP_PATH): void {
+		$rFile = $rDir . self::POKE;
+		$rUntil = microtime(true) + $rSeconds;
+		while (microtime(true) < $rUntil) {
+			if (@unlink($rFile)) {
+				return;
+			}
+			usleep(250000);
+		}
 	}
 
 	/**

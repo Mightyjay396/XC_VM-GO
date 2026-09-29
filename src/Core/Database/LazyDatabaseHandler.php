@@ -23,8 +23,15 @@ namespace XcVm\Core\Database;
 class LazyDatabaseHandler extends DatabaseHandler {
 	private bool $rOpened = false;
 
-	/** Configured credentials via the xcvm_core extension, as `new DatabaseHandler()`; nothing is opened yet. */
-	public function __construct() {
+	/** A graceful handle's connect failed: every later use fails the same way, without retrying. */
+	private bool $rDown = false;
+
+	/**
+	 * Configured credentials via the xcvm_core extension, as `new DatabaseHandler()`; nothing is opened yet.
+	 *
+	 * @param bool $rGraceful A failed connect throws DatabaseUnavailableException, then and at every later use, instead of exiting.
+	 */
+	public function __construct(private bool $rGraceful = false) {
 		$this->dbh = false;
 	}
 
@@ -34,9 +41,18 @@ class LazyDatabaseHandler extends DatabaseHandler {
 	}
 
 	private function open(): void {
-		if (!$this->rOpened) {
-			$this->rOpened = true;
+		if ($this->rOpened) {
+			if ($this->rDown) {
+				throw new DatabaseUnavailableException('MySQL: cannot connect to the database');
+			}
+			return;
+		}
+		$this->rOpened = true;
+		if (!$this->rGraceful) {
 			$this->db_connect();
+		} elseif (!$this->db_connect(false, true)) {
+			$this->rDown = true;
+			throw new DatabaseUnavailableException('MySQL: cannot connect to the database');
 		}
 	}
 

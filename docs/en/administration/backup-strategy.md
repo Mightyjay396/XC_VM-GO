@@ -263,6 +263,7 @@ php console.php cluster:import-keys /root/cluster-keys.xcdr
     ```
 
 - `--all` takes the nodes that are enrolling or active. Revoked and quarantined nodes stay as they are, unless you name them or pass `--state=`. A node you revoke while the run goes on is skipped when the run reaches it.
+- `--all --pending` leaves out the nodes that are active and were enrolled since `cluster:init` created the new keys, so a run after the first node, or after a partial failure, takes only the rest. It refuses on a panel whose keys were created before this was recorded: name the nodes by ID there.
 - Only one `cluster:reenrol` runs at a time, and a node is never enrolled by `server:enrol` and `cluster:reenrol` at once.
 - A node that fails is listed with the reason, and the run goes on: for example a changed host key, a node that does not run this release yet, or a node that cannot reach MAIN's cluster API. Fix the cause and name the node in a new run. The node's agent was already stopped and given new keys if the run got as far as the reachability check, so it may not work again until that new run.
 - A licence refusal stops the run before the next node.

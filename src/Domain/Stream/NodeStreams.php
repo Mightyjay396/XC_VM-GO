@@ -263,10 +263,11 @@ final class NodeStreams {
 
 	/**
 	 * The viewers of these streams on this node: stream id => count. With
-	 * CONNECTIONS on, the agent's registry (1 when it holds an open viewer
-	 * of the stream, and when the agent does not answer, so a stream is
-	 * never stopped for an answer it did not get); otherwise MAIN's
-	 * `lines_live`, as ConnectionTracker::onlineClientCounts reads it.
+	 * CONNECTIONS on, the agent's registry, in one call (counts); an agent
+	 * that does not answer it is asked per stream (1 when it holds an open
+	 * viewer of the stream, and when it does not answer, so a stream is never
+	 * stopped for an answer it did not get). Otherwise MAIN's `lines_live`,
+	 * as ConnectionTracker::onlineClientCounts reads it.
 	 *
 	 * @param list<int> $rStreamIDs
 	 * @return array<int, int>
@@ -277,6 +278,10 @@ final class NodeStreams {
 		}
 		if (!AgentConnections::enabled()) {
 			return ConnectionTracker::onlineClientCounts($rStreamIDs, intval(SERVER_ID));
+		}
+		$rCounts = AgentConnections::counts($rStreamIDs);
+		if ($rCounts !== null) {
+			return $rCounts;
 		}
 		$rOut = [];
 		foreach ($rStreamIDs as $rID) {

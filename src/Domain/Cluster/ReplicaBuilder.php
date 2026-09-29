@@ -9,6 +9,7 @@ use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\StrictQuery;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\StreamSecret;
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -100,6 +101,21 @@ final class ReplicaBuilder {
 	public const MAX_REPLY = 8323072;
 
 	/**
+	 * A section too large for one reply goes to an agent that says `parts`
+	 * in parts of this size (base64), each its own `config {part}` reply
+	 * (plan section 7, "large transfers in ≤ 4 MiB parts").
+	 */
+	public const PART_BYTES = self::MAX_WHOLE_BYTES;
+
+	/** The most parts a section is staged in (128 MiB); a larger one is only `too_large`. */
+	public const MAX_PARTS = 32;
+
+	/** How long a staged section waits for its node, in seconds. */
+	public const STAGE_TTL = 900;
+
+	private static ?string $rXferDir = null;
+
+	/**
 	 * The order a `config` reply takes the sections sent whole in, within
 	 * MAX_REPLY: the viewer catalogue, the largest, last.
 	 */
@@ -142,17 +158,23 @@ final class ReplicaBuilder {
 	/**
 	 * A section sent whole: `unchanged` when the node holds its ETag, else the
 	 * sealed `rep` record; `too_large` with the ETag when that record would
-	 * pass MAX_WHOLE_BYTES (audited once per ETag).
+	 * pass MAX_WHOLE_BYTES (audited once per ETag). For an agent that fetches
+	 * parts ($rParts), the record is staged (stage()) and `too_large` says how
+	 * many `parts` it takes; a record already staged for the node under this
+	 * ETag is not sealed again, so parts fetched across polls fit together.
 	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row
 	 * @param array<string, mixed> $rSettings MAIN's settings (the `cluster` section's policy)
 	 * @param array<string, mixed> $rMain MAIN's `servers` row
-	 * @return array{unchanged?: bool, too_large?: bool, etag?: string, sealed?: string}
+	 * @return array{unchanged?: bool, too_large?: bool, etag?: string, sealed?: string, parts?: int}
 	 */
-	public static function whole(ClusterCrypto $rCrypto, array $rNode, string $rSection, string $rHave, array $rSettings = [], array $rMain = []): array {
+	public static function whole(ClusterCrypto $rCrypto, array $rNode, string $rSection, string $rHave, array $rSettings = [], array $rMain = [], bool $rParts = false): array {
 		['etag' => $rEtag, 'data' => $rData] = self::section($rCrypto, $rNode, $rSection, $rSettings, $rMain);
 		if (hash_equals($rEtag, $rHave)) {
 			return ['unchanged' => true];
+		}
+		if ($rParts && ($rCount = self::staged($rNode, $rSection, $rEtag)) !== null) {
+			return ['too_large' => true, 'etag' => $rEtag, 'parts' => $rCount];
 		}
 		$rDoc = [
 			'v' => 1, 'section' => $rSection, 'node' => (string) $rNode['node_uuid'], 'gen' => (int) $rNode['gen'],
@@ -161,9 +183,87 @@ final class ReplicaBuilder {
 		$rSealed = base64_encode(self::record($rCrypto, $rNode, 'rep', self::json($rDoc)));
 		if (strlen($rSealed) > self::MAX_WHOLE_BYTES) {
 			self::tooLarge($rSection, $rEtag, strlen($rSealed));
-			return ['too_large' => true, 'etag' => $rEtag];
+			$rCount = $rParts ? self::stage($rNode, $rSection, $rEtag, $rSealed) : null;
+			return ['too_large' => true, 'etag' => $rEtag] + ($rCount === null ? [] : ['parts' => $rCount]);
 		}
 		return ['etag' => $rEtag, 'sealed' => $rSealed];
+	}
+
+	/**
+	 * Part $rN of a section staged for this node: `{etag, n, parts, data}`,
+	 * data being that part of the sealed record's base64. `{etag, gone}` when
+	 * nothing is staged under that ETag any more (the section changed, the
+	 * stage expired, or its last part was served): the node asks for the
+	 * section again. Serving the last part removes the stage.
+	 *
+	 * @param array<string, mixed> $rNode cluster_nodes row
+	 * @return array{etag: string, gone?: bool, n?: int, parts?: int, data?: string}
+	 */
+	public static function part(array $rNode, string $rSection, string $rEtag, int $rN): array {
+		$rCount = self::staged($rNode, $rSection, $rEtag);
+		$rPath = self::stagePath($rNode, $rSection, $rEtag);
+		$rData = $rCount === null || $rN >= $rCount ? false : @file_get_contents($rPath, false, null, $rN * self::PART_BYTES, self::PART_BYTES);
+		if (!is_string($rData) || $rData === '') {
+			return ['etag' => $rEtag, 'gone' => true];
+		}
+		if ($rN === $rCount - 1) {
+			@unlink($rPath);
+		}
+		return ['etag' => $rEtag, 'n' => $rN, 'parts' => (int) $rCount, 'data' => $rData];
+	}
+
+	/** Tests: where sections are staged (null: TMP_PATH/cluster_xfer/). */
+	public static function useXferDir(?string $rDir): void {
+		self::$rXferDir = $rDir;
+	}
+
+	private static function xferDir(): string {
+		return self::$rXferDir ?? (defined('TMP_PATH') ? TMP_PATH : sys_get_temp_dir() . '/') . 'cluster_xfer/';
+	}
+
+	/** @param array<string, mixed> $rNode */
+	private static function stagePath(array $rNode, string $rSection, string $rEtag): string {
+		return self::xferDir() . (int) $rNode['server_id'] . '.' . $rSection . '.' . $rEtag;
+	}
+
+	/**
+	 * How many parts the section staged for this node under this ETag takes,
+	 * or null when none is staged (or it expired).
+	 *
+	 * @param array<string, mixed> $rNode
+	 */
+	private static function staged(array $rNode, string $rSection, string $rEtag): ?int {
+		$rPath = self::stagePath($rNode, $rSection, $rEtag);
+		clearstatcache(true, $rPath);
+		$rSize = @filesize($rPath);
+		if (!is_int($rSize) || $rSize === 0 || (int) @filemtime($rPath) < time() - self::STAGE_TTL) {
+			return null;
+		}
+		return (int) ceil($rSize / self::PART_BYTES);
+	}
+
+	/**
+	 * Stage a sealed section too large for one reply, for its node to fetch
+	 * in parts: TMP_PATH/cluster_xfer/<server id>.<section>.<etag>, 0600
+	 * (tmpfs: it is removed with its last part, and after STAGE_TTL). The
+	 * node's other stages of the section and every expired stage go first.
+	 * Null when it would take more than MAX_PARTS, or cannot be written.
+	 *
+	 * @param array<string, mixed> $rNode
+	 */
+	private static function stage(array $rNode, string $rSection, string $rEtag, string $rSealed): ?int {
+		$rCount = (int) ceil(strlen($rSealed) / self::PART_BYTES);
+		$rDir = self::xferDir();
+		if ($rCount > self::MAX_PARTS || (!is_dir($rDir) && !@mkdir($rDir, 0700, true))) {
+			return null;
+		}
+		$rMine = (int) $rNode['server_id'] . '.' . $rSection . '.';
+		foreach (glob($rDir . '*') ?: [] as $rFile) {
+			if (str_starts_with(basename($rFile), $rMine) || (int) @filemtime($rFile) < time() - self::STAGE_TTL) {
+				@unlink($rFile);
+			}
+		}
+		return AtomicFile::write(self::stagePath($rNode, $rSection, $rEtag), $rSealed, 0600) ? $rCount : null;
 	}
 
 	/** Audit a section too large to send, once per ETag. */

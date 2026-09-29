@@ -26,6 +26,9 @@ final class ClusterMeta {
 		self::db()->query('INSERT INTO `cluster_meta` (`name`, `value`, `updated_at`) VALUES (?, ?, ?);', $rName, $rValue, ClusterClock::now());
 	}
 
+	/** When MAIN's root last changed (unix seconds); absent for a root from before it was recorded. */
+	public const ROOT_AT = 'root_at';
+
 	/** @return array{created: bool, panel_fp: string} */
 	public static function init(ClusterCrypto $rCrypto): array {
 		$rRoot = $rCrypto->init();
@@ -34,6 +37,10 @@ final class ClusterMeta {
 		self::set('panel_sign_pub', base64_encode((string) $rRoot['panel_sign_pub']));
 		self::set('panel_box_pub', base64_encode((string) $rRoot['panel_box_pub']));
 		self::set('panel_fp', $rFp);
+		if ($rKnown !== $rFp) {
+			// When nodes enrolled after it hold this root (cluster:reenrol --pending).
+			self::set(self::ROOT_AT, (string) ClusterClock::now());
+		}
 		self::markReady();
 		if ($rKnown !== null && $rKnown !== $rFp) {
 			// Nodes pinned the old keys: every one of them must re-enrol.

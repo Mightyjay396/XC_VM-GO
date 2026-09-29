@@ -148,6 +148,31 @@ final class AgentConnections {
 		return self::record(AgentClient::request('POST', '/v1/conn/find', ['match' => (object) $rMatch], self::TIMEOUT));
 	}
 
+	/** How many streams one counts() call asks the agent for (its MaxCountStreams). */
+	public const COUNT_CHUNK = 10000;
+
+	/**
+	 * The open viewers of each stream (`POST /v1/conn/counts`): stream id =>
+	 * count. Null when the agent does not answer it, an agent from before the
+	 * call included (it answers 405).
+	 *
+	 * @param list<int> $rStreamIDs
+	 * @return array<int, int>|null
+	 */
+	public static function counts(array $rStreamIDs): ?array {
+		$rCounts = [];
+		foreach (array_chunk(array_values(array_unique($rStreamIDs)), self::COUNT_CHUNK) as $rChunk) {
+			$rOut = AgentClient::request('POST', '/v1/conn/counts', ['stream_ids' => $rChunk], self::TIMEOUT);
+			if ($rOut === null || $rOut[0] !== 200 || !is_array($rOut[1]['counts'] ?? null)) {
+				return null;
+			}
+			foreach ($rChunk as $rID) {
+				$rCounts[$rID] = (int) ($rOut[1]['counts'][(string) $rID] ?? 0);
+			}
+		}
+		return $rCounts;
+	}
+
 	/** @return array<string, mixed>|false|null a line's oldest open connection */
 	public static function oldest(mixed $rLineID): array|false|null {
 		return self::record(AgentClient::request('POST', '/v1/conn/oldest', ['user_id' => $rLineID], self::TIMEOUT));

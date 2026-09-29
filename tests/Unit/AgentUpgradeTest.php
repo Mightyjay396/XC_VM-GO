@@ -146,6 +146,44 @@ final class AgentUpgradeTest extends TestCase {
 		$this->assertSame([[5, 'amd64']], $rSent);
 	}
 
+	/** @return list<array{0: int, 1: string}> The pushes push() asked for at $rNow. */
+	private function pushAt(int $rNow, array ...$rNodes): array {
+		$this->rDb->rNodes = $rNodes;
+		$rSent = [];
+		AgentUpgrades::push(function (int $rServerID, string $rArch) use (&$rSent): bool {
+			$rSent[] = [$rServerID, $rArch];
+			return true;
+		}, $rNow);
+		return $rSent;
+	}
+
+	/**
+	 * A canary: the first node offered a version that is not running it
+	 * RETRY_SEC later holds that version back from the nodes not yet offered
+	 * it. It is offered it again itself.
+	 */
+	public function testAVersionThatFailedOnOneNodeIsHeldFromTheOthers(): void {
+		$rNodes = [$this->node(['server_id' => 5]), $this->node(['server_id' => 6]), $this->node(['server_id' => 7])];
+		$this->assertSame([[5, 'amd64']], $this->push(...$rNodes));
+		SettingsManager::set(['cluster_agent_upgrade_parallel' => 3]);
+		try {
+			$this->assertSame([[5, 'amd64']], $this->pushAt(self::NOW + AgentUpgrades::RETRY_SEC, ...$rNodes), 'only the node it failed on');
+			// Once node 5 runs it, the others follow.
+			$rNodes[0] = $this->node(['server_id' => 5, 'agent_version' => '1.4.0']);
+			$this->assertSame([[6, 'amd64'], [7, 'amd64']], $this->pushAt(self::NOW + 2 * AgentUpgrades::RETRY_SEC, ...$rNodes));
+		} finally {
+			SettingsManager::set([]);
+		}
+	}
+
+	public function testANodeIsOfferedAVersionAtMostMaxTries(): void {
+		$rNode = $this->node();
+		for ($i = 0; $i < AgentUpgrades::MAX_TRIES; $i++) {
+			$this->assertSame([[5, 'amd64']], $this->pushAt(self::NOW + $i * AgentUpgrades::RETRY_SEC, $rNode), 'try ' . ($i + 1));
+		}
+		$this->assertSame([], $this->pushAt(self::NOW + AgentUpgrades::MAX_TRIES * AgentUpgrades::RETRY_SEC, $rNode), 'given up');
+	}
+
 	public function testAReEnrolledNodeIsOfferedItAgain(): void {
 		$this->assertSame([[5, 'amd64']], $this->push($this->node()));
 		$this->assertSame([[5, 'amd64']], $this->push($this->node(['gen' => 2])));

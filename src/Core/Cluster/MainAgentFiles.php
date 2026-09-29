@@ -31,6 +31,9 @@ final class MainAgentFiles {
 	/** The directory of the servers section and tickets MAIN's agent reads. */
 	public const REPLICA = AgentPaths::DIR . 'replica/';
 
+	/** What MAIN's agent reports of chunk digests that named no request (XC_VM_Fanout, MainDigestN1File). */
+	public const DIGEST_N1 = AgentPaths::DIR . 'main_digest_n1.json';
+
 	/** How long main.json is taken as it was read, in seconds. */
 	private const TTL = 5;
 

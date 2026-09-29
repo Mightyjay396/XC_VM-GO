@@ -23,7 +23,7 @@ class FakeClusterCrypto extends ClusterCrypto {
 	 * the extension's registry (commandRegistry()), and CommandBusRegistryTest
 	 * holds this list to it.
 	 */
-	public const RESTRICTIVE_COMMANDS = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
+	public const RESTRICTIVE_COMMANDS = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed', 'node.purge'];
 
 	/** @var array<string, mixed>|null the extension's command registry (cluster_commands.json) */
 	private static ?array $rRegistry = null;
@@ -281,6 +281,18 @@ class FakeClusterCrypto extends ClusterCrypto {
 		}
 		if (isset($rCmd['args']) && array_diff(array_keys(get_object_vars($rCmd['args'])), $rAllowed) !== []) {
 			throw new ClusterRefusedException('RECORD:args', 'cluster_sign');
+		}
+		// node.purge: restrictive only with jobs, each of the registry's job types and keys.
+		if (isset($rEntry['job_types'])) {
+			$rJobs = isset($rCmd['args']) ? ($rCmd['args']->jobs ?? null) : null;
+			if (!is_array($rJobs) || $rJobs === []) {
+				throw new ClusterRefusedException('RECORD:args', 'cluster_sign');
+			}
+			foreach ($rJobs as $rJob) {
+				if (!$rJob instanceof \stdClass || array_diff(array_keys(get_object_vars($rJob)), $rEntry['job_keys']) !== [] || !in_array($rJob->type ?? null, $rEntry['job_types'], true)) {
+					throw new ClusterRefusedException('RECORD:args', 'cluster_sign');
+				}
+			}
 		}
 		return 'R';
 	}

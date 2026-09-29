@@ -53,6 +53,12 @@ final class ArtefactStage {
 	/** The most of an agent binary's `version` output kept, for its first line. */
 	private const VERSION_OUTPUT = 65536;
 
+	/** Beside the agent binary: the one an install replaced, which run.sh puts back (bin/xc_agent/run.sh). */
+	public const PREV = '.prev';
+
+	/** Beside the agent binary: `<installed at> <failed starts>` while the new one is on trial. */
+	public const TRIAL = '.trial';
+
 	private static ?string $rDownloads = null;
 
 	private static ?string $rVideos = null;
@@ -296,7 +302,9 @@ final class ArtefactStage {
 	 * run.sh starts it, as the agent's user (the directory is xc_vm's), from
 	 * root's copy. It is checked again as it is written aside, run once there
 	 * (runs(): a binary that does not start on this node is never put where
-	 * run.sh would restart it every 2 s), then renamed in.
+	 * run.sh would restart it every 2 s), then renamed in. The binary it
+	 * replaces is kept as PREV and the new one put on TRIAL: run.sh restores
+	 * PREV if the new one fails at start three times within its trial.
 	 *
 	 * @param array{path: string, grant: array<string, mixed>} $rStaged
 	 * @return string|null null once installed, else why not
@@ -318,7 +326,15 @@ final class ArtefactStage {
 			$rWhy = 'it does not run on this node (' . php_uname('m') . ')';
 		}
 		$rPlaced = SettingsAudit::asAgentUser(static function () use ($rTmp, $rTarget, &$rWhy): bool {
+			// The binary it replaces stays beside it, and the new one is on trial:
+			// run.sh puts the old one back if the new one keeps failing at start.
+			if ($rWhy === null && is_file($rTarget)) {
+				@unlink($rTarget . self::PREV);
+				@link($rTarget, $rTarget . self::PREV) || @copy($rTarget, $rTarget . self::PREV);
+				@chmod($rTarget . self::PREV, 0755);
+			}
 			if ($rWhy === null && @rename($rTmp, $rTarget)) {
+				@file_put_contents($rTarget . self::TRIAL, time() . " 0\n");
 				return true;
 			}
 			@unlink($rTmp);

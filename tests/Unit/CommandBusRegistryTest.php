@@ -144,7 +144,9 @@ final class CommandBusRegistryTest extends TestCase {
 	public function testEveryCommandMainSendsIsOneTheExtensionSigns(): void {
 		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'free_temp']));
 		$this->assertSame([true, true], ClusterRoute::root(self::SID, ['action' => 'reboot']));
+		// A removal as node.purge, a rebuild as node.cache.
 		$this->assertSame([true, true], ClusterRoute::cache(self::SID, [['type' => 'delete_vod', 'id' => 7]]));
+		$this->assertSame([true, true], ClusterRoute::cache(self::SID, [['type' => 'update_stream', 'id' => 7]]));
 		$this->assertSame([true, true], ClusterRoute::kill(self::SID, 4242, true));
 		$this->assertSame([true, true], ClusterRoute::kill(self::SID, 4243, false));
 		$this->assertSame([true, true], ClusterRoute::drop(self::SID, 'viewer1'));
@@ -163,6 +165,9 @@ final class CommandBusRegistryTest extends TestCase {
 		$this->assertSame([true, true], ClusterRoute::quarantine(self::SID, 'admin'));
 		CommandBus::enqueue($this->rCrypto, self::SID, 'config.changed', ['sections' => ['servers']], 'config.changed');
 		CommandBus::enqueue($this->rCrypto, self::SID, 'artefact.fetch', ['artefact' => ['id' => 'offair/banned', 'name' => 'banned.ts', 'size' => 3, 'sha256' => str_repeat('0', 64), 'mtime' => 1799990000, 'ctime' => 1799990000]]);
+		// StreamAssign's and StreamPush's.
+		CommandBus::enqueue($this->rCrypto, self::SID, 'stream.assign', ['stream_ids' => [5], 'set' => ['to_analyze' => 1], 'fill' => ['pid' => 1]]);
+		CommandBus::enqueue($this->rCrypto, self::SID, 'queue.poke', [], 'queue.poke');
 
 		$rSeen = [];
 		foreach ($this->queued() as $rRow) {
@@ -238,8 +243,10 @@ final class CommandBusRegistryTest extends TestCase {
 		$this->assertSame([true, true], ClusterRoute::closeConnection(self::SID, 'viewer2', true));
 		$this->assertSame([true, false], ClusterRoute::send(self::SID, ['action' => 'free_temp']));
 		$this->assertSame([true, false], ClusterRoute::root(self::SID, ['action' => 'reboot']));
-		$this->assertSame([true, false], ClusterRoute::cache(self::SID, [['type' => 'delete_vod', 'id' => 7]]));
-		$this->assertSame(['conn.kill_worker', 'conn.close'], array_map(static fn(array $rRow): string => json_decode($rRow['doc'], true)['type'], $this->queued()));
+		// A removal goes as node.purge, which signs without a licence; a rebuild does not.
+		$this->assertSame([true, true], ClusterRoute::cache(self::SID, [['type' => 'delete_vod', 'id' => 7]]));
+		$this->assertSame([true, false], ClusterRoute::cache(self::SID, [['type' => 'update_stream', 'id' => 7]]));
+		$this->assertSame(['conn.kill_worker', 'conn.close', 'node.purge'], array_map(static fn(array $rRow): string => json_decode($rRow['doc'], true)['type'], $this->queued()));
 		$rLog = array_map(static fn(string $rLine): array => (array) json_decode((string) base64_decode($rLine), true), file($this->rLog, FILE_IGNORE_NEW_LINES) ?: []);
 		$this->assertSame(
 			['Command node.rpc for server 17 not queued (refused: LICENCE)', 'Command node.root for server 17 not queued (refused: LICENCE)', 'Command node.cache for server 17 not queued (refused: LICENCE)'],

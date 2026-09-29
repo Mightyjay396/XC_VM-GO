@@ -5,6 +5,7 @@ namespace XcVm\Cli\CronJobs;
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\AgentConnections;
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Process\ProcessManager;
@@ -162,6 +163,11 @@ class StreamsCronJob implements CommandInterface {
 		// moved to it — adopting their running encoder, so they do not restart.
 		$rMigrate = $rStates !== null && !empty($rStates['accepting']) && StreamProcess::supervisionEnabled();
 
+		// Past a fence's drain the node releases its producers (plan, section 9,
+		// FENCED). Their rows keep their state, so the first pass after the fence
+		// lifts starts them again; until then startMonitor() starts nothing.
+		$rFenced = NodeLease::refusesEverything();
+
 		$rRows = NodeStreams::liveChecks($rRedis, $db);
 		if (count($rRows) > 0) {
 			foreach ($rRows as $rStream) {
@@ -169,6 +175,13 @@ class StreamsCronJob implements CommandInterface {
 				$rStreamIDs[] = $rStream['stream_id'];
 
 				$rIsSupervised = isset($rSupervisedSet[intval($rStream['stream_id'])]);
+				if ($rFenced) {
+					if ($rIsSupervised || ProcessManager::isMonitorAlive($rStream['monitor_pid'], $rStream['stream_id']) || ProcessManager::isStreamRunning(intval($rStream['pid']), $rStream['stream_id'])) {
+						echo 'Fenced: releasing the producer...' . "\n\n";
+						StreamProcess::stopStream(intval($rStream['stream_id']));
+					}
+					continue;
+				}
 				// superviseStream, not startMonitor: a stream the daemon will not
 				// take (delay, created channels) must keep the PHP monitor it has,
 				// not have a second one spawned beside it every pass.
