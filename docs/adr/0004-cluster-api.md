@@ -3401,7 +3401,7 @@ Port 31290 is unprivileged: while the agent does not hold it, any local user cou
 - The node list gains `dataplane`, for the parents' password rule.
 - MAIN runs no data-plane client: `-role main` is the listener alone (until Phase 9's eighth increment).
 
-**Not built / limits.** The acceptance measured on a running fleet (48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host). A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
+**Not built / limits.** The acceptance measured on a running fleet (48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host). Since then [the MITM harness](#the-mitm-harness) measures the MITM'd body and the replayed headers against MAIN's real guard and file server; the 48 h stays a fleet measure. A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
 
 **Tests.** PHP: `RelayAuthTest` (a relay admitted once and a replay refused; another stream, parent or panel, a tampered ticket; a revoked, re-enrolled or unlisted child; another key, a stale or retargeted proof; no nonce window or panel key; headers never falling back to the password; the password from a DATAPLANE child refused; a password that is not a string refused; a load balancer judging by MAIN's anchored clock; the four endpoints through the guard), `FileTicketTest` (chunks with their digests, a replay, another key or owner, a revoked or re-enrolled fetcher, a path sealed under another ref or key, getFile's rule, nothing unsigned, the routes and their own rate zone), `FileDigestTest` (a chunk's digest bound to its offset and size), `DataPlaneUrlsTest` (no URL carries the secret with the flow on; the builders use it; legacy servers and the flow off keep the legacy URL; the loopback only while the agent's uid holds the port, from fixture socket tables; `legacyApiRetired`), `LbNginxApiLegacyTest` and `ModeTwoPathsTest` (`api_legacy.conf` stays `1` while MAIN reads with `getFile`), `ClusterTelemetryTest` (DATAPLANE only for an agent saying `relay`), `ClusterDataplaneVectorsTest`, and `ClusterApiTest` (tickets in the record and on the delta, no ETag, version or cache entry moved, paging, the licence, a malformed ask, the flow off). Go: the vectors, the proxy (each connect signed afresh and a replay refused, the key, a stream without a ticket, the flow off, a ticket for another node, generation or stream; `relay.key` published only while the port is held, a held port retried), `/xfile` (whole, a range, a suffix, past the end; a tampered, moved or foreign-signed chunk refused, an inactive owner; the ticket re-read per chunk; 429 and 503 retried, a bounded number of times), the ticket store (paging, a restart, the flow off and on, a licence refusal, the latest ticket per ref) and `TestInteropDataPlane` against MAIN's real PHP (`XCVM_PANEL_DIR`): tickets from the streams op, a relay MAIN's guard admits once, a file read through MAIN's `FileTicketServer` and a tampered chunk refused.
 
@@ -4077,6 +4077,67 @@ the legacy ones for a legacy server, MAIN's own file and no licence); on the age
 `TestMainReadsANodesFileWithItsOwnKey`, `TestMainFollowsItsIdentity`,
 `TestRunMainEndsWhenTheIdentityChanges`, `TestNewMainAgentNeedsAWholeIdentity` and
 `TestInteropMainDataPlane`, which loads what MAIN's real `MainDataPlane` wrote.
+
+### The MITM harness
+
+A test harness, no runtime change: an attacker on the wire that holds no key, between an agent and
+MAIN's cluster API, and between an agent's loopback relay proxy and a parent or owner. It is
+`internal/mitm` in XC_VM_Fanout: a reverse proxy that records every exchange and can rewrite a
+request or a reply, answer in the server's place (an old reply, a refusal), or send a recorded
+request again byte for byte. The attacks are Go tests in `internal/clusteragent`, in two halves.
+
+- **The agent's half** (`mitm_test.go`; runs in CI): an honest MAIN in Go behind the proxy.
+  `TestMITMRepliesThatDoNotAuthenticateAreNeverTaken`: a BOX flipped, cut or extended, no body, the
+  MAC flipped or dropped, the reply's stamp or nonce moved, another content type or status, an
+  error page, an old reply played to a new request, another op's reply, an old commands batch —
+  each is `ErrTransport`, nothing reaches the caller, and the node takes no MAIN time from it.
+  `TestMITMDenialsMustBeSignedForThisRequest`: an old denial played to a new request, a byte of it
+  flipped, its signature flipped or dropped, its reason rewritten. `TestMITMHealthMustBeSigned`:
+  `health` and the install probe refuse a document or signature the wire changed.
+- **MAIN's half** (`interop_mitm_test.go`; `XCVM_PANEL_DIR`, as the other interop tests):
+  `TestInteropMITM` runs the agent through the proxy against MAIN's real PHP `ClusterApi`. Every
+  change to a request is refused before anything about the node moves, with the reason the order of
+  checks gives: the body flipped or cut, the path, query, content type, agent, stamp or nonce
+  changed, the MAC flipped (401 `BAD_MAC`); no MAC (400 `BAD_REQUEST`); a stamp ten minutes old
+  (401 `CLOCK_SKEW`); another node (401 `UNKNOWN_NODE`); another protocol (426 `PROTO`);
+  `token_refresh` with its node signature dropped or flipped (401 `BAD_NODE_SIG`). The proxy then
+  holds a genuine heartbeat back and sends tampered copies first: MAIN refuses them without spending
+  the nonce, takes the genuine request once, and answers it with 401 `REPLAY` after that. MAIN's
+  real replies changed on their way back, or an old one, are not taken. `TestInteropMITMDataPlane`
+  puts the proxy between the agent's relay proxy and a parent running MAIN's real `RelayGuard` and
+  `FileTicketServer`: a relay with another target, a query added, the ticket or proof flipped, no
+  proof, an earlier proof, or the password added is refused, and a relay request sent again too; a
+  file chunk flipped, cut, answered with another chunk's bytes or digest, or asked at another offset
+  is never passed on, and whatever came before it is the file's own bytes; a chunk request sent
+  again is refused.
+
+That is the Phase 8 acceptance's MITM'd body and replayed headers, measured against the real code
+rather than a fleet. The replays go out from the same host; MAIN refuses them by the spent nonce,
+which does not depend on the sender.
+
+**What it found.**
+
+- **A denial's HTTP status is not signed**, its document is. Every branch the agent takes on a
+  refusal pairs the status with the signed reason (`replayWait`, `skewClock`, `busyWait`,
+  `laneRefusal`, `FLOW_OFF` and `BAD_REQUEST`), and `fatal()` reads the reason alone. So a status the
+  wire changed only turns a refusal the agent handles into a plain one, which dropping the reply
+  does anyway. `TestMITMADenialsStatusOnlyEverLosesItsHandling` pins that, and `TestInteropMITM`
+  shows MAIN's `BAD_MAC` answered as a 200 is still that `BAD_MAC`.
+- **Limit: a file chunk's digest is not bound to the request.** It names the ticket, the offset,
+  the size, the hash and the total, and its `iat` is not checked. So an old answer for the same
+  chunk under the same ticket is taken. It is the file's own bytes at that offset, but a file
+  rewritten in place during one ticket's life (up to 12 h) could be read as a mix of old and new
+  chunks. Closing it means naming the request's nonce in the digest (MAIN's `FileTicketServer`, the
+  node's owner side and the agent's check, with new vectors). `TestInteropMITMDataPlane` pins
+  today's behaviour, so closing it is a decision.
+
+Also fixed: `TestInteropEvents` checked the agent's spool the moment MAIN held the events, before the
+agent had dropped the spool file after reading MAIN's answer. It now waits for the drain.
+
+**Not covered.** The wire outside these two paths: the node's PHP to its own agent (a local socket),
+SSH provisioning, and what a node reads over HTTPS from MAIN's nginx (the harness speaks plain HTTP
+to the servers it fronts, as the interop tests do). A MITM that holds a key (a node's session
+secret, a parent's box key) is out of scope; it is a compromised node.
 
 ### Disaster recovery of MAIN's cluster keys
 
