@@ -28,6 +28,9 @@ the admin specs create, edit, start and delete real records.
 
 ## Run
 
+Use Node 18–22. Under Node 26, Playwright 1.49 fails every test within seconds with
+`Test timeout of 30000ms exceeded`, the sign-in included.
+
 ```bash
 # one-time: install deps + the Chromium browser
 cd tests/e2e && npm ci && npx playwright install --with-deps chromium
