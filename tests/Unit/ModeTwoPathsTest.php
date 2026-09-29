@@ -506,7 +506,7 @@ final class ModeTwoPathsTest extends TestCase {
 		mkdir($rPin . 'inbox', 0700, true);
 		RootPin::useDirs($rPin . 'etc/', $rPin . 'inbox/');
 		$this->assertTrue(RootPin::write($rCrypto->info()['panel_sign_pub'], self::NODE));
-		foreach ([['action' => 'reboot'], ['action' => 'restart_services'], ['action' => 'stop_services'], ['action' => 'flush'], ['action' => 'update'], ['action' => 'rollback', 'version' => '2.0.0']] as $i => $rArgs) {
+		foreach ([['action' => 'reboot'], ['action' => 'restart_services'], ['action' => 'stop_services'], ['action' => 'flush'], ['action' => 'update', 'version' => '9.9.9'], ['action' => 'rollback', 'version' => '2.0.0']] as $i => $rArgs) {
 			$rDoc = (string) json_encode(['v' => 1, 'type' => 'node.root', 'action' => $rArgs['action'], 'exp' => self::NOW + 600, 'iat' => self::NOW, 'cmd_id' => bin2hex(random_bytes(16)), 'seq' => $i + 1, 'node_uuid' => self::NODE, 'gen' => 1, 'dedupe_key' => null, 'args' => (object) array_diff_key($rArgs, ['action' => 0])]);
 			file_put_contents($rPin . 'inbox/' . ($i + 1) . '.json', json_encode(['doc' => $rDoc, 'sig' => Enc::b64url($rCrypto->sign('cmd', $rDoc))]));
 		}
@@ -525,8 +525,13 @@ final class ModeTwoPathsTest extends TestCase {
 		// reboot's survives it; the flush logs once it flushed.
 		$this->assertSame([['reboot', 1], ['systemctl stop xc_vm', 2], ['systemctl start xc_vm', 2], ['systemctl stop xc_vm', 3], ['iptables -F', 3]], array_values(array_filter($this->sudoSpooled(), static fn(array $rCall): bool => (bool) preg_match('/^(reboot|systemctl|iptables -F)/', $rCall[0]))));
 		// An update and a rollback start the updater: it reports its status
-		// through the agent now (NodeStateSink::status), not MAIN's row.
-		$this->assertSame(['console.php update update', 'console.php update rollback 2.0.0'], array_values(array_map(static fn(string $rLine): string => (string) preg_replace('/^.*(console\.php update .*?)( 2>&1.*)?$/', '$1', $rLine), preg_grep('/console\.php update/', $this->commands()))));
+		// through the agent now (NodeStateSink::status), not MAIN's row. It is
+		// started detached (ProcessRunner::start), so its stand-in may still be
+		// writing, in either order.
+		for ($rTry = 0; $rTry < 50 && count(preg_grep('/console\.php update/', $this->commands())) < 2; $rTry++) {
+			usleep(100000);
+		}
+		$this->assertEqualsCanonicalizing(['console.php update update 9.9.9', 'console.php update rollback 2.0.0'], array_values(array_map(static fn(string $rLine): string => (string) preg_replace('/^.*(console\.php update .*)$/', '$1', $rLine), preg_grep('/console\.php update/', $this->commands()))));
 		// Each logged through the spool, in order, as root on this node.
 		$rRows = array_map(static fn(array $rEvent): array => $rEvent['d']['rows'][0], $this->spooled('p1'));
 		$this->assertSame(['log.syslog'], array_values(array_unique(array_column($this->spooled('p1'), 'type'))));

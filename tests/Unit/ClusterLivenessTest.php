@@ -44,6 +44,7 @@ final class ClusterLivenessTest extends TestCase {
 
 	protected function tearDown(): void {
 		LivenessService::useQueueReader(null);
+		LivenessService::useLicence(null);
 		ClusterClock::fix(null);
 		DatabaseFactory::reset();
 		@unlink($this->rHealth);
@@ -108,6 +109,42 @@ final class ClusterLivenessTest extends TestCase {
 		$rAll(62000);
 		$this->assertSame([7 => ['suspect', 'ok']], $this->at(62000));
 		$this->assertSame(4, $this->audit('node.health'), 'ok→suspect, suspect→offline, offline→suspect, suspect→ok; the first publication is not a transition');
+	}
+
+	/**
+	 * No licence: a node whose token ends within LICENCE_CUTOFF_SEC is routed
+	 * no new viewer (`suspended`), since no token will follow it; the others
+	 * are judged as ever. Back at once when MAIN renews its token, and an
+	 * offline node stays offline. Without an extension to ask, nothing is.
+	 */
+	public function testANodeWhoseTokenEndsSoonWithoutALicenceIsRoutedNothing(): void {
+		$rNow = intdiv($this->rT0, 1000);
+		$this->rDb->query('UPDATE `cluster_nodes` SET `token_exp` = ? WHERE `server_id` = 5', $rNow + 300);
+		$this->rDb->query('UPDATE `cluster_nodes` SET `token_exp` = ? WHERE `server_id` = 6', $rNow + 3600);
+		LivenessService::useLicence(static fn(): ?bool => true);
+		$this->assertSame([5 => [null, 'ok'], 6 => [null, 'ok'], 7 => [null, 'ok']], $this->at(0), 'licensed: judged as ever');
+
+		LivenessService::useLicence(static fn(): ?bool => false);
+		$this->beat(1000);
+		$this->assertSame([5 => ['ok', 'suspended']], $this->at(1000), 'an hour left, or no token: judged as ever');
+		$this->assertSame('suspended', ClusterHealth::state(5), 'read back as published');
+		$this->assertContains('suspended', ClusterHealth::NO_ROUTING);
+		$this->assertStringContainsString('ClusterHealth::NO_ROUTING', (string) file_get_contents(dirname(__DIR__, 2) . '/src/Domain/Server/ServerRepository.php'), 'routing reads it');
+
+		$this->rDb->query('UPDATE `cluster_nodes` SET `token_exp` = ? WHERE `server_id` = 5', $rNow + 3600);
+		$this->beat(2000);
+		$this->assertSame([5 => ['suspended', 'ok']], $this->at(2000), 'a renewed token: back at once');
+
+		// Silent past the offline window while its token ends: offline, not suspended.
+		$this->rDb->query('UPDATE `cluster_nodes` SET `token_exp` = ? WHERE `server_id` = 7', $rNow + 60);
+		$this->beat(40000, [5, 6]);
+		$this->assertSame('offline', $this->at(40000)[7][1] ?? ClusterHealth::state(7));
+
+		LivenessService::useLicence(static fn(): ?bool => null);
+		$this->rDb->query('UPDATE `cluster_nodes` SET `token_exp` = ? WHERE `server_id` = 6', $rNow + 60);
+		$this->beat(41000, [5, 6]);
+		$this->at(41000);
+		$this->assertSame('ok', ClusterHealth::state(6), 'no extension to ask: nothing suspended');
 	}
 
 	public function testFleetSilenceHoldsNodesInsteadOfMarkingThemOffline(): void {

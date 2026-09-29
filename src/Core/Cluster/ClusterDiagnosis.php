@@ -51,9 +51,6 @@ final class ClusterDiagnosis {
 	/** An outbox (an event lane on the node, the command queue on MAIN) whose oldest entry is older than this lags. */
 	public const OUTBOX_LAG_SEC = 120;
 
-	/** The extension's own ceiling on a lease window: `exp - iat` is 26 h at most. */
-	public const LEASE_MAX_SEC = 26 * 3600;
-
 	/**
 	 * The window a node may serve in once it stops reaching MAIN, as MAIN's
 	 * settings draw it from the node's token: the lease MAIN signs with a token

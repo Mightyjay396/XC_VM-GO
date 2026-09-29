@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\ClusterHealth;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -55,8 +56,25 @@ final class LivenessService {
 	 */
 	public const QUEUE_HOLD_WINDOWS = 4;
 
+	/**
+	 * While MAIN holds no licence, a node whose token ends within this many
+	 * seconds is routed no new viewer (`suspended`): no token will follow it,
+	 * and it fences at the token's end (plan section 4, "Licence revocation
+	 * stops token generation", step 1).
+	 */
+	public const LICENCE_CUTOFF_SEC = 600;
+
+	/** How long the loop takes MAIN's licence state as it last read it (ms). */
+	public const LICENCE_CHECK_MS = 30000;
+
 	/** Tests: fn(): ?int, the queue's age as ClusterPool::listenQueueMs() says it (null: the real probe). */
 	private static ?\Closure $rQueueReader = null;
+
+	/** Tests: fn(): ?bool, whether MAIN holds a licence (null: the extension's answer). */
+	private static ?\Closure $rLicence = null;
+
+	/** @var array{0: int, 1: ?bool}|null when the licence state was read, and what it was */
+	private static ?array $rLicensed = null;
 
 	/**
 	 * The heard times the last pass read from the bus: [its socket, when
@@ -69,6 +87,12 @@ final class LivenessService {
 	/** Tests: read the cluster_ctl listen queue's age with fn(): ?int (null: ClusterPool's probe). */
 	public static function useQueueReader(?\Closure $rReader): void {
 		self::$rQueueReader = $rReader;
+	}
+
+	/** Tests: say whether MAIN holds a licence with fn(): ?bool (null: the extension). */
+	public static function useLicence(?\Closure $rLicence): void {
+		self::$rLicence = $rLicence;
+		self::$rLicensed = null;
 	}
 
 	/**
@@ -85,7 +109,7 @@ final class LivenessService {
 		$rHeard = HeartbeatService::flush();
 		$rReady = ClusterMeta::readyAtMs();
 		$rHeard = self::busHeard($rHeard, $rNow);
-		self::db()->query("SELECT `server_id`, `last_seen_at` FROM `cluster_nodes` WHERE `state` = 'active' AND `mode` >= 1 AND (`flows` & ?) <> 0;", NodeRegistry::FLOW_TELEMETRY);
+		self::db()->query("SELECT `server_id`, `last_seen_at`, `token_exp` FROM `cluster_nodes` WHERE `state` = 'active' AND `mode` >= 1 AND (`flows` & ?) <> 0;", NodeRegistry::FLOW_TELEMETRY);
 		$rRows = self::db()->get_rows();
 		$rPrev = ClusterHealth::read();
 		$rJudged = [];
@@ -141,6 +165,18 @@ final class LivenessService {
 			], 'liveness');
 		}
 
+		// No licence: no token follows the one a node holds, so one that ends
+		// soon routes no new viewer. Back as judged once MAIN renews it.
+		if (self::licensed($rNow) === false) {
+			foreach ($rRows as $rRow) {
+				$rID = (int) $rRow['server_id'];
+				$rExp = $rRow['token_exp'] ?? null;
+				if ($rExp !== null && $rJudged[$rID] !== 'offline' && (int) $rExp - intdiv($rNow, 1000) < self::LICENCE_CUTOFF_SEC) {
+					$rJudged[$rID] = 'suspended';
+				}
+			}
+		}
+
 		$rTransitions = [];
 		foreach ($rJudged + $rPrev['states'] as $rID => $rUnused) {
 			$rFrom = $rPrev['states'][$rID] ?? null;
@@ -158,6 +194,24 @@ final class LivenessService {
 			ClusterHealth::write($rJudged, $rGuard, $rOkSince, $rReasons, $rQueue, $rHold);
 		}
 		return $rTransitions;
+	}
+
+	/**
+	 * Whether MAIN's extension holds a licence, read at most every
+	 * LICENCE_CHECK_MS. Null when it cannot tell (no extension): no node is
+	 * suspended then.
+	 */
+	private static function licensed(int $rNowMs): ?bool {
+		if (self::$rLicensed !== null && $rNowMs - self::$rLicensed[0] < self::LICENCE_CHECK_MS && $rNowMs >= self::$rLicensed[0]) {
+			return self::$rLicensed[1];
+		}
+		try {
+			$rOk = self::$rLicence !== null ? (self::$rLicence)() : (bool) (ClusterCryptoFactory::create()->info()['licensed'] ?? false);
+		} catch (\Throwable) {
+			$rOk = null;
+		}
+		self::$rLicensed = [$rNowMs, $rOk];
+		return $rOk;
 	}
 
 	/**

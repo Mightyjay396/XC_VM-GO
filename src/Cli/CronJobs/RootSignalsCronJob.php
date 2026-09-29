@@ -3,6 +3,7 @@
 namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Cli\Commands\UpdateCommand;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ArtefactStage;
@@ -22,6 +23,7 @@ use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\PhpFpmPools;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Cluster\ClusterEndpoint;
@@ -1096,16 +1098,18 @@ class RootSignalsCronJob implements CommandInterface {
 				if (!LogSink::syslog('UPDATE', 'Updating XC_VM...')) {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', 'Updating XC_VM...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
 				}
-				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update update 2>&1 &');
+				// MAIN's release, when it names one (NodeActions::update).
+				$rUpVersion = UpdateCommand::pinned($rData['version'] ?? null);
+				ProcessRunner::start(array_merge(['sudo', PHP_BIN, MAIN_HOME . 'console.php', 'update', 'update'], $rUpVersion === null ? [] : [$rUpVersion]));
 				break;
 			case 'rollback':
-				$rRbVersion = isset($rData['version']) ? trim((string) $rData['version']) : '';
-				if (preg_match('/^\d+\.\d+\.\d+$/', $rRbVersion)) {
+				$rRbVersion = UpdateCommand::pinned($rData['version'] ?? null);
+				if ($rRbVersion !== null) {
 					echo 'Rolling back to ' . $rRbVersion . '...' . "\n";
 					if (!LogSink::syslog('UPDATE', 'Rolling back XC_VM to ' . $rRbVersion . '...')) {
 						$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Rolling back XC_VM to ' . $rRbVersion . '...', time());
 					}
-					shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update rollback ' . escapeshellarg($rRbVersion) . ' 2>&1 &');
+					ProcessRunner::start(['sudo', PHP_BIN, MAIN_HOME . 'console.php', 'update', 'rollback', $rRbVersion]);
 				}
 				break;
 			case 'set_services':

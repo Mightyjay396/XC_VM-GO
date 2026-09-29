@@ -71,12 +71,8 @@ final class ReplicaBuilder {
 
 	public const SECTION_BLOCKLIST = 'blocklist';
 
-	public const SECTION_SETTINGS = ReplicaSections::SETTINGS;
-
 	/** Sections sent whole whenever the node's ETag differs (and `secrets`, see serves()). */
 	public const WHOLE = ReplicaSections::WHOLE;
-
-	public const SECTION_SECRETS = ReplicaSections::SECRETS;
 
 	/**
 	 * What an agent says at hello (`features`) when it runs `config.changed`

@@ -161,7 +161,7 @@ final class CommandBusRegistryTest extends TestCase {
 		// path's shape, sent as its own row.
 		CommandBus::enqueue($this->rCrypto, self::SID, 'node.fence', ['reason' => ClusterRoute::LICENCE_FENCE, 'drain_min' => 10]);
 		$this->assertSame([true, true], ClusterRoute::resync(self::SID));
-		$this->assertSame([true, true], ClusterRoute::policyUpdate(self::SID));
+		CommandBus::enqueue($this->rCrypto, self::SID, 'policy.update', [], 'policy.update');
 		$this->assertSame([true, true], ClusterRoute::quarantine(self::SID, 'admin'));
 		CommandBus::enqueue($this->rCrypto, self::SID, 'config.changed', ['sections' => ['servers']], 'config.changed');
 		CommandBus::enqueue($this->rCrypto, self::SID, 'artefact.fetch', ['artefact' => ['id' => 'offair/banned', 'name' => 'banned.ts', 'size' => 3, 'sha256' => str_repeat('0', 64), 'mtime' => 1799990000, 'ctime' => 1799990000]]);

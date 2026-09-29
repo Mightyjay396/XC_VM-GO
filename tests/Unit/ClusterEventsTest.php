@@ -220,6 +220,41 @@ final class ClusterEventsTest extends TestCase {
 	}
 
 	/**
+	 * Below the cursor, only a copy of a batch applied is a repeat: the newest
+	 * however old, the others for three minutes. Anything else is another
+	 * install numbering from where this node was (`backwards`); with no
+	 * record (a fresh lock directory) it is a repeat, as before.
+	 */
+	public function testAP0BatchThatGoesBackIsNoRepeat(): void {
+		$rPrevious = EventIngest::useLockDir($this->rDir . '/locks/');
+		try {
+			$rState = static fn(int $rPid) => ['type' => 'stream.state', 'd' => ['stream_id' => 100, 'server_id' => 5, 'fields' => ['pid' => $rPid]]];
+			$rA = [$rState(1), $rState(2)];
+			$rB = [$rState(3)];
+			$this->assertSame(2, EventIngest::ingest($this->node(), 'p0', 1, $rA)['applied']);
+			$this->assertSame(1, EventIngest::ingest($this->node(), 'p0', 3, $rB)['applied']);
+
+			$this->assertSame(['ok' => false, 'useq' => 3, 'backwards' => true], EventIngest::ingest($this->node(), 'p0', 1, [$rState(7), $rState(8)]), 'other events under the same numbers');
+			$this->assertSame(['ok' => false, 'useq' => 3, 'backwards' => true], EventIngest::ingest($this->node(), 'p0', 2, [$rState(2)]), 'part of a batch');
+			$this->assertSame(['ok' => false, 'useq' => 3, 'backwards' => true], EventIngest::ingest($this->node(), 'p0', 3, [$rState(3), $rState(4)]), 'an overlap');
+			$this->assertSame(3, (int) $this->val('SELECT `pid` FROM `streams_servers` WHERE `server_stream_id` = 11'), 'none of them applied');
+
+			$this->assertTrue(EventIngest::ingest($this->node(), 'p0', 1, $rA)['ok'], 'a late copy of the batch before');
+			ClusterClock::fix(1800000000000 + 181000);
+			$this->assertTrue(EventIngest::ingest($this->node(), 'p0', 3, $rB)['ok'], 'the newest, however old: the node resends it until it hears back');
+			$this->assertTrue(EventIngest::ingest($this->node(), 'p0', 1, $rA)['ok'], 'kept until the next batch');
+			$this->assertSame(1, EventIngest::ingest($this->node(), 'p0', 4, [$rState(4)])['applied']);
+			$this->assertSame(['ok' => false, 'useq' => 4, 'backwards' => true], EventIngest::ingest($this->node(), 'p0', 1, $rA), 'three minutes past, no copy can still be on its way');
+
+			exec('rm -rf ' . escapeshellarg($this->rDir . '/locks/'));
+			$this->assertSame(['ok' => true, 'useq' => 4, 'applied' => 0, 'dropped' => 0], EventIngest::ingest($this->node(), 'p0', 1, [$rState(7)]), 'no record: a repeat');
+			$this->assertSame(4, (int) $this->val('SELECT `pid` FROM `streams_servers` WHERE `server_stream_id` = 11'));
+		} finally {
+			EventIngest::useLockDir($rPrevious);
+		}
+	}
+
+	/**
 	 * A `log.syslog` row is root's on the sending node: one of the types
 	 * root writes (never `AUTH`, whose addresses cron:root_mysql blocks),
 	 * as `root` from `localhost`, dated no later than MAIN's clock (the

@@ -28,7 +28,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *     recording.state, vod.analysis,                 useq_p0 + 1, else 409 {expected_useq}
  *     conn.upsert, conn.remove, conn.close, conn.limit,
  *     security.block_ip, node.state
- *                                                    and the node rewinds
+ *                                                    and the node rewinds; below
+ *                                                    it, only a copy of a batch
+ *                                                    applied (else `backwards`)
  * p1  log.<type>, skip, node.inventory,             high-water: numbers at or below
  *     conn.divergence                                useq_p1 are skipped, gaps are fine
  * p2  conn.touch                                     no number: the latest value per
@@ -52,6 +54,14 @@ final class EventIngest {
 
 	/** Longest a batch waits for the one before it from the same node and lane (s). */
 	private const LOCK_WAIT = 10.0;
+
+	/**
+	 * How long a P0 batch's fingerprint outlives the next one (ms): a copy
+	 * signed before the node moved on is refused past the request window
+	 * (90 s). The newest is kept however old: the node resends its batch until
+	 * it hears back, however long that takes.
+	 */
+	private const COPY_KEEP_MS = 180000;
 
 	/** Lane of each event type, and the flow it needs. */
 	private const TYPES = [
@@ -106,9 +116,16 @@ final class EventIngest {
 	}
 
 	/**
+	 * `backwards` (P0): the batch starts at or below the cursor and is no
+	 * copy of a batch MAIN applied. The agent numbers from MAIN's cursor and
+	 * resends only the batch in flight, whole, so this is another install
+	 * sending as the node (plan, section 4, "Quarantine"). Without a record
+	 * of the batches applied (a fresh `cluster_ingest/`), it is a repeat, as
+	 * before.
+	 *
 	 * @param array<string, mixed> $rNode cluster_nodes row
 	 * @param list<mixed> $rEvents
-	 * @return array{ok: bool, useq: int, applied?: int, dropped?: int, expected_useq?: int}
+	 * @return array{ok: bool, useq: int, applied?: int, dropped?: int, expected_useq?: int, backwards?: true}
 	 */
 	public static function ingest(array $rNode, string $rLane, int $rFirst, array $rEvents): array {
 		if ($rLane === 'p2') {
@@ -128,11 +145,20 @@ final class EventIngest {
 				throw new \RuntimeException('cannot read the node\'s cursor');
 			}
 			$rCursor = (int) $rDb->get_row()['useq'];
+			$rPrint = $rLane === 'p0' && $rEvents !== [] ? $rFirst . ':' . count($rEvents) . ':' . hash('sha256', (string) json_encode($rEvents)) : null;
+			$rCopies = $rPrint === null ? [] : self::copies($rLock);
+			if ($rPrint !== null && $rFirst <= $rCursor && $rCopies !== [] && !isset($rCopies[$rPrint])) {
+				return ['ok' => false, 'useq' => $rCursor, 'backwards' => true];
+			}
 			if ($rEvents === [] || $rLast <= $rCursor) {
 				return ['ok' => true, 'useq' => $rCursor, 'applied' => 0, 'dropped' => 0]; // a repeat of what was applied
 			}
 			if ($rLane === 'p0' && $rFirst !== $rCursor + 1) {
 				return ['ok' => false, 'useq' => $rCursor, 'expected_useq' => $rCursor + 1];
+			}
+			if ($rPrint !== null) {
+				// Before the batch commits: a copy may be the next to ask.
+				self::remember($rLock, $rCopies, $rPrint);
 			}
 			if ($rFirst <= $rCursor) {
 				$rEvents = array_slice($rEvents, $rCursor - $rFirst + 1); // p1: the part already applied
@@ -188,6 +214,42 @@ final class EventIngest {
 	}
 
 	/**
+	 * The P0 batches the lane's lock file records as applied (fingerprint =>
+	 * when, ms). Empty when there is no lock or no record.
+	 *
+	 * @param resource|null $rLock
+	 * @return array<string, int>
+	 */
+	private static function copies($rLock): array {
+		if ($rLock === null || !rewind($rLock)) {
+			return [];
+		}
+		$rCopies = json_decode((string) stream_get_contents($rLock), true);
+		return is_array($rCopies) ? array_filter($rCopies, 'is_int') : [];
+	}
+
+	/**
+	 * Record $rPrint as the newest batch, keeping the others for
+	 * COPY_KEEP_MS. A write that fails leaves the lane without a record, so
+	 * nothing is taken as backwards.
+	 *
+	 * @param resource|null $rLock
+	 * @param array<string, int> $rCopies
+	 */
+	private static function remember($rLock, array $rCopies, string $rPrint): void {
+		if ($rLock === null) {
+			return;
+		}
+		$rNow = ClusterClock::nowMs();
+		$rCopies = array_filter($rCopies, static fn(int $rAt): bool => $rAt >= $rNow - self::COPY_KEEP_MS);
+		unset($rCopies[$rPrint]);
+		$rCopies[$rPrint] = $rNow;
+		if (!ftruncate($rLock, 0) || !rewind($rLock) || fwrite($rLock, (string) json_encode($rCopies)) === false) {
+			ftruncate($rLock, 0);
+		}
+	}
+
+	/**
 	 * The node's lane, held while a batch is applied (`TMP_PATH/cluster_ingest/`,
 	 * a file lock, so it never holds the node's database row, which every
 	 * heartbeat writes). Null when the file cannot be opened: the batch then
@@ -201,7 +263,7 @@ final class EventIngest {
 		if (!is_dir($rDir)) {
 			@mkdir($rDir, 0750, true);
 		}
-		$rHandle = @fopen($rDir . $rServerID . '_' . $rLane . '.lock', 'c');
+		$rHandle = @fopen($rDir . $rServerID . '_' . $rLane . '.lock', 'c+'); // c+: the P0 lock also holds its record (copies())
 		if ($rHandle === false) {
 			return null;
 		}

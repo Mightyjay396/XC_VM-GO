@@ -220,7 +220,7 @@ final class ClusterExtensionIntegrationTest extends TestCase {
 			$this->assertTrue(ClusterRoute::stop($rSid, 'vod.stop', [8])[0]);
 			$this->assertSame([true, true], ClusterRoute::fence($rSid, 'test', 1));
 			$this->assertSame([true, true], ClusterRoute::resync($rSid));
-			$this->assertSame([true, true], ClusterRoute::policyUpdate($rSid));
+			CommandBus::enqueue($rCrypto, $rSid, 'policy.update', [], 'policy.update'); // no producer: the policy rides the heartbeat
 			CommandBus::enqueue($rCrypto, $rSid, 'node.unfence', []); // its route shares the fence's dedupe key
 			CommandBus::enqueue($rCrypto, $rSid, 'stream.assign', ['stream_ids' => [7], 'set' => ['to_analyze' => 1]]);
 			CommandBus::enqueue($rCrypto, $rSid, 'queue.poke', []);

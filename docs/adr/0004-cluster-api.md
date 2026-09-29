@@ -3241,7 +3241,7 @@ The loops stay up. Every `break` that means something — a code change, nginx s
 - **`servers.whitelist_ips` grants the `/api` allowed IPs**, and every node wrote its own `ip -4 addr` into it once a minute — a node that declared an address was granting it, which is the trust hole `proxy_api` was fixed for with a different writer. The API path never carried the column (`NodeStateSink` excludes it), and now the legacy path does not either: MAIN keeps publishing its own addresses (it is the panel, already trusted, and a multi-homed MAIN reaches each node from whichever address the route picks), and elsewhere the column is the admin's. Existing values are left alone, so no fleet loses access on upgrade.
 - The access-code name **`cluster`** joins the reserved list, so an admin cannot create a code whose nginx location sits over the cluster API's.
 - **`cron:users` is the `legacy` role.** The role existed (`ReplicaSections::cronRoles`: a node in mode 0 or 1 runs `all` and `legacy`, one in mode 2 only `all`) and no row used it, so the one cron that walks MAIN's own `lines_live` and Redis was still handed to a node whose database access is refused. A mode-2 node's viewers are its agent's registry, which reaps them itself (`hls_reaper`), and MAIN's copy is reaped by MAIN's own row. Migration 050 moves it on an existing install.
-- **A licence key replaced after a revocation** is audited (`cluster.licence_key`). The nodes need nothing from MAIN here — their next heartbeat mints a token again — but the operator's timeline should say when the key changed, which is the moment a fenced fleet starts coming back.
+- **A licence key replaced after a revocation** is audited (`cluster.licence_key`). The nodes need nothing from MAIN here — their next heartbeat mints a token again — but the operator's timeline should say when the key changed, which is the moment a fenced fleet starts coming back. (A different key now also rotates every token: see *A new licence key rotates the fleet's tokens*.)
 
 ### Replacing the viewer-token secret without an outage (Phase 8, first increment)
 
@@ -3736,7 +3736,7 @@ request, and the cutover's last steps — rotating what legacy nodes sent in cle
 | `node.unfence` | G | *Unfence* (shares the fence's dedupe key, so it supersedes one not yet taken) | agent |
 | `node.quarantine {reason}` | R | *Quarantine* (queued, then the row goes `quarantined`); *Trust again* sets it `active` and queues `token.rotate_now` | agent |
 | `resync {sections}` | R | *Resync* (`config`, `streams`, `connections`) | agent |
-| `policy.update` | G | `ClusterRoute::policyUpdate()` | agent: a hello now |
+| `policy.update` | G | none: a newer `policy_ver` reaches the node with its heartbeat (`ClusterRoute::policyUpdate()` had no caller and is removed) | agent: a hello now |
 
 - **A quarantined node's long-poll** hands out class R only (`CommandBus::pending(…, restrictive)`);
   the rest stays queued for *Trust again*. Its replica stays refused, and the agent itself runs only
@@ -4546,6 +4546,13 @@ hardware, and never ran `status`'s own work.
   `streams_servers` before it sent `node.inventory`. Those counts feed only the `servers_stats` row,
   which the agent's telemetry replaces: with TELEMETRY on they are not taken, and a node in mode 2
   never falls back to writing MAIN's row when the spool does not take the inventory.
+- **MAIN's release, exactly** (plan §12, "an `update` signal carrying `{version}`"). `NodeActions::update`
+  used to send `{action: update}` alone, and a load balancer then installed GitHub's newest release,
+  which could be newer than MAIN's. The command now names MAIN's version (`XC_VM_VERSION`), and the node
+  installs that release's `loadbalancer.tar.gz` exactly (`getVersionFile`, as a rollback does). A node
+  already at that release or past it changes nothing; going back is a rollback's job. Only an `x.y.z`
+  version is passed to the updater (`UpdateCommand::pinned`). An older node ignores the version and
+  updates to the newest, as before. MAIN's own update still takes GitHub's newest.
 - **`status`.** Its database check already stepped aside in mode 2, but its next read,
   `getServers()`, was a `SELECT * FROM servers` on MAIN's database. In mode 2 it now takes the
   replica's servers (`ServerRepository::getAll`), which is all its node work needs (its own
@@ -4568,6 +4575,127 @@ hardware, and never ran `status`'s own work.
   `testTheServersMinuteSendsItsInventoryWithoutMainsDatabase`;
   `testStatusReadsTheServersFromTheReplica`. Each of the last two failed on the code before, with
   the refusal.
+
+### Routing stops before a licence fence
+
+The plan's first step when the licence is revoked (§4, "Licence revocation stops token generation") is
+that MAIN stops routing new viewers to a node whose token expires within 10 minutes. Nothing did: the
+Cluster Nodes page showed each node's fence window, and viewers kept landing on a node until it fenced
+and sent them the not-on-air video.
+
+- **The state.** MAIN's liveness loop (`LivenessService::tick`, every second) publishes `suspended`
+  for an active node while MAIN holds no licence and the node's `token_exp` is less than
+  `LICENCE_CUTOFF_SEC` (600) away. No token will follow the one it holds.
+- **Routing.** `ServerRepository::getAll` treats `suspended` as it treats `offline`
+  (`ClusterHealth::NO_ROUTING`). The node keeps serving the viewers it has until its own fence and
+  drain. The HLS orphan purge still counts it as alive.
+- **Back.** Once MAIN renews the node's token, or holds a licence again, the next pass publishes
+  the node as judged, without the usual recovery wait (`NodeHealth::settle` does not rank
+  `suspended`). An offline node stays offline.
+- **The licence state** is the extension's `info()['licensed']`, read at most every 30 s
+  (`LICENCE_CHECK_MS`). Without an extension to ask, nothing is suspended.
+
+**Not built / limits.**
+- **Up to 30 s late.** A licence lost less than 30 s ago is not seen yet.
+- **One cutoff for both modes.** The hard mode fences sooner (about 12 min) through its own
+  `node.fence`, so the cutoff there mostly adds the page badge.
+
+**Tests.** `ClusterLivenessTest::testANodeWhoseTokenEndsSoonWithoutALicenceIsRoutedNothing` covers:
+- licensed, nothing suspended;
+- unlicensed, only the node whose token ends soon is suspended, and routing reads the state;
+- a renewed token brings the node back at once;
+- an offline node stays offline;
+- without an extension to ask, nothing is suspended.
+
+### A new licence key rotates the fleet's tokens
+
+The plan (§4, "Licence change") has another valid key push `token.rotate_now`. The key is part of the
+token chain's base (`B`, and so `CK_B`, in `xcvm_core`'s `cluster/binding.rs`). An epoch minted
+under the old key keeps its stored `B` and runs to its `exp`, so nothing breaks. Without a push,
+though, each node moves to the new key's chain only at its next scheduled refresh, up to
+`lb_token_rotation_min` later.
+
+- **The trigger.** `save_activation_key`, once the extension accepts the key
+  (`LicenseGate::licensed()`), compares it with the key it replaced. If they differ, it calls
+  `ClusterOverview::rotateAll`, the same as *Rotate all tokens now*: every active node that takes
+  commands gets `token.rotate_now`, deduplicated and audited per node (`node.token_rotate`). The
+  key's own audit line (`cluster.licence_key`) records how many were queued (`rotated`).
+- **The same key saved again** rotates nothing.
+
+**Not built / limits.**
+- **No event.** The plan names an `ActivationKeyChangedEvent`. The dashboard's save is the only
+  writer of the key, so the action calls `rotateAll` directly. An event is worth adding when a second
+  writer appears.
+- **A key written by hand** (`config/activation_key` edited on disk) rotates nothing. Its nodes move
+  at their next refresh, as before.
+- **A rejected key** rotates nothing: without a licence there is no new `B` to rotate to.
+
+**Tests.** `ClusterOverviewTest::testANewLicenceKeyRotatesEveryToken` (the action, from its source;
+it ends the request) beside `testRotateAllQueuesForEveryActiveNodeThatTakesCommands` (`rotateAll` itself).
+
+### A P0 sequence that goes backwards quarantines the node
+
+The plan names three kinds of authenticated evidence that quarantine a node (§4, "Quarantine"). Two
+were built: a `hello` from another `instance_id`, and a re-key whose attestation names another
+instance. The third, "a backwards P0 sequence", was not. `EventIngest` took any P0 batch at or
+below the cursor as a repeat and applied none of it. So a second install sending as the node, for
+example a snapshot of it with the same `instance_id`, had its events dropped without a trace.
+
+- **What an agent sends.** It numbers P0 from the cursor `hello` gave it, and advances the number
+  itself. It resends only the batch in flight (`<lane>.inflight`), whole, with the same events,
+  until MAIN answers; after `USEQ_GAP` it renumbers forward. So below the cursor an honest agent
+  sends one thing: an exact copy of a batch MAIN applied, when the reply was lost or a copy arrived
+  late.
+- **The record.** Each P0 batch MAIN goes on to apply leaves a fingerprint in the lane's lock
+  file (`tmp/cluster_ingest/<server>_p0.lock`, held while the batch is applied): its first number,
+  its count and the SHA-256 of its events. The newest stays however old, since the agent resends it
+  for as long as it goes unanswered. The others are dropped 180 s later (`COPY_KEEP_MS`), because a
+  copy signed before the agent moved on is refused past the 90 s request window. The fingerprint is
+  written before the batch commits, so a copy that races the commit is still recognised.
+- **Backwards.** A P0 batch that starts at or below the cursor and matches no fingerprint is not
+  applied. That covers other events under an applied number, part of a batch, and a batch that
+  overlaps the cursor. `events` then quarantines the node as `hello` does: state `quarantined`,
+  reason `P0 sequence went backwards`, the audit line `node.quarantine` (`p0 backwards`, the first
+  number, the count, the cursor), `config.changed` to the peers, and `409 NOT_ACTIVE`. The admin
+  picks *Trust again* or *Revoke*.
+- **No record, no quarantine.** Where the lane has no fingerprint (`tmp/` emptied by a reboot, a
+  lock file that could not be opened or written), a batch at or below the cursor is a repeat, as
+  before.
+
+**Not built / limits.**
+- **The genuine node is quarantined too.** MAIN cannot tell which of the two installs is the
+  original. The admin decides, as for the other two kinds of evidence.
+- **P1 is not checked.** Its numbers are a high-water mark, and gaps are allowed there.
+- **After a reboot of MAIN**, the check starts again with the first batch applied.
+- **The overlap was a `USEQ_GAP`.** A batch that overlapped the cursor used to be told the number
+  MAIN expected, and it was then renumbered and applied. No agent sends one, so it now counts as
+  backwards.
+
+**Tests.**
+- `ClusterEventsTest::testAP0BatchThatGoesBackIsNoRepeat`: other events under the same numbers,
+  part of a batch, an overlap, a late copy, the newest however old, the 180 s bound, and no record.
+- `ClusterApiTest::testAP0BatchThatGoesBackQuarantines`: through the `events` op, with its
+  audit and the peers' `config.changed`.
+- `ConnectionIngestIdempotencyTest`: its tail and overlap cases are now backwards.
+
+### Members nothing used
+
+An audit of the cluster code for unused members found six in the panel and four in the agent, and
+removed them:
+- **Panel:** `ClusterDiagnosis::LEASE_MAX_SEC` (the extension enforces the 26 h itself),
+  `ReplicaApply::CACHES`, `DenialFactory::REASONS`, and `ReplicaBuilder::SECTION_SETTINGS` and
+  `SECTION_SECRETS`. None had a reference.
+- **`ClusterRoute::policyUpdate()`:** only its tests called it. The policy is announced by the
+  heartbeat's `policy_ver` (see *Announced, not pushed*). The `policy.update` type stays in the
+  registry, and the agent still takes it.
+- **Agent:** `clustercrypto.WithinWindow` had no caller. `Agent.recheckReplica`, `Agent.sendTouches`
+  and `ticketStore.drop` were wrappers that only tests still called, after the code moved to
+  `recheckLocked`, `sendTouchBatch` and `setStreams`.
+
+**Not built / limits.** Members that only tests use stay, where a test needs them (`ticketStore.held`).
+The agent's vector-parity functions (`ValidNode`, `VerifyRelayAuth`, `JoinSigned`) stay: the
+cross-language vectors pin them. `SessionKeys`' key id stays too, since it is part of the
+extension's session record.
 
 ### Disaster recovery of MAIN's cluster keys
 

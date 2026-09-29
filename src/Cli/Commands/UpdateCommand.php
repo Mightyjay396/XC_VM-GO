@@ -85,7 +85,16 @@ class UpdateCommand implements CommandInterface {
 				echo "Checking for updates (server={$rServerType}, version=" . XC_VM_VERSION . ")...\n";
 				UpdateLogger::info('Update started; server=' . $rServerType . ', current version=' . XC_VM_VERSION);
 
-				$rLatest = $gitRelease->getLatestVersion(
+				// A load balancer MAIN names a release for installs exactly that
+				// one (NodeActions::update), so it runs MAIN's, never one newer.
+				$rPinned = $rIsMain ? null : self::pinned($rArgs[1] ?? null);
+				if ($rPinned !== null && version_compare($rPinned, XC_VM_VERSION, '<=')) {
+					echo "Already at MAIN's release {$rPinned} or newer (" . XC_VM_VERSION . ").\n";
+					UpdateLogger::info('Already at MAIN\'s release ' . $rPinned . ' or newer, no action needed');
+					return 0;
+				}
+
+				$rLatest = $rPinned ?? $gitRelease->getLatestVersion(
 					$rIsMain ? XC_VM_VERSION : ServerRepository::getAll()[SERVER_ID]['xc_vm_version']
 				);
 
@@ -95,11 +104,13 @@ class UpdateCommand implements CommandInterface {
 					return 0;
 				}
 
-				echo "New version available: {$rLatest}\n";
-				UpdateLogger::info('New version found: ' . $rLatest);
+				echo ($rPinned === null ? 'New version available: ' : 'MAIN\'s release: ') . $rLatest . "\n";
+				UpdateLogger::info(($rPinned === null ? 'New version found: ' : 'Updating to MAIN\'s release: ') . $rLatest);
 
 				if ($rIsMain) {
 					$UpdateData = $gitRelease->getUpdateFile("main", XC_VM_VERSION);
+				} elseif ($rPinned !== null) {
+					$UpdateData = $gitRelease->getVersionFile('lb_update', $rPinned);
 				} else {
 					$UpdateData = $gitRelease->getUpdateFile("lb_update", ServerRepository::getAll()[SERVER_ID]['xc_vm_version']);
 				}
@@ -372,6 +383,12 @@ class UpdateCommand implements CommandInterface {
 		}
 
 		return 0;
+	}
+
+	/** A release version (x.y.z) as an update names it, or null for none or anything else. */
+	public static function pinned(mixed $rVersion): ?string {
+		$rVersion = is_string($rVersion) ? trim($rVersion) : '';
+		return preg_match('/^\d+\.\d+\.\d+$/', $rVersion) ? $rVersion : null;
 	}
 
 	private function downloadFile($url, $targetPath): bool {

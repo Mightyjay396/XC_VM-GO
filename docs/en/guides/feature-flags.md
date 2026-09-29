@@ -56,7 +56,7 @@ Loaded from settings cache and used in runtime decision points.
 | --- | --- | --- |
 | `debug_show_errors` | `bool` | show detailed errors/debug output |
 | `recaptcha_enable` | `bool` | enable reCAPTCHA v2 on login |
-| `verify_host` | `bool` | enforce host allowlist validation |
+| `verify_host` | `bool` | enforce host allowlist validation (default on): a request's host name must be a server's `domain_name` or IP, or an active reseller's `reseller_dns`; an IP address always passes, so an admin locked out by a host name can still sign in by IP and switch it off |
 | `save_login_logs` | `bool` | persist login attempts in `login_logs` |
 | `fanout_enabled` | `bool` | master switch for the xc_fanout daemon (default on); off stops it on every node and live delivery uses the pre-fanout paths (see streaming-subsystem, "Switching fanout off") |
 | `fanout_supervise` | `bool` | hand live streams to the xc_fanout supervisor instead of a PHP monitor (default on) |

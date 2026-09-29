@@ -125,8 +125,6 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 final class ReplicaApply {
 	use DirSeam;
 
-	public const CACHES = ['blocked_ips', 'blocked_servers', 'blocked_ua', 'blocked_isp', 'rtmp_ips'];
-
 	/** The crontab section's cache: the jobs the node's crontab runs. */
 	public const CRON_CACHE = 'cron_jobs';
 

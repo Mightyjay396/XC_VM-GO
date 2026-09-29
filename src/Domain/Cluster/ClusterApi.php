@@ -853,6 +853,8 @@ final class ClusterApi {
 	/**
 	 * `events`: a batch from one lane, applied in order (EventIngest). A P0 gap
 	 * is refused with the number MAIN expects, and the node resends from there.
+	 * A P0 batch that goes back past the cursor, and is no copy of one
+	 * applied, quarantines the node.
 	 * P2 has no number: `first_useq` is not read, and the reply's `useq` is 0.
 	 */
 	private static function events(ClusterCrypto $rCrypto, array $rNode, SessionKeys $rKeys, string $rCtx, array $rH, array $rP): array {
@@ -867,8 +869,17 @@ final class ClusterApi {
 		} catch (\Throwable) {
 			return self::dbDown($rCrypto, $rH);
 		}
+		if (!empty($rOut['backwards'])) {
+			// Authenticated evidence of a clone, as in hello: another install
+			// numbering P0 from where this node was. The admin decides.
+			NodeRegistry::update((int) $rNode['server_id'], ['state' => 'quarantined', 'quarantine_reason' => 'P0 sequence went backwards']);
+			ClusterAudit::log('node.quarantine', (int) $rNode['server_id'], ['reason' => 'p0 backwards', 'first_useq' => $rFirst, 'count' => count($rEvents), 'cursor' => $rOut['useq']], 'node');
+			// No longer active in the node list: its peers stop trusting it at once.
+			ReplicaBuilder::nodesChanged($rCrypto, (int) $rNode['server_id']);
+			return self::notActive($rCrypto, $rH, 'quarantined');
+		}
 		if (!$rOut['ok']) {
-			return self::deny($rCrypto, $rH, 409, 'USEQ_GAP', ['expected_useq' => $rOut['expected_useq']]);
+			return self::deny($rCrypto, $rH, 409, 'USEQ_GAP', ['expected_useq' => $rOut['expected_useq'] ?? $rOut['useq'] + 1]);
 		}
 		return self::ok($rKeys, $rCtx, $rOut);
 	}
