@@ -116,6 +116,15 @@ final class AdminScopeBootstrap implements ScopeBootstrap {
 		if (isset($_SESSION['hash'])) {
 			$rUserInfo = UserRepository::getRegisteredUserById($_SESSION['hash']);
 
+			// The session outlived its user (e.g. the users table was replaced by a migration).
+			if (!$rUserInfo) {
+				SessionManager::clearContext('admin');
+				if (!headers_sent()) {
+					header('Location: index');
+				}
+				exit();
+			}
+
 			$__tz = trim($rUserInfo['timezone'] ?? '', '" ');
 			if ($__tz !== '' && in_array($__tz, timezone_identifiers_list())) {
 				date_default_timezone_set($__tz);

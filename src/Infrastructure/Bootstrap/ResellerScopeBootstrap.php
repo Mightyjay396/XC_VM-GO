@@ -93,6 +93,13 @@ final class ResellerScopeBootstrap implements ScopeBootstrap {
 		if (isset($_SESSION['reseller'])) {
 			$rUserInfo = UserRepository::getRegisteredUserById($_SESSION['reseller']);
 
+			// The session outlived its user (e.g. the users table was replaced by a migration).
+			if (!$rUserInfo) {
+				SessionManager::clearContext('reseller');
+				header('Location: ./index');
+				exit();
+			}
+
 			if ((string) ($rUserInfo['timezone'] ?? '') !== '') {
 				date_default_timezone_set($rUserInfo['timezone']);
 			}

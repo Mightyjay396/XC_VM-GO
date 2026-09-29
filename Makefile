@@ -567,25 +567,29 @@ LANG_TRANSLATE ?= all
 
 .PHONY: docs-venv docs-translate docs-build docs-serve lang-translate
 
-# The venv's mkdocs binary doubles as the install stamp (built once). Installs
+# Install stamp keyed on the system python3 minor version and the requirement
+# files: a distro python upgrade (the venv symlinks /usr/bin/python3 and loses its
+# site-packages) or a new requirement rebuilds the venv from scratch. Installs
 # both the build toolchain and the (local-only) translation deps.
-$(DOCS_VENV)/bin/mkdocs:
-	@python3 -m venv $(DOCS_VENV)
+DOCS_STAMP := $(DOCS_VENV)/.installed-py$(shell python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
+$(DOCS_STAMP): docs/requirements.txt tools/i18n/requirements.txt
+	@python3 -m venv --clear $(DOCS_VENV)
 	@$(DOCS_VENV)/bin/pip install -q --upgrade pip
 	@$(DOCS_VENV)/bin/pip install -q -r docs/requirements.txt -r tools/i18n/requirements.txt
+	@touch $@
 
-docs-venv: $(DOCS_VENV)/bin/mkdocs
+docs-venv: $(DOCS_STAMP)
 
 # Release-time step: regenerate the committed docs/ru from docs/en. Commit the
 # result with the release. NOT part of docs-build (CI builds the committed tree).
-docs-translate: $(DOCS_VENV)/bin/mkdocs
+docs-translate: $(DOCS_STAMP)
 	@DOCS_TRANSLATE_PROVIDER=$(DOCS_TRANSLATE_PROVIDER) $(DOCS_PY) -u tools/i18n/translate.py --lang ru
 
-lang-translate: $(DOCS_VENV)/bin/mkdocs
+lang-translate: $(DOCS_STAMP)
 	@DOCS_TRANSLATE_PROVIDER=$(DOCS_TRANSLATE_PROVIDER) $(DOCS_PY) -u tools/i18n/translate.py --ini --lang $(LANG_TRANSLATE)
 
-docs-build: $(DOCS_VENV)/bin/mkdocs
+docs-build: $(DOCS_STAMP)
 	@$(DOCS_PY) -m mkdocs build --strict
 
-docs-serve: $(DOCS_VENV)/bin/mkdocs
+docs-serve: $(DOCS_STAMP)
 	@$(DOCS_PY) -m mkdocs serve
