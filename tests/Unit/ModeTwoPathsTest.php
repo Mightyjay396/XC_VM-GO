@@ -525,8 +525,13 @@ final class ModeTwoPathsTest extends TestCase {
 		// reboot's survives it; the flush logs once it flushed.
 		$this->assertSame([['reboot', 1], ['systemctl stop xc_vm', 2], ['systemctl start xc_vm', 2], ['systemctl stop xc_vm', 3], ['iptables -F', 3]], array_values(array_filter($this->sudoSpooled(), static fn(array $rCall): bool => (bool) preg_match('/^(reboot|systemctl|iptables -F)/', $rCall[0]))));
 		// An update and a rollback start the updater: it reports its status
-		// through the agent now (NodeStateSink::status), not MAIN's row.
-		$this->assertSame(['console.php update update 9.9.9', 'console.php update rollback 2.0.0'], array_values(array_map(static fn(string $rLine): string => (string) preg_replace('/^.*(console\.php update .*?)( 2>&1.*)?$/', '$1', $rLine), preg_grep('/console\.php update/', $this->commands()))));
+		// through the agent now (NodeStateSink::status), not MAIN's row. It is
+		// started detached (ProcessRunner::start), so its stand-in may still be
+		// writing, in either order.
+		for ($rTry = 0; $rTry < 50 && count(preg_grep('/console\.php update/', $this->commands())) < 2; $rTry++) {
+			usleep(100000);
+		}
+		$this->assertEqualsCanonicalizing(['console.php update update 9.9.9', 'console.php update rollback 2.0.0'], array_values(array_map(static fn(string $rLine): string => (string) preg_replace('/^.*(console\.php update .*)$/', '$1', $rLine), preg_grep('/console\.php update/', $this->commands()))));
 		// Each logged through the spool, in order, as root on this node.
 		$rRows = array_map(static fn(array $rEvent): array => $rEvent['d']['rows'][0], $this->spooled('p1'));
 		$this->assertSame(['log.syslog'], array_values(array_unique(array_column($this->spooled('p1'), 'type'))));
