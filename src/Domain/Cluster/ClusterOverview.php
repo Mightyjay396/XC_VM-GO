@@ -5,6 +5,7 @@ namespace XcVm\Domain\Cluster;
 use XcVm\Core\Cluster\ClusterDiagnosis;
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\ClusterSettings;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -84,6 +85,52 @@ final class ClusterOverview {
 		$rOwners = array_values(array_unique(array_merge($rOwners, MainDataPlane::digestN1() ?? [])));
 		sort($rOwners);
 		return ['owners' => $rOwners, 'silent' => $rSilent];
+	}
+
+	/**
+	 * A node's clock badge (plan, section 4, "Clock"): none within
+	 * ClusterDiagnosis::SKEW_WARN_MS, a warning past it, "degraded (clock)"
+	 * past SKEW_DEGRADED_MS. It never fences.
+	 *
+	 * @param mixed $rOffsetMs `cluster_nodes.clock_offset_ms` (node − MAIN)
+	 * @return array{tone: string, key: string, vars: array<string, string>}|null
+	 */
+	public static function clockBadge(mixed $rOffsetMs): ?array {
+		$rOffset = is_numeric($rOffsetMs) ? (int) $rOffsetMs : 0;
+		if (abs($rOffset) <= ClusterDiagnosis::SKEW_WARN_MS) {
+			return null;
+		}
+		$rDegraded = abs($rOffset) > ClusterDiagnosis::SKEW_DEGRADED_MS;
+		return ['tone' => $rDegraded ? 'danger' : 'warning', 'key' => $rDegraded ? 'cluster_clock_degraded' : 'cluster_clock_off', 'vars' => ['{OFFSET}' => sprintf('%+ds', (int) round($rOffset / 1000))]];
+	}
+
+	/**
+	 * Does the extension still sign granting records (tokens, leases)? What a
+	 * node's challenge reports as `licence_ok`, read as the liveness loop reads
+	 * it (LivenessService::licensed()). True when $rOn is false (the API is off
+	 * or has no extension), or when it cannot tell: no banner rather than a
+	 * false alarm.
+	 */
+	public static function licensed(bool $rOn): bool {
+		return !$rOn || LivenessService::licensed(ClusterClock::nowMs()) !== false;
+	}
+
+	/**
+	 * banners() for the dashboard (plan, section 11, "Dashboard banner"), from
+	 * the two columns they read, so the dashboard pays for no node walk.
+	 * Nothing while the cluster API is off, or before its table exists.
+	 *
+	 * @param array<string, mixed> $rMain MAIN's `servers` row.
+	 * @param array<string, mixed> $rSettings
+	 * @return list<array{type: string, key: string, vars: array<string, string>}>
+	 */
+	public static function dashboardBanners(array $rMain, array $rSettings, int $rNow): array {
+		$rOn = !empty($rSettings['cluster_api_enabled']) && ClusterCryptoFactory::available();
+		if (!$rOn || !self::db()->query('SELECT `state`, `token_exp` FROM `cluster_nodes`;')) {
+			return [];
+		}
+		$rNodes = self::db()->get_rows() ?: [];
+		return self::banners(self::licensed($rOn), $rMain, $rSettings, $rNodes, $rNow);
 	}
 
 	/**

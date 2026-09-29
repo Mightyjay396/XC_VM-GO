@@ -10,6 +10,7 @@
 
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Util\LayoutRenderer;
+use XcVm\Domain\Cluster\ClusterOverview;
 
 $rBadge = static fn(string $rState): string => match ($rState) {
 	'ok', 'active' => 'success',
@@ -200,7 +201,12 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                             <?php $rDepth = (int) ($clusterMetrics['commands']['per_node'][(int) $rNode['server_id']] ?? 0); ?>
                             <span class="badge bg-label-<?= $rDepth > 0 ? 'warning' : 'secondary'; ?>"><?= $rDepth; ?></span>
                         </td>
-                        <td><?= $rWhen($rNode['last_seen_at'] === null ? null : intdiv((int) $rNode['last_seen_at'], 1000)); ?></td>
+                        <td>
+                            <?= $rWhen($rNode['last_seen_at'] === null ? null : intdiv((int) $rNode['last_seen_at'], 1000)); ?>
+                            <?php if (($rClock = ClusterOverview::clockBadge($rNode['clock_offset_ms'] ?? null)) !== null): ?>
+                                <span class="badge bg-label-<?= $rClock['tone']; ?>" title="<?= htmlspecialchars($language::get('cluster_clock_help'), ENT_QUOTES); ?>"><?= htmlspecialchars($language::get($rClock['key'], $rClock['vars']), ENT_QUOTES); ?></span>
+                            <?php endif; ?>
+                        </td>
                         <td>
                             <?= htmlspecialchars((string) ($rNode['agent_version'] ?? '—'), ENT_QUOTES); ?>
                             <?php if (!empty($rNode['arch'])): ?>

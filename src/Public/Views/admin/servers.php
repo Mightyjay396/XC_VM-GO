@@ -12,6 +12,7 @@
 use XcVm\Core\Auth\Authorization;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Util\LayoutRenderer;
+use XcVm\Domain\Cluster\ClusterOverview;
 use XcVm\Domain\Stream\ConnectionTracker;
 
 $rCanEdit = Authorization::check('adv', 'edit_server');
@@ -154,6 +155,9 @@ $rBar = static function (int $pct): string {
                                     <?= htmlspecialchars($rHealth !== '' ? $rHealth : (string) $rNode['state'], ENT_QUOTES); ?> ·
                                     <?= htmlspecialchars($language::get('cluster_mode'), ENT_QUOTES); ?> <?= (int) $rNode['mode']; ?>
                                 </a>
+                                <?php if (($rClock = ClusterOverview::clockBadge($rNode['clock_offset_ms'] ?? null)) !== null): ?>
+                                    <span class="badge bg-label-<?= $rClock['tone']; ?>" title="<?= htmlspecialchars($language::get('cluster_clock_help'), ENT_QUOTES); ?>"><?= htmlspecialchars($language::get($rClock['key'], $rClock['vars']), ENT_QUOTES); ?></span>
+                                <?php endif; ?>
                             <?php endif; ?>
                             <?php if (!empty($rServer['domain_name'])): ?>
                                 <br><small class="text-body-secondary"><?= htmlspecialchars(explode(',', (string) $rServer['domain_name'])[0], ENT_QUOTES); ?></small>

@@ -4711,6 +4711,48 @@ deadline, the rest after), the rows retention keeps, the missing indexes by lead
 `ALTER`'s exact text, and no answer from `SHOW INDEX`. Run once by hand on MariaDB 11.4: the prune took 25,003 rows, both
 indexes were built in place, and `EXPLAIN` shows the prune and `getWatchdog` using them.
 
+### A node's own clock, its badge, and the dashboard banner
+
+Plan §4 ("Clock") shows a node whose clock is off MAIN's: a warning past 30 s, "degraded (clock)"
+past 300 s, never a fence. Plan §11 puts the Cluster Nodes page's warnings on the dashboard too.
+Neither was built, and the offset they read was wrong.
+
+**The bug.** `HeartbeatService::record()` took `cluster_nodes.clock_offset_ms` as the heartbeat's
+`X-XCVM-Ts` minus MAIN's clock. Since its first version the agent stamps every request with
+`MainNowMs()` (local time plus the offset it learned from MAIN's last authenticated reply), so after
+its first reply the offset read about 0 on every node, whatever its clock. An inventory copies that
+offset into `servers.time_offset` (*Node state and inventory*, Phase 5), which the node's PHP subtracts from `time()`
+to judge token expiry and admission. So a node whose clock was off judged both on its own wrong
+clock. `server:diagnose` showed about 0 as well.
+
+1. **The field.** Every heartbeat payload (the JSON inside the BOX) carries
+   `"local_ms": <int>`, the node's own wall clock in unix milliseconds when it built the payload
+   (`Agent.Heartbeat`, the xc_vm_fanout release after 0.14.0).
+2. **MAIN.** `clock_offset_ms` is `local_ms` minus MAIN's clock when it handles the heartbeat,
+   clamped to a signed 32-bit int, as before. A payload without an integer `local_ms` (an older
+   agent) keeps the stamp, so it reads about 0 as it did. The offset includes the one-way latency,
+   as the legacy cron's measure against the database clock did.
+3. **The badge.** `ClusterOverview::clockBadge()` puts `clock ±Ns` (warning) past
+   `ClusterDiagnosis::SKEW_WARN_MS` (30 s) and `degraded (clock) ±Ns` (danger) past
+   `SKEW_DEGRADED_MS` (300 s) beside the node on the Cluster Nodes page and on the Servers list.
+   Neither changes the node's state, its routing or its fence.
+4. **The dashboard banner.** `ClusterOverview::dashboardBanners()` gives the dashboard the page's
+   own `banners()` (licence and certificate), read from `cluster_nodes.state` and `token_exp`
+   alone, so the dashboard walks no node. Nothing while the cluster API is off or has no extension.
+   Whether MAIN is licensed is read as the liveness loop reads it (`LivenessService::licensed()`,
+   cached for `LICENCE_CHECK_MS`); `ClusterNodesController` asks the same function now.
+
+**Not built / limits.**
+- **The other badges.** P0/P1 lag, divergence and "MAIN URL unreachable" on the Servers list, and
+  the Settings Info-tab block, are still missing.
+- **An older agent** keeps reporting about 0 until it is updated.
+
+**Tests.** PHP: `ClusterApiTest` (a heartbeat with `local_ms` ten minutes ahead records 600000; an
+older one keeps the stamp's offset), `ClusterOverviewTest` (the badge's thresholds and a
+non-numeric offset; the dashboard's banners against the page's, licensed, the API off, no
+extension). Go: `TestAHeartbeatCarriesTheNodesOwnClock` (the payload carries the node's clock and
+the request is still stamped with MAIN's).
+
 ### Members nothing used
 
 An audit of the cluster code for unused members found six in the panel and four in the agent, and
