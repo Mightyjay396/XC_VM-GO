@@ -4576,6 +4576,37 @@ hardware, and never ran `status`'s own work.
   `testStatusReadsTheServersFromTheReplica`. Each of the last two failed on the code before, with
   the refusal.
 
+### Routing stops before a licence fence
+
+The plan's first step when the licence is revoked (§4, "Licence revocation stops token generation") is
+that MAIN stops routing new viewers to a node whose token expires within 10 minutes. Nothing did: the
+Cluster Nodes page showed each node's fence window, and viewers kept landing on a node until it fenced
+and sent them the not-on-air video.
+
+- **The state.** MAIN's liveness loop (`LivenessService::tick`, every second) publishes `suspended`
+  for an active node while MAIN holds no licence and the node's `token_exp` is less than
+  `LICENCE_CUTOFF_SEC` (600) away. No token will follow the one it holds.
+- **Routing.** `ServerRepository::getAll` treats `suspended` as it treats `offline`
+  (`ClusterHealth::NO_ROUTING`). The node keeps serving the viewers it has until its own fence and
+  drain. The HLS orphan purge still counts it as alive.
+- **Back.** Once MAIN renews the node's token, or holds a licence again, the next pass publishes
+  the node as judged, without the usual recovery wait (`NodeHealth::settle` does not rank
+  `suspended`). An offline node stays offline.
+- **The licence state** is the extension's `info()['licensed']`, read at most every 30 s
+  (`LICENCE_CHECK_MS`). Without an extension to ask, nothing is suspended.
+
+**Not built / limits.**
+- **Up to 30 s late.** A licence lost less than 30 s ago is not seen yet.
+- **One cutoff for both modes.** The hard mode fences sooner (about 12 min) through its own
+  `node.fence`, so the cutoff there mostly adds the page badge.
+
+**Tests.** `ClusterLivenessTest::testANodeWhoseTokenEndsSoonWithoutALicenceIsRoutedNothing` covers:
+- licensed, nothing suspended;
+- unlicensed, only the node whose token ends soon is suspended, and routing reads the state;
+- a renewed token brings the node back at once;
+- an offline node stays offline;
+- without an extension to ask, nothing is suspended.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

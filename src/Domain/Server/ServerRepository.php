@@ -94,7 +94,7 @@ class ServerRepository {
 			// liveness loop instead (offline after 30 s of silence, not 90 s).
 			$rRow['cluster_health'] = ClusterHealth::state(intval($rRow['id']));
 			if ($rRow['cluster_health'] !== null && SERVER_ID != $rRow['id']) {
-				$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && $rRow['cluster_health'] !== 'offline';
+				$rRow['server_online'] = $rRow['enabled'] && in_array($rRow['status'], $rOnlineStatus) && !in_array($rRow['cluster_health'], ClusterHealth::NO_ROUTING, true);
 			}
 			if (!isset($rRow['order'])) {
 				$rRow['order'] = 0;

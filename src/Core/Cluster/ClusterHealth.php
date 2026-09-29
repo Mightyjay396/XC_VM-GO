@@ -10,6 +10,9 @@ use XcVm\Core\Util\AtomicFile;
  * Domain\Cluster\LivenessService). Routing reads it:
  *
  * - `offline` — no new viewers are routed to the node;
+ * - `suspended` — alive, but MAIN holds no licence and the node's token ends
+ *   within LivenessService::LICENCE_CUTOFF_SEC: no new viewers either, so
+ *   none lands on a node about to fence (plan section 4);
  * - `suspect` — its capacity weight is doubled, so it gets fewer;
  * - `ok` — it is online whatever its legacy last_check_ago says.
  *
@@ -37,7 +40,10 @@ final class ClusterHealth {
 
 	private static ?string $rPath = null;
 
-	/** @return 'ok'|'suspect'|'offline'|null null when the node is not judged by the loop. */
+	/** The states that route a node no new viewer. */
+	public const NO_ROUTING = ['offline', 'suspended'];
+
+	/** @return 'ok'|'suspect'|'offline'|'suspended'|null null when the node is not judged by the loop. */
 	public static function state(int $rServerID): ?string {
 		return self::read()['states'][$rServerID] ?? null;
 	}
@@ -62,7 +68,7 @@ final class ClusterHealth {
 			$rDoc = json_decode((string) @file_get_contents(self::path()), true);
 			$rStates = [];
 			foreach ((is_array($rDoc['states'] ?? null) ? $rDoc['states'] : []) as $rID => $rState) {
-				if (in_array($rState, ['ok', 'suspect', 'offline'], true)) {
+				if (in_array($rState, ['ok', 'suspect', 'offline', 'suspended'], true)) {
 					$rStates[(int) $rID] = $rState;
 				}
 			}

@@ -14,7 +14,7 @@ use XcVm\Core\Util\LayoutRenderer;
 $rBadge = static fn(string $rState): string => match ($rState) {
 	'ok', 'active' => 'success',
 	'suspect', 'enrolling' => 'warning',
-	'offline', 'revoked', 'quarantined' => 'danger',
+	'offline', 'suspended', 'revoked', 'quarantined' => 'danger',
 	default => 'secondary',
 };
 $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' UTC' : '—';
