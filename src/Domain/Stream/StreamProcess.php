@@ -4,6 +4,7 @@ namespace XcVm\Domain\Stream;
 
 use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\ReplicaStreamCache;
 use XcVm\Core\Cluster\SignalDispatcher;
@@ -148,6 +149,9 @@ class StreamProcess {
 	/** startMonitor(): a PHP watchdog (`console.php monitor`) was started for it. */
 	public const MONITOR_PHP = 'php';
 
+	/** startMonitor(): nothing was started, the node is fenced past its drain (NodeLease). */
+	public const MONITOR_FENCED = 'fenced';
+
 	/**
 	 * Start watching a live stream: hand it to the fanout daemon's supervisor
 	 * when this server supervises (see superviseStream()), otherwise start the
@@ -155,9 +159,15 @@ class StreamProcess {
 	 *
 	 * @param int $rStreamID Stream id.
 	 * @param int $rRestart  Truthy to restart what is running rather than take it as it is.
-	 * @return string MONITOR_FANOUT or MONITOR_PHP — which one now watches it.
+	 * @return string MONITOR_FANOUT or MONITOR_PHP — which one now watches it —
+	 *                or MONITOR_FENCED when nothing may start here.
 	 */
 	public static function startMonitor(int $rStreamID, int $rRestart = 0) {
+		// A node fenced past its drain releases its producers (plan, section 9,
+		// FENCED; cron:streams) and starts none, whoever asks, until it lifts.
+		if (NodeLease::refusesEverything()) {
+			return self::MONITOR_FENCED;
+		}
 		if (self::superviseStream(intval($rStreamID), (bool) $rRestart)) {
 			return self::MONITOR_FANOUT;
 		}

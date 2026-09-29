@@ -744,6 +744,45 @@ final class ModeTwoPathsTest extends TestCase {
 	}
 
 	/**
+	 * A node fenced past its drain releases its producers (plan, section 9,
+	 * FENCED): cron:streams kills a running stream's producer, starts nothing,
+	 * and keeps the stream's record as it was, so the first pass after the
+	 * fence lifts starts it again. No connect.
+	 */
+	public function testAFencedNodeReleasesItsProducersAndKeepsTheirRecords(): void {
+		$this->streams();
+		$this->node(['redis_handler' => '0', 'kill_rogue_ffmpeg' => '0', 'lb_lease_fence' => '1', 'lb_fence_drain_min' => '0']);
+		// The producer: a process whose command line names the stream's playlist.
+		$rProducer = proc_open(['php', '-r', 'sleep(60);', $this->rHome . 'content/streams/7_.m3u8'], [], $rPipes);
+		$rPid = (int) proc_get_status($rProducer)['pid'];
+		try {
+			file_put_contents($this->rHome . 'content/streams/7_.pid', (string) $rPid);
+			$this->runtime([7 => ['pid' => $rPid, 'monitor_pid' => null, 'stream_status' => 0, 'stream_started' => time() - 60]]);
+			// The agent's lease, past its exp and its drain (0 min) on MAIN's clock.
+			$rNowMs = (int) round(microtime(true) * 1000);
+			file_put_contents($this->rHome . 'config/cluster/lease_state.json', (string) json_encode(['exp' => intdiv($rNowMs, 1000) - 60, 'iat' => intdiv($rNowMs, 1000) - 3600, 'gen' => 1, 'server_id' => 5, 'anchor_ms' => $rNowMs, 'wrote_at_ms' => $rNowMs]));
+			mkdir($this->rHome . 'stub_ps');
+			file_put_contents($this->rHome . 'stub_ps/ps', "#!/bin/sh\necho 'root 1 0.0 grep XC_VM'\n");
+			chmod($this->rHome . 'stub_ps/ps', 0755);
+
+			[, $rOut, $rResult] = $this->child(['streams'], null, ['PATH' => $this->rHome . 'stub_ps:' . $this->rHome . 'stub:' . getenv('PATH')]);
+			$this->assertIsArray($rResult, $rOut);
+			$this->assertArrayNotHasKey('error', $rResult, $rOut);
+			$this->assertNoConnect();
+			$this->assertStringContainsString('Fenced: releasing the producer', $rResult['output']);
+			$this->assertStringNotContainsString('Start monitor', $rResult['output']);
+			for ($i = 0; $i < 50 && proc_get_status($rProducer)['running']; $i++) {
+				usleep(20000);
+			}
+			$this->assertFalse(proc_get_status($rProducer)['running'], 'the producer is released');
+			$this->assertSame($rPid, $this->kept(7)['pid'], 'the record stays as it was, for the restart');
+		} finally {
+			proc_terminate($rProducer, 9);
+			proc_close($rProducer);
+		}
+	}
+
+	/**
 	 * cron:vod in mode 2 from the replica and the store: a movie whose
 	 * analysis is due is analysed (its file is gone: broken), a channel with
 	 * sources left is queued through the agent (MAIN owns the queue table, and
