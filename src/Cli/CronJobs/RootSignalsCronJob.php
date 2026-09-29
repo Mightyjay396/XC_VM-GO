@@ -429,22 +429,6 @@ class RootSignalsCronJob implements CommandInterface {
 	}
 
 	/**
-	 * Can this node run an update or a rollback? Not in mode 2 yet: the
-	 * update command writes MAIN's servers row (`status` 5 before the
-	 * updater starts, the version after), which mode 2 refuses, so the node
-	 * would download the archive and stop there, reported started. Refused
-	 * here, before anything runs: cluster:root reports it failed with this
-	 * message.
-	 *
-	 * @throws \RuntimeException on a node in mode 2
-	 */
-	private static function updatesHere(string $rAction): void {
-		if (!self::readsMainDatabase()) {
-			throw new \RuntimeException($rAction . ': refused on a node in cluster API mode (mode 2): the updater still writes MAIN\'s servers row');
-		}
-	}
-
-	/**
 	 * What the replica's servers cache was built from: its entry in
 	 * ReplicaApply::OWNED_CACHE (`<servers ETag>/<node ETag>`). Null while
 	 * the replica does not own that cache.
@@ -1108,7 +1092,6 @@ class RootSignalsCronJob implements CommandInterface {
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php module:delete "' . base64_encode(json_encode($rData)) . '" 2>&1 &');
 				break;
 			case 'update':
-				self::updatesHere('update');
 				echo 'Updating...' . "\n";
 				if (!LogSink::syslog('UPDATE', 'Updating XC_VM...')) {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', 'Updating XC_VM...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
@@ -1116,7 +1099,6 @@ class RootSignalsCronJob implements CommandInterface {
 				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update update 2>&1 &');
 				break;
 			case 'rollback':
-				self::updatesHere('rollback');
 				$rRbVersion = isset($rData['version']) ? trim((string) $rData['version']) : '';
 				if (preg_match('/^\d+\.\d+\.\d+$/', $rRbVersion)) {
 					echo 'Rolling back to ' . $rRbVersion . '...' . "\n";

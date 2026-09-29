@@ -346,7 +346,8 @@ final class EventIngest {
 			case 'security.block_ip':
 				return self::blockIp($rServerID, $rData);
 			case 'node.state':
-				return self::nodeRow($rServerID, $rData, NodeStateSink::STATE, []);
+				$rStatus = self::nodeStatus($rServerID, $rData);
+				return self::nodeRow($rServerID, $rData, NodeStateSink::STATE, []) || $rStatus;
 			case 'node.inventory':
 				// time_offset as the legacy cron measured it: node clock − MAIN's.
 				return self::nodeRow($rServerID, $rData, NodeStateSink::INVENTORY, ['time_offset' => (int) round(self::clockOffsetMs($rNode) / 1000)]);
@@ -443,6 +444,22 @@ final class EventIngest {
 			self::afterCommit(static fn() => BlocklistChanges::set('ip', [$rIP], self::db()));
 		}
 		self::afterCommit(static fn() => ClusterAudit::log('security.block_ip', $rServerID, ['ip' => $rIP, 'reason' => $rReason], 'node'));
+		return true;
+	}
+
+	/**
+	 * A node's own `status` from its node.state (NodeStateSink::status): only
+	 * updating or back (STATUSES), and only over one of them, so an install
+	 * state MAIN set (3, 4) is never the node's to leave.
+	 *
+	 * @param array<string, mixed> $rData
+	 */
+	private static function nodeStatus(int $rServerID, array $rData): bool {
+		$rStatus = is_array($rData['fields'] ?? null) ? ($rData['fields']['status'] ?? null) : null;
+		if (!is_int($rStatus) || !in_array($rStatus, NodeStateSink::STATUSES, true)) {
+			return false;
+		}
+		self::run('UPDATE `servers` SET `status` = ? WHERE `id` = ? AND `status` IN (' . implode(', ', NodeStateSink::STATUSES) . ');', $rStatus, $rServerID);
 		return true;
 	}
 

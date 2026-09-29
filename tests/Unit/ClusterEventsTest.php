@@ -336,13 +336,46 @@ final class ClusterEventsTest extends TestCase {
 		$this->assertFalse(NodeStateSink::inventory(['ping' => 12]), 'TELEMETRY off: the cron writes the row itself');
 	}
 
+	/**
+	 * A node's own status, as its update reports it (NodeStateSink::status):
+	 * 5 while it updates and 1 once it is back, only over one of these, so
+	 * an install state MAIN set is never the node's to leave.
+	 */
+	public function testANodeReportsItsUpdateInItsOwnStatusOnly(): void {
+		$this->rDb->exec("CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `status` int DEFAULT 1, `certbot_ssl` text)");
+		$this->rDb->exec("INSERT INTO `servers` (`id`, `status`) VALUES (5, 1), (6, 1)");
+		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_TELEMETRY]);
+		$rStatus = fn(): array => array_map('intval', array_column($this->rows('SELECT `status` FROM `servers` ORDER BY `id`'), 'status'));
+		$rSend = fn(int $rSeq, array $rFields): array => EventIngest::ingest($this->node(), 'p0', $rSeq, [['type' => 'node.state', 'd' => ['fields' => $rFields]]]);
+
+		$this->assertSame(1, $rSend(1, ['status' => 5])['applied']);
+		$this->assertSame([5, 1], $rStatus(), 'updating: its own row only');
+		$this->assertSame(1, $rSend(2, ['status' => 1, 'certbot_ssl' => '{"a":1}'])['applied']);
+		$this->assertSame([1, 1], $rStatus(), 'back');
+		$this->assertSame(1, $rSend(3, ['status' => 3])['dropped'], 'no other status');
+		$this->assertSame(1, $rSend(4, ['status' => '5'])['dropped'], 'an int only');
+		$this->rDb->exec('UPDATE `servers` SET `status` = 4 WHERE `id` = 5');
+		$rSend(5, ['status' => 1]);
+		$this->assertSame([4, 1], $rStatus(), 'an install state MAIN set stays');
+
+		$this->flows(NodeFlows::TELEMETRY);
+		$this->assertTrue(NodeStateSink::status(5));
+		$this->assertFalse(NodeStateSink::status(3));
+		$this->assertSame([['node.state', ['fields' => ['status' => 5]]]], array_map(static fn($e) => [$e['type'], $e['d']], $this->spooled('p0')));
+
+		// The update reports through it, so a node in mode 2 can be updated.
+		$rUpdate = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/Commands/UpdateCommand.php');
+		$this->assertStringNotContainsString('SET `status`', $rUpdate);
+		$this->assertSame(3, substr_count($rUpdate, 'NodeStateSink::status('));
+	}
+
 	public function testMainWritesOnlyTheNodesOwnRowAndItsColumns(): void {
 		$this->rDb->exec("CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `server_ip` varchar(64), `status` int DEFAULT 1, `whitelist_ips` text, `certbot_ssl` text, `governor` text, `sysctl` text, `ping` int DEFAULT 0, `xc_vm_version` varchar(50), `interfaces` text, `time_offset` int DEFAULT 0)");
 		$this->rDb->exec("INSERT INTO `servers` (`id`, `server_ip`) VALUES (5, '198.51.100.5'), (6, '198.51.100.6')");
 		NodeRegistry::update(5, ['flows' => NodeRegistry::FLOW_TELEMETRY, 'clock_offset_ms' => -2600]);
 		$rOut = EventIngest::ingest($this->node(), 'p0', 1, [
 			['type' => 'node.state', 'd' => ['fields' => ['certbot_ssl' => '{"a":1}', 'governor' => '["x"]']]],
-			['type' => 'node.state', 'd' => ['fields' => ['server_ip' => '6.6.6.6', 'status' => 5]]],  // not the node's to set
+			['type' => 'node.state', 'd' => ['fields' => ['server_ip' => '6.6.6.6', 'status' => 3]]],  // not the node's to set
 			['type' => 'node.state', 'd' => ['fields' => ['sysctl' => ['nested']]]],
 			['type' => 'node.state', 'd' => ['fields' => ['sysctl' => str_repeat('x', NodeStateSink::MAX_VALUE + 1)]]],
 			['type' => 'node.inventory', 'd' => ['fields' => ['ping' => 3]]],                           // wrong lane

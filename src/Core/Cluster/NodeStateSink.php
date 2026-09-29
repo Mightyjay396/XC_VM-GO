@@ -10,7 +10,7 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * `node.state` and `inventory`). A legacy node writes the row in MAIN's
  * database, as before. A node whose TELEMETRY flow is on sends it through its
  * agent instead ({@see EventSpool}), and MAIN writes only these columns of
- * the node's own row (EventIngest):
+ * the node's own row (EventIngest), and its `status` only as status() says:
  *
  * ```text
  * node.state      P0  certbot_ssl, governor, sysctl    when it changes
@@ -20,7 +20,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * The inventory lane is P1: a newer inventory replaces an older one, so one
  * lost past the cap costs nothing. Columns that grant or route are never the
  * node's to send: `whitelist_ips` (it feeds the allowed IPs), `server_ip`,
- * `status` (the heartbeat's) and the ports stay with MAIN and the admin.
+ * `status` beyond status()'s updating and back, and the ports stay with MAIN
+ * and the admin.
  *
  * A node in mode 2 keeps its own copy of the KEPT fields it reported
  * (`config/cluster/node_state.json`), since MAIN's row is out of its reach:
@@ -35,6 +36,14 @@ final class NodeStateSink {
 
 	/** Columns a node.inventory event may set (time_offset comes from MAIN's clock offset). */
 	public const INVENTORY = ['remote_status', 'xc_vm_version', 'server_hardware', 'governors', 'sysctl', 'video_devices', 'audio_devices', 'gpu_info', 'interfaces', 'ping'];
+
+	/**
+	 * The `status` values a node reports of itself: 5 while its update runs
+	 * (which takes it out of routing, as the legacy update did), 1 once it is
+	 * back. MAIN takes no other, and only over one of these, never over the
+	 * install states its own flows set (EventIngest).
+	 */
+	public const STATUSES = [1, 5];
 
 	/** Longest value MAIN takes for one column. */
 	public const MAX_VALUE = 262144;
@@ -68,6 +77,24 @@ final class NodeStateSink {
 		}
 		$rSet = implode(', ', array_map(static fn(string $rColumn): string => '`' . $rColumn . '` = ?', array_keys($rFields)));
 		return (bool) ($rDb ?? DatabaseFactory::get())->query('UPDATE `servers` SET ' . $rSet . ' WHERE `id` = ?;', ...[...array_values($rFields), (int) SERVER_ID]);
+	}
+
+	/**
+	 * This server's own status (STATUSES) in its `servers` row, as its update
+	 * reports it: an event with TELEMETRY on, else the row. A node in mode 2
+	 * never writes MAIN's database: false when the spool did not take it.
+	 */
+	public static function status(int $rStatus, ?object $rDb = null): bool {
+		if (!in_array($rStatus, self::STATUSES, true)) {
+			return false;
+		}
+		if (NodeFlows::on(NodeFlows::TELEMETRY) && EventSpool::append('p0', [['type' => 'node.state', 'd' => ['fields' => (object) ['status' => $rStatus]]]])) {
+			return true;
+		}
+		if (NodeRole::refusesConnects()) {
+			return false;
+		}
+		return (bool) ($rDb ?? DatabaseFactory::get())->query('UPDATE `servers` SET `status` = ? WHERE `id` = ?;', $rStatus, (int) SERVER_ID);
 	}
 
 	/**
