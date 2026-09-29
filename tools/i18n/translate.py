@@ -382,13 +382,6 @@ def parse_ini(path: Path) -> dict[str, str]:
     return entries
 
 
-def _write_atomic(path: Path, text: str) -> None:
-    """Replace ``path`` in one step, so a kill mid-write never leaves it truncated."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")  # per process: a rival run can't take it
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def _render_ini(en_lines, values) -> str:
     """en.ini's layout with each key's value from ``values`` (English when absent)."""
     out = []
@@ -442,12 +435,12 @@ def sync_ini(en_path, dst_path, lang, translate, glossary, cache, provider_name,
             continue
         cache[ck] = values[key] = value
         translated += 1
-        _write_atomic(dst_path, _render_ini(en_lines, values))
+        dst_path.write_text(_render_ini(en_lines, values), encoding="utf-8")
         save_cache()
         if translated % 25 == 0:
             print(f"  … {translated} keys translated", flush=True)
     removed = sorted(set(current) - en_keys)
-    _write_atomic(dst_path, _render_ini(en_lines, values))
+    dst_path.write_text(_render_ini(en_lines, values), encoding="utf-8")
     return kept, translated, failed, removed
 
 
@@ -480,7 +473,7 @@ def run_ini(args, translate, provider_name, glossary, repo_root) -> int:
         cache = json.loads(cache_file.read_text(encoding="utf-8")) if cache_file.is_file() else {}
 
         def save_cache(cache=cache, cache_file=cache_file):
-            _write_atomic(cache_file, json.dumps(cache, ensure_ascii=False, indent=0))
+            cache_file.write_text(json.dumps(cache, ensure_ascii=False, indent=0), encoding="utf-8")
 
         print(f"→ {lang}.ini …", flush=True)
         try:
