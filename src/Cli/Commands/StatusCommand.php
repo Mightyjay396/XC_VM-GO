@@ -11,6 +11,7 @@ use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Module\ModuleManager;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
 use XcVm\Domain\Cluster\ClusterPool;
+use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Bootstrap\StreamingRequestBootstrap;
 use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -213,6 +214,11 @@ class StatusCommand implements CommandInterface {
 	}
 
 	private function getServers(): array {
+		// A node in mode 2 reads no database of MAIN's: the replica's servers,
+		// as every reader there has them (status needs only its own row).
+		if (NodeRole::refusesConnects()) {
+			return ServerRepository::getAll(true);
+		}
 		$db = self::db();
 		$db->query('SELECT * FROM `servers`');
 		$rServers = [];

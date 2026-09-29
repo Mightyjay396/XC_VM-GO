@@ -188,7 +188,7 @@ class ModuleInstallCommand implements CommandInterface {
 	 * Is $rFile the archive the payload announced (its `size` and `sha256`,
 	 * ModuleManager::lbInstallPayload)? Null when it is, or when the payload
 	 * announces neither (a MAIN from before them: the zip magic is then the
-	 * only check, as before); else what differs.
+	 * only check, as before); else why not.
 	 *
 	 * @param array<string, mixed> $rPayload
 	 */
@@ -201,11 +201,7 @@ class ModuleInstallCommand implements CommandInterface {
 		if (!is_int($rSize) || !is_string($rSha) || !preg_match('/^[0-9a-f]{64}$/', $rSha)) {
 			return 'a malformed size or SHA-256';
 		}
-		clearstatcache(true, $rFile);
-		if (@filesize($rFile) !== $rSize) {
-			return 'size mismatch';
-		}
-		return hash_equals($rSha, (string) @hash_file('sha256', $rFile)) ? null : 'sha256 mismatch';
+		return ArtefactStage::matches($rFile, $rSize, $rSha) ? null : 'size or SHA-256 mismatch';
 	}
 
 	/**

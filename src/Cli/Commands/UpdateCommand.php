@@ -5,6 +5,8 @@ namespace XcVm\Cli\Commands;
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cluster\NodeActions;
+use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Logging\UpdateLogger;
@@ -156,7 +158,8 @@ class UpdateCommand implements CommandInterface {
 					return 1;
 				}
 
-				$db->query('UPDATE `servers` SET `status` = 5 WHERE `id` = ?;', SERVER_ID);
+				// Through the agent where the node reports its row that way (mode 2 has no other).
+				NodeStateSink::status(5, $db);
 				UpdateLogger::info('Server status set to 5 (updating), launching system update...');
 
 				echo "Launching system update...\n";
@@ -281,7 +284,7 @@ class UpdateCommand implements CommandInterface {
 					return 1;
 				}
 
-				$db->query('UPDATE `servers` SET `status` = 5 WHERE `id` = ?;', SERVER_ID);
+				NodeStateSink::status(5, $db);
 				UpdateLogger::info('Server status set to 5 (updating), launching system rollback...');
 
 				echo "Launching system rollback...\n";
@@ -315,7 +318,10 @@ class UpdateCommand implements CommandInterface {
 					}
 				}
 
-				$db->query('UPDATE `servers` SET `status` = 1, `xc_vm_version` = ? WHERE `id` = ?;', XC_VM_VERSION, SERVER_ID);
+				NodeStateSink::status(1, $db);
+				if (!NodeStateSink::inventory(['xc_vm_version' => XC_VM_VERSION]) && !NodeRole::refusesConnects()) {
+					$db->query('UPDATE `servers` SET `xc_vm_version` = ? WHERE `id` = ?;', XC_VM_VERSION, SERVER_ID);
+				}
 				if (ServerRepository::getAll()[SERVER_ID]['is_main']) {
 					// One settings row for the cluster: an LB clearing it threw away
 					// MAIN's pending update record.

@@ -486,6 +486,16 @@ final class ReplicaBuilder {
 	}
 
 	/**
+	 * Does this node take `config.changed` now: it takes commands, and its
+	 * agent says it runs the command (FEATURE_CONFIG_CHANGED)?
+	 *
+	 * @param array<string, mixed> $rNode cluster_nodes row
+	 */
+	public static function takesConfigChanged(array $rNode): bool {
+		return CommandBus::accepts($rNode) && in_array(self::FEATURE_CONFIG_CHANGED, explode(',', (string) ($rNode['features'] ?? '')), true);
+	}
+
+	/**
 	 * The node list changed (a node revoked, re-enrolled, activated or
 	 * quarantined): drop the cached sections and tell every other node at
 	 * once whose agent takes `config.changed` (COMMANDS on, and the
@@ -508,7 +518,7 @@ final class ReplicaBuilder {
 		}
 		$rSent = 0;
 		foreach ($rNodes as $rNode) {
-			if (!CommandBus::accepts($rNode) || !in_array(self::FEATURE_CONFIG_CHANGED, explode(',', (string) ($rNode['features'] ?? '')), true)) {
+			if (!self::takesConfigChanged($rNode)) {
 				continue;
 			}
 			try {

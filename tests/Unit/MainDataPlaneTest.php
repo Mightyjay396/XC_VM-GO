@@ -28,7 +28,8 @@ use XcVm\Tests\Support\FakeClusterCrypto;
  */
 final class MainDataPlaneTest extends TestCase {
 	private const MAIN = 1;
-	private const NODE = 5;
+	// Not an id any test defines SERVER_ID as (1 or 5): the node is never this process, whichever test ran first.
+	private const NODE = 7;
 	private const LEGACY = 6;
 	private const UUID = '7f8fad5b-d9cb-469f-a165-70867728950e';
 	private const NOW = 1_800_000_000;

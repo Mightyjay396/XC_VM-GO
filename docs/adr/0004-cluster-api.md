@@ -698,8 +698,8 @@ The plan's `artefact` op (section 7: "off-air videos, pinned binaries, ≤ 4 MB 
 - Section 7 says module install and delete are not offered to API-mode nodes until a module API exists. Root commands already carried `install_module` and `delete_module` to nodes with COMMANDS (second increment); this increment lets `install_module` carry the custom module's archive as a grant, so such a node no longer pulls it with `live_streaming_pass`. A module API (MAIN knowing which modules each node holds) is still not built.
 - Section 7's "large transfers in ≤ 4 MiB parts, staged in `tmp/cluster_xfer/`" is for uploads. The artefact op is a download: MAIN stages nothing, and the node assembles the chunks.
 - The viewer token still carries MAIN's off-air path (section 7's legacy mapping wants replica basenames there): a node plays its granted copy by that path's file name, which is the file name the `cluster` section names.
-- `update_binaries` gets no artefact: the binaries bundle is per distribution and MAIN caches none, so a node still downloads it from the binaries release itself. The pinned binary the registry serves is the agent (section 5); `xc_fanout` and `xcvm_core` "follow the same path" in the plan, not built.
-- Section 7's sha256/size check of the module zip for legacy nodes (today only the `PK` magic) is not built: a legacy node still pulls the archive the old way. Built later: MAIN's `install_module` payload for a custom module carries its archive's `size` and `sha256` (`ModuleManager::lbInstallPayload`), and a node that pulls the archive with `getFile` (a legacy node, or one whose agent takes no artefacts) installs it only when the download matches both (`ModuleInstallCommand::announced`; else `size mismatch` or `sha256 mismatch`, and nothing is installed). A payload from an older MAIN announces neither, and the zip magic is then the only check, as before. The pull itself still uses `live_streaming_pass`. `LegacyModuleArchiveTest`.
+- `update_binaries` gets no artefact: the binaries bundle is per distribution and MAIN caches none, so a node still downloads it from the binaries release itself. The pinned binary the registry serves is the agent (section 5); `xc_fanout` and `xcvm_core` "follow the same path" in the plan, not built. Kept so on review: every node already downloads its panel update, the binaries and `xc_fanout` from GitHub, each checked by SHA-256 (`FanoutBinaryCommand`), so serving `xc_fanout` from MAIN would help only a node without GitHub access, which the updater does not serve either. It would take a cache on MAIN, a registry kind, a root action, a node-side install and a rollout, as `agent_binary` has. `xcvm_core` is the owner's distribution. Add them when a fleet without GitHub access is a target.
+- Section 7's sha256/size check of the module zip for legacy nodes (today only the `PK` magic) is not built: a legacy node still pulls the archive the old way. Built later: MAIN's `install_module` payload for a custom module carries its archive's `size` and `sha256` (`ModuleManager::lbInstallPayload`), and a node that pulls the archive with `getFile` (a legacy node, or one whose agent takes no artefacts) installs it only when the download matches both (`ModuleInstallCommand::announced`, through the same check as a staged archive, `ArtefactStage::matches`; else `size or SHA-256 mismatch`, and nothing is installed). A payload from an older MAIN announces neither, and the zip magic is then the only check, as before. The pull itself still uses `live_streaming_pass`. `LegacyModuleArchiveTest`.
 
 **Known limits.**
 - Today's agent never says `artefact` at hello, so MAIN grants it nothing: `install_module` keeps the `getFile` path with `live_streaming_pass`, off-air videos are not delivered, and `agent_binary` is not sent (`NodeActions::agentBinary` answers false).
@@ -1851,19 +1851,19 @@ The eighth increment's refusal stopped the paths a node in mode 2 still took to 
 - The plan's `log.*` has seven types; there are six (`client`, `stream`, `stream_error`, `panel_error`, `restream`, `syslog`). `log.syslog` is new, and MAIN rewrites its fixed columns and bounds its date.
 - The plan has root's actions arrive as commands and says nothing of the checks a `signals` row triggered; following the replica's ETags for them is this increment's.
 - The plan does not say what a mode 2 node without CONFIG does. It cannot boot, so this increment only keeps `cluster:apply` off MAIN's database there.
-- Refusing `update` and `rollback` in mode 2 is not in the plan: the update command still needs MAIN's database.
+- Refusing `update` and `rollback` in mode 2 is not in the plan: the update command still needs MAIN's database. Built later: see [A node in mode 2 updates, and its status and inventory](#a-node-in-mode-2-updates-and-its-status-and-inventory).
 
 **Known limits.**
 
 - Mode 2 still cannot be switched on (Phase 9).
 - In mode 2 a system log line the spool refuses (the agent stopped for over two minutes, or LOGS off) never reaches MAIN's system log. The panel's error log keeps it, and it reaches MAIN's panel logs once the agent takes events again; where root cannot switch to the agent's user it goes to the cron's stderr and is lost.
-- `update` and `rollback` cannot run in mode 2 until the update command stops writing MAIN's `servers` row.
+- `update` and `rollback` cannot run in mode 2 until the update command stops writing MAIN's `servers` row. Built later: see [A node in mode 2 updates, and its status and inventory](#a-node-in-mode-2-updates-and-its-status-and-inventory).
 - A root action MAIN still queues as a `signals` row for a node in mode 2 never runs: MAIN does so when it lacks `root_ready` or the node is quarantined (`CommandBus::acceptsRoot` takes active nodes only). MAIN's own cron purges the row after a day. The checks from the replica make good ports, services and the ramdisk; a reboot, restart, update or module action is lost.
 - In mode 2, until R2 fills `streamChecks()`, the files of streams deleted on MAIN stay, TV archive segments are kept past their retention, and neither the VOD analysis nor the created-channel checks run. Since the thirteenth Phase 7 increment they run from the replica and the node's own store once both answer.
 - Other paths still reach MAIN's database on a node in mode 2, and the refusal stops them:
   - the signals daemon (`signals`: kills and cache jobs from MAIN's `signals` table). Since the fourteenth Phase 7 increment it reads no row and no Redis in mode 2: MAIN sends the cache jobs as `node.cache` commands;
   - `cron:certbot` (this node's `servers.certbot_ssl`, and its renewal and nginx reloads queued as `signals` rows through `NodeActions`), and the `certbot` command `certbot_generate` starts, which reads `servers.certbot_ssl` when certbot fails or says the certificate is not due. Since the fourteenth Phase 7 increment neither reads MAIN's database in mode 2: the node keeps a copy of the `certbot_ssl` it reported and reloads its nginx itself, and MAIN sends the renewal as a `node.root`;
-  - `cron:servers`, every minute: it counts this node's running streams in `streams_servers` (R2), and without `redis_handler` its connections in `lines_live` first. It stops there, before `node.inventory`, so a node in mode 2 sends no inventory (and writes no `servers_stats` row, which TELEMETRY leaves to MAIN anyway);
+  - `cron:servers`, every minute: it counts this node's running streams in `streams_servers` (R2), and without `redis_handler` its connections in `lines_live` first. It stops there, before `node.inventory`, so a node in mode 2 sends no inventory (and writes no `servers_stats` row, which TELEMETRY leaves to MAIN anyway). Built later: see [A node in mode 2 updates, and its status and inventory](#a-node-in-mode-2-updates-and-its-status-and-inventory);
   - `cron:vod` and `cron:streams`, which read this node's stream rows (R2);
   - `cron:cache`'s bouquets, categories, proxies and allowed-IPs caches and the stream endpoints (R2).
 
@@ -1928,7 +1928,7 @@ The eighth increment's refusal stopped the paths a node in mode 2 still took to 
 - A real mode 1 node does not reach the zero yet: its crons (`cron:servers`, `cron:streams`, `cron:vod`, `cron:cache`'s bouquets, categories, proxies and allowed IPs), the signals daemon, `cron:root_signals` (its `signals` rows), `status` (at every boot and update), the relay endpoints (stream rows), viewer authentication (`auth.php`, `player_api`, the Enigma2, XPlugin and playlist controllers), and in Redis mode the connection tracking and the watchdog still use MAIN's database or Redis. That is R2, Phase 8 and the tenth increment's list for mode 2; the sites on the Cluster Nodes page show what is left.
 - A process that boots before an apply built the caches after a reboot boots through MAIN's database, counted. After a re-enrolment `service`'s `--from-disk` apply refuses the stored records (seventh increment), so that lasts until the agent's own first apply.
 - The counts reach MAIN only once the agent sends `audit.json` (seventh increment's contract; since xc_vm_fanout #31).
-- In mode 2 `status` does none of its node work (above): it is one more path the refusal stops, until it takes the servers and the Redis settings from the replica.
+- In mode 2 `status` does none of its node work (above): it is one more path the refusal stops, until it takes the servers and the Redis settings from the replica. Built later: see [A node in mode 2 updates, and its status and inventory](#a-node-in-mode-2-updates-and-its-status-and-inventory).
 
 **Tests.** `ReplicaBootTest`:
 
@@ -2712,7 +2712,7 @@ In a fleet of agents that send `policy_ver`, an old port therefore goes a minute
 - An enrolment code holds every kept port and URL while it lives (30 minutes), and a request made with it for up to 30 minutes more while it waits for approval. Without that, a code issued before a change would lose MAIN a minute or two after it.
 - Under `https_required`, kept plain-HTTP ports and URLs keep their 7 days (above).
 - A node in mode 0 holds a port only while it is heard. One that is offline at the release and comes back only on the old port finds it closed. With no node in mode ≥ 1, nothing is kept for it in the first place (`nodesListening()`).
-- A deleted LB's `cluster_nodes` row stays, since nothing removes it, but holds nothing. An agent still running on that LB loses MAIN when its port goes.
+- A deleted LB's `cluster_nodes` row stays, since nothing removes it, but holds nothing. An agent still running on that LB loses MAIN when its port goes. Built later: deleting a server revokes its node (`NodeRegistry::serverDeleted`, from `ServerRepository::deleteById`), so an agent still running there is refused with `NODE_REVOKED` instead of being handed tokens, leases and commands; `ClusterApiTest::testADeletedServersNodeIsRevoked`.
 - `main_port` is the port of the node's latest hello or heartbeat. The other lanes (commands, events) are not observed; today they dial in the same order, with the same backoff.
 - A node that goes back to a kept port after its release finds it closed, as after the 7 days. It still holds the current URLs of the policy it adopted.
 - A kept address URL on the current port stays for its 7 days while nodes use that port (above).
@@ -4523,6 +4523,51 @@ stage, the stage going with its last part, and the refusals. Agent:
 `gone`, a part out of order and too many parts refused, the ETag kept). Interop:
 `TestInteropWithPanel` adds a bouquet of 600,000 channels and takes it in parts from MAIN's real
 PHP, whose stage is gone after the last part.
+
+### A node in mode 2 updates, and its status and inventory
+
+Three paths still took a node in mode 2 to MAIN's database, and the refusal stopped each of them.
+A node that an operator had promoted to mode 2 could not be updated, never reported its version or
+hardware, and never ran `status`'s own work.
+
+- **The update.** `console.php update` wrote the node's `servers` row: `status` 5 before it starts
+  the updater, then `status` 1 and the version from `post-update`. So `cluster:root` refused `update`
+  and `rollback` in mode 2 (`RootSignalsCronJob::updatesHere`). The update now reports its status
+  through `NodeStateSink::status()`: a `node.state {status}` event with TELEMETRY on, else the row
+  as before. The version goes with the inventory, the same way. The refusal is gone, and
+  `cluster:root` starts the updater in mode 2 as elsewhere.
+- **A node's own status: a decision reversed.** `NodeStateSink` said `status` was never the node's
+  to send. MAIN now takes a node's `status` only as 5 (updating, which takes it out of routing, as the
+  legacy update always did) or 1 (back), and only over one of them (`EventIngest::nodeStatus`: `WHERE
+  status IN (1, 5)`). So an install state MAIN set (3 installing, 4 failed) is never the node's to
+  leave, and no other value is taken. A node can already take itself out of routing by going silent,
+  and a legacy node writes the whole row. Without this, a mode 2 node cannot be updated at all.
+- **`cron:servers`.** It counted this node's `lines_live` rows and running streams in
+  `streams_servers` before it sent `node.inventory`. Those counts feed only the `servers_stats` row,
+  which the agent's telemetry replaces: with TELEMETRY on they are not taken, and a node in mode 2
+  never falls back to writing MAIN's row when the spool does not take the inventory.
+- **`status`.** Its database check already stepped aside in mode 2, but its next read,
+  `getServers()`, was a `SELECT * FROM servers` on MAIN's database. In mode 2 it now takes the
+  replica's servers (`ServerRepository::getAll`), which is all its node work needs (its own
+  `is_main`). So the permissions, nginx's config, root's crontab, the file limits and the init-script
+  cleanup run at boot and after an update.
+
+**Not built / limits.**
+- **The Redis settings.** `status` still skips `configureRedisLb` in mode 2, since a node in mode 2
+  reads no Redis of MAIN's.
+- **The owner reviews the reversal.** Whether a node may report its own updating status is a trust
+  decision. If it is refused, a mode 2 node goes back to being updated only over SSH or by demotion.
+- **An agent that is down during `post-update`.** The "back" event waits in the spool. The node stays at
+  5, out of routing, until the agent delivers it after the service restart.
+
+**Tests.**
+- `ClusterEventsTest::testANodeReportsItsUpdateInItsOwnStatusOnly`: 5 and back, its own row only, no
+  other value, not a string, an install state kept, the spooled event, and `UpdateCommand` writing
+  no `status` itself.
+- `ModeTwoPathsTest`: `update` and `rollback` start the updater and log through the spool;
+  `testTheServersMinuteSendsItsInventoryWithoutMainsDatabase`;
+  `testStatusReadsTheServersFromTheReplica`. Each of the last two failed on the code before, with
+  the refusal.
 
 ### Disaster recovery of MAIN's cluster keys
 

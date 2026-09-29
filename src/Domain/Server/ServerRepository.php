@@ -14,6 +14,7 @@ use XcVm\Core\Config\SettingsRepository;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Server\ServerSavedEvent;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
+use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -454,6 +455,9 @@ class ServerRepository {
 
 		if ($rServer['server_type'] == 0) {
 			BackupService::revokePrivileges($rServer['server_ip']);
+		}
+		if (class_exists(NodeRegistry::class)) {
+			NodeRegistry::serverDeleted($rID);
 		}
 
 		return true;

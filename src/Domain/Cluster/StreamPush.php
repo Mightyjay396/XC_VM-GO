@@ -96,7 +96,7 @@ final class StreamPush {
 				continue;
 			}
 			// The streams section, for a node that reads it and whose agent takes config.changed.
-			if (($rAll || in_array($rServerID, $rIDs, true)) && ($rFlows & NodeRegistry::FLOW_STREAMS) !== 0 && in_array(ReplicaBuilder::FEATURE_CONFIG_CHANGED, explode(',', (string) ($rNode['features'] ?? '')), true)) {
+			if (($rAll || in_array($rServerID, $rIDs, true)) && ($rFlows & NodeRegistry::FLOW_STREAMS) !== 0 && ReplicaBuilder::takesConfigChanged($rNode)) {
 				$rSent += self::send($rCrypto, $rServerID, 'config.changed', ['sections' => [ReplicaSections::STREAMS]]);
 			}
 			// The queue, for a node that asks MAIN for it.

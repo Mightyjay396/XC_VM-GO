@@ -74,8 +74,8 @@ class ClusterRootCommand implements CommandInterface {
 	 * Run one verified root action through the signals cron's code; what it
 	 * prints is the command's result. On a node in mode 2 it reaches no
 	 * database: its system log line goes to the agent (LogSink::syslog), and
-	 * an update or rollback is refused (RootSignalsCronJob::updatesHere).
-	 * An action that throws leaves no output buffer open.
+	 * an update reports its status there too (NodeStateSink::status). An
+	 * action that throws leaves no output buffer open.
 	 *
 	 * @param array<string, mixed> $rAction {action, …}
 	 */

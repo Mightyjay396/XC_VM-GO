@@ -160,9 +160,11 @@ final class ModeTwoPathsTest extends TestCase {
 		file_put_contents($rScript, <<<'PHP'
 			<?php
 			use XcVm\Cli\Commands\ClusterRootCommand;
+			use XcVm\Cli\Commands\StatusCommand;
 			use XcVm\Cli\Commands\WatchdogCommand;
 			use XcVm\Cli\CronJobs\CleanupCronJob;
 			use XcVm\Cli\CronJobs\RootSignalsCronJob;
+			use XcVm\Cli\CronJobs\ServersCronJob;
 			use XcVm\Cli\CronJobs\StreamsCronJob;
 			use XcVm\Cli\CronJobs\VodCronJob;
 			use XcVm\Core\Cluster\ReplicaBoot;
@@ -257,6 +259,19 @@ final class ModeTwoPathsTest extends TestCase {
 							$rResult['output'] = (string) ob_get_clean();
 						}
 						$rResult['restarts'] = $rDog->rRestarts;
+						break;
+					case 'status_servers':
+						// Only the servers status reads: the rest of status changes the host.
+						$rServers = (new ReflectionMethod(StatusCommand::class, 'getServers'))->invoke(new StatusCommand());
+						$rResult['servers'] = array_map(static fn(array $rServer): int => (int) $rServer['is_main'], $rServers);
+						break;
+					case 'servers':
+						ob_start();
+						try {
+							(new ReflectionMethod(ServersCronJob::class, 'loadCron'))->invoke(new ServersCronJob());
+						} finally {
+							$rResult['output'] = (string) ob_get_clean();
+						}
 						break;
 					case 'cleanup':
 						ob_start();
@@ -480,7 +495,8 @@ final class ModeTwoPathsTest extends TestCase {
 	 * Reboot, restart and stop logged to MAIN's database before acting, so
 	 * in mode 2 the refusal stopped them and cluster:root reported them
 	 * failed. Now each acts, and its line goes to the spool first. An update
-	 * or rollback is still refused, now before it downloads anything.
+	 * and a rollback start the updater too, which reports its status
+	 * through the agent (NodeStateSink::status) rather than MAIN's row.
 	 */
 	public function testRootActionsActAndLogThroughTheSpool(): void {
 		$this->node();
@@ -499,8 +515,8 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertArrayNotHasKey('error', $rResult, $rOut);
 		$this->assertNoConnect();
 
-		$this->assertSame([true, true, true, true, false, false], array_column($rResult['done'], 'ok'), $rOut);
-		foreach ([1, 2, 3, 4] as $rSeq) {
+		$this->assertSame([true, true, true, true, true, true], array_column($rResult['done'], 'ok'), $rOut);
+		foreach ([1, 2, 3, 4, 5, 6] as $rSeq) {
 			$this->assertTrue(json_decode((string) file_get_contents($rPin . 'inbox/' . $rSeq . '.done'), true)['ok'], 'cluster:root reports it done: ' . $rSeq);
 		}
 		// Each acted.
@@ -508,14 +524,9 @@ final class ModeTwoPathsTest extends TestCase {
 		// Reboot, restart and stop spool their line before they act, so a
 		// reboot's survives it; the flush logs once it flushed.
 		$this->assertSame([['reboot', 1], ['systemctl stop xc_vm', 2], ['systemctl start xc_vm', 2], ['systemctl stop xc_vm', 3], ['iptables -F', 3]], array_values(array_filter($this->sudoSpooled(), static fn(array $rCall): bool => (bool) preg_match('/^(reboot|systemctl|iptables -F)/', $rCall[0]))));
-		// An update or rollback is refused before anything runs: the updater
-		// still writes MAIN's servers row.
-		foreach ([5, 6] as $rSeq) {
-			$rDone = json_decode((string) file_get_contents($rPin . 'inbox/' . $rSeq . '.done'), true);
-			$this->assertFalse($rDone['ok']);
-			$this->assertStringContainsString('refused on a node in cluster API mode (mode 2)', $rDone['result']);
-		}
-		$this->assertSame([], preg_grep('/console\.php update/', $this->commands()), 'no update started');
+		// An update and a rollback start the updater: it reports its status
+		// through the agent now (NodeStateSink::status), not MAIN's row.
+		$this->assertSame(['console.php update update', 'console.php update rollback 2.0.0'], array_values(array_map(static fn(string $rLine): string => (string) preg_replace('/^.*(console\.php update .*?)( 2>&1.*)?$/', '$1', $rLine), preg_grep('/console\.php update/', $this->commands()))));
 		// Each logged through the spool, in order, as root on this node.
 		$rRows = array_map(static fn(array $rEvent): array => $rEvent['d']['rows'][0], $this->spooled('p1'));
 		$this->assertSame(['log.syslog'], array_values(array_unique(array_column($this->spooled('p1'), 'type'))));
@@ -524,6 +535,8 @@ final class ModeTwoPathsTest extends TestCase {
 			['RESTART', 'XC_VM services restarted on request.'],
 			['STOP', 'XC_VM services stopped on request.'],
 			['FLUSH', 'Flushed blocked IP\'s from iptables.'],
+			['UPDATE', 'Updating XC_VM...'],
+			['UPDATE', 'Rolling back XC_VM to 2.0.0...'],
 		], array_map(static fn(array $rRow): array => [$rRow['type'], $rRow['error']], $rRows));
 		$this->assertSame([5], array_values(array_unique(array_column($rRows, 'server_id'))));
 	}
@@ -560,6 +573,41 @@ final class ModeTwoPathsTest extends TestCase {
 		$this->assertStringNotContainsString('waiting', $rResult['output']);
 		$this->assertStringNotContainsString('Not running', $rResult['output'], 'the pass reached its settings refresh');
 		$this->assertFileExists($this->rHome . 'config/cluster/local.json', 'what PHP samples, for the agent');
+	}
+
+	// ── status ───────────────────────────────────────────────────────
+
+	/**
+	 * status reads the servers from the replica in mode 2: MAIN's `servers`
+	 * table was its one read there, and refused, so none of its node work
+	 * ran (the permissions, nginx's config, root's crontab, the file limits).
+	 */
+	public function testStatusReadsTheServersFromTheReplica(): void {
+		$this->node();
+		[, $rOut, $rResult] = $this->child(['status_servers']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$this->assertSame(0, $rResult['servers'][5] ?? null, 'this node, not MAIN');
+	}
+
+	// ── cron:servers ─────────────────────────────────────────────────
+
+	/**
+	 * The minute's node work needs no database with TELEMETRY on: the counts
+	 * that fed the servers_stats row are not taken (they were refused, and
+	 * the inventory never went), and the inventory goes to MAIN as an event.
+	 */
+	public function testTheServersMinuteSendsItsInventoryWithoutMainsDatabase(): void {
+		$this->node();
+		$this->nginxRunning();
+		[, $rOut, $rResult] = $this->child(['servers']);
+		$this->assertIsArray($rResult, $rOut);
+		$this->assertArrayNotHasKey('error', $rResult, $rOut);
+		$this->assertNoConnect();
+		$rInventory = array_values(array_filter($this->spooled('p1'), static fn(array $rEvent): bool => $rEvent['type'] === 'node.inventory'));
+		$this->assertCount(1, $rInventory, $rResult['output']);
+		$this->assertArrayHasKey('xc_vm_version', $rInventory[0]['d']['fields'], 'MAIN learns the node\'s version');
 	}
 
 	// ── cron:cleanup ─────────────────────────────────────────────────
