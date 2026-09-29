@@ -371,7 +371,7 @@ final class ClusterPoolTest extends TestCase {
 
 		$rIndex = (string) file_get_contents($rSrc . 'Public/cluster/index.php');
 		$rOrder = [];
-		foreach (['ClusterCryptoFactory::create()', 'ClusterPool::gate($rCrypto, $rReq)', "=== '/cluster/v1/health'", 'db_connect('] as $rStep) {
+		foreach (['ClusterCryptoFactory::create()', 'ClusterPool::gate($rCrypto, $rReq)', "=== '/cluster/v1/health'", 'new LazyDatabaseHandler(true)'] as $rStep) {
 			$rAt = strpos($rIndex, $rStep);
 			$this->assertNotFalse($rAt, $rStep);
 			$rOrder[] = $rAt;
