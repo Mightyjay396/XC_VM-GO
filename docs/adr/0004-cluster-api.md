@@ -2574,8 +2574,8 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 
 **Not built:**
 
-- Nodes are re-enrolled one at a time, never in parallel.
-- `--all` does not skip nodes already re-enrolled under the current root, so after a canary node, or a partial failure, the rest are best named by id. Telling them apart would need the time of the last root change. `cluster:init` records it in the audit log only, and a fleet-wide re-enrolment without a root change (new identities after a suspected compromise) must still take every node.
+- Nodes are re-enrolled one at a time, never in parallel. Kept so on review: the plan does not ask for it, the command serves only a MAIN replaced without a DR bundle, and a parallel run would need a process per node with its own database connection and its credentials passed to it. Add it when a fleet's re-enrolment time is measured as a problem.
+- `--all` did not skip nodes already re-enrolled under the current root, so after a canary node, or a partial failure, the rest were best named by id. Built later as `--pending` (with `--all` only): `ClusterMeta::init()` now records `root_at` in `cluster_meta` when the panel fingerprint changes (a new root, or the first), and `--pending` leaves out the active nodes whose row was created at or after it. A node still `enrolling` is taken, since its enrolment never completed. It stays opt-in, because a fleet-wide re-enrolment without a root change (new identities after a suspected compromise) must still take every node. A root from before `root_at` has no record, and `--pending` then refuses before any node is touched: name the nodes by id. `ClusterReenrolCommandTest::testPendingLeavesOutTheNodesOnTheCurrentRoot` and `ClusterApiTest::testInitRecordsThePanelKeysAndReadiness` cover it.
 
 **Tests:**
 

@@ -4,6 +4,7 @@ use PHPUnit\Framework\TestCase;
 use XcVm\Cli\Commands\ClusterReenrolCommand;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterClock;
+use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -98,10 +99,10 @@ final class ClusterReenrolCommandTest extends TestCase {
 	}
 
 	/** @return array{0: int, 1: string} [exit code, output] */
-	private function reenrol(array $rServers, ?array $rIDs, ?array $rCreds, bool $rDryRun = false, array $rStates = ['enrolling', 'active'], ?callable $rAgentBinary = null): array {
+	private function reenrol(array $rServers, ?array $rIDs, ?array $rCreds, bool $rDryRun = false, array $rStates = ['enrolling', 'active'], ?callable $rAgentBinary = null, bool $rPending = false): array {
 		ob_start();
 		try {
-			$rCode = ClusterReenrolCommand::run($rServers, $rIDs, $rStates, $rCreds, $rDryRun, $this->rCrypto, $this->rSsh, $rAgentBinary ?? fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null);
+			$rCode = ClusterReenrolCommand::run($rServers, $rIDs, $rStates, $rCreds, $rDryRun, $this->rCrypto, $this->rSsh, $rAgentBinary ?? fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null, $rPending);
 		} finally {
 			$rOut = (string) ob_get_clean();
 		}
@@ -153,6 +154,32 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->assertStringContainsString('3 re-enrolled, 0 failed, 0 not attempted, 0 skipped', $rOut);
 		$this->assertSame([['ok' => [7, 8, 12], 'failed' => []]], $this->audit('cluster.reenrol'));
 		$this->assertSame(3, substr_count(implode("\n", $this->rSsh->rLog), 'close '), 'each session is closed');
+	}
+
+	/** --pending leaves out the active nodes enrolled since the root changed; without a record of the change nothing runs. */
+	public function testPendingLeavesOutTheNodesOnTheCurrentRoot(): void {
+		$rServers = $this->servers();
+		ClusterClock::fix(1000000);
+		$this->enrolled(7);
+		ClusterMeta::set(ClusterMeta::ROOT_AT, '2000');
+		ClusterClock::fix(3000000);
+		$this->enrolled(8);
+		$this->enrolled(9, 'enrolling');
+		ClusterClock::fix(null);
+
+		[$rCode, $rOut] = $this->reenrol($rServers, null, self::creds(), false, ['enrolling', 'active'], null, true);
+		$this->assertSame(0, $rCode, $rOut);
+		$this->assertStringContainsString('#7 lb-a: re-enrolled', $rOut, 'enrolled before the root changed');
+		$this->assertStringContainsString('#8 lb-b: skipped: enrolled since the root changed on 1970-01-01 00:33 UTC (name it to re-enrol it)', $rOut);
+		$this->assertStringContainsString('#9 lb-c: re-enrolled', $rOut, 'an enrolment never completed');
+		$this->assertNotContains('connect 10.0.0.8:22', $this->rSsh->rLog);
+
+		$this->rDb->query("DELETE FROM `cluster_meta` WHERE `name` = 'root_at'");
+		$this->rSsh->rLog = [];
+		[$rCode, $rOut] = $this->reenrol($rServers, null, self::creds(), false, ['enrolling', 'active'], null, true);
+		$this->assertSame(1, $rCode);
+		$this->assertStringContainsString('no record of when its root last changed', $rOut);
+		$this->assertSame([], $this->rSsh->rLog, 'no node contacted');
 	}
 
 	public function testAFailingNodeIsReportedAndTheRunGoesOn(): void {
@@ -474,9 +501,10 @@ final class ClusterReenrolCommandTest extends TestCase {
 	}
 
 	public function testArguments(): void {
-		$this->assertSame(['ids' => null, 'states' => ['enrolling', 'active'], 'cred-file' => '/x/f.cred', 'dry-run' => false], ClusterReenrolCommand::parseArgs(['--all', '--cred-file=/x/f.cred']));
-		$this->assertSame(['ids' => null, 'states' => ['quarantined', 'active'], 'cred-file' => null, 'dry-run' => true], ClusterReenrolCommand::parseArgs(['--all', '--state=quarantined,active', '--dry-run']));
-		$this->assertSame(['ids' => [7, 9], 'states' => [], 'cred-file' => '/x/f.cred', 'dry-run' => false], ClusterReenrolCommand::parseArgs(['7', '9', '7', '--cred-file=/x/f.cred']));
+		$this->assertSame(['ids' => null, 'states' => ['enrolling', 'active'], 'cred-file' => '/x/f.cred', 'dry-run' => false, 'pending' => false], ClusterReenrolCommand::parseArgs(['--all', '--cred-file=/x/f.cred']));
+		$this->assertSame(['ids' => null, 'states' => ['quarantined', 'active'], 'cred-file' => null, 'dry-run' => true, 'pending' => false], ClusterReenrolCommand::parseArgs(['--all', '--state=quarantined,active', '--dry-run']));
+		$this->assertSame(['ids' => [7, 9], 'states' => [], 'cred-file' => '/x/f.cred', 'dry-run' => false, 'pending' => false], ClusterReenrolCommand::parseArgs(['7', '9', '7', '--cred-file=/x/f.cred']));
+		$this->assertSame(['ids' => null, 'states' => ['enrolling', 'active'], 'cred-file' => '/x/f.cred', 'dry-run' => false, 'pending' => true], ClusterReenrolCommand::parseArgs(['--all', '--pending', '--cred-file=/x/f.cred']));
 		foreach ([
 			[],
 			['--cred-file=/x/f.cred'],
@@ -487,6 +515,7 @@ final class ClusterReenrolCommandTest extends TestCase {
 			['seven', '--cred-file=/x/f.cred'],
 			['0', '--cred-file=/x/f.cred'],
 			['--all', '--force', '--cred-file=/x/f.cred'],
+			['7', '--pending', '--cred-file=/x/f.cred'],
 			['--all', '--cred-file=/x/f.cred', '--expect-hostkey=' . sha1('x')],
 		] as $rArgs) {
 			$this->assertIsString(ClusterReenrolCommand::parseArgs($rArgs), implode(' ', $rArgs));

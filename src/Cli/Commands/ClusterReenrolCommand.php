@@ -8,6 +8,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterAudit;
 use XcVm\Domain\Cluster\ClusterCli;
+use XcVm\Domain\Cluster\ClusterMeta;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Server\ServerRepository;
@@ -24,7 +25,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * admin's decision, so it is re-enrolled only when asked, and a node that
  * leaves the chosen states while the run goes on (revoked from the panel) is
  * skipped when the run reaches it. Nodes named by id are taken whatever their
- * state. One run at a time.
+ * state. `--pending` leaves out the active nodes enrolled since MAIN's root
+ * last changed (ClusterMeta::ROOT_AT), so a run after a canary or a partial
+ * failure takes only the rest. One run at a time.
  *
  * Each node meets server:enrol's requirements (ServerEnrolCommand::enrol):
  *   - its SSH host key matches the one the credential file gives for it, else
@@ -51,7 +54,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * panel keeps no node's SSH port (server:install's bin/install/<id>.json is
  * gone once the install succeeds), so a node on another port needs one.
  *
- * Usage: `console.php cluster:reenrol (--all [--state=enrolling,active] | <serverID>...) --cred-file=<path> [--dry-run]`.
+ * Usage: `console.php cluster:reenrol (--all [--state=enrolling,active] [--pending] | <serverID>...) --cred-file=<path> [--dry-run]`.
  * MAIN only.
  *
  * @package XC_VM_CLI_Commands
@@ -59,7 +62,7 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 class ClusterReenrolCommand implements CommandInterface {
 	use DatabaseAware;
 
-	public const USAGE = "Usage: cluster:reenrol (--all [--state=enrolling,active] | <serverID>...) --cred-file=<path> [--dry-run]\n";
+	public const USAGE = "Usage: cluster:reenrol (--all [--state=enrolling,active] [--pending] | <serverID>...) --cred-file=<path> [--dry-run]\n";
 
 	/** The states --all takes by default. */
 	public const DEFAULT_STATES = ['enrolling', 'active'];
@@ -120,7 +123,7 @@ class ClusterReenrolCommand implements CommandInterface {
 			return 1;
 		}
 		try {
-			return self::run($rServers ?? ServerRepository::getAll(true), $rParsed['ids'], $rParsed['states'], $rCreds, $rParsed['dry-run'], $rCrypto, $rSsh, $rAgentBinary);
+			return self::run($rServers ?? ServerRepository::getAll(true), $rParsed['ids'], $rParsed['states'], $rCreds, $rParsed['dry-run'], $rCrypto, $rSsh, $rAgentBinary, $rParsed['pending']);
 		} finally {
 			flock($rLock, LOCK_UN);
 			fclose($rLock);
@@ -134,18 +137,21 @@ class ClusterReenrolCommand implements CommandInterface {
 
 	/**
 	 * @param list<string> $rArgs
-	 * @return array{ids: list<int>|null, states: list<string>, cred-file: string|null, dry-run: bool}|string The run, or what is wrong.
+	 * @return array{ids: list<int>|null, states: list<string>, cred-file: string|null, dry-run: bool, pending: bool}|string The run, or what is wrong.
 	 */
 	public static function parseArgs(array $rArgs): array|string {
 		[$rArgs, $rOptions] = InstallCredentials::splitOptions($rArgs);
 		$rAll = false;
 		$rDryRun = false;
+		$rPending = false;
 		$rIDs = [];
 		foreach ($rArgs as $rArg) {
 			if ($rArg === '--all') {
 				$rAll = true;
 			} elseif ($rArg === '--dry-run') {
 				$rDryRun = true;
+			} elseif ($rArg === '--pending') {
+				$rPending = true;
 			} elseif (preg_match('/^[1-9]\d*\z/', (string) $rArg)) {
 				$rIDs[(int) $rArg] = (int) $rArg;
 			} else {
@@ -158,6 +164,9 @@ class ClusterReenrolCommand implements CommandInterface {
 		}
 		if ($rAll === ($rIDs !== [])) {
 			return 'Name the nodes, or pass --all';
+		}
+		if ($rPending && !$rAll) {
+			return '--pending goes with --all';
 		}
 		$rStates = [];
 		if (isset($rOptions['state'])) {
@@ -176,7 +185,7 @@ class ClusterReenrolCommand implements CommandInterface {
 		if ($rCredFile === null && !$rDryRun) {
 			return 'The SSH credentials are missing (--cred-file)';
 		}
-		return ['ids' => $rAll ? null : array_values($rIDs), 'states' => $rStates, 'cred-file' => $rCredFile, 'dry-run' => $rDryRun];
+		return ['ids' => $rAll ? null : array_values($rIDs), 'states' => $rStates, 'cred-file' => $rCredFile, 'dry-run' => $rDryRun, 'pending' => $rPending];
 	}
 
 	/**
@@ -278,14 +287,23 @@ class ClusterReenrolCommand implements CommandInterface {
 	 * @param array{default: array<string, mixed>, nodes: array<int, array<string, mixed>>}|null $rCreds readCredentials(); null only for a dry run.
 	 * @param SshSession|null                  $rSsh         Tests.
 	 * @param callable|null                    $rAgentBinary Tests (as for provisionCluster).
+	 * @param bool                             $rPending     --all leaves out the active nodes enrolled since the root last changed.
 	 * @return int 0 when every chosen node was (or would be) re-enrolled.
 	 */
-	public static function run(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds, bool $rDryRun, ClusterCrypto $rCrypto, ?SshSession $rSsh = null, ?callable $rAgentBinary = null): int {
+	public static function run(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds, bool $rDryRun, ClusterCrypto $rCrypto, ?SshSession $rSsh = null, ?callable $rAgentBinary = null, bool $rPending = false): int {
 		if (empty($rCrypto->info()['licensed'])) {
 			echo "CLUSTER_LICENCE_REQUIRED: this panel's extension issues no tokens, so no node can be re-enrolled. Nothing was touched.\n";
 			return 1;
 		}
-		$rTargets = self::targets($rServers, $rIDs, $rStates, $rCreds);
+		$rRootAt = null;
+		if ($rPending) {
+			$rRootAt = ClusterMeta::get(ClusterMeta::ROOT_AT);
+			if ($rRootAt === null) {
+				echo "--pending: MAIN has no record of when its root last changed (a root from before it was recorded). Name the nodes by id. Nothing was touched.\n";
+				return 1;
+			}
+		}
+		$rTargets = self::targets($rServers, $rIDs, $rStates, $rCreds, $rRootAt === null ? null : (int) $rRootAt);
 		if ($rTargets === []) {
 			echo "No enrolled node to re-enrol.\n";
 			return 0;
@@ -371,13 +389,19 @@ class ClusterReenrolCommand implements CommandInterface {
 	 * The nodes a run considers, in server id order: why each is skipped (not
 	 * chosen) or cannot be attempted, else how to reach it.
 	 *
+	 * @param int|null $rRootAt --pending: when the root last changed.
 	 * @return array<int, array{name: string, skip: string|null, why: string|null, access: array{host: string, port: int, username: string, password: string, hostkey: string, expected: string|null, source: string}|null}>
 	 */
-	private static function targets(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds): array {
-		self::db()->query('SELECT `server_id`, `state` FROM `cluster_nodes` ORDER BY `server_id`;');
+	private static function targets(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds, ?int $rRootAt = null): array {
+		self::db()->query('SELECT `server_id`, `state`, `created_at` FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rEnrolled = [];
+		$rCurrent = [];
 		foreach (self::db()->get_rows() as $rRow) {
 			$rEnrolled[(int) $rRow['server_id']] = (string) $rRow['state'];
+			// Active and enrolled since the root changed: it holds the current root.
+			if ($rRootAt !== null && $rRow['state'] === 'active' && (int) $rRow['created_at'] >= $rRootAt) {
+				$rCurrent[(int) $rRow['server_id']] = true;
+			}
 		}
 		$rTargets = [];
 		foreach ($rIDs ?? array_keys($rEnrolled) as $rID) {
@@ -388,6 +412,8 @@ class ClusterReenrolCommand implements CommandInterface {
 				$rTarget['skip'] = 'no load balancer with this id';
 			} elseif ($rIDs === null && !in_array($rEnrolled[$rID], $rStates, true)) {
 				$rTarget['skip'] = $rEnrolled[$rID] . ' (name it, or pass --state=' . $rEnrolled[$rID] . ')';
+			} elseif ($rIDs === null && isset($rCurrent[$rID])) {
+				$rTarget['skip'] = 'enrolled since the root changed on ' . gmdate('Y-m-d H:i', (int) $rRootAt) . ' UTC (name it to re-enrol it)';
 			} elseif (!$rIsLb) {
 				$rTarget['why'] = 'not a load balancer';
 			} elseif (!isset($rEnrolled[$rID])) {

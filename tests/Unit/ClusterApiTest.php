@@ -880,10 +880,12 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame($rFp, ClusterMeta::get('panel_fp'));
 		$this->assertSame(base64_encode((string) $this->rCrypto->info()['panel_sign_pub']), ClusterMeta::get('panel_sign_pub'));
 		$this->assertSame($this->rT0, ClusterMeta::readyAtMs());
+		$this->assertSame((string) intdiv($this->rT0, 1000), ClusterMeta::get(ClusterMeta::ROOT_AT), 'a new root: when it changed');
 
 		ClusterClock::fix($this->rT0 + 60000);
 		$this->assertFalse(ClusterMeta::init($this->rCrypto)['created'], 'idempotent');
 		$this->assertSame($this->rT0 + 60000, ClusterMeta::readyAtMs(), 'a restart restarts the silence clock');
+		$this->assertSame((string) intdiv($this->rT0, 1000), ClusterMeta::get(ClusterMeta::ROOT_AT), 'the same root: unchanged');
 		$this->rDb->query("SELECT COUNT(*) AS `n` FROM `cluster_meta` WHERE `name` = 'panel_fp'");
 		$this->assertSame(1, (int) $this->rDb->get_row()['n']);
 	}
