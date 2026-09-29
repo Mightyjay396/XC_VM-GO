@@ -12,9 +12,9 @@ use XcVm\Domain\Cluster\DbPassword;
  * password SEALed to each node that takes root commands, as `node.root
  * rotate_db` (DbPassword).
  *
- * It first lists what each load balancer needs, since one MAIN cannot send
- * the password to loses MAIN's database until an operator sets the password there
- * (`cluster:set-db-password`, on the node). The operator types `rotate` to
+ * It first lists what each load balancer needs, since a node MAIN cannot send
+ * the password to keeps the old one and loses MAIN's database until an
+ * operator sets it there (`cluster:set-db-password`, on the node). The operator types `rotate` to
  * confirm, or passes `--yes`. The new password is generated and never shown,
  * unless `--password-stdin` reads it from standard input (one line), which is
  * what an operator who has such nodes to update by hand uses.

@@ -714,6 +714,9 @@ final class ClusterApi {
 		}
 		// Its own audit (settings misses), kept only when it changed.
 		NodeAudit::record($rNode, $rP['audit'] ?? null);
+		// Whether its agent holds the relay proxy's port, kept only when it changed.
+		$rNowMs = ClusterClock::nowMs();
+		NodeRelay::record($rNode, $rP['relay'] ?? null, $rNowMs, (int) $rH['ts_ms'] - $rNowMs);
 		// A node that holds its viewers sends its registry's digest; a drift
 		// that outlives the events in flight gets its snapshot asked for.
 		$rWant = false;

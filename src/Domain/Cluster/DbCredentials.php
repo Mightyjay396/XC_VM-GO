@@ -113,6 +113,47 @@ final class DbCredentials {
 	}
 
 	/**
+	 * Must this load balancer hold none of MAIN's DB credentials? True for a
+	 * cluster node in mode 2 (it reaches MAIN through the cluster API alone:
+	 * installed in API mode, or promoted) and for one whose grant MAIN revoked.
+	 * Such a node is never granted again, and an SSH reinstall keeps it
+	 * credential-free (LbInstallFlow::installsInApiMode). False without the
+	 * cluster tables.
+	 */
+	public static function credentialFree(int $rServerID): bool {
+		try {
+			self::db()->query('SELECT `mode` FROM `cluster_nodes` WHERE `server_id` = ?;', $rServerID);
+			$rNode = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		} catch (\Throwable) {
+			return false;
+		}
+		if ($rNode === null) {
+			return false;
+		}
+		return (int) $rNode['mode'] === 2 || self::revokedAt($rServerID) !== null;
+	}
+
+	/**
+	 * Is $rHost the address of a load balancer that must hold no credentials
+	 * (credentialFree())? A grant is per host, so one such node on it is
+	 * enough: BackupService::grantPrivileges() then grants nothing.
+	 */
+	public static function credentialFreeHost(string $rHost): bool {
+		try {
+			self::db()->query('SELECT `id` FROM `servers` WHERE `server_ip` = ? AND `server_type` = 0;', $rHost);
+			$rIDs = array_map(static fn(array $rRow): int => (int) $rRow['id'], self::db()->get_rows() ?: []);
+		} catch (\Throwable) {
+			return false;
+		}
+		foreach ($rIDs as $rServerID) {
+			if (self::credentialFree($rServerID)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * When MAIN revoked the node's grant (`cluster_nodes.db_revoked_at`), or
 	 * null. A table from before migration 052 reads as never.
 	 */

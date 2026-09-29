@@ -2,11 +2,13 @@
 
 use PHPUnit\Framework\TestCase;
 use XcVm\Cli\Commands\LbInstallFlow;
+use XcVm\Core\Backup\BackupService;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\CredentialFreeConfig;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterClock;
+use XcVm\Domain\Cluster\DbCredentials;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -19,6 +21,8 @@ use XcVm\Tests\Support\FakeClusterCrypto;
  * (`config_pack(…, ['db_credentials' => false])`, found by `install_config`);
  * an older one would pack MAIN's credentials, so API mode is refused there.
  * `api_mode_allowed` stays false: the switch itself is the operator's cutover.
+ * A node MAIN already keeps credential-free (mode 2, or a revoked grant) is
+ * reinstalled the same way, whatever the setting, and never granted again.
  */
 final class ApiModeInstallTest extends TestCase {
 	private const SID = 9;
@@ -146,7 +150,10 @@ final class ApiModeInstallTest extends TestCase {
 		$rService = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Domain/Server/ServerService.php');
 		$this->assertMatchesRegularExpression('/if \(\$rArray\[\'server_type\'\] == 0 && !ClusterSettings::newNodesInApiMode\(SettingsManager::getAll\(\)\)\) \{\s*BackupService::grantPrivileges/', $rService);
 		$rInstall = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/Commands/ServerInstallCommand.php');
-		$this->assertStringContainsString('!($rType == 2 && ClusterSettings::newNodesInApiMode(SettingsManager::getAll()))', $rInstall);
+		$this->assertStringContainsString('$rApiMode = $rType == 2 && LbInstallFlow::installsInApiMode(SettingsManager::getAll(), $rServerID);', $rInstall);
+		$this->assertStringContainsString('$this->finalizeHostAfterRuntime($rConn, $rRunSSH, $rHost, !$rApiMode);', $rInstall);
+		$this->assertStringContainsString('provisionConfig($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, $rApiMode)', $rInstall);
+		$this->assertStringContainsString('provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, null, null, true, $rApiMode)', $rInstall);
 		$this->assertMatchesRegularExpression('/if \(\$rGrant\) \{\s*BackupService::grantPrivileges\(\$rHost\);/', $rInstall);
 
 		// Without the cluster API's crypto an API-mode install fails rather than "stays legacy".
@@ -155,5 +162,63 @@ final class ApiModeInstallTest extends TestCase {
 		ob_end_clean();
 		$this->assertFalse($rOk);
 		$this->assertSame(4, $this->serverStatus());
+	}
+
+	// ── A node MAIN keeps credential-free ──────────────────────────────────
+
+	private function node(int $rMode, ?int $rRevokedAt): void {
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `db_revoked_at` int DEFAULT NULL');
+		NodeRegistry::startEnrolment(self::SID, '0f8fad5b-d9cb-469f-a165-70867728950e', random_bytes(32), random_bytes(32), $rMode);
+		if ($rRevokedAt !== null) {
+			$this->rDb->query('UPDATE `cluster_nodes` SET `db_revoked_at` = ? WHERE `server_id` = ?', $rRevokedAt, self::SID);
+		}
+	}
+
+	/** Reinstalling a node in mode 2, or one whose grant MAIN revoked, keeps it credential-free whatever lb_new_node_mode says. */
+	public function testACredentialFreeNodeReinstallsInApiMode(): void {
+		$rLegacy = ['cluster_api_enabled' => 1, 'lb_new_node_mode' => 'legacy'];
+		$this->assertFalse(LbInstallFlow::installsInApiMode($rLegacy, self::SID), 'not enrolled: a new node follows the setting');
+		$this->assertTrue(LbInstallFlow::installsInApiMode(['cluster_api_enabled' => 1, 'lb_new_node_mode' => 'api'], self::SID));
+
+		$this->node(1, null);
+		$this->assertFalse(DbCredentials::credentialFree(self::SID));
+		$this->assertFalse(LbInstallFlow::installsInApiMode($rLegacy, self::SID), 'mode 1 holds its grant');
+
+		$this->rDb->query('UPDATE `cluster_nodes` SET `mode` = 2 WHERE `server_id` = ?', self::SID);
+		$this->assertTrue(DbCredentials::credentialFree(self::SID));
+		$this->assertTrue(LbInstallFlow::installsInApiMode($rLegacy, self::SID));
+		$this->assertFalse(LbInstallFlow::installsInApiMode(['cluster_api_enabled' => 0, 'lb_new_node_mode' => 'legacy'], self::SID), 'no cluster API: nothing to enrol into');
+
+		$this->rDb->query('UPDATE `cluster_nodes` SET `mode` = 1, `db_revoked_at` = 1800000000 WHERE `server_id` = ?', self::SID);
+		$this->assertTrue(LbInstallFlow::installsInApiMode($rLegacy, self::SID), 'a revoked grant is not handed back');
+	}
+
+	/** The re-enrolment replaces the node's row; in mode 2 the revoke survives it. */
+	public function testAReEnrolmentInModeTwoKeepsTheRevoke(): void {
+		$this->node(2, 1800000000);
+		$rCrypto = new FakeClusterCrypto();
+		EnrolmentService::begin($rCrypto, self::SID, '1f8fad5b-d9cb-469f-a165-70867728950e', random_bytes(32), random_bytes(32), random_bytes(32), ['lb_new_node_mode' => 'api', 'lb_token_rotation_min' => 60]);
+		$this->assertSame(1800000000, DbCredentials::revokedAt(self::SID));
+		$this->assertSame(2, (int) NodeRegistry::byServer(self::SID)['gen']);
+
+		EnrolmentService::begin($rCrypto, self::SID, '2f8fad5b-d9cb-469f-a165-70867728950e', random_bytes(32), random_bytes(32), random_bytes(32), ['lb_new_node_mode' => 'legacy', 'lb_token_rotation_min' => 60]);
+		$this->assertNull(DbCredentials::revokedAt(self::SID), 'a deliberate mode-1 enrolment starts clean');
+	}
+
+	/** Every grant path goes through grantPrivileges(), which grants nothing to such a node's host. */
+	public function testNoGrantReachesACredentialFreeNodesHost(): void {
+		$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN `server_ip` varchar(64)');
+		$this->rDb->exec('ALTER TABLE `servers` ADD COLUMN `server_type` int NOT NULL DEFAULT 0');
+		$this->rDb->exec("UPDATE `servers` SET `server_ip` = '203.0.113.9' WHERE `id` = 9");
+		$this->node(2, null);
+		$this->assertTrue(DbCredentials::credentialFreeHost('203.0.113.9'));
+		$this->assertFalse(DbCredentials::credentialFreeHost('203.0.113.10'), 'another host');
+		$this->assertFalse(BackupService::grantPrivileges('203.0.113.9'), 'refused before the extension is asked');
+
+		$this->rDb->exec('UPDATE `servers` SET `server_type` = 1 WHERE `id` = 9');
+		$this->assertFalse(DbCredentials::credentialFreeHost('203.0.113.9'), 'only load balancers are cluster nodes');
+
+		$rTools = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/Commands/ToolsCommand.php');
+		$this->assertStringContainsString('if (!BackupService::grantPrivileges($rServer[\'server_ip\'])) {', $rTools);
 	}
 }

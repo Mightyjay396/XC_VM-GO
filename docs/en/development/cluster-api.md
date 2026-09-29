@@ -194,6 +194,9 @@ console.php cluster:db-allowlist status | apply | undo
 # Phase 9: a mode-2 node gives up MAIN's credentials (asks first; --wait=<s> waits for the revoke)
 console.php cluster:strip-credentials <serverID> [--yes] [--wait=<seconds>]
 
+# MAIN reads other servers' files and relays through its own agent (on | off | rekey | status)
+console.php cluster:main-dataplane on
+
 # Rotate the panel's DB password (MAIN), and set it on a node MAIN cannot reach (node, root)
 console.php cluster:rotate-db-password [--yes] [--password-stdin]
 echo "$NEW_PASSWORD" | console.php cluster:set-db-password
@@ -252,23 +255,29 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   - The secret still appears on the node's own loopback: the local RTMP output
     (`rtmp://127.0.0.1/live/<id>?password=`) and the recorder's pull from its own
     `/admin/live` and `/admin/timeshift`.
-  - MAIN pulls nothing through it: MAIN has no flows, so a stream MAIN relays from a load
-    balancer, or a file MAIN reads from one, keeps the legacy URL. `xc_agent run -role main`
-    runs the listener alone, for when MAIN has an identity to sign with.
+  - MAIN pulls through it only once an operator runs `cluster:main-dataplane on`: MAIN then
+    gets a data-plane key of its own and an entry in the signed node list, and its source
+    probe, a node's certbot log, and the relays and files of the streams it runs go through
+    `xc_agent run -role main`. Off (the default), MAIN keeps the legacy URLs. MAIN's key sits
+    in `config/cluster/main_agent.json` (0600), outside `xcvm_core`, as a node's does;
+    `cluster:main-dataplane rekey` replaces it and raises its generation.
   - A file ticket names the owner's box key as it was when minted: an owner re-enrolled
     since cannot open it until the next epoch's ticket (at most 3 h).
   - The node's own legacy `/api` stays served with the flow on. `api_legacy.conf` (Phase
     8's second increment) retires it only once nothing reads the node's files with the
     legacy `getFile` URL any more: its own flow on, and every server of the cluster, MAIN
-    included, an active node with its data plane on. MAIN reads a node's files with
-    `getFile` (a source probe, the certbot log) and has no data-plane client, so today no
-    node's `/api` is retired.
+    included, an active node with its data plane on. MAIN counts once
+    `cluster:main-dataplane on` is set. A proxy is never a node, so a cluster with a proxy
+    keeps every node's `/api`.
   - The flow can be switched on only for a node whose agent runs the loopback relay proxy
     (it says `relay` at hello): update `xc_agent` first. The agent publishes the loopback
     key (`relay.key`) only while it holds `127.0.0.1:31290`, and the node's PHP checks
     that the listener belongs to the key's owner. While the port is not the agent's (held
     by another user, or the agent is stopped), the node's relays and file reads fail and
-    are retried: they never fall back to the stream secret.
+    are retried: they never fall back to the stream secret. An agent that cannot bind the
+    port tells MAIN in every heartbeat: the Cluster Nodes page shows *relay port down* with
+    the error, and `server:diagnose` names it. The port is not freed for it: an operator
+    finds the holder on the node.
   - `/xfile` has its own rate limit (50 requests/s per server, burst 100, answered with a
     429 the agent retries), apart from the viewers' 20 requests/s.
   - `cluster:rotate-stream-secret` does not exist: retiring the password is Phase 9's.
@@ -283,7 +292,8 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   The fence that acts on it is built in the node's PHP (`Core\Cluster\NodeLease`) behind
   `lb_lease_fence`, which is **off by default**: with it on, past the lease's `exp` no new
   viewer starts on the node (`stream/auth.php`), and past `lb_fence_drain_min` more the
-  sessions still running stop (`segment.php`, `key.php`). It judges the lease state the
+  sessions still running stop (`segment.php`, `key.php`, `live.php`), and the agent drops
+  every viewer the fanout serves, judging the same lease, clock and settings itself. It judges the lease state the
   agent writes to `config/cluster/lease_state.json` at every heartbeat interval, whether or
   not MAIN answers: the lease's `exp`, and MAIN's clock carried forward on the node's
   monotonic clock from MAIN's last authenticated statement, so moving the node's wall clock
@@ -306,7 +316,10 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   `cluster_nodes.db_revoked_at` (`Domain\Cluster\DbCredentials`). Only an operator sends
   the strip (*Drop DB credentials*, `cluster:strip-credentials`), and
   `lb_new_node_mode=api` is still refused (`api_mode_allowed` is false): the cutover stays
-  the operator's decision. `cluster:rotate-db-password` rotates the panel's DB password
+  the operator's decision. A node MAIN already keeps credential-free (mode 2, or a revoked
+  grant) stays so: a reinstall over SSH packs it a credential-free config, re-enrols it in
+  mode 2 and grants it nothing, and no grant path (*Re-authorise MySQL*, `tools mysql`)
+  reaches its host. `cluster:rotate-db-password` rotates the panel's DB password
   through `XC_VM::db_set_password` and sends each node below mode 2 that takes root
   commands a signed `node.root rotate_db` with the new password SEALed to its box key,
   which its root side opens and hands to `XC_VM::config_set_db` (only `db.pass` changes).

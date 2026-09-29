@@ -110,8 +110,9 @@ final class ClusterAdmin {
 	 * @param array<int, array<string, mixed>> $rServers ServerRepository::getAll(true)
 	 * @return list<array<string, mixed>> One row per enrolled node, with `server_name`, `health`,
 	 *                                    `settings_misses` and `connects` (NodeAudit; null when not reported),
-	 *                                    `relay` (its agent runs the relay proxy), `core_pinned` (CorePins)
-	 *                                    and `db_revoked_at` (null: never).
+	 *                                    `relay` (its agent runs the relay proxy), `relay_down_since` and
+	 *                                    `relay_error` (NodeRelay; null and '' while it holds its port),
+	 *                                    `core_pinned` (CorePins) and `db_revoked_at` (null: never).
 	 */
 	public static function nodes(array $rServers, int $rOfflineAfterSec): array {
 		$rReady = ClusterMeta::readyAtMs(); // its own query: before ours, not between query() and get_rows()
@@ -123,7 +124,7 @@ final class ClusterAdmin {
 		} catch (\Throwable) {
 			$rPanelFp = null;
 		}
-		// Every column: `db_revoked_at` arrived with migration 052.
+		// Every column: `db_revoked_at` arrived with migration 052, the relay's with 054.
 		self::db()->query('SELECT * FROM `cluster_nodes` ORDER BY `server_id`;');
 		$rRows = self::db()->get_rows();
 		$rOut = [];
@@ -131,6 +132,8 @@ final class ClusterAdmin {
 			// The keys and MACs are no business of the page (nor of JSON).
 			unset($rRow['node_sign_pub'], $rRow['node_box_pub'], $rRow['attest'], $rRow['row_mac']);
 			$rRow['db_revoked_at'] = isset($rRow['db_revoked_at']) ? (int) $rRow['db_revoked_at'] : null;
+			$rRow['relay_down_since'] = isset($rRow['relay_down_since']) ? (int) $rRow['relay_down_since'] : null;
+			$rRow['relay_error'] = (string) ($rRow['relay_error'] ?? '');
 			try {
 				$rRow['core_pinned'] = CorePins::current($rRow, $rPanelFp);
 			} catch (\Throwable) {

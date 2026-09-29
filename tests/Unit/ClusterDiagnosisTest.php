@@ -160,6 +160,24 @@ final class ClusterDiagnosisTest extends TestCase {
 		$this->assertTrue($rRevoked['Token']['ok'], 'a revoked node\'s token expiring is no separate problem');
 	}
 
+	/** The relay proxy's port, from the agent's status (on the node) and the node's row (on MAIN). */
+	public function testARelayPortThatCannotBeBoundIsAProblem(): void {
+		$rChecks = $this->byLabel(ClusterDiagnosis::agent($this->agentDoc(), self::NOW_MS, []));
+		$this->assertArrayNotHasKey('Relay proxy', $rChecks, 'no relay report: no line');
+		$rChecks = $this->byLabel(ClusterDiagnosis::agent($this->agentDoc(['relay' => ['bound' => true]]), self::NOW_MS, []));
+		$this->assertTrue($rChecks['Relay proxy']['ok']);
+		$rChecks = $this->byLabel(ClusterDiagnosis::agent($this->agentDoc(['relay' => ['bound' => false, 'since_ms' => self::NOW_MS - 90000, 'failures' => 12, 'error' => "bind: address already in use\n"]]), self::NOW_MS, []));
+		$this->assertFalse($rChecks['Relay proxy']['ok']);
+		$this->assertSame('cannot bind 127.0.0.1:31290 for 1m (12 attempts): bind: address already in use', $rChecks['Relay proxy']['value']);
+
+		$rNode = ['server_id' => 3, 'state' => 'active', 'health' => 'ok', 'mode' => 1, 'flows' => 3, 'token_exp' => intdiv(self::NOW_MS, 1000) + 600, 'last_seen_at' => self::NOW_MS - 2000];
+		$this->assertArrayNotHasKey('Relay proxy', $this->byLabel(ClusterDiagnosis::node($rNode, ['count' => 0, 'oldest' => null], self::NOW_MS, [])), 'an agent without the proxy');
+		$this->assertTrue($this->byLabel(ClusterDiagnosis::node(['relay' => true, 'relay_down_since' => null] + $rNode, ['count' => 0, 'oldest' => null], self::NOW_MS, []))['Relay proxy']['ok']);
+		$rDown = $this->byLabel(ClusterDiagnosis::node(['relay' => true, 'relay_down_since' => 1_799_999_000, 'relay_error' => 'bind: address already in use'] + $rNode, ['count' => 0, 'oldest' => null], self::NOW_MS, []))['Relay proxy'];
+		$this->assertFalse($rDown['ok']);
+		$this->assertStringContainsString('since ' . gmdate('Y-m-d H:i', 1_799_999_000) . ' UTC: bind: address already in use', $rDown['value']);
+	}
+
 	public function testStatusReadsTheAgentsDocument(): void {
 		$this->agent([[200, (string) json_encode($this->agentDoc())]]);
 		$rStatus = AgentClient::status();

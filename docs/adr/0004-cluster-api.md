@@ -1,6 +1,6 @@
 # ADR 0004 — Cluster API between MAIN and load balancers: the panel's contract
 
-- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) four increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest), and its relay half as one change — relay and file tickets minted into the R2 stream record and refreshed on the delta path without moving a record's ETag or version, the parents' `RelayGuard`, `/xfile` with a signed digest per chunk, the agent's loopback proxy and the URL builders, behind each node's DATAPLANE flow, which mode 2 now requires. Its acceptance on a running fleet (48 h without an encoder restart at L = 5) is still to be measured, and `cluster:rotate-stream-secret` waits with Phase 9. Of Phase 9 (the licence lease, cutover and lockdown) six increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days; every token MAIN hands a node carries the lease it may serve on without MAIN; the node's agent verifies and keeps that lease and anchors MAIN's clock; past the lease's window a node refuses new viewers and, past the drain, the sessions still running — behind `lb_lease_fence`, off until an operator turns it on; the restrictive commands, the stream-secret and credential rotations, `rotate_sign_key` and the manual `cluster:lockdown`; and the extension's compiled lease verdict with the credential actions (`strip_db_credentials`, `install_config`, MAIN's revoke). A seventh pins MAIN's panel key in every node's `xcvm_core` (`core.pin`: at the SSH install, else `node.root pin_core`, with the node's install_id in `cluster_nodes.install_id`), gives the operator the credential strip (the Cluster Nodes page's *Drop DB credentials* and `cluster:strip-credentials`), and rotates the panel's DB password (`cluster:rotate-db-password` on MAIN, `cluster:set-db-password` on a node). `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it, at mode 1: flipping that flag is the cutover decision, and it stays with the operator.
+- **Status:** Accepted. Phases 0-7 are implemented: the seams and gates, the crypto contract and schema, MAIN's API with the cluster bus and pools, enrolment (SSH for new and existing LBs, by code, and `token_rekey`), the *Servers → Cluster Nodes* page and `cron:cluster`, authoritative telemetry and the 1 s liveness loop, the signed command channel with root commands and artefacts, logs, stream state, content and the fanout's monitor feed as events, all ten connection increments (admission, the agent's HLS reaper, limits on MAIN, digest and seed, `conn.divergence` and the P2 lane), and the authoritative config replica with mode-2 boot and the connect audit. Of Phase 8 (the data plane without bearer credentials) four increments are in: the viewer-token secret replaced without an outage, the legacy `/api`'s own switch, the two helpers a node's PHP asks its agent for (the relay nonce window and the file digest), and its relay half as one change — relay and file tickets minted into the R2 stream record and refreshed on the delta path without moving a record's ETag or version, the parents' `RelayGuard`, `/xfile` with a signed digest per chunk, the agent's loopback proxy and the URL builders, behind each node's DATAPLANE flow, which mode 2 now requires. Its acceptance on a running fleet (48 h without an encoder restart at L = 5) is still to be measured, and `cluster:rotate-stream-secret` waits with Phase 9. Of Phase 9 (the licence lease, cutover and lockdown) six increments are in: an operator promotes and demotes a node's `mode` from the Cluster Nodes page, behind the flows, the connect audit and seven clean days; every token MAIN hands a node carries the lease it may serve on without MAIN; the node's agent verifies and keeps that lease and anchors MAIN's clock; past the lease's window a node refuses new viewers and, past the drain, the sessions still running — behind `lb_lease_fence`, off until an operator turns it on; the restrictive commands, the stream-secret and credential rotations, `rotate_sign_key` and the manual `cluster:lockdown`; and the extension's compiled lease verdict with the credential actions (`strip_db_credentials`, `install_config`, MAIN's revoke). A seventh pins MAIN's panel key in every node's `xcvm_core` (`core.pin`: at the SSH install, else `node.root pin_core`, with the node's install_id in `cluster_nodes.install_id`), gives the operator the credential strip (the Cluster Nodes page's *Drop DB credentials* and `cluster:strip-credentials`), and rotates the panel's DB password (`cluster:rotate-db-password` on MAIN, sealed to each node's box key, and `cluster:set-db-password` on a node). An eighth keeps a credential-free node so through reinstalls and grants, tells MAIN when an agent cannot bind its relay port, drops the fanout's viewers under a lease fence, and gives MAIN a data-plane client of its own (`cluster:main-dataplane`, off by default). `api_mode_allowed` is still false, so promotion is the only path to mode 2 and a new node still enrols below it, at mode 1: flipping that flag is the cutover decision, and it stays with the operator.
 - **Date:** 2026-09-25
 - **Plan:** `docs/superpowers/specs/2026-09-21-main-lb-api-communication-design.md` (MAIN ↔ LB API communication, revision 3 plus corrections).
 - **Extension side:** `xcvm_core` ADR-002, "Cluster API: the extension's half of MAIN ↔ LB communication", cluster API version 1.
@@ -3374,7 +3374,7 @@ One change, as the third increment said it had to be: tickets that nothing verif
 
 - `GET /relay/<k>/<stream>.ts[?prebuffer=1]`: the stream's relay ticket, the parent's address from the stored `servers` section (its private address when both it and this node have one, else its public one, on its HTTP broadcast port, as the legacy URLs chose), and `GET /admin/live?stream=<id>&extension=ts[&prebuffer=1]` with `X-XCVM-Relay` and `X-XCVM-Relay-Auth` (`RelayAuth`: the node key over the ticket, `GET`, that target, MAIN's time as the agent measured it, a fresh nonce). The body streams through unchecked (D11).
 - `GET /xfile/<k>/<ref>[.<ext>]`, with the reader's `Range` (one range): chunk by chunk, `GET /xfile?o=<offset>&n=4194304` with `X-XCVM-File` and `X-XCVM-File-Auth` (the same proof over the file ticket). The ticket is read from the store and verified again for every chunk, so a transfer that outlives its ticket moves to the refreshed one and ends when there is none (expired, dropped, a revoked node). An owner answering 429 or 503 (its `/xfile` rate, a busy PHP) is asked for the chunk again, at most five times in all, waiting 250 ms doubling up to 4 s (or its `Retry-After` within that). Each chunk must carry an `X-XCVM-File-Digest` that verifies under the owner's key (the panel's, `dig`, for MAIN; else the owner's `ed_pub` in the node list, active), names the ticket, the owner and the offset asked, and matches the chunk's bytes, length and the file's total; every chunk but the last is whole. A chunk that fails ends the read before a byte of it is passed on: before the headers, a 502; after them, a short body.
-- `xc_agent run -role main` runs the listener alone on MAIN, which has no node identity, tickets or flows; MAIN's own relays and file reads keep the legacy URLs.
+- `xc_agent run -role main` runs the listener alone on MAIN, which has no node identity, tickets or flows; MAIN's own relays and file reads keep the legacy URLs. Phase 9's eighth increment gives MAIN an identity to sign with (`cluster:main-dataplane on`).
 
 **The parent** (`Core/Cluster/RelayGuard`, in `admin/{live,vod,timeshift,thumb}.php`). Tickets and proofs are judged on MAIN's clock (`DataPlaneTrust::nowMs`): MAIN's own, or on a load balancer MAIN's as its agent anchored it (`NodeLease::mainNowMs`, from `lease_state.json`; the host's clock when the agent wrote no anchor), because the child signs with MAIN's time as its agent measured it. A `password` that is not a string (`password[]=…`) is refused, not a 500. A request that carries `X-XCVM-Relay` or `X-XCVM-Relay-Auth` is judged by them alone, never by the password: the ticket verifies under the panel key and names this server as the parent and the stream asked for; the node list has the child active at the ticket's generation (a revoked or re-enrolled child holds nothing that works, and `config.changed` pushes the list at once); the proof is the child key's over this method and `REQUEST_URI`, within ±90 s; and the nonce is spent. A relay gets no playlist (`extension=m3u8` in `live` and `timeshift`), whose segment URLs carry the password. The legacy password is still admitted from a server's address, except from a server whose own DATAPLANE flow is on (the node list's new `dataplane`); `thumb` takes no password, as before.
 
@@ -3388,7 +3388,7 @@ Port 31290 is unprivileged: while the agent does not hold it, any local user cou
 
 **Mode 2 and the page.** `ClusterAdmin::MODE2_FLOWS` includes DATAPLANE, and the Cluster Nodes page switches it (`dataplane_on`/`off`; it needs STREAMS and CONTENT, and it is switched on only for a node whose agent says `relay` in hello's `features`, `ClusterAdmin::FEATURE_RELAY`: the flow points the node's encoders at the proxy, and without one there every relay and file read would fail). Switching it off needs nothing.
 
-**The legacy `/api`** (the second increment's switch). The node's own flow alone no longer turns it off: other servers still read its files with `getFile` (MAIN's source probe, `ServerRepository::checkSource`, and its certbot log, `getSSLLog`; any server whose own flow is off), and each would get a 404. `api_legacy.conf` is `0` only when `DataPlane::legacyApiRetired()`: the node's own flow is on, and every server in the servers list (MAIN included) is a node the signed node list has active with its DATAPLANE flow on, so each reads through `/xfile`. MAIN has no data-plane client and no node entry, so today it is `1` on every node; an unreadable servers list keeps it `1`.
+**The legacy `/api`** (the second increment's switch). The node's own flow alone no longer turns it off: other servers still read its files with `getFile` (MAIN's source probe, `ServerRepository::checkSource`, and its certbot log, `getSSLLog`; any server whose own flow is off), and each would get a 404. `api_legacy.conf` is `0` only when `DataPlane::legacyApiRetired()`: the node's own flow is on, and every server in the servers list (MAIN included) is a node the signed node list has active with its DATAPLANE flow on, so each reads through `/xfile`. MAIN had no data-plane client and no node entry, so it was `1` on every node; an unreadable servers list keeps it `1`. Since Phase 9's eighth increment MAIN counts once `cluster:main-dataplane on` is set.
 
 **Vectors.** `tests/Support/cluster_dataplane_vectors.json`, panel-owned like the canonical vectors and generated from the PHP classes (`ClusterDataplaneVectorsTest` reproduces every byte of it): a relay and a file ticket under `cluster_vectors.json`'s panel seed, `X-XCVM-Relay-Auth` and `X-XCVM-File-Auth`, and a chunk's digest signed by a node and by the panel. The Go agent holds a byte-identical copy (`internal/clustercrypto/testdata`), and both pin its SHA-256. `xcvm_core` does not take part in these formats, so its fixtures are unchanged.
 
@@ -3399,7 +3399,7 @@ Port 31290 is unprivileged: while the agent does not hold it, any local user cou
 - Refreshes run every 3 h for both kinds (the plan: relays every 12 h, files at least every 3 h); a relay ticket is simply re-minted more often than it needs.
 - The ticket kids the plan puts in the `secrets` section are not needed: tickets are signed with the panel key every node pins.
 - The node list gains `dataplane`, for the parents' password rule.
-- MAIN runs no data-plane client: `-role main` is the listener alone.
+- MAIN runs no data-plane client: `-role main` is the listener alone (until Phase 9's eighth increment).
 
 **Not built / limits.** The acceptance measured on a running fleet (48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host). A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
 
@@ -3747,9 +3747,9 @@ agent); a file older than `STALE_SEC` serves, as every uncertainty does. Past th
 writes one `SIGNALS_PATH/<uuid>` entry `{"type": "drop"}` per open viewer in its registry and drops
 the fanout's own viewers over its control socket; `live.php`'s TS loop ends on a `drop` entry and,
 independently, on `NodeLease::refusesEverything()` at each segment — so a PHP-served `.ts` request
-ends under a lapsed lease too, without the registry. **Still not built:** a fanout-served viewer
-under a *lease* fence (not a commanded one) is not dropped, because the agent does not judge the
-lease; and producers are still not released.
+ends under a lapsed lease too, without the registry. A fanout-served viewer under a *lease* fence
+(not a commanded one) was not dropped, because the agent did not judge the lease: the eighth
+increment has it do so. Producers are still not released.
 
 **`cluster:rotate-stream-secret`** (`StreamSecretRotation`). Refused while an enrolled node has
 DATAPLANE off (`--force` warns). Resumable: `cluster_meta` `stream_secret_rotation` holds the phase,
@@ -3845,9 +3845,10 @@ compiled answer there — the plan's "`license_valid()` on the LB on MAIN time".
   `XC_VM::db_revoke($server_ip)` (which now refuses loopback addresses and MAIN's own DB host),
   then `cluster_nodes.db_revoked_at` (migration 052, through `NodeRegistry::update()` so the
   auth cache is told), audited `node.db_revoked` or `node.db_revoke_failed`.
-- **Not built:** a caller of `DbCredentials::strip()` (a Cluster Nodes button or a CLI command)
-  and the credential-free SSH install (`LbInstallFlow::configPackParams` still packs credentials,
-  and `db_grant` still runs at install). `api_mode_allowed` stays false.
+- **Not built here:** a caller of `DbCredentials::strip()` (the seventh increment adds both),
+  and the credential-free SSH install, which the fifth increment had built for new nodes in API
+  mode; the eighth keeps a reinstalled credential-free node that way. `api_mode_allowed` stays
+  false.
 
 **Tests.** `LeaseVerdictCacheTest` (the extension consulted once per 2 s window, a live or
 expired answer deciding over the agent's file, `none` and a throwing extension falling back,
@@ -3933,8 +3934,9 @@ packed for the node's install_id with `XC_VM::config_pack` — credential-free f
   `cluster:rotate-db-password` is MAIN-only (stripped from the LB build); `cluster:set-db-password`
   ships on nodes and uses nothing the LB build strips.
 
-**Not built:** the credential-free SSH install (`configPackParams` still packs credentials and
-`db_grant` still runs).
+A new node in API mode was already installed credential-free (the fifth increment). The eighth
+increment keeps a node MAIN already holds credential-free that way through a reinstall and every
+grant path.
 
 **Tests.** `CorePinTest` (root's two steps against a fake extension: the install_id read only
 when it exists, only root's key pinned, another panel's pin replaced and root's kept, the
@@ -3947,6 +3949,134 @@ rotation that sends the sealed password only where it can and never logs it, ref
 rollback config packed for the node's install, both commands, and which ships on a node),
 `CredentialRotationTest::testTheDbPasswordTravelsSealed` (the real bus: ciphertext only in the
 row, no `signals` row, the node opening it for `config_set_db`).
+
+### What Phase 9 still owed (Phase 9, eighth increment)
+
+Four pieces the earlier increments left open. None flips `api_mode_allowed`, and none removes the
+LB's `/api`, `configureRedisLb`, its DB code paths or the viewer API.
+
+**A node MAIN keeps credential-free stays so.** The fifth increment installs a *new* node in API
+mode without a grant and with a credential-free `config_pack`. Two paths still handed MAIN's
+credentials back to a node that had given them up:
+
+- **A reinstall over SSH** (`server:install`, and `server:enrol` for an existing load balancer)
+  decided API mode by `lb_new_node_mode` alone, and the enrolment replaces the node's row. So a node
+  in mode 2, or one whose grant MAIN had revoked, was packed a config with credentials, granted
+  again, re-enrolled in mode 1, and `db_revoked_at` was lost. `LbInstallFlow::installsInApiMode()`
+  now also answers true for a node `DbCredentials::credentialFree()` (mode 2, or `db_revoked_at`
+  set), asked once before the enrolment. `ServerInstallCommand` hands the same answer to
+  `provisionConfig` (credential-free `config_pack`, or a refusal with an extension that cannot pack
+  one), to the grant at the end of the install (none), and to `provisionCluster`, which re-enrols the
+  node in mode 2 with `ClusterAdmin::MODE2_FLOWS`. `NodeRegistry::startEnrolment()` carries
+  `db_revoked_at` over when the new row is in mode 2. A deliberate mode-1 enrolment starts clean.
+- **The bulk grants** (the admin's *Re-authorise MySQL*, `tools mysql`, `tools migrate`, and the
+  server form) all go through `BackupService::grantPrivileges()`, which now grants nothing to the
+  host of such a node (`DbCredentials::credentialFreeHost()`: a grant is per host, so one such load
+  balancer on it is enough) and returns false. `tools mysql` says so for each skipped host.
+
+Tests: `ApiModeInstallTest` (the reinstall decision, the revoke across a re-enrolment, no grant to
+such a host).
+
+**MAIN hears when the relay proxy cannot bind its port.** The agent's loopback relay proxy
+(`127.0.0.1:31290`, fourth Phase 8 increment) is an unprivileged port. While another process held
+it, the node's relays and file reads failed and were retried, and only the node's own log said
+why. Now every heartbeat carries the proxy's state:
+
+```text
+relay   {"bound": true}
+        {"bound": false, "since_ms": <agent's unix ms of the first failed bind in a row>,
+         "failures": <failed binds since>, "error": "<the last, printable ASCII, at most 200 bytes>"}
+```
+
+- **The agent** (`relayproxy.go`, `RelayReport`) sends it once the proxy has tried its port, and
+  never while it is off (no `-relay`). `failures` is 0 when a listener it held stopped. The same
+  object is `relay` in `GET /v1/status` (null while there is none).
+- **MAIN** (`Domain\Cluster\NodeRelay`, from the `heartbeat` op) keeps it in
+  `cluster_nodes.relay_down_since` (MAIN's clock: the agent's `since_ms` moved by the node's clock
+  offset, never later than now) and `relay_error` (migration 054, and `database.sql`), written only
+  when the state or the error changes. Each transition is audited: `node.relay_unbound {error}` and
+  `node.relay_bound {down_since}`. A heartbeat without `relay`, or with one that is not an object
+  with a boolean `bound`, changes nothing. A table from before 054 changes nothing either.
+- **Shown** as a *relay port down* badge in the DATAPLANE column of the Cluster Nodes page, and as a
+  *Relay proxy* line in `server:diagnose`: from MAIN's row on MAIN, from the agent's status on the
+  node.
+
+Tests: `NodeRelayTest`, `ClusterDiagnosisTest`; on the agent's side
+`TestRelayReportTellsWhetherTheProxyHoldsItsPort`, `TestHeartbeatCarriesTheRelayReport`, the status
+tests and `TestInteropWithPanel` against MAIN's real `ClusterApi`.
+
+**The lease fence drops the fanout's viewers.** Past a lease's `exp` plus `lb_fence_drain_min`, on
+MAIN's clock and with `lb_lease_fence` on, the node's PHP ends the sessions it serves at their next
+segment. A viewer the fanout serves under X-Accel has no PHP worker left, and only a commanded fence
+dropped it. The agent (`leasefence.go`) now judges the drain itself on `RunFence`'s one-second tick,
+when no commanded fence stands:
+
+- **From what `NodeLease`'s fallback reads:** the lease it holds (`exp`), its MAIN clock
+  (`mainclock.go`, as in `lease_state.json`), and `lb_lease_fence` / `lb_fence_drain_min` from the
+  replica's verified `settings` section (`replica/settings.json`; a drain outside 0–60 reads as the
+  default 10, as `ClusterSettings` bounds it). Every uncertainty serves, as there: no fanout socket,
+  no replica settings, the switch off, mode 0, no lease, or MAIN's time never seen.
+- **What it drops:** every connection the fanout lists (`GET /connections` on its control socket,
+  then `DELETE /connections/<uuid>`), each once, and one that attaches later at the next tick. It
+  writes no `SIGNALS_PATH` entry: a PHP-served viewer ends on `NodeLease` at its next segment. New
+  viewers are refused by `stream/auth.php` from `exp` on, as before.
+- **The compiled verdict** does not reach Go. It anchors on the same MAIN time within seconds, and it
+  outranks this judgement only where MAIN's clock went back. There the agent's anchor is the earlier
+  one, so the agent drops later than PHP, never sooner.
+- **The commanded fence** now drops the fanout's own viewers the same way as well as the registry's,
+  so a node whose CONNECTIONS flow is off (an empty registry) loses its fanout viewers at the end of
+  the drain too.
+
+Tests (agent): `TestALeasePastItsDrainDropsTheFanoutsViewers`,
+`TestALeaseFenceServesOnEveryUncertainty`, `TestTheLeaseFenceSettingsAreReadAsMAINKeepsThem`,
+`TestACommandedFenceDropsTheFanoutsOwnViewersToo`.
+
+**MAIN's data-plane client.** MAIN read other servers' files with `getFile` and the stream secret
+(its source probe, `ServerRepository::checkSource`; a node's certbot log, `getSSLLog`; the movies
+and created channels it runs) and pulled streams from load balancer parents with the password.
+Because of that, `DataPlane::legacyApiRetired()` never held and no node's `/api` could be retired.
+MAIN now gets a client of its own, and it is off until an operator runs `cluster:main-dataplane on`.
+
+- **A key of MAIN's own, not the panel key.** `xc_agent keygen -state
+  config/cluster/main_agent.json -uuid <uuid>` makes it, as a node's. The command runs it as
+  `xc_vm` and records the public halves, uuid and generation in `cluster_meta` `main_dataplane`
+  (`Domain\Cluster\MainDataPlane`). The panel key stays inside `xcvm_core`, which signs no
+  per-request proofs. `rekey` makes a new uuid and key and raises the generation, and `off` keeps the
+  key.
+- **MAIN in the node list.** While on, `ReplicaBuilder::serversData()` adds `{sid: MAIN, gen,
+  state: active, ed_pub, dataplane: true}` to the signed node list, and the nodes are sent
+  `config.changed {servers}`. A parent's `RelayGuard` and an owner's `FileTicketServer` then check
+  MAIN's proofs exactly as a node's (the child or fetcher active at the ticket's generation, its key,
+  the nonce), so nothing changed on their side. The same entry makes a load balancer's parents refuse
+  MAIN's password (the node list's `dataplane`), and it makes MAIN count for
+  `legacyApiRetired()`.
+- **MAIN's tickets.** `TicketService::relayTicket()` and `fileTicket()` (split out of `forRecord`)
+  mint for MAIN as the child or fetcher, into `config/cluster/replica/tickets.json` under a lock. A
+  pull is minted when its URL is built (`DataPlane::relayUrl` / `fileUrl` on MAIN, through
+  `MainDataPlane::ensureRelay` / `ensureFile`, when no ticket with an hour left is held). The cron
+  (`cron:cluster`, `MainDataPlane::refresh`) mints anew at each epoch for every stream MAIN holds,
+  and for every file read on demand within a day (`cluster_meta` `main_dataplane_files`, at most 500).
+  A pull MAIN cannot mint for (no licence, a legacy owner or parent) keeps the legacy URL, and so does
+  MAIN's own file.
+- **MAIN's agent.** `xc_agent run -role main -state main_agent.json` (XC_VM_Fanout,
+  `mainrole.go`): the loopback proxy with MAIN's key, the server id and generation from
+  `config/cluster/main.json` (which it re-reads every 2 s; a changed identity ends it and `run.sh`
+  starts it again), the routes and owners' keys from `replica/servers.json`, and MAIN's own clock.
+  `run.sh`, `service` and `cron:root_signals` start it whenever `main.json` exists. The binary is
+  MAIN's cached one for its arch. `DataPlane::on()` on MAIN is `main.json`'s `dataplane`.
+- **The readers.** `checkSource` and `getSSLLog` use `DataPlane::fileUrl` while MAIN's data plane
+  is on, else `getFile` of the server's IP as before.
+
+What it does not change: MAIN's own `/api`, the load balancers' `/api` code and `InternalApiController`,
+the viewer API, and proxies. A proxy is never a node, so with one in the cluster `legacyApiRetired()`
+stays false and every node keeps its `/api`.
+
+Tests: `MainDataPlaneTest` (off by default; the key, `main.json`, MAIN's entry and a re-key; tickets
+naming MAIN with the path only the owner opens; the cron's epochs; MAIN's URLs through the agent, and
+the legacy ones for a legacy server, MAIN's own file and no licence); on the agent's side
+`TestMainReadsANodesFileWithItsOwnKey`, `TestMainFollowsItsIdentity`,
+`TestRunMainEndsWhenTheIdentityChanges`, `TestNewMainAgentNeedsAWholeIdentity` and
+`TestInteropMainDataPlane`, which loads what MAIN's real `MainDataPlane` wrote.
 
 ### Disaster recovery of MAIN's cluster keys
 

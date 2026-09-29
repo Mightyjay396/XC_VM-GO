@@ -4,7 +4,6 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Backup\BackupService;
-use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Proxy\ProxyArchiveUpdater;
@@ -202,6 +201,11 @@ class ServerInstallCommand implements CommandInterface {
 			}
 		}
 
+		// An LB in API mode — a new one under lb_new_node_mode=api, or one MAIN
+		// keeps free of its credentials — gets no grant and a credential-free
+		// config.enc. Decided once, before the enrolment replaces the node's row.
+		$rApiMode = $rType == 2 && LbInstallFlow::installsInApiMode(SettingsManager::getAll(), $rServerID);
+
 		if ($rType == 2) {
 			LbInstallFlow::runPostExtractSteps($rConn, $rRunSSH, $rSendFileSSH, $rDistID, $rVersion, $rUpdateSysctl, $rSysCtl, $rServerID);
 		}
@@ -213,7 +217,7 @@ class ServerInstallCommand implements CommandInterface {
 			$this->sendFileSSH($rConn, TMP_PATH . 'config_' . $rServerID, CONFIG_PATH . 'config.ini');
 		} else {
 			// LB: secure provisioning — DB password never enters PHP (see LbInstallFlow::provisionConfig).
-			if (!LbInstallFlow::provisionConfig($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db)) {
+			if (!LbInstallFlow::provisionConfig($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, $rApiMode)) {
 				return 1;
 			}
 		}
@@ -226,11 +230,11 @@ class ServerInstallCommand implements CommandInterface {
 			$rServices = LbInstallFlow::configureRuntime($rConn, $rSendFileSSH, $rRunSSH, $rServers, $rServerID);
 		}
 
-		$this->finalizeHostAfterRuntime($rConn, $rRunSSH, $rHost, !($rType == 2 && ClusterSettings::newNodesInApiMode(SettingsManager::getAll())));
+		$this->finalizeHostAfterRuntime($rConn, $rRunSSH, $rHost, !$rApiMode);
 
 		if ($rType == 2) {
 			LbInstallFlow::runStartup($rConn, $rRunSSH);
-			if (!LbInstallFlow::provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db)) {
+			if (!LbInstallFlow::provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, null, null, true, $rApiMode)) {
 				return 1;
 			}
 		} else {

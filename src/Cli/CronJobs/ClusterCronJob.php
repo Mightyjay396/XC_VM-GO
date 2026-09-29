@@ -19,6 +19,7 @@ use XcVm\Domain\Cluster\CommandBus;
 use XcVm\Domain\Cluster\CorePins;
 use XcVm\Domain\Cluster\EnrolCodeService;
 use XcVm\Domain\Cluster\LivenessService;
+use XcVm\Domain\Cluster\MainDataPlane;
 use XcVm\Domain\Cluster\NonceStore;
 use XcVm\Domain\Cluster\StreamReplica;
 use XcVm\Domain\Cluster\TokenService;
@@ -42,7 +43,10 @@ use XcVm\Domain\Server\ServerRepository;
  * - in the hard revocation mode without a licence, every node that takes
  *   commands is sent the licence fence (ClusterRoute::licenceFences);
  * - a node that takes root commands and whose xcvm_core is not pinned to this
- *   panel's key is sent `node.root pin_core` (CorePins::offer).
+ *   panel's key is sent `node.root pin_core` (CorePins::offer);
+ * - with MAIN's data-plane client on, MAIN's own tickets are minted anew at
+ *   each epoch and its agent's servers section kept current
+ *   (MainDataPlane::refresh).
  *
  * The crontab row (`cluster`, role `main`) is copied to load balancers with
  * the rest; there the job returns before touching anything, as the cluster
@@ -108,6 +112,9 @@ class ClusterCronJob implements CommandInterface {
 			// Every node that takes root commands gets this panel's key pinned in
 			// its xcvm_core, which its compiled lease verdict needs (Phase 9).
 			'core_pin' => static fn() => CorePins::offer(),
+			// MAIN's own data-plane client: its tickets anew at each epoch, its
+			// agent's servers section when it changed (Phase 9).
+			'main_dataplane' => static fn() => MainDataPlane::refresh(),
 			// The signals daemon runs this every second; the minute is its fallback.
 			'liveness' => static function () {
 				if (LivenessService::tick(ClusterSettings::int('cluster_offline_after_sec', SettingsManager::get('cluster_offline_after_sec'))) !== []) {

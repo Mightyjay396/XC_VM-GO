@@ -136,42 +136,76 @@ final class TicketService {
 			return null;
 		}
 		$rServerID = (int) $rNode['server_id'];
-		$rGen = (int) $rNode['gen'];
 		$rStreamID = (int) ($rData['stream']['id'] ?? 0);
-		$rEpoch = DataPlane::epoch($rNow);
-		$rIat = $rEpoch * DataPlane::EPOCH;
-		$rServers = self::servers();
-		$rRelay = null;
-		$rParent = (int) ($rData['server']['parent_id'] ?? 0);
-		if ($rStreamID > 0 && $rParent > 0 && $rParent !== $rServerID && ($rParent === $rServers['main'] || isset($rServers['nodes'][$rParent]))) {
-			$rDoc = Ticket::document('rly', DataPlane::relayTid($rEpoch, $rServerID, $rStreamID), $rIat, $rIat + DataPlane::RELAY_LIFE, [
-				'child_sid' => $rServerID, 'child_gen' => $rGen, 'parent_sid' => $rParent, 'stream_id' => $rStreamID,
-			]);
-			$rRelay = Ticket::wire($rDoc, $rCrypto->sign('rly', $rDoc));
-		}
+		$rRelay = self::relayTicket($rCrypto, $rNode, (int) ($rData['server']['parent_id'] ?? 0), $rStreamID, $rNow);
 		$rFiles = [];
 		foreach (self::files($rData, $rServerID) as [$rOwner, $rPath]) {
 			$rRef = DataPlane::ref($rOwner, $rPath);
 			if (isset($rFiles[$rRef])) {
 				continue;
 			}
-			if ($rOwner === $rServers['main']) {
-				$rFile = DataPlane::SEAL_MAIN . Enc::b64url($rCrypto->sealLocal(FileTicketServer::MAIN_SEAL, $rPath, $rRef));
-			} elseif (isset($rServers['nodes'][$rOwner])) {
-				$rFile = DataPlane::SEAL_NODE . Enc::b64url(Seal::seal($rServers['nodes'][$rOwner]['box'], DataPlane::SEAL_PURPOSE, $rRef, $rPath));
-			} else {
-				continue;
+			$rWire = self::fileTicket($rCrypto, $rNode, $rOwner, $rPath, $rNow);
+			if ($rWire !== null) {
+				$rFiles[$rRef] = $rWire;
 			}
-			$rDoc = Ticket::document('fil', DataPlane::fileTid($rEpoch, $rServerID, $rRef), $rIat, $rIat + DataPlane::FILE_LIFE, [
-				'fetcher_sid' => $rServerID, 'fetcher_gen' => $rGen, 'owner_sid' => $rOwner, 'ref' => $rRef, 'file' => $rFile,
-			]);
-			$rFiles[$rRef] = Ticket::wire($rDoc, $rCrypto->sign('fil', $rDoc));
 		}
 		if ($rRelay === null && $rFiles === []) {
 			return null;
 		}
 		ksort($rFiles, SORT_STRING);
 		return ['files' => $rFiles === [] ? null : $rFiles, 'relay' => $rRelay];
+	}
+
+	/**
+	 * A relay ticket for $rNode (the child) to pull $rStreamID from
+	 * $rParent, for the current epoch; null when the parent cannot check
+	 * one (not MAIN, not an active node, the child itself). Throws
+	 * ClusterRefusedException when it cannot be signed.
+	 *
+	 * @param array<string, mixed> $rNode {server_id, gen}: a cluster_nodes row, or MAIN's (MainDataPlane)
+	 */
+	public static function relayTicket(ClusterCrypto $rCrypto, array $rNode, int $rParent, int $rStreamID, int $rNow): ?string {
+		$rServerID = (int) $rNode['server_id'];
+		$rServers = self::servers();
+		if ($rStreamID <= 0 || $rParent <= 0 || $rParent === $rServerID || ($rParent !== $rServers['main'] && !isset($rServers['nodes'][$rParent]))) {
+			return null;
+		}
+		$rEpoch = DataPlane::epoch($rNow);
+		$rIat = $rEpoch * DataPlane::EPOCH;
+		$rDoc = Ticket::document('rly', DataPlane::relayTid($rEpoch, $rServerID, $rStreamID), $rIat, $rIat + DataPlane::RELAY_LIFE, [
+			'child_sid' => $rServerID, 'child_gen' => (int) $rNode['gen'], 'parent_sid' => $rParent, 'stream_id' => $rStreamID,
+		]);
+		return Ticket::wire($rDoc, $rCrypto->sign('rly', $rDoc));
+	}
+
+	/**
+	 * A file ticket for $rNode (the fetcher) to read $rPath from $rOwner, for
+	 * the current epoch, the path sealed to the owner; null when the owner
+	 * cannot check one. Throws ClusterRefusedException when it cannot be
+	 * signed.
+	 *
+	 * @param array<string, mixed> $rNode {server_id, gen}: a cluster_nodes row, or MAIN's (MainDataPlane)
+	 */
+	public static function fileTicket(ClusterCrypto $rCrypto, array $rNode, int $rOwner, string $rPath, int $rNow): ?string {
+		$rServerID = (int) $rNode['server_id'];
+		$rServers = self::servers();
+		if ($rOwner === $rServerID || $rPath === '') {
+			return null;
+		}
+		$rRef = DataPlane::ref($rOwner, $rPath);
+		if ($rOwner === $rServers['main']) {
+			$rFile = DataPlane::SEAL_MAIN . Enc::b64url($rCrypto->sealLocal(FileTicketServer::MAIN_SEAL, $rPath, $rRef));
+		} elseif (isset($rServers['nodes'][$rOwner])) {
+			$rFile = DataPlane::SEAL_NODE . Enc::b64url(Seal::seal($rServers['nodes'][$rOwner]['box'], DataPlane::SEAL_PURPOSE, $rRef, $rPath));
+		} else {
+			return null;
+		}
+		$rEpoch = DataPlane::epoch($rNow);
+		$rIat = $rEpoch * DataPlane::EPOCH;
+		$rDoc = Ticket::document('fil', DataPlane::fileTid($rEpoch, $rServerID, $rRef), $rIat, $rIat + DataPlane::FILE_LIFE, [
+			'fetcher_sid' => $rServerID, 'fetcher_gen' => (int) $rNode['gen'], 'owner_sid' => $rOwner, 'ref' => $rRef, 'file' => $rFile,
+		]);
+		return Ticket::wire($rDoc, $rCrypto->sign('fil', $rDoc));
 	}
 
 	/**

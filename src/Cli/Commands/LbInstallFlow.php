@@ -16,6 +16,7 @@ use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\CorePins;
+use XcVm\Domain\Cluster\DbCredentials;
 use XcVm\Domain\Cluster\EnrolmentService;
 use XcVm\Domain\Cluster\LeaseService;
 
@@ -144,12 +145,12 @@ class LbInstallFlow {
 	 */
 	public static function provisionConfig($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?bool $rApiMode = null): bool {
 		echo "Generating configuration file\n";
-		$rApiMode ??= self::apiMode(SettingsManager::getAll());
+		$rApiMode ??= self::installsInApiMode(SettingsManager::getAll(), $rServerID);
 		if ($rApiMode && !CredentialFreeConfig::supported()) {
 			// Refused before anything is written: an older extension would pack
 			// MAIN's credentials into a node meant never to hold them.
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
-			echo "lb_new_node_mode is api, but this panel's xcvm_core cannot pack a configuration without MAIN's credentials (it needs install_config). Update the extension, or install the node in legacy mode. Exiting\n";
+			echo "This node installs in API mode (lb_new_node_mode is api, or MAIN keeps it free of its credentials: cluster mode 2 or a revoked grant), but this panel's xcvm_core cannot pack a configuration without MAIN's credentials (it needs install_config). Update the extension. Exiting\n";
 			return false;
 		}
 
@@ -223,6 +224,21 @@ class LbInstallFlow {
 	 */
 	public static function apiMode(array $rSettings): bool {
 		return ClusterSettings::newNodesInApiMode($rSettings);
+	}
+
+	/**
+	 * Does this node install (or re-enrol) in API mode? New nodes do when
+	 * `lb_new_node_mode` is api (apiMode()). A node MAIN already keeps
+	 * credential-free — in cluster mode 2, or with its grant revoked
+	 * (DbCredentials::credentialFree) — does too, whatever the setting: a
+	 * reinstall over SSH must not hand it MAIN's credentials and grant back,
+	 * nor drop it to mode 1. Ask before the enrolment, which replaces the
+	 * node's row.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 */
+	public static function installsInApiMode(array $rSettings, int $rServerID): bool {
+		return self::apiMode($rSettings) || (!empty($rSettings['cluster_api_enabled']) && DbCredentials::credentialFree($rServerID));
 	}
 
 	/**
@@ -515,10 +531,15 @@ class LbInstallFlow {
 	 * @param callable|null $rAgentBinary fn(string $arch): ?string local agent path (tests; defaults to AgentBinaryCommand::cached)
 	 * @param bool          $rMarkFailed  Set status 4 on failure (a fresh install); false for `server:enrol` on a live node.
 	 */
-	public static function provisionCluster($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?ClusterCrypto $rCrypto = null, ?callable $rAgentBinary = null, bool $rMarkFailed = true): bool {
+	public static function provisionCluster($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?ClusterCrypto $rCrypto = null, ?callable $rAgentBinary = null, bool $rMarkFailed = true, ?bool $rApiMode = null): bool {
 		$rSettings = SettingsManager::getAll();
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return true;
+		}
+		// A node MAIN keeps credential-free re-enrols in mode 2 whatever
+		// lb_new_node_mode says (installsInApiMode, asked before the row goes).
+		if ($rApiMode ?? self::installsInApiMode($rSettings, $rServerID)) {
+			$rSettings['lb_new_node_mode'] = 'api';
 		}
 		$rFail = static function (string $rWhy) use ($db, $rServerID, $rMarkFailed): bool {
 			if ($rMarkFailed) {
