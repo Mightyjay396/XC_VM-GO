@@ -3977,6 +3977,34 @@ credentials back to a node that had given them up:
 Tests: `ApiModeInstallTest` (the reinstall decision, the revoke across a re-enrolment, no grant to
 such a host).
 
+**MAIN hears when the relay proxy cannot bind its port.** The agent's loopback relay proxy
+(`127.0.0.1:31290`, fourth Phase 8 increment) is an unprivileged port. While another process held
+it, the node's relays and file reads failed and were retried, and only the node's own log said
+why. Now every heartbeat carries the proxy's state:
+
+```text
+relay   {"bound": true}
+        {"bound": false, "since_ms": <agent's unix ms of the first failed bind in a row>,
+         "failures": <failed binds since>, "error": "<the last, printable ASCII, at most 200 bytes>"}
+```
+
+- **The agent** (`relayproxy.go`, `RelayReport`) sends it once the proxy has tried its port, and
+  never while it is off (no `-relay`). `failures` is 0 when a listener it held stopped. The same
+  object is `relay` in `GET /v1/status` (null while there is none).
+- **MAIN** (`Domain\Cluster\NodeRelay`, from the `heartbeat` op) keeps it in
+  `cluster_nodes.relay_down_since` (MAIN's clock: the agent's `since_ms` moved by the node's clock
+  offset, never later than now) and `relay_error` (migration 054, and `database.sql`), written only
+  when the state or the error changes. Each transition is audited: `node.relay_unbound {error}` and
+  `node.relay_bound {down_since}`. A heartbeat without `relay`, or with one that is not an object
+  with a boolean `bound`, changes nothing. A table from before 054 changes nothing either.
+- **Shown** as a *relay port down* badge in the DATAPLANE column of the Cluster Nodes page, and as a
+  *Relay proxy* line in `server:diagnose`: from MAIN's row on MAIN, from the agent's status on the
+  node.
+
+Tests: `NodeRelayTest`, `ClusterDiagnosisTest`; on the agent's side
+`TestRelayReportTellsWhetherTheProxyHoldsItsPort`, `TestHeartbeatCarriesTheRelayReport`, the status
+tests and `TestInteropWithPanel` against MAIN's real `ClusterApi`.
+
 ### Disaster recovery of MAIN's cluster keys
 
 `cluster:export-keys <file>` and `cluster:import-keys <file>` wrap `xcvm_core`'s `cluster_export_keys()` and `cluster_import_keys()` (ADR-002, "Disaster recovery"):

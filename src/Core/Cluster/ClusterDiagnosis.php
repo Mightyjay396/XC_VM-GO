@@ -151,6 +151,15 @@ final class ClusterDiagnosis {
 			$rValue .= $rCursor < 0 ? ' · MAIN\'s cursor not known yet' : ' · MAIN at #' . $rCursor;
 			$rOut[] = self::check('Outbox ' . $rName, $rValue, $rLaneOk, 'Events wait ' . $rAge . 's in the ' . $rName . ' spool: MAIN is not taking them (unreachable, refusing the session, or busy — ' . (int) ($rStatus['busy_refusals'] ?? 0) . ' busy refusals since the agent started). ' . ($rName === 'p0' ? 'Stream state reaches MAIN late until it drains.' : 'Logs are dropped oldest first past the lane\'s cap.'));
 		}
+
+		// The relay proxy's port (status `relay`; null while it is off or has not tried).
+		$rRelay = is_array($rStatus['relay'] ?? null) ? $rStatus['relay'] : null;
+		if ($rRelay !== null) {
+			$rBound = ($rRelay['bound'] ?? null) === true;
+			$rErr = self::str($rRelay['error'] ?? '');
+			$rSince = (int) ($rRelay['since_ms'] ?? 0);
+			$rOut[] = self::check('Relay proxy', $rBound ? 'holds 127.0.0.1:31290' : 'cannot bind 127.0.0.1:31290' . ($rSince > 0 ? ' for ' . self::span(intdiv(max(0, $rNowMs - $rSince), 1000)) : '') . ' (' . (int) ($rRelay['failures'] ?? 0) . ' attempts)' . ($rErr !== '' ? ': ' . $rErr : ''), $rBound, 'Another process holds 127.0.0.1:31290, so this node\'s data-plane relays and file reads fail until the agent can bind it (it retries, and MAIN is told). Find it with `ss -ltnp \'sport = :31290\'`.');
+		}
 		return $rOut;
 	}
 
@@ -198,6 +207,13 @@ final class ClusterDiagnosis {
 		$rOut[] = self::check('Command queue', $rCount === 0 ? 'empty' : $rCount . ' not acked, oldest ' . $rLag . 's', $rLag <= self::OUTBOX_LAG_SEC, $rCount . ' command(s) for this node are not acked, the oldest for ' . $rLag . 's: the node is not polling (COMMANDS flow off, agent stopped) or cannot run them.');
 
 		$rOut[] = self::check('Event cursors', 'p0 #' . (int) ($rNode['useq_p0'] ?? 0) . ' · p1 #' . (int) ($rNode['useq_p1'] ?? 0), true);
+
+		// The agent's report of its relay proxy's port (heartbeat `relay`, NodeRelay).
+		$rRelayDown = isset($rNode['relay_down_since']) ? (int) $rNode['relay_down_since'] : null;
+		if ($rRelayDown !== null || !empty($rNode['relay'])) {
+			$rRelayErr = self::str($rNode['relay_error'] ?? '');
+			$rOut[] = self::check('Relay proxy', $rRelayDown === null ? 'holds 127.0.0.1:31290' : 'cannot bind 127.0.0.1:31290 since ' . self::utc($rRelayDown) . ($rRelayErr !== '' ? ': ' . $rRelayErr : ''), $rRelayDown === null, 'The node\'s agent cannot bind its relay proxy\'s port (127.0.0.1:31290): another process holds it, so the node\'s data-plane relays and file reads fail until it frees. Find it on the node (`ss -ltnp \'sport = :31290\'`).');
+		}
 		return $rOut;
 	}
 

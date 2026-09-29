@@ -268,7 +268,10 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
     key (`relay.key`) only while it holds `127.0.0.1:31290`, and the node's PHP checks
     that the listener belongs to the key's owner. While the port is not the agent's (held
     by another user, or the agent is stopped), the node's relays and file reads fail and
-    are retried: they never fall back to the stream secret.
+    are retried: they never fall back to the stream secret. An agent that cannot bind the
+    port tells MAIN in every heartbeat: the Cluster Nodes page shows *relay port down* with
+    the error, and `server:diagnose` names it. The port is not freed for it: an operator
+    finds the holder on the node.
   - `/xfile` has its own rate limit (50 requests/s per server, burst 100, answered with a
     429 the agent retries), apart from the viewers' 20 requests/s.
   - `cluster:rotate-stream-secret` does not exist: retiring the password is Phase 9's.

@@ -162,6 +162,9 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                             <?php else: ?>
                                 <span class="text-body-secondary">—</span>
                             <?php endif; ?>
+                            <?php if ($rFlowName === 'dataplane' && $rNode['relay_down_since'] !== null): ?>
+                                <span class="badge bg-label-danger" title="<?= htmlspecialchars($language::get('cluster_relay_unbound_help') . ' ' . $rNode['relay_error'], ENT_QUOTES); ?>"><?= $language::get('cluster_relay_unbound'); ?> <?= $rWhen((int) $rNode['relay_down_since']); ?></span>
+                            <?php endif; ?>
                         </td>
                         <?php endforeach; ?>
                         <td>
