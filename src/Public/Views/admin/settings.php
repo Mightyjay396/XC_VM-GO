@@ -2294,6 +2294,7 @@ use XcVm\Domain\Server\ServerRepository;
 						['lb_partition_tolerance_h', 'number', 'Hours a node keeps serving after its token expires while MAIN is unreachable (0-24).'],
 						['lb_lease_fence', 'switch', 'Let a node stop serving when its lease runs out: past the lease no viewer starts on it, and past the drain below its running sessions stop. Off by default, and it has to be on BEFORE a licence lapses, because the section that carries it to a node needs a valid one. A node with no lease, no agent or no word from MAIN keeps serving.'],
 						['lb_fence_drain_min', 'number', 'Minutes existing sessions drain after a node is fenced (0-60).'],
+						['lb_digest_nonce_required', 'switch', 'Refuse a file chunk whose digest names no request, which only an owner from before the nonce sends: past it, an old answer for the same chunk cannot be replayed within 90 s. Turn it on once Cluster Nodes names no such owner.'],
 						['lb_telemetry_interval_sec', 'number', 'Heartbeat interval in seconds (1-3).'],
 						['cluster_offline_after_sec', 'number', 'Silence before MAIN marks a node offline (10-300 s).'],
 						['cluster_orphan_conn_ttl_sec', 'number', 'Silence before MAIN purges a node\'s connections (30-3600 s).'],

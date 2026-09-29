@@ -107,6 +107,7 @@ return [
 		'keep_restarts',
 		'kill_rogue_ffmpeg',
 		'language',
+		'lb_digest_nonce_required',
 		'lb_fence_drain_min',
 		'lb_lease_fence',
 		'lb_new_node_mode',

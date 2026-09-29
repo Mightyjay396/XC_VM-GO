@@ -78,7 +78,9 @@ export async function submitForm(page: Page, scope: Scope, action: string, submi
       new Promise<string>((_, reject) => setTimeout(() => reject(new Error(`no post.php?action=${action} within 30s`)), 30_000)),
     ]);
   } finally {
-    await page.unroute(pattern, handler);
+    // Not awaited: unroute waits on the browser's interception update, which can
+    // stall for the rest of the test while the page navigates away on success.
+    page.unroute(pattern, handler).catch(() => undefined);
   }
   let body: Record<string, unknown> | null = null;
   try {

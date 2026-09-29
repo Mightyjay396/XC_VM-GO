@@ -20,10 +20,16 @@ the admin specs create, edit, start and delete real records.
 | `tests/admin/templates.spec.ts` | Activation code pages render; category template: the menu's create entry, create, rename and make it a system template, clone, delete |
 | `tests/admin/reports.spec.ts` | VOD theft detection and line IP usage keep the chosen time range |
 | `tests/admin/pickers.spec.ts` | Date pickers open: expiry on the line / MAG / Enigma2 forms and their mass-edit pages, and the log pages' date range filters |
+| `tests/admin/groups.spec.ts` | Reseller member group: create, reopen with its flags, rename, delete; transcoding profile: create, rename, delete |
+| `tests/admin/access.spec.ts` | RTMP IP: allow to push (a generated password), add pull, remove; HMAC key: generated on open, create, disable (the secret stays hidden), delete |
+| `tests/admin/cluster.spec.ts` | Read-only: the servers list shows `XC_E2E_SERVER`, the Cluster Nodes page renders |
 | `tests/admin/player-api.spec.ts` | A line signs in to `player_api.php` and every action answers JSON; info actions answer only for the line's own content; malformed parameters and a wrong password get JSON too |
 | `tests/admin/cleanup.teardown.ts` | After everything: removes whatever the admin specs left behind (see below) |
 
 ## Run
+
+Use Node 18–22. Under Node 26, Playwright 1.49 fails every test within seconds with
+`Test timeout of 30000ms exceeded`, the sign-in included.
 
 ```bash
 # one-time: install deps + the Chromium browser
@@ -73,7 +79,7 @@ ssh root@panel 'sudo -u xc_vm /home/xc_vm/bin/php/bin/php /tmp/create-admin.php 
 ## Test data
 
 Every record the admin specs create is named after the run: `e2e-<run>-<label>`
-(categories, bouquets, packages, category templates, streams, block lists), `e2e<run><label>` for
+(categories, bouquets, packages, category templates, streams, block lists, member groups, transcoding profiles, HMAC key notes), `e2e<run><label>` for
 usernames, and devices carry an `e2e-<run>` tag in their notes. Each spec deletes
 what it made; `cleanup.teardown.ts` runs after the whole suite (also after a
 failure) and sweeps anything matching those patterns, from any earlier run. It
@@ -81,6 +87,8 @@ never touches other records, nor the `XC_E2E_USER` account.
 
 Side effects on the panel host worth knowing:
 
+- **RTMP IPs** have no name to tag: the spec allows an address from
+  198.51.100.0/24, and cleanup removes every RTMP IP in that range.
 - **Blocking an IP** adds an iptables DROP rule. The spec uses an address from
   198.51.100.0/24 (RFC 5737 documentation range) and lifts the block again.
 - **The wrong-password test** counts once against the login flood limit

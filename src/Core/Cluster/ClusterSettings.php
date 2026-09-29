@@ -33,6 +33,7 @@ final class ClusterSettings {
 		'lb_partition_tolerance_h' => [12, 0, 24],
 		'lb_fence_drain_min' => [10, 0, 60],
 		'lb_lease_fence' => [0, 0, 1],
+		'lb_digest_nonce_required' => [0, 0, 1],
 		'lb_telemetry_interval_sec' => [2, 1, 3],
 		'cluster_offline_after_sec' => [30, 10, 300],
 		'cluster_orphan_conn_ttl_sec' => [120, 30, 3600],
@@ -70,6 +71,11 @@ final class ClusterSettings {
 	/** Every setting this class owns. */
 	public static function keys(): array {
 		return array_merge(array_keys(self::INTS), array_keys(self::ENUMS), ['cluster_api_port', 'cluster_main_host', 'lb_scan_roots', 'cluster_db_allowlist_extra']);
+	}
+
+	/** The on/off settings (0-1): the settings form's switches, which post nothing when off. */
+	public static function switches(): array {
+		return array_keys(array_filter(self::INTS, static fn(array $rRange): bool => $rRange[1] === 0 && $rRange[2] === 1));
 	}
 
 	/** Grace G for a rotation interval L (both minutes): clamp(L/4, 5, 60). */

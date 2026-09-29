@@ -58,6 +58,33 @@ final class ClusterOverview {
 	}
 
 	/**
+	 * What the active nodes' agents report of chunk digests that name no
+	 * request (NodeDigestN1): the owners named in the last 24 h, and how many
+	 * active nodes do not report (an agent from before the report). Pure.
+	 *
+	 * @param list<array<string, mixed>> $rNodes ClusterAdmin::nodes()
+	 * @return array{owners: list<int>, silent: int}
+	 */
+	public static function digestN1(array $rNodes): array {
+		$rOwners = [];
+		$rSilent = 0;
+		foreach ($rNodes as $rNode) {
+			if (($rNode['state'] ?? '') !== 'active') {
+				continue;
+			}
+			$rList = NodeDigestN1::owners($rNode);
+			if ($rList === null) {
+				$rSilent++;
+			} else {
+				$rOwners = array_merge($rOwners, $rList);
+			}
+		}
+		$rOwners = array_values(array_unique($rOwners));
+		sort($rOwners);
+		return ['owners' => $rOwners, 'silent' => $rSilent];
+	}
+
+	/**
 	 * The page's banners. Pure.
 	 *
 	 * - Licence suspended: MAIN signs no lease (or any granting record), so each

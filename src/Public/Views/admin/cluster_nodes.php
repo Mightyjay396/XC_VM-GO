@@ -324,6 +324,17 @@ $rWhen = static fn(?int $rTs): string => $rTs ? gmdate('Y-m-d H:i:s', $rTs) . ' 
                     <div class="small text-body-secondary"><?= $language::get('cluster_metric_ctl'); ?></div>
                     <div class="fs-5 <?= $rSat['ctl_queue_ms'] === null ? '' : 'text-warning'; ?>"><?= $rSat['ctl_queue_ms'] === null ? htmlspecialchars($language::get('cluster_metric_ctl_none'), ENT_QUOTES) : number_format($rSat['ctl_queue_ms'] / 1000, 1) . ' s'; ?></div>
                 </div>
+                <div class="col-md-3 mt-3" title="<?= htmlspecialchars($language::get('cluster_metric_digest_n1_help'), ENT_QUOTES); ?>">
+                    <div class="small text-body-secondary"><?= $language::get('cluster_metric_digest_n1'); ?></div>
+                    <?php if ($clusterDigestN1['owners'] === []): ?>
+                        <div class="fs-5"><?= $language::get('cluster_metric_digest_n1_none'); ?></div>
+                    <?php else: ?>
+                        <div class="fs-5 text-warning"><?= htmlspecialchars(implode(', ', array_map(static fn(int $rSid): string => ($clusterNames[$rSid] ?? '') ?: '#' . $rSid, $clusterDigestN1['owners'])), ENT_QUOTES); ?></div>
+                    <?php endif; ?>
+                    <?php if ($clusterDigestN1['silent'] > 0): ?>
+                        <div class="small text-body-secondary"><?= htmlspecialchars($language::get('cluster_metric_digest_n1_silent', ['{COUNT}' => (string) $clusterDigestN1['silent']]), ENT_QUOTES); ?></div>
+                    <?php endif; ?>
+                </div>
             </div>
         </div>
     </div>
