@@ -21,21 +21,21 @@
 <details>
 <summary><strong>📘 Contents</strong></summary>
 
-* 🏁 [Overview](#-overview)
-* ⚠️ [Status](#️-status)
-* 📚 [Documentation](#-documentation)
-* 🔄 [Migration Guide](#-migration-guide)
-* 🧱 [Technology Stack](#-technology-stack)
-* 🧩 [Supported OS](#-supported-operating-systems)
-* 📥 [Quick Install](#-quick-install)
-* 🧰 [Service Management](#-service-management)
-* 📂 [Project Structure](#-project-structure)
-* 🧮 [Server Requirements & Sizing](#-server-requirements--sizing)
-* ⭐ [Features](#-features)
-* 🐞 [Known Limitations](#-known-limitations)
-* 🤝 [Contributing](#-contributing)
-* ⚠️ [Legal & Licensing Notice](#️-legal--licensing-notice)
-* 📜 [License (AGPL-3.0)](#-license-agpl-30)
+- 🏁 [Overview](#-overview)
+- ⚠️ [Status](#️-status)
+- 📚 [Documentation](#-documentation)
+- 🔄 [Migration Guide](#-migration-guide)
+- 🧱 [Technology Stack](#-technology-stack)
+- 🧩 [Supported OS](#-supported-operating-systems)
+- 📥 [Quick Install](#-quick-install)
+- 🧰 [Service Management](#-service-management)
+- 📂 [Project Structure](#-project-structure)
+- 🧮 [Server Requirements & Sizing](#-server-requirements--sizing)
+- ⭐ [Features](#-features)
+- 🐞 [Known Limitations](#-known-limitations)
+- 🤝 [Contributing](#-contributing)
+- ⚠️ [Legal & Licensing Notice](#️-legal--licensing-notice)
+- 📜 [License (AGPL-3.0)](#-license-agpl-30)
 
 </details>
 
@@ -46,11 +46,11 @@
 **XC_VM** is an open-source IPTV platform based on Xtream Codes.
 It enables:
 
-* 📺 Live & VOD streaming
-* 🔀 Load balancing
-* 📊 Full user/reseller control
-* 🎚️ Transcoding & EPG
-* 🔐 Hardened security fixes
+- 📺 Live & VOD streaming
+- 🔀 Load balancing
+- 📊 Full user/reseller control
+- 🎚️ Transcoding & EPG
+- 🔐 Hardened security fixes
 
 > ✅ 100% free. No license checks. No server locks.
 
@@ -64,10 +64,10 @@ It enables:
 
 ## 📚 Documentation
 
-* 🇬🇧 **English Guide**
+- 🇬🇧 **English Guide**
   [https://vateron-media.github.io/XC_VM/](https://vateron-media.github.io/XC_VM/)
 
-* 🇷🇺 **Руководство на русском**
+- 🇷🇺 **Руководство на русском**
   [https://vateron-media.github.io/XC_VM/ru/](https://vateron-media.github.io/XC_VM/ru/)
 
 ---
@@ -76,20 +76,20 @@ It enables:
 
 Migrating from Xtream Codes / XUI.one? Follow the step-by-step migration guide:
 
-* 📖 **Migration Guide**
-  [https://vateron-media.github.io/XC_VM/info/migration_guide/](https://vateron-media.github.io/XC_VM/info/migration_guide/)
+- 📖 **Migration Guide**
+  [https://vateron-media.github.io/XC_VM/latest/info/migration_guide/](https://vateron-media.github.io/XC_VM/latest/info/migration_guide/)
 
 ---
 
 ## 🧱 Technology Stack
 
-| Component | Version    | Description                     |
-| --------- | ---------- | ------------------------------- |
+| Component | Version       | Description                     |
+| --------- | ------------- | ------------------------------- |
 | PHP       | 8.1.33        | Backend runtime                 |
-| Nginx     | 1.24       | Web server & reverse proxy      |
-| FFmpeg    | 8.0, 7.1, 4.0                        | Media transcoding & processing  |
-| MariaDB   | 11.4      | SQL database engine             |
-| KeyDB     | 6.3.4      | Cache & session storage (Redis) |
+| Nginx     | 1.24          | Web server & reverse proxy      |
+| FFmpeg    | 8.0, 7.1, 4.0 | Media transcoding & processing  |
+| MariaDB   | 11.4          | SQL database engine             |
+| KeyDB     | 6.3.4         | Cache & session storage (Redis) |
 
 ---
 
@@ -99,26 +99,26 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries (PHP
 
 ### Ubuntu
 
-| Version | Codename | Status |
-| --- | --- | --- |
-| **20.04** | Focal Fossa | ⚠️ *Outdated* — installation possible, but some packages may need to be installed manually |
-| **22.04** | Jammy Jellyfish | ✅ **Recommended** |
-| **24.04** | Noble Numbat | ✅ **Recommended** |
+| Version   | Codename        | Status                                                                                     |
+| --------- | --------------- | ------------------------------------------------------------------------------------------ |
+| **20.04** | Focal Fossa     | ⚠️ _Outdated_ — installation possible, but some packages may need to be installed manually |
+| **22.04** | Jammy Jellyfish | ✅ **Recommended**                                                                         |
+| **24.04** | Noble Numbat    | ✅ **Recommended**                                                                         |
 
 ### Debian
 
-| Version    | Codename   | Status                |
-| ---------- | ---------- | --------------------- |
-| **11**     | Bullseye   | ❌ *EOL — not supported* |
-| **12**     | Bookworm   | ✅ **Recommended**     |
-| **13**     | Trixie     | ✅ Supported           |
+| Version | Codename | Status                   |
+| ------- | -------- | ------------------------ |
+| **11**  | Bullseye | ❌ _EOL — not supported_ |
+| **12**  | Bookworm | ✅ **Recommended**       |
+| **13**  | Trixie   | ✅ Supported             |
 
 ### RHEL-compatible (Rocky Linux, AlmaLinux, CentOS, RHEL)
 
-| Version | Status             |
-| ------- | ------------------ |
-| **8**   | 🚧 *Not yet supported* |
-| **9**   | 🚧 *Not yet supported* |
+| Version | Status                 |
+| ------- | ---------------------- |
+| **8**   | 🚧 _Not yet supported_ |
+| **9**   | 🚧 _Not yet supported_ |
 
 > ⚠️ RHEL-family support is planned but not yet available. The installer recognizes these distributions, but pre-built binaries are not provided yet.
 
@@ -128,8 +128,8 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries (PHP
 
 For new installations:
 
-* 🟢 **Ubuntu 22.04 / 24.04 LTS**
-* 🟢 **Debian 12**
+- 🟢 **Ubuntu 22.04 / 24.04 LTS**
+- 🟢 **Debian 12**
 
 > ⚠️ Ubuntu 18.04 is in legacy mode — it works but receives no priority fixes.
 
@@ -232,20 +232,20 @@ cat /home/xc_vm/bin/php/var/log/php-fpm.log
 
 ### 🔧 Minimum Specs
 
-| Component | Recommendation                |
-| --------- | ----------------------------- |
-| CPU       | 6+ cores (Xeon/Ryzen)         |
-| RAM       | 16–32 GB                      |
-| Disk      | SSD/NVMe, 480+ GB             |
-| Network   | Dedicated 1 Gbps port         |
+| Component | Recommendation                            |
+| --------- | ----------------------------------------- |
+| CPU       | 6+ cores (Xeon/Ryzen)                     |
+| RAM       | 16–32 GB                                  |
+| Disk      | SSD/NVMe, 480+ GB                         |
+| Network   | Dedicated 1 Gbps port                     |
 | OS        | Ubuntu 22.04+, Debian 12+ (clean install) |
 
 ---
 
 ### 📊 Planning Formulae
 
-* **Bandwidth (Mbps)** = Channels × Bitrate
-* **Max Users** = Bandwidth ÷ Stream Bitrate
+- **Bandwidth (Mbps)** = Channels × Bitrate
+- **Max Users** = Bandwidth ÷ Stream Bitrate
 
 ```text
 Example:
@@ -271,20 +271,20 @@ HD bitrate = 4 Mbps
 
 ## ✅ Features
 
-* ✅ No server restrictions
-* ✅ EPG importer
-* ✅ VOD management
-* ✅ User/reseller panel
-* ✅ Security patches
-* ✅ Clean UI
+- ✅ No server restrictions
+- ✅ EPG importer
+- ✅ VOD management
+- ✅ User/reseller panel
+- ✅ Security patches
+- ✅ Clean UI
 
 ---
 
 ## 🔧 Known Limitations
 
-* ❌ Requires Linux knowledge
-* ❌ Community-based support
-* ❌ Some bugs in transcoding module (in progress)
+- ❌ Requires Linux knowledge
+- ❌ Community-based support
+- ❌ Some bugs in transcoding module (in progress)
 
 ---
 
@@ -292,8 +292,8 @@ HD bitrate = 4 Mbps
 
 We welcome community help!
 
-* 🛠️ [Contributing Guide](CONTRIBUTING.md)
-* 👥 [Contributors List](CONTRIBUTORS.md)
+- 🛠️ [Contributing Guide](CONTRIBUTING.md)
+- 👥 [Contributors List](CONTRIBUTORS.md)
 
 ---
 
@@ -314,17 +314,17 @@ XC_VM is distributed under the **GNU Affero General Public License v3.0 (AGPL-3.
 
 Under this license:
 
-* Redistribution or modification is permitted **only under the same license (AGPL-3.0)**
-* Any modified version **must remain open-source**
-* Providing XC_VM as a service **requires making the source code available**
-* **Copyright and attribution must be preserved**
+- Redistribution or modification is permitted **only under the same license (AGPL-3.0)**
+- Any modified version **must remain open-source**
+- Providing XC_VM as a service **requires making the source code available**
+- **Copyright and attribution must be preserved**
 
 Any attempt to redistribute this software under a different license, remove attribution, or obscure the origin of the project constitutes a violation of the license terms.
 
 #### Attribution-integrity check
 
 As permitted by **AGPL-3.0 §7(b)** (preservation of author attributions), the panel
-verifies on each request that its attribution notice — the *"Vateron Media · AGPL-3.0"*
+verifies on each request that its attribution notice — the _"Vateron Media · AGPL-3.0"_
 credit shown in the panel footer — is still present. If the notice has been removed, the
 **management UI** (admin / reseller / player panels) is locked with an
 `ATTRIBUTION_REMOVED` notice until it is restored. The check is fully reversible and
