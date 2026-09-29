@@ -392,12 +392,13 @@ final class ArtefactStage {
 		if ($rStage === false || $rReal === false || dirname($rReal) !== $rStage || is_link($rPath) || !is_file($rReal)) {
 			return 'the archive is not in root\'s stage';
 		}
-		$rSize = $rGrant['size'] ?? null;
-		$rHash = $rGrant['sha256'] ?? null;
-		if (!is_int($rSize) || !is_string($rHash) || filesize($rReal) !== $rSize || !hash_equals($rHash, (string) hash_file('sha256', $rReal))) {
-			return 'the archive is not the one MAIN granted';
-		}
-		return null;
+		return self::matches($rReal, $rGrant['size'] ?? null, $rGrant['sha256'] ?? null) ? null : 'the archive is not the one MAIN granted';
+	}
+
+	/** Is $rPath the file of this size and SHA-256 (hex)? False for a size or hash that is not one. */
+	public static function matches(string $rPath, mixed $rSize, mixed $rSha256): bool {
+		clearstatcache(true, $rPath);
+		return is_int($rSize) && is_string($rSha256) && @filesize($rPath) === $rSize && hash_equals($rSha256, (string) @hash_file('sha256', $rPath));
 	}
 
 	/**

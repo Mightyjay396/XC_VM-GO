@@ -42,12 +42,12 @@ final class LegacyModuleArchiveTest extends TestCase {
 		$rSize = strlen($rZip);
 		$this->assertNull(ModuleInstallCommand::announced($rFile, ['size' => $rSize, 'sha256' => $rSha]));
 		$this->assertNull(ModuleInstallCommand::announced($rFile, []), 'a MAIN from before: the zip magic alone, as before');
-		$this->assertSame('size mismatch', ModuleInstallCommand::announced($rFile, ['size' => $rSize + 1, 'sha256' => $rSha]));
-		$this->assertSame('sha256 mismatch', ModuleInstallCommand::announced($rFile, ['size' => $rSize, 'sha256' => hash('sha256', 'another')]));
+		$this->assertSame('size or SHA-256 mismatch', ModuleInstallCommand::announced($rFile, ['size' => $rSize + 1, 'sha256' => $rSha]));
+		$this->assertSame('size or SHA-256 mismatch', ModuleInstallCommand::announced($rFile, ['size' => $rSize, 'sha256' => hash('sha256', 'another')]));
 		$this->assertSame('a malformed size or SHA-256', ModuleInstallCommand::announced($rFile, ['sha256' => $rSha]));
 		$this->assertSame('a malformed size or SHA-256', ModuleInstallCommand::announced($rFile, ['size' => (string) $rSize, 'sha256' => $rSha]));
 		$this->assertSame('a malformed size or SHA-256', ModuleInstallCommand::announced($rFile, ['size' => $rSize, 'sha256' => strtoupper($rSha)]));
-		$this->assertSame('size mismatch', ModuleInstallCommand::announced($this->rRoot . 'gone.zip', ['size' => $rSize, 'sha256' => $rSha]));
+		$this->assertSame('size or SHA-256 mismatch', ModuleInstallCommand::announced($this->rRoot . 'gone.zip', ['size' => $rSize, 'sha256' => $rSha]));
 
 		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/Commands/ModuleInstallCommand.php');
 		$this->assertStringContainsString('$rWrong = self::announced($rTmp, $rPayload);', $rSource, 'the getFile download is checked');
