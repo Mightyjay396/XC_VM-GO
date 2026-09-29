@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Config\SettingsManager;
@@ -132,6 +133,17 @@ class CacheCronJob implements CommandInterface {
 			FileCache::setCache('blocked_ips', BlocklistService::getBlockedIPs(true));
 		}
 		FileCache::setCache('allowed_ips', ServerRepository::getAllowedIPs(true));
+		// verify_host's list (HostVerificationStage, the streaming bootstrap):
+		// the servers' names and addresses and the resellers' DNS. Nothing had
+		// written it since the move off CoreUtilities, so hosts went unchecked.
+		// A node in mode 2 reads no reseller of MAIN's (the replica carries
+		// none), and a list without them would refuse a reseller's viewers: it
+		// keeps no list, and hosts stay unchecked there.
+		if (NodeRole::refusesConnects()) {
+			FileCache::delCache('allowed_domains');
+		} else {
+			ServerRepository::getAllowedDomains(true);
+		}
 		if (!ReplicaApply::owns(ReplicaSections::CATEGORIES)) {
 			FileCache::setCache('categories', CategoryService::getFromDatabase(null, true));
 		}

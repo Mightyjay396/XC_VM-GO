@@ -117,7 +117,7 @@ A procedural guard script included early in the legacy bootstrap. Runs only for 
 
 1. **Flood protection** -- If the file `FLOOD_TMP_PATH/block_{IP}` exists, the request is rejected with HTTP 403.
 2. **Settings cache load** -- Reads `$rSettings` from the igbinary-serialized file cache at `CACHE_TMP_PATH/settings`.
-3. **Host verification** -- When `$rSettings['verify_host']` is true, checks that `HOST` appears in the cached `allowed_domains` list. Exceptions: the hostname `xc_vm` and any valid IP address are always allowed.
+3. **Host verification** -- When `$rSettings['verify_host']` is true, checks that `HOST` appears in the cached `allowed_domains` list. Exceptions: the hostname `xc_vm` and any valid IP address are always allowed. `cron:cache` writes the list every minute (`ServerRepository::getAllowedDomains`): the enabled servers' `domain_name` entries, server and private IPs, and the active resellers' `reseller_dns`, plus `localhost` and `127.0.0.1`. From March to September 2026 nothing wrote it, so no host was checked. A node in cluster mode 2 reads no reseller data from MAIN, so it keeps no list and checks no host.
 4. **Error display flag** -- Sets the `PHP_ERRORS` constant from `$rSettings['debug_show_errors']`.
 5. **Logger initialization** -- Calls `Logger::init(PHP_ERRORS, LOGS_TMP_PATH . 'error_log.log')`.
 
