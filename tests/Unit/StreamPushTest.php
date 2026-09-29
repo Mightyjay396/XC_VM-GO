@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Domain\Cluster\ReplicaBuilder;
@@ -90,5 +91,35 @@ final class StreamPushTest extends TestCase {
 		$this->assertGreaterThan(0, StreamVersions::bump([10]));
 		StreamPush::flush($this->rCrypto);
 		$this->assertSame([2, 3], array_column($this->told(), 0), 'the server holding it and the one archiving it, not server 4');
+	}
+
+	/**
+	 * Encoding work MAIN queued onto a node pokes it (`queue.poke`) when its
+	 * CONTENT flow is on, once per request; the node's daemon then stops
+	 * waiting for its next pass.
+	 */
+	public function testQueuedWorkPokesTheNodeAndItsDaemonStopsWaiting(): void {
+		$this->node(5, 'active', NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_CONTENT);
+		$this->node(6, 'active', NodeRegistry::FLOW_COMMANDS); // asks nobody for its queue
+		StreamPush::queued([5, 6]);
+		StreamPush::queued([5]);
+		$this->assertSame(1, StreamPush::flush($this->rCrypto));
+		$this->rDb->query("SELECT `server_id`, `dedupe_key` FROM `cluster_commands` WHERE `type` = 'queue.poke'");
+		$this->assertSame([['server_id' => 5, 'dedupe_key' => 'queue.poke']], array_map(static fn(array $rRow): array => ['server_id' => (int) $rRow['server_id'], 'dedupe_key' => $rRow['dedupe_key']], $this->rDb->get_rows()));
+
+		$rDir = sys_get_temp_dir() . '/xcvm-poke-' . bin2hex(random_bytes(4)) . '/';
+		mkdir($rDir);
+		try {
+			$rStart = microtime(true);
+			QueueSink::waitPoke(1, $rDir);
+			$this->assertGreaterThanOrEqual(0.9, microtime(true) - $rStart, 'no poke: the whole wait');
+			touch($rDir . QueueSink::POKE);
+			$rStart = microtime(true);
+			QueueSink::waitPoke(5, $rDir);
+			$this->assertLessThan(1.0, microtime(true) - $rStart, 'poked: at once');
+			$this->assertFileDoesNotExist($rDir . QueueSink::POKE, 'and the poke is spent');
+		} finally {
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
 	}
 }

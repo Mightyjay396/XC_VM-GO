@@ -10,6 +10,7 @@ use XcVm\Core\Http\ApiClient;
 use XcVm\Core\Util\AdminHelpers;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Domain\Bouquet\BouquetService;
+use XcVm\Domain\Cluster\StreamAssign;
 use XcVm\Domain\Vod\SeriesService;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
@@ -191,6 +192,7 @@ class ChannelService {
 				if ($rReencode) {
 					ApiClient::request(['action' => 'stream', 'sub' => 'stop', 'stream_ids' => [$rInsertID]]);
 					$db->query("UPDATE `streams_servers` SET `pids_create_channel` = '[]', `cchannel_rsources` = '[]' WHERE `stream_id` = ?;", $rInsertID);
+					StreamAssign::send([$rInsertID], ['cchannel_rsources' => '[]']);
 					StreamProcess::queueChannel($rInsertID);
 				}
 
@@ -395,6 +397,7 @@ class ChannelService {
 			EventDispatcher::dispatch(new StreamsChangedEvent(array_values(array_map('intval', $rStreamIDs))));
 			if (isset($rData['reencode_on_edit'])) {
 				$db->query("UPDATE `streams_servers` SET `pids_create_channel` = '[]', `cchannel_rsources` = '[]' WHERE `stream_id` IN (" . implode(',', array_map('intval', $rStreamIDs)) . ');');
+				StreamAssign::send($rStreamIDs, ['cchannel_rsources' => '[]']);
 
 				if (!empty($rEncQuery)) {
 					$rEncQuery = rtrim($rEncQuery, ',');

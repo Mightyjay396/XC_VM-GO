@@ -61,7 +61,7 @@ class QueueCommand implements CommandInterface {
 			$this->channels($rPids, $rDelete);
 			QueueSink::update($rPids, $rDelete);
 
-			sleep($this->slots('queue_loop', 5));
+			QueueSink::waitPoke($this->slots('queue_loop', 5));
 		}
 
 		$this->restartDaemon('queue');

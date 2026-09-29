@@ -163,6 +163,9 @@ final class CommandBusRegistryTest extends TestCase {
 		$this->assertSame([true, true], ClusterRoute::quarantine(self::SID, 'admin'));
 		CommandBus::enqueue($this->rCrypto, self::SID, 'config.changed', ['sections' => ['servers']], 'config.changed');
 		CommandBus::enqueue($this->rCrypto, self::SID, 'artefact.fetch', ['artefact' => ['id' => 'offair/banned', 'name' => 'banned.ts', 'size' => 3, 'sha256' => str_repeat('0', 64), 'mtime' => 1799990000, 'ctime' => 1799990000]]);
+		// StreamAssign's and StreamPush's.
+		CommandBus::enqueue($this->rCrypto, self::SID, 'stream.assign', ['stream_ids' => [5], 'set' => ['to_analyze' => 1], 'fill' => ['pid' => 1]]);
+		CommandBus::enqueue($this->rCrypto, self::SID, 'queue.poke', [], 'queue.poke');
 
 		$rSeen = [];
 		foreach ($this->queued() as $rRow) {

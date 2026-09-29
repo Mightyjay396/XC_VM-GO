@@ -21,6 +21,11 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * The command is restrictive, so it signs without a licence, and a newer one
  * supersedes one not yet acked. Never fails the change: a node that cannot be
  * told takes the change at its next delta.
+ *
+ * Encoding work MAIN queued onto a node (QueueSink) pokes it the same way:
+ * `queue.poke` to an active node whose CONTENT flow is on (it asks MAIN for its
+ * queue) and that takes commands, so its daemon's pass comes at once rather
+ * than within `queue_loop`. Granting, so a MAIN without a licence sends none.
  */
 final class StreamPush {
 	use DatabaseAware;
@@ -30,6 +35,9 @@ final class StreamPush {
 
 	private static bool $rAll = false;
 
+	/** @var array<int, true> server ids whose queue MAIN wrote */
+	private static array $rQueued = [];
+
 	private static bool $rRegistered = false;
 
 	/** @param list<int> $rServerIDs the servers a change stamped */
@@ -37,6 +45,16 @@ final class StreamPush {
 		foreach ($rServerIDs as $rServerID) {
 			if ((int) $rServerID > 0) {
 				self::$rPending[(int) $rServerID] = true;
+			}
+		}
+		self::register();
+	}
+
+	/** @param list<int> $rServerIDs servers MAIN queued encoding work for */
+	public static function queued(array $rServerIDs): void {
+		foreach ($rServerIDs as $rServerID) {
+			if ((int) $rServerID > 0) {
+				self::$rQueued[(int) $rServerID] = true;
 			}
 		}
 		self::register();
@@ -55,32 +73,48 @@ final class StreamPush {
 	 */
 	public static function flush(?ClusterCrypto $rCrypto = null): int {
 		$rIDs = array_keys(self::$rPending);
+		$rQueued = self::$rQueued;
 		$rAll = self::$rAll;
-		self::$rPending = [];
+		self::$rPending = self::$rQueued = [];
 		self::$rAll = false;
-		if ($rIDs === [] && !$rAll) {
+		if ($rIDs === [] && $rQueued === [] && !$rAll) {
 			return 0;
 		}
+		$rWanted = array_keys($rQueued + array_flip($rIDs));
 		try {
 			$rCrypto ??= ClusterCryptoFactory::create();
-			self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` = 'active'" . ($rAll ? '' : ' AND `server_id` IN (' . implode(',', array_map('intval', $rIDs)) . ')') . ';');
+			self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` = 'active'" . ($rAll ? '' : ' AND `server_id` IN (' . implode(',', array_map('intval', $rWanted)) . ')') . ';');
 			$rNodes = self::db()->get_rows() ?: [];
 		} catch (\Throwable) {
 			return 0;
 		}
 		$rSent = 0;
 		foreach ($rNodes as $rNode) {
-			if (((int) ($rNode['flows'] ?? 0) & NodeRegistry::FLOW_STREAMS) === 0 || !CommandBus::accepts($rNode) || !in_array(ReplicaBuilder::FEATURE_CONFIG_CHANGED, explode(',', (string) ($rNode['features'] ?? '')), true)) {
+			$rServerID = (int) $rNode['server_id'];
+			$rFlows = (int) ($rNode['flows'] ?? 0);
+			if (!CommandBus::accepts($rNode)) {
 				continue;
 			}
-			try {
-				CommandBus::enqueue($rCrypto, (int) $rNode['server_id'], 'config.changed', ['sections' => [ReplicaSections::STREAMS]], 'config.changed');
-				$rSent++;
-			} catch (\Throwable) {
-				// This node takes the change at its next delta.
+			// The streams section, for a node that reads it and whose agent takes config.changed.
+			if (($rAll || in_array($rServerID, $rIDs, true)) && ($rFlows & NodeRegistry::FLOW_STREAMS) !== 0 && in_array(ReplicaBuilder::FEATURE_CONFIG_CHANGED, explode(',', (string) ($rNode['features'] ?? '')), true)) {
+				$rSent += self::send($rCrypto, $rServerID, 'config.changed', ['sections' => [ReplicaSections::STREAMS]]);
+			}
+			// The queue, for a node that asks MAIN for it.
+			if (isset($rQueued[$rServerID]) && ($rFlows & NodeRegistry::FLOW_CONTENT) !== 0) {
+				$rSent += self::send($rCrypto, $rServerID, 'queue.poke', []);
 			}
 		}
 		return $rSent;
+	}
+
+	/** Queue one command (its type is its dedupe key); 0 when it could not be: the node's next pass takes the change. */
+	private static function send(ClusterCrypto $rCrypto, int $rServerID, string $rType, array $rArgs): int {
+		try {
+			CommandBus::enqueue($rCrypto, $rServerID, $rType, $rArgs, $rType);
+			return 1;
+		} catch (\Throwable) {
+			return 0;
+		}
 	}
 
 	private static function register(): void {

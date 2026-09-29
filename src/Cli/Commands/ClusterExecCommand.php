@@ -10,10 +10,13 @@ use XcVm\Core\Cluster\CacheJobs;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\Crypto\PanelSig;
 use XcVm\Core\Cluster\NodeRpc;
+use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\RootPin;
+use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Core\Util\AtomicFile;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamProcess;
+use XcVm\Domain\Stream\StreamStateWriter;
 use XcVm\Public\Controllers\Api\InternalApiController;
 use XcVm\Streaming\Fanout\FanoutClient;
 
@@ -46,6 +49,13 @@ use XcVm\Streaming\Fanout\FanoutClient;
  * - `stream.stop {stream_id}`, `vod.stop {stream_id}` — restrictive stops
  *   (signed without a licence), run as the legacy /api's stop runs them
  *   (StreamProcess::stopStream(), stopMovie()).
+ * - `stream.assign {stream_ids, set, fill?}` — MAIN's own write to this
+ *   node's streams' runtime columns (Rescan VOD, Recreate channels, a
+ *   re-encoded channel's reset), into the node's store (StreamRuntime::assign):
+ *   only StreamStateWriter::STATE_FIELDS, scalar values, at most
+ *   StreamRuntime::ASSIGN_MAX streams; otherwise refused whole (exit 2).
+ * - `queue.poke` — MAIN queued encoding work for this node: the queue
+ *   daemon's next pass comes now (QueueSink::POKE).
  * - `artefact.fetch {artefact}` — an off-air video MAIN granted, which the
  *   agent downloaded into config/cluster/artefacts/<cmd_id>: placed where
  *   the node's off-air code plays it once its size and SHA-256 are the
@@ -66,7 +76,7 @@ class ClusterExecCommand implements CommandInterface {
 	public const SKEW = 300;
 
 	/** The command types run here (`--types`). */
-	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop'];
+	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop', 'stream.assign', 'queue.poke'];
 
 	public function getName(): string {
 		return 'cluster:exec';
@@ -184,6 +194,28 @@ class ClusterExecCommand implements CommandInterface {
 		}
 	}
 
+	/**
+	 * A `stream.assign`'s arguments: 1 to StreamRuntime::ASSIGN_MAX stream ids,
+	 * and columns of StreamStateWriter::STATE_FIELDS with scalar or null values,
+	 * at least one.
+	 */
+	private static function assignable(mixed $rIDs, mixed $rSet, mixed $rFill): bool {
+		if (!is_array($rIDs) || $rIDs === [] || !array_is_list($rIDs) || count($rIDs) > StreamRuntime::ASSIGN_MAX || !is_array($rSet) || !is_array($rFill) || $rSet + $rFill === []) {
+			return false;
+		}
+		foreach ($rIDs as $rID) {
+			if (!is_int($rID) || $rID <= 0) {
+				return false;
+			}
+		}
+		foreach ($rSet + $rFill as $rColumn => $rValue) {
+			if (!in_array($rColumn, StreamStateWriter::STATE_FIELDS, true) || !(is_scalar($rValue) || $rValue === null)) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	/** @param array<string, mixed> $rCmd */
 	public static function run(array $rCmd): int {
 		$rArgs = is_array($rCmd['args'] ?? null) ? $rCmd['args'] : [];
@@ -260,6 +292,21 @@ class ClusterExecCommand implements CommandInterface {
 				}
 				self::stopStream($rCmd['type'], $rStreamID);
 				echo json_encode(['result' => true]);
+				return 0;
+
+			case 'stream.assign':
+				$rIDs = $rArgs['stream_ids'] ?? null;
+				$rSet = $rArgs['set'] ?? [];
+				$rFill = $rArgs['fill'] ?? [];
+				if (!self::assignable($rIDs, $rSet, $rFill)) {
+					fwrite(STDERR, "cluster:exec: bad stream assignment\n");
+					return 2;
+				}
+				echo json_encode(['result' => true, 'kept' => StreamRuntime::assign($rIDs, $rSet, $rFill)]);
+				return 0;
+
+			case 'queue.poke':
+				echo json_encode(['result' => @touch(SIGNALS_TMP_PATH . QueueSink::POKE)]);
 				return 0;
 
 			case 'config.changed':
