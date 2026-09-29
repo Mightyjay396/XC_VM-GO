@@ -4678,6 +4678,39 @@ example a snapshot of it with the same `instance_id`, had its events dropped wit
   audit and the peers' `config.changed`.
 - `ConnectionIngestIdempotencyTest`: its tail and overlap cases are now backwards.
 
+### `servers_stats` pruned in batches, and its indexes
+
+Plan §8 ("MAIN capacity") prunes `servers_stats` in batches, then builds `INDEX(time)` and
+`INDEX(server_id, time)` online with `console.php cluster:maintain-stats`, outside
+`MigrationRunner`. Neither was built. The table had its primary key alone, and `cron:cleanup` pruned
+it, with `cluster_audit`, in one `DELETE … WHERE time < ?`. Every node adds a row a minute, so that
+statement scanned the whole table and, on the first run over a long history, held it and its undo log
+for as long as it ran. The per-server reads (`ProcessChecker::getWatchdog`, `proxy_api`) scanned it
+too.
+
+- **Batches.** `CleanupCronJob::prune` deletes 10,000 rows per statement (`PRUNE_BATCH`) until none
+  are left or 20 s have passed (`PRUNE_SEC`, shared by both tables). The next hourly run goes on
+  from there. Old rows sit at the start of the primary key, so each batch finds them quickly even
+  before the index exists.
+- **The indexes.** `cluster:maintain-stats` (MAIN only, one run at a time) reads `SHOW INDEX` and
+  adds whichever of `time (time)` and `server_time (server_id, time)` is missing, with
+  `ALGORITHM=INPLACE, LOCK=NONE`. An existing index whose leading columns are the same counts, so an
+  operator's own index is not duplicated. A server that cannot build one in place refuses, and
+  nothing falls back to a locking `ALTER`.
+- **Who starts it.** `cron:cleanup` on MAIN, after pruning, starts the command detached
+  (`ProcessRunner::start`) while an index is missing. A fresh install gets the indexes within the
+  hour. The LB build strips the command.
+
+**Not built / limits.**
+- **`database.sql` is unchanged.** A new install gets the indexes from the first `cron:cleanup`.
+- **A refused build is retried every hour**, and each attempt is written to the command's output
+  only.
+
+**Tests.** `ClusterMaintainStatsTest`: 25,003 old rows pruned in batches (one batch past the
+deadline, the rest after), the rows retention keeps, the missing indexes by leading columns, the
+`ALTER`'s exact text, and no answer from `SHOW INDEX`. Run once by hand on MariaDB 11.4: the prune took 25,003 rows, both
+indexes were built in place, and `EXPLAIN` shows the prune and `getWatchdog` using them.
+
 ### Members nothing used
 
 An audit of the cluster code for unused members found six in the panel and four in the agent, and
