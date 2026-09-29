@@ -132,6 +132,8 @@ if (!($_GET['addr'] == '127.0.0.1' && $_GET['call'] == 'publish')) {
 																		$rConnectionData = ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => SERVER_ID, 'proxy_id' => 0, 'user_agent' => '', 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rRequest['clientid'], 'date_start' => $rLastRead, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => $rExternalDevice, 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => $rChannelInfo['on_demand'], 'identity' => $rUserInfo['id'], 'uuid' => md5($rRequest['clientid'])];
 																		// The table path keeps its own date_start (the node's clock), as it always did.
 																		// No stream token, so no claim: a limited line is admitted by the agent asking MAIN (conn_admit).
+																		// md5() only names the connection after nginx-rtmp's client id, as play_done does to close it; it protects nothing.
+																		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
 																		$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => SERVER_ID, 'proxy_id' => 0, 'user_agent' => '', 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rRequest['clientid'], 'uuid' => md5($rRequest['clientid']), 'date_start' => time(), 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => $rExternalDevice, 'hls_last_read' => $rLastRead], ['user_info' => ['max_connections' => (int) $rUserInfo['max_connections']]], intval($rServers[SERVER_ID]['time_offset']));
 
 																		if ($rResult) {
