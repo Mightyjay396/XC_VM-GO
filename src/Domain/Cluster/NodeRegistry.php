@@ -3,7 +3,9 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Logging\FileLogger;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -174,6 +176,24 @@ final class NodeRegistry {
 		ClusterAudit::log('node.revoke', $rServerID, ['node' => $rNode['node_uuid'], 'gen' => $rGen], $rActor);
 		ReplicaBuilder::nodesChanged($rCrypto, $rServerID);
 		return true;
+	}
+
+	/**
+	 * Its server was deleted: the node, if it has one, is revoked, so an
+	 * agent still running there is refused (NODE_REVOKED) rather than handed
+	 * tokens, leases and commands. Never throws: the delete stands.
+	 */
+	public static function serverDeleted(int $rServerID, ?ClusterCrypto $rCrypto = null): bool {
+		try {
+			$rNode = self::byServer($rServerID);
+			if ($rNode === null || $rNode['state'] === 'revoked') {
+				return false;
+			}
+			return self::revoke($rServerID, $rCrypto ?? ClusterCryptoFactory::create(), 'admin');
+		} catch (\Throwable $rE) {
+			FileLogger::log('cluster', 'Server ' . $rServerID . ' deleted, its cluster node not revoked', $rE->getMessage());
+			return false;
+		}
 	}
 
 	/** Flows a node may have, given the dependency rules (CONNECTIONS needs COMMANDS+STREAMS; DATAPLANE needs STREAMS+CONTENT). */

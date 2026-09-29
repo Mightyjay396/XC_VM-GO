@@ -784,6 +784,17 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(0, (int) $this->rDb->get_row()['n'], 'z is erased with the row');
 	}
 
+	/** A deleted server's node is revoked: an agent still running there is refused, never handed tokens, leases or commands. */
+	public function testADeletedServersNodeIsRevoked(): void {
+		$rKeys = $this->active();
+		$this->assertTrue(NodeRegistry::serverDeleted(self::SID, $this->rCrypto));
+		[$rRes, , $rReq] = $this->call('heartbeat', [], 1, $rKeys);
+		$this->assertSame(2, $this->denial($rRes, 403, 'NODE_REVOKED', $rReq)['revoked_gen']);
+		$this->assertFalse(NodeRegistry::serverDeleted(self::SID, $this->rCrypto), 'already revoked: nothing to do');
+		$this->assertFalse(NodeRegistry::serverDeleted(99, $this->rCrypto), 'a server without a node');
+		$this->assertStringContainsString("NodeRegistry::serverDeleted(\$rID);", (string) file_get_contents(dirname(__DIR__, 2) . '/src/Domain/Server/ServerRepository.php'), 'deleteById revokes it');
+	}
+
 	public function testRevokedNodeIsRefusedEvenWithItsRowRestored(): void {
 		$rKeys = $this->active();
 		$this->rDb->query('SELECT * FROM `cluster_node_epochs` WHERE `server_id` = 5');
