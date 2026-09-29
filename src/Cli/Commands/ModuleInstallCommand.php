@@ -93,7 +93,7 @@ class ModuleInstallCommand implements CommandInterface {
 				$rManager->deployFromArchiveFilesOnly($rStaged);
 			} else {
 				echo "Installing custom module '{$rName}' v{$rVersion} from MAIN...\n";
-				$rArchive = $this->fetchArchiveFromMain($rManager->archivePathFor($rName, $rVersion));
+				$rArchive = $this->fetchArchiveFromMain($rManager->archivePathFor($rName, $rVersion), $rPayload);
 				try {
 					$rManager->deployFromArchiveFilesOnly($rArchive);
 				} finally {
@@ -126,11 +126,13 @@ class ModuleInstallCommand implements CommandInterface {
 
 	/**
 	 * Pull a custom module archive from MAIN over the internal system API
-	 * (action=getFile). Returns the path to a downloaded temp file.
+	 * (action=getFile). Returns the path to a downloaded temp file, which is
+	 * the archive the payload announced (announced()).
 	 *
+	 * @param array<string, mixed> $rPayload
 	 * @throws \RuntimeException If MAIN cannot be located or the download fails.
 	 */
-	private function fetchArchiveFromMain(string $rArchivePath): string {
+	private function fetchArchiveFromMain(string $rArchivePath, array $rPayload): string {
 		$rMain = null;
 		foreach (ServerRepository::getAll() as $rServer) {
 			if (!empty($rServer['is_main'])) {
@@ -173,8 +175,37 @@ class ModuleInstallCommand implements CommandInterface {
 			@unlink($rTmp);
 			throw new \RuntimeException("Failed to download module archive from MAIN (HTTP {$rCode}).");
 		}
+		$rWrong = self::announced($rTmp, $rPayload);
+		if ($rWrong !== null) {
+			@unlink($rTmp);
+			throw new \RuntimeException('The module archive from MAIN is not the one it announced: ' . $rWrong . '.');
+		}
 
 		return $rTmp;
+	}
+
+	/**
+	 * Is $rFile the archive the payload announced (its `size` and `sha256`,
+	 * ModuleManager::lbInstallPayload)? Null when it is, or when the payload
+	 * announces neither (a MAIN from before them: the zip magic is then the
+	 * only check, as before); else what differs.
+	 *
+	 * @param array<string, mixed> $rPayload
+	 */
+	public static function announced(string $rFile, array $rPayload): ?string {
+		$rSize = $rPayload['size'] ?? null;
+		$rSha = $rPayload['sha256'] ?? null;
+		if ($rSize === null && $rSha === null) {
+			return null;
+		}
+		if (!is_int($rSize) || !is_string($rSha) || !preg_match('/^[0-9a-f]{64}$/', $rSha)) {
+			return 'a malformed size or SHA-256';
+		}
+		clearstatcache(true, $rFile);
+		if (@filesize($rFile) !== $rSize) {
+			return 'size mismatch';
+		}
+		return hash_equals($rSha, (string) @hash_file('sha256', $rFile)) ? null : 'sha256 mismatch';
 	}
 
 	/**
