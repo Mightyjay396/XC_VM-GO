@@ -3747,9 +3747,9 @@ agent); a file older than `STALE_SEC` serves, as every uncertainty does. Past th
 writes one `SIGNALS_PATH/<uuid>` entry `{"type": "drop"}` per open viewer in its registry and drops
 the fanout's own viewers over its control socket; `live.php`'s TS loop ends on a `drop` entry and,
 independently, on `NodeLease::refusesEverything()` at each segment — so a PHP-served `.ts` request
-ends under a lapsed lease too, without the registry. **Still not built:** a fanout-served viewer
-under a *lease* fence (not a commanded one) is not dropped, because the agent does not judge the
-lease; and producers are still not released.
+ends under a lapsed lease too, without the registry. A fanout-served viewer under a *lease* fence
+(not a commanded one) was not dropped, because the agent did not judge the lease: the eighth
+increment has it do so. Producers are still not released.
 
 **`cluster:rotate-stream-secret`** (`StreamSecretRotation`). Refused while an enrolled node has
 DATAPLANE off (`--force` warns). Resumable: `cluster_meta` `stream_secret_rotation` holds the phase,
@@ -4004,6 +4004,32 @@ relay   {"bound": true}
 Tests: `NodeRelayTest`, `ClusterDiagnosisTest`; on the agent's side
 `TestRelayReportTellsWhetherTheProxyHoldsItsPort`, `TestHeartbeatCarriesTheRelayReport`, the status
 tests and `TestInteropWithPanel` against MAIN's real `ClusterApi`.
+
+**The lease fence drops the fanout's viewers.** Past a lease's `exp` plus `lb_fence_drain_min`, on
+MAIN's clock and with `lb_lease_fence` on, the node's PHP ends the sessions it serves at their next
+segment. A viewer the fanout serves under X-Accel has no PHP worker left, and only a commanded fence
+dropped it. The agent (`leasefence.go`) now judges the drain itself on `RunFence`'s one-second tick,
+when no commanded fence stands:
+
+- **From what `NodeLease`'s fallback reads:** the lease it holds (`exp`), its MAIN clock
+  (`mainclock.go`, as in `lease_state.json`), and `lb_lease_fence` / `lb_fence_drain_min` from the
+  replica's verified `settings` section (`replica/settings.json`; a drain outside 0–60 reads as the
+  default 10, as `ClusterSettings` bounds it). Every uncertainty serves, as there: no fanout socket,
+  no replica settings, the switch off, mode 0, no lease, or MAIN's time never seen.
+- **What it drops:** every connection the fanout lists (`GET /connections` on its control socket,
+  then `DELETE /connections/<uuid>`), each once, and one that attaches later at the next tick. It
+  writes no `SIGNALS_PATH` entry: a PHP-served viewer ends on `NodeLease` at its next segment. New
+  viewers are refused by `stream/auth.php` from `exp` on, as before.
+- **The compiled verdict** does not reach Go. It anchors on the same MAIN time within seconds, and it
+  outranks this judgement only where MAIN's clock went back. There the agent's anchor is the earlier
+  one, so the agent drops later than PHP, never sooner.
+- **The commanded fence** now drops the fanout's own viewers the same way as well as the registry's,
+  so a node whose CONNECTIONS flow is off (an empty registry) loses its fanout viewers at the end of
+  the drain too.
+
+Tests (agent): `TestALeasePastItsDrainDropsTheFanoutsViewers`,
+`TestALeaseFenceServesOnEveryUncertainty`, `TestTheLeaseFenceSettingsAreReadAsMAINKeepsThem`,
+`TestACommandedFenceDropsTheFanoutsOwnViewersToo`.
 
 ### Disaster recovery of MAIN's cluster keys
 

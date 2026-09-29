@@ -286,7 +286,8 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   The fence that acts on it is built in the node's PHP (`Core\Cluster\NodeLease`) behind
   `lb_lease_fence`, which is **off by default**: with it on, past the lease's `exp` no new
   viewer starts on the node (`stream/auth.php`), and past `lb_fence_drain_min` more the
-  sessions still running stop (`segment.php`, `key.php`). It judges the lease state the
+  sessions still running stop (`segment.php`, `key.php`, `live.php`), and the agent drops
+  every viewer the fanout serves, judging the same lease, clock and settings itself. It judges the lease state the
   agent writes to `config/cluster/lease_state.json` at every heartbeat interval, whether or
   not MAIN answers: the lease's `exp`, and MAIN's clock carried forward on the node's
   monotonic clock from MAIN's last authenticated statement, so moving the node's wall clock
