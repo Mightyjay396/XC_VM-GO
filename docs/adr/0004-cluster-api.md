@@ -1050,7 +1050,7 @@ A token without a claim was minted before this, or where admission did not apply
 
 **The node's PHP.** A new viewer is registered through `ConnectionTracker::openRecord`. live.php, vod.php and timeshift.php now pass it the token and the node's `time_offset`. On a CONNECTIONS node, `AgentConnections::register` adds an `X-XCVM-Admission` header to `PUT /v1/conn/{uuid}`, built by `AgentConnections::admission`.
 - **Why a header.** An agent that predates it ignores the header, and the record it stores stays the record.
-- **When.** Only a new viewer with a limited token (`max_connections` > 0) sends it, and only while `flows.json` says the node is `active`. Refreshes (`updateLive`), RTMP and endpoints without a token do not. A quarantined node sends none: MAIN mints it no claim and answers its `conn_admit` with `NOT_ACTIVE`, so its viewers are admitted without asking, as before this increment.
+- **When.** Only a new viewer with a limited token (`max_connections` > 0) sends it, and only while `flows.json` says the node is `active`. Refreshes (`updateLive`) and endpoints without a token do not; RTMP does since a later change (below, **Not built**). A quarantined node sends none: MAIN mints it no claim and answers its `conn_admit` with `NOT_ACTIVE`, so its viewers are admitted without asking, as before this increment.
 - **Timeout.** Such a register waits 2.5 s (`ADMIT_TIMEOUT`) instead of 1 s, since the agent may ask MAIN for up to 1.5 s.
 
 PHP reads the agent's answer as follows:
@@ -1136,7 +1136,7 @@ The denials are signed and name the node and the request's nonce: 409 `NOT_ACTIV
 
 **Not built:**
 - the agent's half, above;
-- admission for RTMP viewers (`rtmp.php` has no stream token);
+- admission for RTMP viewers (`rtmp.php` has no stream token). Built later: `rtmp.php` passes `openRecord` the line's `max_connections` as a token without a claim, so a limited line's RTMP viewer is admitted as a viewer whose token has none: the agent asks MAIN's `conn_admit`, with an empty `ua`. A refusal is logged with the event `StreamAuth::admissionRefusal` gives its reason (`admission: <reason>`), and the play gets a 404, since RTMP has no off-air video to show. `AgentAdmissionTest::testAnRtmpViewerIsAdmittedWithoutAClaim` covers the register and the wiring;
 - an audit row for refusals. A refusal is only in the client log, so a flood of expired tokens cannot fill `cluster_audit`.
 
 Tests:

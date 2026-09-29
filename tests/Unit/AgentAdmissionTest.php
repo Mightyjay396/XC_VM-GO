@@ -157,6 +157,22 @@ PHP);
 		$this->assertSame(0, $this->rows(), 'the agent holds them, not MAIN\'s store');
 	}
 
+	/** rtmp.php has no stream token: its limited viewer is admitted without a claim (the agent asks MAIN), and a refusal is logged and refused. */
+	public function testAnRtmpViewerIsAdmittedWithoutAClaim(): void {
+		$this->agent([[200, '{}'], [403, '{"admit":false,"reason":"EXPIRED"}']]);
+		$rUUID = md5('17');
+		$rRecord = $this->record($rUUID, ['user_agent' => '', 'container' => 'rtmp', 'pid' => '17']);
+		$this->assertTrue($this->open($rRecord, ['user_info' => ['max_connections' => 2]]));
+		$this->assertSame(['line_id' => 42, 'stream_id' => 100, 'max_connections' => 2, 'ip' => '203.0.113.9', 'ua' => ''], $this->header(0));
+		$this->assertFalse($this->open($this->record(md5('18'), ['user_agent' => '', 'container' => 'rtmp']), ['user_info' => ['max_connections' => 2]]));
+		$this->assertSame('EXPIRED', ConnectionTracker::refusedAdmission());
+
+		$rRtmp = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/stream/rtmp.php');
+		$this->assertStringContainsString("['user_info' => ['max_connections' => (int) \$rUserInfo['max_connections']]], intval(\$rServers[SERVER_ID]['time_offset']));", $rRtmp);
+		$this->assertStringContainsString("StreamAuth::admissionRefusal(\$rRefused)[0], \$rIP, 'admission: ' . \$rRefused);", $rRtmp);
+		$this->assertLessThan(strpos($rRtmp, "'LINE_CREATE_FAIL'"), strpos($rRtmp, 'ConnectionTracker::refusedAdmission()'), 'a refusal is told apart before a failed register');
+	}
+
 	public function testNoAdmissionForAnUnlimitedLineARefreshOrAnEndpointWithoutAToken(): void {
 		$this->agent([[200, '{}'], [200, '{}'], [200, '{}']]);
 		$this->assertTrue($this->open($this->record('c1'), $this->token('c1', ['user_info' => ['id' => 42, 'max_connections' => 0]])));
