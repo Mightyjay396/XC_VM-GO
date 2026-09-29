@@ -4313,8 +4313,19 @@ it skips.
   command to run a fleet by hand.
 - **One `php -S` serves the whole fleet**, one request at a time. It shows ordering and recovery,
   not MAIN's throughput.
-- **Time is real.** A path measured in hours (a lease's `exp`, a token's expiry at the default
-  rotation) needs the harness to move MAIN's clock, which it does not yet do.
+- **Time was real.** A path measured in hours (a lease's `exp`, a token's expiry at the default
+  rotation) needed the harness to move MAIN's clock. It does now: `rig.clock(t, d)` writes
+  `<db>.clock`, and `common.php` fixes `ClusterClock` at the time plus `d` for each request, so
+  tokens and leases are issued, and stamps checked, in that time.
+  `TestInteropSimAFleetFollowsMainsClockPastItsTokens` moves it two hours ahead once the fleet is
+  enrolled: each node takes MAIN's time from the `CLOCK_SKEW` refusal, gets `TOKEN_EXPIRED`,
+  re-keys, and holds a lease issued at the new time. The agents' own clocks stay real, so the
+  harness moves MAIN, not the fleet. A jump inside the enrolment window leaves `enrol_complete`
+  refused, as the enrolment's token expired; such a node is enrolled again.
+- **A flaky check fixed.** `TestInteropSimARelicensedFleetGetsItsLeasesBack` waited for a lease
+  issued at most a second before the licence came back. The last node enrolled could still hold
+  its enrolment lease inside that second (leases are stamped in whole seconds), so the test went on
+  and failed on its epoch (once in two runs here). It now waits for a lease issued after.
 - **The Phase 8 48-hour measurement** (no encoder restart at L = 5) needs real encoders and stays
   a fleet measure.
 
