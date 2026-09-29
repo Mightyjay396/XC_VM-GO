@@ -249,15 +249,16 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 		$this->assertSame(1, $this->activity());
 
 		$this->assertSame(['ok' => true, 'useq' => 5, 'applied' => 0, 'dropped' => 0], $this->ingest(1, $rBatch), 'the same batch again');
-		$this->assertSame(['ok' => true, 'useq' => 5, 'applied' => 0, 'dropped' => 0], $this->ingest(3, array_slice($rBatch, 2)), 'its tail again');
+		// Its tail, or a batch that overlaps it and goes on: an agent resends
+		// its batch in flight whole, so these are another install's
+		// (ClusterApi quarantines the node). Nothing of them is applied.
+		$this->assertSame(['ok' => false, 'useq' => 5, 'backwards' => true], $this->ingest(3, array_slice($rBatch, 2)), 'its tail');
+		$rOverlap = [$this->upsert('cccc'), $this->remove('cccc'), $this->upsert('dddd')];
+		$this->assertSame(['ok' => false, 'useq' => 5, 'backwards' => true], $this->ingest(4, $rOverlap), 'an overlap');
 		$this->assertSame($rStore, $this->store(), 'aaaa is not re-opened, cccc not re-created');
 		$this->assertSame(1, $this->activity(), 'one activity row for one close');
-
-		// A resend that overlaps what was applied and goes on: nothing of it
-		// is applied, and the node resends from the number MAIN expects.
-		$rOverlap = [$this->upsert('cccc'), $this->remove('cccc'), $this->upsert('dddd')];
-		$this->assertSame(['ok' => false, 'useq' => 5, 'expected_useq' => 6], $this->ingest(4, $rOverlap));
-		$this->assertSame($rStore, $this->store());
+		// Past the cursor: a gap, and the node resends from the number MAIN expects.
+		$this->assertSame(['ok' => false, 'useq' => 5, 'expected_useq' => 6], $this->ingest(8, [$this->upsert('dddd')]));
 		$this->assertSame(1, $this->ingest(6, [$this->upsert('dddd')])['applied']);
 		$this->assertSame(['bbbb', 'dddd'], array_keys($this->store()));
 		$this->assertSame(6, $this->cursor());

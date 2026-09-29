@@ -29,6 +29,7 @@ use XcVm\Domain\Cluster\ClusterPolicy;
 use XcVm\Domain\Cluster\ClusterPool;
 use XcVm\Domain\Cluster\ClusterSemaphore;
 use XcVm\Domain\Cluster\EnrolmentService;
+use XcVm\Domain\Cluster\EventIngest;
 use XcVm\Domain\Cluster\HeartbeatService;
 use XcVm\Domain\Cluster\NodeAudit;
 use XcVm\Domain\Cluster\NodeAuthCache;
@@ -1440,6 +1441,35 @@ final class ClusterApiTest extends TestCase {
 
 		[$rRes, $rCtx] = $this->call('hello', ['instance_id' => 'inst-a'], 1, $rKeys);
 		$this->assertSame(['p0' => 1, 'p1' => 0], $this->reply($rRes, $rCtx, $rKeys)['cursors']);
+	}
+
+	public function testAP0BatchThatGoesBackQuarantines(): void {
+		$rPrevious = EventIngest::useLockDir(sys_get_temp_dir() . '/xcvm-ingest-' . bin2hex(random_bytes(4)) . '/');
+		try {
+			$this->rDb->exec('CREATE TABLE `streams_servers` (`server_stream_id` INTEGER PRIMARY KEY, `stream_id` int, `server_id` int, `pid` int)');
+			$this->rDb->exec('INSERT INTO `streams_servers` (`server_stream_id`, `stream_id`, `server_id`, `pid`) VALUES (11, 100, 5, 0)');
+			$rKeys = $this->active();
+			$this->peer(6, ReplicaBuilder::FEATURE_CONFIG_CHANGED);
+			NodeRegistry::update(self::SID, ['mode' => 1, 'flows' => NodeRegistry::FLOW_STREAMS]);
+			$rState = static fn(int $rPid): array => ['type' => 'stream.state', 'd' => ['stream_id' => 100, 'server_id' => self::SID, 'fields' => ['pid' => $rPid]]];
+
+			$this->assertSame(1, $this->served('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => [$rState(42)]], 1, $rKeys)['useq']);
+			$this->assertSame(0, $this->served('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => [$rState(42)]], 1, $rKeys)['applied'], 'its reply was lost: a repeat');
+			$this->assertSame([], $this->announced());
+
+			// Other events under a number MAIN applied: another install.
+			[$rRes, , $rReq] = $this->call('events', ['lane' => 'p0', 'first_useq' => 1, 'events' => [$rState(7)]], 1, $rKeys);
+			$this->assertSame('quarantined', $this->denial($rRes, 409, 'NOT_ACTIVE', $rReq)['state']);
+			$rNode = NodeRegistry::byServer(self::SID);
+			$this->assertSame(['quarantined', 'P0 sequence went backwards'], [$rNode['state'], $rNode['quarantine_reason']]);
+			$this->assertSame([6], $this->announced(), 'its peers stop trusting it at once');
+			$this->rDb->query("SELECT `detail` FROM `cluster_audit` WHERE `event` = 'node.quarantine';");
+			$this->assertSame(['reason' => 'p0 backwards', 'first_useq' => 1, 'count' => 1, 'cursor' => 1], json_decode($this->rDb->get_row()['detail'], true));
+			$this->rDb->query('SELECT `pid` FROM `streams_servers` WHERE `server_stream_id` = 11');
+			$this->assertSame(42, (int) $this->rDb->get_row()['pid'], 'nothing of it applied');
+		} finally {
+			exec('rm -rf ' . escapeshellarg((string) EventIngest::useLockDir($rPrevious)));
+		}
 	}
 
 	public function testP2TakesTouchesWithoutANumberAndHelloAndHeartbeatSaySo(): void {

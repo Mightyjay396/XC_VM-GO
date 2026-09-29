@@ -4633,6 +4633,51 @@ though, each node moves to the new key's chain only at its next scheduled refres
 **Tests.** `ClusterOverviewTest::testANewLicenceKeyRotatesEveryToken` (the action, from its source;
 it ends the request) beside `testRotateAllQueuesForEveryActiveNodeThatTakesCommands` (`rotateAll` itself).
 
+### A P0 sequence that goes backwards quarantines the node
+
+The plan names three kinds of authenticated evidence that quarantine a node (§4, "Quarantine"). Two
+were built: a `hello` from another `instance_id`, and a re-key whose attestation names another
+instance. The third, "a backwards P0 sequence", was not. `EventIngest` took any P0 batch at or
+below the cursor as a repeat and applied none of it. So a second install sending as the node, for
+example a snapshot of it with the same `instance_id`, had its events dropped without a trace.
+
+- **What an agent sends.** It numbers P0 from the cursor `hello` gave it, and advances the number
+  itself. It resends only the batch in flight (`<lane>.inflight`), whole, with the same events,
+  until MAIN answers; after `USEQ_GAP` it renumbers forward. So below the cursor an honest agent
+  sends one thing: an exact copy of a batch MAIN applied, when the reply was lost or a copy arrived
+  late.
+- **The record.** Each P0 batch MAIN goes on to apply leaves a fingerprint in the lane's lock
+  file (`tmp/cluster_ingest/<server>_p0.lock`, held while the batch is applied): its first number,
+  its count and the SHA-256 of its events. The newest stays however old, since the agent resends it
+  for as long as it goes unanswered. The others are dropped 180 s later (`COPY_KEEP_MS`), because a
+  copy signed before the agent moved on is refused past the 90 s request window. The fingerprint is
+  written before the batch commits, so a copy that races the commit is still recognised.
+- **Backwards.** A P0 batch that starts at or below the cursor and matches no fingerprint is not
+  applied. That covers other events under an applied number, part of a batch, and a batch that
+  overlaps the cursor. `events` then quarantines the node as `hello` does: state `quarantined`,
+  reason `P0 sequence went backwards`, the audit line `node.quarantine` (`p0 backwards`, the first
+  number, the count, the cursor), `config.changed` to the peers, and `409 NOT_ACTIVE`. The admin
+  picks *Trust again* or *Revoke*.
+- **No record, no quarantine.** Where the lane has no fingerprint (`tmp/` emptied by a reboot, a
+  lock file that could not be opened or written), a batch at or below the cursor is a repeat, as
+  before.
+
+**Not built / limits.**
+- **The genuine node is quarantined too.** MAIN cannot tell which of the two installs is the
+  original. The admin decides, as for the other two kinds of evidence.
+- **P1 is not checked.** Its numbers are a high-water mark, and gaps are allowed there.
+- **After a reboot of MAIN**, the check starts again with the first batch applied.
+- **The overlap was a `USEQ_GAP`.** A batch that overlapped the cursor used to be told the number
+  MAIN expected, and it was then renumbered and applied. No agent sends one, so it now counts as
+  backwards.
+
+**Tests.**
+- `ClusterEventsTest::testAP0BatchThatGoesBackIsNoRepeat`: other events under the same numbers,
+  part of a batch, an overlap, a late copy, the newest however old, the 180 s bound, and no record.
+- `ClusterApiTest::testAP0BatchThatGoesBackQuarantines`: through the `events` op, with its
+  audit and the peers' `config.changed`.
+- `ConnectionIngestIdempotencyTest`: its tail and overlap cases are now backwards.
+
 ### Members nothing used
 
 An audit of the cluster code for unused members found six in the panel and four in the agent, and
