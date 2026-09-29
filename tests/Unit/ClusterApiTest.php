@@ -1161,7 +1161,7 @@ final class ClusterApiTest extends TestCase {
 			$this->assertFalse(SignalDispatcher::cache(self::SID, ['type' => 'delete_con', 'uuid' => 'a b']), 'nothing well-formed: nothing sent');
 			$this->assertCount(1, $rRows, 'no row for a node in mode 2');
 			$rDocs = $rJobs();
-			$this->assertSame(array_fill(0, 6, 'node.cache'), array_column($rDocs, 'type'));
+			$this->assertSame(array_fill(0, 6, 'node.purge'), array_column($rDocs, 'type'), 'every job here removes something');
 			$this->assertSame([['type' => 'delete_vods', 'id' => [8, 9]]], $rDocs[0]['args']['jobs'], 'ids as integers, the rest dropped');
 			$this->assertSame([['type' => 'drop_con', 'uuid' => 'abc123']], $rDocs[1]['args']['jobs']);
 			$this->assertCount($rMax, $rDocs[2]['args']['jobs']);
@@ -1174,7 +1174,7 @@ final class ClusterApiTest extends TestCase {
 			}
 			$this->assertSame(86400, $rDocs[0]['exp'] - $rDocs[0]['iat'], 'kept for a day, as MAIN keeps a signals row');
 			$this->rDb->query('SELECT DISTINCT `class` FROM `cluster_commands`');
-			$this->assertSame('G', $this->rDb->get_row()['class'], 'granting to today\'s extension');
+			$this->assertSame('R', $this->rDb->get_row()['class'], 'restrictive: removals only (node.purge)');
 
 			// With the cluster API off, and for a node without COMMANDS, rows.
 			SettingsManager::set(['cluster_api_enabled' => 0] + $this->rSettings);

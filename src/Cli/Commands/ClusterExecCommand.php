@@ -43,6 +43,8 @@ use XcVm\Streaming\Fanout\FanoutClient;
  *   (CacheJobs::run), only when every job is in the form MAIN signs it
  *   (CacheJobs::job) and they name at most CacheJobs::MAX targets
  *   (CacheJobs::targets); otherwise refused whole (exit 2) before any runs.
+ * - `node.purge {jobs}` — the same, with only the jobs that remove something
+ *   (CacheJobs::PURGES): restrictive, so MAIN sends it without a licence.
  * - `config.changed {sections}` — the agent fetches its replica at once; an
  *   agent that hands it here instead is acked `{"deferred": true}`, and its
  *   next minute's poll fetches the change.
@@ -76,7 +78,7 @@ class ClusterExecCommand implements CommandInterface {
 	public const SKEW = 300;
 
 	/** The command types run here (`--types`). */
-	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop', 'stream.assign', 'queue.poke'];
+	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop', 'stream.assign', 'queue.poke', 'node.purge'];
 
 	public function getName(): string {
 		return 'cluster:exec';
@@ -195,6 +197,33 @@ class ClusterExecCommand implements CommandInterface {
 	}
 
 	/**
+	 * A `node.cache`'s or `node.purge`'s jobs, when every one is in the form
+	 * MAIN signs it (CacheJobs::job) and they name at most CacheJobs::MAX
+	 * targets (what one run may take within the agent's minute: MAIN splits
+	 * longer lists); a purge's only the jobs that remove something
+	 * (CacheJobs::PURGES). Null refuses the command whole, before any runs.
+	 *
+	 * @return list<array<string, mixed>>|null
+	 */
+	private static function cacheJobs(mixed $rJobs, bool $rPurge): ?array {
+		if (!is_array($rJobs) || $rJobs === [] || !array_is_list($rJobs) || count($rJobs) > CacheJobs::MAX) {
+			return null;
+		}
+		foreach ($rJobs as $rJob) {
+			// Exactly the job MAIN's form makes of it, whatever its keys' order.
+			$rClean = CacheJobs::job($rJob);
+			if ($rClean !== null && is_array($rJob)) {
+				ksort($rClean);
+				ksort($rJob);
+			}
+			if ($rClean === null || $rClean !== $rJob || ($rPurge && !in_array($rClean['type'], CacheJobs::PURGES, true))) {
+				return null;
+			}
+		}
+		return CacheJobs::targets($rJobs) > CacheJobs::MAX ? null : $rJobs;
+	}
+
+	/**
 	 * A `stream.assign`'s arguments: 1 to StreamRuntime::ASSIGN_MAX stream ids,
 	 * and columns of StreamStateWriter::STATE_FIELDS with scalar or null values,
 	 * at least one.
@@ -257,25 +286,9 @@ class ClusterExecCommand implements CommandInterface {
 				return 0;
 
 			case 'node.cache':
-				$rJobs = $rArgs['jobs'] ?? null;
-				if (!is_array($rJobs) || $rJobs === [] || !array_is_list($rJobs) || count($rJobs) > CacheJobs::MAX) {
-					fwrite(STDERR, "cluster:exec: bad cache jobs\n");
-					return 2;
-				}
-				foreach ($rJobs as $rJob) {
-					// Exactly the job MAIN's form makes of it, whatever its keys' order.
-					$rClean = CacheJobs::job($rJob);
-					if ($rClean !== null && is_array($rJob)) {
-						ksort($rClean);
-						ksort($rJob);
-					}
-					if ($rClean === null || $rClean !== $rJob) {
-						fwrite(STDERR, "cluster:exec: bad cache jobs\n");
-						return 2;
-					}
-				}
-				// What one run may take within the agent's minute: MAIN splits longer lists.
-				if (CacheJobs::targets($rJobs) > CacheJobs::MAX) {
+			case 'node.purge':
+				$rJobs = self::cacheJobs($rArgs['jobs'] ?? null, $rCmd['type'] === 'node.purge');
+				if ($rJobs === null) {
 					fwrite(STDERR, "cluster:exec: bad cache jobs\n");
 					return 2;
 				}

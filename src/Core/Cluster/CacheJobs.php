@@ -34,6 +34,31 @@ final class CacheJobs {
 	public const REBUILDS = ['update_stream', 'update_line', 'update_streams', 'update_lines'];
 
 	/**
+	 * The jobs that only remove something: a restrictive `node.purge` carries
+	 * them, which xcvm_core signs without a licence (its registry's
+	 * `job_types`); the others go in a granting `node.cache`.
+	 */
+	public const PURGES = ['delete_con', 'drop_con', 'delete_vod', 'delete_vods'];
+
+	/**
+	 * $rJobs as two lists, in their order: [the removals, the rest].
+	 *
+	 * @param list<mixed> $rJobs
+	 * @return array{0: list<mixed>, 1: list<mixed>}
+	 */
+	public static function split(array $rJobs): array {
+		$rPurges = $rRest = [];
+		foreach ($rJobs as $rJob) {
+			if (is_array($rJob) && in_array($rJob['type'] ?? null, self::PURGES, true)) {
+				$rPurges[] = $rJob;
+			} else {
+				$rRest[] = $rJob;
+			}
+		}
+		return [$rPurges, $rRest];
+	}
+
+	/**
 	 * Most targets one `node.cache` command names (targets()): its jobs run
 	 * in one cluster:exec, which the agent gives a minute, and a delete
 	 * removes each id's files.

@@ -32,12 +32,12 @@ final class CommandBus {
 	use DatabaseAware;
 
 	/** Lifetime of a command by type prefix (seconds). */
-	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'node.cache' => 86400, 'node.fence' => 3600, 'node.unfence' => 3600, 'node.quarantine' => 3600, 'artefact.' => 3600, 'default' => 600];
+	public const TTL = ['conn.' => 300, 'node.root' => 86400, 'node.cache' => 86400, 'node.purge' => 86400, 'node.fence' => 3600, 'node.unfence' => 3600, 'node.quarantine' => 3600, 'artefact.' => 3600, 'default' => 600];
 
 	/** Types MAIN sends today. */
 	public const TYPES = [
 		'node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch', 'token.rotate_now',
-		'stream.stop', 'vod.stop', 'node.fence', 'node.unfence', 'node.quarantine', 'resync', 'policy.update', 'stream.assign', 'queue.poke',
+		'stream.stop', 'vod.stop', 'node.fence', 'node.unfence', 'node.quarantine', 'resync', 'policy.update', 'stream.assign', 'queue.poke', 'node.purge',
 	];
 
 	/**
@@ -46,7 +46,7 @@ final class CommandBus {
 	 * list is informational, and CommandBusRegistryTest holds it to the
 	 * extension's registry.
 	 */
-	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed'];
+	public const RESTRICTIVE = ['conn.drop', 'conn.drop_line', 'conn.kill_worker', 'conn.close', 'stream.stop', 'vod.stop', 'token.rotate_now', 'node.quarantine', 'node.fence', 'resync', 'config.changed', 'node.purge'];
 
 	/** Types that name what they run in a top-level `action`, never among their arguments. */
 	public const ACTION_TYPES = ['node.rpc', 'node.root'];

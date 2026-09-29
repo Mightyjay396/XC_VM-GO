@@ -339,14 +339,27 @@ final class ClusterRoute {
 			return [false, false];
 		}
 		return self::command($rServerID, 'node.cache', static function (ClusterCrypto $rCrypto) use ($rServerID, $rJobs): bool {
-			$rCommands = CacheJobs::commands($rJobs);
-			if ($rCommands === []) {
-				return false;
+			// The removals first, as a restrictive node.purge that signs without a
+			// licence; an extension from before it refuses the type, and they go
+			// as node.cache like the rest.
+			[$rPurges, $rRest] = CacheJobs::split($rJobs);
+			$rSent = false;
+			foreach (CacheJobs::commands($rPurges) as $rCommand) {
+				try {
+					CommandBus::enqueue($rCrypto, $rServerID, 'node.purge', ['jobs' => $rCommand]);
+				} catch (ClusterRefusedException $rE) {
+					if ($rE->reason() !== 'RECORD:type') {
+						throw $rE;
+					}
+					CommandBus::enqueue($rCrypto, $rServerID, 'node.cache', ['jobs' => $rCommand]);
+				}
+				$rSent = true;
 			}
-			foreach ($rCommands as $rCommand) {
+			foreach (CacheJobs::commands($rRest) as $rCommand) {
 				CommandBus::enqueue($rCrypto, $rServerID, 'node.cache', ['jobs' => $rCommand]);
+				$rSent = true;
 			}
-			return true;
+			return $rSent;
 		}, false, false, $rNode);
 	}
 

@@ -86,6 +86,29 @@ final class ClusterExecCommandTest extends TestCase {
 		}
 	}
 
+	/**
+	 * `node.purge` is signed without a licence, so it runs only the jobs that
+	 * remove something: a rebuild in it is refused whole, the malformed ones
+	 * as for `node.cache`.
+	 */
+	public function testAPurgeRunsOnlyRemovals(): void {
+		foreach ([
+			'a rebuild' => ['jobs' => [['type' => 'update_stream', 'id' => 7]]],
+			'a removal beside a rebuild' => ['jobs' => [['type' => 'delete_vod', 'id' => 7], ['type' => 'update_line', 'id' => 8]]],
+			'an extra field' => ['jobs' => [['type' => 'delete_vod', 'id' => 7, 'path' => '/etc']]],
+			'empty' => ['jobs' => []],
+		] as $rWhy => $rArgs) {
+			ob_start();
+			$rExit = ClusterExecCommand::run(['type' => 'node.purge', 'args' => $rArgs]);
+			$this->assertSame('', ob_get_clean(), $rWhy);
+			$this->assertSame(2, $rExit, $rWhy);
+		}
+		ob_start();
+		$rExit = ClusterExecCommand::run(['type' => 'node.purge', 'args' => ['jobs' => [['type' => 'drop_con', 'uuid' => 'abc123']]]]);
+		$this->assertSame(['result' => true, 'jobs' => 1], json_decode((string) ob_get_clean(), true));
+		$this->assertSame(0, $rExit);
+	}
+
 	public function testUnknownTypesAndActionsDoNothing(): void {
 		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.root', 'action' => 'reboot', 'args' => []]));
 		$this->assertSame(2, ClusterExecCommand::run(['type' => 'node.rpc', 'action' => 'view_log', 'args' => []]), 'not in NodeRpc::ACTIONS');
