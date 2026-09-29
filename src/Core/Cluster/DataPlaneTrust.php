@@ -197,19 +197,22 @@ final class DataPlaneTrust {
 	 * `X-XCVM-File-Digest` for a chunk this server serves: MAIN's is signed by
 	 * `xcvm_core` (tag `dig`), a load balancer's by its agent with the node
 	 * key. Null when it cannot be signed: the caller then serves nothing.
+	 *
+	 * @param string|null $rNonce The answered request's `X-XCVM-File-Auth` nonce (16 bytes), which the digest names.
 	 */
-	public static function signDigest(string $rTid, int $rOwnerID, int $rOffset, int $rTotal, string $rBytes, int $rIat): ?string {
+	public static function signDigest(string $rTid, int $rOwnerID, int $rOffset, int $rTotal, string $rBytes, int $rIat, ?string $rNonce = null): ?string {
 		$rSha = hash('sha256', $rBytes);
+		$rNonceHex = $rNonce === null ? null : bin2hex($rNonce);
 		if (self::main() || self::$rSigner !== null) {
 			try {
-				$rDoc = FileDigest::document($rTid, $rOwnerID, strlen($rBytes), $rSha, $rIat, $rOffset, $rTotal);
+				$rDoc = FileDigest::document($rTid, $rOwnerID, strlen($rBytes), $rSha, $rIat, $rOffset, $rTotal, $rNonceHex);
 				$rSig = self::$rSigner !== null ? (self::$rSigner)($rDoc) : self::crypto()->sign('dig', $rDoc);
 			} catch (\Throwable) {
 				return null;
 			}
 			return $rSig === null ? null : FileDigest::header($rDoc, $rSig);
 		}
-		return AgentDataPlane::fileDigest($rTid, $rOwnerID, strlen($rBytes), $rSha, $rIat, $rOffset, $rTotal);
+		return AgentDataPlane::fileDigest($rTid, $rOwnerID, strlen($rBytes), $rSha, $rIat, $rOffset, $rTotal, $rNonceHex);
 	}
 
 	/**

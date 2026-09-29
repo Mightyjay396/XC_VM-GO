@@ -3373,12 +3373,12 @@ One change, as the third increment said it had to be: tickets that nothing verif
 **The loopback proxy** (`relayproxy.go`, `127.0.0.1:31290`, `-relay-addr`). `k` is 32 random bytes, base64url, made once and kept in `.relay.key` beside the agent's state (0600), so an agent restart breaks no encoder's URL. The agent publishes it as `relay.key` (0600), which the node's PHP reads (`DataPlane::key`), only once its listener is bound, and removes it before it lets go of the port; a port it cannot bind (held by anyone) is retried with backoff from 1 s to 30 s and logged, and nothing is published meanwhile. A request without `k` is refused, and nothing is served with the flow off. The agent says `relay` in hello's `features` while it runs the proxy.
 
 - `GET /relay/<k>/<stream>.ts[?prebuffer=1]`: the stream's relay ticket, the parent's address from the stored `servers` section (its private address when both it and this node have one, else its public one, on its HTTP broadcast port, as the legacy URLs chose), and `GET /admin/live?stream=<id>&extension=ts[&prebuffer=1]` with `X-XCVM-Relay` and `X-XCVM-Relay-Auth` (`RelayAuth`: the node key over the ticket, `GET`, that target, MAIN's time as the agent measured it, a fresh nonce). The body streams through unchecked (D11).
-- `GET /xfile/<k>/<ref>[.<ext>]`, with the reader's `Range` (one range): chunk by chunk, `GET /xfile?o=<offset>&n=4194304` with `X-XCVM-File` and `X-XCVM-File-Auth` (the same proof over the file ticket). The ticket is read from the store and verified again for every chunk, so a transfer that outlives its ticket moves to the refreshed one and ends when there is none (expired, dropped, a revoked node). An owner answering 429 or 503 (its `/xfile` rate, a busy PHP) is asked for the chunk again, at most five times in all, waiting 250 ms doubling up to 4 s (or its `Retry-After` within that). Each chunk must carry an `X-XCVM-File-Digest` that verifies under the owner's key (the panel's, `dig`, for MAIN; else the owner's `ed_pub` in the node list, active), names the ticket, the owner and the offset asked, and matches the chunk's bytes, length and the file's total; every chunk but the last is whole. A chunk that fails ends the read before a byte of it is passed on: before the headers, a 502; after them, a short body.
+- `GET /xfile/<k>/<ref>[.<ext>]`, with the reader's `Range` (one range): chunk by chunk, `GET /xfile?o=<offset>&n=4194304` with `X-XCVM-File` and `X-XCVM-File-Auth` (the same proof over the file ticket). The ticket is read from the store and verified again for every chunk, so a transfer that outlives its ticket moves to the refreshed one and ends when there is none (expired, dropped, a revoked node). An owner answering 429 or 503 (its `/xfile` rate, a busy PHP) is asked for the chunk again, at most five times in all, waiting 250 ms doubling up to 4 s (or its `Retry-After` within that). Each chunk must carry an `X-XCVM-File-Digest` that verifies under the owner's key (the panel's, `dig`, for MAIN; else the owner's `ed_pub` in the node list, active), names the ticket, the owner and the offset asked, and matches the chunk's bytes, length and the file's total; every chunk but the last is whole. Since [the digest names its request](#binding-a-chunks-digest-to-its-request), it must also name the nonce of the request's `X-XCVM-File-Auth` (an N−1 owner's, without one, only while its `iat` is within ±90 s). A chunk that fails ends the read before a byte of it is passed on: before the headers, a 502; after them, a short body.
 - `xc_agent run -role main` runs the listener alone on MAIN, which has no node identity, tickets or flows; MAIN's own relays and file reads keep the legacy URLs. Phase 9's eighth increment gives MAIN an identity to sign with (`cluster:main-dataplane on`).
 
 **The parent** (`Core/Cluster/RelayGuard`, in `admin/{live,vod,timeshift,thumb}.php`). Tickets and proofs are judged on MAIN's clock (`DataPlaneTrust::nowMs`): MAIN's own, or on a load balancer MAIN's as its agent anchored it (`NodeLease::mainNowMs`, from `lease_state.json`; the host's clock when the agent wrote no anchor), because the child signs with MAIN's time as its agent measured it. A `password` that is not a string (`password[]=…`) is refused, not a 500. A request that carries `X-XCVM-Relay` or `X-XCVM-Relay-Auth` is judged by them alone, never by the password: the ticket verifies under the panel key and names this server as the parent and the stream asked for; the node list has the child active at the ticket's generation (a revoked or re-enrolled child holds nothing that works, and `config.changed` pushes the list at once); the proof is the child key's over this method and `REQUEST_URI`, within ±90 s; and the nonce is spent. A relay gets no playlist (`extension=m3u8` in `live` and `timeshift`), whose segment URLs carry the password. The legacy password is still admitted from a server's address, except from a server whose own DATAPLANE flow is on (the node list's new `dataplane`); `thumb` takes no password, as before.
 
-**The owner** (`Core/Cluster/FileTicketServer`, `location = /xfile` in MAIN's and the load balancers' nginx, through the admin gateway to `Public/admin/xfile.php` and `FileTicketController`). `/xfile` has its own `limit_req` zone, `xfile`: 50 r/s per TCP peer (`$realip_remote_addr`), burst 100, `nodelay`, status 429. The viewers' zone `one` (20 r/s per client, burst 16, 503) would have throttled a VOD pull, which is one request per 4 MiB chunk. It judges on MAIN's clock as the parent does. The file ticket as the relay ticket (this server the owner, the fetcher active at its generation, a fresh proof over `/xfile?o=…&n=…`, the nonce spent); the path opens from `file` and hashes to `ref`; it passes `getFile`'s rule (its extensions, under `lb_scan_roots` or the panel's directory). It reads at most 4 MiB at the offset asked and signs `{tid, owner_sid, offset, size, total, sha256, iat}`: MAIN with `xcvm_core` (`dig`), a load balancer through its agent (`/v1/file_digest`, node key). One it cannot sign is a 503 with no body.
+**The owner** (`Core/Cluster/FileTicketServer`, `location = /xfile` in MAIN's and the load balancers' nginx, through the admin gateway to `Public/admin/xfile.php` and `FileTicketController`). `/xfile` has its own `limit_req` zone, `xfile`: 50 r/s per TCP peer (`$realip_remote_addr`), burst 100, `nodelay`, status 429. The viewers' zone `one` (20 r/s per client, burst 16, 503) would have throttled a VOD pull, which is one request per 4 MiB chunk. It judges on MAIN's clock as the parent does. The file ticket as the relay ticket (this server the owner, the fetcher active at its generation, a fresh proof over `/xfile?o=…&n=…`, the nonce spent); the path opens from `file` and hashes to `ref`; it passes `getFile`'s rule (its extensions, under `lb_scan_roots` or the panel's directory). It reads at most 4 MiB at the offset asked and signs `{tid, owner_sid, offset, size, total, sha256, iat}` (and, [since](#binding-a-chunks-digest-to-its-request), the proof's `nonce`): MAIN with `xcvm_core` (`dig`), a load balancer through its agent (`/v1/file_digest`, node key). One it cannot sign is a 503 with no body.
 
 **Trust on either side** (`Core/Cluster/DataPlaneTrust`): on MAIN, `xcvm_core`'s panel key, `cluster_nodes` and the cluster bus's nonce store (`NonceStore`, node `relay:<sid>`); on a load balancer, the panel key its agent pinned (`agent.json`), the `servers` section's node list and its agent's nonce window (`/v1/nonce`). Each fails closed.
 
@@ -3401,7 +3401,7 @@ Port 31290 is unprivileged: while the agent does not hold it, any local user cou
 - The node list gains `dataplane`, for the parents' password rule.
 - MAIN runs no data-plane client: `-role main` is the listener alone (until Phase 9's eighth increment).
 
-**Not built / limits.** The acceptance measured on a running fleet (48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host). A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
+**Not built / limits.** The acceptance, which was to be measured on a running fleet: 48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host. Since then [the MITM harness](#the-mitm-harness) measures the MITM'd body and the replayed headers against MAIN's real guard and file server instead; only the 48 h is still a fleet measure, and it is not measured yet. A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
 
 **Tests.** PHP: `RelayAuthTest` (a relay admitted once and a replay refused; another stream, parent or panel, a tampered ticket; a revoked, re-enrolled or unlisted child; another key, a stale or retargeted proof; no nonce window or panel key; headers never falling back to the password; the password from a DATAPLANE child refused; a password that is not a string refused; a load balancer judging by MAIN's anchored clock; the four endpoints through the guard), `FileTicketTest` (chunks with their digests, a replay, another key or owner, a revoked or re-enrolled fetcher, a path sealed under another ref or key, getFile's rule, nothing unsigned, the routes and their own rate zone), `FileDigestTest` (a chunk's digest bound to its offset and size), `DataPlaneUrlsTest` (no URL carries the secret with the flow on; the builders use it; legacy servers and the flow off keep the legacy URL; the loopback only while the agent's uid holds the port, from fixture socket tables; `legacyApiRetired`), `LbNginxApiLegacyTest` and `ModeTwoPathsTest` (`api_legacy.conf` stays `1` while MAIN reads with `getFile`), `ClusterTelemetryTest` (DATAPLANE only for an agent saying `relay`), `ClusterDataplaneVectorsTest`, and `ClusterApiTest` (tickets in the record and on the delta, no ETag, version or cache entry moved, paging, the licence, a malformed ask, the flow off). Go: the vectors, the proxy (each connect signed afresh and a replay refused, the key, a stream without a ticket, the flow off, a ticket for another node, generation or stream; `relay.key` published only while the port is held, a held port retried), `/xfile` (whole, a range, a suffix, past the end; a tampered, moved or foreign-signed chunk refused, an inactive owner; the ticket re-read per chunk; 429 and 503 retried, a bounded number of times), the ticket store (paging, a restart, the flow off and on, a licence refusal, the latest ticket per ref) and `TestInteropDataPlane` against MAIN's real PHP (`XCVM_PANEL_DIR`): tickets from the streams op, a relay MAIN's guard admits once, a file read through MAIN's `FileTicketServer` and a tampered chunk refused.
 
@@ -4077,6 +4077,127 @@ the legacy ones for a legacy server, MAIN's own file and no licence); on the age
 `TestMainReadsANodesFileWithItsOwnKey`, `TestMainFollowsItsIdentity`,
 `TestRunMainEndsWhenTheIdentityChanges`, `TestNewMainAgentNeedsAWholeIdentity` and
 `TestInteropMainDataPlane`, which loads what MAIN's real `MainDataPlane` wrote.
+
+### The MITM harness
+
+A test harness, no runtime change: an attacker on the wire that holds no key, between an agent and
+MAIN's cluster API, and between an agent's loopback relay proxy and a parent or owner. It is
+`internal/mitm` in XC_VM_Fanout: a reverse proxy that records every exchange and can rewrite a
+request or a reply, answer in the server's place (an old reply, a refusal), or send a recorded
+request again byte for byte. The attacks are Go tests in `internal/clusteragent`, in two halves.
+
+- **The agent's half** (`mitm_test.go`; runs in CI): an honest MAIN in Go behind the proxy.
+  `TestMITMRepliesThatDoNotAuthenticateAreNeverTaken`: a BOX flipped, cut or extended, no body, the
+  MAC flipped or dropped, the reply's stamp or nonce moved, another content type or status, an
+  error page, an old reply played to a new request, another op's reply, an old commands batch —
+  each is `ErrTransport`, nothing reaches the caller, and the node takes no MAIN time from it.
+  `TestMITMDenialsMustBeSignedForThisRequest`: an old denial played to a new request, a byte of it
+  flipped, its signature flipped or dropped, its reason rewritten. `TestMITMHealthMustBeSigned`:
+  `health` and the install probe refuse a document or signature the wire changed.
+- **MAIN's half** (`interop_mitm_test.go`; `XCVM_PANEL_DIR`, as the other interop tests):
+  `TestInteropMITM` runs the agent through the proxy against MAIN's real PHP `ClusterApi`. Every
+  change to a request is refused before anything about the node moves, with the reason the order of
+  checks gives: the body flipped or cut, the path, query, content type, agent, stamp or nonce
+  changed, the MAC flipped (401 `BAD_MAC`); no MAC (400 `BAD_REQUEST`); a stamp ten minutes old
+  (401 `CLOCK_SKEW`); another node (401 `UNKNOWN_NODE`); another protocol (426 `PROTO`);
+  `token_refresh` with its node signature dropped or flipped (401 `BAD_NODE_SIG`). The proxy then
+  holds a genuine heartbeat back and sends tampered copies first: MAIN refuses them without spending
+  the nonce, takes the genuine request once, and answers it with 401 `REPLAY` after that. MAIN's
+  real replies changed on their way back, or an old one, are not taken. `TestInteropMITMDataPlane`
+  puts the proxy between the agent's relay proxy and a parent running MAIN's real `RelayGuard` and
+  `FileTicketServer`: a relay with another target, a query added, the ticket or proof flipped, no
+  proof, an earlier proof, or the password added is refused, and a relay request sent again too; a
+  file chunk flipped, cut, answered with another chunk's bytes or digest, or asked at another offset
+  is never passed on, and whatever came before it is the file's own bytes; a chunk request sent
+  again is refused.
+
+That is the Phase 8 acceptance's MITM'd body and replayed headers, measured against the real code
+rather than a fleet. The replays go out from the same host; MAIN refuses them by the spent nonce,
+which does not depend on the sender.
+
+**What it found.**
+
+- **A denial's HTTP status is not signed**, its document is. Every branch the agent takes on a
+  refusal pairs the status with the signed reason (`replayWait`, `skewClock`, `busyWait`,
+  `laneRefusal`, `FLOW_OFF` and `BAD_REQUEST`), and `fatal()` reads the reason alone. So a status the
+  wire changed only turns a refusal the agent handles into a plain one, which dropping the reply
+  does anyway. `TestMITMADenialsStatusOnlyEverLosesItsHandling` pins that, and `TestInteropMITM`
+  shows MAIN's `BAD_MAC` answered as a 200 is still that `BAD_MAC`.
+- **A file chunk's digest was not bound to the request** (closed since, in
+  [the next entry](#binding-a-chunks-digest-to-its-request)). It named the ticket, the offset, the
+  size, the hash and the total, and its `iat` was not checked. So an old answer for the same chunk
+  under the same ticket was taken. It was the file's own bytes at that offset, but a file rewritten
+  in place during one ticket's life could be read as a mix of old and new chunks.
+  `TestInteropMITMDataPlane` pinned that behaviour until the digest named the request's nonce; it
+  now refuses the old answer.
+
+Also fixed: `TestInteropEvents` checked the agent's spool the moment MAIN held the events, before the
+agent had dropped the spool file after reading MAIN's answer. It now waits for the drain.
+
+**Not covered.** The wire outside these two paths: the node's PHP to its own agent (a local socket),
+SSH provisioning, and what a node reads over HTTPS from MAIN's nginx (the harness speaks plain HTTP
+to the servers it fronts, as the interop tests do). A MITM that holds a key (a node's session
+secret, a parent's box key) is out of scope; it is a compromised node.
+
+### Binding a chunk's digest to its request
+
+The limit the MITM harness found. A chunk's `X-XCVM-File-Digest` now names the request it answers:
+`nonce`, the hex of the 16-byte nonce in that request's `X-XCVM-File-Auth`. The fetcher made the
+nonce fresh, and the owner has just spent it. So an owner's earlier answer for the same chunk under
+the same ticket names an earlier nonce, and the fetcher refuses it.
+
+```text
+doc = {"v":1, "typ":"xcvm-file-digest", "tid", "owner_sid", "size", "sha256", "iat",
+       "offset", "total", "nonce"}   (sorted keys; nonce is a chunk's only, 32 lowercase hex)
+```
+
+- **MAIN as the owner** (`FileTicketServer`): passes the verified proof's nonce to
+  `DataPlaneTrust::signDigest`, which signs it into `FileDigest::document`. A load balancer's PHP
+  sends it to its agent as `nonce` in `POST /v1/file_digest` (`AgentDataPlane::fileDigest`).
+- **A load balancer as the owner** (XC_VM_Fanout, `dataplane.go`): `/v1/file_digest` takes an
+  optional `nonce` (a chunk's only, 32 lowercase hex, else `400`) and signs it in.
+- **The fetcher** (`relayproxy.go`, `clustercrypto/filedigest.go`): `upstream` returns the nonce
+  it signed, and `check` requires `FileDigest.Answers(nonce, MainNowMs())`: the digest names that
+  nonce, compared in constant time. A digest that has a `nonce` with no `offset`, or one that is not
+  32 lowercase hex, does not verify on either side.
+- **Vectors.** `cluster_dataplane_vectors.json`'s `file_digest` names `file_auth`'s nonce (the two
+  describe one request and its answer); its SHA-256 is now
+  `7016c21b9600dedc1745f4644772ff53e899ae8f83a14c27357c95172e7498b0` in both repositories.
+  `xcvm_core` does not take part in these formats.
+
+**Mixed versions.** Nothing new is refused on the wire that an N−1 peer sends, so `proto` does not
+move and the vector file's `version` stays 1.
+- An owner from before this change signs no `nonce`. Its PHP leaves the field out, and an older
+  agent ignores it in `/v1/file_digest`, which decodes leniently.
+- The fetcher takes a digest without a `nonce` only while its `iat` is within the request window
+  (±90 s, plus a second for `iat`'s rounding) on MAIN's clock, as the agent measures it. That clock
+  is the one the owner stamped on.
+- A fetcher from before this change ignores the field.
+- The wire cannot turn a new owner's digest into an N−1 one, because the `nonce` is under the
+  signature.
+
+**Not built / limits.**
+- **The N−1 fallback stays open.** A digest without a `nonce` is still taken inside the window, so
+  against an owner from before this change an old answer can be replayed for about 90 s. Refusing
+  every digest without a `nonce` waits until no such owner is left. Nothing measures that yet, and
+  no setting switches it.
+- **A whole-file digest names no request.** It has no `offset` and nothing sends one over the wire
+  today. It carries no `nonce`.
+- **The fetcher is Go only.** PHP's `FileDigest::verify` checks the `nonce`'s shape, but PHP never
+  fetches a chunk, so it has no counterpart to `Answers`.
+
+**Tests.**
+- PHP: `FileDigestTest` (the document with a `nonce`; a `nonce` on a whole file or malformed,
+  refused at signing and at verification; MAIN signing the nonce it is given; the agent never asked
+  with a malformed one), `FileTicketTest` (each served chunk's digest names its request's
+  `X-XCVM-File-Auth` nonce), `ClusterDataplaneVectorsTest` and `ClusterVectorsTest` (the new pin).
+- Go: `TestFileDigestVectors` (the digest answers `file_auth`'s nonce at any time and no other
+  nonce), `TestFileDigestNonce` (without a `nonce`: inside the window only; malformed ones
+  refused), `TestAChunksDigestNamesTheRequestsNonce` and `TestDataPlaneRefusesWhatItCannotSign`
+  (`/v1/file_digest`), `TestXfileRefusesAnOldAnswerForTheSameChunk` (an owner's earlier answer
+  refused; an N−1 owner taken fresh, refused two minutes old or ahead).
+- Interop: `TestInteropMITMDataPlane` has "an old answer for the same chunk" among the attacks
+  that are refused, against MAIN's real `FileTicketServer`.
 
 ### Disaster recovery of MAIN's cluster keys
 

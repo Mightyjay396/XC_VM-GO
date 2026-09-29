@@ -113,12 +113,14 @@ final class FileTicketTest extends TestCase {
 		$rTid = Ticket::verify(Ref::panelPub($this->rSeed), 'fil', $rTicket, $this->rNow)['tid'];
 		$rRead = '';
 		foreach ([0, FileDigest::CHUNK] as $rOffset) {
-			$rOut = $this->get($rOffset, FileDigest::CHUNK, $rTicket);
+			$rServer = null;
+			$rOut = $this->get($rOffset, FileDigest::CHUNK, $rTicket, null, $rServer);
 			$this->assertSame(200, $rOut['status']);
 			$rDigest = FileDigest::verify($rOut['headers']['X-XCVM-File-Digest'], $rTid, null, sodium_crypto_sign_publickey(sodium_crypto_sign_seed_keypair(substr($this->rOwnerSk, 0, 32))));
 			$this->assertNotNull($rDigest, 'the owner\'s node key signed it');
 			$this->assertTrue(FileDigest::chunkMatches($rDigest, $rOffset, $rOut['body']));
 			$this->assertSame([strlen($rWhole), (int) SERVER_ID], [$rDigest['total'], $rDigest['owner_sid']]);
+			$this->assertSame(explode('.', $rServer[FileTicketServer::AUTH])[1], $rDigest['nonce'], 'the digest names the request it answers');
 			$this->assertSame((string) strlen($rOut['body']), $rOut['headers']['Content-Length']);
 			$rRead .= $rOut['body'];
 		}
