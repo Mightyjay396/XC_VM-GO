@@ -54,13 +54,15 @@ final class ClusterDataplaneVectorsTest extends TestCase {
 
 	public function testFileDigest(): void {
 		$rD = self::$rV['file_digest'];
-		$rDoc = FileDigest::document($rD['tid'], $rD['owner_sid'], strlen($rD['body']), $rD['sha256'], $rD['iat'], $rD['offset'], $rD['total']);
+		$rDoc = FileDigest::document($rD['tid'], $rD['owner_sid'], strlen($rD['body']), $rD['sha256'], $rD['iat'], $rD['offset'], $rD['total'], $rD['nonce']);
 		$this->assertSame($rD['doc'], $rDoc);
+		$this->assertSame(self::$rV['file_auth']['nonce'], $rD['nonce'], 'the digest answers file_auth\'s request');
 		$this->assertSame(hash('sha256', $rD['body']), $rD['sha256']);
 		$rSk = sodium_crypto_sign_secretkey(sodium_crypto_sign_seed_keypair(hex2bin(self::$rV['node_seed'])));
 		$this->assertSame($rD['node_header'], FileDigest::header($rDoc, NodeSig::sign($rSk, 'digest', $rDoc)));
 		$this->assertSame($rD['panel_header'], FileDigest::header($rDoc, Ref::panelSign(hex2bin(self::$rV['panel_seed']), 'dig', $rDoc)));
 		$rOk = FileDigest::verify($rD['node_header'], $rD['tid'], null, hex2bin(self::$rV['node_pub']));
+		$this->assertSame($rD['nonce'], $rOk['nonce'] ?? null);
 		$this->assertTrue(FileDigest::chunkMatches($rOk, $rD['offset'], $rD['body']));
 		$this->assertFalse(FileDigest::chunkMatches($rOk, $rD['offset'] + 1, $rD['body']), 'moved');
 		$this->assertFalse(FileDigest::chunkMatches($rOk, $rD['offset'], 'y' . substr($rD['body'], 1)), 'tampered');

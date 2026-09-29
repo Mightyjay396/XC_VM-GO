@@ -18,7 +18,7 @@ use XcVm\Core\Cluster\Crypto\Ticket;
  * X-XCVM-File       a panel-signed `fil` ticket: fetcher_sid, fetcher_gen, owner_sid, ref, file
  * X-XCVM-File-Auth  the fetcher's node-key proof over the ticket, the method and this target
  * ->  200, the chunk (at most FileDigest::CHUNK bytes), and
- *     X-XCVM-File-Digest  this server's signature over {tid, owner_sid, offset, size, total, sha256, iat}
+ *     X-XCVM-File-Digest  this server's signature over {tid, owner_sid, offset, size, total, sha256, iat, nonce}
  * ```
  *
  * The ticket must verify under the panel key, name this server as the owner
@@ -32,7 +32,9 @@ use XcVm\Core\Cluster\Crypto\Ticket;
  *
  * The digest is signed per chunk, so the fetcher's agent checks each chunk
  * before any of its bytes reach the reader (a tampered or moved chunk is
- * refused). A server that cannot sign serves nothing.
+ * refused), and it names the nonce of the request it answers, so an old
+ * answer for the same chunk is refused too. A server that cannot sign serves
+ * nothing.
  */
 final class FileTicketServer {
 	public const TICKET = 'HTTP_X_XCVM_FILE';
@@ -108,7 +110,7 @@ final class FileTicketServer {
 		fclose($rFP);
 		// A file cut short while it was read is served as it read; its digest
 		// says so, and the next chunk the fetcher asks for will not match.
-		$rDigest = DataPlaneTrust::signDigest((string) $rTicket['tid'], (int) SERVER_ID, $rOffset, max($rTotal, $rOffset + strlen($rBytes)), $rBytes, intdiv($rNowMs, 1000));
+		$rDigest = DataPlaneTrust::signDigest((string) $rTicket['tid'], (int) SERVER_ID, $rOffset, max($rTotal, $rOffset + strlen($rBytes)), $rBytes, intdiv($rNowMs, 1000), $rAuth['nonce']);
 		if ($rDigest === null) {
 			return ['status' => 503, 'headers' => [], 'body' => ''];
 		}

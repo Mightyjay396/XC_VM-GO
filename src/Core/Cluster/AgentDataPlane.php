@@ -52,13 +52,16 @@ final class AgentDataPlane {
 	 * not answer, and the caller then serves nothing — an unvouched body is
 	 * what the digest exists to prevent.
 	 *
-	 * @param string   $rTid    The file ticket's id, which binds the digest to this request.
-	 * @param string   $rSha256 The file's (or chunk's) SHA-256, lowercase hex.
-	 * @param int|null $rOffset Where the chunk starts, with $rTotal the file's size (`/xfile`'s chunks); null for a whole file.
+	 * @param string      $rTid      The file ticket's id.
+	 * @param string      $rSha256   The file's (or chunk's) SHA-256, lowercase hex.
+	 * @param int|null    $rOffset   Where the chunk starts, with $rTotal the file's size (`/xfile`'s chunks); null for a whole file.
+	 * @param string|null $rNonceHex The answered request's `X-XCVM-File-Auth` nonce (32 hex), which binds a chunk's digest to that request.
+	 *                               An agent from before it ignores the field and signs without it.
 	 */
-	public static function fileDigest(string $rTid, int $rOwnerSid, int $rSize, string $rSha256, ?int $rIat = null, ?int $rOffset = null, ?int $rTotal = null): ?string {
+	public static function fileDigest(string $rTid, int $rOwnerSid, int $rSize, string $rSha256, ?int $rIat = null, ?int $rOffset = null, ?int $rTotal = null, ?string $rNonceHex = null): ?string {
 		if (!preg_match('/^[A-Za-z0-9_-]{8,64}\z/', $rTid) || !preg_match('/^[0-9a-f]{64}\z/', $rSha256) || $rSize < 0 || $rOwnerSid <= 0
 			|| ($rOffset === null) !== ($rTotal === null) || ($rOffset !== null && ($rOffset < 0 || $rTotal < $rOffset + $rSize))
+			|| ($rNonceHex !== null && ($rOffset === null || !preg_match('/^[0-9a-f]{32}\z/', $rNonceHex)))
 		) {
 			return null;
 		}
@@ -71,6 +74,9 @@ final class AgentDataPlane {
 		];
 		if ($rOffset !== null) {
 			$rBody += ['offset' => $rOffset, 'total' => $rTotal];
+		}
+		if ($rNonceHex !== null) {
+			$rBody['nonce'] = $rNonceHex;
 		}
 		$rOut = AgentClient::request('POST', '/v1/file_digest', $rBody, self::TIMEOUT);
 		if ($rOut === null || $rOut[0] !== 200 || !is_array($rOut[1])) {

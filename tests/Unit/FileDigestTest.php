@@ -29,6 +29,27 @@ final class FileDigestTest extends TestCase {
 		$this->assertFalse(FileDigest::chunkMatches($rDigest, 4194304, 'd' . substr($rChunk, 1)), 'altered');
 	}
 
+	public function testAChunkDigestNamesTheRequestItAnswers(): void {
+		$rSeed = random_bytes(32);
+		$rNonce = str_repeat('ab', 16);
+		$rDoc = FileDigest::document(self::TID, 1, 3, hash('sha256', 'abc'), 1800000000, 0, 3, $rNonce);
+		$this->assertSame('{"iat":1800000000,"nonce":"' . $rNonce . '","offset":0,"owner_sid":1,"sha256":"' . hash('sha256', 'abc') . '","size":3,"tid":"' . self::TID . '","total":3,"typ":"xcvm-file-digest","v":1}', $rDoc);
+		$this->assertSame($rNonce, FileDigest::verify(FileDigest::header($rDoc, Ref::panelSign($rSeed, 'dig', $rDoc)), self::TID, Ref::panelPub($rSeed))['nonce'] ?? null);
+		foreach ([[null, null, $rNonce], [0, 3, 'AB' . substr($rNonce, 2)], [0, 3, substr($rNonce, 2)]] as [$rOffset, $rTotal, $rBad]) {
+			try {
+				FileDigest::document(self::TID, 1, 3, hash('sha256', 'abc'), 1, $rOffset, $rTotal, $rBad);
+				$this->fail('accepted nonce ' . $rBad . ' at offset ' . var_export($rOffset, true));
+			} catch (InvalidArgumentException) {
+				$this->addToAssertionCount(1);
+			}
+		}
+		// A signed document that says so anyway is refused at verification.
+		foreach ([['nonce' => $rNonce], ['nonce' => 5, 'offset' => 0, 'total' => 3], ['nonce' => null, 'offset' => 0, 'total' => 3], ['nonce' => 'xyz', 'offset' => 0, 'total' => 3]] as $rOver) {
+			$rDoc = json_encode(['iat' => 1, 'owner_sid' => 1, 'sha256' => hash('sha256', 'abc'), 'size' => 3, 'tid' => self::TID, 'typ' => 'xcvm-file-digest', 'v' => 1] + $rOver);
+			$this->assertNull(FileDigest::verify(FileDigest::header($rDoc, Ref::panelSign($rSeed, 'dig', $rDoc)), self::TID, Ref::panelPub($rSeed)), (string) json_encode($rOver));
+		}
+	}
+
 	public function testOffsetAndTotalComeTogetherAndAgree(): void {
 		foreach ([[0, null], [null, 10], [-1, 10], [10, 5]] as [$rOffset, $rTotal]) {
 			try {
@@ -59,17 +80,20 @@ final class FileDigestTest extends TestCase {
 		$rSeed = random_bytes(32);
 		DataPlaneTrust::useSources(null, null, null, static fn(string $rDoc): string => Ref::panelSign($rSeed, 'dig', $rDoc), true);
 		try {
-			$rHeader = DataPlaneTrust::signDigest(self::TID, 1, 0, 3, 'abc', 1800000000);
+			$rHeader = DataPlaneTrust::signDigest(self::TID, 1, 0, 3, 'abc', 1800000000, str_repeat("\x5a", 16));
 		} finally {
 			DataPlaneTrust::useSources(null, null, null);
 		}
 		$rDigest = FileDigest::verify((string) $rHeader, self::TID, Ref::panelPub($rSeed));
 		$this->assertTrue(FileDigest::chunkMatches((array) $rDigest, 0, 'abc'));
+		$this->assertSame(str_repeat('5a', 16), $rDigest['nonce'] ?? null);
 	}
 
 	public function testTheAgentIsNeverAskedForAMalformedChunk(): void {
 		// Refused before any socket call: null, as "no agent" is.
 		$this->assertNull(AgentDataPlane::fileDigest(self::TID, 5, 10, str_repeat('a', 64), null, 0, null));
 		$this->assertNull(AgentDataPlane::fileDigest(self::TID, 5, 10, str_repeat('a', 64), null, 5, 10));
+		$this->assertNull(AgentDataPlane::fileDigest(self::TID, 5, 10, str_repeat('a', 64), null, null, null, str_repeat('a', 32)), 'a nonce on a whole file');
+		$this->assertNull(AgentDataPlane::fileDigest(self::TID, 5, 10, str_repeat('a', 64), null, 0, 10, 'not-hex'), 'a malformed nonce');
 	}
 }
