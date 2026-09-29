@@ -12,6 +12,7 @@ use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\Crypto\SessionKeys;
 use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Database\DatabaseUnavailableException;
 use XcVm\Core\Logging\FileLogger;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Domain\Stream\RecordingFinalizer;
@@ -183,6 +184,14 @@ final class ClusterApi {
 		try {
 			return self::handle($rCrypto, $rReq, $rSettings, $rMain);
 		} catch (\Throwable $rE) {
+			if ($rE instanceof DatabaseUnavailableException) {
+				// The entry point opens MySQL at the first query: down there, as before it opened it eagerly.
+				try {
+					return DenialFactory::deny($rCrypto, 503, 'DB');
+				} catch (\Throwable) {
+					// Not even a denial could be signed: as below.
+				}
+			}
 			return self::failed((string) ($rReq['path'] ?? ''), $rE);
 		}
 	}

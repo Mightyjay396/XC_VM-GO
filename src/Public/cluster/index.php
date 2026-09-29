@@ -21,7 +21,7 @@ use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\ConstantsInitializer;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
-use XcVm\Core\Database\DatabaseHandler;
+use XcVm\Core\Database\LazyDatabaseHandler;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Domain\Cluster\ClusterApi;
 use XcVm\Domain\Cluster\ClusterPool;
@@ -84,16 +84,10 @@ try {
 	}
 
 	try {
-		// Connect gracefully: DatabaseHandler's constructor exit()s on failure, and
-		// an agent must get a signed 503 it can act on instead.
-		$db = new class extends DatabaseHandler {
-			public function __construct() {
-				$this->dbh = false;
-			}
-		};
-		if (!$db->db_connect(false, true)) {
-			throw new \RuntimeException('db');
-		}
+		// MySQL is opened at the first query, so an op served from the cluster bus
+		// (a heartbeat) opens none. Gracefully: MySQL down is a signed 503 DB the
+		// agent acts on, here or from ClusterApi::serve(), never an exit().
+		$db = new LazyDatabaseHandler(true);
 		$rDb = $db;
 		DatabaseFactory::set($rDb);
 		$rSettings = FileCache::getCache('settings') ?: [];
@@ -102,8 +96,7 @@ try {
 		}
 		SettingsManager::set($rSettings);
 		// MAIN's row, for the ops that read it (the policy, the replica): a
-		// heartbeat whose node the cluster bus holds sends MySQL no query of its
-		// own, only the connection's setup above.
+		// heartbeat whose node the cluster bus holds sends MySQL nothing.
 		$rMain = [];
 		if (ClusterApi::readsMain($rReq['path'])) {
 			$rDb->query('SELECT * FROM `servers` WHERE `is_main` = 1 LIMIT 1;');

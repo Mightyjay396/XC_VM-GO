@@ -17,6 +17,7 @@ use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
+use XcVm\Core\Database\LazyDatabaseHandler;
 use XcVm\Core\Events\EventDispatcher;
 use XcVm\Core\Events\Stream\StreamsChangedEvent;
 use XcVm\Domain\Cluster\ClusterAdmin;
@@ -1982,6 +1983,33 @@ final class ClusterApiTest extends TestCase {
 		$rNext = $this->reply($rRes, $rCtx, $rKeys);
 		$this->assertTrue($rNext['blocklist']['unchanged']);
 		$this->assertArrayNotHasKey('secrets', $rNext);
+	}
+
+	/**
+	 * The entry point opens MySQL at an op's first query: down there, the
+	 * agent still gets a signed 503 DB, and MySQL is tried once.
+	 */
+	public function testADatabaseDownAtTheFirstQueryIsASigned503Db(): void {
+		$rKeys = $this->active();
+		$r = $this->request('config', ['blocklist_since' => 0, 'have' => ['settings' => '']], 1, $rKeys);
+		$rDown = new class (true) extends LazyDatabaseHandler {
+			public int $rOpens = 0;
+
+			public function db_connect(bool $migrate = false, ?bool $graceful = null) {
+				$this->rOpens++;
+				return false;
+			}
+		};
+		NodeAuthCache::forget(self::SID);
+		DatabaseFactory::set($rDown);
+		try {
+			$this->denial(ClusterApi::serve($this->rCrypto, $r['req'], $this->rSettings, $this->rMain), 503, 'DB');
+		} finally {
+			DatabaseFactory::set($this->rDb);
+		}
+		$this->assertSame(1, $rDown->rOpens);
+		$rIndex = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Public/cluster/index.php');
+		$this->assertStringContainsString('$db = new LazyDatabaseHandler(true);', $rIndex, 'the entry point opens nothing an op does not query');
 	}
 
 	public function testConfigAnswers503ForASectionMainCannotRead(): void {

@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Database\DatabaseUnavailableException;
 use XcVm\Core\Database\LazyDatabaseHandler;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -54,6 +55,26 @@ final class LazyDatabaseHandlerTest extends TestCase {
 		$this->assertTrue($rTx->beginTransaction());
 		$this->assertSame(1, $rTx->rOpens);
 		$rTx->rollback();
+	}
+
+	/** Graceful (MAIN's cluster entry point): MySQL down throws, once tried, and every later use throws without trying again. */
+	public function testAGracefulHandleThrowsWhenTheDatabaseIsDown(): void {
+		$rDb = new class (true) extends LazyDatabaseHandler {
+			public int $rOpens = 0;
+
+			public function db_connect(bool $migrate = false, ?bool $graceful = null) {
+				$this->rOpens++;
+				return $graceful === true ? false : throw new \LogicException('an exit() on a graceful handle');
+			}
+		};
+		foreach (['query', 'escape', 'beginTransaction'] as $rUse) {
+			try {
+				$rUse === 'query' ? $rDb->query('SELECT 1') : $rDb->{$rUse}('x');
+				$this->fail($rUse . ' went on without a database');
+			} catch (DatabaseUnavailableException) {
+			}
+		}
+		$this->assertSame(1, $rDb->rOpens, 'tried once: no reconnect loop per query');
 	}
 
 	public function testConnectLazyKeepsAnUnopenedHandle(): void {
