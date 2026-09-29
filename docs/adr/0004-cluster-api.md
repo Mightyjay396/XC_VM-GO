@@ -2035,7 +2035,7 @@ Without them, the bouquets of a panel with many large packages would have stoppe
 - The plan's local `recording.state` override is not built: `StreamSource::recording` answers MAIN's `status`. The thirteenth Phase 7 increment builds it.
 - Section 9 lists neither the bouquets nor the categories, and does not replicate the viewer accounts that their readers serve. Two new R1 sections carry them, so that `cron:cache` needs no database; they are small beside the tmpfs the plan protects (they were already cached there).
 - The plan puts `allowed_ips`, `proxy_servers` and `allowed_domains` in the blocklist section. The first two are built from the `servers` and `settings` sections, which already carry every field they need (`whitelist_ips` since the fifth increment), so the blocklist section does not repeat them; the third is built nowhere.
-- The size bounds and `too_large` are not in the plan. The plan's way for large transfers (parts of at most 4 MiB, section 7) is not built for whole sections.
+- The size bounds and `too_large` are not in the plan. The plan's way for large transfers (parts of at most 4 MiB, section 7) was not built for whole sections; it is now, see [Sections in parts](#sections-in-parts).
 
 **Known limits.**
 
@@ -2043,7 +2043,7 @@ Without them, the bouquets of a panel with many large packages would have stoppe
 - Readers that still read MAIN's database for a stream on a node, because they also read its runtime state, which no record carries and the node does not keep locally yet (the plan's local store, and the other half of the mode-2 work): the monitor's, proxy producer's, delay's, TV archive's and thumbnails' joined `streams ⨝ streams_servers` row (`MonitorCommand`, `ProxyCommand`, `DelayCommand`, `ArchiveCommand`, `ThumbnailCommand`); the created channel's (`CreatedCommand`, `StreamProcess::createChannelItem`, `cron:vod`'s created channels); `StreamProcess::startLoopback`; `cron:streams`, `cron:vod`'s analysis queue and `QueueCommand`; the scanner's selection; `cron:cleanup`'s checks (the other mode-2 work). `ReplicaStreams::assigned()` and `archives()` give it the streams it selects, from the agent's files. They do not check ownership: a caller checks `ReplicaStreamCache::owned()` first. Since the thirteenth Phase 7 increment these readers take the node's own store (`StreamRuntime`) and the stream caches (`StreamSource`, `NodeStreams`), all but `QueueCommand`'s queue rows and the scanner's selection.
 - `StreamSource`'s answers from the replica carry no runtime state: a stream starts from its first source (`current_source` null), and a created channel restarted at a position finds no `cc_info`. Since the thirteenth Phase 7 increment they carry the node's own store's once it is seeded.
 - The shadow comparison reads every stream the node holds from MAIN's database at each agent `cluster:apply` while STREAMS is off, 1000 streams a step (at most ten statements); `cron:cache`'s minute never runs it. It compares files MAIN no longer updates, so it is a staleness report.
-- A bouquets or categories section larger than 4 MiB sealed is not replicated. Once the agent has dropped its copy (`too_large`), `cron:cache` builds that node's cache from MAIN's database in mode 0 and 1. In mode 2, with no database, a process booted from the replica keeps the cache the last apply built. Today's agent names neither section, so nothing changes for it.
+- A bouquets or categories section larger than 4 MiB sealed is not replicated (to an agent from before [Sections in parts](#sections-in-parts); a newer agent fetches it in parts). Once the agent has dropped its copy (`too_large`), `cron:cache` builds that node's cache from MAIN's database in mode 0 and 1. In mode 2, with no database, a process booted from the replica keeps the cache the last apply built. Today's agent names neither section, so nothing changes for it.
 - The blocklist part is not bounded: a blocklist whose whole section alone passes 8 MiB still stops the reply, as before this increment.
 - From disk, a node holding more than about 40,000 streams has its boot apply stopped by `service`'s timeout in the streams part (**Order**, above); its stream caches then come from the agent's unverified files at `startup`'s `cron:cache`.
 - A record that did not verify at boot is kept out only until the next apply without `--from-disk` (the agent's, or `cron:cache`'s minute), which trusts the agent's `.json`.
@@ -4478,6 +4478,51 @@ were neither reported nor refused.
 **Tests.** `MainDataPlaneTest` (the switch in MAIN's `settings.json`, a fresh report read, a
 stopped agent's ignored, MAIN's owners in the page's summary), and `TestMainReportsTheOwnersWhoseDigestNamedNoRequest` (XC_VM_Fanout:
 written on change and on the interval, not otherwise).
+
+### Sections in parts
+
+A whole section whose sealed record passed 4 MiB was answered `too_large`, and the node dropped its
+copy: the bouquets of a panel with many large packages never reached a node, and in mode 2, with
+no database, its readers kept the cache the last apply built. The plan moves large transfers in
+parts of at most 4 MiB, staged in `tmp/cluster_xfer/`.
+
+- **Asked for.** The agent's `config` poll says `"parts": true`. To it, MAIN answers a section too
+  large for one reply `{too_large, etag, parts}`, having staged the sealed record for this node
+  (`ReplicaBuilder::whole`, `stage()`). An agent that does not say `parts` gets `too_large` alone,
+  and MAIN stages nothing for it, as before.
+- **Fetched.** `config {part: {section, etag, n}}` answers `{part: {section, etag, n, parts, data}}`,
+  `data` being that 4 MiB of the record's base64 (`ClusterApi::configPart`, `ReplicaBuilder::part`).
+  The agent fetches the parts in order and joins them (`fetchParts`, XC_VM_Fanout). It then opens
+  the record as any section sent whole: MAIN's signature, sealed to this node, its section, ETag and
+  generation. No part needs its own signature, since the record's covers the whole, and each reply
+  is boxed and MAC'd in the session.
+- **Staged once.** Sealing is not deterministic, so parts from two sealings would not join. A poll
+  that finds the section already staged for the node under this ETag answers from the stage
+  without sealing again, so parts fetched across polls fit together. Parts ride the `config` op,
+  its lane and its semaphore: no new op.
+- **Kept short.** `TMP_PATH` is tmpfs, and each node has its own stage: `<server id>.<section>.<etag>`,
+  0600. Serving the last part removes it. Staging a section removes the node's older stages of it
+  and every stage older than `STAGE_TTL` (15 minutes). A record past `MAX_PARTS` (32 parts, 128 MiB)
+  is not staged, and gets `too_large` alone.
+- **A failed fetch.** MAIN's `{gone: true}` (the stage expired, or the section changed), a part
+  other than the one asked for, or a failed call drops the copy held, as `too_large` did. The
+  agent keeps the ETag it held, so its next poll asks for the section, and its parts, anew.
+
+**Not built / limits.**
+- **Memory while a fleet fetches.** Each node's stage is the size of its sealed record, so a 20 MiB
+  section staged for 50 nodes at once holds about 1 GiB of tmpfs until the parts are fetched or
+  the stages expire.
+- **The blocklist** is not sent in parts: a whole blocklist section alone past 8 MiB still stops
+  the reply, as before.
+- **Older agents** still drop the section: parts need this agent.
+
+**Tests.** PHP: `ClusterApiTest::testASectionTooLargeForOneReplyIsFetchedInParts`. It covers an older
+agent getting no stage, two parts that join into the section's record, a second poll reusing the
+stage, the stage going with its last part, and the refusals. Agent:
+`TestASectionTooLargeIsFetchedInParts` (the poll says `parts`, parts asked in order and joined;
+`gone`, a part out of order and too many parts refused, the ETag kept). Interop:
+`TestInteropWithPanel` adds a bouquet of 600,000 channels and takes it in parts from MAIN's real
+PHP, whose stage is gone after the last part.
 
 ### Disaster recovery of MAIN's cluster keys
 

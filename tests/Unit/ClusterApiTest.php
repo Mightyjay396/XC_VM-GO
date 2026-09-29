@@ -1891,6 +1891,64 @@ final class ClusterApiTest extends TestCase {
 		$this->assertTrue($this->reply($rRes, $rCtx, $rKeys)['settings']['too_large']);
 	}
 
+	/**
+	 * A section too large for one reply, to an agent that says `parts`: MAIN
+	 * stages the sealed record once and serves it in 4 MiB parts, which join
+	 * into the record the node opens as any section sent whole.
+	 */
+	public function testASectionTooLargeForOneReplyIsFetchedInParts(): void {
+		$this->blocklistTables();
+		$this->rDb->exec(InstallSchema::table('bouquets'));
+		$this->rDb->query("INSERT INTO `bouquets` (`id`, `bouquet_name`, `bouquet_channels`, `bouquet_order`) VALUES (3, 'Everything', ?, 2)", '[' . implode(',', range(100000, 700000)) . ']');
+		$rKeys = $this->active();
+		$rDir = sys_get_temp_dir() . '/xcvm-xfer-' . bin2hex(random_bytes(4)) . '/';
+		ReplicaBuilder::useXferDir($rDir);
+		$rPart = function (array $rAsk) use ($rKeys): array {
+			[$rRes, $rCtx] = $this->call('config', ['part' => $rAsk], 1, $rKeys);
+			return $this->reply($rRes, $rCtx, $rKeys)['part'];
+		};
+		try {
+			// An older agent: too_large alone, and nothing staged for it.
+			[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => [ReplicaSections::BOUQUETS => '']], 1, $rKeys);
+			$this->assertSame(['too_large', 'etag'], array_keys($this->reply($rRes, $rCtx, $rKeys)[ReplicaSections::BOUQUETS]));
+			$this->assertSame([], glob($rDir . '*') ?: []);
+
+			[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'parts' => true, 'have' => [ReplicaSections::BOUQUETS => '']], 1, $rKeys);
+			$rOut = $this->reply($rRes, $rCtx, $rKeys)[ReplicaSections::BOUQUETS];
+			$this->assertTrue($rOut['too_large']);
+			$this->assertSame(2, $rOut['parts']);
+			$rEtag = $rOut['etag'];
+			$rFirst = $rPart(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 0]);
+			$this->assertSame(ReplicaBuilder::PART_BYTES, strlen($rFirst['data']));
+			$this->assertSame(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 0, 'parts' => 2], array_diff_key($rFirst, ['data' => 0]));
+
+			// The next poll finds it staged: not sealed again, so the parts still fit together.
+			[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'parts' => true, 'have' => [ReplicaSections::BOUQUETS => '']], 1, $rKeys);
+			$this->assertSame(['too_large' => true, 'etag' => $rEtag, 'parts' => 2], $this->reply($rRes, $rCtx, $rKeys)[ReplicaSections::BOUQUETS]);
+			$this->assertSame($rFirst['data'], $rPart(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 0])['data']);
+
+			$rLast = $rPart(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 1]);
+			$rDoc = $this->openRecord($rFirst['data'] . $rLast['data'], 'rep');
+			$this->assertSame([ReplicaSections::BOUQUETS, $rEtag], [$rDoc['section'], $rDoc['etag']], 'the parts join into the section\'s record');
+			$this->assertSame([], glob($rDir . '*') ?: [], 'the last part served removes the stage');
+			$this->assertSame(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'gone' => true], $rPart(['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => 0]));
+
+			foreach ([
+				['section' => 'streams', 'etag' => $rEtag, 'n' => 0],
+				['section' => ReplicaSections::BOUQUETS, 'etag' => 'nope', 'n' => 0],
+				['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => -1],
+				['section' => ReplicaSections::BOUQUETS, 'etag' => $rEtag, 'n' => '0'],
+				'bouquets',
+			] as $rBad) {
+				[$rRes] = $this->call('config', ['part' => $rBad], 1, $rKeys);
+				$this->denial($rRes, 400, 'BAD_REQUEST');
+			}
+		} finally {
+			ReplicaBuilder::useXferDir(null);
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
 	public function testConfigKeepsTheWholeReplyWithinWhatTheAgentReads(): void {
 		$this->blocklistTables();
 		$this->rDb->exec(InstallSchema::table('bouquets'));
