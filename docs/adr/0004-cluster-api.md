@@ -4267,9 +4267,9 @@ the fallback with one setting.
   once the page names no owner and every active node reports.
 
 **Not built / limits.**
-- **MAIN's own reads are not covered.** MAIN's data-plane client (`xc_agent run -role main`) sends
-  no heartbeat, and its replica directory has no `settings` section. So its fetches are neither
-  reported nor refused, and they keep the fallback.
+- **MAIN's own reads.** This note first said they were not covered: MAIN's data-plane client
+  (`xc_agent run -role main`) sends no heartbeat, and its replica directory had no `settings`
+  section. They are now; see [MAIN's own reads in the digest report](#mains-own-reads-in-the-digest-report).
 - **The list is capped at 32 owners per node** (the 255-character column). Past that, the page
   names only those 32.
 - **"None" means none fetched.** An owner nobody read from in 24 h is not named, even if it is old.
@@ -4405,6 +4405,68 @@ type, and every cache job stays granting.
 `vectors.rs` (the fixture's digest). Panel: `CommandBusRegistryTest` (a removal routed as
 `node.purge`, a rebuild as `node.cache`), `ClusterVectorsTest` (the digest). Agent:
 `TestRestrictiveIsTheRegistrys` (its restrictive set is the registry's R types).
+
+### A failing agent on a node, and a canary
+
+The [agent rollout](#keeping-the-fleets-agent-current-phase-4-sixth-increment) had no way back.
+`node.root agent_binary` replaced the binary and kept nothing. A new agent that started (it answers
+`version`, which the install checks) but then failed at run left `run.sh` restarting it every two
+seconds. The node then answered nothing, and only SSH reached it. And MAIN offered the same
+version to the next node in order as soon as the first one's slot ended.
+
+- **On the node** (`ArtefactStage::installAgent`, `bin/xc_agent/run.sh`). The install keeps the
+  binary it replaces as `xc_agent.prev` and puts the new one on trial: `xc_agent.trial`,
+  `<installed at> <failed starts>`. `run.sh` judges each run while the trial lasts. A run that
+  exits within 60 s of its start counts as a failed start, and on the third within
+  `TRIAL_SEC` (10 min) of the install `.prev` is moved back over the new binary and the log says
+  so. A run that lasts, an exit 3 (MAIN stopped the node), or the end of the trial ends the trial.
+  MAIN's own agent (`-role main`) is judged the same way.
+- **On MAIN** (`AgentUpgrades::push`). A node offered a version that does not run it `RETRY_SEC`
+  (15 min) later, whether its install failed or it rolled back, holds that version back from every
+  node not yet offered it. The hold is audited once as `cluster.agent_rollout_held` and lasts until
+  the node runs the version or MAIN pins another. With `cluster_agent_upgrade_parallel` at 1, the
+  lowest server id is the canary. A node is offered the same version at most `MAX_TRIES` (3)
+  times.
+
+**Not built / limits.**
+- **Only a failure at start is caught.** An agent that runs but misbehaves (it never reaches MAIN,
+  or it serves wrongly) is not rolled back. MAIN sees it only as a node that stays on its old
+  version, or goes offline.
+- **Nothing lifts a hold by hand.** An operator lifts it by fixing the canary node, or by pinning
+  another binary (`console.php agent_binary`).
+- **One step back.** `.prev` is only the binary the last install replaced, so a second bad install
+  on the same node keeps no good binary.
+
+**Tests.** `AgentRunShTest` runs `run.sh` for real in a throwaway home. A new binary that fails
+three times at start is replaced by the previous one; past its trial, a failing binary is left
+alone. `AgentUpgradeTest` (a failed node holds the rest back until it runs the version; a node
+is offered a version at most three times), `ArtefactHashRefusalTest` (the install keeps `.prev` and writes
+`.trial`).
+
+### MAIN's own reads in the digest report
+
+[The N−1 digest report](#the-n1-digest-report) covered the nodes only. MAIN's data-plane agent
+sends no heartbeat, and its replica directory had no `settings` section, so MAIN's own fetches
+were neither reported nor refused.
+
+- **The report.** MAIN's agent writes `main_digest_n1.json` beside its key state:
+  `{"owners": [...], "at_ms": <unix ms>}`, the same list a node's heartbeat carries. It writes when
+  the list changes, and every 10 minutes otherwise (`MainDigestN1Every`). `MainDataPlane::digestN1()`
+  reads it while it is at most 30 minutes old (`DIGEST_N1_STALE`). The Cluster Nodes page's
+  summary adds MAIN's owners to the nodes'.
+- **The switch.** `MainDataPlane::refresh()` writes `replica/settings.json` for MAIN's agent, with
+  only `lb_digest_nonce_required`, and rewrites it only when it changes. The agent reads it as a
+  node reads its replica's `settings` section, so turning the switch on refuses MAIN's fetches too.
+
+**Not built / limits.**
+- **A stopped agent.** MAIN's report older than 30 minutes is ignored, not counted as silent: the
+  page's *do not report* count is still nodes only.
+- **Only the one setting.** MAIN's `settings.json` carries nothing else. The lease fence reads the
+  same file and finds its switch absent, so it stays off on MAIN, as before.
+
+**Tests.** `MainDataPlaneTest` (the switch in MAIN's `settings.json`, a fresh report read, a
+stopped agent's ignored, MAIN's owners in the page's summary), and `TestMainReportsTheOwnersWhoseDigestNamedNoRequest` (XC_VM_Fanout:
+written on change and on the interval, not otherwise).
 
 ### Disaster recovery of MAIN's cluster keys
 
