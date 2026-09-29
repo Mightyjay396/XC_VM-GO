@@ -2523,7 +2523,7 @@ That older `nginx.conf` reads neither `cluster.d/` file. While it is in place, `
 **Not built:**
 
 - releasing an old port before its 7 days once every node uses the new URL. Neither the policy version a node last fetched nor the URL it used is recorded (built in the sixth Phase 2 increment);
-- IPv6 listeners: the dedicated and old ports listen as `ports/http.conf` does, on IPv4.
+- IPv6 listeners: the dedicated and old ports listened as `ports/http.conf` does, on IPv4 only, though MAIN's URL may be an IPv6 address (`ClusterEndpoint` keeps it bracketed). Built later: each of their servers also listens on `[::]` (IPv6 only, as nginx makes it) where nginx has it already, or where a v6-only bind of the port succeeds (`probe('free6')`). A listen the master cannot bind at a reload leaves it on its previous config and stops its next start, so a port another program holds on IPv6, or a machine without IPv6, gets none. `ClusterNginxConfigTest::testIpv6IsListenedOnWhereItCanBeBound` and `ClusterEndpointTest` (an old HTTPS port) cover it; it was not run against a real nginx. The public server's ports stay IPv4, so with `cluster_api_port` at 0 a node that reaches MAIN over IPv6 is still not served.
 
 ### Re-enrolling the fleet (Phase 2, fourth increment)
 

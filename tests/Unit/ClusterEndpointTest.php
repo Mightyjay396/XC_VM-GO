@@ -194,6 +194,7 @@ final class ClusterEndpointTest extends TestCase {
 		$rOld = (string) ClusterNginxConfig::render($rSettings, [25461, 8443], $this->rNow)[ClusterNginxConfig::OLD_PORT];
 		$this->assertStringContainsString("listen 25463 ssl;\n", $rOld);
 		$this->assertStringContainsString("include ssl.conf;\n", $rOld, "the public server's certificate");
+		$this->assertStringContainsString("    listen 25463 ssl;\n    listen [::]:25463 ssl;\n", (string) ClusterNginxConfig::render($rSettings, [25461, 8443], $this->rNow, static fn(int $rPort): bool => true)[ClusterNginxConfig::OLD_PORT], 'on IPv6 too, over TLS');
 		$this->assertStringContainsString("include cluster_locations.conf;\n", $rOld, 'the cluster API alone');
 		$this->assertMatchesRegularExpression('#location / \{\s*return 404;\s*\}#', $rOld);
 		$this->assertNull(ClusterNginxConfig::render($rSettings, [25461, 25463], $this->rNow)[ClusterNginxConfig::OLD_PORT], 'the public server serves it again');
