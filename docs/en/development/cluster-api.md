@@ -194,6 +194,9 @@ console.php cluster:db-allowlist status | apply | undo
 # Phase 9: a mode-2 node gives up MAIN's credentials (asks first; --wait=<s> waits for the revoke)
 console.php cluster:strip-credentials <serverID> [--yes] [--wait=<seconds>]
 
+# MAIN reads other servers' files and relays through its own agent (on | off | rekey | status)
+console.php cluster:main-dataplane on
+
 # Rotate the panel's DB password (MAIN), and set it on a node MAIN cannot reach (node, root)
 console.php cluster:rotate-db-password [--yes] [--password-stdin]
 echo "$NEW_PASSWORD" | console.php cluster:set-db-password
@@ -252,17 +255,20 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   - The secret still appears on the node's own loopback: the local RTMP output
     (`rtmp://127.0.0.1/live/<id>?password=`) and the recorder's pull from its own
     `/admin/live` and `/admin/timeshift`.
-  - MAIN pulls nothing through it: MAIN has no flows, so a stream MAIN relays from a load
-    balancer, or a file MAIN reads from one, keeps the legacy URL. `xc_agent run -role main`
-    runs the listener alone, for when MAIN has an identity to sign with.
+  - MAIN pulls through it only once an operator runs `cluster:main-dataplane on`: MAIN then
+    gets a data-plane key of its own and an entry in the signed node list, and its source
+    probe, a node's certbot log, and the relays and files of the streams it runs go through
+    `xc_agent run -role main`. Off (the default), MAIN keeps the legacy URLs. MAIN's key sits
+    in `config/cluster/main_agent.json` (0600), outside `xcvm_core`, as a node's does;
+    `cluster:main-dataplane rekey` replaces it and raises its generation.
   - A file ticket names the owner's box key as it was when minted: an owner re-enrolled
     since cannot open it until the next epoch's ticket (at most 3 h).
   - The node's own legacy `/api` stays served with the flow on. `api_legacy.conf` (Phase
     8's second increment) retires it only once nothing reads the node's files with the
     legacy `getFile` URL any more: its own flow on, and every server of the cluster, MAIN
-    included, an active node with its data plane on. MAIN reads a node's files with
-    `getFile` (a source probe, the certbot log) and has no data-plane client, so today no
-    node's `/api` is retired.
+    included, an active node with its data plane on. MAIN counts once
+    `cluster:main-dataplane on` is set. A proxy is never a node, so a cluster with a proxy
+    keeps every node's `/api`.
   - The flow can be switched on only for a node whose agent runs the loopback relay proxy
     (it says `relay` at hello): update `xc_agent` first. The agent publishes the loopback
     key (`relay.key`) only while it holds `127.0.0.1:31290`, and the node's PHP checks
