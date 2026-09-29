@@ -304,6 +304,9 @@ final class ArtefactHashRefusalTest extends TestCase {
 			$this->assertSame(AgentUser::UID, fileowner($rAgent), 'installed as the agent\'s user');
 		}
 		$this->assertSame([], glob($this->rBase . 'bin/xc_agent/.*.new') ?: []);
+		// The binary it replaced stays beside it, and the new one is on trial (run.sh).
+		$this->assertSame('the running agent', file_get_contents($rAgent . ArtefactStage::PREV));
+		$this->assertMatchesRegularExpression('/^\d+ 0$/', trim((string) file_get_contents($rAgent . ArtefactStage::TRIAL)));
 	}
 
 	/** ArtefactHashRefusal: a tampered binary is refused before its action runs, the refusal audited. */
