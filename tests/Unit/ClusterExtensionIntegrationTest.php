@@ -155,6 +155,14 @@ final class ClusterExtensionIntegrationTest extends TestCase {
 		$rReg = FakeClusterCrypto::commandRegistry();
 		foreach ($rReg['types'] as $rType => $rEntry) {
 			$rDoc = ['type' => $rType, 'exp' => time() + 300] + (empty($rEntry['action']) ? [] : ['action' => 'x']);
+			if (isset($rEntry['job_types'])) {
+				// Restrictive only as a whole (node.purge): every job one of its types.
+				$rJobs = array_map(static fn(string $rJob): array => ['type' => $rJob, 'id' => 1], $rEntry['job_types']);
+				$this->assertSame('R', $rCrypto->recordClass('cmd', (string) json_encode($rDoc + ['args' => ['jobs' => $rJobs]])), $rType . ' with every job type');
+				$this->assertRefused('RECORD:args', $rCrypto, (string) json_encode($rDoc + ['args' => ['jobs' => [['type' => 'update_stream', 'id' => 1]]]]), $rType . ' with a job of another type');
+				$this->assertRefused('RECORD:args', $rCrypto, (string) json_encode($rDoc), $rType . ' without its jobs');
+				continue;
+			}
 			$this->assertSame($rEntry['class'], $rCrypto->recordClass('cmd', (string) json_encode($rDoc)), $rType);
 			if (isset($rEntry['args'])) {
 				$this->assertSame('R', $rCrypto->recordClass('cmd', (string) json_encode($rDoc + ['args' => (object) array_fill_keys($rEntry['args'], 1)])), $rType . ' with every argument');
@@ -207,6 +215,17 @@ final class ClusterExtensionIntegrationTest extends TestCase {
 			$this->assertSame([true, true], ClusterRoute::rotateNow($rSid));
 			CommandBus::enqueue($rCrypto, $rSid, 'config.changed', ['sections' => ['servers']], 'config.changed');
 			CommandBus::enqueue($rCrypto, $rSid, 'artefact.fetch', ['artefact' => ['id' => 'offair/banned', 'name' => 'banned.ts', 'size' => 3, 'sha256' => str_repeat('0', 64), 'mtime' => 1, 'ctime' => 1]]);
+			$this->assertSame([true, true], ClusterRoute::cache($rSid, [['type' => 'update_stream', 'id' => 7]]), 'a rebuild goes as node.cache');
+			$this->assertTrue(ClusterRoute::stop($rSid, 'stream.stop', [7])[0]);
+			$this->assertTrue(ClusterRoute::stop($rSid, 'vod.stop', [8])[0]);
+			$this->assertSame([true, true], ClusterRoute::fence($rSid, 'test', 1));
+			$this->assertSame([true, true], ClusterRoute::resync($rSid));
+			$this->assertSame([true, true], ClusterRoute::policyUpdate($rSid));
+			CommandBus::enqueue($rCrypto, $rSid, 'node.unfence', []); // its route shares the fence's dedupe key
+			CommandBus::enqueue($rCrypto, $rSid, 'stream.assign', ['stream_ids' => [7], 'set' => ['to_analyze' => 1]]);
+			CommandBus::enqueue($rCrypto, $rSid, 'queue.poke', []);
+			// Last: a quarantined node is handed restrictive commands only.
+			$this->assertSame([true, true], ClusterRoute::quarantine($rSid, 'test'));
 			$rDb->query('SELECT `type`, `class`, `payload`, `sig` FROM `cluster_commands` WHERE `server_id` = ? ORDER BY `seq`', $rSid);
 			$rRows = $rDb->get_rows();
 			$this->assertEqualsCanonicalizing(CommandBus::TYPES, array_column($rRows, 'type'));
