@@ -4546,6 +4546,13 @@ hardware, and never ran `status`'s own work.
   `streams_servers` before it sent `node.inventory`. Those counts feed only the `servers_stats` row,
   which the agent's telemetry replaces: with TELEMETRY on they are not taken, and a node in mode 2
   never falls back to writing MAIN's row when the spool does not take the inventory.
+- **MAIN's release, exactly** (plan §12, "an `update` signal carrying `{version}`"). `NodeActions::update`
+  used to send `{action: update}` alone, and a load balancer then installed GitHub's newest release,
+  which could be newer than MAIN's. The command now names MAIN's version (`XC_VM_VERSION`), and the node
+  installs that release's `loadbalancer.tar.gz` exactly (`getVersionFile`, as a rollback does). A node
+  already at that release or past it changes nothing; going back is a rollback's job. Only an `x.y.z`
+  version is passed to the updater (`UpdateCommand::pinned`). An older node ignores the version and
+  updates to the newest, as before. MAIN's own update still takes GitHub's newest.
 - **`status`.** Its database check already stepped aside in mode 2, but its next read,
   `getServers()`, was a `SELECT * FROM servers` on MAIN's database. In mode 2 it now takes the
   replica's servers (`ServerRepository::getAll`), which is all its node work needs (its own

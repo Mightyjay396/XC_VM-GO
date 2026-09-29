@@ -51,8 +51,13 @@ final class NodeActions {
 		return self::send($rServerID, ['action' => 'reload_nginx'], $rDb);
 	}
 
+	/**
+	 * Update a node to this MAIN's release: it names its version, which the
+	 * node installs exactly (UpdateCommand), so the fleet runs MAIN's release
+	 * rather than whatever is newest on GitHub. An older node ignores it.
+	 */
 	public static function update(int $rServerID, ?object $rDb = null): bool {
-		return self::send($rServerID, ['action' => 'update'], $rDb);
+		return self::send($rServerID, ['action' => 'update', 'version' => XC_VM_VERSION], $rDb);
 	}
 
 	public static function rollback(int $rServerID, string $rVersion, ?object $rDb = null): bool {

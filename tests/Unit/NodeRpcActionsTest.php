@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\Commands\UpdateCommand;
 use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeRpc;
 use XcVm\Core\Cluster\SignalDispatcher;
@@ -58,6 +59,8 @@ final class NodeRpcActionsTest extends TestCase {
 		NodeActions::setRamdisk(2, false);
 		NodeActions::setPorts(2, 1, [80, 81], true);
 		NodeActions::rollback(2, '2.3.1');
+		class_exists(\XcVm\Core\Config\ConstantsInitializer::class); // defines XC_VM_VERSION
+		NodeActions::update(2);
 		NodeActions::certbot(2, ['a.example']);
 		NodeActions::send(2, '{"action":"install_module","name":"x"}');
 		$this->assertSame([
@@ -65,10 +68,23 @@ final class NodeRpcActionsTest extends TestCase {
 			'{"action":"disable_ramdisk"}',
 			'{"action":"set_port","type":1,"ports":[80,81],"reload":true}',
 			'{"action":"rollback","version":"2.3.1"}',
+			(string) json_encode(['action' => 'update', 'version' => XC_VM_VERSION]), // MAIN's release, installed exactly
 			'{"action":"certbot_generate","domain":["a.example"]}',
 			'{"action":"install_module","name":"x"}',
 		], array_column($rSink->rRows, 'custom_data'));
 		$this->assertSame([2], array_values(array_unique(array_column($rSink->rRows, 'server_id'))));
+	}
+
+	/** An update names MAIN's release; only an x.y.z version is ever passed to the updater. */
+	public function testAnUpdateNamesMainsReleaseOnly(): void {
+		$this->assertSame('2.6.0', UpdateCommand::pinned('2.6.0'));
+		$this->assertSame('2.6.0', UpdateCommand::pinned(' 2.6.0 '));
+		foreach ([null, '', '2.6', 'v2.6.0', '2.6.0; rm -rf /', '2.6.0-beta', 260, ['2.6.0']] as $rBad) {
+			$this->assertNull(UpdateCommand::pinned($rBad), var_export($rBad, true));
+		}
+		$rUpdate = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/Commands/UpdateCommand.php');
+		$this->assertStringContainsString("\$gitRelease->getVersionFile('lb_update', \$rPinned)", $rUpdate, 'that release exactly, not the newest');
+		$this->assertStringContainsString("version_compare(\$rPinned, XC_VM_VERSION, '<=')", $rUpdate, 'never down to it: that is a rollback');
 	}
 
 	public function testUnknownRootActionIsRefused(): void {

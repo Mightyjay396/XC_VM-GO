@@ -3,6 +3,7 @@
 namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Cli\Commands\UpdateCommand;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ArtefactStage;
@@ -1096,7 +1097,9 @@ class RootSignalsCronJob implements CommandInterface {
 				if (!LogSink::syslog('UPDATE', 'Updating XC_VM...')) {
 					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'UPDATE', 'Updating XC_VM...', 'root', 'localhost', NULL, ?);", SERVER_ID, time());
 				}
-				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update update 2>&1 &');
+				// MAIN's release, when it names one (NodeActions::update).
+				$rUpVersion = UpdateCommand::pinned($rData['version'] ?? null);
+				shell_exec('sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php update update' . ($rUpVersion === null ? '' : ' ' . escapeshellarg($rUpVersion)) . ' 2>&1 &');
 				break;
 			case 'rollback':
 				$rRbVersion = isset($rData['version']) ? trim((string) $rData['version']) : '';
