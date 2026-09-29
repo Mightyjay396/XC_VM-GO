@@ -72,6 +72,11 @@ final class ClusterSettings {
 		return array_merge(array_keys(self::INTS), array_keys(self::ENUMS), ['cluster_api_port', 'cluster_main_host', 'lb_scan_roots', 'cluster_db_allowlist_extra']);
 	}
 
+	/** The on/off settings (0-1): the settings form's switches, which post nothing when off. */
+	public static function switches(): array {
+		return array_keys(array_filter(self::INTS, static fn(array $rRange): bool => $rRange[1] === 0 && $rRange[2] === 1));
+	}
+
 	/** Grace G for a rotation interval L (both minutes): clamp(L/4, 5, 60). */
 	public static function graceMin(int $rRotationMin): int {
 		return max(5, min(60, intdiv(self::clampInt('lb_token_rotation_min', $rRotationMin), 4)));
