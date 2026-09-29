@@ -9,6 +9,8 @@ use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\DataPlaneTrust;
 use XcVm\Core\Cluster\MainAgentFiles;
 use XcVm\Core\Cluster\NodeFlows;
+use XcVm\Core\Config\SettingsManager;
+use XcVm\Domain\Cluster\ClusterOverview;
 use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\MainDataPlane;
 use XcVm\Domain\Cluster\NodeRegistry;
@@ -90,9 +92,10 @@ final class MainDataPlaneTest extends TestCase {
 
 	private function clean(): void {
 		$rDir = AgentPaths::file(MainAgentFiles::REPLICA);
-		foreach (['servers.json', 'tickets.json', '.tickets.lock'] as $rFile) {
+		foreach (['servers.json', 'tickets.json', '.tickets.lock', 'settings.json'] as $rFile) {
 			@unlink($rDir . $rFile);
 		}
+		@unlink(AgentPaths::file(MainAgentFiles::DIGEST_N1));
 		@unlink(AgentPaths::file(MainAgentFiles::IDENTITY));
 		MainAgentFiles::usePath(null);
 	}
@@ -222,6 +225,32 @@ final class MainDataPlaneTest extends TestCase {
 		ClusterClock::fix($rLater * 1000);
 		MainDataPlane::refresh();
 		$this->assertArrayNotHasKey(MainDataPlane::ADHOC, $this->store()['streams']);
+	}
+
+	/**
+	 * MAIN's agent is given lb_digest_nonce_required in its replica's settings,
+	 * as a node is; and the owners it reports taking a chunk digest without a
+	 * nonce from reach the Cluster Nodes page while its report is fresh.
+	 */
+	public function testMainsAgentGetsTheDigestSwitchAndItsReportIsRead(): void {
+		MainDataPlane::enable($this->keygen());
+		$rBefore = SettingsManager::getAll();
+		SettingsManager::set(['lb_digest_nonce_required' => '1'] + $rBefore);
+		try {
+			MainDataPlane::refresh();
+		} finally {
+			SettingsManager::set($rBefore);
+		}
+		$rSettings = json_decode((string) file_get_contents(AgentPaths::file(MainAgentFiles::REPLICA) . 'settings.json'), true);
+		$this->assertSame(['lb_digest_nonce_required' => 1], $rSettings['data']);
+
+		$rNowMs = self::NOW * 1000;
+		$this->assertNull(MainDataPlane::digestN1($rNowMs), 'no report');
+		file_put_contents(AgentPaths::file(MainAgentFiles::DIGEST_N1), json_encode(['owners' => [9, 5], 'at_ms' => $rNowMs - 60000]));
+		$this->assertSame([5, 9], MainDataPlane::digestN1($rNowMs));
+		$this->assertNull(MainDataPlane::digestN1($rNowMs + MainDataPlane::DIGEST_N1_STALE * 1000), 'a stopped agent\'s report');
+		file_put_contents(AgentPaths::file(MainAgentFiles::DIGEST_N1), json_encode(['owners' => [9], 'at_ms' => (int) round(microtime(true) * 1000)]));
+		$this->assertSame(['owners' => [7, 9], 'silent' => 0], ClusterOverview::digestN1([['state' => 'active', 'digest_n1' => '[7]']]));
 	}
 
 	/** Where MAIN reads another server's file: its agent while on, getFile with the server's IP otherwise. */

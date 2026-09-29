@@ -8,7 +8,9 @@ use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\Crypto\ClusterRefusedException;
 use XcVm\Core\Cluster\Crypto\Ticket;
 use XcVm\Core\Cluster\DataPlane;
+use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\MainAgentFiles;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -267,6 +269,7 @@ final class MainDataPlane {
 			return;
 		}
 		self::writeServers();
+		self::writeSettings();
 		TicketService::forget(); // the servers that check tickets, read again
 		$rNow = self::now();
 		$rEpoch = DataPlane::epoch($rNow);
@@ -403,6 +406,37 @@ final class MainDataPlane {
 		if (@file_get_contents($rPath) !== $rJson) {
 			self::write($rPath, $rJson);
 		}
+	}
+
+	/**
+	 * `replica/settings.json`: the settings MAIN's agent reads as a node's
+	 * reads its replica's (`lb_digest_nonce_required`), written when it changed.
+	 */
+	private static function writeSettings(): void {
+		$rData = ['lb_digest_nonce_required' => ClusterSettings::int('lb_digest_nonce_required', SettingsManager::get('lb_digest_nonce_required'))];
+		$rJson = (string) json_encode(['etag' => hash('sha256', (string) json_encode($rData)), 'data' => $rData], JSON_UNESCAPED_SLASHES);
+		$rPath = AgentPaths::file(MainAgentFiles::REPLICA) . 'settings.json';
+		if (@file_get_contents($rPath) !== $rJson) {
+			self::write($rPath, $rJson);
+		}
+	}
+
+	/** How old MAIN's agent's digest report may be and still be read (it writes it every 10 minutes). */
+	public const DIGEST_N1_STALE = 1800;
+
+	/**
+	 * The owners MAIN's own agent took a chunk digest without a nonce from
+	 * (its report, main_digest_n1.json), or null without a fresh report.
+	 *
+	 * @return list<int>|null
+	 */
+	public static function digestN1(?int $rNowMs = null): ?array {
+		$rDoc = json_decode((string) @file_get_contents(AgentPaths::file(MainAgentFiles::DIGEST_N1)), true);
+		$rNowMs ??= (int) round(microtime(true) * 1000);
+		if (!is_array($rDoc) || !is_int($rDoc['at_ms'] ?? null) || $rNowMs - $rDoc['at_ms'] > self::DIGEST_N1_STALE * 1000) {
+			return null;
+		}
+		return NodeDigestN1::normalise($rDoc['owners'] ?? null);
 	}
 
 	/** The node list changed: every node fetches the servers section now. */

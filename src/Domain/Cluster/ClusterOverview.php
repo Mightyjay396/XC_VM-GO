@@ -59,8 +59,9 @@ final class ClusterOverview {
 
 	/**
 	 * What the active nodes' agents report of chunk digests that name no
-	 * request (NodeDigestN1): the owners named in the last 24 h, and how many
-	 * active nodes do not report (an agent from before the report). Pure.
+	 * request (NodeDigestN1), and MAIN's own agent (MainDataPlane::digestN1):
+	 * the owners named in the last 24 h, and how many active nodes do not
+	 * report (an agent from before the report).
 	 *
 	 * @param list<array<string, mixed>> $rNodes ClusterAdmin::nodes()
 	 * @return array{owners: list<int>, silent: int}
@@ -79,7 +80,8 @@ final class ClusterOverview {
 				$rOwners = array_merge($rOwners, $rList);
 			}
 		}
-		$rOwners = array_values(array_unique($rOwners));
+		// MAIN's own data-plane agent reads files too (its report, not a heartbeat).
+		$rOwners = array_values(array_unique(array_merge($rOwners, MainDataPlane::digestN1() ?? [])));
 		sort($rOwners);
 		return ['owners' => $rOwners, 'silent' => $rSilent];
 	}
