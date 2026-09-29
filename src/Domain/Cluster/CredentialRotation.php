@@ -8,17 +8,17 @@ use XcVm\Infrastructure\Database\DatabaseAware;
 use XcVm\Infrastructure\Redis\RedisManager;
 
 /**
- * MAIN's Redis and DB password rotations for the nodes that still use them
- * (plan, section 10, step 3; ADR 0004, Phase 9): `cluster:rotate-credentials`.
+ * MAIN's Redis password rotation for the nodes that still use it (plan,
+ * section 10, step 3; ADR 0004, Phase 9): `cluster:rotate-credentials`.
  *
  * Until lockdown every legacy and hybrid load balancer sends `AUTH
  * <redis_password>` and its SQL login to MAIN in cleartext, so a sniffer of
- * that era holds both. A rotation gives MAIN new ones and pushes them to the
- * nodes that still connect — every load balancer whose cluster node is not in
+ * that era holds both. A rotation gives MAIN a new Redis password and pushes
+ * it to the nodes that still connect — every load balancer whose cluster node is not in
  * mode 2 (targets()):
  *
- * - to a node that takes root commands, as `node.root rotate_redis` /
- *   `rotate_db` with the password SEALed to its box key (RootCredentials);
+ * - to a node that takes root commands, as `node.root rotate_redis` with
+ *   the password SEALed to its box key (RootCredentials);
  * - to a legacy node without them, `rotate_redis` as a `signals` row with no
  *   secret: its root cron reads MAIN's settings row, as it always has.
  *
@@ -29,13 +29,9 @@ use XcVm\Infrastructure\Redis\RedisManager;
  * old one (by its SHA-256, so MAIN never keeps it) once every command node
  * has acked, or with --force. The job's state lives in `cluster_meta`.
  *
- * DB: MariaDB has no second password, and the password lives only in the
- * extension's config.enc, never in PHP's hands. The rotation therefore needs
- * xcvm_core to change it on MAIN (DB_ROTATOR: ALTER USER for every host the
- * panel's user is granted on, and config.enc) and on the nodes
- * (RootCredentials::DB_SETTER). Neither exists yet: the rotation refuses
- * until they do, and it refuses while a target node takes no root command,
- * since that node would lose MAIN's database for good.
+ * The DB password is not rotated here: `cluster:rotate-db-password`
+ * (DbPassword) does it through xcvm_core, and sends it to the nodes sealed
+ * the same way (`node.root rotate_db`).
  */
 final class CredentialRotation {
 	use DatabaseAware;
@@ -43,17 +39,8 @@ final class CredentialRotation {
 	/** The Redis rotation's state while it is open. */
 	public const META_REDIS = 'credential_rotation.redis';
 
-	/** When the last rotation of each ended. */
+	/** When the last Redis rotation ended. */
 	public const DONE_REDIS = 'redis_rotated_at';
-
-	public const DONE_DB = 'db_rotated_at';
-
-	/**
-	 * MAIN's DB password setter in xcvm_core, when it has one:
-	 * `XC_VM::db_set_password(string $password): bool` — ALTER USER for the
-	 * panel's user on every host it holds a grant for, then config.enc.
-	 */
-	public const DB_ROTATOR = 'db_set_password';
 
 	public const REDIS_PORT = 6379;
 
@@ -63,24 +50,19 @@ final class CredentialRotation {
 	/** @var callable(string, int, string): bool */
 	private $rRedisConfig;
 
-	/** @var (callable(string): bool)|null */
-	private $rDbRotate;
-
 	private string $rRedisConf;
 
 	/**
 	 * @param (callable(list<string>): mixed)|null        $rRedis       a raw command on MAIN's Redis
 	 * @param (callable(string, int, string): bool)|null  $rRedisConfig MAIN's config.enc Redis setter
-	 * @param (callable(string): bool)|null               $rDbRotate    MAIN's DB password setter; null asks the extension
 	 * @param string|null                                 $rRedisConf   redis.conf
 	 */
-	public function __construct(?callable $rRedis = null, ?callable $rRedisConfig = null, ?callable $rDbRotate = null, ?string $rRedisConf = null) {
+	public function __construct(?callable $rRedis = null, ?callable $rRedisConfig = null, ?string $rRedisConf = null) {
 		$this->rRedis = $rRedis ?? static function (array $rArgs): mixed {
 			$rConn = RedisManager::instance();
 			return $rConn instanceof \Redis ? $rConn->rawCommand(...$rArgs) : false;
 		};
 		$this->rRedisConfig = $rRedisConfig ?? static fn(string $rHost, int $rPort, string $rAuth): bool => method_exists('XC_VM', 'config_set_redis') && \XC_VM::config_set_redis($rHost, $rPort, $rAuth);
-		$this->rDbRotate = $rDbRotate ?? (method_exists('XC_VM', self::DB_ROTATOR) ? static fn(string $rPass): bool => (bool) call_user_func(['XC_VM', self::DB_ROTATOR], $rPass) : null);
 		$this->rRedisConf = $rRedisConf ?? (defined('MAIN_HOME') ? MAIN_HOME . 'bin/redis/redis.conf' : '');
 	}
 
@@ -216,55 +198,6 @@ final class CredentialRotation {
 		ClusterMeta::set(self::DONE_REDIS, (string) ($rNow ?? time()));
 		ClusterAudit::log('cluster.redis_rotated', null, ['id' => $rJob['id'], 'forced' => $rPending], 'cli');
 		return [];
-	}
-
-	/** Can this panel rotate the DB password? (xcvm_core's DB_ROTATOR) */
-	public function dbSupported(): bool {
-		return $this->rDbRotate !== null;
-	}
-
-	/**
-	 * The DB password: changed on MAIN by the extension, then pushed sealed to
-	 * every target over `node.root rotate_db`. Refused (nothing changed) when
-	 * the extension cannot, or while a target takes no root command, unless
-	 * $rForce: that node then loses MAIN's database.
-	 *
-	 * @return array{blockers: list<int>, nodes: array<int, string>}
-	 */
-	public function rotateDb(bool $rForce, ?string $rNew = null, ?int $rNow = null): array {
-		if ($this->rDbRotate === null) {
-			throw new \RuntimeException('xcvm_core has no XC_VM::' . self::DB_ROTATOR . '(): the DB password cannot be rotated from PHP');
-		}
-		$rTargets = self::targets();
-		$rBlockers = [];
-		foreach ($rTargets as $rServerID => $rNode) {
-			if (!CommandBus::acceptsRoot($rNode)) {
-				$rBlockers[] = $rServerID;
-			}
-		}
-		if ($rBlockers !== [] && !$rForce) {
-			return ['blockers' => $rBlockers, 'nodes' => []];
-		}
-		$rNew ??= bin2hex(random_bytes(24));
-		if (!($this->rDbRotate)($rNew)) {
-			throw new \RuntimeException('xcvm_core refused to change the DB password; nothing was changed');
-		}
-		$rOut = [];
-		foreach ($rTargets as $rServerID => $rNode) {
-			if (in_array($rServerID, $rBlockers, true)) {
-				$rOut[$rServerID] = 'not reached (no root commands)';
-				continue;
-			}
-			try {
-				$rSent = NodeActions::send($rServerID, ['action' => 'rotate_db', 'auth_sealed' => RootCredentials::seal((string) $rNode['node_box_pub'], (string) $rNode['node_uuid'], $rNew)]);
-				$rOut[$rServerID] = $rSent ? 'queued' : 'not queued';
-			} catch (\Throwable $rE) {
-				$rOut[$rServerID] = 'not queued: ' . substr($rE->getMessage(), 0, 120);
-			}
-		}
-		ClusterMeta::set(self::DONE_DB, (string) ($rNow ?? time()));
-		ClusterAudit::log('cluster.db_rotated', null, ['nodes' => $rOut, 'forced' => $rBlockers], 'cli');
-		return ['blockers' => $rBlockers, 'nodes' => $rOut];
 	}
 
 	private function redisPassword(): string {

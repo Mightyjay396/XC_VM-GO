@@ -956,6 +956,8 @@ class RootSignalsCronJob implements CommandInterface {
 				echo RootCredentials::rotateRedis($rData, $db) . "\n";
 				break;
 			case 'rotate_db':
+				// MAIN rotated the panel's DB password (cluster:rotate-db-password):
+				// the sealed password into config.enc through config_set_db.
 				echo RootCredentials::rotateDb($rData) . "\n";
 				break;
 			case 'rotate_sign_key':

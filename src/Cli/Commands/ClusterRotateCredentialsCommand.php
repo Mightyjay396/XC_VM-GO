@@ -6,16 +6,15 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Domain\Cluster\CredentialRotation;
 
 /**
- * ClusterRotateCredentialsCommand — rotate MAIN's Redis or DB password and
- * push it to the load balancers that still use it (plan, section 10, step 3).
+ * ClusterRotateCredentialsCommand — rotate MAIN's Redis password and push it
+ * to the load balancers that still use it (plan, section 10, step 3).
  *
  * - `redis`: a new Redis password beside the old one, MAIN on the new one at
  *   once, and every node below mode 2 told (CredentialRotation::redis()).
  * - `redis --finish [--force]`: drop the old password once every node reached
  *   by command has acked; `--force` drops it regardless (the nodes that have
  *   not moved lose Redis).
- * - `db [--force]`: the DB password, through xcvm_core (rotateDb()); refused while a node
- *   below mode 2 takes no root command, unless `--force`.
+ * - `db`: moved to `cluster:rotate-db-password` (DbPassword); it says so.
  * - `status`: the open Redis rotation, node by node.
  *
  * MAIN only (stripped from LB builds). Root, for redis.conf.
@@ -31,7 +30,7 @@ class ClusterRotateCredentialsCommand implements CommandInterface {
 	}
 
 	public function getDescription(): string {
-		return 'Rotate the Redis or DB password for the nodes that still use them: redis [--finish] [--force] | db [--force] | status';
+		return 'Rotate the Redis password for the nodes that still use it: redis [--finish] [--force] | status';
 	}
 
 	public function execute(array $rArgs): int {
@@ -60,26 +59,14 @@ class ClusterRotateCredentialsCommand implements CommandInterface {
 					echo "When `status` shows every node acked, run `cluster:rotate-credentials redis --finish`.\n";
 					return 0;
 				case 'db':
-					if (!$rRotation->dbSupported()) {
-						echo 'Refused: this xcvm_core cannot change the DB password (it needs XC_VM::' . CredentialRotation::DB_ROTATOR . "()). Nothing was changed.\n";
-						return 1;
-					}
-					$rOut = $rRotation->rotateDb($rForce);
-					if ($rOut['nodes'] === [] && $rOut['blockers'] !== []) {
-						echo 'Refused: server(s) ' . implode(', ', $rOut['blockers']) . " take no root command, so they could not be given the new password and would lose MAIN's database. --force rotates regardless.\n";
-						return 1;
-					}
-					echo "The DB password changed on MAIN.\n";
-					foreach ($rOut['nodes'] as $rServerID => $rState) {
-						echo '  server ' . $rServerID . ': ' . $rState . "\n";
-					}
-					return 0;
+					echo "The DB password is rotated by `cluster:rotate-db-password`.\n";
+					return 1;
 			}
 		} catch (\Throwable $rE) {
 			echo 'Failed: ' . $rE->getMessage() . "\n";
 			return 1;
 		}
-		echo "Usage: cluster:rotate-credentials [status | redis [--finish] [--force] | db [--force]]\n";
+		echo "Usage: cluster:rotate-credentials [status | redis [--finish] [--force]]\n";
 		return 1;
 	}
 

@@ -8,11 +8,12 @@ use XcVm\Domain\Cluster\DbPassword;
 /**
  * ClusterRotateDbPasswordCommand — rotate the panel's database password
  * (plan, section 10; Phase 9) through `xcvm_core`'s `db_set_password`: MAIN's
- * accounts and `config.enc`, every load balancer's grant, and a config with
- * the new password for each node MAIN can send one to (DbPassword).
+ * accounts and `config.enc`, every load balancer's grant, and the new
+ * password SEALed to each node that takes root commands, as `node.root
+ * rotate_db` (DbPassword).
  *
- * It first lists what each load balancer needs, since one MAIN cannot send a
- * config to loses MAIN's database until an operator sets the password there
+ * It first lists what each load balancer needs, since one MAIN cannot send
+ * the password to loses MAIN's database until an operator sets the password there
  * (`cluster:set-db-password`, on the node). The operator types `rotate` to
  * confirm, or passes `--yes`. The new password is generated and never shown,
  * unless `--password-stdin` reads it from standard input (one line), which is
@@ -91,14 +92,14 @@ class ClusterRotateDbPasswordCommand implements CommandInterface {
 		}
 		$rFailed = 0;
 		foreach ($rOut['nodes'] as $rNode) {
-			if ($rNode['how'] !== 'config') {
+			if ($rNode['how'] !== 'sealed') {
 				continue;
 			}
 			if ($rNode['result'] === null) {
-				echo '  server ' . $rNode['server_id'] . ": new config sent (node.root install_config)\n";
+				echo '  server ' . $rNode['server_id'] . ": new password sent sealed (node.root rotate_db)\n";
 			} else {
 				$rFailed++;
-				echo '  server ' . $rNode['server_id'] . ': config NOT sent (' . $rNode['result'] . "): set the password there by hand\n";
+				echo '  server ' . $rNode['server_id'] . ': password NOT sent (' . $rNode['result'] . "): set it there by hand\n";
 			}
 		}
 		return $rFailed === 0 ? 0 : 2;
@@ -107,7 +108,7 @@ class ClusterRotateDbPasswordCommand implements CommandInterface {
 	/** @param array{how: string, why: string|null} $rNode */
 	private static function describe(array $rNode): string {
 		return match ($rNode['how']) {
-			'config' => 'sent a config with the new password',
+			'sealed' => 'sent the new password sealed to its box key (node.root rotate_db)',
 			'mode2' => 'mode 2, does not use MAIN\'s database (its grant follows; drop its credentials with cluster:strip-credentials)',
 			'revoked' => 'its grant was revoked: nothing to change',
 			default => 'BY HAND: ' . (string) $rNode['why'],

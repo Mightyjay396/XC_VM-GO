@@ -382,15 +382,8 @@ class StatusCommand implements CommandInterface {
 			return;
 		}
 
-		// Resolve the MAIN server's reachable IP (prefer a private link if set).
-		$rHost = null;
-		foreach ($rServers as $rServer) {
-			if (!empty($rServer['is_main'])) {
-				$rHost = !empty($rServer['private_url_ip']) ? $rServer['private_url_ip'] : ($rServer['server_ip'] ?? null);
-				break;
-			}
-		}
-		if (empty($rHost)) {
+		$rHost = self::mainRedisHost($rServers);
+		if ($rHost === null) {
 			echo "WARNING: could not resolve the main server's IP for Redis\n";
 			return;
 		}
@@ -407,6 +400,30 @@ class StatusCommand implements CommandInterface {
 		} else {
 			echo "Redis pointed at main server {$rHost}:6379\n";
 		}
+	}
+
+	/**
+	 * The address a load balancer reaches MAIN's Redis on: MAIN's `private_ip`
+	 * when it has one, else its `server_ip` — the raw column, never a URL built
+	 * from it (`private_url_ip` is `http://<ip>:<port>/`). Null when MAIN's row
+	 * is missing or neither is an IP address or a plain host name.
+	 *
+	 * @param array<int, array<string, mixed>> $rServers `servers` rows
+	 */
+	public static function mainRedisHost(array $rServers): ?string {
+		foreach ($rServers as $rServer) {
+			if (empty($rServer['is_main'])) {
+				continue;
+			}
+			foreach (['private_ip', 'server_ip'] as $rKey) {
+				$rHost = trim((string) ($rServer[$rKey] ?? ''));
+				if ($rHost !== '' && (filter_var($rHost, FILTER_VALIDATE_IP) !== false || preg_match('/^(?=.{1,253}$)[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/', $rHost) === 1)) {
+					return $rHost;
+				}
+			}
+			return null;
+		}
+		return null;
 	}
 
 	private function printStatusReport(array $rServers): void {

@@ -307,13 +307,13 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   the strip (*Drop DB credentials*, `cluster:strip-credentials`), and
   `lb_new_node_mode=api` is still refused (`api_mode_allowed` is false): the cutover stays
   the operator's decision. `cluster:rotate-db-password` rotates the panel's DB password
-  through `XC_VM::db_set_password` and sends each mode-1 node that takes root commands a
-  config with the new password (`install_config`, packed for that install only); every
-  other load balancer that still uses its grant keeps the old password until an operator
-  runs `cluster:set-db-password` on it (`XC_VM::config_set_db`). The password never rides a
-  command. `cluster:rotate-credentials` (Redis, and the DB through a sealed `node.root
-  rotate_db`) and the manual `cluster:lockdown` exist too (ADR 0004, Phase 9's fifth
-  increment).
+  through `XC_VM::db_set_password` and sends each node below mode 2 that takes root
+  commands a signed `node.root rotate_db` with the new password SEALed to its box key,
+  which its root side opens and hands to `XC_VM::config_set_db` (only `db.pass` changes).
+  Every other load balancer that still uses its grant keeps the old password until an
+  operator runs `cluster:set-db-password` on it. The password never rides a command in the
+  clear. `cluster:rotate-credentials` rotates the Redis password the same way, and the
+  manual `cluster:lockdown` exists too (ADR 0004, Phase 9's fifth and seventh increments).
 - The viewer-token secret can be *replaced* gracefully (the value it replaces stays readable
   for ten minutes, fleet-wide), but a full rotation — re-encrypting what is stored under it
   — is Phase 9's.
