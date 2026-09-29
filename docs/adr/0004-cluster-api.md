@@ -3845,9 +3845,10 @@ compiled answer there — the plan's "`license_valid()` on the LB on MAIN time".
   `XC_VM::db_revoke($server_ip)` (which now refuses loopback addresses and MAIN's own DB host),
   then `cluster_nodes.db_revoked_at` (migration 052, through `NodeRegistry::update()` so the
   auth cache is told), audited `node.db_revoked` or `node.db_revoke_failed`.
-- **Not built:** a caller of `DbCredentials::strip()` (a Cluster Nodes button or a CLI command)
-  and the credential-free SSH install (`LbInstallFlow::configPackParams` still packs credentials,
-  and `db_grant` still runs at install). `api_mode_allowed` stays false.
+- **Not built here:** a caller of `DbCredentials::strip()` (the seventh increment adds both),
+  and the credential-free SSH install, which the fifth increment had built for new nodes in API
+  mode; the eighth keeps a reinstalled credential-free node that way. `api_mode_allowed` stays
+  false.
 
 **Tests.** `LeaseVerdictCacheTest` (the extension consulted once per 2 s window, a live or
 expired answer deciding over the agent's file, `none` and a throwing extension falling back,
@@ -3933,8 +3934,9 @@ packed for the node's install_id with `XC_VM::config_pack` — credential-free f
   `cluster:rotate-db-password` is MAIN-only (stripped from the LB build); `cluster:set-db-password`
   ships on nodes and uses nothing the LB build strips.
 
-**Not built:** the credential-free SSH install (`configPackParams` still packs credentials and
-`db_grant` still runs).
+A new node in API mode was already installed credential-free (the fifth increment). The eighth
+increment keeps a node MAIN already holds credential-free that way through a reinstall and every
+grant path.
 
 **Tests.** `CorePinTest` (root's two steps against a fake extension: the install_id read only
 when it exists, only root's key pinned, another panel's pin replaced and root's kept, the
@@ -3947,6 +3949,33 @@ rotation that sends the sealed password only where it can and never logs it, ref
 rollback config packed for the node's install, both commands, and which ships on a node),
 `CredentialRotationTest::testTheDbPasswordTravelsSealed` (the real bus: ciphertext only in the
 row, no `signals` row, the node opening it for `config_set_db`).
+
+### What Phase 9 still owed (Phase 9, eighth increment)
+
+Four pieces the earlier increments left open. None flips `api_mode_allowed`, and none removes the
+LB's `/api`, `configureRedisLb`, its DB code paths or the viewer API.
+
+**A node MAIN keeps credential-free stays so.** The fifth increment installs a *new* node in API
+mode without a grant and with a credential-free `config_pack`. Two paths still handed MAIN's
+credentials back to a node that had given them up:
+
+- **A reinstall over SSH** (`server:install`, and `server:enrol` for an existing load balancer)
+  decided API mode by `lb_new_node_mode` alone, and the enrolment replaces the node's row. So a node
+  in mode 2, or one whose grant MAIN had revoked, was packed a config with credentials, granted
+  again, re-enrolled in mode 1, and `db_revoked_at` was lost. `LbInstallFlow::installsInApiMode()`
+  now also answers true for a node `DbCredentials::credentialFree()` (mode 2, or `db_revoked_at`
+  set), asked once before the enrolment. `ServerInstallCommand` hands the same answer to
+  `provisionConfig` (credential-free `config_pack`, or a refusal with an extension that cannot pack
+  one), to the grant at the end of the install (none), and to `provisionCluster`, which re-enrols the
+  node in mode 2 with `ClusterAdmin::MODE2_FLOWS`. `NodeRegistry::startEnrolment()` carries
+  `db_revoked_at` over when the new row is in mode 2. A deliberate mode-1 enrolment starts clean.
+- **The bulk grants** (the admin's *Re-authorise MySQL*, `tools mysql`, `tools migrate`, and the
+  server form) all go through `BackupService::grantPrivileges()`, which now grants nothing to the
+  host of such a node (`DbCredentials::credentialFreeHost()`: a grant is per host, so one such load
+  balancer on it is enough) and returns false. `tools mysql` says so for each skipped host.
+
+Tests: `ApiModeInstallTest` (the reinstall decision, the revoke across a re-enrolment, no grant to
+such a host).
 
 ### Disaster recovery of MAIN's cluster keys
 

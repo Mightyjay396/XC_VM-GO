@@ -306,7 +306,10 @@ for a re-enrolment over SSH. Every decision is written to `cluster_audit`, which
   `cluster_nodes.db_revoked_at` (`Domain\Cluster\DbCredentials`). Only an operator sends
   the strip (*Drop DB credentials*, `cluster:strip-credentials`), and
   `lb_new_node_mode=api` is still refused (`api_mode_allowed` is false): the cutover stays
-  the operator's decision. `cluster:rotate-db-password` rotates the panel's DB password
+  the operator's decision. A node MAIN already keeps credential-free (mode 2, or a revoked
+  grant) stays so: a reinstall over SSH packs it a credential-free config, re-enrols it in
+  mode 2 and grants it nothing, and no grant path (*Re-authorise MySQL*, `tools mysql`)
+  reaches its host. `cluster:rotate-db-password` rotates the panel's DB password
   through `XC_VM::db_set_password` and sends each node below mode 2 that takes root
   commands a signed `node.root rotate_db` with the new password SEALed to its box key,
   which its root side opens and hands to `XC_VM::config_set_db` (only `db.pass` changes).

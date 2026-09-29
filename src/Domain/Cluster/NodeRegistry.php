@@ -94,6 +94,11 @@ final class NodeRegistry {
 			$rNow,
 			$rNow
 		);
+		// A re-enrolment in mode 2 keeps MAIN's record of a revoked grant: the
+		// grant stays revoked, and DbCredentials::credentialFree() still reads it.
+		if ($rExisting && $rMode === 2 && !empty($rExisting['db_revoked_at'])) {
+			self::db()->query('UPDATE `cluster_nodes` SET `db_revoked_at` = ? WHERE `server_id` = ?;', (int) $rExisting['db_revoked_at'], $rServerID);
+		}
 		NodeAuthCache::forget($rServerID);
 		HeartbeatService::forget($rServerID);
 		if ($rExisting && $rCrypto instanceof \XcVm\Core\Cluster\Crypto\ClusterCrypto) {

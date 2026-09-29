@@ -171,7 +171,9 @@ class ToolsCommand implements CommandInterface {
 	private function processMysql(array $rServers): int {
 		foreach ($rServers as $rServerID => $rServer) {
 			echo 'Granting privileges to: ' . $rServer['server_ip'] . " (ID: {$rServerID})\n";
-			BackupService::grantPrivileges($rServer['server_ip']);
+			if (!BackupService::grantPrivileges($rServer['server_ip'])) {
+				echo "  not granted: a node in cluster mode 2 or with a revoked grant holds none, or the extension refused\n";
+			}
 		}
 		echo "\nMySQL privileges have been reauthorised for all servers.\n";
 		return 0;

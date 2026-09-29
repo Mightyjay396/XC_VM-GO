@@ -4,6 +4,7 @@ namespace XcVm\Core\Backup;
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Storage\DropboxClient;
+use XcVm\Domain\Cluster\DbCredentials;
 
 /**
  * Backup & Database Privileges Service
@@ -70,10 +71,19 @@ class BackupService {
 	/**
 	 * Grant SELECT/INSERT/UPDATE/DELETE/DROP/ALTER privileges to a remote host.
 	 *
+	 * Never to the host of a load balancer that must hold none of MAIN's
+	 * credentials — a cluster node in mode 2, or one whose grant MAIN revoked
+	 * (DbCredentials::credentialFree(), plan section 10) — whichever path asks:
+	 * the server form, the install, "re-authorise MySQL" or `tools mysql`.
+	 *
 	 * @param string $host Remote host IP
+	 * @return bool False when nothing was granted (such a node, or the extension refused)
 	 */
-	public static function grantPrivileges(string $host) {
-		\XC_VM::db_grant($host);
+	public static function grantPrivileges(string $host): bool {
+		if (class_exists(DbCredentials::class) && DbCredentials::credentialFreeHost($host)) {
+			return false;
+		}
+		return (bool) \XC_VM::db_grant($host);
 	}
 
 	/**
