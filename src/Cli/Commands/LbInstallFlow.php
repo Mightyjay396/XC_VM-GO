@@ -170,13 +170,17 @@ class LbInstallFlow {
 		// would silently fall back to a default config (server_id=1, is_lb=0).
 		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . CONFIG_PATH);
 		$rIdResult = call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg('echo XC_VM::install_id();'));
-		$rInstallId = trim($rIdResult['output'] ?? '');
-		if ($rInstallId === '') {
+		// A freshly installed PHP may print warnings before the id, which
+		// config_pack() would refuse as part of it.
+		$rInstallId = self::lastLine($rIdResult);
+		if (!CorePins::validInstallId($rInstallId)) {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
 			echo "Failed to read install_id from node! Exiting\n";
-			$rIdErr = trim($rIdResult['error'] ?? '');
-			if ($rIdErr !== '') {
-				echo $rIdErr . "\n";
+			foreach (['output', 'error'] as $rStream) {
+				$rText = trim((string) ($rIdResult[$rStream] ?? ''));
+				if ($rText !== '') {
+					echo $rText . "\n";
+				}
 			}
 			return false;
 		}
@@ -184,10 +188,12 @@ class LbInstallFlow {
 		// Pack config.enc targeted at the node's install_id. Credentials are
 		// read from MAIN's config.enc inside the extension, never exposed here;
 		// in API mode there are none (CredentialFreeConfig).
-		$rBlob = $rApiMode ? CredentialFreeConfig::pack($rInstallId, self::configPackParams($rServers, $rServerID)) : \XC_VM::config_pack($rInstallId, self::configPackParams($rServers, $rServerID));
+		$rPackParams = self::configPackParams($rServers, $rServerID);
+		$rBlob = $rApiMode ? CredentialFreeConfig::pack($rInstallId, $rPackParams) : \XC_VM::config_pack($rInstallId, $rPackParams);
 		if (empty($rBlob)) {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
-			echo "Failed to pack node configuration! Exiting\n";
+			$rWhy = error_get_last()['message'] ?? 'no warning';
+			echo 'Failed to pack node configuration (install_id ' . $rInstallId . ', hostname ' . var_export($rPackParams['hostname'], true) . ', api mode ' . ($rApiMode ? 'yes' : 'no') . ', ' . $rWhy . ")! Exiting\n";
 			return false;
 		}
 
@@ -664,14 +670,10 @@ class LbInstallFlow {
 	 * API on either side is only a reason.
 	 */
 	public static function pinCore($rConn, callable $rRunSSH, ClusterCrypto $rCrypto, int $rServerID): ?string {
-		$rLast = static function (array $rOut): string {
-			$rLines = preg_split('/\R/', trim((string) ($rOut['output'] ?? ''))) ?: [];
-			return trim((string) end($rLines));
-		};
 		// install_id() would create a root-owned file were there none: ask only
 		// when it exists (provisionConfig created it).
 		$rAsk = 'echo is_file(' . var_export(CONFIG_PATH . 'install_id', true) . ') && class_exists("XC_VM") && method_exists("XC_VM", "cluster_pin") ? XC_VM::install_id() : "";';
-		$rID = $rLast((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg($rAsk)));
+		$rID = self::lastLine((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg($rAsk)));
 		if (!CorePins::validInstallId($rID)) {
 			return 'no install_id, or an xcvm_core without the cluster API on the node';
 		}
@@ -687,13 +689,19 @@ class LbInstallFlow {
 		}
 		$rPin = '$r = XC_VM::cluster_pin(base64_decode(' . var_export(base64_encode($rBlob), true) . '), true);'
 			. ' echo $r === false ? "ERR " . XC_VM::cluster_last_error() : "OK " . hash("sha256", $r["panel_sign_pub"]);';
-		$rOut = $rLast((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg($rPin)));
+		$rOut = self::lastLine((array) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' -r ' . escapeshellarg($rPin)));
 		$rFp = hash('sha256', $rPub);
 		if ($rOut !== 'OK ' . $rFp) {
 			return 'cluster_pin: ' . ($rOut === '' ? 'no answer' : substr($rOut, 0, 120));
 		}
 		CorePins::recorded($rServerID, $rFp, 'install');
 		return null;
+	}
+
+	/** The last stdout line of an SSH command: what it echoed after any PHP warnings. */
+	private static function lastLine(array $rOut): string {
+		$rLines = preg_split('/\R/', trim((string) ($rOut['output'] ?? ''))) ?: [];
+		return trim((string) end($rLines));
 	}
 
 	private static function uuid4(): string {
