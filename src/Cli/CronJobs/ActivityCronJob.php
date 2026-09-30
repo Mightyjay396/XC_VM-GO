@@ -64,14 +64,12 @@ class ActivityCronJob implements CommandInterface {
 		$rClaimed = $rLogFile . '.import';
 		$rCount = 0;
 
-		if (file_exists($rClaimed)) {
-			$rCount += $this->parseLog($rClaimed);
-			if (file_exists($rClaimed)) {
-				return $rCount; // refused again: claiming the spool now would overwrite it
-			}
+		// Refused again, the claim stays: claiming the spool now would overwrite it.
+		if (file_exists($rClaimed) && !$this->parseLog($rClaimed, $rCount)) {
+			return $rCount;
 		}
 		if (file_exists($rLogFile) && rename($rLogFile, $rClaimed)) {
-			$rCount += $this->parseLog($rClaimed);
+			$this->parseLog($rClaimed, $rCount);
 		}
 
 		return $rCount;
@@ -83,14 +81,17 @@ class ActivityCronJob implements CommandInterface {
 	 * database unavailable, a deadlock, the node's agent unreachable: with the
 	 * panel's non-strict sql_mode bad data only truncates) is kept, with the
 	 * rest of the file and not the batches already in, for the next run.
+	 *
+	 * @param int $rCount Raised by the rows inserted.
+	 * @return bool Whether every batch is in (the file is removed).
 	 */
-	private function parseLog(string $rFile): int {
+	private function parseLog(string $rFile, int &$rCount): bool {
 		$rRows = [];
-		$rCount = $rBytes = $rBatchAt = 0;
+		$rBytes = $rBatchAt = 0;
 
 		$rFP = fopen($rFile, 'r');
 		if ($rFP === false) {
-			return 0;
+			return false;
 		}
 		while (($rRaw = fgets($rFP)) !== false) {
 			$rLine = trim($rRaw);
@@ -107,7 +108,7 @@ class ActivityCronJob implements CommandInterface {
 			if (count($rRows) >= self::IMPORT_BATCH || $rBytes >= self::IMPORT_BYTES) {
 				if (!$this->insertBatch($rRows)) {
 					$this->keepFrom($rFP, $rFile, $rBatchAt);
-					return $rCount;
+					return false;
 				}
 				$rCount += count($rRows);
 				$rRows = [];
@@ -118,20 +119,21 @@ class ActivityCronJob implements CommandInterface {
 
 		if ($rRows !== [] && !$this->insertBatch($rRows)) {
 			$this->keepFrom($rFP, $rFile, $rBatchAt);
-			return $rCount;
+			return false;
 		}
 		$rCount += count($rRows);
 		fclose($rFP);
 		unlink($rFile);
 
-		return $rCount;
+		return true;
 	}
 
-	// ponytail: a batch refused for good (a strict sql_mode) is retried every
-	// run and holds the import up; drop it after N refusals if that is ever seen.
 	/**
 	 * Leave $rFile holding only what follows $rFrom (the refused batch and
 	 * the rows after it), and close $rFP.
+	 *
+	 * ponytail: a batch refused for good (a strict sql_mode) is retried every
+	 * run and holds the import up; drop it after N refusals if that is ever seen.
 	 *
 	 * @param resource $rFP
 	 */
