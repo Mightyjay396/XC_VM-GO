@@ -142,6 +142,21 @@ final class RedisConnectionCloseTest extends TestCase {
 		$this->assertNotFalse($this->rRedis->get($rUUID), 'still there');
 	}
 
+	/**
+	 * Two viewers opening at once on a line with room for one each ran the
+	 * limiter, each saw the other, and each closed it: both were gone. A
+	 * request now closes only connections older than its own, so the newer
+	 * stays and the older goes.
+	 */
+	public function testTwoOpensAtOnceOnAFullLineLeaveTheNewerOne(): void {
+		$this->viewer('first', '198.51.100.7', 'tv', 1800000001);
+		$this->viewer('second', '203.0.113.9', 'phone', 1800000002);
+		// Both requests run the limiter, in either order.
+		$this->assertSame(0, ConnectionLimiter::closeConnections(7, 1, null, '', '198.51.100.7', 'tv', 'first'), 'the older one closes nothing newer');
+		$this->assertSame(1, ConnectionLimiter::closeConnections(7, 1, null, '', '203.0.113.9', 'phone', 'second'));
+		$this->assertSame(['second'], $this->rRedis->zRange('LINE#7', 0, -1), 'the newer one is watching');
+	}
+
 	/** An HLS viewer of line 7: $rUUID, from $rIP with $rAgent, opened at $rStart. */
 	private function viewer(string $rUUID, string $rIP, string $rAgent, int $rStart, int $rServerID = SERVER_ID): void {
 		$this->assertNotFalse(ConnectionTracker::createConnection(['uuid' => $rUUID, 'identity' => 7, 'user_id' => 7, 'stream_id' => 11, 'server_id' => $rServerID, 'proxy_id' => 0, 'container' => 'hls', 'pid' => 0, 'hls_end' => 0, 'date_start' => $rStart, 'hls_last_read' => $rStart, 'user_ip' => $rIP, 'user_agent' => $rAgent, 'geoip_country_code' => '', 'isp' => '', 'on_demand' => 0]));

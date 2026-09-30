@@ -61,8 +61,8 @@ class ConnectionLimiter {
 					}
 				}
 				unset($rKeys);
-				$rDate = array_column($rConnections, 'date_start');
-				array_multisort($rDate, SORT_ASC, $rConnections);
+				// Oldest first, ties by uuid: every request orders them alike.
+				usort($rConnections, static fn(array $rA, array $rB): int => [(int) ($rA['date_start'] ?? 0), (string) ($rA['uuid'] ?? '')] <=> [(int) ($rB['date_start'] ?? 0), (string) ($rB['uuid'] ?? '')]);
 			} else {
 				return null;
 			}
@@ -95,9 +95,20 @@ class ConnectionLimiter {
 			}
 		}
 
+		// Only connections older than the requesting one: two viewers opening
+		// at once on a full line each saw the other and closed it, both gone.
+		// The newer one closes the older, and the older closes nothing newer.
+		$rOlder = count($rConnections);
+		foreach ($rConnections as $rIndex => $rConnection) {
+			if ($rCurrentUUID !== null && ($rConnection['uuid'] ?? null) === $rCurrentUUID) {
+				$rOlder = $rIndex;
+				break;
+			}
+		}
+
 		foreach ($rKillTypes as $rKillOwnIP) {
 			$i = 0;
-			while ($i < count($rConnections) && $rKilled < $rToKill) {
+			while ($i < $rOlder && $rKilled < $rToKill) {
 				if ($rKilled != $rToKill) {
 					$rIsCurrent = $rCurrentUUID !== null && ($rConnections[$i]['uuid'] ?? null) === $rCurrentUUID;
 					// Each pass starts over: one closed by an earlier pass is not closed, nor counted, again.
