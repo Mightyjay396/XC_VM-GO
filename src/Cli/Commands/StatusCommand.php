@@ -322,6 +322,12 @@ class StatusCommand implements CommandInterface {
 
 	private function configureRedis(): void {
 		$db = self::db();
+		// Run as root in a tree xc_vm owns: a link in the config's place would
+		// have root read and rewrite whatever it points to.
+		if (is_link(MAIN_HOME . 'bin/redis') || is_link(MAIN_HOME . 'bin/redis/redis.conf')) {
+			echo "WARNING: bin/redis/redis.conf is a symlink, not configuring Redis\n";
+			return;
+		}
 		$rConfig = file_get_contents(MAIN_HOME . 'bin/redis/redis.conf');
 		$rWrite = false;
 		if (stripos($rConfig, "\nsave 60 1000") === false) {
