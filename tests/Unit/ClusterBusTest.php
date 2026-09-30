@@ -72,6 +72,21 @@ final class ClusterBusTest extends TestCase {
 		$this->assertFalse(ClusterBus::waitNode(6, 0.2), 'another node was not woken');
 	}
 
+	/**
+	 * A blocking wait raises the connection's read timeout to outlast its
+	 * block, and puts it back: a later call on the same connection gives up on
+	 * a bus that hangs within a second, not within the last wait's length.
+	 */
+	public function testAWaitPutsTheReadTimeoutBack(): void {
+		$rRedis = $this->bus();
+		$rBefore = $rRedis->getOption(\Redis::OPT_READ_TIMEOUT);
+		$this->assertFalse(ClusterBus::waitNode(7, 0.3));
+		$this->assertSame($rBefore, $rRedis->getOption(\Redis::OPT_READ_TIMEOUT));
+		$this->assertTrue(ClusterBus::wakeNode(7));
+		$this->assertTrue(ClusterBus::waitNode(7, 2.0));
+		$this->assertSame($rBefore, $rRedis->getOption(\Redis::OPT_READ_TIMEOUT), 'after a wake too');
+	}
+
 	public function testAWakeFromAnotherProcessEndsTheWait(): void {
 		$this->bus();
 		$rScript = tempnam(sys_get_temp_dir(), 'wake') . '.php';

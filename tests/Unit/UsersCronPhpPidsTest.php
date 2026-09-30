@@ -89,6 +89,53 @@ final class UsersCronPhpPidsTest extends TestCase {
 		$this->assertStringNotContainsString("\$rServer['php_pids']", $rSource, 'getAll() rows carry no php_pids');
 	}
 
+	/**
+	 * A worker-served viewer is over when its worker is gone, five minutes
+	 * after it ended, or after three missed check-ins even with its pid
+	 * running: a worker whose close was never written leaves a pid PHP-FPM
+	 * gives the next request.
+	 */
+	public function testASilentWorkersViewerIsClosedWhateverItsPid(): void {
+		$rNow = 1800000000;
+		$rGone = fn(int $rEnd, int $rAgo, bool $rRunning): bool => $this->invoke('workerGone', [['hls_end' => $rEnd, 'hls_last_read' => $rNow - $rAgo], $rRunning, $rNow]);
+		$this->assertFalse($rGone(0, 299, true), 'checked in within the interval');
+		$this->assertFalse($rGone(0, UsersCronJob::SILENT_WORKER - 1, true), 'two missed check-ins');
+		$this->assertTrue($rGone(0, UsersCronJob::SILENT_WORKER, true), 'three: its pid serves someone else');
+		$this->assertTrue($rGone(0, 10, false), 'its worker gone');
+		$this->assertFalse($rGone(1, 100, true), 'ended a moment ago');
+		$this->assertTrue($rGone(1, 300, true), 'ended five minutes ago');
+	}
+
+	/**
+	 * In MySQL mode each server sweeps its own rows; a deleted or crashed
+	 * one's stayed open for good. MAIN takes a row as orphaned when its server
+	 * is gone, or when it has been silent for ORPHAN_AFTER.
+	 */
+	public function testAViewerNobodySweepsIsOrphaned(): void {
+		$rNow = 1800000000;
+		$rServers = [1 => ['is_main' => 1], 2 => []];
+		$rOrphan = fn(int $rServer, int $rAgo, string $rContainer = 'ts', int $rPid = 4242): bool => $this->invoke('orphaned', [['server_id' => $rServer, 'hls_last_read' => $rNow - $rAgo, 'container' => $rContainer, 'pid' => $rPid], $rServers, $rNow]);
+		$this->assertFalse($rOrphan(2, 60), 'a live server sweeps its own');
+		$this->assertFalse($rOrphan(2, UsersCronJob::ORPHAN_AFTER - 1));
+		$this->assertTrue($rOrphan(2, UsersCronJob::ORPHAN_AFTER), 'silent past the bound: its server does not sweep it');
+		$this->assertTrue($rOrphan(2, UsersCronJob::ORPHAN_AFTER, 'hls', 0));
+		$this->assertFalse($rOrphan(2, 86400, 'rtmp'), 'an RTMP viewer never checks in');
+		$this->assertFalse($rOrphan(2, 86400, 'ts', 0), 'nor does a daemon-served one');
+		$this->assertTrue($rOrphan(9, 5, 'rtmp'), 'its server deleted');
+	}
+
+	/** A viewer closed for silence ended when it was last heard, not when the sweep noticed. */
+	public function testASilentViewersEndIsWhenItWasLastHeard(): void {
+		$rNow = 1800000000;
+		$rHeard = fn(array $rConnection): int => $this->invoke('lastHeard', [$rConnection + ['hls_end' => 0, 'container' => 'ts', 'pid' => 4242], $rNow]);
+		$this->assertSame($rNow - 700, $rHeard(['hls_last_read' => $rNow - 1000]), 'a worker: its last check-in, plus one period');
+		$this->assertSame($rNow, $rHeard(['hls_last_read' => $rNow - 100]), 'never past now');
+		$this->assertSame($rNow - 1000, $rHeard(['hls_last_read' => $rNow - 1000, 'hls_end' => 1]), 'an ended one: its worker stamped the end');
+		$this->assertSame($rNow - 40, $rHeard(['hls_last_read' => $rNow - 40, 'container' => 'hls']), 'HLS: its last read');
+		$this->assertSame($rNow, $rHeard(['hls_last_read' => $rNow - 5000, 'container' => 'rtmp']), 'never checks in: now');
+		$this->assertSame($rNow, $rHeard(['hls_last_read' => $rNow - 5000, 'pid' => 0]));
+	}
+
 	/** A Redis record carries no exp_date: the line's stands in, so an expired line is kicked in Redis mode too. */
 	public function testAnExpiredLineIsKickedWhateverTheStore(): void {
 		$rNow = self::HEARTBEAT;

@@ -61,8 +61,8 @@ class ConnectionLimiter {
 					}
 				}
 				unset($rKeys);
-				$rDate = array_column($rConnections, 'date_start');
-				array_multisort($rDate, SORT_ASC, $rConnections);
+				// Oldest first, ties by uuid: every request orders them alike.
+				usort($rConnections, static fn(array $rA, array $rB): int => [(int) ($rA['date_start'] ?? 0), (string) ($rA['uuid'] ?? '')] <=> [(int) ($rB['date_start'] ?? 0), (string) ($rB['uuid'] ?? '')]);
 			} else {
 				return null;
 			}
@@ -95,9 +95,20 @@ class ConnectionLimiter {
 			}
 		}
 
+		// Only connections older than the requesting one: two viewers opening
+		// at once on a full line each saw the other and closed it, both gone.
+		// The newer one closes the older, and the older closes nothing newer.
+		$rOlder = count($rConnections);
+		foreach ($rConnections as $rIndex => $rConnection) {
+			if ($rCurrentUUID !== null && ($rConnection['uuid'] ?? null) === $rCurrentUUID) {
+				$rOlder = $rIndex;
+				break;
+			}
+		}
+
 		foreach ($rKillTypes as $rKillOwnIP) {
 			$i = 0;
-			while ($i < count($rConnections) && $rKilled < $rToKill) {
+			while ($i < $rOlder && $rKilled < $rToKill) {
 				if ($rKilled != $rToKill) {
 					$rIsCurrent = $rCurrentUUID !== null && ($rConnections[$i]['uuid'] ?? null) === $rCurrentUUID;
 					// Each pass starts over: one closed by an earlier pass is not closed, nor counted, again.
@@ -265,13 +276,15 @@ class ConnectionLimiter {
 		}
 
 		if (!empty($rSettings['redis_handler'])) {
-			// md5() only names the connection after nginx-rtmp's client id, as rtmp.php opened it; it protects nothing.
+			// ponytail: md5($rPID) is the key before rtmpUuid(); drop it once no play opened before the upgrade is left.
 			// nosemgrep: php.lang.security.weak-crypto.weak-crypto
-			$rRecord = ConnectionTracker::getConnection(md5((string) $rPID));
-			if (!is_array($rRecord) || ($rRecord['container'] ?? '') !== 'rtmp' || (int) ($rRecord['server_id'] ?? 0) !== (int) SERVER_ID || (string) ($rRecord['pid'] ?? '') !== (string) $rPID) {
-				return false;
+			foreach ([ConnectionTracker::rtmpUuid($rPID), md5((string) $rPID)] as $rUUID) {
+				$rRecord = ConnectionTracker::getConnection($rUUID);
+				if (is_array($rRecord) && ($rRecord['container'] ?? '') === 'rtmp' && (int) ($rRecord['server_id'] ?? 0) === (int) SERVER_ID && (string) ($rRecord['pid'] ?? '') === (string) $rPID) {
+					return ConnectionTracker::closeConnection(['hls_end' => 1] + $rRecord);
+				}
 			}
-			return ConnectionTracker::closeConnection(['hls_end' => 1] + $rRecord);
+			return false;
 		}
 
 		$db->query("SELECT * FROM `lines_live` WHERE `container` = 'rtmp' AND `pid` = ? AND `server_id` = ?", $rPID, SERVER_ID);

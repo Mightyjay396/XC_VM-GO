@@ -27,6 +27,18 @@ class RedisManager {
 	/** @var int Last ping health-check timestamp */
 	private static $lastPingCheck = 0;
 
+	/** A failed connect is not tried again for this long in the process (seconds). */
+	public const RETRY_AFTER = 5;
+
+	/** The longest a connect may take (seconds): phpredis's default is default_socket_timeout, 60 s. */
+	public const CONNECT_TIMEOUT = 2;
+
+	/** When this process's last connect failed (unix seconds); 0: none since. */
+	private static int $rFailedAt = 0;
+
+	/** @var (callable(): mixed)|null Tests: stands in for \XC_VM::redis_connect() */
+	private static $rConnector = null;
+
 	// ──────── Singleton API ────────
 
 	/**
@@ -53,8 +65,14 @@ class RedisManager {
 			}
 		}
 		if (!is_object(self::$instance)) {
+			// Redis down: one try per RETRY_AFTER, not one per call (each could
+			// block for the connect timeout, and a request makes many calls).
+			if (self::$rFailedAt > 0 && time() - self::$rFailedAt < self::RETRY_AFTER) {
+				return null;
+			}
 			self::ensureConnected();
 			self::$lastPingCheck = time();
+			self::$rFailedAt = is_object(self::$instance) ? 0 : time();
 		}
 		return self::$instance;
 	}
@@ -80,7 +98,14 @@ class RedisManager {
 	 */
 	public static function reconnect(): ?\Redis {
 		self::closeInstance();
+		self::$rFailedAt = 0; // asked for: tried now, whatever failed before
 		return self::instance();
+	}
+
+	/** Tests: another connector than \XC_VM::redis_connect(); null restores it, and forgets a failure. */
+	public static function useConnector(?callable $rConnector): void {
+		self::$rConnector = $rConnector;
+		self::$rFailedAt = 0;
 	}
 
 	/**
@@ -136,8 +161,12 @@ class RedisManager {
 		}
 
 		ConnectAudit::guard(ConnectAudit::REDIS);
+		// The extension connects with phpredis's default timeout, which is
+		// default_socket_timeout (60 s): bounded here for the connect.
+		$rTimeout = ini_get('default_socket_timeout');
+		ini_set('default_socket_timeout', (string) self::CONNECT_TIMEOUT);
 		try {
-			$rRedis = \XC_VM::redis_connect();
+			$rRedis = self::$rConnector !== null ? (self::$rConnector)() : \XC_VM::redis_connect();
 			if (!is_object($rRedis)) {
 				return null;
 			}
@@ -149,6 +178,8 @@ class RedisManager {
 			return $rRedis;
 		} catch (\Exception $e) {
 			return null;
+		} finally {
+			ini_set('default_socket_timeout', $rTimeout === false ? '60' : $rTimeout);
 		}
 	}
 
@@ -170,5 +201,22 @@ class RedisManager {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * The panel's own redis-server (bin/redis/redis.conf), by the pidfile that
+	 * config names: 0 when there is none, or when that pid is not a
+	 * redis-server any more, or is the cluster bus's (it runs on a unix
+	 * socket, `redis-server unixsocket:…`, as the same user). Never "the
+	 * first redis-server of the user", which can be the bus.
+	 */
+	public static function panelServerPid(?string $rPidFile = null): int {
+		$rPidFile ??= MAIN_HOME . 'bin/redis/redis-server.pid';
+		$rPid = (int) trim((string) @file_get_contents($rPidFile));
+		if ($rPid <= 0) {
+			return 0;
+		}
+		$rTitle = str_replace("\0", ' ', (string) @file_get_contents('/proc/' . $rPid . '/cmdline'));
+		return str_starts_with($rTitle, 'redis-server') && !str_contains($rTitle, 'unixsocket') ? $rPid : 0;
 	}
 }

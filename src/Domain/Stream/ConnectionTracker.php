@@ -180,12 +180,9 @@ class ConnectionTracker {
 			// zRangeByScore/mGet return false on a failed connection (e.g. an
 			// unauthenticated socket during a Redis restart) — degrade to empty.
 			if (is_array($rKeys) && count($rKeys) > 0) {
-				$rData = $rRedis->mGet($rKeys);
-				if (is_array($rData)) {
-					return [$rKeys, array_map(static function ($rItem) {
-						return is_string($rItem) ? igbinary_unserialize($rItem) : false;
-					}, $rData)
-					];
+				$rData = self::records($rRedis, $rKeys);
+				if ($rData !== null) {
+					return [$rKeys, $rData];
 				}
 			}
 			return [[], []];
@@ -349,6 +346,9 @@ class ConnectionTracker {
 		return null;
 	}
 
+	/** How long a Redis-mode signal waits for its server (seconds). */
+	public const SIGNAL_TTL = 300;
+
 	/**
 	 * Send a signal to a server via Redis.
 	 *
@@ -384,7 +384,9 @@ class ConnectionTracker {
 		// and overwrite each other before the target's signals daemon read them.
 		$rKey = 'SIGNAL#' . md5($rServerID . '#' . $rPID . '#' . $rRTMP . (is_null($rCustomData) ? '' : '#' . json_encode($rCustomData)));
 		$rData = ['pid' => $rPID, 'server_id' => $rServerID, 'rtmp' => $rRTMP, 'time' => time(), 'custom_data' => $rCustomData, 'key' => $rKey];
-		return $rRedis->multi()->sAdd('SIGNALS#' . $rServerID, $rKey)->set($rKey, igbinary_serialize($rData))->exec();
+		// Short-lived: a server that has not read it by then is down, and its
+		// worker gone with it; hours later the pid may be someone else's.
+		return $rRedis->multi()->sAdd('SIGNALS#' . $rServerID, $rKey)->expire('SIGNALS#' . $rServerID, self::SIGNAL_TTL)->set($rKey, igbinary_serialize($rData), ['ex' => self::SIGNAL_TTL])->exec();
 	}
 
 	/**
@@ -984,6 +986,8 @@ class ConnectionTracker {
 	/**
 	 * A long-running viewer's periodic check-in: refresh `hls_last_read` and
 	 * read back what the store now says (null when the connection is gone).
+	 * A connection that has ended (closed by the limiter, an admin or the
+	 * sweep) is read back as it is, never opened again: the caller then stops.
 	 * Opens and closes its own Redis / database connection, as the stream
 	 * endpoints' loops do between check-ins.
 	 *
@@ -1002,7 +1006,7 @@ class ConnectionTracker {
 			RedisManager::ensureConnected();
 			$rExisting = self::getConnection($rUUID);
 			if ($rExisting) {
-				$rConnection = self::updateConnection($rExisting, ['hls_last_read' => $rLastRead], 'open');
+				$rConnection = self::ended($rExisting) ? $rExisting : self::updateConnection($rExisting, ['hls_last_read' => $rLastRead]);
 			}
 			RedisManager::closeInstance();
 			return $rConnection ?: null;
@@ -1233,13 +1237,32 @@ class ConnectionTracker {
 		if (!is_array($rKeys) || 0 >= count($rKeys)) {
 			return [];
 		}
-		$rData = $rRedis->mGet($rKeys);
-		if (!is_array($rData)) {
-			return [];
+		return self::records($rRedis, $rKeys) ?? [];
+	}
+
+	/** Keys a record read asks Redis for at once. */
+	public const READ_CHUNK = 5000;
+
+	/**
+	 * The records of $rKeys (false for one gone), READ_CHUNK keys a command:
+	 * one mGet of every viewer held Redis, for every client, while it built a
+	 * reply of tens of MB. Null when a read fails.
+	 *
+	 * @param list<string> $rKeys
+	 * @return list<array<string, mixed>|false>|null
+	 */
+	private static function records(\Redis $rRedis, array $rKeys): ?array {
+		$rData = [];
+		foreach (array_chunk($rKeys, self::READ_CHUNK) as $rChunk) {
+			$rPart = $rRedis->mGet($rChunk);
+			if (!is_array($rPart)) {
+				return null;
+			}
+			foreach ($rPart as $rItem) {
+				$rData[] = is_string($rItem) ? igbinary_unserialize($rItem) : false;
+			}
 		}
-		return array_map(static function ($rItem) {
-			return is_string($rItem) ? igbinary_unserialize($rItem) : false;
-		}, $rData);
+		return $rData;
 	}
 
 	/**
@@ -1314,6 +1337,18 @@ class ConnectionTracker {
 		$rRedis->zRem('LIVE', $rUUID);
 		$rRedis->sRem('ENDED', $rUUID);
 		return (bool) $rRedis->exec();
+	}
+
+	/**
+	 * An RTMP viewer's uuid, from nginx-rtmp's client id (which play_done
+	 * closes it by). nginx numbers its clients from 1 in each process, so
+	 * the id alone named two servers' viewers alike, and in Redis mode the
+	 * second's record replaced the first's: the server is part of it.
+	 */
+	public static function rtmpUuid(int|string $rClientID, ?int $rServerID = null): string {
+		// md5() only names the connection; it protects nothing.
+		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
+		return md5(($rServerID ?? SERVER_ID) . '/' . $rClientID);
 	}
 
 	/**
@@ -1433,12 +1468,47 @@ class ConnectionTracker {
 						ClusterRoute::closeConnection(intval($rActivityInfo['server_id']), (string) $rActivityInfo['uuid'], $rRemove);
 					}
 				}
-				self::writeOfflineActivity($rSettings, $rActivityInfo['server_id'] ?? 0, intval($rActivityInfo['proxy_id'] ?? 0), $rActivityInfo['user_id'] ?? 0, $rActivityInfo['stream_id'] ?? 0, $rActivityInfo['date_start'] ?? 0, $rActivityInfo['user_agent'] ?? '', $rActivityInfo['user_ip'] ?? '', $rActivityInfo['container'] ?? '', $rActivityInfo['geoip_country_code'] ?? '', strval($rActivityInfo['isp'] ?? ''), $rActivityInfo['external_device'] ?? '', $rActivityInfo['divergence'] ?? 0, $rActivityInfo['hmac_id'] ?? null, $rActivityInfo['hmac_identifier'] ?? '');
+				// The end in MAIN's clock, as date_start and hls_last_read are. A
+				// record never carries date_end: a close for silence sets it to
+				// when the viewer was last heard, not when it was noticed.
+				$rEndAt = isset($rActivityInfo['date_end']) ? intval($rActivityInfo['date_end']) : time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0);
+				// A Redis record has no divergence: the sweep keeps it in lines_divergence.
+				if ($rSettings['redis_handler'] && !isset($rActivityInfo['divergence']) && !empty($rSettings['save_closed_connection']) && !empty($rServers[SERVER_ID]['is_main'])) {
+					try {
+						$db->query('SELECT `divergence` FROM `lines_divergence` WHERE `uuid` = ?;', $rActivityInfo['uuid']);
+						$rActivityInfo['divergence'] = (int) round((float) ($db->get_row()['divergence'] ?? 0));
+					} catch (\Throwable) {
+						// logged as 0, as before
+					}
+				}
+				self::writeOfflineActivity($rSettings, $rActivityInfo['server_id'] ?? 0, intval($rActivityInfo['proxy_id'] ?? 0), $rActivityInfo['user_id'] ?? 0, $rActivityInfo['stream_id'] ?? 0, $rActivityInfo['date_start'] ?? 0, $rActivityInfo['user_agent'] ?? '', $rActivityInfo['user_ip'] ?? '', $rActivityInfo['container'] ?? '', $rActivityInfo['geoip_country_code'] ?? '', strval($rActivityInfo['isp'] ?? ''), $rActivityInfo['external_device'] ?? '', $rActivityInfo['divergence'] ?? 0, $rActivityInfo['hmac_id'] ?? null, $rActivityInfo['hmac_identifier'] ?? '', $rEndAt);
 				return true;
 			}
 			return false;
 		}
 		return false;
+	}
+
+	/** @var list<string>|null The sweep's activity lines, held until their records are gone; null: written at once. */
+	private static ?array $rHeldActivity = null;
+
+	/**
+	 * Hold activity lines back (the sweep), until releaseActivity(): written
+	 * at once, a sweep killed before it removed the records it closed, or
+	 * that could not remove them, logged them again when it next closed them.
+	 */
+	public static function holdActivity(bool $rHold = true): void {
+		self::$rHeldActivity = $rHold ? (self::$rHeldActivity ?? []) : null;
+	}
+
+	/** Write the held lines, their records removed; or drop them, the records kept (they are closed, and logged, again). */
+	public static function releaseActivity(bool $rWrite = true): void {
+		if ($rWrite && !empty(self::$rHeldActivity)) {
+			file_put_contents(LOGS_TMP_PATH . 'activity', implode('', self::$rHeldActivity), FILE_APPEND | LOCK_EX);
+		}
+		if (self::$rHeldActivity !== null) {
+			self::$rHeldActivity = [];
+		}
 	}
 
 	/**
@@ -1462,12 +1532,18 @@ class ConnectionTracker {
 	 * @param int         $rDivergence     Divergence value.
 	 * @param int|null    $rIsHMAC         HMAC ID.
 	 * @param string      $rIdentifier     HMAC identifier.
+	 * @param int|null    $rEnd            When it ended (MAIN's clock); null: now.
 	 */
-	public static function writeOfflineActivity(array $rSettings, int $rServerID, int $rProxyID, int $rUserID, int $rStreamID, int $rStart, string $rUserAgent, string $rIP, string $rExtension, string $rGeoIP, string $rISP, string $rExternalDevice = '', int $rDivergence = 0, ?int $rIsHMAC = null, string $rIdentifier = ''): void {
+	public static function writeOfflineActivity(array $rSettings, int $rServerID, int $rProxyID, int $rUserID, int $rStreamID, int $rStart, string $rUserAgent, string $rIP, string $rExtension, string $rGeoIP, string $rISP, string $rExternalDevice = '', int $rDivergence = 0, ?int $rIsHMAC = null, string $rIdentifier = '', ?int $rEnd = null): void {
 		if ($rSettings['save_closed_connection'] != 0) {
 			if ($rServerID && ($rUserID || $rIsHMAC) && $rStreamID) { // a line's viewer, or an HMAC identity's
-				$rActivityInfo = ['user_id' => intval($rUserID), 'stream_id' => intval($rStreamID), 'server_id' => intval($rServerID), 'proxy_id' => intval($rProxyID), 'date_start' => intval($rStart), 'user_agent' => $rUserAgent, 'user_ip' => htmlentities($rIP), 'date_end' => time(), 'container' => $rExtension, 'geoip_country_code' => $rGeoIP, 'isp' => $rISP, 'external_device' => htmlentities($rExternalDevice), 'divergence' => intval($rDivergence), 'hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
-				file_put_contents(LOGS_TMP_PATH . 'activity', base64_encode(json_encode($rActivityInfo)) . "\n", FILE_APPEND | LOCK_EX);
+				$rActivityInfo = ['user_id' => intval($rUserID), 'stream_id' => intval($rStreamID), 'server_id' => intval($rServerID), 'proxy_id' => intval($rProxyID), 'date_start' => intval($rStart), 'user_agent' => $rUserAgent, 'user_ip' => htmlentities($rIP), 'date_end' => $rEnd ?? time(), 'container' => $rExtension, 'geoip_country_code' => $rGeoIP, 'isp' => $rISP, 'external_device' => htmlentities($rExternalDevice), 'divergence' => intval($rDivergence), 'hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
+				$rLine = base64_encode(json_encode($rActivityInfo)) . "\n";
+				if (self::$rHeldActivity !== null) {
+					self::$rHeldActivity[] = $rLine;
+				} else {
+					file_put_contents(LOGS_TMP_PATH . 'activity', $rLine, FILE_APPEND | LOCK_EX);
+				}
 			}
 		} else {
 			return;

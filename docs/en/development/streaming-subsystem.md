@@ -381,6 +381,20 @@ Manages live connection state. Backend is selected by `$rSettings['redis_handler
 
 - Table: `lines_live` with fields: `activity_id`, `user_id`, `stream_id`, `server_id`, `uuid`, `pid`, `hls_end`
 
+**Closing viewers** (`cron:users`). In Redis mode MAIN sweeps every server's viewers; in MySQL mode
+each server sweeps its own, and MAIN also closes those of a deleted server, or a viewer that checks
+in and has been silent for `UsersCronJob::ORPHAN_AFTER`.
+
+- Times (`date_start`, `hls_last_read`, the activity row's `date_end`) are MAIN's clock: a node
+  stamps `time() - time_offset`, and a node's sweep compares on that clock too.
+- A viewer closed for silence ends when it was last heard: an ended worker's own stamp, the last
+  HLS read, or a TS/VOD worker's last check-in (every 300 s) plus one period.
+- The sweep holds its activity rows and writes a batch's only once its records are removed; a
+  sweep killed, or one that could not remove them, leaves them to the next sweep, which logs them
+  once.
+- An RTMP viewer's uuid is `ConnectionTracker::rtmpUuid()`: nginx-rtmp's client id and the server.
+- A Redis-mode kill signal (`SIGNAL#…`) expires after `ConnectionTracker::SIGNAL_TTL` unread.
+
 Key methods:
 
 ```php

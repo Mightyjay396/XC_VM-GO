@@ -61,7 +61,10 @@ class UsersCronJob implements CommandInterface {
 		$this->rServers = ServerRepository::getAll();
 
 		if (!empty($rArgs[0]) && $this->rServers[SERVER_ID]['is_main']) {
-			RedisManager::ensureConnected();
+			// Just enabled (the Cache page): the watchdog starts Redis within seconds.
+			for ($i = 0; $i < 30 && !RedisManager::ensureConnected(); $i++) {
+				sleep(1);
+			}
 
 			if (RedisManager::isConnected()) {
 				$rSync = intval($rArgs[0]);
@@ -133,7 +136,13 @@ class UsersCronJob implements CommandInterface {
 			$this->rPHPPIDs = $this->loadPHPPIDs();
 		}
 
-		$this->loadCron();
+		ConnectionTracker::holdActivity();
+		try {
+			$this->loadCron();
+			ConnectionTracker::releaseActivity();
+		} finally {
+			ConnectionTracker::holdActivity(false); // what a failed sweep still holds was not removed: dropped
+		}
 
 		return 0;
 	}
@@ -190,6 +199,67 @@ class UsersCronJob implements CommandInterface {
 	private static function lineExpired(array $rConnection, mixed $rLineExp, int $rNow): bool {
 		$rExp = $rConnection['exp_date'] ?? $rLineExp;
 		return $rExp !== null && $rExp !== '' && (int) $rExp < $rNow;
+	}
+
+	/**
+	 * When a viewer closed for silence was last known watching (MAIN's clock):
+	 * an ended one's end (its worker stamps hls_last_read on the way out), an
+	 * HLS viewer's last read, a worker's last check-in plus one period (it
+	 * would have checked in again). RTMP and daemon viewers never check in:
+	 * now.
+	 *
+	 * @param array<string, mixed> $rConnection
+	 */
+	private static function lastHeard(array $rConnection, int $rNow): int {
+		$rLast = intval($rConnection['hls_last_read'] ?? 0);
+		if ($rLast <= 0 || $rLast >= $rNow) {
+			return $rNow;
+		}
+		if (($rConnection['hls_end'] ?? 0) == 1 || ($rConnection['container'] ?? '') == 'hls') {
+			return $rLast;
+		}
+		if (($rConnection['container'] ?? '') == 'rtmp' || intval($rConnection['pid'] ?? 0) === 0) {
+			return $rNow;
+		}
+		return min($rNow, $rLast + 300);
+	}
+
+	/** A viewer silent this long is one its server no longer sweeps (MySQL mode, MAIN only). */
+	public const ORPHAN_AFTER = 1800;
+
+	/**
+	 * Is this another server's viewer that nobody sweeps: its server deleted,
+	 * or, for one that checks in (HLS, or a TS/VOD PHP worker), silent for
+	 * ORPHAN_AFTER (a server that sweeps its own would have closed it long
+	 * before)? RTMP and daemon-served viewers never check in: only their
+	 * server tells, so only a deleted server orphans them.
+	 *
+	 * @param array<string, mixed> $rConnection
+	 * @param array<int, array<string, mixed>> $rServers
+	 */
+	private static function orphaned(array $rConnection, array $rServers, int $rNow): bool {
+		if (!isset($rServers[(int) ($rConnection['server_id'] ?? 0)])) {
+			return true;
+		}
+		$rChecksIn = ($rConnection['container'] ?? '') == 'hls' || (($rConnection['container'] ?? '') != 'rtmp' && intval($rConnection['pid'] ?? 0) !== 0);
+		return $rChecksIn && $rNow - intval($rConnection['hls_last_read'] ?? 0) >= self::ORPHAN_AFTER;
+	}
+
+	/** Three missed check-ins: a TS, VOD or timeshift worker checks its viewer in every 300 s. */
+	public const SILENT_WORKER = 900;
+
+	/**
+	 * Is this worker-served viewer (TS, VOD, timeshift TS) over? Ended five
+	 * minutes ago, its worker gone, or no check-in for SILENT_WORKER: a worker
+	 * that stopped serving it without closing it (its end-of-request write
+	 * failed, Redis down) leaves a pid PHP-FPM gives the next request, which
+	 * reads as running for as long as that worker lives.
+	 *
+	 * @param array<string, mixed> $rConnection
+	 */
+	private static function workerGone(array $rConnection, bool $rIsRunning, int $rNow): bool {
+		$rSilent = $rNow - intval($rConnection['hls_last_read'] ?? 0);
+		return !$rIsRunning || ($rConnection['hls_end'] == 1 ? $rSilent >= 300 : $rSilent >= self::SILENT_WORKER);
 	}
 
 	/**
@@ -363,6 +433,7 @@ class UsersCronJob implements CommandInterface {
 		$rRedis = SettingsManager::getBool('redis_handler');
 		global $db;
 		$rTime = time();
+		$rRemoved = true;
 
 		if ($rRedis) {
 			// Redis can die mid-run — postpone cleanup instead of crashing the
@@ -395,17 +466,22 @@ class UsersCronJob implements CommandInterface {
 					$rRedis->del(...$rDelete['uuid']);
 				}
 
-				$rRedis->exec();
+				$rRemoved = is_array($rRedis->exec());
 			} elseif ($rDelete['count'] > 0) {
 				echo "Redis unavailable, connection cleanup postponed until next run\n";
+				$rRemoved = false;
 			}
 		} else {
 			foreach ($rDelete as $rConnections) {
 				if (count($rConnections) > 0) {
-					$db->query("DELETE FROM `lines_live` WHERE `uuid` IN ('" . implode("','", $rConnections) . "')");
+					// ponytail: one failed DELETE drops the batch's rows, the other servers' removed too; a DB that fails one fails all.
+					$rRemoved = $db->query("DELETE FROM `lines_live` WHERE `uuid` IN ('" . implode("','", $rConnections) . "')") !== false && $rRemoved;
 				}
 			}
 		}
+		// The rows of the connections closed so far: written once their records
+		// are gone; the ones kept are closed, and logged, by the next sweep.
+		ConnectionTracker::releaseActivity($rRemoved);
 
 		foreach (($rRedis ? $rDelete['server'] : $rDelete) as $rServerID => $rConnections) {
 			if ($rServerID != SERVER_ID) {
@@ -456,7 +532,9 @@ class UsersCronJob implements CommandInterface {
 			RedisManager::ensureConnected();
 		}
 
-		$rStartTime = time();
+		// MAIN's clock, as hls_last_read and date_start are: a node's own runs
+		// ahead or behind by its time_offset, and HLS goes stale in 30 s.
+		$rStartTime = time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0);
 		$rLiveKeys = [];
 		if ($rServers[SERVER_ID]['is_main']) {
 			// Nodes whose agent ends its own idle HLS viewers, and the orphan
@@ -531,7 +609,7 @@ class UsersCronJob implements CommandInterface {
 
 						if ($rClose) {
 							echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-							ConnectionTracker::closeConnection($rConnection, false, false);
+							ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
 							$rRedisDelete['count']++;
 							$rRedisDelete['line'][$rConnection['identity']][] = $rConnection['uuid'];
 							$rRedisDelete['stream'][$rConnection['stream_id']][] = $rConnection['uuid'];
@@ -566,7 +644,7 @@ class UsersCronJob implements CommandInterface {
 								if ($rConnection['container'] == 'hls') {
 									if ($this->hlsEnded($rConnection, $rStartTime)) {
 										echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-										ConnectionTracker::closeConnection($rConnection, false, false);
+										ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
 
 										if ($rRedis) {
 											$rRedisDelete['count']++;
@@ -601,9 +679,9 @@ class UsersCronJob implements CommandInterface {
 											$rIsRunning = $this->isRemoteWorkerRunning($rConnection, $rServers[$rConnection['server_id']] ?? null, $rPHPPIDs[$rConnection['server_id']] ?? null);
 										}
 
-										if (($rConnection['hls_end'] == 1 && ($rStartTime - $rConnection['hls_last_read']) >= 300) || !$rIsRunning) {
+										if (self::workerGone($rConnection, $rIsRunning, $rStartTime)) {
 											echo 'Close connection: ' . $rConnection['uuid'] . "\n";
-											ConnectionTracker::closeConnection($rConnection, false, false);
+											ConnectionTracker::closeConnection(['date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
 
 											if ($rRedis) {
 												$rRedisDelete['count']++;
@@ -672,6 +750,15 @@ class UsersCronJob implements CommandInterface {
 								$rDeleteStream[$rConnection['stream_id']] = $rDelete[$rConnection['server_id']];
 							}
 						}
+					} elseif ($rServers[SERVER_ID]['is_main'] && self::orphaned($rConnection, $rServers, $rStartTime)) {
+						// MySQL mode: each server sweeps its own rows, so a deleted one's,
+						// or a crashed one's, stayed open for good. MAIN closes them, as
+						// ended: nothing is left to kill.
+						echo 'Close orphaned connection: ' . $rConnection['uuid'] . "\n";
+						ConnectionTracker::closeConnection(['hls_end' => 1, 'date_end' => self::lastHeard($rConnection, $rStartTime)] + $rConnection, false, false);
+						$rDelete[$rConnection['server_id']][] = $rConnection['uuid'];
+						$rDeleteStream[$rConnection['stream_id']] = $rDelete[$rConnection['server_id']];
+						continue;
 					}
 
 					if (!$rConnection['hls_end']) {

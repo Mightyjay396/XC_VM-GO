@@ -1,6 +1,8 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\CronJobs\UsersCronJob;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
@@ -123,8 +125,7 @@ final class RedisConnectionCloseTest extends TestCase {
 	}
 
 	public function testAnRtmpPlayThatEndedLeavesNothingBehind(): void {
-		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
-		$rUUID = md5('4242');
+		$rUUID = ConnectionTracker::rtmpUuid('4242');
 		$this->connection('rtmp', 4242, 0, $rUUID);
 		$this->assertTrue(ConnectionLimiter::closeRTMP('4242'));
 		$this->assertFalse($this->rRedis->get($rUUID));
@@ -135,11 +136,35 @@ final class RedisConnectionCloseTest extends TestCase {
 	}
 
 	public function testAnotherServersRtmpClientWithTheSameIdIsLeftAlone(): void {
-		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
-		$rUUID = md5('4243');
-		$this->connection('rtmp', 4243, 0, $rUUID, SERVER_ID + 1);
+		// Each server's nginx numbers its clients from 1: the same id, two viewers, two records.
+		$rTheirs = ConnectionTracker::rtmpUuid('4243', SERVER_ID + 1);
+		$this->assertNotSame(ConnectionTracker::rtmpUuid('4243'), $rTheirs);
+		$this->connection('rtmp', 4243, 0, $rTheirs, SERVER_ID + 1);
 		$this->assertFalse(ConnectionLimiter::closeRTMP('4243'));
-		$this->assertNotFalse($this->rRedis->get($rUUID), 'still there');
+		$this->assertNotFalse($this->rRedis->get($rTheirs), 'still there');
+	}
+
+	public function testAnRtmpPlayOpenedBeforeTheUpgradeStillCloses(): void {
+		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
+		$rOld = md5('4244');
+		$this->connection('rtmp', 4244, 0, $rOld);
+		$this->assertTrue(ConnectionLimiter::closeRTMP('4244'));
+		$this->assertFalse($this->rRedis->get($rOld));
+	}
+
+	/**
+	 * Two viewers opening at once on a line with room for one each ran the
+	 * limiter, each saw the other, and each closed it: both were gone. A
+	 * request now closes only connections older than its own, so the newer
+	 * stays and the older goes.
+	 */
+	public function testTwoOpensAtOnceOnAFullLineLeaveTheNewerOne(): void {
+		$this->viewer('first', '198.51.100.7', 'tv', 1800000001);
+		$this->viewer('second', '203.0.113.9', 'phone', 1800000002);
+		// Both requests run the limiter, in either order.
+		$this->assertSame(0, ConnectionLimiter::closeConnections(7, 1, null, '', '198.51.100.7', 'tv', 'first'), 'the older one closes nothing newer');
+		$this->assertSame(1, ConnectionLimiter::closeConnections(7, 1, null, '', '203.0.113.9', 'phone', 'second'));
+		$this->assertSame(['second'], $this->rRedis->zRange('LINE#7', 0, -1), 'the newer one is watching');
 	}
 
 	/** An HLS viewer of line 7: $rUUID, from $rIP with $rAgent, opened at $rStart. */
@@ -184,6 +209,158 @@ final class RedisConnectionCloseTest extends TestCase {
 
 		ConnectionTracker::closeConnection(ConnectionTracker::getConnection('kicked'), false, false); // as the sweep removes it
 		$this->assertSame($rBefore + 1, $this->activityRows(), 'one row, from its removal');
+	}
+
+	/**
+	 * cron:streams stops an idle on-demand stream when it has no viewers. A
+	 * Redis it cannot ask used to count as none, and stopped the stream under
+	 * its viewers: unknown is now null (the cron keeps the stream).
+	 */
+	public function testAnOnDemandStreamsViewersAreUnknownWithoutRedis(): void {
+		$rCount = new \ReflectionMethod(\XcVm\Cli\CronJobs\StreamsCronJob::class, 'redisViewers');
+		$this->viewer('here-1', '198.51.100.7', 'tv', 1800000001);
+		$this->viewer('here-2', '198.51.100.8', 'tv', 1800000002);
+		$this->viewer('elsewhere', '198.51.100.9', 'tv', 1800000003, SERVER_ID + 1);
+		$this->assertSame(2, $rCount->invoke(null, 11), 'this server\'s viewers of stream 11');
+		$this->assertSame(0, $rCount->invoke(null, 12));
+
+		$this->manager(null);
+		RedisManager::useConnector(static fn() => false);
+		try {
+			$this->assertNull($rCount->invoke(null, 11), 'Redis down: unknown, never none');
+		} finally {
+			RedisManager::useConnector(null);
+		}
+	}
+
+	/** heartbeat() closes the shared connection when it is done: a fresh one for what follows. */
+	private function reconnect(): void {
+		$this->rRedis = new \Redis();
+		$this->rRedis->connect($this->rBus->socket(), 0, 2.0, null, 0, 2.0);
+		$this->manager($this->rRedis);
+	}
+
+	/**
+	 * A long-running viewer's check-in (and a timeshift segment's) refreshes
+	 * an open connection, and reads an ended one back as ended: it used to
+	 * open it again (hls_end 0, back in LIVE), so a worker whose viewer the
+	 * limiter or an admin had just ended went on streaming.
+	 */
+	public function testAHeartbeatNeverBringsAnEndedConnectionBack(): void {
+		$this->viewer('open', '198.51.100.7', 'tv', 1800000001);
+		$rHeard = ConnectionTracker::heartbeat($GLOBALS['rSettings'], 'open', 1800000500);
+		$this->assertSame(0, (int) $rHeard['hls_end']);
+		$this->assertSame(1800000500, (int) $rHeard['hls_last_read']);
+		$this->reconnect();
+		$this->assertNotFalse($this->rRedis->zScore('LIVE', 'open'));
+
+		$this->viewer('ended', '198.51.100.8', 'tv', 1800000002);
+		$this->assertNotNull(ConnectionTracker::updateConnection(ConnectionTracker::getConnection('ended'), [], 'close'));
+		$rHeard = ConnectionTracker::heartbeat($GLOBALS['rSettings'], 'ended', 1800000600);
+		$this->assertSame(1, (int) $rHeard['hls_end'], 'read back as ended: the caller stops');
+		$this->reconnect();
+		$this->assertFalse($this->rRedis->zScore('LIVE', 'ended'), 'not back among the live ones');
+		$this->assertTrue((bool) $this->rRedis->sIsMember('ENDED', 'ended'));
+	}
+
+	/**
+	 * A close logs its end in MAIN's clock, as the record's times are (a
+	 * node's own is off by its time_offset); a close for silence says when
+	 * the viewer was last heard.
+	 */
+	public function testAClosedViewersEndIsInMainsClock(): void {
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		$GLOBALS['rSettings']['save_closed_connection'] = 1;
+		$GLOBALS['rServers'][SERVER_ID]['time_offset'] = 120; // this node runs 2 min ahead
+		$rEnd = fn(): int => json_decode(base64_decode(trim((string) array_slice(file(LOGS_TMP_PATH . 'activity'), -1)[0])), true)['date_end'];
+
+		$rMainNow = time() - 120;
+		$this->assertTrue(ConnectionTracker::closeConnection($this->connection('ts', 999999, 1, 'end-now')));
+		$this->assertEqualsWithDelta($rMainNow, $rEnd(), 2);
+
+		$this->assertTrue(ConnectionTracker::closeConnection(['date_end' => 1800000300] + $this->connection('ts', 999999, 1, 'end-heard')));
+		$this->assertSame(1800000300, $rEnd());
+	}
+
+	/** A Redis record has no divergence; MAIN logs the one the sweep keeps in lines_divergence. */
+	public function testAClosedViewersDivergenceIsLoggedInRedisMode(): void {
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		$GLOBALS['rSettings']['save_closed_connection'] = 1;
+		$GLOBALS['rServers'][SERVER_ID]['is_main'] = 1;
+		$rDb = new \TestDb();
+		$rDb->exec(\XcVm\Tests\Support\InstallSchema::table('lines_divergence'));
+		$rDb->query('INSERT INTO `lines_divergence` (`uuid`, `divergence`) VALUES (?, ?);', 'diverged', 37);
+		\XcVm\Infrastructure\Database\DatabaseFactory::set($rDb);
+		try {
+			$this->assertTrue(ConnectionTracker::closeConnection($this->connection('ts', 999999, 1, 'diverged')));
+		} finally {
+			\XcVm\Infrastructure\Database\DatabaseFactory::reset();
+		}
+		$this->assertSame(37, json_decode(base64_decode(trim((string) array_slice(file(LOGS_TMP_PATH . 'activity'), -1)[0])), true)['divergence']);
+	}
+
+	/** A signal its server never reads (down, deleted) goes: hours later its pid may be someone else's. */
+	public function testARedisSignalExpiresUnread(): void {
+		$rSet = 'SIGNALS#' . (SERVER_ID + 1);
+		ConnectionTracker::redisSignal(4245, SERVER_ID + 1, 0);
+		$rKeys = $this->rRedis->sMembers($rSet);
+		$this->assertCount(1, $rKeys);
+		foreach ([$rKeys[0], $rSet] as $rKey) {
+			$rTTL = $this->rRedis->ttl($rKey);
+			$this->assertGreaterThan(0, $rTTL, $rKey);
+			$this->assertLessThanOrEqual(ConnectionTracker::SIGNAL_TTL, $rTTL, $rKey);
+		}
+	}
+
+	/**
+	 * The sweep holds its activity rows until the records it closed are
+	 * removed. Written at once, a sweep that could not remove them (Redis
+	 * down, the cron killed) logged them again when it next closed them.
+	 */
+	public function testTheSweepLogsAViewerOnceItsRecordIsGone(): void {
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		$GLOBALS['rSettings']['save_closed_connection'] = 1;
+		SettingsManager::set(['redis_handler' => 1]);
+		$rDeletions = new \ReflectionMethod(UsersCronJob::class, 'processDeletions');
+		$rBatch = ['line' => [7 => ['swept']], 'server' => [SERVER_ID => ['swept']], 'server_lines' => [], 'proxy' => [], 'stream' => [11 => ['swept']], 'uuid' => ['swept'], 'count' => 1];
+		$rRecord = $this->connection('ts', 999999, 1, 'swept');
+		$rBefore = $this->activityRows();
+		ConnectionTracker::holdActivity();
+		try {
+			$this->assertTrue(ConnectionTracker::closeConnection($rRecord, false, false));
+			$this->assertSame($rBefore, $this->activityRows(), 'held');
+
+			$this->manager(null);
+			RedisManager::useConnector(fn() => null);
+			$rDeletions->invoke(new UsersCronJob(), $rBatch);
+			$this->assertSame($rBefore, $this->activityRows(), 'not removed: dropped');
+			RedisManager::useConnector(null);
+			$this->manager($this->rRedis);
+			$this->assertNotFalse($this->rRedis->get('swept'), 'kept, for the next sweep');
+
+			$this->assertTrue(ConnectionTracker::closeConnection($rRecord, false, false));
+			$rDeletions->invoke(new UsersCronJob(), $rBatch);
+			$this->assertSame($rBefore + 1, $this->activityRows(), 'removed: written, once');
+			$this->assertFalse($this->rRedis->get('swept'));
+		} finally {
+			ConnectionTracker::holdActivity(false);
+			RedisManager::useConnector(null);
+			SettingsManager::set([]);
+		}
+	}
+
+	/** The sweep reads the viewers READ_CHUNK at a time, not in one reply that holds Redis: all of them, in order. */
+	public function testEveryViewerIsReadPastOneChunk(): void {
+		$rPipe = $this->rRedis->multi(\Redis::PIPELINE);
+		for ($i = 0; $i <= ConnectionTracker::READ_CHUNK; $i++) {
+			$rPipe->set('chunk-' . $i, igbinary_serialize(['uuid' => 'chunk-' . $i]));
+			$rPipe->zAdd('LIVE', $i, 'chunk-' . $i);
+		}
+		$rPipe->exec();
+		[$rKeys, $rData] = ConnectionTracker::getConnections();
+		$this->assertCount(ConnectionTracker::READ_CHUNK + 1, $rData);
+		$this->assertSame('chunk-' . ConnectionTracker::READ_CHUNK, $rData[ConnectionTracker::READ_CHUNK]['uuid']);
+		$this->assertSame($rKeys[ConnectionTracker::READ_CHUNK], $rData[ConnectionTracker::READ_CHUNK]['uuid']);
 	}
 
 	public function testAnHmacViewersActivityIsWritten(): void {
