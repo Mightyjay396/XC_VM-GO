@@ -31,6 +31,9 @@ class SignalsCommand implements CommandInterface {
 	/** Seconds between syncs of supervised streams' rows from the fanout daemon. */
 	public const RECONCILE_INTERVAL = 5;
 
+	/** The loop's pace: four passes a second, as the re-execing one had. */
+	private const PASS_USEC = 250000;
+
 	public function getName(): string {
 		return 'signals';
 	}
@@ -48,9 +51,6 @@ class SignalsCommand implements CommandInterface {
 	 * its agent and cluster:exec run (CacheJobs). MAIN, mode 0 and mode 1
 	 * read them as before.
 	 */
-	/** The loop's pace: four passes a second, as the re-execing one had. */
-	private const PASS_USEC = 250000;
-
 	public static function readsMainDatabase(): bool {
 		return !NodeRole::refusesConnects();
 	}

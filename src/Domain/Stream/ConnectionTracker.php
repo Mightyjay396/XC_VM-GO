@@ -1340,15 +1340,6 @@ class ConnectionTracker {
 	}
 
 	/**
-	 * Has the connection ended (`hls_end` = 1)? For a connection a PHP worker
-	 * served, the worker then ran its shutdown handler and PHP-FPM gave it to
-	 * another request (pm = ondemand, max_requests 40000), or it exited and its
-	 * pid went to another process: that pid must never be killed. A record
-	 * without the field has not ended.
-	 *
-	 * @param array<string, mixed> $rConnection
-	 */
-	/**
 	 * An RTMP viewer's uuid, from nginx-rtmp's client id (which play_done
 	 * closes it by). nginx numbers its clients from 1 in each process, so
 	 * the id alone named two servers' viewers alike, and in Redis mode the
@@ -1360,6 +1351,15 @@ class ConnectionTracker {
 		return md5(($rServerID ?? SERVER_ID) . '/' . $rClientID);
 	}
 
+	/**
+	 * Has the connection ended (`hls_end` = 1)? For a connection a PHP worker
+	 * served, the worker then ran its shutdown handler and PHP-FPM gave it to
+	 * another request (pm = ondemand, max_requests 40000), or it exited and its
+	 * pid went to another process: that pid must never be killed. A record
+	 * without the field has not ended.
+	 *
+	 * @param array<string, mixed> $rConnection
+	 */
 	public static function ended(array $rConnection): bool {
 		return (int) ($rConnection['hls_end'] ?? 0) === 1;
 	}

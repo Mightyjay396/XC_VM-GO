@@ -89,7 +89,6 @@ final class UsersCronPhpPidsTest extends TestCase {
 		$this->assertStringNotContainsString("\$rServer['php_pids']", $rSource, 'getAll() rows carry no php_pids');
 	}
 
-	/** A Redis record carries no exp_date: the line's stands in, so an expired line is kicked in Redis mode too. */
 	/**
 	 * A worker-served viewer is over when its worker is gone, five minutes
 	 * after it ended, or after three missed check-ins even with its pid
@@ -137,6 +136,7 @@ final class UsersCronPhpPidsTest extends TestCase {
 		$this->assertSame($rNow, $rHeard(['hls_last_read' => $rNow - 5000, 'pid' => 0]));
 	}
 
+	/** A Redis record carries no exp_date: the line's stands in, so an expired line is kicked in Redis mode too. */
 	public function testAnExpiredLineIsKickedWhateverTheStore(): void {
 		$rNow = self::HEARTBEAT;
 		$this->assertTrue($this->invoke('lineExpired', [['uuid' => 'r'], (string) ($rNow - 1), $rNow]), 'a Redis record: the line\'s date');
