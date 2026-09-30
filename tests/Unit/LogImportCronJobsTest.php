@@ -14,6 +14,9 @@ use XcVm\Core\Database\DatabaseHandler;
 class LogImportDb extends DatabaseHandler {
 	public array $queries = [];
 	public bool $fail = false;
+	/** Refuse only the Nth INSERT INTO `lines_activity` (1-based; 0: none). */
+	public int $refuseActivityInsert = 0;
+	private int $activityInserts = 0;
 	/** @var list<list<mixed>> Bound values, one list per recorded statement. */
 	public array $params = [];
 	/** Runs once, on the first statement: stands in for a writer appending mid-import. */
@@ -33,6 +36,9 @@ class LogImportDb extends DatabaseHandler {
 		$this->queries[] = $query;
 		$this->params[] = array_slice(func_get_args(), 1);
 		if ($this->fail) {
+			return false;
+		}
+		if (str_starts_with($query, 'INSERT INTO `lines_activity`') && ++$this->activityInserts === $this->refuseActivityInsert) {
 			return false;
 		}
 		if (str_starts_with($query, 'INSERT INTO `lines_activity`')) {
@@ -195,15 +201,42 @@ class LogImportCronJobsTest extends TestCase {
 		}
 	}
 
-	public function testActivityFailedInsertDropsTheRows(): void {
+	public function testActivityARefusedBatchIsKeptForTheNextRun(): void {
+		// The second of three batches is refused (a deadlock, the database
+		// gone): it and the third wait in the claim, the first is not imported twice.
+		$this->db->refuseActivityInsert = 2;
+		$rFile = $this->spool('activity', array_map(fn($i) => $this->activityRow($i), range(1, 2500)));
+
+		$this->assertSame(1000, $this->import(ActivityCronJob::class, $rFile));
+
+		$rKept = file($rFile . '.import', FILE_IGNORE_NEW_LINES);
+		$this->assertSame(array_map(fn($i) => $this->activityRow($i), range(1001, 2500)), $rKept);
+		$this->assertFileDoesNotExist($rFile);
+
+		$this->db->refuseActivityInsert = 0;
+		$this->assertSame(1500, $this->import(ActivityCronJob::class, $rFile), 'the next run imports them');
+		$this->assertFileDoesNotExist($rFile . '.import');
+	}
+
+	public function testActivityARefusedClaimIsNotOverwrittenByTheSpool(): void {
 		$this->db->fail = true;
-		$rFile = $this->spool('activity', [$this->activityRow(11), $this->activityRow(12)]);
+		$this->spool('activity.import', [$this->activityRow(1), $this->activityRow(2)]);
+		$rFile = $this->spool('activity', [$this->activityRow(3)]);
 
 		$this->assertSame(0, $this->import(ActivityCronJob::class, $rFile));
 
-		$this->assertCount(1, $this->db->startingWith(self::ACTIVITY_INSERT));
+		$this->assertSame([$this->activityRow(1), $this->activityRow(2)], file($rFile . '.import', FILE_IGNORE_NEW_LINES));
+		$this->assertSame([$this->activityRow(3)], file($rFile, FILE_IGNORE_NEW_LINES), 'the spool waits behind the claim');
 		$this->assertSame([], $this->db->startingWith(self::LINES_UPDATE), 'no ids to update without the insert');
-		$this->assertFileDoesNotExist($rFile);
+	}
+
+	public function testActivityOfAnHmacViewerIsImported(): void {
+		// An HMAC identity has no line: no user_id, its hmac_id instead.
+		$rFile = $this->spool('activity', [$this->activityRow(0, ['user_id' => null, 'hmac_id' => 3]), $this->activityRow(0, ['user_id' => null])]);
+
+		$this->assertSame(1, $this->import(ActivityCronJob::class, $rFile), 'the row with neither is still skipped');
+		$this->assertSame([1], array_map([self::class, 'tuples'], $this->db->startingWith(self::ACTIVITY_INSERT)));
+		$this->assertSame([], $this->db->startingWith(self::LINES_UPDATE), 'no line to point at it');
 	}
 
 	public function testLinesLogsImportsEveryRowAndSkipsGarbage(): void {

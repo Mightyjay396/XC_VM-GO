@@ -237,12 +237,17 @@ class ConnectionLimiter {
 		// A node whose agent holds its viewers (CONNECTIONS on) hears of the
 		// close too (MAIN only), or its registry would resume a kicked HLS
 		// viewer on the next playlist request.
+		$rHLS = $rActivityInfo['container'] == 'hls' || $rActivityInfo['container'] == 'm3u8';
 		if ($rActivityInfo['server_id'] != SERVER_ID && !empty($rActivityInfo['uuid']) && class_exists(ClusterRoute::class)) {
-			$rHLS = $rActivityInfo['container'] == 'hls' || $rActivityInfo['container'] == 'm3u8';
 			ClusterRoute::closeConnection(intval($rActivityInfo['server_id']), (string) $rActivityInfo['uuid'], !$rHLS);
 		}
 
-		self::writeOfflineActivity($rActivityInfo['server_id'], $rActivityInfo['proxy_id'], $rActivityInfo['user_id'], $rActivityInfo['stream_id'], $rActivityInfo['date_start'], $rActivityInfo['user_agent'], $rActivityInfo['user_ip'], $rActivityInfo['container'], $rActivityInfo['geoip_country_code'], $rActivityInfo['isp'], $rActivityInfo['external_device'] ?? '', $rActivityInfo['divergence'] ?? 0, $rActivityInfo['hmac_id'] ?? null, $rActivityInfo['hmac_identifier'] ?? '');
+		// An HLS viewer is only ended here: its record stays, and what removes
+		// it (the sweep, or its node's conn.close) writes its activity row, as
+		// for any ended viewer. Written here too, it was counted twice.
+		if (!$rHLS) {
+			self::writeOfflineActivity($rActivityInfo['server_id'], $rActivityInfo['proxy_id'], $rActivityInfo['user_id'], $rActivityInfo['stream_id'], $rActivityInfo['date_start'], $rActivityInfo['user_agent'], $rActivityInfo['user_ip'], $rActivityInfo['container'], $rActivityInfo['geoip_country_code'], $rActivityInfo['isp'], $rActivityInfo['external_device'] ?? '', $rActivityInfo['divergence'] ?? 0, $rActivityInfo['hmac_id'] ?? null, $rActivityInfo['hmac_identifier'] ?? '');
+		}
 		return true;
 	}
 

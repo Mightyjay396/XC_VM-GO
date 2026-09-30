@@ -54,7 +54,8 @@ class ActivityCronJob implements CommandInterface {
 	 * Import a spool, claimed by renaming it to <spool>.import so rows written
 	 * meanwhile start a fresh spool. A claim left by a run that died mid-import
 	 * goes first, and the batches that run had inserted are inserted again
-	 * (at-least-once). Rows whose INSERT fails are dropped.
+	 * (at-least-once). A batch the sink refuses stays claimed, with the rows
+	 * after it, for the next run (parseLog), and the spool waits behind it.
 	 *
 	 * @param string $rLogFile Spool path.
 	 * @return int Rows inserted.
@@ -63,24 +64,34 @@ class ActivityCronJob implements CommandInterface {
 		$rClaimed = $rLogFile . '.import';
 		$rCount = 0;
 
-		if (file_exists($rClaimed)) {
-			$rCount += $this->parseLog($rClaimed);
+		// Refused again, the claim stays: claiming the spool now would overwrite it.
+		if (file_exists($rClaimed) && !$this->parseLog($rClaimed, $rCount)) {
+			return $rCount;
 		}
 		if (file_exists($rLogFile) && rename($rLogFile, $rClaimed)) {
-			$rCount += $this->parseLog($rClaimed);
+			$this->parseLog($rClaimed, $rCount);
 		}
 
 		return $rCount;
 	}
 
-	/** Insert every valid row of a claimed spool, up to IMPORT_BATCH rows or IMPORT_BYTES per INSERT, then delete it. */
-	private function parseLog(string $rFile): int {
+	/**
+	 * Insert every valid row of a claimed spool, up to IMPORT_BATCH rows or
+	 * IMPORT_BYTES per INSERT, then delete it. A batch the sink refuses (the
+	 * database unavailable, a deadlock, the node's agent unreachable: with the
+	 * panel's non-strict sql_mode bad data only truncates) is kept, with the
+	 * rest of the file and not the batches already in, for the next run.
+	 *
+	 * @param int $rCount Raised by the rows inserted.
+	 * @return bool Whether every batch is in (the file is removed).
+	 */
+	private function parseLog(string $rFile, int &$rCount): bool {
 		$rRows = [];
-		$rCount = $rBytes = 0;
+		$rBytes = $rBatchAt = 0;
 
 		$rFP = fopen($rFile, 'r');
 		if ($rFP === false) {
-			return 0;
+			return false;
 		}
 		while (($rRaw = fgets($rFP)) !== false) {
 			$rLine = trim($rRaw);
@@ -88,25 +99,51 @@ class ActivityCronJob implements CommandInterface {
 				continue;
 			}
 			$rLine = json_decode(base64_decode($rLine), true);
-			if (!is_array($rLine) || empty($rLine['server_id']) || empty($rLine['user_id']) || empty($rLine['stream_id']) || empty($rLine['user_ip'])) {
+			// A line's viewer, or an HMAC identity's (which has no line).
+			if (!is_array($rLine) || empty($rLine['server_id']) || (empty($rLine['user_id']) && empty($rLine['hmac_id'])) || empty($rLine['stream_id']) || empty($rLine['user_ip'])) {
 				continue;
 			}
 			$rRows[] = $rLine;
 			$rBytes += strlen($rRaw);
 			if (count($rRows) >= self::IMPORT_BATCH || $rBytes >= self::IMPORT_BYTES) {
-				$rCount += $this->insertBatch($rRows);
+				if (!$this->insertBatch($rRows)) {
+					$this->keepFrom($rFP, $rFile, $rBatchAt);
+					return false;
+				}
+				$rCount += count($rRows);
 				$rRows = [];
 				$rBytes = 0;
+				$rBatchAt = (int) ftell($rFP);
 			}
 		}
-		fclose($rFP);
 
-		if ($rRows !== []) {
-			$rCount += $this->insertBatch($rRows);
+		if ($rRows !== [] && !$this->insertBatch($rRows)) {
+			$this->keepFrom($rFP, $rFile, $rBatchAt);
+			return false;
 		}
+		$rCount += count($rRows);
+		fclose($rFP);
 		unlink($rFile);
 
-		return $rCount;
+		return true;
+	}
+
+	/**
+	 * Leave $rFile holding only what follows $rFrom (the refused batch and
+	 * the rows after it), and close $rFP.
+	 *
+	 * ponytail: a batch refused for good (a strict sql_mode) is retried every
+	 * run and holds the import up; drop it after N refusals if that is ever seen.
+	 *
+	 * @param resource $rFP
+	 */
+	private function keepFrom($rFP, string $rFile, int $rFrom): void {
+		$rRest = $rFile . '.rest';
+		$rOut = fopen($rRest, 'w');
+		if ($rOut !== false && fseek($rFP, $rFrom) === 0 && stream_copy_to_stream($rFP, $rOut) !== false && fclose($rOut)) {
+			rename($rRest, $rFile);
+		}
+		fclose($rFP);
 	}
 
 	/**
@@ -115,9 +152,9 @@ class ActivityCronJob implements CommandInterface {
 	 * (LogSink, which also records each line's last activity).
 	 *
 	 * @param list<array<string, mixed>> $rRows
-	 * @return int Rows written.
+	 * @return bool Whether they were written.
 	 */
-	private function insertBatch(array $rRows): int {
-		return LogSink::write('activity', $rRows, self::db()) ? count($rRows) : 0;
+	private function insertBatch(array $rRows): bool {
+		return LogSink::write('activity', $rRows, self::db());
 	}
 }
