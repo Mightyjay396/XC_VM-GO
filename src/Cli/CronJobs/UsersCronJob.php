@@ -192,6 +192,27 @@ class UsersCronJob implements CommandInterface {
 		return $rExp !== null && $rExp !== '' && (int) $rExp < $rNow;
 	}
 
+	/** A viewer silent this long is one its server no longer sweeps (MySQL mode, MAIN only). */
+	public const ORPHAN_AFTER = 1800;
+
+	/**
+	 * Is this another server's viewer that nobody sweeps: its server deleted,
+	 * or, for one that checks in (HLS, or a TS/VOD PHP worker), silent for
+	 * ORPHAN_AFTER (a server that sweeps its own would have closed it long
+	 * before)? RTMP and daemon-served viewers never check in: only their
+	 * server tells, so only a deleted server orphans them.
+	 *
+	 * @param array<string, mixed> $rConnection
+	 * @param array<int, array<string, mixed>> $rServers
+	 */
+	private static function orphaned(array $rConnection, array $rServers, int $rNow): bool {
+		if (!isset($rServers[(int) ($rConnection['server_id'] ?? 0)])) {
+			return true;
+		}
+		$rChecksIn = ($rConnection['container'] ?? '') == 'hls' || (($rConnection['container'] ?? '') != 'rtmp' && intval($rConnection['pid'] ?? 0) !== 0);
+		return $rChecksIn && $rNow - intval($rConnection['hls_last_read'] ?? 0) >= self::ORPHAN_AFTER;
+	}
+
 	/** Three missed check-ins: a TS, VOD or timeshift worker checks its viewer in every 300 s. */
 	public const SILENT_WORKER = 900;
 
@@ -689,6 +710,15 @@ class UsersCronJob implements CommandInterface {
 								$rDeleteStream[$rConnection['stream_id']] = $rDelete[$rConnection['server_id']];
 							}
 						}
+					} elseif ($rServers[SERVER_ID]['is_main'] && self::orphaned($rConnection, $rServers, $rStartTime)) {
+						// MySQL mode: each server sweeps its own rows, so a deleted one's,
+						// or a crashed one's, stayed open for good. MAIN closes them, as
+						// ended: nothing is left to kill.
+						echo 'Close orphaned connection: ' . $rConnection['uuid'] . "\n";
+						ConnectionTracker::closeConnection(['hls_end' => 1] + $rConnection, false, false);
+						$rDelete[$rConnection['server_id']][] = $rConnection['uuid'];
+						$rDeleteStream[$rConnection['stream_id']] = $rDelete[$rConnection['server_id']];
+						continue;
 					}
 
 					if (!$rConnection['hls_end']) {

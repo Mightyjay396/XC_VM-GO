@@ -107,6 +107,24 @@ final class UsersCronPhpPidsTest extends TestCase {
 		$this->assertTrue($rGone(1, 300, true), 'ended five minutes ago');
 	}
 
+	/**
+	 * In MySQL mode each server sweeps its own rows; a deleted or crashed
+	 * one's stayed open for good. MAIN takes a row as orphaned when its server
+	 * is gone, or when it has been silent for ORPHAN_AFTER.
+	 */
+	public function testAViewerNobodySweepsIsOrphaned(): void {
+		$rNow = 1800000000;
+		$rServers = [1 => ['is_main' => 1], 2 => []];
+		$rOrphan = fn(int $rServer, int $rAgo, string $rContainer = 'ts', int $rPid = 4242): bool => $this->invoke('orphaned', [['server_id' => $rServer, 'hls_last_read' => $rNow - $rAgo, 'container' => $rContainer, 'pid' => $rPid], $rServers, $rNow]);
+		$this->assertFalse($rOrphan(2, 60), 'a live server sweeps its own');
+		$this->assertFalse($rOrphan(2, UsersCronJob::ORPHAN_AFTER - 1));
+		$this->assertTrue($rOrphan(2, UsersCronJob::ORPHAN_AFTER), 'silent past the bound: its server does not sweep it');
+		$this->assertTrue($rOrphan(2, UsersCronJob::ORPHAN_AFTER, 'hls', 0));
+		$this->assertFalse($rOrphan(2, 86400, 'rtmp'), 'an RTMP viewer never checks in');
+		$this->assertFalse($rOrphan(2, 86400, 'ts', 0), 'nor does a daemon-served one');
+		$this->assertTrue($rOrphan(9, 5, 'rtmp'), 'its server deleted');
+	}
+
 	public function testAnExpiredLineIsKickedWhateverTheStore(): void {
 		$rNow = self::HEARTBEAT;
 		$this->assertTrue($this->invoke('lineExpired', [['uuid' => 'r'], (string) ($rNow - 1), $rNow]), 'a Redis record: the line\'s date');
