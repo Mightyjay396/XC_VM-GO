@@ -110,7 +110,7 @@ final class ClusterAuthCacheTest extends TestCase {
 
 	private function mysqlRow(int $rServerID): array {
 		$this->rDb->query('SELECT * FROM `cluster_nodes` WHERE `server_id` = ?', $rServerID);
-		return $this->rDb->get_row();
+		return $this->rDb->get_raw_row();
 	}
 
 	/** The bus keeps running, but this worker cannot reach it: its socket moved aside, a plain file in its place. */

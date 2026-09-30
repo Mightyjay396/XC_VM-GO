@@ -253,7 +253,7 @@ final class TicketService {
 		$rMain = (int) (self::db()->get_row()['id'] ?? 0);
 		StrictQuery::run(self::db(), 'streams', "SELECT `server_id`, `gen`, `node_box_pub` FROM `cluster_nodes` WHERE `state` = 'active';");
 		$rNodes = [];
-		foreach (self::db()->get_rows() ?: [] as $rRow) {
+		foreach (self::db()->get_raw_rows() ?: [] as $rRow) {
 			if (strlen((string) $rRow['node_box_pub']) === 32) {
 				$rNodes[(int) $rRow['server_id']] = ['gen' => (int) $rRow['gen'], 'box' => (string) $rRow['node_box_pub']];
 			}

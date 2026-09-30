@@ -209,7 +209,7 @@ final class CorePins {
 	 */
 	public static function acked(int $rServerID, string $rCmdID, bool $rOk, string $rResult, ?callable $rPack = null, ?callable $rSend = null): bool {
 		self::db()->query('SELECT `type`, `payload` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ?;', $rServerID, $rCmdID);
-		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		$rRow = self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 		$rDoc = $rRow !== null && $rRow['type'] === 'node.root' ? json_decode((string) $rRow['payload'], true) : null;
 		if (!is_array($rDoc) || ($rDoc['action'] ?? null) !== NodeCorePin::ACTION) {
 			return false;

@@ -111,7 +111,7 @@ final class EnrolCodeService {
 		} else {
 			self::db()->query('SELECT * FROM `cluster_enrol_codes` WHERE `server_id` = ? AND `id` = ?;', $rServerID, $rCodeID);
 		}
-		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		$rRow = self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 		if ($rRow === null || ($rLive && (int) $rRow['exp'] <= ClusterClock::now())) {
 			return null;
 		}
@@ -133,7 +133,7 @@ final class EnrolCodeService {
 	/** @return array<string, mixed>|null The server's enrolment request. */
 	public static function request(int $rServerID): ?array {
 		self::db()->query('SELECT * FROM `cluster_enrol_requests` WHERE `server_id` = ?;', $rServerID);
-		return self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		return self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 	}
 
 	/**

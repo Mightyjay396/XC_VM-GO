@@ -216,7 +216,7 @@ final class ArtefactGrants {
 	 */
 	public static function live(array $rNode, string $rCmdID): ?array {
 		self::db()->query("SELECT `type`, `payload`, `exp` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ? AND `state` IN ('queued', 'delivered');", (int) $rNode['server_id'], $rCmdID);
-		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		$rRow = self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 		if ($rRow === null || !in_array($rRow['type'], self::GRANT_TYPES, true)) {
 			return null;
 		}
@@ -297,7 +297,7 @@ final class ArtefactGrants {
 	 */
 	public static function acked(int $rServerID, string $rCmdID, bool $rOk, string $rResult): void {
 		self::db()->query('SELECT `type`, `payload` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ?;', $rServerID, $rCmdID);
-		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		$rRow = self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 		$rDoc = $rRow === null || !in_array($rRow['type'], self::GRANT_TYPES, true) ? null : json_decode((string) $rRow['payload'], true);
 		$rGrant = is_array($rDoc) ? ($rDoc['args']['artefact'] ?? null) : null;
 		if (!is_array($rGrant) || !is_string($rGrant['id'] ?? null)) {

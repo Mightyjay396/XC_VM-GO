@@ -37,13 +37,13 @@ final class NodeRegistry {
 	/** @return array<string, mixed>|null */
 	public static function byUuid(string $rUuid): ?array {
 		self::db()->query('SELECT * FROM `cluster_nodes` WHERE `node_uuid` = ?;', $rUuid);
-		return self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		return self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 	}
 
 	/** @return array<string, mixed>|null */
 	public static function byServer(int $rServerID): ?array {
 		self::db()->query('SELECT * FROM `cluster_nodes` WHERE `server_id` = ?;', $rServerID);
-		return self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		return self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 	}
 
 	/**
@@ -55,7 +55,7 @@ final class NodeRegistry {
 	public static function enrolled(): array {
 		self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` IN ('active', 'quarantined') ORDER BY `server_id`;");
 		$rOut = [];
-		foreach (self::db()->get_rows() as $rRow) {
+		foreach (self::db()->get_raw_rows() as $rRow) {
 			$rOut[(int) $rRow['server_id']] = $rRow;
 		}
 		return $rOut;
