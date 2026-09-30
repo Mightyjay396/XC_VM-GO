@@ -52,6 +52,9 @@ const epochCell = (tr: Locator): Locator => tr.locator('td').filter({ hasText: /
 const epoch = async (tr: Locator): Promise<number> => Number((await epochCell(tr).innerText()).trim().split(/\s+/)[0]);
 /** The node's command queue: the badge three cells after the epoch's. */
 const queued = async (tr: Locator): Promise<number> => Number((await epochCell(tr).locator('xpath=following-sibling::td[3]').innerText()).trim());
+/** The node's last heartbeat as the page shows it (UTC, to the second), in the cell after the queue's. */
+const lastSeen = async (tr: Locator): Promise<string> =>
+  ((await epochCell(tr).locator('xpath=following-sibling::td[4]').innerText()).match(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/) ?? [''])[0];
 
 /** Run `body` with the node's COMMANDS flow on, then put the flow back as it was. */
 async function withCommands(page: Page, body: () => Promise<void>): Promise<void> {
@@ -85,9 +88,11 @@ test('a flow switched on reaches the node and is switched off again', async ({ p
   const wasOn = await flowOn(await row(page), 'telemetry');
   await act(page, wasOn ? 'telemetry_off' : 'telemetry_on');
   await until(page, 'telemetry switched', async (tr) => (await flowOn(tr, 'telemetry')) !== wasOn, 30_000);
-  // The node keeps heart-beating under the new flows (its next heartbeat may
-  // take a few seconds to land).
-  await until(page, 'heard under the new flows', async (tr) => (await health(tr)) === 'ok', 30_000);
+  // The node keeps heart-beating under the new flows: a heartbeat newer than
+  // the one shown once the switch took lands, and the node is healthy.
+  const seen = await lastSeen(await row(page));
+  expect(seen, 'a last heartbeat on the page').not.toBe('');
+  await until(page, 'a heartbeat under the new flows', async (tr) => (await lastSeen(tr)) !== seen && (await health(tr)) === 'ok', 60_000);
   await act(page, wasOn ? 'telemetry_on' : 'telemetry_off');
   await until(page, 'telemetry restored', async (tr) => (await flowOn(tr, 'telemetry')) === wasOn, 30_000);
 });
