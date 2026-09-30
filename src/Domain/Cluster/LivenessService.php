@@ -201,7 +201,7 @@ final class LivenessService {
 	 * LICENCE_CHECK_MS. Null when it cannot tell (no extension): no node is
 	 * suspended then.
 	 */
-	private static function licensed(int $rNowMs): ?bool {
+	public static function licensed(int $rNowMs): ?bool {
 		if (self::$rLicensed !== null && $rNowMs - self::$rLicensed[0] < self::LICENCE_CHECK_MS && $rNowMs >= self::$rLicensed[0]) {
 			return self::$rLicensed[1];
 		}

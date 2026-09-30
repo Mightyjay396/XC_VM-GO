@@ -49,7 +49,7 @@ For a node enrolled in the [cluster API](../development/cluster-api.md), a **Clu
 | Agent heard | When MAIN last heard the node's agent, against `cluster_offline_after_sec` |
 | Token | The newest epoch and its expiry |
 | Fence window | How long the node serves without MAIN: token expiry + `lb_partition_tolerance_h`, then `lb_fence_drain_min`, and whether `lb_lease_fence` is on |
-| Clock offset | The offset the node's heartbeats carry (MAIN refuses requests past ±90 s) |
+| Clock offset | The node's own clock against MAIN's, from its heartbeats (an agent up to xc_vm_fanout 0.14.0 reports about 0). Its agent corrects its own requests, but its PHP, crons and logs use that clock. Past 30 s this warns, and the Cluster Nodes page and the Servers list badge the node; past 300 s they show it "degraded (clock)". Neither fences it |
 | Command queue | Commands for the node not yet acked, and the oldest one's age (over 120 s: the node is not polling) |
 | Event cursors | The last P0 and P1 event numbers MAIN applied |
 

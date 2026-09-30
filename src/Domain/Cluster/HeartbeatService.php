@@ -214,7 +214,10 @@ final class HeartbeatService {
 	public static function record(array $rNode, array $rPayload, int $rNodeTsMs): void {
 		$rServerID = (int) $rNode['server_id'];
 		$rNow = ClusterClock::nowMs();
-		$rOffset = max(-2147483648, min(2147483647, $rNodeTsMs - $rNow));
+		// The node's clock: its agent stamps requests with MAIN's time, so the
+		// heartbeat's own `local_ms` says it (an agent before it: the stamp).
+		$rNodeMs = is_int($rPayload['local_ms'] ?? null) ? $rPayload['local_ms'] : $rNodeTsMs;
+		$rOffset = max(-2147483648, min(2147483647, $rNodeMs - $rNow));
 		// Whether the node's root-owned panel-key pin is in place (root commands).
 		$rRoot = array_key_exists('root_ready', $rPayload) ? (empty($rPayload['root_ready']) ? 0 : 1) : null;
 		$rTelemetry = is_array($rPayload['telemetry'] ?? null) ? $rPayload['telemetry'] : null;

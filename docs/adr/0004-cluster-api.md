@@ -4678,6 +4678,81 @@ example a snapshot of it with the same `instance_id`, had its events dropped wit
   audit and the peers' `config.changed`.
 - `ConnectionIngestIdempotencyTest`: its tail and overlap cases are now backwards.
 
+### `servers_stats` pruned in batches, and its indexes
+
+Plan §8 ("MAIN capacity") prunes `servers_stats` in batches, then builds `INDEX(time)` and
+`INDEX(server_id, time)` online with `console.php cluster:maintain-stats`, outside
+`MigrationRunner`. Neither was built. The table had its primary key alone, and `cron:cleanup` pruned
+it, with `cluster_audit`, in one `DELETE … WHERE time < ?`. Every node adds a row a minute, so that
+statement scanned the whole table and, on the first run over a long history, held it and its undo log
+for as long as it ran. The per-server reads (`ProcessChecker::getWatchdog`, `proxy_api`) scanned it
+too.
+
+- **Batches.** `CleanupCronJob::prune` deletes 10,000 rows per statement (`PRUNE_BATCH`) until none
+  are left or 20 s have passed (`PRUNE_SEC`, shared by both tables). The next hourly run goes on
+  from there. Old rows sit at the start of the primary key, so each batch finds them quickly even
+  before the index exists.
+- **The indexes.** `cluster:maintain-stats` (MAIN only, one run at a time) reads `SHOW INDEX` and
+  adds whichever of `time (time)` and `server_time (server_id, time)` is missing, with
+  `ALGORITHM=INPLACE, LOCK=NONE`. An existing index whose leading columns are the same counts, so an
+  operator's own index is not duplicated. A server that cannot build one in place refuses, and
+  nothing falls back to a locking `ALTER`.
+- **Who starts it.** `cron:cleanup` on MAIN, after pruning, starts the command detached
+  (`ProcessRunner::start`) while an index is missing. A fresh install gets the indexes within the
+  hour. The LB build strips the command.
+
+**Not built / limits.**
+- **`database.sql` is unchanged.** A new install gets the indexes from the first `cron:cleanup`.
+- **A refused build is retried every hour**, and each attempt is written to the command's output
+  only.
+
+**Tests.** `ClusterMaintainStatsTest`: 25,003 old rows pruned in batches (one batch past the
+deadline, the rest after), the rows retention keeps, the missing indexes by leading columns, the
+`ALTER`'s exact text, and no answer from `SHOW INDEX`. Run once by hand on MariaDB 11.4: the prune took 25,003 rows, both
+indexes were built in place, and `EXPLAIN` shows the prune and `getWatchdog` using them.
+
+### A node's own clock, its badge, and the dashboard banner
+
+Plan §4 ("Clock") shows a node whose clock is off MAIN's: a warning past 30 s, "degraded (clock)"
+past 300 s, never a fence. Plan §11 puts the Cluster Nodes page's warnings on the dashboard too.
+Neither was built, and the offset they read was wrong.
+
+**The bug.** `HeartbeatService::record()` took `cluster_nodes.clock_offset_ms` as the heartbeat's
+`X-XCVM-Ts` minus MAIN's clock. Since its first version the agent stamps every request with
+`MainNowMs()` (local time plus the offset it learned from MAIN's last authenticated reply), so after
+its first reply the offset read about 0 on every node, whatever its clock. An inventory copies that
+offset into `servers.time_offset` (*Node state and inventory*, Phase 5), which the node's PHP subtracts from `time()`
+to judge token expiry and admission. So a node whose clock was off judged both on its own wrong
+clock. `server:diagnose` showed about 0 as well.
+
+1. **The field.** Every heartbeat payload (the JSON inside the BOX) carries
+   `"local_ms": <int>`, the node's own wall clock in unix milliseconds when it built the payload
+   (`Agent.Heartbeat`, the xc_vm_fanout release after 0.14.0).
+2. **MAIN.** `clock_offset_ms` is `local_ms` minus MAIN's clock when it handles the heartbeat,
+   clamped to a signed 32-bit int, as before. A payload without an integer `local_ms` (an older
+   agent) keeps the stamp, so it reads about 0 as it did. The offset includes the one-way latency,
+   as the legacy cron's measure against the database clock did.
+3. **The badge.** `ClusterOverview::clockBadge()` puts `clock ±Ns` (warning) past
+   `ClusterDiagnosis::SKEW_WARN_MS` (30 s) and `degraded (clock) ±Ns` (danger) past
+   `SKEW_DEGRADED_MS` (300 s) beside the node on the Cluster Nodes page and on the Servers list.
+   Neither changes the node's state, its routing or its fence.
+4. **The dashboard banner.** `ClusterOverview::dashboardBanners()` gives the dashboard the page's
+   own `banners()` (licence and certificate), read from `cluster_nodes.state` and `token_exp`
+   alone, so the dashboard walks no node. Nothing while the cluster API is off or has no extension.
+   Whether MAIN is licensed is read as the liveness loop reads it (`LivenessService::licensed()`,
+   cached for `LICENCE_CHECK_MS`); `ClusterNodesController` asks the same function now.
+
+**Not built / limits.**
+- **The other badges.** P0/P1 lag, divergence and "MAIN URL unreachable" on the Servers list, and
+  the Settings Info-tab block, are still missing.
+- **An older agent** keeps reporting about 0 until it is updated.
+
+**Tests.** PHP: `ClusterApiTest` (a heartbeat with `local_ms` ten minutes ahead records 600000; an
+older one keeps the stamp's offset), `ClusterOverviewTest` (the badge's thresholds and a
+non-numeric offset; the dashboard's banners against the page's, licensed, the API off, no
+extension). Go: `TestAHeartbeatCarriesTheNodesOwnClock` (the payload carries the node's clock and
+the request is still stamped with MAIN's).
+
 ### Members nothing used
 
 An audit of the cluster code for unused members found six in the panel and four in the agent, and

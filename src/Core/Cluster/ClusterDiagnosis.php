@@ -48,6 +48,12 @@ final class ClusterDiagnosis {
 	 */
 	public const SKEW_WARN_MS = 30000;
 
+	/**
+	 * A node's clock offset (ms) past which the Cluster Nodes page shows it
+	 * "degraded (clock)" (plan, section 4, "Clock"). It never fences.
+	 */
+	public const SKEW_DEGRADED_MS = 300000;
+
 	/** An outbox (an event lane on the node, the command queue on MAIN) whose oldest entry is older than this lags. */
 	public const OUTBOX_LAG_SEC = 120;
 
@@ -201,7 +207,7 @@ final class ClusterDiagnosis {
 
 		$rOffset = isset($rNode['clock_offset_ms']) ? (int) $rNode['clock_offset_ms'] : null;
 		$rOffsetOk = $rOffset === null || abs($rOffset) <= self::SKEW_WARN_MS;
-		$rOut[] = self::check('Clock offset', $rOffset === null ? 'not reported' : self::signedMs($rOffset) . ' (node request time − MAIN)', $rOffsetOk, 'The node\'s requests arrive ' . self::signedMs((int) $rOffset) . ' off MAIN\'s clock; MAIN refuses them past ±90 s. Sync NTP on both.');
+		$rOut[] = self::check('Clock offset', $rOffset === null ? 'not reported' : self::signedMs($rOffset) . ' (node clock − MAIN)', $rOffsetOk, 'The node\'s clock is ' . self::signedMs((int) $rOffset) . ' off MAIN\'s. Its agent corrects its own requests, but its PHP, its crons and its logs use that clock (an older agent reports its corrected time, near 0). Sync NTP on both.');
 
 		$rCount = (int) ($rOutbox['count'] ?? 0);
 		$rOldest = isset($rOutbox['oldest']) ? (int) $rOutbox['oldest'] : 0;

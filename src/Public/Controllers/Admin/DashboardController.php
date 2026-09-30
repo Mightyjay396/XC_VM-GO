@@ -9,6 +9,7 @@ use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Localization\Translator;
 use XcVm\Core\Reference\GeoReference;
 use XcVm\Domain\Cluster\ClusterAdmin;
+use XcVm\Domain\Cluster\ClusterOverview;
 use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
@@ -114,7 +115,7 @@ class DashboardController extends BaseAdminController {
 		)));
 
 		$this->setTitle('Dashboard');
-		$this->render('dashboard', ['rColours' => $rColours, 'rColourMap' => $rColourMap, 'rConnectionMap' => $rConnectionMap, 'rConnectionCount' => $rConnectionCount, 'rServerStats' => $rServerStats, 'rOrderedServers' => $rOrderedServers, 'rStatusChecks' => $rStatusChecks]);
+		$this->render('dashboard', ['rColours' => $rColours, 'rColourMap' => $rColourMap, 'rConnectionMap' => $rConnectionMap, 'rConnectionCount' => $rConnectionCount, 'rServerStats' => $rServerStats, 'rOrderedServers' => $rOrderedServers, 'rStatusChecks' => $rStatusChecks, 'clusterBanners' => ClusterOverview::dashboardBanners($rServers[SERVER_ID] ?? [], SettingsManager::getAll(), time())]);
 	}
 
 	/**

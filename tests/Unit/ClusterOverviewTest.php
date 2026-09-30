@@ -2,6 +2,7 @@
 
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\ClusterHealth;
+use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterBus;
@@ -9,6 +10,7 @@ use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterOverview;
 use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Cluster\ClusterSemaphore;
+use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\BusServer;
@@ -233,6 +235,37 @@ final class ClusterOverviewTest extends TestCase {
 		ClusterOverview::rotateAll(7);
 		$this->rDb->query('SELECT COUNT(*) AS `n` FROM `cluster_commands`;');
 		$this->assertSame(2, (int) $this->rDb->get_row()['n'], 'a second click replaces the rotation still waiting (its dedupe key), rather than adding one');
+	}
+
+	public function testTheDashboardShowsThePagesBannersFromTheNodesTable(): void {
+		ClusterCryptoFactory::useProbe(static fn(): array => ['api' => 1]);
+		LivenessService::useLicence(static fn(): bool => false);
+		try {
+			$this->node(2, 'active', NodeRegistry::FLOW_COMMANDS, self::NOW + 600);
+			$this->node(3, 'revoked', NodeRegistry::FLOW_COMMANDS, self::NOW + 99999);
+			$rSettings = ['cluster_api_enabled' => 1, 'lb_lease_fence' => 1, 'lb_partition_tolerance_h' => 2, 'lb_fence_drain_min' => 10];
+			$rBanners = ClusterOverview::dashboardBanners([], $rSettings, self::NOW);
+			$this->assertSame(ClusterOverview::banners(false, [], $rSettings, [['state' => 'active', 'token_exp' => self::NOW + 600]], self::NOW), $rBanners, 'the page\'s, from each node\'s state and token expiry');
+			$this->assertSame('cluster_banner_licence_stop', $rBanners[0]['key']);
+
+			LivenessService::useLicence(static fn(): bool => true);
+			$this->assertSame([], ClusterOverview::dashboardBanners([], $rSettings, self::NOW), 'licensed');
+			LivenessService::useLicence(static fn(): bool => false);
+			$this->assertSame([], ClusterOverview::dashboardBanners([], ['cluster_api_enabled' => 0] + $rSettings, self::NOW), 'the API off');
+			ClusterCryptoFactory::useProbe(static fn(): ?array => null);
+			$this->assertSame([], ClusterOverview::dashboardBanners([], $rSettings, self::NOW), 'no extension');
+		} finally {
+			ClusterCryptoFactory::useProbe(null);
+			LivenessService::useLicence(null);
+		}
+	}
+
+	public function testAClockOffTheMainsIsBadgedNeverFenced(): void {
+		$this->assertNull(ClusterOverview::clockBadge(null), 'not reported');
+		$this->assertNull(ClusterOverview::clockBadge(-30000), 'within 30 s');
+		$this->assertSame(['tone' => 'warning', 'key' => 'cluster_clock_off', 'vars' => ['{OFFSET}' => '+45s']], ClusterOverview::clockBadge('45000'));
+		$this->assertSame(['tone' => 'danger', 'key' => 'cluster_clock_degraded', 'vars' => ['{OFFSET}' => '-600s']], ClusterOverview::clockBadge(-600000));
+		$this->assertNull(ClusterOverview::clockBadge('bogus'), 'not a number');
 	}
 
 	public function testANewLicenceKeyRotatesEveryToken(): void {

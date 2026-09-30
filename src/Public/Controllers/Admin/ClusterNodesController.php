@@ -53,7 +53,7 @@ class ClusterNodesController extends BaseAdminController {
 			'clusterNodes' => $rNodes,
 			'clusterFences' => ClusterOverview::fenceWindows($rNodes, $rSettings),
 			'clusterDigestN1' => ClusterOverview::digestN1($rNodes),
-			'clusterBanners' => ClusterOverview::banners(self::licensed($rEnabled && $rAvailable), $rServers[(int) SERVER_ID] ?? [], $rSettings, $rNodes, $rNow),
+			'clusterBanners' => ClusterOverview::banners(ClusterOverview::licensed($rEnabled && $rAvailable), $rServers[(int) SERVER_ID] ?? [], $rSettings, $rNodes, $rNow),
 			'clusterMetrics' => $rEnabled ? self::metrics($rSettings, $rNow) : null,
 			'clusterNames' => array_map(static fn(array $rServer): string => (string) ($rServer['server_name'] ?? ''), $rServers),
 			'clusterPending' => ClusterAdmin::pending($rServers),
@@ -61,22 +61,6 @@ class ClusterNodesController extends BaseAdminController {
 			'clusterFlash' => $rFlash,
 			'clusterPanelFp' => $rEnabled && $rAvailable ? ClusterMeta::get('panel_fp') ?? '' : '',
 		]);
-	}
-
-	/**
-	 * Does the extension still sign granting records (tokens, leases)? What a
-	 * node's challenge reports as `licence_ok`. True when the API is off: no
-	 * banner then.
-	 */
-	private static function licensed(bool $rOn): bool {
-		if (!$rOn) {
-			return true;
-		}
-		try {
-			return (bool) (ClusterCryptoFactory::create()->info()['licensed'] ?? false);
-		} catch (\Throwable) {
-			return true; // cannot tell: say nothing rather than a false alarm
-		}
 	}
 
 	/**

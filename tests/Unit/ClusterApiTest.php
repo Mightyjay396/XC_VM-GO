@@ -451,6 +451,12 @@ final class ClusterApiTest extends TestCase {
 		$this->assertSame(250, (int) $rNode['clock_offset_ms']);
 		$this->rDb->query('SELECT `status` FROM `servers` WHERE `id` = 5');
 		$this->assertSame(1, (int) $this->rDb->get_row()['status'], 'first authenticated heartbeat marks the server up');
+
+		// An agent that stamps its requests with MAIN's time says its own
+		// clock (ten minutes ahead) in `local_ms`: that is the offset.
+		[$rRes, $rCtx] = $this->call('heartbeat', ['local_ms' => $this->rT0 + 5000 + 600000], 1, $rKeys, ['ts' => $this->rT0 + 5000]);
+		$this->reply($rRes, $rCtx, $rKeys);
+		$this->assertSame(600000, (int) NodeRegistry::byServer(self::SID)['clock_offset_ms']);
 	}
 
 	/**

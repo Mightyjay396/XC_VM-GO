@@ -3,6 +3,7 @@
 namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Cli\Commands\ClusterMaintainStatsCommand;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\ConnectAudit;
@@ -11,6 +12,7 @@ use XcVm\Core\Cluster\SettingsAudit;
 use XcVm\Core\Cluster\StreamRuntime;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Domain\Server\InstallCredentials;
 use XcVm\Domain\Stream\ContentSink;
 use XcVm\Domain\Stream\NodeStreams;
@@ -33,6 +35,10 @@ use XcVm\Streaming\Codec\FFprobeRunner;
 
 class CleanupCronJob implements CommandInterface {
 	use CronTrait;
+
+	/** Rows one retention DELETE takes, and the longest the prune runs per pass (s). */
+	private const PRUNE_BATCH = 10000;
+	private const PRUNE_SEC = 20;
 
 	public function getName(): string {
 		return 'cron:cleanup';
@@ -261,10 +267,36 @@ class CleanupCronJob implements CommandInterface {
 		// which also holds each one's bounds and default): the dashboard's
 		// server graphs and the cluster audit log. Both were settings with a
 		// form field and no reader, so neither table was ever pruned.
+		$rUntil = microtime(true) + self::PRUNE_SEC;
 		foreach (['servers_stats' => 'servers_stats_retention_days', 'cluster_audit' => 'cluster_audit_retention_days'] as $rTable => $rSetting) {
 			// lb-settings: servers_stats_retention_days, cluster_audit_retention_days
 			$rDays = ClusterSettings::int($rSetting, SettingsManager::getAll()[$rSetting] ?? null);
-			$db->query('DELETE FROM `' . $rTable . '` WHERE `time` < ?;', time() - $rDays * 86400);
+			self::prune($db, $rTable, time() - $rDays * 86400, $rUntil);
 		}
+		// The indexes that prune and the server graphs read by, built online
+		// and apart: on a year of rows the ALTER runs for minutes.
+		if (class_exists(ClusterMaintainStatsCommand::class) && ClusterMaintainStatsCommand::missing($db) !== []) {
+			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'cluster:maintain-stats']);
+		}
+	}
+
+	/**
+	 * Delete $rTable's rows older than $rBefore, PRUNE_BATCH at a time, until
+	 * none are left or $rUntil (microtime) passes; the next run goes on. One
+	 * DELETE of a year of rows held the table and its undo log for as long
+	 * as it ran (plan, section 8).
+	 *
+	 * @return int the rows deleted
+	 */
+	public static function prune(object $db, string $rTable, int $rBefore, float $rUntil): int {
+		$rDeleted = 0;
+		do {
+			if (!$db->query('DELETE FROM `' . $rTable . '` WHERE `time` < ? LIMIT ' . self::PRUNE_BATCH . ';', $rBefore)) {
+				break;
+			}
+			$rRows = $db->num_rows();
+			$rDeleted += $rRows;
+		} while ($rRows >= self::PRUNE_BATCH && microtime(true) < $rUntil);
+		return $rDeleted;
 	}
 }

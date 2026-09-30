@@ -133,6 +133,14 @@ if (!LicenseGate::licensed()):
     </script>
 <?php endif; ?>
 
+<?php // The Cluster Nodes page's licence and certificate warnings (ClusterOverview::dashboardBanners). ?>
+<?php foreach ($clusterBanners ?? [] as $rBanner): ?>
+    <div class="alert alert-<?= htmlspecialchars($rBanner['type'], ENT_QUOTES); ?> mb-4" role="alert">
+        <i class="icon-base ti tabler-<?= $rBanner['type'] === 'danger' ? 'alert-octagon' : 'alert-triangle'; ?> me-1"></i><?= htmlspecialchars($language::get($rBanner['key'], $rBanner['vars']), ENT_QUOTES); ?>
+        <a href="cluster_nodes" class="alert-link ms-1"><?= $language::get('cluster_nodes'); ?></a>
+    </div>
+<?php endforeach; ?>
+
 <!-- Page header -->
 <div class="d-flex flex-wrap justify-content-between align-items-center mb-4 gap-3">
     <h4 class="mb-0">
