@@ -180,6 +180,14 @@ class StreamsCronJob implements CommandInterface {
 						echo 'Fenced: releasing the producer...' . "\n\n";
 						StreamProcess::stopStream(intval($rStream['stream_id']));
 					}
+					// Its thumbnail and TV archive workers read the stream: they go with
+					// it, and the first pass after the fence lifts starts them again.
+					foreach (['Thumbnail' => 'vframes_pid', 'TVArchive' => 'tv_archive_pid'] as $rWorker => $rColumn) {
+						if (ProcessManager::isNamedProcessRunning(intval($rStream[$rColumn] ?? 0), $rWorker, $rStream['stream_id'])) {
+							echo 'Fenced: releasing its ' . $rWorker . ' worker...' . "\n";
+							posix_kill(intval($rStream[$rColumn]), 9);
+						}
+					}
 					continue;
 				}
 				// superviseStream, not startMonitor: a stream the daemon will not

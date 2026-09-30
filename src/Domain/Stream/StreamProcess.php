@@ -200,6 +200,9 @@ class StreamProcess {
 	 * @return mixed Start result.
 	 */
 	public static function startThumbnail(int $rStreamID) {
+		if (NodeLease::refusesEverything()) {
+			return false; // fenced: nothing starts here (plan, section 9, FENCED)
+		}
 		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php thumbnail ' . intval($rStreamID) . ' >/dev/null 2>/dev/null &');
 		return true;
 	}

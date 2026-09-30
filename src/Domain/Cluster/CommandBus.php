@@ -37,7 +37,7 @@ final class CommandBus {
 	/** Types MAIN sends today. */
 	public const TYPES = [
 		'node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'conn.close', 'config.changed', 'artefact.fetch', 'token.rotate_now',
-		'stream.stop', 'vod.stop', 'node.fence', 'node.unfence', 'node.quarantine', 'resync', 'policy.update', 'stream.assign', 'queue.poke', 'node.purge',
+		'stream.stop', 'vod.stop', 'stream.start', 'vod.start', 'node.fence', 'node.unfence', 'node.quarantine', 'resync', 'policy.update', 'stream.assign', 'queue.poke', 'node.purge',
 	];
 
 	/**

@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Stream\ContentSink;
@@ -48,6 +49,11 @@ class ArchiveCommand implements CommandInterface {
 	 * @return int Exit code: 0 = clean stop, 1 = permission error.
 	 */
 	public function execute(array $rArgs): int {
+		// Fenced past its drain, the node starts nothing (plan, section 9, FENCED).
+		if (NodeLease::refusesEverything()) {
+			echo "Fenced: nothing starts on this node.\n";
+			return 0;
+		}
 		if (posix_getpwuid(posix_geteuid())['name'] != 'xc_vm') {
 			echo "Please run as XC_VM!\n";
 			return 1;

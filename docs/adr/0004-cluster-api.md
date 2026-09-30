@@ -3269,7 +3269,7 @@ It is the one command the agent runs itself. Every other command goes to the nod
 
 MAIN's half is `ClusterRoute::rotateNow()` with a dedupe key (a double click queues one command), a *Rotate token* button beside *Revoke* on the Cluster Nodes page, and an audit line (`node.token_rotate`). A node that does not take commands yet is told to switch its COMMANDS flow on rather than being given a button that does nothing.
 
-**Not built:** `stream.stop` and `vod.stop` are still listed as restrictive with no producer, and `node.root rotate_sign_key` — re-pinning MAIN's panel key without SSH — does not exist. Both are Phase 9's, where the fence and the credential lockdown need them.
+**Not built:** `stream.stop` and `vod.stop` are still listed as restrictive with no producer, and `node.root rotate_sign_key` — re-pinning MAIN's panel key without SSH — does not exist. Both are Phase 9's, where the fence and the credential lockdown need them. Both were built since: a stop RPC goes as the restrictive `stream.stop` / `vod.stop` (`ClusterRoute::stops()`), and `rotate_sign_key` is a root action.
 
 ### Seeing the cluster from outside its own page (Phase 10, first increment)
 
@@ -4348,7 +4348,9 @@ ones, but the node's encoders kept running. The plan's FENCED state releases the
   status 1 or 2, never 0, so it stays selected.
 
 **Not built / limits.** VOD transcodes, TV-archive recorders and thumbnail workers are not
-released: they serve no viewer, and with the producer gone the archive records nothing.
+released: they serve no viewer, and with the producer gone the archive records nothing. Since
+[typed starts and what a fence stops](#typed-starts-and-what-a-fence-stops), a released stream's
+thumbnail and archive workers go with it, and nothing new starts under the fence.
 
 **Tests.** `FencedProducersTest` (`startMonitor` starts nothing when fenced), and
 `ModeTwoPathsTest::testAFencedNodeReleasesItsProducersAndKeepsTheirRecords` (a child PHP on a
@@ -4385,7 +4387,8 @@ them now.
 - **Older node PHP.** A node PHP from before this refuses `stream.assign` and `queue.poke`
   (`unknown command type`); the command is acked failed, and the node keeps its old behaviour.
 - **Typed starts.** `stream.start`, `vod.start` and `recording.start` still have no producer:
-  starts go as `node.rpc`, which works.
+  starts go as `node.rpc`, which works. Since [typed starts and what a fence stops](#typed-starts-and-what-a-fence-stops),
+  `stream.start` and `vod.start` do, to a node whose PHP runs them.
 - **Large rescans.** A Rescan VOD of a large catalogue is one command per 500 movies per node.
 
 **Tests.** `StreamPushTest` (who is told, once; everyone on a reset; a bump's holders; the queue
@@ -5021,3 +5024,34 @@ since the last sync stored on request; a refusal answered 502; no replica, 404).
 stores the record on the sync: the start finds it; no request without the feature; once a minute
 for a stream the sync does not bring; none for a stream with an entry),
 `StreamPushTest::testABlocklistChangeWakesTheConfigNodesInOneCommandWithTheStreams`.
+
+### Typed starts, and what a fence stops
+
+- **Typed starts** (`ClusterRoute::starts`, `ClusterRoute::start`). A start RPC (`{action:
+  stream|vod, function: start, stream_ids[, force]}`) goes as one `stream.start {stream_id}` or
+  `vod.start {stream_id, force}` per stream, deduped per stream (`<type>:<id>`), granting, to a
+  node whose agent says `typed_starts` at hello: its `cluster:exec --types` lists `stream.start`.
+  Any other node keeps `node.rpc`, which an older node PHP understands and a typed start would be
+  refused by. `cluster:exec` runs them as `node.rpc`'s stream and vod starts ran them
+  (`startMonitor` with a restart; `stopMovie`, then `startMovie` when forced, else the queue). The
+  extension already classes both as granting. `recording.start` has no producer and needs none: a
+  node starts the recordings due on it from its replica (`cron:vod`), and MAIN reaches it by
+  scheduling them.
+- **What a fence stops.** Past the drain, `cron:streams` releases a stream's thumbnail and TV
+  archive workers with its producer: they read the stream, and the first pass after the fence
+  lifts starts them again. Nothing new starts under the fence: `startThumbnail`, the `thumbnail`,
+  `archive` and `record` commands, the queue daemon's movie and channel passes (their rows wait),
+  and `cron:vod`'s due recordings.
+
+**Not built / limits.**
+- **A running VOD transcode or channel build finishes** under the fence: it serves no viewer,
+  killing it would fail the movie and lose the work, and the queue has no way to hand a row back
+  to pending (`QueueSink::update` takes pids above 0 only, and in CONTENT mode the queue is MAIN's).
+- **A recording already running** runs to its end; with its stream's producer released it records
+  nothing.
+
+**Tests.** `ClusterRestrictiveProducersTest::testAStartIsTypedOnlyWhereTheNodesPhpRunsIt` and
+`testClusterExecRunsTheStops` (the starts too); agent `TestTypedStartsFollowThePHP`;
+`FencedProducersTest::testAFencedNodeStartsNoWorkerRecordingEncodeOrBuild`;
+`ModeTwoPathsTest::testAFencedNodeReleasesItsProducersAndKeepsTheirRecords` (the thumbnail worker
+goes with its producer).
