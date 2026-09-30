@@ -442,6 +442,31 @@ final class ArtefactHashRefusalTest extends TestCase {
 		return ['path' => $rPath, 'grant' => $rGrant];
 	}
 
+	/**
+	 * An agent whose `version` says `features: reached` is on trial for
+	 * reaching MAIN (run.sh's reach check); one that does not is judged by its
+	 * starts alone. PREV stays the last binary that proved itself: an install
+	 * over one still on trial keeps the PREV before it.
+	 */
+	public function testTheTrialAsksReachOfAnAgentThatSaysItAndPrevStaysTheLastProvenOne(): void {
+		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
+		$rReaching = "#!/bin/sh\necho 1.6.0\necho 'features: reached'\n# " . bin2hex(random_bytes(64)) . "\n";
+		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rReaching), $rAgent));
+		$this->assertMatchesRegularExpression('/^\d+ 0 reach$/', trim((string) file_get_contents($rAgent . ArtefactStage::TRIAL)));
+		$this->assertSame('the running agent', file_get_contents($rAgent . ArtefactStage::PREV));
+
+		// Another install while 1.6.0 is still on trial: it never proved itself.
+		$rOlder = $this->runnableAgent('1.7.0');
+		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rOlder), $rAgent));
+		$this->assertSame('the running agent', file_get_contents($rAgent . ArtefactStage::PREV), 'the last proven binary stays');
+		$this->assertMatchesRegularExpression('/^\d+ 0$/', trim((string) file_get_contents($rAgent . ArtefactStage::TRIAL)), 'no reach check for an agent that does not say it');
+
+		// run.sh ended 1.7.0's trial: the next install keeps it.
+		unlink($rAgent . ArtefactStage::TRIAL);
+		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $this->runnableAgent('1.8.0')), $rAgent));
+		$this->assertSame($rOlder, file_get_contents($rAgent . ArtefactStage::PREV));
+	}
+
 	/** A binary that does not start on this node is never put where run.sh would restart it every 2 s. */
 	public function testAnAgentThatDoesNotRunIsNeverInstalled(): void {
 		$rBytes = random_bytes(4000);

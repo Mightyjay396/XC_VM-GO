@@ -25,6 +25,9 @@ use XcVm\Domain\Server\ServerRepository;
  *   address) is admitted as before, except from a server whose own DATAPLANE
  *   flow is on: that child pulls through its agent, so a password arriving
  *   from it is not its own.
+ * - **The node's own loopback** (`password=lb1-…`, a LoopbackToken for the
+ *   stream asked for) is admitted from 127.0.0.1 or ::1 only: the recorder
+ *   pulling from its own node carries no fleet secret.
  *
  * Every check that cannot be made (no panel key, no node list, no nonce
  * window) refuses (DataPlaneTrust).
@@ -36,6 +39,7 @@ final class RelayGuard {
 
 	public const RELAY = 'relay';
 	public const PASSWORD = 'password';
+	public const LOOPBACK = 'loopback';
 
 	/** @var (callable(): array{0: array<int, array<string, mixed>>, 1: list<string>})|null */
 	private static $rServers = null;
@@ -46,7 +50,7 @@ final class RelayGuard {
 	}
 
 	/**
-	 * Admit a request for $rStreamID: RELAY, PASSWORD, or null (refused).
+	 * Admit a request for $rStreamID: RELAY, PASSWORD, LOOPBACK, or null (refused).
 	 *
 	 * @param mixed $rPassword the `password` query parameter as PHP parsed it:
 	 *                         anything but a string (`password[]=…`, absent) is refused
@@ -56,6 +60,9 @@ final class RelayGuard {
 	public static function admit(int $rStreamID, mixed $rPassword, string $rIP, array $rServer, bool $rPasswordOk = true, ?int $rNowMs = null): ?string {
 		if (self::presented($rServer)) {
 			return self::relay($rStreamID, $rServer, $rNowMs ?? DataPlaneTrust::nowMs()) !== null ? self::RELAY : null;
+		}
+		if ($rPasswordOk && is_string($rPassword) && str_starts_with($rPassword, LoopbackToken::PREFIX)) {
+			return in_array($rIP, ['127.0.0.1', '::1'], true) && LoopbackToken::verify($rStreamID, $rPassword) ? self::LOOPBACK : null;
 		}
 		if (!$rPasswordOk || !is_string($rPassword) || !AuthService::secretMatches((string) SettingsManager::get('live_streaming_pass'), $rPassword)) {
 			return null;

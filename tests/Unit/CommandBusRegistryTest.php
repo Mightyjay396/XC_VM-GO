@@ -155,6 +155,11 @@ final class CommandBusRegistryTest extends TestCase {
 		$this->assertSame([true, true], ClusterRoute::rotateNow(self::SID));
 		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'stream', 'function' => 'stop', 'stream_ids' => [5]]));
 		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'vod', 'function' => 'stop', 'stream_ids' => [6]]));
+		// Typed starts, to a node whose PHP runs them (its agent says typed_starts).
+		$this->rDb->query('UPDATE `cluster_nodes` SET `features` = ? WHERE `server_id` = ?', ClusterRoute::FEATURE_TYPED_STARTS, self::SID);
+		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'stream', 'function' => 'start', 'stream_ids' => [5]]));
+		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'vod', 'function' => 'start', 'stream_ids' => [6], 'force' => true]));
+		$this->rDb->query('UPDATE `cluster_nodes` SET `features` = NULL WHERE `server_id` = ?', self::SID);
 		$this->assertSame([true, true], ClusterRoute::fence(self::SID, 'admin', 10));
 		$this->assertSame([true, true], ClusterRoute::unfence(self::SID));
 		// The unfence superseded that fence (one dedupe key): the lease-fence

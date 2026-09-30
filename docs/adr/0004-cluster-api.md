@@ -3265,11 +3265,11 @@ The agent keeps it in its state (a restart holds the pace), clamps what a policy
 
 `token.rotate_now` was listed among the restrictive command types — the ones the extension signs even while MAIN's licence is refused — and had no producer and no executor. An operator who no longer trusted a node's token could revoke the node, which stops it, or wait out `lb_token_rotation_min`.
 
-It is the one command the agent runs itself. Every other command goes to the node's PHP (`cluster:exec`), which verifies it again and runs it with the legacy handlers; this one cannot, because the token is the agent's and the node's PHP has no idea what it is — it would answer "unknown command type". The agent therefore handles the type before the executor, triggers the refresh it already has for the halfway point, and acks; a redelivery moves the high-water and rotates nothing twice.
+It is the one command the agent runs itself. Every other command goes to the node's PHP (`cluster:exec`), which verifies it again and runs it with the legacy handlers; this one cannot, because the token is the agent's and the node's PHP has no idea what it is — it would answer "unknown command type". The agent therefore handles the type before the executor, triggers the refresh it already has for the halfway point, and acks; a redelivery moves the high-water and rotates nothing twice. Since [rotate-now's outcome](#the-agents-refresh-backoff-rotate-nows-outcome-and-the-canarys-reach-check), the agent refreshes before it acks, and the ack says how it went.
 
 MAIN's half is `ClusterRoute::rotateNow()` with a dedupe key (a double click queues one command), a *Rotate token* button beside *Revoke* on the Cluster Nodes page, and an audit line (`node.token_rotate`). A node that does not take commands yet is told to switch its COMMANDS flow on rather than being given a button that does nothing.
 
-**Not built:** `stream.stop` and `vod.stop` are still listed as restrictive with no producer, and `node.root rotate_sign_key` — re-pinning MAIN's panel key without SSH — does not exist. Both are Phase 9's, where the fence and the credential lockdown need them.
+**Not built:** `stream.stop` and `vod.stop` are still listed as restrictive with no producer, and `node.root rotate_sign_key` — re-pinning MAIN's panel key without SSH — does not exist. Both are Phase 9's, where the fence and the credential lockdown need them. Both were built since: a stop RPC goes as the restrictive `stream.stop` / `vod.stop` (`ClusterRoute::stops()`), and `rotate_sign_key` is a root action.
 
 ### Seeing the cluster from outside its own page (Phase 10, first increment)
 
@@ -3401,7 +3401,7 @@ Port 31290 is unprivileged: while the agent does not hold it, any local user cou
 - The node list gains `dataplane`, for the parents' password rule.
 - MAIN runs no data-plane client: `-role main` is the listener alone (until Phase 9's eighth increment).
 
-**Not built / limits.** The acceptance, which was to be measured on a running fleet: 48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host. Since then [the MITM harness](#the-mitm-harness) measures the MITM'd body and the replayed headers against MAIN's real guard and file server instead; only the 48 h is still a fleet measure, and it is not measured yet. A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
+**Not built / limits.** The acceptance, which was to be measured on a running fleet: 48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host. Since then [the MITM harness](#the-mitm-harness) measures the MITM'd body and the replayed headers against MAIN's real guard and file server instead; only the 48 h is still a fleet measure, and it is not measured yet. A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). Since [the node's own loopback](#the-nodes-own-loopback), neither does. A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
 
 **Tests.** PHP: `RelayAuthTest` (a relay admitted once and a replay refused; another stream, parent or panel, a tampered ticket; a revoked, re-enrolled or unlisted child; another key, a stale or retargeted proof; no nonce window or panel key; headers never falling back to the password; the password from a DATAPLANE child refused; a password that is not a string refused; a load balancer judging by MAIN's anchored clock; the four endpoints through the guard), `FileTicketTest` (chunks with their digests, a replay, another key or owner, a revoked or re-enrolled fetcher, a path sealed under another ref or key, getFile's rule, nothing unsigned, the routes and their own rate zone), `FileDigestTest` (a chunk's digest bound to its offset and size), `DataPlaneUrlsTest` (no URL carries the secret with the flow on; the builders use it; legacy servers and the flow off keep the legacy URL; the loopback only while the agent's uid holds the port, from fixture socket tables; `legacyApiRetired`), `LbNginxApiLegacyTest` and `ModeTwoPathsTest` (`api_legacy.conf` stays `1` while MAIN reads with `getFile`), `ClusterTelemetryTest` (DATAPLANE only for an agent saying `relay`), `ClusterDataplaneVectorsTest`, and `ClusterApiTest` (tickets in the record and on the delta, no ETag, version or cache entry moved, paging, the licence, a malformed ask, the flow off). Go: the vectors, the proxy (each connect signed afresh and a replay refused, the key, a stream without a ticket, the flow off, a ticket for another node, generation or stream; `relay.key` published only while the port is held, a held port retried), `/xfile` (whole, a range, a suffix, past the end; a tampered, moved or foreign-signed chunk refused, an inactive owner; the ticket re-read per chunk; 429 and 503 retried, a bounded number of times), the ticket store (paging, a restart, the flow off and on, a licence refusal, the latest ticket per ref) and `TestInteropDataPlane` against MAIN's real PHP (`XCVM_PANEL_DIR`): tickets from the streams op, a relay MAIN's guard admits once, a file read through MAIN's `FileTicketServer` and a tampered chunk refused.
 
@@ -4221,7 +4221,9 @@ already puts every node on a path that asks MAIN again within a minute.
   holds that lease's token.
 - **Before the token expires.** From the token's `refresh_at` on, `token_refresh` is refused with
   `LICENCE_INVALID`. The agent asks again at every heartbeat tick, with no backoff. The first
-  refresh after the licence returns brings a token and its lease.
+  refresh after the licence returns brings a token and its lease. Since
+  [the agent's refresh backoff](#the-agents-refresh-backoff-rotate-nows-outcome-and-the-canarys-reach-check),
+  it waits 2 s after a refused refresh, doubling to 30 s.
 - **After the token has expired.** The node re-keys. While MAIN's challenge answers
   `licence_ok: false`, the agent waits `RekeyPoll` (60 s, ±10 %) between tries, not the doubling
   backoff. The first re-key after the licence returns comes within about a minute, with a lease.
@@ -4233,11 +4235,12 @@ already puts every node on a path that asks MAIN again within a minute.
 - **Nothing rate-limits the refused refreshes.** Until the licence returns, each node asks for a
   refresh at every heartbeat tick (2 s at the default), from its `refresh_at` until its token
   expires. Each ask costs MAIN an epoch lookup and the extension's cached binding check, and the
-  agent logs each refusal.
+  agent logs each refusal. Built since: [the agent's refresh backoff](#the-agents-refresh-backoff-rotate-nows-outcome-and-the-canarys-reach-check).
 - **The ~1 minute is measured in tests only.** The agent's tests and a simulated fleet
   ([xc_cluster_sim](#xc_cluster_sim)) measure it. No real fleet has.
 
-**Tests.** Agent: `TestARefreshRefusedForTheLicenceIsAskedAgainEachTick` and
+**Tests.** Agent: `TestARefreshRefusedForTheLicenceIsAskedAgainEachTick` (since replaced by
+`TestARefusedRefreshBacksOffAndIsStillAskedAgain`) and
 `TestAnUnlicensedRekeyIsAskedAgainEveryPoll`. Each fails if its path gains a backoff. Interop:
 `TestInteropSimARelicensedFleetGetsItsLeasesBack`, three nodes against MAIN's real PHP.
 
@@ -4345,7 +4348,9 @@ ones, but the node's encoders kept running. The plan's FENCED state releases the
   status 1 or 2, never 0, so it stays selected.
 
 **Not built / limits.** VOD transcodes, TV-archive recorders and thumbnail workers are not
-released: they serve no viewer, and with the producer gone the archive records nothing.
+released: they serve no viewer, and with the producer gone the archive records nothing. Since
+[typed starts and what a fence stops](#typed-starts-and-what-a-fence-stops), a released stream's
+thumbnail and archive workers go with it, and nothing new starts under the fence.
 
 **Tests.** `FencedProducersTest` (`startMonitor` starts nothing when fenced), and
 `ModeTwoPathsTest::testAFencedNodeReleasesItsProducersAndKeepsTheirRecords` (a child PHP on a
@@ -4382,7 +4387,8 @@ them now.
 - **Older node PHP.** A node PHP from before this refuses `stream.assign` and `queue.poke`
   (`unknown command type`); the command is acked failed, and the node keeps its old behaviour.
 - **Typed starts.** `stream.start`, `vod.start` and `recording.start` still have no producer:
-  starts go as `node.rpc`, which works.
+  starts go as `node.rpc`, which works. Since [typed starts and what a fence stops](#typed-starts-and-what-a-fence-stops),
+  `stream.start` and `vod.start` do, to a node whose PHP runs them.
 - **Large rescans.** A Rescan VOD of a large catalogue is one command per 500 movies per node.
 
 **Tests.** `StreamPushTest` (who is told, once; everyone on a reset; a bump's holders; the queue
@@ -4442,11 +4448,12 @@ version to the next node in order as soon as the first one's slot ended.
 **Not built / limits.**
 - **Only a failure at start is caught.** An agent that runs but misbehaves (it never reaches MAIN,
   or it serves wrongly) is not rolled back. MAIN sees it only as a node that stays on its old
-  version, or goes offline.
+  version, or goes offline. Since [the canary's reach check](#the-agents-refresh-backoff-rotate-nows-outcome-and-the-canarys-reach-check),
+  one that never reaches MAIN is; one that reaches MAIN and serves wrongly still is not.
 - **Nothing lifts a hold by hand.** An operator lifts it by fixing the canary node, or by pinning
-  another binary (`console.php agent_binary`).
+  another binary (`console.php agent_binary`). Since then, `console.php agent_binary release <version>`.
 - **One step back.** `.prev` is only the binary the last install replaced, so a second bad install
-  on the same node keeps no good binary.
+  on the same node keeps no good binary. Since then, `.prev` is the last binary that proved itself.
 
 **Tests.** `AgentRunShTest` runs `run.sh` for real in a throwaway home. A new binary that fails
 three times at start is replaced by the previous one; past its trial, a failing binary is left
@@ -4929,3 +4936,146 @@ Until lockdown, legacy and hybrid LBs still use MAIN's MariaDB (3306) and Redis 
 - A new extension API version needs `API_MAX` raised, and new vectors copied in, in the same panel release.
 - The crypto pipeline measures about 0.25 ms p99 for a 64 KB request against the plan's 1 ms budget. It measures about 41 ms for 8 MB in the CI container against the plan's 40 ms target, because the body is hashed twice and encrypted twice. `ClusterCryptoBenchTest` guards 8 MB at 2× the target. It is opt-in (`XCVM_BENCH=1`), because wall-clock timings depend on the machine and must not fail the unit suite on a slower one. The target itself needs a check on bundled PHP and production hardware.
 - `ClusterExtensionIntegrationTest` runs the panel against a real test-hooks build of `xcvm_core` (opt-in, throwaway `XCVM_CONFIG_DIR`). It passed against the 2.2.2 build at the time of writing. Run again against the build with `node.purge` (XC_VM_CoreExtention `c598330`), two of its tests had gone stale, since CI never runs it: *every command MAIN sends is signed* compared `CommandBus::TYPES` with the commands it sent, and sent none of the types the Phase 9 producers added (`stream.stop`, `vod.stop`, `node.fence`, `node.unfence`, `node.quarantine`, `resync`, `policy.update`) nor this work's; and the registry walk classed `node.purge` without the jobs it must carry. Both now cover them, and the run passes (16 tests with `ClusterVectorsTest`).
+
+### The agent's refresh backoff, rotate-now's outcome and the canary's reach check
+
+Three agent gaps from the notes above, and the canary's two others.
+
+- **A refused refresh backs off** (XC_VM_Fanout, `Agent.refresh`). A refresh MAIN refuses or
+  that fails waits `RefreshRetryMin` (2 s) before the next scheduled one, doubling to
+  `RefreshRetryMax` (30 s), and a refresh that works ends the wait. A fleet without a licence asks
+  about once every 30 s, not every 2 s, and still gets its tokens and leases within 30 s of the
+  licence's return: the plan's drill allows two minutes. The re-key path is unchanged
+  (`RekeyPoll`).
+- **`token.rotate_now` acks its outcome.** It used to ack `rotating` and start the background
+  refresh: a refresh that failed was neither retried before `refresh_at` nor reported, and MAIN's
+  row said the rotation happened. The agent now waits for a refresh already running, refreshes
+  (whatever the backoff: an operator asked), and acks `rotated to epoch <n>`, or `ok: false` with
+  `refresh failed: <why>`.
+- **The canary's reach check.** An answered heartbeat touches `config/cluster/reached` (the first
+  of a run at once, then at most every 10 s), and `xc_agent version` says so on a second line,
+  `features: reached`. `ArtefactStage::installAgent` puts a binary that says it on trial with
+  `reach` (`<installed at> <failed starts> reach`). `run.sh` then runs the agent with a watcher
+  beside it: the trial ends once this run has touched the file since it started (the agent it
+  replaced, still running for 10 s after the install, does not count), and if it has not within
+  `REACH_SEC` (300 s) of the install, `.prev` is put back and the run ended. A run that merely
+  lasts no longer ends a `reach` trial; failed starts still count. A binary that does not say it
+  (one pinned from before) is judged by its starts alone, so it is never rolled back for a file it
+  does not write.
+- **`.prev` is the last proven binary.** An install over a binary still on trial keeps the `.prev`
+  before it, unless there is none; one whose trial ended becomes `.prev` at the next install.
+- **Releasing a held rollout** (`AgentUpgrades::release`, `console.php agent_binary release
+  <version>`): each node that was offered the version at least `RETRY_SEC` ago and does not run it
+  is forgotten, so none counts as a failure and each is offered it afresh (an offer still
+  installing is left alone), and the hold's audit goes, so a new failure is audited again.
+  Audited as `cluster.agent_rollout_released`.
+
+**Not built / limits.**
+- **MAIN unreachable during a trial** rolls the new agent back like a bad one: `.prev` cannot
+  reach MAIN either, and MAIN, back, holds the rollout. The operator releases it.
+- **Serving wrongly is not caught.** Reaching MAIN is the only thing the watcher judges.
+- **MAIN's own agent** (`-role main`) sends no heartbeat, so it is judged by its starts alone.
+
+**Tests.** Agent: `TestARefusedRefreshBacksOffAndIsStillAskedAgain`,
+`TestRotateNowAcksTheRefreshsOutcome`, `TestAnAnsweredHeartbeatMarksTheNodeReached`; interop
+`TestInteropRotateNowAcksTheNewEpoch` (MAIN's `CommandBus` queues it, the ack names the epoch MAIN
+then holds). Panel: `AgentRunShTest` (a new agent that never reaches MAIN is rolled back; one that
+does ends its trial, even with a reached file the agent before it wrote), `ArtefactHashRefusalTest`
+(`reach` only for an agent that says it; `.prev` stays the last proven one), `AgentUpgradeTest`
+(a released rollout is offered afresh; offers still installing are kept).
+
+### A start miss, and the blocklist on change
+
+Two Phase 7 gaps: a start that finds no entry for a stream MAIN assigned a moment before (the
+plan's `stream_bundle` on a miss), and a blocklist change that waited for the next poll.
+
+- **A start miss** (`StreamSource::streamRow`, `ReplicaStreamCache::syncMissing`). MAIN stamps a
+  stream's version before it sends the command that starts it, so its record is already in the
+  node's next delta; only the agent's sync may not have run yet. When a start finds no entry, the
+  node's PHP asks its agent to sync the section now, `POST /v1/streams_sync` on the agent's socket
+  (answered once the sync ends: 200, or 502 with why not), and reads again, where the entry is
+  built from the record the agent stored. Only with an agent that says `streams_sync` in
+  `flows.json`'s features; never for a stream the node has an entry for, or one whose record did
+  not read at the last apply; once per stream a minute in a process. The plan's `stream_bundle`
+  op, one stream's record fetched on its own, is not built: the delta MAIN already serves carries
+  it, with no new record type to sign. `stream_bundle` stays in `ClusterPool`'s list of bulk ops,
+  unused.
+- **The blocklist on change** (`BlocklistChanges`, `StreamPush`). Every change the change log
+  records (every block and unblock path) marks the request, and when it ends every active node
+  whose CONFIG flow is on and whose agent takes `config.changed` is sent
+  `config.changed {sections: [blocklist]}`: its agent syncs, stores the delta and runs
+  `cluster:apply`, so the node's blocklist caches follow within seconds, and root's iptables at its
+  minute sync. A node whose streams changed in the same request gets one command naming both
+  sections: the command's type is its dedupe key, so a second would supersede the first. The
+  plan's `node.root blocklist_sync` is not built: root's minute sync already applies the
+  replica's blocklist, and nothing on the node could order a root action after the agent's sync.
+- **The `node` section's nginx settings** (`cloudflare`, `mag_legacy_redirect`) need no applier of
+  their own: root's `cron:root_signals` reads them through `SettingsManager`, which answers from
+  the replica's `settings` section (both are in `lb_settings_keys.php`) wherever the replica owns
+  the settings. The `node` section carries a copy no reader needs.
+
+**Not built / limits.**
+- **A start of a stream the node does not hold** still costs one sync a minute per process.
+- **iptables** follows a block at root's next minute, not within seconds.
+
+**Tests.** Agent: `TestAStreamsSyncOnRequestStoresWhatMainJustAssigned` (the stream MAIN assigned
+since the last sync stored on request; a refusal answered 502; no replica, 404). Panel:
+`ReplicaStreamCacheTest::testAStartThatMissesHasTheAgentSyncAndReadsAgain` (a stand-in agent
+stores the record on the sync: the start finds it; no request without the feature; once a minute
+for a stream the sync does not bring; none for a stream with an entry),
+`StreamPushTest::testABlocklistChangeWakesTheConfigNodesInOneCommandWithTheStreams`.
+
+### Typed starts, and what a fence stops
+
+- **Typed starts** (`ClusterRoute::starts`, `ClusterRoute::start`). A start RPC (`{action:
+  stream|vod, function: start, stream_ids[, force]}`) goes as one `stream.start {stream_id}` or
+  `vod.start {stream_id, force}` per stream, deduped per stream (`<type>:<id>`), granting, to a
+  node whose agent says `typed_starts` at hello: its `cluster:exec --types` lists `stream.start`.
+  Any other node keeps `node.rpc`, which an older node PHP understands and a typed start would be
+  refused by. `cluster:exec` runs them as `node.rpc`'s stream and vod starts ran them
+  (`startMonitor` with a restart; `stopMovie`, then `startMovie` when forced, else the queue). The
+  extension already classes both as granting. `recording.start` has no producer and needs none: a
+  node starts the recordings due on it from its replica (`cron:vod`), and MAIN reaches it by
+  scheduling them.
+- **What a fence stops.** Past the drain, `cron:streams` releases a stream's thumbnail and TV
+  archive workers with its producer: they read the stream, and the first pass after the fence
+  lifts starts them again. Nothing new starts under the fence: `startThumbnail`, the `thumbnail`,
+  `archive` and `record` commands, the queue daemon's movie and channel passes (their rows wait),
+  and `cron:vod`'s due recordings.
+
+**Not built / limits.**
+- **A running VOD transcode or channel build finishes** under the fence: it serves no viewer,
+  killing it would fail the movie and lose the work, and the queue has no way to hand a row back
+  to pending (`QueueSink::update` takes pids above 0 only, and in CONTENT mode the queue is MAIN's).
+- **A recording already running** runs to its end; with its stream's producer released it records
+  nothing.
+
+**Tests.** `ClusterRestrictiveProducersTest::testAStartIsTypedOnlyWhereTheNodesPhpRunsIt` and
+`testClusterExecRunsTheStops` (the starts too); agent `TestTypedStartsFollowThePHP`;
+`FencedProducersTest::testAFencedNodeStartsNoWorkerRecordingEncodeOrBuild`;
+`ModeTwoPathsTest::testAFencedNodeReleasesItsProducersAndKeepsTheirRecords` (the thumbnail worker
+goes with its producer).
+
+### The node's own loopback
+
+Phase 8's acceptance wants `live_streaming_pass` in no process's command line. Two of a node's
+own pulls still carried it.
+
+- **The local RTMP output** (`StreamProcess`, `rtmp_output`) published to
+  `rtmp://127.0.0.1:<port>/live/<id>?password=<live_streaming_pass>`, in ffmpeg's command line.
+  nginx-rtmp asks `rtmp.php` at `on_publish`, and `rtmp.php` takes a publish from 127.0.0.1
+  without a password at all, so the output now names none.
+- **The recorder** (`RecordCommand`) read its own `/admin/live` and `/admin/timeshift` with the
+  fleet's secret, which pulls any stream from any server. It now presents a `LoopbackToken`:
+  `lb1-<exp>-<hmac>`, HMAC-SHA256 under the node's own key (`config/cluster/loopback.key`, 32
+  random bytes, made at first use, 0600) over the stream and a 24 h expiry. `RelayGuard` admits
+  it as `LOOPBACK` for that stream, from 127.0.0.1 or ::1 only, on the endpoints that take a
+  password; a token from any other address is refused and never tried as the password. When the
+  key cannot be made, the recorder falls back to the secret, as before.
+
+**Not built / limits.** A legacy relay (DATAPLANE off) still pulls its parent with the secret, by
+design: that is what the data plane's tickets replace.
+
+**Tests.** `LoopbackTokenTest` (a token opens its stream until it expires, no other stream, not
+tampered, and no token verifies before the key exists; RelayGuard takes it from the node itself
+only), `StreamProcessBuildLiveTest::testRtmpOutputAppendsFlvTarget` (no secret in the command).

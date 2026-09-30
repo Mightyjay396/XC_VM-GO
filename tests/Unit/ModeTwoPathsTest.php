@@ -798,9 +798,10 @@ final class ModeTwoPathsTest extends TestCase {
 
 	/**
 	 * A node fenced past its drain releases its producers (plan, section 9,
-	 * FENCED): cron:streams kills a running stream's producer, starts nothing,
-	 * and keeps the stream's record as it was, so the first pass after the
-	 * fence lifts starts it again. No connect.
+	 * FENCED): cron:streams kills a running stream's producer and its
+	 * thumbnail worker, starts nothing, and keeps the stream's record as it
+	 * was, so the first pass after the fence lifts starts them again. No
+	 * connect.
 	 */
 	public function testAFencedNodeReleasesItsProducersAndKeepsTheirRecords(): void {
 		$this->streams();
@@ -808,9 +809,12 @@ final class ModeTwoPathsTest extends TestCase {
 		// The producer: a process whose command line names the stream's playlist.
 		$rProducer = proc_open(['php', '-r', 'sleep(60);', $this->rHome . 'content/streams/7_.m3u8'], [], $rPipes);
 		$rPid = (int) proc_get_status($rProducer)['pid'];
+		// Its thumbnail worker: a PHP process titled as ThumbnailCommand titles it.
+		$rThumb = proc_open([PHP_BINARY, '-r', 'cli_set_process_title("Thumbnail[7]"); sleep(60);'], [], $rPipes);
+		$rThumbPid = (int) proc_get_status($rThumb)['pid'];
 		try {
 			file_put_contents($this->rHome . 'content/streams/7_.pid', (string) $rPid);
-			$this->runtime([7 => ['pid' => $rPid, 'monitor_pid' => null, 'stream_status' => 0, 'stream_started' => time() - 60]]);
+			$this->runtime([7 => ['pid' => $rPid, 'monitor_pid' => null, 'stream_status' => 0, 'stream_started' => time() - 60, 'vframes_pid' => $rThumbPid]]);
 			// The agent's lease, past its exp and its drain (0 min) on MAIN's clock.
 			$rNowMs = (int) round(microtime(true) * 1000);
 			file_put_contents($this->rHome . 'config/cluster/lease_state.json', (string) json_encode(['exp' => intdiv($rNowMs, 1000) - 60, 'iat' => intdiv($rNowMs, 1000) - 3600, 'gen' => 1, 'server_id' => 5, 'anchor_ms' => $rNowMs, 'wrote_at_ms' => $rNowMs]));
@@ -828,10 +832,18 @@ final class ModeTwoPathsTest extends TestCase {
 				usleep(20000);
 			}
 			$this->assertFalse(proc_get_status($rProducer)['running'], 'the producer is released');
+			for ($i = 0; $i < 50 && proc_get_status($rThumb)['running']; $i++) {
+				usleep(20000);
+			}
+			$this->assertStringContainsString('Fenced: releasing its Thumbnail worker', $rResult['output']);
+			$this->assertFalse(proc_get_status($rThumb)['running'], 'its thumbnail worker goes with it');
+			$this->assertStringNotContainsString('Start Thumbnail', $rResult['output']);
 			$this->assertSame($rPid, $this->kept(7)['pid'], 'the record stays as it was, for the restart');
 		} finally {
 			proc_terminate($rProducer, 9);
 			proc_close($rProducer);
+			proc_terminate($rThumb, 9);
+			proc_close($rThumb);
 		}
 	}
 

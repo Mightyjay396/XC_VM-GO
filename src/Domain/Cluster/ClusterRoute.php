@@ -38,10 +38,10 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: mixed} the node's raw result, or null on failure/timeout
 	 */
 	public static function rpc(int $rServerID, array $rData, int $rTimeout): array {
-		$rStop = self::stops($rData);
-		if ($rStop !== null) {
-			// The legacy answer, once the node has run (or refused) the last stop.
-			[$rRouted, $rCmdIDs] = self::stop($rServerID, $rStop[0], $rStop[1]);
+		$rTyped = self::perStream($rServerID, $rData);
+		if ($rTyped !== null) {
+			// The legacy answer, once the node has run (or refused) the last one.
+			[$rRouted, $rCmdIDs] = $rTyped;
 			if ($rCmdIDs === null || $rCmdIDs === []) {
 				return [$rRouted, null];
 			}
@@ -64,12 +64,85 @@ final class ClusterRoute {
 	 * @return array{0: bool, 1: bool} queued?
 	 */
 	public static function send(int $rServerID, array $rData): array {
-		$rStop = self::stops($rData);
-		if ($rStop !== null) {
-			[$rRouted, $rCmdIDs] = self::stop($rServerID, $rStop[0], $rStop[1]);
-			return [$rRouted, $rCmdIDs !== null];
+		$rTyped = self::perStream($rServerID, $rData);
+		if ($rTyped !== null) {
+			return [$rTyped[0], $rTyped[1] !== null];
 		}
 		return self::enqueue($rServerID, 'node.rpc', $rData);
+	}
+
+	/** An agent whose node's PHP runs `stream.start` and `vod.start` says so at hello. */
+	public const FEATURE_TYPED_STARTS = 'typed_starts';
+
+	/**
+	 * A per-stream RPC as its typed commands: a stop always (restrictive), a
+	 * start where the node's PHP runs typed starts (its agent says
+	 * FEATURE_TYPED_STARTS; an older one would refuse the type, so it keeps
+	 * `node.rpc`). Null for anything else.
+	 *
+	 * @param array<string, mixed> $rData
+	 * @return array{0: bool, 1: list<string>|null}|null
+	 */
+	private static function perStream(int $rServerID, array $rData): ?array {
+		$rStop = self::stops($rData);
+		if ($rStop !== null) {
+			return self::stop($rServerID, $rStop[0], $rStop[1]);
+		}
+		$rStart = self::starts($rData);
+		if ($rStart !== null && self::takesTypedStarts($rServerID)) {
+			return self::start($rServerID, $rStart[0], $rStart[1], $rStart[2]);
+		}
+		return null;
+	}
+
+	/**
+	 * The start an RPC payload asks for: `{action: stream|vod, function:
+	 * start, stream_ids[, force]}` → [`stream.start`|`vod.start`, ids, force].
+	 * Null for anything else.
+	 *
+	 * @param array<string, mixed> $rData
+	 * @return array{0: string, 1: list<int>, 2: bool}|null
+	 */
+	public static function starts(array $rData): ?array {
+		$rAction = $rData['action'] ?? null;
+		if (!in_array($rAction, ['stream', 'vod'], true) || ($rData['function'] ?? null) !== 'start' || !is_array($rData['stream_ids'] ?? null)) {
+			return null;
+		}
+		$rIDs = array_values(array_unique(array_filter(array_map('intval', $rData['stream_ids']), static fn(int $rID): bool => $rID > 0)));
+		return $rIDs === [] ? null : [$rAction . '.start', $rIDs, !empty($rData['force'])];
+	}
+
+	/** Does this node's PHP run typed starts (its agent says FEATURE_TYPED_STARTS)? */
+	private static function takesTypedStarts(int $rServerID): bool {
+		try {
+			$rNode = empty(SettingsManager::get('cluster_api_enabled')) ? null : NodeRegistry::byServer($rServerID);
+		} catch (\Throwable) {
+			return false;
+		}
+		return $rNode !== null && in_array(self::FEATURE_TYPED_STARTS, explode(',', (string) ($rNode['features'] ?? '')), true);
+	}
+
+	/**
+	 * Start streams (or movies) on a node: one `stream.start {stream_id}` /
+	 * `vod.start {stream_id, force}` per id, the node's cluster:exec running
+	 * what `node.rpc`'s start ran. Deduped per stream, so repeated clicks
+	 * queue one. Granting: a MAIN without a licence starts nothing.
+	 *
+	 * @param list<int> $rStreamIDs
+	 * @return array{0: bool, 1: list<string>|null} [routed, cmd_ids or null when not queued]
+	 */
+	public static function start(int $rServerID, string $rType, array $rStreamIDs, bool $rForce = false): array {
+		if (!in_array($rType, ['stream.start', 'vod.start'], true)) {
+			throw new \InvalidArgumentException('Not a start: ' . $rType);
+		}
+		return self::command($rServerID, $rType, static function (ClusterCrypto $rCrypto) use ($rServerID, $rType, $rStreamIDs, $rForce): array {
+			$rOut = [];
+			foreach ($rStreamIDs as $rID) {
+				$rArgs = ['stream_id' => (int) $rID] + ($rType === 'vod.start' ? ['force' => $rForce] : []);
+				$rOut[] = CommandBus::enqueue($rCrypto, $rServerID, $rType, $rArgs, $rType . ':' . (int) $rID);
+			}
+			return $rOut;
+		}, null);
 	}
 
 	/**

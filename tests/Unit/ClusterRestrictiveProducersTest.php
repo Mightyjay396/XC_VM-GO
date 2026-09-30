@@ -94,6 +94,33 @@ final class ClusterRestrictiveProducersTest extends TestCase {
 		], $this->queued(), 'one stop per stream, deduped');
 	}
 
+	/**
+	 * A start becomes its typed command (`stream.start`, `vod.start`, one per
+	 * stream, deduped, granting) only on a node whose PHP runs it, which its
+	 * agent says at hello (`typed_starts`); any other node keeps `node.rpc`,
+	 * which an older PHP understands.
+	 */
+	public function testAStartIsTypedOnlyWhereTheNodesPhpRunsIt(): void {
+		$this->assertSame(['stream.start', [3, 4], false], ClusterRoute::starts(['action' => 'stream', 'function' => 'start', 'stream_ids' => ['3', 4, 4, 0]]));
+		$this->assertSame(['vod.start', [9], true], ClusterRoute::starts(['action' => 'vod', 'function' => 'start', 'stream_ids' => [9], 'force' => 1]));
+		$this->assertNull(ClusterRoute::starts(['action' => 'stream', 'function' => 'stop', 'stream_ids' => [3]]));
+
+		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'stream', 'function' => 'start', 'stream_ids' => [3]]));
+		$this->assertSame(['node.rpc'], array_column($this->queued(), 'type'), 'no typed_starts: the RPC');
+
+		$this->rDb->exec('DELETE FROM `cluster_commands`');
+		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `features` varchar(255) DEFAULT NULL');
+		$this->rDb->query('UPDATE `cluster_nodes` SET `features` = ? WHERE `server_id` = ?', 'artefact,' . ClusterRoute::FEATURE_TYPED_STARTS, self::SID);
+		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'stream', 'function' => 'start', 'stream_ids' => [3, 4]]));
+		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'stream', 'function' => 'start', 'stream_ids' => [3]]), 'a second click');
+		$this->assertSame([true, true], ClusterRoute::send(self::SID, ['action' => 'vod', 'function' => 'start', 'stream_ids' => [9], 'force' => true]));
+		$this->assertSame([
+			['type' => 'stream.start', 'class' => 'G', 'dedupe' => 'stream.start:4', 'args' => ['stream_id' => 4]],
+			['type' => 'stream.start', 'class' => 'G', 'dedupe' => 'stream.start:3', 'args' => ['stream_id' => 3]],
+			['type' => 'vod.start', 'class' => 'G', 'dedupe' => 'vod.start:9', 'args' => ['stream_id' => 9, 'force' => true]],
+		], $this->queued(), 'one start per stream, deduped');
+	}
+
 	/** Stops are restrictive: they are signed when the licence is gone, which is when they matter. */
 	public function testAStopIsSignedWithoutALicence(): void {
 		$this->rCrypto->rRefuseSign = 'LICENCE';
@@ -145,14 +172,18 @@ final class ClusterRestrictiveProducersTest extends TestCase {
 		ClusterExecCommand::useStopper(static function (string $rType, int $rID) use (&$rRan): void {
 			$rRan[] = [$rType, $rID];
 		});
-		$this->assertContains('stream.stop', ClusterExecCommand::TYPES);
-		$this->assertContains('vod.stop', ClusterExecCommand::TYPES);
+		foreach (['stream.stop', 'vod.stop', 'stream.start', 'vod.start'] as $rType) {
+			$this->assertContains($rType, ClusterExecCommand::TYPES);
+		}
 		ob_start();
 		$this->assertSame(0, ClusterExecCommand::run(['type' => 'stream.stop', 'args' => ['stream_id' => 5]]));
 		$this->assertSame(0, ClusterExecCommand::run(['type' => 'vod.stop', 'args' => ['stream_id' => 6]]));
+		$this->assertSame(0, ClusterExecCommand::run(['type' => 'stream.start', 'args' => ['stream_id' => 7]]));
+		$this->assertSame(0, ClusterExecCommand::run(['type' => 'vod.start', 'args' => ['stream_id' => 8, 'force' => true]]));
 		$this->assertSame(2, ClusterExecCommand::run(['type' => 'stream.stop', 'args' => ['stream_id' => '5; rm']]));
+		$this->assertSame(2, ClusterExecCommand::run(['type' => 'stream.start', 'args' => []]));
 		ob_end_clean();
-		$this->assertSame([['stream.stop', 5], ['vod.stop', 6]], $rRan);
+		$this->assertSame([['stream.stop', 5], ['vod.stop', 6], ['stream.start', 7], ['vod.start', 8]], $rRan);
 	}
 
 	private function fenceFile(string $rState, int $rAgeMs = 0): void {

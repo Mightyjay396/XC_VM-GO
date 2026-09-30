@@ -6,6 +6,7 @@ use XcVm\Cli\CommandInterface;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
+use XcVm\Domain\Cluster\AgentUpgrades;
 
 /**
  * AgentBinaryCommand — MAIN's cache of the LB cluster agent (`xc_agent`,
@@ -19,7 +20,8 @@ use XcVm\Core\Updates\UpdateChannels;
  * binary. MAIN only (stripped from LB builds).
  *
  * Usage: `console.php agent_binary [amd64|arm64|armv7|386 …] [force]`
- * (no arch = this host's).
+ * (no arch = this host's), and `console.php agent_binary release <version>`
+ * to release a rollout a failing node holds back (AgentUpgrades::release).
  *
  * @package XC_VM_CLI_Commands
  */
@@ -35,6 +37,16 @@ class AgentBinaryCommand implements CommandInterface {
 	}
 
 	public function execute(array $rArgs): int {
+		if (($rArgs[0] ?? '') === 'release') {
+			$rVersion = trim((string) ($rArgs[1] ?? ''));
+			if ($rVersion === '') {
+				echo "Usage: console.php agent_binary release <version>\n";
+				return 1;
+			}
+			$rNodes = AgentUpgrades::release($rVersion);
+			echo 'Released the rollout of xc_agent ' . $rVersion . ': ' . $rNodes . " node(s) that did not take it are offered it again at the next cron:cluster.\n";
+			return 0;
+		}
 		$rForce = in_array('force', $rArgs, true);
 		$rArches = array_values(array_intersect($rArgs, array_unique(ReleaseAsset::ARCH_MAP)));
 		if ($rArches === []) {

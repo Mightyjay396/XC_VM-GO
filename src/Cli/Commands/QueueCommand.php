@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\DaemonTrait;
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Config\SettingsManager;
@@ -76,6 +77,12 @@ class QueueCommand implements CommandInterface {
 	 * @param list<int>       $rDelete Rows to drop.
 	 */
 	private function movies(array &$rPids, array &$rDelete): void {
+		// Fenced: nothing starts, and the pending rows wait for the fence to
+		// lift. A running encode finishes (it serves no viewer, and killing it
+		// would lose the work and fail the movie).
+		if (NodeLease::refusesEverything()) {
+			return;
+		}
 		$rMax = $this->slots('max_encode_movies', 50);
 		$rQueue = QueueSink::claim('movie', $rMax);
 		if ($rQueue === null) {
@@ -112,6 +119,9 @@ class QueueCommand implements CommandInterface {
 	 * @param list<int>       $rDelete
 	 */
 	private function channels(array &$rPids, array &$rDelete): void {
+		if (NodeLease::refusesEverything()) {
+			return; // fenced, as movies()
+		}
 		$rMax = $this->slots('max_encode_cc', 1);
 		$rQueue = QueueSink::claim('channel', $rMax);
 		if ($rQueue === null) {

@@ -4,6 +4,7 @@ namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Cli\CronTrait;
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Diagnostics\DiagnosticsService;
@@ -81,7 +82,8 @@ class VodCronJob implements CommandInterface {
 			}
 		}
 
-		$rRecordings = NodeStreams::recordingsDue($db);
+		// Fenced: no recording starts (RecordCommand refuses too).
+		$rRecordings = NodeLease::refusesEverything() ? [] : NodeStreams::recordingsDue($db);
 		if (count($rRecordings) > 0) {
 			foreach ($rRecordings as $rRow) {
 				echo 'Start recording ID: ' . intval($rRow['id']) . "\n";

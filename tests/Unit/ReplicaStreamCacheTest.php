@@ -2,6 +2,7 @@
 
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cache\FileCache;
+use XcVm\Core\Cluster\AgentClient;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
@@ -86,7 +87,15 @@ final class ReplicaStreamCacheTest extends TestCase {
 		DatabaseFactory::set($this->rDb);
 	}
 
+	/** @var resource|null the stand-in agent (streamsSyncAgent) */
+	private $rAgent = null;
+
 	protected function tearDown(): void {
+		if ($this->rAgent !== null) {
+			proc_terminate($this->rAgent);
+			proc_close($this->rAgent);
+		}
+		AgentClient::useSocket(null);
 		DatabaseFactory::reset();
 		StreamSource::useLoader(null);
 		ReplicaApply::useDir(null);
@@ -353,6 +362,79 @@ final class ReplicaStreamCacheTest extends TestCase {
 		$this->mainUnreachable();
 		$this->assertNull(StreamSource::streamRow(20, true));
 		$this->assertNotContains(20, ReplicaStreamCache::cached());
+	}
+
+	/**
+	 * A stand-in agent on its socket: each POST /v1/streams_sync moves what is
+	 * staged in $rStaged into the replica's streams (the records a sync would
+	 * store) and answers 200; each request is logged.
+	 */
+	private function streamsSyncAgent(string $rStaged): string {
+		$rSock = $this->rDir . 'agent.sock';
+		$rScript = $this->rDir . 'agent.php';
+		file_put_contents($rScript, <<<'PHP'
+<?php
+[, $rSock, $rLog, $rStaged, $rStreams] = $argv;
+$rServer = stream_socket_server('unix://' . $rSock, $rErrNo, $rErr);
+while (($rConn = @stream_socket_accept($rServer, 10)) !== false) {
+	$rHead = '';
+	while (!str_contains($rHead, "\r\n\r\n") && ($rChunk = fread($rConn, 8192)) !== false && $rChunk !== '') {
+		$rHead .= $rChunk;
+	}
+	file_put_contents($rLog, strtok($rHead, "\r\n") . "\n", FILE_APPEND);
+	foreach (glob($rStaged . '/*') ?: [] as $rFile) {
+		rename($rFile, $rStreams . '/' . basename($rFile));
+	}
+	$rBody = '{"synced":true}';
+	fwrite($rConn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($rBody) . "\r\nConnection: close\r\n\r\n" . $rBody);
+	fclose($rConn);
+}
+PHP);
+		$rNull = ['file', '/dev/null', 'w'];
+		$this->rAgent = proc_open([PHP_BINARY, $rScript, $rSock, $this->rDir . 'requests.log', $rStaged, $this->rFixture->dir() . 'streams'], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes) ?: null;
+		for ($i = 0; $i < 100 && !file_exists($rSock); $i++) {
+			usleep(20000);
+		}
+		$this->assertFileExists($rSock, 'the stand-in agent listens');
+		AgentClient::useSocket($rSock);
+		return $this->rDir . 'requests.log';
+	}
+
+	/**
+	 * A start that finds no entry for a stream MAIN assigned a moment ago (its
+	 * record not yet synced) has the agent sync the section and reads again:
+	 * the plan's `stream_bundle` on a miss. Once per stream a minute, and only
+	 * with an agent that says it can.
+	 */
+	public function testAStartThatMissesHasTheAgentSyncAndReadsAgain(): void {
+		$this->storeSection();
+		$this->apply();
+		// Stream 20, assigned since: its record is what the next sync stores.
+		$this->rFixture->stream(20, ReplicaFixture::streamData(20, $this->rSid));
+		$rStaged = $this->rDir . 'staged';
+		mkdir($rStaged);
+		foreach (['20.json', '20.rep'] as $rFile) {
+			rename($this->rFixture->dir() . 'streams/' . $rFile, $rStaged . '/' . $rFile);
+		}
+		$rLog = $this->streamsSyncAgent($rStaged);
+		$this->mainUnreachable();
+
+		// An agent that does not say it: no request, no stream.
+		$this->assertNull(StreamSource::streamRow(20, true));
+		$this->assertFileDoesNotExist($rLog);
+
+		file_put_contents($this->rDir . 'flows.json', json_encode(['mode' => 1, 'flows' => NodeFlows::STREAMS, 'state' => 'active', 'features' => [ReplicaStreamCache::FEATURE_SYNC]]));
+		NodeFlows::usePath($this->rDir . 'flows.json');
+		$this->assertSame('S20', StreamSource::streamRow(20, true)['stream_display_name'] ?? null, 'the start finds it after the sync');
+		$this->assertSame(['POST /v1/streams_sync HTTP/1.0'], file($rLog, FILE_IGNORE_NEW_LINES));
+
+		// A stream the sync does not bring (not the node's): asked once a minute, not at every start.
+		$this->assertNull(StreamSource::streamRow(30, true));
+		$this->assertNull(StreamSource::streamRow(30, true));
+		$this->assertCount(2, file($rLog, FILE_IGNORE_NEW_LINES));
+		// One the node has an entry for never asks.
+		$this->assertNotNull(StreamSource::streamRow(10, true));
+		$this->assertCount(2, file($rLog, FILE_IGNORE_NEW_LINES));
 	}
 
 	public function testARecordingStoredSinceTheLastApplyIsFound(): void {

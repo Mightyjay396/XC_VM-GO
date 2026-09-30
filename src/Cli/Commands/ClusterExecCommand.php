@@ -78,7 +78,7 @@ class ClusterExecCommand implements CommandInterface {
 	public const SKEW = 300;
 
 	/** The command types run here (`--types`). */
-	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop', 'stream.assign', 'queue.poke', 'node.purge'];
+	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop', 'stream.start', 'vod.start', 'stream.assign', 'queue.poke', 'node.purge'];
 
 	public function getName(): string {
 		return 'cluster:exec';
@@ -184,15 +184,30 @@ class ClusterExecCommand implements CommandInterface {
 		self::$rStopper = $rStopper;
 	}
 
-	private static function stopStream(string $rType, int $rStreamID): void {
+	/** A typed stop or start of one stream, as `node.rpc`'s stream and vod actions ran it. */
+	private static function stopStream(string $rType, int $rStreamID, bool $rForce = false): void {
 		if (self::$rStopper !== null) {
 			(self::$rStopper)($rType, $rStreamID);
 			return;
 		}
-		if ($rType === 'vod.stop') {
-			StreamProcess::stopMovie($rStreamID);
-		} else {
-			StreamProcess::stopStream($rStreamID, true);
+		switch ($rType) {
+			case 'vod.stop':
+				StreamProcess::stopMovie($rStreamID);
+				break;
+			case 'stream.stop':
+				StreamProcess::stopStream($rStreamID, true);
+				break;
+			case 'stream.start':
+				StreamProcess::startMonitor($rStreamID, 1);
+				break;
+			case 'vod.start':
+				StreamProcess::stopMovie($rStreamID, true);
+				if ($rForce) {
+					StreamProcess::startMovie($rStreamID);
+				} else {
+					StreamProcess::queueMovie($rStreamID);
+				}
+				break;
 		}
 	}
 
@@ -298,12 +313,14 @@ class ClusterExecCommand implements CommandInterface {
 
 			case 'stream.stop':
 			case 'vod.stop':
+			case 'stream.start':
+			case 'vod.start':
 				$rStreamID = $rArgs['stream_id'] ?? null;
 				if (!is_int($rStreamID) || $rStreamID <= 0) {
 					fwrite(STDERR, "cluster:exec: bad stream id\n");
 					return 2;
 				}
-				self::stopStream($rCmd['type'], $rStreamID);
+				self::stopStream($rCmd['type'], $rStreamID, ($rArgs['force'] ?? false) === true);
 				echo json_encode(['result' => true]);
 				return 0;
 

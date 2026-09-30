@@ -195,6 +195,40 @@ final class ReplicaStreamCache {
 		return $rEntry;
 	}
 
+	/** An agent that says this in flows.json syncs the streams section on request (syncMissing). */
+	public const FEATURE_SYNC = 'streams_sync';
+
+	/** How long a start waits on its agent's sync. */
+	public const SYNC_TIMEOUT = 10.0;
+
+	/** A stream asked again after this long may be synced again (a later assignment). */
+	public const SYNC_AGAIN_SEC = 60;
+
+	/** @var array<int, int> stream id => when this process last synced for it */
+	private static array $rSynced = [];
+
+	/**
+	 * A start found no entry for $rID: MAIN may have assigned the stream a
+	 * moment ago, its record not yet synced (the start's command raced the
+	 * agent's sync). Ask the agent for a streams sync now (`POST
+	 * /v1/streams_sync`, when flows.json says it can) and say whether it
+	 * synced, so the caller reads again. Once per stream a minute in a
+	 * process, never for a stream the node has an entry for, or one whose
+	 * record did not read at the last apply. The plan's `stream_bundle` op on
+	 * a start miss, done with the delta MAIN already serves.
+	 */
+	public static function syncMissing(int $rID): bool {
+		if (($rAt = self::$rSynced[$rID] ?? null) !== null && time() - $rAt < self::SYNC_AGAIN_SEC) {
+			return false;
+		}
+		if (!NodeFlows::agentHas(self::FEATURE_SYNC) || self::get($rID) !== null || in_array($rID, self::unreadable(), true)) {
+			return false;
+		}
+		self::$rSynced[$rID] = time();
+		$rOut = AgentClient::request('POST', '/v1/streams_sync', null, self::SYNC_TIMEOUT);
+		return $rOut !== null && $rOut[0] === 200;
+	}
+
 	/**
 	 * StreamSource::streamRow's answer: the `streams` row with its type (live
 	 * or not) and profile, or null (not held, another kind, a direct source,

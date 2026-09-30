@@ -25,7 +25,10 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * stream. The node's runtime columns come from its own store
  * (StreamRuntime) once that is seeded, and are null until then; MAIN's
  * catalogue metadata and an argument's description stay null.
- * `stream_bundle` on a miss (plan, section 7) is not built.
+ * A start that finds no entry (streamRow) has the agent sync the section
+ * first and reads again (ReplicaStreamCache::syncMissing), for a stream
+ * assigned a moment before: the plan's `stream_bundle` on a miss, with the
+ * delta MAIN already serves.
  *
  * The readers that take a stream's definition and its runtime state
  * together, from one joined row (the monitor, the proxy producer, the delay,
@@ -65,6 +68,10 @@ final class StreamSource {
 		}
 		if (ReplicaStreamCache::owned()) {
 			$rRow = ReplicaStreamCache::streamRow($rStreamID, $rLive);
+			// A start that missed: the stream may have been assigned a moment ago.
+			if ($rRow === null && ReplicaStreamCache::syncMissing($rStreamID)) {
+				$rRow = ReplicaStreamCache::streamRow($rStreamID, $rLive);
+			}
 			return $rRow !== null && StreamRuntime::ready() ? array_merge($rRow, StreamRuntime::streamFields($rStreamID)) : $rRow;
 		}
 		$rDb ??= DatabaseFactory::get();

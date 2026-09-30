@@ -56,8 +56,11 @@ final class ArtefactStage {
 	/** Beside the agent binary: the one an install replaced, which run.sh puts back (bin/xc_agent/run.sh). */
 	public const PREV = '.prev';
 
-	/** Beside the agent binary: `<installed at> <failed starts>` while the new one is on trial. */
+	/** Beside the agent binary: `<installed at> <failed starts> [reach]` while the new one is on trial. */
 	public const TRIAL = '.trial';
+
+	/** An agent that says this on `version`'s features line writes config/cluster/reached (run.sh's reach check). */
+	public const FEATURE_REACHED = 'reached';
 
 	private static ?string $rDownloads = null;
 
@@ -304,7 +307,11 @@ final class ArtefactStage {
 	 * (runs(): a binary that does not start on this node is never put where
 	 * run.sh would restart it every 2 s), then renamed in. The binary it
 	 * replaces is kept as PREV and the new one put on TRIAL: run.sh restores
-	 * PREV if the new one fails at start three times within its trial.
+	 * PREV if the new one fails at start three times within its trial, or,
+	 * for an agent that says it reports reaching MAIN (its `version`'s
+	 * features line), if it has not reached MAIN in time. PREV is the last
+	 * binary that proved itself: one replaced while still on trial never
+	 * becomes it, unless there is no PREV at all.
 	 *
 	 * @param array{path: string, grant: array<string, mixed>} $rStaged
 	 * @return string|null null once installed, else why not
@@ -322,19 +329,23 @@ final class ArtefactStage {
 			return $rWhy === null;
 		}, $rDir);
 		fclose($rIn);
-		if ($rWhy === null && !self::runs($rTmp, $rDir)) {
+		$rVersion = $rWhy === null ? self::runs($rTmp, $rDir) : null;
+		if ($rWhy === null && $rVersion === null) {
 			$rWhy = 'it does not run on this node (' . php_uname('m') . ')';
 		}
-		$rPlaced = SettingsAudit::asAgentUser(static function () use ($rTmp, $rTarget, &$rWhy): bool {
+		$rReach = $rVersion !== null && self::says($rVersion, self::FEATURE_REACHED);
+		$rPlaced = SettingsAudit::asAgentUser(static function () use ($rTmp, $rTarget, $rReach, &$rWhy): bool {
 			// The binary it replaces stays beside it, and the new one is on trial:
-			// run.sh puts the old one back if the new one keeps failing at start.
-			if ($rWhy === null && is_file($rTarget)) {
+			// run.sh puts the old one back if the new one keeps failing at start
+			// (or, with `reach`, never reaches MAIN). One still on trial has not
+			// proved itself, so the PREV before it stays.
+			if ($rWhy === null && is_file($rTarget) && (!is_file($rTarget . self::TRIAL) || !is_file($rTarget . self::PREV))) {
 				@unlink($rTarget . self::PREV);
 				@link($rTarget, $rTarget . self::PREV) || @copy($rTarget, $rTarget . self::PREV);
 				@chmod($rTarget . self::PREV, 0755);
 			}
 			if ($rWhy === null && @rename($rTmp, $rTarget)) {
-				@file_put_contents($rTarget . self::TRIAL, time() . " 0\n");
+				@file_put_contents($rTarget . self::TRIAL, time() . ' 0' . ($rReach ? ' reach' : '') . "\n");
 				return true;
 			}
 			@unlink($rTmp);
@@ -347,17 +358,18 @@ final class ArtefactStage {
 	 * Does this binary start here: `<binary> version` exits 0 with a line
 	 * within 10 s, run as the owner of its directory (the agent's user; from
 	 * root through sudo, never with root's rights). No shell: an argv list,
-	 * stdin and stderr /dev/null, and the first line of at most
-	 * VERSION_OUTPUT bytes of stdout kept (the rest is read and dropped, so
-	 * the binary never blocks on a full pipe).
+	 * stdin and stderr /dev/null, and at most VERSION_OUTPUT bytes of stdout
+	 * kept (the rest is read and dropped, so the binary never blocks on a
+	 * full pipe). Returns what it printed (its version first), null when it
+	 * does not start.
 	 */
-	private static function runs(string $rBinary, string $rDir): bool {
+	private static function runs(string $rBinary, string $rDir): ?string {
 		$rArgv = ['timeout', '10', $rBinary, 'version'];
 		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
 			clearstatcache(true, rtrim($rDir, '/'));
 			$rStat = @lstat(rtrim($rDir, '/'));
 			if (!is_array($rStat) || $rStat['uid'] === 0) {
-				return false;
+				return null;
 			}
 			$rArgv = array_merge(['sudo', '-n', '-u', '#' . $rStat['uid']], $rArgv);
 		}
@@ -365,7 +377,7 @@ final class ArtefactStage {
 		// nosemgrep: php.lang.security.exec-use.exec-use
 		$rProc = @proc_open($rArgv, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $rPipes);
 		if (!is_resource($rProc)) {
-			return false;
+			return null;
 		}
 		$rOut = '';
 		while (!feof($rPipes[1])) {
@@ -376,7 +388,12 @@ final class ArtefactStage {
 			$rOut .= substr($rChunk, 0, max(0, self::VERSION_OUTPUT - strlen($rOut)));
 		}
 		fclose($rPipes[1]);
-		return proc_close($rProc) === 0 && trim(explode("\n", $rOut, 2)[0]) !== '';
+		return proc_close($rProc) === 0 && trim(explode("\n", $rOut, 2)[0]) !== '' ? $rOut : null;
+	}
+
+	/** Does an agent's `version` output name $rFeature on its `features:` line? */
+	private static function says(string $rVersion, string $rFeature): bool {
+		return (bool) preg_match('/^features:(.*)$/m', $rVersion, $rM) && in_array($rFeature, preg_split('/[\s,]+/', trim($rM[1])) ?: [], true);
 	}
 
 	/**
