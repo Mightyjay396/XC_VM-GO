@@ -984,6 +984,8 @@ class ConnectionTracker {
 	/**
 	 * A long-running viewer's periodic check-in: refresh `hls_last_read` and
 	 * read back what the store now says (null when the connection is gone).
+	 * A connection that has ended (closed by the limiter, an admin or the
+	 * sweep) is read back as it is, never opened again: the caller then stops.
 	 * Opens and closes its own Redis / database connection, as the stream
 	 * endpoints' loops do between check-ins.
 	 *
@@ -1002,7 +1004,7 @@ class ConnectionTracker {
 			RedisManager::ensureConnected();
 			$rExisting = self::getConnection($rUUID);
 			if ($rExisting) {
-				$rConnection = self::updateConnection($rExisting, ['hls_last_read' => $rLastRead], 'open');
+				$rConnection = self::ended($rExisting) ? $rExisting : self::updateConnection($rExisting, ['hls_last_read' => $rLastRead]);
 			}
 			RedisManager::closeInstance();
 			return $rConnection ?: null;

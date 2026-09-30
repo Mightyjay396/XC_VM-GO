@@ -3,6 +3,7 @@
 use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Util\Encryption;
+use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\AsyncFileOperations;
 use XcVm\Streaming\Codec\FfmpegPaths;
 use XcVm\Streaming\Delivery\SignalSender;
@@ -142,6 +143,21 @@ if (isset($_GET['token'])) {
 
 			if (!file_exists(CONS_TMP_PATH . $rUUID)) {
 				generate404();
+			}
+
+			// A timeshift playlist is one whole VOD list, asked for once: its
+			// segments keep the viewer heard, or the sweep's 30 s rule ends it
+			// mid-programme. One ended since (the limiter, an admin) gets no more;
+			// a store that cannot be asked does not stop the playback.
+			if ($rType == 'ARCHIVE') {
+				try {
+					$rHeard = ConnectionTracker::heartbeat($rSettings, $rUUID, time() - intval($rServers[SERVER_ID]['time_offset']));
+				} catch (\Throwable) {
+					$rHeard = null;
+				}
+				if (is_array($rHeard) && !empty($rHeard['hls_end'])) {
+					generate404();
+				}
 			}
 
 			$rFilesize = filesize($rSegment);

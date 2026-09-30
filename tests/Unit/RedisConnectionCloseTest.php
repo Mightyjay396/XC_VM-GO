@@ -208,6 +208,36 @@ final class RedisConnectionCloseTest extends TestCase {
 		}
 	}
 
+	/** heartbeat() closes the shared connection when it is done: a fresh one for what follows. */
+	private function reconnect(): void {
+		$this->rRedis = new \Redis();
+		$this->rRedis->connect($this->rBus->socket(), 0, 2.0, null, 0, 2.0);
+		$this->manager($this->rRedis);
+	}
+
+	/**
+	 * A long-running viewer's check-in (and a timeshift segment's) refreshes
+	 * an open connection, and reads an ended one back as ended: it used to
+	 * open it again (hls_end 0, back in LIVE), so a worker whose viewer the
+	 * limiter or an admin had just ended went on streaming.
+	 */
+	public function testAHeartbeatNeverBringsAnEndedConnectionBack(): void {
+		$this->viewer('open', '198.51.100.7', 'tv', 1800000001);
+		$rHeard = ConnectionTracker::heartbeat($GLOBALS['rSettings'], 'open', 1800000500);
+		$this->assertSame(0, (int) $rHeard['hls_end']);
+		$this->assertSame(1800000500, (int) $rHeard['hls_last_read']);
+		$this->reconnect();
+		$this->assertNotFalse($this->rRedis->zScore('LIVE', 'open'));
+
+		$this->viewer('ended', '198.51.100.8', 'tv', 1800000002);
+		$this->assertNotNull(ConnectionTracker::updateConnection(ConnectionTracker::getConnection('ended'), [], 'close'));
+		$rHeard = ConnectionTracker::heartbeat($GLOBALS['rSettings'], 'ended', 1800000600);
+		$this->assertSame(1, (int) $rHeard['hls_end'], 'read back as ended: the caller stops');
+		$this->reconnect();
+		$this->assertFalse($this->rRedis->zScore('LIVE', 'ended'), 'not back among the live ones');
+		$this->assertTrue((bool) $this->rRedis->sIsMember('ENDED', 'ended'));
+	}
+
 	public function testAnHmacViewersActivityIsWritten(): void {
 		// An HMAC identity has no line (user_id 0): its hmac_id names it.
 		@mkdir(LOGS_TMP_PATH, 0777, true);
