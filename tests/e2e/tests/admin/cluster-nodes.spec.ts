@@ -85,9 +85,9 @@ test('a flow switched on reaches the node and is switched off again', async ({ p
   const wasOn = await flowOn(await row(page), 'telemetry');
   await act(page, wasOn ? 'telemetry_off' : 'telemetry_on');
   await until(page, 'telemetry switched', async (tr) => (await flowOn(tr, 'telemetry')) !== wasOn, 30_000);
-  // The node keeps heart-beating under the new flows.
-  await page.waitForTimeout(6000);
-  expect(await health(await row(page))).toBe('ok');
+  // The node keeps heart-beating under the new flows (its next heartbeat may
+  // take a few seconds to land).
+  await until(page, 'heard under the new flows', async (tr) => (await health(tr)) === 'ok', 30_000);
   await act(page, wasOn ? 'telemetry_on' : 'telemetry_off');
   await until(page, 'telemetry restored', async (tr) => (await flowOn(tr, 'telemetry')) === wasOn, 30_000);
 });
