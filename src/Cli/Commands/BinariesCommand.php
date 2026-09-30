@@ -91,14 +91,18 @@ class BinariesCommand implements CommandInterface {
 			return 1;
 		}
 
-		$rCommand = '/bin/bash ' . escapeshellarg($rScript) . ' ' . escapeshellarg(GIT_OWNER) . ' ' . escapeshellarg(GIT_REPO_BIN) . ' ' . escapeshellarg(BIN_PATH) . ' ' . escapeshellarg($rLatestVersion);
+		// Then xcvm_core, which is kept current on its own: the bundle's PHP can
+		// bring an older one (no cluster API), and a panel update never refreshes
+		// bin/install, so the script's own guard is not on every panel.
+		$rCommand = '/bin/bash ' . escapeshellarg($rScript) . ' ' . escapeshellarg(GIT_OWNER) . ' ' . escapeshellarg(GIT_REPO_BIN) . ' ' . escapeshellarg(BIN_PATH) . ' ' . escapeshellarg($rLatestVersion)
+			. '; ' . escapeshellarg(PHP_BIN) . ' ' . escapeshellarg(MAIN_HOME . 'console.php') . ' xcvm_core';
 		$rLogDir = MAIN_HOME . 'tmp/';
 		if (!is_dir($rLogDir)) {
 			@mkdir($rLogDir, 0755, true);
 		}
 
 		$rLogFile = $rLogDir . 'binaries_update_' . date('Ymd_His') . '.log';
-		$rDetachedCommand = 'nohup ' . $rCommand . ' > ' . escapeshellarg($rLogFile) . ' 2>&1 < /dev/null & echo $!';
+		$rDetachedCommand = 'nohup sh -c ' . escapeshellarg($rCommand) . ' > ' . escapeshellarg($rLogFile) . ' 2>&1 < /dev/null & echo $!';
 		echo "Starting binaries updater in background...\n";
 		$rPid = trim((string) shell_exec($rDetachedCommand));
 
