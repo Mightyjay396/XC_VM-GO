@@ -3,6 +3,7 @@
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Cluster\ClusterAdmin;
 use XcVm\Domain\Cluster\ClusterBus;
@@ -10,6 +11,7 @@ use XcVm\Domain\Cluster\ClusterClock;
 use XcVm\Domain\Cluster\ClusterOverview;
 use XcVm\Domain\Cluster\ClusterRoute;
 use XcVm\Domain\Cluster\ClusterSemaphore;
+use XcVm\Domain\Cluster\ConnectionDigest;
 use XcVm\Domain\Cluster\LivenessService;
 use XcVm\Domain\Cluster\NodeRegistry;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -266,6 +268,60 @@ final class ClusterOverviewTest extends TestCase {
 		$this->assertSame(['tone' => 'warning', 'key' => 'cluster_clock_off', 'vars' => ['{OFFSET}' => '+45s']], ClusterOverview::clockBadge('45000'));
 		$this->assertSame(['tone' => 'danger', 'key' => 'cluster_clock_degraded', 'vars' => ['{OFFSET}' => '-600s']], ClusterOverview::clockBadge(-600000));
 		$this->assertNull(ClusterOverview::clockBadge('bogus'), 'not a number');
+	}
+
+	public function testAConnectionMismatchOrResyncIsBadged(): void {
+		$rNow = self::NOW * 1000;
+		$this->assertNull(ClusterOverview::divergenceBadge(null, $rNow), 'no digest, no check');
+		$this->assertNull(ClusterOverview::divergenceBadge(['at' => $rNow - 4000, 'miss' => 0, 'asked' => 0], $rNow), 'agreeing');
+		$this->assertSame('cluster_conn_differ', ClusterOverview::divergenceBadge(['at' => $rNow - 4000, 'miss' => 1, 'asked' => 0], $rNow)['key'] ?? null);
+		$this->assertNull(ClusterOverview::divergenceBadge(['at' => $rNow - 61000, 'miss' => 1, 'asked' => 0], $rNow), 'a check over a minute old: the node sends no digest now');
+		$this->assertSame(['tone' => 'warning', 'key' => 'cluster_conn_resynced', 'vars' => ['{AGO}' => '42s']], ClusterOverview::divergenceBadge(['at' => $rNow, 'miss' => 0, 'asked' => $rNow - 42000], $rNow));
+		$this->assertNull(ClusterOverview::divergenceBadge(['at' => $rNow, 'miss' => 0, 'asked' => $rNow - ClusterOverview::RESYNC_SHOWN_MS], $rNow), 'resynced long ago');
+
+		// The Servers list's badges read the digest's own state file.
+		$rDir = sys_get_temp_dir() . '/xcvm-digest-' . bin2hex(random_bytes(4)) . '/';
+		mkdir($rDir);
+		ConnectionDigest::useState($rDir);
+		try {
+			file_put_contents($rDir . '5.json', json_encode(['at' => $rNow, 'miss' => 0, 'asked' => $rNow - 1000]));
+			$rBadges = ClusterOverview::nodeBadges(['server_id' => 5, 'clock_offset_ms' => 45000], $rNow);
+			$this->assertSame(['cluster_clock_off', 'cluster_conn_resynced'], array_column($rBadges, 'key'));
+			$this->assertSame(['cluster_clock_help', 'cluster_conn_help'], array_column($rBadges, 'help'));
+			$this->assertSame([], ClusterOverview::nodeBadges(['server_id' => 6, 'clock_offset_ms' => 0], $rNow));
+		} finally {
+			ConnectionDigest::useState(null);
+			exec('rm -rf ' . escapeshellarg($rDir));
+		}
+	}
+
+	public function testTheInfoTabShowsTheGateTheKeysAndTheNextRefresh(): void {
+		$this->node(2, 'active', NodeRegistry::FLOW_COMMANDS);
+		$this->node(3, 'active', NodeRegistry::FLOW_COMMANDS);
+		$this->node(4, 'enrolling', 0);
+		foreach ([[2, self::NOW + 900], [3, self::NOW + 300], [4, self::NOW + 60]] as [$rSid, $rRefresh]) {
+			$this->rDb->query('INSERT INTO `cluster_node_epochs` (`server_id`, `epoch`, `record`, `nbf`, `exp`, `refresh_at`, `created_at`) VALUES (?, 1, ?, ?, ?, ?, ?)', $rSid, '', self::NOW, self::NOW + 3600, $rRefresh, self::NOW);
+		}
+		ClusterCryptoFactory::useProbe(static fn(): array => ['api' => 1, 'ext_version' => '2.4.0', 'licensed' => true, 'kid' => 'a1b2c3d4', 'clock_ok' => true, 'initialised' => true, 'panel_fp' => str_repeat("\xab", 32)]);
+		try {
+			$rRows = array_column((array) ClusterOverview::infoRows(['cluster_api_enabled' => 1, 'live_streaming_pass' => 'pass']), 1, 0);
+			$this->assertSame(['On', 'Open', 'a1b2c3d4'], [$rRows['Cluster API'], $rRows['Licence gate'], $rRows['Licence kid']]);
+			$this->assertSame(str_repeat('ab', 32), $rRows['Panel key'], 'what cluster:pin-root takes');
+			$this->assertSame('2 active, 1 enrolling', $rRows['Nodes']);
+			$this->assertSame(gmdate('Y-m-d H:i', self::NOW + 300) . ' UTC', $rRows['Next token refresh'], 'the soonest active node\'s; an enrolling one does not count');
+			$this->assertSame('2.4.0 (API 1; the panel takes ' . ClusterCryptoFactory::status()['range'] . ')', $rRows['Extension']);
+			$this->assertSame('OK', $rRows['Extension clock']);
+			$this->assertSame('kid ' . ReplicaSections::kid('live_streaming_pass', 'pass') . ', never rotated', $rRows['Stream secret']);
+
+			ClusterCryptoFactory::useProbe(static fn(): array => ['api' => 1, 'ext_version' => '2.4.0', 'licensed' => false, 'clock_ok' => false, 'initialised' => false, 'root_error' => 'NO_ROOT']);
+			$rRows = array_column((array) ClusterOverview::infoRows([]), 1, 0);
+			$this->assertSame(['Off', 'Closed: no token is issued', '—', 'Not initialised: NO_ROOT', 'Rolled back: cluster calls are refused'], [$rRows['Cluster API'], $rRows['Licence gate'], $rRows['Licence kid'], $rRows['Panel key'], $rRows['Extension clock']]);
+
+			ClusterCryptoFactory::useProbe(static fn(): ?array => null);
+			$this->assertNull(ClusterOverview::infoRows([]), 'no extension, no block');
+		} finally {
+			ClusterCryptoFactory::useProbe(null);
+		}
 	}
 
 	public function testANewLicenceKeyRotatesEveryToken(): void {

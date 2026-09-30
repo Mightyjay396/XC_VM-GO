@@ -6,6 +6,7 @@ use XcVm\Core\Cluster\ClusterDiagnosis;
 use XcVm\Core\Cluster\ClusterHealth;
 use XcVm\Core\Cluster\ClusterSettings;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Infrastructure\Database\DatabaseAware;
 
 /**
@@ -102,6 +103,89 @@ final class ClusterOverview {
 		}
 		$rDegraded = abs($rOffset) > ClusterDiagnosis::SKEW_DEGRADED_MS;
 		return ['tone' => $rDegraded ? 'danger' : 'warning', 'key' => $rDegraded ? 'cluster_clock_degraded' : 'cluster_clock_off', 'vars' => ['{OFFSET}' => sprintf('%+ds', (int) round($rOffset / 1000))]];
+	}
+
+	/** How long a connection resync stays on a node's badge (ms). */
+	public const RESYNC_SHOWN_MS = 300000;
+
+	/**
+	 * A node's connection-digest badge (plan, section 8: "a badge flags digest
+	 * mismatches"): MAIN asked it for a snapshot within RESYNC_SHOWN_MS, or its
+	 * registry and MAIN's store disagreed at a check in the last minute
+	 * (ConnectionDigest). None for a node that sends no digest.
+	 *
+	 * @param array<string, mixed>|null $rState ConnectionDigest::state()
+	 * @return array{tone: string, key: string, vars: array<string, string>}|null
+	 */
+	public static function divergenceBadge(?array $rState, int $rNowMs): ?array {
+		$rAsked = (int) ($rState['asked'] ?? 0);
+		if ($rAsked > 0 && $rNowMs - $rAsked < self::RESYNC_SHOWN_MS) {
+			return ['tone' => 'warning', 'key' => 'cluster_conn_resynced', 'vars' => ['{AGO}' => intdiv($rNowMs - $rAsked, 1000) . 's']];
+		}
+		if ((int) ($rState['miss'] ?? 0) > 0 && $rNowMs - (int) ($rState['at'] ?? 0) < 60000) {
+			return ['tone' => 'warning', 'key' => 'cluster_conn_differ', 'vars' => []];
+		}
+		return null;
+	}
+
+	/**
+	 * The Servers list's badges for a node beside its state and mode (plan,
+	 * section 11, "Servers list badges"), each with its help text's key.
+	 *
+	 * @param array<string, mixed> $rNode a ClusterAdmin::nodes() row
+	 * @return list<array{tone: string, key: string, vars: array<string, string>, help: string}>
+	 */
+	public static function nodeBadges(array $rNode, ?int $rNowMs = null): array {
+		$rOut = [];
+		if (($rClock = self::clockBadge($rNode['clock_offset_ms'] ?? null)) !== null) {
+			$rOut[] = $rClock + ['help' => 'cluster_clock_help'];
+		}
+		if (($rConn = self::divergenceBadge(ConnectionDigest::state((int) $rNode['server_id']), $rNowMs ?? ClusterClock::nowMs())) !== null) {
+			$rOut[] = $rConn + ['help' => 'cluster_conn_help'];
+		}
+		return $rOut;
+	}
+
+	/**
+	 * The Settings Info tab's cluster rows (plan, section 11, "Info tab"), in
+	 * the shape of the tab's versions table: [label, value, badge class,
+	 * colour]. Null without an extension the panel takes.
+	 *
+	 * @param array<string, mixed> $rSettings
+	 * @return list<array{0: string, 1: string, 2: string, 3: string}>|null
+	 */
+	public static function infoRows(array $rSettings): ?array {
+		$rStatus = ClusterCryptoFactory::status();
+		$rInfo = ClusterCryptoFactory::info();
+		if (!$rStatus['available'] || $rInfo === null) {
+			return null;
+		}
+		$rTone = static fn(bool $rOk): string => $rOk ? 'bg-success' : 'bg-danger';
+		$rNodes = [];
+		if (self::db()->query('SELECT `state`, COUNT(*) AS `n` FROM `cluster_nodes` GROUP BY `state` ORDER BY `state`;')) {
+			foreach (self::db()->get_rows() ?: [] as $rRow) {
+				$rNodes[] = $rRow['n'] . ' ' . $rRow['state'];
+			}
+		}
+		// A node refreshes at its newest epoch's refresh_at; older epochs only expire.
+		$rNext = null;
+		if (self::db()->query("SELECT MIN(e.`refresh_at`) AS `at` FROM `cluster_node_epochs` e JOIN `cluster_nodes` n ON n.`server_id` = e.`server_id` AND n.`epoch` = e.`epoch` WHERE n.`state` = 'active';")) {
+			$rNext = self::db()->get_row()['at'] ?? null;
+		}
+		$rRotated = ClusterMeta::get(StreamSecretRotation::DONE_META);
+		$rSecret = (string) ($rSettings['live_streaming_pass'] ?? '');
+		$rOn = !empty($rSettings['cluster_api_enabled']);
+		return [
+			['Cluster API', $rOn ? 'On' : 'Off', $rOn ? 'bg-success' : 'bg-secondary', ''],
+			['Licence gate', !empty($rInfo['licensed']) ? 'Open' : 'Closed: no token is issued', $rTone(!empty($rInfo['licensed'])), ''],
+			['Licence kid', (string) ($rInfo['kid'] ?? '') !== '' ? (string) $rInfo['kid'] : '—', 'bg-secondary', ''],
+			['Panel key', !empty($rInfo['initialised']) ? bin2hex((string) ($rInfo['panel_fp'] ?? '')) : 'Not initialised: ' . (string) ($rInfo['root_error'] ?? 'unknown'), $rTone(!empty($rInfo['initialised'])), ''],
+			['Nodes', $rNodes !== [] ? implode(', ', $rNodes) : 'None', 'bg-info', ''],
+			['Next token refresh', $rNext !== null ? gmdate('Y-m-d H:i', (int) $rNext) . ' UTC' : '—', 'bg-secondary', ''],
+			['Extension', $rStatus['ext_version'] . ' (API ' . $rStatus['api'] . '; the panel takes ' . $rStatus['range'] . ')', 'bg-secondary', ''],
+			['Extension clock', !empty($rInfo['clock_ok']) ? 'OK' : 'Rolled back: cluster calls are refused', $rTone(!empty($rInfo['clock_ok'])), ''],
+			['Stream secret', ($rSecret !== '' ? 'kid ' . ReplicaSections::kid('live_streaming_pass', $rSecret) : 'none') . (StreamSecretRotation::inProgress() !== null ? ', rotating now' : ($rRotated !== null ? ', rotated ' . gmdate('Y-m-d H:i', (int) $rRotated) . ' UTC' : ', never rotated')), 'bg-secondary', ''],
+		];
 	}
 
 	/**

@@ -98,8 +98,7 @@ final class ConnectionDigest {
 		}
 		$rNow = ClusterClock::nowMs();
 		$rFile = self::dir() . $rServerID . '.json';
-		$rState = json_decode((string) @file_get_contents($rFile), true);
-		$rState = is_array($rState) ? $rState + ['at' => 0, 'miss' => 0, 'asked' => 0] : ['at' => 0, 'miss' => 0, 'asked' => 0];
+		$rState = (self::state($rServerID) ?? []) + ['at' => 0, 'miss' => 0, 'asked' => 0];
 		if ($rNow - (int) $rState['at'] < (self::$rEvery ?? self::EVERY_MS)) {
 			return false;
 		}
@@ -117,6 +116,18 @@ final class ConnectionDigest {
 		}
 		@file_put_contents($rFile, json_encode($rState), LOCK_EX);
 		return $rWant;
+	}
+
+	/**
+	 * The node's last check, as check() keeps it: `at` (when), `miss` (checks
+	 * in a row that disagreed), `asked` (the last snapshot request), in ms on
+	 * MAIN's clock. Null before its first check.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function state(int $rServerID): ?array {
+		$rState = json_decode((string) @file_get_contents(self::dir() . $rServerID . '.json'), true);
+		return is_array($rState) ? $rState : null;
 	}
 
 	private static function dir(): string {
