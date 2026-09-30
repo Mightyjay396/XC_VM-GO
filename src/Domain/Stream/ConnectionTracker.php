@@ -1327,6 +1327,18 @@ class ConnectionTracker {
 	 *
 	 * @param array<string, mixed> $rConnection
 	 */
+	/**
+	 * An RTMP viewer's uuid, from nginx-rtmp's client id (which play_done
+	 * closes it by). nginx numbers its clients from 1 in each process, so
+	 * the id alone named two servers' viewers alike, and in Redis mode the
+	 * second's record replaced the first's: the server is part of it.
+	 */
+	public static function rtmpUuid(int|string $rClientID, ?int $rServerID = null): string {
+		// md5() only names the connection; it protects nothing.
+		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
+		return md5(($rServerID ?? SERVER_ID) . '/' . $rClientID);
+	}
+
 	public static function ended(array $rConnection): bool {
 		return (int) ($rConnection['hls_end'] ?? 0) === 1;
 	}

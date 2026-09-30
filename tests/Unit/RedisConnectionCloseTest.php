@@ -123,8 +123,7 @@ final class RedisConnectionCloseTest extends TestCase {
 	}
 
 	public function testAnRtmpPlayThatEndedLeavesNothingBehind(): void {
-		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
-		$rUUID = md5('4242');
+		$rUUID = ConnectionTracker::rtmpUuid('4242');
 		$this->connection('rtmp', 4242, 0, $rUUID);
 		$this->assertTrue(ConnectionLimiter::closeRTMP('4242'));
 		$this->assertFalse($this->rRedis->get($rUUID));
@@ -135,11 +134,20 @@ final class RedisConnectionCloseTest extends TestCase {
 	}
 
 	public function testAnotherServersRtmpClientWithTheSameIdIsLeftAlone(): void {
-		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
-		$rUUID = md5('4243');
-		$this->connection('rtmp', 4243, 0, $rUUID, SERVER_ID + 1);
+		// Each server's nginx numbers its clients from 1: the same id, two viewers, two records.
+		$rTheirs = ConnectionTracker::rtmpUuid('4243', SERVER_ID + 1);
+		$this->assertNotSame(ConnectionTracker::rtmpUuid('4243'), $rTheirs);
+		$this->connection('rtmp', 4243, 0, $rTheirs, SERVER_ID + 1);
 		$this->assertFalse(ConnectionLimiter::closeRTMP('4243'));
-		$this->assertNotFalse($this->rRedis->get($rUUID), 'still there');
+		$this->assertNotFalse($this->rRedis->get($rTheirs), 'still there');
+	}
+
+	public function testAnRtmpPlayOpenedBeforeTheUpgradeStillCloses(): void {
+		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
+		$rOld = md5('4244');
+		$this->connection('rtmp', 4244, 0, $rOld);
+		$this->assertTrue(ConnectionLimiter::closeRTMP('4244'));
+		$this->assertFalse($this->rRedis->get($rOld));
 	}
 
 	/**
