@@ -96,6 +96,7 @@ final class ClusterApiTest extends TestCase {
 		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `arch` varchar(8) DEFAULT NULL');
 		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `status` int NOT NULL DEFAULT 0)');
 		$this->rDb->exec('INSERT INTO `servers` (`id`, `status`) VALUES (5, 0)');
+		$this->rDb->exec('CREATE TABLE `users` (`id` INTEGER PRIMARY KEY, `reseller_dns` text, `status` int)');
 		DatabaseFactory::set($this->rDb);
 		$this->rSettings = ['cluster_api_enabled' => 1, 'lb_token_rotation_min' => 60, 'lb_revocation_mode' => 'graceful', 'lb_new_node_mode' => 'legacy'];
 		SettingsManager::set($this->rSettings);

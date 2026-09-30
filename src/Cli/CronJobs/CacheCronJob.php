@@ -136,13 +136,16 @@ class CacheCronJob implements CommandInterface {
 		// verify_host's list (HostVerificationStage, the streaming bootstrap):
 		// the servers' names and addresses and the resellers' DNS. Nothing had
 		// written it since the move off CoreUtilities, so hosts went unchecked.
-		// A node in mode 2 reads no reseller of MAIN's (the replica carries
-		// none), and a list without them would refuse a reseller's viewers: it
-		// keeps no list, and hosts stay unchecked there.
-		if (NodeRole::refusesConnects()) {
-			FileCache::delCache('allowed_domains');
-		} else {
-			ServerRepository::getAllowedDomains(true);
+		// While the replica owns the servers, it writes the list from its
+		// `servers` section (ReplicaApply). Without it a node in mode 2 reads
+		// no reseller of MAIN's, and a list without them would refuse a
+		// reseller's viewers: it keeps no list, and hosts stay unchecked there.
+		if (!ReplicaApply::owns(ReplicaSections::SERVERS)) {
+			if (NodeRole::refusesConnects()) {
+				FileCache::delCache('allowed_domains');
+			} else {
+				ServerRepository::getAllowedDomains(true);
+			}
 		}
 		if (!ReplicaApply::owns(ReplicaSections::CATEGORIES)) {
 			FileCache::setCache('categories', CategoryService::getFromDatabase(null, true));

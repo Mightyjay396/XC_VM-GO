@@ -66,6 +66,7 @@ final class MainDataPlaneTest extends TestCase {
 		}
 		$this->rDb->exec('CREATE TABLE `cluster_audit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `time` int, `server_id` int, `actor` varchar(64), `event` varchar(64), `detail` text, `ip` varchar(64))');
 		$this->rDb->exec('CREATE TABLE `servers` (`id` INTEGER PRIMARY KEY, `is_main` int DEFAULT 0, `server_type` int DEFAULT 0, `server_name` varchar(64), `server_ip` varchar(64), `private_ip` varchar(64), `http_broadcast_port` int DEFAULT 80, `enabled` int DEFAULT 1)');
+		$this->rDb->exec('CREATE TABLE `users` (`id` INTEGER PRIMARY KEY, `reseller_dns` text, `status` int)');
 		$this->rDb->exec("INSERT INTO `servers` (`id`, `is_main`, `server_name`, `server_ip`) VALUES (1, 1, 'main', '203.0.113.1'), (5, 0, 'node', '203.0.113.5'), (6, 0, 'legacy', '203.0.113.6')");
 		foreach (['streams_servers' => '`stream_id` int, `server_id` int', 'streams' => '`id` int, `tv_archive_server_id` int, `vframes_server_id` int', 'recordings' => '`stream_id` int, `source_id` int'] as $rTable => $rCols) {
 			$this->rDb->exec('CREATE TABLE `' . $rTable . '` (' . $rCols . ')');
