@@ -725,7 +725,9 @@ final class ClusterApi {
 		NodeAudit::record($rNode, $rP['audit'] ?? null);
 		// Whether its agent holds the relay proxy's port, kept only when it changed.
 		$rNowMs = ClusterClock::nowMs();
-		NodeRelay::record($rNode, $rP['relay'] ?? null, $rNowMs, (int) $rH['ts_ms'] - $rNowMs);
+		NodeRelay::record($rNode, $rP['relay'] ?? null, $rNowMs, HeartbeatService::nodeClockMs($rP, (int) $rH['ts_ms']) - $rNowMs);
+		// Its event lanes' lag and the MAIN URLs it cannot reach, kept only when they changed.
+		NodeLag::record($rNode, $rP, $rNowMs);
 		// The owners whose chunk digest named no request, kept only when the list changed.
 		NodeDigestN1::record($rNode, $rP['digest_n1'] ?? null);
 		// A node that holds its viewers sends its registry's digest; a drift

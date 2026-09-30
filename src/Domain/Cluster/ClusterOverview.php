@@ -120,7 +120,7 @@ final class ClusterOverview {
 	public static function divergenceBadge(?array $rState, int $rNowMs): ?array {
 		$rAsked = (int) ($rState['asked'] ?? 0);
 		if ($rAsked > 0 && $rNowMs - $rAsked < self::RESYNC_SHOWN_MS) {
-			return ['tone' => 'warning', 'key' => 'cluster_conn_resynced', 'vars' => ['{AGO}' => intdiv($rNowMs - $rAsked, 1000) . 's']];
+			return ['tone' => 'warning', 'key' => 'cluster_conn_resynced', 'vars' => ['{AGO}' => ClusterDiagnosis::span(intdiv($rNowMs - $rAsked, 1000))]];
 		}
 		if ((int) ($rState['miss'] ?? 0) > 0 && $rNowMs - (int) ($rState['at'] ?? 0) < 60000) {
 			return ['tone' => 'warning', 'key' => 'cluster_conn_differ', 'vars' => []];
@@ -136,12 +136,24 @@ final class ClusterOverview {
 	 * @return list<array{tone: string, key: string, vars: array<string, string>, help: string}>
 	 */
 	public static function nodeBadges(array $rNode, ?int $rNowMs = null): array {
+		$rNowMs ??= ClusterClock::nowMs();
 		$rOut = [];
 		if (($rClock = self::clockBadge($rNode['clock_offset_ms'] ?? null)) !== null) {
 			$rOut[] = $rClock + ['help' => 'cluster_clock_help'];
 		}
-		if (($rConn = self::divergenceBadge(ConnectionDigest::state((int) $rNode['server_id']), $rNowMs ?? ClusterClock::nowMs())) !== null) {
+		if (($rConn = self::divergenceBadge(ConnectionDigest::state((int) $rNode['server_id']), $rNowMs)) !== null) {
 			$rOut[] = $rConn + ['help' => 'cluster_conn_help'];
+		}
+		// NodeLag: a lane whose oldest event has waited past OUTBOX_LAG_SEC (P0
+		// carries state, so it is the graver), and the MAIN URLs that fail.
+		foreach (NodeLag::LANES as $rLane) {
+			if (($rNode[$rLane . '_lag_since'] ?? null) !== null) {
+				$rAge = ClusterDiagnosis::span(max(0, intdiv($rNowMs, 1000) - (int) $rNode[$rLane . '_lag_since']));
+				$rOut[] = ['tone' => $rLane === 'p0' ? 'danger' : 'warning', 'key' => 'cluster_lane_lag', 'vars' => ['{LANE}' => strtoupper($rLane), '{AGE}' => $rAge], 'help' => 'cluster_lane_lag_help'];
+			}
+		}
+		if ((string) ($rNode['unreachable_urls'] ?? '') !== '') {
+			$rOut[] = ['tone' => 'warning', 'key' => 'cluster_url_unreachable', 'vars' => ['{URLS}' => (string) $rNode['unreachable_urls']], 'help' => 'cluster_url_unreachable_help'];
 		}
 		return $rOut;
 	}
