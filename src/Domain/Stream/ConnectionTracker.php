@@ -1435,7 +1435,20 @@ class ConnectionTracker {
 						ClusterRoute::closeConnection(intval($rActivityInfo['server_id']), (string) $rActivityInfo['uuid'], $rRemove);
 					}
 				}
-				self::writeOfflineActivity($rSettings, $rActivityInfo['server_id'] ?? 0, intval($rActivityInfo['proxy_id'] ?? 0), $rActivityInfo['user_id'] ?? 0, $rActivityInfo['stream_id'] ?? 0, $rActivityInfo['date_start'] ?? 0, $rActivityInfo['user_agent'] ?? '', $rActivityInfo['user_ip'] ?? '', $rActivityInfo['container'] ?? '', $rActivityInfo['geoip_country_code'] ?? '', strval($rActivityInfo['isp'] ?? ''), $rActivityInfo['external_device'] ?? '', $rActivityInfo['divergence'] ?? 0, $rActivityInfo['hmac_id'] ?? null, $rActivityInfo['hmac_identifier'] ?? '');
+				// The end in MAIN's clock, as date_start and hls_last_read are. A
+				// record never carries date_end: a close for silence sets it to
+				// when the viewer was last heard, not when it was noticed.
+				$rEndAt = isset($rActivityInfo['date_end']) ? intval($rActivityInfo['date_end']) : time() - intval($rServers[SERVER_ID]['time_offset'] ?? 0);
+				// A Redis record has no divergence: the sweep keeps it in lines_divergence.
+				if ($rSettings['redis_handler'] && !isset($rActivityInfo['divergence']) && !empty($rSettings['save_closed_connection']) && !empty($rServers[SERVER_ID]['is_main'])) {
+					try {
+						$db->query('SELECT `divergence` FROM `lines_divergence` WHERE `uuid` = ?;', $rActivityInfo['uuid']);
+						$rActivityInfo['divergence'] = (int) round((float) ($db->get_row()['divergence'] ?? 0));
+					} catch (\Throwable) {
+						// logged as 0, as before
+					}
+				}
+				self::writeOfflineActivity($rSettings, $rActivityInfo['server_id'] ?? 0, intval($rActivityInfo['proxy_id'] ?? 0), $rActivityInfo['user_id'] ?? 0, $rActivityInfo['stream_id'] ?? 0, $rActivityInfo['date_start'] ?? 0, $rActivityInfo['user_agent'] ?? '', $rActivityInfo['user_ip'] ?? '', $rActivityInfo['container'] ?? '', $rActivityInfo['geoip_country_code'] ?? '', strval($rActivityInfo['isp'] ?? ''), $rActivityInfo['external_device'] ?? '', $rActivityInfo['divergence'] ?? 0, $rActivityInfo['hmac_id'] ?? null, $rActivityInfo['hmac_identifier'] ?? '', $rEndAt);
 				return true;
 			}
 			return false;
@@ -1464,11 +1477,12 @@ class ConnectionTracker {
 	 * @param int         $rDivergence     Divergence value.
 	 * @param int|null    $rIsHMAC         HMAC ID.
 	 * @param string      $rIdentifier     HMAC identifier.
+	 * @param int|null    $rEnd            When it ended (MAIN's clock); null: now.
 	 */
-	public static function writeOfflineActivity(array $rSettings, int $rServerID, int $rProxyID, int $rUserID, int $rStreamID, int $rStart, string $rUserAgent, string $rIP, string $rExtension, string $rGeoIP, string $rISP, string $rExternalDevice = '', int $rDivergence = 0, ?int $rIsHMAC = null, string $rIdentifier = ''): void {
+	public static function writeOfflineActivity(array $rSettings, int $rServerID, int $rProxyID, int $rUserID, int $rStreamID, int $rStart, string $rUserAgent, string $rIP, string $rExtension, string $rGeoIP, string $rISP, string $rExternalDevice = '', int $rDivergence = 0, ?int $rIsHMAC = null, string $rIdentifier = '', ?int $rEnd = null): void {
 		if ($rSettings['save_closed_connection'] != 0) {
 			if ($rServerID && ($rUserID || $rIsHMAC) && $rStreamID) { // a line's viewer, or an HMAC identity's
-				$rActivityInfo = ['user_id' => intval($rUserID), 'stream_id' => intval($rStreamID), 'server_id' => intval($rServerID), 'proxy_id' => intval($rProxyID), 'date_start' => intval($rStart), 'user_agent' => $rUserAgent, 'user_ip' => htmlentities($rIP), 'date_end' => time(), 'container' => $rExtension, 'geoip_country_code' => $rGeoIP, 'isp' => $rISP, 'external_device' => htmlentities($rExternalDevice), 'divergence' => intval($rDivergence), 'hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
+				$rActivityInfo = ['user_id' => intval($rUserID), 'stream_id' => intval($rStreamID), 'server_id' => intval($rServerID), 'proxy_id' => intval($rProxyID), 'date_start' => intval($rStart), 'user_agent' => $rUserAgent, 'user_ip' => htmlentities($rIP), 'date_end' => $rEnd ?? time(), 'container' => $rExtension, 'geoip_country_code' => $rGeoIP, 'isp' => $rISP, 'external_device' => htmlentities($rExternalDevice), 'divergence' => intval($rDivergence), 'hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
 				file_put_contents(LOGS_TMP_PATH . 'activity', base64_encode(json_encode($rActivityInfo)) . "\n", FILE_APPEND | LOCK_EX);
 			}
 		} else {

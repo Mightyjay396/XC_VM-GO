@@ -125,6 +125,18 @@ final class UsersCronPhpPidsTest extends TestCase {
 		$this->assertTrue($rOrphan(9, 5, 'rtmp'), 'its server deleted');
 	}
 
+	/** A viewer closed for silence ended when it was last heard, not when the sweep noticed. */
+	public function testASilentViewersEndIsWhenItWasLastHeard(): void {
+		$rNow = 1800000000;
+		$rHeard = fn(array $rConnection): int => $this->invoke('lastHeard', [$rConnection + ['hls_end' => 0, 'container' => 'ts', 'pid' => 4242], $rNow]);
+		$this->assertSame($rNow - 700, $rHeard(['hls_last_read' => $rNow - 1000]), 'a worker: its last check-in, plus one period');
+		$this->assertSame($rNow, $rHeard(['hls_last_read' => $rNow - 100]), 'never past now');
+		$this->assertSame($rNow - 1000, $rHeard(['hls_last_read' => $rNow - 1000, 'hls_end' => 1]), 'an ended one: its worker stamped the end');
+		$this->assertSame($rNow - 40, $rHeard(['hls_last_read' => $rNow - 40, 'container' => 'hls']), 'HLS: its last read');
+		$this->assertSame($rNow, $rHeard(['hls_last_read' => $rNow - 5000, 'container' => 'rtmp']), 'never checks in: now');
+		$this->assertSame($rNow, $rHeard(['hls_last_read' => $rNow - 5000, 'pid' => 0]));
+	}
+
 	public function testAnExpiredLineIsKickedWhateverTheStore(): void {
 		$rNow = self::HEARTBEAT;
 		$this->assertTrue($this->invoke('lineExpired', [['uuid' => 'r'], (string) ($rNow - 1), $rNow]), 'a Redis record: the line\'s date');

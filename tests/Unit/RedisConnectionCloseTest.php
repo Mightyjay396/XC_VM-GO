@@ -253,6 +253,42 @@ final class RedisConnectionCloseTest extends TestCase {
 		$this->assertTrue((bool) $this->rRedis->sIsMember('ENDED', 'ended'));
 	}
 
+	/**
+	 * A close logs its end in MAIN's clock, as the record's times are (a
+	 * node's own is off by its time_offset); a close for silence says when
+	 * the viewer was last heard.
+	 */
+	public function testAClosedViewersEndIsInMainsClock(): void {
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		$GLOBALS['rSettings']['save_closed_connection'] = 1;
+		$GLOBALS['rServers'][SERVER_ID]['time_offset'] = 120; // this node runs 2 min ahead
+		$rEnd = fn(): int => json_decode(base64_decode(trim((string) array_slice(file(LOGS_TMP_PATH . 'activity'), -1)[0])), true)['date_end'];
+
+		$rMainNow = time() - 120;
+		$this->assertTrue(ConnectionTracker::closeConnection($this->connection('ts', 999999, 1, 'end-now')));
+		$this->assertEqualsWithDelta($rMainNow, $rEnd(), 2);
+
+		$this->assertTrue(ConnectionTracker::closeConnection(['date_end' => 1800000300] + $this->connection('ts', 999999, 1, 'end-heard')));
+		$this->assertSame(1800000300, $rEnd());
+	}
+
+	/** A Redis record has no divergence; MAIN logs the one the sweep keeps in lines_divergence. */
+	public function testAClosedViewersDivergenceIsLoggedInRedisMode(): void {
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		$GLOBALS['rSettings']['save_closed_connection'] = 1;
+		$GLOBALS['rServers'][SERVER_ID]['is_main'] = 1;
+		$rDb = new \TestDb();
+		$rDb->exec(\XcVm\Tests\Support\InstallSchema::table('lines_divergence'));
+		$rDb->query('INSERT INTO `lines_divergence` (`uuid`, `divergence`) VALUES (?, ?);', 'diverged', 37);
+		\XcVm\Infrastructure\Database\DatabaseFactory::set($rDb);
+		try {
+			$this->assertTrue(ConnectionTracker::closeConnection($this->connection('ts', 999999, 1, 'diverged')));
+		} finally {
+			\XcVm\Infrastructure\Database\DatabaseFactory::reset();
+		}
+		$this->assertSame(37, json_decode(base64_decode(trim((string) array_slice(file(LOGS_TMP_PATH . 'activity'), -1)[0])), true)['divergence']);
+	}
+
 	public function testAnHmacViewersActivityIsWritten(): void {
 		// An HMAC identity has no line (user_id 0): its hmac_id names it.
 		@mkdir(LOGS_TMP_PATH, 0777, true);
