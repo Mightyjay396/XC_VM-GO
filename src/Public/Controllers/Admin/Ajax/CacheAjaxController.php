@@ -78,27 +78,13 @@ class CacheAjaxController extends BaseAjaxController {
 		}
 
 		// The panel's Redis by its pidfile: the first redis-server of the user
-		// can be the cluster bus.
+		// can be the cluster bus. The watchdog starts it again within seconds
+		// (cron:servers within a minute), not this page: a server an FPM worker
+		// starts inherits the pool's rlimit_files (4000), which caps its
+		// maxclients near that. The signals and watchdog daemons read the
+		// setting themselves; the sync below waits for Redis.
 		if (($rPID = RedisManager::panelServerPid()) > 0) {
 			posix_kill($rPID, 9);
-		}
-
-		shell_exec(MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . '/bin/redis/redis.conf > /dev/null 2>/dev/null &');
-		sleep(1);
-		exec("pgrep -U xc_vm | xargs ps | grep -E 'signals|XC_VM\\[Signals\\]' | awk '{print \$1}'", $rPID);
-
-		if (0 < count($rPID) && is_numeric($rPID[0])) {
-			$rPID = intval($rPID[0]);
-			shell_exec('kill -9 ' . $rPID);
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php signals > /dev/null 2>/dev/null &');
-		}
-
-		exec("pgrep -U xc_vm | xargs ps | grep -E 'watchdog|XC_VM\\[Watchdog\\]' | awk '{print \$1}'", $rPID);
-
-		if (0 < count($rPID) && is_numeric($rPID[0])) {
-			$rPID = intval($rPID[0]);
-			shell_exec('kill -9 ' . $rPID);
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php watchdog > /dev/null 2>/dev/null &');
 		}
 
 		shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:users 1 > /dev/null 2>/dev/null &');
@@ -119,25 +105,11 @@ class CacheAjaxController extends BaseAjaxController {
 		}
 
 		// The panel's Redis by its pidfile: the first redis-server of the user
-		// can be the cluster bus.
+		// can be the cluster bus. The signals and watchdog daemons read the
+		// setting themselves (restarted from here, they kept the FPM pool's
+		// 4000-file limit for good).
 		if (($rPID = RedisManager::panelServerPid()) > 0) {
 			posix_kill($rPID, 9);
-		}
-
-		exec("pgrep -U xc_vm | xargs ps | grep -E 'signals|XC_VM\\[Signals\\]' | awk '{print \$1}'", $rPID);
-
-		if (0 < count($rPID) && is_numeric($rPID[0])) {
-			$rPID = intval($rPID[0]);
-			shell_exec('kill -9 ' . $rPID);
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php signals > /dev/null 2>/dev/null &');
-		}
-
-		exec("pgrep -U xc_vm | xargs ps | grep -E 'watchdog|XC_VM\\[Watchdog\\]' | awk '{print \$1}'", $rPID);
-
-		if (0 < count($rPID) && is_numeric($rPID[0])) {
-			$rPID = intval($rPID[0]);
-			shell_exec('kill -9 ' . $rPID);
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php watchdog > /dev/null 2>/dev/null &');
 		}
 
 		$this->ok();
@@ -154,7 +126,7 @@ class CacheAjaxController extends BaseAjaxController {
 			$this->fail();
 		}
 
-		$rRedis->flushAll();
+		$rRedis->flushAll(true); // ASYNC: freed in the background, not while Redis blocks every client
 
 		$this->ok();
 	}

@@ -61,7 +61,10 @@ class UsersCronJob implements CommandInterface {
 		$this->rServers = ServerRepository::getAll();
 
 		if (!empty($rArgs[0]) && $this->rServers[SERVER_ID]['is_main']) {
-			RedisManager::ensureConnected();
+			// Just enabled (the Cache page): the watchdog starts Redis within seconds.
+			for ($i = 0; $i < 30 && !RedisManager::ensureConnected(); $i++) {
+				sleep(1);
+			}
 
 			if (RedisManager::isConnected()) {
 				$rSync = intval($rArgs[0]);
