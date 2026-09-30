@@ -4782,14 +4782,61 @@ The second is an Info-tab block of the cluster API's state.
   `cluster_node_epochs` and `cluster_meta`.
 
 **Not built / limits.**
-- **P0/P1 lag and "MAIN URL unreachable".** MAIN has neither. The lane backlog is only in the agent's
-  `/v1/status`, and the URLs the agent failed to reach are only in its memory (`Client.failed`). Both
-  need the heartbeat to carry them.
+- **P0/P1 lag and "MAIN URL unreachable"** needed the heartbeat to carry them, and came next
+  (*Lane lag and unreachable MAIN URLs*).
 - **The Info tab's labels are English**, as the *Versions* rows beside them are.
 
 **Tests.** `ClusterOverviewTest`: the divergence badge's windows, and `nodeBadges()` reading the
 digest's state file. The Info rows cover a licensed and an unlicensed extension, the nodes by
 state, the next refresh (an enrolling node's does not count), the stream secret, and no extension.
+
+### Lane lag and unreachable MAIN URLs
+
+Plan §11's last two Servers-list badges are "P0/P1 lag" and "MAIN cluster URL unreachable from this
+LB". MAIN knew neither. A lane's backlog was only in the agent's `/v1/status`, and the URLs the agent
+failed to reach were only in its memory (`Client.failed`).
+
+1. **The fields.** Every heartbeat payload now carries:
+   - `"lanes": {"p0": {"files": n, "lag_ms": n}, "p1": {…}}`: each lane's spooled files, and the age
+     of the oldest (0 when empty). It is sent only by an agent with a spool.
+   - `"unreachable": [{"url": "…", "for_ms": n}]`: the MAIN URLs that failed (connect, TLS or timeout)
+     and have not answered since, sorted by URL, with how long ago each first failed. The list is
+     empty when none fail.
+
+   Both are ages on the node's own clock, so no clock offset applies. They come from xc_vm_fanout,
+   the release after 0.14.0: `Agent.laneLags`, `Client.Unreachable`. A MAIN that does not know them
+   ignores them.
+2. **MAIN** (`NodeLag`, migration 056: `cluster_nodes.p0_lag_since`, `p1_lag_since`,
+   `unreachable_urls`) keeps transitions only:
+   - A lane lags once its oldest event has waited past `ClusterDiagnosis::OUTBOX_LAG_SEC` (120 s), as
+     `server:diagnose` judges it. `<lane>_lag_since` is then when that began, on MAIN's clock (unix
+     seconds), and NULL again once the lane catches up.
+   - `unreachable_urls` is the sorted, space-separated list, at most 1024 bytes, or NULL.
+   - The row is written only on such a change. Each change is audited: `node.lane_lagging`,
+     `node.lane_caught_up`, `node.urls_unreachable`, `node.urls_reachable`.
+   - A heartbeat without the fields (an older agent), or a table before migration 056, changes
+     nothing.
+3. **The badges** (`ClusterOverview::nodeBadges()`):
+   - `P0 lagging 5m` (danger, since P0 carries state) and `P1 lagging 5m` (warning). The age counts
+     from when the lane crossed 120 s.
+   - `MAIN URL unreachable` (warning), with the URLs in its tooltip.
+   - `ClusterDiagnosis::span()`, the checks' duration format, is now public and formats both.
+4. **The relay report's clock.** `NodeRelay` moved the agent's `since_ms` by the stamp's offset from
+   MAIN's clock, which is about 0 since the agent stamps with MAIN's time (*A node's own clock*). It
+   now takes the node's own clock (`HeartbeatService::nodeClockMs()`, from `local_ms`), as the
+   clock offset does.
+
+**Not built / limits.**
+- **The cost.** The agent stats every spooled file at each heartbeat, as `/v1/status` does. Keeping
+  each lane's oldest mtime is the upgrade, if a large backlog makes that costly.
+- **A URL that an older policy kept** (a legacy port or URL) and that fails is reported like any
+  other.
+- **The interop suite** runs `NodeLag` on every real heartbeat (its harness has the columns), but
+  asserts no badge: the unit tests on each side pin the contract.
+
+**Tests.** PHP: `NodeLagTest` (strict reading of both reports, the transitions and their audit, a
+table before the migration, the badges, the schema and the heartbeat's call); `NodeRelayTest` (the
+node's own clock). Go: `TestAHeartbeatCarriesTheLanesLagAndTheURLsThatFail`.
 
 ### verify_host on a node that reads no database
 

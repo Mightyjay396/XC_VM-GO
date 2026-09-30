@@ -88,7 +88,7 @@ final class NodeRelayTest extends TestCase {
 
 	public function testTheHeartbeatKeepsItAndTheSchemaHasIt(): void {
 		$rRoot = dirname(__DIR__, 2);
-		$this->assertStringContainsString("NodeRelay::record(\$rNode, \$rP['relay'] ?? null, \$rNowMs, (int) \$rH['ts_ms'] - \$rNowMs);", (string) file_get_contents($rRoot . '/src/Domain/Cluster/ClusterApi.php'));
+		$this->assertStringContainsString("NodeRelay::record(\$rNode, \$rP['relay'] ?? null, \$rNowMs, HeartbeatService::nodeClockMs(\$rP, (int) \$rH['ts_ms']) - \$rNowMs);", (string) file_get_contents($rRoot . '/src/Domain/Cluster/ClusterApi.php'), 'since_ms is on the node\'s own clock');
 		$rSchema = (string) file_get_contents($rRoot . '/src/bin/install/database.sql');
 		$this->assertStringContainsString('`relay_down_since` int(11) DEFAULT NULL,', $rSchema);
 		$this->assertStringContainsString('`relay_error` varchar(255)', $rSchema);

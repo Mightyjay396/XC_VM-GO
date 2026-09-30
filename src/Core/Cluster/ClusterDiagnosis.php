@@ -272,7 +272,8 @@ final class ClusterDiagnosis {
 		return self::span(intdiv(max(0, $rMs), 1000)) . ' ago';
 	}
 
-	private static function span(int $rSec): string {
+	/** A duration as the checks and the Servers list's badges show it: 42s, 5m, 2h 3m, 1d 4h. */
+	public static function span(int $rSec): string {
 		return match (true) {
 			$rSec >= 86400 => intdiv($rSec, 86400) . 'd ' . intdiv($rSec % 86400, 3600) . 'h',
 			$rSec >= 3600 => intdiv($rSec, 3600) . 'h ' . intdiv($rSec % 3600, 60) . 'm',

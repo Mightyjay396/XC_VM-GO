@@ -156,7 +156,7 @@ $rBar = static function (int $pct): string {
                                     <?= htmlspecialchars($language::get('cluster_mode'), ENT_QUOTES); ?> <?= (int) $rNode['mode']; ?>
                                 </a>
                                 <?php foreach (ClusterOverview::nodeBadges($rNode) as $rBadge): ?>
-                                    <span class="badge bg-label-<?= $rBadge['tone']; ?>" title="<?= htmlspecialchars($language::get($rBadge['help']), ENT_QUOTES); ?>"><?= htmlspecialchars($language::get($rBadge['key'], $rBadge['vars']), ENT_QUOTES); ?></span>
+                                    <span class="badge bg-label-<?= $rBadge['tone']; ?>" title="<?= htmlspecialchars($language::get($rBadge['help'], $rBadge['vars']), ENT_QUOTES); ?>"><?= htmlspecialchars($language::get($rBadge['key'], $rBadge['vars']), ENT_QUOTES); ?></span>
                                 <?php endforeach; ?>
                             <?php endif; ?>
                             <?php if (!empty($rServer['domain_name'])): ?>
