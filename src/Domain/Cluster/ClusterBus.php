@@ -52,6 +52,9 @@ use XcVm\Core\Process\ProcessManager;
  * away a fill that read MySQL before a write.
  */
 final class ClusterBus {
+	/** The read timeout of a bus call (seconds), but for pop()'s blocking wait. */
+	private const READ_TIMEOUT = 1.0;
+
 	/** Seconds a wake waits for its reader. */
 	private const WAKE_TTL = 60;
 
@@ -117,7 +120,7 @@ final class ClusterBus {
 		}
 		try {
 			$rRedis = new \Redis();
-			if (!$rRedis->connect($rSocket, 0, 0.2, null, 0, 1.0)) {
+			if (!$rRedis->connect($rSocket, 0, 0.2, null, 0, self::READ_TIMEOUT)) {
 				throw new \RuntimeException('connect');
 			}
 			self::$rClient = $rRedis;
@@ -372,6 +375,16 @@ final class ClusterBus {
 		} catch (\Throwable) {
 			self::drop();
 			return null;
+		} finally {
+			// Back to the connection's own, or every later call on it waits as
+			// long as this block did before it gives up on a bus that hangs.
+			if (self::$rClient === $rRedis) {
+				try {
+					$rRedis->setOption(\Redis::OPT_READ_TIMEOUT, (string) self::READ_TIMEOUT);
+				} catch (\Throwable) {
+					self::drop();
+				}
+			}
 		}
 	}
 

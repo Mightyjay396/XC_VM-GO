@@ -171,4 +171,22 @@ class RedisManager {
 		}
 		return null;
 	}
+
+	/**
+	 * The panel's own redis-server (bin/redis/redis.conf), by the pidfile that
+	 * config names: 0 when there is none, or when that pid is not a
+	 * redis-server any more, or is the cluster bus's (it runs on a unix
+	 * socket, `redis-server unixsocket:…`, as the same user). Never "the
+	 * first redis-server of the user", which can be the bus.
+	 */
+	public static function panelServerPid(?string $rPidFile = null): int {
+		$rPidFile ??= MAIN_HOME . 'bin/redis/redis-server.pid';
+		$rPid = (int) trim((string) @file_get_contents($rPidFile));
+		if ($rPid <= 0) {
+			return 0;
+		}
+		$rTitle = str_replace("\0", ' ', (string) @file_get_contents('/proc/' . $rPid . '/cmdline'));
+		return str_starts_with($rTitle, 'redis-server') && !str_contains($rTitle, 'unixsocket') ? $rPid : 0;
+	}
+
 }

@@ -77,11 +77,10 @@ class CacheAjaxController extends BaseAjaxController {
 			unlink(CACHE_TMP_PATH . 'settings');
 		}
 
-		exec('pgrep -u xc_vm redis-server', $rRedis);
-
-		if (0 < count($rRedis) && is_numeric($rRedis[0])) {
-			$rPID = intval($rRedis[0]);
-			shell_exec('kill -9 ' . $rPID);
+		// The panel's Redis by its pidfile: the first redis-server of the user
+		// can be the cluster bus.
+		if (($rPID = RedisManager::panelServerPid()) > 0) {
+			posix_kill($rPID, 9);
 		}
 
 		shell_exec(MAIN_HOME . 'bin/redis/redis-server ' . MAIN_HOME . '/bin/redis/redis.conf > /dev/null 2>/dev/null &');
@@ -119,11 +118,10 @@ class CacheAjaxController extends BaseAjaxController {
 			unlink(CACHE_TMP_PATH . 'settings');
 		}
 
-		exec('pgrep -u xc_vm redis-server', $rRedis);
-
-		if (0 < count($rRedis) && is_numeric($rRedis[0])) {
-			$rPID = intval($rRedis[0]);
-			shell_exec('kill -9 ' . $rPID);
+		// The panel's Redis by its pidfile: the first redis-server of the user
+		// can be the cluster bus.
+		if (($rPID = RedisManager::panelServerPid()) > 0) {
+			posix_kill($rPID, 9);
 		}
 
 		exec("pgrep -U xc_vm | xargs ps | grep -E 'signals|XC_VM\\[Signals\\]' | awk '{print \$1}'", $rPID);
