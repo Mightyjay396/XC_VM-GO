@@ -219,5 +219,4 @@ class RedisManager {
 		$rTitle = str_replace("\0", ' ', (string) @file_get_contents('/proc/' . $rPid . '/cmdline'));
 		return str_starts_with($rTitle, 'redis-server') && !str_contains($rTitle, 'unixsocket') ? $rPid : 0;
 	}
-
 }

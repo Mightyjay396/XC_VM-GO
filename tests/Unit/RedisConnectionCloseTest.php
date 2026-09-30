@@ -186,6 +186,28 @@ final class RedisConnectionCloseTest extends TestCase {
 		$this->assertSame($rBefore + 1, $this->activityRows(), 'one row, from its removal');
 	}
 
+	/**
+	 * cron:streams stops an idle on-demand stream when it has no viewers. A
+	 * Redis it cannot ask used to count as none, and stopped the stream under
+	 * its viewers: unknown is now null (the cron keeps the stream).
+	 */
+	public function testAnOnDemandStreamsViewersAreUnknownWithoutRedis(): void {
+		$rCount = new \ReflectionMethod(\XcVm\Cli\CronJobs\StreamsCronJob::class, 'redisViewers');
+		$this->viewer('here-1', '198.51.100.7', 'tv', 1800000001);
+		$this->viewer('here-2', '198.51.100.8', 'tv', 1800000002);
+		$this->viewer('elsewhere', '198.51.100.9', 'tv', 1800000003, SERVER_ID + 1);
+		$this->assertSame(2, $rCount->invoke(null, 11), 'this server\'s viewers of stream 11');
+		$this->assertSame(0, $rCount->invoke(null, 12));
+
+		$this->manager(null);
+		RedisManager::useConnector(static fn() => false);
+		try {
+			$this->assertNull($rCount->invoke(null, 11), 'Redis down: unknown, never none');
+		} finally {
+			RedisManager::useConnector(null);
+		}
+	}
+
 	public function testAnHmacViewersActivityIsWritten(): void {
 		// An HMAC identity has no line (user_id 0): its hmac_id names it.
 		@mkdir(LOGS_TMP_PATH, 0777, true);

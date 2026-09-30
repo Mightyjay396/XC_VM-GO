@@ -204,20 +204,9 @@ class StreamsCronJob implements CommandInterface {
 						if ($rAgentViewers) {
 							$rStream['online_clients'] = NodeStreams::viewers([intval($rStream['stream_id'])])[intval($rStream['stream_id'])] ?? 0;
 						} elseif ($rRedis) {
-							$rCount = 0;
-							$rRedis = RedisManager::instance();
-							if ($rRedis instanceof \Redis) {
-								$rKeys = $rRedis->zRangeByScore('STREAM#' . $rStream['stream_id'], '-inf', '+inf');
-								if (count($rKeys) > 0) {
-									$rConnections = array_map('igbinary_unserialize', $rRedis->mGet($rKeys));
-									foreach ($rConnections as $rConnection) {
-										if ($rConnection && $rConnection['server_id'] == SERVER_ID) {
-											$rCount++;
-										}
-									}
-								}
-							}
-							$rStream['online_clients'] = $rCount;
+							// Unknown is never none: a Redis that cannot be asked keeps
+							// the stream running, as the agent's registry does.
+							$rStream['online_clients'] = self::redisViewers(intval($rStream['stream_id'])) ?? 1;
 						}
 
 						$rAdminQueue = $rQueue = 0;
@@ -517,5 +506,39 @@ class StreamsCronJob implements CommandInterface {
 			$rRows = array_merge($rRows, self::collectUuidRows($rChild));
 		}
 		return $rRows;
+	}
+
+	/**
+	 * An on-demand stream's viewers on this server in MAIN's Redis, or null
+	 * when Redis cannot be asked (not connected, or a call that fails).
+	 */
+	private static function redisViewers(int $rStreamID): ?int {
+		$rRedis = RedisManager::instance();
+		if (!$rRedis instanceof \Redis) {
+			return null;
+		}
+		try {
+			$rKeys = $rRedis->zRangeByScore('STREAM#' . $rStreamID, '-inf', '+inf');
+			if (!is_array($rKeys)) {
+				return null;
+			}
+			if ($rKeys === []) {
+				return 0;
+			}
+			$rRecords = $rRedis->mGet($rKeys);
+			if (!is_array($rRecords)) {
+				return null;
+			}
+			$rCount = 0;
+			foreach ($rRecords as $rRaw) {
+				$rConnection = is_string($rRaw) ? igbinary_unserialize($rRaw) : null;
+				if (is_array($rConnection) && ($rConnection['server_id'] ?? null) == SERVER_ID) {
+					$rCount++;
+				}
+			}
+			return $rCount;
+		} catch (\RedisException) {
+			return null;
+		}
 	}
 }
