@@ -4980,3 +4980,44 @@ then holds). Panel: `AgentRunShTest` (a new agent that never reaches MAIN is rol
 does ends its trial, even with a reached file the agent before it wrote), `ArtefactHashRefusalTest`
 (`reach` only for an agent that says it; `.prev` stays the last proven one), `AgentUpgradeTest`
 (a released rollout is offered afresh; offers still installing are kept).
+
+### A start miss, and the blocklist on change
+
+Two Phase 7 gaps: a start that finds no entry for a stream MAIN assigned a moment before (the
+plan's `stream_bundle` on a miss), and a blocklist change that waited for the next poll.
+
+- **A start miss** (`StreamSource::streamRow`, `ReplicaStreamCache::syncMissing`). MAIN stamps a
+  stream's version before it sends the command that starts it, so its record is already in the
+  node's next delta; only the agent's sync may not have run yet. When a start finds no entry, the
+  node's PHP asks its agent to sync the section now, `POST /v1/streams_sync` on the agent's socket
+  (answered once the sync ends: 200, or 502 with why not), and reads again, where the entry is
+  built from the record the agent stored. Only with an agent that says `streams_sync` in
+  `flows.json`'s features; never for a stream the node has an entry for, or one whose record did
+  not read at the last apply; once per stream a minute in a process. The plan's `stream_bundle`
+  op, one stream's record fetched on its own, is not built: the delta MAIN already serves carries
+  it, with no new record type to sign. `stream_bundle` stays in `ClusterPool`'s list of bulk ops,
+  unused.
+- **The blocklist on change** (`BlocklistChanges`, `StreamPush`). Every change the change log
+  records (every block and unblock path) marks the request, and when it ends every active node
+  whose CONFIG flow is on and whose agent takes `config.changed` is sent
+  `config.changed {sections: [blocklist]}`: its agent syncs, stores the delta and runs
+  `cluster:apply`, so the node's blocklist caches follow within seconds, and root's iptables at its
+  minute sync. A node whose streams changed in the same request gets one command naming both
+  sections: the command's type is its dedupe key, so a second would supersede the first. The
+  plan's `node.root blocklist_sync` is not built: root's minute sync already applies the
+  replica's blocklist, and nothing on the node could order a root action after the agent's sync.
+- **The `node` section's nginx settings** (`cloudflare`, `mag_legacy_redirect`) need no applier of
+  their own: root's `cron:root_signals` reads them through `SettingsManager`, which answers from
+  the replica's `settings` section (both are in `lb_settings_keys.php`) wherever the replica owns
+  the settings. The `node` section carries a copy no reader needs.
+
+**Not built / limits.**
+- **A start of a stream the node does not hold** still costs one sync a minute per process.
+- **iptables** follows a block at root's next minute, not within seconds.
+
+**Tests.** Agent: `TestAStreamsSyncOnRequestStoresWhatMainJustAssigned` (the stream MAIN assigned
+since the last sync stored on request; a refusal answered 502; no replica, 404). Panel:
+`ReplicaStreamCacheTest::testAStartThatMissesHasTheAgentSyncAndReadsAgain` (a stand-in agent
+stores the record on the sync: the start finds it; no request without the feature; once a minute
+for a stream the sync does not bring; none for a stream with an entry),
+`StreamPushTest::testABlocklistChangeWakesTheConfigNodesInOneCommandWithTheStreams`.
