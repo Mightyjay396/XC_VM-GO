@@ -180,12 +180,9 @@ class ConnectionTracker {
 			// zRangeByScore/mGet return false on a failed connection (e.g. an
 			// unauthenticated socket during a Redis restart) — degrade to empty.
 			if (is_array($rKeys) && count($rKeys) > 0) {
-				$rData = $rRedis->mGet($rKeys);
-				if (is_array($rData)) {
-					return [$rKeys, array_map(static function ($rItem) {
-						return is_string($rItem) ? igbinary_unserialize($rItem) : false;
-					}, $rData)
-					];
+				$rData = self::records($rRedis, $rKeys);
+				if ($rData !== null) {
+					return [$rKeys, $rData];
 				}
 			}
 			return [[], []];
@@ -1240,13 +1237,32 @@ class ConnectionTracker {
 		if (!is_array($rKeys) || 0 >= count($rKeys)) {
 			return [];
 		}
-		$rData = $rRedis->mGet($rKeys);
-		if (!is_array($rData)) {
-			return [];
+		return self::records($rRedis, $rKeys) ?? [];
+	}
+
+	/** Keys a record read asks Redis for at once. */
+	public const READ_CHUNK = 5000;
+
+	/**
+	 * The records of $rKeys (false for one gone), READ_CHUNK keys a command:
+	 * one mGet of every viewer held Redis, for every client, while it built a
+	 * reply of tens of MB. Null when a read fails.
+	 *
+	 * @param list<string> $rKeys
+	 * @return list<array<string, mixed>|false>|null
+	 */
+	private static function records(\Redis $rRedis, array $rKeys): ?array {
+		$rData = [];
+		foreach (array_chunk($rKeys, self::READ_CHUNK) as $rChunk) {
+			$rPart = $rRedis->mGet($rChunk);
+			if (!is_array($rPart)) {
+				return null;
+			}
+			foreach ($rPart as $rItem) {
+				$rData[] = is_string($rItem) ? igbinary_unserialize($rItem) : false;
+			}
 		}
-		return array_map(static function ($rItem) {
-			return is_string($rItem) ? igbinary_unserialize($rItem) : false;
-		}, $rData);
+		return $rData;
 	}
 
 	/**

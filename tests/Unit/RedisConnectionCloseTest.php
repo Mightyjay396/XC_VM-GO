@@ -349,6 +349,20 @@ final class RedisConnectionCloseTest extends TestCase {
 		}
 	}
 
+	/** The sweep reads the viewers READ_CHUNK at a time, not in one reply that holds Redis: all of them, in order. */
+	public function testEveryViewerIsReadPastOneChunk(): void {
+		$rPipe = $this->rRedis->multi(\Redis::PIPELINE);
+		for ($i = 0; $i <= ConnectionTracker::READ_CHUNK; $i++) {
+			$rPipe->set('chunk-' . $i, igbinary_serialize(['uuid' => 'chunk-' . $i]));
+			$rPipe->zAdd('LIVE', $i, 'chunk-' . $i);
+		}
+		$rPipe->exec();
+		[$rKeys, $rData] = ConnectionTracker::getConnections();
+		$this->assertCount(ConnectionTracker::READ_CHUNK + 1, $rData);
+		$this->assertSame('chunk-' . ConnectionTracker::READ_CHUNK, $rData[ConnectionTracker::READ_CHUNK]['uuid']);
+		$this->assertSame($rKeys[ConnectionTracker::READ_CHUNK], $rData[ConnectionTracker::READ_CHUNK]['uuid']);
+	}
+
 	public function testAnHmacViewersActivityIsWritten(): void {
 		// An HMAC identity has no line (user_id 0): its hmac_id names it.
 		@mkdir(LOGS_TMP_PATH, 0777, true);
