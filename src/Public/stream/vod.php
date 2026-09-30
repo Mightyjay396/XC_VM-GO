@@ -136,7 +136,8 @@ if ($rChannelInfo) {
 
 		// Do not kill active workers handling concurrent HTTP Range requests for the same stream.
 		// Killing in-flight Range workers immediately breaks video streaming and causes net::ERR_CONTENT_LENGTH_MISMATCH in browsers.
-		if (empty($_SERVER['HTTP_RANGE']) && ProcessManager::isRunning($rConnection['pid'], 'php-fpm') && $rPID != $rConnection['pid'] && is_numeric($rConnection['pid']) && 0 < $rConnection['pid']) {
+		// Nor an ended connection's worker, which serves someone else now (ConnectionTracker::ended).
+		if (empty($_SERVER['HTTP_RANGE']) && !ConnectionTracker::ended($rConnection) && ProcessManager::isRunning($rConnection['pid'], 'php-fpm') && $rPID != $rConnection['pid'] && is_numeric($rConnection['pid']) && 0 < $rConnection['pid']) {
 			if ($rConnection['server_id'] == SERVER_ID) {
 				posix_kill(intval($rConnection['pid']), 9);
 			} else {

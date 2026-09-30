@@ -88,4 +88,16 @@ final class UsersCronPhpPidsTest extends TestCase {
 		$this->assertSame(1, substr_count($rSource, '$this->isRemoteWorkerRunning('), 'the reaper must judge remote workers through the helper');
 		$this->assertStringNotContainsString("\$rServer['php_pids']", $rSource, 'getAll() rows carry no php_pids');
 	}
+
+	/** A Redis record carries no exp_date: the line's stands in, so an expired line is kicked in Redis mode too. */
+	public function testAnExpiredLineIsKickedWhateverTheStore(): void {
+		$rNow = self::HEARTBEAT;
+		$this->assertTrue($this->invoke('lineExpired', [['uuid' => 'r'], (string) ($rNow - 1), $rNow]), 'a Redis record: the line\'s date');
+		$this->assertFalse($this->invoke('lineExpired', [['uuid' => 'r'], (string) ($rNow + 60), $rNow]));
+		$this->assertFalse($this->invoke('lineExpired', [['uuid' => 'r'], null, $rNow]), 'no date: never');
+		$this->assertTrue($this->invoke('lineExpired', [['exp_date' => $rNow - 1], null, $rNow]), 'a lines_live row: its own');
+		$this->assertFalse($this->invoke('lineExpired', [['exp_date' => null], null, $rNow]), 'an unlimited line');
+		$rSource = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/UsersCronJob.php');
+		$this->assertStringContainsString('self::lineExpired($rConnection, $rExpDateArray[$rUserID] ?? null, $rStartTime)', $rSource, 'the reaper judges expiry through the helper');
+	}
 }

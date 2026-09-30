@@ -243,10 +243,27 @@ class ConnectionLimiter {
 		return true;
 	}
 
+	/**
+	 * An RTMP client's play ended (nginx-rtmp's play_done): its connection is
+	 * removed and its activity written, in either store. In Redis the record is
+	 * named after the client id (rtmp.php: md5) and only this server's RTMP
+	 * record for that client is closed, as ended: the client is gone, so
+	 * nothing is dropped.
+	 */
 	public static function closeRTMP($rPID) {
-		global $db;
+		global $db, $rSettings;
 		if (empty($rPID)) {
 			return false;
+		}
+
+		if (!empty($rSettings['redis_handler'])) {
+			// md5() only names the connection after nginx-rtmp's client id, as rtmp.php opened it; it protects nothing.
+			// nosemgrep: php.lang.security.weak-crypto.weak-crypto
+			$rRecord = ConnectionTracker::getConnection(md5((string) $rPID));
+			if (!is_array($rRecord) || ($rRecord['container'] ?? '') !== 'rtmp' || (int) ($rRecord['server_id'] ?? 0) !== (int) SERVER_ID || (string) ($rRecord['pid'] ?? '') !== (string) $rPID) {
+				return false;
+			}
+			return ConnectionTracker::closeConnection(['hls_end' => 1] + $rRecord);
 		}
 
 		$db->query("SELECT * FROM `lines_live` WHERE `container` = 'rtmp' AND `pid` = ? AND `server_id` = ?", $rPID, SERVER_ID);
