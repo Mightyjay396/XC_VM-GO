@@ -4,6 +4,7 @@ namespace XcVm\Public\Controllers\Admin;
 
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\Response;
+use XcVm\Domain\Cluster\ClusterOverview;
 use XcVm\Domain\Stream\StreamConfigRepository;
 
 /**
@@ -59,7 +60,7 @@ class SettingsController extends BaseAdminController {
 		$License = $this->licenseInfo();
 
 		$this->setTitle('Settings');
-		$this->render('settings', ['rSettings' => $rSettings, 'rStreamArguments' => $rStreamArguments, 'GeoLite2' => $GeoLite2, 'GeoISP' => $GeoISP, 'Nginx' => $Nginx, 'BinVersion' => $BinVersion, 'BinOS' => $BinOS, 'rUpdate' => $rUpdate, 'FanoutVersion' => $FanoutVersion, 'XcvmCoreVersion' => $XcvmCoreVersion, 'YtDlpVersion' => $YtDlpVersion, 'License' => $License]);
+		$this->render('settings', ['rSettings' => $rSettings, 'rStreamArguments' => $rStreamArguments, 'GeoLite2' => $GeoLite2, 'GeoISP' => $GeoISP, 'Nginx' => $Nginx, 'BinVersion' => $BinVersion, 'BinOS' => $BinOS, 'rUpdate' => $rUpdate, 'FanoutVersion' => $FanoutVersion, 'XcvmCoreVersion' => $XcvmCoreVersion, 'YtDlpVersion' => $YtDlpVersion, 'License' => $License, 'clusterInfo' => ClusterOverview::infoRows($rSettings)]);
 	}
 
 	/**

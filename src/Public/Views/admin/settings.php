@@ -2852,8 +2852,6 @@ use XcVm\Domain\Server\ServerRepository;
 				<div class="tab-pane fade" id="info" role="tabpanel">
 					<div class="row">
 						<div class="col-12">
-							<h4 class="card-title mb-4"><?= $language::get('versions') ?></h4>
-
 							<?php
 							// [label, value, bootstrap-bg-class, inline-bg-hex] — a distinct colour per row.
 							$rVersions = [
@@ -2870,10 +2868,13 @@ use XcVm\Domain\Server\ServerRepository;
 								['HWID', $License['hwid'], '', '#6c757d'],
 								['Activation key', $License['key'], $License['key'] === 'Present' ? 'bg-success' : 'bg-secondary', ''],
 							];
+							// The cluster API's block (ClusterOverview::infoRows), none without the extension.
 							?>
+							<?php foreach (array_filter([$language::get('versions') => $rVersions, $language::get('cluster') => $clusterInfo ?? null]) as $rTitle => $rRows): ?>
+							<h4 class="card-title mb-4"><?= htmlspecialchars((string) $rTitle, ENT_QUOTES); ?></h4>
 							<table class="table table-striped table-bordered">
 								<tbody>
-									<?php foreach (array_chunk($rVersions, 2) as $rPair): ?>
+									<?php foreach (array_chunk($rRows, 2) as $rPair): ?>
 										<tr>
 											<?php for ($i = 0; $i < 2; $i++): $rV = $rPair[$i] ?? null; ?>
 												<td class="text-center" style="font-size: 0.85rem;"><?= $rV ? htmlspecialchars((string) $rV[0], ENT_QUOTES) : ''; ?></td>
@@ -2887,6 +2888,7 @@ use XcVm\Domain\Server\ServerRepository;
 									<?php endforeach; ?>
 								</tbody>
 							</table>
+							<?php endforeach; ?>
 
 							<h4 class="card-title mb-4">FFmpeg</h4>
 

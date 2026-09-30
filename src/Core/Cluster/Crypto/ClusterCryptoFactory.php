@@ -63,6 +63,16 @@ final class ClusterCryptoFactory {
 		return $rOut;
 	}
 
+	/**
+	 * The extension's `cluster_info()` (licence, kid, clock, panel key) for the
+	 * Settings Info tab, or null without an extension.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function info(): ?array {
+		return self::probe();
+	}
+
 	/** Replace the extension probe (tests). Null restores the real one. */
 	public static function useProbe(?callable $rProbe): void {
 		self::$rProbe = $rProbe;

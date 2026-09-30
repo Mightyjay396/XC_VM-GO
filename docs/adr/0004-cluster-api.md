@@ -4743,8 +4743,8 @@ clock. `server:diagnose` showed about 0 as well.
    cached for `LICENCE_CHECK_MS`); `ClusterNodesController` asks the same function now.
 
 **Not built / limits.**
-- **The other badges.** P0/P1 lag, divergence and "MAIN URL unreachable" on the Servers list, and
-  the Settings Info-tab block, are still missing.
+- **The other badges.** Divergence and the Settings Info-tab block came later (*The divergence
+  badge and the Settings Info tab*). P0/P1 lag and "MAIN URL unreachable" are still missing.
 - **An older agent** keeps reporting about 0 until it is updated.
 
 **Tests.** PHP: `ClusterApiTest` (a heartbeat with `local_ms` ten minutes ahead records 600000; an
@@ -4752,6 +4752,44 @@ older one keeps the stamp's offset), `ClusterOverviewTest` (the badge's threshol
 non-numeric offset; the dashboard's banners against the page's, licensed, the API off, no
 extension). Go: `TestAHeartbeatCarriesTheNodesOwnClock` (the payload carries the node's clock and
 the request is still stamped with MAIN's).
+
+### The divergence badge and the Settings Info tab
+
+Plan §11 lists two more pieces of the admin UI. The first is the Servers list's
+"connection-count divergence" badge, the digest mismatch of §8: "a badge flags digest mismatches".
+The second is an Info-tab block of the cluster API's state.
+
+- **The divergence badge.** `ConnectionDigest::check` already keeps each node's last check in
+  `TMP_PATH/cluster_digest/<sid>.json` (`{at, miss, asked}`); `ConnectionDigest::state()` now reads
+  it. `ClusterOverview::divergenceBadge()` shows `connections resynced Ns ago` for 5 minutes after
+  MAIN asked the node for a snapshot (`RESYNC_SHOWN_MS`), and `connections differ` while the last
+  check, less than a minute old, disagreed. A node that sends no digest (CONNECTIONS off) never has
+  one.
+- **One list of badges.** `ClusterOverview::nodeBadges()` gives the Servers list each badge with its
+  help text's key: the clock and the divergence badges now.
+- **The Info tab.** `ClusterOverview::infoRows()` adds a *Cluster* table under *Versions* when the
+  extension is one the panel takes. Its rows are:
+  - the API switch;
+  - the licence gate and its `kid`;
+  - the panel key's fingerprint (what `cluster:pin-root` takes), or why the root is not initialised;
+  - the nodes by state;
+  - the next token refresh (the soonest newest-epoch `refresh_at` of an active node);
+  - the extension's version and API against the range the panel takes;
+  - the extension's clock;
+  - the stream secret's `kid` and its last rotation, or a rotation in progress.
+
+  They come from the extension's `cluster_info()` (`ClusterCryptoFactory::info()`), `cluster_nodes`,
+  `cluster_node_epochs` and `cluster_meta`.
+
+**Not built / limits.**
+- **P0/P1 lag and "MAIN URL unreachable".** MAIN has neither. The lane backlog is only in the agent's
+  `/v1/status`, and the URLs the agent failed to reach are only in its memory (`Client.failed`). Both
+  need the heartbeat to carry them.
+- **The Info tab's labels are English**, as the *Versions* rows beside them are.
+
+**Tests.** `ClusterOverviewTest`: the divergence badge's windows, and `nodeBadges()` reading the
+digest's state file. The Info rows cover a licensed and an unlicensed extension, the nodes by
+state, the next refresh (an enrolling node's does not count), the stream secret, and no extension.
 
 ### verify_host on a node that reads no database
 
