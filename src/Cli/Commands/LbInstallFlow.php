@@ -652,7 +652,17 @@ class LbInstallFlow {
 		// same verified session. Not fatal: MAIN pins it over the cluster API later.
 		$rWhyNot = self::pinCore($rConn, $rRunSSH, $rCrypto, $rServerID);
 		echo $rWhyNot === null ? "Panel key pinned in the node's xcvm_core\n" : 'The node\'s xcvm_core is not pinned yet (' . $rWhyNot . "); MAIN pins it once the node takes root commands\n";
-		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm bash ' . escapeshellarg(MAIN_HOME . 'bin/xc_agent/run.sh') . ' >/dev/null 2>&1 &');
+		// Started, and seen running: a release without run.sh, or an agent that
+		// exits at once, would otherwise leave a node that never completes.
+		$rRunSh = escapeshellarg(MAIN_HOME . 'bin/xc_agent/run.sh');
+		$rStart = call_user_func($rRunSSH, $rConn, 'if [ ! -f ' . $rRunSh . ' ]; then echo NO_RUNSH; else sudo -u xc_vm bash ' . $rRunSh . ' </dev/null >/dev/null 2>&1 & sleep 3; pgrep -u xc_vm -x xc_agent >/dev/null && echo STARTED; fi');
+		$rStarted = trim((string) ($rStart['output'] ?? ''));
+		if ($rStarted === 'NO_RUNSH') {
+			return $rFail('The node has no bin/xc_agent/run.sh: its release predates the cluster agent. Install a newer release, then retry. Exiting');
+		}
+		if ($rStarted !== 'STARTED') {
+			return $rFail('xc_agent did not start on the node (see ' . MAIN_HOME . 'bin/xc_agent/xc_agent.log there). Exiting');
+		}
 		echo 'Node enrolled (uuid ' . $rUuid . ', SAS ' . $rSas . "); it finishes with enrol_complete within 30 minutes\n";
 		return true;
 	}

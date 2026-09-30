@@ -11,12 +11,51 @@ namespace XcVm\Cli\Commands;
  * @package XC_VM_CLI_Commands
  */
 class SshSession {
+	/** libssh2's key-exchange failure, and what it most often means on a node. */
+	private const KEX_FAILED = 'Unable to exchange encryption keys';
+
+	private const RSA_ONLY_HINT = 'the node may offer only an RSA host key, which this panel\'s SSH library (libssh2 before 1.11) cannot use with OpenSSH 8.8 or later: give the node an Ed25519 host key (ssh-keygen -A && systemctl restart ssh) and retry';
+
 	/** @var resource|false */
 	private $rConn = false;
 
+	private string $rError = '';
+
 	public function connect(string $rHost, int $rPort): bool {
-		$this->rConn = @ssh2_connect($rHost, $rPort);
+		$this->rConn = self::open($rHost, $rPort, $this->rError);
 		return $this->rConn !== false;
+	}
+
+	/** Why the last connect() failed ('' when it did not). */
+	public function error(): string {
+		return $this->rError;
+	}
+
+	/**
+	 * ssh2_connect(), and on failure why: libssh2 says it in the first of its
+	 * two warnings, which error_get_last() loses to the second.
+	 *
+	 * @return resource|false
+	 */
+	public static function open(string $rHost, int $rPort, ?string &$rError = null) {
+		$rMessages = [];
+		set_error_handler(static function (int $rNo, string $rMessage) use (&$rMessages): bool {
+			$rMessages[] = preg_replace('/^ssh2_connect\(\): /', '', $rMessage);
+			return true;
+		});
+		try {
+			$rConn = ssh2_connect($rHost, $rPort);
+		} finally {
+			restore_error_handler();
+		}
+		$rError = $rConn === false ? self::explain($rMessages) : '';
+		return $rConn;
+	}
+
+	/** @param list<string> $rMessages libssh2's warnings for one failed connect */
+	public static function explain(array $rMessages): string {
+		$rText = implode('; ', $rMessages);
+		return str_contains($rText, self::KEX_FAILED) ? $rText . ' — ' . self::RSA_ONLY_HINT : $rText;
 	}
 
 	/** The host key's SHA-1, in hex, as libssh2 reports it. */

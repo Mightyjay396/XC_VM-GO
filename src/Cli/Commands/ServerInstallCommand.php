@@ -132,9 +132,9 @@ class ServerInstallCommand implements CommandInterface {
 
 		$rHost = $rServers[$rServerID]['server_ip'];
 		echo 'Connecting to ' . $rHost . ':' . $rPort . "\n";
-		if (!($rConn = ssh2_connect($rHost, $rPort))) {
+		if (!($rConn = SshSession::open($rHost, $rPort, $rConnectError))) {
 			$db->query('UPDATE `servers` SET `status` = 4 WHERE `id` = ?;', $rServerID);
-			echo "Failed to connect to server. Exiting\n";
+			echo 'Failed to connect to server' . ($rConnectError !== '' ? ': ' . $rConnectError : '') . ". Exiting\n";
 			return 1;
 		}
 
