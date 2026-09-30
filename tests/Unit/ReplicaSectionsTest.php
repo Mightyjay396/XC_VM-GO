@@ -48,6 +48,7 @@ final class ReplicaSectionsTest extends TestCase {
 		mkdir($this->rDir, 0777, true);
 		$this->rDb = new TestDb();
 		$this->rDb->exec(InstallSchema::serversTable());
+		$this->rDb->exec('CREATE TABLE `users` (`id` INTEGER PRIMARY KEY, `reseller_dns` text, `status` int)');
 		$this->rDb->exec(InstallSchema::migration('029_create_cluster_nodes'));
 		$this->rDb->exec(InstallSchema::migration('030_create_cluster_commands'));
 		$this->rDb->exec('ALTER TABLE `cluster_nodes` ADD COLUMN `root_ready` tinyint(1) NOT NULL DEFAULT 0');
@@ -168,8 +169,10 @@ final class ReplicaSectionsTest extends TestCase {
 		$this->server(6, ['server_type' => 1]);
 		$this->node(5);
 		$this->node(6, 'revoked');
+		$this->rDb->exec("INSERT INTO `users` VALUES (1, 'b.example.net', 1), (2, 'a.example.net', 1), (3, 'gone.example.net', 0), (4, '', 1), (5, 'a.example.net', 1)");
 
 		$rData = ReplicaBuilder::serversData();
+		$this->assertSame(['a.example.net', 'b.example.net'], $rData['reseller_dns'], 'the active resellers\' DNS, once each, sorted: the rest of verify_host\'s list');
 		$this->assertSame([1, 5, 6], array_column($rData['servers'], 'id'));
 		foreach ($rData['servers'] as $rRow) {
 			$this->assertSame(array_keys(ReplicaSections::SERVER_FIELDS), array_keys($rRow));

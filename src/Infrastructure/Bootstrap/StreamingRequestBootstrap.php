@@ -62,7 +62,9 @@ class StreamingRequestBootstrap {
 			}
 
 			if (is_array($rSettings) && !empty($rSettings['verify_host'])) {
-				$rAllowedDomains = (igbinary_unserialize(file_get_contents(CACHE_TMP_PATH . 'allowed_domains')) ?: []);
+				// No list (none built yet, or none on this node): hosts pass, as in HostVerificationStage.
+				$rData = is_file(CACHE_TMP_PATH . 'allowed_domains') ? file_get_contents(CACHE_TMP_PATH . 'allowed_domains') : false;
+				$rAllowedDomains = $rData === false ? [] : (igbinary_unserialize($rData) ?: []);
 
 				if (is_array($rAllowedDomains)
 					&& count($rAllowedDomains) > 0

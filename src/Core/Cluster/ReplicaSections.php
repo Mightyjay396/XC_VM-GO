@@ -9,7 +9,8 @@ namespace XcVm\Core\Cluster;
  * LBs, where Domain\Cluster does not.
  *
  * ```text
- * servers  {servers: [SERVER_FIELDS of every server], nodes: [{sid, gen, state, ed_pub}]}
+ * servers  {servers: [SERVER_FIELDS of every server], nodes: [{sid, gen, state, ed_pub}],
+ *           reseller_dns: [str]}   the active resellers' DNS, for verify_host
  * node     NODE_FIELDS of the node's own row, and NODE_SETTINGS
  * crontab  {jobs: [{filename, time}]}   enabled rows whose role fits the node's mode
  * cluster  {main_urls, urls_ver, policy_ver, transport, heartbeat_sec,

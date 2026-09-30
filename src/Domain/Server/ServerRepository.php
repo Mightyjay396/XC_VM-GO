@@ -477,28 +477,37 @@ class ServerRepository {
 				return $rCache;
 			}
 		}
-		$rDomains = ['127.0.0.1', 'localhost'];
-		$db->query('SELECT `server_ip`, `private_ip`, `domain_name` FROM `servers` WHERE `enabled` = 1;');
-		foreach ($db->get_rows() as $rRow) {
-			foreach (explode(',', $rRow['domain_name']) as $rDomain) {
-				$rDomains[] = $rDomain;
-			}
-			if (!empty($rRow['server_ip'])) {
-				$rDomains[] = $rRow['server_ip'];
-			}
-			if (!empty($rRow['private_ip'])) {
-				$rDomains[] = $rRow['private_ip'];
-			}
-		}
-		$db->query('SELECT `reseller_dns` FROM `users` WHERE `status` = 1;');
-		foreach ($db->get_rows() as $rRow) {
-			if (!empty($rRow['reseller_dns'])) {
-				$rDomains[] = $rRow['reseller_dns'];
-			}
-		}
-		$rDomains = array_filter(array_unique($rDomains));
+		$db->query('SELECT `server_ip`, `private_ip`, `domain_name`, `enabled` FROM `servers` WHERE `enabled` = 1;');
+		$rServers = $db->get_rows() ?: [];
+		$db->query("SELECT DISTINCT `reseller_dns` FROM `users` WHERE `status` = 1 AND `reseller_dns` <> '' ORDER BY `reseller_dns`;");
+		$rDomains = self::allowedDomains($rServers, array_column($db->get_rows() ?: [], 'reseller_dns'));
 		FileCache::setCache('allowed_domains', $rDomains);
 		return $rDomains;
+	}
+
+	/**
+	 * verify_host's list from the servers' rows and the active resellers'
+	 * DNS: localhost, and every enabled server's names and addresses. Pure:
+	 * a node whose replica owns the servers (ReplicaApply) builds it from its
+	 * `servers` section as cron:cache builds it from the database.
+	 *
+	 * @param iterable<array<string, mixed>> $rServers
+	 * @param list<string> $rResellerDns
+	 * @return list<string>
+	 */
+	public static function allowedDomains(iterable $rServers, array $rResellerDns): array {
+		$rDomains = ['127.0.0.1', 'localhost'];
+		foreach ($rServers as $rRow) {
+			if (empty($rRow['enabled'])) {
+				continue;
+			}
+			foreach (explode(',', (string) ($rRow['domain_name'] ?? '')) as $rDomain) {
+				$rDomains[] = $rDomain;
+			}
+			$rDomains[] = (string) ($rRow['server_ip'] ?? '');
+			$rDomains[] = (string) ($rRow['private_ip'] ?? '');
+		}
+		return array_values(array_filter(array_unique(array_merge($rDomains, $rResellerDns))));
 	}
 
 	/**

@@ -2007,7 +2007,7 @@ streams  {since, streams, mode: applied, written, removed, unreadable: [ids]}
 | `settings`, `servers`, `blocked_*` | R1, blocklist | their sections (earlier increments) |
 | `proxy_servers` | blocklist section | the `servers` a process booted with: the proxies (`server_type` 1) by `server_ip` and `private_ip`. The R1 `servers` section carries them; no database read |
 | `allowed_ips` | blocklist section | the `servers` and settings a process booted with: `server_ip`, `private_ip`, `whitelist_ips`, domain names that are addresses, `allowed_ips_admin`. The R1 `servers` and `settings` sections carry them; no database read |
-| `allowed_domains` | blocklist section | nothing: no node (and no MAIN) builds it. `ServerRepository::getAllowedDomains` has no caller; the readers skip a missing file |
+| `allowed_domains` | blocklist section | the R1 `servers` section: every enabled server's names and addresses, and its `reseller_dns` (see *verify_host on a node that reads no database*) |
 | `bouquets` | none | the new R1 `bouquets` section |
 | `categories` | none | the new R1 `categories` section |
 | `stream_<id>` (`STREAMS_TMP_PATH`) | R2 | nothing: `cron:cache_engine` builds it, and it is MAIN's (migration 043; the LB build strips it). Its node-side readers (player_api, the Ministra portal) take it only with `cache_complete`, which no node writes |
@@ -2034,7 +2034,7 @@ Without them, the bouquets of a panel with many large packages would have stoppe
 - `stream_bundle` on a start miss is not built. An entry missing is built from the agent's file instead, which covers a record stored since the last apply.
 - The plan's local `recording.state` override is not built: `StreamSource::recording` answers MAIN's `status`. The thirteenth Phase 7 increment builds it.
 - Section 9 lists neither the bouquets nor the categories, and does not replicate the viewer accounts that their readers serve. Two new R1 sections carry them, so that `cron:cache` needs no database; they are small beside the tmpfs the plan protects (they were already cached there).
-- The plan puts `allowed_ips`, `proxy_servers` and `allowed_domains` in the blocklist section. The first two are built from the `servers` and `settings` sections, which already carry every field they need (`whitelist_ips` since the fifth increment), so the blocklist section does not repeat them; the third is built nowhere.
+- The plan puts `allowed_ips`, `proxy_servers` and `allowed_domains` in the blocklist section. The first two are built from the `servers` and `settings` sections, which already carry every field they need (`whitelist_ips` since the fifth increment), so the blocklist section does not repeat them. The third comes from the `servers` section too, which also carries the resellers' DNS names for it (*verify_host on a node that reads no database*).
 - The size bounds and `too_large` are not in the plan. The plan's way for large transfers (parts of at most 4 MiB, section 7) was not built for whole sections; it is now, see [Sections in parts](#sections-in-parts).
 
 **Known limits.**
@@ -3035,7 +3035,7 @@ A row does not say what the key became; MAIN reads that when it serves the chang
 
 **Pruning.** `cron:cluster` keeps seven days of the log, and always keeps its newest row, so a quiet week does not send every node into a full reload. It prunes even while the cluster API is off, because the log is written either way.
 
-`allowed_ips`, `proxy_servers` and `allowed_domains` are not in this section. They come from `servers` and the settings, so they travel with those sections.
+`allowed_ips`, `proxy_servers` and `allowed_domains` are not in this section. They come from `servers` (with its `reseller_dns`) and the settings, so they travel with those sections.
 
 ### The replica transport (Phase 7, second increment)
 
@@ -4752,6 +4752,34 @@ older one keeps the stamp's offset), `ClusterOverviewTest` (the badge's threshol
 non-numeric offset; the dashboard's banners against the page's, licensed, the API off, no
 extension). Go: `TestAHeartbeatCarriesTheNodesOwnClock` (the payload carries the node's clock and
 the request is still stamped with MAIN's).
+
+### verify_host on a node that reads no database
+
+`verify_host` refuses a request whose `Host` is not on the `allowed_domains` list: the enabled
+servers' names and addresses, the active resellers' `reseller_dns`, and localhost. `cron:cache`
+builds the list from MAIN's database. A node in mode 2 reads none, so it deleted the list, and there
+`verify_host` checked nothing. Without the list, the streaming bootstrap also read a file that was
+not there, so every viewer request logged a warning.
+
+- **MAIN.** The `servers` section also carries `reseller_dns`: the non-empty `reseller_dns` of the
+  users whose `status` is 1, once each, sorted, so the ETag moves only when they change. A
+  reseller's new DNS reaches a node at its next poll (60 s): nothing announces it.
+- **The node.** When the replica makes the servers cache its own (CONFIG on, both sections
+  applied), `ReplicaApply` writes `allowed_domains` from the rows it applied and `reseller_dns`,
+  through `ServerRepository::allowedDomains()`, the function `cron:cache` uses. `cron:cache` then
+  leaves the list alone.
+- **An older MAIN.** Its section has no `reseller_dns`. The node then keeps no list, as before: a
+  list without the resellers would refuse their viewers.
+- **The streaming bootstrap** reads the list only when the file exists, as `HostVerificationStage`
+  does. With no list, hosts pass.
+
+**Not built / limits.** In mode 1 with CONFIG off, `cron:cache` still builds the list from MAIN's
+database, as before.
+
+**Tests.** `AllowedDomainsTest` (the replica's rows and resellers give the database's list; once
+each, never empty; `cron:cache` leaves the list to the replica), `ReplicaSectionsTest` (the section's
+`reseller_dns`: active only, non-empty, once each, sorted), `ReplicaApplyTest` (with CONFIG on, the
+applied replica writes the database's list; a section without `reseller_dns` leaves none).
 
 ### Members nothing used
 

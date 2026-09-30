@@ -410,6 +410,7 @@ final class ReplicaApplyTest extends TestCase {
 		(new \ReflectionProperty(ServerRepository::class, 'db'))->setValue(null, null);
 		$rDb = new TestDb();
 		$rDb->exec(InstallSchema::serversTable());
+		$rDb->exec('CREATE TABLE `users` (`id` INTEGER PRIMARY KEY, `reseller_dns` text, `status` int)');
 		$rDb->exec('CREATE TABLE `settings` (`id` int, `cloudflare` int, `mag_legacy_redirect` int)');
 		$rDb->exec('INSERT INTO `settings` VALUES (1, 1, 0)');
 		$rDb->exec('CREATE TABLE `cluster_nodes` (`server_id` int, `gen` int, `state` varchar(16), `node_sign_pub` blob)');
@@ -440,6 +441,26 @@ final class ReplicaApplyTest extends TestCase {
 		$this->whole('servers', ReplicaBuilder::serversData());
 		$this->whole('node', ReplicaBuilder::nodeData(SERVER_ID));
 		$this->whole('crontab', ReplicaBuilder::crontabData(1));
+	}
+
+	public function testWithConfigOnTheReplicaWritesVerifyHostsList(): void {
+		$rDb = $this->mainDb();
+		$rDb->exec("INSERT INTO `users` VALUES (1, 'reseller.example.net', 1), (2, 'gone.example.net', 0)");
+		$rFromDb = ServerRepository::getAllowedDomains(true);
+		FileCache::delCache('allowed_domains');
+		$this->sections();
+		$this->flows(NodeFlows::CONFIG);
+
+		ReplicaApply::run(true, null, SERVER_ID);
+		$this->assertEqualsCanonicalizing($rFromDb, FileCache::getCache('allowed_domains'), 'the list cron:cache builds from MAIN\'s database');
+		$this->assertContains('reseller.example.net', $rFromDb);
+
+		// A MAIN before `reseller_dns`: no list, rather than one that refuses resellers' viewers.
+		$rServers = ReplicaBuilder::serversData();
+		unset($rServers['reseller_dns']);
+		$this->whole('servers', $rServers);
+		ReplicaApply::run(true, null, SERVER_ID);
+		$this->assertFalse(FileCache::getCache('allowed_domains'));
 	}
 
 	public function testWithConfigOnTheServersCacheKeepsGetAllsShape(): void {

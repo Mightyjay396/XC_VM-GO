@@ -334,9 +334,11 @@ final class ReplicaBuilder {
 	 * keys (`{sid, gen, state, ed_pub, dataplane}`, MAIN's own while its
 	 * data-plane client is on, MainDataPlane; `dataplane`: the node's
 	 * DATAPLANE flow is on, Phase 8). Never liveness, telemetry or a
-	 * node's own settings (ReplicaSections::SERVER_LOCAL).
+	 * node's own settings (ReplicaSections::SERVER_LOCAL). `reseller_dns`:
+	 * the active resellers' DNS names, the rest of verify_host's list
+	 * (ServerRepository::allowedDomains), sorted.
 	 *
-	 * @return array{servers: list<array<string, int|string|null>>, nodes: list<array{sid: int, gen: int, state: string, ed_pub: string, dataplane: bool}>}
+	 * @return array{servers: list<array<string, int|string|null>>, nodes: list<array{sid: int, gen: int, state: string, ed_pub: string, dataplane: bool}>, reseller_dns: list<string>}
 	 */
 	public static function serversData(): array {
 		self::read('SELECT * FROM `servers` ORDER BY `id` ASC;');
@@ -365,7 +367,9 @@ final class ReplicaBuilder {
 				break;
 			}
 		}
-		return ['servers' => $rServers, 'nodes' => $rNodes];
+		self::read("SELECT DISTINCT `reseller_dns` FROM `users` WHERE `status` = 1 AND `reseller_dns` <> '' ORDER BY `reseller_dns`;");
+		$rDns = array_map('strval', array_column(self::db()->get_rows() ?: [], 'reseller_dns'));
+		return ['servers' => $rServers, 'nodes' => $rNodes, 'reseller_dns' => $rDns];
 	}
 
 	/**

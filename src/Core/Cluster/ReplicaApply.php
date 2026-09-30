@@ -925,6 +925,7 @@ final class ReplicaApply {
 			// Refused or incomplete: the cache is MAIN's database's again (cron:cache).
 			if ($rRows !== null && FileCache::setCache('servers', $rRows)) {
 				self::own(ReplicaSections::SERVERS, $rReport['etag'] . '/' . $rReport['node_etag']);
+				self::allowedDomains($rRows, $rServers['data']['reseller_dns'] ?? null);
 			} else {
 				self::own(ReplicaSections::SERVERS, null);
 			}
@@ -955,6 +956,23 @@ final class ReplicaApply {
 			'extra' => array_values(array_map('intval', array_keys(array_diff_key($rRows, $rCurrent)))),
 			'differ' => array_slice($rDiffer, 0, self::MAX_DIFFER),
 		];
+	}
+
+	/**
+	 * verify_host's list (`allowed_domains`) from the servers just applied
+	 * and the section's `reseller_dns`, as cron:cache builds it from MAIN's
+	 * database. A section without them (a MAIN before they were carried)
+	 * leaves none, and hosts unchecked: a list without the resellers would
+	 * refuse their viewers.
+	 *
+	 * @param array<int, array<string, mixed>> $rRows
+	 */
+	private static function allowedDomains(array $rRows, mixed $rResellerDns): void {
+		if (ReplicaRecords::listOf($rResellerDns, 'is_string')) {
+			FileCache::setCache('allowed_domains', ServerRepository::allowedDomains($rRows, $rResellerDns));
+		} else {
+			FileCache::delCache('allowed_domains');
+		}
 	}
 
 	/**

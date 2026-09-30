@@ -61,6 +61,7 @@ final class ReplicaBuilderSecretsTest extends TestCase {
 	private function mainDb(): TestDb {
 		$rDb = new TestDb();
 		$rDb->exec(InstallSchema::serversTable());
+		$rDb->exec('CREATE TABLE `users` (`id` INTEGER PRIMARY KEY, `reseller_dns` text, `status` int)');
 		$rDb->exec(InstallSchema::migration('029_create_cluster_nodes'));
 		$rDb->exec(InstallSchema::migration('034_create_cluster_changes'));
 		$rDb->exec('CREATE TABLE `crontab` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `filename` varchar(255), `time` varchar(128), `enabled` int, `role` varchar(8))');

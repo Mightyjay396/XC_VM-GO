@@ -42,5 +42,19 @@ final class AllowedDomainsTest extends TestCase {
 		$rCron = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Cli/CronJobs/CacheCronJob.php');
 		$this->assertStringContainsString('ServerRepository::getAllowedDomains(true);', $rCron, 'cron:cache writes it every minute');
 		$this->assertStringContainsString("FileCache::delCache('allowed_domains');", $rCron, 'a node in mode 2 keeps none');
+		$this->assertStringContainsString('if (!ReplicaApply::owns(ReplicaSections::SERVERS)) {', $rCron, 'unless its replica owns the servers: the replica writes the list');
+	}
+
+	public function testTheReplicasServersAndResellersMakeTheDatabasesList(): void {
+		// What ReplicaApply builds on a node: the servers cache rows (every
+		// server, a disabled one too) and the section's `reseller_dns`.
+		$rRows = [
+			1 => ['enabled' => 1, 'server_ip' => '203.0.113.1', 'private_ip' => '10.0.0.1', 'domain_name' => 'panel.example.com,tv.example.com'],
+			5 => ['enabled' => 1, 'server_ip' => '203.0.113.5', 'private_ip' => null, 'domain_name' => null],
+			6 => ['enabled' => 0, 'server_ip' => '203.0.113.6', 'private_ip' => '', 'domain_name' => 'off.example.com'],
+		];
+		$this->assertEqualsCanonicalizing(ServerRepository::getAllowedDomains(true), ServerRepository::allowedDomains($rRows, ['reseller.example.net']));
+		$this->assertSame(['127.0.0.1', 'localhost'], ServerRepository::allowedDomains([], []));
+		$this->assertSame(['127.0.0.1', 'localhost', 'a.example.net'], ServerRepository::allowedDomains([], ['a.example.net', 'localhost', '']), 'once each, never empty');
 	}
 }
