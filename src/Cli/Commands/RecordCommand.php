@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Cluster\AgentClient;
+use XcVm\Core\Cluster\LoopbackToken;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Config\SettingsManager;
@@ -101,9 +102,9 @@ class RecordCommand implements CommandInterface {
 			}
 			if ($recordingData['archive']) {
 				$rDuration = intval(($recordingData['end'] - $recordingData['start']) / 60);
-				$rSource = 'http://127.0.0.1:' . ServerRepository::getAll()[SERVER_ID]['http_broadcast_port'] . '/admin/timeshift?password=' . SettingsManager::get('live_streaming_pass') . '&stream=' . $recordingData['stream_id'] . '&start=' . $recordingData['start'] . '&duration=' . $rDuration . '&extension=ts';
+				$rSource = 'http://127.0.0.1:' . ServerRepository::getAll()[SERVER_ID]['http_broadcast_port'] . '/admin/timeshift?password=' . self::loopbackPass((int) $recordingData['stream_id']) . '&stream=' . $recordingData['stream_id'] . '&start=' . $recordingData['start'] . '&duration=' . $rDuration . '&extension=ts';
 			} else {
-				$rSource = 'http://127.0.0.1:' . ServerRepository::getAll()[SERVER_ID]['http_broadcast_port'] . '/admin/live?password=' . SettingsManager::get('live_streaming_pass') . '&stream=' . $recordingData['stream_id'] . '&extension=ts';
+				$rSource = 'http://127.0.0.1:' . ServerRepository::getAll()[SERVER_ID]['http_broadcast_port'] . '/admin/live?password=' . self::loopbackPass((int) $recordingData['stream_id']) . '&stream=' . $recordingData['stream_id'] . '&extension=ts';
 			}
 			$rFP = @fopen($rSource, 'r');
 			if ($rFP) {
@@ -263,4 +264,14 @@ class RecordCommand implements CommandInterface {
 		}
 		file_put_contents(ARCHIVE_PATH . $recordingID . '_.record', getmypid());
 	}
+
+	/**
+	 * What the recorder pulls its own node with: a LoopbackToken for the
+	 * stream, or the fleet's live_streaming_pass when the node's key cannot be
+	 * made (RelayGuard takes either).
+	 */
+	private static function loopbackPass(int $rStreamID): string {
+		return LoopbackToken::issue($rStreamID) ?? urlencode((string) SettingsManager::get('live_streaming_pass'));
+	}
+
 }

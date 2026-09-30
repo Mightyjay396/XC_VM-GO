@@ -3401,7 +3401,7 @@ Port 31290 is unprivileged: while the agent does not hold it, any local user cou
 - The node list gains `dataplane`, for the parents' password rule.
 - MAIN runs no data-plane client: `-role main` is the listener alone (until Phase 9's eighth increment).
 
-**Not built / limits.** The acceptance, which was to be measured on a running fleet: 48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host. Since then [the MITM harness](#the-mitm-harness) measures the MITM'd body and the replayed headers against MAIN's real guard and file server instead; only the 48 h is still a fleet measure, and it is not measured yet. A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
+**Not built / limits.** The acceptance, which was to be measured on a running fleet: 48 h without an encoder restart at L = 5, a MITM'd body, replayed headers from another host. Since then [the MITM harness](#the-mitm-harness) measures the MITM'd body and the replayed headers against MAIN's real guard and file server instead; only the 48 h is still a fleet measure, and it is not measured yet. A parent or owner that is a legacy server keeps the password URL. The legacy `/api` of a node is not retired while MAIN reads its files with `getFile` (above), which is every node until MAIN has a data-plane client. The agent only logs a port it cannot bind; nothing tells MAIN. The node's own loopback still carries the secret (the local RTMP output, the recorder's pull from its own `/admin/live` and `/admin/timeshift`). Since [the node's own loopback](#the-nodes-own-loopback), neither does. A file ticket sealed to an owner's box key before the owner re-enrolled does not open until the next epoch's. `cluster:rotate-stream-secret` (Phase 9).
 
 **Tests.** PHP: `RelayAuthTest` (a relay admitted once and a replay refused; another stream, parent or panel, a tampered ticket; a revoked, re-enrolled or unlisted child; another key, a stale or retargeted proof; no nonce window or panel key; headers never falling back to the password; the password from a DATAPLANE child refused; a password that is not a string refused; a load balancer judging by MAIN's anchored clock; the four endpoints through the guard), `FileTicketTest` (chunks with their digests, a replay, another key or owner, a revoked or re-enrolled fetcher, a path sealed under another ref or key, getFile's rule, nothing unsigned, the routes and their own rate zone), `FileDigestTest` (a chunk's digest bound to its offset and size), `DataPlaneUrlsTest` (no URL carries the secret with the flow on; the builders use it; legacy servers and the flow off keep the legacy URL; the loopback only while the agent's uid holds the port, from fixture socket tables; `legacyApiRetired`), `LbNginxApiLegacyTest` and `ModeTwoPathsTest` (`api_legacy.conf` stays `1` while MAIN reads with `getFile`), `ClusterTelemetryTest` (DATAPLANE only for an agent saying `relay`), `ClusterDataplaneVectorsTest`, and `ClusterApiTest` (tickets in the record and on the delta, no ETag, version or cache entry moved, paging, the licence, a malformed ask, the flow off). Go: the vectors, the proxy (each connect signed afresh and a replay refused, the key, a stream without a ticket, the flow off, a ticket for another node, generation or stream; `relay.key` published only while the port is held, a held port retried), `/xfile` (whole, a range, a suffix, past the end; a tampered, moved or foreign-signed chunk refused, an inactive owner; the ticket re-read per chunk; 429 and 503 retried, a bounded number of times), the ticket store (paging, a restart, the flow off and on, a licence refusal, the latest ticket per ref) and `TestInteropDataPlane` against MAIN's real PHP (`XCVM_PANEL_DIR`): tickets from the streams op, a relay MAIN's guard admits once, a file read through MAIN's `FileTicketServer` and a tampered chunk refused.
 
@@ -5055,3 +5055,27 @@ for a stream the sync does not bring; none for a stream with an entry),
 `FencedProducersTest::testAFencedNodeStartsNoWorkerRecordingEncodeOrBuild`;
 `ModeTwoPathsTest::testAFencedNodeReleasesItsProducersAndKeepsTheirRecords` (the thumbnail worker
 goes with its producer).
+
+### The node's own loopback
+
+Phase 8's acceptance wants `live_streaming_pass` in no process's command line. Two of a node's
+own pulls still carried it.
+
+- **The local RTMP output** (`StreamProcess`, `rtmp_output`) published to
+  `rtmp://127.0.0.1:<port>/live/<id>?password=<live_streaming_pass>`, in ffmpeg's command line.
+  nginx-rtmp asks `rtmp.php` at `on_publish`, and `rtmp.php` takes a publish from 127.0.0.1
+  without a password at all, so the output now names none.
+- **The recorder** (`RecordCommand`) read its own `/admin/live` and `/admin/timeshift` with the
+  fleet's secret, which pulls any stream from any server. It now presents a `LoopbackToken`:
+  `lb1-<exp>-<hmac>`, HMAC-SHA256 under the node's own key (`config/cluster/loopback.key`, 32
+  random bytes, made at first use, 0600) over the stream and a 24 h expiry. `RelayGuard` admits
+  it as `LOOPBACK` for that stream, from 127.0.0.1 or ::1 only, on the endpoints that take a
+  password; a token from any other address is refused and never tried as the password. When the
+  key cannot be made, the recorder falls back to the secret, as before.
+
+**Not built / limits.** A legacy relay (DATAPLANE off) still pulls its parent with the secret, by
+design: that is what the data plane's tickets replace.
+
+**Tests.** `LoopbackTokenTest` (a token opens its stream until it expires, no other stream, not
+tampered, and no token verifies before the key exists; RelayGuard takes it from the node itself
+only), `StreamProcessBuildLiveTest::testRtmpOutputAppendsFlvTarget` (no secret in the command).

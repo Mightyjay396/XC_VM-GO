@@ -203,7 +203,10 @@ final class StreamProcessBuildLiveTest extends TestCase {
 
 	public function testRtmpOutputAppendsFlvTarget(): void {
 		$out = $this->build(['stream_info' => ['rtmp_output' => 1]]);
-		$this->assertStringContainsString('rtmp://127.0.0.1:1935/live/42?password=secret', $out);
+		// No password: rtmp.php takes a publish from 127.0.0.1 without one, and
+		// ffmpeg's command line would carry the fleet's secret.
+		$this->assertMatchesRegularExpression('#rtmp://127\.0\.0\.1:1935/live/42(\s|$)#', $out);
+		$this->assertStringNotContainsString('secret', $out);
 		$this->assertStringContainsString('-f flv', $out);
 	}
 }

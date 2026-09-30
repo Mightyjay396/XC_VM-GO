@@ -996,7 +996,9 @@ class StreamProcess {
 		}
 
 		if ($rStream['stream_info']['rtmp_output'] == 1) {
-			$rOutputs['flv'][] = self::buildFlvOutput($rFLVOptions, 'rtmp://127.0.0.1:' . intval($rServers[$rStream['server_info']['server_id']]['rtmp_port']) . '/live/' . intval($rStreamID) . '?password=' . urlencode($rSettings['live_streaming_pass']));
+			// No password: nginx-rtmp asks rtmp.php, which takes a publish from
+			// 127.0.0.1 without one, and it would sit in ffmpeg's command line.
+			$rOutputs['flv'][] = self::buildFlvOutput($rFLVOptions, 'rtmp://127.0.0.1:' . intval($rServers[$rStream['server_info']['server_id']]['rtmp_port']) . '/live/' . intval($rStreamID));
 		}
 
 		if (!empty($rExternalPush[SERVER_ID])) {
