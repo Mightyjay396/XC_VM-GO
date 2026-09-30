@@ -183,6 +183,16 @@ class UsersCronJob implements CommandInterface {
 	}
 
 	/**
+	 * Has the connection's line expired? A lines_live row carries its line's
+	 * exp_date (the join); a Redis record does not, so the line's, read by the
+	 * cron, stands in. No date: it never expires.
+	 */
+	private static function lineExpired(array $rConnection, mixed $rLineExp, int $rNow): bool {
+		$rExp = $rConnection['exp_date'] ?? $rLineExp;
+		return $rExp !== null && $rExp !== '' && (int) $rExp < $rNow;
+	}
+
+	/**
 	 * Is this HLS viewer over? The node said so (hls_end), or it made no
 	 * playlist request for 30 s and its node does not reap for itself
 	 * (HlsReaping: an agent with hls_reaper, unless orphaned).
@@ -496,15 +506,16 @@ class UsersCronJob implements CommandInterface {
 				$rUsers = ConnectionTracker::getConnections(($rServers[SERVER_ID]['is_main'] ? null : SERVER_ID));
 			}
 
-			$rRestreamerArray = $rMaxConnectionsArray = [];
+			$rRestreamerArray = $rMaxConnectionsArray = $rExpDateArray = [];
 			$rUserIDs = InputValidator::confirmIDs(array_keys($rUsers));
 
 			if (count($rUserIDs) > 0) {
-				$db->query('SELECT `id`, `max_connections`, `is_restreamer` FROM `lines` WHERE `id` IN (' . implode(',', $rUserIDs) . ');');
+				$db->query('SELECT `id`, `max_connections`, `is_restreamer`, `exp_date` FROM `lines` WHERE `id` IN (' . implode(',', $rUserIDs) . ');');
 
 				foreach ($db->get_rows() as $rRow) {
 					$rMaxConnectionsArray[$rRow['id']] = $rRow['max_connections'];
 					$rRestreamerArray[$rRow['id']] = $rRow['is_restreamer'];
+					$rExpDateArray[$rRow['id']] = $rRow['exp_date'];
 				}
 			}
 
@@ -548,7 +559,7 @@ class UsersCronJob implements CommandInterface {
 
 				foreach ($rConnections as $rConnection) {
 					if ($rConnection['server_id'] == SERVER_ID || $rRedis) {
-						if (!isset($rConnection['exp_date']) || is_null($rConnection['exp_date']) || $rConnection['exp_date'] >= $rStartTime) {
+						if (!self::lineExpired($rConnection, $rExpDateArray[$rUserID] ?? null, $rStartTime)) {
 							$rTotalTime = $rStartTime - $rConnection['date_start'];
 
 							if ($rAutoKick == 0 || $rAutoKick > $rTotalTime || $rIsRestreamer) {

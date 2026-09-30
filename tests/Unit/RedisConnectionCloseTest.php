@@ -1,0 +1,138 @@
+<?php
+
+use PHPUnit\Framework\TestCase;
+use XcVm\Domain\Stream\ConnectionTracker;
+use XcVm\Infrastructure\Database\DatabaseFactory;
+use XcVm\Infrastructure\Redis\RedisManager;
+use XcVm\Streaming\Protection\ConnectionLimiter;
+use XcVm\Tests\Support\BusServer;
+
+if (!defined('SERVER_ID')) {
+	define('SERVER_ID', 1);
+}
+if (!defined('CONS_TMP_PATH')) {
+	define('CONS_TMP_PATH', sys_get_temp_dir() . '/xcvm-no-cons/');
+}
+
+/**
+ * Closing a connection in Redis mode, against a real redis-server. A
+ * connection that has ended (hls_end = 1) names a PHP worker that PHP-FPM has
+ * since given to another request (pm = ondemand, max_requests 40000): the
+ * close never kills it. An RTMP play that ended (play_done) leaves nothing
+ * behind in Redis, and another server's client with the same id is left alone.
+ */
+final class RedisConnectionCloseTest extends TestCase {
+	private ?BusServer $rBus = null;
+
+	private \Redis $rRedis;
+
+	/** @var array{0: mixed, 1: mixed} */
+	private array $rGlobals = [null, null];
+
+	/** @var list<resource> */
+	private array $rProcs = [];
+
+	protected function setUp(): void {
+		$this->rBus = BusServer::start('conns');
+		if ($this->rBus === null) {
+			$this->markTestSkipped('needs redis-server and phpredis');
+		}
+		$this->rRedis = new \Redis();
+		// Explicit timeouts: other suites set default_socket_timeout to 0, which
+		// phpredis would take as its read timeout.
+		$this->rRedis->connect($this->rBus->socket(), 0, 2.0, null, 0, 2.0);
+		$this->manager($this->rRedis);
+		$this->rGlobals = [$GLOBALS['rSettings'] ?? null, $GLOBALS['rServers'] ?? null];
+		$GLOBALS['rSettings'] = ['redis_handler' => 1, 'save_closed_connection' => 0];
+		$GLOBALS['rServers'] = [SERVER_ID => ['rtmp_mport_url' => 'http://127.0.0.1:9/']];
+		DatabaseFactory::set(new TestDb());
+	}
+
+	protected function tearDown(): void {
+		foreach ($this->rProcs as $rProc) {
+			$rStatus = proc_get_status($rProc);
+			if ($rStatus['running']) {
+				posix_kill($rStatus['pid'], 9);
+			}
+			proc_close($rProc);
+		}
+		$this->manager(null);
+		[$GLOBALS['rSettings'], $GLOBALS['rServers']] = $this->rGlobals;
+		DatabaseFactory::reset();
+		$this->rBus?->stop();
+	}
+
+	/** Point RedisManager's shared client at the test server (null: none). */
+	private function manager(?\Redis $rRedis): void {
+		(new \ReflectionProperty(RedisManager::class, 'instance'))->setValue(null, $rRedis);
+		(new \ReflectionProperty(RedisManager::class, 'lastPingCheck'))->setValue(null, time());
+	}
+
+	/** A process standing in for a PHP-FPM worker. @return array{0: resource, 1: int} */
+	private function worker(): array {
+		$rNull = ['file', '/dev/null', 'w'];
+		$rProc = proc_open(['sleep', '30'], [0 => ['file', '/dev/null', 'r'], 1 => $rNull, 2 => $rNull], $rPipes);
+		$this->assertIsResource($rProc);
+		$this->rProcs[] = $rProc;
+		return [$rProc, (int) proc_get_status($rProc)['pid']];
+	}
+
+	/** @param resource $rProc */
+	private function running($rProc): bool {
+		for ($i = 0; $i < 50; $i++) {
+			if (!proc_get_status($rProc)['running']) {
+				return false;
+			}
+			usleep(20000);
+		}
+		return true;
+	}
+
+	/** @return array<string, mixed> the record, as stored */
+	private function connection(string $rContainer, int $rPID, int $rEnded, string $rUUID, int $rServerID = SERVER_ID): array {
+		$rRecord = ['uuid' => $rUUID, 'identity' => 7, 'user_id' => 7, 'stream_id' => 11, 'server_id' => $rServerID, 'proxy_id' => 0, 'container' => $rContainer, 'pid' => $rPID, 'hls_end' => $rEnded, 'date_start' => 1800000000, 'hls_last_read' => 1800000000, 'user_ip' => '198.51.100.7', 'user_agent' => 'test'];
+		$this->assertNotFalse(ConnectionTracker::createConnection($rRecord));
+		return $rRecord;
+	}
+
+	public function testAnEndedConnectionsWorkerIsNeverKilled(): void {
+		[$rProc, $rPID] = $this->worker();
+		$rRecord = $this->connection('ts', $rPID, 1, 'ended-ts');
+		$this->assertTrue(ConnectionTracker::closeConnection($rRecord));
+		$this->assertTrue($this->running($rProc), 'the worker serves someone else now: it lives');
+		$this->assertFalse($this->rRedis->get('ended-ts'), 'the record is gone');
+		$this->assertFalse($this->rRedis->zScore('LINE#7', 'ended-ts'));
+	}
+
+	public function testALiveConnectionsWorkerIsStillKilled(): void {
+		[$rProc, $rPID] = $this->worker();
+		$this->assertTrue(ConnectionTracker::closeConnection($this->connection('ts', $rPID, 0, 'live-ts')));
+		$this->assertFalse($this->running($rProc), 'the worker serving it is killed, as before');
+	}
+
+	public function testARecordWithoutHlsEndHasNotEnded(): void {
+		$this->assertFalse(ConnectionTracker::ended(['pid' => 5]));
+		$this->assertFalse(ConnectionTracker::ended(['hls_end' => 0]));
+		$this->assertTrue(ConnectionTracker::ended(['hls_end' => '1']));
+	}
+
+	public function testAnRtmpPlayThatEndedLeavesNothingBehind(): void {
+		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
+		$rUUID = md5('4242');
+		$this->connection('rtmp', 4242, 0, $rUUID);
+		$this->assertTrue(ConnectionLimiter::closeRTMP('4242'));
+		$this->assertFalse($this->rRedis->get($rUUID));
+		foreach (['LIVE', 'LINE#7', 'STREAM#11', 'SERVER#' . SERVER_ID, 'SERVER_LINES#' . SERVER_ID] as $rSet) {
+			$this->assertFalse($this->rRedis->zScore($rSet, $rUUID), $rSet);
+		}
+		$this->assertFalse(ConnectionLimiter::closeRTMP('4242'), 'closed once');
+	}
+
+	public function testAnotherServersRtmpClientWithTheSameIdIsLeftAlone(): void {
+		// nosemgrep: php.lang.security.weak-crypto.weak-crypto
+		$rUUID = md5('4243');
+		$this->connection('rtmp', 4243, 0, $rUUID, SERVER_ID + 1);
+		$this->assertFalse(ConnectionLimiter::closeRTMP('4243'));
+		$this->assertNotFalse($this->rRedis->get($rUUID), 'still there');
+	}
+}

@@ -221,7 +221,8 @@ if ($rUserInfo) {
 					generateError('IP_MISMATCH');
 				}
 
-				if (!(ProcessManager::isRunning($rConnection['pid'], 'php-fpm') && $rPID != $rConnection['pid'] && is_numeric($rConnection['pid']) && 0 < $rConnection['pid'])) {
+				// An ended connection's worker serves someone else now (ConnectionTracker::ended): never kill it.
+				if (!(!ConnectionTracker::ended($rConnection) && ProcessManager::isRunning($rConnection['pid'], 'php-fpm') && $rPID != $rConnection['pid'] && is_numeric($rConnection['pid']) && 0 < $rConnection['pid'])) {
 				} else {
 					if ($rConnection['server_id'] == SERVER_ID) {
 						posix_kill(intval($rConnection['pid']), 9);

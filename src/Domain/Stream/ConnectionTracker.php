@@ -1306,11 +1306,25 @@ class ConnectionTracker {
 	}
 
 	/**
+	 * Has the connection ended (`hls_end` = 1)? For a connection a PHP worker
+	 * served, the worker then ran its shutdown handler and PHP-FPM gave it to
+	 * another request (pm = ondemand, max_requests 40000), or it exited and its
+	 * pid went to another process: that pid must never be killed. A record
+	 * without the field has not ended.
+	 *
+	 * @param array<string, mixed> $rConnection
+	 */
+	public static function ended(array $rConnection): bool {
+		return (int) ($rConnection['hls_end'] ?? 0) === 1;
+	}
+
+	/**
 	 * Close an active connection.
 	 *
 	 * Performs the full close cycle: kills the process (RTMP drop client,
-	 * posix_kill, or Redis signal), removes from Redis sorted sets,
-	 * cleans tmp files, and writes to the activity log.
+	 * posix_kill, or Redis signal) unless the connection has already ended
+	 * (self::ended: its worker or client is gone), removes from Redis sorted
+	 * sets, cleans tmp files, and writes to the activity log.
 	 *
 	 * @param array|string $rActivityInfo Connection data or UUID/activity_id.
 	 * @param bool         $rRemove       Remove connection from Redis/MySQL.
@@ -1342,11 +1356,14 @@ class ConnectionTracker {
 				}
 			}
 			if (is_array($rActivityInfo)) {
+				// Before the defaults below, which read a missing hls_end as ended.
+				$rEnded = self::ended($rActivityInfo);
 				$rActivityInfo += ['server_id' => 0, 'pid' => 0, 'activity_id' => null, 'stream_id' => 0, 'uuid' => '', 'hls_end' => 1];
 				if (($rActivityInfo['container'] ?? '') == 'rtmp') {
-					if ($rActivityInfo['server_id'] == SERVER_ID) {
+					// An ended one's client is gone (play_done): nginx may have given its id to another.
+					if (!$rEnded && $rActivityInfo['server_id'] == SERVER_ID) {
 						shell_exec('wget --timeout=2 -O /dev/null -o /dev/null "' . $rServers[SERVER_ID]['rtmp_mport_url'] . 'control/drop/client?clientid=' . intval($rActivityInfo['pid']) . '" >/dev/null 2>/dev/null &');
-					} else {
+					} elseif (!$rEnded) {
 						if ($rSettings['redis_handler']) {
 							self::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 1);
 						} else {
@@ -1366,11 +1383,12 @@ class ConnectionTracker {
 					} else {
 						if (intval($rActivityInfo['pid']) === 0) {
 							self::dropDaemonViewer($rActivityInfo);
-						} elseif ($rActivityInfo['server_id'] == SERVER_ID) {
+						} elseif (!$rEnded && $rActivityInfo['server_id'] == SERVER_ID) {
+							// An ended connection's worker ended with it and now serves someone else (self::ended).
 							if ($rActivityInfo['pid'] != getmypid() && is_numeric($rActivityInfo['pid']) && 0 < $rActivityInfo['pid']) {
 								posix_kill(intval($rActivityInfo['pid']), 9);
 							}
-						} else {
+						} elseif (!$rEnded) {
 							if ($rSettings['redis_handler']) {
 								self::redisSignal($rActivityInfo['pid'], $rActivityInfo['server_id'], 0);
 							} else {

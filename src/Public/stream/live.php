@@ -439,7 +439,8 @@ if ($rChannelInfo) {
 					generateError("IP_MISMATCH");
 				}
 
-				if (ProcessManager::isRunning($rConnection["pid"], "php-fpm") && $rPID != $rConnection["pid"] && is_numeric($rConnection["pid"]) && 0 < $rConnection["pid"]) {
+				// Take over from a worker still serving this token; an ended connection's worker serves someone else now.
+				if (!ConnectionTracker::ended($rConnection) && ProcessManager::isRunning($rConnection["pid"], "php-fpm") && $rPID != $rConnection["pid"] && is_numeric($rConnection["pid"]) && 0 < $rConnection["pid"]) {
 					posix_kill(intval($rConnection["pid"]), 9);
 				}
 
