@@ -34,6 +34,9 @@ class AgentUpgradeDb extends DatabaseHandler {
 		} elseif (str_starts_with($query, 'INSERT INTO `cluster_meta`')) {
 			$this->rMeta[(string) $rArgs[0]] = (string) $rArgs[1];
 			$this->rRows = [];
+		} elseif (str_starts_with($query, 'DELETE FROM `cluster_meta`')) {
+			unset($this->rMeta[(string) $rArgs[0]]);
+			$this->rRows = [];
 		} else {
 			$this->rRows = [];
 		}
@@ -171,6 +174,27 @@ final class AgentUpgradeTest extends TestCase {
 			// Once node 5 runs it, the others follow.
 			$rNodes[0] = $this->node(['server_id' => 5, 'agent_version' => '1.4.0']);
 			$this->assertSame([[6, 'amd64'], [7, 'amd64']], $this->pushAt(self::NOW + 2 * AgentUpgrades::RETRY_SEC, ...$rNodes));
+		} finally {
+			SettingsManager::set([]);
+		}
+	}
+
+	/**
+	 * An operator who judges a failure not the version's (the canary was
+	 * down, MAIN unreachable) releases the hold: the failed node is offered it
+	 * afresh, and the rest follow.
+	 */
+	public function testAReleasedRolloutIsOfferedAgainToAll(): void {
+		$rNodes = [$this->node(['server_id' => 5]), $this->node(['server_id' => 6])];
+		SettingsManager::set(['cluster_agent_upgrade_parallel' => 3]);
+		try {
+			$this->assertSame([[5, 'amd64'], [6, 'amd64']], $this->push(...$rNodes));
+			// Neither took it: both are failures, and a node offered it twice more is given up.
+			$this->assertSame([[5, 'amd64'], [6, 'amd64']], $this->pushAt(self::NOW + AgentUpgrades::RETRY_SEC, ...$rNodes));
+			$rLater = self::NOW + 2 * AgentUpgrades::RETRY_SEC;
+			$this->assertSame(2, AgentUpgrades::release('1.4.0', 'test', $rLater));
+			$this->assertSame([[5, 'amd64'], [6, 'amd64']], $this->pushAt($rLater + 60, ...$rNodes), 'offered afresh');
+			$this->assertSame(0, AgentUpgrades::release('1.4.0', 'test', $rLater + 120), 'offers still installing are left alone');
 		} finally {
 			SettingsManager::set([]);
 		}

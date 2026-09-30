@@ -33,8 +33,9 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * RETRY_SEC later (its install failed, or run.sh put the previous binary back
  * after the new one kept failing at start) is held back from every node not
  * yet offered it, audited once as `cluster.agent_rollout_held`, until the node
- * runs it or MAIN pins another. A node is offered a version at most MAX_TRIES
- * times.
+ * runs it or MAIN pins another, or an operator releases it (release(), for a
+ * failure that was not the version's: the node was down, MAIN unreachable).
+ * A node is offered a version at most MAX_TRIES times.
  */
 final class AgentUpgrades {
 	use DatabaseAware;
@@ -127,6 +128,32 @@ final class AgentUpgrades {
 
 	private static function record(int $rServerID, int $rGen, string $rVersion, int $rNow, int $rTries): void {
 		ClusterMeta::set(self::PUSHED . $rServerID, (string) json_encode(['gen' => $rGen, 'version' => $rVersion, 'at' => $rNow, 'tries' => $rTries]));
+	}
+
+	/**
+	 * Release a held rollout of $rVersion: forget what each node that did not
+	 * take it was offered (RETRY_SEC ago or more, so a failure; an offer still
+	 * installing is left alone), so none counts as a failure and each is
+	 * offered it afresh, MAX_TRIES times; and the hold's audit, so a new
+	 * failure is audited again. Audited as `cluster.agent_rollout_released`.
+	 *
+	 * @return int The nodes whose offer was forgotten.
+	 */
+	public static function release(string $rVersion, string $rBy = 'cli', ?int $rNow = null): int {
+		$rNow ??= ClusterClock::now();
+		self::db()->query('SELECT * FROM `cluster_nodes`;');
+		$rForgotten = 0;
+		foreach (self::db()->get_rows() ?: [] as $rNode) {
+			$rDoc = self::pushed((int) $rNode['server_id'], (int) $rNode['gen']);
+			if ($rDoc !== null && $rDoc['version'] === $rVersion && (string) ($rNode['agent_version'] ?? '') !== $rVersion && $rNow - $rDoc['at'] >= self::RETRY_SEC) {
+				ClusterMeta::delete(self::PUSHED . $rNode['server_id']);
+				$rForgotten++;
+			}
+		}
+		$rWasHeld = ClusterMeta::get(self::HELD . $rVersion) !== null;
+		ClusterMeta::delete(self::HELD . $rVersion);
+		ClusterAudit::log('cluster.agent_rollout_released', null, ['version' => $rVersion, 'nodes' => $rForgotten, 'was_held' => $rWasHeld], $rBy);
+		return $rForgotten;
 	}
 
 	/** The rollout of $rVersion is held (a node it failed on): audited once. */

@@ -14,10 +14,14 @@
 # nothing restarts it until the node is enrolled again, which removes the file.
 #
 # A binary MAIN's `agent_binary` just installed is on trial (xc_agent.trial,
-# "<installed at> <failed starts>"): if it exits within 60 s of its start three
-# times within TRIAL_SEC of the install, the one it replaced (xc_agent.prev)
-# is put back. A run that lasts, an exit MAIN asked for, or the end of the
-# trial ends it. XCVM_AGENT_HOME is for tests: sudo does not pass it on.
+# "<installed at> <failed starts> [reach]"): if it exits within 60 s of its
+# start three times within TRIAL_SEC of the install, the one it replaced
+# (xc_agent.prev) is put back. A run that lasts, an exit MAIN asked for, or the
+# end of the trial ends it. With `reach` (an agent that says it writes
+# config/cluster/reached at each heartbeat MAIN answers), lasting is not
+# enough: the trial ends once it has reached MAIN during one of its runs, and
+# if it has not within REACH_SEC of the install, the previous one is put back.
+# XCVM_AGENT_HOME and XCVM_AGENT_REACH_SEC are for tests: sudo passes neither on.
 SCRIPT="${XCVM_AGENT_HOME:-/home/xc_vm}"
 AGENT_DIR="$SCRIPT/bin/xc_agent"
 STATE="$SCRIPT/config/cluster/agent.json"
@@ -25,6 +29,9 @@ MAIN_ID="$SCRIPT/config/cluster/main.json"
 MAIN_STATE="$SCRIPT/config/cluster/main_agent.json"
 LOG="$AGENT_DIR/xc_agent.log"
 TRIAL_SEC=600
+REACH_SEC="${XCVM_AGENT_REACH_SEC:-300}"
+WATCH_SEC=$(( REACH_SEC < 10 ? 1 : 5 ))
+REACHED="$SCRIPT/config/cluster/reached"
 
 exec 9>"$AGENT_DIR/run.lock"
 if command -v flock >/dev/null 2>&1; then
@@ -32,24 +39,54 @@ if command -v flock >/dev/null 2>&1; then
 fi
 echo "=== $(date '+%F %T') supervisor pid=$$ start ===" >> "$LOG"
 
+# rollback <why>: put the previous binary back and end the trial.
+rollback() {
+  mv -f "$AGENT_DIR/xc_agent.prev" "$AGENT_DIR/xc_agent"
+  rm -f "$AGENT_DIR/xc_agent.trial"
+  echo "=== $(date '+%F %T') $1: the previous one is back ===" >> "$LOG"
+}
+
 # trial <started at> <exit code>: judge a run of a binary on trial.
 trial() {
-  local now at fails
+  local now at fails reach lasted
   [ -f "$AGENT_DIR/xc_agent.trial" ] || return 0
   now=$(date +%s)
-  read -r at fails < "$AGENT_DIR/xc_agent.trial"
-  if [ $((now - ${at:-0})) -gt "$TRIAL_SEC" ] || [ $((now - $1)) -ge 60 ] || [ "$2" = "3" ]; then
+  read -r at fails reach < "$AGENT_DIR/xc_agent.trial"
+  lasted=$(( now - $1 >= 60 ))
+  [ "$reach" = "reach" ] && lasted=0
+  if [ $((now - ${at:-0})) -gt "$TRIAL_SEC" ] || [ "$lasted" = "1" ] || [ "$2" = "3" ]; then
     rm -f "$AGENT_DIR/xc_agent.trial"
     return 0
   fi
-  fails=$(( ${fails:-0} + 1 ))
-  if [ "$fails" -ge 3 ] && [ -x "$AGENT_DIR/xc_agent.prev" ]; then
-    mv -f "$AGENT_DIR/xc_agent.prev" "$AGENT_DIR/xc_agent"
-    rm -f "$AGENT_DIR/xc_agent.trial"
-    echo "=== $(date '+%F %T') the new agent failed at start $fails times: the previous one is back ===" >> "$LOG"
+  [ $((now - $1)) -ge 60 ] || fails=$(( ${fails:-0} + 1 ))
+  if [ "${fails:-0}" -ge 3 ] && [ -x "$AGENT_DIR/xc_agent.prev" ]; then
+    rollback "the new agent failed at start $fails times"
   else
-    echo "$at $fails" > "$AGENT_DIR/xc_agent.trial"
+    echo "$at ${fails:-0} $reach" > "$AGENT_DIR/xc_agent.trial"
   fi
+}
+
+# reach_watch <pid> <started at>: beside a run of a binary on trial for
+# reaching MAIN, end the trial once this run has (the agent touched REACHED
+# since the run started, so not the agent it replaced), or put the previous
+# binary back and end the run when it has not within REACH_SEC of the install.
+reach_watch() {
+  local at fails reach
+  while [ -f "$AGENT_DIR/xc_agent.trial" ]; do
+    read -r at fails reach < "$AGENT_DIR/xc_agent.trial"
+    [ "$reach" = "reach" ] || return 0
+    if [ -f "$REACHED" ] && [ "$(stat -c %Y "$REACHED")" -gt "$2" ]; then
+      rm -f "$AGENT_DIR/xc_agent.trial"
+      echo "=== $(date '+%F %T') the new agent reached MAIN: its trial is over ===" >> "$LOG"
+      return 0
+    fi
+    if [ $(( $(date +%s) - ${at:-0} )) -ge "$REACH_SEC" ] && [ -x "$AGENT_DIR/xc_agent.prev" ]; then
+      rollback "the new agent did not reach MAIN within ${REACH_SEC}s of its install"
+      kill "$1" 2>/dev/null
+      return 0
+    fi
+    sleep "$WATCH_SEC"
+  done
 }
 
 while true; do
@@ -74,8 +111,16 @@ while true; do
   if [ -x "$AGENT_DIR/xc_agent" ]; then
     pkill -u xc_vm -x xc_agent 2>/dev/null
     started=$(date +%s)
-    "$AGENT_DIR/xc_agent" run -state "$STATE" >> "$LOG" 2>&1
+    "$AGENT_DIR/xc_agent" run -state "$STATE" >> "$LOG" 2>&1 &
+    pid=$!
+    watcher=""
+    if [ -f "$AGENT_DIR/xc_agent.trial" ]; then
+      reach_watch "$pid" "$started" &
+      watcher=$!
+    fi
+    wait "$pid"
     rc=$?
+    [ -n "$watcher" ] && kill "$watcher" 2>/dev/null
     echo "=== $(date '+%F %T') agent exited rc=$rc ===" >> "$LOG"
     trial "$started" "$rc"
     if [ "$rc" = "3" ]; then

@@ -3265,7 +3265,7 @@ The agent keeps it in its state (a restart holds the pace), clamps what a policy
 
 `token.rotate_now` was listed among the restrictive command types — the ones the extension signs even while MAIN's licence is refused — and had no producer and no executor. An operator who no longer trusted a node's token could revoke the node, which stops it, or wait out `lb_token_rotation_min`.
 
-It is the one command the agent runs itself. Every other command goes to the node's PHP (`cluster:exec`), which verifies it again and runs it with the legacy handlers; this one cannot, because the token is the agent's and the node's PHP has no idea what it is — it would answer "unknown command type". The agent therefore handles the type before the executor, triggers the refresh it already has for the halfway point, and acks; a redelivery moves the high-water and rotates nothing twice.
+It is the one command the agent runs itself. Every other command goes to the node's PHP (`cluster:exec`), which verifies it again and runs it with the legacy handlers; this one cannot, because the token is the agent's and the node's PHP has no idea what it is — it would answer "unknown command type". The agent therefore handles the type before the executor, triggers the refresh it already has for the halfway point, and acks; a redelivery moves the high-water and rotates nothing twice. Since [rotate-now's outcome](#the-agents-refresh-backoff-rotate-nows-outcome-and-the-canarys-reach-check), the agent refreshes before it acks, and the ack says how it went.
 
 MAIN's half is `ClusterRoute::rotateNow()` with a dedupe key (a double click queues one command), a *Rotate token* button beside *Revoke* on the Cluster Nodes page, and an audit line (`node.token_rotate`). A node that does not take commands yet is told to switch its COMMANDS flow on rather than being given a button that does nothing.
 
@@ -4221,7 +4221,9 @@ already puts every node on a path that asks MAIN again within a minute.
   holds that lease's token.
 - **Before the token expires.** From the token's `refresh_at` on, `token_refresh` is refused with
   `LICENCE_INVALID`. The agent asks again at every heartbeat tick, with no backoff. The first
-  refresh after the licence returns brings a token and its lease.
+  refresh after the licence returns brings a token and its lease. Since
+  [the agent's refresh backoff](#the-agents-refresh-backoff-rotate-nows-outcome-and-the-canarys-reach-check),
+  it waits 2 s after a refused refresh, doubling to 30 s.
 - **After the token has expired.** The node re-keys. While MAIN's challenge answers
   `licence_ok: false`, the agent waits `RekeyPoll` (60 s, ±10 %) between tries, not the doubling
   backoff. The first re-key after the licence returns comes within about a minute, with a lease.
@@ -4233,11 +4235,12 @@ already puts every node on a path that asks MAIN again within a minute.
 - **Nothing rate-limits the refused refreshes.** Until the licence returns, each node asks for a
   refresh at every heartbeat tick (2 s at the default), from its `refresh_at` until its token
   expires. Each ask costs MAIN an epoch lookup and the extension's cached binding check, and the
-  agent logs each refusal.
+  agent logs each refusal. Built since: [the agent's refresh backoff](#the-agents-refresh-backoff-rotate-nows-outcome-and-the-canarys-reach-check).
 - **The ~1 minute is measured in tests only.** The agent's tests and a simulated fleet
   ([xc_cluster_sim](#xc_cluster_sim)) measure it. No real fleet has.
 
-**Tests.** Agent: `TestARefreshRefusedForTheLicenceIsAskedAgainEachTick` and
+**Tests.** Agent: `TestARefreshRefusedForTheLicenceIsAskedAgainEachTick` (since replaced by
+`TestARefusedRefreshBacksOffAndIsStillAskedAgain`) and
 `TestAnUnlicensedRekeyIsAskedAgainEveryPoll`. Each fails if its path gains a backoff. Interop:
 `TestInteropSimARelicensedFleetGetsItsLeasesBack`, three nodes against MAIN's real PHP.
 
@@ -4442,11 +4445,12 @@ version to the next node in order as soon as the first one's slot ended.
 **Not built / limits.**
 - **Only a failure at start is caught.** An agent that runs but misbehaves (it never reaches MAIN,
   or it serves wrongly) is not rolled back. MAIN sees it only as a node that stays on its old
-  version, or goes offline.
+  version, or goes offline. Since [the canary's reach check](#the-agents-refresh-backoff-rotate-nows-outcome-and-the-canarys-reach-check),
+  one that never reaches MAIN is; one that reaches MAIN and serves wrongly still is not.
 - **Nothing lifts a hold by hand.** An operator lifts it by fixing the canary node, or by pinning
-  another binary (`console.php agent_binary`).
+  another binary (`console.php agent_binary`). Since then, `console.php agent_binary release <version>`.
 - **One step back.** `.prev` is only the binary the last install replaced, so a second bad install
-  on the same node keeps no good binary.
+  on the same node keeps no good binary. Since then, `.prev` is the last binary that proved itself.
 
 **Tests.** `AgentRunShTest` runs `run.sh` for real in a throwaway home. A new binary that fails
 three times at start is replaced by the previous one; past its trial, a failing binary is left
@@ -4929,3 +4933,50 @@ Until lockdown, legacy and hybrid LBs still use MAIN's MariaDB (3306) and Redis 
 - A new extension API version needs `API_MAX` raised, and new vectors copied in, in the same panel release.
 - The crypto pipeline measures about 0.25 ms p99 for a 64 KB request against the plan's 1 ms budget. It measures about 41 ms for 8 MB in the CI container against the plan's 40 ms target, because the body is hashed twice and encrypted twice. `ClusterCryptoBenchTest` guards 8 MB at 2× the target. It is opt-in (`XCVM_BENCH=1`), because wall-clock timings depend on the machine and must not fail the unit suite on a slower one. The target itself needs a check on bundled PHP and production hardware.
 - `ClusterExtensionIntegrationTest` runs the panel against a real test-hooks build of `xcvm_core` (opt-in, throwaway `XCVM_CONFIG_DIR`). It passed against the 2.2.2 build at the time of writing. Run again against the build with `node.purge` (XC_VM_CoreExtention `c598330`), two of its tests had gone stale, since CI never runs it: *every command MAIN sends is signed* compared `CommandBus::TYPES` with the commands it sent, and sent none of the types the Phase 9 producers added (`stream.stop`, `vod.stop`, `node.fence`, `node.unfence`, `node.quarantine`, `resync`, `policy.update`) nor this work's; and the registry walk classed `node.purge` without the jobs it must carry. Both now cover them, and the run passes (16 tests with `ClusterVectorsTest`).
+
+### The agent's refresh backoff, rotate-now's outcome and the canary's reach check
+
+Three agent gaps from the notes above, and the canary's two others.
+
+- **A refused refresh backs off** (XC_VM_Fanout, `Agent.refresh`). A refresh MAIN refuses or
+  that fails waits `RefreshRetryMin` (2 s) before the next scheduled one, doubling to
+  `RefreshRetryMax` (30 s), and a refresh that works ends the wait. A fleet without a licence asks
+  about once every 30 s, not every 2 s, and still gets its tokens and leases within 30 s of the
+  licence's return: the plan's drill allows two minutes. The re-key path is unchanged
+  (`RekeyPoll`).
+- **`token.rotate_now` acks its outcome.** It used to ack `rotating` and start the background
+  refresh: a refresh that failed was neither retried before `refresh_at` nor reported, and MAIN's
+  row said the rotation happened. The agent now waits for a refresh already running, refreshes
+  (whatever the backoff: an operator asked), and acks `rotated to epoch <n>`, or `ok: false` with
+  `refresh failed: <why>`.
+- **The canary's reach check.** An answered heartbeat touches `config/cluster/reached` (the first
+  of a run at once, then at most every 10 s), and `xc_agent version` says so on a second line,
+  `features: reached`. `ArtefactStage::installAgent` puts a binary that says it on trial with
+  `reach` (`<installed at> <failed starts> reach`). `run.sh` then runs the agent with a watcher
+  beside it: the trial ends once this run has touched the file since it started (the agent it
+  replaced, still running for 10 s after the install, does not count), and if it has not within
+  `REACH_SEC` (300 s) of the install, `.prev` is put back and the run ended. A run that merely
+  lasts no longer ends a `reach` trial; failed starts still count. A binary that does not say it
+  (one pinned from before) is judged by its starts alone, so it is never rolled back for a file it
+  does not write.
+- **`.prev` is the last proven binary.** An install over a binary still on trial keeps the `.prev`
+  before it, unless there is none; one whose trial ended becomes `.prev` at the next install.
+- **Releasing a held rollout** (`AgentUpgrades::release`, `console.php agent_binary release
+  <version>`): each node that was offered the version at least `RETRY_SEC` ago and does not run it
+  is forgotten, so none counts as a failure and each is offered it afresh (an offer still
+  installing is left alone), and the hold's audit goes, so a new failure is audited again.
+  Audited as `cluster.agent_rollout_released`.
+
+**Not built / limits.**
+- **MAIN unreachable during a trial** rolls the new agent back like a bad one: `.prev` cannot
+  reach MAIN either, and MAIN, back, holds the rollout. The operator releases it.
+- **Serving wrongly is not caught.** Reaching MAIN is the only thing the watcher judges.
+- **MAIN's own agent** (`-role main`) sends no heartbeat, so it is judged by its starts alone.
+
+**Tests.** Agent: `TestARefusedRefreshBacksOffAndIsStillAskedAgain`,
+`TestRotateNowAcksTheRefreshsOutcome`, `TestAnAnsweredHeartbeatMarksTheNodeReached`; interop
+`TestInteropRotateNowAcksTheNewEpoch` (MAIN's `CommandBus` queues it, the ack names the epoch MAIN
+then holds). Panel: `AgentRunShTest` (a new agent that never reaches MAIN is rolled back; one that
+does ends its trial, even with a reached file the agent before it wrote), `ArtefactHashRefusalTest`
+(`reach` only for an agent that says it; `.prev` stays the last proven one), `AgentUpgradeTest`
+(a released rollout is offered afresh; offers still installing are kept).

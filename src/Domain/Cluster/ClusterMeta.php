@@ -26,6 +26,10 @@ final class ClusterMeta {
 		self::db()->query('INSERT INTO `cluster_meta` (`name`, `value`, `updated_at`) VALUES (?, ?, ?);', $rName, $rValue, ClusterClock::now());
 	}
 
+	public static function delete(string $rName): void {
+		self::db()->query('DELETE FROM `cluster_meta` WHERE `name` = ?;', $rName);
+	}
+
 	/** When MAIN's root last changed (unix seconds); absent for a root from before it was recorded. */
 	public const ROOT_AT = 'root_at';
 
