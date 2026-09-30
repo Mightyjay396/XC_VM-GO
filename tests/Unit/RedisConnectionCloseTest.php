@@ -297,6 +297,19 @@ final class RedisConnectionCloseTest extends TestCase {
 		$this->assertSame(37, json_decode(base64_decode(trim((string) array_slice(file(LOGS_TMP_PATH . 'activity'), -1)[0])), true)['divergence']);
 	}
 
+	/** A signal its server never reads (down, deleted) goes: hours later its pid may be someone else's. */
+	public function testARedisSignalExpiresUnread(): void {
+		$rSet = 'SIGNALS#' . (SERVER_ID + 1);
+		ConnectionTracker::redisSignal(4245, SERVER_ID + 1, 0);
+		$rKeys = $this->rRedis->sMembers($rSet);
+		$this->assertCount(1, $rKeys);
+		foreach ([$rKeys[0], $rSet] as $rKey) {
+			$rTTL = $this->rRedis->ttl($rKey);
+			$this->assertGreaterThan(0, $rTTL, $rKey);
+			$this->assertLessThanOrEqual(ConnectionTracker::SIGNAL_TTL, $rTTL, $rKey);
+		}
+	}
+
 	public function testAnHmacViewersActivityIsWritten(): void {
 		// An HMAC identity has no line (user_id 0): its hmac_id names it.
 		@mkdir(LOGS_TMP_PATH, 0777, true);

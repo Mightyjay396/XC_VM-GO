@@ -349,6 +349,9 @@ class ConnectionTracker {
 		return null;
 	}
 
+	/** How long a Redis-mode signal waits for its server (seconds). */
+	public const SIGNAL_TTL = 300;
+
 	/**
 	 * Send a signal to a server via Redis.
 	 *
@@ -384,7 +387,9 @@ class ConnectionTracker {
 		// and overwrite each other before the target's signals daemon read them.
 		$rKey = 'SIGNAL#' . md5($rServerID . '#' . $rPID . '#' . $rRTMP . (is_null($rCustomData) ? '' : '#' . json_encode($rCustomData)));
 		$rData = ['pid' => $rPID, 'server_id' => $rServerID, 'rtmp' => $rRTMP, 'time' => time(), 'custom_data' => $rCustomData, 'key' => $rKey];
-		return $rRedis->multi()->sAdd('SIGNALS#' . $rServerID, $rKey)->set($rKey, igbinary_serialize($rData))->exec();
+		// Short-lived: a server that has not read it by then is down, and its
+		// worker gone with it; hours later the pid may be someone else's.
+		return $rRedis->multi()->sAdd('SIGNALS#' . $rServerID, $rKey)->expire('SIGNALS#' . $rServerID, self::SIGNAL_TTL)->set($rKey, igbinary_serialize($rData), ['ex' => self::SIGNAL_TTL])->exec();
 	}
 
 	/**

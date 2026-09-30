@@ -177,6 +177,9 @@ class SignalsCommand implements CommandInterface {
 							$rSignalData = RedisManager::instance()->mGet($rSignals);
 							$rIDs = [];
 							foreach ($rSignalData as $rData) {
+								if (!is_string($rData)) {
+									continue; // expired unread (ConnectionTracker::SIGNAL_TTL)
+								}
 								$rRow = igbinary_unserialize($rData);
 								$rIDs[] = $rRow['key'];
 								$rPID = $rRow['pid'];
