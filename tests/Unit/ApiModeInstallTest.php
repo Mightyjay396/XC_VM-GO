@@ -35,6 +35,9 @@ final class ApiModeInstallTest extends TestCase {
 	/** @var array<string, string> */
 	private array $rSent = [];
 
+	/** What the node prints for `XC_VM::install_id()`. */
+	private string $rIidOutput = "0f8fad5b-install-id-0001\n";
+
 	public static function setUpBeforeClass(): void {
 		foreach (['SERVER_ID' => 1, 'TMP_PATH' => sys_get_temp_dir() . '/xcvm-test-tmp/', 'CONFIG_PATH' => sys_get_temp_dir() . '/xcvm-test-config/'] as $rName => $rValue) {
 			if (!defined($rName)) {
@@ -71,7 +74,7 @@ final class ApiModeInstallTest extends TestCase {
 	private function install(bool $rApi): bool {
 		$rRun = function ($rConn, string $rCmd): array {
 			$this->rRan[] = $rCmd;
-			return ['output' => str_contains($rCmd, 'install_id') ? "0f8fad5b-install-id-0001\n" : '', 'error' => ''];
+			return ['output' => str_contains($rCmd, 'install_id') ? $this->rIidOutput : '', 'error' => ''];
 		};
 		$rSend = function ($rConn, string $rLocal, string $rRemote): bool {
 			$this->rSent[$rRemote] = (string) file_get_contents($rLocal);
@@ -131,6 +134,22 @@ final class ApiModeInstallTest extends TestCase {
 		$this->assertSame([['0f8fad5b-install-id-0001', ['db_credentials' => false, 'hostname' => '10.0.0.1', 'database' => 'xc_vm', 'server_id' => self::SID, 'is_lb' => 1]]], $rPacked);
 		$this->assertSame('XCVT-credential-free', $this->rSent[CONFIG_PATH . 'config.enc']);
 		$this->assertSame(0, $this->serverStatus());
+	}
+
+	/** A fresh node's PHP may print warnings before the id: only the id is packed for. */
+	public function testTheInstallIdIsTheLastLineOfTheNodesOutput(): void {
+		$rPacked = [];
+		CredentialFreeConfig::useSeams(static fn(): bool => true, static function (string $rIid) use (&$rPacked): string {
+			$rPacked[] = $rIid;
+			return 'XCVT-credential-free';
+		});
+		$this->rIidOutput = "Warning: XC_VM: ionCube Loader not detected.\n0f8fad5b-install-id-0001\n";
+		$this->assertTrue($this->install(true));
+		$this->assertSame(['0f8fad5b-install-id-0001'], $rPacked);
+
+		$this->rIidOutput = "Warning: no id here\n";
+		$this->assertFalse($this->install(true));
+		$this->assertSame(4, $this->serverStatus());
 	}
 
 	/** Born in mode 2 with the flows mode 2 needs, as a promoted node must have. */
