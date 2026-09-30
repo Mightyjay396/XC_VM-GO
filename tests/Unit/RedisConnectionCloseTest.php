@@ -20,6 +20,8 @@ if (!defined('CONS_TMP_PATH')) {
  * since given to another request (pm = ondemand, max_requests 40000): the
  * close never kills it. An RTMP play that ended (play_done) leaves nothing
  * behind in Redis, and another server's client with the same id is left alone.
+ * The limiter closes each victim once, and an HLS viewer that moves to
+ * another server leaves the old server's sets.
  */
 final class RedisConnectionCloseTest extends TestCase {
 	private ?BusServer $rBus = null;
@@ -134,5 +136,39 @@ final class RedisConnectionCloseTest extends TestCase {
 		$this->connection('rtmp', 4243, 0, $rUUID, SERVER_ID + 1);
 		$this->assertFalse(ConnectionLimiter::closeRTMP('4243'));
 		$this->assertNotFalse($this->rRedis->get($rUUID), 'still there');
+	}
+
+	/** An HLS viewer of line 7: $rUUID, from $rIP with $rAgent, opened at $rStart. */
+	private function viewer(string $rUUID, string $rIP, string $rAgent, int $rStart, int $rServerID = SERVER_ID): void {
+		$this->assertNotFalse(ConnectionTracker::createConnection(['uuid' => $rUUID, 'identity' => 7, 'user_id' => 7, 'stream_id' => 11, 'server_id' => $rServerID, 'proxy_id' => 0, 'container' => 'hls', 'pid' => 0, 'hls_end' => 0, 'date_start' => $rStart, 'hls_last_read' => $rStart, 'user_ip' => $rIP, 'user_agent' => $rAgent, 'geoip_country_code' => '', 'isp' => '', 'on_demand' => 0]));
+	}
+
+	public function testTheLimiterClosesEachVictimOnce(): void {
+		// Limit 1, three open: the requester's own device first, then anyone.
+		// The own device's old viewer used to be closed and counted again by
+		// the later passes, so the other viewer was never closed.
+		$this->viewer('own-old', '198.51.100.7', 'tv', 1800000001);
+		$this->viewer('other', '203.0.113.9', 'phone', 1800000002);
+		$this->viewer('own-new', '198.51.100.7', 'tv', 1800000003);
+		$rWas = $_SERVER['REMOTE_ADDR'] ?? null;
+		$_SERVER['REMOTE_ADDR'] = '198.51.100.7'; // the requester, as a stream request has it
+		try {
+			$this->assertSame(2, ConnectionLimiter::closeConnections(7, 1, null, '', '198.51.100.7', 'tv', 'own-new'));
+		} finally {
+			$_SERVER['REMOTE_ADDR'] = $rWas;
+		}
+		$this->assertSame(['own-new'], $this->rRedis->zRange('LINE#7', 0, -1), 'the limit holds');
+		$this->assertEqualsCanonicalizing(['own-old', 'other'], $this->rRedis->sMembers('ENDED'));
+	}
+
+	public function testAnHlsViewerThatMovesLeavesTheOldServersSets(): void {
+		$rOther = SERVER_ID + 1;
+		$this->viewer('mover', '198.51.100.7', 'tv', 1800000001, $rOther);
+		$rRecord = ConnectionTracker::getConnection('mover');
+		$this->assertNotNull(ConnectionTracker::updateConnection($rRecord, ['server_id' => SERVER_ID], 'open'));
+		$this->assertFalse($this->rRedis->zScore('SERVER#' . $rOther, 'mover'));
+		$this->assertFalse($this->rRedis->zScore('SERVER_LINES#' . $rOther, 'mover'));
+		$this->assertNotFalse($this->rRedis->zScore('SERVER#' . SERVER_ID, 'mover'));
+		$this->assertNotFalse($this->rRedis->zScore('SERVER_LINES#' . SERVER_ID, 'mover'));
 	}
 }

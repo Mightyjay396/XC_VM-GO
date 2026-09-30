@@ -32,9 +32,10 @@ final class AgentConnections {
 	/**
 	 * A connection's uuid, as a regex fragment: what every store, event and
 	 * command naming a connection carries (ADR 0004). CONN_UUID matches it
-	 * whole.
+	 * whole. Never the name of a Redis index: a connection's record is stored
+	 * under its bare uuid, so a node naming one `LIVE` would replace that index.
 	 */
-	public const CONN_UUID_CHARS = '[A-Za-z0-9_-]{1,64}';
+	public const CONN_UUID_CHARS = '(?!(?:LIVE|ENDED|CONNECTIONS)(?![A-Za-z0-9_-]))[A-Za-z0-9_-]{1,64}';
 
 	/** A whole connection uuid (CONN_UUID_CHARS), for preg_match(). */
 	public const CONN_UUID = '/^' . self::CONN_UUID_CHARS . '\z/';

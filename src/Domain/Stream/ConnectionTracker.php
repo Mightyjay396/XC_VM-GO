@@ -299,6 +299,17 @@ class ConnectionTracker {
 		}
 		$rMulti = $rRedis->multi();
 		if ($rOption == 'open') {
+			// A viewer that moved (an HLS refresh served by another server or
+			// proxy) leaves the old sets, or they count it there forever.
+			foreach (['LINE#' => 'identity', 'STREAM#' => 'stream_id', 'SERVER#' => 'server_id', 'PROXY#' => 'proxy_id'] as $rSet => $rField) {
+				if (!empty($rOrigData[$rField]) && $rOrigData[$rField] != $rData[$rField]) {
+					$rMulti->zRem($rSet . $rOrigData[$rField], $rData['uuid']);
+				}
+			}
+			$rMoved = $rOrigData['server_id'] != $rData['server_id'];
+			if ($rMoved && $rOrigData['user_id']) {
+				$rMulti->zRem('SERVER_LINES#' . $rOrigData['server_id'], $rData['uuid']);
+			}
 			$rMulti->sRem('ENDED', $rData['uuid']);
 			$rMulti->zAdd('LIVE', $rData['date_start'], $rData['uuid']);
 			$rMulti->zAdd('LINE#' . $rData['identity'], $rData['date_start'], $rData['uuid']);
@@ -307,7 +318,7 @@ class ConnectionTracker {
 			if ($rData['proxy_id']) {
 				$rMulti->zAdd('PROXY#' . $rData['proxy_id'], $rData['date_start'], $rData['uuid']);
 			}
-			if ($rData['hls_end'] == 1) {
+			if ($rData['hls_end'] == 1 || $rMoved) {
 				$rData['hls_end'] = 0;
 				if ($rData['user_id']) {
 					$rMulti->zAdd('SERVER_LINES#' . $rData['server_id'], $rData['user_id'], $rData['uuid']);
