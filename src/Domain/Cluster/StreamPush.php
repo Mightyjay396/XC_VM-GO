@@ -2,6 +2,7 @@
 
 namespace XcVm\Domain\Cluster;
 
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\Crypto\ClusterCrypto;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Cluster\ReplicaSections;
@@ -22,6 +23,14 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * supersedes one not yet acked. Never fails the change: a node that cannot be
  * told takes the change at its next delta.
  *
+ * A blocklist change (BlocklistChanges, every block and unblock path) wakes
+ * every active node whose CONFIG flow is on (it reads the R1 blocklist) the
+ * same way, `config.changed {sections: [blocklist]}`: its agent syncs, stores
+ * the delta and runs cluster:apply, so the node's blocklist caches follow
+ * within seconds rather than at its next poll, and root's iptables at its
+ * minute sync. A node due both hears of them in one command, both sections
+ * named (the command's type is its dedupe key: two would supersede).
+ *
  * Encoding work MAIN queued onto a node (QueueSink) pokes it the same way:
  * `queue.poke` to an active node whose CONTENT flow is on (it asks MAIN for its
  * queue) and that takes commands, so its daemon's pass comes at once rather
@@ -34,6 +43,8 @@ final class StreamPush {
 	private static array $rPending = [];
 
 	private static bool $rAll = false;
+
+	private static bool $rBlocklist = false;
 
 	/** @var array<int, true> server ids whose queue MAIN wrote */
 	private static array $rQueued = [];
@@ -60,6 +71,12 @@ final class StreamPush {
 		self::register();
 	}
 
+	/** The blocklist changed (BlocklistChanges): every CONFIG node is told. */
+	public static function blocklistChanged(): void {
+		self::$rBlocklist = true;
+		self::register();
+	}
+
 	/** Every stream changed at once (StreamVersions::reset()): every node is told. */
 	public static function changedAll(): void {
 		self::$rAll = true;
@@ -75,15 +92,16 @@ final class StreamPush {
 		$rIDs = array_keys(self::$rPending);
 		$rQueued = self::$rQueued;
 		$rAll = self::$rAll;
+		$rBlocklist = self::$rBlocklist;
 		self::$rPending = self::$rQueued = [];
-		self::$rAll = false;
-		if ($rIDs === [] && $rQueued === [] && !$rAll) {
+		self::$rAll = self::$rBlocklist = false;
+		if ($rIDs === [] && $rQueued === [] && !$rAll && !$rBlocklist) {
 			return 0;
 		}
 		$rWanted = array_keys($rQueued + array_flip($rIDs));
 		try {
 			$rCrypto ??= ClusterCryptoFactory::create();
-			self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` = 'active'" . ($rAll ? '' : ' AND `server_id` IN (' . implode(',', array_map('intval', $rWanted)) . ')') . ';');
+			self::db()->query("SELECT * FROM `cluster_nodes` WHERE `state` = 'active'" . ($rAll || $rBlocklist ? '' : ' AND `server_id` IN (' . implode(',', array_map('intval', $rWanted)) . ')') . ';');
 			$rNodes = self::db()->get_rows() ?: [];
 		} catch (\Throwable) {
 			return 0;
@@ -95,9 +113,16 @@ final class StreamPush {
 			if (!CommandBus::accepts($rNode)) {
 				continue;
 			}
-			// The streams section, for a node that reads it and whose agent takes config.changed.
-			if (($rAll || in_array($rServerID, $rIDs, true)) && ($rFlows & NodeRegistry::FLOW_STREAMS) !== 0 && ReplicaBuilder::takesConfigChanged($rNode)) {
-				$rSent += self::send($rCrypto, $rServerID, 'config.changed', ['sections' => [ReplicaSections::STREAMS]]);
+			// The sections that changed and the node reads, for an agent that takes config.changed.
+			$rSections = [];
+			if (($rAll || in_array($rServerID, $rIDs, true)) && ($rFlows & NodeRegistry::FLOW_STREAMS) !== 0) {
+				$rSections[] = ReplicaSections::STREAMS;
+			}
+			if ($rBlocklist && ($rFlows & NodeRegistry::FLOW_CONFIG) !== 0) {
+				$rSections[] = BlocklistChanges::SECTION;
+			}
+			if ($rSections !== [] && ReplicaBuilder::takesConfigChanged($rNode)) {
+				$rSent += self::send($rCrypto, $rServerID, 'config.changed', ['sections' => $rSections]);
 			}
 			// The queue, for a node that asks MAIN for it.
 			if (isset($rQueued[$rServerID]) && ($rFlows & NodeRegistry::FLOW_CONTENT) !== 0) {

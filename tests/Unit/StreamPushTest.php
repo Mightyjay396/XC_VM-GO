@@ -1,6 +1,7 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Core\Cluster\BlocklistChanges;
 use XcVm\Core\Cluster\QueueSink;
 use XcVm\Core\Cluster\StreamVersions;
 use XcVm\Domain\Cluster\NodeRegistry;
@@ -79,6 +80,25 @@ final class StreamPushTest extends TestCase {
 		StreamPush::changedAll();
 		$this->assertSame(2, StreamPush::flush($this->rCrypto));
 		$this->assertSame([5, 10], array_column($this->told(), 0));
+	}
+
+	/**
+	 * A block or unblock wakes every node that reads the R1 blocklist (CONFIG
+	 * on), once per request; a node whose streams changed too hears of both in
+	 * one command, since a second config.changed would supersede the first.
+	 */
+	public function testABlocklistChangeWakesTheConfigNodesInOneCommandWithTheStreams(): void {
+		$this->node(5, 'active', NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_CONFIG);
+		$this->node(6, 'active', NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_CONFIG | NodeRegistry::FLOW_STREAMS);
+		$this->node(7); // STREAMS without CONFIG: it reads MAIN's blocklist
+		$this->node(8, 'active', NodeRegistry::FLOW_COMMANDS | NodeRegistry::FLOW_CONFIG, 'hls_reaper'); // no config.changed
+
+		BlocklistChanges::set('ip', ['198.51.100.7'], $this->rDb);
+		BlocklistChanges::del('ua', [3], $this->rDb);
+		StreamPush::changed([6]);
+		$this->assertSame(2, StreamPush::flush($this->rCrypto));
+		$this->assertSame([[5, ['blocklist']], [6, ['streams', 'blocklist']]], $this->told());
+		$this->assertSame(0, StreamPush::flush($this->rCrypto), 'nothing pending twice');
 	}
 
 	public function testABumpWakesTheServersItStamped(): void {

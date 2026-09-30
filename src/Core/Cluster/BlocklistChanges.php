@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Cluster;
 
+use XcVm\Domain\Cluster\StreamPush;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
 /**
@@ -75,6 +76,10 @@ final class BlocklistChanges {
 				$rArgs[] = $rNow;
 			}
 			$rDb->query('INSERT INTO `cluster_changes` (`section`, `op`, `kind`, `value`, `time`) VALUES ' . implode(', ', array_fill(0, count($rKeys), '(?, ?, ?, ?, ?)')) . ';', ...$rArgs);
+			// The nodes that read the blocklist hear of it when this request ends (MAIN only).
+			if (class_exists(StreamPush::class)) {
+				StreamPush::blocklistChanged();
+			}
 		} catch (\Throwable) {
 			// The daily full reload covers a change that could not be logged.
 		}
