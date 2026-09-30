@@ -58,6 +58,18 @@ type Scope = Page | FrameLocator;
  * the requests of an edit modal's iframe.
  */
 export async function submitForm(page: Page, scope: Scope, action: string, submit?: Locator): Promise<Record<string, unknown>> {
+  const { body, text } = await postAnswer(page, scope, action, submit);
+  expect(body, `post.php?action=${action} answered non-JSON: ${text.slice(0, 300)}`).not.toBeNull();
+  expect(body!.result, `post.php?action=${action} refused the form: ${text.slice(0, 300)}`).not.toBe(false);
+  return body!;
+}
+
+/**
+ * Submit an admin form and return what post.php answered, accepted or not:
+ * the parsed JSON (null when it is not JSON) and the raw text. submitForm is
+ * this plus the assertion that the panel accepted it.
+ */
+export async function postAnswer(page: Page, scope: Scope, action: string, submit?: Locator): Promise<{ body: Record<string, any> | null; text: string }> {
   const pattern = new RegExp(`/post\\.php\\?action=${action}(&|$)`);
   let captured: (text: string) => void = () => undefined;
   const answered = new Promise<string>((resolve) => (captured = resolve));
@@ -82,15 +94,13 @@ export async function submitForm(page: Page, scope: Scope, action: string, submi
     // stall for the rest of the test while the page navigates away on success.
     page.unroute(pattern, handler).catch(() => undefined);
   }
-  let body: Record<string, unknown> | null = null;
+  let body: Record<string, any> | null = null;
   try {
     body = JSON.parse(text);
   } catch {
-    // fall through to the assertion below with the raw text
+    // not JSON: the caller asserts on the raw text
   }
-  expect(body, `post.php?action=${action} answered non-JSON: ${text.slice(0, 300)}`).not.toBeNull();
-  expect(body!.result, `post.php?action=${action} refused the form: ${text.slice(0, 300)}`).not.toBe(false);
-  return body!;
+  return { body, text };
 }
 
 /**

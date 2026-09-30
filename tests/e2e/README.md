@@ -23,6 +23,7 @@ the admin specs create, edit, start and delete real records.
 | `tests/admin/groups.spec.ts` | Reseller member group: create, reopen with its flags, rename, delete; transcoding profile: create, rename, delete |
 | `tests/admin/access.spec.ts` | RTMP IP: allow to push (a generated password), add pull, remove; HMAC key: generated on open, create, disable (the secret stays hidden), delete |
 | `tests/admin/cluster.spec.ts` | Read-only: the servers list shows `XC_E2E_SERVER`, the Cluster Nodes page renders |
+| `tests/admin/cluster-settings.spec.ts` | Settings → Cluster: the extension probe and every setting; a reserved (6379) and a privileged (1023) API port refused with nothing saved (a refused cluster value fails the whole save); the Info tab's *Cluster* block present exactly when the extension is usable |
 | `tests/admin/player-api.spec.ts` | A line signs in to `player_api.php` and every action answers JSON; info actions answer only for the line's own content; malformed parameters and a wrong password get JSON too |
 | `tests/admin/cleanup.teardown.ts` | After everything: removes whatever the admin specs left behind (see below) |
 
