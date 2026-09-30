@@ -1,6 +1,8 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
+use XcVm\Cli\CronJobs\UsersCronJob;
+use XcVm\Core\Config\SettingsManager;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Infrastructure\Redis\RedisManager;
@@ -307,6 +309,43 @@ final class RedisConnectionCloseTest extends TestCase {
 			$rTTL = $this->rRedis->ttl($rKey);
 			$this->assertGreaterThan(0, $rTTL, $rKey);
 			$this->assertLessThanOrEqual(ConnectionTracker::SIGNAL_TTL, $rTTL, $rKey);
+		}
+	}
+
+	/**
+	 * The sweep holds its activity rows until the records it closed are
+	 * removed. Written at once, a sweep that could not remove them (Redis
+	 * down, the cron killed) logged them again when it next closed them.
+	 */
+	public function testTheSweepLogsAViewerOnceItsRecordIsGone(): void {
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		$GLOBALS['rSettings']['save_closed_connection'] = 1;
+		SettingsManager::set(['redis_handler' => 1]);
+		$rDeletions = new \ReflectionMethod(UsersCronJob::class, 'processDeletions');
+		$rBatch = ['line' => [7 => ['swept']], 'server' => [SERVER_ID => ['swept']], 'server_lines' => [], 'proxy' => [], 'stream' => [11 => ['swept']], 'uuid' => ['swept'], 'count' => 1];
+		$rRecord = $this->connection('ts', 999999, 1, 'swept');
+		$rBefore = $this->activityRows();
+		ConnectionTracker::holdActivity();
+		try {
+			$this->assertTrue(ConnectionTracker::closeConnection($rRecord, false, false));
+			$this->assertSame($rBefore, $this->activityRows(), 'held');
+
+			$this->manager(null);
+			RedisManager::useConnector(fn() => null);
+			$rDeletions->invoke(new UsersCronJob(), $rBatch);
+			$this->assertSame($rBefore, $this->activityRows(), 'not removed: dropped');
+			RedisManager::useConnector(null);
+			$this->manager($this->rRedis);
+			$this->assertNotFalse($this->rRedis->get('swept'), 'kept, for the next sweep');
+
+			$this->assertTrue(ConnectionTracker::closeConnection($rRecord, false, false));
+			$rDeletions->invoke(new UsersCronJob(), $rBatch);
+			$this->assertSame($rBefore + 1, $this->activityRows(), 'removed: written, once');
+			$this->assertFalse($this->rRedis->get('swept'));
+		} finally {
+			ConnectionTracker::holdActivity(false);
+			RedisManager::useConnector(null);
+			SettingsManager::set([]);
 		}
 	}
 

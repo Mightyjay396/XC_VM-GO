@@ -1473,6 +1473,28 @@ class ConnectionTracker {
 		return false;
 	}
 
+	/** @var list<string>|null The sweep's activity lines, held until their records are gone; null: written at once. */
+	private static ?array $rHeldActivity = null;
+
+	/**
+	 * Hold activity lines back (the sweep), until releaseActivity(): written
+	 * at once, a sweep killed before it removed the records it closed, or
+	 * that could not remove them, logged them again when it next closed them.
+	 */
+	public static function holdActivity(bool $rHold = true): void {
+		self::$rHeldActivity = $rHold ? (self::$rHeldActivity ?? []) : null;
+	}
+
+	/** Write the held lines, their records removed; or drop them, the records kept (they are closed, and logged, again). */
+	public static function releaseActivity(bool $rWrite = true): void {
+		if ($rWrite && !empty(self::$rHeldActivity)) {
+			file_put_contents(LOGS_TMP_PATH . 'activity', implode('', self::$rHeldActivity), FILE_APPEND | LOCK_EX);
+		}
+		if (self::$rHeldActivity !== null) {
+			self::$rHeldActivity = [];
+		}
+	}
+
 	/**
 	 * Write closed connection data to the activity log file.
 	 *
@@ -1500,7 +1522,12 @@ class ConnectionTracker {
 		if ($rSettings['save_closed_connection'] != 0) {
 			if ($rServerID && ($rUserID || $rIsHMAC) && $rStreamID) { // a line's viewer, or an HMAC identity's
 				$rActivityInfo = ['user_id' => intval($rUserID), 'stream_id' => intval($rStreamID), 'server_id' => intval($rServerID), 'proxy_id' => intval($rProxyID), 'date_start' => intval($rStart), 'user_agent' => $rUserAgent, 'user_ip' => htmlentities($rIP), 'date_end' => $rEnd ?? time(), 'container' => $rExtension, 'geoip_country_code' => $rGeoIP, 'isp' => $rISP, 'external_device' => htmlentities($rExternalDevice), 'divergence' => intval($rDivergence), 'hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
-				file_put_contents(LOGS_TMP_PATH . 'activity', base64_encode(json_encode($rActivityInfo)) . "\n", FILE_APPEND | LOCK_EX);
+				$rLine = base64_encode(json_encode($rActivityInfo)) . "\n";
+				if (self::$rHeldActivity !== null) {
+					self::$rHeldActivity[] = $rLine;
+				} else {
+					file_put_contents(LOGS_TMP_PATH . 'activity', $rLine, FILE_APPEND | LOCK_EX);
+				}
 			}
 		} else {
 			return;

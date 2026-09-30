@@ -136,7 +136,13 @@ class UsersCronJob implements CommandInterface {
 			$this->rPHPPIDs = $this->loadPHPPIDs();
 		}
 
-		$this->loadCron();
+		ConnectionTracker::holdActivity();
+		try {
+			$this->loadCron();
+			ConnectionTracker::releaseActivity();
+		} finally {
+			ConnectionTracker::holdActivity(false); // what a failed sweep still holds was not removed: dropped
+		}
 
 		return 0;
 	}
@@ -427,6 +433,7 @@ class UsersCronJob implements CommandInterface {
 		$rRedis = SettingsManager::getBool('redis_handler');
 		global $db;
 		$rTime = time();
+		$rRemoved = true;
 
 		if ($rRedis) {
 			// Redis can die mid-run — postpone cleanup instead of crashing the
@@ -459,17 +466,22 @@ class UsersCronJob implements CommandInterface {
 					$rRedis->del(...$rDelete['uuid']);
 				}
 
-				$rRedis->exec();
+				$rRemoved = is_array($rRedis->exec());
 			} elseif ($rDelete['count'] > 0) {
 				echo "Redis unavailable, connection cleanup postponed until next run\n";
+				$rRemoved = false;
 			}
 		} else {
 			foreach ($rDelete as $rConnections) {
 				if (count($rConnections) > 0) {
-					$db->query("DELETE FROM `lines_live` WHERE `uuid` IN ('" . implode("','", $rConnections) . "')");
+					// ponytail: one failed DELETE drops the batch's rows, the other servers' removed too; a DB that fails one fails all.
+					$rRemoved = $db->query("DELETE FROM `lines_live` WHERE `uuid` IN ('" . implode("','", $rConnections) . "')") !== false && $rRemoved;
 				}
 			}
 		}
+		// The rows of the connections closed so far: written once their records
+		// are gone; the ones kept are closed, and logged, by the next sweep.
+		ConnectionTracker::releaseActivity($rRemoved);
 
 		foreach (($rRedis ? $rDelete['server'] : $rDelete) as $rServerID => $rConnections) {
 			if ($rServerID != SERVER_ID) {
