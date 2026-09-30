@@ -355,9 +355,6 @@ class StatusCommand implements CommandInterface {
 		if ($rWrite) {
 			file_put_contents(MAIN_HOME . 'bin/redis/redis.conf', $rConfig);
 		}
-		// redis.conf holds the password, and dump.rdb every viewer and the
-		// panel's cache: its owner's (xc_vm, who runs Redis) only.
-		@chmod(MAIN_HOME . 'bin/redis', 0700);
 		$db->query('SELECT `redis_password` FROM `settings`;');
 		if ($db->get_row()['redis_password'] !== $rPassword) {
 			echo "Updating Redis password in database\n";

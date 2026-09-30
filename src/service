@@ -25,6 +25,10 @@ boot() {
   # finds its FPM pools answering and writes this marker again (ClusterPool).
   rm -f $SCRIPT/tmp/cluster_ready
   if [ -f $SCRIPT/bin/redis/redis-server ]; then
+    # redis.conf holds the password, and dump.rdb every viewer and the
+    # panel's cache: xc_vm's only. As xc_vm, not root, which would follow a
+    # symlink put in its place.
+    sudo -u xc_vm chmod 0700 $SCRIPT/bin/redis 2>/dev/null
     sudo -u xc_vm $SCRIPT/bin/redis/redis-server $SCRIPT/bin/redis/redis.conf >/dev/null 2>/dev/null
   fi
   # The cluster bus (MAIN only: LB builds strip bin/cluster_bus): the cluster
