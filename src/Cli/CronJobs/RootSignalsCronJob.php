@@ -88,11 +88,14 @@ class RootSignalsCronJob implements CommandInterface {
 		$this->rIdentifier = ProcessManager::cronLockPath(static::class);
 		ProcessManager::acquireCronLock($this->rIdentifier);
 
-		$pids = shell_exec("pgrep -f 'XC_VM\[Signals\]'");
+		// A title of its own: it used to take the xc_vm signals daemon's,
+		// and killed that daemon every minute (and cron:servers, seeing this
+		// run under the daemon's title, did not start it again).
+		$pids = shell_exec("pgrep -f 'XC_VM\[RootSignals\]'");
 		if (!empty($pids)) {
 			shell_exec("sudo kill -9 $pids");
 		}
-		cli_set_process_title('XC_VM[Signals]');
+		cli_set_process_title('XC_VM[RootSignals]');
 		file_put_contents(CONFIG_PATH . 'signals.last', time());
 
 		$this->loadCron();
