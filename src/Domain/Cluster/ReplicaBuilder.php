@@ -348,7 +348,7 @@ final class ReplicaBuilder {
 		}
 		self::read('SELECT * FROM `cluster_nodes` ORDER BY `server_id` ASC;');
 		$rNodes = [];
-		foreach (self::db()->get_rows() ?: [] as $rRow) {
+		foreach (self::db()->get_raw_rows() ?: [] as $rRow) {
 			// dataplane: the node pulls through its agent, so a parent refuses the
 			// legacy password from its address (RelayGuard).
 			$rNodes[] = [

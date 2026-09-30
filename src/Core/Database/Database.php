@@ -395,6 +395,31 @@ class Database {
 	}
 
 	/**
+	 * The last query's rows as stored, without clean_row(): for binary columns
+	 * (keys, signatures, sealed blobs) and signed documents, which its HTML
+	 * escaping and trim() would corrupt. Never echo these rows into a page.
+	 *
+	 * @return list<array<string, mixed>>
+	 */
+	public function get_raw_rows(): array {
+		if (!$this->dbh || !$this->result) {
+			return [];
+		}
+		$rows = $this->result->fetchAll(\PDO::FETCH_ASSOC);
+		$this->result = null;
+		return $rows;
+	}
+
+	/**
+	 * The last query's first row as stored (get_raw_rows()), or null when there is none.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public function get_raw_row(): ?array {
+		return $this->get_raw_rows()[0] ?? null;
+	}
+
+	/**
 	 * Fetch the first column of the first row.
 	 *
 	 * @return mixed The scalar value, or false if no active result/row.

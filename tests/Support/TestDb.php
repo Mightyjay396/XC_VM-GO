@@ -172,12 +172,13 @@ final class TestDb extends DatabaseHandler {
 	 * Return buffered rows, optionally keyed by a column (mirrors Database).
 	 */
 	public function get_rows($use_id = false, $column_as_id = '', $unique_row = true, $sub_row_id = '') {
+		$rows = array_map(fn($row) => $this->clean_row($row), $this->rows);
 		if (!$use_id) {
-			return $this->rows;
+			return $rows;
 		}
 
 		$out = array();
-		foreach ($this->rows as $row) {
+		foreach ($rows as $row) {
 			if ($column_as_id !== '' && array_key_exists($column_as_id, $row)) {
 				if ($unique_row) {
 					$out[$row[$column_as_id]] = $row;
@@ -194,7 +195,15 @@ final class TestDb extends DatabaseHandler {
 	}
 
 	public function get_row() {
-		return $this->rows[0] ?? array();
+		return $this->clean_row($this->rows[0] ?? array());
+	}
+
+	public function get_raw_rows(): array {
+		return $this->rows;
+	}
+
+	public function get_raw_row(): ?array {
+		return $this->rows[0] ?? null;
 	}
 
 	public function get_col() {
@@ -232,7 +241,13 @@ final class TestDb extends DatabaseHandler {
 		return true;
 	}
 
+	/** Database's escaping, on the strings a MySQL fetch would return; get_raw_rows() skips it as Database's does. */
 	public function clean_row($row) {
+		foreach ($row as $key => $value) {
+			if (is_string($value) && $value !== '') {
+				$row[$key] = self::parseCleanValue($value);
+			}
+		}
 		return $row;
 	}
 

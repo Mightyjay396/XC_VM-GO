@@ -195,7 +195,7 @@ final class CommandBus {
 			$rAfterSeq,
 			ClusterClock::now()
 		);
-		$rRows = self::db()->get_rows();
+		$rRows = self::db()->get_raw_rows();
 		$rOut = [];
 		$rIDs = [];
 		foreach ($rRows as $rRow) {
@@ -229,7 +229,7 @@ final class CommandBus {
 			$rServerID,
 			ClusterClock::now()
 		);
-		return array_map(static fn($rRow) => ['doc' => (string) $rRow['payload'], 'sig' => Enc::b64url((string) $rRow['sig']), 'seq' => (int) $rRow['seq']], self::db()->get_rows());
+		return array_map(static fn($rRow) => ['doc' => (string) $rRow['payload'], 'sig' => Enc::b64url((string) $rRow['sig']), 'seq' => (int) $rRow['seq']], self::db()->get_raw_rows());
 	}
 
 	/**

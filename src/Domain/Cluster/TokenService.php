@@ -72,7 +72,7 @@ final class TokenService {
 	/** @return array<string, mixed>|null A live epoch row. */
 	public static function epoch(int $rServerID, int $rEpoch): ?array {
 		self::db()->query('SELECT * FROM `cluster_node_epochs` WHERE `server_id` = ? AND `epoch` = ? AND `exp` > ?;', $rServerID, $rEpoch, ClusterClock::now());
-		return self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		return self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 	}
 
 	/**
@@ -121,7 +121,7 @@ final class TokenService {
 	public static function refresh(ClusterCrypto $rCrypto, array $rNode, int $rAuthEpoch, string $rAgentEphPub): array {
 		$rServerID = (int) $rNode['server_id'];
 		self::db()->query('SELECT * FROM `cluster_node_epochs` WHERE `server_id` = ? AND `epoch` > ? AND `exp` > ? ORDER BY `epoch` DESC LIMIT 1;', $rServerID, $rAuthEpoch, ClusterClock::now());
-		$rNext = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		$rNext = self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 		if ($rNext !== null && (int) $rNext['used'] === 0 && hash_equals((string) $rNext['agent_eph_pub'], $rAgentEphPub)) {
 			// A retry of a refresh whose reply was lost: the same token again.
 			return [

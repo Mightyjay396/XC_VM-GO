@@ -164,6 +164,14 @@ final class CommandBusEnqueueTest extends TestCase {
 				return $this->rInner->get_row();
 			}
 
+			public function get_raw_rows(): array {
+				return $this->rInner->get_raw_rows();
+			}
+
+			public function get_raw_row(): ?array {
+				return $this->rInner->get_raw_row();
+			}
+
 			public function get_rows($use_id = false, $column_as_id = '', $unique_row = true, $sub_row_id = '') {
 				return $this->rInner->get_rows($use_id, $column_as_id, $unique_row, $sub_row_id);
 			}

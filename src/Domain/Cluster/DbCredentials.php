@@ -177,7 +177,7 @@ final class DbCredentials {
 			return false;
 		}
 		self::db()->query('SELECT `type`, `payload` FROM `cluster_commands` WHERE `server_id` = ? AND `cmd_id` = ?;', $rServerID, $rCmdID);
-		$rRow = self::db()->num_rows() > 0 ? self::db()->get_row() : null;
+		$rRow = self::db()->num_rows() > 0 ? self::db()->get_raw_row() : null;
 		$rDoc = $rRow !== null && $rRow['type'] === 'node.root' ? json_decode((string) $rRow['payload'], true) : null;
 		if (!is_array($rDoc) || !in_array($rDoc['action'] ?? null, [NodeCredentials::STRIP, NodeCredentials::INSTALL], true)) {
 			return false;

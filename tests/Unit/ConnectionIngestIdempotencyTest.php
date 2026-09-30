@@ -143,6 +143,14 @@ final class ConnectionIngestIdempotencyTest extends TestCase {
 				return $this->rInner->get_row();
 			}
 
+			public function get_raw_rows(): array {
+				return $this->rInner->get_raw_rows();
+			}
+
+			public function get_raw_row(): ?array {
+				return $this->rInner->get_raw_row();
+			}
+
 			public function num_rows(): int {
 				return $this->rInner->num_rows();
 			}
