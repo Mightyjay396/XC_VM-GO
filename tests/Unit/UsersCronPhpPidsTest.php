@@ -90,6 +90,23 @@ final class UsersCronPhpPidsTest extends TestCase {
 	}
 
 	/** A Redis record carries no exp_date: the line's stands in, so an expired line is kicked in Redis mode too. */
+	/**
+	 * A worker-served viewer is over when its worker is gone, five minutes
+	 * after it ended, or after three missed check-ins even with its pid
+	 * running: a worker whose close was never written leaves a pid PHP-FPM
+	 * gives the next request.
+	 */
+	public function testASilentWorkersViewerIsClosedWhateverItsPid(): void {
+		$rNow = 1800000000;
+		$rGone = fn(int $rEnd, int $rAgo, bool $rRunning): bool => $this->invoke('workerGone', [['hls_end' => $rEnd, 'hls_last_read' => $rNow - $rAgo], $rRunning, $rNow]);
+		$this->assertFalse($rGone(0, 299, true), 'checked in within the interval');
+		$this->assertFalse($rGone(0, UsersCronJob::SILENT_WORKER - 1, true), 'two missed check-ins');
+		$this->assertTrue($rGone(0, UsersCronJob::SILENT_WORKER, true), 'three: its pid serves someone else');
+		$this->assertTrue($rGone(0, 10, false), 'its worker gone');
+		$this->assertFalse($rGone(1, 100, true), 'ended a moment ago');
+		$this->assertTrue($rGone(1, 300, true), 'ended five minutes ago');
+	}
+
 	public function testAnExpiredLineIsKickedWhateverTheStore(): void {
 		$rNow = self::HEARTBEAT;
 		$this->assertTrue($this->invoke('lineExpired', [['uuid' => 'r'], (string) ($rNow - 1), $rNow]), 'a Redis record: the line\'s date');

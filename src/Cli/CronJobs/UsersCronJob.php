@@ -192,6 +192,23 @@ class UsersCronJob implements CommandInterface {
 		return $rExp !== null && $rExp !== '' && (int) $rExp < $rNow;
 	}
 
+	/** Three missed check-ins: a TS, VOD or timeshift worker checks its viewer in every 300 s. */
+	public const SILENT_WORKER = 900;
+
+	/**
+	 * Is this worker-served viewer (TS, VOD, timeshift TS) over? Ended five
+	 * minutes ago, its worker gone, or no check-in for SILENT_WORKER: a worker
+	 * that stopped serving it without closing it (its end-of-request write
+	 * failed, Redis down) leaves a pid PHP-FPM gives the next request, which
+	 * reads as running for as long as that worker lives.
+	 *
+	 * @param array<string, mixed> $rConnection
+	 */
+	private static function workerGone(array $rConnection, bool $rIsRunning, int $rNow): bool {
+		$rSilent = $rNow - intval($rConnection['hls_last_read'] ?? 0);
+		return !$rIsRunning || ($rConnection['hls_end'] == 1 ? $rSilent >= 300 : $rSilent >= self::SILENT_WORKER);
+	}
+
 	/**
 	 * Is this HLS viewer over? The node said so (hls_end), or it made no
 	 * playlist request for 30 s and its node does not reap for itself
@@ -601,7 +618,7 @@ class UsersCronJob implements CommandInterface {
 											$rIsRunning = $this->isRemoteWorkerRunning($rConnection, $rServers[$rConnection['server_id']] ?? null, $rPHPPIDs[$rConnection['server_id']] ?? null);
 										}
 
-										if (($rConnection['hls_end'] == 1 && ($rStartTime - $rConnection['hls_last_read']) >= 300) || !$rIsRunning) {
+										if (self::workerGone($rConnection, $rIsRunning, $rStartTime)) {
 											echo 'Close connection: ' . $rConnection['uuid'] . "\n";
 											ConnectionTracker::closeConnection($rConnection, false, false);
 
