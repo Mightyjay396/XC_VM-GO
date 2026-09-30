@@ -113,7 +113,7 @@ class ServerEnrolCommand implements CommandInterface {
 		echo 'Connecting to ' . $rHost . ':' . $rPort . "\n";
 		try {
 			if (!$rSsh->connect($rHost, $rPort)) {
-				return $rFail('Failed to connect to server');
+				return $rFail('Failed to connect to server' . ($rSsh->error() !== '' ? ': ' . $rSsh->error() : ''));
 			}
 			$rPresented = $rSsh->hostKey();
 			$rHostKeyError = InstallCredentials::checkHostKey($rPresented, $rExpected, $rStored);

@@ -34,6 +34,9 @@ final class LbProvisionClusterTest extends TestCase {
 
 	private bool $rProbeOk = true;
 
+	/** How the node answers the agent's start: STARTED, NO_RUNSH, or '' (it did not start). */
+	private string $rAgentStart = 'STARTED';
+
 	public static function setUpBeforeClass(): void {
 		foreach (['SERVER_ID' => 1, 'TMP_PATH' => sys_get_temp_dir() . '/xcvm-test-tmp/', 'CONFIG_PATH' => sys_get_temp_dir() . '/xcvm-test-config/'] as $rName => $rValue) {
 			if (!defined($rName)) {
@@ -98,6 +101,9 @@ final class LbProvisionClusterTest extends TestCase {
 			}
 			if (str_contains($rCmd, ' install ')) {
 				return ['output' => "OK\n", 'error' => ''];
+			}
+			if (str_contains($rCmd, 'run.sh') && str_contains($rCmd, 'pgrep')) {
+				return ['output' => $this->rAgentStart . "\n", 'error' => ''];
 			}
 			return ['output' => '', 'error' => ''];
 		};
@@ -238,6 +244,31 @@ final class LbProvisionClusterTest extends TestCase {
 		$this->assertStringContainsString("cannot reach MAIN's cluster API", $rLog);
 		$this->assertNull(NodeRegistry::byServer(self::SID), 'no node row, so no token');
 		$this->assertSame(4, $this->serverStatus());
+	}
+
+	/** @return array{0: bool, 1: string} whether the install succeeded, and what it printed */
+	private function provision(): array {
+		[$rRun, $rSend] = $this->fakeSsh();
+		ob_start();
+		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary());
+		return [$rOk, (string) ob_get_clean()];
+	}
+
+	public function testANodeWithoutRunShIsNotReportedEnrolled(): void {
+		$this->rAgentStart = 'NO_RUNSH';
+		[$rOk, $rLog] = $this->provision();
+		$this->assertFalse($rOk);
+		$this->assertStringContainsString('no bin/xc_agent/run.sh', $rLog);
+		$this->assertStringNotContainsString('Node enrolled', $rLog);
+		$this->assertSame(4, $this->serverStatus());
+	}
+
+	public function testAnAgentThatDoesNotStartIsNotReportedEnrolled(): void {
+		$this->rAgentStart = '';
+		[$rOk, $rLog] = $this->provision();
+		$this->assertFalse($rOk);
+		$this->assertStringContainsString('xc_agent did not start', $rLog);
+		$this->assertStringNotContainsString('Node enrolled', $rLog);
 	}
 
 	public function testLicenceRefusalStopsTheInstall(): void {

@@ -10,10 +10,11 @@ use XcVm\Core\Cluster\AgentConnections;
  */
 final class ConnUuidTest extends TestCase {
 	public function testTheRuleTakesWhatAuthMintsAndNothingElse(): void {
-		foreach (['a', bin2hex(random_bytes(16)), str_repeat('Z', 64), 'a_b-C9'] as $rUUID) {
+		foreach (['a', bin2hex(random_bytes(16)), str_repeat('Z', 64), 'a_b-C9', 'LIVE1', 'live', 'ENDED_'] as $rUUID) {
 			$this->assertSame(1, preg_match(AgentConnections::CONN_UUID, $rUUID), $rUUID);
 		}
-		foreach (['', str_repeat('a', 65), "abc\n", 'a/b', 'a.b', 'a b', '../x', 'é'] as $rUUID) {
+		// LIVE, ENDED, CONNECTIONS: the Redis store's indexes, which a record under that name would replace.
+		foreach (['', str_repeat('a', 65), "abc\n", 'a/b', 'a.b', 'a b', '../x', 'é', 'LIVE', 'ENDED', 'CONNECTIONS'] as $rUUID) {
 			$this->assertSame(0, preg_match(AgentConnections::CONN_UUID, $rUUID), json_encode($rUUID));
 		}
 	}

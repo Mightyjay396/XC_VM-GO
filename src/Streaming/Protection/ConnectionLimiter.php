@@ -81,9 +81,10 @@ class ConnectionLimiter {
 			}
 		}
 
-		$rIP = $_SERVER['REMOTE_ADDR'];
+		// The caller's viewer IP (MAIN admitting for a node passes the viewer's, not its own REMOTE_ADDR).
+		$rIP ??= $_SERVER['REMOTE_ADDR'] ?? null;
 		$rKilled = 0;
-		$rDelSID = $rDelUUID = $rIDs = [];
+		$rDelSID = $rDelUUID = $rIDs = $rClosed = [];
 		if ($rIP && $rUserAgent) {
 			$rKillTypes = [2, 1, 0];
 		} else {
@@ -99,9 +100,11 @@ class ConnectionLimiter {
 			while ($i < count($rConnections) && $rKilled < $rToKill) {
 				if ($rKilled != $rToKill) {
 					$rIsCurrent = $rCurrentUUID !== null && ($rConnections[$i]['uuid'] ?? null) === $rCurrentUUID;
-					if (!$rIsCurrent && $rConnections[$i]['pid'] != getmypid()) {
+					// Each pass starts over: one closed by an earlier pass is not closed, nor counted, again.
+					if (!isset($rClosed[$i]) && !$rIsCurrent && $rConnections[$i]['pid'] != getmypid()) {
 						if ($rConnections[$i]['user_ip'] == $rIP && $rConnections[$i]['user_agent'] == $rUserAgent && $rKillOwnIP == 2 || $rConnections[$i]['user_ip'] == $rIP && $rKillOwnIP == 1 || $rKillOwnIP == 0) {
 							if (self::closeConnection($rConnections[$i])) {
+								$rClosed[$i] = true;
 								$rKilled++;
 								if ($rConnections[$i]['container'] != 'hls') {
 									if ($rSettings['redis_handler']) {

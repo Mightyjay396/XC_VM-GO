@@ -63,6 +63,9 @@ final class FakeSshFleet extends SshSession {
 		if (str_contains($rCommand, ' install ')) {
 			return ['output' => "OK\n", 'error' => ''];
 		}
+		if (str_contains($rCommand, 'run.sh') && str_contains($rCommand, 'pgrep')) {
+			return ['output' => "STARTED\n", 'error' => '']; // the agent's start, seen running
+		}
 		return ['output' => '', 'error' => ''];
 	}
 

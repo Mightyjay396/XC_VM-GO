@@ -1319,9 +1319,9 @@ class AdminAPIWrapper {
 			if ($rData['type'] != 1 || !empty($rData['type']) && !empty($rData['ssh_port'])) {
 				$rReturn = parseerror(ServerService::install($rData, ServerRepository::getStreamingSimple($rPermissions, 'all'), ServerRepository::getProxySimple($rPermissions)));
 				if (isset($rReturn['data']['insert_id'])) {
-					$rReturn['data'] = self::getServer($rReturn['data']['insert_id']);
+					$rReturn['data'] = self::getServer($rReturn['data']['insert_id'])['data'] ?? null;
 				}
-				return ['status' => 'STATUS_FAILURE'];
+				return $rReturn;
 			}
 			return ['status' => 'STATUS_INVALID_INPUT'];
 		}

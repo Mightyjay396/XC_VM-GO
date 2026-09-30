@@ -351,6 +351,19 @@ install_component_replace() {
     mv "$stage_path" "$target_path"
 }
 
+# xcvm_core is installed and kept current on its own (`console.php xcvm_core`),
+# not with the runtime bundle, whose copy can be older: keep the installed one
+# wherever the bundle's PHP loads the same extension ABI. A bundle that loads
+# another ABI brings its own, which `console.php xcvm_core` then updates.
+for installed_ext in "$TARGET_BIN_DIR"/php/lib/php/extensions/*/xcvm_core.so; do
+    [[ -f "$installed_ext" ]] || continue
+    staged_ext="$STAGE_DIR/php/${installed_ext#"$TARGET_BIN_DIR/php/"}"
+    if [[ -d "$(dirname "$staged_ext")" ]]; then
+        echo "Keeping the installed xcvm_core: ${installed_ext}"
+        cp -a "$installed_ext" "$staged_ext"
+    fi
+done
+
 ROLLBACK_REQUIRED=1
 
 install_component_merge "nginx"
