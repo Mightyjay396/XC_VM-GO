@@ -13,6 +13,9 @@ if (!defined('SERVER_ID')) {
 if (!defined('CONS_TMP_PATH')) {
 	define('CONS_TMP_PATH', sys_get_temp_dir() . '/xcvm-no-cons/');
 }
+if (!defined('LOGS_TMP_PATH')) {
+	define('LOGS_TMP_PATH', sys_get_temp_dir() . '/xcvm-logs-' . getmypid() . '/');
+}
 
 /**
  * Closing a connection in Redis mode, against a real redis-server. A
@@ -20,8 +23,9 @@ if (!defined('CONS_TMP_PATH')) {
  * since given to another request (pm = ondemand, max_requests 40000): the
  * close never kills it. An RTMP play that ended (play_done) leaves nothing
  * behind in Redis, and another server's client with the same id is left alone.
- * The limiter closes each victim once, and an HLS viewer that moves to
- * another server leaves the old server's sets.
+ * The limiter closes each victim once, and an HLS viewer it ends gets one
+ * activity row (from its removal), as an HMAC viewer gets one too. An HLS
+ * viewer that moves to another server leaves the old server's sets.
  */
 final class RedisConnectionCloseTest extends TestCase {
 	private ?BusServer $rBus = null;
@@ -159,6 +163,37 @@ final class RedisConnectionCloseTest extends TestCase {
 		}
 		$this->assertSame(['own-new'], $this->rRedis->zRange('LINE#7', 0, -1), 'the limit holds');
 		$this->assertEqualsCanonicalizing(['own-old', 'other'], $this->rRedis->sMembers('ENDED'));
+	}
+
+	/** Activity rows written so far (writeOfflineActivity's spool). */
+	private function activityRows(): int {
+		return is_file(LOGS_TMP_PATH . 'activity') ? count(file(LOGS_TMP_PATH . 'activity')) : 0;
+	}
+
+	public function testAnHlsViewerTheLimiterEndsGetsOneActivityRow(): void {
+		// The limiter only ends an HLS viewer (its record stays); what removes
+		// the record writes its row. Written by both, it was counted twice.
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		$GLOBALS['rSettings']['save_closed_connection'] = 1;
+		$this->viewer('kicked', '203.0.113.9', 'phone', 1800000001);
+		$this->viewer('stays', '198.51.100.7', 'tv', 1800000002);
+		$rBefore = $this->activityRows();
+
+		$this->assertSame(1, ConnectionLimiter::closeConnections(7, 1, null, '', '198.51.100.7', 'tv', 'stays'));
+		$this->assertSame($rBefore, $this->activityRows(), 'ended, not written');
+
+		ConnectionTracker::closeConnection(ConnectionTracker::getConnection('kicked'), false, false); // as the sweep removes it
+		$this->assertSame($rBefore + 1, $this->activityRows(), 'one row, from its removal');
+	}
+
+	public function testAnHmacViewersActivityIsWritten(): void {
+		// An HMAC identity has no line (user_id 0): its hmac_id names it.
+		@mkdir(LOGS_TMP_PATH, 0777, true);
+		$rBefore = $this->activityRows();
+		ConnectionTracker::writeOfflineActivity(['save_closed_connection' => 1], SERVER_ID, 0, 0, 11, 1800000000, 'tv', '198.51.100.7', 'ts', 'NL', '', '', 0, 3, 'box-1');
+		$this->assertSame($rBefore + 1, $this->activityRows());
+		ConnectionTracker::writeOfflineActivity(['save_closed_connection' => 1], SERVER_ID, 0, 0, 11, 1800000000, 'tv', '198.51.100.7', 'ts', 'NL', '');
+		$this->assertSame($rBefore + 1, $this->activityRows(), 'neither a line nor an HMAC identity: nothing');
 	}
 
 	public function testAnHlsViewerThatMovesLeavesTheOldServersSets(): void {
