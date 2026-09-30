@@ -273,5 +273,4 @@ class RecordCommand implements CommandInterface {
 	private static function loopbackPass(int $rStreamID): string {
 		return LoopbackToken::issue($rStreamID) ?? urlencode((string) SettingsManager::get('live_streaming_pass'));
 	}
-
 }
