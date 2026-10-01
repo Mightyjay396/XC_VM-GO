@@ -54,4 +54,16 @@ final class FanoutFileHandOverTest extends TestCase {
 		file_put_contents($this->rDir . 'fanout_features', json_encode(['at' => 1800000000, 'features' => ['files']]));
 		$this->assertFalse(FanoutClient::supportsFiles(1800000061));
 	}
+
+	public function testADaemonThatFetchesSourcesSaysSo(): void {
+		file_put_contents($this->rDir . 'fanout_features', json_encode(['at' => 1800000000, 'features' => ['files']]));
+		$this->assertFalse(FanoutClient::supports('file_urls', 1800000001), 'files only: a direct proxy stays in PHP');
+		file_put_contents($this->rDir . 'fanout_features', json_encode(['at' => 1800000000, 'features' => ['files', 'file_urls']]));
+		$this->assertTrue(FanoutClient::supports('file_urls', 1800000001));
+
+		$this->assertTrue(FanoutClient::handOverFile(9, 'u', [['url' => 'https://source.example/m.mp4', 'offset' => 0, 'length' => -1]], 'video/mp4', 0, 3145728, '', 1800000000));
+		$rDoc = json_decode((string) file_get_contents(glob($this->rDir . 'files/*.json')[0]), true);
+		$this->assertSame([['url' => 'https://source.example/m.mp4', 'offset' => 0, 'length' => -1]], $rDoc['parts']);
+		$this->assertSame([0, 3145728], [$rDoc['limit_perc'], $rDoc['rate']], 'paced from the first byte');
+	}
 }

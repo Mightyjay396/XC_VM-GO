@@ -610,6 +610,15 @@ class FanoutClient {
 	 * and until then this worker serves the file itself, as before.
 	 */
 	public static function supportsFiles(?int $rNow = null): bool {
+		return self::supports('files', $rNow);
+	}
+
+	/**
+	 * Whether the daemon names $rFeature among its features ("files",
+	 * "file_urls" for a direct-proxy movie's source), the answer kept a
+	 * minute as supportsFiles() says.
+	 */
+	public static function supports(string $rFeature, ?int $rNow = null): bool {
 		$rNow ??= time();
 		$rCache = self::$rFeaturesCache ?? TMP_PATH . 'fanout_features';
 		$rKept = json_decode((string) @file_get_contents($rCache), true);
@@ -622,7 +631,7 @@ class FanoutClient {
 			$rKept = ['at' => $rNow, 'features' => self::$features];
 			AtomicFile::write($rCache, (string) json_encode($rKept));
 		}
-		return in_array('files', $rKept['features'], true);
+		return in_array($rFeature, $rKept['features'], true);
 	}
 
 	/** Where the daemon reads file manifests: its -filesdir, <sockets>/files. */
@@ -645,7 +654,8 @@ class FanoutClient {
 	 * response (0 = never), counts the viewer by $rUUID like a live one, and
 	 * drops it when the panel does. No path is ever in a URL.
 	 *
-	 * @param list<array{path: string, offset: int, length: int}> $rParts length -1 = to the file's end
+	 * @param list<array{path?: string, url?: string, offset: int, length: int}> $rParts length -1 = to the file's end;
+	 *        a direct-proxy movie: one part naming its source's `url` (supports('file_urls'))
 	 * @param string $rRange A range the token carried, used when the request has none.
 	 * @return bool False when the manifest could not be written: nothing was sent.
 	 */

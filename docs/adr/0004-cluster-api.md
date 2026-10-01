@@ -5405,9 +5405,11 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
 - **Parts.** A movie is one part, the whole file. A timeshift is its queued minute files, the first from its offset.
 - **When.** The hand-over happens with fanout usable (`FanoutMode`, `LicenseGate::fanoutUsable()`) and a daemon that has the `files` feature (`FanoutClient::supportsFiles()`, the answer kept a minute in `TMP_PATH/fanout_features`). Otherwise, and for a direct-proxy VOD, the PHP loop serves as before.
 
+- **A direct-proxy movie** goes to a daemon with `file_urls`: its manifest names the source URL, which the daemon fetches with the viewer's range and the panel's User-Agent, paced as the cURL relay was (past 512 MB, three times the movie's average rate). PHP still probes the source's size and type first.
+- **HLS timeshift segments** (`segment.php`, an archive minute or a partial first one) go to a daemon that serves files, with no viewer to count: an HLS row is not tracked per segment.
+- **The file roots.** A manifest's paths must lie under the daemon's file roots (`-fileroots`, `/home/xc_vm/content` by default), so a manifest names nothing else the daemon's user could read.
+
 **Not built.**
-- **Direct-proxy VOD** still relays through PHP (cURL).
-- **HLS timeshift** segments are still served one by one by `segment.php`; each is a short request.
 - **The per-connection speed file** (`DIVERGENCE_TMP_PATH`) is not written for a daemon-served file; `fanout_sync` takes the rate from the daemon's `/rates`, as for live.
 
 **Tests.** `FanoutFileHandOverTest` checks the manifest (its name, mode and content, the throttle clamped, the token's range) and that the feature answer is kept a minute. XC_VM_Fanout's `files_test.go` covers:
