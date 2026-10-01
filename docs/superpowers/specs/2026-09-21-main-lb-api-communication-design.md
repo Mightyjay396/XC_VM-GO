@@ -1152,11 +1152,11 @@ There are 20 open decisions (D1–D21, with D12 retired), and each one has a rec
 | D4 | `lb_partition_tolerance_h`, which is also the bypass window | 0–24 h; extension cap 26 h total | 12 h |
 | D5 | `lb_offline_admission`: tokens without `adm` while MAIN is unreachable | `allow`, `local`, `deny` | `local` (enforce the token's limit on the node's own registry) |
 | D6 | Cluster listener | Reuse `http_broadcast_port` under `/cluster/v1/` (`cluster_api_port=0`), or a dedicated plain-HTTP port (1024–65535) | Reuse the HTTP port; dedicated port optional |
-| D7 | H1: per-LB viewer-token keys in `xcvm_core` | Yes or no | Yes, Phase 11 (\~3 pw) |
-| D8 | Proxies join the enrolment and token scheme (needs an XC\_VM\_Proxy release) | Yes or no | Yes, Phase 11 (\~2 pw); Phase 0 stop-gap until then |
+| D7 | H1: per-LB viewer-token keys in `xcvm_core` | Yes or no | Yes, Phase 11 (\~3 pw). Built in the panel, increments 1–3 (ADR 0004, "Per-node viewer-token keys"); the key in `xcvm_core` is optional |
+| D8 | Proxies join the enrolment and token scheme (needs an XC\_VM\_Proxy release) | Yes or no | Yes, Phase 11 (\~2 pw); Phase 0 stop-gap until then. Built as a signed channel (ADR 0004, "Proxies on a signed channel"); needs an XC\_VM\_Proxy release |
 | D9 | LB node agent architecture | 1: all PHP (68.4); 2: Go agent + PHP gateway (81.0); 3: adds Go stream auth (67.4); 4: full Go LB (53.0) | Option 2: Go `xc_agent` |
 | D10 | Kill live sessions on line disable, ban or expiry (`cluster_kill_on_line_disable`) | 1 or 0 | Yes (1) |
-| D11 | Scope of "all communication through the API" | Accept the scope in the notes below, or add AEAD relay framing or HTTPS relays (Phase 11, \~3 pw) | Yes, as scoped |
+| D11 | Scope of "all communication through the API" | Accept the scope in the notes below, or add AEAD relay framing or HTTPS relays (Phase 11, \~3 pw) | Yes, as scoped. Owner chose AEAD relay framing: built (ADR 0004, "AEAD-framed relays") |
 | D12 | Retired in revision 2 (was mTLS); HTTPS policy is now D19 | — | — |
 | D13 | Enrolment channel for the existing (legacy) fleet | SSH `server:enrol`; console code + SAS; in-band binding if D18 ships | SSH with an expected host-key fingerprint or the SAS from the LB console. Trust on first use alone is refused. Key-based auth recommended. Console code plus SAS as fallback. No bulk approve |
 | D14 | Remove dead settings | Drop `connection_sync_timer`; also drop `online_capacity_interval` | Drop only `connection_sync_timer`; `online_capacity_interval` is still in use |

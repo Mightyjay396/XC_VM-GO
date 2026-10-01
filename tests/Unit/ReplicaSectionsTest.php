@@ -179,10 +179,14 @@ final class ReplicaSectionsTest extends TestCase {
 		}
 		$rFive = $rData['servers'][1];
 		$this->assertSame(['[1]', 'lb5.example.com', 8080, '["10.9.9.5"]'], [$rFive['parent_id'], $rFive['domain_name'], $rFive['http_broadcast_port'], $rFive['whitelist_ips']]);
+		$rBox = function (int $rSid): string {
+			$this->rDb->query('SELECT `node_box_pub` FROM `cluster_nodes` WHERE `server_id` = ?', $rSid);
+			return base64_encode((string) $this->rDb->get_raw_rows()[0]['node_box_pub']);
+		};
 		$this->assertSame([
-			['sid' => 5, 'gen' => 1, 'state' => 'active', 'ed_pub' => base64_encode(str_repeat(chr(5), 32)), 'dataplane' => false],
-			['sid' => 6, 'gen' => 1, 'state' => 'revoked', 'ed_pub' => base64_encode(str_repeat(chr(6), 32)), 'dataplane' => false],
-		], $rData['nodes']);
+			['sid' => 5, 'gen' => 1, 'state' => 'active', 'ed_pub' => base64_encode(str_repeat(chr(5), 32)), 'box_pub' => $rBox(5), 'dataplane' => false],
+			['sid' => 6, 'gen' => 1, 'state' => 'revoked', 'ed_pub' => base64_encode(str_repeat(chr(6), 32)), 'box_pub' => $rBox(6), 'dataplane' => false],
+		], $rData['nodes'], 'box_pub: what a child seals a relay\'s key to');
 
 		$rJson = (string) json_encode($rData);
 		foreach (['watchdog_data', 'php_pids', 'last_check_ago', '"status"', 'api_url', '"connections"', '"users"', 'limit_requests', 'governor', 'sysctl', 'server_hardware', 'uuid', 'time_offset'] as $rForbidden) {

@@ -26,13 +26,13 @@ final class ClusterLockdownTest extends TestCase {
 
 	protected function setUp(): void {
 		$this->rDb = new TestDb();
-		$this->rDb->exec('CREATE TABLE `servers` (`id` int, `server_type` int, `is_main` int, `server_ip` varchar(255), `private_ip` varchar(255))');
+		$this->rDb->exec('CREATE TABLE `servers` (`id` int, `server_type` int, `is_main` int, `server_ip` varchar(255), `private_ip` varchar(255), `proxy_signed` int DEFAULT 0)');
 		$this->rDb->exec("CREATE TABLE `cluster_nodes` (`server_id` int, `mode` int, `state` varchar(16) DEFAULT 'active')");
 		$this->rDb->exec("CREATE TABLE `settings` (`cluster_db_allowlist` int DEFAULT 0, `cluster_db_allowlist_extra` varchar(1024) DEFAULT '')");
 		$this->rDb->exec('CREATE TABLE `cluster_meta` (`name` varchar(64) PRIMARY KEY, `value` text, `updated_at` int)');
 		$this->rDb->exec('CREATE TABLE `cluster_audit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `time` int, `server_id` int, `actor` varchar(64), `event` varchar(64), `detail` text, `ip` varchar(64))');
 		$this->rDb->exec("INSERT INTO `settings` VALUES (0, '')");
-		$this->rDb->exec("INSERT INTO `servers` VALUES (1, 0, 1, '203.0.113.1', '10.0.0.1'), (2, 0, 0, '203.0.113.2', ''), (3, 0, 0, '203.0.113.3', '')");
+		$this->rDb->exec("INSERT INTO `servers` (`id`, `server_type`, `is_main`, `server_ip`, `private_ip`) VALUES (1, 0, 1, '203.0.113.1', '10.0.0.1'), (2, 0, 0, '203.0.113.2', ''), (3, 0, 0, '203.0.113.3', '')");
 		$this->rDb->exec("INSERT INTO `cluster_nodes` (`server_id`, `mode`) VALUES (2, 1), (3, 2)");
 		DatabaseFactory::set($this->rDb);
 		$this->rDir = sys_get_temp_dir() . '/xcvm-lock-' . bin2hex(random_bytes(4));
@@ -85,7 +85,7 @@ final class ClusterLockdownTest extends TestCase {
 	}
 
 	public function testItRefusesWhileANodeBelowModeTwoOrAProxyRemains(): void {
-		$this->rDb->exec("INSERT INTO `servers` VALUES (4, 1, 0, '203.0.113.4', '')");
+		$this->rDb->exec("INSERT INTO `servers` (`id`, `server_type`, `is_main`, `server_ip`, `private_ip`) VALUES (4, 1, 0, '203.0.113.4', '')");
 		$this->assertSame(['nodes' => [2], 'proxies' => [4]], ClusterLockdown::blockers());
 		ob_start();
 		$rCode = (new ClusterLockdownCommand($this->lockdown(), false))->execute([]);
@@ -96,6 +96,10 @@ final class ClusterLockdownTest extends TestCase {
 		$this->assertFileDoesNotExist($this->rDir . '/mysql/' . ClusterLockdown::MYSQL_DROPIN, 'nothing changed');
 		$this->assertSame([], $this->rCalls, 'the firewall was not touched');
 		$this->assertNull(ClusterLockdown::state());
+
+		// A proxy that signs its channel (ProxyKey, D8) uses MAIN's API only.
+		$this->rDb->exec('UPDATE `servers` SET `proxy_signed` = 1 WHERE `id` = 4');
+		$this->assertSame(['nodes' => [2], 'proxies' => []], ClusterLockdown::blockers());
 	}
 
 	public function testLockdownBindsToLoopbackAndNarrowsTheChainThenUndoRestoresIt(): void {

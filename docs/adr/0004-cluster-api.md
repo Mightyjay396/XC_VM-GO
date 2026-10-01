@@ -5389,3 +5389,96 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
   - a node sending a viewer to itself mints with its own key.
 - `ReplicaBuilderSecretsTest` and `ClusterApiTest` check that the section carries the node's own key, and no other node's.
 
+
+### VOD and timeshift bytes in the daemon (Phase 11)
+
+**Before:** a movie (`vod.php`) or a continuous timeshift (`timeshift.php`, TS output) was read and written by one PHP-FPM worker for the whole download, its throttle a sleep loop. The plan kept this for "only if FPM pressure is measured"; the owner chose to move it.
+
+**Built.** The bytes go to the xc_fanout daemon, as a live viewer's do (the daemon's `files` feature, XC_VM_Fanout).
+- **The hand-over.** PHP still authenticates the viewer and records its connection, now with pid 0 as a daemon-served live viewer's. It then writes a manifest naming the file parts into the daemon's files directory (`<sockets>/files`, 0600, a random 32-hex name) and hands the byte path to nginx: `X-Accel-Redirect: /xc_fanout_file/<id>?c=<uuid>&m=<name>` (`FanoutClient::handOverFile`), an internal location on MAIN's and the LB's nginx that proxies to the daemon's `/file/<id>`. The worker is freed at once. No path is in a URL.
+- **What the daemon does.** It reads and removes the manifest and serves the parts back to back:
+  - HTTP ranges (`http.ServeContent`), across parts, and the token's range when the request has none;
+  - the panel's throttle: free for `vod_limit_perc` of the response, then the movie's (or recording's) bitrate plus `vod_bitrate_plus`, never for a restreamer;
+  - each write under the write deadline, and the kill channel.
+
+  The viewer is counted in `/connections`, `/rates` and the kick like a live one, so `fanout_sync` closes the row once it leaves, the panel's kick drops it, and the agent's registry and events carry it.
+- **Parts.** A movie is one part, the whole file. A timeshift is its queued minute files, the first from its offset.
+- **When.** The hand-over happens with fanout usable (`FanoutMode`, `LicenseGate::fanoutUsable()`) and a daemon that has the `files` feature (`FanoutClient::supportsFiles()`, the answer kept a minute in `TMP_PATH/fanout_features`). Otherwise, and for a direct-proxy VOD, the PHP loop serves as before.
+
+**Not built.**
+- **Direct-proxy VOD** still relays through PHP (cURL).
+- **HLS timeshift** segments are still served one by one by `segment.php`; each is a short request.
+- **The per-connection speed file** (`DIVERGENCE_TMP_PATH`) is not written for a daemon-served file; `fanout_sync` takes the rate from the daemon's `/rates`, as for live.
+
+**Tests.** `FanoutFileHandOverTest` checks the manifest (its name, mode and content, the throttle clamped, the token's range) and that the feature answer is kept a minute. XC_VM_Fanout's `files_test.go` covers:
+- a whole file;
+- a range across parts;
+- refused manifests (relative, unclean, expired, empty, a directory, past the end, a name that isn't one);
+- a viewer listed, rated and dropped like a live one, its holder forgotten once it leaves;
+- the throttle after its share;
+- the sweep of unread manifests.
+
+### AEAD-framed relays (D11)
+
+**Before:** a relay was authenticated at connect (the relay ticket and the child's per-connect proof) and its bytes then passed in the clear. A passive observer read them, and an active one could change them undetected. The plan accepted that scope by default; the owner chose AEAD framing.
+
+**Built.**
+- **The key.** The child's agent picks a fresh 32-byte session key per connect and SEALs it to the parent's box key (purpose `relay`, context `relay|<parent>|<stream>`).
+  - For a node parent, the box key comes from the signed node list, which now carries each node's `box_pub` beside its `ed_pub`.
+  - For MAIN, it is the panel box key, which MAIN opens through the extension (`cluster_open_sealed` with the `relay` purpose, XC_VM_CoreExtention).
+  - The sealed key goes in the target as `rk=<base64url>`, which the relay proof signs, so it can't be swapped.
+- **The frames.** `admin/live.php` opens the key (`RelaySeal::openKey`; a key that does not open refuses the relay), answers `X-XCVM-Relay-Seal: v1`, and seals everything it writes through an output buffer: `u32 len ‖ AES-256-GCM(key, nonce 0⁴ ‖ u64 counter, aad "xcvm relay v1")`, at most 64 KiB of plaintext a frame. A partial frame is flushed before each wait for the next segment.
+- **No downgrade.** Each server reports whether it opens relay keys (`servers.relay_seal`, migration 060, with its inventory each minute; `RelaySeal::supported()`). A node needs its box key; MAIN tries a key sealed to its own panel box key, so an extension without the `relay` purpose reports 0. The signed servers section carries it. A child pulls from a parent marked as sealing only sealed: an unsealed answer is refused, and a frame that does not open or comes out of order ends the read. A parent not marked (older code, or MAIN on an older extension) is pulled as before.
+
+**Not built.**
+- **`/xfile`** file pulls are integrity-checked against the owner's signed digest, but not confidential.
+- **Viewer bytes and `/images`** stay direct, as D11 scoped.
+- **Forward secrecy:** a parent's box key taken later opens a recorded relay's key.
+
+**Tests.**
+- `RelaySealTest`:
+  - the frame vector the agent's reader is tested against;
+  - long writes split, and nothing altered, cut short, reordered or under another key opens;
+  - a node opens the key a child sealed to it, for that stream only.
+- `ReplicaSectionsTest` and `ClusterApiTest`: the node list's `box_pub`.
+- XC_VM_Fanout `relayseal_test.go`:
+  - the panel's vector;
+  - a sealed relay read whole;
+  - an unsealed answer and a changed frame refused;
+  - no key for a parent that doesn't seal;
+  - the section's `relay_seal` and `box_pub`.
+- XC_VM_CoreExtention `ClusterApiTest`: a relay key opens with the panel box key, for its stream only.
+
+### Proxies on a signed channel (D8)
+
+**Before:** a proxy's cron (XC_VM_Proxy's `callback.php`) posted its stats to MAIN's `/admin/proxy_api` once a minute, unsigned. It then ran whatever signals came back: reboot, restart or stop the services, block or unblock an IP, flush the firewall, reload nginx. MAIN trusted the request's source address (the Phase 0 stop-gap), and the proxy trusted the answer. Lockdown counted every proxy as a blocker, since one might still use MAIN's database, and the DB allowlist kept every proxy on 3306/6379.
+
+**Built (`Domain/Server/ProxyKey`).**
+- **The key.** Each proxy's key is `HMAC-SHA256(MAIN's proxy secret, "xcvm proxy key v1|" ‖ id ‖ "|" ‖ gen)`.
+  - The secret is MAIN's alone (`config/proxy_secret`, 0600, made once and never replaced).
+  - `gen` is the proxy's `proxy_key_gen` (migration 061), raised at each install, so a reinstalled proxy's old key opens nothing. MAIN stores no key.
+  - The install (`ProxyInstallFlow::provisionKey`) writes the key to the proxy as hex in `config/proxy.key` (0600, root).
+- **The request** carries `X-XCVM-Proxy-Auth: <ts ms>.<nonce>.<mac>`, an HMAC over the server id, the stamp, the nonce and the body's SHA-256. MAIN takes it within 90 s of its clock, each nonce once (`NonceStore`, as `proxy-<id>`, claimed only after the MAC verified). It reads the proxy's generation from the database, not from the servers cache, which an install can be ahead of.
+- **The answer** is `{"payload": <signals>, "mac": …}`, bound to the request's nonce. The proxy runs only signals whose MAC verifies.
+- **After the first signed request.** Once a proxy has signed one (`proxy_signed`):
+  - its unsigned requests are refused;
+  - lockdown no longer counts it as a blocker;
+  - the DB allowlist leaves it out, since it uses MAIN's API only.
+
+  An install resets `proxy_signed`, so a proxy installed from an archive from before this keeps the legacy source-address rule until it signs.
+
+**The proxy (XC_VM_Proxy).** `callback.php` signs when the key is installed and runs signals only from a verified answer. `includes/proxy_auth.php` holds the code, and `tests/proxy_auth_check.php` (`make check`, run before each release build) checks it against `ProxyKeyTest`'s vectors. A proxy without a key works as before. **Deploying it needs an XC_VM_Proxy release**, which the panel's `cron:proxy` then ships to new installs.
+
+**Not built.**
+- **The route segment.** The URL segment that routes a viewer through a proxy to its parent, `md5(proxy_parent_OPENSSL_EXTRA)`, stays as the proxy's nginx was installed with it. It only selects the parent and authenticates nothing: the parent still checks the viewer's token, which per-node keys (H1) now bind to the parent.
+- **Existing proxies** get their key at their next install (Reinstall in the servers list); until then their channel stays unsigned.
+
+**Tests.**
+- `ProxyKeyTest`:
+  - the vectors the proxy checks against;
+  - each proxy's and install's own key;
+  - only the proxy's own fresh request verifies (not another key, server, body or an old stamp);
+  - admission needs a keyed proxy and a fresh nonce, with no nonce burnt before the MAC verifies;
+  - the secret is made once and never replaced.
+- `ProxyInstallKeyTest`: the install writes the key of a new generation and leaves no copy.
+- `ClusterLockdownTest` and `DbAllowlistTest`: a signing proxy is no blocker and leaves the allowlist.

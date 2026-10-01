@@ -1847,7 +1847,7 @@ final class ClusterApiTest extends TestCase {
 			$rData[$rSection] = $rDoc['data'];
 		}
 		$this->assertSame([5, '10.0.0.5', 8080], [$rData['servers']['servers'][0]['id'], $rData['servers']['servers'][0]['server_ip'], $rData['servers']['servers'][0]['http_broadcast_port']]);
-		$this->assertSame([['dataplane' => false, 'ed_pub' => base64_encode((string) NodeRegistry::byServer(self::SID)['node_sign_pub']), 'gen' => 1, 'sid' => 5, 'state' => 'active']], $rData['servers']['nodes'], 'keys sorted, as every level of a section');
+		$this->assertSame([['box_pub' => base64_encode((string) NodeRegistry::byServer(self::SID)['node_box_pub']), 'dataplane' => false, 'ed_pub' => base64_encode((string) NodeRegistry::byServer(self::SID)['node_sign_pub']), 'gen' => 1, 'sid' => 5, 'state' => 'active']], $rData['servers']['nodes'], 'keys sorted, as every level of a section');
 		$this->assertSame([5, 8080, 1], [$rData['node']['id'], $rData['node']['http_broadcast_port'], $rData['node']['cloudflare']]);
 		$this->assertSame([['filename' => 'streams', 'time' => '* * * * *']], $rData['crontab']['jobs'], 'the node\'s mode (1): never a main row');
 		$this->assertSame(ClusterPolicy::current($this->rSettings, $this->rMain)['main_urls'], $rData['cluster']['main_urls']);

@@ -2,6 +2,7 @@
 
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Cluster\ViewerKey;
+use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -12,6 +13,8 @@ use XcVm\Streaming\AsyncFileOperations;
 use XcVm\Streaming\Auth\StreamAuth;
 use XcVm\Streaming\Auth\StreamAuthMiddleware;
 use XcVm\Streaming\Delivery\HttpRange;
+use XcVm\Streaming\Fanout\FanoutClient;
+use XcVm\Streaming\Fanout\FanoutMode;
 use XcVm\Streaming\Lifecycle\ShutdownHandler;
 
 /**
@@ -202,6 +205,11 @@ if ($rUserInfo) {
 
 			exit();
 		default:
+			// The minute files' bytes go to the xc_fanout daemon when it serves
+			// files (FanoutClient::handOverFile): this worker is freed at once, and
+			// the connection is the daemon's, recorded with pid 0 as a live viewer's.
+			$rFileDaemon = !FanoutMode::legacyDelivery($rSettings) && LicenseGate::fanoutUsable() && FanoutClient::supportsFiles();
+			$rConnPID = $rFileDaemon ? 0 : $rPID;
 			// A player's HTTP Range request may come without the uuid (table path).
 			$rRangeMatch = empty($_SERVER['HTTP_RANGE']) ? [] : ['user_id' => $rUserInfo['id'], 'container' => 'hls', 'user_agent' => $rUserAgent, 'stream_id' => $rStreamID];
 			$rConnection = ConnectionTracker::findByUuid($rSettings, $rTokenData['uuid'], '`server_id`, `activity_id`, `pid`, `user_ip`', $rRangeMatch);
@@ -213,8 +221,8 @@ if ($rUserInfo) {
 				}
 
 				$rLastRead = time() - intval($rServers[SERVER_ID]['time_offset']);
-				$rConnectionData = ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => 0, 'identity' => $rUserInfo['id'], 'uuid' => $rTokenData['uuid']];
-				$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset']));
+				$rConnectionData = ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rConnPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => 0, 'identity' => $rUserInfo['id'], 'uuid' => $rTokenData['uuid']];
+				$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, ['user_id' => $rUserInfo['id'], 'stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => $rExtension, 'pid' => $rConnPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset']));
 			} else {
 				$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rConnection['user_ip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1)) : $rConnection['user_ip'] == $rIP);
 
@@ -234,7 +242,7 @@ if ($rUserInfo) {
 					}
 				}
 
-				$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])]);
+				$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rConnPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])]);
 			}
 
 			if ($rResult) {
@@ -270,6 +278,23 @@ if ($rUserInfo) {
 			// from its .offset (a partial first minute).
 			$rSize = getLength($rQueue) - $rOffset;
 			$rBitrate = ($rSize * 0.008) / ($rDuration * 60);
+			$rDownloadBytes = $rBitrate * 125;
+			$rDownloadBytes += $rDownloadBytes * $rSettings['vod_bitrate_plus'] * 0.01;
+			if ($rFileDaemon) {
+				$rParts = [];
+				foreach (array_values($rQueue) as $rIndex => $rItem) {
+					$rFrom = ($rIndex === 0 ? $rOffset : 0);
+					if ($rItem['filesize'] > $rFrom) {
+						$rParts[] = ['path' => $rItem['filename'], 'offset' => $rFrom, 'length' => $rItem['filesize'] - $rFrom];
+					}
+				}
+				// Throttled as below: past vod_limit_perc, at the recording's bitrate, never for a restreamer.
+				$rRate = (0 < $rSettings['vod_limit_perc'] && !$rUserInfo['is_restreamer']) ? (int) $rDownloadBytes : 0;
+				if ($rParts === [] || !FanoutClient::handOverFile($rStreamID, (string) $rTokenData['uuid'], $rParts, 'video/mp2t', (int) $rSettings['vod_limit_perc'], $rRate)) {
+					generateError('ARCHIVE_DOESNT_EXIST');
+				}
+				exit();
+			}
 			$rServe = HttpRange::sendHeaders(HttpRange::parse($_SERVER['HTTP_RANGE'] ?? null, $rSize), $rSize);
 			if ($rServe === null) {
 				exit(); // 416 already sent
@@ -277,8 +302,6 @@ if ($rUserInfo) {
 			[$rStart, $rEnd] = $rServe;
 			$rLength = $rEnd - $rStart + 1;
 			$rRemaining = $rLength;
-			$rDownloadBytes = $rBitrate * 125;
-			$rDownloadBytes += $rDownloadBytes * $rSettings['vod_bitrate_plus'] * 0.01;
 			$rLastCheck = $rTimeChecked = $rTimeStart = time();
 			$rBytesRead = 0;
 			$rBuffer = $rSettings['read_buffer_size'];

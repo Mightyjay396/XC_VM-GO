@@ -23,12 +23,12 @@ final class DbAllowlistTest extends TestCase {
 
 	protected function setUp(): void {
 		$this->rDb = new TestDb();
-		$this->rDb->exec('CREATE TABLE `servers` (`id` int, `server_type` int, `is_main` int, `server_ip` varchar(255), `private_ip` varchar(255))');
+		$this->rDb->exec('CREATE TABLE `servers` (`id` int, `server_type` int, `is_main` int, `server_ip` varchar(255), `private_ip` varchar(255), `proxy_signed` int DEFAULT 0)');
 		$this->rDb->exec('CREATE TABLE `cluster_nodes` (`server_id` int, `mode` int)');
 		$this->rDb->exec("CREATE TABLE `settings` (`cluster_db_allowlist` int DEFAULT 0, `cluster_db_allowlist_extra` varchar(1024) DEFAULT '')");
 		$this->rDb->exec('CREATE TABLE `cluster_audit` (`id` INTEGER PRIMARY KEY AUTOINCREMENT, `time` int, `server_id` int, `actor` varchar(64), `event` varchar(64), `detail` text, `ip` varchar(64))');
 		$this->rDb->exec("INSERT INTO `settings` VALUES (0, '')");
-		$this->rDb->exec("INSERT INTO `servers` VALUES (1, 0, 1, '203.0.113.1', '10.0.0.1'), (2, 0, 0, '203.0.113.2', ''), (3, 0, 0, '203.0.113.3', '10.0.0.3'), (4, 1, 0, '2001:db8::4', NULL), (5, 0, 0, 'lb5.example', '')");
+		$this->rDb->exec("INSERT INTO `servers` (`id`, `server_type`, `is_main`, `server_ip`, `private_ip`) VALUES (1, 0, 1, '203.0.113.1', '10.0.0.1'), (2, 0, 0, '203.0.113.2', ''), (3, 0, 0, '203.0.113.3', '10.0.0.3'), (4, 1, 0, '2001:db8::4', NULL), (5, 0, 0, 'lb5.example', '')");
 		$this->rDb->exec('INSERT INTO `cluster_nodes` VALUES (2, 1), (3, 2)');
 		DatabaseFactory::set($this->rDb);
 		$this->rFw = ['/sbin/iptables' => ['chain' => null, 'jumps' => 0], '/sbin/ip6tables' => ['chain' => null, 'jumps' => 0]];
@@ -58,6 +58,9 @@ final class DbAllowlistTest extends TestCase {
 			6 => ['2001:db8::4/128'],
 		], $rWanted);
 		$this->assertTrue(DbAllowlist::covers($rWanted[4], '198.51.100.77'));
+		// A proxy that signs its channel (ProxyKey, D8) no longer reaches either port.
+		$this->rDb->exec('UPDATE `servers` SET `proxy_signed` = 1 WHERE `id` = 4');
+		$this->assertNotContains('2001:db8::4/128', $this->allowlist()->wanted()[6] ?? []);
 		$this->assertFalse(DbAllowlist::covers($rWanted[4], '203.0.113.3'));
 	}
 

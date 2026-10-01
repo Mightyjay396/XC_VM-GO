@@ -2,6 +2,8 @@
 
 namespace XcVm\Cli\Commands;
 
+use XcVm\Domain\Server\ProxyKey;
+
 class ProxyInstallFlow {
 	public static function getPackages(): array {
 		return ['iproute2', 'net-tools', 'libcurl4', 'libcurl3-gnutls', 'libxslt1-dev', 'libonig-dev', 'e2fsprogs', 'wget', 'sysstat', 'mcrypt', 'python3', 'certbot', 'iptables-persistent', 'libjpeg-dev', 'libpng-dev', 'libssh2-1', 'xz-utils', 'zip', 'unzip', 'cron'];
@@ -73,6 +75,37 @@ class ProxyInstallFlow {
 		call_user_func($rRunSSH, $rConn, 'sudo chmod 0777 /home/xc_vm/bin');
 
 		return $rServices;
+	}
+
+	/**
+	 * The proxy's control-channel key (ProxyKey, D8): a new generation, so the
+	 * key it had before opens nothing, written to the proxy as hex in
+	 * config/proxy.key (0600, root's: its callback cron runs as root). The proxy
+	 * is heard unsigned again until it signs (an archive from before this).
+	 */
+	public static function provisionKey($rConn, callable $rSendFileSSH, callable $rRunSSH, int $rServerID, $db): bool {
+		$db->query('UPDATE `servers` SET `proxy_key_gen` = `proxy_key_gen` + 1, `proxy_signed` = 0 WHERE `id` = ?;', $rServerID);
+		$db->query('SELECT `proxy_key_gen` FROM `servers` WHERE `id` = ?;', $rServerID);
+		$rKey = ProxyKey::forServer($rServerID, (int) (($db->get_row() ?: [])['proxy_key_gen'] ?? 0));
+		if ($rKey === null) {
+			echo "No proxy secret on MAIN (config/proxy_secret): the proxy keeps the unsigned channel.\n";
+			return false;
+		}
+		$rTmp = tempnam(sys_get_temp_dir(), 'pk'); // 0600 from the start
+		if ($rTmp === false) {
+			return false;
+		}
+		try {
+			chmod($rTmp, 0600);
+			file_put_contents($rTmp, bin2hex($rKey) . "\n");
+			if (!call_user_func($rSendFileSSH, $rConn, $rTmp, MAIN_HOME . 'config/proxy.key', false)) {
+				return false;
+			}
+		} finally {
+			@unlink($rTmp);
+		}
+		call_user_func($rRunSSH, $rConn, 'sudo chown root:root ' . MAIN_HOME . 'config/proxy.key && sudo chmod 0600 ' . MAIN_HOME . 'config/proxy.key');
+		return true;
 	}
 
 	public static function runStartup($rConn, callable $rRunSSH): void {

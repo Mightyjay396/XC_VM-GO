@@ -238,6 +238,7 @@ class ServerInstallCommand implements CommandInterface {
 				return 1;
 			}
 		} else {
+			ProxyInstallFlow::provisionKey($rConn, $rSendFileSSH, $rRunSSH, $rServerID, $db);
 			ProxyInstallFlow::runStartup($rConn, $rRunSSH);
 		}
 

@@ -36,7 +36,7 @@ final class NodeStateSink {
 	public const STATE = ['certbot_ssl', 'governor', 'sysctl', 'viewer_key_fp'];
 
 	/** Columns a node.inventory event may set (time_offset comes from MAIN's clock offset). */
-	public const INVENTORY = ['remote_status', 'xc_vm_version', 'server_hardware', 'governors', 'sysctl', 'video_devices', 'audio_devices', 'gpu_info', 'interfaces', 'ping'];
+	public const INVENTORY = ['remote_status', 'xc_vm_version', 'server_hardware', 'governors', 'sysctl', 'video_devices', 'audio_devices', 'gpu_info', 'interfaces', 'ping', 'relay_seal'];
 
 	/**
 	 * The `status` values a node reports of itself: 5 while its update runs

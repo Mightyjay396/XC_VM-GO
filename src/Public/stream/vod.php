@@ -1,6 +1,7 @@
 <?php
 
 use XcVm\Core\Cluster\SignalDispatcher;
+use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -11,6 +12,8 @@ use XcVm\Streaming\AsyncFileOperations;
 use XcVm\Streaming\Auth\StreamAuth;
 use XcVm\Streaming\Auth\StreamAuthMiddleware;
 use XcVm\Streaming\Delivery\HttpRange;
+use XcVm\Streaming\Fanout\FanoutClient;
+use XcVm\Streaming\Fanout\FanoutMode;
 use XcVm\Streaming\Lifecycle\ShutdownHandler;
 
 /**
@@ -77,6 +80,13 @@ if (file_exists($rRequest) || $rDirectProxy) {
 	generateError('VOD_DOESNT_EXIST');
 }
 
+// The file's bytes go to the xc_fanout daemon when it serves files
+// (FanoutClient::handOverFile): this worker is freed at once, and the
+// connection is the daemon's, recorded with pid 0 as a live viewer's is
+// (fanout_sync reconciles it, a kick drops it). A direct proxy stays here.
+$rFileDaemon = !$rDirectProxy && !FanoutMode::legacyDelivery($rSettings) && LicenseGate::fanoutUsable() && FanoutClient::supportsFiles();
+$rConnPID = $rFileDaemon ? 0 : $rPID;
+
 if ($rSettings['use_buffer'] != 0) {
 } else {
 	header('X-Accel-Buffering: no');
@@ -123,8 +133,8 @@ if ($rChannelInfo) {
 			$rOwner = ['hmac_id' => $rIsHMAC, 'hmac_identifier' => $rIdentifier];
 			$rIdentity = $rIsHMAC . '_' . $rIdentifier;
 		}
-		$rConnectionData = $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => 0, 'identity' => $rIdentity, 'uuid' => $rTokenData['uuid']];
-		$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset']));
+		$rConnectionData = $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rConnPID, 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'external_device' => '', 'hls_end' => 0, 'hls_last_read' => $rLastRead, 'on_demand' => 0, 'identity' => $rIdentity, 'uuid' => $rTokenData['uuid']];
+		$rResult = ConnectionTracker::openRecord($rSettings, $rConnectionData, $rOwner + ['stream_id' => $rStreamID, 'server_id' => $rServerID, 'proxy_id' => $rProxyID, 'user_agent' => $rUserAgent, 'user_ip' => $rIP, 'container' => 'VOD', 'pid' => $rConnPID, 'uuid' => $rTokenData['uuid'], 'date_start' => $rActivityStart, 'geoip_country_code' => $rCountryCode, 'isp' => $rUserInfo['con_isp_name'], 'hls_last_read' => $rLastRead], $rTokenData, intval($rServers[SERVER_ID]['time_offset']));
 	} else {
 		$rIPMatch = ($rSettings['ip_subnet_match'] ? implode('.', array_slice(explode('.', $rConnection['user_ip']), 0, -1)) == implode('.', array_slice(explode('.', $rIP), 0, -1)) : $rConnection['user_ip'] == $rIP);
 
@@ -145,7 +155,7 @@ if ($rChannelInfo) {
 			}
 		}
 
-		$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])]);
+		$rResult = ConnectionTracker::updateLive($rSettings, $rConnection, ['pid' => $rConnPID, 'hls_last_read' => time() - intval($rServers[SERVER_ID]['time_offset'])]);
 	}
 
 	if (!$rResult) {
@@ -177,60 +187,22 @@ if ($rChannelInfo) {
 	if (!$rDirectProxy) {
 		$rConSpeedFile = DIVERGENCE_TMP_PATH . $rTokenData['uuid'];
 
-		switch ($rChannelInfo['target_container']) {
-			case 'mp4':
-			case 'm4v':
-				header('Content-type: video/mp4');
-
-				break;
-
-			case 'mkv':
-				header('Content-type: video/x-matroska');
-
-				break;
-
-			case 'avi':
-				header('Content-type: video/x-msvideo');
-
-				break;
-
-			case '3gp':
-				header('Content-type: video/3gpp');
-
-				break;
-
-			case 'flv':
-				header('Content-type: video/x-flv');
-
-				break;
-
-			case 'wmv':
-				header('Content-type: video/x-ms-wmv');
-
-				break;
-
-			case 'mov':
-				header('Content-type: video/quicktime');
-
-				break;
-
-			case 'ts':
-				header('Content-type: video/mp2t');
-
-				break;
-
-			case 'mpg':
-			case 'mpeg':
-				header('Content-Type: video/mpeg');
-
-				break;
-
-			default:
-				header('Content-Type: application/octet-stream');
-		}
+		$rTypes = ['mp4' => 'video/mp4', 'm4v' => 'video/mp4', 'mkv' => 'video/x-matroska', 'avi' => 'video/x-msvideo', '3gp' => 'video/3gpp', 'flv' => 'video/x-flv', 'wmv' => 'video/x-ms-wmv', 'mov' => 'video/quicktime', 'ts' => 'video/mp2t', 'mpg' => 'video/mpeg', 'mpeg' => 'video/mpeg'];
+		$rContentType = $rTypes[$rChannelInfo['target_container']] ?? 'application/octet-stream';
+		header('Content-Type: ' . $rContentType);
 		$rRequest = VOD_PATH . $rStreamID . '.' . $rExtension;
 		$rDownloadBytes = (!empty($rChannelInfo['bitrate']) ? $rChannelInfo['bitrate'] * 125 : 0);
 		$rDownloadBytes += $rDownloadBytes * $rSettings['vod_bitrate_plus'] * 0.01;
+
+		if ($rFileDaemon && file_exists($rRequest)) {
+			// Throttled as below: past vod_limit_perc of the response, at the
+			// movie's bitrate, never for a restreamer.
+			$rRate = (0 < $rSettings['vod_limit_perc'] && !$rUserInfo['is_restreamer']) ? (int) $rDownloadBytes : 0;
+			if (!FanoutClient::handOverFile($rStreamID, (string) $rTokenData['uuid'], [['path' => $rRequest, 'offset' => 0, 'length' => -1]], $rContentType, (int) $rSettings['vod_limit_perc'], $rRate, (string) ($rTokenData['http_range'] ?? ''))) {
+				generateError('VOD_DOESNT_EXIST');
+			}
+			exit();
+		}
 
 		if (!file_exists($rRequest)) {
 		} else {
