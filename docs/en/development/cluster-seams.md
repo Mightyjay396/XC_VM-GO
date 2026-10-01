@@ -33,7 +33,7 @@ Each seam has a hook for tests and for the future transport (`useSink()`,
 | Seam | Wraps | Catalogue | API form (phase 4) |
 | --- | --- | --- | --- |
 | `Core\Cluster\NodeRpc` | `ApiClient::systemRequest()` / `asyncRequest()`: request/response calls to a node's `/api` | `NodeRpc::ACTIONS` | `node.rpc{action}`, answered via `ack` / `rpc_result` |
-| `Core\Cluster\NodeActions` | root actions for `RootSignalsCronJob`: reboot, services, update/rollback, ports, sysctl, certbot, modules, blocklist flush, `OPENSSL_EXTRA`, and the agent binary (`agent_binary`, cluster API only) | `NodeActions::ROOT_ACTIONS` | `node.root{action}` for `cluster:root`, with an artefact grant when the action needs a file of MAIN's |
+| `Core\Cluster\NodeActions` | root actions for `RootSignalsCronJob`: reboot, services, update/rollback, ports, sysctl, certbot, modules, blocklist flush, `OPENSSL_EXTRA`, and the credential, key and pin actions that run over the cluster API only | `NodeActions::ROOT_ACTIONS` | `node.root{action}` for `cluster:root`, with an artefact grant when the action needs a file of MAIN's |
 
 Both seams refuse an action that is not in their catalogue, so a new call is a
 deliberate change. `NodeRpcActionsTest` checks that every call site uses a
@@ -98,8 +98,8 @@ action.
   in the node's own store in mode 2 (`StreamStateWriter::resend()` sends it
   later) instead of falling back to MAIN's row; in mode 0 and 1 it falls back,
   and the store lapses once MAIN's row has it (`StreamRuntime::lapse()`).
-- A file a node needs from MAIN (a custom off-air video, a module's archive,
-  a binary MAIN pinned) is an artefact: MAIN names it in
+- A file a node needs from MAIN (a custom off-air video, a module's archive)
+  is an artefact: MAIN names it in
   `Domain\Cluster\ArtefactRegistry` and grants it with a signed command
   (`ArtefactGrants`), and the node uses it only once `Core\Cluster\ArtefactStage`
   checked its size and SHA-256 against the grant, as it copies it to where it

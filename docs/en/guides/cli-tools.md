@@ -156,16 +156,18 @@ never replaces a working one). Runs on every node (main **and** LB).
 
 | Binary | Command | Source | Verify | Poll |
 | --- | --- | --- | --- | --- |
-| `xc_fanout` daemon | `fanout_binary` | `XC_VM_Fanout` release asset | `SHA256SUMS` | ~hourly |
+| `xc_fanout` daemon and `xc_agent` | `fanout_binary` | `XC_VM_Fanout` release assets | `SHA256SUMS` (+ the agent's trial in `run.sh`) | ~hourly |
 | `xcvm_core` extension | `xcvm_core` | `XC_VM_Binaries` repo tree (`bin/xcvm_core/`) | `SHA256SUMS` + load-test | ~hourly |
 | `yt-dlp` | `ytdlp` | upstream `yt-dlp/yt-dlp` release | `SHA2-256SUMS` + `--version` | daily |
 
 Stamps live in `CRONS_TMP_PATH` (`fanout_binary_check`, `xcvm_core_check`,
 `ytdlp_check`); the first pass (stamp absent) runs immediately, so a fresh
-install/LB gets the binary within a minute. A node in cluster mode 2 skips the
-`xc_fanout` and `xcvm_core` checks: MAIN hands it both over the cluster API
-(`node.root fanout_binary`, `xcvm_core`), from the copies it keeps
-(`fanout_binary cache`, `xcvm_core cache`). The heavy runtime bundle
+install/LB gets the binary within a minute. Every node runs them, whatever its
+cluster mode: MAIN hands none of these out. `fanout_binary` takes `fanout` or
+`agent` to update one of the two; with fanout switched off the hourly check runs
+`fanout_binary agent`. An agent release that `run.sh` rolled back on a node is not
+fetched there again until a newer one is out (`xc_agent.tried`; `force` retries
+it). The heavy runtime bundle
 (php/nginx/ffmpeg) is instead refreshed by the `binaries` command, triggered by an
 `update_binaries` signal from MAIN.
 
