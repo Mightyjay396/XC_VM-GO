@@ -355,6 +355,8 @@ final class ReplicaBuilder {
 			// legacy password from its address (RelayGuard).
 			$rNodes[] = [
 				'sid' => (int) $rRow['server_id'], 'gen' => (int) $rRow['gen'], 'state' => (string) $rRow['state'], 'ed_pub' => base64_encode((string) $rRow['node_sign_pub']),
+				// box_pub: what a child seals a relay's session key to (RelaySeal).
+				'box_pub' => base64_encode((string) ($rRow['node_box_pub'] ?? '')),
 				'dataplane' => (int) ($rRow['mode'] ?? 0) >= 1 && ((int) ($rRow['flows'] ?? 0) & NodeRegistry::FLOW_DATAPLANE) !== 0,
 			];
 		}

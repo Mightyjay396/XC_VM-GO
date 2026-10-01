@@ -5417,3 +5417,34 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
 - a viewer listed, rated and dropped like a live one, its holder forgotten once it leaves;
 - the throttle after its share;
 - the sweep of unread manifests.
+
+### AEAD-framed relays (D11)
+
+**Before:** a relay was authenticated at connect (the relay ticket and the child's per-connect proof) and its bytes then passed in the clear. A passive observer read them, and an active one could change them undetected. The plan accepted that scope by default; the owner chose AEAD framing.
+
+**Built.**
+- **The key.** The child's agent picks a fresh 32-byte session key per connect and SEALs it to the parent's box key (purpose `relay`, context `relay|<parent>|<stream>`).
+  - For a node parent, the box key comes from the signed node list, which now carries each node's `box_pub` beside its `ed_pub`.
+  - For MAIN, it is the panel box key, which MAIN opens through the extension (`cluster_open_sealed` with the `relay` purpose, XC_VM_CoreExtention).
+  - The sealed key goes in the target as `rk=<base64url>`, which the relay proof signs, so it can't be swapped.
+- **The frames.** `admin/live.php` opens the key (`RelaySeal::openKey`; a key that does not open refuses the relay), answers `X-XCVM-Relay-Seal: v1`, and seals everything it writes through an output buffer: `u32 len ‖ AES-256-GCM(key, nonce 0⁴ ‖ u64 counter, aad "xcvm relay v1")`, at most 64 KiB of plaintext a frame. A partial frame is flushed before each wait for the next segment.
+- **No downgrade.** Each server reports whether it opens relay keys (`servers.relay_seal`, migration 060, with its inventory each minute; `RelaySeal::supported()`). A node needs its box key; MAIN tries a key sealed to its own panel box key, so an extension without the `relay` purpose reports 0. The signed servers section carries it. A child pulls from a parent marked as sealing only sealed: an unsealed answer is refused, and a frame that does not open or comes out of order ends the read. A parent not marked (older code, or MAIN on an older extension) is pulled as before.
+
+**Not built.**
+- **`/xfile`** file pulls are integrity-checked against the owner's signed digest, but not confidential.
+- **Viewer bytes and `/images`** stay direct, as D11 scoped.
+- **Forward secrecy:** a parent's box key taken later opens a recorded relay's key.
+
+**Tests.**
+- `RelaySealTest`:
+  - the frame vector the agent's reader is tested against;
+  - long writes split, and nothing altered, cut short, reordered or under another key opens;
+  - a node opens the key a child sealed to it, for that stream only.
+- `ReplicaSectionsTest` and `ClusterApiTest`: the node list's `box_pub`.
+- XC_VM_Fanout `relayseal_test.go`:
+  - the panel's vector;
+  - a sealed relay read whole;
+  - an unsealed answer and a changed frame refused;
+  - no key for a parent that doesn't seal;
+  - the section's `relay_seal` and `box_pub`.
+- XC_VM_CoreExtention `ClusterApiTest`: a relay key opens with the panel box key, for its stream only.

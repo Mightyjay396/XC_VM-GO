@@ -105,7 +105,7 @@ final class ReplicaSections {
 		'rtmp_port' => 'int', 'total_clients' => 'int', 'network_guaranteed_speed' => 'int', 'enable_geoip' => 'int',
 		'geoip_countries' => 'str', 'geoip_type' => 'str', 'enable_isp' => 'int', 'isp_names' => 'str', 'isp_type' => 'str',
 		'timeshift_only' => 'int', 'random_ip' => 'int', 'enable_proxy' => 'int', 'persistent_connections' => 'int',
-		'enable_gzip' => 'int', 'order' => 'int', 'whitelist_ips' => 'str', 'xc_vm_version' => 'str',
+		'enable_gzip' => 'int', 'order' => 'int', 'whitelist_ips' => 'str', 'xc_vm_version' => 'str', 'relay_seal' => 'int',
 	];
 
 	/** `node`: the node's own configuration, from its row; only it gets these. */

@@ -1,6 +1,7 @@
 <?php
 
 use XcVm\Core\Cluster\RelayGuard;
+use XcVm\Core\Cluster\RelaySeal;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Process\ProcessManager;
@@ -57,6 +58,16 @@ if (!empty(RequestManager::get('uitoken'))) {
 		if (strtoupper($rKey) == 'X-XC_VM-PREBUFFER') {
 			$rPrebuffer = $rSegmentSettings['seg_time'];
 		}
+	}
+}
+
+// A sealed relay (D11, RelaySeal): the child sealed a session key to this
+// server in the target its proof signed; the stream goes out framed under it.
+$rRelayKey = null;
+if (isset($rAdmitted) && $rAdmitted === RelayGuard::RELAY && is_string($rSealedKey = RequestManager::get(RelaySeal::PARAM)) && $rSealedKey !== '') {
+	$rRelayKey = RelaySeal::openKey($rSealedKey, intval(RequestManager::get('stream')));
+	if ($rRelayKey === null) {
+		generate404();
 	}
 }
 
@@ -200,6 +211,9 @@ if ($rChannelInfo !== null) {
 
 		default:
 			header('Content-Type: video/mp2t');
+			if ($rRelayKey !== null) {
+				RelaySeal::start($rRelayKey);
+			}
 
 			if (file_exists($rPlaylist)) {
 				if (file_exists(STREAMS_PATH . $rStreamID . '_.dur')) {
@@ -249,6 +263,9 @@ if ($rChannelInfo !== null) {
 				$rSegmentFile = sprintf('%d_%d.ts', $rStreamID, $rCurrent + 1);
 				$rNextSegment = sprintf('%d_%d.ts', $rStreamID, $rCurrent + 2);
 				$rChecks = 0;
+				if ($rRelayKey !== null) {
+					RelaySeal::flush(); // what is buffered goes out before the wait
+				}
 
 				while (!file_exists(STREAMS_PATH . $rSegmentFile) && $rChecks <= $rTotalFails * 10) {
 					usleep(100000);
@@ -302,6 +319,9 @@ if ($rChannelInfo !== null) {
 						exit();
 					}
 
+					if ($rRelayKey !== null) {
+						RelaySeal::flush();
+					}
 					usleep(100000);
 					$rFails++;
 

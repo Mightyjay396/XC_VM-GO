@@ -1263,6 +1263,7 @@ CREATE TABLE IF NOT EXISTS `servers` (
   `limit_burst` int(11) DEFAULT '0',
   `ssh_hostkey_sha1` char(40) COLLATE utf8_unicode_ci DEFAULT NULL,
   `viewer_key_fp` char(16) COLLATE utf8_unicode_ci DEFAULT NULL,
+  `relay_seal` tinyint(1) NOT NULL DEFAULT '0',
   PRIMARY KEY (`id`),
   KEY `total_clients` (`total_clients`),
   KEY `status` (`status`)

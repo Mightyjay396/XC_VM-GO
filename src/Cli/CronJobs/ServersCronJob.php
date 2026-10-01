@@ -7,6 +7,7 @@ use XcVm\Cli\CronTrait;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\NodeStateSink;
+use XcVm\Core\Cluster\RelaySeal;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
@@ -253,10 +254,12 @@ class ServersCronJob implements CommandInterface {
 
 		// With TELEMETRY on, the inventory goes to MAIN as an event; the node's
 		// addresses do not (whitelist_ips feeds the allowed IPs, MAIN's to set).
-		$rInventory = ['remote_status' => $rRemoteStatus ? 1 : 0, 'xc_vm_version' => XC_VM_VERSION, 'server_hardware' => json_encode($rHardware, JSON_UNESCAPED_UNICODE), 'governors' => json_encode($rGovernors, JSON_UNESCAPED_UNICODE), 'sysctl' => $rSysCtl, 'video_devices' => json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), 'audio_devices' => json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), 'gpu_info' => json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), 'interfaces' => json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), 'ping' => $rPing];
+		// relay_seal: this server opens a relay's session key, so its children pull from it sealed (RelaySeal, D11).
+		$rRelaySeal = RelaySeal::supported() ? 1 : 0;
+		$rInventory = ['relay_seal' => $rRelaySeal, 'remote_status' => $rRemoteStatus ? 1 : 0, 'xc_vm_version' => XC_VM_VERSION, 'server_hardware' => json_encode($rHardware, JSON_UNESCAPED_UNICODE), 'governors' => json_encode($rGovernors, JSON_UNESCAPED_UNICODE), 'sysctl' => $rSysCtl, 'video_devices' => json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), 'audio_devices' => json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), 'gpu_info' => json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), 'interfaces' => json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), 'ping' => $rPing];
 		// A node in mode 2 never writes MAIN's row: an inventory the spool did not take goes next minute.
 		if (!NodeStateSink::inventory($rInventory) && !NodeRole::refusesConnects()) {
-			$db->query('UPDATE `servers` SET `remote_status` = ?, `xc_vm_version` = ?, `server_hardware` = ?,`whitelist_ips` = ?, `governors` = ?, `sysctl` = ?, `video_devices` = ?, `audio_devices` = ?, `gpu_info` = ?, `interfaces` = ?, `time_offset` = ' . intval(time()) . ' - UNIX_TIMESTAMP(), `ping` = ? WHERE `id` = ?', $rRemoteStatus, XC_VM_VERSION, json_encode($rHardware, JSON_UNESCAPED_UNICODE), $rWhitelist, json_encode($rGovernors, JSON_UNESCAPED_UNICODE), $rSysCtl, json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), $rPing, SERVER_ID);
+			$db->query('UPDATE `servers` SET `remote_status` = ?, `xc_vm_version` = ?, `server_hardware` = ?,`whitelist_ips` = ?, `governors` = ?, `sysctl` = ?, `video_devices` = ?, `audio_devices` = ?, `gpu_info` = ?, `interfaces` = ?, `time_offset` = ' . intval(time()) . ' - UNIX_TIMESTAMP(), `ping` = ?, `relay_seal` = ? WHERE `id` = ?', $rRemoteStatus, XC_VM_VERSION, json_encode($rHardware, JSON_UNESCAPED_UNICODE), $rWhitelist, json_encode($rGovernors, JSON_UNESCAPED_UNICODE), $rSysCtl, json_encode($rStats['video_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['audio_devices'], JSON_UNESCAPED_UNICODE), json_encode($rStats['gpu_info'], JSON_UNESCAPED_UNICODE), json_encode($rStats['interfaces'], JSON_UNESCAPED_UNICODE), $rPing, $rRelaySeal, SERVER_ID);
 		}
 
 		if ($rServers[SERVER_ID]['is_main']) {
