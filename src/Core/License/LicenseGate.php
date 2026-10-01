@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\License;
 
+use XcVm\Core\Cluster\NodeLease;
 use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
@@ -56,9 +57,13 @@ class LicenseGate {
 	 * load-balancer nodes). Fail-open where the extension or the method is absent
 	 * (dev / CI / installs without xcvm_core), so it never blocks a working panel.
 	 *
+	 * On a cluster node the extension's verdict is the node's lease, so it is
+	 * handed the agent's newest one first (NodeLease::feedExtension).
+	 *
 	 * @return bool True when the install is licensed.
 	 */
 	public static function licensed(): bool {
+		NodeLease::feedExtension();
 		if (class_exists('XC_VM') && method_exists('XC_VM', 'license_valid')) {
 			return (bool) \XC_VM::license_valid();
 		}

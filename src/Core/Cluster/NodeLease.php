@@ -184,6 +184,21 @@ final class NodeLease {
 		self::forgetCompiled();
 	}
 
+	/**
+	 * Hand the extension the agent's newest lease (offer()) on a cluster node,
+	 * whether or not the panel fences on it (`lb_lease_fence`): on a node the
+	 * extension's licence verdict (`XC_VM::license_valid()`) is a live lease,
+	 * so a node whose extension holds none reads as unlicensed, and every
+	 * licence-gated path with it (LicenseGate: fanout delivery). At most one
+	 * read every 2 s per process, and a lease already held is not offered
+	 * again. Nothing on MAIN or a legacy node.
+	 */
+	public static function feedExtension(): void {
+		if (NodeFlows::current()['mode'] >= 1) {
+			self::compiled();
+		}
+	}
+
 	private static function forgetCompiled(): void {
 		self::$rCompiled = null;
 		self::$rCompiledAt = 0;
