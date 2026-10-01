@@ -90,6 +90,16 @@ final class StreamSecret {
 		return $rEntry !== null && ($rNow ?? time()) <= $rEntry['valid_until'] ? $rEntry : null;
 	}
 
+	/**
+	 * The value replaced last, whatever its window: never to read a token with,
+	 * only for MAIN to derive the viewer key a node still holds when it missed
+	 * the rotation's window (ViewerKey::keyFor), a key that node accepts anyway
+	 * until it applies the new one.
+	 */
+	public static function replacedValue(): ?string {
+		return self::entry()['value'] ?? null;
+	}
+
 	/** Tests: another file, and forget what was read; null restores the default. */
 	public static function useFile(?string $rPath): void {
 		self::$rFile = $rPath;

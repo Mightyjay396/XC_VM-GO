@@ -5370,7 +5370,7 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
   - The legacy cron lock path, which hashes no value.
 
   They get an empty password, which every check refuses.
-- **No routing check on a stale key.** A node that misses a rotation's whole window (offline for more than 10 min) reports a stale key, so MAIN mints its tokens with the shared secret, which it can no longer read. It catches up at its next apply. Until then MAIN still routes viewers to it, and they fail there.
+- **A node that missed a rotation's window** (offline for more than 10 min) still reports the key it holds. MAIN mints its tokens with that key, derived from the replaced secret past its window (`StreamSecret::replacedValue`), and keeps its section hashed. That costs nothing, since the node accepts that key anyway until it applies the new one, which it does at its next apply. Only a node two rotations behind reports a key no one holds; it gets the value again, and with it the shared secret's tokens.
 - **Holding the key in `xcvm_core`.** The design's optional fourth increment.
 
 **Tests.**
