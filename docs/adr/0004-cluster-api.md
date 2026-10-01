@@ -5254,10 +5254,34 @@ this branch), with each change put back afterwards.
   stays `auto`. The recovery through the HTTP challenge needs a certificate that lapses, and stays
   with `HttpsRequiredRecoveryTest`.
 
+- **An LB reboot with MAIN unreachable** (2026-10-01): the LB in mode 1 with CONFIG on, its
+  replica applied, and the LB's address dropped on MAIN.
+  - **The boot:** the LB booted in about 40 s. `cluster:apply --from-disk` rebuilt the settings
+    and servers caches from the replica. nginx, PHP-FPM, the agent, the daemon, the signals,
+    watchdog and queue daemons and every cron came up.
+  - **With MAIN still unreachable:**
+    - A viewer request was refused in 6 ms, and `player_api` answered in 0.2 s, with no 5xx.
+    - The crons ran and finished each minute.
+    - Processes in mode 1 still tried MAIN's database, 11 times in the first minute. The
+      connect audit counted those attempts without refusing them, as mode 1 does.
+  - **Recovery:** once MAIN was reachable, the agent's health check passed within seconds, and
+    the node stayed active in the same generation.
+  - **One drawback of the drill:** MAIN rewrites its INPUT chain itself (`P2PTV_BLOCK`), and it
+    removed the drop rule about a minute later. That was after the boot, but a longer outage
+    drill needs a block MAIN does not manage.
+- **MAIN's HTTP port change** (2026-10-01), with one node. The admin's save was replayed from
+  the CLI (`ServerService::announceMainEndpoints`, `changePort`).
+  - **8080 to 8082 and back, each way:**
+    - The cluster API answered on both ports within seconds.
+    - The admin moved to the new port at the next `cron:root_signals` pass, under 20 s.
+    - The old port kept serving the cluster API alone (`cluster.d/old_port.conf`, 7 days or
+      until every node has moved off).
+    - The LB's agent took the new URL and kept its generation, active throughout.
+  - **A first try at 8081 failed and was reverted:** another service on the test MAIN already
+    held that port. See "Found on the way".
+
 **Not run.**
-- **MAIN's port change with three nodes:** one node, and the port is the admin's too.
-- **An LB reboot with MAIN unreachable:** a mode 1 node without CONFIG has no replica to boot
-  from.
+- **MAIN's port change with three nodes:** only one node.
 - **xcvm_core version skew:** both sides run 2.3.1, and 2.3.3 has no archives yet.
 
 **Found on the way.**
@@ -5271,6 +5295,13 @@ this branch), with each change put back afterwards.
     second fix also reaches panels whose `bin/install` an update never refreshes.
 - **The test LB's link to the default E2E source** (a multi-variant HLS) was too slow for the
   monitor's 15 s probe. The LB specs ran with a single-variant source (`XC_E2E_STREAM_SOURCE`).
+- **A MAIN port nginx cannot bind is stored and announced anyway.**
+  - **What happened:** the first try of the port drill moved MAIN to 8081, which another service
+    on the test MAIN already held. nginx's reload failed (`bind() ... Address already in use`)
+    and nginx kept its old configuration, so the panel stayed up on 8080. Meanwhile, the
+    servers row and the announcement to the nodes named 8081.
+  - **What's missing:** nothing checks that a port is free before it is saved, and nothing
+    reports the failed reload. Not fixed.
 - **Every enrolled LB read as unlicensed, and served its live viewers without the daemon.**
   - **Why:** on a node, `xcvm_core`'s licence verdict (`XC_VM::license_valid()`) is a live
     cluster lease, since a node holds no activation key. Only `NodeLease::judge()` handed the
