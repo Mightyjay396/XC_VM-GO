@@ -28,7 +28,16 @@ let channelID = 0;
 
 const RUNNING = 1;
 
-type Viewer = { status: number; reader: ReadableStreamDefaultReader<Uint8Array> | null; abort: AbortController };
+type Viewer = { status: number; type: string; reader: ReadableStreamDefaultReader<Uint8Array> | null; abort: AbortController };
+
+/**
+ * Served: the stream itself, still flowing, not a refusal. Production refuses
+ * with a bare 404; with Settings → debug_show_errors on, with a 200 HTML page
+ * naming the error (NOT_IN_BOUQUET until the caches take the new line). Until
+ * MAIN's stream cache sees the channel running on the load balancer, it
+ * serves its own not-on-air clip, a short MPEG-TS that ends at once.
+ */
+const served = (v: Viewer | null): boolean => !!v && v.status === 200 && !/text\/html/i.test(v.type) && v.reader !== null;
 
 /** Open a viewer of the channel: its first bytes read, the stream left open. */
 async function open(path: string): Promise<Viewer> {
@@ -36,11 +45,19 @@ async function open(path: string): Promise<Viewer> {
   const timer = setTimeout(() => abort.abort(), 30_000);
   try {
     const resp = await fetch(`${origin}/live/${line.username}/${line.password}/${channelID}.${path}`, { redirect: 'follow', signal: abort.signal });
-    const reader = resp.ok && resp.body ? resp.body.getReader() : null;
-    if (reader) {
-      await reader.read();
+    const v: Viewer = { status: resp.status, type: resp.headers.get('content-type') ?? '', reader: null, abort };
+    if (v.status === 200 && !/text\/html/i.test(v.type) && resp.body) {
+      v.reader = resp.body.getReader();
+      await v.reader.read();
+      // A live stream keeps flowing; an off-air clip has ended by now.
+      if (await endsWithin(v, 3_000)) {
+        v.reader = null;
+      }
     }
-    return { status: resp.status, reader, abort };
+    if (!v.reader) {
+      abort.abort();
+    }
+    return v;
   } finally {
     clearTimeout(timer);
   }
@@ -118,19 +135,19 @@ test.describe.serial('a line\'s connection limit on the load balancer', () => {
   });
 
   test('a second viewer on the line cuts the first', async () => {
-    test.setTimeout(600_000);
+    test.setTimeout(900_000);
     // The caches take the new line and channel at their next passes.
     let first: Viewer | null = null;
     await expect
       .poll(async () => {
         first?.abort.abort();
         first = await open('ts').catch(() => null);
-        return first?.status ?? 0;
-      }, { timeout: 480_000, intervals: [15_000] })
-      .toBe(200);
+        return served(first) ? 'served' : `${first?.status} ${first?.type}`;
+      }, { timeout: 780_000, intervals: [15_000] })
+      .toBe('served');
     const second = await open('ts');
     try {
-      expect(second.status, 'the second viewer is served').toBe(200);
+      expect(served(second), `the second viewer is served (${second.status} ${second.type})`).toBe(true);
       expect(await endsWithin(first!, 20_000), 'the first viewer is cut once the second opens').toBe(true);
       expect(await endsWithin(second, 5_000), 'the second keeps playing').toBe(false);
     } finally {
@@ -143,6 +160,7 @@ test.describe.serial('a line\'s connection limit on the load balancer', () => {
     test.setTimeout(120_000);
     const resp = await fetch(`${origin}/live/${line.username}/${line.password}/${channelID}.m3u8`, { redirect: 'follow' });
     expect(resp.status, 'the playlist').toBe(200);
+    expect(resp.headers.get('content-type') ?? '', 'a playlist, not an error page').toMatch(/mpegurl/i);
     expect(await resp.text()).toContain('#EXTM3U');
     // The same viewer asks for its playlist again, as a player does.
     for (let i = 0; i < 3; i++) {
