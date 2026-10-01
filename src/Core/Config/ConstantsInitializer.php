@@ -246,6 +246,7 @@ class ConstantsInitializer {
 			'STATUS_RESERVED_CODE'       => 46,
 			'STATUS_NO_TITLE'            => 47,
 			'STATUS_NO_SOURCE'           => 48,
+			'STATUS_PORT_IN_USE'         => 49,
 		];
 	}
 

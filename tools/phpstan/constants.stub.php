@@ -130,6 +130,7 @@ if (!defined('STATUS_NO_SOURCE')) define('STATUS_NO_SOURCE', mt_rand());
 if (!defined('STATUS_NO_SOURCES')) define('STATUS_NO_SOURCES', mt_rand());
 if (!defined('STATUS_NO_TITLE')) define('STATUS_NO_TITLE', mt_rand());
 if (!defined('STATUS_NO_TRIALS')) define('STATUS_NO_TRIALS', mt_rand());
+if (!defined('STATUS_PORT_IN_USE')) define('STATUS_PORT_IN_USE', mt_rand());
 if (!defined('STATUS_RESERVED_CODE')) define('STATUS_RESERVED_CODE', mt_rand());
 if (!defined('STATUS_SPACE_ISSUE')) define('STATUS_SPACE_ISSUE', mt_rand());
 if (!defined('STATUS_SUCCESS')) define('STATUS_SUCCESS', mt_rand());
