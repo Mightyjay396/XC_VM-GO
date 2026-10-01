@@ -155,6 +155,8 @@ class FfmpegBuildsCommand implements CommandInterface {
 		}
 		try {
 			CurlClient::downloadToFile($rUrl, $rTmp);
+			// The release ships only hashes.md5, fetched from that release over the same HTTPS: a check against a corrupt or truncated download, not a signature.
+			// nosemgrep: php.lang.security.weak-crypto.weak-crypto
 			return hash_equals($rMd5, (string) md5_file($rTmp)) ? $this->place($rTmp, $rLabel) : 'checksum mismatch';
 		} catch (\Throwable $rE) {
 			return 'download failed: ' . $rE->getMessage();
