@@ -189,7 +189,8 @@ class StartupCommand implements CommandInterface {
 			return false;
 		}
 		if (@file_put_contents($rTmp, $rData) !== strlen($rData) || !@chmod($rTmp, $rMode)
-			|| (posix_geteuid() === 0 && posix_getpwnam('xc_vm') !== false && !@chown($rTmp, 'xc_vm')) || !@rename($rTmp, $rPath)) {
+			|| (posix_geteuid() === 0 && posix_getpwnam('xc_vm') !== false && !@chown($rTmp, 'xc_vm')) || !@rename($rTmp, $rPath)
+		) {
 			@unlink($rTmp);
 			return false;
 		}

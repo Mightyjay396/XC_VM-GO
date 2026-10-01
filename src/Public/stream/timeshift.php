@@ -188,6 +188,9 @@ if ($rUserInfo) {
 
 			for ($i = 0; $i < count($rQueue); $i++) {
 				$rOutput .= "#EXTINF:60.0,\n";
+				// The proxy's route segment, as its nginx was installed with (ProxyInstallFlow): a path, not a
+				// signature; the token after it is what is authenticated. D8 replaces it with the proxy's key.
+				// nosemgrep: php.lang.security.weak-crypto.weak-crypto
 				$rOutput .= (($rProxyID ? '/' . md5($rProxyID . '_' . $rServerID . '_' . OPENSSL_EXTRA) : '')) . '/hls/' . ViewerKey::mintOwn('TS/' . $rUsername . '/' . $rPassword . '/' . $rIP . '/' . $rDuration . '/' . $rStartDate . '/' . $rStreamID . '_' . basename($rQueue[$i]['filename']) . '_' . (($i == 0 ? $rOffset : 0)) . '/' . $rTokenData['uuid'] . '/' . $rServerID, $rSettings) . "\n";
 			}
 			$rOutput .= '#EXT-X-ENDLIST';
