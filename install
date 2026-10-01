@@ -750,9 +750,16 @@ def install_distribution_binaries(dist_id, version):
 
         # 7. xcvm_core is not in the bundle, and console.php cannot boot without it
         printc("Installing the xcvm_core PHP extension...", col.OKBLUE)
-        if subprocess.call(["bash", "/home/xc_vm/bin/install/install_xcvm_core.sh"]) != 0:
+        result = subprocess.run(
+            ["bash", "/home/xc_vm/bin/install/install_xcvm_core.sh"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
             printc("Failed to install the xcvm_core PHP extension", col.FAIL)
+            print((result.stderr or result.stdout).strip())
             return False
+        printc("xcvm_core PHP extension installed", col.OKGREEN)
 
         write_bin_version_file(release_tag, patch_name, dist_id, version)
 
