@@ -35,7 +35,16 @@ final class ViewerKey {
 	/** The `servers` column the node reports its key's kid in (NodeStateSink). */
 	public const FP = 'viewer_key_fp';
 
+	/**
+	 * The `secrets` section's entry a locked-down MAIN sends a node in mode 2
+	 * in place of `live_streaming_pass` (the third increment): the SHA-256 of
+	 * the value, which checks a legacy password (passMatches) and mints nothing.
+	 */
+	public const PASS_HASH = 'streaming_pass_hash';
+
 	private const FILE = 'viewer_key';
+
+	private const PASS_HASH_FILE = 'stream_pass_hash';
 
 	/** @var array{current: string, previous: ?string, previous_valid_until: ?int}|false|null */
 	private static array|bool|null $rOwn = null;
@@ -82,8 +91,12 @@ final class ViewerKey {
 	 * @param array<string, mixed> $rSettings live_streaming_pass, secure_stream_tokens
 	 */
 	public static function mint(string $rData, array $rServers, ?int $rServerID, array $rSettings): string {
+		// A node sending the viewer to itself (an off-air redirect): its own key.
+		if ($rServerID !== null && defined('SERVER_ID') && $rServerID === (int) SERVER_ID && self::own() !== []) {
+			return self::mintOwn($rData, $rSettings);
+		}
 		$rSecret = (string) ($rSettings['live_streaming_pass'] ?? '');
-		$rKey = $rServerID === null ? null : self::keyFor($rServers[$rServerID]['viewer_key_fp'] ?? null, $rSecret, $rServerID);
+		$rKey = $rServerID === null ? null : self::keyFor($rServers[$rServerID][self::FP] ?? null, $rSecret, $rServerID);
 		return $rKey !== null
 			? Encryption::seal($rData, $rKey, OPENSSL_EXTRA)
 			: Encryption::mintToken($rData, $rSecret, OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
@@ -154,7 +167,54 @@ final class ViewerKey {
 		if (self::read() === $rKeep) {
 			return null;
 		}
-		$rPath = self::file();
+		if (!self::write(self::file(), (string) json_encode($rKeep))) {
+			return false;
+		}
+		self::$rOwn = $rKeep;
+		self::$rReadAt = @filemtime(self::file()) ?: null;
+		return true;
+	}
+
+	/**
+	 * Node: keep the stream secret's hash MAIN sent in place of its value, or
+	 * forget it once MAIN sends the value again (null). True when written or
+	 * removed, null when nothing changed, false when it could not be written.
+	 */
+	public static function adoptPassHash(?string $rHash): ?bool {
+		$rPath = self::passHashFile();
+		if ($rHash === null) {
+			return is_file($rPath) ? @unlink($rPath) : null;
+		}
+		if (self::passHash() === $rHash) {
+			return null;
+		}
+		return self::write($rPath, $rHash);
+	}
+
+	/** Node: the stream secret's hash it holds instead of the value, or null. */
+	public static function passHash(): ?string {
+		$rHash = trim((string) @file_get_contents(self::passHashFile()));
+		return preg_match('/^[0-9a-f]{64}\z/', $rHash) ? $rHash : null;
+	}
+
+	/**
+	 * A legacy password (a relay's or RTMP's `password=`) against the stream
+	 * secret: its value where the node holds it ($rKnown), else the hash MAIN
+	 * sent in its place.
+	 */
+	public static function passMatches(mixed $rKnown, mixed $rGiven): bool {
+		if (!is_string($rGiven) || $rGiven === '') {
+			return false;
+		}
+		if (is_scalar($rKnown) && (string) $rKnown !== '') {
+			return hash_equals((string) $rKnown, $rGiven);
+		}
+		$rHash = self::passHash();
+		return $rHash !== null && hash_equals($rHash, hash('sha256', $rGiven));
+	}
+
+	/** A file in the config directory, whole (temp file + rename), 0600, owned like the directory. */
+	private static function write(string $rPath, string $rData): bool {
 		$rTmp = $rPath . '.' . getmypid() . '.tmp';
 		@unlink($rTmp);
 		if (!@touch($rTmp)) {
@@ -169,14 +229,15 @@ final class ViewerKey {
 		if (($rGroup = @filegroup($rDir)) !== false) {
 			@chgrp($rTmp, $rGroup);
 		}
-		$rData = (string) json_encode($rKeep);
 		if (@file_put_contents($rTmp, $rData) !== strlen($rData) || !@rename($rTmp, $rPath)) {
 			@unlink($rTmp);
 			return false;
 		}
-		self::$rOwn = $rKeep;
-		self::$rReadAt = @filemtime($rPath) ?: null;
 		return true;
+	}
+
+	private static function passHashFile(): string {
+		return dirname(self::file()) . '/' . self::PASS_HASH_FILE;
 	}
 
 	/** The file the node's keys live in. */

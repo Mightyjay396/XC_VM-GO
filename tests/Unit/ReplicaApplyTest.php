@@ -204,6 +204,39 @@ final class ReplicaApplyTest extends TestCase {
 		$this->assertStringNotContainsString($rEntry['current'], (string) file_get_contents($this->rDir . '/replica/apply.json'));
 	}
 
+	public function testANodeSentTheSecretsHashKeepsItAndNoValue(): void {
+		$this->mainDb();
+		FileCache::setCache('settings', ['server_name' => 'XC', 'live_streaming_pass' => self::LIVE]);
+		file_put_contents($this->rDir . '/config/stream_secret.prev', json_encode(['value' => 'older', 'valid_until' => time() + 60]));
+		$this->whole('settings', self::SETTINGS);
+		$rKey = [ViewerKey::NAME => ViewerKey::entry(self::LIVE, (int) SERVER_ID, null)];
+		$rHash = hash('sha256', self::LIVE);
+		$rData = $this->secrets();
+		unset($rData['live_streaming_pass']);
+		$this->whole('secrets', $rData + $rKey + [ViewerKey::PASS_HASH => ['current' => $rHash, 'kid' => ReplicaSections::kid(ViewerKey::PASS_HASH, $rHash), 'previous' => null, 'previous_valid_until' => null]]);
+		$this->flows(NodeFlows::CONFIG);
+
+		$this->assertSame('applied', ReplicaApply::run(true)['secrets']['mode']);
+		$this->assertSame('', FileCache::getCache('settings')['live_streaming_pass'], 'no value on the node');
+		$this->assertSame($rHash, ViewerKey::passHash());
+		$this->assertFileDoesNotExist($this->rDir . '/config/stream_secret.prev', 'nor the value it replaced');
+		$this->assertTrue(ViewerKey::passMatches('', self::LIVE));
+
+		// The value again (lockdown undone): the hash goes.
+		$this->whole('secrets', $this->secrets() + $rKey);
+		$this->assertSame('applied', ReplicaApply::run(true)['secrets']['mode']);
+		$this->assertNull(ViewerKey::passHash());
+		$this->assertSame(self::LIVE, FileCache::getCache('settings')['live_streaming_pass']);
+	}
+
+	public function testASecretsSectionWithBothTheValueAndItsHashIsRefused(): void {
+		$this->whole('settings', self::SETTINGS);
+		$rHash = hash('sha256', self::LIVE);
+		$this->whole('secrets', $this->secrets() + [ViewerKey::PASS_HASH => ['current' => $rHash, 'kid' => ReplicaSections::kid(ViewerKey::PASS_HASH, $rHash), 'previous' => null, 'previous_valid_until' => null]]);
+		$this->flows(NodeFlows::CONFIG);
+		$this->assertSame(['mode' => 'refused'], ReplicaApply::run(true)['secrets']);
+	}
+
 	public function testSecretsInShadowOnlySayWhichDifferAndNeverWhat(): void {
 		FileCache::setCache('settings', ['server_name' => 'XC', 'live_streaming_pass' => 'old-pass']);
 		$this->whole('settings', ['server_name' => 'XC']);

@@ -5328,7 +5328,7 @@ this branch), with each change put back afterwards.
     viewer (`lb-delivery-kinds`, C4).
   - **Test:** `LeaseVerdictCacheTest::testTheLicenceGateFeedsTheLeaseWithTheSwitchOff`.
 
-### Per-node viewer-token keys (H1, first and second increments)
+### Per-node viewer-token keys (H1, increments one to three)
 
 The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`.
 
@@ -5349,9 +5349,28 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
 - **The node's own tokens (second increment).** The tokens a node mints for itself and reads back go through `ViewerKey::mintOwn`: HLS segment and key links (`HLSGenerator`) and timeshift HLS. Once the node has its own key they are sealed with it; until then they use the shared secret, as before.
 - **The off-air redirect.** `OffAirHandler::showVideoServer` mints through `ViewerKey::mint` for the server it sends the viewer to (its originator when a proxy fronts it).
 
+**The containment (third increment).**
+- **What MAIN sends.** A locked-down MAIN (`ClusterLockdown::state()`) sends a node in mode 2 that reports a key MAIN mints its tokens with the stream secret's SHA-256 in place of the value (`streaming_pass_hash`, `ReplicaBuilder::withholdsStreamPass`).
+  - A key reported under the replaced secret counts too, inside its window, so a rotation never hands the new value out.
+  - A node that reports no such key, a node in mode 1, and every node before lockdown get the value, as before.
+- **What the node does.** It keeps the hash (`config/stream_pass_hash`, 0600), keeps no value (its settings cache has an empty `live_streaming_pass`), and removes the value it replaced (`stream_secret.prev`). Once MAIN sends the value again, as after `cluster:lockdown --undo`, the hash goes.
+  - A section that carries both the value and its hash is refused.
+- **What still reads.**
+  - With no shared secret, `Encryption::readToken` opens only with the node's own keys. Under an empty key, anyone who knows `OPENSSL_EXTRA` could seal a token.
+  - `RelayGuard` and RTMP check a legacy password against the value or else the hash (`ViewerKey::passMatches`).
+  - `key.php` and `segment.php` serve a node that has its own key.
+  - A node sending a viewer to itself (an off-air redirect) mints with its own key.
+- **Then rotate the stream secret** (`cluster:rotate-stream-secret`, D20). MAIN itself still reads tokens under the shared secret, and a value taken from a node before lockdown keeps working on MAIN until the rotation.
+
 **Not built yet.**
-- **The containment.** A node still also holds the shared secret, so until the third increment a stolen node can still mint tokens every node accepts. At lockdown, `streaming_pass_hash` takes the shared secret's place in a mode-2 node's section, and a test guards that no mode-2 path reads the shared secret.
-- **The RTMP and Ministra tokens** still use the shared secret.
+- **The RTMP and Ministra tokens** still use the shared secret. They are minted on MAIN and read on MAIN, or on a node that still holds the value.
+- **Legacy uses of the value on a node without it.**
+  - The legacy-password fallback of `DataPlane::relayUrl` and `admin/live`'s password links, which only legacy children use; lockdown leaves none.
+  - The recorder's fallback when its loopback token can't be issued.
+  - The legacy cron lock path, which hashes no value.
+
+  They get an empty password, which every check refuses.
+- **No routing check on a stale key.** A node that misses a rotation's whole window (offline for more than 10 min) reports a stale key, so MAIN mints its tokens with the shared secret, which it can no longer read. It catches up at its next apply. Until then MAIN still routes viewers to it, and they fail there.
 - **Holding the key in `xcvm_core`.** The design's optional fourth increment.
 
 **Tests.**
@@ -5362,6 +5381,11 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
   - the rotation window;
   - the node keeps its keys (0600) and reads with them first;
   - its own tokens use its own key once it has one, and read back.
-- `ReplicaApplyTest::testTheNodesOwnViewerKeyIsKeptAndReported`.
+- `ReplicaApplyTest::testTheNodesOwnViewerKeyIsKeptAndReported`, `testANodeSentTheSecretsHashKeepsItAndNoValue` and `testASecretsSectionWithBothTheValueAndItsHashIsRefused`.
+- `ReplicaBuilderSecretsTest::testALockedDownMainSendsANodeHoldingItsKeyTheSecretsHashNotItsValue`.
+- `ViewerKeyTest` also covers increment 3:
+  - with no shared secret only the node's own key opens, and a token sealed under an empty key is refused;
+  - a legacy password checks against the value or else its hash;
+  - a node sending a viewer to itself mints with its own key.
 - `ReplicaBuilderSecretsTest` and `ClusterApiTest` check that the section carries the node's own key, and no other node's.
 

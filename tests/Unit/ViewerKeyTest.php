@@ -109,4 +109,45 @@ final class ViewerKeyTest extends TestCase {
 		$this->assertFalse(Encryption::open($rToken, self::SECRET, OPENSSL_EXTRA));
 		$this->assertSame('seg', Encryption::readToken($rToken, self::SECRET, OPENSSL_EXTRA, false), 'and read back on the node');
 	}
+
+	public function testWithoutTheSharedSecretOnlyTheNodesOwnKeyOpens(): void {
+		$rEntry = ViewerKey::entry(self::SECRET, 5, null);
+		ViewerKey::adopt($rEntry);
+		$this->assertSame('ok', Encryption::readToken(Encryption::seal('ok', $rEntry['current'], OPENSSL_EXTRA), '', OPENSSL_EXTRA, true));
+		// Under an empty key anyone who knows the context could seal one: refused.
+		foreach (['', null] as $rNone) {
+			$this->assertFalse(Encryption::readToken(Encryption::seal('forged', '', OPENSSL_EXTRA), $rNone, OPENSSL_EXTRA, true));
+			$this->assertFalse(Encryption::readToken(Encryption::encrypt('forged', '', OPENSSL_EXTRA), $rNone, OPENSSL_EXTRA, true));
+		}
+		$this->assertFalse(Encryption::readToken(Encryption::seal('old', self::SECRET, OPENSSL_EXTRA), '', OPENSSL_EXTRA, true), 'the shared secret\'s tokens are not this node\'s to read');
+	}
+
+	public function testALegacyPasswordChecksAgainstTheValueOrElseItsHash(): void {
+		$this->assertTrue(ViewerKey::passMatches(self::SECRET, self::SECRET));
+		$this->assertFalse(ViewerKey::passMatches(self::SECRET, 'wrong'));
+		$this->assertFalse(ViewerKey::passMatches('', self::SECRET), 'no value and no hash');
+		$this->assertNull(ViewerKey::adoptPassHash(null), 'nothing to forget');
+
+		$this->assertTrue(ViewerKey::adoptPassHash(hash('sha256', self::SECRET)));
+		$this->assertNull(ViewerKey::adoptPassHash(hash('sha256', self::SECRET)));
+		$this->assertSame(0600, fileperms($this->rDir . 'stream_pass_hash') & 0777);
+		$this->assertTrue(ViewerKey::passMatches('', self::SECRET));
+		$this->assertTrue(ViewerKey::passMatches(null, self::SECRET));
+		$this->assertFalse(ViewerKey::passMatches('', 'wrong'));
+		$this->assertFalse(ViewerKey::passMatches('', ''), 'an empty password never');
+		$this->assertFalse(ViewerKey::passMatches('', hash('sha256', self::SECRET)), 'the hash is no password');
+
+		$this->assertTrue(ViewerKey::adoptPassHash(null), 'the value back: the hash goes');
+		$this->assertFalse(ViewerKey::passMatches('', self::SECRET));
+	}
+
+	public function testANodeSendingAViewerToItselfMintsWithItsOwnKey(): void {
+		if (!defined('SERVER_ID')) {
+			define('SERVER_ID', 1);
+		}
+		$rEntry = ViewerKey::entry(self::SECRET, (int) SERVER_ID, null);
+		ViewerKey::adopt($rEntry);
+		$rToken = ViewerKey::mint('off-air', [], (int) SERVER_ID, ['live_streaming_pass' => '']);
+		$this->assertSame('off-air', Encryption::open($rToken, $rEntry['current'], OPENSSL_EXTRA));
+	}
 }

@@ -151,6 +151,11 @@ class Encryption {
 				}
 			}
 		}
+		// No shared secret (a node MAIN sends only its hash): nothing else opens.
+		// Under an empty key anyone who knows the context could seal a token.
+		if (!is_string($key) || $key === '') {
+			return false;
+		}
 		$rPlain = self::open($token, $key, $deviceId);
 		if ($rPlain !== false) {
 			return $rPlain;

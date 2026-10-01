@@ -7,6 +7,8 @@ use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterClock;
+use XcVm\Domain\Cluster\ClusterMeta;
+use XcVm\Domain\Cluster\DbAllowlist;
 use XcVm\Domain\Cluster\ReplicaBuilder;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 use XcVm\Tests\Support\FakeClusterCrypto;
@@ -110,6 +112,26 @@ final class ReplicaBuilderSecretsTest extends TestCase {
 		$rDb->exec("INSERT INTO `settings` VALUES (1, 'XC', 'p1', 'p2', 'p3', 6, 'x')");
 		DatabaseFactory::set($rDb);
 		$this->assertSame(['id' => '1', 'seg_time' => '6', 'server_name' => 'XC'], ReplicaBuilder::settingsData());
+	}
+
+	public function testALockedDownMainSendsANodeHoldingItsKeyTheSecretsHashNotItsValue(): void {
+		$rDb = $this->mainDb();
+		$rNode = ['server_id' => 5, 'mode' => 2, 'state' => 'active'];
+		$rKid = ViewerKey::kid(ViewerKey::derive('sekret-live', 5));
+		$rDb->query('UPDATE `servers` SET `viewer_key_fp` = ? WHERE `id` = 5', $rKid);
+		$this->assertArrayHasKey('live_streaming_pass', ReplicaBuilder::secretsData(5, $rNode), 'not locked down: the value');
+
+		ClusterMeta::set(DbAllowlist::LOCKDOWN_META, '{"at":1}');
+		$rHashed = ReplicaBuilder::secretsData(5, $rNode);
+		$this->assertSame(['openssl_extra', ViewerKey::NAME, ViewerKey::PASS_HASH], array_keys($rHashed));
+		$this->assertSame(hash('sha256', 'sekret-live'), $rHashed[ViewerKey::PASS_HASH]['current']);
+		$this->assertStringNotContainsString('sekret-live', (string) json_encode($rHashed));
+
+		$this->assertArrayHasKey('live_streaming_pass', ReplicaBuilder::secretsData(5, ['mode' => 1] + $rNode), 'a node in mode 1: the value');
+		foreach ([null, ViewerKey::kid(ViewerKey::derive('sekret-live', 6)), ViewerKey::kid(ViewerKey::derive('another', 5))] as $rFp) {
+			$rDb->query('UPDATE `servers` SET `viewer_key_fp` = ? WHERE `id` = 5', $rFp);
+			$this->assertArrayHasKey('live_streaming_pass', ReplicaBuilder::secretsData(5, $rNode), 'reports no key MAIN mints with: ' . var_export($rFp, true));
+		}
 	}
 
 	public function testTheSecretsSectionCarriesOnlyTheStreamSecretOpensslExtraAndTheNodesOwnKey(): void {

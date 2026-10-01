@@ -77,6 +77,8 @@ Per-node keys alone change nothing while the node also holds the shared secret. 
 
 ## Increments
 
+Increments 1–3 are built (ADR 0004, "Per-node viewer-token keys"); the fourth is optional.
+
 1. **Keys and minting.**
    - `ViewerKeys` (derive, fingerprint, own-key file).
    - The `secrets` section carries `viewer_key`; the node installs it and reports `viewer_key_fp`.

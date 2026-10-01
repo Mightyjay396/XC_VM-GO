@@ -2,7 +2,6 @@
 
 namespace XcVm\Core\Cluster;
 
-use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Cluster\Crypto\RelayAuth;
 use XcVm\Core\Cluster\Crypto\Ticket;
 use XcVm\Core\Config\SettingsManager;
@@ -64,7 +63,7 @@ final class RelayGuard {
 		if ($rPasswordOk && is_string($rPassword) && str_starts_with($rPassword, LoopbackToken::PREFIX)) {
 			return in_array($rIP, ['127.0.0.1', '::1'], true) && LoopbackToken::verify($rStreamID, $rPassword) ? self::LOOPBACK : null;
 		}
-		if (!$rPasswordOk || !is_string($rPassword) || !AuthService::secretMatches((string) SettingsManager::get('live_streaming_pass'), $rPassword)) {
+		if (!$rPasswordOk || !is_string($rPassword) || !ViewerKey::passMatches(SettingsManager::get('live_streaming_pass'), $rPassword)) {
 			return null;
 		}
 		return self::passwordAllowed($rIP) ? self::PASSWORD : null;
