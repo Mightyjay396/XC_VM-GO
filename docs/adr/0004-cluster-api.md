@@ -5163,3 +5163,45 @@ version, and the ids refused); `ArtefactHashRefusalTest::testActionsTakeOnlyASta
 (neither action takes anything but root's staged copy); `ClusterTelemetryTest::testTheNodesVersionsComeAlong`;
 `ClusterExecCommandTest::testItSaysWhichCommandTypesItRuns`; agent `TestArtefactBinariesFollowThePHP`,
 `TestArtefactGrantShape`.
+
+### Drills on the test panel
+
+Section 14's scripted drills, run on the test panel (MAIN and one load balancer in mode 1, both on
+this branch), with each change put back afterwards.
+
+- **Licence drill** (`lb_token_rotation_min` 5, the activation key moved aside). MAIN was
+  unlicensed at once. The node's next refresh was refused (`403 LICENCE_INVALID`), and a
+  `conn.kill_worker` sent meanwhile still killed its target, since restrictive commands sign without
+  a licence. With the key back, the node's next refresh (`rotate_now`) went through with no SSH,
+  within about 1.5 minutes. No fence: `lb_lease_fence` is off by default.
+- **`kill -9` of the agent during HLS** (COMMANDS, STREAMS and CONNECTIONS on, one HLS viewer).
+  `run.sh` restarted the agent within about 3 s, and the viewer was never dropped. MAIN logged its
+  session once. For 10 to 30 s after the kill, the node's playlists stalled: one refresh hung past
+  8 s, or playlists came without segments. PHP's calls to the restarting agent wait out their
+  timeouts (connect up to 2 s, then 1 s, or 2.5 s for admission), several per request. That is
+  within a player's buffer of three segments.
+- **Clock steps of ±2 h** on the load balancer, NTP off. Each step cost one immediate re-key (its
+  token epoch read as unusable by the new clock). Heartbeats went on, the node stayed active, and
+  MAIN's measured `time_offset` followed (7200, then 0).
+- **`https_required` without a certificate** (the test panel is IP-only). MAIN's self-probe fails
+  (`https_disabled`), and the guard refuses the switch (`cluster_error_https_probe`): the transport
+  stays `auto`. The recovery through the HTTP challenge needs a certificate that lapses, and stays
+  with `HttpsRequiredRecoveryTest`.
+
+**Not run.**
+- **MAIN's port change with three nodes:** one node, and the port is the admin's too.
+- **An LB reboot with MAIN unreachable:** a mode 1 node without CONFIG has no replica to boot
+  from.
+- **xcvm_core version skew:** both sides run 2.3.1, and 2.3.3 has no archives yet.
+
+**Found on the way.**
+- **Two flaws in the binaries update:**
+  - `update_binaries.sh` stopped the panel before it downloaded the bundle.
+  - XC_VM_Binaries `01.10.2026` was published without assets, so each try got a 404, started the
+    panel again, and that start's `status` queued the update once more. MAIN went down every
+    minute.
+  - Both are fixed: the script stops the service only once the bundle is staged, and
+    `console.php binaries` first checks that the release has this distribution's bundle. The
+    second fix also reaches panels whose `bin/install` an update never refreshes.
+- **The test LB's link to the default E2E source** (a multi-variant HLS) was too slow for the
+  monitor's 15 s probe. The LB specs ran with a single-variant source (`XC_E2E_STREAM_SOURCE`).

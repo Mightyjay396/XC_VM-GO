@@ -71,13 +71,6 @@ if [[ "$EUID" -ne 0 ]]; then
     exit 1
 fi
 
-echo "Stopping service: ${SERVICE_NAME}"
-if ! systemctl stop "$SERVICE_NAME"; then
-    echo "Failed to stop service: ${SERVICE_NAME}" >&2
-    exit 1
-fi
-SERVICE_STOPPED=1
-
 TMP_ROOT="$(mktemp -d /tmp/xc_vm_bin_update.XXXXXX)"
 EXTRACT_DIR="$TMP_ROOT/extract"
 STAGE_DIR="$TMP_ROOT/stage"
@@ -363,6 +356,18 @@ for installed_ext in "$TARGET_BIN_DIR"/php/lib/php/extensions/*/xcvm_core.so; do
         cp -a "$installed_ext" "$staged_ext"
     fi
 done
+
+# The service stops only now, with the new binaries downloaded, checked and
+# staged: a release without this distribution's asset (a 404), a bad
+# checksum or a broken archive used to stop the panel first and start it
+# again, and the start's `status` queued the update once more, so the panel
+# went down every minute until the release was fixed.
+echo "Stopping service: ${SERVICE_NAME}"
+if ! systemctl stop "$SERVICE_NAME"; then
+    echo "Failed to stop service: ${SERVICE_NAME}" >&2
+    exit 1
+fi
+SERVICE_STOPPED=1
 
 ROLLBACK_REQUIRED=1
 

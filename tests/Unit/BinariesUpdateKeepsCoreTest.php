@@ -65,4 +65,46 @@ final class BinariesUpdateKeepsCoreTest extends TestCase {
 		$this->assertSame(1, preg_match('/^UPDATE_EXCLUDE_DIRS = \[(.*?)^\]/ms', $rUpdate, $rList));
 		$this->assertStringContainsString('"bin/bin_version.json"', $rList[1]);
 	}
+	/**
+	 * A release without this distribution's asset (an empty one, a 404) must
+	 * not take the panel down: the updater stopped the service before it
+	 * downloaded, failed, started it again, and the start's `status` queued
+	 * the update once more, so the panel went down every minute. Now it stops
+	 * the service only once the new binaries are downloaded and staged.
+	 */
+	public function testAReleaseWithoutTheAssetNeverStopsTheService(): void {
+		if (posix_geteuid() !== 0) {
+			$this->markTestSkipped('the updater runs as root');
+		}
+		$rFake = $this->rDir . '/fake';
+		@mkdir($rFake, 0777, true);
+		// systemctl logs what it is asked; curl answers every URL with a 404 (exit 22).
+		file_put_contents($rFake . '/systemctl', "#!/bin/sh\necho \"$@\" >> " . escapeshellarg($this->rDir . '/systemctl.log') . "\n");
+		file_put_contents($rFake . '/curl', "#!/bin/sh\necho 'curl: (22) The requested URL returned error: 404' >&2\nexit 22\n");
+		chmod($rFake . '/systemctl', 0755);
+		chmod($rFake . '/curl', 0755);
+		@mkdir($this->rDir . '/target', 0777, true);
+		$rCmd = 'PATH=' . escapeshellarg($rFake . ':' . getenv('PATH')) . ' bash ' . escapeshellarg(self::ROOT . 'bin/install/update_binaries.sh')
+			. ' Vateron-Media XC_VM_Binaries ' . escapeshellarg($this->rDir . '/target') . ' 01102026 2>&1';
+		exec($rCmd, $rOut, $rCode);
+		$rText = implode("\n", $rOut);
+		$this->assertNotSame(0, $rCode, $rText);
+		$this->assertStringContainsString('404', $rText);
+		$this->assertFileDoesNotExist($this->rDir . '/systemctl.log', 'the service was neither stopped nor started: ' . $rText);
+	}
+	/**
+	 * A panel's own updater script is never refreshed by a panel update
+	 * (bin/install is kept), so `console.php binaries` checks first that the
+	 * release has this distribution's bundle, as the script names it.
+	 */
+	public function testTheBundleIsNamedAsTheUpdaterNamesIt(): void {
+		$this->assertSame('ubuntu_22.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('ubuntu', '22.04'));
+		$this->assertSame('debian_12.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('debian', '12'));
+		$this->assertSame('rhel_9.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('rocky', '9.4'));
+		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('ubuntu', '16.04'));
+		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('arch', ''));
+		$this->assertFalse(\XcVm\Core\Updates\ReleaseAsset::exists('http://127.0.0.1:9/none.tar.gz'), 'nothing there: no update');
+		$rSource = (string) file_get_contents(self::ROOT . 'Cli/Commands/BinariesCommand.php');
+		$this->assertLessThan(strpos($rSource, 'update_binaries.sh'), strpos($rSource, 'ReleaseAsset::exists('), 'checked before the updater runs');
+	}
 }
