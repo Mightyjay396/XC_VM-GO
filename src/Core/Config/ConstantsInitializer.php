@@ -162,6 +162,7 @@ class ConstantsInitializer {
 			'GIT_REPO_BIN'      => 'XC_VM_Binaries',
 			'GIT_REPO_FANOUT'   => 'XC_VM_Fanout',
 			'GIT_REPO_PROXY'    => 'XC_VM_Proxy',
+			'GIT_REPO_FFMPEG'   => 'XC_VM_FFMPEG',
 			'MONITOR_CALLS'     => 3,
 			'OPENSSL_EXTRA'     => 'fNiu3XD448xTDa27xoY4',
 		];

@@ -3,6 +3,7 @@
 namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Cli\Commands\FfmpegBuildsCommand;
 use XcVm\Cli\Commands\UpdateCommand;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
@@ -707,6 +708,22 @@ class RootSignalsCronJob implements CommandInterface {
 		if (!file_exists($rYtDlpStamp) || time() - intval(@file_get_contents($rYtDlpStamp) ?: 0) > 86400) {
 			file_put_contents($rYtDlpStamp, time());
 			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'ytdlp']);
+		}
+
+		// ffmpeg — the builds for this distribution from XC_VM_FFMPEG (`ffmpeg`,
+		// FfmpegBuildsCommand): same self-heal rationale. Idempotent (an unchanged
+		// release is not fetched again) and each build is run-tested before it
+		// replaces the installed one, so it is safe to poll. Daily is enough (rare
+		// releases); the first pass runs immediately. As xc_vm, which owns
+		// bin/ffmpeg_bin/: nothing of it needs root. A run that did not finish
+		// (one this cron's own service restart below killed, GitHub unreachable,
+		// a build that failed) leaves its index older than the stamp, and is
+		// tried again after an hour.
+		$rFfmpegStamp = CRONS_TMP_PATH . 'ffmpeg_check';
+		$rFfmpegLast = intval(@file_get_contents($rFfmpegStamp) ?: 0);
+		if (time() - $rFfmpegLast > ((int) @filemtime(FfmpegBuildsCommand::indexPath()) >= $rFfmpegLast ? 86400 : 3600)) {
+			file_put_contents($rFfmpegStamp, time());
+			ProcessRunner::start(['sudo', '-u', 'xc_vm', PHP_BIN, MAIN_HOME . 'console.php', 'ffmpeg']);
 		}
 
 		if ($rServers[SERVER_ID]['limit_requests'] > 0) {

@@ -13,6 +13,8 @@ use XcVm\Core\Config\SettingsManager;
  *   - BIN    (compiled binaries)       → `update_channel_bin`
  *   - FANOUT (xc_fanout daemon)        → `update_channel_fanout`
  *
+ * The ffmpeg builds (FFMPEG) are compiled binaries too, and follow BIN.
+ *
  * Only MAIN offers the 'dev' channel: nightly panel builds published to the
  * releases-only GIT_REPO_DEV repository. BIN and FANOUT have no nightly builds.
  *
@@ -63,7 +65,7 @@ final class UpdateChannels {
 	 * @return string 'stable', 'beta' or (MAIN-following repos only) 'dev'
 	 */
 	public static function forRepo(string $repo): string {
-		if (defined('GIT_REPO_BIN') && $repo === GIT_REPO_BIN) {
+		if ((defined('GIT_REPO_BIN') && $repo === GIT_REPO_BIN) || (defined('GIT_REPO_FFMPEG') && $repo === GIT_REPO_FFMPEG)) {
 			return self::bin();
 		}
 		if (defined('GIT_REPO_FANOUT') && $repo === GIT_REPO_FANOUT) {

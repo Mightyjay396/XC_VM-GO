@@ -2004,7 +2004,7 @@ use XcVm\Domain\Server\ServerRepository;
 
 							<?php
 							$rFfmpegGpuBuilds = FfmpegBinaries::gpuCapable();
-							$rCpuOpts = array_keys(FfmpegBinaries::available()) ?: ["8.0", "7.1", "4.0"];
+							$rCpuOpts = array_keys(FfmpegBinaries::available()) ?: ["8.1", "7.1", "4.0"];
 							if (!empty($rSettings["ffmpeg_cpu"]) && !in_array($rSettings["ffmpeg_cpu"], $rCpuOpts, true)) {
 								$rCpuOpts[] = $rSettings["ffmpeg_cpu"];
 							}
