@@ -748,6 +748,12 @@ def install_distribution_binaries(dist_id, version):
         if os.path.exists(temp_extract_dir):
             shutil.rmtree(temp_extract_dir)
 
+        # 7. xcvm_core is not in the bundle, and console.php cannot boot without it
+        printc("Installing the xcvm_core PHP extension...", col.OKBLUE)
+        if subprocess.call(["bash", "/home/xc_vm/bin/install/install_xcvm_core.sh"]) != 0:
+            printc("Failed to install the xcvm_core PHP extension", col.FAIL)
+            return False
+
         write_bin_version_file(release_tag, patch_name, dist_id, version)
 
         printc(

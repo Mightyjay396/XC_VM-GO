@@ -338,9 +338,9 @@ install_component_replace() {
 }
 
 # xcvm_core is installed and kept current on its own (`console.php xcvm_core`),
-# not with the runtime bundle, whose copy can be older: keep the installed one
-# wherever the bundle's PHP loads the same extension ABI. A bundle that loads
-# another ABI brings its own, which `console.php xcvm_core` then updates.
+# and the runtime bundle no longer carries it: keep the installed one wherever
+# the bundle's PHP loads the same extension ABI. A bundle on another ABI comes
+# without one, and console.php cannot boot until install_xcvm_core.sh runs.
 for installed_ext in "$TARGET_BIN_DIR"/php/lib/php/extensions/*/xcvm_core.so; do
     [[ -f "$installed_ext" ]] || continue
     staged_ext="$STAGE_DIR/php/${installed_ext#"$TARGET_BIN_DIR/php/"}"
