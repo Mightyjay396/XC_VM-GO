@@ -55,7 +55,7 @@ $rVideoCodec = null;
 if (isset($rRequest["token"])) {
 	$rTokenData = StreamAuthMiddleware::decryptToken($rRequest["token"], $rSettings, $rServers, $rIP);
 
-	if (!isset($rTokenData["video_path"])) {
+	if (!isset($rTokenData["video_path"]) && !isset($rTokenData["off_air"])) {
 		if (isset($rTokenData["hmac_id"])) {
 			$rIsHMAC = $rTokenData["hmac_id"];
 			$rIdentifier = $rTokenData["identifier"];
@@ -80,7 +80,7 @@ if (isset($rRequest["token"])) {
 		$rPlaylist = "";
 	} else {
 		header("Content-Type: video/mp2t");
-		readfile(OffAirHandler::localVideo((string) $rTokenData["video_path"]));
+		readfile(OffAirHandler::tokenVideo($rTokenData));
 
 		exit();
 	}
