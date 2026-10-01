@@ -38,12 +38,11 @@ const kinds: Record<'plain' | 'proxy' | 'llod' | 'loopback', Kind> = {
 
 /**
  * TableController's live-stream statuses (admin/streams.php). A direct proxy
- * the daemon pulls has no producer pid on its row, so the list shows it as
- * "Proxy Down" (7) even while it serves: its viewer is what tells.
+ * the daemon pulls from its first viewer on has no producer pid on its row:
+ * with fanout on, the list shows it as On Demand. Its viewer is what tells.
  */
 const RUNNING = 1;
 const ON_DEMAND = 4;
-const PROXY_DOWN = 7;
 
 async function findRow(page: Page, name: string) {
   await page.goto('./streams');
@@ -172,7 +171,7 @@ test.describe.serial('each kind of live channel, served by the load balancer\'s 
     for (const k of [kinds.plain, kinds.loopback]) {
       await expect.poll(() => status(page, k), { timeout: 150_000, intervals: [3_000], message: `${k.name} never ran` }).toBe(RUNNING);
     }
-    expect([RUNNING, PROXY_DOWN], 'the proxy: listed running, or down while the daemon owns its pull').toContain(await status(page, kinds.proxy));
+    expect([RUNNING, ON_DEMAND], 'the proxy: listed running, or on demand while the daemon owns its pull').toContain(await status(page, kinds.proxy));
     expect(await status(page, kinds.llod), 'on demand: started by its first viewer').toBe(ON_DEMAND);
   });
 
