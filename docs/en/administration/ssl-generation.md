@@ -7,6 +7,16 @@ This guide explains how to create a self-signed SSL certificate to enable secure
 > into `bin/nginx/conf/` before Nginx starts), and `CertbotCronJob` later replaces
 > it with a real Let's Encrypt certificate. Follow this guide only to **regenerate
 > or replace** the certificate manually.
+>
+> A load balancer, or an older install, that still has the placeholder key from
+> the archive gets its own key and certificate at its next start
+> (`console.php startup`, which then reloads Nginx). The placeholder key is in the
+> repository, so every node using it shared one private key. A key you put there
+> yourself is never replaced.
+>
+> The `ssl.conf` that ships allows TLS 1.2 and 1.3 only. A node still running the
+> earlier shipped `ssl.conf` (SSLv3, TLS 1.1 and 1.2) gets the new one at the same
+> start. An `ssl.conf` you edited, or one certbot wrote, is kept as it is.
 
 ---
 
