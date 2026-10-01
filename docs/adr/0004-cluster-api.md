@@ -5472,9 +5472,14 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
 
 **The proxy (XC_VM_Proxy).** `callback.php` signs when the key is installed and runs signals only from a verified answer. `includes/proxy_auth.php` holds the code, and `tests/proxy_auth_check.php` (`make check`, run before each release build) checks it against `ProxyKeyTest`'s vectors. A proxy without a key works as before. **Deploying it needs an XC_VM_Proxy release**, which the panel's `cron:proxy` then ships to new installs.
 
+**The route segment (`Domain/Server/ProxyRoute`).** The URL segment that routes a viewer through a proxy to its parent picks the parent and authenticates nothing: the parent still checks the viewer's token, which per-node keys (H1) bind to the parent.
+- A proxy installed by this panel has an HMAC-SHA256 segment (`ProxyRoute::current`). Its install writes it into the proxy's nginx, after the key generation is raised.
+- An older proxy (`proxy_key_gen` 0) keeps the `md5(proxy_parent_OPENSSL_EXTRA)` its nginx holds until its next install.
+- Every site that builds a proxied URL goes through `ProxyRoute::segment`: MAIN's redirects and the off-air redirect, and a node's proxied HLS and timeshift playlists. `proxy_key_gen` is therefore a replicated server field. It isn't secret: the key needs MAIN's secret.
+- The dead `X-Token` header the proxy's nginx sent its parent is gone.
+
 **Not built.**
-- **The route segment.** The URL segment that routes a viewer through a proxy to its parent, `md5(proxy_parent_OPENSSL_EXTRA)`, stays as the proxy's nginx was installed with it. It only selects the parent and authenticates nothing: the parent still checks the viewer's token, which per-node keys (H1) now bind to the parent.
-- **Existing proxies** get their key at their next install (Reinstall in the servers list); until then their channel stays unsigned.
+- **Existing proxies** get their key, and the new route segment, at their next install (Reinstall in the servers list). Until then, their channel stays unsigned and their route segment md5.
 
 **Tests.**
 - `ProxyKeyTest`:

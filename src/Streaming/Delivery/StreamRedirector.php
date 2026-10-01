@@ -3,6 +3,7 @@
 namespace XcVm\Streaming\Delivery;
 
 use XcVm\Domain\Bouquet\BouquetService;
+use XcVm\Domain\Server\ProxyRoute;
 use XcVm\Domain\Stream\ConnectionTracker;
 
 /**
@@ -210,7 +211,7 @@ class StreamRedirector {
 		}
 
 		if ($rServers[$rServerID]['server_type'] == 1 && $rOriginatorID && $rServers[$rOriginatorID]['is_main'] == 0) {
-			$rURL .= '/' . md5($rServerID . '_' . $rOriginatorID . '_' . OPENSSL_EXTRA);
+			$rURL .= '/' . ProxyRoute::segment((int) $rServerID, (int) $rOriginatorID, $rServers);
 		}
 		return $rURL;
 	}

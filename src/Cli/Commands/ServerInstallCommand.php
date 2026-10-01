@@ -225,6 +225,8 @@ class ServerInstallCommand implements CommandInterface {
 		$this->installSystemdService($rConn, $rRunSSH, $rSendFileSSH, $rServerID);
 
 		if ($rType == 1) {
+			// The key generation first: the routes configureRuntime writes are that generation's (ProxyRoute).
+			ProxyInstallFlow::provisionKey($rConn, $rSendFileSSH, $rRunSSH, $rServerID, $db);
 			$rServices = ProxyInstallFlow::configureRuntime($rConn, $rSendFileSSH, $rRunSSH, $rServers, $rParentIDs, $rPrivateIP, $rHTTPPort, $rHTTPSPort, $rServerID);
 		} else {
 			$rServices = LbInstallFlow::configureRuntime($rConn, $rSendFileSSH, $rRunSSH, $rServers, $rServerID);
@@ -238,7 +240,6 @@ class ServerInstallCommand implements CommandInterface {
 				return 1;
 			}
 		} else {
-			ProxyInstallFlow::provisionKey($rConn, $rSendFileSSH, $rRunSSH, $rServerID, $db);
 			ProxyInstallFlow::runStartup($rConn, $rRunSSH);
 		}
 

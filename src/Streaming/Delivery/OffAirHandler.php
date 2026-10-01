@@ -5,6 +5,7 @@ namespace XcVm\Streaming\Delivery;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\ViewerKey;
+use XcVm\Domain\Server\ProxyRoute;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\Auth\StreamAuth;
 use XcVm\Streaming\Balancer\ProxySelector;
@@ -157,7 +158,7 @@ class OffAirHandler {
 			$rURL = rtrim($rServers[$rServerID]['site_url'], '/');
 		}
 		if ($rOriginatorID && !$rServers[$rOriginatorID]['is_main']) {
-			$rURL .= '/' . md5($rServerID . '_' . $rOriginatorID . '_' . OPENSSL_EXTRA);
+			$rURL .= '/' . ProxyRoute::segment((int) $rServerID, (int) $rOriginatorID, $rServers);
 		}
 		// The video by name, which the playing node finds for itself.
 		// ponytail: video_path is for nodes from before off_air; drop it once none is left.

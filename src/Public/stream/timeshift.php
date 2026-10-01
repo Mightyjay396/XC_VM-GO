@@ -5,6 +5,7 @@ use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Domain\Server\ProxyRoute;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Infrastructure\Cache\CacheReader;
 use XcVm\Infrastructure\Database\DatabaseFactory;
@@ -191,10 +192,7 @@ if ($rUserInfo) {
 
 			for ($i = 0; $i < count($rQueue); $i++) {
 				$rOutput .= "#EXTINF:60.0,\n";
-				// The proxy's route segment, as its nginx was installed with (ProxyInstallFlow): a path, not a
-				// signature; the token after it is what is authenticated. D8 replaces it with the proxy's key.
-				// nosemgrep: php.lang.security.weak-crypto.weak-crypto
-				$rOutput .= (($rProxyID ? '/' . md5($rProxyID . '_' . $rServerID . '_' . OPENSSL_EXTRA) : '')) . '/hls/' . ViewerKey::mintOwn('TS/' . $rUsername . '/' . $rPassword . '/' . $rIP . '/' . $rDuration . '/' . $rStartDate . '/' . $rStreamID . '_' . basename($rQueue[$i]['filename']) . '_' . (($i == 0 ? $rOffset : 0)) . '/' . $rTokenData['uuid'] . '/' . $rServerID, $rSettings) . "\n";
+				$rOutput .= (($rProxyID ? '/' . ProxyRoute::segment((int) $rProxyID, (int) $rServerID, $rServers) : '')) . '/hls/' . ViewerKey::mintOwn('TS/' . $rUsername . '/' . $rPassword . '/' . $rIP . '/' . $rDuration . '/' . $rStartDate . '/' . $rStreamID . '_' . basename($rQueue[$i]['filename']) . '_' . (($i == 0 ? $rOffset : 0)) . '/' . $rTokenData['uuid'] . '/' . $rServerID, $rSettings) . "\n";
 			}
 			$rOutput .= '#EXT-X-ENDLIST';
 			touch(CONS_TMP_PATH . $rTokenData['uuid']);
