@@ -120,7 +120,7 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries are 
 | **8**   | 🚧 _Not yet supported_ |
 | **9**   | 🚧 _Not yet supported_ |
 
-> ⚠️ RHEL-family support is planned but not yet available: there are no pre-built binaries or FFmpeg builds for it. The installer warns on these distributions and asks before going on.
+> ⚠️ RHEL-family support is planned but not yet available: there are no pre-built binaries or FFmpeg builds for it, and the installer refuses these distributions.
 
 ---
 

@@ -242,38 +242,6 @@ PACKAGES = {
         "libogg0",
         "libnuma1",
     ],
-    "redhat": [
-        "epel-release",
-        "wget",
-        "mariadb-server",
-        "mariadb",
-        "sysstat",
-        "alsa-utils",
-        "v4l-utils",
-        "libcurl-devel",
-        "geoip-devel",
-        "libxslt-devel",
-        "oniguruma-devel",
-        "e2fsprogs",
-        "libjpeg-turbo-devel",
-        "libpng-devel",
-        "harfbuzz-devel",
-        "fribidi-devel",
-        "libogg",
-        "xz",
-        "zip",
-        "unzip",
-        "libssh2-devel",
-        "cronie",
-        "certbot",
-        "iptables-services",
-        "GeoIP-update",
-        "git",
-        "curl",
-        "libsodium",
-        "numactl",
-        "kernel-tools",
-    ],
 }
 
 rRemove = ["mysql-server"]
@@ -486,37 +454,6 @@ def install_prerequisites(dist_info):
         else:
             printc("Prerequisites (sudo, curl) are already installed.", col.OKGREEN)
 
-    elif dist_info["family"] == "redhat":
-        printc("Checking for prerequisites (sudo, curl, wget)...", col.OKBLUE)
-
-        ret, _, _ = run_command("which sudo", capture_output=True)
-        sudo_missing = ret != 0
-
-        ret, _, _ = run_command("which curl", capture_output=True)
-        curl_missing = ret != 0
-
-        ret, _, _ = run_command("which wget", capture_output=True)
-        wget_missing = ret != 0
-
-        if sudo_missing or curl_missing or wget_missing:
-            printc("Installing missing prerequisites...", col.WARNING)
-            packages_to_install = []
-            if sudo_missing:
-                packages_to_install.append("sudo")
-            if curl_missing:
-                packages_to_install.append("curl")
-            if wget_missing:
-                packages_to_install.append("wget")
-
-            if packages_to_install:
-                packages_str = " ".join(packages_to_install)
-                printc(f"Installing {packages_str}...", col.OKBLUE)
-                run_command(
-                    f"yum install -y {packages_str} || dnf install -y {packages_str}"
-                )
-                printc("Prerequisites installed successfully.", col.OKGREEN)
-        else:
-            printc("Prerequisites are already installed.", col.OKGREEN)
 
 
 def compute_md5(file_path):
@@ -615,15 +552,6 @@ def install_distribution_binaries(dist_id, version):
             display_name = f"Debian {major}"
         else:
             printc(f"Debian version {version} not supported for patches", col.WARNING)
-            return False
-    elif dist_id in ["rocky", "almalinux", "rhel", "centos"]:
-        if major in ["8", "9"]:
-            patch_name = f"rhel_{major}.tar.gz"
-            display_name = f"RHEL/Rocky/Alma {major}"
-        else:
-            printc(
-                f"{dist_id} version {version} not supported for patches", col.WARNING
-            )
             return False
     else:
         printc(f"Distribution {dist_id} not supported for patches", col.WARNING)
@@ -1203,16 +1131,6 @@ def install_mariadb_repo(dist_info):
         printc("Updating package list...", col.OKBLUE)
         run_command("apt-get update")
 
-    elif family == "redhat":
-        # RedHat based distributions
-        run_command("yum install -y curl")
-
-        # Install MariaDB repository using official script
-        printc("Adding MariaDB repository...", col.OKBLUE)
-        run_command(
-            "curl -LsS https://r.mariadb.com/downloads/mariadb_repo_setup | bash -s -- --mariadb-server-version='mariadb-11.4'"
-        )
-
     else:
         printc(f"Unsupported distribution: {dist_id}", col.WARNING)
         return False
@@ -1772,6 +1690,12 @@ if __name__ == "__main__":
     if dist_info["id"] == "debian" and dist_info["version"].split(".")[0] == "11":
         printc("Debian 11 is end-of-life and no longer supported. Use Debian 12 or 13.", col.FAIL)
         sys.exit(1)
+    if dist_info["family"] == "redhat":
+        printc(
+            f"{dist_info['id']} {dist_info['version']} is not supported: XC_VM runs on Ubuntu 20.04/22.04/24.04 and Debian 12/13.",
+            col.FAIL,
+        )
+        sys.exit(1)
 
     # Install prerequisites before continuing
     install_prerequisites(dist_info)
@@ -1932,43 +1856,6 @@ if __name__ == "__main__":
         printc("Configuring SSH2 libraries", col.OKBLUE)
         fix_ssh2_library_issue()
 
-    elif dist_info["family"] == "redhat":
-        # RedHat based distributions
-        printc("Configuring repositories", col.OKBLUE)
-
-        # Install EPEL
-        run_command("yum install -y epel-release")
-
-        # Install MariaDB repository
-        if not install_mariadb_repo(dist_info):
-            printc("Using system MariaDB repository", col.WARNING)
-
-        printc("Updating system", col.OKBLUE)
-        run_command("yum update -y")
-
-        # Install system packages from PACKAGES['redhat']
-        redhat_packages = PACKAGES.get("redhat", [])
-        if redhat_packages:
-            packages_str = " ".join(redhat_packages)
-            printc(
-                f"Installing RedHat packages ({len(redhat_packages)} packages)...",
-                col.OKBLUE,
-            )
-            run_command(
-                f"yum install -y {packages_str} || echo 'Some packages may not be available'"
-            )
-
-        # Ensure libssh2 libraries are installed
-        printc("Verifying SSH2 libraries for RedHat...", col.OKBLUE)
-        run_command("yum install -y libssh2 libssh2-devel || true")
-
-        # Enable services
-        run_command("systemctl enable mariadb")
-        run_command("systemctl enable crond")
-
-        # Fix SSH2 library issue
-        printc("Configuring SSH2 libraries", col.OKBLUE)
-        fix_ssh2_library_issue()
     else:
         printc(f"Unsupported distribution family: {dist_info['family']}", col.FAIL)
         sys.exit(1)
@@ -1988,12 +1875,6 @@ if __name__ == "__main__":
         if dist_info["family"] == "debian":
             rc, _, err = run_command(
                 "adduser --system --shell /bin/false --no-create-home --home /nonexistent --group --disabled-login xc_vm",
-                capture_output=True,
-            )
-        else:  # redhat
-            run_command("groupadd -r xc_vm", capture_output=True)
-            rc, _, err = run_command(
-                "useradd -r -g xc_vm -s /bin/false -M -d /nonexistent xc_vm",
                 capture_output=True,
             )
         if rc == 0:
@@ -2064,21 +1945,6 @@ if __name__ == "__main__":
                 col.OKBLUE,
             )
 
-    elif dist_id in ["rocky", "almalinux", "rhel", "centos"]:
-        major = version.split(".")[0]
-        if major in ["8", "9"]:
-            if not install_distribution_binaries(dist_id, version):
-                printc(
-                    f"FATAL: failed to install {dist_id} {version} binaries — the panel "
-                    f"cannot run without them. Check network/DNS and re-run the installer.",
-                    col.FAIL,
-                )
-                sys.exit(1)
-        else:
-            printc(
-                f"No specific patches available for {dist_id} {version}, using default binaries",
-                col.OKBLUE,
-            )
     else:
         printc(
             f"No patches available for {dist_id} {version}, using default binaries",
