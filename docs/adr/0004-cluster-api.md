@@ -5280,9 +5280,19 @@ this branch), with each change put back afterwards.
   - **A first try at 8081 failed and was reverted:** another service on the test MAIN already
     held that port. See "Found on the way".
 
+- **xcvm_core version skew** (2026-10-01), 2.3.1 against 2.3.3, cluster API 1 on both:
+  - **MAIN 2.3.3, LB 2.3.1:** the LB stayed licensed on a live lease, and its agent's health
+    check passed. A channel started and stopped on it through MAIN's signed commands, and its
+    telemetry stayed fresh (`lb-streams`, `lb-telemetry`, 4/4).
+  - **MAIN 2.3.1, LB 2.3.3:** that pair, plus all of `cluster-nodes` (a flow switched on and
+    off, rotate-now, a quarantine lifted, a fence and its lifting), passed 9/9.
+  - **Getting MAIN onto 2.3.1:** the first attempt restarted MAIN's service. Its `status`
+    queued `update_binaries`, and MAIN installed the new XC_VM_Binaries `01.10.2026` (md5
+    verified, staged, then swapped in) together with that bundle's xcvm_core 2.3.3. The
+    attempt that counted swapped the `.so` and reloaded PHP-FPM instead.
+
 **Not run.**
 - **MAIN's port change with three nodes:** only one node.
-- **xcvm_core version skew:** both sides run 2.3.1, and 2.3.3 has no archives yet.
 
 **Found on the way.**
 - **Two flaws in the binaries update:**
