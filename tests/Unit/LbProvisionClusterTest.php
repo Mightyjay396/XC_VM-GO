@@ -34,6 +34,9 @@ final class LbProvisionClusterTest extends TestCase {
 
 	private bool $rProbeOk = true;
 
+	/** Does the node install the agent from its release (`fanout_binary agent`)? */
+	private bool $rAgentInstalls = true;
+
 	/** How the node answers the agent's start: STARTED, NO_RUNSH, or '' (it did not start). */
 	private string $rAgentStart = 'STARTED';
 
@@ -96,6 +99,9 @@ final class LbProvisionClusterTest extends TestCase {
 				]) . "\n", 'error' => ''
 				];
 			}
+			if (str_contains($rCmd, 'console.php fanout_binary agent')) {
+				return ['output' => $this->rAgentInstalls ? "xc_agent 1.5.0 installed.\nAGENT_OK\n" : "Failed to download xc_agent-linux-amd64\n", 'error' => ''];
+			}
 			if (str_contains($rCmd, ' probe ')) {
 				return ['output' => $this->rProbeOk ? "OK http://10.0.0.1:25461/cluster/v1/\n" : "xc_agent probe: connection refused\n", 'error' => ''];
 			}
@@ -119,19 +125,19 @@ final class LbProvisionClusterTest extends TestCase {
 		return (int) $this->rDb->get_row()['status'];
 	}
 
-	private function agentBinary(): callable {
-		$rFile = tempnam(sys_get_temp_dir(), 'agent');
-		file_put_contents($rFile, 'fake agent');
-		return static fn(string $rArch) => $rArch === 'amd64' ? $rFile : null;
-	}
-
 	public function testEnrolsTheNodeOverSsh(): void {
 		[$rRun, $rSend] = $this->fakeSsh();
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary());
+		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto);
 		$rLog = (string) ob_get_clean();
 		$this->assertTrue($rOk, $rLog);
-		$this->assertArrayHasKey(LbInstallFlow::AGENT_BIN, $this->rSent, 'the agent is pushed from MAIN');
+		$this->assertArrayNotHasKey(LbInstallFlow::AGENT_BIN, $this->rSent, 'MAIN pushes no agent');
+		$rInstall = array_values(array_filter($this->rCommands, static fn($c) => str_contains($c, 'console.php fanout_binary agent')));
+		$this->assertCount(1, $rInstall, 'the node installs it from its release');
+		$rKeygenAt = array_key_first(array_filter($this->rCommands, static fn($c) => str_contains($c, ' keygen ')));
+		$rChownAt = array_key_first(array_filter($this->rCommands, static fn($c) => str_contains($c, 'chown -R xc_vm:xc_vm')));
+		$this->assertLessThan(array_search($rInstall[0], $this->rCommands, true), $rChownAt, 'into a directory that is the agent\'s');
+		$this->assertLessThan($rKeygenAt, array_search($rInstall[0], $this->rCommands, true));
 
 		$rNode = NodeRegistry::byServer(self::SID);
 		$this->assertSame('enrolling', $rNode['state']);
@@ -192,7 +198,7 @@ final class LbProvisionClusterTest extends TestCase {
 			return $rRun($rConn, $rCmd);
 		};
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rNode, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary());
+		$rOk = LbInstallFlow::provisionCluster(null, $rNode, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto);
 		$rLog = (string) ob_get_clean();
 		$this->assertTrue($rOk, $rLog);
 		$this->assertStringContainsString("Panel key pinned in the node's xcvm_core", $rLog);
@@ -222,7 +228,7 @@ final class LbProvisionClusterTest extends TestCase {
 			return $rRun($rConn, $rCmd);
 		};
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rNode, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary());
+		$rOk = LbInstallFlow::provisionCluster(null, $rNode, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto);
 		$rLog = (string) ob_get_clean();
 		$this->assertTrue($rOk, $rLog);
 		$this->assertStringContainsString('not pinned yet (cluster_pin: ERR CRYPTO); MAIN pins it once the node takes root commands', $rLog);
@@ -238,7 +244,7 @@ final class LbProvisionClusterTest extends TestCase {
 		$this->rProbeOk = false;
 		[$rRun, $rSend] = $this->fakeSsh();
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary());
+		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto);
 		$rLog = (string) ob_get_clean();
 		$this->assertFalse($rOk);
 		$this->assertStringContainsString("cannot reach MAIN's cluster API", $rLog);
@@ -250,7 +256,7 @@ final class LbProvisionClusterTest extends TestCase {
 	private function provision(): array {
 		[$rRun, $rSend] = $this->fakeSsh();
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary());
+		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto);
 		return [$rOk, (string) ob_get_clean()];
 	}
 
@@ -275,7 +281,7 @@ final class LbProvisionClusterTest extends TestCase {
 		$this->rCrypto->rRefuseIssue = 'LICENCE';
 		[$rRun, $rSend] = $this->fakeSsh();
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary());
+		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto);
 		$rLog = (string) ob_get_clean();
 		$this->assertFalse($rOk);
 		$this->assertStringContainsString('CLUSTER_LICENCE_REQUIRED', $rLog);
@@ -289,7 +295,7 @@ final class LbProvisionClusterTest extends TestCase {
 		$this->rProbeOk = false;
 		[$rRun, $rSend] = $this->fakeSsh();
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary(), false);
+		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, false);
 		ob_end_clean();
 		$this->assertFalse($rOk);
 		$this->assertSame(1, $this->serverStatus());
@@ -298,10 +304,10 @@ final class LbProvisionClusterTest extends TestCase {
 	public function testReEnrolmentStopsTheRunningAgentFirstAndRaisesTheGeneration(): void {
 		[$rRun, $rSend] = $this->fakeSsh();
 		ob_start();
-		$this->assertTrue(LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary(), false));
+		$this->assertTrue(LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, false));
 		$rFirst = NodeRegistry::byServer(self::SID);
 		$this->rCommands = [];
-		$this->assertTrue(LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary(), false));
+		$this->assertTrue(LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, false));
 		ob_end_clean();
 		$rSecond = NodeRegistry::byServer(self::SID);
 		$this->assertNotSame($rFirst['node_uuid'], $rSecond['node_uuid'], 'a new identity');
@@ -316,15 +322,16 @@ final class LbProvisionClusterTest extends TestCase {
 	public function testLegacyWhenDisabledOrWithoutAnAgent(): void {
 		[$rRun, $rSend] = $this->fakeSsh();
 		SettingsManager::set(['cluster_api_enabled' => 0]);
-		$this->assertTrue(LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary()));
+		$this->assertTrue(LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto));
 		$this->assertSame([], $this->rCommands, 'API off: the node is not touched');
 
 		SettingsManager::set(['cluster_api_enabled' => 1]);
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, static fn() => null);
+		$this->rAgentInstalls = false;
+		$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto);
 		$rLog = (string) ob_get_clean();
 		$this->assertTrue($rOk, 'no agent binary: the install goes on, legacy');
-		$this->assertStringContainsString('stays legacy', $rLog);
+		$this->assertStringContainsString('No xc_agent on the node (Failed to download xc_agent-linux-amd64); the node stays legacy', $rLog);
 		$this->assertNull(NodeRegistry::byServer(self::SID));
 		$this->assertSame(0, $this->serverStatus());
 	}
@@ -341,7 +348,7 @@ final class LbProvisionClusterTest extends TestCase {
 			return $rOut;
 		};
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, $rTampered, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto, $this->agentBinary());
+		$rOk = LbInstallFlow::provisionCluster(null, $rTampered, $rSend, $this->servers(), self::SID, $this->rDb, $this->rCrypto);
 		ob_end_clean();
 		$this->assertFalse($rOk);
 		$this->assertNull(NodeRegistry::byServer(self::SID));
@@ -378,8 +385,9 @@ final class LbProvisionClusterTest extends TestCase {
 		}
 		try {
 			$rRun = function ($rConn, string $rCmd) use ($rLocal, $rBin): array {
-				if ($rCmd === 'uname -m') {
-					return ['output' => php_uname('m'), 'error' => ''];
+				if (str_contains($rCmd, 'console.php fanout_binary agent')) {
+					@mkdir(dirname($rLocal(LbInstallFlow::AGENT_BIN)), 0700, true);
+					return ['output' => copy($rBin, $rLocal(LbInstallFlow::AGENT_BIN)) && chmod($rLocal(LbInstallFlow::AGENT_BIN), 0700) ? "AGENT_OK\n" : '', 'error' => ''];
 				}
 				// The node is this machine: drop sudo, map the node's paths into the temp dir.
 				$rCmd = (string) preg_replace('/sudo( -u xc_vm)? /', '', $rLocal($rCmd));
@@ -392,14 +400,14 @@ final class LbProvisionClusterTest extends TestCase {
 				exec($rCmd . ' 2>&1', $rOut);
 				return ['output' => implode("\n", $rOut) . "\n", 'error' => ''];
 			};
-			$rSend = static function ($rConn, string $rFrom, string $rTo) use ($rLocal, $rBin): bool {
+			$rSend = static function ($rConn, string $rFrom, string $rTo) use ($rLocal): bool {
 				$rTo = $rLocal($rTo);
 				@mkdir(dirname($rTo), 0700, true);
-				return copy($rTo === $rLocal(LbInstallFlow::AGENT_BIN) ? $rBin : $rFrom, $rTo) && chmod($rTo, 0700);
+				return copy($rFrom, $rTo) && chmod($rTo, 0700);
 			};
 			$rServers = [SERVER_ID => ['server_ip' => '127.0.0.1', 'http_broadcast_port' => $rPort, 'enable_https' => 0], self::SID => []];
 			ob_start();
-			$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $rServers, self::SID, $this->rDb, $this->rCrypto, static fn() => $rBin);
+			$rOk = LbInstallFlow::provisionCluster(null, $rRun, $rSend, $rServers, self::SID, $this->rDb, $this->rCrypto);
 			$rLog = (string) ob_get_clean();
 			$this->assertTrue($rOk, $rLog);
 			exec(escapeshellarg($rBin) . ' health -state ' . escapeshellarg($rLocal(LbInstallFlow::AGENT_STATE)) . ' 2>&1', $rHealth, $rCode);

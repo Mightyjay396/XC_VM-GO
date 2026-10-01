@@ -7,10 +7,11 @@ use XcVm\Domain\Cluster\EnrolmentService;
 
 /**
  * The fleet's side of SSH: one entry per node address, answering as a node
- * that runs this release and xc_agent does (uname, keygen, probe, install).
+ * that runs this release and xc_agent does (the agent's install from its
+ * release, keygen, probe, install).
  */
 final class FakeSshFleet extends SshSession {
-	/** @var array<string, array{hostkey: string, password: string, ready?: bool, probe?: bool}> */
+	/** @var array<string, array{hostkey: string, password: string, ready?: bool, probe?: bool, agent?: bool}> */
 	public array $rNodes = [];
 
 	/** @var list<string> connect/login/close events and "run <host> <cmd>" */
@@ -45,8 +46,8 @@ final class FakeSshFleet extends SshSession {
 		if (str_contains($rCommand, 'echo READY')) {
 			return ['output' => ($rNode['ready'] ?? true) ? "READY\n" : '', 'error' => ''];
 		}
-		if ($rCommand === 'uname -m') {
-			return ['output' => "x86_64\n", 'error' => ''];
+		if (str_contains($rCommand, 'console.php fanout_binary agent')) {
+			return ['output' => ($rNode['agent'] ?? true) ? "xc_agent 1.5.0 installed.\nAGENT_OK\n" : "Failed to download xc_agent-linux-amd64\n", 'error' => ''];
 		}
 		if (preg_match('/ keygen .* -uuid ([0-9a-f-]{36})$/', $rCommand, $rM)) {
 			$rSign = sodium_crypto_sign_publickey(sodium_crypto_sign_keypair());

@@ -3,7 +3,6 @@
 namespace XcVm\Core\Cluster;
 
 use XcVm\Core\Logging\FileLogger;
-use XcVm\Core\Updates\ReleaseAsset;
 
 /**
  * Artefacts on the node (plan, section 7: the `artefact` op and "Root
@@ -98,7 +97,7 @@ final class ArtefactStage {
 		return self::$rVideos ?? ((defined('VIDEO_PATH') ? VIDEO_PATH : '/home/xc_vm/content/video/') . 'cluster/');
 	}
 
-	/** The xc_agent binary run.sh starts, which `agent_binary` replaces. */
+	/** The xc_agent binary run.sh starts, which `fanout_binary` replaces. */
 	public static function agentBinary(): string {
 		return self::$rAgent ?? ((defined('BIN_PATH') ? BIN_PATH : '/home/xc_vm/bin/') . 'xc_agent/xc_agent');
 	}
@@ -106,8 +105,8 @@ final class ArtefactStage {
 	/**
 	 * Is this an artefact id of MAIN's registry? `offair/<name>` for the
 	 * off-air names the `cluster` section carries, `module/<name>/<version>`
-	 * as ModuleManager names a custom module's archive, `agent/<arch>` for a
-	 * release arch. Shape only: MAIN resolves it, never a node.
+	 * as ModuleManager names a custom module's archive. Shape only: MAIN
+	 * resolves it, never a node.
 	 */
 	public static function validId(string $rId): bool {
 		$rParts = explode('/', $rId);
@@ -115,8 +114,6 @@ final class ArtefactStage {
 			'offair' => count($rParts) === 2 && isset(ReplicaSections::OFF_AIR[$rParts[1]]),
 			'module' => count($rParts) === 3 && preg_match('/^[a-z0-9][a-z0-9-]{0,63}\z/', $rParts[1]) === 1
 				&& preg_match('/^[0-9A-Za-z][0-9A-Za-z._-]{0,31}\z/', $rParts[2]) === 1 && !str_contains($rParts[2], '..'),
-			'agent', 'fanout' => count($rParts) === 2 && in_array($rParts[1], ReleaseAsset::ARCH_MAP, true),
-			'core' => count($rParts) === 2 && preg_match('/^php[0-9]\.[0-9]{1,2}\z/', $rParts[1]) === 1,
 			default => false,
 		};
 	}
@@ -302,11 +299,12 @@ final class ArtefactStage {
 	}
 
 	/**
-	 * `agent_binary` (root): install the staged, checked agent binary where
-	 * run.sh starts it, as the agent's user (the directory is xc_vm's), from
-	 * root's copy. It is checked again as it is written aside, run once there
-	 * (runs(): a binary that does not start on this node is never put where
-	 * run.sh would restart it every 2 s), then renamed in. The binary it
+	 * `fanout_binary` (root): install a checked agent binary where run.sh
+	 * starts it, as the agent's user (the directory is xc_vm's), from root's
+	 * copy of the release asset. It is checked again (size, SHA-256) as it is
+	 * written aside, run once there (runs(): a binary that does not start on
+	 * this node is never put where run.sh would restart it every 2 s), then
+	 * renamed in. With $rTrial (an agent runs to judge it), the binary it
 	 * replaces is kept as PREV and the new one put on TRIAL: run.sh restores
 	 * PREV if the new one fails at start three times within its trial, or,
 	 * for an agent that says it reports reaching MAIN (its `version`'s
@@ -317,7 +315,7 @@ final class ArtefactStage {
 	 * @param array{path: string, grant: array<string, mixed>} $rStaged
 	 * @return string|null null once installed, else why not
 	 */
-	public static function installAgent(array $rStaged, string $rTarget): ?string {
+	public static function installAgent(array $rStaged, string $rTarget, bool $rTrial = true): ?string {
 		$rIn = @fopen((string) $rStaged['path'], 'rb');
 		if ($rIn === false) {
 			return 'the staged copy is gone';
@@ -335,24 +333,34 @@ final class ArtefactStage {
 			$rWhy = 'it does not run on this node (' . php_uname('m') . ')';
 		}
 		$rReach = $rVersion !== null && self::says($rVersion, self::FEATURE_REACHED);
-		$rPlaced = SettingsAudit::asAgentUser(static function () use ($rTmp, $rTarget, $rReach, &$rWhy): bool {
+		$rPlaced = SettingsAudit::asAgentUser(static function () use ($rTmp, $rTarget, $rReach, $rTrial, &$rWhy): bool {
 			// The binary it replaces stays beside it, and the new one is on trial:
 			// run.sh puts the old one back if the new one keeps failing at start
 			// (or, with `reach`, never reaches MAIN). One still on trial has not
 			// proved itself, so the PREV before it stays.
-			if ($rWhy === null && is_file($rTarget) && (!is_file($rTarget . self::TRIAL) || !is_file($rTarget . self::PREV))) {
+			if ($rWhy === null && $rTrial && is_file($rTarget) && (!is_file($rTarget . self::TRIAL) || !is_file($rTarget . self::PREV))) {
 				@unlink($rTarget . self::PREV);
 				@link($rTarget, $rTarget . self::PREV) || @copy($rTarget, $rTarget . self::PREV);
 				@chmod($rTarget . self::PREV, 0755);
 			}
 			if ($rWhy === null && @rename($rTmp, $rTarget)) {
-				@file_put_contents($rTarget . self::TRIAL, time() . ' 0' . ($rReach ? ' reach' : '') . "\n");
+				if ($rTrial) {
+					@file_put_contents($rTarget . self::TRIAL, time() . ' 0' . ($rReach ? ' reach' : '') . "\n");
+				} else {
+					@unlink($rTarget . self::TRIAL);
+				}
 				return true;
 			}
 			@unlink($rTmp);
 			return false;
 		}, $rDir);
 		return $rPlaced ? null : ($rWhy ?? 'cannot install it');
+	}
+
+	/** The installed agent's version (the first line of `xc_agent version`, run as its user), or null when it does not run. */
+	public static function agentVersion(): ?string {
+		$rVersion = self::runs(self::agentBinary(), dirname(self::agentBinary()) . '/');
+		return $rVersion === null ? null : ltrim(trim(explode("\n", $rVersion, 2)[0]), 'vV');
 	}
 
 	/**

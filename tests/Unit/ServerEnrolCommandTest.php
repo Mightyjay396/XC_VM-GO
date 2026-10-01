@@ -23,8 +23,6 @@ final class ServerEnrolCommandTest extends TestCase {
 
 	private FakeSshFleet $rSsh;
 
-	private string $rAgent;
-
 	public static function setUpBeforeClass(): void {
 		foreach (['SERVER_ID' => 1, 'TMP_PATH' => sys_get_temp_dir() . '/xcvm-test-tmp/', 'CONFIG_PATH' => sys_get_temp_dir() . '/xcvm-test-config/'] as $rName => $rValue) {
 			if (!defined($rName)) {
@@ -57,14 +55,11 @@ final class ServerEnrolCommandTest extends TestCase {
 		$this->rCrypto = new FakeClusterCrypto();
 		$this->rSsh = new FakeSshFleet();
 		$this->rSsh->rNodes['10.0.0.7'] = ['hostkey' => sha1('host-7'), 'password' => 'pw'];
-		$this->rAgent = (string) tempnam(sys_get_temp_dir(), 'agent');
-		file_put_contents($this->rAgent, 'fake agent');
 	}
 
 	protected function tearDown(): void {
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
-		@unlink($this->rAgent);
 	}
 
 	/** MAIN #1, the LB #7 (host key stored at its install) and the proxy #4. */
@@ -77,10 +72,10 @@ final class ServerEnrolCommandTest extends TestCase {
 	}
 
 	/** @return array{0: string|null, 1: string} [enrol()'s answer, what it printed] */
-	private function enrol(array $rServers, int $rServerID = 7, string $rPassword = 'pw', ?string $rExpected = null, ?callable $rAgentBinary = null): array {
+	private function enrol(array $rServers, int $rServerID = 7, string $rPassword = 'pw', ?string $rExpected = null): array {
 		ob_start();
 		try {
-			$rWhy = ServerEnrolCommand::enrol($rServers, $rServerID, 22, ['username' => 'root', 'password' => $rPassword], $rExpected, $this->rCrypto, $this->rSsh, $rAgentBinary ?? fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null);
+			$rWhy = ServerEnrolCommand::enrol($rServers, $rServerID, 22, ['username' => 'root', 'password' => $rPassword], $rExpected, $this->rCrypto, $this->rSsh);
 		} finally {
 			$rOut = (string) ob_get_clean();
 		}
@@ -171,18 +166,23 @@ final class ServerEnrolCommandTest extends TestCase {
 	}
 
 	public function testAFlowThatEnrolsNothingIsAFailure(): void {
-		// No xc_agent for the node's arch: provisionCluster returns true and
-		// leaves the node as it was. Its reason is kept, whatever the clock.
+		// No xc_agent on the node (it could not take one from its release):
+		// provisionCluster returns true and leaves the node as it was. Its
+		// reason is kept, whatever the clock.
 		ClusterClock::fix(1_700_000_000_000);
-		[$rWhy, $rOut] = $this->enrol($this->servers(), 7, 'pw', null, static fn(string $rArch): ?string => null);
-		$this->assertSame('No xc_agent for this node (amd64); the node was not enrolled and stays legacy', $rWhy, $rOut);
+		$this->rSsh->rNodes['10.0.0.7']['agent'] = false;
+		[$rWhy, $rOut] = $this->enrol($this->servers());
+		$this->assertSame('No xc_agent on the node (Failed to download xc_agent-linux-amd64); the node was not enrolled and stays legacy', $rWhy, $rOut);
 		$this->assertNull(NodeRegistry::byServer(7));
 
 		// An enrolled node keeps its identity, even one enrolled in the same second.
+		$this->rSsh->rNodes['10.0.0.7']['agent'] = true;
 		$this->assertNull($this->enrol($this->servers())[0]);
 		$rOld = NodeRegistry::byServer(7);
-		[$rWhy] = $this->enrol($this->servers(), 7, 'pw', null, static fn(string $rArch): ?string => null);
-		$this->assertSame('No xc_agent for this node (amd64); the node was not re-enrolled and keeps its previous identity', $rWhy);
+		$this->rSsh->rNodes['10.0.0.7']['agent'] = false;
+		[$rWhy] = $this->enrol($this->servers());
+		$this->assertSame('No xc_agent on the node (Failed to download xc_agent-linux-amd64); the node was not re-enrolled and keeps its previous identity', $rWhy);
+		$this->rSsh->rNodes['10.0.0.7']['agent'] = true;
 		$this->assertSame($rOld['node_uuid'], NodeRegistry::byServer(7)['node_uuid']);
 
 		// Enrolled again in the same second: a new identity is what counts.

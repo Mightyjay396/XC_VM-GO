@@ -7,7 +7,6 @@ use XcVm\Core\Cluster\AgentPaths;
 use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\MainAgentFiles;
 use XcVm\Core\Process\ProcessRunner;
-use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Domain\Cluster\MainDataPlane;
 
 /**
@@ -17,8 +16,8 @@ use XcVm\Domain\Cluster\MainDataPlane;
  * - `on`: MAIN pulls what it reads from other servers (a source probe, a
  *   node's certbot log, the relays and files of the streams it runs)
  *   through its own agent with a key of its own, listed in the signed node
- *   list. The agent binary for MAIN's arch comes from MAIN's cache
- *   (`agent_binary`); `run.sh` starts `xc_agent run -role main`.
+ *   list. The agent binary comes from its GitHub release (`fanout_binary
+ *   agent`); `run.sh` starts `xc_agent run -role main`.
  * - `off`: MAIN leaves the node list and keeps the legacy URLs. The key stays.
  * - `rekey`: a new key and generation; the old one's tickets and proofs stop.
  * - `status`: what is set, and whether the agent holds its port.
@@ -97,38 +96,16 @@ class ClusterMainDataplaneCommand implements CommandInterface {
 	}
 
 	/**
-	 * Put the verified agent binary for MAIN's arch from MAIN's cache in
-	 * place when it is missing or another; null when done, else why not.
+	 * The agent binary, which MAIN takes from its GitHub release as every node
+	 * does (`fanout_binary agent`, hourly from cron:root_signals): installed
+	 * now when it is missing and this runs as root. Null when it is there,
+	 * else why not.
 	 */
 	private static function installBinary(): ?string {
-		$rArch = ReleaseAsset::arch(php_uname('m'));
-		if ($rArch === null) {
-			return 'no xc_agent build for this machine (' . php_uname('m') . ')';
+		if (!is_executable(self::AGENT_BIN) && function_exists('posix_geteuid') && posix_geteuid() === 0) {
+			(new FanoutBinaryCommand())->execute(['agent']);
 		}
-		$rCached = AgentBinaryCommand::cached($rArch);
-		if ($rCached === null) {
-			return is_executable(self::AGENT_BIN) ? null : 'no xc_agent binary for ' . $rArch . ' in MAIN\'s cache (console.php agent_binary)';
-		}
-		if (is_file(self::AGENT_BIN) && hash_file('sha256', self::AGENT_BIN) === hash_file('sha256', $rCached)) {
-			return null;
-		}
-		$rTmp = self::AGENT_BIN . '.new';
-		if (!is_dir(dirname(self::AGENT_BIN))) {
-			@mkdir(dirname(self::AGENT_BIN), 0755, true);
-		}
-		if (!@copy($rCached, $rTmp) || !@chmod($rTmp, 0755)) {
-			@unlink($rTmp);
-			return 'cannot write ' . self::AGENT_BIN;
-		}
-		if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-			@chown($rTmp, 'xc_vm');
-			@chgrp($rTmp, 'xc_vm');
-		}
-		if (!@rename($rTmp, self::AGENT_BIN)) {
-			@unlink($rTmp);
-			return 'cannot write ' . self::AGENT_BIN;
-		}
-		return null;
+		return is_executable(self::AGENT_BIN) ? null : 'no xc_agent binary yet: run `console.php fanout_binary agent` as root';
 	}
 
 	/**

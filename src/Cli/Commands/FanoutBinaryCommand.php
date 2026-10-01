@@ -3,34 +3,44 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
-use XcVm\Core\Cluster\NodeRole;
+use XcVm\Core\Cluster\ArtefactStage;
+use XcVm\Core\Cluster\SettingsAudit;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
 
 /**
- * FanoutBinaryCommand — install/update the xc_fanout daemon binary (ADR 0003).
+ * FanoutBinaryCommand — install/update the xc_fanout daemon and the xc_agent
+ * cluster agent from their release (ADR 0003, ADR 0004).
  *
- * The daemon lives in its own repo (GIT_REPO_FANOUT) and ships its per-arch
- * static binaries as GitHub **release assets** (not committed to the tree). This
+ * Both live in their own repo (GIT_REPO_FANOUT) and ship per-arch static
+ * binaries as GitHub **release assets** (not committed to the tree), from the
+ * same tag and the same SHA256SUMS. Every node, MAIN included and whatever its
+ * cluster mode, takes them from there itself: MAIN never hands them out. This
  * command is the panel-side installer/updater, modelled on the binaries/maxmind
- * updaters. The installed version is tracked in a sidecar file
+ * updaters; cron:root_signals runs it hourly.
+ *
+ * The daemon's installed version is tracked in a sidecar file
  * (`xc_fanout.version`) rather than derived from the binary, so a locally-built
  * or custom-signed test build is not force-overwritten just because its
  * self-reported version differs from the latest GitHub release — pin it by
  * writing the file. Independently, the binary is probed with `xc_fanout
  * -version`: a binary that does not answer is treated as missing/corrupt and
- * reinstalled regardless of the recorded version. When an update is due it
- * downloads the arch-matched asset, verifies its SHA-256, installs it
- * atomically, records the version file, and restarts the daemon (the `service`
- * keepalive respawns it with the new binary). The release channel is the
- * per-repository FANOUT channel ({@see UpdateChannels}).
+ * reinstalled regardless of the recorded version.
  *
- * Usage: `console.php fanout_binary` (add `force` to reinstall the same version).
- * On MAIN, `console.php fanout_binary cache [arch…]` keeps the verified binary
- * for each arch its nodes run (AgentBinaryCommand's cache, FANOUT_PREFIX),
- * which it hands nodes over the cluster API (`node.root fanout_binary`); its
- * own arch's is kept at each install.
+ * The agent's version is what `xc_agent version` prints. A new one is put on
+ * trial where an agent runs to judge it (ArtefactStage::installAgent): run.sh
+ * puts the previous binary back if the new one keeps failing. The version
+ * tried is recorded beside it (`xc_agent.tried`), so a release that did not
+ * stay on this node is not fetched again every hour, only a newer one.
+ *
+ * When an update is due it downloads the arch-matched asset, verifies its
+ * SHA-256, installs it atomically and restarts the process (its keepalive
+ * respawns it with the new binary). The release channel is the per-repository
+ * FANOUT channel ({@see UpdateChannels}).
+ *
+ * Usage: `console.php fanout_binary [fanout|agent] [force]` (neither: both;
+ * `force` reinstalls the same version and retries one that did not stay).
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -42,31 +52,24 @@ class FanoutBinaryCommand implements CommandInterface {
 	/** Sidecar file (next to the binary) recording the installed version. */
 	private const VERSION_FILE = 'xc_fanout.version';
 
+	/** Beside the agent: the last version this command installed or tried to. */
+	public const AGENT_TRIED = 'xc_agent.tried';
+
 	public function getName(): string {
 		return 'fanout_binary';
 	}
 
 	public function getDescription(): string {
-		return 'Install/update the xc_fanout daemon binary from its release';
+		return 'Install/update the xc_fanout daemon and the xc_agent binary from their release';
 	}
 
 	public function execute(array $rArgs): int {
-		if (($rArgs[0] ?? '') === 'cache') {
-			$rArches = array_values(array_intersect($rArgs, array_unique(ReleaseAsset::ARCH_MAP)));
-			$rArches = $rArches !== [] ? $rArches : array_values(array_filter([ReleaseAsset::arch(trim(php_uname('m')))]));
-			$rFailed = 0;
-			foreach ($rArches as $rArch) {
-				$rFailed += AgentBinaryCommand::cached($rArch, in_array('force', $rArgs, true), static function (string $rLine): void {
-					echo $rLine . "\n";
-				}, AgentBinaryCommand::FANOUT_PREFIX) === null ? 1 : 0;
-			}
-			return $rFailed === 0 && $rArches !== [] ? 0 : 1;
-		}
 		if (posix_getpwuid(posix_geteuid())['name'] !== 'root') {
 			echo "Please run as root!\n";
 			return 1;
 		}
 		$rForce = in_array('force', $rArgs, true);
+		$rTools = array_values(array_intersect(['fanout', 'agent'], $rArgs)) ?: ['fanout', 'agent'];
 
 		$rMachine = trim(php_uname('m'));
 		$rArch = ReleaseAsset::arch($rMachine);
@@ -75,6 +78,37 @@ class FanoutBinaryCommand implements CommandInterface {
 			return 1;
 		}
 
+		try {
+			$rGit = new GitHubReleases(GIT_OWNER, GIT_REPO_FANOUT, UpdateChannels::fanout());
+			$rGit->setTimeout(20);
+			// `force` means "recheck everything from scratch": drop the 30-minute
+			// releases cache so a forced reinstall resolves against a fresh GitHub
+			// response instead of a stale one that could pin an old "latest".
+			if ($rForce) {
+				$rGit->clearCache();
+			}
+			$rReleases = $rGit->getReleases();
+		} catch (\Exception $e) {
+			echo 'Failed to check xc_fanout releases: ' . $e->getMessage() . "\n";
+			return 1;
+		}
+		if (empty($rReleases[0])) {
+			echo "Failed to resolve the latest xc_fanout release.\n";
+			return 1;
+		}
+		$rTag = trim($rReleases[0]);
+		$rLatest = ltrim($rTag, 'vV');
+		$rBase = ReleaseAsset::baseUrl(GIT_OWNER, GIT_REPO_FANOUT, $rTag);
+
+		$rOk = true;
+		foreach ($rTools as $rTool) {
+			$rOk = ($rTool === 'fanout' ? $this->fanout($rBase, $rArch, $rLatest, $rForce) : self::agent($rBase, $rArch, $rLatest, $rForce)) && $rOk;
+		}
+		return $rOk ? 0 : 1;
+	}
+
+	/** The daemon at $rLatest, from the release at $rBase. */
+	private function fanout(string $rBase, string $rArch, string $rLatest, bool $rForce): bool {
 		$rDir = BIN_PATH . 'xc_fanout/';
 		$rBinary = $rDir . 'xc_fanout';
 		$rVerFile = $rDir . self::VERSION_FILE;
@@ -96,84 +130,107 @@ class FanoutBinaryCommand implements CommandInterface {
 			$rInstalled = $rReported;
 		}
 
-		$rChannel = UpdateChannels::fanout();
-
-		try {
-			$rGit = new GitHubReleases(GIT_OWNER, GIT_REPO_FANOUT, $rChannel);
-			$rGit->setTimeout(20);
-			// `force` means "recheck everything from scratch": drop the 30-minute
-			// releases cache so a forced reinstall resolves against a fresh GitHub
-			// response instead of a stale one that could pin an old "latest".
-			if ($rForce) {
-				$rGit->clearCache();
-			}
-			$rReleases = $rGit->getReleases();
-		} catch (\Exception $e) {
-			echo 'Failed to check xc_fanout releases: ' . $e->getMessage() . "\n";
-			return 1;
-		}
-		if (empty($rReleases[0])) {
-			echo "Failed to resolve the latest xc_fanout release.\n";
-			return 1;
-		}
-		$rTag = trim($rReleases[0]);
-		$rLatest = ltrim($rTag, 'vV');
-
 		if (!$rForce && $rHealthy && $rInstalled !== null && $rInstalled === $rLatest) {
 			echo "xc_fanout is up to date ({$rInstalled}).\n";
-			return 0;
+			return true;
 		}
 		$rReason = !$rHealthy
 			? 'binary not responding (missing/corrupt)'
 			: 'installed=' . ($rInstalled ?? 'none') . ', latest=' . $rLatest;
 		echo 'xc_fanout: ' . $rReason . " → updating\n";
 
-		$rBase = ReleaseAsset::baseUrl(GIT_OWNER, GIT_REPO_FANOUT, $rTag);
 		$rAsset = 'xc_fanout-linux-' . $rArch;
 
 		if (!is_dir($rDir) && !@mkdir($rDir, 0755, true)) {
 			echo "Failed to create {$rDir}\n";
-			return 1;
+			return false;
 		}
 		$rTmp = $rDir . '.xc_fanout.new';
 
 		if (!ReleaseAsset::download($rBase . $rAsset, $rTmp)) {
 			echo "Failed to download {$rAsset}\n";
 			@unlink($rTmp);
-			return 1;
+			return false;
 		}
 
 		$rExpected = ReleaseAsset::expectedSha256($rBase . 'SHA256SUMS', $rAsset);
 		if ($rExpected === null) {
 			echo "Failed to fetch SHA256SUMS\n";
 			@unlink($rTmp);
-			return 1;
+			return false;
 		}
 		if (!hash_equals($rExpected, hash_file('sha256', $rTmp))) {
 			echo "Checksum mismatch for {$rAsset} — aborting\n";
 			@unlink($rTmp);
-			return 1;
+			return false;
 		}
 
 		$rFailed = self::install($rTmp, $rLatest);
 		if ($rFailed !== null) {
 			echo $rFailed . " — aborting\n";
-			return 1;
-		}
-		// MAIN keeps its own arch's binary for the nodes it serves.
-		if (NodeRole::mainBuild()) {
-			AgentBinaryCommand::cached($rArch, false, null, AgentBinaryCommand::FANOUT_PREFIX);
+			return false;
 		}
 		echo "xc_fanout {$rLatest} installed.\n";
-		return 0;
+		return true;
+	}
+
+	/**
+	 * The agent at $rLatest, from the release at $rBase, put where run.sh
+	 * starts it (as the agent's user, ArtefactStage::installAgent). On trial
+	 * only where an agent runs to judge it: a trial nobody runs would be
+	 * judged at the node's enrolment, long past, and roll the binary back.
+	 */
+	public static function agent(string $rBase, string $rArch, string $rLatest, bool $rForce): bool {
+		$rTarget = ArtefactStage::agentBinary();
+		$rDir = dirname($rTarget) . '/';
+		$rInstalled = ArtefactStage::agentVersion();
+		if (!$rForce && $rInstalled === $rLatest) {
+			echo "xc_agent is up to date ({$rInstalled}).\n";
+			return true;
+		}
+		if (!$rForce && ltrim(trim((string) @file_get_contents($rDir . self::AGENT_TRIED)), 'vV') === $rLatest) {
+			echo "xc_agent {$rLatest} did not stay on this node: kept on " . ($rInstalled ?? 'none') . " until a newer release (force retries it).\n";
+			return true;
+		}
+		echo 'xc_agent: installed=' . ($rInstalled ?? 'none') . ', latest=' . $rLatest . " → updating\n";
+		if (!is_dir($rDir) && (!@mkdir($rDir, 0755, true) || !@chown($rDir, 'xc_vm') || !@chgrp($rDir, 'xc_vm'))) {
+			echo "Failed to create {$rDir}\n";
+			return false;
+		}
+		$rAsset = 'xc_agent-linux-' . $rArch;
+		// Root's own temp file: installAgent copies it in as the agent's user.
+		$rTmp = (string) tempnam(sys_get_temp_dir(), 'xc_agent');
+		try {
+			if (!ReleaseAsset::download($rBase . $rAsset, $rTmp)) {
+				echo "Failed to download {$rAsset}\n";
+				return false;
+			}
+			$rExpected = ReleaseAsset::expectedSha256($rBase . 'SHA256SUMS', $rAsset);
+			if ($rExpected === null || !hash_equals($rExpected, (string) hash_file('sha256', $rTmp))) {
+				echo "Checksum mismatch or missing for {$rAsset} — aborting\n";
+				return false;
+			}
+			SettingsAudit::asAgentUser(static fn(): bool => @file_put_contents($rDir . self::AGENT_TRIED, $rLatest . "\n") !== false, $rDir);
+			$rRunning = trim((string) shell_exec('pgrep -u xc_vm -x xc_agent 2>/dev/null')) !== '';
+			$rWhy = ArtefactStage::installAgent(['path' => $rTmp, 'grant' => ['size' => (int) filesize($rTmp), 'sha256' => $rExpected]], $rTarget, $rRunning);
+		} finally {
+			@unlink($rTmp);
+		}
+		if ($rWhy !== null) {
+			echo "xc_agent {$rLatest} not installed: {$rWhy}\n";
+			return false;
+		}
+		// run.sh restarts it with the new binary.
+		shell_exec('pkill -u xc_vm -x xc_agent 2>/dev/null');
+		echo "xc_agent {$rLatest} installed.\n";
+		return true;
 	}
 
 	/**
 	 * Install $rTmp, a verified xc_fanout binary of version $rVersion in
-	 * bin/xc_fanout/ (the download, or the copy root staged from MAIN's
-	 * grant): it must run here (`-version`), then it replaces the binary
-	 * atomically, the version is recorded beside it, and the daemon restarts.
-	 * $rTmp is gone either way. Null once installed, else why not.
+	 * bin/xc_fanout/: it must run here (`-version`), then it replaces the
+	 * binary atomically, the version is recorded beside it, and the daemon
+	 * restarts. $rTmp is gone either way. Null once installed, else why not.
 	 */
 	public static function install(string $rTmp, string $rVersion): ?string {
 		$rDir = BIN_PATH . 'xc_fanout/';

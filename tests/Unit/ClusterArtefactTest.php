@@ -86,15 +86,15 @@ final class ClusterArtefactTest extends TestCase {
 		// No cluster bus: never one at the checkout's default socket.
 		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '/cluster.sock');
 		$this->rDir = sys_get_temp_dir() . '/artefact_main_' . bin2hex(random_bytes(4)) . '/';
-		foreach (['video', 'modules_archives', 'agent_cache', 'core_cache'] as $rSub) {
+		foreach (['video', 'modules_archives'] as $rSub) {
 			mkdir($this->rDir . $rSub, 0755, true);
 		}
-		ArtefactRegistry::useDirs($this->rDir . 'modules_archives/', $this->rDir . 'agent_cache/', $this->rDir . 'core_cache/');
+		ArtefactRegistry::useDirs($this->rDir . 'modules_archives/');
 		SettingsManager::set($this->rSettings);
 	}
 
 	protected function tearDown(): void {
-		ArtefactRegistry::useDirs(null, null);
+		ArtefactRegistry::useDirs(null);
 		ClusterRoute::useCrypto(null);
 		ClusterBus::useSocket(null);
 		ClusterClock::fix(null);
@@ -228,34 +228,16 @@ final class ClusterArtefactTest extends TestCase {
 		$this->assertSame(['offair/not_on_air', 'custom_offline.ts', 1880, hash_file('sha256', $rPath)], [$rDesc['id'], $rDesc['name'], $rDesc['size'], $rDesc['sha256']]);
 		$this->assertSame(['offair/not_on_air'], ArtefactRegistry::offAirIds($this->rSettings), 'the off-air names with a custom video, and only those');
 
-		// A module archive and the pinned agent, from MAIN's own directories.
+		// A module archive, from MAIN's own directory.
 		file_put_contents($this->rDir . 'modules_archives/radio_1.2.0.zip', 'PK' . str_repeat('z', 100));
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-arm64', str_repeat("\x7f", 300));
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-arm64.version', "1.4.2\n");
 		$this->assertSame(['radio_1.2.0.zip', 102], [ArtefactRegistry::describe('module/radio/1.2.0', [])['name'], ArtefactRegistry::describe('module/radio/1.2.0', [])['size']]);
-		$rAgent = ArtefactRegistry::describe('agent/arm64', []);
-		$this->assertSame(['xc_agent-linux-arm64', '1.4.2'], [$rAgent['name'], $rAgent['version']]);
-		$this->assertNull(ArtefactRegistry::describe('agent/amd64', []), 'not cached');
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64', 'x');
-		$this->assertNull(ArtefactRegistry::describe('agent/amd64', []), 'a binary without its verified version is not pinned');
-
-		// The fanout daemon from the same cache, and xcvm_core's archive for a
-		// PHP group: they follow the agent's path (plan, section 5).
-		file_put_contents($this->rDir . 'agent_cache/xc_fanout-linux-arm64', str_repeat("\x7f", 200));
-		file_put_contents($this->rDir . 'agent_cache/xc_fanout-linux-arm64.version', "0.14.1\n");
-		$rFanout = ArtefactRegistry::describe('fanout/arm64', []);
-		$this->assertSame(['fanout', 'xc_fanout-linux-arm64', '0.14.1', 200], [$rFanout['kind'], $rFanout['name'], $rFanout['version'], $rFanout['size']]);
-		$this->assertSame(['agent', '1.4.2'], [ArtefactRegistry::describe('agent/arm64', [])['kind'], ArtefactRegistry::describe('agent/arm64', [])['version']], 'the agent and the daemon stay apart');
-		file_put_contents($this->rDir . 'core_cache/xcvm_core-php8.1.tar.gz', str_repeat("\x1f", 400));
-		file_put_contents($this->rDir . 'core_cache/xcvm_core-php8.1.tar.gz.version', "2.3.3\n");
-		$rCore = ArtefactRegistry::describe('core/php8.1', []);
-		$this->assertSame(['core', 'xcvm_core-php8.1.tar.gz', '2.3.3', 400], [$rCore['kind'], $rCore['name'], $rCore['version'], $rCore['size']]);
-		$this->assertNull(ArtefactRegistry::describe('core/php8.4', []), 'not cached');
 
 		// Anything else: never a path, never outside the registry.
 		foreach ([
 			'offair/../../etc/passwd', 'offair/unknown', 'module/../../../etc/passwd/1', 'module/radio/../../x', 'module/Radio/1.2.0',
-			'module/radio/1..2', 'agent/../../bin/sh', 'agent/sparc', 'fanout/sparc', 'fanout/../x', 'core/php', 'core/php8', 'core/../x', 'core/php8.1/x', '/etc/passwd', 'file:///etc/passwd', '', 'offair/not_on_air/', 'offair/not_on_air/x',
+			'module/radio/1..2', 'agent/../../bin/sh', 'agent/sparc', 'fanout/sparc', 'fanout/../x', 'core/php', 'core/php8', 'core/../x', 'core/php8.1/x',
+			// The binaries every node takes from GitHub: MAIN serves none of them.
+			'agent/amd64', 'agent/arm64', 'fanout/amd64', 'core/php8.1', '/etc/passwd', 'file:///etc/passwd', '', 'offair/not_on_air/', 'offair/not_on_air/x',
 		] as $rId) {
 			$this->assertNull(ArtefactRegistry::locate($rId, $this->rSettings), $rId);
 			$this->assertFalse(ArtefactStage::validId($rId), $rId);
@@ -478,45 +460,45 @@ final class ClusterArtefactTest extends TestCase {
 	}
 
 	/**
-	 * Pinned binaries and module archives ride the `node.root` command that
-	 * needs them (plan section 7, "Root artefacts"), for root to stage and
-	 * check before it runs the action: the binary happy path.
+	 * A custom module's archive rides the `node.root` command that needs it
+	 * (plan section 7, "Root artefacts"), for root to stage and check before
+	 * it runs the action. The agent, the fanout daemon and xcvm_core are not
+	 * MAIN's to hand out: every node takes them from GitHub, and an older
+	 * MAIN's actions for them are not root actions any more.
 	 */
 	public function testRootActionsCarryTheirArtefactsGrant(): void {
 		$rKeys = $this->activeNode();
-		$rBinary = random_bytes(9000);
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64', $rBinary);
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64.version', "1.5.0\n");
-		file_put_contents($this->rDir . 'modules_archives/radio_2.0.1.zip', 'PK' . str_repeat('m', 700));
+		$rArchive = 'PK' . random_bytes(9000);
+		file_put_contents($this->rDir . 'modules_archives/radio_2.0.1.zip', $rArchive);
 
-		$this->assertTrue(NodeActions::agentBinary(self::SID, 'amd64'));
 		$this->assertTrue(NodeActions::send(self::SID, ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '2.0.1']));
 		$this->assertTrue(NodeActions::send(self::SID, ['action' => 'install_module', 'source' => 'platform', 'name' => 'store', 'version' => '1.0.0']));
 		$this->assertTrue(NodeActions::reloadNginx(self::SID));
 		$rCommands = $this->commands($rKeys);
-		$this->assertSame(['node.root', 'node.root', 'node.root', 'node.root'], array_column($rCommands, 'type'));
-		[$rAgent, $rModule, $rStore, $rReload] = array_column($rCommands, 'args');
-		$this->assertSame(['agent_binary', 'amd64', '1.5.0'], [$rCommands[0]['action'], $rAgent['arch'], $rAgent['version']]);
-		$this->assertSame(['agent/amd64', 'xc_agent-linux-amd64', 9000, hash('sha256', $rBinary), $rCommands[0]['exp']], [$rAgent['artefact']['id'], $rAgent['artefact']['name'], $rAgent['artefact']['size'], $rAgent['artefact']['sha256'], $rAgent['artefact']['exp']]);
-		$this->assertSame(['module/radio/2.0.1', 702], [$rModule['artefact']['id'], $rModule['artefact']['size']]);
+		$this->assertSame(['node.root', 'node.root', 'node.root'], array_column($rCommands, 'type'));
+		[$rModule, $rStore, $rReload] = array_column($rCommands, 'args');
+		$this->assertSame(['module/radio/2.0.1', 'radio_2.0.1.zip', 9002, hash('sha256', $rArchive), $rCommands[0]['exp']], [$rModule['artefact']['id'], $rModule['artefact']['name'], $rModule['artefact']['size'], $rModule['artefact']['sha256'], $rModule['artefact']['exp']]);
 		$this->assertArrayNotHasKey('artefact', $rStore, 'a store module comes from the platform, not MAIN');
 		$this->assertArrayNotHasKey('artefact', $rReload);
 
 		[$rGot] = $this->fetch($rKeys, $rCommands[0]['cmd_id'], 4000);
-		$this->assertSame($rBinary, $rGot);
+		$this->assertSame($rArchive, $rGot);
 
-		// No pinned binary for the arch: nothing is sent, and never through the signals table.
-		$this->assertFalse(NodeActions::agentBinary(self::SID, 'arm64'));
-		$this->assertCount(4, $this->commands($rKeys));
+		foreach (['agent_binary', 'fanout_binary', 'xcvm_core'] as $rAction) {
+			try {
+				NodeActions::send(self::SID, ['action' => $rAction, 'arch' => 'amd64']);
+				$this->fail($rAction . ' was queued');
+			} catch (\InvalidArgumentException $rE) {
+				$this->assertStringContainsString('Unknown node root action: ' . $rAction, $rE->getMessage());
+			}
+		}
+		$this->assertCount(3, $this->commands($rKeys));
 	}
 
-	/** Today's agent never names `artefact` at hello: its root commands stay as they were, and no binary is pushed to it. */
+	/** Today's agent never names `artefact` at hello: its root commands stay as they were. */
 	public function testANodeWithoutTheFeatureKeepsTheLegacyPaths(): void {
 		$rKeys = $this->activeNode(null);
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64', 'bin');
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64.version', "1.5.0\n");
 		file_put_contents($this->rDir . 'modules_archives/radio_2.0.1.zip', 'PK');
-		$this->assertFalse(NodeActions::agentBinary(self::SID, 'amd64'));
 		$this->assertTrue(NodeActions::send(self::SID, ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '2.0.1']));
 		$rCommands = $this->commands($rKeys);
 		$this->assertCount(1, $rCommands);
@@ -527,8 +509,6 @@ final class ClusterArtefactTest extends TestCase {
 	public function testGrantsNeedALicence(): void {
 		$rKeys = $this->activeNode();
 		$this->video('not_on_air', 'custom_offline.ts', str_repeat('n', 3000));
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64', 'bin');
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64.version', "1.5.0\n");
 		// Granted while licensed.
 		$this->assertSame(1, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings));
 		$rGrant = $this->commands($rKeys)[0]['cmd_id'];
@@ -536,7 +516,6 @@ final class ClusterArtefactTest extends TestCase {
 		$this->rCrypto->rLicensed = false;
 		$this->video('banned', 'custom_banned.ts', 'b');
 		$this->assertSame(0, ArtefactGrants::offerOffAir($this->rCrypto, $this->rSettings), 'nothing signed without a licence');
-		$this->assertFalse(NodeActions::agentBinary(self::SID, 'amd64'));
 		$this->assertCount(1, $this->commands($rKeys));
 		// In graceful mode the session still works, and a grant signed before the lapse still serves.
 		[$rRes, $rCtx] = $this->call('artefact', ['grant' => $rGrant, 'offset' => 0, 'length' => 10], $rKeys);
@@ -621,10 +600,8 @@ final class ClusterArtefactTest extends TestCase {
 		$this->denial($rRes, $rReq, 403, 'GRANT_INVALID');
 	}
 
-	/** agent_binary rides the cluster API alone: for a node it does not route, nothing is queued, and never as a signals row. */
+	/** rotate_sign_key rides the cluster API alone: for a node it does not route, nothing is queued, and never as a signals row. */
 	public function testAnActionOnlyTheClusterCarriesIsNeverASignalsRow(): void {
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64', 'bin');
-		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64.version', "1.5.0\n");
 		$rSink = new class implements SignalSink {
 			/** @var list<array<string, mixed>> */
 			public array $rRows = [];
@@ -640,7 +617,7 @@ final class ClusterArtefactTest extends TestCase {
 		};
 		SignalDispatcher::useSink($rSink);
 		try {
-			$this->assertFalse(NodeActions::agentBinary(9, 'amd64'), 'a legacy node');
+			$this->assertFalse(NodeActions::send(9, ['action' => 'rotate_sign_key']), 'a legacy node');
 			$this->assertSame([], $rSink->rRows);
 			$this->assertTrue(NodeActions::reloadNginx(9));
 			$this->assertCount(1, $rSink->rRows, 'what the signals table does carry');
@@ -659,7 +636,7 @@ final class ClusterArtefactTest extends TestCase {
 			$rAll = $rKept();
 			$rAll['offair/not_on_air'] = $rOver + $rAll['offair/not_on_air'];
 			ClusterMeta::set('artefact_hashes', (string) json_encode($rAll));
-			ArtefactRegistry::useDirs($this->rDir . 'modules_archives/', $this->rDir . 'agent_cache/');
+			ArtefactRegistry::useDirs($this->rDir . 'modules_archives/');
 		};
 		$rFake = str_repeat('f', 64);
 		$rForge(['sha256' => $rFake]);

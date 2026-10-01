@@ -41,7 +41,6 @@ final class ClusterSettings {
 		'cluster_ingest_concurrency' => [6, 1, 64],
 		'servers_stats_retention_days' => [30, 1, 365],
 		'cluster_audit_retention_days' => [30, 1, 365],
-		'cluster_agent_upgrade_parallel' => [1, 1, 50],
 		'cluster_db_allowlist' => [0, 0, 1],
 	];
 
