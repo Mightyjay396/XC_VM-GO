@@ -21,12 +21,8 @@ rPath = os.path.dirname(os.path.realpath(__file__))
 
 # Distribuciones soportadas
 SUPPORTED_DISTROS = {
-    "ubuntu": ["18.04", "20.04", "22.04", "24.04"],
+    "ubuntu": ["20.04", "22.04", "24.04"],
     "debian": ["12", "13"],
-    "rocky": ["8", "9"],
-    "almalinux": ["8", "9"],
-    "centos": ["7", "8"],
-    "rhel": ["8", "9"],
 }
 
 PACKAGES = {
@@ -925,13 +921,11 @@ def check_supported_distro(dist_info):
         else:
             # Check if any supported version starts with the same major version
             for supported_version in SUPPORTED_DISTROS[dist_id]:
-                if supported_version.startswith(version.split(".")[0]):
+                if supported_version.split(".")[0] == version.split(".")[0]:
                     return True
 
-    # If not in list but is a known family, we'll try anyway
-    if dist_info["family"] in ["debian", "redhat"]:
-        return True
-
+    # Anything else (Ubuntu 18, Debian 11, the RHEL family) has no ffmpeg or
+    # runtime builds: the operator is warned and asked before going on.
     return False
 
 
@@ -2494,6 +2488,15 @@ if __name__ == "__main__":
         printc("Downloading proxy node archive...", col.OKBLUE)
         run_command(
             f"sudo -u xc_vm /home/xc_vm/bin/php/bin/php {startup_cmd} cron:proxy --force"
+        )
+
+    # Fetch the ffmpeg builds for this distribution (XC_VM_FFMPEG). They are no
+    # longer bundled in the release archive; cron:root_signals keeps them current
+    # daily. Runs as xc_vm (owner of bin/ffmpeg_bin/); non-fatal, like the above.
+    if os.path.exists(startup_cmd):
+        printc("Downloading the ffmpeg builds...", col.OKBLUE)
+        run_command(
+            f"sudo -u xc_vm /home/xc_vm/bin/php/bin/php {startup_cmd} ffmpeg"
         )
 
     time.sleep(3)

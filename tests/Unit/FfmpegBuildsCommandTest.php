@@ -24,7 +24,9 @@ final class FfmpegBuildsCommandTest extends TestCase {
 		$this->assertSame('ubuntu_22', FfmpegBuildsCommand::distro('ubuntu', '22.04'));
 		$this->assertSame('ubuntu_20', FfmpegBuildsCommand::distro('ubuntu', '20.04'));
 		$this->assertSame('debian_12', FfmpegBuildsCommand::distro('debian', '12'));
-		$this->assertSame('rhel_9', FfmpegBuildsCommand::distro('rocky', '9.4'));
+		$this->assertSame('debian_13', FfmpegBuildsCommand::distro('debian', '13'));
+		$this->assertNull(FfmpegBuildsCommand::distro('rocky', '9.4'), 'not supported: no builds');
+		$this->assertNull(FfmpegBuildsCommand::distro('ubuntu', '18.04'));
 		$this->assertNull(FfmpegBuildsCommand::distro('arch', ''));
 		$this->assertSame(['4.0', '7.1', '8.1'], FfmpegBuildsCommand::LABELS);
 	}

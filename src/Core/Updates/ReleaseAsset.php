@@ -71,15 +71,15 @@ final class ReleaseAsset {
 
 	/**
 	 * The runtime bundle's asset for a distribution (os-release's ID and
-	 * VERSION_ID), as bin/install/update_binaries.sh picks it; null for one it
-	 * does not serve.
+	 * VERSION_ID), as bin/install/update_binaries.sh picks it; null for one
+	 * XC_VM does not support (only Ubuntu 20, 22, 24 and Debian 12, 13: not
+	 * Ubuntu 18, Debian 11 or the RHEL family).
 	 */
 	public static function bundleFor(string $rId, string $rVersion): ?string {
 		$rMajor = (int) explode('.', $rVersion)[0];
 		return match (true) {
-			$rId === 'ubuntu' && in_array($rMajor, [18, 20, 22, 24], true) => 'ubuntu_' . $rMajor . '.tar.gz',
-			$rId === 'debian' && in_array($rMajor, [11, 12, 13], true) => 'debian_' . $rMajor . '.tar.gz',
-			in_array($rId, ['rocky', 'almalinux', 'rhel', 'centos'], true) && in_array($rMajor, [8, 9], true) => 'rhel_' . $rMajor . '.tar.gz',
+			$rId === 'ubuntu' && in_array($rMajor, [20, 22, 24], true) => 'ubuntu_' . $rMajor . '.tar.gz',
+			$rId === 'debian' && in_array($rMajor, [12, 13], true) => 'debian_' . $rMajor . '.tar.gz',
 			default => null,
 		};
 	}

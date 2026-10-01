@@ -11,6 +11,7 @@ use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\PhpFpmPools;
 use XcVm\Core\Updates\GitHubReleases;
+use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Cluster\ClusterCli;
 use XcVm\Domain\Cluster\ClusterPolicy;
@@ -323,31 +324,9 @@ class LbInstallFlow {
 		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php status 1');
 		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php startup');
 		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:servers');
-	}
-
-	private static function getDistributionBinaryName(string $rDistID, string $rVersion): ?string {
-		$rMajor = explode('.', $rVersion)[0];
-		switch ($rDistID) {
-			case 'ubuntu':
-				if (in_array($rMajor, ['18', '20', '22', '24'])) {
-					return 'ubuntu_' . $rMajor . '.tar.gz';
-				}
-				break;
-			case 'debian':
-				if (in_array($rMajor, ['12', '13'])) {
-					return 'debian_' . $rMajor . '.tar.gz';
-				}
-				break;
-			case 'rocky':
-			case 'almalinux':
-			case 'rhel':
-			case 'centos':
-				if (in_array($rMajor, ['8', '9'])) {
-					return 'rhel_' . $rMajor . '.tar.gz';
-				}
-				break;
-		}
-		return null;
+		// The node's ffmpeg builds, which no release archive carries: before its
+		// first stream (cron:root_signals keeps them current daily).
+		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php ffmpeg');
 	}
 
 	/**
@@ -381,7 +360,7 @@ class LbInstallFlow {
 	}
 
 	private static function installDistributionBinaries($rConn, callable $rRunSSH, string $rDistID, string $rVersion): bool {
-		$rBinaryName = self::getDistributionBinaryName($rDistID, $rVersion);
+		$rBinaryName = ReleaseAsset::bundleFor($rDistID, $rVersion);
 		if ($rBinaryName === null) {
 			echo "Unsupported distribution for binaries: {$rDistID} {$rVersion}\n";
 			return false;

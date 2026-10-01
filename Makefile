@@ -465,10 +465,6 @@ set_permissions:
 	@chmod 0550 $(TEMP_DIR)/bin/network 2>/dev/null || true
 	@chmod 0550 $(TEMP_DIR)/bin/network.py 2>/dev/null || true
 
-	# FFmpeg executables
-	@find $(TEMP_DIR)/bin/ffmpeg_bin -type f \( -name 'ffmpeg' -o -name 'ffprobe' \) \
-		-exec chmod 0551 {} + 2>/dev/null || true
-
 	# Nginx binaries
 	@find $(TEMP_DIR)/bin/nginx -type d -exec chmod 750 {} + 2>/dev/null || true
 	@find $(TEMP_DIR)/bin/nginx -type f -exec chmod 550 {} + 2>/dev/null || true

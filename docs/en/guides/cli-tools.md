@@ -171,7 +171,8 @@ fetched there again until a newer one is out (`xc_agent.tried`; `force` retries
 it).
 
 `ffmpeg` fetches `ffmpeg_<label>_<distro>.tar.gz` for each label the settings page
-offers, built in this distribution's container so its glibc matches the node's,
+offers (the release archives carry no ffmpeg: the installer and an LB's install
+run it too), built in this distribution's container so its glibc matches the node's,
 and swaps each into `bin/ffmpeg_bin/<label>/` only once it starts here.
 `ffmpeg_bin/ffmpeg_version.json` records each label's release; a launch that did
 not finish (killed, GitHub unreachable) is tried again after an hour. XUI's 4.0 is

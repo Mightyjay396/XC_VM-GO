@@ -113,22 +113,15 @@ ASSET_NAME=""
 case "$DIST_ID" in
     ubuntu)
         case "$DIST_MAJOR" in
-            18|20|22|24)
+            20|22|24)
                 ASSET_NAME="ubuntu_${DIST_MAJOR}.tar.gz"
                 ;;
         esac
         ;;
     debian)
         case "$DIST_MAJOR" in
-            11|12|13)
+            12|13)
                 ASSET_NAME="debian_${DIST_MAJOR}.tar.gz"
-                ;;
-        esac
-        ;;
-    rocky|almalinux|rhel|centos)
-        case "$DIST_MAJOR" in
-            8|9)
-                ASSET_NAME="rhel_${DIST_MAJOR}.tar.gz"
                 ;;
         esac
         ;;
