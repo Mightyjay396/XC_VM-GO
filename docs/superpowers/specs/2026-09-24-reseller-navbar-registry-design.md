@@ -1,7 +1,7 @@
 # Reseller navbar registry — design spec
 
 **Date:** 2026-09-24
-**Status:** approved (brainstorming), pending implementation plan
+**Status:** implemented (`ResellerNavbarRegistry`, `CoreResellerNavbarProvider` and `ResellerNavbarProviderInterface`; the reseller sidebar renders from the registry).
 
 ## Problem
 
