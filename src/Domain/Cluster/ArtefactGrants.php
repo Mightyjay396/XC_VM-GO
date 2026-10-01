@@ -72,6 +72,14 @@ final class ArtefactGrants {
 		return CommandBus::accepts($rNode) && in_array(self::FEATURE, explode(',', (string) ($rNode['features'] ?? '')), true);
 	}
 
+	/** Said by an agent whose node's PHP installs the fanout daemon and xcvm_core MAIN grants (ClusterExecCommand::ROOT_BINARIES). */
+	public const FEATURE_BINARIES = 'artefact_binaries';
+
+	/** May this node be granted the fanout daemon and xcvm_core? As takes(), and its agent says so: an older node's root refuses them. */
+	public static function takesBinaries(?array $rNode): bool {
+		return self::takes($rNode) && in_array(self::FEATURE_BINARIES, explode(',', (string) ($rNode['features'] ?? '')), true);
+	}
+
 	/**
 	 * A grant for an artefact ArtefactRegistry::describe() found. Its `exp`
 	 * is its command's (CommandBus::enqueue()).
@@ -117,7 +125,8 @@ final class ArtefactGrants {
 			default => null,
 		};
 		if ($rId !== null) {
-			$rFound = self::takes(NodeRegistry::byServer($rServerID)) ? ArtefactRegistry::describe($rId, []) : null;
+			$rNode = NodeRegistry::byServer($rServerID);
+			$rFound = ($rAction === 'agent_binary' ? self::takes($rNode) : self::takesBinaries($rNode)) ? ArtefactRegistry::describe($rId, []) : null;
 			return $rFound === null ? null : ['version' => (string) $rFound['version']] + $rPayload + ['artefact' => self::grant($rFound)];
 		}
 		return $rPayload;

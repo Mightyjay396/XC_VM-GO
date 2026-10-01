@@ -5144,15 +5144,22 @@ the agent's path.
   itself, and may be ahead of MAIN.
 - **Mode 2.** A node in mode 2 no longer updates them from GitHub (`cron:root_signals`' hourly
   checks): MAIN is its only source.
+- **The agent's contract.** It takes the grants `fanout/<arch>` and `core/php<M>.<m>`, and says
+  `artefact_binaries` at hello, beside `artefact`, while the node's `cluster:exec --types` lists
+  `root:fanout_binary` and `root:xcvm_core` (`ClusterExecCommand::ROOT_BINARIES`). MAIN grants
+  the two only to such a node (`ArtefactGrants::takesBinaries`): an older PHP's root would refuse
+  them, and a refusal holds the version's rollout for the fleet.
 
 **Not built / limits.**
 - **MAIN holds what it was asked to cache**, and its own arch and PHP. A node in mode 2 of another
   arch or PHP gets no update until an operator caches that one.
 - **Pinned in mode 2 only.** A node in mode 1 may run a newer version from GitHub.
-- **An agent that takes no artefacts** gets neither, as with the agent.
+- **An agent that takes no artefacts**, or does not say `artefact_binaries`, gets neither.
 
 **Tests.** `AgentUpgradeTest::testTheFanoutDaemonAndXcvmCoreFollowTheAgentsPath` (behind, ahead,
 no copy for its PHP, mode 0, nothing reported, no artefacts, each kind's own offers);
 `ClusterArtefactTest::testTheRegistryServesOnlyWhatMainNamesItself` (both kinds, pinned by their
 version, and the ids refused); `ArtefactHashRefusalTest::testActionsTakeOnlyAStagedArtefact`
-(neither action takes anything but root's staged copy); `ClusterTelemetryTest::testTheNodesVersionsComeAlong`.
+(neither action takes anything but root's staged copy); `ClusterTelemetryTest::testTheNodesVersionsComeAlong`;
+`ClusterExecCommandTest::testItSaysWhichCommandTypesItRuns`; agent `TestArtefactBinariesFollowThePHP`,
+`TestArtefactGrantShape`.

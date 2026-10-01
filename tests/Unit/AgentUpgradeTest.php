@@ -97,7 +97,7 @@ final class AgentUpgradeTest extends TestCase {
 	 * @return list<array{0: int, 1: string}>
 	 */
 	private function pushKind(string $rKind, array $rVersions, array $rOverride = []): array {
-		$this->rDb->rNodes = [$this->node(['watchdog_data' => json_encode(['versions' => $rVersions])] + $rOverride)];
+		$this->rDb->rNodes = [$this->node(['watchdog_data' => json_encode(['versions' => $rVersions])] + $rOverride + ['features' => 'artefact,artefact_binaries'])];
 		$rSent = [];
 		AgentUpgrades::push(function (int $rServerID, string $rFor) use (&$rSent): bool {
 			$rSent[] = [$rServerID, $rFor];
@@ -127,6 +127,7 @@ final class AgentUpgradeTest extends TestCase {
 		$this->assertSame([], $this->pushKind('fanout', ['xc_fanout' => '0.13.7'], ['server_id' => 9, 'mode' => 0]), 'mode 0: GitHub, as before');
 		$this->assertSame([], $this->pushKind('fanout', [], ['server_id' => 10]), 'a node that reports no daemon');
 		$this->assertSame([], $this->pushKind('core', ['xcvm_core' => '2.3.1', 'php' => 'php8.1'], ['server_id' => 11, 'features' => '']), 'an agent that takes no artefacts');
+		$this->assertSame([], $this->pushKind('fanout', ['xc_fanout' => '0.13.7', 'php' => 'php8.1'], ['server_id' => 12, 'features' => 'artefact']), 'an agent whose node\'s PHP does not install them');
 
 		// Each kind keeps its own offers: the agent's rollout is untouched.
 		$this->assertArrayHasKey('fanout_push:5', $this->rDb->rMeta);

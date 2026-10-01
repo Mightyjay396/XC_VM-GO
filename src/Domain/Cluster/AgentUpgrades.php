@@ -102,8 +102,9 @@ final class AgentUpgrades {
 			if ($rKind !== 'agent' && ((int) ($rNode['mode'] ?? 0) < 1 || version_compare($rHas, $rWant, '>'))) {
 				continue;
 			}
-			// Only an agent that downloads artefacts can be given a binary.
-			if (!ArtefactGrants::takes($rNode)) {
+			// Only an agent that downloads artefacts can be given a binary (and
+			// the daemon or the extension, one whose node's PHP installs them).
+			if (!($rKind === 'agent' ? ArtefactGrants::takes($rNode) : ArtefactGrants::takesBinaries($rNode))) {
 				continue;
 			}
 			$rServerID = (int) $rNode['server_id'];
