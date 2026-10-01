@@ -5271,3 +5271,17 @@ this branch), with each change put back afterwards.
     second fix also reaches panels whose `bin/install` an update never refreshes.
 - **The test LB's link to the default E2E source** (a multi-variant HLS) was too slow for the
   monitor's 15 s probe. The LB specs ran with a single-variant source (`XC_E2E_STREAM_SOURCE`).
+- **Every enrolled LB read as unlicensed, and served its live viewers without the daemon.**
+  - **Why:** on a node, `xcvm_core`'s licence verdict (`XC_VM::license_valid()`) is a live
+    cluster lease, since a node holds no activation key. Only `NodeLease::judge()` handed the
+    extension the agent's lease, and only with `lb_lease_fence` on, which ships off. So the
+    extension held none.
+  - **What it did:** `LicenseGate` sent every live viewer down the legacy path. A viewer MAIN
+    redirected to the test LB was served from the on-disk segments, while the daemon held the
+    stream with no viewers (ADR 0003, C4).
+  - **The fix:** `LicenseGate::licensed()` now hands the extension the lease first
+    (`NodeLease::feedExtension()`), whatever the fence switch says. The switch still decides
+    only whether the node fences. With the extension's lease file removed, the test LB stored
+    the agent's lease again within 30 s, by itself, and the daemon then served the redirected
+    viewer (`lb-delivery-kinds`, C4).
+  - **Test:** `LeaseVerdictCacheTest::testTheLicenceGateFeedsTheLeaseWithTheSwitchOff`.
