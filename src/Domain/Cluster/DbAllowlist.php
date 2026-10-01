@@ -12,8 +12,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *
  * - loopback, and MAIN's own `server_ip` / `private_ip`;
  * - every other `servers` row, LBs and proxies alike (a proxy may hold a
- *   `db_grant`), except LBs whose cluster node runs in mode 2, which no longer
- *   use either port;
+ *   `db_grant`), except LBs whose cluster node runs in mode 2 and proxies that
+ *   sign their channel (ProxyKey), which no longer use either port;
  * - the admin's `cluster_db_allowlist_extra` (IPs or CIDRs, one per line).
  *
  * `cluster:lockdown` (ClusterLockdown) narrows the same chain to loopback,
@@ -198,6 +198,12 @@ final class DbAllowlist {
 		if ($db->query('SELECT `server_id` FROM `cluster_nodes` WHERE `mode` = 2;')) {
 			foreach ($db->get_rows() as $rRow) {
 				$rMode2[] = (int) $rRow['server_id'];
+			}
+		}
+		// A proxy that signs its channel (ProxyKey, D8) uses MAIN's API only.
+		if ($db->query('SELECT `id` FROM `servers` WHERE `server_type` = 1 AND `proxy_signed` = 1;')) {
+			foreach ($db->get_rows() as $rRow) {
+				$rMode2[] = (int) $rRow['id'];
 			}
 		}
 		$db->query('SELECT `cluster_db_allowlist_extra` FROM `settings` LIMIT 1;');

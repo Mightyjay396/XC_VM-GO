@@ -3,8 +3,10 @@
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\DatabaseHandler;
+use XcVm\Domain\Cluster\NonceStore;
 use XcVm\Domain\Security\BlocklistService;
 use XcVm\Domain\Server\ProxyIdentity;
+use XcVm\Domain\Server\ProxyKey;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Infrastructure\Database\DatabaseFactory;
 
@@ -20,16 +22,38 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
 
 set_time_limit(0);
 $rSignals = [];
+$db = new DatabaseHandler();
+DatabaseFactory::set($db);
 
-// The reporting proxy is the one whose address the request comes from; a
-// posted server_id naming any other server is refused.
-$rServerIDRequest = BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])
-	? ProxyIdentity::resolve(BlocklistService::getProxyIPs(), $_SERVER['REMOTE_ADDR'], $_POST['server_id'] ?? null)
-	: null;
+// A proxy's signed request (ProxyKey, D8): the posted server_id's key, its
+// generation read here rather than from a cache an install may be ahead of.
+$rSigned = null;
+$rAuth = $_SERVER['HTTP_X_XCVM_PROXY_AUTH'] ?? null;
+if (is_string($rAuth)) {
+	$db->query('SELECT `id`, `server_type`, `proxy_key_gen`, `proxy_signed` FROM `servers` WHERE `id` = ?;', intval($_POST['server_id'] ?? 0));
+	$rClaimed = $db->num_rows() === 1 ? $db->get_row() : null;
+	$rSigned = ProxyKey::admit($rClaimed, $rAuth, (string) file_get_contents('php://input'), (int) floor(microtime(true) * 1000), static fn(string $rNode, string $rNonce, int $rTsMs): bool => NonceStore::claim($rNode, $rNonce, $rTsMs));
+	$rServerIDRequest = $rSigned['id'] ?? null;
+	if ($rSigned !== null && empty($rClaimed['proxy_signed'])) {
+		// From now on this proxy is heard signed only.
+		$db->query('UPDATE `servers` SET `proxy_signed` = 1 WHERE `id` = ?;', $rSigned['id']);
+	}
+} else {
+	// Unsigned: the reporting proxy is the one whose address the request comes
+	// from, and a posted server_id naming any other server is refused (Phase 0),
+	// never a proxy that has signed a request, so a forged one is not heard.
+	$rServerIDRequest = BlocklistService::isProxy($_SERVER['REMOTE_ADDR'])
+		? ProxyIdentity::resolve(BlocklistService::getProxyIPs(), $_SERVER['REMOTE_ADDR'], $_POST['server_id'] ?? null)
+		: null;
+	if ($rServerIDRequest !== null) {
+		$db->query('SELECT `proxy_signed` FROM `servers` WHERE `id` = ?;', $rServerIDRequest);
+		if (!empty(($db->get_row() ?: [])['proxy_signed'])) {
+			$rServerIDRequest = null;
+		}
+	}
+}
 
 if ($rServerIDRequest !== null) {
-	$db = new DatabaseHandler();
-	DatabaseFactory::set($db);
 	$rServers = ServerRepository::getAll();
 	$rStats = $_POST['stats'];
 	$db->query('SELECT `bytes_sent_total`, `bytes_received_total`, `time` FROM `servers_stats` WHERE `server_id` = ? ORDER BY `id` DESC LIMIT 1;', $rServerIDRequest);
@@ -85,7 +109,8 @@ if ($rServerIDRequest !== null) {
 			}
 		}
 
-		echo json_encode($rSignals);
+		// A signed request gets a signed answer, bound to its nonce.
+		echo $rSigned !== null ? ProxyKey::answer($rSigned['key'], $rSigned['id'], $rSigned['nonce'], $rSignals) : json_encode($rSignals);
 
 		exit();
 	}

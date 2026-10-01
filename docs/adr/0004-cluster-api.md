@@ -5448,3 +5448,37 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
   - no key for a parent that doesn't seal;
   - the section's `relay_seal` and `box_pub`.
 - XC_VM_CoreExtention `ClusterApiTest`: a relay key opens with the panel box key, for its stream only.
+
+### Proxies on a signed channel (D8)
+
+**Before:** a proxy's cron (XC_VM_Proxy's `callback.php`) posted its stats to MAIN's `/admin/proxy_api` once a minute, unsigned. It then ran whatever signals came back: reboot, restart or stop the services, block or unblock an IP, flush the firewall, reload nginx. MAIN trusted the request's source address (the Phase 0 stop-gap), and the proxy trusted the answer. Lockdown counted every proxy as a blocker, since one might still use MAIN's database, and the DB allowlist kept every proxy on 3306/6379.
+
+**Built (`Domain/Server/ProxyKey`).**
+- **The key.** Each proxy's key is `HMAC-SHA256(MAIN's proxy secret, "xcvm proxy key v1|" ‖ id ‖ "|" ‖ gen)`.
+  - The secret is MAIN's alone (`config/proxy_secret`, 0600, made once and never replaced).
+  - `gen` is the proxy's `proxy_key_gen` (migration 061), raised at each install, so a reinstalled proxy's old key opens nothing. MAIN stores no key.
+  - The install (`ProxyInstallFlow::provisionKey`) writes the key to the proxy as hex in `config/proxy.key` (0600, root).
+- **The request** carries `X-XCVM-Proxy-Auth: <ts ms>.<nonce>.<mac>`, an HMAC over the server id, the stamp, the nonce and the body's SHA-256. MAIN takes it within 90 s of its clock, each nonce once (`NonceStore`, as `proxy-<id>`, claimed only after the MAC verified). It reads the proxy's generation from the database, not from the servers cache, which an install can be ahead of.
+- **The answer** is `{"payload": <signals>, "mac": …}`, bound to the request's nonce. The proxy runs only signals whose MAC verifies.
+- **After the first signed request.** Once a proxy has signed one (`proxy_signed`):
+  - its unsigned requests are refused;
+  - lockdown no longer counts it as a blocker;
+  - the DB allowlist leaves it out, since it uses MAIN's API only.
+
+  An install resets `proxy_signed`, so a proxy installed from an archive from before this keeps the legacy source-address rule until it signs.
+
+**The proxy (XC_VM_Proxy).** `callback.php` signs when the key is installed and runs signals only from a verified answer. `includes/proxy_auth.php` holds the code, and `tests/proxy_auth_check.php` (`make check`, run before each release build) checks it against `ProxyKeyTest`'s vectors. A proxy without a key works as before. **Deploying it needs an XC_VM_Proxy release**, which the panel's `cron:proxy` then ships to new installs.
+
+**Not built.**
+- **The route segment.** The URL segment that routes a viewer through a proxy to its parent, `md5(proxy_parent_OPENSSL_EXTRA)`, stays as the proxy's nginx was installed with it. It only selects the parent and authenticates nothing: the parent still checks the viewer's token, which per-node keys (H1) now bind to the parent.
+- **Existing proxies** get their key at their next install (Reinstall in the servers list); until then their channel stays unsigned.
+
+**Tests.**
+- `ProxyKeyTest`:
+  - the vectors the proxy checks against;
+  - each proxy's and install's own key;
+  - only the proxy's own fresh request verifies (not another key, server, body or an old stamp);
+  - admission needs a keyed proxy and a fresh nonce, with no nonce burnt before the MAC verifies;
+  - the secret is made once and never replaced.
+- `ProxyInstallKeyTest`: the install writes the key of a new generation and leaves no copy.
+- `ClusterLockdownTest` and `DbAllowlistTest`: a signing proxy is no blocker and leaves the allowlist.

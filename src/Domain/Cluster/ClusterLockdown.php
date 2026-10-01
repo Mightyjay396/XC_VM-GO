@@ -72,12 +72,15 @@ final class ClusterLockdown {
 	 * @return array{nodes: list<int>, proxies: list<int>}
 	 */
 	public static function blockers(): array {
-		self::db()->query('SELECT `id`, `server_type` FROM `servers` WHERE `is_main` = 0 ORDER BY `id`;');
+		self::db()->query('SELECT `id`, `server_type`, `proxy_signed` FROM `servers` WHERE `is_main` = 0 ORDER BY `id`;');
 		$rOut = ['nodes' => [], 'proxies' => []];
 		foreach (self::db()->get_rows() as $rRow) {
 			$rID = (int) $rRow['id'];
 			if ((int) $rRow['server_type'] === 1) {
-				$rOut['proxies'][] = $rID;
+				// A proxy that signs its channel (ProxyKey, D8) uses MAIN's API only.
+				if (empty($rRow['proxy_signed'])) {
+					$rOut['proxies'][] = $rID;
+				}
 				continue;
 			}
 			try {
