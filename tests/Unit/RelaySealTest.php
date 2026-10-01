@@ -52,9 +52,9 @@ final class RelaySealTest extends TestCase {
 		$rKey = random_bytes(32);
 		$rParam = rtrim(strtr(base64_encode(Seal::seal(sodium_crypto_scalarmult_base($rSk), RelaySeal::PURPOSE, RelaySeal::context((int) SERVER_ID, 42), $rKey)), '+/', '-_'), '=');
 
-		$this->assertSame($rKey, RelaySeal::openKey($rParam, 42));
-		$this->assertNull(RelaySeal::openKey($rParam, 43), 'another stream');
-		$this->assertNull(RelaySeal::openKey('not-a-sealed-key', 42));
+		$this->assertSame($rKey, RelaySeal::openKey($rParam, RelaySeal::context((int) SERVER_ID, 42)));
+		$this->assertNull(RelaySeal::openKey($rParam, RelaySeal::context((int) SERVER_ID, 43)), 'another stream');
+		$this->assertNull(RelaySeal::openKey('not-a-sealed-key', RelaySeal::context((int) SERVER_ID, 42)));
 		$this->assertTrue(RelaySeal::supported(), 'a node with its box key opens relay keys');
 
 		DataPlaneTrust::useSources(null, null, null, null, false, null);

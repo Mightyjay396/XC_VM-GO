@@ -65,7 +65,7 @@ if (!empty(RequestManager::get('uitoken'))) {
 // server in the target its proof signed; the stream goes out framed under it.
 $rRelayKey = null;
 if (isset($rAdmitted) && $rAdmitted === RelayGuard::RELAY && is_string($rSealedKey = RequestManager::get(RelaySeal::PARAM)) && $rSealedKey !== '') {
-	$rRelayKey = RelaySeal::openKey($rSealedKey, intval(RequestManager::get('stream')));
+	$rRelayKey = RelaySeal::openKey($rSealedKey, RelaySeal::context((int) SERVER_ID, intval(RequestManager::get('stream'))));
 	if ($rRelayKey === null) {
 		generate404();
 	}

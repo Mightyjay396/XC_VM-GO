@@ -5430,8 +5430,9 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
 - **The frames.** `admin/live.php` opens the key (`RelaySeal::openKey`; a key that does not open refuses the relay), answers `X-XCVM-Relay-Seal: v1`, and seals everything it writes through an output buffer: `u32 len ‖ AES-256-GCM(key, nonce 0⁴ ‖ u64 counter, aad "xcvm relay v1")`, at most 64 KiB of plaintext a frame. A partial frame is flushed before each wait for the next segment.
 - **No downgrade.** Each server reports whether it opens relay keys (`servers.relay_seal`, migration 060, with its inventory each minute; `RelaySeal::supported()`). A node needs its box key; MAIN tries a key sealed to its own panel box key, so an extension without the `relay` purpose reports 0. The signed servers section carries it. A child pulls from a parent marked as sealing only sealed: an unsealed answer is refused, and a frame that does not open or comes out of order ends the read. A parent not marked (older code, or MAIN on an older extension) is pulled as before.
 
+- **`/xfile` too.** A file chunk from an owner marked as sealing is asked for with a key sealed under `file|<owner>|<ticket id>` (`RelaySeal::fileContext`), so a relay's key and a file's cannot stand in for each other. `FileTicketServer` frames the chunk, and the agent opens the frames before it checks the owner's digest over the plaintext.
+
 **Not built.**
-- **`/xfile`** file pulls are integrity-checked against the owner's signed digest, but not confidential.
 - **Viewer bytes and `/images`** stay direct, as D11 scoped.
 - **Forward secrecy:** a parent's box key taken later opens a recorded relay's key.
 
