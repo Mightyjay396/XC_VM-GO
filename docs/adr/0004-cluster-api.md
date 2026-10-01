@@ -5328,7 +5328,7 @@ this branch), with each change put back afterwards.
     viewer (`lb-delivery-kinds`, C4).
   - **Test:** `LeaseVerdictCacheTest::testTheLicenceGateFeedsTheLeaseWithTheSwitchOff`.
 
-### Per-node viewer-token keys (H1, first increment)
+### Per-node viewer-token keys (H1, first and second increments)
 
 The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`.
 
@@ -5346,11 +5346,12 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
   - The reader is the server the redirect URL names: its originator when a proxy fronts it.
   - Callers: `auth.php`'s eight redirect tokens (live, adaptive, VOD, timeshift, thumbnails, subtitles) and the admin player's `uitoken` (`StreamViewController`, `player.php`).
 - **Reading on the node.** `Encryption::readToken` tries the node's own keys first, for the viewer-token context only. MAIN holds none, so it pays nothing.
+- **The node's own tokens (second increment).** The tokens a node mints for itself and reads back go through `ViewerKey::mintOwn`: HLS segment and key links (`HLSGenerator`) and timeshift HLS. Once the node has its own key they are sealed with it; until then they use the shared secret, as before.
+- **The off-air redirect.** `OffAirHandler::showVideoServer` mints through `ViewerKey::mint` for the server it sends the viewer to (its originator when a proxy fronts it).
 
 **Not built yet.**
 - **The containment.** A node still also holds the shared secret, so until the third increment a stolen node can still mint tokens every node accepts. At lockdown, `streaming_pass_hash` takes the shared secret's place in a mode-2 node's section, and a test guards that no mode-2 path reads the shared secret.
-- **The node's own tokens** (HLS segment and key tokens, timeshift HLS) still use the shared secret. That is the second increment.
-- **The off-air redirect** (`OffAirHandler`) and the RTMP and Ministra tokens still use the shared secret too.
+- **The RTMP and Ministra tokens** still use the shared secret.
 - **Holding the key in `xcvm_core`.** The design's optional fourth increment.
 
 **Tests.**
@@ -5359,7 +5360,8 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
   - a token for a reporting node opens with its key alone, not with the shared secret or another node's key;
   - a node that reports nothing, a stale key or another node's key gets the shared secret's token;
   - the rotation window;
-  - the node keeps its keys (0600) and reads with them first.
+  - the node keeps its keys (0600) and reads with them first;
+  - its own tokens use its own key once it has one, and read back.
 - `ReplicaApplyTest::testTheNodesOwnViewerKeyIsKeptAndReported`.
 - `ReplicaBuilderSecretsTest` and `ClusterApiTest` check that the section carries the node's own key, and no other node's.
 

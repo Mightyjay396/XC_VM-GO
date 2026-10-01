@@ -90,6 +90,21 @@ final class ViewerKey {
 	}
 
 	/**
+	 * A token this node mints for itself to read back (HLS segment and key
+	 * links, timeshift HLS): sealed with its own key once it has one, else the
+	 * shared secret's, as mintToken() makes it ($rSecure, or the
+	 * secure_stream_tokens setting).
+	 *
+	 * @param array<string, mixed> $rSettings live_streaming_pass, secure_stream_tokens
+	 */
+	public static function mintOwn(string $rData, array $rSettings, ?bool $rSecure = null): string {
+		$rOwn = self::own()[0] ?? null;
+		return $rOwn !== null
+			? Encryption::seal($rData, $rOwn, OPENSSL_EXTRA)
+			: Encryption::mintToken($rData, $rSettings['live_streaming_pass'] ?? '', OPENSSL_EXTRA, $rSecure ?? !empty($rSettings['secure_stream_tokens']));
+	}
+
+	/**
 	 * MAIN: the key a node that reports $rFp holds: K_n under $rSecret, or
 	 * under the secret it replaced while that is accepted (the node has not
 	 * applied the rotation yet). Null without a report or for any other kid.

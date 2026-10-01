@@ -2,7 +2,7 @@
 
 namespace XcVm\Streaming\Delivery;
 
-use XcVm\Core\Util\Encryption;
+use XcVm\Core\Cluster\ViewerKey;
 
 /**
  * HLSGenerator — turns the xc_fanout daemon's in-RAM HLS playlist into the
@@ -40,7 +40,7 @@ class HLSGenerator {
 			} else {
 				$rPayload = $rUsername . '/' . $rPassword . '/' . $rIP . '/' . $rStreamID . '/' . $rSegment . '/' . $rUUID . '/' . SERVER_ID . '/' . $rVideoCodec . '/' . $rOnDemand;
 			}
-			$rToken = Encryption::mintToken($rPayload, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, $rSecure);
+			$rToken = ViewerKey::mintOwn($rPayload, $rSettings, $rSecure);
 			return !empty($rSettings['allow_cdn_access'])
 				? $rPrefix . '/hls/' . $rSegment . '?token=' . $rToken
 				: $rPrefix . '/hls/' . $rToken;
@@ -64,7 +64,7 @@ class HLSGenerator {
 		if (!empty($rSettings['encrypt_hls'])) {
 			$rIVFile = STREAMS_PATH . intval($rStreamID) . '_.iv';
 			if (is_file($rIVFile)) {
-				$rKeyToken = Encryption::mintToken($rIP . '/' . $rStreamID, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, $rSecure);
+				$rKeyToken = ViewerKey::mintOwn($rIP . '/' . $rStreamID, $rSettings, $rSecure);
 				$rKeyLine = '#EXT-X-KEY:METHOD=AES-128,URI="' . $rPrefix . '/key/' . $rKeyToken . '",IV=0x' . bin2hex((string) file_get_contents($rIVFile));
 				$rSource = preg_replace('/(#EXTM3U\r?\n)/', '$1' . $rKeyLine . "\n", $rSource, 1);
 			}
@@ -98,7 +98,7 @@ class HLSGenerator {
 				} else {
 					$rPayload = $rUsername . '/' . $rPassword . '/' . $rIP . '/' . $rStreamID . '/' . $rSegName . '/' . $rUUID . '/' . SERVER_ID . '/' . $rVideoCodec . '/' . $rOnDemand;
 				}
-				return $rPrefix . '/hls/' . Encryption::mintToken($rPayload, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+				return $rPrefix . '/hls/' . ViewerKey::mintOwn($rPayload, $rSettings);
 			},
 			$rPlaylist
 		);
@@ -125,7 +125,7 @@ class HLSGenerator {
 		if (!empty($rSettings['encrypt_hls'])) {
 			$rIVFile = STREAMS_PATH . intval($rStreamID) . '_.iv';
 			if (is_file($rIVFile)) {
-				$rKeyToken = Encryption::mintToken($rIP . '/' . $rStreamID, $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+				$rKeyToken = ViewerKey::mintOwn($rIP . '/' . $rStreamID, $rSettings);
 				$rKeyLine = '#EXT-X-KEY:METHOD=AES-128,URI="' . $rPrefix . '/key/' . $rKeyToken . '",IV=0x' . bin2hex((string) file_get_contents($rIVFile));
 				$rSource = preg_replace('/(#EXTM3U\r?\n)/', '$1' . $rKeyLine . "\n", $rSource, 1);
 			}

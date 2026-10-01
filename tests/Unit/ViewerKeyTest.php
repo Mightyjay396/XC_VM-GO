@@ -96,4 +96,17 @@ final class ViewerKeyTest extends TestCase {
 		$rOther = Encryption::seal('z', ViewerKey::derive(self::SECRET, 6), OPENSSL_EXTRA);
 		$this->assertFalse(Encryption::readToken($rOther, 'not-the-fleet-secret', OPENSSL_EXTRA, false));
 	}
+
+	public function testTheNodesOwnTokensUseItsOwnKeyOnceItHasOne(): void {
+		// None yet (MAIN, or a node that has not applied it): the shared secret's, as before.
+		$this->assertSame('seg', Encryption::open(ViewerKey::mintOwn('seg', $this->settings()), self::SECRET, OPENSSL_EXTRA));
+		$this->assertSame('seg', Encryption::decrypt(ViewerKey::mintOwn('seg', $this->settings(), false), self::SECRET, OPENSSL_EXTRA), 'the legacy format when asked');
+
+		$rEntry = ViewerKey::entry(self::SECRET, 5, null);
+		ViewerKey::adopt($rEntry);
+		$rToken = ViewerKey::mintOwn('seg', $this->settings(), false);
+		$this->assertSame('seg', Encryption::open($rToken, $rEntry['current'], OPENSSL_EXTRA), 'sealed with its own key, whatever the setting');
+		$this->assertFalse(Encryption::open($rToken, self::SECRET, OPENSSL_EXTRA));
+		$this->assertSame('seg', Encryption::readToken($rToken, self::SECRET, OPENSSL_EXTRA, false), 'and read back on the node');
+	}
 }
