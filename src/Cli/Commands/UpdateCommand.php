@@ -10,6 +10,7 @@ use XcVm\Core\Cluster\NodeStateSink;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Logging\UpdateLogger;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Core\Updates\ReleaseArchiveInspector;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Server\ServerRepository;
@@ -316,6 +317,15 @@ class UpdateCommand implements CommandInterface {
 				}
 				UpdateLogger::info('Running file cleanup...');
 				MigrationRunner::runFileCleanup();
+				// MAIN's copies of the binaries it used to hand its nodes: every node
+				// takes them from GitHub itself now (ADR 0004, "Binaries from GitHub
+				// on every node"), and nothing reads these.
+				foreach (['xc_agent/cache', 'xcvm_core/cache'] as $rLeft) {
+					if (is_dir(BIN_PATH . $rLeft) && !is_link(BIN_PATH . $rLeft)) {
+						ProcessRunner::run(['rm', '-rf', '--', BIN_PATH . $rLeft], true);
+					}
+				}
+				@rmdir(BIN_PATH . 'xcvm_core');
 
 				if (ServerRepository::getAll()[SERVER_ID]['is_main'] && SettingsManager::get('auto_update_lbs')) {
 					UpdateLogger::info('Broadcasting update signal to LB servers');
