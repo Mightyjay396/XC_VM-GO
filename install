@@ -1610,7 +1610,6 @@ def fix_ssh2_library_issue():
 
 # Mapping: (dist_id, major_version) -> PACKAGES key
 _PACKAGE_KEY_MAP = {
-    ("ubuntu", "18"): "ubuntu20",
     ("ubuntu", "20"): "ubuntu20",
     ("ubuntu", "22"): "ubuntu22",
     ("ubuntu", "24"): "ubuntu24",
@@ -1619,7 +1618,7 @@ _PACKAGE_KEY_MAP = {
 }
 
 # Distros that need OpenSSL 3 compatibility library
-_NEEDS_OPENSSL3 = {"ubuntu_18", "ubuntu_20"}
+_NEEDS_OPENSSL3 = {"ubuntu_20"}
 
 
 def _install_openssl3_compat(dist_id, major):

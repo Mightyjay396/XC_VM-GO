@@ -108,11 +108,10 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries are 
 
 ### Debian
 
-| Version | Codename | Status                   |
-| ------- | -------- | ------------------------ |
-| **11**  | Bullseye | ❌ _EOL — not supported_ |
-| **12**  | Bookworm | ✅ **Recommended**       |
-| **13**  | Trixie   | ✅ Supported             |
+| Version | Codename | Status             |
+| ------- | -------- | ------------------ |
+| **12**  | Bookworm | ✅ Supported       |
+| **13**  | Trixie   | ✅ **Recommended** |
 
 ### RHEL-compatible (Rocky Linux, AlmaLinux, CentOS, RHEL)
 
@@ -130,7 +129,7 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries are 
 For new installations:
 
 - 🟢 **Ubuntu 22.04 / 24.04 LTS**
-- 🟢 **Debian 12**
+- 🟢 **Debian 13**
 
 > ⚠️ Ubuntu 18.04 and Debian 11 are not supported: the installer warns on them and asks before going on.
 
