@@ -77,6 +77,14 @@ class ClusterExecCommand implements CommandInterface {
 	/** Commands older than their exp by more than this (LB clock) are refused. */
 	public const SKEW = 300;
 
+	/**
+	 * The root actions that install a binary MAIN grants (fanout_binary,
+	 * xcvm_core), printed with the types (`--types`) though cluster:root,
+	 * not this command, runs them: the agent then says artefact_binaries,
+	 * and MAIN grants this node those binaries (ArtefactGrants::takesBinaries).
+	 */
+	public const ROOT_BINARIES = ['root:fanout_binary', 'root:xcvm_core'];
+
 	/** The command types run here (`--types`). */
 	public const TYPES = ['node.rpc', 'node.root', 'node.cache', 'conn.kill_worker', 'conn.drop', 'config.changed', ArtefactStage::TYPE_FETCH, 'stream.stop', 'vod.stop', 'stream.start', 'vod.start', 'stream.assign', 'queue.poke', 'node.purge'];
 
@@ -90,7 +98,7 @@ class ClusterExecCommand implements CommandInterface {
 
 	public function execute(array $rArgs): int {
 		if (in_array('--types', $rArgs, true)) {
-			echo json_encode(self::TYPES);
+			echo json_encode(array_merge(self::TYPES, self::ROOT_BINARIES));
 			return 0;
 		}
 		$rIn = json_decode((string) stream_get_contents(STDIN), true);

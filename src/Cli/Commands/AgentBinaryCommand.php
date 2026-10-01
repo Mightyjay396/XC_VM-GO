@@ -28,6 +28,9 @@ use XcVm\Domain\Cluster\AgentUpgrades;
 class AgentBinaryCommand implements CommandInterface {
 	public const ASSET_PREFIX = 'xc_agent-linux-';
 
+	/** The fanout daemon, from the same release, which MAIN serves its nodes as it serves the agent. */
+	public const FANOUT_PREFIX = 'xc_fanout-linux-';
+
 	public function getName(): string {
 		return 'agent_binary';
 	}
@@ -39,12 +42,13 @@ class AgentBinaryCommand implements CommandInterface {
 	public function execute(array $rArgs): int {
 		if (($rArgs[0] ?? '') === 'release') {
 			$rVersion = trim((string) ($rArgs[1] ?? ''));
-			if ($rVersion === '') {
-				echo "Usage: console.php agent_binary release <version>\n";
+			$rKind = (string) ($rArgs[2] ?? 'agent');
+			if ($rVersion === '' || !in_array($rKind, AgentUpgrades::KINDS, true)) {
+				echo "Usage: console.php agent_binary release <version> [agent|fanout|core]\n";
 				return 1;
 			}
-			$rNodes = AgentUpgrades::release($rVersion);
-			echo 'Released the rollout of xc_agent ' . $rVersion . ': ' . $rNodes . " node(s) that did not take it are offered it again at the next cron:cluster.\n";
+			$rNodes = AgentUpgrades::release($rVersion, 'cli', null, $rKind);
+			echo 'Released the rollout of ' . ['agent' => 'xc_agent', 'fanout' => 'xc_fanout', 'core' => 'xcvm_core'][$rKind] . ' ' . $rVersion . ': ' . $rNodes . " node(s) that did not take it are offered it again at the next cron:cluster.\n";
 			return 0;
 		}
 		$rForce = in_array('force', $rArgs, true);
@@ -76,33 +80,36 @@ class AgentBinaryCommand implements CommandInterface {
 	/**
 	 * The version of the cached binary for $rArch (the `.version` beside it),
 	 * or null when there is none. Read without asking GitHub anything, so the
-	 * fleet's upgrades are decided from what MAIN actually holds.
+	 * fleet's upgrades are decided from what MAIN actually holds. $rPrefix:
+	 * ASSET_PREFIX (xc_agent) or FANOUT_PREFIX (xc_fanout).
 	 */
-	public static function cachedVersion(string $rArch): ?string {
-		if (!in_array($rArch, ReleaseAsset::ARCH_MAP, true)) {
+	public static function cachedVersion(string $rArch, string $rPrefix = self::ASSET_PREFIX): ?string {
+		if (!in_array($rArch, ReleaseAsset::ARCH_MAP, true) || !in_array($rPrefix, [self::ASSET_PREFIX, self::FANOUT_PREFIX], true)) {
 			return null;
 		}
-		$rBinary = self::cacheDir() . self::ASSET_PREFIX . $rArch;
+		$rBinary = self::cacheDir() . $rPrefix . $rArch;
 		$rVersion = is_file($rBinary) && is_file($rBinary . '.version') ? trim((string) file_get_contents($rBinary . '.version')) : '';
 		return $rVersion === '' ? null : $rVersion;
 	}
 
 	/**
-	 * The path of a verified agent binary for $rArch at the current release,
-	 * downloading it when the cache is missing or stale. Null when it cannot
-	 * be had (GitHub unreachable, no such asset, checksum mismatch).
+	 * The path of a verified agent binary (or, with FANOUT_PREFIX, fanout
+	 * daemon) for $rArch at the current release, downloading it when the
+	 * cache is missing or stale. Null when it cannot be had (GitHub
+	 * unreachable, no such asset, checksum mismatch).
 	 *
 	 * @param callable|null $rLog fn(string $line): void
 	 */
-	public static function cached(string $rArch, bool $rForce = false, ?callable $rLog = null): ?string {
+	public static function cached(string $rArch, bool $rForce = false, ?callable $rLog = null, string $rPrefix = self::ASSET_PREFIX): ?string {
 		$rLog = $rLog ?? static function (string $rLine): void {
 		};
-		if (!in_array($rArch, ReleaseAsset::ARCH_MAP, true)) {
-			$rLog('xc_agent: unsupported arch ' . $rArch);
+		$rTool = $rPrefix === self::FANOUT_PREFIX ? 'xc_fanout' : 'xc_agent';
+		if (!in_array($rArch, ReleaseAsset::ARCH_MAP, true) || !in_array($rPrefix, [self::ASSET_PREFIX, self::FANOUT_PREFIX], true)) {
+			$rLog($rTool . ': unsupported arch ' . $rArch);
 			return null;
 		}
 		$rDir = self::cacheDir();
-		$rAsset = self::ASSET_PREFIX . $rArch;
+		$rAsset = $rPrefix . $rArch;
 		$rBinary = $rDir . $rAsset;
 		$rVerFile = $rBinary . '.version';
 
@@ -115,7 +122,7 @@ class AgentBinaryCommand implements CommandInterface {
 			$rTag = trim((string) ($rGit->getReleases()[0] ?? ''));
 		} catch (\Throwable $rE) {
 			$rTag = '';
-			$rLog('xc_agent: cannot check releases: ' . $rE->getMessage());
+			$rLog($rTool . ': cannot check releases: ' . $rE->getMessage());
 		}
 		$rCachedVer = is_file($rVerFile) ? trim((string) file_get_contents($rVerFile)) : '';
 		if ($rTag === '') {
@@ -128,20 +135,20 @@ class AgentBinaryCommand implements CommandInterface {
 		}
 
 		if (!is_dir($rDir) && !@mkdir($rDir, 0755, true)) {
-			$rLog('xc_agent: cannot create ' . $rDir);
+			$rLog($rTool . ': cannot create ' . $rDir);
 			return null;
 		}
 		$rBase = ReleaseAsset::baseUrl(GIT_OWNER, GIT_REPO_FANOUT, $rTag);
 		$rTmp = $rDir . '.' . $rAsset . '.new';
 		if (!ReleaseAsset::download($rBase . $rAsset, $rTmp)) {
 			@unlink($rTmp);
-			$rLog('xc_agent: ' . $rAsset . ' is not in release ' . $rTag);
+			$rLog($rTool . ': ' . $rAsset . ' is not in release ' . $rTag);
 			return is_file($rBinary) && $rCachedVer !== '' ? $rBinary : null;
 		}
 		$rExpected = ReleaseAsset::expectedSha256($rBase . 'SHA256SUMS', $rAsset);
 		if ($rExpected === null || !hash_equals($rExpected, (string) hash_file('sha256', $rTmp))) {
 			@unlink($rTmp);
-			$rLog('xc_agent: checksum mismatch or missing for ' . $rAsset . ' — not cached');
+			$rLog($rTool . ': checksum mismatch or missing for ' . $rAsset . ' — not cached');
 			return null;
 		}
 		@chmod($rTmp, 0755);
@@ -150,7 +157,7 @@ class AgentBinaryCommand implements CommandInterface {
 			return null;
 		}
 		@file_put_contents($rVerFile, $rLatest . "\n");
-		$rLog('xc_agent ' . $rLatest . ' cached for ' . $rArch);
+		$rLog($rTool . ' ' . $rLatest . ' cached for ' . $rArch);
 		return $rBinary;
 	}
 }

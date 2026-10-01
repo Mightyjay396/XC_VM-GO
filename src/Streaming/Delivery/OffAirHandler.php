@@ -3,6 +3,7 @@
 namespace XcVm\Streaming\Delivery;
 
 use XcVm\Core\Cluster\ArtefactStage;
+use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\Auth\StreamAuth;
@@ -44,6 +45,21 @@ class OffAirHandler {
 	 */
 	public static function localVideo(string $rPath): string {
 		return ArtefactStage::offAirVideo($rPath);
+	}
+
+	/**
+	 * The file to play for an off-air token. The token names the video
+	 * (`off_air`, a ReplicaSections::OFF_AIR name), and this node finds it
+	 * from its own settings (the replica's on a CONFIG node): its own file,
+	 * or the copy MAIN granted it. A token from an older MAIN names only
+	 * MAIN's path (`video_path`).
+	 *
+	 * @param array<string, mixed> $rTokenData
+	 */
+	public static function tokenVideo(array $rTokenData): string {
+		$rKey = ReplicaSections::OFF_AIR[(string) ($rTokenData['off_air'] ?? '')] ?? null;
+		$rPath = $rKey !== null ? (string) self::getOffAirVideo($rKey) : '';
+		return self::localVideo($rPath !== '' ? $rPath : (string) ($rTokenData['video_path'] ?? ''));
 	}
 
 	public static function getOffAirVideo($rPathKey) {
@@ -143,7 +159,13 @@ class OffAirHandler {
 		if ($rOriginatorID && !$rServers[$rOriginatorID]['is_main']) {
 			$rURL .= '/' . md5($rServerID . '_' . $rOriginatorID . '_' . OPENSSL_EXTRA);
 		}
+		// The video by name, which the playing node finds for itself.
+		// ponytail: video_path is for nodes from before off_air; drop it once none is left.
 		$rTokenData = ['expires' => time() + 10, 'video_path' => $rVideoPath];
+		$rName = array_search($rVideoPathKey, ReplicaSections::OFF_AIR, true);
+		if ($rName !== false) {
+			$rTokenData['off_air'] = $rName;
+		}
 		$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
 		if ($rExtension == 'm3u8') {
 			if (self::$rHlsStreamID !== null) {

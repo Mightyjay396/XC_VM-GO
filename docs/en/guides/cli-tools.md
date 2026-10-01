@@ -162,7 +162,10 @@ never replaces a working one). Runs on every node (main **and** LB).
 
 Stamps live in `CRONS_TMP_PATH` (`fanout_binary_check`, `xcvm_core_check`,
 `ytdlp_check`); the first pass (stamp absent) runs immediately, so a fresh
-install/LB gets the binary within a minute. The heavy runtime bundle
+install/LB gets the binary within a minute. A node in cluster mode 2 skips the
+`xc_fanout` and `xcvm_core` checks: MAIN hands it both over the cluster API
+(`node.root fanout_binary`, `xcvm_core`), from the copies it keeps
+(`fanout_binary cache`, `xcvm_core cache`). The heavy runtime bundle
 (php/nginx/ffmpeg) is instead refreshed by the `binaries` command, triggered by an
 `update_binaries` signal from MAIN.
 

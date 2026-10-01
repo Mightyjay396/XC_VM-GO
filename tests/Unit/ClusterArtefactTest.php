@@ -86,10 +86,10 @@ final class ClusterArtefactTest extends TestCase {
 		// No cluster bus: never one at the checkout's default socket.
 		ClusterBus::useSocket(sys_get_temp_dir() . '/no-such-bus-' . bin2hex(random_bytes(4)) . '/cluster.sock');
 		$this->rDir = sys_get_temp_dir() . '/artefact_main_' . bin2hex(random_bytes(4)) . '/';
-		foreach (['video', 'modules_archives', 'agent_cache'] as $rSub) {
+		foreach (['video', 'modules_archives', 'agent_cache', 'core_cache'] as $rSub) {
 			mkdir($this->rDir . $rSub, 0755, true);
 		}
-		ArtefactRegistry::useDirs($this->rDir . 'modules_archives/', $this->rDir . 'agent_cache/');
+		ArtefactRegistry::useDirs($this->rDir . 'modules_archives/', $this->rDir . 'agent_cache/', $this->rDir . 'core_cache/');
 		SettingsManager::set($this->rSettings);
 	}
 
@@ -239,10 +239,23 @@ final class ClusterArtefactTest extends TestCase {
 		file_put_contents($this->rDir . 'agent_cache/xc_agent-linux-amd64', 'x');
 		$this->assertNull(ArtefactRegistry::describe('agent/amd64', []), 'a binary without its verified version is not pinned');
 
+		// The fanout daemon from the same cache, and xcvm_core's archive for a
+		// PHP group: they follow the agent's path (plan, section 5).
+		file_put_contents($this->rDir . 'agent_cache/xc_fanout-linux-arm64', str_repeat("\x7f", 200));
+		file_put_contents($this->rDir . 'agent_cache/xc_fanout-linux-arm64.version', "0.14.1\n");
+		$rFanout = ArtefactRegistry::describe('fanout/arm64', []);
+		$this->assertSame(['fanout', 'xc_fanout-linux-arm64', '0.14.1', 200], [$rFanout['kind'], $rFanout['name'], $rFanout['version'], $rFanout['size']]);
+		$this->assertSame(['agent', '1.4.2'], [ArtefactRegistry::describe('agent/arm64', [])['kind'], ArtefactRegistry::describe('agent/arm64', [])['version']], 'the agent and the daemon stay apart');
+		file_put_contents($this->rDir . 'core_cache/xcvm_core-php8.1.tar.gz', str_repeat("\x1f", 400));
+		file_put_contents($this->rDir . 'core_cache/xcvm_core-php8.1.tar.gz.version', "2.3.3\n");
+		$rCore = ArtefactRegistry::describe('core/php8.1', []);
+		$this->assertSame(['core', 'xcvm_core-php8.1.tar.gz', '2.3.3', 400], [$rCore['kind'], $rCore['name'], $rCore['version'], $rCore['size']]);
+		$this->assertNull(ArtefactRegistry::describe('core/php8.4', []), 'not cached');
+
 		// Anything else: never a path, never outside the registry.
 		foreach ([
 			'offair/../../etc/passwd', 'offair/unknown', 'module/../../../etc/passwd/1', 'module/radio/../../x', 'module/Radio/1.2.0',
-			'module/radio/1..2', 'agent/../../bin/sh', 'agent/sparc', '/etc/passwd', 'file:///etc/passwd', '', 'offair/not_on_air/', 'offair/not_on_air/x',
+			'module/radio/1..2', 'agent/../../bin/sh', 'agent/sparc', 'fanout/sparc', 'fanout/../x', 'core/php', 'core/php8', 'core/../x', 'core/php8.1/x', '/etc/passwd', 'file:///etc/passwd', '', 'offair/not_on_air/', 'offair/not_on_air/x',
 		] as $rId) {
 			$this->assertNull(ArtefactRegistry::locate($rId, $this->rSettings), $rId);
 			$this->assertFalse(ArtefactStage::validId($rId), $rId);

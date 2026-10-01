@@ -109,6 +109,49 @@ final class LbNginxApiLegacyTest extends TestCase {
 		$this->assertNull(RootSignalsCronJob::apiLegacyConf(), 'MAIN: nothing to write');
 	}
 
+	/** The body of the first `location ~ $rRegex {…}`. */
+	private function regexLocation(string $rConf, string $rRegex): string {
+		$rStart = strpos($rConf, 'location ~ ' . $rRegex . ' {');
+		$this->assertNotFalse($rStart, 'no location ~ ' . $rRegex);
+		$rOpen = strpos($rConf, '{', $rStart);
+		$rClose = strpos($rConf, "\n        }", $rOpen);
+		return substr($rConf, $rOpen + 1, $rClose - $rOpen);
+	}
+
+	/**
+	 * D16: a node in mode 2 reads no line from MAIN's database, so the viewer
+	 * APIs (player_api, enigma2, xplugin, epg, playlist) answer 404 there, in
+	 * both their forms; every other node serves them, as before.
+	 */
+	public function testTheViewerApisAreGuardedAndFollowTheNodesMode(): void {
+		$rConf = $this->lbConf();
+		$this->assertMatchesRegularExpression('/^\s*include viewer_api\.conf;$/m', $rConf);
+		foreach (['^/api/(player_api|enigma2|xplugin|epg|playlist)$', '^/(player_api|enigma2|xplugin|epg|playlist)(?:\.php)?$'] as $rRegex) {
+			$rBody = $this->regexLocation($rConf, $rRegex);
+			$this->assertMatchesRegularExpression('/^\s*if \(\$viewer_api = 0\) \{\s*return 404;\s*\}/', $rBody, $rRegex . ': the guard comes first');
+			$this->assertStringContainsString('fastcgi_param XC_API $1;', $rBody, $rRegex);
+		}
+		$this->assertSame('set $viewer_api 1;', trim((string) file_get_contents($this->rRoot . '/src/bin/nginx/conf/viewer_api.conf')), 'the shipped default serves them');
+
+		$this->rFlows = (string) tempnam(sys_get_temp_dir(), 'flows');
+		NodeRole::useServers(fn () => [SERVER_ID => ['is_main' => 0]]);
+		NodeRole::useMainBuild(false);
+		try {
+			foreach ([[2, 'active', '0'], [2, 'quarantined', '0'], [1, 'active', '1'], [0, 'active', '1']] as [$rMode, $rState, $rOn]) {
+				file_put_contents($this->rFlows, json_encode(['mode' => $rMode, 'flows' => NodeFlows::CONFIG, 'state' => $rState]));
+				NodeFlows::usePath($this->rFlows, true);
+				$this->assertSame('set $viewer_api ' . $rOn . ';', RootSignalsCronJob::viewerApiConf(), "mode $rMode, $rState");
+			}
+			NodeRole::useServers(fn () => [SERVER_ID => ['is_main' => 1]]);
+			NodeFlows::usePath($this->rFlows, true);
+			$this->assertNull(RootSignalsCronJob::viewerApiConf(), 'MAIN: nothing to write');
+		} finally {
+			NodeRole::useMainBuild(null);
+		}
+		$rMain = (string) file_get_contents($this->rRoot . '/src/bin/nginx/conf/nginx.conf');
+		$this->assertStringNotContainsString('viewer_api', $rMain, 'MAIN serves its viewer APIs');
+	}
+
 	public function testTheShippedDefaultKeepsTheApiServed(): void {
 		$this->assertSame('set $api_legacy 1;', trim((string) file_get_contents($this->rRoot . '/src/bin/nginx/conf/api_legacy.conf')));
 	}
@@ -129,6 +172,7 @@ final class LbNginxApiLegacyTest extends TestCase {
 
 		preg_match_all('/^\s*include\s+([^\s;*]+);/m', $this->lbConf(), $rMatches);
 		$this->assertContains('api_legacy.conf', $rMatches[1]);
+		$this->assertContains('viewer_api.conf', $rMatches[1]);
 		foreach (array_unique($rMatches[1]) as $rInclude) {
 			$rPath = 'bin/nginx/conf/' . $rInclude;
 			exec('git -C ' . escapeshellarg($this->rRoot) . ' ls-files --error-unmatch -- ' . escapeshellarg('src/' . $rPath) . ' 2>/dev/null', $rOut, $rCode);

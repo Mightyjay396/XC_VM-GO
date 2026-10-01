@@ -697,8 +697,8 @@ The plan's `artefact` op (section 7: "off-air videos, pinned binaries, ≤ 4 MB 
 - Section 7's root handoff checks `seq > root.seq` "and the `cmd_id` set". Root keeps only its high-water `root.seq`, which never goes down, so it refuses a lower `seq` handed over after a higher one as a replay. A root command whose artefact is still downloading must not be overtaken: the agent hands root commands over in `seq` order, a later one waiting behind a download (its contract below), rather than root accepting a lower unseen `seq`.
 - Section 7 says module install and delete are not offered to API-mode nodes until a module API exists. Root commands already carried `install_module` and `delete_module` to nodes with COMMANDS (second increment); this increment lets `install_module` carry the custom module's archive as a grant, so such a node no longer pulls it with `live_streaming_pass`. A module API (MAIN knowing which modules each node holds) is still not built.
 - Section 7's "large transfers in ≤ 4 MiB parts, staged in `tmp/cluster_xfer/`" is for uploads. The artefact op is a download: MAIN stages nothing, and the node assembles the chunks.
-- The viewer token still carries MAIN's off-air path (section 7's legacy mapping wants replica basenames there): a node plays its granted copy by that path's file name, which is the file name the `cluster` section names.
-- `update_binaries` gets no artefact: the binaries bundle is per distribution and MAIN caches none, so a node still downloads it from the binaries release itself. The pinned binary the registry serves is the agent (section 5); `xc_fanout` and `xcvm_core` "follow the same path" in the plan, not built. Kept so on review: every node already downloads its panel update, the binaries and `xc_fanout` from GitHub, each checked by SHA-256 (`FanoutBinaryCommand`), so serving `xc_fanout` from MAIN would help only a node without GitHub access, which the updater does not serve either. It would take a cache on MAIN, a registry kind, a root action, a node-side install and a rollout, as `agent_binary` has. `xcvm_core` is the owner's distribution. Add them when a fleet without GitHub access is a target.
+- The viewer token still carries MAIN's off-air path (section 7's legacy mapping wants replica basenames there): a node plays its granted copy by that path's file name, which is the file name the `cluster` section names. Built later: the token names the video (`off_air`: `connected`, `not_on_air`, `banned`, `expired` or `expiring`, `ReplicaSections::OFF_AIR`), and the node that plays it finds it from its own settings, the replica's on a CONFIG node (`OffAirHandler::tokenVideo`): its own file, or the copy MAIN granted it. The token keeps `video_path` for nodes from before, which read only that; a token from an older MAIN, which has only `video_path`, still plays. `ArtefactHashRefusalTest::testAnOffAirVideoIsPlacedOnceItsSizeAndHashAreTheGrants`.
+- `update_binaries` gets no artefact: the binaries bundle is per distribution and MAIN caches none, so a node still downloads it from the binaries release itself. The pinned binary the registry serves is the agent (section 5); `xc_fanout` and `xcvm_core` "follow the same path" in the plan, not built. Kept so on review: every node already downloads its panel update, the binaries and `xc_fanout` from GitHub, each checked by SHA-256 (`FanoutBinaryCommand`), so serving `xc_fanout` from MAIN would help only a node without GitHub access, which the updater does not serve either. It would take a cache on MAIN, a registry kind, a root action, a node-side install and a rollout, as `agent_binary` has. `xcvm_core` is the owner's distribution. Add them when a fleet without GitHub access is a target. Built since, on request: [the fanout daemon and xcvm_core from MAIN](#the-fanout-daemon-and-xcvm_core-from-main).
 - Section 7's sha256/size check of the module zip for legacy nodes (today only the `PK` magic) is not built: a legacy node still pulls the archive the old way. Built later: MAIN's `install_module` payload for a custom module carries its archive's `size` and `sha256` (`ModuleManager::lbInstallPayload`), and a node that pulls the archive with `getFile` (a legacy node, or one whose agent takes no artefacts) installs it only when the download matches both (`ModuleInstallCommand::announced`, through the same check as a staged archive, `ArtefactStage::matches`; else `size or SHA-256 mismatch`, and nothing is installed). A payload from an older MAIN announces neither, and the zip magic is then the only check, as before. The pull itself still uses `live_streaming_pass`. `LegacyModuleArchiveTest`.
 
 **Known limits.**
@@ -5079,3 +5079,87 @@ design: that is what the data plane's tickets replace.
 **Tests.** `LoopbackTokenTest` (a token opens its stream until it expires, no other stream, not
 tampered, and no token verifies before the key exists; RelayGuard takes it from the node itself
 only), `StreamProcessBuildLiveTest::testRtmpOutputAppendsFlvTarget` (no secret in the command).
+
+### The viewer APIs on a node in mode 2 (D16)
+
+D16 stops routing the viewer APIs on load balancers (`player_api`, `enigma2`, `xplugin`, `epg`,
+`playlist`, `/stream/auth`, `/stream/probe`), and section 3 lists them among the routes the LB's
+nginx drops. `/stream/auth`, `/stream/probe`, the Ministra portal and every other `.php` already
+answer 404 on a load balancer. The five viewer APIs were still routed to its front controller,
+which reads the viewer's line from MAIN's database: in mode 2 that read is refused, so they could
+not answer there anyway.
+
+- **A switch per node.** `viewer_api.conf` (`set $viewer_api 0|1;`, beside `api_legacy.conf`)
+  is included by the LB's nginx, and both forms of the five routes (`/api/<name>` and
+  `/<name>[.php]`) answer 404 while it is 0. `cron:root_signals` writes it each minute
+  (`RootSignalsCronJob::viewerApiConf`): 0 on a node in mode 2 (`NodeRole::refusesConnects`), 1
+  everywhere else, and nothing on MAIN, whose nginx has no such switch. The archive ships it at
+  1, so an LB's nginx never misses the include.
+
+**How it differs from the plan.** The plan removes the routes from the LB's nginx and strips the
+viewer-API controllers from the LB build. One build serves every mode, and a node in mode 0 or 1
+still serves its viewers' API calls as before, so the routes stay and answer 404 only where they
+cannot work.
+
+**Not built / limits.**
+- **Clients that use a node's address** for these calls get a 404 once the node is in mode 2: they
+  must use MAIN's address, as the plan's viewer-API routing assumes.
+- **After an update** the archive's default (1) stands until root's next minute.
+
+**Tests.** `LbNginxApiLegacyTest::testTheViewerApisAreGuardedAndFollowTheNodesMode` (the include,
+the guard first in both locations, the shipped default, the switch per mode and state, nothing on
+MAIN), `testTheLbBuildShipsEveryFileItsNginxIncludes`;
+`ModeTwoPathsTest::testTheRootSignalsMinuteReadsTheReplicaNotMainsDatabase` (a real mode 2 root
+minute writes 0).
+
+### The fanout daemon and xcvm_core from MAIN
+
+Section 5: `xc_fanout` and `xcvm_core` "follow the same path on nodes in mode 1 or 2" as the
+agent. A review had kept them out (every node downloads them from GitHub itself, each checked by
+SHA-256), until a fleet without GitHub access is a target. They are built now, on request, reusing
+the agent's path.
+
+- **MAIN's copies.** `xc_fanout-linux-<arch>` sits in the agent's cache
+  (`AgentBinaryCommand::cached` with `FANOUT_PREFIX`), from the same release, checked against its
+  `SHA256SUMS`: `console.php fanout_binary cache [arch…]`. `xcvm_core-<group>.tar.gz` (`php8.1`,
+  `php8.4`) sits in `bin/xcvm_core/cache/`, checked against the binaries repo's `SHA256SUMS`:
+  `console.php xcvm_core cache [group…]`. MAIN keeps its own arch's daemon and its own PHP's
+  archive at each of its own installs. Each copy's `.version` pins it, as the agent's does.
+- **Artefacts.** `fanout/<arch>` and `core/<group>` in `ArtefactRegistry`, granted with
+  `node.root fanout_binary {arch}` and `node.root xcvm_core {group}` (cluster only, as
+  `agent_binary`), each with its version.
+- **On the node.** Root installs only its staged, checked copy, and only for this node's arch or
+  PHP group (else refused and audited): the daemon through `FanoutBinaryCommand::install` (it
+  must run here, then replaces the binary atomically, records its version and restarts), the
+  extension through `XcvmCoreCommand::installStaged` (load-tested in a fresh PHP, kept only if it
+  loads and keeps the cluster API this panel speaks, else the previous `.so` is put back).
+- **What a node runs.** Its watchdog reports `versions` (`xc_fanout`, `xcvm_core`, its PHP
+  group), which reaches `watchdog_data` whether MAIN takes it from the heartbeat (each value
+  version-shaped or null) or the node writes it.
+- **The rollout.** `AgentUpgrades::push(…, 'fanout')` and `'core'`, from `cron:cluster` beside the
+  agent's, with its rules: `cluster_agent_upgrade_parallel` at a time, the canary hold,
+  `MAX_TRIES`, and `console.php agent_binary release <version> fanout|core`. Only to an active
+  node in mode 1 or 2 whose agent takes artefacts and that runs an older version than MAIN's
+  copy for its arch or group. Never a downgrade: a node in mode 1 still updates them from GitHub
+  itself, and may be ahead of MAIN.
+- **Mode 2.** A node in mode 2 no longer updates them from GitHub (`cron:root_signals`' hourly
+  checks): MAIN is its only source.
+- **The agent's contract.** It takes the grants `fanout/<arch>` and `core/php<M>.<m>`, and says
+  `artefact_binaries` at hello, beside `artefact`, while the node's `cluster:exec --types` lists
+  `root:fanout_binary` and `root:xcvm_core` (`ClusterExecCommand::ROOT_BINARIES`). MAIN grants
+  the two only to such a node (`ArtefactGrants::takesBinaries`): an older PHP's root would refuse
+  them, and a refusal holds the version's rollout for the fleet.
+
+**Not built / limits.**
+- **MAIN holds what it was asked to cache**, and its own arch and PHP. A node in mode 2 of another
+  arch or PHP gets no update until an operator caches that one.
+- **Pinned in mode 2 only.** A node in mode 1 may run a newer version from GitHub.
+- **An agent that takes no artefacts**, or does not say `artefact_binaries`, gets neither.
+
+**Tests.** `AgentUpgradeTest::testTheFanoutDaemonAndXcvmCoreFollowTheAgentsPath` (behind, ahead,
+no copy for its PHP, mode 0, nothing reported, no artefacts, each kind's own offers);
+`ClusterArtefactTest::testTheRegistryServesOnlyWhatMainNamesItself` (both kinds, pinned by their
+version, and the ids refused); `ArtefactHashRefusalTest::testActionsTakeOnlyAStagedArtefact`
+(neither action takes anything but root's staged copy); `ClusterTelemetryTest::testTheNodesVersionsComeAlong`;
+`ClusterExecCommandTest::testItSaysWhichCommandTypesItRuns`; agent `TestArtefactBinariesFollowThePHP`,
+`TestArtefactGrantShape`.

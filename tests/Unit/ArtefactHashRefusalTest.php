@@ -184,6 +184,19 @@ final class ArtefactHashRefusalTest extends TestCase {
 		foreach (['/home/xc_vm/content/video/other.ts', 'http://cdn/x/custom_offline.ts?a=1', '/x/../custom_offline.ts/', ''] as $rPath) {
 			$this->assertSame($rPath, OffAirHandler::localVideo($rPath), $rPath);
 		}
+
+		// A token names the video, and the node finds it from its own
+		// settings (the replica's): MAIN's path never has to be in it.
+		$rSettings = $GLOBALS['rSettings'] ?? null;
+		$GLOBALS['rSettings'] = ['not_on_air_video_path' => '/home/xc_vm/content/video/custom_offline.ts'];
+		try {
+			$this->assertSame($rPlaced, OffAirHandler::tokenVideo(['off_air' => 'not_on_air']));
+			$this->assertSame($rPlaced, OffAirHandler::tokenVideo(['off_air' => 'not_on_air', 'video_path' => '/elsewhere/x.ts']), 'the name wins');
+			$this->assertSame($rPlaced, OffAirHandler::tokenVideo(['video_path' => '/home/xc_vm/content/video/custom_offline.ts']), 'an older MAIN\'s token');
+			$this->assertSame('/elsewhere/x.ts', OffAirHandler::tokenVideo(['off_air' => 'nope', 'video_path' => '/elsewhere/x.ts']), 'an unknown name: the path');
+		} finally {
+			$GLOBALS['rSettings'] = $rSettings;
+		}
 	}
 
 	/** A download whose bytes are not the grant's is refused before it is placed, and audited for MAIN. */
@@ -409,6 +422,11 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$rOut = (string) ob_get_clean();
 		$this->assertStringContainsString('refused', $rOut, 'not staged by cluster:root: a signals row, or a payload naming a path');
 		$this->assertSame('the running agent', file_get_contents($this->rBase . 'bin/xc_agent/xc_agent'));
+		foreach ([['action' => 'fanout_binary', 'arch' => 'amd64', 'artefact_path' => '/tmp/x'], ['action' => 'xcvm_core', 'group' => 'php8.1', 'artefact_path' => '/tmp/x']] as $rAction) {
+			ob_start();
+			(new RootSignalsCronJob())->executeAction($rAction, [], $rDb);
+			$this->assertStringContainsString('refused: no', (string) ob_get_clean(), $rAction['action'] . ': only root\'s staged copy');
+		}
 
 		// module:install's archive: only root's stage, and only the grant's bytes.
 		mkdir($this->rBase . 'etc/stage', 0700);

@@ -3,7 +3,9 @@
 namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Cli\Commands\FanoutBinaryCommand;
 use XcVm\Cli\Commands\UpdateCommand;
+use XcVm\Cli\Commands\XcvmCoreCommand;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ArtefactStage;
@@ -292,6 +294,20 @@ class RootSignalsCronJob implements CommandInterface {
 		return 'set $api_legacy ' . (DataPlane::legacyApiRetired() ? '0' : '1') . ';';
 	}
 
+	/**
+	 * viewer_api.conf for this node, or null on MAIN: the viewer APIs
+	 * (player_api, enigma2, xplugin, epg, playlist) answer 404 on a node in
+	 * mode 2, which reads no line from MAIN's database to answer them with
+	 * (plan, D16), and are served everywhere else, as before. MAIN's
+	 * nginx.conf has no such switch.
+	 */
+	public static function viewerApiConf(): ?string {
+		if (NodeRole::isMain()) {
+			return null;
+		}
+		return 'set $viewer_api ' . (NodeRole::refusesConnects() ? '0' : '1') . ';';
+	}
+
 	/** Tests: run the artefact actions' argv lists through $rRunner (argv => [exit status, output]); null restores run(). */
 	public static function useRunner(?callable $rRunner): void {
 		self::$rRunner = $rRunner;
@@ -550,6 +566,12 @@ class RootSignalsCronJob implements CommandInterface {
 			file_put_contents(BIN_PATH . 'nginx/conf/api_legacy.conf', $rApiLegacyConf);
 			$rReload = true;
 		}
+		$rViewerApiConf = self::viewerApiConf();
+		if ($rViewerApiConf !== null && $rViewerApiConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/viewer_api.conf')) ?: '')) {
+			echo 'Updating the viewer API toggle...' . "\n";
+			file_put_contents(BIN_PATH . 'nginx/conf/viewer_api.conf', $rViewerApiConf);
+			$rReload = true;
+		}
 		$rMinistraLegacyConf = 'set $ministra_legacy_redirect ' . (SettingsManager::get('mag_legacy_redirect') ? '1' : '0') . ';';
 		$rCurrentMinistraLegacyConf = (trim(@file_get_contents(BIN_PATH . 'nginx/conf/ministra_legacy.conf')) ?: '');
 		if ($rMinistraLegacyConf != $rCurrentMinistraLegacyConf) {
@@ -662,7 +684,10 @@ class RootSignalsCronJob implements CommandInterface {
 		// actual upgrade. Root context (this cron) is required — it installs into
 		// bin/ and chowns. Runs on every node (main + LB) since LBs need it too.
 		$rFanoutStamp = CRONS_TMP_PATH . 'fanout_binary_check';
-		if ($rFanoutEnabled && (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600)) {
+		// A node in mode 2 takes the daemon and the extension from MAIN only
+		// (`node.root fanout_binary`, `xcvm_core`, AgentUpgrades), never GitHub.
+		$rFromMain = NodeRole::refusesConnects();
+		if ($rFanoutEnabled && !$rFromMain && (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600)) {
 			file_put_contents($rFanoutStamp, time());
 			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php fanout_binary >/dev/null 2>&1 &');
 		}
@@ -676,7 +701,7 @@ class RootSignalsCronJob implements CommandInterface {
 		// pass runs immediately. This is what delivers config_set_redis to LB nodes,
 		// without which StatusCommand::configureRedisLb cannot point Redis at main.
 		$rCoreStamp = CRONS_TMP_PATH . 'xcvm_core_check';
-		if (!file_exists($rCoreStamp) || time() - intval(@file_get_contents($rCoreStamp) ?: 0) > 3600) {
+		if (!$rFromMain && (!file_exists($rCoreStamp) || time() - intval(@file_get_contents($rCoreStamp) ?: 0) > 3600)) {
 			file_put_contents($rCoreStamp, time());
 			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php xcvm_core >/dev/null 2>&1 &');
 		}
@@ -1060,6 +1085,45 @@ class RootSignalsCronJob implements CommandInterface {
 				// agent acks this command first (its high-water, then the ack).
 				self::run(['/bin/sh', '-c', self::AGENT_RESTART]);
 				echo "xc_agent installed; it restarts in 10 s\n";
+				break;
+			case 'fanout_binary':
+			case 'xcvm_core':
+				// The fanout daemon or the xcvm_core MAIN keeps (plan section 5:
+				// they follow the agent's path on nodes in mode 1 and 2): only its
+				// artefact, staged by cluster:root and checked there.
+				$rFanout = $rData['action'] === 'fanout_binary';
+				$rTool = $rFanout ? 'xc_fanout' : 'xcvm_core';
+				$rStaged = ArtefactStage::current();
+				if ($rStaged === null) {
+					echo $rData['action'] . ': refused: no ' . $rTool . ' staged and checked by cluster:root' . "\n";
+					break;
+				}
+				// Only what runs here: this node's arch, or the PHP its .so loads into.
+				$rWant = $rFanout ? 'fanout/' . (ReleaseAsset::arch(php_uname('m')) ?? '?') : 'core/' . XcvmCoreCommand::group();
+				$rNamed = $rFanout ? 'fanout/' . (string) ($rData['arch'] ?? '') : 'core/' . (string) ($rData['group'] ?? '');
+				if ($rStaged['grant']['id'] !== $rWant || $rNamed !== $rWant) {
+					throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not this node\'s ' . ($rFanout ? 'arch (' . php_uname('m') . ')' : 'PHP (' . XcvmCoreCommand::group() . ')')));
+				}
+				$rVersion = preg_replace('/[^0-9A-Za-z._-]/', '', (string) ($rData['version'] ?? '')) ?: 'unknown';
+				$rLine = 'Installing ' . $rTool . ' ' . $rVersion . ' from MAIN...';
+				echo $rLine . "\n";
+				if (!LogSink::syslog('BINARIES', $rLine)) {
+					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rLine, time());
+				}
+				if ($rFanout) {
+					// install() renames its input into place: a copy beside the binary.
+					$rTmp = BIN_PATH . 'xc_fanout/.xc_fanout.new';
+					if ((!is_dir(dirname($rTmp)) && !@mkdir(dirname($rTmp), 0755, true)) || !@copy($rStaged['path'], $rTmp)) {
+						throw new \RuntimeException('fanout_binary: cannot copy the staged binary');
+					}
+					$rFailed = FanoutBinaryCommand::install($rTmp, $rVersion);
+				} else {
+					$rFailed = (new XcvmCoreCommand())->installStaged($rStaged['path']);
+				}
+				if ($rFailed !== null) {
+					throw new \RuntimeException($rData['action'] . ': ' . $rFailed);
+				}
+				echo $rTool . ' ' . $rVersion . " installed\n";
 				break;
 			case 'strip_db_credentials':
 			case 'install_config':
