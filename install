@@ -21,7 +21,7 @@ rPath = os.path.dirname(os.path.realpath(__file__))
 
 # Distribuciones soportadas
 SUPPORTED_DISTROS = {
-    "ubuntu": ["18.04", "20.04", "22.04", "24.04"],
+    "ubuntu": ["20.04", "22.04", "24.04"],
     "debian": ["12", "13"],
     "rocky": ["8", "9"],
     "almalinux": ["8", "9"],
@@ -1616,7 +1616,6 @@ def fix_ssh2_library_issue():
 
 # Mapping: (dist_id, major_version) -> PACKAGES key
 _PACKAGE_KEY_MAP = {
-    ("ubuntu", "18"): "ubuntu20",
     ("ubuntu", "20"): "ubuntu20",
     ("ubuntu", "22"): "ubuntu22",
     ("ubuntu", "24"): "ubuntu24",
@@ -1625,7 +1624,7 @@ _PACKAGE_KEY_MAP = {
 }
 
 # Distros that need OpenSSL 3 compatibility library
-_NEEDS_OPENSSL3 = {"ubuntu_18", "ubuntu_20"}
+_NEEDS_OPENSSL3 = {"ubuntu_20"}
 
 
 def _install_openssl3_compat(dist_id, major):

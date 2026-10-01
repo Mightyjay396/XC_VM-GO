@@ -107,11 +107,10 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries (PHP
 
 ### Debian
 
-| Version | Codename | Status                   |
-| ------- | -------- | ------------------------ |
-| **11**  | Bullseye | ❌ _EOL — not supported_ |
-| **12**  | Bookworm | ✅ **Recommended**       |
-| **13**  | Trixie   | ✅ Supported             |
+| Version | Codename | Status             |
+| ------- | -------- | ------------------ |
+| **12**  | Bookworm | ✅ Supported       |
+| **13**  | Trixie   | ✅ **Recommended** |
 
 ### RHEL-compatible (Rocky Linux, AlmaLinux, CentOS, RHEL)
 
@@ -129,9 +128,7 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries (PHP
 For new installations:
 
 - 🟢 **Ubuntu 22.04 / 24.04 LTS**
-- 🟢 **Debian 12**
-
-> ⚠️ Ubuntu 18.04 is in legacy mode — it works but receives no priority fixes.
+- 🟢 **Debian 13**
 
 ---
 
