@@ -678,7 +678,7 @@ class RootSignalsCronJob implements CommandInterface {
 		$rFanoutStamp = CRONS_TMP_PATH . 'fanout_binary_check';
 		if (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600) {
 			file_put_contents($rFanoutStamp, time());
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php fanout_binary' . ($rFanoutEnabled ? '' : ' agent') . ' >/dev/null 2>&1 &');
+			ProcessRunner::start($rFanoutEnabled ? [PHP_BIN, MAIN_HOME . 'console.php', 'fanout_binary'] : [PHP_BIN, MAIN_HOME . 'console.php', 'fanout_binary', 'agent']);
 		}
 
 		// xcvm_core PHP extension — same self-heal rationale as the daemon above.
@@ -692,7 +692,7 @@ class RootSignalsCronJob implements CommandInterface {
 		$rCoreStamp = CRONS_TMP_PATH . 'xcvm_core_check';
 		if (!file_exists($rCoreStamp) || time() - intval(@file_get_contents($rCoreStamp) ?: 0) > 3600) {
 			file_put_contents($rCoreStamp, time());
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php xcvm_core >/dev/null 2>&1 &');
+			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'xcvm_core']);
 		}
 
 		// yt-dlp — same self-heal rationale. It is a static bundled binary that
@@ -706,7 +706,7 @@ class RootSignalsCronJob implements CommandInterface {
 		$rYtDlpStamp = CRONS_TMP_PATH . 'ytdlp_check';
 		if (!file_exists($rYtDlpStamp) || time() - intval(@file_get_contents($rYtDlpStamp) ?: 0) > 86400) {
 			file_put_contents($rYtDlpStamp, time());
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php ytdlp >/dev/null 2>&1 &');
+			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'ytdlp']);
 		}
 
 		if ($rServers[SERVER_ID]['limit_requests'] > 0) {
