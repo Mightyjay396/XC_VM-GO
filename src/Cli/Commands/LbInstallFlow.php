@@ -102,6 +102,7 @@ class LbInstallFlow {
 		if (!self::installDistributionBinaries($rConn, $rRunSSH, $rDistID, $rVersion)) {
 			echo "Warning: Failed to install distribution binaries, using defaults\n";
 		}
+		self::installExtension($rConn, $rRunSSH, $rSendFileSSH);
 
 		if (stripos(call_user_func($rRunSSH, $rConn, 'sudo cat /etc/fstab')['output'], STREAMS_PATH) === false) {
 			echo "Adding ramdisk mounts\n";
@@ -127,6 +128,21 @@ class LbInstallFlow {
 				call_user_func($rRunSSH, $rConn, 'sudo touch ' . CONFIG_PATH . 'sysctl.on');
 			}
 		}
+	}
+
+	/**
+	 * Install xcvm_core on the node. The binaries bundle does not carry it, the
+	 * LB archive has no bin/install, and the node's console.php cannot boot
+	 * without it, so MAIN sends its own installer script over.
+	 */
+	private static function installExtension($rConn, callable $rRunSSH, callable $rSendFileSSH): void {
+		echo "Installing the xcvm_core PHP extension\n";
+		$rScript = '/tmp/install_xcvm_core.sh';
+		if (!call_user_func($rSendFileSSH, $rConn, MAIN_HOME . 'bin/install/install_xcvm_core.sh', $rScript, true)) {
+			return;
+		}
+		$rArgs = implode(' ', array_map('escapeshellarg', [GIT_OWNER, GIT_REPO_BIN, BIN_PATH]));
+		echo call_user_func($rRunSSH, $rConn, 'sudo bash ' . $rScript . ' ' . $rArgs . ' 2>&1; rm -f ' . $rScript)['output'] . "\n";
 	}
 
 	/**
