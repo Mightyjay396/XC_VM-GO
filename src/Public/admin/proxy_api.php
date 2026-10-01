@@ -122,7 +122,10 @@ if ($rServerIDRequest !== null) {
 
 function pingServer($rIP, $rPort) {
 	$rStartTime = microtime(true);
-	$rSocket = fsockopen($rIP, $rPort, $rErrNo, $rErrStr, 3);
+	// A proxy whose port does not answer is a ping of -1, not a warning: with
+	// debug_show_errors on, a warning printed here went out ahead of the answer,
+	// which the proxy then could not read (nor verify, signed).
+	$rSocket = @fsockopen($rIP, $rPort, $rErrNo, $rErrStr, 3);
 	$rStopTime = microtime(true);
 
 	if (!$rSocket) {
