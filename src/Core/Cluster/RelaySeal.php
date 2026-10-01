@@ -25,8 +25,9 @@ use XcVm\Core\Cluster\Crypto\Seal;
  *   (`servers.relay_seal`, supported()); the signed servers section carries
  *   it, and a child pulls a stream from such a parent only sealed.
  *
- * Relays only: `/xfile` is checked against its owner's signed digest
- * (integrity) and stays clear, as do viewer bytes.
+ * A file chunk (`/xfile`) is sealed the same way when its fetcher asks
+ * (FileTicketServer, fileContext()), on top of its owner's signed digest.
+ * Viewer bytes stay direct.
  */
 final class RelaySeal {
 	public const PURPOSE = 'relay';
@@ -59,17 +60,22 @@ final class RelaySeal {
 		return 'relay|' . $rParentID . '|' . $rStreamID;
 	}
 
+	/** The SEAL context of a file chunk's key for owner $rOwnerID under file ticket $rTid (`/xfile`). */
+	public static function fileContext(int $rOwnerID, string $rTid): string {
+		return 'file|' . $rOwnerID . '|' . $rTid;
+	}
+
 	/**
-	 * The session key a child sealed to this server for stream $rStreamID
-	 * (PARAM, base64url), or null when it does not open: MAIN opens with the
-	 * panel box key through the extension, a node with its own box key.
+	 * The session key a child sealed to this server under $rContext (context()
+	 * for a relay, fileContext() for a file chunk) as PARAM (base64url), or
+	 * null when it does not open: MAIN opens with the panel box key through
+	 * the extension, a node with its own box key.
 	 */
-	public static function openKey(string $rParam, int $rStreamID): ?string {
+	public static function openKey(string $rParam, string $rContext): ?string {
 		$rSealed = base64_decode(strtr($rParam, '-_', '+/'), true);
 		if (!is_string($rSealed) || $rSealed === '') {
 			return null;
 		}
-		$rContext = self::context((int) SERVER_ID, $rStreamID);
 		try {
 			$rKey = DataPlaneTrust::main()
 				? ClusterCryptoFactory::create()->openSealed(self::PURPOSE, $rSealed, $rContext)

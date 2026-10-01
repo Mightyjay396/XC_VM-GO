@@ -83,8 +83,9 @@ if (file_exists($rRequest) || $rDirectProxy) {
 // The file's bytes go to the xc_fanout daemon when it serves files
 // (FanoutClient::handOverFile): this worker is freed at once, and the
 // connection is the daemon's, recorded with pid 0 as a live viewer's is
-// (fanout_sync reconciles it, a kick drops it). A direct proxy stays here.
-$rFileDaemon = !$rDirectProxy && !FanoutMode::legacyDelivery($rSettings) && LicenseGate::fanoutUsable() && FanoutClient::supportsFiles();
+// (fanout_sync reconciles it, a kick drops it). A direct proxy's source goes
+// to a daemon that fetches sources ("file_urls").
+$rFileDaemon = !FanoutMode::legacyDelivery($rSettings) && LicenseGate::fanoutUsable() && FanoutClient::supports($rDirectProxy ? 'file_urls' : 'files');
 $rConnPID = $rFileDaemon ? 0 : $rPID;
 
 if ($rSettings['use_buffer'] != 0) {
@@ -323,6 +324,18 @@ if ($rChannelInfo) {
 		$rContentType = strtolower(trim(explode(';', (string) ($rHeaders['content-type'] ?? ''))[0]));
 
 		if (0 < $rSize && in_array($rContentType, ['video/mp4', 'video/x-matroska', 'video/x-msvideo', 'video/3gpp', 'video/x-flv', 'video/x-ms-wmv', 'video/quicktime', 'video/mp2t', 'video/mpeg', 'application/octet-stream'], true)) {
+			if ($rFileDaemon) {
+				// Paced as the relay below: past 512 MB, at three times the movie's
+				// average rate (1 MB/s at least), from the first byte.
+				$rRate = 0;
+				if (512 * 1024 * 1024 < $rSize) {
+					$rRate = (int) max(1024 * 1024, !empty($rChannelInfo['bitrate']) ? ($rSize * 0.008) / $rChannelInfo['bitrate'] * 125 * 3 : 20 * 1024 * 1024);
+				}
+				if (!FanoutClient::handOverFile($rStreamID, (string) $rTokenData['uuid'], [['url' => $rDirectProxy, 'offset' => 0, 'length' => -1]], $rContentType, 0, $rRate, (string) ($rTokenData['http_range'] ?? ''))) {
+					generateError('VOD_DOESNT_EXIST');
+				}
+				exit();
+			}
 			header('Content-Type: ' . $rContentType);
 			$rServe = HttpRange::sendHeaders(HttpRange::parse($_SERVER['HTTP_RANGE'] ?? null, $rSize), $rSize);
 			if ($rServe === null) {

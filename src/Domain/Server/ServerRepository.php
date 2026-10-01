@@ -611,7 +611,7 @@ class ServerRepository {
 			}
 			$rServerURL = $rProtocol . '://' . $rDomain . ':' . $rServers[$rServerID][$rProtocol . '_broadcast_port'] . '/';
 			if ($rServers[$rServerID]['server_type'] == 1 && $rOriginatorID && $rServers[$rOriginatorID]['is_main'] == 0) {
-				$rServerURL .= md5($rServerID . '_' . $rOriginatorID . '_' . OPENSSL_EXTRA) . '/';
+				$rServerURL .= ProxyRoute::segment((int) $rServerID, (int) $rOriginatorID, $rServers) . '/';
 			}
 			return $rServerURL;
 		}

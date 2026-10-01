@@ -73,8 +73,12 @@ final class ViewerKeyTest extends TestCase {
 		$rEntry = ViewerKey::entry(self::SECRET, 5, StreamSecret::previousEntry());
 		$this->assertSame([ViewerKey::derive(self::SECRET, 5), $rOld], [$rEntry['current'], $rEntry['previous']]);
 
-		// Past the window, the old key is no one's.
-		$this->assertNull(ViewerKey::keyFor(ViewerKey::kid($rOld), self::SECRET, 5, time() + StreamSecret::PREVIOUS_WINDOW + 1));
+		// Past the window too: a node offline through it still holds that key, and
+		// accepts it until it applies the new one.
+		$this->assertSame($rOld, ViewerKey::keyFor(ViewerKey::kid($rOld), self::SECRET, 5, time() + StreamSecret::PREVIOUS_WINDOW + 1));
+		// A key from two rotations back is no one's.
+		StreamSecret::replaced(self::SECRET, 'newest-secret');
+		$this->assertNull(ViewerKey::keyFor(ViewerKey::kid($rOld), 'newest-secret', 5));
 	}
 
 	public function testTheNodeKeepsItsKeysAndReadsWithThemFirst(): void {

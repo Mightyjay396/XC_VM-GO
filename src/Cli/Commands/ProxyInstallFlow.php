@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Domain\Server\ProxyKey;
+use XcVm\Domain\Server\ProxyRoute;
 
 class ProxyInstallFlow {
 	public static function getPackages(): array {
@@ -61,8 +62,10 @@ class ProxyInstallFlow {
 			if ($rServers[$rParentID]['is_main']) {
 				$rConfigText = 'location / {' . "\n" . '    include options.conf;' . "\n" . '    proxy_pass http://' . $rIP . '$1;' . "\n" . '}';
 			} else {
-				$rKey = md5($rServerID . '_' . $rParentID . '_' . OPENSSL_EXTRA);
-				$rConfigText = 'location ~/' . $rKey . '(.*)$ {' . "\n" . '    include options.conf;' . "\n" . '    proxy_pass http://' . $rIP . '$1;' . "\n" . '    proxy_set_header X-Token "' . $rKey . '";' . "\n" . '}';
+				// The proxy's route to this parent (ProxyRoute): installed with a key
+				// generation (provisionKey, before this), so every server routes by it.
+				$rKey = ProxyRoute::current($rServerID, (int) $rParentID);
+				$rConfigText = 'location ~/' . $rKey . '(.*)$ {' . "\n" . '    include options.conf;' . "\n" . '    proxy_pass http://' . $rIP . '$1;' . "\n" . '}';
 			}
 
 			$rTmpPath = TMP_PATH . md5(time() . $rKey . '.conf');

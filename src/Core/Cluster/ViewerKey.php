@@ -119,14 +119,18 @@ final class ViewerKey {
 
 	/**
 	 * MAIN: the key a node that reports $rFp holds: K_n under $rSecret, or
-	 * under the secret it replaced while that is accepted (the node has not
-	 * applied the rotation yet). Null without a report or for any other kid.
+	 * under the secret it replaced (the node has not applied the rotation yet,
+	 * within its window or, offline through it, after). Null without a report
+	 * or for any other kid, a key from two rotations back among them.
 	 */
 	public static function keyFor(mixed $rFp, string $rSecret, int $rServerID, ?int $rNow = null): ?string {
 		if (!is_string($rFp) || $rFp === '' || $rSecret === '') {
 			return null;
 		}
-		foreach ([$rSecret, StreamSecret::previous($rNow)] as $rFrom) {
+		// The replaced secret past its window too: a node that missed the whole
+		// window (offline through the rotation) still holds that key, accepts it
+		// until it applies the new one, and reads nothing else.
+		foreach ([$rSecret, StreamSecret::replacedValue()] as $rFrom) {
 			if ($rFrom !== null && $rFrom !== '') {
 				$rKey = self::derive($rFrom, $rServerID);
 				if (hash_equals(self::kid($rKey), $rFp)) {

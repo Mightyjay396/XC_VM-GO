@@ -10,6 +10,7 @@ use XcVm\Core\Cluster\Crypto\Ticket;
 use XcVm\Core\Cluster\DataPlane;
 use XcVm\Core\Cluster\DataPlaneTrust;
 use XcVm\Core\Cluster\FileTicketServer;
+use XcVm\Core\Cluster\RelaySeal;
 use XcVm\Tests\Support\ClusterReference as Ref;
 
 /**
@@ -126,6 +127,31 @@ final class FileTicketTest extends TestCase {
 		}
 		$this->assertSame($rWhole, $rRead);
 		$this->assertSame(416, $this->get(strlen($rWhole) + 1)['status'], 'past the end');
+	}
+
+	public function testAChunkIsSealedWhenItsFetcherSealedAKeyToTheOwner(): void {
+		$rTicket = $this->ticket();
+		$rTid = (string) Ticket::verify(Ref::panelPub($this->rSeed), 'fil', $rTicket, $this->rNow)['tid'];
+		$rKey = random_bytes(32);
+		$rParam = Enc::b64url(Seal::seal(sodium_crypto_scalarmult_base($this->rBoxSk), RelaySeal::PURPOSE, RelaySeal::fileContext((int) SERVER_ID, $rTid), $rKey));
+		$rServe = function (string $rParam) use ($rTicket): array {
+			$rTarget = '/xfile?o=0&n=' . FileDigest::CHUNK . '&rk=' . $rParam;
+			$rServer = ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => $rTarget, FileTicketServer::TICKET => $rTicket, FileTicketServer::AUTH => RelayAuth::header($this->rFetcherSk, $rTicket, 'GET', $rTarget, $this->rNow * 1000)];
+			return FileTicketServer::serve($rServer, ['o' => '0', 'n' => (string) FileDigest::CHUNK, 'rk' => $rParam], ['lb_scan_roots' => [$this->rDir]], $this->rNow * 1000);
+		};
+
+		$rOut = $rServe($rParam);
+		$this->assertSame(200, $rOut['status']);
+		$this->assertSame(RelaySeal::VERSION, $rOut['headers'][RelaySeal::HEADER]);
+		$rPlain = RelaySeal::open($rKey, $rOut['body']);
+		$this->assertSame(substr((string) file_get_contents($this->rFile), 0, FileDigest::CHUNK), $rPlain, 'the chunk, framed');
+		$rDigest = FileDigest::verify($rOut['headers']['X-XCVM-File-Digest'], $rTid, null, sodium_crypto_sign_publickey(sodium_crypto_sign_seed_keypair(substr($this->rOwnerSk, 0, 32))));
+		$this->assertTrue(FileDigest::chunkMatches($rDigest, 0, (string) $rPlain), 'the digest is over the plaintext');
+		$this->assertSame((string) strlen($rOut['body']), $rOut['headers']['Content-Length']);
+
+		// A key sealed for a relay (or another ticket) is no file key.
+		$rRelay = Enc::b64url(Seal::seal(sodium_crypto_scalarmult_base($this->rBoxSk), RelaySeal::PURPOSE, RelaySeal::context((int) SERVER_ID, 1), $rKey));
+		$this->assertSame(404, $rServe($rRelay)['status']);
 	}
 
 	public function testAReplayIsRefused(): void {

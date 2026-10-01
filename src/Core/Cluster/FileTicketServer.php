@@ -114,7 +114,19 @@ final class FileTicketServer {
 		if ($rDigest === null) {
 			return ['status' => 503, 'headers' => [], 'body' => ''];
 		}
-		return ['status' => 200, 'headers' => ['Content-Type' => 'application/octet-stream', 'Content-Length' => (string) strlen($rBytes), 'X-XCVM-File-Digest' => $rDigest, 'Cache-Control' => 'no-store'], 'body' => $rBytes];
+		$rHeaders = ['Content-Type' => 'application/octet-stream', 'X-XCVM-File-Digest' => $rDigest, 'Cache-Control' => 'no-store'];
+		// A fetcher that sealed a key to this server (RelaySeal, D11) gets the
+		// chunk framed under it; the digest stays over the plaintext.
+		$rSealedKey = $rQuery[RelaySeal::PARAM] ?? null;
+		if (is_string($rSealedKey) && $rSealedKey !== '') {
+			$rKey = RelaySeal::openKey($rSealedKey, RelaySeal::fileContext((int) SERVER_ID, (string) $rTicket['tid']));
+			if ($rKey === null) {
+				return $rDenied;
+			}
+			$rBytes = (new RelaySeal($rKey))->frames($rBytes);
+			$rHeaders[RelaySeal::HEADER] = RelaySeal::VERSION;
+		}
+		return ['status' => 200, 'headers' => $rHeaders + ['Content-Length' => (string) strlen($rBytes)], 'body' => $rBytes];
 	}
 
 	/**

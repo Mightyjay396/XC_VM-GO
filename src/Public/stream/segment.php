@@ -3,11 +3,13 @@
 use XcVm\Core\Cluster\NodeLease;
 use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\ConfigReader;
+use XcVm\Core\License\LicenseGate;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\AsyncFileOperations;
 use XcVm\Streaming\Codec\FfmpegPaths;
 use XcVm\Streaming\Delivery\SignalSender;
+use XcVm\Streaming\Fanout\FanoutClient;
 use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
@@ -247,8 +249,15 @@ if (isset($_GET['token'])) {
 				exit();
 			}
 
-			// ARCHIVE (timeshift catch-up) segments are on-disk files, served here.
-			// Offset-read a partial first segment, else readfile.
+			// ARCHIVE (timeshift catch-up) segments are on-disk files: the xc_fanout
+			// daemon serves them when it serves files (no viewer to count: an HLS
+			// row), freeing this worker; else they are served here, a partial
+			// first segment from its offset.
+			if (!FanoutMode::legacyDelivery($rSettings) && LicenseGate::fanoutUsable() && FanoutClient::supportsFiles()
+				&& FanoutClient::handOverFile($rStreamID, '', [['path' => $rSegment, 'offset' => (int) $rOffset, 'length' => -1]], 'video/mp2t', 0, 0)
+			) {
+				exit();
+			}
 			if (0 < $rOffset) {
 				header('Content-Length: ' . ($rFilesize - $rOffset));
 				$rFP = @fopen($rSegment, 'rb');

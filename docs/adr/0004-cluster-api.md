@@ -5370,7 +5370,7 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
   - The legacy cron lock path, which hashes no value.
 
   They get an empty password, which every check refuses.
-- **No routing check on a stale key.** A node that misses a rotation's whole window (offline for more than 10 min) reports a stale key, so MAIN mints its tokens with the shared secret, which it can no longer read. It catches up at its next apply. Until then MAIN still routes viewers to it, and they fail there.
+- **A node that missed a rotation's window** (offline for more than 10 min) still reports the key it holds. MAIN mints its tokens with that key, derived from the replaced secret past its window (`StreamSecret::replacedValue`), and keeps its section hashed. That costs nothing, since the node accepts that key anyway until it applies the new one, which it does at its next apply. Only a node two rotations behind reports a key no one holds; it gets the value again, and with it the shared secret's tokens.
 - **Holding the key in `xcvm_core`.** The design's optional fourth increment.
 
 **Tests.**
@@ -5405,9 +5405,11 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
 - **Parts.** A movie is one part, the whole file. A timeshift is its queued minute files, the first from its offset.
 - **When.** The hand-over happens with fanout usable (`FanoutMode`, `LicenseGate::fanoutUsable()`) and a daemon that has the `files` feature (`FanoutClient::supportsFiles()`, the answer kept a minute in `TMP_PATH/fanout_features`). Otherwise, and for a direct-proxy VOD, the PHP loop serves as before.
 
+- **A direct-proxy movie** goes to a daemon with `file_urls`: its manifest names the source URL, which the daemon fetches with the viewer's range and the panel's User-Agent, paced as the cURL relay was (past 512 MB, three times the movie's average rate). PHP still probes the source's size and type first.
+- **HLS timeshift segments** (`segment.php`, an archive minute or a partial first one) go to a daemon that serves files, with no viewer to count: an HLS row is not tracked per segment.
+- **The file roots.** A manifest's paths must lie under the daemon's file roots (`-fileroots`, `/home/xc_vm/content` by default), so a manifest names nothing else the daemon's user could read.
+
 **Not built.**
-- **Direct-proxy VOD** still relays through PHP (cURL).
-- **HLS timeshift** segments are still served one by one by `segment.php`; each is a short request.
 - **The per-connection speed file** (`DIVERGENCE_TMP_PATH`) is not written for a daemon-served file; `fanout_sync` takes the rate from the daemon's `/rates`, as for live.
 
 **Tests.** `FanoutFileHandOverTest` checks the manifest (its name, mode and content, the throttle clamped, the token's range) and that the feature answer is kept a minute. XC_VM_Fanout's `files_test.go` covers:
@@ -5430,8 +5432,9 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
 - **The frames.** `admin/live.php` opens the key (`RelaySeal::openKey`; a key that does not open refuses the relay), answers `X-XCVM-Relay-Seal: v1`, and seals everything it writes through an output buffer: `u32 len ‖ AES-256-GCM(key, nonce 0⁴ ‖ u64 counter, aad "xcvm relay v1")`, at most 64 KiB of plaintext a frame. A partial frame is flushed before each wait for the next segment.
 - **No downgrade.** Each server reports whether it opens relay keys (`servers.relay_seal`, migration 060, with its inventory each minute; `RelaySeal::supported()`). A node needs its box key; MAIN tries a key sealed to its own panel box key, so an extension without the `relay` purpose reports 0. The signed servers section carries it. A child pulls from a parent marked as sealing only sealed: an unsealed answer is refused, and a frame that does not open or comes out of order ends the read. A parent not marked (older code, or MAIN on an older extension) is pulled as before.
 
+- **`/xfile` too.** A file chunk from an owner marked as sealing is asked for with a key sealed under `file|<owner>|<ticket id>` (`RelaySeal::fileContext`), so a relay's key and a file's cannot stand in for each other. `FileTicketServer` frames the chunk, and the agent opens the frames before it checks the owner's digest over the plaintext.
+
 **Not built.**
-- **`/xfile`** file pulls are integrity-checked against the owner's signed digest, but not confidential.
 - **Viewer bytes and `/images`** stay direct, as D11 scoped.
 - **Forward secrecy:** a parent's box key taken later opens a recorded relay's key.
 
@@ -5469,9 +5472,14 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
 
 **The proxy (XC_VM_Proxy).** `callback.php` signs when the key is installed and runs signals only from a verified answer. `includes/proxy_auth.php` holds the code, and `tests/proxy_auth_check.php` (`make check`, run before each release build) checks it against `ProxyKeyTest`'s vectors. A proxy without a key works as before. **Deploying it needs an XC_VM_Proxy release**, which the panel's `cron:proxy` then ships to new installs.
 
+**The route segment (`Domain/Server/ProxyRoute`).** The URL segment that routes a viewer through a proxy to its parent picks the parent and authenticates nothing: the parent still checks the viewer's token, which per-node keys (H1) bind to the parent.
+- A proxy installed by this panel has an HMAC-SHA256 segment (`ProxyRoute::current`). Its install writes it into the proxy's nginx, after the key generation is raised.
+- An older proxy (`proxy_key_gen` 0) keeps the `md5(proxy_parent_OPENSSL_EXTRA)` its nginx holds until its next install.
+- Every site that builds a proxied URL goes through `ProxyRoute::segment`: MAIN's redirects and the off-air redirect, and a node's proxied HLS and timeshift playlists. `proxy_key_gen` is therefore a replicated server field. It isn't secret: the key needs MAIN's secret.
+- The dead `X-Token` header the proxy's nginx sent its parent is gone.
+
 **Not built.**
-- **The route segment.** The URL segment that routes a viewer through a proxy to its parent, `md5(proxy_parent_OPENSSL_EXTRA)`, stays as the proxy's nginx was installed with it. It only selects the parent and authenticates nothing: the parent still checks the viewer's token, which per-node keys (H1) now bind to the parent.
-- **Existing proxies** get their key at their next install (Reinstall in the servers list); until then their channel stays unsigned.
+- **Existing proxies** get their key, and the new route segment, at their next install (Reinstall in the servers list). Until then, their channel stays unsigned and their route segment md5.
 
 **Tests.**
 - `ProxyKeyTest`:

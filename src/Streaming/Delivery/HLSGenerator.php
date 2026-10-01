@@ -3,6 +3,7 @@
 namespace XcVm\Streaming\Delivery;
 
 use XcVm\Core\Cluster\ViewerKey;
+use XcVm\Domain\Server\ProxyRoute;
 
 /**
  * HLSGenerator — turns the xc_fanout daemon's in-RAM HLS playlist into the
@@ -32,7 +33,7 @@ class HLSGenerator {
 			return false;
 		}
 		$rSource = (string) @file_get_contents($rM3U8);
-		$rPrefix = ($rProxyID ? '/' . md5($rProxyID . '_' . $rServerID . '_' . OPENSSL_EXTRA) : '');
+		$rPrefix = ($rProxyID ? '/' . ProxyRoute::segment((int) $rProxyID, (int) $rServerID) : '');
 		$rSecure = !empty($rSettings['secure_stream_tokens']);
 		$rURL = static function (string $rSegment) use ($rSettings, $rUsername, $rPassword, $rStreamID, $rUUID, $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, $rOnDemand, $rPrefix, $rSecure): string {
 			if ($rIsHMAC) {
@@ -85,7 +86,7 @@ class HLSGenerator {
 	 * @return string|false Tokenized playlist, or false if it has no segments.
 	 */
 	public static function tokenizeDaemonPlaylist(string $rPlaylist, $rSettings, $rUsername, $rPassword, $rStreamID, $rUUID, $rIP, $rIsHMAC, $rIdentifier, $rVideoCodec, $rOnDemand, $rServerID, $rProxyID) {
-		$rPrefix = ($rProxyID ? '/' . md5($rProxyID . '_' . $rServerID . '_' . OPENSSL_EXTRA) : '');
+		$rPrefix = ($rProxyID ? '/' . ProxyRoute::segment((int) $rProxyID, (int) $rServerID) : '');
 		$rReplaced = 0;
 
 		$rSource = preg_replace_callback(

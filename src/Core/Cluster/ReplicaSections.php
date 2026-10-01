@@ -105,7 +105,7 @@ final class ReplicaSections {
 		'rtmp_port' => 'int', 'total_clients' => 'int', 'network_guaranteed_speed' => 'int', 'enable_geoip' => 'int',
 		'geoip_countries' => 'str', 'geoip_type' => 'str', 'enable_isp' => 'int', 'isp_names' => 'str', 'isp_type' => 'str',
 		'timeshift_only' => 'int', 'random_ip' => 'int', 'enable_proxy' => 'int', 'persistent_connections' => 'int',
-		'enable_gzip' => 'int', 'order' => 'int', 'whitelist_ips' => 'str', 'xc_vm_version' => 'str', 'relay_seal' => 'int',
+		'enable_gzip' => 'int', 'order' => 'int', 'whitelist_ips' => 'str', 'xc_vm_version' => 'str', 'relay_seal' => 'int', 'proxy_key_gen' => 'int',
 	];
 
 	/** `node`: the node's own configuration, from its row; only it gets these. */
@@ -127,7 +127,7 @@ final class ReplicaSections {
 	public const SERVER_LOCAL = [
 		'status', 'last_check_ago', 'last_status', 'remote_status', 'ping', 'watchdog_data', 'php_pids', 'connections',
 		'users', 'requests_per_second', 'server_hardware', 'video_devices', 'audio_devices', 'gpu_info', 'interfaces',
-		'governors', 'certbot_ssl', 'certbot_renew', 'uuid', 'ssh_hostkey_sha1', 'viewer_key_fp', 'proxy_key_gen', 'proxy_signed',
+		'governors', 'certbot_ssl', 'certbot_renew', 'uuid', 'ssh_hostkey_sha1', 'viewer_key_fp', 'proxy_signed',
 	];
 
 	/** R2: the record of one stream a node holds (the `streams` op). */
