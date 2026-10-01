@@ -189,6 +189,13 @@ console.php cluster:seed-connections <serverID>
 # The agent binary MAIN pins, per architecture
 console.php agent_binary [amd64|arm64|armv7|386] [force]
 
+# The fanout daemon and xcvm_core MAIN hands nodes in mode 1 and 2 (its own arch and PHP are kept at each install)
+console.php fanout_binary cache [amd64|arm64|armv7|386] [force]
+console.php xcvm_core cache [php8.1|php8.4] [force]
+
+# A rollout a failing node holds back, released (agent by default)
+console.php agent_binary release <version> [agent|fanout|core]
+
 # Firewall MariaDB and Redis to the fleet (check first)
 console.php cluster:db-allowlist status | apply | undo
 

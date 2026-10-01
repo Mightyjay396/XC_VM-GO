@@ -3,6 +3,7 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
+use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
@@ -26,6 +27,10 @@ use XcVm\Core\Updates\UpdateChannels;
  * per-repository FANOUT channel ({@see UpdateChannels}).
  *
  * Usage: `console.php fanout_binary` (add `force` to reinstall the same version).
+ * On MAIN, `console.php fanout_binary cache [arch…]` keeps the verified binary
+ * for each arch its nodes run (AgentBinaryCommand's cache, FANOUT_PREFIX),
+ * which it hands nodes over the cluster API (`node.root fanout_binary`); its
+ * own arch's is kept at each install.
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -46,6 +51,17 @@ class FanoutBinaryCommand implements CommandInterface {
 	}
 
 	public function execute(array $rArgs): int {
+		if (($rArgs[0] ?? '') === 'cache') {
+			$rArches = array_values(array_intersect($rArgs, array_unique(ReleaseAsset::ARCH_MAP)));
+			$rArches = $rArches !== [] ? $rArches : array_values(array_filter([ReleaseAsset::arch(trim(php_uname('m')))]));
+			$rFailed = 0;
+			foreach ($rArches as $rArch) {
+				$rFailed += AgentBinaryCommand::cached($rArch, in_array('force', $rArgs, true), static function (string $rLine): void {
+					echo $rLine . "\n";
+				}, AgentBinaryCommand::FANOUT_PREFIX) === null ? 1 : 0;
+			}
+			return $rFailed === 0 && $rArches !== [] ? 0 : 1;
+		}
 		if (posix_getpwuid(posix_geteuid())['name'] !== 'root') {
 			echo "Please run as root!\n";
 			return 1;
@@ -139,34 +155,57 @@ class FanoutBinaryCommand implements CommandInterface {
 			return 1;
 		}
 
+		$rFailed = self::install($rTmp, $rLatest);
+		if ($rFailed !== null) {
+			echo $rFailed . " — aborting\n";
+			return 1;
+		}
+		// MAIN keeps its own arch's binary for the nodes it serves.
+		if (NodeRole::mainBuild()) {
+			AgentBinaryCommand::cached($rArch, false, null, AgentBinaryCommand::FANOUT_PREFIX);
+		}
+		echo "xc_fanout {$rLatest} installed.\n";
+		return 0;
+	}
+
+	/**
+	 * Install $rTmp, a verified xc_fanout binary of version $rVersion in
+	 * bin/xc_fanout/ (the download, or the copy root staged from MAIN's
+	 * grant): it must run here (`-version`), then it replaces the binary
+	 * atomically, the version is recorded beside it, and the daemon restarts.
+	 * $rTmp is gone either way. Null once installed, else why not.
+	 */
+	public static function install(string $rTmp, string $rVersion): ?string {
+		$rDir = BIN_PATH . 'xc_fanout/';
 		@chmod($rTmp, 0755);
-		$rNewVer = trim((string) shell_exec(escapeshellarg($rTmp) . ' -version 2>/dev/null'));
-		if ($rNewVer === '') {
-			echo "Downloaded binary does not run on this host — aborting\n";
+		if (trim((string) shell_exec(escapeshellarg($rTmp) . ' -version 2>/dev/null')) === '') {
 			@unlink($rTmp);
-			return 1;
+			return 'the binary does not run on this host';
 		}
-
-		if (!@rename($rTmp, $rBinary)) { // atomic replace
-			echo "Failed to install {$rBinary}\n";
+		if (!@rename($rTmp, $rDir . 'xc_fanout')) { // atomic replace
 			@unlink($rTmp);
-			return 1;
+			return 'cannot install ' . $rDir . 'xc_fanout';
 		}
-		@chown($rBinary, 'xc_vm');
-		@chgrp($rBinary, 'xc_vm');
-
+		@chown($rDir . 'xc_fanout', 'xc_vm');
+		@chgrp($rDir . 'xc_fanout', 'xc_vm');
 		// Record the installed version in the sidecar file so subsequent runs
 		// compare this file against GitHub (not the binary's self-report).
-		$this->writeVersionFile($rVerFile, $rLatest);
-
+		if (@file_put_contents($rDir . self::VERSION_FILE, ltrim($rVersion, 'vV') . "\n") !== false) {
+			@chown($rDir . self::VERSION_FILE, 'xc_vm');
+			@chgrp($rDir . self::VERSION_FILE, 'xc_vm');
+		}
 		// Restart: kill ONLY the daemon process (match the exact process NAME, not
 		// the cmdline) so the service keepalive loop — whose bash cmdline contains
 		// the same binary path — survives and respawns it with the new binary.
 		// Harmless no-op if it isn't running yet.
 		shell_exec("pkill -u xc_vm -x xc_fanout 2>/dev/null");
+		return null;
+	}
 
-		echo "xc_fanout {$rNewVer} installed.\n";
-		return 0;
+	/** The version recorded beside the installed binary (the node reports it), or null. */
+	public static function installedVersion(): ?string {
+		$rVal = trim((string) @file_get_contents(BIN_PATH . 'xc_fanout/' . self::VERSION_FILE));
+		return $rVal !== '' ? ltrim($rVal, 'vV') : null;
 	}
 
 	/**

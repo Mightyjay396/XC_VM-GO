@@ -3,6 +3,7 @@
 namespace XcVm\Domain\Cluster;
 
 use XcVm\Cli\Commands\AgentBinaryCommand;
+use XcVm\Cli\Commands\XcvmCoreCommand;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Module\ModuleManager;
@@ -17,6 +18,8 @@ use XcVm\Core\Module\ModuleManager;
  * | `offair/<name>` | the admin's custom video for that off-air name (`<name>_video_path`, as `cluster.off_air` names its file) | `artefact.fetch` (cluster:exec) |
  * | `module/<name>/<version>` | the custom module's archive MAIN keeps (ModuleManager::archivePathFor) | `node.root install_module` |
  * | `agent/<arch>` | the xc_agent binary MAIN pinned and verified (`agent_binary` cache, with its version) | `node.root agent_binary` |
+ * | `fanout/<arch>` | the xc_fanout binary MAIN verified (the same cache, `fanout_binary cache`, with its version) | `node.root fanout_binary` |
+ * | `core/<group>` | the xcvm_core archive for a PHP group MAIN verified (`xcvm_core cache`, with its version) | `node.root xcvm_core` |
  *
  * locate() resolves an id from MAIN's own configuration alone. The id's
  * shape is checked first (ArtefactStage::validId), a module archive or an
@@ -27,7 +30,7 @@ use XcVm\Core\Module\ModuleManager;
  */
 final class ArtefactRegistry {
 	/** The largest artefact of each kind MAIN serves (bytes). */
-	public const MAX_SIZE = ['offair' => 268435456, 'module' => 67108864, 'agent' => 134217728];
+	public const MAX_SIZE = ['offair' => 268435456, 'module' => 67108864, 'agent' => 134217728, 'fanout' => 134217728, 'core' => 67108864];
 
 	/** An off-air video is served as MPEG-TS (live.php): these extensions only. */
 	public const VIDEO_EXTENSIONS = ['ts', 'm2ts', 'mts', 'mpegts', 'mp4'];
@@ -39,16 +42,19 @@ final class ArtefactRegistry {
 
 	private static ?string $rAgents = null;
 
+	private static ?string $rCores = null;
+
 	/** A file changed this recently (s) is hashed, but its hash is not kept: a write in the same second leaves its stat as it was. */
 	private const SETTLED = 2;
 
 	/** @var array<string, array<string, mixed>>|null */
 	private static ?array $rHashes = null;
 
-	/** Tests: other directories for module archives and the agent cache; null restores the defaults. */
-	public static function useDirs(?string $rModuleArchives, ?string $rAgentCache): void {
+	/** Tests: other directories for module archives, the agent (and fanout) cache and the xcvm_core cache; null restores the defaults. */
+	public static function useDirs(?string $rModuleArchives, ?string $rAgentCache, ?string $rCoreCache = null): void {
 		self::$rModules = $rModuleArchives;
 		self::$rAgents = $rAgentCache;
+		self::$rCores = $rCoreCache;
 		self::$rHashes = null;
 	}
 
@@ -82,9 +88,14 @@ final class ArtefactRegistry {
 				$rPath = $rDir . $rParts[1] . '_' . $rParts[2] . '.zip';
 				break;
 			default:
-				$rDir = self::$rAgents ?? AgentBinaryCommand::cacheDir();
-				$rPath = $rDir . AgentBinaryCommand::ASSET_PREFIX . $rParts[1];
-				// Pinned: only a binary AgentBinaryCommand verified and recorded.
+				if ($rParts[0] === 'core') {
+					$rDir = self::$rCores ?? XcvmCoreCommand::cacheDir();
+					$rPath = $rDir . 'xcvm_core-' . $rParts[1] . '.tar.gz';
+				} else {
+					$rDir = self::$rAgents ?? AgentBinaryCommand::cacheDir();
+					$rPath = $rDir . ($rParts[0] === 'fanout' ? AgentBinaryCommand::FANOUT_PREFIX : AgentBinaryCommand::ASSET_PREFIX) . $rParts[1];
+				}
+				// Pinned: only a binary (or archive) MAIN verified and recorded.
 				$rVersion = trim((string) @file_get_contents($rPath . '.version'));
 				if (!preg_match('/^[0-9A-Za-z][0-9A-Za-z._+-]{0,31}\z/', $rVersion)) {
 					return null;

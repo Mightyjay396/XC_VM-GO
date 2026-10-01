@@ -157,6 +157,7 @@ class WatchdogCommand implements CommandInterface {
 
 			// ── xc_fanout daemon health (admin "Service Status" panel) ──
 			$rStats['fanout'] = FanoutClient::status();
+			$rStats['versions'] = self::versions();
 
 			// ── PHP PIDs ─────────────────────────────────────────
 			// FPM worker pids, which connection rows record; the pool pid
@@ -298,6 +299,18 @@ class WatchdogCommand implements CommandInterface {
 		if (!is_dir($rDir)) {
 			return;
 		}
-		LocalTelemetry::refresh($rDir, TMP_PATH . 'watchdog_devices.json', time(), ['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status()], static fn(): array => SystemInfo::getDevices(LocalTelemetry::PROBE_TIMEOUT));
+		LocalTelemetry::refresh($rDir, TMP_PATH . 'watchdog_devices.json', time(), ['requests_per_second' => (int) $rRequestsPerSecond, 'fanout' => FanoutClient::status(), 'versions' => self::versions()], static fn(): array => SystemInfo::getDevices(LocalTelemetry::PROBE_TIMEOUT));
+	}
+
+	/**
+	 * What this node runs of the binaries MAIN may hand it (plan, section 5):
+	 * the xc_fanout version recorded beside the daemon, the xcvm_core this
+	 * PHP loaded, and the PHP group its .so must be built for. MAIN's rollout
+	 * reads it from the node's watchdog data (AgentUpgrades).
+	 *
+	 * @return array{xc_fanout: ?string, xcvm_core: ?string, php: string}
+	 */
+	public static function versions(): array {
+		return ['xc_fanout' => FanoutBinaryCommand::installedVersion(), 'xcvm_core' => phpversion('xcvm_core') ?: null, 'php' => XcvmCoreCommand::group()];
 	}
 }

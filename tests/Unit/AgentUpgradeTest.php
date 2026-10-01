@@ -86,6 +86,53 @@ final class AgentUpgradeTest extends TestCase {
 			(new ReflectionProperty($rClass, 'db'))->setValue(null, null);
 		}
 		array_map('unlink', glob($this->rCache . '*') ?: []);
+		array_map('unlink', glob(BIN_PATH . 'xcvm_core/cache/*') ?: []);
+	}
+
+	/**
+	 * The pushes push() asked for of $rKind (fanout, core), each node's
+	 * watchdog reporting $rVersions.
+	 *
+	 * @param array<string, mixed> $rVersions
+	 * @return list<array{0: int, 1: string}>
+	 */
+	private function pushKind(string $rKind, array $rVersions, array $rOverride = []): array {
+		$this->rDb->rNodes = [$this->node(['watchdog_data' => json_encode(['versions' => $rVersions])] + $rOverride)];
+		$rSent = [];
+		AgentUpgrades::push(function (int $rServerID, string $rFor) use (&$rSent): bool {
+			$rSent[] = [$rServerID, $rFor];
+			return true;
+		}, self::NOW, $rKind);
+		return $rSent;
+	}
+
+	/**
+	 * The fanout daemon and xcvm_core follow the agent's path on nodes in
+	 * mode 1 and 2 (plan, section 5): a node behind MAIN's copy for its arch
+	 * or PHP group is offered it, never one ahead (it updates from GitHub
+	 * itself in mode 1), nor a node in mode 0.
+	 */
+	public function testTheFanoutDaemonAndXcvmCoreFollowTheAgentsPath(): void {
+		file_put_contents($this->rCache . 'xc_fanout-linux-amd64', 'ELF');
+		file_put_contents($this->rCache . 'xc_fanout-linux-amd64.version', "0.14.1\n");
+		@mkdir(BIN_PATH . 'xcvm_core/cache/', 0o777, true);
+		file_put_contents(BIN_PATH . 'xcvm_core/cache/xcvm_core-php8.1.tar.gz', 'gz');
+		file_put_contents(BIN_PATH . 'xcvm_core/cache/xcvm_core-php8.1.tar.gz.version', "2.3.3\n");
+
+		$this->assertSame([[5, 'amd64']], $this->pushKind('fanout', ['xc_fanout' => '0.13.7', 'xcvm_core' => '2.3.1', 'php' => 'php8.1']));
+		$this->assertSame([[5, 'php8.1']], $this->pushKind('core', ['xc_fanout' => '0.13.7', 'xcvm_core' => '2.3.1', 'php' => 'php8.1']));
+		$this->assertSame([], $this->pushKind('fanout', ['xc_fanout' => '0.14.1', 'php' => 'php8.1'], ['server_id' => 6]), 'on MAIN\'s version');
+		$this->assertSame([], $this->pushKind('fanout', ['xc_fanout' => '0.15.0', 'php' => 'php8.1'], ['server_id' => 7]), 'never a downgrade');
+		$this->assertSame([], $this->pushKind('core', ['xcvm_core' => '2.3.1', 'php' => 'php8.4'], ['server_id' => 8]), 'no archive for its PHP');
+		$this->assertSame([], $this->pushKind('fanout', ['xc_fanout' => '0.13.7'], ['server_id' => 9, 'mode' => 0]), 'mode 0: GitHub, as before');
+		$this->assertSame([], $this->pushKind('fanout', [], ['server_id' => 10]), 'a node that reports no daemon');
+		$this->assertSame([], $this->pushKind('core', ['xcvm_core' => '2.3.1', 'php' => 'php8.1'], ['server_id' => 11, 'features' => '']), 'an agent that takes no artefacts');
+
+		// Each kind keeps its own offers: the agent's rollout is untouched.
+		$this->assertArrayHasKey('fanout_push:5', $this->rDb->rMeta);
+		$this->assertArrayHasKey('core_push:5', $this->rDb->rMeta);
+		$this->assertArrayNotHasKey('agent_push:5', $this->rDb->rMeta);
+		$this->assertSame([[5, 'amd64']], $this->push($this->node()), 'the agent is still offered its own');
 	}
 
 	/** MAIN's cached binary for an arch, at a version. */

@@ -115,7 +115,8 @@ final class ArtefactStage {
 			'offair' => count($rParts) === 2 && isset(ReplicaSections::OFF_AIR[$rParts[1]]),
 			'module' => count($rParts) === 3 && preg_match('/^[a-z0-9][a-z0-9-]{0,63}\z/', $rParts[1]) === 1
 				&& preg_match('/^[0-9A-Za-z][0-9A-Za-z._-]{0,31}\z/', $rParts[2]) === 1 && !str_contains($rParts[2], '..'),
-			'agent' => count($rParts) === 2 && in_array($rParts[1], ReleaseAsset::ARCH_MAP, true),
+			'agent', 'fanout' => count($rParts) === 2 && in_array($rParts[1], ReleaseAsset::ARCH_MAP, true),
+			'core' => count($rParts) === 2 && preg_match('/^php[0-9]\.[0-9]{1,2}\z/', $rParts[1]) === 1,
 			default => false,
 		};
 	}

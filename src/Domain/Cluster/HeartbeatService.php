@@ -586,6 +586,25 @@ final class HeartbeatService {
 		$rHistory[] = $rOut['cpu'];
 		$rOut['cpu_average_array'] = array_slice($rHistory, -self::CPU_HISTORY);
 		$rOut['fanout'] = is_array($rLocal['fanout'] ?? null) ? $rLocal['fanout'] : ($rPrev['fanout'] ?? null);
+		$rOut['versions'] = self::versions($rLocal['versions'] ?? null) ?? ($rPrev['versions'] ?? null);
+		return $rOut;
+	}
+
+	/**
+	 * The node's `versions` (WatchdogCommand::versions), each a version-shaped
+	 * string or null, nothing else; null when it sent none.
+	 *
+	 * @return array{xc_fanout: ?string, xcvm_core: ?string, php: ?string}|null
+	 */
+	private static function versions(mixed $rIn): ?array {
+		if (!is_array($rIn)) {
+			return null;
+		}
+		$rOut = [];
+		foreach (['xc_fanout', 'xcvm_core', 'php'] as $rKey) {
+			$rValue = $rIn[$rKey] ?? null;
+			$rOut[$rKey] = is_string($rValue) && preg_match('/^[0-9A-Za-z][0-9A-Za-z._+-]{0,31}\z/', $rValue) ? $rValue : null;
+		}
 		return $rOut;
 	}
 

@@ -89,7 +89,8 @@ final class ArtefactGrants {
 	/**
 	 * A root action's payload with the grant for the artefact it needs: a
 	 * custom module's archive (install_module from `local`), the pinned
-	 * xc_agent (agent_binary, which also gets its version). Unchanged for the
+	 * xc_agent, xc_fanout or xcvm_core (agent_binary, fanout_binary,
+	 * xcvm_core, each of which also gets its version). Unchanged for the
 	 * other actions, and for install_module when the node does not take
 	 * artefacts or MAIN has no such archive (the node then pulls it the
 	 * legacy way). Null when the action cannot be sent without its artefact.
@@ -107,8 +108,16 @@ final class ArtefactGrants {
 			$rFound = ArtefactRegistry::describe('module/' . (string) ($rPayload['name'] ?? '') . '/' . (string) ($rPayload['version'] ?? ''), []);
 			return $rFound === null ? $rPayload : $rPayload + ['artefact' => self::grant($rFound)];
 		}
-		if ($rAction === 'agent_binary') {
-			$rFound = self::takes(NodeRegistry::byServer($rServerID)) ? ArtefactRegistry::describe('agent/' . (string) ($rPayload['arch'] ?? ''), []) : null;
+		// The binaries MAIN pins: the agent and the fanout daemon by the node's
+		// arch, the xcvm_core archive by its PHP group, each with its version.
+		$rId = match ($rAction) {
+			'agent_binary' => 'agent/' . (string) ($rPayload['arch'] ?? ''),
+			'fanout_binary' => 'fanout/' . (string) ($rPayload['arch'] ?? ''),
+			'xcvm_core' => 'core/' . (string) ($rPayload['group'] ?? ''),
+			default => null,
+		};
+		if ($rId !== null) {
+			$rFound = self::takes(NodeRegistry::byServer($rServerID)) ? ArtefactRegistry::describe($rId, []) : null;
 			return $rFound === null ? null : ['version' => (string) $rFound['version']] + $rPayload + ['artefact' => self::grant($rFound)];
 		}
 		return $rPayload;

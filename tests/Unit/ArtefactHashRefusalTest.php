@@ -422,6 +422,11 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$rOut = (string) ob_get_clean();
 		$this->assertStringContainsString('refused', $rOut, 'not staged by cluster:root: a signals row, or a payload naming a path');
 		$this->assertSame('the running agent', file_get_contents($this->rBase . 'bin/xc_agent/xc_agent'));
+		foreach ([['action' => 'fanout_binary', 'arch' => 'amd64', 'artefact_path' => '/tmp/x'], ['action' => 'xcvm_core', 'group' => 'php8.1', 'artefact_path' => '/tmp/x']] as $rAction) {
+			ob_start();
+			(new RootSignalsCronJob())->executeAction($rAction, [], $rDb);
+			$this->assertStringContainsString('refused: no', (string) ob_get_clean(), $rAction['action'] . ': only root\'s staged copy');
+		}
 
 		// module:install's archive: only root's stage, and only the grant's bytes.
 		mkdir($this->rBase . 'etc/stage', 0700);

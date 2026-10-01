@@ -106,6 +106,10 @@ class ClusterCronJob implements CommandInterface {
 			// Every node runs the agent MAIN pinned: one that reports another
 			// version is offered the binary for its arch.
 			'agent' => static fn() => AgentUpgrades::push(),
+			// The fanout daemon and xcvm_core follow its path on nodes in mode 1
+			// and 2: one behind MAIN's copy for its arch or PHP is offered it.
+			'fanout' => static fn() => AgentUpgrades::push(null, null, 'fanout'),
+			'core' => static fn() => AgentUpgrades::push(null, null, 'core'),
 			// lb_revocation_mode=hard without a licence: every node that takes
 			// commands is fenced, the fence riding its refused session.
 			'licence_fence' => static fn() => ClusterRoute::licenceFences(ClusterCryptoFactory::create(), SettingsManager::getAll()),
