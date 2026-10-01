@@ -292,6 +292,20 @@ class RootSignalsCronJob implements CommandInterface {
 		return 'set $api_legacy ' . (DataPlane::legacyApiRetired() ? '0' : '1') . ';';
 	}
 
+	/**
+	 * viewer_api.conf for this node, or null on MAIN: the viewer APIs
+	 * (player_api, enigma2, xplugin, epg, playlist) answer 404 on a node in
+	 * mode 2, which reads no line from MAIN's database to answer them with
+	 * (plan, D16), and are served everywhere else, as before. MAIN's
+	 * nginx.conf has no such switch.
+	 */
+	public static function viewerApiConf(): ?string {
+		if (NodeRole::isMain()) {
+			return null;
+		}
+		return 'set $viewer_api ' . (NodeRole::refusesConnects() ? '0' : '1') . ';';
+	}
+
 	/** Tests: run the artefact actions' argv lists through $rRunner (argv => [exit status, output]); null restores run(). */
 	public static function useRunner(?callable $rRunner): void {
 		self::$rRunner = $rRunner;
@@ -548,6 +562,12 @@ class RootSignalsCronJob implements CommandInterface {
 		if ($rApiLegacyConf !== null && $rApiLegacyConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/api_legacy.conf')) ?: '')) {
 			echo 'Updating the legacy /api toggle...' . "\n";
 			file_put_contents(BIN_PATH . 'nginx/conf/api_legacy.conf', $rApiLegacyConf);
+			$rReload = true;
+		}
+		$rViewerApiConf = self::viewerApiConf();
+		if ($rViewerApiConf !== null && $rViewerApiConf !== (trim(@file_get_contents(BIN_PATH . 'nginx/conf/viewer_api.conf')) ?: '')) {
+			echo 'Updating the viewer API toggle...' . "\n";
+			file_put_contents(BIN_PATH . 'nginx/conf/viewer_api.conf', $rViewerApiConf);
 			$rReload = true;
 		}
 		$rMinistraLegacyConf = 'set $ministra_legacy_redirect ' . (SettingsManager::get('mag_legacy_redirect') ? '1' : '0') . ';';

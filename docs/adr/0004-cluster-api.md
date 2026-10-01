@@ -5079,3 +5079,35 @@ design: that is what the data plane's tickets replace.
 **Tests.** `LoopbackTokenTest` (a token opens its stream until it expires, no other stream, not
 tampered, and no token verifies before the key exists; RelayGuard takes it from the node itself
 only), `StreamProcessBuildLiveTest::testRtmpOutputAppendsFlvTarget` (no secret in the command).
+
+### The viewer APIs on a node in mode 2 (D16)
+
+D16 stops routing the viewer APIs on load balancers (`player_api`, `enigma2`, `xplugin`, `epg`,
+`playlist`, `/stream/auth`, `/stream/probe`), and section 3 lists them among the routes the LB's
+nginx drops. `/stream/auth`, `/stream/probe`, the Ministra portal and every other `.php` already
+answer 404 on a load balancer. The five viewer APIs were still routed to its front controller,
+which reads the viewer's line from MAIN's database: in mode 2 that read is refused, so they could
+not answer there anyway.
+
+- **A switch per node.** `viewer_api.conf` (`set $viewer_api 0|1;`, beside `api_legacy.conf`)
+  is included by the LB's nginx, and both forms of the five routes (`/api/<name>` and
+  `/<name>[.php]`) answer 404 while it is 0. `cron:root_signals` writes it each minute
+  (`RootSignalsCronJob::viewerApiConf`): 0 on a node in mode 2 (`NodeRole::refusesConnects`), 1
+  everywhere else, and nothing on MAIN, whose nginx has no such switch. The archive ships it at
+  1, so an LB's nginx never misses the include.
+
+**How it differs from the plan.** The plan removes the routes from the LB's nginx and strips the
+viewer-API controllers from the LB build. One build serves every mode, and a node in mode 0 or 1
+still serves its viewers' API calls as before, so the routes stay and answer 404 only where they
+cannot work.
+
+**Not built / limits.**
+- **Clients that use a node's address** for these calls get a 404 once the node is in mode 2: they
+  must use MAIN's address, as the plan's viewer-API routing assumes.
+- **After an update** the archive's default (1) stands until root's next minute.
+
+**Tests.** `LbNginxApiLegacyTest::testTheViewerApisAreGuardedAndFollowTheNodesMode` (the include,
+the guard first in both locations, the shipped default, the switch per mode and state, nothing on
+MAIN), `testTheLbBuildShipsEveryFileItsNginxIncludes`;
+`ModeTwoPathsTest::testTheRootSignalsMinuteReadsTheReplicaNotMainsDatabase` (a real mode 2 root
+minute writes 0).

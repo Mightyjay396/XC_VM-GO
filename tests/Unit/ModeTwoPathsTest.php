@@ -59,7 +59,7 @@ final class ModeTwoPathsTest extends TestCase {
 		file_put_contents($this->rHome . 'bin/nginx/conf/ports/http.conf', 'listen 8080;');
 		file_put_contents($this->rHome . 'bin/nginx/conf/ports/https.conf', '');
 		file_put_contents($this->rHome . 'bin/nginx_rtmp/conf/port.conf', 'listen 8880;');
-		foreach (['realip_xc_vm.conf', 'realip_cloudflare.conf', 'limit.conf', 'limit_queue.conf', 'ministra_legacy.conf', 'api_legacy.conf'] as $rConf) {
+		foreach (['realip_xc_vm.conf', 'realip_cloudflare.conf', 'limit.conf', 'limit_queue.conf', 'ministra_legacy.conf', 'api_legacy.conf', 'viewer_api.conf'] as $rConf) {
 			file_put_contents($this->rHome . 'bin/nginx/conf/' . $rConf, '');
 		}
 		// The hourly self-heals are not this test's: done a moment ago.
@@ -411,6 +411,9 @@ final class ModeTwoPathsTest extends TestCase {
 		// is no node and still reads the node's files with getFile (a source
 		// probe, the certbot log): the legacy `/api` stays served.
 		$this->assertSame('set $api_legacy 1;', trim((string) file_get_contents($this->rHome . 'bin/nginx/conf/api_legacy.conf')));
+		// In mode 2 the viewer APIs, which would read the line from MAIN's
+		// database, answer 404 (D16).
+		$this->assertSame('set $viewer_api 0;', trim((string) file_get_contents($this->rHome . 'bin/nginx/conf/viewer_api.conf')));
 	}
 
 	/**
