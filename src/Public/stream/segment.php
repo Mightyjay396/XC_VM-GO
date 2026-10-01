@@ -1,6 +1,7 @@
 <?php
 
 use XcVm\Core\Cluster\NodeLease;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\ConfigReader;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -29,7 +30,8 @@ if (!defined('SERVER_ID')) {
 	define('SERVER_ID', intval(ConfigReader::get('server_id')));
 }
 
-if (empty($rSettings['live_streaming_pass'])) {
+// No stream secret, and no key of its own (ViewerKey) either: nothing to read a token with.
+if (empty($rSettings['live_streaming_pass']) && ViewerKey::own() === []) {
 	generate404();
 }
 

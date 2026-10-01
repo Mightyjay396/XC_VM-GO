@@ -5310,8 +5310,9 @@ this branch), with each change put back afterwards.
     on the test MAIN already held. nginx's reload failed (`bind() ... Address already in use`)
     and nginx kept its old configuration, so the panel stayed up on 8080. Meanwhile, the
     servers row and the announcement to the nodes named 8081.
-  - **What's missing:** nothing checks that a port is free before it is saved, and nothing
-    reports the failed reload. Not fixed.
+  - **Fixed since:** saving this machine's own server now refuses an HTTP, HTTPS or RTMP port
+    another program already listens on (`ServerService::portsTaken`, `STATUS_PORT_IN_USE`); the
+    server's own current ports don't count.
 - **Every enrolled LB read as unlicensed, and served its live viewers without the daemon.**
   - **Why:** on a node, `xcvm_core`'s licence verdict (`XC_VM::license_valid()`) is a live
     cluster lease, since a node holds no activation key. Only `NodeLease::judge()` handed the
@@ -5326,3 +5327,65 @@ this branch), with each change put back afterwards.
     the agent's lease again within 30 s, by itself, and the daemon then served the redirected
     viewer (`lb-delivery-kinds`, C4).
   - **Test:** `LeaseVerdictCacheTest::testTheLicenceGateFeedsTheLeaseWithTheSwitchOff`.
+
+### Per-node viewer-token keys (H1, increments one to three)
+
+The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`.
+
+**The risk.** A node serves a viewer on the strength of the token MAIN minted at the redirect alone: user, line, channel and admission all come from inside it. Every token was sealed with the fleet's one secret (`live_streaming_pass`, keyed by `OPENSSL_EXTRA`), which every node holds. So whoever held one node could mint tokens that MAIN and every other node accepted.
+
+**Built (`Core/Cluster/ViewerKey`).**
+- **The key.** Node *n*'s key is `K_n = HMAC-SHA256(live_streaming_pass, "xc_vm viewer key v1|" ‖ n)`. MAIN derives it when it mints and stores nothing new. Rotating the stream secret rotates every `K_n`.
+- **Delivery.** The replica's `secrets` section carries the node's own key as `viewer_key`, in the same `{kid, current, previous, previous_valid_until}` form. Inside the replaced secret's window, `previous` is `K_n` under that secret.
+  - A node on older code leaves the key alone, and the agent stores the section opaquely.
+- **The node keeps and reports it.** With CONFIG on, the node keeps the key in `config/viewer_key` (0600) and reports its kid as `servers.viewer_key_fp` (migration 059, a `node.state` field).
+  - It reports at each change.
+  - In mode 2 it also reports whenever its kept copy differs, for example after a report the spool didn't take.
+  - A failed report is never an apply failure.
+- **Minting on MAIN.** `ViewerKey::mint` seals with `K_n` for a node that reports the kid of `K_n` under the current secret, or under the replaced one inside its window (a node that hasn't applied the rotation yet). Any other node gets the shared secret's token, as before, and still reads it.
+  - The reader is the server the redirect URL names: its originator when a proxy fronts it.
+  - Callers: `auth.php`'s eight redirect tokens (live, adaptive, VOD, timeshift, thumbnails, subtitles) and the admin player's `uitoken` (`StreamViewController`, `player.php`).
+- **Reading on the node.** `Encryption::readToken` tries the node's own keys first, for the viewer-token context only. MAIN holds none, so it pays nothing.
+- **The node's own tokens (second increment).** The tokens a node mints for itself and reads back go through `ViewerKey::mintOwn`: HLS segment and key links (`HLSGenerator`) and timeshift HLS. Once the node has its own key they are sealed with it; until then they use the shared secret, as before.
+- **The off-air redirect.** `OffAirHandler::showVideoServer` mints through `ViewerKey::mint` for the server it sends the viewer to (its originator when a proxy fronts it).
+
+**The containment (third increment).**
+- **What MAIN sends.** A locked-down MAIN (`ClusterLockdown::state()`) sends a node in mode 2 that reports a key MAIN mints its tokens with the stream secret's SHA-256 in place of the value (`streaming_pass_hash`, `ReplicaBuilder::withholdsStreamPass`).
+  - A key reported under the replaced secret counts too, inside its window, so a rotation never hands the new value out.
+  - A node that reports no such key, a node in mode 1, and every node before lockdown get the value, as before.
+- **What the node does.** It keeps the hash (`config/stream_pass_hash`, 0600), keeps no value (its settings cache has an empty `live_streaming_pass`), and removes the value it replaced (`stream_secret.prev`). Once MAIN sends the value again, as after `cluster:lockdown --undo`, the hash goes.
+  - A section that carries both the value and its hash is refused.
+- **What still reads.**
+  - With no shared secret, `Encryption::readToken` opens only with the node's own keys. Under an empty key, anyone who knows `OPENSSL_EXTRA` could seal a token.
+  - `RelayGuard` and RTMP check a legacy password against the value or else the hash (`ViewerKey::passMatches`).
+  - `key.php` and `segment.php` serve a node that has its own key.
+  - A node sending a viewer to itself (an off-air redirect) mints with its own key.
+- **Then rotate the stream secret** (`cluster:rotate-stream-secret`, D20). MAIN itself still reads tokens under the shared secret, and a value taken from a node before lockdown keeps working on MAIN until the rotation.
+
+**Not built yet.**
+- **The RTMP and Ministra tokens** still use the shared secret. They are minted on MAIN and read on MAIN, or on a node that still holds the value.
+- **Legacy uses of the value on a node without it.**
+  - The legacy-password fallback of `DataPlane::relayUrl` and `admin/live`'s password links, which only legacy children use; lockdown leaves none.
+  - The recorder's fallback when its loopback token can't be issued.
+  - The legacy cron lock path, which hashes no value.
+
+  They get an empty password, which every check refuses.
+- **No routing check on a stale key.** A node that misses a rotation's whole window (offline for more than 10 min) reports a stale key, so MAIN mints its tokens with the shared secret, which it can no longer read. It catches up at its next apply. Until then MAIN still routes viewers to it, and they fail there.
+- **Holding the key in `xcvm_core`.** The design's optional fourth increment.
+
+**Tests.**
+- `ViewerKeyTest`:
+  - each node's key is its own;
+  - a token for a reporting node opens with its key alone, not with the shared secret or another node's key;
+  - a node that reports nothing, a stale key or another node's key gets the shared secret's token;
+  - the rotation window;
+  - the node keeps its keys (0600) and reads with them first;
+  - its own tokens use its own key once it has one, and read back.
+- `ReplicaApplyTest::testTheNodesOwnViewerKeyIsKeptAndReported`, `testANodeSentTheSecretsHashKeepsItAndNoValue` and `testASecretsSectionWithBothTheValueAndItsHashIsRefused`.
+- `ReplicaBuilderSecretsTest::testALockedDownMainSendsANodeHoldingItsKeyTheSecretsHashNotItsValue`.
+- `ViewerKeyTest` also covers increment 3:
+  - with no shared secret only the node's own key opens, and a token sealed under an empty key is refused;
+  - a legacy password checks against the value or else its hash;
+  - a node sending a viewer to itself mints with its own key.
+- `ReplicaBuilderSecretsTest` and `ClusterApiTest` check that the section carries the node's own key, and no other node's.
+

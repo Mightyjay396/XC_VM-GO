@@ -770,7 +770,8 @@ final class ReplicaApply {
 		if ($rAuthoritative) {
 			$rSecrets = self::secretEntries();
 			// Refused or incomplete: the cache is MAIN's database's again (cron:cache).
-			$rApplied = $rData !== null && $rSecrets !== null && FileCache::setCache('settings', SettingsRepository::decode(['live_streaming_pass' => $rSecrets['live_streaming_pass']['current']] + $rData));
+			// Without the stream secret's value (MAIN sent its hash), none: the node reads with its own key (ViewerKey).
+			$rApplied = $rData !== null && $rSecrets !== null && FileCache::setCache('settings', SettingsRepository::decode(['live_streaming_pass' => $rSecrets['live_streaming_pass']['current'] ?? ''] + $rData));
 			self::own(ReplicaSections::SETTINGS, $rApplied ? $rReport['etag'] : null);
 			if ($rApplied) {
 				return $rReport + ['mode' => 'applied', 'keys' => count((array) $rData)];
@@ -814,6 +815,7 @@ final class ReplicaApply {
 		$rInUse = [
 			'live_streaming_pass' => is_array($rSettings) ? (string) ($rSettings['live_streaming_pass'] ?? '') : '',
 			'openssl_extra' => OpensslExtra::inUse(self::configDir()),
+			ViewerKey::PASS_HASH => ViewerKey::passHash() ?? '',
 		];
 		$rDiffer = [];
 		foreach ($rEntries as $rKey => $rEntry) {
@@ -830,11 +832,40 @@ final class ReplicaApply {
 			// The viewer-token secret MAIN replaced last: the node reads the
 			// links minted under it too, for the window MAIN dated
 			// (StreamSecret). Its current value arrives with the settings.
-			$rLive = $rEntries['live_streaming_pass'];
-			StreamSecret::adopt($rLive['previous'], $rLive['previous_valid_until'], $rNow ?? time());
+			$rLive = $rEntries['live_streaming_pass'] ?? null;
+			if ($rLive !== null) {
+				StreamSecret::adopt($rLive['previous'], $rLive['previous_valid_until'], $rNow ?? time());
+			} else {
+				// MAIN sent the hash: no value of the secret is the node's to read with.
+				@unlink(StreamSecret::file());
+			}
+			if (ViewerKey::adoptPassHash($rEntries[ViewerKey::PASS_HASH]['current'] ?? null) === false) {
+				$rSet = false;
+			}
+			// The node's own viewer-token key (ViewerKey): MAIN mints with it once
+			// the node reports holding it, so the report follows each change (and,
+			// in mode 2, any report the spool did not take).
+			$rViewer = ReplicaSections::secret(self::whole(ReplicaSections::SECRETS)['data'][ViewerKey::NAME] ?? null);
+			if ($rViewer !== null) {
+				$rWrote = ViewerKey::adopt($rViewer);
+				if ($rWrote === false) {
+					$rSet = false;
+				} elseif ($rWrote === true || (NodeRole::refusesConnects() && NodeStateSink::reported(ViewerKey::FP) !== $rViewer['kid'])) {
+					$rViewerFp = $rViewer['kid'];
+				}
+			}
 		} catch (\Throwable) {
 			// Never an uncaught trace: it would print the value among the arguments.
 			$rSet = false;
+		}
+		if (isset($rViewerFp)) {
+			try {
+				NodeStateSink::state([ViewerKey::FP => $rViewerFp]);
+			} catch (\Throwable) {
+				// ponytail: unreported, MAIN keeps minting this node's tokens with the
+				// shared secret, which it reads; mode 2 reports again next minute
+				// (its kept copy differs), mode 1 at the key's next change.
+			}
 		}
 		return ['mode' => $rSet === false ? 'failed' : 'applied', 'differ' => $rDiffer];
 	}
@@ -842,7 +873,9 @@ final class ReplicaApply {
 	/**
 	 * The `secrets` section's entries (ReplicaSections::SECRET_KEYS, each as
 	 * ReplicaSections::secret takes it), or null when there is no usable one.
-	 * A key a later MAIN adds is left for the node that knows it.
+	 * A key a later MAIN adds is left for the node that knows it. A locked-down
+	 * MAIN sends `streaming_pass_hash` (ViewerKey::PASS_HASH) in place of
+	 * `live_streaming_pass`; a section with both is refused.
 	 *
 	 * @return array<string, array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}>|null
 	 */
@@ -851,8 +884,12 @@ final class ReplicaApply {
 		if (!is_array($rDoc)) {
 			return null;
 		}
+		$rHashed = array_key_exists(ViewerKey::PASS_HASH, $rDoc['data']);
+		if ($rHashed && array_key_exists('live_streaming_pass', $rDoc['data'])) {
+			return null;
+		}
 		$rOut = [];
-		foreach (ReplicaSections::SECRET_KEYS as $rKey) {
+		foreach ($rHashed ? ['openssl_extra', ViewerKey::PASS_HASH] : ReplicaSections::SECRET_KEYS as $rKey) {
 			$rEntry = ReplicaSections::secret($rDoc['data'][$rKey] ?? null);
 			if ($rEntry === null) {
 				return null;

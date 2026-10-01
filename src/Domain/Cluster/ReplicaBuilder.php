@@ -7,6 +7,7 @@ use XcVm\Core\Cluster\Crypto\Seal;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\StrictQuery;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\StreamSecret;
 use XcVm\Core\Util\AtomicFile;
@@ -42,7 +43,8 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  *   own configuration, the crontab rows its mode runs, and MAIN's transport
  *   policy and keys.
  * - `secrets`: `live_streaming_pass` and OPENSSL_EXTRA, each as {kid,
- *   current, previous, previous_valid_until}, the only secrets a node gets.
+ *   current, previous, previous_valid_until}, and the node's own viewer-token
+ *   key (`viewer_key`, ViewerKey) in the same form: the only secrets a node gets.
  * - `bouquets`, `categories`: every bouquet and stream category, the
  *   catalogue the node's caches of those names hold for the viewer APIs.
  *
@@ -298,7 +300,7 @@ final class ReplicaBuilder {
 	 */
 	public static function section(ClusterCrypto $rCrypto, array $rNode, string $rSection, array $rSettings, array $rMain): array {
 		if ($rSection === ReplicaSections::SECRETS) {
-			$rData = self::canonical(self::secretsData());
+			$rData = self::canonical(self::secretsData((int) $rNode['server_id'], $rNode));
 			return ['etag' => self::etag($rData), 'data' => $rData];
 		}
 		$rKey = match ($rSection) {
@@ -559,18 +561,54 @@ final class ReplicaBuilder {
 	 * empty `current` (ReplicaSections::secret), and cron:root_signals sets a
 	 * missing stream secret on MAIN within the minute.
 	 *
+	 * With $rServerID, also that node's own viewer-token key (ViewerKey,
+	 * `viewer_key`), which a node on older code leaves alone; and for a node
+	 * withholdsStreamPass() names ($rNode), the stream secret's hash
+	 * (`streaming_pass_hash`) in place of its value.
+	 *
+	 * @param array<string, mixed>|null $rNode cluster_nodes row (server_id, mode)
 	 * @return array<string, array{current: string, kid: string, previous: ?string, previous_valid_until: ?int}>
 	 */
-	public static function secretsData(): array {
+	public static function secretsData(?int $rServerID = null, ?array $rNode = null): array {
 		$rLive = (string) (self::settingsRow('`live_streaming_pass`')['live_streaming_pass'] ?? '');
 		$rExtra = defined('OPENSSL_EXTRA') ? (string) OPENSSL_EXTRA : '';
 		if ($rLive === '' || $rExtra === '') {
 			throw new \RuntimeException('replica: a secret is not set');
 		}
-		return [
-			'live_streaming_pass' => self::secret('live_streaming_pass', $rLive, StreamSecret::previousEntry(ClusterClock::now())),
+		$rLivePrevious = StreamSecret::previousEntry(ClusterClock::now());
+		$rData = [
+			'live_streaming_pass' => self::secret('live_streaming_pass', $rLive, $rLivePrevious),
 			'openssl_extra' => self::secret('openssl_extra', $rExtra, OpensslExtra::previousEntry(ClusterClock::now())),
 		];
+		if ($rServerID !== null) {
+			$rData[ViewerKey::NAME] = ViewerKey::entry($rLive, $rServerID, $rLivePrevious);
+			if ($rNode !== null && self::withholdsStreamPass($rNode, $rLive)) {
+				unset($rData['live_streaming_pass']);
+				$rData[ViewerKey::PASS_HASH] = self::secret(ViewerKey::PASS_HASH, hash('sha256', $rLive), null);
+			}
+		}
+		return $rData;
+	}
+
+	/**
+	 * Does node $rNode get the stream secret's hash in place of its value (H1,
+	 * third increment)? Once MAIN is locked down (DbAllowlist::lockedDown: no node below
+	 * mode 2, every relay on tickets), a node in mode 2 that reports holding a
+	 * key MAIN mints its tokens with (ViewerKey::keyFor: under the current
+	 * secret, or the replaced one inside its window, so a rotation never hands
+	 * the new value out). It reads MAIN's tokens and its own with that key, and
+	 * checks a legacy password against the hash: without the value, a node
+	 * mints nothing another server reads.
+	 *
+	 * @param array<string, mixed> $rNode cluster_nodes row (server_id, mode)
+	 */
+	public static function withholdsStreamPass(array $rNode, string $rLive): bool {
+		if ((int) ($rNode['mode'] ?? 0) < 2 || !DbAllowlist::lockedDown()) {
+			return false;
+		}
+		self::read('SELECT `viewer_key_fp` FROM `servers` WHERE `id` = ?;', (int) $rNode['server_id']);
+		$rFp = (self::db()->get_row() ?: [])[ViewerKey::FP] ?? null;
+		return ViewerKey::keyFor($rFp, $rLive, (int) $rNode['server_id'], ClusterClock::now()) !== null;
 	}
 
 	/**

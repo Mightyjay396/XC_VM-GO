@@ -3,6 +3,7 @@
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\BruteforceGuard;
 use XcVm\Core\Cluster\NodeLease;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\GeoIP\GeoIPService;
 use XcVm\Core\Init\LegacyInitializer;
 use XcVm\Core\Logging\DatabaseLogger;
@@ -567,7 +568,7 @@ if ($rExtension) {
 								if ((0 < $rBitrate && 0 < $rHeight && 0 < $rWidth)) {
 									$rTokenData = ['stream_id' => $rAdaptiveID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'channel_info' => ['redirect_id' => $rAdaptiveInfo['redirect_id'], 'originator_id' => ($rAdaptiveInfo['originator_id'] ?? null), 'pid' => $rAdaptiveInfo['pid'], 'on_demand' => $rAdaptiveInfo['on_demand'], 'monitor_pid' => $rAdaptiveInfo['monitor_pid']], 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_id' => $rUserInfo['pair_id'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'external_device' => $rExternalDevice, 'activity_start' => $rActivityStart, 'country_code' => $rCountryCode, 'video_codec' => ($rStreamInfo['codecs']['video']['codec_name'] ?? 'h264'), 'uuid' => $rUUID, 'adaptive' => [$rChannelInfo['redirect_id'], $rStreamID]];
 									$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
-									$rStreamURL = (string) $rURL . '/auth/' . Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+									$rStreamURL = (string) $rURL . '/auth/' . ViewerKey::mint(json_encode($rTokenData), $rServers, (int) (($rAdaptiveInfo['originator_id'] ?? 0) ?: $rAdaptiveInfo['redirect_id']), $rSettings);
 									$rParts[$rBitrate] = '#EXT-X-STREAM-INF:BANDWIDTH=' . $rBitrate . ',RESOLUTION=' . $rWidth . 'x' . $rHeight . "\n" . $rStreamURL;
 								}
 							}
@@ -595,7 +596,7 @@ if ($rExtension) {
 							}
 
 							$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
-							$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+							$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) (($rChannelInfo['originator_id'] ?? 0) ?: $rChannelInfo['redirect_id']), $rSettings);
 
 							if ($rSettings['allow_cdn_access']) {
 								header('Location: ' . $rURL . '/auth/' . $rStreamID . '.m3u8?token=' . $rToken);
@@ -619,7 +620,7 @@ if ($rExtension) {
 						}
 
 						$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
-						$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+						$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) (($rChannelInfo['originator_id'] ?? 0) ?: $rChannelInfo['redirect_id']), $rSettings);
 
 						if ($rSettings['allow_cdn_access']) {
 							header('Location: ' . $rURL . '/auth/' . $rStreamID . '.ts?token=' . $rToken);
@@ -671,7 +672,7 @@ if ($rExtension) {
 				}
 
 				$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
-				$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+				$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) (($rChannelInfo['originator_id'] ?? 0) ?: $rChannelInfo['redirect_id']), $rSettings);
 
 				if ($rSettings['allow_cdn_access']) {
 					header('Location: ' . $rURL . '/vauth/' . $rStreamID . '.' . $rExtension . '?token=' . $rToken);
@@ -725,7 +726,7 @@ if ($rExtension) {
 
 					$rTokenData = ['stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_line_info' => $rUserInfo['pair_line_info'], 'pair_id' => $rUserInfo['pair_id'], 'active_cons' => $rUserInfo['active_cons'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 					$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
-					$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+					$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) ($rOriginatorID ?: $rRedirectID), $rSettings);
 
 					if ($rSettings['allow_cdn_access']) {
 						header('Location: ' . $rURL . '/tsauth/' . $rStreamID . '_' . $rStartDate . '_' . $rDuration . '.m3u8?token=' . $rToken);
@@ -745,7 +746,7 @@ if ($rExtension) {
 					$rActivityStart = time();
 					$rTokenData = ['stream' => $rStreamID, 'username' => $rUserInfo['username'], 'password' => $rUserInfo['password'], 'extension' => $rExtension, 'pid' => $rPID, 'start' => $rStartDate, 'duration' => $rDuration, 'redirect_id' => $rRedirectID, 'originator_id' => $rOriginatorID, 'user_info' => ['id' => $rUserInfo['id'], 'max_connections' => $rUserInfo['max_connections'], 'pair_line_info' => $rUserInfo['pair_line_info'], 'pair_id' => $rUserInfo['pair_id'], 'active_cons' => $rUserInfo['active_cons'], 'con_isp_name' => $rUserInfo['con_isp_name'], 'is_restreamer' => $rUserInfo['is_restreamer']], 'country_code' => $rCountryCode, 'activity_start' => $rActivityStart, 'uuid' => $rUUID, 'http_range' => (isset($_SERVER['HTTP_RANGE']) ? $_SERVER['HTTP_RANGE'] : null)];
 					$rTokenData = ConnectionAdmission::admitToken($rSettings, $rTokenData, $rIP, $rUserAgent);
-					$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+					$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) ($rOriginatorID ?: $rRedirectID), $rSettings);
 
 					if ($rSettings['allow_cdn_access']) {
 						header('Location: ' . $rURL . '/tsauth/' . $rStreamID . '_' . $rStartDate . '_' . $rDuration . '.ts?token=' . $rToken);
@@ -795,7 +796,7 @@ if ($rExtension) {
 			}
 
 			$rURL = StreamRedirector::getStreamingURL($rSettings, $rServers, $rStreamInfo['info']['vframes_server_id'], $rOriginatorID, $rForceHTTP, $rUserID);
-			$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+			$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) ($rOriginatorID ?: $rStreamInfo['info']['vframes_server_id']), $rSettings);
 			header('Location: ' . $rURL . '/thauth/' . $rToken);
 
 			exit();
@@ -818,7 +819,7 @@ if ($rExtension) {
 
 				$rURL = StreamRedirector::getStreamingURL($rSettings, $rServers, $rChannelInfo['redirect_id'], ($rChannelInfo['originator_id'] ?? null), $rForceHTTP, $rUserID);
 				$rTokenData = ['stream_id' => $rStreamID, 'sub_id' => intval($rRequest['sid'] ?? 0), 'webvtt' => intval($rRequest['webvtt'] ?? 0), 'expires' => time() + 5];
-				$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+				$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) (($rChannelInfo['originator_id'] ?? 0) ?: $rChannelInfo['redirect_id']), $rSettings);
 				header('Location: ' . $rURL . '/subauth/' . $rToken);
 
 				exit();

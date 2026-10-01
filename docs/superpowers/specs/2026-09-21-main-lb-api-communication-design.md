@@ -1049,7 +1049,7 @@ Names below are the ones in the code (panel `src/`, agent in XC_VM_Fanout); ADR 
 | VOD/timeshift bytes in Go, only if FPM pressure is measured | — | \~3 |
 | AEAD-framed relays, or HTTPS relays to parents with a certificate | D11 | \~3 |
 
-A TLS-hardening ticket sits outside the phases. It limits the placeholder `ssl.conf` to TLS 1.2/1.3 and regenerates each LB's self-signed key. The cluster API does not depend on it.
+A TLS-hardening ticket sits outside the phases. It limits the placeholder `ssl.conf` to TLS 1.2/1.3 and regenerates each LB's self-signed key. The cluster API does not depend on it. Done: `console.php startup` (`StartupCommand::hardenTls`) replaces a placeholder key and the old shipped `ssl.conf` on every node.
 
 ## 14. Testing
 

@@ -20,6 +20,22 @@ use XcVm\Core\Process\ProcessRunner;
 class StartupCommand implements CommandInterface {
 	use DaemonTrait;
 
+	/**
+	 * sha256 of each server.key the archive has shipped. They are in git, so a
+	 * node still using one shares its private key with every other such node
+	 * (a load balancer's install never replaced it).
+	 */
+	public const PLACEHOLDER_KEYS = [
+		'27b205d352c99672ff15f2cba96e1c8ea1d14ebba0488e0591551b683bd552ef',
+		'54d14bfaef0399f8891de7714e8d18368f917c87bc897298247dd3d7f468bff5',
+	];
+
+	/** sha256 of the ssl.conf the archive shipped before SSL_CONF (SSLv3, TLS 1.1 and 1.2). */
+	public const OLD_SSL_CONF = 'ab86bf8ac5ee9430ef4a6000467d2001a227fa764be71f9047b6869e131993b4';
+
+	/** The archive's ssl.conf (bin/nginx/conf/): the self-signed pair, TLS 1.2 and 1.3 only. */
+	public const SSL_CONF = "ssl_certificate server.crt; ssl_certificate_key server.key; ssl_protocols TLSv1.2 TLSv1.3;\n";
+
 	public function getName(): string {
 		return 'startup';
 	}
@@ -82,6 +98,12 @@ class StartupCommand implements CommandInterface {
 		$this->ensureExecutableScripts(['service', 'update', 'bin/redis/redis-server', 'bin/daemons.sh'], MAIN_HOME);
 		$this->ensurePhpFpmPoolConfigs(MAIN_HOME);
 
+		// nginx is already up (service starts it before this): reload it onto the new pair.
+		if (self::hardenTls(MAIN_HOME . 'bin/nginx/conf/')) {
+			$rNginx = [MAIN_HOME . 'bin/nginx/sbin/nginx', '-s', 'reload'];
+			ProcessRunner::run(posix_geteuid() === 0 ? array_merge(['sudo', '-u', 'xc_vm'], $rNginx) : $rNginx, true);
+		}
+
 		// ── Установка crontab и запуск кэша ──────────────────
 		if (posix_getpwuid(posix_geteuid())['name'] == 'root') {
 			self::installRootCrontab();
@@ -113,6 +135,66 @@ class StartupCommand implements CommandInterface {
 				@chmod($rPath, 0755);
 			}
 		}
+	}
+
+	/**
+	 * In nginx's conf dir $rConf: a placeholder server.key (PLACEHOLDER_KEYS) is
+	 * replaced by a self-signed pair of this node's own, and the archive's old
+	 * ssl.conf by SSL_CONF. A key or an ssl.conf anyone else wrote (the installer,
+	 * an operator, certbot) is left alone. True when either changed.
+	 */
+	public static function hardenTls(string $rConf): bool {
+		$rChanged = false;
+		if (in_array(@hash_file('sha256', $rConf . 'server.key'), self::PLACEHOLDER_KEYS, true)) {
+			$rPair = self::selfSigned(gethostname() ?: 'xc_vm');
+			// The certificate first: interrupted before the key, the placeholder
+			// is still there and the next start makes the pair again.
+			if ($rPair !== null && self::replace($rConf . 'server.crt', $rPair[0], 0644) && self::replace($rConf . 'server.key', $rPair[1], 0600)) {
+				echo "Replaced the placeholder TLS key with this node's own.\n";
+				$rChanged = true;
+			}
+		}
+		if (@hash_file('sha256', $rConf . 'ssl.conf') === self::OLD_SSL_CONF && self::replace($rConf . 'ssl.conf', self::SSL_CONF, 0644)) {
+			echo "ssl.conf: TLS 1.2 and 1.3 only.\n";
+			$rChanged = true;
+		}
+		return $rChanged;
+	}
+
+	/**
+	 * A new RSA-2048 key and a 10-year self-signed certificate for $rName, as the
+	 * installer makes them: [certificate PEM, key PEM], or null.
+	 */
+	private static function selfSigned(string $rName): ?array {
+		// A config of its own: the system's would add its sample subject (AU, Some-State, Internet Widgits).
+		$rCnf = @tempnam(sys_get_temp_dir(), 'xcvm_tls_');
+		if ($rCnf === false || @file_put_contents($rCnf, "[req]\ndistinguished_name = dn\n[dn]\n") === false) {
+			return null;
+		}
+		try {
+			$rOpts = ['config' => $rCnf, 'digest_alg' => 'sha256'];
+			$rKey = openssl_pkey_new($rOpts + ['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+			$rCsr = $rKey ? openssl_csr_new(['commonName' => $rName], $rKey, $rOpts) : false;
+			$rCrt = $rCsr ? openssl_csr_sign($rCsr, null, $rKey, 3650, $rOpts, random_int(1, PHP_INT_MAX)) : false;
+			return $rCrt && openssl_x509_export($rCrt, $rCrtPem) && openssl_pkey_export($rKey, $rKeyPem, null, $rOpts) ? [$rCrtPem, $rKeyPem] : null;
+		} finally {
+			@unlink($rCnf);
+		}
+	}
+
+	/** Write $rPath whole (temp file + rename), owned by xc_vm when run as root. */
+	private static function replace(string $rPath, string $rData, int $rMode): bool {
+		$rTmp = @tempnam(dirname($rPath), '.tls_');
+		if ($rTmp === false) {
+			return false;
+		}
+		if (@file_put_contents($rTmp, $rData) !== strlen($rData) || !@chmod($rTmp, $rMode)
+			|| (posix_geteuid() === 0 && posix_getpwnam('xc_vm') !== false && !@chown($rTmp, 'xc_vm')) || !@rename($rTmp, $rPath)
+		) {
+			@unlink($rTmp);
+			return false;
+		}
+		return true;
 	}
 
 	/**

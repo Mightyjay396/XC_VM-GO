@@ -2,10 +2,10 @@
 
 namespace XcVm\Public\Controllers\Admin;
 
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\AdminHelpers;
-use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\ImageUtils;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Domain\Epg\EpgService;
@@ -51,7 +51,7 @@ class StreamViewController extends BaseAdminController {
 			if (0 < $rStream['vframes_server_id']) {
 				$rExpires = time() + 3600;
 				$rTokenData = ['session_id' => session_id(), 'expires' => $rExpires, 'stream_id' => intval(RequestManager::get('id')), 'ip' => NetworkUtils::getUserIP()];
-				$rUIToken = Encryption::mintToken(json_encode($rTokenData), SettingsManager::get('live_streaming_pass'), OPENSSL_EXTRA, (bool) SettingsManager::get('secure_stream_tokens'));
+				$rUIToken = ViewerKey::mint(json_encode($rTokenData), ServerRepository::getAll(), (int) $rStream['vframes_server_id'], SettingsManager::getAll());
 				if (AdminHelpers::issecure()) {
 					$rVServer = ServerRepository::getAll()[$rStream['vframes_server_id']];
 					$rImage = 'https://' . (($rVServer['domain_name'] ? $rVServer['domain_name'] : $rVServer['server_ip'])) . ':' . intval($rVServer['https_broadcast_port']) . '/admin/thumb?uitoken=' . $rUIToken;

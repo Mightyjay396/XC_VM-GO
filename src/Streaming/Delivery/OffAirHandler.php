@@ -4,7 +4,7 @@ namespace XcVm\Streaming\Delivery;
 
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\ReplicaSections;
-use XcVm\Core\Util\Encryption;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Streaming\Auth\StreamAuth;
 use XcVm\Streaming\Balancer\ProxySelector;
@@ -166,7 +166,7 @@ class OffAirHandler {
 		if ($rName !== false) {
 			$rTokenData['off_air'] = $rName;
 		}
-		$rToken = Encryption::mintToken(json_encode($rTokenData), $rSettings['live_streaming_pass'], OPENSSL_EXTRA, !empty($rSettings['secure_stream_tokens']));
+		$rToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) ($rOriginatorID ?: $rServerID), $rSettings);
 		if ($rExtension == 'm3u8') {
 			if (self::$rHlsStreamID !== null) {
 				HlsSequence::markOffAir(self::$rHlsStreamID);

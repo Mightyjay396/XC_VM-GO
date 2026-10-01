@@ -2,6 +2,7 @@
 
 use XcVm\Core\Auth\AuthService;
 use XcVm\Core\Auth\BruteforceGuard;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\GeoIP\GeoIPService;
 use XcVm\Core\Logging\DatabaseLogger;
 use XcVm\Core\Process\ProcessManager;
@@ -52,7 +53,7 @@ if (!($_GET['addr'] == '127.0.0.1' && $_GET['call'] == 'publish')) {
 
 	if ($rRequest['call'] != 'publish') {
 		if ($rRequest['call'] != 'play_done') {
-			if (!(AuthService::secretMatches($rSettings['live_streaming_pass'], $rRequest['password'] ?? null) || isset($rAllowed[$rIP]) && $rAllowed[$rIP]['pull'] && (!$rAllowed[$rIP]['password'] || AuthService::secretMatches($rAllowed[$rIP]['password'], $rRequest['password'] ?? null)))) {
+			if (!(ViewerKey::passMatches($rSettings['live_streaming_pass'] ?? null, $rRequest['password'] ?? null) || isset($rAllowed[$rIP]) && $rAllowed[$rIP]['pull'] && (!$rAllowed[$rIP]['password'] || AuthService::secretMatches($rAllowed[$rIP]['password'], $rRequest['password'] ?? null)))) {
 				if (isset($rRequest['tcurl']) && isset($rRequest['app'])) {
 					if (isset($rRequest['token'])) {
 						if (!ctype_xdigit($rRequest['token'])) {
@@ -289,7 +290,7 @@ if (!($_GET['addr'] == '127.0.0.1' && $_GET['call'] == 'publish')) {
 		exit();
 	}
 
-	if (AuthService::secretMatches($rSettings['live_streaming_pass'], $rRequest['password'] ?? null) || isset($rAllowed[$rIP]) && $rAllowed[$rIP]['push'] && (!$rAllowed[$rIP]['password'] || AuthService::secretMatches($rAllowed[$rIP]['password'], $rRequest['password'] ?? null))) {
+	if (ViewerKey::passMatches($rSettings['live_streaming_pass'] ?? null, $rRequest['password'] ?? null) || isset($rAllowed[$rIP]) && $rAllowed[$rIP]['push'] && (!$rAllowed[$rIP]['password'] || AuthService::secretMatches($rAllowed[$rIP]['password'], $rRequest['password'] ?? null))) {
 		$rDeny = false;
 		http_response_code(200);
 
