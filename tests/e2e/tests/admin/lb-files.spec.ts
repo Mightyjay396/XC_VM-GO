@@ -10,15 +10,16 @@ import { lb, serverView } from './cluster-support';
  * range too), and the load balancer's daemon counts it while it downloads: the
  * PHP-FPM worker that admitted it has returned.
  *
- * Needs XC_E2E_LB_SERVER (its TELEMETRY flow on), XC_E2E_VOD_SOURCE (an MP4 of
- * 30 MB or more both servers reach, served as video/mp4 with ranges, so a
- * download is still open when the count is read) and XC_E2E_STREAM_SOURCE
- * (the timeshift channel's live source).
+ * Needs XC_E2E_LB_SERVER (its TELEMETRY flow on), XC_E2E_VOD_SOURCE (an MP4
+ * both servers reach, served as video/mp4 with ranges, far larger than the
+ * TCP buffers between the load balancer and the test runner: they took a
+ * 30 MB file whole, so the daemon had finished before its count was read)
+ * and XC_E2E_STREAM_SOURCE (the timeshift channel's live source).
  */
 
 test.skip(!lb, 'XC_E2E_LB_SERVER (a load balancer enrolled in the cluster API) not set');
 
-const VOD_SOURCE = process.env.XC_E2E_VOD_SOURCE || 'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/1080/Big_Buck_Bunny_1080_10s_30MB.mp4';
+const VOD_SOURCE = process.env.XC_E2E_VOD_SOURCE || 'https://archive.org/download/Sintel/sintel-2048-stereo.mp4';
 const SOURCE = process.env.XC_E2E_STREAM_SOURCE || 'https://demo.unified-streaming.com/k8s/live/stable/scte35.isml/.m3u8';
 const origin = new URL(process.env.XC_E2E_BASE_URL || 'http://localhost/').origin;
 
@@ -43,10 +44,11 @@ async function sourceBytes(from: number, to: number): Promise<Buffer> {
   return Buffer.from(await resp.arrayBuffer());
 }
 
-/** A ranged read through MAIN: status, type and body. */
-async function ranged(url: string, from: number, to: number): Promise<{ status: number; type: string; body: Buffer }> {
+/** A ranged read through MAIN: status, type, body and the file's whole size (Content-Range, 0 without). */
+async function ranged(url: string, from: number, to: number): Promise<{ status: number; type: string; body: Buffer; total: number }> {
   const resp = await fetch(url, { redirect: 'follow', headers: { Range: `bytes=${from}-${to}` } });
-  return { status: resp.status, type: resp.headers.get('content-type') ?? '', body: Buffer.from(await resp.arrayBuffer()) };
+  const total = Number(/\/(\d+)$/.exec(resp.headers.get('content-range') ?? '')?.[1] ?? 0);
+  return { status: resp.status, type: resp.headers.get('content-type') ?? '', body: Buffer.from(await resp.arrayBuffer()), total };
 }
 
 /**
@@ -177,13 +179,30 @@ test.describe.serial('files served by the load balancer\'s daemon', () => {
     test(`a ${kind === 'proxy' ? 'direct-proxy movie, relayed from its source' : 'movie the load balancer holds'}: its bytes, a range, and the daemon serving it`, async ({ page }) => {
       test.setTimeout(900_000);
       const m = movies[kind];
-      // MAIN's caches take the new line and movie, and the load balancer fetches its copy.
-      await expect.poll(async () => (await ranged(movieURL(m), 0, 0)).status, { timeout: 780_000, intervals: [10_000], message: `${m.name} is never served` }).toBe(206);
+      // MAIN's caches take the new line and movie, and the load balancer's copy
+      // is whole: its size no longer grows (ffmpeg writes it as it downloads).
+      let size = -1;
+      await expect
+        .poll(async () => {
+          const r = await ranged(movieURL(m), 0, 0);
+          const settled = r.status === 206 && r.total > 0 && r.total === size;
+          size = r.status === 206 ? r.total : -1;
+          return settled;
+        }, { timeout: 780_000, intervals: [15_000], message: `${m.name} is never served whole` })
+        .toBe(true);
 
       const got = await ranged(movieURL(m), 1_000_000, 1_000_999);
       expect(got.status).toBe(206);
       expect(got.type).toMatch(/video\/mp4/);
-      expect(got.body.equals(await sourceBytes(1_000_000, 1_000_999)), 'the range is the source\'s').toBe(true);
+      if (m.direct) {
+        expect(got.body.equals(await sourceBytes(1_000_000, 1_000_999)), 'the range is the source\'s').toBe(true);
+      } else {
+        // The load balancer's copy is ffmpeg's remux (+faststart), not the
+        // source's bytes: an MP4, whose ranges agree with each other.
+        expect((await ranged(movieURL(m), 0, 11)).body.subarray(4, 8).toString(), 'an MP4 (ftyp first)').toBe('ftyp');
+        const wider = await ranged(movieURL(m), 999_000, 1_001_999);
+        expect(got.body.equals(wider.body.subarray(1_000, 2_000)), 'the range is the same bytes as a wider one').toBe(true);
+      }
 
       await countedByTheDaemon(page.request, movieURL(m), m.name);
     });
