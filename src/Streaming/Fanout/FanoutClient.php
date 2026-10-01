@@ -2,6 +2,7 @@
 
 namespace XcVm\Streaming\Fanout;
 
+use XcVm\Core\Util\AtomicFile;
 use XcVm\Streaming\Codec\FfmpegPaths;
 
 /**
@@ -30,6 +31,10 @@ class FanoutClient {
 
 	/** What the last monitorStates() call reported the daemon can be handed. */
 	private static ?array $features = null;
+
+	private static ?string $rFilesDir = null;
+
+	private static ?string $rFeaturesCache = null;
 
 	/**
 	 * Whether the control socket may be used: fanout is switched on (FanoutMode)
@@ -595,6 +600,63 @@ class FanoutClient {
 			self::monitorStates();
 		}
 		return is_array(self::$features) && in_array('remux', self::$features, true);
+	}
+
+	/**
+	 * Whether the daemon serves files (its "files" feature): a movie or a run
+	 * of archive minutes handed over with handOverFile(). vod.php and
+	 * timeshift.php ask on every request, so the answer is kept a minute
+	 * (TMP_PATH/fanout_features): an upgraded daemon is used within the minute,
+	 * and until then this worker serves the file itself, as before.
+	 */
+	public static function supportsFiles(?int $rNow = null): bool {
+		$rNow ??= time();
+		$rCache = self::$rFeaturesCache ?? TMP_PATH . 'fanout_features';
+		$rKept = json_decode((string) @file_get_contents($rCache), true);
+		if (!is_array($rKept) || !is_array($rKept['features'] ?? null) || (int) ($rKept['at'] ?? 0) < $rNow - 60) {
+			self::$features = null;
+			self::monitorStates();
+			if (!is_array(self::$features)) {
+				return false;
+			}
+			$rKept = ['at' => $rNow, 'features' => self::$features];
+			AtomicFile::write($rCache, (string) json_encode($rKept));
+		}
+		return in_array('files', $rKept['features'], true);
+	}
+
+	/** Where the daemon reads file manifests: its -filesdir, <sockets>/files. */
+	public static function filesDir(): string {
+		return self::$rFilesDir ?? dirname(FANOUT_CTL_SOCK) . '/files/';
+	}
+
+	/** Tests: another files dir and features cache; null restores the defaults. */
+	public static function useFilesPaths(?string $rFilesDir, ?string $rFeaturesCache = null): void {
+		self::$rFilesDir = $rFilesDir;
+		self::$rFeaturesCache = $rFeaturesCache;
+	}
+
+	/**
+	 * Hand a file response to the daemon (supportsFiles()): the manifest naming
+	 * its parts goes into filesDir() under a random name, and nginx is told to
+	 * fetch /file/<id> with it (`X-Accel-Redirect: /xc_fanout_file/…`), so this
+	 * worker is freed at once. The daemon serves the parts back to back with
+	 * HTTP ranges, throttled to $rRate bytes/s past $rLimitPerc of the
+	 * response (0 = never), counts the viewer by $rUUID like a live one, and
+	 * drops it when the panel does. No path is ever in a URL.
+	 *
+	 * @param list<array{path: string, offset: int, length: int}> $rParts length -1 = to the file's end
+	 * @param string $rRange A range the token carried, used when the request has none.
+	 * @return bool False when the manifest could not be written: nothing was sent.
+	 */
+	public static function handOverFile(int $rStreamID, string $rUUID, array $rParts, string $rType, int $rLimitPerc, int $rRate, string $rRange = '', ?int $rNow = null): bool {
+		$rName = bin2hex(random_bytes(16));
+		$rDoc = json_encode(['type' => $rType, 'parts' => $rParts, 'limit_perc' => max(0, min(100, $rLimitPerc)), 'rate' => max(0, $rRate), 'range' => $rRange, 'expires' => ($rNow ?? time()) + 60]);
+		if (!is_string($rDoc) || !AtomicFile::write(self::filesDir() . $rName . '.json', $rDoc, 0600)) {
+			return false;
+		}
+		header('X-Accel-Redirect: /xc_fanout_file/' . $rStreamID . '?c=' . rawurlencode($rUUID) . '&m=' . $rName);
+		return true;
 	}
 
 	/**

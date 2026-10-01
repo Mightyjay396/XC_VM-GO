@@ -5389,3 +5389,31 @@ The design is `docs/superpowers/specs/2026-10-01-per-node-viewer-keys-design.md`
   - a node sending a viewer to itself mints with its own key.
 - `ReplicaBuilderSecretsTest` and `ClusterApiTest` check that the section carries the node's own key, and no other node's.
 
+
+### VOD and timeshift bytes in the daemon (Phase 11)
+
+**Before:** a movie (`vod.php`) or a continuous timeshift (`timeshift.php`, TS output) was read and written by one PHP-FPM worker for the whole download, its throttle a sleep loop. The plan kept this for "only if FPM pressure is measured"; the owner chose to move it.
+
+**Built.** The bytes go to the xc_fanout daemon, as a live viewer's do (the daemon's `files` feature, XC_VM_Fanout).
+- **The hand-over.** PHP still authenticates the viewer and records its connection, now with pid 0 as a daemon-served live viewer's. It then writes a manifest naming the file parts into the daemon's files directory (`<sockets>/files`, 0600, a random 32-hex name) and hands the byte path to nginx: `X-Accel-Redirect: /xc_fanout_file/<id>?c=<uuid>&m=<name>` (`FanoutClient::handOverFile`), an internal location on MAIN's and the LB's nginx that proxies to the daemon's `/file/<id>`. The worker is freed at once. No path is in a URL.
+- **What the daemon does.** It reads and removes the manifest and serves the parts back to back:
+  - HTTP ranges (`http.ServeContent`), across parts, and the token's range when the request has none;
+  - the panel's throttle: free for `vod_limit_perc` of the response, then the movie's (or recording's) bitrate plus `vod_bitrate_plus`, never for a restreamer;
+  - each write under the write deadline, and the kill channel.
+
+  The viewer is counted in `/connections`, `/rates` and the kick like a live one, so `fanout_sync` closes the row once it leaves, the panel's kick drops it, and the agent's registry and events carry it.
+- **Parts.** A movie is one part, the whole file. A timeshift is its queued minute files, the first from its offset.
+- **When.** The hand-over happens with fanout usable (`FanoutMode`, `LicenseGate::fanoutUsable()`) and a daemon that has the `files` feature (`FanoutClient::supportsFiles()`, the answer kept a minute in `TMP_PATH/fanout_features`). Otherwise, and for a direct-proxy VOD, the PHP loop serves as before.
+
+**Not built.**
+- **Direct-proxy VOD** still relays through PHP (cURL).
+- **HLS timeshift** segments are still served one by one by `segment.php`; each is a short request.
+- **The per-connection speed file** (`DIVERGENCE_TMP_PATH`) is not written for a daemon-served file; `fanout_sync` takes the rate from the daemon's `/rates`, as for live.
+
+**Tests.** `FanoutFileHandOverTest` checks the manifest (its name, mode and content, the throttle clamped, the token's range) and that the feature answer is kept a minute. XC_VM_Fanout's `files_test.go` covers:
+- a whole file;
+- a range across parts;
+- refused manifests (relative, unclean, expired, empty, a directory, past the end, a name that isn't one);
+- a viewer listed, rated and dropped like a live one, its holder forgotten once it leaves;
+- the throttle after its share;
+- the sweep of unread manifests.
