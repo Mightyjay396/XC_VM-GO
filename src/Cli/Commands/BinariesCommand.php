@@ -4,6 +4,7 @@ namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
 use XcVm\Core\Updates\GitHubReleases;
+use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Updates\UpdateChannels;
 
 /**
@@ -83,6 +84,17 @@ class BinariesCommand implements CommandInterface {
 			echo 'Current binaries version is unknown (missing/invalid ' . $rVersionFile . '). Update required.' . "\n";
 		} else {
 			echo 'New binaries release available: installed=' . $rCurrentVersion . ', latest=' . $rLatestVersion . ".\n";
+		}
+
+		// The release must have this distribution's bundle before anything
+		// stops: the updater a panel already runs (bin/install is never
+		// refreshed by a panel update) stops the service first, and a release
+		// published without its assets then took the panel down every minute.
+		$rOs = @parse_ini_file('/etc/os-release') ?: [];
+		$rAsset = ReleaseAsset::bundleFor(strtolower((string) ($rOs['ID'] ?? '')), (string) ($rOs['VERSION_ID'] ?? ''));
+		if ($rAsset === null || !ReleaseAsset::exists(ReleaseAsset::baseUrl(GIT_OWNER, GIT_REPO_BIN, $rLatestVersion) . $rAsset)) {
+			echo 'Release ' . $rLatestVersion . ' has no ' . ($rAsset ?? 'bundle for this distribution') . ': the running binaries are kept.' . "\n";
+			return 0;
 		}
 
 		$rScript = MAIN_HOME . 'bin/install/update_binaries.sh';

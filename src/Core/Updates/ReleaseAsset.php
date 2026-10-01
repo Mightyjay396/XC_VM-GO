@@ -52,6 +52,38 @@ final class ReleaseAsset {
 		return $rOk !== false && $rCode >= 200 && $rCode < 300 && filesize($rDest) > 0;
 	}
 
+	/** Is $rUrl there: a HEAD that ends in a 2xx, redirects followed? */
+	public static function exists(string $rUrl): bool {
+		$rCurl = curl_init();
+		curl_setopt_array($rCurl, [
+			CURLOPT_URL            => $rUrl,
+			CURLOPT_NOBODY         => true,
+			CURLOPT_FOLLOWLOCATION => true,
+			CURLOPT_CONNECTTIMEOUT => 10,
+			CURLOPT_TIMEOUT        => 30,
+			CURLOPT_USERAGENT      => 'XC_VM',
+		]);
+		$rOk = curl_exec($rCurl);
+		$rCode = curl_getinfo($rCurl, CURLINFO_HTTP_CODE);
+		curl_close($rCurl);
+		return $rOk !== false && $rCode >= 200 && $rCode < 300;
+	}
+
+	/**
+	 * The runtime bundle's asset for a distribution (os-release's ID and
+	 * VERSION_ID), as bin/install/update_binaries.sh picks it; null for one it
+	 * does not serve.
+	 */
+	public static function bundleFor(string $rId, string $rVersion): ?string {
+		$rMajor = (int) explode('.', $rVersion)[0];
+		return match (true) {
+			$rId === 'ubuntu' && in_array($rMajor, [18, 20, 22, 24], true) => 'ubuntu_' . $rMajor . '.tar.gz',
+			$rId === 'debian' && in_array($rMajor, [11, 12, 13], true) => 'debian_' . $rMajor . '.tar.gz',
+			in_array($rId, ['rocky', 'almalinux', 'rhel', 'centos'], true) && in_array($rMajor, [8, 9], true) => 'rhel_' . $rMajor . '.tar.gz',
+			default => null,
+		};
+	}
+
 	/** Expected sha256 for $rAsset from a SHA256SUMS file (`<hash>  <name>`). */
 	public static function expectedSha256(string $rUrl, string $rAsset): ?string {
 		$rCurl = curl_init();

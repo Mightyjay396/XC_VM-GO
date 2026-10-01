@@ -92,4 +92,19 @@ final class BinariesUpdateKeepsCoreTest extends TestCase {
 		$this->assertStringContainsString('404', $rText);
 		$this->assertFileDoesNotExist($this->rDir . '/systemctl.log', 'the service was neither stopped nor started: ' . $rText);
 	}
+	/**
+	 * A panel's own updater script is never refreshed by a panel update
+	 * (bin/install is kept), so `console.php binaries` checks first that the
+	 * release has this distribution's bundle, as the script names it.
+	 */
+	public function testTheBundleIsNamedAsTheUpdaterNamesIt(): void {
+		$this->assertSame('ubuntu_22.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('ubuntu', '22.04'));
+		$this->assertSame('debian_12.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('debian', '12'));
+		$this->assertSame('rhel_9.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('rocky', '9.4'));
+		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('ubuntu', '16.04'));
+		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('arch', ''));
+		$this->assertFalse(\XcVm\Core\Updates\ReleaseAsset::exists('http://127.0.0.1:9/none.tar.gz'), 'nothing there: no update');
+		$rSource = (string) file_get_contents(self::ROOT . 'Cli/Commands/BinariesCommand.php');
+		$this->assertLessThan(strpos($rSource, 'update_binaries.sh'), strpos($rSource, 'ReleaseAsset::exists('), 'checked before the updater runs');
+	}
 }
