@@ -11,6 +11,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\MigrationRunner;
 use XcVm\Core\Logging\UpdateLogger;
 use XcVm\Core\Process\ProcessRunner;
+use XcVm\Core\Updates\GitHubReleases;
 use XcVm\Core\Updates\ReleaseArchiveInspector;
 use XcVm\Core\Updates\UpdateChannels;
 use XcVm\Domain\Server\ServerRepository;
@@ -395,10 +396,13 @@ class UpdateCommand implements CommandInterface {
 		return 0;
 	}
 
-	/** A release version (x.y.z) as an update names it, or null for none or anything else. */
+	/**
+	 * A release version (x.y.z, or a nightly x.y.z-dev.N when MAIN runs the dev
+	 * channel) as an update names it, or null for none or anything else.
+	 */
 	public static function pinned(mixed $rVersion): ?string {
 		$rVersion = is_string($rVersion) ? trim($rVersion) : '';
-		return preg_match('/^\d+\.\d+\.\d+$/', $rVersion) ? $rVersion : null;
+		return preg_match('/^\d+\.\d+\.\d+$/', $rVersion) || GitHubReleases::isDevVersion($rVersion) ? $rVersion : null;
 	}
 
 	private function downloadFile($url, $targetPath): bool {
