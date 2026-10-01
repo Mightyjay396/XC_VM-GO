@@ -65,6 +65,12 @@ teardown('remove test records', async ({ page }) => {
     (r) => NAMED.test(r.title ?? ''),
     (r) => ['stream', { sub: 'delete', stream_id: r.id, server_id: r.server_col_id }],
   );
+  swept.movies = await sweepTable(
+    page,
+    'movies',
+    (r) => NAMED.test(r.title ?? ''),
+    (r) => ['movie', { sub: 'delete', stream_id: r.id, server_id: -1 }],
+  );
   swept.mags = await sweepTable(
     page,
     'mags',
