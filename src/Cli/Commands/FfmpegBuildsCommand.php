@@ -51,6 +51,11 @@ class FfmpegBuildsCommand implements CommandInterface {
 
 	private ?string $rBase;
 
+	/** This run's hash lookups, and how many found a hash. */
+	private int $rLookups = 0;
+
+	private int $rFound = 0;
+
 	/** @param string|null $rBase Another ffmpeg_bin/ (tests). */
 	public function __construct(?string $rBase = null) {
 		$this->rBase = $rBase;
@@ -94,6 +99,13 @@ class FfmpegBuildsCommand implements CommandInterface {
 		foreach (self::LABELS as $rLabel) {
 			$rFailed += $this->label($rRepo, $rLatest, $rLabel, $rDistro, $rForce) ? 0 : 1;
 		}
+		// Every hash looked up came back empty: the release's hashes.md5 could
+		// not be read (a supported distribution has a build of each label), so
+		// this run is not finished and is tried again within the hour.
+		if ($this->rLookups > 0 && $this->rFound === 0) {
+			echo "Cannot read release {$rLatest}'s hashes.md5: tried again later.\n";
+			return 1;
+		}
 		return $rFailed === 0 ? $this->finished() : 1;
 	}
 
@@ -128,10 +140,12 @@ class FfmpegBuildsCommand implements CommandInterface {
 		}
 		$rAsset = 'ffmpeg_' . $rLabel . '_' . $rDistro . '.tar.gz';
 		$rMd5 = $rRepo->getAssetHash($rVersion, $rAsset);
+		$this->rLookups++;
 		if ($rMd5 === null || !preg_match('/^[0-9a-f]{32}$/', $rMd5)) {
 			echo "[SKIP]  {$rLabel}: release {$rVersion} has no {$rAsset}.\n";
 			return true;
 		}
+		$this->rFound++;
 		$rWhy = $this->install($rRepo->assetUrl($rVersion, $rAsset), $rMd5, $rLabel);
 		if ($rWhy !== null) {
 			echo "[ERROR] {$rLabel}: {$rWhy}" . (is_file($rDir . 'ffmpeg') ? '; the installed build is kept' : '') . ".\n";
