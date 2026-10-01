@@ -23,6 +23,7 @@ use XcVm\Domain\Stream\ConnectionTracker;
 use XcVm\Domain\User\UserRepository;
 use XcVm\Infrastructure\Bootstrap\WebApiBootstrap;
 use XcVm\Infrastructure\Redis\RedisManager;
+use XcVm\Streaming\Fanout\FanoutMode;
 
 /**
  * TableController — DataTables JSON endpoint for admin panel.
@@ -1231,6 +1232,11 @@ class TableController extends BaseAdminController {
 									if ((int) $rRow["direct_proxy"] == 1) {
 										if ($rRow["pid"] && 0 < $rRow["pid"]) {
 											$rActualStatus = 1;
+										} elseif (FanoutMode::enabled()) {
+											// The daemon owns a proxy's pull, from its first
+											// viewer on, and its row never gets a producer pid:
+											// ready on demand, not down (ADR 0003).
+											$rActualStatus = 4;
 										} else {
 											$rActualStatus = 7;
 										}

@@ -101,7 +101,6 @@ LB_FILES_TO_REMOVE := \
 	Cli/Commands/ClusterMaintainStatsCommand.php \
 	Cli/Commands/ClusterNginxCommand.php \
 	Cli/Commands/ClusterEndpointCommand.php \
-	Cli/Commands/AgentBinaryCommand.php \
 	Cli/Commands/ServerEnrolCommand.php \
 	Cli/Commands/ClusterReenrolCommand.php \
 	Cli/Commands/SshChannel.php \
@@ -465,10 +464,6 @@ set_permissions:
 	@chmod 0755 $(TEMP_DIR)/bin/yt-dlp 2>/dev/null || true
 	@chmod 0550 $(TEMP_DIR)/bin/network 2>/dev/null || true
 	@chmod 0550 $(TEMP_DIR)/bin/network.py 2>/dev/null || true
-
-	# FFmpeg executables
-	@find $(TEMP_DIR)/bin/ffmpeg_bin -type f \( -name 'ffmpeg' -o -name 'ffprobe' \) \
-		-exec chmod 0551 {} + 2>/dev/null || true
 
 	# Nginx binaries
 	@find $(TEMP_DIR)/bin/nginx -type d -exec chmod 750 {} + 2>/dev/null || true

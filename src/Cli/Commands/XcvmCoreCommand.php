@@ -3,7 +3,6 @@
 namespace XcVm\Cli\Commands;
 
 use XcVm\Cli\CommandInterface;
-use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\Crypto\ClusterCryptoFactory;
 use XcVm\Core\Updates\UpdateChannels;
 
@@ -40,9 +39,8 @@ use XcVm\Core\Updates\UpdateChannels;
  *
  * Usage: `console.php xcvm_core` (add `force` to reinstall the same version),
  * `console.php xcvm_core status` (what is loaded, and its cluster API state).
- * On MAIN, `console.php xcvm_core cache [php8.1 …]` keeps the verified archive
- * of each PHP group its nodes run (cacheDir()), which it hands nodes over the
- * cluster API (`node.root xcvm_core`); its own group's is kept at each install.
+ * Every node, MAIN included and whatever its cluster mode, keeps it current
+ * this way (hourly from cron:root_signals): MAIN never hands it out.
  *
  * @package XC_VM_CLI_Commands
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -65,20 +63,9 @@ class XcvmCoreCommand implements CommandInterface {
 		return 'Install/update the xcvm_core PHP extension from the binaries repo';
 	}
 
-	/** A PHP group's name: the minor its .so loads into. */
-	public const GROUP_PATTERN = '/^php[0-9]\.[0-9]{1,2}\z/';
-
 	public function execute(array $rArgs): int {
 		if (in_array('status', $rArgs, true)) {
 			return $this->status();
-		}
-		if (($rArgs[0] ?? '') === 'cache') {
-			$rGroups = array_values(preg_grep(self::GROUP_PATTERN, $rArgs) ?: [self::group()]);
-			$rFailed = 0;
-			foreach ($rGroups as $rGroup) {
-				$rFailed += $this->cacheGroup($rGroup, in_array('force', $rArgs, true)) === null ? 1 : 0;
-			}
-			return $rFailed === 0 ? 0 : 1;
 		}
 		if (posix_getpwuid(posix_geteuid())['name'] !== 'root') {
 			echo "Please run as root!\n";
@@ -152,10 +139,6 @@ class XcvmCoreCommand implements CommandInterface {
 			}
 
 			$rOk = $this->installFromTarball($rTmp, $rSo);
-			// MAIN keeps its own group's archive for the nodes it serves.
-			if ($rOk && NodeRole::mainBuild()) {
-				self::keep($rTmp, $rGroup, $rLatest);
-			}
 			@unlink($rTmp);
 			if ($rOk) {
 				echo "xcvm_core {$rLatest} ({$rGroup}) installed.\n";
@@ -256,87 +239,6 @@ class XcvmCoreCommand implements CommandInterface {
 	/** This PHP's group (php8.1, php8.4, …). */
 	public static function group(): string {
 		return 'php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;
-	}
-
-	/** MAIN's cache of the archives it serves its nodes: `xcvm_core-<group>.tar.gz`, each with its `.version`. */
-	public static function cacheDir(): string {
-		return BIN_PATH . 'xcvm_core/cache/';
-	}
-
-	/** The version of MAIN's cached archive for $rGroup, or null when it holds none. */
-	public static function cachedVersion(string $rGroup): ?string {
-		if (!preg_match(self::GROUP_PATTERN, $rGroup)) {
-			return null;
-		}
-		$rFile = self::cacheDir() . 'xcvm_core-' . $rGroup . '.tar.gz';
-		$rVersion = is_file($rFile) ? trim((string) @file_get_contents($rFile . '.version')) : '';
-		return $rVersion === '' ? null : $rVersion;
-	}
-
-	/**
-	 * Keep $rTarball, verified against the binaries repo's SHA256SUMS, as
-	 * MAIN's copy for $rGroup at $rVersion: written aside and renamed in,
-	 * its version beside it.
-	 */
-	private static function keep(string $rTarball, string $rGroup, string $rVersion): bool {
-		$rDir = self::cacheDir();
-		if (!preg_match(self::GROUP_PATTERN, $rGroup) || (!is_dir($rDir) && !@mkdir($rDir, 0755, true))) {
-			return false;
-		}
-		$rFile = $rDir . 'xcvm_core-' . $rGroup . '.tar.gz';
-		$rTmp = $rFile . '.' . bin2hex(random_bytes(4));
-		if (!@copy($rTarball, $rTmp) || !@rename($rTmp, $rFile)) {
-			@unlink($rTmp);
-			return false;
-		}
-		return @file_put_contents($rFile . '.version', $rVersion . "\n") !== false;
-	}
-
-	/**
-	 * MAIN's verified archive for $rGroup at the binaries repo's current
-	 * version, downloading it when missing or stale. Its path, or null.
-	 */
-	private function cacheGroup(string $rGroup, bool $rForce): ?string {
-		if (!preg_match(self::GROUP_PATTERN, $rGroup)) {
-			echo "xcvm_core: not a PHP group: {$rGroup}\n";
-			return null;
-		}
-		$rBase = $this->rawBase(UpdateChannels::bin() === 'beta' ? 'beta' : self::BIN_BRANCH);
-		$rLatest = $this->fetchLatestVersion($rBase . 'version.json') ?? $this->fetchLatestVersion(($rBase = $this->rawBase(self::BIN_BRANCH)) . 'version.json');
-		$rFile = self::cacheDir() . 'xcvm_core-' . $rGroup . '.tar.gz';
-		if ($rLatest === null) {
-			echo "xcvm_core: cannot resolve the latest version\n";
-			return self::cachedVersion($rGroup) !== null ? $rFile : null;
-		}
-		if (!$rForce && self::cachedVersion($rGroup) === $rLatest) {
-			return $rFile;
-		}
-		$rAsset = 'xcvm_core-' . $rGroup . '.tar.gz';
-		$rExpected = $this->shaFor((string) $this->fetch($rBase . 'SHA256SUMS'), $rAsset);
-		$rTmp = sys_get_temp_dir() . '/.xcvm_core.cache.' . $rGroup . '.tar.gz';
-		if ($rExpected === null || !$this->download($rBase . $rAsset, $rTmp) || !hash_equals($rExpected, (string) hash_file('sha256', $rTmp))) {
-			@unlink($rTmp);
-			echo "xcvm_core: {$rAsset} not cached (absent, or its checksum does not match)\n";
-			return null;
-		}
-		$rKept = self::keep($rTmp, $rGroup, $rLatest);
-		@unlink($rTmp);
-		echo $rKept ? "xcvm_core {$rLatest} cached for {$rGroup}\n" : "xcvm_core: cannot write {$rFile}\n";
-		return $rKept ? $rFile : null;
-	}
-
-	/**
-	 * Install the archive root staged from MAIN's grant (`node.root
-	 * xcvm_core`), as an update installs a download: load-tested in a fresh
-	 * PHP, kept only if it loads and keeps the cluster API this panel speaks,
-	 * else the previous .so is put back. Null once installed, else why not.
-	 */
-	public function installStaged(string $rTarball): ?string {
-		$rExtDir = rtrim((string) ini_get('extension_dir'), '/');
-		if ($rExtDir === '' || !is_dir($rExtDir)) {
-			return 'no PHP extension_dir';
-		}
-		return $this->installFromTarball($rTarball, $rExtDir . '/xcvm_core.so') ? null : 'it does not load on this host (the previous one is kept)';
 	}
 
 	/**

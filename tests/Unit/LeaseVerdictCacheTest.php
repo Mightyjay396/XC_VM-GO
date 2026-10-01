@@ -80,6 +80,32 @@ final class LeaseVerdictCacheTest extends TestCase {
 		$this->assertSame([], $this->asked());
 	}
 
+	/**
+	 * The licence gate hands the extension the agent's lease whatever the fence
+	 * switch says: on a node the extension's licence verdict is that lease, and
+	 * without it every LB read as unlicensed and delivered through the legacy
+	 * path. Not on a legacy node.
+	 */
+	public function testTheLicenceGateFeedsTheLeaseWithTheSwitchOff(): void {
+		$this->withExtension();
+		\XcVm\Core\Config\SettingsManager::set(['lb_lease_fence' => 0]);
+		$rNow = time();
+		$this->agentLease($rNow - 10, '{"v":1,"typ":"xcvm-lease"}', str_repeat("\x01", 64));
+		$this->rCompiledState = self::compiled('none', 0, 0, 0, 'NO_LEASE');
+		$this->rStoreAnswer = self::compiled('live', $rNow + 3600, $rNow - 10, $rNow - 10);
+		\XcVm\Core\License\LicenseGate::licensed();
+		$this->assertSame(['cluster_lease_state', 'cluster_lease_store'], $this->asked());
+		$this->assertSame(NodeLease::SERVING, NodeLease::state(), 'the fence itself stays off');
+
+		$this->rCalls = [];
+		NodeLease::useExtension(null);
+		$this->withExtension();
+		file_put_contents($this->rDir . '/flows.json', json_encode(['mode' => 0, 'flows' => 0, 'state' => 'active']));
+		\XcVm\Core\Cluster\NodeFlows::usePath($this->rDir . '/flows.json');
+		\XcVm\Core\License\LicenseGate::licensed();
+		$this->assertSame([], $this->asked(), 'a legacy node holds no lease');
+	}
+
 	public function testTheAgentsNewerLeaseIsOfferedOnceWithItsExactBytes(): void {
 		$this->withExtension();
 		$rNow = time();

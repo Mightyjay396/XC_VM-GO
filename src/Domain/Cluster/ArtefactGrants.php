@@ -16,15 +16,15 @@ use XcVm\Infrastructure\Database\DatabaseAware;
  * the node may fetch:
  *
  * ```text
- * {"id": "offair/<name>" | "module/<name>/<version>" | "agent/<arch>",
+ * {"id": "offair/<name>" | "module/<name>/<version>",
  *  "name": "<file name>", "size": <bytes>, "sha256": "<hex>", "mtime": <MAIN's>, "ctime": <MAIN's>, "exp": <the command's exp>}
  * ```
  *
  * - `artefact.fetch {artefact}` grants an off-air video (offerOffAir(),
  *   every minute from cron:cluster); cluster:exec places it.
  * - `node.root {action, …, artefact}` grants the file a root action needs
- *   (forRoot(): a custom module's archive for install_module, the pinned
- *   xc_agent for agent_binary); root stages and checks it before it runs.
+ *   (forRoot(): a custom module's archive for install_module); root stages
+ *   and checks it before it runs.
  *
  * Both are granting commands, so the extension signs them only under a
  * licence. Only a node whose agent says FEATURE at hello is granted one;
@@ -72,14 +72,6 @@ final class ArtefactGrants {
 		return CommandBus::accepts($rNode) && in_array(self::FEATURE, explode(',', (string) ($rNode['features'] ?? '')), true);
 	}
 
-	/** Said by an agent whose node's PHP installs the fanout daemon and xcvm_core MAIN grants (ClusterExecCommand::ROOT_BINARIES). */
-	public const FEATURE_BINARIES = 'artefact_binaries';
-
-	/** May this node be granted the fanout daemon and xcvm_core? As takes(), and its agent says so: an older node's root refuses them. */
-	public static function takesBinaries(?array $rNode): bool {
-		return self::takes($rNode) && in_array(self::FEATURE_BINARIES, explode(',', (string) ($rNode['features'] ?? '')), true);
-	}
-
 	/**
 	 * A grant for an artefact ArtefactRegistry::describe() found. Its `exp`
 	 * is its command's (CommandBus::enqueue()).
@@ -96,40 +88,21 @@ final class ArtefactGrants {
 
 	/**
 	 * A root action's payload with the grant for the artefact it needs: a
-	 * custom module's archive (install_module from `local`), the pinned
-	 * xc_agent, xc_fanout or xcvm_core (agent_binary, fanout_binary,
-	 * xcvm_core, each of which also gets its version). Unchanged for the
-	 * other actions, and for install_module when the node does not take
+	 * custom module's archive (install_module from `local`). Unchanged for
+	 * the other actions, and for install_module when the node does not take
 	 * artefacts or MAIN has no such archive (the node then pulls it the
-	 * legacy way). Null when the action cannot be sent without its artefact.
+	 * legacy way).
 	 *
 	 * @param array<string, mixed> $rPayload {action, …}
-	 * @return array<string, mixed>|null
+	 * @return array<string, mixed>
 	 */
-	public static function forRoot(int $rServerID, array $rPayload): ?array {
+	public static function forRoot(int $rServerID, array $rPayload): array {
 		unset($rPayload['artefact']);
-		$rAction = $rPayload['action'] ?? null;
-		if ($rAction === 'install_module') {
-			if (($rPayload['source'] ?? null) !== 'local' || !self::takes(NodeRegistry::byServer($rServerID))) {
-				return $rPayload;
-			}
-			$rFound = ArtefactRegistry::describe('module/' . (string) ($rPayload['name'] ?? '') . '/' . (string) ($rPayload['version'] ?? ''), []);
-			return $rFound === null ? $rPayload : $rPayload + ['artefact' => self::grant($rFound)];
+		if (($rPayload['action'] ?? null) !== 'install_module' || ($rPayload['source'] ?? null) !== 'local' || !self::takes(NodeRegistry::byServer($rServerID))) {
+			return $rPayload;
 		}
-		// The binaries MAIN pins: the agent and the fanout daemon by the node's
-		// arch, the xcvm_core archive by its PHP group, each with its version.
-		$rId = match ($rAction) {
-			'agent_binary' => 'agent/' . (string) ($rPayload['arch'] ?? ''),
-			'fanout_binary' => 'fanout/' . (string) ($rPayload['arch'] ?? ''),
-			'xcvm_core' => 'core/' . (string) ($rPayload['group'] ?? ''),
-			default => null,
-		};
-		if ($rId !== null) {
-			$rNode = NodeRegistry::byServer($rServerID);
-			$rFound = ($rAction === 'agent_binary' ? self::takes($rNode) : self::takesBinaries($rNode)) ? ArtefactRegistry::describe($rId, []) : null;
-			return $rFound === null ? null : ['version' => (string) $rFound['version']] + $rPayload + ['artefact' => self::grant($rFound)];
-		}
-		return $rPayload;
+		$rFound = ArtefactRegistry::describe('module/' . (string) ($rPayload['name'] ?? '') . '/' . (string) ($rPayload['version'] ?? ''), []);
+		return $rFound === null ? $rPayload : $rPayload + ['artefact' => self::grant($rFound)];
 	}
 
 	/**

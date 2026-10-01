@@ -659,7 +659,7 @@ The plan's `artefact` op (section 7: "off-air videos, pinned binaries, ≤ 4 MB 
 | --- | --- | --- | --- |
 | `offair/<name>`, `<name>` a key of `ReplicaSections::OFF_AIR` (`connected`, `not_on_air`, `banned`, `expired`, `expiring`) | the admin's `<name>_video_path`: an absolute local path whose extension is `ts`, `m2ts`, `mts`, `mpegts` or `mp4`, the file the `cluster` section names by its file name | 256 MiB | `artefact.fetch` |
 | `module/<name>/<version>`, `<name>` `[a-z0-9][a-z0-9-]{0,63}`, `<version>` `[0-9A-Za-z][0-9A-Za-z._-]{0,31}` without `..` | the custom module's archive MAIN keeps (`ModuleManager::archivePathFor`, `modules_archives/<name>_<version>.zip`) | 64 MiB | `node.root install_module` |
-| `agent/<arch>`, `<arch>` one of `amd64`, `arm64`, `armv7`, `386` | the xc_agent binary `console.php agent_binary` verified into `bin/xc_agent/cache/` (`xc_agent-linux-<arch>`), with its `.version` | 128 MiB | `node.root agent_binary` |
+| `agent/<arch>` (removed 2026-10-01, [Binaries from GitHub on every node](#binaries-from-github-on-every-node)), `<arch>` one of `amd64`, `arm64`, `armv7`, `386` | the xc_agent binary `console.php agent_binary` verified into `bin/xc_agent/cache/` (`xc_agent-linux-<arch>`), with its `.version` | 128 MiB | `node.root agent_binary` |
 
 - `ArtefactStage::validId()` (Core, so both ends share it) checks the id's shape first. A module archive or an agent binary must be a regular file inside its own directory once links are resolved; an off-air video a regular file whose file name matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` (no path, no dot file), at least one byte. Anything else is no artefact: an off-air setting that is a URL, a relative path or no video keeps playing as before on every node.
 - An artefact's SHA-256 is computed when it is granted and kept in `cluster_meta.artefact_hashes` by the file's path, device, inode, size, mtime and ctime, so a file is hashed again only after it changed. ctime moves on every write and every touch, so a video rewritten in place with its size and mtime kept (`cp -p`, `rsync -t`, `touch -r`) is hashed again. The hash of a file changed within the last two seconds of MAIN's clock is not kept at all: a second write in that same second would leave its stat as it was.
@@ -3185,6 +3185,8 @@ It asks the node's own registry first, as every other connection writer does: th
 
 ### Keeping the fleet's agent current (Phase 4, sixth increment)
 
+> **Superseded** by [Binaries from GitHub on every node](#binaries-from-github-on-every-node) (2026-10-01): MAIN no longer hands out the agent, the fanout daemon or xcvm_core.
+
 MAIN pins the agent: it keeps one SHA-256-verified `xc_agent` per architecture (`console.php agent_binary`) and the install flow pushes it over SSH, "so every node runs the version MAIN pinned". A node did run it — and then ran it for ever. `NodeActions::agentBinary()`, the signed `node.root agent_binary` command with its artefact grant, had no caller at all: root's half, the staging, the checks and the restart were all built, and nothing ever asked for them. The only way to move an agent was to provision the node again.
 
 - **The node's architecture.** MAIN could not choose a binary, because it did not know what the machine was (the install flow read `uname -m` over SSH and did not keep it). The agent reports it at hello as the release assets name it (`amd64`, `arm64`, `armv7`, `386` — `runtime.GOARCH`, with `arm` as `armv7`), and MAIN stores it in `cluster_nodes.arch` when it changes, as it does the MAIN port. MAIN never guesses: without an arch, nothing is offered.
@@ -4425,6 +4427,8 @@ type, and every cache job stays granting.
 
 ### A failing agent on a node, and a canary
 
+> MAIN's half (the rollout and its hold) is **superseded** by [Binaries from GitHub on every node](#binaries-from-github-on-every-node) (2026-10-01). The node's half, the trial `run.sh` judges, stays.
+
 The [agent rollout](#keeping-the-fleets-agent-current-phase-4-sixth-increment) had no way back.
 `node.root agent_binary` replaced the binary and kept nothing. A new agent that started (it answers
 `version`, which the install checks) but then failed at run left `run.sh` restarting it every two
@@ -5114,6 +5118,8 @@ minute writes 0).
 
 ### The fanout daemon and xcvm_core from MAIN
 
+> **Superseded** by [Binaries from GitHub on every node](#binaries-from-github-on-every-node) (2026-10-01): MAIN no longer hands out the agent, the fanout daemon or xcvm_core.
+
 Section 5: `xc_fanout` and `xcvm_core` "follow the same path on nodes in mode 1 or 2" as the
 agent. A review had kept them out (every node downloads them from GitHub itself, each checked by
 SHA-256), until a fleet without GitHub access is a target. They are built now, on request, reusing
@@ -5164,6 +5170,66 @@ version, and the ids refused); `ArtefactHashRefusalTest::testActionsTakeOnlyASta
 `ClusterExecCommandTest::testItSaysWhichCommandTypesItRuns`; agent `TestArtefactBinariesFollowThePHP`,
 `TestArtefactGrantShape`.
 
+### Binaries from GitHub on every node
+
+Decided by the project owner on 2026-10-01. It supersedes [Keeping the fleet's agent current](#keeping-the-fleets-agent-current-phase-4-sixth-increment),
+MAIN's half of [A failing agent on a node, and a canary](#a-failing-agent-on-a-node-and-a-canary)
+and [The fanout daemon and xcvm_core from MAIN](#the-fanout-daemon-and-xcvm_core-from-main).
+Every node, MAIN included and whatever its mode, takes `xc_agent`, `xc_fanout` and `xcvm_core`
+from their GitHub releases itself. MAIN hands none of them out.
+
+- **The hourly checks.** `cron:root_signals` runs `console.php fanout_binary` and `console.php
+  xcvm_core` about once an hour, the first pass at once, in mode 2 too. `fanout_binary` installs
+  the daemon and the agent from the same XC_VM_Fanout release (one tag, one `SHA256SUMS`). With
+  fanout switched off it installs the agent alone (`fanout_binary agent`).
+- **The agent's install.** The asset is downloaded to root's temp directory and checked against
+  `SHA256SUMS`. `ArtefactStage::installAgent` then copies it in as the agent's user, checks it
+  again, runs it once and renames it in.
+  - **The trial.** Where an agent runs, the new binary is on trial as before (`.prev`, `.trial`,
+    `run.sh`'s start and reach checks). Where none runs (a node not enrolled yet), it is not: a trial
+    nobody judges would be judged at enrolment, long after the install, and rolled back.
+  - **No retry loop.** The version tried is kept in `xc_agent.tried`. A release rolled back on a
+    node is not fetched there again every hour, only a newer one (or `force`).
+- **Enrolment.** `LbInstallFlow::provisionCluster` no longer uploads the agent. Over the same SSH
+  session, the node runs `console.php fanout_binary agent` once its agent directory is xc_vm's. A
+  node that cannot get one (GitHub unreachable, no asset for its arch) stays legacy, or fails the
+  install in API mode, as before. `cluster:main-dataplane on` installs MAIN's own agent the same
+  way when it is missing.
+- **Removed:**
+  - MAIN's cache (`AgentBinaryCommand`), and `fanout_binary cache` and `xcvm_core cache`;
+  - the rollout (`AgentUpgrades`), with the canary hold and `agent_binary release`;
+  - the root actions `agent_binary`, `fanout_binary` and `xcvm_core`, and their artefacts
+    `agent/<arch>`, `fanout/<arch>` and `core/<group>`;
+  - the `cluster_agent_upgrade_parallel` setting (its column stays, unread);
+  - the watchdog's `versions`;
+  - `ClusterExecCommand::ROOT_BINARIES`, so the agent no longer says `artefact_binaries`.
+
+  A newer node's root refuses an older MAIN's `node.root agent_binary` as an unknown action.
+  Artefacts remain for off-air videos and custom modules.
+
+**Limits.**
+- **A node needs GitHub.** One without outbound HTTPS to GitHub keeps the binaries it has, and a
+  fresh one cannot be enrolled.
+- **No fleet canary.** Each node takes a release at its next hourly check. A release that fails on
+  one node is rolled back there by `run.sh` and not retried, but the other nodes are not held back.
+- **No pinning to MAIN.** Each node runs the latest release of its channel
+  (`UpdateChannels::fanout()`, `bin()`), whatever MAIN runs.
+
+**Tests:**
+- `ArtefactHashRefusalTest`:
+  - `testAnAgentInstalledWhereNoneRunsIsNotOnTrial`;
+  - `testTheAgentFromItsReleaseIsFetchedOnlyWhenNewAndNotTriedHere`;
+  - `testActionsTakeOnlyAStagedArtefact`: the three actions install nothing.
+- `LbProvisionClusterTest`:
+  - `testEnrolsTheNodeOverSsh`: no upload; the node installs the agent after the chown and before
+    keygen;
+  - `testLegacyWhenDisabledOrWithoutAnAgent`.
+- `ServerEnrolCommandTest` and `ClusterReenrolCommandTest`: a node that cannot install one.
+- `ClusterArtefactTest`:
+  - `testRootActionsCarryTheirArtefactsGrant`: the three actions are unknown;
+  - `testTheRegistryServesOnlyWhatMainNamesItself`: their ids are refused.
+- `ClusterExecCommandTest::testItSaysWhichCommandTypesItRuns`.
+
 ### Drills on the test panel
 
 Section 14's scripted drills, run on the test panel (MAIN and one load balancer in mode 1, both on
@@ -5188,11 +5254,45 @@ this branch), with each change put back afterwards.
   stays `auto`. The recovery through the HTTP challenge needs a certificate that lapses, and stays
   with `HttpsRequiredRecoveryTest`.
 
+- **An LB reboot with MAIN unreachable** (2026-10-01): the LB in mode 1 with CONFIG on, its
+  replica applied, and the LB's address dropped on MAIN.
+  - **The boot:** the LB booted in about 40 s. `cluster:apply --from-disk` rebuilt the settings
+    and servers caches from the replica. nginx, PHP-FPM, the agent, the daemon, the signals,
+    watchdog and queue daemons and every cron came up.
+  - **With MAIN still unreachable:**
+    - A viewer request was refused in 6 ms, and `player_api` answered in 0.2 s, with no 5xx.
+    - The crons ran and finished each minute.
+    - Processes in mode 1 still tried MAIN's database, 11 times in the first minute. The
+      connect audit counted those attempts without refusing them, as mode 1 does.
+  - **Recovery:** once MAIN was reachable, the agent's health check passed within seconds, and
+    the node stayed active in the same generation.
+  - **One drawback of the drill:** MAIN rewrites its INPUT chain itself (`P2PTV_BLOCK`), and it
+    removed the drop rule about a minute later. That was after the boot, but a longer outage
+    drill needs a block MAIN does not manage.
+- **MAIN's HTTP port change** (2026-10-01), with one node. The admin's save was replayed from
+  the CLI (`ServerService::announceMainEndpoints`, `changePort`).
+  - **8080 to 8082 and back, each way:**
+    - The cluster API answered on both ports within seconds.
+    - The admin moved to the new port at the next `cron:root_signals` pass, under 20 s.
+    - The old port kept serving the cluster API alone (`cluster.d/old_port.conf`, 7 days or
+      until every node has moved off).
+    - The LB's agent took the new URL and kept its generation, active throughout.
+  - **A first try at 8081 failed and was reverted:** another service on the test MAIN already
+    held that port. See "Found on the way".
+
+- **xcvm_core version skew** (2026-10-01), 2.3.1 against 2.3.3, cluster API 1 on both:
+  - **MAIN 2.3.3, LB 2.3.1:** the LB stayed licensed on a live lease, and its agent's health
+    check passed. A channel started and stopped on it through MAIN's signed commands, and its
+    telemetry stayed fresh (`lb-streams`, `lb-telemetry`, 4/4).
+  - **MAIN 2.3.1, LB 2.3.3:** that pair, plus all of `cluster-nodes` (a flow switched on and
+    off, rotate-now, a quarantine lifted, a fence and its lifting), passed 9/9.
+  - **Getting MAIN onto 2.3.1:** the first attempt restarted MAIN's service. Its `status`
+    queued `update_binaries`, and MAIN installed the new XC_VM_Binaries `01.10.2026` (md5
+    verified, staged, then swapped in) together with that bundle's xcvm_core 2.3.3. The
+    attempt that counted swapped the `.so` and reloaded PHP-FPM instead.
+
 **Not run.**
-- **MAIN's port change with three nodes:** one node, and the port is the admin's too.
-- **An LB reboot with MAIN unreachable:** a mode 1 node without CONFIG has no replica to boot
-  from.
-- **xcvm_core version skew:** both sides run 2.3.1, and 2.3.3 has no archives yet.
+- **MAIN's port change with three nodes:** only one node.
 
 **Found on the way.**
 - **Two flaws in the binaries update:**
@@ -5205,3 +5305,24 @@ this branch), with each change put back afterwards.
     second fix also reaches panels whose `bin/install` an update never refreshes.
 - **The test LB's link to the default E2E source** (a multi-variant HLS) was too slow for the
   monitor's 15 s probe. The LB specs ran with a single-variant source (`XC_E2E_STREAM_SOURCE`).
+- **A MAIN port nginx cannot bind is stored and announced anyway.**
+  - **What happened:** the first try of the port drill moved MAIN to 8081, which another service
+    on the test MAIN already held. nginx's reload failed (`bind() ... Address already in use`)
+    and nginx kept its old configuration, so the panel stayed up on 8080. Meanwhile, the
+    servers row and the announcement to the nodes named 8081.
+  - **What's missing:** nothing checks that a port is free before it is saved, and nothing
+    reports the failed reload. Not fixed.
+- **Every enrolled LB read as unlicensed, and served its live viewers without the daemon.**
+  - **Why:** on a node, `xcvm_core`'s licence verdict (`XC_VM::license_valid()`) is a live
+    cluster lease, since a node holds no activation key. Only `NodeLease::judge()` handed the
+    extension the agent's lease, and only with `lb_lease_fence` on, which ships off. So the
+    extension held none.
+  - **What it did:** `LicenseGate` sent every live viewer down the legacy path. A viewer MAIN
+    redirected to the test LB was served from the on-disk segments, while the daemon held the
+    stream with no viewers (ADR 0003, C4).
+  - **The fix:** `LicenseGate::licensed()` now hands the extension the lease first
+    (`NodeLease::feedExtension()`), whatever the fence switch says. The switch still decides
+    only whether the node fences. With the extension's lease file removed, the test LB stored
+    the agent's lease again within 30 s, by itself, and the daemon then served the redirected
+    viewer (`lb-delivery-kinds`, C4).
+  - **Test:** `LeaseVerdictCacheTest::testTheLicenceGateFeedsTheLeaseWithTheSwitchOff`.

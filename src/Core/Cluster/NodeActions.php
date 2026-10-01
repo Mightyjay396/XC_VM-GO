@@ -26,19 +26,17 @@ final class NodeActions {
 		'disable_ramdisk', 'enable_ramdisk', 'certbot_generate', 'update_binaries',
 		'install_module', 'delete_module', 'update', 'rollback',
 		'set_services', 'set_governor', 'set_sysctl', 'set_port', 'flush',
-		OpensslExtra::SIGNAL_ACTION, 'agent_binary', 'fanout_binary', 'xcvm_core', 'rotate_redis', 'rotate_db', 'rotate_sign_key',
+		OpensslExtra::SIGNAL_ACTION, 'rotate_redis', 'rotate_db', 'rotate_sign_key',
 		NodeCredentials::STRIP, NodeCredentials::INSTALL, NodeCorePin::ACTION,
 	];
 
 	/**
 	 * Actions that run only over the cluster API: never queued as a `signals`
-	 * row. `agent_binary`, `fanout_binary` and `xcvm_core` carry an artefact
-	 * root stages and checks;
-	 * `rotate_db` a sealed password nothing else could carry;
+	 * row. `rotate_db` carries a sealed password nothing else could carry;
 	 * `rotate_sign_key` is only worth the signature root checks it under;
 	 * the credential strip and install carry sealed configs.
 	 */
-	public const CLUSTER_ONLY = ['agent_binary', 'fanout_binary', 'xcvm_core', 'rotate_db', 'rotate_sign_key', NodeCredentials::STRIP, NodeCredentials::INSTALL, NodeCorePin::ACTION];
+	public const CLUSTER_ONLY = ['rotate_db', 'rotate_sign_key', NodeCredentials::STRIP, NodeCredentials::INSTALL, NodeCorePin::ACTION];
 
 	public static function reboot(int $rServerID, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => 'reboot'], $rDb);
@@ -67,27 +65,6 @@ final class NodeActions {
 
 	public static function updateBinaries(int $rServerID, ?object $rDb = null): bool {
 		return self::send($rServerID, ['action' => 'update_binaries'], $rDb);
-	}
-
-	/**
-	 * Install the xc_agent binary MAIN pinned for this arch (plan section 5,
-	 * `node.root agent_binary`): a signed root command carrying the binary's
-	 * artefact grant, which root stages and checks before installing it. Only
-	 * to a node whose agent takes artefacts; false otherwise, and nothing is
-	 * queued.
-	 */
-	public static function agentBinary(int $rServerID, string $rArch, ?object $rDb = null): bool {
-		return self::send($rServerID, ['action' => 'agent_binary', 'arch' => $rArch], $rDb);
-	}
-
-	/** The xc_fanout binary MAIN keeps for this arch, as agentBinary() sends the agent (plan, section 5). */
-	public static function fanoutBinary(int $rServerID, string $rArch, ?object $rDb = null): bool {
-		return self::send($rServerID, ['action' => 'fanout_binary', 'arch' => $rArch], $rDb);
-	}
-
-	/** The xcvm_core archive MAIN keeps for this PHP group (php8.1, …), as agentBinary() sends the agent. */
-	public static function xcvmCore(int $rServerID, string $rGroup, ?object $rDb = null): bool {
-		return self::send($rServerID, ['action' => 'xcvm_core', 'group' => $rGroup], $rDb);
 	}
 
 	/**

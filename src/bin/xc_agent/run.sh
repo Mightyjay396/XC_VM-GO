@@ -13,7 +13,7 @@
 # supervisor then writes `stopped` and exits, and
 # nothing restarts it until the node is enrolled again, which removes the file.
 #
-# A binary MAIN's `agent_binary` just installed is on trial (xc_agent.trial,
+# A binary `fanout_binary` just installed is on trial (xc_agent.trial,
 # "<installed at> <failed starts> [reach]"): if it exits within 60 s of its
 # start three times within TRIAL_SEC of the install, the one it replaced
 # (xc_agent.prev) is put back. A run that lasts, an exit MAIN asked for, or the

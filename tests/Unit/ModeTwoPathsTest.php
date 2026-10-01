@@ -63,7 +63,7 @@ final class ModeTwoPathsTest extends TestCase {
 			file_put_contents($this->rHome . 'bin/nginx/conf/' . $rConf, '');
 		}
 		// The hourly self-heals are not this test's: done a moment ago.
-		foreach (['fanout_binary_check', 'xcvm_core_check', 'ytdlp_check'] as $rStamp) {
+		foreach (['fanout_binary_check', 'xcvm_core_check', 'ytdlp_check', 'ffmpeg_check'] as $rStamp) {
 			file_put_contents($this->rHome . 'tmp/crons/' . $rStamp, (string) time());
 		}
 		$this->rFixture = new ReplicaFixture($this->rHome . 'config/cluster/');

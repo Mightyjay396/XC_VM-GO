@@ -156,18 +156,32 @@ never replaces a working one). Runs on every node (main **and** LB).
 
 | Binary | Command | Source | Verify | Poll |
 | --- | --- | --- | --- | --- |
-| `xc_fanout` daemon | `fanout_binary` | `XC_VM_Fanout` release asset | `SHA256SUMS` | ~hourly |
+| `xc_fanout` daemon and `xc_agent` | `fanout_binary` | `XC_VM_Fanout` release assets | `SHA256SUMS` (+ the agent's trial in `run.sh`) | ~hourly |
 | `xcvm_core` extension | `xcvm_core` | `XC_VM_Binaries` repo tree (`bin/xcvm_core/`) | `SHA256SUMS` + load-test | ~hourly |
 | `yt-dlp` | `ytdlp` | upstream `yt-dlp/yt-dlp` release | `SHA2-256SUMS` + `--version` | daily |
+| `ffmpeg`/`ffprobe` 4.0, 7.1, 8.1 | `ffmpeg` (as xc_vm) | `XC_VM_FFMPEG` release, this distribution's builds | `hashes.md5` + both binaries must start | daily |
 
 Stamps live in `CRONS_TMP_PATH` (`fanout_binary_check`, `xcvm_core_check`,
-`ytdlp_check`); the first pass (stamp absent) runs immediately, so a fresh
-install/LB gets the binary within a minute. A node in cluster mode 2 skips the
-`xc_fanout` and `xcvm_core` checks: MAIN hands it both over the cluster API
-(`node.root fanout_binary`, `xcvm_core`), from the copies it keeps
-(`fanout_binary cache`, `xcvm_core cache`). The heavy runtime bundle
-(php/nginx/ffmpeg) is instead refreshed by the `binaries` command, triggered by an
-`update_binaries` signal from MAIN.
+`ytdlp_check`, `ffmpeg_check`); the first pass (stamp absent) runs immediately, so a fresh
+install/LB gets the binary within a minute. Every node runs them, whatever its
+cluster mode: MAIN hands none of these out. `fanout_binary` takes `fanout` or
+`agent` to update one of the two; with fanout switched off the hourly check runs
+`fanout_binary agent`. An agent release that `run.sh` rolled back on a node is not
+fetched there again until a newer one is out (`xc_agent.tried`; `force` retries
+it).
+
+`ffmpeg` fetches `ffmpeg_<label>_<distro>.tar.gz` for each label the settings page
+offers (the release archives carry no ffmpeg: the installer and an LB's install
+run it too), built in this distribution's container so its glibc matches the node's,
+and swaps each into `bin/ffmpeg_bin/<label>/` only once it starts here.
+`ffmpeg_bin/ffmpeg_version.json` records each label's release; a launch that did
+not finish (killed, GitHub unreachable) is tried again after an hour. XUI's 4.0 is
+kept where a node has it (only it takes `-nofix_dts`) until the rebuilt 4.0's DTS
+handling is validated. A setting naming a build the node lacks takes the newest
+of its major (8.0 until 8.1 is fetched).
+
+The heavy runtime bundle (nginx, nginx_rtmp and PHP) is instead refreshed by the
+`binaries` command, triggered by an `update_binaries` signal from MAIN.
 
 ---
 

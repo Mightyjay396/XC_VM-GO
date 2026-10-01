@@ -31,8 +31,6 @@ final class ClusterReenrolCommandTest extends TestCase {
 
 	private string $rDir;
 
-	private string $rAgent;
-
 	public static function setUpBeforeClass(): void {
 		foreach (['SERVER_ID' => 1, 'TMP_PATH' => sys_get_temp_dir() . '/xcvm-test-tmp/', 'CONFIG_PATH' => sys_get_temp_dir() . '/xcvm-test-config/'] as $rName => $rValue) {
 			if (!defined($rName)) {
@@ -65,8 +63,6 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->rSsh = new FakeSshFleet();
 		$this->rDir = sys_get_temp_dir() . '/xcvm_reenrol_' . uniqid('', true) . '/';
 		mkdir($this->rDir, 0750, true);
-		$this->rAgent = (string) tempnam(sys_get_temp_dir(), 'agent');
-		file_put_contents($this->rAgent, 'fake agent');
 	}
 
 	protected function tearDown(): void {
@@ -76,7 +72,6 @@ final class ClusterReenrolCommandTest extends TestCase {
 			@unlink($rFile);
 		}
 		@rmdir($this->rDir);
-		@unlink($this->rAgent);
 	}
 
 	/** MAIN #1 and the load balancers #7, #8, #9, #10 and #12, each with the host key stored at its install. */
@@ -99,10 +94,10 @@ final class ClusterReenrolCommandTest extends TestCase {
 	}
 
 	/** @return array{0: int, 1: string} [exit code, output] */
-	private function reenrol(array $rServers, ?array $rIDs, ?array $rCreds, bool $rDryRun = false, array $rStates = ['enrolling', 'active'], ?callable $rAgentBinary = null, bool $rPending = false): array {
+	private function reenrol(array $rServers, ?array $rIDs, ?array $rCreds, bool $rDryRun = false, array $rStates = ['enrolling', 'active'], bool $rPending = false): array {
 		ob_start();
 		try {
-			$rCode = ClusterReenrolCommand::run($rServers, $rIDs, $rStates, $rCreds, $rDryRun, $this->rCrypto, $this->rSsh, $rAgentBinary ?? fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null, $rPending);
+			$rCode = ClusterReenrolCommand::run($rServers, $rIDs, $rStates, $rCreds, $rDryRun, $this->rCrypto, $this->rSsh, $rPending);
 		} finally {
 			$rOut = (string) ob_get_clean();
 		}
@@ -113,7 +108,7 @@ final class ClusterReenrolCommandTest extends TestCase {
 	private function main(array $rServers, array $rArgs): array {
 		ob_start();
 		try {
-			$rCode = ClusterReenrolCommand::main($rArgs, $this->rCrypto, $rServers, $this->rSsh, fn(string $rArch) => $rArch === 'amd64' ? $this->rAgent : null, $this->rDir);
+			$rCode = ClusterReenrolCommand::main($rArgs, $this->rCrypto, $rServers, $this->rSsh, $this->rDir);
 		} finally {
 			$rOut = (string) ob_get_clean();
 		}
@@ -167,7 +162,7 @@ final class ClusterReenrolCommandTest extends TestCase {
 		$this->enrolled(9, 'enrolling');
 		ClusterClock::fix(null);
 
-		[$rCode, $rOut] = $this->reenrol($rServers, null, self::creds(), false, ['enrolling', 'active'], null, true);
+		[$rCode, $rOut] = $this->reenrol($rServers, null, self::creds(), false, ['enrolling', 'active'], true);
 		$this->assertSame(0, $rCode, $rOut);
 		$this->assertStringContainsString('#7 lb-a: re-enrolled', $rOut, 'enrolled before the root changed');
 		$this->assertStringContainsString('#8 lb-b: skipped: enrolled since the root changed on 1970-01-01 00:33 UTC (name it to re-enrol it)', $rOut);
@@ -176,7 +171,7 @@ final class ClusterReenrolCommandTest extends TestCase {
 
 		$this->rDb->query("DELETE FROM `cluster_meta` WHERE `name` = 'root_at'");
 		$this->rSsh->rLog = [];
-		[$rCode, $rOut] = $this->reenrol($rServers, null, self::creds(), false, ['enrolling', 'active'], null, true);
+		[$rCode, $rOut] = $this->reenrol($rServers, null, self::creds(), false, ['enrolling', 'active'], true);
 		$this->assertSame(1, $rCode);
 		$this->assertStringContainsString('no record of when its root last changed', $rOut);
 		$this->assertSame([], $this->rSsh->rLog, 'no node contacted');
@@ -232,10 +227,11 @@ final class ClusterReenrolCommandTest extends TestCase {
 	public function testAFlowThatEnrolsNothingIsAFailure(): void {
 		$rServers = $this->servers();
 		$rOld = $this->enrolled(7);
-		// No xc_agent for the node's arch: provisionCluster returns true without enrolling it.
-		[$rCode, $rOut] = $this->reenrol($rServers, [7], self::creds(), false, [], static fn(string $rArch): ?string => null);
+		// No xc_agent on the node (none from its release): provisionCluster returns true without enrolling it.
+		$this->rSsh->rNodes['10.0.0.7']['agent'] = false;
+		[$rCode, $rOut] = $this->reenrol($rServers, [7], self::creds(), false, []);
 		$this->assertSame(1, $rCode, $rOut);
-		$this->assertStringContainsString('#7 lb-a: failed: No xc_agent for this node (amd64); the node was not re-enrolled and keeps its previous identity', $rOut);
+		$this->assertStringContainsString('#7 lb-a: failed: No xc_agent on the node (Failed to download xc_agent-linux-amd64); the node was not re-enrolled and keeps its previous identity', $rOut);
 		$this->assertSame($rOld['node_uuid'], NodeRegistry::byServer(7)['node_uuid']);
 		$this->assertSame([['ok' => [], 'failed' => [7]]], $this->audit('cluster.reenrol'));
 	}

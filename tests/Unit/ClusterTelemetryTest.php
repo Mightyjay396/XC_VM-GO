@@ -1,7 +1,6 @@
 <?php
 
 use PHPUnit\Framework\TestCase;
-use XcVm\Cli\Commands\WatchdogCommand;
 use XcVm\Core\Cluster\LocalTelemetry;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Config\SettingsManager;
@@ -134,26 +133,9 @@ final class ClusterTelemetryTest extends TestCase {
 		preg_match_all('/\$rJSON\[\'([a-z_]+)\'\]/', $rSource, $rM);
 		$rLegacy = array_values(array_unique($rM[1]));
 		$this->assertContains('network_info', $rLegacy);
-		$rLegacy[] = 'cpu_average_array'; // the watchdog adds these three
+		$rLegacy[] = 'cpu_average_array'; // the watchdog adds these two
 		$rLegacy[] = 'fanout';
-		$rLegacy[] = 'versions';
 		$this->assertSame($rLegacy, array_keys(HeartbeatService::toWatchdogData(self::SAMPLE, [])), 'same keys, same order');
-	}
-
-	/**
-	 * What the node runs of the binaries MAIN may hand it (WatchdogCommand::
-	 * versions) comes along for MAIN's rollout (AgentUpgrades), each value
-	 * version-shaped or null; a sample without it keeps the last one.
-	 */
-	public function testTheNodesVersionsComeAlong(): void {
-		$rData = HeartbeatService::toWatchdogData(self::withLocal(self::SAMPLE['local'] + ['versions' => ['xc_fanout' => '0.14.1', 'xcvm_core' => '2.3.3', 'php' => 'php8.1', 'other' => 'x']]), []);
-		$this->assertSame(['xc_fanout' => '0.14.1', 'xcvm_core' => '2.3.3', 'php' => 'php8.1'], $rData['versions']);
-		$rBad = HeartbeatService::toWatchdogData(self::withLocal(self::SAMPLE['local'] + ['versions' => ['xc_fanout' => '../../x', 'xcvm_core' => ['a'], 'php' => str_repeat('9', 40)]]), []);
-		$this->assertSame(['xc_fanout' => null, 'xcvm_core' => null, 'php' => null], $rBad['versions']);
-		$this->assertSame($rData['versions'], HeartbeatService::toWatchdogData(self::SAMPLE, $rData)['versions'], 'kept from the last sample');
-		$rMine = WatchdogCommand::versions();
-		$this->assertSame(['xc_fanout', 'xcvm_core', 'php'], array_keys($rMine));
-		$this->assertSame('php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION, $rMine['php']);
 	}
 
 	public function testWatchdogDataFromTelemetry(): void {

@@ -2004,7 +2004,7 @@ use XcVm\Domain\Server\ServerRepository;
 
 							<?php
 							$rFfmpegGpuBuilds = FfmpegBinaries::gpuCapable();
-							$rCpuOpts = array_keys(FfmpegBinaries::available()) ?: ["8.0", "7.1", "4.0"];
+							$rCpuOpts = array_keys(FfmpegBinaries::available()) ?: ["8.1", "7.1", "4.0"];
 							if (!empty($rSettings["ffmpeg_cpu"]) && !in_array($rSettings["ffmpeg_cpu"], $rCpuOpts, true)) {
 								$rCpuOpts[] = $rSettings["ffmpeg_cpu"];
 							}
@@ -2304,7 +2304,6 @@ use XcVm\Domain\Server\ServerRepository;
 						['lb_new_node_mode', ['legacy', 'api'], 'Mode of newly installed LBs. api (no database access) is available from the cutover phase.'],
 						['servers_stats_retention_days', 'number', 'Days of servers_stats kept (1-365).'],
 						['cluster_audit_retention_days', 'number', 'Days of cluster audit log kept (1-365).'],
-						['cluster_agent_upgrade_parallel', 'number', 'Nodes updated at once during staged agent/core/fanout updates (1-50).'],
 						['cluster_db_allowlist', 'switch', 'Firewall MariaDB (3306) and Redis (6379) on MAIN: only MAIN, LBs and proxies not yet in cluster mode 2, and the extra list below may connect. Applied within a minute by the root cron; check first with console.php cluster:db-allowlist status.'],
 					];
 					?>

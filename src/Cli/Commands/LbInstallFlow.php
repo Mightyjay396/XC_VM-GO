@@ -324,31 +324,9 @@ class LbInstallFlow {
 		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php status 1');
 		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php startup');
 		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php cron:servers');
-	}
-
-	private static function getDistributionBinaryName(string $rDistID, string $rVersion): ?string {
-		$rMajor = explode('.', $rVersion)[0];
-		switch ($rDistID) {
-			case 'ubuntu':
-				if (in_array($rMajor, ['18', '20', '22', '24'])) {
-					return 'ubuntu_' . $rMajor . '.tar.gz';
-				}
-				break;
-			case 'debian':
-				if (in_array($rMajor, ['12', '13'])) {
-					return 'debian_' . $rMajor . '.tar.gz';
-				}
-				break;
-			case 'rocky':
-			case 'almalinux':
-			case 'rhel':
-			case 'centos':
-				if (in_array($rMajor, ['8', '9'])) {
-					return 'rhel_' . $rMajor . '.tar.gz';
-				}
-				break;
-		}
-		return null;
+		// The node's ffmpeg builds, which no release archive carries: before its
+		// first stream (cron:root_signals keeps them current daily).
+		call_user_func($rRunSSH, $rConn, 'sudo -u xc_vm ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php ffmpeg');
 	}
 
 	/**
@@ -382,7 +360,7 @@ class LbInstallFlow {
 	}
 
 	private static function installDistributionBinaries($rConn, callable $rRunSSH, string $rDistID, string $rVersion): bool {
-		$rBinaryName = self::getDistributionBinaryName($rDistID, $rVersion);
+		$rBinaryName = ReleaseAsset::bundleFor($rDistID, $rVersion);
 		if ($rBinaryName === null) {
 			echo "Unsupported distribution for binaries: {$rDistID} {$rVersion}\n";
 			return false;
@@ -519,11 +497,13 @@ class LbInstallFlow {
 	 * install's verified SSH session. Runs after runStartup(), when /home/xc_vm
 	 * belongs to xc_vm.
 	 *
-	 * With the API disabled, no extension, or no agent binary for the node's
-	 * arch, the node stays legacy (mode 0) and the install goes on: it can be
-	 * enrolled later. Otherwise:
+	 * With the API disabled, no extension, or no agent binary on the node (it
+	 * could not take one from the agent's GitHub release), the node stays
+	 * legacy (mode 0) and the install goes on: it can be enrolled later.
+	 * Otherwise:
 	 *
-	 * 1. push the SHA-256-verified agent from MAIN's cache;
+	 * 1. the node installs the SHA-256-verified agent from its GitHub release
+	 *    itself (`console.php fanout_binary agent`), as it keeps it current;
 	 * 2. `xc_agent keygen` on the node — its private keys never leave it;
 	 * 3. `xc_agent probe` — the node checks MAIN's signed health with the panel
 	 *    key it got over SSH, before any token exists;
@@ -534,10 +514,9 @@ class LbInstallFlow {
 	 * Only a refusal by an available extension, or a node that cannot reach
 	 * MAIN's API, stops the install (status 4).
 	 *
-	 * @param callable|null $rAgentBinary fn(string $arch): ?string local agent path (tests; defaults to AgentBinaryCommand::cached)
-	 * @param bool          $rMarkFailed  Set status 4 on failure (a fresh install); false for `server:enrol` on a live node.
+	 * @param bool $rMarkFailed Set status 4 on failure (a fresh install); false for `server:enrol` on a live node.
 	 */
-	public static function provisionCluster($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?ClusterCrypto $rCrypto = null, ?callable $rAgentBinary = null, bool $rMarkFailed = true, ?bool $rApiMode = null): bool {
+	public static function provisionCluster($rConn, callable $rRunSSH, callable $rSendFileSSH, array $rServers, int $rServerID, $db, ?ClusterCrypto $rCrypto = null, bool $rMarkFailed = true, ?bool $rApiMode = null): bool {
 		$rSettings = SettingsManager::getAll();
 		if (empty($rSettings['cluster_api_enabled'])) {
 			return true;
@@ -565,23 +544,20 @@ class LbInstallFlow {
 		}
 		echo "Enrolling the node in the cluster API\n";
 
-		$rArch = ReleaseAsset::arch((string) call_user_func($rRunSSH, $rConn, 'uname -m')['output']);
-		$rLocal = $rArch === null ? null : call_user_func($rAgentBinary ?? static fn(string $rA) => AgentBinaryCommand::cached($rA), $rArch);
-		if ($rLocal === null) {
-			if ($rApiMode) {
-				return $rFail('No xc_agent for this node (' . ($rArch ?? 'unsupported arch') . '): an API-mode node cannot run without it. Exiting');
-			}
-			echo 'No xc_agent for this node (' . ($rArch ?? 'unsupported arch') . "); the node stays legacy and can be enrolled later\n";
-			return true;
-		}
 		// A re-enrolment replaces the node's identity: stop a running agent (the
 		// supervisor first, so it cannot respawn it) before its state changes.
 		call_user_func($rRunSSH, $rConn, 'sudo pkill -u xc_vm -f ' . escapeshellarg(dirname(self::AGENT_BIN) . '/run.sh') . '; sudo pkill -u xc_vm -x xc_agent; true');
-		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)));
-		if (!call_user_func($rSendFileSSH, $rConn, $rLocal, self::AGENT_BIN, false)) {
-			return $rFail('Failed to upload xc_agent! Exiting');
+		call_user_func($rRunSSH, $rConn, 'sudo mkdir -p ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)) . ' && sudo rm -f ' . escapeshellarg(dirname(self::AGENT_BIN) . '/stopped') . ' && sudo chown -R xc_vm:xc_vm ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)) . ' && sudo chmod 0700 ' . escapeshellarg(dirname(self::AGENT_STATE)));
+		// The node takes the agent from its GitHub release itself, as it keeps it current.
+		$rGot = trim((string) call_user_func($rRunSSH, $rConn, 'sudo ' . PHP_BIN . ' ' . MAIN_HOME . 'console.php fanout_binary agent 2>&1; test -x ' . escapeshellarg(self::AGENT_BIN) . ' && echo AGENT_OK')['output']);
+		if (!str_ends_with($rGot, 'AGENT_OK')) {
+			$rWhy = trim((string) strrchr("\n" . $rGot, "\n")) ?: 'it could not install one';
+			if ($rApiMode) {
+				return $rFail('No xc_agent on the node (' . $rWhy . '): an API-mode node cannot run without it. Exiting');
+			}
+			echo 'No xc_agent on the node (' . $rWhy . "); the node stays legacy and can be enrolled later\n";
+			return true;
 		}
-		call_user_func($rRunSSH, $rConn, 'sudo rm -f ' . escapeshellarg(dirname(self::AGENT_BIN) . '/stopped') . ' && sudo chmod 0755 ' . escapeshellarg(self::AGENT_BIN) . ' && sudo chown -R xc_vm:xc_vm ' . escapeshellarg(dirname(self::AGENT_BIN)) . ' ' . escapeshellarg(dirname(self::AGENT_STATE)) . ' && sudo chmod 0700 ' . escapeshellarg(dirname(self::AGENT_STATE)));
 		$rAgent = 'sudo -u xc_vm ' . escapeshellarg(self::AGENT_BIN);
 
 		$rUuid = self::uuid4();

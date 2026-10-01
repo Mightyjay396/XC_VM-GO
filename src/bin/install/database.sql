@@ -1618,7 +1618,6 @@ CREATE TABLE IF NOT EXISTS `settings` (
   `lb_scan_roots` varchar(1024) DEFAULT '["/home/xc_vm/content","/mnt","/media"]',
   `servers_stats_retention_days` int(11) DEFAULT '30',
   `cluster_audit_retention_days` int(11) DEFAULT '30',
-  `cluster_agent_upgrade_parallel` int(11) DEFAULT '1',
   `cluster_policy_ver` int(11) DEFAULT '1',
   `cluster_legacy_ports` varchar(255) DEFAULT '',
   `cluster_legacy_urls` mediumtext COLLATE utf8_unicode_ci,

@@ -40,7 +40,7 @@ final class ConstantsInitializerTest extends TestCase {
 	public function testAppConfigValues(): void {
 		$cfg = ConstantsInitializer::appConfig();
 
-		$this->assertCount(13, $cfg);
+		$this->assertCount(14, $cfg);
 		// The release commit bumps the version (nightly builds stamp X.Y.Z-dev.N);
 		// the test only pins its shape.
 		$this->assertMatchesRegularExpression('/^\d+\.\d+\.\d+(-dev\.\d+)?$/', $cfg['XC_VM_VERSION']);
@@ -50,6 +50,7 @@ final class ConstantsInitializerTest extends TestCase {
 		$this->assertSame('Vateron-Media', $cfg['GIT_OWNER']);
 		$this->assertSame('XC_VM', $cfg['GIT_REPO_MAIN']);
 		$this->assertSame('XC_VM_Dev', $cfg['GIT_REPO_DEV']);
+		$this->assertSame('XC_VM_FFMPEG', $cfg['GIT_REPO_FFMPEG']);
 		$this->assertSame(3, $cfg['MONITOR_CALLS']);
 	}
 
@@ -73,11 +74,12 @@ final class ConstantsInitializerTest extends TestCase {
 	public function testStatusesAreSequentialFromZero(): void {
 		$statuses = ConstantsInitializer::statuses();
 
-		$this->assertCount(49, $statuses);
+		$this->assertCount(50, $statuses);
 		$this->assertSame(0, $statuses['STATUS_FAILURE']);
 		$this->assertSame(1, $statuses['STATUS_SUCCESS']);
 		$this->assertSame(48, $statuses['STATUS_NO_SOURCE']);
-		$this->assertSame(range(0, 48), array_values($statuses));
+		$this->assertSame(49, $statuses['STATUS_PORT_IN_USE']);
+		$this->assertSame(range(0, 49), array_values($statuses));
 	}
 
 	/**

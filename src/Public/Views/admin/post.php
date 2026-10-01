@@ -356,6 +356,9 @@ if (1 < $rICount) { ?>
 							case "STATUS_INVALID_IP":
 								showError("Please enter a valid IP address / CIDR.");
 								break;
+							case "STATUS_PORT_IN_USE":
+								showError("Another program already uses one of these ports on this server. Please choose another port.");
+								break;
 							case "STATUS_EXISTS_IP":
 								showError("This IP address is already in the database. Please use another.");
 								break;

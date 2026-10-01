@@ -135,6 +135,13 @@ class ServerService {
 		if ((string) $rData['private_ip'] !== '' && !filter_var($rData['private_ip'], FILTER_VALIDATE_IP)) {
 			return ['status' => STATUS_INVALID_IP, 'data' => $rData];
 		}
+		// This machine's own row: a new port another program already holds here
+		// is refused. nginx's reload would fail to bind it and keep running the
+		// old configuration, while the row (and, for MAIN, the nodes'
+		// announcement) named the new one.
+		if ((int) $rServer['id'] === (int) SERVER_ID && self::portsTaken($rServer, array_merge($rPorts['http'], $rPorts['https'], [$rData['rtmp_port']])) !== []) {
+			return ['status' => STATUS_PORT_IN_USE, 'data' => $rData];
+		}
 
 		$rArray['total_services'] = $rData['total_services'];
 		$rPrepare = QueryHelper::prepareArray($rArray);
@@ -191,6 +198,42 @@ class ServerService {
 		}
 
 		return ['status' => STATUS_SUCCESS, 'data' => ['insert_id' => $rInsertID]];
+	}
+
+	/**
+	 * The ports of $rPorts this server does not listen on yet (its row's
+	 * HTTP, HTTPS and RTMP ports) that something on this machine already
+	 * accepts connections on.
+	 *
+	 * @param array<string, mixed> $rServer The row as stored.
+	 * @param array<int|string>    $rPorts  The ports the save would use.
+	 * @param callable|null        $rListening fn(int $port): bool (tests)
+	 * @return list<int>
+	 */
+	public static function portsTaken(array $rServer, array $rPorts, ?callable $rListening = null): array {
+		$rOwn = [];
+		foreach (['http_broadcast_port', 'https_broadcast_port', 'rtmp_port', 'http_ports_add', 'https_ports_add'] as $rKey) {
+			foreach (explode(',', (string) ($rServer[$rKey] ?? '')) as $rPort) {
+				if (is_numeric($rPort)) {
+					$rOwn[] = (int) $rPort;
+				}
+			}
+		}
+		$rListening ??= static function (int $rPort): bool {
+			$rSocket = @fsockopen('127.0.0.1', $rPort, $rErrno, $rError, 0.5);
+			if ($rSocket === false) {
+				return false;
+			}
+			fclose($rSocket);
+			return true;
+		};
+		$rTaken = [];
+		foreach (array_unique(array_map('intval', array_filter($rPorts, 'is_numeric'))) as $rPort) {
+			if ($rPort > 0 && !in_array($rPort, $rOwn, true) && $rListening($rPort)) {
+				$rTaken[] = $rPort;
+			}
+		}
+		return $rTaken;
 	}
 
 	/**

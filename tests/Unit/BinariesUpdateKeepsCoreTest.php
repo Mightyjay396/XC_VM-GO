@@ -100,7 +100,10 @@ final class BinariesUpdateKeepsCoreTest extends TestCase {
 	public function testTheBundleIsNamedAsTheUpdaterNamesIt(): void {
 		$this->assertSame('ubuntu_22.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('ubuntu', '22.04'));
 		$this->assertSame('debian_12.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('debian', '12'));
-		$this->assertSame('rhel_9.tar.gz', \XcVm\Core\Updates\ReleaseAsset::bundleFor('rocky', '9.4'));
+		// Not supported: no bundle (Ubuntu 18, Debian 11, the RHEL family).
+		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('rocky', '9.4'));
+		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('ubuntu', '18.04'));
+		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('debian', '11'));
 		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('ubuntu', '16.04'));
 		$this->assertNull(\XcVm\Core\Updates\ReleaseAsset::bundleFor('arch', ''));
 		$this->assertFalse(\XcVm\Core\Updates\ReleaseAsset::exists('http://127.0.0.1:9/none.tar.gz'), 'nothing there: no update');

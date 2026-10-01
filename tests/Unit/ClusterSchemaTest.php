@@ -111,7 +111,20 @@ final class ClusterSchemaTest extends TestCase {
 		preg_match_all('/ADD COLUMN IF NOT EXISTS (`[a-z_]+` [^\n]*?),?\n/', $this->src('migrations/database/up/028_add_cluster_settings.sql') . "\n", $rM);
 		$this->assertCount(19, $rM[1]);
 		$rSettings = $this->tables($this->src('bin/install/database.sql'))['settings'];
+		// Less what a later migration dropped (058: the binaries rollout's width).
+		$rDropped = [];
+		foreach (glob(dirname(__DIR__, 2) . '/src/migrations/database/up/*.sql') ?: [] as $rFile) {
+			if (preg_match_all('/ALTER TABLE `settings` DROP COLUMN IF EXISTS `([a-z_]+)`/', (string) file_get_contents($rFile), $rD)) {
+				array_push($rDropped, ...$rD[1]);
+			}
+		}
+		$this->assertContains('cluster_agent_upgrade_parallel', $rDropped);
 		foreach ($rM[1] as $rColumn) {
+			preg_match('/^`([a-z_]+)`/', $rColumn, $rName);
+			if (in_array($rName[1], $rDropped, true)) {
+				$this->assertStringNotContainsString('`' . $rName[1] . '`', $rSettings, $rName[1] . ' is dropped');
+				continue;
+			}
 			$this->assertStringContainsString('  ' . rtrim($rColumn, ';') . ',', $rSettings);
 		}
 	}

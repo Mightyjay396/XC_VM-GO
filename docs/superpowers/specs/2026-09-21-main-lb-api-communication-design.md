@@ -373,6 +373,8 @@ Crypto is cheap in both languages: MAIN already does it per PHP request, in tens
 
 ### Packaging and update rules
 
+> **Changed 2026-10-01 (owner's decision):** every node, MAIN included and whatever its mode, keeps `xc_agent`, `xc_fanout` and `xcvm_core` current from their GitHub releases itself (`fanout_binary`, `xcvm_core`, hourly). MAIN pushes none of them, and there is no staged rollout. The **Updates** and **Staged rollout** rules below are superseded; see ADR 0004, "Binaries from GitHub on every node".
+
 - **Asset.** Built from `XC_VM_Fanout/cmd/xc_agent` and released as its own asset, `xc_agent-linux-<arch>`, with a version sidecar.
 - **Install.** The binary lives at `bin/xc_agent/xc_agent`. Its keepalive, `bin/xc_agent/run.sh` (flock plus a respawn loop), starts from `boot()` in `src/service`.
 - **Updates.** On enrolled nodes, only through the signed `node.root agent_binary{version, sha256}` command, never the hourly self-heal. The version is pinned to MAIN's release via `agent_version_expected` in `hello`.

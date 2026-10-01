@@ -172,12 +172,12 @@ final class ApiModeInstallTest extends TestCase {
 		$this->assertStringContainsString('$rApiMode = $rType == 2 && LbInstallFlow::installsInApiMode(SettingsManager::getAll(), $rServerID);', $rInstall);
 		$this->assertStringContainsString('$this->finalizeHostAfterRuntime($rConn, $rRunSSH, $rHost, !$rApiMode);', $rInstall);
 		$this->assertStringContainsString('provisionConfig($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, $rApiMode)', $rInstall);
-		$this->assertStringContainsString('provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, null, null, true, $rApiMode)', $rInstall);
+		$this->assertStringContainsString('provisionCluster($rConn, $rRunSSH, $rSendFileSSH, $rServers, $rServerID, $db, null, true, $rApiMode)', $rInstall);
 		$this->assertMatchesRegularExpression('/if \(\$rGrant\) \{\s*BackupService::grantPrivileges\(\$rHost\);/', $rInstall);
 
 		// Without the cluster API's crypto an API-mode install fails rather than "stays legacy".
 		ob_start();
-		$rOk = LbInstallFlow::provisionCluster(null, static fn(): array => ['output' => '', 'error' => ''], static fn(): bool => true, [], self::SID, $this->rDb, null, static fn(): ?string => null);
+		$rOk = LbInstallFlow::provisionCluster(null, static fn(): array => ['output' => '', 'error' => ''], static fn(): bool => true, [], self::SID, $this->rDb, null);
 		ob_end_clean();
 		$this->assertFalse($rOk);
 		$this->assertSame(4, $this->serverStatus());

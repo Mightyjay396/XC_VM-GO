@@ -22,6 +22,22 @@
 
 Sections below keep their original text as the record of the cutover; where they say "no flag", "legacy deleted" or "stop the daemon to fall back", read this amendment instead.
 
+## Load-balancer validation (2026-10-01)
+
+C4 and the kinds Phase D had no canary for, run on the test panel's load balancer (`tests/e2e/tests/admin/lb-delivery-kinds.spec.ts`).
+- **The setup:** a channel of each kind on the load balancer alone, or for loopback under MAIN, on a live source. Each viewer comes through MAIN, which redirects it to the LB. The viewer's stream must keep flowing, and the LB's daemon must count it (its watchdog data, from the agent's telemetry).
+- **Results.** All five pass:
+  - **C4**, a plain channel;
+  - a **direct proxy**;
+  - the plain channel played by a **restreamer** line;
+  - an **on-demand LLOD v3** channel, started by its viewer;
+  - a **loopback**, the LB's copy pulled from MAIN's.
+- **What it took to get there.** At first, every enrolled LB served its live viewers through the legacy path, because the LB read as unlicensed. `xcvm_core` gives a node its licence from the cluster lease, and the panel handed the extension that lease only with `lb_lease_fence` on (ADR 0004, drills). With that fixed, the daemon served all five.
+
+**Found, not fixed.**
+- **The native remuxer races through a finite source.** A daemon-run channel on the native remuxer, fed a VOD playlist (`EXT-X-ENDLIST`), reads it at about 300× instead of in real time. It reaches the end in seconds and restarts, over and over, so viewers mostly get not-on-air. ffmpeg paced the same source in real time. Live sources pace themselves; a "channel" made from a VOD playlist does not.
+- **The admin list shows a daemon-run direct proxy as "Proxy Down"** (status 7): its row never gets a producer pid, because the daemon owns the pull. Its row offers no stop either. Delivery is unaffected.
+
 ## Progress snapshot (2026-08-17)
 
 Verified against the code, not just this doc:
@@ -29,8 +45,8 @@ Verified against the code, not just this doc:
 - **Phase 0** ✅ dropped (no `live_fanout` flag; switch = daemon reachability).
 - **Phase A** ✅ done — A1 ingest, A2 `StreamProcess` tee, A3 `live.php` routing, LLOD v3 push.
 - **Phase B** ✅ done — daemon-served HLS incl. AES-128 encrypted.
-- **Phase C** 🟢 nearly complete — off-air (probe) ✅, disconnect accounting ✅ *(`fanout_sync` self-respawn fixed 2026-08-17)*, C1a cold-start ✅, C2 adaptive ✅, C3 restreamer-prebuffer ✅, C-ops re-feed ✅, C5 off-air-in-auth closed (already covered). **C4 (redirect-to-LB) remains — deferred, needs an LB node**; **per-viewer `divergence`/bitrate telemetry (P4 slice 1) 🟢 done** (daemon `GET /rates` → `fanout_sync` writes `lines_divergence`; daemon 0.8.0 released as latest 2026-08-18 — nodes auto-update via `fanout_binary`. **Panel side still needs to reach prod:** the `FanoutClient::connectionRates` + `FanoutSyncCommand::writeDivergence` changes live on `feature/tmpfs-free-streaming` and must land in the panel release, else the daemon serves `/rates` but nothing consumes it — see the Phase C breakdown). See the Phase C task breakdown at the end.
-- **Phase D** 🟢 done for the canary's available types — coverage confirmed (llod=0 verified daemon-fed + self-healing; llod=1 covered by construction). Proxy/restreamer/llod=2 lack a canary representative; their full validation rides with C4.
+- **Phase C** 🟢 nearly complete — off-air (probe) ✅, disconnect accounting ✅ *(`fanout_sync` self-respawn fixed 2026-08-17)*, C1a cold-start ✅, C2 adaptive ✅, C3 restreamer-prebuffer ✅, C-ops re-feed ✅, C5 off-air-in-auth closed (already covered). **C4 (redirect-to-LB) — validated on an LB 2026-10-01** (see "Load-balancer validation"); **per-viewer `divergence`/bitrate telemetry (P4 slice 1) 🟢 done** (daemon `GET /rates` → `fanout_sync` writes `lines_divergence`; daemon 0.8.0 released as latest 2026-08-18 — nodes auto-update via `fanout_binary`. The panel side, `FanoutClient::connectionRates` + `FanoutSyncCommand::writeDivergence`, is on `main` (checked 2026-10-01), so `/rates` is consumed — see the Phase C breakdown). See the Phase C task breakdown at the end.
+- **Phase D** 🟢 done for the canary's available types — coverage confirmed (llod=0 verified daemon-fed + self-healing; llod=1 covered by construction). Proxy/restreamer/llod=2 lack a canary representative; their full validation rides with C4. *(Done on a load balancer 2026-10-01: see "Load-balancer validation".)*
 - **Phase E** 🟡 E1 done + dead-code sweep (removed the never-matching `XC_VMProxy[]` process checks). **E2/E3 deliberately GATED** — the `live.php` chase-read and `generateHLS`/`segment.php` serving are the active daemon-reachability fallback (daemon-down, re-feed windows, unvalidated proxy/restreamer/llod=2 types); deleting them removes the rollback. E4 (`CONS_TMP_PATH`) intentionally **retained** (not dead).
 - **Phase F** ⛔ **cancelled** per Danil: on-disk HLS stays (timeshift/thumbnail/analyse depend on `<id>_*.ts`); the tee's on-disk HLS slave and the streaming-tmpfs drop are off the table. The daemon is the *delivery* layer; on-disk artifacts remain for non-delivery consumers.
 - **Phase G (LB)** 🟢 install productionised (2026-08-18) — daemon proven functional on the first LB (ingest→fan-out→in-RAM HLS); **install/update wired**: daemon **0.8.0 released as latest**, `UpdateCommand` + a `RootSignals` hourly self-heal run `fanout_binary`, `service`'s keepalive is unconditional so a fresh node/LB self-installs the daemon. **Root-cause fixed:** the LB build overrides nginx.conf with `lb_configs/nginx.conf`, which was stale and lacked **all** streaming X-Accel locations (`/xc_hls/`, `/xc_fanout/`, `/xc_fanout_hls/`) — so a stock LB served neither daemon fan-out nor plain HLS; the three locations are now in `lb_configs/nginx.conf` (rebuilt archive verified). `libogg0` is already in `LbInstallFlow::getPackages` for every distro. **Only open item:** a real-source stream-to-LB e2e (needs a source reachable from the LB IP + a `streams_servers` assignment; the earlier attempt failed on a geo/source defect, not the daemon).

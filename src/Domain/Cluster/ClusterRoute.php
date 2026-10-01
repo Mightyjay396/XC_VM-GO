@@ -430,18 +430,14 @@ final class ClusterRoute {
 	 * node by cluster:root after it checks the signature against its
 	 * root-owned pin of the panel key. Only for nodes that report that pin.
 	 * An action that needs a file of MAIN's carries its artefact grant
-	 * (ArtefactGrants::forRoot); one that cannot have it is not sent.
+	 * (ArtefactGrants::forRoot).
 	 *
 	 * @param array<string, mixed> $rPayload {action, …} as the signals row carried it
 	 * @return array{0: bool, 1: bool}
 	 */
 	public static function root(int $rServerID, array $rPayload): array {
 		return self::command($rServerID, 'node.root', static function (ClusterCrypto $rCrypto) use ($rServerID, $rPayload): bool {
-			$rPayload = ArtefactGrants::forRoot($rServerID, $rPayload);
-			if ($rPayload === null) {
-				return false;
-			}
-			CommandBus::enqueue($rCrypto, $rServerID, 'node.root', $rPayload);
+			CommandBus::enqueue($rCrypto, $rServerID, 'node.root', ArtefactGrants::forRoot($rServerID, $rPayload));
 			return true;
 		}, false, true);
 	}

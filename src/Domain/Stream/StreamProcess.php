@@ -928,7 +928,7 @@ class StreamProcess {
 					$rFFMPEG_CPU = FFMPEG_BIN_40;
 				}
 
-				$rNoFix = ($rFFMPEG_CPU == FFMPEG_BIN_40 ? '-nofix_dts' : '');
+				$rNoFix = ($rFFMPEG_CPU == FFMPEG_BIN_40 && FfmpegPaths::fixDts() ? '-nofix_dts' : '');
 				$rGenPTS = $rNoFix . ' -start_at_zero -copyts -vsync 0 -correct_ts_overflow 0 -avoid_negative_ts disabled -max_interleave_delta 0';
 			}
 

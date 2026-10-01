@@ -83,10 +83,9 @@ class ServerEnrolCommand implements CommandInterface {
 	 *
 	 * @param array<int, array<string, mixed>>           $rServers     ServerRepository::getAll(true)
 	 * @param array{username: string, password: string} $rCred
-	 * @param callable|null                              $rAgentBinary As for provisionCluster (tests).
 	 * @return string|null Null once the node is enrolled; otherwise why not.
 	 */
-	public static function enrol(array $rServers, int $rServerID, int $rPort, array $rCred, ?string $rExpected, ClusterCrypto $rCrypto, ?SshSession $rSsh = null, ?callable $rAgentBinary = null): ?string {
+	public static function enrol(array $rServers, int $rServerID, int $rPort, array $rCred, ?string $rExpected, ClusterCrypto $rCrypto, ?SshSession $rSsh = null): ?string {
 		$rFail = static function (string $rWhy): string {
 			echo $rWhy . ". Exiting\n";
 			return $rWhy;
@@ -148,7 +147,6 @@ class ServerEnrolCommand implements CommandInterface {
 					$rServerID,
 					self::db(),
 					$rCrypto,
-					$rAgentBinary,
 					false
 				);
 			} finally {

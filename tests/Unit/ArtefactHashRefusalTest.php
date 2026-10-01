@@ -3,15 +3,16 @@
 use PHPUnit\Framework\TestCase;
 use XcVm\Cli\Commands\ClusterExecCommand;
 use XcVm\Cli\Commands\ClusterRootCommand;
+use XcVm\Cli\Commands\FanoutBinaryCommand;
 use XcVm\Cli\Commands\ModuleInstallCommand;
 use XcVm\Cli\CronJobs\RootSignalsCronJob;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\Crypto\Enc;
 use XcVm\Core\Cluster\EventSpool;
+use XcVm\Core\Cluster\NodeActions;
 use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\RootPin;
 use XcVm\Core\Logging\FileLogger;
-use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Streaming\Delivery\OffAirHandler;
 use XcVm\Tests\Support\AgentUser;
 use XcVm\Tests\Support\FakeClusterCrypto;
@@ -127,15 +128,6 @@ final class ArtefactHashRefusalTest extends TestCase {
 	/** An xc_agent that starts: its `version` prints one, as the real one does. */
 	private function runnableAgent(string $rVersion = '1.5.0'): string {
 		return "#!/bin/sh\necho " . $rVersion . "\n# " . bin2hex(random_bytes(64)) . "\n";
-	}
-
-	/** This machine's release arch, as the node's root checks it. */
-	private function arch(): string {
-		$rArch = ReleaseAsset::arch(php_uname('m'));
-		if ($rArch === null) {
-			$this->markTestSkipped('no release arch for ' . php_uname('m'));
-		}
-		return $rArch;
 	}
 
 	/** Run an action as cluster:root does (ClusterRootCommand::runAction), on a node with no database to reach. */
@@ -261,7 +253,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 			'an empty artefact' => ['artefact' => ['size' => 0] + $rGood],
 			'a malformed hash' => ['artefact' => ['sha256' => 'abc'] + $rGood],
 			'no expiry' => ['artefact' => ['exp' => null] + $rGood],
-			'a root artefact' => ['artefact' => ['id' => 'agent/amd64'] + $rGood],
+			'a root artefact' => ['artefact' => ['id' => 'module/radio/1.0'] + $rGood],
 		] as $rWhy => $rArgs) {
 			$rOne = $this->command(1, 'artefact.fetch', $rArgs);
 			$this->download($rOne['cmd'], $rBytes);
@@ -282,13 +274,13 @@ final class ArtefactHashRefusalTest extends TestCase {
 	}
 
 	/**
-	 * The happy path of a binary: root copies the agent's download into its
-	 * own stage, checks it there, and only then runs the action, which takes
-	 * the staged copy (the pinned agent, installed where run.sh starts it).
+	 * The happy path of a root artefact: root copies the agent's download
+	 * into its own stage, checks it there, and only then runs the action,
+	 * which takes the staged copy.
 	 */
-	public function testRootStagesAndChecksABinaryBeforeTheActionRuns(): void {
-		$rBytes = $this->runnableAgent();
-		$rOne = $this->command(3, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+	public function testRootStagesAndChecksAnArtefactBeforeTheActionRuns(): void {
+		$rBytes = 'PK' . random_bytes(3000);
+		$rOne = $this->command(3, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', $rBytes)]);
 		$rDownload = $this->download($rOne['cmd'], $rBytes);
 		$this->inbox(3, $rOne['wire']);
 		$rSeen = [];
@@ -301,33 +293,23 @@ final class ArtefactHashRefusalTest extends TestCase {
 			$this->assertSame(0600, fileperms($rStaged['path']) & 0777);
 			$this->assertSame(0700, fileperms($this->rBase . 'etc/stage') & 0777);
 			$this->assertFileDoesNotExist($rDownload, 'the agent\'s copy is gone before the action runs');
-			$this->assertNull(ArtefactStage::installAgent($rStaged, $this->rBase . 'bin/xc_agent/xc_agent'));
 			return 'installed';
 		};
 		$rDone = ClusterRootCommand::drain($rRun, 1800000000);
-		$this->assertSame('agent_binary', $rSeen[0] ?? null, json_encode($this->done(3)));
-		$this->assertSame([['seq' => 3, 'ok' => true, 'detail' => 'agent_binary']], $rDone);
+		$this->assertSame('install_module', $rSeen[0] ?? null, json_encode($this->done(3)));
+		$this->assertSame('module/radio/1.0', $rSeen[2] ?? null);
+		$this->assertSame([['seq' => 3, 'ok' => true, 'detail' => 'install_module']], $rDone);
 		$this->assertSame(['ok' => true, 'result' => 'installed'], $this->done(3));
 		$this->assertNull(ArtefactStage::current(), 'only while its action runs');
 		$this->assertSame([], $this->staged(), 'the staged copy goes once the action ran');
-		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
-		$this->assertSame($rBytes, file_get_contents($rAgent));
-		$this->assertSame(0755, fileperms($rAgent) & 0777);
-		if (AgentUser::root()) {
-			$this->assertSame(AgentUser::UID, fileowner($rAgent), 'installed as the agent\'s user');
-		}
-		$this->assertSame([], glob($this->rBase . 'bin/xc_agent/.*.new') ?: []);
-		// The binary it replaced stays beside it, and the new one is on trial (run.sh).
-		$this->assertSame('the running agent', file_get_contents($rAgent . ArtefactStage::PREV));
-		$this->assertMatchesRegularExpression('/^\d+ 0$/', trim((string) file_get_contents($rAgent . ArtefactStage::TRIAL)));
 	}
 
-	/** ArtefactHashRefusal: a tampered binary is refused before its action runs, the refusal audited. */
-	public function testRootRefusesATamperedBinaryAndAuditsIt(): void {
+	/** ArtefactHashRefusal: a tampered archive is refused before its action runs, the refusal audited. */
+	public function testRootRefusesATamperedArtefactAndAuditsIt(): void {
 		$rBytes = random_bytes(20000);
 		$rTampered = $rBytes;
 		$rTampered[100] = chr(ord($rTampered[100]) ^ 1);
-		$rOne = $this->command(4, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rOne = $this->command(4, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', $rBytes)]);
 		$rDownload = $this->download($rOne['cmd'], $rTampered);
 		$this->inbox(4, $rOne['wire']);
 		$rRan = false;
@@ -339,25 +321,24 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$this->assertFalse($rDone[0]['ok']);
 		$rResult = $this->done(4);
 		$this->assertFalse($rResult['ok']);
-		$this->assertStringStartsWith('refused by root: artefact refused: agent/amd64', $rResult['result']);
+		$this->assertStringStartsWith('refused by root: artefact refused: module/radio/1.0', $rResult['result']);
 		$this->assertStringContainsString('sha256 mismatch', $rResult['result']);
 		$this->assertSame([], $this->staged(), 'nothing left staged');
 		$this->assertFileDoesNotExist($rDownload);
-		$this->assertSame('the running agent', file_get_contents($this->rBase . 'bin/xc_agent/xc_agent'));
 		$this->assertSame(4, RootPin::highWater(), 'spent: a replay is refused too');
 		$rLines = $this->audited();
 		$this->assertCount(1, $rLines);
 		$this->assertSame('log.syslog:ARTEFACT', $rLines[0][0]);
-		$this->assertStringContainsString('agent/amd64', $rLines[0][1]);
+		$this->assertStringContainsString('module/radio/1.0', $rLines[0][1]);
 		$this->assertStringContainsString($rOne['cmd']['cmd_id'], $rLines[0][1]);
 	}
 
 	/** Root's stage is its own: closed to others when it finds it open, and never a link. */
 	public function testRootsStageIsItsOwn(): void {
-		$rBytes = 'the pinned agent';
+		$rBytes = 'PK the archive';
 		mkdir($this->rBase . 'etc/stage', 0755);
 		chmod($this->rBase . 'etc/stage', 0755);
-		$rOne = $this->command(7, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rOne = $this->command(7, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', $rBytes)]);
 		$this->download($rOne['cmd'], $rBytes);
 		$this->inbox(7, $rOne['wire']);
 		ClusterRootCommand::drain(static fn(): string => 'ok', 1800000000);
@@ -368,7 +349,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 		rmdir($this->rBase . 'etc/stage');
 		mkdir($this->rBase . 'elsewhere', 0700);
 		symlink($this->rBase . 'elsewhere', $this->rBase . 'etc/stage');
-		$rTwo = $this->command(8, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rTwo = $this->command(8, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', $rBytes)]);
 		$this->download($rTwo['cmd'], $rBytes);
 		$this->inbox(8, $rTwo['wire']);
 		$rRan = false;
@@ -386,7 +367,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$rSecret = $this->rBase . 'root_only';
 		file_put_contents($rSecret, 'root only');
 		chmod($rSecret, 0600);
-		$rOne = $this->command(5, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', 'root only')]);
+		$rOne = $this->command(5, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', 'root only')]);
 		symlink($rSecret, $this->rBase . 'config/cluster/artefacts/' . $rOne['cmd']['cmd_id']);
 		$this->inbox(5, $rOne['wire']);
 		$rRan = false;
@@ -417,15 +398,13 @@ final class ArtefactHashRefusalTest extends TestCase {
 				throw new \RuntimeException('no database here: ' . $rQuery);
 			}
 		};
-		ob_start();
-		(new RootSignalsCronJob())->executeAction(['action' => 'agent_binary', 'arch' => 'amd64', 'artefact_path' => $this->rBase . 'bin/xc_agent/xc_agent'], [], $rDb);
-		$rOut = (string) ob_get_clean();
-		$this->assertStringContainsString('refused', $rOut, 'not staged by cluster:root: a signals row, or a payload naming a path');
-		$this->assertSame('the running agent', file_get_contents($this->rBase . 'bin/xc_agent/xc_agent'));
-		foreach ([['action' => 'fanout_binary', 'arch' => 'amd64', 'artefact_path' => '/tmp/x'], ['action' => 'xcvm_core', 'group' => 'php8.1', 'artefact_path' => '/tmp/x']] as $rAction) {
+		// The binaries an older MAIN pushed: no action of root's installs them (every node takes them from GitHub).
+		foreach ([['action' => 'agent_binary', 'arch' => 'amd64', 'artefact_path' => $this->rBase . 'etc/x'], ['action' => 'fanout_binary', 'arch' => 'amd64'], ['action' => 'xcvm_core', 'group' => 'php8.1']] as $rAction) {
+			$this->assertNotContains($rAction['action'], NodeActions::ROOT_ACTIONS);
 			ob_start();
 			(new RootSignalsCronJob())->executeAction($rAction, [], $rDb);
-			$this->assertStringContainsString('refused: no', (string) ob_get_clean(), $rAction['action'] . ': only root\'s staged copy');
+			ob_end_clean();
+			$this->assertSame('the running agent', file_get_contents($this->rBase . 'bin/xc_agent/xc_agent'), $rAction['action']);
 		}
 
 		// module:install's archive: only root's stage, and only the grant's bytes.
@@ -460,6 +439,14 @@ final class ArtefactHashRefusalTest extends TestCase {
 		return ['path' => $rPath, 'grant' => $rGrant];
 	}
 
+	/** A release asset root downloaded and verified (as fanout_binary hands it to installAgent): its path, size and SHA-256. */
+	private function asset(string $rBytes): array {
+		$rPath = $this->rBase . 'etc/asset_' . bin2hex(random_bytes(4));
+		file_put_contents($rPath, $rBytes);
+		chmod($rPath, 0600);
+		return ['path' => $rPath, 'grant' => ['size' => strlen($rBytes), 'sha256' => hash('sha256', $rBytes)]];
+	}
+
 	/**
 	 * An agent whose `version` says `features: reached` is on trial for
 	 * reaching MAIN (run.sh's reach check); one that does not is judged by its
@@ -469,26 +456,26 @@ final class ArtefactHashRefusalTest extends TestCase {
 	public function testTheTrialAsksReachOfAnAgentThatSaysItAndPrevStaysTheLastProvenOne(): void {
 		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
 		$rReaching = "#!/bin/sh\necho 1.6.0\necho 'features: reached'\n# " . bin2hex(random_bytes(64)) . "\n";
-		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rReaching), $rAgent));
+		$this->assertNull(ArtefactStage::installAgent($this->asset($rReaching), $rAgent));
 		$this->assertMatchesRegularExpression('/^\d+ 0 reach$/', trim((string) file_get_contents($rAgent . ArtefactStage::TRIAL)));
 		$this->assertSame('the running agent', file_get_contents($rAgent . ArtefactStage::PREV));
 
 		// Another install while 1.6.0 is still on trial: it never proved itself.
 		$rOlder = $this->runnableAgent('1.7.0');
-		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rOlder), $rAgent));
+		$this->assertNull(ArtefactStage::installAgent($this->asset($rOlder), $rAgent));
 		$this->assertSame('the running agent', file_get_contents($rAgent . ArtefactStage::PREV), 'the last proven binary stays');
 		$this->assertMatchesRegularExpression('/^\d+ 0$/', trim((string) file_get_contents($rAgent . ArtefactStage::TRIAL)), 'no reach check for an agent that does not say it');
 
 		// run.sh ended 1.7.0's trial: the next install keeps it.
 		unlink($rAgent . ArtefactStage::TRIAL);
-		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $this->runnableAgent('1.8.0')), $rAgent));
+		$this->assertNull(ArtefactStage::installAgent($this->asset($this->runnableAgent('1.8.0')), $rAgent));
 		$this->assertSame($rOlder, file_get_contents($rAgent . ArtefactStage::PREV));
 	}
 
 	/** A binary that does not start on this node is never put where run.sh would restart it every 2 s. */
 	public function testAnAgentThatDoesNotRunIsNeverInstalled(): void {
 		$rBytes = random_bytes(4000);
-		$rStaged = $this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes);
+		$rStaged = $this->asset($rBytes);
 		$rWhy = ArtefactStage::installAgent($rStaged, $this->rBase . 'bin/xc_agent/xc_agent');
 		$this->assertIsString($rWhy);
 		$this->assertStringContainsString('does not run on this node', $rWhy);
@@ -510,7 +497,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 		// Records who ran it and with what, NUL-separated (the path holds a newline).
 		$rBytes = "#!/bin/sh\nprintf '%s\\0' \"\$(id -u)\" \"\$#\" \"\$0\" \"\$@\" > '" . $rRecord . "'\necho 1.5.0\n";
 		AgentUser::own($this->rBase . 'bin', $this->rBase . 'logs');
-		$rStaged = $this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes);
+		$rStaged = $this->asset($rBytes);
 		$this->assertNull(ArtefactStage::installAgent($rStaged, $rDir . 'xc_agent'));
 		$this->assertSame($rBytes, file_get_contents($rDir . 'xc_agent'));
 		$rRan = explode("\0", rtrim((string) file_get_contents($rRecord), "\0"));
@@ -531,54 +518,62 @@ final class ArtefactHashRefusalTest extends TestCase {
 			'a blank first line' => "#!/bin/sh\necho\necho 1.5.0\n",
 			'its line on stderr' => "#!/bin/sh\necho 1.5.0 >&2\n",
 		] as $rWhy => $rBytes) {
-			$rStaged = $this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes);
+			$rStaged = $this->asset($rBytes);
 			$this->assertStringContainsString('does not run on this node', (string) ArtefactStage::installAgent($rStaged, $rAgent), $rWhy);
 			$this->assertSame('the running agent', file_get_contents($rAgent), $rWhy);
 		}
 		// 1 MiB to stderr first, then 1 MiB to stdout after its line: head's
 		// status (a SIGPIPE, a timeout) would be the script's.
 		$rBytes = "#!/bin/sh\necho 1.5.0\nhead -c 1048576 /dev/zero >&2\nhead -c 1048576 /dev/zero\n";
-		$this->assertNull(ArtefactStage::installAgent($this->stagedCopy('agent/amd64', 'xc_agent-linux-amd64', $rBytes), $rAgent));
+		$this->assertNull(ArtefactStage::installAgent($this->asset($rBytes), $rAgent));
 		$this->assertSame($rBytes, file_get_contents($rAgent));
 	}
 
-	/** agent_binary installs only an xc_agent of this node's arch, then has run.sh restart the agent after its ack. */
-	public function testAgentBinaryInstallsOnlyThisNodesArch(): void {
-		$rArch = $this->arch();
-		$rOther = $rArch === 'amd64' ? 'arm64' : 'amd64';
-		$rBytes = $this->runnableAgent();
+	/**
+	 * Where no agent runs to judge it (a node not enrolled yet), the binary
+	 * is installed without a trial: one left for run.sh would be judged at the
+	 * node's enrolment, long past its install, and rolled back.
+	 */
+	public function testAnAgentInstalledWhereNoneRunsIsNotOnTrial(): void {
 		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
-		$rRuns = [];
-		RootSignalsCronJob::useRunner(static function (array $rArgv) use (&$rRuns): array {
-			$rRuns[] = $rArgv;
-			return [0, ''];
-		});
-		foreach ([
-			'another arch' => ['agent/' . $rOther, $rOther, 'not this node\'s arch'],
-			'a payload for another arch' => ['agent/' . $rArch, $rOther, 'not this node\'s arch'],
-			'a module\'s archive' => ['module/radio/1.0', $rArch, 'not an xc_agent binary'],
-		] as $rWhy => [$rId, $rPayloadArch, $rSays]) {
-			$rStaged = $this->stagedCopy($rId, 'xc_agent-linux-x', $rBytes);
-			try {
-				ArtefactStage::withStaged($rStaged, fn() => $this->runAction(['action' => 'agent_binary', 'arch' => $rPayloadArch, 'version' => '1.5.0']));
-				$this->fail($rWhy . ': installed');
-			} catch (\RuntimeException $rE) {
-				$this->assertStringStartsWith('artefact refused: ' . $rId . ' ', $rE->getMessage(), $rWhy);
-				$this->assertStringContainsString($rSays, $rE->getMessage(), $rWhy);
-			}
-			$this->assertSame('the running agent', file_get_contents($rAgent), $rWhy);
-		}
-		$this->assertSame([], $rRuns, 'nothing restarted');
-		$this->assertCount(3, $this->audited(), 'each refusal audited');
-
-		// This node's arch: installed from root's copy, the agent restarted after its ack.
-		$rStaged = $this->stagedCopy('agent/' . $rArch, 'xc_agent-linux-' . $rArch, $rBytes);
-		$rOut = ArtefactStage::withStaged($rStaged, fn() => $this->runAction(['action' => 'agent_binary', 'arch' => $rArch, 'version' => '1.5.0']));
-		$this->assertStringContainsString('xc_agent installed', $rOut);
+		file_put_contents($rAgent . ArtefactStage::TRIAL, "1 0 reach\n");
+		$rBytes = $this->runnableAgent('1.6.0');
+		$this->assertNull(ArtefactStage::installAgent($this->asset($rBytes), $rAgent, false));
 		$this->assertSame($rBytes, file_get_contents($rAgent));
-		// In the background, after the ack: the only shell left is this
-		// constant script, which carries nothing of the command's.
-		$this->assertSame([['/bin/sh', '-c', '(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &']], $rRuns);
+		$this->assertFileDoesNotExist($rAgent . ArtefactStage::TRIAL, 'a stale trial goes too');
+		$this->assertFileDoesNotExist($rAgent . ArtefactStage::PREV);
+	}
+
+	/**
+	 * fanout_binary keeps the agent at its release's version: nothing is
+	 * fetched while it runs that version, nor for a version it already tried
+	 * here that did not stay (run.sh put the previous one back), until a
+	 * newer one is out or `force` asks.
+	 */
+	public function testTheAgentFromItsReleaseIsFetchedOnlyWhenNewAndNotTriedHere(): void {
+		$rAgent = $this->rBase . 'bin/xc_agent/xc_agent';
+		file_put_contents($rAgent, $this->runnableAgent('v1.5.0'));
+		chmod($rAgent, 0755);
+		AgentUser::own($this->rBase . 'bin');
+		$this->assertSame('1.5.0', ArtefactStage::agentVersion());
+		// No release reachable: a fetch would fail, so only a skip succeeds.
+		$rNowhere = 'https://127.0.0.1:1/';
+		ob_start();
+		$this->assertTrue(FanoutBinaryCommand::agent($rNowhere, 'amd64', '1.5.0', false));
+		$this->assertStringContainsString('up to date (1.5.0)', (string) ob_get_clean());
+
+		file_put_contents($this->rBase . 'bin/xc_agent/' . FanoutBinaryCommand::AGENT_TRIED, "1.6.0\n");
+		ob_start();
+		$this->assertTrue(FanoutBinaryCommand::agent($rNowhere, 'amd64', '1.6.0', false));
+		$this->assertStringContainsString('1.6.0 did not stay on this node', (string) ob_get_clean());
+
+		foreach (['a newer release' => ['1.7.0', false], 'force' => ['1.6.0', true]] as $rWhy => [$rLatest, $rForce]) {
+			ob_start();
+			$this->assertFalse(FanoutBinaryCommand::agent($rNowhere, 'amd64', $rLatest, $rForce), $rWhy);
+			$this->assertStringContainsString('Failed to download xc_agent-linux-amd64', (string) ob_get_clean(), $rWhy . ': fetched');
+		}
+		$this->assertSame("1.6.0\n", file_get_contents($this->rBase . 'bin/xc_agent/' . FanoutBinaryCommand::AGENT_TRIED), 'a failed download is not a try');
+		$this->assertSame('1.5.0', ArtefactStage::agentVersion());
 	}
 
 	/** Root's stage is trusted only while it is root's: one the agent's user owns (and could swap a checked copy in) is refused. */
@@ -588,8 +583,8 @@ final class ArtefactHashRefusalTest extends TestCase {
 		}
 		mkdir($this->rBase . 'etc/stage', 0700);
 		AgentUser::own($this->rBase . 'etc/stage');
-		$rBytes = $this->runnableAgent();
-		$rOne = $this->command(9, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rBytes = 'PK the archive';
+		$rOne = $this->command(9, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', $rBytes)]);
 		$rDownload = $this->download($rOne['cmd'], $rBytes);
 		$this->inbox(9, $rOne['wire']);
 		$rRan = false;
@@ -612,7 +607,7 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$rSecret = $this->rBase . 'root_only';
 		file_put_contents($rSecret, $rBytes);
 		chmod($rSecret, 0600);
-		$rOne = $this->command(10, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rOne = $this->command(10, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', $rBytes)]);
 		$rDownload = $this->rBase . 'config/cluster/artefacts/' . $rOne['cmd']['cmd_id'];
 		// A hard link: lstat sees a regular file, so only the rights stop it.
 		$this->assertTrue(link($rSecret, $rDownload));
@@ -802,10 +797,10 @@ final class ArtefactHashRefusalTest extends TestCase {
 	 * as `artefact.refused` (ArtefactGrants::acked).
 	 */
 	public function testARootRefusalReachesTheAgentsAck(): void {
-		$rBytes = $this->runnableAgent();
+		$rBytes = 'PK' . random_bytes(3000);
 		$rTampered = $rBytes;
 		$rTampered[3] = 'X';
-		$rOne = $this->command(11, 'node.root', ['action' => 'agent_binary', 'arch' => 'amd64', 'version' => '1.5.0', 'artefact' => $this->grant('agent/amd64', 'xc_agent-linux-amd64', $rBytes)]);
+		$rOne = $this->command(11, 'node.root', ['action' => 'install_module', 'source' => 'local', 'name' => 'radio', 'version' => '1.0', 'artefact' => $this->grant('module/radio/1.0', 'radio_1.0.zip', $rBytes)]);
 		$this->download($rOne['cmd'], $rTampered);
 		$rScript = $this->rBase . 'exec.php';
 		file_put_contents($rScript, "<?php\n"
@@ -827,6 +822,6 @@ final class ArtefactHashRefusalTest extends TestCase {
 		$rCode = proc_close($rProc);
 		$this->assertSame(1, $rCode, $rStdout . $rStderr);
 		$rResult = $rCode === 0 ? $rStdout : 'cluster:exec: exit status ' . $rCode . ': ' . trim($rStderr);
-		$this->assertStringStartsWith('cluster:exec: exit status 1: cluster:exec: refused by root: artefact refused: agent/amd64 (xc_agent-linux-amd64): sha256 mismatch', $rResult);
+		$this->assertStringStartsWith('cluster:exec: exit status 1: cluster:exec: refused by root: artefact refused: module/radio/1.0 (radio_1.0.zip): sha256 mismatch', $rResult);
 	}
 }

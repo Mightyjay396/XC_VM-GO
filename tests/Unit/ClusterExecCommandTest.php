@@ -52,11 +52,11 @@ final class ClusterExecCommandTest extends TestCase {
 		$rExit = (new ClusterExecCommand())->execute(['--types']);
 		$rTypes = json_decode((string) ob_get_clean(), true);
 		$this->assertSame(0, $rExit);
-		$this->assertSame(array_merge(ClusterExecCommand::TYPES, ClusterExecCommand::ROOT_BINARIES), $rTypes);
+		$this->assertSame(ClusterExecCommand::TYPES, $rTypes);
 		$this->assertContains('artefact.fetch', $rTypes);
-		// The binaries root installs from MAIN's grants: the agent says artefact_binaries.
-		$this->assertContains('root:fanout_binary', $rTypes);
-		$this->assertContains('root:xcvm_core', $rTypes);
+		// No binaries from MAIN's grants: every node takes them from GitHub, so the agent never says artefact_binaries.
+		$this->assertNotContains('root:fanout_binary', $rTypes);
+		$this->assertNotContains('root:xcvm_core', $rTypes);
 		$this->assertContains('node.root', $rTypes);
 		$this->assertContains('node.cache', $rTypes);
 	}

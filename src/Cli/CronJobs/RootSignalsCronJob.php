@@ -3,9 +3,8 @@
 namespace XcVm\Cli\CronJobs;
 
 use XcVm\Cli\CommandInterface;
-use XcVm\Cli\Commands\FanoutBinaryCommand;
+use XcVm\Cli\Commands\FfmpegBuildsCommand;
 use XcVm\Cli\Commands\UpdateCommand;
-use XcVm\Cli\Commands\XcvmCoreCommand;
 use XcVm\Cli\CronTrait;
 use XcVm\Core\Cache\FileCache;
 use XcVm\Core\Cluster\ArtefactStage;
@@ -26,7 +25,6 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Process\PhpFpmPools;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Process\ProcessRunner;
-use XcVm\Core\Updates\ReleaseAsset;
 use XcVm\Core\Util\Encryption;
 use XcVm\Domain\Cluster\ClusterEndpoint;
 use XcVm\Domain\Cluster\ClusterNginxConfig;
@@ -50,14 +48,6 @@ class RootSignalsCronJob implements CommandInterface {
 	private $rSaveIPTables = false;
 
 	private $AutoUpdateServerIP = true;
-
-	/**
-	 * The agent's restart after `agent_binary`: in the background, 10 s
-	 * later, so the agent acks the command first; run.sh then starts the new
-	 * binary. The only shell root's artefact actions start, and this
-	 * constant is its whole script: nothing of a command's is in it.
-	 */
-	public const AGENT_RESTART = '(sleep 10; pkill -u xc_vm -x xc_agent) > /dev/null 2>&1 &';
 
 	/** The start of the streams ramdisk's fstab line (install, LbInstallFlow). */
 	public const RAMDISK_MOUNT = 'tmpfs /home/xc_vm/content/streams';
@@ -351,7 +341,7 @@ class RootSignalsCronJob implements CommandInterface {
 		if (self::$rRunner !== null) {
 			return (self::$rRunner)($rArgv);
 		}
-		// An argv list, no shell: sudo, the node's own PHP_BIN and console.php, module:install, then the payload as one base64 argument; or /bin/sh -c AGENT_RESTART, a constant script.
+		// An argv list, no shell: sudo, the node's own PHP_BIN and console.php, module:install, then the payload as one base64 argument.
 		// nosemgrep: php.lang.security.exec-use.exec-use
 		$rProc = proc_open($rArgv, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $rPipes);
 		if (!is_resource($rProc)) {
@@ -673,23 +663,23 @@ class RootSignalsCronJob implements CommandInterface {
 			shell_exec('sudo -u xc_vm bash /home/xc_vm/bin/xc_agent/run.sh >/dev/null 2>&1 &');
 		}
 
-		// xc_fanout daemon binary — keep it installed and current (ADR 0003,
-		// Phase G). Nothing else pulls it: not the installer, not UpdateCommand,
-		// so a fresh node/LB would never get the daemon and an updated panel would
-		// keep an old one. fanout_binary is idempotent (downloads only on a
-		// version mismatch, and only when GitHub is reachable), so it is safe to
-		// poll. Throttle the check to ~hourly via a stamp, but the first pass
-		// (stamp absent) runs immediately so a fresh install/LB gets the daemon
-		// within a minute; the running daemon is respawned by fanout_binary on an
-		// actual upgrade. Root context (this cron) is required — it installs into
-		// bin/ and chowns. Runs on every node (main + LB) since LBs need it too.
+		// xc_fanout daemon and xc_agent binaries — keep them installed and
+		// current (ADR 0003, Phase G; ADR 0004). Every node takes both from their
+		// GitHub release itself, whatever its cluster mode: MAIN never hands
+		// them out. Nothing else pulls them: not the installer, not
+		// UpdateCommand, so a fresh node/LB would never get the daemon and an
+		// updated panel would keep an old one. fanout_binary is idempotent
+		// (downloads only on a version mismatch, and only when GitHub is
+		// reachable), so it is safe to poll. Throttle the check to ~hourly via a
+		// stamp, but the first pass (stamp absent) runs immediately so a fresh
+		// install/LB gets them within a minute; the running process is respawned
+		// by fanout_binary on an actual upgrade. Root context (this cron) is
+		// required — it installs into bin/ and chowns. With fanout off, the
+		// agent alone.
 		$rFanoutStamp = CRONS_TMP_PATH . 'fanout_binary_check';
-		// A node in mode 2 takes the daemon and the extension from MAIN only
-		// (`node.root fanout_binary`, `xcvm_core`, AgentUpgrades), never GitHub.
-		$rFromMain = NodeRole::refusesConnects();
-		if ($rFanoutEnabled && !$rFromMain && (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600)) {
+		if (!file_exists($rFanoutStamp) || time() - intval(@file_get_contents($rFanoutStamp) ?: 0) > 3600) {
 			file_put_contents($rFanoutStamp, time());
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php fanout_binary >/dev/null 2>&1 &');
+			ProcessRunner::start($rFanoutEnabled ? [PHP_BIN, MAIN_HOME . 'console.php', 'fanout_binary'] : [PHP_BIN, MAIN_HOME . 'console.php', 'fanout_binary', 'agent']);
 		}
 
 		// xcvm_core PHP extension — same self-heal rationale as the daemon above.
@@ -701,9 +691,9 @@ class RootSignalsCronJob implements CommandInterface {
 		// pass runs immediately. This is what delivers config_set_redis to LB nodes,
 		// without which StatusCommand::configureRedisLb cannot point Redis at main.
 		$rCoreStamp = CRONS_TMP_PATH . 'xcvm_core_check';
-		if (!$rFromMain && (!file_exists($rCoreStamp) || time() - intval(@file_get_contents($rCoreStamp) ?: 0) > 3600)) {
+		if (!file_exists($rCoreStamp) || time() - intval(@file_get_contents($rCoreStamp) ?: 0) > 3600) {
 			file_put_contents($rCoreStamp, time());
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php xcvm_core >/dev/null 2>&1 &');
+			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'xcvm_core']);
 		}
 
 		// yt-dlp — same self-heal rationale. It is a static bundled binary that
@@ -717,7 +707,23 @@ class RootSignalsCronJob implements CommandInterface {
 		$rYtDlpStamp = CRONS_TMP_PATH . 'ytdlp_check';
 		if (!file_exists($rYtDlpStamp) || time() - intval(@file_get_contents($rYtDlpStamp) ?: 0) > 86400) {
 			file_put_contents($rYtDlpStamp, time());
-			shell_exec(PHP_BIN . ' ' . MAIN_HOME . 'console.php ytdlp >/dev/null 2>&1 &');
+			ProcessRunner::start([PHP_BIN, MAIN_HOME . 'console.php', 'ytdlp']);
+		}
+
+		// ffmpeg — the builds for this distribution from XC_VM_FFMPEG (`ffmpeg`,
+		// FfmpegBuildsCommand): same self-heal rationale. Idempotent (an unchanged
+		// release is not fetched again) and each build is run-tested before it
+		// replaces the installed one, so it is safe to poll. Daily is enough (rare
+		// releases); the first pass runs immediately. As xc_vm, which owns
+		// bin/ffmpeg_bin/: nothing of it needs root. A run that did not finish
+		// (one this cron's own service restart below killed, GitHub unreachable,
+		// a build that failed) leaves its index older than the stamp, and is
+		// tried again after an hour.
+		$rFfmpegStamp = CRONS_TMP_PATH . 'ffmpeg_check';
+		$rFfmpegLast = intval(@file_get_contents($rFfmpegStamp) ?: 0);
+		if (time() - $rFfmpegLast > ((int) @filemtime(FfmpegBuildsCommand::indexPath()) >= $rFfmpegLast ? 86400 : 3600)) {
+			file_put_contents($rFfmpegStamp, time());
+			ProcessRunner::start(['sudo', '-u', 'xc_vm', PHP_BIN, MAIN_HOME . 'console.php', 'ffmpeg']);
 		}
 
 		if ($rServers[SERVER_ID]['limit_requests'] > 0) {
@@ -1053,77 +1059,6 @@ class RootSignalsCronJob implements CommandInterface {
 					break;
 				}
 				self::run(self::moduleInstallArgv($rData, null));
-				break;
-			case 'agent_binary':
-				// The xc_agent MAIN pinned (plan section 5: `node.root
-				// agent_binary{version, sha256}`): only its artefact, staged by
-				// cluster:root and checked there, never a path a payload names.
-				$rStaged = ArtefactStage::current();
-				if ($rStaged === null) {
-					echo "agent_binary: refused: no xc_agent binary staged and checked by cluster:root\n";
-					break;
-				}
-				// Only this node's arch: a binary that cannot start here would
-				// leave run.sh restarting it, and the node out of MAIN's reach.
-				$rArch = ReleaseAsset::arch(php_uname('m'));
-				if (!str_starts_with((string) $rStaged['grant']['id'], 'agent/')) {
-					throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not an xc_agent binary'));
-				}
-				if ($rArch === null || $rStaged['grant']['id'] !== 'agent/' . $rArch || ($rData['arch'] ?? null) !== $rArch) {
-					throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not this node\'s arch (' . php_uname('m') . ')'));
-				}
-				$rVersion = preg_replace('/[^0-9A-Za-z._-]/', '', (string) ($rData['version'] ?? '')) ?: 'unknown';
-				echo 'Installing xc_agent ' . $rVersion . ' from MAIN...' . "\n";
-				if (!LogSink::syslog('BINARIES', 'Installing xc_agent ' . $rVersion . ' from MAIN...')) {
-					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, 'Installing xc_agent ' . $rVersion . ' from MAIN...', time());
-				}
-				$rFailed = ArtefactStage::installAgent($rStaged, ArtefactStage::agentBinary());
-				if ($rFailed !== null) {
-					throw new \RuntimeException('agent_binary: ' . $rFailed);
-				}
-				// run.sh restarts it with the new binary; after a pause, so the
-				// agent acks this command first (its high-water, then the ack).
-				self::run(['/bin/sh', '-c', self::AGENT_RESTART]);
-				echo "xc_agent installed; it restarts in 10 s\n";
-				break;
-			case 'fanout_binary':
-			case 'xcvm_core':
-				// The fanout daemon or the xcvm_core MAIN keeps (plan section 5:
-				// they follow the agent's path on nodes in mode 1 and 2): only its
-				// artefact, staged by cluster:root and checked there.
-				$rFanout = $rData['action'] === 'fanout_binary';
-				$rTool = $rFanout ? 'xc_fanout' : 'xcvm_core';
-				$rStaged = ArtefactStage::current();
-				if ($rStaged === null) {
-					echo $rData['action'] . ': refused: no ' . $rTool . ' staged and checked by cluster:root' . "\n";
-					break;
-				}
-				// Only what runs here: this node's arch, or the PHP its .so loads into.
-				$rWant = $rFanout ? 'fanout/' . (ReleaseAsset::arch(php_uname('m')) ?? '?') : 'core/' . XcvmCoreCommand::group();
-				$rNamed = $rFanout ? 'fanout/' . (string) ($rData['arch'] ?? '') : 'core/' . (string) ($rData['group'] ?? '');
-				if ($rStaged['grant']['id'] !== $rWant || $rNamed !== $rWant) {
-					throw new \RuntimeException(ArtefactStage::refuseGrant($rStaged['grant'], 'not this node\'s ' . ($rFanout ? 'arch (' . php_uname('m') . ')' : 'PHP (' . XcvmCoreCommand::group() . ')')));
-				}
-				$rVersion = preg_replace('/[^0-9A-Za-z._-]/', '', (string) ($rData['version'] ?? '')) ?: 'unknown';
-				$rLine = 'Installing ' . $rTool . ' ' . $rVersion . ' from MAIN...';
-				echo $rLine . "\n";
-				if (!LogSink::syslog('BINARIES', $rLine)) {
-					$db->query("INSERT INTO `mysql_syslog`(`server_id`, `type`, `error`, `username`, `ip`, `database`, `date`) VALUES(?, 'BINARIES', ?, 'root', 'localhost', NULL, ?);", SERVER_ID, $rLine, time());
-				}
-				if ($rFanout) {
-					// install() renames its input into place: a copy beside the binary.
-					$rTmp = BIN_PATH . 'xc_fanout/.xc_fanout.new';
-					if ((!is_dir(dirname($rTmp)) && !@mkdir(dirname($rTmp), 0755, true)) || !@copy($rStaged['path'], $rTmp)) {
-						throw new \RuntimeException('fanout_binary: cannot copy the staged binary');
-					}
-					$rFailed = FanoutBinaryCommand::install($rTmp, $rVersion);
-				} else {
-					$rFailed = (new XcvmCoreCommand())->installStaged($rStaged['path']);
-				}
-				if ($rFailed !== null) {
-					throw new \RuntimeException($rData['action'] . ': ' . $rFailed);
-				}
-				echo $rTool . ' ' . $rVersion . " installed\n";
 				break;
 			case 'strip_db_credentials':
 			case 'install_config':

@@ -95,12 +95,13 @@ Migrating from Xtream Codes / XUI.one? Follow the step-by-step migration guide:
 
 ## 🐧 Supported Operating Systems
 
-XC_VM supports multiple Linux distributions. Distribution-specific binaries (PHP, Nginx) are downloaded automatically from [XC_VM_Binaries](https://github.com/Vateron-Media/XC_VM_Binaries) during installation.
+XC_VM supports multiple Linux distributions. Distribution-specific binaries are downloaded automatically during installation: PHP and Nginx from [XC_VM_Binaries](https://github.com/Vateron-Media/XC_VM_Binaries), FFmpeg from [XC_VM_FFMPEG](https://github.com/Vateron-Media/XC_VM_FFMPEG).
 
 ### Ubuntu
 
 | Version   | Codename        | Status                                                                                     |
 | --------- | --------------- | ------------------------------------------------------------------------------------------ |
+| **18.04** | Bionic Beaver   | ❌ _Not supported_                                                                          |
 | **20.04** | Focal Fossa     | ⚠️ _Outdated_ — installation possible, but some packages may need to be installed manually |
 | **22.04** | Jammy Jellyfish | ✅ **Recommended**                                                                         |
 | **24.04** | Noble Numbat    | ✅ **Recommended**                                                                         |
@@ -119,7 +120,7 @@ XC_VM supports multiple Linux distributions. Distribution-specific binaries (PHP
 | **8**   | 🚧 _Not yet supported_ |
 | **9**   | 🚧 _Not yet supported_ |
 
-> ⚠️ RHEL-family support is planned but not yet available. The installer recognizes these distributions, but pre-built binaries are not provided yet.
+> ⚠️ RHEL-family support is planned but not yet available: there are no pre-built binaries or FFmpeg builds for it, and the installer refuses these distributions.
 
 ---
 
@@ -129,6 +130,8 @@ For new installations:
 
 - 🟢 **Ubuntu 22.04 / 24.04 LTS**
 - 🟢 **Debian 13**
+
+> ⚠️ Ubuntu 18.04 and Debian 11 are not supported: the installer warns on them and asks before going on.
 
 ---
 

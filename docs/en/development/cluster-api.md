@@ -154,7 +154,6 @@ readers use (a shadow diff before the flow is on, so an operator sees what would
 | `lb_new_node_mode` | legacy \| api | the mode a newly installed LB enrols at |
 | `servers_stats_retention_days` | 1–365 (30) | `cron:cleanup` prunes `servers_stats` |
 | `cluster_audit_retention_days` | 1–365 (30) | `cron:cleanup` prunes `cluster_audit` |
-| `cluster_agent_upgrade_parallel` | 1–50 (1) | nodes upgraded at once by `cron:cluster` |
 | `cluster_db_allowlist` (+`_extra`) | 0/1 | firewalls 3306/6379 on MAIN to the fleet |
 | `lb_scan_roots` | paths | the directories the node's scan RPC may list |
 | `lb_partition_tolerance_h`, `lb_fence_drain_min` | 0–24 (12), 0–60 (10) | the lease's window past token expiry, and the drain after it |
@@ -186,15 +185,10 @@ console.php cluster:maintain-stats   # servers_stats indexes, built online (cron
 # Before switching CONNECTIONS on: load the node's viewers into its agent
 console.php cluster:seed-connections <serverID>
 
-# The agent binary MAIN pins, per architecture
-console.php agent_binary [amd64|arm64|armv7|386] [force]
-
-# The fanout daemon and xcvm_core MAIN hands nodes in mode 1 and 2 (its own arch and PHP are kept at each install)
-console.php fanout_binary cache [amd64|arm64|armv7|386] [force]
-console.php xcvm_core cache [php8.1|php8.4] [force]
-
-# A rollout a failing node holds back, released (agent by default)
-console.php agent_binary release <version> [agent|fanout|core]
+# Every node (MAIN too, any mode) keeps the agent, the fanout daemon and xcvm_core
+# current from GitHub itself, hourly from cron:root_signals; by hand, as root:
+console.php fanout_binary [fanout|agent] [force]
+console.php xcvm_core [force]
 
 # Firewall MariaDB and Redis to the fleet (check first)
 console.php cluster:db-allowlist status | apply | undo

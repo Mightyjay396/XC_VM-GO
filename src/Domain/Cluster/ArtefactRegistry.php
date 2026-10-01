@@ -2,35 +2,31 @@
 
 namespace XcVm\Domain\Cluster;
 
-use XcVm\Cli\Commands\AgentBinaryCommand;
-use XcVm\Cli\Commands\XcvmCoreCommand;
 use XcVm\Core\Cluster\ArtefactStage;
 use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Module\ModuleManager;
 
 /**
  * What MAIN may hand a node as an artefact (plan, section 7: the `artefact`
- * op, "off-air videos, pinned binaries"), each by an id that names it and
- * never a path:
+ * op), each by an id that names it and never a path. The xc_agent, xc_fanout
+ * and xcvm_core binaries are not among them: every node takes those from
+ * their GitHub releases itself (`fanout_binary`, `xcvm_core`).
+ *
  *
  * | Id | File on MAIN | Used by |
  * | --- | --- | --- |
  * | `offair/<name>` | the admin's custom video for that off-air name (`<name>_video_path`, as `cluster.off_air` names its file) | `artefact.fetch` (cluster:exec) |
  * | `module/<name>/<version>` | the custom module's archive MAIN keeps (ModuleManager::archivePathFor) | `node.root install_module` |
- * | `agent/<arch>` | the xc_agent binary MAIN pinned and verified (`agent_binary` cache, with its version) | `node.root agent_binary` |
- * | `fanout/<arch>` | the xc_fanout binary MAIN verified (the same cache, `fanout_binary cache`, with its version) | `node.root fanout_binary` |
- * | `core/<group>` | the xcvm_core archive for a PHP group MAIN verified (`xcvm_core cache`, with its version) | `node.root xcvm_core` |
  *
  * locate() resolves an id from MAIN's own configuration alone. The id's
- * shape is checked first (ArtefactStage::validId), a module archive or an
- * agent binary must be a file inside its own directory once links are
- * resolved, and an off-air video must be a local video file with a name a
+ * shape is checked first (ArtefactStage::validId), a module archive must
+ * be a file inside its own directory once links are resolved, and an off-air video must be a local video file with a name a
  * node may write. Anything else is not an artefact. A node names only a
  * grant (a command's id), whose artefact id MAIN wrote itself.
  */
 final class ArtefactRegistry {
 	/** The largest artefact of each kind MAIN serves (bytes). */
-	public const MAX_SIZE = ['offair' => 268435456, 'module' => 67108864, 'agent' => 134217728, 'fanout' => 134217728, 'core' => 67108864];
+	public const MAX_SIZE = ['offair' => 268435456, 'module' => 67108864];
 
 	/** An off-air video is served as MPEG-TS (live.php): these extensions only. */
 	public const VIDEO_EXTENSIONS = ['ts', 'm2ts', 'mts', 'mpegts', 'mp4'];
@@ -40,21 +36,15 @@ final class ArtefactRegistry {
 
 	private static ?string $rModules = null;
 
-	private static ?string $rAgents = null;
-
-	private static ?string $rCores = null;
-
 	/** A file changed this recently (s) is hashed, but its hash is not kept: a write in the same second leaves its stat as it was. */
 	private const SETTLED = 2;
 
 	/** @var array<string, array<string, mixed>>|null */
 	private static ?array $rHashes = null;
 
-	/** Tests: other directories for module archives, the agent (and fanout) cache and the xcvm_core cache; null restores the defaults. */
-	public static function useDirs(?string $rModuleArchives, ?string $rAgentCache, ?string $rCoreCache = null): void {
+	/** Tests: another directory for module archives; null restores the default. */
+	public static function useDirs(?string $rModuleArchives): void {
 		self::$rModules = $rModuleArchives;
-		self::$rAgents = $rAgentCache;
-		self::$rCores = $rCoreCache;
 		self::$rHashes = null;
 	}
 
@@ -62,14 +52,13 @@ final class ArtefactRegistry {
 	 * Where artefact $rId is on MAIN now.
 	 *
 	 * @param array<string, mixed> $rSettings MAIN's settings (the off-air videos' paths).
-	 * @return array{id: string, kind: string, path: string, name: string, size: int, mtime: int, ctime: int, dev: int, ino: int, version: ?string}|null
+	 * @return array{id: string, kind: string, path: string, name: string, size: int, mtime: int, ctime: int, dev: int, ino: int}|null
 	 */
 	public static function locate(string $rId, array $rSettings): ?array {
 		if (!ArtefactStage::validId($rId)) {
 			return null;
 		}
 		$rParts = explode('/', $rId);
-		$rVersion = null;
 		switch ($rParts[0]) {
 			case 'offair':
 				$rSetting = $rSettings[ReplicaSections::OFF_AIR[$rParts[1]]] ?? null;
@@ -79,27 +68,13 @@ final class ArtefactRegistry {
 				}
 				$rDir = null;
 				break;
-			case 'module':
+			default:
 				try {
 					$rDir = self::$rModules ?? dirname((new ModuleManager())->archivePathFor($rParts[1], $rParts[2])) . '/';
 				} catch (\Throwable) {
 					return null;
 				}
 				$rPath = $rDir . $rParts[1] . '_' . $rParts[2] . '.zip';
-				break;
-			default:
-				if ($rParts[0] === 'core') {
-					$rDir = self::$rCores ?? XcvmCoreCommand::cacheDir();
-					$rPath = $rDir . 'xcvm_core-' . $rParts[1] . '.tar.gz';
-				} else {
-					$rDir = self::$rAgents ?? AgentBinaryCommand::cacheDir();
-					$rPath = $rDir . ($rParts[0] === 'fanout' ? AgentBinaryCommand::FANOUT_PREFIX : AgentBinaryCommand::ASSET_PREFIX) . $rParts[1];
-				}
-				// Pinned: only a binary (or archive) MAIN verified and recorded.
-				$rVersion = trim((string) @file_get_contents($rPath . '.version'));
-				if (!preg_match('/^[0-9A-Za-z][0-9A-Za-z._+-]{0,31}\z/', $rVersion)) {
-					return null;
-				}
 		}
 		$rName = basename($rPath);
 		clearstatcache(true, $rPath);
@@ -116,7 +91,7 @@ final class ArtefactRegistry {
 		}
 		return [
 			'id' => $rId, 'kind' => $rParts[0], 'path' => $rReal, 'name' => $rName, 'size' => (int) $rStat['size'], 'mtime' => (int) $rStat['mtime'],
-			'ctime' => (int) $rStat['ctime'], 'dev' => (int) $rStat['dev'], 'ino' => (int) $rStat['ino'], 'version' => $rVersion,
+			'ctime' => (int) $rStat['ctime'], 'dev' => (int) $rStat['dev'], 'ino' => (int) $rStat['ino'],
 		];
 	}
 
@@ -129,7 +104,7 @@ final class ArtefactRegistry {
 	 * would leave its stat unchanged.
 	 *
 	 * @param array<string, mixed> $rSettings
-	 * @return array{id: string, kind: string, path: string, name: string, size: int, mtime: int, ctime: int, dev: int, ino: int, version: ?string, sha256: string}|null
+	 * @return array{id: string, kind: string, path: string, name: string, size: int, mtime: int, ctime: int, dev: int, ino: int, sha256: string}|null
 	 */
 	public static function describe(string $rId, array $rSettings): ?array {
 		$rFound = self::locate($rId, $rSettings);

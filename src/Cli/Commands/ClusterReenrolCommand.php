@@ -95,7 +95,7 @@ class ClusterReenrolCommand implements CommandInterface {
 	 * @param array<int, array<string, mixed>>|null $rServers     ServerRepository::getAll(true) (tests).
 	 * @param string|null                           $rDir         The credential file's directory (tests).
 	 */
-	public static function main(array $rArgs, ?ClusterCrypto $rCrypto = null, ?array $rServers = null, ?SshSession $rSsh = null, ?callable $rAgentBinary = null, ?string $rDir = null): int {
+	public static function main(array $rArgs, ?ClusterCrypto $rCrypto = null, ?array $rServers = null, ?SshSession $rSsh = null, ?string $rDir = null): int {
 		$rCredFile = InstallCredentials::splitOptions($rArgs)[1]['cred-file'] ?? null;
 		$rCreds = $rCredFile === null ? null : self::readCredentials($rCredFile, in_array('--dry-run', $rArgs, true), $rDir);
 		$rParsed = self::parseArgs($rArgs);
@@ -123,7 +123,7 @@ class ClusterReenrolCommand implements CommandInterface {
 			return 1;
 		}
 		try {
-			return self::run($rServers ?? ServerRepository::getAll(true), $rParsed['ids'], $rParsed['states'], $rCreds, $rParsed['dry-run'], $rCrypto, $rSsh, $rAgentBinary, $rParsed['pending']);
+			return self::run($rServers ?? ServerRepository::getAll(true), $rParsed['ids'], $rParsed['states'], $rCreds, $rParsed['dry-run'], $rCrypto, $rSsh, $rParsed['pending']);
 		} finally {
 			flock($rLock, LOCK_UN);
 			fclose($rLock);
@@ -286,11 +286,10 @@ class ClusterReenrolCommand implements CommandInterface {
 	 * @param list<string>                     $rStates      The states --all takes.
 	 * @param array{default: array<string, mixed>, nodes: array<int, array<string, mixed>>}|null $rCreds readCredentials(); null only for a dry run.
 	 * @param SshSession|null                  $rSsh         Tests.
-	 * @param callable|null                    $rAgentBinary Tests (as for provisionCluster).
 	 * @param bool                             $rPending     --all leaves out the active nodes enrolled since the root last changed.
 	 * @return int 0 when every chosen node was (or would be) re-enrolled.
 	 */
-	public static function run(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds, bool $rDryRun, ClusterCrypto $rCrypto, ?SshSession $rSsh = null, ?callable $rAgentBinary = null, bool $rPending = false): int {
+	public static function run(array $rServers, ?array $rIDs, array $rStates, ?array $rCreds, bool $rDryRun, ClusterCrypto $rCrypto, ?SshSession $rSsh = null, bool $rPending = false): int {
 		if (empty($rCrypto->info()['licensed'])) {
 			echo "CLUSTER_LICENCE_REQUIRED: this panel's extension issues no tokens, so no node can be re-enrolled. Nothing was touched.\n";
 			return 1;
@@ -330,7 +329,7 @@ class ClusterReenrolCommand implements CommandInterface {
 			} else {
 				echo "\n== #{$rID} {$rTarget['name']} ({$rAccess['host']}:{$rAccess['port']})\n";
 				try {
-					$rWhy = ServerEnrolCommand::enrol($rServers, $rID, $rAccess['port'], ['username' => $rAccess['username'], 'password' => $rAccess['password']], $rAccess['expected'], $rCrypto, $rSsh, $rAgentBinary);
+					$rWhy = ServerEnrolCommand::enrol($rServers, $rID, $rAccess['port'], ['username' => $rAccess['username'], 'password' => $rAccess['password']], $rAccess['expected'], $rCrypto, $rSsh);
 				} catch (\Throwable $rE) {
 					$rWhy = 'error: ' . $rE->getMessage();
 					echo $rWhy . "\n";
