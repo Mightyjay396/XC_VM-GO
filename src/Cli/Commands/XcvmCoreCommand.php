@@ -253,11 +253,6 @@ class XcvmCoreCommand implements CommandInterface {
 
 	/** True if a fresh php (as xc_vm) loads xcvm_core and it is the new API build. */
 
-	/**
-	 * Would swapping an extension with cluster API $rBefore for one with $rAfter
-	 * lose the API this panel speaks? (0 = no cluster API.) Keeping an
-	 * out-of-range or absent API as it was is allowed: nothing worked before.
-	 */
 	/** This PHP's group (php8.1, php8.4, …). */
 	public static function group(): string {
 		return 'php' . PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION;
@@ -344,6 +339,11 @@ class XcvmCoreCommand implements CommandInterface {
 		return $this->installFromTarball($rTarball, $rExtDir . '/xcvm_core.so') ? null : 'it does not load on this host (the previous one is kept)';
 	}
 
+	/**
+	 * Would swapping an extension with cluster API $rBefore for one with $rAfter
+	 * lose the API this panel speaks? (0 = no cluster API.) Keeping an
+	 * out-of-range or absent API as it was is allowed: nothing worked before.
+	 */
 	public static function clusterApiKept(int $rBefore, int $rAfter): bool {
 		$rInRange = static fn(int $rApi) => $rApi >= ClusterCryptoFactory::API_MIN && $rApi <= ClusterCryptoFactory::API_MAX;
 		return !$rInRange($rBefore) || $rInRange($rAfter);
