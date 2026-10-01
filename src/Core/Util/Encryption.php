@@ -2,6 +2,7 @@
 
 namespace XcVm\Core\Util;
 
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\StreamSecret;
 
@@ -141,6 +142,15 @@ class Encryption {
 	 * @return string|false
 	 */
 	public static function readToken($token, $key, $deviceId, bool $rAcceptLegacy) {
+		// A node's own viewer keys first: MAIN mints with them for a node that
+		// holds them (ViewerKey). None on MAIN, so it pays nothing.
+		if (defined('OPENSSL_EXTRA') && $deviceId === OPENSSL_EXTRA) {
+			foreach (ViewerKey::own() as $rOwn) {
+				if (($rPlain = self::open($token, $rOwn, $deviceId)) !== false) {
+					return $rPlain;
+				}
+			}
+		}
 		$rPlain = self::open($token, $key, $deviceId);
 		if ($rPlain !== false) {
 			return $rPlain;

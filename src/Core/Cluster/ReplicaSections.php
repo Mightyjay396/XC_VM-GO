@@ -19,7 +19,8 @@ namespace XcVm\Core\Cluster;
  *             BouquetService::getAll reads them (bouquet_order, 0 last; id)
  * categories  {categories: [CATEGORY_FIELDS of every stream category]}, by
  *             cat_order, then id
- * secrets  {live_streaming_pass: SECRET, openssl_extra: SECRET}
+ * secrets  {live_streaming_pass: SECRET, openssl_extra: SECRET, viewer_key: SECRET}
+ *          (viewer_key: the node's own, ViewerKey; a node on older code ignores it)
  *          SECRET = {kid, current, previous, previous_valid_until}
  * ```
  *
@@ -126,7 +127,7 @@ final class ReplicaSections {
 	public const SERVER_LOCAL = [
 		'status', 'last_check_ago', 'last_status', 'remote_status', 'ping', 'watchdog_data', 'php_pids', 'connections',
 		'users', 'requests_per_second', 'server_hardware', 'video_devices', 'audio_devices', 'gpu_info', 'interfaces',
-		'governors', 'certbot_ssl', 'certbot_renew', 'uuid', 'ssh_hostkey_sha1',
+		'governors', 'certbot_ssl', 'certbot_renew', 'uuid', 'ssh_hostkey_sha1', 'viewer_key_fp',
 	];
 
 	/** R2: the record of one stream a node holds (the `streams` op). */

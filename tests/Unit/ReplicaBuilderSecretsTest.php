@@ -3,6 +3,7 @@
 use PHPUnit\Framework\TestCase;
 use XcVm\Core\Cluster\ReplicaEtagCache;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Domain\Cluster\BlocklistDelta;
 use XcVm\Domain\Cluster\ClusterClock;
@@ -111,12 +112,14 @@ final class ReplicaBuilderSecretsTest extends TestCase {
 		$this->assertSame(['id' => '1', 'seg_time' => '6', 'server_name' => 'XC'], ReplicaBuilder::settingsData());
 	}
 
-	public function testTheSecretsSectionCarriesOnlyTheStreamSecretAndOpensslExtra(): void {
+	public function testTheSecretsSectionCarriesOnlyTheStreamSecretOpensslExtraAndTheNodesOwnKey(): void {
 		$this->mainDb();
 		$rData = ReplicaBuilder::section(new FakeClusterCrypto(), ['server_id' => 5, 'mode' => 1, 'state' => 'active'], ReplicaSections::SECRETS, [], [])['data'];
 
 		$this->assertSame(['live_streaming_pass', 'openssl_extra'], ReplicaSections::SECRET_KEYS);
-		$this->assertSame(ReplicaSections::SECRET_KEYS, array_keys($rData), 'the allowed keys, and nothing else');
+		$this->assertSame([...ReplicaSections::SECRET_KEYS, ViewerKey::NAME], array_keys($rData), 'the allowed keys, and nothing else');
+		$this->assertSame(ViewerKey::entry('sekret-live', 5, null), $rData[ViewerKey::NAME], 'server 5\'s own key');
+		$this->assertNotSame(ViewerKey::derive('sekret-live', 6), $rData[ViewerKey::NAME]['current'], 'not another node\'s');
 		foreach ($rData as $rName => $rEntry) {
 			$this->assertSame(['current', 'kid', 'previous', 'previous_valid_until'], array_keys($rEntry), $rName);
 			$this->assertSame($rEntry, ReplicaSections::secret($rEntry), $rName . ': an entry the node takes');

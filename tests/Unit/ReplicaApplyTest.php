@@ -8,6 +8,7 @@ use XcVm\Core\Cluster\NodeFlows;
 use XcVm\Core\Cluster\NodeRole;
 use XcVm\Core\Cluster\ReplicaApply;
 use XcVm\Core\Cluster\ReplicaSections;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Config\SettingsRepository;
@@ -61,6 +62,7 @@ final class ReplicaApplyTest extends TestCase {
 	}
 
 	protected function tearDown(): void {
+		ViewerKey::useFile(null);
 		DatabaseFactory::reset();
 		SettingsManager::set([]);
 		$GLOBALS['rSettings'] = $this->rSettingsBackup;
@@ -185,6 +187,21 @@ final class ReplicaApplyTest extends TestCase {
 		];
 		$this->whole('secrets', $rData);
 		return $rData;
+	}
+
+	public function testTheNodesOwnViewerKeyIsKeptAndReported(): void {
+		$rDb = $this->mainDb();
+		$this->whole('settings', self::SETTINGS);
+		$rEntry = ViewerKey::entry(self::LIVE, (int) SERVER_ID, null);
+		$this->whole('secrets', $this->secrets() + [ViewerKey::NAME => $rEntry]);
+		$this->flows(NodeFlows::CONFIG);
+
+		$this->assertSame('applied', ReplicaApply::run(true)['secrets']['mode']);
+		$this->assertSame($this->rDir . '/config/viewer_key', ViewerKey::file());
+		$this->assertSame([$rEntry['current']], ViewerKey::own());
+		$rDb->query('SELECT `viewer_key_fp` FROM `servers` WHERE `id` = ?', SERVER_ID);
+		$this->assertSame($rEntry['kid'], $rDb->get_row()['viewer_key_fp'], 'reported, so MAIN mints with it');
+		$this->assertStringNotContainsString($rEntry['current'], (string) file_get_contents($this->rDir . '/replica/apply.json'));
 	}
 
 	public function testSecretsInShadowOnlySayWhichDifferAndNeverWhat(): void {

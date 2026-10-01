@@ -2,10 +2,10 @@
 
 use XcVm\Core\Auth\PageAuthorization;
 use XcVm\Core\Auth\SessionManager;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Util\AdminHelpers;
-use XcVm\Core\Util\Encryption;
 use XcVm\Core\Util\NetworkUtils;
 use XcVm\Core\Localization\Translator;
 use XcVm\Infrastructure\Bootstrap\AdminScopeBootstrap;
@@ -56,7 +56,7 @@ if (RequestManager::has('id')) {
         }
 
         if ($rServerID) {
-            $rUIToken = Encryption::mintToken(json_encode($rTokenData), SettingsManager::get('live_streaming_pass'), OPENSSL_EXTRA, (bool) SettingsManager::get('secure_stream_tokens'));
+            $rUIToken = ViewerKey::mint(json_encode($rTokenData), $rServers, (int) $rServerID, SettingsManager::getAll());
 
             if ($rOnDemand) {
                 $rStartURL = 'http://' . $rServers[$rServerID]['server_ip'] . ':' . $rServers[$rServerID]['http_broadcast_port'] . '/admin/live?password=' . SettingsManager::get('live_streaming_pass') . '&stream=' . intval(RequestManager::get('id')) . '&extension=.m3u8&odstart=1';

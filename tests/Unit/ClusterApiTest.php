@@ -15,6 +15,7 @@ use XcVm\Core\Cluster\ReplicaSections;
 use XcVm\Core\Cluster\SettingsAudit;
 use XcVm\Core\Cluster\SignalDispatcher;
 use XcVm\Core\Cluster\StreamVersions;
+use XcVm\Core\Cluster\ViewerKey;
 use XcVm\Core\Config\OpensslExtra;
 use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Database\LazyDatabaseHandler;
@@ -2051,8 +2052,9 @@ final class ClusterApiTest extends TestCase {
 		$rDoc = $this->openRecord($rOut['sealed'], 'rep');
 		$this->assertSame(['secrets', $this->rUuid, 1, $rOut['etag']], [$rDoc['section'], $rDoc['node'], $rDoc['gen'], $rDoc['etag']]);
 		$this->assertSame($rOut['etag'], ReplicaBuilder::etag($rDoc['data']));
-		$this->assertSame(['live_streaming_pass', 'openssl_extra'], array_keys($rDoc['data']));
+		$this->assertSame(['live_streaming_pass', 'openssl_extra', ViewerKey::NAME], array_keys($rDoc['data']));
 		$this->assertSame(['secret-live', OPENSSL_EXTRA], [$rDoc['data']['live_streaming_pass']['current'], $rDoc['data']['openssl_extra']['current']]);
+		$this->assertSame(ViewerKey::entry('secret-live', self::SID, null), $rDoc['data'][ViewerKey::NAME], 'the node\'s own viewer key');
 		$this->assertStringNotContainsString('secret-api', (string) json_encode($rDoc));
 
 		[$rRes, $rCtx] = $this->call('config', ['blocklist_since' => 0, 'have' => ['secrets' => $rOut['etag']]], 1, $rKeys);

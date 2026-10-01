@@ -13,7 +13,8 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  * the node's own row (EventIngest), and its `status` only as status() says:
  *
  * ```text
- * node.state      P0  certbot_ssl, governor, sysctl    when it changes
+ * node.state      P0  certbot_ssl, governor, sysctl,   when it changes
+ *                     viewer_key_fp (ViewerKey)
  * node.inventory  P1  hardware, devices, interfaces…   once a minute (cron:servers)
  * ```
  *
@@ -32,7 +33,7 @@ use XcVm\Infrastructure\Database\DatabaseFactory;
  */
 final class NodeStateSink {
 	/** Columns a node.state event may set. */
-	public const STATE = ['certbot_ssl', 'governor', 'sysctl'];
+	public const STATE = ['certbot_ssl', 'governor', 'sysctl', 'viewer_key_fp'];
 
 	/** Columns a node.inventory event may set (time_offset comes from MAIN's clock offset). */
 	public const INVENTORY = ['remote_status', 'xc_vm_version', 'server_hardware', 'governors', 'sysctl', 'video_devices', 'audio_devices', 'gpu_info', 'interfaces', 'ping'];
@@ -52,7 +53,7 @@ final class NodeStateSink {
 	 * State fields a node in mode 2 reads back (cron:certbot, the certbot
 	 * command): it keeps its own copy of what it reported.
 	 */
-	public const KEPT = ['certbot_ssl'];
+	public const KEPT = ['certbot_ssl', 'viewer_key_fp'];
 
 	/**
 	 * Set state columns of this node's row: an event with TELEMETRY on, else

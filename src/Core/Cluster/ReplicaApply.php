@@ -832,9 +832,30 @@ final class ReplicaApply {
 			// (StreamSecret). Its current value arrives with the settings.
 			$rLive = $rEntries['live_streaming_pass'];
 			StreamSecret::adopt($rLive['previous'], $rLive['previous_valid_until'], $rNow ?? time());
+			// The node's own viewer-token key (ViewerKey): MAIN mints with it once
+			// the node reports holding it, so the report follows each change (and,
+			// in mode 2, any report the spool did not take).
+			$rViewer = ReplicaSections::secret(self::whole(ReplicaSections::SECRETS)['data'][ViewerKey::NAME] ?? null);
+			if ($rViewer !== null) {
+				$rWrote = ViewerKey::adopt($rViewer);
+				if ($rWrote === false) {
+					$rSet = false;
+				} elseif ($rWrote === true || (NodeRole::refusesConnects() && NodeStateSink::reported(ViewerKey::FP) !== $rViewer['kid'])) {
+					$rViewerFp = $rViewer['kid'];
+				}
+			}
 		} catch (\Throwable) {
 			// Never an uncaught trace: it would print the value among the arguments.
 			$rSet = false;
+		}
+		if (isset($rViewerFp)) {
+			try {
+				NodeStateSink::state([ViewerKey::FP => $rViewerFp]);
+			} catch (\Throwable) {
+				// ponytail: unreported, MAIN keeps minting this node's tokens with the
+				// shared secret, which it reads; mode 2 reports again next minute
+				// (its kept copy differs), mode 1 at the key's next change.
+			}
 		}
 		return ['mode' => $rSet === false ? 'failed' : 'applied', 'differ' => $rDiffer];
 	}
