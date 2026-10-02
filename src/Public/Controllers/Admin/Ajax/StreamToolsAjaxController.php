@@ -382,7 +382,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			$rDone('blocked', $rIP);
 		}
 
-		$rStreams = (string) shell_exec('timeout 30 ' . FfmpegPaths::probe() . ' -v quiet -http_proxy ' . escapeshellarg($rProxy) . ' -show_entries stream=codec_type -of csv=p=0 -i ' . escapeshellarg($rURL));
+		[, $rStreams] = ProcessRunner::capture(['timeout', '30', FfmpegPaths::probe(), '-v', 'quiet', '-http_proxy', $rProxy, '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', '-i', $rURL]);
 		$rDone(str_contains($rStreams, 'video') ? 'ok' : 'noplay', $rIP);
 	}
 
