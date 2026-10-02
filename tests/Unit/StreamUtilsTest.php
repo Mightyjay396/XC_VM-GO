@@ -47,4 +47,17 @@ final class StreamUtilsTest extends TestCase {
 		$this->assertSame(30, StreamUtils::segmentRetryBudget(3, 30));   // configured wins
 		$this->assertSame(20, StreamUtils::segmentRetryBudget(3, 0));    // 0 → default floor 20
 	}
+
+	public function testProxyUrlAddsHttpSchemeFfmpegNeeds() {
+		$this->assertSame('', StreamUtils::proxyURL(''));
+		$this->assertSame('http://1.2.3.4:8080', StreamUtils::proxyURL('1.2.3.4:8080'));
+		$this->assertSame('http://u:p@h:1', StreamUtils::proxyURL('http://u:p@h:1'));
+		$this->assertSame('socks5://h:1', StreamUtils::proxyURL('socks5://h:1'));
+	}
+
+	public function testStreamProxyArgumentReachesFfmpegWithHttpScheme() {
+		$rProxy = ['argument_key' => 'proxy', 'argument_cat' => 'fetch', 'argument_wprotocol' => 'http', 'argument_type' => 'text', 'argument_cmd' => '-http_proxy "%s"'];
+		$this->assertSame(['-http_proxy "http://9.9.9.9:3128"'], StreamUtils::getArguments([$rProxy + ['value' => '9.9.9.9:3128']], 'https', 'fetch'));
+		$this->assertSame(['-http_proxy "http://u:p@h:1"'], StreamUtils::getArguments([$rProxy + ['value' => 'http://u:p@h:1']], 'https', 'fetch'));
+	}
 }

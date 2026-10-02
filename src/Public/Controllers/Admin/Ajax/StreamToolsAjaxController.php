@@ -182,7 +182,9 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		$rStreamInfo = null;
 
 		if (!empty(RequestManager::get('url'))) {
-			$rURL = StreamUtils::parseStreamURL(RequestManager::get('url'));
+			// Not resolved here: the node probeSource asks resolves a platform page itself.
+			$rProxy = (string) RequestManager::get('proxy');
+			$rURL = (string) RequestManager::get('url');
 
 			if (StreamUtils::detectXC_VM($rURL) && SettingsManager::get('api_probe')) {
 				$rURLInfo = parse_url($rURL);
@@ -200,7 +202,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			}
 
 			if (!$rStreamInfo) {
-				$rProbeResult = ServerRepository::probeSource($rServerID, RequestManager::get('url'), (RequestManager::get('user_agent') ?? null), (RequestManager::get('http_proxy') ?? null), (RequestManager::get('cookies') ?? null), (RequestManager::get('headers') ?? null));
+				$rProbeResult = ServerRepository::probeSource($rServerID, RequestManager::get('url'), (RequestManager::get('user_agent') ?? null), ($rProxy !== '' ? $rProxy : null), (RequestManager::get('cookies') ?? null), (RequestManager::get('headers') ?? null));
 				$rStreamInfo = $rProbeResult['data'] ?? [];
 				$rStreamInfo['container'] = $rStreamInfo['format']['format_name'] ?? '';
 			}
@@ -262,7 +264,8 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		ini_set('default_socket_timeout', intval($rTimeout));
 
 		if (RequestManager::has('url')) {
-			$rURL = StreamUtils::parseStreamURL(RequestManager::get('url'));
+			$rSource = (string) RequestManager::get('url');
+			$rProxy = (string) RequestManager::get('proxy');
 			$rUA = RequestManager::has('ua') ? ' -user_agent ' . escapeshellarg(RequestManager::get('ua')) : '';
 			$rCookie = RequestManager::has('cookie') ? ' -cookies ' . escapeshellarg(StreamUtils::fixCookie(RequestManager::get('cookie'))) : '';
 		} else {
@@ -270,8 +273,11 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			$rStreamOptions = StreamRepository::getOptions(RequestManager::get('stream'));
 			$rUA = ((string) $rStreamOptions[1]['value'] !== '') ? ' -user_agent ' . escapeshellarg($rStreamOptions[1]['value']) : '';
 			$rCookie = RequestManager::has('cookie') ? ' -cookies ' . escapeshellarg(StreamUtils::fixCookie($rStreamOptions[17]['value'])) : '';
-			$rURL = StreamUtils::parseStreamURL(json_decode($rStream['stream_source'], true)[intval(RequestManager::get('id'))]);
+			$rSource = (string) json_decode($rStream['stream_source'], true)[intval(RequestManager::get('id'))];
+			$rProxy = (string) ($rStreamOptions[2]['value'] ?? '');
 		}
+		$rURL = StreamUtils::parseStreamURL($rSource, $rProxy);
+		$rProxyArg = ($rProxy !== '' ? ' -http_proxy ' . escapeshellarg(StreamUtils::proxyURL($rProxy)) : '');
 
 		if ((string) $rURL !== '') {
 			$rStreamInfoText = self::driverSourceTable((string) $rURL) ?? "<table style='width: 300px;' class='table-data' align='center'><tbody><tr><td colspan='4'>Stream probe failed!</td></tr></tbody></table>";
@@ -291,7 +297,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			}
 
 			if (!$rStreamInfo) {
-				$rStreamInfo = json_decode(shell_exec('timeout ' . intval($rTimeout) . ' ' . FfmpegPaths::probe() . $rUA . $rCookie . ' -v quiet -probesize 5000000 -print_format json -show_format -show_streams ' . escapeshellarg($rURL)), true);
+				$rStreamInfo = json_decode(shell_exec('timeout ' . intval($rTimeout) . ' ' . FfmpegPaths::probe() . $rUA . $rCookie . $rProxyArg . ' -v quiet -probesize 5000000 -print_format json -show_format -show_streams ' . escapeshellarg($rURL)), true);
 			}
 
 			if (0 < count($rStreamInfo['streams'] ?? [])) {

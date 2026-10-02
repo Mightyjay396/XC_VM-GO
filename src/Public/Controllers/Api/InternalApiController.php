@@ -11,6 +11,7 @@ use XcVm\Core\Diagnostics\DiagnosticsService;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Process\ProcessManager;
 use XcVm\Core\Util\NetworkUtils;
+use XcVm\Core\Util\StreamUtils;
 use XcVm\Core\Util\SystemInfo;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\ConnectionTracker;
@@ -555,14 +556,21 @@ class InternalApiController {
 			exit(json_encode(['result' => false, 'error' => 'Invalid probe target.']));
 		}
 
+		// A platform page (YouTube, ...) is resolved here, through the proxy
+		// ffprobe uses: the media URL only plays from the IP that resolved it.
+		$rProxy = (string) ($rRequest['http_proxy'] ?? '');
+		if (StreamUtils::needsResolver($rURL)) {
+			$rURL = StreamUtils::parseStreamURL($rURL, $rProxy);
+		}
+
 		$rFetchArguments = [];
 
 		if (!empty($rRequest['user_agent'])) {
 			$rFetchArguments[] = sprintf("-user_agent '%s'", escapeshellcmd($rRequest['user_agent']));
 		}
 
-		if (!empty($rRequest['http_proxy'])) {
-			$rFetchArguments[] = sprintf("-http_proxy '%s'", escapeshellcmd($rRequest['http_proxy']));
+		if ($rProxy !== '') {
+			$rFetchArguments[] = '-http_proxy ' . escapeshellarg(StreamUtils::proxyURL($rProxy));
 		}
 
 		if (!empty($rRequest['cookies'])) {

@@ -121,11 +121,11 @@ class ProxyCommand implements CommandInterface {
 		}
 		$rContext = stream_context_create($rOptions);
 		$rURLs = json_decode((string) $rStreamInfo['stream_source'], true);
-		$rFP = $this->getActiveStream(is_array($rURLs) ? $rURLs : [], $rContext);
+		$rFP = $this->getActiveStream(is_array($rURLs) ? $rURLs : [], $rContext, $rProxy);
 		if (is_string($rFP)) {
 			// An HLS source: ffmpeg remuxes it to MPEG-TS on stdout.
 			$rHeaders = (!empty($rOptions['http']['header']) ? '-headers ' . escapeshellarg($rOptions['http']['header']) : '');
-			$rProxyArg = ($rProxy !== '' ? '-http_proxy ' . escapeshellarg($rProxy) : '');
+			$rProxyArg = ($rProxy !== '' ? '-http_proxy ' . escapeshellarg(StreamUtils::proxyURL($rProxy)) : '');
 			$rCommand = FfmpegPaths::cpu() . ' -copyts -vsync 0 -nostats -nostdin -hide_banner -loglevel quiet -y -user_agent ' . escapeshellarg($rUserAgent) . ' ' . $rHeaders . ' ' . $rProxyArg . ' -i ' . escapeshellarg($rFP) . ' -map 0 -c copy -mpegts_flags +initial_discontinuity -pat_period ' . self::PAT_PERIOD . ' -f mpegts -';
 			$rFP = popen($rCommand, 'rb');
 		}
@@ -281,9 +281,9 @@ class ProxyCommand implements CommandInterface {
 	 *
 	 * @return resource|string|null
 	 */
-	private function getActiveStream(array $rURLs, $rContext) {
+	private function getActiveStream(array $rURLs, $rContext, string $rProxy) {
 		foreach ($rURLs as $rURL) {
-			$rURL = StreamUtils::parseStreamURL((string) $rURL);
+			$rURL = StreamUtils::parseStreamURL((string) $rURL, $rProxy);
 			$rFP = @fopen($rURL, 'rb', false, $rContext);
 			if (!$rFP) {
 				continue;
