@@ -77,7 +77,8 @@ final class StreamProcessSupervisionTest extends TestCase {
 			'headers' => ['value' => "X-A: 1\r\nX-B: 2\r\n"],
 		]]);
 		$this->assertStringContainsString("-user_agent 'VLC/3.0'", $c);
-		$this->assertStringContainsString("-http_proxy '10.0.0.1:3128'", $c);
+		// remux takes host:port or http://host:port; the panel normalises to the URL ffmpeg needs.
+		$this->assertStringContainsString("-http_proxy 'http://10.0.0.1:3128'", $c);
 		$this->assertStringContainsString('-cookies ', $c);
 		$this->assertStringContainsString("-headers 'X-A: 1\r\nX-B: 2\r\n'", $c);
 
