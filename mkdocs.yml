@@ -108,6 +108,7 @@ plugins:
             Licensing & Activation: Лицензирование и активация
             Migration Guide: Руководство по миграции
             Watch Folder: Отслеживаемая папка
+            Restreaming YouTube: Рестрим YouTube
             Developer Guide: Руководство разработчика
             Architecture: Архитектура
             Architecture Overview: Обзор архитектуры
@@ -171,6 +172,7 @@ nav:
           - Licensing & Activation: en/info/licensing-and-activation.md
           - Migration Guide: en/info/migration_guide.md
           - Watch Folder: en/info/watch_folder.md
+          - Restreaming YouTube: en/info/youtube-restream.md
   - Developer Guide:
       - Architecture:
           - Architecture Overview: en/development/architecture.md

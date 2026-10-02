@@ -66,6 +66,10 @@ final class FanoutClientTest extends TestCase {
 
 		$this->assertSame('1.2.3.4:8080', $src['proxy']);
 		$this->assertSame('sid=xyz', $src['cookie']);
+
+		// The daemon adds http:// itself: a value written as a URL loses its scheme.
+		$src = FanoutClient::buildSource($row, ['proxy' => ['value' => 'http://u:p@h:3128/']]);
+		$this->assertSame('u:p@h:3128', $src['proxy']);
 	}
 
 	public function testBuildSourceHandlesMissingOrInvalidStreamSource() {

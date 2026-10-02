@@ -3,6 +3,7 @@
 namespace XcVm\Core\Util;
 
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Process\ProcessRunner;
 
 /**
  * StreamUtils — stream utils
@@ -48,6 +49,22 @@ class StreamUtils {
 	}
 
 	/**
+	 * A stream's "HTTP Proxy" value as a proxy URL. The form asks for ip:port,
+	 * but ffmpeg's -http_proxy ignores a value without http:// (it fetches
+	 * directly), and yt-dlp wants a scheme too.
+	 *
+	 * @param string $rProxy ip:port, or a URL with its scheme.
+	 * @return string
+	 */
+	public static function proxyURL(string $rProxy): string {
+		$rProxy = trim($rProxy);
+		if ($rProxy === '' || str_contains($rProxy, '://')) {
+			return $rProxy;
+		}
+		return 'http://' . $rProxy;
+	}
+
+	/**
 	 * Build the ffmpeg argument list for a stream, filtered by category/protocol.
 	 *
 	 * @param array       $rArguments Configured argument definitions.
@@ -61,6 +78,8 @@ class StreamUtils {
 			if ($rArgument['argument_cat'] == $rType && (is_null($rArgument['argument_wprotocol']) || stristr($rProtocol, $rArgument['argument_wprotocol']) || is_null($rProtocol))) {
 				if ($rArgument['argument_key'] == 'cookie') {
 					$rArgument['value'] = self::fixCookie($rArgument['value']);
+				} elseif ($rArgument['argument_key'] == 'proxy') {
+					$rArgument['value'] = self::proxyURL((string) $rArgument['value']);
 				}
 				if ($rArgument['argument_type'] == 'text') {
 					$rReturn[] = sprintf($rArgument['argument_cmd'], $rArgument['value']);
@@ -130,12 +149,15 @@ class StreamUtils {
 	 * Normalize a stream source URL for ffmpeg.
 	 *
 	 * Applies rtmp options and resolves known streaming-platform pages to a
-	 * direct media URL via yt-dlp.
+	 * direct media URL via yt-dlp. The resolved googlevideo URL is bound to the
+	 * IP that asked for it, so yt-dlp goes through the stream's own proxy, the
+	 * one ffmpeg fetches through.
 	 *
-	 * @param string $rURL Source URL.
+	 * @param string $rURL   Source URL.
+	 * @param string $rProxy The stream's "HTTP Proxy" value ('' for none).
 	 * @return string Normalized/resolved URL.
 	 */
-	public static function parseStreamURL(string $rURL) {
+	public static function parseStreamURL(string $rURL, string $rProxy = '') {
 		$rProtocol = strtolower(substr($rURL, 0, 4));
 		if ($rProtocol == 'rtmp') {
 			if (stristr($rURL, '$OPT')) {
@@ -145,8 +167,15 @@ class StreamUtils {
 			$rURL .= ' live=1 timeout=10';
 		} else {
 			if (self::needsResolver($rURL)) {
-				$rURLs = trim(shell_exec(YOUTUBE_BIN . ' ' . escapeshellarg($rURL) . ' -q --get-url --skip-download -f best'));
-				list($rURL) = explode("\n", $rURLs);
+				// ponytail: without a JS runtime YouTube's default clients give a live
+				// stream only as separate video/audio, which -f best cannot pick;
+				// android_vr still serves one muxed HLS playlist. Drop it once nodes have deno.
+				$rArgv = [YOUTUBE_BIN, '--extractor-args', 'youtube:player_client=default,android_vr', '-q', '--get-url', '--skip-download', '-f', 'best'];
+				if ($rProxy !== '') {
+					array_push($rArgv, '--proxy', self::proxyURL($rProxy));
+				}
+				[, $rURLs] = ProcessRunner::capture([...$rArgv, '--', $rURL]);
+				list($rURL) = explode("\n", trim($rURLs));
 			}
 		}
 		return $rURL;

@@ -75,9 +75,11 @@ class FanoutClient {
 				?: ($rStreamArguments['user_agent']['argument_default_value'] ?? self::DEFAULT_UA));
 		}
 
+		// The daemon takes host:port and adds http:// itself, so the scheme a
+		// panel value may carry (http://user:pass@host:port) is cut here.
 		$rProxy = '';
 		if (!empty($rStreamArguments['proxy']['value'])) {
-			$rProxy = (string) $rStreamArguments['proxy']['value'];
+			$rProxy = rtrim((string) preg_replace('#^https?://#i', '', trim((string) $rStreamArguments['proxy']['value'])), '/');
 		}
 
 		$rCookie = '';

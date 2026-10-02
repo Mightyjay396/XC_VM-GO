@@ -6,6 +6,7 @@ use XcVm\Core\Config\SettingsManager;
 use XcVm\Core\Http\CurlClient;
 use XcVm\Core\Http\RequestManager;
 use XcVm\Core\Module\SourceDriverRegistry;
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Core\Util\StreamUtils;
 use XcVm\Domain\Server\ServerRepository;
 use XcVm\Domain\Stream\StreamRepository;
@@ -182,7 +183,9 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		$rStreamInfo = null;
 
 		if (!empty(RequestManager::get('url'))) {
-			$rURL = StreamUtils::parseStreamURL(RequestManager::get('url'));
+			// Not resolved here: the node probeSource asks resolves a platform page itself.
+			$rProxy = (string) RequestManager::get('proxy');
+			$rURL = (string) RequestManager::get('url');
 
 			if (StreamUtils::detectXC_VM($rURL) && SettingsManager::get('api_probe')) {
 				$rURLInfo = parse_url($rURL);
@@ -200,7 +203,7 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			}
 
 			if (!$rStreamInfo) {
-				$rProbeResult = ServerRepository::probeSource($rServerID, RequestManager::get('url'), (RequestManager::get('user_agent') ?? null), (RequestManager::get('http_proxy') ?? null), (RequestManager::get('cookies') ?? null), (RequestManager::get('headers') ?? null));
+				$rProbeResult = ServerRepository::probeSource($rServerID, RequestManager::get('url'), (RequestManager::get('user_agent') ?? null), ($rProxy !== '' ? $rProxy : null), (RequestManager::get('cookies') ?? null), (RequestManager::get('headers') ?? null));
 				$rStreamInfo = $rProbeResult['data'] ?? [];
 				$rStreamInfo['container'] = $rStreamInfo['format']['format_name'] ?? '';
 			}
@@ -262,15 +265,25 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		ini_set('default_socket_timeout', intval($rTimeout));
 
 		if (RequestManager::has('url')) {
-			$rURL = StreamUtils::parseStreamURL(RequestManager::get('url'));
-			$rUA = RequestManager::has('ua') ? ' -user_agent ' . escapeshellarg(RequestManager::get('ua')) : '';
-			$rCookie = RequestManager::has('cookie') ? ' -cookies ' . escapeshellarg(StreamUtils::fixCookie(RequestManager::get('cookie'))) : '';
+			$rSource = (string) RequestManager::get('url');
+			$rProxy = (string) RequestManager::get('proxy');
+			$rFetch = RequestManager::has('ua') ? ['-user_agent', (string) RequestManager::get('ua')] : [];
+			if (RequestManager::has('cookie')) {
+				array_push($rFetch, '-cookies', StreamUtils::fixCookie(RequestManager::get('cookie')));
+			}
 		} else {
 			$rStream = StreamRepository::getById(RequestManager::get('stream'));
 			$rStreamOptions = StreamRepository::getOptions(RequestManager::get('stream'));
-			$rUA = ((string) $rStreamOptions[1]['value'] !== '') ? ' -user_agent ' . escapeshellarg($rStreamOptions[1]['value']) : '';
-			$rCookie = RequestManager::has('cookie') ? ' -cookies ' . escapeshellarg(StreamUtils::fixCookie($rStreamOptions[17]['value'])) : '';
-			$rURL = StreamUtils::parseStreamURL(json_decode($rStream['stream_source'], true)[intval(RequestManager::get('id'))]);
+			$rFetch = ((string) $rStreamOptions[1]['value'] !== '') ? ['-user_agent', (string) $rStreamOptions[1]['value']] : [];
+			if (RequestManager::has('cookie')) {
+				array_push($rFetch, '-cookies', StreamUtils::fixCookie($rStreamOptions[17]['value']));
+			}
+			$rSource = (string) json_decode($rStream['stream_source'], true)[intval(RequestManager::get('id'))];
+			$rProxy = (string) ($rStreamOptions[2]['value'] ?? '');
+		}
+		$rURL = StreamUtils::parseStreamURL($rSource, $rProxy);
+		if ($rProxy !== '') {
+			array_push($rFetch, '-http_proxy', StreamUtils::proxyURL($rProxy));
 		}
 
 		if ((string) $rURL !== '') {
@@ -291,7 +304,8 @@ class StreamToolsAjaxController extends BaseAjaxController {
 			}
 
 			if (!$rStreamInfo) {
-				$rStreamInfo = json_decode(shell_exec('timeout ' . intval($rTimeout) . ' ' . FfmpegPaths::probe() . $rUA . $rCookie . ' -v quiet -probesize 5000000 -print_format json -show_format -show_streams ' . escapeshellarg($rURL)), true);
+				[, $rProbe] = ProcessRunner::capture(['timeout', (string) intval($rTimeout), FfmpegPaths::probe(), ...$rFetch, '-v', 'quiet', '-probesize', '5000000', '-print_format', 'json', '-show_format', '-show_streams', '-i', (string) $rURL], 1 << 20);
+				$rStreamInfo = json_decode($rProbe, true);
 			}
 
 			if (0 < count($rStreamInfo['streams'] ?? [])) {

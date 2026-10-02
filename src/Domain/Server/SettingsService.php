@@ -186,17 +186,18 @@ class SettingsService {
 		$db = self::db();
 		// The stream arguments' defaults: a change reaches the streams that use
 		// them (their R2 records carry the definition).
-		$rArgumentKeys = ['user_agent', 'http_proxy', 'cookie', 'headers'];
-		$db->query('SELECT `argument_key`, `argument_default_value` FROM `streams_arguments` WHERE `argument_key` IN (?, ?, ?, ?);', ...$rArgumentKeys);
+		// Form field => argument_key: the proxy's field is http_proxy, its row `proxy`.
+		$rArgumentKeys = ['user_agent' => 'user_agent', 'http_proxy' => 'proxy', 'cookie' => 'cookie', 'headers' => 'headers'];
+		$db->query('SELECT `argument_key`, `argument_default_value` FROM `streams_arguments` WHERE `argument_key` IN (?, ?, ?, ?);', ...array_values($rArgumentKeys));
 		$rWas = array_column($db->get_rows() ?: [], 'argument_default_value', 'argument_key');
 		$rChanged = [];
-		foreach ($rArgumentKeys as $rKey) {
-			$rValue = ($rData[$rKey] ?: null);
+		foreach ($rArgumentKeys as $rField => $rKey) {
+			$rValue = ($rData[$rField] ?: null);
 			$db->query('UPDATE `streams_arguments` SET `argument_default_value` = ? WHERE `argument_key` = ?;', $rValue, $rKey);
 			if (array_key_exists($rKey, $rWas) && (string) $rWas[$rKey] !== (string) $rValue) {
 				$rChanged[] = $rKey;
 			}
-			unset($rData[$rKey]);
+			unset($rData[$rField]);
 		}
 		if ($rChanged !== []) {
 			EventDispatcher::dispatch(new StreamArgumentsChangedEvent($rChanged));

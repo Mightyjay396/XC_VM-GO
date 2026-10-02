@@ -1127,7 +1127,7 @@ class StreamProcess {
 			$rCmd[] = '-cookies ' . escapeshellarg(StreamUtils::fixCookie($rSource['cookie']));
 		}
 		if ($rSource['proxy'] !== '') {
-			$rCmd[] = '-http_proxy ' . escapeshellarg($rSource['proxy']);
+			$rCmd[] = '-http_proxy ' . escapeshellarg(StreamUtils::proxyURL($rSource['proxy']));
 		}
 		if (!empty($rArgs['headers']['value'])) {
 			$rCmd[] = '-headers ' . escapeshellarg($rArgs['headers']['value']);
@@ -1335,7 +1335,7 @@ class StreamProcess {
 		if (SourceDriverRegistry::refusal($rSource) !== null) {
 			return false;
 		}
-		$rStreamSource = StreamUtils::parseStreamURL($rSource);
+		$rStreamSource = StreamUtils::parseStreamURL($rSource, (string) (array_column($rStreamArguments, 'value', 'argument_key')['proxy'] ?? ''));
 		$rProtocol = strtolower(substr($rStreamSource, 0, (int) strpos($rStreamSource, '://')));
 		return (bool) FFprobeRunner::probeStream($rStreamSource, implode(' ', StreamUtils::getArguments($rStreamArguments, $rProtocol, 'fetch')));
 	}
@@ -1563,7 +1563,7 @@ class StreamProcess {
 				array_push($rSpecSources, ...$rDriverEntries);
 				continue;
 			}
-			$rStreamSource = StreamUtils::parseStreamURL($rSource);
+			$rStreamSource = StreamUtils::parseStreamURL($rSource, (string) ($rArgsByKey['proxy']['value'] ?? ''));
 			$rProtocol = strtolower(substr($rStreamSource, 0, (int) strpos($rStreamSource, '://')));
 			$rArguments = $rStream['stream_arguments'];
 			$rIsXC_VM = $rLoopback || StreamUtils::detectXC_VM($rStreamSource);
@@ -2498,7 +2498,7 @@ class StreamProcess {
 						$rFFProbeOutput = self::skipFFProbeOutput();
 						break;
 					}
-					$rStreamSource = StreamUtils::parseStreamURL($rSource);
+					$rStreamSource = StreamUtils::parseStreamURL($rSource, (string) ($rArgsByKey['proxy']['value'] ?? ''));
 					echo 'Checking source: ' . $rSource . "\n";
 					$rURLInfo = parse_url($rStreamSource);
 					$rIsXC_VM = ($rLoopback ? true : StreamUtils::detectXC_VM($rStreamSource));
