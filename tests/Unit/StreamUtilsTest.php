@@ -1,5 +1,6 @@
 <?php
 
+use XcVm\Core\Process\ProcessRunner;
 use XcVm\Core\Util\StreamUtils;
 use PHPUnit\Framework\TestCase;
 
@@ -59,5 +60,32 @@ final class StreamUtilsTest extends TestCase {
 		$rProxy = ['argument_key' => 'proxy', 'argument_cat' => 'fetch', 'argument_wprotocol' => 'http', 'argument_type' => 'text', 'argument_cmd' => '-http_proxy "%s"'];
 		$this->assertSame(['-http_proxy "http://9.9.9.9:3128"'], StreamUtils::getArguments([$rProxy + ['value' => '9.9.9.9:3128']], 'https', 'fetch'));
 		$this->assertSame(['-http_proxy "http://u:p@h:1"'], StreamUtils::getArguments([$rProxy + ['value' => 'http://u:p@h:1']], 'https', 'fetch'));
+	}
+
+	public function testParseStreamUrlRunsYtDlpThroughTheStreamProxyWithoutAShell() {
+		if (!defined('YOUTUBE_BIN')) {
+			define('YOUTUBE_BIN', '/bin/yt-dlp');
+		}
+		$rCalls = [];
+		ProcessRunner::useCapturer(function (array $rArgv) use (&$rCalls) {
+			$rCalls[] = $rArgv;
+			return [0, "https://media.example/live.m3u8\nhttps://media.example/second\n"];
+		});
+		try {
+			$rPage = 'https://www.youtube.com/watch?v=x';
+			$this->assertSame('https://media.example/live.m3u8', StreamUtils::parseStreamURL($rPage, '1.2.3.4:8080'));
+			$this->assertSame(['--proxy', 'http://1.2.3.4:8080'], array_slice($rCalls[0], array_search('--proxy', $rCalls[0], true), 2));
+			// The page URL is one argument, after --, never an option.
+			$this->assertSame(['--', $rPage], array_slice($rCalls[0], -2));
+
+			StreamUtils::parseStreamURL($rPage);
+			$this->assertNotContains('--proxy', $rCalls[1]);
+
+			// Not a platform page: yt-dlp is not run.
+			$this->assertSame('http://iptv.example/live.ts', StreamUtils::parseStreamURL('http://iptv.example/live.ts', '1.2.3.4:8080'));
+			$this->assertCount(2, $rCalls);
+		} finally {
+			ProcessRunner::useCapturer(null);
+		}
 	}
 }

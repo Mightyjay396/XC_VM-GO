@@ -3,6 +3,7 @@
 namespace XcVm\Core\Util;
 
 use XcVm\Core\Process\ProcessManager;
+use XcVm\Core\Process\ProcessRunner;
 
 /**
  * StreamUtils — stream utils
@@ -169,9 +170,12 @@ class StreamUtils {
 				// ponytail: without a JS runtime YouTube's default clients give a live
 				// stream only as separate video/audio, which -f best cannot pick;
 				// android_vr still serves one muxed HLS playlist. Drop it once nodes have deno.
-				$rProxyArg = ($rProxy !== '' ? ' --proxy ' . escapeshellarg(self::proxyURL($rProxy)) : '');
-				$rURLs = trim((string) shell_exec(YOUTUBE_BIN . ' ' . escapeshellarg($rURL) . $rProxyArg . " --extractor-args 'youtube:player_client=default,android_vr' -q --get-url --skip-download -f best"));
-				list($rURL) = explode("\n", $rURLs);
+				$rArgv = [YOUTUBE_BIN, '--extractor-args', 'youtube:player_client=default,android_vr', '-q', '--get-url', '--skip-download', '-f', 'best'];
+				if ($rProxy !== '') {
+					array_push($rArgv, '--proxy', self::proxyURL($rProxy));
+				}
+				[, $rURLs] = ProcessRunner::capture([...$rArgv, '--', $rURL]);
+				list($rURL) = explode("\n", trim($rURLs));
 			}
 		}
 		return $rURL;
