@@ -244,6 +244,7 @@ $router->get('stream_errors', [StreamErrorsController::class, 'index']);
 $router->get('stream_rank', [StreamRankController::class, 'index']);
 $router->any('stream_review', [StreamReviewController::class, 'index']);
 $router->get('stream_tools', [StreamToolsController::class, 'index']);
+$router->get('proxy_checker', [StreamToolsController::class, 'proxyChecker']);
 $router->get('stream_view', [StreamViewController::class, 'index']);
 $router->get('channel_order', [ChannelOrderController::class, 'index']);
 $router->get('created_channel', [CreatedChannelController::class, 'index']);
@@ -465,6 +466,7 @@ $router->api('adaptivelist', [StreamToolsAjaxController::class, 'adaptivelist'])
 $router->api('titlesync', [StreamToolsAjaxController::class, 'titlesync']);
 $router->api('probe_stream', [StreamToolsAjaxController::class, 'probeStream']);
 $router->api('check_stream', [StreamToolsAjaxController::class, 'checkStream']);
+$router->api('check_proxy', [StreamToolsAjaxController::class, 'checkProxy']);
 $router->api('get_episode_ids', [StreamToolsAjaxController::class, 'getEpisodeIds']);
 
 // ─── No-bootstrap pages (login, setup, database, session) ────

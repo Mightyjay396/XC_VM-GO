@@ -51,6 +51,36 @@ A value without a scheme (`ip:port`) is treated as `http://ip:port`.
 
 ---
 
+## Finding working proxies: Proxy Checker
+
+**Tools → Proxy Checker** checks a whole list of proxies the way a
+YouTube stream uses them, so you can pick working ones out of hundreds or thousands.
+
+1. Paste a link to a YouTube broadcast that is **live right now**.
+2. Paste the proxies, one per line (`ip:port` or `http://user:password@host:port`).
+3. Set how many proxies to check at once (default 5, up to 20) and press **Start**.
+
+Each proxy gets one of these results:
+
+| Result | Meaning |
+|---|---|
+| **OK** | The proxy answers, YouTube accepts it, and the video plays through it. Ready to use. |
+| **Blocked by YouTube** | The proxy works, but YouTube refuses its IP ("Sign in to confirm you're not a bot"). |
+| **Does not play** | YouTube gave a link, but the video does not play through the proxy, usually because it is a SOCKS proxy or changes IP on every request. |
+| **Not responding** | The proxy did not answer within 10 seconds, or the login is wrong. |
+
+The **IP Address** column shows each proxy's exit IP. Several proxies with the same exit IP
+count as one IP to YouTube, so such proxies are marked *(duplicate)*.
+**Copy working (one per IP)** copies one working proxy per exit IP, ready to put into your
+streams. Over plain `http`, where the browser has no clipboard access, the list is put
+into the proxy box instead.
+
+The check runs on the main server, and every proxy asks YouTube once. Checking a large
+list repeatedly makes YouTube block those IPs sooner. A proxy that passes can still get
+blocked later under load, so re-check your list from time to time.
+
+---
+
 ## Setting up a YouTube stream
 
 1. Open **Streams → Add Stream**.

@@ -347,6 +347,45 @@ class StreamToolsAjaxController extends BaseAjaxController {
 		exit();
 	}
 
+	/**
+	 * action=check_proxy (POST: proxy, url) — would $rURL (a platform page)
+	 * restream through this proxy? The steps a stream takes, stopping at the
+	 * first that fails: the proxy answers (dead), yt-dlp resolves through it
+	 * (blocked), ffprobe plays the result through it (noplay); else ok. The
+	 * Proxy Checker page calls it once per proxy.
+	 */
+	public function checkProxy(): never {
+		$this->requireXhr();
+		$this->gate('adv', 'stream_tools');
+		set_time_limit(180);
+
+		$rProxy = StreamUtils::proxyURL((string) RequestManager::get('proxy'));
+		$rSource = trim((string) RequestManager::get('url'));
+		if ($rProxy === '' || !StreamUtils::needsResolver($rSource)) {
+			$this->fail(['error' => 'A proxy and a YouTube (or other platform) link are required.']);
+		}
+		$rStart = microtime(true);
+		$rDone = function (string $rStatus, string $rIP = '') use ($rStart): never {
+			$this->ok(['status' => $rStatus, 'ip' => $rIP, 'seconds' => round(microtime(true) - $rStart, 1)]);
+		};
+
+		$rCurl = curl_init('https://api.ipify.org');
+		curl_setopt_array($rCurl, [CURLOPT_PROXY => $rProxy, CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10, CURLOPT_CONNECTTIMEOUT => 8]);
+		$rIP = trim((string) curl_exec($rCurl));
+		curl_close($rCurl);
+		if (!filter_var($rIP, FILTER_VALIDATE_IP)) {
+			$rDone('dead');
+		}
+
+		$rURL = StreamUtils::parseStreamURL($rSource, $rProxy);
+		if (!str_starts_with($rURL, 'http')) {
+			$rDone('blocked', $rIP);
+		}
+
+		$rStreams = (string) shell_exec('timeout 30 ' . FfmpegPaths::probe() . ' -v quiet -http_proxy ' . escapeshellarg($rProxy) . ' -show_entries stream=codec_type -of csv=p=0 -i ' . escapeshellarg($rURL));
+		$rDone(str_contains($rStreams, 'video') ? 'ok' : 'noplay', $rIP);
+	}
+
 	/** action=get_episode_ids — parse episode numbers from filenames (guessit/release.py). */
 	public function getEpisodeIds(): never {
 		$this->requireXhr();
