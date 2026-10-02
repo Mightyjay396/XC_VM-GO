@@ -6,6 +6,7 @@ namespace XcVm\Public\Controllers\Admin;
  * StreamToolsController — инструменты стримов.
  *
  * @renders Views/admin/stream_tools.php
+ * @renders Views/admin/proxy_checker.php
  *
  * @package XC_VM_Public_Controllers_Admin
  * @author  Divarion_D <https://github.com/Divarion-D>
@@ -20,5 +21,12 @@ class StreamToolsController extends BaseAdminController {
 
 		$this->setTitle('Stream Tools');
 		$this->render('stream_tools');
+	}
+
+	public function proxyChecker() {
+		$this->requirePermission();
+
+		$this->setTitle('Proxy Checker');
+		$this->render('proxy_checker');
 	}
 }

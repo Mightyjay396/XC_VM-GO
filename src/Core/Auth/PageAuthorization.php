@@ -378,6 +378,7 @@ class PageAuthorization {
 				return Authorization::check('adv', 'quick_tools');
 
 			case 'stream_tools':
+			case 'proxy_checker':
 				return Authorization::check('adv', 'stream_tools');
 
 			case 'stream_view':

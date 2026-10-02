@@ -569,6 +569,9 @@ class CoreNavbarProvider implements NavbarProviderInterface {
 		NavbarRegistry::add((new NavbarItem('management.tools.stream_tools'))
 			->parent('management.tools')->url('stream_tools')
 			->label('stream_tools')->permissions(['stream_tools'])->order(60));
+		NavbarRegistry::add((new NavbarItem('management.tools.proxy_checker'))
+			->parent('management.tools')->url('proxy_checker')
+			->label('proxy_checker')->permissions(['stream_tools'])->order(70));
 
 		// Logs moved to its own top-level tab — see _logs().
 
