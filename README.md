@@ -177,6 +177,23 @@ sudo python3 install
 
 > ⚠️ Beta versions may contain unstable features. Use on test servers only.
 
+### ⚡ XC_VM-GO Install (this fork)
+
+This fork adds a high-performance Go delivery server for live TS/HLS/VOD streams.
+Go is the primary handler with automatic PHP fallback.
+
+**Fresh install** (new server):
+```bash
+wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/install_fresh.sh | sudo bash
+```
+
+**Upgrade** an existing XC_VM installation:
+```bash
+wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/upgrade_go.sh | sudo bash
+```
+
+See [INSTALL.md](INSTALL.md) for all installation methods and detailed documentation.
+
 ---
 
 ## 🧰 Service Management

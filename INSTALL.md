@@ -4,16 +4,49 @@ This fork adds a high-performance Go delivery server (`xc_ts_server`) to XC_VM.
 Go handles live TS/HLS streams natively (auth + delivery), with automatic
 PHP fallback when Go is not running. VOD uses PHP auth with Go file serving.
 
+## Quick Start
+
+### Upgrade an existing XC_VM installation
+
+One command to add Go delivery to your current XC_VM panel:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/upgrade_go.sh | sudo bash
+```
+
+This script will:
+- Install Go 1.22 toolchain (if not present)
+- Clone the repository and build the Go binary
+- Stop any existing Go server safely
+- Deploy the binary, PHP patches, and nginx config
+- Back up your existing `live.php` and `vod.php` before replacing
+- Test nginx config before reloading
+- Start the Go server and verify health
+
+### Fresh install (new server)
+
+Full XC_VM panel + Go delivery on a clean server:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/install_fresh.sh | sudo bash
+```
+
+This script will:
+- Install system packages and Go toolchain
+- Clone the repository and build the Go binary
+- Launch the XC_VM interactive installer (asks for DB credentials, ports, etc.)
+- Go delivery is configured automatically during installation
+
 ## Requirements
 
-- Ubuntu 20/22/24 or Debian 11/12 (x86_64)
+- Ubuntu 20/22/24 or Debian 11/12 (x86_64 or arm64)
 - Root access
 - 2+ GB RAM
-- Go 1.22+ (installed automatically during setup)
+- Go 1.22+ (installed automatically by the scripts above)
 
-## Installation Methods
+## Alternative Installation Methods
 
-### Method 1: Build + Install (recommended)
+### Method 1: Build + Install (for separate build/deploy workflows)
 
 Build the archive on a build machine, then install on the target server.
 
@@ -53,9 +86,9 @@ sudo make install-local TYPE=main
 sudo make install-local TYPE=lb
 ```
 
-### Method 3: Add Go to Existing XC_VM
+### Method 3: Manual upgrade (step-by-step)
 
-If you already have XC_VM installed and want to add Go delivery:
+If you prefer to run each step yourself instead of using `upgrade_go.sh`:
 
 ```bash
 # 1. Install Go
