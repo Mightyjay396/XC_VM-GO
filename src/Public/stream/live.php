@@ -33,6 +33,26 @@ use XcVm\Streaming\Lifecycle\ShutdownHandler;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
+
+// ─── Go xc_ts_server integration (ADR-GO) ────────────────────────────
+// When the Go TS server is running on this node, delivery of TS, HLS and
+// segments is handed off via X-Accel-Redirect. PHP still handles auth,
+// connection tracking and enforcement — Go handles only byte delivery.
+// Falls back to PHP delivery transparently when Go is not running.
+function goTsServerAvailable(): bool {
+	static $available = null;
+	if ($available === null) {
+		$pidFile = '/home/xc_vm/bin/xc_ts_server/ts_server.pid';
+		if (!file_exists($pidFile)) {
+			$available = false;
+		} else {
+			$pid = intval(file_get_contents($pidFile));
+			$available = ($pid > 0 && file_exists("/proc/{$pid}"));
+		}
+	}
+	return $available;
+}
+
 set_time_limit(0);
 register_shutdown_function([ShutdownHandler::class, 'handle'], 'live');
 unset($rSettings["watchdog_data"]);
@@ -382,6 +402,20 @@ if ($rChannelInfo) {
 				DatabaseFactory::close();
 			}
 
+
+			// ─── Go xc_ts_server HLS handoff (ADR-GO) ───────────────────
+			// When the Go server is running, hand off HLS playlist generation
+			// to Go via X-Accel-Redirect. Go reads the on-disk m3u8, rewrites
+			// segment URLs to /auth/seg/<file>?uuid=U, and serves it.
+			// Falls back to PHP HLSGenerator when Go is not available.
+			if (goTsServerAvailable() && !empty($rPlaylist) && file_exists($rPlaylist)) {
+				touch(CONS_TMP_PATH . $rTokenData["uuid"]);
+				header("Content-Type: application/x-mpegurl");
+				header("Cache-Control: no-store, no-cache, must-revalidate");
+				header("X-Accel-Redirect: /xc_hls_go/" . intval($rStreamID) . "?uuid=" . rawurlencode($rTokenData["uuid"]));
+				exit();
+			}
+
 			// With fanout on, client HLS is daemon-only (ADR 0003, Phase E). When
 			// the stream is fed, serve the daemon's in-RAM segmenter playlist
 			// (plain or AES-128, both produced by the daemon), tokenized into
@@ -575,6 +609,24 @@ if ($rChannelInfo) {
 			// ────────────────────────────────────────────────────────────────
 			if ($rTSVia !== FanoutMode::VIA_LEGACY) {
 				OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
+			}
+
+
+			// ─── Go xc_ts_server TS handoff (ADR-GO) ────────────────────
+			// When the Go server is running and this is a legacy (non-fanout,
+			// non-proxy) TS delivery, hand off to Go via X-Accel-Redirect.
+			// Go does the chase-read loop with prebuffering and heartbeat.
+			// Falls back to PHP delivery when Go is not available.
+			if (goTsServerAvailable()) {
+				$rGoPrebuffer = $rUserInfo["is_restreamer"]
+					? (!empty($rTokenData["prebuffer"]) ? intval($rSegmentSettings["seg_time"] ?? 10) : intval($rSettings["restreamer_prebuffer"] ?? 0))
+					: intval($rSettings["client_prebuffer"] ?? 0);
+				header("Content-Type: video/mp2t");
+				header("X-Accel-Buffering: no");
+				header("X-Accel-Redirect: /xc_ts_go/" . intval($rStreamID)
+					. "?uuid=" . rawurlencode($rTokenData["uuid"])
+					. "&prebuffer=" . $rGoPrebuffer);
+				exit;
 			}
 
 			// ────────────────────────────────────────────────────────────────
@@ -777,3 +829,4 @@ if ($rChannelInfo) {
 } else {
 	OffAirHandler::showNotOnAir($rExtension, $rUserInfo, $rIP, $rCountryCode, $rServerID, $rProxyID);
 }
+

@@ -26,6 +26,25 @@ use XcVm\Streaming\Lifecycle\ShutdownHandler;
  * @license AGPL-3.0 https://www.gnu.org/licenses/agpl-3.0.html
  */
 
+
+// ─── Go xc_ts_server integration (ADR-GO) ────────────────────────────
+// When the Go TS server is running, VOD file delivery is handed off via
+// X-Accel-Redirect. PHP still handles auth, connection tracking and
+// enforcement. Go handles Range requests and byte delivery efficiently.
+function goTsServerAvailable(): bool {
+	static $available = null;
+	if ($available === null) {
+		$pidFile = '/home/xc_vm/bin/xc_ts_server/ts_server.pid';
+		if (!file_exists($pidFile)) {
+			$available = false;
+		} else {
+			$pid = intval(file_get_contents($pidFile));
+			$available = ($pid > 0 && file_exists("/proc/{$pid}"));
+		}
+	}
+	return $available;
+}
+
 set_time_limit(0);
 register_shutdown_function([ShutdownHandler::class, 'handle'], 'vod');
 unset($rSettings['watchdog_data'], $rSettings['server_hardware']);
@@ -184,6 +203,20 @@ if ($rChannelInfo) {
 	}
 
 	touch(CONS_TMP_PATH . $rTokenData['uuid']);
+
+	// ─── Go xc_ts_server VOD handoff (ADR-GO) ───────────────────────
+	// When the Go server is running and this is a local (non-proxy) VOD
+	// file, hand off to Go via X-Accel-Redirect. Go serves the file with
+	// native HTTP Range support (206/416), proper Content-Type, and
+	// connection heartbeat. Falls back to PHP HttpRange when Go is not
+	// available. Direct-proxy VOD (fetched from remote source) stays in PHP.
+	if (!$rDirectProxy && goTsServerAvailable() && file_exists($rRequest)) {
+		header("X-Accel-Redirect: /xc_vod_go/" . intval($rStreamID)
+			. "?uuid=" . rawurlencode($rTokenData['uuid'])
+			. "&ext=" . rawurlencode($rExtension));
+		exit();
+	}
+
 
 	if (!$rDirectProxy) {
 		$rConSpeedFile = DIVERGENCE_TMP_PATH . $rTokenData['uuid'];
@@ -383,3 +416,4 @@ if ($rChannelInfo) {
 } else {
 	generateError('TOKEN_ERROR');
 }
+
