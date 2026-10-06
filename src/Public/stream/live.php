@@ -35,11 +35,13 @@ use XcVm\Streaming\Lifecycle\ShutdownHandler;
 
 
 // ─── Go xc_ts_server integration (ADR-GO) ────────────────────────────
-// When the Go TS server is running on this node, delivery of TS, HLS and
-// segments is handed off via X-Accel-Redirect. PHP still handles auth,
-// connection tracking and enforcement — Go handles only byte delivery
-// and heartbeat/lifecycle. Falls back to PHP delivery transparently
-// when Go is not running.
+// Go is the primary handler for /auth/<token> (full pipeline: auth,
+// tracking, enforcement, delivery). These X-Accel-Redirect blocks are
+// the secondary/fallback path: they are reached only when nginx routes
+// to PHP instead of Go (e.g. if the /auth/ rewrite is re-enabled, or
+// for any reason the request reaches live.php). In that case, PHP does
+// auth and hands off delivery to Go via X-Accel-Redirect.
+// If Go is not running, PHP falls back to its own delivery.
 function goTsServerAvailable(): bool {
 	static $available = null;
 	if ($available === null) {
@@ -405,9 +407,8 @@ if ($rChannelInfo) {
 
 
 			// ─── Go xc_ts_server HLS handoff (ADR-GO) ───────────────────
-			// When the Go server is running, hand off HLS playlist generation
-			// to Go via X-Accel-Redirect. Go reads the on-disk m3u8, rewrites
-			// segment URLs to /auth/seg/<file>?uuid=U, and serves it.
+			// Secondary path: reached only if nginx routes to PHP instead
+			// of Go. Hands off HLS playlist generation to Go via X-Accel.
 			// Falls back to PHP HLSGenerator when Go is not available.
 			if (goTsServerAvailable() && !empty($rPlaylist) && file_exists($rPlaylist)) {
 				touch(CONS_TMP_PATH . $rTokenData["uuid"]);
@@ -614,8 +615,8 @@ if ($rChannelInfo) {
 
 
 			// ─── Go xc_ts_server TS handoff (ADR-GO) ────────────────────
-			// When the Go server is running and this is a legacy (non-fanout,
-			// non-proxy) TS delivery, hand off to Go via X-Accel-Redirect.
+			// Secondary path: reached only if nginx routes to PHP instead
+			// of Go. Hands off TS delivery to Go via X-Accel-Redirect.
 			// Go does the chase-read loop with prebuffering and heartbeat.
 			// Falls back to PHP delivery when Go is not available.
 			if (goTsServerAvailable()) {

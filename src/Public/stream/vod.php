@@ -28,9 +28,10 @@ use XcVm\Streaming\Lifecycle\ShutdownHandler;
 
 
 // ─── Go xc_ts_server integration (ADR-GO) ────────────────────────────
-// When the Go TS server is running, VOD file delivery is handed off via
-// X-Accel-Redirect. PHP still handles auth, connection tracking and
-// enforcement. Go handles Range requests and byte delivery efficiently.
+// For VOD, PHP always handles auth and enforcement first. If the Go
+// server is running, PHP hands off file delivery to Go via X-Accel-Redirect
+// (Go provides efficient Range/seek support). If Go is not running,
+// PHP falls back to its own file delivery.
 function goTsServerAvailable(): bool {
 	static $available = null;
 	if ($available === null) {
@@ -208,8 +209,8 @@ if ($rChannelInfo) {
 	// When the Go server is running and this is a local (non-proxy) VOD
 	// file, hand off to Go via X-Accel-Redirect. Go serves the file with
 	// native HTTP Range support (206/416), proper Content-Type, and
-	// connection heartbeat. Falls back to PHP HttpRange when Go is not
-	// available. Direct-proxy VOD (fetched from remote source) stays in PHP.
+	// connection heartbeat. Falls back to PHP when Go is not available.
+	// Direct-proxy VOD (fetched from remote source) stays in PHP.
 	if (!$rDirectProxy && goTsServerAvailable() && file_exists($rRequest)) {
 		header("X-Accel-Redirect: /xc_vod_go/" . intval($rStreamID)
 			. "?uuid=" . rawurlencode($rTokenData['uuid'])
