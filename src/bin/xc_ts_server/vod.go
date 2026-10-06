@@ -21,7 +21,7 @@ import (
 // eliminating PHP's manual HttpRange implementation.
 type VODHandler struct {
 	tracker        *Tracker
-	vodPath        string   // /home/xc_vm/content/vod/
+	vodPath        string // /home/xc_vm/content/vod/
 	consTmpPath    string
 	divergencePath string
 }

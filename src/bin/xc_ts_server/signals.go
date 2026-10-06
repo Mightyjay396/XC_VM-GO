@@ -27,14 +27,14 @@ import (
 //	 └─ SignalDispatcher::cache(server_id, {type:drop_con, uuid:...})
 //	     → signals table → SignalPoller reads it → instant disconnect
 type SignalPoller struct {
-	db         *sql.DB
-	tracker    *Tracker
-	redis      *RedisTracker // may be nil
-	serverID   int
+	db          *sql.DB
+	tracker     *Tracker
+	redis       *RedisTracker // may be nil
+	serverID    int
 	consTmpPath string
-	interval   time.Duration
-	stopCh     chan struct{}
-	mu         sync.Mutex
+	interval    time.Duration
+	stopCh      chan struct{}
+	mu          sync.Mutex
 }
 
 func NewSignalPoller(db *sql.DB, tracker *Tracker, serverID int, consTmpPath string) *SignalPoller {

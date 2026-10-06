@@ -80,9 +80,15 @@ GOOS=linux GOARCH=amd64 go build -o xc_ts_server .
 
 ## Configuration
 
-All configuration is via command-line flags. The startup script `run.sh`
-reads credentials automatically from XC_VM's `config/config.ini` and
-`config/openssl_extra`.
+Go auto-configures from the XC_VM installation. No manual flags required.
+
+At startup (`run.sh` → `xc_ts_server -main-home /home/xc_vm/`), the binary:
+1. Reads **DB DSN** from `go_db.conf` (created by `upgrade_go.sh`)
+2. Reads **OPENSSL_EXTRA** from `config/openssl_extra`
+3. Reads **server_id** via PHP/XC_VM C extension (`config.enc`)
+4. Loads **live_streaming_pass** and all settings from the DB `settings` table
+
+All CLI flags can override auto-detected values when needed.
 
 ### Command-Line Flags
 
@@ -92,10 +98,10 @@ reads credentials automatically from XC_VM's `config/config.ini` and
 | `-socket` | _(empty)_ | Unix socket path (overrides -listen) |
 | `-streams` | `/home/xc_vm/content/streams/` | Path to streams tmpfs |
 | `-vod-path` | `/home/xc_vm/content/vod/` | Path to VOD files |
-| `-db-dsn` | _(required)_ | MariaDB DSN |
-| `-server-id` | `0` | This server's XC_VM server ID |
-| `-live-streaming-pass` | _(required for auth)_ | XC_VM `live_streaming_pass` from settings |
-| `-openssl-extra` | _(required for auth)_ | XC_VM OPENSSL_EXTRA constant |
+| `-db-dsn` | _(auto: go\_db.conf)_ | MariaDB DSN (auto-detected from `go_db.conf`) |
+| `-server-id` | _(auto: PHP)_ | Server ID (auto-detected via PHP/XC\_VM) |
+| `-live-streaming-pass` | _(auto: DB)_ | `live_streaming_pass` (auto-loaded from DB settings) |
+| `-openssl-extra` | _(auto: file)_ | OPENSSL\_EXTRA (auto-read from `config/openssl_extra`) |
 | `-php-bin` | `/home/xc_vm/bin/php/bin/php` | PHP binary for on-demand |
 | `-main-home` | `/home/xc_vm/` | XC_VM home directory |
 | `-signals-path` | `/home/xc_vm/signals/` | Admin signal files |
@@ -146,7 +152,7 @@ PHP serves the file itself. If Go is up, PHP X-Accel-Redirects to Go.
 
 **Automatic (via XC_VM service):**
 ```bash
-service xc_vm start    # Starts Go via run.sh (reads config.ini)
+service xc_vm start    # Starts Go via run.sh (auto-configures from XC_VM)
 service xc_vm stop     # Stops all services including Go
 ```
 
@@ -202,9 +208,10 @@ src/bin/xc_ts_server/
 ├── watcher.go       # Filesystem segment watcher (inotify)
 ├── redis.go         # Optional Redis integration
 ├── igbinary.go      # PHP igbinary format decoder (Redis compat)
+├── config.go        # Auto-configuration from XC_VM (DSN, server_id, openssl)
 ├── flock.go         # File locking for on-demand
 ├── go.mod / go.sum  # Go module dependencies
-├── run.sh           # Keepalive supervisor (reads config.ini)
+├── run.sh           # Keepalive supervisor (auto-configures from XC_VM)
 ├── xc_ts_server.sh  # Manual start/stop script
 └── README.md        # This file
 ```

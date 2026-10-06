@@ -17,11 +17,17 @@ wget -qO- https://raw.githubusercontent.com/Mightyjay396/XC_VM-GO/main/upgrade_g
 This script will:
 - Install Go 1.22 toolchain (if not present)
 - Clone the repository and build the Go binary
+- Create a dedicated Go DB user (random password per install)
+- Write `go_db.conf` with the DB connection string
 - Stop any existing Go server safely
 - Deploy the binary, PHP patches, and nginx config
 - Back up your existing `live.php` and `vod.php` before replacing
+- Clean any old inline Go nginx blocks
 - Test nginx config before reloading
 - Start the Go server and verify health
+
+Go auto-configures at startup: DSN from `go_db.conf`, OPENSSL\_EXTRA from
+`config/openssl_extra`, server\_id via PHP, and settings from the DB.
 
 ### Fresh install (new server)
 

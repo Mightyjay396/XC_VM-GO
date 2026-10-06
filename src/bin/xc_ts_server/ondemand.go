@@ -25,7 +25,7 @@ type OnDemandStarter struct {
 	mainHome    string // /home/xc_vm/
 	waitTime    int    // on_demand_wait_time from settings (seconds)
 	serverID    int
-	instantOff  int    // on_demand_instant_off from settings
+	instantOff  int // on_demand_instant_off from settings
 
 	// Per-stream locks to prevent concurrent starts in Go
 	mu      sync.Mutex

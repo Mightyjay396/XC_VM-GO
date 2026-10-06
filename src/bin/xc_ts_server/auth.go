@@ -237,7 +237,7 @@ type AuthHandler struct {
 	restrictSameIP   int
 	ipSubnetMatch    int
 	// On-demand stream start
-	onDemand         *OnDemandStarter
+	onDemand *OnDemandStarter
 }
 
 var authPathRe = regexp.MustCompile(`^/auth/(.+)$`)
@@ -278,6 +278,7 @@ func NewAuthHandler(decryptor *TokenDecryptor, tsHandler *TSHandler, tracker *Tr
 //  7. Check restrict_same_ip on existing connection
 //  8. Enforce max_connections (regular + HMAC + pair_id)
 //  9. Serve MPEG-TS stream (prebuffer + chase-read)
+//
 // 10. On disconnect: set hls_end=1
 func (a *AuthHandler) ServeAuth(w http.ResponseWriter, r *http.Request) {
 	matches := authPathRe.FindStringSubmatch(r.URL.Path)

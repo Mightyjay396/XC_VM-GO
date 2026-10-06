@@ -180,7 +180,9 @@ sudo python3 install
 ### ⚡ XC_VM-GO Install (this fork)
 
 This fork adds a high-performance Go delivery server for live TS/HLS/VOD streams.
-Go is the primary handler with automatic PHP fallback.
+Go is the primary handler with automatic PHP fallback. Go auto-configures from
+the XC_VM installation (DB credentials, server identity, settings) — no manual
+configuration needed.
 
 **Fresh install** (new server):
 ```bash
