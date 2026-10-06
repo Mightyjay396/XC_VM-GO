@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"flag"
 	"fmt"
 	"log"
@@ -27,7 +28,7 @@ var (
 	// MariaDB tracking
 	dbDSN        = flag.String("db-dsn", "", "MariaDB DSN (auto-detected from go_db.conf if empty)")
 	dbTimeOffset = flag.Int("db-time-offset", 0, "Server time_offset for lines_live")
-	heartbeatSec = flag.Int("heartbeat-sec", 60, "Heartbeat interval in seconds")
+	heartbeatSec = flag.Int("heartbeat-sec", 10, "Heartbeat interval in seconds")
 
 	// Native auth (replaces PHP entirely on MAIN and LB)
 	liveStreamingPass = flag.String("live-streaming-pass", "", "XC_VM live_streaming_pass (auto-detected from DB if empty)")
@@ -143,6 +144,17 @@ func main() {
 		log.Println("WARNING: no -db-dsn provided, tracking disabled")
 	}
 
+	// Fallback: if server_id is still 0 and DB is available, detect from servers table
+	if *serverID == 0 && tracker != nil {
+		sid, err := detectServerIDFromDB(tracker.GetDB())
+		if err == nil && sid > 0 {
+			*serverID = sid
+			log.Printf("autoconfig: server_id=%d (from DB servers table)", sid)
+		} else if err != nil {
+			log.Printf("autoconfig: DB server_id fallback failed: %v", err)
+		}
+	}
+
 	// Load XC_VM settings from DB (prebuffer, seg_time, create_expiration, etc.)
 	var xcSettings *XCSettings
 	if tracker != nil {
@@ -247,8 +259,16 @@ func main() {
 	signalsTmpPath := filepath.Join(filepath.Dir(*consTmpPath), "signals") + "/"
 	var onDemand *OnDemandStarter
 	if *phpBin != "" && *mainHome != "" {
-		onDemand = NewOnDemandStarter(*streamsPath, *phpBin, *mainHome, onDemandWaitTime, *serverID, onDemandInstantOff, signalsTmpPath)
-		log.Printf("on-demand starter enabled: php=%s home=%s wait=%ds instant_off=%d", *phpBin, *mainHome, onDemandWaitTime, onDemandInstantOff)
+		var trackerDB *sql.DB
+		if tracker != nil {
+			trackerDB = tracker.GetDB()
+		}
+		segTime := 10
+		if xcSettings != nil && xcSettings.SegTime > 0 {
+			segTime = xcSettings.SegTime
+		}
+		onDemand = NewOnDemandStarter(*streamsPath, *phpBin, *mainHome, onDemandWaitTime, *serverID, onDemandInstantOff, segTime, signalsTmpPath, trackerDB)
+		log.Printf("on-demand starter enabled: php=%s home=%s wait=%ds instant_off=%d ffmpeg_fallback=%v", *phpBin, *mainHome, onDemandWaitTime, onDemandInstantOff, onDemand.ffmpegBin != "")
 	}
 
 	// Initialize signal poller (admin kills for pid=0 Go-served connections)

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -111,6 +113,67 @@ echo json_encode(['server_id' => intval($conf['server_id'] ?? 0), 'is_lb' => int
 	}
 
 	return result.ServerID, nil
+}
+
+// detectServerIDFromDB queries the `servers` table and matches this machine's
+// IP addresses to find the correct server_id. This is the fallback when PHP
+// CLI cannot resolve server_id (e.g. config.enc DB credentials issue on LBs).
+func detectServerIDFromDB(db *sql.DB) (int, error) {
+	localIPs := getLocalIPs()
+	if len(localIPs) == 0 {
+		return 0, fmt.Errorf("no local IPs found")
+	}
+
+	rows, err := db.Query("SELECT `id`, `server_ip` FROM `servers`")
+	if err != nil {
+		return 0, fmt.Errorf("query servers: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var ip string
+		if err := rows.Scan(&id, &ip); err != nil {
+			continue
+		}
+		for _, lip := range localIPs {
+			if lip == ip {
+				return id, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("no matching server_ip in servers table (local IPs: %v)", localIPs)
+}
+
+// getLocalIPs returns all non-loopback IPv4 addresses on this machine.
+func getLocalIPs() []string {
+	var ips []string
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ips
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip != nil && ip.To4() != nil {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+	return ips
 }
 
 // writeGoDBConf creates the go_db.conf file with the DSN for the dedicated
