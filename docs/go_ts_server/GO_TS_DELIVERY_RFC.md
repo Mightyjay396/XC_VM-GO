@@ -142,26 +142,68 @@ Both `src/bin/nginx/conf/nginx.conf` (MAIN) and `lb_configs/nginx.conf` (LB):
 
 ## Features Summary
 
+### Implemented — Go handles these today
+
 | Feature | Live TS/HLS (Go) | VOD (PHP → Go) | Fallback (PHP) |
 |---------|:-----------------:|:---------------:|:--------------:|
-| Token decryption | **Go** | PHP | PHP |
-| Auth & validation | **Go** | PHP | PHP |
-| Connection tracking | **Go** | PHP + Go heartbeat | PHP |
-| Enforcement | **Go** | PHP | PHP |
-| On-demand start | **Go** | — | PHP |
+| Token decryption (GCM + CBC) | **Go** | PHP | PHP |
+| Auth & validation (expiry, extension) | **Go** | PHP | PHP |
+| Connection tracking (lines_live CRUD) | **Go** | PHP create + Go heartbeat | PHP |
+| Max connections enforcement | **Go** (3-pass, container-aware) | PHP | PHP |
+| HMAC identity enforcement | **Go** | PHP | PHP |
+| pair_id enforcement | **Go** | PHP | PHP |
+| Container-aware eviction | **Go** (HLS→hls_end=1, TS→kill, cross-server→signal) | PHP | PHP |
+| IP restrictions (disallow_2nd_ip, restrict_same_ip) | **Go** | PHP | PHP |
+| IP subnet matching (/24 IPv4, /48 IPv6) | **Go** | PHP | PHP |
+| On-demand start (monitor + proxy) | **Go** (flock → console.php) | — | PHP |
 | Segment cache (inotify) | **Go** | — | — |
 | Chase-read + prebuffer | **Go** | — | PHP |
-| HLS playlist rewrite | **Go** | — | PHP |
-| HTTP Range (206/416) | — | **Go** | PHP |
-| Signal polling | **Go** | **Go** | — |
-| MariaDB heartbeat | **Go** | **Go** | PHP |
+| Segment duration file (_.dur) | **Go** | — | PHP |
+| HLS playlist rewrite (tokenized m3u8) | **Go** | — | PHP |
+| HLS segment delivery (UUID + IP validation) | **Go** | — | PHP (segment.php) |
+| HLS deterministic connection key | **Go** | — | PHP |
+| HTTP Range support (206/416/seek) | — | **Go** (http.ServeFile) | PHP (HttpRange) |
+| Content-Type mapping (11 types) | **Go** (TS/HLS) | **Go** (VOD: 1:1 with PHP) | PHP |
+| Signal polling (admin kill/drop) | **Go** (DB + Redis ready) | **Go** (stopCh) | PHP daemon |
+| Signal file check (drop on disk) | **Go** | — | PHP |
+| MariaDB heartbeat | **Go** (configurable interval) | **Go** | PHP (300s) |
+| CONS_TMP touch files | **Go** | **Go** | PHP |
+| Activity logging (writeOfflineActivity) | **Go** | — | PHP |
+| CORS headers | **Go** | **Go** | PHP |
+| X-Accel-Buffering: no | **Go** | **Go** | PHP |
+| Divergence/speed tracking file | **Go** (TS prebuffer) | — | PHP |
+| Redis dual-mode (code ready, disabled) | **Go** (igbinary encode/decode) | — | PHP |
+| Graceful shutdown (hls_end=1) | **Go** | **Go** | PHP |
+| Auto PHP fallback (nginx) | ← 502/503/504 → PHP | ← goTsServerAvailable() | always |
+
+### Known Gaps — Not yet in Go
+
+| Feature | Description | Priority |
+|---------|-------------|:--------:|
+| HLS encryption (encrypt_hls) | PHP encrypts segments at serve-time (AES-128-CBC); Go serves raw | P1 |
+| Off-air video serving | PHP serves off-air video file; Go returns 404 | P1 |
+| On-demand PID queue file | PHP writes `SIGNALS_TMP_PATH/queue_<id>`; Go tracks in-memory only | P1 |
+| NodeLease fencing | PHP checks `NodeLease::refusesEverything()` per segment | P1 |
+| DatabaseLogger::clientLog | PHP logs events for panel visibility | P1 |
+| Proxy TS relay (UNIX datagrams) | PHP `ProxyCommand` relays via socket; Go reads disk only | P1 |
+| Protection headers | XSS, Content-Type-Options, Server header, Alt-Svc from settings | P2 |
+| Unique cookie header | `send_unique_header` from settings | P2 |
+| VOD bitrate throttling | `vod_limit_perc`, `vod_bitrate_plus` — Go serves at full speed | P2 |
+| Signal overlay | PHP burns overlay text onto segment; Go detects but doesn't apply | P2 |
+| isWatched fanout check | PHP checks `FanoutClient::isSupervised`; Go checks PID only | P2 |
+| Proxy socket cleanup | PHP unlinks per-stream proxy sockets on close | P2 |
+| FanoutClient integration | PHP fanout daemon delivery path | P2 |
 
 ## Performance
 
-- **Live (Go primary)**: No PHP worker involved at all. Go handles everything
-  from token decryption to stream disconnect.
-- **VOD (PHP + Go)**: PHP worker freed after ~100 ms (auth + X-Accel).
-- **Memory**: Go uses ~50 KB per viewer + cached segments (~7 MB × 15 per stream)
-- **Concurrency**: Go's goroutine model handles thousands of concurrent viewers
-- **VOD**: native Go `http.ServeFile` with zero-copy sendfile
-- **Fallback latency**: 2s `proxy_connect_timeout` when Go is down
+| Metric | Go (primary) | PHP (fallback) |
+|--------|:------------:|:--------------:|
+| Workers per viewer | 0 (goroutine, ~8 KB stack) | 1 PHP-FPM worker (~20 MB) |
+| Auth latency | < 1 ms (in-process decrypt) | ~5-15 ms (PHP boot + decrypt) |
+| VOD PHP worker hold | ~100 ms (auth + X-Accel) | Full duration (minutes/hours) |
+| Heartbeat interval | Configurable (default 60s) | 300s fixed |
+| Segment notification | inotify (instant) | sleep/poll loop |
+| VOD file serving | sendfile(2) zero-copy | PHP fread() loop |
+| Fallback detection | 2s (proxy_connect_timeout) | — |
+| Memory per stream (cache) | ~7 MB × 15 segments | 0 (no cache) |
+| Concurrent viewers | Thousands (goroutines) | = pm.max_children |

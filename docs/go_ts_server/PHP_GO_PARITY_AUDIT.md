@@ -1,7 +1,7 @@
 # PHP↔Go Parity Audit — live.php vs xc_ts_server
 
 ## Scope
-Go replaces **TS, HLS and VOD delivery** on all nodes (MAIN and LBs). PHP retains panel, daemons, RTMP, crons, and auth/enforcement (Go receives delivery via X-Accel-Redirect after PHP auth).
+Go replaces the **full live stream pipeline (TS + HLS auth + delivery)** on all nodes (MAIN and LBs). Go is the primary handler for `/auth/<token>`. PHP is the automatic fallback. VOD uses PHP auth with Go file serving (via X-Accel-Redirect).
 
 ## Audit Matrix
 
@@ -9,7 +9,7 @@ Go replaces **TS, HLS and VOD delivery** on all nodes (MAIN and LBs). PHP retain
 |---|---|---|---|---|---|
 | 1 | Token decrypt (GCM + CBC) | `StreamAuthMiddleware::decryptToken` | `auth.go: Decrypt()` GCM→CBC fallback | Covered | — |
 | 2 | Off-air / video_path token | Reads off-air video file, streams it | Returns HTTP 404 `STREAM_OFF_AIR` | Gap | P1 |
-| 3 | Extension validation | ts/m3u8, defaults to `api_container` | ts-only, error on others | By design | — |
+| 3 | Extension validation | ts/m3u8, defaults to `api_container` | ts/m3u8; error on others | Covered | — |
 | 4 | CORS header | `Access-Control-Allow-Origin: *` | Same | Covered | — |
 | 5 | Protection headers (XSS, Content-Type-Options) | From settings `send_protection_headers` | Not sent | Gap | P2 |
 | 6 | Server header | From settings `send_server_header` | Not sent | Gap | P2 |

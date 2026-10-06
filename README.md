@@ -315,6 +315,39 @@ Measured: 352 channels, ~2 Gbps inbound, 36 s ring
 - ✅ Security patches
 - ✅ Clean UI
 
+### ⚡ Go Delivery Server (this fork)
+
+This fork adds `xc_ts_server`, a native Go server that replaces the full PHP live stream pipeline.
+
+| Feature | Live TS/HLS (Go) | VOD (PHP → Go) | Fallback (PHP) |
+|---------|:-----------------:|:---------------:|:--------------:|
+| Token decryption (GCM + CBC) | **Go** | PHP | PHP |
+| Auth & validation (expiry, extension) | **Go** | PHP | PHP |
+| Connection tracking (lines_live) | **Go** | PHP + Go heartbeat | PHP |
+| Enforcement (3-pass, container-aware) | **Go** | PHP | PHP |
+| IP restrictions (2nd IP, same IP, subnet) | **Go** | PHP | PHP |
+| On-demand start (monitor + proxy) | **Go** | — | PHP |
+| Segment cache (inotify) | **Go** | — | — |
+| Chase-read + prebuffer | **Go** | — | PHP |
+| HLS playlist rewrite (tokenized m3u8) | **Go** | — | PHP |
+| HLS segment delivery (UUID + IP) | **Go** | — | PHP |
+| HTTP Range support (206/416/seek) | — | **Go** | PHP |
+| Content-Type mapping (11 types) | **Go** | **Go** | PHP |
+| Signal polling (admin kill/drop) | **Go** | **Go** | PHP daemon |
+| MariaDB heartbeat | **Go** | **Go** | PHP |
+| CONS_TMP touch files | **Go** | **Go** | PHP |
+| Activity logging | **Go** | — | PHP |
+| Redis dual-mode (code ready) | **Go** | — | PHP |
+| Auto PHP fallback | ← 502/503/504 → PHP | ← PID check → PHP | always |
+
+**Performance gains:**
+- Live: zero PHP workers needed (goroutines instead of php-fpm children)
+- VOD: PHP worker freed in ~100 ms (auth + X-Accel handoff to Go)
+- inotify-based segment notification (instant vs PHP sleep/poll)
+- sendfile(2) zero-copy for VOD file delivery
+
+See [docs/go_ts_server/GO_TS_DELIVERY_RFC.md](docs/go_ts_server/GO_TS_DELIVERY_RFC.md) for the complete technical specification.
+
 ---
 
 ## 🔧 Known Limitations

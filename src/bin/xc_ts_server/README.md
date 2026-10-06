@@ -9,17 +9,31 @@ Runs on all nodes (MAIN and LBs). VOD uses PHP auth with Go file serving.
 
 ## Features
 
-- **Full Auth Pipeline**: Decrypts XC_VM tokens (AES-256-GCM/CBC), validates users, enforces connection limits, tracks connections in MariaDB — replaces PHP entirely for live streams
+- **Full Auth Pipeline**: Decrypts XC_VM tokens (AES-256-GCM/CBC), validates users, enforces connection limits (regular/HMAC/pair_id), IP restrictions (disallow_2nd_ip, restrict_same_ip, subnet match), tracks connections in MariaDB — replaces PHP entirely for live streams
+- **Container-Aware Enforcement**: 3-pass eviction (same IP+UA → same IP → any). HLS → soft-close (hls_end=1), TS pid>0 → SIGKILL, cross-server → DB signal dispatch
 - **Automatic PHP Fallback**: If Go is down, nginx falls back to PHP via `@go_auth_fallback` — zero manual intervention
-- **MPEG-TS Delivery**: Chase-read loop serving live TS segments with prebuffering, divergence tracking, and signal handling
-- **HLS Playlist**: Generates tokenized m3u8 playlists with rewritten segment URLs pointing to Go
-- **HLS Segments**: Serves individual `.ts`/`.enc` segments with UUID validation
-- **VOD File Serving**: HTTP Range support (206/416), seek, Content-Type mapping, heartbeat (PHP auth → Go delivery)
-- **Connection Tracking**: MariaDB `lines_live` heartbeat, `opened_cons` touch files, activity logging
-- **On-Demand**: File-locked stream start via PHP `console.php monitor`, stale lock cleanup
-- **Signal Polling**: Admin kill/drop signals for Go-served connections (pid=0)
-- **Enforcement**: Max connections (regular/HMAC/pair_id), IP restrictions, cross-server eviction
-- **Redis Support**: Optional dual-mode (Redis+MariaDB) when `redis_handler=1`
+- **MPEG-TS Delivery**: Chase-read loop serving live TS segments with inotify, prebuffering, divergence tracking, and signal handling
+- **HLS Playlist**: Generates tokenized m3u8 playlists with rewritten segment URLs pointing to Go segment handler
+- **HLS Segments**: Serves `.ts`/`.m4s` segments with UUID validation, IP matching, path traversal protection
+- **VOD File Serving**: HTTP Range support (206/416), seek, Content-Type mapping (11 types identical to PHP), heartbeat (PHP auth → Go delivery)
+- **Connection Tracking**: MariaDB `lines_live` heartbeat, CONS_TMP touch files, activity logging (writeOfflineActivity)
+- **On-Demand**: File-locked stream start via PHP `console.php monitor|proxy`, stale lock cleanup, monitor + proxy mode
+- **Signal Polling**: Admin kill/drop signals for Go-served connections (pid=0) via DB and signal files
+- **Redis Support**: Optional dual-mode (Redis+MariaDB) with igbinary encode/decode when `redis_handler=1`
+- **Graceful Shutdown**: SIGINT/SIGTERM → hls_end=1 for all tracked viewers, clean MariaDB + Redis + cons_tmp cleanup
+
+### Known Gaps (P1/P2 backlog)
+
+| Gap | Priority | Description |
+|-----|:--------:|-------------|
+| HLS encryption | P1 | PHP encrypts segments at serve-time; Go serves raw |
+| Off-air video | P1 | PHP serves off-air video; Go returns 404 |
+| PID queue file | P1 | PHP writes queue file for shutdown; Go tracks in-memory |
+| NodeLease fencing | P1 | PHP checks lease per segment |
+| Proxy TS relay | P1 | PHP relays via UNIX socket; Go reads disk only |
+| VOD throttling | P2 | vod_limit_perc/vod_bitrate_plus not implemented |
+| Protection headers | P2 | XSS, unique cookie, Alt-Svc from settings |
+| Signal overlay | P2 | PHP burns overlay on segment; Go skips |
 
 ## Architecture
 
