@@ -2,11 +2,16 @@
 
 High-performance Go replacement for PHP stream delivery in XC_VM.
 Handles MPEG-TS live streaming, HLS playlist generation, and VOD file serving
-with native authentication, MariaDB connection tracking, and on-demand stream management.
+with MariaDB connection tracking and on-demand stream management.
+
+Runs on all nodes (MAIN and LBs). By default, PHP handles auth and Go handles
+delivery (Mode B). Optionally, Go can handle the full pipeline including auth
+(Mode A — opt-in via nginx config).
 
 ## Features
 
-- **Native Auth**: Decrypts XC_VM tokens, validates users, enforces connection limits — replaces PHP auth entirely
+- **Native Auth** (Mode A, opt-in): Decrypts XC_VM tokens, validates users, enforces connection limits — replaces PHP entirely for live streams
+- **PHP Handoff** (Mode B, default): PHP handles auth, Go handles delivery via X-Accel-Redirect — with automatic PHP fallback if Go is not running
 - **MPEG-TS Delivery**: Chase-read loop serving live TS segments with prebuffering, divergence tracking, and signal handling
 - **HLS Playlist**: Generates tokenized m3u8 playlists with rewritten segment URLs pointing to Go
 - **HLS Segments**: Serves individual `.ts`/`.enc` segments with UUID validation
@@ -21,26 +26,28 @@ with native authentication, MariaDB connection tracking, and on-demand stream ma
 
 ```
 Client → Nginx → Go xc_ts_server (127.0.0.1:8089)
-                      ├── /auth/<token>           Native auth (TS + HLS)
-                      ├── /auth/seg/<file>        HLS segment delivery
-                      ├── /ts/<stream_id>         Internal TS (X-Accel from PHP)
-                      ├── /hls_playlist/<id>      Internal HLS (X-Accel from PHP)
-                      ├── /vod_serve/<id>         Internal VOD (X-Accel from PHP)
+                      ├── /auth/<token>           Native auth — Mode A (commented out by default)
+                      ├── /auth/seg/<file>        HLS segment delivery (Mode A only)
+                      ├── /ts/<stream_id>         Internal TS (X-Accel from PHP — Mode B, active)
+                      ├── /hls_playlist/<id>      Internal HLS (X-Accel from PHP — Mode B, active)
+                      ├── /vod_serve/<id>         Internal VOD (X-Accel from PHP — Mode B, active)
                       └── /health                 Health check
 ```
 
 ### Two Integration Modes
 
-**Mode A — Native Auth** (recommended for all nodes — MAIN and LB):
-- Nginx routes `/auth/<token>` directly to Go
-- Go handles everything: auth, tracking, enforcement, delivery
-- PHP is completely bypassed for live streams
+**Mode B — PHP Auth + Go Delivery** (active by default):
+- Nginx routes to PHP as usual (`/auth/<token>` → `live.php`, `/vauth/<token>` → `vod.php`)
+- PHP handles token decryption, auth, `createLive()`, enforcement
+- PHP sends `X-Accel-Redirect` to Go for byte delivery (TS, HLS, VOD)
+- Go handles: chase-read, playlist rewriting, Range/seek, heartbeat, lifecycle
+- **If Go is not running, PHP falls back to its own delivery automatically**
 
-**Mode B — PHP Auth + Go Delivery**:
-- Nginx routes to PHP as usual
-- PHP handles auth, creates `lines_live`, runs enforcement
-- PHP sends `X-Accel-Redirect` to Go's internal routes for byte delivery
-- Go handles efficient file serving (TS chase-read, VOD Range)
+**Mode A — Native Auth** (opt-in, uncomment in go_ts_server.conf):
+- Nginx routes `/auth/<token>` directly to Go (bypasses PHP entirely)
+- Go handles the full pipeline: token decryption, auth, tracking, enforcement, delivery
+- Higher performance (no PHP worker involved at all)
+- **No PHP fallback** — if Go is down, nginx returns 502
 
 ## Building
 
@@ -114,17 +121,21 @@ include go_ts_server.conf;
 
 4. `nginx -t && nginx -s reload`
 
-## PHP Integration (Mode B)
+## PHP Integration (Mode B — active by default)
 
 The modified `live.php` and `vod.php` include Go handoff logic:
 
 - **live.php**: After PHP auth/enforcement, if Go is running (PID file exists),
-  sends `X-Accel-Redirect` to Go for TS delivery or HLS playlist generation
-- **vod.php**: After PHP auth/enforcement, if Go is running,
-  sends `X-Accel-Redirect` to Go for file serving with Range support
+  sends `X-Accel-Redirect` to Go for TS delivery or HLS playlist generation.
+  If Go is not running, PHP falls back to its own delivery.
+- **vod.php**: After PHP auth/enforcement, if Go is running (PID file exists),
+  sends `X-Accel-Redirect` to Go for file serving with Range support.
+  Direct-proxy VOD (fetched from remote source) stays entirely in PHP.
 
-The handoff is automatic when the Go server is running and transparent
-when it's not (PHP falls back to its own delivery).
+If Mode A is activated (uncommented in `go_ts_server.conf`), live requests
+bypass PHP entirely — Go handles auth and delivery via `/auth/<token>`.
+The `live.php` X-Accel blocks then serve only as a fallback if Mode A
+is later disabled.
 
 ## File Structure
 

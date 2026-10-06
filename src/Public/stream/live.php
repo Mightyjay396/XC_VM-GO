@@ -37,8 +37,9 @@ use XcVm\Streaming\Lifecycle\ShutdownHandler;
 // ─── Go xc_ts_server integration (ADR-GO) ────────────────────────────
 // When the Go TS server is running on this node, delivery of TS, HLS and
 // segments is handed off via X-Accel-Redirect. PHP still handles auth,
-// connection tracking and enforcement — Go handles only byte delivery.
-// Falls back to PHP delivery transparently when Go is not running.
+// connection tracking and enforcement — Go handles only byte delivery
+// and heartbeat/lifecycle. Falls back to PHP delivery transparently
+// when Go is not running.
 function goTsServerAvailable(): bool {
 	static $available = null;
 	if ($available === null) {
