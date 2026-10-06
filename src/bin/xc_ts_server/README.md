@@ -1,53 +1,56 @@
 # xc_ts_server — Go TS/HLS/VOD Delivery Server
 
-High-performance Go replacement for PHP stream delivery in XC_VM.
-Handles MPEG-TS live streaming, HLS playlist generation, and VOD file serving
-with MariaDB connection tracking and on-demand stream management.
+High-performance Go replacement for the full PHP live stream pipeline in XC_VM.
+Go handles token decryption, authentication, connection tracking, enforcement,
+on-demand start, and stream delivery (TS/HLS). PHP is the automatic fallback
+when Go is not running.
 
-Runs on all nodes (MAIN and LBs). By default, PHP handles auth and Go handles
-delivery (Mode B). Optionally, Go can handle the full pipeline including auth
-(Mode A — opt-in via nginx config).
+Runs on all nodes (MAIN and LBs). VOD uses PHP auth with Go file serving.
 
 ## Features
 
-- **Native Auth** (Mode A, opt-in): Decrypts XC_VM tokens, validates users, enforces connection limits — replaces PHP entirely for live streams
-- **PHP Handoff** (Mode B, default): PHP handles auth, Go handles delivery via X-Accel-Redirect — with automatic PHP fallback if Go is not running
+- **Full Auth Pipeline**: Decrypts XC_VM tokens (AES-256-GCM/CBC), validates users, enforces connection limits, tracks connections in MariaDB — replaces PHP entirely for live streams
+- **Automatic PHP Fallback**: If Go is down, nginx falls back to PHP via `@go_auth_fallback` — zero manual intervention
 - **MPEG-TS Delivery**: Chase-read loop serving live TS segments with prebuffering, divergence tracking, and signal handling
 - **HLS Playlist**: Generates tokenized m3u8 playlists with rewritten segment URLs pointing to Go
 - **HLS Segments**: Serves individual `.ts`/`.enc` segments with UUID validation
-- **VOD File Serving**: HTTP Range support (206/416), seek, Content-Type mapping, heartbeat
+- **VOD File Serving**: HTTP Range support (206/416), seek, Content-Type mapping, heartbeat (PHP auth → Go delivery)
 - **Connection Tracking**: MariaDB `lines_live` heartbeat, `opened_cons` touch files, activity logging
 - **On-Demand**: File-locked stream start via PHP `console.php monitor`, stale lock cleanup
 - **Signal Polling**: Admin kill/drop signals for Go-served connections (pid=0)
-- **Enforcement**: Max connections, IP restrictions, cross-server eviction via signals table
+- **Enforcement**: Max connections (regular/HMAC/pair_id), IP restrictions, cross-server eviction
 - **Redis Support**: Optional dual-mode (Redis+MariaDB) when `redis_handler=1`
 
 ## Architecture
 
 ```
-Client → Nginx → Go xc_ts_server (127.0.0.1:8089)
-                      ├── /auth/<token>           Native auth — Mode A (commented out by default)
-                      ├── /auth/seg/<file>        HLS segment delivery (Mode A only)
-                      ├── /ts/<stream_id>         Internal TS (X-Accel from PHP — Mode B, active)
-                      ├── /hls_playlist/<id>      Internal HLS (X-Accel from PHP — Mode B, active)
-                      ├── /vod_serve/<id>         Internal VOD (X-Accel from PHP — Mode B, active)
-                      └── /health                 Health check
+Live TS/HLS (Go is primary):
+  Client → Nginx → Go :8089 /auth/<token>
+                      ├── Decrypt token, auth, tracking, enforcement
+                      ├── On-demand start if needed
+                      ├── Serve TS or HLS
+                      └── Heartbeat + cleanup on disconnect
+
+  If Go is down (502/503/504):
+  Client → Nginx → Go (down) → @go_auth_fallback
+                                └── rewrite → PHP live.php (full pipeline)
+
+VOD (PHP auth + Go delivery):
+  Client → Nginx → PHP vod.php
+                      ├── Auth + enforcement
+                      └── X-Accel → Go /vod_serve/ (Range/seek)
 ```
 
-### Two Integration Modes
+### Routes
 
-**Mode B — PHP Auth + Go Delivery** (active by default):
-- Nginx routes to PHP as usual (`/auth/<token>` → `live.php`, `/vauth/<token>` → `vod.php`)
-- PHP handles token decryption, auth, `createLive()`, enforcement
-- PHP sends `X-Accel-Redirect` to Go for byte delivery (TS, HLS, VOD)
-- Go handles: chase-read, playlist rewriting, Range/seek, heartbeat, lifecycle
-- **If Go is not running, PHP falls back to its own delivery automatically**
-
-**Mode A — Native Auth** (opt-in, uncomment in go_ts_server.conf):
-- Nginx routes `/auth/<token>` directly to Go (bypasses PHP entirely)
-- Go handles the full pipeline: token decryption, auth, tracking, enforcement, delivery
-- Higher performance (no PHP worker involved at all)
-- **No PHP fallback** — if Go is down, nginx returns 502
+| Route | Handler | Description |
+|-------|---------|-------------|
+| `/auth/<token>` | Go primary, PHP fallback | Live TS/HLS — full pipeline |
+| `/auth/seg/<file>` | Go | HLS segment delivery |
+| `/ts/<stream_id>` | Go (internal X-Accel) | TS delivery (secondary path from live.php) |
+| `/hls_playlist/<id>` | Go (internal X-Accel) | HLS playlist (secondary path from live.php) |
+| `/vod_serve/<id>` | Go (internal X-Accel) | VOD file serving (from vod.php) |
+| `/health` | Go | Health check endpoint |
 
 ## Building
 
@@ -63,19 +66,9 @@ GOOS=linux GOARCH=amd64 go build -o xc_ts_server .
 
 ## Configuration
 
-All configuration is via command-line flags. The startup script `xc_ts_server.sh`
-reads from environment variables for sensitive values.
-
-### Required Environment Variables
-
-Set these before running `xc_ts_server.sh`:
-
-```bash
-export XC_TS_DB_DSN="user:pass@tcp(host:port)/dbname"
-export XC_TS_LIVE_PASS="your_live_streaming_pass"
-export XC_TS_OPENSSL_EXTRA="your_openssl_extra_constant"
-export XC_TS_SERVER_ID=5
-```
+All configuration is via command-line flags. The startup script `run.sh`
+reads credentials automatically from XC_VM's `config/config.ini` and
+`config/openssl_extra`.
 
 ### Command-Line Flags
 
@@ -87,8 +80,8 @@ export XC_TS_SERVER_ID=5
 | `-vod-path` | `/home/xc_vm/content/vod/` | Path to VOD files |
 | `-db-dsn` | _(required)_ | MariaDB DSN |
 | `-server-id` | `0` | This server's XC_VM server ID |
-| `-live-streaming-pass` | _(empty)_ | Enables native auth |
-| `-openssl-extra` | _(empty)_ | XC_VM OPENSSL_EXTRA constant |
+| `-live-streaming-pass` | _(required for auth)_ | XC_VM `live_streaming_pass` from settings |
+| `-openssl-extra` | _(required for auth)_ | XC_VM OPENSSL_EXTRA constant |
 | `-php-bin` | `/home/xc_vm/bin/php/bin/php` | PHP binary for on-demand |
 | `-main-home` | `/home/xc_vm/` | XC_VM home directory |
 | `-signals-path` | `/home/xc_vm/signals/` | Admin signal files |
@@ -105,58 +98,54 @@ automatically read from the XC_VM `settings` table in MariaDB at startup.
 
 ## Nginx Integration
 
-See `lb_configs/go_ts_server.conf` for the nginx configuration snippet.
+See `lb_configs/go_ts_server.conf` for the complete nginx config.
 
-### Quick Setup
+### Setup (2 steps)
 
-1. Add to your nginx config:
-```nginx
-include go_ts_server.conf;
+1. **Comment out** the `/auth/` rewrite in your nginx.conf:
+   ```nginx
+   # rewrite ^/auth/(?<token>[^/]*)$ /stream/live?token=$token break;
+   ```
+
+2. **Include** the Go config (already done in the modified nginx.conf):
+   ```nginx
+   include go_ts_server.conf;
+   ```
+
+3. `nginx -t && nginx -s reload`
+
+The `/auth/` rewrite MUST be commented out — otherwise nginx rewrites the
+URL to `/stream/live` before Go's location block can match it.
+
+## PHP Fallback
+
+When Go is running: all `/auth/<token>` requests go to Go.
+When Go is stopped: nginx gets 502, triggers `@go_auth_fallback`, which
+rewrites to `/stream/live?token=...` → PHP handles everything as before.
+
+The fallback is fully automatic. No config changes needed.
+
+For VOD: `vod.php` always checks `goTsServerAvailable()`. If Go is down,
+PHP serves the file itself. If Go is up, PHP X-Accel-Redirects to Go.
+
+## Service Management
+
+**Automatic (via XC_VM service):**
+```bash
+service xc_vm start    # Starts Go via run.sh (reads config.ini)
+service xc_vm stop     # Stops all services including Go
 ```
 
-2. For **Mode A** (native auth), uncomment the `/auth/` location blocks in the config.
-
-3. For **Mode B** (PHP handoff), the internal locations are already active. Apply the
-   PHP patches to `live.php` and `vod.php` (see below).
-
-4. `nginx -t && nginx -s reload`
-
-## PHP Integration (Mode B — active by default)
-
-The modified `live.php` and `vod.php` include Go handoff logic:
-
-- **live.php**: After PHP auth/enforcement, if Go is running (PID file exists),
-  sends `X-Accel-Redirect` to Go for TS delivery or HLS playlist generation.
-  If Go is not running, PHP falls back to its own delivery.
-- **vod.php**: After PHP auth/enforcement, if Go is running (PID file exists),
-  sends `X-Accel-Redirect` to Go for file serving with Range support.
-  Direct-proxy VOD (fetched from remote source) stays entirely in PHP.
-
-If Mode A is activated (uncommented in `go_ts_server.conf`), live requests
-bypass PHP entirely — Go handles auth and delivery via `/auth/<token>`.
-The `live.php` X-Accel blocks then serve only as a fallback if Mode A
-is later disabled.
-
-## File Structure
-
+**Manual:**
+```bash
+./xc_ts_server.sh start|stop|restart|status
 ```
-src/bin/xc_ts_server/
-├── main.go          # Entry point, flags, route setup, health
-├── auth.go          # Token decryption, native auth handler
-├── handler.go       # TS chase-read delivery, HLS playlist internal
-├── hls.go           # HLS segment handler
-├── vod.go           # VOD file serving with Range
-├── tracker.go       # MariaDB lines_live tracking, heartbeat, enforcement
-├── ondemand.go      # On-demand stream start via PHP console.php
-├── signals.go       # Admin signal polling (kill/drop)
-├── cache.go         # In-memory segment cache
-├── watcher.go       # Filesystem segment watcher
-├── redis.go         # Optional Redis integration
-├── igbinary.go      # PHP igbinary format decoder (Redis compat)
-├── flock.go         # File locking for on-demand
-├── go.mod / go.sum  # Go module dependencies
-├── xc_ts_server.sh  # Startup/stop script
-└── README.md        # This file
+
+**Disable Go without uninstalling:**
+```bash
+touch /home/xc_vm/bin/xc_ts_server/disabled
+# Go's run.sh will exit. PHP fallback activates automatically.
+# Remove the file to re-enable.
 ```
 
 ## Health Check
@@ -179,14 +168,31 @@ Response:
     "vod_native": true,
     "redis_active": false,
     "on_demand_enabled": true,
-    "on_demand_instant_off": 1,
-    "signal_poller": true,
-    "client_prebuffer": 30,
-    "restreamer_prebuffer": 30,
-    "seg_time": 10,
-    "seg_wait_time": 45,
-    "on_demand_wait_time": 60
+    "signal_poller": true
 }
+```
+
+## File Structure
+
+```
+src/bin/xc_ts_server/
+├── main.go          # Entry point, flags, route setup, health
+├── auth.go          # Token decryption, full auth pipeline
+├── handler.go       # TS chase-read delivery, internal HLS
+├── hls.go           # HLS segment handler
+├── vod.go           # VOD file serving with Range
+├── tracker.go       # MariaDB lines_live tracking, enforcement
+├── ondemand.go      # On-demand stream start via console.php
+├── signals.go       # Admin signal polling (kill/drop)
+├── cache.go         # In-memory segment cache
+├── watcher.go       # Filesystem segment watcher (inotify)
+├── redis.go         # Optional Redis integration
+├── igbinary.go      # PHP igbinary format decoder (Redis compat)
+├── flock.go         # File locking for on-demand
+├── go.mod / go.sum  # Go module dependencies
+├── run.sh           # Keepalive supervisor (reads config.ini)
+├── xc_ts_server.sh  # Manual start/stop script
+└── README.md        # This file
 ```
 
 ## Dependencies
