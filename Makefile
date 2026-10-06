@@ -132,7 +132,7 @@ LB_KEEP_ON_UPDATE := Domain/User
 
 EXCLUDE_ARGS := $(addprefix --exclude=,$(EXCLUDES))
 
-.PHONY: new lb main lb_copy_files main_copy_files set_permissions create_archive \
+.PHONY: new lb main lb_copy_files main_copy_files set_permissions create_archive go-build \
 	lb_archive_move main_archive_move main_install_archive clean \
 	verify_no_lfs_pointers \
 	lb_delete_files_list generate_deleted_files \
@@ -363,13 +363,40 @@ generate_deleted_files:
 			echo "[INFO] No deleted files detected since $(LAST_TAG)"; \
 		fi
 
+
+# ─── Go xc_ts_server binary ─────────────────────────────────────
+# Cross-compile the Go TS delivery server for linux/amd64. The binary is placed
+# next to the Go source under src/bin/xc_ts_server/ so the archive includes it.
+# Requires Go 1.22+ on the build machine.
+# Skip with: make lb GO_BUILD=0
+GO_BUILD ?= 1
+GO_SRC := $(MAIN_DIR)/bin/xc_ts_server
+GO_BIN := $(GO_SRC)/xc_ts_server
+
+go-build:
+ifeq ($(GO_BUILD),1)
+	@if command -v go >/dev/null 2>&1; then \
+		echo "==> [GO] Building xc_ts_server (linux/amd64)"; \
+		cd "$(GO_SRC)" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o xc_ts_server . ; \
+		echo "==> [GO] xc_ts_server built ($$(du -h $(GO_BIN) | cut -f1))"; \
+	elif [ -f "$(GO_BIN)" ]; then \
+		echo "==> [GO] Go not installed, using existing binary"; \
+	else \
+		echo "==> [GO] WARNING: Go not installed and no pre-built binary found"; \
+		echo "    Install Go 1.22+: https://go.dev/dl/"; \
+		echo "    Or set GO_BUILD=0 to skip: make lb GO_BUILD=0"; \
+	fi
+else
+	@echo "==> [GO] Skipped (GO_BUILD=0)"
+endif
+
 # ─── MAIN targets ────────────────────────────────────────────────
 # Single archive: used for both clean install and update.
 # The update script (src/update) filters out excluded dirs at runtime.
-main: main_copy_files stamp_release_id set_permissions verify_no_lfs_pointers create_archive main_archive_move main_install_archive clean
+main: go-build main_copy_files stamp_release_id set_permissions verify_no_lfs_pointers create_archive main_archive_move main_install_archive clean
 
 # ─── LoadBalancer targets ────────────────────────────────────────
-lb: lb_copy_files lb_delete_files_list stamp_release_id set_permissions verify_no_lfs_pointers create_archive lb_archive_move clean
+lb: go-build lb_copy_files lb_delete_files_list stamp_release_id set_permissions verify_no_lfs_pointers create_archive lb_archive_move clean
 
 lb_copy_files:
 	@echo "==> [LB] Creating distribution directory: $(DIST_DIR)"
@@ -412,6 +439,10 @@ lb_copy_files:
 	@echo "==> [LB] Copying config files"
 	cp "$(CONFIG_DIR)/nginx.conf" $(TEMP_DIR)/bin/nginx/conf/nginx.conf
 	cp "$(CONFIG_DIR)/live.conf" $(TEMP_DIR)/bin/nginx_rtmp/conf/live.conf
+	@if [ -f "$(CONFIG_DIR)/go_ts_server.conf" ]; then \
+		echo "   → Copying Go TS server nginx config"; \
+		cp "$(CONFIG_DIR)/go_ts_server.conf" $(TEMP_DIR)/bin/nginx/conf/go_ts_server.conf; \
+	fi
 
 	@echo "Remove all .gitkeep files..."
 	@find $(TEMP_DIR) -name .gitkeep \
@@ -510,6 +541,9 @@ set_permissions:
 	@chmod 0755 $(TEMP_DIR)/console.php 2>/dev/null || true
 	@chmod 0755 $(TEMP_DIR)/bin/guess 2>/dev/null || true
 	@chmod 0755 $(TEMP_DIR)/bin/yt-dlp 2>/dev/null || true
+	@chmod 0755 $(TEMP_DIR)/bin/xc_ts_server/xc_ts_server 2>/dev/null || true
+	@chmod 0750 $(TEMP_DIR)/bin/xc_ts_server/run.sh 2>/dev/null || true
+	@chmod 0750 $(TEMP_DIR)/bin/xc_ts_server/xc_ts_server.sh 2>/dev/null || true
 	@chmod 0550 $(TEMP_DIR)/bin/network 2>/dev/null || true
 	@chmod 0550 $(TEMP_DIR)/bin/network.py 2>/dev/null || true
 

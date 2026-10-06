@@ -1,0 +1,8 @@
+# Compiled binary (built by `make go-build` or during install)
+xc_ts_server
+!xc_ts_server.sh
+
+# Runtime files (created on the server)
+*.pid
+*.log
+*.lock

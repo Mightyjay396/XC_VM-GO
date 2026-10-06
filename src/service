@@ -62,6 +62,14 @@ boot() {
       sudo -u xc_vm timeout 15 $SCRIPT/bin/php/bin/php $SCRIPT/console.php cluster:apply --from-disk >/dev/null 2>/dev/null
     fi
   fi
+  # Go TS delivery server: runs on every node where the binary is present.
+  # Reads DB credentials from config/config.ini + config/openssl_extra, queries
+  # live_streaming_pass from the settings table, and serves TS/HLS/VOD via
+  # nginx X-Accel. Supervisor auto-restarts on crash; `disabled` flag stops it.
+  if [ -x $SCRIPT/bin/xc_ts_server/xc_ts_server ] && [ ! -f $SCRIPT/bin/xc_ts_server/disabled ]; then
+    sudo chown -R xc_vm:xc_vm $SCRIPT/bin/xc_ts_server 2>/dev/null
+    sudo -u xc_vm bash $SCRIPT/bin/xc_ts_server/run.sh &
+  fi
   sudo -u xc_vm $SCRIPT/bin/nginx/sbin/nginx >/dev/null 2>/dev/null
   sudo -u xc_vm $SCRIPT/bin/nginx_rtmp/sbin/nginx_rtmp >/dev/null 2>/dev/null
   sudo -u xc_vm $SCRIPT/bin/daemons.sh
@@ -152,3 +160,4 @@ case "$1" in
 esac
 
 exit 0
+

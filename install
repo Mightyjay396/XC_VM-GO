@@ -779,6 +779,134 @@ def install_distribution_binaries(dist_id, version):
         return False
 
 
+
+
+GO_VERSION = "1.22.10"
+GO_INSTALL_DIR = "/usr/local"
+
+def install_go_toolchain():
+    """Install Go toolchain if not already present. Required to build xc_ts_server."""
+    go_bin = os.path.join(GO_INSTALL_DIR, "go", "bin", "go")
+    if os.path.exists(go_bin):
+        result = subprocess.run([go_bin, "version"], capture_output=True, text=True)
+        if result.returncode == 0:
+            printc(f"Go already installed: {result.stdout.strip()}", col.OKGREEN)
+            return True
+
+    printc(f"Installing Go {GO_VERSION}...", col.OKBLUE)
+    import platform
+    arch = platform.machine()
+    if arch == "x86_64":
+        go_arch = "amd64"
+    elif arch == "aarch64":
+        go_arch = "arm64"
+    else:
+        printc(f"Unsupported architecture for Go: {arch}", col.WARNING)
+        return False
+
+    go_tar = f"go{GO_VERSION}.linux-{go_arch}.tar.gz"
+    go_url = f"https://go.dev/dl/{go_tar}"
+    temp_file = f"/tmp/{go_tar}"
+
+    try:
+        printc(f"Downloading {go_url}...", col.OKBLUE)
+        last_err = None
+        for attempt in range(1, 4):
+            try:
+                urllib.request.urlretrieve(go_url, temp_file)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                printc(f"Download attempt {attempt}/3 failed: {e}", col.WARNING)
+                time.sleep(3)
+        if last_err is not None:
+            raise last_err
+
+        # Remove old Go installation
+        old_go = os.path.join(GO_INSTALL_DIR, "go")
+        if os.path.exists(old_go):
+            shutil.rmtree(old_go)
+
+        # Extract
+        with tarfile.open(temp_file, "r:gz") as tar:
+            tar.extractall(path=GO_INSTALL_DIR)
+
+        os.remove(temp_file)
+
+        # Verify
+        result = subprocess.run([go_bin, "version"], capture_output=True, text=True)
+        if result.returncode == 0:
+            printc(f"Go installed: {result.stdout.strip()}", col.OKGREEN)
+            return True
+        else:
+            printc("Go installation verification failed", col.FAIL)
+            return False
+
+    except Exception as e:
+        printc(f"Failed to install Go: {e}", col.FAIL)
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+        return False
+
+
+def build_go_ts_server():
+    """Build the xc_ts_server Go binary for the current platform."""
+    go_src = "/home/xc_vm/bin/xc_ts_server"
+    go_binary = os.path.join(go_src, "xc_ts_server")
+    go_mod = os.path.join(go_src, "go.mod")
+    go_bin = os.path.join(GO_INSTALL_DIR, "go", "bin", "go")
+
+    # Check if source exists
+    if not os.path.exists(go_mod):
+        printc("xc_ts_server Go source not found, skipping build", col.OKBLUE)
+        return True
+
+    # Check if binary already exists and is executable
+    if os.path.exists(go_binary) and os.access(go_binary, os.X_OK):
+        printc("xc_ts_server binary already exists", col.OKGREEN)
+        return True
+
+    # Need Go toolchain
+    if not os.path.exists(go_bin):
+        printc("Go toolchain not found, installing...", col.OKBLUE)
+        if not install_go_toolchain():
+            printc("Cannot build xc_ts_server without Go toolchain", col.WARNING)
+            return False
+
+    printc("Building xc_ts_server...", col.OKBLUE)
+    env = os.environ.copy()
+    env["CGO_ENABLED"] = "0"
+    env["GOPATH"] = "/tmp/go-build-cache"
+    env["GOCACHE"] = "/tmp/go-cache"
+    env["PATH"] = os.path.join(GO_INSTALL_DIR, "go", "bin") + ":" + env.get("PATH", "")
+
+    result = subprocess.run(
+        [go_bin, "build", "-trimpath", "-ldflags=-s -w", "-o", "xc_ts_server", "."],
+        cwd=go_src,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+    if result.returncode != 0:
+        printc(f"Failed to build xc_ts_server: {result.stderr}", col.FAIL)
+        return False
+
+    # Set permissions
+    os.chmod(go_binary, 0o755)
+    run_command(f"chown xc_vm:xc_vm {go_binary}")
+
+    file_size_mb = os.path.getsize(go_binary) / (1024 * 1024)
+    printc(f"xc_ts_server built successfully ({file_size_mb:.1f} MB)", col.OKGREEN)
+
+    # Set ownership of entire directory
+    run_command(f"chown -R xc_vm:xc_vm {go_src}")
+
+    return True
+
+
 def detect_distribution():
     """Detect Linux distribution and version without external modules"""
     dist_id = "unknown"
@@ -1965,6 +2093,18 @@ if __name__ == "__main__":
         )
 
     ##################################################
+    # GO TS SERVER BUILD                             #
+    ##################################################
+
+    printc("Building Go TS delivery server", col.OKBLUE)
+    if not build_go_ts_server():
+        printc(
+            "xc_ts_server build failed — the Go delivery server will not be available. "
+            "PHP delivery remains functional as fallback.",
+            col.WARNING,
+        )
+
+    ##################################################
     # MariaDB CONFIGURATION                          #
     ##################################################
 
@@ -2402,3 +2542,4 @@ if __name__ == "__main__":
     printc("IMPORTANT: Move the credentials file to a secure location!", col.WARNING)
 
     printc("=" * 60, col.OKGREEN)
+
