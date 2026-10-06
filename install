@@ -2414,6 +2414,14 @@ if __name__ == "__main__":
     run_command("chmod +x /home/xc_vm/console.php")
     run_command("chmod +x /home/xc_vm/bin/nginx/sbin/nginx")
 
+    # Go TS server permissions
+    if os.path.exists("/home/xc_vm/bin/xc_ts_server/xc_ts_server"):
+        run_command("chmod +x /home/xc_vm/bin/xc_ts_server/xc_ts_server")
+    if os.path.exists("/home/xc_vm/bin/xc_ts_server/run.sh"):
+        run_command("chmod +x /home/xc_vm/bin/xc_ts_server/run.sh")
+    if os.path.exists("/home/xc_vm/bin/xc_ts_server/xc_ts_server.sh"):
+        run_command("chmod +x /home/xc_vm/bin/xc_ts_server/xc_ts_server.sh")
+
     # Check for RTMP nginx
     nginx_rtmp_path = "/home/xc_vm/bin/nginx_rtmp/sbin/nginx_rtmp"
     if os.path.exists(nginx_rtmp_path):

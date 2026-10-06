@@ -132,7 +132,7 @@ LB_KEEP_ON_UPDATE := Domain/User
 
 EXCLUDE_ARGS := $(addprefix --exclude=,$(EXCLUDES))
 
-.PHONY: new lb main lb_copy_files main_copy_files set_permissions create_archive go-build \
+.PHONY: new lb main lb_copy_files main_copy_files set_permissions create_archive go-build install-local \
 	lb_archive_move main_archive_move main_install_archive clean \
 	verify_no_lfs_pointers \
 	lb_delete_files_list generate_deleted_files \
@@ -444,6 +444,15 @@ lb_copy_files:
 		cp "$(CONFIG_DIR)/go_ts_server.conf" $(TEMP_DIR)/bin/nginx/conf/go_ts_server.conf; \
 	fi
 
+	@# Copy compiled Go binary (not tracked by git, excluded by .gitignore)
+	@if [ -f "$(MAIN_DIR)/bin/xc_ts_server/xc_ts_server" ]; then \
+		echo "   → Copying compiled xc_ts_server binary"; \
+		mkdir -p $(TEMP_DIR)/bin/xc_ts_server; \
+		cp "$(MAIN_DIR)/bin/xc_ts_server/xc_ts_server" $(TEMP_DIR)/bin/xc_ts_server/xc_ts_server; \
+	else \
+		echo "   → WARNING: xc_ts_server binary not found. Run 'make go-build' first or install Go 1.22+"; \
+	fi
+
 	@echo "Remove all .gitkeep files..."
 	@find $(TEMP_DIR) -name .gitkeep \
 		-not -path "*/.git/*" \
@@ -671,3 +680,25 @@ docs-build: $(DOCS_STAMP)
 
 docs-serve: $(DOCS_STAMP)
 	@$(DOCS_PY) -m mkdocs serve
+
+# ─── Local install (clone + build + install in one step) ─────────────
+# For users who clone the fork and want to install directly on the target
+# server without creating a separate archive.
+#
+# Usage:
+#   git clone https://github.com/Mightyjay396/XC_VM-GO.git
+#   cd XC_VM-GO
+#   sudo make install-local TYPE=main    # For main server
+#   sudo make install-local TYPE=lb      # For load balancer
+#
+install-local: go-build
+	@echo "\n==> [INSTALL-LOCAL] Building archive and installing..."
+ifeq ($(TYPE),lb)
+	@$(MAKE) lb
+	@echo "==> Archive created: loadbalancer.tar.gz"
+	@echo "==> Extract to /home/xc_vm/ and run 'service xc_vm start'"
+else
+	@$(MAKE) main
+	@echo "==> Running install script..."
+	@python3 install
+endif
