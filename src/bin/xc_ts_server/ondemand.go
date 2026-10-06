@@ -358,7 +358,7 @@ func (o *OnDemandStarter) buildPHPCommand(action string, streamID int) *exec.Cmd
 // ──────────────────────────────────────────────
 // On-demand viewer queue — compatibility layer
 // ──────────────────────────────────────────────
-// PHP's XC_VM[Ondemand] daemon already runs on LB2 and handles stream
+// PHP's XC_VM[Ondemand] daemon already runs on the node and handles stream
 // shutdown by checking lines_live viewer counts + PID queue + 30s age guard.
 // Since Go writes connections to lines_live, the PHP daemon sees Go viewers.
 // When the last Go viewer disconnects, Go sets hls_end=1 and deletes the row,

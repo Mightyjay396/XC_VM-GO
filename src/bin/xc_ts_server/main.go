@@ -29,7 +29,7 @@ var (
         dbTimeOffset = flag.Int("db-time-offset", 0, "Server time_offset for lines_live")
         heartbeatSec = flag.Int("heartbeat-sec", 60, "Heartbeat interval in seconds")
 
-        // Native auth (replaces PHP entirely on LB)
+        // Native auth (replaces PHP entirely on MAIN and LB)
         liveStreamingPass = flag.String("live-streaming-pass", "", "XC_VM live_streaming_pass setting (enables native auth)")
         opensslExtra      = flag.String("openssl-extra", "", "XC_VM OPENSSL_EXTRA constant")
         serverID          = flag.Int("server-id", 0, "This server's ID in XC_VM")

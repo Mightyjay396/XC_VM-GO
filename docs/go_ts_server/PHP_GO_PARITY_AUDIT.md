@@ -1,7 +1,7 @@
 # PHP↔Go Parity Audit — live.php vs xc_ts_server
 
 ## Scope
-Go replaces **only TS delivery** on LB2 (`/auth/<token>` → TS). PHP retains HLS, VOD, panel, daemons, RTMP, crons.
+Go replaces **TS, HLS and VOD delivery** on all nodes (MAIN and LBs). PHP retains panel, daemons, RTMP, crons, and auth/enforcement (Go receives delivery via X-Accel-Redirect after PHP auth).
 
 ## Audit Matrix
 
@@ -17,7 +17,7 @@ Go replaces **only TS delivery** on LB2 (`/auth/<token>` → TS). PHP retains HL
 | 8 | Unique cookie | From settings `send_unique_header` | Not sent | Gap | P2 |
 | 9 | `X-Accel-Buffering: no` | When `use_buffer=0` | Always sent | Covered | — |
 | 10 | Server/Proxy ID resolution (originator/redirect) | `$rChannelInfo["originator_id"]`, `redirect_id` | `auth.go` lines 347-353 | Covered | — |
-| 11 | FanoutMode delivery routing | `legacyDelivery()`, daemon vs legacy | Not implemented (N/A: fanout off on LB2) | N/A | — |
+| 11 | FanoutMode delivery routing | `legacyDelivery()`, daemon vs legacy | Not implemented (N/A when fanout off) | N/A | — |
 | 12 | PID file reads (_.pid, _.monitor) | `AsyncFileOperations::readFile` | `ondemand.go: readPidFile()` | Covered | — |
 | 13 | On-demand queue (addToQueue/removeFromQueue) | PID queue file `SIGNALS_TMP_PATH/queue_<id>` | In-memory UUID map (no file written) | Gap | P1 |
 | 14 | On-demand start: START_MONITOR | `lockOnDemandStart` → `startMonitor` → wait | `doStartMonitor`: flock → PHP console.php → wait | Covered | — |

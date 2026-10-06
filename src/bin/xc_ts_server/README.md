@@ -31,7 +31,7 @@ Client → Nginx → Go xc_ts_server (127.0.0.1:8089)
 
 ### Two Integration Modes
 
-**Mode A — Native Auth** (recommended for LB nodes):
+**Mode A — Native Auth** (recommended for all nodes — MAIN and LB):
 - Nginx routes `/auth/<token>` directly to Go
 - Go handles everything: auth, tracking, enforcement, delivery
 - PHP is completely bypassed for live streams

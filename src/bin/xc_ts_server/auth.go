@@ -268,7 +268,7 @@ func NewAuthHandler(decryptor *TokenDecryptor, tsHandler *TSHandler, tracker *Tr
 
 // ServeAuth handles: GET /auth/<encrypted_token>
 //
-// This replaces live.php entirely for TS delivery on LB2:
+// This replaces live.php entirely for TS/HLS delivery on MAIN and LB:
 //  1. Send stream headers (CORS, protection — like PHP sendStreamHeaders)
 //  2. Decrypt token (GCM -> CBC fallback)
 //  3. Handle off-air/video_path tokens
