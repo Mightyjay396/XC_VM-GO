@@ -36,8 +36,8 @@ Go replaces **TS, HLS and VOD delivery** on all nodes (MAIN and LBs). PHP retain
 | 27 | UpdateLive (reconnect) | `ConnectionTracker::updateLive` | `tracker.UpdateConnectionReuse` | Covered | — |
 | 28 | Delete closed by UUID | Delete stale `hls_end=1` rows before create | `tracker.DeleteClosedByUUID` | Covered | — |
 | 29 | PHP TS worker kill on reconnect | `posix_kill(old_pid, 9)` when pid>0 | N/A (Go uses pid=0, no worker to kill) | By design | — |
-| **30** | **Enforcement: container-aware eviction** | **HLS → UPDATE hls_end=1; TS pid>0 → SIGKILL+DELETE; pid=0 → dropDaemonViewer** | **All → DELETE (no container/pid differentiation)** | **BUG** | **P0** |
-| **31** | **Enforcement: cross-server signaling** | **Different server → SignalDispatcher::kill / dropDaemonViewer** | **DELETE regardless of server** | **BUG** | **P0** |
+| 30 | Enforcement: container-aware eviction | HLS → UPDATE hls_end=1; TS pid>0 → SIGKILL+DELETE; pid=0 → dropDaemonViewer | `tracker.go: smartEvict()` — same 3-way logic | Fixed | — |
+| 31 | Enforcement: cross-server signaling | Different server → SignalDispatcher::kill / dropDaemonViewer | `tracker.go: sendEvictSignal()` → INSERT into signals table | Fixed | — |
 | 32 | Enforcement 3-pass eviction order | Same IP+UA → same IP → any (oldest first) | Same 3-pass logic | Covered | — |
 | 33 | Enforcement pair_id | `closeConnections($rUserInfo['pair_id'], ...)` | `EnforceMaxConnections(*td.UserInfo.PairID, ...)` | Covered | — |
 | 34 | Touch file (CONS_TMP_PATH) | `touch(CONS_TMP_PATH . uuid)` + cleanup | `handler.go` line 114 + defer Remove | Covered | — |
@@ -49,7 +49,7 @@ Go replaces **TS, HLS and VOD delivery** on all nodes (MAIN and LBs). PHP retain
 | 40 | Admin signal file (overlay) | `SignalSender::sendSignal` burns overlay onto segment | Consumed but not applied | Gap | P2 |
 | 41 | NodeLease fencing | `NodeLease::refusesEverything()` check per segment | Not implemented | Gap | P1 |
 | 42 | Divergence/speed tracking | `DIVERGENCE_TMP_PATH . uuid` | `divergencePath` in handler.go | Covered | — |
-| 43 | Segment duration file (_.dur) | Reads `<id>_.dur`, adjusts seg_time | Not read | Gap | P1 |
+| 43 | Segment duration file (_.dur) | Reads `<id>_.dur`, adjusts seg_time | `handler.go` line 151: reads `_.dur`, adjusts segTime | Fixed | — |
 | 44 | Connection heartbeat | Every 5 min: re-read settings, heartbeat | Every N seconds (configurable), MariaDB UPDATE | Covered (more frequent) | — |
 | 45 | Shutdown: normal disconnect | `UPDATE hls_end=1 WHERE uuid=? AND pid=?` | `UPDATE hls_end=1 WHERE uuid=? AND hls_end=0` | Covered (pid check N/A for Go) | — |
 | 46 | Shutdown: removeFromQueue | `ConnectionTracker::removeFromQueue($streamID, $PID)` | In-memory map (no file) | Gap (same as #13) | P1 |
@@ -62,28 +62,24 @@ Go replaces **TS, HLS and VOD delivery** on all nodes (MAIN and LBs). PHP retain
 | 53 | Redis dual-mode tracking | All CRUD to Redis + MySQL | All CRUD dual-mode code present, disabled | Covered (code ready) | — |
 | 54 | igbinary encode/decode | PHP native igbinary | `igbinary.go` custom encoder/decoder | Covered (code ready) | — |
 
-## P0 Fixes Required (This Session)
+## P0 Fixes — Completed
 
-### Fix 1: Container-aware enforcement eviction (#30)
-**Problem**: Go DELETEs ALL evicted connections regardless of container type. PHP differentiates:
-- HLS (`container='hls'/'m3u8'`): UPDATE hls_end=1 (soft close, player detects on next refresh)
-- TS with pid>0 (PHP worker): DELETE + SIGKILL
-- TS with pid=0 (Go/daemon): DELETE + signal/tracker drop
+### Fix 1: Container-aware enforcement eviction (#30) ✅
+Implemented in `tracker.go: smartEvict()` — HLS soft-close, same-server TS kill, cross-server signaling.
 
-**Impact**: Go evicting an HLS viewer via DELETE causes the player to hang instead of gracefully stopping.
+### Fix 2: Cross-server enforcement signaling (#31) ✅
+Implemented in `tracker.go: sendEvictSignal()` — INSERT into signals table for target server's daemon.
 
-### Fix 2: Cross-server enforcement signaling (#31)
-**Problem**: Go DELETEs connections from other servers without notification. PHP dispatches a signal (via `signals` table or Redis) so the other server's daemon can act.
-
-**Impact**: Evicted connections on other servers remain active until their next heartbeat (up to 5 min).
+### Fix 3: Segment duration file (#43) ✅
+Implemented in `handler.go` line 151 — reads `_.dur` and adjusts segment wait time.
 
 ## P1 Items (Future)
 - Off-air video serving (#2)
 - On-demand PID queue file (#13, #46)
 - NodeLease fencing (#41)
-- Segment duration file (#43)
 - DatabaseLogger::clientLog (#51)
 - Proxy TS relay (#52)
+- HLS encryption support (`encrypt_hls` — Go serves unencrypted segments)
 
 ## P2 Items (Backlog)
 - Protection/Server/Alt-Svc/Cookie headers (#5-8)
